@@ -13,7 +13,7 @@
 
 use rtl::sync::Locked;
 
-use crate::imports;
+use crate::kernel32::{self, InputRecord};
 use crate::thread::Lock;
 
 /// The console input's state, behind its lock: `_getch` holds it while it waits for a key.
@@ -62,7 +62,6 @@ const ENHANCED_KEY: u32 = 0x0100;
 const GENERIC_READ_WRITE: u32 = 0xC000_0000;
 const FILE_SHARE_READ_WRITE: u32 = 3;
 const OPEN_EXISTING: u32 = 3;
-const INVALID_HANDLE: usize = usize::MAX;
 
 /// The extended keys, by virtual-key code: the codes the PC BIOS gives each alone, with Shift,
 /// with Ctrl and with Alt.
@@ -129,22 +128,17 @@ impl Console {
     /// console.
     fn input(&mut self) -> Option<usize> {
         if let Input::Unopened = self.input {
-            // SAFETY: kernel32's export, over a NUL-terminated name.
-            let handle = unsafe {
-                imports::CreateFileA(
-                    c"CONIN$".as_ptr().cast(),
-                    GENERIC_READ_WRITE,
-                    FILE_SHARE_READ_WRITE,
-                    core::ptr::null(),
-                    OPEN_EXISTING,
-                    0,
-                    0,
-                )
-            };
-            self.input = if handle == INVALID_HANDLE {
-                Input::Missing
-            } else {
-                Input::Open(handle)
+            let opened = kernel32::create_file(
+                c"CONIN$",
+                GENERIC_READ_WRITE,
+                FILE_SHARE_READ_WRITE,
+                None,
+                OPEN_EXISTING,
+                0,
+            );
+            self.input = match opened {
+                Ok(handle) => Input::Open(handle),
+                Err(_) => Input::Missing,
             };
         }
         match self.input {
@@ -169,33 +163,21 @@ fn key_waiting(console: &mut Console) -> i32 {
     let Some(handle) = console.input() else {
         return 0;
     };
-    let mut count = 0u32;
-    // SAFETY: kernel32's export, over a dword.
-    if unsafe { imports::GetNumberOfConsoleInputEvents(handle, &mut count) } == 0 || count == 0 {
-        return 0;
-    }
-    let records = crate::heap::allocate(count as usize * RECORD_SIZE, false);
-    if records.is_null() {
-        return 0;
-    }
-    let mut peeked = 0u32;
-    // SAFETY: kernel32's export, over the block of `count` records.
-    let waiting = if unsafe { imports::PeekConsoleInputA(handle, records, count, &mut peeked) } != 0
-    {
-        // SAFETY: the block holds the `peeked` records PeekConsoleInputA copied.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(records, peeked.min(count) as usize * RECORD_SIZE)
-        };
-        bytes
-            .as_chunks::<RECORD_SIZE>()
-            .0
-            .iter()
-            .any(|record| key(record).is_some())
-    } else {
-        false
+    let count = match kernel32::console_input_events(handle) {
+        Ok(count) if count > 0 => count as usize,
+        _ => return 0,
     };
-    // SAFETY: the block from the C runtime's heap, given back.
-    unsafe { crate::heap::release(records) };
+    let block = crate::heap::allocate(count * RECORD_SIZE, true);
+    if block.is_null() {
+        return 0;
+    }
+    // SAFETY: a fresh, zeroed block of the C runtime's heap holding `count` records (byte arrays,
+    // aligned anywhere), this function's alone until it is given back below.
+    let records = unsafe { core::slice::from_raw_parts_mut(block.cast::<InputRecord>(), count) };
+    let waiting = kernel32::peek_console_input(handle, records)
+        .is_ok_and(|peeked| records[..peeked].iter().any(|record| key(record).is_some()));
+    // SAFETY: the block from the C runtime's heap, used no more.
+    unsafe { crate::heap::release(block) };
     i32::from(waiting)
 }
 
@@ -215,23 +197,16 @@ fn next_key(console: &mut Console) -> i32 {
     let Some(handle) = console.input() else {
         return EOF;
     };
-    let mut mode = 0u32;
-    // SAFETY: kernel32's exports, over the console's input buffer.
-    let restore = unsafe { imports::GetConsoleMode(handle, &mut mode) } != 0;
-    if restore {
-        // SAFETY: as above.
-        unsafe { imports::SetConsoleMode(handle, 0) };
+    let mode = kernel32::console_mode(handle).ok();
+    if mode.is_some() {
+        let _ = kernel32::set_console_mode(handle, 0);
     }
-    let mut record = [0u8; RECORD_SIZE];
+    let mut record = [[0u8; RECORD_SIZE]];
     let answer = loop {
-        let mut read = 0u32;
-        // SAFETY: kernel32's export, over one record.
-        if unsafe { imports::ReadConsoleInputA(handle, record.as_mut_ptr(), 1, &mut read) } == 0
-            || read == 0
-        {
+        if kernel32::read_console_input(handle, &mut record).unwrap_or(0) == 0 {
             break EOF;
         }
-        match key(&record) {
+        match key(&record[0]) {
             Some(Key::Character(character)) => break i32::from(character),
             Some(Key::Extended(prefix, code)) => {
                 console.pending = Some(code);
@@ -240,9 +215,8 @@ fn next_key(console: &mut Console) -> i32 {
             None => {}
         }
     };
-    if restore {
-        // SAFETY: kernel32's export, the mode as it was.
-        unsafe { imports::SetConsoleMode(handle, mode) };
+    if let Some(mode) = mode {
+        let _ = kernel32::set_console_mode(handle, mode);
     }
     answer
 }

@@ -3,7 +3,7 @@
 //! RtlAnsiStringToUnicodeString) into a buffer of MAX_PATH + 1 units (Windows 2000's kernel32
 //! converts into the thread's static Unicode string, of that size: a longer name is
 //! ERROR_FILENAME_EXCED_RANGE), the W calls copy theirs into the same ([`wide`]), and the names a
-//! call hands back go to either kind of buffer ([`crate::base::Text`], an A call's narrowed by
+//! call hands back go to either kind of buffer ([`crate::edge::Text`], an A call's narrowed by
 //! ntdll's RtlUnicodeToMultiByteN); ntdll makes the NT path of the DOS one
 //! (RtlDosPathNameToNtPathName_U, which fails for a name it cannot make: ERROR_PATH_NOT_FOUND), a
 //! relative path under the current directory coming back relative to its handle; and a failed
@@ -22,9 +22,11 @@ pub mod names;
 pub mod search;
 pub mod volume;
 
-use crate::base::{set_last_error, SecurityAttributes, OBJ_INHERIT};
+use crate::base::{SecurityAttributes, OBJ_INHERIT};
+use crate::edge::{ansi_into, wide_units, In, InStr, InWStr, Out};
+use crate::error::Failure;
 use crate::heap::HeapString;
-use crate::nt::{self, IoStatus, ObjectAttributes, RelativeName, UnicodeString};
+use crate::nt::{ObjectAttributes, UnicodeString};
 use crate::ntcall;
 
 /// The ANSI path limit, terminator included.
@@ -143,59 +145,36 @@ impl Wide {
     }
 }
 
-/// An ANSI name into UTF-16 (ntdll's conversion, [`crate::base::ansi_into`]); none
-/// (ERROR_FILENAME_EXCED_RANGE set) past MAX_PATH characters.
-///
-/// # Safety
-///
-/// `name` is null (the empty name) or points at a NUL-terminated string (a bad pointer faults the
-/// caller, as on the platform).
-pub unsafe fn widen(name: *const u8) -> Option<Wide> {
+/// An A call's name converted into UTF-16 (ntdll's conversion, [`crate::edge::ansi_into`]; no
+/// name is the empty one): ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters.
+pub fn widen(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
     let mut wide = Wide {
         units: [0; MAX_PATH + 1],
         length: 0,
     };
-    // SAFETY: the caller's string, into the buffer.
-    let Some(length) = (unsafe { crate::base::ansi_into(name, &mut wide.units) }) else {
-        set_last_error(ERROR_FILENAME_EXCED_RANGE);
-        return None;
-    };
-    wide.length = length;
-    Some(wide)
+    wide.length =
+        ansi_into(name, &mut wide.units).ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
+    Ok(wide)
 }
 
 /// A W call's name, copied into the buffer an A call's conversion fills. A W call does not convert:
-/// a name past MAX_PATH reaches ntdll, whose DOS path conversion refuses it — none here, with
-/// ERROR_PATH_NOT_FOUND set (the files capture: CreateFileW of a 300-character path), where an A
-/// call's conversion refuses it with ERROR_FILENAME_EXCED_RANGE.
-///
-/// # Safety
-///
-/// `name` points at a NUL-terminated UTF-16 string (a bad pointer faults the caller).
-pub unsafe fn wide(name: *const u16) -> Option<Wide> {
-    // SAFETY: the caller's string.
-    let Some(units) = (unsafe { crate::base::wide_units(name) }) else {
-        set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-        return None;
-    };
-    let copied = Wide::of(&units);
-    if copied.is_none() {
-        set_last_error(ERROR_PATH_NOT_FOUND);
-    }
-    copied
+/// a name past MAX_PATH reaches ntdll, whose DOS path conversion refuses it — ERROR_PATH_NOT_FOUND
+/// here (the files capture: CreateFileW of a 300-character path), where an A call's conversion
+/// refuses it with ERROR_FILENAME_EXCED_RANGE.
+pub fn wide(name: &InWStr<'_>) -> Result<Wide, Failure> {
+    let units = wide_units(name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
+    Wide::of(&units).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))
 }
 
-/// UTF-16 units into an ANSI buffer of `size` bytes with its terminator, as the narrow calls hand
-/// names back.
-///
-/// # Safety
-///
-/// `buffer` holds `size` bytes, and `size` exceeds `units`' length.
-pub unsafe fn narrow_into(units: &[u16], buffer: *mut u8) {
-    // SAFETY: the caller's buffer holds the name and its terminator.
-    unsafe {
-        crate::base::narrow(units, buffer);
-        buffer.add(units.len()).write(0);
+/// Two names, each read and converted whatever the other's answer, in the order the call reads
+/// them: both, or the failure of the one read last that failed (the last error the two leave).
+pub fn both<A, B>(
+    first: Result<A, Failure>,
+    second: Result<B, Failure>,
+) -> Result<(A, B), Failure> {
+    match (first, second) {
+        (Ok(first), Ok(second)) => Ok((first, second)),
+        (_, Err(failure)) | (Err(failure), Ok(_)) => Err(failure),
     }
 }
 
@@ -209,40 +188,25 @@ pub struct NtPath {
     pub name: UnicodeString,
     /// The directory the name is relative to (zero: none).
     pub root: u32,
-    /// Where the last component starts, if the path has one (null otherwise).
-    pub file_part: *mut u16,
+    /// Where the last component starts in the whole path, in units, if the path has one.
+    pub file_part: Option<usize>,
 }
 
 impl NtPath {
     /// The NT path of a NUL-terminated DOS path (RtlDosPathNameToNtPathName_U); none when ntdll
     /// cannot make it.
     pub fn of(dos: &[u16]) -> Option<NtPath> {
-        let mut full = UnicodeString::empty();
-        let mut file_part = core::ptr::null_mut();
-        let mut relative = RelativeName {
-            name: UnicodeString::empty(),
-            containing_directory: 0,
-        };
-        // SAFETY: ntdll's export, over a terminated string and the structures above.
-        let made = unsafe {
-            nt::RtlDosPathNameToNtPathName_U(dos.as_ptr(), &mut full, &mut file_part, &mut relative)
-        };
-        if made as u8 == 0 {
-            return None;
-        }
-        // SAFETY: the path ntdll made: its buffer a block of the process heap it allocated for
-        // the path, which the relative name and the file part point into, and nothing frees.
-        let full = unsafe { HeapString::adopt(full) };
-        let (name, root) = if relative.name.length != 0 {
-            (relative.name, relative.containing_directory)
+        let made = ntcall::dos_path_name_to_nt_path_name(dos)?;
+        let (name, root) = if made.relative.name.length != 0 {
+            (made.relative.name, made.relative.containing_directory)
         } else {
-            (*full.string(), 0)
+            (*made.full.string(), 0)
         };
         Some(NtPath {
-            full,
+            full: made.full,
             name,
             root,
-            file_part,
+            file_part: made.file_part,
         })
     }
 
@@ -264,37 +228,14 @@ impl NtPath {
     }
 }
 
-/// Whether a SECURITY_ATTRIBUTES asks for an inheritable handle.
-///
-/// # Safety
-///
-/// `security` is null or points at a SECURITY_ATTRIBUTES.
-pub unsafe fn inherits(security: *const SecurityAttributes) -> bool {
-    // SAFETY: the caller's structure, when given.
-    unsafe { security.as_ref() }.is_some_and(|security| security.inherit_handle != 0)
+/// Whether a SECURITY_ATTRIBUTES, when given, asks for an inheritable handle.
+pub fn inherits(security: Option<In<'_, SecurityAttributes>>) -> bool {
+    security.is_some_and(|security| security.read().inherit_handle != 0)
 }
 
 /// Open `path` with `access`, `share` and `options` (NtOpenFile): the handle, or the status.
 pub fn open(path: &NtPath, access: u32, share: u32, options: u32) -> Result<u32, u32> {
-    let attributes = path.attributes(false);
-    let mut handle = 0;
-    let mut io_status = IoStatus::default();
-    // SAFETY: ntdll's export, over the attributes above.
-    let status = unsafe {
-        nt::NtOpenFile(
-            &mut handle,
-            access,
-            &attributes,
-            &mut io_status,
-            share,
-            options,
-        )
-    };
-    if rtl::status::nt_success(status) {
-        Ok(handle)
-    } else {
-        Err(status)
-    }
+    ntcall::open_file(access, &path.attributes(false), share, options)
 }
 
 /// A typed service's answer as the status the file calls test: STATUS_SUCCESS, or the failure.
@@ -312,6 +253,32 @@ pub fn set(handle: u32, class: u32, information: &[u8]) -> u32 {
     as_status(ntcall::set_information_file(handle, class, information))
 }
 
+/// Query `class` of the volume of the open file `handle` into `out`
+/// ([`ntcall::query_volume_information_file`]): the status.
+pub fn query_volume(handle: u32, class: u32, out: &mut [u8]) -> u32 {
+    as_status(ntcall::query_volume_information_file(handle, class, out))
+}
+
+/// A status as the file calls' work answers it: a success, or the failure (its error set through
+/// BaseSetLastNTError).
+pub fn checked(status: u32) -> Result<(), Failure> {
+    if rtl::status::nt_success(status) {
+        Ok(())
+    } else {
+        Err(Failure::Status(status))
+    }
+}
+
+/// A status as the calls that keep a warning's answer (a name cut to the buffer) take it: only an
+/// error fails them.
+pub fn unless_error(status: u32) -> Result<(), Failure> {
+    if status & 0xC000_0000 == 0xC000_0000 {
+        Err(Failure::Status(status))
+    } else {
+        Ok(())
+    }
+}
+
 /// Close a handle the call opened for itself (a failure leaves nothing more to do).
 pub fn close(handle: u32) {
     let _ = ntcall::close(handle);
@@ -327,26 +294,9 @@ pub fn quad(bytes: &[u8], at: usize) -> u64 {
     u64::from(word(bytes, at)) | u64::from(word(bytes, at + 4)) << 32
 }
 
-/// Write a dword where a pointer argument asks, when it does.
-///
-/// # Safety
-///
-/// `at` is null or points at a dword.
-pub unsafe fn put(at: *mut u32, value: u32) {
-    if !at.is_null() {
-        // SAFETY: the caller's slot.
-        unsafe { at.write_unaligned(value) };
-    }
-}
-
-/// Write a FILETIME where a pointer argument asks, when it does.
-///
-/// # Safety
-///
-/// `at` is null or points at a FILETIME.
-pub unsafe fn put_time(at: *mut u64, value: u64) {
-    if !at.is_null() {
-        // SAFETY: the caller's slot.
-        unsafe { at.write_unaligned(value) };
+/// Write a value where an optional out parameter asks, when it does.
+pub fn put<T: Copy>(at: Option<&mut Out<'_, T>>, value: T) {
+    if let Some(at) = at {
+        at.set(value);
     }
 }

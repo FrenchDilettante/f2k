@@ -8,8 +8,9 @@
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
+use crate::edge::{InStr, InWStr};
 use crate::error::ERROR_NOT_ENOUGH_MEMORY;
-use crate::nt::{self, AnsiString, UnicodeString};
+use crate::nt::{self, UnicodeString};
 use crate::ntcall::{self, NtStatus};
 
 /// The process heap had no room for a block: ERROR_NOT_ENOUGH_MEMORY.
@@ -57,6 +58,15 @@ impl<T: Copy + Default> HeapArray<T> {
             at += part.len();
         }
         Ok(array)
+    }
+
+    /// The block handed out to a caller, who gives it back to the process heap itself (RtlFreeHeap:
+    /// FreeEnvironmentStrings, LocalFree), as Windows 2000's kernel32 hands out the blocks it
+    /// fills.
+    pub fn into_raw(self) -> NonNull<T> {
+        let block = self.block;
+        core::mem::forget(self);
+        block
     }
 
     /// The first `length` values kept, those past them left behind (none when it holds no more);
@@ -205,38 +215,25 @@ impl<T: Copy + Default> DerefMut for HeapVec<T> {
 pub struct HeapString(UnicodeString);
 
 impl HeapString {
-    /// An ANSI string converted through the ANSI code page onto the process heap, as Windows 2000's
-    /// kernel32 converts an A call's string for a call that keeps it whole (ntdll's
-    /// RtlInitAnsiString, then RtlAnsiStringToUnicodeString, its allocating form): the converting
-    /// call's status when it fails (STATUS_INVALID_PARAMETER_2 for a string whose Unicode form is
-    /// past a counted string's reach, STATUS_NO_MEMORY when the heap has no room).
-    ///
-    /// # Safety
-    ///
-    /// `text` is null (the empty string) or points at a NUL-terminated string (a bad pointer
-    /// faults the caller, as on the platform).
-    pub unsafe fn from_ansi(text: *const u8) -> Result<HeapString, NtStatus> {
-        let mut ansi = AnsiString::empty();
-        let mut wide = UnicodeString::empty();
-        // SAFETY: ntdll's exports, over the caller's string and the structures above; the
-        // conversion's buffer is new, on the process heap.
-        let status = unsafe {
-            nt::RtlInitAnsiString(&mut ansi, text);
-            nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 1)
-        };
-        if rtl::status::nt_success(status) {
-            Ok(HeapString(wide))
-        } else {
-            Err(status)
-        }
+    /// A caller's ANSI string (the empty one for none) converted through the ANSI code page onto
+    /// the process heap, as Windows 2000's kernel32 converts an A call's string for a call that
+    /// keeps it whole (ntdll's RtlInitAnsiString, then RtlAnsiStringToUnicodeString, its allocating
+    /// form): the converting call's status when it fails (STATUS_INVALID_PARAMETER_2 for a string
+    /// whose Unicode form is past a counted string's reach, STATUS_NO_MEMORY when the heap has no
+    /// room).
+    pub fn of_ansi(text: Option<&InStr<'_>>) -> Result<HeapString, NtStatus> {
+        let ansi = ntcall::init_ansi_string(text);
+        // The conversion's buffer is new, on the process heap: the string's own.
+        ntcall::ansi_to_unicode_on_heap(&ansi).map(HeapString)
     }
 
     /// A string ntdll made on the process heap, taken over.
     ///
     /// # Safety
     ///
-    /// `string`'s buffer is null or a block of the process heap that ntdll allocated for it,
-    /// holding its length in bytes, aligned, and used by nothing else.
+    /// `string`'s buffer is a block of the process heap that ntdll allocated for it, holding its
+    /// length in bytes and the terminator ntdll puts after them, aligned, and used by nothing
+    /// else.
     pub unsafe fn adopt(string: UnicodeString) -> HeapString {
         HeapString(string)
     }
@@ -246,9 +243,18 @@ impl HeapString {
         &self.0
     }
 
+    /// Its units and the terminator ntdll's conversion puts after them, as a string kernel32 hands
+    /// on to ntdll whole.
+    pub fn terminated(&self) -> InWStr<'_> {
+        // SAFETY: the string's own block, which ntdll sized for the terminator and terminated
+        // (RtlAnsiStringToUnicodeString's, for `of_ansi`; `adopt`'s contract); unchanged while
+        // the string is.
+        unsafe { InWStr::new(self.0.buffer) }
+    }
+
     /// Its units.
     pub fn units(&self) -> &[u16] {
-        // SAFETY: the buffer is the string's own block (`from_ansi`, `adopt`), holding its length,
+        // SAFETY: the buffer is the string's own block (`of_ansi`, `adopt`), holding its length,
         // aligned (the heap's blocks are), unchanged while the string is.
         unsafe { self.0.units() }
     }

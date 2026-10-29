@@ -14,18 +14,25 @@
 //! value, reached only inside its `with`. A thread waiting on one stream or descriptor (stdin,
 //! reading the console) holds that one's locks alone, so another thread's output goes on.
 //!
+//! The locks a call holds while it reads or writes its caller's memory (a stream's and the buffer
+//! it is lent, a descriptor's across its reads and writes, the exit functions') are let go when an
+//! exception unwinds out of the call ([`Guarded`], [`Lock::holding`], over [`crate::unwind`]): a
+//! fault in the caller's memory that the program's `__except` takes leaves no lock held, as
+//! Windows 2000's `__finally` blocks leave none.
+//!
 //! The locks nest in one order, outermost first: a stream's, then the buffer it is lent for a call;
 //! a descriptor's (two at once in ascending order); the descriptor table's. The exit functions',
 //! the environment's, the locale's and the console input's take none of the C runtime's locks
 //! inside them.
 
+use core::cell::{Cell, UnsafeCell};
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 
 use rtl::critsec::CriticalSection;
 use rtl::sync::RawLock;
 
-use crate::imports;
+use crate::{kernel32, unwind};
 
 /// A thread's own C runtime state. Its fields are atomics: a thread's block is its own, but the
 /// [`FALLBACK`] is shared by every thread the slot or the heap fails.
@@ -67,9 +74,8 @@ static ROOT: CriticalSection = unprepared();
 /// The DLL's process attach: the TLS slot and the lock of the locks. False when the slot cannot be
 /// had.
 pub fn initialize() -> bool {
-    initialize_section(&ROOT);
-    // SAFETY: kernel32's export.
-    let slot = unsafe { imports::TlsAlloc() };
+    kernel32::initialize_critical_section(&ROOT);
+    let slot = kernel32::tls_alloc();
     SLOT.store(slot, Relaxed);
     slot != u32::MAX
 }
@@ -80,23 +86,17 @@ pub fn with_data<R>(body: impl FnOnce(&ThreadData) -> R) -> R {
     if slot == u32::MAX {
         return body(&FALLBACK);
     }
-    // SAFETY: kernel32's exports.
-    let (error, mut block) = unsafe {
-        let error = imports::GetLastError();
-        (error, imports::TlsGetValue(slot) as *const ThreadData)
-    };
+    let error = kernel32::last_error();
+    let mut block = kernel32::tls_get(slot) as *const ThreadData;
     let fresh = block.is_null();
     if fresh {
         block = crate::heap::allocate(core::mem::size_of::<ThreadData>(), true).cast();
-        // SAFETY: kernel32's export.
-        if block.is_null() || unsafe { imports::TlsSetValue(slot, block as usize) } == 0 {
-            // SAFETY: kernel32's export.
-            unsafe { imports::SetLastError(error) };
+        if block.is_null() || kernel32::tls_set(slot, block as usize).is_err() {
+            kernel32::set_last_error(error);
             return body(&FALLBACK);
         }
     }
-    // SAFETY: kernel32's export.
-    unsafe { imports::SetLastError(error) };
+    kernel32::set_last_error(error);
     // SAFETY: the block is the calling thread's (its TLS slot's value): allocated zeroed from the C
     // runtime's heap, whose blocks are 8-aligned (zero is a valid ThreadData: its fields are
     // atomics), and freed only at this thread's DLL_THREAD_DETACH. The borrow ends with `body`, on
@@ -114,14 +114,12 @@ pub fn detach_thread() {
     if slot == u32::MAX {
         return;
     }
-    // SAFETY: kernel32's exports; the block was the thread's alone, and the thread runs no more C
-    // runtime code that reaches it.
-    unsafe {
-        let data = imports::TlsGetValue(slot) as *mut u8;
-        if !data.is_null() {
-            imports::TlsSetValue(slot, 0);
-            crate::heap::release(data);
-        }
+    let data = kernel32::tls_get(slot) as *mut u8;
+    if !data.is_null() {
+        let _ = kernel32::tls_set(slot, 0);
+        // SAFETY: the thread's block, of the C runtime's heap: the thread's alone, and the thread
+        // runs no more C runtime code that reaches it.
+        unsafe { crate::heap::release(data) };
     }
 }
 
@@ -139,6 +137,11 @@ pub const EMFILE: i32 = 24;
 pub const ENOSPC: i32 = 28;
 pub const EPIPE: i32 = 32;
 pub const ERANGE: i32 = 34;
+
+/// The calling thread's errno.
+pub fn errno() -> i32 {
+    with_data(|data| data.errno.load(Relaxed))
+}
 
 /// The calling thread's errno set.
 pub fn set_errno(value: i32) {
@@ -213,17 +216,26 @@ impl Lock {
         Held(self)
     }
 
+    /// `body` run with the lock taken, which is let go when `body` returns or when an exception
+    /// unwinds out of it: for a lock held while the caller's memory is read or written.
+    pub fn holding<R>(&self, body: impl FnOnce() -> R) -> R {
+        self.lock();
+        let answer = unwind::on_unwind(&|| self.unlock(), body);
+        self.unlock();
+        answer
+    }
+
     /// The section initialized, once, before its first enter.
     fn prepare(&self) {
         if self.ready.load(Acquire) {
             return;
         }
-        enter(&ROOT);
+        kernel32::enter_critical_section(&ROOT);
         if !self.ready.load(Relaxed) {
-            initialize_section(&self.section);
+            kernel32::initialize_critical_section(&self.section);
             self.ready.store(true, Release);
         }
-        leave(&ROOT);
+        kernel32::leave_critical_section(&ROOT);
     }
 }
 
@@ -240,11 +252,11 @@ impl Default for Lock {
 unsafe impl RawLock for Lock {
     fn lock(&self) {
         self.prepare();
-        enter(&self.section);
+        kernel32::enter_critical_section(&self.section);
     }
 
     fn unlock(&self) {
-        leave(&self.section);
+        kernel32::leave_critical_section(&self.section);
     }
 }
 
@@ -254,6 +266,57 @@ pub struct Held<'a>(&'a Lock);
 impl Drop for Held<'_> {
     fn drop(&mut self) {
         self.0.unlock();
+    }
+}
+
+/// A value behind a lock of the C runtime's, for state a call holds while it reads or writes its
+/// caller's memory: as an `rtl::sync::Locked` (one closure at a time has the value, and the
+/// holder's re-entry is a panic), and an exception that unwinds out of the closure lets the lock
+/// go and the value with it ([`crate::unwind`]).
+pub struct Guarded<T> {
+    lock: Lock,
+    /// Whether a closure has the value: read and written only with the lock held.
+    busy: Cell<bool>,
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: the value and the busy flag are touched only by the thread holding the lock (`with` takes
+// it first; a critical section admits one thread at a time and orders one holder's accesses before
+// the next's), and only one `&mut T` is out at a time (the busy flag makes the holder's re-entry a
+// panic before a second is made; an unwind clears it only once the closure's frames are abandoned).
+// So sharing a `Guarded` moves the value between threads, which `T: Send` allows.
+unsafe impl<T: Send> Sync for Guarded<T> {}
+
+impl<T> Guarded<T> {
+    pub const fn new(value: T) -> Guarded<T> {
+        Guarded {
+            lock: Lock::new(),
+            busy: Cell::new(false),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// Run `body` over the value with the lock held, and answer what it answers; the lock is let go
+    /// when `body` returns, or when an exception unwinds out of it.
+    ///
+    /// # Panics
+    ///
+    /// When `body` (or something it calls) reaches the same value again.
+    pub fn with<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
+        self.lock.lock();
+        assert!(!self.busy.replace(true), "Guarded::with re-entered");
+        let release = || {
+            self.busy.set(false);
+            self.lock.unlock();
+        };
+        let answer = unwind::on_unwind(&release, || {
+            // SAFETY: the lock is held and the busy flag was clear, so no other `&mut` to the
+            // value exists (on this thread or another) until `release` clears it: after `body`
+            // returns, or once an unwind has abandoned `body`'s frames.
+            body(unsafe { &mut *self.value.get() })
+        });
+        release();
+        answer
     }
 }
 
@@ -267,30 +330,6 @@ const fn unprepared() -> CriticalSection {
         lock_semaphore: AtomicU32::new(0),
         spin_count: AtomicU32::new(0),
     }
-}
-
-/// The section's address, as kernel32 takes it. Its fields are atomics, so kernel32 writing them
-/// through a pointer from a shared reference is sound.
-fn address(section: &CriticalSection) -> *mut u8 {
-    core::ptr::from_ref(section).cast_mut().cast()
-}
-
-/// InitializeCriticalSection over the section: free, owned by nobody.
-fn initialize_section(section: &CriticalSection) {
-    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own, which no thread holds.
-    unsafe { imports::InitializeCriticalSection(address(section)) };
-}
-
-/// EnterCriticalSection over an initialized section.
-fn enter(section: &CriticalSection) {
-    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own, initialized.
-    unsafe { imports::EnterCriticalSection(address(section)) };
-}
-
-/// LeaveCriticalSection over a section the calling thread entered.
-fn leave(section: &CriticalSection) {
-    // SAFETY: kernel32's export, over a CRITICAL_SECTION of the DLL's own that the caller entered.
-    unsafe { imports::LeaveCriticalSection(address(section)) };
 }
 
 #[cfg(test)]
@@ -310,6 +349,39 @@ mod tests {
             4,
             "the second dword"
         );
+    }
+
+    /// An exception unwinding out of a guarded value's closure (a panic, on the host) lets the lock
+    /// go and the value with it: the same thread takes it again at once, and so does another.
+    #[test]
+    fn an_unwind_lets_a_guarded_value_go() {
+        static STATE: Guarded<u32> = Guarded::new(0);
+        let unwound = std::panic::catch_unwind(|| {
+            STATE.with(|value| {
+                *value = 7;
+                panic!("a fault in the caller's memory");
+            })
+        });
+        assert!(unwound.is_err());
+        assert_eq!(
+            STATE.with(|value| *value),
+            7,
+            "taken again, the busy flag clear"
+        );
+        let other = std::thread::spawn(|| STATE.with(|value| *value + 1));
+        assert_eq!(other.join().unwrap(), 8, "let go: another thread takes it");
+        assert!(!crate::imports::host::section_held(&STATE.lock.section));
+    }
+
+    /// The same for a lock held across the caller's memory.
+    #[test]
+    fn an_unwind_lets_a_held_lock_go() {
+        static LOCK: Lock = Lock::new();
+        let unwound = std::panic::catch_unwind(|| LOCK.holding(|| panic!("a fault")));
+        assert!(unwound.is_err());
+        assert!(!crate::imports::host::section_held(&LOCK.section));
+        assert_eq!(LOCK.holding(|| 5), 5);
+        assert!(!crate::imports::host::section_held(&LOCK.section));
     }
 
     /// A lock is recursive, and taken by one thread at a time.

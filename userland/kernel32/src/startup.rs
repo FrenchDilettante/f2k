@@ -6,6 +6,7 @@
 //! the process heap, their pointers in kernel32's own data.
 
 use rtl::params::{CountedString, ProcessParameters};
+use rtl::pod::Pod;
 use rtl::sync::OnceWord;
 
 use crate::base::{
@@ -16,9 +17,9 @@ use crate::base::{
     set_last_nt_error,
     string_units,
     version,
-    Text,
 };
-use crate::nt;
+use crate::edge::{In, OutBuf, Text};
+use crate::heap::HeapArray;
 use crate::ntcall::{self, FastPebLock};
 
 own_data! {
@@ -41,17 +42,7 @@ const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 /// NUL-terminated block on the process heap (ntdll's RtlUnicodeStringToAnsiString, its allocating
 /// form); null when the heap has no room.
 fn narrow_on_heap(units: &[u16]) -> *mut u8 {
-    let Some(source) = nt::UnicodeString::from_units(units) else {
-        return core::ptr::null_mut();
-    };
-    let mut narrow = nt::AnsiString::empty();
-    // SAFETY: ntdll's export, over the string above; the block it allocates is the process heap's.
-    let status = unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 1) };
-    if rtl::status::nt_success(status) {
-        narrow.buffer
-    } else {
-        core::ptr::null_mut()
-    }
+    ntcall::unicode_to_ansi_on_heap(units).map_or(core::ptr::null_mut(), |block| block.as_ptr())
 }
 
 /// GetCommandLineA: the process parameters' CommandLine, narrowed once, at the first call, under
@@ -152,29 +143,31 @@ fn startup_info(
 /// `info` addresses a writable STARTUPINFOA (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetStartupInfoA")]
 pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
+    // SAFETY: the caller's STARTUPINFOA (the contract).
+    let info = unsafe { OutBuf::new(info, STARTUP_INFO_SIZE) };
+    startup_info_a(info)
+}
+
+/// GetStartupInfoA's work.
+fn startup_info_a(mut info: OutBuf<'_, u8>) {
     let cached = ansi_startup_info().get_or_make(|| {
         let Some(image) = startup_info(&parameters(), narrow_string) else {
             return 0;
         };
-        let Some(block) = ntcall::allocate_heap(STARTUP_INFO_SIZE) else {
+        let Ok(mut block) = HeapArray::<u32>::new(image.len()) else {
             return 0;
         };
-        // SAFETY: the fresh block holds the image.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                image.as_ptr().cast::<u8>(),
-                block.as_ptr(),
-                STARTUP_INFO_SIZE,
-            )
-        };
-        block.as_ptr() as usize
+        block.copy_from_slice(&image);
+        block.into_raw().as_ptr() as usize
     });
     if cached == 0 {
         set_last_nt_error(STATUS_NO_MEMORY);
         return;
     }
-    // SAFETY: the cached image; the caller's contract.
-    unsafe { core::ptr::copy_nonoverlapping(cached as *const u8, info, STARTUP_INFO_SIZE) };
+    // SAFETY: the cached image: the block made above, on the process heap for the process's life,
+    // never written again.
+    let image = unsafe { core::slice::from_raw_parts(cached as *const u8, STARTUP_INFO_SIZE) };
+    info.put(image);
 }
 
 /// GetStartupInfoW: the process parameters' startup information, its strings the parameters' own,
@@ -187,11 +180,12 @@ pub unsafe extern "system" fn get_startup_info_a(info: *mut u8) {
 /// `info` addresses a writable STARTUPINFOW (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetStartupInfoW")]
 pub unsafe extern "system" fn get_startup_info_w(info: *mut u8) {
+    // SAFETY: the caller's STARTUPINFOW (the contract).
+    let mut info = unsafe { OutBuf::new(info, STARTUP_INFO_SIZE) };
     let parameters = parameters();
     let mut image = startup_info(&parameters, wide_string).expect("no string to make");
     image[14..].copy_from_slice(&standard_handles(&parameters));
-    // SAFETY: the caller's contract.
-    unsafe { core::ptr::copy_nonoverlapping(image.as_ptr().cast::<u8>(), info, STARTUP_INFO_SIZE) };
+    info.put(image.as_bytes());
 }
 
 /// GetVersion: the PEB's version — the build number, the minor and the major version, the top two
@@ -215,21 +209,16 @@ const CSD_ROOM: usize = 128;
 
 /// GetVersionExW's work: the PEB's version — major, minor, build, platform — and its service pack's
 /// name (the rest of szCSDVersion cleared), and in the extended structure the service pack's
-/// numbers (OSCSDVersion's bytes), the suite mask and the product type (the shared data page's).
-/// ERROR_INSUFFICIENT_BUFFER for a structure size that is neither form's (OSVERSIONINFOW's sizes
-/// for `wide`, OSVERSIONINFOA's otherwise).
-///
-/// # Safety
-///
-/// `info` addresses the structure its size says (a bad pointer faults the caller).
-unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
+/// numbers (OSCSDVersion's bytes), the suite mask and the product type (the shared data page's),
+/// into the caller's structure of `size` bytes (its first dword). ERROR_INSUFFICIENT_BUFFER for a
+/// structure size that is neither form's (OSVERSIONINFOW's sizes for `wide`, OSVERSIONINFOA's
+/// otherwise).
+fn version_ex(size: u32, mut info: OutBuf<'_, u8>, wide: bool) -> u32 {
     let (plain, extended) = if wide {
         (OSVERSIONINFOW_SIZE, OSVERSIONINFOEXW_SIZE)
     } else {
         (OSVERSIONINFOA_SIZE, OSVERSIONINFOEXA_SIZE)
     };
-    // SAFETY: the caller's contract, here and below.
-    let size = unsafe { (info as *const u32).read_unaligned() };
     if size != plain && size != extended {
         set_last_error(ERROR_INSUFFICIENT_BUFFER);
         return 0;
@@ -241,9 +230,8 @@ unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
         u32::from(version.build),
         version.platform,
     ];
-    for (at, field) in fields.iter().enumerate() {
-        // SAFETY: the caller's structure.
-        unsafe { (info.add(4 + 4 * at) as *mut u32).write_unaligned(*field) };
+    for (at, &field) in fields.iter().enumerate() {
+        info.store(4 + 4 * at, field);
     }
     let mut csd = [0u16; CSD_ROOM];
     // SAFETY: the PEB's own string.
@@ -253,13 +241,14 @@ unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
     {
         *slot = unit;
     }
-    let text = if wide {
-        Text::Wide(info.wrapping_add(20) as *mut u16)
+    // szCSDVersion's room, after the five dwords.
+    let room = info.reborrow().tail(20);
+    let mut text = if wide {
+        Text::Wide(room.reinterpret::<u16>().head(CSD_ROOM))
     } else {
-        Text::Ansi(info.wrapping_add(20))
+        Text::Ansi(room.head(CSD_ROOM))
     };
-    // SAFETY: the caller's structure: szCSDVersion's room.
-    unsafe { text.put(&csd) };
+    text.put(&csd);
     if size == extended {
         let service_pack = version.service_pack;
         let tail = [
@@ -268,9 +257,8 @@ unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
             crate::shared::read(crate::shared::SUITE_MASK) as u16,
             crate::shared::read(crate::shared::NT_PRODUCT_TYPE) as u8 as u16,
         ];
-        for (at, field) in tail.iter().enumerate() {
-            // SAFETY: the caller's extended structure.
-            unsafe { (info.add(plain as usize + 2 * at) as *mut u16).write_unaligned(*field) };
+        for (at, &field) in tail.iter().enumerate() {
+            info.store(plain as usize + 2 * at, field);
         }
     }
     1
@@ -284,8 +272,13 @@ unsafe fn version_ex(info: *mut u8, wide: bool) -> u32 {
 /// the caller).
 #[unsafe(export_name = "f2k_export_GetVersionExA")]
 pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
-    // SAFETY: the caller's contract.
-    unsafe { version_ex(info, false) }
+    // SAFETY: the caller's structure (the contract): its size its first dword, read unaligned;
+    // the structure holds that many bytes.
+    let (size, info) = unsafe {
+        let size = In::<u32>::new(info.cast()).read();
+        (size, OutBuf::new(info, size as usize))
+    };
+    version_ex(size, info, false)
 }
 
 /// GetVersionExW (see [`version_ex`]).
@@ -296,6 +289,11 @@ pub unsafe extern "system" fn get_version_ex_a(info: *mut u8) -> u32 {
 /// the caller).
 #[unsafe(export_name = "f2k_export_GetVersionExW")]
 pub unsafe extern "system" fn get_version_ex_w(info: *mut u8) -> u32 {
-    // SAFETY: the caller's contract.
-    unsafe { version_ex(info, true) }
+    // SAFETY: the caller's structure (the contract): its size its first dword, read unaligned;
+    // the structure holds that many bytes.
+    let (size, info) = unsafe {
+        let size = In::<u32>::new(info.cast()).read();
+        (size, OutBuf::new(info, size as usize))
+    };
+    version_ex(size, info, true)
 }

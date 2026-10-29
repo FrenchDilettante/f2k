@@ -9,8 +9,11 @@ use rtl::status::nt_success;
 
 use super::handle::create_file_w;
 use super::*;
-use crate::base::set_last_nt_error;
+use crate::base::set_last_error;
+use crate::error::bool_answer;
 use crate::heap::HeapArray;
+use crate::nt::IoStatus;
+use crate::ntcall::{Destination, Source, Transfer};
 
 /// CreateFileA's dispositions and the flag the copy opens its files with.
 const CREATE_NEW: u32 = 1;
@@ -21,46 +24,33 @@ const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 /// The buffer the bytes move through.
 const COPY_CHUNK: usize = 0x1_0000;
 
+/// STATUS_NO_MEMORY: no room on the process heap for the buffer.
+const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+
 /// The copy's work once both files are open: the bytes, then the last-write time. The status that
 /// failed it.
 fn copy_stream(source: u32, target: u32, buffer: &mut [u8], last_write: u64) -> Result<(), u32> {
     loop {
         let mut io_status = IoStatus::default();
-        // SAFETY: ntdll's export, into the buffer.
-        let status = unsafe {
-            nt::NtReadFile(
-                source,
-                0,
-                0,
-                0,
-                &mut io_status,
-                buffer.as_mut_ptr(),
-                buffer.len() as u32,
-                core::ptr::null(),
-                core::ptr::null(),
-            )
-        };
+        let status = ntcall::read_file(
+            source,
+            Transfer::AtPosition,
+            &mut Out::from(&mut io_status),
+            Destination::of(buffer),
+        );
         if status == STATUS_END_OF_FILE || (nt_success(status) && io_status.information == 0) {
             break;
         }
         if !nt_success(status) {
             return Err(status);
         }
-        let read = io_status.information;
-        // SAFETY: ntdll's export, from the bytes just read.
-        let status = unsafe {
-            nt::NtWriteFile(
-                target,
-                0,
-                0,
-                0,
-                &mut io_status,
-                buffer.as_ptr(),
-                read,
-                core::ptr::null(),
-                core::ptr::null(),
-            )
-        };
+        let read = &buffer[..io_status.information as usize];
+        let status = ntcall::write_file(
+            target,
+            Transfer::AtPosition,
+            &mut Out::from(&mut io_status),
+            Source::of(read),
+        );
         if !nt_success(status) {
             return Err(status);
         }
@@ -86,11 +76,10 @@ pub unsafe extern "system" fn copy_file_a(
     to: *const u8,
     fail_if_exists: u32,
 ) -> u32 {
-    // SAFETY: the caller's strings.
-    match (unsafe { widen(from) }, unsafe { widen(to) }) {
-        (Some(from), Some(to)) => copy_file(&from, &to, fail_if_exists),
-        _ => 0,
-    }
+    // SAFETY: the caller's strings (null: the empty one).
+    let (from, to) = unsafe { (InStr::optional(from), InStr::optional(to)) };
+    let names = both(widen(from.as_ref()), widen(to.as_ref()));
+    bool_answer(names.and_then(|(from, to)| copy_file(&from, &to, fail_if_exists)))
 }
 
 /// CopyFileW (as [`copy_file_a`]).
@@ -105,70 +94,60 @@ pub unsafe extern "system" fn copy_file_w(
     fail_if_exists: u32,
 ) -> u32 {
     // SAFETY: the caller's strings.
-    match (unsafe { wide(from) }, unsafe { wide(to) }) {
-        (Some(from), Some(to)) => copy_file(&from, &to, fail_if_exists),
-        _ => 0,
-    }
+    let (from, to) = unsafe { (InWStr::new(from), InWStr::new(to)) };
+    let names = both(wide(&from), wide(&to));
+    bool_answer(names.and_then(|(from, to)| copy_file(&from, &to, fail_if_exists)))
 }
 
 /// The copy (see the module's): TRUE with the last error cleared; FALSE with the error — a target
 /// that exists under fail-if-exists ERROR_FILE_EXISTS, a read-only one or a directory
 /// ERROR_ACCESS_DENIED.
-fn copy_file(from: &Wide, to: &Wide, fail_if_exists: u32) -> u32 {
-    // SAFETY: no security attributes.
-    let source = unsafe {
-        create_file_w(
-            from,
-            GENERIC_READ,
-            FILE_SHARE_READ,
-            core::ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_SEQUENTIAL_SCAN,
-        )
-    };
-    if source == INVALID_HANDLE_VALUE {
-        return 0;
-    }
+fn copy_file(from: &Wide, to: &Wide, fail_if_exists: u32) -> Result<(), Failure> {
+    let source = create_file_w(
+        from,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_SEQUENTIAL_SCAN,
+    )?;
     let mut basic = [0u8; 40];
     let status = query(source, FILE_BASIC_INFORMATION, &mut basic);
     if !nt_success(status) {
         close(source);
-        set_last_nt_error(status);
-        return 0;
+        return Err(Failure::Status(status));
     }
     let disposition = if fail_if_exists != 0 {
         CREATE_NEW
     } else {
         CREATE_ALWAYS
     };
-    // SAFETY: as above.
-    let target = unsafe {
-        create_file_w(
-            to,
-            GENERIC_WRITE | DELETE,
-            0,
-            core::ptr::null(),
-            disposition,
-            word(&basic, 32) | FILE_FLAG_SEQUENTIAL_SCAN,
-        )
+    let target = match create_file_w(
+        to,
+        GENERIC_WRITE | DELETE,
+        0,
+        None,
+        disposition,
+        word(&basic, 32) | FILE_FLAG_SEQUENTIAL_SCAN,
+    ) {
+        Ok(target) => target,
+        Err(failure) => {
+            close(source);
+            return Err(failure);
+        }
     };
-    if target == INVALID_HANDLE_VALUE {
-        close(source);
-        return 0;
-    }
     let copied = match HeapArray::<u8>::new(COPY_CHUNK) {
-        Err(_) => Err(0xC000_0017),
+        Err(_) => Err(STATUS_NO_MEMORY),
         Ok(mut buffer) => copy_stream(source, target, &mut buffer, quad(&basic, 16)),
     };
     if let Err(status) = copied {
         set(target, FILE_DISPOSITION_INFORMATION, &[1]);
         close(target);
         close(source);
-        set_last_nt_error(status);
-        return 0;
+        return Err(Failure::Status(status));
     }
     close(target);
     close(source);
     set_last_error(0);
-    1
+    Ok(())
 }

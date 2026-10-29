@@ -7,7 +7,8 @@
 
 use rtl::seh::{ExceptionRecord, EXCEPTION_MAXIMUM_PARAMETERS, EXCEPTION_NONCONTINUABLE};
 
-use crate::nt;
+use crate::edge::InBuf;
+use crate::ntcall;
 
 /// An exception code's bit 28, reserved for the system: RaiseException clears it.
 const RESERVED_BIT: u32 = 0x1000_0000;
@@ -29,19 +30,23 @@ pub unsafe extern "system" fn raise_exception(
     count: u32,
     arguments: *const u32,
 ) {
+    let count = (count as usize).min(EXCEPTION_MAXIMUM_PARAMETERS);
+    // SAFETY: the caller's array of (at most fifteen of) its `count` arguments, when given (the
+    // contract).
+    let arguments = (!arguments.is_null()).then(|| unsafe { InBuf::new(arguments, count) });
+    raise(code, flags, arguments)
+}
+
+/// RaiseException's work: the record built and raised.
+fn raise(code: u32, flags: u32, arguments: Option<InBuf<'_, u32>>) {
     let mut record =
         ExceptionRecord::status(code & !RESERVED_BIT, flags & EXCEPTION_NONCONTINUABLE, 0);
     record.address = raise_exception as *const () as u32;
-    if !arguments.is_null() {
-        let count = (count as usize).min(EXCEPTION_MAXIMUM_PARAMETERS);
-        record.count = count as u32;
-        for (i, slot) in record.information[..count].iter_mut().enumerate() {
-            // SAFETY: the caller's array of `count` arguments (a bad one faults the caller).
-            *slot = unsafe { core::ptr::read_volatile(arguments.add(i)) };
-        }
+    if let Some(arguments) = arguments {
+        record.count = arguments.len() as u32;
+        arguments.copy_to(&mut record.information);
     }
-    // SAFETY: ntdll's export, over the record on this stack.
-    unsafe { nt::RtlRaiseException(&mut record) }
+    ntcall::raise_exception(&mut record)
 }
 
 /// DebugBreak: a breakpoint exception (STATUS_BREAKPOINT) in the calling thread, through ntdll's
@@ -49,8 +54,7 @@ pub unsafe extern "system" fn raise_exception(
 /// With no debugger, the thread's own handlers take it; one that continues it returns here.
 #[unsafe(export_name = "f2k_export_DebugBreak")]
 pub extern "system" fn debug_break() {
-    // SAFETY: ntdll's export.
-    unsafe { nt::DbgBreakPoint() }
+    ntcall::debug_break()
 }
 
 /// The probes' handler taking an exception (src/probe.s, cdecl): the chain unwound to the probe's
@@ -63,13 +67,16 @@ pub extern "system" fn debug_break() {
 /// probe's registration on the calling thread's chain.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn f2k_k32_probe_unwind(frame: u32, record: *mut ExceptionRecord) {
-    // SAFETY: ntdll's export; the record the dispatcher handed the handler.
-    unsafe { nt::RtlUnwind(frame, 0, record, 0) }
+    // SAFETY: the record the dispatcher handed the handler, on the dispatcher's stack, which it
+    // reads and writes only through this pointer meanwhile; the probe's registration, on the
+    // thread's chain, whose frames above it the probe gives up (it answers from its own frame).
+    unsafe { ntcall::unwind(frame, &mut *record) }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nt;
 
     fn raised(test: impl FnOnce()) -> ExceptionRecord {
         nt::RAISED.with(|raised| raised.borrow_mut().clear());

@@ -19,8 +19,9 @@
 //! answer for it; a DOS program named `.txt` is one all the same (the name types only a file
 //! without MZ).
 
-use crate::base::{set_last_error, set_last_nt_error};
 use crate::create::{OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
+use crate::edge::{InStr, InWStr, Out};
+use crate::error::{bool_answer, Failure};
 use crate::files::{self, NtPath, Wide, ERROR_PATH_NOT_FOUND};
 use crate::heap::Owned;
 use crate::ntcall::{self, NtStatus, SectionImageInformation};
@@ -55,16 +56,8 @@ const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
 const STATUS_INVALID_IMAGE_PROTECT: NtStatus = 0xC000_0130;
 const STATUS_INVALID_IMAGE_WIN_16: NtStatus = 0xC000_0131;
 
-/// Why a file has no binary type: a service's status (its error set through ntdll's mapping), or
-/// a Win32 error kernel32 sets itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Refusal {
-    Status(NtStatus),
-    Error(u32),
-}
-
 /// A file that is no program of a type GetBinaryType names.
-const BAD: Refusal = Refusal::Error(ERROR_BAD_EXE_FORMAT);
+const BAD: Failure = Failure::Error(ERROR_BAD_EXE_FORMAT);
 
 /// The type a name's extension gives a file that is not an image (the DOS machine runs a `.com` or
 /// `.exe` as a DOS program, a `.pif` describes one); none for any other name.
@@ -93,7 +86,7 @@ fn by_extension(name: &[u16]) -> Option<u32> {
 /// What an image section's description says the file is: an executable for the i386 is a Windows
 /// program (SCS_32BIT_BINARY), or a POSIX one by its subsystem; a DLL, an image not marked
 /// executable or one for another machine is ERROR_BAD_EXE_FORMAT.
-pub fn of_image(image: &SectionImageInformation) -> Result<u32, Refusal> {
+pub fn of_image(image: &SectionImageInformation) -> Result<u32, Failure> {
     let characteristics = image.image_characteristics;
     if characteristics & IMAGE_FILE_DLL != 0
         || characteristics & IMAGE_FILE_EXECUTABLE_IMAGE == 0
@@ -113,7 +106,7 @@ pub fn of_image(image: &SectionImageInformation) -> Result<u32, Refusal> {
 /// new header, or with an LE one or an NE one for OS/2, a DOS program; with a Windows NE header a
 /// Windows 3.x program. Any other file no image section is made of (an empty one, a broken PE one)
 /// is ERROR_BAD_EXE_FORMAT, and any other status the failure it is.
-pub fn of_refusal(status: NtStatus, name: &[u16]) -> Result<u32, Refusal> {
+pub fn of_refusal(status: NtStatus, name: &[u16]) -> Result<u32, Failure> {
     match status {
         STATUS_INVALID_IMAGE_NOT_MZ => by_extension(name).ok_or(BAD),
         STATUS_INVALID_IMAGE_PROTECT
@@ -123,16 +116,16 @@ pub fn of_refusal(status: NtStatus, name: &[u16]) -> Result<u32, Refusal> {
         STATUS_INVALID_IMAGE_FORMAT
         | STATUS_MAPPED_FILE_SIZE_ZERO
         | STATUS_INVALID_FILE_FOR_SECTION => Err(BAD),
-        status => Err(Refusal::Status(status)),
+        status => Err(Failure::Status(status)),
     }
 }
 
 /// GetBinaryTypeW's work over a name: the file opened as CreateProcess opens an image, an image
 /// section made of it (the file closed then) and its description asked (the section closed then).
-fn type_of(name: &Wide) -> Result<u32, Refusal> {
-    let path = NtPath::of(name.terminated()).ok_or(Refusal::Error(ERROR_PATH_NOT_FOUND))?;
+fn type_of(name: &Wide) -> Result<u32, Failure> {
+    let path = NtPath::of(name.terminated()).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))?;
     let file =
-        Owned(files::open(&path, OPEN_ACCESS, OPEN_SHARE, OPEN_OPTIONS).map_err(Refusal::Status)?);
+        Owned(files::open(&path, OPEN_ACCESS, OPEN_SHARE, OPEN_OPTIONS).map_err(Failure::Status)?);
     let section = ntcall::create_image_section(file.0);
     drop(file);
     let section = match section {
@@ -141,27 +134,17 @@ fn type_of(name: &Wide) -> Result<u32, Refusal> {
     };
     let image = ntcall::query_image(section.0);
     drop(section);
-    of_image(&image.map_err(Refusal::Status)?)
+    of_image(&image.map_err(Failure::Status)?)
 }
 
-/// The export's answer: the type written and TRUE, or the refusal's error set and FALSE.
-fn answer(result: Result<u32, Refusal>, binary_type: Option<&mut u32>) -> u32 {
-    match result {
-        Ok(kind) => {
-            if let Some(binary_type) = binary_type {
-                *binary_type = kind;
-            }
-            1
+/// The export's answer: the type written where asked and TRUE, or the refusal's error set and
+/// FALSE.
+fn typed(result: Result<u32, Failure>, binary_type: Option<Out<'_, u32>>) -> u32 {
+    bool_answer(result.map(|kind| {
+        if let Some(mut binary_type) = binary_type {
+            binary_type.set(kind);
         }
-        Err(Refusal::Status(status)) => {
-            set_last_nt_error(status);
-            0
-        }
-        Err(Refusal::Error(error)) => {
-            set_last_error(error);
-            0
-        }
-    }
+    }))
 }
 
 /// GetBinaryTypeW: the binary type of the file `name` names into `*binary_type`; FALSE with the
@@ -172,12 +155,12 @@ fn answer(result: Result<u32, Refusal>, binary_type: Option<&mut u32>) -> u32 {
 /// `name` is a NUL-terminated string; `binary_type` is null or writable.
 #[unsafe(export_name = "f2k_export_GetBinaryTypeW")]
 pub unsafe extern "system" fn get_binary_type_w(name: *const u16, binary_type: *mut u32) -> u32 {
-    // SAFETY: the caller's string and slot.
-    let (name, binary_type) = unsafe { (files::wide(name), binary_type.as_mut()) };
-    match name {
-        Some(name) => answer(type_of(&name), binary_type),
-        None => 0,
-    }
+    // SAFETY: the caller's string, and its dword when given (the contract).
+    let (name, binary_type) = unsafe { (InWStr::new(name), Out::optional(binary_type)) };
+    typed(
+        files::wide(&name).and_then(|name| type_of(&name)),
+        binary_type,
+    )
 }
 
 /// GetBinaryTypeA: GetBinaryTypeW's work, the name converted through the ANSI code page.
@@ -187,12 +170,12 @@ pub unsafe extern "system" fn get_binary_type_w(name: *const u16, binary_type: *
 /// As GetBinaryTypeW's, the name narrow.
 #[unsafe(export_name = "f2k_export_GetBinaryTypeA")]
 pub unsafe extern "system" fn get_binary_type_a(name: *const u8, binary_type: *mut u32) -> u32 {
-    // SAFETY: the caller's string and slot.
-    let (name, binary_type) = unsafe { (files::widen(name), binary_type.as_mut()) };
-    match name {
-        Some(name) => answer(type_of(&name), binary_type),
-        None => 0,
-    }
+    // SAFETY: the caller's string (null: the empty one), and its dword when given (the contract).
+    let (name, binary_type) = unsafe { (InStr::optional(name), Out::optional(binary_type)) };
+    typed(
+        files::widen(name.as_ref()).and_then(|name| type_of(&name)),
+        binary_type,
+    )
 }
 
 #[cfg(test)]
@@ -292,7 +275,7 @@ mod tests {
         }
         assert_eq!(
             of_refusal(0xC000_0022, &exe),
-            Err(Refusal::Status(0xC000_0022))
+            Err(Failure::Status(0xC000_0022))
         );
     }
 }

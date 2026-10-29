@@ -16,81 +16,14 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::marker::PhantomData;
-use core::ptr::NonNull;
-
 pub mod imports;
 pub mod sound;
 pub mod stub;
 pub mod winsta;
 
+/// A caller's out parameter and buffers, as every system DLL's exports take them.
+pub use rtl::edge::{caller_bytes_mut, Out};
+
 // The exports' descriptions (`spec`) and the stubbed exports' bodies, generated from exports.toml
 // (tools/exportgen; see `stub`).
 include!(concat!(env!("OUT_DIR"), "/exports.rs"));
-
-/// A caller's out parameter: the place of a `T` it gave the address of, written (and read, for an
-/// in-out one) unaligned. x86 tolerates a misaligned address, so a Windows program may pass one.
-pub struct Out<'a, T> {
-    at: NonNull<T>,
-    place: PhantomData<&'a mut T>,
-}
-
-impl<'a, T: Copy> Out<'a, T> {
-    /// The out parameter at `at`: none for null.
-    ///
-    /// # Safety
-    ///
-    /// `at` is null, or the address (at any alignment) of a `T` the call may read and write for
-    /// `'a`, which nothing else reaches meanwhile.
-    pub unsafe fn new(at: *mut T) -> Option<Self> {
-        NonNull::new(at).map(|at| Out {
-            at,
-            place: PhantomData,
-        })
-    }
-
-    /// The value the place holds.
-    pub fn get(&self) -> T {
-        // SAFETY: `new`'s contract: a readable `T`, read unaligned.
-        unsafe { self.at.as_ptr().read_unaligned() }
-    }
-
-    /// Write `value` to the place.
-    pub fn set(&mut self, value: T) {
-        // SAFETY: `new`'s contract: a writable `T`, written unaligned.
-        unsafe { self.at.as_ptr().write_unaligned(value) }
-    }
-
-    /// The place's address, for a service to write (the kernel writes it unaligned as well).
-    pub fn as_ptr(&mut self) -> *mut T {
-        self.at.as_ptr()
-    }
-}
-
-impl<'a, T> From<&'a mut T> for Out<'a, T> {
-    /// A place of the code's own as an out parameter.
-    fn from(place: &'a mut T) -> Self {
-        Out {
-            at: NonNull::from(place),
-            place: PhantomData,
-        }
-    }
-}
-
-/// The caller's buffer of `length` bytes at `at`, to write: none for a null address with a length
-/// (a buffer the call cannot reach), the empty slice for no length.
-///
-/// # Safety
-///
-/// `at` is null, or holds `length` bytes the call may read and write for `'a`, which nothing else
-/// reaches meanwhile.
-pub unsafe fn caller_bytes_mut<'a>(at: *mut u8, length: usize) -> Option<&'a mut [u8]> {
-    if length == 0 {
-        return Some(&mut []);
-    }
-    if at.is_null() {
-        return None;
-    }
-    // SAFETY: the caller's contract: `length` writable bytes, ours for the call.
-    Some(unsafe { core::slice::from_raw_parts_mut(at, length) })
-}

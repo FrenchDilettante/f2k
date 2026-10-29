@@ -37,7 +37,7 @@ pub type ProcessParameters = rtl::params::ProcessParameters<usize>;
 
 /// An IO_STATUS_BLOCK: the status and the information (a count, or what an open did).
 #[repr(C)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct IoStatus {
     pub status: u32,
     pub information: u32,
@@ -1864,7 +1864,6 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's message.
         let message = unsafe { &mut *message };
-        let words = length as usize / core::mem::size_of::<usize>();
         let mut handles = CONSOLE_HANDLES.with(Cell::get);
         let status = CONSOLE_STATE.with(|console| {
             rtl::console::serve(
@@ -1872,7 +1871,8 @@ pub mod host {
                 &mut handles,
                 &mut Client(message.data[0] as u32),
                 api,
-                &mut message.data[..words],
+                &mut message.data,
+                length as usize,
             )
         });
         CONSOLE_HANDLES.with(|cell| cell.set(handles));
@@ -2598,7 +2598,7 @@ pub mod threads {
     }
 
     impl HostProcess {
-        /// The kernel's process at its start (`user::teb::peb_words`, `user::params::header`): the
+        /// The kernel's process at its start (`user::teb::fresh_peb`, `user::params::header`): the
         /// image's base, the version fields and the service pack's name, the TLS bitmaps; the
         /// parameters' standard handles, image path, command line and startup values; the TEB's
         /// self and PEB pointers.
@@ -3794,7 +3794,8 @@ pub mod children {
             (
                 text(image).unwrap_or_default(),
                 String::from_utf16_lossy(
-                    &crate::base::wide_units(option).expect("the option name"),
+                    &crate::edge::wide_units(&crate::edge::InWStr::new(option))
+                        .expect("the option name"),
                 ),
             )
         };

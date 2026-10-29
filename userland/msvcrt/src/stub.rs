@@ -9,16 +9,18 @@
 //! it returns. An export that cannot fail (`never`) raises STATUS_NOT_IMPLEMENTED instead, through
 //! kernel32's RaiseException (noncontinuable).
 
+use core::ffi::CStr;
+
 use rtl::stub::{describe, Entry, Fails, Line};
 
-use crate::imports::{self, Probed};
+use crate::imports::Probed;
+use crate::kernel32;
 
 /// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 
-/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises, and EXCEPTION_NONCONTINUABLE.
+/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises (noncontinuable).
 const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
-const EXCEPTION_NONCONTINUABLE: u32 = 1;
 
 /// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, then fail
 /// as `entry` fails.
@@ -30,26 +32,14 @@ const EXCEPTION_NONCONTINUABLE: u32 = 1;
 pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
     let mut line = Line::new();
     let _ = describe(entry, reason, args, &Probed, &mut line);
-    // SAFETY: the imports; the format and the line are NUL-terminated.
-    unsafe {
-        imports::DbgPrint(b"%s\0".as_ptr(), line.terminated().as_ptr());
-        match entry.fails {
-            Fails::Value(value) => {
-                imports::SetLastError(ERROR_CALL_NOT_IMPLEMENTED);
-                value
-            }
-            Fails::Void => 0,
-            Fails::Never => {
-                imports::RaiseException(
-                    STATUS_NOT_IMPLEMENTED,
-                    EXCEPTION_NONCONTINUABLE,
-                    0,
-                    core::ptr::null(),
-                );
-                // A noncontinuable exception does not resume its raiser.
-                unreachable!()
-            }
+    kernel32::debug_print(CStr::from_bytes_until_nul(line.terminated()).unwrap_or(c""));
+    match entry.fails {
+        Fails::Value(value) => {
+            kernel32::set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
+            value
         }
+        Fails::Void => 0,
+        Fails::Never => kernel32::raise_noncontinuable(STATUS_NOT_IMPLEMENTED),
     }
 }
 

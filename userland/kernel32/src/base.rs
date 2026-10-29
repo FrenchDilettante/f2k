@@ -3,16 +3,17 @@
 //! ntdll's RtlNtStatusToDosError), BaseFormatTimeOut, BaseFormatObjectAttributes and
 //! BaseGetNamedObjectDirectory, the PEB lock's critical regions, the PEB, the process parameters,
 //! the process heap and the environment block as the thread reaches them, the standard and console
-//! handles' tests, and the A calls' strings converted through ntdll's code-page calls (in through
-//! RtlAnsiStringToUnicodeString, out through RtlUnicodeToMultiByteN).
+//! handles' tests, and a caller's UTF-16 string as kernel32 reads it ([`WideUnits`]: borrowed
+//! where aligned, copied where not).
 
 use rtl::params::{CountedString, ProcessParameters};
 use rtl::peb::PebLdrData;
 use rtl::sync::OnceWord;
 
+use crate::edge::In;
 use crate::heap::HeapArray;
-use crate::nt::{self, ObjectAttributes, RtlBitmap, UnicodeString};
-use crate::ntcall::FastPebLock;
+use crate::nt::{ObjectAttributes, RtlBitmap, UnicodeString};
+use crate::ntcall::{self, FastPebLock};
 
 /// kernel32's own data, as Windows 2000's kernel32 keeps it in its data section (every process its
 /// own copy: its writable pages are copy-on-write): `fn name() -> &'static Type = init;` makes the
@@ -52,8 +53,7 @@ pub fn set_last_error(code: u32) {
 /// BaseSetLastNTError: a failed system service's status, mapped to its Win32 error
 /// (RtlNtStatusToDosError) and set as the last error; the error.
 pub fn set_last_nt_error(status: u32) -> u32 {
-    // SAFETY: ntdll's export, callable with any status.
-    let error = unsafe { nt::RtlNtStatusToDosError(status) };
+    let error = ntcall::nt_status_to_dos_error(status);
     set_last_error(error);
     error
 }
@@ -114,27 +114,8 @@ pub fn unicode_string(units: &mut [u16], length: usize) -> UnicodeString {
     UnicodeString::with_room(units, length).expect("a string past its buffer")
 }
 
-/// A UNICODE_STRING over a caller's NUL-terminated string, as RtlInitUnicodeString makes one: its
-/// length to the terminator, its room the terminator's too (a string past the UNICODE_STRING's
-/// limit stops at it: an assumption, unverified on the platform). The string stays where it is, at
-/// any address: the services read it through the counted string.
-///
-/// # Safety
-///
-/// `string` points at a NUL-terminated UTF-16 string, aligned or not.
-pub unsafe fn wide_string(string: *const u16) -> UnicodeString {
-    const MOST_UNITS: usize = rtl::string::MAX_USTRING / 2 - 1;
-    // SAFETY: the caller's string, read to its terminator.
-    let units = unsafe { rtl::cstr::len_until_nul(string) }.min(MOST_UNITS);
-    UnicodeString {
-        length: (2 * units) as u16,
-        maximum_length: (2 * units + 2) as u16,
-        buffer: string.cast_mut(),
-    }
-}
-
-/// A caller's UTF-16 string as [`wide_units`] reads it, its terminator left out: the caller's own
-/// units where its pointer is aligned, a copy on the process heap where it is not.
+/// A caller's UTF-16 string as [`crate::edge::wide_units`] reads it, its terminator left out: the
+/// caller's own units where its pointer is aligned, a copy on the process heap where it is not.
 pub enum WideUnits<'a> {
     Borrowed(&'a [u16]),
     Copied(HeapArray<u16>),
@@ -147,158 +128,6 @@ impl core::ops::Deref for WideUnits<'_> {
         match self {
             WideUnits::Borrowed(units) => units,
             WideUnits::Copied(units) => units,
-        }
-    }
-}
-
-/// A caller's NUL-terminated UTF-16 string, its terminator left out. An x86 program may hand an
-/// LPCWSTR at an odd address, which Windows reads like any other; a Rust slice must be aligned, so
-/// such a string is copied onto the process heap. None only when that copy finds no room.
-///
-/// # Safety
-///
-/// `string` points at a NUL-terminated UTF-16 string, aligned or not, that stays unchanged for
-/// `'a` (a bad pointer faults the caller, as on the platform).
-pub unsafe fn wide_units<'a>(string: *const u16) -> Option<WideUnits<'a>> {
-    // SAFETY: the caller's string, read to its terminator.
-    let length = unsafe { rtl::cstr::len_until_nul(string) };
-    // SAFETY: the `length` units the scan read.
-    unsafe { wide_units_of(string, length) }
-}
-
-/// `length` UTF-16 units a caller passes at `units`, aligned or not, as [`wide_units`] reads a
-/// string: borrowed where aligned, copied onto the process heap where not; none only when that
-/// copy finds no room.
-///
-/// # Safety
-///
-/// `units` points at `length` readable UTF-16 units, aligned or not, unchanged for `'a`.
-pub unsafe fn wide_units_of<'a>(units: *const u16, length: usize) -> Option<WideUnits<'a>> {
-    if units.is_aligned() {
-        // SAFETY: `length` units at an aligned address, the caller's for 'a (the contract).
-        let units = unsafe { core::slice::from_raw_parts(units, length) };
-        return Some(WideUnits::Borrowed(units));
-    }
-    let mut copy = HeapArray::new(length).ok()?;
-    for (at, unit) in copy.iter_mut().enumerate() {
-        // SAFETY: one of the caller's `length` units, read unaligned.
-        *unit = unsafe { units.add(at).read_unaligned() };
-    }
-    Some(WideUnits::Copied(copy))
-}
-
-/// An A call's narrow string converted into `buffer`, terminated, as Windows 2000's kernel32
-/// converts one into a buffer of its own (the thread's static Unicode string, for a name): ntdll's
-/// RtlInitAnsiString, then RtlAnsiStringToUnicodeString through the ANSI code page. Its length in
-/// units; none when the buffer cannot hold it and its terminator (a null string is the empty one).
-///
-/// # Safety
-///
-/// `string` is null or a NUL-terminated string (a bad pointer faults the caller, as on the
-/// platform).
-pub unsafe fn ansi_into(string: *const u8, buffer: &mut [u16]) -> Option<usize> {
-    let mut ansi = nt::AnsiString::empty();
-    let mut wide = unicode_string(buffer, 0);
-    // SAFETY: ntdll's exports, over the caller's string and the buffer, of the room given.
-    let status = unsafe {
-        nt::RtlInitAnsiString(&mut ansi, string);
-        nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 0)
-    };
-    rtl::status::nt_success(status).then_some(wide.length as usize / 2)
-}
-
-/// UTF-16 units narrowed through the ANSI code page into the bytes at `buffer`, as Windows 2000's
-/// kernel32 hands an A call's strings back (ntdll's RtlUnicodeToMultiByteN). The code page is one
-/// byte a character: `buffer` takes as many bytes as there are units.
-///
-/// # Safety
-///
-/// `buffer` holds `units.len()` bytes.
-pub unsafe fn narrow(units: &[u16], buffer: *mut u8) {
-    if units.is_empty() {
-        return;
-    }
-    // SAFETY: ntdll's export, over the caller's buffer and the units, of the sizes given.
-    unsafe {
-        nt::RtlUnicodeToMultiByteN(
-            buffer,
-            units.len() as u32,
-            core::ptr::null_mut(),
-            units.as_ptr(),
-            (2 * units.len()) as u32,
-        )
-    };
-}
-
-/// A caller's buffer for a string a call hands back: an A call's bytes (the units narrowed through
-/// the ANSI code page, [`narrow`]) or a W call's UTF-16 units as they are. Code page 1252 is one
-/// byte a character, so both count the same characters.
-#[derive(Clone, Copy)]
-pub enum Text {
-    Ansi(*mut u8),
-    Wide(*mut u16),
-}
-
-impl Text {
-    pub fn is_null(self) -> bool {
-        match self {
-            Text::Ansi(buffer) => buffer.is_null(),
-            Text::Wide(buffer) => buffer.is_null(),
-        }
-    }
-
-    /// Write `units` from the buffer's start.
-    ///
-    /// # Safety
-    ///
-    /// The buffer holds them.
-    pub unsafe fn put(self, units: &[u16]) {
-        // SAFETY: the caller's contract.
-        unsafe {
-            match self {
-                Text::Ansi(buffer) => narrow(units, buffer),
-                Text::Wide(buffer) => {
-                    for (at, &unit) in units.iter().enumerate() {
-                        buffer.add(at).write_unaligned(unit);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Write `units` from the buffer's start, then the terminator.
-    ///
-    /// # Safety
-    ///
-    /// The buffer holds them and the terminator.
-    pub unsafe fn put_terminated(self, units: &[u16]) {
-        // SAFETY: the caller's contract.
-        unsafe {
-            self.put(units);
-            self.put_unit(units.len(), 0);
-        }
-    }
-
-    /// Write one unit at character `at`.
-    ///
-    /// # Safety
-    ///
-    /// The buffer holds `at + 1` characters.
-    pub unsafe fn put_unit(self, at: usize, unit: u16) {
-        // SAFETY: the caller's contract.
-        unsafe {
-            match self {
-                Text::Ansi(buffer) => narrow(&[unit], buffer.add(at)),
-                Text::Wide(buffer) => buffer.add(at).write_unaligned(unit),
-            }
-        }
-    }
-
-    /// The address of the buffer's character `at` (a file part's place in it).
-    pub fn address(self, at: usize) -> usize {
-        match self {
-            Text::Ansi(buffer) => buffer as usize + at,
-            Text::Wide(buffer) => buffer as usize + 2 * at,
         }
     }
 }
@@ -333,20 +162,14 @@ pub fn named_object_directory() -> u32 {
             security_descriptor: core::ptr::null(),
             security_quality_of_service: core::ptr::null(),
         };
-        let mut opened = 0;
-        // SAFETY: ntdll's export, over the attributes above.
-        let status =
-            unsafe { nt::NtOpenDirectoryObject(&mut opened, NAMED_OBJECTS_ACCESS, &attributes) };
-        if rtl::status::nt_success(status) {
-            opened as usize
-        } else {
-            0
-        }
+        ntcall::open_directory_object(NAMED_OBJECTS_ACCESS, &attributes)
+            .map_or(0, |opened| opened as usize)
     }) as u32
 }
 
 /// A SECURITY_ATTRIBUTES, as a create's caller passes it.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SecurityAttributes {
     pub length: u32,
     pub security_descriptor: *const u8,
@@ -355,21 +178,16 @@ pub struct SecurityAttributes {
 
 /// BaseFormatObjectAttributes: the OBJECT_ATTRIBUTES a create passes — none when it has neither
 /// security attributes nor a name; otherwise inheritable as the security attributes ask, and a
-/// name is OBJ_OPENIF in `\BaseNamedObjects` (an existing object of the name is opened).
-///
-/// # Safety
-///
-/// `security` is null or points at a SECURITY_ATTRIBUTES; `name` outlives the attributes' use.
-pub unsafe fn format_object_attributes<'a>(
-    out: &'a mut ObjectAttributes,
-    security: *const SecurityAttributes,
+/// name is OBJ_OPENIF in `\BaseNamedObjects` (an existing object of the name is opened). The
+/// attributes point at the name: they are used while it lives.
+pub fn format_object_attributes(
+    security: Option<In<'_, SecurityAttributes>>,
     name: Option<&UnicodeString>,
-) -> Option<&'a ObjectAttributes> {
-    if security.is_null() && name.is_none() {
+) -> Option<ObjectAttributes> {
+    if security.is_none() && name.is_none() {
         return None;
     }
-    // SAFETY: the caller's structure, when given.
-    let (mut attributes, descriptor) = match unsafe { security.as_ref() } {
+    let (mut attributes, descriptor) = match security.map(|security| security.read()) {
         Some(security) => (
             if security.inherit_handle != 0 {
                 OBJ_INHERIT
@@ -385,15 +203,14 @@ pub unsafe fn format_object_attributes<'a>(
         attributes |= OBJ_OPENIF;
         root = named_object_directory();
     }
-    *out = ObjectAttributes {
+    Some(ObjectAttributes {
         length: 24,
         root_directory: root,
         object_name: name.map_or(core::ptr::null(), |name| name as *const UnicodeString),
         attributes,
         security_descriptor: descriptor,
         security_quality_of_service: core::ptr::null(),
-    };
-    Some(out)
+    })
 }
 
 /// Whether a handle is a console handle (Windows 2000's CONSOLE_HANDLE: the low two bits set, bit
@@ -564,6 +381,19 @@ pub unsafe fn string_units<'a>(string: &CountedString<usize>) -> &'a [u16] {
     }
 }
 
+/// The process's image path (its parameters' ImagePathName), as the loader's search reads it.
+pub fn image_path_name() -> &'static [u16] {
+    // SAFETY: the process parameters' ImagePathName: its buffer inside the parameters block,
+    // mapped for the process's whole life, holding its length; nothing rewrites it.
+    unsafe { string_units(&parameters().image_path_name) }
+}
+
+/// The process's desktop (its parameters' DesktopInfo), as a new process inherits it.
+pub fn desktop_info() -> &'static [u16] {
+    // SAFETY: as `image_path_name`'s, for DesktopInfo: nothing rewrites it either.
+    unsafe { string_units(&parameters().desktop_info) }
+}
+
 /// The TEB's field, read in place: the calling thread's own.
 macro_rules! teb_field {
     ($($field:tt)+) => {
@@ -700,6 +530,8 @@ mod teb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edge::{wide_units, InWStr};
+    use crate::nt;
 
     /// A failed service's status becomes the last error through RtlNtStatusToDosError
     /// (STATUS_INVALID_HANDLE is ERROR_INVALID_HANDLE, STATUS_ACCESS_VIOLATION ERROR_NOACCESS).
@@ -723,7 +555,7 @@ mod tests {
         let mut storage = [0u16; 32];
         storage[..text.len()].copy_from_slice(&text);
         // SAFETY: a NUL-terminated string in `storage`, aligned.
-        let aligned = unsafe { wide_units(storage.as_ptr()) }.unwrap();
+        let aligned = wide_units(&unsafe { InWStr::new(storage.as_ptr()) }).unwrap();
         assert!(matches!(aligned, WideUnits::Borrowed(_)));
         assert_eq!(*aligned, text[..]);
         #[repr(align(2))]
@@ -735,7 +567,7 @@ mod tests {
         let odd = bytes.0[1..].as_ptr() as *const u16;
         assert!(!odd.is_aligned());
         // SAFETY: a NUL-terminated string in `bytes` (zeroed past the text), at an odd address.
-        let unaligned = unsafe { wide_units(odd) }.unwrap();
+        let unaligned = wide_units(&unsafe { InWStr::new(odd) }).unwrap();
         assert!(matches!(unaligned, WideUnits::Copied(_)));
         assert_eq!(*unaligned, text[..]);
     }

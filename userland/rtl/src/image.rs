@@ -1,13 +1,16 @@
 //! A PE32 image's structures, as Windows defines them (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32, the
-//! section table's rows, the export directory and the import descriptors), all plain data
-//! ([`Pod`]), so that a parse reads each one whole from an image's bytes; a data directory as
-//! RtlImageDirectoryEntryToData finds it ([`data_directory`]). From a mapped image's first page:
-//! its NT headers ([`nt_headers`]), and what the process's start takes from them: the process
-//! heap's first segment ([`process_heap_sizes`]); where RtlImageNtHeader finds them
-//! ([`nt_headers_offset`]).
+//! section table's rows, the export directory, the import descriptors and the TLS directory), all
+//! plain data ([`Pod`]), so that a parse reads each one whole from an image's bytes; a data
+//! directory as RtlImageDirectoryEntryToData finds it ([`data_directory`]). From a mapped image's
+//! first page: its NT headers ([`nt_headers`]), and what the process's start takes from them: the
+//! process heap's first segment ([`process_heap_sizes`]); where RtlImageNtHeader finds them
+//! ([`nt_headers_offset`]). From an image mapped in a process's memory as the loader reads it
+//! ([`Memory`]): its NT headers ([`mapped_headers`], [`mapped_nt_headers`]) and a data directory
+//! ([`mapped_directory`]).
 
 use core::mem::{offset_of, size_of};
 
+use crate::modules::Memory;
 use crate::pod::Pod;
 
 /// IMAGE_DOS_HEADER: the MZ stub's header, its last word the NT headers' offset from the image's
@@ -139,6 +142,31 @@ pub struct ImageImportDescriptor {
     pub first_thunk: u32,
 }
 
+/// IMAGE_TLS_DIRECTORY32: the template of a thread's implicit-TLS block (its raw data's start and
+/// end, user addresses), the index variable's address, the callbacks' array (user addresses all),
+/// and the zero fill after the raw data.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ImageTlsDirectory32 {
+    pub start_address_of_raw_data: u32,
+    pub end_address_of_raw_data: u32,
+    pub address_of_index: u32,
+    pub address_of_call_backs: u32,
+    pub size_of_zero_fill: u32,
+    pub characteristics: u32,
+}
+
+impl ImageTlsDirectory32 {
+    /// A thread's block's size: the raw data and the zero fill; none for a directory that does not
+    /// add up.
+    pub fn block_size(&self) -> Option<usize> {
+        let raw = self
+            .end_address_of_raw_data
+            .checked_sub(self.start_address_of_raw_data)?;
+        (raw as usize).checked_add(self.size_of_zero_fill as usize)
+    }
+}
+
 const _: () = {
     // The layouts Windows defines.
     assert!(size_of::<ImageDosHeader>() == 0x40);
@@ -174,6 +202,8 @@ const _: () = {
     assert!(size_of::<ImageExportDirectory>() == 0x28);
     assert!(offset_of!(ImageImportDescriptor, name) == 0x0C);
     assert!(size_of::<ImageImportDescriptor>() == 0x14);
+    assert!(offset_of!(ImageTlsDirectory32, size_of_zero_fill) == 0x10);
+    assert!(size_of::<ImageTlsDirectory32>() == 0x18);
 };
 
 // SAFETY: each is a `#[repr(C)]` structure of integers, arrays of them and the structures above,
@@ -194,6 +224,11 @@ unsafe impl Pod for ImageSectionHeader {}
 unsafe impl Pod for ImageExportDirectory {}
 // SAFETY: as above.
 unsafe impl Pod for ImageImportDescriptor {}
+// SAFETY: as above.
+unsafe impl Pod for ImageTlsDirectory32 {}
+
+/// The file header's IMAGE_FILE_DLL characteristic: the image is a DLL.
+pub const FILE_DLL: u16 = 0x2000;
 
 /// "MZ", "PE\0\0", and the PE32 optional header's magic.
 pub const DOS_MAGIC: u16 = 0x5A4D;
@@ -204,7 +239,9 @@ pub const PE32_MAGIC: u16 = 0x010B;
 /// count of them (IMAGE_NUMBEROF_DIRECTORY_ENTRIES).
 pub const DIRECTORY_EXPORT: usize = 0;
 pub const DIRECTORY_IMPORT: usize = 1;
+pub const DIRECTORY_RESOURCE: usize = 2;
 pub const DIRECTORY_BASERELOC: usize = 5;
+pub const DIRECTORY_TLS: usize = 9;
 pub const DIRECTORY_IAT: usize = 12;
 pub const NUMBER_OF_DIRECTORIES: usize = 16;
 
@@ -218,6 +255,34 @@ pub fn data_directory(nt: &ImageNtHeaders32, index: usize) -> Option<ImageDataDi
     }
     let entry = *optional.data_directory.get(index)?;
     (entry.virtual_address != 0).then_some(entry)
+}
+
+/// The NT headers of the image mapped at `base` in `memory`, read whole where its DOS header's
+/// e_lfanew puts them, unchecked: the facts the loader records of an image the kernel mapped (and
+/// so parsed) come from them.
+pub fn mapped_headers<M: Memory>(memory: &M, base: u32) -> ImageNtHeaders32 {
+    let dos: ImageDosHeader = memory.read(base);
+    memory.read(base.wrapping_add(dos.e_lfanew as u32))
+}
+
+/// The NT headers of the image mapped at `base` in `memory`, as RtlImageNtHeader finds them: none
+/// without the MZ signature, for a negative e_lfanew, or when what it points at is not a PE32
+/// image's headers.
+pub fn mapped_nt_headers<M: Memory>(memory: &M, base: u32) -> Option<ImageNtHeaders32> {
+    let offset = nt_headers_offset(&memory.read(base))?;
+    let nt: ImageNtHeaders32 = memory.read(base.wrapping_add(offset as u32));
+    (nt.signature == NT_SIGNATURE && nt.optional_header.magic == PE32_MAGIC).then_some(nt)
+}
+
+/// The data directory `index` of the image mapped at `base` in `memory` ([`data_directory`] over
+/// its [`mapped_nt_headers`]): none for an image that is not a PE32 one, or that has no such
+/// directory.
+pub fn mapped_directory<M: Memory>(
+    memory: &M,
+    base: u32,
+    index: usize,
+) -> Option<ImageDataDirectory> {
+    data_directory(&mapped_nt_headers(memory, base)?, index)
 }
 
 /// The page an image's headers sit in: the loader maps it whole, and the headers are read inside

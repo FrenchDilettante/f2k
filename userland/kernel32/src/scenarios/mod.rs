@@ -7,6 +7,13 @@
 //!
 //! An address no call may read (a source a refusal must leave unread) is [`UNREAD`]: dereferencing
 //! it faults the test.
+//!
+//! The scenarios call the exports through their raw ABI on purpose, so every one of their `unsafe`
+//! blocks is the same contract, stated once here rather than at each call: the block calls an
+//! `unsafe extern "system"` export (or a stand-in it pins) with what the API asks for — the test's
+//! own live buffers and structures, the sizes passed theirs, strings NUL-terminated — save the
+//! deliberate bad pointers (null, [`UNREAD`]) a scenario passes to show a call refuses them before
+//! it reads, or faults where Windows 2000's does.
 
 mod binary_type;
 mod clocks;

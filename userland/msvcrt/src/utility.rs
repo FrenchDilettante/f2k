@@ -6,20 +6,37 @@
 
 use core::sync::atomic::Ordering::Relaxed;
 
+use crate::kernel32;
 use crate::thread;
 
 /// The comparison qsort calls (cdecl).
 pub type Compare = unsafe extern "C" fn(*const u8, *const u8) -> i32;
 
-/// Two elements of `width` bytes swapped.
-///
-/// # Safety
-///
-/// Both are elements of the caller's array.
-unsafe fn swap(a: *mut u8, b: *mut u8, width: usize) {
-    if a != b {
-        // SAFETY: the caller's elements, distinct.
-        unsafe { core::ptr::swap_nonoverlapping(a, b, width) };
+/// An array of elements of `width` bytes, sorted in place by a comparison of two of them.
+struct Elements<'a> {
+    bytes: &'a mut [u8],
+    width: usize,
+    compare: &'a dyn Fn(&[u8], &[u8]) -> i32,
+}
+
+impl Elements<'_> {
+    /// Element `i`.
+    fn at(&self, i: usize) -> &[u8] {
+        &self.bytes[i * self.width..][..self.width]
+    }
+
+    /// Elements `i` and `j` compared.
+    fn order(&self, i: usize, j: usize) -> i32 {
+        (self.compare)(self.at(i), self.at(j))
+    }
+
+    /// Elements `i` and `j` swapped.
+    fn swap(&mut self, i: usize, j: usize) {
+        if i != j {
+            let (low, high) = (i.min(j), i.max(j));
+            let (front, back) = self.bytes.split_at_mut(high * self.width);
+            front[low * self.width..][..self.width].swap_with_slice(&mut back[..self.width]);
+        }
     }
 }
 
@@ -35,69 +52,79 @@ pub unsafe extern "C" fn qsort(base: *mut u8, count: usize, width: usize, compar
     if count < 2 || width == 0 {
         return;
     }
-    // SAFETY: the caller's contract.
-    unsafe { sort(base, count, width, compare) };
+    let Some(length) = count.checked_mul(width) else {
+        return;
+    };
+    // SAFETY: the caller's array of `count` elements of `width` bytes, the sort's alone meanwhile.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(base, length) };
+    let compare = |a: &[u8], b: &[u8]| {
+        // SAFETY: the caller's comparison, over two elements of its array (it reads them only).
+        unsafe { compare(a.as_ptr(), b.as_ptr()) }
+    };
+    sort(&mut Elements {
+        bytes,
+        width,
+        compare: &compare,
+    });
 }
 
-/// The quicksort's body over `count` elements at `base`.
-///
-/// # Safety
-///
-/// As qsort's.
-unsafe fn sort(mut base: *mut u8, mut count: usize, width: usize, compare: Compare) {
-    // SAFETY: every element touched is inside the caller's array.
-    unsafe {
-        let element = |base: *mut u8, i: usize| base.add(i * width);
-        while count > 8 {
-            let (first, middle, last) = (
-                element(base, 0),
-                element(base, count / 2),
-                element(base, count - 1),
-            );
-            // The median of three to the front.
-            if compare(middle, first) < 0 {
-                swap(middle, first, width);
-            }
-            if compare(last, middle) < 0 {
-                swap(last, middle, width);
-                if compare(middle, first) < 0 {
-                    swap(middle, first, width);
-                }
-            }
-            swap(first, middle, width);
-            // Partition the rest around the pivot at the front.
-            let (mut low, mut high) = (1, count - 1);
-            loop {
-                while low <= high && compare(element(base, low), first) < 0 {
-                    low += 1;
-                }
-                while high >= low && compare(element(base, high), first) > 0 {
-                    high -= 1;
-                }
-                if low >= high {
-                    break;
-                }
-                swap(element(base, low), element(base, high), width);
-                low += 1;
-                high -= 1;
-            }
-            swap(first, element(base, high), width);
-            let (left, right) = (high, count - high - 1);
-            if left < right {
-                sort(base, left, width, compare);
-                base = element(base, high + 1);
-                count = right;
-            } else {
-                sort(element(base, high + 1), right, width, compare);
-                count = left;
+/// The quicksort's body.
+fn sort(array: &mut Elements) {
+    let width = array.width;
+    let mut count = array.bytes.len() / width;
+    while count > 8 {
+        let (first, middle, last) = (0, count / 2, count - 1);
+        // The median of three to the front.
+        if array.order(middle, first) < 0 {
+            array.swap(middle, first);
+        }
+        if array.order(last, middle) < 0 {
+            array.swap(last, middle);
+            if array.order(middle, first) < 0 {
+                array.swap(middle, first);
             }
         }
-        for i in 1..count {
-            let mut j = i;
-            while j > 0 && compare(element(base, j - 1), element(base, j)) > 0 {
-                swap(element(base, j - 1), element(base, j), width);
-                j -= 1;
+        array.swap(first, middle);
+        // Partition the rest around the pivot at the front.
+        let (mut low, mut high) = (1, count - 1);
+        loop {
+            while low <= high && array.order(low, first) < 0 {
+                low += 1;
             }
+            while high >= low && array.order(high, first) > 0 {
+                high -= 1;
+            }
+            if low >= high {
+                break;
+            }
+            array.swap(low, high);
+            low += 1;
+            high -= 1;
+        }
+        array.swap(first, high);
+        let (left, right) = (high, count - high - 1);
+        // The smaller side sorted first (recursively), the larger by the loop.
+        let bytes = core::mem::take(&mut array.bytes);
+        let (front, back) = bytes.split_at_mut(high * width);
+        let back = &mut back[width..];
+        let (smaller, larger) = if left < right {
+            (front, back)
+        } else {
+            (back, front)
+        };
+        sort(&mut Elements {
+            bytes: smaller,
+            width,
+            compare: array.compare,
+        });
+        array.bytes = larger;
+        count = left.max(right);
+    }
+    for i in 1..count {
+        let mut j = i;
+        while j > 0 && array.order(j - 1, j) > 0 {
+            array.swap(j - 1, j);
+            j -= 1;
         }
     }
 }
@@ -132,9 +159,7 @@ const UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 /// `timer` is null or a `time_t`'s storage.
 #[unsafe(export_name = "f2k_export_time")]
 pub unsafe extern "C" fn time(timer: *mut i32) -> i32 {
-    let mut now = 0u64;
-    // SAFETY: kernel32's export, over the FILETIME.
-    unsafe { crate::imports::GetSystemTimeAsFileTime(&mut now) };
+    let now = kernel32::system_time();
     let seconds = (now.saturating_sub(UNIX_EPOCH) / 10_000_000) as i32;
     if !timer.is_null() {
         // SAFETY: the caller's time_t.

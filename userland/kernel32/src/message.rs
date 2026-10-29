@@ -19,11 +19,10 @@
 //! text then goes into the caller's buffer, or into a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), an A call's narrowed through the ANSI code page.
 
-use crate::base::{set_last_error, set_last_nt_error, Text};
-use crate::error::{ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ENOUGH_MEMORY};
-use crate::heap::{HeapArray, HeapString};
-use crate::nt;
-use crate::ntcall;
+use crate::edge::{InStr, InWStr, Out, OutBuf, Text};
+use crate::error::{answer, Failure, ERROR_INSUFFICIENT_BUFFER};
+use crate::heap::{HeapArray, HeapString, OutOfMemory};
+use crate::ntcall::{self, MessageArguments, MessageLayout, MessageText, NtStatus};
 
 /// FORMAT_MESSAGE_ALLOCATE_BUFFER, FORMAT_MESSAGE_IGNORE_INSERTS, FORMAT_MESSAGE_FROM_STRING,
 /// FORMAT_MESSAGE_FROM_HMODULE, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_ARGUMENT_ARRAY, and
@@ -35,9 +34,6 @@ const FROM_HMODULE: u32 = 0x0800;
 const FROM_SYSTEM: u32 = 0x1000;
 const ARGUMENT_ARRAY: u32 = 0x2000;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
-
-/// MESSAGE_RESOURCE_UNICODE: a table entry's text is UTF-16.
-const MESSAGE_RESOURCE_UNICODE: u16 = 0x0001;
 
 /// The statuses kernel32 tells apart: a block the layout outgrew, and a call it cannot serve.
 const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
@@ -71,97 +67,75 @@ fn program_handle() -> usize {
     crate::base::image_base()
 }
 
-/// A message's text, NUL-terminated UTF-16: the caller's or a table's in place, or one kernel32
-/// converted from ANSI (on the process heap, freed with it).
-struct Message {
-    text: *const u16,
-    /// The converted text's block, which `text` points into: kept for the message's life.
-    _converted: Option<HeapString>,
+/// What FormatMessage's source argument is: the caller's string, of the call's form, for
+/// FORMAT_MESSAGE_FROM_STRING; a module's handle otherwise (the program's for NULL).
+pub enum Source<'a> {
+    Wide(InWStr<'a>),
+    Ansi(InStr<'a>),
+    Module(usize),
 }
 
-impl Message {
-    /// Text read in place.
-    fn borrowed(text: *const u16) -> Message {
-        Message {
-            text,
-            _converted: None,
-        }
-    }
+/// Where FormatMessage's text goes: the caller's buffer, or for FORMAT_MESSAGE_ALLOCATE_BUFFER the
+/// place of a pointer to a block the call allocates.
+pub enum Destination<'a> {
+    Buffer(Text<'a>),
+    Allocate(Out<'a, usize>),
+}
 
-    /// A NUL-terminated ANSI text converted ([`HeapString::from_ansi`]: ntdll's RtlInitAnsiString
+/// A message's text, NUL-terminated UTF-16: the caller's or a table's in place, or one kernel32
+/// converted from ANSI (on the process heap, freed with it).
+enum Message<'a> {
+    Borrowed(InWStr<'a>),
+    Converted(HeapString),
+}
+
+impl Message<'_> {
+    /// A NUL-terminated ANSI text converted ([`HeapString::of_ansi`]: ntdll's RtlInitAnsiString
     /// and RtlAnsiStringToUnicodeString, onto the process heap); the status of a failed
     /// conversion.
-    ///
-    /// # Safety
-    ///
-    /// `text` is a NUL-terminated string.
-    unsafe fn converted(text: *const u8) -> Result<Message, u32> {
-        // SAFETY: the caller's contract.
-        let converted = unsafe { HeapString::from_ansi(text) }?;
-        Ok(Message {
+    fn converted(text: &InStr<'_>) -> Result<Self, NtStatus> {
+        HeapString::of_ansi(Some(text)).map(Message::Converted)
+    }
+
+    /// The text, to its terminator.
+    fn text(&self) -> InWStr<'_> {
+        match self {
+            Message::Borrowed(text) => *text,
             // The conversion terminates its buffer, which it sized for the terminator too.
-            text: converted.string().buffer,
-            _converted: Some(converted),
-        })
+            Message::Converted(converted) => converted.terminated(),
+        }
     }
 }
 
 /// Message `id` of `module`'s message table, in `language` (ntdll's RtlFindMessage): its text,
 /// or the lookup's status.
-fn table_message(module: usize, id: u32, language: u32) -> Result<Message, u32> {
-    let mut entry = core::ptr::null();
-    // SAFETY: ntdll's export, over the module's image.
-    let status = unsafe {
-        nt::RtlFindMessage(
-            module,
-            rtl::resource::RT_MESSAGETABLE,
-            language,
-            id,
-            &mut entry,
-        )
-    };
-    if !rtl::status::nt_success(status) {
-        return Err(status);
-    }
-    // SAFETY: a MESSAGE_RESOURCE_ENTRY: its length and flags, then its NUL-terminated text.
-    let flags = unsafe { (entry.add(2) as *const u16).read_unaligned() };
-    if flags & MESSAGE_RESOURCE_UNICODE != 0 {
-        // SAFETY: the entry's text, 4 bytes in (after its length and flags), inside the entry
-        // RtlFindMessage found in the module's mapped image.
-        Ok(Message::borrowed(unsafe { entry.add(4) } as *const u16))
-    } else {
-        // SAFETY: as above, an ANSI text.
-        unsafe { Message::converted(entry.add(4)) }
+fn table_message(module: usize, id: u32, language: u32) -> Result<Message<'static>, NtStatus> {
+    match ntcall::find_message(module, rtl::resource::RT_MESSAGETABLE, language, id)? {
+        MessageText::Wide(text) => Ok(Message::Borrowed(text)),
+        MessageText::Ansi(text) => Message::converted(&text),
     }
 }
 
-/// The message the flags name: the string `source` points at, or message `id` from the module's
-/// table (`source`, the program's for NULL) and then the system's, as asked. A call naming no
-/// source is STATUS_INVALID_PARAMETER; one that finds no message has the last lookup's status.
-///
-/// # Safety
-///
-/// For FORMAT_MESSAGE_FROM_STRING, `source` is a NUL-terminated string of the call's form.
-unsafe fn message(
+/// The message the flags name: the string `source` is, or message `id` from the module's table
+/// (`source`, the program's for NULL) and then the system's, as asked. A call naming no source is
+/// STATUS_INVALID_PARAMETER; one that finds no message has the last lookup's status.
+fn message<'a>(
     flags: u32,
-    source: *const u8,
+    source: Source<'a>,
     id: u32,
     language: u32,
-    wide: bool,
-) -> Result<Message, u32> {
-    if flags & FROM_STRING != 0 {
-        if wide {
-            return Ok(Message::borrowed(source as *const u16));
-        }
-        // SAFETY: the caller's string.
-        return unsafe { Message::converted(source) };
-    }
+) -> Result<Message<'a>, NtStatus> {
+    let module = match source {
+        Source::Wide(text) => return Ok(Message::Borrowed(text)),
+        Source::Ansi(text) => return Message::converted(&text),
+        Source::Module(module) => module,
+    };
     let mut status = STATUS_INVALID_PARAMETER;
     if flags & FROM_HMODULE != 0 {
-        let module = if source.is_null() {
+        let module = if module == 0 {
             program_handle()
         } else {
-            source as usize
+            module
         };
         match table_message(module, id, language) {
             Ok(found) => return Ok(found),
@@ -177,130 +151,87 @@ unsafe fn message(
 /// `text` laid out by ntdll's RtlFormatMessage as the flags ask (the width: the flags' low byte,
 /// FORMAT_MESSAGE_MAX_WIDTH_MASK as MAXULONG; the inserts from `arguments` unless ignored), into a
 /// block that grows until it fits: the characters, or the status of the call that failed.
-///
-/// # Safety
-///
-/// `text` is NUL-terminated; `arguments` holds every value the text's inserts name (a va_list's
-/// address, or an array for FORMAT_MESSAGE_ARGUMENT_ARRAY).
-unsafe fn laid_out(
-    text: *const u16,
+fn laid_out(
+    text: &InWStr<'_>,
     flags: u32,
-    arguments: *const u8,
+    arguments: MessageArguments,
     wide: bool,
-) -> Result<HeapArray<u16>, u32> {
-    let width = match flags & MAX_WIDTH_MASK {
-        MAX_WIDTH_MASK => rtl::message::NO_LINE_BREAKS,
-        width => width,
+) -> Result<HeapArray<u16>, NtStatus> {
+    let layout = MessageLayout {
+        width: match flags & MAX_WIDTH_MASK {
+            MAX_WIDTH_MASK => rtl::message::NO_LINE_BREAKS,
+            width => width,
+        },
+        ignore_inserts: flags & IGNORE_INSERTS != 0,
+        ansi: !wide,
+        array: flags & ARGUMENT_ARRAY != 0,
     };
     let mut room = FIRST_ROOM;
     loop {
-        let Ok(mut laid) = HeapArray::<u16>::new(room) else {
-            return Err(STATUS_NO_MEMORY);
-        };
-        let mut returned = 0u32;
-        // SAFETY: ntdll's export, over the caller's text and arguments, into the block.
-        let status = unsafe {
-            nt::RtlFormatMessage(
-                text,
-                width,
-                u32::from(flags & IGNORE_INSERTS != 0),
-                u32::from(!wide),
-                u32::from(flags & ARGUMENT_ARRAY != 0),
-                arguments,
-                laid.as_mut_ptr(),
-                (2 * room) as u32,
-                &mut returned,
-            )
-        };
-        if status == STATUS_BUFFER_OVERFLOW && room < LAST_ROOM {
-            room *= 2;
-            continue;
+        let mut laid = HeapArray::<u16>::new(room).map_err(|OutOfMemory| STATUS_NO_MEMORY)?;
+        match ntcall::format_message(text, &layout, arguments, &mut laid) {
+            Err(STATUS_BUFFER_OVERFLOW) if room < LAST_ROOM => room *= 2,
+            Err(status) => return Err(status),
+            Ok(returned) => {
+                laid.truncate((returned / 2).saturating_sub(1));
+                return Ok(laid);
+            }
         }
-        if !rtl::status::nt_success(status) {
-            return Err(status);
-        }
-        laid.truncate((returned as usize / 2).saturating_sub(1));
-        return Ok(laid);
     }
 }
 
 /// FormatMessageW's work: the message the flags name (see [`message`]) laid out (see
 /// [`laid_out`]), its length without the terminator, as characters (`wide`) or bytes. Into the
-/// caller's buffer of `size` characters (ERROR_INSUFFICIENT_BUFFER, the buffer untouched, when it
-/// cannot hold the text and its terminator), or, for FORMAT_MESSAGE_ALLOCATE_BUFFER, into a block
-/// of the text's size on the process heap (a fixed local block: LocalFree frees it; `size` is not
-/// its least, as the runtime and msgtable captures show) whose address goes where `buffer` points
-/// — null there when the call fails or the text is empty. An empty text is no failure: zero, the
-/// last error untouched, a W call's buffer given its terminator alone, an A call's untouched (the
-/// msgtable capture).
-///
-/// # Safety
-///
-/// The buffer holds `size` characters; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
-/// For FORMAT_MESSAGE_FROM_STRING, `source` is a NUL-terminated string of the call's form;
-/// `arguments` holds every value the message's inserts name.
-#[allow(clippy::too_many_arguments)]
-unsafe fn format_message(
+/// caller's buffer (ERROR_INSUFFICIENT_BUFFER, the buffer untouched, when it cannot hold the text
+/// and its terminator), or, for FORMAT_MESSAGE_ALLOCATE_BUFFER, into a block of the text's size on
+/// the process heap (a fixed local block: LocalFree frees it; the size given is not its least, as
+/// the runtime and msgtable captures show) whose address goes to the caller's place — null there
+/// when the call fails or the text is empty. An empty text is no failure: zero, the last error
+/// untouched, a W call's buffer given its terminator alone, an A call's untouched (the msgtable
+/// capture).
+fn format_message(
     flags: u32,
-    source: *const u8,
-    id: u32,
-    language: u32,
-    buffer: *mut u8,
-    size: u32,
-    arguments: *const u8,
+    (source, id, language): (Source<'_>, u32, u32),
+    mut destination: Destination<'_>,
+    arguments: MessageArguments,
     wide: bool,
-) -> u32 {
-    let allocate = flags & ALLOCATE_BUFFER != 0;
-    if allocate {
-        // SAFETY: the caller's pointer place.
-        unsafe { (buffer as *mut *mut u8).write_unaligned(core::ptr::null_mut()) };
+) -> Result<u32, Failure> {
+    if let Destination::Allocate(place) = &mut destination {
+        place.set(0);
     }
-    // SAFETY: the caller's source, of the form the flags say (the contract).
-    let laid = unsafe { message(flags, source, id, language, wide) }.and_then(|message| {
-        // SAFETY: the message's text is NUL-terminated (a string, a table entry's or its
-        // conversion, alive while `message` is); `arguments` holds every value its inserts name
-        // (the contract).
-        unsafe { laid_out(message.text, flags, arguments, wide) }
-    });
-    let laid = match laid {
-        Ok(laid) => laid,
-        Err(status) => {
-            set_last_nt_error(status);
-            return 0;
-        }
-    };
+    let laid = message(flags, source, id, language)
+        .and_then(|message| laid_out(&message.text(), flags, arguments, wide))
+        .map_err(Failure::Status)?;
     // Code page 1252 is one byte a character: the A form's bytes count the characters.
     let units = &*laid;
     let length = units.len();
+    let allocate = matches!(destination, Destination::Allocate(_));
     if length == 0 && (allocate || !wide) {
-        return 0;
+        return Ok(0);
     }
-    let unit = if wide { 2 } else { 1 };
-    let out = if allocate {
-        // On the process heap, as LocalAlloc(LMEM_FIXED) makes a block.
-        let Some(block) = ntcall::allocate_heap(unit * (length + 1)) else {
-            set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-            return 0;
-        };
-        let block = block.as_ptr();
-        // SAFETY: the caller's pointer place.
-        unsafe { (buffer as *mut *mut u8).write_unaligned(block) };
-        block
-    } else {
-        if (size as usize) <= length {
-            set_last_error(ERROR_INSUFFICIENT_BUFFER);
-            return 0;
+    match destination {
+        Destination::Allocate(mut place) => {
+            // On the process heap, as LocalAlloc(LMEM_FIXED) makes a block, terminated (the
+            // block's values start zero).
+            let block = if wide {
+                let mut block = HeapArray::<u16>::new(length + 1)?;
+                block[..length].copy_from_slice(units);
+                block.into_raw().as_ptr() as usize
+            } else {
+                let mut block = HeapArray::<u8>::new(length + 1)?;
+                ntcall::unicode_to_multi_byte_into(&mut block[..length], units);
+                block.into_raw().as_ptr() as usize
+            };
+            place.set(block);
         }
-        buffer
-    };
-    let out = if wide {
-        Text::Wide(out as *mut u16)
-    } else {
-        Text::Ansi(out)
-    };
-    // SAFETY: the buffer or the block holds the message and its terminator.
-    unsafe { out.put_terminated(units) };
-    length as u32
+        Destination::Buffer(mut buffer) => {
+            if buffer.len() <= length {
+                return Err(Failure::Error(ERROR_INSUFFICIENT_BUFFER));
+            }
+            buffer.put_terminated(units);
+        }
+    }
+    Ok(length as u32)
 }
 
 /// FormatMessageA (see [`format_message`]): the size and the length in bytes.
@@ -321,8 +252,28 @@ pub unsafe extern "system" fn format_message_a(
     size: u32,
     arguments: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's source, buffer and arguments.
-    unsafe { format_message(flags, source, id, language, buffer, size, arguments, false) }
+    // SAFETY: the caller's source, buffer and arguments, of the forms the flags say (the
+    // contract).
+    let (source, destination, arguments) = unsafe {
+        (
+            if flags & FROM_STRING != 0 {
+                Source::Ansi(InStr::new(source))
+            } else {
+                Source::Module(source as usize)
+            },
+            if flags & ALLOCATE_BUFFER != 0 {
+                Destination::Allocate(Out::new(buffer.cast()))
+            } else {
+                Destination::Buffer(Text::Ansi(OutBuf::new(buffer, size as usize)))
+            },
+            MessageArguments::caller(arguments),
+        )
+    };
+    let named = (source, id, language);
+    answer(
+        format_message(flags, named, destination, arguments, false),
+        0,
+    )
 }
 
 /// FormatMessageW (see [`format_message`]): the size and the length in characters.
@@ -343,19 +294,28 @@ pub unsafe extern "system" fn format_message_w(
     size: u32,
     arguments: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's source, buffer and arguments.
-    unsafe {
-        format_message(
-            flags,
-            source as *const u8,
-            id,
-            language,
-            buffer as *mut u8,
-            size,
-            arguments,
-            true,
+    // SAFETY: the caller's source, buffer and arguments, of the forms the flags say (the
+    // contract).
+    let (source, destination, arguments) = unsafe {
+        (
+            if flags & FROM_STRING != 0 {
+                Source::Wide(InWStr::new(source))
+            } else {
+                Source::Module(source as usize)
+            },
+            if flags & ALLOCATE_BUFFER != 0 {
+                Destination::Allocate(Out::new(buffer.cast()))
+            } else {
+                Destination::Buffer(Text::Wide(OutBuf::new(buffer, size as usize)))
+            },
+            MessageArguments::caller(arguments),
         )
-    }
+    };
+    let named = (source, id, language);
+    answer(
+        format_message(flags, named, destination, arguments, true),
+        0,
+    )
 }
 
 #[cfg(test)]

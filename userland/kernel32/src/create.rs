@@ -61,17 +61,27 @@ use rtl::pod::Pod;
 use crate::base::{
     self,
     last_error,
-    set_last_error,
-    set_last_nt_error,
     under_peb_lock,
     SecurityAttributes,
+    WideUnits,
     CURRENT_PROCESS,
 };
+use crate::edge::{
+    caller_bytes,
+    wide_units,
+    wide_units_of,
+    EnvironmentBlock,
+    In,
+    InStr,
+    InWStr,
+    Out,
+};
 use crate::env;
+use crate::error::{bool_answer, Failure};
 use crate::files::names::file_attributes;
 use crate::files::search::{directory_of, search_default, search_list};
 use crate::files::{self, NtPath, Wide, MAX_PATH};
-use crate::heap::{HeapArray, OutOfMemory, Owned};
+use crate::heap::{HeapArray, Owned};
 use crate::nt::ClientId;
 use crate::ntcall::{self, NtStatus, ParameterStrings, SectionImageInformation, Source};
 use crate::thread;
@@ -101,7 +111,6 @@ const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 const ERROR_BAD_EXE_FORMAT: u32 = 193;
 const ERROR_DIRECTORY: u32 = 267;
 
-const STATUS_UNSUCCESSFUL: NtStatus = 0xC000_0001;
 const STATUS_ACCESS_VIOLATION: NtStatus = 0xC000_0005;
 
 /// The section's refusals of a file that is no Windows image: not a PE file at all (no MZ, an NE,
@@ -183,43 +192,6 @@ const QUOTE: u16 = b'"' as u16;
 const SPACE: u16 = b' ' as u16;
 const TAB: u16 = b'\t' as u16;
 
-/// Why a creation failed: a service's status (its error set through ntdll's mapping), a Win32
-/// error kernel32 sets itself, or a fault the caller takes (the status raised in it, as Windows
-/// 2000's kernel32 faults reading through a missing pointer).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Failure {
-    Status(NtStatus),
-    Error(u32),
-    Fault(NtStatus),
-}
-
-impl Failure {
-    /// The failure as the last error, or raised.
-    fn report(self) {
-        match self {
-            Failure::Status(status) => {
-                set_last_nt_error(status);
-            }
-            Failure::Error(error) => set_last_error(error),
-            Failure::Fault(status) => ntcall::raise_status(status),
-        }
-    }
-
-    /// The status a process given up on ends with.
-    fn status(self) -> NtStatus {
-        match self {
-            Failure::Status(status) | Failure::Fault(status) => status,
-            Failure::Error(_) => STATUS_UNSUCCESSFUL,
-        }
-    }
-}
-
-impl From<OutOfMemory> for Failure {
-    fn from(full: OutOfMemory) -> Failure {
-        Failure::Error(full.error())
-    }
-}
-
 /// The environment a creation hands the new process: the caller's own, or a block given (ANSI,
 /// or UTF-16 with CREATE_UNICODE_ENVIRONMENT), each through its final empty entry.
 #[derive(Clone, Copy)]
@@ -250,8 +222,8 @@ pub struct Startup<'a> {
 pub struct Request<'a> {
     pub application_name: Option<&'a [u16]>,
     pub command_line: Option<&'a [u16]>,
-    pub process_attributes: Option<&'a SecurityAttributes>,
-    pub thread_attributes: Option<&'a SecurityAttributes>,
+    pub process_attributes: Option<In<'a, SecurityAttributes>>,
+    pub thread_attributes: Option<In<'a, SecurityAttributes>>,
     pub inherit_handles: bool,
     pub flags: u32,
     pub environment: Environment<'a>,
@@ -312,7 +284,11 @@ fn directory(name: &[u16]) -> Result<Wide, Failure> {
     let full = Wide::of(name)
         .and_then(|name| full_path(&name))
         .ok_or(Failure::Error(ERROR_DIRECTORY))?;
-    let attributes = file_attributes(&full);
+    // A failed query's error is set, then the call's own over it.
+    let attributes = file_attributes(&full).unwrap_or_else(|failure| {
+        failure.report();
+        INVALID_FILE_ATTRIBUTES
+    });
     if attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(Failure::Error(ERROR_DIRECTORY));
     }
@@ -433,7 +409,8 @@ fn ask_execution_options(path: &Wide) {
 }
 
 /// The OBJECT_ATTRIBUTES a SECURITY_ATTRIBUTES asks for the new process's or thread's handle.
-fn attributes(security: &SecurityAttributes) -> crate::nt::ObjectAttributes {
+fn attributes(security: In<'_, SecurityAttributes>) -> crate::nt::ObjectAttributes {
+    let security = security.read();
     ntcall::unnamed_attributes(security.inherit_handle != 0, security.security_descriptor)
 }
 
@@ -580,8 +557,7 @@ fn push_parameters(
     let environment = write_environment(process, request.environment)?;
     let dll_path = search_list(directory_of(program.path.text()))?;
     let own = base::parameters();
-    // SAFETY: the caller's parameters' DesktopInfo, the process's own string.
-    let own_desktop = unsafe { base::string_units(&own.desktop_info) };
+    let own_desktop = base::desktop_info();
     let console = image.subsystem_type == IMAGE_SUBSYSTEM_WINDOWS_CUI;
     let mut block = ntcall::create_process_parameters(&ParameterStrings {
         image_path_name: program.path.text(),
@@ -777,6 +753,7 @@ pub fn create_process(request: &Request) -> Result<ProcessInformation, Failure> 
 
 /// STARTUPINFOA and STARTUPINFOW: `C` the strings' character (`u8` or `u16`).
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct StartupInfo<C> {
     pub cb: u32,
     pub reserved: *const C,
@@ -795,24 +772,6 @@ pub struct StartupInfo<C> {
 
 #[cfg(target_arch = "x86")]
 const _: () = assert!(size_of::<StartupInfo<u8>>() == 68);
-
-/// The creation's answer: PROCESS_INFORMATION filled and TRUE, or the failure's error set and
-/// FALSE.
-fn answer(
-    result: Result<ProcessInformation, Failure>,
-    information: &mut ProcessInformation,
-) -> u32 {
-    match result {
-        Ok(created) => {
-            *information = created;
-            1
-        }
-        Err(failure) => {
-            failure.report();
-            0
-        }
-    }
-}
 
 /// The stub path's arguments, for its log line.
 #[allow(clippy::too_many_arguments)]
@@ -843,46 +802,31 @@ fn stub_arguments(
 }
 
 /// A caller's optional NUL-terminated string, its terminator left out (copied onto the process
-/// heap when unaligned: [`base::wide_units`]); ERROR_NOT_ENOUGH_MEMORY when that copy finds no
-/// room.
-///
-/// # Safety
-///
-/// `string` is null or a NUL-terminated string (a bad pointer faults the caller).
-unsafe fn optional_wide<'a>(string: *const u16) -> Result<Option<base::WideUnits<'a>>, Failure> {
-    if string.is_null() {
-        return Ok(None);
-    }
-    // SAFETY: the caller's contract: a non-null string is NUL-terminated.
-    unsafe { base::wide_units(string) }
-        .map(Some)
-        .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))
+/// heap when unaligned: [`crate::edge::wide_units`]); ERROR_NOT_ENOUGH_MEMORY when that copy finds
+/// no room.
+fn optional_wide<'a>(string: Option<InWStr<'a>>) -> Result<Option<WideUnits<'a>>, Failure> {
+    string
+        .map(|string| wide_units(&string).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY)))
+        .transpose()
 }
 
 /// A caller's optional ANSI string converted through the ANSI code page onto the process heap.
-///
-/// # Safety
-///
-/// As [`optional_wide`], the string narrow.
-unsafe fn optional_ansi(string: *const u8) -> Result<Option<HeapArray<u16>>, Failure> {
-    if string.is_null() {
+fn optional_ansi(string: Option<InStr<'_>>) -> Result<Option<HeapArray<u16>>, Failure> {
+    let Some(string) = string else {
         return Ok(None);
-    }
-    // SAFETY: the caller's contract: a non-null string is NUL-terminated (bytes need no
-    // alignment).
-    let bytes = unsafe { rtl::cstr::bytes_until_nul(string) };
+    };
+    let bytes = string.bytes();
     let mut units = HeapArray::new(bytes.len())?;
     ntcall::multi_byte_to_unicode(&mut units, bytes);
     Ok(Some(units))
 }
 
 /// The environment block a caller passes, read where it is: an ANSI block's bytes, a UTF-16 block's
-/// units (copied onto the process heap when unaligned, as a caller's string is:
-/// [`base::WideUnits`]).
+/// units (copied onto the process heap when unaligned, as a caller's string is: [`WideUnits`]).
 enum CallerEnvironment<'a> {
     Inherited,
     Ansi(&'a [u8]),
-    Wide(base::WideUnits<'a>),
+    Wide(WideUnits<'a>),
 }
 
 impl CallerEnvironment<'_> {
@@ -896,44 +840,24 @@ impl CallerEnvironment<'_> {
     }
 }
 
-/// The environment block a caller passes: none for null; otherwise UTF-16 with
-/// CREATE_UNICODE_ENVIRONMENT, ANSI without, through its final empty entry.
-/// ERROR_NOT_ENOUGH_MEMORY when an unaligned UTF-16 block's copy finds no room.
-///
-/// # Safety
-///
-/// `block` is null or an environment block of the kind the flags say, at any address, unchanged
-/// for `'a` (a bad pointer faults the caller).
-unsafe fn environment<'a>(block: *const u8, flags: u32) -> Result<CallerEnvironment<'a>, Failure> {
-    if block.is_null() {
-        return Ok(CallerEnvironment::Inherited);
-    }
-    if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
-        let block = block as *const u16;
-        // SAFETY: the caller's contract: a UTF-16 block, read through its final empty entry.
-        let length = unsafe { env::block_length(block) };
-        // SAFETY: as above, the `length` units the scan read.
-        return unsafe { base::wide_units_of(block, length) }
-            .map(CallerEnvironment::Wide)
-            .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY));
-    }
-    // SAFETY: the caller's contract: an ANSI block (bytes need no alignment), read through its
-    // final empty entry.
-    Ok(CallerEnvironment::Ansi(unsafe {
-        core::slice::from_raw_parts(block, env::block_length(block))
-    }))
+/// The environment block a caller passes, as the flags say it is: UTF-16 with
+/// CREATE_UNICODE_ENVIRONMENT, ANSI without.
+enum CallerBlock<'a> {
+    Ansi(EnvironmentBlock<'a, u8>),
+    Wide(EnvironmentBlock<'a, u16>),
 }
 
-/// A caller's STARTUPINFO's C runtime block (cbReserved2 bytes at lpReserved2), none without one.
-///
-/// # Safety
-///
-/// `info`'s lpReserved2 is null or holds cbReserved2 bytes.
-unsafe fn runtime_data<'a, C>(info: &StartupInfo<C>) -> Option<&'a [u8]> {
-    (!info.reserved2.is_null() && info.reserved2_length != 0).then(|| {
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts(info.reserved2, usize::from(info.reserved2_length)) }
-    })
+/// The environment block a caller passes, read through its final empty entry: none for none
+/// (the caller's own is inherited). ERROR_NOT_ENOUGH_MEMORY when an unaligned UTF-16 block's copy
+/// finds no room.
+fn environment(block: Option<CallerBlock<'_>>) -> Result<CallerEnvironment<'_>, Failure> {
+    match block {
+        None => Ok(CallerEnvironment::Inherited),
+        Some(CallerBlock::Wide(block)) => wide_units_of(block.units())
+            .map(CallerEnvironment::Wide)
+            .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY)),
+        Some(CallerBlock::Ansi(block)) => Ok(CallerEnvironment::Ansi(block.units().bytes())),
+    }
 }
 
 /// A STARTUPINFO's fields, its strings those given.
@@ -958,6 +882,45 @@ fn startup<'a, C>(
             info.standard_error,
         ],
     }
+}
+
+/// What CreateProcess reads of its caller besides its strings, made at the export: the
+/// STARTUPINFO's C runtime block (cbReserved2 bytes at lpReserved2, none without), the attributes
+/// and the environment block.
+struct Arguments<'a> {
+    runtime_data: Option<&'a [u8]>,
+    process_attributes: Option<In<'a, SecurityAttributes>>,
+    thread_attributes: Option<In<'a, SecurityAttributes>>,
+    environment: Option<CallerBlock<'a>>,
+}
+
+/// CreateProcessW's and CreateProcessA's work once the strings are read (the application name,
+/// the command line, the current directory, then STARTUPINFO's lpReserved, lpDesktop and
+/// lpTitle): the environment block read, the request made, the creation, PROCESS_INFORMATION
+/// filled.
+fn create_with<C>(
+    strings: [Option<&[u16]>; 6],
+    arguments: Arguments<'_>,
+    info: &StartupInfo<C>,
+    inherit_handles: u32,
+    flags: u32,
+    mut information: Out<'_, ProcessInformation>,
+) -> Result<(), Failure> {
+    let [application_name, command_line, current_directory, reserved, desktop, title] = strings;
+    let environment = environment(arguments.environment)?;
+    let request = Request {
+        application_name,
+        command_line,
+        process_attributes: arguments.process_attributes,
+        thread_attributes: arguments.thread_attributes,
+        inherit_handles: inherit_handles != 0,
+        flags,
+        environment: environment.environment(),
+        current_directory,
+        startup: startup(info, reserved, desktop, title, arguments.runtime_data),
+    };
+    information.set(create_process(&request)?);
+    Ok(())
 }
 
 /// CreateProcessW (see the module doc): TRUE with PROCESS_INFORMATION filled, or FALSE with the
@@ -1001,53 +964,64 @@ pub unsafe extern "system" fn create_process_w(
             crate::stub::stubbed(&crate::spec::CreateProcessW, "not yet implemented", &args)
         };
     }
-    // SAFETY: the caller's structures, when given.
-    let (Some(info), Some(information)) = (unsafe { startup_info.as_ref() }, unsafe {
-        process_information.as_mut()
-    }) else {
+    // SAFETY: the caller's structures, when given (the contract).
+    let (info, information) = unsafe {
+        (
+            In::optional(startup_info),
+            Out::optional(process_information),
+        )
+    };
+    let (Some(info), Some(information)) = (info, information) else {
         ntcall::raise_status(STATUS_ACCESS_VIOLATION);
     };
-    // SAFETY: the caller's strings, as the contract says.
-    let read = unsafe {
-        [
-            application_name,
-            command_line.cast_const(),
-            current_directory,
-            info.reserved,
-            info.desktop,
-            info.title,
-        ]
-        .map(|string| optional_wide(string))
+    let info = info.read();
+    // SAFETY: the caller's strings, its STARTUPINFO's and their C runtime block, its attributes
+    // and its environment block (of the kind the flags say), each when given, as the contract
+    // says.
+    let (strings, arguments) = unsafe {
+        (
+            [
+                application_name,
+                command_line.cast_const(),
+                current_directory,
+                info.reserved,
+                info.desktop,
+                info.title,
+            ]
+            .map(|string| InWStr::optional(string)),
+            Arguments {
+                runtime_data: caller_bytes(info.reserved2, usize::from(info.reserved2_length))
+                    .filter(|bytes| !bytes.is_empty()),
+                process_attributes: In::optional(process_attributes),
+                thread_attributes: In::optional(thread_attributes),
+                environment: (!environment_block.is_null()).then(|| {
+                    if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
+                        CallerBlock::Wide(EnvironmentBlock::new(environment_block.cast()))
+                    } else {
+                        CallerBlock::Ansi(EnvironmentBlock::new(environment_block))
+                    }
+                }),
+            },
+        )
     };
-    let mut strings = [None, None, None, None, None, None];
-    for (slot, string) in strings.iter_mut().zip(read) {
-        match string {
-            Ok(string) => *slot = string,
-            Err(failure) => return answer(Err(failure), information),
+    // Every string read (and copied where unaligned), then the first failure answered.
+    let read = strings.map(optional_wide);
+    let created = (|| {
+        let mut strings = [None, None, None, None, None, None];
+        for (slot, string) in strings.iter_mut().zip(read) {
+            *slot = string?;
         }
-    }
-    let [application_name, command_line, current_directory, reserved, desktop, title] =
-        strings.each_ref().map(|string| string.as_deref());
-    // SAFETY: the caller's block, of the kind the flags say (the contract).
-    let environment = match unsafe { environment(environment_block, flags) } {
-        Ok(environment) => environment,
-        Err(failure) => return answer(Err(failure), information),
-    };
-    // SAFETY: the caller's attributes and structure, as the contract says.
-    let request = unsafe {
-        Request {
-            application_name,
-            command_line,
-            process_attributes: process_attributes.as_ref(),
-            thread_attributes: thread_attributes.as_ref(),
-            inherit_handles: inherit_handles != 0,
+        let strings = strings.each_ref().map(|string| string.as_deref());
+        create_with(
+            strings,
+            arguments,
+            &info,
+            inherit_handles,
             flags,
-            environment: environment.environment(),
-            current_directory,
-            startup: startup(info, reserved, desktop, title, runtime_data(info)),
-        }
-    };
-    answer(create_process(&request), information)
+            information,
+        )
+    })();
+    bool_answer(created)
 }
 
 /// CreateProcessA: CreateProcessW's work, its strings (the application name, the command line, the
@@ -1090,51 +1064,60 @@ pub unsafe extern "system" fn create_process_a(
             crate::stub::stubbed(&crate::spec::CreateProcessA, "not yet implemented", &args)
         };
     }
-    // SAFETY: the caller's structures, when given.
-    let (Some(info), Some(information)) = (unsafe { startup_info.as_ref() }, unsafe {
-        process_information.as_mut()
-    }) else {
+    // SAFETY: the caller's structures, when given (the contract).
+    let (info, information) = unsafe {
+        (
+            In::optional(startup_info),
+            Out::optional(process_information),
+        )
+    };
+    let (Some(info), Some(information)) = (info, information) else {
         ntcall::raise_status(STATUS_ACCESS_VIOLATION);
     };
-    // SAFETY: the caller's strings, as the contract says.
-    let converted = unsafe {
-        [
-            application_name,
-            command_line.cast_const(),
-            current_directory,
-            info.reserved,
-            info.desktop,
-            info.title,
-        ]
-        .map(|string| optional_ansi(string))
+    let info = info.read();
+    // SAFETY: as CreateProcessW's, the strings narrow.
+    let (strings, arguments) = unsafe {
+        (
+            [
+                application_name,
+                command_line.cast_const(),
+                current_directory,
+                info.reserved,
+                info.desktop,
+                info.title,
+            ]
+            .map(|string| InStr::optional(string)),
+            Arguments {
+                runtime_data: caller_bytes(info.reserved2, usize::from(info.reserved2_length))
+                    .filter(|bytes| !bytes.is_empty()),
+                process_attributes: In::optional(process_attributes),
+                thread_attributes: In::optional(thread_attributes),
+                environment: (!environment_block.is_null()).then(|| {
+                    if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
+                        CallerBlock::Wide(EnvironmentBlock::new(environment_block.cast()))
+                    } else {
+                        CallerBlock::Ansi(EnvironmentBlock::new(environment_block))
+                    }
+                }),
+            },
+        )
     };
-    let mut strings = [None, None, None, None, None, None];
-    for (slot, string) in strings.iter_mut().zip(converted) {
-        match string {
-            Ok(string) => *slot = string,
-            Err(failure) => return answer(Err(failure), information),
+    // Every string read and converted, then the first failure answered.
+    let read = strings.map(optional_ansi);
+    let created = (|| {
+        let mut strings = [None, None, None, None, None, None];
+        for (slot, string) in strings.iter_mut().zip(read) {
+            *slot = string?;
         }
-    }
-    let [application_name, command_line, current_directory, reserved, desktop, title] =
-        strings.each_ref().map(|string| string.as_deref());
-    // SAFETY: the caller's block, of the kind the flags say (the contract).
-    let environment = match unsafe { environment(environment_block, flags) } {
-        Ok(environment) => environment,
-        Err(failure) => return answer(Err(failure), information),
-    };
-    // SAFETY: the caller's attributes and structure, as the contract says.
-    let request = unsafe {
-        Request {
-            application_name,
-            command_line,
-            process_attributes: process_attributes.as_ref(),
-            thread_attributes: thread_attributes.as_ref(),
-            inherit_handles: inherit_handles != 0,
+        let strings = strings.each_ref().map(|string| string.as_deref());
+        create_with(
+            strings,
+            arguments,
+            &info,
+            inherit_handles,
             flags,
-            environment: environment.environment(),
-            current_directory,
-            startup: startup(info, reserved, desktop, title, runtime_data(info)),
-        }
-    };
-    answer(create_process(&request), information)
+            information,
+        )
+    })();
+    bool_answer(created)
 }

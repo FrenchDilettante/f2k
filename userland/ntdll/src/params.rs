@@ -7,10 +7,15 @@
 //! the image's path. The new process normalizes the block it was handed early in its
 //! initialization ([`normalize_own_parameters`], RtlNormalizeProcessParams: the offsets made
 //! addresses); RtlDeNormalizeProcessParams does the reverse.
+//!
+//! The process's own block is ntdll's to read and change under the PEB lock
+//! ([`with_own_parameters`]: the current directory, the environment's address), but for its image's
+//! path, which nothing changes after the process's creation ([`image_path_name`]). Its other
+//! fields (the standard handles, the console's) are kernel32's, read and written in place.
 
 use core::mem::size_of;
 
-use rtl::params::{self, CountedString, ProcessParameters, Strings};
+use rtl::params::{self, CountedString, CurrentDirectory, ProcessParameters, Strings};
 use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
 use rtl::string::UnicodeString;
 use rtl::sys;
@@ -20,20 +25,102 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_READWRITE: u32 = 0x04;
 
-/// The calling process's own block.
-fn own_parameters() -> &'static ProcessParameters<usize> {
-    // SAFETY: the PEB's ProcessParameters points at the process's block, mapped for its whole life
-    // and normalized (its strings' buffers addresses); its fields change only under the PEB lock,
-    // which the callers hold while they read it.
-    unsafe { &*sys::process_parameters() }
+/// The fields of the calling process's own block that change under the PEB lock (its current
+/// directory, its environment's address) and its DLL search path, which nothing changes after the
+/// block's creation: each a borrow of its own field (the block's other fields are kernel32's, read
+/// and written in place without the lock), for as long as [`with_own_parameters`] holds the lock.
+pub(crate) struct OwnParameters<'a> {
+    pub current_directory: &'a mut CurrentDirectory<usize>,
+    pub environment: &'a mut usize,
+    pub dll_path: &'a CountedString<usize>,
 }
 
-/// A string of the process's own (normalized) block, as bytes.
-fn own_string(string: &CountedString<usize>) -> &'static [u8] {
+impl OwnParameters<'_> {
+    /// The current directory's DOS path (with its trailing separator).
+    pub fn current_path(&self) -> &[u16] {
+        own_units(&self.current_directory.dos_path)
+    }
+
+    /// The current directory's handle (zero for none).
+    pub fn current_handle(&self) -> u32 {
+        self.current_directory.handle as u32
+    }
+
+    /// Whether a DOS path of `length` units fits the current directory's room with its terminator.
+    pub fn current_path_fits(&self, length: usize) -> bool {
+        2 * (length + 1) <= usize::from(self.current_directory.dos_path.maximum_length)
+    }
+
+    /// Make `path` (which [`Self::current_path_fits`]) the current directory's DOS path,
+    /// terminated, and `handle` its handle.
+    pub fn set_current_directory(&mut self, path: &[u16], handle: u32) {
+        let string = &mut self.current_directory.dos_path;
+        let room = usize::from(string.maximum_length) / 2;
+        assert!(
+            path.len() < room,
+            "the current directory's room holds the path"
+        );
+        // SAFETY: a normalized block's string: its buffer, inside the block's pages and aligned
+        // for its units, holds its room, which only this borrow (the PEB lock's) changes.
+        let buffer = unsafe { core::slice::from_raw_parts_mut(string.buffer as *mut u16, room) };
+        buffer[..path.len()].copy_from_slice(path);
+        buffer[path.len()] = 0;
+        string.length = (2 * path.len()) as u16;
+        self.current_directory.handle = handle as usize;
+    }
+}
+
+/// Run `body` over the calling process's own block (see [`OwnParameters`]), under the PEB lock.
+pub(crate) fn with_own_parameters<R>(body: impl FnOnce(&mut OwnParameters<'_>) -> R) -> R {
+    crate::process::peb_lock().with(&sys::Native, || {
+        let block = sys::process_parameters();
+        // SAFETY: the PEB's ProcessParameters points at the process's block, mapped for its whole
+        // life and normalized by its first thread before anything reads it; the fields borrowed
+        // change only under the PEB lock, held while the borrows live, and the DLL path never
+        // after the block's creation. No borrow covers the fields kernel32 writes in place.
+        let mut own = unsafe {
+            OwnParameters {
+                current_directory: &mut (*block).current_directory,
+                environment: &mut (*block).environment,
+                dll_path: &(*block).dll_path,
+            }
+        };
+        body(&mut own)
+    })
+}
+
+/// The process's own ImagePathName: the program's full path, set at the process's creation and
+/// never changed after it.
+pub(crate) fn image_path_name() -> &'static CountedString<usize> {
+    // SAFETY: the process parameters are mapped for the process's whole life, and nothing changes
+    // their ImagePathName after the process's creation.
+    unsafe { &(*sys::process_parameters()).image_path_name }
+}
+
+/// The units of the process's own ImagePathName.
+pub(crate) fn image_path() -> &'static [u16] {
+    own_units(image_path_name())
+}
+
+/// The units of a string of the process's own (normalized) block, borrowed with the string.
+fn own_units(string: &CountedString<usize>) -> &[u16] {
+    if string.buffer == 0 || string.length < 2 {
+        return &[];
+    }
+    // SAFETY: a normalized block's string: its buffer, inside the block's pages and aligned for
+    // its units, holds its length, unchanged while the string is borrowed.
+    unsafe {
+        core::slice::from_raw_parts(string.buffer as *const u16, usize::from(string.length) / 2)
+    }
+}
+
+/// A string of the process's own (normalized) block, as bytes, borrowed with the string.
+fn own_string(string: &CountedString<usize>) -> &[u8] {
     if string.buffer == 0 || string.length == 0 {
         return &[];
     }
-    // SAFETY: a normalized block's string: its buffer, inside the block's pages, holds its length.
+    // SAFETY: a normalized block's string: its buffer, inside the block's pages, holds its length,
+    // unchanged while the string is borrowed.
     unsafe { core::slice::from_raw_parts(string.buffer as *const u8, string.length as usize) }
 }
 
@@ -100,12 +187,11 @@ pub unsafe extern "system" fn rtl_create_process_parameters(
     let (Some(out), Some(image_path_name)) = (out, image_path_name) else {
         return STATUS_INVALID_PARAMETER;
     };
-    crate::process::peb_lock().with(&sys::Native, || {
-        let own = own_parameters();
+    with_own_parameters(|own| {
         let strings = Strings {
             current_directory: current_directory
                 .unwrap_or_else(|| own_string(&own.current_directory.dos_path)),
-            dll_path: dll_path.unwrap_or_else(|| own_string(&own.dll_path)),
+            dll_path: dll_path.unwrap_or_else(|| own_string(own.dll_path)),
             image_path_name,
             command_line: command_line.unwrap_or(image_path_name),
             window_title,
@@ -114,7 +200,7 @@ pub unsafe extern "system" fn rtl_create_process_parameters(
             runtime_data,
         };
         let environment = if environment == 0 {
-            own.environment
+            *own.environment
         } else {
             environment
         };

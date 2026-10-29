@@ -29,8 +29,9 @@
 //! and set services' structures), the process and thread environment blocks ([`peb`]: the PEB,
 //! the TEB, the loader's lists), the page the kernel shares with every process ([`shared_data`]:
 //! KUSER_SHARED_DATA), plain data viewed as bytes ([`pod`]), a vector of fixed capacity
-//! for the code without an allocator ([`array_vec`]), NUL-terminated strings read once ([`cstr`])
-//! and a process's state behind a lock ([`sync`]).
+//! for the code without an allocator ([`array_vec`]), NUL-terminated strings read once ([`cstr`]),
+//! a caller's memory at a DLL export's edge ([`edge`]) and a process's state behind a lock
+//! ([`sync`]).
 //!
 //! On the DLLs' target (i686 Windows) only: what the compiler expects of an MSVC environment
 //! without its CRT (the compiler-helpers crate, which this library links into every DLL), the
@@ -47,6 +48,7 @@ pub mod console;
 pub mod cp1252;
 pub mod critsec;
 pub mod cstr;
+pub mod edge;
 pub mod env;
 pub mod execution_options;
 pub mod handles;

@@ -8,11 +8,9 @@
 //! from the base server's static data, which csrss fills at its start with the same query (no
 //! csrss).
 
-use rtl::status::nt_success;
-
 use crate::base::set_last_nt_error;
 pub use crate::base::CURRENT_PROCESS;
-use crate::nt;
+use crate::edge::Out;
 use crate::ntcall::{self, Destination};
 
 const MEM_RELEASE: u32 = 0x8000;
@@ -130,11 +128,10 @@ pub unsafe extern "system" fn virtual_protect_ex(
     old: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's old protection, as the contract says.
-    let old = unsafe { old.as_mut() };
-    answer(
-        ntcall::protect_virtual_memory_reporting(process, address, size, protect, old).map(|()| 1),
-        0,
-    )
+    let mut old = unsafe { Out::optional(old) };
+    let protected =
+        ntcall::protect_virtual_memory_reporting(process, address, size, protect, old.as_mut());
+    answer(protected.map(|()| 1), 0)
 }
 
 /// VirtualQuery: VirtualQueryEx in the calling process.
@@ -178,21 +175,12 @@ pub unsafe extern "system" fn virtual_query_ex(
 
 /// A system query's structure, as dwords; none when the query fails.
 fn query<const N: usize>(class: u32) -> Option<[u32; N]> {
-    let mut words = [0u32; N];
-    // SAFETY: ntdll's export, into the buffer above.
-    let status = unsafe {
-        nt::NtQuerySystemInformation(
-            class,
-            words.as_mut_ptr().cast(),
-            (4 * N) as u32,
-            core::ptr::null_mut(),
-        )
-    };
-    nt_success(status).then_some(words)
+    ntcall::query_system_information::<[u32; N]>(class).ok()
 }
 
 /// SYSTEM_INFO, as the caller's structure lays it out.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SystemInfo {
     pub processor_architecture: u16,
     pub reserved: u16,
@@ -216,6 +204,13 @@ pub struct SystemInfo {
 /// `info` points at a writable SYSTEM_INFO (a bad pointer faults the caller, as on the platform).
 #[unsafe(export_name = "f2k_export_GetSystemInfo")]
 pub unsafe extern "system" fn get_system_info(info: *mut SystemInfo) {
+    // SAFETY: the caller's structure (the contract).
+    let info = unsafe { Out::new(info) };
+    system_info(info)
+}
+
+/// GetSystemInfo's work.
+fn system_info(mut info: Out<'_, SystemInfo>) {
     let (Some(basic), Some(processor)) = (
         query::<{ BASIC_SIZE / 4 }>(SYSTEM_BASIC_INFORMATION),
         query::<{ PROCESSOR_SIZE / 4 }>(SYSTEM_PROCESSOR_INFORMATION),
@@ -243,12 +238,12 @@ pub unsafe extern "system" fn get_system_info(info: *mut SystemInfo) {
         processor_level: level,
         processor_revision: processor[1] as u16,
     };
-    // SAFETY: the caller's structure.
-    unsafe { info.write_unaligned(filled) };
+    info.set(filled);
 }
 
 /// MEMORYSTATUS, as the caller's structure lays it out.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct MemoryStatus {
     pub length: u32,
     pub memory_load: u32,
@@ -272,6 +267,13 @@ pub struct MemoryStatus {
 /// platform).
 #[unsafe(export_name = "f2k_export_GlobalMemoryStatus")]
 pub unsafe extern "system" fn global_memory_status(buffer: *mut MemoryStatus) {
+    // SAFETY: the caller's structure (the contract).
+    let buffer = unsafe { Out::new(buffer) };
+    memory_status(buffer)
+}
+
+/// GlobalMemoryStatus's work.
+fn memory_status(mut buffer: Out<'_, MemoryStatus>) {
     let mut status = MemoryStatus {
         length: core::mem::size_of::<MemoryStatus>() as u32,
         memory_load: 0,
@@ -305,8 +307,7 @@ pub unsafe extern "system" fn global_memory_status(buffer: *mut MemoryStatus) {
         status.total_virtual = basic[8] - basic[7] + 1;
         status.avail_virtual = status.total_virtual.saturating_sub(counters[1]);
     }
-    // SAFETY: the caller's structure.
-    unsafe { buffer.write_unaligned(status) };
+    buffer.set(status);
 }
 
 #[cfg(test)]

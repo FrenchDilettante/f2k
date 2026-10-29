@@ -347,25 +347,22 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
 /// The calling thread's implicit-TLS block, when the image has a TLS directory: its array on the
 /// TEB (ThreadLocalStoragePointer), on the process heap.
 fn thread_tls() {
-    let base = sys::image_base();
-    let word = |offset: u32| {
-        // SAFETY: the image's headers and the directory they name, mapped for the process's whole
-        // life (a malformed image's offsets fault here, in the process's own image).
-        Some(unsafe { ((base + offset as usize) as *const u32).read_unaligned() })
-    };
-    let Some(directory) = ldr::tls_directory(word) else {
+    // The image's headers and the directory they name, mapped for the process's whole life (a
+    // malformed image's offsets fault here, in the process's own image).
+    let Some(directory) = ldr::tls_directory(&loader::Mapped, sys::image_base() as u32) else {
         return;
     };
     if sys::process_heap_handle() == 0 || directory.block_size().is_none() {
         return;
     }
-    let raw = (directory.end - directory.start) as usize;
+    let start = directory.start_address_of_raw_data;
+    let raw = (directory.end_address_of_raw_data - start) as usize;
     let block = ldr::thread_block(
         &Native,
         sys::process_heap(),
-        directory.start as usize,
+        start as usize,
         raw,
-        directory.zero_fill as usize,
+        directory.size_of_zero_fill as usize,
     );
     if let Some(array) = block {
         sys::set_thread_local_storage_pointer(array);

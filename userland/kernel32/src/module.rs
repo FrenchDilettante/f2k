@@ -9,25 +9,21 @@
 //! down to fit (which would make a name with a tail past MAX_PATH find kernel32).
 
 use rtl::peb::LdrDataTableEntry;
-use rtl::status::nt_success;
 
-use crate::base::{
-    loader_data,
-    set_last_error,
-    set_last_nt_error,
-    string_units,
-    unicode_string,
-    wide_string,
-    Text,
-};
-use crate::files::widen;
-use crate::nt::{self, AnsiString};
-use crate::ntcall::LoaderLock;
+use crate::base::{loader_data, set_last_error, string_units, unicode_string};
+use crate::edge::{ansi_into, counted, InStr, InWStr, OutBuf, Text};
+use crate::error::{answer, bool_answer, Failure};
+use crate::nt::{AnsiString, UnicodeString};
+use crate::ntcall::{self, LoaderLock, NtStatus};
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
+const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
+
+/// The ANSI path limit: a module name's longest, in characters.
+const MAX_PATH: usize = 260;
 
 /// How many entries the walk visits at most (a list corrupted into a cycle ends there).
 const MAX_ENTRIES: usize = 1024;
@@ -38,48 +34,58 @@ fn image_base() -> u32 {
 }
 
 /// A loader call: the module's handle (LdrGetDllHandle, LdrLoadDll).
-type Loader =
-    unsafe extern "system" fn(*const u16, *const u32, *const nt::UnicodeString, *mut u32) -> u32;
-
-/// A loader call over the module name `name` (ANSI), converted to Unicode first; its handle, or 0
-/// with the last error set (ERROR_FILENAME_EXCED_RANGE past MAX_PATH, the status's error
-/// otherwise).
-///
-/// # Safety
-///
-/// `name` is a NUL-terminated string.
-unsafe fn by_name(name: *const u8, call: Loader) -> u32 {
-    // SAFETY: the caller's string.
-    let Some(mut wide) = (unsafe { widen(name) }) else {
-        return 0;
-    };
-    let length = wide.length;
-    let string = unicode_string(&mut wide.units, length);
-    by_string(&string, call)
+#[derive(Clone, Copy)]
+enum Loader {
+    Handle,
+    Load,
 }
 
-/// A loader call over the UTF-16 module name `name`, as given: its handle, or 0 with the status's
-/// error.
-///
-/// # Safety
-///
-/// `name` is a NUL-terminated UTF-16 string.
-unsafe fn by_name_w(name: *const u16, call: Loader) -> u32 {
-    // SAFETY: the caller's string.
-    let string = unsafe { wide_string(name) };
-    by_string(&string, call)
-}
-
-/// The loader call over `string`.
-fn by_string(string: &nt::UnicodeString, call: Loader) -> u32 {
-    let mut handle = 0;
-    // SAFETY: ntdll's export, over the caller's string.
-    let status = unsafe { call(core::ptr::null(), core::ptr::null(), string, &mut handle) };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+impl Loader {
+    /// The loader call over the module name.
+    fn call(self, name: &UnicodeString) -> Result<u32, NtStatus> {
+        match self {
+            Loader::Handle => ntcall::get_dll_handle(name),
+            Loader::Load => ntcall::load_dll(name),
+        }
     }
-    handle
+}
+
+/// A module name as GetModuleHandle and LoadLibrary are handed it.
+enum Name<'a> {
+    /// An A call's, converted to Unicode first into a MAX_PATH-character buffer
+    /// (ERROR_FILENAME_EXCED_RANGE past it).
+    Ansi(InStr<'a>),
+    /// A W call's, as given.
+    Wide(InWStr<'a>),
+}
+
+/// A loader call over the module name: its handle, or the failure (ERROR_FILENAME_EXCED_RANGE
+/// past MAX_PATH for an A call's name, the status otherwise).
+fn by_name(name: Name<'_>, call: Loader) -> Result<u32, Failure> {
+    let handle = match name {
+        Name::Ansi(name) => {
+            let mut units = [0u16; MAX_PATH + 1];
+            let length = ansi_into(Some(&name), &mut units)
+                .ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
+            call.call(&unicode_string(&mut units, length))
+        }
+        Name::Wide(name) => call.call(&counted(&name)),
+    };
+    handle.map_err(Failure::Status)
+}
+
+/// GetModuleHandle's and LoadLibrary's answer for a name given or none: for none, the image's
+/// handle (GetModuleHandle) or ERROR_INVALID_PARAMETER (LoadLibrary); for a name, the loader
+/// call's answer.
+fn module(name: Option<Name<'_>>, call: Loader) -> u32 {
+    match name {
+        None if matches!(call, Loader::Handle) => image_base(),
+        None => {
+            set_last_error(ERROR_INVALID_PARAMETER);
+            0
+        }
+        Some(name) => answer(by_name(name, call), 0),
+    }
 }
 
 /// GetModuleHandleA: the image's handle for a null name (the PEB's ImageBaseAddress), else the
@@ -90,11 +96,9 @@ fn by_string(string: &nt::UnicodeString, call: Loader) -> u32 {
 /// `name` is null or a NUL-terminated string (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetModuleHandleA")]
 pub unsafe extern "system" fn get_module_handle_a(name: *const u8) -> u32 {
-    if name.is_null() {
-        return image_base();
-    }
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe { by_name(name, nt::LdrGetDllHandle) }
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InStr::optional(name) };
+    module(name.map(Name::Ansi), Loader::Handle)
 }
 
 /// GetModuleHandleW (as [`get_module_handle_a`]).
@@ -104,11 +108,9 @@ pub unsafe extern "system" fn get_module_handle_a(name: *const u8) -> u32 {
 /// `name` is null or a NUL-terminated UTF-16 string (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetModuleHandleW")]
 pub unsafe extern "system" fn get_module_handle_w(name: *const u16) -> u32 {
-    if name.is_null() {
-        return image_base();
-    }
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe { by_name_w(name, nt::LdrGetDllHandle) }
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InWStr::optional(name) };
+    module(name.map(Name::Wide), Loader::Handle)
 }
 
 /// LoadLibraryA: the module the name names, loaded (LdrLoadDll: one the process has, or one it
@@ -119,12 +121,9 @@ pub unsafe extern "system" fn get_module_handle_w(name: *const u16) -> u32 {
 /// As [`get_module_handle_a`].
 #[unsafe(export_name = "f2k_export_LoadLibraryA")]
 pub unsafe extern "system" fn load_library_a(name: *const u8) -> u32 {
-    if name.is_null() {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    }
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe { by_name(name, nt::LdrLoadDll) }
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InStr::optional(name) };
+    module(name.map(Name::Ansi), Loader::Load)
 }
 
 /// LoadLibraryW (as [`load_library_a`]).
@@ -134,12 +133,9 @@ pub unsafe extern "system" fn load_library_a(name: *const u8) -> u32 {
 /// As [`get_module_handle_w`].
 #[unsafe(export_name = "f2k_export_LoadLibraryW")]
 pub unsafe extern "system" fn load_library_w(name: *const u16) -> u32 {
-    if name.is_null() {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    }
-    // SAFETY: the caller's string; ntdll's export.
-    unsafe { by_name_w(name, nt::LdrLoadDll) }
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InWStr::optional(name) };
+    module(name.map(Name::Wide), Loader::Load)
 }
 
 /// FreeLibrary: one reference to the module fewer (LdrUnloadDll: a loaded module's last goes with
@@ -147,13 +143,7 @@ pub unsafe extern "system" fn load_library_w(name: *const u16) -> u32 {
 /// module, as Windows 2000 maps LdrUnloadDll's STATUS_DLL_NOT_FOUND.
 #[unsafe(export_name = "f2k_export_FreeLibrary")]
 pub extern "system" fn free_library(module: u32) -> u32 {
-    // SAFETY: ntdll's export.
-    let status = unsafe { nt::LdrUnloadDll(module) };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    1
+    bool_answer(ntcall::unload_dll(module).map_err(Failure::Status))
 }
 
 /// DisableThreadLibraryCalls: the DLL whose handle is `module` gets no DLL_THREAD_ATTACH and
@@ -162,18 +152,19 @@ pub extern "system" fn free_library(module: u32) -> u32 {
 /// status's error.
 #[unsafe(export_name = "f2k_export_DisableThreadLibraryCalls")]
 pub extern "system" fn disable_thread_library_calls(module: u32) -> u32 {
-    // SAFETY: ntdll's export.
-    let status = unsafe { nt::LdrDisableThreadCalloutsForDll(module) };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    1
+    bool_answer(ntcall::disable_thread_callouts(module).map_err(Failure::Status))
 }
 
 /// The longest export name GetProcAddress hands the loader (an ANSI_STRING's length is a word):
 /// a longer one names no export.
 const MAX_EXPORT_NAME: usize = 0xFFFE;
+
+/// What GetProcAddress names an export by.
+enum Export<'a> {
+    Name(InStr<'a>),
+    /// A value below 0x10000 in the name's place.
+    Ordinal(u32),
+}
 
 /// GetProcAddress: the address of the module's export (the image's for a null handle) named
 /// `name`, exactly (LdrGetProcedureAddress, forwarders followed), or of the ordinal a value below
@@ -189,27 +180,33 @@ const MAX_EXPORT_NAME: usize = 0xFFFE;
 /// caller).
 #[unsafe(export_name = "f2k_export_GetProcAddress")]
 pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> u32 {
-    let module = if module == 0 { image_base() } else { module };
-    let by_name = name as usize > 0xFFFF;
-    let mut address = 0;
-    let status = if by_name {
-        // SAFETY: the caller's string, read to its terminator (or past the longest name).
-        let length = (0..=MAX_EXPORT_NAME).find(|&at| unsafe { name.add(at).read() } == 0);
-        match length {
-            Some(length) => {
-                let string = AnsiString {
-                    length: length as u16,
-                    maximum_length: length as u16 + 1,
-                    buffer: name as *mut u8,
-                };
-                // SAFETY: ntdll's export, over the string above.
-                unsafe { nt::LdrGetProcedureAddress(module, &string, 0, &mut address) }
-            }
-            None => STATUS_ENTRYPOINT_NOT_FOUND,
-        }
+    let export = if name as usize > 0xFFFF {
+        // SAFETY: the caller's string (the contract: past 0xFFFF, the name is one).
+        Export::Name(unsafe { InStr::new(name) })
     } else {
-        // SAFETY: ntdll's export.
-        unsafe { nt::LdrGetProcedureAddress(module, core::ptr::null(), name as u32, &mut address) }
+        Export::Ordinal(name as u32)
+    };
+    answer(proc_address(module, export), 0)
+}
+
+/// GetProcAddress's work.
+fn proc_address(module: u32, export: Export<'_>) -> Result<u32, Failure> {
+    let module = if module == 0 { image_base() } else { module };
+    let by_name = matches!(export, Export::Name(_));
+    let (status, address) = match export {
+        // Read to its terminator, or past the longest name.
+        Export::Name(name) => match name.bytes_within(MAX_EXPORT_NAME) {
+            Some(bytes) => {
+                let string = AnsiString {
+                    length: bytes.len() as u16,
+                    maximum_length: bytes.len() as u16 + 1,
+                    buffer: bytes.as_ptr().cast_mut(),
+                };
+                ntcall::get_procedure_address(module, Some(&string), 0)
+            }
+            None => (STATUS_ENTRYPOINT_NOT_FOUND, 0),
+        },
+        Export::Ordinal(ordinal) => ntcall::get_procedure_address(module, None, ordinal),
     };
     let status = match status {
         0 if address == module => {
@@ -221,11 +218,10 @@ pub unsafe extern "system" fn get_proc_address(module: u32, name: *const u8) -> 
         }
         status => status,
     };
-    if !nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
+    if !rtl::status::nt_success(status) {
+        return Err(Failure::Status(status));
     }
-    address
+    Ok(address)
 }
 
 /// The entry of the module whose handle is `module`, walking the PEB's InLoadOrderModuleList (the
@@ -257,31 +253,19 @@ fn entry_of(module: u32) -> Option<*const LdrDataTableEntry<usize>> {
 /// Windows 2000's truncation: a buffer too small takes exactly its size, unterminated, and that
 /// size comes back, the last error untouched. ERROR_MOD_NOT_FOUND for a handle naming no module,
 /// the buffer untouched.
-///
-/// # Safety
-///
-/// `buffer` holds `size` characters (a bad pointer faults the caller).
-unsafe fn module_file_name(module: u32, buffer: Text, size: u32) -> u32 {
+fn module_file_name(module: u32, mut buffer: Text<'_>) -> Result<u32, Failure> {
     let module = if module == 0 { image_base() } else { module };
-    let copied = {
-        let _loader = LoaderLock::enter();
-        entry_of(module).map(|entry| {
-            // SAFETY: the module's entry and its own path, in the lists (under the loader lock).
-            let path = unsafe { string_units(&(*entry).full_dll_name) };
-            let copy = path.len().min(size as usize);
-            // SAFETY: the caller's buffer holds `size` characters.
-            unsafe { buffer.put(&path[..copy]) };
-            if copy < size as usize {
-                // SAFETY: as above.
-                unsafe { buffer.put_unit(copy, 0) };
-            }
-            copy as u32
-        })
-    };
-    copied.unwrap_or_else(|| {
-        set_last_error(ERROR_MOD_NOT_FOUND);
-        0
-    })
+    let size = buffer.len();
+    let _loader = LoaderLock::enter();
+    let entry = entry_of(module).ok_or(Failure::Error(ERROR_MOD_NOT_FOUND))?;
+    // SAFETY: the module's entry and its own path, in the lists (under the loader lock).
+    let path = unsafe { string_units(&(*entry).full_dll_name) };
+    let copy = path.len().min(size);
+    buffer.put(&path[..copy]);
+    if copy < size {
+        buffer.put_unit(copy, 0);
+    }
+    Ok(copy as u32)
 }
 
 /// GetModuleFileNameA (see [`module_file_name`]): the path narrowed.
@@ -295,8 +279,9 @@ pub unsafe extern "system" fn get_module_file_name_a(
     buffer: *mut u8,
     size: u32,
 ) -> u32 {
-    // SAFETY: the caller's buffer.
-    unsafe { module_file_name(module, Text::Ansi(buffer), size) }
+    // SAFETY: the caller's buffer (the contract).
+    let buffer = unsafe { OutBuf::new(buffer, size as usize) };
+    answer(module_file_name(module, Text::Ansi(buffer)), 0)
 }
 
 /// GetModuleFileNameW (see [`module_file_name`]).
@@ -310,6 +295,7 @@ pub unsafe extern "system" fn get_module_file_name_w(
     buffer: *mut u16,
     size: u32,
 ) -> u32 {
-    // SAFETY: the caller's buffer.
-    unsafe { module_file_name(module, Text::Wide(buffer), size) }
+    // SAFETY: the caller's buffer (the contract).
+    let buffer = unsafe { OutBuf::new(buffer, size as usize) };
+    answer(module_file_name(module, Text::Wide(buffer)), 0)
 }

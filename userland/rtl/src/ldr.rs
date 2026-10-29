@@ -11,57 +11,14 @@
 
 use crate::critsec::System;
 use crate::heap::{Heap, Vm, HEAP_ZERO_MEMORY};
+use crate::image::{self, ImageTlsDirectory32};
+use crate::modules::Memory;
 
-/// IMAGE_TLS_DIRECTORY32: the template's raw data (start and end, user addresses), the index
-/// variable's address, the callbacks' array and the zero fill after the raw data.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TlsDirectory {
-    pub start: u32,
-    pub end: u32,
-    pub index_address: u32,
-    pub callbacks: u32,
-    pub zero_fill: u32,
-}
-
-impl TlsDirectory {
-    /// The block's size: the raw data and the zero fill; none for a directory that does not add up.
-    pub fn block_size(&self) -> Option<usize> {
-        let raw = self.end.checked_sub(self.start)?;
-        (raw as usize).checked_add(self.zero_fill as usize)
-    }
-}
-
-/// The PE optional header's data directory index of the TLS directory.
-const DIR_TLS: u32 = 9;
-
-/// The TLS directory of the image whose headers `read` reads (a dword at an offset from the image's
-/// base), when it has one.
-pub fn tls_directory(read: impl Fn(u32) -> Option<u32>) -> Option<TlsDirectory> {
-    if read(0)? & 0xFFFF != 0x5A4D {
-        return None; // "MZ"
-    }
-    let nt = read(0x3C)?;
-    if read(nt)? != 0x0000_4550 {
-        return None; // "PE\0\0"
-    }
-    let optional = nt.checked_add(0x18)?;
-    if read(optional)? & 0xFFFF != 0x010B {
-        return None; // PE32
-    }
-    if read(optional + 0x5C)? <= DIR_TLS {
-        return None;
-    }
-    let rva = read(optional + 0x60 + DIR_TLS * 8)?;
-    if rva == 0 {
-        return None;
-    }
-    Some(TlsDirectory {
-        start: read(rva)?,
-        end: read(rva + 4)?,
-        index_address: read(rva + 8)?,
-        callbacks: read(rva + 12)?,
-        zero_fill: read(rva + 16)?,
-    })
+/// The TLS directory of the image mapped at `base` (its headers' data directory, the directory
+/// read whole), when it has one.
+pub fn tls_directory<M: Memory>(memory: &M, base: u32) -> Option<ImageTlsDirectory32> {
+    let place = image::mapped_directory(memory, base, image::DIRECTORY_TLS)?;
+    Some(memory.read(base.wrapping_add(place.virtual_address)))
 }
 
 /// A thread's implicit-TLS block, made on the process `heap` from the template of `size` raw bytes
@@ -129,10 +86,13 @@ mod tests {
         bytes
     }
 
-    fn reader(bytes: &[u8]) -> impl Fn(u32) -> Option<u32> + '_ {
-        move |at| {
-            let at = at as usize;
-            Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+    /// An image's bytes at address zero, zeros past them (a cut image reads as one whose headers
+    /// stop there).
+    struct Bytes<'a>(&'a [u8]);
+
+    impl Memory for Bytes<'_> {
+        fn byte(&self, at: u32) -> u8 {
+            self.0.get(at as usize).copied().unwrap_or(0)
         }
     }
 
@@ -141,24 +101,25 @@ mod tests {
     #[test]
     fn the_tls_directory_reads_from_the_headers() {
         let bytes = image(true);
-        let directory = tls_directory(reader(&bytes)).unwrap();
+        let directory = tls_directory(&Bytes(&bytes), 0).unwrap();
         assert_eq!(
             directory,
-            TlsDirectory {
-                start: 0x0040_5000,
-                end: 0x0040_5010,
-                index_address: 0x0040_6000,
-                callbacks: 0,
-                zero_fill: 0x20
+            ImageTlsDirectory32 {
+                start_address_of_raw_data: 0x0040_5000,
+                end_address_of_raw_data: 0x0040_5010,
+                address_of_index: 0x0040_6000,
+                address_of_call_backs: 0,
+                size_of_zero_fill: 0x20,
+                characteristics: 0,
             }
         );
         assert_eq!(directory.block_size(), Some(0x30));
-        assert_eq!(tls_directory(reader(&image(false))), None);
+        assert_eq!(tls_directory(&Bytes(&image(false)), 0), None);
         let mut broken = image(true);
         broken[0x80] = 0;
-        assert_eq!(tls_directory(reader(&broken)), None);
+        assert_eq!(tls_directory(&Bytes(&broken), 0), None);
         assert_eq!(
-            tls_directory(reader(&broken[..0x40])),
+            tls_directory(&Bytes(&broken[..0x40]), 0),
             None,
             "headers cut short read none"
         );

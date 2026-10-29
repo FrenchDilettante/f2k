@@ -19,13 +19,32 @@ unsafe extern "C" {
     ) -> u32;
 }
 
-/// The calling thread, as the walks see it.
-struct Thread;
+/// The calling thread, as the walks see it: its TEB's chain head and stack limits, and its memory,
+/// read and written at the addresses the chain and the exception's records give. Making one is the
+/// walks' one claim on that memory ([`Thread::current`]).
+struct Thread {
+    _claim: (),
+}
+
+impl Thread {
+    /// The calling thread.
+    ///
+    /// # Safety
+    ///
+    /// Every address a walk over it reads or writes is the calling thread's own memory, laid out as
+    /// the platform lays it: the chain's registrations from the TEB's head (each one's next and
+    /// the frames ExecuteHandler2 pushes), the exception record and context the dispatch or the
+    /// raise wrote, and the DispatcherContext of a handler's call. The thread's own code keeps the
+    /// chain; a frame it corrupted faults inside the walk, an exception of its own, as on Windows
+    /// 2000.
+    unsafe fn current() -> Thread {
+        Thread { _claim: () }
+    }
+}
 
 impl Frames for Thread {
     fn read(&self, address: u32) -> u32 {
-        // SAFETY: the chain's frames and the exception's record, as the thread's own code laid them
-        // out: a bad one faults here, an exception of its own, as on Windows 2000.
+        // SAFETY: an address of the thread's own chain or records (the constructor's contract).
         unsafe { core::ptr::read_volatile(address as *const u32) }
     }
 
@@ -76,28 +95,60 @@ impl Frames for Thread {
 
 /// ExecuteHandler2's ExceptionHandler: an exception raised while a search's handler runs is nested
 /// in it.
-extern "C" fn f2k_nested_handler(record: u32, own: u32, _context: u32, dispatcher: u32) -> u32 {
-    seh::own_frame_handler(&Thread, false, record, own, dispatcher)
+///
+/// # Safety
+///
+/// Called as the platform calls a registration's handler (src/except.s's ExecuteHandler2 pushed
+/// it): the exception's record, the registration itself and the DispatcherContext, all of the
+/// calling thread.
+unsafe extern "C" fn f2k_nested_handler(
+    record: u32,
+    own: u32,
+    _context: u32,
+    dispatcher: u32,
+) -> u32 {
+    // SAFETY: the caller's addresses are the calling thread's (the function's contract).
+    let thread = unsafe { Thread::current() };
+    seh::own_frame_handler(&thread, false, record, own, dispatcher)
 }
 
 /// ExecuteHandler2's UnwindHandler: an unwind passing while an unwind's handler runs collides with
 /// it.
-extern "C" fn f2k_unwind_handler(record: u32, own: u32, _context: u32, dispatcher: u32) -> u32 {
-    seh::own_frame_handler(&Thread, true, record, own, dispatcher)
+///
+/// # Safety
+///
+/// As [`f2k_nested_handler`]'s.
+unsafe extern "C" fn f2k_unwind_handler(
+    record: u32,
+    own: u32,
+    _context: u32,
+    dispatcher: u32,
+) -> u32 {
+    // SAFETY: as `f2k_nested_handler`'s.
+    let thread = unsafe { Thread::current() };
+    seh::own_frame_handler(&thread, true, record, own, dispatcher)
 }
 
 /// KiUserExceptionDispatcher's body: the search (RtlDispatchException), then the context resumed
 /// when a handler continued execution (NtContinue), or the exception's second chance
 /// (NtRaiseException, FirstChance FALSE: the process ends with its code). Only a failed service
 /// returns: its status is raised, the exception chained to it.
+///
+/// # Safety
+///
+/// Entered from KiUserExceptionDispatcher (src/except.s) with the record and the context the
+/// kernel's dispatch wrote on the calling thread's stack.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_user_exception_dispatch(record: u32, context: u32) -> ! {
-    let status = if seh::dispatch(&Thread, record, context) {
+unsafe extern "C" fn f2k_user_exception_dispatch(record: u32, context: u32) -> ! {
+    // SAFETY: the caller's record and context are the calling thread's (the function's
+    // contract), below the frames of the chain the thread keeps.
+    let thread = unsafe { Thread::current() };
+    let status = if seh::dispatch(&thread, record, context) {
         system_service(nr::NtContinue, &[context, 0])
     } else {
         system_service(nr::NtRaiseException, &[record, context, 0])
     };
-    Thread.raise_chained(status, record)
+    thread.raise_chained(status, record)
 }
 
 /// RtlUnwind's body (src/except.s captured `context`, the caller's resume point, and made room for
@@ -105,8 +156,13 @@ extern "C" fn f2k_user_exception_dispatch(record: u32, context: u32) -> ! {
 /// marked unwinding; the walk; then the caller resumed as from a return, its EAX the return value
 /// (NtContinue), or — the target never reached, an exit unwind — the exception's second chance.
 /// TargetIp is ignored, as x86 Windows ignores it.
+///
+/// # Safety
+///
+/// Entered from RtlUnwind (src/except.s): `record` null or an exception record of the calling
+/// thread, `context` the caller's context captured on this stack, `own` room for a record on it.
 #[unsafe(no_mangle)]
-extern "C" fn f2k_rtl_unwind(
+unsafe extern "C" fn f2k_rtl_unwind(
     return_address: u32,
     target: u32,
     _target_ip: u32,
@@ -125,11 +181,14 @@ extern "C" fn f2k_rtl_unwind(
     } else {
         record
     };
-    let status = match seh::unwind(&Thread, target, record, context) {
+    // SAFETY: the record (the caller's, or RtlUnwind's own on this stack) and the context are the
+    // calling thread's (the function's contract); the target is a frame of its chain or none.
+    let thread = unsafe { Thread::current() };
+    let status = match seh::unwind(&thread, target, record, context) {
         Unwound::Continue => system_service(nr::NtContinue, &[context, 0]),
         Unwound::SecondChance => system_service(nr::NtRaiseException, &[record, context, 0]),
     };
-    Thread.raise_chained(status, record)
+    thread.raise_chained(status, record)
 }
 
 /// A failed NtContinue's status, raised (KiUserApcDispatcher's end).

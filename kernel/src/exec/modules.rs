@@ -337,6 +337,7 @@ mod tests {
     //! binaries the kernel runs, resolved as ntdll's loader resolves it.
 
     use rtl::modules::{self as ldr, Memory, MemoryMut};
+    use rtl::pod::Pod;
 
     use super::*;
     use crate::exec::pe::Section;
@@ -761,11 +762,10 @@ mod tests {
     }
 
     impl MemoryMut for Process {
-        fn set_word(&mut self, at: u32, value: u32) {
+        fn set_byte(&mut self, at: u32, value: u8) {
             for (base, bytes) in &mut self.regions {
-                if at >= *base && ((at - *base) as usize) + 4 <= bytes.len() {
-                    let offset = (at - *base) as usize;
-                    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                if at >= *base && ((at - *base) as usize) < bytes.len() {
+                    bytes[(at - *base) as usize] = value;
                     return;
                 }
             }
@@ -789,7 +789,7 @@ mod tests {
                 (dll.base, mapped)
             })
             .collect();
-        regions.push((HEAP, ldr::empty_lists(HEAP).to_vec()));
+        regions.push((HEAP, ldr::empty_lists(HEAP).as_bytes().to_vec()));
         regions[2].1.resize(0x1000, 0);
         let mut process = Process { regions };
         for (index, (dll, path)) in [
@@ -804,15 +804,12 @@ mod tests {
             let buffer = at + 0x100;
             let module = ldr::loaded(&process, dll.base, None);
             let entry = ldr::loaded_entry(at, &module, buffer, &units, 2 * units.len() as u32 + 2);
-            let heap = &mut process.regions[2].1;
-            let offset = (at - HEAP) as usize;
-            heap[offset..offset + entry.len()].copy_from_slice(&entry);
-            let start = (buffer - HEAP) as usize;
-            for (index, unit) in units.iter().enumerate() {
-                heap[start + 2 * index..start + 2 * index + 2].copy_from_slice(&unit.to_le_bytes());
+            process.write(at, entry);
+            for (index, &unit) in units.iter().enumerate() {
+                process.write(buffer + 2 * index as u32, unit);
             }
-            ldr::insert(&mut process, HEAP, at);
-            ldr::insert_initialized(&mut process, HEAP, at);
+            ldr::insert(&mut process, HEAP, ldr::Module(at));
+            ldr::insert_initialized(&mut process, HEAP, ldr::Module(at));
         }
         process
     }
@@ -828,8 +825,9 @@ mod tests {
             let units: Vec<u16> = name.encode_utf16().collect();
             let mut formed = [0u16; 32];
             let length = ldr::module_name(&units, &mut formed).unwrap();
-            let entry = ldr::by_name(&process, HEAP, &formed[..length]).unwrap();
-            process.word(entry + ldr::entry::DLL_BASE)
+            ldr::by_name(&process, HEAP, &formed[..length])
+                .unwrap()
+                .base(&process)
         };
         assert_eq!(names("KERNEL32.dll"), KERNEL32_BASE);
         assert_eq!(names("ntdll"), NTDLL_BASE);
@@ -849,7 +847,7 @@ mod tests {
             }
         }
         let initialized: Vec<u32> = ldr::initialization_order(&process, HEAP, false)
-            .map(|entry| process.word(entry + ldr::entry::DLL_BASE))
+            .map(|module| module.base(&process))
             .collect();
         assert_eq!(initialized, [NTDLL_BASE, KERNEL32_BASE]);
     }

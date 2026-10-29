@@ -22,14 +22,16 @@
 //! - An exception the program does not handle reaches `_XcptFilter`, which hands it to
 //!   UnhandledExceptionFilter; the start-up's handler ends the process with the exception's code.
 
+use core::ffi::CStr;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::{AtomicBool, AtomicUsize};
 
+use rtl::cstr::bytes_until_nul;
 use rtl::sync::Locked;
 
 use crate::data::{Exported, FMODE};
-use crate::imports;
-use crate::thread::Lock;
+use crate::kernel32;
+use crate::thread::{Guarded, Lock};
 
 /// `_commode`: the default commit mode of the streams a program opens (0).
 static COMMODE: Exported<i32> = Exported::new(0);
@@ -61,14 +63,12 @@ unsafe impl Send for ExitTable {}
 
 /// The exit functions, behind their lock (Windows 2000's msvcrt has one for its exit list). Each
 /// one is taken out under it and called after it is let go, so a function may register another.
-static EXIT: Locked<ExitTable, Lock> = Locked::new(
-    Lock::new(),
-    ExitTable {
-        functions: core::ptr::null_mut(),
-        count: 0,
-        capacity: 0,
-    },
-);
+/// `__dllonexit` changes its caller's table under it too, so an exception there lets it go.
+static EXIT: Guarded<ExitTable> = Guarded::new(ExitTable {
+    functions: core::ptr::null_mut(),
+    count: 0,
+    capacity: 0,
+});
 
 /// Whether exit or _exit has run: the DLL's detach then leaves the process as they did.
 static EXITED: AtomicBool = AtomicBool::new(false);
@@ -256,23 +256,27 @@ pub extern "C" fn controlfp(new: u32, mask: u32) -> u32 {
     abstract_word(fpu::read())
 }
 
-/// _initterm: each non-null function of the table `[begin, end)` called, in order.
+/// _initterm: each non-null function of the table `[begin, end)` called, in order (a C
+/// `void (*)(void)` each: `Option<extern "C" fn()>` is a nullable function pointer).
 ///
 /// # Safety
 ///
-/// The table holds null or callable `void (*)(void)` entries.
+/// `[begin, end)` is a table, aligned, of null or callable `void (*)(void)` entries that the
+/// functions it calls leave unchanged.
 #[unsafe(export_name = "f2k_export__initterm")]
-pub unsafe extern "C" fn initterm(begin: *const usize, end: *const usize) {
-    let mut at = begin;
-    while at < end {
-        // SAFETY: the caller's table.
-        let function = unsafe { at.read() };
-        if function != 0 {
-            // SAFETY: the caller's initializer.
-            unsafe { core::mem::transmute::<usize, extern "C" fn()>(function)() };
-        }
-        // SAFETY: inside the table.
-        at = unsafe { at.add(1) };
+pub unsafe extern "C" fn initterm(
+    begin: *const Option<extern "C" fn()>,
+    end: *const Option<extern "C" fn()>,
+) {
+    let count =
+        (end as usize).saturating_sub(begin as usize) / core::mem::size_of::<ExitFunction>();
+    if count == 0 {
+        return;
+    }
+    // SAFETY: the caller's table: `count` entries from `begin`, before `end`.
+    let table = unsafe { core::slice::from_raw_parts(begin, count) };
+    for function in table.iter().flatten() {
+        function();
     }
 }
 
@@ -337,11 +341,69 @@ pub fn split(line: &[u8], mut each: impl FnMut(Option<u8>)) {
     }
 }
 
-/// The C runtime's copy of a NUL-terminated string array's worth: `count` pointers (and a NULL)
-/// followed by `bytes` bytes, in one block.
-fn array_block(count: usize, bytes: usize) -> *mut *mut u8 {
-    let size = (count + 1) * core::mem::size_of::<usize>() + bytes;
-    crate::heap::allocate(size, true).cast()
+/// A pointer's size: a word.
+const WORD: usize = core::mem::size_of::<usize>();
+
+/// The strings of an array [`string_array`] builds, written one after the other: each string's
+/// bytes go into the block's pool, and its end records its address in the pointer that is its
+/// own.
+struct ArrayWriter<'a> {
+    /// The pointers not yet written, a word each.
+    pointers: core::slice::IterMut<'a, [u8; WORD]>,
+    /// The bytes after the pointers, and their address.
+    pool: &'a mut [u8],
+    base: usize,
+    /// Where the next byte goes, and where the current string starts.
+    at: usize,
+    start: usize,
+}
+
+impl ArrayWriter<'_> {
+    /// A byte of the current string.
+    fn push(&mut self, byte: u8) {
+        self.pool[self.at] = byte;
+        self.at += 1;
+    }
+
+    /// The current string ended: its NUL written, its address its pointer's.
+    fn end(&mut self) {
+        self.push(0);
+        let pointer = self.pointers.next().expect("no more strings than counted");
+        *pointer = (self.base + self.start).to_ne_bytes();
+        self.start = self.at;
+    }
+
+    /// A whole string.
+    fn string(&mut self, string: &[u8]) {
+        string.iter().for_each(|&byte| self.push(byte));
+        self.end();
+    }
+}
+
+/// A NULL-terminated array of `count` NUL-terminated strings of `bytes` bytes (their NULs
+/// included), as argv and `_environ` are, in one block of the C runtime's heap: the pointers and
+/// the NULL after them, then the strings, which `fill` writes. Null when the heap has no room.
+fn string_array(count: usize, bytes: usize, fill: impl FnOnce(&mut ArrayWriter)) -> *mut *mut u8 {
+    let words = count * WORD;
+    let size = words + WORD + bytes;
+    let block = crate::heap::allocate(size, true);
+    if block.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: a fresh, zeroed block of the C runtime's heap of `size` bytes, this function's alone
+    // until it answers it.
+    let whole = unsafe { core::slice::from_raw_parts_mut(block, size) };
+    let (pointers, pool) = whole.split_at_mut(words + WORD);
+    let mut writer = ArrayWriter {
+        pointers: pointers[..words].as_chunks_mut::<WORD>().0.iter_mut(),
+        base: pool.as_ptr() as usize,
+        pool,
+        at: 0,
+        start: 0,
+    };
+    // The NULL after the pointers is the block's zero.
+    fill(&mut writer);
+    block.cast()
 }
 
 /// __getmainargs: argc, argv and envp for `main`, from the command line and the environment;
@@ -359,8 +421,7 @@ pub unsafe extern "C" fn getmainargs(
     _dowildcard: i32,
     _startinfo: *mut i32,
 ) -> i32 {
-    // SAFETY: kernel32's export; the command line, NUL-terminated.
-    let line = unsafe { core::ffi::CStr::from_ptr(imports::GetCommandLineA().cast()) }.to_bytes();
+    let line = kernel32::command_line();
     let (mut count, mut bytes) = (0usize, 0usize);
     split(line, |b| {
         bytes += 1;
@@ -368,31 +429,14 @@ pub unsafe extern "C" fn getmainargs(
             count += 1;
         }
     });
-    let block = array_block(count, bytes);
+    let block = string_array(count, bytes, |array| {
+        split(line, |b| match b {
+            Some(byte) => array.push(byte),
+            None => array.end(),
+        })
+    });
     if block.is_null() {
         return -1;
-    }
-    // SAFETY: the block holds `count + 1` pointers, then the bytes.
-    unsafe {
-        let mut text = block.add(count + 1).cast::<u8>();
-        let mut index = 0;
-        *block = text;
-        split(line, |b| match b {
-            Some(byte) => {
-                text.write(byte);
-                text = text.add(1);
-            }
-            None => {
-                text.write(0);
-                text = text.add(1);
-                index += 1;
-                *block.add(index) = if index < count {
-                    text
-                } else {
-                    core::ptr::null_mut()
-                };
-            }
-        });
     }
     let environment = ENVIRONMENT.with(|environment| {
         ARGC.write(count as i32);
@@ -412,46 +456,23 @@ pub unsafe extern "C" fn getmainargs(
 
 /// The DLL's process attach: `_environ` from the environment block, less its `=` entries.
 pub fn initialize_environment() -> bool {
-    // SAFETY: kernel32's exports; the block, double-NUL-terminated, read then given back.
-    unsafe {
-        let block = imports::GetEnvironmentStrings();
-        if block.is_null() {
-            return false;
-        }
-        let entries = || {
-            let mut at = block;
-            core::iter::from_fn(move || {
-                let entry = core::ffi::CStr::from_ptr(at.cast()).to_bytes();
-                if entry.is_empty() {
-                    return None;
-                }
-                at = at.add(entry.len() + 1);
-                Some(entry)
-            })
-            .filter(|entry| entry[0] != b'=')
-        };
-        let count = entries().count();
-        let bytes: usize = entries().map(|entry| entry.len() + 1).sum();
-        let array = array_block(count, bytes);
-        if array.is_null() {
-            imports::FreeEnvironmentStringsA(block);
-            return false;
-        }
-        let mut text = array.add(count + 1).cast::<u8>();
-        for (i, entry) in entries().enumerate() {
-            *array.add(i) = text;
-            core::ptr::copy_nonoverlapping(entry.as_ptr(), text, entry.len());
-            text = text.add(entry.len());
-            text.write(0);
-            text = text.add(1);
-        }
-        ENVIRONMENT.with(|environment| {
-            environment.set_current(array);
-            environment.set_initial(array);
-        });
-        imports::FreeEnvironmentStringsA(block);
-        true
+    let Some(strings) = kernel32::EnvironmentStrings::get() else {
+        return false;
+    };
+    let entries = || strings.entries().filter(|entry| entry[0] != b'=');
+    let count = entries().count();
+    let bytes: usize = entries().map(|entry| entry.len() + 1).sum();
+    let array = string_array(count, bytes, |array| {
+        entries().for_each(|entry| array.string(entry))
+    });
+    if array.is_null() {
+        return false;
     }
+    ENVIRONMENT.with(|environment| {
+        environment.set_current(array);
+        environment.set_initial(array);
+    });
+    true
 }
 
 /// A copy of `bytes` with a NUL after them, from the C runtime's heap (null when it has no room).
@@ -492,7 +513,7 @@ fn value_of(environment: &Environment, name: &[u8], out: &mut [u8]) -> Option<us
     let entries = (0..)
         .map(|i| unsafe { *current.add(i) })
         .take_while(|entry| !entry.is_null())
-        .map(|entry| unsafe { crate::string::narrow(entry) });
+        .map(|entry| unsafe { bytes_until_nul(entry) });
     let value = entries
         .into_iter()
         .find(|entry| sets(entry, name))
@@ -520,7 +541,7 @@ fn edit_environ(environment: &mut Environment, name: &[u8], entry: Option<*mut u
     // SAFETY: as above: each entry is NUL-terminated.
     let found = entries
         .iter()
-        .position(|&each| sets(unsafe { crate::string::narrow(each) }, name));
+        .position(|&each| sets(unsafe { bytes_until_nul(each) }, name));
     let added = entry.filter(|_| found.is_none());
     let count = entries.len() + usize::from(added.is_some())
         - usize::from(found.is_some() && entry.is_none());
@@ -561,7 +582,7 @@ pub unsafe extern "C" fn putenv(string: *const u8) -> i32 {
         return -1;
     }
     // SAFETY: the caller's string.
-    let string = unsafe { crate::string::narrow(string) };
+    let string = unsafe { bytes_until_nul(string) };
     let Some(split) = string
         .iter()
         .position(|&byte| byte == b'=')
@@ -592,19 +613,22 @@ fn put(environment: &mut Environment, string: &[u8], split: usize) -> i32 {
         }
         return -1;
     }
-    let name = terminated_copy(name);
-    if name.is_null() {
+    let copy = terminated_copy(name);
+    if copy.is_null() {
         return -1;
     }
-    let value = entry.map_or(core::ptr::null(), |copy| {
-        // SAFETY: inside the entry's copy: its value, NUL-terminated.
-        unsafe { copy.add(split + 1).cast_const() }
-    });
-    // SAFETY: kernel32's export, over the NUL-terminated name and value (or NULL).
-    let set = unsafe { imports::SetEnvironmentVariableA(name, value) };
+    // SAFETY: the name's copy, NUL-terminated; the entry's copy holds `split + 1` bytes and its
+    // value after them, NUL-terminated. Both stay until the call below returns.
+    let (name, value) = unsafe {
+        (
+            CStr::from_ptr(copy.cast()),
+            entry.map(|entry| CStr::from_ptr(entry.add(split + 1).cast())),
+        )
+    };
+    let set = kernel32::set_environment_variable(name, value);
     // SAFETY: the name's copy, used no more.
-    unsafe { crate::heap::release(name) };
-    if set == 0 {
+    unsafe { crate::heap::release(copy) };
+    if set.is_err() {
         -1
     } else {
         0
@@ -716,16 +740,14 @@ pub extern "C" fn exit(status: i32) -> ! {
     run_exit_functions();
     crate::stdio::flush_all();
     EXITED.store(true, Relaxed);
-    // SAFETY: kernel32's export.
-    unsafe { imports::ExitProcess(status as u32) }
+    kernel32::exit_process(status as u32)
 }
 
 /// _exit: the process ended with `status` at once.
 #[unsafe(export_name = "f2k_export__exit")]
 pub extern "C" fn quick_exit(status: i32) -> ! {
     EXITED.store(true, Relaxed);
-    // SAFETY: kernel32's export.
-    unsafe { imports::ExitProcess(status as u32) }
+    kernel32::exit_process(status as u32)
 }
 
 /// The DLL's detach as the process ends without exit or _exit (ExitProcess straight from the
@@ -745,8 +767,8 @@ pub fn detach_process() {
 /// `pointers` is the exception's EXCEPTION_POINTERS.
 #[unsafe(export_name = "f2k_export__XcptFilter")]
 pub unsafe extern "C" fn xcpt_filter(_code: u32, pointers: usize) -> i32 {
-    // SAFETY: kernel32's export, over the dispatcher's pointers.
-    unsafe { imports::UnhandledExceptionFilter(pointers) }
+    // SAFETY: the caller's contract: the dispatcher's pointers.
+    unsafe { kernel32::unhandled_exception_filter(pointers) }
 }
 
 #[cfg(test)]
@@ -830,16 +852,10 @@ mod tests {
     fn putenv_sets_both_environments() {
         use crate::imports::ENVIRONMENT_SETS;
         let initial = [&b"F2KHOME=C:\\CORPUS"[..], b"PATH=C:\\WINNT"];
-        let array = array_block(initial.len(), 64);
-        // SAFETY: the array's block: its pointers, then room for the entries' text.
-        unsafe {
-            let mut text = array.add(initial.len() + 1).cast::<u8>();
-            for (i, entry) in initial.iter().enumerate() {
-                *array.add(i) = text;
-                core::ptr::copy_nonoverlapping(entry.as_ptr(), text, entry.len());
-                text = text.add(entry.len() + 1);
-            }
-        }
+        let bytes = initial.iter().map(|entry| entry.len() + 1).sum();
+        let array = string_array(initial.len(), bytes, |array| {
+            initial.iter().for_each(|entry| array.string(entry))
+        });
         ENVIRON.write(array);
         INITENV.write(array);
         let environ = || entries_of(ENVIRON.read());

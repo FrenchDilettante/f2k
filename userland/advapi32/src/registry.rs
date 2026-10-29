@@ -626,8 +626,8 @@ pub unsafe extern "system" fn reg_create_key_ex_w(
             wide_text(sub_key),
             wide_text(class),
             inherits(security),
-            Out::new(result),
-            Out::new(disposition),
+            Out::optional(result),
+            Out::optional(disposition),
         )
     };
     let class_name = Counted::new(class_units);
@@ -667,8 +667,8 @@ pub unsafe extern "system" fn reg_create_key_ex_a(
             ansi_text(sub_key),
             ansi_text(class),
             inherits(security),
-            Out::new(result),
-            Out::new(disposition),
+            Out::optional(result),
+            Out::optional(disposition),
         )
     };
     let (path, class_name) = match (wide(path), wide(class_text)) {
@@ -714,7 +714,7 @@ pub unsafe extern "system" fn reg_open_key_ex_w(
     result: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's string and out parameter.
-    let (path, mut result) = unsafe { (wide_text(sub_key), Out::new(result)) };
+    let (path, mut result) = unsafe { (wide_text(sub_key), Out::optional(result)) };
     open_key(key, &Counted::new(path), access, result.as_mut())
 }
 
@@ -732,7 +732,7 @@ pub unsafe extern "system" fn reg_open_key_ex_a(
     result: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's string and out parameter.
-    let (path, mut result) = unsafe { (ansi_text(sub_key), Out::new(result)) };
+    let (path, mut result) = unsafe { (ansi_text(sub_key), Out::optional(result)) };
     match wide(path) {
         Ok(path) => open_key(key, &path.counted(), access, result.as_mut()),
         Err(code) => code,
@@ -760,7 +760,7 @@ pub unsafe extern "system" fn reg_open_key_w(
     result: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's string and out parameter.
-    let (path, mut result) = unsafe { (wide_text(sub_key), Out::new(result)) };
+    let (path, mut result) = unsafe { (wide_text(sub_key), Out::optional(result)) };
     if path.is_empty() {
         return open_key_itself(key, result.as_mut());
     }
@@ -779,7 +779,7 @@ pub unsafe extern "system" fn reg_open_key_a(
     result: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's string and out parameter.
-    let (path, mut result) = unsafe { (ansi_text(sub_key), Out::new(result)) };
+    let (path, mut result) = unsafe { (ansi_text(sub_key), Out::optional(result)) };
     let path = match wide(path) {
         Ok(path) => path,
         Err(code) => return code,
@@ -892,7 +892,7 @@ unsafe fn query_buffer<'a>(
     size: *mut u32,
 ) -> (Option<&'a mut [u8]>, Option<Out<'a, u32>>) {
     // SAFETY: the caller's contract.
-    let size = unsafe { Out::new(size) };
+    let size = unsafe { Out::optional(size) };
     let room = size.as_ref().map_or(0, Out::get);
     let data = if data.is_null() {
         None
@@ -931,8 +931,13 @@ pub unsafe extern "system" fn reg_query_value_ex_w(
         Err(code) => return code,
     };
     // SAFETY: the caller's string, buffer and out parameters.
-    let (name, mut kind, (data, mut size)) =
-        unsafe { (wide_text(name), Out::new(kind), query_buffer(data, size)) };
+    let (name, mut kind, (data, mut size)) = unsafe {
+        (
+            wide_text(name),
+            Out::optional(kind),
+            query_buffer(data, size),
+        )
+    };
     query_value_w(key, &Counted::new(name), kind.as_mut(), data, size.as_mut())
 }
 
@@ -962,8 +967,13 @@ pub unsafe extern "system" fn reg_query_value_ex_a(
         Err(code) => return code,
     };
     // SAFETY: the caller's string, buffer and out parameters.
-    let (name, mut kind, (data, mut size)) =
-        unsafe { (ansi_text(name), Out::new(kind), query_buffer(data, size)) };
+    let (name, mut kind, (data, mut size)) = unsafe {
+        (
+            ansi_text(name),
+            Out::optional(kind),
+            query_buffer(data, size),
+        )
+    };
     match wide(name) {
         Ok(name) => query_value_a(key, &name.counted(), kind.as_mut(), data, size.as_mut()),
         Err(code) => code,
@@ -1294,12 +1304,12 @@ mod tests {
     fn the_callers_places_convert_once() {
         let mut bytes = [0u8; 9];
         // SAFETY: a dword's place at an odd address in the local buffer.
-        let mut out = unsafe { Out::new(bytes[1..].as_mut_ptr().cast::<u32>()) }.unwrap();
+        let mut out = unsafe { Out::optional(bytes[1..].as_mut_ptr().cast::<u32>()) }.unwrap();
         out.set(0x1122_3344);
         assert_eq!(out.get(), 0x1122_3344);
         assert_eq!(bytes[1..5], [0x44, 0x33, 0x22, 0x11]);
         // SAFETY: null.
-        assert!(unsafe { Out::<u32>::new(core::ptr::null_mut()) }.is_none());
+        assert!(unsafe { Out::<u32>::optional(core::ptr::null_mut()) }.is_none());
         // SAFETY: null addresses, with and without a length.
         unsafe {
             assert!(caller_bytes(core::ptr::null(), 4).is_none());

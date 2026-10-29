@@ -6,6 +6,8 @@
 //! is [`crate::create`]'s).
 
 use crate::base::{set_last_error, set_last_nt_error, win32_bool, CURRENT_PROCESS};
+use crate::edge::Out;
+use crate::error::{bool_answer, Failure};
 use crate::nt::ClientId;
 use crate::ntcall::{self, Destination, PebLock, PriorityClass, Source};
 
@@ -124,20 +126,17 @@ pub const STILL_ACTIVE: u32 = 259;
 /// `code` is writable.
 #[unsafe(export_name = "f2k_export_GetExitCodeProcess")]
 pub unsafe extern "system" fn get_exit_code_process(process: u32, code: *mut u32) -> u32 {
-    // SAFETY: the caller's slot.
-    let Some(code) = (unsafe { code.as_mut() }) else {
-        ntcall::raise_status(rtl::status::STATUS_ACCESS_VIOLATION);
-    };
-    match ntcall::basic_information(process) {
-        Ok(information) => {
-            *code = information.exit_status;
-            1
-        }
-        Err(status) => {
-            set_last_nt_error(status);
-            0
-        }
-    }
+    // SAFETY: the caller's slot (the contract), or null.
+    let code = unsafe { Out::optional(code) };
+    bool_answer(exit_code(process, code))
+}
+
+/// GetExitCodeProcess's work.
+fn exit_code(process: u32, code: Option<Out<'_, u32>>) -> Result<(), Failure> {
+    let mut code = code.ok_or(Failure::Fault(rtl::status::STATUS_ACCESS_VIOLATION))?;
+    let information = ntcall::basic_information(process).map_err(Failure::Status)?;
+    code.set(information.exit_status);
+    Ok(())
 }
 
 /// ReadProcessMemory: `size` bytes of the process at `address` into the caller's buffer
@@ -158,13 +157,13 @@ pub unsafe extern "system" fn read_process_memory(
     count: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's buffer and count, as the contract says.
-    let (destination, count) = unsafe {
+    let (destination, mut count) = unsafe {
         (
             Destination::caller(buffer as usize, size as usize),
-            count.as_mut(),
+            Out::optional(count),
         )
     };
-    match ntcall::read_virtual_memory(process, address, destination, count) {
+    match ntcall::read_virtual_memory(process, address, destination, count.as_mut()) {
         Ok(()) => 1,
         Err(status) => {
             set_last_nt_error(status);
@@ -208,21 +207,25 @@ pub unsafe extern "system" fn write_process_memory(
     count: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's buffer and count, as the contract says.
-    let (source, count) = unsafe {
+    let (source, mut count) = unsafe {
         (
             Source::caller(buffer as usize, size as usize),
-            count.as_mut(),
+            Out::optional(count),
         )
     };
-    let length = size as usize;
-    let old = match ntcall::protect_virtual_memory(process, address, length, PAGE_EXECUTE_READWRITE)
-    {
-        Ok(old) => old,
-        Err(status) => {
-            set_last_nt_error(status);
-            return 0;
-        }
-    };
+    bool_answer(write_memory(process, address, source, count.as_mut()))
+}
+
+/// WriteProcessMemory's work.
+fn write_memory(
+    process: u32,
+    address: usize,
+    source: Source<'_>,
+    count: Option<&mut Out<'_, u32>>,
+) -> Result<(), Failure> {
+    let length = source.len();
+    let old = ntcall::protect_virtual_memory(process, address, length, PAGE_EXECUTE_READWRITE)
+        .map_err(Failure::Status)?;
     let restore = || {
         let _ = ntcall::protect_virtual_memory(process, address, length, old);
     };
@@ -232,21 +235,14 @@ pub unsafe extern "system" fn write_process_memory(
         ntcall::write_virtual_memory(process, address, source, count)
     } else if kind & READ_ONLY != 0 {
         restore();
-        set_last_error(ERROR_NOACCESS);
-        return 0;
+        return Err(Failure::Error(ERROR_NOACCESS));
     } else {
         let written = ntcall::write_virtual_memory(process, address, source, count);
         restore();
         written
     };
     let _ = ntcall::flush_instruction_cache(process, address, length);
-    match written {
-        Ok(()) => 1,
-        Err(status) => {
-            set_last_nt_error(status);
-            0
-        }
-    }
+    written.map_err(Failure::Status)
 }
 
 /// FlushInstructionCache: the process's instruction cache over `[address, address + size)` made

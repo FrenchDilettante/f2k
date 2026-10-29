@@ -10,36 +10,53 @@
 //! locale, for the case-insensitive ones: `[` against `a` is -6); wcsncpy pads with NULs and leaves
 //! a full destination unterminated; wcschr and wcsrchr find the terminator too; wcsstr finds the
 //! empty string at the start; _wcslwr and _wcsupr map in place, in the LC_CTYPE locale.
+//!
+//! Each export reads its caller's strings once, into slices ([`crate::edge`]); the work below is
+//! over those.
+
+use core::iter::once;
+
+use rtl::cstr::bytes_until_nul;
 
 use crate::ctype;
+use crate::edge::{self, units, WideUnit};
 
-/// A wide string's unit at `index`.
-///
-/// # Safety
-///
-/// `index` is at or before the string's NUL (or inside its buffer).
-unsafe fn at(string: *const u16, index: usize) -> u16 {
-    // SAFETY: the caller's contract.
-    unsafe { string.add(index).read_unaligned() }
-}
-
-/// A wide string's length in units.
-///
-/// # Safety
-///
-/// `string` is NUL-terminated.
-pub unsafe fn wide_length(string: *const u16) -> usize {
-    let mut length = 0;
-    // SAFETY: the caller's string, read up to its NUL.
-    while unsafe { at(string, length) } != 0 {
-        length += 1;
+/// The first `count` units of two strings compared, each string's NUL after its units and each
+/// unit mapped by `map` first: the difference of the first that differ; 0 at a common NUL or past
+/// the count.
+fn difference(
+    a: impl Iterator<Item = u32>,
+    b: impl Iterator<Item = u32>,
+    count: usize,
+    map: impl Fn(u32) -> u32,
+) -> i32 {
+    for (x, y) in a.chain(once(0)).zip(b.chain(once(0))).take(count) {
+        let (x, y) = (map(x), map(y));
+        if x != y || x == 0 {
+            return x as i32 - y as i32;
+        }
     }
-    length
+    0
 }
 
-/// The sign of an ordering, as -1, 0 or 1.
-fn sign(ordering: core::cmp::Ordering) -> i32 {
-    ordering as i32
+/// A narrow string's bytes as the compares take them.
+fn narrow_values(string: &[u8]) -> impl Iterator<Item = u32> + '_ {
+    string.iter().map(|&byte| u32::from(byte))
+}
+
+/// A wide string's units as the compares take them.
+fn wide_values(string: &[WideUnit]) -> impl Iterator<Item = u32> + '_ {
+    units(string).map(u32::from)
+}
+
+/// A byte lowered in the LC_CTYPE locale, as the compares map them.
+fn lower_byte(value: u32) -> u32 {
+    u32::from(ctype::byte_lower(value as u8))
+}
+
+/// A wide unit lowered in the LC_CTYPE locale, as the compares map them.
+fn lower_wide(value: u32) -> u32 {
+    u32::from(ctype::wide_lower(value as u16))
 }
 
 /// strcmp: the strings' order, byte by byte, as -1, 0 or 1.
@@ -49,15 +66,9 @@ fn sign(ordering: core::cmp::Ordering) -> i32 {
 /// Both strings are NUL-terminated.
 #[unsafe(export_name = "f2k_export_strcmp")]
 pub unsafe extern "C" fn strcmp(a: *const u8, b: *const u8) -> i32 {
-    let mut i = 0;
-    loop {
-        // SAFETY: the caller's strings, read up to the first NUL.
-        let (x, y) = unsafe { (a.add(i).read(), b.add(i).read()) };
-        if x != y || x == 0 {
-            return sign(x.cmp(&y));
-        }
-        i += 1;
-    }
+    // SAFETY: the caller's strings.
+    let (a, b) = unsafe { (bytes_until_nul(a), bytes_until_nul(b)) };
+    difference(narrow_values(a), narrow_values(b), usize::MAX, |b| b).signum()
 }
 
 /// _stricmp: the strings' order without regard to case (each byte lowered in the LC_CTYPE
@@ -68,20 +79,9 @@ pub unsafe extern "C" fn strcmp(a: *const u8, b: *const u8) -> i32 {
 /// Both strings are NUL-terminated.
 #[unsafe(export_name = "f2k_export__stricmp")]
 pub unsafe extern "C" fn stricmp(a: *const u8, b: *const u8) -> i32 {
-    let mut i = 0;
-    loop {
-        // SAFETY: as strcmp's.
-        let (x, y) = unsafe {
-            (
-                ctype::byte_lower(a.add(i).read()),
-                ctype::byte_lower(b.add(i).read()),
-            )
-        };
-        if x != y || x == 0 {
-            return x as i32 - y as i32;
-        }
-        i += 1;
-    }
+    // SAFETY: the caller's strings.
+    let (a, b) = unsafe { (bytes_until_nul(a), bytes_until_nul(b)) };
+    difference(narrow_values(a), narrow_values(b), usize::MAX, lower_byte)
 }
 
 /// wcslen.
@@ -91,25 +91,24 @@ pub unsafe extern "C" fn stricmp(a: *const u8, b: *const u8) -> i32 {
 /// `string` is NUL-terminated.
 #[unsafe(export_name = "f2k_export_wcslen")]
 pub unsafe extern "C" fn wcslen(string: *const u16) -> usize {
-    // SAFETY: the caller's contract.
-    unsafe { wide_length(string) }
+    // SAFETY: the caller's string.
+    unsafe { rtl::cstr::len_until_nul(string) }
 }
 
-/// The comparison the wide compares share: up to `count` units, each mapped by `map`; the first
-/// difference.
+/// The wide compares' work over the caller's strings, each read to its NUL or `count` units.
 ///
 /// # Safety
 ///
-/// Both strings are NUL-terminated (or hold `count` units).
-unsafe fn compare(a: *const u16, b: *const u16, count: usize, map: impl Fn(u16) -> u16) -> i32 {
-    for i in 0..count {
-        // SAFETY: the caller's strings, read up to the first NUL.
-        let (x, y) = unsafe { (map(at(a, i)), map(at(b, i))) };
-        if x != y || x == 0 {
-            return x as i32 - y as i32;
-        }
-    }
-    0
+/// Both strings are NUL-terminated or hold `count` units.
+unsafe fn wide_difference(
+    a: *const u16,
+    b: *const u16,
+    count: usize,
+    map: impl Fn(u32) -> u32,
+) -> i32 {
+    // SAFETY: the caller's strings.
+    let (a, b) = unsafe { (edge::wide_bounded(a, count), edge::wide_bounded(b, count)) };
+    difference(wide_values(a), wide_values(b), count, map)
 }
 
 /// wcscmp: the order, unit by unit, as -1, 0 or 1.
@@ -120,7 +119,7 @@ unsafe fn compare(a: *const u16, b: *const u16, count: usize, map: impl Fn(u16) 
 #[unsafe(export_name = "f2k_export_wcscmp")]
 pub unsafe extern "C" fn wcscmp(a: *const u16, b: *const u16) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { compare(a, b, usize::MAX, |u| u) }.signum()
+    unsafe { wide_difference(a, b, usize::MAX, |u| u) }.signum()
 }
 
 /// wcsncmp: the first `count` units' order: the difference of the first that differ.
@@ -131,7 +130,7 @@ pub unsafe extern "C" fn wcscmp(a: *const u16, b: *const u16) -> i32 {
 #[unsafe(export_name = "f2k_export_wcsncmp")]
 pub unsafe extern "C" fn wcsncmp(a: *const u16, b: *const u16, count: usize) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { compare(a, b, count, |u| u) }
+    unsafe { wide_difference(a, b, count, |u| u) }
 }
 
 /// _wcsicmp: the order without regard to case.
@@ -142,7 +141,7 @@ pub unsafe extern "C" fn wcsncmp(a: *const u16, b: *const u16, count: usize) -> 
 #[unsafe(export_name = "f2k_export__wcsicmp")]
 pub unsafe extern "C" fn wcsicmp(a: *const u16, b: *const u16) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { compare(a, b, usize::MAX, ctype::wide_lower) }
+    unsafe { wide_difference(a, b, usize::MAX, lower_wide) }
 }
 
 /// _wcsnicmp: the first `count` units' order without regard to case.
@@ -153,7 +152,7 @@ pub unsafe extern "C" fn wcsicmp(a: *const u16, b: *const u16) -> i32 {
 #[unsafe(export_name = "f2k_export__wcsnicmp")]
 pub unsafe extern "C" fn wcsnicmp(a: *const u16, b: *const u16, count: usize) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { compare(a, b, count, ctype::wide_lower) }
+    unsafe { wide_difference(a, b, count, lower_wide) }
 }
 
 /// wcscpy: `source` and its NUL copied to `destination`; answers `destination`.
@@ -163,38 +162,37 @@ pub unsafe extern "C" fn wcsnicmp(a: *const u16, b: *const u16, count: usize) ->
 /// `source` is NUL-terminated; `destination` has room for it.
 #[unsafe(export_name = "f2k_export_wcscpy")]
 pub unsafe extern "C" fn wcscpy(destination: *mut u16, source: *const u16) -> *mut u16 {
-    let mut i = 0;
-    loop {
-        // SAFETY: the caller's contract.
-        let unit = unsafe { at(source, i) };
-        // SAFETY: as above.
-        unsafe { destination.add(i).write_unaligned(unit) };
-        if unit == 0 {
-            return destination;
-        }
-        i += 1;
+    // SAFETY: the caller's string, and its room for the string and the NUL (ranges that overlap,
+    // the caller's error in C, are copied as memmove copies).
+    unsafe {
+        let length = rtl::cstr::len_until_nul(source) + 1;
+        core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), 2 * length);
     }
+    destination
 }
 
 /// wcsncpy: `count` units: `source`'s, then NULs (none when `source` fills them).
 ///
 /// # Safety
 ///
-/// `source` is NUL-terminated or holds `count` units; `destination` holds `count` units.
+/// `source` is NUL-terminated or holds `count` units; `destination` holds `count` units, apart
+/// from them.
 #[unsafe(export_name = "f2k_export_wcsncpy")]
 pub unsafe extern "C" fn wcsncpy(
     destination: *mut u16,
     source: *const u16,
     count: usize,
 ) -> *mut u16 {
-    let mut ended = false;
-    for i in 0..count {
-        // SAFETY: the caller's contract (the source is not read past its NUL).
-        let unit = if ended { 0 } else { unsafe { at(source, i) } };
-        ended |= unit == 0;
-        // SAFETY: as above.
-        unsafe { destination.add(i).write_unaligned(unit) };
-    }
+    // SAFETY: the caller's string, read to its NUL or `count` units, and its room of `count` units.
+    let (source, out) = unsafe {
+        (
+            edge::wide_bounded(source, count),
+            edge::wide_parts_mut(destination, count),
+        )
+    };
+    let (copied, padding) = out.split_at_mut(source.len());
+    copied.copy_from_slice(source);
+    padding.fill(WideUnit::new(0));
     destination
 }
 
@@ -205,11 +203,17 @@ pub unsafe extern "C" fn wcsncpy(
 /// Both strings are NUL-terminated; `destination` has room for both.
 #[unsafe(export_name = "f2k_export_wcscat")]
 pub unsafe extern "C" fn wcscat(destination: *mut u16, source: *const u16) -> *mut u16 {
-    // SAFETY: the caller's contract.
+    // SAFETY: the caller's strings and room: the copy goes over `destination`'s NUL.
     unsafe {
-        wcscpy(destination.add(wide_length(destination)), source);
+        let end = destination.add(rtl::cstr::len_until_nul(destination));
+        wcscpy(end, source);
     }
     destination
+}
+
+/// The address of `string`'s unit `index` (its NUL at its length).
+fn unit_address(string: *const u16, index: usize) -> *const u16 {
+    string.wrapping_add(index)
 }
 
 /// wcschr: the first `c` in `string` (its NUL for 0), or NULL.
@@ -219,19 +223,14 @@ pub unsafe extern "C" fn wcscat(destination: *mut u16, source: *const u16) -> *m
 /// `string` is NUL-terminated.
 #[unsafe(export_name = "f2k_export_wcschr")]
 pub unsafe extern "C" fn wcschr(string: *const u16, c: u32) -> *const u16 {
-    let c = c as u16;
-    let mut i = 0;
-    loop {
-        // SAFETY: the caller's string, read up to its NUL.
-        let unit = unsafe { at(string, i) };
-        if unit == c {
-            // SAFETY: inside the string.
-            return unsafe { string.add(i) };
-        }
-        if unit == 0 {
-            return core::ptr::null();
-        }
-        i += 1;
+    // SAFETY: the caller's string.
+    let units_of = unsafe { edge::wide(string) };
+    match units(units_of)
+        .chain(once(0))
+        .position(|unit| unit == c as u16)
+    {
+        Some(at) => unit_address(string, at),
+        None => core::ptr::null(),
     }
 }
 
@@ -242,20 +241,16 @@ pub unsafe extern "C" fn wcschr(string: *const u16, c: u32) -> *const u16 {
 /// `string` is NUL-terminated.
 #[unsafe(export_name = "f2k_export_wcsrchr")]
 pub unsafe extern "C" fn wcsrchr(string: *const u16, c: u32) -> *const u16 {
-    let c = c as u16;
-    let mut found = core::ptr::null();
-    let mut i = 0;
-    loop {
-        // SAFETY: as wcschr's.
-        let unit = unsafe { at(string, i) };
-        if unit == c {
-            // SAFETY: inside the string.
-            found = unsafe { string.add(i) };
-        }
-        if unit == 0 {
-            return found;
-        }
-        i += 1;
+    // SAFETY: the caller's string.
+    let units_of = unsafe { edge::wide(string) };
+    let found = if c as u16 == 0 {
+        Some(units_of.len())
+    } else {
+        units(units_of).rposition(|unit| unit == c as u16)
+    };
+    match found {
+        Some(at) => unit_address(string, at),
+        None => core::ptr::null(),
     }
 }
 
@@ -267,19 +262,17 @@ pub unsafe extern "C" fn wcsrchr(string: *const u16, c: u32) -> *const u16 {
 /// Both strings are NUL-terminated.
 #[unsafe(export_name = "f2k_export_wcsstr")]
 pub unsafe extern "C" fn wcsstr(string: *const u16, search: *const u16) -> *const u16 {
-    // SAFETY: the caller's strings, read up to their NULs.
-    unsafe {
-        let wanted = wide_length(search);
-        let mut start = 0;
-        loop {
-            if (0..wanted).all(|i| at(string, start + i) == at(search, i)) {
-                return string.add(start);
-            }
-            if at(string, start) == 0 {
-                return core::ptr::null();
-            }
-            start += 1;
-        }
+    // SAFETY: the caller's strings.
+    let (haystack, wanted) = unsafe { (edge::wide(string), edge::wide(search)) };
+    if wanted.is_empty() {
+        return string;
+    }
+    match haystack
+        .windows(wanted.len())
+        .position(|window| window == wanted)
+    {
+        Some(at) => unit_address(string, at),
+        None => core::ptr::null(),
     }
 }
 
@@ -290,33 +283,18 @@ pub unsafe extern "C" fn wcsstr(string: *const u16, search: *const u16) -> *cons
 /// Both strings are NUL-terminated.
 #[unsafe(export_name = "f2k_export_wcsspn")]
 pub unsafe extern "C" fn wcsspn(string: *const u16, set: *const u16) -> usize {
-    // SAFETY: the caller's strings, read up to their NULs.
-    unsafe {
-        let set_length = wide_length(set);
-        let mut i = 0;
-        while at(string, i) != 0 && (0..set_length).any(|j| at(set, j) == at(string, i)) {
-            i += 1;
-        }
-        i
-    }
+    // SAFETY: the caller's strings.
+    let (string, set) = unsafe { (edge::wide(string), edge::wide(set)) };
+    string
+        .iter()
+        .position(|unit| !set.contains(unit))
+        .unwrap_or(string.len())
 }
 
-/// The string's units mapped in place; answers it.
-///
-/// # Safety
-///
-/// `string` is NUL-terminated and writable.
-unsafe fn map_in_place(string: *mut u16, map: impl Fn(u16) -> u16) -> *mut u16 {
-    let mut i = 0;
-    loop {
-        // SAFETY: the caller's string, up to its NUL.
-        let unit = unsafe { at(string, i) };
-        if unit == 0 {
-            return string;
-        }
-        // SAFETY: as above.
-        unsafe { string.add(i).write_unaligned(map(unit)) };
-        i += 1;
+/// The string's units mapped in place.
+fn map_in_place(string: &mut [WideUnit], map: impl Fn(u16) -> u16) {
+    for unit in string {
+        *unit = WideUnit::new(map(unit.get()));
     }
 }
 
@@ -327,8 +305,10 @@ unsafe fn map_in_place(string: *mut u16, map: impl Fn(u16) -> u16) -> *mut u16 {
 /// `string` is NUL-terminated and writable.
 #[unsafe(export_name = "f2k_export__wcslwr")]
 pub unsafe extern "C" fn wcslwr(string: *mut u16) -> *mut u16 {
-    // SAFETY: the caller's contract.
-    unsafe { map_in_place(string, ctype::wide_lower) }
+    // SAFETY: the caller's writable string, the call's alone.
+    let units_of = unsafe { edge::wide_parts_mut(string, rtl::cstr::len_until_nul(string)) };
+    map_in_place(units_of, ctype::wide_lower);
+    string
 }
 
 /// _wcsupr: the string raised in place; answers it.
@@ -338,36 +318,10 @@ pub unsafe extern "C" fn wcslwr(string: *mut u16) -> *mut u16 {
 /// `string` is NUL-terminated and writable.
 #[unsafe(export_name = "f2k_export__wcsupr")]
 pub unsafe extern "C" fn wcsupr(string: *mut u16) -> *mut u16 {
-    // SAFETY: the caller's contract.
-    unsafe { map_in_place(string, ctype::wide_upper) }
-}
-
-/// A narrow string's bytes, its NUL left out.
-///
-/// # Safety
-///
-/// `string` is NUL-terminated, and stays unchanged while the bytes are in use.
-pub(crate) unsafe fn narrow<'a>(string: *const u8) -> &'a [u8] {
-    // SAFETY: the caller's contract.
-    unsafe { core::ffi::CStr::from_ptr(string.cast()) }.to_bytes()
-}
-
-/// A narrow string's bytes up to `count` of them, its NUL included when it comes first.
-///
-/// # Safety
-///
-/// `string` is NUL-terminated or holds `count` bytes.
-unsafe fn bounded<'a>(string: *const u8, count: usize) -> &'a [u8] {
-    if count == 0 {
-        return &[];
-    }
-    let mut length = 0;
-    // SAFETY: the caller's string, read up to its NUL or `count` bytes.
-    while length < count && unsafe { string.add(length).read() } != 0 {
-        length += 1;
-    }
-    // SAFETY: as above: the bytes read, and the NUL when it was reached.
-    unsafe { core::slice::from_raw_parts(string, (length + 1).min(count)) }
+    // SAFETY: as _wcslwr's.
+    let units_of = unsafe { edge::wide_parts_mut(string, rtl::cstr::len_until_nul(string)) };
+    map_in_place(units_of, ctype::wide_upper);
+    string
 }
 
 /// strlen.
@@ -378,7 +332,7 @@ unsafe fn bounded<'a>(string: *const u8, count: usize) -> &'a [u8] {
 #[unsafe(export_name = "f2k_export_strlen")]
 pub unsafe extern "C" fn strlen(string: *const u8) -> usize {
     // SAFETY: the caller's contract.
-    unsafe { narrow(string) }.len()
+    unsafe { bytes_until_nul(string) }.len()
 }
 
 /// strcpy: `source` and its NUL copied to `destination`; answers `destination`.
@@ -391,8 +345,8 @@ pub unsafe extern "C" fn strcpy(destination: *mut u8, source: *const u8) -> *mut
     // SAFETY: the caller's string and room (ranges that overlap, the caller's error in C, are
     // copied as memmove copies).
     unsafe {
-        let source = core::ffi::CStr::from_ptr(source.cast()).to_bytes_with_nul();
-        core::ptr::copy(source.as_ptr(), destination, source.len());
+        let length = bytes_until_nul(source).len() + 1;
+        core::ptr::copy(source, destination, length);
     }
     destination
 }
@@ -404,8 +358,8 @@ pub unsafe extern "C" fn strcpy(destination: *mut u8, source: *const u8) -> *mut
 /// Both strings are NUL-terminated; `destination` has room for both.
 #[unsafe(export_name = "f2k_export_strcat")]
 pub unsafe extern "C" fn strcat(destination: *mut u8, source: *const u8) -> *mut u8 {
-    // SAFETY: the caller's strings and room.
-    unsafe { strcpy(destination.add(narrow(destination).len()), source) };
+    // SAFETY: the caller's strings and room: the copy goes over `destination`'s NUL.
+    unsafe { strcpy(destination.add(bytes_until_nul(destination).len()), source) };
     destination
 }
 
@@ -425,7 +379,7 @@ fn complement_span(string: &[u8], set: &[u8]) -> usize {
 #[unsafe(export_name = "f2k_export_strcspn")]
 pub unsafe extern "C" fn strcspn(string: *const u8, set: *const u8) -> usize {
     // SAFETY: the caller's strings.
-    let (string, set) = unsafe { (narrow(string), narrow(set)) };
+    let (string, set) = unsafe { (bytes_until_nul(string), bytes_until_nul(set)) };
     complement_span(string, set)
 }
 
@@ -437,28 +391,20 @@ pub unsafe extern "C" fn strcspn(string: *const u8, set: *const u8) -> usize {
 #[unsafe(export_name = "f2k_export_strrchr")]
 pub unsafe extern "C" fn strrchr(string: *const u8, c: i32) -> *const u8 {
     // SAFETY: the caller's string.
-    let bytes = unsafe { core::ffi::CStr::from_ptr(string.cast()) }.to_bytes_with_nul();
-    match bytes.iter().rposition(|&byte| byte == c as u8) {
-        // SAFETY: inside the string.
-        Some(at) => unsafe { string.add(at) },
+    let bytes = unsafe { bytes_until_nul(string) };
+    let found = if c as u8 == 0 {
+        Some(bytes.len())
+    } else {
+        bytes.iter().rposition(|&byte| byte == c as u8)
+    };
+    match found {
+        Some(at) => string.wrapping_add(at),
         None => core::ptr::null(),
     }
 }
 
-/// The comparison _strnicmp makes of its strings' bytes (each its NUL included when reached first):
-/// each byte lowered in the LC_CTYPE locale, the difference of the first that differ, 0 at a common
-/// NUL or past the bytes.
-fn compare_folded(a: &[u8], b: &[u8]) -> i32 {
-    for (&x, &y) in a.iter().zip(b) {
-        let (x, y) = (ctype::byte_lower(x), ctype::byte_lower(y));
-        if x != y || x == 0 {
-            return x as i32 - y as i32;
-        }
-    }
-    0
-}
-
-/// _strnicmp: the first `count` characters' order without regard to case.
+/// _strnicmp: the first `count` characters' order without regard to case (each byte lowered in
+/// the LC_CTYPE locale): the difference of the first that differ, as _stricmp answers.
 ///
 /// # Safety
 ///
@@ -466,8 +412,8 @@ fn compare_folded(a: &[u8], b: &[u8]) -> i32 {
 #[unsafe(export_name = "f2k_export__strnicmp")]
 pub unsafe extern "C" fn strnicmp(a: *const u8, b: *const u8, count: usize) -> i32 {
     // SAFETY: the caller's strings.
-    let (a, b) = unsafe { (bounded(a, count), bounded(b, count)) };
-    compare_folded(a, b)
+    let (a, b) = unsafe { (edge::bytes_bounded(a, count), edge::bytes_bounded(b, count)) };
+    difference(narrow_values(a), narrow_values(b), count, lower_byte)
 }
 
 #[cfg(test)]

@@ -6,10 +6,13 @@
 
 use rtl::time::{SystemTime, TimeFields};
 
-use crate::base::{set_last_error, set_last_nt_error};
-use crate::error::ERROR_INVALID_PARAMETER;
-use crate::nt;
+use crate::edge::{In, Out, OutBuf};
+use crate::error::{answer, bool_answer, Failure, ERROR_INVALID_PARAMETER};
+use crate::ntcall;
 use crate::shared;
+
+/// A SYSTEMTIME, as the caller's structure holds it: its 16 bytes.
+type SystemTimeBytes = [u8; 16];
 
 /// GetTickCount: the milliseconds since boot, `TickCountLow * TickCountMultiplier >> 24`.
 #[unsafe(export_name = "f2k_export_GetTickCount")]
@@ -36,8 +39,9 @@ fn local_time() -> u64 {
 /// `file_time` points at a writable FILETIME.
 #[unsafe(export_name = "f2k_export_GetSystemTimeAsFileTime")]
 pub unsafe extern "system" fn get_system_time_as_file_time(file_time: *mut u64) {
-    // SAFETY: the caller's FILETIME.
-    unsafe { file_time.write_unaligned(system_time()) };
+    // SAFETY: the caller's FILETIME (the contract).
+    let mut file_time = unsafe { Out::new(file_time) };
+    file_time.set(system_time());
 }
 
 /// GetSystemTime: the system time as a SYSTEMTIME.
@@ -47,8 +51,9 @@ pub unsafe extern "system" fn get_system_time_as_file_time(file_time: *mut u64) 
 /// `out` points at a writable SYSTEMTIME.
 #[unsafe(export_name = "f2k_export_GetSystemTime")]
 pub unsafe extern "system" fn get_system_time(out: *mut u8) {
-    // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(out, civil(system_time())) };
+    // SAFETY: the caller's SYSTEMTIME (the contract).
+    let mut out = unsafe { Out::<SystemTimeBytes>::new(out.cast()) };
+    out.set(civil(system_time()).to_bytes());
 }
 
 /// GetLocalTime: the local time as a SYSTEMTIME.
@@ -58,16 +63,15 @@ pub unsafe extern "system" fn get_system_time(out: *mut u8) {
 /// `out` points at a writable SYSTEMTIME.
 #[unsafe(export_name = "f2k_export_GetLocalTime")]
 pub unsafe extern "system" fn get_local_time(out: *mut u8) {
-    // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(out, civil(local_time())) };
+    // SAFETY: the caller's SYSTEMTIME (the contract).
+    let mut out = unsafe { Out::<SystemTimeBytes>::new(out.cast()) };
+    out.set(civil(local_time()).to_bytes());
 }
 
 /// A time's SYSTEMTIME: ntdll's RtlTimeToTimeFields, its TIME_FIELDS in the SYSTEMTIME's order
 /// (the day of the week third, where TIME_FIELDS has it last).
 fn civil(time: u64) -> SystemTime {
-    let mut fields = TimeFields::default();
-    // SAFETY: ntdll's export, over the time and the structure above.
-    unsafe { nt::RtlTimeToTimeFields(&(time as i64), &mut fields) };
+    let fields = ntcall::time_to_fields(time as i64);
     SystemTime {
         year: fields.year as u16,
         month: fields.month as u16,
@@ -93,18 +97,7 @@ fn time_of(civil: SystemTime) -> Option<u64> {
         milliseconds: civil.milliseconds as i16,
         weekday: civil.day_of_week as i16,
     };
-    let mut time = 0i64;
-    // SAFETY: ntdll's export, over the structure and the time above.
-    (unsafe { nt::RtlTimeFieldsToTime(&fields, &mut time) } != 0).then_some(time as u64)
-}
-
-/// # Safety
-///
-/// `out` points at 16 writable bytes.
-unsafe fn write_system_time(out: *mut u8, time: SystemTime) {
-    let bytes = time.to_bytes();
-    // SAFETY: the caller's contract.
-    unsafe { out.copy_from_nonoverlapping(bytes.as_ptr(), bytes.len()) };
+    ntcall::fields_to_time(&fields).map(|time| time as u64)
 }
 
 /// SystemCurrentTimeZoneInformation, and the structure's size.
@@ -122,23 +115,19 @@ const TIME_ZONE_ID_INVALID: u32 = 0xFFFF_FFFF;
 /// `information` points at a writable TIME_ZONE_INFORMATION.
 #[unsafe(export_name = "f2k_export_GetTimeZoneInformation")]
 pub unsafe extern "system" fn get_time_zone_information(information: *mut u8) -> u32 {
-    let mut zone = [0u8; TIME_ZONE_INFORMATION_SIZE];
-    // SAFETY: ntdll's export, into a buffer of the length given.
-    let status = unsafe {
-        nt::NtQuerySystemInformation(
-            SYSTEM_CURRENT_TIME_ZONE_INFORMATION,
-            zone.as_mut_ptr(),
-            zone.len() as u32,
-            core::ptr::null_mut(),
-        )
-    };
-    if !rtl::status::nt_success(status) {
-        set_last_nt_error(status);
-        return TIME_ZONE_ID_INVALID;
-    }
-    // SAFETY: the caller's structure.
-    unsafe { information.copy_from_nonoverlapping(zone.as_ptr(), zone.len()) };
-    shared::read(shared::TIME_ZONE_ID)
+    // SAFETY: the caller's TIME_ZONE_INFORMATION (the contract).
+    let information = unsafe { OutBuf::new(information, TIME_ZONE_INFORMATION_SIZE) };
+    answer(time_zone_information(information), TIME_ZONE_ID_INVALID)
+}
+
+/// GetTimeZoneInformation's work.
+fn time_zone_information(mut information: OutBuf<'_, u8>) -> Result<u32, Failure> {
+    let zone = ntcall::query_system_information::<[u8; TIME_ZONE_INFORMATION_SIZE]>(
+        SYSTEM_CURRENT_TIME_ZONE_INFORMATION,
+    )
+    .map_err(Failure::Status)?;
+    information.put(&zone);
+    Ok(shared::read(shared::TIME_ZONE_ID))
 }
 
 /// QueryPerformanceCounter: the counter, from NtQueryPerformanceCounter; FALSE with its error when
@@ -149,13 +138,9 @@ pub unsafe extern "system" fn get_time_zone_information(information: *mut u8) ->
 /// `count` points at a writable LARGE_INTEGER.
 #[unsafe(export_name = "f2k_export_QueryPerformanceCounter")]
 pub unsafe extern "system" fn query_performance_counter(count: *mut u64) -> u32 {
-    // SAFETY: ntdll's export; the system service checks the caller's pointer.
-    let status = unsafe { nt::NtQueryPerformanceCounter(count, core::ptr::null_mut()) };
-    if !rtl::status::nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    1
+    // SAFETY: the caller's LARGE_INTEGER (the contract; the service probes it).
+    let mut count = unsafe { Out::new(count) };
+    bool_answer(ntcall::query_performance_counter(&mut count, None).map_err(Failure::Status))
 }
 
 /// QueryPerformanceFrequency: the counter's frequency, from NtQueryPerformanceCounter; FALSE with
@@ -166,14 +151,12 @@ pub unsafe extern "system" fn query_performance_counter(count: *mut u64) -> u32 
 /// `frequency` points at a writable LARGE_INTEGER.
 #[unsafe(export_name = "f2k_export_QueryPerformanceFrequency")]
 pub unsafe extern "system" fn query_performance_frequency(frequency: *mut u64) -> u32 {
+    // SAFETY: the caller's LARGE_INTEGER (the contract; the service probes it).
+    let mut frequency = unsafe { Out::new(frequency) };
     let mut counter = 0u64;
-    // SAFETY: ntdll's export; the system service checks the caller's pointer.
-    let status = unsafe { nt::NtQueryPerformanceCounter(&mut counter, frequency) };
-    if !rtl::status::nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    1
+    let queried =
+        ntcall::query_performance_counter(&mut Out::from(&mut counter), Some(&mut frequency));
+    bool_answer(queried.map_err(Failure::Status))
 }
 
 /// SystemTimeToFileTime: the SYSTEMTIME's FILETIME; FALSE with ERROR_INVALID_PARAMETER for a field
@@ -187,24 +170,25 @@ pub unsafe extern "system" fn system_time_to_file_time(
     system_time: *const u8,
     file_time: *mut u64,
 ) -> u32 {
-    let mut bytes = [0u8; 16];
-    // SAFETY: the caller's SYSTEMTIME.
-    unsafe {
-        bytes
-            .as_mut_ptr()
-            .copy_from_nonoverlapping(system_time, bytes.len())
+    // SAFETY: the caller's SYSTEMTIME and FILETIME (the contract).
+    let (system_time, file_time) = unsafe {
+        (
+            In::<SystemTimeBytes>::new(system_time.cast()),
+            Out::new(file_time),
+        )
     };
-    match time_of(SystemTime::from_bytes(&bytes)) {
-        Some(time) => {
-            // SAFETY: the caller's FILETIME.
-            unsafe { file_time.write_unaligned(time) };
-            1
-        }
-        None => {
-            set_last_error(ERROR_INVALID_PARAMETER);
-            0
-        }
-    }
+    bool_answer(to_file_time(system_time, file_time))
+}
+
+/// SystemTimeToFileTime's work.
+fn to_file_time(
+    system_time: In<'_, SystemTimeBytes>,
+    mut file_time: Out<'_, u64>,
+) -> Result<(), Failure> {
+    let time = time_of(SystemTime::from_bytes(&system_time.read()))
+        .ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
+    file_time.set(time);
+    Ok(())
 }
 
 /// FileTimeToSystemTime: the FILETIME's civil fields; FALSE with ERROR_INVALID_PARAMETER for a
@@ -218,15 +202,27 @@ pub unsafe extern "system" fn file_time_to_system_time(
     file_time: *const u64,
     system_time: *mut u8,
 ) -> u32 {
-    // SAFETY: the caller's FILETIME.
-    let time = unsafe { file_time.read_unaligned() };
+    // SAFETY: the caller's FILETIME and SYSTEMTIME (the contract).
+    let (file_time, system_time) = unsafe {
+        (
+            In::new(file_time),
+            Out::<SystemTimeBytes>::new(system_time.cast()),
+        )
+    };
+    bool_answer(to_system_time(file_time, system_time))
+}
+
+/// FileTimeToSystemTime's work.
+fn to_system_time(
+    file_time: In<'_, u64>,
+    mut system_time: Out<'_, SystemTimeBytes>,
+) -> Result<(), Failure> {
+    let time = file_time.read();
     if time >= 1 << 63 {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        return Err(Failure::Error(ERROR_INVALID_PARAMETER));
     }
-    // SAFETY: the caller's SYSTEMTIME.
-    unsafe { write_system_time(system_time, civil(time)) };
-    1
+    system_time.set(civil(time).to_bytes());
+    Ok(())
 }
 
 /// FileTimeToLocalFileTime: the FILETIME less the time-zone bias.
@@ -239,14 +235,13 @@ pub unsafe extern "system" fn file_time_to_local_file_time(
     file_time: *const u64,
     local: *mut u64,
 ) -> u32 {
-    // SAFETY: the caller's FILETIMEs.
-    unsafe {
-        local.write_unaligned(
-            file_time
-                .read_unaligned()
-                .wrapping_sub(shared::time(shared::TIME_ZONE_BIAS)),
-        )
-    };
+    // SAFETY: the caller's FILETIMEs (the contract).
+    let (file_time, mut local) = unsafe { (In::new(file_time), Out::new(local)) };
+    local.set(
+        file_time
+            .read()
+            .wrapping_sub(shared::time(shared::TIME_ZONE_BIAS)),
+    );
     1
 }
 
@@ -259,9 +254,9 @@ pub unsafe extern "system" fn file_time_to_local_file_time(
 /// Both point at FILETIMEs.
 #[unsafe(export_name = "f2k_export_CompareFileTime")]
 pub unsafe extern "system" fn compare_file_time(first: *const u64, second: *const u64) -> i32 {
-    // SAFETY: the caller's FILETIMEs.
-    let (first, second) = unsafe { (first.read_unaligned(), second.read_unaligned()) };
-    first.cmp(&second) as i32
+    // SAFETY: the caller's FILETIMEs (the contract).
+    let (first, second) = unsafe { (In::new(first), In::new(second)) };
+    first.read().cmp(&second.read()) as i32
 }
 
 /// SetLocalTime: the local time a SYSTEMTIME gives (judged by ntdll's RtlTimeFieldsToTime: a field
@@ -275,30 +270,23 @@ pub unsafe extern "system" fn compare_file_time(first: *const u64, second: *cons
 /// `local` points at a SYSTEMTIME.
 #[unsafe(export_name = "f2k_export_SetLocalTime")]
 pub unsafe extern "system" fn set_local_time(local: *const u8) -> u32 {
-    let mut bytes = [0u8; 16];
-    // SAFETY: the caller's SYSTEMTIME.
-    unsafe {
-        bytes
-            .as_mut_ptr()
-            .copy_from_nonoverlapping(local, bytes.len())
-    };
-    let Some(local) = time_of(SystemTime::from_bytes(&bytes)) else {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    };
+    // SAFETY: the caller's SYSTEMTIME (the contract).
+    let local = unsafe { In::<SystemTimeBytes>::new(local.cast()) };
+    bool_answer(set_local(local))
+}
+
+/// SetLocalTime's work.
+fn set_local(local: In<'_, SystemTimeBytes>) -> Result<(), Failure> {
+    let local = time_of(SystemTime::from_bytes(&local.read()))
+        .ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
     let system = local.wrapping_add(shared::time(shared::TIME_ZONE_BIAS));
-    // SAFETY: ntdll's export, over the time above.
-    let status = unsafe { nt::NtSetSystemTime(&system, core::ptr::null_mut()) };
-    if !rtl::status::nt_success(status) {
-        set_last_nt_error(status);
-        return 0;
-    }
-    1
+    ntcall::set_system_time(system).map_err(Failure::Status)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nt;
 
     fn compare(first: u64, second: u64) -> i32 {
         // SAFETY: the FILETIMEs above.

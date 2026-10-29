@@ -646,6 +646,12 @@ pub mod host {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    /// Whether a thread holds `section` (the tests' check that a lock was let go).
+    pub fn section_held(section: &rtl::critsec::CriticalSection) -> bool {
+        let at = core::ptr::from_ref(section) as usize;
+        sections().iter().any(|(held, ..)| *held == at)
+    }
+
     pub unsafe extern "system" fn InitializeCriticalSection(_: *mut u8) {}
 
     /// EnterCriticalSection: the section taken by the calling thread, as a critical section is (one

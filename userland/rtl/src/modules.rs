@@ -5,13 +5,13 @@
 //! in load order (the image, ntdll, then each DLL as it is mapped), in memory order (the same), and
 //! in initialization order (ntdll, then each DLL once its imports are snapped, so a DLL comes after
 //! the DLLs it imports; the image is not initialized as a DLL is). Programs and packers walk the
-//! lists themselves (to find kernel32's base), so the layout is the platform's, byte for byte.
-//! ntdll's process initialization builds them in user mode, on the process heap, as Windows 2000's
-//! LdrpInitializeProcess does: the image's entry and ntdll's, then every DLL the image imports,
-//! loaded and snapped like any other. A DLL joins them as it is mapped ([`loaded_entry`],
-//! [`insert`]), its imports walked and snapped against them ([`import_descriptors`],
-//! [`import_address`]), joins the initialization order once they are ([`insert_initialized`]), and
-//! leaves them at its last unload ([`remove`]).
+//! lists themselves (to find kernel32's base), so the layout is the platform's, byte for byte
+//! (`rtl::peb`'s [`PebLdrData`] and [`LdrDataTableEntry`]). ntdll's process initialization builds
+//! them in user mode, on the process heap, as Windows 2000's LdrpInitializeProcess does: the
+//! image's entry and ntdll's, then every DLL the image imports, loaded and snapped like any other.
+//! A DLL joins them as it is mapped ([`loaded_entry`], [`insert`]), its imports walked and snapped
+//! against them ([`import_descriptors`], [`import_address`]), joins the initialization order once
+//! they are ([`insert_initialized`]), and leaves them at its last unload ([`remove`]).
 //!
 //! What ntdll's loader exports do over them (LdrGetDllHandle, LdrGetProcedureAddress, LdrLoadDll,
 //! LdrUnloadDll): find a module by its base, or by its name ([`by_name`]: without regard to case,
@@ -22,11 +22,17 @@
 //! [`procedure_by_ordinal`]), following forwarders (`NTDLL.RtlUnwind`, split at the first dot;
 //! `NTDLL.#12` by ordinal) into the modules they name.
 //!
-//! The reads go through [`Memory`], by 32-bit user address: the process's own memory on the target,
-//! a model in the tests.
+//! The reads and writes go through [`Memory`] and [`MemoryMut`], by 32-bit user address, each
+//! structure whole as its `#[repr(C)]` type ([`Module`] is an entry's address): the process's own
+//! memory on the target, a model in the tests.
 
 use core::cmp::Ordering;
+use core::mem::{offset_of, size_of};
 
+use crate::image::{self, ImageExportDirectory, ImageImportDescriptor};
+use crate::nt::UnicodeString;
+use crate::peb::{LdrDataTableEntry, ListEntry, PebLdrData};
+use crate::pod::Pod;
 use crate::status::{
     STATUS_DLL_NOT_FOUND,
     STATUS_ENTRYPOINT_NOT_FOUND,
@@ -39,51 +45,43 @@ pub trait Memory {
     /// The byte at `at`.
     fn byte(&self, at: u32) -> u8;
 
-    /// The little-endian word at `at`.
+    /// The `T` at `at`, read whole, at any alignment (little-endian, as the target and the hosts
+    /// the tests run on are).
+    fn read<T: Pod>(&self, at: u32) -> T {
+        let mut value = T::zeroed();
+        for (offset, byte) in value.as_bytes_mut().iter_mut().enumerate() {
+            *byte = self.byte(at.wrapping_add(offset as u32));
+        }
+        value
+    }
+
+    /// The word at `at`.
     fn half(&self, at: u32) -> u16 {
-        u16::from_le_bytes([self.byte(at), self.byte(at.wrapping_add(1))])
+        self.read(at)
     }
 
-    /// The little-endian dword at `at`.
+    /// The dword at `at`.
     fn word(&self, at: u32) -> u32 {
-        u32::from(self.half(at)) | u32::from(self.half(at.wrapping_add(2))) << 16
+        self.read(at)
     }
 }
 
-/// PEB_LDR_DATA (NT 5.0, x86): its Length, Initialized, SsHandle, and the three lists' heads
-/// (LIST_ENTRYs: Flink, Blink).
-pub mod data {
-    pub const LENGTH: u32 = 0x00;
-    pub const INITIALIZED: u32 = 0x04;
-    pub const SS_HANDLE: u32 = 0x08;
-    pub const IN_LOAD_ORDER_MODULE_LIST: u32 = 0x0C;
-    pub const IN_MEMORY_ORDER_MODULE_LIST: u32 = 0x14;
-    pub const IN_INITIALIZATION_ORDER_MODULE_LIST: u32 = 0x1C;
-    /// Its size, as its Length records it.
-    pub const SIZE: u32 = 0x24;
+/// The memory the lists are changed in, by user address.
+pub trait MemoryMut: Memory {
+    /// Write the byte at `at`.
+    fn set_byte(&mut self, at: u32, value: u8);
+
+    /// Write `value` whole at `at`, at any alignment.
+    fn write<T: Pod>(&mut self, at: u32, value: T) {
+        for (offset, &byte) in value.as_bytes().iter().enumerate() {
+            self.set_byte(at.wrapping_add(offset as u32), byte);
+        }
+    }
 }
 
-/// LDR_DATA_TABLE_ENTRY (NT 5.0, x86): its links in the three lists, the image's base, entry point
-/// and size, its full path and file name (UNICODE_STRINGs), the LDRP_* flags, the load count (a
-/// word), the TLS index (a word), the hash links (LIST_ENTRY; SectionPointer and CheckSum share
-/// them) and the image's TimeDateStamp.
-pub mod entry {
-    pub const IN_LOAD_ORDER_LINKS: u32 = 0x00;
-    pub const IN_MEMORY_ORDER_LINKS: u32 = 0x08;
-    pub const IN_INITIALIZATION_ORDER_LINKS: u32 = 0x10;
-    pub const DLL_BASE: u32 = 0x18;
-    pub const ENTRY_POINT: u32 = 0x1C;
-    pub const SIZE_OF_IMAGE: u32 = 0x20;
-    pub const FULL_DLL_NAME: u32 = 0x24;
-    pub const BASE_DLL_NAME: u32 = 0x2C;
-    pub const FLAGS: u32 = 0x34;
-    pub const LOAD_COUNT: u32 = 0x38;
-    pub const TLS_INDEX: u32 = 0x3A;
-    pub const HASH_LINKS: u32 = 0x3C;
-    pub const TIME_DATE_STAMP: u32 = 0x44;
-    /// Its size.
-    pub const SIZE: u32 = 0x48;
-}
+/// PEB_LDR_DATA and LDR_DATA_TABLE_ENTRY as a 32-bit process's memory holds them.
+pub type LdrData = PebLdrData<u32>;
+pub type Entry = LdrDataTableEntry<u32>;
 
 /// The LDRP_* flags of an entry: a DLL's image (LDRP_IMAGE_DLL); an entry the loader's
 /// initialization pass has taken (LDRP_ENTRY_PROCESSED: its entry point called, or none to call);
@@ -115,72 +113,151 @@ const BACKSLASH: u16 = b'\\' as u16;
 const SLASH: u16 = b'/' as u16;
 const DOT: u16 = b'.' as u16;
 
-/// The entries of the list headed at `head` in the PEB_LDR_DATA at `ldr`, linked through their
-/// `links` (each entry's address): from the head's Flink, or from its Blink for `backward`.
+/// Where a LIST_ENTRY's two links sit in it.
+const FLINK: u32 = offset_of!(ListEntry<u32>, flink) as u32;
+const BLINK: u32 = offset_of!(ListEntry<u32>, blink) as u32;
+
+/// A LIST_ENTRY at `node` linked to itself: an empty list's head, or an entry in no list.
+fn self_linked(node: u32) -> ListEntry<u32> {
+    ListEntry {
+        flink: node,
+        blink: node,
+    }
+}
+
+/// The three lists: load, memory and initialization order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Order {
+    Load,
+    Memory,
+    Initialization,
+}
+
+impl Order {
+    const ALL: [Order; 3] = [Order::Load, Order::Memory, Order::Initialization];
+
+    /// Where the list's head sits in a PEB_LDR_DATA.
+    const fn head(self) -> u32 {
+        (match self {
+            Order::Load => offset_of!(LdrData, in_load_order_module_list),
+            Order::Memory => offset_of!(LdrData, in_memory_order_module_list),
+            Order::Initialization => offset_of!(LdrData, in_initialization_order_module_list),
+        }) as u32
+    }
+
+    /// Where an entry's links in the list sit in it.
+    const fn links(self) -> u32 {
+        (match self {
+            Order::Load => offset_of!(Entry, in_load_order_links),
+            Order::Memory => offset_of!(Entry, in_memory_order_links),
+            Order::Initialization => offset_of!(Entry, in_initialization_order_links),
+        }) as u32
+    }
+}
+
+/// A module of the lists: the address of its LDR_DATA_TABLE_ENTRY ([`Entry`]), which the walks
+/// find and the loader makes, read and changed through a [`Memory`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Module(pub u32);
+
+impl Module {
+    /// The entry's address.
+    pub fn at(self) -> u32 {
+        self.0
+    }
+
+    /// The entry, read whole.
+    pub fn entry<M: Memory>(self, memory: &M) -> Entry {
+        memory.read(self.0)
+    }
+
+    /// The module's handle: its image's base.
+    pub fn base<M: Memory>(self, memory: &M) -> u32 {
+        self.entry(memory).dll_base
+    }
+
+    /// The module's entry point (zero for none).
+    pub fn entry_point<M: Memory>(self, memory: &M) -> u32 {
+        self.entry(memory).entry_point
+    }
+
+    /// The module's load count.
+    pub fn load_count<M: Memory>(self, memory: &M) -> u16 {
+        self.entry(memory).load_count
+    }
+
+    /// The module's LDRP_* flags ([`flags`]).
+    pub fn flags<M: Memory>(self, memory: &M) -> u32 {
+        self.entry(memory).flags
+    }
+
+    /// Replace the module's load count, in place.
+    pub fn set_load_count<M: MemoryMut>(self, memory: &mut M, count: u16) {
+        memory.write(self.0 + offset_of!(Entry, load_count) as u32, count);
+    }
+
+    /// Replace the module's flags, in place.
+    pub fn set_flags<M: MemoryMut>(self, memory: &mut M, value: u32) {
+        memory.write(self.0 + offset_of!(Entry, flags) as u32, value);
+    }
+
+    /// Unlink the module from the initialization order's links of its own (zeroes: in no list, as
+    /// the image's entry is), in place.
+    pub fn clear_initialization_links<M: MemoryMut>(self, memory: &mut M) {
+        memory.write(
+            self.0 + Order::Initialization.links(),
+            ListEntry::<u32>::default(),
+        );
+    }
+}
+
+/// The entries of the list `order` of the PEB_LDR_DATA at `ldr`: from its head's Flink, or from
+/// its Blink for `backward`.
 fn walk<M: Memory>(
     memory: &M,
     ldr: u32,
-    head: u32,
-    links: u32,
+    order: Order,
     backward: bool,
-) -> impl Iterator<Item = u32> + '_ {
-    let head = ldr.wrapping_add(head);
-    let step = if backward { 4 } else { 0 };
-    let mut next = memory.word(head + step);
+) -> impl Iterator<Item = Module> + '_ {
+    let head = ldr.wrapping_add(order.head());
+    let step = move |node: ListEntry<u32>| if backward { node.blink } else { node.flink };
+    let mut next = step(memory.read(head));
     let mut left = MAX_ENTRIES;
     core::iter::from_fn(move || {
         if next == head || next == 0 || left == 0 {
             return None;
         }
         left -= 1;
-        let entry = next.wrapping_sub(links);
-        next = memory.word(next + step);
-        Some(entry)
+        let module = Module(next.wrapping_sub(order.links()));
+        next = step(memory.read(next));
+        Some(module)
     })
 }
 
-/// The entries of the PEB_LDR_DATA at `ldr`, in load order (each entry's address).
-pub fn load_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = u32> + '_ {
-    walk(
-        memory,
-        ldr,
-        data::IN_LOAD_ORDER_MODULE_LIST,
-        entry::IN_LOAD_ORDER_LINKS,
-        false,
-    )
+/// The modules of the PEB_LDR_DATA at `ldr`, in load order.
+pub fn load_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = Module> + '_ {
+    walk(memory, ldr, Order::Load, false)
 }
 
-/// The entries of the PEB_LDR_DATA at `ldr`, in memory order (the order the thread attach
+/// The modules of the PEB_LDR_DATA at `ldr`, in memory order (the order the thread attach
 /// notifications take).
-pub fn memory_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = u32> + '_ {
-    walk(
-        memory,
-        ldr,
-        data::IN_MEMORY_ORDER_MODULE_LIST,
-        entry::IN_MEMORY_ORDER_LINKS,
-        false,
-    )
+pub fn memory_order<M: Memory>(memory: &M, ldr: u32) -> impl Iterator<Item = Module> + '_ {
+    walk(memory, ldr, Order::Memory, false)
 }
 
-/// The entries of the PEB_LDR_DATA at `ldr` in initialization order (a DLL after the DLLs it
+/// The modules of the PEB_LDR_DATA at `ldr` in initialization order (a DLL after the DLLs it
 /// imports), or in its reverse for `backward` (the order the detach notifications take).
 pub fn initialization_order<M: Memory>(
     memory: &M,
     ldr: u32,
     backward: bool,
-) -> impl Iterator<Item = u32> + '_ {
-    walk(
-        memory,
-        ldr,
-        data::IN_INITIALIZATION_ORDER_MODULE_LIST,
-        entry::IN_INITIALIZATION_ORDER_LINKS,
-        backward,
-    )
+) -> impl Iterator<Item = Module> + '_ {
+    walk(memory, ldr, Order::Initialization, backward)
 }
 
-/// The entry of the module whose base is `base` (its handle).
-pub fn by_base<M: Memory>(memory: &M, ldr: u32, base: u32) -> Option<u32> {
-    load_order(memory, ldr).find(|&entry| memory.word(entry + entry::DLL_BASE) == base)
+/// The module whose base is `base` (its handle).
+pub fn by_base<M: Memory>(memory: &M, ldr: u32, base: u32) -> Option<Module> {
+    load_order(memory, ldr).find(|module| module.base(memory) == base)
 }
 
 /// Whether a module name carries a path (a separator: it is then matched against the modules' full
@@ -213,25 +290,37 @@ pub fn module_name(name: &[u16], out: &mut [u16]) -> Option<usize> {
     Some(length)
 }
 
-/// Whether the UNICODE_STRING at `at` holds `name`, without regard to case.
-fn string_is<M: Memory>(memory: &M, at: u32, name: &[u16]) -> bool {
-    let length = usize::from(memory.half(at)) / 2;
-    let buffer = memory.word(at + 4);
-    length == name.len()
+/// Whether `string` (its buffer in `memory`) holds `name`, without regard to case.
+fn string_is<M: Memory>(memory: &M, string: &UnicodeString<u32>, name: &[u16]) -> bool {
+    usize::from(string.length) / 2 == name.len()
         && name.iter().enumerate().all(|(index, &unit)| {
-            crate::path::upcase(memory.half(buffer + 2 * index as u32)) == crate::path::upcase(unit)
+            crate::path::upcase(memory.half(string.buffer + 2 * index as u32))
+                == crate::path::upcase(unit)
         })
 }
 
-/// The entry of the module `name` names (as [`module_name`] forms it): its BaseDllName without
-/// regard to case, or its FullDllName for a name with a path (the caller made it absolute).
-pub fn by_name<M: Memory>(memory: &M, ldr: u32, name: &[u16]) -> Option<u32> {
-    let field = if has_path(name) {
-        entry::FULL_DLL_NAME
-    } else {
-        entry::BASE_DLL_NAME
-    };
-    load_order(memory, ldr).find(|&entry| string_is(memory, entry + field, name))
+/// The units of `string` (its buffer in `memory`) into `out`, cut to its room: their count.
+pub fn string_units<M: Memory>(memory: &M, string: &UnicodeString<u32>, out: &mut [u16]) -> usize {
+    let length = (usize::from(string.length) / 2).min(out.len());
+    for (index, unit) in out[..length].iter_mut().enumerate() {
+        *unit = memory.half(string.buffer + 2 * index as u32);
+    }
+    length
+}
+
+/// The module `name` names (as [`module_name`] forms it): its BaseDllName without regard to case,
+/// or its FullDllName for a name with a path (the caller made it absolute).
+pub fn by_name<M: Memory>(memory: &M, ldr: u32, name: &[u16]) -> Option<Module> {
+    let full = has_path(name);
+    load_order(memory, ldr).find(|module| {
+        let entry = module.entry(memory);
+        let string = if full {
+            &entry.full_dll_name
+        } else {
+            &entry.base_dll_name
+        };
+        string_is(memory, string, name)
+    })
 }
 
 /// LdrLoadDll's count for a module loaded once more: one more reference, a static module's count
@@ -262,24 +351,6 @@ pub enum Export {
     Forwarder(u32),
 }
 
-/// The export directory of the image mapped at `base` (its RVA and size); none for an image without
-/// one.
-fn export_directory<M: Memory>(memory: &M, base: u32) -> Option<(u32, u32)> {
-    if memory.half(base) != 0x5A4D {
-        return None; // "MZ"
-    }
-    let nt = base.wrapping_add(memory.word(base + 0x3C));
-    if memory.word(nt) != 0x0000_4550 {
-        return None; // "PE\0\0"
-    }
-    let optional = nt + 0x18;
-    if memory.half(optional) != 0x010B || memory.word(optional + 0x5C) == 0 {
-        return None; // not PE32, or no data directories
-    }
-    let (rva, size) = (memory.word(optional + 0x60), memory.word(optional + 0x64));
-    (rva != 0).then_some((rva, size))
-}
-
 /// The NUL-terminated string at `at` against `name`, as strcmp orders them.
 fn compare<M: Memory>(memory: &M, at: u32, name: &[u8]) -> Ordering {
     for (index, &byte) in name.iter().enumerate() {
@@ -295,7 +366,9 @@ fn compare<M: Memory>(memory: &M, at: u32, name: &[u8]) -> Ordering {
     }
 }
 
-/// The export directory's fields a lookup reads, of the image mapped at `base`.
+/// The export directory's fields a lookup reads, of the image mapped at `base`: where the directory
+/// lies (a function in it is a forwarder), the ordinal base, and the three tables' sizes and
+/// addresses.
 struct Directory {
     rva: u32,
     size: u32,
@@ -311,17 +384,18 @@ impl Directory {
     /// The export directory of the image mapped at `base`; STATUS_PROCEDURE_NOT_FOUND for an image
     /// without one.
     fn of<M: Memory>(memory: &M, base: u32) -> Result<Directory, u32> {
-        let (rva, size) = export_directory(memory, base).ok_or(STATUS_PROCEDURE_NOT_FOUND)?;
-        let at = base.wrapping_add(rva);
+        let place = image::mapped_directory(memory, base, image::DIRECTORY_EXPORT)
+            .ok_or(STATUS_PROCEDURE_NOT_FOUND)?;
+        let directory: ImageExportDirectory = memory.read(base.wrapping_add(place.virtual_address));
         Ok(Directory {
-            rva,
-            size,
-            ordinal_base: memory.word(at + 0x10),
-            functions: memory.word(at + 0x14),
-            names: memory.word(at + 0x18),
-            function_table: base.wrapping_add(memory.word(at + 0x1C)),
-            name_table: base.wrapping_add(memory.word(at + 0x20)),
-            ordinal_table: base.wrapping_add(memory.word(at + 0x24)),
+            rva: place.virtual_address,
+            size: place.size,
+            ordinal_base: directory.base,
+            functions: directory.number_of_functions,
+            names: directory.number_of_names,
+            function_table: base.wrapping_add(directory.address_of_functions),
+            name_table: base.wrapping_add(directory.address_of_names),
+            ordinal_table: base.wrapping_add(directory.address_of_name_ordinals),
         })
     }
 
@@ -390,7 +464,7 @@ fn forwarded_module<M: Memory>(memory: &M, ldr: u32, module: &[u8]) -> Result<u3
     let mut name = [0u16; FORWARDER_ROOM + DEFAULT_EXTENSION.len()];
     let length = module_name(&wide[..module.len()], &mut name).ok_or(STATUS_DLL_NOT_FOUND)?;
     by_name(memory, ldr, &name[..length])
-        .map(|entry| memory.word(entry + entry::DLL_BASE))
+        .map(|module| module.base(memory))
         .ok_or(STATUS_DLL_NOT_FOUND)
 }
 
@@ -481,12 +555,6 @@ pub fn procedure_by_ordinal<M: Memory>(
 }
 
 // --- Loading a module: LdrLoadDll's and LdrUnloadDll's work over the lists ---------------------
-
-/// The memory the lists are changed in, by user address.
-pub trait MemoryMut: Memory {
-    /// Write the little-endian dword at `at`.
-    fn set_word(&mut self, at: u32, value: u32);
-}
 
 /// Where a load looks for a module's file: Windows 2000 SP4's default search (SafeDllSearchMode
 /// off), as kernel32 computes it for LoadLibrary and the process parameters carry it for the
@@ -624,8 +692,8 @@ pub struct Loaded {
 /// The facts an entry records of the image mapped at `base`, read from its headers (its size the
 /// mapping's, `size`, or the headers' SizeOfImage for none): see [`Loaded`].
 pub fn loaded<M: Memory>(memory: &M, base: u32, size: Option<u32>) -> Loaded {
-    let nt = base.wrapping_add(memory.word(base + 0x3C));
-    let entry_rva = memory.word(nt + 0x18 + 0x10);
+    let nt = image::mapped_headers(memory, base);
+    let entry_rva = nt.optional_header.address_of_entry_point;
     Loaded {
         base,
         entry_point: if entry_rva == 0 {
@@ -633,116 +701,104 @@ pub fn loaded<M: Memory>(memory: &M, base: u32, size: Option<u32>) -> Loaded {
         } else {
             base.wrapping_add(entry_rva)
         },
-        size: size.unwrap_or_else(|| memory.word(nt + 0x18 + 0x38)),
-        time_date_stamp: memory.word(nt + 8),
-        dll: memory.half(nt + 22) & 0x2000 != 0,
+        size: size.unwrap_or(nt.optional_header.size_of_image),
+        time_date_stamp: nt.file_header.time_date_stamp,
+        dll: nt.file_header.characteristics & image::FILE_DLL != 0,
     }
 }
 
-/// The LDR_DATA_TABLE_ENTRY's bytes of a module the loader mapped: `module`, its FullDllName the
-/// path it was opened by (`path`, in units, at `buffer`, its room `room` bytes), its BaseDllName
-/// the path's file part (the name as asked, its default extension supplied); a LoadCount of 1,
-/// TlsIndex 0, the hash links empty (no hash table: the lookups walk the lists), the load and
-/// memory order links left for [`insert`], and the initialization order's linked to the entry
-/// itself until [`insert_initialized`] (so [`remove`] leaves alone an entry that never joined
-/// it). Its flags say a DLL's image (LDRP_IMAGE_DLL), nothing processed yet.
-pub fn loaded_entry(
-    at: u32,
-    module: &Loaded,
-    buffer: u32,
-    path: &[u16],
-    room: u32,
-) -> [u8; entry::SIZE as usize] {
-    let mut bytes = [0u8; entry::SIZE as usize];
-    let mut put = |offset: u32, value: u32| {
-        bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
-    };
-    put(entry::DLL_BASE, module.base);
-    put(entry::ENTRY_POINT, module.entry_point);
-    put(entry::SIZE_OF_IMAGE, module.size);
+/// The LDR_DATA_TABLE_ENTRY of a module the loader mapped, to be written at `at`: `module`, its
+/// FullDllName the path it was opened by (`path`, in units, at `buffer`, its room `room` bytes),
+/// its BaseDllName the path's file part (the name as asked, its default extension supplied); a
+/// LoadCount of 1, TlsIndex 0, the hash links empty (no hash table: the lookups walk the lists),
+/// the load and memory order links left for [`insert`], and the initialization order's linked to
+/// the entry itself until [`insert_initialized`] (so [`remove`] leaves alone an entry that never
+/// joined it). Its flags say a DLL's image (LDRP_IMAGE_DLL), nothing processed yet.
+pub fn loaded_entry(at: u32, module: &Loaded, buffer: u32, path: &[u16], room: u32) -> Entry {
     let length = 2 * path.len() as u32;
-    put(entry::FULL_DLL_NAME, length | room << 16);
-    put(entry::FULL_DLL_NAME + 4, buffer);
     let file = 2 * path
         .iter()
         .rposition(|&unit| unit == BACKSLASH)
         .map_or(0, |at| at + 1) as u32;
-    put(entry::BASE_DLL_NAME, (length - file) | (room - file) << 16);
-    put(entry::BASE_DLL_NAME + 4, buffer + file);
-    put(entry::FLAGS, if module.dll { flags::IMAGE_DLL } else { 0 });
-    put(entry::LOAD_COUNT, 1);
-    for links in [entry::IN_INITIALIZATION_ORDER_LINKS, entry::HASH_LINKS] {
-        put(links, at + links);
-        put(links + 4, at + links);
+    Entry {
+        in_initialization_order_links: self_linked(at + Order::Initialization.links()),
+        dll_base: module.base,
+        entry_point: module.entry_point,
+        size_of_image: module.size,
+        full_dll_name: UnicodeString {
+            length: length as u16,
+            maximum_length: room as u16,
+            buffer,
+        },
+        base_dll_name: UnicodeString {
+            length: (length - file) as u16,
+            maximum_length: (room - file) as u16,
+            buffer: buffer + file,
+        },
+        flags: if module.dll { flags::IMAGE_DLL } else { 0 },
+        load_count: 1,
+        hash_links: self_linked(at + offset_of!(Entry, hash_links) as u32),
+        time_date_stamp: module.time_date_stamp,
+        ..Entry::default()
     }
-    put(entry::TIME_DATE_STAMP, module.time_date_stamp);
-    bytes
 }
 
 /// Link the LIST_ENTRY at `node` last in the list headed at `head`.
 fn link_last<M: MemoryMut>(memory: &mut M, head: u32, node: u32) {
-    let last = memory.word(head + 4);
-    memory.set_word(node, head);
-    memory.set_word(node + 4, last);
-    memory.set_word(last, node);
-    memory.set_word(head + 4, node);
+    let last = memory.read::<ListEntry<u32>>(head).blink;
+    memory.write(
+        node,
+        ListEntry {
+            flink: head,
+            blink: last,
+        },
+    );
+    memory.write(last + FLINK, node);
+    memory.write(head + BLINK, node);
 }
 
 /// Unlink the LIST_ENTRY at `node` from its list (one linked to itself stays as it is).
 fn unlink<M: MemoryMut>(memory: &mut M, node: u32) {
-    let (next, previous) = (memory.word(node), memory.word(node + 4));
-    memory.set_word(previous, next);
-    memory.set_word(next + 4, previous);
+    let ListEntry {
+        flink: next,
+        blink: previous,
+    } = memory.read(node);
+    memory.write(previous + FLINK, next);
+    memory.write(next + BLINK, previous);
 }
 
-/// The three lists' heads and an entry's links in them: load, memory and initialization order.
-const ORDERS: [(u32, u32); 3] = [
-    (data::IN_LOAD_ORDER_MODULE_LIST, entry::IN_LOAD_ORDER_LINKS),
-    (
-        data::IN_MEMORY_ORDER_MODULE_LIST,
-        entry::IN_MEMORY_ORDER_LINKS,
-    ),
-    (
-        data::IN_INITIALIZATION_ORDER_MODULE_LIST,
-        entry::IN_INITIALIZATION_ORDER_LINKS,
-    ),
-];
-
-/// An empty PEB_LDR_DATA's bytes, at `at`: its Length, Initialized, and the three lists' heads
-/// linked to themselves.
-pub fn empty_lists(at: u32) -> [u8; data::SIZE as usize] {
-    let mut bytes = [0u8; data::SIZE as usize];
-    let mut put = |offset: u32, value: u32| {
-        bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
-    };
-    put(data::LENGTH, data::SIZE);
-    put(data::INITIALIZED, 1);
-    for (head, _) in ORDERS {
-        put(head, at + head);
-        put(head + 4, at + head);
-    }
-    bytes
-}
-
-/// The entry at `entry` joins the load and memory orders of the PEB_LDR_DATA at `ldr`, after
-/// their last entries (its module is mapped).
-pub fn insert<M: MemoryMut>(memory: &mut M, ldr: u32, entry: u32) {
-    for (head, links) in &ORDERS[..2] {
-        link_last(memory, ldr + head, entry + links);
+/// An empty PEB_LDR_DATA, to be written at `at`: its Length, Initialized, and the three lists'
+/// heads linked to themselves.
+pub fn empty_lists(at: u32) -> LdrData {
+    LdrData {
+        length: size_of::<LdrData>() as u32,
+        initialized: 1,
+        ss_handle: 0,
+        in_load_order_module_list: self_linked(at + Order::Load.head()),
+        in_memory_order_module_list: self_linked(at + Order::Memory.head()),
+        in_initialization_order_module_list: self_linked(at + Order::Initialization.head()),
     }
 }
 
-/// The entry at `entry` joins the initialization order of the PEB_LDR_DATA at `ldr`, after its last
-/// entry (its module's imports are snapped: every DLL it imports is already there).
-pub fn insert_initialized<M: MemoryMut>(memory: &mut M, ldr: u32, entry: u32) {
-    let (head, links) = ORDERS[2];
-    link_last(memory, ldr + head, entry + links);
+/// `module` joins the load and memory orders of the PEB_LDR_DATA at `ldr`, after their last
+/// entries (its image is mapped).
+pub fn insert<M: MemoryMut>(memory: &mut M, ldr: u32, module: Module) {
+    for order in [Order::Load, Order::Memory] {
+        link_last(memory, ldr + order.head(), module.0 + order.links());
+    }
 }
 
-/// The entry at `entry` leaves the three lists.
-pub fn remove<M: MemoryMut>(memory: &mut M, entry: u32) {
-    for (_, links) in ORDERS {
-        unlink(memory, entry + links);
+/// `module` joins the initialization order of the PEB_LDR_DATA at `ldr`, after its last entry (its
+/// imports are snapped: every DLL it imports is already there).
+pub fn insert_initialized<M: MemoryMut>(memory: &mut M, ldr: u32, module: Module) {
+    let order = Order::Initialization;
+    link_last(memory, ldr + order.head(), module.0 + order.links());
+}
+
+/// `module` leaves the three lists.
+pub fn remove<M: MemoryMut>(memory: &mut M, module: Module) {
+    for order in Order::ALL {
+        unlink(memory, module.0 + order.links());
     }
 }
 
@@ -765,13 +821,8 @@ pub fn import_descriptors<M: Memory>(
     memory: &M,
     base: u32,
 ) -> impl Iterator<Item = Descriptor> + '_ {
-    let nt = base.wrapping_add(memory.word(base + 0x3C));
-    let optional = nt + 0x18;
-    let rva = if memory.word(optional + 0x5C) > 1 {
-        memory.word(optional + 0x68)
-    } else {
-        0
-    };
+    let rva = image::mapped_directory(memory, base, image::DIRECTORY_IMPORT)
+        .map_or(0, |place| place.virtual_address);
     let mut at = base.wrapping_add(rva);
     let mut left = if rva == 0 { 0 } else { MAX_DESCRIPTORS };
     core::iter::from_fn(move || {
@@ -779,28 +830,35 @@ pub fn import_descriptors<M: Memory>(
             return None;
         }
         left -= 1;
-        let (original, name, first) = (memory.word(at), memory.word(at + 12), memory.word(at + 16));
-        if name == 0 || first == 0 {
+        let descriptor: ImageImportDescriptor = memory.read(at);
+        if descriptor.name == 0 || descriptor.first_thunk == 0 {
             left = 0;
             return None;
         }
-        at += 20;
-        let lookup = if original == 0 { first } else { original };
+        at += size_of::<ImageImportDescriptor>() as u32;
+        let lookup = match descriptor.original_first_thunk {
+            0 => descriptor.first_thunk,
+            original => original,
+        };
         Some(Descriptor {
-            name: base.wrapping_add(name),
+            name: base.wrapping_add(descriptor.name),
             lookup: base.wrapping_add(lookup),
-            iat: base.wrapping_add(first),
+            iat: base.wrapping_add(descriptor.first_thunk),
         })
     })
 }
 
-/// One import, as a thunk names it: by its hint/name entry's address, or by ordinal (the thunk's
-/// high bit set).
+/// One import, as a thunk names it: by name (the address of its hint/name entry's name, past the
+/// entry's two-byte hint), or by ordinal (the thunk's high bit set: IMAGE_ORDINAL_FLAG32).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Import {
     Name(u32),
     Ordinal(u32),
 }
+
+/// A thunk's ordinal flag (IMAGE_ORDINAL_FLAG32), and the hint before a hint/name entry's name.
+const ORDINAL_FLAG: u32 = 0x8000_0000;
+const HINT_SIZE: u32 = size_of::<u16>() as u32;
 
 /// The imports of the lookup table at `lookup` of the image at `base`, to its zero thunk.
 pub fn imports<M: Memory>(memory: &M, base: u32, lookup: u32) -> impl Iterator<Item = Import> + '_ {
@@ -808,10 +866,10 @@ pub fn imports<M: Memory>(memory: &M, base: u32, lookup: u32) -> impl Iterator<I
         .map(move |index| memory.word(lookup + 4 * index))
         .take_while(|&thunk| thunk != 0)
         .map(move |thunk| {
-            if thunk & 0x8000_0000 != 0 {
+            if thunk & ORDINAL_FLAG != 0 {
                 Import::Ordinal(thunk & 0xFFFF)
             } else {
-                Import::Name(base.wrapping_add(thunk) + 2)
+                Import::Name(base.wrapping_add(thunk) + HINT_SIZE)
             }
         })
 }
@@ -876,11 +934,10 @@ pub mod model {
     }
 
     impl MemoryMut for Space {
-        fn set_word(&mut self, at: u32, value: u32) {
+        fn set_byte(&mut self, at: u32, value: u8) {
             for (base, bytes) in &mut self.0 {
-                if at >= *base && ((at - *base) as usize) + 4 <= bytes.len() {
-                    let offset = (at - *base) as usize;
-                    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+                if at >= *base && ((at - *base) as usize) < bytes.len() {
+                    bytes[(at - *base) as usize] = value;
                     return;
                 }
             }
@@ -980,7 +1037,7 @@ pub mod model {
     }
 
     /// A module of a modelled list: its base, its full path, its load count.
-    pub struct Module<'a> {
+    pub struct Listed<'a> {
         pub base: u32,
         pub path: &'a str,
         pub load_count: u16,
@@ -988,76 +1045,83 @@ pub mod model {
 
     /// A PEB_LDR_DATA at `at` listing `modules` in load and memory order (the first is the image,
     /// left out of the initialization order), each entry's names on the same region.
-    pub fn lists(at: u32, modules: &[Module]) -> std::vec::Vec<u8> {
-        let mut bytes = std::vec![0u8; 0x1000];
-        let put = |bytes: &mut std::vec::Vec<u8>, offset: u32, value: u32| {
-            bytes[offset as usize..offset as usize + 4].copy_from_slice(&value.to_le_bytes())
-        };
-        let entry_at = |index: usize| 0x40 + index as u32 * entry::SIZE;
-        put(&mut bytes, data::LENGTH, data::SIZE);
-        put(&mut bytes, data::INITIALIZED, 1);
+    pub fn lists(at: u32, modules: &[Listed]) -> std::vec::Vec<u8> {
+        let mut space = Space(std::vec![(at, std::vec![0u8; 0x1000])]);
+        let entry_at = |index: usize| at + 0x40 + (index * size_of::<Entry>()) as u32;
         let mut strings = entry_at(modules.len());
-        for (index, module) in modules.iter().enumerate() {
-            let entry = entry_at(index);
-            put(&mut bytes, entry + entry::DLL_BASE, module.base);
-            bytes[(entry + entry::LOAD_COUNT) as usize..(entry + entry::LOAD_COUNT) as usize + 2]
-                .copy_from_slice(&module.load_count.to_le_bytes());
+        let mut entries = std::vec::Vec::new();
+        for module in modules {
             let units: std::vec::Vec<u16> = module.path.encode_utf16().collect();
-            for (offset, unit) in units.iter().enumerate() {
-                let place = (strings + 2 * offset as u32) as usize;
-                bytes[place..place + 2].copy_from_slice(&unit.to_le_bytes());
+            for (offset, &unit) in units.iter().enumerate() {
+                space.write(strings + 2 * offset as u32, unit);
             }
-            let file = units
+            let file = 2 * units
                 .iter()
                 .rposition(|&unit| unit == u16::from(b'\\'))
-                .map_or(0, |at| at + 1);
-            let length = 2 * units.len() as u32;
-            put(
-                &mut bytes,
-                entry + entry::FULL_DLL_NAME,
-                length | (length + 2) << 16,
-            );
-            put(&mut bytes, entry + entry::FULL_DLL_NAME + 4, at + strings);
-            let base_length = length - 2 * file as u32;
-            put(
-                &mut bytes,
-                entry + entry::BASE_DLL_NAME,
-                base_length | (base_length + 2) << 16,
-            );
-            put(
-                &mut bytes,
-                entry + entry::BASE_DLL_NAME + 4,
-                at + strings + 2 * file as u32,
-            );
-            strings += length + 2;
+                .map_or(0, |at| at + 1) as u16;
+            let length = 2 * units.len() as u16;
+            entries.push(Entry {
+                dll_base: module.base,
+                load_count: module.load_count,
+                full_dll_name: UnicodeString {
+                    length,
+                    maximum_length: length + 2,
+                    buffer: strings,
+                },
+                base_dll_name: UnicodeString {
+                    length: length - file,
+                    maximum_length: length - file + 2,
+                    buffer: strings + u32::from(file),
+                },
+                ..Entry::default()
+            });
+            strings += u32::from(length) + 2;
         }
+        let mut data = LdrData {
+            length: size_of::<LdrData>() as u32,
+            initialized: 1,
+            ..LdrData::default()
+        };
         // Each order's links: the load and memory orders every module, the initialization order all
         // but the image.
-        for (head, links) in ORDERS {
-            let first = if head == data::IN_INITIALIZATION_ORDER_MODULE_LIST {
-                1
-            } else {
-                0
-            };
-            let nodes: std::vec::Vec<u32> = core::iter::once(head)
-                .chain((first..modules.len()).map(|index| entry_at(index) + links))
+        for order in Order::ALL {
+            let first = usize::from(order == Order::Initialization);
+            let nodes: std::vec::Vec<u32> = core::iter::once(at + order.head())
+                .chain((first..modules.len()).map(|index| entry_at(index) + order.links()))
                 .collect();
-            for (index, &node) in nodes.iter().enumerate() {
-                put(&mut bytes, node, at + nodes[(index + 1) % nodes.len()]);
-                put(
-                    &mut bytes,
-                    node + 4,
-                    at + nodes[(index + nodes.len() - 1) % nodes.len()],
-                );
+            for index in 0..nodes.len() {
+                let links = ListEntry {
+                    flink: nodes[(index + 1) % nodes.len()],
+                    blink: nodes[(index + nodes.len() - 1) % nodes.len()],
+                };
+                match index.checked_sub(1) {
+                    None => match order {
+                        Order::Load => data.in_load_order_module_list = links,
+                        Order::Memory => data.in_memory_order_module_list = links,
+                        Order::Initialization => data.in_initialization_order_module_list = links,
+                    },
+                    Some(slot) => {
+                        let entry = &mut entries[first + slot];
+                        match order {
+                            Order::Load => entry.in_load_order_links = links,
+                            Order::Memory => entry.in_memory_order_links = links,
+                            Order::Initialization => entry.in_initialization_order_links = links,
+                        }
+                    }
+                }
             }
         }
-        bytes
+        space.write(at, data);
+        for (index, entry) in entries.into_iter().enumerate() {
+            space.write(entry_at(index), entry);
+        }
+        space.0.remove(0).1
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::model::{image, lists, with_imports, Module, Space};
+    use super::model::{image, lists, with_imports, Listed, Space};
     use super::*;
 
     const LDR: u32 = 0x0032_0800;
@@ -1093,17 +1157,17 @@ mod tests {
             ("Hole", Ok(0)),
         ]);
         let modules = [
-            Module {
+            Listed {
                 base: IMAGE,
                 path: "C:\\RUNTIME.EXE",
                 load_count: STATIC_LOAD_COUNT,
             },
-            Module {
+            Listed {
                 base: NTDLL,
                 path: "C:\\WINNT\\system32\\ntdll.dll",
                 load_count: STATIC_LOAD_COUNT,
             },
-            Module {
+            Listed {
                 base: KERNEL32,
                 path: "C:\\WINNT\\system32\\KERNEL32.DLL",
                 load_count: STATIC_LOAD_COUNT,
@@ -1120,7 +1184,7 @@ mod tests {
     fn found(space: &Space, name: &str) -> Option<u32> {
         let mut formed = [0u16; 300];
         let length = module_name(&wide(name), &mut formed)?;
-        by_name(space, LDR, &formed[..length]).map(|entry| space.word(entry + entry::DLL_BASE))
+        by_name(space, LDR, &formed[..length]).map(|module| module.base(space))
     }
 
     /// The load order is the image's, ntdll's, kernel32's; a module is found by its base.
@@ -1128,7 +1192,7 @@ mod tests {
     fn the_lists_walk_in_load_order() {
         let space = process();
         let bases: std::vec::Vec<u32> = load_order(&space, LDR)
-            .map(|entry| space.word(entry + entry::DLL_BASE))
+            .map(|module| module.base(&space))
             .collect();
         assert_eq!(bases, [IMAGE, NTDLL, KERNEL32]);
         assert!(by_base(&space, LDR, KERNEL32).is_some());
@@ -1376,23 +1440,23 @@ mod tests {
     fn a_cyclic_list_ends() {
         let mut space = process();
         // The last entry's Flink back to the first entry (not the head).
-        let first = space.word(LDR + data::IN_LOAD_ORDER_MODULE_LIST);
-        let last = space.word(LDR + data::IN_LOAD_ORDER_MODULE_LIST + 4);
-        let offset = (last - LDR) as usize;
-        space.0[0].1[offset..offset + 4].copy_from_slice(&first.to_le_bytes());
+        let head: ListEntry<u32> = space.read(LDR + Order::Load.head());
+        space.write(head.blink + FLINK, head.flink);
         assert_eq!(load_order(&space, LDR).count(), MAX_ENTRIES);
         assert_eq!(by_base(&space, LDR, 0x1234_0000), None);
     }
 
-    /// The modules a list holds, in the order `head` links them (each node back to its entry by
-    /// `links`).
-    fn order(space: &Space, head: u32, links: u32) -> std::vec::Vec<u32> {
+    /// The bases of the modules the list `order` of the lists at LDR holds, in the order its links
+    /// give.
+    fn linked(space: &Space, order: Order) -> std::vec::Vec<u32> {
+        let head = LDR + order.head();
+        let links = |node: u32| space.read::<ListEntry<u32>>(node);
         let mut bases = std::vec::Vec::new();
-        let mut node = space.word(head);
+        let mut node = links(head).flink;
         while node != head {
-            bases.push(space.word(node - links + entry::DLL_BASE));
-            assert_eq!(space.word(space.word(node + 4)), node, "the Blinks agree");
-            node = space.word(node);
+            bases.push(Module(node - order.links()).base(space));
+            assert_eq!(links(links(node).blink).flink, node, "the Blinks agree");
+            node = links(node).flink;
         }
         bases
     }
@@ -1509,36 +1573,37 @@ mod tests {
         };
         let path = wide("C:\\CORPUS\\Companion.DLL");
         let at = 0x0050_0000;
-        let bytes = loaded_entry(at, &module, at + entry::SIZE, &path, 2 * 23 + 2);
-        let mut space = Space(std::vec![(at, bytes.to_vec())]);
-        let word = |offset: u32| space.word(at + offset);
-        assert_eq!(word(entry::DLL_BASE), 0x1000_0000);
-        assert_eq!(word(entry::ENTRY_POINT), 0x1000_1234);
-        assert_eq!(word(entry::SIZE_OF_IMAGE), 0x5000);
-        assert_eq!(word(entry::TIME_DATE_STAMP), 0x3A2B_1C0D);
-        assert_eq!(word(entry::FULL_DLL_NAME), 2 * 23 | (2 * 23 + 2) << 16);
-        assert_eq!(word(entry::FULL_DLL_NAME + 4), at + entry::SIZE);
+        let buffer = at + size_of::<Entry>() as u32;
+        let entry = loaded_entry(at, &module, buffer, &path, 2 * 23 + 2);
+        assert_eq!(entry.dll_base, 0x1000_0000);
+        assert_eq!(entry.entry_point, 0x1000_1234);
+        assert_eq!(entry.size_of_image, 0x5000);
+        assert_eq!(entry.time_date_stamp, 0x3A2B_1C0D);
         assert_eq!(
-            word(entry::BASE_DLL_NAME),
-            2 * 13 | (2 * 13 + 2) << 16,
+            entry.full_dll_name,
+            UnicodeString {
+                length: 2 * 23,
+                maximum_length: 2 * 23 + 2,
+                buffer
+            }
+        );
+        assert_eq!(
+            entry.base_dll_name,
+            UnicodeString {
+                length: 2 * 13,
+                maximum_length: 2 * 13 + 2,
+                buffer: buffer + 2 * 10
+            },
             "Companion.DLL"
         );
-        assert_eq!(word(entry::BASE_DLL_NAME + 4), at + entry::SIZE + 2 * 10);
+        assert_eq!(entry.flags, flags::IMAGE_DLL, "nothing processed yet");
+        assert_eq!((entry.load_count, entry.tls_index), (1, 0));
+        let hash = at + offset_of!(Entry, hash_links) as u32;
+        assert_eq!(entry.hash_links, self_linked(hash));
+        let initialization = at + Order::Initialization.links();
         assert_eq!(
-            word(entry::FLAGS),
-            flags::IMAGE_DLL,
-            "nothing processed yet"
-        );
-        assert_eq!(space.half(at + entry::LOAD_COUNT), 1);
-        assert_eq!(space.half(at + entry::TLS_INDEX), 0);
-        assert_eq!(
-            (word(entry::HASH_LINKS), word(entry::HASH_LINKS + 4)),
-            (at + entry::HASH_LINKS, at + entry::HASH_LINKS)
-        );
-        let initialization = entry::IN_INITIALIZATION_ORDER_LINKS;
-        assert_eq!(
-            (word(initialization), word(initialization + 4)),
-            (at + initialization, at + initialization),
+            entry.in_initialization_order_links,
+            self_linked(initialization),
             "in no initialization order yet"
         );
         let program = Loaded {
@@ -1546,23 +1611,15 @@ mod tests {
             entry_point: 0,
             ..module
         };
-        let bytes = loaded_entry(
-            at,
-            &program,
-            at + entry::SIZE,
-            &wide("C:\\x.exe"),
-            2 * 8 + 2,
-        );
-        space.0[0].1 = bytes.to_vec();
+        let entry = loaded_entry(at, &program, buffer, &wide("C:\\x.exe"), 2 * 8 + 2);
+        assert_eq!(entry.flags, 0, "a program's image: no DLL flag");
+        assert_eq!(entry.entry_point, 0);
         assert_eq!(
-            space.word(at + entry::FLAGS),
-            0,
-            "a program's image: no DLL flag"
-        );
-        assert_eq!(space.word(at + entry::ENTRY_POINT), 0);
-        assert_eq!(
-            space.word(at + entry::BASE_DLL_NAME),
-            2 * 5 | (2 * 8 + 2 - 2 * 3) << 16,
+            (
+                entry.base_dll_name.length,
+                entry.base_dll_name.maximum_length
+            ),
+            (2 * 5, 2 * 8 + 2 - 2 * 3),
             "x.exe"
         );
     }
@@ -1584,20 +1641,24 @@ mod tests {
             time_date_stamp: 0,
             dll: true,
         };
-        let mut bytes = loaded_entry(at, &module, at + entry::SIZE, &path, 2 * 23 + 2).to_vec();
+        let buffer = at + size_of::<Entry>() as u32;
+        let mut bytes = loaded_entry(at, &module, buffer, &path, 2 * 23 + 2)
+            .as_bytes()
+            .to_vec();
         for unit in path.iter().chain([&0]) {
             bytes.extend_from_slice(&unit.to_le_bytes());
         }
         space.0.push((at, bytes.clone()));
-        insert(&mut space, LDR, at);
-        let orders = |space: &Space| ORDERS.map(|(head, links)| order(space, LDR + head, links));
+        let companion = Module(at);
+        insert(&mut space, LDR, companion);
+        let orders = |space: &Space| Order::ALL.map(|order| linked(space, order));
         let mapped = [
             std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
             std::vec![IMAGE, NTDLL, KERNEL32, COMPANION],
             std::vec![NTDLL, KERNEL32],
         ];
         assert_eq!(orders(&space), mapped, "mapped: not initialized yet");
-        insert_initialized(&mut space, LDR, at);
+        insert_initialized(&mut space, LDR, companion);
         assert_eq!(
             orders(&space),
             [
@@ -1608,15 +1669,15 @@ mod tests {
         );
         assert_eq!(
             initialization_order(&space, LDR, true)
-                .map(|entry| space.word(entry + entry::DLL_BASE))
+                .map(|module| module.base(&space))
                 .collect::<std::vec::Vec<_>>(),
             [COMPANION, KERNEL32, NTDLL],
             "backward"
         );
         assert_eq!(found(&space, "companion"), Some(COMPANION));
         assert_eq!(found(&space, "C:\\CORPUS\\COMPANION.DLL"), Some(COMPANION));
-        assert_eq!(by_base(&space, LDR, COMPANION), Some(at));
-        remove(&mut space, at);
+        assert_eq!(by_base(&space, LDR, COMPANION), Some(companion));
+        remove(&mut space, companion);
         assert_eq!(
             orders(&space),
             [
@@ -1630,8 +1691,8 @@ mod tests {
         let at = 0x0060_0000;
         space.0.retain(|(base, _)| *base != at);
         space.0.push((at, bytes));
-        insert(&mut space, LDR, at);
-        remove(&mut space, at);
+        insert(&mut space, LDR, companion);
+        remove(&mut space, companion);
         assert_eq!(
             orders(&space),
             [
@@ -1646,14 +1707,12 @@ mod tests {
     #[test]
     fn the_lists_start_empty() {
         const AT: u32 = 0x0050_0000;
-        let space = Space(std::vec![(AT, empty_lists(AT).to_vec())]);
-        assert_eq!(space.word(AT + data::LENGTH), 0x24);
-        assert_eq!(space.word(AT + data::INITIALIZED), 1);
-        for (head, _) in ORDERS {
-            assert_eq!(
-                (space.word(AT + head), space.word(AT + head + 4)),
-                (AT + head, AT + head)
-            );
+        let space = Space(std::vec![(AT, empty_lists(AT).as_bytes().to_vec())]);
+        let data: LdrData = space.read(AT);
+        assert_eq!((data.length, data.initialized), (0x24, 1));
+        for order in Order::ALL {
+            let head = AT + order.head();
+            assert_eq!(space.read::<ListEntry<u32>>(head), self_linked(head));
         }
         assert_eq!(load_order(&space, AT).count(), 0);
         assert_eq!(initialization_order(&space, AT, false).count(), 0);
@@ -1725,7 +1784,7 @@ mod tests {
             let mut name = [0u16; 32];
             let length = import_module_name(&space, descriptor.name, &mut name).unwrap();
             let module = by_name(&space, LDR, &name[..length])
-                .map(|entry| space.word(entry + entry::DLL_BASE))
+                .map(|module| module.base(&space))
                 .unwrap();
             imports(&space, COMPANION, descriptor.lookup)
                 .map(|import| import_address(&space, LDR, module, import))

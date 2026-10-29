@@ -9,18 +9,25 @@
 //! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno.
 //! - _ultoa writes the digits in any radix from 2 to 36, letters in lower case.
 //!
-//! The conversions read a string through `at`, its unit at an index (0 past its end): a wide
-//! string's units, or a narrow string's bytes, each the unit of its value (a byte's class is its
-//! wide value's below U+0100).
+//! Each export reads its caller's string once ([`crate::edge`]); the conversions read it through
+//! `at`, its unit at an index (0 past its end): a wide string's units, or a narrow string's bytes,
+//! each the unit of its value (a byte's class is its wide value's below U+0100).
+
+use rtl::cstr::bytes_until_nul;
 
 use crate::ctype;
+use crate::edge::{self, WideUnit};
 use crate::scan::digit_value;
-use crate::string::{narrow, wide_length};
 use crate::thread::{set_errno, ERANGE};
 
 /// A narrow string's byte at `index` as a unit, 0 past its end.
 fn unit_of(string: &[u8], index: usize) -> u16 {
     string.get(index).map_or(0, |&byte| byte.into())
+}
+
+/// A wide string's unit at `index`, 0 past its end.
+fn wide_unit_of(string: &[WideUnit], index: usize) -> u16 {
+    string.get(index).map_or(0, |unit| unit.get())
 }
 
 /// The blanks, the sign and the prefix: where the digits start, the sign, the base.
@@ -92,34 +99,15 @@ fn unsigned(at: impl Fn(usize) -> u16, base: i32) -> (u32, usize) {
     (value, index)
 }
 
-/// The end pointer stored, when asked.
+/// The end pointer, `string`'s unit `index`, stored when asked.
 ///
 /// # Safety
 ///
-/// `end` is null or a pointer's storage; `index` is inside `string`'s units or at its NUL.
+/// `end` is null or a pointer's storage.
 unsafe fn set_end<T>(end: *mut *const T, string: *const T, index: usize) {
     if !end.is_null() {
         // SAFETY: the caller's contract.
-        unsafe { end.write_unaligned(string.add(index)) };
-    }
-}
-
-/// A wide string's reader for the conversions: its unit at an index, 0 past its end (each read
-/// unaligned, as a caller's string may be).
-///
-/// # Safety
-///
-/// `string` is NUL-terminated, and stays unchanged while the reader is in use.
-unsafe fn wide(string: *const u16) -> impl Fn(usize) -> u16 + Copy {
-    // SAFETY: the caller's contract.
-    let length = unsafe { wide_length(string) };
-    move |i| {
-        if i < length {
-            // SAFETY: inside the caller's string, before its NUL.
-            unsafe { string.add(i).read_unaligned() }
-        } else {
-            0
-        }
+        unsafe { end.write_unaligned(string.wrapping_add(index)) };
     }
 }
 
@@ -131,8 +119,8 @@ unsafe fn wide(string: *const u16) -> impl Fn(usize) -> u16 + Copy {
 #[unsafe(export_name = "f2k_export_wcstol")]
 pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: i32) -> i32 {
     // SAFETY: the caller's string.
-    let at = unsafe { wide(string) };
-    let (magnitude, negative, overflow, index) = parse(at, base);
+    let units = unsafe { edge::wide(string) };
+    let (magnitude, negative, overflow, index) = parse(|i| wide_unit_of(units, i), base);
     // SAFETY: the caller's end pointer; the index is inside the string.
     unsafe { set_end(end, string, index) };
     let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
@@ -155,8 +143,8 @@ pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: 
 #[unsafe(export_name = "f2k_export_wcstoul")]
 pub unsafe extern "C" fn wcstoul(string: *const u16, end: *mut *const u16, base: i32) -> u32 {
     // SAFETY: the caller's string.
-    let at = unsafe { wide(string) };
-    let (value, index) = unsigned(at, base);
+    let units = unsafe { edge::wide(string) };
+    let (value, index) = unsigned(|i| wide_unit_of(units, i), base);
     // SAFETY: the caller's end pointer; the index is inside the string.
     unsafe { set_end(end, string, index) };
     value
@@ -170,7 +158,7 @@ pub unsafe extern "C" fn wcstoul(string: *const u16, end: *mut *const u16, base:
 #[unsafe(export_name = "f2k_export_strtoul")]
 pub unsafe extern "C" fn strtoul(string: *const u8, end: *mut *const u8, base: i32) -> u32 {
     // SAFETY: the caller's string.
-    let bytes = unsafe { narrow(string) };
+    let bytes = unsafe { bytes_until_nul(string) };
     let (value, index) = unsigned(|i| unit_of(bytes, i), base);
     // SAFETY: the caller's end pointer; the index is inside the string.
     unsafe { set_end(end, string, index) };
@@ -185,7 +173,8 @@ pub unsafe extern "C" fn strtoul(string: *const u8, end: *mut *const u8, base: i
 #[unsafe(export_name = "f2k_export__wtol")]
 pub unsafe extern "C" fn wtol(string: *const u16) -> i32 {
     // SAFETY: the caller's string.
-    let at = unsafe { wide(string) };
+    let units = unsafe { edge::wide(string) };
+    let at = |i| wide_unit_of(units, i);
     let (mut i, negative, _) = lead(at, 10);
     let mut value = 0u32;
     while let Some(digit) = digit_value(at(i)).filter(|&d| d < 10) {
@@ -226,13 +215,12 @@ pub unsafe extern "C" fn ultoa(value: u32, buffer: *mut u8, radix: i32) -> *mut 
             }
         }
     }
-    // SAFETY: the caller's buffer.
-    unsafe {
-        for i in 0..count {
-            buffer.add(i).write(digits[count - 1 - i]);
-        }
-        buffer.add(count).write(0);
+    // SAFETY: the caller's room for the digits and the NUL.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer, count + 1) };
+    for (slot, &digit) in out.iter_mut().zip(digits[..count].iter().rev()) {
+        *slot = digit;
     }
+    out[count] = 0;
     buffer
 }
 

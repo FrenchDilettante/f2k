@@ -12,9 +12,10 @@
 //! component has none.
 
 use super::*;
-use crate::base::{set_last_nt_error, unicode_string, Text};
+use crate::base::unicode_string;
+use crate::edge::{OutBuf, Text};
+use crate::error::answer;
 use crate::heap::{HeapString, HeapVec, OutOfMemory};
-use crate::nt::UnicodeString;
 
 /// RTL_PATH_TYPE's RtlPathTypeRelative: a name the search looks for under each directory.
 const RTL_PATH_TYPE_RELATIVE: u32 = 5;
@@ -33,9 +34,7 @@ pub type List = HeapVec<u16>;
 /// its last component), `.` (the current directory), the three places under the system root, then
 /// PATH's value (ntdll's RtlQueryEnvironmentVariable_U); none when the heap has no room.
 fn default_list() -> Result<List, OutOfMemory> {
-    // SAFETY: the process parameters' ImagePathName, the process's own string.
-    let image = unsafe { crate::base::string_units(&crate::base::parameters().image_path_name) };
-    search_list(directory_of(image))
+    search_list(directory_of(crate::base::image_path_name()))
 }
 
 /// A path's directory: the path less its last component (empty without a separator).
@@ -54,10 +53,9 @@ pub fn search_list(image_directory: &[u16]) -> Result<List, OutOfMemory> {
     let root = &root[..root_length];
     let name: [u16; 4] = b"PATH".map(u16::from);
     let name = UnicodeString::from_units(&name).expect("a short name");
+    // PATH's length.
     let mut probe = UnicodeString::empty();
-    // SAFETY: ntdll's export, over the strings above: PATH's length.
-    let status =
-        unsafe { nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), &name, &mut probe) };
+    let status = ntcall::query_environment_variable(&name, &mut probe);
     let path_length = if status == STATUS_BUFFER_TOO_SMALL || status == 0 {
         probe.length as usize / 2
     } else {
@@ -81,12 +79,9 @@ pub fn search_list(image_directory: &[u16]) -> Result<List, OutOfMemory> {
             room.len() >= path_length,
             "a search list without room for PATH"
         );
+        // Into the list's room past the units pushed, no more than the string's room.
         let mut value = unicode_string(&mut room[..path_length], 0);
-        // SAFETY: ntdll's export, into the list's room past the units pushed, no more than the
-        // string's room.
-        let status =
-            unsafe { nt::RtlQueryEnvironmentVariable_U(core::ptr::null_mut(), &name, &mut value) };
-        if status == 0 {
+        if ntcall::query_environment_variable(&name, &mut value) == 0 {
             list.extend_written(value.length as usize / 2);
         }
     }
@@ -113,28 +108,21 @@ fn joined(directory: &[u16], file: &[u16], out: &mut [u16; MAX_PATH + 1]) -> Opt
 
 /// SearchPathW's work: `name` (its extension added when its last component has none) looked for
 /// in `path`'s directories, or the default search's for none; the first that exists made full into
-/// the caller's buffer of `size` characters: its length when it fits with its terminator, the file
-/// part pointing at its last component; otherwise the size it needs, terminator included, nothing
-/// written. An empty name is ERROR_INVALID_PARAMETER, one found nowhere ERROR_FILE_NOT_FOUND (a
-/// missing directory too: the files capture), a name and extension past MAX_PATH
-/// ERROR_FILENAME_EXCED_RANGE.
-///
-/// # Safety
-///
-/// `buffer` holds `size` characters; `file_part` is null or points at a pointer.
+/// the caller's buffer: its length when it fits with its terminator, the file part pointing at its
+/// last component; otherwise the size it needs, terminator included, nothing written. An empty
+/// name is ERROR_INVALID_PARAMETER, one found nowhere ERROR_FILE_NOT_FOUND (a missing directory
+/// too: the files capture), a name and extension past MAX_PATH ERROR_FILENAME_EXCED_RANGE.
 #[inline(never)]
-unsafe fn search_path(
+fn search_path(
     path: Option<&[u16]>,
     name: &Wide,
     extension: Option<&Wide>,
-    size: u32,
-    buffer: Text,
-    file_part: *mut usize,
-) -> u32 {
+    mut buffer: Text<'_>,
+    file_part: Option<Out<'_, usize>>,
+) -> Result<u32, Failure> {
     let name = name.text();
     if name.is_empty() {
-        set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        return Err(Failure::Error(ERROR_INVALID_PARAMETER));
     }
     let last = name
         .iter()
@@ -146,8 +134,7 @@ unsafe fn search_path(
     };
     let length = name.len() + extension.len();
     if length > MAX_PATH {
-        set_last_error(ERROR_FILENAME_EXCED_RANGE);
-        return 0;
+        return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
     let mut file = Wide {
         units: [0; MAX_PATH + 1],
@@ -155,92 +142,58 @@ unsafe fn search_path(
     };
     file.units[..name.len()].copy_from_slice(name);
     file.units[name.len()..length].copy_from_slice(extension);
-    // SAFETY: ntdll's export, over the terminated name.
-    let relative = unsafe { nt::RtlDetermineDosPathNameType_U(file.terminated().as_ptr()) }
-        == RTL_PATH_TYPE_RELATIVE;
+    let relative = ntcall::dos_path_name_type(file.terminated()) == RTL_PATH_TYPE_RELATIVE;
     let default;
     let list: &[u16] = match path {
         _ if !relative => &[],
         Some(path) => path,
         None => {
-            default = match default_list() {
-                Ok(list) => list,
-                Err(full) => {
-                    set_last_error(full.error());
-                    return 0;
-                }
-            };
+            default = default_list()?;
             &default
         }
     };
     let mut candidate = [0u16; MAX_PATH + 1];
+    let mut exists = |directory: &[u16]| {
+        joined(directory, file.text(), &mut candidate)
+            .filter(|&length| ntcall::does_file_exist(&candidate[..=length]))
+    };
     let found = if relative {
         list.split(|&unit| unit == u16::from(b';'))
             .filter(|directory| !directory.is_empty())
-            .find(|directory| {
-                joined(directory, file.text(), &mut candidate).is_some()
-                    // SAFETY: ntdll's export, over the terminated candidate.
-                    && unsafe { nt::RtlDoesFileExists_U(candidate.as_ptr()) } != 0
-            })
-            .is_some()
+            .find_map(&mut exists)
     } else {
-        joined(&[], file.text(), &mut candidate).is_some()
-            // SAFETY: as above.
-            && unsafe { nt::RtlDoesFileExists_U(candidate.as_ptr()) } != 0
+        exists(&[])
     };
-    if !found {
-        set_last_error(ERROR_FILE_NOT_FOUND);
-        return 0;
-    }
+    let found = found.ok_or(Failure::Error(ERROR_FILE_NOT_FOUND))?;
     let mut full = [0u16; MAX_PATH + 1];
-    let mut part = core::ptr::null_mut();
-    // SAFETY: ntdll's export, into the buffer above.
-    let bytes = unsafe {
-        nt::RtlGetFullPathName_U(
-            candidate.as_ptr(),
-            2 * full.len() as u32,
-            full.as_mut_ptr(),
-            &mut part,
-        )
-    } as usize;
+    let (bytes, part) = ntcall::get_full_path_name(&candidate[..=found], &mut full);
     if bytes == 0 || bytes > 2 * MAX_PATH {
-        set_last_error(ERROR_FILENAME_EXCED_RANGE);
-        return 0;
+        return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
     let length = bytes / 2;
-    if (size as usize) <= length {
-        return length as u32 + 1;
+    if buffer.len() <= length {
+        return Ok(length as u32 + 1);
     }
-    // SAFETY: the caller's buffer holds the path and its terminator.
-    unsafe { buffer.put_terminated(&full[..length]) };
-    if !file_part.is_null() {
-        let at = (!part.is_null()).then(|| (part as usize - full.as_ptr() as usize) / 2);
-        // SAFETY: the caller's slot; the part lies in the caller's buffer.
-        unsafe { file_part.write_unaligned(at.map_or(0, |at| buffer.address(at))) };
+    buffer.put_terminated(&full[..length]);
+    if let Some(mut file_part) = file_part {
+        // The part lies in the caller's buffer.
+        file_part.set(part.map_or(0, |at| buffer.address(at)));
     }
-    length as u32
+    Ok(length as u32)
 }
 
 /// SearchPathW's default search for `name`, `extension` added when its last component has none:
-/// the full path found, or none with the search's error set (see [`search_path`]).
+/// the full path found, or none with the search's error set as it misses, as SearchPath sets it
+/// (see [`search_path`]).
 pub fn search_default(name: &Wide, extension: &Wide) -> Option<Wide> {
     let mut found = Wide {
         units: [0; MAX_PATH + 1],
         length: 0,
     };
-    let size = found.units.len() as u32;
-    // SAFETY: the buffer holds `size` characters; no file part asked.
-    let length = unsafe {
-        search_path(
-            None,
-            name,
-            Some(extension),
-            size,
-            Text::Wide(found.units.as_mut_ptr()),
-            core::ptr::null_mut(),
-        )
-    } as usize;
-    if length == 0 || length >= found.units.len() {
+    let room = found.units.len();
+    let buffer = Text::Wide(OutBuf::from(&mut found.units[..]));
+    let length = answer(search_path(None, name, Some(extension), buffer, None), 0) as usize;
+    if length == 0 || length >= room {
         return None;
     }
     found.length = length;
@@ -263,42 +216,34 @@ pub unsafe extern "system" fn search_path_a(
     buffer: *mut u8,
     file_part: *mut *mut u8,
 ) -> u32 {
-    let list = if path.is_null() {
-        None
-    } else {
-        // SAFETY: the caller's string, converted through the ANSI code page onto the process heap.
-        match unsafe { HeapString::from_ansi(path) } {
-            Ok(list) => Some(list),
-            Err(status) => {
-                set_last_nt_error(status);
-                return 0;
-            }
-        }
+    // SAFETY: the caller's strings when given (a null name is the empty one), its buffer, and its
+    // slot when given (the contract).
+    let (path, name, extension, buffer, file_part) = unsafe {
+        (
+            InStr::optional(path),
+            InStr::optional(name),
+            InStr::optional(extension),
+            OutBuf::new(buffer, size as usize),
+            Out::optional(file_part.cast::<usize>()),
+        )
     };
-    // SAFETY: the caller's strings.
-    let Some(name) = (unsafe { widen(name) }) else {
-        return 0;
-    };
-    let extension = if extension.is_null() {
-        None
-    } else {
-        // SAFETY: the caller's string.
-        match unsafe { widen(extension) } {
-            Some(extension) => Some(extension),
-            None => return 0,
-        }
-    };
-    // SAFETY: the caller's buffer and slot.
-    unsafe {
+    let found = (|| {
+        let list = path
+            .map(|path| HeapString::of_ansi(Some(&path)).map_err(Failure::Status))
+            .transpose()?;
+        let name = widen(name.as_ref())?;
+        let extension = extension
+            .map(|extension| widen(Some(&extension)))
+            .transpose()?;
         search_path(
             list.as_ref().map(HeapString::units),
             &name,
             extension.as_ref(),
-            size,
             Text::Ansi(buffer),
-            file_part as *mut usize,
+            file_part,
         )
-    }
+    })();
+    answer(found, 0)
 }
 
 /// SearchPathW (as [`search_path_a`], over UTF-16 strings).
@@ -316,40 +261,30 @@ pub unsafe extern "system" fn search_path_w(
     buffer: *mut u16,
     file_part: *mut *mut u16,
 ) -> u32 {
-    let list = if path.is_null() {
-        None
-    } else {
-        // SAFETY: the caller's contract: a non-null `path` is a NUL-terminated UTF-16 string.
-        match unsafe { crate::base::wide_units(path) } {
-            Some(list) => Some(list),
-            None => {
-                set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-                return 0;
-            }
-        }
+    // SAFETY: the caller's strings (the list and the extension when given), its buffer, and its
+    // slot when given (the contract).
+    let (path, name, extension, buffer, file_part) = unsafe {
+        (
+            InWStr::optional(path),
+            InWStr::new(name),
+            InWStr::optional(extension),
+            OutBuf::new(buffer, size as usize),
+            Out::optional(file_part.cast::<usize>()),
+        )
     };
-    // SAFETY: the caller's contract: `name` is a NUL-terminated UTF-16 string.
-    let Some(name) = (unsafe { wide(name) }) else {
-        return 0;
-    };
-    let extension = if extension.is_null() {
-        None
-    } else {
-        // SAFETY: the caller's string.
-        match unsafe { wide(extension) } {
-            Some(extension) => Some(extension),
-            None => return 0,
-        }
-    };
-    // SAFETY: the caller's buffer and slot.
-    unsafe {
+    let found = (|| {
+        let list = path
+            .map(|path| wide_units(&path).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY)))
+            .transpose()?;
+        let name = wide(&name)?;
+        let extension = extension.map(|extension| wide(&extension)).transpose()?;
         search_path(
             list.as_deref(),
             &name,
             extension.as_ref(),
-            size,
             Text::Wide(buffer),
-            file_part as *mut usize,
+            file_part,
         )
-    }
+    })();
+    answer(found, 0)
 }

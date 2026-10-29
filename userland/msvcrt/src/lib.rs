@@ -1,5 +1,6 @@
 //! msvcrt's user-mode code: the bodies of the C runtime's exports, as Windows 2000's msvcrt.dll
-//! (6.1) runs them, over kernel32's exports ([`imports`]: msvcrt imports kernel32 alone).
+//! (6.1) runs them, over kernel32's exports ([`imports`]: msvcrt imports kernel32 alone), each
+//! wrapped once in a safe call ([`kernel32`]).
 //!
 //! An export here is a cdecl function named `f2k_export_<Name>` (its spec's convention is cdecl),
 //! or, for an exported variable, a static of that name ([`data`]): the DLL's module-definition file
@@ -24,10 +25,12 @@ pub mod conio;
 pub mod convert;
 pub mod ctype;
 pub mod data;
+pub mod edge;
 pub mod float;
 pub mod format;
 pub mod heap;
 pub mod imports;
+pub mod kernel32;
 pub mod lowio;
 pub mod process;
 pub mod scan;
@@ -36,6 +39,7 @@ pub mod stdio;
 pub mod string;
 pub mod stub;
 pub mod thread;
+pub mod unwind;
 pub mod utility;
 
 /// The registrations above `frame` unwound (their handlers called, the record marked unwinding),
@@ -47,8 +51,9 @@ pub mod utility;
 /// `frame` is a registration on the calling thread's chain; `record` is null or the exception's.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn f2k_msvcrt_global_unwind(frame: usize, record: usize) {
-    // SAFETY: kernel32's export (ntdll's, forwarded).
-    unsafe { imports::RtlUnwind(frame, 0, record, 0) }
+    // SAFETY: the caller's contract: a registration on this thread's chain, the record null or the
+    // exception's; src/seh.s abandons the frames above it.
+    unsafe { kernel32::unwind(frame, record) }
 }
 
 /// DLL_PROCESS_DETACH, DLL_PROCESS_ATTACH, DLL_THREAD_ATTACH, DLL_THREAD_DETACH.

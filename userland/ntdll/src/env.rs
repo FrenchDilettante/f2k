@@ -7,6 +7,7 @@
 //! RtlDestroyEnvironment releases.
 
 use rtl::env::{self, EnvError};
+use rtl::nt::info::MemoryBasicInformation;
 use rtl::status::{
     STATUS_BUFFER_TOO_SMALL,
     STATUS_INVALID_PARAMETER,
@@ -17,13 +18,7 @@ use rtl::status::{
 use rtl::string::UnicodeString;
 use rtl::sys::{self, nr, system_service};
 
-/// The process parameters' Environment: the place of the process's environment block's address
-/// (read and changed under the PEB lock).
-fn environment_slot() -> *mut *mut u16 {
-    // SAFETY: a place in the process parameters, mapped for the process's whole life (no reference
-    // is made); an address in a `usize` field is the pointer's.
-    unsafe { (&raw mut (*sys::process_parameters()).environment).cast::<*mut u16>() }
-}
+use crate::params::with_own_parameters;
 
 /// The current-process pseudo-handle, and the virtual-memory calls' constants.
 const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -32,31 +27,39 @@ const MEM_RESERVE: u32 = 0x2000;
 const PAGE_READWRITE: u32 = 0x04;
 const GRANULARITY: usize = 0x1_0000;
 
-/// The block at `block` with the room its allocation leaves after it (NtQueryVirtualMemory's region
-/// from its page on), in units, and the allocation's base.
+/// MemoryBasicInformation, NtQueryVirtualMemory's class.
+const MEMORY_BASIC_INFORMATION: u32 = 0;
+
+/// Run `body` over the block at `block` with the room its allocation leaves after it
+/// (NtQueryVirtualMemory's region from its page on), in units, and the allocation's base.
 ///
 /// # Safety
 ///
-/// `block` is an environment block in committed memory.
-unsafe fn block_at(block: *mut u16) -> (&'static mut [u16], usize) {
-    let mut info = [0u32; 7];
+/// `block` is an environment block in committed memory, which nothing else reads or writes while
+/// `body` runs.
+unsafe fn with_block<R>(block: *mut u16, body: impl FnOnce(&mut [u16], usize) -> R) -> R {
+    let mut info = MemoryBasicInformation::default();
     let args = [
         CURRENT_PROCESS,
         block as u32,
-        0, // MemoryBasicInformation
-        info.as_mut_ptr() as u32,
-        28,
+        MEMORY_BASIC_INFORMATION,
+        &mut info as *mut MemoryBasicInformation as u32,
+        core::mem::size_of::<MemoryBasicInformation>() as u32,
         0,
     ];
     let status = system_service(nr::NtQueryVirtualMemory, &args);
     let (base, allocation, size) = if status == STATUS_SUCCESS {
-        (info[0] as usize, info[1] as usize, info[3] as usize)
+        (
+            info.base_address as usize,
+            info.allocation_base as usize,
+            info.region_size as usize,
+        )
     } else {
         (block as usize, block as usize, 0x1000)
     };
     let room = (base + size - block as usize) / 2;
-    // SAFETY: the caller's block, inside its committed region.
-    (
+    // SAFETY: the caller's block, inside its committed region, the body's alone while it runs.
+    body(
         unsafe { core::slice::from_raw_parts_mut(block, room) },
         allocation,
     )
@@ -77,24 +80,34 @@ unsafe fn units<'a>(string: *const UnicodeString) -> &'a [u16] {
     unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
 }
 
+/// Run `body` over the process's environment block, under the PEB lock.
+fn with_process_environment<R>(body: impl FnOnce(&mut [u16]) -> R) -> R {
+    with_own_parameters(|own| {
+        // SAFETY: the process parameters' Environment: the process's block, in committed memory,
+        // read and changed only under the PEB lock, held while `body` runs.
+        unsafe { with_block(*own.environment as *mut u16, |block, _| body(block)) }
+    })
+}
+
 /// Run `body` over the environment `environment` names: the process's (under the PEB lock) for
 /// null.
-fn with_environment<R>(environment: *mut u16, body: impl FnOnce(*mut u16) -> R) -> R {
-    if !environment.is_null() {
-        return body(environment);
+///
+/// # Safety
+///
+/// `environment` is null or an environment block in committed memory, which nothing else reads or
+/// writes while `body` runs.
+unsafe fn with_environment<R>(environment: *mut u16, body: impl FnOnce(&mut [u16]) -> R) -> R {
+    if environment.is_null() {
+        return with_process_environment(body);
     }
-    crate::process::peb_lock().with(&sys::Native, || {
-        // SAFETY: the process parameters' Environment, read in place under the PEB lock.
-        body(unsafe { environment_slot().read_volatile() })
-    })
+    // SAFETY: the caller's block.
+    unsafe { with_block(environment, |block, _| body(block)) }
 }
 
 /// The value of `name` in the process's environment, under the PEB lock, into `out` (cut to its
 /// room): its length in units, zero for an unset name.
 pub(crate) fn process_variable(name: &[u16], out: &mut [u16]) -> usize {
-    with_environment(core::ptr::null_mut(), |block| {
-        // SAFETY: the process's environment block.
-        let (block, _) = unsafe { block_at(block) };
+    with_process_environment(|block| {
         let found = env::query(block, name).unwrap_or(&[]);
         let length = found.len().min(out.len());
         out[..length].copy_from_slice(&found[..length]);
@@ -116,9 +129,8 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
     name: *const UnicodeString,
     value: *mut UnicodeString,
 ) -> u32 {
-    with_environment(environment, |block| {
-        // SAFETY: the environment block and the caller's strings.
-        let (block, _) = unsafe { block_at(block) };
+    let query = |block: &mut [u16]| {
+        // SAFETY: the caller's string.
         let Some(found) = env::query(block, unsafe { units(name) }) else {
             return STATUS_VARIABLE_NOT_FOUND;
         };
@@ -140,7 +152,9 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
             }
         }
         STATUS_SUCCESS
-    })
+    };
+    // SAFETY: the caller's block, or the process's for null.
+    unsafe { with_environment(environment, query) }
 }
 
 /// RtlSetEnvironmentVariable: set `name` to `value` in the environment `*environment` names (the
@@ -160,24 +174,27 @@ pub unsafe extern "system" fn rtl_set_environment_variable(
     // SAFETY: the caller's strings.
     let (name, value) = unsafe { (units(name), (!value.is_null()).then(|| units(value))) };
     if environment.is_null() {
-        return crate::process::peb_lock().with(&sys::Native, || {
+        return with_own_parameters(|own| {
+            let mut block = *own.environment as *mut u16;
             // SAFETY: the process parameters' Environment, under the PEB lock.
-            unsafe { set_in(environment_slot(), name, value) }
+            let status = unsafe { set_in(&mut block, name, value) };
+            *own.environment = block as usize;
+            status
         });
     }
     // SAFETY: the caller's block pointer.
-    unsafe { set_in(environment, name, value) }
+    unsafe { set_in(&mut *environment, name, value) }
 }
 
 /// The set, over the block `*slot` names, the block moved when it must grow.
 ///
 /// # Safety
 ///
-/// `slot` points at an environment block's pointer.
-unsafe fn set_in(slot: *mut *mut u16, name: &[u16], value: Option<&[u16]>) -> u32 {
-    // SAFETY: the caller's block.
-    let (block, allocation) = unsafe { block_at(*slot) };
-    match env::set(block, name, value) {
+/// `*slot` is an environment block in committed memory, which nothing else reads or writes
+/// meanwhile.
+unsafe fn set_in(slot: &mut *mut u16, name: &[u16], value: Option<&[u16]>) -> u32 {
+    let block = *slot;
+    let set = |block: &mut [u16], allocation: usize| match env::set(block, name, value) {
         Ok(()) => STATUS_SUCCESS,
         Err(EnvError::InvalidName) => STATUS_INVALID_PARAMETER,
         Err(EnvError::NeedsRoom(needed)) => {
@@ -196,11 +213,12 @@ unsafe fn set_in(slot: *mut *mut u16, name: &[u16], value: Option<&[u16]>) -> u3
                 return STATUS_NO_MEMORY;
             }
             sys::release_virtual_memory(allocation);
-            // SAFETY: the caller's block pointer.
-            unsafe { *slot = base as *mut u16 };
+            *slot = base as *mut u16;
             STATUS_SUCCESS
         }
-    }
+    };
+    // SAFETY: the caller's block.
+    unsafe { with_block(block, set) }
 }
 
 /// RtlExpandEnvironmentStrings_U: `source` with its `%NAME%` references expanded through the
@@ -219,11 +237,9 @@ pub unsafe extern "system" fn rtl_expand_environment_strings_u(
     destination: *mut UnicodeString,
     returned: *mut u32,
 ) -> u32 {
-    with_environment(environment, |block| {
-        // SAFETY: the environment block and the caller's strings.
-        let (block, _) = unsafe { block_at(block) };
-        let source = unsafe { units(source) };
-        let destination = unsafe { &mut *destination };
+    let expand = |block: &mut [u16]| {
+        // SAFETY: the caller's strings.
+        let (source, destination) = unsafe { (units(source), &mut *destination) };
         let room = destination.maximum_length as usize / 2;
         let mut produced = 0usize;
         env::expand(block, source, |unit| {
@@ -248,7 +264,9 @@ pub unsafe extern "system" fn rtl_expand_environment_strings_u(
         } else {
             STATUS_BUFFER_TOO_SMALL
         }
-    })
+    };
+    // SAFETY: the caller's block, or the process's for null.
+    unsafe { with_environment(environment, expand) }
 }
 
 /// RtlCreateEnvironment: a new environment block in `*environment`, in virtual memory of its own
@@ -275,9 +293,7 @@ pub unsafe extern "system" fn rtl_create_environment(inherit: u32, environment: 
             Err(status) => status,
         };
     }
-    with_environment(core::ptr::null_mut(), |block| {
-        // SAFETY: the process's environment block.
-        let (block, _) = unsafe { block_at(block) };
+    with_process_environment(|block| {
         let used = env::block_length(block);
         let base = match sys::allocate_virtual_memory(
             0,

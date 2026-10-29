@@ -12,20 +12,27 @@
 //!
 //! The answer is the count of fields stored: a field that does not match ends the scan, and so does
 //! the input's end; neither answers EOF (wide's capture: `swscanf(L"", L"%d")` answers 0).
+//!
+//! The export reads the input and the format once, into slices ([`crate::edge`]).
 
 use crate::ctype;
+use crate::edge::WideUnit;
 use crate::format::Args;
 
+/// A string's unit at `index`, 0 past its end.
+fn unit_at(string: &[WideUnit], index: usize) -> u16 {
+    string.get(index).map_or(0, |unit| unit.get())
+}
+
 /// The input, read unit by unit (0 at its end).
-struct Input {
-    at: *const u16,
+struct Input<'a> {
+    units: &'a [WideUnit],
     read: usize,
 }
 
-impl Input {
+impl Input<'_> {
     fn peek(&self) -> u16 {
-        // SAFETY: the caller's NUL-terminated input, never read past its NUL.
-        unsafe { self.at.add(self.read).read_unaligned() }
+        unit_at(self.units, self.read)
     }
 
     fn take(&mut self) {
@@ -40,23 +47,32 @@ impl Input {
 }
 
 /// The format, read unit by unit (0 at its end).
-struct Format {
-    at: *const u16,
+struct Format<'a> {
+    units: &'a [WideUnit],
+    at: usize,
 }
 
-impl Format {
+impl<'a> Format<'a> {
+    /// The unit `ahead` units on (0 past the end).
+    fn peek_ahead(&self, ahead: usize) -> u16 {
+        unit_at(self.units, self.at + ahead)
+    }
+
     fn peek(&self) -> u16 {
-        // SAFETY: the caller's NUL-terminated format.
-        unsafe { self.at.read_unaligned() }
+        self.peek_ahead(0)
     }
 
     fn next(&mut self) -> u16 {
         let unit = self.peek();
         if unit != 0 {
-            // SAFETY: before the NUL.
-            self.at = unsafe { self.at.add(1) };
+            self.at += 1;
         }
         unit
+    }
+
+    /// The units from `start` to where the format is now.
+    fn since(&self, start: usize) -> &'a [WideUnit] {
+        &self.units[start..self.at]
     }
 }
 
@@ -69,15 +85,17 @@ enum Size {
     Quad,
 }
 
-/// Scan `input` against `format`, storing through `args`' pointers; the count of fields stored.
-///
-/// # Safety
-///
-/// Both strings are NUL-terminated; `args` holds a pointer, of the type its conversion stores, for
-/// each field not suppressed.
-pub unsafe fn scan(input: *const u16, format: *const u16, args: &mut impl Args) -> i32 {
-    let mut input = Input { at: input, read: 0 };
-    let mut format = Format { at: format };
+/// Scan `input` against `format` (their units, each NUL left out), storing through `args`'
+/// pointers; the count of fields stored.
+pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i32 {
+    let mut input = Input {
+        units: input,
+        read: 0,
+    };
+    let mut format = Format {
+        units: format,
+        at: 0,
+    };
     let mut stored = 0;
     loop {
         let f = format.next();
@@ -119,11 +137,7 @@ pub unsafe fn scan(input: *const u16, format: *const u16, args: &mut impl Args) 
                 0x6C /* l */ | 0x77 /* w */ => size = Size::Long,
                 0x4C /* L */ => size = Size::Quad,
                 0x49 /* I */ => {
-                    // SAFETY: the format's next units, before its NUL.
-                    let (a, b) = unsafe {
-                        let next = format.at.add(1).read_unaligned();
-                        (next, if next != 0 { format.at.add(2).read_unaligned() } else { 0 })
-                    };
+                    let (a, b) = (format.peek_ahead(1), format.peek_ahead(2));
                     if (a, b) == (b'6' as u16, b'4' as u16) {
                         format.next();
                         format.next();
@@ -138,7 +152,8 @@ pub unsafe fn scan(input: *const u16, format: *const u16, args: &mut impl Args) 
         }
         let conversion = format.next();
         let limit = if width == 0 { usize::MAX } else { width };
-        // SAFETY: the caller's pointers, as each conversion stores.
+        // SAFETY: `Args`' contract: a pointer of the type each field stores, for each field not
+        // suppressed.
         let matched = unsafe {
             match conversion as u8 {
                 _ if conversion >= 0x80 || conversion == 0 => false,
@@ -397,49 +412,46 @@ fn real(input: &mut Input, limit: usize) -> Option<f64> {
 }
 
 /// A `%[` field's set: the format's units between the brackets.
-struct Set {
+struct Set<'a> {
     negated: bool,
-    start: *const u16,
-    length: usize,
+    units: &'a [WideUnit],
 }
 
-impl Set {
+impl<'a> Set<'a> {
     /// The set after `%[`, the format left past its `]`; none when it never closes.
-    fn parse(format: &mut Format) -> Option<Set> {
+    fn parse(format: &mut Format<'a>) -> Option<Set<'a>> {
         let mut negated = false;
         if format.peek() == b'^' as u16 {
             negated = true;
             format.next();
         }
         let start = format.at;
-        let mut length = 0;
         // A `]` first is the set's own.
         if format.peek() == b']' as u16 {
             format.next();
-            length += 1;
         }
         loop {
             match format.next() {
                 0 => return None,
                 0x5D /* ] */ => break,
-                _ => length += 1,
+                _ => {}
             }
         }
+        let units = format.since(start);
         Some(Set {
             negated,
-            start,
-            length,
+            units: &units[..units.len() - 1],
         })
     }
 
     fn contains(&self, unit: u16) -> bool {
-        // SAFETY: the set's units, inside the format.
-        let at = |i: usize| unsafe { self.start.add(i).read_unaligned() };
+        let at = |i: usize| unit_at(self.units, i);
+        let length = self.units.len();
         let mut found = false;
         let mut i = 0;
-        while i < self.length {
+        while i < length {
             let low = at(i);
-            if i + 2 < self.length && at(i + 1) == b'-' as u16 {
+            if i + 2 < length && at(i + 1) == b'-' as u16 {
                 let high = at(i + 2);
                 let (low, high) = if low <= high {
                     (low, high)
@@ -464,18 +476,14 @@ impl Set {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::tests::{wide, Arg::P, List};
+    use crate::format::tests::{units_of, wide, Arg::P, List};
 
     fn run(input: &str, format: &str, pointers: &[usize]) -> i32 {
-        let (input, format) = (wide(input), wide(format));
-        // SAFETY: NUL-terminated strings, the pointers the test's own.
-        unsafe {
-            scan(
-                input.as_ptr(),
-                format.as_ptr(),
-                &mut List(pointers.iter().map(|&p| P(p)).collect()),
-            )
-        }
+        scan(
+            &units_of(&wide(input)),
+            &units_of(&wide(format)),
+            &mut List(pointers.iter().map(|&p| P(p)).collect()),
+        )
     }
 
     fn text(units: &[u16]) -> String {

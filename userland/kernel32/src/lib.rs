@@ -9,24 +9,31 @@
 //! spec declares it `impl = { native = "<Name>" }`). The DLL (src/main.rs) links this library; the
 //! host tests run its code against [`nt`]'s stand-ins.
 //!
+//! An export converts its caller's pointers once, on entry, into the values of [`edge`] (an out
+//! parameter, a buffer, a structure, a string), in one `unsafe` block whose contract is the API's;
+//! the code below it is safe, and answers a [`error::Failure`] up to the export, which sets it as
+//! the last error and returns the API's failure value. The file calls still hand their caller's
+//! pointers down.
+//!
 //! The shared helpers are [`base`]'s (the last error, a failed service's status mapped to it, the
 //! PEB, the process parameters, the process heap and the environment block) and [`heap`]'s (what
 //! kernel32 holds on the process heap, and its own handles, as values freed when dropped). The
 //! groups: the console ([`console`], to the console server), the start-up calls ([`startup`]), the
 //! modules ([`module`]), the synchronization objects, the waits and the handle calls ([`sync`]),
 //! the files' read side ([`files`], over ntdll's file services) and the current directory
-//! ([`curdir`]), the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new processes
-//! ([`create`]: CreateProcess), the processes' calls ([`process`]: their end, OpenProcess, their
-//! exit codes and memory), a file's binary type ([`binary_type`]), exceptions ([`except`]:
-//! RaiseException, the pointer probes' unwind), the locale group ([`locale`] over `rtl::codepage`,
-//! with [`collate`] and [`localeinfo`]), the clocks ([`time`], over the shared data page,
-//! [`shared`]), the system messages ([`message`], over ntdll's message calls and kernel32's own
-//! message table), virtual memory and the system's memory facts ([`vm`]) and the paging file's
-//! mappings ([`filemap`]). The heap and Local/Global functions are the DLL's (src/main.rs and
-//! src/memory.s, over ntdll's heap and handle-table exports). The trivial natives (src/natives.s),
-//! the main thread's start (src/start.s) and the pointer probes (src/probe.s) are assembly. No
-//! export enters the kernel itself: kernel32 goes through ntdll's system-service stubs, as Windows
-//! 2000's does (`tests/harness/test_repository.py` checks the built DLL holds no `int 2Eh`).
+//! ([`curdir`]), the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new
+//! processes ([`create`]: CreateProcess), the processes' calls ([`process`]: their end,
+//! OpenProcess, their exit codes and memory), a file's binary type ([`binary_type`]), exceptions
+//! ([`except`]: RaiseException, the pointer probes' unwind), the locale group ([`locale`] over
+//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the clocks ([`time`], over the shared
+//! data page, [`shared`]), the system messages ([`message`], over ntdll's message calls and
+//! kernel32's own message table), virtual memory and the system's memory facts ([`vm`]) and the
+//! paging file's mappings ([`filemap`]). The heap and Local/Global functions are the DLL's
+//! (src/main.rs and src/memory.s, over ntdll's heap and handle-table exports). The trivial natives
+//! (src/natives.s), the main thread's start (src/start.s) and the pointer probes (src/probe.s) are
+//! assembly. No export enters the kernel itself: kernel32 goes through ntdll's system-service
+//! stubs, as Windows 2000's does (`tests/harness/test_repository.py` checks the built DLL holds no
+//! `int 2Eh`).
 
 #![cfg_attr(not(test), no_std)]
 
@@ -36,6 +43,7 @@ pub mod collate;
 pub mod console;
 pub mod create;
 pub mod curdir;
+pub mod edge;
 pub mod env;
 pub mod error;
 pub mod except;

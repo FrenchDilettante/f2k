@@ -9,6 +9,9 @@
 //! relative to its handle, which the caller opens through the handle (OBJECT_ATTRIBUTES'
 //! RootDirectory), as on Windows 2000.
 
+use rtl::cstr::units_until_nul;
+use rtl::nt::info::FileBasicInformation;
+use rtl::nt::IoStatusBlock;
 use rtl::path::{
     dos_path_to_nt,
     full_path_name,
@@ -23,36 +26,7 @@ use rtl::status::{STATUS_NAME_TOO_LONG, STATUS_OBJECT_NAME_INVALID, STATUS_SUCCE
 use rtl::string::UnicodeString;
 use rtl::sys::{self, nr, system_service};
 
-/// The current directory's DOS path (the process parameters' CurrentDirectory.DosPath).
-fn dos_path() -> &'static mut UnicodeString {
-    // SAFETY: the process parameters are mapped for the process's whole life; the DOS path's string
-    // is theirs, changed only under the PEB lock (a UNICODE_STRING whose buffer is a `usize` has
-    // the typed one's layout).
-    unsafe {
-        &mut *(&raw mut (*sys::process_parameters()).current_directory.dos_path)
-            .cast::<UnicodeString>()
-    }
-}
-
-/// The current directory's handle (the process parameters' CurrentDirectory.Handle; zero for
-/// none).
-fn directory_handle() -> u32 {
-    // SAFETY: the process parameters are mapped for the process's whole life; the handle is read
-    // in place, and changed only under the PEB lock.
-    let handle = unsafe {
-        (&raw const (*sys::process_parameters()).current_directory.handle).read_volatile()
-    };
-    handle as u32
-}
-
-/// Record the current directory's handle (under the PEB lock).
-fn set_directory_handle(handle: u32) {
-    // SAFETY: as `directory_handle`'s; the caller holds the PEB lock.
-    unsafe {
-        (&raw mut (*sys::process_parameters()).current_directory.handle)
-            .write_volatile(handle as usize)
-    }
-}
+use crate::params::{with_own_parameters, OwnParameters};
 
 /// NtOpenFile's arguments for a current directory: traverse and synchronize, the share modes
 /// Windows 2000 opens it with (read and write: the directory cannot be deleted while it is
@@ -65,28 +39,42 @@ const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
 const OBJ_INHERIT: u32 = 0x2;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
+/// OBJECT_ATTRIBUTES (`rtl::nt`'s): a name for the file services, borrowed for as long as the
+/// attributes are.
+type ObjectAttributes<'a> = rtl::nt::ObjectAttributes<u32, &'a UnicodeString, usize>;
+
+/// The OBJECT_ATTRIBUTES naming `name` (the namespace's root its directory), with `attributes`.
+fn attributes(name: &UnicodeString, attributes: u32) -> ObjectAttributes<'_> {
+    ObjectAttributes {
+        length: core::mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: 0,
+        object_name: name,
+        attributes,
+        security_descriptor: 0,
+        security_quality_of_service: 0,
+    }
+}
+
+/// A UNICODE_STRING over `units` (the services only read it).
+fn counted(units: &[u16]) -> UnicodeString {
+    UnicodeString {
+        length: (2 * units.len()) as u16,
+        maximum_length: (2 * units.len()) as u16,
+        buffer: units.as_ptr() as *mut u16,
+    }
+}
+
 /// Open the directory at the NT path `name` as a current directory: its handle, or the status.
 fn open_directory(name: &[u16]) -> Result<u32, u32> {
-    let string = UnicodeString {
-        length: (2 * name.len()) as u16,
-        maximum_length: (2 * name.len()) as u16,
-        buffer: name.as_ptr() as *mut u16,
-    };
-    let attributes: [u32; 6] = [
-        24,
-        0,
-        &string as *const UnicodeString as u32,
-        OBJ_CASE_INSENSITIVE | OBJ_INHERIT,
-        0,
-        0,
-    ];
-    let mut io_status = [0u32; 2];
+    let string = counted(name);
+    let attributes = attributes(&string, OBJ_CASE_INSENSITIVE | OBJ_INHERIT);
+    let mut io_status = IoStatusBlock::<u32>::default();
     let mut handle = 0u32;
     let args = [
         &mut handle as *mut u32 as u32,
         FILE_TRAVERSE | SYNCHRONIZE,
-        attributes.as_ptr() as u32,
-        io_status.as_mut_ptr() as u32,
+        &attributes as *const ObjectAttributes as u32,
+        &mut io_status as *mut IoStatusBlock<u32> as u32,
         FILE_SHARE_READ_WRITE,
         FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
     ];
@@ -113,31 +101,28 @@ fn open_directory(name: &[u16]) -> Result<u32, u32> {
 /// `path` is a UNICODE_STRING whose buffer holds its length.
 #[unsafe(export_name = "f2k_export_RtlSetCurrentDirectory_U")]
 pub unsafe extern "system" fn rtl_set_current_directory_u(path: *const UnicodeString) -> u32 {
-    crate::process::peb_lock().with(&sys::Native, || {
-        // SAFETY: the caller's string.
-        set_current_directory(unsafe { (*path).units() })
-    })
+    // SAFETY: the caller's string.
+    let path = unsafe { (*path).units() };
+    with_own_parameters(|own| set_current_directory(own, path))
 }
 
-fn set_current_directory(path: &[u16]) -> u32 {
-    let current = dos_path();
+/// RtlSetCurrentDirectory_U's work, over the process's own block under the PEB lock.
+fn set_current_directory(own: &mut OwnParameters, path: &[u16]) -> u32 {
     let mut full = [0u16; MAX_PATH + 1];
-    // SAFETY: the DOS path's buffer holds its length.
-    let made = full_path_name(path, unsafe { current.units() }, &mut full[..MAX_PATH]);
+    let made = full_path_name(path, own.current_path(), &mut full[..MAX_PATH]);
     let mut length = match made {
         Ok((length, _)) => length,
         Err(PathError::Empty) => return STATUS_OBJECT_NAME_INVALID,
         Err(PathError::TooLong) => return STATUS_NAME_TOO_LONG,
     };
-    let old = directory_handle();
-    // SAFETY: the DOS path's buffer holds its length.
-    let same = old != 0 && same_directory(&full[..length], unsafe { current.units() });
+    let old = own.current_handle();
+    let same = old != 0 && same_directory(&full[..length], own.current_path());
     if full[length - 1] != u16::from(b'\\') {
         full[length] = u16::from(b'\\');
         length += 1;
     }
     // The DOS path's room holds the path and its terminator.
-    if 2 * (length + 1) > current.maximum_length as usize {
+    if !own.current_path_fits(length) {
         return STATUS_NAME_TOO_LONG;
     }
     let handle = if same {
@@ -156,15 +141,7 @@ fn set_current_directory(path: &[u16]) -> u32 {
         }
         handle
     };
-    // SAFETY: the DOS path's own room, checked above to hold the path and its terminator.
-    unsafe {
-        current
-            .buffer
-            .copy_from_nonoverlapping(full.as_ptr(), length);
-        current.buffer.add(length).write(0);
-    }
-    current.length = (2 * length) as u16;
-    set_directory_handle(handle);
+    own.set_current_directory(&full[..length], handle);
     STATUS_SUCCESS
 }
 
@@ -196,10 +173,8 @@ pub unsafe extern "system" fn rtl_get_current_directory_u(
     buffer_length: u32,
     buffer: *mut u16,
 ) -> u32 {
-    crate::process::peb_lock().with(&sys::Native, || {
-        let current = dos_path();
-        // SAFETY: the DOS path's buffer holds its length.
-        let units = unsafe { current.units() };
+    with_own_parameters(|own| {
+        let units = own.current_path();
         let mut length = units.len();
         if length > 3 && units[length - 1] == u16::from(b'\\') {
             length -= 1;
@@ -223,15 +198,15 @@ pub unsafe extern "system" fn rtl_get_current_directory_u(
 /// load under.
 #[inline(never)]
 pub fn open_starting_directory() {
-    let current = dos_path();
     let mut copy = [0u16; MAX_PATH + 1];
-    // SAFETY: the DOS path's buffer holds its length.
-    let units = unsafe { current.units() };
-    let length = units.len().min(MAX_PATH);
-    copy[..length].copy_from_slice(&units[..length]);
-    if length != 0 {
-        let _ = set_current_directory(&copy[..length]);
-    }
+    with_own_parameters(|own| {
+        let units = own.current_path();
+        let length = units.len().min(MAX_PATH);
+        copy[..length].copy_from_slice(&units[..length]);
+        if length != 0 {
+            let _ = set_current_directory(own, &copy[..length]);
+        }
+    });
 }
 
 /// RTL_RELATIVE_NAME, Windows 2000's: the name relative to the directory, and the directory's
@@ -242,30 +217,28 @@ pub struct RelativeName {
     pub containing_directory: u32,
 }
 
-/// A NUL-terminated string's units (up to UNICODE_STRING's limit).
+/// The longest string a path call takes, in units: UNICODE_STRING's limit.
+const MAX_STRING: usize = 0x7FFF;
+
+/// A NUL-terminated string's units, cut to UNICODE_STRING's limit.
 ///
 /// # Safety
 ///
-/// `string` points at a NUL-terminated string.
+/// `string` is aligned for `u16` and points at a NUL-terminated string.
 unsafe fn terminated<'a>(string: *const u16) -> &'a [u16] {
-    let mut length = 0;
-    // SAFETY: the caller's string, read to its terminator.
-    while length < 0x7FFF && unsafe { string.add(length).read() } != 0 {
-        length += 1;
-    }
-    // SAFETY: as above.
-    unsafe { core::slice::from_raw_parts(string, length) }
+    // SAFETY: the caller's contract.
+    let units = unsafe { units_until_nul(string) };
+    &units[..units.len().min(MAX_STRING)]
 }
 
 /// The current directory's DOS path and handle, copied under the PEB lock into `out` (cut to
 /// MAX_PATH units and to its room): its length.
 pub(crate) fn current_directory(out: &mut [u16]) -> (usize, u32) {
-    crate::process::peb_lock().with(&sys::Native, || {
-        // SAFETY: the DOS path's buffer holds its length.
-        let units = unsafe { dos_path().units() };
+    with_own_parameters(|own| {
+        let units = own.current_path();
         let length = units.len().min(MAX_PATH).min(out.len());
         out[..length].copy_from_slice(&units[..length]);
-        (length, directory_handle())
+        (length, own.current_handle())
     })
 }
 
@@ -361,22 +334,13 @@ pub unsafe extern "system" fn rtl_does_file_exists_u(path: *const u16) -> u32 {
     let Ok(made) = dos_path_to_nt(path, &current[..current_length], false, &mut name) else {
         return 0;
     };
-    let string = UnicodeString {
-        length: (2 * made.length) as u16,
-        maximum_length: (2 * made.length) as u16,
-        buffer: name.as_mut_ptr(),
-    };
-    let attributes: [u32; 6] = [
-        24,
-        0,
-        &string as *const UnicodeString as u32,
-        OBJ_CASE_INSENSITIVE,
-        0,
-        0,
+    let string = counted(&name[..made.length]);
+    let attributes = attributes(&string, OBJ_CASE_INSENSITIVE);
+    let mut basic = FileBasicInformation::default();
+    let args = [
+        &attributes as *const ObjectAttributes as u32,
+        &mut basic as *mut FileBasicInformation as u32,
     ];
-    // FILE_BASIC_INFORMATION: the four times and the attributes.
-    let mut basic = [0u32; 10];
-    let args = [attributes.as_ptr() as u32, basic.as_mut_ptr() as u32];
     u32::from(system_service(nr::NtQueryAttributesFile, &args) == STATUS_SUCCESS)
 }
 

@@ -24,11 +24,12 @@
 //!   `_O_NOINHERIT`) in STARTUPINFO's C runtime block ([`inheritance_length`]); its start-up takes
 //!   them, then the standard handles for those of 0 to 2 it was not handed.
 
+use core::ffi::CStr;
 use core::sync::atomic::{AtomicI32, Ordering::Relaxed};
 
 use rtl::sync::Locked;
 
-use crate::imports;
+use crate::kernel32::{self, Win32Error};
 use crate::thread::{self, set_dos_error, set_errno, Held, Lock, EBADF, EINVAL, EMFILE, ENOSPC};
 
 /// The descriptors the table holds.
@@ -72,7 +73,6 @@ const OPEN_ALWAYS: u32 = 4;
 const TRUNCATE_EXISTING: u32 = 5;
 const FILE_ATTRIBUTE_READONLY: u32 = 0x01;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-const INVALID_HANDLE_VALUE: usize = usize::MAX;
 
 /// GetFileType's answers.
 const FILE_TYPE_UNKNOWN: u32 = 0;
@@ -195,6 +195,16 @@ fn with_table<R>(f: impl FnOnce(&mut Table) -> R) -> R {
 fn hold(fd: i32) -> Option<Held<'static>> {
     let fd = usize::try_from(fd).ok()?;
     IO.get(fd).map(Lock::hold)
+}
+
+/// `body` run with descriptor `fd`'s own lock taken (none for a descriptor out of range), let go
+/// when `body` returns or when an exception unwinds out of it: for the reads and writes that touch
+/// the caller's buffer under the lock.
+fn holding<R>(fd: i32, body: impl FnOnce() -> R) -> R {
+    match usize::try_from(fd).ok().and_then(|fd| IO.get(fd)) {
+        Some(lock) => lock.holding(body),
+        None => body(),
+    }
 }
 
 /// Descriptor `fd`'s entry, a copy, open or not; none when `fd` is out of range.
@@ -413,9 +423,7 @@ pub fn with_inheritance<R>(body: impl FnOnce(Inheritance<'_>) -> R) -> R {
 /// The descriptors the parent handed on (STARTUPINFO's C runtime block): each open one whose
 /// handle is valid and of a known type takes its descriptor, flags and all.
 fn take_inherited() {
-    let mut info = imports::StartupInfoA::new();
-    // SAFETY: kernel32's export, into the structure above.
-    unsafe { imports::GetStartupInfoA(&mut info) };
+    let info = kernel32::startup_info();
     if info.reserved2.is_null() || info.reserved2_length < 4 {
         return;
     }
@@ -428,8 +436,7 @@ fn take_inherited() {
         if flags & FOPEN == 0 || handle == 0 || handle as u32 == u32::MAX {
             continue;
         }
-        // SAFETY: kernel32's export.
-        if unsafe { imports::GetFileType(handle) } == FILE_TYPE_UNKNOWN {
+        if kernel32::file_type(handle) == FILE_TYPE_UNKNOWN {
             continue;
         }
         store(fd, Descriptor::open(handle, flags));
@@ -444,18 +451,11 @@ pub fn initialize() {
         if descriptor(fd as i32).is_some_and(|entry| entry.is_open()) {
             continue;
         }
-        // SAFETY: kernel32's exports.
-        let (handle, kind) = unsafe {
-            let handle = imports::GetStdHandle(which);
-            let valid = handle != 0 && handle != usize::MAX;
-            (
-                handle,
-                if valid {
-                    imports::GetFileType(handle)
-                } else {
-                    FILE_TYPE_UNKNOWN
-                },
-            )
+        let handle = kernel32::std_handle(which);
+        let kind = if handle != 0 && handle != usize::MAX {
+            kernel32::file_type(handle)
+        } else {
+            FILE_TYPE_UNKNOWN
         };
         let kind = if kind == FILE_TYPE_UNKNOWN {
             FDEV
@@ -475,20 +475,8 @@ pub fn is_device(fd: i32) -> bool {
 /// console program.
 fn follow_standard(fd: usize, handle: usize) {
     if fd < 3 && APP_TYPE.load(Relaxed) == 1 {
-        // SAFETY: kernel32's export.
-        unsafe { imports::SetStdHandle(STANDARD[fd], handle) };
+        let _ = kernel32::set_std_handle(STANDARD[fd], handle);
     }
-}
-
-/// CloseHandle over a handle the C runtime opened or duplicated: the error, when it fails.
-fn close_handle(handle: usize) -> Result<(), u32> {
-    // SAFETY: kernel32's exports.
-    unsafe {
-        if imports::CloseHandle(handle) == 0 {
-            return Err(imports::GetLastError());
-        }
-    }
-    Ok(())
 }
 
 /// `descriptor` made a new descriptor over a handle the C runtime opened (or duplicated) on the
@@ -498,7 +486,7 @@ fn install(reservation: Reservation, descriptor: Descriptor) -> i32 {
     match reservation.fill(descriptor) {
         Some(fd) => fd as i32,
         None => {
-            let _ = close_handle(descriptor.handle);
+            let _ = kernel32::close_handle(descriptor.handle);
             none_free();
             -1
         }
@@ -509,11 +497,9 @@ fn install(reservation: Reservation, descriptor: Descriptor) -> i32 {
 /// `_O_NOINHERIT`); -1 with EBADF for a handle of unknown type, EMFILE when none is free.
 #[unsafe(export_name = "f2k_export__open_osfhandle")]
 pub extern "C" fn open_osfhandle(handle: usize, flags: i32) -> i32 {
-    // SAFETY: kernel32's export.
-    let kind = unsafe { imports::GetFileType(handle) };
+    let kind = kernel32::file_type(handle);
     if kind == FILE_TYPE_UNKNOWN {
-        // SAFETY: kernel32's export.
-        let error = unsafe { imports::GetLastError() };
+        let error = kernel32::last_error();
         set_errno(EBADF);
         thread::set_doserrno(error);
         return -1;
@@ -625,6 +611,8 @@ fn open_plan(oflag: i32, pmode: i32, fmode: i32) -> Option<OpenPlan> {
 /// `name` is a NUL-terminated string; `pmode` is passed when `oflag` holds `_O_CREAT`.
 #[unsafe(export_name = "f2k_export__open")]
 pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i32 {
+    // SAFETY: the caller's NUL-terminated name, unchanged during the call.
+    let name = unsafe { CStr::from_ptr(name.cast()) };
     let pmode = if oflag & O_CREAT != 0 { pmode } else { 0 };
     let Some(plan) = open_plan(oflag, pmode, crate::data::FMODE.read()) else {
         set_errno(EINVAL);
@@ -636,28 +624,25 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
     let Some(reservation) = Reservation::lowest() else {
         return -1;
     };
-    let security = imports::SecurityAttributes::inheritable(plan.inherit);
-    // SAFETY: kernel32's export, over the caller's name and the attributes above.
-    let handle = unsafe {
-        imports::CreateFileA(
-            name,
-            plan.access,
-            FILE_SHARE_READ_WRITE,
-            &security,
-            plan.disposition,
-            plan.attributes,
-            0,
-        )
+    let security = crate::imports::SecurityAttributes::inheritable(plan.inherit);
+    let opened = kernel32::create_file(
+        name,
+        plan.access,
+        FILE_SHARE_READ_WRITE,
+        Some(&security),
+        plan.disposition,
+        plan.attributes,
+    );
+    let handle = match opened {
+        Ok(handle) => handle,
+        Err(Win32Error(error)) => {
+            set_dos_error(error);
+            return -1;
+        }
     };
-    if handle == INVALID_HANDLE_VALUE {
-        // SAFETY: kernel32's export.
-        set_dos_error(unsafe { imports::GetLastError() });
-        return -1;
-    }
-    // SAFETY: kernel32's export, over the handle just opened.
-    let kind = unsafe { imports::GetFileType(handle) };
+    let kind = kernel32::file_type(handle);
     if kind == FILE_TYPE_UNKNOWN {
-        let _ = close_handle(handle);
+        let _ = kernel32::close_handle(handle);
         not_open();
         return -1;
     }
@@ -686,7 +671,7 @@ pub extern "C" fn close(fd: i32) -> i32 {
         return -1;
     };
     let mut result = 0;
-    if let Some(Err(error)) = handle.map(close_handle) {
+    if let Some(Err(Win32Error(error))) = handle.map(kernel32::close_handle) {
         set_dos_error(error);
         result = -1;
     }
@@ -698,16 +683,9 @@ pub extern "C" fn close(fd: i32) -> i32 {
 /// A handle duplicated within the process, inheritable, its access the same; none (errno from the
 /// error) when it cannot be.
 fn duplicate(handle: usize) -> Option<usize> {
-    let mut copy = 0usize;
-    // SAFETY: kernel32's exports.
-    unsafe {
-        let process = imports::GetCurrentProcess();
-        if imports::DuplicateHandle(process, handle, process, &mut copy, 0, 1, 2) == 0 {
-            set_dos_error(imports::GetLastError());
-            return None;
-        }
-    }
-    Some(copy)
+    kernel32::duplicate_inheritable(handle)
+        .map_err(|Win32Error(error)| set_dos_error(error))
+        .ok()
 }
 
 /// _dup: a second descriptor for the same file, the lowest free one. The descriptor's lock is held,
@@ -762,7 +740,7 @@ pub extern "C" fn dup2(from: i32, to: i32) -> i32 {
         table.entries[to] = Descriptor::open(copy, entry.flags & !(FNOINHERIT | FEOF));
         (old.is_open() && !shared).then_some(old.handle)
     });
-    if let Some(Err(error)) = replaced.map(close_handle) {
+    if let Some(Err(Win32Error(error))) = replaced.map(kernel32::close_handle) {
         set_dos_error(error);
     }
     follow_standard(to, copy);
@@ -807,16 +785,13 @@ pub fn seek(fd: i32, offset: i32, origin: u32) -> i32 {
     let Some(entry) = open(fd) else {
         return -1;
     };
-    // SAFETY: kernel32's exports, over the descriptor's handle.
-    let (position, error) = unsafe {
-        imports::SetLastError(0);
-        let position = imports::SetFilePointer(entry.handle, offset, core::ptr::null_mut(), origin);
-        (position, imports::GetLastError())
+    let position = match kernel32::set_file_pointer(entry.handle, offset, origin) {
+        Ok(position) => position,
+        Err(Win32Error(error)) => {
+            set_dos_error(error);
+            return -1;
+        }
     };
-    if position == u32::MAX && error != 0 {
-        set_dos_error(error);
-        return -1;
-    }
     update(fd, entry.handle, |entry| entry.flags &= !FEOF);
     position as i32
 }
@@ -827,50 +802,50 @@ pub extern "C" fn tell(fd: i32) -> i32 {
     seek(fd, 0, 1)
 }
 
-/// WriteFile over the whole of `bytes`: the count written, or the error.
-fn write_all(handle: usize, bytes: &[u8]) -> Result<usize, u32> {
-    let mut written = 0u32;
-    // SAFETY: kernel32's exports, over the slice.
-    unsafe {
-        if imports::WriteFile(handle, bytes.as_ptr(), bytes.len() as u32, &mut written, 0) == 0 {
-            return Err(imports::GetLastError());
-        }
-    }
-    Ok(written as usize)
-}
-
-/// _write: `count` bytes to the descriptor, each LF as CR LF in text mode, at the file's end when
-/// it appends; the caller's bytes written, or -1 (EBADF for a descriptor not open or not writable,
-/// ENOSPC when nothing could be written). The descriptor's lock is held across WriteFile (so two
-/// threads' writes to one descriptor do not interleave); the table's is taken only to read the
-/// descriptor.
+/// _write: `count` bytes to the descriptor (see [`write`]).
 ///
 /// # Safety
 ///
 /// `buffer` holds `count` bytes.
 #[unsafe(export_name = "f2k_export__write")]
-pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
-    let _io = hold(fd);
+pub unsafe extern "C" fn write_export(fd: i32, buffer: *const u8, count: u32) -> i32 {
+    let bytes = if count == 0 {
+        &[][..]
+    } else {
+        // SAFETY: the caller's buffer of `count` bytes, unchanged during the call.
+        unsafe { core::slice::from_raw_parts(buffer, count as usize) }
+    };
+    write(fd, bytes)
+}
+
+/// `bytes` to the descriptor, each LF as CR LF in text mode, at the file's end when it appends;
+/// the count of `bytes` written, or -1 (EBADF for a descriptor not open or not writable, ENOSPC
+/// when nothing could be written). The descriptor's lock is held across WriteFile (so two threads'
+/// writes to one descriptor do not interleave); the table's is taken only to read the descriptor.
+pub fn write(fd: i32, bytes: &[u8]) -> i32 {
+    holding(fd, || write_held(fd, bytes))
+}
+
+/// [`write`]'s work, under the descriptor's lock.
+fn write_held(fd: i32, bytes: &[u8]) -> i32 {
     let Some(entry) = open(fd) else {
         return -1;
     };
-    if count == 0 {
+    if bytes.is_empty() {
         return 0;
     }
     let (handle, flags) = (entry.handle, entry.flags);
     if flags & FAPPEND != 0 {
         seek(fd, 0, 2);
     }
-    // SAFETY: the caller's buffer.
-    let bytes = unsafe { core::slice::from_raw_parts(buffer, count as usize) };
     let (mut consumed, mut stored, mut failure) = (0usize, 0usize, None);
     if flags & FTEXT == 0 {
-        match write_all(handle, bytes) {
+        match kernel32::write_file(handle, bytes) {
             Ok(written) => {
                 consumed = written;
                 stored = written;
             }
-            Err(error) => failure = Some(error),
+            Err(Win32Error(error)) => failure = Some(error),
         }
     } else {
         // The translation, a chunk at a time.
@@ -887,7 +862,7 @@ pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
                 length += 1;
                 at += 1;
             }
-            match write_all(handle, &chunk[..length]) {
+            match kernel32::write_file(handle, &chunk[..length]) {
                 Ok(written) => {
                     stored += written;
                     if written < length {
@@ -904,7 +879,7 @@ pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
                     }
                     consumed += at - start;
                 }
-                Err(error) => {
+                Err(Win32Error(error)) => {
                     failure = Some(error);
                     break;
                 }
@@ -931,25 +906,23 @@ pub unsafe extern "C" fn write(fd: i32, buffer: *const u8, count: u32) -> i32 {
     consumed as i32
 }
 
-/// The descriptor's next bytes into `buffer`, CR LF read as LF and Ctrl-Z the end of a file in
+/// The descriptor's next bytes into `bytes`, CR LF read as LF and Ctrl-Z the end of a file in
 /// text mode: the count, 0 at the end, -1 (errno) on an error. The descriptor's lock is held across
 /// ReadFile; the table's is taken only to read the descriptor and write back its byte read ahead
 /// and its end-of-file mark: a thread waiting on the console does not stop another's output.
-///
-/// # Safety
-///
-/// `buffer` holds `count` bytes.
-pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
-    let _io = hold(fd);
+pub fn read(fd: i32, bytes: &mut [u8]) -> i32 {
+    holding(fd, || read_held(fd, bytes))
+}
+
+/// [`read`]'s work, under the descriptor's lock.
+fn read_held(fd: i32, bytes: &mut [u8]) -> i32 {
     let Some(entry) = open(fd) else {
         return -1;
     };
-    let (handle, flags) = (entry.handle, entry.flags);
+    let (handle, flags, count) = (entry.handle, entry.flags, bytes.len());
     if count == 0 || flags & FEOF != 0 {
         return 0;
     }
-    // SAFETY: the caller's buffer.
-    let bytes = unsafe { core::slice::from_raw_parts_mut(buffer, count) };
     let mut got = 0;
     if entry.ahead != 0x100 && flags & (FPIPE | FDEV) != 0 {
         // Taken under the table's lock, and the entry checked still open over the same handle.
@@ -961,34 +934,21 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
             got = 1;
         }
     }
-    let mut read = 0u32;
-    // SAFETY: kernel32's exports, over the rest of the buffer.
-    unsafe {
-        if got < count
-            && imports::ReadFile(
-                handle,
-                bytes[got..].as_mut_ptr(),
-                (count - got) as u32,
-                &mut read,
-                0,
-            ) == 0
-        {
-            let error = imports::GetLastError();
-            match error {
-                ERROR_BROKEN_PIPE => return got as i32,
-                ERROR_ACCESS_DENIED => {
-                    set_errno(EBADF);
-                    thread::set_doserrno(error);
-                    return -1;
-                }
-                _ => {
-                    set_dos_error(error);
-                    return -1;
-                }
+    if got < count {
+        match kernel32::read_file(handle, &mut bytes[got..]) {
+            Ok(read) => got += read,
+            Err(Win32Error(ERROR_BROKEN_PIPE)) => return got as i32,
+            Err(Win32Error(error @ ERROR_ACCESS_DENIED)) => {
+                set_errno(EBADF);
+                thread::set_doserrno(error);
+                return -1;
+            }
+            Err(Win32Error(error)) => {
+                set_dos_error(error);
+                return -1;
             }
         }
     }
-    got += read as usize;
     if flags & FTEXT == 0 {
         return got as i32;
     }
@@ -1019,10 +979,9 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
         }
         // A CR last: the next byte decides.
         from += 1;
-        let (mut next, mut one) = (0u8, 0u32);
-        // SAFETY: kernel32's export, over one byte.
-        let peeked =
-            unsafe { imports::ReadFile(handle, &mut next, 1, &mut one, 0) } != 0 && one == 1;
+        let mut next = [0u8];
+        let peeked = kernel32::read_file(handle, &mut next) == Ok(1);
+        let next = next[0];
         if peeked && next == b'\n' {
             bytes[to] = b'\n';
         } else {
@@ -1031,8 +990,8 @@ pub unsafe fn read(fd: i32, buffer: *mut u8, count: usize) -> i32 {
                 if flags & (FPIPE | FDEV) != 0 {
                     update(fd, handle, |entry| entry.ahead = u16::from(next));
                 } else {
-                    // SAFETY: kernel32's export: the byte given back to the file.
-                    unsafe { imports::SetFilePointer(handle, -1, core::ptr::null_mut(), 1) };
+                    // The byte given back to the file.
+                    let _ = kernel32::set_file_pointer(handle, -1, 1);
                 }
             }
         }

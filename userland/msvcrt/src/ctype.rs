@@ -28,7 +28,7 @@ use core::sync::atomic::{AtomicPtr, Ordering::Acquire, Ordering::Release};
 
 use rtl::sync::Locked;
 
-use crate::imports;
+use crate::kernel32;
 use crate::thread::Lock;
 
 /// setlocale's categories (locale.h).
@@ -219,10 +219,9 @@ pub fn wide_class(c: u16, mask: u16) -> u16 {
     if c < 0x100 {
         return byte_class(c as u8) & mask;
     }
-    let mut types = 0u16;
-    // SAFETY: kernel32's export, over one unit and one type word.
-    unsafe { imports::GetStringTypeW(CT_CTYPE1, &c, 1, &mut types) };
-    types & mask
+    let mut types = [0u16];
+    kernel32::string_type_w(CT_CTYPE1, &[c], &mut types);
+    types[0] & mask
 }
 
 /// A wide character's case mapped, in the LC_CTYPE locale.
@@ -243,11 +242,10 @@ fn map_wide(c: u16, upper: bool) -> u16 {
     } else {
         LCMAP_LOWERCASE
     };
-    let mut mapped = 0u16;
-    // SAFETY: kernel32's export, over one unit each way.
-    match unsafe { imports::LCMapStringW(state.lcid, flags, &c, 1, &mut mapped, 1) } {
+    let mut mapped = [0u16];
+    match kernel32::lcmap_w(state.lcid, flags, &[c], &mut mapped) {
         0 => c,
-        _ => mapped,
+        _ => mapped[0],
     }
 }
 
@@ -275,11 +273,10 @@ pub fn byte_to_wide(byte: u8) -> u16 {
     if state.lcid == 0 {
         return byte as u16;
     }
-    let mut wide = 0u16;
-    // SAFETY: kernel32's export, over one byte and one unit.
-    match unsafe { imports::MultiByteToWideChar(state.page, 0, &byte, 1, &mut wide, 1) } {
+    let mut wide = [0u16];
+    match kernel32::multi_byte_to_wide(state.page, 0, &[byte], &mut wide) {
         0 => byte as u16,
-        _ => wide,
+        _ => wide[0],
     }
 }
 
@@ -290,29 +287,14 @@ pub fn wide_to_byte(c: u16) -> Option<u8> {
     if state.lcid == 0 {
         return (c < 0x100).then_some(c as u8);
     }
-    let (mut byte, mut defaulted) = (0u8, 0u32);
-    // SAFETY: kernel32's export, over one unit and one byte.
-    let written = unsafe {
-        imports::WideCharToMultiByte(
-            state.page,
-            0,
-            &c,
-            1,
-            &mut byte,
-            1,
-            core::ptr::null(),
-            &mut defaulted,
-        )
-    };
-    (written == 1 && defaulted == 0).then_some(byte)
+    let mut byte = [0u8];
+    let (written, defaulted) = kernel32::wide_to_multi_byte(state.page, 0, &[c], &mut byte);
+    (written == 1 && !defaulted).then_some(byte[0])
 }
 
 /// A string locale value of `lcid` (GetLocaleInfoA), into `out`; its length.
 fn locale_info(lcid: u32, lctype: u32, out: &mut [u8; 64]) -> usize {
-    // SAFETY: kernel32's export, over the buffer.
-    let length =
-        unsafe { imports::GetLocaleInfoA(lcid, lctype, out.as_mut_ptr(), out.len() as i32) };
-    (length as usize).saturating_sub(1)
+    kernel32::locale_info(lcid, lctype, out).saturating_sub(1)
 }
 
 /// A numeric locale value of `lcid`.
@@ -341,8 +323,7 @@ fn resolve(text: &[u8]) -> Option<Resolved> {
             name: Name::C,
         });
     }
-    // SAFETY: kernel32's export.
-    let lcid = unsafe { imports::GetUserDefaultLCID() };
+    let lcid = kernel32::user_default_lcid();
     let ansi = locale_number(lcid, LOCALE_IDEFAULTANSICODEPAGE);
     let mut page = ansi;
     if !text.is_empty() {
@@ -452,32 +433,9 @@ fn make_tables(locale: &Resolved, next: Option<&'static Tables>) -> Option<&'sta
     for (i, byte) in bytes.iter_mut().enumerate() {
         *byte = i as u8;
     }
-    // SAFETY: kernel32's exports, over the 256 bytes and the tables of 256 entries.
-    unsafe {
-        imports::GetStringTypeA(
-            locale.lcid,
-            CT_CTYPE1,
-            bytes.as_ptr(),
-            256,
-            tables.class.as_mut_ptr(),
-        );
-        imports::LCMapStringA(
-            locale.lcid,
-            LCMAP_LOWERCASE,
-            bytes.as_ptr(),
-            256,
-            tables.lower.as_mut_ptr(),
-            256,
-        );
-        imports::LCMapStringA(
-            locale.lcid,
-            LCMAP_UPPERCASE,
-            bytes.as_ptr(),
-            256,
-            tables.upper.as_mut_ptr(),
-            256,
-        );
-    }
+    kernel32::string_type_a(locale.lcid, CT_CTYPE1, &bytes, &mut tables.class);
+    kernel32::lcmap_a(locale.lcid, LCMAP_LOWERCASE, &bytes, &mut tables.lower);
+    kernel32::lcmap_a(locale.lcid, LCMAP_UPPERCASE, &bytes, &mut tables.upper);
     Some(tables)
 }
 

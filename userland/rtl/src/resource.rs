@@ -19,7 +19,9 @@
 //! The reads go through [`Memory`], by 32-bit user address: the process's own memory on the target,
 //! a model in the tests.
 
+use crate::image;
 use crate::modules::Memory;
+
 /// The resource type of a message table: RT_MESSAGETABLE.
 pub const RT_MESSAGETABLE: u32 = 11;
 /// The name a message-table resource has: the message compiler writes one, numbered 1.
@@ -36,8 +38,6 @@ pub const STATUS_RESOURCE_NAME_NOT_FOUND: u32 = 0xC000_008B;
 pub const STATUS_RESOURCE_LANG_NOT_FOUND: u32 = 0xC000_0204;
 pub const STATUS_MESSAGE_NOT_FOUND: u32 = 0xC000_0109;
 
-/// The optional header's data directory index of the resource directory.
-const DIR_RESOURCE: u32 = 2;
 /// An entry's high bit: its name is a string (Name), its target a subtable (OffsetToData).
 const HIGH_BIT: u32 = 0x8000_0000;
 
@@ -110,26 +110,15 @@ fn is_numbered(element: u32) -> bool {
 /// The resource directory of the image mapped at `base`: its root table's address and the
 /// directory's size; none for an image without one.
 pub fn root<M: Memory>(memory: &M, base: u32) -> Option<(u32, u32)> {
-    if memory.half(base) != 0x5A4D {
-        return None; // "MZ"
-    }
-    let nt = base.wrapping_add(memory.word(base + 0x3C));
-    if memory.word(nt) != 0x0000_4550 {
-        return None; // "PE\0\0"
-    }
-    let optional = nt + 0x18;
-    if memory.half(optional) != 0x010B || memory.word(optional + 0x5C) <= DIR_RESOURCE {
-        return None; // not PE32, or no resource directory slot
-    }
-    let at = optional + 0x60 + 8 * DIR_RESOURCE;
-    let (rva, size) = (memory.word(at), memory.word(at + 4));
-    (rva != 0 && size != 0).then(|| (base.wrapping_add(rva), size))
+    let place = image::mapped_directory(memory, base, image::DIRECTORY_RESOURCE)?;
+    (place.size != 0).then(|| (base.wrapping_add(place.virtual_address), place.size))
 }
 
 /// The image's size (the optional header's SizeOfImage), for an image [`root`] read.
 fn size_of_image<M: Memory>(memory: &M, base: u32) -> u32 {
-    let nt = base.wrapping_add(memory.word(base + 0x3C));
-    memory.word(nt + 0x18 + 0x38)
+    image::mapped_headers(memory, base)
+        .optional_header
+        .size_of_image
 }
 
 /// The entry of the table at `table` for the element `element`: its OffsetToData word (the high

@@ -27,9 +27,10 @@
 //!   `system(NULL)` answers whether COMSPEC names a file (0 with ENOENT when not). F2K has no
 //!   cmd.exe on its disk.
 
+use core::ffi::CStr;
 use core::ptr::NonNull;
 
-use crate::imports::{self, ProcessInformation, StartupInfoA};
+use crate::kernel32;
 use crate::thread::{
     set_dos_error,
     set_doserrno,
@@ -55,12 +56,11 @@ const MAX_COMMAND_LINE: usize = 1024;
 /// What the search tries after a name without an extension.
 const EXTENSIONS: [&[u8]; 4] = [b".com", b".exe", b".bat", b".cmd"];
 
-/// CreateProcessA's DETACHED_PROCESS; the waits' INFINITE and WAIT_OBJECT_0; GetFileAttributesA's
-/// failure; ERROR_INVALID_HANDLE and ERROR_FILE_NOT_FOUND.
+/// CreateProcessA's DETACHED_PROCESS; the waits' INFINITE and WAIT_OBJECT_0; ERROR_INVALID_HANDLE
+/// and ERROR_FILE_NOT_FOUND.
 const DETACHED_PROCESS: u32 = 0x8;
 const INFINITE: u32 = 0xFFFF_FFFF;
 const WAIT_OBJECT_0: u32 = 0;
-const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
 const ERROR_INVALID_HANDLE: u32 = 6;
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 
@@ -126,7 +126,7 @@ impl Strings {
             .map(move |at| unsafe { *array.add(at) })
             .take_while(|string| !string.is_null())
             // SAFETY: as above: each entry is NUL-terminated.
-            .map(|string| unsafe { crate::string::narrow(string) })
+            .map(|string| unsafe { rtl::cstr::bytes_until_nul(string) })
     }
 }
 
@@ -173,75 +173,22 @@ pub fn environment_block<'a>(
     end
 }
 
-/// The kernel32 calls the family makes, each a safe call over its import.
-mod calls {
-    use super::*;
+/// Whether the NUL-terminated path at the start of `name` names a file or directory.
+fn exists(name: &[u8]) -> bool {
+    CStr::from_bytes_until_nul(name).is_ok_and(|name| kernel32::file_attributes(name).is_ok())
+}
 
-    /// The calling thread's last error.
-    pub fn last_error() -> u32 {
-        // SAFETY: kernel32's export.
-        unsafe { imports::GetLastError() }
+/// The process's end waited for, and its exit code; none when the handle names no process.
+fn wait_for(process: usize) -> Option<u32> {
+    if kernel32::wait_for_single_object(process, INFINITE) != WAIT_OBJECT_0 {
+        return None;
     }
+    kernel32::exit_code_process(process).ok()
+}
 
-    /// Whether the NUL-terminated `name` names a file or directory (GetFileAttributesA).
-    pub fn exists(name: &[u8]) -> bool {
-        debug_assert_eq!(name.last(), Some(&0));
-        // SAFETY: kernel32's export, over the terminated name.
-        unsafe { imports::GetFileAttributesA(name.as_ptr()) != INVALID_FILE_ATTRIBUTES }
-    }
-
-    /// CreateProcessA of the program `application` (NUL-terminated) with the command line, the
-    /// handles inherited, the flags, the environment block (none: the process's own) and the C
-    /// runtime's block; its handles and ids, or the error.
-    pub fn create_process(
-        application: &[u8],
-        command_line: &mut [u8],
-        flags: u32,
-        environment: Option<&[u8]>,
-        runtime_data: &[u8],
-    ) -> Result<ProcessInformation, u32> {
-        debug_assert_eq!(application.last(), Some(&0));
-        let mut startup = StartupInfoA::new();
-        startup.reserved2_length = runtime_data.len() as u16;
-        startup.reserved2 = runtime_data.as_ptr();
-        let mut information = ProcessInformation::default();
-        // SAFETY: kernel32's export, over the terminated strings, the block and the structures.
-        let created = unsafe {
-            imports::CreateProcessA(
-                application.as_ptr(),
-                command_line.as_mut_ptr(),
-                0,
-                0,
-                1,
-                flags,
-                environment.map_or(core::ptr::null(), <[u8]>::as_ptr),
-                core::ptr::null(),
-                &startup,
-                &mut information,
-            )
-        };
-        if created == 0 {
-            return Err(last_error());
-        }
-        Ok(information)
-    }
-
-    /// The process's end waited for, and its exit code; none when the handle names no process.
-    pub fn wait_for(process: usize) -> Option<u32> {
-        let mut code = 0;
-        // SAFETY: kernel32's exports, over the local above.
-        let ended = unsafe {
-            imports::WaitForSingleObject(process, INFINITE) == WAIT_OBJECT_0
-                && imports::GetExitCodeProcess(process, &mut code) != 0
-        };
-        ended.then_some(code)
-    }
-
-    /// CloseHandle.
-    pub fn close(handle: usize) {
-        // SAFETY: kernel32's export.
-        unsafe { imports::CloseHandle(handle) };
-    }
+/// A handle of the C runtime's closed: a failure leaves nothing to undo.
+fn close(handle: usize) {
+    let _ = kernel32::close_handle(handle);
 }
 
 /// The NUL-terminated path at `out` made of `parts`, if it names a file.
@@ -256,7 +203,7 @@ fn found(parts: &[&[u8]], out: &mut [u8; 260]) -> bool {
         at += part.len();
     }
     out[at] = 0;
-    calls::exists(&out[..=at])
+    exists(&out[..=at])
 }
 
 /// The program `name` names (see the module doc), at `directory` (none: as given): with its
@@ -299,7 +246,7 @@ fn locate(name: &[u8], path: Option<&[u8]>, out: &mut [u8; 260]) -> bool {
             }
         }
     }
-    let error = match calls::last_error() {
+    let error = match kernel32::last_error() {
         0 => ERROR_FILE_NOT_FOUND,
         error => error,
     };
@@ -343,7 +290,9 @@ pub fn spawn(
     if !locate(name, directories, &mut path) {
         return -1;
     }
-    let path_length = path.iter().position(|&byte| byte == 0).unwrap_or(0);
+    let Ok(path) = CStr::from_bytes_until_nul(&path) else {
+        return -1;
+    };
     let Some(mut command_line) = Buffer::new(length) else {
         return -1;
     };
@@ -363,8 +312,8 @@ pub fn spawn(
     let created = crate::lowio::with_inheritance(|inheritance| {
         let mut runtime_data = Buffer::new(inheritance.length())?;
         inheritance.write(runtime_data.bytes_mut());
-        Some(calls::create_process(
-            &path[..=path_length],
+        Some(kernel32::create_process(
+            path,
             command_line.bytes_mut(),
             if mode == P_DETACH {
                 DETACHED_PROCESS
@@ -379,24 +328,24 @@ pub fn spawn(
         None => return -1,
         Some(Ok(process)) => process,
         Some(Err(error)) => {
-            set_dos_error(error);
+            set_dos_error(error.0);
             return -1;
         }
     };
-    calls::close(process.thread);
+    close(process.thread);
     match mode {
         P_WAIT => {
-            let code = calls::wait_for(process.process);
-            calls::close(process.process);
+            let code = wait_for(process.process);
+            close(process.process);
             code.map_or(-1, |code| code as i32 as isize)
         }
         P_NOWAIT | P_NOWAITO => process.process as isize,
         P_DETACH => {
-            calls::close(process.process);
+            close(process.process);
             0
         }
         _ => {
-            calls::close(process.process);
+            close(process.process);
             crate::startup::quick_exit(0)
         }
     }
@@ -418,7 +367,7 @@ unsafe fn spawn_arrays(
     // SAFETY: the caller's contract.
     let (name, arguments, environment) = unsafe {
         (
-            crate::string::narrow(name),
+            rtl::cstr::bytes_until_nul(name),
             Strings::new(argv),
             (!envp.is_null()).then(|| Strings::new(envp)),
         )
@@ -579,10 +528,10 @@ pub unsafe extern "C" fn cwait(status: *mut i32, process: isize, _action: i32) -
     // SAFETY: the caller's slot.
     let status = unsafe { status.as_mut() };
     let handle = process as usize;
-    let (answer, code) = match calls::wait_for(handle) {
+    let (answer, code) = match wait_for(handle) {
         Some(code) => (process, code as i32),
         None => {
-            match calls::last_error() {
+            match kernel32::last_error() {
                 ERROR_INVALID_HANDLE => {
                     set_errno(ECHILD);
                     set_doserrno(ERROR_INVALID_HANDLE);
@@ -592,7 +541,7 @@ pub unsafe extern "C" fn cwait(status: *mut i32, process: isize, _action: i32) -
             (-1, -1)
         }
     };
-    calls::close(handle);
+    close(handle);
     if let Some(status) = status {
         *status = code;
     }
@@ -611,7 +560,7 @@ pub unsafe extern "C" fn system(command: *const u8) -> i32 {
     let comspec = crate::startup::environment_value(b"COMSPEC", &mut comspec[..259])
         .map(|length| &comspec[..=length]);
     if command.is_null() {
-        let found = comspec.is_some_and(calls::exists);
+        let found = comspec.is_some_and(exists);
         if !found {
             set_errno(ENOENT);
         }
@@ -636,8 +585,7 @@ pub unsafe extern "C" fn system(command: *const u8) -> i32 {
             None,
             false,
         );
-        // SAFETY: the calling thread's errno.
-        let errno = unsafe { *crate::thread::errno_address() };
+        let errno = crate::thread::errno();
         if answer != -1 || (errno != ENOENT && errno != EACCES) {
             return answer as i32;
         }

@@ -14,7 +14,9 @@
 //! ([`call_server_waiting`]), where Windows 2000's csrss holds the reply. The host tests'
 //! CsrClientCallServer serves the same rules, the bytes written recorded ([`console_writes`]).
 
-use rtl::console::api;
+use rtl::console::api::{self, InputRecords, Message};
+use rtl::console::Api;
+use rtl::pod::Pod;
 use rtl::status::{nt_success, STATUS_INVALID_HANDLE, STATUS_NO_MEMORY, STATUS_PENDING};
 use rtl::sync::{Locked, OnceWord};
 
@@ -29,6 +31,7 @@ use crate::base::{
     standard_slot,
     update_console_flags,
 };
+use crate::edge::{InStr, InWStr, Out, OutBuf};
 use crate::heap::{HeapVec, OutOfMemory};
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
@@ -45,10 +48,11 @@ own_data! {
     fn input_wait() -> &'static OnceWord<FastPebLock> = OnceWord::new(FastPebLock);
 }
 
-/// Send the API's data to the console server (CsrClientCallServer, no capture buffer: F2K's server
-/// reads the client's memory where it is); the status, `data` as the server answered it.
-fn call_server(api: u32, data: &mut [usize]) -> u32 {
-    let mut message = ApiMessage {
+/// Send an API's message to the console server (CsrClientCallServer, no capture buffer: F2K's
+/// server reads the client's memory where it is), as the API's data after the header; the status,
+/// `message` as the server answered it.
+fn call_server<M: Message>(message: &mut M) -> u32 {
+    let mut sent = ApiMessage {
         port_message: [0; 6],
         capture_buffer: 0,
         api_number: 0,
@@ -56,12 +60,15 @@ fn call_server(api: u32, data: &mut [usize]) -> u32 {
         reserved: 0,
         data: [0; rtl::console::DATA_WORDS],
     };
-    message.data[..data.len()].copy_from_slice(data);
-    let length = core::mem::size_of_val(data) as u32;
+    let length = core::mem::size_of::<M>();
+    sent.data.as_bytes_mut()[..length].copy_from_slice(message.as_bytes());
+    let api = M::API.into();
     // SAFETY: ntdll's export, over the message above.
-    unsafe { nt::CsrClientCallServer(&mut message, core::ptr::null_mut(), api, length) };
-    data.copy_from_slice(&message.data[..data.len()]);
-    message.return_value
+    unsafe { nt::CsrClientCallServer(&mut sent, core::ptr::null_mut(), api, length as u32) };
+    message
+        .as_bytes_mut()
+        .copy_from_slice(&sent.data.as_bytes()[..length]);
+    sent.return_value
 }
 
 /// A call's answer as a BOOL: TRUE, or FALSE with the status's error set (BaseSetLastNTError).
@@ -117,12 +124,14 @@ pub extern "system" fn set_handle_count(count: u32) -> u32 {
 
 /// The console's input or output code page from its server; zero with the status's error.
 fn console_cp(output: bool) -> u32 {
-    let mut data = [usize::from(output), 0];
-    let status = call_server(api::GET_CP, &mut data);
-    if succeeded(status) == 0 {
+    let mut message = api::GetCp {
+        output: usize::from(output),
+        code_page: 0,
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
-    data[1] as u32
+    message.code_page as u32
 }
 
 /// GetConsoleCP: the console's input code page (the OEM one, 437).
@@ -145,49 +154,54 @@ pub extern "system" fn get_console_output_cp() -> u32 {
 /// `mode` points at a dword.
 #[unsafe(export_name = "f2k_export_GetConsoleMode")]
 pub unsafe extern "system" fn get_console_mode(console: u32, mode: *mut u32) -> u32 {
-    let mut data = [console as usize, 0];
-    if succeeded(call_server(api::GET_MODE, &mut data)) == 0 {
+    // SAFETY: the caller's dword (the contract).
+    let mode = unsafe { Out::new(mode) };
+    console_mode(console, mode)
+}
+
+/// GetConsoleMode's work.
+fn console_mode(console: u32, mut mode: Out<'_, u32>) -> u32 {
+    let mut message = api::GetMode {
+        handle: console as usize,
+        mode: 0,
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
-    // SAFETY: the caller's dword.
-    unsafe { mode.write_unaligned(data[1] as u32) };
+    mode.set(message.mode as u32);
     1
 }
 
-/// WriteConsoleW's work: `count` characters of `buffer` (bytes, or UTF-16 units for `unicode`) to
-/// the console's screen, the count written stored where asked — the full count: the CRT's writer
-/// sums it. The reserved argument (WriteFile's OVERLAPPED) must be null (ERROR_INVALID_PARAMETER);
-/// a handle that is not an open output handle is ERROR_INVALID_HANDLE, a buffer the caller cannot
-/// name ERROR_NOACCESS, one that cannot be read ERROR_INVALID_USER_BUFFER (the server's statuses).
-///
-/// # Safety
-///
-/// `written` is null or points at a dword.
-unsafe fn write_console(
+/// WriteConsoleW's work (and WriteFile's on a console handle, as Windows 2000's hands it): `count`
+/// characters of `buffer` (bytes, or UTF-16 units for `unicode`) to the console's screen, the
+/// count written stored where asked — the full count: the CRT's writer sums it. The reserved
+/// argument (WriteFile's OVERLAPPED) must be null (ERROR_INVALID_PARAMETER); a handle that is not
+/// an open output handle is ERROR_INVALID_HANDLE, a buffer the caller cannot name ERROR_NOACCESS,
+/// one that cannot be read ERROR_INVALID_USER_BUFFER (the server's statuses).
+pub fn write_console(
     console: u32,
     buffer: usize,
     count: u32,
-    written: *mut u32,
-    reserved: *const u8,
+    written: Option<Out<'_, u32>>,
+    reserved: bool,
     unicode: bool,
 ) -> u32 {
-    if !reserved.is_null() {
+    if reserved {
         set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     }
-    let mut data = [
-        console as usize,
+    let mut message = api::WriteConsole {
+        handle: console as usize,
         buffer,
-        count as usize,
-        0,
-        usize::from(unicode),
-    ];
-    if succeeded(call_server(api::WRITE_CONSOLE, &mut data)) == 0 {
+        count: count as usize,
+        written: 0,
+        unicode: usize::from(unicode),
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
-    if !written.is_null() {
-        // SAFETY: the caller's dword.
-        unsafe { written.write_unaligned(data[3] as u32) };
+    if let Some(mut written) = written {
+        written.set(message.written as u32);
     }
     1
 }
@@ -205,8 +219,11 @@ pub unsafe extern "system" fn write_console_a(
     written: *mut u32,
     reserved: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe { write_console(console, buffer as usize, count, written, reserved, false) }
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // reads it.
+    let written = unsafe { Out::optional(written) };
+    let reserved = !reserved.is_null();
+    write_console(console, buffer as usize, count, written, reserved, false)
 }
 
 /// WriteConsoleW: `count` UTF-16 units, shown in the console's code page (see [`write_console`]).
@@ -222,36 +239,36 @@ pub unsafe extern "system" fn write_console_w(
     written: *mut u32,
     reserved: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe { write_console(console, buffer as usize, count, written, reserved, true) }
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // reads it.
+    let written = unsafe { Out::optional(written) };
+    let reserved = !reserved.is_null();
+    write_console(console, buffer as usize, count, written, reserved, true)
 }
 
-/// ReadConsoleA, as Windows 2000's ReadFile reaches it: up to `count` bytes of the console's
+/// ReadConsoleA, as Windows 2000's ReadFile reaches it: up to the buffer's bytes of the console's
 /// input, the count read stored ([`read_console_a`]); any handle but an input one is
 /// ERROR_INVALID_HANDLE.
-///
-/// # Safety
-///
-/// `read` is null or points at a dword.
-pub unsafe fn read_console(console: u32, buffer: *mut u8, count: u32, read: *mut u32) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe { read_console_as(console, buffer as usize, count, read, false) }
+pub fn read_console(console: u32, buffer: OutBuf<'_, u8>, read: Option<Out<'_, u32>>) -> u32 {
+    read_console_as(console, buffer.address(0), buffer.len() as u32, read, false)
 }
 
 /// FlushConsoleInputBuffer (and Windows 2000's FlushFileBuffers on a console handle): the input
 /// buffer emptied; an output handle, or one naming nothing, is ERROR_INVALID_HANDLE.
 #[unsafe(export_name = "f2k_export_FlushConsoleInputBuffer")]
 pub extern "system" fn flush_console_input_buffer(console: u32) -> u32 {
-    succeeded(call_server(
-        api::FLUSH_INPUT_BUFFER,
-        &mut [console as usize],
-    ))
+    succeeded(call_server(&mut api::FlushInputBuffer {
+        handle: console as usize,
+    }))
 }
 
 /// VerifyConsoleIoHandle: whether a console handle names an open console object.
 pub fn verify_console_io_handle(console: u32) -> bool {
-    let mut data = [console as usize, 0];
-    nt_success(call_server(api::VERIFY_IO_HANDLE, &mut data)) && data[1] != 0
+    let mut message = api::VerifyIoHandle {
+        handle: console as usize,
+        valid: 0,
+    };
+    nt_success(call_server(&mut message)) && message.valid != 0
 }
 
 /// GetConsoleInputWaitHandle's handle: the event a wait on a console handle waits on, signaled
@@ -261,9 +278,9 @@ pub fn verify_console_io_handle(console: u32) -> bool {
 /// then fails on the console handle itself).
 pub fn input_wait_handle() -> u32 {
     input_wait().get_or_make(|| {
-        let mut data = [0];
-        if nt_success(call_server(api::GET_INPUT_WAIT_HANDLE, &mut data)) {
-            data[0] as u32 as usize
+        let mut message = api::GetInputWaitHandle { handle: 0usize };
+        if nt_success(call_server(&mut message)) {
+            message.handle as u32 as usize
         } else {
             0
         }
@@ -288,24 +305,26 @@ pub fn wait_handle(handle: u32) -> u32 {
 /// CloseConsoleHandle, as Windows 2000's CloseHandle reaches it: the console handle closed;
 /// ERROR_INVALID_HANDLE for one naming nothing.
 pub fn close_console_handle(console: u32) -> u32 {
-    succeeded(call_server(api::CLOSE_HANDLE, &mut [console as usize]))
+    succeeded(call_server(&mut api::CloseHandle {
+        handle: console as usize,
+    }))
 }
 
 /// DuplicateConsoleHandle, as Windows 2000's DuplicateHandle reaches it: a new console handle on
 /// the same console object (the source closed for DUPLICATE_CLOSE_SOURCE); INVALID_HANDLE_VALUE
 /// with the server's error otherwise.
 pub fn duplicate_console_handle(console: u32, access: u32, inherit: u32, options: u32) -> u32 {
-    let mut data = [
-        console as usize,
-        access as usize,
-        inherit as usize,
-        options as usize,
-        0,
-    ];
-    if succeeded(call_server(api::DUP_HANDLE, &mut data)) == 0 {
+    let mut message = api::DupHandle {
+        handle: console as usize,
+        access: access as usize,
+        inherit: inherit as usize,
+        options: options as usize,
+        duplicate: 0,
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return INVALID_HANDLE_VALUE;
     }
-    data[4] as u32
+    message.duplicate as u32
 }
 
 /// SetHandleInformation's work for a console handle, as Windows 2000's hands it to the console
@@ -313,19 +332,23 @@ pub fn duplicate_console_handle(console: u32, access: u32, inherit: u32, options
 /// console handle carries no protection from close: that flag is not looked at);
 /// ERROR_INVALID_HANDLE for one naming nothing.
 pub fn set_console_handle_information(console: u32, mask: u32, flags: u32) -> u32 {
-    succeeded(call_server(
-        api::SET_HANDLE_INFORMATION,
-        &mut [console as usize, mask as usize, flags as usize],
-    ))
+    succeeded(call_server(&mut api::SetHandleInformation {
+        handle: console as usize,
+        mask: mask as usize,
+        flags: flags as usize,
+    }))
 }
 
 /// GetHandleInformation's work for a console handle, as Windows 2000's asks the console server:
 /// HANDLE_FLAG_INHERIT when the handle is inheritable, no other flag (a console handle carries no
 /// protection from close); the server's status (STATUS_INVALID_HANDLE) for one naming nothing.
 pub fn get_console_handle_information(console: u32) -> Result<u32, u32> {
-    let mut data = [console as usize, 0];
-    match call_server(api::GET_HANDLE_INFORMATION, &mut data) {
-        status if nt_success(status) => Ok(data[1] as u32),
+    let mut message = api::GetHandleInformation {
+        handle: console as usize,
+        flags: 0,
+    };
+    match call_server(&mut message) {
+        status if nt_success(status) => Ok(message.flags as u32),
         status => Err(status),
     }
 }
@@ -356,20 +379,26 @@ pub fn console_name(name: &[u16], access: u32) -> Option<bool> {
 
 /// OpenConsoleW's work, as Windows 2000's CreateFile hands it CONIN$ and CONOUT$: a new handle on
 /// the console's input buffer (or, `output`, its screen buffer) from the console server, the last
-/// error cleared; INVALID_HANDLE_VALUE with the server's error otherwise.
-pub fn open_console(output: bool, access: u32, inherit: bool, share: u32) -> u32 {
-    let mut data = [
-        usize::from(output),
-        access as usize,
-        usize::from(inherit),
-        share as usize,
-        0,
-    ];
-    if succeeded(call_server(api::OPEN_CONSOLE, &mut data)) == 0 {
-        return INVALID_HANDLE_VALUE;
+/// error cleared; the server's status otherwise.
+pub fn open_console(
+    output: bool,
+    access: u32,
+    inherit: bool,
+    share: u32,
+) -> Result<u32, crate::error::Failure> {
+    let mut message = api::OpenConsole {
+        output: usize::from(output),
+        access: access as usize,
+        inherit: usize::from(inherit),
+        share: share as usize,
+        handle: 0,
+    };
+    let status = call_server(&mut message);
+    if !nt_success(status) {
+        return Err(crate::error::Failure::Status(status));
     }
     set_last_error(0);
-    data[4] as u32
+    Ok(message.handle as u32)
 }
 
 // --- The screen buffer ---------------------------------------------------------------------------
@@ -383,16 +412,28 @@ pub fn open_console(output: bool, access: u32, inherit: bool, share: u32) -> u32
 /// `info` points at a CONSOLE_SCREEN_BUFFER_INFO.
 #[unsafe(export_name = "f2k_export_GetConsoleScreenBufferInfo")]
 pub unsafe extern "system" fn get_console_screen_buffer_info(console: u32, info: *mut u8) -> u32 {
-    let mut data = [console as usize, 0, 0, 0, 0, 0, 0];
-    if succeeded(call_server(api::GET_SCREEN_BUFFER_INFO, &mut data)) == 0 {
+    // SAFETY: the caller's structure (the contract).
+    let info = unsafe { OutBuf::new(info, SCREEN_BUFFER_INFO_SIZE) };
+    screen_buffer_info(console, info)
+}
+
+/// sizeof(CONSOLE_SCREEN_BUFFER_INFO).
+const SCREEN_BUFFER_INFO_SIZE: usize = 22;
+
+/// GetConsoleScreenBufferInfo's work.
+fn screen_buffer_info(console: u32, mut info: OutBuf<'_, u8>) -> u32 {
+    let mut message = api::GetScreenBufferInfo {
+        handle: console as usize,
+        info: [0; 6],
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
     let mut bytes = [0u8; 24];
-    for (chunk, &word) in bytes.chunks_exact_mut(4).zip(&data[1..7]) {
+    for (chunk, &word) in bytes.chunks_exact_mut(4).zip(&message.info) {
         chunk.copy_from_slice(&(word as u32).to_le_bytes());
     }
-    // SAFETY: the caller's structure, 22 bytes.
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), info, 22) };
+    info.put(&bytes[..SCREEN_BUFFER_INFO_SIZE]);
     1
 }
 
@@ -403,10 +444,10 @@ pub unsafe extern "system" fn get_console_screen_buffer_info(console: u32, info:
 /// two bits, are ERROR_INVALID_PARAMETER; a handle naming no console object ERROR_INVALID_HANDLE.
 #[unsafe(export_name = "f2k_export_SetConsoleMode")]
 pub extern "system" fn set_console_mode(console: u32, mode: u32) -> u32 {
-    succeeded(call_server(
-        api::SET_MODE,
-        &mut [console as usize, mode as usize],
-    ))
+    succeeded(call_server(&mut api::SetMode {
+        handle: console as usize,
+        mode: mode as usize,
+    }))
 }
 
 /// GetNumberOfConsoleInputEvents: the records waiting in the input buffer; FALSE with
@@ -420,25 +461,33 @@ pub unsafe extern "system" fn get_number_of_console_input_events(
     console: u32,
     count: *mut u32,
 ) -> u32 {
-    let mut data = [console as usize, 0];
-    if succeeded(call_server(api::GET_INPUT_COUNT, &mut data)) == 0 {
+    // SAFETY: the caller's dword (the contract).
+    let count = unsafe { Out::new(count) };
+    input_event_count(console, count)
+}
+
+/// GetNumberOfConsoleInputEvents's work.
+fn input_event_count(console: u32, mut count: Out<'_, u32>) -> u32 {
+    let mut message = api::GetInputCount {
+        handle: console as usize,
+        count: 0,
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
-    // SAFETY: the caller's dword.
-    unsafe { count.write_unaligned(data[1] as u32) };
+    count.set(message.count as u32);
     1
 }
 
 /// Send a call the console server may answer STATUS_PENDING (a read with nothing to take yet)
 /// until it answers otherwise: each pending answer waited out on the console's input-wait handle
-/// (signaled once input waits), the call then sent again as it was. The final status, `data` as
+/// (signaled once input waits), the call then sent again as it was. The final status, `message` as
 /// the server answered it.
-fn call_server_waiting(api: u32, data: &mut [usize]) -> u32 {
-    let mut sent = [0usize; rtl::console::DATA_WORDS];
-    sent[..data.len()].copy_from_slice(data);
+fn call_server_waiting<M: Message>(message: &mut M) -> u32 {
+    let sent = *message;
     loop {
-        data.copy_from_slice(&sent[..data.len()]);
-        let status = call_server(api, data);
+        *message = sent;
+        let status = call_server(message);
         if status != STATUS_PENDING {
             return status;
         }
@@ -455,30 +504,25 @@ fn call_server_waiting(api: u32, data: &mut [usize]) -> u32 {
 /// console's code page for the A form) into `buffer`, as the input mode reads them — a line and
 /// its CR LF in line mode, the rest of a line kept for the next read; what was typed in raw mode
 /// — waiting for the input that completes it. The count read stored where asked.
-///
-/// # Safety
-///
-/// `read` is null or points at a dword.
-unsafe fn read_console_as(
+fn read_console_as(
     console: u32,
     buffer: usize,
     count: u32,
-    read: *mut u32,
+    read: Option<Out<'_, u32>>,
     unicode: bool,
 ) -> u32 {
-    let mut data = [
-        console as usize,
+    let mut message = api::ReadConsole {
+        handle: console as usize,
         buffer,
-        count as usize,
-        0,
-        usize::from(unicode),
-    ];
-    if succeeded(call_server_waiting(api::READ_CONSOLE, &mut data)) == 0 {
+        count: count as usize,
+        read: 0,
+        unicode: usize::from(unicode),
+    };
+    if succeeded(call_server_waiting(&mut message)) == 0 {
         return 0;
     }
-    if !read.is_null() {
-        // SAFETY: the caller's dword.
-        unsafe { read.write_unaligned(data[3] as u32) };
+    if let Some(mut read) = read {
+        read.set(message.read as u32);
     }
     1
 }
@@ -497,8 +541,10 @@ pub unsafe extern "system" fn read_console_a(
     read: *mut u32,
     _reserved: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe { read_console_as(console, buffer as usize, count, read, false) }
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // writes it.
+    let read = unsafe { Out::optional(read) };
+    read_console_as(console, buffer as usize, count, read, false)
 }
 
 /// ReadConsoleW: up to `count` UTF-16 units of the console's input (see [`read_console_as`]).
@@ -514,42 +560,40 @@ pub unsafe extern "system" fn read_console_w(
     read: *mut u32,
     _reserved: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe { read_console_as(console, buffer as usize, count, read, true) }
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // writes it.
+    let read = unsafe { Out::optional(read) };
+    read_console_as(console, buffer as usize, count, read, true)
 }
 
-/// An input-record call's work: `api` over `length` INPUT_RECORDs at `records`, the A form's
-/// characters in the console's code page; the count the server answered stored. Reads go through
-/// [`call_server_waiting`]: ReadConsoleInput waits for a record.
-///
-/// # Safety
-///
-/// `count` points at a dword.
-unsafe fn input_records(
-    api: u32,
+/// An input-record call's work: the API whose message `form` makes ([`api::PeekInput`],
+/// [`api::ReadInput`] or [`api::WriteInput`]) over `length` INPUT_RECORDs at `records`, the A
+/// form's characters in the console's code page; the count the server answered stored. Reads go
+/// through [`call_server_waiting`]: ReadConsoleInput waits for a record.
+fn input_records<M: Message + AsRef<InputRecords<usize>>>(
+    form: fn(InputRecords<usize>) -> M,
     console: u32,
     records: usize,
     length: u32,
-    count: *mut u32,
+    mut count: Out<'_, u32>,
     unicode: bool,
 ) -> u32 {
-    let mut data = [
-        console as usize,
+    let mut message = form(InputRecords {
+        handle: console as usize,
         records,
-        length as usize,
-        0,
-        usize::from(unicode),
-    ];
-    let status = if api == api::READ_INPUT {
-        call_server_waiting(api, &mut data)
+        length: length as usize,
+        count: 0,
+        unicode: usize::from(unicode),
+    });
+    let status = if M::API == Api::ReadInput {
+        call_server_waiting(&mut message)
     } else {
-        call_server(api, &mut data)
+        call_server(&mut message)
     };
     if succeeded(status) == 0 {
         return 0;
     }
-    // SAFETY: the caller's dword.
-    unsafe { count.write_unaligned(data[3] as u32) };
+    count.set(message.as_ref().count as u32);
     1
 }
 
@@ -566,17 +610,17 @@ pub unsafe extern "system" fn write_console_input_a(
     length: u32,
     written: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::WRITE_INPUT,
-            console,
-            records as usize,
-            length,
-            written,
-            false,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let written = unsafe { Out::new(written) };
+    input_records(
+        api::WriteInput,
+        console,
+        records as usize,
+        length,
+        written,
+        false,
+    )
 }
 
 /// WriteConsoleInputW: as WriteConsoleInputA, the characters UTF-16 units.
@@ -591,17 +635,17 @@ pub unsafe extern "system" fn write_console_input_w(
     length: u32,
     written: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::WRITE_INPUT,
-            console,
-            records as usize,
-            length,
-            written,
-            true,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let written = unsafe { Out::new(written) };
+    input_records(
+        api::WriteInput,
+        console,
+        records as usize,
+        length,
+        written,
+        true,
+    )
 }
 
 /// PeekConsoleInputA: up to `length` waiting records copied, oldest first, and left waiting (a
@@ -617,17 +661,17 @@ pub unsafe extern "system" fn peek_console_input_a(
     length: u32,
     read: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::PEEK_INPUT,
-            console,
-            records as usize,
-            length,
-            read,
-            false,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let read = unsafe { Out::new(read) };
+    input_records(
+        api::PeekInput,
+        console,
+        records as usize,
+        length,
+        read,
+        false,
+    )
 }
 
 /// PeekConsoleInputW: as PeekConsoleInputA, the characters UTF-16 units.
@@ -642,17 +686,17 @@ pub unsafe extern "system" fn peek_console_input_w(
     length: u32,
     read: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::PEEK_INPUT,
-            console,
-            records as usize,
-            length,
-            read,
-            true,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let read = unsafe { Out::new(read) };
+    input_records(
+        api::PeekInput,
+        console,
+        records as usize,
+        length,
+        read,
+        true,
+    )
 }
 
 /// ReadConsoleInputA: as PeekConsoleInputA, the records copied taken out of the input buffer,
@@ -668,17 +712,17 @@ pub unsafe extern "system" fn read_console_input_a(
     length: u32,
     read: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::READ_INPUT,
-            console,
-            records as usize,
-            length,
-            read,
-            false,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let read = unsafe { Out::new(read) };
+    input_records(
+        api::ReadInput,
+        console,
+        records as usize,
+        length,
+        read,
+        false,
+    )
 }
 
 /// ReadConsoleInputW: as ReadConsoleInputA, the characters UTF-16 units.
@@ -693,29 +737,34 @@ pub unsafe extern "system" fn read_console_input_w(
     length: u32,
     read: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's dword.
-    unsafe {
-        input_records(
-            api::READ_INPUT,
-            console,
-            records as usize,
-            length,
-            read,
-            true,
-        )
-    }
+    // SAFETY: the caller's dword (the contract); the records go to the server, which reads or
+    // writes them.
+    let read = unsafe { Out::new(read) };
+    input_records(
+        api::ReadInput,
+        console,
+        records as usize,
+        length,
+        read,
+        true,
+    )
 }
 
 // --- The title -----------------------------------------------------------------------------------
 
 /// A title through the console server into `buffer` of `size` characters (see
-/// `rtl::console::api::GET_TITLE`): the answer, 0 with the server's error when it refuses.
+/// [`api::GetTitle`]): the answer, 0 with the server's error when it refuses.
 fn get_title(buffer: usize, size: u32, unicode: bool) -> u32 {
-    let mut data = [buffer, size as usize, 0, usize::from(unicode)];
-    if succeeded(call_server(api::GET_TITLE, &mut data)) == 0 {
+    let mut message = api::GetTitle {
+        buffer,
+        size: size as usize,
+        returned: 0,
+        unicode: usize::from(unicode),
+    };
+    if succeeded(call_server(&mut message)) == 0 {
         return 0;
     }
-    data[2] as u32
+    message.returned as u32
 }
 
 /// GetConsoleTitleA: the title and its terminator in the console's code page when the buffer
@@ -742,12 +791,13 @@ pub extern "system" fn get_console_title_w(buffer: *mut u16, size: u32) -> u32 {
 /// `title` is a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_SetConsoleTitleA")]
 pub unsafe extern "system" fn set_console_title_a(title: *const u8) -> u32 {
-    // SAFETY: the caller's string, read to its NUL.
-    let length = unsafe { rtl::cstr::bytes_until_nul(title) }.len();
-    succeeded(call_server(
-        api::SET_TITLE,
-        &mut [title as usize, length, 0],
-    ))
+    // SAFETY: the caller's string (the contract), read to its NUL.
+    let length = unsafe { InStr::new(title) }.bytes().len();
+    succeeded(call_server(&mut api::SetTitle {
+        buffer: title as usize,
+        length,
+        unicode: 0,
+    }))
 }
 
 /// SetConsoleTitleW: the title replaced by the string's characters.
@@ -757,12 +807,13 @@ pub unsafe extern "system" fn set_console_title_a(title: *const u8) -> u32 {
 /// `title` is a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_SetConsoleTitleW")]
 pub unsafe extern "system" fn set_console_title_w(title: *const u16) -> u32 {
-    // SAFETY: the caller's string, at any address, read to its NUL.
-    let length = unsafe { rtl::cstr::len_until_nul(title) };
-    succeeded(call_server(
-        api::SET_TITLE,
-        &mut [title as usize, length, 1],
-    ))
+    // SAFETY: the caller's string (the contract), at any address, read to its NUL.
+    let length = unsafe { InWStr::new(title) }.len();
+    succeeded(call_server(&mut api::SetTitle {
+        buffer: title as usize,
+        length,
+        unicode: 1,
+    }))
 }
 
 // --- Control handlers ----------------------------------------------------------------------------

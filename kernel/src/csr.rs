@@ -93,7 +93,7 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     let mut call = crate::nt::call::NtCall::new(frame, passive);
     // The input-wait handle is an object's: made (or opened) here, below the server's level,
     // where objects are made, and handed to the call that asks for it.
-    let mut prepared = (args[2] == rtl::console::api::GET_INPUT_WAIT_HANDLE)
+    let mut prepared = (args[2] == rtl::console::Api::GetInputWaitHandle.into())
         .then(|| prepare_input_wait_handle(call.passive()));
     // The process's console handles are held for the call (its lock is the process's state
     // lock), and the call is served at the server's level, raised from the lock's.
@@ -289,26 +289,23 @@ pub fn client_call_server(
     if length > 4 * DATA_WORDS || !length.is_multiple_of(4) {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let words = length / 4;
     // The message as far as the call's data goes, as Windows 2000's port copies a message's own
-    // length: the rest stays zeros here, and the caller's is neither read nor written.
+    // length: the rest stays zeros here, and the caller's is neither read nor written. The server
+    // decodes the data as the API's message and answers it in place.
     let size = offset_of!(CsrApiMsg, data) + length;
     let mut msg = CsrApiMsg::zeroed();
     message.read(&mut msg.as_bytes_mut()[..size])?;
-    let mut data = msg.data.map(|word| word as usize);
     let status = NtStatus(rtl::console::serve(
         console,
         handles,
         client,
         api,
-        &mut data[..words],
+        &mut msg.data,
+        length,
     ));
     msg.capture_buffer = capture.raw();
     msg.api_number = api;
     msg.return_value = status.0;
-    for (word, &value) in msg.data.iter_mut().zip(&data[..words]) {
-        *word = value as u32;
-    }
     // Everything after the LPC header, which the server leaves as the caller wrote it.
     let answer = offset_of!(CsrApiMsg, capture_buffer);
     message
@@ -409,7 +406,7 @@ fn serial_byte(_byte: u8) {}
 
 #[cfg(test)]
 mod tests {
-    use rtl::console::api;
+    use rtl::console::Api;
 
     use super::*;
 
@@ -429,7 +426,7 @@ mod tests {
                 },
                 UserAddr(0x40_0000),
                 UserAddr(0),
-                api::CLOSE_HANDLE,
+                Api::CloseHandle.into(),
                 length,
             )
         };

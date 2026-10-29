@@ -27,9 +27,11 @@ core::arch::global_asm!(
     include_str!("memory.s"),
 );
 
+use core::cell::RefCell;
 use core::sync::atomic::AtomicU32;
 
-use kernel32::{nt, ntcall};
+use kernel32::edge::OutBuf;
+use kernel32::ntcall;
 use rtl::critsec::CriticalSection;
 use rtl::handles::HandleTable;
 use rtl::localmem::{HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
@@ -51,12 +53,18 @@ static TOP_LEVEL_FILTER: AtomicU32 = AtomicU32::new(0);
 /// InitializeCriticalSection: ntdll's RtlInitializeCriticalSection, its failure raised (as Windows
 /// 2000's kernel32 raises it; with no event preallocated it cannot fail). Its body is the
 /// critical-section initialization kernel32 keeps itself (src/critsec.s's export calls it, cdecl).
+/// The section may sit at any address the processor accepts, as on Windows 2000 (x86's locked
+/// operations take a misaligned operand): its address goes to ntdll as it is.
+///
+/// # Safety
+///
+/// `section` is the address of a CRITICAL_SECTION's bytes the call may write, which no other
+/// thread uses meanwhile (a bad pointer faults the caller where ntdll writes it).
 #[unsafe(no_mangle)]
-extern "C" fn f2k_k32_initialize_critical_section(section: *mut u8) {
-    // SAFETY: the caller's CRITICAL_SECTION, its 24 bytes a section's atomics (ntdll writes it in
-    // place; a bad pointer faults the caller there).
-    let section = unsafe { &*section.cast::<CriticalSection>() };
-    if let Err(status) = ntcall::initialize_critical_section(section) {
+unsafe extern "C" fn f2k_k32_initialize_critical_section(section: *mut u8) {
+    // SAFETY: the caller's CRITICAL_SECTION (the contract), its bytes lent to ntdll.
+    let mut section = unsafe { OutBuf::new(section, size_of::<CriticalSection>()) };
+    if let Err(status) = ntcall::initialize_caller_critical_section(&mut section) {
         ntcall::raise_status(status);
     }
 }
@@ -69,14 +77,10 @@ const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 /// committed; null with ERROR_NOT_ENOUGH_MEMORY when there is no room.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_heap_create(flags: u32, initial: usize, maximum: usize) -> usize {
-    // SAFETY: ntdll's export, without a caller-supplied base, lock or parameters.
-    match unsafe { nt::RtlCreateHeap(flags, 0, maximum, initial, 0, 0) } {
-        0 => {
-            sys::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
-            0
-        }
-        heap => heap,
-    }
+    ntcall::create_heap(flags, initial, maximum).unwrap_or_else(|| {
+        sys::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        0
+    })
 }
 
 /// HeapDestroy: ntdll's RtlDestroyHeap, every page of the heap given back; FALSE with
@@ -84,8 +88,7 @@ extern "C" fn f2k_k32_heap_create(flags: u32, initial: usize, maximum: usize) ->
 /// heap).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_heap_destroy(handle: usize) -> u32 {
-    // SAFETY: ntdll's export.
-    if unsafe { nt::RtlDestroyHeap(handle) } == 0 {
+    if ntcall::destroy_heap(handle) {
         return 1;
     }
     sys::set_last_error(ERROR_INVALID_HANDLE);
@@ -96,8 +99,7 @@ extern "C" fn f2k_k32_heap_destroy(handle: usize) -> u32 {
 /// exports it as its own code, not as a forwarder.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_heap_validate(handle: usize, flags: u32, block: usize) -> u32 {
-    // SAFETY: ntdll's export; a pointer that is no block of the heap is refused, not followed.
-    u32::from(unsafe { nt::RtlValidateHeap(handle, flags, block as *const u8) })
+    u32::from(ntcall::validate_heap(handle, flags, block))
 }
 
 /// The process heap, through ntdll's RtlAllocateHeap family (as Windows 2000's kernel32 reaches
@@ -116,15 +118,13 @@ impl HeapCalls for ProcessHeap {
     }
 
     fn size(&self, flags: u32, pointer: usize) -> Option<usize> {
-        // SAFETY: as above; -1 for what is not a block.
-        Some(unsafe { nt::RtlSizeHeap(self.0, flags, pointer as *const u8) })
-            .filter(|&size| size != usize::MAX)
+        ntcall::size_heap(self.0, flags, pointer)
     }
 
     fn realloc(&self, flags: u32, pointer: usize, size: usize) -> Option<usize> {
-        // SAFETY: as above.
-        Some(unsafe { nt::RtlReAllocateHeap(self.0, flags, pointer as *mut u8, size) } as usize)
-            .filter(|&block| block != 0)
+        // SAFETY: as in `free`: LocalReAlloc's and GlobalReAlloc's caller gives the block up to
+        // the resize.
+        unsafe { ntcall::reallocate_heap(self.0, flags, pointer, size) }
     }
 }
 
@@ -137,13 +137,12 @@ struct ProcessHeapLock;
 // matching RtlUnlockHeap, and its entry and leave order the holders' accesses.
 unsafe impl RawLock for ProcessHeapLock {
     fn lock(&self) {
-        // SAFETY: ntdll's export, over the process heap (the PEB's, live for the process's life).
-        unsafe { nt::RtlLockHeap(sys::process_heap_handle()) };
+        ntcall::lock_heap(sys::process_heap_handle());
     }
 
     fn unlock(&self) {
-        // SAFETY: ntdll's export: the calling thread took the lock (`RawLock`'s pairing).
-        unsafe { nt::RtlUnlockHeap(sys::process_heap_handle()) };
+        // SAFETY: the calling thread took the lock (`RawLock`'s pairing).
+        unsafe { ntcall::unlock_heap(sys::process_heap_handle()) };
     }
 }
 
@@ -165,24 +164,20 @@ static HANDLE_TABLE: Locked<HandleTable, ProcessHeapLock> = Locked::new(
 );
 
 /// kernel32's handle table, through ntdll's RtlAllocateHandle family (as Windows 2000's kernel32
-/// keeps its movable blocks' handles).
-struct BaseHandles(*mut HandleTable);
+/// keeps its movable blocks' handles), lent under the heap's lock.
+struct BaseHandles<'t>(RefCell<&'t mut HandleTable>);
 
-impl HandleCalls for BaseHandles {
+impl HandleCalls for BaseHandles<'_> {
     fn allocate(&self) -> Option<usize> {
-        // SAFETY: ntdll's export, over kernel32's initialized table, under the heap's lock.
-        Some(unsafe { nt::RtlAllocateHandle(self.0, core::ptr::null_mut()) })
-            .filter(|&entry| entry != 0)
+        ntcall::allocate_handle(&mut self.0.borrow_mut())
     }
 
     fn free(&self, entry: usize) -> bool {
-        // SAFETY: as above; an address that is no entry in use is refused, not followed.
-        (unsafe { nt::RtlFreeHandle(self.0, entry) }) != 0
+        ntcall::free_handle(&mut self.0.borrow_mut(), entry)
     }
 
     fn is_valid(&self, entry: usize) -> bool {
-        // SAFETY: as above.
-        (unsafe { nt::RtlIsValidHandle(self.0, entry) }) != 0
+        ntcall::is_valid_handle(&self.0.borrow(), entry)
     }
 }
 
@@ -190,19 +185,15 @@ impl HandleCalls for BaseHandles {
 /// the heap's lock held across the call (RtlLockHeap, RtlUnlockHeap: the table and the blocks
 /// change together, as Windows 2000's kernel32 holds it). The table is initialized at the first
 /// call, under the lock.
-fn with_memory<R>(body: impl FnOnce(&Memory<'_, ProcessHeap, BaseHandles>) -> R) -> R {
+fn with_memory<R>(body: impl FnOnce(&Memory<'_, ProcessHeap, BaseHandles<'_>>) -> R) -> R {
     let heap = ProcessHeap(sys::process_heap_handle());
     HANDLE_TABLE.with(|table| {
-        let table: *mut HandleTable = table;
-        // SAFETY: ntdll's export, over kernel32's table (the lent value, the heap's lock held).
-        unsafe {
-            if (*table).maximum_number_of_handles == 0 {
-                nt::RtlInitializeHandleTable(MAXIMUM_HANDLES, ENTRY_SIZE, table);
-            }
+        if table.maximum_number_of_handles == 0 {
+            ntcall::initialize_handle_table(MAXIMUM_HANDLES, ENTRY_SIZE, table);
         }
         body(&Memory {
             heap: &heap,
-            handles: &BaseHandles(table),
+            handles: &BaseHandles(RefCell::new(table)),
         })
     })
 }

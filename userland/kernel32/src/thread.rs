@@ -29,7 +29,7 @@ use crate::base::{
     CURRENT_PROCESS,
     CURRENT_THREAD,
 };
-use crate::nt;
+use crate::edge::{In, Out};
 use crate::ntcall::{self, PebLock, TlsBitmap};
 
 /// THREADINFOCLASS: the classes kernel32 asks (ThreadBasicInformation is [`ntcall`]'s).
@@ -243,6 +243,38 @@ pub unsafe extern "system" fn create_thread(
     flags: u32,
     thread_id: *mut u32,
 ) -> u32 {
+    // SAFETY: the caller's attributes and identifier's place, when given (the contract).
+    let (attributes, thread_id) = unsafe { (In::optional(attributes), Out::optional(thread_id)) };
+    let start = Start {
+        stack_size,
+        start,
+        parameter,
+        flags,
+    };
+    create(attributes, start, thread_id)
+}
+
+/// CreateThread's numbers: the stack size, the start address and its parameter, and the creation
+/// flags.
+struct Start {
+    stack_size: u32,
+    start: u32,
+    parameter: u32,
+    flags: u32,
+}
+
+/// CreateThread's work.
+fn create(
+    attributes: Option<In<'_, SecurityAttributes>>,
+    start: Start,
+    thread_id: Option<Out<'_, u32>>,
+) -> u32 {
+    let Start {
+        stack_size,
+        start,
+        parameter,
+        flags,
+    } = start;
     let stack = match create_stack(
         CURRENT_PROCESS,
         stack_reservation(stack_size, flags),
@@ -260,19 +292,11 @@ pub unsafe extern "system" fn create_thread(
         parameter,
         stack.stack_base as u32,
     );
-    let mut object_attributes = core::mem::MaybeUninit::<nt::ObjectAttributes>::uninit();
-    // SAFETY: the caller's attributes, when given; the structure lives across the call.
-    let object_attributes = unsafe {
-        crate::base::format_object_attributes(
-            &mut *object_attributes.as_mut_ptr(),
-            attributes,
-            None,
-        )
-    };
+    let object_attributes = crate::base::format_object_attributes(attributes, None);
     let created = ntcall::create_thread(
         CURRENT_PROCESS,
         THREAD_ALL_ACCESS,
-        object_attributes,
+        object_attributes.as_ref(),
         &context,
         &stack,
         true,
@@ -285,9 +309,8 @@ pub unsafe extern "system" fn create_thread(
             return 0;
         }
     };
-    if !thread_id.is_null() {
-        // SAFETY: the caller's contract.
-        unsafe { thread_id.write(client_id.unique_thread as u32) };
+    if let Some(mut thread_id) = thread_id {
+        thread_id.set(client_id.unique_thread as u32);
     }
     if flags & CREATE_SUSPENDED == 0 {
         let _ = ntcall::resume_thread(handle);
@@ -360,17 +383,10 @@ pub extern "system" fn resume_thread(thread: u32) -> u32 {
 /// `code` is writable (a bad pointer faults the caller, as on Windows 2000).
 #[unsafe(export_name = "f2k_export_GetExitCodeThread")]
 pub unsafe extern "system" fn get_exit_code_thread(thread: u32, code: *mut u32) -> u32 {
-    match ntcall::thread_basic_information(thread) {
-        Ok(info) => {
-            // SAFETY: the caller's contract.
-            unsafe { code.write(info.exit_status) };
-            1
-        }
-        Err(status) => {
-            set_last_nt_error(status);
-            0
-        }
-    }
+    // SAFETY: the caller's slot (the contract).
+    let mut code = unsafe { Out::new(code) };
+    let info = ntcall::thread_basic_information(thread);
+    win32_bool(info.map(|info| code.set(info.exit_status)))
 }
 
 /// SetThreadPriority's value as ThreadBasePriority takes it: TIME_CRITICAL and IDLE become the
@@ -425,17 +441,10 @@ pub extern "system" fn get_thread_priority(thread: u32) -> i32 {
 /// `disabled` is writable (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetThreadPriorityBoost")]
 pub unsafe extern "system" fn get_thread_priority_boost(thread: u32, disabled: *mut u32) -> u32 {
-    match ntcall::query_thread::<u32>(thread, THREAD_PRIORITY_BOOST) {
-        Ok(value) => {
-            // SAFETY: the caller's contract.
-            unsafe { disabled.write(value) };
-            1
-        }
-        Err(status) => {
-            set_last_nt_error(status);
-            0
-        }
-    }
+    // SAFETY: the caller's slot (the contract).
+    let mut disabled = unsafe { Out::new(disabled) };
+    let value = ntcall::query_thread::<u32>(thread, THREAD_PRIORITY_BOOST);
+    win32_bool(value.map(|value| disabled.set(value)))
 }
 
 /// SetThreadPriorityBoost: ThreadPriorityBoost, the BOOL as TRUE or FALSE.

@@ -61,7 +61,7 @@ pub unsafe extern "system" fn get_user_object_information_w(
 ) -> u32 {
     // SAFETY: the caller's buffer, handed to the kernel unread, and its length's place.
     let (information, mut needed) =
-        unsafe { (UserBuffer::new(information, length), Out::new(needed)) };
+        unsafe { (UserBuffer::new(information, length), Out::optional(needed)) };
     information_w(object, index, information, needed.as_mut())
 }
 
@@ -120,14 +120,14 @@ pub unsafe extern "system" fn get_user_object_information_a(
     if index as u32 != UOI_NAME && index as u32 != UOI_TYPE {
         // SAFETY: the caller's buffer, handed to the kernel unread, and its length's place.
         let (information, mut needed) =
-            unsafe { (UserBuffer::new(information, length), Out::new(needed)) };
+            unsafe { (UserBuffer::new(information, length), Out::optional(needed)) };
         return information_w(object, index, information, needed.as_mut());
     }
     // SAFETY: the caller's buffer, which the conversion writes, and its length's place.
     let (information, mut needed) = unsafe {
         (
             caller_bytes_mut(information, length as usize),
-            Out::new(needed),
+            Out::optional(needed),
         )
     };
     text_a(object, index, information, length, needed.as_mut())

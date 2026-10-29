@@ -653,7 +653,7 @@ fn no_name_at_all_faults_the_caller() {
         current_directory: None,
         startup: crate::create::Startup::default(),
     });
-    assert_eq!(created, Err(crate::create::Failure::Fault(0xC000_0005)));
+    assert_eq!(created, Err(crate::error::Failure::Fault(0xC000_0005)));
     assert!(calls().is_empty());
 }
 

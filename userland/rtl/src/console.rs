@@ -14,13 +14,14 @@
 //! What mirrors Windows 2000: CsrClientCallServer's signature and answer (the message, an optional
 //! capture buffer, the API number, the API data's length; the message's ReturnValue), and the
 //! message header's layout ([`header`]: the LPC message header, then the capture buffer pointer,
-//! the API number, the return value, a reserved word — the API's data after them). The API
+//! the API number, the return value, a reserved word — the API's data after them), the API's data
+//! one structure per API ([`api`]: Windows 2000's CSR_API_MSG holds them in a union). The API
 //! numbers are made as Windows 2000's are: the console server's index, 2, in the high word, but the
-//! indexes and the data's layout ([`api`]) are F2K's own: Windows 2000's are internal to its
-//! kernel32 and csrss. The client's buffers are read where they are (the server is the kernel),
-//! never captured: the capture buffer is carried, not used. The structures a console call fills
-//! are the public ABI's ([`Coord`], [`SmallRect`], [`ConsoleScreenBufferInfo`]): the server
-//! answers them as their bytes, in dwords.
+//! indexes and the structures' layouts are F2K's own: Windows 2000's are internal to its kernel32
+//! and csrss. The client's buffers are read where they are (the server is the kernel), never
+//! captured: the capture buffer is carried, not used. The structures a console call fills are the
+//! public ABI's ([`Coord`], [`SmallRect`], [`ConsoleScreenBufferInfo`]): the server answers them
+//! as their bytes, in dwords.
 //!
 //! The server never blocks. Windows 2000's csrss holds a read's reply until its input arrives; a
 //! read F2K's server cannot complete yet (a line without its Enter, an empty input buffer) answers
@@ -28,10 +29,13 @@
 //! built), and kernel32 waits on the console's input-wait handle — signaled while the input buffer
 //! holds records — then asks again.
 
+pub mod api;
 pub mod input;
 pub mod layout;
 pub mod screen;
 
+pub use api::Api;
+use api::{Message, Word};
 use input::{
     Append,
     InputBuffer,
@@ -45,6 +49,7 @@ use input::{
 use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
 
 use crate::codepage::{self, CodePage};
+use crate::pod::Pod;
 use crate::status::{
     STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
@@ -130,110 +135,6 @@ pub const STATUS_ILLEGAL_FUNCTION: u32 = 0xC000_00AF;
 
 /// The console server's index among csrss's servers (Windows 2000's CONSRV_SERVERDLL_INDEX).
 pub const CONSOLE_SERVER: u32 = 2;
-
-/// The console server's APIs: the server's index in the high word, the API's in the low one, F2K's
-/// indexes. Each names its data as dwords after the header, in order; `out` marks what the server
-/// writes. A `unicode` word is nonzero for a W call's UTF-16 text, zero for an A call's text in the
-/// console's code page (the server converts, as Windows 2000's does).
-pub mod api {
-    use super::CONSOLE_SERVER;
-
-    const fn number(index: u32) -> u32 {
-        (CONSOLE_SERVER << 16) | index
-    }
-
-    /// ConsolepWriteConsole: [handle, buffer, count, out written, unicode] — the bytes to the
-    /// screen, or, with `unicode` nonzero, `count` UTF-16 units (WriteConsoleW's), each shown as
-    /// the console's code page holds it.
-    pub const WRITE_CONSOLE: u32 = number(0);
-    /// ConsolepReadConsole: [handle, buffer, count, out read, unicode] — up to `count` characters
-    /// of input, as the input mode reads them; STATUS_PENDING while none can be answered yet.
-    pub const READ_CONSOLE: u32 = number(1);
-    /// ConsolepGetMode: [handle, out mode].
-    pub const GET_MODE: u32 = number(2);
-    /// ConsolepGetCP: [output (nonzero for the output code page), out code page].
-    pub const GET_CP: u32 = number(3);
-    /// ConsolepVerifyIoHandle: [handle, out valid] — whether it names a console object.
-    pub const VERIFY_IO_HANDLE: u32 = number(4);
-    /// ConsolepFlushInputBuffer: [handle].
-    pub const FLUSH_INPUT_BUFFER: u32 = number(5);
-    /// ConsolepCloseHandle: [handle].
-    pub const CLOSE_HANDLE: u32 = number(6);
-    /// ConsolepDupHandle: [handle, access, inherit, options, out handle].
-    pub const DUP_HANDLE: u32 = number(7);
-    /// ConsolepGetCursorPosition: [handle, out position (a COORD)].
-    pub const GET_CURSOR_POSITION: u32 = number(8);
-    /// ConsolepSetCursorPosition: [handle, position (a COORD)] — inside the buffer.
-    pub const SET_CURSOR_POSITION: u32 = number(9);
-    /// ConsolepGetScreenBufferInfo: [handle, out info ×6] — the CONSOLE_SCREEN_BUFFER_INFO's 22
-    /// bytes in dword order ([`ConsoleScreenBufferInfo::words`](super::ConsoleScreenBufferInfo)).
-    pub const GET_SCREEN_BUFFER_INFO: u32 = number(10);
-    /// ConsolepSetTextAttribute: [handle, attributes] — what written cells take.
-    pub const SET_TEXT_ATTRIBUTE: u32 = number(11);
-    /// ConsolepFillOutput: [handle, element (0 the character, 1 the attribute), value, count,
-    /// origin (a COORD), out written].
-    pub const FILL_OUTPUT: u32 = number(12);
-    /// ConsolepScrollRegion: [handle, source left | top << 16, source right | bottom << 16,
-    /// destination (a COORD), fill (a CHAR_INFO: character | attributes << 16), clipped (nonzero:
-    /// the clip rectangle follows), clip left | top << 16, clip right | bottom << 16].
-    pub const SCROLL_REGION: u32 = number(13);
-    /// ConsolepGetTitle: [buffer, size, out returned, unicode] — the title into a buffer of `size`
-    /// characters, as GetConsoleTitleA and GetConsoleTitleW answer.
-    pub const GET_TITLE: u32 = number(14);
-    /// ConsolepSetTitle: [buffer, length, unicode] — the title's `length` characters.
-    pub const SET_TITLE: u32 = number(15);
-    /// ConsolepSetMode: [handle, mode] — the mode of the buffer the handle names.
-    pub const SET_MODE: u32 = number(16);
-    /// ConsolepGetNumberOfInputEvents: [handle, out count] — the records the input buffer holds.
-    pub const GET_INPUT_COUNT: u32 = number(17);
-    /// ConsolepPeekInput: [handle, buffer, count, out copied, unicode] — up to `count` records,
-    /// oldest first, copied to the buffer as INPUT_RECORDs and left in the input buffer.
-    pub const PEEK_INPUT: u32 = number(18);
-    /// ConsolepReadInput: [handle, buffer, count, out copied, unicode] — as PEEK_INPUT, the
-    /// records copied removed from the input buffer; STATUS_PENDING while it is empty.
-    pub const READ_INPUT: u32 = number(19);
-    /// ConsolepWriteInput: [handle, buffer, count, out written, unicode] — `count` INPUT_RECORDs
-    /// appended to the input buffer as they are, as many as it has room for.
-    pub const WRITE_INPUT: u32 = number(20);
-    /// ConsolepOpenConsole: [output (nonzero: the screen buffer, CONOUT$; zero: the input buffer,
-    /// CONIN$), access, inherit, share, out handle] — a new handle in the lowest free slot.
-    pub const OPEN_CONSOLE: u32 = number(21);
-    /// ConsolepGetInputWaitHandle: [out handle] — the calling process's handle to the console's
-    /// input-wait event, signaled while the input buffer holds records.
-    pub const GET_INPUT_WAIT_HANDLE: u32 = number(22);
-    /// ConsolepSetHandleInformation: [handle, mask, flags] — the handle's inheritance set from
-    /// `flags` when `mask` holds HANDLE_FLAG_INHERIT (SetHandleInformation's, for a console
-    /// handle).
-    pub const SET_HANDLE_INFORMATION: u32 = number(23);
-    /// ConsolepGetHandleInformation: [handle, out flags] — HANDLE_FLAG_INHERIT when the handle is
-    /// inheritable, nothing else (GetHandleInformation's, for a console handle: a console handle
-    /// is never protected from close).
-    pub const GET_HANDLE_INFORMATION: u32 = number(24);
-
-    /// Each API's data length in dwords.
-    pub const fn words(api: u32) -> Option<usize> {
-        Some(match api {
-            WRITE_CONSOLE | READ_CONSOLE => 5,
-            GET_MODE | GET_CP | VERIFY_IO_HANDLE => 2,
-            FLUSH_INPUT_BUFFER | CLOSE_HANDLE => 1,
-            DUP_HANDLE => 5,
-            GET_CURSOR_POSITION | SET_CURSOR_POSITION | SET_TEXT_ATTRIBUTE => 2,
-            GET_SCREEN_BUFFER_INFO => 7,
-            FILL_OUTPUT => 6,
-            SCROLL_REGION => 8,
-            GET_TITLE => 4,
-            SET_TITLE => 3,
-            SET_MODE => 2,
-            GET_INPUT_COUNT => 2,
-            PEEK_INPUT | READ_INPUT | WRITE_INPUT => 5,
-            OPEN_CONSOLE => 5,
-            GET_INPUT_WAIT_HANDLE => 1,
-            SET_HANDLE_INFORMATION => 3,
-            GET_HANDLE_INFORMATION => 2,
-            _ => return None,
-        })
-    }
-}
 
 /// The console's code pages (input and output): the OEM one, 437, as a US Windows 2000 console's.
 pub const CONSOLE_CP: u32 = 437;
@@ -732,25 +633,87 @@ pub trait Client {
     fn input_wait_handle(&mut self) -> Result<u32, u32>;
 }
 
-/// Serve one API call over the console and a process's handles: its data (the dwords after the
-/// header, as pointer-sized words: the host tests' buffers are the host's addresses) read and
-/// answered in place; the status, the message's ReturnValue.
-pub fn serve(
+/// Serve one API call over the console and a process's handles: the message's data (the words
+/// after the header, `length` bytes of them the call's) decoded as the message of the API `number`
+/// names, answered, and written back as the server left it; the status, the message's ReturnValue.
+/// A number no API has is STATUS_ILLEGAL_FUNCTION, a length short of its API's message
+/// STATUS_INVALID_PARAMETER.
+pub fn serve<W: Word>(
     console: &mut Console,
     handles: &mut Handles,
     client: &mut impl Client,
-    api: u32,
-    data: &mut [usize],
+    number: u32,
+    data: &mut [W; DATA_WORDS],
+    length: usize,
 ) -> u32 {
-    let Some(words) = api::words(api) else {
+    let Ok(api) = Api::try_from(number) else {
         return STATUS_ILLEGAL_FUNCTION;
     };
-    if data.len() < words {
-        return STATUS_INVALID_PARAMETER;
-    }
-    match answer(console, handles, client, api, data) {
+    let mut call = Call {
+        console,
+        handles,
+        client,
+    };
+    let message = Exchange { data, length };
+    let answer = match api {
+        Api::WriteConsole => message.serve(&mut call, Call::write_console),
+        Api::ReadConsole => message.serve(&mut call, Call::read_console),
+        Api::GetMode => message.serve(&mut call, Call::get_mode),
+        Api::SetMode => message.serve(&mut call, Call::set_mode),
+        Api::GetCp => message.serve(&mut call, Call::get_cp),
+        Api::VerifyIoHandle => message.serve(&mut call, Call::verify_io_handle),
+        Api::FlushInputBuffer => message.serve(&mut call, Call::flush_input_buffer),
+        Api::GetInputCount => message.serve(&mut call, Call::get_input_count),
+        Api::PeekInput => message.serve(&mut call, Call::peek_input),
+        Api::ReadInput => message.serve(&mut call, Call::read_input),
+        Api::WriteInput => message.serve(&mut call, Call::write_input),
+        Api::OpenConsole => message.serve(&mut call, Call::open_console),
+        Api::GetInputWaitHandle => message.serve(&mut call, Call::get_input_wait_handle),
+        Api::CloseHandle => message.serve(&mut call, Call::close_handle),
+        Api::DupHandle => message.serve(&mut call, Call::dup_handle),
+        Api::SetHandleInformation => message.serve(&mut call, Call::set_handle_information),
+        Api::GetHandleInformation => message.serve(&mut call, Call::get_handle_information),
+        Api::GetCursorPosition => message.serve(&mut call, Call::get_cursor_position),
+        Api::SetCursorPosition => message.serve(&mut call, Call::set_cursor_position),
+        Api::GetScreenBufferInfo => message.serve(&mut call, Call::get_screen_buffer_info),
+        Api::SetTextAttribute => message.serve(&mut call, Call::set_text_attribute),
+        Api::FillOutput => message.serve(&mut call, Call::fill_output),
+        Api::ScrollRegion => message.serve(&mut call, Call::scroll_region),
+        Api::GetTitle => message.serve(&mut call, Call::get_title),
+        Api::SetTitle => message.serve(&mut call, Call::set_title),
+    };
+    match answer {
         Ok(()) => STATUS_SUCCESS,
         Err(status) => status,
+    }
+}
+
+/// A call's data words, as long as the call names them.
+struct Exchange<'a, W> {
+    data: &'a mut [W; DATA_WORDS],
+    length: usize,
+}
+
+impl<W: Word> Exchange<'_, W> {
+    /// The message decoded from the data, served by `serve` for `call`, and written back as it
+    /// was left (on a refusal too: a read refused STATUS_PENDING answers its count of 0);
+    /// STATUS_INVALID_PARAMETER, nothing served, when the call's data is shorter than the
+    /// message.
+    fn serve<C, M: Message<Word = W>>(
+        self,
+        call: &mut C,
+        serve: impl FnOnce(&mut C, &mut M) -> Result<(), u32>,
+    ) -> Result<(), u32> {
+        let size = core::mem::size_of::<M>();
+        if self.length < size {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let bytes = &mut self.data.as_bytes_mut()[..size];
+        let mut message = M::zeroed();
+        message.as_bytes_mut().copy_from_slice(bytes);
+        let answer = serve(call, &mut message);
+        bytes.copy_from_slice(message.as_bytes());
+        answer
     }
 }
 
@@ -977,256 +940,388 @@ fn read_raw(
     Ok(answered)
 }
 
-/// The API's work: `data` holds at least its words.
-fn answer(
-    console: &mut Console,
-    handles: &mut Handles,
-    client: &mut impl Client,
-    api: u32,
-    data: &mut [usize],
-) -> Result<(), u32> {
-    let handle = data[0] as u32;
-    let kind = handles.kind(handle);
-    let output = || match kind {
-        Some(Kind::Output) => Ok(()),
-        _ => Err(STATUS_INVALID_HANDLE),
-    };
-    let input = || match kind {
-        Some(Kind::Input) => Ok(()),
-        _ => Err(STATUS_INVALID_HANDLE),
-    };
-    match api {
-        api::WRITE_CONSOLE => {
-            output()?;
-            if data[2] != 0 {
-                console.screen.begin_write();
-                let logged = handles.logged(handle);
-                let shown = if data[4] != 0 {
-                    show_unicode(console, client, data[1], data[2], logged)
-                } else {
-                    client.show(&mut console.screen, data[1], data[2], logged)
-                };
-                console.screen.end_write();
-                shown?;
-            }
-            data[3] = data[2];
-        }
-        api::READ_CONSOLE => {
-            input()?;
-            let (buffer, count, unicode) = (data[1], data[2], data[4] != 0);
-            data[3] = if count == 0 {
-                0
-            } else if console.input_mode & ENABLE_LINE_INPUT != 0 {
-                read_line(console, client, buffer, count, unicode)?
-            } else {
-                read_raw(console, client, buffer, count, unicode)?
-            };
-        }
-        api::GET_MODE => {
-            data[1] = match kind.ok_or(STATUS_INVALID_HANDLE)? {
-                Kind::Input => console.input_mode(),
-                Kind::Output => console.screen.mode(),
-            } as usize;
-        }
-        api::SET_MODE => {
-            let mode = data[1] as u32;
-            match kind.ok_or(STATUS_INVALID_HANDLE)? {
-                Kind::Input => {
-                    if mode & !INPUT_MODE_MASK != 0
-                        || mode & (ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT) == ENABLE_ECHO_INPUT
-                    {
-                        return Err(STATUS_INVALID_PARAMETER);
-                    }
-                    console.input_mode = mode;
-                }
-                Kind::Output => {
-                    if mode & !OUTPUT_MODE_MASK != 0 {
-                        return Err(STATUS_INVALID_PARAMETER);
-                    }
-                    console.screen.set_mode(mode);
-                }
-            }
-        }
-        api::GET_CP => data[1] = CONSOLE_CP as usize,
-        api::VERIFY_IO_HANDLE => data[1] = usize::from(kind.is_some()),
-        api::FLUSH_INPUT_BUFFER => {
-            input()?;
-            console.input.flush();
-        }
-        api::GET_INPUT_COUNT => {
-            input()?;
-            data[1] = console.input.count();
-        }
-        api::PEEK_INPUT | api::READ_INPUT => {
-            input()?;
-            let unicode = data[4] != 0;
-            if api == api::READ_INPUT && data[2] != 0 && console.input.count() == 0 {
-                data[3] = 0;
-                return Err(STATUS_PENDING);
-            }
-            // Every record is copied before any is removed: a buffer that refuses one leaves the
-            // input buffer as it was.
-            let copied = data[2].min(console.input.count());
-            for index in 0..copied {
-                let Some(record) = console.input.get(index) else {
-                    break;
-                };
-                let mut bytes = record.bytes();
-                if !unicode && record.event_type == KEY_EVENT {
-                    // An A call's AsciiChar: the character in the console's code page.
-                    bytes[14..16].copy_from_slice(&[oem_byte(record.key.char), 0]);
-                }
-                let at = data[1].wrapping_add(index * INPUT_RECORD_BYTES);
-                client.write(at, &bytes)?;
-            }
-            if api == api::READ_INPUT {
-                console.input.remove(copied);
-            }
-            data[3] = copied;
-        }
-        api::WRITE_INPUT => {
-            input()?;
-            let unicode = data[4] != 0;
-            let mut written = 0;
-            while written < data[2] {
-                let mut bytes = [0u8; INPUT_RECORD_BYTES];
-                client.read(
-                    data[1].wrapping_add(written * INPUT_RECORD_BYTES),
-                    &mut bytes,
-                )?;
-                let mut record = InputRecord::from_bytes(&bytes);
-                if !unicode && record.event_type == KEY_EVENT {
-                    // An A call's AsciiChar, in the console's code page.
-                    record.key.char = codepage::decode_byte(CodePage::Oem, bytes[14]);
-                }
-                if !console.input.push(record) {
-                    break;
-                }
-                written += 1;
-            }
-            data[3] = written;
-        }
-        api::OPEN_CONSOLE => {
-            let kind = if data[0] != 0 {
-                Kind::Output
-            } else {
-                Kind::Input
-            };
-            data[4] = handles.open(kind, data[2] != 0)? as usize;
-        }
-        api::GET_INPUT_WAIT_HANDLE => data[0] = client.input_wait_handle()? as usize,
-        api::CLOSE_HANDLE => handles.close(handle)?,
-        api::DUP_HANDLE => {
-            data[4] =
-                handles.duplicate(handle, data[1] as u32, data[2] != 0, data[3] as u32)? as usize
-        }
-        api::SET_HANDLE_INFORMATION => {
-            if data[1] as u32 & HANDLE_FLAG_INHERIT != 0 {
-                handles.set_inheritable(handle, data[2] as u32 & HANDLE_FLAG_INHERIT != 0)?;
-            } else {
-                handles.kind(handle).ok_or(STATUS_INVALID_HANDLE)?;
-            }
-        }
-        api::GET_HANDLE_INFORMATION => {
-            let inheritable = handles.inheritable(handle).ok_or(STATUS_INVALID_HANDLE)?;
-            data[1] = if inheritable {
-                HANDLE_FLAG_INHERIT as usize
-            } else {
-                0
-            };
-        }
-        api::GET_CURSOR_POSITION => {
-            output()?;
-            data[1] = console.screen_buffer_info().cursor_position.word() as usize;
-        }
-        api::SET_CURSOR_POSITION => {
-            output()?;
-            let at = Coord::from_word(data[1] as u32);
-            if at.x < 0 || at.y < 0 || !console.screen.set_cursor(at.y as usize, at.x as usize) {
-                return Err(STATUS_INVALID_PARAMETER);
-            }
-        }
-        api::GET_SCREEN_BUFFER_INFO => {
-            output()?;
-            let info = console.screen_buffer_info().words();
-            for (slot, value) in data[1..7].iter_mut().zip(info) {
-                *slot = value as usize;
-            }
-        }
-        api::SET_TEXT_ATTRIBUTE => {
-            output()?;
-            let attribute = data[1] as u32;
-            if attribute & !COLOR_MASK != 0 {
-                return Err(STATUS_INVALID_PARAMETER);
-            }
-            console.screen.set_attribute(attribute as u8);
-        }
-        api::FILL_OUTPUT => {
-            output()?;
-            // The cell keeps a character's OEM byte and an attribute's colours: the low byte.
-            let value = data[2] as u8;
-            let fill = match data[1] {
-                0 => Fill::Character(value),
-                1 => Fill::Attribute(value),
-                _ => return Err(STATUS_INVALID_PARAMETER),
-            };
-            let at = Coord::from_word(data[4] as u32);
-            data[5] = console.screen.fill(at.x.into(), at.y.into(), data[3], fill);
-        }
-        api::SCROLL_REGION => {
-            output()?;
-            let source = SmallRect::from_words(data[1] as u32, data[2] as u32);
-            let to = Coord::from_word(data[3] as u32);
-            let fill = match data[4] as u32 {
-                0 => Cell::blank(console.screen.attribute()),
-                char_info => Cell {
-                    character: char_info as u8,
-                    attribute: (char_info >> 16) as u8,
-                },
-            };
-            let clip = (data[5] as u32 != 0)
-                .then(|| SmallRect::from_words(data[6] as u32, data[7] as u32));
-            console
-                .screen
-                .scroll(source, clip, to.x.into(), to.y.into(), fill);
-        }
-        api::GET_TITLE => {
-            // GetConsoleTitleW: as much of the title as fits with its terminator, the characters
-            // copied the answer; GetConsoleTitleA: the whole title and its terminator, or nothing
-            // at all (0) when they do not fit. An empty title, or a buffer of no characters, is
-            // 0 with nothing written — Windows 2000's console capture.
-            let (buffer, size, unicode) = (data[0], data[1], data[3] != 0);
-            let title = &console.title[..console.title_length];
-            let length = if title.is_empty() || size == 0 {
-                0
-            } else if unicode {
-                title.len().min(size - 1)
-            } else if title.len() < size {
-                title.len()
-            } else {
-                0
-            };
-            if length != 0 {
-                put_text(client, buffer, &title[..length], unicode)?;
-                put_text(
-                    client,
-                    buffer.wrapping_add(length * if unicode { 2 } else { 1 }),
-                    &[0],
-                    unicode,
-                )?;
-            }
-            data[2] = length;
-        }
-        api::SET_TITLE => {
-            // The title is replaced only once the new one is read whole.
-            let mut title = [0u16; TITLE_UNITS];
-            let length = get_text(client, data[0], data[1], data[2] != 0, &mut title)?;
-            console.title = title;
-            console.title_length = length;
-        }
-        _ => return Err(STATUS_ILLEGAL_FUNCTION),
+/// One call being served: the console, the calling process's handles, and the client. Each API's
+/// work is a method over its message, the fields it answers written in place.
+struct Call<'a, C> {
+    console: &'a mut Console,
+    handles: &'a mut Handles,
+    client: &'a mut C,
+}
+
+impl<C: Client> Call<'_, C> {
+    /// What the handle names; STATUS_INVALID_HANDLE when it names nothing.
+    fn kind(&self, handle: impl Word) -> Result<Kind, u32> {
+        self.handles
+            .kind(handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)
     }
-    Ok(())
+
+    /// STATUS_INVALID_HANDLE unless the handle names the screen buffer.
+    fn output(&self, handle: impl Word) -> Result<(), u32> {
+        match self.kind(handle) {
+            Ok(Kind::Output) => Ok(()),
+            _ => Err(STATUS_INVALID_HANDLE),
+        }
+    }
+
+    /// STATUS_INVALID_HANDLE unless the handle names the input buffer.
+    fn input(&self, handle: impl Word) -> Result<(), u32> {
+        match self.kind(handle) {
+            Ok(Kind::Input) => Ok(()),
+            _ => Err(STATUS_INVALID_HANDLE),
+        }
+    }
+
+    fn write_console<W: Word>(&mut self, message: &mut api::WriteConsole<W>) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let (buffer, count) = (message.buffer.get(), message.count.get());
+        if count != 0 {
+            let console = &mut *self.console;
+            console.screen.begin_write();
+            let logged = self.handles.logged(message.handle.dword());
+            let shown = if message.unicode.is_set() {
+                show_unicode(console, self.client, buffer, count, logged)
+            } else {
+                self.client.show(&mut console.screen, buffer, count, logged)
+            };
+            console.screen.end_write();
+            shown?;
+        }
+        message.written = message.count;
+        Ok(())
+    }
+
+    fn read_console<W: Word>(&mut self, message: &mut api::ReadConsole<W>) -> Result<(), u32> {
+        self.input(message.handle)?;
+        let (buffer, count) = (message.buffer.get(), message.count.get());
+        let unicode = message.unicode.is_set();
+        let read = if count == 0 {
+            0
+        } else if self.console.input_mode & ENABLE_LINE_INPUT != 0 {
+            read_line(self.console, self.client, buffer, count, unicode)?
+        } else {
+            read_raw(self.console, self.client, buffer, count, unicode)?
+        };
+        message.read = W::from_usize(read);
+        Ok(())
+    }
+
+    fn get_mode<W: Word>(&mut self, message: &mut api::GetMode<W>) -> Result<(), u32> {
+        message.mode = W::from_dword(match self.kind(message.handle)? {
+            Kind::Input => self.console.input_mode(),
+            Kind::Output => self.console.screen.mode(),
+        });
+        Ok(())
+    }
+
+    fn set_mode<W: Word>(&mut self, message: &mut api::SetMode<W>) -> Result<(), u32> {
+        let mode = message.mode.dword();
+        match self.kind(message.handle)? {
+            Kind::Input => {
+                if mode & !INPUT_MODE_MASK != 0
+                    || mode & (ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT) == ENABLE_ECHO_INPUT
+                {
+                    return Err(STATUS_INVALID_PARAMETER);
+                }
+                self.console.input_mode = mode;
+            }
+            Kind::Output => {
+                if mode & !OUTPUT_MODE_MASK != 0 {
+                    return Err(STATUS_INVALID_PARAMETER);
+                }
+                self.console.screen.set_mode(mode);
+            }
+        }
+        Ok(())
+    }
+
+    fn get_cp<W: Word>(&mut self, message: &mut api::GetCp<W>) -> Result<(), u32> {
+        message.code_page = W::from_dword(CONSOLE_CP);
+        Ok(())
+    }
+
+    fn verify_io_handle<W: Word>(
+        &mut self,
+        message: &mut api::VerifyIoHandle<W>,
+    ) -> Result<(), u32> {
+        message.valid = W::from_usize(usize::from(self.kind(message.handle).is_ok()));
+        Ok(())
+    }
+
+    fn flush_input_buffer<W: Word>(
+        &mut self,
+        message: &mut api::FlushInputBuffer<W>,
+    ) -> Result<(), u32> {
+        self.input(message.handle)?;
+        self.console.input.flush();
+        Ok(())
+    }
+
+    fn get_input_count<W: Word>(&mut self, message: &mut api::GetInputCount<W>) -> Result<(), u32> {
+        self.input(message.handle)?;
+        message.count = W::from_usize(self.console.input.count());
+        Ok(())
+    }
+
+    fn peek_input<W: Word>(&mut self, message: &mut api::PeekInput<W>) -> Result<(), u32> {
+        self.copy_input(&mut message.0, false)
+    }
+
+    fn read_input<W: Word>(&mut self, message: &mut api::ReadInput<W>) -> Result<(), u32> {
+        self.copy_input(&mut message.0, true)
+    }
+
+    /// PeekConsoleInput's work, and ReadConsoleInput's (`remove`: the records copied taken out of
+    /// the input buffer, STATUS_PENDING while it is empty).
+    fn copy_input<W: Word>(
+        &mut self,
+        message: &mut api::InputRecords<W>,
+        remove: bool,
+    ) -> Result<(), u32> {
+        self.input(message.handle)?;
+        let unicode = message.unicode.is_set();
+        let input = &mut self.console.input;
+        if remove && message.length.is_set() && input.count() == 0 {
+            message.count = W::default();
+            return Err(STATUS_PENDING);
+        }
+        // Every record is copied before any is removed: a buffer that refuses one leaves the
+        // input buffer as it was.
+        let copied = message.length.get().min(input.count());
+        for index in 0..copied {
+            let Some(record) = input.get(index) else {
+                break;
+            };
+            let mut bytes = record.bytes();
+            if !unicode && record.event_type == KEY_EVENT {
+                // An A call's AsciiChar: the character in the console's code page.
+                bytes[14..16].copy_from_slice(&[oem_byte(record.key.char), 0]);
+            }
+            let at = message
+                .records
+                .get()
+                .wrapping_add(index * INPUT_RECORD_BYTES);
+            self.client.write(at, &bytes)?;
+        }
+        if remove {
+            input.remove(copied);
+        }
+        message.count = W::from_usize(copied);
+        Ok(())
+    }
+
+    fn write_input<W: Word>(&mut self, message: &mut api::WriteInput<W>) -> Result<(), u32> {
+        let message = &mut message.0;
+        self.input(message.handle)?;
+        let unicode = message.unicode.is_set();
+        let mut written = 0;
+        while written < message.length.get() {
+            let mut bytes = [0u8; INPUT_RECORD_BYTES];
+            let at = message
+                .records
+                .get()
+                .wrapping_add(written * INPUT_RECORD_BYTES);
+            self.client.read(at, &mut bytes)?;
+            let mut record = InputRecord::from_bytes(&bytes);
+            if !unicode && record.event_type == KEY_EVENT {
+                // An A call's AsciiChar, in the console's code page.
+                record.key.char = codepage::decode_byte(CodePage::Oem, bytes[14]);
+            }
+            if !self.console.input.push(record) {
+                break;
+            }
+            written += 1;
+        }
+        message.count = W::from_usize(written);
+        Ok(())
+    }
+
+    fn open_console<W: Word>(&mut self, message: &mut api::OpenConsole<W>) -> Result<(), u32> {
+        let kind = if message.output.is_set() {
+            Kind::Output
+        } else {
+            Kind::Input
+        };
+        message.handle = W::from_dword(self.handles.open(kind, message.inherit.is_set())?);
+        Ok(())
+    }
+
+    fn get_input_wait_handle<W: Word>(
+        &mut self,
+        message: &mut api::GetInputWaitHandle<W>,
+    ) -> Result<(), u32> {
+        message.handle = W::from_dword(self.client.input_wait_handle()?);
+        Ok(())
+    }
+
+    fn close_handle<W: Word>(&mut self, message: &mut api::CloseHandle<W>) -> Result<(), u32> {
+        self.handles.close(message.handle.dword())
+    }
+
+    fn dup_handle<W: Word>(&mut self, message: &mut api::DupHandle<W>) -> Result<(), u32> {
+        let duplicate = self.handles.duplicate(
+            message.handle.dword(),
+            message.access.dword(),
+            message.inherit.is_set(),
+            message.options.dword(),
+        )?;
+        message.duplicate = W::from_dword(duplicate);
+        Ok(())
+    }
+
+    fn set_handle_information<W: Word>(
+        &mut self,
+        message: &mut api::SetHandleInformation<W>,
+    ) -> Result<(), u32> {
+        if message.mask.dword() & HANDLE_FLAG_INHERIT != 0 {
+            let inherit = message.flags.dword() & HANDLE_FLAG_INHERIT != 0;
+            self.handles
+                .set_inheritable(message.handle.dword(), inherit)
+        } else {
+            self.kind(message.handle).map(drop)
+        }
+    }
+
+    fn get_handle_information<W: Word>(
+        &mut self,
+        message: &mut api::GetHandleInformation<W>,
+    ) -> Result<(), u32> {
+        let inheritable = self
+            .handles
+            .inheritable(message.handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        message.flags = W::from_dword(if inheritable { HANDLE_FLAG_INHERIT } else { 0 });
+        Ok(())
+    }
+
+    fn get_cursor_position<W: Word>(
+        &mut self,
+        message: &mut api::GetCursorPosition<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let at = self.console.screen_buffer_info().cursor_position;
+        message.position = W::from_dword(at.word());
+        Ok(())
+    }
+
+    fn set_cursor_position<W: Word>(
+        &mut self,
+        message: &mut api::SetCursorPosition<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let at = Coord::from_word(message.position.dword());
+        if at.x < 0 || at.y < 0 || !self.console.screen.set_cursor(at.y as usize, at.x as usize) {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        Ok(())
+    }
+
+    fn get_screen_buffer_info<W: Word>(
+        &mut self,
+        message: &mut api::GetScreenBufferInfo<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        message.info = self.console.screen_buffer_info().words().map(W::from_dword);
+        Ok(())
+    }
+
+    fn set_text_attribute<W: Word>(
+        &mut self,
+        message: &mut api::SetTextAttribute<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let attribute = message.attributes.dword();
+        if attribute & !COLOR_MASK != 0 {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        self.console.screen.set_attribute(attribute as u8);
+        Ok(())
+    }
+
+    fn fill_output<W: Word>(&mut self, message: &mut api::FillOutput<W>) -> Result<(), u32> {
+        self.output(message.handle)?;
+        // The cell keeps a character's OEM byte and an attribute's colours: the low byte.
+        let value = message.value.get() as u8;
+        let fill = match message.element.get() {
+            0 => Fill::Character(value),
+            1 => Fill::Attribute(value),
+            _ => return Err(STATUS_INVALID_PARAMETER),
+        };
+        let at = Coord::from_word(message.origin.dword());
+        let count = message.count.get();
+        let written = self
+            .console
+            .screen
+            .fill(at.x.into(), at.y.into(), count, fill);
+        message.written = W::from_usize(written);
+        Ok(())
+    }
+
+    fn scroll_region<W: Word>(&mut self, message: &mut api::ScrollRegion<W>) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let source = SmallRect::from_words(
+            message.source_top_left.dword(),
+            message.source_bottom_right.dword(),
+        );
+        let to = Coord::from_word(message.destination.dword());
+        let screen = &mut self.console.screen;
+        let fill = match message.fill.dword() {
+            0 => Cell::blank(screen.attribute()),
+            char_info => Cell {
+                character: char_info as u8,
+                attribute: (char_info >> 16) as u8,
+            },
+        };
+        let clip = (message.clipped.dword() != 0).then(|| {
+            SmallRect::from_words(
+                message.clip_top_left.dword(),
+                message.clip_bottom_right.dword(),
+            )
+        });
+        screen.scroll(source, clip, to.x.into(), to.y.into(), fill);
+        Ok(())
+    }
+
+    /// GetConsoleTitleW: as much of the title as fits with its terminator, the characters copied
+    /// the answer; GetConsoleTitleA: the whole title and its terminator, or nothing at all (0)
+    /// when they do not fit. An empty title, or a buffer of no characters, is 0 with nothing
+    /// written — Windows 2000's console capture.
+    fn get_title<W: Word>(&mut self, message: &mut api::GetTitle<W>) -> Result<(), u32> {
+        let (buffer, size) = (message.buffer.get(), message.size.get());
+        let unicode = message.unicode.is_set();
+        let title = &self.console.title[..self.console.title_length];
+        let length = if title.is_empty() || size == 0 {
+            0
+        } else if unicode {
+            title.len().min(size - 1)
+        } else if title.len() < size {
+            title.len()
+        } else {
+            0
+        };
+        if length != 0 {
+            put_text(self.client, buffer, &title[..length], unicode)?;
+            let end = buffer.wrapping_add(length * if unicode { 2 } else { 1 });
+            put_text(self.client, end, &[0], unicode)?;
+        }
+        message.returned = W::from_usize(length);
+        Ok(())
+    }
+
+    /// The title is replaced only once the new one is read whole.
+    fn set_title<W: Word>(&mut self, message: &mut api::SetTitle<W>) -> Result<(), u32> {
+        let mut title = [0u16; TITLE_UNITS];
+        let length = get_text(
+            self.client,
+            message.buffer.get(),
+            message.length.get(),
+            message.unicode.is_set(),
+            &mut title,
+        )?;
+        self.console.title = title;
+        self.console.title_length = length;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1322,21 +1417,24 @@ mod tests {
             }
         }
 
-        fn call(&mut self, api: u32, data: &[usize]) -> (u32, [usize; DATA_WORDS]) {
+        /// The call's answer: its status and data words, the message sent `data` and zeros after
+        /// it, as long as the message area.
+        fn call(&mut self, api: impl Into<u32>, data: &[usize]) -> (u32, [usize; DATA_WORDS]) {
             let mut words = [0; DATA_WORDS];
             words[..data.len()].copy_from_slice(data);
             let status = serve(
                 &mut self.console,
                 &mut self.handles,
                 &mut self.client,
-                api,
-                &mut words[..api::words(api).unwrap_or(data.len())],
+                api.into(),
+                &mut words,
+                DATA_WORDS * core::mem::size_of::<usize>(),
             );
             (status, words)
         }
 
         /// The status alone.
-        fn status(&mut self, api: u32, data: &[usize]) -> u32 {
+        fn status(&mut self, api: impl Into<u32>, data: &[usize]) -> u32 {
             self.call(api, data).0
         }
 
@@ -1379,19 +1477,19 @@ mod tests {
     fn writes_go_to_the_screen_on_output_handles_only() {
         let mut server = Server::new();
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 15, 0xCC, 0]),
+            server.call(Api::WriteConsole, &[7, 0x40_0000, 15, 0xCC, 0]),
             (0, [7, 0x40_0000, 15, 15, 0, 0, 0, 0])
         );
         assert_eq!(
             server
-                .call(api::WRITE_CONSOLE, &[0xB, 0x40_0000, 0, 0xCC, 0])
+                .call(Api::WriteConsole, &[0xB, 0x40_0000, 0, 0xCC, 0])
                 .1[3],
             0
         );
         for handle in [3, 0xF, 4, 0] {
             assert_eq!(
                 server
-                    .call(api::WRITE_CONSOLE, &[handle, 0x40_0000, 1, 0, 0])
+                    .call(Api::WriteConsole, &[handle, 0x40_0000, 1, 0, 0])
                     .0,
                 STATUS_INVALID_HANDLE
             );
@@ -1402,13 +1500,11 @@ mod tests {
             "an empty write shows nothing"
         );
         assert_eq!(
-            server
-                .call(api::WRITE_CONSOLE, &[7, 0x8000_0000, 4, 0, 0])
-                .0,
+            server.call(Api::WriteConsole, &[7, 0x8000_0000, 4, 0, 0]).0,
             0xC000_0005
         );
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x1000, 4, 0, 0]).0,
+            server.call(Api::WriteConsole, &[7, 0x1000, 4, 0, 0]).0,
             0xC000_00E8
         );
         assert_eq!(
@@ -1426,48 +1522,47 @@ mod tests {
     #[test]
     fn modes_code_pages_and_reads() {
         let mut server = Server::new();
-        assert_eq!(server.call(api::GET_MODE, &[3]).1[1], 0xE7);
-        assert_eq!(server.call(api::GET_MODE, &[7]).1[1], 0x3);
-        assert_eq!(server.call(api::GET_MODE, &[0xF]).0, STATUS_INVALID_HANDLE);
-        assert_eq!(server.call(api::GET_CP, &[0]).1[1], 437);
-        assert_eq!(server.call(api::GET_CP, &[1]).1[1], 437);
+        assert_eq!(server.call(Api::GetMode, &[3]).1[1], 0xE7);
+        assert_eq!(server.call(Api::GetMode, &[7]).1[1], 0x3);
+        assert_eq!(server.call(Api::GetMode, &[0xF]).0, STATUS_INVALID_HANDLE);
+        assert_eq!(server.call(Api::GetCp, &[0]).1[1], 437);
+        assert_eq!(server.call(Api::GetCp, &[1]).1[1], 437);
         assert_eq!(
-            server
-                .call(api::READ_CONSOLE, &[3, 0x40_0000, 8, 0xCC, 1])
-                .0,
+            server.call(Api::ReadConsole, &[3, 0x40_0000, 8, 0xCC, 1]).0,
             STATUS_PENDING,
             "nothing typed: the read waits"
         );
         assert_eq!(
-            server.call(api::READ_CONSOLE, &[3, 0x40_0000, 0, 0xCC, 1]),
+            server.call(Api::ReadConsole, &[3, 0x40_0000, 0, 0xCC, 1]),
             (0, [3, 0x40_0000, 0, 0, 1, 0, 0, 0]),
             "no room: nothing, at once"
         );
         assert_eq!(
-            server.call(api::READ_CONSOLE, &[7, 0x40_0000, 8, 0, 1]).0,
+            server.call(Api::ReadConsole, &[7, 0x40_0000, 8, 0, 1]).0,
             STATUS_INVALID_HANDLE
         );
-        assert_eq!(server.call(api::FLUSH_INPUT_BUFFER, &[3]).0, 0);
+        assert_eq!(server.call(Api::FlushInputBuffer, &[3]).0, 0);
         assert_eq!(
-            server.call(api::FLUSH_INPUT_BUFFER, &[7]).0,
+            server.call(Api::FlushInputBuffer, &[7]).0,
             STATUS_INVALID_HANDLE
         );
         assert_eq!(
-            server.call(api::VERIFY_IO_HANDLE, &[0xB]),
+            server.call(Api::VerifyIoHandle, &[0xB]),
             (0, [0xB, 1, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
-            server.call(api::VERIFY_IO_HANDLE, &[0xF]),
+            server.call(Api::VerifyIoHandle, &[0xF]),
             (0, [0xF, 0, 0, 0, 0, 0, 0, 0])
         );
-        assert_eq!(server.call(0x0002_0063, &[7]).0, STATUS_ILLEGAL_FUNCTION);
+        assert_eq!(server.call(0x0002_0063u32, &[7]).0, STATUS_ILLEGAL_FUNCTION);
         assert_eq!(
             serve(
                 &mut server.console,
                 &mut server.handles,
                 &mut server.client,
-                api::GET_MODE,
-                &mut [7]
+                Api::GetMode.into(),
+                &mut [7usize, 0, 0, 0, 0, 0, 0, 0],
+                core::mem::size_of::<usize>(),
             ),
             STATUS_INVALID_PARAMETER
         );
@@ -1477,16 +1572,13 @@ mod tests {
     fn handles_duplicate_into_the_lowest_free_slot_and_close() {
         let mut server = Server::new();
         let (status, data) =
-            server.call(api::DUP_HANDLE, &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize]);
+            server.call(Api::DupHandle, &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize]);
         assert_eq!((status, data[4]), (0, 0xF));
         assert_eq!(server.handles.kind(0xF), Some(Kind::Output));
-        assert_eq!(server.call(api::CLOSE_HANDLE, &[7]).0, 0);
+        assert_eq!(server.call(Api::CloseHandle, &[7]).0, 0);
+        assert_eq!(server.call(Api::CloseHandle, &[7]).0, STATUS_INVALID_HANDLE);
         assert_eq!(
-            server.call(api::CLOSE_HANDLE, &[7]).0,
-            STATUS_INVALID_HANDLE
-        );
-        assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, 0x40_0000, 1, 0, 0]).0,
+            server.call(Api::WriteConsole, &[7, 0x40_0000, 1, 0, 0]).0,
             STATUS_INVALID_HANDLE
         );
         // The freed slot is the next one taken; the source goes when asked.
@@ -1532,37 +1624,37 @@ mod tests {
             [3, 7, 0xB].map(|handle| server.handles.inheritable(handle)),
             [Some(true); 3]
         );
-        let (status, data) = server.call(api::OPEN_CONSOLE, &[1, 0, 0, 0, 0]);
+        let (status, data) = server.call(Api::OpenConsole, &[1, 0, 0, 0, 0]);
         assert_eq!((status, data[4]), (0, 0xF));
         assert_eq!(server.handles.inheritable(0xF), Some(false));
         let (status, data) = server.call(
-            api::DUP_HANDLE,
+            Api::DupHandle,
             &[3, 0, 1, DUPLICATE_SAME_ACCESS as usize, 0],
         );
         assert_eq!((status, data[4]), (0, 0x13));
         assert_eq!(server.handles.inheritable(0x13), Some(true));
         // The mask decides what changes; the inheritance alone is a console handle's.
-        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[7, 2, 0]).0, 0);
+        assert_eq!(server.call(Api::SetHandleInformation, &[7, 2, 0]).0, 0);
         assert_eq!(server.handles.inheritable(7), Some(true));
-        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[7, 1, 0]).0, 0);
+        assert_eq!(server.call(Api::SetHandleInformation, &[7, 1, 0]).0, 0);
         assert_eq!(server.handles.inheritable(7), Some(false));
-        assert_eq!(server.call(api::SET_HANDLE_INFORMATION, &[0xF, 3, 3]).0, 0);
+        assert_eq!(server.call(Api::SetHandleInformation, &[0xF, 3, 3]).0, 0);
         assert_eq!(server.handles.inheritable(0xF), Some(true));
         assert_eq!(
-            server.call(api::SET_HANDLE_INFORMATION, &[0x17, 1, 1]).0,
+            server.call(Api::SetHandleInformation, &[0x17, 1, 1]).0,
             STATUS_INVALID_HANDLE
         );
         assert_eq!(
-            server.call(api::SET_HANDLE_INFORMATION, &[0x17, 0, 0]).0,
+            server.call(Api::SetHandleInformation, &[0x17, 0, 0]).0,
             STATUS_INVALID_HANDLE
         );
         // Asked back: the inheritance alone, never a protection from close.
-        let (status, data) = server.call(api::GET_HANDLE_INFORMATION, &[0xF, 0]);
+        let (status, data) = server.call(Api::GetHandleInformation, &[0xF, 0]);
         assert_eq!((status, data[1]), (0, 1));
-        let (status, data) = server.call(api::GET_HANDLE_INFORMATION, &[7, 0]);
+        let (status, data) = server.call(Api::GetHandleInformation, &[7, 0]);
         assert_eq!((status, data[1]), (0, 0));
         assert_eq!(
-            server.call(api::GET_HANDLE_INFORMATION, &[0x17, 0]).0,
+            server.call(Api::GetHandleInformation, &[0x17, 0]).0,
             STATUS_INVALID_HANDLE
         );
         let child = server.handles.inherited();
@@ -1617,7 +1709,7 @@ mod tests {
         let mut server = Server::new();
         server.poke(0, b"Hello\r\nworld");
         assert_eq!(
-            server.call(api::WRITE_CONSOLE, &[7, BASE, 12, 0, 0]),
+            server.call(Api::WriteConsole, &[7, BASE, 12, 0, 0]),
             (0, [7, BASE, 12, 12, 0, 0, 0, 0])
         );
         assert_eq!(&server.console.screen.row_text(0)[..6], b"Hello ");
@@ -1625,7 +1717,7 @@ mod tests {
         assert_eq!(server.console.screen.cursor(), (1, 5));
         // A refused buffer shows nothing.
         assert_eq!(
-            server.status(api::WRITE_CONSOLE, &[0xB, 0x8000_0000, 4, 0, 0]),
+            server.status(Api::WriteConsole, &[0xB, 0x8000_0000, 4, 0, 0]),
             0xC000_0005
         );
         assert_eq!(server.console.screen.cursor(), (1, 5));
@@ -1635,8 +1727,8 @@ mod tests {
     fn the_cursor_position_round_trips_inside_the_buffer() {
         let mut server = Server::new();
         let at = Coord { x: W - 1, y: H - 1 }.word() as usize;
-        assert_eq!(server.status(api::SET_CURSOR_POSITION, &[7, at]), 0);
-        assert_eq!(server.call(api::GET_CURSOR_POSITION, &[0xB, 0]).1[1], at);
+        assert_eq!(server.status(Api::SetCursorPosition, &[7, at]), 0);
+        assert_eq!(server.call(Api::GetCursorPosition, &[0xB, 0]).1[1], at);
         assert_eq!(server.console.screen.cursor(), (HEIGHT - 1, WIDTH - 1));
         for outside in [
             Coord { x: W, y: 0 },
@@ -1644,7 +1736,7 @@ mod tests {
             Coord { x: -1, y: 0 },
         ] {
             assert_eq!(
-                server.status(api::SET_CURSOR_POSITION, &[7, outside.word() as usize]),
+                server.status(Api::SetCursorPosition, &[7, outside.word() as usize]),
                 STATUS_INVALID_PARAMETER,
                 "{outside:?}"
             );
@@ -1654,7 +1746,7 @@ mod tests {
             (HEIGHT - 1, WIDTH - 1),
             "a refused move moves nothing"
         );
-        for api in [api::GET_CURSOR_POSITION, api::SET_CURSOR_POSITION] {
+        for api in [Api::GetCursorPosition, Api::SetCursorPosition] {
             assert_eq!(server.status(api, &[3, 0]), STATUS_INVALID_HANDLE);
             assert_eq!(server.status(api, &[0xF, 0]), STATUS_INVALID_HANDLE);
         }
@@ -1664,7 +1756,7 @@ mod tests {
     fn the_screen_buffer_info_describes_the_buffer() {
         let mut server = Server::new();
         server.console.screen.set_cursor(3, 12);
-        let (status, data) = server.call(api::GET_SCREEN_BUFFER_INFO, &[7]);
+        let (status, data) = server.call(Api::GetScreenBufferInfo, &[7]);
         assert_eq!(status, 0);
         let mut words = [0u32; 6];
         for (word, &value) in words.iter_mut().zip(&data[1..7]) {
@@ -1691,12 +1783,12 @@ mod tests {
         );
         assert_eq!((W, H), (80, 300), "Windows 2000's default buffer");
         assert_eq!(
-            server.status(api::GET_SCREEN_BUFFER_INFO, &[3]),
+            server.status(Api::GetScreenBufferInfo, &[3]),
             STATUS_INVALID_HANDLE
         );
         // The window follows the cursor down the buffer.
         server.console.screen.set_cursor(100, 0);
-        let (_, data) = server.call(api::GET_SCREEN_BUFFER_INFO, &[7]);
+        let (_, data) = server.call(Api::GetScreenBufferInfo, &[7]);
         let words = [1, 2, 3, 4, 5, 6].map(|index| data[index] as u32);
         let info = ConsoleScreenBufferInfo::from_words(words);
         assert_eq!((info.window.top, info.window.bottom), (76, 100));
@@ -1735,26 +1827,26 @@ mod tests {
     #[test]
     fn the_text_attribute_takes_colours_only() {
         let mut server = Server::new();
-        assert_eq!(server.status(api::SET_TEXT_ATTRIBUTE, &[7, 0x1E]), 0);
+        assert_eq!(server.status(Api::SetTextAttribute, &[7, 0x1E]), 0);
         assert_eq!(server.console.screen.attribute(), 0x1E);
         assert_eq!(
-            server.call(api::GET_SCREEN_BUFFER_INFO, &[7]).1[3] & 0xFFFF,
+            server.call(Api::GetScreenBufferInfo, &[7]).1[3] & 0xFFFF,
             0x1E
         );
         for attribute in [0x100, 0x8000, 0x1_0000] {
             assert_eq!(
-                server.status(api::SET_TEXT_ATTRIBUTE, &[7, attribute]),
+                server.status(Api::SetTextAttribute, &[7, attribute]),
                 STATUS_INVALID_PARAMETER,
                 "{attribute:#x}"
             );
         }
         assert_eq!(server.console.screen.attribute(), 0x1E);
         assert_eq!(
-            server.status(api::SET_TEXT_ATTRIBUTE, &[3, 0x07]),
+            server.status(Api::SetTextAttribute, &[3, 0x07]),
             STATUS_INVALID_HANDLE
         );
         server.poke(0, b"x");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 1, 0, 0]);
+        server.call(Api::WriteConsole, &[7, BASE, 1, 0, 0]);
         assert_eq!(server.console.screen.cell(0, 0).attribute, 0x1E);
     }
 
@@ -1764,7 +1856,7 @@ mod tests {
         let at = |x: i16, y: i16| Coord { x, y }.word() as usize;
         assert_eq!(
             server.call(
-                api::FILL_OUTPUT,
+                Api::FillOutput,
                 &[7, 0, b'#' as usize, 5, at(W - 2, 0), 0xCC]
             ),
             (0, [7, 0, b'#' as usize, 5, at(W - 2, 0), 5, 0, 0])
@@ -1774,7 +1866,7 @@ mod tests {
         assert_eq!(&screen.row_text(1)[..4], b"### ");
         assert_eq!(
             server
-                .call(api::FILL_OUTPUT, &[7, 1, 0x4F, 3, at(W - 1, 0), 0])
+                .call(Api::FillOutput, &[7, 1, 0x4F, 3, at(W - 1, 0), 0])
                 .1[5],
             3
         );
@@ -1803,7 +1895,7 @@ mod tests {
         assert_eq!(
             server
                 .call(
-                    api::FILL_OUTPUT,
+                    Api::FillOutput,
                     &[7, 0, b'+' as usize, 9999, at(W - 3, H - 1), 0]
                 )
                 .1[5],
@@ -1811,22 +1903,22 @@ mod tests {
             "clipped at the buffer's end"
         );
         assert_eq!(
-            server.call(api::FILL_OUTPUT, &[7, 0, b'!' as usize, 4, at(W, 0), 0xCC]),
+            server.call(Api::FillOutput, &[7, 0, b'!' as usize, 4, at(W, 0), 0xCC]),
             (0, [7, 0, b'!' as usize, 4, at(W, 0), 0, 0, 0]),
             "outside the buffer: nothing, and success"
         );
         assert_eq!(
             server
-                .call(api::FILL_OUTPUT, &[7, 0, b'!' as usize, 4, at(-1, 3), 0])
+                .call(Api::FillOutput, &[7, 0, b'!' as usize, 4, at(-1, 3), 0])
                 .1[5],
             0
         );
         assert_eq!(
-            server.status(api::FILL_OUTPUT, &[7, 2, 0, 1, at(0, 0), 0]),
+            server.status(Api::FillOutput, &[7, 2, 0, 1, at(0, 0), 0]),
             STATUS_INVALID_PARAMETER
         );
         assert_eq!(
-            server.status(api::FILL_OUTPUT, &[3, 0, 0, 1, at(0, 0), 0]),
+            server.status(Api::FillOutput, &[3, 0, 0, 1, at(0, 0), 0]),
             STATUS_INVALID_HANDLE
         );
     }
@@ -1845,12 +1937,12 @@ mod tests {
             )
         };
         server.poke(0, b"top\nmid\nend");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 11, 0, 0]);
+        server.call(Api::WriteConsole, &[7, BASE, 11, 0, 0]);
         server.console.screen.set_attribute(0x2A);
         // Rows 1-2 up one; a zero fill is a space in the current attribute.
         let (from, to) = words(0, 1, W - 1, 2);
         assert_eq!(
-            server.status(api::SCROLL_REGION, &[7, from, to, 0, 0, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[7, from, to, 0, 0, 0, 0, 0]),
             0
         );
         let screen = &server.console.screen;
@@ -1866,7 +1958,7 @@ mod tests {
         let at = Coord { x: 0, y: 1 }.word() as usize;
         assert_eq!(
             server.status(
-                api::SCROLL_REGION,
+                Api::ScrollRegion,
                 &[7, from, to, at, fill, 1, clip_from, clip_to]
             ),
             0
@@ -1879,12 +1971,12 @@ mod tests {
         let before = server.console.clone();
         let (from, to) = words(100, 0, 120, 5);
         assert_eq!(
-            server.status(api::SCROLL_REGION, &[7, from, to, 0, fill, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[7, from, to, 0, fill, 0, 0, 0]),
             0
         );
         assert_eq!(server.console, before);
         assert_eq!(
-            server.status(api::SCROLL_REGION, &[3, 0, 0, 0, 0, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[3, 0, 0, 0, 0, 0, 0, 0]),
             STATUS_INVALID_HANDLE
         );
     }
@@ -1910,7 +2002,7 @@ mod tests {
             let width = if unicode { 2 } else { 1 };
             self.poke(0x800, &std::vec![b'#'; (size + 2) * width]);
             let (status, data) = self.call(
-                api::GET_TITLE,
+                Api::GetTitle,
                 &[BASE + 0x800, size, 0xCC, usize::from(unicode)],
             );
             assert_eq!(status, 0);
@@ -1929,7 +2021,7 @@ mod tests {
         let mut server = Server::new();
         assert_eq!(server.title(64, true).0, 0, "empty to start");
         server.poke_wide(0, "F2K title");
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, 9, 1]), 0);
+        assert_eq!(server.status(Api::SetTitle, &[BASE, 9, 1]), 0);
         assert_eq!(server.console.title(), wide("F2K title"));
         // A unit the fill left reads as two '#' bytes.
         let units = |text: &str| -> Vec<u8> {
@@ -1954,29 +2046,29 @@ mod tests {
         assert_eq!(server.title(0, false), (0, b"##".to_vec()));
         // An A title is the console's code page's: 0x82 is e acute.
         server.poke(0x100, b"Caf\x82");
-        assert_eq!(server.status(api::SET_TITLE, &[BASE + 0x100, 4, 0]), 0);
+        assert_eq!(server.status(Api::SetTitle, &[BASE + 0x100, 4, 0]), 0);
         assert_eq!(server.console.title(), wide("Caf\u{e9}"));
         assert_eq!(server.title(5, false), (4, b"Caf\x82\0##".to_vec()));
         // An empty title: nothing written either way.
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, 0, 1]), 0);
+        assert_eq!(server.status(Api::SetTitle, &[BASE, 0, 1]), 0);
         assert_eq!(server.title(4, true), (0, units("######")));
         assert_eq!(server.title(4, false), (0, b"######".to_vec()));
         // A buffer that cannot be read leaves the title; one that cannot be written fails.
         server.poke_wide(0, "Short");
-        assert_eq!(server.status(api::SET_TITLE, &[BASE, 5, 1]), 0);
+        assert_eq!(server.status(Api::SetTitle, &[BASE, 5, 1]), 0);
         assert_eq!(
-            server.status(api::SET_TITLE, &[0x8000_0000, 4, 1]),
+            server.status(Api::SetTitle, &[0x8000_0000, 4, 1]),
             0xC000_0005
         );
         assert_eq!(server.console.title(), wide("Short"));
         assert_eq!(
-            server.status(api::GET_TITLE, &[0x1000, 8, 0, 1]),
+            server.status(Api::GetTitle, &[0x1000, 8, 0, 1]),
             0xC000_00E8
         );
         // A title past the console's room keeps its first characters.
         server.poke(0, &[b'x'; MEMORY]);
         assert_eq!(
-            server.status(api::SET_TITLE, &[BASE, TITLE_UNITS + 100, 0]),
+            server.status(Api::SetTitle, &[BASE, TITLE_UNITS + 100, 0]),
             0
         );
         assert_eq!(server.console.title(), &[u16::from(b'x'); TITLE_UNITS][..]);
@@ -1985,22 +2077,22 @@ mod tests {
     #[test]
     fn modes_are_per_buffer_and_checked() {
         let mut server = Server::new();
-        let mode = |server: &mut Server, handle| server.call(api::GET_MODE, &[handle, 0]).1[1];
-        assert_eq!(server.status(api::SET_MODE, &[7, 0x1]), 0);
+        let mode = |server: &mut Server, handle| server.call(Api::GetMode, &[handle, 0]).1[1];
+        assert_eq!(server.status(Api::SetMode, &[7, 0x1]), 0);
         assert_eq!(
             mode(&mut server, 0xB),
             0x1,
             "every handle on the screen buffer"
         );
         assert_eq!(mode(&mut server, 3), 0xE7, "the input buffer's own");
-        assert_eq!(server.status(api::SET_MODE, &[3, 0x3]), 0);
+        assert_eq!(server.status(Api::SetMode, &[3, 0x3]), 0);
         assert_eq!(mode(&mut server, 3), 0x3);
         // The insert and quick-edit bits read back with the extended flags (the capture's 0xA0).
-        assert_eq!(server.status(api::SET_MODE, &[3, 0x20]), 0);
+        assert_eq!(server.status(Api::SetMode, &[3, 0x20]), 0);
         assert_eq!(mode(&mut server, 3), 0xA0);
-        assert_eq!(server.status(api::SET_MODE, &[3, 0x41]), 0);
+        assert_eq!(server.status(Api::SetMode, &[3, 0x41]), 0);
         assert_eq!(mode(&mut server, 3), 0xC1);
-        assert_eq!(server.status(api::SET_MODE, &[3, 0x1F]), 0);
+        assert_eq!(server.status(Api::SetMode, &[3, 0x1F]), 0);
         for (handle, bad) in [
             (7, 0x4),
             (7, 0x8000_0003),
@@ -2010,20 +2102,20 @@ mod tests {
             (3, 0x5),
         ] {
             assert_eq!(
-                server.status(api::SET_MODE, &[handle, bad]),
+                server.status(Api::SetMode, &[handle, bad]),
                 STATUS_INVALID_PARAMETER,
                 "{handle:#x} {bad:#x}"
             );
         }
         assert_eq!((mode(&mut server, 7), mode(&mut server, 3)), (0x1, 0x1F));
         assert_eq!(
-            server.status(api::SET_MODE, &[0xF, 0]),
+            server.status(Api::SetMode, &[0xF, 0]),
             STATUS_INVALID_HANDLE
         );
         // The stored mode is the one the renderer follows.
-        assert_eq!(server.status(api::SET_MODE, &[7, 0]), 0);
+        assert_eq!(server.status(Api::SetMode, &[7, 0]), 0);
         server.poke(0, b"a\nb");
-        server.call(api::WRITE_CONSOLE, &[7, BASE, 3, 0, 0]);
+        server.call(Api::WriteConsole, &[7, BASE, 3, 0, 0]);
         assert_eq!(&server.console.screen.row_text(0)[..3], b"a\nb");
     }
 
@@ -2080,23 +2172,23 @@ mod tests {
     fn the_input_apis_serve_the_input_buffer() {
         let mut server = Server::new();
         assert_eq!(
-            server.call(api::GET_INPUT_COUNT, &[3, 0xCC]),
+            server.call(Api::GetInputCount, &[3, 0xCC]),
             (0, [3, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
-            server.call(api::READ_INPUT, &[3, BASE, 4, 0xCC]),
+            server.call(Api::ReadInput, &[3, BASE, 4, 0xCC]),
             (STATUS_PENDING, [3, BASE, 4, 0, 0, 0, 0, 0]),
             "an empty buffer: none, and the read waits"
         );
         assert_eq!(
-            server.call(api::PEEK_INPUT, &[3, BASE, 4, 0xCC]),
+            server.call(Api::PeekInput, &[3, BASE, 4, 0xCC]),
             (0, [3, BASE, 4, 0, 0, 0, 0, 0]),
             "a peek never waits"
         );
         // a, b, c: down and up each.
         server.keys(&[0x1E, 0x9E, 0x30, 0xB0, 0x2E, 0xAE]);
-        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 6);
-        let (status, data) = server.call(api::PEEK_INPUT, &[3, BASE, 2, 0]);
+        assert_eq!(server.call(Api::GetInputCount, &[3, 0]).1[1], 6);
+        let (status, data) = server.call(Api::PeekInput, &[3, BASE, 2, 0]);
         assert_eq!((status, data[3]), (0, 2));
         let first = server.console.input.get(0).unwrap().bytes();
         assert_eq!(server.records(0, 2)[0], first);
@@ -2105,43 +2197,39 @@ mod tests {
             &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0x41, 0, 0x1E, 0, b'a', 0]
         );
         assert_eq!(
-            server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1],
+            server.call(Api::GetInputCount, &[3, 0]).1[1],
             6,
             "a peek takes none"
         );
-        let (status, data) = server.call(api::READ_INPUT, &[3, BASE + 0x100, 3, 0]);
+        let (status, data) = server.call(Api::ReadInput, &[3, BASE + 0x100, 3, 0]);
         assert_eq!((status, data[3]), (0, 3));
         assert_eq!(server.records(0x100, 1)[0], first);
-        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 3);
+        assert_eq!(server.call(Api::GetInputCount, &[3, 0]).1[1], 3);
         assert_eq!(
             server.console.input.get(0).unwrap().key.virtual_key_code,
             u16::from(b'B'),
             "b's keyup is next"
         );
         assert_eq!(
-            server.call(api::READ_INPUT, &[3, BASE, 10, 0]).1[3],
+            server.call(Api::ReadInput, &[3, BASE, 10, 0]).1[3],
             3,
             "what is there"
         );
-        assert_eq!(server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1], 0);
+        assert_eq!(server.call(Api::GetInputCount, &[3, 0]).1[1], 0);
         server.keys(&[0x1E, 0x9E]);
-        assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
-        assert_eq!(
-            server.call(api::GET_INPUT_COUNT, &[3, 0]).1[1],
-            0,
-            "flushed"
-        );
+        assert_eq!(server.status(Api::FlushInputBuffer, &[3]), 0);
+        assert_eq!(server.call(Api::GetInputCount, &[3, 0]).1[1], 0, "flushed");
         for api in [
-            api::GET_INPUT_COUNT,
-            api::PEEK_INPUT,
-            api::READ_INPUT,
-            api::FLUSH_INPUT_BUFFER,
+            Api::GetInputCount,
+            Api::PeekInput,
+            Api::ReadInput,
+            Api::FlushInputBuffer,
         ] {
             for handle in [7, 0xB, 0xF] {
                 assert_eq!(
                     server.status(api, &[handle, BASE, 1, 0]),
                     STATUS_INVALID_HANDLE,
-                    "{api:#x} {handle:#x}"
+                    "{api:?} {handle:#x}"
                 );
             }
         }
@@ -2153,35 +2241,32 @@ mod tests {
         let mut server = Server::new();
         server.keys(&[0x1E, 0x9E]);
         assert_eq!(
-            server.status(api::READ_INPUT, &[3, 0x8000_0000, 2, 0]),
+            server.status(Api::ReadInput, &[3, 0x8000_0000, 2, 0]),
             0xC000_0005
         );
         assert_eq!(
-            server.status(api::READ_INPUT, &[3, 0x1000, 2, 0]),
+            server.status(Api::ReadInput, &[3, 0x1000, 2, 0]),
             0xC000_00E8
         );
         assert_eq!(
             server.status(
-                api::READ_INPUT,
+                Api::ReadInput,
                 &[3, BASE + MEMORY - INPUT_RECORD_BYTES, 2, 0]
             ),
             0xC000_0005,
             "the second record falls outside"
         );
         assert_eq!(server.console.input.count(), 2);
-        assert_eq!(
-            server.call(api::READ_INPUT, &[3, 0x8000_0000, 0, 0]).1[3],
-            0
-        );
+        assert_eq!(server.call(Api::ReadInput, &[3, 0x8000_0000, 0, 0]).1[3], 0);
     }
 
     /// A handle's duplicate shares its buffer's mode.
     #[test]
     fn a_duplicate_shares_the_mode() {
         let mut server = Server::new();
-        let (_, data) = server.call(api::DUP_HANDLE, &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize]);
-        assert_eq!(server.status(api::SET_MODE, &[data[4], 0x2]), 0);
-        assert_eq!(server.call(api::GET_MODE, &[7, 0]).1[1], 0x2);
+        let (_, data) = server.call(Api::DupHandle, &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize]);
+        assert_eq!(server.status(Api::SetMode, &[data[4], 0x2]), 0);
+        assert_eq!(server.call(Api::GetMode, &[7, 0]).1[1], 0x2);
     }
 
     /// Set 1 scan codes of the letters, as the console fixture queues them.
@@ -2220,7 +2305,7 @@ mod tests {
             self.poke(0x400, &bytes);
             let count = bytes.len() / INPUT_RECORD_BYTES;
             let (status, data) = self.call(
-                api::WRITE_INPUT,
+                Api::WriteInput,
                 &[3, BASE + 0x400, count, 0xCC, usize::from(unicode)],
             );
             assert_eq!(status, 0);
@@ -2230,7 +2315,7 @@ mod tests {
         /// READ_CONSOLE of `count` characters into BASE + 0xC00: the status, and the text read.
         fn read(&mut self, count: usize, unicode: bool) -> (u32, Vec<u16>) {
             let (status, data) = self.call(
-                api::READ_CONSOLE,
+                Api::ReadConsole,
                 &[3, BASE + 0xC00, count, 0xCC, usize::from(unicode)],
             );
             if status != 0 {
@@ -2249,7 +2334,7 @@ mod tests {
         }
 
         fn events(&mut self) -> usize {
-            self.call(api::GET_INPUT_COUNT, &[3, 0]).1[1]
+            self.call(Api::GetInputCount, &[3, 0]).1[1]
         }
     }
 
@@ -2277,12 +2362,12 @@ mod tests {
     fn a_line_mode_read_takes_a_line() {
         for unicode in [true, false] {
             let mut server = Server::new();
-            assert_eq!(server.status(api::SET_MODE, &[3, 0x3]), 0);
+            assert_eq!(server.status(Api::SetMode, &[3, 0x3]), 0);
             assert_eq!(server.queue("dir abc\r", unicode), 16);
             assert_eq!(server.events(), 16);
             assert_eq!(server.read(64, unicode), (0, wide("dir abc\r\n")));
             assert_eq!(server.events(), 1, "the Enter's keyup");
-            assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
+            assert_eq!(server.status(Api::FlushInputBuffer, &[3]), 0);
             assert_eq!(server.queue("abcdefgh\r", unicode), 18);
             assert_eq!(server.read(4, unicode), (0, wide("abcd")));
             assert_eq!(server.queue("zz\r", unicode), 6);
@@ -2310,7 +2395,7 @@ mod tests {
         );
         server.poke(0x400, &press(0x08, 0x0E, 0x08));
         assert_eq!(
-            server.call(api::WRITE_INPUT, &[3, BASE + 0x400, 2, 0, 1]).1[3],
+            server.call(Api::WriteInput, &[3, BASE + 0x400, 2, 0, 1]).1[3],
             2
         );
         server.queue("c\r", true);
@@ -2329,7 +2414,7 @@ mod tests {
     fn a_raw_read_takes_what_was_typed() {
         for unicode in [true, false] {
             let mut server = Server::new();
-            assert_eq!(server.status(api::SET_MODE, &[3, 0x1]), 0);
+            assert_eq!(server.status(Api::SetMode, &[3, 0x1]), 0);
             assert_eq!(server.read(64, unicode).0, STATUS_PENDING, "nothing typed");
             assert_eq!(server.queue("xyz\r", unicode), 8);
             assert_eq!(
@@ -2364,7 +2449,7 @@ mod tests {
         });
         server.poke(0, &record.bytes());
         server.poke(INPUT_RECORD_BYTES, &record.bytes());
-        assert_eq!(server.call(api::WRITE_INPUT, &[3, BASE, 2, 0, 0]).1[3], 2);
+        assert_eq!(server.call(Api::WriteInput, &[3, BASE, 2, 0, 0]).1[3], 2);
         assert_eq!(
             server.console.input.get(0).unwrap().key.char,
             0xE9,
@@ -2376,31 +2461,31 @@ mod tests {
             "no folding"
         );
         assert_eq!(
-            server.call(api::PEEK_INPUT, &[3, BASE + 0x100, 1, 0, 0]).1[3],
+            server.call(Api::PeekInput, &[3, BASE + 0x100, 1, 0, 0]).1[3],
             1
         );
         assert_eq!(&server.client.memory[0x100 + 14..0x100 + 16], &[0x82, 0]);
         assert_eq!(
-            server.call(api::PEEK_INPUT, &[3, BASE + 0x100, 1, 0, 1]).1[3],
+            server.call(Api::PeekInput, &[3, BASE + 0x100, 1, 0, 1]).1[3],
             1
         );
         assert_eq!(&server.client.memory[0x100 + 14..0x100 + 16], &[0xE9, 0]);
         // A full buffer takes what fits.
         for _ in 0..200 {
-            server.call(api::WRITE_INPUT, &[3, BASE, 1, 0, 1]);
+            server.call(Api::WriteInput, &[3, BASE, 1, 0, 1]);
         }
         assert_eq!(server.events(), input::INPUT_BUFFER_RECORDS);
         assert_eq!(
-            server.call(api::WRITE_INPUT, &[3, BASE, 1, 0xCC, 1]),
+            server.call(Api::WriteInput, &[3, BASE, 1, 0xCC, 1]),
             (0, [3, BASE, 1, 0, 1, 0, 0, 0])
         );
         assert_eq!(
-            server.status(api::WRITE_INPUT, &[7, BASE, 1, 0, 1]),
+            server.status(Api::WriteInput, &[7, BASE, 1, 0, 1]),
             STATUS_INVALID_HANDLE
         );
-        assert_eq!(server.status(api::FLUSH_INPUT_BUFFER, &[3]), 0);
+        assert_eq!(server.status(Api::FlushInputBuffer, &[3]), 0);
         assert_eq!(
-            server.status(api::WRITE_INPUT, &[3, 0x8000_0000, 1, 0, 1]),
+            server.status(Api::WriteInput, &[3, 0x8000_0000, 1, 0, 1]),
             0xC000_0005
         );
     }
@@ -2410,11 +2495,11 @@ mod tests {
     #[test]
     fn the_console_opens_by_name_and_hands_its_wait_handle() {
         let mut server = Server::new();
-        let (status, data) = server.call(api::OPEN_CONSOLE, &[0, 0xC000_0000, 0, 3, 0]);
+        let (status, data) = server.call(Api::OpenConsole, &[0, 0xC000_0000, 0, 3, 0]);
         assert_eq!((status, data[4]), (0, 0xF));
         assert_eq!(server.handles.kind(0xF), Some(Kind::Input));
         assert_eq!(
-            server.call(api::OPEN_CONSOLE, &[1, 0xC000_0000, 0, 3, 0]).1[4],
+            server.call(Api::OpenConsole, &[1, 0xC000_0000, 0, 3, 0]).1[4],
             0x13
         );
         assert_eq!(server.handles.kind(0x13), Some(Kind::Output));
@@ -2432,7 +2517,7 @@ mod tests {
             .unwrap();
         assert!(!server.handles.logged(duplicate));
         assert_eq!(
-            server.call(api::GET_INPUT_WAIT_HANDLE, &[0]),
+            server.call(Api::GetInputWaitHandle, &[0]),
             (0, [WAIT_HANDLE as usize, 0, 0, 0, 0, 0, 0, 0])
         );
         assert!(!server.console.input_waiting());

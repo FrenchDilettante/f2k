@@ -20,11 +20,23 @@
 //! An unknown type writes its letter. A narrow string or character written to a wide output, or a
 //! wide one to a narrow output, is converted in the LC_CTYPE locale ([`crate::ctype`]); a wide
 //! character the locale's code page lacks ends the string there.
+//!
+//! The exports read the format once, into a slice ([`crate::edge`]); a string argument is read
+//! where its conversion takes it, bounded by the precision.
 
+use rtl::nt::AnsiString;
+
+use crate::edge::{self, WideUnit};
 use crate::float::{self, Decimal, Value};
 
 /// The variable arguments, consumed in order.
-pub trait Args {
+///
+/// # Safety
+///
+/// An implementation hands out what the format consuming it asks for: for each conversion that
+/// reads or writes through a pointer (`%s`, `%S`, `%Z`, `%n`, the scanner's fields), a pointer
+/// valid for that access, or null where the conversion allows one.
+pub unsafe trait Args {
     /// A dword (an `int`, a `long`, a promoted `short` or character).
     fn int(&mut self) -> u32;
     /// A quadword (`__int64`: two dwords, the low one first).
@@ -36,20 +48,31 @@ pub trait Args {
 }
 
 /// The caller's variable arguments where its call pushed them (a `va_list`): dwords in order.
-pub struct VaList(pub *const u8);
+pub struct VaList(*const u8);
 
 impl VaList {
+    /// The arguments at `at`.
+    ///
+    /// # Safety
+    ///
+    /// `at` is the caller's argument block (a `va_list`): the arguments the format it is used with
+    /// consumes, in order, each as [`Args`] asks, valid while the list is in use.
+    pub unsafe fn new(at: *const u8) -> VaList {
+        VaList(at)
+    }
+
     fn take<T: Copy>(&mut self) -> T {
-        // SAFETY: the caller's argument block (the contract of the export taking it).
+        // SAFETY: the caller's argument block, which `new`'s contract says holds the arguments the
+        // format consumes: this one is the next.
         let value = unsafe { (self.0 as *const T).read_unaligned() };
         let size = core::mem::size_of::<T>().max(4);
-        // SAFETY: the next argument follows.
-        self.0 = unsafe { self.0.add(size) };
+        self.0 = self.0.wrapping_add(size);
         value
     }
 }
 
-impl Args for VaList {
+// SAFETY: `new`'s contract: the arguments are those the format asks for.
+unsafe impl Args for VaList {
     fn int(&mut self) -> u32 {
         self.take()
     }
@@ -67,11 +90,13 @@ impl Args for VaList {
     }
 }
 
-/// A code unit of a format or an output: a byte (the narrow functions) or a UTF-16 unit (the
-/// wide ones).
+/// A code unit of a format or an output: a byte (the narrow functions) or a UTF-16 unit, as it
+/// lies in the caller's memory (the wide ones).
 pub trait Unit: Copy {
     const WIDE: bool;
     fn value(self) -> u32;
+    /// The unit of an output's width for `value` (truncated to it).
+    fn of(value: u32) -> Self;
 }
 
 impl Unit for u8 {
@@ -80,13 +105,21 @@ impl Unit for u8 {
     fn value(self) -> u32 {
         self as u32
     }
+
+    fn of(value: u32) -> u8 {
+        value as u8
+    }
 }
 
-impl Unit for u16 {
+impl Unit for WideUnit {
     const WIDE: bool = true;
 
     fn value(self) -> u32 {
-        self as u32
+        self.get() as u32
+    }
+
+    fn of(value: u32) -> WideUnit {
+        WideUnit::new(value as u16)
     }
 }
 
@@ -135,36 +168,50 @@ impl<O: Output> Writer<'_, O> {
     }
 }
 
-/// A string argument: where its units are, and how many may be read.
+/// A string argument's units.
 #[derive(Clone, Copy)]
-enum Text {
-    Narrow(*const u8, Option<usize>),
-    Wide(*const u16, Option<usize>),
+enum Text<'a> {
+    Narrow(&'a [u8]),
+    Wide(&'a [WideUnit]),
 }
 
-/// Format the NUL-terminated `format` with `args` into `out`; the count of units written.
-///
-/// # Safety
-///
-/// `format` is NUL-terminated; `args` holds what its conversions consume, the strings and the
-/// pointers among them valid.
-pub unsafe fn format<U: Unit, O: Output>(
-    format: *const U,
-    args: &mut impl Args,
-    out: &mut O,
-) -> usize {
-    let mut w = Writer { out, count: 0 };
-    let mut at = format;
-    // SAFETY: the caller's NUL-terminated format, read up to its NUL.
-    let next = |at: &mut *const U| unsafe {
-        let unit = (**at).value();
+/// "(null)", in the output's own width: what a null string argument writes.
+const NULL_TEXT: Text = Text::Narrow(b"(null)");
+
+/// The format, read unit by unit (0 past its end).
+struct Cursor<'a, U> {
+    units: &'a [U],
+    at: usize,
+}
+
+impl<U: Unit> Cursor<'_, U> {
+    /// The unit `ahead` units on (0 past the end).
+    fn peek(&self, ahead: usize) -> u32 {
+        self.units
+            .get(self.at + ahead)
+            .map_or(0, |unit| unit.value())
+    }
+
+    /// The next unit, taken (0 at the end, which stays there).
+    fn next(&mut self) -> u32 {
+        let unit = self.peek(0);
         if unit != 0 {
-            *at = at.add(1);
+            self.at += 1;
         }
         unit
+    }
+}
+
+/// Format `format` (its units, its NUL left out) with `args` into `out`; the count of units
+/// written.
+pub fn format<U: Unit, O: Output>(format: &[U], args: &mut impl Args, out: &mut O) -> usize {
+    let mut w = Writer { out, count: 0 };
+    let mut at = Cursor {
+        units: format,
+        at: 0,
     };
     loop {
-        let unit = next(&mut at);
+        let unit = at.next();
         if unit == 0 {
             break;
         }
@@ -173,7 +220,7 @@ pub unsafe fn format<U: Unit, O: Output>(
             continue;
         }
         let mut spec = Spec::default();
-        let mut c = next(&mut at);
+        let mut c = at.next();
         loop {
             match c as u8 {
                 b'-' if c < 0x80 => spec.left = true,
@@ -183,7 +230,7 @@ pub unsafe fn format<U: Unit, O: Output>(
                 b'0' if c < 0x80 => spec.zero = true,
                 _ => break,
             }
-            c = next(&mut at);
+            c = at.next();
         }
         if c == b'*' as u32 {
             let width = args.int() as i32;
@@ -191,29 +238,29 @@ pub unsafe fn format<U: Unit, O: Output>(
                 spec.left = true;
             }
             spec.width = width.unsigned_abs() as usize;
-            c = next(&mut at);
+            c = at.next();
         } else {
             while (b'0' as u32..=b'9' as u32).contains(&c) {
                 spec.width = spec
                     .width
                     .saturating_mul(10)
                     .saturating_add((c - b'0' as u32) as usize);
-                c = next(&mut at);
+                c = at.next();
             }
         }
         if c == b'.' as u32 {
-            c = next(&mut at);
+            c = at.next();
             let mut precision = 0usize;
             if c == b'*' as u32 {
                 let given = args.int() as i32;
-                c = next(&mut at);
+                c = at.next();
                 spec.precision = (given >= 0).then_some(given as usize);
             } else {
                 while (b'0' as u32..=b'9' as u32).contains(&c) {
                     precision = precision
                         .saturating_mul(10)
                         .saturating_add((c - b'0' as u32) as usize);
-                    c = next(&mut at);
+                    c = at.next();
                 }
                 spec.precision = Some(precision);
             }
@@ -231,28 +278,26 @@ pub unsafe fn format<U: Unit, O: Output>(
                 0x77 /* w */ => spec.long = true,
                 0x4C /* L */ => spec.quad = true,
                 0x49 /* I */ => {
-                    // SAFETY: the format's next units, read before its NUL.
-                    let (a, b) = unsafe { ((*at).value(), if (*at).value() != 0 { (*at.add(1)).value() } else { 0 }) };
+                    let (a, b) = (at.peek(0), at.peek(1));
                     if (a, b) == (b'6' as u32, b'4' as u32) {
                         spec.quad = true;
-                        next(&mut at);
-                        next(&mut at);
+                        at.next();
+                        at.next();
                     } else if (a, b) == (b'3' as u32, b'2' as u32) {
-                        next(&mut at);
-                        next(&mut at);
+                        at.next();
+                        at.next();
                     } else {
                         break;
                     }
                 }
                 _ => break,
             }
-            c = next(&mut at);
+            c = at.next();
         }
         if c == 0 {
             break;
         }
-        // SAFETY: the caller's arguments, as the conversion reads them.
-        unsafe { convert::<U, O>(&mut w, c, spec, args) };
+        convert::<U, O>(&mut w, c, spec, args);
     }
     w.count
 }
@@ -272,11 +317,7 @@ fn other_width<U: Unit>(conversion: u32, spec: &Spec) -> bool {
 }
 
 /// One conversion.
-///
-/// # Safety
-///
-/// As [`format`]'s.
-unsafe fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, args: &mut impl Args) {
+fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, args: &mut impl Args) {
     match c as u8 {
         _ if c >= 0x80 => w.put(c),
         b'%' => w.put(c),
@@ -340,41 +381,53 @@ unsafe fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, arg
         }
         b's' | b'S' => {
             let pointer = args.pointer();
+            let limit = spec.precision.unwrap_or(usize::MAX);
             let text = if pointer == 0 {
-                // "(null)", in the output's own width.
-                Text::Narrow(c"(null)".as_ptr().cast(), None)
+                NULL_TEXT
             } else if other_width::<U>(c, &spec) != U::WIDE {
-                Text::Wide(pointer as *const u16, None)
+                // SAFETY: `Args`' contract: a wide string, NUL-terminated or holding the
+                // precision's units.
+                Text::Wide(unsafe { edge::wide_bounded(pointer as *const u16, limit) })
             } else {
-                Text::Narrow(pointer as *const u8, None)
+                // SAFETY: as above, a narrow string.
+                Text::Narrow(unsafe { edge::bytes_bounded(pointer as *const u8, limit) })
             };
-            // SAFETY: the caller's string.
-            unsafe { string::<U, O>(w, spec, text) };
+            string::<U, O>(w, spec, text);
         }
         b'Z' => {
             // ANSI_STRING / UNICODE_STRING: Length (bytes), MaximumLength, Buffer.
             let pointer = args.pointer();
-            // SAFETY: the caller's counted string, when there is one.
-            let text = unsafe {
-                if pointer == 0 || (pointer as *const usize).add(1).read_unaligned() == 0 {
-                    Text::Narrow(c"(null)".as_ptr().cast(), None)
-                } else {
-                    let length = (pointer as *const u16).read_unaligned() as usize;
-                    let buffer = (pointer as *const usize).add(1).read_unaligned();
+            let counted = (pointer != 0).then(|| {
+                // SAFETY: `Args`' contract: a counted string's structure, at any address.
+                unsafe { (pointer as *const AnsiString<usize>).read_unaligned() }
+            });
+            let limit = spec.precision.unwrap_or(usize::MAX);
+            let text = match counted {
+                Some(counted) if counted.buffer != 0 => {
+                    let length = usize::from(counted.length);
                     if spec.long {
-                        Text::Wide(buffer as *const u16, Some(length / 2))
+                        // SAFETY: `Args`' contract: the buffer holds the length's units.
+                        Text::Wide(unsafe {
+                            edge::wide_parts(counted.buffer as *const u16, (length / 2).min(limit))
+                        })
                     } else {
-                        Text::Narrow(buffer as *const u8, Some(length))
+                        // SAFETY: as above, its bytes.
+                        Text::Narrow(unsafe {
+                            core::slice::from_raw_parts(
+                                counted.buffer as *const u8,
+                                length.min(limit),
+                            )
+                        })
                     }
                 }
+                _ => NULL_TEXT,
             };
-            // SAFETY: as above.
-            unsafe { string::<U, O>(w, spec, text) };
+            string::<U, O>(w, spec, text);
         }
         b'n' => {
             let pointer = args.pointer();
             if pointer != 0 {
-                // SAFETY: the caller's int.
+                // SAFETY: `Args`' contract: an int's storage (a short's with `h`), at any address.
                 unsafe {
                     if spec.short {
                         (pointer as *mut u16).write_unaligned(w.count as u16)
@@ -451,40 +504,24 @@ fn integer<O: Output>(
 }
 
 /// The units of a string argument as the output takes them, at most `limit` (each converted to the
-/// output's width), handed to `each`; their count.
-///
-/// # Safety
-///
-/// The string is readable to its NUL or its length.
-unsafe fn units<U: Unit>(text: Text, limit: Option<usize>, mut each: impl FnMut(u32)) -> usize {
+/// output's width; a wide unit the locale's code page lacks ends a narrow output's), handed to
+/// `each`; their count.
+fn units<U: Unit>(text: Text, limit: Option<usize>, mut each: impl FnMut(u32)) -> usize {
     let limit = limit.unwrap_or(usize::MAX);
     let mut count = 0;
     match text {
-        Text::Narrow(p, length) => {
-            let mut i = 0;
-            while count < limit && length.is_none_or(|n| i < n) {
-                // SAFETY: the caller's contract.
-                let byte = unsafe { p.add(i).read() };
-                if byte == 0 && length.is_none() {
-                    break;
-                }
+        Text::Narrow(bytes) => {
+            for &byte in bytes.iter().take(limit) {
                 each(if U::WIDE {
                     crate::ctype::byte_to_wide(byte) as u32
                 } else {
                     byte as u32
                 });
                 count += 1;
-                i += 1;
             }
         }
-        Text::Wide(p, length) => {
-            let mut i = 0;
-            while count < limit && length.is_none_or(|n| i < n) {
-                // SAFETY: the caller's contract.
-                let unit = unsafe { p.add(i).read_unaligned() };
-                if unit == 0 && length.is_none() {
-                    break;
-                }
+        Text::Wide(wide) => {
+            for unit in edge::units(wide).take(limit) {
                 if U::WIDE {
                     each(unit as u32);
                 } else {
@@ -494,7 +531,6 @@ unsafe fn units<U: Unit>(text: Text, limit: Option<usize>, mut each: impl FnMut(
                     }
                 }
                 count += 1;
-                i += 1;
             }
         }
     }
@@ -502,20 +538,15 @@ unsafe fn units<U: Unit>(text: Text, limit: Option<usize>, mut each: impl FnMut(
 }
 
 /// A string conversion, padded to the width.
-///
-/// # Safety
-///
-/// As [`units`]'.
-unsafe fn string<U: Unit, O: Output>(w: &mut Writer<O>, spec: Spec, text: Text) {
-    // SAFETY: the caller's contract (the first pass counts, the second writes).
-    let length = unsafe { units::<U>(text, spec.precision, |_| {}) };
+fn string<U: Unit, O: Output>(w: &mut Writer<O>, spec: Spec, text: Text) {
+    // The first pass counts, the second writes.
+    let length = units::<U>(text, spec.precision, |_| {});
     let fill = spec.width.saturating_sub(length);
     let fill_unit = if spec.zero && !spec.left { b'0' } else { b' ' } as u32;
     if !spec.left {
         w.pad(fill_unit, fill);
     }
-    // SAFETY: as above.
-    unsafe { units::<U>(text, spec.precision, |unit| w.put(unit)) };
+    units::<U>(text, spec.precision, |unit| w.put(unit));
     if spec.left {
         w.pad(b' ' as u32, fill);
     }
@@ -698,96 +729,76 @@ fn trim(n: &mut Number) {
     n.length -= removed;
 }
 
-/// An output into a buffer of `capacity` units: what fits is written, the rest counted.
-pub struct Buffer<U> {
-    pub at: *mut U,
-    pub capacity: usize,
-    pub written: usize,
+/// An output into the caller's buffer: what fits is written, the rest counted.
+pub struct Buffer<'a, U> {
+    out: &'a mut [U],
+    written: usize,
 }
 
-impl Output for Buffer<u8> {
+impl<U: Unit> Output for Buffer<'_, U> {
     fn put(&mut self, unit: u32) {
-        if self.written < self.capacity {
-            // SAFETY: inside the caller's buffer.
-            unsafe { self.at.add(self.written).write(unit as u8) };
+        if let Some(slot) = self.out.get_mut(self.written) {
+            *slot = U::of(unit);
         }
         self.written += 1;
     }
 }
 
-impl Output for Buffer<u16> {
-    fn put(&mut self, unit: u32) {
-        if self.written < self.capacity {
-            // SAFETY: inside the caller's buffer.
-            unsafe { self.at.add(self.written).write_unaligned(unit as u16) };
-        }
-        self.written += 1;
-    }
-}
-
-/// The bounded formatters' convention (_vsnprintf, _snwprintf, _vsnwprintf): the count when the
-/// text fits `count` units, terminated when there is room left for the NUL; -1 when it does not
-/// fit, `count` units written and no NUL.
-///
-/// # Safety
-///
-/// `buffer` holds `count` units; the format and the arguments are [`format`]'s.
-pub unsafe fn bounded<U: Unit>(
-    buffer: *mut U,
-    count: usize,
-    text: *const U,
-    args: &mut impl Args,
-) -> i32
-where
-    Buffer<U>: Output,
-{
+/// The bounded formatters' convention (_vsnprintf, _snwprintf, _vsnwprintf), into `buffer` (its
+/// length the count): the count when the text fits, terminated when there is room left for the
+/// NUL; -1 when it does not fit, the buffer filled and no NUL.
+pub fn bounded<U: Unit>(buffer: &mut [U], text: &[U], args: &mut impl Args) -> i32 {
+    let count = buffer.len();
     let mut out = Buffer {
-        at: buffer,
-        capacity: count,
+        out: buffer,
         written: 0,
     };
-    // SAFETY: the caller's contract.
-    let length = unsafe { format(text, args, &mut out) };
+    let length = format(text, args, &mut out);
     if length > count {
         return -1;
     }
-    if length < count {
-        // SAFETY: inside the buffer.
-        unsafe { out.put_terminator(length) };
+    if let Some(terminator) = out.out.get_mut(length) {
+        *terminator = U::of(0);
     }
     length as i32
 }
 
-impl<U> Buffer<U> {
-    /// The NUL after `length` units.
+/// An output into a buffer that takes no size (sprintf's and swprintf's): its room is the caller's
+/// word.
+pub struct Unbounded<U> {
+    at: *mut U,
+    written: usize,
+}
+
+impl<U> Unbounded<U> {
+    /// The buffer at `at`.
     ///
     /// # Safety
     ///
-    /// `length` is inside the buffer.
-    unsafe fn put_terminator(&mut self, length: usize) {
-        // SAFETY: the caller's contract; a zero unit of the buffer's width.
-        unsafe { core::ptr::write_bytes(self.at.add(length), 0, 1) };
+    /// `at` has room for every unit the output is given and the NUL after them, at any address,
+    /// and is the output's alone while it is in use.
+    pub unsafe fn new(at: *mut U) -> Unbounded<U> {
+        Unbounded { at, written: 0 }
+    }
+
+    /// A unit stored after those written.
+    fn store(&mut self, unit: U) {
+        // SAFETY: `new`'s contract: the buffer has room for this unit.
+        unsafe { self.at.add(self.written).write_unaligned(unit) };
+        self.written += 1;
     }
 }
 
-/// The unbounded formatters' (sprintf, swprintf): the text and its NUL; the count.
-///
-/// # Safety
-///
-/// `buffer` has room for the text; the format and the arguments are [`format`]'s.
-pub unsafe fn unbounded<U: Unit>(buffer: *mut U, text: *const U, args: &mut impl Args) -> i32
-where
-    Buffer<U>: Output,
-{
-    let mut out = Buffer {
-        at: buffer,
-        capacity: usize::MAX,
-        written: 0,
-    };
-    // SAFETY: the caller's contract.
-    let length = unsafe { format(text, args, &mut out) };
-    // SAFETY: as above.
-    unsafe { out.put_terminator(length) };
+impl<U: Unit> Output for Unbounded<U> {
+    fn put(&mut self, unit: u32) {
+        self.store(U::of(unit));
+    }
+}
+
+/// The unbounded formatters' (sprintf, swprintf): the text and its NUL into `out`; the count.
+pub fn unbounded<U: Unit>(mut out: Unbounded<U>, text: &[U], args: &mut impl Args) -> i32 {
+    let length = format(text, args, &mut out);
+    out.store(U::of(0));
     length as i32
 }
 
@@ -804,9 +815,12 @@ pub(crate) mod tests {
         P(usize),
     }
 
+    /// The arguments a test hands over: its pointers are its own strings and slots, each of the
+    /// kind its format's conversion takes.
     pub struct List(pub std::collections::VecDeque<Arg>);
 
-    impl Args for List {
+    // SAFETY: the tests' pointers are their own live strings and slots, as their formats take them.
+    unsafe impl Args for List {
         fn int(&mut self) -> u32 {
             match self.0.pop_front() {
                 Some(Arg::I(v)) => v,
@@ -841,34 +855,37 @@ pub(crate) mod tests {
         text.encode_utf16().chain([0]).collect()
     }
 
+    /// A string's wide units, as an export reads them, its NUL left out.
+    pub fn units_of(text: &[u16]) -> Vec<WideUnit> {
+        text.iter()
+            .take_while(|&&unit| unit != 0)
+            .map(|&unit| WideUnit::new(unit))
+            .collect()
+    }
+
     /// A narrow format's text.
     fn narrow(format: &str, args: &[Arg]) -> String {
-        let mut text = format.as_bytes().to_vec();
-        text.push(0);
         let mut out = vec![0u8; 512];
-        // SAFETY: a NUL-terminated format, a buffer large enough.
-        let n = unsafe {
-            unbounded(
-                out.as_mut_ptr(),
-                text.as_ptr(),
-                &mut List(args.iter().copied().collect()),
-            )
-        };
+        // SAFETY: a buffer large enough for the tests' texts.
+        let buffer = unsafe { Unbounded::new(out.as_mut_ptr()) };
+        let n = unbounded(
+            buffer,
+            format.as_bytes(),
+            &mut List(args.iter().copied().collect()),
+        );
         String::from_utf8_lossy(&out[..n as usize]).into_owned()
     }
 
     /// A wide format's text, its count.
     fn widef(format: &str, args: &[Arg]) -> (i32, String) {
-        let text = wide(format);
         let mut out = vec![0u16; 512];
         // SAFETY: as above.
-        let n = unsafe {
-            unbounded(
-                out.as_mut_ptr(),
-                text.as_ptr(),
-                &mut List(args.iter().copied().collect()),
-            )
-        };
+        let buffer = unsafe { Unbounded::new(out.as_mut_ptr().cast::<WideUnit>()) };
+        let n = unbounded(
+            buffer,
+            &units_of(&wide(format)),
+            &mut List(args.iter().copied().collect()),
+        );
         (n, String::from_utf16_lossy(&out[..n as usize]))
     }
 
@@ -943,17 +960,13 @@ pub(crate) mod tests {
     #[test]
     fn bounded_as_captured() {
         let run = |count: usize, format: &str, args: &[Arg]| {
-            let text = wide(format);
-            let mut out = vec![b'#' as u16; 20];
-            // SAFETY: a buffer of 20 units, `count` at most.
-            let n = unsafe {
-                bounded(
-                    out.as_mut_ptr(),
-                    count,
-                    text.as_ptr(),
-                    &mut List(args.iter().copied().collect()),
-                )
-            };
+            let mut out = vec![WideUnit::new(b'#' as u16); 20];
+            let n = bounded(
+                &mut out[..count],
+                &units_of(&wide(format)),
+                &mut List(args.iter().copied().collect()),
+            );
+            let out: Vec<u16> = edge::units(&out).collect();
             let shown: String = out[..9]
                 .iter()
                 .map(|&u| {
