@@ -32,6 +32,7 @@
 pub mod api;
 pub mod input;
 pub mod layout;
+pub mod line;
 pub mod screen;
 
 pub use api::Api;
@@ -46,6 +47,7 @@ use input::{
     INPUT_RECORD_BYTES,
     KEY_EVENT,
 };
+pub use line::{Histories, Line, LINE_UNITS};
 use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
 
 use crate::codepage::{self, CodePage};
@@ -168,15 +170,6 @@ const VALID_ATTRIBUTES: u32 = 0xDFFF;
 /// The most title characters the console keeps (a longer title keeps its first ones).
 pub const TITLE_UNITS: usize = 1024;
 
-/// The most characters a line-mode read's line holds, its CR LF included: the keys typed past
-/// room for them are dropped.
-pub const LINE_UNITS: usize = 1024;
-
-/// The characters a line ends with, and the ones an Enter key and a backspace stand for.
-const CR: u16 = 0x0D;
-const LF: u16 = 0x0A;
-const BACKSPACE: u16 = 0x08;
-
 /// COORD: a cell's column (X) and row (Y). As a dword, X is the low word.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -283,41 +276,9 @@ impl ConsoleScreenBufferInfo {
     }
 }
 
-/// The line a line-mode read builds: the characters typed so far and, once its Enter arrived, the
-/// whole line with its CR LF, handed to readers a buffer at a time until all of it is taken.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Line {
-    units: [u16; LINE_UNITS],
-    length: usize,
-    /// How much of a complete line readers have taken.
-    taken: usize,
-    complete: bool,
-}
-
-impl Line {
-    const fn new() -> Self {
-        Line {
-            units: [0; LINE_UNITS],
-            length: 0,
-            taken: 0,
-            complete: false,
-        }
-    }
-
-    /// The characters typed so far, or the complete line's part no reader took yet.
-    pub fn pending(&self) -> &[u16] {
-        &self.units[self.taken..self.length]
-    }
-
-    /// Whether the line's Enter arrived.
-    pub fn is_complete(&self) -> bool {
-        self.complete
-    }
-}
-
 /// The console: its input buffer, the producer that fills it, the input buffer's mode, the line a
-/// line-mode read builds, its screen buffer and its title. Each mode is its buffer's, shared by
-/// every handle on that buffer.
+/// line-mode read builds ([`line`]) and the command histories it recalls from, its screen buffer
+/// and its title. Each mode is its buffer's, shared by every handle on that buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Console {
     pub screen: ScreenBuffer,
@@ -326,6 +287,8 @@ pub struct Console {
     pub producer: Producer,
     input_mode: u32,
     line: Line,
+    /// The programs' command histories, by program name.
+    pub histories: Histories,
     title: [u16; TITLE_UNITS],
     title_length: usize,
     /// Whether the standard handles stand for a file: their writes reach the serial line alone,
@@ -343,6 +306,7 @@ impl Console {
             producer: Producer::new(LAYOUT),
             input_mode: INPUT_MODE,
             line: Line::new(),
+            histories: Histories::new(),
             title: [0; TITLE_UNITS],
             title_length: 0,
             redirected: false,
@@ -661,6 +625,12 @@ pub trait Client {
     /// The client process's handle to the console's input-wait event (made or opened for it); the
     /// status that refuses one.
     fn input_wait_handle(&mut self) -> Result<u32, u32>;
+    /// The client process's program name, in the console's code page: the key of the command
+    /// history its line-mode reads recall from, as Windows 2000's console keys a history buffer
+    /// by the program name the process gives when it connects. Empty when the client has none.
+    fn program(&self) -> &[u8] {
+        &[]
+    }
 }
 
 /// Serve one API call over the console and a process's handles: the message's data (the words
@@ -839,81 +809,68 @@ fn get_text(
     Ok(count)
 }
 
-/// Echo characters a line-mode read took on the screen (and the serial line: what was typed shows
-/// in the boot's log), as one write: each in the console's code page, an Enter as CR LF, a
-/// backspace erasing the character before the cursor.
-fn echo(console: &mut Console, client: &mut impl Client, units: &[u16]) {
-    console.screen.begin_write();
-    for &unit in units {
-        match unit {
-            CR => client.print(Some(&mut console.screen), b"\r\n", true),
-            BACKSPACE => client.print(Some(&mut console.screen), b"\x08 \x08", true),
-            other => client.print(Some(&mut console.screen), &[oem_byte(other)], true),
-        }
-    }
-    console.screen.end_write();
+/// The Enter's echo of a line-mode read's line: the line shown once more from its first cell, as
+/// the edits left it, then CR LF, in one write, always on the screen. Through the client, so a
+/// read on a standard handle shows the line entered on the serial line too (what was typed shows
+/// in the boot's log) — unless the console is redirected: a capture's file never holds the echo.
+/// The edits before it reach the screen alone ([`Line::key`]).
+fn echo(console: &mut Console, client: &mut impl Client, logged: bool) {
+    let logged = logged && !console.redirected;
+    let Console { screen, line, .. } = console;
+    line.echo_entered(screen, |screen, bytes| {
+        client.print(Some(screen), bytes, logged)
+    });
 }
 
-/// A line-mode read's work: the line built from the input buffer's key records — each keydown's
-/// character, as many times as it repeats; a backspace takes back the last one; the records
-/// without a character are dropped — up to and including the Enter's keydown, which ends the line
-/// with CR LF (the records after it stay). Echoed when the mode asks. Then up to `count`
-/// characters of the line to the client, the rest kept for the next read; STATUS_PENDING while
-/// the line has no Enter yet (what was typed kept in the line).
+/// A line-mode read's work: the line built from the input buffer's key records — each keydown as
+/// many times as it repeats, edited as [`line`] has it, the records that are no keydown dropped —
+/// up to and including the Enter's keydown, which ends the line with CR LF (the records after it
+/// stay). Echoed and recorded into the program's command history when the mode asks for echo.
+/// Then up to `count` characters of the line to the client, the rest kept for the next read;
+/// STATUS_PENDING while the line has no Enter yet (what was typed kept in the line, which the
+/// next read goes on with).
 fn read_line(
     console: &mut Console,
     client: &mut impl Client,
     buffer: usize,
     count: usize,
     unicode: bool,
+    logged: bool,
 ) -> Result<usize, u32> {
     let echoing = console.input_mode & ENABLE_ECHO_INPUT != 0;
-    while !console.line.complete {
-        let Some(record) = console.input.pop() else {
+    let Console {
+        screen,
+        input,
+        line,
+        histories,
+        ..
+    } = &mut *console;
+    let entered = !line.is_complete();
+    if entered && !line.is_begun() {
+        line.begin(screen.cursor(), Some(histories.claim(client.program())));
+    }
+    while !line.is_complete() {
+        let Some(record) = input.pop() else {
             return Err(STATUS_PENDING);
         };
-        if !record.is_key_down() || record.key.char == 0 {
+        if !record.is_key_down() {
             continue;
         }
-        let character = record.key.char;
         for _ in 0..record.key.repeat_count.max(1) {
-            let line = &mut console.line;
-            match character {
-                CR => {
-                    line.units[line.length] = CR;
-                    line.units[line.length + 1] = LF;
-                    line.length += 2;
-                    line.complete = true;
-                }
-                BACKSPACE if line.length == 0 => continue,
-                BACKSPACE => line.length -= 1,
-                // Room is kept for the CR LF.
-                _ if line.length + 2 >= LINE_UNITS => continue,
-                other => {
-                    line.units[line.length] = other;
-                    line.length += 1;
-                }
-            }
-            if echoing {
-                echo(console, client, &[character]);
-            }
-            if console.line.complete {
+            let echo = if echoing { Some(&mut *screen) } else { None };
+            if line.key(&record.key, histories, echo) {
                 break;
             }
         }
     }
-    let line = &mut console.line;
-    let taken = (line.length - line.taken).min(count);
-    put_text(
-        client,
-        buffer,
-        &line.units[line.taken..line.taken + taken],
-        unicode,
-    )?;
-    line.taken += taken;
-    if line.taken == line.length {
-        *line = Line::new();
+    if echoing && entered {
+        echo(console, client, logged);
     }
+    let line = &mut console.line;
+    let pending = line.pending();
+    let taken = pending.len().min(count);
+    put_text(client, buffer, &pending[..taken], unicode)?;
+    line.consume(taken);
     Ok(taken)
 }
 
@@ -1040,7 +997,8 @@ impl<C: Client> Call<'_, C> {
         let read = if count == 0 {
             0
         } else if self.console.input_mode & ENABLE_LINE_INPUT != 0 {
-            read_line(self.console, self.client, buffer, count, unicode)?
+            let logged = self.handles.logged(message.handle.dword());
+            read_line(self.console, self.client, buffer, count, unicode, logged)?
         } else {
             read_raw(self.console, self.client, buffer, count, unicode)?
         };
@@ -2795,7 +2753,7 @@ mod tests {
         );
         assert_eq!(&server.client.memory[0x100 + 14..0x100 + 16], &[0xE9, 0]);
         // A full buffer takes what fits.
-        for _ in 0..200 {
+        for _ in 0..input::INPUT_BUFFER_RECORDS {
             server.call(Api::WriteInput, &[3, BASE, 1, 0, 1]);
         }
         assert_eq!(server.events(), input::INPUT_BUFFER_RECORDS);
@@ -2847,5 +2805,171 @@ mod tests {
         assert!(!server.console.input_waiting());
         server.queue("a", true);
         assert!(server.console.input_waiting());
+    }
+
+    /// A client that is a named program, and keeps what reaches the serial line.
+    struct Program {
+        kept: Kept,
+        name: &'static [u8],
+        logged: Vec<u8>,
+    }
+
+    impl Client for Program {
+        fn show(
+            &mut self,
+            screen: Option<&mut ScreenBuffer>,
+            buffer: usize,
+            count: usize,
+            logged: bool,
+        ) -> Result<(), u32> {
+            self.kept.show(screen, buffer, count, logged)
+        }
+
+        fn print(&mut self, screen: Option<&mut ScreenBuffer>, bytes: &[u8], logged: bool) {
+            if logged {
+                self.logged.extend_from_slice(bytes);
+            }
+            if let Some(screen) = screen {
+                screen.render(bytes);
+            }
+        }
+
+        fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32> {
+            self.kept.read(buffer, into)
+        }
+
+        fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32> {
+            self.kept.write(buffer, bytes)
+        }
+
+        fn input_wait_handle(&mut self) -> Result<u32, u32> {
+            self.kept.input_wait_handle()
+        }
+
+        fn program(&self) -> &[u8] {
+            self.name
+        }
+    }
+
+    /// The server's state and a named program as its client.
+    struct Programs {
+        console: Console,
+        handles: Handles,
+        client: Program,
+    }
+
+    impl Programs {
+        fn call(&mut self, api: Api, data: &[usize]) -> (u32, [usize; DATA_WORDS]) {
+            let mut words = [0; DATA_WORDS];
+            words[..data.len()].copy_from_slice(data);
+            let status = serve(
+                &mut self.console,
+                &mut self.handles,
+                &mut self.client,
+                api.into(),
+                &mut words,
+                DATA_WORDS * core::mem::size_of::<usize>(),
+            );
+            (status, words)
+        }
+
+        /// Queue the keys `presses` on `handle`, then read up to `count` characters from it: the
+        /// text read (none while the read waits).
+        fn read(&mut self, handle: usize, presses: &[Vec<u8>], count: usize) -> Option<String> {
+            let bytes: Vec<u8> = presses.concat();
+            self.client.kept.memory[0x400..0x400 + bytes.len()].copy_from_slice(&bytes);
+            let records = bytes.len() / INPUT_RECORD_BYTES;
+            let (status, data) = self.call(Api::WriteInput, &[handle, BASE + 0x400, records, 0, 1]);
+            assert_eq!((status, data[3]), (0, records));
+            let (status, data) = self.call(Api::ReadConsole, &[handle, BASE + 0xC00, count, 0, 1]);
+            (status == 0).then(|| {
+                let memory = &self.client.kept.memory[0xC00..];
+                let units: Vec<u16> = (0..data[3])
+                    .map(|at| u16::from_le_bytes([memory[2 * at], memory[2 * at + 1]]))
+                    .collect();
+                String::from_utf16(&units).unwrap()
+            })
+        }
+    }
+
+    /// Letters typed, one key each.
+    fn typed(text: &str) -> Vec<Vec<u8>> {
+        text.bytes()
+            .map(|letter| {
+                press(
+                    u16::from(letter - 32),
+                    SCAN_LETTERS[usize::from(letter - b'a')],
+                    u16::from(letter),
+                )
+            })
+            .collect()
+    }
+
+    /// The line-mode read over the line editor: the keys edit the line; the history is the
+    /// calling program's; the Enter's echo shows the line entered on the serial line when the
+    /// read's handle is a standard one, once, however many reads take the line.
+    #[test]
+    fn a_line_mode_read_edits_and_recalls_by_program() {
+        let enter = || press(0x0D, 0x1C, 0x0D);
+        let up = || press(0x26, 0x48, 0);
+        let home = || press(0x24, 0x47, 0);
+        let mut programs = Programs {
+            console: Console::new(),
+            handles: Handles::standard(),
+            client: Program {
+                kept: Kept::default(),
+                name: b"one",
+                logged: Vec::new(),
+            },
+        };
+        let mut keys = typed("bc");
+        keys.extend([home(), typed("a").remove(0), enter()]);
+        assert_eq!(programs.read(3, &keys, 64).as_deref(), Some("abc\r\n"));
+        assert_eq!(programs.client.logged, b"abc\r\n");
+        let conin = programs
+            .call(Api::OpenConsole, &[0, 0xC000_0000, 0, 3, 0])
+            .1[4];
+        assert_eq!(
+            programs.read(conin, &[up(), enter()], 64).as_deref(),
+            Some("abc\r\n")
+        );
+        assert_eq!(
+            programs.client.logged, b"abc\r\n",
+            "a handle opened by name shows on the screen alone"
+        );
+        assert_eq!(programs.console.screen.row_text(1)[..4], *b"abc ");
+        programs.client.name = b"two";
+        assert_eq!(
+            programs.read(3, &[up(), enter()], 64).as_deref(),
+            Some("\r\n")
+        );
+        programs.client.name = b"ONE";
+        assert_eq!(programs.read(3, &[up(), enter()], 2).as_deref(), Some("ab"));
+        assert_eq!(programs.read(3, &[], 64).as_deref(), Some("c\r\n"));
+        assert_eq!(programs.client.logged, b"abc\r\n\r\nabc\r\n", "echoed once");
+        assert_eq!(programs.read(3, &typed("x"), 64), None, "no Enter yet");
+        assert_eq!(
+            programs
+                .read(3, &[home(), typed("y").remove(0), enter()], 64)
+                .as_deref(),
+            Some("yx\r\n")
+        );
+        programs.console.redirect();
+        let logged = programs.client.logged.len();
+        let row = programs.console.screen.cursor().0;
+        assert_eq!(
+            programs
+                .read(3, &[typed("z").remove(0), enter()], 64)
+                .as_deref(),
+            Some("z\r\n")
+        );
+        assert_eq!(
+            (
+                programs.client.logged.len(),
+                programs.console.screen.row_text(row)[0]
+            ),
+            (logged, b'z'),
+            "redirected: the echo on the screen alone"
+        );
     }
 }

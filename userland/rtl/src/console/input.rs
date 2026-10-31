@@ -316,8 +316,10 @@ fn record_key(vk: u8) -> u8 {
     }
 }
 
-/// How many records the input buffer holds.
-pub const INPUT_BUFFER_RECORDS: usize = 128;
+/// How many records the input buffer holds: F2K's own bound (Windows 2000's console grows its
+/// buffer as records come). A program may queue a long line's keys at once, a keydown and a keyup
+/// each: Windows 2000's capture takes 346 records in one WriteConsoleInput.
+pub const INPUT_BUFFER_RECORDS: usize = 384;
 
 /// The hook the input buffer consults for each record before it is kept: true keeps it.
 pub type Filter = fn(&KeyEventRecord) -> bool;

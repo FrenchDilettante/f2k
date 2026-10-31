@@ -66,8 +66,13 @@ struct ConsoleServer {
 }
 
 /// The room for a call's staged writes: the most one call writes to its caller (a whole input
-/// buffer's records, 2560 bytes; a Unicode title, 2050), with room to spare.
-const STAGED_BYTES: usize = 4096;
+/// buffer's records, 7680 bytes; a Unicode title, 2050), with room to spare.
+const STAGED_BYTES: usize = 8 * 1024;
+
+const _: () = assert!(
+    rtl::console::input::INPUT_BUFFER_RECORDS * rtl::console::input::INPUT_RECORD_BYTES
+        < STAGED_BYTES
+);
 
 /// A call's writes into its caller's stack guard page, held for the copy into the caller's memory
 /// below the server's level, where the fault on the guard page grows the stack as any fault on it
@@ -179,9 +184,11 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     let mut prepared = (args[2] == rtl::console::Api::GetInputWaitHandle.into())
         .then(|| prepare_input_wait_handle(call.passive()));
     let guard = stack_guard_page();
+    let process = crate::user::args::calling_process();
+    let program = process.name();
     // The process's console handles are held for the call (its lock is the process's state
     // lock), and the call is served at the server's level, raised from the lock's.
-    let (mut result, staged) = crate::user::args::calling_process().with_console(|handles| {
+    let (mut result, staged) = process.with_console(|handles| {
         crate::level::raised::<Dispatch, _>(|dispatch| {
             // Nothing below waits: a fault in a user-memory copy resolves in place (a
             // copy-on-write page) or fails the copy; a write into the caller's stack guard page,
@@ -193,6 +200,7 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 &mut Dual {
                     input_wait_handle: &mut prepared,
                     guard: guard.map(|page| (page, &mut server.staged)),
+                    program,
                 },
                 UserAddr(args[0]),
                 UserAddr(args[1]),
@@ -469,6 +477,10 @@ struct Dual<'a> {
     /// The caller's stack guard page and the staging its writes go to (see [`Staged`]); none for
     /// a caller without one.
     guard: Option<(u32, &'a mut Staged)>,
+    /// The calling process's name: its program's, the key of its command history. Windows
+    /// 2000's kernel32 names the program when it connects to the console; F2K's server takes the
+    /// name the kernel keeps for the process.
+    program: crate::process::ProcessName,
 }
 
 impl Client for Dual<'_> {
@@ -550,6 +562,10 @@ impl Client for Dual<'_> {
             .expect("the input-wait handle is prepared for the call that asks for it")
             .map_err(|status| status.0)
     }
+
+    fn program(&self) -> &[u8] {
+        self.program.as_str().as_bytes()
+    }
 }
 
 /// One byte to the serial line: COM1.
@@ -600,6 +616,7 @@ mod tests {
                 &mut Dual {
                     input_wait_handle: &mut input_wait_handle,
                     guard: None,
+                    program: crate::process::ProcessName::new(b"fixture"),
                 },
                 UserAddr(0x40_0000),
                 UserAddr(0),
