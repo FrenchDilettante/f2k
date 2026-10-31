@@ -20,7 +20,9 @@
  *   preempt  a higher-priority arrival runs to completion while two
  *            spinners are frozen
  *   yield    a new thread does not preempt its equal-priority creator;
- *            Sleep(0) and SwitchToThread hand it the CPU
+ *            Sleep(0) and SwitchToThread hand it the CPU; a lower-priority
+ *            one runs during a Sleep(10) started just after a clock tick,
+ *            not during a Sleep(0)
  *   boost    the order between an event's setter and its woken waiter
  *   freeze   a suspended spinner makes no progress; a suspended sleeper
  *            wakes only after it is resumed
@@ -390,6 +392,7 @@ static void sec_yield(void)
 {
     HANDLE h;
     BOOL r;
+    DWORD tick;
 
     /* Main at the same priority as the threads it hands the CPU to. */
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
@@ -410,6 +413,14 @@ static void sec_yield(void)
     h = start(set_flag, (void *)3, THREAD_PRIORITY_BELOW_NORMAL, 0);
     Sleep(0);
     line("Sleep(0) does not hand the CPU to a lower-priority thread: %s", yesno(flag == 0));
+    /* A relative wait is due its interval past the interrupt time of the
+     * last clock tick, so a Sleep(10) begun late in a tick ends at the next
+     * one, which may come before the new thread has started. Begin it just
+     * after a tick, spinning to the tick count's change (the spin hands
+     * nothing to the lower-priority thread), so it lasts a whole tick. */
+    tick = GetTickCount();
+    while (GetTickCount() == tick) {
+    }
     Sleep(10);
     line("Sleep(10) does: %s", yesno(flag == 3));
     join(h);

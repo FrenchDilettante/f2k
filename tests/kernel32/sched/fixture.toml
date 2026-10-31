@@ -99,6 +99,7 @@ yield = [
     "kernel32.Sleep",
     "kernel32.WaitForSingleObject",
     "kernel32.SwitchToThread",
+    "kernel32.GetTickCount",
     "ntdll.NtYieldExecution",
 ]
 clock = [

@@ -71,7 +71,10 @@
  *               statuses
  *   dupshare    a handle and its duplicate (one file object, one
  *               position): one thread reads BIG.BIN through the first in
- *               30000-byte reads while another queries the position, the
+ *               30000-byte reads while another queries the position
+ *               (ntdll's NtQueryInformationFile, FilePositionInformation:
+ *               SetFilePointer's FILE_CURRENT is a query then a set, and
+ *               a read between the two would be undone by the set), the
  *               size and the file information through the duplicate, as
  *               relations; then a seek through the duplicate and a read
  *               through the first
@@ -1580,6 +1583,11 @@ static void sec_flags(void)
 
 /* --- dupshare ----------------------------------------------------- */
 
+/* NtQueryInformationFile(FileHandle, IoStatusBlock, FileInformation, Length,
+ * FileInformationClass). */
+typedef LONG (WINAPI *query_file_fn)(HANDLE, PVOID, PVOID, ULONG, ULONG);
+#define FILE_POSITION_INFORMATION_CLASS 14
+
 static HANDLE dup_first, dup_second;
 static DWORD dup_read_total;
 static int dup_read_failed;
@@ -1609,9 +1617,21 @@ static void sec_dupshare(void)
     BYTE ten[10];
     HANDLE t;
     DWORD id, at_pos, size, n;
+    DWORD io_status[2];
+    LARGE_INTEGER position;
+    query_file_fn query_file;
     int queries = 0, failures = 0, off_boundary = 0, wrong_size = 0;
+    LONG st;
     BOOL r;
 
+    /* The position is queried alone, never set: SetFilePointer(FILE_CURRENT)
+     * reads it and then sets it, and a read that moved it in between would
+     * be undone by the set. */
+    query_file = (query_file_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationFile");
+    if (query_file == NULL) {
+        line("ntdll's NtQueryInformationFile: not found");
+        return;
+    }
     dup_first = open_read("DATA\\BIG.BIN");
     DuplicateHandle(GetCurrentProcess(), dup_first, GetCurrentProcess(), &dup_second, 0, FALSE,
                     DUPLICATE_SAME_ACCESS);
@@ -1620,13 +1640,15 @@ static void sec_dupshare(void)
     t = CreateThread(NULL, 0, dup_reader, NULL, 0, &id);
     while (WaitForSingleObject(t, 0) == WAIT_TIMEOUT && queries < 100000) {
         queries++;
-        at_pos = SetFilePointer(dup_second, 0, NULL, FILE_CURRENT);
+        st = query_file(dup_second, io_status, &position, sizeof position,
+                        FILE_POSITION_INFORMATION_CLASS);
         size = GetFileSize(dup_second, NULL);
-        if (at_pos == INVALID_SET_FILE_POINTER || size == (DWORD)-1 ||
+        if (st != 0 || position.HighPart != 0 || size == (DWORD)-1 ||
             !GetFileInformationByHandle(dup_second, &info)) {
             failures++;
             continue;
         }
+        at_pos = position.LowPart;
         /* The reads move the shared position a whole read at a time. */
         if (at_pos % 30000 != 0 && at_pos != 150000) {
             off_boundary++;

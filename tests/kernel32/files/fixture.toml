@@ -194,6 +194,7 @@ dupshare = [
     "kernel32.CloseHandle",
     "kernel32.GetLastError",
     "kernel32.SetLastError",
+    "ntdll.NtQueryInformationFile",
 ]
 imagesec = [
     "kernel32.GetModuleFileNameA",

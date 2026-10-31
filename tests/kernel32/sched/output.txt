@@ -1,9 +1,9 @@
 # F2K capture of sched (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:15:16.69
-sched F2KT-SOURCE-CRC=0xACF07BD0
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  2:33:20.88
+sched F2KT-SOURCE-CRC=0xBAECECDA
 >>> sched.exe sleep
 == sleep
 Sleep(200) in [190, 300] ms: yes
@@ -62,7 +62,7 @@ sched: done
 == yield
 a new equal-priority thread did not preempt its creator: yes
 after Sleep(0) it had run: yes
-SwitchToThread: returned 1, the new thread had run no
+SwitchToThread: returned 1, the new thread had run yes
 Sleep(0) does not hand the CPU to a lower-priority thread: yes
 Sleep(10) does: no
 sched: done

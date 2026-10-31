@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  1:15:52.46
-files F2KT-SOURCE-CRC=0xF1F48C27
+# date: Sat 10/31/2026  2:33:14.87
+files F2KT-SOURCE-CRC=0xF59FE07A
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
