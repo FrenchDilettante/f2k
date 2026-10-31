@@ -72,6 +72,31 @@ pub struct IoStatusBlock<P> {
     pub information: P,
 }
 
+/// PUBLIC_OBJECT_BASIC_INFORMATION (winternl.h), NtQueryObject's ObjectBasicInformation: the
+/// handle's attributes (OBJ_INHERIT, OBJ_PROTECT_CLOSE) and granted access, the object's handle and
+/// pointer counts, and ten reserved dwords: 56 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ObjectBasicInformation {
+    pub attributes: u32,
+    pub granted_access: u32,
+    pub handle_count: u32,
+    pub pointer_count: u32,
+    pub reserved: [u32; 10],
+}
+
+/// FILE_PIPE_PEEK_BUFFER's fixed part (ntifs.h): FSCTL_PIPE_PEEK's answer before the peeked data
+/// that follows it — the pipe's state as the end sees it (FILE_PIPE_*_STATE), the bytes a read
+/// could take, and the message counts, which a byte-mode pipe reports as 0.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FilePipePeekBuffer {
+    pub named_pipe_state: u32,
+    pub read_data_available: u32,
+    pub number_of_messages: u32,
+    pub message_length: u32,
+}
+
 impl UnicodeString<*mut u16> {
     /// The empty string, with no buffer: what a service that answers a string fills, or the
     /// probe that asks a value's length.
@@ -165,6 +190,10 @@ unsafe impl Pod for ObjectAttributes<u32> {}
 unsafe impl Pod for ClientId<u32> {}
 // SAFETY: two u32s.
 unsafe impl Pod for IoStatusBlock<u32> {}
+// SAFETY: four u32s.
+unsafe impl Pod for FilePipePeekBuffer {}
+// SAFETY: fourteen u32s.
+unsafe impl Pod for ObjectBasicInformation {}
 
 const _: () = {
     // NT 5.0's layouts, with 32-bit pointers on any host.
@@ -184,6 +213,10 @@ const _: () = {
     assert!(offset_of!(ClientId<u32>, unique_thread) == 4);
     assert!(size_of::<IoStatusBlock<u32>>() == 8);
     assert!(offset_of!(IoStatusBlock<u32>, information) == 4);
+    assert!(size_of::<FilePipePeekBuffer>() == 16);
+    assert!(size_of::<ObjectBasicInformation>() == 56);
+    assert!(offset_of!(ObjectBasicInformation, reserved) == 16);
+    assert!(offset_of!(FilePipePeekBuffer, message_length) == 12);
 };
 
 // The DLLs' native forms lay out as the 32-bit ones on their target.

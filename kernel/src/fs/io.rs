@@ -124,6 +124,17 @@ mod target {
         crate::process::threads::critical_region(|| object.serialized(body))
     }
 
+    /// Run `body` on the object's position holding its lock, for a call through another device's
+    /// object than the disk's (a pipe's), which may wait under the lock for as long as another
+    /// party decides: no critical region, and a termination interrupts the wait for the lock (its
+    /// status, `body` not run; see [`FileObject::serialized_interruptible`]).
+    pub fn serialized_interruptible<R>(
+        object: &Referenced<FileObject>,
+        body: impl FnOnce(&mut IoState) -> R,
+    ) -> Result<R, NtStatus> {
+        object.serialized_interruptible(body)
+    }
+
     /// How a new open's object starts: its rights, the sharing it allows, and its options.
     pub struct Open {
         pub granted: u32,
@@ -194,6 +205,7 @@ mod target {
     pub fn cleanup(context: Context, access: u8, share: u8, delete_on_close: bool) {
         match context {
             Context::Disk(record) => disk_cleanup(record, access, share, delete_on_close),
+            Context::Pipe(end) => crate::fs::pipes::cleanup(end),
         }
     }
 
@@ -202,6 +214,7 @@ mod target {
     pub fn close(context: Context) {
         match context {
             Context::Disk(record) => with_records(|records| records.close(record)),
+            Context::Pipe(end) => crate::fs::pipes::close(end),
         }
     }
 

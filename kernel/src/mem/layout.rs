@@ -11,6 +11,7 @@
 //! | [`KERNEL_STACKS`]  | `0xA4000000` | 656-659   | additional system PTEs                    |
 //! | [`PAGE_TABLES`]    | `0xC0000000` | 768       | the process page tables (self-map)        |
 //! | [`HYPERSPACE`]     | `0xC0400000` | 769       | hyperspace                                |
+//! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
 //! The kernel image window is the only region mapped from the first instruction on: the boot stub
@@ -25,6 +26,12 @@
 //! ([`crate::ob::THREADS`]) at the slot stride of a 32 KiB stack plus its guard page (36 KiB: 4.5
 //! MiB, two entries), with as much again to grow into: four entries, 16 MiB. It sits far from the
 //! image window, so the image can keep growing without meeting it.
+//!
+//! The nonpaged pool, in miniature: kernel memory that comes and goes with what holds it (a pipe's
+//! data queues), shared by every address space as the kernel stacks are, its frames mapped when a
+//! block is taken and given back with it ([`crate::mem::pool`]). Windows 2000 grows its nonpaged
+//! pool's expansion down from `0xFFBE0000`, just under the HAL's area; F2K's region is the four
+//! entries below the shared data page's, 16 MiB.
 
 /// One page-directory entry's span: the 4 MiB a page table maps.
 pub const ENTRY_SPAN: u32 = 0x0040_0000;
@@ -100,6 +107,13 @@ pub const HYPERSPACE: Region = Region {
     entries: 1,
 };
 
+/// The nonpaged pool: blocks of kernel memory taken and released at runtime, mapped in every
+/// address space ([`crate::mem::pool`]).
+pub const NONPAGED_POOL: Region = Region {
+    start: 0xFEC0_0000,
+    entries: 4,
+};
+
 /// The kernel's view of the shared data page (KUSER_SHARED_DATA) at `0xFFDF0000`, Windows 2000's
 /// address for it, in the table of the last directory entry.
 pub const SHARED_DATA: Region = Region {
@@ -118,11 +132,12 @@ const _: () = {
 mod tests {
     use super::*;
 
-    const REGIONS: [(&str, Region); 5] = [
+    const REGIONS: [(&str, Region); 6] = [
         ("kernel image", KERNEL_IMAGE),
         ("kernel stacks", KERNEL_STACKS),
         ("page tables", PAGE_TABLES),
         ("hyperspace", HYPERSPACE),
+        ("nonpaged pool", NONPAGED_POOL),
         ("shared data", SHARED_DATA),
     ];
 
@@ -142,6 +157,11 @@ mod tests {
         assert_eq!(KERNEL_STACKS.end(), 0xA500_0000);
         assert_eq!(PAGE_TABLES.first_entry(), 768);
         assert_eq!(HYPERSPACE.first_entry(), 769);
+        assert_eq!(
+            (NONPAGED_POOL.first_entry(), NONPAGED_POOL.end_entry()),
+            (1019, 1023)
+        );
+        assert_eq!(NONPAGED_POOL.end(), SHARED_DATA.start as u64);
         assert_eq!(SHARED_DATA.first_entry(), 1023);
         assert_eq!(SHARED_DATA.end(), 0x1_0000_0000);
         for (name, region) in REGIONS {

@@ -19,6 +19,7 @@ use rtl::nt::info::{
     FileNetworkOpenInformation,
     FilePositionInformation,
     FileRenameInformation,
+    FileStandardInformation,
     VariableSize,
 };
 
@@ -33,6 +34,7 @@ use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::write;
 use crate::fs::file::{same_entry, with_records, Context, FileObject, FileRecordId};
 use crate::fs::io::{self, times_at, SETTABLE_ATTRIBUTES};
+use crate::fs::pipes::{self, PipeEnd};
 use crate::ob::Referenced;
 use crate::status::*;
 
@@ -63,21 +65,49 @@ fn query_information_file_held(
     information.probe(length)?;
     let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
-    // The position as the object's lock has it: a read or write through another handle to the
-    // object moves it under the lock.
-    let position = io::serialized(&object, |held| held.position);
     let mut answer = [0u8; size_of::<FileAllInformation>()];
-    let written = if class == QueryClass::Position {
-        // The I/O manager's own answer, whatever the device: the object's position.
-        info::position(position, &mut answer)
-    } else {
-        match object.context {
-            Context::Disk(record) => query_disk(&object, record, position, class, &mut answer),
+    // The position as the object's lock has it: a read or write through another handle to the
+    // object moves it under the lock. A disk file's answer is one critical region (it holds the
+    // object across the volume's); a pipe's waits for the lock outside any, as its reads do.
+    let written = match object.context {
+        Context::Disk(record) => crate::process::threads::critical_region(|| {
+            let position = io::serialized(&object, |held| held.position);
+            match class {
+                QueryClass::Position => info::position(position, &mut answer),
+                _ => query_disk(&object, record, position, class, &mut answer),
+            }
+        }),
+        Context::Pipe(end) => {
+            let position = io::serialized_interruptible(&object, |held| held.position)?;
+            match class {
+                QueryClass::Position => info::position(position, &mut answer),
+                _ => query_pipe(end, class, &mut answer)?,
+            }
         }
     };
     information.write(&answer[..written])?;
     complete(io_status, STATUS_SUCCESS, written as u32);
     Ok(STATUS_SUCCESS)
+}
+
+/// A pipe's answer to a query of `class` into `answer` (the position is the I/O manager's): its
+/// standard information — the allocation both queues' quotas, the end of file the bytes in the
+/// pipe (the capture's GetFileSize), one link, no delete pending, no directory. The pipe's other
+/// classes are not served yet (STATUS_NOT_IMPLEMENTED).
+fn query_pipe(end: PipeEnd, class: QueryClass, answer: &mut [u8]) -> Result<usize, NtStatus> {
+    match class {
+        QueryClass::Standard => {
+            let (allocation_size, end_of_file) = pipes::sizes(end);
+            let standard = FileStandardInformation {
+                allocation_size,
+                end_of_file,
+                number_of_links: 1,
+                ..Default::default()
+            };
+            Ok(info::put(answer, &standard))
+        }
+        _ => Err(STATUS_NOT_IMPLEMENTED),
+    }
 }
 
 /// A disk file's answer to a query of `class` (see [`info::query`]) into `answer`: the bytes
@@ -144,7 +174,7 @@ enum Start {
 /// A rename's target name (FILE_RENAME_INFORMATION's, `length` bytes at `information`, its fixed
 /// part read as `header`): relative to its root directory's file object, an absolute NT path, or a
 /// bare name in the file's own directory. A root that is a file's, or another device's object than
-/// the disk's, is STATUS_INVALID_PARAMETER.
+/// the disk's, is STATUS_INVALID_PARAMETER; a pipe's name STATUS_NOT_SAME_DEVICE.
 fn rename_target(
     header: &FileRenameInformation,
     length: u32,
@@ -168,7 +198,11 @@ fn rename_target(
         return Ok((name::relative(units)?, Start::At(Some(directory))));
     }
     if units.contains(&u16::from(b'\\')) {
-        return Ok((name::absolute(units)?, Start::At(None)));
+        return match name::absolute(units)? {
+            name::Absolute::Disk(name) => Ok((name, Start::At(None))),
+            // A disk file's name never moves onto another device.
+            name::Absolute::Pipe(_) => Err(STATUS_NOT_SAME_DEVICE),
+        };
     }
     Ok((name::relative(units)?, Start::Own))
 }
@@ -283,15 +317,31 @@ fn set_information_file_held(
     let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
     match object.context {
-        Context::Disk(record) => set_disk(&object, record, setting, length, information)?,
+        // One critical region: it holds the object across the volume's.
+        Context::Disk(record) => crate::process::threads::critical_region(|| {
+            set_disk(&object, record, setting, length, information)
+        })?,
+        Context::Pipe(_) => set_pipe(&object, setting)?,
     }
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)
 }
 
+/// A pipe's set: the position (the I/O manager's, as for any device; the pipe never reads it, and
+/// the capture's SetFilePointer reads back what it set). The pipe's other classes are not served
+/// yet (STATUS_NOT_IMPLEMENTED).
+fn set_pipe(object: &Referenced<FileObject>, setting: Setting) -> Result<(), NtStatus> {
+    match setting {
+        Setting::Position(position) => set_position(object, position),
+        _ => Err(STATUS_NOT_IMPLEMENTED),
+    }
+}
+
 /// FilePositionInformation's set, the same for every device's object (Windows 2000's I/O manager
 /// sets a synchronous object's position itself): a negative offset is STATUS_INVALID_PARAMETER;
-/// the position moves under the object's lock, as a read or write moves it.
+/// the position moves under the object's lock, as a read or write moves it — a disk file's inside
+/// a critical region, a pipe's waiting for the lock outside any (see [`io::serialized`] and
+/// [`io::serialized_interruptible`]).
 fn set_position(
     object: &Referenced<FileObject>,
     position: FilePositionInformation,
@@ -300,7 +350,10 @@ fn set_position(
     if (position as i64) < 0 {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    io::serialized(object, |held| held.position = position);
+    match object.context {
+        Context::Disk(_) => io::serialized(object, |held| held.position = position),
+        Context::Pipe(_) => io::serialized_interruptible(object, |held| held.position = position)?,
+    }
     Ok(())
 }
 
@@ -429,7 +482,8 @@ pub fn query_full_attributes_file(
     Ok(STATUS_SUCCESS)
 }
 
-/// NtQueryInformationFile (see [`query_information_file_held`]), as one critical region.
+/// NtQueryInformationFile (see [`query_information_file_held`]): a disk file's answer is one
+/// critical region, inside the device's arm.
 #[allow(clippy::too_many_arguments)]
 pub fn query_information_file(
     call: &mut NtCall,
@@ -439,16 +493,11 @@ pub fn query_information_file(
     length: u32,
     class: u32,
 ) -> NtResult {
-    // The call holds its file object (a reference) across the volume's critical regions: run it
-    // inside one of its own, so a termination requested meanwhile ends the thread only once the
-    // reference has gone (an inner region's end would end it with the reference still held).
-    crate::process::threads::critical_region(|| {
-        query_information_file_held(call, handle, io_status, information, length, class)
-    })
+    query_information_file_held(call, handle, io_status, information, length, class)
 }
 
-/// NtSetInformationFile (see [`set_information_file_held`]), as one critical region: like the
-/// query, it holds its file object across the volume's critical regions.
+/// NtSetInformationFile (see [`set_information_file_held`]): like the query, a disk file's set is
+/// one critical region, inside the device's arm.
 #[allow(clippy::too_many_arguments)]
 pub fn set_information_file(
     call: &mut NtCall,
@@ -458,7 +507,5 @@ pub fn set_information_file(
     length: u32,
     class: u32,
 ) -> NtResult {
-    crate::process::threads::critical_region(|| {
-        set_information_file_held(call, handle, io_status, information, length, class)
-    })
+    set_information_file_held(call, handle, io_status, information, length, class)
 }

@@ -1,9 +1,10 @@
-//! NtCreateFile and NtOpenFile: the I/O manager's checks of the arguments, then FastFat's create —
-//! the walk, the disposition's decision against what the name names, a new file or directory made,
-//! the open (its share check), and an overwrite's truncation.
+//! NtCreateFile and NtOpenFile: the I/O manager's checks of the arguments, then the create of the
+//! device the name is on: FastFat's — the walk, the disposition's decision against what the name
+//! names, a new file or directory made, the open (its share check), and an overwrite's truncation
+//! — or the named-pipe file system's, a pipe's client end connected ([`super::pipe`]).
 
 use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
-use super::common::{complete, deliver, target, walk, Found, Target};
+use super::common::{complete, deliver, named, walk, Found, Named, Target};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
@@ -15,28 +16,28 @@ use crate::status::*;
 
 /// The dispositions.
 const FILE_SUPERSEDE: u32 = 0;
-const FILE_OPEN: u32 = 1;
-const FILE_CREATE: u32 = 2;
-const FILE_OPEN_IF: u32 = 3;
+pub(super) const FILE_OPEN: u32 = 1;
+pub(super) const FILE_CREATE: u32 = 2;
+pub(super) const FILE_OPEN_IF: u32 = 3;
 const FILE_OVERWRITE: u32 = 4;
 const FILE_OVERWRITE_IF: u32 = 5;
 
 /// The IO_STATUS_BLOCK's Information an open answers with.
 const FILE_SUPERSEDED: u32 = 0;
-const FILE_OPENED: u32 = 1;
-const FILE_CREATED: u32 = 2;
+pub(super) const FILE_OPENED: u32 = 1;
+pub(super) const FILE_CREATED: u32 = 2;
 const FILE_OVERWRITTEN: u32 = 3;
 
 /// The create options F2K reads, and every one the platform defines.
-const FILE_DIRECTORY_FILE: u32 = 0x1;
-const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
-const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+pub(super) const FILE_DIRECTORY_FILE: u32 = 0x1;
+pub(super) const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
+pub(super) const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
-const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
-const FILE_VALID_OPTION_FLAGS: u32 = 0x00FF_FFFF;
+pub(super) const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
+pub(super) const FILE_VALID_OPTION_FLAGS: u32 = 0x00FF_FFFF;
 /// The attributes a create may carry (FILE_ATTRIBUTE_VALID_FLAGS), and the share modes' bits.
 const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
-const FILE_SHARE_VALID_FLAGS: u32 = 0x7;
+pub(super) const FILE_SHARE_VALID_FLAGS: u32 = 0x7;
 
 /// The rights that change a file, which a read-only one refuses.
 const CHANGES: u32 = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA | rights::DELETE;
@@ -205,7 +206,21 @@ fn create(
     options: u32,
 ) -> NtResult {
     check_arguments(access, file_attributes, share, disposition, options)?;
-    let target = target(attributes)?;
+    let target = match named(attributes)? {
+        Named::Disk(target) => target,
+        Named::Pipe { name, inherit } => {
+            slot.addr().probe(4)?;
+            io_status.probe(8)?;
+            let open = super::pipe::ClientOpen {
+                granted: rights::mapped(access),
+                share,
+                disposition,
+                options,
+                inherit,
+            };
+            return super::pipe::open_client(&name, &open, slot, io_status);
+        }
+    };
     slot.addr().probe(4)?;
     io_status.probe(8)?;
     let request = Request {

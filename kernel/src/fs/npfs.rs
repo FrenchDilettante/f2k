@@ -42,28 +42,20 @@
 //! ring's extra header's worth leaves room for a pending write to begin. A pending write's bytes
 //! beyond the ring's room stay with its writer, which feeds them as reads free room.
 
-// Nothing calls the module before the named-pipe services do; the host tests exercise all of it.
-#![cfg_attr(target_arch = "x86", allow(dead_code))]
+pub use rtl::nt::FilePipePeekBuffer;
 
-use crate::status::{NtStatus, STATUS_BUFFER_OVERFLOW, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-
-// The named-pipe statuses (ntstatus.h), and kernel32's error for each. They belong with the others
-// in rtl's table (`rtl::status`, with RtlNtStatusToDosError's mapping) once the services report
-// them.
-
-/// A create's open of an instance another client holds (ERROR_PIPE_BUSY, 231).
-pub const STATUS_PIPE_NOT_AVAILABLE: NtStatus = NtStatus(0xC000_00AC);
-/// A peek on a pipe no client has opened yet.
-pub const STATUS_INVALID_PIPE_STATE: NtStatus = NtStatus(0xC000_00AD);
-/// A second call waiting through one end (ERROR_PIPE_BUSY, 231).
-pub const STATUS_PIPE_BUSY: NtStatus = NtStatus(0xC000_00AE);
-/// A write once the reading end is closed (ERROR_NO_DATA, 232).
-pub const STATUS_PIPE_CLOSING: NtStatus = NtStatus(0xC000_00B1);
-/// A read or write on a server end no client has opened yet (ERROR_PIPE_LISTENING, 536).
-pub const STATUS_PIPE_LISTENING: NtStatus = NtStatus(0xC000_00B3);
-/// A read once the writing end is closed and the data is drained, or a write the reading end's
-/// close ended (ERROR_BROKEN_PIPE, 109).
-pub const STATUS_PIPE_BROKEN: NtStatus = NtStatus(0xC000_014B);
+use crate::status::{
+    NtStatus,
+    STATUS_BUFFER_OVERFLOW,
+    STATUS_INVALID_PARAMETER,
+    STATUS_INVALID_PIPE_STATE,
+    STATUS_PIPE_BROKEN,
+    STATUS_PIPE_BUSY,
+    STATUS_PIPE_CLOSING,
+    STATUS_PIPE_LISTENING,
+    STATUS_PIPE_NOT_AVAILABLE,
+    STATUS_SUCCESS,
+};
 
 /// The quota a create's 0 asks for: what the capture's CreatePipe of size 0 holds, the same as
 /// size 4096.
@@ -290,34 +282,6 @@ pub enum FlushOutcome {
     Failed(PipeError),
 }
 
-/// FILE_PIPE_PEEK_BUFFER's header (ntifs.h): the pipe's state, the bytes a read could take, and the
-/// message counts, which a byte-mode pipe reports as 0. The peeked data follows it.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FilePipePeekBuffer {
-    pub named_pipe_state: u32,
-    pub read_data_available: u32,
-    pub number_of_messages: u32,
-    pub message_length: u32,
-}
-
-impl FilePipePeekBuffer {
-    /// The header's bytes, as the output buffer holds them.
-    pub fn to_bytes(self) -> [u8; PEEK_HEADER as usize] {
-        let mut bytes = [0; PEEK_HEADER as usize];
-        let fields = [
-            self.named_pipe_state,
-            self.read_data_available,
-            self.number_of_messages,
-            self.message_length,
-        ];
-        for (index, field) in fields.into_iter().enumerate() {
-            bytes[index * 4..index * 4 + 4].copy_from_slice(&field.to_le_bytes());
-        }
-        bytes
-    }
-}
-
 /// What a peek found: the header to write, and how many bytes it copied after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Peeked {
@@ -454,7 +418,8 @@ impl<S: AsRef<[u8]> + AsMut<[u8]>> Queue<S> {
         }
     }
 
-    /// The queue's quota.
+    /// The queue's quota (FilePipeLocalInformation's, which no service answers yet).
+    #[cfg_attr(target_arch = "x86", allow(dead_code))]
     pub fn quota(&self) -> u32 {
         self.quota
     }
@@ -467,6 +432,7 @@ impl<S: AsRef<[u8]> + AsMut<[u8]>> Queue<S> {
 
     /// The quota left: the quota less every entry's charge (FilePipeLocalInformation's
     /// WriteQuotaAvailable), 0 while a pending write overdraws it.
+    #[cfg_attr(target_arch = "x86", allow(dead_code))]
     pub fn quota_available(&self) -> u32 {
         u32::try_from(u64::from(self.quota).saturating_sub(self.charged())).unwrap_or(0)
     }
@@ -1511,7 +1477,7 @@ mod tests {
         assert_eq!(peeked.status(room), STATUS_SUCCESS);
         assert_eq!(PEEK_HEADER + peeked.copied, 16 + 13);
         assert_eq!(
-            peeked.header.to_bytes(),
+            rtl::pod::Pod::as_bytes(&peeked.header),
             [3, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
         );
         assert_eq!(data[..13], RUN);

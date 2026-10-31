@@ -120,9 +120,19 @@ pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
 pub const STATUS_FREE_VM_NOT_AT_BASE: u32 = 0xC000_009F;
 pub const STATUS_MEMORY_NOT_ALLOCATED: u32 = 0xC000_00A0;
 pub const STATUS_MEDIA_WRITE_PROTECTED: u32 = 0xC000_00A2;
+/// The named-pipe file system's: an open of an instance another client holds; a peek on a pipe no
+/// client has opened; a second call waiting through one end; a write once the reading end is
+/// closed; a call on a server end no client has opened; a read past what the closed writing end
+/// left, or a write the reading end's close ended.
+pub const STATUS_PIPE_NOT_AVAILABLE: u32 = 0xC000_00AC;
+pub const STATUS_INVALID_PIPE_STATE: u32 = 0xC000_00AD;
+pub const STATUS_PIPE_BUSY: u32 = 0xC000_00AE;
+pub const STATUS_PIPE_CLOSING: u32 = 0xC000_00B1;
+pub const STATUS_PIPE_LISTENING: u32 = 0xC000_00B3;
 pub const STATUS_IO_TIMEOUT: u32 = 0xC000_00B5;
 pub const STATUS_FILE_IS_A_DIRECTORY: u32 = 0xC000_00BA;
 pub const STATUS_NOT_SUPPORTED: u32 = 0xC000_00BB;
+pub const STATUS_NOT_SAME_DEVICE: u32 = 0xC000_00D4;
 pub const STATUS_CANT_TERMINATE_SELF: u32 = 0xC000_00DB;
 pub const STATUS_INVALID_USER_BUFFER: u32 = 0xC000_00E8;
 pub const STATUS_INVALID_PARAMETER_1: u32 = 0xC000_00EF;
@@ -147,6 +157,7 @@ pub const STATUS_INVALID_IMAGE_LE_FORMAT: u32 = 0xC000_012E;
 pub const STATUS_INVALID_IMAGE_NOT_MZ: u32 = 0xC000_012F;
 pub const STATUS_INVALID_IMAGE_PROTECT: u32 = 0xC000_0130;
 pub const STATUS_INVALID_IMAGE_WIN_16: u32 = 0xC000_0131;
+pub const STATUS_PIPE_BROKEN: u32 = 0xC000_014B;
 pub const STATUS_UNRECOGNIZED_VOLUME: u32 = 0xC000_014F;
 pub const STATUS_KEY_DELETED: u32 = 0xC000_017C;
 pub const STATUS_IO_DEVICE_ERROR: u32 = 0xC000_0185;
@@ -291,6 +302,23 @@ mod tests {
             (STATUS_INFO_LENGTH_MISMATCH, 24),
             (0xC000_0102, 1392), // STATUS_FILE_CORRUPT_ERROR
             (0xC000_0185, 1117), // STATUS_IO_DEVICE_ERROR
+        ] {
+            assert_eq!(dos_error(status), error, "{status:#010x}");
+        }
+    }
+
+    /// The named-pipe statuses, to the errors the pipe fixture pins (109 and 232) and the ones
+    /// kernel32 documents for the rest.
+    #[test]
+    fn the_pipe_statuses_map_as_the_fixtures_pin() {
+        for (status, error) in [
+            (STATUS_PIPE_BROKEN, 109),        // ERROR_BROKEN_PIPE
+            (STATUS_PIPE_CLOSING, 232),       // ERROR_NO_DATA
+            (STATUS_PIPE_LISTENING, 536),     // ERROR_PIPE_LISTENING
+            (STATUS_PIPE_NOT_AVAILABLE, 231), // ERROR_PIPE_BUSY
+            (STATUS_PIPE_BUSY, 231),
+            (STATUS_INVALID_PIPE_STATE, 230), // ERROR_BAD_PIPE
+            (STATUS_NOT_SAME_DEVICE, 17),     // ERROR_NOT_SAME_DEVICE
         ] {
             assert_eq!(dos_error(status), error, "{status:#010x}");
         }

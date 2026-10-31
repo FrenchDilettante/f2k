@@ -60,9 +60,9 @@ pub const SYS_CSR_CALL: u32 = 0x8000_0010;
 pub const SYS_DEBUG_PRINT: u32 = 0x8000_0011;
 
 /// Largest argument block the dispatcher copies onto the kernel stack. Sized up front so the gate
-/// path stays allocation-free: Windows 2000's largest services, NtCreateFile's and
-/// NtQueryDirectoryFile's, take eleven arguments.
-pub const MAX_ARG_BYTES: usize = 44;
+/// path stays allocation-free: Windows 2000's largest service F2K serves, NtCreateNamedPipeFile,
+/// takes fourteen arguments.
+pub const MAX_ARG_BYTES: usize = 56;
 
 /// A service: places its result in the frame's EAX slot. It is handed the passive-level token the
 /// system-call entry makes, which its call context ([`crate::nt::call::NtCall`]) lends its handler.
@@ -518,7 +518,7 @@ mod tests {
     /// The argument budget covers every service and is whole dwords.
     #[test]
     fn argument_budget_covers_the_registry() {
-        assert_eq!(MAX_ARG_BYTES, 44);
+        assert_eq!(MAX_ARG_BYTES, 56);
         assert_eq!(MAX_ARG_BYTES % 4, 0);
         for arg_bytes in crate::nt::NT_SERVICES
             .iter()

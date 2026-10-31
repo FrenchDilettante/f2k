@@ -4,6 +4,13 @@
 //! the current directory). The Win32 rules (separators, `.` and `..`, trailing dots and spaces, the
 //! current directory) are user mode's: the kernel walks the components it is given.
 //!
+//! A name under `\Device\NamedPipe\` is a pipe's, the named-pipe file system's to look up: the
+//! rest of the name is the pipe's, whatever it holds (a pipe's name may hold separators), up to
+//! [`crate::fs::pipes::MAX_PIPE_NAME`] units (STATUS_OBJECT_NAME_INVALID past it). The file
+//! system's own root (`\Device\NamedPipe` or `\Device\NamedPipe\`) is not served
+//! (STATUS_NOT_IMPLEMENTED). No `\??\PIPE` link leads there yet: Win32's `\\.\pipe\` names
+//! come with named pipes.
+//!
 //! The boot volume is C:; `\??\C:` alone is the volume itself. Another drive is missing, as is any
 //! other name under `\??` (STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND with more
 //! after it); a name outside `\??` is no path there. A component is a FAT long name: no control
@@ -12,6 +19,7 @@
 //! unverified); an empty component is no name either (STATUS_OBJECT_NAME_INVALID).
 
 use super::super::attributes::MAX_NAME;
+use crate::fs::pipes::PipeName;
 use crate::status::*;
 
 /// The longest component, in units (a FAT long name's).
@@ -126,11 +134,39 @@ fn components(units: &[u16], name: &mut FileName) -> Result<(), NtStatus> {
     Ok(())
 }
 
-/// An absolute NT name: the components below the volume's root.
-pub fn absolute(units: &[u16]) -> Result<FileName, NtStatus> {
+/// What an absolute NT name names, by the device it is on: a path on the boot volume, or a pipe.
+// Made once per call and matched at once, never kept: the variants' sizes do not matter.
+#[allow(clippy::large_enum_variant)]
+pub enum Absolute {
+    Disk(FileName),
+    Pipe(PipeName),
+}
+
+/// The named-pipe file system's device.
+const NAMED_PIPE_DEVICE: &[u8] = b"\\Device\\NamedPipe";
+
+/// An absolute NT name: a pipe's under `\Device\NamedPipe\` (see the module notes), else the
+/// components below the volume's root.
+pub fn absolute(units: &[u16]) -> Result<Absolute, NtStatus> {
     if units.first() != Some(&SEPARATOR) {
         return Err(STATUS_OBJECT_PATH_SYNTAX_BAD);
     }
+    if starts_with(units, NAMED_PIPE_DEVICE) {
+        match &units[NAMED_PIPE_DEVICE.len()..] {
+            [] | [SEPARATOR] => return Err(STATUS_NOT_IMPLEMENTED),
+            [SEPARATOR, name @ ..] => {
+                return PipeName::new(name)
+                    .map(Absolute::Pipe)
+                    .ok_or(STATUS_OBJECT_NAME_INVALID)
+            }
+            _ => {}
+        }
+    }
+    disk(units).map(Absolute::Disk)
+}
+
+/// An absolute name on the boot volume: the components below its root.
+fn disk(units: &[u16]) -> Result<FileName, NtStatus> {
     let rest = [&b"\\??\\"[..], b"\\DosDevices\\"]
         .iter()
         .find_map(|prefix| starts_with(units, prefix).then(|| &units[prefix.len()..]))
@@ -182,9 +218,10 @@ mod tests {
     }
 
     fn path(
-        name: Result<FileName, NtStatus>,
+        name: Result<impl Into<Option<FileName>>, NtStatus>,
     ) -> Result<(std::string::String, bool, bool), NtStatus> {
         name.map(|name| {
+            let name = name.into().expect("a disk path");
             (
                 std::string::String::from_utf8(name.path().to_vec()).unwrap(),
                 name.trailing,
@@ -232,12 +269,39 @@ mod tests {
             path(absolute(&wide("C:\\X"))).err(),
             Some(STATUS_OBJECT_PATH_SYNTAX_BAD)
         );
-        let name = absolute(&wide("\\??\\C:\\A\\B\\C.TXT")).unwrap();
+        let name = disk(&wide("\\??\\C:\\A\\B\\C.TXT")).unwrap();
         assert_eq!(
             name.components().collect::<std::vec::Vec<_>>(),
             [&b"A"[..], b"B", b"C.TXT"]
         );
         assert_eq!(name.last(), b"C.TXT");
+    }
+
+    /// A name under `\Device\NamedPipe\` is a pipe's, all of the rest of it; the device's root is
+    /// not served, and a name past the limit is invalid.
+    #[test]
+    fn pipe_names_are_the_named_pipe_file_system_s() {
+        let pipe = |text: &str| match absolute(&wide(text)) {
+            Ok(Absolute::Pipe(name)) => Ok(std::string::String::from_utf16_lossy(name.units())),
+            Ok(Absolute::Disk(_)) => panic!("{text} is a disk path"),
+            Err(status) => Err(status),
+        };
+        assert_eq!(
+            pipe("\\Device\\NamedPipe\\Win32Pipes.0000001c.00000001"),
+            Ok("Win32Pipes.0000001c.00000001".into())
+        );
+        assert_eq!(pipe("\\device\\namedpipe\\a\\b"), Ok("a\\b".into()));
+        assert_eq!(pipe("\\Device\\NamedPipe"), Err(STATUS_NOT_IMPLEMENTED));
+        assert_eq!(pipe("\\Device\\NamedPipe\\"), Err(STATUS_NOT_IMPLEMENTED));
+        let long = "x".repeat(crate::fs::pipes::MAX_PIPE_NAME + 1);
+        assert_eq!(
+            pipe(&std::format!("\\Device\\NamedPipe\\{long}")),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+        assert_eq!(
+            path(absolute(&wide("\\Device\\NamedPipeX\\a"))).err(),
+            Some(STATUS_OBJECT_PATH_NOT_FOUND)
+        );
     }
 
     /// What no component may be.
@@ -254,18 +318,18 @@ mod tests {
             );
         }
         let long = "x".repeat(MAX_COMPONENT);
-        assert!(absolute(&wide(&std::format!("\\??\\C:\\{long}"))).is_ok());
+        assert!(disk(&wide(&std::format!("\\??\\C:\\{long}"))).is_ok());
         assert_eq!(
             path(absolute(&wide(&std::format!("\\??\\C:\\{long}x")))).err(),
             Some(STATUS_OBJECT_NAME_INVALID)
         );
         // Inside the path, `.` and `..` are names the walk will not find (the files capture).
-        let name = absolute(&wide("\\??\\C:\\DATA\\..\\SMALL.TXT")).unwrap();
+        let name = disk(&wide("\\??\\C:\\DATA\\..\\SMALL.TXT")).unwrap();
         assert_eq!(
             name.components().collect::<std::vec::Vec<_>>(),
             [&b"DATA"[..], b"..", b"SMALL.TXT"]
         );
-        let name = absolute(&wide("\\??\\C:\\caf\u{E9}.txt")).unwrap();
+        let name = disk(&wide("\\??\\C:\\caf\u{E9}.txt")).unwrap();
         assert_eq!(
             name.path(),
             b"caf\xE9.txt",
@@ -274,6 +338,15 @@ mod tests {
     }
 
     /// A name relative to a directory: its components, the directory itself for none.
+    impl From<Absolute> for Option<FileName> {
+        fn from(name: Absolute) -> Self {
+            match name {
+                Absolute::Disk(name) => Some(name),
+                Absolute::Pipe(_) => None,
+            }
+        }
+    }
+
     #[test]
     fn relative_names_start_at_their_directory() {
         assert_eq!(

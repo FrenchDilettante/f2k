@@ -2,7 +2,8 @@
 //! manager's own answer), and the rest from that device: the boot volume's facts through any of
 //! its file objects — its label and serial number (the boot sector's), its size and free clusters
 //! (the FSInfo sector's count when it carries a plausible one, else a FAT scan), and its file
-//! system's name, flags and longest component (FAT32's).
+//! system's name, flags and longest component (FAT32's). A pipe's end has its device type alone
+//! (STATUS_NOT_SUPPORTED for the rest).
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, file_object};
@@ -77,11 +78,15 @@ pub fn query_volume_information_file(
         // The I/O manager's own answer, from the object's device (no file system asked).
         let device_type = match object.context {
             Context::Disk(_) => info::FILE_DEVICE_DISK,
+            Context::Pipe(_) => info::FILE_DEVICE_NAMED_PIPE,
         };
         Ok(info::device(device_type, room))
     } else {
         match object.context {
             Context::Disk(_) => info::volume_query(class, &volume_facts()?, room),
+            // The named-pipe file system keeps no volume to describe: the capture's
+            // GetFileInformationByHandle on a pipe fails 50, its volume query's error.
+            Context::Pipe(_) => return Err(STATUS_NOT_SUPPORTED),
         }
     };
     let (code, written) = match answer {

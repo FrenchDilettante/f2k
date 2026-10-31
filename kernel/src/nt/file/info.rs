@@ -170,6 +170,9 @@ impl VolumeClass {
 
 /// FILE_DEVICE_DISK: the volume's device type.
 pub const FILE_DEVICE_DISK: u32 = 7;
+/// FILE_DEVICE_NAMED_PIPE: the named-pipe file system's device type (kernel32's GetFileType makes
+/// it FILE_TYPE_PIPE).
+pub const FILE_DEVICE_NAMED_PIPE: u32 = 0x11;
 /// FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK: what FAT32 reports.
 pub const FAT32_ATTRIBUTES: u32 = 0x2 | 0x4;
 /// The longest component FAT32 stores.
@@ -178,7 +181,7 @@ pub const FAT32_MAX_COMPONENT: u32 = 255;
 const BYTES_PER_SECTOR: u32 = 512;
 
 /// A structure's bytes at the start of `out` (which holds them): their length.
-fn put<T: Pod>(out: &mut [u8], value: &T) -> usize {
+pub fn put<T: Pod>(out: &mut [u8], value: &T) -> usize {
     let bytes = value.as_bytes();
     out[..bytes.len()].copy_from_slice(bytes);
     bytes.len()

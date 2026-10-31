@@ -147,10 +147,24 @@ statuses! {
     STATUS_MEMORY_NOT_ALLOCATED,
     /// The device, or the file, takes no writes.
     STATUS_MEDIA_WRITE_PROTECTED,
+    /// A client's open of a named pipe whose instance another client holds.
+    STATUS_PIPE_NOT_AVAILABLE,
+    /// A peek on a pipe no client has opened yet.
+    STATUS_INVALID_PIPE_STATE,
+    /// A second call waiting through one end of a pipe.
+    STATUS_PIPE_BUSY,
+    /// A write into a pipe whose reading end is closed.
+    STATUS_PIPE_CLOSING,
+    /// A read or write on a server end of a pipe no client has opened yet.
+    STATUS_PIPE_LISTENING,
     /// A device did not respond in time.
     STATUS_IO_TIMEOUT,
     /// The path names a directory where a file must be.
     STATUS_FILE_IS_A_DIRECTORY,
+    /// A request the device does not serve (a named pipe has no volume to describe).
+    STATUS_NOT_SUPPORTED,
+    /// A rename onto another device than the file's.
+    STATUS_NOT_SAME_DEVICE,
     /// NtTerminateThread with no handle from a process's only thread (kernel32's ExitThread then
     /// ends the process instead).
     STATUS_CANT_TERMINATE_SELF,
@@ -199,6 +213,9 @@ statuses! {
     STATUS_INVALID_IMAGE_PROTECT,
     /// A 16-bit Windows image.
     STATUS_INVALID_IMAGE_WIN_16,
+    /// A pipe's read once its writing end is closed and its data drained, or a write the reading
+    /// end's close ended.
+    STATUS_PIPE_BROKEN,
     /// The volume holds no file system the kernel recognizes (a refused mount).
     STATUS_UNRECOGNIZED_VOLUME,
     /// A key deleted while a handle still named it: what every service answers through that

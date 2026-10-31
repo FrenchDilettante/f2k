@@ -1,7 +1,8 @@
 //! The file services: NtCreateFile and NtOpenFile, NtReadFile and NtWriteFile,
 //! NtFlushBuffersFile, NtQueryInformationFile and NtSetInformationFile, NtQueryDirectoryFile,
-//! NtQueryAttributesFile and NtQueryFullAttributesFile, and NtQueryVolumeInformationFile —
-//! FastFat's answers over the boot volume (`fs`), in NTSTATUS. kernel32's Win32 file calls are
+//! NtQueryAttributesFile and NtQueryFullAttributesFile, NtQueryVolumeInformationFile,
+//! NtCreateNamedPipeFile and NtFsControlFile — FastFat's answers over the boot volume and the
+//! named-pipe file system's over its pipes (`fs`), in NTSTATUS. kernel32's Win32 file calls are
 //! user-mode code over these, as on Windows 2000: a Win32 error is the status's mapping, or one of
 //! kernel32's own special cases.
 //!
@@ -9,11 +10,12 @@
 //! object keeps the rights its open was granted (the generic ones mapped to the file rights), and
 //! names the device it is open on ([`crate::fs::file::Context`]). Each service makes the I/O
 //! manager's checks first, the rights it needs among them, then serves the request by the object's
-//! device, one match arm per device (the disk's, FastFat's, alone today). Every file object
-//! completes its I/O at once, in the caller's thread: a synchronous one keeps the position a read
-//! or write without an offset uses; an event handed to a read, write or listing is reset first and
-//! signaled once it completes. An APC routine (ReadFileEx's completion) is not supported
-//! .
+//! device, one match arm per device (the disk's, FastFat's, and a pipe's, the named-pipe file
+//! system's). Every call completes in the caller's thread: a disk file's at once, a pipe's once the
+//! other end lets it (a read waits for data, a write for room), the wait inside the service. A
+//! synchronous object keeps the position a read or write without an offset uses; an event handed
+//! to a read, write or listing is reset first and signaled once it completes. An APC routine
+//! (ReadFileEx's completion) is not supported.
 
 pub mod info;
 pub mod name;
@@ -25,6 +27,8 @@ mod directory;
 #[cfg(target_arch = "x86")]
 mod io;
 #[cfg(target_arch = "x86")]
+mod pipe;
+#[cfg(target_arch = "x86")]
 mod query;
 #[cfg(target_arch = "x86")]
 mod volume;
@@ -35,6 +39,8 @@ pub use create::{create_file, open_file};
 pub use directory::query_directory_file;
 #[cfg(target_arch = "x86")]
 pub use io::{flush_buffers_file, read_file, write_file};
+#[cfg(target_arch = "x86")]
+pub use pipe::{create_named_pipe_file, fs_control_file};
 #[cfg(target_arch = "x86")]
 pub use query::{
     query_attributes_file,
@@ -53,10 +59,11 @@ mod common {
 
     use super::super::attributes::{self, Root};
     use super::super::call::{UserAddr, UserPtr};
-    use super::name::{self, FileName};
+    use super::name::{self, Absolute, FileName};
     use crate::fs::fat32::lookup::{find, root, File, LookupError};
     use crate::fs::fat32::volume::Volume;
     use crate::fs::file::{with_records, FileObject};
+    use crate::fs::pipes::PipeName;
     use crate::ob::{ObjectType, Referenced};
     use crate::status::*;
 
@@ -96,20 +103,41 @@ mod common {
         Ok(())
     }
 
-    /// What an OBJECT_ATTRIBUTES names for the file services: the name, the directory it starts at
-    /// (none: the volume's root), and whether a handle made for it is inheritable.
+    /// What an OBJECT_ATTRIBUTES names on the boot volume for the file services: the name, the
+    /// directory it starts at (none: the volume's root), and whether a handle made for it is
+    /// inheritable.
     pub struct Target {
         pub name: FileName,
         pub start: Option<File>,
         pub inherit: bool,
     }
 
-    /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service: an absolute name, or one
-    /// relative to a directory's file object (ntdll names files under the current directory against
-    /// its handle). STATUS_OBJECT_NAME_INVALID without a name; a root that is no file object is
+    /// What an OBJECT_ATTRIBUTES names, by the device the name is on: a path on the boot volume, or
+    /// a pipe (and whether a handle made for it is inheritable).
+    // Made once per call and matched at once, never kept: the variants' sizes do not matter.
+    #[allow(clippy::large_enum_variant)]
+    pub enum Named {
+        Disk(Target),
+        Pipe { name: PipeName, inherit: bool },
+    }
+
+    /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service (see [`named`]), for a
+    /// service that serves the boot volume's names alone: a pipe's name is not served yet
+    /// (STATUS_NOT_IMPLEMENTED).
+    pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
+        match named(attributes)? {
+            Named::Disk(target) => Ok(target),
+            Named::Pipe { .. } => Err(STATUS_NOT_IMPLEMENTED),
+        }
+    }
+
+    /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service: an absolute name (a path on
+    /// the boot volume, or a pipe's: see [`name::absolute`]), or one relative to a directory's file
+    /// object (ntdll names files under the current directory against its handle).
+    /// STATUS_OBJECT_NAME_INVALID without a name; a root that is no file object is
     /// STATUS_OBJECT_TYPE_MISMATCH, a file's (not a directory's, or another device's than the
     /// disk) STATUS_INVALID_PARAMETER.
-    pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
+    pub fn named(attributes: UserAddr) -> Result<Named, NtStatus> {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
         }
@@ -118,7 +146,15 @@ mod common {
         let units = read.units();
         let (name, start) = match attributes::root_of(read.root)? {
             Root::None if units.is_empty() => return Err(STATUS_OBJECT_NAME_INVALID),
-            Root::None => (name::absolute(units)?, None),
+            Root::None => match name::absolute(units)? {
+                Absolute::Disk(name) => (name, None),
+                Absolute::Pipe(name) => {
+                    return Ok(Named::Pipe {
+                        name,
+                        inherit: read.inherit(),
+                    })
+                }
+            },
             Root::File(id) => {
                 let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
                 let object = crate::ob::file_object(reference);
@@ -133,11 +169,11 @@ mod common {
             }
             Root::NamedObjects | Root::Other => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         };
-        Ok(Target {
+        Ok(Named::Disk(Target {
             name,
             start,
             inherit: read.inherit(),
-        })
+        }))
     }
 
     /// What a walk found: the entry the name names, or the directory its last component would be
@@ -234,6 +270,8 @@ mod host {
         query_attributes_file(UserAddr, UserAddr);
         query_full_attributes_file(UserAddr, UserAddr);
         query_volume_information_file(Handle, UserAddr, UserAddr, u32, u32);
+        create_named_pipe_file(UserPtr<u32>, u32, UserAddr, UserAddr, u32, u32, u32, u32, u32, u32, u32, u32, u32, UserPtr<u64>);
+        fs_control_file(Handle, Handle, UserAddr, UserAddr, UserAddr, u32, UserAddr, u32, UserAddr, u32);
     }
 }
 

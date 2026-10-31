@@ -140,6 +140,7 @@ pub fn create() -> Option<GateStack> {
             frames,
             stacks,
             scratch,
+            ..
         } = database.parts();
         let slot = stacks.slots.allocate()?;
         Some((slot, paging::map_gate_slot(frames, scratch, slot as u32)))

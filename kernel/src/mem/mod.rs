@@ -1,5 +1,5 @@
-//! Memory management: the physical frame database, paging, kernel stacks, virtual memory, and the
-//! block heap the registry's arena runs on.
+//! Memory management: the physical frame database, paging, kernel stacks, the nonpaged pool,
+//! virtual memory, and the block heap the registry's arena runs on.
 
 pub mod frame;
 pub mod heap;
@@ -7,6 +7,7 @@ pub mod kstacks;
 pub mod layout;
 pub mod multiboot;
 pub mod paging;
+pub mod pool;
 pub mod vm;
 
 /// Boot-time frame database, built from the Multiboot memory map. Host builds run the modules' unit
@@ -20,15 +21,19 @@ use frame::FrameDb;
 use kstacks::KernelStacks;
 #[cfg(target_arch = "x86")]
 use paging::ScratchWindow;
+#[cfg(target_arch = "x86")]
+use pool::PoolPages;
 
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
 
-/// The memory manager's database: the frame database, the kernel stacks and the scratch window.
+/// The memory manager's database: the frame database, the kernel stacks, the nonpaged pool's pages
+/// and the scratch window.
 ///
 /// They are one database because their operations nest. A kernel stack's creation takes a slot,
 /// allocates the stack's frames, zeroes each through the scratch window and maps it, as one step;
-/// its release unmaps the frames and gives them back. Windows 2000 does the same under one lock,
+/// its release unmaps the frames and gives them back. A pool block's is the same, over the pool's
+/// pages. Windows 2000 does the same under one lock,
 /// the PFN lock, which covers the frame database and is held while a kernel stack is made. A step
 /// borrows the whole database once ([`with_database`]) and lends its parts ([`Database::parts`])
 /// to the code it calls, which never reaches the database again from inside the borrow.
@@ -38,6 +43,8 @@ struct Database {
     frames: Option<FrameDb>,
     /// The kernel stacks' slot ledger and parked stack.
     stacks: KernelStacks,
+    /// Which pages of the nonpaged pool blocks hold.
+    pool: PoolPages,
     /// The system's one scratch window.
     scratch: ScratchWindow,
 }
@@ -47,6 +54,7 @@ struct Database {
 struct Parts<'a> {
     frames: &'a mut FrameDb,
     stacks: &'a mut KernelStacks,
+    pool: &'a mut PoolPages,
     scratch: &'a mut ScratchWindow,
 }
 
@@ -58,6 +66,7 @@ impl Database {
         Database {
             frames: None,
             stacks: KernelStacks::empty(),
+            pool: PoolPages::empty(),
             scratch: ScratchWindow::new(),
         }
     }
@@ -85,6 +94,7 @@ impl Database {
                 .as_mut()
                 .expect("frame database not initialized"),
             stacks: &mut self.stacks,
+            pool: &mut self.pool,
             scratch: &mut self.scratch,
         }
     }

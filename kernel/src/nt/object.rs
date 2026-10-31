@@ -13,6 +13,8 @@
 //! exit): the services that need it answer STATUS_PROCESS_IS_TERMINATING, ntstatus.h's "an attempt
 //! was made to access an exiting process".
 
+use rtl::nt::{ObjectBasicInformation, UnicodeString};
+
 use super::call::{Fault, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::ob::{Entry, ObjectId, ObjectType};
 use crate::status::*;
@@ -246,9 +248,82 @@ pub fn closable(entry: Entry) -> Result<(), NtStatus> {
     }
 }
 
-/// OBJECT_INFORMATION_CLASS: ObjectHandleFlagInformation, the one class NtQueryObject and
-/// NtSetInformationObject answer here.
+/// OBJECT_INFORMATION_CLASS: ObjectHandleFlagInformation, the one class NtSetInformationObject
+/// takes, and NtQueryObject answers beside ObjectBasicInformation and ObjectNameInformation.
 pub const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
+pub const OBJECT_BASIC_INFORMATION: u32 = 0;
+pub const OBJECT_NAME_INFORMATION: u32 = 1;
+
+/// PUBLIC_OBJECT_BASIC_INFORMATION's size.
+pub const OBJECT_BASIC_INFORMATION_SIZE: u32 =
+    core::mem::size_of::<ObjectBasicInformation>() as u32;
+const _: () = assert!(OBJECT_BASIC_INFORMATION_SIZE == 56);
+
+/// A handle's attributes as ObjectBasicInformation reports them: OBJ_PROTECT_CLOSE and OBJ_INHERIT.
+const OBJ_PROTECT_CLOSE: u32 = 0x1;
+const OBJ_INHERIT: u32 = 0x2;
+
+/// ObjectBasicInformation for the handle `entry` is, its object's counts (pointer, handle) as they
+/// stand: the handle's attributes and access, the counts, and the reserved dwords zero (F2K keeps
+/// no pool charges, no creation time).
+pub fn basic_information(entry: Entry, (pointers, handles): (u32, u32)) -> ObjectBasicInformation {
+    let mut attributes = 0;
+    if entry.inherit {
+        attributes |= OBJ_INHERIT;
+    }
+    if entry.protect_from_close {
+        attributes |= OBJ_PROTECT_CLOSE;
+    }
+    ObjectBasicInformation {
+        attributes,
+        granted_access: entry.access,
+        handle_count: handles,
+        pointer_count: pointers,
+        reserved: [0; 10],
+    }
+}
+
+/// The longest object name ObjectNameInformation answers, in units: a pipe's, or a named object's,
+/// with its prefix.
+const NAME_UNITS: usize = 32
+    + if crate::fs::pipes::MAX_PIPE_NAME > crate::ob::MAX_NAME {
+        crate::fs::pipes::MAX_PIPE_NAME
+    } else {
+        crate::ob::MAX_NAME
+    };
+
+/// The prefixes an object's name takes: the named-pipe file system's device, the named objects'
+/// directory.
+const NAMED_PIPE_PREFIX: &[u8] = b"\\Device\\NamedPipe\\";
+const NAMED_OBJECTS_PREFIX: &[u8] = b"\\BaseNamedObjects\\";
+
+/// `prefix` then `name` (code page 1252 bytes, as the namespace keeps names) into `out`: the units
+/// written.
+fn name_units(prefix: &[u8], name: &[u8], out: &mut [u16]) -> usize {
+    let mut count = 0;
+    for &byte in prefix.iter().chain(name) {
+        out[count] = rtl::cp1252::MB_TO_WC[usize::from(byte)];
+        count += 1;
+    }
+    count
+}
+
+/// OBJECT_NAME_INFORMATION's layout for a name of `units` units, the caller's structure at
+/// `buffer`: the UNICODE_STRING, and the bytes the whole answer takes — the string, its units and
+/// their terminator; a nameless object's string is empty, with no buffer.
+pub fn name_information(units: usize, buffer: u32) -> (UnicodeString<u32>, u32) {
+    let header = core::mem::size_of::<UnicodeString<u32>>() as u32;
+    if units == 0 {
+        return (UnicodeString::default(), header);
+    }
+    let length = (2 * units) as u16;
+    let string = UnicodeString {
+        length,
+        maximum_length: length + 2,
+        buffer: buffer.wrapping_add(header),
+    };
+    (string, header + u32::from(length) + 2)
+}
 
 /// OBJECT_HANDLE_FLAG_INFORMATION: a handle's two attributes, as BOOLEANs.
 #[repr(C)]
@@ -303,10 +378,11 @@ pub enum FlagLength {
     Exactly,
 }
 
-/// The checks NtQueryObject and NtSetInformationObject make of their class and length before the
-/// handle: a class other than ObjectHandleFlagInformation is STATUS_INVALID_INFO_CLASS (the
-/// others, the object's basic, name, type and all-types information, are not answered here), a
-/// length the service does not take (see [`FlagLength`]) STATUS_INFO_LENGTH_MISMATCH.
+/// The checks NtQueryObject (past its basic and name classes) and NtSetInformationObject make of
+/// their class and length before the handle: a class other than ObjectHandleFlagInformation is
+/// STATUS_INVALID_INFO_CLASS (the object's type and all-types information are not answered, and
+/// NtSetInformationObject takes the flags alone), a length the service does not take (see
+/// [`FlagLength`]) STATUS_INFO_LENGTH_MISMATCH.
 pub fn handle_flag_arguments(class: u32, length: u32, rule: FlagLength) -> Result<(), NtStatus> {
     if class != OBJECT_HANDLE_FLAG_INFORMATION {
         return Err(STATUS_INVALID_INFO_CLASS);
@@ -331,7 +407,8 @@ pub fn pseudo_handle_flags(handle: u32) -> Option<ObjectHandleFlagInformation> {
 }
 
 /// NtQueryObject(Handle, ObjectInformationClass, ObjectInformation, ObjectInformationLength,
-/// ReturnLength): ObjectHandleFlagInformation alone: the handle's inheritance and its protection
+/// ReturnLength): ObjectBasicInformation ([`query_basic`]), ObjectNameInformation
+/// ([`query_name`]), or ObjectHandleFlagInformation: the handle's inheritance and its protection
 /// from close, from its entry in the calling process's handle table (kernel32's
 /// GetHandleInformation), its size written to ReturnLength when given. The class and length are
 /// checked first (see [`handle_flag_arguments`]: a buffer too short still has the size written to
@@ -347,6 +424,15 @@ pub fn query_object(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
+    match class {
+        OBJECT_BASIC_INFORMATION => {
+            return query_basic(call, handle, information, length, return_length)
+        }
+        OBJECT_NAME_INFORMATION => {
+            return query_name(call, handle, information, length, return_length)
+        }
+        _ => {}
+    }
     if let Err(status) = handle_flag_arguments(class, length, FlagLength::AtLeast) {
         if status == STATUS_INFO_LENGTH_MISMATCH {
             return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
@@ -360,6 +446,133 @@ pub fn query_object(
     information.write(&flags.to_bytes())?;
     return_length.write_optional(OBJECT_HANDLE_FLAG_INFORMATION_SIZE)?;
     Ok(STATUS_SUCCESS)
+}
+
+/// ObjectBasicInformation (see [`basic_information`]) of the handle, into a buffer of at least its
+/// 56 bytes (STATUS_INFO_LENGTH_MISMATCH otherwise, the size written to ReturnLength), its size
+/// written to ReturnLength when given. The pointer count holds the service's own reference, as
+/// Windows 2000's does. A handle naming no entry (a console handle has none) is
+/// STATUS_INVALID_HANDLE; a pseudo-handle, which has none either, is not served yet
+/// (STATUS_NOT_IMPLEMENTED).
+fn query_basic(
+    call: &mut NtCall,
+    handle: Handle,
+    information: UserAddr,
+    length: u32,
+    return_length: UserPtr<u32>,
+) -> NtResult {
+    if length < OBJECT_BASIC_INFORMATION_SIZE {
+        return_length.write_optional(OBJECT_BASIC_INFORMATION_SIZE)?;
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    let entry = handle_entry(call, handle)?;
+    let basic = basic_information(entry, counts_of(entry)?);
+    information.write(rtl::pod::Pod::as_bytes(&basic))?;
+    return_length.write_optional(OBJECT_BASIC_INFORMATION_SIZE)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// ObjectNameInformation of the handle's object: an OBJECT_NAME_INFORMATION (a UNICODE_STRING)
+/// with the name's units after it, terminated (the capture: the characters follow the structure,
+/// MaximumLength is Length + 2, and ReturnLength the whole). A pipe's end is named under
+/// `\Device\NamedPipe\`, a named object under `\BaseNamedObjects\`; an object without a name
+/// answers the empty string. A buffer too short for the answer is STATUS_INFO_LENGTH_MISMATCH,
+/// the size it needs written to ReturnLength. A disk file's name, and the directories', window
+/// stations', desktops' and keys', are not served yet (STATUS_NOT_IMPLEMENTED), nor a
+/// pseudo-handle's.
+fn query_name(
+    call: &mut NtCall,
+    handle: Handle,
+    information: UserAddr,
+    length: u32,
+    return_length: UserPtr<u32>,
+) -> NtResult {
+    let entry = handle_entry(call, handle)?;
+    let mut units = [0u16; NAME_UNITS + 1];
+    let count = object_name(entry, &mut units[..NAME_UNITS])?;
+    let (string, needed) = name_information(count, information.raw());
+    if length < needed {
+        return_length.write_optional(needed)?;
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    information.cast::<UnicodeString<u32>>().write(string)?;
+    if count > 0 {
+        let bytes = rtl::pod::Pod::as_bytes(&units);
+        let header = core::mem::size_of::<UnicodeString<u32>>() as u32;
+        information.offset(header).write(&bytes[..2 * count + 2])?;
+    }
+    return_length.write_optional(needed)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// The entry `handle` names in the calling process's table: STATUS_INVALID_HANDLE for none, and a
+/// pseudo-handle's (no entry to read) STATUS_NOT_IMPLEMENTED.
+fn handle_entry(call: &mut NtCall, handle: Handle) -> Result<Entry, NtStatus> {
+    if pseudo_handle_flags(handle.raw()).is_some() {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    #[cfg(target_arch = "x86")]
+    {
+        call.process()
+            .lookup_handle(handle.raw())
+            .ok_or(STATUS_INVALID_HANDLE)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = call;
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// The (pointer, handle) counts of the object `entry` names, the service's reference among them.
+fn counts_of(entry: Entry) -> Result<(u32, u32), NtStatus> {
+    let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
+    #[cfg(target_arch = "x86")]
+    {
+        let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
+        let counts = crate::ob::locked(|directory| directory.counts(id));
+        drop(reference);
+        counts.ok_or(STATUS_INVALID_HANDLE)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = id;
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// The name of the object `entry` names, into `out`: its units (0 for none; see [`query_name`]).
+fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
+    let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
+    match id.kind {
+        ObjectType::Directory
+        | ObjectType::WindowStation
+        | ObjectType::Desktop
+        | ObjectType::Key => Err(STATUS_NOT_IMPLEMENTED),
+        #[cfg(target_arch = "x86")]
+        ObjectType::File => {
+            let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
+            let object = crate::ob::file_object(reference);
+            match object.context {
+                crate::fs::file::Context::Pipe(end) => {
+                    let count = name_units(NAMED_PIPE_PREFIX, &[], out);
+                    Ok(count + crate::fs::pipes::name_of(end, &mut out[count..]))
+                }
+                crate::fs::file::Context::Disk(_) => Err(STATUS_NOT_IMPLEMENTED),
+            }
+        }
+        #[cfg(target_arch = "x86")]
+        _ => Ok(crate::ob::locked(|directory| {
+            directory
+                .name_of(id)
+                .map_or(0, |name| name_units(NAMED_OBJECTS_PREFIX, name, out))
+        })),
+        #[cfg(not(target_arch = "x86"))]
+        _ => {
+            let _ = (out, NAMED_OBJECTS_PREFIX);
+            Err(STATUS_INVALID_HANDLE)
+        }
+    }
 }
 
 /// The flags of the entry `handle` names in the calling process's handle table;
@@ -921,6 +1134,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// ObjectBasicInformation: the handle's attributes as OBJ_INHERIT and OBJ_PROTECT_CLOSE (the
+    /// capture's 0x2 for an inheritable pipe end, 0x0 otherwise), its access, the counts.
+    #[test]
+    fn basic_information_reports_the_handle_and_the_counts() {
+        let entry = Entry {
+            inherit: true,
+            access: 0x0012_0189,
+            ..event()
+        };
+        let basic = basic_information(entry, (2, 1));
+        assert_eq!(
+            (
+                basic.attributes,
+                basic.granted_access,
+                basic.handle_count,
+                basic.pointer_count
+            ),
+            (0x2, 0x0012_0189, 1, 2)
+        );
+        assert_eq!(basic.reserved, [0; 10]);
+        let protected = Entry {
+            protect_from_close: true,
+            ..event()
+        };
+        assert_eq!(basic_information(protected, (1, 1)).attributes, 0x1);
+    }
+
+    /// ObjectNameInformation's layout: the characters right after the structure, MaximumLength
+    /// Length + 2, the whole 8 + MaximumLength (the capture's checks); a nameless object's string
+    /// empty, with no buffer.
+    #[test]
+    fn name_information_lays_the_name_after_the_string() {
+        let (string, needed) = name_information(46, 0x0040_1000);
+        assert_eq!((string.length, string.maximum_length), (92, 94));
+        assert_eq!(string.buffer, 0x0040_1008);
+        assert_eq!(needed, 8 + 94);
+        let (empty, needed) = name_information(0, 0x0040_1000);
+        assert_eq!(empty, UnicodeString::default());
+        assert_eq!(needed, 8);
+        let mut out = [0u16; 64];
+        let count = name_units(NAMED_PIPE_PREFIX, b"x", &mut out);
+        assert_eq!(
+            std::string::String::from_utf16_lossy(&out[..count]),
+            "\\Device\\NamedPipe\\x"
+        );
     }
 
     /// The pseudo-handles answer no flags set; any other handle is its entry's.

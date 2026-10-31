@@ -94,6 +94,8 @@ pub fn memory(magic: u32, multiboot_info: u32) {
     crate::mem::paging::init_table_access();
     // The kernel stack region's tables, shared by every address space from the first on.
     crate::mem::paging::init_kernel_stack_tables();
+    // The nonpaged pool's tables, shared alike.
+    crate::mem::paging::init_pool_tables();
 }
 
 /// The executive's tables: the console and the registry.

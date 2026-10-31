@@ -5,7 +5,13 @@
 //! call (one position, one call at a time), and through a kernel chunk: a read takes it off the
 //! volume inside the volume's locked section and copies it out once the volume is released, a
 //! write the reverse. A chunk the caller's memory refuses ends the call with
-//! STATUS_ACCESS_VIOLATION, what moved before it counted.
+//! STATUS_ACCESS_VIOLATION, what moved before it counted. The disk's arm is one critical region (it
+//! holds the object across the volume's).
+//!
+//! A pipe's bytes move through the named-pipe file system ([`crate::fs::pipes`]), the object's
+//! lock held for the call as Windows 2000 holds a synchronous file object's while a pipe's read
+//! waits, outside any critical region: the call may wait as long as the other end decides, and a
+//! termination interrupts the wait (for the lock, or for the pipe), the call cancelled.
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
@@ -109,9 +115,16 @@ fn read_file_held(
         rights::FILE_READ_DATA,
     )?;
     let result = match transfer.object.context {
-        Context::Disk(record) => {
+        Context::Disk(record) => crate::process::threads::critical_region(|| {
             disk_data(record)?;
-            read_disk(&transfer, record, buffer, length)
+            Ok::<_, NtStatus>(read_disk(&transfer, record, buffer, length))
+        })?,
+        Context::Pipe(end) => {
+            buffer.probe(length)?;
+            io::serialized_interruptible(&transfer.object, |_| {
+                crate::fs::pipes::read(end, buffer, length)
+            })
+            .and_then(|read| read)
         }
     };
     finish(transfer, io_status, result)
@@ -163,7 +176,8 @@ fn read_disk(
     })
 }
 
-/// NtReadFile (see [`read_file_held`]), as one critical region.
+/// NtReadFile (see [`read_file_held`]): a disk file's read is one critical region, inside the
+/// device's arm.
 #[allow(clippy::too_many_arguments)]
 pub fn read_file(
     call: &mut NtCall,
@@ -177,14 +191,9 @@ pub fn read_file(
     offset: UserPtr<u64>,
     key: UserPtr<u32>,
 ) -> NtResult {
-    // The call holds its file object (a reference) across the volume's critical regions: run it
-    // inside one of its own, so a termination requested meanwhile ends the thread only once the
-    // reference has gone (an inner region's end would end it with the reference still held).
-    crate::process::threads::critical_region(|| {
-        read_file_held(
-            call, handle, event, routine, context, io_status, buffer, length, offset, key,
-        )
-    })
+    read_file_held(
+        call, handle, event, routine, context, io_status, buffer, length, offset, key,
+    )
 }
 
 /// NtWriteFile: the I/O manager's checks ([`transfer`]; a handle without write access is
@@ -206,9 +215,16 @@ fn write_file_held(
     let needs = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA;
     let transfer = transfer(handle, event, routine, io_status, offset, needs)?;
     let result = match transfer.object.context {
-        Context::Disk(record) => {
+        Context::Disk(record) => crate::process::threads::critical_region(|| {
             disk_data(record)?;
-            write_disk(&transfer, record, buffer, length)
+            Ok::<_, NtStatus>(write_disk(&transfer, record, buffer, length))
+        })?,
+        Context::Pipe(end) => {
+            buffer.probe(length)?;
+            io::serialized_interruptible(&transfer.object, |_| {
+                crate::fs::pipes::write(end, buffer, length)
+            })
+            .and_then(|written| written)
         }
     };
     finish(transfer, io_status, result)
@@ -272,7 +288,8 @@ fn write_disk(
     })
 }
 
-/// NtWriteFile (see [`write_file_held`]), as one critical region.
+/// NtWriteFile (see [`write_file_held`]): as NtReadFile's, a disk file's write is one critical
+/// region, inside the device's arm.
 #[allow(clippy::too_many_arguments)]
 pub fn write_file(
     call: &mut NtCall,
@@ -286,23 +303,25 @@ pub fn write_file(
     offset: UserPtr<u64>,
     key: UserPtr<u32>,
 ) -> NtResult {
-    // As NtReadFile's: the call holds its file object across the volume's critical regions.
-    crate::process::threads::critical_region(|| {
-        write_file_held(
-            call, handle, event, routine, context, io_status, buffer, length, offset, key,
-        )
-    })
+    write_file_held(
+        call, handle, event, routine, context, io_status, buffer, length, offset, key,
+    )
 }
 
 /// NtFlushBuffersFile: the I/O manager's checks (a handle without write access is
 /// STATUS_ACCESS_DENIED), then the object's device flushes: a disk file's writes are already on
-/// the volume (F2K's writes go through).
+/// the volume (F2K's writes go through); a pipe's end waits until the other end has read what it
+/// wrote (see [`crate::fs::pipes::flush`]), under the object's lock as its writes.
 pub fn flush_buffers_file(_call: &mut NtCall, handle: Handle, io_status: UserAddr) -> NtResult {
     let object = file_object(handle.raw())?;
     check_access(&object, rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA)?;
     io_status.probe(8)?;
     match object.context {
         Context::Disk(_) => {}
+        Context::Pipe(end) => {
+            io::serialized_interruptible(&object, |_| crate::fs::pipes::flush(end))
+                .and_then(|flushed| flushed)?;
+        }
     }
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)

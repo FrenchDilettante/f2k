@@ -694,7 +694,6 @@ impl Directory {
     }
 
     /// An object's (pointer, handle) counts; none for an id that names nothing.
-    #[cfg(test)]
     pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {
         self.header(id)
             .map(|header| (header.pointers, header.handles))
@@ -1158,6 +1157,15 @@ impl Directory {
         self.names
             .iter()
             .find_map(|entry| entry.object.filter(|_| entry.name() == name))
+    }
+
+    /// The name `id` is bound to in the namespace, as the namespace keeps it; none for an object
+    /// without one.
+    pub fn name_of(&self, id: ObjectId) -> Option<&[u8]> {
+        self.names
+            .iter()
+            .find(|entry| entry.object == Some(id))
+            .map(NameEntry::name)
     }
 
     /// Bind `name` to `id` (its session prefix aside).

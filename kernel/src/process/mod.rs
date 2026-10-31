@@ -1140,9 +1140,10 @@ fn release_address_space_of(process: &Process) {
 /// The object audit. With its handles closed, its waits returned and its threads ended, the
 /// process holds no object any more: what only it held is gone, and its threads' records start
 /// over. An object still live may be another process's too, so the leak sweep waits for a
-/// `quiescent` reap: with no process left, no object is left either — nor any open-file record.
-/// One that is would be a reference leak: it is reported, and swept all the same (a leaked
-/// section's frames given back; the file records are forgotten whole).
+/// `quiescent` reap: with no process left, no object is left either — nor any open-file record or
+/// pipe instance. One that is would be a reference leak: it is reported, and swept all the same (a
+/// leaked section's frames given back; the file records are forgotten whole; a pipe's rings go
+/// back to the pool).
 #[cfg(target_arch = "x86")]
 fn audit_objects(process: &Process, quiescent: bool) {
     crate::ob::locked(|directory| directory.process_ended(process.sched_ptr()));
@@ -1162,6 +1163,7 @@ fn audit_objects(process: &Process, quiescent: bool) {
     }
     crate::ob::locked(crate::ob::Directory::sweep_end);
     leaked += crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
+    leaked += crate::fs::pipes::sweep();
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",

@@ -99,9 +99,12 @@ fn query_directory_file_held(
         return Err(STATUS_NOT_IMPLEMENTED);
     }
     let event = completion_event(event.raw())?;
-    // The object's device lists: a disk directory's entries; a disk file has none to list.
+    // The object's device lists: a disk directory's entries; a disk file has none to list, and a
+    // pipe's end none either (only the named-pipe file system's root, which no open reaches yet,
+    // lists pipes).
     let directory: File = match object.context {
         Context::Disk(record) => crate::fs::io::file_at(record),
+        Context::Pipe(_) => return Err(STATUS_INVALID_PARAMETER),
     };
     if !directory.directory {
         return Err(STATUS_INVALID_PARAMETER);

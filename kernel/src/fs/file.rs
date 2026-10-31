@@ -170,6 +170,9 @@ pub enum Context {
     /// A file or directory of the boot volume, served by the FAT file system: its file record. The
     /// open's own state (its position, its directory search) is the object's [`IoState`].
     Disk(FileRecordId),
+    /// One end of a pipe instance, served by the named-pipe file system (NPFS's CCB and the end
+    /// it opens, its FsContext and FsContext2).
+    Pipe(crate::fs::pipes::PipeEnd),
 }
 
 /// A file object's body: one open of one file.
@@ -242,6 +245,7 @@ impl FileObject {
     pub fn disk(&self) -> Option<FileRecordId> {
         match self.context {
             Context::Disk(record) => Some(record),
+            Context::Pipe(_) => None,
         }
     }
 
@@ -262,6 +266,23 @@ impl FileObject {
         let result = body(unsafe { &mut *self.io.get() });
         self.lock.release();
         result
+    }
+
+    /// [`FileObject::serialized`] for a call that may wait as long as another party decides (a
+    /// pipe's read until a writer comes), outside any critical region: taking the lock is a wait
+    /// that ends the thread's termination interrupts, with the wait's status (STATUS_USER_APC),
+    /// as Windows 2000's IopAcquireFileObjectLock reports an interrupted acquisition, and `body`
+    /// is not run then.
+    #[cfg(target_arch = "x86")]
+    pub fn serialized_interruptible<R>(
+        &self,
+        body: impl FnOnce(&mut IoState) -> R,
+    ) -> Result<R, crate::status::NtStatus> {
+        self.lock.acquire_interruptible()?;
+        // SAFETY: as in `serialized`: the running thread holds the lock until the release below.
+        let result = body(unsafe { &mut *self.io.get() });
+        self.lock.release();
+        Ok(result)
     }
 }
 
@@ -392,6 +413,39 @@ impl FileLock {
             });
         }
         self.waiters.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Take the lock for the running thread, as [`FileLock::acquire`] does, its waits user-mode
+    /// ones (Windows 2000 waits in the requestor's mode): a termination's exit, pending at the
+    /// thread's return to user mode, ends the wait with STATUS_USER_APC, and the thread gives up
+    /// without the lock, no longer counted among the waiters.
+    #[cfg(target_arch = "x86")]
+    fn acquire_interruptible(&self) -> Result<(), crate::status::NtStatus> {
+        let running = crate::sched::current_thread();
+        if self.take(running) {
+            return Ok(());
+        }
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        while !self.take(running) {
+            let status =
+                crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
+                    dispatcher.wait_for(
+                        thread,
+                        self.event(),
+                        WaitReason::Executive,
+                        WaitMode::User,
+                        false,
+                        None,
+                        stamp,
+                    )
+                });
+            if status == crate::status::STATUS_USER_APC {
+                self.waiters.fetch_sub(1, Ordering::SeqCst);
+                return Err(status);
+            }
+        }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+        Ok(())
     }
 
     /// Give up the lock the running thread holds; the dispatcher is needed only to set the event.

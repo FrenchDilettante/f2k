@@ -385,6 +385,26 @@ pub fn init_kernel_stack_tables() {
     });
 }
 
+/// Make the nonpaged pool's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
+/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
+/// inherits, so a pool page mapped in them ([`map_pool_page`]) is mapped in every address space.
+/// They are never released.
+#[cfg(target_arch = "x86")]
+pub fn init_pool_tables() {
+    assert!(
+        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+        "the nonpaged pool's tables made after the first process directory"
+    );
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        for window in layout::NONPAGED_POOL.first_entry()..layout::NONPAGED_POOL.end_entry() {
+            install_kernel_table(window, new_table_in(frames, scratch));
+        }
+    });
+}
+
 /// Point the current directory's entry `window` at the page table `table_phys`: present, writable,
 /// supervisor, not global. Nothing maps through the entry before it is written.
 ///
@@ -765,9 +785,10 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
 ///
 /// Past the boot (before any thread runs), the kernel windows change only here and in
 /// [`unmap_kernel_page`], at every thread create and exit, from [`map_gate_slot`] and
-/// [`unmap_gate_slot`] under the memory manager's database borrow, which masks interrupts: on one
-/// processor nothing else touches the entry between the check and the store. Only the boot creates
-/// a table (the frozen-half assertion).
+/// [`unmap_gate_slot`], and at every nonpaged pool block's allocation and release, from
+/// [`map_pool_page`] and [`unmap_pool_page`], each under the memory manager's database borrow,
+/// which masks interrupts: on one processor nothing else touches the entry between the check and
+/// the store. Only the boot creates a table (the frozen-half assertion).
 ///
 /// # Panics
 ///
@@ -814,9 +835,9 @@ fn map_kernel_page_in(
 }
 
 /// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,
-/// returning the frame it named. The frame itself is the caller's to release. The caller,
-/// [`unmap_gate_slot`], runs under the memory manager's database borrow with interrupts masked, so
-/// nothing else touches the entry meanwhile.
+/// returning the frame it named. The frame itself is the caller's to release. The callers,
+/// [`unmap_gate_slot`] and [`unmap_pool_page`], run under the memory manager's database borrow with
+/// interrupts masked, so nothing else touches the entry meanwhile.
 ///
 /// # Panics
 ///
@@ -900,6 +921,51 @@ pub fn map_gate_slot(
         *slot = frame;
     }
     stack
+}
+
+/// A frame for a nonpaged pool page, from `frames`; none when the frame database has none left
+/// (the pool's caller answers that as a status, not a panic).
+#[cfg(target_arch = "x86")]
+pub fn try_allocate_frame(frames: &mut FrameDb) -> Option<u32> {
+    frames
+        .try_allocate(PRIMARY_COLOR)
+        .map(|frame| frame * PAGE_SIZE)
+}
+
+/// Map the frame `frame_phys`, zeroed through `scratch` first, at the nonpaged pool's page
+/// `vaddr` in the shared tables, so into every address space at once (supervisor-only).
+///
+/// # Panics
+///
+/// `vaddr` lies outside the pool's region, or is mapped already.
+#[cfg(target_arch = "x86")]
+pub fn map_pool_page(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    vaddr: u32,
+    frame_phys: u32,
+) {
+    assert!(
+        layout::NONPAGED_POOL.holds(vaddr),
+        "a pool page outside the nonpaged pool"
+    );
+    scratch.init_frame(frame_phys, 0, &[]);
+    map_kernel_page_in(frames, scratch, vaddr, frame_phys);
+}
+
+/// Unmap the nonpaged pool's page `vaddr` from the shared tables, so from every address space:
+/// the frame it mapped, for the caller to release.
+///
+/// # Panics
+///
+/// `vaddr` lies outside the pool's region, or is not mapped.
+#[cfg(target_arch = "x86")]
+pub fn unmap_pool_page(vaddr: u32) -> u32 {
+    assert!(
+        layout::NONPAGED_POOL.holds(vaddr),
+        "a pool page outside the nonpaged pool"
+    );
+    unmap_kernel_page(vaddr)
 }
 
 /// Whether the current directory holds every table of the kernel stack region.
