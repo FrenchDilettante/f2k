@@ -1,17 +1,3 @@
-# ctrl: blocks the capture script cannot take, merged over output.txt by tests/f2kboot.py
-# (a block here replaces the captured block with the same command line, or adds one).
-#
-# ctrl.exe keys: real Ctrl+C and Ctrl+Break pressed on the keyboard, which tests/capture.bat
-# cannot press. Captured by hand on the real machine: in a console window, from the fixture's
-# directory, "ctrl.exe keys > keys.txt", the keys pressed as each prompt asks (ctrl.c's header
-# lists them), then "echo %ERRORLEVEL%". Its block goes below this header: ">>> ctrl.exe keys",
-# keys.txt's lines, then "<<< exit code=N" with the number echoed.
-#
-# Written ahead of the hand capture (from the documented behaviour: a line read Ctrl+C or
-# Ctrl+Break ends returns no characters with ERROR_OPERATION_ABORTED, the console echoes no ^C, a
-# handler runs on a thread of its own), to be confirmed by the owner against the real machine.
-# "input events left" depends on when the keys are released, so it may need a mask.
->>> ctrl.exe keys
 == keys
 CONIN$ and CONOUT$ open: yes
 SetConsoleMode(CONIN$, 0x7): ret=1 err=-
@@ -43,4 +29,4 @@ kid: handler: event 1, on the main thread no, answers FALSE
 the child's end: WAIT_OBJECT_0, exit code 0xC000013A
 this program's handler: CTRL_BREAK_EVENT, on the main thread no
 CONIN$ mode restored: yes
-<<< exit code=0
+ctrl: done
