@@ -22,7 +22,7 @@ if not "%~1"=="" goto one
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn winsta registry hellomd crt seh fd wide) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe winsta registry hellomd crt seh fd wide) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -34,7 +34,7 @@ rem needs it and it is not there (the fixtures built on common\f2kt.h
 rem stamp their source with it).
 :one
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -255,6 +255,21 @@ call :stamp spawn.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% spawn.c
 if errorlevel 1 (echo build.bat: spawn failed & exit /b 1)
 del spawn.obj spawnkid.obj
+cd ..\..
+goto :eof
+
+rem pipe's companion program, pipekid.exe (the child its sections start,
+rem and the stand-in command processor its popen section points COMSPEC
+rem at), builds beside it with no source stamp; both with /MD.
+:pipe
+echo === pipe
+cd kernel32\pipe
+cl /nologo /MD pipekid.c
+if errorlevel 1 (echo build.bat: pipekid failed & exit /b 1)
+call :stamp pipe.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% pipe.c
+if errorlevel 1 (echo build.bat: pipe failed & exit /b 1)
+del pipe.obj pipekid.obj
 cd ..\..
 goto :eof
 

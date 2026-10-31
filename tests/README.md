@@ -13,7 +13,7 @@ tests/
 │               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn
+│               # console, spawn, pipe
 ├── user32/     # hellogui, winsta
 ├── advapi32/   # registry
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide (built with /MD)
@@ -21,7 +21,7 @@ tests/
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
 
-No fixture calls ntdll directly yet, so there is no `ntdll/` group.
+There is no `ntdll/` group: the fixtures that call ntdll directly (`memory`, `files`, `spawn`, `pipe`) reach its exports through `GetProcAddress`, declaring the structures they need themselves, and sit in the group of the DLL whose behaviour they observe.
 msvcrt's group is `crt/`: a `tests/msvcrt/` directory would shadow Python's `msvcrt` module, which `subprocess` imports to detect Windows.
 Inside its group, each test has its own directory, named after the test:
 
@@ -108,6 +108,9 @@ The fixtures:
   Built with `/MD`, in a scratch directory as `fswrite`'s.
   Gated.
   Its `system` block (no cmd.exe on F2K's disk), `detach` block (F2K's stub path) and `remoteexit` block (a refusal Windows 2000's base server gives, which F2K does not have) are expected to stay failing.
+- `pipe` - anonymous pipes, with its companion program `pipekid.exe` (built beside it from `pipekid.c`), which the sections start with pipes for their standard handles: `CreatePipe`'s sizes and how many bytes each takes before a write waits, its ends' file type, inheritance, granted access and name (ntdll's `NtQueryObject`), I/O the wrong way and the file queries on a pipe, reads, writes, zero-byte I/O and `PeekNamedPipe`, ntdll's `NtFsControlFile` with the pipe-peek code (checked only through the bytes it returns, so only a real peek gives the capture), a closed end seen from the other, waits for data and for room (woken, ended by a close or by `TerminateThread`), children joined by pipes as cmd.exe joins them, msvcrt's `_pipe`, `_read` and `_write` in text and binary mode, and `_popen`, `_pclose` and `system()` with COMSPEC naming `pipekid.exe`, whose `/c` mode stands in for the command processor (F2K's disk has no cmd.exe) and prints the command line msvcrt gives it.
+  Built with `/MD`.
+  Declared ahead of its real-machine build and capture.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 
