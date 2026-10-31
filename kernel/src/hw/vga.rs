@@ -36,9 +36,10 @@ pub trait CellMemory {
     fn store(&mut self, index: usize, word: u16);
 }
 
-/// A cell as the screen stores it.
+/// A cell as the screen stores it: its character, and its attribute's colours (the low byte; the
+/// text screen has no place for the COMMON_LVB_ bits above them).
 pub const fn cell_word(cell: Cell) -> u16 {
-    cell.character as u16 | (cell.attribute as u16) << 8
+    cell.character as u16 | (cell.attribute & 0xFF) << 8
 }
 
 /// The text screen over its cell memory and port space.
@@ -74,7 +75,7 @@ impl<M: CellMemory, P: Io> TextScreen<M, P> {
     }
 
     /// Blank every cell in `attribute`.
-    pub fn clear(&mut self, attribute: u8) {
+    pub fn clear(&mut self, attribute: u16) {
         for index in 0..COLUMNS * ROWS {
             self.memory.store(index, cell_word(Cell::blank(attribute)));
         }

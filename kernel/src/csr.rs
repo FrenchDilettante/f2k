@@ -13,8 +13,11 @@
 //! unchanged, as the kernel's console always has (the suite reads program output there), then
 //! through the screen buffer's renderer. Only the standard handles' writes reach the serial line
 //! (`rtl::console::Handles`): it stands for the file a capture redirects standard output to, and a
-//! screen buffer opened by name (CONOUT$) writes to the screen alone. After each call the window's
-//! rows it changed are copied to the VGA text screen and the hardware cursor follows the buffer's.
+//! screen buffer opened by name (CONOUT$) writes to the screen alone. Under the kernel option
+//! `redirected` (the harness's runs of the corpus) the standard handles' writes reach the serial
+//! line alone, as the capture's redirected output never reaches the real machine's screen. After
+//! each call the window's rows it changed are copied to the VGA text screen and the hardware
+//! cursor follows the buffer's.
 //!
 //! The keyboard's bytes reach the same console from the keyboard driver's DPC ([`key_byte`]): the
 //! console's producer turns them into key event records, appended to its input buffer for the
@@ -122,14 +125,26 @@ static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer
     staged: Staged::new(),
 });
 
+/// The kernel option under which the standard handles stand for a file ([`Console::redirect`]):
+/// the test harness's runs of the corpus, as capture.bat redirects each program's standard output
+/// and error to a file on the real machine.
+pub const REDIRECTED: &[u8] = b"redirected";
+
 /// The console's title, from the first program the boot loads into it: its image path (see
-/// [`Console::name`]). The programs after it share the console and its title.
+/// [`Console::name`]); and, under the kernel option [`REDIRECTED`], its standard handles standing
+/// for a file. The programs after it share the console, its title and its standard handles'
+/// redirection.
 #[cfg(target_arch = "x86")]
 pub fn name_console(image_path: &[u8]) {
+    use crate::boot::cmdline::{kernel_command_line, kernel_option};
+    let redirected = kernel_option(kernel_command_line(), REDIRECTED);
     crate::level::raised::<Dispatch, _>(|dispatch| {
         let server = SERVER.get(dispatch);
         if !core::mem::replace(&mut server.named, true) {
             server.console.name(image_path);
+            if redirected {
+                server.console.redirect();
+            }
         }
     });
 }
@@ -463,7 +478,7 @@ impl Client for Dual<'_> {
     /// before it shown — the two answers the bare/badptr fixture's console writes capture.
     fn show(
         &mut self,
-        screen: &mut ScreenBuffer,
+        mut screen: Option<&mut ScreenBuffer>,
         buffer: usize,
         count: usize,
         logged: bool,
@@ -482,20 +497,24 @@ impl Client for Dual<'_> {
                     serial_byte(byte);
                 }
             }
-            screen.render(&chunk[..take]);
+            if let Some(screen) = screen.as_deref_mut() {
+                screen.render(&chunk[..take]);
+            }
             done += take as u32;
         }
         Ok(())
     }
 
     /// The server's bytes (a Unicode write's), to the serial line, then to the screen buffer.
-    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8], logged: bool) {
+    fn print(&mut self, screen: Option<&mut ScreenBuffer>, bytes: &[u8], logged: bool) {
         if logged {
             for &byte in bytes {
                 serial_byte(byte);
             }
         }
-        screen.render(bytes);
+        if let Some(screen) = screen {
+            screen.render(bytes);
+        }
     }
 
     /// The caller's memory, refused as the services refuse it: STATUS_ACCESS_VIOLATION.

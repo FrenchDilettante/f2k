@@ -1,6 +1,6 @@
 //! The allocator: malloc, calloc, realloc and free over a heap of the C runtime's own (HeapCreate,
-//! when the DLL is loaded), and memmove, memset and memcmp (which answers -1, 0 or 1, as strcmp
-//! does).
+//! when the DLL is loaded), and memmove, memcpy, memset and memcmp (which answers -1, 0 or 1, as
+//! strcmp does).
 //!
 //! As wide's capture shows: malloc(0) and calloc(0, n) hand out a block; realloc(p, 0) frees `p`
 //! and answers NULL; realloc(NULL, n) is malloc; a request the heap cannot serve answers NULL with
@@ -138,6 +138,19 @@ pub unsafe extern "C" fn memmove(destination: *mut u8, source: *const u8, count:
     destination
 }
 
+/// memcpy: `count` bytes copied from `source` to `destination`; answers `destination`. The C
+/// runtime reference leaves overlapping ranges undefined; they are copied as memmove copies them.
+///
+/// # Safety
+///
+/// Both ranges are the caller's, `count` bytes each.
+#[unsafe(export_name = "f2k_export_memcpy")]
+pub unsafe extern "C" fn memcpy(destination: *mut u8, source: *const u8, count: usize) -> *mut u8 {
+    // SAFETY: the caller's ranges.
+    unsafe { core::ptr::copy(source, destination, count) };
+    destination
+}
+
 /// memset: `count` bytes at `destination` set to `c` (as an unsigned char); answers `destination`.
 ///
 /// # Safety
@@ -220,6 +233,12 @@ mod tests {
             let b = buf.as_mut_ptr();
             memmove(b, b.add(2), 5);
             assert_eq!(&buf, b"2345656789");
+            let mut to = [0u8; 4];
+            assert_eq!(
+                memcpy(to.as_mut_ptr(), b"abcd".as_ptr(), 3),
+                to.as_mut_ptr()
+            );
+            assert_eq!(&to, b"abc\0");
         }
     }
 

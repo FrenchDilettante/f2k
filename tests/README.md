@@ -10,7 +10,7 @@ The tests are grouped by the DLL they exercise, one directory per group:
 ```text
 tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input and screen tests
-│               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
+│               # (test_limine.py, test_input.py, test_textscreen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl
@@ -152,6 +152,7 @@ The suite merges it over `output.txt` (a block replaces the captured block with 
 
 Each sectioned fixture's capture runs on the kernel, one pytest test per block (`make test` runs them with everything else; `-m corpus` selects them alone): one boot per fixture, the kernel command line listing the selected blocks' command lines in the capture's order (`-- CORPUS\runtime.exe crt ;; CORPUS\runtime.exe env`), and the kernel running each as its own process, one after another, each torn down and audited before the next starts.
 The kernel announces each process's start on COM1 (`F2K: process 2 of 12: CORPUS\runtime.exe env`); the harness splits the boot's log there and compares each block's own part, the program's output line for line and its exit code.
+The batch boots with the kernel option `redirected`: the programs' standard handles stand for the file capture.bat redirects them to, their writes reaching COM1 alone and never the screen, so a program that reads the screen back (through CONOUT$) finds what the real machine's screen held.
 The first of a fixture's tests to run boots the batch, the others read its log; a run of one block (`uv run pytest tests/kernel32/runtime -k crt`) boots that block alone.
 If the boot stops early (a kernel panic, a timeout, QEMU exiting), the block it stopped in fails with the reason and every later block fails as not run, naming it.
 Each block keeps its `timeout` (the boot's start counts against the first).

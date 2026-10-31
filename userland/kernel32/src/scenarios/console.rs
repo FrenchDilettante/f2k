@@ -753,3 +753,163 @@ fn control_handlers_register_and_unregister() {
         .count();
     assert_eq!(removed, 20);
 }
+
+/// The cursor and the window, as screen's capture shows them: a position inside the buffer moves
+/// the cursor and brings the window over it, one outside is ERROR_INVALID_PARAMETER, the cursor
+/// kept; the attribute keeps the COMMON_LVB_ bits (0x0100) and refuses 0xFFFF; the calls on an
+/// input handle or a bogus one are ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.SetConsoleCursorPosition, kernel32.SetConsoleTextAttribute,
+/// kernel32.GetConsoleScreenBufferInfo
+#[test]
+fn the_cursor_and_the_attribute_are_set() {
+    let coord = |x: i16, y: i16| x as u16 as u32 | (y as u16 as u32) << 16;
+    let info = || {
+        let mut bytes = [0u8; 22];
+        // SAFETY: a CONSOLE_SCREEN_BUFFER_INFO's bytes.
+        unsafe { get_console_screen_buffer_info(STDOUT, bytes.as_mut_ptr()) };
+        let half = |index: usize| i16::from_le_bytes([bytes[2 * index], bytes[2 * index + 1]]);
+        // The cursor, the attribute, the window's top.
+        ((half(2), half(3)), half(4) as u16, half(6))
+    };
+    assert_eq!(set_console_cursor_position(STDOUT, coord(5, 3)), 1);
+    assert_eq!(info().0, (5, 3));
+    for (x, y) in [(80, 0), (-1, 0), (0, -1), (0, 300)] {
+        crate::base::set_last_error(0);
+        assert_eq!(set_console_cursor_position(STDOUT, coord(x, y)), 0);
+        assert_eq!(last_error(), 87, "({x},{y})");
+    }
+    assert_eq!(info().0, (5, 3), "the cursor kept");
+    assert_eq!(set_console_cursor_position(STDOUT, coord(79, 299)), 1);
+    assert_eq!((info().0, info().2), ((79, 299), 275), "the window follows");
+    set_console_cursor_position(STDOUT, coord(0, 0));
+    assert_eq!(set_console_text_attribute(STDOUT, 0x0100), 1);
+    assert_eq!(info().1, 0x0100);
+    crate::base::set_last_error(0);
+    assert_eq!(set_console_text_attribute(STDOUT, 0xFFFF), 0);
+    assert_eq!((last_error(), info().1), (87, 0x0100));
+    assert_eq!(set_console_text_attribute(STDOUT, 0x07), 1);
+    for handle in [STDIN, 0x1234] {
+        crate::base::set_last_error(0);
+        assert_eq!(set_console_cursor_position(handle, 0), 0);
+        assert_eq!(last_error(), 6);
+        assert_eq!(set_console_text_attribute(handle, 0x07), 0);
+        assert_eq!(last_error(), 6);
+    }
+}
+
+/// Fills and reads of the screen buffer, as screen's capture shows them: a fill past the buffer's
+/// end writes up to it, the count stored; a W fill's U+00E9 reads back as itself and, through the
+/// A form, as code page 437's 0x82; the attributes read back as words; an A scroll's fill 0x82
+/// reads back as theta (0xE9: the code page twice); on an input handle each call is
+/// ERROR_INVALID_HANDLE with a count of 0.
+///
+/// Pins: kernel32.FillConsoleOutputCharacterW, kernel32.FillConsoleOutputCharacterA,
+/// kernel32.FillConsoleOutputAttribute, kernel32.ReadConsoleOutputCharacterW,
+/// kernel32.ReadConsoleOutputCharacterA, kernel32.ReadConsoleOutputAttribute,
+/// kernel32.ScrollConsoleScreenBufferW, kernel32.ScrollConsoleScreenBufferA
+#[test]
+fn the_screen_buffer_is_filled_read_and_scrolled() {
+    let coord = |x: i16, y: i16| x as u16 as u32 | (y as u16 as u32) << 16;
+    let mut count = 0xDEAD_BEEF;
+    // SAFETY: a dword, in each call below.
+    unsafe {
+        assert_eq!(
+            fill_console_output_character_w(STDOUT, 0x00E9, 10, coord(76, 299), &mut count),
+            1
+        );
+        assert_eq!(count, 4, "up to the buffer's end");
+        assert_eq!(
+            fill_console_output_character_a(STDOUT, 0xFFFF_FF82, 3, coord(0, 1), &mut count),
+            1
+        );
+        assert_eq!(
+            fill_console_output_attribute(STDOUT, 0x8F1E, 3, coord(0, 1), &mut count),
+            1
+        );
+    }
+    let mut units = [0x23u16; 4];
+    let mut bytes = [b'#'; 4];
+    let mut words = [0u16; 4];
+    // SAFETY: buffers of the counts read, dwords.
+    unsafe {
+        assert_eq!(
+            read_console_output_character_w(
+                STDOUT,
+                units.as_mut_ptr(),
+                3,
+                coord(78, 299),
+                &mut count
+            ),
+            1
+        );
+        assert_eq!((count, units), (2, [0xE9, 0xE9, 0x23, 0x23]));
+        read_console_output_character_a(STDOUT, bytes.as_mut_ptr(), 3, coord(0, 1), &mut count);
+        assert_eq!((count, bytes), (3, *b"\x82\x82\x82#"));
+        read_console_output_attribute(STDOUT, words.as_mut_ptr(), 4, coord(0, 1), &mut count);
+        assert_eq!((count, words), (4, [0x8F1E, 0x8F1E, 0x8F1E, 0x07]));
+    }
+    // Row 1's three cells down a row, the A fill 0x82.
+    let source = rtl::console::SmallRect {
+        left: 0,
+        top: 1,
+        right: 2,
+        bottom: 1,
+    };
+    let fill = 0x82 | 0x4E << 16;
+    // SAFETY: the rectangle and the CHAR_INFO; no clip.
+    let answer = unsafe {
+        scroll_console_screen_buffer_a(STDOUT, &source, core::ptr::null(), coord(0, 2), &fill)
+    };
+    assert_eq!(answer, 1);
+    // SAFETY: as above.
+    unsafe {
+        read_console_output_character_w(STDOUT, units.as_mut_ptr(), 4, coord(0, 1), &mut count);
+        read_console_output_attribute(STDOUT, words.as_mut_ptr(), 4, coord(0, 2), &mut count);
+    }
+    assert_eq!(units, [0x398, 0x398, 0x398, 0x20]);
+    assert_eq!(words, [0x8F1E, 0x8F1E, 0x8F1E, 0x07]);
+    let clip = rtl::console::SmallRect {
+        left: 1,
+        top: 0,
+        right: 79,
+        bottom: 299,
+    };
+    let fill = b'.' as u32 | 0x4E << 16;
+    // SAFETY: the rectangles and the CHAR_INFO.
+    let answer =
+        unsafe { scroll_console_screen_buffer_w(STDOUT, &source, &clip, coord(0, 2), &fill) };
+    assert_eq!(answer, 1);
+    // SAFETY: a buffer of the count, a dword.
+    unsafe {
+        read_console_output_character_w(STDOUT, units.as_mut_ptr(), 4, coord(0, 1), &mut count)
+    };
+    assert_eq!(
+        units,
+        [0x398, 0x2E, 0x2E, 0x20],
+        "column 0 outside the clip"
+    );
+    for handle in [STDIN, 0x1234] {
+        crate::base::set_last_error(0);
+        count = 0xDEAD_BEEF;
+        // SAFETY: a dword.
+        assert_eq!(
+            unsafe { fill_console_output_attribute(handle, 7, 1, 0, &mut count) },
+            0
+        );
+        assert_eq!((last_error(), count), (6, 0));
+        count = 0xDEAD_BEEF;
+        // SAFETY: a buffer of the count, a dword.
+        assert_eq!(
+            unsafe {
+                read_console_output_character_a(handle, bytes.as_mut_ptr(), 1, 0, &mut count)
+            },
+            0
+        );
+        assert_eq!((last_error(), count), (6, 0));
+        // SAFETY: the rectangle and the CHAR_INFO.
+        let answer =
+            unsafe { scroll_console_screen_buffer_w(handle, &source, core::ptr::null(), 0, &fill) };
+        assert_eq!((answer, last_error()), (0, 6));
+    }
+}

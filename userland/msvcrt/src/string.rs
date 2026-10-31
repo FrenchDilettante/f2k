@@ -1,10 +1,12 @@
-//! The string functions: strcmp and _stricmp, the narrow ones spawn's and pipe's programs call
-//! (strlen, strcpy, strncpy, strcat, strcspn, strrchr, _strnicmp), and the wide ones cmd.exe calls.
+//! The string functions: strcmp and _stricmp, the narrow ones spawn's, pipe's and the console
+//! fixtures' programs call (strlen, strcpy, strncpy, strcat, strcspn, strchr, strrchr, strncmp,
+//! _strnicmp), and the wide ones cmd.exe calls.
 //!
 //! The narrow ones as the C runtime reference documents them: strncpy pads with NULs and leaves a
-//! full destination unterminated, as wcsncpy does; strrchr finds the terminator for 0;
-//! _strnicmp compares at most `count` characters, each lowered in the LC_CTYPE locale, answering
-//! the difference of the first that differ as _stricmp does.
+//! full destination unterminated, as wcsncpy does; strchr and strrchr find the terminator for 0;
+//! strncmp compares at most `count` characters, answering the difference of the first that differ
+//! as wcsncmp does; _strnicmp compares at most `count` characters, each lowered in the LC_CTYPE
+//! locale, answering the difference of the first that differ as _stricmp does.
 //!
 //! As wide's capture pins them: wcscmp and strcmp answer -1, 0 or 1; wcsncmp, _wcsicmp and
 //! _wcsnicmp the difference of the first units that differ (each lowered first, in the LC_CTYPE
@@ -426,6 +428,39 @@ pub unsafe extern "C" fn strrchr(string: *const u8, c: i32) -> *const u8 {
     }
 }
 
+/// strchr: the first `c` (as a char) in `string`, its NUL for 0, or NULL.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_strchr")]
+pub unsafe extern "C" fn strchr(string: *const u8, c: i32) -> *const u8 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    let found = if c as u8 == 0 {
+        Some(bytes.len())
+    } else {
+        bytes.iter().position(|&byte| byte == c as u8)
+    };
+    match found {
+        Some(at) => string.wrapping_add(at),
+        None => core::ptr::null(),
+    }
+}
+
+/// strncmp: the first `count` characters' order, byte by byte as unsigned chars: the difference
+/// of the first that differ, as wcsncmp answers.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated or hold `count` bytes.
+#[unsafe(export_name = "f2k_export_strncmp")]
+pub unsafe extern "C" fn strncmp(a: *const u8, b: *const u8, count: usize) -> i32 {
+    // SAFETY: the caller's strings.
+    let (a, b) = unsafe { (edge::bytes_bounded(a, count), edge::bytes_bounded(b, count)) };
+    difference(narrow_values(a), narrow_values(b), count, |b| b)
+}
+
 /// _strnicmp: the first `count` characters' order without regard to case (each byte lowered in
 /// the LC_CTYPE locale): the difference of the first that differ, as _stricmp answers.
 ///
@@ -607,7 +642,7 @@ mod tests {
         }
     }
 
-    /// strcspn and strrchr.
+    /// strcspn, strrchr and strchr.
     #[test]
     fn narrow_strings_are_searched() {
         // SAFETY: NUL-terminated strings.
@@ -637,7 +672,42 @@ mod tests {
                 [9, 15, -1, 19]
             );
             assert_eq!(at(0x15C), 9, "c taken as a char");
+            let first = |c: i32| {
+                let p = strchr(path.as_ptr(), c);
+                if p.is_null() {
+                    -1
+                } else {
+                    p.offset_from(path.as_ptr())
+                }
+            };
+            assert_eq!(
+                [
+                    first(b'\\' as i32),
+                    first(0x15C),
+                    first(b'z' as i32),
+                    first(0)
+                ],
+                [2, 2, -1, 19]
+            );
         }
+    }
+
+    /// strncmp: at most `count` characters, the difference of the first that differ.
+    #[test]
+    fn strncmp_compares_a_prefix() {
+        // SAFETY: NUL-terminated strings.
+        let ncmp = |a: &[u8], b: &[u8], n| unsafe { strncmp(a.as_ptr(), b.as_ptr(), n) };
+        assert_eq!(
+            [
+                ncmp(b"abcd\0", b"abce\0", 3),
+                ncmp(b"abcd\0", b"abce\0", 4),
+                ncmp(b"ab\0", b"abc\0", 5),
+                ncmp(b"a\0", b"A\0", 1),
+                ncmp(b"\x80\0", b"\x7F\0", 1),
+                ncmp(b"x\0", b"y\0", 0)
+            ],
+            [0, -1, -99, 32, 1, 0]
+        );
     }
 
     /// _strnicmp: at most `count` characters, lowered, the difference of the first that differ.

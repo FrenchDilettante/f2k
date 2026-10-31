@@ -576,7 +576,7 @@ note = "it waits while the input buffer is empty"
 name = "SetConsoleCursorPosition"
 group = "console"
 args = ["handle hConsoleOutput", "u32 dwCursorPosition"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleCursorPosition" }
 ordinal = 629
 fails = "FALSE"
 
@@ -584,7 +584,7 @@ fails = "FALSE"
 name = "SetConsoleTextAttribute"
 group = "console"
 args = ["handle hConsoleOutput", "u32 wAttributes"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetConsoleTextAttribute" }
 ordinal = 648
 fails = "FALSE"
 
@@ -592,7 +592,7 @@ fails = "FALSE"
 name = "FillConsoleOutputAttribute"
 group = "console"
 args = ["handle hConsoleOutput", "u32 wAttribute", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfAttrsWritten"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FillConsoleOutputAttribute" }
 ordinal = 159
 fails = "FALSE"
 
@@ -600,7 +600,7 @@ fails = "FALSE"
 name = "FillConsoleOutputCharacterW"
 group = "console"
 args = ["handle hConsoleOutput", "u32 cCharacter", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfCharsWritten"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FillConsoleOutputCharacterW" }
 ordinal = 161
 fails = "FALSE"
 
@@ -608,7 +608,7 @@ fails = "FALSE"
 name = "ScrollConsoleScreenBufferW"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpScrollRectangle", "ptr lpClipRectangle", "u32 dwDestinationOrigin", "ptr lpFill"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScrollConsoleScreenBufferW" }
 ordinal = 607
 fails = "FALSE"
 
@@ -616,7 +616,7 @@ fails = "FALSE"
 name = "FillConsoleOutputCharacterA"
 group = "console"
 args = ["handle hConsoleOutput", "u32 cCharacter", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfCharsWritten"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FillConsoleOutputCharacterA" }
 ordinal = 160
 fails = "FALSE"
 
@@ -624,7 +624,7 @@ fails = "FALSE"
 name = "ScrollConsoleScreenBufferA"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpScrollRectangle", "ptr lpClipRectangle", "u32 dwDestinationOrigin", "ptr lpFill"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScrollConsoleScreenBufferA" }
 ordinal = 606
 fails = "FALSE"
 
@@ -632,7 +632,7 @@ fails = "FALSE"
 name = "ReadConsoleOutputCharacterW"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpCharacter", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfCharsRead"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReadConsoleOutputCharacterW" }
 ordinal = 574
 fails = "FALSE"
 
@@ -640,7 +640,7 @@ fails = "FALSE"
 name = "ReadConsoleOutputCharacterA"
 group = "console"
 args = ["handle hConsoleOutput", "ptr lpCharacter", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfCharsRead"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReadConsoleOutputCharacterA" }
 ordinal = 573
 fails = "FALSE"
 
@@ -648,7 +648,7 @@ fails = "FALSE"
 name = "ReadConsoleOutputAttribute"
 group = "console"
 args = ["handle hConsoleOutput", "ptr<u16> lpAttribute", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfAttrsRead"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReadConsoleOutputAttribute" }
 ordinal = 572
 fails = "FALSE"
 

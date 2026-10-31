@@ -15,7 +15,7 @@
 //! CsrClientCallServer serves the same rules, the bytes written recorded ([`console_writes`]).
 
 use rtl::console::api::{self, InputRecords, Message};
-use rtl::console::Api;
+use rtl::console::{Api, Coord, SmallRect};
 use rtl::pod::Pod;
 use rtl::status::{nt_success, STATUS_INVALID_HANDLE, STATUS_NO_MEMORY, STATUS_PENDING};
 use rtl::sync::{Locked, OnceWord};
@@ -31,7 +31,7 @@ use crate::base::{
     standard_slot,
     update_console_flags,
 };
-use crate::edge::{InStr, InWStr, Out, OutBuf};
+use crate::edge::{In, InStr, InWStr, Out, OutBuf};
 use crate::heap::{HeapVec, OutOfMemory};
 #[cfg(test)]
 pub use crate::nt::host::console_writes;
@@ -435,6 +435,350 @@ fn screen_buffer_info(console: u32, mut info: OutBuf<'_, u8>) -> u32 {
     }
     info.put(&bytes[..SCREEN_BUFFER_INFO_SIZE]);
     1
+}
+
+/// SetConsoleCursorPosition: the screen buffer's cursor moved to `position` (a COORD, X the low
+/// word), the window following it; a position outside the buffer is ERROR_INVALID_PARAMETER, the
+/// cursor where it was; a handle naming no screen buffer ERROR_INVALID_HANDLE.
+#[unsafe(export_name = "f2k_export_SetConsoleCursorPosition")]
+pub extern "system" fn set_console_cursor_position(console: u32, position: u32) -> u32 {
+    succeeded(call_server(&mut api::SetCursorPosition {
+        handle: console as usize,
+        position: position as usize,
+    }))
+}
+
+/// SetConsoleTextAttribute: the attribute written cells take — the colours and the COMMON_LVB_
+/// bits; any other bit is ERROR_INVALID_PARAMETER, the attribute as it was.
+#[unsafe(export_name = "f2k_export_SetConsoleTextAttribute")]
+pub extern "system" fn set_console_text_attribute(console: u32, attributes: u32) -> u32 {
+    succeeded(call_server(&mut api::SetTextAttribute {
+        handle: console as usize,
+        // A WORD argument: its dword's high half is not the caller's.
+        attributes: attributes as u16 as usize,
+    }))
+}
+
+/// A fill through the console server (see [`api::FillOutput`]): `count` cells from `origin`
+/// written with the character or the attribute `value`, on across each row's end, as far as the
+/// buffer's end; the cells written stored where asked — 0 when the server refuses the call, as
+/// Windows 2000's capture shows. A start outside the buffer writes nothing and succeeds.
+fn fill_output(
+    console: u32,
+    element: usize,
+    value: u32,
+    count: u32,
+    origin: u32,
+    written: Option<Out<'_, u32>>,
+    unicode: bool,
+) -> u32 {
+    let mut message = api::FillOutput {
+        handle: console as usize,
+        element,
+        value: value as usize,
+        count: count as usize,
+        origin: origin as usize,
+        written: 0,
+        unicode: usize::from(unicode),
+    };
+    let answer = succeeded(call_server(&mut message));
+    if let Some(mut written) = written {
+        written.set(if answer != 0 {
+            message.written as u32
+        } else {
+            0
+        });
+    }
+    answer
+}
+
+/// The element a character fill writes.
+const FILL_CHARACTER: usize = 0;
+/// The element an attribute fill writes.
+const FILL_ATTRIBUTE: usize = 1;
+
+/// FillConsoleOutputCharacterW: `count` cells' characters set to the UTF-16 unit `character`, as
+/// the console's code page holds it (see [`fill_output`]).
+///
+/// # Safety
+///
+/// `written` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_FillConsoleOutputCharacterW")]
+pub unsafe extern "system" fn fill_console_output_character_w(
+    console: u32,
+    character: u32,
+    count: u32,
+    origin: u32,
+    written: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract).
+    let written = unsafe { Out::optional(written) };
+    let character = character as u16 as u32;
+    fill_output(
+        console,
+        FILL_CHARACTER,
+        character,
+        count,
+        origin,
+        written,
+        true,
+    )
+}
+
+/// FillConsoleOutputCharacterA: as FillConsoleOutputCharacterW, the character a byte of the
+/// console's code page.
+///
+/// # Safety
+///
+/// `written` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_FillConsoleOutputCharacterA")]
+pub unsafe extern "system" fn fill_console_output_character_a(
+    console: u32,
+    character: u32,
+    count: u32,
+    origin: u32,
+    written: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract).
+    let written = unsafe { Out::optional(written) };
+    let character = character as u8 as u32;
+    fill_output(
+        console,
+        FILL_CHARACTER,
+        character,
+        count,
+        origin,
+        written,
+        false,
+    )
+}
+
+/// FillConsoleOutputAttribute: `count` cells' attributes set to the word `attribute` (see
+/// [`fill_output`]).
+///
+/// # Safety
+///
+/// `written` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_FillConsoleOutputAttribute")]
+pub unsafe extern "system" fn fill_console_output_attribute(
+    console: u32,
+    attribute: u32,
+    count: u32,
+    origin: u32,
+    written: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract).
+    let written = unsafe { Out::optional(written) };
+    let attribute = attribute as u16 as u32;
+    fill_output(
+        console,
+        FILL_ATTRIBUTE,
+        attribute,
+        count,
+        origin,
+        written,
+        false,
+    )
+}
+
+/// A read of the screen buffer through the console server: up to `count` cells from `origin`, on
+/// across each row's end, as far as the buffer's end — their characters (UTF-16 units, or bytes
+/// in the console's code page) or, `attributes`, their attribute words — written by the server
+/// into `buffer`, as a console read's are; the count read stored where asked, 0 when the server
+/// refuses the call (Windows 2000's capture). A start outside the buffer reads nothing and
+/// succeeds.
+fn read_output(
+    console: u32,
+    buffer: usize,
+    count: u32,
+    origin: u32,
+    read: Option<Out<'_, u32>>,
+    form: ReadForm,
+) -> u32 {
+    let (status, answered) = match form {
+        ReadForm::Attributes => {
+            let mut message = api::ReadOutputAttribute {
+                handle: console as usize,
+                buffer,
+                count: count as usize,
+                origin: origin as usize,
+                read: 0,
+            };
+            (call_server(&mut message), message.read)
+        }
+        ReadForm::Characters { unicode } => {
+            let mut message = api::ReadOutputCharacter {
+                handle: console as usize,
+                buffer,
+                count: count as usize,
+                origin: origin as usize,
+                read: 0,
+                unicode: usize::from(unicode),
+            };
+            (call_server(&mut message), message.read)
+        }
+    };
+    let answer = succeeded(status);
+    if let Some(mut read) = read {
+        read.set(if answer != 0 { answered as u32 } else { 0 });
+    }
+    answer
+}
+
+/// What a read of the screen buffer reads.
+#[derive(Clone, Copy)]
+enum ReadForm {
+    /// The characters: UTF-16 units, or, not `unicode`, bytes in the console's code page.
+    Characters { unicode: bool },
+    /// The attribute words.
+    Attributes,
+}
+
+/// ReadConsoleOutputCharacterW: up to `count` cells' characters as UTF-16 units (see
+/// [`read_output`]).
+///
+/// # Safety
+///
+/// `read` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_ReadConsoleOutputCharacterW")]
+pub unsafe extern "system" fn read_console_output_character_w(
+    console: u32,
+    buffer: *mut u16,
+    count: u32,
+    origin: u32,
+    read: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // writes it.
+    let read = unsafe { Out::optional(read) };
+    let form = ReadForm::Characters { unicode: true };
+    read_output(console, buffer as usize, count, origin, read, form)
+}
+
+/// ReadConsoleOutputCharacterA: up to `count` cells' characters as bytes in the console's code
+/// page (see [`read_output`]).
+///
+/// # Safety
+///
+/// `read` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_ReadConsoleOutputCharacterA")]
+pub unsafe extern "system" fn read_console_output_character_a(
+    console: u32,
+    buffer: *mut u8,
+    count: u32,
+    origin: u32,
+    read: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // writes it.
+    let read = unsafe { Out::optional(read) };
+    let form = ReadForm::Characters { unicode: false };
+    read_output(console, buffer as usize, count, origin, read, form)
+}
+
+/// ReadConsoleOutputAttribute: up to `count` cells' attribute words (see [`read_output`]).
+///
+/// # Safety
+///
+/// `read` is null or points at a dword.
+#[unsafe(export_name = "f2k_export_ReadConsoleOutputAttribute")]
+pub unsafe extern "system" fn read_console_output_attribute(
+    console: u32,
+    buffer: *mut u16,
+    count: u32,
+    origin: u32,
+    read: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's dword, when given (the contract); the buffer goes to the server, which
+    // writes it.
+    let read = unsafe { Out::optional(read) };
+    read_output(
+        console,
+        buffer as usize,
+        count,
+        origin,
+        read,
+        ReadForm::Attributes,
+    )
+}
+
+/// A SMALL_RECT as the scroll's message carries it: left | top << 16, right | bottom << 16.
+fn rect_words(rect: SmallRect) -> (usize, usize) {
+    let top_left = Coord {
+        x: rect.left,
+        y: rect.top,
+    };
+    let bottom_right = Coord {
+        x: rect.right,
+        y: rect.bottom,
+    };
+    (top_left.word() as usize, bottom_right.word() as usize)
+}
+
+/// A scroll through the console server (see [`api::ScrollRegion`]): the `source` rectangle's cells
+/// moved so its top left lands at `destination` (a COORD), the cells it leaves filled with the
+/// CHAR_INFO `fill` (its character a UTF-16 unit, or a byte of the console's code page), only
+/// cells inside `clip` changing when there is one; a rectangle partly outside the buffer is
+/// clipped to it, one wholly outside (or inverted) changes nothing and succeeds.
+fn scroll_region(
+    console: u32,
+    source: In<'_, SmallRect>,
+    clip: Option<In<'_, SmallRect>>,
+    destination: u32,
+    fill: In<'_, u32>,
+    unicode: bool,
+) -> u32 {
+    let (source_top_left, source_bottom_right) = rect_words(source.read());
+    let (clip_top_left, clip_bottom_right) = clip.map_or((0, 0), |clip| rect_words(clip.read()));
+    succeeded(call_server(&mut api::ScrollRegion {
+        handle: console as usize,
+        source_top_left,
+        source_bottom_right,
+        destination: destination as usize,
+        fill: fill.read() as usize,
+        clipped: usize::from(clip.is_some()),
+        clip_top_left,
+        clip_bottom_right,
+        unicode: usize::from(unicode),
+    }))
+}
+
+/// ScrollConsoleScreenBufferW: see [`scroll_region`], the fill's character a UTF-16 unit.
+///
+/// # Safety
+///
+/// `source` points at a SMALL_RECT, `clip` is null or points at one, `fill` points at a
+/// CHAR_INFO.
+#[unsafe(export_name = "f2k_export_ScrollConsoleScreenBufferW")]
+pub unsafe extern "system" fn scroll_console_screen_buffer_w(
+    console: u32,
+    source: *const SmallRect,
+    clip: *const SmallRect,
+    destination: u32,
+    fill: *const u32,
+) -> u32 {
+    // SAFETY: the caller's structures (the contract), the clip when given.
+    let (source, clip, fill) = unsafe { (In::new(source), In::optional(clip), In::new(fill)) };
+    scroll_region(console, source, clip, destination, fill, true)
+}
+
+/// ScrollConsoleScreenBufferA: see [`scroll_region`], the fill's character a byte of the
+/// console's code page.
+///
+/// # Safety
+///
+/// As ScrollConsoleScreenBufferW's.
+#[unsafe(export_name = "f2k_export_ScrollConsoleScreenBufferA")]
+pub unsafe extern "system" fn scroll_console_screen_buffer_a(
+    console: u32,
+    source: *const SmallRect,
+    clip: *const SmallRect,
+    destination: u32,
+    fill: *const u32,
+) -> u32 {
+    // SAFETY: the caller's structures (the contract), the clip when given.
+    let (source, clip, fill) = unsafe { (In::new(source), In::optional(clip), In::new(fill)) };
+    scroll_region(console, source, clip, destination, fill, false)
 }
 
 // --- Modes and input -----------------------------------------------------------------------------

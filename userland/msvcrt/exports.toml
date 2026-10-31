@@ -731,7 +731,7 @@ fails = "never"
 name = "strchr"
 group = "strings"
 args = ["strA string", "i32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strchr" }
 ordinal = 717
 fails = "never"
 
@@ -739,7 +739,7 @@ fails = "never"
 name = "strncmp"
 group = "strings"
 args = ["strA string1", "strA string2", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strncmp" }
 ordinal = 726
 fails = "never"
 
@@ -895,7 +895,7 @@ fails = "never"
 name = "memcpy"
 group = "memory"
 args = ["ptr dest", "ptr src", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "memcpy" }
 ordinal = 685
 fails = "never"
 

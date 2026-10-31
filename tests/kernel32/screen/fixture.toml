@@ -4,6 +4,7 @@
 # saved as its process ends (screenshots), for the record.
 description = "screen - the screen buffer through CONOUT$ (screen.c): SetConsoleCursorPosition and the window following the cursor, SetConsoleTextAttribute and the written cells, FillConsoleOutputCharacterW/A and FillConsoleOutputAttribute past the row's and the buffer's end, ReadConsoleOutputCharacterW/A and ReadConsoleOutputAttribute, ScrollConsoleScreenBufferW/A (overlapping, clipped, filled, at the buffer's edges), and their errors on CONIN$, a file and a bogus handle."
 kind = "sectioned"
+gate = true
 screenshots = true
 
 [pins]

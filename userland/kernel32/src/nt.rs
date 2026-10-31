@@ -1840,7 +1840,7 @@ pub mod host {
     impl rtl::console::Client for Client {
         fn show(
             &mut self,
-            screen: &mut rtl::console::screen::ScreenBuffer,
+            screen: Option<&mut rtl::console::screen::ScreenBuffer>,
             buffer: usize,
             count: usize,
             _logged: bool,
@@ -1848,18 +1848,22 @@ pub mod host {
             Self::check(buffer)?;
             // SAFETY: the test's buffer of `count` bytes.
             let bytes = unsafe { core::slice::from_raw_parts(buffer as *const u8, count) };
-            screen.render(bytes);
+            if let Some(screen) = screen {
+                screen.render(bytes);
+            }
             CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes.to_vec())));
             Ok(())
         }
 
         fn print(
             &mut self,
-            screen: &mut rtl::console::screen::ScreenBuffer,
+            screen: Option<&mut rtl::console::screen::ScreenBuffer>,
             bytes: &[u8],
             _logged: bool,
         ) {
-            screen.render(bytes);
+            if let Some(screen) = screen {
+                screen.render(bytes);
+            }
             CONSOLE.with(|console| console.borrow_mut().push((self.0, bytes.to_vec())));
         }
 

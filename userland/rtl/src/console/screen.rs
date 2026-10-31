@@ -29,7 +29,7 @@ pub const HEIGHT: usize = 300;
 pub const WINDOW_HEIGHT: usize = 25;
 
 /// A fresh buffer's attribute: light grey on black.
-pub const DEFAULT_ATTRIBUTE: u8 = 0x07;
+pub const DEFAULT_ATTRIBUTE: u16 = 0x07;
 
 /// The output mode's bits.
 pub const ENABLE_PROCESSED_OUTPUT: u32 = 0x1;
@@ -40,17 +40,18 @@ pub const OUTPUT_MODE_MASK: u32 = ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_O
 /// The columns between tab stops.
 const TAB_STOP: usize = 8;
 
-/// One cell: its character (an OEM byte) and its attribute, in the text screen's order.
+/// One cell: its character (an OEM byte) and its attribute, a CHAR_INFO's word: the colours in
+/// the low byte (what the text screen shows), the COMMON_LVB_ bits in the high one.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cell {
     pub character: u8,
-    pub attribute: u8,
+    pub attribute: u16,
 }
 
 impl Cell {
     /// A space in `attribute`.
-    pub const fn blank(attribute: u8) -> Self {
+    pub const fn blank(attribute: u16) -> Self {
         Cell {
             character: b' ',
             attribute,
@@ -65,7 +66,7 @@ pub type Grid = [[Cell; WIDTH]; HEIGHT];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
     Character(u8),
-    Attribute(u8),
+    Attribute(u16),
 }
 
 /// The screen buffer.
@@ -78,7 +79,7 @@ pub struct ScreenBuffer {
     /// The window's first row.
     window_top: usize,
     /// The attribute written cells take.
-    attribute: u8,
+    attribute: u16,
     /// The output mode (ENABLE_PROCESSED_OUTPUT, ENABLE_WRAP_AT_EOL_OUTPUT).
     mode: u32,
     /// Whether a backspace stops at column 0 rather than going back to the previous row's end.
@@ -172,11 +173,11 @@ impl ScreenBuffer {
     }
 
     /// The attribute written cells take.
-    pub fn attribute(&self) -> u8 {
+    pub fn attribute(&self) -> u16 {
         self.attribute
     }
 
-    pub fn set_attribute(&mut self, attribute: u8) {
+    pub fn set_attribute(&mut self, attribute: u16) {
         self.attribute = attribute;
     }
 
@@ -331,16 +332,32 @@ impl ScreenBuffer {
         self.touch(0..HEIGHT);
     }
 
+    /// The place of (`x`, `y`) among the grid's cells taken row after row; none outside the grid.
+    fn index(x: i32, y: i32) -> Option<usize> {
+        ((0..WIDTH as i32).contains(&x) && (0..HEIGHT as i32).contains(&y))
+            .then(|| y as usize * WIDTH + x as usize)
+    }
+
+    /// Up to `count` cells from (`x`, `y`), on across each row's end onto the next and as far as
+    /// the grid's end: what ReadConsoleOutputCharacter and ReadConsoleOutputAttribute read (none
+    /// from a start outside the grid).
+    pub fn run(&self, x: i32, y: i32, count: usize) -> &[Cell] {
+        let Some(start) = Self::index(x, y) else {
+            return &[];
+        };
+        let cells = &self.cells.as_flattened()[start..];
+        &cells[..count.min(cells.len())]
+    }
+
     /// Fill `count` cells from (`x`, `y`), on across each row's end onto the next and clipped at
     /// the grid's end: the cells written (none from a start outside the grid).
     pub fn fill(&mut self, x: i32, y: i32, count: usize, fill: Fill) -> usize {
-        if !(0..WIDTH as i32).contains(&x) || !(0..HEIGHT as i32).contains(&y) {
+        let Some(start) = Self::index(x, y) else {
             return 0;
-        }
-        let start = y as usize * WIDTH + x as usize;
-        let count = count.min(WIDTH * HEIGHT - start);
-        for index in start..start + count {
-            let cell = &mut self.cells[index / WIDTH][index % WIDTH];
+        };
+        let cells = &mut self.cells.as_flattened_mut()[start..];
+        let count = count.min(cells.len());
+        for cell in &mut cells[..count] {
             match fill {
                 Fill::Character(character) => cell.character = character,
                 Fill::Attribute(attribute) => cell.attribute = attribute,
@@ -521,7 +538,11 @@ mod tests {
             .all(|&cell| cell == Cell::blank(0x07)));
         assert_eq!(screen.cursor(), (0, 0));
         assert_eq!(screen.mode(), 0x3);
-        assert_eq!(core::mem::size_of::<Cell>(), 2, "a text screen cell");
+        assert_eq!(
+            core::mem::size_of::<Cell>(),
+            4,
+            "a character byte and an attribute word"
+        );
     }
 
     #[test]
@@ -904,6 +925,95 @@ mod tests {
         let mut screen = numbered();
         let before = screen.clone();
         screen.scroll(rect(0, 0, 2, 3), Some(rect(-9, -9, -1, -1)), 0, 1, fill);
+        assert_eq!(screen, before);
+    }
+
+    /// Windows 2000's capture's scrolls, over its pattern: rows of a letter and the ten digits
+    /// from (`x`, `y`), row i's attribute (i + 1) << 4 | 0x0F; each row read back as its text.
+    #[test]
+    fn scrolls_as_captured() {
+        fn pattern(x: usize, y: usize, rows: usize) -> ScreenBuffer {
+            let mut screen = ScreenBuffer::new();
+            for row in 0..rows {
+                screen.set_attribute(((row as u16 + 1) << 4) | 0x0F);
+                screen.set_cursor(y + row, x);
+                screen.write_bytes(
+                    std::format!("{}0123456789", (b'A' + row as u8) as char).as_bytes(),
+                );
+            }
+            screen
+        }
+        let fill = Cell {
+            character: b'.',
+            attribute: 0x4E,
+        };
+        let w = WIDTH as i16;
+        let rows =
+            |screen: &ScreenBuffer, x: usize, from: usize, to: usize| -> Vec<std::string::String> {
+                (from..to)
+                    .map(|row| {
+                        std::string::String::from_utf8(screen.row_text(row)[x..x + 14].to_vec())
+                            .unwrap()
+                    })
+                    .collect()
+            };
+        // Down two rows, a small clip.
+        let mut screen = pattern(0, 0, 4);
+        screen.scroll(rect(0, 0, 10, 3), Some(rect(3, 1, 7, 4)), 0, 2, fill);
+        assert_eq!(
+            rows(&screen, 0, 0, 6),
+            [
+                "A0123456789   ",
+                "B01.....789   ",
+                "C0123456789   ",
+                "D0123456789   ",
+                "   23456      ",
+                "              "
+            ]
+        );
+        assert_eq!(
+            (
+                screen.cell(2, 3).attribute,
+                screen.cell(4, 3).attribute,
+                screen.cell(1, 3)
+            ),
+            (0x1F, 0x3F, fill)
+        );
+        // A source past the right edge, to (0, 5).
+        let mut screen = pattern(WIDTH - 12, 0, 3);
+        screen.scroll(rect(w - 5, 0, w + 4, 2), None, 0, 5, fill);
+        assert_eq!(rows(&screen, WIDTH - 14, 0, 1), ["  A012345....."]);
+        assert_eq!(rows(&screen, 0, 5, 6), ["6789          "]);
+        assert_eq!(screen.cell(5, 4), Cell::blank(0x07));
+        // A destination past the left and top edges.
+        let mut screen = pattern(0, 2, 3);
+        screen.scroll(rect(0, 2, 10, 4), None, -3, 0, fill);
+        assert_eq!(
+            rows(&screen, 0, 0, 6),
+            [
+                "23456789      ",
+                "23456789      ",
+                "23456789...   ",
+                "...........   ",
+                "...........   ",
+                "              "
+            ]
+        );
+        // A destination wholly past the right edge, and an inverted source.
+        let mut screen = pattern(0, 0, 3);
+        screen.scroll(rect(0, 0, 10, 2), None, WIDTH as i32 + 2, 0, fill);
+        assert_eq!(
+            rows(&screen, 0, 0, 4),
+            [
+                "...........   ",
+                "...........   ",
+                "...........   ",
+                "              "
+            ]
+        );
+        let mut screen = pattern(0, 0, 3);
+        let before = screen.clone();
+        screen.scroll(rect(10, 0, 0, 2), None, 0, 4, fill);
         assert_eq!(screen, before);
     }
 

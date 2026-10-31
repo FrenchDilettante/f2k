@@ -19,8 +19,8 @@ through QMP while QEMU still runs:
 
 Each run's screen is kept beside its COM1 log (target/qemu/logs/<test id>.png).
 
-    uv run pytest tests/core/test_screen.py
-    uv run pytest tests/core/test_screen.py --update-screens
+    uv run pytest tests/core/test_textscreen.py
+    uv run pytest tests/core/test_textscreen.py --update-screens
 """
 from __future__ import annotations
 

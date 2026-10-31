@@ -473,6 +473,10 @@ SCREENS = WORK / "screens"
 # pause announces, and the CMOS byte (index port 0x70, data port 0x71) whose write lets it go on
 # (kernel/src/process/runner.rs, kernel/src/hw/rtc.rs SCREEN_MAILBOX).
 SCREENS_OPTION = "screens"
+# The kernel option every batch boots with: the programs' standard handles stand for a file, their
+# writes reaching the serial line alone, never the screen, as capture.bat's `>> output.txt 2>&1`
+# keeps them off the real machine's screen (kernel/src/csr.rs REDIRECTED).
+REDIRECTED_OPTION = "redirected"
 SCREEN_PAUSE = re.compile(r"^F2K: screen: process (\d+) ended$")
 SCREEN_MAILBOX = 0x7F
 
@@ -1231,7 +1235,7 @@ def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,
-        kernel_options=SCREENS_OPTION if screens is not None else "",
+        kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if screens is not None else [])),
         during=ScreenTaker(blocks, screens) if screens is not None else None,
     )
     if watch.overran is not None:

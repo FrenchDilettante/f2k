@@ -75,7 +75,7 @@ pub mod header {
 }
 
 /// The most API data a message carries, in dwords (the server reads no more).
-pub const DATA_WORDS: usize = 8;
+pub const DATA_WORDS: usize = 9;
 
 /// A whole message's size: the header and the largest API data.
 pub const MESSAGE_BYTES: usize = header::DATA + 4 * DATA_WORDS;
@@ -159,8 +159,11 @@ const INPUT_MODE_MASK: u32 = 0xFF;
 pub const INPUT_MODE: u32 = 0xE7;
 pub const OUTPUT_MODE: u32 = 0x1 | 0x2;
 
-/// The attribute bits a cell holds: the foreground and background colours.
-const COLOR_MASK: u32 = 0xFF;
+/// The attribute bits a cell holds: the foreground and background colours, and the COMMON_LVB_
+/// bits the public headers name (the leading and trailing byte, the grid lines, reverse video and
+/// underscore: every bit of the high byte but 0x2000). Windows 2000's capture refuses 0xFFFF and
+/// keeps 0x0100 and 0x8000.
+const VALID_ATTRIBUTES: u32 = 0xDFFF;
 
 /// The most title characters the console keeps (a longer title keeps its first ones).
 pub const TITLE_UNITS: usize = 1024;
@@ -325,6 +328,9 @@ pub struct Console {
     line: Line,
     title: [u16; TITLE_UNITS],
     title_length: usize,
+    /// Whether the standard handles stand for a file: their writes reach the serial line alone,
+    /// never the screen (see [`Console::redirect`]).
+    redirected: bool,
 }
 
 impl Console {
@@ -339,7 +345,17 @@ impl Console {
             line: Line::new(),
             title: [0; TITLE_UNITS],
             title_length: 0,
+            redirected: false,
         }
+    }
+
+    /// Make the standard handles stand for a file, as a capture's command line redirects a
+    /// program's standard output and error (`>> output.txt 2>&1`): what they write reaches the
+    /// serial line, the file's stand-in, and leaves the screen buffer as it was — its cursor
+    /// included. The screen buffer then holds what the program writes to it by name (CONOUT$), and
+    /// a line read's echo, as the real machine's console holds them during its capture.
+    pub fn redirect(&mut self) {
+        self.redirected = true;
     }
 
     /// The input buffer's mode, as GetConsoleMode reads it: a mode holding the insert or the
@@ -619,21 +635,24 @@ impl Handles {
 
 /// The calling client, as the server reaches it: the bytes it shows, and its memory.
 pub trait Client {
-    /// Show `count` bytes of the client's memory at `buffer` on `screen`, each piece read handed to
+    /// Show `count` bytes of the client's memory at `buffer` on `screen` (none: a redirected
+    /// standard handle's write, see [`Console::redirect`]), each piece read handed to
     /// [`ScreenBuffer::render`] in order, and, `logged`, to the serial line before it (a standard
     /// handle's write: see [`Handles`]); the status that refuses them (an address the client
     /// cannot name, a buffer that cannot be read: what was read before it shown).
     fn show(
         &mut self,
-        screen: &mut ScreenBuffer,
+        screen: Option<&mut ScreenBuffer>,
         buffer: usize,
         count: usize,
         logged: bool,
     ) -> Result<(), u32>;
     /// Show `bytes` the server made (a Unicode write's, a read's echo, in the console's code page)
     /// on `screen`, as [`Client::show`] shows the client's own.
-    fn print(&mut self, screen: &mut ScreenBuffer, bytes: &[u8], _logged: bool) {
-        screen.render(bytes);
+    fn print(&mut self, screen: Option<&mut ScreenBuffer>, bytes: &[u8], _logged: bool) {
+        if let Some(screen) = screen {
+            screen.render(bytes);
+        }
     }
     /// Read the client's memory at `buffer` into `into`; the status that refuses it.
     fn read(&mut self, buffer: usize, into: &mut [u8]) -> Result<(), u32>;
@@ -690,6 +709,8 @@ pub fn serve<W: Word>(
         Api::SetTextAttribute => message.serve(&mut call, Call::set_text_attribute),
         Api::FillOutput => message.serve(&mut call, Call::fill_output),
         Api::ScrollRegion => message.serve(&mut call, Call::scroll_region),
+        Api::ReadOutputCharacter => message.serve(&mut call, Call::read_output_character),
+        Api::ReadOutputAttribute => message.serve(&mut call, Call::read_output_attribute),
         Api::GetTitle => message.serve(&mut call, Call::get_title),
         Api::SetTitle => message.serve(&mut call, Call::set_title),
     };
@@ -737,7 +758,7 @@ fn oem_byte(unit: u16) -> u8 {
 /// time, each unit shown as the console's code page holds it; the status that refuses the client's
 /// memory, what was read before it shown.
 fn show_unicode(
-    console: &mut Console,
+    mut screen: Option<&mut ScreenBuffer>,
     client: &mut impl Client,
     buffer: usize,
     count: usize,
@@ -753,7 +774,7 @@ fn show_unicode(
         for (at, byte) in bytes[..take].iter_mut().enumerate() {
             *byte = oem_byte(u16::from_le_bytes([units[2 * at], units[2 * at + 1]]));
         }
-        client.print(&mut console.screen, &bytes[..take], logged);
+        client.print(screen.as_deref_mut(), &bytes[..take], logged);
         done += take;
     }
     Ok(())
@@ -825,9 +846,9 @@ fn echo(console: &mut Console, client: &mut impl Client, units: &[u16]) {
     console.screen.begin_write();
     for &unit in units {
         match unit {
-            CR => client.print(&mut console.screen, b"\r\n", true),
-            BACKSPACE => client.print(&mut console.screen, b"\x08 \x08", true),
-            other => client.print(&mut console.screen, &[oem_byte(other)], true),
+            CR => client.print(Some(&mut console.screen), b"\r\n", true),
+            BACKSPACE => client.print(Some(&mut console.screen), b"\x08 \x08", true),
+            other => client.print(Some(&mut console.screen), &[oem_byte(other)], true),
         }
     }
     console.screen.end_write();
@@ -895,6 +916,9 @@ fn read_line(
     }
     Ok(taken)
 }
+
+/// The most cells a read of the screen buffer hands the client at once.
+const CELL_PIECE: usize = 128;
 
 /// The most characters a raw read answers at once.
 const RAW_UNITS: usize = 128;
@@ -987,15 +1011,22 @@ impl<C: Client> Call<'_, C> {
         self.output(message.handle)?;
         let (buffer, count) = (message.buffer.get(), message.count.get());
         if count != 0 {
-            let console = &mut *self.console;
-            console.screen.begin_write();
             let logged = self.handles.logged(message.handle.dword());
+            let console = &mut *self.console;
+            // A redirected standard handle's write is the file's alone.
+            let mut screen = (!(logged && console.redirected)).then_some(&mut console.screen);
+            if let Some(screen) = screen.as_deref_mut() {
+                screen.begin_write();
+            }
             let shown = if message.unicode.is_set() {
-                show_unicode(console, self.client, buffer, count, logged)
+                show_unicode(screen.as_deref_mut(), self.client, buffer, count, logged)
             } else {
-                self.client.show(&mut console.screen, buffer, count, logged)
+                self.client
+                    .show(screen.as_deref_mut(), buffer, count, logged)
             };
-            console.screen.end_write();
+            if let Some(screen) = screen {
+                screen.end_write();
+            }
             shown?;
         }
         message.written = message.count;
@@ -1242,20 +1273,23 @@ impl<C: Client> Call<'_, C> {
     ) -> Result<(), u32> {
         self.output(message.handle)?;
         let attribute = message.attributes.dword();
-        if attribute & !COLOR_MASK != 0 {
+        if attribute & !VALID_ATTRIBUTES != 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        self.console.screen.set_attribute(attribute as u8);
+        self.console.screen.set_attribute(attribute as u16);
         Ok(())
     }
 
+    /// A start outside the buffer writes nothing and succeeds, as does a count of 0 (Windows
+    /// 2000's capture).
     fn fill_output<W: Word>(&mut self, message: &mut api::FillOutput<W>) -> Result<(), u32> {
         self.output(message.handle)?;
-        // The cell keeps a character's OEM byte and an attribute's colours: the low byte.
-        let value = message.value.get() as u8;
+        let value = message.value.dword();
         let fill = match message.element.get() {
-            0 => Fill::Character(value),
-            1 => Fill::Attribute(value),
+            // The cell keeps a character's OEM byte, a byte of the console's code page already.
+            0 if message.unicode.is_set() => Fill::Character(oem_byte(value as u16)),
+            0 => Fill::Character(value as u8),
+            1 => Fill::Attribute(value as u16),
             _ => return Err(STATUS_INVALID_PARAMETER),
         };
         let at = Coord::from_word(message.origin.dword());
@@ -1275,13 +1309,19 @@ impl<C: Client> Call<'_, C> {
             message.source_bottom_right.dword(),
         );
         let to = Coord::from_word(message.destination.dword());
-        let screen = &mut self.console.screen;
-        let fill = match message.fill.dword() {
-            0 => Cell::blank(screen.attribute()),
-            char_info => Cell {
-                character: char_info as u8,
-                attribute: (char_info >> 16) as u8,
-            },
+        let char_info = message.fill.dword();
+        let character = if message.unicode.is_set() {
+            oem_byte(char_info as u16)
+        } else {
+            // An A call's character goes through the code page twice, as Windows 2000's capture
+            // shows (0x82, e-acute, fills with 0xE9, theta): once into its UTF-16 unit, then that
+            // unit's low byte (the CHAR_INFO's AsciiChar over its UnicodeChar) as a character of
+            // the code page again.
+            codepage::decode_byte(CodePage::Oem, char_info as u8) as u8
+        };
+        let fill = Cell {
+            character,
+            attribute: (char_info >> 16) as u16,
         };
         let clip = (message.clipped.dword() != 0).then(|| {
             SmallRect::from_words(
@@ -1289,7 +1329,67 @@ impl<C: Client> Call<'_, C> {
                 message.clip_bottom_right.dword(),
             )
         });
-        screen.scroll(source, clip, to.x.into(), to.y.into(), fill);
+        self.console
+            .screen
+            .scroll(source, clip, to.x.into(), to.y.into(), fill);
+        Ok(())
+    }
+
+    /// The characters from `origin`, a piece at a time: UTF-16 units, or, not `unicode`, the
+    /// cells' own bytes of the console's code page. A start outside the buffer reads nothing and
+    /// succeeds, as does a count of 0 (Windows 2000's capture).
+    fn read_output_character<W: Word>(
+        &mut self,
+        message: &mut api::ReadOutputCharacter<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let at = Coord::from_word(message.origin.dword());
+        let cells = self
+            .console
+            .screen
+            .run(at.x.into(), at.y.into(), message.count.get());
+        let width = if message.unicode.is_set() { 2 } else { 1 };
+        let mut bytes = [0u8; 2 * CELL_PIECE];
+        for (index, piece) in cells.chunks(CELL_PIECE).enumerate() {
+            for (at, cell) in piece.iter().enumerate() {
+                if width == 2 {
+                    let unit = codepage::decode_byte(CodePage::Oem, cell.character);
+                    bytes[2 * at..2 * at + 2].copy_from_slice(&unit.to_le_bytes());
+                } else {
+                    bytes[at] = cell.character;
+                }
+            }
+            let address = message
+                .buffer
+                .get()
+                .wrapping_add(index * CELL_PIECE * width);
+            self.client.write(address, &bytes[..piece.len() * width])?;
+        }
+        message.read = W::from_usize(cells.len());
+        Ok(())
+    }
+
+    /// The attribute words from `origin`, a piece at a time, as
+    /// [`read_output_character`](Self::read_output_character) reads characters.
+    fn read_output_attribute<W: Word>(
+        &mut self,
+        message: &mut api::ReadOutputAttribute<W>,
+    ) -> Result<(), u32> {
+        self.output(message.handle)?;
+        let at = Coord::from_word(message.origin.dword());
+        let cells = self
+            .console
+            .screen
+            .run(at.x.into(), at.y.into(), message.count.get());
+        let mut bytes = [0u8; 2 * CELL_PIECE];
+        for (index, piece) in cells.chunks(CELL_PIECE).enumerate() {
+            for (at, cell) in piece.iter().enumerate() {
+                bytes[2 * at..2 * at + 2].copy_from_slice(&cell.attribute.to_le_bytes());
+            }
+            let address = message.buffer.get().wrapping_add(index * CELL_PIECE * 2);
+            self.client.write(address, &bytes[..2 * piece.len()])?;
+        }
+        message.read = W::from_usize(cells.len());
         Ok(())
     }
 
@@ -1381,14 +1481,16 @@ mod tests {
     impl Client for Kept {
         fn show(
             &mut self,
-            screen: &mut ScreenBuffer,
+            screen: Option<&mut ScreenBuffer>,
             buffer: usize,
             count: usize,
             _logged: bool,
         ) -> Result<(), u32> {
             let range = self.range(buffer, count)?;
             self.shown.push((buffer, count));
-            screen.render(&self.memory[range]);
+            if let Some(screen) = screen {
+                screen.render(&self.memory[range]);
+            }
             Ok(())
         }
 
@@ -1489,7 +1591,7 @@ mod tests {
         let mut server = Server::new();
         assert_eq!(
             server.call(Api::WriteConsole, &[7, 0x40_0000, 15, 0xCC, 0]),
-            (0, [7, 0x40_0000, 15, 15, 0, 0, 0, 0])
+            (0, [7, 0x40_0000, 15, 15, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             server
@@ -1545,7 +1647,7 @@ mod tests {
         );
         assert_eq!(
             server.call(Api::ReadConsole, &[3, 0x40_0000, 0, 0xCC, 1]),
-            (0, [3, 0x40_0000, 0, 0, 1, 0, 0, 0]),
+            (0, [3, 0x40_0000, 0, 0, 1, 0, 0, 0, 0]),
             "no room: nothing, at once"
         );
         assert_eq!(
@@ -1559,11 +1661,11 @@ mod tests {
         );
         assert_eq!(
             server.call(Api::VerifyIoHandle, &[0xB]),
-            (0, [0xB, 1, 0, 0, 0, 0, 0, 0])
+            (0, [0xB, 1, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             server.call(Api::VerifyIoHandle, &[0xF]),
-            (0, [0xF, 0, 0, 0, 0, 0, 0, 0])
+            (0, [0xF, 0, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(server.call(0x0002_0063u32, &[7]).0, STATUS_ILLEGAL_FUNCTION);
         assert_eq!(
@@ -1572,7 +1674,7 @@ mod tests {
                 &mut server.handles,
                 &mut server.client,
                 Api::GetMode.into(),
-                &mut [7usize, 0, 0, 0, 0, 0, 0, 0],
+                &mut [7usize, 0, 0, 0, 0, 0, 0, 0, 0],
                 core::mem::size_of::<usize>(),
             ),
             STATUS_INVALID_PARAMETER
@@ -1721,7 +1823,7 @@ mod tests {
         server.poke(0, b"Hello\r\nworld");
         assert_eq!(
             server.call(Api::WriteConsole, &[7, BASE, 12, 0, 0]),
-            (0, [7, BASE, 12, 12, 0, 0, 0, 0])
+            (0, [7, BASE, 12, 12, 0, 0, 0, 0, 0])
         );
         assert_eq!(&server.console.screen.row_text(0)[..6], b"Hello ");
         assert_eq!(&server.console.screen.row_text(1)[..6], b"world ");
@@ -1835,30 +1937,40 @@ mod tests {
         assert_eq!(Coord::from_word(0xFFFF_0005), Coord { x: 5, y: -1 });
     }
 
+    /// Windows 2000's capture: the colours and the COMMON_LVB_ bits are kept (0x0100, 0x8000, and
+    /// in the cells written), any other bit refused (0xFFFF), the attribute as it was.
     #[test]
-    fn the_text_attribute_takes_colours_only() {
+    fn the_text_attribute_takes_colours_and_the_lvb_bits() {
         let mut server = Server::new();
+        let attribute =
+            |server: &mut Server| server.call(Api::GetScreenBufferInfo, &[7]).1[3] & 0xFFFF;
         assert_eq!(server.status(Api::SetTextAttribute, &[7, 0x1E]), 0);
         assert_eq!(server.console.screen.attribute(), 0x1E);
-        assert_eq!(
-            server.call(Api::GetScreenBufferInfo, &[7]).1[3] & 0xFFFF,
-            0x1E
-        );
-        for attribute in [0x100, 0x8000, 0x1_0000] {
+        assert_eq!(attribute(&mut server), 0x1E);
+        for value in [0x0000, 0x00FF, 0x0100, 0x8000, 0xDFFF] {
             assert_eq!(
-                server.status(Api::SetTextAttribute, &[7, attribute]),
+                server.status(Api::SetTextAttribute, &[7, value]),
+                0,
+                "{value:#x}"
+            );
+            assert_eq!(attribute(&mut server), value);
+        }
+        server.status(Api::SetTextAttribute, &[7, 0x8000]);
+        for value in [0xFFFF, 0x2000, 0x1_0000] {
+            assert_eq!(
+                server.status(Api::SetTextAttribute, &[7, value]),
                 STATUS_INVALID_PARAMETER,
-                "{attribute:#x}"
+                "{value:#x}"
             );
         }
-        assert_eq!(server.console.screen.attribute(), 0x1E);
+        assert_eq!(server.console.screen.attribute(), 0x8000);
         assert_eq!(
             server.status(Api::SetTextAttribute, &[3, 0x07]),
             STATUS_INVALID_HANDLE
         );
         server.poke(0, b"x");
         server.call(Api::WriteConsole, &[7, BASE, 1, 0, 0]);
-        assert_eq!(server.console.screen.cell(0, 0).attribute, 0x1E);
+        assert_eq!(server.console.screen.cell(0, 0).attribute, 0x8000);
     }
 
     #[test]
@@ -1870,7 +1982,7 @@ mod tests {
                 Api::FillOutput,
                 &[7, 0, b'#' as usize, 5, at(W - 2, 0), 0xCC]
             ),
-            (0, [7, 0, b'#' as usize, 5, at(W - 2, 0), 5, 0, 0])
+            (0, [7, 0, b'#' as usize, 5, at(W - 2, 0), 5, 0, 0, 0])
         );
         let screen = &server.console.screen;
         assert_eq!(&screen.row_text(0)[WIDTH - 2..], b"##");
@@ -1915,7 +2027,7 @@ mod tests {
         );
         assert_eq!(
             server.call(Api::FillOutput, &[7, 0, b'!' as usize, 4, at(W, 0), 0xCC]),
-            (0, [7, 0, b'!' as usize, 4, at(W, 0), 0, 0, 0]),
+            (0, [7, 0, b'!' as usize, 4, at(W, 0), 0, 0, 0, 0]),
             "outside the buffer: nothing, and success"
         );
         assert_eq!(
@@ -1934,6 +2046,156 @@ mod tests {
         );
     }
 
+    /// Windows 2000's capture: a W fill's character narrows to the code page (U+00E9 to 0x82,
+    /// U+2500 to 0xC4), an A fill's byte is the code page's already; an attribute fill keeps its
+    /// whole word.
+    #[test]
+    fn fills_through_the_code_page() {
+        let mut server = Server::new();
+        let at = |x: i16, y: i16| Coord { x, y }.word() as usize;
+        for (row, value, unicode, character) in [
+            (0, 0x00E9, 1, 0x82),
+            (1, 0x82, 0, 0x82),
+            (2, 0x2500, 1, 0xC4),
+            (3, 0xC4, 0, 0xC4),
+        ] {
+            assert_eq!(
+                server
+                    .call(Api::FillOutput, &[7, 0, value, 3, at(0, row), 0, unicode])
+                    .1[5],
+                3
+            );
+            assert_eq!(
+                server.console.screen.cell(row as usize, 2).character,
+                character
+            );
+        }
+        server.call(Api::FillOutput, &[7, 1, 0x8F1F, 2, at(0, 0), 0, 0]);
+        assert_eq!(server.console.screen.cell(0, 1).attribute, 0x8F1F);
+    }
+
+    /// Reading the screen back, as Windows 2000's capture shows it: `count` cells on across the
+    /// row's end, as far as the buffer's end, the count read; nothing (and success) from a start
+    /// outside the buffer or for a count of 0, the client's memory past the count untouched; the
+    /// characters as UTF-16 units or the code page's bytes, the attributes as words.
+    #[test]
+    fn reads_of_the_screen_buffer() {
+        let mut server = Server::new();
+        let at = |x: i16, y: i16| Coord { x, y }.word() as usize;
+        server.call(
+            Api::FillOutput,
+            &[7, 0, b'a' as usize, 3, at(W - 3, 1), 0, 1],
+        );
+        server.call(Api::FillOutput, &[7, 0, 0x82, 3, at(0, 2), 0, 0]);
+        server.call(Api::FillOutput, &[7, 1, 0x011E, 2, at(W - 1, 1), 0, 0]);
+        server.poke(0, &[b'#'; 32]);
+        assert_eq!(
+            server.call(
+                Api::ReadOutputCharacter,
+                &[7, BASE, 6, at(W - 3, 1), 0xCC, 1]
+            ),
+            (0, [7, BASE, 6, at(W - 3, 1), 6, 1, 0, 0, 0])
+        );
+        let units: Vec<u16> = server.client.memory[..14]
+            .chunks(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(units, [0x61, 0x61, 0x61, 0xE9, 0xE9, 0xE9, 0x2323]);
+        assert_eq!(
+            server
+                .call(Api::ReadOutputCharacter, &[7, BASE, 4, at(W - 1, 1), 0, 0])
+                .1[4],
+            4
+        );
+        assert_eq!(
+            &server.client.memory[..5],
+            b"a\x82\x82\x82a",
+            "the rest untouched"
+        );
+        assert_eq!(
+            server
+                .call(Api::ReadOutputAttribute, &[7, BASE, 3, at(W - 1, 1), 0])
+                .1[4],
+            3
+        );
+        assert_eq!(
+            &server.client.memory[..8],
+            &[0x1E, 0x01, 0x1E, 0x01, 0x07, 0x00, 0xE9, 0x00]
+        );
+        assert_eq!(
+            server
+                .call(
+                    Api::ReadOutputAttribute,
+                    &[7, BASE, 10, at(W - 3, H - 1), 0]
+                )
+                .1[4],
+            3,
+            "as far as the buffer's end"
+        );
+        server.poke(0, &[b'#'; 32]);
+        for (api, count, x, y) in [
+            (Api::ReadOutputCharacter, 0, 0, 0),
+            (Api::ReadOutputCharacter, 5, W, 0),
+            (Api::ReadOutputCharacter, 5, 0, H),
+            (Api::ReadOutputCharacter, 5, -1, 0),
+            (Api::ReadOutputAttribute, 5, 0, -1),
+        ] {
+            assert_eq!(
+                server.call(api, &[7, BASE, count, at(x, y), 0xCC, 1]).1[4],
+                0,
+                "{api:?} {count} at {x},{y}"
+            );
+        }
+        assert_eq!(&server.client.memory[..32], &[b'#'; 32], "untouched");
+        for handle in [3, 0xF, 0x1234] {
+            for api in [Api::ReadOutputCharacter, Api::ReadOutputAttribute] {
+                assert_eq!(
+                    server.status(api, &[handle, BASE, 1, 0, 0, 1]),
+                    STATUS_INVALID_HANDLE
+                );
+            }
+        }
+        assert_eq!(
+            server.status(Api::ReadOutputAttribute, &[7, 0x8000_0000, 1, 0, 0]),
+            crate::status::STATUS_ACCESS_VIOLATION
+        );
+    }
+
+    /// A redirected console: the standard handles' writes (A and W, and a duplicate's) reach the
+    /// client's log alone, the screen buffer and its cursor as they were; a handle opened by name
+    /// (CONOUT$) still writes to the screen.
+    #[test]
+    fn redirected_standard_handles_leave_the_screen_alone() {
+        let mut server = Server::new();
+        server.console.redirect();
+        server.poke(0, b"ab");
+        server.poke_wide(0x10, "cd");
+        let before = server.console.screen.clone();
+        assert_eq!(server.status(Api::WriteConsole, &[7, BASE, 2, 0, 0]), 0);
+        assert_eq!(
+            server.status(Api::WriteConsole, &[0xB, BASE + 0x10, 2, 0, 1]),
+            0
+        );
+        let (_, data) = server.call(
+            Api::DupHandle,
+            &[7, 0, 0, DUPLICATE_SAME_ACCESS as usize, 0],
+        );
+        assert_eq!(
+            server.status(Api::WriteConsole, &[data[4], BASE, 2, 0, 0]),
+            0
+        );
+        assert_eq!(server.console.screen, before);
+        assert_eq!(
+            server.client.shown,
+            [(BASE, 2), (BASE, 2)],
+            "the A writes' bytes"
+        );
+        let (_, data) = server.call(Api::OpenConsole, &[1, 0, 0, 0, 0]);
+        server.call(Api::WriteConsole, &[data[4], BASE, 2, 0, 0]);
+        assert_eq!(&server.console.screen.row_text(0)[..3], b"ab ");
+        assert_eq!(server.console.screen.cursor(), (0, 2));
+    }
+
     #[test]
     fn a_scroll_region_moves_cells_and_fills_the_rest() {
         let mut server = Server::new();
@@ -1949,11 +2211,11 @@ mod tests {
         };
         server.poke(0, b"top\nmid\nend");
         server.call(Api::WriteConsole, &[7, BASE, 11, 0, 0]);
-        server.console.screen.set_attribute(0x2A);
-        // Rows 1-2 up one; a zero fill is a space in the current attribute.
+        // Rows 1-2 up one, the row they leave filled.
         let (from, to) = words(0, 1, W - 1, 2);
+        let blank = b' ' as usize | 0x2A << 16;
         assert_eq!(
-            server.status(Api::ScrollRegion, &[7, from, to, 0, 0, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[7, from, to, 0, blank, 0, 0, 0, 1]),
             0
         );
         let screen = &server.console.screen;
@@ -1970,7 +2232,7 @@ mod tests {
         assert_eq!(
             server.status(
                 Api::ScrollRegion,
-                &[7, from, to, at, fill, 1, clip_from, clip_to]
+                &[7, from, to, at, fill, 1, clip_from, clip_to, 1]
             ),
             0
         );
@@ -1978,18 +2240,69 @@ mod tests {
         assert_eq!(&screen.row_text(0)[..4], b"mid ", "outside the clip");
         assert_eq!(&screen.row_text(1)[..4], b"mid ");
         assert_eq!(&screen.row_text(2)[..4], b"end ");
-        // A source wholly outside: nothing, and success.
+        // A source wholly outside, an inverted clip: nothing, and success.
         let before = server.console.clone();
         let (from, to) = words(100, 0, 120, 5);
         assert_eq!(
-            server.status(Api::ScrollRegion, &[7, from, to, 0, fill, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[7, from, to, 0, fill, 0, 0, 0, 1]),
+            0
+        );
+        let (from, to) = words(0, 0, 10, 3);
+        let (clip_from, clip_to) = words(5, 0, 0, 3);
+        assert_eq!(
+            server.status(
+                Api::ScrollRegion,
+                &[7, from, to, at, fill, 1, clip_from, clip_to, 1]
+            ),
             0
         );
         assert_eq!(server.console, before);
         assert_eq!(
-            server.status(Api::ScrollRegion, &[3, 0, 0, 0, 0, 0, 0, 0]),
+            server.status(Api::ScrollRegion, &[3, 0, 0, 0, 0, 0, 0, 0, 0]),
             STATUS_INVALID_HANDLE
         );
+    }
+
+    /// The fill's character through the code page, as Windows 2000's capture shows: a W call's
+    /// U+00E9 is e-acute (0x82), an A call's 0x82 goes through the code page twice and fills with
+    /// theta (0xE9), an A call's '.' is itself; the fill's attribute is its whole word.
+    #[test]
+    fn a_scroll_fill_through_the_code_page() {
+        let mut server = Server::new();
+        let rect = |x: i16, y: i16| Coord { x, y }.word() as usize;
+        let down = Coord { x: 0, y: 1 }.word() as usize;
+        for (fill, unicode, character) in [
+            (0x00E9, 1, 0x82),
+            (0x82, 0, 0xE9),
+            (b'.' as usize, 0, b'.'),
+            (0x2500, 1, 0xC4),
+        ] {
+            assert_eq!(
+                server.status(
+                    Api::ScrollRegion,
+                    &[
+                        7,
+                        rect(0, 0),
+                        rect(3, 0),
+                        down,
+                        fill | 0x4E << 16,
+                        0,
+                        0,
+                        0,
+                        unicode
+                    ]
+                ),
+                0
+            );
+            assert_eq!(
+                server.console.screen.cell(0, 2),
+                Cell {
+                    character,
+                    attribute: 0x4E
+                },
+                "{fill:#x} {unicode}"
+            );
+        }
     }
 
     /// The UTF-16 units of `text`.
@@ -2184,16 +2497,16 @@ mod tests {
         let mut server = Server::new();
         assert_eq!(
             server.call(Api::GetInputCount, &[3, 0xCC]),
-            (0, [3, 0, 0, 0, 0, 0, 0, 0])
+            (0, [3, 0, 0, 0, 0, 0, 0, 0, 0])
         );
         assert_eq!(
             server.call(Api::ReadInput, &[3, BASE, 4, 0xCC]),
-            (STATUS_PENDING, [3, BASE, 4, 0, 0, 0, 0, 0]),
+            (STATUS_PENDING, [3, BASE, 4, 0, 0, 0, 0, 0, 0]),
             "an empty buffer: none, and the read waits"
         );
         assert_eq!(
             server.call(Api::PeekInput, &[3, BASE, 4, 0xCC]),
-            (0, [3, BASE, 4, 0, 0, 0, 0, 0]),
+            (0, [3, BASE, 4, 0, 0, 0, 0, 0, 0]),
             "a peek never waits"
         );
         // a, b, c: down and up each.
@@ -2488,7 +2801,7 @@ mod tests {
         assert_eq!(server.events(), input::INPUT_BUFFER_RECORDS);
         assert_eq!(
             server.call(Api::WriteInput, &[3, BASE, 1, 0xCC, 1]),
-            (0, [3, BASE, 1, 0, 1, 0, 0, 0])
+            (0, [3, BASE, 1, 0, 1, 0, 0, 0, 0])
         );
         assert_eq!(
             server.status(Api::WriteInput, &[7, BASE, 1, 0, 1]),
@@ -2529,7 +2842,7 @@ mod tests {
         assert!(!server.handles.logged(duplicate));
         assert_eq!(
             server.call(Api::GetInputWaitHandle, &[0]),
-            (0, [WAIT_HANDLE as usize, 0, 0, 0, 0, 0, 0, 0])
+            (0, [WAIT_HANDLE as usize, 0, 0, 0, 0, 0, 0, 0, 0])
         );
         assert!(!server.console.input_waiting());
         server.queue("a", true);

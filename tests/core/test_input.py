@@ -1,7 +1,7 @@
 """input - the PS/2 keyboard's path into the console's input buffer, driven through QEMU's monitor:
 the bytes the i8042 driver reads, and the key event records the console's producer appends.
 
-The boot is hello's program smoke (as tests/core/test_screen.py's: the kernel through QEMU's Multiboot
+The boot is hello's program smoke (as tests/core/test_textscreen.py's: the kernel through QEMU's Multiboot
 loader, `hello.exe` from the volume's root, a QMP socket beside it), built with the `kbd-smoke`
 feature: the keyboard driver's DPC reports on COM1 each byte it takes from the controller
 

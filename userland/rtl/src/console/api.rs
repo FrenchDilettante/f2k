@@ -123,6 +123,10 @@ pub enum Api {
     SetHandleInformation = number(23),
     /// ConsolepGetHandleInformation ([`GetHandleInformation`]).
     GetHandleInformation = number(24),
+    /// ConsolepReadConsoleOutputString's characters ([`ReadOutputCharacter`]).
+    ReadOutputCharacter = number(25),
+    /// ConsolepReadConsoleOutputString's attributes ([`ReadOutputAttribute`]).
+    ReadOutputAttribute = number(26),
 }
 
 /// An API's number: the console server's index in the high word, the API's in the low one.
@@ -131,7 +135,7 @@ const fn number(index: u32) -> u32 {
 }
 
 /// Every API, at its index.
-const APIS: [Api; 25] = [
+const APIS: [Api; 27] = [
     Api::WriteConsole,
     Api::ReadConsole,
     Api::GetMode,
@@ -157,6 +161,8 @@ const APIS: [Api; 25] = [
     Api::GetInputWaitHandle,
     Api::SetHandleInformation,
     Api::GetHandleInformation,
+    Api::ReadOutputCharacter,
+    Api::ReadOutputAttribute,
 ];
 
 const _: () = {
@@ -226,8 +232,8 @@ messages! {
     SetCursorPosition: 2 [handle, position];
     GetScreenBufferInfo: 7 [handle, info];
     SetTextAttribute: 2 [handle, attributes];
-    FillOutput: 6 [handle, element, value, count, origin, written];
-    ScrollRegion: 8 [
+    FillOutput: 7 [handle, element, value, count, origin, written, unicode];
+    ScrollRegion: 9 [
         handle,
         source_top_left,
         source_bottom_right,
@@ -235,7 +241,8 @@ messages! {
         fill,
         clipped,
         clip_top_left,
-        clip_bottom_right
+        clip_bottom_right,
+        unicode
     ];
     GetTitle: 4 [buffer, size, returned, unicode];
     SetTitle: 3 [buffer, length, unicode];
@@ -248,6 +255,8 @@ messages! {
     GetInputWaitHandle: 1 [handle];
     SetHandleInformation: 3 [handle, mask, flags];
     GetHandleInformation: 2 [handle, flags];
+    ReadOutputCharacter: 6 [handle, buffer, count, origin, read, unicode];
+    ReadOutputAttribute: 5 [handle, buffer, count, origin, read];
 }
 
 /// WriteConsole: `count` bytes of the client's memory at `buffer` to the screen, or, `unicode`,
@@ -360,7 +369,7 @@ pub struct GetScreenBufferInfo<W> {
     pub info: [W; 6],
 }
 
-/// SetConsoleTextAttribute: the attributes written cells take.
+/// SetConsoleTextAttribute: the attributes written cells take (a CHAR_INFO's attribute word).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SetTextAttribute<W> {
@@ -369,19 +378,22 @@ pub struct SetTextAttribute<W> {
 }
 
 /// FillConsoleOutputCharacter and FillConsoleOutputAttribute: `count` cells from `origin`
-/// written with `value`.
+/// written with `value`, on across each row's end, as far as the buffer's end.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FillOutput<W> {
     pub handle: W,
     /// What the fill writes: 0 the character, 1 the attribute.
     pub element: W,
+    /// The character (a UTF-16 unit, or, not `unicode`, a byte in the console's code page) or
+    /// the attribute word.
     pub value: W,
     pub count: W,
     /// A COORD (X the low word).
     pub origin: W,
     /// Written by the server: the cells written.
     pub written: W,
+    pub unicode: W,
 }
 
 /// ScrollConsoleScreenBuffer: the source rectangle's cells moved to `destination`, the cells
@@ -396,8 +408,8 @@ pub struct ScrollRegion<W> {
     pub source_bottom_right: W,
     /// A COORD (X the low word).
     pub destination: W,
-    /// A CHAR_INFO: the character | the attributes << 16 (zero: a blank in the current
-    /// attributes).
+    /// A CHAR_INFO: the character (a UTF-16 unit, or, not `unicode`, a byte in the console's
+    /// code page) | the attributes << 16.
     pub fill: W,
     /// Nonzero: the clip rectangle follows.
     pub clipped: W,
@@ -405,6 +417,7 @@ pub struct ScrollRegion<W> {
     pub clip_top_left: W,
     /// right | bottom << 16.
     pub clip_bottom_right: W,
+    pub unicode: W,
 }
 
 /// GetConsoleTitleA and GetConsoleTitleW: the title into a buffer of `size` characters.
@@ -535,6 +548,35 @@ pub struct GetHandleInformation<W> {
     pub flags: W,
 }
 
+/// ReadConsoleOutputCharacter: up to `count` cells' characters from `origin`, on across each row's
+/// end, as far as the buffer's end, into `buffer` (UTF-16 units, or, not `unicode`, bytes in the
+/// console's code page).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadOutputCharacter<W> {
+    pub handle: W,
+    pub buffer: W,
+    pub count: W,
+    /// A COORD (X the low word).
+    pub origin: W,
+    /// Written by the server: the characters read.
+    pub read: W,
+    pub unicode: W,
+}
+
+/// ReadConsoleOutputAttribute: as [`ReadOutputCharacter`], the cells' attribute words.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadOutputAttribute<W> {
+    pub handle: W,
+    pub buffer: W,
+    pub count: W,
+    /// A COORD (X the low word).
+    pub origin: W,
+    /// Written by the server: the attributes read.
+    pub read: W,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,7 +585,8 @@ mod tests {
     fn numbers_name_their_apis() {
         assert_eq!(Api::try_from(0x0002_0000), Ok(Api::WriteConsole));
         assert_eq!(Api::try_from(0x0002_0018), Ok(Api::GetHandleInformation));
-        for number in [0x0002_0019, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
+        assert_eq!(Api::try_from(0x0002_001A), Ok(Api::ReadOutputAttribute));
+        for number in [0x0002_001B, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
             assert_eq!(Api::try_from(number), Err(number), "{number:#x}");
         }
         assert_eq!(u32::from(Api::GetInputWaitHandle), 0x0002_0016);
