@@ -728,6 +728,22 @@ ordinal = 729
 fails = "never"
 
 [[export]]
+name = "strchr"
+group = "strings"
+args = ["strA string", "i32 c"]
+impl = { stub = "not yet implemented" }
+ordinal = 717
+fails = "never"
+
+[[export]]
+name = "strncmp"
+group = "strings"
+args = ["strA string1", "strA string2", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 726
+fails = "never"
+
+[[export]]
 name = "_strnicmp"
 group = "strings"
 args = ["strA string1", "strA string2", "u32 count"]
@@ -873,6 +889,14 @@ group = "memory"
 args = ["ptr dest", "i32 c", "u32 count"]
 impl = { native = "memset" }
 ordinal = 687
+fails = "never"
+
+[[export]]
+name = "memcpy"
+group = "memory"
+args = ["ptr dest", "ptr src", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 685
 fails = "never"
 
 # --- sorting / random numbers / time / locale -----------------------------------------------------
@@ -3456,10 +3480,6 @@ name = "memchr"
 ordinal = 683
 
 [[export]]
-name = "memcpy"
-ordinal = 685
-
-[[export]]
 name = "mktime"
 ordinal = 688
 
@@ -3540,10 +3560,6 @@ name = "sscanf"
 ordinal = 715
 
 [[export]]
-name = "strchr"
-ordinal = 717
-
-[[export]]
 name = "strcoll"
 ordinal = 719
 
@@ -3558,10 +3574,6 @@ ordinal = 723
 [[export]]
 name = "strncat"
 ordinal = 725
-
-[[export]]
-name = "strncmp"
-ordinal = 726
 
 [[export]]
 name = "strpbrk"

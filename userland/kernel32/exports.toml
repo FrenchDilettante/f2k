@@ -612,6 +612,54 @@ impl = { stub = "not yet implemented" }
 ordinal = 607
 fails = "FALSE"
 
+[[export]]
+name = "FillConsoleOutputCharacterA"
+group = "console"
+args = ["handle hConsoleOutput", "u32 cCharacter", "u32 nLength", "u32 dwWriteCoord", "ptr<u32> lpNumberOfCharsWritten"]
+impl = { stub = "not yet implemented" }
+ordinal = 160
+fails = "FALSE"
+
+[[export]]
+name = "ScrollConsoleScreenBufferA"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpScrollRectangle", "ptr lpClipRectangle", "u32 dwDestinationOrigin", "ptr lpFill"]
+impl = { stub = "not yet implemented" }
+ordinal = 606
+fails = "FALSE"
+
+[[export]]
+name = "ReadConsoleOutputCharacterW"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpCharacter", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfCharsRead"]
+impl = { stub = "not yet implemented" }
+ordinal = 574
+fails = "FALSE"
+
+[[export]]
+name = "ReadConsoleOutputCharacterA"
+group = "console"
+args = ["handle hConsoleOutput", "ptr lpCharacter", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfCharsRead"]
+impl = { stub = "not yet implemented" }
+ordinal = 573
+fails = "FALSE"
+
+[[export]]
+name = "ReadConsoleOutputAttribute"
+group = "console"
+args = ["handle hConsoleOutput", "ptr<u16> lpAttribute", "u32 nLength", "u32 dwReadCoord", "ptr<u32> lpNumberOfAttrsRead"]
+impl = { stub = "not yet implemented" }
+ordinal = 572
+fails = "FALSE"
+
+[[export]]
+name = "GenerateConsoleCtrlEvent"
+group = "console"
+args = ["u32 dwCtrlEvent", "u32 dwProcessGroupId"]
+impl = { stub = "not yet implemented" }
+ordinal = 205
+fails = "FALSE"
+
 # --- environment ------------------------------------------------------------------------------------
 
 [[export]]
@@ -2728,10 +2776,6 @@ name = "FileTimeToDosDateTime"
 ordinal = 156
 
 [[export]]
-name = "FillConsoleOutputCharacterA"
-ordinal = 160
-
-[[export]]
 name = "FindAtomA"
 ordinal = 162
 
@@ -2853,10 +2897,6 @@ ordinal = 203
 [[export]]
 name = "FreeVirtualBuffer"
 ordinal = 204
-
-[[export]]
-name = "GenerateConsoleCtrlEvent"
-ordinal = 205
 
 [[export]]
 name = "GetAtomNameA"
@@ -3737,18 +3777,6 @@ name = "ReadConsoleOutputA"
 ordinal = 571
 
 [[export]]
-name = "ReadConsoleOutputAttribute"
-ordinal = 572
-
-[[export]]
-name = "ReadConsoleOutputCharacterA"
-ordinal = 573
-
-[[export]]
-name = "ReadConsoleOutputCharacterW"
-ordinal = 574
-
-[[export]]
 name = "ReadConsoleOutputW"
 ordinal = 575
 
@@ -3835,10 +3863,6 @@ note = "forwarded to NTDLL.RtlMoveMemory"
 name = "RtlZeroMemory"
 ordinal = 605
 note = "forwarded to NTDLL.RtlZeroMemory"
-
-[[export]]
-name = "ScrollConsoleScreenBufferA"
-ordinal = 606
 
 [[export]]
 name = "SetCPGlobal"

@@ -10,6 +10,7 @@ kind = "sectioned"
 timeout = 60
 
 [pending]
+lone = "CREATE_NEW_CONSOLE not yet implemented: the section's child opens a console of its own"
 keys = "interactive: real Ctrl+C and Ctrl+Break keys, captured by hand into overrides.txt; the harness has no field yet for the keys a block sends once it prints a marker"
 
 [pins]
