@@ -3,4 +3,5 @@
 pub mod fat32;
 pub mod file;
 pub mod io;
+pub mod npfs;
 pub mod search;
