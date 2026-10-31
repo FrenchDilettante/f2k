@@ -1,0 +1,177 @@
+# F2K capture of ctrl (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  8:32:06.14
+ctrl F2KT-SOURCE-CRC=0xBD0AC690
+>>> ctrl.exe order
+== order
+-- three handlers, the first registered answering TRUE (ctrlkid chain TFF)
+kid: registered [TFF]: every call ret=1 yes
+kid: handler 3: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 2: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 1: event 1, on the main thread no, on the first handler's thread yes, answers TRUE
+kid: a handler answered TRUE: the main thread runs on
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- three handlers, the second registered answering TRUE (ctrlkid chain FTF)
+kid: registered [FTF]: every call ret=1 yes
+kid: handler 3: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 2: event 1, on the main thread no, on the first handler's thread yes, answers TRUE
+kid: a handler answered TRUE: the main thread runs on
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- three handlers, the last registered answering TRUE (ctrlkid chain FFT)
+kid: registered [FFT]: every call ret=1 yes
+kid: handler 3: event 1, on the main thread no, on the first handler's thread yes, answers TRUE
+kid: a handler answered TRUE: the main thread runs on
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- the second handler registered twice (ctrlkid chain TF2)
+kid: registered [TF2]: every call ret=1 yes
+kid: handler 2: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 2: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 1: event 1, on the main thread no, on the first handler's thread yes, answers TRUE
+kid: a handler answered TRUE: the main thread runs on
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0
+>>> ctrl.exe default
+== default
+-- three handlers answering FALSE (ctrlkid chain FFF)
+kid: registered [FFF]: every call ret=1 yes
+kid: handler 3: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 2: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+kid: handler 1: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0xC000013A
+-- no handler (ctrlkid chain -)
+kid: registered [-]: every call ret=1 yes
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0xC000013A
+-- Ctrl+C ignored, one handler answering FALSE (ctrlkid chain IF)
+kid: registered [IF]: every call ret=1 yes
+kid: handler 1: event 1, on the main thread no, on the first handler's thread yes, answers FALSE
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0xC000013A
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0
+>>> ctrl.exe ctrlc
+== ctrlc
+-- the child as started (ctrlkid listen, keep): CTRL_C_EVENT, then the fence
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- Ctrl+C processed again (ctrlkid listen, process): CTRL_C_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 1, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- Ctrl+C ignored (ctrlkid listen, ignore): CTRL_C_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, TRUE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- Ctrl+C ignored, a Ctrl+Break (ctrlkid listen, ignore): CTRL_BREAK_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, TRUE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 2, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0
+>>> ctrl.exe inherit
+== inherit
+-- both as started (ctrlkid family keep keep): CTRL_C_EVENT, then the fence
+grandkid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+kid: the grandchild's exit code 0
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- the child processing Ctrl+C, the grandchild as started (ctrlkid family process keep): CTRL_C_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+grandkid: seen: Ctrl+C 1, Ctrl+Break 1, other events none; on the main thread no
+kid: the grandchild's exit code 0
+kid: seen: Ctrl+C 1, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- the child processing Ctrl+C, the grandchild ignoring it (ctrlkid family process ignore): CTRL_C_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+grandkid: SetConsoleCtrlHandler(NULL, TRUE): ret=1 err=-
+grandkid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+kid: the grandchild's exit code 0
+kid: seen: Ctrl+C 1, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- the child as started, the grandchild processing Ctrl+C (ctrlkid family keep process): CTRL_C_EVENT, then the fence
+grandkid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+grandkid: seen: Ctrl+C 1, Ctrl+Break 1, other events none; on the main thread no
+kid: the grandchild's exit code 0
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_C_EVENT, the child's group): ret=1 err=-
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0
+>>> ctrl.exe errors
+== errors
+-- an event GenerateConsoleCtrlEvent does not generate (ctrlkid listen, process): CTRL_CLOSE_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_CLOSE_EVENT, the child's group): ret=0 err=87
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- an event GenerateConsoleCtrlEvent does not generate (ctrlkid listen, process): 3, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(3, the child's group): ret=0 err=87
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- an event GenerateConsoleCtrlEvent does not generate (ctrlkid listen, process): CTRL_LOGOFF_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_LOGOFF_EVENT, the child's group): ret=0 err=87
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- an event GenerateConsoleCtrlEvent does not generate (ctrlkid listen, process): CTRL_SHUTDOWN_EVENT, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(CTRL_SHUTDOWN_EVENT, the child's group): ret=0 err=87
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+-- an event GenerateConsoleCtrlEvent does not generate (ctrlkid listen, process): 0xFFFFFFFF, then the fence
+kid: SetConsoleCtrlHandler(NULL, FALSE): ret=1 err=-
+kid: seen: Ctrl+C 0, Ctrl+Break 1, other events none; on the main thread no
+GenerateConsoleCtrlEvent(0xFFFFFFFF, the child's group): ret=0 err=87
+GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's group): ret=1 err=-
+the child's end: WAIT_OBJECT_0, exit code 0
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0
+>>> ctrl.exe lone
+== lone
+the standard output duplicated, inheritable: yes
+-- ctrlkid lone, in a console and a group of its own
+kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the parent's id, in another console): ret=0 err=87
+kid: Ctrl+Breaks this program saw for both: 1
+kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the grandchild's id, not a group's root): ret=0 err=87
+kid: Ctrl+Breaks this program saw for both: 1
+kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, an ended process's id): ret=0 err=87
+kid: Ctrl+Breaks this program saw for both: 1
+grandkid: seen: Ctrl+C 0, Ctrl+Break 3, other events none; on the main thread no
+kid: the grandchild's exit code 0; the fences it shared: 3
+the child's end: WAIT_OBJECT_0, exit code 0
+this program's handler saw: Ctrl+C 0, Ctrl+Break 0, other events 0
+ctrl: done
+<<< exit code=0

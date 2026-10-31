@@ -1,0 +1,8 @@
+# ctrl: blocks the capture script cannot take, merged over output.txt by tests/f2kboot.py
+# (a block here replaces the captured block with the same command line, or adds one).
+#
+# ctrl.exe keys: real Ctrl+C and Ctrl+Break pressed on the keyboard, which tests/capture.bat
+# cannot press. Captured by hand on the real machine: in a console window, from the fixture's
+# directory, "ctrl.exe keys > keys.txt", the keys pressed as each prompt asks (ctrl.c's header
+# lists them), then "echo %ERRORLEVEL%". Its block goes below this header: ">>> ctrl.exe keys",
+# keys.txt's lines, then "<<< exit code=N" with the number echoed.

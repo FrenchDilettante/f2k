@@ -1,0 +1,111 @@
+# screen: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. Every section works through CONOUT$ (and CONIN$) opened by name, so capture.bat takes every
+# block; each clears the screen buffer and homes the cursor first, as cls does. Each block's screen is
+# saved as its process ends (screenshots), for the record.
+description = "screen - the screen buffer through CONOUT$ (screen.c): SetConsoleCursorPosition and the window following the cursor, SetConsoleTextAttribute and the written cells, FillConsoleOutputCharacterW/A and FillConsoleOutputAttribute past the row's and the buffer's end, ReadConsoleOutputCharacterW/A and ReadConsoleOutputAttribute, ScrollConsoleScreenBufferW/A (overlapping, clipped, filled, at the buffer's edges), and their errors on CONIN$, a file and a bogus handle."
+kind = "sectioned"
+screenshots = true
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself; every section clears the buffer with
+# FillConsoleOutputCharacterW, FillConsoleOutputAttribute and SetConsoleCursorPosition first.
+cursor = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.WriteConsoleA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+attr = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.SetConsoleTextAttribute",
+    "kernel32.WriteConsoleA",
+    "kernel32.WriteConsoleW",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+fill = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputCharacterA",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputCharacterA",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+readback = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.WriteConsoleA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputCharacterA",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+scroll = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.SetConsoleTextAttribute",
+    "kernel32.WriteConsoleA",
+    "kernel32.ScrollConsoleScreenBufferW",
+    "kernel32.ScrollConsoleScreenBufferA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputCharacterA",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+clip = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.SetConsoleTextAttribute",
+    "kernel32.WriteConsoleA",
+    "kernel32.ScrollConsoleScreenBufferW",
+    "kernel32.ScrollConsoleScreenBufferA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+edges = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.SetConsoleTextAttribute",
+    "kernel32.WriteConsoleA",
+    "kernel32.ScrollConsoleScreenBufferW",
+    "kernel32.ScrollConsoleScreenBufferA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputAttribute",
+]
+errors = [
+    "kernel32.CreateFileA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.SetConsoleCursorPosition",
+    "kernel32.SetConsoleTextAttribute",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FillConsoleOutputCharacterA",
+    "kernel32.FillConsoleOutputAttribute",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.ReadConsoleOutputCharacterA",
+    "kernel32.ReadConsoleOutputAttribute",
+    "kernel32.ScrollConsoleScreenBufferW",
+    "kernel32.ScrollConsoleScreenBufferA",
+]

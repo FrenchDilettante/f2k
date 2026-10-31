@@ -17,9 +17,10 @@ rem see common\f2kt.h), which the parser skips.
 rem
 rem The fixtures built on common\f2kt.h list their own sections
 rem (<fixture>.exe --list): every one is captured but the interactive ones
-rem (runtime console), whose output needs a console: capture those by hand
-rem into the fixture's overrides.txt. Run after build.bat: the binaries it
-rem builds list their sections; older ones do not.
+rem (runtime console, ctrl keys), whose output needs a console or keys
+rem pressed: capture those by hand into the fixture's overrides.txt. Run
+rem after build.bat: the binaries it builds list their sections; older
+rem ones do not.
 rem
 rem Each fixture runs in its own directory, <dll>\<name> (the fixtures are
 rem grouped by the DLL they exercise). A fixture's name (capture.bat dll)
@@ -41,6 +42,7 @@ call :cap_bare
 call :cap_runtime
 for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
 call :cap_spawn
+for %%F in (screen lineedit ctrl) do call :listed kernel32 %%F
 call :listed user32 winsta
 call :listed advapi32 registry
 call :cap_hellomd
@@ -48,7 +50,8 @@ call :cap_crt
 for %%F in (seh fd wide) do call :listed crt %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
-echo by hand, into kernel32\runtime\overrides.txt.
+echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe keys"
+echo with its keys pressed, into kernel32\ctrl\overrides.txt.
 exit /b 0
 
 rem One fixture (capture.bat dll): recapture only it. The files fixture
@@ -56,7 +59,7 @@ rem needs its data tree's attributes first (kernel32\files\setup.bat).
 :one
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn screen lineedit ctrl) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 for %%F in (winsta) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (registry) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_DLL=crt

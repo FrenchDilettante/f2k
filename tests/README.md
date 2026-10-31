@@ -13,7 +13,7 @@ tests/
 │               # (test_limine.py, test_input.py, test_screen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn
+│               # console, spawn, screen, lineedit, ctrl
 ├── user32/     # hellogui, winsta
 ├── advapi32/   # registry
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide (built with /MD)
@@ -108,6 +108,15 @@ The fixtures:
   Built with `/MD`, in a scratch directory as `fswrite`'s.
   Gated.
   Its `system` block (no cmd.exe on F2K's disk), `detach` block (F2K's stub path) and `remoteexit` block (a refusal Windows 2000's base server gives, which F2K does not have) are expected to stay failing.
+- `screen` - the screen buffer through `CONOUT$`, each section starting from a buffer cleared the way cls clears it: `SetConsoleCursorPosition` (inside and outside the buffer, the window following the cursor), `SetConsoleTextAttribute` and the cells a write leaves, `FillConsoleOutputCharacterW`/`A` and `FillConsoleOutputAttribute` (past the row's end and the buffer's end, the count written), `ReadConsoleOutputCharacterW`/`A` and `ReadConsoleOutputAttribute`, `ScrollConsoleScreenBufferW`/`A` (overlapping, clipped, the fill, the buffer's edges), and their errors on `CONIN$`, a file and a bogus handle.
+  Positions print from the cleared buffer's corner, or relative to its size near its far edges.
+  Built with `/MD`; declared ahead of its real-machine build and capture.
+- `lineedit` - the console's line editing and history in a line-mode read with echo, over key events the program queues itself with `WriteConsoleInputW`/`A` as a keyboard makes them: moving within the line, by word, deleting, Esc, insert and overtype, lines longer than a row and on the buffer's last row, the history keys (Up, Down, PgUp, PgDn, F1, F3, F5, F8), F6 and Alt+F7, each read's result and the echoed rows read back.
+  Each section clears its program's history first, which Windows 2000 keeps after a program ends.
+  Built with `/MD`; declared ahead of its real-machine build and capture.
+- `ctrl` - console control events, with its companion program `ctrlkid.exe` (built beside it from `ctrlkid.c`), started in a process group of its own: `GenerateConsoleCtrlEvent` into that group (the handlers' order and thread, the chain's end, the default handler's exit code), `CTRL_C_EVENT` into a group and the ignore flag in a child and a grandchild, the call's refusals, groups no process leads (from a console of its own), and named-only `keys`, real Ctrl+C and Ctrl+Break during a line read and a running child, captured by hand into `overrides.txt`.
+  No event ever goes to group 0, which would reach the cmd.exe running the capture.
+  Built with `/MD`; declared ahead of its real-machine build and capture; its `keys` block waits for the harness to send keys.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 

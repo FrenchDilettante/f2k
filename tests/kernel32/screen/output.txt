@@ -1,0 +1,436 @@
+# F2K capture of screen (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  8:31:55.48
+screen F2KT-SOURCE-CRC=0x61C78A7F
+>>> screen.exe cursor
+== cursor
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+after the clear: cursor at (0,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(5,3): ret=1 err=-
+then: cursor at (5,3), window top at row 0, the cursor in the window: yes (its row 3)
+SetConsoleCursorPosition(W-1,0): ret=1 err=-
+then: cursor at (W-1,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(W,0): ret=0 err=87
+then: cursor at (W-1,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(-1,0): ret=0 err=87
+then: cursor at (W-1,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(0,-1): ret=0 err=87
+then: cursor at (W-1,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(0,H): ret=0 err=87
+then: cursor at (W-1,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(W-1,H-1): ret=1 err=-
+then: cursor at (W-1,H-1), window top at row 275, the cursor in the window: yes (its row last)
+SetConsoleCursorPosition(0,0): ret=1 err=-
+home: cursor at (0,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(0,30): ret=1 err=-
+then: cursor at (0,30), window top at row 6, the cursor in the window: yes (its row last)
+SetConsoleCursorPosition(0,28): ret=1 err=-
+then: cursor at (0,28), window top at row 6, the cursor in the window: yes (its row 22)
+SetConsoleCursorPosition(0,2): ret=1 err=-
+then: cursor at (0,2), window top at row 2, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(0,0): ret=1 err=-
+home: cursor at (0,0), window top at row 0, the cursor in the window: yes (its row 0)
+WriteConsoleA([abc]): ret=1 written 3 err=-
+then: cursor at (3,0), window top at row 0, the cursor in the window: yes (its row 0)
+SetConsoleCursorPosition(W-2,1): ret=1 err=-
+WriteConsoleA([xyz]): ret=1 written 3 err=-
+then: cursor at (1,2), window top at row 0, the cursor in the window: yes (its row 2)
+  cells (W-3,1): [ xy] 07 07 07
+  cells (0,2): [z  ] 07 07 07
+screen: done
+<<< exit code=0
+>>> screen.exe attr
+== attr
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+  as cleared (0,0): [      ] 07 07 07 07 07 07
+SetConsoleTextAttribute(0x001E): ret=1 err=-, the buffer's attribute now 0x001E
+WriteConsoleA([abc]): ret=1 written 3 err=-
+  cells (0,0): [abc   ] 1E 1E 1E 07 07 07
+SetConsoleTextAttribute(0x004F): ret=1 err=-, the buffer's attribute now 0x004F
+WriteConsoleW([de]): ret=1 written 2 err=-
+  cells (0,1): [de    ] 4F 4F 07 07 07 07
+SetConsoleTextAttribute(0x0000): ret=1 err=-, the buffer's attribute now 0x0000
+WriteConsoleA([x]): ret=1 written 1 err=-
+  cells (0,2): [x ] 00 07
+SetConsoleTextAttribute(0x00FF): ret=1 err=-, the buffer's attribute now 0x00FF
+WriteConsoleA([x]): ret=1 written 1 err=-
+  cells (0,3): [x ] FF 07
+SetConsoleTextAttribute(0x0100): ret=1 err=-, the buffer's attribute now 0x0100
+WriteConsoleA([x]): ret=1 written 1 err=-
+  cells (0,4): [x ] 100 07
+SetConsoleTextAttribute(0x8000): ret=1 err=-, the buffer's attribute now 0x8000
+WriteConsoleA([x]): ret=1 written 1 err=-
+  cells (0,5): [x ] 8000 07
+SetConsoleTextAttribute(0xFFFF): ret=0 err=87, the buffer's attribute now 0x8000
+WriteConsoleA([x]): ret=1 written 1 err=-
+  cells (0,6): [x ] 8000 07
+SetConsoleTextAttribute(0x002A): ret=1 err=-, the buffer's attribute now 0x002A
+FillConsoleOutputCharacterW(f, 3 at (0,0)): ret=1 written 3 err=-
+  cells (0,0): [fff   ] 1E 1E 1E 07 07 07
+attribute restored: yes
+screen: done
+<<< exit code=0
+>>> screen.exe fill
+== fill
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+FillConsoleOutputCharacterW(x, 5 at (2,1)): ret=1 written 5 err=-
+  cells (0,1): [  xxxxx   ] 07 07 07 07 07 07 07 07 07 07
+FillConsoleOutputCharacterA(y, 5 at (2,2)): ret=1 written 5 err=-
+  cells (0,2): [  yyyyy   ] 07 07 07 07 07 07 07 07 07 07
+FillConsoleOutputCharacterW(p, 6 at (W-3,3)): ret=1 written 6 err=-
+  cells (W-5,3): [  ppp] 07 07 07 07 07
+  cells (0,4): [ppp  ] 07 07 07 07 07
+FillConsoleOutputCharacterA(q, 6 at (W-3,5)): ret=1 written 6 err=-
+  cells (W-5,5): [  qqq] 07 07 07 07 07
+  cells (0,6): [qqq  ] 07 07 07 07 07
+FillConsoleOutputCharacterW(z, 10 at (W-4,H-1)): ret=1 written 4 err=-
+  cells (W-6,H-1): [  zzzz] 07 07 07 07 07 07
+FillConsoleOutputCharacterA(r, 10 at (W-3,H-1)): ret=1 written 3 err=-
+  cells (W-6,H-1): [  zrrr] 07 07 07 07 07 07
+FillConsoleOutputCharacterW(n, 0 at (0,7)): ret=1 written 0 err=-
+FillConsoleOutputCharacterA(n, 0 at (0,7)): ret=1 written 0 err=-
+  cells (0,7): [   ] 07 07 07
+FillConsoleOutputCharacterW(o, 3 at (W,0)): ret=1 written 0 err=-
+FillConsoleOutputCharacterW(o, 3 at (0,H)): ret=1 written 0 err=-
+FillConsoleOutputCharacterW(o, 3 at (-1,0)): ret=1 written 0 err=-
+FillConsoleOutputCharacterW(o, 3 at (0,-1)): ret=1 written 0 err=-
+FillConsoleOutputCharacterA(o, 3 at (W,0)): ret=1 written 0 err=-
+FillConsoleOutputCharacterA(o, 3 at (0,H)): ret=1 written 0 err=-
+FillConsoleOutputCharacterA(o, 3 at (-1,0)): ret=1 written 0 err=-
+  cells (0,0): [   ] 07 07 07
+FillConsoleOutputAttribute(0x2F, 5 at (2,8)): ret=1 written 5 err=-
+  cells (0,8): [          ] 07 07 2F 2F 2F 2F 2F 07 07 07
+FillConsoleOutputAttribute(0x3F, 6 at (W-3,9)): ret=1 written 6 err=-
+  cells (W-5,9): [     ] 07 07 3F 3F 3F
+  cells (0,10): [     ] 3F 3F 3F 07 07
+FillConsoleOutputAttribute(0x5F, 10 at (W-4,H-2)): ret=1 written 10 err=-
+  cells (W-6,H-2): [      ] 07 07 5F 5F 5F 5F
+FillConsoleOutputAttribute(0x6F, 10 at (W-4,H-1)): ret=1 written 4 err=-
+  cells (W-6,H-1): [  zrrr] 07 07 6F 6F 6F 6F
+FillConsoleOutputAttribute(0x1F, 0 at (0,11)): ret=1 written 0 err=-
+  cells (0,11): [   ] 07 07 07
+FillConsoleOutputAttribute(0x1F, 3 at (W,0)): ret=1 written 0 err=-
+FillConsoleOutputAttribute(0x1F, 3 at (0,H)): ret=1 written 0 err=-
+FillConsoleOutputAttribute(0x1F, 3 at (-1,0)): ret=1 written 0 err=-
+FillConsoleOutputCharacterW(<U+00E9>, 3 at (0,12)): ret=1 written 3 err=-
+  read back at (0,12): W ret=1 [<U+00E9><U+00E9><U+00E9>], A ret=1 [\x82\x82\x82]
+FillConsoleOutputCharacterA(\x82, 3 at (0,13)): ret=1 written 3 err=-
+  read back at (0,13): W ret=1 [<U+00E9><U+00E9><U+00E9>], A ret=1 [\x82\x82\x82]
+FillConsoleOutputCharacterW(<U+2500>, 3 at (0,14)): ret=1 written 3 err=-
+  read back at (0,14): W ret=1 [<U+2500><U+2500><U+2500>], A ret=1 [\xC4\xC4\xC4]
+FillConsoleOutputCharacterA(\xC4, 3 at (0,15)): ret=1 written 3 err=-
+  read back at (0,15): W ret=1 [<U+2500><U+2500><U+2500>], A ret=1 [\xC4\xC4\xC4]
+screen: done
+<<< exit code=0
+>>> screen.exe readback
+== readback
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+ReadConsoleOutputCharacterW(5 at (0,0)): ret=1 read 5 err=- [hello] the rest untouched yes
+ReadConsoleOutputCharacterA(5 at (0,0)): ret=1 read 5 err=- [hello] the rest untouched yes
+ReadConsoleOutputAttribute(5 at (0,0)): ret=1 read 5 err=- [1E 1E 1E 1E 1E] the rest untouched yes
+ReadConsoleOutputCharacterW(16 at (0,0)): ret=1 read 16 err=- [hello world     ] the rest untouched yes
+ReadConsoleOutputCharacterA(16 at (0,0)): ret=1 read 16 err=- [hello world     ] the rest untouched yes
+ReadConsoleOutputAttribute(8 at (0,0)): ret=1 read 8 err=- [1E 1E 1E 1E 1E 07 07 07] the rest untouched yes
+ReadConsoleOutputCharacterW(6 at (W-3,1)): ret=1 read 6 err=- [abcdef] the rest untouched yes
+ReadConsoleOutputCharacterA(6 at (W-3,1)): ret=1 read 6 err=- [abcdef] the rest untouched yes
+ReadConsoleOutputAttribute(6 at (W-3,1)): ret=1 read 6 err=- [2F 2F 2F 2F 2F 2F] the rest untouched yes
+ReadConsoleOutputCharacterW(10 at (W-3,H-1)): ret=1 read 3 err=- [zz ] the rest untouched yes
+ReadConsoleOutputCharacterA(10 at (W-3,H-1)): ret=1 read 3 err=- [zz ] the rest untouched yes
+ReadConsoleOutputAttribute(10 at (W-3,H-1)): ret=1 read 3 err=- [3F 3F 07] the rest untouched yes
+ReadConsoleOutputCharacterW(0 at (0,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterA(0 at (0,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputAttribute(0 at (0,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterW(5 at (W,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterW(5 at (0,H)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterW(5 at (-1,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterW(5 at (0,-1)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterA(5 at (W,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterA(5 at (0,H)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputCharacterA(5 at (-1,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputAttribute(5 at (W,0)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputAttribute(5 at (0,H)): ret=1 read 0 err=- [] the rest untouched yes
+ReadConsoleOutputAttribute(5 at (-1,0)): ret=1 read 0 err=- [] the rest untouched yes
+screen: done
+<<< exit code=0
+>>> screen.exe scroll
+== scroll
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+-- down two rows, over itself
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip none, to (0,2), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,4): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,5): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- right three columns, over itself
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip none, to (3,0), fill .): ret=1 err=-
+  row (0,0): [...A0123456789  ] 4E 4E 4E 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07
+  row (0,1): [...B0123456789  ] 4E 4E 4E 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07
+  row (0,2): [...C0123456789  ] 4E 4E 4E 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07
+  row (0,3): [...D0123456789  ] 4E 4E 4E 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07
+  row (0,4): [                ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- up and left two, over itself
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((2,2)-(10,5), clip none, to (0,0), fill .): ret=1 err=-
+  row (0,0): [12345678989   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 1F 1F 07 07 07
+  row (0,1): [12345678989   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 2F 2F 07 07 07
+  row (0,2): [123456789..   ] 5F 5F 5F 5F 5F 5F 5F 5F 5F 4E 4E 07 07 07
+  row (0,3): [123456789..   ] 6F 6F 6F 6F 6F 6F 6F 6F 6F 4E 4E 07 07 07
+  row (0,4): [E0.........   ] 5F 5F 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,5): [F0.........   ] 6F 6F 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- to a place it does not overlap
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(4,1), clip none, to (6,4), fill .): ret=1 err=-
+  row (0,0): [.....456789   ] 4E 4E 4E 4E 4E 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [.....456789   ] 4E 4E 4E 4E 4E 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,3): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,4): [      A0123   ] 07 07 07 07 07 07 1F 1F 1F 1F 1F 07 07 07
+  row (0,5): [      B0123   ] 07 07 07 07 07 07 2F 2F 2F 2F 2F 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- onto itself
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,2), clip none, to (0,0), fill .): ret=1 err=-
+  row (0,0): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, A, the fill 0x82
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferA((0,0)-(10,3), clip none, to (0,2), fill \x82): ret=1 err=-
+  row (0,0): [<U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398>   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [<U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398><U+0398>   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,4): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,5): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  read back at (0,0): W ret=1 [<U+0398><U+0398><U+0398>], A ret=1 [\xE9\xE9\xE9]
+-- down two rows, W, the fill U+00E9
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip none, to (0,2), fill <U+00E9>): ret=1 err=-
+  row (0,0): [<U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9>   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [<U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9><U+00E9>   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,4): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,5): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  read back at (0,0): W ret=1 [<U+00E9><U+00E9><U+00E9>], A ret=1 [\x82\x82\x82]
+attribute restored: yes
+screen: done
+<<< exit code=0
+>>> screen.exe clip
+== clip
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+-- down two rows, the clip the left six columns
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (0,0)-(5,4), to (0,0), fill .): ret=1 err=-
+  row (0,0): [......56789   ] 4E 4E 4E 4E 4E 4E 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [......56789   ] 4E 4E 4E 4E 4E 4E 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 4F 4F 4F 4F 4F 07 07 07
+  row (0,4): [C01234        ] 3F 3F 3F 3F 3F 3F 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down four rows, the clip the source's first two rows
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (0,0)-(10,1), to (0,0), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,4): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,7): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,8): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, a small clip
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (3,1)-(7,4), to (0,0), fill .): ret=1 err=-
+  row (0,0): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [B01.....789   ] 2F 2F 2F 4E 4E 4E 4E 4E 2F 2F 2F 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 1F 1F 1F 1F 1F 3F 3F 3F 07 07 07
+  row (0,3): [D0123456789   ] 4F 4F 4F 2F 2F 2F 2F 2F 4F 4F 4F 07 07 07
+  row (0,4): [   23456      ] 07 07 07 3F 3F 3F 3F 3F 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, a clip past the buffer's edges
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (-5,-5)-(W+5,3), to (0,0), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,4): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, a clip apart from both rectangles
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (20,20)-(30,30), to (0,0), fill .): ret=1 err=-
+  row (0,0): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,4): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, an inverted clip
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,3), clip (5,0)-(0,3), to (0,0), fill .): ret=1 err=-
+  row (0,0): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [D0123456789   ] 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 4F 07 07 07
+  row (0,4): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- down two rows, the clip the left six columns, A
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferA((0,0)-(10,3), clip (0,0)-(5,4), to (0,0), fill .): ret=1 err=-
+  row (0,0): [......56789   ] 4E 4E 4E 4E 4E 4E 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [......56789   ] 4E 4E 4E 4E 4E 4E 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [B0123456789   ] 2F 2F 2F 2F 2F 2F 4F 4F 4F 4F 4F 07 07 07
+  row (0,4): [C01234        ] 3F 3F 3F 3F 3F 3F 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+attribute restored: yes
+screen: done
+<<< exit code=0
+>>> screen.exe edges
+== edges
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+-- a source past the right edge
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((W-5,0)-(W+4,2), clip none, to (0,5), fill .): ret=1 err=-
+  row (W-14,0): [  A012345.....] 07 07 1F 1F 1F 1F 1F 1F 1F 4E 4E 4E 4E 4E
+  row (W-14,1): [  B012345.....] 07 07 2F 2F 2F 2F 2F 2F 2F 4E 4E 4E 4E 4E
+  row (W-14,2): [  C012345.....] 07 07 3F 3F 3F 3F 3F 3F 3F 4E 4E 4E 4E 4E
+  row (0,5): [6789          ] 1F 1F 1F 1F 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [6789          ] 2F 2F 2F 2F 07 07 07 07 07 07 07 07 07 07
+  row (0,7): [6789          ] 3F 3F 3F 3F 07 07 07 07 07 07 07 07 07 07
+-- a source wholly past the right edge
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((W,0)-(W+5,2), clip none, to (0,5), fill .): ret=1 err=-
+  row (W-14,0): [  A0123456789 ] 07 07 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07
+  row (W-14,1): [  B0123456789 ] 07 07 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07
+  row (W-14,2): [  C0123456789 ] 07 07 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,7): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- a destination past the right edge
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,2), clip none, to (W-5,4), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (W-14,4): [         A0123] 07 07 07 07 07 07 07 07 07 1F 1F 1F 1F 1F
+  row (W-14,5): [         B0123] 07 07 07 07 07 07 07 07 07 2F 2F 2F 2F 2F
+  row (W-14,6): [         C0123] 07 07 07 07 07 07 07 07 07 3F 3F 3F 3F 3F
+-- a destination past the left and top edges
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,2)-(10,4), clip none, to (-3,0), fill .): ret=1 err=-
+  row (0,0): [23456789      ] 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07 07 07 07
+  row (0,1): [23456789      ] 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07 07 07 07
+  row (0,2): [23456789...   ] 3F 3F 3F 3F 3F 3F 3F 3F 4E 4E 4E 07 07 07
+  row (0,3): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,4): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- a destination past the bottom edge
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,H-4)-(10,H-2), clip none, to (0,H-2), fill .): ret=1 err=-
+  row (0,H-4): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,H-3): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,H-2): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,H-1): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+-- a destination wholly past the right edge
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,2), clip none, to (W+2,0), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,3): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- a destination wholly below the buffer
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((0,0)-(10,2), clip none, to (0,H), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,3): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- an inverted source
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferW((10,0)-(0,2), clip none, to (0,4), fill .): ret=1 err=-
+  row (0,0): [A0123456789   ] 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 1F 07 07 07
+  row (0,1): [B0123456789   ] 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 2F 07 07 07
+  row (0,2): [C0123456789   ] 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 3F 07 07 07
+  row (0,3): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,4): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,5): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+  row (0,6): [              ] 07 07 07 07 07 07 07 07 07 07 07 07 07 07
+-- a destination past the right edge, A
+buffer cleared and the cursor homed: yes
+ScrollConsoleScreenBufferA((0,0)-(10,2), clip none, to (W-5,4), fill .): ret=1 err=-
+  row (0,0): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,1): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (0,2): [...........   ] 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 4E 07 07 07
+  row (W-14,4): [         A0123] 07 07 07 07 07 07 07 07 07 1F 1F 1F 1F 1F
+  row (W-14,5): [         B0123] 07 07 07 07 07 07 07 07 07 2F 2F 2F 2F 2F
+  row (W-14,6): [         C0123] 07 07 07 07 07 07 07 07 07 3F 3F 3F 3F 3F
+attribute restored: yes
+screen: done
+<<< exit code=0
+>>> screen.exe errors
+== errors
+CONIN$ and CONOUT$ open: yes
+buffer cleared and the cursor homed: yes
+-- CONIN$
+SetConsoleCursorPosition: ret=0 err=6
+SetConsoleTextAttribute: ret=0 err=6
+FillConsoleOutputCharacterW: ret=0 written 0 err=6
+FillConsoleOutputCharacterA: ret=0 written 0 err=6
+FillConsoleOutputAttribute: ret=0 written 0 err=6
+ReadConsoleOutputCharacterW: ret=0 read 0 err=6
+ReadConsoleOutputCharacterA: ret=0 read 0 err=6
+ReadConsoleOutputAttribute: ret=0 read 0 err=6
+ScrollConsoleScreenBufferW: ret=0 err=6
+ScrollConsoleScreenBufferA: ret=0 err=6
+the image file open: yes
+-- the image file
+SetConsoleCursorPosition: ret=0 err=6
+SetConsoleTextAttribute: ret=0 err=6
+FillConsoleOutputCharacterW: ret=0 written 0 err=6
+FillConsoleOutputCharacterA: ret=0 written 0 err=6
+FillConsoleOutputAttribute: ret=0 written 0 err=6
+ReadConsoleOutputCharacterW: ret=0 read 0 err=6
+ReadConsoleOutputCharacterA: ret=0 read 0 err=6
+ReadConsoleOutputAttribute: ret=0 read 0 err=6
+ScrollConsoleScreenBufferW: ret=0 err=6
+ScrollConsoleScreenBufferA: ret=0 err=6
+-- a bogus handle
+SetConsoleCursorPosition: ret=0 err=6
+SetConsoleTextAttribute: ret=0 err=6
+FillConsoleOutputCharacterW: ret=0 written 0 err=6
+FillConsoleOutputCharacterA: ret=0 written 0 err=6
+FillConsoleOutputAttribute: ret=0 written 0 err=6
+ReadConsoleOutputCharacterW: ret=0 read 0 err=6
+ReadConsoleOutputCharacterA: ret=0 read 0 err=6
+ReadConsoleOutputAttribute: ret=0 read 0 err=6
+ScrollConsoleScreenBufferW: ret=0 err=6
+ScrollConsoleScreenBufferA: ret=0 err=6
+screen: done
+<<< exit code=0
