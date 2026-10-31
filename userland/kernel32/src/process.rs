@@ -289,6 +289,51 @@ pub extern "system" fn set_priority_class(process: u32, flags: u32) -> u32 {
     win32_bool(ntcall::set_process(process, PROCESS_PRIORITY_CLASS, &class))
 }
 
+/// SYSTEM_BASIC_INFORMATION, NtQuerySystemInformation's class 0, as dwords (44 bytes), and the
+/// index of its ActiveProcessorsAffinityMask.
+const SYSTEM_BASIC_INFORMATION: u32 = 0;
+const SYSTEM_BASIC_WORDS: usize = 11;
+const ACTIVE_PROCESSORS_AFFINITY_MASK: usize = 9;
+
+/// GetProcessAffinityMask: the process's affinity (ProcessBasicInformation,
+/// PROCESS_QUERY_INFORMATION) and the system's, its active processors (Windows 2000 reads them from
+/// the base server's copy of the system's basic information, csrss's query at its start; F2K asks
+/// the same query), each written where asked; FALSE with the status's error otherwise. A bad
+/// pointer faults the caller.
+///
+/// # Safety
+///
+/// `process_mask` and `system_mask` are writable.
+#[unsafe(export_name = "f2k_export_GetProcessAffinityMask")]
+pub unsafe extern "system" fn get_process_affinity_mask(
+    process: u32,
+    process_mask: *mut u32,
+    system_mask: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's slots (the contract), or null.
+    let (process_mask, system_mask) =
+        unsafe { (Out::optional(process_mask), Out::optional(system_mask)) };
+    bool_answer(affinity_masks(process, process_mask, system_mask))
+}
+
+/// GetProcessAffinityMask's work.
+fn affinity_masks(
+    process: u32,
+    process_mask: Option<Out<'_, u32>>,
+    system_mask: Option<Out<'_, u32>>,
+) -> Result<(), Failure> {
+    let information = ntcall::basic_information(process).map_err(Failure::Status)?;
+    let basic =
+        ntcall::query_system_information::<[u32; SYSTEM_BASIC_WORDS]>(SYSTEM_BASIC_INFORMATION)
+            .map_err(Failure::Status)?;
+    let fault = Failure::Fault(rtl::status::STATUS_ACCESS_VIOLATION);
+    process_mask.ok_or(fault)?.set(information.affinity_mask);
+    system_mask
+        .ok_or(fault)?
+        .set(basic[ACTIVE_PROCESSORS_AFFINITY_MASK]);
+    Ok(())
+}
+
 /// SetProcessAffinityMask: ProcessAffinityMask (a non-empty subset of the one processor, which
 /// changes nothing; ERROR_INVALID_PARAMETER otherwise).
 #[unsafe(export_name = "f2k_export_SetProcessAffinityMask")]

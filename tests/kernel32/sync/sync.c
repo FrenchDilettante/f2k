@@ -29,6 +29,10 @@
  *   pingpong     the original pingpong fixture: two threads alternate
  *                strictly through two auto-reset events, then the same
  *                again through SignalObjectAndWait
+ *   waitleak     a thread terminated inside SignalObjectAndWait,
+ *                WaitForSingleObject and WaitForMultipleObjects on named
+ *                events: once every handle is closed, whether the names
+ *                still open (the waits' hold on them gone with the thread)
  *
  * The named objects run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)").
@@ -829,6 +833,86 @@ static void sec_pingpong(void)
     CloseHandle(turn_pong);
 }
 
+/* --- waitleak ----------------------------------------------------- */
+
+static HANDLE leak_a, leak_b, leak_c;
+
+/* Each waiter signals A, then waits on B (and C): A tells the main
+ * thread it is about to wait. */
+static DWORD WINAPI leak_signal_and_wait(LPVOID parameter)
+{
+    (void)parameter;
+    SignalObjectAndWait(leak_a, leak_b, INFINITE, FALSE);
+    return 0;
+}
+
+static DWORD WINAPI leak_wait_single(LPVOID parameter)
+{
+    (void)parameter;
+    SetEvent(leak_a);
+    WaitForSingleObject(leak_b, INFINITE);
+    return 0;
+}
+
+static DWORD WINAPI leak_wait_multiple(LPVOID parameter)
+{
+    HANDLE both[2];
+
+    (void)parameter;
+    both[0] = leak_b;
+    both[1] = leak_c;
+    SetEvent(leak_a);
+    WaitForMultipleObjects(2, both, TRUE, INFINITE);
+    return 0;
+}
+
+static void leak_open(const char *label, const char *name)
+{
+    HANDLE h;
+
+    arm();
+    h = OpenEventA(EVENT_ALL_ACCESS, FALSE, name);
+    line("%s: OpenEventA(%s) after the closes: %s err=%s", label, name,
+         h != NULL ? "opened" : "NULL", le());
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+}
+
+static void leak_case(const char *label, LPTHREAD_START_ROUTINE routine)
+{
+    HANDLE t;
+    DWORD id, w;
+    BOOL r;
+
+    leak_a = CreateEventA(NULL, FALSE, FALSE, "f2kt-waitleak-a");
+    leak_b = CreateEventA(NULL, TRUE, FALSE, "f2kt-waitleak-b");
+    leak_c = CreateEventA(NULL, TRUE, FALSE, "f2kt-waitleak-c");
+    t = CreateThread(NULL, 0, routine, NULL, 0, &id);
+    w = WaitForSingleObject(leak_a, WAIT_MS);
+    /* A is set: let the thread block in its wait. */
+    Sleep(100);
+    arm();
+    r = TerminateThread(t, 1);
+    line("%s: started %s; TerminateThread ret=%d err=%s", label, wr(w), r, le());
+    w = WaitForSingleObject(t, WAIT_MS);
+    line("%s: the thread's end %s", label, wr(w));
+    CloseHandle(t);
+    CloseHandle(leak_a);
+    CloseHandle(leak_b);
+    CloseHandle(leak_c);
+    leak_open(label, "f2kt-waitleak-a");
+    leak_open(label, "f2kt-waitleak-b");
+    leak_open(label, "f2kt-waitleak-c");
+}
+
+static void sec_waitleak(void)
+{
+    leak_case("SignalObjectAndWait", leak_signal_and_wait);
+    leak_case("WaitForSingleObject", leak_wait_single);
+    leak_case("WaitForMultipleObjects", leak_wait_multiple);
+}
+
 static const section_t sections[] = {
     { "event", sec_event, 0 },
     { "semaphore", sec_semaphore, 0 },
@@ -839,6 +923,7 @@ static const section_t sections[] = {
     { "interlocked", sec_interlocked, 0 },
     { "handles", sec_handles, 0 },
     { "pingpong", sec_pingpong, 0 },
+    { "waitleak", sec_waitleak, 0 },
     { NULL, NULL, 0 }
 };
 

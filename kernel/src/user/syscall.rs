@@ -344,49 +344,49 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     let mut passive = unsafe { At::<Passive>::enter() };
     debug_assert_eq!(crate::pcr::pcr().current(), crate::interrupt::irql::PASSIVE);
 
-    // A Windows 2000 system service of either table, the client-server call, or the debugger
-    // print.
-    let (arg_bytes, service) = match find_service(frame.eax) {
-        Ok(found) => found,
-        Err(status) => {
-            frame.eax = status.0;
-            return;
-        }
-    };
-
-    // A win32k service first connects the calling process to its window station and desktop, as
-    // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
-    // bits are 0).
-    if service_table(frame.eax) == WIN32K_TABLE {
-        if let Err(status) = crate::win32k::winsta::connect(crate::user::args::calling_process()) {
-            frame.eax = status.0;
-            return;
-        }
-    }
-
-    if let Err(status) = probe_user_range(frame.edx, arg_bytes) {
+    if let Err(status) = serve(frame, &mut passive) {
         frame.eax = status.0;
-        return;
     }
-
-    let mut args = [0u32; MAX_ARG_BYTES / 4];
-    copy_user_args(frame.edx, arg_bytes, &mut args);
-    service(frame, &args[..arg_bytes as usize / 4], &mut passive);
-    // A service attaches to another process only for a scope inside it: the caller resumes on its
-    // own address space (Windows stops on the same mismatch, APC_INDEX_MISMATCH).
-    assert!(
-        !crate::sched::attach::running_attached(),
-        "a system service returns to user mode detached"
-    );
 
     // The service boundary is where a same-processor preemption lands: a thread the service readied
     // at strictly higher priority — or a quantum the tick ended mid-service — is switched to here,
     // before the caller returns to user mode.
     crate::sched::dispatcher::deliver_pending();
     // The user-APC window: an alertable wait that completed for a user APC (or NtContinue's test
-    // alert, with more queued) redirects the return through KiUserApcDispatcher. Nothing after
-    // this writes the frame.
+    // alert, with more queued) redirects the return through KiUserApcDispatcher, and a terminated
+    // thread's exit APC, at the head of its queue, ends it here, the service's frames unwound.
+    // Nothing after this writes the frame.
     super::apc::deliver(frame);
+}
+
+/// The service the frame names, called with its arguments: it writes its result into the frame.
+/// The refusals before it runs are the dispatcher's own: a number no table serves, a win32k service
+/// whose process cannot connect, an argument block outside user memory.
+#[cfg(target_arch = "x86")]
+fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatus> {
+    // A Windows 2000 system service of either table, the client-server call, or the debugger
+    // print.
+    let (arg_bytes, service) = find_service(frame.eax)?;
+
+    // A win32k service first connects the calling process to its window station and desktop, as
+    // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
+    // bits are 0).
+    if service_table(frame.eax) == WIN32K_TABLE {
+        crate::win32k::winsta::connect(crate::user::args::calling_process())?;
+    }
+
+    probe_user_range(frame.edx, arg_bytes)?;
+
+    let mut args = [0u32; MAX_ARG_BYTES / 4];
+    copy_user_args(frame.edx, arg_bytes, &mut args);
+    service(frame, &args[..arg_bytes as usize / 4], passive);
+    // A service attaches to another process only for a scope inside it: the caller resumes on its
+    // own address space (Windows stops on the same mismatch, APC_INDEX_MISMATCH).
+    assert!(
+        !crate::sched::attach::running_attached(),
+        "a system service returns to user mode detached"
+    );
+    Ok(())
 }
 
 // Gate stub: entered from ring 3 through the DPL-3 interrupt gate.

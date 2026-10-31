@@ -329,8 +329,7 @@ pub struct Console {
 
 impl Console {
     /// A fresh console: the default modes, a blank screen buffer, an empty input buffer and an
-    /// empty title.
-    // TODO: the default title a fresh console reports, captured from one.
+    /// empty title, until its first program names it ([`Console::name`]).
     pub const fn new() -> Self {
         Console {
             screen: ScreenBuffer::new(),
@@ -390,6 +389,18 @@ impl Console {
     /// The title's characters.
     pub fn title(&self) -> &[u16] {
         &self.title[..self.title_length]
+    }
+
+    /// The title a new console takes from the program it is made for: the program's image path,
+    /// as Windows 2000's CreateProcess names a new console when STARTUPINFO gives no title (MSDN,
+    /// STARTUPINFO's lpTitle). `path` is in the console's code page; a longer one keeps its first
+    /// characters.
+    pub fn name(&mut self, path: &[u8]) {
+        let length = path.len().min(TITLE_UNITS);
+        for (unit, &byte) in self.title.iter_mut().zip(&path[..length]) {
+            *unit = codepage::decode_byte(CodePage::Oem, byte);
+        }
+        self.title_length = length;
     }
 
     /// What GetConsoleScreenBufferInfo reports: the buffer's size, the cursor, the attribute

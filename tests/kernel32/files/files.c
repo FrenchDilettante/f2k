@@ -69,6 +69,18 @@
  *               ntdll's NtQueryObject and NtSetInformationObject on
  *               ObjectHandleFlagInformation (class 4): lengths and
  *               statuses
+ *   dupshare    a handle and its duplicate (one file object, one
+ *               position): one thread reads BIG.BIN through the first in
+ *               30000-byte reads while another queries the position, the
+ *               size and the file information through the duplicate, as
+ *               relations; then a seek through the duplicate and a read
+ *               through the first
+ *   imagesec    an image section of the program's own file
+ *               (CreateFileMappingA, SEC_IMAGE) outliving the file's
+ *               handle: a view mapped after the close, its headers
+ *               against the loaded image's; then thirty image sections
+ *               made while another thread closes the file's handle: each
+ *               a section or ERROR_INVALID_HANDLE
  *
  * The opens, paths, metadata, listings and mappings run twice: through
  * the A calls, then through their W twins on the same paths (converted
@@ -1566,6 +1578,157 @@ static void sec_flags(void)
     CloseHandle(f);
 }
 
+/* --- dupshare ----------------------------------------------------- */
+
+static HANDLE dup_first, dup_second;
+static DWORD dup_read_total;
+static int dup_read_failed;
+
+static DWORD WINAPI dup_reader(LPVOID parameter)
+{
+    DWORD n;
+
+    (void)parameter;
+    for (;;) {
+        n = 0;
+        if (!ReadFile(dup_first, chunk_buf, 30000, &n, NULL)) {
+            dup_read_failed = 1;
+            break;
+        }
+        if (n == 0) {
+            break;
+        }
+        dup_read_total += n;
+    }
+    return 0;
+}
+
+static void sec_dupshare(void)
+{
+    BY_HANDLE_FILE_INFORMATION info;
+    BYTE ten[10];
+    HANDLE t;
+    DWORD id, at_pos, size, n;
+    int queries = 0, failures = 0, off_boundary = 0, wrong_size = 0;
+    BOOL r;
+
+    dup_first = open_read("DATA\\BIG.BIN");
+    DuplicateHandle(GetCurrentProcess(), dup_first, GetCurrentProcess(), &dup_second, 0, FALSE,
+                    DUPLICATE_SAME_ACCESS);
+    dup_read_total = 0;
+    dup_read_failed = 0;
+    t = CreateThread(NULL, 0, dup_reader, NULL, 0, &id);
+    while (WaitForSingleObject(t, 0) == WAIT_TIMEOUT && queries < 100000) {
+        queries++;
+        at_pos = SetFilePointer(dup_second, 0, NULL, FILE_CURRENT);
+        size = GetFileSize(dup_second, NULL);
+        if (at_pos == INVALID_SET_FILE_POINTER || size == (DWORD)-1 ||
+            !GetFileInformationByHandle(dup_second, &info)) {
+            failures++;
+            continue;
+        }
+        /* The reads move the shared position a whole read at a time. */
+        if (at_pos % 30000 != 0 && at_pos != 150000) {
+            off_boundary++;
+        }
+        if (size != 150000 || info.nFileSizeLow != 150000) {
+            wrong_size++;
+        }
+    }
+    WaitForSingleObject(t, WAIT_MS);
+    CloseHandle(t);
+    line("reads through the first handle: failed %s, %lu bytes in all", yesno(dup_read_failed),
+         dup_read_total);
+    line("queries through the duplicate: failures %d, positions between reads %d, wrong sizes %d",
+         failures, off_boundary, wrong_size);
+    line("the shared position after the reads: %lu",
+         SetFilePointer(dup_second, 0, NULL, FILE_CURRENT));
+    arm();
+    at_pos = SetFilePointer(dup_second, 1000, NULL, FILE_BEGIN);
+    line("SetFilePointer(duplicate, 1000) ret=%lu err=%s", at_pos, le());
+    n = 0;
+    arm();
+    r = ReadFile(dup_first, ten, sizeof ten, &n, NULL);
+    line("ReadFile(first, 10) ret=%d n=%lu err=%s; bytes 1000..1009: %s", r, n, le(),
+         yesno(n == sizeof ten && big_ok(ten, 1000, n)));
+    CloseHandle(dup_second);
+    CloseHandle(dup_first);
+}
+
+/* --- imagesec ----------------------------------------------------- */
+
+static HANDLE image_file;
+static HANDLE image_go;
+
+static DWORD WINAPI image_closer(LPVOID parameter)
+{
+    (void)parameter;
+    WaitForSingleObject(image_go, WAIT_MS);
+    CloseHandle(image_file);
+    return 0;
+}
+
+static void sec_imagesec(void)
+{
+    char self[MAX_PATH];
+    HANDLE section, t;
+    BYTE *view;
+    DWORD id, err;
+    BOOL closed;
+    int i, made = 0, refused = 0, other = 0;
+
+    GetModuleFileNameA(NULL, self, sizeof self);
+    image_file = CreateFileA(self, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    arm();
+    section = CreateFileMappingA(image_file, NULL, PAGE_READONLY | SEC_IMAGE, 0, 0, NULL);
+    line("CreateFileMappingA(SEC_IMAGE): %s err=%s", section != NULL ? "made" : "NULL", le());
+    arm();
+    closed = CloseHandle(image_file);
+    line("CloseHandle(the file) ret=%d err=%s", closed, le());
+    if (section != NULL) {
+        arm();
+        view = (BYTE *)MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+        line("MapViewOfFile after the file's close: %s err=%s", view != NULL ? "mapped" : "NULL",
+             le());
+        if (view != NULL) {
+            line("its headers are the loaded image's: %s",
+                 yesno(memcmp(view, GetModuleHandleA(NULL), 512) == 0));
+            UnmapViewOfFile(view);
+        }
+        CloseHandle(section);
+    }
+
+    for (i = 0; i < 30; i++) {
+        image_file = CreateFileA(self, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        image_go = CreateEventA(NULL, TRUE, FALSE, NULL);
+        t = CreateThread(NULL, 0, image_closer, NULL, 0, &id);
+        SetEvent(image_go);
+        SetLastError(F2KT_UNTOUCHED);
+        section = CreateFileMappingA(image_file, NULL, PAGE_READONLY | SEC_IMAGE, 0, 0, NULL);
+        err = GetLastError();
+        WaitForSingleObject(t, WAIT_MS);
+        CloseHandle(t);
+        CloseHandle(image_go);
+        if (section != NULL) {
+            made++;
+            view = (BYTE *)MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+            if (view == NULL || memcmp(view, GetModuleHandleA(NULL), 512) != 0) {
+                other++;
+            }
+            if (view != NULL) {
+                UnmapViewOfFile(view);
+            }
+            CloseHandle(section);
+        } else if (err == ERROR_INVALID_HANDLE) {
+            refused++;
+        } else {
+            other++;
+        }
+    }
+    line("thirty sections against a closing handle: each made and mapped or ERROR_INVALID_HANDLE: %s",
+         yesno(made + refused == 30 && other == 0));
+}
+
 static const section_t sections[] = {
     { "open", sec_open, 0 },
     { "read", sec_read, 0 },
@@ -1580,6 +1743,8 @@ static const section_t sections[] = {
     { "diskfree", sec_diskfree, 0 },
     { "slots", sec_slots, 0 },
     { "flags", sec_flags, 0 },
+    { "dupshare", sec_dupshare, 0 },
+    { "imagesec", sec_imagesec, 0 },
     { NULL, NULL, 0 }
 };
 

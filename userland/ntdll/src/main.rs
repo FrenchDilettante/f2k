@@ -340,9 +340,20 @@ extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -
 /// thread's DLL_PROCESS_ATTACH (lpReserved the context), a later thread's DLL_THREAD_ATTACH. A
 /// process whose DLLs do not load or initialize ends here with the status. A TLS block that finds
 /// no room is left undone (the program meets a null TLS pointer).
+///
+/// The first thread is the first to arrive here (another process's CreateRemoteThread can start a
+/// thread before the main thread has run): a thread arriving while the process initializes waits,
+/// a few milliseconds at a time, for its first thread's DLL_PROCESS_ATTACH to have run, as Windows
+/// 2000's LdrpInitialize holds later threads off the process's initialization.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_ldr_initialize(context: u32) {
-    let first = sys::process_heap_handle() == 0;
+    use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+    let first = INITIALIZATION
+        .compare_exchange(NOT_STARTED, INITIALIZING, AcqRel, Acquire)
+        .is_ok();
+    while !first && INITIALIZATION.load(Acquire) != INITIALIZED {
+        service::delay_execution(INITIALIZATION_POLL);
+    }
     if first {
         params::normalize_own_parameters();
         process::initialize_heap_list_lock();
@@ -382,10 +393,22 @@ extern "C" fn f2k_ldr_initialize(context: u32) {
         if let Err(status) = loader::attach_process(context) {
             loader::fail_process(status);
         }
+        INITIALIZATION.store(INITIALIZED, Release);
     } else {
         loader::attach_thread();
     }
 }
+
+/// Where the process's initialization stands (see [`f2k_ldr_initialize`]).
+static INITIALIZATION: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(NOT_STARTED);
+const NOT_STARTED: u32 = 0;
+const INITIALIZING: u32 = 1;
+const INITIALIZED: u32 = 2;
+
+/// How long a thread waits between two looks at the process's initialization: 10 ms, in 100 ns
+/// units.
+const INITIALIZATION_POLL: u32 = 100_000;
 
 /// The calling thread's implicit-TLS block, when the image has a TLS directory: its array on the
 /// TEB (ThreadLocalStoragePointer), on the process heap.

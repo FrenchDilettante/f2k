@@ -48,6 +48,14 @@
  *                   descriptors 0 to 5 are open
  *   flags <h>...    each handle value's GetHandleInformation flags and
  *                   file type, or the error; never the value
+ *   later <ms> <n>  sleep, then ExitProcess(n); prints nothing
+ *   lastthread      the main thread ends with ExitThread(5) while a
+ *                   second thread runs on, which ends 200 ms later with
+ *                   ExitThread(6), the process's last; prints nothing
+ *   handoff         a second thread sleeping, then NtTerminateProcess
+ *                   (NULL, 3), which ends it and leaves the caller
+ *                   running, then the caller ends with ExitThread(4);
+ *                   prints nothing
  *   (anything else) that the mode is unknown, then what where prints;
  *                   exit 100
  *
@@ -369,6 +377,38 @@ static void crt_info(void)
     }
 }
 
+/* lastthread's second thread: the process's last to end. */
+static DWORD WINAPI last_thread(LPVOID arg)
+{
+    (void)arg;
+    Sleep(200);
+    ExitThread(6);
+    return 0;
+}
+
+/* handoff's second thread, for the first step to end. */
+static DWORD WINAPI sleeper(LPVOID arg)
+{
+    (void)arg;
+    Sleep(60000);
+    return 0;
+}
+
+/* handoff: ExitProcess's first step alone (every other thread ended, the
+ * caller running on), then the caller's own end. */
+static void hand_off(void)
+{
+    typedef LONG (WINAPI *terminate_fn)(HANDLE, LONG);
+    terminate_fn terminate =
+        (terminate_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
+    DWORD id;
+
+    CloseHandle(CreateThread(NULL, 0, sleeper, NULL, 0, &id));
+    Sleep(50);
+    terminate(NULL, 3);
+    ExitThread(4);
+}
+
 static void show_flags(int argc, char **argv)
 {
     HANDLE h;
@@ -435,6 +475,14 @@ int main(int argc, char **argv)
         crt_info();
     } else if (strcmp(mode, "flags") == 0) {
         show_flags(argc, argv);
+    } else if (strcmp(mode, "later") == 0 && argc >= 4) {
+        Sleep(strtoul(argv[2], NULL, 0));
+        ExitProcess((UINT)strtoul(argv[3], NULL, 0));
+    } else if (strcmp(mode, "lastthread") == 0) {
+        CloseHandle(CreateThread(NULL, 0, last_thread, NULL, 0, &n));
+        ExitThread(5);
+    } else if (strcmp(mode, "handoff") == 0) {
+        hand_off();
     } else if (strcmp(mode, "mark") == 0) {
         image = (BYTE *)GetModuleHandleA(NULL);
         say(out(), "header mark 0x%08lX",

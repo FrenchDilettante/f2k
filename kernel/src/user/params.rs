@@ -231,6 +231,8 @@ pub fn map(process: &crate::process::Process, command_line: &[u8], module: &[u8]
     });
     let mut name = [0u8; MODULE_ROOM];
     let name_length = module_file_name(module, &mut name);
+    // The boot's first program names the console every program shares.
+    crate::csr::name_console(&name[..name_length]);
     // The pages are fresh, mapped and writable: the writes cannot fail.
     let mut wide = [0u8; COMMAND_LINE_ROOM as usize];
     let command_line_bytes = widen(command_line, &mut wide[..COMMAND_LINE_ROOM as usize - 2]);

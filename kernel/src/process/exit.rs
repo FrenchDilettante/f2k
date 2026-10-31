@@ -131,13 +131,23 @@ impl ThreadEnd {
         }
     }
 
-    /// The process's end when this thread is its last: the end decided for the process earlier
-    /// (`decided`: an NtTerminateProcess's or a fault's, which the first to decide holds), else the
-    /// one this end decides, else the thread's exit status as the exit code.
-    pub fn last_thread_end(self, decided: Option<ProcessEnd>) -> ProcessEnd {
-        decided
-            .or(self.ends_process())
-            .unwrap_or(ProcessEnd::Exited(self.status()))
+    /// The process's end when this thread is its last, `started` saying whether it reached user
+    /// mode, and `decided` the end decided for the process earlier (an NtTerminateProcess's or a
+    /// fault's, which the first to decide holds). Windows 2000's process exit status is its last
+    /// thread's (LastThreadExitStatus): the last thread's own status is the exit code, whatever
+    /// was decided before it — the spawn fixture's lastcode block: NtTerminateProcess(NULL, 3),
+    /// then the caller's ExitThread(4), ends the process with 4. A fault, decided earlier or this
+    /// thread's own, ends it as a fault (its exception code). A thread that never reached user mode
+    /// ends it with the end decided for it, when there is one: a child terminated before any of its
+    /// threads ran exits with 0, as the spawn fixture's capture shows.
+    pub fn last_thread_end(self, decided: Option<ProcessEnd>, started: bool) -> ProcessEnd {
+        match (decided, self) {
+            (Some(ProcessEnd::Faulted(fault)), _) | (_, ThreadEnd::Fault(fault)) => {
+                ProcessEnd::Faulted(fault)
+            }
+            (Some(decided), _) if !started => decided,
+            _ => ProcessEnd::Exited(self.status()),
+        }
     }
 }
 
@@ -628,12 +638,12 @@ mod tests {
         assert_eq!(ThreadEnd::Exit(0).ends_process(), None);
         assert_eq!(ThreadEnd::Exit(7).status(), 7);
         assert_eq!(
-            ThreadEnd::Exit(7).last_thread_end(None),
+            ThreadEnd::Exit(7).last_thread_end(None, true),
             ProcessEnd::Exited(7)
         );
         // The status reports as the unsigned code the exit line has always printed.
         assert_eq!(
-            ThreadEnd::Exit(0xC000_001Cu32 as i32).last_thread_end(None),
+            ThreadEnd::Exit(0xC000_001Cu32 as i32).last_thread_end(None, true),
             ProcessEnd::Exited(3_221_225_500)
         );
     }
@@ -648,7 +658,7 @@ mod tests {
         );
         assert_eq!(ThreadEnd::ExitProcess(1).status(), 1);
         assert_eq!(
-            ThreadEnd::ExitProcess(0).last_thread_end(None),
+            ThreadEnd::ExitProcess(0).last_thread_end(None, true),
             ProcessEnd::Exited(0)
         );
     }
@@ -663,7 +673,7 @@ mod tests {
         );
         assert_eq!(ThreadEnd::Fault(PAGE_FAULT).status(), 0xC000_0005);
         assert_eq!(
-            ThreadEnd::Fault(COPY_FAULT).last_thread_end(None),
+            ThreadEnd::Fault(COPY_FAULT).last_thread_end(None, true),
             ProcessEnd::Faulted(COPY_FAULT)
         );
     }
@@ -909,35 +919,53 @@ mod tests {
     }
 
     /// A terminated thread ends with the status its termination gave it, decides nothing for the
-    /// process, and as the last thread ends it with the end decided for it — or, with none decided
-    /// (TerminateThread), with its status as the exit code.
+    /// process, and as the last thread ends it with its status as the exit code — or as the fault
+    /// decided for it.
     #[test]
-    fn a_terminated_thread_ends_the_process_with_the_end_decided() {
-        let decided = ProcessEnd::Faulted(PAGE_FAULT);
+    fn a_terminated_thread_ends_the_process_with_its_status() {
         assert_eq!(ThreadEnd::Terminated(5).status(), 5);
         assert_eq!(ThreadEnd::Terminated(5).ends_process(), None);
         assert_eq!(
-            ThreadEnd::Terminated(5).last_thread_end(Some(decided)),
-            decided
+            ThreadEnd::Terminated(5).last_thread_end(Some(ProcessEnd::Exited(3)), true),
+            ProcessEnd::Exited(5)
         );
         assert_eq!(
-            ThreadEnd::Terminated(5).last_thread_end(None),
+            ThreadEnd::Terminated(5).last_thread_end(Some(ProcessEnd::Faulted(PAGE_FAULT)), true),
+            ProcessEnd::Faulted(PAGE_FAULT)
+        );
+        assert_eq!(
+            ThreadEnd::Terminated(5).last_thread_end(None, true),
             ProcessEnd::Exited(5)
         );
     }
 
-    /// The end decided first stands: a thread whose own end would decide another, or none, ends the
-    /// process with the earlier decision when it is the last.
+    /// The last thread's status is the process's exit code, whatever was decided before it
+    /// (Windows 2000's LastThreadExitStatus: NtTerminateProcess(NULL, 3), then ExitThread(4), exits
+    /// with 4); a fault, its own or decided, ends it as the fault; a last thread that never reached
+    /// user mode ends it with the end decided for it.
     #[test]
-    fn the_first_decided_end_stands() {
+    fn the_last_threads_status_is_the_exit_code() {
         let decided = ProcessEnd::Exited(3);
-        for end in [
-            ThreadEnd::Exit(9),
-            ThreadEnd::ExitProcess(4),
-            ThreadEnd::Fault(PAGE_FAULT),
-        ] {
-            assert_eq!(end.last_thread_end(Some(decided)), decided);
-        }
+        assert_eq!(
+            ThreadEnd::Exit(4).last_thread_end(Some(decided), true),
+            ProcessEnd::Exited(4)
+        );
+        assert_eq!(
+            ThreadEnd::ExitProcess(9).last_thread_end(Some(decided), true),
+            ProcessEnd::Exited(9)
+        );
+        assert_eq!(
+            ThreadEnd::Fault(PAGE_FAULT).last_thread_end(Some(decided), true),
+            ProcessEnd::Faulted(PAGE_FAULT)
+        );
+        assert_eq!(
+            ThreadEnd::Terminated(0xC000_004B).last_thread_end(Some(ProcessEnd::Exited(0)), false),
+            ProcessEnd::Exited(0)
+        );
+        assert_eq!(
+            ThreadEnd::Terminated(0xC000_004B).last_thread_end(None, false),
+            ProcessEnd::Exited(0xC000_004B)
+        );
     }
 
     /// Who reports: a leg of a suite by its index, the one program of a one-process boot (or of a

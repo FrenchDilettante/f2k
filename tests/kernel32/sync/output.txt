@@ -1,9 +1,9 @@
 # F2K capture of sync (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:15:09.05
-sync F2KT-SOURCE-CRC=0x73E737EC
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Thu 10/29/2026 14:05:22.68
+sync F2KT-SOURCE-CRC=0xCBCB93B1
 >>> sync.exe event
 == event
 manual, initially set: WAIT_OBJECT_0, still WAIT_OBJECT_0
@@ -168,5 +168,24 @@ signal ping 3
 signal pong 3
 signal ping 4
 signal pong 4
+sync: done
+<<< exit code=0
+>>> sync.exe waitleak
+== waitleak
+SignalObjectAndWait: started WAIT_OBJECT_0; TerminateThread ret=1 err=-
+SignalObjectAndWait: the thread's end WAIT_OBJECT_0
+SignalObjectAndWait: OpenEventA(f2kt-waitleak-a) after the closes: NULL err=2
+SignalObjectAndWait: OpenEventA(f2kt-waitleak-b) after the closes: NULL err=2
+SignalObjectAndWait: OpenEventA(f2kt-waitleak-c) after the closes: NULL err=2
+WaitForSingleObject: started WAIT_OBJECT_0; TerminateThread ret=1 err=-
+WaitForSingleObject: the thread's end WAIT_OBJECT_0
+WaitForSingleObject: OpenEventA(f2kt-waitleak-a) after the closes: NULL err=2
+WaitForSingleObject: OpenEventA(f2kt-waitleak-b) after the closes: NULL err=2
+WaitForSingleObject: OpenEventA(f2kt-waitleak-c) after the closes: NULL err=2
+WaitForMultipleObjects: started WAIT_OBJECT_0; TerminateThread ret=1 err=-
+WaitForMultipleObjects: the thread's end WAIT_OBJECT_0
+WaitForMultipleObjects: OpenEventA(f2kt-waitleak-a) after the closes: NULL err=2
+WaitForMultipleObjects: OpenEventA(f2kt-waitleak-b) after the closes: NULL err=2
+WaitForMultipleObjects: OpenEventA(f2kt-waitleak-c) after the closes: NULL err=2
 sync: done
 <<< exit code=0

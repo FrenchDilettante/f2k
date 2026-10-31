@@ -223,19 +223,50 @@ fn thread_start_thunk() -> u32 {
     }
 }
 
-/// CreateThread: a thread of the calling process, as Windows 2000's CreateRemoteThread makes one
-/// for NtCurrentProcess — its stack (BaseCreateStack, sized by [`stack_reservation`]), its context
-/// (BaseInitializeContext at BaseThreadStartThunk), then NtCreateThread with the attributes'
-/// inheritance, suspended; the identifier written where asked (a bad pointer faults the caller, the
-/// thread already made, as on Windows 2000), and the thread resumed unless CREATE_SUSPENDED. Any
-/// other creation flag is ignored. A refusal gives the stack back and returns NULL with the
-/// status's error.
+/// CreateThread: CreateRemoteThread in the calling process, as on Windows 2000.
 ///
 /// # Safety
 ///
 /// `attributes` is null or a SECURITY_ATTRIBUTES; `thread_id` is null or writable.
 #[unsafe(export_name = "f2k_export_CreateThread")]
 pub unsafe extern "system" fn create_thread(
+    attributes: *const SecurityAttributes,
+    stack_size: u32,
+    start: u32,
+    parameter: u32,
+    flags: u32,
+    thread_id: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's attributes and identifier's place (the contract).
+    unsafe {
+        create_remote_thread(
+            CURRENT_PROCESS,
+            attributes,
+            stack_size,
+            start,
+            parameter,
+            flags,
+            thread_id,
+        )
+    }
+}
+
+/// CreateRemoteThread: a thread of the process the handle names (the caller's own through its
+/// pseudo-handle), as Windows 2000 makes one — its stack in that process (BaseCreateStack, sized
+/// by [`stack_reservation`]), its context (BaseInitializeContext at BaseThreadStartThunk, which
+/// sits at the same address in every process), then NtCreateThread with the attributes'
+/// inheritance, suspended; the identifier written where asked (a bad pointer faults the caller,
+/// the thread already made, as on Windows 2000), and the thread resumed unless CREATE_SUSPENDED.
+/// Any other creation flag is ignored. A refusal gives the stack back and returns NULL with the
+/// status's error. Windows 2000 also tells the base server (csrss) of a thread made in another
+/// process; F2K has no base server to tell.
+///
+/// # Safety
+///
+/// `attributes` is null or a SECURITY_ATTRIBUTES; `thread_id` is null or writable.
+#[unsafe(export_name = "f2k_export_CreateRemoteThread")]
+pub unsafe extern "system" fn create_remote_thread(
+    process: u32,
     attributes: *const SecurityAttributes,
     stack_size: u32,
     start: u32,
@@ -251,11 +282,11 @@ pub unsafe extern "system" fn create_thread(
         parameter,
         flags,
     };
-    create(attributes, start, thread_id)
+    create(process, attributes, start, thread_id)
 }
 
-/// CreateThread's numbers: the stack size, the start address and its parameter, and the creation
-/// flags.
+/// CreateRemoteThread's numbers: the stack size, the start address and its parameter, and the
+/// creation flags.
 struct Start {
     stack_size: u32,
     start: u32,
@@ -263,8 +294,9 @@ struct Start {
     flags: u32,
 }
 
-/// CreateThread's work.
+/// CreateRemoteThread's work, in `process`.
 fn create(
+    process: u32,
     attributes: Option<In<'_, SecurityAttributes>>,
     start: Start,
     thread_id: Option<Out<'_, u32>>,
@@ -275,11 +307,7 @@ fn create(
         parameter,
         flags,
     } = start;
-    let stack = match create_stack(
-        CURRENT_PROCESS,
-        stack_reservation(stack_size, flags),
-        STACK_COMMIT,
-    ) {
+    let stack = match create_stack(process, stack_reservation(stack_size, flags), STACK_COMMIT) {
         Ok(stack) => stack,
         Err(status) => {
             set_last_nt_error(status);
@@ -294,7 +322,7 @@ fn create(
     );
     let object_attributes = crate::base::format_object_attributes(attributes, None);
     let created = ntcall::create_thread(
-        CURRENT_PROCESS,
+        process,
         THREAD_ALL_ACCESS,
         object_attributes.as_ref(),
         &context,
@@ -304,7 +332,7 @@ fn create(
     let (handle, client_id) = match created {
         Ok(created) => created,
         Err(status) => {
-            free_stack(CURRENT_PROCESS, stack.allocation_base);
+            free_stack(process, stack.allocation_base);
             set_last_nt_error(status);
             return 0;
         }

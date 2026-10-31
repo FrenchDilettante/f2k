@@ -4,7 +4,7 @@
 # real machine. Gated. The system block (no cmd.exe on F2K's disk) and the detach block (F2K's stub
 # path) are expected to stay pending. The create block starts some sixty processes, hence the
 # longer timeout.
-description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W, on programs and on made-up headers; an ended process, a child never started, DUPLICATE_CLOSE_SOURCE, another process's memory (VirtualAllocEx and the rest, FlushInstructionCache), handle flags in a child; msvcrt's descriptor block for a child, its _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH."
+description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W, on programs and on made-up headers; an ended process, a child never started, DUPLICATE_CLOSE_SOURCE, another process's memory (VirtualAllocEx and the rest, FlushInstructionCache), handle flags in a child; msvcrt's descriptor block for a child, its _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH; a child terminated twice, a process's exit code when its threads end it in turn, racing terminations, CreateRemoteThread into an exiting child, and NtCreateProcess with no thread."
 kind = "sectioned"
 gate = true
 timeout = 60
@@ -23,6 +23,9 @@ layout = [
     "second thread: stack base *, limit *",
     "child: environment 0x00010000, command line buffer *",
 ]
+# Whether a CreateRemoteThread lands in the child's last moments, and is refused, depends on timing:
+# one capture saw refusals other than ERROR_ACCESS_DENIED, the next none.
+remoteexit = ["its refusals while it exited: *"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -142,3 +145,67 @@ inheritflags = [
     "kernel32.CreateProcessA",
 ]
 binaryforms = ["kernel32.GetBinaryTypeA", "kernel32.GetBinaryTypeW"]
+twice = [
+    "kernel32.CreateProcessA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetCurrentThread",
+    "kernel32.GetProcessAffinityMask",
+    "kernel32.SetProcessAffinityMask",
+    "kernel32.SetThreadPriority",
+    "kernel32.TerminateProcess",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.GetExitCodeThread",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtTerminateProcess",
+]
+lastcode = [
+    "kernel32.CreateProcessA",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.GetExitCodeThread",
+    "kernel32.CloseHandle",
+]
+termrace = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.TerminateProcess",
+    "kernel32.TerminateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+remoteexit = [
+    "kernel32.CreateProcessA",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.CreateRemoteThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtCreateThread",
+]
+nothread = [
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetCurrentProcess",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.TerminateProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtCreateSection",
+    "ntdll.NtCreateProcess",
+]

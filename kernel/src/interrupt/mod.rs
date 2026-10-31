@@ -662,6 +662,13 @@ mod target {
             Outcome::Served => {
                 crate::interrupt::dpc::drain();
                 crate::sched::dispatcher::deliver_pending();
+                // A return to user code ends a terminated thread first (the exit APC's second
+                // stage, which the delivery just above may have queued): it holds nothing of the
+                // kernel's here.
+                let (_, cs) = frame.interrupted_pc();
+                if cs & 3 != 0 {
+                    crate::user::apc::deliver_exit();
+                }
             }
             Outcome::Spurious => {
                 SPURIOUS.fetch_add(1, Ordering::Relaxed);

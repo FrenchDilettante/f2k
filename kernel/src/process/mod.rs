@@ -8,8 +8,10 @@
 //!
 //! A boot's program starts with its main thread ([`Process::start`]); a process another process
 //! creates (NtCreateProcess) starts with none ([`Process::create`]), and its first thread, created
-//! later by its creator, is its main thread. Until then nothing ends it but a termination or its
-//! last handle's closing (see [`threads`]).
+//! later by its creator, is its main thread. Until then nothing ends it: a termination only closes
+//! it to new threads, and as on Windows 2000 it neither signals nor takes an exit code. It goes
+//! when its object's last reference beside its own does, deleted on the calling thread
+//! ([`Process::delete_threadless`]).
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, a slot of the kernel stack region numbered system-wide and
@@ -199,10 +201,13 @@ struct ProcessState {
     /// The end NtTerminateProcess or a fault decided for the process, while other threads were
     /// still to take their exit APCs: the last thread to exit ends the process with it.
     handed_end: Option<exit::ProcessEnd>,
-    /// Whether its end is under way with none of its threads running it (a termination from
-    /// another process, or the deletion of one that never had a thread; see
-    /// `threads::end_unattended`): it takes no new thread, and is not ended twice.
+    /// Whether another process terminated it while it had no thread (see
+    /// `threads::terminate_process`): it takes no new thread, and is not terminated twice. Nothing
+    /// ends it: it goes with its object's last reference.
     ending: bool,
+    /// Whether the deletion of a process that never had a thread has begun (see
+    /// [`Process::delete_threadless`]): it runs once.
+    deleting: bool,
     /// Whether the teardown has run (the record waits for its object's last reference).
     torn_down: bool,
 }
@@ -219,6 +224,7 @@ impl ProcessState {
             end: None,
             handed_end: None,
             ending: false,
+            deleting: false,
             torn_down: false,
         }
     }
@@ -420,12 +426,18 @@ impl Process {
     }
 
     /// The kernel stacks the process's threads hold: one per attached thread (see
-    /// [`SchedProcess::stack_count`]).
+    /// [`SchedProcess::stack_count`]). A process that never had a thread holds none: its record's
+    /// sentinel reads as 0.
     pub fn stack_count(&self) -> u16 {
-        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        let count = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             self.sched(crate::sched::DISPATCHER.get(dispatch))
                 .stack_count()
-        })
+        });
+        if count == crate::sched::process::NO_THREADS {
+            0
+        } else {
+            count
+        }
     }
 
     /// The process's base priority (KPROCESS's BasePriority).
@@ -481,8 +493,8 @@ impl Process {
         locked(&self.state, |state| f(&mut state.console))
     }
 
-    /// Whether the process is ending: its end is decided and held for its last thread, or under
-    /// way with none of its threads running it. It takes no new thread then.
+    /// Whether the process is terminating: its end is decided and held for its last thread, or it
+    /// was terminated with no thread. It takes no new thread then.
     pub fn terminating(&self) -> bool {
         locked(&self.state, |state| {
             state.ending || state.handed_end.is_some()
@@ -583,8 +595,8 @@ impl Process {
         self.with_handles(|table| table.update(handle, change))
     }
 
-    /// Release what one closed handle named. A process's last handle closing ends the process if
-    /// it never had a thread (see `threads::forsake_if_abandoned`).
+    /// Release what one closed handle named. A process's last reference beside its own going
+    /// deletes the process if it never had a thread (see `threads::delete_if_abandoned`).
     fn release_entry(&self, entry: crate::ob::Entry) {
         match entry.target {
             #[cfg(target_arch = "x86")]
@@ -593,7 +605,7 @@ impl Process {
                 // finished once the directory is released.
                 crate::ob::locked(|directory| directory.handle_closed(id)).finish();
                 if id.kind == crate::ob::ObjectType::Process {
-                    threads::forsake_if_abandoned(id);
+                    threads::delete_if_abandoned(id);
                 }
             }
             #[cfg(not(target_arch = "x86"))]
@@ -684,12 +696,31 @@ impl Process {
         self.with_handles(|table| table.drain(|_| {}));
     }
 
-    /// Hold the end NtTerminateProcess or a fault decided for the process, for whichever of its
-    /// threads exits last (see [`exit::ThreadEnd::last_thread_end`]). The first decision stands: a
-    /// later one, from a thread that had not taken its exit APC yet, changes nothing.
-    pub fn hand_end(&self, end: exit::ProcessEnd) {
-        locked(&self.state, |state| {
-            state.handed_end.get_or_insert(end);
+    /// Decide the process's end — NtTerminateProcess's, or a fault's — for whichever of its threads
+    /// exits last (see [`exit::ThreadEnd::last_thread_end`]), and close it to new threads. The
+    /// first decision stands: a later one, from a thread that had not taken its exit APC yet, or a
+    /// second termination racing the first, changes nothing. Returns whether this one was the
+    /// first.
+    pub fn decide_end(&self, end: exit::ProcessEnd) -> bool {
+        let first = locked(&self.state, |state| {
+            let first = state.handed_end.is_none() && !state.ending;
+            if first {
+                state.handed_end = Some(end);
+            }
+            first
+        });
+        self.close_to_threads();
+        first
+    }
+
+    /// The process takes no new thread from here on (see [`ordinals::Ordinals::close`]). Host
+    /// builds have no directory to keep the ordinals in.
+    fn close_to_threads(&self) {
+        #[cfg(target_arch = "x86")]
+        crate::ob::locked(|directory| {
+            if let Some(ordinals) = directory.ordinals(self.object()) {
+                ordinals.close();
+            }
         });
     }
 
@@ -707,10 +738,17 @@ impl Process {
         });
     }
 
-    /// Mark the process's end under way with none of its threads running it (see
-    /// `threads::end_unattended`).
-    pub fn begin_unattended_end(&self) {
-        locked(&self.state, |state| state.ending = true);
+    /// Mark a process with no thread terminated (see `threads::terminate_process`), and close it
+    /// to new threads. Returns whether this was the first termination decided for it: false for a
+    /// process terminated, or whose end is decided, already.
+    pub fn mark_terminated(&self) -> bool {
+        let first = locked(&self.state, |state| {
+            let first = state.handed_end.is_none() && !state.ending;
+            state.ending = true;
+            first
+        });
+        self.close_to_threads();
+        first
     }
 
     /// The process has ended, step 3 of its end (see the module notes): its object signals with
@@ -817,19 +855,40 @@ impl Process {
         free_directory(dir_phys);
     }
 
-    /// Undo a creation refused after the process's address space was built — a process with no
-    /// thread and no handle to it — at once, as its teardown would: its handles (inherited ones)
-    /// close, its views and its address space go, then its own reference on its object, which
-    /// takes the object and the record with it. Runs detached from it: the directory goes here.
-    pub fn discard(&self) {
+    /// Delete a process that never had a thread, as Windows 2000 deletes one with its object
+    /// (PspProcessDelete): its handles (inherited ones) close, its views and its address space go,
+    /// then its own reference on its object, which takes the object and the record with it.
+    /// Nothing signals and nothing reports: only a last thread's exit ends a process. Two callers:
+    /// a creation refused after the address space was built (no handle to the process exists),
+    /// and the object's last reference beside the process's own going
+    /// ([`threads::delete_if_abandoned`]). Runs on the calling thread, detached from the process
+    /// (the directory goes here), with none of the reap's conditions: no thread ever ran on the
+    /// directory, and nothing else references the object. Once: a second call does nothing.
+    pub fn delete_threadless(&self) {
         assert!(
             self.stack_count() == 0 && !self.has_main_thread(),
-            "a discarded process never had a thread"
+            "a deleted process never had a thread"
         );
+        assert_eq!(
+            self.attach_count(),
+            0,
+            "a deleted process has no thread attached to its address space"
+        );
+        if locked(&self.state, |state| {
+            core::mem::replace(&mut state.deleting, true)
+        }) {
+            return;
+        }
         self.release_handles();
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         release_record(self);
+    }
+
+    /// Whether the deletion of the process, one that never had a thread, has begun: its client id
+    /// names nothing from then on.
+    pub fn deleting(&self) -> bool {
+        locked(&self.state, |state| state.deleting)
     }
 
     /// Whether the process has a main thread: a boot's program from its start, a process another
@@ -1031,25 +1090,27 @@ fn teardown(process: &'static Process, quiescent: bool) {
         signaled,
         "a process's object signals its end before the teardown"
     );
+    // Per thread first: the parked gate stack (the last exit's, or a later exit's in another
+    // process: whichever is parked, its owner off it for good, since this runs on the idle
+    // thread's boot stack). Then per process.
+    crate::mem::kstacks::release_parked();
     release_address_space_of(process);
     audit_objects(process, quiescent);
     locked(&process.state, |state| state.torn_down = true);
     release_record(process);
 }
 
-/// Step 4: the address space goes — every frame the process owns, per thread then per process: the
-/// parked gate stack first (the last exit's, or a later exit's in another process: whichever is
-/// parked, its owner off it for good, since this runs on the idle thread's boot stack), then the
-/// address space (see [`release_process`]). The process is
-/// torn down in place: its record holds absolute addresses into itself.
+/// Step 4: the address space goes — every frame the process owns (see [`release_process`]); the
+/// reap releases the parked gate stack before it. The process is torn down in place: its record
+/// holds absolute addresses into itself.
 #[cfg(target_arch = "x86")]
 fn release_address_space_of(process: &Process) {
     use crate::mem::frame::FrameState;
     use crate::mem::paging::{self, PAGE_SIZE};
-    // The views of an ended process went with its end (see `Process::unmap_views`); a discarded
-    // one's go here, each dropping its reference on its section or image segment (one nothing else
-    // references goes with it, dropping its hold on its frames) once the address space has let go
-    // of them. Their pages are the walk's.
+    // The views of an ended process went with its end (see `Process::unmap_views`); a deleted
+    // threadless one's go here, each dropping its reference on its section or image segment (one
+    // nothing else references goes with it, dropping its hold on its frames) once the address
+    // space has let go of them. Their pages are the walk's.
     let mut gone = [None; crate::mem::vm::VIEWS];
     process.with_space(|space| {
         let mut count = 0;
@@ -1061,7 +1122,6 @@ fn release_address_space_of(process: &Process) {
     for mapping in gone.iter().flatten() {
         crate::ob::release_mapping(*mapping);
     }
-    crate::mem::kstacks::release_parked();
     release_process(
         process,
         |frame, index| paging::read_frame_word(frame, index),
@@ -1542,6 +1602,28 @@ mod tests {
         let mut stacks = KernelStacks::empty();
         exit(&mut stacks, child);
         mem.tear_down(&mut stacks, process);
+    }
+
+    /// A process that never had a thread holds the stack count's sentinel, which reads as no thread
+    /// attached: its teardown (its deletion's) releases its address space, the directory last.
+    #[test]
+    fn a_process_that_never_had_a_thread_is_torn_down() {
+        let _dispatcher = crate::sched::testkit::dispatcher();
+        let dir = 0x0090_0000;
+        let process: &'static Process = Box::leak(Box::new(record_at(dir)));
+        let mut mem = FakeMemory::new();
+        let user_table = 0x00A0_0000;
+        mem.plant(
+            dir,
+            &[
+                (1, user_table | PAGE_PRESENT),
+                (KERNEL_HALF_START, 0x0010_0000 | PAGE_PRESENT),
+            ],
+        );
+        mem.plant(user_table, &[(0, 0x00E0_0000 | PAGE_PRESENT)]);
+        assert_eq!(process.stack_count(), 0, "the sentinel reads as none");
+        mem.tear_down(&mut KernelStacks::empty(), process);
+        assert_eq!(mem.released, vec![0x00E0_0000, user_table, dir]);
     }
 
     /// The walk's user range ends below the kernel stack region: the region's entries are in the

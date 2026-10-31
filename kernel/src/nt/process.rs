@@ -278,12 +278,12 @@ pub fn create_process(
                 super::object::process_access(access),
                 inherit,
             ) else {
-                child.discard();
+                child.delete_threadless();
                 return Err(STATUS_INSUFFICIENT_RESOURCES);
             };
             let handle = handle.get();
             // Probed above; a slot that went away meanwhile takes the process back: its one handle
-            // closes, which ends a process that never had a thread.
+            // closes, which deletes a process that never had a thread.
             if slot.write(handle).is_err() {
                 process.close_handle(handle);
                 return Err(STATUS_ACCESS_VIOLATION);
@@ -343,10 +343,11 @@ pub fn terminate_process(call: &mut NtCall, process: Handle, status: u32) -> NtR
             drop(target);
             crate::user::process_exited(status)
         }
-        if target.ended() || target.record().terminating() {
+        if target.ended() {
             return Err(STATUS_PROCESS_IS_TERMINATING);
         }
-        crate::process::threads::terminate_process(target.record(), status);
+        crate::process::threads::terminate_process(target.record(), status)
+            .map_err(|_| STATUS_PROCESS_IS_TERMINATING)?;
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]

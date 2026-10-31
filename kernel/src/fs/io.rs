@@ -55,15 +55,12 @@ pub fn times_at(filetime: u64) -> Times {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::ptr::NonNull;
-
     use super::*;
     use crate::fs::fat32::dir::is_empty;
     use crate::fs::fat32::volume::{with_boot_volume, Volume};
     use crate::fs::fat32::write;
-    use crate::fs::file::{with_records, FileObject, FileRecordId, OpenError};
+    use crate::fs::file::{with_records, FileObject, FileRecordId, IoState, OpenError};
     use crate::ob::Referenced;
-    use crate::sched::wait::WaitableId;
     use crate::status::{
         NtStatus,
         STATUS_DELETE_PENDING,
@@ -120,47 +117,15 @@ mod target {
         with_records(|records| records.get_mut(record).file = file);
     }
 
-    /// Run `body` holding the object's synchronous-I/O lock: one call at a time moves its position
-    /// or its directory search — the one way to the object mutably (see [`Referenced`]). The lock
-    /// is taken before the object is borrowed (another thread may hold the object under the lock,
-    /// blocked inside its own call), and the borrow ends before it is released. The call is a
-    /// critical region: a termination requested meanwhile waits for it to finish, holding nothing.
+    /// Run `body` on the object's position and search, holding its synchronous-I/O lock: one call
+    /// at a time moves them (see [`FileObject::serialized`]). The call is a critical region: its
+    /// holder may block under the lock (the disk's reads), and a termination requested meanwhile
+    /// waits for it to finish, holding nothing.
     pub fn serialized<R>(
         object: &Referenced<FileObject>,
-        body: impl FnOnce(&mut FileObject) -> R,
+        body: impl FnOnce(&mut IoState) -> R,
     ) -> R {
-        crate::process::threads::critical_region(|| {
-            let record = object.as_ptr();
-            // SAFETY: `record` is the referenced object's pool record, live while `object` holds
-            // its reference. The projection computes the address of its lock's header, inside the
-            // record, and reads nothing: no reference to the object is formed while another thread
-            // may hold it under the lock.
-            let header = unsafe { core::ptr::addr_of_mut!((*record).lock.waitable) };
-            // The object's init named its embedded header by this address.
-            let lock = WaitableId::Embedded(NonNull::new(header).expect("a record is not null"));
-            crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
-                dispatcher.wait_for(
-                    thread,
-                    lock,
-                    crate::sched::wait::WaitReason::Executive,
-                    crate::sched::wait::WaitMode::Kernel,
-                    false,
-                    None,
-                    stamp,
-                )
-            });
-            // SAFETY: the lock is this call's: the record is live while `object` holds its
-            // reference, and every other way to it mutably waits for the lock, so this is the only
-            // mutable reference until the release below (see `Referenced`'s notes).
-            let object: &mut FileObject = unsafe { &mut *record };
-            debug_assert_eq!(object.lock.waitable.id(), lock);
-            let result = body(object);
-            // The borrow has ended: the release reaches the lock's header by its name only.
-            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
-                crate::sched::DISPATCHER.get(dispatch).set_event(lock, 0);
-            });
-            result
-        })
+        crate::process::threads::critical_region(|| object.serialized(body))
     }
 
     /// How a new open's object starts: its rights, the sharing it allows, and its options.

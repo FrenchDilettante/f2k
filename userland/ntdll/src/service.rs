@@ -226,6 +226,14 @@ pub(crate) unsafe fn protect_virtual_memory(
     }
 }
 
+/// NtDelayExecution: the calling thread waits `interval` (100 ns units), not alertable.
+pub(crate) fn delay_execution(interval: u32) {
+    let due = -i64::from(interval);
+    // SAFETY: NtDelayExecution's arguments: Alertable FALSE and the relative due time it reads,
+    // borrowed for the call.
+    unsafe { system_service(nr::NtDelayExecution, &[0, address_of(&due)]) };
+}
+
 /// NtTerminateProcess: the process `process` ends with `status`; the service's own status (a
 /// termination of the calling process does not return).
 pub(crate) fn terminate_process(process: u32, status: u32) -> u32 {

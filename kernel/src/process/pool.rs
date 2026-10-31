@@ -169,10 +169,10 @@ pub fn of_object(id: crate::ob::ObjectId) -> Option<&'static Process> {
 /// The process object whose process has client id `id`, among the processes that have not ended:
 /// as on Windows 2000, a process leaves the client id table when its last thread ends, while its
 /// object lives on for the handles that hold it (they still query it and wait on it), so its id
-/// names nothing any more.
+/// names nothing any more. A process that never had a thread leaves it when its deletion begins.
 #[cfg(target_arch = "x86")]
 pub fn by_client_id(id: u32) -> Option<crate::ob::ObjectId> {
     live().find_map(|(process, object)| {
-        (process.id() == id && process.end().is_none()).then_some(object)
+        (process.id() == id && process.end().is_none() && !process.deleting()).then_some(object)
     })
 }

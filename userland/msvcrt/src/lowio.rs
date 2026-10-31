@@ -58,7 +58,9 @@ pub const O_EXCL: i32 = 0x0400;
 pub const O_TEXT: i32 = 0x4000;
 pub const O_BINARY: i32 = 0x8000;
 
-/// sys/stat.h's write permission: a file `_open` creates without it is read-only.
+/// sys/stat.h's read and write permissions: a file `_open` creates without the write one is
+/// read-only.
+pub const S_IREAD: i32 = 0x0100;
 pub const S_IWRITE: i32 = 0x0080;
 
 /// CreateFileA's values `_open` asks with: the access, the sharing (`_SH_DENYNO`: both ways), the

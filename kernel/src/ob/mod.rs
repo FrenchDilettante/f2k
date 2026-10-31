@@ -685,9 +685,13 @@ impl Directory {
         self.header(id).is_some()
     }
 
-    /// How many handles name `id`; none for an id that names nothing.
-    pub fn handle_count(&mut self, id: ObjectId) -> Option<u32> {
-        self.header(id).map(|header| header.handles)
+    /// Whether the live process object `id` names is held by its process's own reference alone:
+    /// no handle, and no reference beside that one (see [`crate::process::Process`]'s object).
+    pub fn only_its_own_reference(&mut self, id: ObjectId) -> bool {
+        id.kind == ObjectType::Process
+            && self
+                .header(id)
+                .is_some_and(|header| header.pointers == 1 && header.handles == 0)
     }
 
     /// An object's (pointer, handle) counts; none for an id that names nothing.
@@ -1514,20 +1518,12 @@ mod target {
     ///
     /// The object is reached outside the directory's lock, as Windows 2000 reaches a file object
     /// outside the object manager's: what its open set (its record, its access and rights, its
-    /// sharing, its options) is never written again while it lives, and reads freely; its position
-    /// and its directory search change only under the object's own lock, through
-    /// [`crate::fs::io::serialized`], the one way to the object mutably.
+    /// sharing, its options) is never written again while it lives, and reads freely; its lock
+    /// is shared state of its own, and its position and its directory search sit in a cell
+    /// reached only by the lock's holder, through [`crate::fs::io::serialized`].
     pub struct Referenced<T: 'static> {
         _reference: ObRef,
         record: NonNull<T>,
-    }
-
-    impl<T: 'static> Referenced<T> {
-        /// The record itself, borrowed by nothing: how a caller reaches a part of it (a lock)
-        /// without borrowing the whole while another thread may hold it.
-        pub fn as_ptr(&self) -> *mut T {
-            self.record.as_ptr()
-        }
     }
 
     impl<T: 'static> core::ops::Deref for Referenced<T> {
@@ -1535,9 +1531,10 @@ mod target {
 
         fn deref(&self) -> &T {
             // SAFETY: the record is a pool record of the directory, at its final address for the
-            // kernel's life, and its object is held for the value's life. The fields read through
-            // this are the ones its open set, which nothing writes while the object lives (see
-            // the type's notes).
+            // kernel's life, and its object is held for the value's life. Its plain fields are the
+            // ones its open set, which nothing writes while the object lives; what other threads
+            // change meanwhile (the lock, the position and the search) sits in cells (see the
+            // type's notes).
             unsafe { self.record.as_ref() }
         }
     }
@@ -1579,10 +1576,14 @@ mod target {
     }
 
     /// Drop a reference on `id` (the last one deletes the object, the caller finishing what the
-    /// deletion leaves once the directory is released).
+    /// deletion leaves once the directory is released). A process that never had a thread goes
+    /// once only its own reference is left (see [`crate::process::threads::delete_if_abandoned`]).
     pub fn release(id: ObjectId) {
         if let Some(followup) = locked(|directory| directory.dereference(id)) {
             finish(followup);
+        }
+        if id.kind == ObjectType::Process {
+            crate::process::threads::delete_if_abandoned(id);
         }
     }
 
@@ -1649,6 +1650,13 @@ mod target {
         }
         let result = wait();
         locked(|directory| directory.release_wait(index));
+        // A process that never had a thread goes with the last reference beside its own, a
+        // wait's included.
+        for &id in objects {
+            if id.kind == ObjectType::Process {
+                crate::process::threads::delete_if_abandoned(id);
+            }
+        }
         Some(result)
     }
 }
@@ -2296,6 +2304,27 @@ mod tests {
             "a bare prefix names nothing"
         );
         assert_eq!(namespace_name(b"Session\\1"), b"Session\\1");
+    }
+
+    /// A process object is held by its own reference alone while nothing else references it: the
+    /// moment a process that never had a thread is deleted. A handle or another reference holds
+    /// it, and no other kind is a process's.
+    #[test]
+    fn a_process_object_held_by_its_own_reference_alone() {
+        let directory = directory();
+        let id = directory.create_process().unwrap();
+        assert!(directory.only_its_own_reference(id), "made with its own");
+        assert!(directory.handle_opened(id));
+        assert!(!directory.only_its_own_reference(id), "a handle holds it");
+        assert!(directory.reference(id));
+        assert!(directory.handle_closed(id).iter().next().is_none());
+        assert!(!directory.only_its_own_reference(id), "a reference holds it");
+        assert_eq!(directory.dereference(id), None);
+        assert!(directory.only_its_own_reference(id));
+        let event = directory.create_event(EventKind::Notification, false);
+        assert!(event.is_some_and(|event| !directory.only_its_own_reference(event)));
+        assert_eq!(directory.dereference(id), None);
+        assert!(!directory.only_its_own_reference(id), "gone");
     }
 
     /// A process object: waitable, still active and unsignaled until its end, signaled with its

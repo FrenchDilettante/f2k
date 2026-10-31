@@ -41,6 +41,8 @@ statuses! {
     // Informational.
     /// A create that opened an object of the name that already existed.
     STATUS_OBJECT_NAME_EXISTS,
+    /// An image's view mapped away from its preferred base, which another region holds.
+    STATUS_IMAGE_NOT_AT_BASE,
     /// A yield found no thread to hand the processor to (SwitchToThread returns FALSE).
     STATUS_NO_YIELD_PERFORMED,
     /// A timer set to resume the system, which this one cannot.

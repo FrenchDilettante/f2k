@@ -27,6 +27,14 @@
  *              exception handling, each per thread
  *   crt        _beginthreadex (suspended, with _endthreadex) and
  *              _beginthread
+ *   lateexit   TerminateThread on a thread blocked in a wait, then at
+ *              once, before the target runs again (the process on one
+ *              CPU, the caller above the target), GetExitCodeThread and a
+ *              zero-timeout wait on it; then the same once it has ended
+ *   suspterm   a thread created suspended and suspended once more, a user
+ *              APC queued to it, then TerminateThread: whether it ends
+ *              (the termination resumes it), its exit code, whether the
+ *              APC ran, and ResumeThread and SuspendThread on it after
  *
  * Named-only sections (they end the process):
  *
@@ -714,6 +722,106 @@ static void sec_procexit(void)
     line("main: survived the child's ExitProcess");
 }
 
+/* --- lateexit ----------------------------------------------------- */
+
+static HANDLE late_ready, late_never;
+
+static DWORD WINAPI late_waiter(LPVOID parameter)
+{
+    (void)parameter;
+    SetEvent(late_ready);
+    WaitForSingleObject(late_never, INFINITE);
+    return 0;
+}
+
+static void sec_lateexit(void)
+{
+    HANDLE t;
+    DWORD id, code, w, process_mask = 1, system_mask = 1;
+    BOOL r;
+
+    /* One CPU, this thread above the waiter: the waiter runs only once
+     * this thread waits. */
+    GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask);
+    SetProcessAffinityMask(GetCurrentProcess(), 1);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    late_ready = CreateEventA(NULL, FALSE, FALSE, NULL);
+    late_never = CreateEventA(NULL, TRUE, FALSE, NULL);
+    t = CreateThread(NULL, 0, late_waiter, NULL, 0, &id);
+    w = WaitForSingleObject(late_ready, WAIT_MS);
+    Sleep(50);
+    line("the waiter started: %s", wr(w));
+    arm();
+    r = TerminateThread(t, 7);
+    line("TerminateThread(7) ret=%d err=%s", r, le());
+    code = 0;
+    arm();
+    r = GetExitCodeThread(t, &code);
+    line("at once: GetExitCodeThread ret=%d code=%lu err=%s", r, code, le());
+    w = WaitForSingleObject(t, 0);
+    line("at once: WaitForSingleObject(0) %s", wr(w));
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    w = WaitForSingleObject(t, WAIT_MS);
+    line("after: WaitForSingleObject %s", wr(w));
+    code = 0;
+    arm();
+    r = GetExitCodeThread(t, &code);
+    line("after: GetExitCodeThread ret=%d code=%lu err=%s", r, code, le());
+    CloseHandle(t);
+    CloseHandle(late_ready);
+    CloseHandle(late_never);
+    SetProcessAffinityMask(GetCurrentProcess(), process_mask);
+}
+
+/* --- suspterm ----------------------------------------------------- */
+
+static LONG suspterm_apc_ran;
+
+static VOID CALLBACK suspterm_apc(DWORD parameter)
+{
+    (void)parameter;
+    InterlockedIncrement(&suspterm_apc_ran);
+}
+
+static DWORD WINAPI alertable_sleeper(LPVOID parameter)
+{
+    (void)parameter;
+    SleepEx(INFINITE, TRUE);
+    return 0;
+}
+
+static void sec_suspterm(void)
+{
+    HANDLE t;
+    DWORD id, code, w, n;
+    BOOL r;
+
+    t = CreateThread(NULL, 0, alertable_sleeper, NULL, CREATE_SUSPENDED, &id);
+    arm();
+    n = SuspendThread(t);
+    line("SuspendThread of a thread created suspended ret=%lu err=%s", n, le());
+    arm();
+    n = QueueUserAPC(suspterm_apc, t, 0);
+    line("QueueUserAPC while suspended ret=%lu err=%s", n, le());
+    arm();
+    r = TerminateThread(t, 9);
+    line("TerminateThread(9) ret=%d err=%s", r, le());
+    w = WaitForSingleObject(t, WAIT_MS);
+    line("WaitForSingleObject %s", wr(w));
+    code = 0;
+    arm();
+    r = GetExitCodeThread(t, &code);
+    line("GetExitCodeThread ret=%d code=%lu err=%s", r, code, le());
+    line("the APC ran: %s", yesno(suspterm_apc_ran != 0));
+    arm();
+    n = ResumeThread(t);
+    line("ResumeThread after its end ret=%ld err=%s", (long)n, le());
+    arm();
+    n = SuspendThread(t);
+    line("SuspendThread after its end ret=%ld err=%s", (long)n, le());
+    CloseHandle(t);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "exit", sec_exit, 0 },
@@ -723,6 +831,8 @@ static const section_t sections[] = {
     { "tls", sec_tls, 0 },
     { "perthread", sec_perthread, 0 },
     { "crt", sec_crt, 0 },
+    { "lateexit", sec_lateexit, 0 },
+    { "suspterm", sec_suspterm, 0 },
     { "mainexit", sec_mainexit, 1 },
     { "procexit", sec_procexit, 1 },
     { NULL, NULL, 0 }

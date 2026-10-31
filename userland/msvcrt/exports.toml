@@ -473,6 +473,22 @@ ordinal = 708
 fails = "-1"
 
 [[export]]
+name = "fopen"
+group = "stdio"
+args = ["strA filename", "strA mode"]
+impl = { native = "fopen" }
+ordinal = 621
+fails = "NULL"
+
+[[export]]
+name = "fputs"
+group = "stdio"
+args = ["strA str", "ptr stream"]
+impl = { native = "fputs" }
+ordinal = 624
+fails = "-1"
+
+[[export]]
 name = "_fdopen"
 group = "stdio"
 args = ["i32 fd", "strA mode"]
@@ -3210,16 +3226,8 @@ name = "fmod"
 ordinal = 620
 
 [[export]]
-name = "fopen"
-ordinal = 621
-
-[[export]]
 name = "fputc"
 ordinal = 623
-
-[[export]]
-name = "fputs"
-ordinal = 624
 
 [[export]]
 name = "fputwc"

@@ -55,6 +55,60 @@ struct ConsoleServer {
     /// The console's input-wait event, once a process asked for it: the object, which the server
     /// holds a reference on until no process is left.
     input_event: Option<ObjectId>,
+    /// Whether the console has its first program's name for its title.
+    named: bool,
+    /// The writes a call made into its caller's stack guard page, kept for the caller to copy out
+    /// below the server's level (see [`Staged`]).
+    staged: Staged,
+}
+
+/// The room for a call's staged writes: the most one call writes to its caller (a whole input
+/// buffer's records, 2560 bytes; a Unicode title, 2050), with room to spare.
+const STAGED_BYTES: usize = 4096;
+
+/// A call's writes into its caller's stack guard page, held for the copy into the caller's memory
+/// below the server's level, where the fault on the guard page grows the stack as any fault on it
+/// does (a fault at the server's level cannot be resolved). This is Windows 2000's shape: csrss
+/// answers into the message's capture buffer, and kernel32 copies the answer into the caller's
+/// buffer itself, in user mode. One contiguous run of bytes, written by one call at a time.
+struct Staged {
+    /// The thread whose call staged the bytes, until it has copied them out; none when free.
+    owner: Option<crate::sched::thread::ThreadId>,
+    /// Where the bytes go in the caller's memory.
+    address: u32,
+    length: usize,
+    bytes: [u8; STAGED_BYTES],
+}
+
+impl Staged {
+    const fn new() -> Self {
+        Staged {
+            owner: None,
+            address: 0,
+            length: 0,
+            bytes: [0; STAGED_BYTES],
+        }
+    }
+
+    /// Take `bytes`, bound for `address`, after what is staged already when they follow it (a
+    /// write made in pieces); false, nothing taken, when another thread's bytes wait to be copied
+    /// out, the bytes do not follow, or there is no room.
+    fn stage(&mut self, address: u32, bytes: &[u8]) -> bool {
+        if self.owner.is_some() {
+            return false;
+        }
+        if self.length == 0 {
+            self.address = address;
+        } else if self.address.wrapping_add(self.length as u32) != address {
+            return false;
+        }
+        let Some(room) = self.bytes.get_mut(self.length..self.length + bytes.len()) else {
+            return false;
+        };
+        room.copy_from_slice(bytes);
+        self.length += bytes.len();
+        true
+    }
 }
 
 /// The console server, at the dispatch level: the keyboard's DPC feeds it there, and the system
@@ -64,7 +118,21 @@ struct ConsoleServer {
 static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer {
     console: Console::new(),
     input_event: None,
+    named: false,
+    staged: Staged::new(),
 });
+
+/// The console's title, from the first program the boot loads into it: its image path (see
+/// [`Console::name`]). The programs after it share the console and its title.
+#[cfg(target_arch = "x86")]
+pub fn name_console(image_path: &[u8]) {
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        let server = SERVER.get(dispatch);
+        if !core::mem::replace(&mut server.named, true) {
+            server.console.name(image_path);
+        }
+    });
+}
 
 /// The boot's step: the text screen shows the fresh console's window (whatever the firmware and
 /// loader left there cleared), the hardware cursor at its cursor.
@@ -95,18 +163,21 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     // where objects are made, and handed to the call that asks for it.
     let mut prepared = (args[2] == rtl::console::Api::GetInputWaitHandle.into())
         .then(|| prepare_input_wait_handle(call.passive()));
+    let guard = stack_guard_page();
     // The process's console handles are held for the call (its lock is the process's state
     // lock), and the call is served at the server's level, raised from the lock's.
-    let result = crate::user::args::calling_process().with_console(|handles| {
+    let (mut result, staged) = crate::user::args::calling_process().with_console(|handles| {
         crate::level::raised::<Dispatch, _>(|dispatch| {
             // Nothing below waits: a fault in a user-memory copy resolves in place (a
-            // copy-on-write page) or fails the copy.
+            // copy-on-write page) or fails the copy; a write into the caller's stack guard page,
+            // whose fault would grow the stack, is staged instead.
             let server = SERVER.get(dispatch);
             let result = client_call_server(
                 &mut server.console,
                 handles,
                 &mut Dual {
                     input_wait_handle: &mut prepared,
+                    guard: guard.map(|page| (page, &mut server.staged)),
                 },
                 UserAddr(args[0]),
                 UserAddr(args[1]),
@@ -114,16 +185,71 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 args[3],
             );
             present(&mut server.console.screen, &mut crate::hw::vga::screen());
+            let staged = server.staged.length != 0 && server.staged.owner.is_none();
+            if staged {
+                server.staged.owner = Some(crate::sched::current_thread());
+            }
             let input = server.input_state();
             show_input(dispatch, input);
-            result
+            (result, staged)
         })
     });
+    if staged && copy_out_staged(call.passive()).is_err() {
+        result = Err(STATUS_ACCESS_VIOLATION);
+    }
     // A call refused before it reached the handle (its message unreadable) leaves it unopened.
     if let Some(Ok(handle)) = prepared {
         call.process().close_handle(handle);
     }
     call.finish(result);
+}
+
+/// The calling thread's stack guard page: the page below its TEB's StackLimit, the one whose fault
+/// grows its stack. None for a thread without a TEB.
+#[cfg(target_arch = "x86")]
+fn stack_guard_page() -> Option<u32> {
+    use crate::user::teb::teb_field;
+    let thread = crate::sched::current_thread();
+    let teb = crate::level::raised::<Dispatch, _>(|dispatch| {
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .thread(thread)
+            .teb_va()
+    });
+    if teb == 0 {
+        return None;
+    }
+    let limit = teb_field!(stack_limit).of(teb).read().ok()?;
+    limit.checked_sub(crate::mem::paging::PAGE_SIZE)
+}
+
+/// Copy the calling thread's staged writes into its memory, below the server's level, a chunk at a
+/// time (a fault on the guard page grows its stack, as the thread's own touch would); the staging
+/// is free again after. The copy's refusal is the call's answer then.
+#[cfg(target_arch = "x86")]
+fn copy_out_staged(passive: &mut At<Passive>) -> Result<(), NtStatus> {
+    let mut chunk = [0u8; 256];
+    let mut done = 0;
+    let mut copied = Ok(());
+    loop {
+        let (address, take) = {
+            let mut dispatch = passive.raise::<Dispatch>();
+            let staged = &SERVER.get(&mut dispatch).staged;
+            let take = (staged.length - done).min(chunk.len());
+            chunk[..take].copy_from_slice(&staged.bytes[done..done + take]);
+            (staged.address.wrapping_add(done as u32), take)
+        };
+        if take == 0 || copied.is_err() {
+            break;
+        }
+        copied = UserAddr(address).write(&chunk[..take]);
+        done += take;
+    }
+    let mut dispatch = passive.raise::<Dispatch>();
+    let staged = &mut SERVER.get(&mut dispatch).staged;
+    staged.owner = None;
+    staged.length = 0;
+    copied.map_err(NtStatus::from)
 }
 
 /// The calling process's handle to the console's input-wait event, for the call about to ask for
@@ -325,6 +451,9 @@ struct Dual<'a> {
     /// target's: the host never serves that call).
     #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
     input_wait_handle: &'a mut Option<Result<u32, NtStatus>>,
+    /// The caller's stack guard page and the staging its writes go to (see [`Staged`]); none for
+    /// a caller without one.
+    guard: Option<(u32, &'a mut Staged)>,
 }
 
 impl Client for Dual<'_> {
@@ -378,9 +507,19 @@ impl Client for Dual<'_> {
             .map_err(|fault| NtStatus::from(fault).0)
     }
 
+    /// A write into the caller's stack guard page — or following one staged — is staged (see
+    /// [`Staged`]); any other goes to the caller's memory at once.
     fn write(&mut self, buffer: usize, bytes: &[u8]) -> Result<(), u32> {
         crate::user::syscall::probe_user_range(buffer as u32, bytes.len() as u32)
             .map_err(|status| status.0)?;
+        if let Some((guard, staged)) = &mut self.guard {
+            let (start, end) = (buffer as u32, buffer as u32 + bytes.len() as u32);
+            let page = *guard..guard.wrapping_add(crate::mem::paging::PAGE_SIZE);
+            let touches = start < page.end && end > page.start;
+            if (touches || staged.length != 0) && staged.stage(start, bytes) {
+                return Ok(());
+            }
+        }
         UserAddr(buffer as u32)
             .write(bytes)
             .map_err(|fault| NtStatus::from(fault).0)
@@ -410,6 +549,24 @@ mod tests {
 
     use super::*;
 
+    /// A call's writes into its caller's guard page are staged in one run: a piece that follows
+    /// the last is taken, one elsewhere or past the room is not, and nothing is taken while
+    /// another thread's bytes wait to be copied out.
+    #[test]
+    fn staged_writes_make_one_run() {
+        let mut staged = Box::new(Staged::new());
+        assert!(staged.stage(0x1000, b"abc"));
+        assert!(staged.stage(0x1003, b"de"));
+        assert!(!staged.stage(0x2000, b"x"), "not following");
+        assert_eq!(
+            (staged.address, &staged.bytes[..staged.length]),
+            (0x1000, &b"abcde"[..])
+        );
+        assert!(!staged.stage(0x1005, &[0; STAGED_BYTES]), "past the room");
+        staged.owner = Some(crate::sched::thread::ThreadId(0));
+        assert!(!staged.stage(0x1005, b"f"), "another thread's bytes wait");
+    }
+
     /// The host's user memory refuses every transfer (the gate is the target's): a message the
     /// caller cannot name fails before the server is asked.
     #[test]
@@ -423,6 +580,7 @@ mod tests {
                 handles,
                 &mut Dual {
                     input_wait_handle: &mut input_wait_handle,
+                    guard: None,
                 },
                 UserAddr(0x40_0000),
                 UserAddr(0),

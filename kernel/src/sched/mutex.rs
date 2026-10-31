@@ -422,6 +422,14 @@ mod tests {
             d.delay(t, WaitMode::User, true, 10_000, STAMP),
             WaitDisposition::Complete(STATUS_USER_APC)
         );
+        // A delivery armed already completes any user-mode wait (a terminated thread's exit APC);
+        // with none armed, a non-alertable wait parks whatever is queued.
+        assert_eq!(
+            wait(d, t, e.waitable()),
+            WaitDisposition::Complete(STATUS_USER_APC),
+            "armed"
+        );
+        t.user_apc_pending = false;
         assert_eq!(
             wait(d, t, e.waitable()),
             WaitDisposition::Yield,

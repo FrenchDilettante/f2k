@@ -67,6 +67,11 @@ const BASE_PRIORITY_MAX: i32 = 2;
 const BASE_PRIORITY_MIN: i32 = -2;
 pub const SATURATION: i32 = 16;
 
+/// The priority increment an LPC reply wakes its client with (Windows 2000's
+/// LPC_RELEASE_WAIT_INCREMENT): what a thread's creator gets from the base server's reply.
+#[cfg(target_arch = "x86")]
+const LPC_RELEASE_WAIT_INCREMENT: i8 = 1;
+
 /// The processors there are: the one.
 pub const SYSTEM_AFFINITY: u32 = 1;
 
@@ -269,7 +274,7 @@ pub fn create_thread(
             if record.terminating() {
                 return Err(STATUS_PROCESS_IS_TERMINATING);
             }
-            crate::process::threads::create(record, user, stack).ok_or(STATUS_NO_MEMORY)
+            crate::process::threads::create(record, user, stack)
         })?;
         // The handle joins the thread's own reference (which its end releases).
         let opened = crate::ob::open(call.process(), object, access, inherit)
@@ -296,10 +301,15 @@ pub fn create_thread(
         // tick lands while the creator is still inside the create — so a quantum it ends
         // passes the processor on without the new thread jumping ahead of its creator.
         crate::pcr::pcr().interrupt_window();
-        // The handle exists; the thread becomes schedulable now.
-        DISPATCHER
-            .get(&mut call.passive().raise::<Dispatch>())
-            .make_ready(thread);
+        // The handle exists; the thread becomes schedulable now. Its creator then runs on as
+        // Windows 2000's does once it has told the base server of the new thread (kernel32's
+        // CreateThread and CreateProcess make that LPC round trip for every thread before they
+        // resume it): woken by the server's reply with the LPC release increment, its quantum
+        // fresh, so the thread it made, at its own priority, does not run before it waits.
+        let mut dispatch = call.passive().raise::<Dispatch>();
+        let dispatcher = DISPATCHER.get(&mut dispatch);
+        dispatcher.make_ready(thread);
+        dispatcher.boost(crate::sched::current_thread(), LPC_RELEASE_WAIT_INCREMENT);
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]

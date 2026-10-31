@@ -43,6 +43,11 @@
  *            program's own headers; class 1 on data sections, lengths
  *            short and long, an unknown class, no length pointer, a
  *            handle without SECTION_QUERY, an event, NULL: the statuses
+ *   guardcall a new thread's stack guard page handed whole to
+ *            GetConsoleTitleA as its buffer, then a second thread's to
+ *            GetConsoleTitleW: the call's answer, and whether the page
+ *            was committed and a new guard page set below it, as a fault
+ *            on the guard page in the thread's own code would have
  *
  * The named mappings run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)");
@@ -1125,6 +1130,91 @@ static void sec_query(void)
     CloseHandle(paging);
 }
 
+/* --- guardcall ---------------------------------------------------- */
+
+typedef struct {
+    int wide;
+    int guarded;        /* a guard page was found below the committed stack */
+    DWORD ret;
+    DWORD err;
+    int committed;      /* the page afterwards: committed, no longer a guard */
+    int guard_below;    /* the page below it: the new guard page */
+} guardcall_t;
+
+/* The lowest page of the stack holding `here` that is a guard page: walk
+ * the stack's reservation from its base up to `here`. NULL if none. */
+static BYTE *stack_guard(const void *here)
+{
+    MEMORY_BASIC_INFORMATION m;
+    BYTE *p;
+
+    VirtualQuery(here, &m, sizeof m);
+    p = (BYTE *)m.AllocationBase;
+    while (p < (const BYTE *)here) {
+        if (VirtualQuery(p, &m, sizeof m) == 0) {
+            break;
+        }
+        if (m.State == MEM_COMMIT && (m.Protect & PAGE_GUARD)) {
+            return (BYTE *)m.BaseAddress;
+        }
+        p = (BYTE *)m.BaseAddress + m.RegionSize;
+    }
+    return NULL;
+}
+
+static DWORD WINAPI guardcall_thread(LPVOID parameter)
+{
+    guardcall_t *g = (guardcall_t *)parameter;
+    MEMORY_BASIC_INFORMATION m;
+    BYTE *guard = stack_guard(&m);
+
+    g->guarded = guard != NULL;
+    if (guard == NULL) {
+        return 0;
+    }
+    /* Nothing touches the page before the call: the console writes the
+     * title into it. */
+    SetLastError(F2KT_UNTOUCHED);
+    if (g->wide) {
+        g->ret = GetConsoleTitleW((WCHAR *)guard, 2048);
+    } else {
+        g->ret = GetConsoleTitleA((char *)guard, 4096);
+    }
+    g->err = GetLastError();
+    VirtualQuery(guard, &m, sizeof m);
+    g->committed = m.State == MEM_COMMIT && !(m.Protect & PAGE_GUARD);
+    VirtualQuery(guard - 4096, &m, sizeof m);
+    g->guard_below = m.State == MEM_COMMIT && (m.Protect & PAGE_GUARD) != 0;
+    return 0;
+}
+
+static void guardcall(int wide)
+{
+    guardcall_t g;
+    HANDLE t;
+    DWORD id, w;
+
+    memset(&g, 0, sizeof g);
+    g.wide = wide;
+    /* 64 KiB committed: the guard page lies well below anything the
+     * call's own frames reach. */
+    t = CreateThread(NULL, 65536, guardcall_thread, &g, 0, &id);
+    w = WaitForSingleObject(t, WAIT_MS);
+    CloseHandle(t);
+    line("%s into the stack's guard page: the thread's end %s, a guard page found %s",
+         wide ? "GetConsoleTitleW" : "GetConsoleTitleA", wr(w), yesno(g.guarded));
+    if (g.guarded) {
+        line("  ret>0 %s err=%s; the page committed %s, a guard page below it %s",
+             yesno(g.ret > 0), le_of(g.err), yesno(g.committed), yesno(g.guard_below));
+    }
+}
+
+static void sec_guardcall(void)
+{
+    guardcall(0);
+    guardcall(1);
+}
+
 static const section_t sections[] = {
     { "sysinfo", sec_sysinfo, 0 },
     { "malloc", sec_malloc, 0 },
@@ -1136,6 +1226,7 @@ static const section_t sections[] = {
     { "mapping", sec_mapping, 0 },
     { "stack", sec_stack, 0 },
     { "query", sec_query, 0 },
+    { "guardcall", sec_guardcall, 0 },
     { NULL, NULL, 0 }
 };
 

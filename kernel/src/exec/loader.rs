@@ -756,7 +756,7 @@ pub fn load_section(
     match built {
         Ok(()) => Ok(process),
         Err(status) => {
-            process.discard();
+            process.delete_threadless();
             Err(status)
         }
     }

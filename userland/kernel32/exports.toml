@@ -1073,6 +1073,13 @@ impl = { native = "CreateThread" }
 ordinal = 82
 
 [[export]]
+name = "CreateRemoteThread"
+group = "threads"
+args = ["handle hProcess", "ptr lpThreadAttributes", "u32 dwStackSize", "u32 lpStartAddress", "u32 lpParameter", "u32 dwCreationFlags", "ptr<u32> lpThreadId"]
+impl = { native = "CreateRemoteThread" }
+ordinal = 78
+
+[[export]]
 name = "BaseThreadStartThunk"
 group = "threads"
 args = []
@@ -1560,6 +1567,13 @@ group = "threads"
 args = ["ptr<u64> lpFrequency"]
 impl = { native = "QueryPerformanceFrequency" }
 ordinal = 561
+
+[[export]]
+name = "GetProcessAffinityMask"
+group = "threads"
+args = ["handle hProcess", "ptr<u32> lpProcessAffinityMask", "ptr<u32> lpSystemAffinityMask"]
+impl = { native = "GetProcessAffinityMask" }
+ordinal = 345
 
 [[export]]
 name = "SetProcessAffinityMask"
@@ -2452,11 +2466,6 @@ name = "CreateProcessInternalWSecure"
 ordinal = 76
 
 [[export]]
-name = "CreateRemoteThread"
-ordinal = 78
-
-
-[[export]]
 name = "CreateTapePartition"
 ordinal = 81
 
@@ -3177,10 +3186,6 @@ ordinal = 342
 [[export]]
 name = "GetPrivateProfileStructW"
 ordinal = 343
-
-[[export]]
-name = "GetProcessAffinityMask"
-ordinal = 345
 
 [[export]]
 name = "GetProcessHeaps"

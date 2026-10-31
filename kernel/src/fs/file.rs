@@ -21,11 +21,18 @@
 //! A directory opens too (backup semantics), for its metadata. Positions are 64-bit, as Win32 file
 //! pointers are; files themselves stay within FAT32's 32-bit sizes.
 
+use core::cell::UnsafeCell;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
 use super::fat32::lookup::File;
 use super::search::Search;
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
+use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{Event, EventKind};
+use crate::sched::thread::ThreadId;
+use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, WaitableId};
 
 /// How many file objects can exist at once (across processes). Exhaustion is a program-visible
 /// failure (the open returns no handle), not a bug.
@@ -154,11 +161,14 @@ impl OpenFile {
 }
 
 /// A file object's body: one open of one file.
+///
+/// What its open set (its record, its access and rights, its sharing, its options) is never written
+/// again once the object is published, and reads freely through a shared reference. What its calls
+/// move, the position and the directory search ([`IoState`]), sits in a cell its lock guards: only
+/// the lock's holder reaches it ([`FileObject::serialized`]).
 pub struct FileObject {
     /// The file's record.
     pub record: FileRecordId,
-    /// Where the next read or write starts.
-    pub position: u64,
     /// The access granted, as the share check reads it.
     pub access: u8,
     /// The access granted, the file rights the generic ones map to (FILE_READ_DATA,
@@ -171,13 +181,22 @@ pub struct FileObject {
     /// Whether the object keeps a position (opened for synchronous I/O): a read or write without
     /// an offset uses and moves it.
     pub synchronous: bool,
+    /// The synchronous-I/O lock: a call reading, writing or moving the position through the
+    /// object holds it, so the position moves one call at a time (FO_SYNCHRONOUS_IO's
+    /// serialization).
+    pub lock: FileLock,
+    /// The position and the search, reached by the lock's holder only.
+    io: UnsafeCell<IoState>,
+}
+
+/// What a file object's calls move under its lock.
+pub struct IoState {
+    /// Where the next read or write starts.
+    pub position: u64,
     /// The directory search the object's queries continue (none before the first query): the
     /// file object's own, as Windows 2000 keeps it in the object's context block, so it goes with
     /// the object.
     pub search: Option<Search>,
-    /// The synchronous-I/O lock: a call reading or writing through the object holds it, so the
-    /// position moves one call at a time (FO_SYNCHRONOUS_IO's serialization). Signaled while free.
-    pub lock: Event,
 }
 
 impl FileObject {
@@ -186,14 +205,16 @@ impl FileObject {
     pub const fn new(record: FileRecordId, access: u8, granted: u32, share: u8) -> Self {
         FileObject {
             record,
-            position: 0,
             access,
             granted,
             share,
             delete_on_close: false,
             synchronous: true,
-            search: None,
-            lock: Event::new(EventKind::Synchronization, true),
+            lock: FileLock::new(),
+            io: UnsafeCell::new(IoState {
+                position: 0,
+                search: None,
+            }),
         }
     }
 
@@ -203,9 +224,171 @@ impl FileObject {
         FileObject::new(FileRecordId(0), 0, 0, 0)
     }
 
-    /// Close the lock's waiters sentinel; call once at the final address.
+    /// Name the lock's event by its address; call once at the final address.
     pub fn init(&mut self) {
         self.lock.init();
+    }
+
+    /// Run `body` on the position and the search, holding the object's lock: taken first (blocking
+    /// while another call holds it), released once `body` is done. The caller is inside a critical
+    /// region, as for any lock held across a wait (the body's disk reads): see
+    /// [`crate::fs::io::serialized`].
+    #[cfg(target_arch = "x86")]
+    pub fn serialized<R>(&self, body: impl FnOnce(&mut IoState) -> R) -> R {
+        self.lock.acquire();
+        // SAFETY: the running thread holds the lock, and every way to the cell goes through it, so
+        // this is the only reference to the state until the release below.
+        let result = body(unsafe { &mut *self.io.get() });
+        self.lock.release();
+        result
+    }
+}
+
+/// The priority increment a release grants the waiter its event wakes: none, as
+/// IopReleaseFileObjectLock's KeSetEvent grants.
+const RELEASE_INCREMENT: i8 = 0;
+
+/// A file object's synchronous-I/O lock, in Windows 2000's shape: a busy flag, a count of the
+/// threads waiting, and a synchronization event (FILE_OBJECT's Busy, Waiters and Lock).
+///
+/// Taking it sets the busy flag when it is clear (IopAcquireFastLock); otherwise the taker counts
+/// itself among the waiters and loops: try the flag again, else wait on the event
+/// (IopAcquireFileObjectLock). Releasing clears the flag and, when anyone waits, sets the event
+/// with no priority increment (IopReleaseFileObjectLock). The release hands nothing over: the
+/// waiter the event readies takes its chance when it runs, and the releasing thread may take the
+/// lock straight back before then; a waiter that finds it taken again waits again. A signal set
+/// while its waiter is not parked yet stays on the event and lets the next wait through, to try
+/// the flag once more.
+///
+/// The holder may block under the lock (a read's disk waits), so it is taken only inside a
+/// critical region. The holder is recorded, and a holder taking the lock again is refused: it
+/// would wait for itself.
+pub struct FileLock {
+    busy: AtomicBool,
+    waiters: AtomicU32,
+    /// The holding thread ([`crate::block::lock::identity`]); 0 while the lock is free.
+    owner: AtomicUsize,
+    event: UnsafeCell<Event>,
+}
+
+impl FileLock {
+    /// A free lock, its event clear (KeInitializeEvent(SynchronizationEvent, FALSE)). Call
+    /// [`FileLock::init`] once it is at its final address.
+    pub const fn new() -> Self {
+        FileLock {
+            busy: AtomicBool::new(false),
+            waiters: AtomicU32::new(0),
+            owner: AtomicUsize::new(0),
+            event: UnsafeCell::new(Event::new(EventKind::Synchronization, false)),
+        }
+    }
+
+    /// Name the event by its address; once, at the lock's final address.
+    pub fn init(&mut self) {
+        self.event.get_mut().init();
+    }
+
+    /// Whether a thread holds the lock.
+    #[cfg(test)]
+    fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::SeqCst)
+    }
+
+    /// The event's name, as the dispatcher takes it: its header's address. No reference to the
+    /// event is formed: the dispatcher may be walking its waiters meanwhile.
+    fn event(&self) -> WaitableId {
+        // SAFETY: a projection inside the lock's own cell, live as long as `self`: it computes the
+        // header's address and reads nothing.
+        let header = unsafe { core::ptr::addr_of_mut!((*self.event.get()).waitable) };
+        WaitableId::Embedded(NonNull::new(header).expect("a lock is not null"))
+    }
+
+    /// Set the busy flag for `taker` if it is clear: whether `taker` holds the lock now.
+    fn take(&self, taker: ThreadId) -> bool {
+        let taker = crate::block::lock::identity(taker);
+        assert_ne!(
+            self.owner.load(Ordering::SeqCst),
+            taker,
+            "a file object's lock taken again by its owner"
+        );
+        if self.busy.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        self.owner.store(taker, Ordering::SeqCst);
+        true
+    }
+
+    /// Park `thread` on the event, or let it through at once when a signal waits there (the switch
+    /// away is the caller's business, as with any wait).
+    fn wait_for(
+        &self,
+        dispatcher: &mut Dispatcher,
+        thread: ThreadId,
+        stamp: ClockStamp,
+    ) -> WaitDisposition {
+        dispatcher.wait_for(
+            thread,
+            self.event(),
+            WaitReason::Executive,
+            WaitMode::Kernel,
+            false,
+            None,
+            stamp,
+        )
+    }
+
+    /// Clear the busy flag: whether anyone waits, so the event is to be set.
+    fn free(&self) -> bool {
+        self.owner.store(0, Ordering::SeqCst);
+        assert!(
+            self.busy.swap(false, Ordering::SeqCst),
+            "releasing a file object's lock nobody holds"
+        );
+        self.waiters.load(Ordering::SeqCst) != 0
+    }
+
+    /// Give the lock up, setting the event when anyone waits (see [`FileLock`]).
+    #[cfg(test)]
+    fn release_with(&self, dispatcher: &mut Dispatcher) {
+        if self.free() {
+            dispatcher.set_event(self.event(), RELEASE_INCREMENT);
+        }
+    }
+
+    /// Take the lock for the running thread, blocking while another holds it.
+    #[cfg(target_arch = "x86")]
+    fn acquire(&self) {
+        let running = crate::sched::current_thread();
+        if self.take(running) {
+            return;
+        }
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        while !self.take(running) {
+            // A non-alertable kernel wait ends by the event's signal (a kernel APC's break
+            // re-enters the same wait); the flag is tried again either way.
+            let _ = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
+                self.wait_for(dispatcher, thread, stamp)
+            });
+        }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Give up the lock the running thread holds; the dispatcher is needed only to set the event.
+    #[cfg(target_arch = "x86")]
+    fn release(&self) {
+        if self.free() {
+            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER
+                    .get(dispatch)
+                    .set_event(self.event(), RELEASE_INCREMENT);
+            });
+        }
+    }
+}
+
+impl Default for FileLock {
+    fn default() -> Self {
+        FileLock::new()
     }
 }
 
@@ -498,6 +681,145 @@ static RECORDS: LevelCell<High, FileRecords> = LevelCell::new(FileRecords::empty
 #[cfg(target_arch = "x86")]
 pub fn with_records<R>(step: impl FnOnce(&mut FileRecords) -> R) -> R {
     level::raised::<High, _>(|high| step(RECORDS.get(high)))
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+    use crate::sched::process::SchedProcess;
+    use crate::sched::testkit::Rec;
+    use crate::sched::thread::{Thread, ThreadState};
+
+    const NOW: ClockStamp = ClockStamp {
+        interrupt_time: 0,
+        tick: 0,
+    };
+
+    fn dispatcher() -> &'static mut Dispatcher {
+        crate::sched::testkit::dispatcher()
+    }
+
+    fn lock() -> &'static FileLock {
+        let lock = Box::leak(Box::new(FileLock::new()));
+        lock.init();
+        lock
+    }
+
+    /// A running thread of the installed dispatcher, and its name.
+    fn thread() -> (Rec<Thread>, ThreadId) {
+        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let mut thread = crate::sched::testkit::thread(process);
+        thread.state = ThreadState::Running;
+        let id = ThreadId::from(&*thread);
+        (thread, id)
+    }
+
+    /// The readied `thread` (the only one) selected and running.
+    fn run(d: &mut Dispatcher, thread: &mut Rec<Thread>, id: ThreadId) {
+        assert_eq!(d.select_next(), Some(id));
+        thread.state = ThreadState::Running;
+    }
+
+    fn signaled(lock: &FileLock) -> bool {
+        // SAFETY: a test's lock, on one thread: nothing else reaches the event meanwhile.
+        unsafe { (*lock.event.get()).signaled() }
+    }
+
+    /// The acquisition's slow path up to its wait: the taker counted among the waiters, the flag
+    /// tried, and the wait on the event entered.
+    fn contend(d: &mut Dispatcher, lock: &FileLock, taker: ThreadId) -> WaitDisposition {
+        lock.waiters.fetch_add(1, Ordering::SeqCst);
+        assert!(!lock.take(taker), "the flag is set");
+        lock.wait_for(d, taker, NOW)
+    }
+
+    /// A free lock is taken at once and leaves the event alone; a second taker finds the flag set
+    /// and parks on the event.
+    #[test]
+    fn a_held_lock_parks_the_second_taker() {
+        let d = dispatcher();
+        let lock = lock();
+        let (_holder, h) = thread();
+        let (waiter, w) = thread();
+        assert!(!lock.is_busy());
+        assert!(lock.take(h));
+        assert!(lock.is_busy());
+        assert!(!signaled(lock));
+        assert_eq!(contend(d, lock, w), WaitDisposition::Yield);
+        assert_eq!(waiter.state(), ThreadState::Waiting);
+    }
+
+    /// Windows 2000's release hands nothing over: it frees the lock and readies the waiter, and
+    /// the releasing thread may take the lock straight back before the waiter runs; the waiter
+    /// then finds it taken and waits again. A release with nobody waiting leaves the event clear.
+    #[test]
+    fn the_release_readies_a_waiter_without_handing_it_the_lock() {
+        let d = dispatcher();
+        let lock = lock();
+        let (_holder, h) = thread();
+        let (mut waiter, w) = thread();
+        assert!(lock.take(h));
+        assert_eq!(contend(d, lock, w), WaitDisposition::Yield);
+
+        lock.release_with(d);
+        assert_ne!(waiter.state(), ThreadState::Waiting, "the event readies it");
+        assert!(!lock.is_busy(), "and the lock is left free");
+        assert!(!signaled(lock), "the signal served the waiter");
+        assert!(lock.take(h), "the releasing thread takes it straight back");
+
+        // The waiter runs: the flag is set again, so it waits again.
+        run(d, &mut waiter, w);
+        assert!(!lock.take(w));
+        assert_eq!(lock.wait_for(d, w, NOW), WaitDisposition::Yield);
+
+        lock.release_with(d);
+        run(d, &mut waiter, w);
+        assert!(lock.take(w), "the woken waiter takes the free lock");
+        lock.waiters.fetch_sub(1, Ordering::SeqCst);
+        lock.release_with(d);
+        assert!(!lock.is_busy());
+        assert!(!signaled(lock), "nobody waits: the event is not set");
+    }
+
+    /// A release while its waiter is counted but not parked yet leaves the signal on the event:
+    /// the waiter takes the free flag without waiting, and the signal lets the next wait through
+    /// once, to try the flag again.
+    #[test]
+    fn a_signal_left_on_the_event_lets_one_wait_through() {
+        let d = dispatcher();
+        let lock = lock();
+        let (_first, a) = thread();
+        let (_second, b) = thread();
+        assert!(lock.take(a));
+        lock.waiters.fetch_add(1, Ordering::SeqCst);
+        assert!(!lock.take(b));
+        lock.release_with(d);
+        assert!(signaled(lock), "nobody parked: the signal stays");
+        assert!(lock.take(b), "the counted waiter finds the flag clear");
+        lock.waiters.fetch_sub(1, Ordering::SeqCst);
+
+        assert!(matches!(contend(d, lock, a), WaitDisposition::Complete(_)));
+        assert!(!signaled(lock), "the wait consumed the signal");
+        assert!(!lock.take(a), "the flag is still set");
+        assert_eq!(lock.wait_for(d, a, NOW), WaitDisposition::Yield);
+    }
+
+    /// The holder taking the lock again would wait for itself: refused.
+    #[test]
+    #[should_panic(expected = "taken again by its owner")]
+    fn the_holder_taking_the_lock_again_is_refused() {
+        let _d = dispatcher();
+        let lock = lock();
+        let (_holder, h) = thread();
+        assert!(lock.take(h));
+        lock.take(h);
+    }
+
+    #[test]
+    #[should_panic(expected = "nobody holds")]
+    fn releasing_a_free_lock_is_a_contract_violation() {
+        lock().release_with(dispatcher());
+    }
 }
 
 #[cfg(test)]

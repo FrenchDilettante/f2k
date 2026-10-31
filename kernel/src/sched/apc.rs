@@ -226,7 +226,7 @@ impl Apc {
     }
 
     /// The slots a delivery hands the kernel routine: the normal half and what the APC captured.
-    fn args(&self) -> ApcArgs {
+    pub(crate) fn args(&self) -> ApcArgs {
         ApcArgs {
             normal_routine: self.normal_routine,
             normal_context: self.normal_context,
@@ -518,6 +518,41 @@ impl Dispatcher {
     pub fn close_apc_queue(&mut self, thread: ThreadId) {
         self.thread_mut(thread).apc_queueable = false;
         self.discard_apcs(thread);
+    }
+
+    /// The exit APC's second stage queued (Windows 2000's PspExitNormalApc re-queues the exit APC
+    /// as a user-mode APC): `thread`'s exit APC, off its kernel queue for its normal half's
+    /// delivery, is bound again as a user APC whose kernel routine `exit` runs the thread's exit
+    /// (`normal` is the user-mode marker, never reached), `status` its context. It goes to the
+    /// head of the user queue, which a termination emptied and which takes nothing more (the
+    /// thread's queuing is off), and the thread's user APCs are pending: a user-mode wait it is in,
+    /// or enters, completes with STATUS_USER_APC, and its return to user mode delivers the exit
+    /// before anything else (see [`crate::user::apc::deliver`]).
+    ///
+    /// # Panics
+    ///
+    /// The exit APC is still queued.
+    pub fn queue_user_exit(
+        &mut self,
+        thread: ThreadId,
+        exit: KernelRoutine,
+        normal: NormalRoutine,
+        status: usize,
+    ) {
+        let apc = ApcId::Exit(thread);
+        assert!(!self.apc(apc).inserted, "the exit APC's first stage ran");
+        self.apc_mut(apc)
+            .init(thread, exit, Some(normal), ApcMode::User, status);
+        list::push_front(
+            self,
+            ApcQueue {
+                thread,
+                mode: ApcMode::User,
+            },
+            apc,
+        );
+        self.apc_mut(apc).inserted = true;
+        self.thread_mut(thread).user_apc_pending = true;
     }
 
     /// Discard `thread`'s queued APCs of both modes and their pending flags.

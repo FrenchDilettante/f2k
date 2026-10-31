@@ -1,5 +1,5 @@
 # threads: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, and the main thread's own exits."
+description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, and the main thread's own exits."
 kind = "sectioned"
 gate = true
 [masks]
@@ -115,3 +115,33 @@ tls = [
     "ntdll.RtlClearBits",
 ]
 crt = ["kernel32.CreateEventA", "kernel32.SetEvent"]
+lateexit = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetCurrentThread",
+    "kernel32.GetProcessAffinityMask",
+    "kernel32.SetProcessAffinityMask",
+    "kernel32.SetThreadPriority",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+    "kernel32.TerminateThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtTerminateThread",
+]
+suspterm = [
+    "kernel32.CreateThread",
+    "kernel32.SuspendThread",
+    "kernel32.QueueUserAPC",
+    "kernel32.TerminateThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.InterlockedIncrement",
+    "kernel32.SleepEx",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtSuspendThread",
+    "ntdll.NtQueueApcThread",
+    "ntdll.NtTerminateThread",
+]

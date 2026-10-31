@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Tue 10/27/2026 13:26:11.31
-memory F2KT-SOURCE-CRC=0x36387241
+# date: Thu 10/29/2026 14:05:09.27
+memory F2KT-SOURCE-CRC=0xE6B8C44A
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -203,5 +203,13 @@ class 0, no length pointer: 0x00000000
 a handle opened with FILE_MAP_READ only: basic 0xC0000022, length 254750511
 an event's handle: basic 0xC0000024, length 254750511
 NULL: basic 0xC0000008, length 254750511
+memory: done
+<<< exit code=0
+>>> memory.exe guardcall
+== guardcall
+GetConsoleTitleA into the stack's guard page: the thread's end WAIT_OBJECT_0, a guard page found yes
+  ret>0 yes err=-; the page committed yes, a guard page below it yes
+GetConsoleTitleW into the stack's guard page: the thread's end WAIT_OBJECT_0, a guard page found yes
+  ret>0 yes err=-; the page committed yes, a guard page below it yes
 memory: done
 <<< exit code=0

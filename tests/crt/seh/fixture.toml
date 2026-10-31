@@ -1,6 +1,6 @@
 # seh: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD: every __try registers msvcrt.dll's _except_handler3, and setjmp is msvcrt.dll's _setjmp3.
-description = "seh - structured exception handling and setjmp/longjmp under /MD (seh.c): faults and RaiseException through msvcrt.dll's _except_handler3, filter results, __finally and AbnormalTermination, nested try levels, setjmp/longjmp through _setjmp3, and longjmp out of __try blocks through _seh_longjmp_unwind."
+description = "seh - structured exception handling and setjmp/longjmp under /MD (seh.c): faults and RaiseException through msvcrt.dll's _except_handler3, filter results, __finally and AbnormalTermination, nested try levels, setjmp/longjmp through _setjmp3, longjmp out of __try blocks through _seh_longjmp_unwind, faults inside msvcrt's locked calls (printf, fprintf, fgets, _write) unwinding out of them, and printf from an __except filter."
 kind = "sectioned"
 gate = true
 
@@ -56,3 +56,37 @@ sehjmp = [
     "kernel32.RaiseException",
     "ntdll.RtlUnwind",
 ]
+unwindout = ["msvcrt.printf", "msvcrt.fflush", "msvcrt._iob"]
+unwinderr = ["msvcrt.fprintf", "msvcrt.fflush", "msvcrt._iob"]
+unwindfile = [
+    "msvcrt.strrchr",
+    "msvcrt.strcat",
+    "msvcrt.strlen",
+    "msvcrt.fopen",
+    "msvcrt.fprintf",
+    "msvcrt.fgets",
+    "msvcrt.fclose",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.DeleteFileA",
+]
+unwindgets = [
+    "msvcrt.strrchr",
+    "msvcrt.strcat",
+    "msvcrt.strlen",
+    "msvcrt.fopen",
+    "msvcrt.fputs",
+    "msvcrt.fgets",
+    "msvcrt.fclose",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.DeleteFileA",
+]
+unwindwrite = ["msvcrt._write"]
+unwindthread = [
+    "msvcrt.printf",
+    "msvcrt.fflush",
+    "msvcrt._iob",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.CloseHandle",
+]
+filterprint = ["msvcrt.printf", "msvcrt.fflush", "msvcrt._iob"]

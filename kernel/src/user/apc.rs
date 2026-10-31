@@ -94,28 +94,55 @@ pub fn delivery_image(frame: &TrapFrame, call: [u32; CALL_WORDS]) -> (u32, Deliv
     (esp, delivery)
 }
 
-/// Deliver the head of the running thread's user-APC queue into `frame`, if a delivery is armed:
-/// disarm, take the APC off its queue, and redirect the return through KiUserApcDispatcher. A user
-/// stack the image cannot be written to ends the process with an access violation, as an
-/// exception raised there would. The record a QueueUserAPC took is free again once off the queue.
+/// The head of the running thread's user-APC queue taken for its delivery, if a delivery is armed
+/// (and, with `exit_only`, if the head is the thread's exit APC): disarmed, off its queue, with
+/// what its kernel routine receives and its call frame.
 #[cfg(target_arch = "x86")]
-pub fn deliver(frame: &mut TrapFrame) {
+fn take_head(
+    exit_only: bool,
+) -> Option<(
+    crate::sched::apc::ApcId,
+    crate::sched::apc::KernelRoutine,
+    crate::sched::apc::ApcArgs,
+    [u32; CALL_WORDS],
+)> {
     let current = crate::sched::current_thread();
-    let call = raised::<Dispatch, _>(|dispatch| {
+    raised::<Dispatch, _>(|dispatch| {
         let dispatcher = DISPATCHER.get(dispatch);
-        let thread = dispatcher.thread_mut(current);
-        if !thread.user_apc_pending {
+        if !dispatcher.thread(current).user_apc_pending {
             return None;
         }
-        thread.user_apc_pending = false;
-        let apc = dispatcher.first_apc(current, crate::sched::apc::ApcMode::User)?;
-        let call = call_frame(dispatcher.apc(apc));
+        let apc = dispatcher.first_apc(current, crate::sched::apc::ApcMode::User);
+        if exit_only && apc != Some(crate::sched::apc::ApcId::Exit(current)) {
+            return None;
+        }
+        dispatcher.thread_mut(current).user_apc_pending = false;
+        let apc = apc?;
+        let record = dispatcher.apc(apc);
+        let taken = (
+            apc,
+            record.kernel_routine,
+            record.args(),
+            call_frame(record),
+        );
         dispatcher.remove_apc(apc);
-        Some(call)
-    });
-    let Some(call) = call else {
+        Some(taken)
+    })
+}
+
+/// Deliver the head of the running thread's user-APC queue into `frame`, if a delivery is armed:
+/// disarm, take the APC off its queue, run its kernel routine (a termination's exit APC, at the
+/// head, ends the thread there: see [`crate::sched::dispatcher::Dispatcher::queue_user_exit`]),
+/// and redirect the return through KiUserApcDispatcher. A user stack the image cannot be written
+/// to ends the process with an access violation, as an exception raised there would. The record a
+/// QueueUserAPC took is free again once off the queue.
+#[cfg(target_arch = "x86")]
+pub fn deliver(frame: &mut TrapFrame) {
+    let Some((apc, kernel_routine, mut args, call)) = take_head(false) else {
         return;
     };
+    // Windows 2000's KiDeliverApc runs a user APC's kernel routine first, in kernel mode.
+    kernel_routine(apc, &mut args);
 
     let (esp, delivery) = delivery_image(frame, call);
     if super::args::UserPtr::at(esp).write(delivery).is_err() {
@@ -127,6 +154,17 @@ pub fn deliver(frame: &mut TrapFrame) {
     }
     frame.user_esp = esp;
     frame.eip = crate::exec::modules::apc_dispatcher();
+}
+
+/// A terminated thread's exit, on a return to user mode that delivers no user APC (an interrupt's
+/// exit to user code, a fresh thread's startup): when the head of the running thread's armed user
+/// queue is its exit APC, its kernel routine runs, and the thread ends there. Nothing otherwise.
+#[cfg(target_arch = "x86")]
+pub fn deliver_exit() {
+    if let Some((apc, kernel_routine, mut args, _)) = take_head(true) {
+        kernel_routine(apc, &mut args);
+        unreachable!("the exit APC's kernel routine ends the thread");
+    }
 }
 
 /// NtContinue's test alert (TestAlert TRUE, KiUserApcDispatcher's): when more user APCs are queued

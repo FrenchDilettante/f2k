@@ -42,7 +42,8 @@ const VIEW_SHARE: u32 = 1;
 
 /// CreateFileMappingW: a section of the file (the size asked for, or the file's when none is) or of
 /// the paging file (INVALID_HANDLE_VALUE, which needs a size), read-only, read-write or
-/// copy-on-write (another protection is ERROR_INVALID_PARAMETER); or the named one already bound
+/// copy-on-write (another protection is ERROR_INVALID_PARAMETER: Windows 2000 takes no execute
+/// protection here, not even for an image section); or the named one already bound
 /// (ERROR_ALREADY_EXISTS). The last error is cleared on success (see [`sync::create_named`]). The
 /// file's rules are the section service's (an empty file ERROR_FILE_INVALID, one smaller than the
 /// size asked ERROR_NOT_ENOUGH_MEMORY).
@@ -343,6 +344,64 @@ mod tests {
         assert_eq!(
             LAST_SECTION.with(|cell| cell.take()),
             Some((0x000F_0005, PAGE_READONLY, SEC_RESERVE, 0x30, None))
+        );
+    }
+
+    /// Windows 2000's CreateFileMapping takes no execute protection, an image section's
+    /// (PAGE_EXECUTE_READ | SEC_IMAGE, the spawn fixture's nothread block) included: each is
+    /// ERROR_INVALID_PARAMETER in either form, and the section service is never called.
+    #[test]
+    fn execute_protections_are_refused() {
+        const FILE: u32 = 0x30;
+        for protect in [0x10, 0x20, 0x40, 0x80] {
+            for attributes in [0, SEC_IMAGE] {
+                set_last_error(0);
+                // SAFETY: no security attributes, no name.
+                let narrow = unsafe {
+                    create_file_mapping_a(
+                        FILE,
+                        core::ptr::null(),
+                        protect | attributes,
+                        0,
+                        0,
+                        core::ptr::null(),
+                    )
+                };
+                assert_eq!((narrow, last_error()), (0, 87), "A, {protect:#x}");
+                set_last_error(0);
+                // SAFETY: as above.
+                let wide = unsafe {
+                    create_file_mapping_w(
+                        FILE,
+                        core::ptr::null(),
+                        protect | attributes,
+                        0,
+                        0,
+                        core::ptr::null(),
+                    )
+                };
+                assert_eq!((wide, last_error()), (0, 87), "W, {protect:#x}");
+                assert!(
+                    LAST_SECTION.with(|cell| cell.take()).is_none(),
+                    "refused before the call"
+                );
+            }
+        }
+        // SAFETY: as above.
+        let image = unsafe {
+            create_file_mapping_a(
+                FILE,
+                core::ptr::null(),
+                PAGE_READONLY | SEC_IMAGE,
+                0,
+                0,
+                core::ptr::null(),
+            )
+        };
+        assert_eq!(image, HANDLE, "a read-only image section is made");
+        assert_eq!(
+            LAST_SECTION.with(|cell| cell.take()),
+            Some((0x000F_0005, PAGE_READONLY, SEC_IMAGE, FILE, None))
         );
     }
 

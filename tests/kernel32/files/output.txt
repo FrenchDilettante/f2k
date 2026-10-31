@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Tue 10/27/2026 13:25:47.24
-files F2KT-SOURCE-CRC=0xB2D51553
+# date: Sat 10/31/2026  1:15:52.46
+files F2KT-SOURCE-CRC=0xF1F48C27
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -484,5 +484,23 @@ NtQueryObject(class 4), no length pointer: 0x00000000
 NtSetInformationObject(class 4, not inherit, protect): 0x00000000, flags 0x2
 NtSetInformationObject(class 4, 1 byte): 0xC0000004
 NtSetInformationObject(class 4, 8 bytes): 0xC0000004, flags 0x2
+files: done
+<<< exit code=0
+>>> files.exe dupshare
+== dupshare
+reads through the first handle: failed no, 150000 bytes in all
+queries through the duplicate: failures 0, positions between reads 0, wrong sizes 0
+the shared position after the reads: 150000
+SetFilePointer(duplicate, 1000) ret=1000 err=-
+ReadFile(first, 10) ret=1 n=10 err=-; bytes 1000..1009: yes
+files: done
+<<< exit code=0
+>>> files.exe imagesec
+== imagesec
+CreateFileMappingA(SEC_IMAGE): made err=0
+CloseHandle(the file) ret=1 err=-
+MapViewOfFile after the file's close: mapped err=-
+its headers are the loaded image's: yes
+thirty sections against a closing handle: each made and mapped or ERROR_INVALID_HANDLE: yes
 files: done
 <<< exit code=0

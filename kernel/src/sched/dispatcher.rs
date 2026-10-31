@@ -869,6 +869,40 @@ impl Dispatcher {
         true
     }
 
+    /// Give the processor to `thread`, a thread just terminated
+    /// ([`Dispatcher::request_termination`]) that can run its exit now — Ready, its wait broken
+    /// by the exit APC or never begun — ahead of the running thread, whatever their priorities:
+    /// it takes the standby slot (a standby thread there goes back to the head of its ready
+    /// queue), and the running thread, marked displaced, goes back to the head of its own at
+    /// the next dispatch decision — the service boundary of the termination's caller. The
+    /// terminated thread runs its exit, which does not wait, and its switch away selects the
+    /// caller again. A thread that cannot run at once (waiting in a wait the APC does not
+    /// break, already selected) is left as it is. Returns whether it was handed the processor.
+    pub fn hand_processor_to(&mut self, thread: ThreadId) -> bool {
+        let record = self.thread(thread);
+        if record.state != ThreadState::Ready || record.parked_on_process {
+            return false;
+        }
+        let Some(current) = self.current() else {
+            return false;
+        };
+        let priority = record.priority;
+        self.dequeue(thread, priority);
+        if let Some(standby) = self.next_thread() {
+            self.set_next(None);
+            let record = self.thread_mut(standby);
+            record.state = ThreadState::Ready;
+            record.preempted = false;
+            let level = record.priority;
+            list::push_front(self, ReadyQueue(level as u8), standby);
+            self.ready_summary |= 1 << level as u32;
+        }
+        self.thread_mut(thread).state = ThreadState::Standby;
+        self.set_next(Some(thread));
+        self.thread_mut(current).preempted = true;
+        true
+    }
+
     /// The scheduling teardown every termination ends with: the thread object signals once,
     /// forever, and its waiters wake through the satisfy walk with no priority boost (the exit
     /// path grants none); then the thread leaves its process's list and is Terminated.

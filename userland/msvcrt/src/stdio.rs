@@ -32,7 +32,7 @@ use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
 use crate::edge::{self, WideUnit};
 use crate::format::{self, Args, Output, Unbounded, VaList};
 use crate::lowio;
-use crate::thread::{set_errno, UnwindLock, EBADF, EINVAL, EMFILE};
+use crate::thread::{set_errno, Lock, UnwindLock, EBADF, EINVAL, EMFILE};
 use crate::unwind;
 
 /// The `_flag` bits (stdio.h's, and the C runtime's own: `_IOYOURBUF` a buffer the stream does not
@@ -58,13 +58,14 @@ const IOLBF: i32 = 0x0040;
 /// EOF.
 const EOF: i32 = -1;
 
-/// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock): the C runtime changes the
-/// stream's `FILE` only under it ([`with_stream`]).
-static LOCKS: [Locked<(), UnwindLock>; IOB_ENTRIES] =
-    [const { Locked::new(UnwindLock::new(), ()) }; IOB_ENTRIES];
+/// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock, a critical section): the C
+/// runtime changes the stream's `FILE` only under it ([`with_stream`]). A bare [`Lock`], taken
+/// through [`Lock::holding`] (let go when an exception unwinds out of the call), not a `Locked`
+/// value: its holder may take it again, as Windows 2000's critical section lets it.
+static LOCKS: [Lock; IOB_ENTRIES] = [const { Lock::new() }; IOB_ENTRIES];
 
 /// The lock of a stream that is not one of `_iob`'s (a program's own `FILE`).
-static OTHER: Locked<(), UnwindLock> = Locked::new(UnwindLock::new(), ());
+static OTHER: Lock = Lock::new();
 
 /// The buffers lent to stdout and stderr for a call, each taken under its stream's lock.
 static LENT: [Locked<[u8; STREAM_BUFFER], UnwindLock>; 2] =
@@ -91,19 +92,27 @@ fn index_of(stream: *mut File) -> Option<usize> {
 /// buffer (the stream's own, one lent for the call, or one setvbuf was given for the stream's
 /// life), as the getc and putc macros programs inline keep them too.
 ///
-/// # Panics
-///
-/// When `body` reaches the same stream again through this function: its `FILE` is already lent.
+/// The lock is recursive for its holder, as Windows 2000's is: a call faulting in its caller's
+/// memory holds its stream while the exception's filters run, and a program's `__except` filter
+/// that prints on the same stream (the seh fixture's filterprint) goes ahead, its output after
+/// what the faulting call had buffered. The C runtime's own code never takes a stream it already
+/// holds.
 ///
 /// # Safety
 ///
 /// `stream` is a `FILE` that stays valid for the call: one of `_iob`'s, or one of the caller's.
 unsafe fn with_stream<R>(stream: *mut File, body: impl FnOnce(&mut File, Option<usize>) -> R) -> R {
     let index = index_of(stream);
-    index.map_or(&OTHER, |i| &LOCKS[i]).with(|()| {
-        // SAFETY: the caller's stream, valid and aligned; under its lock, and the lock's busy flag
-        // refuses a second `with`, so this is the C runtime's one reference to it until `body`
-        // returns (a program touching `_iob` itself meanwhile breaks the C runtime's contract).
+    index.map_or(&OTHER, |i| &LOCKS[i]).holding(|| {
+        // SAFETY: the caller's stream, valid and aligned, under its lock: no other thread has a
+        // reference to it until `body` returns (a program touching `_iob` itself meanwhile breaks
+        // the C runtime's contract). The holder takes the lock again only from code an exception
+        // runs on top of an interrupted call (a filter): this second `&mut File` aliases the
+        // interrupted call's, which the exception stopped between two of its instructions — the
+        // one place the C runtime breaks the rule, as Windows 2000's does, by the documented
+        // re-entry of its critical section. The interrupted call never runs again when the filter
+        // picks the handler (its frames are unwound); a filter that continues the execution
+        // resumes it over whatever the filter's call left in the `FILE`.
         body(unsafe { &mut *stream }, index)
     })
 }
@@ -330,15 +339,26 @@ fn give_back(s: &mut File) {
     s.flag &= !(IOYOURBUF | TEMPORARY);
 }
 
-/// Formatted output to a stream, under its lock: stdout or stderr on a device lent a buffer for
-/// the call and flushed at its end. The count, or -1 when a write failed (the call's `_IOERR`,
-/// the stream's own kept apart). An exception unwinding out of the formatting ends the call as its
-/// end would: the lent buffer given back, its bytes written, and the stream's `_IOERR` as it was.
+/// Formatted output to a stream ([`output`]): the count, or -1 when a write failed.
 ///
 /// # Safety
 ///
 /// `stream` is a stream; `args` holds what `text`'s conversions consume.
 unsafe fn print(stream: *mut File, text: &[u8], args: &mut impl Args) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { output(stream, |out| format::format(text, args, out)) }
+}
+
+/// A call's output to a stream, `emit`'s, under the stream's lock: stdout or stderr on a device
+/// lent a buffer for the call and flushed at its end. What `emit` counted, or -1 when a write
+/// failed (the call's `_IOERR`, the stream's own kept apart). An exception unwinding out of `emit`
+/// (a fault in the caller's memory it reads) ends the call as its end would: the lent buffer given
+/// back, its bytes written, and the stream's `_IOERR` as it was.
+///
+/// # Safety
+///
+/// `stream` is a stream.
+unsafe fn output(stream: *mut File, emit: impl FnOnce(&mut Stream<'_>) -> usize) -> i32 {
     let body = |s: &mut File, index: Option<usize>| {
         let lent = match index {
             Some(i @ (1 | 2)) if s.flag & BUFFERED == 0 && lowio::is_device(s.file) => {
@@ -346,7 +366,7 @@ unsafe fn print(stream: *mut File, text: &[u8], args: &mut impl Args) -> i32 {
             }
             _ => None,
         };
-        let mut format_into = |s: &mut File| {
+        let format_into = |s: &mut File| {
             let errors = s.flag & IOERR;
             s.flag &= !IOERR;
             // The call's end: the lent buffer given back, and whether a write failed.
@@ -365,9 +385,7 @@ unsafe fn print(stream: *mut File, text: &[u8], args: &mut impl Args) -> i32 {
                 // outside this one let them go, keep every other thread from the stream.
                 finish(unsafe { &mut *stream });
             };
-            let count = unwind::on_unwind(&abandon, || {
-                format::format(text, args, &mut Stream { file: s, index })
-            });
+            let count = unwind::on_unwind(&abandon, || emit(&mut Stream { file: s, index }));
             if finish(s) {
                 -1
             } else {
@@ -792,8 +810,17 @@ pub unsafe extern "C" fn fdopen(fd: i32, mode: *const u8) -> *mut File {
         set_errno(EBADF);
         return core::ptr::null_mut();
     }
-    for i in 0..IOB_ENTRIES {
-        let claim = |s: &mut File, _| {
+    match claim(flag, fd) {
+        Some(i) => stream_at(i),
+        None => core::ptr::null_mut(),
+    }
+}
+
+/// The first free stream of `_iob`'s claimed for descriptor `fd` with the `_flag` bits `flag`: its
+/// index, or none with EMFILE. Each stream is looked at, and claimed when free, under its own lock.
+fn claim(flag: i32, fd: i32) -> Option<usize> {
+    let found = (0..IOB_ENTRIES).find(|&i| {
+        with_iob(i, |s, _| {
             let free = s.flag & (IOREAD | IOWRT | IORW) == 0;
             if free {
                 *s = File {
@@ -803,13 +830,98 @@ pub unsafe extern "C" fn fdopen(fd: i32, mode: *const u8) -> *mut File {
                 };
             }
             free
-        };
-        if with_iob(i, claim) {
-            return stream_at(i);
+        })
+    });
+    if found.is_none() {
+        set_errno(EMFILE);
+    }
+    found
+}
+
+/// fopen's mode as `_open`'s flags and the stream's `_flag` bits, as MSDN's fopen documents it:
+/// `r` reads an existing file, `w` writes a file it creates or truncates, `a` writes at the end of
+/// one it creates when missing; `+` both reads and writes; `t` or `b` sets the translation (else
+/// `_fmode` does). The other letters MSDN lists (`c`, `n`, and the hints) change nothing here.
+/// None for a mode starting otherwise (EINVAL).
+fn open_mode(mode: &[u8]) -> Option<(i32, i32)> {
+    let (mut oflag, mut flag) = match mode.first() {
+        Some(b'r') => (lowio::O_RDONLY, IOREAD),
+        Some(b'w') => (lowio::O_WRONLY | lowio::O_CREAT | lowio::O_TRUNC, IOWRT),
+        Some(b'a') => (lowio::O_WRONLY | lowio::O_CREAT | lowio::O_APPEND, IOWRT),
+        _ => return None,
+    };
+    for &letter in &mode[1..] {
+        match letter {
+            b'+' => {
+                oflag = (oflag & !(lowio::O_WRONLY | lowio::O_RDONLY)) | lowio::O_RDWR;
+                flag = IORW;
+            }
+            b't' => oflag |= lowio::O_TEXT,
+            b'b' => oflag |= lowio::O_BINARY,
+            _ => {}
         }
     }
-    set_errno(EMFILE);
-    core::ptr::null_mut()
+    Some((oflag, flag))
+}
+
+/// fopen: the file `name` opened as `mode` says ([`open_mode`]) through `_open` (shared for
+/// reading and writing; a created file is read-write), and a stream over its descriptor. NULL for
+/// a bad mode (EINVAL), no free stream (EMFILE: checked first, as MSVC's fopen takes the stream
+/// before it opens the file), or `_open`'s failure (its errno).
+///
+/// # Safety
+///
+/// `name` and `mode` are NUL-terminated.
+#[unsafe(export_name = "f2k_export_fopen")]
+pub unsafe extern "C" fn fopen(name: *const u8, mode: *const u8) -> *mut File {
+    // SAFETY: the caller's mode string.
+    let mode = unsafe { bytes_until_nul(mode) };
+    let Some((oflag, flag)) = open_mode(mode) else {
+        set_errno(EINVAL);
+        return core::ptr::null_mut();
+    };
+    // The stream first, held with no descriptor while the file opens.
+    let Some(i) = claim(flag, -1) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: the caller's NUL-terminated name.
+    let fd = unsafe { lowio::open_file(name, oflag, lowio::S_IREAD | lowio::S_IWRITE) };
+    with_iob(i, |s, _| {
+        if fd < 0 {
+            *s = File::UNUSED;
+        } else {
+            s.file = fd;
+        }
+    });
+    if fd < 0 {
+        core::ptr::null_mut()
+    } else {
+        stream_at(i)
+    }
+}
+
+/// fputs: the string written to the stream (stdout or stderr on a device through a buffer lent
+/// for the call, as printf's output); 0, or EOF when a write failed.
+///
+/// # Safety
+///
+/// `text` is NUL-terminated; `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fputs")]
+pub unsafe extern "C" fn fputs(text: *const u8, stream: *mut File) -> i32 {
+    // SAFETY: the caller's string and stream.
+    let written = unsafe {
+        output(stream, |out| {
+            for &byte in bytes_until_nul(text) {
+                out.put(u32::from(byte));
+            }
+            0
+        })
+    };
+    if written < 0 {
+        EOF
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]

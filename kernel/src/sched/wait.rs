@@ -391,13 +391,22 @@ pub enum WaitDisposition {
     Yield,
 }
 
-/// The alert test every wait entry runs before it would block: an alertable user-mode wait with
-/// user APCs queued does not block — it arms their delivery (the service boundary runs them on the
-/// way out) and completes with the user-APC status. Not while the thread is attached to another
-/// process's address space: its user APCs wait for it to be back on its own.
+/// The alert test every wait entry runs before it would block (Windows 2000's): an alertable
+/// user-mode wait with user APCs queued does not block — it arms their delivery (the service
+/// boundary runs them on the way out) and completes with the user-APC status; and any user-mode
+/// wait, alertable or not, completes so while a delivery is armed already — a terminated thread's,
+/// whose exit APC waits at the head of its user queue for its return to user mode. Not while the
+/// thread is attached to another process's address space: its user APCs wait for it to be back on
+/// its own.
 fn test_alert(thread: &mut Thread, mode: WaitMode, alertable: bool) -> Option<NtStatus> {
-    if alertable && mode == WaitMode::User && !thread.user_apcs.is_empty() && !thread.attached() {
+    if mode != WaitMode::User || thread.attached() {
+        return None;
+    }
+    if alertable && !thread.user_apcs.is_empty() {
         thread.user_apc_pending = true;
+        return Some(crate::status::STATUS_USER_APC);
+    }
+    if thread.user_apc_pending {
         return Some(crate::status::STATUS_USER_APC);
     }
     None

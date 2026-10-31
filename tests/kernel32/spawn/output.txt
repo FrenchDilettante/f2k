@@ -1,9 +1,9 @@
 # F2K capture of spawn (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Tue 10/27/2026 17:57:13.07
-spawn F2KT-SOURCE-CRC=0x98AC5E56
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  1:28:19.49
+spawn F2KT-SOURCE-CRC=0x43FF0AC5
 >>> spawn.exe layout
 == layout
 parent: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
@@ -853,6 +853,57 @@ GetBinaryTypeA(a text file named .pif): ret=1 type=3 err=-
 GetBinaryTypeW(a text file named .pif): ret=1 type=3 err=-
 GetBinaryTypeA(a text file with no extension): ret=0 type=untouched err=193
 GetBinaryTypeW(a text file with no extension): ret=0 type=untouched err=193
+spawn: done
+<<< exit code=0
+>>> spawn.exe twice
+== twice
+TerminateProcess(11) ret=1 err=-
+TerminateProcess(22) at once ret=0 err=5
+its end: WAIT_OBJECT_0; GetExitCodeProcess ret=1 code=0 err=-
+TerminateProcess(33) after its end ret=0 err=5
+exit code then: 0
+its thread's exit code: 0xC000004B
+spawn: done
+<<< exit code=0
+>>> spawn.exe lastcode
+== lastcode
+lastthread: its end WAIT_OBJECT_0; its main thread's exit code 5
+lastthread: the process's exit code 6
+handoff: its end WAIT_OBJECT_0; its main thread's exit code 4
+handoff: the process's exit code 4
+spawn: done
+<<< exit code=0
+>>> spawn.exe termrace
+== termrace
+children ended: 20 of 20
+exit codes 11 or 22: 20 of 20
+TerminateProcess's refusals: none
+TerminateThread's refusals: 87
+TerminateProcess succeeded at least once: yes
+TerminateThread succeeded at least once: no
+spawn: done
+<<< exit code=0
+>>> spawn.exe remoteexit
+== remoteexit
+the child's end: WAIT_OBJECT_0
+threads made in it while it ran: yes
+its refusals while it exited: none
+CreateRemoteThread after its end: NULL err=5
+its exit code: 3
+spawn: done
+<<< exit code=0
+>>> spawn.exe nothread
+== nothread
+CreateFileMappingA(PAGE_EXECUTE_READ | SEC_IMAGE): NULL err=87
+NtCreateSection(SEC_IMAGE, PAGE_EXECUTE) status=0x00000000
+NtCreateProcess status=0x00000000
+  WaitForSingleObject(0) WAIT_TIMEOUT; GetExitCodeProcess ret=1 code=259 err=-
+  CloseHandle ret=1 err=-
+NtCreateProcess again status=0x00000000
+  TerminateProcess(7) ret=1 err=-
+  its end: WAIT_TIMEOUT; GetExitCodeProcess ret=1 code=259 err=-
+  CloseHandle ret=1 err=-
+the program runs on: yes
 spawn: done
 <<< exit code=0
 >>> spawn.exe overlay

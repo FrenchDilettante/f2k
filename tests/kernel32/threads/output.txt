@@ -1,9 +1,9 @@
 # F2K capture of threads (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:14:45.13
-threads F2KT-SOURCE-CRC=0x7C6EAB7B
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Thu 10/29/2026 14:04:18.82
+threads F2KT-SOURCE-CRC=0x608B1328
 >>> threads.exe create
 == create
 child returned its parameter doubled: exit code 42
@@ -102,6 +102,28 @@ _beginthreadex(suspended): handle yes, id nonzero yes
 resumed (returned 1), _endthreadex(55): exit code 55
 _beginthread: handle yes
 its routine ran: WAIT_OBJECT_0, parameter 9
+threads: done
+<<< exit code=0
+>>> threads.exe lateexit
+== lateexit
+the waiter started: WAIT_OBJECT_0
+TerminateThread(7) ret=1 err=-
+at once: GetExitCodeThread ret=1 code=7 err=-
+at once: WaitForSingleObject(0) WAIT_OBJECT_0
+after: WaitForSingleObject WAIT_OBJECT_0
+after: GetExitCodeThread ret=1 code=7 err=-
+threads: done
+<<< exit code=0
+>>> threads.exe suspterm
+== suspterm
+SuspendThread of a thread created suspended ret=1 err=-
+QueueUserAPC while suspended ret=1 err=-
+TerminateThread(9) ret=1 err=-
+WaitForSingleObject WAIT_OBJECT_0
+GetExitCodeThread ret=1 code=9 err=-
+the APC ran: no
+ResumeThread after its end ret=0 err=-
+SuspendThread after its end ret=-1 err=5
 threads: done
 <<< exit code=0
 >>> threads.exe mainexit

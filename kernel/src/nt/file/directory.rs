@@ -16,7 +16,7 @@ use super::info::{self, Entry, ListingClass};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
-use crate::fs::file::{rights, FileObject};
+use crate::fs::file::{rights, IoState};
 use crate::fs::search::{matches, Search, MAX_EXPRESSION};
 use crate::status::*;
 
@@ -106,9 +106,9 @@ fn query_directory_file_held(
     // The search is the object's: taken and moved under its lock, as a read or a write moves its
     // position, so a listing through another handle to the object waits for this one. Returns the
     // answer and the bytes it delivered; a fault in the caller's memory fails the call outright.
-    let (result, used) = crate::fs::io::serialized(&object, |object| {
+    let (result, used) = crate::fs::io::serialized(&object, |held| {
         list(
-            object,
+            held,
             class,
             information,
             (length as usize).min(MAX_BUFFER),
@@ -131,12 +131,12 @@ fn query_directory_file_held(
     result
 }
 
-/// One listing step of `object`'s search (see [`query_directory_file_held`]), its entries in
+/// One listing step of the object's search (see [`query_directory_file_held`]), its entries in
 /// `class` from the search's next record on into the caller's `information`, at most `room` bytes.
 /// Returns the answer and the bytes delivered; a fault in the caller's memory is the error.
 #[allow(clippy::too_many_arguments)]
 fn list(
-    object: &mut FileObject,
+    held: &mut IoState,
     class: ListingClass,
     information: UserAddr,
     room: usize,
@@ -147,7 +147,7 @@ fn list(
 ) -> Result<(NtResult, usize), NtStatus> {
     let offset = class.fixed_size();
     // The search: made by the first query, of its name (a UNICODE_STRING) or of every name.
-    let search = match &mut object.search {
+    let search = match &mut held.search {
         Some(search) => {
             if restart {
                 search.restart();
@@ -164,7 +164,7 @@ fn list(
                 UserAddr(string.buffer).read_units(name)?;
                 expression = (count > 0).then_some(&units[..count]);
             }
-            *object.search.insert(Search::new(expression))
+            *held.search.insert(Search::new(expression))
         }
     };
     let expression = search.expression();
@@ -224,7 +224,7 @@ fn list(
     let result = match walked {
         Some(Ok(())) => {
             let answered = search.answered || last.is_some();
-            if let Some(state) = object.search.as_mut() {
+            if let Some(state) = held.search.as_mut() {
                 state.next = next;
                 state.answered = answered;
             }

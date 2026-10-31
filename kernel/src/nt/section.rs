@@ -564,12 +564,15 @@ mod target {
         frames.release(&mut CurrentPages);
     }
 
-    /// The file object a handle names, with its file as its record holds it now and the access the
-    /// handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
-    /// handle included), STATUS_OBJECT_TYPE_MISMATCH for one naming another kind.
+    /// The file object a handle names, referenced for the caller's use (Windows 2000's
+    /// ObReferenceObjectByHandle: another thread closing the handle meanwhile leaves the object,
+    /// and its file's record, in place), with its file as its record holds it now and the access
+    /// the handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
+    /// handle included, or one closed before the reference), STATUS_OBJECT_TYPE_MISMATCH for one
+    /// naming another kind.
     fn file_of(
         handle: u32,
-    ) -> Result<(ObjectId, crate::fs::fat32::lookup::File, Backing), NtStatus> {
+    ) -> Result<(ob::ObRef, crate::fs::fat32::lookup::File, Backing), NtStatus> {
         if is_console_handle(handle) {
             return Err(STATUS_INVALID_HANDLE);
         }
@@ -580,6 +583,7 @@ mod target {
         if id.kind != ObjectType::File {
             return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
+        let held = ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
         let (record, access) = ob::locked(|directory| {
             directory
                 .file(id)
@@ -593,7 +597,7 @@ mod target {
             read: access & crate::fs::file::ACCESS_READ != 0,
             write: access & crate::fs::file::ACCESS_WRITE != 0,
         };
-        Ok((id, file, backing))
+        Ok((held, file, backing))
     }
 
     /// NtCreateSection (see [`plan`]): a section of the file the handle names, or of the paging
@@ -627,33 +631,35 @@ mod target {
             maximum,
             protect,
             allocation,
-            backing.map(|(_, _, backing)| backing),
+            backing.as_ref().map(|&(_, _, backing)| backing),
         )?;
-        let section = match backing {
+        // The file object stays referenced to the end of the call (`backing` holds it): its
+        // handle's closing meanwhile, on another thread, leaves it and its record in place.
+        let section = match &backing {
             None => ob::SectionObject {
                 size: plan.size,
                 writable: plan.writable,
                 reserve: allocation & SEC_RESERVE != 0,
                 ..ob::SectionObject::none()
             },
-            Some((file_object, file, _)) if allocation & SEC_IMAGE != 0 => {
+            Some((held, file, _)) if allocation & SEC_IMAGE != 0 => {
                 return create_image_section(
                     call.passive(),
                     slot,
                     access,
                     attributes,
-                    file_object,
-                    &file,
+                    held.id(),
+                    file,
                 );
             }
-            Some((file_object, file, _)) => ob::SectionObject {
-                file,
+            Some((held, file, _)) => ob::SectionObject {
+                file: *file,
                 paging_file: false,
                 reserve: false,
                 frames: crate::mem::vm::SectionFrames::empty(),
                 size: plan.size,
                 writable: plan.writable,
-                file_object: Some(file_object),
+                file_object: Some(held.id()),
                 image_base: 0,
                 segment: None,
             },
@@ -852,7 +858,11 @@ mod target {
             })?;
             base.write(mapped.base)?;
             size.write(record.size)?;
-            return Ok(STATUS_SUCCESS);
+            return Ok(if mapped.at_base {
+                STATUS_SUCCESS
+            } else {
+                STATUS_IMAGE_NOT_AT_BASE
+            });
         }
         let bytes = view(
             access,
@@ -1079,14 +1089,25 @@ mod target {
         let image =
             crate::exec::pe::Image::parse_headers(&header_page[..headers], file.size as usize)
                 .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
-        let base = process
-            .with_space(|space| {
+        // The preferred base, else anywhere the address space has room (Windows 2000's view of an
+        // image whose base another region holds, STATUS_IMAGE_NOT_AT_BASE: the files fixture's
+        // imagesec block maps the running program's own image so). The pages are the segment's
+        // as they are: relocating the view is its mapper's work.
+        let reserve = |at: Option<u32>| {
+            process.with_space(|space| {
                 space.reserve(
-                    Some(image.image_base()),
+                    at,
                     image.size_of_image(),
                     PAGE_EXECUTE_WRITECOPY,
                     Kind::Image,
                 )
+            })
+        };
+        let base = reserve(Some(image.image_base()))
+            .or_else(|error| match error {
+                crate::mem::vm::VmError::InvalidAddress
+                | crate::mem::vm::VmError::InvalidParameter => reserve(None),
+                error => Err(error),
             })
             .map_err(|error| match error {
                 crate::mem::vm::VmError::InvalidAddress
@@ -1133,16 +1154,20 @@ mod target {
         debug_assert!(held, "a segment being mapped lives");
         Ok(ImageView {
             base,
+            at_base: base == image.image_base(),
             subsystem: image.subsystem(),
             subsystem_version: image.subsystem_version(),
         })
     }
 
     /// An image's view, as a process made from it records it in its PEB: the view's base (the
-    /// image's preferred base), the image's subsystem and the subsystem version it was linked for.
+    /// image's preferred base, unless another region held it), the image's subsystem and the
+    /// subsystem version it was linked for.
     #[derive(Clone, Copy, Debug)]
     pub struct ImageView {
         pub base: u32,
+        /// Whether the view is at the image's preferred base.
+        pub at_base: bool,
         pub subsystem: u16,
         pub subsystem_version: (u16, u16),
     }

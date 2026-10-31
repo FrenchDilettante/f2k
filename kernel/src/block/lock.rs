@@ -211,7 +211,7 @@ impl<T> DeviceLock<T> {
 }
 
 /// A thread's identity for the owner check: its record's index, one up (0 is nobody).
-fn identity(thread: ThreadId) -> usize {
+pub(crate) fn identity(thread: ThreadId) -> usize {
     thread.index() as usize + 1
 }
 

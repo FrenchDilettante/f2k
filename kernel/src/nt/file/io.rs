@@ -103,8 +103,9 @@ fn read_file_held(
         rights::FILE_READ_DATA,
     )?;
     let at = transfer.offset;
-    let result = io::serialized(&transfer.object, |object| {
-        let start = at.unwrap_or(object.position);
+    let object = &transfer.object;
+    let result = io::serialized(object, |held| {
+        let start = at.unwrap_or(held.position);
         if length == 0 {
             return Ok(0);
         }
@@ -133,7 +134,7 @@ fn read_file_held(
         }
         // The position moves by what reached the caller.
         if object.synchronous {
-            object.position = start + moved as u64;
+            held.position = start + moved as u64;
         }
         failure.map_or(Ok(moved), Err)
     });
@@ -185,14 +186,15 @@ fn write_file_held(
     let needs = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA;
     let transfer = transfer(handle, event, routine, io_status, offset, needs)?;
     let at = transfer.offset;
-    let result = io::serialized(&transfer.object, |object| {
+    let object = &transfer.object;
+    let result = io::serialized(object, |held| {
         let record = object.record;
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let start = match at {
             Some(FILE_WRITE_TO_END_OF_FILE) => io::file_at(record).size as u64,
             _ if append => io::file_at(record).size as u64,
             Some(at) => at,
-            None => object.position,
+            None => held.position,
         };
         if length == 0 {
             return Ok(0);
@@ -226,7 +228,7 @@ fn write_file_held(
             done += take as u32;
         }
         if object.synchronous {
-            object.position = start + done as u64;
+            held.position = start + done as u64;
         }
         failure.map_or(Ok(done), Err)
     });

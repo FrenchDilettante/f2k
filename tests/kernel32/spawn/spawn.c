@@ -135,6 +135,29 @@
  *               header, a PE signature with nothing after it, a bare
  *               64-byte MZ header, a DOS program named .txt, text files
  *               named .com, .pif and with no extension
+ *   twice       TerminateProcess on a child twice in a row (11, then 22)
+ *               before it runs, then once more after its end: each call's
+ *               answer and the exit codes (the parent on one CPU above
+ *               the child, so the child runs only once the parent waits)
+ *   lastcode    the exit code of a child whose main thread ends with
+ *               ExitThread(5) before its last thread ends with
+ *               ExitThread(6), and of one that calls NtTerminateProcess
+ *               (NULL, 3) and then ends with ExitThread(4)
+ *   termrace    twenty children, each terminated at once by
+ *               TerminateProcess (11) from one thread and TerminateThread
+ *               (22) of its only thread from another: how many ended
+ *               with 11 or 22, whether each call ever succeeded, and the
+ *               distinct errors each call's refusals gave
+ *   remoteexit  CreateRemoteThread into a child again and again while the
+ *               child exits on its own (ExitProcess(3) after 50 ms): the
+ *               distinct errors of the refusals; then once more after its
+ *               end
+ *   nothread    CreateFileMappingA refusing PAGE_EXECUTE_READ | SEC_IMAGE;
+ *               then, on an image section NtCreateSection makes with
+ *               execute access, NtCreateProcess with no thread: its
+ *               handle's state, then the handle closed; another
+ *               terminated with no thread (TerminateProcess), waited for
+ *               and closed
  *
  * Named-only section (it ends the program):
  *
@@ -2106,6 +2129,334 @@ static void sec_binaryforms(void)
     binary_both("a text file with no extension", "SCRATCH\\text");
 }
 
+/* --- twice -------------------------------------------------------- */
+
+/* One CPU for the process and its children, the calling thread above
+ * them: a child it terminates or starts runs only once it waits. */
+static DWORD pinned_from;
+
+static void pin(void)
+{
+    DWORD process_mask = 1, system_mask = 1;
+
+    GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask);
+    pinned_from = process_mask;
+    SetProcessAffinityMask(GetCurrentProcess(), 1);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+}
+
+static void unpin(void)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL);
+    SetProcessAffinityMask(GetCurrentProcess(), pinned_from);
+}
+
+static void sec_twice(void)
+{
+    PROCESS_INFORMATION pi;
+    DWORD code, w;
+    BOOL r;
+
+    reset();
+    pin();
+    if (!launch(0, kid, "spawnkid sleep 60000", TRUE, CREATE_SUSPENDED, NULL, NULL, NULL, &pi)) {
+        line("spawnkid sleep: not started, err=%s", le());
+        unpin();
+        return;
+    }
+    SetProcessAffinityMask(pi.hProcess, 1);
+    arm();
+    r = TerminateProcess(pi.hProcess, 11);
+    line("TerminateProcess(11) ret=%d err=%s", r, le());
+    arm();
+    r = TerminateProcess(pi.hProcess, 22);
+    line("TerminateProcess(22) at once ret=%d err=%s", r, le());
+    unpin();
+    w = WaitForSingleObject(pi.hProcess, WAIT_MS);
+    code = 0;
+    arm();
+    r = GetExitCodeProcess(pi.hProcess, &code);
+    line("its end: %s; GetExitCodeProcess ret=%d code=%s err=%s", wr(w), r, code_text(code), le());
+    arm();
+    r = TerminateProcess(pi.hProcess, 33);
+    line("TerminateProcess(33) after its end ret=%d err=%s", r, le());
+    code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    line("exit code then: %s", code_text(code));
+    code = 0;
+    GetExitCodeThread(pi.hThread, &code);
+    line("its thread's exit code: %s", code_text(code));
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
+/* --- lastcode ----------------------------------------------------- */
+
+static void last_code(const char *mode)
+{
+    PROCESS_INFORMATION pi;
+    char cmd[64];
+    DWORD code, w;
+
+    sprintf(cmd, "spawnkid %s", mode);
+    if (!launch(0, kid, cmd, TRUE, 0, NULL, NULL, NULL, &pi)) {
+        line("%s: not started, err=%s", mode, le());
+        return;
+    }
+    w = WaitForSingleObject(pi.hProcess, WAIT_MS);
+    code = 0;
+    GetExitCodeThread(pi.hThread, &code);
+    line("%s: its end %s; its main thread's exit code %s", mode, wr(w), code_text(code));
+    code = finish(&pi, NULL);
+    line("%s: the process's exit code %s", mode, code_text(code));
+}
+
+static void sec_lastcode(void)
+{
+    reset();
+    last_code("lastthread");
+    last_code("handoff");
+}
+
+/* --- termrace ----------------------------------------------------- */
+
+/* The distinct error codes a racing call answered, printed sorted. */
+typedef struct {
+    DWORD codes[8];
+    int count;
+} errors_t;
+
+static void note_error(errors_t *e, DWORD code)
+{
+    int i;
+
+    for (i = 0; i < e->count; i++) {
+        if (e->codes[i] == code) {
+            return;
+        }
+    }
+    if (e->count < 8) {
+        e->codes[e->count++] = code;
+    }
+}
+
+static const char *errors_text(errors_t *e)
+{
+    static char buf[160];
+    DWORD t;
+    int i, j, n = 0;
+
+    for (i = 0; i < e->count; i++) {
+        for (j = i + 1; j < e->count; j++) {
+            if (e->codes[j] < e->codes[i]) {
+                t = e->codes[i];
+                e->codes[i] = e->codes[j];
+                e->codes[j] = t;
+            }
+        }
+    }
+    buf[0] = 0;
+    for (i = 0; i < e->count; i++) {
+        n += sprintf(buf + n, "%s%s", i > 0 ? " " : "", le_of(e->codes[i]));
+    }
+    return e->count > 0 ? buf : "none";
+}
+
+static HANDLE race_go;
+static HANDLE race_thread_handle;
+static BOOL race_thread_ok;
+static DWORD race_thread_err;
+
+static DWORD WINAPI race_terminate_thread(LPVOID parameter)
+{
+    (void)parameter;
+    WaitForSingleObject(race_go, WAIT_MS);
+    SetLastError(F2KT_UNTOUCHED);
+    race_thread_ok = TerminateThread(race_thread_handle, 22);
+    race_thread_err = GetLastError();
+    return 0;
+}
+
+static void sec_termrace(void)
+{
+    PROCESS_INFORMATION pi;
+    HANDLE t;
+    DWORD id, code, err;
+    BOOL r;
+    errors_t process_errors, thread_errors;
+    int i, ended = 0, codes = 0, process_ok = 0, thread_ok = 0;
+
+    memset(&process_errors, 0, sizeof process_errors);
+    memset(&thread_errors, 0, sizeof thread_errors);
+
+    reset();
+    for (i = 0; i < 20; i++) {
+        if (!launch(0, kid, "spawnkid sleep 60000", TRUE, 0, NULL, NULL, NULL, &pi)) {
+            line("spawnkid sleep: not started, err=%s", le());
+            return;
+        }
+        Sleep(20);
+        race_thread_handle = pi.hThread;
+        race_go = CreateEventA(NULL, TRUE, FALSE, NULL);
+        t = CreateThread(NULL, 0, race_terminate_thread, NULL, 0, &id);
+        SetEvent(race_go);
+        SetLastError(F2KT_UNTOUCHED);
+        r = TerminateProcess(pi.hProcess, 11);
+        err = GetLastError();
+        WaitForSingleObject(t, WAIT_MS);
+        CloseHandle(t);
+        CloseHandle(race_go);
+        if (WaitForSingleObject(pi.hProcess, WAIT_MS) == WAIT_OBJECT_0) {
+            ended++;
+        }
+        code = finish(&pi, NULL);
+        if (code == 11 || code == 22) {
+            codes++;
+        }
+        process_ok += r != 0;
+        thread_ok += race_thread_ok != 0;
+        if (!r) {
+            note_error(&process_errors, err);
+        }
+        if (!race_thread_ok) {
+            note_error(&thread_errors, race_thread_err);
+        }
+    }
+    line("children ended: %d of 20", ended);
+    line("exit codes 11 or 22: %d of 20", codes);
+    line("TerminateProcess's refusals: %s", errors_text(&process_errors));
+    line("TerminateThread's refusals: %s", errors_text(&thread_errors));
+    line("TerminateProcess succeeded at least once: %s", yesno(process_ok > 0));
+    line("TerminateThread succeeded at least once: %s", yesno(thread_ok > 0));
+}
+
+/* --- remoteexit --------------------------------------------------- */
+
+static void sec_remoteexit(void)
+{
+    PROCESS_INFORMATION pi;
+    LPTHREAD_START_ROUTINE exit_thread;
+    HANDLE t;
+    DWORD id, err, w;
+    errors_t refusals;
+    int made = 0, tries = 0;
+
+    memset(&refusals, 0, sizeof refusals);
+
+    reset();
+    /* kernel32 sits at the same address in every process. */
+    exit_thread = (LPTHREAD_START_ROUTINE)GetProcAddress(GetModuleHandleA("kernel32.dll"),
+                                                          "ExitThread");
+    if (!launch(0, kid, "spawnkid later 50 3", TRUE, 0, NULL, NULL, NULL, &pi)) {
+        line("spawnkid later: not started, err=%s", le());
+        return;
+    }
+    while (WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT && tries < 100000) {
+        tries++;
+        SetLastError(F2KT_UNTOUCHED);
+        t = CreateRemoteThread(pi.hProcess, NULL, 0, exit_thread, NULL, 0, &id);
+        err = GetLastError();
+        if (t != NULL) {
+            made++;
+            WaitForSingleObject(t, WAIT_MS);
+            CloseHandle(t);
+        } else {
+            note_error(&refusals, err);
+        }
+    }
+    w = WaitForSingleObject(pi.hProcess, WAIT_MS);
+    line("the child's end: %s", wr(w));
+    line("threads made in it while it ran: %s", yesno(made > 0));
+    line("its refusals while it exited: %s", errors_text(&refusals));
+    arm();
+    t = CreateRemoteThread(pi.hProcess, NULL, 0, exit_thread, NULL, 0, &id);
+    line("CreateRemoteThread after its end: %s err=%s", t != NULL ? "made" : "NULL", le());
+    if (t != NULL) {
+        WaitForSingleObject(t, WAIT_MS);
+        CloseHandle(t);
+    }
+    line("its exit code: %s", code_text(finish(&pi, NULL)));
+}
+
+/* --- nothread ----------------------------------------------------- */
+
+typedef LONG (WINAPI *create_process_fn)(HANDLE *, ACCESS_MASK, void *, HANDLE, BOOLEAN, HANDLE,
+                                          HANDLE, HANDLE);
+
+static void sec_nothread(void)
+{
+    typedef LONG (WINAPI *create_section_fn)(HANDLE *, ACCESS_MASK, void *, LARGE_INTEGER *, ULONG,
+                                             ULONG, HANDLE);
+    create_process_fn create_process;
+    create_section_fn create_section;
+    HANDLE file, section, process;
+    DWORD code, w;
+    LONG status;
+    BOOL r;
+
+    reset();
+    create_process =
+        (create_process_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateProcess");
+    create_section =
+        (create_section_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtCreateSection");
+    file = CreateFileA(kid, GENERIC_READ | GENERIC_EXECUTE, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                       0, NULL);
+    /* CreateFileMapping takes no execute protection on Windows 2000. */
+    arm();
+    section = CreateFileMappingA(file, NULL, PAGE_EXECUTE_READ | SEC_IMAGE, 0, 0, NULL);
+    line("CreateFileMappingA(PAGE_EXECUTE_READ | SEC_IMAGE): %s err=%s",
+         section != NULL ? "made" : "NULL", le());
+    if (section != NULL) {
+        CloseHandle(section);
+    }
+    /* The section NtCreateProcess maps: execute access, through ntdll. */
+    section = NULL;
+    status = create_section(&section, SECTION_ALL_ACCESS, NULL, NULL, PAGE_EXECUTE, SEC_IMAGE,
+                            file);
+    line("NtCreateSection(SEC_IMAGE, PAGE_EXECUTE) status=0x%08lX", (unsigned long)status);
+    CloseHandle(file);
+    if (status < 0) {
+        return;
+    }
+
+    process = NULL;
+    status = create_process(&process, PROCESS_ALL_ACCESS, NULL, GetCurrentProcess(), FALSE,
+                            section, NULL, NULL);
+    line("NtCreateProcess status=0x%08lX", (unsigned long)status);
+    if (status >= 0) {
+        w = WaitForSingleObject(process, 0);
+        code = 0;
+        arm();
+        r = GetExitCodeProcess(process, &code);
+        line("  WaitForSingleObject(0) %s; GetExitCodeProcess ret=%d code=%s err=%s", wr(w), r,
+             code_text(code), le());
+        arm();
+        r = CloseHandle(process);
+        line("  CloseHandle ret=%d err=%s", r, le());
+    }
+
+    process = NULL;
+    status = create_process(&process, PROCESS_ALL_ACCESS, NULL, GetCurrentProcess(), FALSE,
+                            section, NULL, NULL);
+    line("NtCreateProcess again status=0x%08lX", (unsigned long)status);
+    if (status >= 0) {
+        arm();
+        r = TerminateProcess(process, 7);
+        line("  TerminateProcess(7) ret=%d err=%s", r, le());
+        w = WaitForSingleObject(process, WAIT_MS);
+        code = 0;
+        arm();
+        r = GetExitCodeProcess(process, &code);
+        line("  its end: %s; GetExitCodeProcess ret=%d code=%s err=%s", wr(w), r, code_text(code),
+             le());
+        arm();
+        r = CloseHandle(process);
+        line("  CloseHandle ret=%d err=%s", r, le());
+    }
+    CloseHandle(section);
+    line("the program runs on: yes");
+}
+
 static const section_t sections[] = {
     { "layout", sec_layout, F2KT_ALWAYS },
     { "create", sec_create, F2KT_ALWAYS },
@@ -2127,6 +2478,11 @@ static const section_t sections[] = {
     { "crtfds", sec_crtfds, F2KT_ALWAYS },
     { "inheritflags", sec_inheritflags, F2KT_ALWAYS },
     { "binaryforms", sec_binaryforms, F2KT_ALWAYS },
+    { "twice", sec_twice, F2KT_ALWAYS },
+    { "lastcode", sec_lastcode, F2KT_ALWAYS },
+    { "termrace", sec_termrace, F2KT_ALWAYS },
+    { "remoteexit", sec_remoteexit, F2KT_ALWAYS },
+    { "nothread", sec_nothread, F2KT_ALWAYS },
     { "overlay", sec_overlay, F2KT_NAMED },
     { NULL, NULL, 0 }
 };

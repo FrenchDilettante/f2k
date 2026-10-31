@@ -83,9 +83,11 @@ use rtl::modules::{
 use rtl::path::{nt_path, MAX_PATH};
 use rtl::pod::Pod;
 use rtl::status::{
+    STATUS_CONFLICTING_ADDRESSES,
     STATUS_DLL_INIT_FAILED,
     STATUS_DLL_NOT_FOUND,
     STATUS_ENTRYPOINT_NOT_FOUND,
+    STATUS_IMAGE_NOT_AT_BASE,
     STATUS_INVALID_PARAMETER,
     STATUS_NO_MEMORY,
     STATUS_ORDINAL_NOT_FOUND,
@@ -450,6 +452,12 @@ fn map_image(file: u32) -> Result<(u32, u32), u32> {
     close(section);
     match status {
         STATUS_SUCCESS => Ok((base, size)),
+        // Mapped away from its base, which another region holds: the loader does not relocate,
+        // so the view goes and the load fails.
+        STATUS_IMAGE_NOT_AT_BASE => {
+            unmap(base);
+            Err(STATUS_CONFLICTING_ADDRESSES)
+        }
         status => Err(status),
     }
 }

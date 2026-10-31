@@ -50,6 +50,11 @@ pub struct Leftover {
 /// A process's ordinal ledger.
 pub struct Ordinals {
     slots: [Slot; ORDINALS],
+    /// Whether the process takes no new thread: its end is decided, or its last thread is ending
+    /// it (Windows 2000's process-delete mark, which PspCreateThread refuses with
+    /// STATUS_PROCESS_IS_TERMINATING). Set in the directory hold that decides it, so a create,
+    /// whose ordinal and attach are one hold too, either comes before it or is refused.
+    closed: bool,
 }
 
 impl Ordinals {
@@ -57,12 +62,24 @@ impl Ordinals {
     pub const fn empty() -> Self {
         Ordinals {
             slots: [Slot::Free; ORDINALS],
+            closed: false,
         }
     }
 
     /// Every ordinal free again, in place: a process record taken for a new process.
     pub fn reset(&mut self) {
         self.slots.fill(Slot::Free);
+        self.closed = false;
+    }
+
+    /// The process takes no new thread from here on.
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Whether the process takes no new thread (see [`Ordinals::close`]).
+    pub fn closed(&self) -> bool {
+        self.closed
     }
 
     /// The main thread's object, its thread live or terminated; none before the process has one.

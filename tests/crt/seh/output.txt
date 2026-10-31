@@ -1,9 +1,9 @@
 # F2K capture of seh (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:28:15.50
-seh F2KT-SOURCE-CRC=0xD216D4EB
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Thu 10/29/2026 14:05:05.87
+seh F2KT-SOURCE-CRC=0x10D7B86E
 >>> seh.exe faults
 == faults
 write to NULL: handled yes code 0xC0000005 flags 0 params 2 info 1 0
@@ -73,5 +73,55 @@ through a called function's __finally: setjmp returned 5; try, middle try, middl
 out of an __except handler: setjmp returned 6; try, filter, handler, back at setjmp
 after the jump, a new __try: next filter, next handler
 from an inner try level to an outer one: setjmp returned 8; inner try, inner finally (abnormal), back at setjmp, outer finally
+seh: done
+<<< exit code=0
+>>> seh.exe unwindout
+== unwindout
+before caught 0xC0000005
+again
+printf on stdout after the caught fault: done
+seh: done
+<<< exit code=0
+>>> seh.exe unwinderr
+== unwinderr
+before caught 0xC0000005
+again
+fprintf on stderr after the caught fault: done
+seh: done
+<<< exit code=0
+>>> seh.exe unwindfile
+== unwindfile
+fprintf to the file: caught 0xC0000005
+fprintf again ret=6
+fclose ret=0
+  the file: [before again]
+seh: done
+<<< exit code=0
+>>> seh.exe unwindgets
+== unwindgets
+fgets into a bad buffer: caught 0xC0000005
+fgets again: [irst line]
+seh: done
+<<< exit code=0
+>>> seh.exe unwindwrite
+== unwindwrite
+_write(1) of a bad buffer: ret=0 caught 0xC0000005
+written again
+_write(1) again ret=14
+seh: done
+<<< exit code=0
+>>> seh.exe unwindthread
+== unwindthread
+before [caught 0xC0000005]
+the second thread printed
+the second thread's end: WAIT_OBJECT_0
+seh: done
+<<< exit code=0
+>>> seh.exe filterprint
+== filterprint
+before in the filter
+in the handler
+caught 0xC0000005
+printf from the filter: done
 seh: done
 <<< exit code=0

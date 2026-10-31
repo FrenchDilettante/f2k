@@ -1,7 +1,7 @@
 # files: one test per block of the real-machine capture (output.txt); see tests/README.md. The read
 # block's five thousand small reads take about twenty seconds in the unoptimized kernel, each through
 # kernel32's ReadFile and NtReadFile, hence the longer timeout.
-description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, concurrent readers, which freed handle slot an open takes, and handle flags (GetHandleInformation, SetHandleInformation, NtQueryObject). Captured on a local FAT32 volume, as F2K's boot volume is."
+description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, concurrent readers, which freed handle slot an open takes, handle flags (GetHandleInformation, SetHandleInformation, NtQueryObject), a duplicated handle's shared position while another thread reads, and image sections outliving their file's handle. Captured on a local FAT32 volume, as F2K's boot volume is."
 kind = "sectioned"
 gate = true
 timeout = 40
@@ -180,4 +180,34 @@ flags = [
     "kernel32.DuplicateHandle",
     "ntdll.NtQueryObject",
     "ntdll.NtSetInformationObject",
+]
+dupshare = [
+    "kernel32.CreateFileA",
+    "kernel32.DuplicateHandle",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CreateThread",
+    "kernel32.ReadFile",
+    "kernel32.SetFilePointer",
+    "kernel32.GetFileSize",
+    "kernel32.GetFileInformationByHandle",
+    "kernel32.WaitForSingleObject",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+imagesec = [
+    "kernel32.GetModuleFileNameA",
+    "kernel32.GetModuleHandleA",
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtCreateSection",
 ]

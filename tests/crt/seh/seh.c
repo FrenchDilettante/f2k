@@ -38,12 +38,35 @@
  *             handler, and from an inner try level back to an outer one;
  *             which __finally blocks run
  *
+ * The unwind sections: a fault inside a C runtime call that holds one
+ * of its locks, caught by the program's __except. The unwind leaves the
+ * call's frames, and the lock goes with them, so the same stream, or
+ * another thread, can be used again. Every stdio line of a section is
+ * flushed before the section's own lines print, so the order is the
+ * same whether the standard output is a file or a console.
+ *
+ *   unwindout    printf("%s") of a bad pointer to stdout, caught; then
+ *                printf again
+ *   unwinderr    the same through fprintf(stderr)
+ *   unwindfile   the same through fprintf to a file the program made
+ *                (a buffered stream), then the file read back
+ *   unwindgets   fgets into a bad buffer from a file, caught; then fgets
+ *                into a good one: what the second call reads
+ *   unwindwrite  _write(1) of a bad buffer (text mode reads it to
+ *                translate line ends), caught; then _write(1) again
+ *   unwindthread after a caught printf fault on the main thread, a
+ *                second thread's printf (the stream's lock released, or
+ *                the thread waits: the main thread's wait is bounded)
+ *   filterprint  printf on stdout from inside an __except filter, while
+ *                the faulting printf on the same stream is still active
+ *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat seh):
  *   cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% seh.c
  */
 
 #include "../common/f2kt.h"
 #include <setjmp.h>
+#include <io.h>
 
 /* --- helpers ------------------------------------------------------- */
 
@@ -692,6 +715,203 @@ static void sec_sehjmp(void)
     jump_between_levels();
 }
 
+/* --- the unwind sections ------------------------------------------ */
+
+/* A bad pointer for the C runtime to read or write: the first page is
+ * never mapped. */
+#define BAD ((char *)1)
+
+/* `name` beside the program (the scratch files the unwind sections
+ * make, each deleted first and last). */
+static const char *beside(const char *name)
+{
+    static char path[2 * MAX_PATH];
+    char *slash;
+
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    slash = strrchr(path, '\\');
+    if (slash != NULL) {
+        slash[1] = 0;
+    }
+    strcat(path, name);
+    return path;
+}
+
+static void sec_unwindout(void)
+{
+    DWORD code = 0;
+
+    fflush(stdout);
+    __try {
+        printf("before %s after\n", BAD);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    printf("caught 0x%08lX\n", code);
+    printf("again\n");
+    fflush(stdout);
+    line("printf on stdout after the caught fault: done");
+}
+
+static void sec_unwinderr(void)
+{
+    DWORD code = 0;
+
+    fflush(stdout);
+    __try {
+        fprintf(stderr, "before %s after\n", BAD);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    fprintf(stderr, "caught 0x%08lX\n", code);
+    fprintf(stderr, "again\n");
+    fflush(stderr);
+    line("fprintf on stderr after the caught fault: done");
+}
+
+static void show_back(const char *path)
+{
+    char buf[128];
+    FILE *f = fopen(path, "r");
+    size_t n;
+
+    if (f == NULL) {
+        line("  the file: not opened");
+        return;
+    }
+    while (fgets(buf, sizeof buf, f) != NULL) {
+        n = strlen(buf);
+        if (n > 0 && buf[n - 1] == '\n') {
+            buf[--n] = 0;
+        }
+        line("  the file: [%s]", buf);
+    }
+    fclose(f);
+}
+
+static void sec_unwindfile(void)
+{
+    const char *path = beside("unwind.tmp");
+    DWORD code = 0;
+    FILE *f;
+
+    DeleteFileA(path);
+    f = fopen(path, "w");
+    if (f == NULL) {
+        line("fopen(unwind.tmp, w): NULL");
+        return;
+    }
+    __try {
+        fprintf(f, "before %s after\n", BAD);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    line("fprintf to the file: caught 0x%08lX", code);
+    line("fprintf again ret=%d", fprintf(f, "again\n"));
+    line("fclose ret=%d", fclose(f));
+    show_back(path);
+    DeleteFileA(path);
+}
+
+static void sec_unwindgets(void)
+{
+    const char *path = beside("unwind.tmp");
+    char buf[64];
+    DWORD code = 0;
+    FILE *f;
+    size_t n;
+
+    DeleteFileA(path);
+    f = fopen(path, "w");
+    if (f == NULL) {
+        line("fopen(unwind.tmp, w): NULL");
+        return;
+    }
+    fputs("first line\nsecond line\n", f);
+    fclose(f);
+    f = fopen(path, "r");
+    __try {
+        fgets(BAD, 10, f);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    line("fgets into a bad buffer: caught 0x%08lX", code);
+    if (fgets(buf, sizeof buf, f) == NULL) {
+        line("fgets again: NULL");
+    } else {
+        n = strlen(buf);
+        if (n > 0 && buf[n - 1] == '\n') {
+            buf[--n] = 0;
+        }
+        line("fgets again: [%s]", buf);
+    }
+    fclose(f);
+    DeleteFileA(path);
+}
+
+static void sec_unwindwrite(void)
+{
+    DWORD code = 0;
+    int r = 0;
+
+    __try {
+        r = _write(1, BAD, 5);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    line("_write(1) of a bad buffer: ret=%d caught 0x%08lX", r, code);
+    r = _write(1, "written again\n", 14);
+    line("_write(1) again ret=%d", r);
+}
+
+static DWORD WINAPI unwind_printer(LPVOID parameter)
+{
+    (void)parameter;
+    printf("the second thread printed\n");
+    fflush(stdout);
+    return 0;
+}
+
+static void sec_unwindthread(void)
+{
+    HANDLE t;
+    DWORD id, w, code = 0;
+
+    fflush(stdout);
+    __try {
+        printf("before %s", BAD);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    printf("[caught 0x%08lX]\n", code);
+    fflush(stdout);
+    t = CreateThread(NULL, 0, unwind_printer, NULL, 0, &id);
+    w = WaitForSingleObject(t, WAIT_MS);
+    CloseHandle(t);
+    line("the second thread's end: %s", wr(w));
+}
+
+static int filter_printed(void)
+{
+    printf("in the filter\n");
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static void sec_filterprint(void)
+{
+    DWORD code = 0;
+
+    fflush(stdout);
+    __try {
+        printf("before %s after\n", BAD);
+    } __except (code = GetExceptionCode(), filter_printed()) {
+        printf("in the handler\n");
+    }
+    printf("caught 0x%08lX\n", code);
+    fflush(stdout);
+    line("printf from the filter: done");
+}
+
 static const section_t sections[] = {
     { "faults", sec_faults, F2KT_ALWAYS },
     { "filters", sec_filters, F2KT_ALWAYS },
@@ -700,6 +920,13 @@ static const section_t sections[] = {
     { "raise", sec_raise, F2KT_ALWAYS },
     { "setjmp", sec_setjmp, F2KT_ALWAYS },
     { "sehjmp", sec_sehjmp, F2KT_ALWAYS },
+    { "unwindout", sec_unwindout, F2KT_ALWAYS },
+    { "unwinderr", sec_unwinderr, F2KT_ALWAYS },
+    { "unwindfile", sec_unwindfile, F2KT_ALWAYS },
+    { "unwindgets", sec_unwindgets, F2KT_ALWAYS },
+    { "unwindwrite", sec_unwindwrite, F2KT_ALWAYS },
+    { "unwindthread", sec_unwindthread, F2KT_ALWAYS },
+    { "filterprint", sec_filterprint, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
