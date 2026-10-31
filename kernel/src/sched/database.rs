@@ -27,11 +27,16 @@ use super::wait::{BlockId, Timer, WaitBlock, Waitable, WaitableId, Waiters, Wait
 use super::waitable_timer::WaitableTimer;
 use crate::ob::{EVENTS, MUTEXES, PROCESSES, SEMAPHORES, THREADS, TIMERS};
 
-/// How many thread records the pool holds: one per thread object, and the idle thread's.
-pub const THREAD_RECORDS: usize = THREADS + 1;
+/// How many thread records the pool holds: one per thread object, the idle thread's, and the
+/// system threads'.
+pub const THREAD_RECORDS: usize = THREADS + 2;
 
 /// The idle thread's record: the one past the thread objects', which no object names.
 pub const IDLE_THREAD: ThreadId = ThreadId(THREADS as u16);
+
+/// The console's control thread's record (see `crate::csr::ctrl`): a system thread's, past the
+/// idle thread's, which no object names either.
+pub const CONSOLE_CONTROL_THREAD: ThreadId = ThreadId(THREADS as u16 + 1);
 
 /// How many user-APC records each process has (QueueUserAPC's, across its threads).
 pub const USER_APCS: usize = 64;

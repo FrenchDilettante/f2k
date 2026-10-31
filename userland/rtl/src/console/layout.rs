@@ -418,13 +418,15 @@ pub const US_SCAN: [u8; 0x80] = patch(
 );
 
 /// The US E0-prefixed keys: the right-hand modifiers, the keypad's Enter and Divide, Print Screen,
+/// Break (what the keyboard sends for Pause with Ctrl held, E0 46, its make and break together),
 /// the gray navigation block, and the Windows and application keys.
-pub const US_SCAN_E0: [(u8, u8); 18] = [
+pub const US_SCAN_E0: [(u8, u8); 19] = [
     (0x1C, VK_RETURN),
     (0x1D, VK_RCONTROL),
     (0x35, VK_DIVIDE),
     (0x37, VK_SNAPSHOT),
     (0x38, VK_RMENU),
+    (0x46, VK_CANCEL),
     (0x47, VK_HOME),
     (0x48, VK_UP),
     (0x49, VK_PRIOR),

@@ -174,10 +174,55 @@ mod target {
     pub(crate) fn on_idle_thread() -> bool {
         super::super::try_current_thread() == Some(IDLE_THREAD)
     }
+
+    /// Start a system thread (Windows' PsCreateSystemThread, as small as the kernel needs it): the
+    /// record `thread`, one of the dispatcher database's system records that no object names,
+    /// attached to the kernel's own process — the idle thread's, as Windows' system threads are
+    /// the System process's — on a gate stack of its own, at `priority`, entering `routine` at its
+    /// first dispatch, at the passive level. It has no TEB and no client id, never enters user mode
+    /// and never ends: its routine waits for its work and never returns (the startup stub halts if
+    /// it does). Readied with interrupts masked, as a boot's main thread is, so its first switch
+    /// waits for the idle loop or the next interrupt. Called at boot, before the allocator's
+    /// baseline: its stack is the boot's for good.
+    ///
+    /// # Panics
+    ///
+    /// The kernel stack region is full.
+    pub(crate) fn start_system_thread(
+        thread: super::super::thread::ThreadId,
+        routine: extern "C" fn(u32, u32) -> !,
+        priority: i8,
+    ) {
+        let (slot, frames) =
+            crate::mem::kstacks::create().expect("a system thread's stack is the boot's");
+        let params = crate::sched::startup::StartParams {
+            system_routine: routine as usize as u32,
+            start_routine: 0,
+            start_context: 0,
+            user: None,
+        };
+        let _masked = pcr().mask_guard();
+        level::raised::<Dispatch, _>(|dispatch| {
+            let dispatcher = DISPATCHER.get(dispatch);
+            dispatcher.renew_thread(thread);
+            IDLE_PROCESS.attach(dispatcher, thread);
+            let record = dispatcher.thread_mut(thread);
+            record.gate_slot = slot;
+            record.gate_frames = frames;
+            record.initial_stack = crate::mem::paging::gate_slot_top(slot as u32);
+            record.teb_va = 0;
+            record.base_priority = priority;
+            record.priority = priority;
+            // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack
+            // slot.
+            unsafe { crate::sched::startup::plant(record, &params) };
+            dispatcher.make_ready(thread);
+        });
+    }
 }
 
 #[cfg(target_arch = "x86")]
-pub(crate) use target::{boot, idle_loop, on_idle_thread};
+pub(crate) use target::{boot, idle_loop, on_idle_thread, start_system_thread};
 
 #[cfg(test)]
 mod tests {

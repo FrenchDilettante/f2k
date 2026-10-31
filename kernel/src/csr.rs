@@ -28,6 +28,14 @@
 //! handle; the process's handle keeps it, and it goes with the process. After each call and each
 //! keyboard byte it shows whether the input buffer holds records: a read the server answered
 //! STATUS_PENDING waits on it.
+//!
+//! The console's control events — Ctrl+C and Ctrl+Break, from the keyboard or
+//! GenerateConsoleCtrlEvent — are [`ctrl`]'s: the console's processes, and the control thread that
+//! delivers each event to them. The base server's one API F2K serves, kernel32's announcement of a
+//! process it created (`rtl::console::base`), comes through the same service: it puts the process
+//! in its process group.
+
+pub mod ctrl;
 
 use core::mem::offset_of;
 
@@ -35,6 +43,7 @@ use rtl::console::screen::{ScreenBuffer, DEFAULT_ATTRIBUTE};
 use rtl::console::{Client, Console, CsrApiMsg, Handles, DATA_WORDS};
 use rtl::pod::Pod;
 
+use self::ctrl::Control;
 use crate::hw::portio::Io;
 use crate::hw::vga::{CellMemory, TextScreen};
 #[cfg(target_arch = "x86")]
@@ -55,6 +64,8 @@ pub const SERVICE: (u32, ServiceFn) = (16, service);
 #[cfg(target_arch = "x86")]
 struct ConsoleServer {
     console: Console,
+    /// The console's processes and the control events raised for them (see [`ctrl`]).
+    ctrl: Control,
     /// The console's input-wait event, once a process asked for it: the object, which the server
     /// holds a reference on until no process is left.
     input_event: Option<ObjectId>,
@@ -125,6 +136,7 @@ impl Staged {
 #[cfg(target_arch = "x86")]
 static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer {
     console: Console::new(),
+    ctrl: Control::new(),
     input_event: None,
     named: false,
     staged: Staged::new(),
@@ -179,6 +191,18 @@ fn show_fresh<M: CellMemory, P: Io>(vga: &mut TextScreen<M, P>) {
 #[cfg(target_arch = "x86")]
 fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Passive>) {
     let mut call = crate::nt::call::NtCall::new(frame, passive);
+    if args[2] >> 16 == rtl::console::base::BASE_SERVER {
+        let result = base_call_server(UserAddr(args[0]), UserAddr(args[1]), args[2], args[3]);
+        call.finish(result);
+        return;
+    }
+    // Who calls, as the console holds its processes: its object and its process group (read
+    // before the call holds the process's state).
+    let calling = crate::user::args::calling_process();
+    let caller = Caller {
+        process: calling.object(),
+        group: calling.process_group(),
+    };
     // The input-wait handle is an object's: made (or opened) here, below the server's level,
     // where objects are made, and handed to the call that asks for it.
     let mut prepared = (args[2] == rtl::console::Api::GetInputWaitHandle.into())
@@ -200,6 +224,7 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 &mut Dual {
                     input_wait_handle: &mut prepared,
                     guard: guard.map(|page| (page, &mut server.staged)),
+                    caller: Some((caller, &mut server.ctrl)),
                     program,
                 },
                 UserAddr(args[0]),
@@ -213,7 +238,11 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 server.staged.owner = Some(crate::sched::current_thread());
             }
             let input = server.input_state();
+            let raised = server.ctrl.has_pending();
             show_input(dispatch, input);
+            if raised {
+                ctrl::wake(crate::sched::DISPATCHER.get(dispatch));
+            }
             (result, staged)
         })
     });
@@ -365,7 +394,7 @@ pub fn key_byte(
 ) {
     use rtl::console::input::Append;
     let server = SERVER.get(dispatch);
-    server
+    let raised = server
         .console
         .key_byte(byte, lights, &mut |outcome, record| {
             if outcome == Append::Dropped {
@@ -390,8 +419,32 @@ pub fn key_byte(
             #[cfg(not(feature = "kbd-smoke"))]
             let _ = record;
         });
+    // A control key's event goes to every process of the console, group 0.
+    if let Some(event) = raised {
+        if !server.ctrl.raise(event, 0) {
+            crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
+        }
+    }
     let input = server.input_state();
+    let raised = server.ctrl.has_pending();
     show_input(dispatch, input);
+    if raised {
+        ctrl::wake(crate::sched::DISPATCHER.get(dispatch));
+    }
+}
+
+/// Start the console's control thread (see [`ctrl`]): once, at boot, before the first process.
+#[cfg(target_arch = "x86")]
+pub fn start_control_thread() {
+    ctrl::start();
+}
+
+/// The console's step at a process's end: it leaves the console, and no control event reaches it
+/// from then on, as Windows 2000's csrss takes a process off its console when it ends. Its group
+/// leads nothing any more (GenerateConsoleCtrlEvent refuses it).
+#[cfg(target_arch = "x86")]
+pub fn disconnect(process: ObjectId) {
+    crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.disconnect(process));
 }
 
 /// Copy what the screen buffer changed since the last look to the text screen: the window's rows
@@ -467,6 +520,52 @@ pub fn client_call_server(
     }
 }
 
+/// Serve one message of the base server's (`rtl::console::base`), read and answered as
+/// [`client_call_server`] reads and answers the console's: BasepCreateProcess, the creator's
+/// announcement of a process it made, puts the process (the creator's handle to it names it) in the
+/// creator's process group, or in a group of its own for CREATE_NEW_PROCESS_GROUP, as Windows
+/// 2000's base server decides. Any other API is STATUS_ILLEGAL_FUNCTION; a handle that names no
+/// process is refused as the process services refuse it.
+#[cfg(target_arch = "x86")]
+fn base_call_server(message: UserAddr, capture: UserAddr, api: u32, length: u32) -> NtResult {
+    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS};
+    let length = length as usize;
+    if length > 4 * DATA_WORDS || !length.is_multiple_of(4) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let size = offset_of!(CsrApiMsg, data) + length;
+    let mut msg = CsrApiMsg::zeroed();
+    message.read(&mut msg.as_bytes_mut()[..size])?;
+    let request = CreateProcess::<u32>::from_bytes(&msg.data.as_bytes()[..length]);
+    let status = match request {
+        _ if api != CREATE_PROCESS => NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION),
+        None => STATUS_INVALID_PARAMETER,
+        Some(request) => {
+            let announced = crate::nt::object::reference_process(request.process, 0).map(|made| {
+                let group = if request.creation_flags & CREATE_NEW_PROCESS_GROUP != 0 {
+                    made.record().id()
+                } else {
+                    crate::user::args::calling_process().process_group()
+                };
+                made.record().set_process_group(group);
+            });
+            announced.map_or_else(|status| status, |()| STATUS_SUCCESS)
+        }
+    };
+    msg.capture_buffer = capture.raw();
+    msg.api_number = api;
+    msg.return_value = status.0;
+    let answer = offset_of!(CsrApiMsg, capture_buffer);
+    message
+        .offset(answer as u32)
+        .write(&msg.as_bytes()[answer..size])?;
+    if status.is_success() {
+        Ok(status)
+    } else {
+        Err(status)
+    }
+}
+
 /// The calling client: its bytes read through a kernel chunk, each chunk to the serial line, then
 /// to the screen buffer; and the console's input-wait event, which the client asks a handle to.
 struct Dual<'a> {
@@ -477,10 +576,20 @@ struct Dual<'a> {
     /// The caller's stack guard page and the staging its writes go to (see [`Staged`]); none for
     /// a caller without one.
     guard: Option<(u32, &'a mut Staged)>,
+    /// Who calls, and the console's control-event side it connects to or raises events through;
+    /// none where nothing calls (the host's tests).
+    caller: Option<(Caller, &'a mut Control)>,
     /// The calling process's name: its program's, the key of its command history. Windows
     /// 2000's kernel32 names the program when it connects to the console; F2K's server takes the
     /// name the kernel keeps for the process.
     program: crate::process::ProcessName,
+}
+
+/// The calling process, as the console holds its processes: its object, and its process group.
+#[derive(Clone, Copy)]
+struct Caller {
+    process: crate::ob::ObjectId,
+    group: u32,
 }
 
 impl Client for Dual<'_> {
@@ -563,6 +672,21 @@ impl Client for Dual<'_> {
             .map_err(|status| status.0)
     }
 
+    /// The caller joins the console's processes with its CtrlRoutine and its group.
+    fn connect_ctrl(&mut self, routine: usize) -> Result<(), u32> {
+        let (caller, control) = self.caller.as_mut().ok_or(STATUS_INVALID_PARAMETER.0)?;
+        if control.connect(caller.process, caller.group, routine as u32) {
+            Ok(())
+        } else {
+            Err(STATUS_NO_MEMORY.0)
+        }
+    }
+
+    fn generate_ctrl_event(&mut self, event: u32, group: u32) -> Result<(), u32> {
+        let (_, control) = self.caller.as_mut().ok_or(STATUS_INVALID_PARAMETER.0)?;
+        control.generate(event, group)
+    }
+
     fn program(&self) -> &[u8] {
         self.program.as_str().as_bytes()
     }
@@ -616,6 +740,7 @@ mod tests {
                 &mut Dual {
                     input_wait_handle: &mut input_wait_handle,
                     guard: None,
+                    caller: None,
                     program: crate::process::ProcessName::new(b"fixture"),
                 },
                 UserAddr(0x40_0000),

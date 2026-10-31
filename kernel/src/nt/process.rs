@@ -268,6 +268,9 @@ pub fn create_process(
             let child = crate::exec::loader::load_section(segment, name, creator.id())?;
             child.set_hard_error_mode(creator.hard_error_mode());
             child.set_console(creator.console().inherited());
+            // The creator's process group, until its announcement says otherwise (see
+            // `crate::csr`'s base server).
+            child.set_process_group(creator.process_group());
             if inherit_object_table {
                 child.inherit_handles(creator);
             }

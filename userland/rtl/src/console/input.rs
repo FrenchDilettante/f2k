@@ -329,6 +329,33 @@ pub fn keep_everything(_record: &KeyEventRecord) -> bool {
     true
 }
 
+/// The character Ctrl+C's keydown carries.
+const CTRL_C: u16 = 0x03;
+
+/// Whether the record is Ctrl+C's keydown: the keydown carrying its control character.
+pub fn is_ctrl_c(record: &KeyEventRecord) -> bool {
+    record.key_down != 0 && record.char == CTRL_C
+}
+
+/// Whether the record is the Break key's (Ctrl+Pause, the layout's VK_CANCEL), going down or up:
+/// the keyboard sends its make and its break together, as one keystroke.
+pub fn is_break(record: &KeyEventRecord) -> bool {
+    record.virtual_key_code == u16::from(super::layout::VK_CANCEL)
+}
+
+/// The filter of an input buffer whose mode processes input (ENABLE_PROCESSED_INPUT): the console
+/// takes Ctrl+C's keydown and the Break key for itself — they raise control events, never records
+/// a reader sees.
+pub fn take_control_keys(record: &KeyEventRecord) -> bool {
+    !is_ctrl_c(record) && !is_break(record)
+}
+
+/// The filter of an input buffer whose mode does not process input: Ctrl+C is a key like any
+/// other, but the console still takes the Break key for itself.
+pub fn take_break(record: &KeyEventRecord) -> bool {
+    !is_break(record)
+}
+
 /// What an append did with its record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Append {
@@ -355,6 +382,11 @@ pub struct InputBuffer {
 impl InputBuffer {
     /// An empty buffer that keeps every record.
     pub const fn new() -> Self {
+        Self::with_filter(keep_everything)
+    }
+
+    /// An empty buffer that consults `filter` for every record appended.
+    pub const fn with_filter(filter: Filter) -> Self {
         InputBuffer {
             records: [InputRecord::key(KeyEventRecord {
                 key_down: 0,
@@ -366,7 +398,7 @@ impl InputBuffer {
             }); INPUT_BUFFER_RECORDS],
             first: 0,
             count: 0,
-            filter: keep_everything,
+            filter,
         }
     }
 

@@ -88,6 +88,9 @@ fn with_suite<R>(step: impl FnOnce(&mut Suite) -> R) -> R {
 pub fn run() -> ! {
     let legs = programs().count() as u32;
     with_suite(|suite| suite.begin(legs));
+    // The console's control thread, the kernel's worker that delivers its control events: its
+    // stack is one of the boot's permanent allocations.
+    crate::csr::start_control_thread();
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();

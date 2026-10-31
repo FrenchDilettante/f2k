@@ -28,8 +28,17 @@
 //! STATUS_PENDING instead, having kept what it took (a line's characters stay in the line being
 //! built), and kernel32 waits on the console's input-wait handle — signaled while the input buffer
 //! holds records — then asks again.
+//!
+//! The console takes two keys for itself: Ctrl+C, when its input mode processes input, and the
+//! Break key (Ctrl+Pause) always. Neither becomes a record ([`input::take_control_keys`]): each
+//! raises a control event ([`Console::key_byte`]'s answer) for the server to deliver to the
+//! console's processes, and ends the line-mode read that waits for its line, if one does — its
+//! next ask is answered STATUS_ALERTED with no characters, what it had typed dropped and left
+//! echoed as it was, no ^C shown (Windows 2000's capture: success, 0 characters,
+//! ERROR_OPERATION_ABORTED).
 
 pub mod api;
+pub mod base;
 pub mod input;
 pub mod layout;
 pub mod line;
@@ -38,7 +47,10 @@ pub mod screen;
 pub use api::Api;
 use api::{Message, Word};
 use input::{
+    take_break,
+    take_control_keys,
     Append,
+    Filter,
     InputBuffer,
     InputRecord,
     KeyEventRecord,
@@ -53,6 +65,7 @@ use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH, WINDOW_H
 use crate::codepage::{self, CodePage};
 use crate::pod::Pod;
 use crate::status::{
+    STATUS_ALERTED,
     STATUS_INVALID_HANDLE,
     STATUS_INVALID_PARAMETER,
     STATUS_NO_MEMORY,
@@ -147,6 +160,7 @@ pub const LAYOUT: &layout::Layout = &layout::US;
 /// The input mode's bits: processed, line-buffered and echoed input, window and mouse events, and
 /// the three later systems name ENABLE_INSERT_MODE, ENABLE_QUICK_EDIT_MODE and
 /// ENABLE_EXTENDED_FLAGS.
+const ENABLE_PROCESSED_INPUT: u32 = 0x1;
 const ENABLE_LINE_INPUT: u32 = 0x2;
 const ENABLE_ECHO_INPUT: u32 = 0x4;
 const INSERT_AND_QUICK_EDIT: u32 = 0x20 | 0x40;
@@ -166,6 +180,21 @@ pub const OUTPUT_MODE: u32 = 0x1 | 0x2;
 /// underscore: every bit of the high byte but 0x2000). Windows 2000's capture refuses 0xFFFF and
 /// keeps 0x0100 and 0x8000.
 const VALID_ATTRIBUTES: u32 = 0xDFFF;
+
+/// The control events the console raises (HandlerRoutine's dwCtrlType): Ctrl+C's and Ctrl+Break's,
+/// the two a key or GenerateConsoleCtrlEvent raises.
+pub const CTRL_C_EVENT: u32 = 0;
+pub const CTRL_BREAK_EVENT: u32 = 1;
+
+/// The filter the input buffer takes for an input mode: whether it processes input decides which
+/// control keys the console takes for itself.
+const fn filter_for(mode: u32) -> Filter {
+    if mode & ENABLE_PROCESSED_INPUT != 0 {
+        take_control_keys
+    } else {
+        take_break
+    }
+}
 
 /// The most title characters the console keeps (a longer title keeps its first ones).
 pub const TITLE_UNITS: usize = 1024;
@@ -287,6 +316,11 @@ pub struct Console {
     pub producer: Producer,
     input_mode: u32,
     line: Line,
+    /// Whether a line-mode read waits for its line: its last ask was answered STATUS_PENDING.
+    line_read_waiting: bool,
+    /// Whether a control key ended the line-mode read that waited: its next ask is answered
+    /// STATUS_ALERTED.
+    line_read_aborted: bool,
     /// The programs' command histories, by program name.
     pub histories: Histories,
     title: [u16; TITLE_UNITS],
@@ -302,10 +336,12 @@ impl Console {
     pub const fn new() -> Self {
         Console {
             screen: ScreenBuffer::new(),
-            input: InputBuffer::new(),
+            input: InputBuffer::with_filter(filter_for(INPUT_MODE)),
             producer: Producer::new(LAYOUT),
             input_mode: INPUT_MODE,
             line: Line::new(),
+            line_read_waiting: false,
+            line_read_aborted: false,
             histories: Histories::new(),
             title: [0; TITLE_UNITS],
             title_length: 0,
@@ -339,20 +375,25 @@ impl Console {
         &self.line
     }
 
-    /// Whether input waits for a reader: what the console's input-wait event shows.
+    /// Whether input waits for a reader: what the console's input-wait event shows. A line-mode
+    /// read a control key ended counts: its waiter must ask again, to be answered.
     pub fn input_waiting(&self) -> bool {
-        self.input.count() != 0
+        self.input.count() != 0 || self.line_read_aborted
     }
 
     /// Take one keyboard byte: each record the producer completes is appended to the input buffer,
     /// and `appended` hears what became of it with the record as it now stands (a kept record as
     /// the input buffer holds it, its repeat count included; any other as the producer made it).
+    /// The answer is the control event the byte's key raised, if it raised one (see the module
+    /// notes): CTRL_C_EVENT for Ctrl+C's keydown the input mode left to the console,
+    /// CTRL_BREAK_EVENT for the Break key's keydown.
     pub fn key_byte(
         &mut self,
         byte: u8,
         lights: &mut impl Lights,
         appended: &mut impl FnMut(Append, KeyEventRecord),
-    ) {
+    ) -> Option<u32> {
+        let mut raised = None;
         let Console {
             input, producer, ..
         } = self;
@@ -362,8 +403,32 @@ impl Console {
                 (Append::Stored | Append::Coalesced, Some(last)) => last.key,
                 _ => key,
             };
+            if outcome == Append::Filtered && key.key_down != 0 {
+                raised = Some(if input::is_break(&key) {
+                    CTRL_BREAK_EVENT
+                } else {
+                    CTRL_C_EVENT
+                });
+            }
             appended(outcome, record);
         });
+        if raised.is_some() {
+            self.end_line_read();
+        }
+        raised
+    }
+
+    /// A control key's work on the line-mode read that waits for its line, if one does: the read
+    /// ends, its next ask answered STATUS_ALERTED, and the line it was building is dropped (what it
+    /// echoed stays on the screen). The records that arrived since its last ask go with it: Windows
+    /// 2000's waiting read takes each key as it arrives, before the next (a Ctrl key's keydown
+    /// before the C its control key raises), where F2K's takes them at its next ask.
+    fn end_line_read(&mut self) {
+        if core::mem::take(&mut self.line_read_waiting) {
+            self.line_read_aborted = true;
+            self.line = Line::new();
+            self.input.flush();
+        }
     }
 
     /// The title's characters.
@@ -625,6 +690,19 @@ pub trait Client {
     /// The client process's handle to the console's input-wait event (made or opened for it); the
     /// status that refuses one.
     fn input_wait_handle(&mut self) -> Result<u32, u32>;
+    /// Connect the client process to the console's control events: `routine`, the routine a
+    /// thread of the process starts at for each control event it receives, the event its
+    /// argument (kernel32's CtrlRoutine). The status that refuses it.
+    fn connect_ctrl(&mut self, _routine: usize) -> Result<(), u32> {
+        Ok(())
+    }
+    /// Raise control event `event` for the console's processes in process group `group` (every
+    /// one for group 0): STATUS_INVALID_PARAMETER, nothing raised, when no process of the console
+    /// is in the group.
+    fn generate_ctrl_event(&mut self, _event: u32, _group: u32) -> Result<(), u32> {
+        Ok(())
+    }
+
     /// The client process's program name, in the console's code page: the key of the command
     /// history its line-mode reads recall from, as Windows 2000's console keys a history buffer
     /// by the program name the process gives when it connects. Empty when the client has none.
@@ -683,6 +761,8 @@ pub fn serve<W: Word>(
         Api::ReadOutputAttribute => message.serve(&mut call, Call::read_output_attribute),
         Api::GetTitle => message.serve(&mut call, Call::get_title),
         Api::SetTitle => message.serve(&mut call, Call::set_title),
+        Api::ConnectCtrl => message.serve(&mut call, Call::connect_ctrl),
+        Api::GenerateCtrlEvent => message.serve(&mut call, Call::generate_ctrl_event),
     };
     match answer {
         Ok(()) => STATUS_SUCCESS,
@@ -997,8 +1077,15 @@ impl<C: Client> Call<'_, C> {
         let read = if count == 0 {
             0
         } else if self.console.input_mode & ENABLE_LINE_INPUT != 0 {
+            let console = &mut *self.console;
+            if core::mem::take(&mut console.line_read_aborted) {
+                message.read = W::from_usize(0);
+                return Err(STATUS_ALERTED);
+            }
             let logged = self.handles.logged(message.handle.dword());
-            read_line(self.console, self.client, buffer, count, unicode, logged)?
+            let read = read_line(console, self.client, buffer, count, unicode, logged);
+            console.line_read_waiting = read == Err(STATUS_PENDING);
+            read?
         } else {
             read_raw(self.console, self.client, buffer, count, unicode)?
         };
@@ -1024,6 +1111,7 @@ impl<C: Client> Call<'_, C> {
                     return Err(STATUS_INVALID_PARAMETER);
                 }
                 self.console.input_mode = mode;
+                self.console.input.set_filter(filter_for(mode));
             }
             Kind::Output => {
                 if mode & !OUTPUT_MODE_MASK != 0 {
@@ -1378,6 +1466,18 @@ impl<C: Client> Call<'_, C> {
     }
 
     /// The title is replaced only once the new one is read whole.
+    fn connect_ctrl<W: Word>(&mut self, message: &mut api::ConnectCtrl<W>) -> Result<(), u32> {
+        self.client.connect_ctrl(message.routine.get())
+    }
+
+    fn generate_ctrl_event<W: Word>(
+        &mut self,
+        message: &mut api::GenerateCtrlEvent<W>,
+    ) -> Result<(), u32> {
+        self.client
+            .generate_ctrl_event(message.event.dword(), message.group.dword())
+    }
+
     fn set_title<W: Word>(&mut self, message: &mut api::SetTitle<W>) -> Result<(), u32> {
         let mut title = [0u16; TITLE_UNITS];
         let length = get_text(
@@ -2688,6 +2788,98 @@ mod tests {
             (1, 0),
             "the Enter echoed as CR LF"
         );
+    }
+
+    /// The keyboard's bytes for Ctrl+C (Ctrl down, C down and up, Ctrl up) and Ctrl+Break (the
+    /// Break key's make and break come together, E0 46 E0 C6, as a keyboard sends Ctrl+Pause).
+    const CTRL_C_KEYS: [u8; 4] = [0x1D, 0x2E, 0xAE, 0x9D];
+    const CTRL_BREAK_KEYS: [u8; 6] = [0x1D, 0xE0, 0x46, 0xE0, 0xC6, 0x9D];
+
+    impl Server {
+        /// Feed keyboard bytes to the console; the control events they raised.
+        fn control_keys(&mut self, bytes: &[u8]) -> Vec<u32> {
+            bytes
+                .iter()
+                .filter_map(|&byte| self.console.key_byte(byte, &mut (), &mut |_, _| {}))
+                .collect()
+        }
+    }
+
+    /// The console takes Ctrl+C's keydown for itself while its mode processes input, and the
+    /// Break key always: each raises its control event and leaves no record (the Ctrl key's own
+    /// records, and C's keyup, stay); with the mode not processing input, Ctrl+C is a key like any
+    /// other.
+    #[test]
+    fn control_keys_raise_events_instead_of_records() {
+        let mut server = Server::new();
+        assert_eq!(server.control_keys(&CTRL_C_KEYS), [CTRL_C_EVENT]);
+        let vks = |server: &Server| {
+            (0..server.console.input.count())
+                .map(|at| {
+                    let key = server.console.input.get(at).unwrap().key;
+                    (key.key_down, key.virtual_key_code)
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(vks(&server), [(1, 0x11), (0, 0x43), (0, 0x11)]);
+        server.console.input.flush();
+        assert_eq!(server.control_keys(&CTRL_BREAK_KEYS), [CTRL_BREAK_EVENT]);
+        assert_eq!(
+            vks(&server),
+            [(1, 0x11), (0, 0x11)],
+            "nothing of the Break key"
+        );
+        server.console.input.flush();
+        assert_eq!(server.status(Api::SetMode, &[3, 0x0]), 0);
+        assert_eq!(server.control_keys(&CTRL_C_KEYS), []);
+        assert_eq!(server.console.input.get(1).unwrap().key.char, 0x03);
+        server.console.input.flush();
+        assert_eq!(server.control_keys(&CTRL_BREAK_KEYS), [CTRL_BREAK_EVENT]);
+        assert_eq!(vks(&server), [(1, 0x11), (0, 0x11)]);
+    }
+
+    /// A control key ends the line-mode read waiting for its line: its next ask is answered
+    /// STATUS_ALERTED with no characters, the line it was building dropped and its echo left on
+    /// the screen as it was, no ^C shown; the input-wait event shows input until then. With no
+    /// read waiting, a control key ends nothing.
+    #[test]
+    fn a_control_key_ends_the_waiting_line_read() {
+        // Each key's bytes up to its event's, the Ctrl key's alone before them.
+        for (keys, split) in [(&CTRL_C_KEYS[..], 2), (&CTRL_BREAK_KEYS[..], 5)] {
+            for unicode in [true, false] {
+                let mut server = Server::new();
+                assert_eq!(server.queue("abc", unicode), 6);
+                assert_eq!(server.read(64, unicode).0, STATUS_PENDING);
+                assert_eq!(server.control_keys(&keys[..1]), []);
+                assert_eq!(server.read(64, unicode).0, STATUS_PENDING, "the Ctrl key");
+                assert!(!server.console.input_waiting());
+                assert_eq!(server.control_keys(&keys[..split]).len(), 1);
+                assert!(server.console.input_waiting(), "the reader asks again");
+                assert_eq!(server.console.line().pending(), &[]);
+                assert_eq!(
+                    server.console.input.count(),
+                    0,
+                    "the Ctrl key's second keydown"
+                );
+                let (status, data) = server.call(
+                    Api::ReadConsole,
+                    &[3, BASE + 0xC00, 64, 0xCC, usize::from(unicode)],
+                );
+                assert_eq!((status, data[3]), (STATUS_ALERTED, 0));
+                assert!(!server.console.input_waiting());
+                assert_eq!(&server.console.screen.row_text(0)[..4], b"abc ");
+                assert_eq!(server.console.screen.cursor(), (0, 3));
+                // The next read starts a line of its own.
+                server.control_keys(&keys[split..]);
+                server.status(Api::FlushInputBuffer, &[3]);
+                server.queue("d\r", unicode);
+                assert_eq!(server.read(64, unicode), (0, wide("d\r\n")));
+            }
+        }
+        let mut server = Server::new();
+        assert_eq!(server.control_keys(&CTRL_C_KEYS), [CTRL_C_EVENT]);
+        server.queue("e\r", true);
+        assert_eq!(server.read(64, true), (0, wide("e\r\n")));
     }
 
     /// A raw read, as Windows 2000's console capture shows it: the first character, a NUL, then

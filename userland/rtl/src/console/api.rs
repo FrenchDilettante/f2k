@@ -127,6 +127,10 @@ pub enum Api {
     ReadOutputCharacter = number(25),
     /// ConsolepReadConsoleOutputString's attributes ([`ReadOutputAttribute`]).
     ReadOutputAttribute = number(26),
+    /// The process's connection to the console's control events ([`ConnectCtrl`]).
+    ConnectCtrl = number(27),
+    /// ConsolepGenerateCtrlEvent ([`GenerateCtrlEvent`]).
+    GenerateCtrlEvent = number(28),
 }
 
 /// An API's number: the console server's index in the high word, the API's in the low one.
@@ -135,7 +139,7 @@ const fn number(index: u32) -> u32 {
 }
 
 /// Every API, at its index.
-const APIS: [Api; 27] = [
+const APIS: [Api; 29] = [
     Api::WriteConsole,
     Api::ReadConsole,
     Api::GetMode,
@@ -163,6 +167,8 @@ const APIS: [Api; 27] = [
     Api::GetHandleInformation,
     Api::ReadOutputCharacter,
     Api::ReadOutputAttribute,
+    Api::ConnectCtrl,
+    Api::GenerateCtrlEvent,
 ];
 
 const _: () = {
@@ -257,6 +263,8 @@ messages! {
     GetHandleInformation: 2 [handle, flags];
     ReadOutputCharacter: 6 [handle, buffer, count, origin, read, unicode];
     ReadOutputAttribute: 5 [handle, buffer, count, origin, read];
+    ConnectCtrl: 1 [routine];
+    GenerateCtrlEvent: 2 [event, group];
 }
 
 /// WriteConsole: `count` bytes of the client's memory at `buffer` to the screen, or, `unicode`,
@@ -577,6 +585,25 @@ pub struct ReadOutputAttribute<W> {
     pub read: W,
 }
 
+/// The process's connection to the console's control events, as Windows 2000's kernel32 makes it
+/// in its console connection: `routine`, its CtrlRoutine, where a thread of the process starts for
+/// each control event the process receives, the event its argument.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConnectCtrl<W> {
+    pub routine: W,
+}
+
+/// GenerateConsoleCtrlEvent: control event `event` (CTRL_C_EVENT or CTRL_BREAK_EVENT: kernel32
+/// refuses any other) for the console's processes in process group `group`, every one of them for
+/// group 0.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GenerateCtrlEvent<W> {
+    pub event: W,
+    pub group: W,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -586,7 +613,8 @@ mod tests {
         assert_eq!(Api::try_from(0x0002_0000), Ok(Api::WriteConsole));
         assert_eq!(Api::try_from(0x0002_0018), Ok(Api::GetHandleInformation));
         assert_eq!(Api::try_from(0x0002_001A), Ok(Api::ReadOutputAttribute));
-        for number in [0x0002_001B, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
+        assert_eq!(Api::try_from(0x0002_001C), Ok(Api::GenerateCtrlEvent));
+        for number in [0x0002_001D, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
             assert_eq!(Api::try_from(number), Err(number), "{number:#x}");
         }
         assert_eq!(u32::from(Api::GetInputWaitHandle), 0x0002_0016);

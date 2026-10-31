@@ -192,6 +192,10 @@ struct ProcessState {
     /// The process's console handles: the console server's own, outside the handle table, as
     /// Windows 2000's csrss keeps them (see `crate::csr`).
     console: rtl::console::Handles,
+    /// The process group the process belongs to, named by its leader's client id (Windows 2000's
+    /// CSR_PROCESS.ProcessGroupId): the console's control events go to a group. A process leads a
+    /// group of its own until its creator says otherwise (see [`Process::set_process_group`]).
+    process_group: u32,
     /// The process's connection to win32k: its window station's and desktop's handles, made at its
     /// first win32k service (see `crate::win32k::winsta`); none until then.
     win32k: Option<crate::win32k::winsta::Connection>,
@@ -220,6 +224,7 @@ impl ProcessState {
             priority_class: NORMAL_PRIORITY_CLASS,
             hard_error_mode: DEFAULT_HARD_ERROR_MODE,
             console: rtl::console::Handles::standard(),
+            process_group: 0,
             win32k: None,
             end: None,
             handed_end: None,
@@ -378,7 +383,10 @@ impl Process {
             table.drain(|_| unreachable!("a free process record holds no handle"))
         });
         self.with_space(AddressSpace::reset);
-        locked(&self.state, |state| *state = ProcessState::fresh());
+        locked(&self.state, |state| {
+            *state = ProcessState::fresh();
+            state.process_group = identity.id;
+        });
     }
 
     /// The process's name.
@@ -491,6 +499,18 @@ impl Process {
     /// dispatch level (a raise from the lock's level).
     pub fn with_console<R>(&self, f: impl FnOnce(&mut rtl::console::Handles) -> R) -> R {
         locked(&self.state, |state| f(&mut state.console))
+    }
+
+    /// The process group the process belongs to: its leader's client id.
+    pub fn process_group(&self) -> u32 {
+        locked(&self.state, |state| state.process_group)
+    }
+
+    /// Put the process in the group whose leader's client id is `group`: its creator's group, or
+    /// one of its own (CreateProcess's CREATE_NEW_PROCESS_GROUP), as Windows 2000's base server
+    /// decides when the creator announces the process.
+    pub fn set_process_group(&self, group: u32) {
+        locked(&self.state, |state| state.process_group = group);
     }
 
     /// Whether the process is terminating: its end is decided and held for its last thread, or it

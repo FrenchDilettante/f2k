@@ -373,6 +373,9 @@ fn end_thread(end: ThreadEnd) -> ! {
         // space (a thread ends detached), each one's section or image segment losing its
         // reference.
         process.release_handles();
+        // It leaves its console: no control event reaches it any more, and its group leads
+        // nothing once its last process has left.
+        crate::csr::disconnect(process.object());
         debug_assert!(
             !crate::sched::attach::running_attached(),
             "a thread ends on its own address space"

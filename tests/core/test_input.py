@@ -18,11 +18,12 @@ later, the release) while the idle thread keeps serving interrupts; each step wa
 its keys' records before the next.
 
 What the emulator was found to do, and the cases pin: the controller translates (bring-up reports
-"translation on"); `sendkey pause` sends Pause's make and break back to back (E1 1D 45 E1 9D C5);
-`sendkey` never repeats a held key (no typematic repeat, however long the hold), so two sendkeys
-of one key are two presses; each lights exchange comes back as two 0xFA replies (the command's and
-its argument's), which never reach the producer. The repeat count is built by the input buffer: two
-keydowns with no keyup between (QMP's input-send-event) fold into one record counted 2.
+"translation on"); `sendkey pause` sends Pause's make and break back to back (E1 1D 45 E1 9D C5),
+and with Ctrl held Break's (E0 46 E0 C6); `sendkey` never repeats a held key (no typematic
+repeat, however long the hold), so two sendkeys of one key are two presses; each lights exchange
+comes back as two 0xFA replies (the command's and its argument's), which never reach the producer.
+The repeat count is built by the input buffer: two keydowns with no keyup between (QMP's
+input-send-event) fold into one record counted 2.
 
     uv run pytest tests/core/test_input.py
 """
@@ -62,6 +63,7 @@ VK_CLEAR = 0x0C
 VK_RIGHT = 0x27
 VK_NUMPAD5 = 0x65
 VK_CAPITAL = 0x14
+VK_CANCEL = 0x03
 
 
 @dataclass(frozen=True)
@@ -171,20 +173,29 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
 @pytest.mark.kernel
 def test_the_driver_reads_set_one_bytes(builder, log_path, boot_timeout):
     """The bytes as the controller translates them: a's make and break, the E0-prefixed left arrow,
-    and Pause's E1 sequence, which the emulator sends make and break together."""
+    and Pause's E1 sequence, which the emulator sends make and break together; with Ctrl held,
+    Pause is Break, E0 46 and its break, together too: the console takes both its records for
+    itself (filtered, its control event raised), the Ctrl key's stay."""
     a, left, pause = Step(["a"], 1), Step(["left"], 1), Step(["pause"], 1)
-    run(builder, log_path, boot_timeout, [a, left, pause])
+    ctrl_pause = Step(["ctrl-pause"], 2)
+    run(builder, log_path, boot_timeout, [a, left, pause, ctrl_pause])
     assert a.key_bytes() == [0x1E, 0x9E], a.lines
     assert left.key_bytes() == [0xE0, 0x4B, 0xE0, 0xCB], left.lines
     assert pause.key_bytes() == [0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5], pause.lines
     assert [(r.down, r.vk, r.scan) for r in pause.records] == [(True, 0x13, 0x45), (False, 0x13, 0x45)]
+    assert ctrl_pause.key_bytes() == [0x1D, 0xE0, 0x46, 0xE0, 0xC6, 0x9D], ctrl_pause.lines
+    assert [(r.down, r.vk, r.outcome) for r in ctrl_pause.records] == [
+        (True, 0x11, "stored"), (True, VK_CANCEL, "filtered"), (False, VK_CANCEL, "filtered"),
+        (False, 0x11, "stored")], ctrl_pause.lines
 
 
 @pytest.mark.kernel
 def test_the_producer_appends_key_event_records(builder, log_path, boot_timeout):
     """The records: one keydown and one keyup per press, the character on the keydown only, the
     live control-key state, the toggles (their lights exchanged without a record), the keypad's Num
-    Lock resolution, Ctrl+C kept by the default filter, the enhanced bit, and the repeat count."""
+    Lock resolution, Ctrl+C's keydown taken by the console (its fresh input mode processes input:
+    the key raises a control event instead) and its keyup kept, the enhanced bit, and the repeat
+    count."""
     a = Step(["a"], 1)
     shift_a = Step(["shift-a"], 2)
     caps_on, caps_a, caps_off, plain_a = Step(["caps_lock"], 1), Step(["a"], 1), Step(["caps_lock"], 1), Step(["a"], 1)
@@ -226,7 +237,7 @@ def test_the_producer_appends_key_event_records(builder, log_path, boot_timeout)
     assert (keydown.vk, keydown.char, keydown.state & NUMLOCK_ON) == (VK_CLEAR, 0, 0), pad_clear.lines
 
     down, up = ctrl_c.of(VK_C)
-    assert (down.char, down.state, down.outcome) == (0x03, LEFT_CTRL_PRESSED, "stored"), ctrl_c.lines
+    assert (down.char, down.state, down.outcome) == (0x03, LEFT_CTRL_PRESSED, "filtered"), ctrl_c.lines
     assert up.char == 0
 
     assert [(r.down, r.vk, r.scan, r.state) for r in right.records] == [
