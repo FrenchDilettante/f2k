@@ -733,7 +733,7 @@ fn the_title_is_set_and_read_back() {
 /// Pins: kernel32.SetConsoleCtrlHandler
 #[test]
 fn control_handlers_register_and_unregister() {
-    const HANDLER: u32 = 0x40_1000;
+    const HANDLER: usize = 0x40_1000;
     assert_eq!(set_console_ctrl_handler(HANDLER, 1), 1);
     assert_eq!(set_console_ctrl_handler(HANDLER, 1), 1);
     assert_eq!(set_console_ctrl_handler(HANDLER, 0), 1);
@@ -911,5 +911,67 @@ fn the_screen_buffer_is_filled_read_and_scrolled() {
         let answer =
             unsafe { scroll_console_screen_buffer_w(handle, &source, core::ptr::null(), 0, &fill) };
         assert_eq!((answer, last_error()), (0, 6));
+    }
+}
+
+/// kernel32's CtrlRoutine's work: the handlers run the last registered first until one answers
+/// TRUE, whose answer it is; none answering so leaves the event to the default handler. The
+/// ignoring of Ctrl+C (SetConsoleCtrlHandler(NULL, TRUE)) keeps a Ctrl+C from every handler, and
+/// only a Ctrl+C.
+///
+/// Pins: kernel32.SetConsoleCtrlHandler
+#[test]
+fn control_events_run_the_handlers_last_registered_first() {
+    use std::cell::RefCell;
+    use std::vec::Vec;
+    std::thread_local! {
+        static CALLS: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
+    }
+    extern "system" fn taking(event: u32) -> u32 {
+        CALLS.with(|calls| calls.borrow_mut().push((1, event)));
+        1
+    }
+    extern "system" fn passing(event: u32) -> u32 {
+        CALLS.with(|calls| calls.borrow_mut().push((2, event)));
+        0
+    }
+    let calls = || CALLS.with(|calls| core::mem::take(&mut *calls.borrow_mut()));
+    let taking = taking as extern "system" fn(u32) -> u32 as usize;
+    let passing = passing as extern "system" fn(u32) -> u32 as usize;
+    assert_eq!(run_ctrl_handlers(1), None, "no handler: the default one's");
+    assert_eq!(set_console_ctrl_handler(taking, 1), 1);
+    assert_eq!(set_console_ctrl_handler(passing, 1), 1);
+    assert_eq!(run_ctrl_handlers(1), Some(1));
+    assert_eq!(calls(), [(2, 1), (1, 1)]);
+    assert_eq!(run_ctrl_handlers(0), Some(1));
+    assert_eq!(calls(), [(2, 0), (1, 0)]);
+    assert_eq!(set_console_ctrl_handler(0, 1), 1);
+    assert_eq!(run_ctrl_handlers(0), Some(0), "Ctrl+C ignored");
+    assert_eq!(calls(), []);
+    assert_eq!(run_ctrl_handlers(1), Some(1), "Ctrl+Break is not");
+    assert_eq!(calls(), [(2, 1), (1, 1)]);
+    assert_eq!(set_console_ctrl_handler(0, 0), 1);
+    assert_eq!(set_console_ctrl_handler(taking, 0), 1);
+    assert_eq!(run_ctrl_handlers(0), None);
+    assert_eq!(calls(), [(2, 0)]);
+    assert_eq!(set_console_ctrl_handler(passing, 0), 1);
+}
+
+/// GenerateConsoleCtrlEvent: CTRL_C_EVENT and CTRL_BREAK_EVENT go to the server, the last error
+/// untouched; any other event is ERROR_INVALID_PARAMETER before the server sees it (Windows 2000's
+/// ctrl capture: 2, 3, 5, 6, 0xFFFFFFFF).
+///
+/// Pins: kernel32.GenerateConsoleCtrlEvent
+#[test]
+fn generate_console_ctrl_event_takes_ctrl_c_and_ctrl_break() {
+    for event in [0, 1] {
+        crate::base::set_last_error(0xBEEF);
+        assert_eq!(generate_console_ctrl_event(event, 0), 1);
+        assert_eq!(last_error(), 0xBEEF);
+    }
+    for event in [2, 3, 5, 6, 0xFFFF_FFFF] {
+        crate::base::set_last_error(0xBEEF);
+        assert_eq!(generate_console_ctrl_event(event, 0), 0, "{event:#x}");
+        assert_eq!(last_error(), 87);
     }
 }

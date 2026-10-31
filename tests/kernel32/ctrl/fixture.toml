@@ -4,9 +4,10 @@
 # CREATE_NEW_PROCESS_GROUP; it goes into \CORPUS beside the program, as it sits beside it on the real
 # machine. Control events go only into such a child's group, while it lives: never group 0, which on
 # the real machine would reach the cmd.exe running capture.bat. The lone section's child runs in a
-# console of its own (CREATE_NEW_CONSOLE: a window opens briefly on the real machine).
+# console of its own (CREATE_NEW_CONSOLE: a window opens briefly on the real machine). Gated.
 description = "ctrl - console control events (ctrl.c, with its companion program ctrlkid.c): GenerateConsoleCtrlEvent's CTRL_BREAK_EVENT into a child's process group (CREATE_NEW_PROCESS_GROUP), the handlers' order and thread, TRUE ending the chain, the default handler's exit code (0xC000013A); CTRL_C_EVENT into a group and the ignore flag (SetConsoleCtrlHandler(NULL, ...)) in a child and a grandchild; GenerateConsoleCtrlEvent's refusals, and groups no process leads, from a console of its own; and, captured by hand, real Ctrl+C and Ctrl+Break during a line read and a running child."
 kind = "sectioned"
+gate = true
 timeout = 60
 
 [pending]

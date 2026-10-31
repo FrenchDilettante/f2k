@@ -31,8 +31,9 @@ _f2k_export_BaseThreadStartThunk:
     push 0
     jmp _f2k_k32_base_thread_start
 
-# BaseProcessStart(entry), under the thunk's zero return address: the entry point takes no
-# arguments.
+# BaseProcessStart(entry), under the thunk's zero return address: the process connects to its
+# console (handing the console server its CtrlRoutine, as Windows 2000's kernel32 does at its
+# initialization), then the entry point, which takes no arguments, runs.
 .p2align 4
 _f2k_k32_base_process_start:
     push ebp
@@ -44,6 +45,7 @@ _f2k_k32_base_process_start:
     push dword ptr fs:[0]
     mov dword ptr fs:[0], esp
     sub esp, 0x1C
+    call _f2k_k32_connect_console
     call dword ptr [ebp+8]
     push eax
     call _f2k_k32_exit_thread

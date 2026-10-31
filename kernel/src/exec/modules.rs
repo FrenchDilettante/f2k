@@ -476,7 +476,7 @@ mod tests {
         // binary-type, process-creation, process, pipe and module calls and RaiseException its
         // Rust, the heap and Local/Global calls its own over ntdll's heap). The internal start
         // thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 281);
+        assert_eq!(NATIVE_EXPORTS.len(), 282);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 290, "the corpus's import surface");
+        assert_eq!(names.len(), 291, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -1057,7 +1057,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
     /// gdi32, which F2K does not have).
-    const LOADED_CORPUS: [(&str, &[u8]); 11] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 13] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1089,6 +1089,14 @@ mod tests {
         (
             "screen",
             include_bytes!("../../../tests/kernel32/screen/screen.exe"),
+        ),
+        (
+            "ctrl",
+            include_bytes!("../../../tests/kernel32/ctrl/ctrl.exe"),
+        ),
+        (
+            "ctrlkid",
+            include_bytes!("../../../tests/kernel32/ctrl/ctrlkid.exe"),
         ),
     ];
 

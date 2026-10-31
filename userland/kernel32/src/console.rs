@@ -13,14 +13,30 @@
 //! STATUS_PENDING: kernel32 waits on the input-wait handle and asks again
 //! ([`call_server_waiting`]), where Windows 2000's csrss holds the reply. The host tests'
 //! CsrClientCallServer serves the same rules, the bytes written recorded ([`console_writes`]).
+//!
+//! Control events: a console program connects to its console at its start, handing the server its
+//! CtrlRoutine ([`connect_console`]), as Windows 2000's kernel32 hands it to csrss in its console
+//! connection. For each Ctrl+C or Ctrl+Break that reaches the process — a key, or
+//! GenerateConsoleCtrlEvent — the server starts a thread of the process there ([`ctrl_routine`]),
+//! which runs the process's handlers, the last registered first, and the default handler, which
+//! ends the process, when none takes the event.
 
 use rtl::console::api::{self, InputRecords, Message};
 use rtl::console::{Api, Coord, SmallRect};
 use rtl::pod::Pod;
-use rtl::status::{nt_success, STATUS_INVALID_HANDLE, STATUS_NO_MEMORY, STATUS_PENDING};
+use rtl::status::{
+    nt_success,
+    STATUS_ALERTED,
+    STATUS_CONTROL_C_EXIT,
+    STATUS_INVALID_HANDLE,
+    STATUS_NO_MEMORY,
+    STATUS_PENDING,
+};
 use rtl::sync::{Locked, OnceWord};
 
 use crate::base::{
+    console_flags,
+    image_subsystem,
     is_console_handle,
     own_data,
     parameters_standard_handle,
@@ -40,6 +56,7 @@ use crate::ntcall::FastPebLock;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const ERROR_INVALID_PARAMETER: u32 = 87;
+const ERROR_OPERATION_ABORTED: u32 = 995;
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 
@@ -48,10 +65,17 @@ own_data! {
     fn input_wait() -> &'static OnceWord<FastPebLock> = OnceWord::new(FastPebLock);
 }
 
-/// Send an API's message to the console server (CsrClientCallServer, no capture buffer: F2K's
-/// server reads the client's memory where it is), as the API's data after the header; the status,
-/// `message` as the server answered it.
+/// Send an API's message to the console server (see [`call_csr`]); the status, `message` as the
+/// server answered it.
 fn call_server<M: Message>(message: &mut M) -> u32 {
+    call_csr(M::API.into(), message.as_bytes_mut())
+}
+
+/// Send API `api`'s data `data` to its server (CsrClientCallServer, no capture buffer: F2K's
+/// server reads the client's memory where it is), as the data after the message's header; the
+/// status, `data` as the server answered it. The console server's calls come through here, and
+/// the base server's announcement of a new process (see `crate::create`).
+pub fn call_csr(api: u32, data: &mut [u8]) -> u32 {
     let mut sent = ApiMessage {
         port_message: [0; 6],
         capture_buffer: 0,
@@ -60,14 +84,11 @@ fn call_server<M: Message>(message: &mut M) -> u32 {
         reserved: 0,
         data: [0; rtl::console::DATA_WORDS],
     };
-    let length = core::mem::size_of::<M>();
-    sent.data.as_bytes_mut()[..length].copy_from_slice(message.as_bytes());
-    let api = M::API.into();
+    let length = data.len();
+    sent.data.as_bytes_mut()[..length].copy_from_slice(data);
     // SAFETY: ntdll's export, over the message above.
     unsafe { nt::CsrClientCallServer(&mut sent, core::ptr::null_mut(), api, length as u32) };
-    message
-        .as_bytes_mut()
-        .copy_from_slice(&sent.data.as_bytes()[..length]);
+    data.copy_from_slice(&sent.data.as_bytes()[..length]);
     sent.return_value
 }
 
@@ -847,7 +868,9 @@ fn call_server_waiting<M: Message>(message: &mut M) -> u32 {
 /// A read through the console server: up to `count` characters (UTF-16 units, or bytes in the
 /// console's code page for the A form) into `buffer`, as the input mode reads them — a line and
 /// its CR LF in line mode, the rest of a line kept for the next read; what was typed in raw mode
-/// — waiting for the input that completes it. The count read stored where asked.
+/// — waiting for the input that completes it. The count read stored where asked. A line read a
+/// Ctrl+C or Ctrl+Break ended (the server's STATUS_ALERTED) succeeds with no characters and
+/// ERROR_OPERATION_ABORTED, as Windows 2000's console capture shows it.
 fn read_console_as(
     console: u32,
     buffer: usize,
@@ -862,8 +885,12 @@ fn read_console_as(
         read: 0,
         unicode: usize::from(unicode),
     };
-    if succeeded(call_server_waiting(&mut message)) == 0 {
+    let status = call_server_waiting(&mut message);
+    if succeeded(status) == 0 {
         return 0;
+    }
+    if status == STATUS_ALERTED {
+        set_last_error(ERROR_OPERATION_ABORTED);
     }
     if let Some(mut read) = read {
         read.set(message.read as u32);
@@ -1165,7 +1192,7 @@ pub unsafe extern "system" fn set_console_title_w(title: *const u16) -> u32 {
 /// The process's control handlers, kept as Windows 2000's kernel32 keeps them, a list in the
 /// order they were added, grown as needed, its block on the process heap (none before the first
 /// handler).
-type CtrlHandlers = Option<HeapVec<u32>>;
+type CtrlHandlers = Option<HeapVec<usize>>;
 
 own_data! {
     /// The control handlers, under the PEB lock.
@@ -1178,7 +1205,7 @@ const FIRST_ROOM: usize = 8;
 
 /// `routine` added at the end of the list (made at the first handler, its room doubled when it is
 /// full); none, the list as it was, when the heap has no room.
-fn add_ctrl_handler(handlers: &mut CtrlHandlers, routine: u32) -> Result<(), OutOfMemory> {
+fn add_ctrl_handler(handlers: &mut CtrlHandlers, routine: usize) -> Result<(), OutOfMemory> {
     let list = match handlers.take() {
         Some(list) => list,
         None => HeapVec::with_capacity(FIRST_ROOM)?,
@@ -1192,7 +1219,7 @@ fn add_ctrl_handler(handlers: &mut CtrlHandlers, routine: u32) -> Result<(), Out
 }
 
 /// The list's latest entry for `routine` taken out; whether it held one.
-fn remove_ctrl_handler(handlers: &mut CtrlHandlers, routine: u32) -> bool {
+fn remove_ctrl_handler(handlers: &mut CtrlHandlers, routine: usize) -> bool {
     let Some(list) = handlers else {
         return false;
     };
@@ -1211,10 +1238,10 @@ const IGNORE_CTRL_C: u32 = 0x1;
 /// SetConsoleCtrlHandler: `routine` added to the process's control handlers (a handler added
 /// twice is in the list twice), or one of its entries removed (the latest); a routine the list
 /// does not hold is ERROR_INVALID_PARAMETER, a list that cannot grow ERROR_NOT_ENOUGH_MEMORY. A
-/// null routine sets or clears the process's ignoring of Ctrl+C, and never fails. Registration
-/// only: no control event is delivered yet.
+/// null routine sets or clears the process's ignoring of Ctrl+C, and never fails: the process
+/// parameters' flag, which [`ctrl_routine`] reads and a child inherits.
 #[unsafe(export_name = "f2k_export_SetConsoleCtrlHandler")]
-pub extern "system" fn set_console_ctrl_handler(routine: u32, add: u32) -> u32 {
+pub extern "system" fn set_console_ctrl_handler(routine: usize, add: u32) -> u32 {
     if routine == 0 {
         update_console_flags(|flags| {
             if add != 0 {
@@ -1239,4 +1266,94 @@ pub extern "system" fn set_console_ctrl_handler(routine: u32, add: u32) -> u32 {
         return 0;
     }
     1
+}
+
+/// The control events a CtrlRoutine runs the handlers for (a HandlerRoutine's dwCtrlType): Ctrl+C's
+/// and Ctrl+Break's, the two GenerateConsoleCtrlEvent raises.
+const CTRL_C_EVENT: u32 = 0;
+const CTRL_BREAK_EVENT: u32 = 1;
+
+/// IMAGE_SUBSYSTEM_WINDOWS_CUI: a console program's subsystem.
+const SUBSYSTEM_CONSOLE: u32 = 3;
+
+/// The handlers' work for control event `event`, as kernel32's CtrlRoutine does it: a Ctrl+C the
+/// process ignores (SetConsoleCtrlHandler(NULL, TRUE), or inherited) reaches no handler, its
+/// answer 0; otherwise the handlers run, the last registered first, until one answers nonzero,
+/// its answer the answer. None when no handler answered so: the default handler's turn. Each
+/// handler is read from the list under the PEB lock and called outside it (a handler may change
+/// the list).
+pub fn run_ctrl_handlers(event: u32) -> Option<u32> {
+    if event == CTRL_C_EVENT && console_flags() & IGNORE_CTRL_C != 0 {
+        return Some(0);
+    }
+    let mut index = ctrl_handlers().with(|handlers| handlers.as_ref().map_or(0, |list| list.len()));
+    while index > 0 {
+        index -= 1;
+        let routine = ctrl_handlers()
+            .with(|handlers| handlers.as_ref().and_then(|list| list.get(index).copied()));
+        let Some(routine) = routine else {
+            continue;
+        };
+        // SAFETY: a routine the process registered with SetConsoleCtrlHandler, a HandlerRoutine
+        // (stdcall, the event its argument, a BOOL its answer).
+        let handler: unsafe extern "system" fn(u32) -> u32 =
+            unsafe { core::mem::transmute::<usize, _>(routine) };
+        // SAFETY: the process's own handler, called as its contract says.
+        let answer = unsafe { handler(event) };
+        if answer != 0 {
+            return Some(answer);
+        }
+    }
+    None
+}
+
+/// kernel32's CtrlRoutine: where the console server starts a thread of the process for each
+/// control event that reaches it, the event its argument (stdcall, under a null return address:
+/// it never returns). It runs the handlers ([`run_ctrl_handlers`]) and ends its thread with their
+/// answer; when none took the event, the default handler ends the process with
+/// STATUS_CONTROL_C_EXIT, as Windows 2000's does.
+pub extern "system" fn ctrl_routine(event: u32) -> ! {
+    match run_ctrl_handlers(event) {
+        Some(answer) => crate::thread::exit_thread(answer),
+        None => crate::process::exit_process(STATUS_CONTROL_C_EXIT),
+    }
+}
+
+/// The process's connection to its console, at its start (BaseProcessStart, src/start.s, before
+/// the program's entry point): a console program hands the console server its CtrlRoutine, as
+/// Windows 2000's kernel32 hands it to csrss when it connects at its initialization. A program of
+/// another subsystem has no console to connect to. The server's refusal leaves the process without
+/// control events.
+pub fn connect_console() {
+    if image_subsystem() != SUBSYSTEM_CONSOLE {
+        return;
+    }
+    let routine: extern "system" fn(u32) -> ! = ctrl_routine;
+    let _ = call_server(&mut api::ConnectCtrl {
+        routine: routine as usize,
+    });
+}
+
+/// [`connect_console`] for kernel32's own assembly (src/start.s: BaseProcessStart).
+#[unsafe(no_mangle)]
+pub extern "C" fn f2k_k32_connect_console() {
+    connect_console();
+}
+
+/// GenerateConsoleCtrlEvent: control event `event` raised for the processes of the console in
+/// process group `group` (the group's leader's id; 0: every process of the console), each of which
+/// runs its handlers for it on a thread of its own, the call returning once the event is raised.
+/// An event other than CTRL_C_EVENT and CTRL_BREAK_EVENT is ERROR_INVALID_PARAMETER, and so is a
+/// group no process of the console is in (the server's answer); the last error is untouched on
+/// success. Windows 2000's ctrl capture.
+#[unsafe(export_name = "f2k_export_GenerateConsoleCtrlEvent")]
+pub extern "system" fn generate_console_ctrl_event(event: u32, group: u32) -> u32 {
+    if event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    succeeded(call_server(&mut api::GenerateCtrlEvent {
+        event: event as usize,
+        group: group as usize,
+    }))
 }

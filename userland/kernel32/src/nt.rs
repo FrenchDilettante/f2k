@@ -1891,7 +1891,9 @@ pub mod host {
     }
 
     /// CsrClientCallServer, over the console server's own rules (`rtl::console`, as the kernel
-    /// serves them): the data words the length names, answered in place; the ReturnValue.
+    /// serves them): the data words the length names, answered in place; the ReturnValue. The
+    /// base server's announcement of a new process (`rtl::console::base`) is taken as the
+    /// kernel takes it, its process group the stand-in's to ignore.
     pub unsafe extern "system" fn CsrClientCallServer(
         message: *mut super::ApiMessage,
         capture_buffer: *mut u8,
@@ -1900,6 +1902,12 @@ pub mod host {
     ) -> u32 {
         // SAFETY: the caller's message.
         let message = unsafe { &mut *message };
+        if api == rtl::console::base::CREATE_PROCESS {
+            message.capture_buffer = capture_buffer as usize;
+            message.api_number = api;
+            message.return_value = 0;
+            return 0;
+        }
         let mut handles = CONSOLE_HANDLES.with(Cell::get);
         let status = CONSOLE_STATE.with(|console| {
             rtl::console::serve(

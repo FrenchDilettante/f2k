@@ -273,6 +273,14 @@ pub fn set_parameters_standard_handle(which: usize, handle: u32) {
     }
 }
 
+/// The process parameters' ConsoleFlags, read in place.
+pub fn console_flags() -> u32 {
+    let parameters = process_parameters();
+    // SAFETY: the process parameters, mapped for the process's whole life; the flags are read in
+    // place (SetConsoleCtrlHandler writes them in place).
+    unsafe { (&raw const (*parameters).console_flags).read_volatile() }
+}
+
 /// Change the process parameters' ConsoleFlags to `change`'s answer, under the PEB lock.
 pub fn update_console_flags(change: impl FnOnce(u32) -> u32) {
     let parameters = process_parameters();
@@ -298,6 +306,12 @@ macro_rules! peb_field {
 /// The process image's base (the PEB's ImageBaseAddress).
 pub fn image_base() -> usize {
     peb_field!(image_base_address)
+}
+
+/// The process image's subsystem (the PEB's ImageSubsystem): IMAGE_SUBSYSTEM_WINDOWS_CUI for a
+/// console program.
+pub fn image_subsystem() -> u32 {
+    peb_field!(image_subsystem)
 }
 
 /// The PEB's ProcessParameters (RTL_USER_PROCESS_PARAMETERS).

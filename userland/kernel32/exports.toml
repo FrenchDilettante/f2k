@@ -656,9 +656,8 @@ fails = "FALSE"
 name = "GenerateConsoleCtrlEvent"
 group = "console"
 args = ["u32 dwCtrlEvent", "u32 dwProcessGroupId"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GenerateConsoleCtrlEvent" }
 ordinal = 205
-fails = "FALSE"
 
 # --- environment ------------------------------------------------------------------------------------
 

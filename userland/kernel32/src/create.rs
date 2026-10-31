@@ -41,9 +41,10 @@
 //!    reservation, its commit — two pages at least, what Windows 2000's child is seen to start its
 //!    program with — and a guard page: the stack at 0x00130000 down), the context
 //!    (BaseProcessStartThunk with EAX the image's entry point and EBX the PEB), NtCreateThread
-//!    suspended, then resumed unless CREATE_SUSPENDED. Windows 2000 announces the new process to
-//!    the base server between the two (CsrClientCallServer); F2K has no csrss (a known gap): the
-//!    kernel tracks its processes itself.
+//!    suspended, then resumed unless CREATE_SUSPENDED. Between the two the new process is announced
+//!    to the base server (CsrClientCallServer, BasepCreateProcess, [`announce`]), as Windows 2000
+//!    announces it: F2K's server takes its process group from it (the kernel tracks the rest of
+//!    what Windows 2000's server records itself).
 //!
 //! Every failure undoes what was made — the file and section closed, a process made terminated and
 //! its handle closed, the parameters block freed — and sets the error Windows 2000 sets; success
@@ -664,6 +665,26 @@ fn process_start_thunk() -> u32 {
 #[cfg(any(not(target_arch = "x86"), test))]
 pub const PROCESS_START_THUNK: u32 = 0x7C4E_1010;
 
+/// The new process and its first thread announced to the base server (BasepCreateProcess), with
+/// the creation flags: the server puts the process in the caller's process group, or in a group of
+/// its own under CREATE_NEW_PROCESS_GROUP. The server's refusal fails the create.
+fn announce(process: u32, thread: u32, client_id: &ClientId, flags: u32) -> Result<(), Failure> {
+    let mut message = rtl::console::base::CreateProcess::<usize> {
+        process: process as usize,
+        thread: thread as usize,
+        process_id: client_id.unique_process,
+        thread_id: client_id.unique_thread,
+        creation_flags: flags as usize,
+    };
+    let status =
+        crate::console::call_csr(rtl::console::base::CREATE_PROCESS, message.as_bytes_mut());
+    if rtl::status::nt_success(status) {
+        Ok(())
+    } else {
+        Err(Failure::Status(status))
+    }
+}
+
 /// The new process's start (see the module's fifth to seventh steps), once NtCreateProcess has
 /// made it: its first thread's handle and the client id.
 #[inline(never)]
@@ -704,8 +725,7 @@ fn start(
     )
     .map_err(Failure::Status)?;
     let thread = Owned(thread);
-    // F2K has no csrss (a known gap): Windows 2000 announces the new process and thread to the
-    // base server here (CsrClientCallServer, BasepCreateProcess); the kernel tracks them itself.
+    announce(process, thread.0, &client_id, request.flags)?;
     if request.flags & CREATE_SUSPENDED == 0 {
         ntcall::resume_thread(thread.0).map_err(Failure::Status)?;
     }
