@@ -117,7 +117,7 @@ The fixtures:
   Built with `/MD`.
 - `ctrl` - console control events, with its companion program `ctrlkid.exe` (built beside it from `ctrlkid.c`), started in a process group of its own: `GenerateConsoleCtrlEvent` into that group (the handlers' order and thread, the chain's end, the default handler's exit code), `CTRL_C_EVENT` into a group and the ignore flag in a child and a grandchild, the call's refusals, groups no process leads (from a console of its own), and named-only `keys`, real Ctrl+C and Ctrl+Break during a line read and a running child, captured by hand into `overrides.txt`.
   No event ever goes to group 0, which would reach the cmd.exe running the capture.
-  Built with `/MD`; its `keys` block waits for the harness to send keys.
+  Built with `/MD`; its `keys` block's keys are pressed by the harness (`[keys]`).
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 
@@ -159,7 +159,18 @@ Each block keeps its `timeout` (the boot's start counts against the first).
 The disk build puts the sectioned fixtures in `\CORPUS` (the files fixture's data tree beside them), the way each runs from its own directory on the real machine.
 The fixture's declaration, `fixture.toml`, states what its comparison allows: `gate = true` once F2K passes every block, `[pending]` for the blocks still on the work list (each with its reason: `search = "not yet implemented"`), both run as strict expected failures (a block that starts passing fails the run, so the marker goes with the fix; `--runxfail` shows each failure's first differing line), `[masks]` for the few capture lines that carry machine-specific values (per section, `"virtual" = ["... region * ..."]`: each `*` one value, a run of non-blank characters, each `**` any text, blanks included, and only in that section's block), `[pins]` for the exports each section pins (`event = ["kernel32.CreateEventA", "ntdll.NtCreateEvent"]`, `"*"` for every block: what the C runtime's startup calls; `scripts/compat.py` reports each export's coverage from them), a `timeout`, `retake` for a capture to be retaken (its blocks skipped), and `screenshots = true` for a fixture whose blocks deal with the screen: its boot pauses as each block's process ends (the kernel option `screens`), the harness saves the screen as QEMU shows it to `target/qemu/screens/<fixture>/<section>.png` and lets the boot go on (through a CMOS byte it writes with QEMU's monitor).
 The screenshots are recorded only, never compared.
-A `[pending]`, `[masks]` or `[pins]` section with no captured block is an error, as is a mask that matches none of its block's lines.
+`[keys]` gives an interactive block the keys a person presses on the real machine while it runs: per section, a list of steps, each a table of what it waits for and what it presses, taken in order:
+
+- `after`: the line of the block's own output to wait for, after the line the step before waited for (the block's markers: `ctrl keys` prints `step N: ...` before each of its waits);
+- `screen`: the text the screen's last line (the last one holding anything but blanks, its trailing blanks dropped) must read, as the harness reads the text page through QMP: the program's echo, say, which shows a read is waiting;
+- `press`: chords pressed and released one after another;
+- `hold`: a chord pressed and held, released at the next step once that step's waits are met (or before the next block's keys), as a person's hand stays on the keys while the program looks at the input.
+
+A chord is QEMU's key names (its qcodes: `a`, `ctrl`, `pause`, `ret`...) joined by `-`, pressed in order and released in reverse: `ctrl-c`, and `ctrl-pause` for Ctrl+Break.
+The keys go through QMP's `input-send-event`, each press and release sent explicitly, in order: the monitor's `sendkey` queues each release behind a hold time of its own, which a chord held from another command would overtake.
+As `tests/core/test_input.py` found, the emulator never repeats a held key, sends Pause's make and break together (`E1 1D 45 E1 9D C5`), and with Ctrl held sends Break's, together too (`E0 46 E0 C6`).
+A step whose wait never comes leaves the rest of its block's keys unpressed: the block fails on its output, or its timeout.
+A `[pending]`, `[masks]`, `[pins]` or `[keys]` section with no captured block is an error, as is a mask that matches none of its block's lines.
 The fixture's `test_<name>.py` only binds `f2kboot.corpus_test("<name>")`.
 A sectioned fixture may be declared ahead of its real-machine files (`<name>.exe` and `output.txt`, both absent; its sources may come first, for the real machine to build): it is then one skipped test, and the disk build leaves it out; `harness/test_repository.py` refuses a fixture holding only one of them.
 A fixture's companion DLLs and programs (`tests/<dll>/<name>/*.dll`, and the `*.exe` other than its own) go into `\CORPUS` beside its program, by their uppercase names (8.3, and distinct across the fixtures: `harness/test_repository.py` checks both), as they sit beside it on the real machine, and the DLLs in a subdirectory of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that subdirectory of `\CORPUS`.

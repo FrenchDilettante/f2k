@@ -4,7 +4,8 @@
 # CREATE_NEW_PROCESS_GROUP; it goes into \CORPUS beside the program, as it sits beside it on the real
 # machine. Control events go only into such a child's group, while it lives: never group 0, which on
 # the real machine would reach the cmd.exe running capture.bat. The lone section's child runs in a
-# console of its own (CREATE_NEW_CONSOLE: a window opens briefly on the real machine). Gated.
+# console of its own (CREATE_NEW_CONSOLE: a window opens briefly on the real machine). Gated; the
+# keys block's keys are pressed by the harness, as [keys] says.
 description = "ctrl - console control events (ctrl.c, with its companion program ctrlkid.c): GenerateConsoleCtrlEvent's CTRL_BREAK_EVENT into a child's process group (CREATE_NEW_PROCESS_GROUP), the handlers' order and thread, TRUE ending the chain, the default handler's exit code (0xC000013A); CTRL_C_EVENT into a group and the ignore flag (SetConsoleCtrlHandler(NULL, ...)) in a child and a grandchild; GenerateConsoleCtrlEvent's refusals, and groups no process leads, from a console of its own; and, captured by hand, real Ctrl+C and Ctrl+Break during a line read and a running child."
 kind = "sectioned"
 gate = true
@@ -12,7 +13,6 @@ timeout = 60
 
 [pending]
 lone = "CREATE_NEW_CONSOLE not yet implemented: the section's child opens a console of its own"
-keys = "interactive: real Ctrl+C and Ctrl+Break keys, captured by hand into overrides.txt; the harness has no field yet for the keys a block sends once it prints a marker"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -99,4 +99,24 @@ keys = [
     "kernel32.GetNumberOfConsoleInputEvents",
     "kernel32.CreateThread",
     "kernel32.CreateProcessA",
+]
+
+[keys]
+# The keys block's keys, as a person presses them on the real machine once each step's prompt
+# shows (ctrl.c's header lists them; each step's marker line is the block's own output). A read's
+# Ctrl+C or Ctrl+Break comes once the read has echoed "abc" (the screen's last line), so the read
+# waits for its line when the key arrives; it is held until the block has counted the input events
+# left, as a person's hand is still on the keys then.
+keys = [
+    { after = "step 1: type abc, then press Ctrl+C", press = ["a", "b", "c"] },
+    { screen = "abc", hold = "ctrl-c" },
+    { after = "input events left: 0" },
+    { after = "step 2: type abc, then press Ctrl+C", press = ["a", "b", "c"] },
+    { screen = "abc", hold = "ctrl-c" },
+    { after = "input events left: 0" },
+    { after = "step 3: type abc, then press Ctrl+Break", press = ["a", "b", "c"] },
+    { screen = "abc", hold = "ctrl-pause" },
+    { after = "input events left: 0" },
+    { after = "step 4: press Ctrl+C", press = ["ctrl-c"] },
+    { after = "step 5: press Ctrl+Break", press = ["ctrl-pause"] },
 ]

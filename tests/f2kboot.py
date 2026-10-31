@@ -15,7 +15,9 @@ Three pieces the test modules share:
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
   it (`screendump`, a PNG; `read_png`, `differing_cells`); a fixture declaring `screenshots` has
-  each block's screen saved as its process ends (`ScreenTaker`).
+  each block's screen saved as its process ends (`ScreenTaker`);
+- the keyboard: a fixture declaring `keys` has its interactive blocks' keys pressed through QMP as
+  each block asks for them (`KeyPresser`).
 """
 from __future__ import annotations
 
@@ -513,6 +515,117 @@ class ScreenTaker:
             self.taken += 1
 
 
+# --- The keyboard --------------------------------------------------------------------------------
+#
+# A fixture's interactive blocks wait for keys a person presses on the real machine (its `keys`
+# field, per section: tests/README.md). The harness presses them through QMP's input-send-event,
+# each key's press and release explicit and sent in order: the monitor's sendkey queues its
+# releases behind a hold time of their own, which a chord held from another command would overtake.
+
+
+@dataclass(frozen=True)
+class KeyStep:
+    """One step of a block's keys: what it waits for — the line of the block's output after the
+    one the step before waited for (`after`), the text the screen's last line reads (`screen`) —
+    then the chords it presses and releases one after another (`press`), and the chord it presses
+    and holds (`hold`), released at the next step once that step's waits are met. A chord is QEMU's
+    key names (qcodes) joined by "-" ("ctrl-c", "ctrl-pause"), pressed in order and released in
+    reverse."""
+
+    after: str | None = None
+    screen: str | None = None
+    press: tuple[str, ...] = ()
+    hold: str | None = None
+
+
+KEY_STEP_FIELDS = {"after", "screen", "press", "hold"}
+
+
+def key_steps(section: str, steps: list[dict]) -> list[KeyStep]:
+    """A section's `keys` steps, checked: each a table of KEY_STEP_FIELDS, not empty."""
+    parsed = []
+    for number, step in enumerate(steps, start=1):
+        unknown = sorted(set(step) - KEY_STEP_FIELDS)
+        if unknown:
+            raise ValueError(f"keys {section!r} step {number}: unknown fields {unknown}")
+        if not step:
+            raise ValueError(f"keys {section!r} step {number}: an empty step")
+        parsed.append(KeyStep(step.get("after"), step.get("screen"), tuple(step.get("press", ())),
+                              step.get("hold")))
+    return parsed
+
+
+def key_events(chord: str, down: bool) -> dict:
+    """The input-send-event command pressing (`down`) or releasing a chord's keys: pressed in
+    order, released in reverse."""
+    keys = chord.split("-")
+    if not down:
+        keys.reverse()
+    return {"execute": "input-send-event",
+            "arguments": {"events": [{"type": "key",
+                                      "data": {"down": down, "key": {"type": "qcode", "data": key}}}
+                                     for key in keys]}}
+
+
+def last_screen_line(screen: TextScreen) -> str:
+    """The text screen's last line holding anything but blanks, its trailing blanks dropped: what
+    was written last (the console writes at its cursor, and blanks what it moves onto)."""
+    rows = [screen.text(row).rstrip(" \0") for row in range(ROWS)]
+    return next((row for row in reversed(rows) if row), "")
+
+
+class KeyPresser:
+    """A keyed boot's `during` step: for each block whose section has keys, in the boot's order,
+    its steps one after another, each taken once its waits are met — its `after` line in the
+    block's own part of the log, after the line the step before waited for; the screen's last line
+    reading its `screen` — then the chord the step before held released, its chords pressed and
+    released, its own chord held. A block's last held chord is released before the next block's
+    steps."""
+
+    def __init__(self, blocks: list[Block], keys: dict[str, list[KeyStep]]):
+        self.plans = [(f"{CORPUS_DIRECTORY}\\{block.command}", keys[block.section])
+                      for block in blocks if block.section in keys]
+        self.plan = 0
+        self.step = 0
+        self.line = 0  # the first log line the next `after` wait may match
+        self.held: str | None = None
+
+    def __call__(self, socket: Path, log: str) -> None:
+        lines = lines_of(log)
+        while self.plan < len(self.plans):
+            command, steps = self.plans[self.plan]
+            start = next((i + 1 for i, line in enumerate(lines)
+                          if (match := START.match(line)) and match.group(3) == command), None)
+            if start is None:
+                return
+            if self.step == len(steps):
+                self.release(socket)
+                self.plan, self.step, self.line = self.plan + 1, 0, 0
+                continue
+            step = steps[self.step]
+            at = max(self.line, start)
+            if step.after is not None:
+                found = next((i for i in range(at, len(lines)) if lines[i] == step.after), None)
+                if found is None:
+                    return
+                at = found + 1
+            if step.screen is not None and last_screen_line(read_text_screen(socket)) != step.screen:
+                return
+            self.release(socket)
+            for chord in step.press:
+                qmp_command(socket, [key_events(chord, True), key_events(chord, False)])
+            if step.hold is not None:
+                qmp_command(socket, [key_events(step.hold, True)])
+                self.held = step.hold
+            self.step, self.line = self.step + 1, at
+
+    def release(self, socket: Path) -> None:
+        """Release the chord a step holds, if one does."""
+        if self.held is not None:
+            qmp_command(socket, [key_events(self.held, False)])
+            self.held = None
+
+
 @dataclass(frozen=True)
 class Image:
     """A decoded image: its rows of RGB pixels, three bytes each."""
@@ -967,6 +1080,7 @@ def blocks(
     pins: dict[str, list[str]] | None = None,
     timeout: float = CORPUS_TIMEOUT,
     retake: str | None = None,
+    keys: dict[str, list[dict]] | None = None,
 ) -> list:
     """A fixture's captured blocks as pytest parameters, one per block, its section the id.
 
@@ -986,6 +1100,8 @@ def blocks(
       an export); a section the capture has no block for is an error here.
     - `timeout`: seconds per boot.
     - `retake`: the capture must be retaken before it counts (the reason): the blocks are skipped.
+    - `keys`: per section, the keys its block waits for a person to press (`KeyStep`'s fields); a
+      section the capture has no block for is an error.
     """
     import pytest
 
@@ -996,13 +1112,15 @@ def blocks(
         marks.append(pytest.mark.xfail(reason=f"{fixture} is not served yet", strict=True))
     captured = read_capture(fixture)
     sections = {block.section for block in captured}
-    for field_name, keyed in (("pending", pending or {}), ("masks", masks or {})):
+    for field_name, keyed in (("pending", pending or {}), ("masks", masks or {}), ("keys", keys or {})):
         unknown = sorted(set(keyed) - sections)
         if unknown:
             raise ValueError(f"{fixture}: {field_name} names sections with no captured block: {unknown}")
     unknown = sorted(set(pins or {}) - {block.name for block in captured} - {"*"})
     if unknown:
         raise ValueError(f"{fixture}: pins names sections with no captured block: {unknown}")
+    for section, steps in (keys or {}).items():
+        key_steps(section, steps)
     for section, exports in (pins or {}).items():
         malformed = [pin for pin in exports if not PIN.fullmatch(pin)]
         if malformed:
@@ -1093,6 +1211,7 @@ def corpus_params(fixture: str) -> list:
         pins=declared.get("pins"),
         timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),
         retake=declared.get("retake"),
+        keys=declared.get("keys"),
     )
 
 
@@ -1215,11 +1334,23 @@ class Batch:
 
 
 def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
-               timeouts: list[float], screens: Path | None = None) -> Batch:
+               timeouts: list[float], screens: Path | None = None,
+               keys: dict[str, list[KeyStep]] | None = None) -> Batch:
     """Run `blocks` in one boot of `build` (`image` as `boot` takes it), each its own process, in
     order; `timeouts` are each block's seconds (the boot's start counts against the first). With
-    `screens`, each block's screen as its process ends is saved there (`ScreenTaker`)."""
+    `screens`, each block's screen as its process ends is saved there (`ScreenTaker`); with `keys`,
+    each block's section's keys are pressed as the block asks for them (`KeyPresser`)."""
     watch = BatchWatch(timeouts)
+    steps: list[Callable[[Path, str], None]] = []
+    if screens is not None:
+        steps.append(ScreenTaker(blocks, screens))
+    if keys and any(block.section in keys for block in blocks):
+        steps.append(KeyPresser(blocks, keys))
+
+    def during(socket: Path, log: str) -> None:
+        for step in steps:
+            step(socket, log)
+
     commands = [block.command for block in blocks]
     cmdline = batch_command_line(commands)
     # The kernel keeps the first KERNEL_COMMAND_LINE bytes; QEMU's loader puts the kernel's path
@@ -1236,7 +1367,7 @@ def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
         timeout=sum(timeouts),
         done=watch,
         kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if screens is not None else [])),
-        during=ScreenTaker(blocks, screens) if screens is not None else None,
+        during=during if steps else None,
     )
     if watch.overran is not None:
         stopped = "timeout"

@@ -37,7 +37,7 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins",
-                    "screenshots"}
+                    "screenshots", "keys"}
 
 
 def declared_sections(fixture: str) -> set[str]:
@@ -70,7 +70,8 @@ def test_fixture_declarations_read(fixture: str):
 def test_captures_match_their_sources(fixture: str):
     """Every section the source declares has a captured block (output.txt, or overrides.txt for the
     ones the capture script cannot take), every block names a declared section, every pending
-    block exists, and every mask still matches a line of its own section's block."""
+    block exists, every mask still matches a line of its own section's block, and every key step's
+    marker is a line of its own section's block."""
     blocks = f2kboot.read_capture(fixture)
     captured = {block.section.split(" ")[0] for block in blocks}
     declared = declared_sections(fixture)
@@ -87,6 +88,12 @@ def test_captures_match_their_sources(fixture: str):
             pattern = f2kboot.mask_pattern(mask)
             assert any(pattern.fullmatch(line) for line in by_section[section].lines), (
                 f"the mask matches no line of {section!r}: {mask!r}"
+            )
+    for section, steps in declaration.get("keys", {}).items():
+        assert section in by_section, f"keys for a section with no block: {section!r}"
+        for step in f2kboot.key_steps(section, steps):
+            assert step.after is None or step.after in by_section[section].lines, (
+                f"a key step waits for a line {section!r} never prints: {step.after!r}"
             )
 
 
