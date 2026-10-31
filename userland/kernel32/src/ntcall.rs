@@ -1789,6 +1789,89 @@ pub fn query_volume_information_file(
     })
 }
 
+// --- Pipes ---------------------------------------------------------------------------------------
+
+/// What NtCreateNamedPipeFile asks beyond an open's arguments: the pipe's type, read mode and
+/// completion mode, how many instances it allows, its queues' quotas, and the default timeout a
+/// client's wait for it takes.
+pub struct NamedPipe {
+    pub pipe_type: u32,
+    pub read_mode: u32,
+    pub completion_mode: u32,
+    pub maximum_instances: u32,
+    pub inbound_quota: u32,
+    pub outbound_quota: u32,
+    pub default_timeout: Option<i64>,
+}
+
+/// NtCreateNamedPipeFile: a pipe the attributes name made, its server end's handle answered.
+pub fn create_named_pipe_file(
+    access: u32,
+    attributes: &ObjectAttributes,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    pipe: &NamedPipe,
+) -> Result<u32, NtStatus> {
+    let mut handle = 0;
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export, over the attributes (their name a counted string whose buffer holds
+    // its length) and the timeout (a live reference, or null for none), into the local handle and
+    // I/O status.
+    checked(unsafe {
+        nt::NtCreateNamedPipeFile(
+            &mut handle,
+            access,
+            attributes,
+            &mut io_status,
+            share,
+            disposition,
+            options,
+            pipe.pipe_type,
+            pipe.read_mode,
+            pipe.completion_mode,
+            pipe.maximum_instances,
+            pipe.inbound_quota,
+            pipe.outbound_quota,
+            pointer(pipe.default_timeout.as_ref()),
+        )
+    })?;
+    Ok(handle)
+}
+
+/// NtFsControlFile, synchronously: the control `code` on the open file, from `input` into
+/// `output`. Its I/O status for a success, an informational status or a warning (a peek's
+/// STATUS_BUFFER_OVERFLOW: the output as long as it fits, the I/O status counting it); the status
+/// of an error.
+pub fn fs_control_file(
+    file: u32,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+) -> Result<IoStatus, NtStatus> {
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export: it reads no more than the input and writes no more than the output
+    // (their lengths passed with them), and the local I/O status.
+    let status = unsafe {
+        nt::NtFsControlFile(
+            file,
+            0,
+            0,
+            0,
+            &mut io_status,
+            code,
+            input.as_ptr(),
+            input.len() as u32,
+            output.as_mut_ptr(),
+            output.len() as u32,
+        )
+    };
+    if status & 0xC000_0000 == 0xC000_0000 {
+        return Err(status);
+    }
+    Ok(io_status)
+}
+
 // --- The DOS paths -------------------------------------------------------------------------------
 
 /// A DOS path's NT form as RtlDosPathNameToNtPathName_U makes it: the whole NT path (its buffer

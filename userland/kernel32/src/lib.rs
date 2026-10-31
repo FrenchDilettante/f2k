@@ -56,6 +56,7 @@ pub mod message;
 pub mod module;
 pub mod nt;
 pub mod ntcall;
+pub mod pipes;
 pub mod process;
 pub mod shared;
 pub mod startup;

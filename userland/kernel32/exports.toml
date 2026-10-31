@@ -2239,17 +2239,17 @@ fails = "FALSE"
 name = "CreatePipe"
 group = "pipes"
 args = ["ptr<u32> hReadPipe", "ptr<u32> hWritePipe", "ptr lpPipeAttributes", "u32 nSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreatePipe" }
 ordinal = 72
-fails = "FALSE"
+note = "a byte-stream pipe named \\Device\\NamedPipe\\Win32Pipes.<pid>.<serial>: its read end made with NtCreateNamedPipeFile, its write end opened with NtOpenFile"
 
 [[export]]
 name = "PeekNamedPipe"
 group = "pipes"
 args = ["handle hNamedPipe", "ptr lpBuffer", "u32 nBufferSize", "ptr<u32> lpBytesRead", "ptr<u32> lpTotalBytesAvail", "ptr<u32> lpBytesLeftThisMessage"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PeekNamedPipe" }
 ordinal = 545
-fails = "FALSE"
+note = "NtFsControlFile's FSCTL_PIPE_PEEK into a block of the process heap"
 
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 

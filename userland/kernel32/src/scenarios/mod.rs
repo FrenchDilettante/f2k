@@ -23,6 +23,7 @@ mod environment;
 mod files;
 mod locale;
 mod modules;
+mod pipes;
 mod processes;
 mod startup;
 mod threads;

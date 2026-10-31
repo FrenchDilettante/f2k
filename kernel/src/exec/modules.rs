@@ -473,10 +473,10 @@ mod tests {
         // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale,
         // clock, virtual-memory, mapping, synchronization, handle-information, timer, sleep, APC,
         // affinity, TLS-index, environment, file (the write side's included), current-directory,
-        // binary-type, process-creation, process and module calls and RaiseException its Rust, the
-        // heap and Local/Global calls its own over ntdll's heap). The internal start thunks are not
-        // among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 269);
+        // binary-type, process-creation, process, pipe and module calls and RaiseException its
+        // Rust, the heap and Local/Global calls its own over ntdll's heap). The internal start
+        // thunks are not among them.
+        assert_eq!(NATIVE_EXPORTS.len(), 271);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 278, "the corpus's import surface");
+        assert_eq!(names.len(), 280, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -1057,7 +1057,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
     /// gdi32, which F2K does not have).
-    const LOADED_CORPUS: [(&str, &[u8]); 8] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 10] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1077,6 +1077,14 @@ mod tests {
         (
             "spawn",
             include_bytes!("../../../tests/kernel32/spawn/spawn.exe"),
+        ),
+        (
+            "pipe",
+            include_bytes!("../../../tests/kernel32/pipe/pipe.exe"),
+        ),
+        (
+            "pipekid",
+            include_bytes!("../../../tests/kernel32/pipe/pipekid.exe"),
         ),
     ];
 

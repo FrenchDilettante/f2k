@@ -99,7 +99,7 @@ args = ["handle Handle", "u32 ObjectInformationClass", "ptr ObjectInformation", 
 impl = { syscall = "crate::nt::object::query_object" }
 ordinal = 205
 zw_ordinal = 850
-note = "answers ObjectHandleFlagInformation (4) alone: a handle's inheritance and protection from close"
+note = "answers ObjectBasicInformation (0), ObjectNameInformation (1: a pipe's, a named object's) and ObjectHandleFlagInformation (4)"
 
 [[export]]
 name = "NtSetInformationObject"
@@ -401,6 +401,24 @@ impl = { syscall = "crate::nt::file::query_volume_information_file" }
 ordinal = 220
 zw_ordinal = 865
 note = "the volume, size, device, attribute and full-size classes"
+
+[[export]]
+name = "NtCreateNamedPipeFile"
+group = "nt"
+args = ["ptr<u32> FileHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr IoStatusBlock", "u32 ShareAccess", "u32 CreateDisposition", "u32 CreateOptions", "u32 NamedPipeType", "u32 ReadMode", "u32 CompletionMode", "u32 MaximumInstances", "u32 InboundQuota", "u32 OutboundQuota", "ptr<u64> DefaultTimeout"]
+impl = { syscall = "crate::nt::file::create_named_pipe_file" }
+ordinal = 98
+zw_ordinal = 744
+note = "a byte-mode pipe of one instance under \\Device\\NamedPipe\\; message mode, non-blocking completion and further instances are STATUS_NOT_IMPLEMENTED"
+
+[[export]]
+name = "NtFsControlFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "u32 FsControlCode", "ptr InputBuffer", "u32 InputBufferLength", "ptr OutputBuffer", "u32 OutputBufferLength"]
+impl = { syscall = "crate::nt::file::fs_control_file" }
+ordinal = 133
+zw_ordinal = 778
+note = "FSCTL_PIPE_PEEK on a pipe's end alone; any other code is STATUS_NOT_IMPLEMENTED"
 
 [[export]]
 name = "NtOpenDirectoryObject"
@@ -1642,10 +1660,6 @@ name = "NtCreateMailslotFile"
 ordinal = 96
 
 [[export]]
-name = "NtCreateNamedPipeFile"
-ordinal = 98
-
-[[export]]
 name = "NtCreatePagingFile"
 ordinal = 99
 
@@ -1720,10 +1734,6 @@ ordinal = 130
 [[export]]
 name = "NtFreeUserPhysicalPages"
 ordinal = 131
-
-[[export]]
-name = "NtFsControlFile"
-ordinal = 133
 
 [[export]]
 name = "NtGetContextThread"
@@ -3694,10 +3704,6 @@ name = "ZwCreateMailslotFile"
 ordinal = 742
 
 [[export]]
-name = "ZwCreateNamedPipeFile"
-ordinal = 744
-
-[[export]]
 name = "ZwCreatePagingFile"
 ordinal = 745
 
@@ -3768,10 +3774,6 @@ ordinal = 775
 [[export]]
 name = "ZwFreeUserPhysicalPages"
 ordinal = 776
-
-[[export]]
-name = "ZwFsControlFile"
-ordinal = 778
 
 [[export]]
 name = "ZwGetContextThread"
