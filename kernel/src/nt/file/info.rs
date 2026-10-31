@@ -288,6 +288,17 @@ pub fn all(file: &File, open: &Open) -> FileAllInformation {
     }
 }
 
+/// FILE_POSITION_INFORMATION of an object at `position`, into `out` (which holds it): the bytes
+/// written. The I/O manager answers it for any device's object.
+pub fn position(position: u64, out: &mut [u8]) -> usize {
+    put(
+        out,
+        &FilePositionInformation {
+            current_byte_offset: position,
+        },
+    )
+}
+
 /// A per-file class's answer for a query, into `out` (at least the class's size): the bytes
 /// written.
 pub fn query(class: QueryClass, file: &File, open: &Open, out: &mut [u8]) -> usize {
@@ -302,12 +313,7 @@ pub fn query(class: QueryClass, file: &File, open: &Open, out: &mut [u8]) -> usi
                 access_flags: open.granted,
             },
         ),
-        QueryClass::Position => put(
-            out,
-            &FilePositionInformation {
-                current_byte_offset: open.position,
-            },
-        ),
+        QueryClass::Position => position(open.position, out),
         QueryClass::Mode => put(out, &FileModeInformation { mode: open.mode }),
         QueryClass::Alignment => put(out, &FileAlignmentInformation::default()),
         QueryClass::All => put(out, &all(file, open)),
@@ -425,8 +431,21 @@ impl Volume {
     }
 }
 
+/// FILE_FS_DEVICE_INFORMATION of a device of `device_type` (no characteristics), into `out`
+/// (which holds it): the bytes written. The I/O manager answers it from any file object's device.
+pub fn device(device_type: u32, out: &mut [u8]) -> usize {
+    put(
+        out,
+        &FileFsDeviceInformation {
+            device_type,
+            characteristics: 0,
+        },
+    )
+}
+
 /// A volume class's answer into `out` (at least its fixed size): the length written, or Err with
-/// it when a name did not fit (STATUS_BUFFER_OVERFLOW, as much as fits written).
+/// it when a name did not fit (STATUS_BUFFER_OVERFLOW, as much as fits written). The device class
+/// answers the boot volume's own device.
 pub fn volume_query(class: VolumeClass, volume: &Volume, out: &mut [u8]) -> Result<usize, usize> {
     match class {
         VolumeClass::Volume => {
@@ -462,13 +481,7 @@ pub fn volume_query(class: VolumeClass, volume: &Volume, out: &mut [u8]) -> Resu
                 bytes_per_sector: BYTES_PER_SECTOR,
             },
         )),
-        VolumeClass::Device => Ok(put(
-            out,
-            &FileFsDeviceInformation {
-                device_type: FILE_DEVICE_DISK,
-                characteristics: 0,
-            },
-        )),
+        VolumeClass::Device => Ok(device(FILE_DEVICE_DISK, out)),
         VolumeClass::Attribute => {
             let name = b"FAT32".map(u16::from);
             let info = FileFsAttributeInformation {

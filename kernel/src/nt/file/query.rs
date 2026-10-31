@@ -4,9 +4,11 @@
 //! The I/O manager's order: the class and the buffer's length (STATUS_INVALID_INFO_CLASS,
 //! STATUS_INFO_LENGTH_MISMATCH), the buffer's probe, then the handle and the rights the class needs
 //! (the basic times and attributes FILE_READ_ATTRIBUTES to read, FILE_WRITE_ATTRIBUTES to write; a
-//! rename or a delete DELETE; the size FILE_WRITE_DATA; the rest none). The file system acts on the
-//! file as its record holds it, every change written to its entry inside the volume's locked
-//! section.
+//! rename or a delete DELETE; the size FILE_WRITE_DATA; the rest none). Then the device the object
+//! is open on answers, one arm per device; the position is the object's alike for every device
+//! (Windows 2000's I/O manager answers a synchronous object's itself). A disk file's file system
+//! acts on the file as its record holds it, every change written to its entry inside the volume's
+//! locked section.
 
 use rtl::nt::info::{
     FileAllInformation,
@@ -29,8 +31,9 @@ use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{Times, ATTR_DIRECTORY, ATTR_READ_ONLY};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::write;
-use crate::fs::file::{same_entry, with_records, FileRecordId};
+use crate::fs::file::{same_entry, with_records, Context, FileObject, FileRecordId};
 use crate::fs::io::{self, times_at, SETTABLE_ATTRIBUTES};
+use crate::ob::Referenced;
 use crate::status::*;
 
 /// FileModeInformation's synchronous-I/O mode.
@@ -60,13 +63,36 @@ fn query_information_file_held(
     information.probe(length)?;
     let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
-    let file = io::file_of(&object);
     // The position as the object's lock has it: a read or write through another handle to the
     // object moves it under the lock.
     let position = io::serialized(&object, |held| held.position);
+    let mut answer = [0u8; size_of::<FileAllInformation>()];
+    let written = if class == QueryClass::Position {
+        // The I/O manager's own answer, whatever the device: the object's position.
+        info::position(position, &mut answer)
+    } else {
+        match object.context {
+            Context::Disk(record) => query_disk(&object, record, position, class, &mut answer),
+        }
+    };
+    information.write(&answer[..written])?;
+    complete(io_status, STATUS_SUCCESS, written as u32);
+    Ok(STATUS_SUCCESS)
+}
+
+/// A disk file's answer to a query of `class` (see [`info::query`]) into `answer`: the bytes
+/// written.
+fn query_disk(
+    object: &FileObject,
+    record: FileRecordId,
+    position: u64,
+    class: QueryClass,
+    answer: &mut [u8],
+) -> usize {
+    let file = io::file_at(record);
     let open = Open {
         allocation: info::allocation(&file, cluster_bytes()),
-        delete_pending: with_records(|records| records.delete_pending(object.record)),
+        delete_pending: with_records(|records| records.delete_pending(record)),
         position,
         granted: object.granted,
         mode: if object.synchronous {
@@ -75,11 +101,7 @@ fn query_information_file_held(
             0
         },
     };
-    let mut answer = [0u8; size_of::<FileAllInformation>()];
-    let written = info::query(class, &file, &open, &mut answer);
-    information.write(&answer[..written])?;
-    complete(io_status, STATUS_SUCCESS, written as u32);
-    Ok(STATUS_SUCCESS)
+    info::query(class, &file, &open, answer)
 }
 
 /// The times a basic set names (zero: leave it), applied to `file`.
@@ -121,7 +143,8 @@ enum Start {
 
 /// A rename's target name (FILE_RENAME_INFORMATION's, `length` bytes at `information`, its fixed
 /// part read as `header`): relative to its root directory's file object, an absolute NT path, or a
-/// bare name in the file's own directory.
+/// bare name in the file's own directory. A root that is a file's, or another device's object than
+/// the disk's, is STATUS_INVALID_PARAMETER.
 fn rename_target(
     header: &FileRenameInformation,
     length: u32,
@@ -138,7 +161,7 @@ fn rename_target(
     let units = &*units;
     if root != 0 {
         let directory = file_object(root)?;
-        let directory = io::file_of(&directory);
+        let directory = io::file_at(directory.disk().ok_or(STATUS_INVALID_PARAMETER)?);
         if !directory.directory {
             return Err(STATUS_INVALID_PARAMETER);
         }
@@ -259,7 +282,37 @@ fn set_information_file_held(
     let setting = Setting::read(class, information)?;
     let object = file_object(handle.raw())?;
     check_access(&object, class.rights())?;
-    let record = object.record;
+    match object.context {
+        Context::Disk(record) => set_disk(&object, record, setting, length, information)?,
+    }
+    complete(io_status, STATUS_SUCCESS, 0);
+    Ok(STATUS_SUCCESS)
+}
+
+/// FilePositionInformation's set, the same for every device's object (Windows 2000's I/O manager
+/// sets a synchronous object's position itself): a negative offset is STATUS_INVALID_PARAMETER;
+/// the position moves under the object's lock, as a read or write moves it.
+fn set_position(
+    object: &Referenced<FileObject>,
+    position: FilePositionInformation,
+) -> Result<(), NtStatus> {
+    let position = position.current_byte_offset;
+    if (position as i64) < 0 {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    io::serialized(object, |held| held.position = position);
+    Ok(())
+}
+
+/// A disk file's set (see [`set_information_file_held`]): `setting` applied to the file at
+/// `record` through `object`, the class's structure read from `information`, `length` bytes.
+fn set_disk(
+    object: &Referenced<FileObject>,
+    record: FileRecordId,
+    setting: Setting,
+    length: u32,
+    information: UserAddr,
+) -> Result<(), NtStatus> {
     match setting {
         Setting::Basic(basic) => {
             let attributes = basic.file_attributes;
@@ -309,19 +362,11 @@ fn set_information_file_held(
             }
             with_records(|records| records.set_delete_pending(record, delete));
         }
-        Setting::Position(position) => {
-            let position = position.current_byte_offset;
-            if (position as i64) < 0 {
-                return Err(STATUS_INVALID_PARAMETER);
-            }
-            // Under the object's lock, as a read or write moves it.
-            io::serialized(&object, |held| held.position = position);
-        }
+        Setting::Position(position) => set_position(object, position)?,
         Setting::Allocation(allocation) => resize(record, allocation.allocation_size, true)?,
         Setting::EndOfFile(end) => resize(record, end.end_of_file, false)?,
     }
-    complete(io_status, STATUS_SUCCESS, 0);
-    Ok(STATUS_SUCCESS)
+    Ok(())
 }
 
 /// The file a name names, for the attribute queries: STATUS_OBJECT_NAME_NOT_FOUND when it is

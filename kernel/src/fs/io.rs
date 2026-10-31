@@ -1,8 +1,9 @@
 //! What the file system services share over the open files: the stored attributes and times as the
 //! services report them, a handle's file object, the synchronous-I/O lock, opening a file (its
 //! record counted, an object made, a handle published), the cleanup and close the object manager
-//! leaves its caller, and reads through a file's record — each inside the boot volume's locked
-//! section, so every open sees the one current copy of the file (see [`super::file`]).
+//! leaves its caller (each by the device the object is open on), and reads through a file's record
+//! — each inside the boot volume's locked section, so every open sees the one current copy of the
+//! file (see [`super::file`]).
 //!
 //! The volume is taken only once the call's user arguments are copied in: a fault in a user copy
 //! ends the process, which must not happen while it holds the volume. The FAT timestamps are local
@@ -59,7 +60,7 @@ mod target {
     use crate::fs::fat32::dir::is_empty;
     use crate::fs::fat32::volume::{with_boot_volume, Volume};
     use crate::fs::fat32::write;
-    use crate::fs::file::{with_records, FileObject, FileRecordId, IoState, OpenError};
+    use crate::fs::file::{with_records, Context, FileObject, FileRecordId, IoState, OpenError};
     use crate::ob::Referenced;
     use crate::status::{
         NtStatus,
@@ -100,11 +101,6 @@ mod target {
         }
         crate::ob::reference_by_handle(handle, Some(crate::ob::ObjectType::File))
             .map(crate::ob::file_object)
-    }
-
-    /// The file an object opens, as its record holds it now.
-    pub fn file_of(object: &FileObject) -> File {
-        file_at(object.record)
     }
 
     /// The open file `record`, as its record holds it now.
@@ -150,18 +146,35 @@ mod target {
         let access = crate::fs::file::rights::share_access(open.granted);
         let record =
             with_records(|records| records.open(file, access, open.share)).map_err(open_status)?;
+        insert(process, Context::Disk(record), access, open, || {
+            with_records(|records| {
+                let _ = records.cleanup(record, access, open.share, false);
+                records.close(record);
+            });
+        })
+    }
+
+    /// The I/O manager's half of an open, once a device has opened `context`: a file object made
+    /// open on it (`access` as the share check reads it; the rights, sharing and options `open`
+    /// asks) and a handle to it inserted into `process`'s table, which the caller found had room
+    /// before the device's open. STATUS_TOO_MANY_OPENED_FILES when the objects are exhausted: no
+    /// object holds the device's open then, and `abandon` undoes it.
+    pub fn insert(
+        process: &crate::process::Process,
+        context: Context,
+        access: u8,
+        open: &Open,
+        abandon: impl FnOnce(),
+    ) -> Result<u32, NtStatus> {
         let made = crate::ob::locked(|directory| {
-            let id = directory.create_file(record, access, open.granted, open.share)?;
+            let id = directory.create_file(context, access, open.granted, open.share)?;
             let object = directory.file(id).expect("just made");
             object.synchronous = open.synchronous;
             object.delete_on_close = open.delete_on_close;
             Some(id)
         });
         let Some(id) = made else {
-            with_records(|records| {
-                let _ = records.cleanup(record, access, open.share, false);
-                records.close(record);
-            });
+            abandon();
             return Err(STATUS_TOO_MANY_OPENED_FILES);
         };
         // The table had room: the publication cannot fail.
@@ -176,10 +189,26 @@ mod target {
         with_records(|records| records.get(record).user_mapped > 0)
     }
 
-    /// A file object's cleanup (its last handle closed): its share access leaves the record, and
-    /// the last cleanup of a delete-pending file deletes it — a directory only while empty, a file
-    /// only while no mapping of it exists (the memory manager keeps a mapped file).
-    pub fn cleanup(record: FileRecordId, access: u8, share: u8, delete_on_close: bool) {
+    /// A file object's cleanup (its last handle closed), by the device it is open on (Windows
+    /// 2000's IRP_MJ_CLEANUP): `access`, `share` and `delete_on_close` are the object's own.
+    pub fn cleanup(context: Context, access: u8, share: u8, delete_on_close: bool) {
+        match context {
+            Context::Disk(record) => disk_cleanup(record, access, share, delete_on_close),
+        }
+    }
+
+    /// A file object's close (its last reference went), by the device it is open on (Windows
+    /// 2000's IRP_MJ_CLOSE).
+    pub fn close(context: Context) {
+        match context {
+            Context::Disk(record) => with_records(|records| records.close(record)),
+        }
+    }
+
+    /// A disk file object's cleanup: its share access leaves the record, and the last cleanup of a
+    /// delete-pending file deletes it — a directory only while empty, a file only while no mapping
+    /// of it exists (the memory manager keeps a mapped file).
+    fn disk_cleanup(record: FileRecordId, access: u8, share: u8, delete_on_close: bool) {
         let deleted =
             with_records(|records| records.cleanup(record, access, share, delete_on_close));
         if let Some(file) = deleted {
@@ -193,11 +222,6 @@ mod target {
                 write::delete(volume, &file)
             });
         }
-    }
-
-    /// A file object's close (its last reference went): its record's reference goes.
-    pub fn close(record: FileRecordId) {
-        with_records(|records| records.close(record));
     }
 
     /// Read `out.len()` bytes of the open file `record` from `offset`, the file as its record holds

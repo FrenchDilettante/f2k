@@ -564,12 +564,19 @@ mod target {
         frames.release(&mut CurrentPages);
     }
 
+    /// The record of the file a section's or a segment's file object opens: a disk file's, as
+    /// [`file_of`] refuses any other device's.
+    pub fn mapped_record(object: &crate::fs::file::FileObject) -> crate::fs::file::FileRecordId {
+        object.disk().expect("a mapped file is a disk file")
+    }
+
     /// The file object a handle names, referenced for the caller's use (Windows 2000's
     /// ObReferenceObjectByHandle: another thread closing the handle meanwhile leaves the object,
     /// and its file's record, in place), with its file as its record holds it now and the access
     /// the handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
     /// handle included, or one closed before the reference), STATUS_OBJECT_TYPE_MISMATCH for one
-    /// naming another kind.
+    /// naming another kind, STATUS_INVALID_FILE_FOR_SECTION for a file object of a device other
+    /// than the disk.
     fn file_of(
         handle: u32,
     ) -> Result<(ob::ObRef, crate::fs::fat32::lookup::File, Backing), NtStatus> {
@@ -587,9 +594,12 @@ mod target {
         let (record, access) = ob::locked(|directory| {
             directory
                 .file(id)
-                .map(|object| (object.record, object.access))
+                .map(|object| (object.disk(), object.access))
         })
         .ok_or(STATUS_INVALID_HANDLE)?;
+        // Only a disk file is mapped: another device's file object has no pages to map (Windows
+        // 2000's answer for a file object without section pointers).
+        let record = record.ok_or(STATUS_INVALID_FILE_FOR_SECTION)?;
         let file = crate::fs::io::file_at(record);
         let backing = Backing {
             size: file.size,
@@ -675,7 +685,7 @@ mod target {
                 if let Some(file_object) = section.file_object {
                     let held = directory.reference(file_object);
                     debug_assert!(held, "the handle's file object lives");
-                    let record = directory.file(file_object).expect("held").record;
+                    let record = mapped_record(directory.file(file_object).expect("held"));
                     crate::fs::file::with_records(|records| {
                         records.get_mut(record).user_mapped += 1
                     });
@@ -698,10 +708,11 @@ mod target {
         file_object: ObjectId,
         file: &crate::fs::fat32::lookup::File,
     ) -> NtResult {
-        let record = ob::lock(passive)
-            .file(file_object)
-            .expect("the handle's file object lives")
-            .record;
+        let record = mapped_record(
+            ob::lock(passive)
+                .file(file_object)
+                .expect("the handle's file object lives"),
+        );
         let segment_of = |directory: &mut ob::Directory| {
             let id = crate::fs::file::with_records(|records| records.get(record).image)?;
             directory
@@ -946,9 +957,11 @@ mod target {
             let section = *directory
                 .section(object)
                 .expect("the caller holds the section");
-            let record = section
-                .file_object
-                .and_then(|file_object| directory.file(file_object).map(|object| object.record));
+            let record = section.file_object.and_then(|file_object| {
+                directory
+                    .file(file_object)
+                    .map(|object| mapped_record(object))
+            });
             (section, record)
         });
         let file = match record {
@@ -1075,7 +1088,7 @@ mod target {
                 .segment(segment)
                 .expect("the caller holds the segment")
                 .file_object;
-            directory.file(file_object).expect("held").record
+            mapped_record(directory.file(file_object).expect("held"))
         });
         let file = crate::fs::io::file_at(record);
         let mut buffer = [0u8; PAGE as usize];
@@ -1242,10 +1255,11 @@ mod target {
                         .segment(segment)
                         .expect("an image section holds its segment")
                         .file_object;
-                    directory
-                        .file(file_object)
-                        .expect("an image segment holds its file object")
-                        .record
+                    mapped_record(
+                        directory
+                            .file(file_object)
+                            .expect("an image segment holds its file object"),
+                    )
                 });
                 let file = crate::fs::io::file_at(file_record);
                 let info = crate::process::threads::critical_region(|| {

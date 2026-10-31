@@ -237,7 +237,9 @@ fn create(
     };
     let handle = io::open(file, &open)?;
     if overwrites {
-        let record = io::object_of(handle).expect("just opened").record;
+        let record = io::object_of(handle)
+            .and_then(|object| object.disk())
+            .expect("a disk file just opened");
         if let Err(failure) = overwrite(record, file_attributes) {
             crate::user::args::calling_process().close_handle(handle);
             return Err(failure);

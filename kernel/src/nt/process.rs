@@ -305,7 +305,9 @@ pub fn create_process(
 fn image_name(segment: crate::ob::SegmentId) -> crate::process::ProcessName {
     let record = crate::ob::locked(|directory| {
         let file_object = directory.segment(segment)?.file_object;
-        directory.file(file_object).map(|object| object.record)
+        directory
+            .file(file_object)
+            .map(|object| crate::nt::section::mapped_record(object))
     });
     // The entry's name is read off the disk, with the directory released.
     let file = record.map(crate::fs::io::file_at);

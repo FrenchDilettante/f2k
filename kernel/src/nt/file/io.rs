@@ -1,14 +1,16 @@
-//! NtReadFile, NtWriteFile and NtFlushBuffersFile: a file's bytes through its record, the object's
-//! synchronous-I/O lock held for the call (one position, one call at a time).
+//! NtReadFile, NtWriteFile and NtFlushBuffersFile: the I/O manager's checks (see [`transfer`]),
+//! then the device the file object is open on moves the bytes.
 //!
-//! The bytes move through a kernel chunk: a read takes it off the volume inside the volume's locked
-//! section and copies it out once the volume is released, a write the reverse. A chunk the caller's
-//! memory refuses ends the call with STATUS_ACCESS_VIOLATION, what moved before it counted.
+//! A disk file's bytes move through its record, the object's synchronous-I/O lock held for the
+//! call (one position, one call at a time), and through a kernel chunk: a read takes it off the
+//! volume inside the volume's locked section and copies it out once the volume is released, a
+//! write the reverse. A chunk the caller's memory refuses ends the call with
+//! STATUS_ACCESS_VIOLATION, what moved before it counted.
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
 use crate::fs::fat32::write;
-use crate::fs::file::{rights, FileObject};
+use crate::fs::file::{rights, Context, FileObject, FileRecordId};
 use crate::fs::io;
 use crate::status::*;
 use crate::user::syscall::{read_user, write_user};
@@ -28,9 +30,9 @@ struct Transfer {
     offset: Option<u64>,
 }
 
-/// The checks a read and a write share, in the I/O manager's order: the handle and its rights, the
-/// I/O status block, an APC routine (not supported), the event, a directory (no data:
-/// STATUS_INVALID_DEVICE_REQUEST), and the offset (an object without a position needs one).
+/// The checks a read and a write share, the I/O manager's before it hands the request to the
+/// object's device, in its order: the handle and its rights, the I/O status block, an APC routine
+/// (not supported), the offset (an object without a position needs one), and the event, reset.
 fn transfer(
     handle: Handle,
     event: Handle,
@@ -44,9 +46,6 @@ fn transfer(
     io_status.probe(8)?;
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
-    }
-    if io::file_of(&object).directory {
-        return Err(STATUS_INVALID_DEVICE_REQUEST);
     }
     let offset = if offset.is_null() {
         None
@@ -76,11 +75,18 @@ fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, NtStatus>
     result.map(|_| STATUS_SUCCESS)
 }
 
-/// NtReadFile: up to `length` bytes from the offset (the object's position when none is given, and
-/// the position then moves past them) into the caller's buffer: what remains before the end, at
-/// most `length`, the I/O status's Information the count. A read at or past the end is
-/// STATUS_END_OF_FILE and moves nothing; a zero-length read succeeds anywhere. A handle without
-/// read access is STATUS_ACCESS_DENIED.
+/// A disk transfer's own refusal: a directory has no data (FastFat's
+/// STATUS_INVALID_DEVICE_REQUEST).
+fn disk_data(record: FileRecordId) -> Result<(), NtStatus> {
+    if io::file_at(record).directory {
+        return Err(STATUS_INVALID_DEVICE_REQUEST);
+    }
+    Ok(())
+}
+
+/// NtReadFile: the I/O manager's checks ([`transfer`]; a handle without read access is
+/// STATUS_ACCESS_DENIED), then the object's device reads (see [`read_disk`]), the I/O status's
+/// Information the count.
 #[allow(clippy::too_many_arguments)]
 fn read_file_held(
     _call: &mut NtCall,
@@ -102,14 +108,33 @@ fn read_file_held(
         offset,
         rights::FILE_READ_DATA,
     )?;
+    let result = match transfer.object.context {
+        Context::Disk(record) => {
+            disk_data(record)?;
+            read_disk(&transfer, record, buffer, length)
+        }
+    };
+    finish(transfer, io_status, result)
+}
+
+/// A disk file's read: up to `length` bytes from the offset (the object's position when none is
+/// given, and the position then moves past them) into the caller's buffer: what remains before the
+/// end, at most `length`. A read at or past the end is STATUS_END_OF_FILE and moves nothing; a
+/// zero-length read succeeds anywhere. Returns the count.
+fn read_disk(
+    transfer: &Transfer,
+    record: FileRecordId,
+    buffer: UserAddr,
+    length: u32,
+) -> Result<u32, NtStatus> {
     let at = transfer.offset;
     let object = &transfer.object;
-    let result = io::serialized(object, |held| {
+    io::serialized(object, |held| {
         let start = at.unwrap_or(held.position);
         if length == 0 {
             return Ok(0);
         }
-        let size = io::file_of(object).size;
+        let size = io::file_at(record).size;
         let wanted = crate::fs::file::available(start, size, length);
         if wanted == 0 {
             return Err(STATUS_END_OF_FILE);
@@ -120,9 +145,7 @@ fn read_file_held(
             let take = (wanted - moved).min(CHUNK as u32) as usize;
             let mut chunk = [0u8; CHUNK];
             // `wanted` is nonzero only below the end, so the offset is within the 32-bit file.
-            if let Err(error) =
-                io::read_record(object.record, start as u32 + moved, &mut chunk[..take])
-            {
+            if let Err(error) = io::read_record(record, start as u32 + moved, &mut chunk[..take]) {
                 failure = Some(error);
                 break;
             }
@@ -137,8 +160,7 @@ fn read_file_held(
             held.position = start + moved as u64;
         }
         failure.map_or(Ok(moved), Err)
-    });
-    finish(transfer, io_status, result)
+    })
 }
 
 /// NtReadFile (see [`read_file_held`]), as one critical region.
@@ -165,11 +187,9 @@ pub fn read_file(
     })
 }
 
-/// NtWriteFile: `length` bytes of the caller's at the offset (the object's position when none is
-/// given, the end for FILE_WRITE_TO_END_OF_FILE or a handle with append access alone), the file
-/// growing as needed (a gap reads as zeros) and its last write stamped; the I/O status's
-/// Information the count. A handle without write access is STATUS_ACCESS_DENIED; a write past
-/// FAT32's 4 GiB is STATUS_DISK_FULL.
+/// NtWriteFile: the I/O manager's checks ([`transfer`]; a handle without write access is
+/// STATUS_ACCESS_DENIED), then the object's device writes (see [`write_disk`]), the I/O status's
+/// Information the count.
 #[allow(clippy::too_many_arguments)]
 fn write_file_held(
     _call: &mut NtCall,
@@ -185,10 +205,28 @@ fn write_file_held(
 ) -> NtResult {
     let needs = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA;
     let transfer = transfer(handle, event, routine, io_status, offset, needs)?;
+    let result = match transfer.object.context {
+        Context::Disk(record) => {
+            disk_data(record)?;
+            write_disk(&transfer, record, buffer, length)
+        }
+    };
+    finish(transfer, io_status, result)
+}
+
+/// A disk file's write: `length` bytes of the caller's at the offset (the object's position when
+/// none is given, the end for FILE_WRITE_TO_END_OF_FILE or a handle with append access alone), the
+/// file growing as needed (a gap reads as zeros) and its last write stamped. A write past FAT32's
+/// 4 GiB is STATUS_DISK_FULL. Returns the count.
+fn write_disk(
+    transfer: &Transfer,
+    record: FileRecordId,
+    buffer: UserAddr,
+    length: u32,
+) -> Result<u32, NtStatus> {
     let at = transfer.offset;
     let object = &transfer.object;
-    let result = io::serialized(object, |held| {
-        let record = object.record;
+    io::serialized(object, |held| {
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let start = match at {
             Some(FILE_WRITE_TO_END_OF_FILE) => io::file_at(record).size as u64,
@@ -231,8 +269,7 @@ fn write_file_held(
             held.position = start + done as u64;
         }
         failure.map_or(Ok(done), Err)
-    });
-    finish(transfer, io_status, result)
+    })
 }
 
 /// NtWriteFile (see [`write_file_held`]), as one critical region.
@@ -257,12 +294,16 @@ pub fn write_file(
     })
 }
 
-/// NtFlushBuffersFile: every write is already on the volume (F2K's writes go through); a handle
-/// without write access is STATUS_ACCESS_DENIED.
+/// NtFlushBuffersFile: the I/O manager's checks (a handle without write access is
+/// STATUS_ACCESS_DENIED), then the object's device flushes: a disk file's writes are already on
+/// the volume (F2K's writes go through).
 pub fn flush_buffers_file(_call: &mut NtCall, handle: Handle, io_status: UserAddr) -> NtResult {
     let object = file_object(handle.raw())?;
     check_access(&object, rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA)?;
     io_status.probe(8)?;
+    match object.context {
+        Context::Disk(_) => {}
+    }
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)
 }

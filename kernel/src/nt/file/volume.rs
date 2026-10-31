@@ -1,12 +1,14 @@
-//! NtQueryVolumeInformationFile: the boot volume's facts through any of its file objects — its
-//! label and serial number (the boot sector's), its size and free clusters (the FSInfo sector's
-//! count when it carries a plausible one, else a FAT scan), its device type (a disk), and its file
+//! NtQueryVolumeInformationFile: the device type of the device a file object is open on (the I/O
+//! manager's own answer), and the rest from that device: the boot volume's facts through any of
+//! its file objects — its label and serial number (the boot sector's), its size and free clusters
+//! (the FSInfo sector's count when it carries a plausible one, else a FAT scan), and its file
 //! system's name, flags and longest component (FAT32's).
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, file_object};
 use super::info::{self, Volume, VolumeClass};
 use crate::fs::fat32::fat::FatEntry;
+use crate::fs::file::Context;
 use crate::status::*;
 
 /// Read the boot volume's facts.
@@ -68,21 +70,21 @@ pub fn query_volume_information_file(
     }
     io_status.probe(8)?;
     information.probe(length)?;
-    file_object(handle.raw())?;
-    let facts = if class == VolumeClass::Device {
-        Volume {
-            serial: 0,
-            label: [b' '; 11],
-            sectors_per_cluster: 0,
-            clusters: 0,
-            free_clusters: 0,
-        }
-    } else {
-        volume_facts()?
-    };
+    let object = file_object(handle.raw())?;
     let mut out = [0u8; 64];
-    let room = (length as usize).min(out.len());
-    let (code, written) = match info::volume_query(class, &facts, &mut out[..room]) {
+    let room = &mut out[..(length as usize).min(64)];
+    let answer = if class == VolumeClass::Device {
+        // The I/O manager's own answer, from the object's device (no file system asked).
+        let device_type = match object.context {
+            Context::Disk(_) => info::FILE_DEVICE_DISK,
+        };
+        Ok(info::device(device_type, room))
+    } else {
+        match object.context {
+            Context::Disk(_) => info::volume_query(class, &volume_facts()?, room),
+        }
+    };
+    let (code, written) = match answer {
         Ok(written) => (STATUS_SUCCESS, written),
         Err(written) => (STATUS_BUFFER_OVERFLOW, written),
     };

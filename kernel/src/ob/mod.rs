@@ -431,19 +431,18 @@ pub enum Followup {
         frames: crate::mem::vm::SectionFrames,
         file_object: Option<ObjectId>,
     },
-    /// A file object's last handle closed (its cleanup): its share access leaves the file's
-    /// record, its delete-on-close marks the file delete-pending, and the last cleanup of a
-    /// delete-pending file deletes it.
+    /// A file object's last handle closed (its cleanup), for the device it is open on: a disk
+    /// file's share access leaves the file's record, its delete-on-close marks the file
+    /// delete-pending, and the last cleanup of a delete-pending file deletes it.
     FileCleanup {
-        record: crate::fs::file::FileRecordId,
+        context: crate::fs::file::Context,
         access: u8,
         share: u8,
         delete_on_close: bool,
     },
-    /// A file object was deleted: its reference on the file's record goes.
-    FileClose {
-        record: crate::fs::file::FileRecordId,
-    },
+    /// A file object was deleted (its close), for the device it is open on: a disk file's
+    /// reference on its record goes.
+    FileClose { context: crate::fs::file::Context },
 }
 
 /// The most follow-ups one handle's close leaves: a file object's cleanup, then what the object's
@@ -882,17 +881,17 @@ impl Directory {
         }
     }
 
-    /// A file object of file record `record`, opened for `access` (as the share check reads it;
-    /// `granted` the file rights) and allowing `share`.
+    /// A file object open on `context` (a device and its context there), opened for `access` (as
+    /// the share check reads it; `granted` the file rights) and allowing `share`.
     pub fn create_file(
         &mut self,
-        record: crate::fs::file::FileRecordId,
+        context: crate::fs::file::Context,
         access: u8,
         granted: u32,
         share: u8,
     ) -> Option<ObjectId> {
         let id = self.insert(crate::fs::file::FileObject::new(
-            record, access, granted, share,
+            context, access, granted, share,
         ))?;
         self.file(id).expect("just made").init();
         Some(id)
@@ -1086,7 +1085,7 @@ impl Directory {
             self.forget_name(id);
             if let Some(file) = self.file(id) {
                 followups.push(Some(Followup::FileCleanup {
-                    record: file.record,
+                    context: file.context,
                     access: file.access,
                     share: file.share,
                     delete_on_close: file.delete_on_close,
@@ -1100,7 +1099,7 @@ impl Directory {
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
     /// A section leaves its frames (and a file's section its file object; an image section its
     /// segment's, when it held the segment's last reference) to the caller, a file
-    /// object its record's reference; an owned mutex leaves its owner's list; no other
+    /// object its close; an owned mutex leaves its owner's list; no other
     /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
     /// waits on it; a thread's record stays as it ended (its pages are released when the record is
     /// reused); a process's record is free for the next process once its object is gone.
@@ -1131,7 +1130,7 @@ impl Directory {
                 }
             }
             ObjectType::File => Some(Followup::FileClose {
-                record: self.file(id).expect("deleting a live file object").record,
+                context: self.file(id).expect("deleting a live file object").context,
             }),
             ObjectType::Event
             | ObjectType::Semaphore
@@ -1410,7 +1409,8 @@ mod target {
     /// Finish what the directory left its caller when an object's last handle or last reference
     /// went (see the module notes): a section's hold on its frames (and a file's section's or a
     /// segment's on its file object), a file object's cleanup — which may delete the file, on disk
-    /// — and its record's close. Runs outside the directory's lock, at the passive level.
+    /// — and its close, each by the device the object is open on. Runs outside the directory's
+    /// lock, at the passive level.
     pub fn finish(followup: Followup) {
         match followup {
             Followup::Section {
@@ -1423,23 +1423,24 @@ mod target {
                 }
             }
             Followup::FileCleanup {
-                record,
+                context,
                 access,
                 share,
                 delete_on_close,
-            } => crate::fs::io::cleanup(record, access, share, delete_on_close),
-            Followup::FileClose { record } => crate::fs::io::close(record),
+            } => crate::fs::io::cleanup(context, access, share, delete_on_close),
+            Followup::FileClose { context } => crate::fs::io::close(context),
         }
     }
 
     /// A file-backed section, or an image segment, is gone: its file is mapped once less, and its
     /// reference on the file object goes (the object's close follows, when that was its last
-    /// reference).
+    /// reference). Only a disk file is mapped (a section refuses any other device's).
     fn unmap_file(file_object: ObjectId) {
-        let Some(record) = locked(|directory| directory.file(file_object).map(|file| file.record))
+        let Some(file) = locked(|directory| directory.file(file_object).map(|file| file.disk()))
         else {
             return;
         };
+        let record = file.expect("a mapped file is a disk file");
         crate::fs::file::with_records(|records| records.get_mut(record).user_mapped -= 1);
         release(file_object);
     }
@@ -2318,7 +2319,10 @@ mod tests {
         assert!(!directory.only_its_own_reference(id), "a handle holds it");
         assert!(directory.reference(id));
         assert!(directory.handle_closed(id).iter().next().is_none());
-        assert!(!directory.only_its_own_reference(id), "a reference holds it");
+        assert!(
+            !directory.only_its_own_reference(id),
+            "a reference holds it"
+        );
         assert_eq!(directory.dereference(id), None);
         assert!(directory.only_its_own_reference(id));
         let event = directory.create_event(EventKind::Notification, false);
@@ -2561,10 +2565,12 @@ mod tests {
     /// reference its close: a mapping's reference holds it between the two. It is no waitable.
     #[test]
     fn a_file_object_cleans_up_then_closes() {
+        use crate::fs::file::{Context, FileRecordId};
         let directory = directory();
+        let four = Context::Disk(FileRecordId::at(4));
         let id = directory
             .create_file(
-                crate::fs::file::FileRecordId::at(4),
+                four,
                 crate::fs::file::ACCESS_READ,
                 0x8000_0000,
                 crate::fs::file::SHARE_ALL,
@@ -2583,7 +2589,7 @@ mod tests {
         assert_eq!(
             closed(directory, id),
             vec![Followup::FileCleanup {
-                record: crate::fs::file::FileRecordId::at(4),
+                context: four,
                 access: 1,
                 share: 7,
                 delete_on_close: true,
@@ -2591,24 +2597,22 @@ mod tests {
         );
         assert_eq!(
             directory.dereference(id),
-            Some(Followup::FileClose {
-                record: crate::fs::file::FileRecordId::at(4)
-            })
+            Some(Followup::FileClose { context: four })
         );
         // Both at once when nothing else holds it.
-        let five = crate::fs::file::FileRecordId::at(5);
+        let five = Context::Disk(FileRecordId::at(5));
         let id = directory.create_file(five, 0, 0x80, 0).unwrap();
         published(directory, id);
         assert_eq!(
             closed(directory, id),
             vec![
                 Followup::FileCleanup {
-                    record: five,
+                    context: five,
                     access: 0,
                     share: 0,
                     delete_on_close: false,
                 },
-                Followup::FileClose { record: five },
+                Followup::FileClose { context: five },
             ]
         );
     }

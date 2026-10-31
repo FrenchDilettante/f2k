@@ -6,8 +6,10 @@
 //! kernel32's own special cases.
 //!
 //! Names are NT paths (see [`name`]), absolute or relative to a directory's file object. A file
-//! object keeps the rights its open was granted (the generic ones mapped to the file rights); each
-//! service checks the rights it needs, as the I/O manager does, before it acts. Every file object
+//! object keeps the rights its open was granted (the generic ones mapped to the file rights), and
+//! names the device it is open on ([`crate::fs::file::Context`]). Each service makes the I/O
+//! manager's checks first, the rights it needs among them, then serves the request by the object's
+//! device, one match arm per device (the disk's, FastFat's, alone today). Every file object
 //! completes its I/O at once, in the caller's thread: a synchronous one keeps the position a read
 //! or write without an offset uses; an event handed to a read, write or listing is reset first and
 //! signaled once it completes. An APC routine (ReadFileEx's completion) is not supported
@@ -105,7 +107,8 @@ mod common {
     /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service: an absolute name, or one
     /// relative to a directory's file object (ntdll names files under the current directory against
     /// its handle). STATUS_OBJECT_NAME_INVALID without a name; a root that is no file object is
-    /// STATUS_OBJECT_TYPE_MISMATCH, a file's (not a directory's) STATUS_INVALID_PARAMETER.
+    /// STATUS_OBJECT_TYPE_MISMATCH, a file's (not a directory's, or another device's than the
+    /// disk) STATUS_INVALID_PARAMETER.
     pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
         if attributes.is_null() {
             return Err(STATUS_INVALID_PARAMETER);
@@ -119,7 +122,10 @@ mod common {
             Root::File(id) => {
                 let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
                 let object = crate::ob::file_object(reference);
-                let directory = crate::fs::io::file_at(object.record);
+                // A name starts only at a disk directory: another device's object is refused as
+                // a file is.
+                let record = object.disk().ok_or(STATUS_INVALID_PARAMETER)?;
+                let directory = crate::fs::io::file_at(record);
                 if !directory.directory {
                     return Err(STATUS_INVALID_PARAMETER);
                 }

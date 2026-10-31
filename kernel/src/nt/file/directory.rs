@@ -16,7 +16,7 @@ use super::info::{self, Entry, ListingClass};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
-use crate::fs::file::{rights, IoState};
+use crate::fs::file::{rights, Context, IoState};
 use crate::fs::search::{matches, Search, MAX_EXPRESSION};
 use crate::status::*;
 
@@ -98,11 +98,14 @@ fn query_directory_file_held(
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
     }
-    let directory: File = crate::fs::io::file_of(&object);
+    let event = completion_event(event.raw())?;
+    // The object's device lists: a disk directory's entries; a disk file has none to list.
+    let directory: File = match object.context {
+        Context::Disk(record) => crate::fs::io::file_at(record),
+    };
     if !directory.directory {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let event = completion_event(event.raw())?;
     // The search is the object's: taken and moved under its lock, as a read or a write moves its
     // position, so a listing through another handle to the object waits for this one. Returns the
     // answer and the bytes it delivered; a fault in the caller's memory fails the call outright.

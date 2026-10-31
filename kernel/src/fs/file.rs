@@ -160,15 +160,27 @@ impl OpenFile {
     }
 }
 
+/// The device a file object is open on, and that device's context for the open: what Windows
+/// 2000's FILE_OBJECT names in its DeviceObject and its driver's FsContext and FsContext2
+/// (FastFat's file control block and its per-open block). The file services make the I/O
+/// manager's own checks on the object first (the handle, the rights, the I/O status block, the
+/// event), then serve the request by the device the context names, one arm per device.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Context {
+    /// A file or directory of the boot volume, served by the FAT file system: its file record. The
+    /// open's own state (its position, its directory search) is the object's [`IoState`].
+    Disk(FileRecordId),
+}
+
 /// A file object's body: one open of one file.
 ///
-/// What its open set (its record, its access and rights, its sharing, its options) is never written
-/// again once the object is published, and reads freely through a shared reference. What its calls
-/// move, the position and the directory search ([`IoState`]), sits in a cell its lock guards: only
-/// the lock's holder reaches it ([`FileObject::serialized`]).
+/// What its open set (its device's context, its access and rights, its sharing, its options) is
+/// never written again once the object is published, and reads freely through a shared reference.
+/// What its calls move, the position and the directory search ([`IoState`]), sits in a cell its
+/// lock guards: only the lock's holder reaches it ([`FileObject::serialized`]).
 pub struct FileObject {
-    /// The file's record.
-    pub record: FileRecordId,
+    /// The device the object is open on, and its context there.
+    pub context: Context,
     /// The access granted, as the share check reads it.
     pub access: u8,
     /// The access granted, the file rights the generic ones map to (FILE_READ_DATA,
@@ -200,11 +212,11 @@ pub struct IoState {
 }
 
 impl FileObject {
-    /// A file object of `record`, at its start, synchronous; call [`FileObject::init`] at its final
-    /// address.
-    pub const fn new(record: FileRecordId, access: u8, granted: u32, share: u8) -> Self {
+    /// A file object open on `context`, at its start, synchronous; call [`FileObject::init`] at its
+    /// final address.
+    pub const fn new(context: Context, access: u8, granted: u32, share: u8) -> Self {
         FileObject {
-            record,
+            context,
             access,
             granted,
             share,
@@ -219,9 +231,18 @@ impl FileObject {
     }
 
     /// A pool's fresh record: overwritten by the object manager's create before any use, so its
-    /// record is never read.
+    /// context is never read.
     pub const fn none() -> Self {
-        FileObject::new(FileRecordId(0), 0, 0, 0)
+        FileObject::new(Context::Disk(FileRecordId(0)), 0, 0, 0)
+    }
+
+    /// The record of the disk file the object opens; none for an object of another device. What
+    /// only a disk file has (a section's pages, an image, a directory a name starts at) asks for it
+    /// here, and refuses another device's object with its own status.
+    pub fn disk(&self) -> Option<FileRecordId> {
+        match self.context {
+            Context::Disk(record) => Some(record),
+        }
     }
 
     /// Name the lock's event by its address; call once at the final address.
