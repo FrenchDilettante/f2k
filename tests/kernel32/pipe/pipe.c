@@ -93,7 +93,12 @@
  *            _popen with "r" and fgets, "w" and fputs, the t and b
  *            modes, _pclose's status, _pclose on a stream fopen opened,
  *            a bad mode; system(NULL), system() of a command's exit code
- *            and of one that prints
+ *            and of one that prints. msvcrt's _popen moves the standard
+ *            output while it starts the child (it hands fd 1 to the pipe
+ *            and back), so the section prints through a private duplicate
+ *            of the handle it started with, which msvcrt never sees, and
+ *            each _popen prints whether the standard output handle it
+ *            leaves is still the one the program started with
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat pipe):
  *   cl /nologo /MD pipekid.c
@@ -1658,6 +1663,17 @@ static void sec_crt(void)
 
 /* --- popen --------------------------------------------------------- */
 
+/* The standard output handle the section started with. */
+static HANDLE popen_stdout;
+
+/* Whether _popen left the standard output handle as the section found
+ * it: a program that keeps the handle GetStdHandle gave it sees this. */
+static void popen_handle(void)
+{
+    line("  the standard output handle after _popen: %s",
+         GetStdHandle(STD_OUTPUT_HANDLE) == popen_stdout ? "the same value" : "another value");
+}
+
 static void popen_read(const char *cmd, const char *mode)
 {
     FILE *f;
@@ -1671,6 +1687,7 @@ static void popen_read(const char *cmd, const char *mode)
         line("  NULL errno=%d", errno);
         return;
     }
+    popen_handle();
     while (lines < 20 && fgets(buf, sizeof buf, f) != NULL) {
         line("  fgets: [%s]", esc(buf, (int)strlen(buf)));
         lines++;
@@ -1694,6 +1711,7 @@ static void popen_write(const char *cmd, const char *mode)
         line("  NULL errno=%d", errno);
         return;
     }
+    popen_handle();
     a = fputs("one\n", f);
     b = fputs("two\n", f);
     clear_errno();
@@ -1705,9 +1723,18 @@ static void popen_write(const char *cmd, const char *mode)
 static void sec_popen(void)
 {
     static char comspec[MAX_PATH + 16];
+    HANDLE own = NULL;
     FILE *f;
     int r;
 
+    /* line() keeps the handle it first printed through; _popen may close
+     * that one. A private duplicate (the same file, so the same position
+     * the children write at) carries the section's lines instead. */
+    popen_stdout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (DuplicateHandle(GetCurrentProcess(), popen_stdout, GetCurrentProcess(), &own, 0, FALSE,
+                        DUPLICATE_SAME_ACCESS)) {
+        f2kt_stdout = own;
+    }
     reset();
     /* Both ways: the process environment, and the C runtime's copy, which
      * its getenv reads. */
