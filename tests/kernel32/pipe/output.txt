@@ -1,0 +1,340 @@
+# F2K capture of pipe (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  8:31:03.83
+pipe F2KT-SOURCE-CRC=0xC2CE82CC
+>>> pipe.exe create
+== create
+CreatePipe(nSize 0): ret=1 err=-; 1-byte writes done before one waits: 163; PeekNamedPipe's total then: 164
+CreatePipe(nSize 1): ret=1 err=-; 1-byte writes done before one waits: 0; PeekNamedPipe's total then: 1
+CreatePipe(nSize 4096): ret=1 err=-; 1-byte writes done before one waits: 163; PeekNamedPipe's total then: 164
+CreatePipe(nSize 65536): ret=1 err=-; 1-byte writes done before one waits: 2621; PeekNamedPipe's total then: 2622
+CreatePipe(inheritable): ret=1 err=-
+  read end: GetFileType 3 err=-, flags 0x1
+  write end: GetFileType 3 err=-, flags 0x1
+CreatePipe(not inheritable): ret=1 err=-
+  read end: GetFileType 3 err=-, flags 0x0
+  write end: GetFileType 3 err=-, flags 0x0
+CreatePipe(no attributes): ret=1 err=-
+  read end: GetFileType 3 err=-, flags 0x0
+  write end: GetFileType 3 err=-, flags 0x0
+NtQueryObject on an inheritable pipe's ends:
+  read end: basic information: status=0x00000000, length 56; attributes 0x2, granted access 0x00120189, handle count 1
+  read end: name: status=0x00000000; its characters follow the structure: yes; MaximumLength = Length + 2: yes; length = 8 + MaximumLength: yes
+  read end: name [\Device\NamedPipe\Win32Pipes.<8 hex>.<8 hex>]
+  write end: basic information: status=0x00000000, length 56; attributes 0x2, granted access 0x00120116, handle count 1
+  write end: name: status=0x00000000; its characters follow the structure: yes; MaximumLength = Length + 2: yes; length = 8 + MaximumLength: yes
+  write end: name [\Device\NamedPipe\Win32Pipes.<8 hex>.<8 hex>]
+NtQueryObject on a pipe's ends, not inheritable:
+  read end: basic information: status=0x00000000, length 56; attributes 0x0, granted access 0x00120189, handle count 1
+  read end: name: status=0x00000000; its characters follow the structure: yes; MaximumLength = Length + 2: yes; length = 8 + MaximumLength: yes
+  read end: name [\Device\NamedPipe\Win32Pipes.<8 hex>.<8 hex>]
+  write end: basic information: status=0x00000000, length 56; attributes 0x0, granted access 0x00120116, handle count 1
+  write end: name: status=0x00000000; its characters follow the structure: yes; MaximumLength = Length + 2: yes; length = 8 + MaximumLength: yes
+  write end: name [\Device\NamedPipe\Win32Pipes.<8 hex>.<8 hex>]
+I/O the wrong way, the pipe empty:
+ReadFile on the write end, 1 byte: ret=0 n=0 err=5
+WriteFile on the read end, 1 byte: ret=0 n=0 err=5
+PeekNamedPipe(the read end): ret=1 err=-; read 0, total 0, left 0
+file queries:
+GetFileSize(the read end, empty): 0, high 0, err=-
+GetFileSize(the write end, empty): 0, high 0, err=-
+WriteFile [12345], 5 bytes: ret=1 n=5 err=-
+GetFileSize(the read end, 5 bytes in the pipe): 5, high 0, err=-
+GetFileSize(the write end, 5 bytes in the pipe): 5, high 0, err=-
+SetFilePointer(the read end, 0, FILE_CURRENT): 0 err=-
+SetFilePointer(the read end, 10, FILE_BEGIN): 10 err=-
+SetFilePointer(the read end, 0, FILE_CURRENT): 10 err=-
+SetFilePointer(the write end, 0, FILE_END): 5 err=-
+ReadFile 64: ret=1 n=5 err=- [12345]
+GetFileInformationByHandle(the read end): ret=0 err=50
+GetFileInformationByHandle(the write end): ret=0 err=50
+FlushFileBuffers(the write end), nothing buffered: ret=1 err=-
+FlushFileBuffers(the read end): ret=0 err=5
+pipe: done
+<<< exit code=0
+>>> pipe.exe io
+== io
+a write, then a read:
+WriteFile [hello], 5 bytes: ret=1 n=5 err=-
+ReadFile 64: ret=1 n=5 err=- [hello]
+a read shorter than the data:
+WriteFile [0123456789], 10 bytes: ret=1 n=10 err=-
+ReadFile 4: ret=1 n=4 err=- [0123]
+ReadFile 64: ret=1 n=6 err=- [456789]
+three writes, one read:
+WriteFile [ab], 2 bytes: ret=1 n=2 err=-
+WriteFile [cd], 2 bytes: ret=1 n=2 err=-
+WriteFile [ef], 2 bytes: ret=1 n=2 err=-
+PeekNamedPipe(no buffer): ret=1 err=-; read 0, total 6, left 0
+ReadFile 64: ret=1 n=6 err=- [abcdef]
+zero-byte writes and reads:
+WriteFile [], 0 bytes: ret=1 n=0 err=-
+PeekNamedPipe(after the zero-byte write): ret=1 err=-; read 0, total 0, left 0
+ReadFile of 0 bytes on the empty pipe, in a thread: waiting after 500 ms
+WriteFile [x], 1 bytes: ret=1 n=1 err=-
+  the thread after the write: WAIT_OBJECT_0; ReadFile ret=1 n=0 err=-
+PeekNamedPipe(after it): ret=1 err=-; read 0, total 1, left 0
+ReadFile 64: ret=1 n=1 err=- [x]
+WriteFile [yz], 2 bytes: ret=1 n=2 err=-
+ReadFile of 0 bytes, 2 bytes in the pipe: ret=1 n=0 err=-
+PeekNamedPipe(after it): ret=1 err=-; read 0, total 2, left 0
+ReadFile 64: ret=1 n=2 err=- [yz]
+PeekNamedPipe:
+WriteFile [peekdata12], 10 bytes: ret=1 n=10 err=-
+PeekNamedPipe(no buffer, size 0): ret=1 err=-; read 0, total 10, left 0
+PeekNamedPipe(a 4-byte buffer): ret=1 err=-; read 4, total 10, left 4294967292 [peek]
+PeekNamedPipe(a 64-byte buffer): ret=1 err=-; read 10, total 10, left 4294967286 [peekdata12]
+PeekNamedPipe(a 64-byte buffer, no counts): ret=1 err=-; read -, total -, left -; the buffer's first 10 bytes [peekdata12]
+PeekNamedPipe(no buffer, the total alone): ret=1 err=-; read -, total 10, left -
+WriteFile [+more], 5 bytes: ret=1 n=5 err=-
+PeekNamedPipe(two writes, a 64-byte buffer): ret=1 err=-; read 15, total 15, left 4294967281 [peekdata12+more]
+ReadFile 64: ret=1 n=15 err=- [peekdata12+more]
+PeekNamedPipe(the empty pipe, no buffer): ret=1 err=-; read 0, total 0, left 0
+PeekNamedPipe(the empty pipe, a 64-byte buffer): ret=1 err=-; read 0, total 0, left 0 []
+pipe: done
+<<< exit code=0
+>>> pipe.exe peek
+== peek
+WriteFile [\x01\x02F2K\x00peek\xFE\xFF\x7F], 13 bytes: ret=1 n=13 err=-
+NtFsControlFile(the pipe-peek code), the read end, a 64-byte buffer:
+  status=0x00000000; the I/O status: the same status: yes, Information = header + 13: yes
+  the header: state 3, available 13, messages 0, message length 0
+  the 13 bytes after the header are the ones written: yes; the bytes past them still 0xCC: yes
+ReadFile 64 then: ret=1 n=13 err=-; the 13 bytes written: yes
+NtFsControlFile, the empty pipe: status=0x00000000; I/O status status=0x00000000, Information 16; available 0; the bytes past the header still 0xCC: yes
+13 fresh bytes, the direct call, then PeekNamedPipe:
+WriteFile [run\x80\r\n\x00\x002\xAAU\xC33], 13 bytes: ret=1 n=13 err=-
+  NtFsControlFile: status=0x00000000, available 13, Information = header + 13: yes, the bytes the ones written: yes
+  PeekNamedPipe, a 64-byte buffer: ret=1 err=-; read 13, total 13, left 4294967283
+  the bytes the ones written: yes; the direct call's answers (the count read, the total, the bytes): yes
+ReadFile 64: ret=1 n=13 err=- [run\x80\r\n\x00\x002\xAAU\xC33]
+the write end, and short buffers, 13 bytes in the pipe:
+WriteFile [\x01\x02F2K\x00peek\xFE\xFF\x7F], 13 bytes: ret=1 n=13 err=-
+NtFsControlFile, the write end: status=0xC0000022; I/O status untouched; the buffer untouched: yes
+PeekNamedPipe(the write end): ret=0 err=5; read -, total -, left -
+NtFsControlFile, the read end, an 8-byte buffer: status=0xC000000D; I/O status untouched; the buffer untouched: yes
+NtFsControlFile, the read end, a buffer as long as the header: status=0x80000005; I/O status status=0x80000005, Information 16; available 13; past the header untouched: yes
+PeekNamedPipe(the read end, after them): ret=1 err=-; read 0, total 13, left 0
+ReadFile 64: ret=1 n=13 err=- [\x01\x02F2K\x00peek\xFE\xFF\x7F]
+pipe: done
+<<< exit code=0
+>>> pipe.exe ends
+== ends
+the write end closed, 4 bytes left:
+WriteFile [tail], 4 bytes: ret=1 n=4 err=-
+CloseHandle(the write end): ret=1 err=-
+PeekNamedPipe(4 bytes left): ret=1 err=-; read 4, total 4, left 4294967292 [tail]
+ReadFile 64: ret=1 n=4 err=- [tail]
+ReadFile 64: ret=0 n=0 err=109
+ReadFile 64: ret=0 n=0 err=109
+PeekNamedPipe(drained): ret=0 err=109; read -, total -, left -
+  the read end: GetFileType 3 err=-, flags 0x0
+CloseHandle(the read end): ret=1 err=-
+the write end closed, nothing left:
+CloseHandle(the write end): ret=1 err=-
+ReadFile 64: ret=0 n=0 err=109
+CloseHandle(the read end): ret=1 err=-
+a duplicated write handle keeps the pipe open:
+DuplicateHandle(the write end): ret=1 err=-
+CloseHandle(the write end): ret=1 err=-
+WriteFile [dup], 3 bytes: ret=1 n=3 err=-
+ReadFile 64: ret=1 n=3 err=- [dup]
+a read in a thread, the duplicate open: waiting after 300 ms: yes
+CloseHandle(the duplicate): ret=1 err=-
+  the thread once the duplicate is closed: WAIT_OBJECT_0; ReadFile ret=0 n=0 err=109
+CloseHandle(the read end): ret=1 err=-
+the read end closed, 4 bytes unread:
+WriteFile [left], 4 bytes: ret=1 n=4 err=-
+CloseHandle(the read end): ret=1 err=-
+WriteFile [x], 1 bytes: ret=0 n=0 err=232
+WriteFile [], 0 bytes: ret=0 n=0 err=232
+FlushFileBuffers(the write end): ret=1 err=-
+PeekNamedPipe(the write end): ret=0 err=5; read -, total -, left -
+  the write end: GetFileType 3 err=-, flags 0x0
+CloseHandle(the write end): ret=1 err=-
+pipe: done
+<<< exit code=0
+>>> pipe.exe block
+== block
+a read on the empty pipe, in a thread, woken by a write:
+  waiting after 200 ms: yes
+WriteFile [wake], 4 bytes: ret=1 n=4 err=-
+  the thread after the write: WAIT_OBJECT_0; ReadFile ret=1 n=4 err=- [wake]
+a 10000-byte write into a 4096-byte pipe, in a thread:
+  waiting after 300 ms: yes; PeekNamedPipe's total meanwhile: 10000
+  ReadFile 1000: ret=1 n=1000 err=-
+  still waiting 200 ms after it: yes
+  the write: WAIT_OBJECT_0, WriteFile ret=1 n=10000 err=-; read in all 10000, the bytes as written: yes
+a read on the empty pipe, in a thread, ended by closing the write end:
+  waiting after 200 ms: yes
+CloseHandle(the write end): ret=1 err=-
+  the thread: WAIT_OBJECT_0; ReadFile ret=0 n=0 err=109
+a read on the empty pipe, its thread terminated:
+  waiting after 200 ms: yes; TerminateThread ret=1 err=-; the thread: WAIT_OBJECT_0, exit code 77
+PeekNamedPipe(the pipe after it): ret=1 err=-; read 0, total 0, left 0
+WriteFile [after], 5 bytes: ret=1 n=5 err=-
+ReadFile 64: ret=1 n=5 err=- [after]
+a 10000-byte write into a 4096-byte pipe, its thread terminated:
+  waiting after 300 ms: yes; TerminateThread ret=1 err=-; the thread: WAIT_OBJECT_0, exit code 78
+  PeekNamedPipe's total after it: 0
+  read then: 0 bytes, the write's first bytes: yes
+WriteFile [after], 5 bytes: ret=1 n=5 err=-
+ReadFile 64: ret=1 n=5 err=- [after]
+a 10000-byte write into a 4096-byte pipe, in a thread, ended by closing the read end:
+  waiting after 300 ms: yes
+CloseHandle(the read end): ret=1 err=-
+  the thread: WAIT_OBJECT_0; WriteFile ret=0 n=0 err=109
+pipe: done
+<<< exit code=0
+>>> pipe.exe child
+== child
+pipekid emit 5, its standard output the pipe:
+  > pipekid: line 1
+  > pipekid: line 2
+  > pipekid: line 3
+  > pipekid: line 4
+  > pipekid: line 5
+  the end of the output: ReadFile ret=0 err=109, 85 bytes in all
+  pipekid emit 5: WAIT_OBJECT_0, exit code 0
+pipekid count, its standard input the pipe:
+WriteFile [one\r\n], 5 bytes: ret=1 n=5 err=-
+WriteFile [two\r\n], 5 bytes: ret=1 n=5 err=-
+WriteFile [three\r\n], 7 bytes: ret=1 n=7 err=-
+CloseHandle(the write end): ret=1 err=-
+  > pipekid: count: 3 lines, 17 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 65 bytes in all
+  pipekid count: WAIT_OBJECT_0, exit code 0
+pipekid upper, its standard input the pipe:
+WriteFile [Mixed Case 1\r\n], 14 bytes: ret=1 n=14 err=-
+WriteFile [second, ], 8 bytes: ret=1 n=8 err=-
+WriteFile [unended], 7 bytes: ret=1 n=7 err=-
+CloseHandle(the write end): ret=1 err=-
+  > MIXED CASE 1
+  > SECOND, UNENDED (no line end)
+  the end of the output: ReadFile ret=0 err=109, 29 bytes in all
+  pipekid upper: WAIT_OBJECT_0, exit code 0
+pipekid emit 3 | pipekid upper, the program only plumbing:
+  > PIPEKID: LINE 1
+  > PIPEKID: LINE 2
+  > PIPEKID: LINE 3
+  the end of the output: ReadFile ret=0 err=109, 51 bytes in all
+  pipekid emit 3: WAIT_OBJECT_0, exit code 0
+  pipekid upper: WAIT_OBJECT_0, exit code 0
+pipekid emit 4 | pipekid count:
+  > pipekid: count: 4 lines, 68 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 65 bytes in all
+  pipekid emit 4: WAIT_OBJECT_0, exit code 0
+  pipekid count: WAIT_OBJECT_0, exit code 0
+pipekid emit 4 | pipekid cat | pipekid count:
+  > pipekid: count: 4 lines, 68 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 65 bytes in all
+  pipekid emit 4: WAIT_OBJECT_0, exit code 0
+  pipekid cat: WAIT_OBJECT_0, exit code 0
+  pipekid count: WAIT_OBJECT_0, exit code 0
+pipekid types, its handles in STARTUPINFO: input a pipe, output a pipe, error a file:
+  > pipekid: standard input: type 3 err=-, flags 0x1
+  > pipekid: standard output: type 3 err=-, flags 0x1
+  > pipekid: standard error: type 1 err=-, flags 0x1
+  the end of the output: ReadFile ret=0 err=109, 151 bytes in all
+  pipekid types: WAIT_OBJECT_0, exit code 0
+pipekid types, none in STARTUPINFO, the program's own set with SetStdHandle: input a pipe, output and error a pipe:
+  > pipekid: standard input: type 3 err=-, flags 0x1
+  > pipekid: standard output: type 3 err=-, flags 0x1
+  > pipekid: standard error: type 3 err=-, flags 0x1
+  the end of the output: ReadFile ret=0 err=109, 151 bytes in all
+  pipekid types: WAIT_OBJECT_0, exit code 0
+pipekid exit 0, its standard input the pipe, ended before the program writes:
+  pipekid exit 0: WAIT_OBJECT_0, exit code 0
+WriteFile [late], 4 bytes: ret=0 n=0 err=232
+  the end of the output: ReadFile ret=0 err=109, 0 bytes in all
+pipekid emit 3000, its standard output the pipe, the read end closed after one read:
+  ReadFile 64: ret=1 err=-, some bytes: yes
+CloseHandle(the read end): ret=1 err=-
+  pipekid emit 3000: WAIT_OBJECT_0, exit code 109
+pipe: done
+<<< exit code=0
+>>> pipe.exe crt
+== crt
+text mode:
+_pipe(4096, _O_TEXT): ret=0 errno=0; two distinct descriptors above 2: yes
+  the read end's handle: flags 0x1; the write end's: flags 0x1
+_write [a\nb\n], 4 bytes: ret=4 errno=0
+ReadFile 64 on its handle: ret=1 n=6 [a\r\nb\r\n]
+_write [x\ny\n], 4 bytes: ret=4 errno=0
+_read 64: ret=4 errno=0 [x\ny\n]
+a CR at the end of a read, LF next:
+WriteFile [ab\r] on its handle: ret=1 n=3
+WriteFile [\ncd] on its handle: ret=1 n=3
+_read 3: ret=3 errno=0 [ab\n]
+_read 64: ret=2 errno=0 [cd]
+a CR at the end of a read, another byte next:
+WriteFile [ab\r] on its handle: ret=1 n=3
+WriteFile [xy] on its handle: ret=1 n=2
+_read 3: ret=3 errno=0 [ab\r]
+_read 64: ret=2 errno=0 [xy]
+a CR at the end of a read, the end of the file next:
+WriteFile [ab\r] on its handle: ret=1 n=3
+_close(the write end): ret=0 errno=0
+_read 3: ret=3 errno=0 [ab\r]
+_read 64: ret=0 errno=0 []
+_read 64: ret=0 errno=0 []
+_close(the read end): ret=0 errno=0
+a Ctrl+Z in text mode, then the end of the file:
+_pipe(4096, _O_TEXT): ret=0 errno=0; two distinct descriptors above 2: yes
+  the read end's handle: flags 0x1; the write end's: flags 0x1
+WriteFile [a\x1Ab] on its handle: ret=1 n=3
+_close(the write end): ret=0 errno=0
+_read 64: ret=1 errno=0 [a]
+_read 64: ret=0 errno=0 []
+_close(the read end): ret=0 errno=0
+binary mode:
+_pipe(4096, _O_BINARY): ret=0 errno=0; two distinct descriptors above 2: yes
+  the read end's handle: flags 0x1; the write end's: flags 0x1
+_write [a\nb\r\n], 5 bytes: ret=5 errno=0
+_read 64: ret=5 errno=0 [a\nb\r\n]
+_write [z], 1 bytes: ret=1 errno=0
+_close(the write end): ret=0 errno=0
+_read 64: ret=1 errno=0 [z]
+_read 64: ret=0 errno=0 []
+_close(the read end): ret=0 errno=0
+binary mode, _O_NOINHERIT, the read end closed:
+_pipe(4096, _O_BINARY | _O_NOINHERIT): ret=0 errno=0; two distinct descriptors above 2: yes
+  the read end's handle: flags 0x0; the write end's: flags 0x0
+_close(the read end): ret=0 errno=0
+_write [x], 1 byte: ret=-1 errno=22 _doserrno=232
+_close(the write end): ret=0 errno=0
+pipe: done
+<<< exit code=0
+>>> pipe.exe popen
+== popen
+COMSPEC: pipekid.exe in the program's directory
+_popen("pipekid emit 3", "r"), read with fgets:
+  fgets: [pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]\r\n]
+  fgets: [pipekid: line 1\r\n]
+  fgets: [pipekid: line 2\r\n]
+  3 lines; _pclose: ret=0 errno=0
+_popen("pipekid count", "w"), "one\n" and "two\n" written with fputs:
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
+pipekid: count: 2 lines, 10 bytes; the last read: ret=0 err=109
+  fputs: done, done; _pclose: ret=0 errno=0
+_popen("pipekid count", "wt"), "one\n" and "two\n" written with fputs:
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
+pipekid: count: 2 lines, 10 bytes; the last read: ret=0 err=109
+  fputs: done, done; _pclose: ret=0 errno=0
+_popen("pipekid count", "wb"), "one\n" and "two\n" written with fputs:
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
+pipekid: count: 2 lines, 8 bytes; the last read: ret=0 err=109
+  fputs: done, done; _pclose: ret=0 errno=0
+_popen("pipekid upper", "w"), "one\n" and "two\n" written with fputs:
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid upper]
+ONE
+TWO
+  fputs: done, done; _pclose: ret=0 errno=0
+_popen("pipekid exit 7", "r"), read with fgets:
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid exit 4]
+pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]
+pipekid: line 1
+pipekid: line 2
+<<< exit code=0

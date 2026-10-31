@@ -41,6 +41,7 @@ call :cap_bare
 call :cap_runtime
 for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
 call :cap_spawn
+call :listed kernel32 pipe
 call :listed user32 winsta
 call :listed advapi32 registry
 call :cap_hellomd
@@ -56,7 +57,7 @@ rem needs its data tree's attributes first (kernel32\files\setup.bat).
 :one
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 for %%F in (winsta) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (registry) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_DLL=crt

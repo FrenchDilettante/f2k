@@ -1,0 +1,104 @@
+# pipe: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. Its companion program, pipekid.exe (built beside pipe.exe from pipekid.c, with /MD), is the
+# child the sections start and, in the popen block, the stand-in command processor COMSPEC names; it
+# goes into \CORPUS beside the program, as it sits beside it on the real machine. Declared ahead of
+# its real-machine build and capture (no pipe.exe, no output.txt yet), and not gated yet. The create
+# block's 1-byte writes run up to 65536 per pipe and the child and popen blocks start some twenty
+# processes, hence the longer timeout.
+description = "pipe - anonymous pipes (pipe.c, with its companion program pipekid.c): CreatePipe's sizes and how many bytes each takes before a write waits, its ends' file type, inheritance, granted access and name (NtQueryObject); I/O the wrong way, file queries and FlushFileBuffers on a pipe; reads, writes, zero-byte I/O and PeekNamedPipe; NtFsControlFile's pipe peek checked against the written bytes; a closed end seen from the other, a duplicated end; reads and writes waiting, woken, ended by a close or by TerminateThread; pipes as children's standard handles, children joined by pipes; msvcrt's _pipe, _read and _write in text and binary mode; _popen, _pclose and system() through a stand-in command processor."
+kind = "sectioned"
+timeout = 60
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself: never the C runtime's startup, nor what a library calls
+# underneath (_popen pins msvcrt._popen, not the CreatePipe beneath it).
+create = [
+    "kernel32.CreatePipe",
+    "kernel32.CreateThread",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.PeekNamedPipe",
+    "kernel32.GetFileType",
+    "kernel32.GetHandleInformation",
+    "ntdll.NtQueryObject",
+    "kernel32.GetFileSize",
+    "kernel32.SetFilePointer",
+    "kernel32.GetFileInformationByHandle",
+    "kernel32.FlushFileBuffers",
+    "kernel32.CloseHandle",
+]
+io = [
+    "kernel32.CreatePipe",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.PeekNamedPipe",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+]
+peek = [
+    "kernel32.CreatePipe",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.PeekNamedPipe",
+    "ntdll.NtFsControlFile",
+]
+ends = [
+    "kernel32.CreatePipe",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.PeekNamedPipe",
+    "kernel32.CloseHandle",
+    "kernel32.DuplicateHandle",
+    "kernel32.FlushFileBuffers",
+    "kernel32.GetFileType",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+]
+block = [
+    "kernel32.CreatePipe",
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "kernel32.PeekNamedPipe",
+    "kernel32.TerminateThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.CloseHandle",
+]
+child = [
+    "kernel32.CreatePipe",
+    "kernel32.SetHandleInformation",
+    "kernel32.CreateProcessA",
+    "kernel32.GetStdHandle",
+    "kernel32.SetStdHandle",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "kernel32.CloseHandle",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+]
+crt = [
+    "msvcrt._pipe",
+    "msvcrt._read",
+    "msvcrt._write",
+    "msvcrt._close",
+    "msvcrt._get_osfhandle",
+    "msvcrt._errno",
+    "msvcrt.__doserrno",
+    "kernel32.GetHandleInformation",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+]
+popen = [
+    "msvcrt._popen",
+    "msvcrt._pclose",
+    "msvcrt.fgets",
+    "msvcrt.fputs",
+    "msvcrt.fopen",
+    "msvcrt.system",
+    "msvcrt._putenv",
+    "msvcrt._errno",
+    "kernel32.SetEnvironmentVariableA",
+]
