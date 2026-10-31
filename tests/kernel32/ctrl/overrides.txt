@@ -1,0 +1,42 @@
+# ctrl: blocks the capture script cannot take, merged over output.txt by tests/f2kboot.py
+# (a block here replaces the captured block with the same command line, or adds one).
+#
+# ctrl.exe keys: real Ctrl+C and Ctrl+Break pressed on the keyboard, which tests/capture.bat
+# cannot press. Captured by hand on the real machine: in a console window, from the fixture's
+# directory, "ctrl.exe keys > keys.txt", the keys pressed as each prompt asks (ctrl.c's header
+# lists them), then "echo %ERRORLEVEL%". Its block goes below this header: ">>> ctrl.exe keys",
+# keys.txt's lines, then "<<< exit code=N" with the number echoed.
+>>> ctrl.exe keys
+== keys
+CONIN$ and CONOUT$ open: yes
+SetConsoleMode(CONIN$, 0x7): ret=1 err=-
+SetConsoleCtrlHandler(handler, TRUE): ret=1 err=-
+step 1: type abc, then press Ctrl+C
+ReadConsoleW: ret=1 read 0 err=995 []
+the echoed row: [abc]
+cursor after: +0 rows, column 3
+input events left: 0
+this program's handler: CTRL_C_EVENT, on the main thread no
+step 2: type abc, then press Ctrl+C
+ReadConsoleA: ret=1 read 0 err=995 []
+the echoed row: [abc]
+cursor after: +0 rows, column 3
+input events left: 0
+this program's handler: CTRL_C_EVENT, on the main thread no
+step 3: type abc, then press Ctrl+Break
+ReadConsoleW: ret=1 read 0 err=995 []
+the echoed row: [abc]
+cursor after: +0 rows, column 3
+input events left: 0
+this program's handler: CTRL_BREAK_EVENT, on the main thread no
+step 4: press Ctrl+C
+kid: handler: event 0, on the main thread no, answers FALSE
+the child's end: WAIT_OBJECT_0, exit code 0xC000013A
+this program's handler: CTRL_C_EVENT, on the main thread no
+step 5: press Ctrl+Break
+kid: handler: event 1, on the main thread no, answers FALSE
+the child's end: WAIT_OBJECT_0, exit code 0xC000013A
+this program's handler: CTRL_BREAK_EVENT, on the main thread no
+CONIN$ mode restored: yes
+ctrl: done
+<<< exit code=0

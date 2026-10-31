@@ -1,0 +1,100 @@
+# ctrl: one test per block of the real-machine capture (output.txt, with the hand-captured keys block
+# in overrides.txt); see tests/README.md. Built with /MD. Its companion program, ctrlkid.exe (built
+# beside ctrl.exe from ctrlkid.c, with /MD), is the child every section starts with
+# CREATE_NEW_PROCESS_GROUP; it goes into \CORPUS beside the program, as it sits beside it on the real
+# machine. Control events go only into such a child's group, while it lives: never group 0, which on
+# the real machine would reach the cmd.exe running capture.bat. The lone section's child runs in a
+# console of its own (CREATE_NEW_CONSOLE: a window opens briefly on the real machine).
+description = "ctrl - console control events (ctrl.c, with its companion program ctrlkid.c): GenerateConsoleCtrlEvent's CTRL_BREAK_EVENT into a child's process group (CREATE_NEW_PROCESS_GROUP), the handlers' order and thread, TRUE ending the chain, the default handler's exit code (0xC000013A); CTRL_C_EVENT into a group and the ignore flag (SetConsoleCtrlHandler(NULL, ...)) in a child and a grandchild; GenerateConsoleCtrlEvent's refusals, and groups no process leads, from a console of its own; and, captured by hand, real Ctrl+C and Ctrl+Break during a line read and a running child."
+kind = "sectioned"
+timeout = 60
+
+[pending]
+keys = "interactive: real Ctrl+C and Ctrl+Break keys, captured by hand into overrides.txt; the harness has no field yet for the keys a block sends once it prints a marker"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, and ctrlkid's own calls in that section's runs.
+order = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetExitCodeProcess",
+]
+default = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetExitCodeProcess",
+]
+ctrlc = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetExitCodeProcess",
+]
+inherit = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetExitCodeProcess",
+]
+errors = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.GetExitCodeProcess",
+]
+lone = [
+    "kernel32.CreateProcessA",
+    "kernel32.DuplicateHandle",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.GetCurrentProcessId",
+    "kernel32.GetExitCodeProcess",
+]
+keys = [
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleMode",
+    "kernel32.SetConsoleMode",
+    "kernel32.SetConsoleCtrlHandler",
+    "kernel32.WriteConsoleA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.FillConsoleOutputCharacterW",
+    "kernel32.FlushConsoleInputBuffer",
+    "kernel32.ReadConsoleW",
+    "kernel32.ReadConsoleA",
+    "kernel32.ReadConsoleOutputCharacterW",
+    "kernel32.GetNumberOfConsoleInputEvents",
+    "kernel32.CreateThread",
+    "kernel32.CreateProcessA",
+]

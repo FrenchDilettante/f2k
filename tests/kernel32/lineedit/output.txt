@@ -1,0 +1,1094 @@
+# F2K capture of lineedit (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sat 10/31/2026  8:32:01.76
+lineedit F2KT-SOURCE-CRC=0x4D758728
+>>> lineedit.exe plain
+== plain
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abc]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [abc\r\n]
+  echo: [abc]
+  cursor after: +1 rows, column 0
+keys []: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [hello world]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 13 err=- [hello world\r\n]
+  echo: [hello world]
+  cursor after: +1 rows, column 0
+keys [a  b ]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [a  b \r\n]
+  echo: [a  b]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abc]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [abc\r\n]
+  echo: [abc]
+  cursor after: +1 rows, column 0
+keys []: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [hello world]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 13 err=- [hello world\r\n]
+  echo: [hello world]
+  cursor after: +1 rows, column 0
+keys [a  b ]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [a  b \r\n]
+  echo: [a  b]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe move
+== move
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [abxcd\r\n]
+  echo: [abxcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [xabcd\r\n]
+  echo: [xabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{End}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [abcdx\r\n]
+  echo: [abcdx]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Right}{Right}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [abxcd\r\n]
+  echo: [abxcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Right}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [abcxd\r\n]
+  echo: [abcxd]
+  cursor after: +1 rows, column 0
+keys [ab{Left}{Left}{Left}{Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [xab\r\n]
+  echo: [xab]
+  cursor after: +1 rows, column 0
+keys [{Left}{Home}{End}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [abxcd\r\n]
+  echo: [abxcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [xabcd\r\n]
+  echo: [xabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{End}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [abcdx\r\n]
+  echo: [abcdx]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Right}{Right}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [abxcd\r\n]
+  echo: [abxcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Right}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [abcxd\r\n]
+  echo: [abcxd]
+  cursor after: +1 rows, column 0
+keys [ab{Left}{Left}{Left}{Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [xab\r\n]
+  echo: [xab]
+  cursor after: +1 rows, column 0
+keys [{Left}{Home}{End}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe words
+== words
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [one two xthree\r\n]
+  echo: [one two xthree]
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}{C-Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [one xtwo three\r\n]
+  echo: [one xtwo three]
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}{C-Left}{C-Left}{C-Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [xone two three\r\n]
+  echo: [xone two three]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [one xtwo three\r\n]
+  echo: [one xtwo three]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}{C-Right}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [one two xthree\r\n]
+  echo: [one two xthree]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}{C-Right}{C-Right}{C-Right}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [one two threxe\r\n]
+  echo: [one two threxe]
+  cursor after: +1 rows, column 0
+keys [one two{Left}{Left}{C-Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 10 err=- [one xtwo\r\n]
+  echo: [one xtwo]
+  cursor after: +1 rows, column 0
+keys [one  two{C-Left}{C-Left}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 11 err=- [xone  two\r\n]
+  echo: [xone  two]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [one two xthree\r\n]
+  echo: [one two xthree]
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}{C-Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [one xtwo three\r\n]
+  echo: [one xtwo three]
+  cursor after: +1 rows, column 0
+keys [one two three{C-Left}{C-Left}{C-Left}{C-Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [xone two three\r\n]
+  echo: [xone two three]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [one xtwo three\r\n]
+  echo: [one xtwo three]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}{C-Right}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [one two xthree\r\n]
+  echo: [one two xthree]
+  cursor after: +1 rows, column 0
+keys [one two three{Home}{C-Right}{C-Right}{C-Right}{C-Right}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [one two threxe\r\n]
+  echo: [one two threxe]
+  cursor after: +1 rows, column 0
+keys [one two{Left}{Left}{C-Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 10 err=- [one xtwo\r\n]
+  echo: [one xtwo]
+  cursor after: +1 rows, column 0
+keys [one  two{C-Left}{C-Left}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 11 err=- [xone  two\r\n]
+  echo: [xone  two]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe delete
+== delete
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Del}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [abd\r\n]
+  echo: [abd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Del}{Del}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [cd\r\n]
+  echo: [cd]
+  cursor after: +1 rows, column 0
+keys [abcd{Del}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{BS}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [abd\r\n]
+  echo: [abd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{BS}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [abcd{BS}{BS}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [abx\r\n]
+  echo: [abx]
+  cursor after: +1 rows, column 0
+keys [abc{Esc}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abc{Esc}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Esc}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Del}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [abd\r\n]
+  echo: [abd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Del}{Del}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [cd\r\n]
+  echo: [cd]
+  cursor after: +1 rows, column 0
+keys [abcd{Del}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{BS}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [abd\r\n]
+  echo: [abd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{BS}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [abcd{BS}{BS}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [abx\r\n]
+  echo: [abx]
+  cursor after: +1 rows, column 0
+keys [abc{Esc}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abc{Esc}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Esc}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe insert
+== insert
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Home}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [xycd\r\n]
+  echo: [xycd]
+  cursor after: +1 rows, column 0
+GetConsoleMode(CONIN$): ret=1 err=- mode 0xA7
+keys [abcd{Home}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}{Ins}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [ab{Home}{Ins}xyz]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [xyz\r\n]
+  echo: [xyz]
+  cursor after: +1 rows, column 0
+SetConsoleMode(CONIN$, 0x7): ret=1 err=-, the mode now 0x7
+keys [abcd{Home}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [xycd\r\n]
+  echo: [xycd]
+  cursor after: +1 rows, column 0
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x7
+keys [abcd{Home}xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{BS}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [axcd\r\n]
+  echo: [axcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Del}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [abxd\r\n]
+  echo: [abxd]
+  cursor after: +1 rows, column 0
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcd{Home}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [xycd\r\n]
+  echo: [xycd]
+  cursor after: +1 rows, column 0
+GetConsoleMode(CONIN$): ret=1 err=- mode 0xA7
+keys [abcd{Home}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}{Ins}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [ab{Home}{Ins}xyz]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [xyz\r\n]
+  echo: [xyz]
+  cursor after: +1 rows, column 0
+SetConsoleMode(CONIN$, 0x7): ret=1 err=-, the mode now 0x7
+keys [abcd{Home}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Home}{Ins}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [xycd\r\n]
+  echo: [xycd]
+  cursor after: +1 rows, column 0
+GetConsoleMode(CONIN$): ret=1 err=- mode 0x7
+keys [abcd{Home}xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xyabcd\r\n]
+  echo: [xyabcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{BS}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [axcd\r\n]
+  echo: [axcd]
+  cursor after: +1 rows, column 0
+keys [abcd{Left}{Left}{Del}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [abxd\r\n]
+  echo: [abxd]
+  cursor after: +1 rows, column 0
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe long
+== long
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [100 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 102 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [cdefghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Home, x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 103 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  echo row 1: [bcdefghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Left 25 times, BS twice]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 100 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuxyzabcd]
+  echo row 1: [efghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Left 25 times, Del twice]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 100 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwzabcd]
+  echo row 1: [efghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Esc, xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+keys [170 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 172 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd]
+  echo row 2: [efghijklmn]
+  cursor after: +3 rows, column 0
+keys [170 letters, Home, x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 173 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  echo row 0: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  echo row 1: [bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc]
+  echo row 2: [defghijklmn]
+  cursor after: +3 rows, column 0
+keys [79 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 81 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza\r\n]
+  echo: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  cursor after: +1 rows, column 0
+keys [80 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 82 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: []
+  cursor after: +2 rows, column 0
+keys [81 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 83 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [c]
+  cursor after: +2 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [100 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 102 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [cdefghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Home, x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 103 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  echo row 1: [bcdefghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Left 25 times, BS twice]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 100 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuxyzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuxyzabcd]
+  echo row 1: [efghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Left 25 times, Del twice]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 100 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwzabcdefghijklmnopqrstuv\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwzabcd]
+  echo row 1: [efghijklmnopqrstuv]
+  cursor after: +2 rows, column 0
+keys [100 letters, Esc, xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [xy\r\n]
+  echo: [xy]
+  cursor after: +1 rows, column 0
+keys [170 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 172 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [cdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcd]
+  echo row 2: [efghijklmn]
+  cursor after: +3 rows, column 0
+keys [170 letters, Home, x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 173 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  echo row 0: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  echo row 1: [bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc]
+  echo row 2: [defghijklmn]
+  cursor after: +3 rows, column 0
+keys [79 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 81 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza\r\n]
+  echo: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  cursor after: +1 rows, column 0
+keys [80 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 82 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: []
+  cursor after: +2 rows, column 0
+keys [81 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 83 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc\r\n]
+  echo row 0: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  echo row 1: [c]
+  cursor after: +2 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe bottom
+== bottom
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [3 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [abc\r\n]
+  row H-4: []
+  row H-3: []
+  row H-2: [abc]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 102 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  row H-4: []
+  row H-3: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  row H-2: [cdefghijklmnopqrstuv]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters, Home, x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 103 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  row H-4: []
+  row H-3: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  row H-2: [bcdefghijklmnopqrstuv]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters, Esc, xy]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [xy\r\n]
+  row H-4: []
+  row H-3: []
+  row H-2: [xy]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [170 letters, Home, x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 173 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  row H-4: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  row H-3: [bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc]
+  row H-2: [defghijklmn]
+  row H-1: []
+  cursor after: +0 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [3 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [abc\r\n]
+  row H-4: []
+  row H-3: []
+  row H-2: [abc]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 102 err=- [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  row H-4: []
+  row H-3: [abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab]
+  row H-2: [cdefghijklmnopqrstuv]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters, Home, x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 103 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv\r\n]
+  row H-4: []
+  row H-3: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  row H-2: [bcdefghijklmnopqrstuv]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [100 letters, Esc, xy]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [xy\r\n]
+  row H-4: []
+  row H-3: []
+  row H-2: [xy]
+  row H-1: []
+  cursor after: +0 rows, column 0
+buffer cleared and the cursor homed: yes
+keys [170 letters, Home, x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 173 err=- [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmn\r\n]
+  row H-4: [xabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyza]
+  row H-3: [bcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabc]
+  row H-2: [defghijklmn]
+  row H-1: []
+  cursor after: +0 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe history
+== history
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [two]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [three]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{Up}{Up}{Up}{Up}{Up}{Up}{Up}{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{Up}{Down}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{Down}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{PgUp}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{PgDn}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{Up}x]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [onex\r\n]
+  echo: [onex]
+  cursor after: +1 rows, column 0
+keys [ab{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [onex\r\n]
+  echo: [onex]
+  cursor after: +1 rows, column 0
+keys [{Up}{Esc}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{F5}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{F5}{F5}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [two]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [three]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{Up}{Up}{Up}{Up}{Up}{Up}{Up}{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{Up}{Down}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{Down}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{PgUp}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{PgDn}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{Up}x]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [onex\r\n]
+  echo: [onex]
+  cursor after: +1 rows, column 0
+keys [ab{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [onex\r\n]
+  echo: [onex]
+  cursor after: +1 rows, column 0
+keys [{Up}{Esc}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{F5}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [{F5}{F5}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe fkeys
+== fkeys
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F1}{F1}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [ab\r\n]
+  echo: [ab]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F3}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [xy{F3}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [xycdef\r\n]
+  echo: [xycdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F1}{F1}{F1}{F3}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{Right}{Right}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 4 err=- [ab\r\n]
+  echo: [ab]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdefgh{Home}{F3}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 16 err=- [abcdefgh      \r\n]
+  echo: [abcdefgh]
+  cursor after: +1 rows, column 0
+keys [{F6}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 3 err=- [<U+001A>\r\n]
+  echo: [^Z]
+  cursor after: +1 rows, column 0
+keys [ab{F6}cd]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [ab<U+001A>cd\r\n]
+  echo: [ab^Zcd]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F1}{F1}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [ab\r\n]
+  echo: [ab]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F3}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [xy{F3}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [xycdef\r\n]
+  echo: [xycdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{F1}{F1}{F1}{F3}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [{Right}{Right}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 4 err=- [ab\r\n]
+  echo: [ab]
+  cursor after: +1 rows, column 0
+keys [abcdef]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 8 err=- [abcdef\r\n]
+  echo: [abcdef]
+  cursor after: +1 rows, column 0
+keys [abcdefgh{Home}{F3}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 16 err=- [abcdefgh      \r\n]
+  echo: [abcdefgh]
+  cursor after: +1 rows, column 0
+keys [{F6}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 3 err=- [\x1A\r\n]
+  echo: [^Z]
+  cursor after: +1 rows, column 0
+keys [ab{F6}cd]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [ab\x1Acd\r\n]
+  echo: [ab^Zcd]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe search
+== search
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [dir one]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 9 err=- [dir one\r\n]
+  echo: [dir one]
+  cursor after: +1 rows, column 0
+keys [echo two]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 10 err=- [echo two\r\n]
+  echo: [echo two]
+  cursor after: +1 rows, column 0
+keys [dir three]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+keys [d{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+keys [d{F8}{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 9 err=- [dir one\r\n]
+  echo: [dir one]
+  cursor after: +1 rows, column 0
+keys [e{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 10 err=- [echo two\r\n]
+  echo: [echo two]
+  cursor after: +1 rows, column 0
+keys [x{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+keys [{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+keys [dir t{F8}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [dir one]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 9 err=- [dir one\r\n]
+  echo: [dir one]
+  cursor after: +1 rows, column 0
+keys [echo two]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 10 err=- [echo two\r\n]
+  echo: [echo two]
+  cursor after: +1 rows, column 0
+keys [dir three]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+keys [d{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+keys [d{F8}{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 9 err=- [dir one\r\n]
+  echo: [dir one]
+  cursor after: +1 rows, column 0
+keys [e{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 10 err=- [echo two\r\n]
+  echo: [echo two]
+  cursor after: +1 rows, column 0
+keys [x{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+keys [{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 3 err=- [x\r\n]
+  echo: [x]
+  cursor after: +1 rows, column 0
+keys [dir t{F8}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 11 err=- [dir three\r\n]
+  echo: [dir three]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
+>>> lineedit.exe forget
+== forget
+CONIN$ and CONOUT$ open: yes
+-- W: WriteConsoleInputW and ReadConsoleW
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [two]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{A-F7}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{F3}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [three]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [ab{A-F7}cd]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputW ret=1 all written yes err=-
+  ReadConsoleW: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+-- A: WriteConsoleInputA and ReadConsoleA
+buffer cleared and the cursor homed: yes
+SetConsoleMode(CONIN$, 0x27): ret=1 err=-, the mode now 0xA7
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [one]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [one\r\n]
+  echo: [one]
+  cursor after: +1 rows, column 0
+keys [two]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 5 err=- [two\r\n]
+  echo: [two]
+  cursor after: +1 rows, column 0
+keys [{A-F7}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [{F3}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 2 err=- [\r\n]
+  echo: []
+  cursor after: +1 rows, column 0
+keys [three]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 7 err=- [three\r\n]
+  echo: [three]
+  cursor after: +1 rows, column 0
+keys [ab{A-F7}cd]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+keys [{Up}]: WriteConsoleInputA ret=1 all written yes err=-
+  ReadConsoleA: ret=1 read 6 err=- [abcd\r\n]
+  echo: [abcd]
+  cursor after: +1 rows, column 0
+CONIN$ mode restored: yes
+lineedit: done
+<<< exit code=0
