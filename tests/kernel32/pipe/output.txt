@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  8:31:03.83
-pipe F2KT-SOURCE-CRC=0xC2CE82CC
+# date: Sat 10/31/2026  8:47:53.07
+pipe F2KT-SOURCE-CRC=0xE7CDF4A9
 >>> pipe.exe create
 == create
 CreatePipe(nSize 0): ret=1 err=-; 1-byte writes done before one waits: 163; PeekNamedPipe's total then: 164
@@ -311,30 +311,59 @@ pipe: done
 == popen
 COMSPEC: pipekid.exe in the program's directory
 _popen("pipekid emit 3", "r"), read with fgets:
+  the standard output handle after _popen: another value
+  fgets: [pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 3]\n]
+  fgets: [pipekid: line 1\n]
+  fgets: [pipekid: line 2\n]
+  fgets: [pipekid: line 3\n]
+  4 lines; _pclose: ret=0 errno=0
+_popen("pipekid emit 2", "rt"), read with fgets:
+  the standard output handle after _popen: another value
+  fgets: [pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]\n]
+  fgets: [pipekid: line 1\n]
+  fgets: [pipekid: line 2\n]
+  3 lines; _pclose: ret=0 errno=0
+_popen("pipekid emit 2", "rb"), read with fgets:
+  the standard output handle after _popen: the same value
   fgets: [pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]\r\n]
   fgets: [pipekid: line 1\r\n]
   fgets: [pipekid: line 2\r\n]
   3 lines; _pclose: ret=0 errno=0
 _popen("pipekid count", "w"), "one\n" and "two\n" written with fputs:
+  the standard output handle after _popen: the same value
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
 pipekid: count: 2 lines, 10 bytes; the last read: ret=0 err=109
   fputs: done, done; _pclose: ret=0 errno=0
 _popen("pipekid count", "wt"), "one\n" and "two\n" written with fputs:
+  the standard output handle after _popen: the same value
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
 pipekid: count: 2 lines, 10 bytes; the last read: ret=0 err=109
   fputs: done, done; _pclose: ret=0 errno=0
 _popen("pipekid count", "wb"), "one\n" and "two\n" written with fputs:
+  the standard output handle after _popen: the same value
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid count]
 pipekid: count: 2 lines, 8 bytes; the last read: ret=0 err=109
   fputs: done, done; _pclose: ret=0 errno=0
 _popen("pipekid upper", "w"), "one\n" and "two\n" written with fputs:
+  the standard output handle after _popen: the same value
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid upper]
 ONE
 TWO
   fputs: done, done; _pclose: ret=0 errno=0
 _popen("pipekid exit 7", "r"), read with fgets:
+  the standard output handle after _popen: another value
+  fgets: [pipekid: /c: command line [<home>\pipekid.exe /c pipekid exit 7]\n]
+  1 lines; _pclose: ret=7 errno=0
+_pclose on a stream fopen opened: ret=-1 errno=0
+_popen("pipekid exit 1", "x"): NULL errno=0
+system(NULL): ret=1 errno=0
+system("pipekid exit 4"):
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid exit 4]
+  ret=4 errno=0
+system("pipekid emit 2"):
 pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]
 pipekid: line 1
 pipekid: line 2
+  ret=0 errno=0
+pipe: done
 <<< exit code=0
