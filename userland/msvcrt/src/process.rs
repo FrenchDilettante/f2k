@@ -26,15 +26,41 @@
 //!   be run, and answers its exit code (-1, errno ENOENT, when no command processor starts);
 //!   `system(NULL)` answers whether COMSPEC names a file (0 with ENOENT when not). F2K has no
 //!   cmd.exe on its disk.
+//!
+//! `_popen` and `_pclose`, as MSDN documents them and pipe's popen capture pins them:
+//!
+//! - `_popen` runs the command as `system` does (`%COMSPEC% /c command`, without waiting), its
+//!   standard output (mode `r`) or input (`w`) a pipe's end, and answers a stream over the other
+//!   end, in text mode for `t`, binary for `b`, `_fmode`'s otherwise ([`popen_mode`]). Another mode
+//!   is NULL, errno untouched.
+//! - The child takes the pipe as its standard handle the way a console program's descriptors 0 to 2
+//!   hand theirs on: while it starts, the caller's own descriptor (1 for `r`, 0 for `w`) is the
+//!   pipe's end (`_dup2`, which sets the standard handle too), then is given back its file through
+//!   a duplicate kept meanwhile (`_dup`, then `_dup2` again). So the standard handle comes back as
+//!   a new handle, whose value the handles freed and taken meanwhile decide: the capture shows the
+//!   standard output's value changed after `r` and `rt` and the same after `rb`, as the slots
+//!   rotate through the pipe's and the process's handles from one `_popen` to the next (see
+//!   [`open_command`]).
+//! - The caller's end is `_O_NOINHERIT`, so the child holds none of it: a writer's `_pclose` is the
+//!   end of the child's input.
+//! - `_pclose` closes the stream, waits for the command processor and answers its exit code (the
+//!   capture's `exit 7`: 7); a stream `_popen` did not open is -1, errno untouched.
 
 use core::ffi::CStr;
 use core::ptr::NonNull;
 
+use rtl::cstr::bytes_until_nul;
+use rtl::sync::Locked;
+
+use crate::data::{File, IOB_ENTRIES};
 use crate::kernel32;
+use crate::lowio::{self, O_BINARY, O_NOINHERIT, O_TEXT};
+use crate::stdio;
 use crate::thread::{
     set_dos_error,
     set_doserrno,
     set_errno,
+    Lock,
     E2BIG,
     EACCES,
     ECHILD,
@@ -527,25 +553,67 @@ mod variadic {
 pub unsafe extern "C" fn cwait(status: *mut i32, process: isize, _action: i32) -> isize {
     // SAFETY: the caller's slot.
     let status = unsafe { status.as_mut() };
-    let handle = process as usize;
-    let (answer, code) = match wait_for(handle) {
+    let (answer, code) = match reap(process as usize) {
         Some(code) => (process, code as i32),
-        None => {
-            match kernel32::last_error() {
-                ERROR_INVALID_HANDLE => {
-                    set_errno(ECHILD);
-                    set_doserrno(ERROR_INVALID_HANDLE);
-                }
-                error => set_dos_error(error),
-            }
-            (-1, -1)
-        }
+        None => (-1, -1),
     };
-    close(handle);
     if let Some(status) = status {
         *status = code;
     }
     answer
+}
+
+/// The process waited for and its handle closed: its exit code. None when it cannot be waited
+/// for: errno ECHILD for a handle that names no process, another error's errno otherwise.
+fn reap(process: usize) -> Option<u32> {
+    let code = wait_for(process);
+    if code.is_none() {
+        match kernel32::last_error() {
+            ERROR_INVALID_HANDLE => {
+                set_errno(ECHILD);
+                set_doserrno(ERROR_INVALID_HANDLE);
+            }
+            error => set_dos_error(error),
+        }
+    }
+    close(process);
+    code
+}
+
+/// COMSPEC's value in the C runtime's environment, NUL-terminated in `buffer`: the path and its
+/// NUL; none when it is unset or does not fit.
+fn comspec(buffer: &mut [u8; 260]) -> Option<&[u8]> {
+    let length = crate::startup::environment_value(b"COMSPEC", &mut buffer[..259])?;
+    buffer[length] = 0;
+    Some(&buffer[..=length])
+}
+
+/// `command` run by the command processor as `mode` says (`_P_WAIT` or `_P_NOWAIT`):
+/// `comspec /c command`, `comspec` the NUL-terminated path COMSPEC names; through PATH's
+/// `cmd.exe` when there is none or it cannot be run (ENOENT or EACCES). [`spawn`]'s answer.
+fn run_command(mode: i32, comspec: Option<&[u8]>, command: &CStr) -> isize {
+    let processor: &[u8] = b"cmd.exe\0";
+    let switch: &[u8] = b"/c\0";
+    let mut argv = [
+        processor.as_ptr(),
+        switch.as_ptr(),
+        command.as_ptr().cast::<u8>(),
+        core::ptr::null(),
+    ];
+    if let Some(comspec) = comspec {
+        argv[0] = comspec.as_ptr();
+        // SAFETY: the array above, of NUL-terminated strings, NULL-terminated.
+        let arguments = unsafe { Strings::new(argv.as_ptr()) };
+        let answer = spawn(mode, &comspec[..comspec.len() - 1], arguments, None, false);
+        let errno = crate::thread::errno();
+        if answer != -1 || (errno != ENOENT && errno != EACCES) {
+            return answer;
+        }
+        argv[0] = processor.as_ptr();
+    }
+    // SAFETY: as above.
+    let arguments = unsafe { Strings::new(argv.as_ptr()) };
+    spawn(mode, b"cmd.exe", arguments, None, true)
 }
 
 /// system: `command` run by the command processor (see the module doc); for NULL, whether there
@@ -556,9 +624,8 @@ pub unsafe extern "C" fn cwait(status: *mut i32, process: isize, _action: i32) -
 /// `command` is null or NUL-terminated.
 #[unsafe(export_name = "f2k_export_system")]
 pub unsafe extern "C" fn system(command: *const u8) -> i32 {
-    let mut comspec = [0u8; 260];
-    let comspec = crate::startup::environment_value(b"COMSPEC", &mut comspec[..259])
-        .map(|length| &comspec[..=length]);
+    let mut buffer = [0u8; 260];
+    let comspec = comspec(&mut buffer);
     if command.is_null() {
         let found = comspec.is_some_and(exists);
         if !found {
@@ -566,34 +633,147 @@ pub unsafe extern "C" fn system(command: *const u8) -> i32 {
         }
         return i32::from(found);
     }
-    let processor: &[u8] = b"cmd.exe\0";
-    let switch: &[u8] = b"/c\0";
-    let mut argv = [
-        processor.as_ptr(),
-        switch.as_ptr(),
-        command,
-        core::ptr::null(),
-    ];
-    if let Some(comspec) = comspec {
-        argv[0] = comspec.as_ptr();
-        // SAFETY: the array above, of NUL-terminated strings, NULL-terminated.
-        let arguments = unsafe { Strings::new(argv.as_ptr()) };
-        let answer = spawn(
-            P_WAIT,
-            &comspec[..comspec.len() - 1],
-            arguments,
-            None,
-            false,
-        );
-        let errno = crate::thread::errno();
-        if answer != -1 || (errno != ENOENT && errno != EACCES) {
-            return answer as i32;
-        }
-        argv[0] = processor.as_ptr();
+    // SAFETY: the caller's NUL-terminated command.
+    let command = unsafe { CStr::from_ptr(command.cast()) };
+    run_command(P_WAIT, comspec, command) as i32
+}
+
+/// The command processor `_popen` started for each of `_iob`'s streams (0: none), for `_pclose`;
+/// behind its lock.
+static CHILDREN: Locked<[usize; IOB_ENTRIES], Lock> = Locked::new(Lock::new(), [0; IOB_ENTRIES]);
+
+/// `_popen`'s mode: whether the caller reads the command's output (`r`) or writes its input (`w`),
+/// and the translation `_pipe` is asked for: `_O_TEXT` for `t`, `_O_BINARY` for `b`, none for
+/// `_fmode`'s. None for any other mode (MSDN lists those letters alone).
+fn popen_mode(mode: &[u8]) -> Option<(bool, i32)> {
+    let reading = match mode.first()? {
+        b'r' => true,
+        b'w' => false,
+        _ => return None,
+    };
+    let translation = match &mode[1..] {
+        [] => 0,
+        [b't'] => O_TEXT,
+        [b'b'] => O_BINARY,
+        _ => return None,
+    };
+    Some((reading, translation))
+}
+
+/// The descriptor a `_popen` child's end stands in for while the child starts: the standard
+/// output for a caller reading, the standard input for one writing.
+fn standard_descriptor(reading: bool) -> i32 {
+    if reading {
+        1
+    } else {
+        0
     }
-    // SAFETY: as above.
-    let arguments = unsafe { Strings::new(argv.as_ptr()) };
-    spawn(P_WAIT, b"cmd.exe", arguments, None, true) as i32
+}
+
+/// `_popen`'s work: `command` started without waiting, its standard output (`reading`) or input a
+/// new pipe's end, the caller's end a stream of `_iob`'s (`translation` as [`popen_mode`] says):
+/// the stream's index. None (errno set) when no pipe, stream, duplicate or command processor could
+/// be had; nothing is left open then.
+///
+/// The order is the one the capture's handle values follow (see the module doc): the pipe made,
+/// the caller's standard descriptor duplicated, the child's end put in its place, the command
+/// processor started (its thread's handle closed at once), the child's end closed, then the
+/// standard descriptor given back its file and the duplicate closed. Windows 2000 takes a freed
+/// handle slot before a fresh one, the most recently freed first, as F2K does: so the standard
+/// handle comes back in the slot the child's end has just given up. A `_pclose` frees the stream's
+/// slot, then the process's; three `_popen`s for reading in a row move the caller's first standard
+/// output slot from the process's handle to the next read end, then to the next write end, so the
+/// third gets that slot back: the capture's "the same value" after `rb`, the third.
+fn open_command(command: &CStr, reading: bool, translation: i32) -> Option<usize> {
+    let [read, write] = lowio::pipe(0, translation | O_NOINHERIT)?;
+    let (ours, theirs) = if reading {
+        (read, write)
+    } else {
+        (write, read)
+    };
+    let standard = standard_descriptor(reading);
+    let abandon = || {
+        lowio::close(ours);
+        lowio::close(theirs);
+        None
+    };
+    let Some(index) = stdio::open_over(ours, !reading) else {
+        return abandon();
+    };
+    // The caller's own standard descriptor, kept while the child's end takes its place.
+    let saved = if lowio::is_open(standard) {
+        match lowio::dup(standard) {
+            -1 => {
+                stdio::close_at(index);
+                lowio::close(theirs);
+                return None;
+            }
+            saved => Some(saved),
+        }
+    } else {
+        None
+    };
+    let mut buffer = [0u8; 260];
+    let process = if lowio::dup2(theirs, standard) == 0 {
+        run_command(P_NOWAIT, comspec(&mut buffer), command)
+    } else {
+        -1
+    };
+    lowio::close(theirs);
+    match saved {
+        Some(saved) => {
+            lowio::dup2(saved, standard);
+            lowio::close(saved);
+        }
+        None => {
+            lowio::close(standard);
+        }
+    }
+    if process == -1 {
+        stdio::close_at(index);
+        return None;
+    }
+    CHILDREN.with(|children| children[index] = process as usize);
+    Some(index)
+}
+
+/// _popen: `command` run by the command processor without waiting, a stream over a pipe to its
+/// standard output (mode `r`) or from its standard input (`w`), `t` or `b` choosing the
+/// translation (see the module doc). NULL for a mode that is none of those, or a null argument,
+/// errno untouched; NULL with errno set when the pipe, the stream or the command processor cannot
+/// be had.
+///
+/// # Safety
+///
+/// `command` and `mode` are null or NUL-terminated.
+#[unsafe(export_name = "f2k_export__popen")]
+pub unsafe extern "C" fn popen(command: *const u8, mode: *const u8) -> *mut File {
+    if command.is_null() || mode.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's NUL-terminated strings.
+    let (command, mode) = unsafe { (CStr::from_ptr(command.cast()), bytes_until_nul(mode)) };
+    let Some((reading, translation)) = popen_mode(mode) else {
+        return core::ptr::null_mut();
+    };
+    open_command(command, reading, translation).map_or(core::ptr::null_mut(), stdio::stream)
+}
+
+/// _pclose: a stream `_popen` opened closed, its command processor waited for: its exit code. -1,
+/// errno untouched, for a stream `_popen` did not open (as pipe's capture shows for one fopen
+/// opened); -1 with `_cwait`'s errno when the process cannot be waited for.
+#[unsafe(export_name = "f2k_export__pclose")]
+pub extern "C" fn pclose(stream: *mut File) -> i32 {
+    let Some(index) = stdio::index(stream) else {
+        return -1;
+    };
+    let process = CHILDREN.with(|children| core::mem::take(&mut children[index]));
+    if process == 0 {
+        return -1;
+    }
+    // The stream first: a child reading from the pipe sees its end, and ends.
+    stdio::close_at(index);
+    reap(process).map_or(-1, |code| code as i32)
 }
 
 #[cfg(test)]
@@ -847,5 +1027,62 @@ mod tests {
         // SAFETY: as above, the long argument NUL-terminated too.
         let answer = unsafe { spawnv(P_WAIT, b"kid.exe\0".as_ptr(), arguments.as_ptr()) };
         assert_eq!((answer, errno().0), (-1, E2BIG));
+    }
+
+    /// `_popen`'s modes: `r` or `w`, then `t`, `b` or nothing; anything else is none (pipe's
+    /// capture: `"x"`).
+    #[test]
+    fn popen_modes() {
+        assert_eq!(popen_mode(b"r"), Some((true, 0)));
+        assert_eq!(popen_mode(b"rt"), Some((true, O_TEXT)));
+        assert_eq!(popen_mode(b"rb"), Some((true, O_BINARY)));
+        assert_eq!(popen_mode(b"w"), Some((false, 0)));
+        assert_eq!(popen_mode(b"wt"), Some((false, O_TEXT)));
+        assert_eq!(popen_mode(b"wb"), Some((false, O_BINARY)));
+        for bad in [&b"x"[..], b"", b"rw", b"r+", b"rbt", b"R", b"tr"] {
+            assert_eq!(popen_mode(bad), None, "{bad:?}");
+        }
+        assert_eq!(
+            (standard_descriptor(true), standard_descriptor(false)),
+            (1, 0)
+        );
+    }
+
+    /// The command processor's command line, `_popen`'s and `system`'s: COMSPEC's path, `/c`, the
+    /// command, as pipe's capture shows pipekid's `/c` mode printing it (`<home>\pipekid.exe /c
+    /// pipekid emit 3`); `_P_NOWAIT` answers the process handle. COMSPEC naming nothing, the
+    /// command processor is PATH's `cmd.exe`; none there either is ENOENT.
+    #[test]
+    fn the_command_processor_runs_the_command() {
+        reset();
+        let comspec = b"C:\\CORPUS\\PIPE\\pipekid.exe\0";
+        existing(&["C:\\CORPUS\\PIPE\\pipekid.exe"]);
+        let answer = run_command(P_NOWAIT, Some(comspec), c"pipekid emit 3");
+        assert_eq!(answer, PROCESS as isize);
+        let made = created();
+        assert_eq!(
+            (
+                made.application_name.as_str(),
+                made.command_line.as_str(),
+                made.inherit_handles
+            ),
+            (
+                "C:\\CORPUS\\PIPE\\pipekid.exe",
+                "C:\\CORPUS\\PIPE\\pipekid.exe /c pipekid emit 3",
+                true
+            )
+        );
+        CLOSED.with(|closed| assert_eq!(*closed.borrow(), [THREAD]));
+        reset();
+        existing(&["cmd.exe"]);
+        EXIT_CODE.with(|code| code.set(4));
+        let answer = run_command(P_WAIT, Some(b"C:\\NONE\\cmd.exe\0"), c"pipekid exit 4");
+        assert_eq!(answer, 4);
+        assert_eq!(created().command_line, "cmd.exe /c pipekid exit 4");
+        reset();
+        existing(&[]);
+        let answer = run_command(P_WAIT, None, c"pipekid exit 4");
+        assert_eq!((answer, errno().0), (-1, ENOENT));
+        assert!(CREATED.with(|created| created.borrow().is_empty()));
     }
 }

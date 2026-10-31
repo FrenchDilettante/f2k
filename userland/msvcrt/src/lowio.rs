@@ -20,6 +20,12 @@
 //! - Text mode writes each LF as CR LF (`_write` answers the caller's bytes, `_tell` sees the
 //!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file).
 //! - `_setmode` answers the previous mode (`_O_TEXT` or `_O_BINARY`); another mode is EINVAL.
+//! - `_pipe` makes an anonymous pipe's two ends the two lowest free descriptors, the read end first
+//!   ([`pipe_mode`]), as pipe's crt capture pins them: both handles inheritable unless
+//!   `_O_NOINHERIT`. A pipe's write end closed reads as the end of the file (ERROR_BROKEN_PIPE, 0
+//!   bytes, errno untouched); in text mode a CR at a read's end waits for the next byte, which is
+//!   kept for the next read when it is no LF, and a Ctrl-Z ends the pipe as it ends a file. A write
+//!   once the read end is closed is ERROR_NO_DATA (EINVAL).
 //! - A child the _spawn family starts is handed the open descriptors (but those opened
 //!   `_O_NOINHERIT`) in STARTUPINFO's C runtime block ([`inheritance_length`]); its start-up takes
 //!   them, then the standard handles for those of 0 to 2 it was not handed.
@@ -30,7 +36,18 @@ use core::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use rtl::sync::Locked;
 
 use crate::kernel32::{self, Win32Error};
-use crate::thread::{self, set_dos_error, set_errno, Held, Lock, EBADF, EINVAL, EMFILE, ENOSPC};
+use crate::thread::{
+    self,
+    set_dos_error,
+    set_errno,
+    Held,
+    Lock,
+    EBADF,
+    EINVAL,
+    EMFILE,
+    ENFILE,
+    ENOSPC,
+};
 
 /// The descriptors the table holds.
 pub const DESCRIPTORS: usize = 2048;
@@ -468,6 +485,11 @@ pub fn initialize() {
     }
 }
 
+/// Whether `fd` is open (errno untouched either way).
+pub fn is_open(fd: i32) -> bool {
+    descriptor(fd).is_some_and(|entry| entry.is_open())
+}
+
 /// Whether `fd` is a character device (the console).
 pub fn is_device(fd: i32) -> bool {
     descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FDEV) == FOPEN | FDEV)
@@ -652,6 +674,87 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
         reservation,
         Descriptor::open(handle, plan.mode | type_flags(kind)),
     )
+}
+
+/// `_pipe`'s descriptors' mode flags for `textmode` and `_fmode`'s value `fmode`, and whether the
+/// pipe's handles are inheritable, as MSDN's `_pipe` documents its flags: `_O_BINARY` or `_O_TEXT`
+/// sets the translation (`_O_BINARY` deciding when both are given, as `_open`'s), else `_fmode`
+/// does (text unless it is `_O_BINARY`); `_O_NOINHERIT` keeps both ends from a child, their
+/// handles and their descriptors. Both ends are pipes (FPIPE).
+fn pipe_mode(textmode: i32, fmode: i32) -> (u8, bool) {
+    let text = if textmode & O_BINARY != 0 {
+        false
+    } else if textmode & O_TEXT != 0 {
+        true
+    } else {
+        fmode != O_BINARY
+    };
+    let inherit = textmode & O_NOINHERIT == 0;
+    let mut mode = FPIPE;
+    if text {
+        mode |= FTEXT;
+    }
+    if !inherit {
+        mode |= FNOINHERIT;
+    }
+    (mode, inherit)
+}
+
+/// `_pipe`'s work: an anonymous pipe of quota `size` (0: the default) made through CreatePipe, its
+/// read end and its write end on the two lowest free descriptors, in that order ([`pipe_mode`]
+/// says how): the two descriptors. None with EMFILE when two descriptors are not free (checked
+/// first: no pipe is made), ENFILE with CreatePipe's error as `_doserrno` when the pipe cannot be
+/// made (MSDN: "system file table overflow").
+pub fn pipe(size: u32, textmode: i32) -> Option<[i32; 2]> {
+    let (mode, inherit) = pipe_mode(textmode, crate::data::FMODE.read());
+    // Both held while CreatePipe runs, without the table's lock.
+    let read = Reservation::lowest()?;
+    let write = Reservation::lowest()?;
+    let security = crate::imports::SecurityAttributes::inheritable(inherit);
+    let (read_end, write_end) = match kernel32::create_pipe(Some(&security), size) {
+        Ok(ends) => ends,
+        Err(Win32Error(error)) => {
+            set_errno(ENFILE);
+            thread::set_doserrno(error);
+            return None;
+        }
+    };
+    let read = install(read, Descriptor::open(read_end, mode));
+    if read < 0 {
+        drop(write);
+        let _ = kernel32::close_handle(write_end);
+        return None;
+    }
+    let write = install(write, Descriptor::open(write_end, mode));
+    if write < 0 {
+        close(read);
+        none_free();
+        return None;
+    }
+    Some([read, write])
+}
+
+/// _pipe: an anonymous pipe, its read end's descriptor into `fds[0]` and its write end's into
+/// `fds[1]` (see [`pipe`]); 0, or -1 (`fds` unchanged). A null `fds` is EINVAL.
+///
+/// # Safety
+///
+/// `fds` is null or holds two writable ints.
+#[unsafe(export_name = "f2k_export__pipe")]
+pub unsafe extern "C" fn pipe_export(fds: *mut i32, size: u32, textmode: i32) -> i32 {
+    // SAFETY: the caller's array of two ints, or null.
+    let Some(fds) = (unsafe { fds.cast::<[i32; 2]>().as_mut() }) else {
+        set_errno(EINVAL);
+        thread::set_doserrno(0);
+        return -1;
+    };
+    match pipe(size, textmode) {
+        Some(ends) => {
+            *fds = ends;
+            0
+        }
+        None => -1,
+    }
 }
 
 /// _get_osfhandle: the descriptor's handle; -1 with EBADF when it is not open.
@@ -908,6 +1011,22 @@ fn write_held(fd: i32, bytes: &[u8]) -> i32 {
     consumed as i32
 }
 
+/// _read: up to `count` bytes from the descriptor into `buffer` (see [`read`]).
+///
+/// # Safety
+///
+/// `buffer` has room for `count` bytes.
+#[unsafe(export_name = "f2k_export__read")]
+pub unsafe extern "C" fn read_export(fd: i32, buffer: *mut u8, count: u32) -> i32 {
+    let bytes = if count == 0 {
+        &mut [][..]
+    } else {
+        // SAFETY: the caller's room for `count` bytes, the call's alone while it runs.
+        unsafe { core::slice::from_raw_parts_mut(buffer, count as usize) }
+    };
+    read(fd, bytes)
+}
+
 /// The descriptor's next bytes into `bytes`, CR LF read as LF and Ctrl-Z the end of a file in
 /// text mode: the count, 0 at the end, -1 (errno) on an error. The descriptor's lock is held across
 /// ReadFile; the table's is taken only to read the descriptor and write back its byte read ahead
@@ -1085,5 +1204,26 @@ mod tests {
         assert_eq!(plan(O_RDONLY, 0, O_TEXT).mode & FTEXT, FTEXT);
         assert_eq!(plan(O_RDONLY | O_TEXT, 0, O_BINARY).mode & FTEXT, FTEXT);
         assert_eq!(plan(O_RDONLY | O_BINARY | O_TEXT, 0, 0).mode & FTEXT, 0);
+    }
+
+    /// `_pipe`'s ends are pipes, in text mode for `_O_TEXT` or `_fmode`'s default, binary for
+    /// `_O_BINARY`; inheritable unless `_O_NOINHERIT`, which marks the descriptors too (pipe's crt
+    /// capture: the handles' flags 0x1, and 0 with `_O_NOINHERIT`).
+    #[test]
+    fn the_pipe_flags_follow_the_mode() {
+        assert_eq!(pipe_mode(O_TEXT, 0), (FPIPE | FTEXT, true));
+        assert_eq!(pipe_mode(O_BINARY, 0), (FPIPE, true));
+        assert_eq!(
+            pipe_mode(O_BINARY | O_NOINHERIT, 0),
+            (FPIPE | FNOINHERIT, false)
+        );
+        assert_eq!(
+            pipe_mode(O_TEXT | O_NOINHERIT, 0),
+            (FPIPE | FTEXT | FNOINHERIT, false)
+        );
+        assert_eq!(pipe_mode(0, 0), (FPIPE | FTEXT, true), "_fmode 0 is text");
+        assert_eq!(pipe_mode(0, O_BINARY), (FPIPE, true));
+        assert_eq!(pipe_mode(O_TEXT, O_BINARY), (FPIPE | FTEXT, true));
+        assert_eq!(pipe_mode(O_TEXT | O_BINARY, 0), (FPIPE, true));
     }
 }

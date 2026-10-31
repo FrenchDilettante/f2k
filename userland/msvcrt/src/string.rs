@@ -1,7 +1,8 @@
-//! The string functions: strcmp and _stricmp, the narrow ones spawn's programs call (strlen,
-//! strcpy, strcat, strcspn, strrchr, _strnicmp), and the wide ones cmd.exe calls.
+//! The string functions: strcmp and _stricmp, the narrow ones spawn's and pipe's programs call
+//! (strlen, strcpy, strncpy, strcat, strcspn, strrchr, _strnicmp), and the wide ones cmd.exe calls.
 //!
-//! The narrow ones as the C runtime reference documents them: strrchr finds the terminator for 0;
+//! The narrow ones as the C runtime reference documents them: strncpy pads with NULs and leaves a
+//! full destination unterminated, as wcsncpy does; strrchr finds the terminator for 0;
 //! _strnicmp compares at most `count` characters, each lowered in the LC_CTYPE locale, answering
 //! the difference of the first that differ as _stricmp does.
 //!
@@ -351,6 +352,28 @@ pub unsafe extern "C" fn strcpy(destination: *mut u8, source: *const u8) -> *mut
     destination
 }
 
+/// strncpy: `count` bytes: `source`'s, then NULs (none when `source` fills them); answers
+/// `destination`.
+///
+/// # Safety
+///
+/// `source` is NUL-terminated or holds `count` bytes; `destination` holds `count` bytes, apart
+/// from them.
+#[unsafe(export_name = "f2k_export_strncpy")]
+pub unsafe extern "C" fn strncpy(destination: *mut u8, source: *const u8, count: usize) -> *mut u8 {
+    // SAFETY: the caller's string, read to its NUL or `count` bytes.
+    let source = unsafe { edge::bytes_bounded(source, count) };
+    if count == 0 {
+        return destination;
+    }
+    // SAFETY: the caller's room of `count` bytes, apart from `source`.
+    let out = unsafe { core::slice::from_raw_parts_mut(destination, count) };
+    let (copied, padding) = out.split_at_mut(source.len());
+    copied.copy_from_slice(source);
+    padding.fill(0);
+    destination
+}
+
 /// strcat: `source` appended to `destination`; answers `destination`.
 ///
 /// # Safety
@@ -562,6 +585,25 @@ mod tests {
             assert_eq!(&buf[..11], b"home\\kid\0##");
             strcpy(buf.as_mut_ptr(), b"\0".as_ptr());
             assert_eq!(&buf[..2], b"\0o");
+        }
+    }
+
+    /// strncpy writes `count` bytes: the source, then NULs; a source that fills them leaves the
+    /// destination unterminated; a count of 0 writes nothing.
+    #[test]
+    fn strncpy_pads_and_truncates() {
+        // SAFETY: NUL-terminated strings, buffers of the counts given.
+        unsafe {
+            let mut buf = [b'#'; 8];
+            assert_eq!(
+                strncpy(buf.as_mut_ptr(), b"ab\0".as_ptr(), 5),
+                buf.as_mut_ptr()
+            );
+            assert_eq!(&buf, b"ab\0\0\0###");
+            strncpy(buf.as_mut_ptr(), b"abcdef\0".as_ptr(), 4);
+            assert_eq!(&buf, b"abcd\0###");
+            strncpy(buf.as_mut_ptr(), b"xyz\0".as_ptr(), 0);
+            assert_eq!(&buf, b"abcd\0###");
         }
     }
 

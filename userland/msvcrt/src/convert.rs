@@ -1,4 +1,5 @@
-//! Number conversions: _ultoa, _wtol, wcstol, wcstoul and strtoul, as wide's capture pins them.
+//! Number conversions: _ultoa, _wtol, atoi, wcstol, wcstoul and strtoul, as wide's capture pins
+//! them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
@@ -6,7 +7,9 @@
 //!   same. Overflow answers LONG_MAX or LONG_MIN (wcstol), ULONG_MAX (wcstoul, then negated like
 //!   any value with a `-`: `-4294967296` is 1), errno ERANGE, the digits all consumed.
 //! - strtoul is wcstoul over a narrow string, its blanks the LC_CTYPE locale's spaces.
-//! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno.
+//! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno; atoi is _wtol
+//!   over a narrow string, its blanks the LC_CTYPE locale's spaces (MSDN: atoi stops at the first
+//!   character that cannot be part of the number).
 //! - _ultoa writes the digits in any radix from 2 to 36, letters in lower case.
 //!
 //! Each export reads its caller's string once ([`crate::edge`]); the conversions read it through
@@ -174,8 +177,25 @@ pub unsafe extern "C" fn strtoul(string: *const u8, end: *mut *const u8, base: i
 pub unsafe extern "C" fn wtol(string: *const u16) -> i32 {
     // SAFETY: the caller's string.
     let units = unsafe { edge::wide(string) };
-    let at = |i| wide_unit_of(units, i);
-    let (mut i, negative, _) = lead(at, 10);
+    decimal(|i| wide_unit_of(units, i))
+}
+
+/// atoi: the narrow string's int, as _wtol reads a wide one.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_atoi")]
+pub unsafe extern "C" fn atoi(string: *const u8) -> i32 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    decimal(|i| unit_of(bytes, i))
+}
+
+/// The conversion _wtol and atoi share: blanks, a sign, then decimal digits, wrapping around
+/// without errno.
+fn decimal(at: impl Fn(usize) -> u16) -> i32 {
+    let (mut i, negative, _) = lead(&at, 10);
     let mut value = 0u32;
     while let Some(digit) = digit_value(at(i)).filter(|&d| d < 10) {
         value = value.wrapping_mul(10).wrapping_add(digit);
@@ -365,6 +385,26 @@ mod tests {
             set_errno(0);
             // SAFETY: a NUL-terminated string.
             assert_eq!(unsafe { wtol(s.as_ptr()) }, value, "{text:?}");
+            assert_eq!(errno(), 0);
+        }
+    }
+
+    /// atoi reads a narrow string as _wtol reads a wide one.
+    #[test]
+    fn atoi_reads_as_wtol() {
+        for (text, value) in [
+            (&b"3\0"[..], 3),
+            (b"  -123abc\0", -123),
+            (b"+7\0", 7),
+            (b"\t\n 42\0", 42),
+            (b"\0", 0),
+            (b"x9\0", 0),
+            (b"0x1A\0", 0),
+            (b"2147483648\0", i32::MIN),
+        ] {
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            assert_eq!(unsafe { atoi(text.as_ptr()) }, value, "{text:?}");
             assert_eq!(errno(), 0);
         }
     }

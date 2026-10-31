@@ -132,6 +132,7 @@ pub const ENOMEM: i32 = 12;
 pub const EACCES: i32 = 13;
 pub const EEXIST: i32 = 17;
 pub const EINVAL: i32 = 22;
+pub const ENFILE: i32 = 23;
 pub const EMFILE: i32 = 24;
 pub const ENOSPC: i32 = 28;
 pub const EPIPE: i32 = 32;

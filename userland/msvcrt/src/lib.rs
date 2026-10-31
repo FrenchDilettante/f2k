@@ -13,9 +13,9 @@
 //! The areas: program start-up and exit ([`startup`]), the per-thread data and the locks
 //! ([`thread`]), the allocator ([`heap`]), the descriptors ([`lowio`]), console input ([`conio`]),
 //! the streams ([`stdio`]) and the formatter and scanner they share ([`format`], [`float`],
-//! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system), the locale and
-//! the character functions ([`ctype`]), strings ([`string`]), number conversions ([`convert`]),
-//! and qsort, rand and time ([`utility`]).
+//! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system, _popen and
+//! _pclose), the locale and the character functions ([`ctype`]), strings ([`string`]), number
+//! conversions ([`convert`]), and qsort, rand and time ([`utility`]).
 //!
 //! The exports not written yet are stubs: their generated bodies log the call and fail ([`stub`]).
 

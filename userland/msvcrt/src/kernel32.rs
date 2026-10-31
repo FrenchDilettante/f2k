@@ -153,6 +153,26 @@ pub fn close_handle(handle: usize) -> Result<(), Win32Error> {
     succeeded(unsafe { imports::CloseHandle(handle) })
 }
 
+/// CreatePipe with the security (none: the default, not inheritable) and the quota `size` (0: the
+/// default): the read end's handle and the write end's.
+pub fn create_pipe(
+    security: Option<&SecurityAttributes>,
+    size: u32,
+) -> Result<(usize, usize), Win32Error> {
+    let (mut read, mut write) = (0usize, 0usize);
+    // SAFETY: the call writes the two handles and reads the attributes (or none).
+    let done = unsafe {
+        imports::CreatePipe(
+            &mut read,
+            &mut write,
+            security.map_or(core::ptr::null(), core::ptr::from_ref),
+            size,
+        )
+    };
+    succeeded(done)?;
+    Ok((read, write))
+}
+
 /// DUPLICATE_SAME_ACCESS.
 const DUPLICATE_SAME_ACCESS: u32 = 2;
 

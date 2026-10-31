@@ -322,7 +322,7 @@ fails = "-1"
 name = "_read"
 group = "lowio"
 args = ["i32 fd", "ptr buffer", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_read" }
 ordinal = 422
 fails = "-1"
 
@@ -346,9 +346,10 @@ fails = "never"
 name = "_pipe"
 group = "lowio"
 args = ["ptr<i32> pfds", "u32 psize", "i32 textmode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_pipe" }
 ordinal = 414
 fails = "-1"
+note = "CreatePipe, its handles inheritable unless _O_NOINHERIT; a failure is ENFILE, as MSDN documents"
 
 [[export]]
 name = "_open"
@@ -508,15 +509,16 @@ fails = "NULL"
 name = "_popen"
 group = "stdio"
 args = ["strA command", "strA mode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_popen" }
 ordinal = 415
 fails = "NULL"
+note = "%COMSPEC% /c command, as system() runs it, without waiting; while the child starts, the caller's descriptor 1 (r) or 0 (w) is the pipe's other end, then gets its file back through a duplicate"
 
 [[export]]
 name = "_pclose"
 group = "stdio"
 args = ["ptr stream"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_pclose" }
 ordinal = 411
 fails = "-1"
 
@@ -745,7 +747,7 @@ fails = "never"
 name = "strncpy"
 group = "strings"
 args = ["ptr strDest", "strA strSource", "u32 count"]
-impl = { stub = "not yet implemented" }
+impl = { native = "strncpy" }
 ordinal = 727
 fails = "never"
 
@@ -753,7 +755,7 @@ fails = "never"
 name = "atoi"
 group = "strings"
 args = ["strA str"]
-impl = { stub = "not yet implemented" }
+impl = { native = "atoi" }
 ordinal = 595
 fails = "never"
 

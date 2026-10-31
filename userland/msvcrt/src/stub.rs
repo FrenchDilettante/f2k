@@ -47,14 +47,15 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
 mod tests {
     use crate::imports::host::{DEBUG_PRINTS, LAST_ERROR};
 
-    /// A stubbed export's generated body is cdecl, as every msvcrt export: _popen's logs its
-    /// command and its mode, then answers its failure value (NULL) with the last error set.
+    /// The stub routine, as a stubbed export's generated body or a native's unhandled path reaches
+    /// it: _popen's call logs its command and its mode, then answers its failure value (NULL) with
+    /// the last error set.
     #[test]
     fn a_stub_logs_its_call_and_fails() {
         let (command, mode) = (b"dir\n\0", b"r\0");
-        // SAFETY: the generated body, given NUL-terminated strings.
-        let result =
-            unsafe { crate::f2k_stub__popen(command.as_ptr() as usize, mode.as_ptr() as usize) };
+        let args = [command.as_ptr() as u64, mode.as_ptr() as u64];
+        // SAFETY: the arguments as _popen's kinds read them: NUL-terminated strings.
+        let result = unsafe { super::stubbed(&crate::spec::_popen, "not yet implemented", &args) };
         assert_eq!(result, 0);
         assert_eq!(LAST_ERROR.with(|error| error.get()), 120);
         let printed = DEBUG_PRINTS.with(|prints| prints.borrow().clone());

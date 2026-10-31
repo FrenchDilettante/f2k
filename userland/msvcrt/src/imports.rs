@@ -47,6 +47,14 @@ unsafe extern "system" {
     ) -> u32;
     pub fn SetFilePointer(handle: usize, distance: i32, high: *mut i32, method: u32) -> u32;
     pub fn CloseHandle(handle: usize) -> u32;
+    /// An anonymous pipe (`_pipe`'s): its read end's and write end's handles, inheritable as the
+    /// attributes say, its quota `size` (0: the default).
+    pub fn CreatePipe(
+        read: *mut usize,
+        write: *mut usize,
+        security: *const SecurityAttributes,
+        size: u32,
+    ) -> u32;
     pub fn DuplicateHandle(
         source_process: usize,
         source: usize,
@@ -501,6 +509,15 @@ pub mod host {
     pub unsafe extern "system" fn GetStartupInfoA(info: *mut super::StartupInfoA) {
         // SAFETY: the caller's structure.
         unsafe { info.write(STARTUP.with(Cell::get)) };
+    }
+
+    pub unsafe extern "system" fn CreatePipe(
+        _: *mut usize,
+        _: *mut usize,
+        _: *const super::SecurityAttributes,
+        _: u32,
+    ) -> u32 {
+        unreachable("CreatePipe")
     }
 
     pub unsafe extern "system" fn DuplicateHandle(

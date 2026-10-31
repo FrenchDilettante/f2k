@@ -15,6 +15,7 @@
 //! - fgets reads to a newline (kept), to `n - 1` bytes, or to the end; NULL when the end comes
 //!   first; the end sets `_IOEOF` (feof).
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
+//! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
 //!
 //! Each stream has its own lock, as on Windows 2000 ([`with_stream`]): a call holds its stream's
 //! across the descriptor's reads and writes, so a thread waiting on stdin (reading the console)
@@ -715,26 +716,49 @@ fn free_buffer(s: &mut File) {
 /// `stream` is a stream.
 #[unsafe(export_name = "f2k_export_fclose")]
 pub unsafe extern "C" fn fclose(stream: *mut File) -> i32 {
-    let body = |s: &mut File, _| {
-        if s.flag & IOSTRG != 0 || s.flag & (IOREAD | IOWRT | IORW) == 0 {
-            s.flag = 0;
-            return EOF;
-        }
-        let mut result = flush(s);
-        free_buffer(s);
-        if lowio::close(s.file) < 0 {
-            result = EOF;
-        }
-        if !s.tmpfname.is_null() {
-            // SAFETY: a `FILE` the C runtime keeps: its temporary name is a block of the C
-            // runtime's heap, forgotten below.
-            unsafe { crate::heap::release(s.tmpfname) };
-        }
-        *s = File::UNUSED;
-        result
-    };
     // SAFETY: the caller's stream.
-    unsafe { with_stream(stream, body) }
+    unsafe { with_stream(stream, |s, _| close_file(s)) }
+}
+
+/// fclose's work, under the stream's lock.
+fn close_file(s: &mut File) -> i32 {
+    if s.flag & IOSTRG != 0 || s.flag & (IOREAD | IOWRT | IORW) == 0 {
+        s.flag = 0;
+        return EOF;
+    }
+    let mut result = flush(s);
+    free_buffer(s);
+    if lowio::close(s.file) < 0 {
+        result = EOF;
+    }
+    if !s.tmpfname.is_null() {
+        // SAFETY: a `FILE` the C runtime keeps: its temporary name is a block of the C runtime's
+        // heap, forgotten below.
+        unsafe { crate::heap::release(s.tmpfname) };
+    }
+    *s = File::UNUSED;
+    result
+}
+
+/// `_iob`'s stream `index` closed, as fclose closes it.
+pub fn close_at(index: usize) -> i32 {
+    with_iob(index, |s, _| close_file(s))
+}
+
+/// A stream of `_iob`'s over descriptor `fd`, writing or reading as `writing` says (its
+/// translation the descriptor's): its index, or none with EMFILE when none is free.
+pub fn open_over(fd: i32, writing: bool) -> Option<usize> {
+    claim(if writing { IOWRT } else { IOREAD }, fd)
+}
+
+/// `_iob`'s stream `index`, as programs are handed it.
+pub fn stream(index: usize) -> *mut File {
+    stream_at(index)
+}
+
+/// A stream's index in `_iob`; none for any other address (a program's own `FILE`, or none).
+pub fn index(stream: *mut File) -> Option<usize> {
+    index_of(stream)
 }
 
 /// setvbuf: the stream's buffering: `mode` `_IOFBF` (or `_IOLBF`, the same) with the caller's
