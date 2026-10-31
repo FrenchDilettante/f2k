@@ -40,6 +40,7 @@ tests/common/srcsum.exe
 tests/kernel32/fswrite/SCRATCH/
 tests/crt/fd/SCRATCH/
 tests/kernel32/spawn/SCRATCH/
+tests/kernel32/pipe/SCRATCH/
 
 # The files make vbox-image adds to the VirtualBox disk: the owner's own, never committed
 /vbox-image/*

@@ -129,6 +129,10 @@ title = "virtual memory"
 key = "processes"
 title = "processes"
 
+[[group]]
+key = "pipes"
+title = "pipes"
+
 # --- termination ----------------------------------------------------------------------------------
 
 [[export]]
@@ -2229,6 +2233,24 @@ impl = { native = "GetBinaryTypeA" }
 ordinal = 210
 fails = "FALSE"
 
+# --- pipes ----------------------------------------------------------------------------------------
+
+[[export]]
+name = "CreatePipe"
+group = "pipes"
+args = ["ptr<u32> hReadPipe", "ptr<u32> hWritePipe", "ptr lpPipeAttributes", "u32 nSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 72
+fails = "FALSE"
+
+[[export]]
+name = "PeekNamedPipe"
+group = "pipes"
+args = ["handle hNamedPipe", "ptr lpBuffer", "u32 nBufferSize", "ptr<u32> lpBytesRead", "ptr<u32> lpTotalBytesAvail", "ptr<u32> lpBytesLeftThisMessage"]
+impl = { stub = "not yet implemented" }
+ordinal = 545
+fails = "FALSE"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -2448,10 +2470,6 @@ ordinal = 70
 [[export]]
 name = "CreateNamedPipeW"
 ordinal = 71
-
-[[export]]
-name = "CreatePipe"
-ordinal = 72
 
 [[export]]
 name = "CreateProcessInternalA"
@@ -3645,10 +3663,6 @@ ordinal = 541
 [[export]]
 name = "OutputDebugStringW"
 ordinal = 542
-
-[[export]]
-name = "PeekNamedPipe"
-ordinal = 545
 
 [[export]]
 name = "PostQueuedCompletionStatus"

@@ -319,6 +319,14 @@ ordinal = 555
 fails = "-1"
 
 [[export]]
+name = "_read"
+group = "lowio"
+args = ["i32 fd", "ptr buffer", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 422
+fails = "-1"
+
+[[export]]
 name = "_errno"
 group = "lowio"
 args = []
@@ -731,6 +739,22 @@ group = "strings"
 args = ["strA nptr", "ptr endptr", "i32 base"]
 impl = { native = "strtoul" }
 ordinal = 735
+fails = "never"
+
+[[export]]
+name = "strncpy"
+group = "strings"
+args = ["ptr strDest", "strA strSource", "u32 count"]
+impl = { stub = "not yet implemented" }
+ordinal = 727
+fails = "never"
+
+[[export]]
+name = "atoi"
+group = "strings"
+args = ["strA str"]
+impl = { stub = "not yet implemented" }
+ordinal = 595
 fails = "never"
 
 # --- wide characters ------------------------------------------------------------------------------
@@ -2528,10 +2552,6 @@ ordinal = 421
 data = true
 
 [[export]]
-name = "_read"
-ordinal = 422
-
-[[export]]
 name = "_rmdir"
 ordinal = 423
 
@@ -3142,10 +3162,6 @@ name = "atof"
 ordinal = 594
 
 [[export]]
-name = "atoi"
-ordinal = 595
-
-[[export]]
 name = "atol"
 ordinal = 596
 
@@ -3544,10 +3560,6 @@ ordinal = 725
 [[export]]
 name = "strncmp"
 ordinal = 726
-
-[[export]]
-name = "strncpy"
-ordinal = 727
 
 [[export]]
 name = "strpbrk"
