@@ -1,0 +1,37 @@
+# rundll32.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 889ca2e8dad02f0a..., linked 1999-09-25T11:01:18Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "rundll32.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 10000
+link_timestamp = "1999-09-25T11:01:18Z"
+sha256 = "889ca2e8dad02f0a80557b760ba1d3ba03147d73df3e5b8beaf8037698541fb2"
+
+[icon]
+files = ["icons/rundll32.ico"]
+images = 2
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["FreeLibrary", "LocalFree", "GetProcAddress", "lstrlenA", "WideCharToMultiByte", "lstrcpyW", "lstrlenW", "GetCommandLineW", "FormatMessageW", "GetLastError", "LoadLibraryW", "SetErrorMode", "GetModuleHandleW", "GetStartupInfoW", "LocalAlloc", "ExitProcess", "RtlUnwind"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["GetStockObject"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["CreateWindowExW", "RegisterClassW", "LoadCursorW", "DestroyWindow", "DefWindowProcW", "LoadIconW", "wsprintfW", "LoadStringW", "SetClassLongW", "CharNextW", "MessageBoxW"]
+
+[[imports]]
+dll = "IMAGEHLP.dll"
+delay = false
+names = ["ImageDirectoryEntryToData"]

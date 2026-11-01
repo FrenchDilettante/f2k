@@ -277,9 +277,11 @@ check-all:
 compat: userland
 	$(UV) run scripts/compat.py --check --run
 
-# The compatibility report, target/compat/report.html: every export of every spec as a square,
-# coloured by its pinning tests' results: the host scenarios (run here) and the on-target suite's
-# last run (target/test-results/pytest.json, which every `make test` keeps).
+# The compatibility report, target/compat/report.html: every export of every spec as a square in
+# one treemap, then one section per tests/compat/*.toml (pe_deps.py's dependency sets) with each
+# executable's imports as squares in the same representation. Squares are coloured by the pinning
+# tests' results: the host scenarios (run here) and the on-target suite's last run
+# (target/test-results/pytest.json, which every `make test` keeps).
 .PHONY: compat-report
 compat-report: userland
 	$(UV) run scripts/compat.py --run --report

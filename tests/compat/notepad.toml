@@ -1,0 +1,57 @@
+# notepad.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 d765da6b0ad1a3f1..., linked 1999-10-02T20:05:16Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "notepad.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 50960
+link_timestamp = "1999-10-02T20:05:16Z"
+sha256 = "d765da6b0ad1a3f1a4b0a0beadc854b9b12d76ccf73d3855e7a5409bb6b42916"
+
+[icon]
+files = ["icons/notepad.ico"]
+images = 2
+
+[[imports]]
+dll = "comdlg32.dll"
+delay = false
+names = ["FindTextW", "GetSaveFileNameW", "GetOpenFileNameW", "PrintDlgExW", "ReplaceTextW", "GetFileTitleW", "ChooseFontW", "PageSetupDlgW", "CommDlgExtendedError"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["DragQueryFileW", "DragFinish", "ShellAboutW", "DragAcceptFiles"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["_initterm", "__getmainargs", "__p__commode", "__setusermatherr", "_adjust_fdiv", "_controlfp", "__p__fmode", "__set_app_type", "_acmdln", "exit", "_XcptFilter", "_exit", "_except_handler3", "time", "localtime", "wcsncpy", "iswctype", "_wtol", "wcsncmp"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["IsTextUnicode", "RegCreateKeyW", "RegQueryValueExW", "RegSetValueExW", "RegOpenKeyExA", "RegQueryValueExA", "RegCloseKey"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["LocalUnlock", "GlobalUnlock", "GlobalLock", "GetLastError", "SetLastError", "GetModuleHandleA", "GetCPInfo", "GetStartupInfoA", "GetFileInformationByHandle", "CreateFileMappingW", "GlobalFree", "GetLocaleInfoW", "MulDiv", "CreateFileW", "lstrcpyW", "lstrcpynW", "LocalFree", "GetProcAddress", "GetCommandLineW", "lstrcatW", "FindClose", "FindFirstFileW", "lstrcmpW", "LocalAlloc", "lstrlenW", "FormatMessageW", "CompareStringW", "LocalLock", "FoldStringW", "LoadLibraryA", "lstrcmpiW", "IsDBCSLeadByte", "GetTimeFormatW", "GetDateFormatW", "GetUserDefaultLCID", "GetLocalTime", "SetEndOfFile", "WideCharToMultiByte", "MapViewOfFile", "GetUserDefaultLangID", "LocalSize", "DeleteFileW", "WriteFile", "MultiByteToWideChar", "UnmapViewOfFile", "CloseHandle", "GetACP", "LocalReAlloc"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["TextOutW", "StartDocW", "GetDeviceCaps", "SelectObject", "SetBkMode", "GetTextMetricsW", "SetAbortProc", "StartPage", "EndPage", "EndDoc", "DeleteDC", "SetWindowExtEx", "GetTextExtentPoint32W", "CreateFontIndirectW", "DeleteObject", "LPtoDP", "SetViewportExtEx", "SetMapMode", "CreateDCW", "GetObjectW", "GetStockObject", "EnumFontsW", "GetTextFaceW"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["IsDialogMessageW", "GetMessageW", "PostQuitMessage", "SetScrollPos", "UpdateWindow", "CharLowerW", "LoadImageW", "MoveWindow", "InvalidateRect", "WinHelpW", "GetDlgCtrlID", "ChildWindowFromPoint", "ScreenToClient", "GetCursorPos", "SendDlgItemMessageW", "SetCursor", "ReleaseDC", "GetDC", "SetFocus", "DialogBoxParamW", "PostMessageW", "GetFocus", "LoadIconW", "MessageBoxW", "GetDesktopWindow", "EnableMenuItem", "GetSubMenu", "SendMessageW", "GetMenu", "SetActiveWindow", "DefWindowProcW", "GetKeyboardLayout", "MessageBeep", "DestroyWindow", "GetForegroundWindow", "IsIconic", "RegisterClassExW", "CharNextW", "DispatchMessageW", "TranslateMessage", "TranslateAcceleratorW", "DrawTextExW", "GetWindowLongW", "GetSystemMetrics", "SetWindowTextW", "CheckMenuItem", "CloseClipboard", "IsClipboardFormatAvailable", "OpenClipboard", "GetMenuState", "wsprintfW", "SetDlgItemTextW", "EndDialog", "GetDlgItemTextW", "PeekMessageW", "GetSystemMenu", "LoadAcceleratorsW", "SetWindowLongW", "CreateDialogParamW", "EnableWindow", "GetWindowTextW", "LoadStringW", "GetWindowPlacement", "LoadCursorW", "RegisterWindowMessageW", "CharUpperW", "ShowWindow", "GetClientRect", "SetWindowPlacement", "CreateWindowExW"]
+
+[[imports]]
+dll = "WINSPOOL.DRV"
+delay = false
+names = ["GetPrinterDriverW", "OpenPrinterW", "ClosePrinter"]

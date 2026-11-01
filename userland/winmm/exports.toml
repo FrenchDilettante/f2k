@@ -1,0 +1,808 @@
+# WINMM.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from WINMM.dll 5.0.2161.1's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of WINMM.dll 5.0.2161.1's export table, by ordinal ------------
+
+[[export]]
+name = "CloseDriver"
+ordinal = 3
+
+[[export]]
+name = "DefDriverProc"
+ordinal = 4
+
+[[export]]
+name = "DriverCallback"
+ordinal = 5
+
+[[export]]
+name = "DrvGetModuleHandle"
+ordinal = 6
+
+[[export]]
+name = "GetDriverModuleHandle"
+ordinal = 7
+
+[[export]]
+name = "MigrateAllDrivers"
+ordinal = 8
+
+[[export]]
+name = "MigrateMidiUser"
+ordinal = 9
+
+[[export]]
+name = "MigrateSoundEvents"
+ordinal = 10
+
+[[export]]
+name = "NotifyCallbackData"
+ordinal = 11
+
+[[export]]
+name = "OpenDriver"
+ordinal = 12
+
+[[export]]
+name = "PlaySound"
+ordinal = 13
+
+[[export]]
+name = "PlaySoundA"
+ordinal = 14
+
+[[export]]
+name = "PlaySoundW"
+ordinal = 15
+
+[[export]]
+name = "SendDriverMessage"
+ordinal = 16
+
+[[export]]
+name = "WOW32DriverCallback"
+ordinal = 17
+
+[[export]]
+name = "WOW32ResolveMultiMediaHandle"
+ordinal = 18
+
+[[export]]
+name = "WOWAppExit"
+ordinal = 19
+
+[[export]]
+name = "WinmmLogoff"
+ordinal = 20
+
+[[export]]
+name = "WinmmLogon"
+ordinal = 21
+
+[[export]]
+name = "aux32Message"
+ordinal = 22
+
+[[export]]
+name = "auxGetDevCapsA"
+ordinal = 23
+
+[[export]]
+name = "auxGetDevCapsW"
+ordinal = 24
+
+[[export]]
+name = "auxGetNumDevs"
+ordinal = 25
+
+[[export]]
+name = "auxGetVolume"
+ordinal = 26
+
+[[export]]
+name = "auxOutMessage"
+ordinal = 27
+
+[[export]]
+name = "auxSetVolume"
+ordinal = 28
+
+[[export]]
+name = "joy32Message"
+ordinal = 29
+
+[[export]]
+name = "joyConfigChanged"
+ordinal = 30
+
+[[export]]
+name = "joyGetDevCapsA"
+ordinal = 31
+
+[[export]]
+name = "joyGetDevCapsW"
+ordinal = 32
+
+[[export]]
+name = "joyGetNumDevs"
+ordinal = 33
+
+[[export]]
+name = "joyGetPos"
+ordinal = 34
+
+[[export]]
+name = "joyGetPosEx"
+ordinal = 35
+
+[[export]]
+name = "joyGetThreshold"
+ordinal = 36
+
+[[export]]
+name = "joyReleaseCapture"
+ordinal = 37
+
+[[export]]
+name = "joySetCapture"
+ordinal = 38
+
+[[export]]
+name = "joySetThreshold"
+ordinal = 39
+
+[[export]]
+name = "mci32Message"
+ordinal = 40
+
+[[export]]
+name = "mciDriverNotify"
+ordinal = 41
+
+[[export]]
+name = "mciDriverYield"
+ordinal = 42
+
+[[export]]
+name = "mciExecute"
+ordinal = 43
+
+[[export]]
+name = "mciFreeCommandResource"
+ordinal = 44
+
+[[export]]
+name = "mciGetCreatorTask"
+ordinal = 45
+
+[[export]]
+name = "mciGetDeviceIDA"
+ordinal = 46
+
+[[export]]
+name = "mciGetDeviceIDFromElementIDA"
+ordinal = 47
+
+[[export]]
+name = "mciGetDeviceIDFromElementIDW"
+ordinal = 48
+
+[[export]]
+name = "mciGetDeviceIDW"
+ordinal = 49
+
+[[export]]
+name = "mciGetDriverData"
+ordinal = 50
+
+[[export]]
+name = "mciGetErrorStringA"
+ordinal = 51
+
+[[export]]
+name = "mciGetErrorStringW"
+ordinal = 52
+
+[[export]]
+name = "mciGetYieldProc"
+ordinal = 53
+
+[[export]]
+name = "mciLoadCommandResource"
+ordinal = 54
+
+[[export]]
+name = "mciSendCommandA"
+ordinal = 55
+
+[[export]]
+name = "mciSendCommandW"
+ordinal = 56
+
+[[export]]
+name = "mciSendStringA"
+ordinal = 57
+
+[[export]]
+name = "mciSendStringW"
+ordinal = 58
+
+[[export]]
+name = "mciSetDriverData"
+ordinal = 59
+
+[[export]]
+name = "mciSetYieldProc"
+ordinal = 60
+
+[[export]]
+name = "mid32Message"
+ordinal = 61
+
+[[export]]
+name = "midiConnect"
+ordinal = 62
+
+[[export]]
+name = "midiDisconnect"
+ordinal = 63
+
+[[export]]
+name = "midiInAddBuffer"
+ordinal = 64
+
+[[export]]
+name = "midiInClose"
+ordinal = 65
+
+[[export]]
+name = "midiInGetDevCapsA"
+ordinal = 66
+
+[[export]]
+name = "midiInGetDevCapsW"
+ordinal = 67
+
+[[export]]
+name = "midiInGetErrorTextA"
+ordinal = 68
+
+[[export]]
+name = "midiInGetErrorTextW"
+ordinal = 69
+
+[[export]]
+name = "midiInGetID"
+ordinal = 70
+
+[[export]]
+name = "midiInGetNumDevs"
+ordinal = 71
+
+[[export]]
+name = "midiInMessage"
+ordinal = 72
+
+[[export]]
+name = "midiInOpen"
+ordinal = 73
+
+[[export]]
+name = "midiInPrepareHeader"
+ordinal = 74
+
+[[export]]
+name = "midiInReset"
+ordinal = 75
+
+[[export]]
+name = "midiInStart"
+ordinal = 76
+
+[[export]]
+name = "midiInStop"
+ordinal = 77
+
+[[export]]
+name = "midiInUnprepareHeader"
+ordinal = 78
+
+[[export]]
+name = "midiOutCacheDrumPatches"
+ordinal = 79
+
+[[export]]
+name = "midiOutCachePatches"
+ordinal = 80
+
+[[export]]
+name = "midiOutClose"
+ordinal = 81
+
+[[export]]
+name = "midiOutGetDevCapsA"
+ordinal = 82
+
+[[export]]
+name = "midiOutGetDevCapsW"
+ordinal = 83
+
+[[export]]
+name = "midiOutGetErrorTextA"
+ordinal = 84
+
+[[export]]
+name = "midiOutGetErrorTextW"
+ordinal = 85
+
+[[export]]
+name = "midiOutGetID"
+ordinal = 86
+
+[[export]]
+name = "midiOutGetNumDevs"
+ordinal = 87
+
+[[export]]
+name = "midiOutGetVolume"
+ordinal = 88
+
+[[export]]
+name = "midiOutLongMsg"
+ordinal = 89
+
+[[export]]
+name = "midiOutMessage"
+ordinal = 90
+
+[[export]]
+name = "midiOutOpen"
+ordinal = 91
+
+[[export]]
+name = "midiOutPrepareHeader"
+ordinal = 92
+
+[[export]]
+name = "midiOutReset"
+ordinal = 93
+
+[[export]]
+name = "midiOutSetVolume"
+ordinal = 94
+
+[[export]]
+name = "midiOutShortMsg"
+ordinal = 95
+
+[[export]]
+name = "midiOutUnprepareHeader"
+ordinal = 96
+
+[[export]]
+name = "midiStreamClose"
+ordinal = 97
+
+[[export]]
+name = "midiStreamOpen"
+ordinal = 98
+
+[[export]]
+name = "midiStreamOut"
+ordinal = 99
+
+[[export]]
+name = "midiStreamPause"
+ordinal = 100
+
+[[export]]
+name = "midiStreamPosition"
+ordinal = 101
+
+[[export]]
+name = "midiStreamProperty"
+ordinal = 102
+
+[[export]]
+name = "midiStreamRestart"
+ordinal = 103
+
+[[export]]
+name = "midiStreamStop"
+ordinal = 104
+
+[[export]]
+name = "mixerClose"
+ordinal = 105
+
+[[export]]
+name = "mixerGetControlDetailsA"
+ordinal = 106
+
+[[export]]
+name = "mixerGetControlDetailsW"
+ordinal = 107
+
+[[export]]
+name = "mixerGetDevCapsA"
+ordinal = 108
+
+[[export]]
+name = "mixerGetDevCapsW"
+ordinal = 109
+
+[[export]]
+name = "mixerGetID"
+ordinal = 110
+
+[[export]]
+name = "mixerGetLineControlsA"
+ordinal = 111
+
+[[export]]
+name = "mixerGetLineControlsW"
+ordinal = 112
+
+[[export]]
+name = "mixerGetLineInfoA"
+ordinal = 113
+
+[[export]]
+name = "mixerGetLineInfoW"
+ordinal = 114
+
+[[export]]
+name = "mixerGetNumDevs"
+ordinal = 115
+
+[[export]]
+name = "mixerMessage"
+ordinal = 116
+
+[[export]]
+name = "mixerOpen"
+ordinal = 117
+
+[[export]]
+name = "mixerSetControlDetails"
+ordinal = 118
+
+[[export]]
+name = "mmDrvInstall"
+ordinal = 119
+
+[[export]]
+name = "mmGetCurrentTask"
+ordinal = 120
+
+[[export]]
+name = "mmTaskBlock"
+ordinal = 121
+
+[[export]]
+name = "mmTaskCreate"
+ordinal = 122
+
+[[export]]
+name = "mmTaskSignal"
+ordinal = 123
+
+[[export]]
+name = "mmTaskYield"
+ordinal = 124
+
+[[export]]
+name = "mmioAdvance"
+ordinal = 125
+
+[[export]]
+name = "mmioAscend"
+ordinal = 126
+
+[[export]]
+name = "mmioClose"
+ordinal = 127
+
+[[export]]
+name = "mmioCreateChunk"
+ordinal = 128
+
+[[export]]
+name = "mmioDescend"
+ordinal = 129
+
+[[export]]
+name = "mmioFlush"
+ordinal = 130
+
+[[export]]
+name = "mmioGetInfo"
+ordinal = 131
+
+[[export]]
+name = "mmioInstallIOProcA"
+ordinal = 132
+
+[[export]]
+name = "mmioInstallIOProcW"
+ordinal = 133
+
+[[export]]
+name = "mmioOpenA"
+ordinal = 134
+
+[[export]]
+name = "mmioOpenW"
+ordinal = 135
+
+[[export]]
+name = "mmioRead"
+ordinal = 136
+
+[[export]]
+name = "mmioRenameA"
+ordinal = 137
+
+[[export]]
+name = "mmioRenameW"
+ordinal = 138
+
+[[export]]
+name = "mmioSeek"
+ordinal = 139
+
+[[export]]
+name = "mmioSendMessage"
+ordinal = 140
+
+[[export]]
+name = "mmioSetBuffer"
+ordinal = 141
+
+[[export]]
+name = "mmioSetInfo"
+ordinal = 142
+
+[[export]]
+name = "mmioStringToFOURCCA"
+ordinal = 143
+
+[[export]]
+name = "mmioStringToFOURCCW"
+ordinal = 144
+
+[[export]]
+name = "mmioWrite"
+ordinal = 145
+
+[[export]]
+name = "mmsystemGetVersion"
+ordinal = 146
+
+[[export]]
+name = "mod32Message"
+ordinal = 147
+
+[[export]]
+name = "mxd32Message"
+ordinal = 148
+
+[[export]]
+name = "sndPlaySoundA"
+ordinal = 149
+
+[[export]]
+name = "sndPlaySoundW"
+ordinal = 150
+
+[[export]]
+name = "tid32Message"
+ordinal = 151
+
+[[export]]
+name = "timeBeginPeriod"
+ordinal = 152
+
+[[export]]
+name = "timeEndPeriod"
+ordinal = 153
+
+[[export]]
+name = "timeGetDevCaps"
+ordinal = 154
+
+[[export]]
+name = "timeGetSystemTime"
+ordinal = 155
+
+[[export]]
+name = "timeGetTime"
+ordinal = 156
+
+[[export]]
+name = "timeKillEvent"
+ordinal = 157
+
+[[export]]
+name = "timeSetEvent"
+ordinal = 158
+
+[[export]]
+name = "waveInAddBuffer"
+ordinal = 159
+
+[[export]]
+name = "waveInClose"
+ordinal = 160
+
+[[export]]
+name = "waveInGetDevCapsA"
+ordinal = 161
+
+[[export]]
+name = "waveInGetDevCapsW"
+ordinal = 162
+
+[[export]]
+name = "waveInGetErrorTextA"
+ordinal = 163
+
+[[export]]
+name = "waveInGetErrorTextW"
+ordinal = 164
+
+[[export]]
+name = "waveInGetID"
+ordinal = 165
+
+[[export]]
+name = "waveInGetNumDevs"
+ordinal = 166
+
+[[export]]
+name = "waveInGetPosition"
+ordinal = 167
+
+[[export]]
+name = "waveInMessage"
+ordinal = 168
+
+[[export]]
+name = "waveInOpen"
+ordinal = 169
+
+[[export]]
+name = "waveInPrepareHeader"
+ordinal = 170
+
+[[export]]
+name = "waveInReset"
+ordinal = 171
+
+[[export]]
+name = "waveInStart"
+ordinal = 172
+
+[[export]]
+name = "waveInStop"
+ordinal = 173
+
+[[export]]
+name = "waveInUnprepareHeader"
+ordinal = 174
+
+[[export]]
+name = "waveOutBreakLoop"
+ordinal = 175
+
+[[export]]
+name = "waveOutClose"
+ordinal = 176
+
+[[export]]
+name = "waveOutGetDevCapsA"
+ordinal = 177
+
+[[export]]
+name = "waveOutGetDevCapsW"
+ordinal = 178
+
+[[export]]
+name = "waveOutGetErrorTextA"
+ordinal = 179
+
+[[export]]
+name = "waveOutGetErrorTextW"
+ordinal = 180
+
+[[export]]
+name = "waveOutGetID"
+ordinal = 181
+
+[[export]]
+name = "waveOutGetNumDevs"
+ordinal = 182
+
+[[export]]
+name = "waveOutGetPitch"
+ordinal = 183
+
+[[export]]
+name = "waveOutGetPlaybackRate"
+ordinal = 184
+
+[[export]]
+name = "waveOutGetPosition"
+ordinal = 185
+
+[[export]]
+name = "waveOutGetVolume"
+ordinal = 186
+
+[[export]]
+name = "waveOutMessage"
+ordinal = 187
+
+[[export]]
+name = "waveOutOpen"
+ordinal = 188
+
+[[export]]
+name = "waveOutPause"
+ordinal = 189
+
+[[export]]
+name = "waveOutPrepareHeader"
+ordinal = 190
+
+[[export]]
+name = "waveOutReset"
+ordinal = 191
+
+[[export]]
+name = "waveOutRestart"
+ordinal = 192
+
+[[export]]
+name = "waveOutSetPitch"
+ordinal = 193
+
+[[export]]
+name = "waveOutSetPlaybackRate"
+ordinal = 194
+
+[[export]]
+name = "waveOutSetVolume"
+ordinal = 195
+
+[[export]]
+name = "waveOutUnprepareHeader"
+ordinal = 196
+
+[[export]]
+name = "waveOutWrite"
+ordinal = 197
+
+[[export]]
+name = "wid32Message"
+ordinal = 198
+
+[[export]]
+name = "winmmDbgOut"
+ordinal = 199
+
+[[export]]
+name = "winmmSetDebugLevel"
+ordinal = 200
+
+[[export]]
+name = "wod32Message"
+ordinal = 201
+
+[[export]]
+name = "#2"
+ordinal = 2

@@ -1,0 +1,116 @@
+# comdlg32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from comdlg32.dll 5.0.3700.6693's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of comdlg32.dll 5.0.3700.6693's export table, by ordinal ------
+
+[[export]]
+name = "ChooseColorA"
+ordinal = 101
+
+[[export]]
+name = "ChooseColorW"
+ordinal = 102
+
+[[export]]
+name = "ChooseFontA"
+ordinal = 103
+
+[[export]]
+name = "ChooseFontW"
+ordinal = 104
+
+[[export]]
+name = "CommDlgExtendedError"
+ordinal = 105
+
+[[export]]
+name = "FindTextA"
+ordinal = 106
+
+[[export]]
+name = "FindTextW"
+ordinal = 107
+
+[[export]]
+name = "GetFileTitleA"
+ordinal = 108
+
+[[export]]
+name = "GetFileTitleW"
+ordinal = 109
+
+[[export]]
+name = "GetOpenFileNameA"
+ordinal = 110
+
+[[export]]
+name = "GetOpenFileNameW"
+ordinal = 111
+
+[[export]]
+name = "GetSaveFileNameA"
+ordinal = 112
+
+[[export]]
+name = "GetSaveFileNameW"
+ordinal = 113
+
+[[export]]
+name = "LoadAlterBitmap"
+ordinal = 114
+
+[[export]]
+name = "PageSetupDlgA"
+ordinal = 115
+
+[[export]]
+name = "PageSetupDlgW"
+ordinal = 116
+
+[[export]]
+name = "PrintDlgA"
+ordinal = 117
+
+[[export]]
+name = "PrintDlgExA"
+ordinal = 118
+
+[[export]]
+name = "PrintDlgExW"
+ordinal = 119
+
+[[export]]
+name = "PrintDlgW"
+ordinal = 120
+
+[[export]]
+name = "ReplaceTextA"
+ordinal = 121
+
+[[export]]
+name = "ReplaceTextW"
+ordinal = 122
+
+[[export]]
+name = "Ssync_ANSI_UNICODE_Struct_For_WOW"
+ordinal = 123
+
+[[export]]
+name = "WantArrows"
+ordinal = 124
+
+[[export]]
+name = "dwLBSubclass"
+ordinal = 125
+
+[[export]]
+name = "dwOKSubclass"
+ordinal = 126
+
+[[export]]
+name = "#100"
+ordinal = 100

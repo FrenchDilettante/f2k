@@ -1,0 +1,28 @@
+# cacls.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 8f9af9968e218e56..., linked 2002-08-16T14:33:47Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "cacls.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "console"
+base = "0x01000000"
+size_bytes = 17680
+link_timestamp = "2002-08-16T14:33:47Z"
+sha256 = "8f9af9968e218e56d54bfb890742e651d62ab700da9d0b28f46655da9b3ce3b0"
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["printf", "fprintf", "setlocale", "__set_app_type", "vswprintf", "fwprintf", "wcscat", "_wcsicmp", "wcscpy", "wcscmp", "wcslen", "_controlfp", "_except_handler3", "_adjust_fdiv", "__p__fmode", "__p__commode", "__wgetmainargs", "__setusermatherr", "_initterm", "_exit", "__p___winitenv", "_XcptFilter", "fgets", "wprintf", "wcschr", "exit", "_stricmp", "_iob", "??2@YAPAXI@Z", "??3@YAXPAX@Z"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["LookupAccountSidW", "GetFileSecurityW", "SetFileSecurityW", "LookupAccountNameW", "GetSecurityDescriptorDacl", "AddAce", "InitializeAcl", "GetLengthSid", "EqualSid"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["FormatMessageW", "FormatMessageA", "lstrcmpiW", "GetStdHandle", "WideCharToMultiByte", "lstrlenW", "WriteConsoleW", "GetConsoleMode", "GetFullPathNameW", "FindFirstFileW", "FindNextFileW", "FindClose", "GetLastError", "LocalAlloc", "LocalFree"]

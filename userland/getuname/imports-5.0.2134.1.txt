@@ -1,0 +1,9 @@
+# GetUName.dll 5.0.2134.1: its import table, dumped by scripts/dump_exports.py
+# linked 1999-11-30 09:32:26 UTC, sha256 4ef73ac4a4b33a67a7ec4e1e3a7db7e8a0fe60c89d9dddc934710512e656c46f
+# 2 modules, 4 imports: [<module>] [delay], then <name> | #<ordinal>
+[KERNEL32.dll]
+lstrcpyW
+GetModuleHandleW
+lstrcatW
+[USER32.dll]
+LoadStringW

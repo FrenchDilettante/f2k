@@ -1,0 +1,38 @@
+# regsvr32.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 c1865299bd2017c9..., linked 2003-02-04T23:43:06Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "regsvr32.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 11024
+link_timestamp = "2003-02-04T23:43:06Z"
+sha256 = "c1865299bd2017c9ca4419c50203925cd065ec54dade357e48bc03163a96b796"
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["_controlfp", "_stricmp", "_splitpath", "__set_app_type", "__p__fmode", "__p__commode", "_adjust_fdiv", "__setusermatherr", "_initterm", "__getmainargs", "_acmdln", "exit", "_XcptFilter", "_exit", "_except_handler3", "__argc", "__argv", "_ismbblead"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegOpenKeyExA", "RegQueryValueA", "RegCloseKey"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["GetModuleHandleA", "LocalAlloc", "FormatMessageA", "SetErrorMode", "LoadLibraryExA", "GetLastError", "GetProcAddress", "FreeLibrary", "MultiByteToWideChar", "lstrcpyW", "lstrlenA", "lstrcpynA", "lstrcatA", "GetStartupInfoA", "lstrcpyA"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["LoadStringA", "wsprintfA", "MessageBoxA"]
+
+[[imports]]
+dll = "ole32.dll"
+delay = false
+names = ["OleInitialize", "OleUninitialize"]

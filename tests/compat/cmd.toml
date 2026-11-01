@@ -1,0 +1,47 @@
+# cmd.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 861bd8be278bb8b6..., linked 2003-01-17T16:06:22Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "cmd.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "console"
+base = "0x4AD00000"
+size_bytes = 236304
+link_timestamp = "2003-01-17T16:06:22Z"
+sha256 = "861bd8be278bb8b65d986ab636a4486a78438e5566144552c8b0829304c402a0"
+
+[icon]
+files = ["icons/cmd.ico"]
+images = 2
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["GetLastError", "ReadFile", "CreateFileW", "WideCharToMultiByte", "GetFileSize", "lstrcmpW", "lstrcmpiW", "FlushConsoleInputBuffer", "GetStdHandle", "HeapAlloc", "GetProcessHeap", "HeapFree", "DebugBreak", "WriteConsoleW", "FillConsoleOutputCharacterW", "SetConsoleCursorPosition", "ReadConsoleW", "GetConsoleScreenBufferInfo", "GetFileType", "GetLocaleInfoW", "GetUserDefaultLCID", "FileTimeToSystemTime", "FileTimeToLocalFileTime", "SystemTimeToFileTime", "GetSystemTime", "GetLocalTime", "SetLocalTime", "SetConsoleMode", "GetConsoleMode", "GetCommandLineW", "GetEnvironmentVariableW", "FreeEnvironmentStringsW", "GetEnvironmentStringsW", "SetEnvironmentVariableW", "SetErrorMode", "GetVDMCurrentDirectories", "CreateProcessW", "GetCurrentThreadId", "GetFileAttributesW", "GetBinaryTypeW", "ReadProcessMemory", "GetProcAddress", "LoadLibraryW", "MultiByteToWideChar", "CloseHandle", "MoveFileExW", "SetConsoleTitleW", "WriteFile", "SearchPathW", "GetVolumeInformationW", "GetModuleHandleW", "GetConsoleTitleW", "GetWindowsDirectoryW", "SetConsoleCtrlHandler", "InitializeCriticalSection", "ExpandEnvironmentStringsW", "GetModuleFileNameW", "LeaveCriticalSection", "EnterCriticalSection", "GetVersion", "GetDriveTypeW", "GetFileAttributesExW", "VirtualFree", "VirtualAlloc", "HeapSize", "HeapReAlloc", "DuplicateHandle", "FlushFileBuffers", "FormatMessageW", "ScrollConsoleScreenBufferW", "SetConsoleTextAttribute", "FillConsoleOutputAttribute", "CreateDirectoryW", "DeleteFileW", "SetFileAttributesW", "CopyFileW", "SetFileTime", "SetCurrentDirectoryW", "TerminateProcess", "GetExitCodeProcess", "WaitForSingleObject", "GetCurrentDirectoryW", "RemoveDirectoryW", "CompareFileTime", "LocalFree", "VirtualQuery", "GetThreadLocale", "FindFirstFileW", "FindNextFileW", "FindClose", "GetFullPathNameW", "SetFilePointer", "GetConsoleOutputCP", "GetCPInfo", "SetThreadLocale", "CmdBatNotification", "SetLastError", "MoveFileW", "GetDiskFreeSpaceExW", "LoadLibraryA", "RaiseException", "InterlockedExchange", "LocalAlloc", "FreeLibrary"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["MessageBeep", "GetThreadDesktop", "GetUserObjectInformationW", "GetProcessWindowStation"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegQueryValueExW", "RegSetValueW", "RegDeleteKeyW", "RegEnumKeyW", "RegQueryValueW", "RegOpenKeyW", "RegCloseKey", "RegSetValueExW", "RegCreateKeyExW", "RegOpenKeyExW", "GetSecurityInfoExW"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["longjmp", "wcslen", "wcscpy", "_tell", "towupper", "wcsspn", "_get_osfhandle", "_getch", "wcscat", "_snwprintf", "wcstol", "wcscmp", "wcsncpy", "wcschr", "memmove", "_pclose", "fgets", "_popen", "_wcsnicmp", "_wcsicmp", "iswspace", "iswdigit", "_wcsupr", "setlocale", "towlower", "wcsrchr", "fprintf", "_iob", "swprintf", "rand", "printf", "iswalpha", "wcstoul", "free", "malloc", "_except_handler3", "_setjmp3", "fflush", "srand", "time", "_wtol", "iswxdigit", "exit", "_setmode", "_seh_longjmp_unwind", "wcsncmp", "_pipe", "_ultoa", "swscanf", "realloc", "_close", "_open_osfhandle", "_dup", "_dup2", "wcsstr", "_vsnwprintf", "qsort", "_wcslwr", "calloc", "_exit", "_XcptFilter", "__p___initenv", "__getmainargs", "_initterm", "__setusermatherr", "_adjust_fdiv", "__p__commode", "__p__fmode", "__set_app_type", "_controlfp"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = true
+names = ["SHChangeNotify", "ShellExecuteExW"]
+
+[[imports]]
+dll = "MPR.dll"
+delay = true
+names = ["WNetCancelConnection2W", "WNetGetConnectionW", "WNetAddConnection2W"]

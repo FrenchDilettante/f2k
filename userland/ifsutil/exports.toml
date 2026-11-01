@@ -1,0 +1,640 @@
+# ifsutil.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from ifsutil.dll 5.0.2195.6605's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of ifsutil.dll 5.0.2195.6605's export table, by ordinal -------
+
+[[export]]
+name = "??0CANNED_SECURITY@@QAE@XZ"
+ordinal = 1
+
+[[export]]
+name = "??0DIGRAPH@@QAE@XZ"
+ordinal = 2
+
+[[export]]
+name = "??0DIGRAPH_EDGE@@QAE@XZ"
+ordinal = 3
+
+[[export]]
+name = "??0DP_DRIVE@@QAE@XZ"
+ordinal = 4
+
+[[export]]
+name = "??0INTSTACK@@QAE@XZ"
+ordinal = 5
+
+[[export]]
+name = "??0LOG_IO_DP_DRIVE@@QAE@XZ"
+ordinal = 6
+
+[[export]]
+name = "??0MOUNT_POINT_MAP@@QAE@XZ"
+ordinal = 7
+
+[[export]]
+name = "??0MOUNT_POINT_TUPLE@@QAE@XZ"
+ordinal = 8
+
+[[export]]
+name = "??0NUMBER_SET@@QAE@XZ"
+ordinal = 9
+
+[[export]]
+name = "??0READ_CACHE@@QAE@XZ"
+ordinal = 10
+
+[[export]]
+name = "??0READ_WRITE_CACHE@@QAE@XZ"
+ordinal = 11
+
+[[export]]
+name = "??0SECRUN@@QAE@XZ"
+ordinal = 12
+
+[[export]]
+name = "??0SPARSE_SET@@QAE@XZ"
+ordinal = 13
+
+[[export]]
+name = "??0SUPERAREA@@IAE@XZ"
+ordinal = 14
+
+[[export]]
+name = "??0TLINK@@QAE@XZ"
+ordinal = 15
+
+[[export]]
+name = "??0VOL_LIODPDRV@@IAE@XZ"
+ordinal = 16
+
+[[export]]
+name = "??1CANNED_SECURITY@@UAE@XZ"
+ordinal = 17
+
+[[export]]
+name = "??1DIGRAPH@@UAE@XZ"
+ordinal = 18
+
+[[export]]
+name = "??1DP_DRIVE@@UAE@XZ"
+ordinal = 19
+
+[[export]]
+name = "??1INTSTACK@@UAE@XZ"
+ordinal = 20
+
+[[export]]
+name = "??1LOG_IO_DP_DRIVE@@UAE@XZ"
+ordinal = 21
+
+[[export]]
+name = "??1MOUNT_POINT_MAP@@UAE@XZ"
+ordinal = 22
+
+[[export]]
+name = "??1NUMBER_SET@@UAE@XZ"
+ordinal = 23
+
+[[export]]
+name = "??1SECRUN@@UAE@XZ"
+ordinal = 24
+
+[[export]]
+name = "??1SPARSE_SET@@UAE@XZ"
+ordinal = 25
+
+[[export]]
+name = "??1SUPERAREA@@UAE@XZ"
+ordinal = 26
+
+[[export]]
+name = "??1TLINK@@UAE@XZ"
+ordinal = 27
+
+[[export]]
+name = "??1VOL_LIODPDRV@@UAE@XZ"
+ordinal = 28
+
+[[export]]
+name = "?Add@NUMBER_SET@@QAEEPBV1@@Z"
+ordinal = 29
+
+[[export]]
+name = "?Add@NUMBER_SET@@QAEEVBIG_INT@@0@Z"
+ordinal = 30
+
+[[export]]
+name = "?Add@NUMBER_SET@@QAEEVBIG_INT@@@Z"
+ordinal = 31
+
+[[export]]
+name = "?AddDriveName@MOUNT_POINT_MAP@@QAEEPAVWSTRING@@0@Z"
+ordinal = 32
+
+[[export]]
+name = "?AddEdge@DIGRAPH@@QAEEKK@Z"
+ordinal = 33
+
+[[export]]
+name = "?AddEntry@AUTOREG@@SGEPBVWSTRING@@@Z"
+ordinal = 34
+
+[[export]]
+name = "?AddNext@NUMBER_SET@@QAEEVBIG_INT@@@Z"
+ordinal = 35
+
+[[export]]
+name = "?AddStart@NUMBER_SET@@QAEEVBIG_INT@@@Z"
+ordinal = 36
+
+[[export]]
+name = "?AddVolumeName@MOUNT_POINT_MAP@@QAEEPAVWSTRING@@0@Z"
+ordinal = 37
+
+[[export]]
+name = "?CheckAndAdd@NUMBER_SET@@QAEEVBIG_INT@@PAE@Z"
+ordinal = 38
+
+[[export]]
+name = "?CheckAndAdd@SPARSE_SET@@QAEEVBIG_INT@@PAE@Z"
+ordinal = 39
+
+[[export]]
+name = "?CheckAndRemove@NUMBER_SET@@QAEEVBIG_INT@@PAE@Z"
+ordinal = 40
+
+[[export]]
+name = "?CheckAndRemove@SPARSE_SET@@QAEEVBIG_INT@@PAE@Z"
+ordinal = 41
+
+[[export]]
+name = "?CheckValidSecurityDescriptor@IFS_SYSTEM@@SGEKPAU_SECURITY_DESCRIPTOR_RELATIVE@@@Z"
+ordinal = 42
+
+[[export]]
+name = "?ChkDsk@VOL_LIODPDRV@@QAEEW4FIX_LEVEL@@PAVMESSAGE@@KKGPAKPBVWSTRING@@@Z"
+ordinal = 43
+
+[[export]]
+name = "?CloseDriveHandle@DP_DRIVE@@QAEXXZ"
+ordinal = 44
+
+[[export]]
+name = "?ComputeVolId@SUPERAREA@@SGKK@Z"
+ordinal = 45
+
+[[export]]
+name = "?DeleteEntry@AUTOREG@@SGEPBVWSTRING@@0@Z"
+ordinal = 46
+
+[[export]]
+name = "?DeleteEntry@AUTOREG@@SGEPBVWSTRING@@E@Z"
+ordinal = 47
+
+[[export]]
+name = "?DiskCopyMainLoop@@YGHPBVWSTRING@@000EPAVMESSAGE@@1@Z"
+ordinal = 48
+
+[[export]]
+name = "?DismountVolume@IFS_SYSTEM@@SGEPBVWSTRING@@@Z"
+ordinal = 49
+
+[[export]]
+name = "?DoesIntersectSet@NUMBER_SET@@QBEEVBIG_INT@@0@Z"
+ordinal = 50
+
+[[export]]
+name = "?DosDriveNameToNtDriveName@IFS_SYSTEM@@SGEPBVWSTRING@@PAV2@@Z"
+ordinal = 51
+
+[[export]]
+name = "?DumpHashTable@SPARSE_SET@@QAEXXZ"
+ordinal = 52
+
+[[export]]
+name = "?EliminateCycles@DIGRAPH@@QAEEPAVCONTAINER@@@Z"
+ordinal = 53
+
+[[export]]
+name = "?EnableFileSystem@IFS_SYSTEM@@SGEPBVWSTRING@@@Z"
+ordinal = 54
+
+[[export]]
+name = "?EnableVolumeCompression@IFS_SYSTEM@@SGEPBVWSTRING@@@Z"
+ordinal = 55
+
+[[export]]
+name = "?EnableVolumeUpgrade@IFS_SYSTEM@@SGEPBVWSTRING@@@Z"
+ordinal = 56
+
+[[export]]
+name = "?FileSetAttributes@IFS_SYSTEM@@SGEPBVWSTRING@@KPAK@Z"
+ordinal = 57
+
+[[export]]
+name = "?FlushCache@IO_DP_DRIVE@@QAEEXZ"
+ordinal = 58
+
+[[export]]
+name = "?ForceAutochk@VOL_LIODPDRV@@QAEEEKKGPBVWSTRING@@@Z"
+ordinal = 59
+
+[[export]]
+name = "?ForceFormat@VOL_LIODPDRV@@SGXG@Z"
+ordinal = 60
+
+[[export]]
+name = "?Format@VOL_LIODPDRV@@QAE?AW4FORMAT_ERROR_CODE@@PBVWSTRING@@PAVMESSAGE@@KKK@Z"
+ordinal = 61
+
+[[export]]
+name = "?GetAt@MOUNT_POINT_MAP@@QAEEKPAVWSTRING@@0@Z"
+ordinal = 62
+
+[[export]]
+name = "?GetBuffer@TLINK@@QAEPAXPAX@Z"
+ordinal = 63
+
+[[export]]
+name = "?GetCannedSecurity@IFS_SYSTEM@@SGPAVCANNED_SECURITY@@XZ"
+ordinal = 64
+
+[[export]]
+name = "?GetCannedSecurityDescriptor@CANNED_SECURITY@@QAEPAXW4_CANNED_SECURITY_TYPE@@PAK@Z"
+ordinal = 65
+
+[[export]]
+name = "?GetData@TLINK@@QAEAAVBIG_INT@@G@Z"
+ordinal = 66
+
+[[export]]
+name = "?GetData@TLINK@@QAEAAVBIG_INT@@PAX@Z"
+ordinal = 67
+
+[[export]]
+name = "?GetDrive@SECRUN@@QAEPAVIO_DP_DRIVE@@XZ"
+ordinal = 68
+
+[[export]]
+name = "?GetDrive@SUPERAREA@@QAEPAVIO_DP_DRIVE@@XZ"
+ordinal = 69
+
+[[export]]
+name = "?GetFirst@TLINK@@QAEPAXXZ"
+ordinal = 70
+
+[[export]]
+name = "?GetMessageW@IO_DP_DRIVE@@QAEPAVMESSAGE@@XZ"
+ordinal = 71
+
+[[export]]
+name = "?GetMessageW@SUPERAREA@@QAEPAVMESSAGE@@XZ"
+ordinal = 72
+
+[[export]]
+name = "?GetNext@TLINK@@QAEPAXPAX@Z"
+ordinal = 73
+
+[[export]]
+name = "?GetNextDataSlot@TLINK@@QAEAAVBIG_INT@@XZ"
+ordinal = 74
+
+[[export]]
+name = "?GetSortedFirst@TLINK@@QAEPAXXZ"
+ordinal = 75
+
+[[export]]
+name = "?GetSortedNext@TLINK@@QAEPAXPAX@Z"
+ordinal = 76
+
+[[export]]
+name = "?Initialize@CANNED_SECURITY@@QAEEXZ"
+ordinal = 77
+
+[[export]]
+name = "?Initialize@DIGRAPH@@QAEEK@Z"
+ordinal = 78
+
+[[export]]
+name = "?Initialize@DP_DRIVE@@QAEEPBVWSTRING@@0PAVMESSAGE@@EE@Z"
+ordinal = 79
+
+[[export]]
+name = "?Initialize@DP_DRIVE@@QAEEPBVWSTRING@@PAVMESSAGE@@EE@Z"
+ordinal = 80
+
+[[export]]
+name = "?Initialize@INTSTACK@@QAEEXZ"
+ordinal = 81
+
+[[export]]
+name = "?Initialize@LOG_IO_DP_DRIVE@@QAEEPBVWSTRING@@0PAVMESSAGE@@E@Z"
+ordinal = 82
+
+[[export]]
+name = "?Initialize@LOG_IO_DP_DRIVE@@QAEEPBVWSTRING@@PAVMESSAGE@@E@Z"
+ordinal = 83
+
+[[export]]
+name = "?Initialize@MOUNT_POINT_MAP@@QAEEXZ"
+ordinal = 84
+
+[[export]]
+name = "?Initialize@NUMBER_SET@@QAEEXZ"
+ordinal = 85
+
+[[export]]
+name = "?Initialize@READ_CACHE@@QAEEPAVIO_DP_DRIVE@@K@Z"
+ordinal = 86
+
+[[export]]
+name = "?Initialize@READ_WRITE_CACHE@@QAEEPAVIO_DP_DRIVE@@K@Z"
+ordinal = 87
+
+[[export]]
+name = "?Initialize@SECRUN@@QAEEPAVMEM@@PAVIO_DP_DRIVE@@VBIG_INT@@K@Z"
+ordinal = 88
+
+[[export]]
+name = "?Initialize@SPARSE_SET@@QAEEXZ"
+ordinal = 89
+
+[[export]]
+name = "?Initialize@SUPERAREA@@IAEEPAVMEM@@PAVLOG_IO_DP_DRIVE@@KPAVMESSAGE@@@Z"
+ordinal = 90
+
+[[export]]
+name = "?Initialize@TLINK@@QAEEG@Z"
+ordinal = 91
+
+[[export]]
+name = "?Initialize@VOL_LIODPDRV@@IAE?AW4FORMAT_ERROR_CODE@@PBVWSTRING@@PAVSUPERAREA@@PAVMESSAGE@@EEW4_MEDIA_TYPE@@@Z"
+ordinal = 92
+
+[[export]]
+name = "?Initialize@VOL_LIODPDRV@@IAEEPBVWSTRING@@0PAVSUPERAREA@@PAVMESSAGE@@E@Z"
+ordinal = 93
+
+[[export]]
+name = "?InvalidateVolume@IO_DP_DRIVE@@QAEEXZ"
+ordinal = 94
+
+[[export]]
+name = "?IsATformat@DP_DRIVE@@QBEEXZ"
+ordinal = 95
+
+[[export]]
+name = "?IsArcSystemPartition@IFS_SYSTEM@@SGEPBVWSTRING@@PAE@Z"
+ordinal = 96
+
+[[export]]
+name = "?IsEntryPresent@AUTOREG@@SGEPBVWSTRING@@0@Z"
+ordinal = 97
+
+[[export]]
+name = "?IsEntryPresent@AUTOREG@@SGEPBVWSTRING@@@Z"
+ordinal = 98
+
+[[export]]
+name = "?IsFileSystemEnabled@IFS_SYSTEM@@SGEPBVWSTRING@@PAE@Z"
+ordinal = 99
+
+[[export]]
+name = "?IsFrontEndPresent@AUTOREG@@SGEPBVWSTRING@@0@Z"
+ordinal = 100
+
+[[export]]
+name = "?IsThisNtfs@IFS_SYSTEM@@SGEVBIG_INT@@KPAX@Z"
+ordinal = 101
+
+[[export]]
+name = "?IsVolumeDirty@IFS_SYSTEM@@SGEPAVWSTRING@@PAE@Z"
+ordinal = 102
+
+[[export]]
+name = "?Lock@IO_DP_DRIVE@@QAEEXZ"
+ordinal = 103
+
+[[export]]
+name = "?Look@INTSTACK@@QBE?AVBIG_INT@@K@Z"
+ordinal = 104
+
+[[export]]
+name = "?NtDriveNameToDosDriveName@IFS_SYSTEM@@SGEPBVWSTRING@@PAV2@@Z"
+ordinal = 105
+
+[[export]]
+name = "?Pop@INTSTACK@@QAEXK@Z"
+ordinal = 106
+
+[[export]]
+name = "?Push@INTSTACK@@QAEEVBIG_INT@@@Z"
+ordinal = 107
+
+[[export]]
+name = "?PushEntry@AUTOREG@@SGEPBVWSTRING@@@Z"
+ordinal = 108
+
+[[export]]
+name = "?QueryAutochkTimeOut@VOL_LIODPDRV@@SGEPAK@Z"
+ordinal = 109
+
+[[export]]
+name = "?QueryCanonicalNtDriveName@IFS_SYSTEM@@SGEPBVWSTRING@@PAV2@@Z"
+ordinal = 110
+
+[[export]]
+name = "?QueryChildren@DIGRAPH@@QBEEKPAVNUMBER_SET@@@Z"
+ordinal = 111
+
+[[export]]
+name = "?QueryCompressedInteger@BIG_INT@@QBEXPAE0@Z"
+ordinal = 112
+
+[[export]]
+name = "?QueryContainingRange@NUMBER_SET@@QBEEVBIG_INT@@PAV2@1@Z"
+ordinal = 113
+
+[[export]]
+name = "?QueryDisjointRange@NUMBER_SET@@QBEXKPAVBIG_INT@@0@Z"
+ordinal = 114
+
+[[export]]
+name = "?QueryDisjointRangeAndAssignBuffer@TLINK@@QAEPAXPAVBIG_INT@@PAG1PAXK2@Z"
+ordinal = 115
+
+[[export]]
+name = "?QueryDriveHandle@DP_DRIVE@@QBEPAXXZ"
+ordinal = 116
+
+[[export]]
+name = "?QueryDriveName@MOUNT_POINT_MAP@@QAEEPAVWSTRING@@0@Z"
+ordinal = 117
+
+[[export]]
+name = "?QueryFileSystemName@IFS_SYSTEM@@SGEPBVWSTRING@@PAV2@PAJ1@Z"
+ordinal = 118
+
+[[export]]
+name = "?QueryFreeDiskSpace@IFS_SYSTEM@@SGEPBVWSTRING@@PAVBIG_INT@@@Z"
+ordinal = 119
+
+[[export]]
+name = "?QueryMachineUniqueToken@@YGKXZ"
+ordinal = 120
+
+[[export]]
+name = "?QueryMediaByte@DP_DRIVE@@QBEEXZ"
+ordinal = 121
+
+[[export]]
+name = "?QueryMemberCount@TLINK@@QBEGXZ"
+ordinal = 122
+
+[[export]]
+name = "?QueryNtfsTime@IFS_SYSTEM@@SGXPAT_LARGE_INTEGER@@@Z"
+ordinal = 123
+
+[[export]]
+name = "?QueryNtfsVersion@IFS_SYSTEM@@SGEPAE0PAVLOG_IO_DP_DRIVE@@PAX@Z"
+ordinal = 124
+
+[[export]]
+name = "?QueryNumber@NUMBER_SET@@QBE?AVBIG_INT@@V2@@Z"
+ordinal = 125
+
+[[export]]
+name = "?QueryPageSize@IFS_SYSTEM@@SGKXZ"
+ordinal = 126
+
+[[export]]
+name = "?QueryParents@DIGRAPH@@QBEEKPAVNUMBER_SET@@@Z"
+ordinal = 127
+
+[[export]]
+name = "?QueryParentsWithChildren@DIGRAPH@@QBEEPAVNUMBER_SET@@K@Z"
+ordinal = 128
+
+[[export]]
+name = "?QueryPhysicalSectorSize@DP_DRIVE@@QBEKXZ"
+ordinal = 129
+
+[[export]]
+name = "?QueryRecommendedMediaType@DP_DRIVE@@QBE?AW4_MEDIA_TYPE@@XZ"
+ordinal = 130
+
+[[export]]
+name = "?QuerySectorSize@DP_DRIVE@@UBEKXZ"
+ordinal = 131
+
+[[export]]
+name = "?QuerySectors@DP_DRIVE@@UBE?AVBIG_INT@@XZ"
+ordinal = 132
+
+[[export]]
+name = "?QuerySize@TLINK@@QBEGXZ"
+ordinal = 133
+
+[[export]]
+name = "?QueryVolumeName@MOUNT_POINT_MAP@@QAEEPAVWSTRING@@0@Z"
+ordinal = 134
+
+[[export]]
+name = "?Read@IO_DP_DRIVE@@QAEEVBIG_INT@@KPAX@Z"
+ordinal = 135
+
+[[export]]
+name = "?Read@LOG_IO_DP_DRIVE@@QAEEVBIG_INT@@KPAX@Z"
+ordinal = 136
+
+[[export]]
+name = "?Read@SECRUN@@UAEEXZ"
+ordinal = 137
+
+[[export]]
+name = "?Recover@VOL_LIODPDRV@@QAEEPBVWSTRING@@PAVMESSAGE@@@Z"
+ordinal = 138
+
+[[export]]
+name = "?Remove@NUMBER_SET@@QAEEPBV1@@Z"
+ordinal = 139
+
+[[export]]
+name = "?Remove@NUMBER_SET@@QAEEVBIG_INT@@0@Z"
+ordinal = 140
+
+[[export]]
+name = "?Remove@NUMBER_SET@@QAEEVBIG_INT@@@Z"
+ordinal = 141
+
+[[export]]
+name = "?RemoveAll@NUMBER_SET@@QAEEXZ"
+ordinal = 142
+
+[[export]]
+name = "?RemoveAll@SPARSE_SET@@QAEEXZ"
+ordinal = 143
+
+[[export]]
+name = "?RemoveEdge@DIGRAPH@@QAEEKK@Z"
+ordinal = 144
+
+[[export]]
+name = "?ReverseCopy@INTSTACK@@QAEEPAV1@@Z"
+ordinal = 145
+
+[[export]]
+name = "?Set@BIG_INT@@QAEXEPBE@Z"
+ordinal = 146
+
+[[export]]
+name = "?SetAutochkTimeOut@VOL_LIODPDRV@@SGEK@Z"
+ordinal = 147
+
+[[export]]
+name = "?SetCache@IO_DP_DRIVE@@QAEXPAVDRIVE_CACHE@@@Z"
+ordinal = 148
+
+[[export]]
+name = "?SetSystemId@LOG_IO_DP_DRIVE@@QAEEE@Z"
+ordinal = 149
+
+[[export]]
+name = "?ShellSort@TLINK@@QAEXXZ"
+ordinal = 150
+
+[[export]]
+name = "?Sort@TLINK@@QAEXXZ"
+ordinal = 151
+
+[[export]]
+name = "?Verify@IO_DP_DRIVE@@QAEEVBIG_INT@@0@Z"
+ordinal = 152
+
+[[export]]
+name = "?Verify@IO_DP_DRIVE@@QAEEVBIG_INT@@0PAVNUMBER_SET@@@Z"
+ordinal = 153
+
+[[export]]
+name = "?Write@IO_DP_DRIVE@@QAEEVBIG_INT@@KPAX@Z"
+ordinal = 154
+
+[[export]]
+name = "?Write@LOG_IO_DP_DRIVE@@QAEEVBIG_INT@@KPAX@Z"
+ordinal = 155
+
+[[export]]
+name = "?Write@SECRUN@@UAEEXZ"
+ordinal = 156
+
+[[export]]
+name = "?WriteToFile@IFS_SYSTEM@@SGEPBVWSTRING@@PAXKE@Z"
+ordinal = 157
+
+[[export]]
+name = "_InitializeIfsUtil@12"
+ordinal = 158

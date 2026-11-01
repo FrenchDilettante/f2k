@@ -1,0 +1,52 @@
+# regedit.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 db534f48effb605b..., linked 2003-04-28T23:14:25Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "regedit.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 73488
+link_timestamp = "2003-04-28T23:14:25Z"
+sha256 = "db534f48effb605bc3c95c0831b970354a2c321e588a3ecc4b1f1496ab5b8db1"
+
+[icon]
+files = ["icons/regedit.ico"]
+images = 2
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["OutputDebugStringW", "GetProcAddress", "GlobalUnlock", "lstrcpynW", "MulDiv", "LoadLibraryW", "FreeLibrary", "WriteFile", "MultiByteToWideChar", "WideCharToMultiByte", "SearchPathW", "CreateFileW", "GetFileSize", "ReadFile", "SetFilePointer", "GetLastError", "LoadLibraryA", "CloseHandle", "lstrcmpW", "GetComputerNameW", "LocalAlloc", "FormatMessageW", "GetCommandLineW", "GetThreadLocale", "GetModuleHandleW", "ExitProcess", "lstrcatW", "GetProcessHeap", "lstrcmpiW", "lstrlenW", "lstrcpyW", "LocalFree", "GlobalAlloc", "GlobalLock"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["GetDeviceCaps", "ExtTextOutW", "CreateFontIndirectW", "SelectObject", "SetTextColor", "SelectClipRgn", "ExcludeClipRect", "PatBlt", "SetBkColor", "GetTextMetricsW", "CreatePatternBrush", "AbortDoc", "EndDoc", "EndPage", "SetViewportOrgEx", "StartPage", "StartDocW", "SetAbortProc", "CreateBitmap", "DeleteObject", "DeleteDC"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["EnableMenuItem", "GetSubMenu", "LoadMenuW", "IsClipboardFormatAvailable", "GetDlgCtrlID", "CheckRadioButton", "SendMessageW", "GetWindowTextW", "GetParent", "GetClipboardData", "IsDlgButtonChecked", "GetDlgItemInt", "SetClipboardData", "RegisterClassExW", "LoadImageW", "LoadIconW", "ShowWindow", "SetWindowPlacement", "CreateWindowExW", "UpdateWindow", "DeleteMenu", "GetMenu", "PostQuitMessage", "GetWindowPlacement", "SetWindowTextW", "EnableWindow", "DialogBoxParamW", "DrawMenuBar", "InsertMenuItemW", "SetMenuItemInfoW", "GetDesktopWindow", "PostMessageW", "SetMenuDefaultItem", "InsertMenuW", "GetMenuItemID", "CheckMenuItem", "GetMenuItemInfoW", "ScreenToClient", "SetCursorPos", "DispatchMessageW", "GetMessageW", "IsIconic", "ShowCursor", "SetCursor", "ClientToScreen", "EndDeferWindowPos", "DeferWindowPos", "BeginDeferWindowPos", "DestroyIcon", "GetSysColor", "DestroyWindow", "CreateDialogParamW", "CharNextW", "CheckDlgButton", "DrawAnimatedRects", "DestroyMenu", "TrackPopupMenuEx", "ModifyMenuW", "GetMessagePos", "TranslateMessage", "TranslateAcceleratorW", "LoadAcceleratorsW", "SetForegroundWindow", "GetLastActivePopup", "BringWindowToTop", "FindWindowW", "LoadStringW", "GetWindow", "IsDialogMessageW", "PeekMessageW", "MessageBoxW", "CharUpperBuffW", "CharUpperW", "IsCharAlphaNumericW", "CloseClipboard", "HideCaret", "SetCaretPos", "MessageBeep", "CharLowerW", "InvalidateRect", "GetKeyState", "KillTimer", "ReleaseCapture", "SetFocus", "SetCapture", "SetTimer", "DestroyCaret", "CreateCaret", "ShowCaret", "wsprintfW", "BeginPaint", "EndPaint", "ScrollWindowEx", "SetScrollInfo", "GetDC", "ReleaseDC", "DefWindowProcW", "RegisterClipboardFormatW", "LoadCursorW", "RegisterClassW", "SetWindowLongW", "SetDlgItemTextW", "SendDlgItemMessageW", "GetDlgItem", "GetWindowRect", "GetSystemMetrics", "MoveWindow", "MapWindowPoints", "SetWindowPos", "GetWindowLongW", "EndDialog", "WinHelpW", "OpenClipboard", "EmptyClipboard", "IntersectRect", "GetClientRect", "GetDlgItemTextW", "CallWindowProcW"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegCloseKey", "RegQueryValueExW", "RegOpenKeyW", "RegEnumKeyW", "RegSetValueExW", "RegCreateKeyW", "RegEnumValueW", "RegDeleteValueW", "RegOpenKeyExW", "RegQueryInfoKeyW", "RegDeleteKeyW", "RegConnectRegistryW", "RegFlushKey", "RegSetValueW", "RegSetValueExA", "RegOpenKeyExA", "RegQueryValueExA"]
+
+[[imports]]
+dll = "COMCTL32.dll"
+delay = false
+names = ["#2", "#4", "ImageList_ReplaceIcon", "ImageList_Destroy", "ImageList_Create", "ImageList_SetBkColor", "CreateStatusWindowW", "#358", "#359", "#363", "#337", "#338", "#334", "#236", "#329", "#365", "#340"]
+
+[[imports]]
+dll = "comdlg32.dll"
+delay = false
+names = ["PrintDlgExW", "GetOpenFileNameW", "GetSaveFileNameW"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["#195", "SHBrowseForFolderW", "DragQueryFileW", "DragFinish", "ShellAboutW"]

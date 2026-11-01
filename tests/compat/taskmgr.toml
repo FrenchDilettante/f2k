@@ -1,0 +1,57 @@
+# taskmgr.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 926637303bf1e30b..., linked 2002-11-25T18:18:02Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "taskmgr.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 87312
+link_timestamp = "2002-11-25T18:18:02Z"
+sha256 = "926637303bf1e30b80052ea099dff0f8f3c6885a9b13a4ef1020364053859de3"
+
+[icon]
+files = ["icons/taskmgr.ico"]
+images = 2
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["CreateSolidBrush", "SelectObject", "BitBlt", "CreatePen", "GetStockObject", "FillRgn", "SetRectRgn", "CombineRgn", "CreateCompatibleDC", "CreateCompatibleBitmap", "Rectangle", "MoveToEx", "DeleteDC", "LineTo", "DeleteObject", "GetDeviceCaps", "CreateRectRgn"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegCloseKey", "RegSetValueExW", "RegQueryValueExA", "GetSiteSidFromToken", "IsValidSid", "OpenProcessToken", "IsTokenRestricted", "RegOpenKeyExA", "LookupAccountSidW", "FreeSid", "RegOpenKeyExW", "RegQueryValueExW", "RegCreateKeyExW"]
+
+[[imports]]
+dll = "COMCTL32.dll"
+delay = false
+names = ["ImageList_SetIconSize", "ImageList_ReplaceIcon", "ImageList_Create", "#17", "CreateStatusWindowW", "ImageList_Remove"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["TranslateAcceleratorW", "GetMessageW", "CreateDialogParamW", "MessageBoxW", "PostQuitMessage", "PostThreadMessageW", "GetWindowThreadProcessId", "FindWindowW", "RegisterWindowMessageW", "CheckDlgButton", "TranslateMessage", "IsDialogMessageW", "IsDlgButtonChecked", "DestroyMenu", "RemoveMenu", "LoadMenuW", "CallWindowProcW", "InvalidateRect", "UpdateWindow", "GetClientRect", "DialogBoxParamW", "CharLowerBuffW", "GetGuiResources", "EndDialog", "DispatchMessageW", "GetSubMenu", "SetMenuDefaultItem", "EnumWindowStationsW", "GetClassLongW", "IsHungAppWindow", "EnumDesktopsW", "CloseWindowStation", "SetProcessWindowStation", "GetProcessWindowStation", "OpenWindowStationW", "EnumWindows", "CloseDesktop", "SetThreadDesktop", "OpenDesktopW", "InternalGetWindowText", "IsWindowVisible", "GetWindow", "EndTask", "ShowWindowAsync", "CascadeWindows", "TileWindows", "SwitchToThisWindow", "GetLastActivePopup", "PostMessageW", "GetCursorPos", "LoadAcceleratorsW", "IsZoomed", "MessageBeep", "IsWindow", "MoveWindow", "FillRect", "ReleaseDC", "OpenIcon", "SetForegroundWindow", "DestroyWindow", "KillTimer", "GetDesktopWindow", "LoadImageW", "DestroyIcon", "GetShellWindow", "ShowWindow", "BeginDeferWindowPos", "DeferWindowPos", "EndDeferWindowPos", "GetMenuItemInfoW", "IsIconic", "BeginPaint", "EndPaint", "DefWindowProcW", "SystemParametersInfoW", "DrawEdge", "GetWindowRect", "GetDialogBaseUnits", "GetThreadDesktop", "GetSystemMetrics", "GetSysColor", "LoadIconW", "SetTimer", "EnableMenuItem", "GetForegroundWindow", "GetAsyncKeyState", "wsprintfW", "SetWindowPos", "SetMenu", "GetDlgItem", "MapWindowPoints", "SendMessageW", "GetMenu", "CheckMenuRadioItem", "CheckMenuItem", "DeleteMenu", "LoadStringW", "SetWindowTextW", "GetClassInfoW", "RegisterClassW", "GetDC", "GetKeyState", "MonitorFromRect", "GetWindowLongW", "SetWindowLongW", "GetUpdateRgn", "GetDCEx", "EnableWindow", "TrackPopupMenuEx", "SendMessageTimeoutW", "AllowSetForegroundWindow", "SetFocus", "GetWindowLongA"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["Shell_NotifyIconW", "#100", "#61", "ShellAboutW"]
+
+[[imports]]
+dll = "ntdll.dll"
+delay = false
+names = ["VerSetConditionMask", "NtOpenProcessToken", "RtlAllocateAndInitializeSid", "NtQueryInformationToken", "RtlFreeSid", "RtlEqualSid", "RtlUnwind", "_chkstk", "NtClose", "strrchr", "RtlInitUnicodeString", "RtlUnicodeStringToInteger", "RtlLargeIntegerToChar", "RtlAnsiStringToUnicodeString", "_allmul", "_alldiv", "_wcsicmp", "RtlTimeToElapsedTimeFields", "NtOpenThread", "memmove", "NtQuerySystemInformation"]
+
+[[imports]]
+dll = "VDMDBG.dll"
+delay = false
+names = ["VDMTerminateTaskWOW", "VDMEnumTaskWOWEx"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["VirtualFree", "lstrcmpiW", "lstrlenW", "FormatMessageW", "lstrcatW", "GetCurrentProcess", "SetPriorityClass", "GetCommandLineW", "GetStartupInfoW", "GetModuleHandleW", "ExitProcess", "GetLocaleInfoW", "InitializeCriticalSection", "CreateMutexW", "LoadLibraryW", "GetProcAddress", "CreateThread", "ReleaseMutex", "FreeLibrary", "SetProcessShutdownParameters", "EnterCriticalSection", "LeaveCriticalSection", "WaitForSingleObject", "CloseHandle", "GetCurrentDirectoryW", "GetLastError", "GetCurrentThreadId", "lstrcpynW", "LocalFree", "LocalAlloc", "lstrcpyW", "GetProcessHeap", "MultiByteToWideChar", "GetThreadTimes", "OpenProcess", "GetPriorityClass", "GetCurrentProcessId", "SetProcessAffinityMask", "GetProcessAffinityMask", "TerminateProcess", "CreateProcessW", "VerifyVersionInfoW", "HeapFree", "HeapReAlloc", "HeapAlloc", "SetEvent", "CreateEventW", "lstrcmpW", "DeleteCriticalSection", "LoadLibraryA", "GetVersionExA", "GetNumberFormatW", "VirtualAlloc"]

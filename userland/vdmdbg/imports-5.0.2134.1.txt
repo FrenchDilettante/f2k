@@ -1,0 +1,47 @@
+# VDMDBG.dll 5.0.2134.1: its import table, dumped by scripts/dump_exports.py
+# linked 1999-11-30 09:34:42 UTC, sha256 22d54078122f0977a0d12f9573cca7d1c62f83f037f00d90d604eb959a5db80a
+# 4 modules, 40 imports: [<module>] [delay], then <name> | #<ordinal>
+[ntdll.dll]
+NtOpenThread
+[KERNEL32.dll]
+ReadProcessMemory
+WriteProcessMemory
+CloseHandle
+UnmapViewOfFile
+DisableThreadLibraryCalls
+HeapAlloc
+OpenProcess
+HeapFree
+GetProcessHeap
+_llseek
+_lread
+OpenFile
+TerminateThread
+WaitForSingleObject
+ContinueDebugEvent
+WaitForDebugEvent
+_lclose
+GetThreadContext
+SetThreadContext
+MapViewOfFile
+CreateRemoteThread
+CreateMutexA
+ReleaseMutex
+OutputDebugStringA
+GlobalAddAtomA
+MultiByteToWideChar
+WideCharToMultiByte
+LCMapStringA
+LCMapStringW
+GetStringTypeA
+GetStringTypeW
+VirtualFree
+VirtualAlloc
+CreateFileMappingA
+[ADVAPI32.dll]
+SetSecurityDescriptorDacl
+InitializeSecurityDescriptor
+[USER32.dll]
+FindWindowExA
+PostMessageA
+GetWindowThreadProcessId

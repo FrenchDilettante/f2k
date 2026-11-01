@@ -1,0 +1,52 @@
+# charmap.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 6ff74bfd62cc045c..., linked 1999-09-25T11:00:25Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "charmap.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 90384
+link_timestamp = "1999-09-25T11:00:25Z"
+sha256 = "6ff74bfd62cc045c25de5a2e43f031aecfa17ace3517c87eb43086f47e91daa4"
+
+[icon]
+files = ["icons/charmap.ico"]
+images = 2
+
+[[imports]]
+dll = "COMCTL32.dll"
+delay = false
+names = ["#17"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["LocalAlloc", "FindClose", "FindNextFileW", "FindFirstFileW", "LocalFree", "UnmapViewOfFile", "IsValidLanguageGroup", "ExpandEnvironmentStringsW", "lstrcatW", "SetFilePointer", "ReadFile", "GetLastError", "InterlockedDecrement", "CreateFileW", "GlobalUnlock", "lstrcmpiW", "GetACP", "GetProfileIntW", "LoadLibraryW", "FreeLibrary", "GetFileSize", "CreateFileMappingW", "CloseHandle", "MapViewOfFile", "GetStringTypeW", "GetCPInfo", "IsDBCSLeadByteEx", "GetSystemDirectoryW", "WriteProfileStringW", "GetProfileStringW", "CompareStringW", "EnumSystemCodePagesW", "IsValidCodePage", "FindResourceW", "LoadResource", "LockResource", "FreeResource", "lstrcmpW", "GlobalAlloc", "GlobalFree", "lstrcpyW", "GetThreadLocale", "MulDiv", "MultiByteToWideChar", "WideCharToMultiByte", "lstrcpynW", "GetWindowsDirectoryW", "GetLocaleInfoW", "GlobalLock", "lstrlenW", "FlushFileBuffers", "SetStdHandle", "InterlockedIncrement", "GetStringTypeA", "LCMapStringW", "LCMapStringA", "WriteFile", "RtlUnwind", "VirtualAlloc", "HeapCreate", "HeapDestroy", "VirtualFree", "GetStdHandle", "SetHandleCount", "GetFileType", "GetEnvironmentStringsW", "GetEnvironmentStrings", "GetOEMCP", "FreeEnvironmentStringsA", "GetModuleFileNameA", "FreeEnvironmentStringsW", "GetCurrentProcess", "TerminateProcess", "UnhandledExceptionFilter", "HeapReAlloc", "HeapFree", "HeapAlloc", "GetVersion", "GetCommandLineA", "ExitProcess", "GetModuleHandleA", "LoadLibraryA", "GetStartupInfoA", "GetProcAddress"]
+
+[[imports]]
+dll = "ole32.dll"
+delay = false
+names = ["DoDragDrop", "OleInitialize", "OleUninitialize", "CoGetMalloc"]
+
+[[imports]]
+dll = "GetUName.dll"
+delay = false
+names = ["GetUName"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegCloseKey", "RegOpenKeyExA", "RegQueryValueExA", "RegOpenKeyExW", "RegEnumValueW"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["GetTextExtentPoint32W", "GetCharWidth32W", "EnumFontFamiliesExW", "GetFontData", "CreateDIBitmap", "GetObjectW", "GetTextAlign", "SetTextAlign", "GetTextExtentPointW", "BitBlt", "PatBlt", "GetStockObject", "ExtTextOutW", "CreatePen", "MoveToEx", "LineTo", "GetDeviceCaps", "CreateFontIndirectW", "DeleteDC", "CreateCompatibleDC", "SetTextColor", "SetBkMode", "CreateCompatibleBitmap", "CreateSolidBrush", "SelectObject", "GetTextMetricsW", "TextOutW", "SetBkColor", "UnrealizeObject", "TranslateCharsetInfo", "CreateFontW", "DeleteObject"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["EnumChildWindows", "WinHelpW", "GetWindowTextLengthW", "ReleaseDC", "CreateWindowExW", "SendMessageW", "GetDC", "EndPaint", "FillRect", "GetSysColor", "GetSystemMetrics", "BeginPaint", "PostQuitMessage", "GetAsyncKeyState", "ValidateRect", "GetMessageTime", "GetCursorPos", "WindowFromPoint", "ShowCursor", "GetUpdateRect", "SetCapture", "SetTimer", "GetWindowRect", "GetClientRect", "DefWindowProcW", "wsprintfW", "PtInRect", "MapWindowPoints", "GetParent", "GetWindowDC", "MoveWindow", "SetScrollPos", "DrawFocusRect", "SetScrollRange", "GetDesktopWindow", "IsWindowEnabled", "SetWindowTextW", "GetDlgCtrlID", "CallWindowProcW", "PostMessageW", "SetScrollInfo", "GetScrollInfo", "UnregisterClassW", "RegisterClipboardFormatW", "DestroyWindow", "GetKeyboardLayout", "ScreenToClient", "EnableWindow", "ClientToScreen", "LoadStringW", "GetMessagePos", "InvalidateRect", "SetDlgItemTextW", "GetDlgItemTextW", "SendDlgItemMessageW", "GetFocus", "GetWindowTextW", "SetWindowLongW", "GetClassNameW", "GetWindowLongW", "UpdateWindow", "CreateDialogParamW", "ShowWindow", "LoadCursorW", "GetDlgItem", "DispatchMessageW", "LoadIconW", "RegisterClassW", "GetMessageW", "IsDialogMessageW", "TranslateMessage", "ReleaseCapture", "KillTimer", "DefDlgProcW", "SetFocus"]

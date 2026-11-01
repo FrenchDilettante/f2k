@@ -1,0 +1,748 @@
+# WINSPOOL.DRV's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from WINSPOOL.DRV 5.0.2195.6659's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of WINSPOOL.DRV 5.0.2195.6659's export table, by ordinal ------
+
+[[export]]
+name = "PerfClose"
+ordinal = 104
+
+[[export]]
+name = "PerfCollect"
+ordinal = 105
+
+[[export]]
+name = "PerfOpen"
+ordinal = 106
+
+[[export]]
+name = "ADVANCEDSETUPDIALOG"
+ordinal = 107
+
+[[export]]
+name = "AbortPrinter"
+ordinal = 108
+
+[[export]]
+name = "AddFormA"
+ordinal = 109
+
+[[export]]
+name = "AddFormW"
+ordinal = 110
+
+[[export]]
+name = "AddJobA"
+ordinal = 111
+
+[[export]]
+name = "AddJobW"
+ordinal = 112
+
+[[export]]
+name = "AddMonitorA"
+ordinal = 113
+
+[[export]]
+name = "AddMonitorW"
+ordinal = 114
+
+[[export]]
+name = "AddPortA"
+ordinal = 115
+
+[[export]]
+name = "AddPortExA"
+ordinal = 116
+
+[[export]]
+name = "AddPortExW"
+ordinal = 117
+
+[[export]]
+name = "AddPortW"
+ordinal = 118
+
+[[export]]
+name = "AddPrintProcessorA"
+ordinal = 119
+
+[[export]]
+name = "AddPrintProcessorW"
+ordinal = 120
+
+[[export]]
+name = "AddPrintProvidorA"
+ordinal = 121
+
+[[export]]
+name = "AddPrintProvidorW"
+ordinal = 122
+
+[[export]]
+name = "AddPrinterA"
+ordinal = 123
+
+[[export]]
+name = "AddPrinterConnectionA"
+ordinal = 124
+
+[[export]]
+name = "AddPrinterConnectionW"
+ordinal = 125
+
+[[export]]
+name = "AddPrinterDriverA"
+ordinal = 126
+
+[[export]]
+name = "AddPrinterDriverExA"
+ordinal = 127
+
+[[export]]
+name = "AddPrinterDriverExW"
+ordinal = 128
+
+[[export]]
+name = "AddPrinterDriverW"
+ordinal = 129
+
+[[export]]
+name = "AddPrinterW"
+ordinal = 130
+
+[[export]]
+name = "AdvancedDocumentPropertiesA"
+ordinal = 131
+
+[[export]]
+name = "AdvancedDocumentPropertiesW"
+ordinal = 132
+
+[[export]]
+name = "AdvancedSetupDialog"
+ordinal = 133
+
+[[export]]
+name = "ClosePrinter"
+ordinal = 134
+
+[[export]]
+name = "CloseSpoolFileHandle"
+ordinal = 135
+
+[[export]]
+name = "CommitSpoolData"
+ordinal = 136
+
+[[export]]
+name = "ConfigurePortA"
+ordinal = 137
+
+[[export]]
+name = "ConfigurePortW"
+ordinal = 138
+
+[[export]]
+name = "ConnectToPrinterDlg"
+ordinal = 139
+
+[[export]]
+name = "ConvertAnsiDevModeToUnicodeDevmode"
+ordinal = 140
+
+[[export]]
+name = "ConvertUnicodeDevModeToAnsiDevmode"
+ordinal = 141
+
+[[export]]
+name = "CreatePrinterIC"
+ordinal = 142
+
+[[export]]
+name = "DEVICECAPABILITIES"
+ordinal = 143
+
+[[export]]
+name = "DEVICEMODE"
+ordinal = 144
+
+[[export]]
+name = "DeleteFormA"
+ordinal = 145
+
+[[export]]
+name = "DeleteFormW"
+ordinal = 146
+
+[[export]]
+name = "DeleteMonitorA"
+ordinal = 147
+
+[[export]]
+name = "DeleteMonitorW"
+ordinal = 148
+
+[[export]]
+name = "DeletePortA"
+ordinal = 149
+
+[[export]]
+name = "DeletePortW"
+ordinal = 150
+
+[[export]]
+name = "DeletePrintProcessorA"
+ordinal = 151
+
+[[export]]
+name = "DeletePrintProcessorW"
+ordinal = 152
+
+[[export]]
+name = "DeletePrintProvidorA"
+ordinal = 153
+
+[[export]]
+name = "DeletePrintProvidorW"
+ordinal = 154
+
+[[export]]
+name = "DeletePrinter"
+ordinal = 155
+
+[[export]]
+name = "DeletePrinterConnectionA"
+ordinal = 156
+
+[[export]]
+name = "DeletePrinterConnectionW"
+ordinal = 157
+
+[[export]]
+name = "DeletePrinterDataA"
+ordinal = 158
+
+[[export]]
+name = "DeletePrinterDataExA"
+ordinal = 159
+
+[[export]]
+name = "DeletePrinterDataExW"
+ordinal = 160
+
+[[export]]
+name = "DeletePrinterDataW"
+ordinal = 161
+
+[[export]]
+name = "DeletePrinterDriverA"
+ordinal = 162
+
+[[export]]
+name = "DeletePrinterDriverExA"
+ordinal = 163
+
+[[export]]
+name = "DeletePrinterDriverExW"
+ordinal = 164
+
+[[export]]
+name = "DeletePrinterDriverW"
+ordinal = 165
+
+[[export]]
+name = "DeletePrinterIC"
+ordinal = 166
+
+[[export]]
+name = "DeletePrinterKeyA"
+ordinal = 167
+
+[[export]]
+name = "DeletePrinterKeyW"
+ordinal = 168
+
+[[export]]
+name = "DevQueryPrint"
+ordinal = 169
+
+[[export]]
+name = "DevQueryPrintEx"
+ordinal = 170
+
+[[export]]
+name = "DeviceCapabilities"
+ordinal = 171
+
+[[export]]
+name = "DeviceCapabilitiesA"
+ordinal = 172
+
+[[export]]
+name = "DeviceCapabilitiesW"
+ordinal = 173
+
+[[export]]
+name = "DeviceMode"
+ordinal = 174
+
+[[export]]
+name = "DevicePropertySheets"
+ordinal = 175
+
+[[export]]
+name = "DocumentEvent"
+ordinal = 176
+
+[[export]]
+name = "DocumentPropertiesA"
+ordinal = 177
+
+[[export]]
+name = "DocumentPropertiesW"
+ordinal = 178
+
+[[export]]
+name = "DocumentPropertySheets"
+ordinal = 179
+
+[[export]]
+name = "EXTDEVICEMODE"
+ordinal = 180
+
+[[export]]
+name = "EndDocPrinter"
+ordinal = 181
+
+[[export]]
+name = "EndPagePrinter"
+ordinal = 182
+
+[[export]]
+name = "EnumFormsA"
+ordinal = 183
+
+[[export]]
+name = "EnumFormsW"
+ordinal = 184
+
+[[export]]
+name = "EnumJobsA"
+ordinal = 185
+
+[[export]]
+name = "EnumJobsW"
+ordinal = 186
+
+[[export]]
+name = "EnumMonitorsA"
+ordinal = 187
+
+[[export]]
+name = "EnumMonitorsW"
+ordinal = 188
+
+[[export]]
+name = "EnumPortsA"
+ordinal = 189
+
+[[export]]
+name = "EnumPortsW"
+ordinal = 190
+
+[[export]]
+name = "EnumPrintProcessorDatatypesA"
+ordinal = 191
+
+[[export]]
+name = "EnumPrintProcessorDatatypesW"
+ordinal = 192
+
+[[export]]
+name = "EnumPrintProcessorsA"
+ordinal = 193
+
+[[export]]
+name = "EnumPrintProcessorsW"
+ordinal = 194
+
+[[export]]
+name = "EnumPrinterDataA"
+ordinal = 195
+
+[[export]]
+name = "EnumPrinterDataExA"
+ordinal = 196
+
+[[export]]
+name = "EnumPrinterDataExW"
+ordinal = 197
+
+[[export]]
+name = "EnumPrinterDataW"
+ordinal = 198
+
+[[export]]
+name = "EnumPrinterDriversA"
+ordinal = 199
+
+[[export]]
+name = "EnumPrinterDriversW"
+ordinal = 200
+
+[[export]]
+name = "GetDefaultPrinterA"
+ordinal = 201
+
+[[export]]
+name = "SetDefaultPrinterA"
+ordinal = 202
+
+[[export]]
+name = "GetDefaultPrinterW"
+ordinal = 203
+
+[[export]]
+name = "SetDefaultPrinterW"
+ordinal = 204
+
+[[export]]
+name = "EnumPrinterKeyA"
+ordinal = 218
+
+[[export]]
+name = "EnumPrinterKeyW"
+ordinal = 219
+
+[[export]]
+name = "EnumPrintersA"
+ordinal = 220
+
+[[export]]
+name = "EnumPrintersW"
+ordinal = 221
+
+[[export]]
+name = "ExtDeviceMode"
+ordinal = 222
+
+[[export]]
+name = "FindClosePrinterChangeNotification"
+ordinal = 223
+
+[[export]]
+name = "FindFirstPrinterChangeNotification"
+ordinal = 224
+
+[[export]]
+name = "FindNextPrinterChangeNotification"
+ordinal = 225
+
+[[export]]
+name = "FlushPrinter"
+ordinal = 226
+
+[[export]]
+name = "FreePrinterNotifyInfo"
+ordinal = 227
+
+[[export]]
+name = "GetFormA"
+ordinal = 228
+
+[[export]]
+name = "GetFormW"
+ordinal = 229
+
+[[export]]
+name = "GetJobA"
+ordinal = 230
+
+[[export]]
+name = "GetJobW"
+ordinal = 231
+
+[[export]]
+name = "GetPrintProcessorDirectoryA"
+ordinal = 232
+
+[[export]]
+name = "GetPrintProcessorDirectoryW"
+ordinal = 233
+
+[[export]]
+name = "GetPrinterA"
+ordinal = 234
+
+[[export]]
+name = "GetPrinterDataA"
+ordinal = 235
+
+[[export]]
+name = "GetPrinterDataExA"
+ordinal = 236
+
+[[export]]
+name = "GetPrinterDataExW"
+ordinal = 237
+
+[[export]]
+name = "GetPrinterDataW"
+ordinal = 238
+
+[[export]]
+name = "GetPrinterDriverA"
+ordinal = 239
+
+[[export]]
+name = "GetPrinterDriverDirectoryA"
+ordinal = 240
+
+[[export]]
+name = "GetPrinterDriverDirectoryW"
+ordinal = 241
+
+[[export]]
+name = "GetPrinterDriverW"
+ordinal = 242
+
+[[export]]
+name = "GetPrinterW"
+ordinal = 243
+
+[[export]]
+name = "GetSpoolFileHandle"
+ordinal = 244
+
+[[export]]
+name = "InitializeDll"
+ordinal = 245
+
+[[export]]
+name = "OpenPrinterA"
+ordinal = 246
+
+[[export]]
+name = "OpenPrinterW"
+ordinal = 247
+
+[[export]]
+name = "PlayGdiScriptOnPrinterIC"
+ordinal = 248
+
+[[export]]
+name = "PrinterMessageBoxA"
+ordinal = 249
+
+[[export]]
+name = "PrinterMessageBoxW"
+ordinal = 250
+
+[[export]]
+name = "PrinterProperties"
+ordinal = 251
+
+[[export]]
+name = "QueryColorProfile"
+ordinal = 252
+
+[[export]]
+name = "QueryRemoteFonts"
+ordinal = 253
+
+[[export]]
+name = "QuerySpoolMode"
+ordinal = 254
+
+[[export]]
+name = "ReadPrinter"
+ordinal = 255
+
+[[export]]
+name = "ResetPrinterA"
+ordinal = 256
+
+[[export]]
+name = "ResetPrinterW"
+ordinal = 257
+
+[[export]]
+name = "ScheduleJob"
+ordinal = 258
+
+[[export]]
+name = "SeekPrinter"
+ordinal = 259
+
+[[export]]
+name = "SetAllocFailCount"
+ordinal = 260
+
+[[export]]
+name = "SetFormA"
+ordinal = 261
+
+[[export]]
+name = "SetFormW"
+ordinal = 262
+
+[[export]]
+name = "SetJobA"
+ordinal = 263
+
+[[export]]
+name = "SetJobW"
+ordinal = 264
+
+[[export]]
+name = "SetPortA"
+ordinal = 265
+
+[[export]]
+name = "SetPortW"
+ordinal = 266
+
+[[export]]
+name = "SetPrinterA"
+ordinal = 267
+
+[[export]]
+name = "SetPrinterDataA"
+ordinal = 268
+
+[[export]]
+name = "SetPrinterDataExA"
+ordinal = 269
+
+[[export]]
+name = "SetPrinterDataExW"
+ordinal = 270
+
+[[export]]
+name = "SetPrinterDataW"
+ordinal = 271
+
+[[export]]
+name = "SetPrinterW"
+ordinal = 272
+
+[[export]]
+name = "SplDriverUnloadComplete"
+ordinal = 273
+
+[[export]]
+name = "SpoolerDevQueryPrintW"
+ordinal = 274
+
+[[export]]
+name = "SpoolerInit"
+ordinal = 275
+
+[[export]]
+name = "SpoolerPrinterEvent"
+ordinal = 276
+
+[[export]]
+name = "StartDocDlgA"
+ordinal = 277
+
+[[export]]
+name = "StartDocDlgW"
+ordinal = 278
+
+[[export]]
+name = "StartDocPrinterA"
+ordinal = 279
+
+[[export]]
+name = "StartDocPrinterW"
+ordinal = 280
+
+[[export]]
+name = "StartPagePrinter"
+ordinal = 281
+
+[[export]]
+name = "WaitForPrinterChange"
+ordinal = 282
+
+[[export]]
+name = "WritePrinter"
+ordinal = 283
+
+[[export]]
+name = "XcvDataW"
+ordinal = 284
+
+[[export]]
+name = "#100"
+ordinal = 100
+
+[[export]]
+name = "#101"
+ordinal = 101
+
+[[export]]
+name = "#102"
+ordinal = 102
+
+[[export]]
+name = "#103"
+ordinal = 103
+
+[[export]]
+name = "#205"
+ordinal = 205
+
+[[export]]
+name = "#206"
+ordinal = 206
+
+[[export]]
+name = "#207"
+ordinal = 207
+
+[[export]]
+name = "#208"
+ordinal = 208
+
+[[export]]
+name = "#209"
+ordinal = 209
+
+[[export]]
+name = "#210"
+ordinal = 210
+
+[[export]]
+name = "#211"
+ordinal = 211
+
+[[export]]
+name = "#212"
+ordinal = 212
+
+[[export]]
+name = "#213"
+ordinal = 213
+
+[[export]]
+name = "#214"
+ordinal = 214
+
+[[export]]
+name = "#215"
+ordinal = 215
+
+[[export]]
+name = "#216"
+ordinal = 216
+
+[[export]]
+name = "#217"
+ordinal = 217

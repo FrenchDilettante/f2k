@@ -1,0 +1,52 @@
+# sol.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 c38338fba450b9b4..., linked 1999-10-01T01:46:27Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "sol.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 34064
+link_timestamp = "1999-10-01T01:46:27Z"
+sha256 = "c38338fba450b9b471146b421a9d8402142bc4c94b676b69d252cc1e7325a7ca"
+
+[icon]
+files = ["icons/sol.ico"]
+images = 2
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["KillTimer", "DrawTextW", "LoadIconW", "InvalidateRect", "PostQuitMessage", "GetMenu", "EnableMenuItem", "GetCapture", "ReleaseCapture", "IsIconic", "DispatchMessageW", "GetClientRect", "MsgWaitForMultipleObjects", "PeekMessageW", "GetDC", "ReleaseDC", "RegisterWindowMessageW", "AdjustWindowRect", "CreateWindowExW", "SetTimer", "ShowWindow", "UpdateWindow", "LoadAcceleratorsW", "ShowCursor", "EndDialog", "MoveWindow", "DestroyWindow", "RegisterClassW", "SetFocus", "CopyRect", "GetSysColor", "FrameRect", "InflateRect", "DialogBoxParamW", "CheckRadioButton", "GetDlgItem", "EnableWindow", "IsDlgButtonChecked", "CheckDlgButton", "BeginPaint", "SetCapture", "DefWindowProcW", "PtInRect", "PostMessageW", "GetMessageW", "TranslateAcceleratorW", "TranslateMessage", "GetKeyState", "ClientToScreen", "SetCursorPos", "LoadStringW", "MessageBoxW", "IntersectRect", "InvertRect", "LoadStringA", "GetDesktopWindow", "EndPaint", "LoadCursorW", "LoadImageW", "RegisterClassExW"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["GetTextMetricsW", "SelectObject", "PatBlt", "CreateCompatibleDC", "TextOutW", "GetStockObject", "GetTextExtentPoint32W", "SetTextColor", "SetPixel", "LineDDA", "BitBlt", "CreateSolidBrush", "CreateCompatibleBitmap", "DeleteDC", "PtVisible", "SetBrushOrgEx", "SetROP2", "MoveToEx", "LineTo", "DeleteObject", "GetDeviceCaps"]
+
+[[imports]]
+dll = "CARDS.dll"
+delay = false
+names = ["cdtInit", "cdtAnimate", "cdtDrawExt", "cdtTerm", "cdtDraw"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["ShellAboutW"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["_controlfp", "_except_handler3", "__set_app_type", "__p__fmode", "__p__commode", "_adjust_fdiv", "__setusermatherr", "_initterm", "__getmainargs", "_acmdln", "exit", "_XcptFilter", "_exit", "rand", "time", "srand"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegOpenKeyExA", "RegQueryValueExA", "RegCloseKey"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["GetModuleHandleA", "LoadLibraryA", "GetProcAddress", "lstrlenW", "MulDiv", "GetProfileIntW", "GetProfileStringW", "WriteProfileStringW", "LocalFree", "LocalAlloc", "GetCommandLineW", "GetStartupInfoA"]

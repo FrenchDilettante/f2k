@@ -1,0 +1,57 @@
+# explorer.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 e4331566515640dc..., linked 2003-04-16T04:00:39Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "explorer.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x00400000"
+size_bytes = 243472
+link_timestamp = "2003-04-16T04:00:39Z"
+sha256 = "e4331566515640dccbfb509b207be70353346225914d5d8cbba4aa4a5d31cf04"
+
+[icon]
+files = ["icons/explorer.ico"]
+images = 6
+
+[[imports]]
+dll = "ADVAPI32.DLL"
+delay = false
+names = ["RegCloseKey", "RegOpenKeyExW", "RegDeleteKeyW", "RegEnumKeyExW", "RegSetValueExW", "RegCreateKeyW", "RegQueryValueW", "RegEnumValueW", "RegQueryValueExW", "GetUserNameW", "RegEnumKeyW", "RegOpenKeyW", "RegDeleteValueW", "RegQueryInfoKeyW", "RegCreateKeyExW", "GetTokenInformation", "OpenProcessToken", "PrivilegeCheck", "OpenThreadToken", "LookupPrivilegeValueW", "RegQueryValueExA", "RegOpenKeyExA"]
+
+[[imports]]
+dll = "KERNEL32.DLL"
+delay = false
+names = ["GetDateFormatW", "GetQueuedCompletionStatus", "TerminateThread", "TerminateProcess", "ResumeThread", "ExitProcess", "SetCurrentDirectoryW", "GetProfileStringW", "GetPrivateProfileStringW", "GetModuleFileNameW", "GetLocaleInfoW", "CreateIoCompletionPort", "lstrcmpiA", "GetCurrentProcess", "GetVersionExW", "OpenEventW", "GetSystemDefaultLCID", "SetProcessShutdownParameters", "ReleaseMutex", "CreateMutexW", "InitializeCriticalSection", "RtlUnwind", "GlobalAlloc", "GetTimeFormatW", "GetLocalTime", "lstrcmpW", "CreateThread", "WaitForSingleObject", "InterlockedExchange", "GlobalFree", "FormatMessageW", "CreateProcessW", "SetLastError", "GetLastError", "GetCurrentProcessId", "GetCurrentThreadId", "GetEnvironmentVariableW", "IsBadCodePtr", "CreateEventW", "SetEvent", "GetWindowsDirectoryW", "LoadLibraryW", "GetProcAddress", "MoveFileW", "FindFirstFileW", "lstrcpynW", "FindNextFileW", "FindClose", "GetFileAttributesW", "GlobalGetAtomNameW", "CloseHandle", "EnterCriticalSection", "LeaveCriticalSection", "GetThreadPriority", "GetTickCount", "lstrcatW", "GetCurrentThread", "SetThreadPriority", "GetUserDefaultLangID", "lstrcmpiW", "Sleep", "MultiByteToWideChar", "GetVersionExA", "GetSystemDirectoryW", "lstrlenW", "GetModuleHandleW", "LocalFree", "LocalAlloc", "lstrcpyW", "GetCommandLineW", "GetStartupInfoA", "SetErrorMode", "FreeLibrary", "IsBadReadPtr", "LoadLibraryA", "RaiseException", "GetUserDefaultLCID", "GetModuleHandleA"]
+
+[[imports]]
+dll = "GDI32.DLL"
+delay = false
+names = ["GetStockObject", "SetTextColor", "TranslateCharsetInfo", "CreateRectRgnIndirect", "GetTextExtentPointW", "GetDeviceCaps", "BitBlt", "SetBkColor", "GetObjectW", "CreateFontIndirectW", "GetClipBox", "ExtTextOutW", "DeleteObject", "CreateCompatibleDC", "GetDCOrgEx", "SelectObject", "DeleteDC", "CreateCompatibleBitmap"]
+
+[[imports]]
+dll = "USER32.DLL"
+delay = false
+names = ["DrawEdge", "ExitWindowsEx", "ModifyMenuW", "SetMenuDefaultItem", "DeleteMenu", "ClientToScreen", "LoadIconW", "RemovePropW", "SetPropW", "FindWindowW", "MsgWaitForMultipleObjects", "AppendMenuW", "CreatePopupMenu", "GetMenuDefaultItem", "InsertMenuItemW", "EndPaint", "BeginPaint", "SetWindowTextW", "SetCursorPos", "DrawFocusRect", "EnumDisplaySettingsW", "GetClassNameW", "PaintDesktop", "UnregisterClassW", "CharNextW", "GetShellWindow", "MessageBoxW", "CharUpperBuffW", "SetMenuItemInfoW", "SwitchToThisWindow", "IsHungAppWindow", "InternalGetWindowText", "PostThreadMessageW", "RegisterHotKey", "UnregisterHotKey", "PostQuitMessage", "MessageBeep", "GetActiveWindow", "IsMenu", "EnumWindows", "GetMenuItemInfoW", "SetWindowRgn", "MoveWindow", "SendMessageTimeoutW", "SendDlgItemMessageW", "IsDlgButtonChecked", "CheckDlgButton", "AdjustWindowRectEx", "SubtractRect", "SetActiveWindow", "wsprintfW", "TranslateAcceleratorW", "TranslateMessage", "DispatchMessageW", "WaitMessage", "LoadAcceleratorsW", "LoadBitmapW", "SendNotifyMessageW", "SetWindowPlacement", "CallWindowProcW", "SetCapture", "CopyRect", "LoadImageW", "DestroyIcon", "LoadMenuW", "GetSubMenu", "RemoveMenu", "RegisterClassW", "IsChild", "IsWindowEnabled", "GetKeyState", "GetFocus", "GetSysColor", "UnionRect", "EqualRect", "GetWindowThreadProcessId", "InflateRect", "RedrawWindow", "GetClientRect", "PeekMessageW", "MapWindowPoints", "SetScrollPos", "RegisterWindowMessageW", "EnumChildWindows", "InsertMenuW", "GetWindow", "IsWindow", "OffsetRect", "IntersectRect", "SystemParametersInfoA", "IsIconic", "GetWindowPlacement", "GetSystemMetrics", "LoadStringW", "SetRectEmpty", "PtInRect", "SetTimer", "SetWindowPos", "GetWindowRect", "SetRect", "DestroyWindow", "InvalidateRect", "UpdateWindow", "GetDC", "ShowWindow", "ReleaseDC", "GetWindowLongW", "LoadCursorW", "SetCursor", "GetParent", "SetFocus", "GetCursorPos", "WindowFromPoint", "ScreenToClient", "GetAsyncKeyState", "EndDialog", "SetWindowLongW", "SendMessageW", "GetDlgItem", "EnableWindow", "GetMenuItemID", "EnableMenuItem", "SetForegroundWindow", "TrackPopupMenu", "GetClassInfoExW", "DefWindowProcW", "RegisterClassExW", "CreateWindowExW", "KillTimer", "GetLastActivePopup", "IsWindowVisible", "IsRectEmpty", "SetScrollInfo", "CharNextA", "GetWindowLongA", "GetMessagePos", "ShowWindowAsync", "GetForegroundWindow", "GetMenuState", "TrackPopupMenuEx", "DestroyMenu", "SystemParametersInfoW", "GetDesktopWindow", "CascadeWindows", "TileWindows", "PostMessageW", "SendMessageCallbackW", "GetSystemMenu", "GetMenuItemCount", "EndTask", "GetScrollInfo", "DrawCaptionTempW", "GetDlgCtrlID", "IsZoomed"]
+
+[[imports]]
+dll = "SHLWAPI.DLL"
+delay = false
+names = ["#169", "PathFindFileNameW", "#94", "PathCombineW", "#236", "SHRegGetUSValueW", "#241", "#244", "#356", "StrStrIW", "PathRemoveArgsW", "PathRemoveBlanksW", "StrCmpNIW", "SHDeleteKeyW", "#460", "PathGetArgsW", "PathUnquoteSpacesW", "#467", "StrCpyW", "#164", "#165", "wnsprintfW", "#204", "StrToIntW", "#260", "PathAppendW", "#10", "StrStrW", "PathGetDriveNumberW", "PathFileExistsW", "PathStripToRootW", "StrChrW", "PathRemoveFileSpecW", "StrCatBuffW", "#292", "PathIsDirectoryW", "PathFindExtensionW", "#8", "#9", "#279", "SHRegGetBoolUSValueW", "SHRegSetUSValueW", "#174", "#172", "#437", "SHSetValueW", "SHGetValueW", "#16", "#413", "SHOpenRegStream2W", "#346", "StrCmpIW", "#433"]
+
+[[imports]]
+dll = "COMCTL32.DLL"
+delay = false
+names = ["#324", "#329", "#323", "#322", "#320", "#325", "#332", "CreatePropertySheetPageW", "#387", "#336", "#334", "#328", "PropertySheetW", "#327", "#326", "ImageList_Remove", "ImageList_Destroy", "ImageList_ReplaceIcon", "ImageList_GetIcon", "ImageList_GetImageCount", "ImageList_SetBkColor", "ImageList_Create", "ImageList_GetIconSize", "#337", "#385", "#413", "#410", "#386", "#412", "InitCommonControlsEx", "#321"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = true
+names = ["SHGetPathFromIDListA", "SHGetSpecialFolderPathW", "#680", "#195", "SHGetSpecialFolderLocation", "SHAddToRecentDocs", "#155", "SHGetFolderPathW", "SHGetFolderLocation", "#127", "SHChangeNotify", "#181", "#100", "#89", "#711", "#2", "#4", "#147", "#18", "#17", "#16", "#152", "#25", "#137", "#182", "SHGetPathFromIDListW", "#244", "#190", "#102", "#82", "#645", "#644", "#202", "#60", "#61", "#64", "#162", "ShellExecuteExW", "#90", "#91", "#161", "#54", "#132", "#156", "Shell_NotifyIconW", "SHGetDesktopFolder", "#20", "#21", "#22", "#134", "#85", "#653", "#200", "#68", "FixupOptionalComponents", "ShellExecuteW", "#201", "#660", "#188", "#149", "#67"]
+
+[[imports]]
+dll = "ole32.dll"
+delay = true
+names = ["CoUninitialize", "CoInitialize", "OleInitialize", "OleUninitialize", "OleLoadFromStream", "OleSaveToStream", "CoMarshalInterThreadInterfaceInStream", "CoCreateInstance", "RegisterDragDrop", "RevokeDragDrop"]

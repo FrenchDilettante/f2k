@@ -1,0 +1,120 @@
+# VDMDBG.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from VDMDBG.dll 5.0.2134.1's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of VDMDBG.dll 5.0.2134.1's export table, by ordinal -----------
+
+[[export]]
+name = "VDMBreakThread"
+ordinal = 1
+
+[[export]]
+name = "VDMDetectWOW"
+ordinal = 2
+
+[[export]]
+name = "VDMEnumProcessWOW"
+ordinal = 3
+
+[[export]]
+name = "VDMEnumTaskWOW"
+ordinal = 4
+
+[[export]]
+name = "VDMEnumTaskWOWEx"
+ordinal = 5
+
+[[export]]
+name = "VDMGetAddrExpression"
+ordinal = 6
+
+[[export]]
+name = "VDMGetContext"
+ordinal = 7
+
+[[export]]
+name = "VDMGetDbgFlags"
+ordinal = 8
+
+[[export]]
+name = "VDMGetModuleSelector"
+ordinal = 9
+
+[[export]]
+name = "VDMGetPointer"
+ordinal = 10
+
+[[export]]
+name = "VDMGetSegmentInfo"
+ordinal = 11
+
+[[export]]
+name = "VDMGetSegtablePointer"
+ordinal = 12
+
+[[export]]
+name = "VDMGetSelectorModule"
+ordinal = 13
+
+[[export]]
+name = "VDMGetSymbol"
+ordinal = 14
+
+[[export]]
+name = "VDMGetThreadContext"
+ordinal = 15
+
+[[export]]
+name = "VDMGetThreadSelectorEntry"
+ordinal = 16
+
+[[export]]
+name = "VDMGlobalFirst"
+ordinal = 17
+
+[[export]]
+name = "VDMGlobalNext"
+ordinal = 18
+
+[[export]]
+name = "VDMIsModuleLoaded"
+ordinal = 19
+
+[[export]]
+name = "VDMKillWOW"
+ordinal = 20
+
+[[export]]
+name = "VDMModuleFirst"
+ordinal = 21
+
+[[export]]
+name = "VDMModuleNext"
+ordinal = 22
+
+[[export]]
+name = "VDMProcessException"
+ordinal = 23
+
+[[export]]
+name = "VDMSetContext"
+ordinal = 24
+
+[[export]]
+name = "VDMSetDbgFlags"
+ordinal = 25
+
+[[export]]
+name = "VDMSetThreadContext"
+ordinal = 26
+
+[[export]]
+name = "VDMStartTaskInWOW"
+ordinal = 27
+
+[[export]]
+name = "VDMTerminateTaskWOW"
+ordinal = 28

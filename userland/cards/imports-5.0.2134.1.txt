@@ -1,0 +1,20 @@
+# CARDS.dll 5.0.2134.1: its import table, dumped by scripts/dump_exports.py
+# linked 1999-11-30 09:31:24 UTC, sha256 a9d749508da06f4809ad64d748ea41ba7fb50ca44380dbd64cb9e9431eece0f9
+# 2 modules, 15 imports: [<module>] [delay], then <name> | #<ordinal>
+[USER32.dll]
+LoadBitmapA
+[GDI32.dll]
+CreateCompatibleDC
+DeleteObject
+GetObjectA
+DeleteDC
+SetPixel
+StretchBlt
+BitBlt
+SetBkColor
+GetDCOrgEx
+SelectObject
+SetBrushOrgEx
+GetPixel
+CreateSolidBrush
+PatBlt

@@ -1,0 +1,724 @@
+# COMCTL32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from COMCTL32.dll 5.81.3502.6601's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of COMCTL32.dll 5.81.3502.6601's export table, by ordinal -----
+
+[[export]]
+name = "MenuHelp"
+ordinal = 2
+
+[[export]]
+name = "ShowHideMenuCtl"
+ordinal = 3
+
+[[export]]
+name = "GetEffectiveClientRect"
+ordinal = 4
+
+[[export]]
+name = "DrawStatusTextA"
+ordinal = 5
+
+[[export]]
+name = "CreateStatusWindowA"
+ordinal = 6
+
+[[export]]
+name = "CreateToolbar"
+ordinal = 7
+
+[[export]]
+name = "CreateMappedBitmap"
+ordinal = 8
+
+[[export]]
+name = "CreatePropertySheetPage"
+ordinal = 12
+
+[[export]]
+name = "MakeDragList"
+ordinal = 13
+
+[[export]]
+name = "LBItemFromPt"
+ordinal = 14
+
+[[export]]
+name = "DrawInsert"
+ordinal = 15
+
+[[export]]
+name = "CreateUpDownControl"
+ordinal = 16
+
+[[export]]
+name = "InitCommonControls"
+ordinal = 17
+
+[[export]]
+name = "CreatePropertySheetPageA"
+ordinal = 18
+
+[[export]]
+name = "CreatePropertySheetPageW"
+ordinal = 19
+
+[[export]]
+name = "CreateStatusWindow"
+ordinal = 20
+
+[[export]]
+name = "CreateStatusWindowW"
+ordinal = 21
+
+[[export]]
+name = "CreateToolbarEx"
+ordinal = 22
+
+[[export]]
+name = "DestroyPropertySheetPage"
+ordinal = 23
+
+[[export]]
+name = "DllGetVersion"
+ordinal = 24
+
+[[export]]
+name = "DllInstall"
+ordinal = 25
+
+[[export]]
+name = "DrawStatusText"
+ordinal = 26
+
+[[export]]
+name = "DrawStatusTextW"
+ordinal = 27
+
+[[export]]
+name = "FlatSB_EnableScrollBar"
+ordinal = 28
+
+[[export]]
+name = "FlatSB_GetScrollInfo"
+ordinal = 29
+
+[[export]]
+name = "FlatSB_GetScrollPos"
+ordinal = 30
+
+[[export]]
+name = "FlatSB_GetScrollProp"
+ordinal = 31
+
+[[export]]
+name = "FlatSB_GetScrollRange"
+ordinal = 32
+
+[[export]]
+name = "FlatSB_SetScrollInfo"
+ordinal = 33
+
+[[export]]
+name = "FlatSB_SetScrollPos"
+ordinal = 34
+
+[[export]]
+name = "FlatSB_SetScrollProp"
+ordinal = 35
+
+[[export]]
+name = "FlatSB_SetScrollRange"
+ordinal = 36
+
+[[export]]
+name = "FlatSB_ShowScrollBar"
+ordinal = 37
+
+[[export]]
+name = "GetMUILanguage"
+ordinal = 38
+
+[[export]]
+name = "ImageList_Add"
+ordinal = 39
+
+[[export]]
+name = "ImageList_AddIcon"
+ordinal = 40
+
+[[export]]
+name = "ImageList_AddMasked"
+ordinal = 41
+
+[[export]]
+name = "ImageList_BeginDrag"
+ordinal = 42
+
+[[export]]
+name = "ImageList_Copy"
+ordinal = 43
+
+[[export]]
+name = "ImageList_Create"
+ordinal = 44
+
+[[export]]
+name = "ImageList_Destroy"
+ordinal = 45
+
+[[export]]
+name = "ImageList_DragEnter"
+ordinal = 46
+
+[[export]]
+name = "ImageList_DragLeave"
+ordinal = 47
+
+[[export]]
+name = "ImageList_DragMove"
+ordinal = 48
+
+[[export]]
+name = "ImageList_DragShowNolock"
+ordinal = 49
+
+[[export]]
+name = "ImageList_Draw"
+ordinal = 50
+
+[[export]]
+name = "ImageList_DrawEx"
+ordinal = 51
+
+[[export]]
+name = "ImageList_DrawIndirect"
+ordinal = 52
+
+[[export]]
+name = "ImageList_Duplicate"
+ordinal = 53
+
+[[export]]
+name = "ImageList_EndDrag"
+ordinal = 54
+
+[[export]]
+name = "ImageList_GetBkColor"
+ordinal = 55
+
+[[export]]
+name = "ImageList_GetDragImage"
+ordinal = 56
+
+[[export]]
+name = "ImageList_GetFlags"
+ordinal = 57
+
+[[export]]
+name = "ImageList_GetIcon"
+ordinal = 58
+
+[[export]]
+name = "ImageList_GetIconSize"
+ordinal = 59
+
+[[export]]
+name = "ImageList_GetImageCount"
+ordinal = 60
+
+[[export]]
+name = "ImageList_GetImageInfo"
+ordinal = 61
+
+[[export]]
+name = "ImageList_GetImageRect"
+ordinal = 62
+
+[[export]]
+name = "ImageList_LoadImage"
+ordinal = 63
+
+[[export]]
+name = "ImageList_LoadImageA"
+ordinal = 64
+
+[[export]]
+name = "ImageList_LoadImageW"
+ordinal = 65
+
+[[export]]
+name = "ImageList_Merge"
+ordinal = 66
+
+[[export]]
+name = "ImageList_Read"
+ordinal = 67
+
+[[export]]
+name = "ImageList_Remove"
+ordinal = 68
+
+[[export]]
+name = "ImageList_Replace"
+ordinal = 69
+
+[[export]]
+name = "ImageList_ReplaceIcon"
+ordinal = 70
+
+[[export]]
+name = "ImageList_SetBkColor"
+ordinal = 75
+
+[[export]]
+name = "ImageList_SetDragCursorImage"
+ordinal = 76
+
+[[export]]
+name = "ImageList_SetFilter"
+ordinal = 77
+
+[[export]]
+name = "ImageList_SetFlags"
+ordinal = 78
+
+[[export]]
+name = "ImageList_SetIconSize"
+ordinal = 79
+
+[[export]]
+name = "ImageList_SetImageCount"
+ordinal = 80
+
+[[export]]
+name = "ImageList_SetOverlayImage"
+ordinal = 81
+
+[[export]]
+name = "ImageList_Write"
+ordinal = 82
+
+[[export]]
+name = "InitCommonControlsEx"
+ordinal = 83
+
+[[export]]
+name = "InitMUILanguage"
+ordinal = 84
+
+[[export]]
+name = "InitializeFlatSB"
+ordinal = 85
+
+[[export]]
+name = "PropertySheet"
+ordinal = 86
+
+[[export]]
+name = "PropertySheetA"
+ordinal = 87
+
+[[export]]
+name = "PropertySheetW"
+ordinal = 88
+
+[[export]]
+name = "UninitializeFlatSB"
+ordinal = 89
+
+[[export]]
+name = "_TrackMouseEvent"
+ordinal = 90
+
+[[export]]
+name = "#9"
+ordinal = 9
+
+[[export]]
+name = "#10"
+ordinal = 10
+
+[[export]]
+name = "#11"
+ordinal = 11
+
+[[export]]
+name = "#71"
+ordinal = 71
+
+[[export]]
+name = "#72"
+ordinal = 72
+
+[[export]]
+name = "#73"
+ordinal = 73
+
+[[export]]
+name = "#74"
+ordinal = 74
+
+[[export]]
+name = "#151"
+ordinal = 151
+
+[[export]]
+name = "#152"
+ordinal = 152
+
+[[export]]
+name = "#153"
+ordinal = 153
+
+[[export]]
+name = "#154"
+ordinal = 154
+
+[[export]]
+name = "#155"
+ordinal = 155
+
+[[export]]
+name = "#156"
+ordinal = 156
+
+[[export]]
+name = "#157"
+ordinal = 157
+
+[[export]]
+name = "#163"
+ordinal = 163
+
+[[export]]
+name = "#164"
+ordinal = 164
+
+[[export]]
+name = "#167"
+ordinal = 167
+
+[[export]]
+name = "#169"
+ordinal = 169
+
+[[export]]
+name = "#233"
+ordinal = 233
+
+[[export]]
+name = "#234"
+ordinal = 234
+
+[[export]]
+name = "#235"
+ordinal = 235
+
+[[export]]
+name = "#236"
+ordinal = 236
+
+[[export]]
+name = "#320"
+ordinal = 320
+
+[[export]]
+name = "#321"
+ordinal = 321
+
+[[export]]
+name = "#322"
+ordinal = 322
+
+[[export]]
+name = "#323"
+ordinal = 323
+
+[[export]]
+name = "#324"
+ordinal = 324
+
+[[export]]
+name = "#325"
+ordinal = 325
+
+[[export]]
+name = "#326"
+ordinal = 326
+
+[[export]]
+name = "#327"
+ordinal = 327
+
+[[export]]
+name = "#328"
+ordinal = 328
+
+[[export]]
+name = "#329"
+ordinal = 329
+
+[[export]]
+name = "#330"
+ordinal = 330
+
+[[export]]
+name = "#331"
+ordinal = 331
+
+[[export]]
+name = "#332"
+ordinal = 332
+
+[[export]]
+name = "#333"
+ordinal = 333
+
+[[export]]
+name = "#334"
+ordinal = 334
+
+[[export]]
+name = "#335"
+ordinal = 335
+
+[[export]]
+name = "#336"
+ordinal = 336
+
+[[export]]
+name = "#337"
+ordinal = 337
+
+[[export]]
+name = "#338"
+ordinal = 338
+
+[[export]]
+name = "#339"
+ordinal = 339
+
+[[export]]
+name = "#340"
+ordinal = 340
+
+[[export]]
+name = "#341"
+ordinal = 341
+
+[[export]]
+name = "#342"
+ordinal = 342
+
+[[export]]
+name = "#350"
+ordinal = 350
+
+[[export]]
+name = "#351"
+ordinal = 351
+
+[[export]]
+name = "#352"
+ordinal = 352
+
+[[export]]
+name = "#353"
+ordinal = 353
+
+[[export]]
+name = "#354"
+ordinal = 354
+
+[[export]]
+name = "#355"
+ordinal = 355
+
+[[export]]
+name = "#356"
+ordinal = 356
+
+[[export]]
+name = "#357"
+ordinal = 357
+
+[[export]]
+name = "#358"
+ordinal = 358
+
+[[export]]
+name = "#359"
+ordinal = 359
+
+[[export]]
+name = "#360"
+ordinal = 360
+
+[[export]]
+name = "#361"
+ordinal = 361
+
+[[export]]
+name = "#362"
+ordinal = 362
+
+[[export]]
+name = "#363"
+ordinal = 363
+
+[[export]]
+name = "#364"
+ordinal = 364
+
+[[export]]
+name = "#365"
+ordinal = 365
+
+[[export]]
+name = "#366"
+ordinal = 366
+
+[[export]]
+name = "#367"
+ordinal = 367
+
+[[export]]
+name = "#368"
+ordinal = 368
+
+[[export]]
+name = "#369"
+ordinal = 369
+
+[[export]]
+name = "#372"
+ordinal = 372
+
+[[export]]
+name = "#373"
+ordinal = 373
+
+[[export]]
+name = "#374"
+ordinal = 374
+
+[[export]]
+name = "#375"
+ordinal = 375
+
+[[export]]
+name = "#376"
+ordinal = 376
+
+[[export]]
+name = "#377"
+ordinal = 377
+
+[[export]]
+name = "#382"
+ordinal = 382
+
+[[export]]
+name = "#383"
+ordinal = 383
+
+[[export]]
+name = "#384"
+ordinal = 384
+
+[[export]]
+name = "#385"
+ordinal = 385
+
+[[export]]
+name = "#386"
+ordinal = 386
+
+[[export]]
+name = "#387"
+ordinal = 387
+
+[[export]]
+name = "#388"
+ordinal = 388
+
+[[export]]
+name = "#389"
+ordinal = 389
+
+[[export]]
+name = "#390"
+ordinal = 390
+
+[[export]]
+name = "#400"
+ordinal = 400
+
+[[export]]
+name = "#401"
+ordinal = 401
+
+[[export]]
+name = "#402"
+ordinal = 402
+
+[[export]]
+name = "#403"
+ordinal = 403
+
+[[export]]
+name = "#404"
+ordinal = 404
+
+[[export]]
+name = "#410"
+ordinal = 410
+
+[[export]]
+name = "#411"
+ordinal = 411
+
+[[export]]
+name = "#412"
+ordinal = 412
+
+[[export]]
+name = "#413"
+ordinal = 413
+
+[[export]]
+name = "#414"
+ordinal = 414
+
+[[export]]
+name = "#415"
+ordinal = 415
+
+[[export]]
+name = "#416"
+ordinal = 416
+
+[[export]]
+name = "#417"
+ordinal = 417
+
+[[export]]
+name = "#418"
+ordinal = 418
+
+[[export]]
+name = "#419"
+ordinal = 419
+
+[[export]]
+name = "#420"
+ordinal = 420
+
+[[export]]
+name = "#421"
+ordinal = 421

@@ -37,7 +37,8 @@ Options:
             stubs' log line, ntdll's DbgPrint (STUB_LOG_IMPORT)
   --run     run every host scenario, ignored ones included, and keep the results: fails if an
             enabled one fails or an ignored one passes (its gap is fixed: remove the marker)
-  --report  write the HTML report (target/compat/report.html)
+  --report  write the HTML report (target/compat/report.html): the DLL treemap, then one
+            section per tests/compat/*.toml with the executable's imports as squares
 
 The summary (per DLL and API group) prints in every case. TOML is read with the standard library
 (tomllib).
@@ -70,6 +71,9 @@ RESULTS = REPO_ROOT / "target" / "test-results"
 PYTEST_RESULTS = RESULTS / "pytest.json"
 SCENARIO_RESULTS = RESULTS / "scenarios.json"
 REPORT = REPO_ROOT / "target" / "compat" / "report.html"
+# The studied executables' dependency sets: tests/compat/<name>.toml, written by
+# scripts/pe_deps.py (see tests/compat/README.md).
+COMPAT = TESTS / "compat"
 # Where the scenarios live: (their directory, the module cargo prints their test paths under, the
 # cargo test command's arguments and directory).
 SCENARIO_SUITES = [
@@ -477,7 +481,22 @@ header { display: grid; grid-template-columns: 1fr auto; padding-bottom: 0 !impo
 main { margin: 0 auto; }
 .container { padding: 16px; }
 h1 { font-size: 20px; margin: 0 0 4px; }
+.hide-toggle { font-size: 12px; font-weight: 400; color: var(--ink-2); margin-left: 12px;
+  white-space: nowrap; cursor: pointer; }
+.hide-toggle input { vertical-align: -1px; }
 h2 { font-size: 16px; margin: 32px 0 8px; }
+h3 { font-size: 14px; margin: 0; }
+.exe-list { margin-top: 38px; display: flex; gap: 24px; flex-wrap: wrap; }
+section.exe { margin: 0; border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; flex-basis: 512px; }
+section.exe h3 { display: flex; align-items: baseline; gap: 8px; line-height: 23px; }
+section.exe h3 .meta { font-size: 12px; font-weight: 400; color: var(--ink-2); }
+.exe-icon { border-radius: 3px; align-self: center; }
+.exe .mod { margin-top: 10px; font: 600 12px/1 system-ui, sans-serif; color: var(--ink-2); }
+.mod .mod-count { font-weight: 400; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.delay-tag { font-weight: 400; color: var(--ink-3); }
+.squares { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px 0 0; }
+.squares .key { cursor: default; }
+.key.in-progress { outline: 1.5px solid var(--ink-2); }
 .meta { color: var(--ink-2); margin: 0; grid-column: span 2; }
 .banner { border: 1px solid var(--uncovered); border-left-width: 4px; padding: 8px 12px;
   margin: 0 0 16px; border-radius: 4px; }
@@ -497,9 +516,10 @@ input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
 .key.unimplemented { background: var(--unimplemented); }
 #map { display: block; width: 100%; height: 100%; }
 #map .tile { fill: var(--tile); stroke: var(--unimplemented); stroke-width: 2; }
-#map .dll { font: 600 12px/1 system-ui, sans-serif; fill: var(--ink); }
+#map .dll { font: 600 12px/1 system-ui, sans-serif; fill: var(--ink); cursor: pointer; }
+#map .dll:hover { text-decoration: underline; }
 #map .dll-count { font: 12px/1 system-ui, sans-serif; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
-#map rect.sq { cursor: pointer; }
+#map rect.sq, .squares .key { cursor: pointer; }
 #map .passing { fill: var(--passing); }
 #map .failing { fill: var(--failing); }
 #map .uncovered { fill: var(--uncovered); }
@@ -625,15 +645,28 @@ function node(name, attrs, parent) {
   return el;
 }
 
-// Draw the map to fill its place on screen, exactly.
+// Draw the map to fill its place on screen, exactly. `focus` names the one DLL shown alone
+// (its rectangle's "Expand" link set it); null shows all.
 let drawnSize = '';
+let focus = null;
 function draw() {
   const box = map.getBoundingClientRect();
   const W = Math.floor(box.width), H = Math.floor(box.height);
   if (W < 1 || H < 1 || `${W}x${H}` === drawnSize) return;
   drawnSize = `${W}x${H}`;
-  const items = DATA.dlls.map(d => ({dll: d, n: d.exports.length})).filter(item => item.n > 0)
-    .sort((a, b) => b.n - a.n);
+  // "Hide untracked exports": when checked, only the unimplemented and untracked squares hide -
+  // a tracked square always shows (its square carries `t`), and so does anything implemented or
+  // stubbed, tracked or not. A DLL left with no squares leaves the map entirely.
+  const hide = document.getElementById('hide-untracked').checked;
+  const hideEmpty = document.getElementById('hide-empty').checked;
+  // "Implemented" is the coverage metric's: passing, failing or uncovered (not stubbed, not
+  // unimplemented). "Hide empty DLLs" drops every DLL with none.
+  const implemented = x => x.s === 'passing' || x.s === 'failing' || x.s === 'uncovered';
+  let items = DATA.dlls.map(d => {
+    const shown = hide ? d.exports.filter(x => x.t || x.s !== 'unimplemented') : d.exports;
+    return {dll: d, n: shown.length, shown, impl: d.exports.filter(implemented).length};
+  }).filter(item => item.n > 0 && (!hideEmpty || item.impl > 0)).sort((a, b) => b.n - a.n);
+  if (focus) items = items.filter(item => item.dll.dll === focus);
   const {rects, pitch, size, columns} = fit(items, W, H);
   map.replaceChildren();
   map.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -643,11 +676,21 @@ function draw() {
     node('rect', {class: 'tile', x: r.x, y: r.y, width: r.w, height: r.h}, map);
     const clip = node('clipPath', {id: 'clip-' + k}, map);
     node('rect', {x: r.x, y: r.y, width: r.w, height: r.h}, clip);
+    // The header is the expand control: clicking it focuses this DLL alone; the focused DLL's
+    // header carries a "Collapse" mark. Works at any rectangle size.
     const label = node('text', {class: 'dll', x: r.x + PAD, y: r.y + PAD + 12, 'clip-path': `url(#clip-${k})`}, map);
     label.textContent = dll.dll;
-    node('tspan', {class: 'dll-count', dx: 6}, label).textContent = dll.exports.length;
+    const pct = Math.round(100 * item.impl / dll.exports.length);
+    node('tspan', {class: 'dll-count', dx: 6}, label).textContent =
+      `${item.impl}/${dll.exports.length}${pct ? ` (${pct}%)` : ''}`;
+    if (dll.dll === focus) node('tspan', {class: 'dll-count', dx: 6}, label).textContent = '· Collapse';
     node('title', {}, label).textContent = dll.summary;
-    dll.exports.forEach((x, n) => {
+    label.addEventListener('click', () => {
+      focus = focus === dll.dll ? null : dll.dll;
+      drawnSize = '';
+      draw();
+    });
+    item.shown.forEach((x, n) => {
       const cx = r.x + PAD + (n % across) * pitch, cy = r.y + PAD + LABEL + Math.floor(n / across) * pitch;
       x.el = node('rect', {class: 'sq ' + x.s + (x.w ? ' in-progress' : ''), x: cx, y: cy, width: size, height: size,
                            rx: Math.min(2, size / 4), 'data-index': x.index}, map);
@@ -721,15 +764,153 @@ function filter() {
   }
 }
 search.addEventListener('input', filter);
+document.getElementById('hide-untracked').addEventListener('change', () => { drawnSize = ''; draw(); });
+document.getElementById('hide-empty').addEventListener('change', () => { drawnSize = ''; draw(); });
 let pending = 0;
 addEventListener('resize', () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(draw); });
+
+// The executables' squares: the same tooltip as the map's, from their data attributes.
+function showKey(el, cx, cy) {
+  let h = '<b>' + esc(el.dataset.pin) + '</b><span class="st">' + esc(el.dataset.label)
+        + (el.dataset.progress === '1' ? ' · in progress' : '') + '</span>';
+  if (el.dataset.facts) h += '<div class="st">' + esc(el.dataset.facts) + '</div>';
+  tip.innerHTML = h;
+  tip.style.display = 'block';
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(cx + 14, innerWidth - r.width - 8) + 'px';
+  tip.style.top = (cy + 14 + r.height > innerHeight ? cy - r.height - 10 : cy + 14) + 'px';
+}
+document.querySelectorAll('.squares .key[data-pin]').forEach(el => {
+  el.addEventListener('mousemove', e => showKey(el, e.clientX, e.clientY));
+  el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+});
 draw();
 """
 
 
+def load_compat():
+    """The studied executables' dependency sets: tests/compat/<name>.toml, one per image
+    pe_deps.py read — its [image] facts, its [icon] files, its [[imports]] modules."""
+    programs = []
+    for path in sorted(COMPAT.glob("*.toml")):
+        with open(path, "rb") as f:
+            doc = tomllib.load(f)
+        programs.append({
+            "name": path.stem,
+            "image": doc.get("image", {}),
+            # The icon files as the TOML records them ("icons/<name>.ico"), relative to COMPAT.
+            "icons": [(name, COMPAT / name) for name in doc.get("icon", {}).get("files", [])],
+            "imports": doc.get("imports", []),
+        })
+    return programs
+
+
+def ordinal_index(specs):
+    """Each DLL's exports by ordinal, for imports by ordinal (an import "#256" names the spec's
+    record whose ordinal is 256)."""
+    return {dll: {e.spec["ordinal"]: e for e in exports.values() if e.spec.get("ordinal") is not None}
+            for dll, (_, exports) in specs.items()}
+
+
+def import_status(specs, by_ordinal, dll, name):
+    """One imported name's square: its status in the DLL's spec, whether a pinning test is pending
+    or skipped (the square's outline), and the tooltip's facts."""
+    key = module_key(dll)
+    exports = specs.get(key, ({}, {}))[1]
+    export = exports.get(name)
+    if export is None and name.startswith("#") and name[1:].isdecimal():
+        export = by_ordinal.get(key, {}).get(int(name[1:]))
+    if export is None:
+        if key not in specs:
+            note = f"no F2K module for {dll}"
+        elif name.startswith("#"):
+            note = "no export at that ordinal in F2K's spec"
+        else:
+            note = "not in F2K's spec"
+        return "unimplemented", False, {"pin": f"{dll} {name}", "note": note}
+    impl = export.spec.get("impl", {})
+    info = {
+        "pin": export.pin,
+        "group": f"group: {export.group}" if export.group else None,
+        "impl": next((f"impl: {k} {v}" for k, v in impl.items()), None),
+        "tests": tally(export.evidence),
+    }
+    return export.status, export.in_progress, {k: v for k, v in info.items() if v}
+
+
+def executable_sections(specs):
+    """One section per executable's dependency TOML, most covered first: its imports as squares
+    in the map's own representation (the same colours and marks), grouped by module alphabetically.
+    A delay-loaded module's import carries a tag; a solid outline marks an in-progress pin."""
+    e = html.escape
+    programs = load_compat()
+    if not programs:
+        return ['<div class="container"><h2>Executables\' imports</h2>',
+                '<p class=meta>No dependency TOMLs under tests/compat/ yet: run '
+                "<code>scripts/pe_deps.py</code> over the studied binaries "
+                "(tests/compat/README.md).</p></div>"]
+    icons_rel = os.path.relpath(COMPAT, REPORT.parent)
+    by_ordinal = ordinal_index(specs)
+
+    def coverage(program):
+        """The program's implemented imports: (percent, implemented, total), where implemented is
+        any status but unimplemented or stubbed — the DLL headers' number."""
+        total = implemented = 0
+        for module in program["imports"]:
+            for name in module["names"]:
+                status, _, _ = import_status(specs, by_ordinal, module["dll"], name)
+                total += 1
+                implemented += status in ("passing", "failing", "uncovered")
+        pct = round(100 * implemented / total) if total else 0
+        return pct, implemented, total
+
+    measured = {p["name"]: coverage(p) for p in programs}
+    ordered = sorted(programs, key=lambda p: (-measured[p["name"]][0], p["name"]))
+    parts = ['<div class="container">', "<h2>Studied binaries' imports</h2>",
+             "<p class=meta>One section per <code>tests/compat/&lt;name&gt;.toml</code> "
+             "(<code>pe_deps.py</code> over the studied SP4 binaries), most covered first: each "
+             "imported name a square in the map's colours and marks, grouped by module. Hover a "
+             "square for the export's facts.</p>"]
+    parts.append('<div class="exe-list">')
+    for program in ordered:
+        blocks = []
+        for module in sorted(program["imports"], key=lambda m: m["dll"].lower()):
+            squares = []
+            implemented = 0
+            for name in module["names"]:
+                status, in_progress, info = import_status(specs, by_ordinal, module["dll"], name)
+                implemented += status in ("passing", "failing", "uncovered")
+                cls = f"key {status}" + (" in-progress" if in_progress else "")
+                facts = " · ".join(str(info[k]) for k in ("group", "impl", "note", "tests")
+                                   if info.get(k))
+                squares.append(
+                    f'<span class="{cls}" data-pin="{e(info.get("pin", ""))}" '
+                    f'data-label="{e(LABELS[status])}" data-progress="{1 if in_progress else 0}" '
+                    f'data-facts="{e(facts)}">{e(mark(status))}</span>')
+            total = len(module["names"])
+            pct = round(100 * implemented / total) if total else 0
+            count = f' <span class="mod-count">{implemented}/{total}{f" ({pct}%)" if pct else ""}</span>'
+            tag = ' <span class="delay-tag">delay-loaded</span>' if module["delay"] else ""
+            blocks.append(f'<div class=mod>{e(module["dll"])}{count}{tag}</div>'
+                          f'<div class=squares>{"".join(squares)}</div>')
+        icon = ""
+        if program["icons"] and program["icons"][0][1].exists():
+            icon = (f'<img class=exe-icon src="{e(icons_rel)}/{e(program["icons"][0][0])}" '
+                    'alt="" width=16 height=16>')
+        file_name = program["image"].get("file", program["name"])
+        pct, implemented, total = measured[program["name"]]
+        share = f"{implemented}/{total}" + (f" ({pct}%)" if pct else "")
+        parts.append(f'<section class=exe><h3>{icon}{e(file_name)} '
+                     f'<span class=meta>{e(share)}</span></h3>{"".join(blocks)}</section>')
+    parts.append("</div>")
+    parts.append("</div>")
+    return parts
+
+
 def render(specs, missing, pytest_run, scenario_run):
     """The report: every export of every DLL in one treemap (the page draws it from the data written
-    here), a summary table per DLL, and each DLL's failing and uncovered exports as a table."""
+    here), then one section per executable's dependency TOML (tests/compat/*.toml) with its
+    imports as squares in the same representation."""
     e = html.escape
     notes = []
     for what, run, gaps, how in (("on-target suite", pytest_run, missing["blocks"], "make test"),
@@ -752,8 +933,12 @@ def render(specs, missing, pytest_run, scenario_run):
             f"host scenarios {when(scenario_run)}" if scenario_run else None]
     data = {"statuses": STATUSES, "labels": LABELS, "marks": {s: mark(s) for s in STATUSES if mark(s)},
             "dlls": []}
+    # The exports the studied executables import (tests/compat/*.toml): the "Hide untracked
+    # exports" checkbox shows only these.
+    tracked = {(module_key(module["dll"]), name)
+               for program in load_compat() for module in program["imports"]
+               for name in module["names"]}
     index = 0
-    rows, attention = [], []
     for dll, (_, exports) in specs.items():
         ordered = sorted(exports.values(), key=lambda x: x.name.lower())
         counts = {s: sum(x.status == s for x in ordered) for s in STATUSES}
@@ -769,6 +954,8 @@ def render(specs, missing, pytest_run, scenario_run):
             }
             entry = {"n": export.name, "s": export.status, "index": index,
                      "i": {k: v for k, v in info.items() if v}}
+            if (dll, export.name) in tracked:
+                entry["t"] = 1
             if export.in_progress:
                 entry["w"] = 1
             entries.append(entry)
@@ -776,17 +963,6 @@ def render(specs, missing, pytest_run, scenario_run):
         summary = f"{dll}.dll: {len(ordered)} exports · " + " · ".join(
             f"{counts[s]} {LABELS[s].lower()}" for s in STATUSES if counts[s])
         data["dlls"].append({"dll": dll, "summary": summary, "exports": entries})
-        rows.append(f"<tr><td>{e(dll)}.dll</td><td>{len(ordered)}</td>"
-                    + "".join(f"<td>{counts[s] or ''}</td>" for s in STATUSES) + "</tr>")
-        failing = [x for x in ordered if x.status in ("failing", "uncovered")]
-        if failing:
-            attention.append(f"<details><summary>{e(dll)}.dll: {len(failing)} failing or uncovered</summary>"
-                             "<table><tr><th>Export</th><th>Status</th><th>Pinning tests</th></tr>")
-            for export in failing:
-                tests = ", ".join(f"{label} ({OUTCOME_WORDS[outcome]})" for label, outcome, _ in export.evidence)
-                attention.append(f"<tr><td>{e(export.name)}</td><td>{LABELS[export.status]}</td>"
-                                 f"<td>{e(tests) or 'none'}</td></tr>")
-            attention.append("</table></details>")
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     parts = [
         "<!doctype html><html lang=en><head><meta charset=utf-8>",
@@ -795,20 +971,18 @@ def render(specs, missing, pytest_run, scenario_run):
         "<main>",
         '<div class="full-screen">',
         '<header class="container">'
-        "<h1>F2K DLL compatibility</h1>",
+        "<h1>F2K DLL compatibility "
+        '<label class="hide-toggle"><input type="checkbox" id="hide-untracked">'
+        " Hide untracked exports</label>"
+        '<label class="hide-toggle"><input type="checkbox" id="hide-empty" checked>'
+        " Hide empty DLLs</label></h1>",
         '<input type="search" id="search" placeholder="Find an export" aria-label="Find an export">',
         f"<p class=meta>Results: {'; '.join(r for r in runs if r) or 'none'}.</p>",
         *(f"<p class=banner>{note}</p>" for note in notes),
         "</header>",
         '<div class="flex-1 container"><svg id=map role=img aria-label="Every export of every DLL, by status"></svg></div>',
         '</div>',
-        '<div class="container">',
-        "<h2>By DLL</h2><div class=scroll><table class=summary><tr><th>DLL</th><th>Exports</th>"
-        + "".join(f"<th>{LABELS[s]}</th>" for s in STATUSES) + "</tr>",
-        *rows,
-        "</table></div>",
-        *attention,
-        '</div>',
+        *executable_sections(specs),
         f"</main><div id=tip role=tooltip></div><script type=application/json id=data>{payload}</script>",
         f"<script>{SCRIPT}</script></body></html>",
     ]

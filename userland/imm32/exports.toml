@@ -1,0 +1,453 @@
+# IMM32.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from IMM32.dll 5.0.2195.6655's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of IMM32.dll 5.0.2195.6655's export table, by ordinal ---------
+
+[[export]]
+name = "ImmActivateLayout"
+ordinal = 1
+
+[[export]]
+name = "ImmAssociateContext"
+ordinal = 2
+
+[[export]]
+name = "ImmAssociateContextEx"
+ordinal = 3
+
+[[export]]
+name = "ImmCallImeConsoleIME"
+ordinal = 4
+
+[[export]]
+name = "ImmConfigureIMEA"
+ordinal = 5
+
+[[export]]
+name = "ImmConfigureIMEW"
+ordinal = 6
+
+[[export]]
+name = "ImmCreateContext"
+ordinal = 7
+
+[[export]]
+name = "ImmCreateIMCC"
+ordinal = 8
+
+[[export]]
+name = "ImmCreateSoftKeyboard"
+ordinal = 9
+
+[[export]]
+name = "ImmDestroyContext"
+ordinal = 10
+
+[[export]]
+name = "ImmDestroyIMCC"
+ordinal = 11
+
+[[export]]
+name = "ImmDestroySoftKeyboard"
+ordinal = 12
+
+[[export]]
+name = "ImmDisableIME"
+ordinal = 13
+
+[[export]]
+name = "ImmDisableIme"
+ordinal = 14
+
+[[export]]
+name = "ImmEnumInputContext"
+ordinal = 15
+
+[[export]]
+name = "ImmEnumRegisterWordA"
+ordinal = 16
+
+[[export]]
+name = "ImmEnumRegisterWordW"
+ordinal = 17
+
+[[export]]
+name = "ImmEscapeA"
+ordinal = 18
+
+[[export]]
+name = "ImmEscapeW"
+ordinal = 19
+
+[[export]]
+name = "ImmFreeLayout"
+ordinal = 20
+
+[[export]]
+name = "ImmGenerateMessage"
+ordinal = 21
+
+[[export]]
+name = "ImmGetCandidateListA"
+ordinal = 22
+
+[[export]]
+name = "ImmGetCandidateListCountA"
+ordinal = 23
+
+[[export]]
+name = "ImmGetCandidateListCountW"
+ordinal = 24
+
+[[export]]
+name = "ImmGetCandidateListW"
+ordinal = 25
+
+[[export]]
+name = "ImmGetCandidateWindow"
+ordinal = 26
+
+[[export]]
+name = "ImmGetCompositionFontA"
+ordinal = 27
+
+[[export]]
+name = "ImmGetCompositionFontW"
+ordinal = 28
+
+[[export]]
+name = "ImmGetCompositionStringA"
+ordinal = 29
+
+[[export]]
+name = "ImmGetCompositionStringW"
+ordinal = 30
+
+[[export]]
+name = "ImmGetCompositionWindow"
+ordinal = 31
+
+[[export]]
+name = "ImmGetContext"
+ordinal = 32
+
+[[export]]
+name = "ImmGetConversionListA"
+ordinal = 33
+
+[[export]]
+name = "ImmGetConversionListW"
+ordinal = 34
+
+[[export]]
+name = "ImmGetConversionStatus"
+ordinal = 35
+
+[[export]]
+name = "ImmGetDefaultIMEWnd"
+ordinal = 36
+
+[[export]]
+name = "ImmGetDescriptionA"
+ordinal = 37
+
+[[export]]
+name = "ImmGetDescriptionW"
+ordinal = 38
+
+[[export]]
+name = "ImmGetGuideLineA"
+ordinal = 39
+
+[[export]]
+name = "ImmGetGuideLineW"
+ordinal = 40
+
+[[export]]
+name = "ImmGetHotKey"
+ordinal = 41
+
+[[export]]
+name = "ImmGetIMCCLockCount"
+ordinal = 42
+
+[[export]]
+name = "ImmGetIMCCSize"
+ordinal = 43
+
+[[export]]
+name = "ImmGetIMCLockCount"
+ordinal = 44
+
+[[export]]
+name = "ImmGetIMEFileNameA"
+ordinal = 45
+
+[[export]]
+name = "ImmGetIMEFileNameW"
+ordinal = 46
+
+[[export]]
+name = "ImmGetImeInfoEx"
+ordinal = 47
+
+[[export]]
+name = "ImmGetImeMenuItemsA"
+ordinal = 48
+
+[[export]]
+name = "ImmGetImeMenuItemsW"
+ordinal = 49
+
+[[export]]
+name = "ImmGetOpenStatus"
+ordinal = 50
+
+[[export]]
+name = "ImmGetProperty"
+ordinal = 51
+
+[[export]]
+name = "ImmGetRegisterWordStyleA"
+ordinal = 52
+
+[[export]]
+name = "ImmGetRegisterWordStyleW"
+ordinal = 53
+
+[[export]]
+name = "ImmGetStatusWindowPos"
+ordinal = 54
+
+[[export]]
+name = "ImmGetVirtualKey"
+ordinal = 55
+
+[[export]]
+name = "ImmIMPGetIMEA"
+ordinal = 56
+
+[[export]]
+name = "ImmIMPGetIMEW"
+ordinal = 57
+
+[[export]]
+name = "ImmIMPQueryIMEA"
+ordinal = 58
+
+[[export]]
+name = "ImmIMPQueryIMEW"
+ordinal = 59
+
+[[export]]
+name = "ImmIMPSetIMEA"
+ordinal = 60
+
+[[export]]
+name = "ImmIMPSetIMEW"
+ordinal = 61
+
+[[export]]
+name = "ImmInstallIMEA"
+ordinal = 62
+
+[[export]]
+name = "ImmInstallIMEW"
+ordinal = 63
+
+[[export]]
+name = "ImmIsIME"
+ordinal = 64
+
+[[export]]
+name = "ImmIsUIMessageA"
+ordinal = 65
+
+[[export]]
+name = "ImmIsUIMessageW"
+ordinal = 66
+
+[[export]]
+name = "ImmLoadIME"
+ordinal = 67
+
+[[export]]
+name = "ImmLoadLayout"
+ordinal = 68
+
+[[export]]
+name = "ImmLockClientImc"
+ordinal = 69
+
+[[export]]
+name = "ImmLockIMC"
+ordinal = 70
+
+[[export]]
+name = "ImmLockIMCC"
+ordinal = 71
+
+[[export]]
+name = "ImmLockImeDpi"
+ordinal = 72
+
+[[export]]
+name = "ImmNotifyIME"
+ordinal = 73
+
+[[export]]
+name = "ImmPenAuxInput"
+ordinal = 74
+
+[[export]]
+name = "ImmProcessKey"
+ordinal = 75
+
+[[export]]
+name = "ImmPutImeMenuItemsIntoMappedFile"
+ordinal = 76
+
+[[export]]
+name = "ImmReSizeIMCC"
+ordinal = 77
+
+[[export]]
+name = "ImmRegisterClient"
+ordinal = 78
+
+[[export]]
+name = "ImmRegisterWordA"
+ordinal = 79
+
+[[export]]
+name = "ImmRegisterWordW"
+ordinal = 80
+
+[[export]]
+name = "ImmReleaseContext"
+ordinal = 81
+
+[[export]]
+name = "ImmRequestMessageA"
+ordinal = 82
+
+[[export]]
+name = "ImmRequestMessageW"
+ordinal = 83
+
+[[export]]
+name = "ImmSendIMEMessageExA"
+ordinal = 84
+
+[[export]]
+name = "ImmSendIMEMessageExW"
+ordinal = 85
+
+[[export]]
+name = "ImmSendMessageToActiveDefImeWndW"
+ordinal = 86
+
+[[export]]
+name = "ImmSetActiveContext"
+ordinal = 87
+
+[[export]]
+name = "ImmSetActiveContextConsoleIME"
+ordinal = 88
+
+[[export]]
+name = "ImmSetCandidateWindow"
+ordinal = 89
+
+[[export]]
+name = "ImmSetCompositionFontA"
+ordinal = 90
+
+[[export]]
+name = "ImmSetCompositionFontW"
+ordinal = 91
+
+[[export]]
+name = "ImmSetCompositionStringA"
+ordinal = 92
+
+[[export]]
+name = "ImmSetCompositionStringW"
+ordinal = 93
+
+[[export]]
+name = "ImmSetCompositionWindow"
+ordinal = 94
+
+[[export]]
+name = "ImmSetConversionStatus"
+ordinal = 95
+
+[[export]]
+name = "ImmSetHotKey"
+ordinal = 96
+note = "forwarded to USER32.CliImmSetHotKey"
+
+[[export]]
+name = "ImmSetOpenStatus"
+ordinal = 97
+
+[[export]]
+name = "ImmSetStatusWindowPos"
+ordinal = 98
+
+[[export]]
+name = "ImmShowSoftKeyboard"
+ordinal = 99
+
+[[export]]
+name = "ImmSimulateHotKey"
+ordinal = 100
+
+[[export]]
+name = "ImmSystemHandler"
+ordinal = 101
+
+[[export]]
+name = "ImmTranslateMessage"
+ordinal = 102
+
+[[export]]
+name = "ImmUnlockClientImc"
+ordinal = 103
+
+[[export]]
+name = "ImmUnlockIMC"
+ordinal = 104
+
+[[export]]
+name = "ImmUnlockIMCC"
+ordinal = 105
+
+[[export]]
+name = "ImmUnlockImeDpi"
+ordinal = 106
+
+[[export]]
+name = "ImmUnregisterWordA"
+ordinal = 107
+
+[[export]]
+name = "ImmUnregisterWordW"
+ordinal = 108
+
+[[export]]
+name = "ImmWINNLSEnableIME"
+ordinal = 109
+
+[[export]]
+name = "ImmWINNLSGetEnableStatus"
+ordinal = 110
+
+[[export]]
+name = "ImmWINNLSGetIMEHotkey"
+ordinal = 111

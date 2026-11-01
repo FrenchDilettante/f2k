@@ -33,7 +33,9 @@ CATALOGUED_HEADING = "# --- not implemented yet: the rest of "
 
 
 def read_dump(path: Path):
-    """A dump: ("<DLL name> <file version>", {name: (ordinal, forward target or None, data)})."""
+    """A dump: ("<DLL name> <file version>", {name: (ordinal, forward target or None, data)}).
+    An export the DLL gives only an ordinal is keyed by its "#<ordinal>" name, so the spec can
+    hold it as a catalogued record (and an import by ordinal can resolve against it)."""
     lines = path.read_text().splitlines()
     source = re.match(r"# (\S+ \S+):", lines[0]).group(1)
     table = {}
@@ -43,7 +45,7 @@ def read_dump(path: Path):
         fields = line.split()
         ordinal, name = int(fields[0]), fields[1]
         if name == "-":
-            sys.exit(f"{path}: ordinal {ordinal} has no name: the specs catalogue named exports only")
+            name = f"#{ordinal}"
         forward = fields[3] if len(fields) > 3 and fields[2] == "->" else None
         table[name] = (ordinal, forward, fields[2:] == ["data"])
     return source, table

@@ -1,0 +1,32 @@
+# CARDS.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from CARDS.dll 5.0.2134.1's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of CARDS.dll 5.0.2134.1's export table, by ordinal ------------
+
+[[export]]
+name = "WEP"
+ordinal = 1
+
+[[export]]
+name = "cdtAnimate"
+ordinal = 2
+
+[[export]]
+name = "cdtDraw"
+ordinal = 3
+
+[[export]]
+name = "cdtDrawExt"
+ordinal = 4
+
+[[export]]
+name = "cdtInit"
+ordinal = 5
+
+[[export]]
+name = "cdtTerm"
+ordinal = 6

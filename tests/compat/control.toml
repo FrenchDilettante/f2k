@@ -1,0 +1,28 @@
+# control.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 3927118c19824cc4..., linked 2002-08-16T14:10:24Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "control.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 7440
+link_timestamp = "2002-08-16T14:10:24Z"
+sha256 = "3927118c19824cc4c136589803903a1d1a62dab6638a6f07b61496161285d0bd"
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["lstrcatW", "FreeLibrary", "GetProcAddress", "LoadLibraryW", "lstrcpynW", "CreateProcessW", "lstrcpyW", "lstrcmpiW", "GetModuleHandleW", "GetStartupInfoW", "CloseHandle", "lstrlenW", "GetCommandLineW"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["DispatchMessageW", "DefWindowProcW", "CreateWindowExW", "RegisterClassW", "DestroyWindow", "GetMessageW", "PostQuitMessage", "SetTimer"]
+
+[[imports]]
+dll = "IMM32.dll"
+delay = false
+names = ["ImmDisableIME"]

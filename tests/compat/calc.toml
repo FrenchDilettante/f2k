@@ -1,0 +1,47 @@
+# calc.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 ddf6696f90a73e01..., linked 1999-09-25T11:00:11Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "calc.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 91408
+link_timestamp = "1999-09-25T11:00:11Z"
+sha256 = "ddf6696f90a73e016c88f2915a73d00ee9bf2100b1f314857554d21892c9e477"
+
+[icon]
+files = ["icons/calc.ico"]
+images = 2
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["ShellAboutW"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["memmove", "_EH_prolog", "toupper", "wcschr", "wcslen", "_controlfp", "??1type_info@@UAE@XZ", "??3@YAXPAX@Z", "_except_handler3", "__set_app_type", "__p__fmode", "__p__commode", "_adjust_fdiv", "__setusermatherr", "_initterm", "__getmainargs", "_acmdln", "exit", "_XcptFilter", "_exit", "_wcsrev", "__CxxFrameHandler", "_CxxThrowException"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegQueryValueExA", "RegOpenKeyExA", "RegCloseKey"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["lstrcpyW", "LocalAlloc", "GetCommandLineW", "GetProfileIntW", "LocalReAlloc", "GetStartupInfoA", "GetModuleHandleA", "LoadLibraryA", "GetProcAddress", "GlobalCompact", "GlobalReAlloc", "GlobalAlloc", "GlobalFree", "lstrcmpW", "Sleep", "WriteProfileStringW", "GlobalLock", "GlobalSize", "GlobalUnlock", "CloseHandle", "CreateEventW", "CreateThread", "ResetEvent", "SetEvent", "WaitForSingleObject", "LocalFree", "lstrcatW", "GetProfileStringW", "lstrlenW"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["SetBkColor", "SetTextColor"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["MessageBoxW", "DispatchMessageW", "TranslateMessage", "TranslateAcceleratorW", "IsChild", "IsDialogMessageW", "GetMessageW", "LoadAcceleratorsW", "CreateWindowExW", "LoadStringW", "SetProcessDefaultLayout", "GetProcessDefaultLayout", "CharNextW", "RegisterClassExW", "GetSysColorBrush", "LoadCursorW", "LoadIconW", "InvalidateRect", "UpdateWindow", "ShowWindow", "SetDlgItemTextW", "CheckMenuItem", "CheckMenuRadioItem", "SetWindowPos", "OffsetRect", "MapWindowPoints", "GetClientRect", "EnableWindow", "GetDlgItem", "LoadMenuW", "SetWindowLongW", "GetWindowLongW", "GetMenu", "CreateDialogParamW", "DestroyMenu", "DestroyWindow", "SetMenu", "GetWindowRect", "SetCursor", "CheckRadioButton", "GetSubMenu", "SetFocus", "MessageBeep", "SendMessageW", "EndDialog", "DialogBoxParamW", "SetWindowTextW", "CloseClipboard", "CharNextA", "GetClipboardData", "OpenClipboard", "GetDesktopWindow", "TrackPopupMenuEx", "DefWindowProcW", "ChildWindowFromPoint", "ScreenToClient", "EnableMenuItem", "IsClipboardFormatAvailable", "GetDlgCtrlID", "DrawTextW", "DrawEdge", "GetSysColor", "PostQuitMessage", "WinHelpW", "CheckDlgButton", "SetDlgItemInt", "GetWindowTextW"]

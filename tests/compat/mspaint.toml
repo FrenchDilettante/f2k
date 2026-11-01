@@ -1,0 +1,67 @@
+# mspaint.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 b3677797fdae3278..., linked 2002-08-16T13:46:40Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "mspaint.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 319760
+link_timestamp = "2002-08-16T13:46:40Z"
+sha256 = "b3677797fdae32780441cc1cad982e2e2edf8a73dbb33b78a8af03ea1fb6b33b"
+
+[icon]
+files = ["icons/mspaint.ico"]
+images = 6
+
+[[imports]]
+dll = "MFC42u.DLL"
+delay = false
+names = ["#3087", "#1771", "#2634", "#1775", "#940", "#4229", "#942", "#6195", "#4704", "#4847", "#4050", "#2933", "#6330", "#5949", "#2286", "#2354", "#755", "#470", "#6153", "#5147", "#5784", "#5790", "#5783", "#4358", "#5244", "#3578", "#620", "#298", "#4225", "#2371", "#4753", "#3687", "#2066", "#1257", "#1196", "#3867", "#4470", "#5947", "#5977", "#3090", "#4532", "#4768", "#5641", "#5579", "#858", "#922", "#4124", "#5679", "#5706", "#536", "#4199", "#4315", "#816", "#562", "#6190", "#4018", "#6115", "#1941", "#4270", "#5286", "#567", "#818", "#1230", "#3747", "#6124", "#3016", "#4215", "#2576", "#3649", "#2430", "#6266", "#3490", "#2858", "#1637", "#3133", "#4357", "#5083", "#4444", "#4665", "#4679", "#1878", "#4246", "#4940", "#3249", "#2433", "#1688", "#5000", "#4464", "#2715", "#2382", "#3054", "#5094", "#5097", "#4461", "#4298", "#5006", "#975", "#5472", "#3398", "#2874", "#2873", "#4149", "#4072", "#5233", "#5281", "#2641", "#1658", "#4430", "#5248", "#4421", "#747", "#739", "#439", "#450", "#442", "#736", "#5491", "#2096", "#4454", "#5652", "#5028", "#4407", "#5728", "#4237", "#3345", "#5468", "#4146", "#5278", "#674", "#366", "#2084", "#4451", "#5048", "#4787", "#5092", "#4614", "#4612", "#1886", "#4249", "#4010", "#4951", "#4855", "#4820", "#3182", "#4944", "#2429", "#2163", "#4511", "#4634", "#4910", "#4996", "#4485", "#5015", "#3101", "#4599", "#4994", "#4410", "#5497", "#4622", "#2986", "#3412", "#5019", "#3509", "#6340", "#5623", "#1003", "#3444", "#3782", "#3245", "#4691", "#3055", "#3061", "#6332", "#2502", "#5240", "#4417", "#2394", "#4381", "#3449", "#3193", "#6077", "#6171", "#3256", "#4617", "#4424", "#748", "#456", "#4819", "#4854", "#4950", "#5573", "#2776", "#5650", "#1740", "#5738", "#4651", "#1255", "#599", "#2721", "#1240", "#2719", "#2722", "#957", "#2007", "#962", "#750", "#603", "#1262", "#6386", "#1985", "#1961", "#273", "#2247", "#458", "#5200", "#2532", "#5014", "#6193", "#4488", "#2385", "#5734", "#4615", "#4356", "#5082", "#4442", "#4675", "#1263", "#1229", "#2755", "#2914", "#4589", "#5024", "#4989", "#4869", "#4904", "#5781", "#3701", "#6191", "#4609", "#4269", "#4480", "#2546", "#2504", "#5727", "#3917", "#1089", "#5237", "#6370", "#5296", "#5298", "#4074", "#5303", "#5285", "#5710", "#3733", "#6360", "#3321", "#6361", "#4467", "#6346", "#5495", "#3273", "#3348", "#4616", "#6450", "#3676", "#3614", "#815", "#459", "#561", "#743", "#5496", "#2550", "#5712", "#5713", "#2028", "#986", "#6133", "#520", "#1202", "#6112", "#2717", "#1173", "#6371", "#4692", "#1197", "#925", "#1149", "#4604", "#3442", "#3191", "#537", "#927", "#1208", "#3998", "#1651", "#4369", "#4846", "#3379", "#482", "#5228", "#1561", "#5264", "#6238", "#1897", "#1937", "#4268", "#1922", "#5070", "#4335", "#4525", "#4539", "#4537", "#4520", "#4523", "#4518", "#4958", "#4955", "#4103", "#5236", "#3743", "#1719", "#560", "#813", "#5256", "#1891", "#2527", "#2238", "#2529", "#3512", "#4364", "#4884", "#4893", "#4458", "#4502", "#4343", "#4426", "#4294", "#4141", "#2486", "#2618", "#2619", "#4607", "#4608", "#1807", "#2966", "#5755", "#6188", "#5752", "#6182", "#4324", "#6185", "#6017", "#5674", "#5732", "#5575", "#5567", "#6057", "#5860", "#5788", "#2518", "#469", "#3517", "#3516", "#4154", "#6399", "#6398", "#1887", "#4952", "#3402", "#4984", "#4921", "#4711", "#5102", "#4906", "#4640", "#4974", "#4516", "#4531", "#5069", "#4033", "#3276", "#4620", "#749", "#2378", "#2379", "#457", "#2548", "#4647", "#4987", "#4851", "#5012", "#4682", "#2958", "#430", "#4931", "#4926", "#1821", "#3397", "#3605", "#656", "#5871", "#6376", "#6375", "#2081", "#3871", "#1930", "#1809", "#5878", "#3312", "#2403", "#2015", "#4213", "#2570", "#4392", "#3577", "#616", "#2455", "#1644", "#1259", "#4263", "#3290", "#4360", "#5080", "#1703", "#1708", "#5058", "#554", "#5879", "#4143", "#2112", "#807", "#4230", "#5076", "#1705", "#6049", "#642", "#327", "#2079", "#1795", "#1704", "#414", "#5855", "#4128", "#4292", "#713", "#6137", "#1258", "#5808", "#3570", "#610", "#6135", "#287", "#996", "#3971", "#2767", "#3974", "#860", "#2362", "#2281", "#324", "#3592", "#4419", "#2438", "#5257", "#5276", "#4493", "#3122", "#4401", "#5230", "#4398", "#1768", "#4073", "#6051", "#5647", "#535", "#5601", "#2753", "#1081", "#715", "#415", "#1863", "#823", "#1143", "#5035", "#3792", "#6211", "#5047", "#6065", "#3289", "#2706", "#2522", "#3480", "#1634", "#5777", "#1702", "#5079", "#2381", "#4116", "#5467", "#4051", "#4359", "#6150", "#2577", "#4260", "#1767", "#6048", "#2506", "#4992", "#4370", "#5261", "#2910", "#5568", "#941", "#5616", "#3568", "#293", "#2505", "#641", "#1127", "#1834", "#1130", "#2879", "#1172", "#4219", "#4078", "#2859", "#2854", "#283", "#5869", "#6168", "#2444", "#1165", "#1662", "#2644", "#2442", "#5787", "#6325", "#5180", "#538", "#3785", "#354", "#350", "#861", "#1971", "#665", "#958", "#3611", "#2388", "#3341", "#1710", "#323", "#1633", "#2855", "#5785", "#2397", "#640", "#1707", "#4803", "#2109", "#5996", "#268", "#4155", "#2606", "#1560", "#289", "#3477", "#6063", "#613", "#2406", "#3621", "#3658", "#825", "#529", "#540", "#796", "#800", "#3566", "#4418", "#4621", "#4075", "#3074", "#3820", "#3826", "#3825", "#2971", "#3076", "#2980", "#3257", "#3131", "#4459", "#3254", "#3142", "#2977", "#5273", "#2116", "#2436", "#5254", "#1720", "#5059", "#3744", "#6372", "#2047", "#2640", "#4435", "#4831", "#3793", "#5275", "#4347", "#6365", "#5157", "#2377", "#4504", "#5153", "#3865", "#4583", "#1569"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["?terminate@@YAXXZ", "_onexit", "__dllonexit", "??1type_info@@UAE@XZ", "_controlfp", "__set_app_type", "__p__fmode", "__p__commode", "_adjust_fdiv", "__setusermatherr", "_initterm", "__wgetmainargs", "_CxxThrowException", "free", "_getdcwd", "rand", "_purecall", "_wcsdup", "wcscat", "_wcsicmp", "_strcmpi", "strncmp", "strstr", "atol", "strrchr", "_itow", "wcsncpy", "wcstok", "_except_handler3", "_exit", "_XcptFilter", "exit", "_wcmdln", "_wtol", "_ltow", "_wtoi", "_wsplitpath", "_EH_prolog", "__CxxFrameHandler", "wcscmp"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegQueryValueExW", "RegEnumKeyW", "RegOpenKeyW", "RegCreateKeyExW", "RegSetValueExW", "RegOpenKeyExW", "RegEnumKeyExA", "RegCreateKeyW", "RegSetValueW", "RegCloseKey", "RegQueryValueExA", "RegOpenKeyExA", "RegCreateKeyExA", "RegSetValueExA"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["GetStartupInfoW", "WideCharToMultiByte", "GlobalAlloc", "lstrcmpW", "IsDBCSLeadByte", "lstrcpyW", "GetACP", "GetThreadLocale", "GetModuleHandleA", "GetTickCount", "FindFirstFileW", "FindClose", "GetModuleFileNameW", "lstrcpynW", "GetShortPathNameW", "GetLastError", "GetCommandLineW", "GetModuleHandleW", "GetProcAddress", "lstrcmpiW", "DeleteFileW", "SetEndOfFile", "SetErrorMode", "MulDiv", "lstrlenA", "MultiByteToWideChar", "GetFileAttributesW", "CreateDirectoryW", "GetTempPathW", "GetTempFileNameW", "GlobalLock", "GlobalUnlock", "GlobalFree", "CreateFileW", "GetFileSize", "GetFileTime", "FileTimeToLocalFileTime", "FileTimeToSystemTime", "GetDateFormatW", "GetTimeFormatW", "CloseHandle", "GetNumberFormatW", "GetLocaleInfoW", "lstrcatW", "lstrlenW", "LoadLibraryA", "HeapAlloc", "GetProcessHeap", "HeapFree", "FreeLibrary", "ReadFile", "CreateFileA", "FindFirstFileA", "lstrcpyA", "lstrcatA", "lstrcmpA"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["RectVisible", "CreateDCW", "CreateFontIndirectW", "CreatePolygonRgn", "ExtFloodFill", "SetBrushOrgEx", "UnrealizeObject", "RoundRect", "SetStretchBltMode", "StretchBlt", "GetPixel", "Ellipse", "Polygon", "OffsetRgn", "CreatePen", "MoveToEx", "LineTo", "SetPixel", "SetDIBitsToDevice", "GetNearestColor", "CreateDIBitmap", "GetDIBits", "CreateHalftonePalette", "CreateDIBSection", "SetViewportExtEx", "PlayMetaFile", "SaveDC", "SetMapMode", "LPtoDP", "RestoreDC", "CreatePalette", "Rectangle", "GetDIBColorTable", "SetDIBColorTable", "GetStockObject", "FillRgn", "CreateSolidBrush", "CreatePatternBrush", "GetPaletteEntries", "GetNearestPaletteIndex", "ResizePalette", "SetPaletteEntries", "GetDeviceCaps", "CreateBitmap", "SetDIBits", "DeleteObject", "DeleteDC", "CreateCompatibleBitmap", "SelectPalette", "RealizePalette", "SetBkMode", "SetTextColor", "SetBkColor", "PatBlt", "SelectObject", "SetTextAlign", "ExtTextOutW", "CreateCompatibleDC", "CreateRectRgnIndirect", "BitBlt", "CreateICW", "GetTextMetricsW", "GetTextExtentPointW", "GetObjectW", "SetROP2", "TextOutW", "Escape", "StretchDIBits", "TranslateCharsetInfo", "GetTextColor", "GetBkMode", "EnumFontFamiliesExW", "EnumFontFamiliesW", "PolyBezier", "PtVisible", "Polyline"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["WindowFromPoint", "ScreenToClient", "GetCursorPos", "UnionRect", "GetKeyState", "IsRectEmpty", "IntersectRect", "SetTimer", "KillTimer", "EqualRect", "SetCursor", "LoadCursorW", "BringWindowToTop", "SetActiveWindow", "GetFocus", "ReleaseCapture", "SetCapture", "ClientToScreen", "GetSubMenu", "LoadMenuW", "GetDesktopWindow", "RemoveMenu", "GetSystemMenu", "PostMessageW", "OpenClipboard", "GetClassInfoW", "IsWindowVisible", "SystemParametersInfoW", "DestroyIcon", "LoadStringW", "GetDC", "DrawFocusRect", "GetMenu", "SetWindowLongW", "CopyRect", "CharNextW", "GrayStringW", "GetWindowDC", "EndPaint", "BeginPaint", "GetUpdateRect", "ValidateRect", "ShowCaret", "HideCaret", "GetKeyboardLayout", "SetCaretPos", "GetCaretPos", "CreateCaret", "DestroyCaret", "SetClassLongW", "ShowCursor", "GetWindow", "RedrawWindow", "CheckMenuItem", "DestroyWindow", "DefWindowProcW", "ShowWindow", "CreateWindowExW", "RegisterClassW", "EnableScrollBar", "GetClipboardData", "CloseClipboard", "IsClipboardFormatAvailable", "FrameRect", "GetCapture", "GetClientRect", "WinHelpW", "RegisterClipboardFormatW", "TabbedTextOutW", "DrawTextW", "ReleaseDC", "OffsetRect", "PtInRect", "SetWindowTextW", "wvsprintfW", "MessageBoxW", "GetParent", "FillRect", "SetRect", "SetRectEmpty", "MessageBeep", "GetSystemMetrics", "EnableWindow", "SendMessageW", "LoadBitmapW", "IsWindow", "GetWindowRect", "UpdateWindow", "InvalidateRect", "wsprintfW", "GetSysColor", "InflateRect", "IsMenu", "LoadIconW", "EnableMenuItem", "LoadStringA"]
+
+[[imports]]
+dll = "comdlg32.dll"
+delay = false
+names = ["GetFileTitleW", "GetSaveFileNameW", "CommDlgExtendedError", "GetOpenFileNameW"]
+
+[[imports]]
+dll = "ole32.dll"
+delay = false
+names = ["StringFromCLSID", "CoTaskMemFree", "WriteFmtUserTypeStg", "WriteClassStg"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["ExtractIconW", "ShellAboutW", "CommandLineToArgvW"]
+
+[[imports]]
+dll = "IMM32.dll"
+delay = false
+names = ["ImmGetCompositionStringW", "ImmGetContext", "ImmNotifyIME", "ImmSetCompositionWindow", "ImmGetCompositionWindow", "ImmAssociateContext", "ImmReleaseContext"]

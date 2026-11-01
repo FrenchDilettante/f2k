@@ -1,0 +1,408 @@
+# IMAGEHLP.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from IMAGEHLP.dll 5.0.2195.6613's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of IMAGEHLP.dll 5.0.2195.6613's export table, by ordinal ------
+
+[[export]]
+name = "BindImage"
+ordinal = 1
+
+[[export]]
+name = "BindImageEx"
+ordinal = 2
+
+[[export]]
+name = "CheckSumMappedFile"
+ordinal = 3
+
+[[export]]
+name = "EnumerateLoadedModules64"
+ordinal = 4
+
+[[export]]
+name = "EnumerateLoadedModules"
+ordinal = 5
+
+[[export]]
+name = "FindDebugInfoFile"
+ordinal = 6
+
+[[export]]
+name = "FindDebugInfoFileEx"
+ordinal = 7
+
+[[export]]
+name = "FindExecutableImage"
+ordinal = 8
+
+[[export]]
+name = "FindExecutableImageEx"
+ordinal = 9
+
+[[export]]
+name = "FindFileInSearchPath"
+ordinal = 10
+
+[[export]]
+name = "GetImageConfigInformation"
+ordinal = 11
+
+[[export]]
+name = "GetImageUnusedHeaderBytes"
+ordinal = 12
+
+[[export]]
+name = "GetTimestampForLoadedLibrary"
+ordinal = 13
+
+[[export]]
+name = "ImageAddCertificate"
+ordinal = 14
+
+[[export]]
+name = "ImageDirectoryEntryToData"
+ordinal = 15
+
+[[export]]
+name = "ImageDirectoryEntryToDataEx"
+ordinal = 16
+
+[[export]]
+name = "ImageEnumerateCertificates"
+ordinal = 17
+
+[[export]]
+name = "ImageGetCertificateData"
+ordinal = 18
+
+[[export]]
+name = "ImageGetCertificateHeader"
+ordinal = 19
+
+[[export]]
+name = "ImageGetDigestStream"
+ordinal = 20
+
+[[export]]
+name = "ImageLoad"
+ordinal = 21
+
+[[export]]
+name = "ImageNtHeader"
+ordinal = 22
+
+[[export]]
+name = "ImageRemoveCertificate"
+ordinal = 23
+
+[[export]]
+name = "ImageRvaToSection"
+ordinal = 24
+
+[[export]]
+name = "ImageRvaToVa"
+ordinal = 25
+
+[[export]]
+name = "ImageUnload"
+ordinal = 26
+
+[[export]]
+name = "ImagehlpApiVersion"
+ordinal = 27
+
+[[export]]
+name = "ImagehlpApiVersionEx"
+ordinal = 28
+
+[[export]]
+name = "MakeSureDirectoryPathExists"
+ordinal = 29
+
+[[export]]
+name = "MapAndLoad"
+ordinal = 30
+
+[[export]]
+name = "MapDebugInformation"
+ordinal = 31
+
+[[export]]
+name = "MapFileAndCheckSumA"
+ordinal = 32
+
+[[export]]
+name = "MapFileAndCheckSumW"
+ordinal = 33
+
+[[export]]
+name = "ReBaseImage64"
+ordinal = 34
+
+[[export]]
+name = "ReBaseImage"
+ordinal = 35
+
+[[export]]
+name = "RemovePrivateCvSymbolic"
+ordinal = 36
+
+[[export]]
+name = "RemovePrivateCvSymbolicEx"
+ordinal = 37
+
+[[export]]
+name = "RemoveRelocations"
+ordinal = 38
+
+[[export]]
+name = "SearchTreeForFile"
+ordinal = 39
+
+[[export]]
+name = "SetImageConfigInformation"
+ordinal = 40
+
+[[export]]
+name = "SplitSymbols"
+ordinal = 41
+
+[[export]]
+name = "StackWalk64"
+ordinal = 42
+
+[[export]]
+name = "StackWalk"
+ordinal = 43
+
+[[export]]
+name = "SymCleanup"
+ordinal = 44
+
+[[export]]
+name = "SymEnumerateModules64"
+ordinal = 45
+
+[[export]]
+name = "SymEnumerateModules"
+ordinal = 46
+
+[[export]]
+name = "SymEnumerateSymbols64"
+ordinal = 47
+
+[[export]]
+name = "SymEnumerateSymbols"
+ordinal = 48
+
+[[export]]
+name = "SymEnumerateSymbolsW64"
+ordinal = 49
+
+[[export]]
+name = "SymEnumerateSymbolsW"
+ordinal = 50
+
+[[export]]
+name = "SymFunctionTableAccess64"
+ordinal = 51
+
+[[export]]
+name = "SymFunctionTableAccess"
+ordinal = 52
+
+[[export]]
+name = "SymGetLineFromAddr64"
+ordinal = 53
+
+[[export]]
+name = "SymGetLineFromAddr"
+ordinal = 54
+
+[[export]]
+name = "SymGetLineFromName64"
+ordinal = 55
+
+[[export]]
+name = "SymGetLineFromName"
+ordinal = 56
+
+[[export]]
+name = "SymGetLineNext64"
+ordinal = 57
+
+[[export]]
+name = "SymGetLineNext"
+ordinal = 58
+
+[[export]]
+name = "SymGetLinePrev64"
+ordinal = 59
+
+[[export]]
+name = "SymGetLinePrev"
+ordinal = 60
+
+[[export]]
+name = "SymGetModuleBase64"
+ordinal = 61
+
+[[export]]
+name = "SymGetModuleBase"
+ordinal = 62
+
+[[export]]
+name = "SymGetModuleInfo64"
+ordinal = 63
+
+[[export]]
+name = "SymGetModuleInfo"
+ordinal = 64
+
+[[export]]
+name = "SymGetModuleInfoEx64"
+ordinal = 65
+
+[[export]]
+name = "SymGetModuleInfoEx"
+ordinal = 66
+
+[[export]]
+name = "SymGetModuleInfoW64"
+ordinal = 67
+
+[[export]]
+name = "SymGetModuleInfoW"
+ordinal = 68
+
+[[export]]
+name = "SymGetOptions"
+ordinal = 69
+
+[[export]]
+name = "SymGetSearchPath"
+ordinal = 70
+
+[[export]]
+name = "SymGetSymFromAddr64"
+ordinal = 71
+
+[[export]]
+name = "SymGetSymFromAddr"
+ordinal = 72
+
+[[export]]
+name = "SymGetSymFromName64"
+ordinal = 73
+
+[[export]]
+name = "SymGetSymFromName"
+ordinal = 74
+
+[[export]]
+name = "SymGetSymNext64"
+ordinal = 75
+
+[[export]]
+name = "SymGetSymNext"
+ordinal = 76
+
+[[export]]
+name = "SymGetSymPrev64"
+ordinal = 77
+
+[[export]]
+name = "SymGetSymPrev"
+ordinal = 78
+
+[[export]]
+name = "SymGetSymbolInfo64"
+ordinal = 79
+
+[[export]]
+name = "SymGetSymbolInfo"
+ordinal = 80
+
+[[export]]
+name = "SymInitialize"
+ordinal = 81
+
+[[export]]
+name = "SymLoadModule64"
+ordinal = 82
+
+[[export]]
+name = "SymLoadModule"
+ordinal = 83
+
+[[export]]
+name = "SymMatchFileName"
+ordinal = 84
+
+[[export]]
+name = "SymRegisterCallback64"
+ordinal = 85
+
+[[export]]
+name = "SymRegisterCallback"
+ordinal = 86
+
+[[export]]
+name = "SymRegisterFunctionEntryCallback64"
+ordinal = 87
+
+[[export]]
+name = "SymRegisterFunctionEntryCallback"
+ordinal = 88
+
+[[export]]
+name = "SymSetOptions"
+ordinal = 89
+
+[[export]]
+name = "SymSetSearchPath"
+ordinal = 90
+
+[[export]]
+name = "SymUnDName64"
+ordinal = 91
+
+[[export]]
+name = "SymUnDName"
+ordinal = 92
+
+[[export]]
+name = "SymUnloadModule64"
+ordinal = 93
+
+[[export]]
+name = "SymUnloadModule"
+ordinal = 94
+
+[[export]]
+name = "TouchFileTimes"
+ordinal = 95
+
+[[export]]
+name = "UnDecorateSymbolName"
+ordinal = 96
+
+[[export]]
+name = "UnMapAndLoad"
+ordinal = 97
+
+[[export]]
+name = "UnmapDebugInformation"
+ordinal = 98
+
+[[export]]
+name = "UpdateDebugInfoFile"
+ordinal = 99
+
+[[export]]
+name = "UpdateDebugInfoFileEx"
+ordinal = 100

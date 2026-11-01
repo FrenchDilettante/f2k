@@ -1,0 +1,52 @@
+# winmine.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 24bd49d7896f032b..., linked 1999-09-28T04:36:47Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "winmine.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x01000000"
+size_bytes = 96528
+link_timestamp = "1999-09-28T04:36:47Z"
+sha256 = "24bd49d7896f032b85e5f44c55d52a52e74c0dd7f6dd4ee277b323039ea8d1e0"
+
+[icon]
+files = ["icons/winmine.ico"]
+images = 2
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["_acmdln", "__getmainargs", "_initterm", "exit", "_XcptFilter", "_except_handler3", "__set_app_type", "__p__fmode", "__p__commode", "_adjust_fdiv", "_exit", "_controlfp", "rand", "__setusermatherr", "srand"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegQueryValueExA", "RegOpenKeyExA", "RegSetValueExW", "RegCreateKeyExW", "RegCloseKey", "RegQueryValueExW"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["FindResourceW", "OutputDebugStringA", "LockResource", "LoadResource", "lstrlenW", "GetPrivateProfileIntW", "lstrcpyW", "LoadLibraryA", "GetModuleFileNameA", "GetModuleHandleA", "GetStartupInfoA", "GetPrivateProfileStringW", "GetTickCount", "GetProcAddress"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["GetDeviceCaps", "MoveToEx", "LineTo", "SetROP2", "GetLayout", "SetLayout", "BitBlt", "DeleteObject", "DeleteDC", "CreatePen", "CreateCompatibleDC", "CreateCompatibleBitmap", "SelectObject", "SetDIBitsToDevice", "SetPixel", "GetStockObject"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["LoadAcceleratorsW", "LoadMenuW", "ShowWindow", "LoadCursorW", "LoadIconW", "ReleaseCapture", "PeekMessageW", "CreateWindowExW", "RegisterClassW", "MapWindowPoints", "PtInRect", "DialogBoxParamW", "PostMessageW", "DefWindowProcW", "ReleaseDC", "GetDC", "SendMessageW", "EndPaint", "BeginPaint", "SetCapture", "PostQuitMessage", "UpdateWindow", "SetDlgItemInt", "EndDialog", "SetDlgItemTextW", "wsprintfW", "GetDlgItem", "GetDlgItemTextW", "GetSystemMetrics", "InvalidateRect", "SetRect", "MoveWindow", "GetMenuItemRect", "GetDesktopWindow", "SetTimer", "MessageBoxW", "LoadStringW", "CheckMenuItem", "SetMenu", "GetDlgItemInt", "KillTimer", "WinHelpW", "TranslateAcceleratorW", "DispatchMessageW", "GetMessageW", "TranslateMessage"]
+
+[[imports]]
+dll = "SHELL32.dll"
+delay = false
+names = ["ShellAboutW"]
+
+[[imports]]
+dll = "WINMM.dll"
+delay = false
+names = ["PlaySoundW"]

@@ -1,0 +1,316 @@
+# MPR.dll's exports: the one source every list of them derives from (the format is
+# kernel32's, documented in userland/kernel32/exports.toml).
+#
+# None is implemented yet: each record is catalogued from MPR.dll 5.0.2195.6611's export table
+# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
+
+# --- not implemented yet: the rest of MPR.dll 5.0.2195.6611's export table, by ordinal -----------
+
+[[export]]
+name = "I_MprSaveConn"
+ordinal = 1
+
+[[export]]
+name = "MultinetGetConnectionPerformanceA"
+ordinal = 2
+
+[[export]]
+name = "MultinetGetConnectionPerformanceW"
+ordinal = 3
+
+[[export]]
+name = "MultinetGetErrorTextA"
+ordinal = 4
+
+[[export]]
+name = "MultinetGetErrorTextW"
+ordinal = 5
+
+[[export]]
+name = "RestoreConnectionA0"
+ordinal = 6
+
+[[export]]
+name = "WNetAddConnection2A"
+ordinal = 7
+
+[[export]]
+name = "WNetAddConnection2W"
+ordinal = 8
+
+[[export]]
+name = "WNetAddConnection3A"
+ordinal = 9
+
+[[export]]
+name = "WNetAddConnection3W"
+ordinal = 10
+
+[[export]]
+name = "WNetAddConnectionA"
+ordinal = 11
+
+[[export]]
+name = "WNetAddConnectionW"
+ordinal = 12
+
+[[export]]
+name = "WNetCancelConnection2A"
+ordinal = 13
+
+[[export]]
+name = "WNetCancelConnection2W"
+ordinal = 14
+
+[[export]]
+name = "WNetCancelConnectionA"
+ordinal = 15
+
+[[export]]
+name = "WNetCancelConnectionW"
+ordinal = 16
+
+[[export]]
+name = "WNetClearConnections"
+ordinal = 17
+
+[[export]]
+name = "WNetCloseEnum"
+ordinal = 18
+
+[[export]]
+name = "WNetConnectionDialog1A"
+ordinal = 19
+
+[[export]]
+name = "WNetConnectionDialog1W"
+ordinal = 20
+
+[[export]]
+name = "WNetConnectionDialog2"
+ordinal = 21
+
+[[export]]
+name = "WNetConnectionDialog"
+ordinal = 22
+
+[[export]]
+name = "WNetDirectoryNotifyA"
+ordinal = 23
+
+[[export]]
+name = "WNetDirectoryNotifyW"
+ordinal = 24
+
+[[export]]
+name = "WNetDisconnectDialog1A"
+ordinal = 25
+
+[[export]]
+name = "WNetDisconnectDialog1W"
+ordinal = 26
+
+[[export]]
+name = "WNetDisconnectDialog2"
+ordinal = 27
+
+[[export]]
+name = "WNetDisconnectDialog"
+ordinal = 28
+
+[[export]]
+name = "WNetEnumResourceA"
+ordinal = 29
+
+[[export]]
+name = "WNetEnumResourceW"
+ordinal = 30
+
+[[export]]
+name = "WNetFMXEditPerm"
+ordinal = 31
+
+[[export]]
+name = "WNetFMXGetPermCaps"
+ordinal = 32
+
+[[export]]
+name = "WNetFMXGetPermHelp"
+ordinal = 33
+
+[[export]]
+name = "WNetFormatNetworkNameA"
+ordinal = 34
+
+[[export]]
+name = "WNetFormatNetworkNameW"
+ordinal = 35
+
+[[export]]
+name = "WNetGetConnection2A"
+ordinal = 36
+
+[[export]]
+name = "WNetGetConnection2W"
+ordinal = 37
+
+[[export]]
+name = "WNetGetConnection3A"
+ordinal = 38
+
+[[export]]
+name = "WNetGetConnection3W"
+ordinal = 39
+
+[[export]]
+name = "WNetGetConnectionA"
+ordinal = 40
+
+[[export]]
+name = "WNetGetConnectionW"
+ordinal = 41
+
+[[export]]
+name = "WNetGetDirectoryTypeA"
+ordinal = 42
+
+[[export]]
+name = "WNetGetDirectoryTypeW"
+ordinal = 43
+
+[[export]]
+name = "WNetGetHomeDirectoryW"
+ordinal = 44
+
+[[export]]
+name = "WNetGetLastErrorA"
+ordinal = 45
+
+[[export]]
+name = "WNetGetLastErrorW"
+ordinal = 46
+
+[[export]]
+name = "WNetGetNetworkInformationA"
+ordinal = 47
+
+[[export]]
+name = "WNetGetNetworkInformationW"
+ordinal = 48
+
+[[export]]
+name = "WNetGetPropertyTextA"
+ordinal = 49
+
+[[export]]
+name = "WNetGetPropertyTextW"
+ordinal = 50
+
+[[export]]
+name = "WNetGetProviderNameA"
+ordinal = 51
+
+[[export]]
+name = "WNetGetProviderNameW"
+ordinal = 52
+
+[[export]]
+name = "WNetGetProviderTypeA"
+ordinal = 53
+
+[[export]]
+name = "WNetGetProviderTypeW"
+ordinal = 54
+
+[[export]]
+name = "WNetGetResourceInformationA"
+ordinal = 55
+
+[[export]]
+name = "WNetGetResourceInformationW"
+ordinal = 56
+
+[[export]]
+name = "WNetGetResourceParentA"
+ordinal = 57
+
+[[export]]
+name = "WNetGetResourceParentW"
+ordinal = 58
+
+[[export]]
+name = "WNetGetSearchDialog"
+ordinal = 59
+
+[[export]]
+name = "WNetGetUniversalNameA"
+ordinal = 60
+
+[[export]]
+name = "WNetGetUniversalNameW"
+ordinal = 61
+
+[[export]]
+name = "WNetGetUserA"
+ordinal = 62
+
+[[export]]
+name = "WNetGetUserW"
+ordinal = 63
+
+[[export]]
+name = "WNetLogonNotify"
+ordinal = 64
+
+[[export]]
+name = "WNetOpenEnumA"
+ordinal = 65
+
+[[export]]
+name = "WNetOpenEnumW"
+ordinal = 66
+
+[[export]]
+name = "WNetPasswordChangeNotify"
+ordinal = 67
+
+[[export]]
+name = "WNetPropertyDialogA"
+ordinal = 68
+
+[[export]]
+name = "WNetPropertyDialogW"
+ordinal = 69
+
+[[export]]
+name = "WNetRestoreConnectionW"
+ordinal = 70
+
+[[export]]
+name = "WNetSetConnectionA"
+ordinal = 71
+
+[[export]]
+name = "WNetSetConnectionW"
+ordinal = 72
+
+[[export]]
+name = "WNetSetLastErrorA"
+ordinal = 73
+
+[[export]]
+name = "WNetSetLastErrorW"
+ordinal = 74
+
+[[export]]
+name = "WNetSupportGlobalEnum"
+ordinal = 75
+
+[[export]]
+name = "WNetUseConnectionA"
+ordinal = 76
+
+[[export]]
+name = "WNetUseConnectionW"
+ordinal = 77
