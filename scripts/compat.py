@@ -486,8 +486,8 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .hide-toggle input { vertical-align: -1px; }
 h2 { font-size: 16px; margin: 32px 0 8px; }
 h3 { font-size: 14px; margin: 0; }
-.exe-list { margin-top: 38px; display: flex; gap: 24px; flex-wrap: wrap; }
-section.exe { margin: 0; border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; flex-basis: 512px; }
+.exe-list { margin-top: 38px; display: grid; gap: 16px; grid-template-columns: repeat(var(--columns), 1fr); --columns: 1; }
+section.exe { margin: 0; border: 1px solid var(--rule); border-radius: 8px; padding: 12px 16px; }
 section.exe h3 { display: flex; align-items: baseline; gap: 8px; line-height: 23px; }
 section.exe h3 .meta { font-size: 12px; font-weight: 400; color: var(--ink-2); }
 .exe-icon { border-radius: 3px; align-self: center; }
@@ -530,7 +530,7 @@ input[type=search] { font: inherit; padding: 4px 8px; min-width: 220px;
   pointer-events: none; }
 #map .glyph.failing { fill: var(--mark-on-failing); }
 #map .glyph.stubbed { fill: var(--mark-on-stubbed); }
-#map .dim { opacity: 0.15; }
+.dim { opacity: 0.10; }
 .scroll { overflow-x: auto; }
 table.summary { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
 table.summary td, table.summary th { padding: 4px 12px 4px 0; border-bottom: 1px solid var(--rule);
@@ -650,6 +650,9 @@ function node(name, attrs, parent) {
 let drawnSize = '';
 let focus = null;
 function draw() {
+  // Informs the list of executables by how much cards can grow
+  document.querySelector(".exe-list").style.setProperty("--columns", Math.floor(document.body.clientWidth / 500));
+
   const box = map.getBoundingClientRect();
   const W = Math.floor(box.width), H = Math.floor(box.height);
   if (W < 1 || H < 1 || `${W}x${H}` === drawnSize) return;
@@ -694,6 +697,7 @@ function draw() {
       const cx = r.x + PAD + (n % across) * pitch, cy = r.y + PAD + LABEL + Math.floor(n / across) * pitch;
       x.el = node('rect', {class: 'sq ' + x.s + (x.w ? ' in-progress' : ''), x: cx, y: cy, width: size, height: size,
                            rx: Math.min(2, size / 4), 'data-index': x.index}, map);
+      x.el.setAttribute("data-export", x.n.toLowerCase());
       const glyph = DATA.marks[x.s];
       x.glyph = null;
       if (glyph && size >= 8) {
@@ -757,10 +761,9 @@ map.addEventListener('click', e => { const x = under(e); if (x) copy(x); });
 const search = document.getElementById('search');
 function filter() {
   const q = search.value.trim().toLowerCase();
-  for (const x of exports) {
-    const dim = q !== '' && !x.n.toLowerCase().includes(q);
-    x.el.classList.toggle('dim', dim);
-    if (x.glyph) x.glyph.classList.toggle('dim', dim);
+  for (const el of document.querySelectorAll("[data-export]")) {
+    const dim = q !== '' && !el.getAttribute("data-export").includes(q);
+    el.classList.toggle("dim", dim);
   }
 }
 search.addEventListener('input', filter);
@@ -884,8 +887,11 @@ def executable_sections(specs):
                 facts = " · ".join(str(info[k]) for k in ("group", "impl", "note", "tests")
                                    if info.get(k))
                 squares.append(
-                    f'<span class="{cls}" data-pin="{e(info.get("pin", ""))}" '
-                    f'data-label="{e(LABELS[status])}" data-progress="{1 if in_progress else 0}" '
+                    f'<span class="{cls}" '
+                    f'data-export="{e(info.get("pin", "").split(".")[1].lower())}" '
+                    f'data-pin="{e(info.get("pin", ""))}" '
+                    f'data-label="{e(LABELS[status])}" '
+                    f'data-progress="{1 if in_progress else 0}" '
                     f'data-facts="{e(facts)}">{e(mark(status))}</span>')
             total = len(module["names"])
             pct = round(100 * implemented / total) if total else 0
