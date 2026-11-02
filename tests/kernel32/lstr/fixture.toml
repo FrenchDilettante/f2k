@@ -1,0 +1,14 @@
+# lstr: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. Each section sets up three pages of its own (read-write, no-access, read-only) for the bad
+# pointers, and frees them before it ends. Gated.
+description = "lstr - kernel32's lstr string functions: lstrlenA/W, lstrcpyA/W, lstrcpynA/W and lstrcatA/W over good strings (empty, ASCII, outside ASCII; lstrcpyn's counts and its NUL without padding) and bad pointers (NULL, a no-access page, a read-only destination, a string or a destination running into a no-access page): what each returns, the last error, and what reached the destination."
+kind = "sectioned"
+gate = true
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the lstr functions: the pages' VirtualAlloc/VirtualProtect set-up is not pinned.
+len = ["kernel32.lstrlenA", "kernel32.lstrlenW"]
+cpy = ["kernel32.lstrcpyA", "kernel32.lstrcpyW"]
+cpyn = ["kernel32.lstrcpynA", "kernel32.lstrcpynW"]
+cat = ["kernel32.lstrcatA", "kernel32.lstrcatW"]

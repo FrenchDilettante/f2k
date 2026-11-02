@@ -1,0 +1,44 @@
+# process: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. The data exports and the
+# C++ operators are reached through GetProcAddress on msvcrt.dll.
+description = "process - msvcrt.dll's view of its process under /MD (process.c): the data exports _acmdln, _wcmdln, __argc and __argv against GetCommandLineA/W and the __p___ accessors, getenv over variables it sets itself, operator new and delete, _msize and _expand."
+kind = "sectioned"
+gate = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "msvcrt.__set_app_type",
+    "msvcrt.__p__fmode",
+    "msvcrt.__p__commode",
+    "msvcrt._controlfp",
+    "msvcrt.__setusermatherr",
+    "msvcrt._initterm",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___initenv",
+    "msvcrt.exit",
+    "msvcrt._vsnprintf",
+    "msvcrt.strcmp",
+    "msvcrt._stricmp",
+]
+cmdline = [
+    "msvcrt._acmdln",
+    "msvcrt._wcmdln",
+    "msvcrt.__argc",
+    "msvcrt.__argv",
+    "msvcrt.__p___argc",
+    "msvcrt.__p___argv",
+    "msvcrt.wcscmp",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetCommandLineW",
+]
+getenv = ["msvcrt.getenv", "msvcrt._putenv", "kernel32.SetEnvironmentVariableA"]
+heap = [
+    "msvcrt.??2@YAPAXI@Z",
+    "msvcrt.??3@YAXPAX@Z",
+    "msvcrt._msize",
+    "msvcrt._expand",
+    "msvcrt.malloc",
+    "msvcrt.free",
+]

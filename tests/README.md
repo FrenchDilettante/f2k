@@ -13,10 +13,10 @@ tests/
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn, pipe, screen, lineedit, ctrl
+│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility
 ├── user32/     # hellogui, winsta
 ├── advapi32/   # registry
-├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide (built with /MD)
+├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
@@ -118,6 +118,16 @@ The fixtures:
 - `ctrl` - console control events, with its companion program `ctrlkid.exe` (built beside it from `ctrlkid.c`), started in a process group of its own: `GenerateConsoleCtrlEvent` into that group (the handlers' order and thread, the chain's end, the default handler's exit code), `CTRL_C_EVENT` into a group and the ignore flag in a child and a grandchild, the call's refusals, groups no process leads (from a console of its own), and named-only `keys`, real Ctrl+C and Ctrl+Break during a line read and a running child, captured by hand into `overrides.txt`.
   No event ever goes to group 0, which would reach the cmd.exe running the capture.
   Built with `/MD`; its `keys` block's keys are pressed by the harness (`[keys]`).
+- `lstr` - kernel32's lstr string functions, `lstrlenA`/`W`, `lstrcpyA`/`W`, `lstrcpynA`/`W` and `lstrcatA`/`W`: lengths and copies of empty, ASCII and non-ASCII strings, `lstrcpyn`'s counts (at most count-1 characters, always a NUL, no padding), appending, and bad pointers (NULL, a no-access page, a read-only destination, a string or a destination running into a no-access page), which Windows 2000 catches inside the call and answers with 0 or NULL.
+  Each section sets up the pages it needs and frees them before it ends.
+  Built with `/MD`.
+  Gated.
+- `utility` - small exports programs call in passing: `MulDiv` (rounding, signs, the 64-bit intermediate, overflow), `IsDBCSLeadByte` and `IsDBCSLeadByteEx` over single-byte code pages and one that does not exist, `GetStringTypeExA`/`GetStringTypeExW` against `GetStringTypeA`/`GetStringTypeW`, `GetUserDefaultLangID`, `GetSystemDirectoryA`/`GetSystemDirectoryW` and their buffer sizes, `GetTempPathA`/`GetTempPathW` with `TMP`, `TEMP` and `USERPROFILE` set or removed in turn, `GetTempFileNameA`/`GetTempFileNameW` with a given number and one they choose, `LocalFileTimeToFileTime` against `FileTimeToLocalFileTime`, and `GetProcessVersion`.
+  Paths print with `<cwd>` and `<windir>` for the current and Windows directories' prefixes, local times only as relations, and a number `GetTempFileName` chose as `<hex>`, so the capture holds on any machine.
+  No DBCS code page is used: which are installed is the machine's choice, and F2K carries no DBCS tables.
+  Built with `/MD`.
+  Gated.
+  Its `stringtype` block (`CT_CTYPE2` and `CT_CTYPE3`, which F2K's `GetStringTypeA`/`GetStringTypeW` do not answer) is expected to stay failing.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 
@@ -132,6 +142,12 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
 - `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`, `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in `_iob`, `fgets`, and `_getch` over console input the program queues itself.
   Gated.
 - `wide` - the wide string, character-class and conversion functions, `swprintf` and `swscanf`, number parsing, the allocator, `qsort`, `rand`, `setlocale` and `time`.
+  Gated.
+- `strings` - `_itow`, `_ltow` and `_ultow` in several radixes, `_wtoi` and `atol` with `errno`, `abs` and `labs`, `strstr`, `wcspbrk` and `wcscspn`, `_wcsdup`, `_wcsrev` and `_strcmpi`, `_splitpath` and `_wsplitpath`, `vswprintf`, and `wprintf` and `fwprintf` to the standard output and into a file in text and binary mode, its bytes read back.
+  Radix 2 converts only values below 65536: Windows 2000's `_itow` overruns an internal buffer on longer radix-2 conversions.
+  Gated.
+- `process` - msvcrt's view of its process: the data exports `_acmdln`, `_wcmdln`, `__argc` and `__argv` against `GetCommandLineA`/`GetCommandLineW` and the `__p___argc`/`__p___argv` accessors, `getenv` over variables the program sets itself (`_putenv`, and `SetEnvironmentVariableA` behind the C runtime's back), operator `new` and `delete`, `_msize` and `_expand`.
+  The data exports and the C++ operators are reached through `GetProcAddress`, so the program stays C rather than C++.
   Gated.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot volume is FAT32, and file-system details differ elsewhere — NTFS has its own names and timestamps, and a VirtualBox shared folder has no short names, no attribute bits and reports a remote drive.

@@ -1057,8 +1057,9 @@ def teardown_problem(lines: list[str]) -> str | None:
 CORPUS_DIRECTORY = "CORPUS"
 CORPUS_TIMEOUT = 20.0
 
-# A pinned export, as a fixture's `[pins]` names it: `dll.Export` (kernel32.CreateFileA).
-PIN = re.compile(r"[a-z0-9_]+\.[A-Za-z_][A-Za-z0-9_]*")
+# A pinned export, as a fixture's `[pins]` names it: `dll.Export` (kernel32.CreateFileA), the
+# export a C name or a decorated C++ one (msvcrt.??2@YAPAXI@Z, operator new).
+PIN = re.compile(r"[a-z0-9_]+\.(?:[A-Za-z_][A-Za-z0-9_]*|\?[A-Za-z0-9_?@$]+)")
 
 
 @dataclass(frozen=True)

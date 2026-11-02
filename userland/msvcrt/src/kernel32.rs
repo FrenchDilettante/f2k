@@ -385,6 +385,13 @@ pub fn command_line() -> &'static [u8] {
     unsafe { rtl::cstr::bytes_until_nul(imports::GetCommandLineA()) }
 }
 
+/// GetCommandLineA and GetCommandLineW: kernel32's two copies of the process's command line, as
+/// their pointers (`_acmdln` and `_wcmdln` hold them).
+pub fn command_line_pointers() -> (*const u8, *const u16) {
+    // SAFETY: no arguments; kernel32 keeps both copies for the process's life.
+    unsafe { (imports::GetCommandLineA(), imports::GetCommandLineW()) }
+}
+
 /// The process's environment block (GetEnvironmentStrings), given back when dropped.
 pub struct EnvironmentStrings {
     block: core::ptr::NonNull<u8>,

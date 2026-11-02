@@ -4,7 +4,8 @@
 # exception the touch raises: the chain unwound to the registration (RtlUnwind, src/except.rs), the
 # probe's stack and EBP back from it, then on to its resume point with TRUE. A guard page the touch
 # meets is spent (the guard violation is the probe's exception); the stack's own guard grows the
-# stack as any access does, and the touch goes on.
+# stack as any access does, and the touch goes on. The lstr functions' guarded call, last, takes
+# its faults through the same handler.
 .text
 
 # The probes' exception handler (cdecl: record, frame, context, dispatcher). An unwind passing
@@ -189,3 +190,42 @@ _f2k_export_IsBadStringPtrW:
     mov esp, ebp
     pop ebp
     ret 8
+
+# A guarded call (cdecl: the body, then its three arguments): body(a, b, c), itself cdecl, under an
+# exception frame of the probes' own, as Windows 2000 runs the lstr functions' work inside
+# `__try`/`__except(EXCEPTION_EXECUTE_HANDLER)` (src/lstr.rs): the body's answer, or 0 when it
+# faults. The handler resumes at .Lguarded_fault with ESP and EBP back from the registration. EBX,
+# ESI and EDI are saved below the registration and restored on either way out: the dispatcher
+# calls the handler with them zeroed, and the body, abandoned mid-way, never restores its own. A
+# body owns nothing (it loops over raw addresses), so abandoning it skips no destructor.
+.p2align 4
+.globl _f2k_k32_guarded
+_f2k_k32_guarded:
+    push ebp
+    mov ebp, esp
+    mov eax, offset .Lguarded_fault
+    push eax
+    mov eax, offset _f2k_k32_probe_handler
+    push eax
+    push dword ptr fs:[0]
+    mov dword ptr fs:[0], esp
+    push ebx
+    push esi
+    push edi
+    push dword ptr [ebp+20]
+    push dword ptr [ebp+16]
+    push dword ptr [ebp+12]
+    call dword ptr [ebp+8]
+    jmp .Lguarded_out
+.Lguarded_fault:
+    xor eax, eax
+.Lguarded_out:
+    lea esp, [ebp-24]
+    pop edi
+    pop esi
+    pop ebx
+    mov ecx, dword ptr [esp]
+    mov dword ptr fs:[0], ecx
+    mov esp, ebp
+    pop ebp
+    ret

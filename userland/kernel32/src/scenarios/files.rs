@@ -766,3 +766,300 @@ fn find_handles_refuse_the_invalid_value() {
     );
     assert_eq!(last_error(), 6);
 }
+
+/// Set (or, for none, delete) an environment variable for the temporary path's calls.
+fn set_variable(name: &str, value: Option<&str>) {
+    let name = format!("{name}\0");
+    let value = value.map(|value| format!("{value}\0"));
+    let value = value
+        .as_ref()
+        .map_or(core::ptr::null(), |value| value.as_ptr());
+    unsafe { crate::env::set_environment_variable_a(name.as_ptr(), value) };
+}
+
+/// GetTempPathA, its answer and the path, as text.
+fn temp_path_a() -> (u32, String) {
+    let mut buffer = [0u8; 64];
+    let length = unsafe { crate::files::temp::get_temp_path_a(64, buffer.as_mut_ptr()) };
+    let end = buffer.iter().position(|&byte| byte == 0).unwrap();
+    (length, String::from_utf8(buffer[..end].to_vec()).unwrap())
+}
+
+/// GetTempPath, as the utility fixture's capture shows it: TMP's directory, else TEMP's, else
+/// USERPROFILE's, else the Windows directory, made full (a relative one under the current
+/// directory) with a trailing backslash added where it has none. An empty TMP stops the search:
+/// the answer is 1, the A form writing the empty string, the W form nothing. A buffer too small
+/// gets the size it needs: the A form's untouched, the W form's holding the full path's first
+/// units (all of them, without the backslash, when only the backslash does not fit).
+///
+/// Pins: kernel32.GetTempPathA, kernel32.GetTempPathW
+#[test]
+fn the_temporary_path_is_tmp_then_temp_then_the_profile_then_windows() {
+    use crate::files::temp::{get_temp_path_a, get_temp_path_w};
+
+    let root = b"C:\\WINNT\0\0";
+    for (at, pair) in root.chunks(2).enumerate() {
+        crate::shared::host::set(
+            crate::shared::NT_SYSTEM_ROOT + 4 * at,
+            u32::from(pair[0]) | u32::from(pair[1]) << 16,
+        );
+    }
+    CURRENT_DIRECTORY
+        .with(|current| *current.borrow_mut() = "C:\\CORPUS\\".encode_utf16().collect());
+    assert_eq!(temp_path_a(), (9, "C:\\WINNT\\".into()));
+    set_variable("USERPROFILE", Some("C:\\PROF"));
+    assert_eq!(temp_path_a(), (8, "C:\\PROF\\".into()));
+    set_variable("TEMP", Some("C:\\T2"));
+    assert_eq!(temp_path_a(), (6, "C:\\T2\\".into()));
+    set_variable("TMP", Some("C:\\T1"));
+    assert_eq!(temp_path_a(), (6, "C:\\T1\\".into()));
+    set_variable("TMP", Some("C:\\T1\\"));
+    assert_eq!(temp_path_a(), (6, "C:\\T1\\".into()));
+    set_variable("TMP", Some("rel"));
+    assert_eq!(temp_path_a(), (14, "C:\\CORPUS\\rel\\".into()));
+
+    set_variable("TMP", Some(""));
+    let mut buffer = [0x5Au8; 16];
+    assert_eq!(unsafe { get_temp_path_a(16, buffer.as_mut_ptr()) }, 1);
+    assert_eq!(&buffer[..2], b"\0Z");
+    let mut wide = [0x5A5Au16; 16];
+    assert_eq!(unsafe { get_temp_path_w(16, wide.as_mut_ptr()) }, 1);
+    assert_eq!(wide, [0x5A5A; 16]);
+
+    set_variable("TMP", Some("C:\\NOWHERE\\..\\T3"));
+    assert_eq!(temp_path_a(), (6, "C:\\T3\\".into()));
+    for size in [0, 3, 6] {
+        let mut buffer = [0x5Au8; 16];
+        assert_eq!(unsafe { get_temp_path_a(size, buffer.as_mut_ptr()) }, 7);
+        assert_eq!(buffer, [0x5A; 16], "size {size}");
+    }
+    let mut buffer = [0x5Au8; 16];
+    assert_eq!(unsafe { get_temp_path_a(7, buffer.as_mut_ptr()) }, 6);
+    assert_eq!(&buffer[..8], b"C:\\T3\\\0Z");
+
+    let wide_of = |text: &str| -> Vec<u16> { text.encode_utf16().collect() };
+    for (size, written) in [(0, ""), (3, "C:\0"), (6, "C:\\T3\0")] {
+        let mut wide = [0x5A5Au16; 16];
+        assert_eq!(unsafe { get_temp_path_w(size, wide.as_mut_ptr()) }, 7);
+        let written = wide_of(written);
+        assert_eq!(wide[..written.len()], written[..], "size {size}");
+        assert!(wide[written.len()..].iter().all(|&unit| unit == 0x5A5A));
+    }
+    let mut wide = [0x5A5Au16; 16];
+    assert_eq!(unsafe { get_temp_path_w(7, wide.as_mut_ptr()) }, 6);
+    assert_eq!(wide[..8], wide_of("C:\\T3\\\0\u{5A5A}")[..]);
+}
+
+/// The stand-in file's attributes: a directory (GetTempFileName's path), or a file.
+fn stand_in_attributes(attributes: u32) {
+    FILE.with(|file| file.borrow_mut().attributes = attributes);
+}
+
+const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
+
+/// GetTempFileName with a number of the caller's, as the utility fixture's capture shows it:
+/// `<path>\<three prefix characters><its low 16 bits in uppercase hexadecimal>.tmp`, no backslash
+/// doubled, those 16 bits answered, no file made (the path's attributes asked, nothing created).
+///
+/// Pins: kernel32.GetTempFileNameA, kernel32.GetTempFileNameW
+#[test]
+fn a_temporary_file_name_with_the_caller_s_number_makes_no_file() {
+    use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
+
+    stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);
+    calls();
+    for (path, prefix, unique, number, name) in [
+        ("C:\\TF", "abc", 0x1234, 0x1234, "C:\\TF\\abc1234.tmp"),
+        ("C:\\TF", "abcdef", 0x1234, 0x1234, "C:\\TF\\abc1234.tmp"),
+        ("C:\\TF", "", 0xABCD, 0xABCD, "C:\\TF\\ABCD.tmp"),
+        ("C:\\TF", "abc", 0xA, 0xA, "C:\\TF\\abcA.tmp"),
+        ("C:\\TF", "abc", 0x12345, 0x2345, "C:\\TF\\abc2345.tmp"),
+        ("C:\\TF\\", "abc", 0x1234, 0x1234, "C:\\TF\\abc1234.tmp"),
+    ] {
+        let mut buffer = [0x5Au8; 260];
+        let (path_z, prefix_z) = (format!("{path}\0"), format!("{prefix}\0"));
+        let answer = unsafe {
+            get_temp_file_name_a(
+                path_z.as_ptr(),
+                prefix_z.as_ptr(),
+                unique,
+                buffer.as_mut_ptr(),
+            )
+        };
+        assert_eq!(answer, number, "{path} {prefix} {unique:#x}");
+        assert_eq!(&buffer[..name.len() + 1], format!("{name}\0").as_bytes());
+
+        let mut wide = [0x5A5Au16; 260];
+        let path_w: Vec<u16> = path.encode_utf16().chain([0]).collect();
+        let prefix_w: Vec<u16> = prefix.encode_utf16().chain([0]).collect();
+        let answer = unsafe {
+            get_temp_file_name_w(
+                path_w.as_ptr(),
+                prefix_w.as_ptr(),
+                unique,
+                wide.as_mut_ptr(),
+            )
+        };
+        assert_eq!(answer, number);
+        let expected: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        assert_eq!(wide[..expected.len()], expected[..]);
+    }
+    assert_eq!(created(), [], "no file made");
+}
+
+/// GetTempFileName in a path that is not an existing directory, with the caller's number or none:
+/// 0 and ERROR_DIRECTORY, nothing created; the A form's buffer untouched, the W form's holding the
+/// path, terminated (the utility fixture's capture). A file's path is refused the same way.
+///
+/// Pins: kernel32.GetTempFileNameA, kernel32.GetTempFileNameW
+#[test]
+fn a_temporary_file_name_needs_an_existing_directory() {
+    use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
+
+    const STATUS_OBJECT_NAME_NOT_FOUND: u32 = 0xC000_0034;
+    let none: Vec<u16> = "C:\\NONE\0".encode_utf16().collect();
+    let prefix: Vec<u16> = "abc\0".encode_utf16().collect();
+    stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);
+    for unique in [0x1234, 0] {
+        calls();
+        let mut untouched = [0x5Au8; 260];
+        fail_next(STATUS_OBJECT_NAME_NOT_FOUND);
+        let answer = unsafe {
+            get_temp_file_name_a(
+                b"C:\\NONE\0".as_ptr(),
+                b"abc\0".as_ptr(),
+                unique,
+                untouched.as_mut_ptr(),
+            )
+        };
+        assert_eq!((answer, last_error()), (0, 267), "{unique:#x}");
+        assert_eq!(untouched, [0x5A; 260]);
+
+        let mut wide = [0x5A5Au16; 260];
+        fail_next(STATUS_OBJECT_NAME_NOT_FOUND);
+        let answer = unsafe {
+            get_temp_file_name_w(none.as_ptr(), prefix.as_ptr(), unique, wide.as_mut_ptr())
+        };
+        assert_eq!((answer, last_error()), (0, 267), "{unique:#x}");
+        assert_eq!(wide[..none.len()], none[..]);
+        assert!(wide[none.len()..].iter().all(|&unit| unit == 0x5A5A));
+        assert_eq!(created(), [], "nothing created");
+    }
+
+    stand_in_attributes(FILE_ATTRIBUTE_ARCHIVE);
+    let mut wide = [0x5A5Au16; 260];
+    let answer =
+        unsafe { get_temp_file_name_w(none.as_ptr(), prefix.as_ptr(), 0, wide.as_mut_ptr()) };
+    assert_eq!((answer, last_error()), (0, 267));
+    assert_eq!(created(), []);
+}
+
+/// The file names of a self-numbered GetTempFileName's creates, in order (the attribute queries,
+/// which ask no access, left out).
+fn created() -> Vec<(String, u32)> {
+    calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Open {
+                access,
+                name,
+                disposition,
+                ..
+            } if access != 0 => Some((name, disposition)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// GetTempFileName numbering the name itself (a number of 0): from the tick count's low 16 bits
+/// (zero skipped), the file made (NtCreateFile's FILE_CREATE, then closed), the last error cleared
+/// and the number answered; a name taken moves on to the next number; another failure is the
+/// call's (0 and its error), the W form's buffer holding the name tried, the A form's untouched.
+///
+/// Pins: kernel32.GetTempFileNameA, kernel32.GetTempFileNameW
+#[test]
+fn a_self_numbered_temporary_file_name_makes_the_file() {
+    use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
+    use crate::nt::files::FAIL_AFTER;
+    use crate::nt::host::CLOSED;
+    use crate::shared::{self, host};
+
+    const FILE_CREATE: u32 = 2;
+    const STATUS_OBJECT_NAME_COLLISION: u32 = 0xC000_0035;
+    const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
+    host::set(shared::TICK_COUNT_MULTIPLIER, 0x0100_0000);
+    host::set(shared::TICK_COUNT_LOW, 0x3_0ABC);
+    stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);
+    calls();
+    CLOSED.with(|closed| closed.borrow_mut().clear());
+
+    let mut buffer = [0x5Au8; 260];
+    crate::base::set_last_error(0x0F2F_2F2F);
+    let answer = unsafe {
+        get_temp_file_name_a(
+            b"C:\\TF\0".as_ptr(),
+            b"abc\0".as_ptr(),
+            0,
+            buffer.as_mut_ptr(),
+        )
+    };
+    assert_eq!((answer, last_error()), (0xABC, 0));
+    assert_eq!(&buffer[..17], b"C:\\TF\\abcABC.tmp\0");
+    assert_eq!(
+        created(),
+        [("\\??\\C:\\TF\\abcABC.tmp".into(), FILE_CREATE)]
+    );
+    CLOSED.with(|closed| assert_eq!(*closed.borrow(), [HANDLE]));
+
+    // The path's attributes pass, the first create collides.
+    FAIL_AFTER.with(|fail| fail.set((1, STATUS_OBJECT_NAME_COLLISION)));
+    let answer = unsafe {
+        get_temp_file_name_a(
+            b"C:\\TF\0".as_ptr(),
+            b"abc\0".as_ptr(),
+            0,
+            buffer.as_mut_ptr(),
+        )
+    };
+    assert_eq!(answer, 0xABD);
+    assert_eq!(&buffer[..17], b"C:\\TF\\abcABD.tmp\0");
+    assert_eq!(
+        created(),
+        [
+            ("\\??\\C:\\TF\\abcABC.tmp".into(), FILE_CREATE),
+            ("\\??\\C:\\TF\\abcABD.tmp".into(), FILE_CREATE)
+        ]
+    );
+
+    let mut untouched = [0x5Au8; 260];
+    FAIL_AFTER.with(|fail| fail.set((1, STATUS_ACCESS_DENIED)));
+    let answer = unsafe {
+        get_temp_file_name_a(
+            b"C:\\TF\0".as_ptr(),
+            b"abc\0".as_ptr(),
+            0,
+            untouched.as_mut_ptr(),
+        )
+    };
+    assert_eq!((answer, last_error()), (0, 5));
+    assert_eq!(untouched, [0x5A; 260]);
+    assert_eq!(created().len(), 1, "no other number tried");
+
+    let mut wide = [0x5A5Au16; 260];
+    let directory: Vec<u16> = "C:\\TF\0".encode_utf16().collect();
+    let prefix: Vec<u16> = "abc\0".encode_utf16().collect();
+    FAIL_AFTER.with(|fail| fail.set((1, STATUS_ACCESS_DENIED)));
+    let answer =
+        unsafe { get_temp_file_name_w(directory.as_ptr(), prefix.as_ptr(), 0, wide.as_mut_ptr()) };
+    assert_eq!((answer, last_error()), (0, 5));
+    let tried: Vec<u16> = "C:\\TF\\abcABC.tmp\0".encode_utf16().collect();
+    assert_eq!(wide[..tried.len()], tried[..]);
+
+    host::set(shared::TICK_COUNT_LOW, 0x5_0000);
+    calls();
+    let answer =
+        unsafe { get_temp_file_name_w(directory.as_ptr(), prefix.as_ptr(), 0, wide.as_mut_ptr()) };
+    assert_eq!(answer, 1, "a tick count of zero's low bits starts at 1");
+    assert_eq!(created(), [("\\??\\C:\\TF\\abc1.tmp".into(), FILE_CREATE)]);
+}

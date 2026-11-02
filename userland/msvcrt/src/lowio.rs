@@ -495,6 +495,11 @@ pub fn is_device(fd: i32) -> bool {
     descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FDEV) == FOPEN | FDEV)
 }
 
+/// Whether `fd` is open in text mode.
+pub fn is_text(fd: i32) -> bool {
+    descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FTEXT) == FOPEN | FTEXT)
+}
+
 /// A standard descriptor's new handle (0 once it is closed) made the standard handle too, in a
 /// console program.
 fn follow_standard(fd: usize, handle: usize) {

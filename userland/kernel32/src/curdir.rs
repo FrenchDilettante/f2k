@@ -168,3 +168,15 @@ pub unsafe extern "system" fn get_system_directory_a(buffer: *mut u8, size: u32)
     let buffer = unsafe { OutBuf::new(buffer, size as usize) };
     windows_directory(true, Text::Ansi(buffer))
 }
+
+/// GetSystemDirectoryW (see [`windows_directory`]): `<system root>\system32`.
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_GetSystemDirectoryW")]
+pub unsafe extern "system" fn get_system_directory_w(buffer: *mut u16, size: u32) -> u32 {
+    // SAFETY: the caller's buffer (the contract).
+    let buffer = unsafe { OutBuf::new(buffer, size as usize) };
+    windows_directory(true, Text::Wide(buffer))
+}

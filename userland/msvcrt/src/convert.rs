@@ -1,5 +1,5 @@
-//! Number conversions: _ultoa, _wtol, atoi, wcstol, wcstoul and strtoul, as wide's capture pins
-//! them.
+//! Number conversions: _ultoa, _itow, _ltow and _ultow, _wtol and _wtoi, atoi and atol, wcstol,
+//! wcstoul and strtoul, as wide's capture pins them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
@@ -9,8 +9,12 @@
 //! - strtoul is wcstoul over a narrow string, its blanks the LC_CTYPE locale's spaces.
 //! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno; atoi is _wtol
 //!   over a narrow string, its blanks the LC_CTYPE locale's spaces (MSDN: atoi stops at the first
-//!   character that cannot be part of the number).
-//! - _ultoa writes the digits in any radix from 2 to 36, letters in lower case.
+//!   character that cannot be part of the number). _wtoi is _wtol and atol is atoi: an int is a
+//!   long on Win32.
+//! - _ultoa and _ultow write the digits in any radix from 2 to 36, letters in lower case. _itow and
+//!   _ltow write a negative value with a `-` in radix 10 and as unsigned in any other (MSDN: "If
+//!   radix equals 10 and value is negative, the first character of the stored string is the minus
+//!   sign"). A radix outside 2 to 36 writes the empty string.
 //!
 //! Each export reads its caller's string once ([`crate::edge`]); the conversions read it through
 //! `at`, its unit at an index (0 past its end): a wide string's units, or a narrow string's bytes,
@@ -180,6 +184,18 @@ pub unsafe extern "C" fn wtol(string: *const u16) -> i32 {
     decimal(|i| wide_unit_of(units, i))
 }
 
+/// _wtoi: the string's int, as _wtol reads it.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export__wtoi")]
+pub unsafe extern "C" fn wtoi(string: *const u16) -> i32 {
+    // SAFETY: the caller's string.
+    let units = unsafe { edge::wide(string) };
+    decimal(|i| wide_unit_of(units, i))
+}
+
 /// atoi: the narrow string's int, as _wtol reads a wide one.
 ///
 /// # Safety
@@ -192,8 +208,20 @@ pub unsafe extern "C" fn atoi(string: *const u8) -> i32 {
     decimal(|i| unit_of(bytes, i))
 }
 
-/// The conversion _wtol and atoi share: blanks, a sign, then decimal digits, wrapping around
-/// without errno.
+/// atol: the narrow string's long, as atoi reads it.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_atol")]
+pub unsafe extern "C" fn atol(string: *const u8) -> i32 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    decimal(|i| unit_of(bytes, i))
+}
+
+/// The conversion _wtol, _wtoi, atoi and atol share: blanks, a sign, then decimal digits, wrapping
+/// around without errno.
 fn decimal(at: impl Fn(usize) -> u16) -> i32 {
     let (mut i, negative, _) = lead(&at, 10);
     let mut value = 0u32;
@@ -209,39 +237,109 @@ fn decimal(at: impl Fn(usize) -> u16) -> i32 {
     }
 }
 
-/// _ultoa: `value`'s digits in `radix` into `buffer`, NUL-terminated; answers `buffer` (a radix
-/// outside 2 to 36 writes the empty string).
+/// The room the text of a number takes: 32 binary digits at most (a `-` comes only with radix 10's
+/// ten).
+const NUMBER_TEXT: usize = 32;
+
+/// `value`'s text in `radix`, at the end of `out`: its digits, letters in lower case, after a `-`
+/// when `signed` and the value is negative in radix 10 (in any other radix it is unsigned); empty
+/// for a radix outside 2 to 36.
+fn number_text(value: u32, signed: bool, radix: i32, out: &mut [u8; NUMBER_TEXT]) -> &[u8] {
+    if !(2..=36).contains(&radix) {
+        return &[];
+    }
+    let negative = signed && radix == 10 && (value as i32) < 0;
+    let mut rest = if negative {
+        (value as i32).unsigned_abs()
+    } else {
+        value
+    };
+    let mut at = out.len();
+    loop {
+        let digit = (rest % radix as u32) as u8;
+        at -= 1;
+        out[at] = if digit < 10 {
+            b'0' + digit
+        } else {
+            b'a' + digit - 10
+        };
+        rest /= radix as u32;
+        if rest == 0 {
+            break;
+        }
+    }
+    if negative {
+        at -= 1;
+        out[at] = b'-';
+    }
+    &out[at..]
+}
+
+/// _ultoa: `value`'s digits in `radix` into `buffer`, NUL-terminated; answers `buffer`.
 ///
 /// # Safety
 ///
 /// `buffer` has room for the digits and the NUL (33 bytes at most).
 #[unsafe(export_name = "f2k_export__ultoa")]
 pub unsafe extern "C" fn ultoa(value: u32, buffer: *mut u8, radix: i32) -> *mut u8 {
-    let mut digits = [0u8; 33];
-    let mut count = 0;
-    if (2..=36).contains(&radix) {
-        let mut rest = value;
-        loop {
-            let digit = (rest % radix as u32) as u8;
-            digits[count] = if digit < 10 {
-                b'0' + digit
-            } else {
-                b'a' + digit - 10
-            };
-            count += 1;
-            rest /= radix as u32;
-            if rest == 0 {
-                break;
-            }
-        }
-    }
+    let mut text = [0u8; NUMBER_TEXT];
+    let text = number_text(value, false, radix, &mut text);
     // SAFETY: the caller's room for the digits and the NUL.
-    let out = unsafe { core::slice::from_raw_parts_mut(buffer, count + 1) };
-    for (slot, &digit) in out.iter_mut().zip(digits[..count].iter().rev()) {
-        *slot = digit;
-    }
-    out[count] = 0;
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer, text.len() + 1) };
+    out[..text.len()].copy_from_slice(text);
+    out[text.len()] = 0;
     buffer
+}
+
+/// The wide forms' work: `value`'s text in `radix` (see [`number_text`]) into `buffer`,
+/// NUL-terminated; answers `buffer`.
+///
+/// # Safety
+///
+/// `buffer` has room for the text and the NUL (33 units at most), at any address.
+unsafe fn wide_number(value: u32, signed: bool, buffer: *mut u16, radix: i32) -> *mut u16 {
+    let mut text = [0u8; NUMBER_TEXT];
+    let text = number_text(value, signed, radix, &mut text);
+    // SAFETY: the caller's room for the text and the NUL.
+    let out = unsafe { edge::wide_parts_mut(buffer, text.len() + 1) };
+    for (slot, &byte) in out.iter_mut().zip(text.iter().chain([&0])) {
+        *slot = WideUnit::new(byte.into());
+    }
+    buffer
+}
+
+/// _itow: `value`'s text in `radix` into `buffer`, `-` first for a negative value in radix 10;
+/// answers `buffer`.
+///
+/// # Safety
+///
+/// `buffer` has room for the text and the NUL (33 units at most).
+#[unsafe(export_name = "f2k_export__itow")]
+pub unsafe extern "C" fn itow(value: i32, buffer: *mut u16, radix: i32) -> *mut u16 {
+    // SAFETY: the caller's contract.
+    unsafe { wide_number(value as u32, true, buffer, radix) }
+}
+
+/// _ltow: as _itow (a long is an int on Win32).
+///
+/// # Safety
+///
+/// As _itow's.
+#[unsafe(export_name = "f2k_export__ltow")]
+pub unsafe extern "C" fn ltow(value: i32, buffer: *mut u16, radix: i32) -> *mut u16 {
+    // SAFETY: the caller's contract.
+    unsafe { wide_number(value as u32, true, buffer, radix) }
+}
+
+/// _ultow: `value`'s digits in `radix` into `buffer`; answers `buffer`.
+///
+/// # Safety
+///
+/// As _itow's.
+#[unsafe(export_name = "f2k_export__ultow")]
+pub unsafe extern "C" fn ultow(value: u32, buffer: *mut u16, radix: i32) -> *mut u16 {
+    // SAFETY: the caller's contract.
+    unsafe { wide_number(value, false, buffer, radix) }
 }
 
 #[cfg(test)]
@@ -456,6 +554,132 @@ mod tests {
                 assert_eq!(r, buffer.as_mut_ptr());
                 assert_eq!(show(&buffer), expected);
             }
+        }
+    }
+
+    /// strings' itow block: _itow and _ltow write a negative value with a `-` in radix 10 and as
+    /// unsigned in any other, _ultow always unsigned; each answers the buffer, NUL-terminated after
+    /// the text; a radix outside 2 to 36 writes the empty string.
+    #[test]
+    fn itow_ltow_and_ultow() {
+        let minus_one = [
+            "11111111111111111111111111111111",
+            "37777777777",
+            "-1",
+            "ffffffff",
+            "1z141z3",
+        ];
+        let int_min = [
+            "10000000000000000000000000000000",
+            "20000000000",
+            "-2147483648",
+            "80000000",
+            "zik0zk",
+        ];
+        let int_max = [
+            "1111111111111111111111111111111",
+            "17777777777",
+            "2147483647",
+            "7fffffff",
+            "zik0zj",
+        ];
+        let small = |v: &'static str| [v; 5];
+        let signed = [
+            (0, small("0")),
+            (1, small("1")),
+            (-1, minus_one),
+            (255, ["11111111", "377", "255", "ff", "73"]),
+            (i32::MIN, int_min),
+            (i32::MAX, int_max),
+        ];
+        let show = |buffer: &[u16]| {
+            let end = buffer.iter().position(|&u| u == 0).unwrap();
+            assert!(buffer[end + 1..].iter().all(|&u| u == b'#' as u16));
+            String::from_utf16(&buffer[..end]).unwrap()
+        };
+        let signed_forms: [unsafe extern "C" fn(i32, *mut u16, i32) -> *mut u16; 2] = [itow, ltow];
+        for convert in signed_forms {
+            for (value, expected) in signed {
+                for (radix, expected) in [2, 8, 10, 16, 36].into_iter().zip(expected) {
+                    let mut buffer = [b'#' as u16; 48];
+                    // SAFETY: a buffer of 48 units.
+                    let r = unsafe { convert(value, buffer.as_mut_ptr(), radix) };
+                    assert_eq!(r, buffer.as_mut_ptr());
+                    assert_eq!(show(&buffer), expected, "{value} in radix {radix}");
+                }
+            }
+        }
+        let unsigned = [
+            (0, small("0")),
+            (1, small("1")),
+            (255, ["11111111", "377", "255", "ff", "73"]),
+            (
+                0x8000_0000,
+                [int_min[0], int_min[1], "2147483648", int_min[3], int_min[4]],
+            ),
+            (0x7FFF_FFFF, int_max),
+            (
+                u32::MAX,
+                [
+                    minus_one[0],
+                    minus_one[1],
+                    "4294967295",
+                    minus_one[3],
+                    minus_one[4],
+                ],
+            ),
+        ];
+        for (value, expected) in unsigned {
+            for (radix, expected) in [2, 8, 10, 16, 36].into_iter().zip(expected) {
+                let mut buffer = [b'#' as u16; 48];
+                // SAFETY: a buffer of 48 units.
+                let r = unsafe { ultow(value, buffer.as_mut_ptr(), radix) };
+                assert_eq!(r, buffer.as_mut_ptr());
+                assert_eq!(show(&buffer), expected, "{value} in radix {radix}");
+            }
+        }
+        for radix in [0, 1, 37] {
+            let mut buffer = [b'#' as u16; 4];
+            // SAFETY: a buffer of 4 units.
+            unsafe { itow(-5, buffer.as_mut_ptr(), radix) };
+            assert_eq!(show(&buffer), "");
+        }
+        // A buffer at an odd address.
+        let mut bytes = [0u8; 16];
+        // SAFETY: 15 bytes from an odd address: room for "-42" and the NUL.
+        unsafe { itow(-42, bytes[1..].as_mut_ptr().cast(), 10) };
+        assert_eq!(&bytes[1..9], b"-\x004\x002\x00\x00\x00");
+    }
+
+    /// strings' atoi block: _wtoi and atol read as _wtol and atoi, wrapping around past LONG_MAX
+    /// and LONG_MIN without errno.
+    #[test]
+    fn wtoi_and_atol() {
+        for (text, value) in [
+            ("42", 42),
+            (" \t 42", 42),
+            ("\t-17", -17),
+            ("+8", 8),
+            ("-0", 0),
+            ("123abc", 123),
+            ("", 0),
+            ("abc123", 0),
+            ("  +-5", 0),
+            ("- 5", 0),
+            ("+", 0),
+            ("2147483647", i32::MAX),
+            ("2147483648", i32::MIN),
+            ("-2147483648", i32::MIN),
+            ("-2147483649", i32::MAX),
+            ("99999999999", 1215752191),
+            ("-99999999999", -1215752191),
+        ] {
+            let s = wide(text);
+            let n: Vec<u8> = text.bytes().chain([0]).collect();
+            set_errno(0);
+            // SAFETY: NUL-terminated strings.
+            let (w, a) = unsafe { (wtoi(s.as_ptr()), atol(n.as_ptr())) };
+            assert_eq!((w, a, errno()), (value, value, 0), "{text:?}");
         }
     }
 }

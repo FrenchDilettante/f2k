@@ -1,0 +1,25 @@
+# utility: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD. Nothing it prints depends on the machine: paths print with <cwd> and <windir> for the
+# current and Windows directories' prefixes, local times only as relations, a self-numbered
+# temporary file name with <hex> for its number, and the temporary path only once the section has
+# set TMP, TEMP and USERPROFILE itself. No DBCS code page is used: which are installed is the
+# machine's choice, and F2K carries no DBCS tables. Gated.
+description = "utility - small kernel32 exports: MulDiv's rounding and overflow, IsDBCSLeadByte and IsDBCSLeadByteEx over single-byte code pages, GetStringTypeExA/W against GetStringTypeA/W, GetUserDefaultLangID, GetSystemDirectoryA/W and their buffer sizes, GetTempPathA/W through TMP, TEMP and USERPROFILE, GetTempFileNameA/W with a given and a self-chosen number, LocalFileTimeToFileTime against FileTimeToLocalFileTime, and GetProcessVersion."
+kind = "sectioned"
+gate = true
+
+[pending]
+stringtype = "CT_CTYPE2 and CT_CTYPE3 not yet implemented: GetStringTypeA/W answer CT_CTYPE1 only, without the character tables the other two need"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them.
+muldiv = ["kernel32.MulDiv"]
+dbcs = ["kernel32.IsDBCSLeadByte", "kernel32.IsDBCSLeadByteEx"]
+stringtype = ["kernel32.GetStringTypeExA", "kernel32.GetStringTypeExW"]
+langid = ["kernel32.GetUserDefaultLangID"]
+sysdir = ["kernel32.GetSystemDirectoryA", "kernel32.GetSystemDirectoryW"]
+temppath = ["kernel32.GetTempPathA", "kernel32.GetTempPathW"]
+tempfile = ["kernel32.GetTempFileNameA", "kernel32.GetTempFileNameW"]
+filetime = ["kernel32.LocalFileTimeToFileTime"]
+version = ["kernel32.GetProcessVersion"]

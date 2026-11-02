@@ -22,6 +22,7 @@ mod curdir;
 mod environment;
 mod files;
 mod locale;
+mod lstr;
 mod modules;
 mod pipes;
 mod processes;

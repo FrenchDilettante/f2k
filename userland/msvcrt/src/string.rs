@@ -1,6 +1,7 @@
-//! The string functions: strcmp and _stricmp, the narrow ones spawn's, pipe's and the console
-//! fixtures' programs call (strlen, strcpy, strncpy, strcat, strcspn, strchr, strrchr, strncmp,
-//! _strnicmp), and the wide ones cmd.exe calls.
+//! The string functions: strcmp and _stricmp (and _strcmpi, its other name), the narrow ones
+//! spawn's, pipe's and the console fixtures' programs call (strlen, strcpy, strncpy, strcat,
+//! strcspn, strchr, strrchr, strstr, strncmp, _strnicmp), the wide ones cmd.exe calls, and
+//! _splitpath and _wsplitpath.
 //!
 //! The narrow ones as the C runtime reference documents them: strncpy pads with NULs and leaves a
 //! full destination unterminated, as wcsncpy does; strchr and strrchr find the terminator for 0;
@@ -13,6 +14,11 @@
 //! locale, for the case-insensitive ones: `[` against `a` is -6); wcsncpy pads with NULs and leaves
 //! a full destination unterminated; wcschr and wcsrchr find the terminator too; wcsstr finds the
 //! empty string at the start; _wcslwr and _wcsupr map in place, in the LC_CTYPE locale.
+//!
+//! As the C runtime reference documents the rest: strstr finds the empty string at the start, as
+//! wcsstr does; wcspbrk never finds the terminator; _wcsrev reverses the units in place; _wcsdup's
+//! copy is a block from malloc; _splitpath keeps the directory's trailing slash and the
+//! extension's leading period, takes `\` and `/` alike, and leaves a NULL buffer out.
 //!
 //! Each export reads its caller's strings once, into slices ([`crate::edge`]); the work below is
 //! over those.
@@ -85,6 +91,17 @@ pub unsafe extern "C" fn stricmp(a: *const u8, b: *const u8) -> i32 {
     // SAFETY: the caller's strings.
     let (a, b) = unsafe { (bytes_until_nul(a), bytes_until_nul(b)) };
     difference(narrow_values(a), narrow_values(b), usize::MAX, lower_byte)
+}
+
+/// _strcmpi: _stricmp under its other name (MSDN documents the two as one function).
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated.
+#[unsafe(export_name = "f2k_export__strcmpi")]
+pub unsafe extern "C" fn strcmpi(a: *const u8, b: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { stricmp(a, b) }
 }
 
 /// wcslen.
@@ -294,6 +311,37 @@ pub unsafe extern "C" fn wcsspn(string: *const u16, set: *const u16) -> usize {
         .unwrap_or(string.len())
 }
 
+/// wcspbrk: the first unit of `string` that is in `set`, or NULL (never the NUL: an empty set
+/// finds nothing).
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated.
+#[unsafe(export_name = "f2k_export_wcspbrk")]
+pub unsafe extern "C" fn wcspbrk(string: *const u16, set: *const u16) -> *const u16 {
+    // SAFETY: the caller's strings.
+    let (units_of, set) = unsafe { (edge::wide(string), edge::wide(set)) };
+    match units_of.iter().position(|unit| set.contains(unit)) {
+        Some(at) => unit_address(string, at),
+        None => core::ptr::null(),
+    }
+}
+
+/// wcscspn: the length of `string`'s first run of units that are not in `set`.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated.
+#[unsafe(export_name = "f2k_export_wcscspn")]
+pub unsafe extern "C" fn wcscspn(string: *const u16, set: *const u16) -> usize {
+    // SAFETY: the caller's strings.
+    let (string, set) = unsafe { (edge::wide(string), edge::wide(set)) };
+    string
+        .iter()
+        .position(|unit| set.contains(unit))
+        .unwrap_or(string.len())
+}
+
 /// The string's units mapped in place.
 fn map_in_place(string: &mut [WideUnit], map: impl Fn(u16) -> u16) {
     for unit in string {
@@ -325,6 +373,44 @@ pub unsafe extern "C" fn wcsupr(string: *mut u16) -> *mut u16 {
     let units_of = unsafe { edge::wide_parts_mut(string, rtl::cstr::len_until_nul(string)) };
     map_in_place(units_of, ctype::wide_upper);
     string
+}
+
+/// _wcsrev: the string's units reversed in place; answers it.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated and writable.
+#[unsafe(export_name = "f2k_export__wcsrev")]
+pub unsafe extern "C" fn wcsrev(string: *mut u16) -> *mut u16 {
+    // SAFETY: the caller's writable string, the call's alone.
+    let units_of = unsafe { edge::wide_parts_mut(string, rtl::cstr::len_until_nul(string)) };
+    units_of.reverse();
+    string
+}
+
+/// _wcsdup: a copy of the string and its NUL in a block from malloc (the caller frees it); NULL
+/// for a NULL string or when the heap has no room.
+///
+/// # Safety
+///
+/// `string` is null or NUL-terminated.
+#[unsafe(export_name = "f2k_export__wcsdup")]
+pub unsafe extern "C" fn wcsdup(string: *const u16) -> *mut u16 {
+    if string.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's string.
+    let units_of = unsafe { edge::wide(string) };
+    let length = units_of.len();
+    let copy = crate::heap::allocate((length + 1) * 2, false).cast::<u16>();
+    if copy.is_null() {
+        return copy;
+    }
+    // SAFETY: a fresh block of the units and the NUL, the call's alone.
+    let out = unsafe { edge::wide_parts_mut(copy, length + 1) };
+    out[..length].copy_from_slice(units_of);
+    out[length] = WideUnit::new(0);
+    copy
 }
 
 /// strlen.
@@ -448,6 +534,28 @@ pub unsafe extern "C" fn strchr(string: *const u8, c: i32) -> *const u8 {
     }
 }
 
+/// strstr: the first occurrence of `search` in `string` (`string` itself for the empty one), or
+/// NULL.
+///
+/// # Safety
+///
+/// Both strings are NUL-terminated.
+#[unsafe(export_name = "f2k_export_strstr")]
+pub unsafe extern "C" fn strstr(string: *const u8, search: *const u8) -> *const u8 {
+    // SAFETY: the caller's strings.
+    let (haystack, wanted) = unsafe { (bytes_until_nul(string), bytes_until_nul(search)) };
+    if wanted.is_empty() {
+        return string;
+    }
+    match haystack
+        .windows(wanted.len())
+        .position(|window| window == wanted)
+    {
+        Some(at) => string.wrapping_add(at),
+        None => core::ptr::null(),
+    }
+}
+
 /// strncmp: the first `count` characters' order, byte by byte as unsigned chars: the difference
 /// of the first that differ, as wcsncmp answers.
 ///
@@ -472,6 +580,94 @@ pub unsafe extern "C" fn strnicmp(a: *const u8, b: *const u8, count: usize) -> i
     // SAFETY: the caller's strings.
     let (a, b) = unsafe { (edge::bytes_bounded(a, count), edge::bytes_bounded(b, count)) };
     difference(narrow_values(a), narrow_values(b), count, lower_byte)
+}
+
+/// The room each of _splitpath's buffers has, its NUL included: stdlib.h's `_MAX_DRIVE`,
+/// `_MAX_DIR`, `_MAX_FNAME` and `_MAX_EXT`. A longer component is cut to fit.
+const PATH_PART_ROOM: [usize; 4] = [3, 256, 256, 256];
+
+/// A path's components, as ranges of its units `at` reads (`length` of them): the drive (its
+/// first two units, when the second is `:`), the directory (to its last `\` or `/`, kept), the file
+/// name (to the last `.` after it) and the extension (from that `.`). A component the path lacks is
+/// empty.
+fn split_path(length: usize, at: impl Fn(usize) -> u16) -> [core::ops::Range<usize>; 4] {
+    let drive = if length >= 2 && at(1) == b':' as u16 {
+        2
+    } else {
+        0
+    };
+    let directory = (drive..length)
+        .rev()
+        .find(|&i| at(i) == b'\\' as u16 || at(i) == b'/' as u16)
+        .map_or(drive, |i| i + 1);
+    let name = (directory..length)
+        .rev()
+        .find(|&i| at(i) == b'.' as u16)
+        .unwrap_or(length);
+    [0..drive, drive..directory, directory..name, name..length]
+}
+
+/// _splitpath: `path` split into its drive, directory, file name and extension, each copied with
+/// its NUL to its buffer when it is given (MSDN: "You can pass NULL for any parameter other than
+/// path that you don't need"). The path is taken a byte at a time (no multibyte code page's lead
+/// bytes).
+///
+/// # Safety
+///
+/// `path` is NUL-terminated; each buffer is null or holds its `_MAX_*` bytes.
+#[unsafe(export_name = "f2k_export__splitpath")]
+pub unsafe extern "C" fn splitpath(
+    path: *const u8,
+    drive: *mut u8,
+    directory: *mut u8,
+    name: *mut u8,
+    extension: *mut u8,
+) {
+    // SAFETY: the caller's path.
+    let path = unsafe { bytes_until_nul(path) };
+    let parts = split_path(path.len(), |i| path[i].into());
+    let buffers = [drive, directory, name, extension];
+    for ((out, part), room) in buffers.into_iter().zip(parts).zip(PATH_PART_ROOM) {
+        if out.is_null() {
+            continue;
+        }
+        let whole = &path[part];
+        let part = &whole[..whole.len().min(room - 1)];
+        // SAFETY: the caller's buffer, which holds `room` bytes: the component's and the NUL.
+        let out = unsafe { core::slice::from_raw_parts_mut(out, part.len() + 1) };
+        out[..part.len()].copy_from_slice(part);
+        out[part.len()] = 0;
+    }
+}
+
+/// _wsplitpath: _splitpath over a wide path, into wide buffers.
+///
+/// # Safety
+///
+/// `path` is NUL-terminated; each buffer is null or holds its `_MAX_*` units, at any address.
+#[unsafe(export_name = "f2k_export__wsplitpath")]
+pub unsafe extern "C" fn wsplitpath(
+    path: *const u16,
+    drive: *mut u16,
+    directory: *mut u16,
+    name: *mut u16,
+    extension: *mut u16,
+) {
+    // SAFETY: the caller's path.
+    let path = unsafe { edge::wide(path) };
+    let parts = split_path(path.len(), |i| path[i].get());
+    let buffers = [drive, directory, name, extension];
+    for ((out, part), room) in buffers.into_iter().zip(parts).zip(PATH_PART_ROOM) {
+        if out.is_null() {
+            continue;
+        }
+        let whole = &path[part];
+        let part = &whole[..whole.len().min(room - 1)];
+        // SAFETY: the caller's buffer, which holds `room` units: the component's and the NUL.
+        let out = unsafe { edge::wide_parts_mut(out, part.len() + 1) };
+        out[..part.len()].copy_from_slice(part);
+        out[part.len()] = WideUnit::new(0);
+    }
 }
 
 #[cfg(test)]
@@ -809,5 +1005,229 @@ mod tests {
         assert_eq!(upper(), "ABC 1[_ÉÉŸĀĀΑΑЖЖ");
         // SAFETY: as above.
         unsafe { crate::ctype::setlocale(0, b"C\0".as_ptr()) };
+    }
+
+    /// The offset of `found` in `string`, -1 for NULL.
+    fn offset<T>(string: *const T, found: *const T) -> isize {
+        if found.is_null() {
+            -1
+        } else {
+            // SAFETY: a pointer into the same string.
+            unsafe { found.offset_from(string) }
+        }
+    }
+
+    /// strings' search block: strstr, wcspbrk and wcscspn.
+    #[test]
+    fn strstr_wcspbrk_and_wcscspn() {
+        let hay = b"haystack\0";
+        let empty = b"\0";
+        let find = |s: &[u8], wanted: &str| {
+            let wanted: Vec<u8> = wanted.bytes().chain([0]).collect();
+            // SAFETY: NUL-terminated strings.
+            offset(s.as_ptr(), unsafe { strstr(s.as_ptr(), wanted.as_ptr()) })
+        };
+        assert_eq!(
+            [
+                "st",
+                "stack",
+                "k",
+                "x",
+                "",
+                "haystack",
+                "haystacks",
+                "stacks"
+            ]
+            .map(|w| find(hay, w)),
+            [3, 3, 7, -1, 0, 0, -1, -1]
+        );
+        assert_eq!([find(empty, ""), find(empty, "a")], [0, -1]);
+
+        let sets = ["", "xyz", "a", "f", "zf", "fa", "dc"];
+        let s = w("abcdef");
+        let e = w("");
+        let latin = w("éα");
+        let brk = |s: &[u16], set: &str| {
+            // SAFETY: NUL-terminated strings.
+            offset(s.as_ptr(), unsafe { wcspbrk(s.as_ptr(), w(set).as_ptr()) })
+        };
+        // SAFETY: NUL-terminated strings.
+        let cspn = |s: &[u16], set: &str| unsafe { wcscspn(s.as_ptr(), w(set).as_ptr()) };
+        assert_eq!(sets.map(|set| brk(&s, set)), [-1, -1, 0, 5, 5, 0, 2]);
+        assert_eq!([brk(&e, ""), brk(&e, "a")], [-1, -1]);
+        assert_eq!(
+            [brk(&latin, "α"), brk(&latin, "é"), brk(&latin, "e")],
+            [1, 0, -1]
+        );
+        assert_eq!(sets.map(|set| cspn(&s, set)), [6, 6, 0, 5, 5, 0, 2]);
+        assert_eq!([cspn(&e, ""), cspn(&e, "a")], [0, 0]);
+        assert_eq!(
+            [cspn(&latin, "α"), cspn(&latin, "é"), cspn(&latin, "e")],
+            [1, 0, 2]
+        );
+    }
+
+    /// strings' dupcase block: _wcsdup, _wcsrev and _strcmpi's sign.
+    #[test]
+    fn wcsdup_wcsrev_and_strcmpi() {
+        crate::heap::initialize();
+        for text in ["duplicate me", "aéαZ", ""] {
+            let source = w(text);
+            // SAFETY: a NUL-terminated string; the copy is NUL-terminated, then freed.
+            unsafe {
+                let copy = wcsdup(source.as_ptr());
+                assert!(!copy.is_null() && copy.cast_const() != source.as_ptr());
+                assert_eq!(wcscmp(copy, source.as_ptr()), 0);
+                crate::heap::free(copy.cast());
+            }
+        }
+        // SAFETY: a null string.
+        assert!(unsafe { wcsdup(core::ptr::null()) }.is_null());
+
+        for (text, reversed) in [
+            ("abcde", "edcba"),
+            ("abcd", "dcba"),
+            ("", ""),
+            ("x", "x"),
+            ("aαb", "bαa"),
+        ] {
+            let mut buffer = w(text);
+            // SAFETY: a NUL-terminated, writable string.
+            let r = unsafe { wcsrev(buffer.as_mut_ptr()) };
+            assert_eq!(r, buffer.as_mut_ptr());
+            assert_eq!(buffer, w(reversed));
+        }
+
+        let _locale = crate::ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { crate::ctype::setlocale(0, b"C\0".as_ptr()) };
+        // SAFETY: NUL-terminated strings.
+        let cmpi = |a: &[u8], b: &[u8]| unsafe { strcmpi(a.as_ptr(), b.as_ptr()) }.signum();
+        assert_eq!(
+            [
+                cmpi(b"abc\0", b"abc\0"),
+                cmpi(b"abc\0", b"ABC\0"),
+                cmpi(b"aBc\0", b"AbC\0"),
+                cmpi(b"abc\0", b"abd\0"),
+                cmpi(b"ABD\0", b"abc\0"),
+                cmpi(b"ab\0", b"abc\0"),
+                cmpi(b"abc\0", b"ab\0"),
+                cmpi(b"\0", b"\0"),
+                cmpi(b"\0", b"a\0"),
+            ],
+            [0, 0, 0, -1, 1, -1, 1, 0, -1]
+        );
+        assert_eq!(
+            [
+                cmpi(b"\xE9\0", b"\xC9\0"),
+                cmpi(b"\xC9\0", b"\xE9\0"),
+                cmpi(b"\xE9\0", b"e\0"),
+                cmpi(b"a\0", b"_\0"),
+                cmpi(b"A\0", b"_\0"),
+                cmpi(b"_\0", b"a\0"),
+                cmpi(b"a\0", b"[\0"),
+                cmpi(b"A\0", b"[\0"),
+                cmpi(b"[\0", b"a\0"),
+            ],
+            [1, -1, 1, 1, 1, -1, 1, 1, -1]
+        );
+    }
+
+    /// strings' split block: each component, a NULL buffer left out, a long one cut to its room.
+    #[test]
+    fn splitpath_and_wsplitpath() {
+        let cases = [
+            (
+                "C:\\dir\\sub\\file.ext",
+                ["C:", "\\dir\\sub\\", "file", ".ext"],
+            ),
+            (
+                "\\\\server\\share\\dir\\file.txt",
+                ["", "\\\\server\\share\\dir\\", "file", ".txt"],
+            ),
+            ("file", ["", "", "file", ""]),
+            ("dir\\", ["", "dir\\", "", ""]),
+            ("dir\\file.tar.gz", ["", "dir\\", "file.tar", ".gz"]),
+            (".profile", ["", "", "", ".profile"]),
+            ("C:file", ["C:", "", "file", ""]),
+            ("c:/fwd/slash.x", ["c:", "/fwd/", "slash", ".x"]),
+            ("a.b\\c", ["", "a.b\\", "c", ""]),
+            ("", ["", "", "", ""]),
+        ];
+        let narrow = |buffer: &[u8]| {
+            let end = buffer.iter().position(|&b| b == 0).unwrap();
+            String::from_utf8(buffer[..end].to_vec()).unwrap()
+        };
+        let wide_text = |buffer: &[u16]| {
+            let end = buffer.iter().position(|&u| u == 0).unwrap();
+            String::from_utf16(&buffer[..end]).unwrap()
+        };
+        for (path, expected) in cases {
+            let p: Vec<u8> = path.bytes().chain([0]).collect();
+            let mut parts = [[b'#'; 256]; 4];
+            let [a, b, c, d] = &mut parts;
+            // SAFETY: a NUL-terminated path; buffers of 256 bytes.
+            unsafe {
+                splitpath(
+                    p.as_ptr(),
+                    a.as_mut_ptr(),
+                    b.as_mut_ptr(),
+                    c.as_mut_ptr(),
+                    d.as_mut_ptr(),
+                )
+            };
+            assert_eq!(parts.map(|part| narrow(&part)), expected, "{path:?}");
+            let mut parts = [[b'#' as u16; 256]; 4];
+            let [a, b, c, d] = &mut parts;
+            // SAFETY: as above, wide.
+            unsafe {
+                wsplitpath(
+                    w(path).as_ptr(),
+                    a.as_mut_ptr(),
+                    b.as_mut_ptr(),
+                    c.as_mut_ptr(),
+                    d.as_mut_ptr(),
+                )
+            };
+            assert_eq!(parts.map(|part| wide_text(&part)), expected, "{path:?}");
+        }
+
+        let path = b"C:\\dir\\sub\\file.ext\0";
+        let (mut dir, mut ext) = ([b'#'; 256], [b'#'; 256]);
+        let null = core::ptr::null_mut();
+        // SAFETY: a NUL-terminated path; buffers of 256 bytes or none.
+        unsafe {
+            splitpath(
+                path.as_ptr(),
+                null,
+                dir.as_mut_ptr(),
+                null,
+                ext.as_mut_ptr(),
+            )
+        };
+        assert_eq!([narrow(&dir), narrow(&ext)], ["\\dir\\sub\\", ".ext"]);
+        // SAFETY: as above.
+        unsafe { splitpath(path.as_ptr(), null, null, null, null) };
+
+        // A component longer than its room is cut: the drive's three bytes, the name's 256.
+        let long: Vec<u8> = b"C:"
+            .iter()
+            .copied()
+            .chain([b'n'; 300])
+            .chain(*b".e\0")
+            .collect();
+        let (mut drive, mut name) = ([b'#'; 8], [b'#'; 300]);
+        // SAFETY: as above; the buffers have more room than the components' maximum.
+        unsafe {
+            splitpath(
+                long.as_ptr(),
+                drive.as_mut_ptr(),
+                null,
+                name.as_mut_ptr(),
+                null,
+            )
+        };
+        assert_eq!(narrow(&drive), "C:");
+        assert_eq!(narrow(&name).len(), 255);
     }
 }

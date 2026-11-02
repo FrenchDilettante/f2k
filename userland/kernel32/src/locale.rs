@@ -1,7 +1,8 @@
 //! The locale group, kernel32's own NLS code as on Windows 2000 (no kernel transition): the code
-//! pages and their conversions (MultiByteToWideChar and WideCharToMultiByte over `rtl::codepage`),
-//! case mapping and character types over code page 1252 (`rtl::cp1252`), comparison
-//! ([`crate::collate`]), and the one locale's facts ([`crate::localeinfo`]).
+//! pages and their conversions (MultiByteToWideChar and WideCharToMultiByte over `rtl::codepage`)
+//! and lead bytes (IsDBCSLeadByte), case mapping and character types over code page 1252
+//! (`rtl::cp1252`), comparison ([`crate::collate`]), the one locale's facts
+//! ([`crate::localeinfo`]), and MulDiv, which the group's spec section keeps beside them.
 //!
 //! The caller's strings are read and written where they are: a pointer the caller cannot read or
 //! write faults in the caller's thread, as kernel32's own code does on Windows 2000.
@@ -69,6 +70,58 @@ fn cp_info(page: u32, mut info: OutBuf<'_, u8>) -> Result<(), Failure> {
 #[unsafe(export_name = "f2k_export_IsValidCodePage")]
 pub extern "system" fn is_valid_code_page(page: u32) -> u32 {
     u32::from(codepage::is_valid(page))
+}
+
+/// CPINFO's LeadByte: up to five (first, last) ranges after MaxCharSize and DefaultChar, ended by
+/// a pair of zeroes.
+const LEAD_BYTES: core::ops::Range<usize> = 6..CP_INFO_SIZE;
+
+/// IsDBCSLeadByteEx: whether the byte is a lead byte of the code page, from its lead-byte ranges as
+/// GetCPInfo describes them (none of the installed pages has any, so FALSE); FALSE with
+/// ERROR_INVALID_PARAMETER for a code page that is not installed.
+#[unsafe(export_name = "f2k_export_IsDBCSLeadByteEx")]
+pub extern "system" fn is_dbcs_lead_byte_ex(page: u32, byte: u32) -> u32 {
+    let Some(facts) = codepage::cp_info(page) else {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let byte = byte as u8;
+    let (ranges, _) = facts[LEAD_BYTES].as_chunks::<2>();
+    let lead = ranges
+        .iter()
+        .take_while(|&&range| range != [0, 0])
+        .any(|&[first, last]| (first..=last).contains(&byte));
+    u32::from(lead)
+}
+
+/// IsDBCSLeadByte: IsDBCSLeadByteEx in the ANSI code page.
+#[unsafe(export_name = "f2k_export_IsDBCSLeadByte")]
+pub extern "system" fn is_dbcs_lead_byte(byte: u32) -> u32 {
+    is_dbcs_lead_byte_ex(codepage::CP_ACP, byte)
+}
+
+/// MulDiv: `number * numerator / denominator` over a 64-bit product, rounded to the nearest
+/// integer, halves away from zero (the quotient of the magnitudes rounded, then signed); -1 for a
+/// zero denominator or a magnitude past 2^31 - 1. A result of -2^31 is overflow too, as the
+/// utility fixture's capture shows: Windows 2000 checks the magnitude, whichever the sign. The last
+/// error is left alone.
+#[unsafe(export_name = "f2k_export_MulDiv")]
+pub extern "system" fn mul_div(number: i32, numerator: i32, denominator: i32) -> i32 {
+    if denominator == 0 {
+        return -1;
+    }
+    let product = i64::from(number) * i64::from(numerator);
+    let divisor = i64::from(denominator).unsigned_abs();
+    let magnitude = (product.unsigned_abs() + divisor / 2) / divisor;
+    let Ok(magnitude) = i32::try_from(magnitude) else {
+        return -1;
+    };
+    let negative = (product < 0) != (denominator < 0);
+    if negative {
+        -magnitude
+    } else {
+        magnitude
+    }
 }
 
 /// A conversion's source: through the terminator for -1 (the terminator converted too), else as
@@ -450,6 +503,41 @@ pub unsafe extern "system" fn get_string_type_w(
     bool_answer(string_type_wide(info, src, out))
 }
 
+/// GetStringTypeExA: GetStringTypeA, with its locale.
+///
+/// # Safety
+///
+/// As GetStringTypeA's.
+#[unsafe(export_name = "f2k_export_GetStringTypeExA")]
+pub unsafe extern "system" fn get_string_type_ex_a(
+    locale: u32,
+    info: u32,
+    src: *const u8,
+    count: i32,
+    out: *mut u16,
+) -> u32 {
+    // SAFETY: the caller's source and output, as GetStringTypeA takes them (the contract).
+    unsafe { get_string_type_a(locale, info, src, count, out) }
+}
+
+/// GetStringTypeExW: GetStringTypeW, the locale ignored (as documented: Unicode characters
+/// classify the same in every locale).
+///
+/// # Safety
+///
+/// As GetStringTypeW's.
+#[unsafe(export_name = "f2k_export_GetStringTypeExW")]
+pub unsafe extern "system" fn get_string_type_ex_w(
+    _locale: u32,
+    info: u32,
+    src: *const u16,
+    count: i32,
+    out: *mut u16,
+) -> u32 {
+    // SAFETY: the caller's source and output, as GetStringTypeW takes them (the contract).
+    unsafe { get_string_type_w(info, src, count, out) }
+}
+
 /// GetStringTypeW's work.
 fn string_type_wide(
     info: u32,
@@ -648,6 +736,13 @@ pub extern "system" fn set_thread_locale(locale: u32) -> u32 {
 #[unsafe(export_name = "f2k_export_GetUserDefaultLCID")]
 pub extern "system" fn get_user_default_lcid() -> u32 {
     crate::localeinfo::LCID_EN_US
+}
+
+/// GetUserDefaultLangID: the user's default locale's language,
+/// LANGIDFROMLCID(GetUserDefaultLCID()), zero-extended.
+#[unsafe(export_name = "f2k_export_GetUserDefaultLangID")]
+pub extern "system" fn get_user_default_lang_id() -> u32 {
+    get_user_default_lcid() & 0xFFFF
 }
 
 /// GetSystemDefaultLCID: the one locale.

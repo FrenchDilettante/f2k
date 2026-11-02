@@ -1,0 +1,153 @@
+# F2K capture of strings (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026  7:05:29.80
+strings F2KT-SOURCE-CRC=0x54F13320
+>>> strings.exe itow
+== itow
+_itow(0): 2 [0] 8 [0] 10 [0] 16 [0] 36 [0]; returned the buffer yes
+_itow(1): 2 [1] 8 [1] 10 [1] 16 [1] 36 [1]; returned the buffer yes
+_itow(-1): 2 skipped 8 [37777777777] 10 [-1] 16 [ffffffff] 36 [1z141z3]; returned the buffer yes
+_itow(255): 2 [11111111] 8 [377] 10 [255] 16 [ff] 36 [73]; returned the buffer yes
+_itow(-2147483648): 2 skipped 8 [20000000000] 10 [-2147483648] 16 [80000000] 36 [zik0zk]; returned the buffer yes
+_itow(2147483647): 2 skipped 8 [17777777777] 10 [2147483647] 16 [7fffffff] 36 [zik0zj]; returned the buffer yes
+_ltow(0): 2 [0] 8 [0] 10 [0] 16 [0] 36 [0]; returned the buffer yes
+_ltow(1): 2 [1] 8 [1] 10 [1] 16 [1] 36 [1]; returned the buffer yes
+_ltow(-1): 2 skipped 8 [37777777777] 10 [-1] 16 [ffffffff] 36 [1z141z3]; returned the buffer yes
+_ltow(255): 2 [11111111] 8 [377] 10 [255] 16 [ff] 36 [73]; returned the buffer yes
+_ltow(-2147483648): 2 skipped 8 [20000000000] 10 [-2147483648] 16 [80000000] 36 [zik0zk]; returned the buffer yes
+_ltow(2147483647): 2 skipped 8 [17777777777] 10 [2147483647] 16 [7fffffff] 36 [zik0zj]; returned the buffer yes
+_ultow(0): 2 [0] 8 [0] 10 [0] 16 [0] 36 [0]; returned the buffer yes
+_ultow(1): 2 [1] 8 [1] 10 [1] 16 [1] 36 [1]; returned the buffer yes
+_ultow(255): 2 [11111111] 8 [377] 10 [255] 16 [ff] 36 [73]; returned the buffer yes
+_ultow(2147483648): 2 skipped 8 [20000000000] 10 [2147483648] 16 [80000000] 36 [zik0zk]; returned the buffer yes
+_ultow(2147483647): 2 skipped 8 [17777777777] 10 [2147483647] 16 [7fffffff] 36 [zik0zj]; returned the buffer yes
+_ultow(4294967295): 2 skipped 8 [37777777777] 10 [4294967295] 16 [ffffffff] 36 [1z141z3]; returned the buffer yes
+strings: done
+<<< exit code=0
+>>> strings.exe atoi
+== atoi
+"42": _wtoi 42 errno 0, atol 42 errno 0
+" \t 42": _wtoi 42 errno 0, atol 42 errno 0
+"\t-17": _wtoi -17 errno 0, atol -17 errno 0
+"+8": _wtoi 8 errno 0, atol 8 errno 0
+"-0": _wtoi 0 errno 0, atol 0 errno 0
+"123abc": _wtoi 123 errno 0, atol 123 errno 0
+"": _wtoi 0 errno 0, atol 0 errno 0
+"abc123": _wtoi 0 errno 0, atol 0 errno 0
+"  +-5": _wtoi 0 errno 0, atol 0 errno 0
+"- 5": _wtoi 0 errno 0, atol 0 errno 0
+"+": _wtoi 0 errno 0, atol 0 errno 0
+"2147483647": _wtoi 2147483647 errno 0, atol 2147483647 errno 0
+"2147483648": _wtoi -2147483648 errno 0, atol -2147483648 errno 0
+"-2147483648": _wtoi -2147483648 errno 0, atol -2147483648 errno 0
+"-2147483649": _wtoi 2147483647 errno 0, atol 2147483647 errno 0
+"99999999999": _wtoi 1215752191 errno 0, atol 1215752191 errno 0
+"-99999999999": _wtoi -1215752191 errno 0, atol -1215752191 errno 0
+strings: done
+<<< exit code=0
+>>> strings.exe abs
+== abs
+0: abs 0, labs 0
+5: abs 5, labs 5
+-5: abs 5, labs 5
+-2147483648: abs -2147483648, labs -2147483648
+2147483647: abs 2147483647, labs 2147483647
+strings: done
+<<< exit code=0
+>>> strings.exe search
+== search
+strstr("haystack"): "st" +3, "stack" +3, "k" +7, "x" NULL, "" +0
+strstr("haystack"): "haystack" +0, "haystacks" NULL, "stacks" NULL
+strstr(""): "" +0, "a" NULL
+wcspbrk("abcdef"): "" NULL, "xyz" NULL, "a" +0, "f" +5, "zf" +5, "fa" +0, "dc" +2
+wcspbrk(""): "" NULL, "a" NULL
+wcspbrk(U+00E9 U+03B1): U+03B1 +1, U+00E9 +0, "e" NULL
+wcscspn("abcdef"): "" 6, "xyz" 6, "a" 0, "f" 5, "zf" 5, "fa" 0, "dc" 2
+wcscspn(""): "" 0, "a" 0
+wcscspn(U+00E9 U+03B1): U+03B1 1, U+00E9 0, "e" 2
+strings: done
+<<< exit code=0
+>>> strings.exe dupcase
+== dupcase
+_wcsdup("duplicate me"): [duplicate me] equal yes, a distinct block yes
+_wcsdup(a U+00E9 U+03B1 Z): [aé<U+03B1>Z] equal yes, a distinct block yes
+_wcsdup(""): [] equal yes, a distinct block yes
+_wcsrev("abcde"): [edcba] returned the argument yes
+_wcsrev("abcd"): [dcba] returned the argument yes
+_wcsrev(""): [] returned the argument yes
+_wcsrev("x"): [x] returned the argument yes
+_wcsrev(a U+03B1 b): [b<U+03B1>a] returned the argument yes
+_strcmpi("abc", "abc"): 0
+_strcmpi("abc", "ABC"): 0
+_strcmpi("aBc", "AbC"): 0
+_strcmpi("abc", "abd"): -1
+_strcmpi("ABD", "abc"): 1
+_strcmpi("ab", "abc"): -1
+_strcmpi("abc", "ab"): 1
+_strcmpi("", ""): 0
+_strcmpi("", "a"): -1
+_strcmpi("\xE9", "\xC9"): 1
+_strcmpi("\xC9", "\xE9"): -1
+_strcmpi("\xE9", "e"): 1
+_strcmpi("a", "_"): 1
+_strcmpi("A", "_"): 1
+_strcmpi("_", "a"): -1
+_strcmpi("a", "["): 1
+_strcmpi("A", "["): 1
+_strcmpi("[", "a"): -1
+strings: done
+<<< exit code=0
+>>> strings.exe split
+== split
+_splitpath("C:\dir\sub\file.ext"): [C:] [\dir\sub\] [file] [.ext]
+_splitpath("\\server\share\dir\file.txt"): [] [\\server\share\dir\] [file] [.txt]
+_splitpath("file"): [] [] [file] []
+_splitpath("dir\"): [] [dir\] [] []
+_splitpath("dir\file.tar.gz"): [] [dir\] [file.tar] [.gz]
+_splitpath(".profile"): [] [] [] [.profile]
+_splitpath("C:file"): [C:] [] [file] []
+_splitpath("c:/fwd/slash.x"): [c:] [/fwd/] [slash] [.x]
+_splitpath(""): [] [] [] []
+_wsplitpath("C:\dir\sub\file.ext"): [C:] [\dir\sub\] [file] [.ext]
+_wsplitpath("\\server\share\dir\file.txt"): [] [\\server\share\dir\] [file] [.txt]
+_wsplitpath("file"): [] [] [file] []
+_wsplitpath("dir\"): [] [dir\] [] []
+_wsplitpath("dir\file.tar.gz"): [] [dir\] [file.tar] [.gz]
+_wsplitpath(".profile"): [] [] [] [.profile]
+_wsplitpath("C:file"): [C:] [] [file] []
+_wsplitpath("c:/fwd/slash.x"): [c:] [/fwd/] [slash] [.x]
+_wsplitpath(""): [] [] [] []
+_splitpath("C:\dir\sub\file.ext", NULL, dir, NULL, ext): [\dir\sub\] [.ext]
+_splitpath("C:\dir\sub\file.ext", drive, NULL, fname, NULL): [C:] [file]
+_splitpath("C:\dir\sub\file.ext", all NULL): returned
+_wsplitpath("\\server\share\dir\file.txt", NULL, dir, NULL, ext): [\\server\share\dir\] [.txt]
+_wsplitpath("\\server\share\dir\file.txt", drive, NULL, fname, NULL): [] [file]
+_wsplitpath("\\server\share\dir\file.txt", all NULL): returned
+strings: done
+<<< exit code=0
+>>> strings.exe wformat
+== wformat
+vswprintf integers and padding: 20 [-7|42|ff|   ab|z  |%]
+vswprintf strings: 25 [wide and narrow and short]
+vswprintf non-ASCII: 5 [é|<U+03B1>|<U+03B1>]
+vswprintf empty: 0 []
+wprintf: 42 [wide] [narrow]
+wprintf returned 28
+wprintf("") returned 0
+fwprintf(stdout): ff [wide]
+fwprintf(stdout) returned 28
+"a\nb\n", "w": fwprintf 4 errno 0; 6 bytes: 61 0D 0A 62 0D 0A
+U+00E9 in the format, "w": fwprintf 4 errno 0; 5 bytes: 5B E9 5D 0D 0A
+U+00E9 through %s, "w": fwprintf 4 errno 0; 5 bytes: 5B E9 5D 0D 0A
+U+03B1 in the format, "w": fwprintf -1 errno 42; 1 bytes: 5B
+U+03B1 through %s, "w": fwprintf -1 errno 42; 1 bytes: 5B
+"a\nb\n", "wb": fwprintf 4 errno 0; 8 bytes: 61 00 0A 00 62 00 0A 00
+U+00E9 in the format, "wb": fwprintf 4 errno 0; 8 bytes: 5B 00 E9 00 5D 00 0A 00
+U+00E9 through %s, "wb": fwprintf 4 errno 0; 8 bytes: 5B 00 E9 00 5D 00 0A 00
+U+03B1 in the format, "wb": fwprintf 4 errno 0; 8 bytes: 5B 00 B1 03 5D 00 0A 00
+U+03B1 through %s, "wb": fwprintf 4 errno 0; 8 bytes: 5B 00 B1 03 5D 00 0A 00
+DeleteFileA at the end: yes
+strings: done
+<<< exit code=0

@@ -1,13 +1,26 @@
 //! The processes' calls over ntdll's process services, as on Windows 2000: ExitProcess and
 //! TerminateProcess, OpenProcess and GetExitCodeProcess, ReadProcessMemory and
-//! WriteProcessMemory, the priority class, the affinity and SetErrorMode. A process is named by
-//! its handle (the current one's pseudo-handle, or a handle CreateProcess or OpenProcess handed
-//! out); the kernel checks the handle's access and answers for the process (CreateProcess itself
-//! is [`crate::create`]'s).
+//! WriteProcessMemory, the priority class, the affinity, a process's version and SetErrorMode. A
+//! process is named by its handle (the current one's pseudo-handle, or a handle CreateProcess or
+//! OpenProcess handed out); the kernel checks the handle's access and answers for the process
+//! (CreateProcess itself is [`crate::create`]'s).
 
-use crate::base::{set_last_error, set_last_nt_error, win32_bool, CURRENT_PROCESS};
+use core::mem::offset_of;
+
+use rtl::image::{self, ImageDosHeader, ImageNtHeaders32};
+use rtl::peb::Peb;
+use rtl::pod::Pod;
+
+use crate::base::{
+    current_process_id,
+    image_base,
+    set_last_error,
+    set_last_nt_error,
+    win32_bool,
+    CURRENT_PROCESS,
+};
 use crate::edge::Out;
-use crate::error::{bool_answer, Failure};
+use crate::error::{answer, bool_answer, Failure};
 use crate::nt::ClientId;
 use crate::ntcall::{self, Destination, PebLock, PriorityClass, Source};
 
@@ -339,6 +352,80 @@ fn affinity_masks(
 #[unsafe(export_name = "f2k_export_SetProcessAffinityMask")]
 pub extern "system" fn set_process_affinity_mask(process: u32, mask: u32) -> u32 {
     win32_bool(ntcall::set_process(process, PROCESS_AFFINITY_MASK, &mask))
+}
+
+/// What GetProcessVersion opens another process for: its PEB's address (PROCESS_QUERY_INFORMATION)
+/// and its memory (PROCESS_VM_READ).
+const PROCESS_VM_READ: u32 = 0x0010;
+const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+
+/// GetProcessVersion: the Windows version the process's image is built for, its subsystem version
+/// as MAKELONG(minor, major) — the calling process's (an id of 0, or its own) from its image's
+/// headers (the PEB's ImageBaseAddress, RtlImageNtHeader); another's read out of it, as Windows
+/// 2000's kernel32 reads it (OpenProcess, ProcessBasicInformation's PEB, NtReadVirtualMemory of
+/// its image base, DOS header and NT headers). 0 with the error otherwise: OpenProcess's for an id
+/// naming no process (ERROR_INVALID_PARAMETER), the service's status for a query or read refused,
+/// ERROR_BAD_EXE_FORMAT for an image without PE headers.
+#[unsafe(export_name = "f2k_export_GetProcessVersion")]
+pub extern "system" fn get_process_version(process_id: u32) -> u32 {
+    answer(process_version(process_id), 0)
+}
+
+/// GetProcessVersion's work.
+fn process_version(process_id: u32) -> Result<u32, Failure> {
+    if process_id == 0 || process_id == current_process_id() {
+        let headers = ntcall::image_nt_header(image_base()).ok_or(BAD_IMAGE)?;
+        return Ok(subsystem_version(&headers));
+    }
+    let attributes = ntcall::unnamed_attributes(false, core::ptr::null());
+    let client_id = ClientId {
+        unique_process: process_id as usize,
+        unique_thread: 0,
+    };
+    let process = ntcall::open_process(
+        PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
+        &attributes,
+        &client_id,
+    )
+    .map_err(Failure::Status)?;
+    let version = remote_version(process);
+    let _ = ntcall::close(process);
+    version
+}
+
+/// An image without PE headers: ERROR_BAD_EXE_FORMAT.
+const BAD_IMAGE: Failure = Failure::Error(193);
+
+/// The subsystem version an image's NT headers carry, MAKELONG(minor, major).
+fn subsystem_version(headers: &ImageNtHeaders32) -> u32 {
+    let optional = &headers.optional_header;
+    u32::from(optional.major_subsystem_version) << 16 | u32::from(optional.minor_subsystem_version)
+}
+
+/// Another process's subsystem version, out of its memory through the open handle.
+fn remote_version(process: u32) -> Result<u32, Failure> {
+    let peb = ntcall::basic_information(process)
+        .map_err(Failure::Status)?
+        .peb_base_address;
+    let image_base: u32 = remote(
+        process,
+        peb as usize + offset_of!(Peb<u32>, image_base_address),
+    )?;
+    let dos: ImageDosHeader = remote(process, image_base as usize)?;
+    let offset = image::nt_headers_offset(&dos).ok_or(BAD_IMAGE)?;
+    let headers: ImageNtHeaders32 = remote(process, image_base as usize + offset)?;
+    if headers.signature != image::NT_SIGNATURE {
+        return Err(BAD_IMAGE);
+    }
+    Ok(subsystem_version(&headers))
+}
+
+/// A `T` out of another process's memory at `address` (NtReadVirtualMemory).
+fn remote<T: Pod>(process: u32, address: usize) -> Result<T, Failure> {
+    let mut value = T::zeroed();
+    let destination = Destination::of(value.as_bytes_mut());
+    ntcall::read_virtual_memory(process, address, destination, None).map_err(Failure::Status)?;
+    Ok(value)
 }
 
 /// SEM_FAILCRITICALERRORS: the one mode bit the process's hard-error mode stores inverted (its

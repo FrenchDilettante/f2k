@@ -916,3 +916,126 @@ fn the_thread_locale_is_set_and_read() {
         "a language alone is no locale"
     );
 }
+
+/// MulDiv over the utility fixture's cases: the 64-bit product rounded to the nearest, halves away
+/// from zero whichever sign; a magnitude past 2^31 - 1 (-2^31 included) and a zero denominator are
+/// -1; the last error is left alone.
+///
+/// Pins: kernel32.MulDiv
+#[test]
+fn mul_div_rounds_halves_away_from_zero() {
+    crate::base::set_last_error(0x0F2F_2F2F);
+    for (number, numerator, denominator, result) in [
+        (10, 3, 2, 15),
+        (5, 1, 2, 3),
+        (-5, 1, 2, -3),
+        (5, 1, -2, -3),
+        (7, 1, 3, 2),
+        (-7, 1, 3, -2),
+        (8, 1, 3, 3),
+        (-8, 1, -3, 3),
+        (i32::MAX, i32::MAX, i32::MAX, i32::MAX),
+        (i32::MAX, 2, 1, -1),
+        (1, 1, 0, -1),
+        (i32::MIN, 1, 1, -1),
+        (-i32::MAX, 1, 1, -i32::MAX),
+        (i32::MIN, -1, 1, -1),
+        (i32::MIN, i32::MIN, i32::MIN, -1),
+        (0, 5, 0, -1),
+    ] {
+        assert_eq!(
+            mul_div(number, numerator, denominator),
+            result,
+            "MulDiv({number}, {numerator}, {denominator})"
+        );
+    }
+    assert_eq!(last_error(), 0x0F2F_2F2F);
+}
+
+/// IsDBCSLeadByte and IsDBCSLeadByteEx: no installed code page has lead bytes, so every byte
+/// answers FALSE, the last error left alone; a code page not installed is FALSE with
+/// ERROR_INVALID_PARAMETER.
+///
+/// Pins: kernel32.IsDBCSLeadByte, kernel32.IsDBCSLeadByteEx
+#[test]
+fn no_installed_code_page_has_lead_bytes() {
+    crate::base::set_last_error(0x0F2F_2F2F);
+    for byte in [0x00, 0x41, 0x7F, 0x80, 0x81, 0x9F, 0xA0, 0xE0, 0xFE, 0xFF] {
+        assert_eq!(is_dbcs_lead_byte(byte), 0, "0x{byte:02X}");
+        for page in [CP_ACP, CP_OEMCP, 1252, 437, 850, CP_UTF8] {
+            assert_eq!(is_dbcs_lead_byte_ex(page, byte), 0, "{page}, 0x{byte:02X}");
+        }
+    }
+    assert_eq!(last_error(), 0x0F2F_2F2F);
+    assert_eq!(is_dbcs_lead_byte_ex(12345, 0x81), 0);
+    assert_eq!(last_error(), 87);
+}
+
+/// GetStringTypeExA answers as GetStringTypeA, its locale passed on; GetStringTypeExW as
+/// GetStringTypeW, its locale ignored: the same words, answers and errors for every locale,
+/// information type and count the utility fixture asks.
+///
+/// Pins: kernel32.GetStringTypeExA, kernel32.GetStringTypeExW
+#[test]
+fn get_string_type_ex_answers_as_get_string_type() {
+    let narrow = b"Az09 !.\t\x01\xE9\0";
+    let wide: [u16; 15] = [
+        0x41, 0x7A, 0x30, 0x39, 0x20, 0x21, 0x2E, 0x09, 0x01, 0xE9, 0x0391, 0x4E2D, 0x3000, 0xFF21,
+        0,
+    ];
+    for locale in [0x0400, 0x0800, LOCALE_US] {
+        for (info, count) in [
+            (CT_CTYPE1, -1),
+            (CT_CTYPE2, -1),
+            (3, -1),
+            (CT_CTYPE1, 4),
+            (CT_CTYPE1, 0),
+            (0, -1),
+            (CT_CTYPE1 | CT_CTYPE2, -1),
+        ] {
+            let (mut ex, mut plain) = ([0xBEEFu16; 20], [0xBEEFu16; 20]);
+            crate::base::set_last_error(0);
+            let ex_answer = unsafe {
+                get_string_type_ex_a(locale, info, narrow.as_ptr(), count, ex.as_mut_ptr())
+            };
+            let ex_error = last_error();
+            crate::base::set_last_error(0);
+            let plain_answer = unsafe {
+                get_string_type_a(locale, info, narrow.as_ptr(), count, plain.as_mut_ptr())
+            };
+            assert_eq!(
+                (ex_answer, ex_error, ex),
+                (plain_answer, last_error(), plain)
+            );
+
+            let (mut ex, mut plain) = ([0xBEEFu16; 20], [0xBEEFu16; 20]);
+            crate::base::set_last_error(0);
+            let ex_answer = unsafe {
+                get_string_type_ex_w(locale, info, wide.as_ptr(), count, ex.as_mut_ptr())
+            };
+            let ex_error = last_error();
+            crate::base::set_last_error(0);
+            let plain_answer =
+                unsafe { get_string_type_w(info, wide.as_ptr(), count, plain.as_mut_ptr()) };
+            assert_eq!(
+                (ex_answer, ex_error, ex),
+                (plain_answer, last_error(), plain)
+            );
+        }
+    }
+    let mut out = [0xBEEFu16; 20];
+    assert_eq!(
+        unsafe { get_string_type_ex_w(0x0400, CT_CTYPE1, wide.as_ptr(), -1, out.as_mut_ptr()) },
+        1
+    );
+    assert_eq!(out[0], cp1252::c1_flags(0x41));
+}
+
+/// GetUserDefaultLangID: the language of GetUserDefaultLCID's locale.
+///
+/// Pins: kernel32.GetUserDefaultLangID
+#[test]
+fn the_user_s_language_is_the_locale_s() {
+    assert_eq!(get_user_default_lang_id(), get_user_default_lcid() & 0xFFFF);
+    assert_eq!(get_user_default_lang_id(), 0x0409);
+}

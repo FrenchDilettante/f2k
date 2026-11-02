@@ -1,0 +1,51 @@
+# F2K capture of process (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026  7:05:26.61
+process F2KT-SOURCE-CRC=0xE51906D1
+>>> process.exe cmdline
+== cmdline
+_acmdln resolved: yes, _wcmdln resolved: yes, __argc resolved: yes, __argv resolved: yes
+_acmdln against GetCommandLineA(): the same pointer yes, the same text yes
+_wcmdln against GetCommandLineW(): the same pointer yes, the same text yes
+__argc: 2, *__p___argc() yes, at __p___argc()'s address yes, main's argc yes
+__argv: *__p___argv() yes, at __p___argv()'s address yes, main's argv yes
+argv[0]'s final component is process.exe: yes
+argv[1]: [cmdline]
+argv[argc] is NULL: yes
+command line tail: [cmdline]
+command line tail (W): [cmdline]
+process: done
+<<< exit code=0
+>>> process.exe getenv
+== getenv
+_putenv("F2KT_A=one"): 0
+getenv("F2KT_A"): [one]
+getenv("f2kt_a"): [one], the same pointer yes
+getenv("F2KT_MISSING"): NULL
+getenv(""): NULL
+getenv("F2KT_A=x"): NULL
+_putenv("F2KT_A="): 0
+getenv("F2KT_A") after: NULL
+SetEnvironmentVariableA("F2KT_B", "two"): ret=1 err=-
+getenv("F2KT_B") after: NULL
+process: done
+<<< exit code=0
+>>> process.exe heap
+== heap
+operator new resolved: yes, operator delete resolved: yes
+new(1): a block, _msize 16
+new(100): a block, _msize 112
+new(0): a block, _msize 16
+new(0) again: a block, _msize 16
+the two new(0) blocks distinct: yes
+malloc(1): a block, _msize 16
+malloc(100): a block, _msize 112
+malloc(5000): a block, _msize 5008
+delete on each new block: returned
+delete(NULL): returned
+_expand(a 5000-byte block, 100): a block, the same pointer yes, _msize 112, contents kept yes
+_expand(that block, 100): a block, the same pointer yes, _msize 112
+process: done
+<<< exit code=0

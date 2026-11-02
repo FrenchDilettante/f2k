@@ -17,6 +17,10 @@
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
 //! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
 //!
+//! wprintf and fwprintf write each wide character as MSDN's "Unicode Stream I/O in Text and Binary
+//! Modes" says: on a text-mode descriptor converted as wctomb converts it (the LC_CTYPE locale's
+//! code page; one it lacks fails the call: -1, errno EILSEQ), on a binary one as its two bytes.
+//!
 //! Each stream has its own lock, as on Windows 2000 ([`with_stream`]): a call holds its stream's
 //! across the descriptor's reads and writes, so a thread waiting on stdin (reading the console)
 //! keeps no other stream from the rest.
@@ -29,11 +33,12 @@
 use rtl::cstr::bytes_until_nul;
 use rtl::sync::Locked;
 
+use crate::ctype;
 use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
 use crate::edge::{self, WideUnit};
 use crate::format::{self, Args, Output, Unbounded, VaList};
 use crate::lowio;
-use crate::thread::{set_errno, Lock, UnwindLock, EBADF, EINVAL, EMFILE};
+use crate::thread::{set_errno, Lock, UnwindLock, EBADF, EILSEQ, EINVAL, EMFILE};
 use crate::unwind;
 
 /// The `_flag` bits (stdio.h's, and the C runtime's own: `_IOYOURBUF` a buffer the stream does not
@@ -350,6 +355,87 @@ unsafe fn print(stream: *mut File, text: &[u8], args: &mut impl Args) -> i32 {
     unsafe { output(stream, |out| format::format(text, args, out)) }
 }
 
+/// A stream the wide formatter writes to, each wide character as its descriptor's mode takes it
+/// (MSDN's "Unicode Stream I/O in Text and Binary Modes"). In text mode, the character in the
+/// LC_CTYPE locale's code page, as wctomb converts it (its `\n` translated when the bytes go out);
+/// a character the code page lacks fails the call, and nothing more is written. In binary mode,
+/// the character's two bytes as they are, low first.
+struct WideStream<'s, 'a> {
+    stream: &'s mut Stream<'a>,
+    text: bool,
+    unconverted: bool,
+}
+
+impl Output for WideStream<'_, '_> {
+    fn put(&mut self, unit: u32) {
+        if self.unconverted {
+            return;
+        }
+        let Stream { file, index } = &mut *self.stream;
+        if !self.text {
+            for byte in (unit as u16).to_le_bytes() {
+                put(byte, file, *index);
+            }
+            return;
+        }
+        match ctype::wide_to_byte(unit as u16) {
+            Some(byte) => {
+                put(byte, file, *index);
+            }
+            None => self.unconverted = true,
+        }
+    }
+}
+
+/// Wide formatted output to a stream ([`output`]): the count of wide characters, or -1 when a write
+/// failed, or with errno EILSEQ when a character has no form in the locale's code page.
+///
+/// # Safety
+///
+/// As [`print`]'s.
+unsafe fn wide_print(stream: *mut File, text: &[WideUnit], args: &mut impl Args) -> i32 {
+    let mut unconverted = false;
+    // SAFETY: the caller's contract.
+    let count = unsafe {
+        output(stream, |out| {
+            let text_mode = lowio::is_text(out.file.file);
+            let mut wide = WideStream {
+                stream: out,
+                text: text_mode,
+                unconverted: false,
+            };
+            let count = format::format(text, args, &mut wide);
+            unconverted = wide.unconverted;
+            count
+        })
+    };
+    if unconverted {
+        set_errno(EILSEQ);
+        return -1;
+    }
+    count
+}
+
+/// wprintf's body: the wide format and its arguments to stdout.
+///
+/// # Safety
+///
+/// `text` is NUL-terminated, `args` the caller's arguments for it.
+pub unsafe extern "C" fn wprintf_va(text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract; stdout is `_iob[1]`.
+    unsafe { wide_print(stream_at(1), edge::wide(text), &mut VaList::new(args)) }
+}
+
+/// fwprintf's body.
+///
+/// # Safety
+///
+/// `stream` is a stream; the rest as wprintf_va's.
+pub unsafe extern "C" fn fwprintf_va(stream: *mut File, text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { wide_print(stream, edge::wide(text), &mut VaList::new(args)) }
+}
+
 /// A call's output to a stream, `emit`'s, under the stream's lock: stdout or stderr on a device
 /// lent a buffer for the call and flushed at its end. What `emit` counted, or -1 when a write
 /// failed (the call's `_IOERR`, the stream's own kept apart). An exception unwinding out of `emit`
@@ -476,6 +562,21 @@ pub unsafe extern "C" fn vsnprintf(
     }
 }
 
+/// _snprintf's body: _vsnprintf's work over the variadic call's arguments.
+///
+/// # Safety
+///
+/// As _vsnprintf's.
+pub unsafe extern "C" fn snprintf_va(
+    buffer: *mut u8,
+    count: usize,
+    text: *const u8,
+    args: *const u8,
+) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { vsnprintf(buffer, count, text, args) }
+}
+
 /// swprintf's body (MSVC 6's swprintf takes no count).
 ///
 /// # Safety
@@ -490,6 +591,17 @@ pub unsafe extern "C" fn swprintf_va(buffer: *mut u16, text: *const u16, args: *
             &mut VaList::new(args),
         )
     }
+}
+
+/// vswprintf: MSVC 6's, without a count: swprintf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As sprintf_va's, in wide units; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vswprintf")]
+pub unsafe extern "C" fn vswprintf(buffer: *mut u16, text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { swprintf_va(buffer, text, args) }
 }
 
 /// _snwprintf's body.
@@ -576,6 +688,37 @@ mod variadic {
         )
     }
 
+    /// wprintf(format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_wprintf")]
+    pub unsafe extern "C" fn wprintf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+8]",
+            "push eax",
+            "push dword ptr [esp+8]",
+            "call {body}",
+            "add esp, 8",
+            "ret",
+            body = sym wprintf_va,
+        )
+    }
+
+    /// fwprintf(stream, format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_fwprintf")]
+    pub unsafe extern "C" fn fwprintf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+12]",
+            "push eax",
+            "push dword ptr [esp+12]",
+            "push dword ptr [esp+12]",
+            "call {body}",
+            "add esp, 12",
+            "ret",
+            body = sym fwprintf_va,
+        )
+    }
+
     /// sprintf(buffer, format, ...).
     #[unsafe(naked)]
     #[unsafe(export_name = "f2k_export_sprintf")]
@@ -622,6 +765,23 @@ mod variadic {
             "add esp, 16",
             "ret",
             body = sym snwprintf_va,
+        )
+    }
+
+    /// _snprintf(buffer, count, format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export__snprintf")]
+    pub unsafe extern "C" fn snprintf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+16]",
+            "push eax",
+            "push dword ptr [esp+16]",
+            "push dword ptr [esp+16]",
+            "push dword ptr [esp+16]",
+            "call {body}",
+            "add esp, 16",
+            "ret",
+            body = sym snprintf_va,
         )
     }
 
@@ -1010,5 +1170,107 @@ mod tests {
         let taken = receiver.recv_timeout(std::time::Duration::from_secs(10));
         assert!(taken.is_ok(), "another thread takes the stream's lock");
         assert_eq!(&buffer[..2], b"ab");
+    }
+
+    /// _snprintf's body is _vsnprintf over the variadic call's arguments (laid out as the host's: a
+    /// pointer takes its own width): the count and a NUL when there is room for it, the count and
+    /// no NUL for an exact fit, -1 and the buffer filled without a NUL when the text overflows.
+    #[test]
+    fn snprintf_bounds_as_vsnprintf_does() {
+        let ab = b"ab\0";
+        let mut list = Vec::new();
+        list.extend(42u32.to_ne_bytes());
+        list.extend((ab.as_ptr() as usize).to_ne_bytes());
+        for (count, answer, expected) in [
+            (8, 5, &b"42|ab\0##"[..]),
+            (5, 5, b"42|ab###"),
+            (3, -1, b"42|#####"),
+            (0, -1, b"########"),
+        ] {
+            let mut out = [b'#'; 8];
+            // SAFETY: a buffer of 8 bytes, `count` of them offered; the list holds what the
+            // format consumes.
+            let n =
+                unsafe { snprintf_va(out.as_mut_ptr(), count, b"%d|%s\0".as_ptr(), list.as_ptr()) };
+            assert_eq!((n, &out[..]), (answer, expected), "count {count}");
+        }
+    }
+
+    /// strings' wformat block: vswprintf is swprintf over a `va_list` (laid out as the host's: a
+    /// pointer takes its own width).
+    #[test]
+    fn vswprintf_takes_a_va_list() {
+        use crate::format::tests::wide;
+        let ab = wide("ab");
+        let mut list = Vec::new();
+        list.extend((-7i32).to_ne_bytes());
+        list.extend(42u32.to_ne_bytes());
+        list.extend(255u32.to_ne_bytes());
+        list.extend((ab.as_ptr() as usize).to_ne_bytes());
+        list.extend(('z' as u32).to_ne_bytes());
+        let format = wide("%d|%u|%x|%5s|%-3c|%%");
+        let mut out = [b'#' as u16; 32];
+        // SAFETY: a buffer of 32 units; the list holds what the format consumes.
+        let n = unsafe { vswprintf(out.as_mut_ptr(), format.as_ptr(), list.as_ptr()) };
+        assert_eq!(n, 20);
+        assert_eq!(
+            String::from_utf16_lossy(&out[..22]),
+            "-7|42|ff|   ab|z  |%\0#"
+        );
+        // SAFETY: as above, an empty format and no arguments.
+        let n = unsafe { vswprintf(out.as_mut_ptr(), wide("").as_ptr(), list.as_ptr()) };
+        assert_eq!((n, out[0]), (0, 0));
+    }
+
+    /// strings' wformat block's files: in text mode each wide character as the C locale's code
+    /// page has it (below U+0100), one without a byte ending the output; in binary mode each
+    /// character's two bytes, low first.
+    #[test]
+    fn wide_output_takes_the_descriptors_mode() {
+        use crate::format::tests::{units_of, wide, List};
+        let _locale = ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
+        let run = |text: bool, format: &str| {
+            let mut buffer = [0u8; 64];
+            let mut file = File {
+                base: buffer.as_mut_ptr(),
+                ptr: buffer.as_mut_ptr(),
+                cnt: 64,
+                bufsiz: 64,
+                flag: IOWRT | IOYOURBUF,
+                file: 2000,
+                ..File::UNUSED
+            };
+            let mut stream = Stream {
+                file: &mut file,
+                index: None,
+            };
+            let mut out = WideStream {
+                stream: &mut stream,
+                text,
+                unconverted: false,
+            };
+            let count = format::format(
+                &units_of(&wide(format)),
+                &mut List(Default::default()),
+                &mut out,
+            );
+            let unconverted = out.unconverted;
+            let written = 64 - file.cnt as usize;
+            (count, unconverted, buffer[..written].to_vec())
+        };
+        assert_eq!(run(true, "a\nb\n"), (4, false, b"a\nb\n".to_vec()));
+        assert_eq!(run(false, "a\nb\n"), (4, false, b"a\0\n\0b\0\n\0".to_vec()));
+        assert_eq!(run(true, "[é]\n"), (4, false, b"[\xE9]\n".to_vec()));
+        assert_eq!(
+            run(false, "[é]\n"),
+            (4, false, b"[\0\xE9\0]\0\n\0".to_vec())
+        );
+        assert_eq!(run(true, "[α]\n"), (4, true, b"[".to_vec()));
+        assert_eq!(
+            run(false, "[α]\n"),
+            (4, false, b"[\0\xB1\x03]\0\n\0".to_vec())
+        );
     }
 }

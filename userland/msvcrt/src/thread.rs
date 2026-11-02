@@ -137,6 +137,7 @@ pub const EMFILE: i32 = 24;
 pub const ENOSPC: i32 = 28;
 pub const EPIPE: i32 = 32;
 pub const ERANGE: i32 = 34;
+pub const EILSEQ: i32 = 42;
 
 /// The calling thread's errno.
 pub fn errno() -> i32 {

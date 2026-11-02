@@ -599,6 +599,8 @@ unsafe extern "system" {
         ordinal: u32,
         address: *mut u32,
     ) -> u32;
+    /// RtlImageNtHeader: the NT headers of the image mapped at the base; null when it has none.
+    pub fn RtlImageNtHeader(base: usize) -> *const rtl::image::ImageNtHeaders32;
     /// The counted strings, through the ANSI code page: a narrow string counted, converted to a
     /// Unicode one (into the caller's buffer, or one on the process heap, freed with
     /// RtlFreeUnicodeString), a Unicode one to a narrow one, and UTF-16 units narrowed and their
@@ -2007,6 +2009,9 @@ pub mod files {
         /// The current directory's DOS path (its trailing separator kept), as ntdll keeps it.
         pub static CURRENT_DIRECTORY: RefCell<Vec<u16>> =
             RefCell::new("C:\\".encode_utf16().collect());
+        /// A status the stand-in fails with once, after this many of its calls succeed first (a
+        /// failure past a call's first service; FAIL_NEXT fails the first).
+        pub static FAIL_AFTER: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
     }
 
     /// The calls taken since the last look, and none kept.
@@ -2018,10 +2023,24 @@ pub mod files {
         CALLS.with(|calls| calls.borrow_mut().push(call));
     }
 
-    /// The status the stand-in fails with, once (FAIL_NEXT).
+    /// The status the stand-in fails with, once (FAIL_NEXT, else FAIL_AFTER's once its calls have
+    /// passed).
     fn failure() -> Option<u32> {
         let status = FAIL_NEXT.with(|cell| cell.replace(0));
-        (status != 0).then_some(status)
+        if status != 0 {
+            return Some(status);
+        }
+        FAIL_AFTER.with(|cell| match cell.get() {
+            (_, 0) => None,
+            (0, status) => {
+                cell.set((0, 0));
+                Some(status)
+            }
+            (passing, status) => {
+                cell.set((passing - 1, status));
+                None
+            }
+        })
     }
 
     unsafe fn text(string: *const UnicodeString) -> String {
@@ -3107,7 +3126,9 @@ pub mod threads {
 pub mod modules {
     use std::cell::RefCell;
 
+    use rtl::image::ImageNtHeaders32;
     use rtl::peb::{LdrDataTableEntry, Peb, PebLdrData};
+    use rtl::pod::Pod;
 
     use super::host::failure;
     use super::threads::{IMAGE_BASE, IMAGE_PATH};
@@ -3238,6 +3259,33 @@ pub mod modules {
             NO_THREAD_CALLS.with(|modules| modules.borrow_mut().push(module));
         }
         0
+    }
+
+    std::thread_local! {
+        /// The process image's subsystem version (major, minor), as its NT headers carry it: the
+        /// MSVC 6 linker's 4.0 to start.
+        pub static IMAGE_SUBSYSTEM_VERSION: std::cell::Cell<(u16, u16)> = const { std::cell::Cell::new((4, 0)) };
+        /// The headers the stand-in RtlImageNtHeader hands out, one per test thread (leaked).
+        static IMAGE_HEADERS: *mut ImageNtHeaders32 =
+            std::boxed::Box::into_raw(std::boxed::Box::new(Pod::zeroed()));
+    }
+
+    /// RtlImageNtHeader: the process image's headers (at [`IMAGE_BASE`]: a PE32 image's, its
+    /// subsystem version [`IMAGE_SUBSYSTEM_VERSION`]'s); null for any other base.
+    pub unsafe extern "system" fn RtlImageNtHeader(base: usize) -> *const ImageNtHeaders32 {
+        if base != IMAGE_BASE as usize {
+            return core::ptr::null();
+        }
+        let (major, minor) = IMAGE_SUBSYSTEM_VERSION.with(std::cell::Cell::get);
+        let headers = IMAGE_HEADERS.with(|headers| *headers);
+        // SAFETY: the thread's own leaked headers, written here alone, between calls.
+        unsafe {
+            (*headers).signature = rtl::image::NT_SIGNATURE;
+            (*headers).optional_header.magic = rtl::image::PE32_MAGIC;
+            (*headers).optional_header.major_subsystem_version = major;
+            (*headers).optional_header.minor_subsystem_version = minor;
+        }
+        headers
     }
 
     /// kernel32's GetTickCount alone is an export (by its exact name, or by its ordinal); no name

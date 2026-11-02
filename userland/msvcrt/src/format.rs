@@ -1,5 +1,6 @@
 //! The printf engine every formatted-output export shares, narrow and wide: printf, fprintf,
-//! sprintf, _vsnprintf, swprintf, _snwprintf and _vsnwprintf.
+//! sprintf, _snprintf and _vsnprintf, wprintf and fwprintf, swprintf and vswprintf, _snwprintf and
+//! _vsnwprintf.
 //!
 //! `%[flags][width][.precision][size]type`, as MSDN's "Format Specification Fields" describes
 //! Visual C++ 6's, and as the corpus captures pin it:
@@ -744,9 +745,9 @@ impl<U: Unit> Output for Buffer<'_, U> {
     }
 }
 
-/// The bounded formatters' convention (_vsnprintf, _snwprintf, _vsnwprintf), into `buffer` (its
-/// length the count): the count when the text fits, terminated when there is room left for the
-/// NUL; -1 when it does not fit, the buffer filled and no NUL.
+/// The bounded formatters' convention (_snprintf, _vsnprintf, _snwprintf, _vsnwprintf), into
+/// `buffer` (its length the count): the count when the text fits, terminated when there is room
+/// left for the NUL; -1 when it does not fit, the buffer filled and no NUL.
 pub fn bounded<U: Unit>(buffer: &mut [U], text: &[U], args: &mut impl Args) -> i32 {
     let count = buffer.len();
     let mut out = Buffer {

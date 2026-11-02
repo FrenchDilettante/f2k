@@ -99,8 +99,10 @@ unsafe extern "system" {
     pub fn EnterCriticalSection(section: *mut u8);
     pub fn LeaveCriticalSection(section: *mut u8);
 
-    /// The process's command line and environment, as the start-up hands them to `main`.
+    /// The process's command line and environment, as the start-up hands them to `main`
+    /// (`_acmdln` and `_wcmdln` hold the command line's pointers).
     pub fn GetCommandLineA() -> *const u8;
+    pub fn GetCommandLineW() -> *const u16;
     pub fn GetEnvironmentStrings() -> *mut u8;
     pub fn FreeEnvironmentStringsA(block: *mut u8) -> u32;
     /// A process environment variable set to `value`, or deleted for NULL (_putenv's).
@@ -578,11 +580,17 @@ pub mod host {
         unreachable("SetConsoleMode")
     }
 
-    /// The host heap stands in for the C runtime's: each block carries its size ahead of it.
+    /// The host heap stands in for the C runtime's: each block carries its size and the room it
+    /// was allocated with ahead of it.
     const HEADER: usize = 16;
 
-    fn layout(size: usize) -> std::alloc::Layout {
-        std::alloc::Layout::from_size_align(size + HEADER, HEADER).unwrap()
+    fn layout(room: usize) -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align(room + HEADER, HEADER).unwrap()
+    }
+
+    /// A block's header: its size, then its room.
+    fn header(block: *const u8) -> *mut [usize; 2] {
+        block.wrapping_sub(HEADER) as *mut [usize; 2]
     }
 
     pub unsafe extern "system" fn HeapCreate(_: u32, _: usize, _: usize) -> usize {
@@ -600,31 +608,42 @@ pub mod host {
             } else {
                 std::alloc::alloc(layout(size))
             };
-            (base as *mut usize).write(size);
+            (base as *mut [usize; 2]).write([size, size]);
             base.add(HEADER)
         }
     }
 
     pub unsafe extern "system" fn HeapSize(_: usize, _: u32, block: *const u8) -> usize {
         // SAFETY: a block HeapAlloc handed out.
-        unsafe { (block.sub(HEADER) as *const usize).read() }
+        unsafe { (*header(block))[0] }
     }
 
     pub unsafe extern "system" fn HeapFree(_: usize, _: u32, block: *mut u8) -> u32 {
         // SAFETY: a block HeapAlloc handed out.
         unsafe {
-            let size = HeapSize(0, 0, block);
-            std::alloc::dealloc(block.sub(HEADER), layout(size));
+            let room = (*header(block))[1];
+            std::alloc::dealloc(block.sub(HEADER), layout(room));
         }
         1
     }
 
+    /// HeapReAlloc: the block moved to a new one, or, with HEAP_REALLOC_IN_PLACE_ONLY, resized
+    /// where it lies when its room holds the size (NULL otherwise).
     pub unsafe extern "system" fn HeapReAlloc(
         _: usize,
-        _: u32,
+        flags: u32,
         block: *mut u8,
         size: usize,
     ) -> *mut u8 {
+        if flags & 0x10 != 0 {
+            // SAFETY: a block HeapAlloc handed out: its header.
+            let [stored, room] = unsafe { &mut *header(block) };
+            if size > *room {
+                return core::ptr::null_mut();
+            }
+            *stored = size;
+            return block;
+        }
         // SAFETY: a block HeapAlloc handed out, its contents moved to the new one.
         unsafe {
             let old = HeapSize(0, 0, block);
@@ -712,6 +731,10 @@ pub mod host {
 
     pub unsafe extern "system" fn GetCommandLineA() -> *const u8 {
         unreachable("GetCommandLineA")
+    }
+
+    pub unsafe extern "system" fn GetCommandLineW() -> *const u16 {
+        unreachable("GetCommandLineW")
     }
 
     pub unsafe extern "system" fn GetEnvironmentStrings() -> *mut u8 {

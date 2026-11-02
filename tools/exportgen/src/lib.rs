@@ -302,6 +302,17 @@ impl Export {
         }
     }
 
+    /// The name its code carries: `f2k_export_<body>` in the DLL's sources, and its `spec` entry. A
+    /// native's body is the one its record names: the export's own name, or, for a C++ decorated
+    /// name (`??2@YAPAXI@Z`, operator new), which no symbol of the DLL's sources can spell, a name
+    /// of its own. Any other export's is its name.
+    pub fn body(&self) -> &str {
+        match &self.implementation {
+            Implementation::Native(body) => body,
+            _ => &self.name,
+        }
+    }
+
     /// A system service's generated wrapper: its service table's entry for it.
     pub fn nt_wrapper(&self) -> String {
         format!("nt_{}", self.name)
@@ -610,9 +621,6 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
     )?;
     let data = boolean(table, "data", &context)?;
     let name = string(table, "name", &context)?;
-    if !is_identifier(&name) {
-        return Err(format!("{context}: the name must be an identifier"));
-    }
     let group = string(table, "group", &context)?;
     if !groups.iter().any(|g| g.key == group) {
         return Err(format!("{context}: unknown group {group:?}"));
@@ -677,7 +685,14 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                     }
                     Implementation::Syscall(value.clone())
                 }
-                "native" => Implementation::Native(value.clone()),
+                "native" => {
+                    if !is_identifier(value) {
+                        return Err(format!(
+                            "{context}: a native's body {value:?} must be an identifier"
+                        ));
+                    }
+                    Implementation::Native(value.clone())
+                }
                 "stub" => {
                     if value.trim().is_empty() {
                         return Err(format!(
@@ -707,6 +722,13 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         Some(_) => return Err(format!("{context}: impl is an inline table with one key")),
         None => return Err(format!("{context}: missing impl")),
     };
+    // A C++ decorated name is a native's alone: its body names its code.
+    if !is_identifier(&name) && !matches!(implementation, Implementation::Native(_)) {
+        return Err(format!(
+            "{context}: the name must be an identifier (a native's need not be: its body names \
+             its code)"
+        ));
+    }
     let ordinal = ordinal_field(table, "ordinal", &context)?;
     let zw_ordinal = ordinal_field(table, "zw_ordinal", &context)?;
     let internal = boolean(table, "internal", &context)?;

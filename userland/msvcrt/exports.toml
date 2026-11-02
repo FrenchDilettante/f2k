@@ -41,7 +41,7 @@ title = "memory"
 
 [[group]]
 key = "utility"
-title = "sorting / random numbers / time / locale"
+title = "sorting / random numbers / absolute values / time / locale"
 
 [[group]]
 key = "process"
@@ -199,6 +199,42 @@ args = ["strA envstring"]
 impl = { native = "_putenv" }
 ordinal = 418
 fails = "-1"
+
+[[export]]
+name = "__argc"
+group = "startup"
+data = true
+impl = { native = "__argc" }
+ordinal = 82
+
+[[export]]
+name = "__argv"
+group = "startup"
+data = true
+impl = { native = "__argv" }
+ordinal = 83
+
+[[export]]
+name = "_acmdln"
+group = "startup"
+data = true
+impl = { native = "_acmdln" }
+ordinal = 146
+
+[[export]]
+name = "_wcmdln"
+group = "startup"
+data = true
+impl = { native = "_wcmdln" }
+ordinal = 504
+
+[[export]]
+name = "getenv"
+group = "startup"
+args = ["strA varname"]
+impl = { native = "getenv" }
+ordinal = 640
+fails = "NULL"
 
 # --- exception handling / setjmp ------------------------------------------------------------------
 
@@ -417,6 +453,14 @@ ordinal = 498
 fails = "-1"
 
 [[export]]
+name = "_snprintf"
+group = "stdio"
+args = ["ptr buffer", "u32 count", "strA format", "..."]
+impl = { native = "_snprintf" }
+ordinal = 444
+fails = "-1"
+
+[[export]]
 name = "swprintf"
 group = "stdio"
 args = ["ptr buffer", "strW format", "..."]
@@ -520,6 +564,31 @@ group = "stdio"
 args = ["ptr stream"]
 impl = { native = "_pclose" }
 ordinal = 411
+fails = "-1"
+
+[[export]]
+name = "vswprintf"
+group = "stdio"
+args = ["ptr buffer", "strW format", "ptr argptr"]
+impl = { native = "vswprintf" }
+ordinal = 755
+fails = "-1"
+note = "MSVC 6's: no count"
+
+[[export]]
+name = "wprintf"
+group = "stdio"
+args = ["strW format", "..."]
+impl = { native = "wprintf" }
+ordinal = 779
+fails = "-1"
+
+[[export]]
+name = "fwprintf"
+group = "stdio"
+args = ["ptr stream", "strW format", "..."]
+impl = { native = "fwprintf" }
+ordinal = 635
 fails = "-1"
 
 # --- strings / conversions ------------------------------------------------------------------------
@@ -775,6 +844,111 @@ impl = { native = "atoi" }
 ordinal = 595
 fails = "never"
 
+[[export]]
+name = "atol"
+group = "strings"
+args = ["strA str"]
+impl = { native = "atol" }
+ordinal = 596
+fails = "never"
+
+[[export]]
+name = "_wtoi"
+group = "strings"
+args = ["strW str"]
+impl = { native = "_wtoi" }
+ordinal = 577
+fails = "never"
+
+[[export]]
+name = "_itow"
+group = "strings"
+args = ["i32 value", "ptr str", "i32 radix"]
+impl = { native = "_itow" }
+ordinal = 320
+fails = "never"
+
+[[export]]
+name = "_ltow"
+group = "strings"
+args = ["i32 value", "ptr str", "i32 radix"]
+impl = { native = "_ltow" }
+ordinal = 339
+fails = "never"
+
+[[export]]
+name = "_ultow"
+group = "strings"
+args = ["u32 value", "ptr str", "i32 radix"]
+impl = { native = "_ultow" }
+ordinal = 490
+fails = "never"
+
+[[export]]
+name = "strstr"
+group = "strings"
+args = ["strA str", "strA strSearch"]
+impl = { native = "strstr" }
+ordinal = 731
+fails = "never"
+
+[[export]]
+name = "wcspbrk"
+group = "strings"
+args = ["strW string", "strW strCharSet"]
+impl = { native = "wcspbrk" }
+ordinal = 768
+fails = "never"
+
+[[export]]
+name = "wcscspn"
+group = "strings"
+args = ["strW string", "strW strCharSet"]
+impl = { native = "wcscspn" }
+ordinal = 762
+fails = "never"
+
+[[export]]
+name = "_wcsrev"
+group = "strings"
+args = ["strW string"]
+impl = { native = "_wcsrev" }
+ordinal = 514
+fails = "never"
+
+[[export]]
+name = "_wcsdup"
+group = "strings"
+args = ["strW? strSource"]
+impl = { native = "_wcsdup" }
+ordinal = 506
+fails = "NULL"
+
+[[export]]
+name = "_strcmpi"
+group = "strings"
+args = ["strA string1", "strA string2"]
+impl = { native = "_strcmpi" }
+ordinal = 460
+fails = "never"
+note = "_stricmp under another name"
+
+[[export]]
+name = "_splitpath"
+group = "strings"
+args = ["strA path", "ptr drive", "ptr dir", "ptr fname", "ptr ext"]
+impl = { native = "_splitpath" }
+ordinal = 455
+fails = "void"
+
+[[export]]
+name = "_wsplitpath"
+group = "strings"
+args = ["strW path", "ptr drive", "ptr dir", "ptr fname", "ptr ext"]
+impl = { native = "_wsplitpath" }
+ordinal = 568
+fails = "void"
+
 # --- wide characters ------------------------------------------------------------------------------
 
 [[export]]
@@ -899,7 +1073,41 @@ impl = { native = "memcpy" }
 ordinal = 685
 fails = "never"
 
-# --- sorting / random numbers / time / locale -----------------------------------------------------
+[[export]]
+name = "_msize"
+group = "memory"
+args = ["ptr memblock"]
+impl = { native = "_msize" }
+ordinal = 401
+fails = "never"
+
+[[export]]
+name = "_expand"
+group = "memory"
+args = ["ptr memblock", "u32 size"]
+impl = { native = "_expand" }
+ordinal = 216
+fails = "NULL"
+
+[[export]]
+name = "??2@YAPAXI@Z"
+group = "memory"
+args = ["u32 size"]
+impl = { native = "operator_new" }
+ordinal = 15
+fails = "NULL"
+note = "operator new"
+
+[[export]]
+name = "??3@YAXPAX@Z"
+group = "memory"
+args = ["ptr memblock"]
+impl = { native = "operator_delete" }
+ordinal = 16
+fails = "void"
+note = "operator delete"
+
+# --- sorting / random numbers / absolute values / time / locale -----------------------------------
 
 [[export]]
 name = "qsort"
@@ -940,6 +1148,22 @@ args = ["i32 category", "strA? locale"]
 impl = { native = "setlocale" }
 ordinal = 707
 fails = "NULL"
+
+[[export]]
+name = "abs"
+group = "utility"
+args = ["i32 n"]
+impl = { native = "abs" }
+ordinal = 587
+fails = "never"
+
+[[export]]
+name = "labs"
+group = "utility"
+args = ["i32 n"]
+impl = { native = "labs" }
+ordinal = 671
+fails = "never"
 
 [[export]]
 name = "_spawnl"
@@ -1063,14 +1287,6 @@ ordinal = 13
 [[export]]
 name = "??1type_info@@UAE@XZ"
 ordinal = 14
-
-[[export]]
-name = "??2@YAPAXI@Z"
-ordinal = 15
-
-[[export]]
-name = "??3@YAXPAX@Z"
-ordinal = 16
 
 [[export]]
 name = "??4__non_rtti_object@@QAEAAV0@ABV0@@Z"
@@ -1334,16 +1550,6 @@ name = "__STRINGTOLD"
 ordinal = 81
 
 [[export]]
-name = "__argc"
-ordinal = 82
-data = true
-
-[[export]]
-name = "__argv"
-ordinal = 83
-data = true
-
-[[export]]
 name = "__badioinfo"
 ordinal = 84
 data = true
@@ -1553,11 +1759,6 @@ data = true
 [[export]]
 name = "_access"
 ordinal = 145
-
-[[export]]
-name = "_acmdln"
-ordinal = 146
-data = true
 
 [[export]]
 name = "_adj_fdiv_m16i"
@@ -1804,10 +2005,6 @@ ordinal = 213
 [[export]]
 name = "_execvpe"
 ordinal = 214
-
-[[export]]
-name = "_expand"
-ordinal = 216
 
 [[export]]
 name = "_fcloseall"
@@ -2199,10 +2396,6 @@ name = "_itoa"
 ordinal = 319
 
 [[export]]
-name = "_itow"
-ordinal = 320
-
-[[export]]
 name = "_j0"
 ordinal = 321
 
@@ -2265,10 +2458,6 @@ ordinal = 337
 [[export]]
 name = "_ltoa"
 ordinal = 338
-
-[[export]]
-name = "_ltow"
-ordinal = 339
 
 [[export]]
 name = "_makepath"
@@ -2517,10 +2706,6 @@ name = "_mktime64"
 ordinal = 400
 
 [[export]]
-name = "_msize"
-ordinal = 401
-
-[[export]]
 name = "_nextafter"
 ordinal = 402
 
@@ -2650,10 +2835,6 @@ name = "_sleep"
 ordinal = 443
 
 [[export]]
-name = "_snprintf"
-ordinal = 444
-
-[[export]]
 name = "_sopen"
 ordinal = 446
 
@@ -2664,10 +2845,6 @@ ordinal = 450
 [[export]]
 name = "_spawnvpe"
 ordinal = 454
-
-[[export]]
-name = "_splitpath"
-ordinal = 455
 
 [[export]]
 name = "_stat"
@@ -2684,10 +2861,6 @@ ordinal = 458
 [[export]]
 name = "_statusfp"
 ordinal = 459
-
-[[export]]
-name = "_strcmpi"
-ordinal = 460
 
 [[export]]
 name = "_strdate"
@@ -2794,10 +2967,6 @@ name = "_ui64tow"
 ordinal = 488
 
 [[export]]
-name = "_ultow"
-ordinal = 490
-
-[[export]]
 name = "_umask"
 ordinal = 491
 
@@ -2842,17 +3011,8 @@ name = "_wchmod"
 ordinal = 503
 
 [[export]]
-name = "_wcmdln"
-ordinal = 504
-data = true
-
-[[export]]
 name = "_wcreat"
 ordinal = 505
-
-[[export]]
-name = "_wcsdup"
-ordinal = 506
 
 [[export]]
 name = "_wcsicoll"
@@ -2869,10 +3029,6 @@ ordinal = 512
 [[export]]
 name = "_wcsnset"
 ordinal = 513
-
-[[export]]
-name = "_wcsrev"
-ordinal = 514
 
 [[export]]
 name = "_wcsset"
@@ -3084,10 +3240,6 @@ name = "_wspawnvpe"
 ordinal = 567
 
 [[export]]
-name = "_wsplitpath"
-ordinal = 568
-
-[[export]]
 name = "_wstat"
 ordinal = 569
 
@@ -3118,10 +3270,6 @@ ordinal = 575
 [[export]]
 name = "_wtmpnam"
 ordinal = 576
-
-[[export]]
-name = "_wtoi"
-ordinal = 577
 
 [[export]]
 name = "_wtoi64"
@@ -3156,10 +3304,6 @@ name = "abort"
 ordinal = 586
 
 [[export]]
-name = "abs"
-ordinal = 587
-
-[[export]]
 name = "acos"
 ordinal = 588
 
@@ -3186,10 +3330,6 @@ ordinal = 593
 [[export]]
 name = "atof"
 ordinal = 594
-
-[[export]]
-name = "atol"
-ordinal = 596
 
 [[export]]
 name = "bsearch"
@@ -3308,10 +3448,6 @@ name = "ftell"
 ordinal = 634
 
 [[export]]
-name = "fwprintf"
-ordinal = 635
-
-[[export]]
 name = "fwrite"
 ordinal = 636
 
@@ -3326,10 +3462,6 @@ ordinal = 638
 [[export]]
 name = "getchar"
 ordinal = 639
-
-[[export]]
-name = "getenv"
-ordinal = 640
 
 [[export]]
 name = "gets"
@@ -3434,10 +3566,6 @@ ordinal = 668
 [[export]]
 name = "isxdigit"
 ordinal = 670
-
-[[export]]
-name = "labs"
-ordinal = 671
 
 [[export]]
 name = "ldexp"
@@ -3584,10 +3712,6 @@ name = "strspn"
 ordinal = 730
 
 [[export]]
-name = "strstr"
-ordinal = 731
-
-[[export]]
 name = "strtod"
 ordinal = 732
 
@@ -3648,10 +3772,6 @@ name = "vsprintf"
 ordinal = 754
 
 [[export]]
-name = "vswprintf"
-ordinal = 755
-
-[[export]]
 name = "vwprintf"
 ordinal = 756
 
@@ -3660,20 +3780,12 @@ name = "wcscoll"
 ordinal = 760
 
 [[export]]
-name = "wcscspn"
-ordinal = 762
-
-[[export]]
 name = "wcsftime"
 ordinal = 763
 
 [[export]]
 name = "wcsncat"
 ordinal = 765
-
-[[export]]
-name = "wcspbrk"
-ordinal = 768
 
 [[export]]
 name = "wcstod"
@@ -3694,10 +3806,6 @@ ordinal = 777
 [[export]]
 name = "wctomb"
 ordinal = 778
-
-[[export]]
-name = "wprintf"
-ordinal = 779
 
 [[export]]
 name = "wscanf"

@@ -1215,3 +1215,59 @@ fn write_process_memory_writes_what_may_be_written() {
     assert_eq!((written, last_error(), count), (0, 487, 0xF2F2));
     assert!(!child_vm().iter().any(|call| call.0 == "flush"));
 }
+
+/// Write `bytes` into the child's memory at `at`, inside one of its regions.
+fn poke_child(at: usize, bytes: &[u8]) {
+    with_child(|child| {
+        let region = child
+            .regions
+            .iter_mut()
+            .find(|region| {
+                at >= region.base && at + bytes.len() <= region.base + region.bytes.len()
+            })
+            .expect("mapped in the child");
+        region.bytes[at - region.base..][..bytes.len()].copy_from_slice(bytes);
+    });
+}
+
+/// GetProcessVersion: the caller's own (an id of 0, or its own) from its image's headers, the
+/// subsystem version as MAKELONG(minor, major); another process's read out of it — opened for
+/// PROCESS_VM_READ and PROCESS_QUERY_INFORMATION, its PEB's image base, the DOS header's offset to
+/// the NT headers, their version — the handle closed; an id naming no process is OpenProcess's
+/// ERROR_INVALID_PARAMETER; an image without PE headers ERROR_BAD_EXE_FORMAT.
+///
+/// Pins: kernel32.GetProcessVersion
+#[test]
+fn process_versions_come_from_the_image_headers() {
+    use crate::nt::modules::IMAGE_SUBSYSTEM_VERSION;
+    use crate::process::get_process_version;
+
+    setup();
+    IMAGE_SUBSYSTEM_VERSION.with(|version| version.set((4, 0)));
+    assert_eq!(get_process_version(0), 0x0004_0000);
+    IMAGE_SUBSYSTEM_VERSION.with(|version| version.set((5, 1)));
+    let own = crate::base::current_process_id();
+    assert_eq!(get_process_version(own), 0x0005_0001);
+    IMAGE_SUBSYSTEM_VERSION.with(|version| version.set((4, 0)));
+
+    a_child();
+    poke_child(CHILD_PEB + 8, &(CHILD_IMAGE_BASE as u32).to_le_bytes());
+    poke_child(CHILD_IMAGE_BASE + 0x3C, &0x80u32.to_le_bytes());
+    poke_child(CHILD_IMAGE_BASE + 0x80, b"PE\0\0");
+    poke_child(CHILD_IMAGE_BASE + 0x80 + 0x18, &0x010Bu16.to_le_bytes());
+    poke_child(CHILD_IMAGE_BASE + 0x80 + 0x48, &[3, 0, 10, 0]);
+    OPENED.with(|opened| opened.borrow_mut().clear());
+    CLOSED.with(|closed| closed.borrow_mut().clear());
+    assert_eq!(get_process_version(CHILD_ID as u32), 0x0003_000A);
+    OPENED.with(|opened| assert_eq!(*opened.borrow(), [(0x0410, 0, CHILD_ID)]));
+    CLOSED.with(|closed| assert_eq!(*closed.borrow(), [OPENED_PROCESS]));
+
+    poke_child(CHILD_IMAGE_BASE + 0x80, b"NE\0\0");
+    assert_eq!(get_process_version(CHILD_ID as u32), 0);
+    assert_eq!(last_error(), 193);
+    CLOSED.with(|closed| assert_eq!(closed.borrow().last(), Some(&OPENED_PROCESS)));
+
+    crate::base::set_last_error(0);
+    assert_eq!(get_process_version(3), 0);
+    assert_eq!(last_error(), 87);
+}

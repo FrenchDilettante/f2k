@@ -10,6 +10,9 @@
 //! process attach gives `_iob` its first streams ([`open_standard_streams`]); `_fmode` and
 //! `_adjust_fdiv` stay zero (text mode; no FDIV workaround).
 //!
+//! The start-up's variables (`__argc`, `__argv`, `_acmdln` and `_wcmdln`) are exported the same
+//! way from [`crate::startup`], beside the state they belong to.
+//!
 //! [`Exported`] also holds the storage whose address programs reach another way: stdin's buffer,
 //! through `_iob[0]`'s pointers. The C runtime's own state is elsewhere: behind its locks
 //! ([`crate::thread`]), or in atomics.

@@ -476,7 +476,7 @@ mod tests {
         // binary-type, process-creation, process, pipe and module calls and RaiseException its
         // Rust, the heap and Local/Global calls its own over ntdll's heap). The internal start
         // thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 282);
+        assert_eq!(NATIVE_EXPORTS.len(), 303);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -649,7 +649,8 @@ mod tests {
 
     /// The exports kernel32 implements ahead of the corpus binary that imports them: a fixture
     /// declared before its real-machine build (awaited). Once its program is checked in, it joins
-    /// [`CORPUS`] and these leave.
+    /// [`CORPUS`] ([`LOADED_CORPUS`] when it imports other system DLLs too) and these leave; none
+    /// waits now.
     const AWAITED: [&str; 0] = [];
 
     /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
@@ -695,7 +696,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 291, "the corpus's import surface");
+        assert_eq!(names.len(), 312, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -1017,7 +1018,18 @@ mod tests {
                 .iter()
                 .all(|name| exports.iter().any(|&(e, _)| e == *name)));
         }
-        assert_eq!(msvcrt::DATA_EXPORTS, ["_fmode", "_adjust_fdiv", "_iob"]);
+        assert_eq!(
+            msvcrt::DATA_EXPORTS,
+            [
+                "_fmode",
+                "_adjust_fdiv",
+                "__argc",
+                "__argv",
+                "_acmdln",
+                "_wcmdln",
+                "_iob"
+            ]
+        );
         assert!(advapi32::DATA_EXPORTS.is_empty() && user32::DATA_EXPORTS.is_empty());
     }
 
@@ -1057,7 +1069,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
     /// gdi32, which F2K does not have).
-    const LOADED_CORPUS: [(&str, &[u8]); 13] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 17] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1066,6 +1078,14 @@ mod tests {
         ("seh", include_bytes!("../../../tests/crt/seh/seh.exe")),
         ("fd", include_bytes!("../../../tests/crt/fd/fd.exe")),
         ("wide", include_bytes!("../../../tests/crt/wide/wide.exe")),
+        (
+            "strings",
+            include_bytes!("../../../tests/crt/strings/strings.exe"),
+        ),
+        (
+            "process",
+            include_bytes!("../../../tests/crt/process/process.exe"),
+        ),
         (
             "registry",
             include_bytes!("../../../tests/advapi32/registry/registry.exe"),
@@ -1097,6 +1117,14 @@ mod tests {
         (
             "ctrlkid",
             include_bytes!("../../../tests/kernel32/ctrl/ctrlkid.exe"),
+        ),
+        (
+            "lstr",
+            include_bytes!("../../../tests/kernel32/lstr/lstr.exe"),
+        ),
+        (
+            "utility",
+            include_bytes!("../../../tests/kernel32/utility/utility.exe"),
         ),
     ];
 

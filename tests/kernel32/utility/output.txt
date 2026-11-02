@@ -1,0 +1,218 @@
+# F2K capture of utility (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026  6:35:00.98
+utility F2KT-SOURCE-CRC=0xAEDC9199
+>>> utility.exe muldiv
+== muldiv
+MulDiv(10, 3, 2) = 15 err=-
+MulDiv(5, 1, 2) = 3 err=-
+MulDiv(-5, 1, 2) = -3 err=-
+MulDiv(5, 1, -2) = -3 err=-
+MulDiv(7, 1, 3) = 2 err=-
+MulDiv(-7, 1, 3) = -2 err=-
+MulDiv(2147483647, 2147483647, 2147483647) = 2147483647 err=-
+MulDiv(2147483647, 2, 1) = -1 err=-
+MulDiv(1, 1, 0) = -1 err=-
+MulDiv(-2147483648, 1, 1) = -1 err=-
+MulDiv(-2147483648, -1, 1) = -1 err=-
+MulDiv(0, 5, 0) = -1 err=-
+utility: done
+<<< exit code=0
+>>> utility.exe dbcs
+== dbcs
+IsDBCSLeadByte(0x00) = 0 err=-
+IsDBCSLeadByte(0x41) = 0 err=-
+IsDBCSLeadByte(0x7F) = 0 err=-
+IsDBCSLeadByte(0x80) = 0 err=-
+IsDBCSLeadByte(0x81) = 0 err=-
+IsDBCSLeadByte(0x9F) = 0 err=-
+IsDBCSLeadByte(0xA0) = 0 err=-
+IsDBCSLeadByte(0xE0) = 0 err=-
+IsDBCSLeadByte(0xFE) = 0 err=-
+IsDBCSLeadByte(0xFF) = 0 err=-
+IsDBCSLeadByteEx(CP_ACP, 0x41) = 0 err=-
+IsDBCSLeadByteEx(CP_ACP, 0x81) = 0 err=-
+IsDBCSLeadByteEx(CP_ACP, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(CP_ACP, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(CP_OEMCP, 0x41) = 0 err=-
+IsDBCSLeadByteEx(CP_OEMCP, 0x81) = 0 err=-
+IsDBCSLeadByteEx(CP_OEMCP, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(CP_OEMCP, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(1252, 0x41) = 0 err=-
+IsDBCSLeadByteEx(1252, 0x81) = 0 err=-
+IsDBCSLeadByteEx(1252, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(1252, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(437, 0x41) = 0 err=-
+IsDBCSLeadByteEx(437, 0x81) = 0 err=-
+IsDBCSLeadByteEx(437, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(437, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(850, 0x41) = 0 err=-
+IsDBCSLeadByteEx(850, 0x81) = 0 err=-
+IsDBCSLeadByteEx(850, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(850, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(CP_UTF8, 0x41) = 0 err=-
+IsDBCSLeadByteEx(CP_UTF8, 0x81) = 0 err=-
+IsDBCSLeadByteEx(CP_UTF8, 0xE0) = 0 err=-
+IsDBCSLeadByteEx(CP_UTF8, 0xFF) = 0 err=-
+IsDBCSLeadByteEx(12345 (no such page), 0x41) = 0 err=87
+IsDBCSLeadByteEx(12345 (no such page), 0x81) = 0 err=87
+IsDBCSLeadByteEx(12345 (no such page), 0xE0) = 0 err=87
+IsDBCSLeadByteEx(12345 (no such page), 0xFF) = 0 err=87
+utility: done
+<<< exit code=0
+>>> utility.exe stringtype
+== stringtype
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0020 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_SYSTEM_DEFAULT, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0020 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_SYSTEM_DEFAULT, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_SYSTEM_DEFAULT, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(0x0409, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0020 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(0x0409, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(0x0409, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 0000 BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE1, count 4): ret=1 err=- words=0181 0102 0084 0084 BEEF BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE1, count 10): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 BEEF BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE1, count 0): ret=0 err=87 words=BEEF BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, 0, count -1): ret=0 err=1004 words=BEEF BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, 3, count -1): ret=0 err=1004 words=BEEF BEEF, the same as GetStringTypeA: yes
+GetStringTypeExA(LOCALE_USER_DEFAULT, CT_CTYPE1, count -1, NULL output): ret=0 err=87, the same as GetStringTypeA: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0101 0100 0048 0181 0020 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0001 0001 000A 0001 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 8000 8100 0088 8080 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_SYSTEM_DEFAULT, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0101 0100 0048 0181 0020 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_SYSTEM_DEFAULT, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0001 0001 000A 0001 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_SYSTEM_DEFAULT, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 8000 8100 0088 8080 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(0x0409, CT_CTYPE1, count -1): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0101 0100 0048 0181 0020 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(0x0409, CT_CTYPE2, count -1): ret=1 err=- words=0001 0001 0003 0003 000A 000B 0004 0009 0000 0001 0001 0001 000A 0001 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(0x0409, CT_CTYPE3, count -1): ret=1 err=- words=8040 8040 0040 0040 0048 0048 0048 0008 0000 8003 8000 8100 0088 8080 0000 BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE1, count 4): ret=1 err=- words=0181 0102 0084 0084 BEEF BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE1, count 14): ret=1 err=- words=0181 0102 0084 0084 0048 0010 0010 0068 0020 0102 0101 0100 0048 0181 BEEF BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE1, count 0): ret=0 err=87 words=BEEF BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, 0, count -1): ret=0 err=1004 words=BEEF BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, 3, count -1): ret=0 err=1004 words=BEEF BEEF, the same as GetStringTypeW: yes
+GetStringTypeExW(LOCALE_USER_DEFAULT, CT_CTYPE1, count -1, NULL output): ret=0 err=87, the same as GetStringTypeW: yes
+utility: done
+<<< exit code=0
+>>> utility.exe langid
+== langid
+GetUserDefaultLangID = 0x0409 err=-, the language of GetUserDefaultLCID: yes
+utility: done
+<<< exit code=0
+>>> utility.exe sysdir
+== sysdir
+GetSystemDirectoryA(MAX_PATH): ret=length path=<windir>\system32 err=-
+GetSystemDirectoryA(NULL, 0): ret=length+1 err=-
+GetSystemDirectoryA(length): ret=length+1 buffer untouched: yes err=-
+GetSystemDirectoryA(length + 1): ret=length path=<windir>\system32 err=-
+GetSystemDirectoryW(MAX_PATH): ret=length path=<windir>\system32 err=-
+GetSystemDirectoryW(NULL, 0): ret=length+1 err=-
+GetSystemDirectoryW(length): ret=length+1 buffer untouched: yes err=-
+GetSystemDirectoryW(length + 1): ret=length path=<windir>\system32 err=-
+the W path is the A path widened: yes
+utility: done
+<<< exit code=0
+>>> utility.exe temppath
+== temppath
+TMP=<cwd>\tpdir TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tpdir\ err=-
+GetTempPathW: ret=length path=<cwd>\tpdir\ err=-
+TMP=<cwd>\tpdir\ TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tpdir\ err=-
+GetTempPathW: ret=length path=<cwd>\tpdir\ err=-
+TMP=<cwd>\tpnone TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tpnone\ err=-
+GetTempPathW: ret=length path=<cwd>\tpnone\ err=-
+TMP=tprel TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tprel\ err=-
+GetTempPathW: ret=length path=<cwd>\tprel\ err=-
+TMP= TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length+1 path= err=-
+GetTempPathW: ret=length+1 path=(untouched) err=-
+TMP=(unset) TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tpenv\ err=-
+GetTempPathW: ret=length path=<cwd>\tpenv\ err=-
+TMP=(unset) TEMP=(unset) USERPROFILE=<cwd>\tpprof
+GetTempPathA: ret=length path=<cwd>\tpprof\ err=-
+GetTempPathW: ret=length path=<cwd>\tpprof\ err=-
+TMP=(unset) TEMP=(unset) USERPROFILE=(unset)
+GetTempPathA: ret=length path=<windir>\ err=-
+GetTempPathW: ret=length path=<windir>\ err=-
+TMP=<cwd>\tpdir TEMP=<cwd>\tpenv USERPROFILE=<cwd>\tpprof
+GetTempPathA(0): ret=length+1 buffer untouched: yes err=-
+GetTempPathA(3): ret=length+1 buffer untouched: yes err=-
+GetTempPathA(length): ret=length+1 buffer untouched: yes err=-
+GetTempPathA(length + 1): ret=length path=<cwd>\tpdir\ err=-
+GetTempPathW(0): ret=length+1 buffer untouched: yes err=-
+GetTempPathW(3): ret=length+1 buffer untouched: no err=-
+GetTempPathW(length): ret=length+1 buffer untouched: no err=-
+GetTempPathW(length + 1): ret=length path=<cwd>\tpdir\ err=-
+utility: done
+<<< exit code=0
+>>> utility.exe tempfile
+== tempfile
+GetTempFileNameA(<cwd>\tfdir, "abc", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir, "abcdef", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir, "", 0x1234): ret=0x1234 name=<cwd>\tfdir\1234.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir, "abc", 0xABCD): ret=0xABCD name=<cwd>\tfdir\abcABCD.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir, "abc", 0x12345): ret=0x2345 name=<cwd>\tfdir\abc2345.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir\, "abc", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameA(<cwd>\tfnone, "abc", 0x1234): ret=0x0 name=(untouched) err=267
+GetTempFileNameW(<cwd>\tfdir, "abc", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfdir, "abcdef", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfdir, "", 0x1234): ret=0x1234 name=<cwd>\tfdir\1234.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfdir, "abc", 0xABCD): ret=0xABCD name=<cwd>\tfdir\abcABCD.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfdir, "abc", 0x12345): ret=0x2345 name=<cwd>\tfdir\abc2345.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfdir\, "abc", 0x1234): ret=0x1234 name=<cwd>\tfdir\abc1234.tmp err=-
+  file exists: no
+GetTempFileNameW(<cwd>\tfnone, "abc", 0x1234): ret=0x0 name=<cwd>\tfnone err=267
+  file exists: no
+GetTempFileNameA(<cwd>\tfdir, "abc", 0): ret nonzero name=<cwd>\tfdir\abc<hex>.tmp err=0
+  1 to 4 hex digits: yes, the return is its number: yes, file exists: yes, size: 0
+GetTempFileNameA(<cwd>\tfdir, "abc", 0): ret nonzero name=<cwd>\tfdir\abc<hex>.tmp err=0
+  1 to 4 hex digits: yes, the return is its number: yes, file exists: yes, size: 0
+the second name differs: yes
+GetTempFileNameA(<cwd>\tfnone, "abc", 0): ret=0 name=(untouched) err=267
+GetTempFileNameW(<cwd>\tfdir, "abc", 0): ret nonzero name=<cwd>\tfdir\abc<hex>.tmp err=0
+  1 to 4 hex digits: yes, the return is its number: yes, file exists: yes, size: 0
+GetTempFileNameW(<cwd>\tfdir, "abc", 0): ret nonzero name=<cwd>\tfdir\abc<hex>.tmp err=0
+  1 to 4 hex digits: yes, the return is its number: yes, file exists: yes, size: 0
+the second name differs (W): yes
+GetTempFileNameW(<cwd>\tfnone, "abc", 0): ret=0 name=<cwd>\tfn<hex>one err=267
+  file exists: no
+utility: done
+<<< exit code=0
+>>> utility.exe filetime
+== filetime
+2000-01-01 00:00:00 UTC: FileTimeToLocalFileTime ret=1 err=-, back with LocalFileTimeToFileTime ret=1 err=-, the original: yes
+2000-01-01 00:00:00 local: LocalFileTimeToFileTime ret=1 err=-, its shift the negative of FileTimeToLocalFileTime's: yes, whole minutes: yes
+2000-07-01 12:00:00 UTC: FileTimeToLocalFileTime ret=1 err=-, back with LocalFileTimeToFileTime ret=1 err=-, the original: yes
+2000-07-01 12:00:00 local: LocalFileTimeToFileTime ret=1 err=-, its shift the negative of FileTimeToLocalFileTime's: yes, whole minutes: yes
+1990-06-15 06:30:00 UTC: FileTimeToLocalFileTime ret=1 err=-, back with LocalFileTimeToFileTime ret=1 err=-, the original: yes
+1990-06-15 06:30:00 local: LocalFileTimeToFileTime ret=1 err=-, its shift the negative of FileTimeToLocalFileTime's: yes, whole minutes: yes
+2030-12-31 23:59:59.1234567 UTC: FileTimeToLocalFileTime ret=1 err=-, back with LocalFileTimeToFileTime ret=1 err=-, the original: yes
+2030-12-31 23:59:59.1234567 local: LocalFileTimeToFileTime ret=1 err=-, its shift the negative of FileTimeToLocalFileTime's: yes, whole minutes: yes
+the same shift for every value: yes
+LocalFileTimeToFileTime in place: ret=1 err=-, the same result: yes
+utility: done
+<<< exit code=0
+>>> utility.exe version
+== version
+GetProcessVersion(0) = 0x00040000 err=-
+GetProcessVersion(own id) = 0x00040000 err=-, the same as for 0: yes
+GetProcessVersion(3) = 0x00000000 err=87
+utility: done
+<<< exit code=0

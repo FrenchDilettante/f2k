@@ -9,8 +9,9 @@
 //   DLL's own code calls and the .def leaves out (the crate assembles `stubs.s` itself).
 // - `_f2k_export_<Export>`: a hand-written export in the crate's assembly sources (a `.globl` line
 //   names it) or its Rust sources (an `export_name = "f2k_export_<Export>"` stdcall function); they
-//   must be exactly the spec's natives. A stubbed export's body is generated (`exports.rs`, which
-//   the crate includes: exportgen's `dll_rust`) under the same symbol.
+//   must be exactly the spec's natives, each under its body's name (the export's, or for a C++
+//   decorated name the identifier its `native` gives). A stubbed export's body is generated
+//   (`exports.rs`, which the crate includes: exportgen's `dll_rust`) under the same symbol.
 // An export the spec forwards (`impl = { forward = "NTDLL.X" }`) becomes a forwarder.
 
 use std::path::{Path, PathBuf};

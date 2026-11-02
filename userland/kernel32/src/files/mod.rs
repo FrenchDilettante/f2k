@@ -13,13 +13,15 @@
 //! [`handle`] holds the calls on a file handle (CreateFileA, ReadFile, WriteFile, SetFilePointer
 //! and the rest), [`names`] those on a name (attributes, deletes, renames, directories, the full
 //! and short names), [`copy`] CopyFileA's loop, [`find`] the directory searches, [`search`]
-//! SearchPath's look through a list of directories, and [`volume`] the volume's.
+//! SearchPath's look through a list of directories, [`temp`] the temporary directory and file
+//! names, and [`volume`] the volume's.
 
 pub mod copy;
 pub mod find;
 pub mod handle;
 pub mod names;
 pub mod search;
+pub mod temp;
 pub mod volume;
 
 use crate::base::{SecurityAttributes, OBJ_INHERIT};

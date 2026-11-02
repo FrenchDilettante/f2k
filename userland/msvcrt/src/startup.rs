@@ -15,7 +15,11 @@
 //! - envp, `_environ` and `__initenv` are one array: the environment block's entries, in order,
 //!   less those starting with `=` (cmd.exe's per-drive current directories). `_putenv` (as MSDN
 //!   documents it) changes both `_environ`, a new array each time (envp stays as `main` got it),
-//!   and the process environment.
+//!   and the process environment. getenv reads `_environ` alone (MSDN: it "operates only on the
+//!   data structures accessible to the run-time library and not on the environment 'segment'
+//!   created for the process by the operating system").
+//! - `_acmdln` and `_wcmdln` hold GetCommandLineA's and GetCommandLineW's pointers from the DLL's
+//!   load; `__argc` and `__argv` are the variables `__p___argc` and `__p___argv` point at.
 //! - `_fmode` and `_commode` are 0; the start-up's `_controlfp(_PC_53, _MCW_PC)` leaves 0x9001F.
 //! - exit runs the `_onexit`/`atexit` functions, last registered first, then flushes the streams,
 //!   then ends the process; `_exit` ends it at once (nothing run, nothing flushed).
@@ -37,9 +41,23 @@ use crate::thread::{Lock, UnwindLock};
 static COMMODE: Exported<i32> = Exported::new(0);
 /// `__argc` and `__argv` (`__getmainargs` sets them), `_environ` and `__initenv` (the DLL's
 /// initialization does). The C runtime reaches them under the environment's lock
-/// ([`ENVIRONMENT`]).
+/// ([`ENVIRONMENT`]). `__argc` and `__argv` are data exports too: the storage `__p___argc` and
+/// `__p___argv` answer.
+#[unsafe(export_name = "f2k_export___argc")]
+#[cfg_attr(target_arch = "x86", unsafe(link_section = ".data"))]
 static ARGC: Exported<i32> = Exported::new(0);
+#[unsafe(export_name = "f2k_export___argv")]
+#[cfg_attr(target_arch = "x86", unsafe(link_section = ".data"))]
 static ARGV: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
+/// `_acmdln` and `_wcmdln`: the process's command line, kernel32's own copies (GetCommandLineA's
+/// and GetCommandLineW's pointers), which the DLL's initialization sets
+/// ([`initialize_command_line`]). Data exports, which the C runtime only writes there.
+#[unsafe(export_name = "f2k_export__acmdln")]
+#[cfg_attr(target_arch = "x86", unsafe(link_section = ".data"))]
+static ACMDLN: Exported<*const u8> = Exported::new(core::ptr::null());
+#[unsafe(export_name = "f2k_export__wcmdln")]
+#[cfg_attr(target_arch = "x86", unsafe(link_section = ".data"))]
+static WCMDLN: Exported<*const u16> = Exported::new(core::ptr::null());
 static ENVIRON: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
 static INITENV: Exported<*mut *mut u8> = Exported::new(core::ptr::null_mut());
 /// The program's `_matherr` (`__setusermatherr`).
@@ -508,22 +526,54 @@ pub fn environment_value(name: &[u8], out: &mut [u8]) -> Option<usize> {
 
 /// `name`'s value in `_environ`, into `out`: [`environment_value`]'s work, under the lock.
 fn value_of(environment: &Environment, name: &[u8], out: &mut [u8]) -> Option<usize> {
+    let entry = entry_of(environment, name)?;
+    // SAFETY: one of `_environ`'s entries, NUL-terminated, `NAME=value`.
+    let value = &unsafe { bytes_until_nul(entry) }[name.len() + 1..];
+    let room = out.get_mut(..value.len())?;
+    room.copy_from_slice(value);
+    Some(value.len())
+}
+
+/// `_environ`'s entry that sets `name`, under the environment's lock.
+fn entry_of(environment: &Environment, name: &[u8]) -> Option<*mut u8> {
     let current = environment.current();
     if current.is_null() {
         return None;
     }
     // SAFETY: `_environ` is the C runtime's array of NUL-terminated entries, ended by NULL.
-    let entries = (0..)
+    (0..)
         .map(|i| unsafe { *current.add(i) })
         .take_while(|entry| !entry.is_null())
-        .map(|entry| unsafe { bytes_until_nul(entry) });
-    let value = entries
-        .into_iter()
-        .find(|entry| sets(entry, name))
-        .map(|entry| &entry[name.len() + 1..])?;
-    let room = out.get_mut(..value.len())?;
-    room.copy_from_slice(value);
-    Some(value.len())
+        .find(|&entry| sets(unsafe { bytes_until_nul(entry) }, name))
+}
+
+/// getenv: `name`'s value in the C runtime's environment, its name matched without regard to case:
+/// a pointer into its `_environ` entry, just after the `=`; NULL when it is unset. The C runtime's
+/// environment is its own copy, which _putenv changes: SetEnvironmentVariable behind its back is
+/// not seen.
+///
+/// # Safety
+///
+/// `name` is null or NUL-terminated.
+#[unsafe(export_name = "f2k_export_getenv")]
+pub unsafe extern "C" fn getenv(name: *const u8) -> *mut u8 {
+    if name.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's string.
+    let name = unsafe { bytes_until_nul(name) };
+    ENVIRONMENT.with(|environment| {
+        entry_of(environment, name).map_or(core::ptr::null_mut(), |entry| {
+            entry.wrapping_add(name.len() + 1)
+        })
+    })
+}
+
+/// The DLL's process attach: `_acmdln` and `_wcmdln`, kernel32's command line.
+pub fn initialize_command_line() {
+    let (narrow, wide) = kernel32::command_line_pointers();
+    ACMDLN.write(narrow);
+    WCMDLN.write(wide);
 }
 
 /// `_environ` with `name`'s entry replaced by `entry` (a fresh `NAME=value` of the C runtime's
@@ -914,5 +964,36 @@ mod tests {
             ["F2KHOME=C:\\CORPUS", "PATH=C:\\WINNT"],
             "main's envp, as the start-up left it"
         );
+
+        // process's getenv block: a pointer into `_environ`'s entry, just after its `=`, whatever
+        // the name's case; NULL for a name no entry sets, the empty name, a name holding `=`, and
+        // after _putenv's removal.
+        let get = |name: &[u8]| {
+            let mut owned = name.to_vec();
+            owned.push(0);
+            // SAFETY: a NUL-terminated name.
+            unsafe { getenv(owned.as_ptr()) }
+        };
+        assert_eq!(put(b"F2KT_A=one"), 0);
+        let upper = get(b"F2KT_A");
+        // SAFETY: getenv's answer, inside a NUL-terminated entry.
+        assert_eq!(unsafe { CStr::from_ptr(upper.cast()) }, c"one");
+        assert_eq!(get(b"f2kt_a"), upper);
+        // SAFETY: `_environ`, an array of NUL-terminated entries ended by NULL.
+        let entry = unsafe {
+            (0..)
+                .map(|i| *ENVIRON.read().add(i))
+                .find(|&entry| CStr::from_ptr(entry.cast()) == c"F2KT_A=one")
+                .unwrap()
+        };
+        assert_eq!(upper, entry.wrapping_add(7));
+        for missing in [&b"F2KT_MISSING"[..], b"", b"F2KT_A=x", b"F2KT_A=one"] {
+            assert!(get(missing).is_null(), "{missing:?}");
+        }
+        // SAFETY: a null name.
+        assert!(unsafe { getenv(core::ptr::null()) }.is_null());
+        assert_eq!(put(b"F2KT_A="), 0);
+        assert!(get(b"F2KT_A").is_null());
+        sets();
     }
 }

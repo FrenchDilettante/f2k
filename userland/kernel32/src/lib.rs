@@ -25,7 +25,8 @@
 //! processes ([`create`]: CreateProcess), the processes' calls ([`process`]: their end,
 //! OpenProcess, their exit codes and memory), a file's binary type ([`binary_type`]), exceptions
 //! ([`except`]: RaiseException, the pointer probes' unwind), the locale group ([`locale`] over
-//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the clocks ([`time`], over the shared
+//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the lstr string functions ([`lstr`],
+//! their work under the pointer probes' exception handler), the clocks ([`time`], over the shared
 //! data page, [`shared`]), the system messages ([`message`], over ntdll's message calls and
 //! kernel32's own message table), virtual memory and the system's memory facts ([`vm`]) and the
 //! paging file's mappings ([`filemap`]). The heap and Local/Global functions are the DLL's
@@ -52,6 +53,7 @@ pub mod files;
 pub mod heap;
 pub mod locale;
 pub mod localeinfo;
+pub mod lstr;
 pub mod message;
 pub mod module;
 pub mod nt;

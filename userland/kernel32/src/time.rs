@@ -245,6 +245,28 @@ pub unsafe extern "system" fn file_time_to_local_file_time(
     1
 }
 
+/// LocalFileTimeToFileTime: the local FILETIME plus the time-zone bias, FileTimeToLocalFileTime's
+/// inverse over the same bias, so a round trip is exact. The two may be the same FILETIME: the
+/// local one is read whole before the result is written.
+///
+/// # Safety
+///
+/// `local` points at a FILETIME, `file_time` at a writable one (the same one or not).
+#[unsafe(export_name = "f2k_export_LocalFileTimeToFileTime")]
+pub unsafe extern "system" fn local_file_time_to_file_time(
+    local: *const u64,
+    file_time: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's FILETIMEs (the contract); where they are one, it is read before it is
+    // written, each access its own.
+    let (local, mut file_time) = unsafe { (In::new(local), Out::new(file_time)) };
+    let utc = local
+        .read()
+        .wrapping_add(shared::time(shared::TIME_ZONE_BIAS));
+    file_time.set(utc);
+    1
+}
+
 /// CompareFileTime: -1, 0 or 1 as the first FILETIME is earlier than, the same as or later than the
 /// second, each compared as the unsigned 64-bit count it is (the high dword first, then the low,
 /// neither signed: the runtime capture).

@@ -255,8 +255,8 @@ pub fn data_exports(spec: &Spec, source: &str) -> String {
 ///
 /// - `spec`: an `rtl::stub::Entry` for each function its own code implements or stubs (the natives
 ///   and the stubs, its variables left out: name, arguments' kinds and names, failure return),
-///   named as the export. The stubs' bodies use theirs; a native's code hands its own to the DLL's
-///   stub routine on a path it does not handle;
+///   named as the export's body ([`Export::body`]). The stubs' bodies use theirs; a native's code
+///   hands its own to the DLL's stub routine on a path it does not handle;
 /// - each stubbed export's body: `f2k_export_<Export>`, in the DLL's convention (stdcall unless its
 ///   spec says cdecl; cdecl whenever it takes variable arguments), taking the arguments as its
 ///   callers push them and handing them, with the spec's reason, to the DLL's stub routine:
@@ -288,7 +288,7 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
         writeln!(
             out,
             "    pub static {name}: Entry = Entry {{\n        dll: {dll},\n        name: {quoted},\n        args: &[{args}],\n        fails: {fails},\n    }};",
-            name = export.name,
+            name = export.body(),
             dll = quote(dll),
             quoted = quote(&export.name),
             args = args.join(", "),
@@ -409,9 +409,10 @@ fn ret(export: &Export) -> String {
     }
 }
 
-/// The symbol a hand-written export's code carries in a DLL's assembly sources.
-pub fn hand_symbol(export: &str) -> String {
-    format!("_f2k_export_{export}")
+/// The symbol a hand-written export's code carries in a DLL's assembly sources, from its body
+/// ([`Export::body`]).
+pub fn hand_symbol(body: &str) -> String {
+    format!("_f2k_export_{body}")
 }
 
 /// `dll`'s generated bodies as Intel-syntax assembly: one global [`nt_stub_symbol`] per system
@@ -440,14 +441,15 @@ pub fn dll_stubs(specs: &[(&str, &Spec)], dll: &str) -> String {
 /// `Zw` name, to its stub, in number order; win32k's are not exported), then its forwarders
 /// (`Name=MODULE.Export`, in spec order). An export's ordinal is its spec's when it has one (a
 /// system service's Zw alias's, its `zw_ordinal`), otherwise the next free one. `hand_exports` must
-/// be exactly the spec's natives.
+/// be exactly the spec's natives' bodies: a C++ decorated name's line maps it to its body's symbol
+/// (`??2@YAPAXI@Z=f2k_export_operator_new`; lld-link leaves a name starting with `?` undecorated).
 pub fn dll_def(
     specs: &[(&str, &Spec)],
     dll: &str,
     hand_exports: &[String],
 ) -> Result<String, String> {
     let own = own_spec(specs, dll);
-    let mut natives: Vec<&str> = own.natives().iter().map(|e| e.name.as_str()).collect();
+    let mut natives: Vec<&str> = own.natives().iter().map(|e| e.body()).collect();
     let mut written: Vec<&str> = hand_exports.iter().map(String::as_str).collect();
     natives.sort();
     written.sort();
@@ -458,11 +460,15 @@ pub fn dll_def(
     }
     // Each line with its ordinal, when the spec gives one, and whether it exports a variable.
     let mut lines: Vec<(Option<u16>, String, bool)> = Vec::new();
-    for name in hand_exports {
-        let export = own.export(name).expect("checked against the natives above");
+    for body in hand_exports {
+        let export = own
+            .natives()
+            .into_iter()
+            .find(|e| e.body() == body)
+            .expect("checked against the natives above");
         lines.push((
             export.ordinal,
-            format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
+            format!("{}={}", export.name, &hand_symbol(export.body())[1..]),
             export.data,
         ));
     }
@@ -874,5 +880,53 @@ impl = { syscall = "crate::nt::object::close" }
         );
         assert!(!dll_rust(&specs, "kernel32", "t").contains("_iob"));
         assert!(dll_exports(&kernel32, "t").contains("    (\"_iob\", 0),"));
+    }
+
+    /// A C++ decorated name (operator new's) is a native's: its body names its code's symbol and
+    /// its description, and the `.def` exports the decorated name to it. Another kind of record,
+    /// or a body that is no identifier, is refused.
+    #[test]
+    fn a_decorated_name_is_a_natives_body() {
+        let record = "\n[[export]]\nname = \"??2@YAPAXI@Z\"\ngroup = \"termination\"\n\
+                      args = [\"u32 size\"]\nimpl = { native = \"operator_new\" }\nordinal = 15\n\
+                      fails = \"NULL\"\n";
+        let text = SPEC.to_string() + record;
+        let kernel32 = parse_spec(&text).unwrap();
+        let ntdll = parse_spec(NTDLL).unwrap();
+        let specs = [("kernel32", &kernel32), ("ntdll", &ntdll)];
+        let mut hand = natives();
+        hand.push("operator_new".into());
+        let def = dll_def(&specs, "kernel32", &hand).unwrap();
+        assert!(
+            def.contains("  ??2@YAPAXI@Z=f2k_export_operator_new @15\n"),
+            "{def}"
+        );
+        let mut by_name = natives();
+        by_name.push("??2@YAPAXI@Z".into());
+        assert!(dll_def(&specs, "kernel32", &by_name).is_err());
+        let rust = dll_rust(&specs, "kernel32", "t");
+        assert!(
+            rust.contains(
+                "    pub static operator_new: Entry = Entry {\n        dll: \"kernel32\",\n        \
+                 name: \"??2@YAPAXI@Z\","
+            ),
+            "{rust}"
+        );
+        assert!(dll_exports(&kernel32, "t").contains("    (\"??2@YAPAXI@Z\", 4),"));
+        for (from, to, message) in [
+            (
+                "native = \"operator_new\"",
+                "stub = \"not yet implemented\"",
+                "must be an identifier",
+            ),
+            (
+                "native = \"operator_new\"",
+                "native = \"??2@YAPAXI@Z\"",
+                "body",
+            ),
+        ] {
+            let error = parse_spec(&text.replacen(from, to, 1)).unwrap_err();
+            assert!(error.contains(message), "{to}: {error}");
+        }
     }
 }

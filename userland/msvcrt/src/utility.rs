@@ -1,4 +1,4 @@
-//! qsort, rand and srand, time.
+//! qsort, rand and srand, abs and labs, time.
 //!
 //! rand is the C runtime's linear congruential generator, per thread: the seed becomes
 //! `seed * 214013 + 2531011` and rand answers its bits 16 to 30 (RAND_MAX 32767), the seed 1 until
@@ -149,6 +149,18 @@ pub extern "C" fn srand(seed: u32) {
     thread::with_data(|data| data.seed.store(seed, Relaxed));
 }
 
+/// abs: the int's absolute value; INT_MIN, which has no positive counterpart, answers itself.
+#[unsafe(export_name = "f2k_export_abs")]
+pub extern "C" fn abs(value: i32) -> i32 {
+    value.wrapping_abs()
+}
+
+/// labs: as abs (a long is an int on Win32).
+#[unsafe(export_name = "f2k_export_labs")]
+pub extern "C" fn labs(value: i32) -> i32 {
+    value.wrapping_abs()
+}
+
 /// The FILETIME of 1970-01-01 00:00:00 UTC, in 100-nanosecond intervals since 1601.
 const UNIX_EPOCH: u64 = 116_444_736_000_000_000;
 
@@ -242,5 +254,19 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// strings' abs block: INT_MIN answers itself.
+    #[test]
+    fn abs_and_labs() {
+        for (value, expected) in [
+            (0, 0),
+            (5, 5),
+            (-5, 5),
+            (i32::MIN, i32::MIN),
+            (i32::MAX, i32::MAX),
+        ] {
+            assert_eq!((abs(value), labs(value)), (expected, expected), "{value}");
+        }
     }
 }

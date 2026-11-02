@@ -22,7 +22,7 @@ if not "%~1"=="" goto one
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl winsta registry hellomd crt seh fd wide) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta registry hellomd crt seh fd wide strings process) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -34,7 +34,7 @@ rem needs it and it is not there (the fixtures built on common\f2kt.h
 rem stamp their source with it).
 :one
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl winsta registry hellomd crt seh fd wide) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -307,6 +307,26 @@ del ctrl.obj ctrlkid.obj
 cd ..\..
 goto :eof
 
+:utility
+echo === utility
+cd kernel32\utility
+call :stamp utility.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% utility.c
+if errorlevel 1 (echo build.bat: utility failed & exit /b 1)
+del utility.obj
+cd ..\..
+goto :eof
+
+:lstr
+echo === lstr
+cd kernel32\lstr
+call :stamp lstr.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% lstr.c
+if errorlevel 1 (echo build.bat: lstr failed & exit /b 1)
+del lstr.obj
+cd ..\..
+goto :eof
+
 :winsta
 echo === winsta
 cd user32\winsta
@@ -376,6 +396,26 @@ call :stamp wide.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wide.c
 if errorlevel 1 (echo build.bat: wide failed & exit /b 1)
 del wide.obj
+cd ..\..
+goto :eof
+
+:strings
+echo === strings
+cd crt\strings
+call :stamp strings.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% strings.c
+if errorlevel 1 (echo build.bat: strings failed & exit /b 1)
+del strings.obj
+cd ..\..
+goto :eof
+
+:process
+echo === process
+cd crt\process
+call :stamp process.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% process.c
+if errorlevel 1 (echo build.bat: process failed & exit /b 1)
+del process.obj
 cd ..\..
 goto :eof
 

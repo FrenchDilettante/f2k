@@ -1,0 +1,88 @@
+# F2K capture of lstr (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026  6:34:54.85
+lstr F2KT-SOURCE-CRC=0x8C4E65B8
+>>> lstr.exe len
+== len
+pages set up (read-write, no-access, read-only): yes
+lstrlenA(""): ret=0 err=-
+lstrlenA("abc"): ret=3 err=-
+lstrlenA("caf\xE9"): ret=4 err=-
+lstrlenA(NULL): ret=0 err=-
+lstrlenA(a no-access page): ret=0 err=-
+lstrlenA("aaaa" running into a no-access page): ret=0 err=-
+lstrlenW(""): ret=0 err=-
+lstrlenW("abc"): ret=3 err=-
+lstrlenW("caf<U+00E9><U+4E2D>"): ret=5 err=-
+lstrlenW(NULL): ret=0 err=-
+lstrlenW(a no-access page): ret=0 err=-
+lstrlenW("aaaa" running into a no-access page): ret=0 err=-
+pages freed: yes
+lstr: done
+<<< exit code=0
+>>> lstr.exe cpy
+== cpy
+pages set up (read-write, no-access, read-only): yes
+lstrcpyA(buf, "abc"): ret=dest err=- dest [abc\0ZZ]
+lstrcpyA(buf, ""): ret=dest err=- dest [\0ZZ]
+lstrcpyA(NULL, "abc"): ret=NULL err=-
+lstrcpyA(buf, NULL): ret=NULL err=- dest [ZZZ]
+lstrcpyA(buf, a no-access page): ret=NULL err=- dest [ZZZ]
+lstrcpyA(a read-only page holding "ro", "abc"): ret=NULL err=- dest [ro\0Z]
+lstrcpyA(3 bytes before a no-access page, "abcdefgh"): ret=NULL err=- dest [ZZZ]
+lstrcpyW(buf, "abc"): ret=dest err=- dest [abc\0<U+5A5A><U+5A5A>]
+lstrcpyW(buf, ""): ret=dest err=- dest [\0<U+5A5A><U+5A5A>]
+lstrcpyW(NULL, "abc"): ret=NULL err=-
+lstrcpyW(buf, NULL): ret=NULL err=- dest [<U+5A5A><U+5A5A><U+5A5A>]
+lstrcpyW(buf, a no-access page): ret=NULL err=- dest [<U+5A5A><U+5A5A><U+5A5A>]
+lstrcpyW(a read-only page holding "ro", "abc"): ret=NULL err=- dest [ro\0<U+5A5A>]
+lstrcpyW(3 units before a no-access page, "abcdefgh"): ret=NULL err=- dest [abc]
+pages freed: yes
+lstr: done
+<<< exit code=0
+>>> lstr.exe cpyn
+== cpyn
+pages set up (read-write, no-access, read-only): yes
+lstrcpynA(buf, "abcde", 0): ret=dest err=- dest [ZZZZZZZZZZZZ]
+lstrcpynA(buf, "abcde", 1): ret=dest err=- dest [\0ZZZZZZZZZZZ]
+lstrcpynA(buf, "abcde", 5): ret=dest err=- dest [abcd\0ZZZZZZZ]
+lstrcpynA(buf, "abcde", 6): ret=dest err=- dest [abcde\0ZZZZZZ]
+lstrcpynA(buf, "abcde", 10): ret=dest err=- dest [abcde\0ZZZZZZ]
+lstrcpynA(buf, "abc", -1): ret=dest err=- dest [abc\0ZZ]
+lstrcpynA(NULL, "abcde", 5): ret=NULL err=-
+lstrcpynA(buf, NULL, 5): ret=NULL err=- dest [ZZZ]
+lstrcpynA(a read-only page holding "ro", "abcde", 5): ret=NULL err=- dest [ro\0Z]
+lstrcpynW(buf, "abcde", 0): ret=dest err=- dest [<U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(buf, "abcde", 1): ret=dest err=- dest [\0<U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(buf, "abcde", 5): ret=dest err=- dest [abcd\0<U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(buf, "abcde", 6): ret=dest err=- dest [abcde\0<U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(buf, "abcde", 10): ret=dest err=- dest [abcde\0<U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(buf, "abc", -1): ret=dest err=- dest [abc\0<U+5A5A><U+5A5A>]
+lstrcpynW(NULL, "abcde", 5): ret=NULL err=-
+lstrcpynW(buf, NULL, 5): ret=NULL err=- dest [<U+5A5A><U+5A5A><U+5A5A>]
+lstrcpynW(a read-only page holding "ro", "abcde", 5): ret=NULL err=- dest [ro\0<U+5A5A>]
+pages freed: yes
+lstr: done
+<<< exit code=0
+>>> lstr.exe cat
+== cat
+pages set up (read-write, no-access, read-only): yes
+lstrcatA("ab", "cd"): ret=dest err=- dest [abcd\0Z]
+lstrcatA("", "xy"): ret=dest err=- dest [xy\0Z]
+lstrcatA("ab", ""): ret=dest err=- dest [ab\0Z]
+lstrcatA(NULL, "cd"): ret=NULL err=-
+lstrcatA("ab", NULL): ret=NULL err=- dest [ab\0Z]
+lstrcatA(a read-only page holding "ro", "x"): ret=NULL err=- dest [ro\0Z]
+lstrcatA("ab", a no-access page): ret=NULL err=- dest [ab\0Z]
+lstrcatW("ab", "cd"): ret=dest err=- dest [abcd\0<U+5A5A>]
+lstrcatW("", "xy"): ret=dest err=- dest [xy\0<U+5A5A>]
+lstrcatW("ab", ""): ret=dest err=- dest [ab\0<U+5A5A>]
+lstrcatW(NULL, "cd"): ret=NULL err=-
+lstrcatW("ab", NULL): ret=NULL err=- dest [ab\0<U+5A5A>]
+lstrcatW(a read-only page holding "ro", "x"): ret=NULL err=- dest [ro\0<U+5A5A>]
+lstrcatW("ab", a no-access page): ret=NULL err=- dest [ab\0<U+5A5A>]
+pages freed: yes
+lstr: done
+<<< exit code=0

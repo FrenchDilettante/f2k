@@ -117,3 +117,34 @@ fn the_conversions_round_trip_and_refuse_out_of_range_values() {
     );
     assert_eq!(last_error(), 87);
 }
+
+/// LocalFileTimeToFileTime adds back the bias FileTimeToLocalFileTime takes off: a round trip is
+/// exact, its shift the other's negative, east of Greenwich as west; one FILETIME may be both the
+/// input and the output.
+///
+/// Pins: kernel32.LocalFileTimeToFileTime
+#[test]
+fn local_file_times_convert_back_exactly() {
+    const HOUR: u64 = 3600 * 10_000_000;
+    for bias in [
+        5 * HOUR,
+        (-(5 * HOUR as i64) - 30 * 60 * 10_000_000) as u64,
+        0,
+    ] {
+        host::set_time(shared::TIME_ZONE_BIAS, bias);
+        let (mut local, mut back) = (0u64, 0u64);
+        unsafe { file_time_to_local_file_time(&FEB_3_2001, &mut local) };
+        assert_eq!(
+            unsafe { local_file_time_to_file_time(&local, &mut back) },
+            1
+        );
+        assert_eq!(back, FEB_3_2001);
+        let mut utc = 0u64;
+        unsafe { local_file_time_to_file_time(&FEB_3_2001, &mut utc) };
+        assert_eq!(utc.wrapping_sub(FEB_3_2001), FEB_3_2001.wrapping_sub(local));
+        let mut same = FEB_3_2001;
+        let place: *mut u64 = &mut same;
+        assert_eq!(unsafe { local_file_time_to_file_time(place, place) }, 1);
+        assert_eq!(same, utc);
+    }
+}

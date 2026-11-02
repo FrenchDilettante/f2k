@@ -2312,6 +2312,15 @@ pub fn get_procedure_address(
     (status, address)
 }
 
+/// RtlImageNtHeader: the NT headers of an image mapped in the calling process at `base` (its own
+/// image, whose headers stay mapped for its life), copied out; none when ntdll finds none.
+pub fn image_nt_header(base: usize) -> Option<rtl::image::ImageNtHeaders32> {
+    // SAFETY: ntdll's export, over the base of a mapped image; it reads only the image's headers.
+    let headers = unsafe { nt::RtlImageNtHeader(base) };
+    // SAFETY: the headers ntdll found, inside the mapped image, read unaligned.
+    (!headers.is_null()).then(|| unsafe { headers.read_unaligned() })
+}
+
 // --- Heaps and the handle tables -----------------------------------------------------------------
 
 // The DLL's own heap and Local/Global calls (src/main.rs) reach these; the host tests have no

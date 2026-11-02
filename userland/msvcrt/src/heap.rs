@@ -1,21 +1,31 @@
 //! The allocator: malloc, calloc, realloc and free over a heap of the C runtime's own (HeapCreate,
-//! when the DLL is loaded), and memmove, memcpy, memset and memcmp (which answers -1, 0 or 1, as
-//! strcmp does).
+//! when the DLL is loaded), _msize and _expand, C++'s operator new and operator delete, and
+//! memmove, memcpy, memset and memcmp (which answers -1, 0 or 1, as strcmp does).
 //!
 //! As wide's capture shows: malloc(0) and calloc(0, n) hand out a block; realloc(p, 0) frees `p`
 //! and answers NULL; realloc(NULL, n) is malloc; a request the heap cannot serve answers NULL with
-//! errno untouched; free(NULL) does nothing.
+//! errno untouched; free(NULL) does nothing. _msize is the heap's size of the block (HeapSize),
+//! _expand resizes it without moving it (HeapReAlloc's HEAP_REALLOC_IN_PLACE_ONLY), and the C++
+//! operators are malloc and free.
+//!
+//! As process's capture shows, every request reaches the heap rounded up to a multiple of 16 bytes,
+//! 16 at least: _msize answers 16 for malloc(1) and new(0), 112 for malloc(100), 5008 for
+//! malloc(5000), and 112 for a block _expand shrinks to 100.
 
 use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use crate::kernel32;
 
-/// HEAP_ZERO_MEMORY.
+/// HEAP_ZERO_MEMORY and HEAP_REALLOC_IN_PLACE_ONLY.
 const HEAP_ZERO_MEMORY: u32 = 0x08;
+const HEAP_REALLOC_IN_PLACE_ONLY: u32 = 0x10;
 
 /// The largest request the allocator passes to the heap (MSVC's `_HEAP_MAXREQ`): beyond it,
 /// rounding the size up would wrap.
 const MAXIMUM_REQUEST: usize = 0xFFFF_FFE0;
+
+/// The granularity of the blocks the allocator asks of the heap.
+const GRANULARITY: usize = 16;
 
 /// The C runtime's heap (0 before the DLL's initialization), set once by the DLL's process attach,
 /// before any other thread reaches the C runtime.
@@ -33,13 +43,23 @@ fn heap() -> usize {
     HEAP.load(Relaxed)
 }
 
-/// A block of `size` bytes (one at least), zeroed when asked; null when the heap cannot serve it.
-pub fn allocate(size: usize, zeroed: bool) -> *mut u8 {
+/// The size the heap is asked for a request of `size` bytes: rounded up to a multiple of 16, 16 at
+/// least; None beyond the largest request.
+fn rounded(size: usize) -> Option<usize> {
     if size > MAXIMUM_REQUEST {
-        return core::ptr::null_mut();
+        return None;
     }
+    Some(size.max(1).next_multiple_of(GRANULARITY))
+}
+
+/// A block of `size` bytes (rounded, as all requests are), zeroed when asked; null when the heap
+/// cannot serve it.
+pub fn allocate(size: usize, zeroed: bool) -> *mut u8 {
+    let Some(size) = rounded(size) else {
+        return core::ptr::null_mut();
+    };
     let flags = if zeroed { HEAP_ZERO_MEMORY } else { 0 };
-    kernel32::heap_alloc(heap(), flags, size.max(1))
+    kernel32::heap_alloc(heap(), flags, size)
 }
 
 /// A block given back (null: nothing).
@@ -55,18 +75,18 @@ pub unsafe fn release(block: *mut u8) {
     }
 }
 
-/// `block` resized to `size` bytes (one at least), its contents kept; null, the block untouched,
-/// when the heap cannot serve it.
+/// `block` resized to `size` bytes (rounded, as all requests are), its contents kept; null, the
+/// block untouched, when the heap cannot serve it.
 ///
 /// # Safety
 ///
 /// `block` is a block of the C runtime's heap.
 pub unsafe fn resize(block: *mut u8, size: usize) -> *mut u8 {
-    if size > MAXIMUM_REQUEST {
+    let Some(size) = rounded(size) else {
         return core::ptr::null_mut();
-    }
+    };
     // SAFETY: the caller's block, of the C runtime's heap.
-    unsafe { kernel32::heap_realloc(heap(), 0, block, size.max(1)) }
+    unsafe { kernel32::heap_realloc(heap(), 0, block, size) }
 }
 
 /// The size of a block of the C runtime's heap.
@@ -121,6 +141,51 @@ pub unsafe extern "C" fn realloc(block: *mut u8, size: usize) -> *mut u8 {
 /// `block` is null or a block malloc, calloc or realloc handed out, not freed since.
 #[unsafe(export_name = "f2k_export_free")]
 pub unsafe extern "C" fn free(block: *mut u8) {
+    // SAFETY: the caller's block.
+    unsafe { release(block) };
+}
+
+/// _msize: the size of a block the allocator handed out (HeapSize's): the request rounded.
+///
+/// # Safety
+///
+/// `block` is a block malloc, calloc, realloc, _expand or operator new handed out, not freed since.
+#[unsafe(export_name = "f2k_export__msize")]
+pub unsafe extern "C" fn msize(block: *const u8) -> usize {
+    // SAFETY: the caller's block.
+    unsafe { size_of(block) }
+}
+
+/// _expand: the block resized to `size` bytes (rounded, as all requests are) where it lies, its
+/// contents kept; NULL, the block untouched, when the heap has no room for it there.
+///
+/// # Safety
+///
+/// `block` is a block the allocator handed out, not freed since.
+#[unsafe(export_name = "f2k_export__expand")]
+pub unsafe extern "C" fn expand(block: *mut u8, size: usize) -> *mut u8 {
+    let Some(size) = rounded(size) else {
+        return core::ptr::null_mut();
+    };
+    // SAFETY: the caller's block, of the C runtime's heap; it does not move.
+    unsafe { kernel32::heap_realloc(heap(), HEAP_REALLOC_IN_PLACE_ONLY, block, size) }
+}
+
+/// operator new (`??2@YAPAXI@Z`): a block of `size` bytes, as malloc's. MSVC 6's operator new calls
+/// the program's new handler when the heap has none, and this DLL installs none
+/// (`_set_new_handler` is not exported yet), so it answers NULL then, as malloc does.
+#[unsafe(export_name = "f2k_export_operator_new")]
+pub extern "C" fn operator_new(size: usize) -> *mut u8 {
+    allocate(size, false)
+}
+
+/// operator delete (`??3@YAXPAX@Z`): the block given back, as free gives it (NULL: nothing).
+///
+/// # Safety
+///
+/// `block` is null or a block operator new handed out, not deleted since.
+#[unsafe(export_name = "f2k_export_operator_delete")]
+pub unsafe extern "C" fn operator_delete(block: *mut u8) {
     // SAFETY: the caller's block.
     unsafe { release(block) };
 }
@@ -239,6 +304,57 @@ mod tests {
                 to.as_mut_ptr()
             );
             assert_eq!(&to, b"abc\0");
+        }
+    }
+
+    /// process's heap block: operator new is malloc (new(0) a block of its own), _msize the
+    /// request rounded up to a multiple of 16 (16 at least), operator delete takes NULL; _expand
+    /// shrinks a block where it lies, its contents kept, its size rounded the same way.
+    #[test]
+    fn msize_expand_and_the_operators() {
+        initialize();
+        // SAFETY: the blocks the allocator hands out, used within their sizes.
+        unsafe {
+            let (one, hundred) = (operator_new(1), operator_new(100));
+            let (zero, again) = (operator_new(0), operator_new(0));
+            assert!(![one, hundred, zero, again].iter().any(|p| p.is_null()));
+            assert_ne!(zero, again);
+            assert_eq!(
+                [one, hundred, zero, again].map(|p| msize(p)),
+                [16, 112, 16, 16]
+            );
+            for p in [one, hundred, zero, again] {
+                operator_delete(p);
+            }
+            operator_delete(core::ptr::null_mut());
+            let (small, hundred) = (malloc(1), malloc(100));
+            assert_eq!([msize(small), msize(hundred)], [16, 112]);
+            // realloc and calloc round the same way; calloc's whole block is zeroed.
+            let grown = realloc(small, 17);
+            assert_eq!(msize(grown), 32);
+            let shrunk = realloc(hundred, 3);
+            assert_eq!(msize(shrunk), 16);
+            let zeroed = calloc(3, 5);
+            assert_eq!(msize(zeroed), 16);
+            assert!((0..16).all(|i| *zeroed.add(i) == 0));
+            for p in [grown, shrunk, zeroed] {
+                free(p);
+            }
+            assert_eq!(rounded(MAXIMUM_REQUEST), Some(MAXIMUM_REQUEST));
+            assert_eq!(rounded(MAXIMUM_REQUEST + 1), None);
+            let m = malloc(5000);
+            assert_eq!(msize(m), 5008);
+            for i in 0..100 {
+                *m.add(i) = b'a' + (i % 26) as u8;
+            }
+            let shrunk = expand(m, 100);
+            assert_eq!(shrunk, m);
+            assert_eq!(msize(shrunk), 112);
+            assert!((0..100).all(|i| *shrunk.add(i) == b'a' + (i % 26) as u8));
+            assert_eq!(expand(shrunk, 100), m);
+            assert_eq!(msize(m), 112);
+            assert!(expand(m, MAXIMUM_REQUEST + 1).is_null());
+            free(m);
         }
     }
 

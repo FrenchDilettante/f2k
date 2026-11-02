@@ -102,3 +102,41 @@ fn the_windows_directory_is_the_system_root() {
     );
     assert_eq!(unsafe { get_windows_directory_w(wide.as_mut_ptr(), 32) }, 8);
 }
+
+/// GetSystemDirectoryW: the system directory the A form reads, in UTF-16; its length without the
+/// terminator when it fits, the size it needs with the terminator when it does not, the buffer
+/// untouched (the utility fixture's sysdir block).
+///
+/// Pins: kernel32.GetSystemDirectoryW
+#[test]
+fn the_wide_system_directory_is_the_narrow_one() {
+    let root = b"C:\\WINNT\0\0";
+    for (at, pair) in root.chunks(2).enumerate() {
+        crate::shared::host::set(
+            crate::shared::NT_SYSTEM_ROOT + 4 * at,
+            u32::from(pair[0]) | u32::from(pair[1]) << 16,
+        );
+    }
+    let expected: Vec<u16> = "C:\\WINNT\\system32\0".encode_utf16().collect();
+    let mut wide = [0x5A5Au16; 32];
+    assert_eq!(
+        unsafe { get_system_directory_w(wide.as_mut_ptr(), 260) },
+        17
+    );
+    assert_eq!(wide[..18], expected[..]);
+    assert_eq!(
+        unsafe { get_system_directory_w(core::ptr::null_mut(), 0) },
+        18
+    );
+    let mut short = [0x5A5Au16; 32];
+    assert_eq!(
+        unsafe { get_system_directory_w(short.as_mut_ptr(), 17) },
+        18
+    );
+    assert_eq!(short, [0x5A5A; 32]);
+    assert_eq!(
+        unsafe { get_system_directory_w(short.as_mut_ptr(), 18) },
+        17
+    );
+    assert_eq!(short[..18], expected[..]);
+}

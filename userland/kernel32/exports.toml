@@ -36,7 +36,10 @@
 #                argument, 8 per u64; a variable (data = true) leaves them out
 #   impl         how it is implemented, an inline table with one key:
 #                  { native = "<body>" }      it runs in user mode: the DLL's own code, an
-#                                             `f2k_export_<Name>` body in its Rust or assembly
+#                                             `f2k_export_<body>` body in its Rust or assembly;
+#                                             the body is the export's name, or for a C++
+#                                             decorated name (msvcrt's `??2@YAPAXI@Z`) an
+#                                             identifier of its own
 #                  { syscall = "<path>" }     a Windows 2000 system service: the DLL's stub raises
 #                                             the gate on Windows 2000's number, and the kernel's
 #                                             handler at <path> serves it. ntoskrnl's are ntdll's
@@ -747,6 +750,14 @@ ordinal = 373
 fails = "0"
 
 [[export]]
+name = "GetSystemDirectoryW"
+group = "environment"
+args = ["ptr lpBuffer", "u32 uSize"]
+impl = { native = "GetSystemDirectoryW" }
+ordinal = 374
+fails = "0"
+
+[[export]]
 name = "GetWindowsDirectoryA"
 group = "environment"
 args = ["ptr lpBuffer", "u32 uSize"]
@@ -994,6 +1005,24 @@ impl = { native = "GetStringTypeW" }
 ordinal = 369
 
 [[export]]
+name = "GetStringTypeExA"
+group = "locale"
+args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
+impl = { native = "GetStringTypeExA" }
+ordinal = 367
+fails = "FALSE"
+note = "GetStringTypeA, with its locale"
+
+[[export]]
+name = "GetStringTypeExW"
+group = "locale"
+args = ["u32 Locale", "u32 dwInfoType", "ptr lpSrcStr", "i32 cchSrc", "ptr lpCharType"]
+impl = { native = "GetStringTypeExW" }
+ordinal = 368
+fails = "FALSE"
+note = "GetStringTypeW, the locale ignored as documented"
+
+[[export]]
 name = "CompareStringA"
 group = "locale"
 args = ["u32 Locale", "u32 dwCmpFlags", "ptr lpString1", "i32 cchCount1", "ptr lpString2", "i32 cchCount2"]
@@ -1030,6 +1059,14 @@ impl = { native = "GetUserDefaultLCID" }
 ordinal = 399
 
 [[export]]
+name = "GetUserDefaultLangID"
+group = "locale"
+args = []
+impl = { native = "GetUserDefaultLangID" }
+ordinal = 400
+fails = "never"
+
+[[export]]
 name = "lstrcmpA"
 group = "locale"
 args = ["strA? lpString1", "strA? lpString2"]
@@ -1060,6 +1097,73 @@ args = ["strW? lpString1", "strW? lpString2"]
 impl = { native = "lstrcmpiW" }
 ordinal = 818
 fails = "never"
+
+[[export]]
+name = "lstrlenA"
+group = "locale"
+args = ["strA? lpString"]
+impl = { native = "lstrlenA" }
+ordinal = 826
+fails = "0"
+note = "its work under the pointer probes' exception frame (src/probe.s), as Windows 2000's __try: a fault, NULL included, answers 0, the last error untouched"
+
+[[export]]
+name = "lstrlenW"
+group = "locale"
+args = ["strW? lpString"]
+impl = { native = "lstrlenW" }
+ordinal = 827
+fails = "0"
+
+[[export]]
+name = "lstrcpyA"
+group = "locale"
+args = ["ptr lpString1", "strA? lpString2"]
+impl = { native = "lstrcpyA" }
+ordinal = 820
+fails = "NULL"
+note = "its work under the pointer probes' exception frame (src/probe.s), as Windows 2000's __try: a fault, NULL included, answers NULL, the last error untouched"
+
+[[export]]
+name = "lstrcpyW"
+group = "locale"
+args = ["ptr lpString1", "strW? lpString2"]
+impl = { native = "lstrcpyW" }
+ordinal = 821
+fails = "NULL"
+
+[[export]]
+name = "lstrcpynA"
+group = "locale"
+args = ["ptr lpString1", "ptr lpString2", "i32 iMaxLength"]
+impl = { native = "lstrcpynA" }
+ordinal = 823
+fails = "NULL"
+note = "at most iMaxLength - 1 characters and always the terminator, no padding; a count of 0 writes nothing and answers the destination"
+
+[[export]]
+name = "lstrcpynW"
+group = "locale"
+args = ["ptr lpString1", "ptr lpString2", "i32 iMaxLength"]
+impl = { native = "lstrcpynW" }
+ordinal = 824
+fails = "NULL"
+
+[[export]]
+name = "lstrcatA"
+group = "locale"
+args = ["ptr lpString1", "strA? lpString2"]
+impl = { native = "lstrcatA" }
+ordinal = 811
+fails = "NULL"
+
+[[export]]
+name = "lstrcatW"
+group = "locale"
+args = ["ptr lpString1", "strW? lpString2"]
+impl = { native = "lstrcatW" }
+ordinal = 812
+fails = "NULL"
 
 [[export]]
 name = "GetThreadLocale"
@@ -1100,6 +1204,23 @@ impl = { native = "IsValidCodePage" }
 ordinal = 478
 
 [[export]]
+name = "IsDBCSLeadByte"
+group = "locale"
+args = ["u32 TestChar"]
+impl = { native = "IsDBCSLeadByte" }
+ordinal = 473
+fails = "FALSE"
+
+[[export]]
+name = "IsDBCSLeadByteEx"
+group = "locale"
+args = ["u32 CodePage", "u32 TestChar"]
+impl = { native = "IsDBCSLeadByteEx" }
+ordinal = 474
+fails = "FALSE"
+note = "from GetCPInfo's lead-byte ranges (no installed code page has any); a code page not installed is ERROR_INVALID_PARAMETER"
+
+[[export]]
 name = "EnumSystemLocalesA"
 group = "locale"
 args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
@@ -1113,6 +1234,15 @@ group = "locale"
 args = ["ptr lpLocaleEnumProc", "u32 dwFlags"]
 impl = { native = "EnumSystemLocalesW" }
 ordinal = 138
+
+[[export]]
+name = "MulDiv"
+group = "locale"
+args = ["i32 nNumber", "i32 nNumerator", "i32 nDenominator"]
+impl = { native = "MulDiv" }
+ordinal = 518
+fails = "-1"
+note = "a 64-bit product, rounded to the nearest with halves away from zero; -1 for a zero denominator or a result past 32 bits"
 
 # --- threads / sync -------------------------------------------------------------------------------
 
@@ -1693,6 +1823,14 @@ impl = { native = "FileTimeToLocalFileTime" }
 ordinal = 157
 
 [[export]]
+name = "LocalFileTimeToFileTime"
+group = "files"
+args = ["ptr lpLocalFileTime", "ptr lpFileTime"]
+impl = { native = "LocalFileTimeToFileTime" }
+ordinal = 492
+fails = "FALSE"
+
+[[export]]
 name = "FileTimeToSystemTime"
 group = "files"
 args = ["ptr lpFileTime", "ptr lpSystemTime"]
@@ -1994,6 +2132,39 @@ impl = { native = "GetFullPathNameW" }
 ordinal = 303
 
 [[export]]
+name = "GetTempPathA"
+group = "files"
+args = ["u32 nBufferLength", "ptr lpBuffer"]
+impl = { native = "GetTempPathA" }
+ordinal = 387
+fails = "0"
+note = "TMP, then TEMP, then the current directory, made full with a trailing backslash; not checked to exist"
+
+[[export]]
+name = "GetTempPathW"
+group = "files"
+args = ["u32 nBufferLength", "ptr lpBuffer"]
+impl = { native = "GetTempPathW" }
+ordinal = 388
+fails = "0"
+
+[[export]]
+name = "GetTempFileNameA"
+group = "files"
+args = ["strA lpPathName", "strA lpPrefixString", "u32 uUnique", "ptr lpTempFileName"]
+impl = { native = "GetTempFileNameA" }
+ordinal = 385
+fails = "0"
+
+[[export]]
+name = "GetTempFileNameW"
+group = "files"
+args = ["strW lpPathName", "strW lpPrefixString", "u32 uUnique", "ptr lpTempFileName"]
+impl = { native = "GetTempFileNameW" }
+ordinal = 386
+fails = "0"
+
+[[export]]
 name = "SearchPathA"
 group = "files"
 args = ["strA? lpPath", "strA lpFileName", "strA? lpExtension", "u32 nBufferLength", "ptr lpBuffer", "ptr lpFilePart"]
@@ -2279,6 +2450,14 @@ args = ["strA lpApplicationName", "ptr<u32> lpBinaryType"]
 impl = { native = "GetBinaryTypeA" }
 ordinal = 210
 fails = "FALSE"
+
+[[export]]
+name = "GetProcessVersion"
+group = "processes"
+args = ["u32 ProcessId"]
+impl = { native = "GetProcessVersion" }
+ordinal = 352
+fails = "0"
 
 # --- pipes ----------------------------------------------------------------------------------------
 
@@ -3265,10 +3444,6 @@ name = "GetProcessTimes"
 ordinal = 351
 
 [[export]]
-name = "GetProcessVersion"
-ordinal = 352
-
-[[export]]
 name = "GetProcessWorkingSetSize"
 ordinal = 353
 
@@ -3303,24 +3478,12 @@ ordinal = 360
 
 
 [[export]]
-name = "GetStringTypeExA"
-ordinal = 367
-
-[[export]]
-name = "GetStringTypeExW"
-ordinal = 368
-
-[[export]]
 name = "GetSystemDefaultLangID"
 ordinal = 371
 
 [[export]]
 name = "GetSystemDefaultUILanguage"
 ordinal = 372
-
-[[export]]
-name = "GetSystemDirectoryW"
-ordinal = 374
 
 [[export]]
 name = "GetSystemPowerStatus"
@@ -3351,22 +3514,6 @@ name = "GetTapeStatus"
 ordinal = 384
 
 [[export]]
-name = "GetTempFileNameA"
-ordinal = 385
-
-[[export]]
-name = "GetTempFileNameW"
-ordinal = 386
-
-[[export]]
-name = "GetTempPathA"
-ordinal = 387
-
-[[export]]
-name = "GetTempPathW"
-ordinal = 388
-
-[[export]]
 name = "GetThreadContext"
 ordinal = 389
 
@@ -3385,10 +3532,6 @@ ordinal = 396
 [[export]]
 name = "GetTimeFormatW"
 ordinal = 397
-
-[[export]]
-name = "GetUserDefaultLangID"
-ordinal = 400
 
 [[export]]
 name = "GetUserDefaultUILanguage"
@@ -3546,14 +3689,6 @@ ordinal = 468
 
 
 [[export]]
-name = "IsDBCSLeadByte"
-ordinal = 473
-
-[[export]]
-name = "IsDBCSLeadByteEx"
-ordinal = 474
-
-[[export]]
 name = "IsDebuggerPresent"
 ordinal = 475
 
@@ -3589,10 +3724,6 @@ ordinal = 489
 [[export]]
 name = "LocalCompact"
 ordinal = 491
-
-[[export]]
-name = "LocalFileTimeToFileTime"
-ordinal = 492
 
 [[export]]
 name = "LocalShrink"
@@ -3645,10 +3776,6 @@ ordinal = 516
 [[export]]
 name = "MoveFileWithProgressW"
 ordinal = 517
-
-[[export]]
-name = "MulDiv"
-ordinal = 518
 
 [[export]]
 name = "NlsConvertIntegerToString"
@@ -4425,14 +4552,6 @@ name = "lstrcat"
 ordinal = 810
 
 [[export]]
-name = "lstrcatA"
-ordinal = 811
-
-[[export]]
-name = "lstrcatW"
-ordinal = 812
-
-[[export]]
 name = "lstrcmp"
 ordinal = 813
 
@@ -4445,33 +4564,9 @@ name = "lstrcpy"
 ordinal = 819
 
 [[export]]
-name = "lstrcpyA"
-ordinal = 820
-
-[[export]]
-name = "lstrcpyW"
-ordinal = 821
-
-[[export]]
 name = "lstrcpyn"
 ordinal = 822
 
 [[export]]
-name = "lstrcpynA"
-ordinal = 823
-
-[[export]]
-name = "lstrcpynW"
-ordinal = 824
-
-[[export]]
 name = "lstrlen"
 ordinal = 825
-
-[[export]]
-name = "lstrlenA"
-ordinal = 826
-
-[[export]]
-name = "lstrlenW"
-ordinal = 827

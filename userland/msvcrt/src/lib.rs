@@ -15,7 +15,7 @@
 //! the streams ([`stdio`]) and the formatter and scanner they share ([`format`], [`float`],
 //! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system, _popen and
 //! _pclose), the locale and the character functions ([`ctype`]), strings ([`string`]), number
-//! conversions ([`convert`]), and qsort, rand and time ([`utility`]).
+//! conversions ([`convert`]), and qsort, rand, abs and time ([`utility`]).
 //!
 //! The exports not written yet are stubs: their generated bodies log the call and fail ([`stub`]).
 
@@ -63,8 +63,9 @@ const THREAD_DETACH: u32 = 3;
 
 /// The DLL's entry point's work, for each reason: the process attach sets up the heap, the
 /// per-thread slot and the locks, the descriptors over the standard handles, `_iob`'s standard
-/// streams and `_environ` (FALSE when one cannot be had); a thread's detach frees its data; the
-/// process's detach, when the program did not end through exit or _exit, runs what exit would.
+/// streams, `_acmdln` and `_wcmdln`, and `_environ` (FALSE when one cannot be had); a thread's
+/// detach frees its data; the process's detach, when the program did not end through exit or
+/// _exit, runs what exit would.
 pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
     match reason {
         PROCESS_ATTACH => {
@@ -73,6 +74,7 @@ pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
             }
             lowio::initialize();
             data::open_standard_streams();
+            startup::initialize_command_line();
             startup::initialize_environment() as u32
         }
         THREAD_DETACH => {
