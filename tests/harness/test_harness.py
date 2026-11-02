@@ -329,6 +329,15 @@ def test_a_mask_star_stands_for_one_value():
     assert not mask.fullmatch("region 0x1 allocprotect 0x4 region 0x2 allocprotect 0x0"), "a run of fields"
 
 
+def test_a_mask_double_star_stands_for_any_text():
+    mask = f2kboot.mask_pattern("  the standard output handle after _popen: **")
+    assert mask.fullmatch("  the standard output handle after _popen: another value")
+    assert mask.fullmatch("  the standard output handle after _popen: the same value")
+    assert not mask.fullmatch("  the standard output handle after _popen: "), "no text"
+    both = f2kboot.mask_pattern("a ** then * end")
+    assert both.fullmatch("a one two then 3 end")
+    assert not both.fullmatch("a one two then 3 4 end"), "a star is still one value"
+
 def test_masks_and_pending_blocks_apply_to_their_own_section():
     params = {p.id: p for p in f2kboot.blocks(
         "memory", gate=True,

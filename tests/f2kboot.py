@@ -797,9 +797,10 @@ def read_capture(fixture: str) -> list[Block]:
 
 
 def mask_pattern(mask: str) -> re.Pattern[str]:
-    """A capture mask: each "*" stands for one value (a run of non-blank characters), the rest is
-    literal."""
-    return re.compile(r"\S+".join(re.escape(part) for part in mask.split("*")))
+    """A capture mask: each "*" stands for one value (a run of non-blank characters), each "**" for
+    any text (words and the blanks between them, at least one character), the rest is literal."""
+    texts = (r"\S+".join(re.escape(part) for part in text.split("*")) for text in mask.split("**"))
+    return re.compile(".+".join(texts))
 
 
 def process_ended(log: str) -> bool:

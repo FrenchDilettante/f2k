@@ -9,8 +9,12 @@ kind = "sectioned"
 gate = true
 timeout = 60
 
-[pending]
-popen = "the standard output is a console handle on F2K, a file in the capture"
+[masks]
+# Whether _popen leaves the standard output handle's value as it found it depends on how the
+# process's handles are handed out, not on msvcrt: the capture's standard output was a file
+# (kernel handles, the most recently freed slot first), F2K's is a console handle (the lowest free
+# slot). A run of the program in a console window on Windows 2000 is to settle which F2K matches.
+popen = ["  the standard output handle after _popen: **"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
