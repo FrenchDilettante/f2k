@@ -149,7 +149,7 @@ The tests declare which exports they pin, as `dll.Export`: a corpus fixture in i
 - yellow: implemented, with no test that passed or failed.
 
 A border marks an export a pending or skipped corpus test pins: work in progress.
-Every `make test` keeps its results (`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the report from both, `target/compat/report.html`, a treemap of every DLL with one square per export.
+Every `make test` keeps its results (`target/test-results/pytest.json`); `make compat` runs the host scenarios and draws the report from both, `target/compat/report.html`, a treemap of every DLL with one square per export.
 Below the treemap, one card per real program in `tests/compat/` shows its imports the same way.
 A DLL among those programs is a compatibility target: F2K runs the real one, copied off the machine, instead of building its own (MFC42u.DLL), so it shows as a card, not in the treemap.
 `--check` checks the pins against the specs and the captures, and that each DLL F2K builds imports only what Windows 2000's imports; `--run` runs every scenario, ignored ones included, and fails once a gap's test passes (the marker goes with the fix).
@@ -157,8 +157,7 @@ A DLL among those programs is a compatibility target: F2K runs the real one, cop
 ```bash
 uv run scripts/compat.py --check
 uv run scripts/compat.py --run
-make compat          # both
-make compat-report   # the report, after a `make test`
+make compat          # both, and the report (after a `make test`, for its latest results)
 ```
 
 Each spec lists every export of Windows 2000's own DLL (SP4's: ntdll, kernel32, advapi32, user32, gdi32, msvcrt, ole32, oleaut32, rpcrt4, psapi and version): an export F2K doesn't implement yet is a catalogued record (its name and ordinal only), and every implemented export keeps its Windows 2000 ordinal.
@@ -168,7 +167,7 @@ The real DLLs never enter the repository.
 
 ### Everything
 
-`make check-all` runs the test systems in turn, fastest first, stopping at the first failure: the host unit tests (`make run-tests`), the pins and the host scenarios (`make compat`) and the on-target suite (`make test`; `PYTEST_FLAGS` passes through).
+`make check-all` runs the test systems in turn, fastest first, stopping at the first failure: the host unit tests (`make run-tests`), the pins, the host scenarios and the report (`make compat`) and the on-target suite (`make test`; `PYTEST_FLAGS` passes through).
 
 ```bash
 make check-all PYTEST_FLAGS="-n 2"
@@ -297,8 +296,7 @@ f2k/
 | `make qemu`          | Build the disk and boot the kernel directly in QEMU, the disk attached           |
 | `make test`          | Run every on-target QEMU test (pytest: the kernel boots and the corpus)          |
 | `make run-tests`     | Run host unit tests                                                              |
-| `make compat`        | Check the tests' pins and run the host scenarios                                 |
-| `make compat-report` | The DLL compatibility report (`target/compat/report.html`) from the last results |
+| `make compat`        | Check the tests' pins, run the host scenarios, write the compatibility report    |
 | `make check-all`     | `run-tests`, `compat` and `test`, in that order                                  |
 | `make check`         | `cargo check` + clippy (the kernel and the userland crates)                      |
 | `make fmt`           | Format the Rust sources and the Markdown files                                   |

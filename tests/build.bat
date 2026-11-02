@@ -6,7 +6,8 @@ rem Each test builds inside its own directory, <dll>\<name> (the
 rem fixtures are grouped by the DLL they exercise); exit code 0 is
 rem success. The fixtures built on common\f2kt.h include it as
 rem "../common/f2kt.h": /I .. (their group's directory) finds it.
-rem A fixture's name (build.bat dll) rebuilds only that one.
+rem Fixtures' names (build.bat dll, or build.bat threads files) rebuild
+rem only those, in the order given.
 
 setlocal
 cd /d "%~dp0"
@@ -18,7 +19,7 @@ for %%I in (cl.exe) do if "%%~$PATH:I"=="" (
     exit /b 1
 )
 
-if not "%~1"=="" goto one
+if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
@@ -29,20 +30,33 @@ for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched fil
 echo All tests built.
 exit /b 0
 
-rem One fixture (build.bat dll): the stamp tool too, when the fixture
-rem needs it and it is not there (the fixtures built on common\f2kt.h
-rem stamp their source with it).
-:one
+rem Some fixtures (build.bat dll, build.bat threads files): every name
+rem checked first, then each built in turn, stopping at the first
+rem failure; the stamp tool too, when a fixture needs it and it is not
+rem there (the fixtures built on common\f2kt.h stamp their source with
+rem it).
+:some
+for %%A in (%*) do (
+    call :known %%A
+    if errorlevel 1 exit /b 1
+)
+if not exist common\srcsum.exe call :srcsum
+if errorlevel 1 exit /b 1
+for %%A in (%*) do (
+    call :%%A
+    if errorlevel 1 exit /b 1
+    echo %%A built.
+)
+exit /b 0
+
+rem Whether %1 names a fixture: an unknown name fails, saying so.
+:known
 set F2KT_ONE=
 for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
 )
-if not exist common\srcsum.exe call :srcsum
-call :%~1
-if errorlevel 1 exit /b 1
-echo %~1 built.
 exit /b 0
 
 :srcsum

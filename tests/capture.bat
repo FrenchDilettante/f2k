@@ -23,8 +23,9 @@ rem after build.bat: the binaries it builds list their sections; older
 rem ones do not.
 rem
 rem Each fixture runs in its own directory, <dll>\<name> (the fixtures are
-rem grouped by the DLL they exercise). A fixture's name (capture.bat dll)
-rem recaptures only that one.
+rem grouped by the DLL they exercise). Fixtures' names (capture.bat dll,
+rem or capture.bat threads files) recapture only those, in the order
+rem given.
 rem
 rem This file keeps CRLF line endings: cmd's label search misreads
 rem LF-only batch files. Every redirection leads its command: cmd reads
@@ -34,7 +35,7 @@ rem "exit code=0>> output.txt" would lose the line.
 setlocal
 cd /d "%~dp0"
 
-if not "%~1"=="" goto one
+if not "%~1"=="" goto some
 
 call kernel32\files\setup.bat > nul
 
@@ -55,9 +56,19 @@ echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe k
 echo with its keys pressed, into kernel32\ctrl\overrides.txt.
 exit /b 0
 
-rem One fixture (capture.bat dll): recapture only it. The files fixture
-rem needs its data tree's attributes first (kernel32\files\setup.bat).
-:one
+rem Some fixtures (capture.bat dll, capture.bat threads files): every
+rem name checked first, then each recaptured in turn.
+:some
+for %%A in (%*) do (
+    call :group %%A
+    if errorlevel 1 exit /b 1
+)
+for %%A in (%*) do call :one %%A
+exit /b 0
+
+rem The DLL group of fixture %1, into F2KT_DLL: an unknown name fails,
+rem saying so.
+:group
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
 for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
@@ -68,6 +79,12 @@ if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1
 )
+exit /b 0
+
+rem One fixture (capture.bat dll): recapture it. The files fixture needs
+rem its data tree's attributes first (kernel32\files\setup.bat).
+:one
+call :group %1
 if /I "%~1"=="files" call kernel32\files\setup.bat > nul
 if /I "%~1"=="bare" (
     call :cap_bare

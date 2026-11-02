@@ -23,5 +23,5 @@ A DLL tracked here is a compatibility target: F2K runs the real DLL, copied off 
 `scripts/compat.py` leaves its spec out of the treemap and shows it as a card among the programs; a program importing from it links to that card, and those imports stay out of the program's coverage.
 `mfc42u.toml` is the one so far, converted from MFC42u.DLL 6.0.9586.0's import-table dump (no copy of the binary was at hand: regenerate it with `pe_deps.py` when there is).
 
-Purpose: the dependency sets are the input to progress reports — which real programs' import closures F2K can already serve, module by module, name by name — alongside `scripts/compat.py`'s export-coverage report (`make compat-report`).
+Purpose: the dependency sets are the input to progress reports — which real programs' import closures F2K can already serve, module by module, name by name — alongside `scripts/compat.py`'s export-coverage report (`make compat`).
 Cross-check: `cmd.toml` matches the measured cmd.exe import closure exactly (104 kernel32, 70 msvcrt, 11 advapi32, 4 user32 load-time; SHELL32/MPR delay-loaded).

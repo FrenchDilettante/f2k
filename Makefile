@@ -113,8 +113,8 @@ help:
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib, and the kernel's doc tests)"
-	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run"
-	@echo "  compat-report - The DLL compatibility report from the last test results (target/compat/)"
+	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run,"
+	@echo "                 and the DLL compatibility report written (target/compat/report.html)"
 	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format the Rust sources (rustfmt) and the Markdown files (rumdl)"
@@ -272,20 +272,16 @@ check-all:
 
 # The system DLLs' compatibility (scripts/compat.py): --check holds the tests' pins against the
 # export specs and the captures; --run runs every host scenario, ignored ones included (keeping the
-# results under target/test-results/), and fails once a known gap's scenario passes.
-.PHONY: compat
-compat: userland
-	$(UV) run scripts/compat.py --check --run
-
-# The compatibility report, target/compat/report.html: every export of every spec as a square in
-# one treemap, then one section per tests/compat/*.toml (pe_deps.py's dependency sets) with each
+# results under target/test-results/), and fails once a known gap's scenario passes; --report writes
+# the compatibility report, target/compat/report.html: every export of every spec as a square in one
+# treemap, then one section per tests/compat/*.toml (pe_deps.py's dependency sets) with each
 # executable's imports as squares in the same representation. Squares are coloured by the pinning
 # tests' results: the host scenarios (run here) and the on-target suite's last run
 # (target/test-results/pytest.json, which every `make test` keeps). A DLL among tests/compat/*.toml
 # is a compatibility target (F2K runs the real one): a section, not part of the treemap.
-.PHONY: compat-report
-compat-report: userland
-	$(UV) run scripts/compat.py --run --report
+.PHONY: compat
+compat: userland
+	$(UV) run scripts/compat.py --check --run --report
 
 .PHONY: run-tests
 run-tests: userland
