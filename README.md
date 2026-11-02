@@ -150,6 +150,8 @@ The tests declare which exports they pin, as `dll.Export`: a corpus fixture in i
 
 A border marks an export a pending or skipped corpus test pins: work in progress.
 Every `make test` keeps its results (`target/test-results/pytest.json`); `make compat-report` runs the host scenarios and draws the report from both, `target/compat/report.html`, a treemap of every DLL with one square per export.
+Below the treemap, one card per real program in `tests/compat/` shows its imports the same way.
+A DLL among those programs is a compatibility target: F2K runs the real one, copied off the machine, instead of building its own (MFC42u.DLL), so it shows as a card, not in the treemap.
 `--check` checks the pins against the specs and the captures, and that each DLL F2K builds imports only what Windows 2000's imports; `--run` runs every scenario, ignored ones included, and fails once a gap's test passes (the marker goes with the fix).
 
 ```bash

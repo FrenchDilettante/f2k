@@ -23,6 +23,12 @@ A forwarder (impl.forward) counts its target's pinning tests as its own: its tar
 runs. F2K-internal entry points (`internal = true`) are not Windows exports: the report leaves them
 out.
 
+A compatibility target is a DLL F2K runs as the real thing, copied off the real machine, instead of
+building its own: a tests/compat/*.toml whose image is a DLL (MFC42u.DLL). Its spec, if one is
+catalogued, takes no part: it is left out of the treemap and the summary, and a pin can't name it.
+It shows among the studied binaries instead, its own imports as squares; a program importing from
+it shows that module as a link to its card, outside the program's coverage.
+
 The results are the last runs': the on-target suite's (target/test-results/pytest.json, which every
 `make test` writes) and the host scenarios' (target/test-results/scenarios.json, which --run
 writes). A report over a partial run says so.
@@ -103,6 +109,8 @@ class Export:
     # The tests pinning it: (label, outcome, whether it is a corpus block), outcome None when the
     # test has no result.
     evidence: list = field(default_factory=list)
+    # Its entry in the report's data (the treemap's square, the tooltip every square of it shows).
+    index: int | None = None
 
     @property
     def pin(self) -> str:
@@ -140,12 +148,16 @@ class Scenario:
 
 
 def load_specs():
-    """Every spec: dll -> (groups, the non-internal exports by name)."""
+    """Every spec but the compatibility targets': dll -> (groups, the non-internal exports by
+    name)."""
     specs = {}
+    targets = compat_targets()
     for path in SPECS:
+        dll = path.parent.name
+        if dll in targets:
+            continue
         with open(path, "rb") as f:
             doc = tomllib.load(f)
-        dll = path.parent.name
         exports = {}
         for spec in doc.get("export", []):
             if spec.get("internal"):
@@ -494,12 +506,15 @@ section.exe h3 .meta { font-size: 12px; font-weight: 400; color: var(--ink-2); }
 .exe .mod { margin-top: 10px; font: 600 12px/1 system-ui, sans-serif; color: var(--ink-2); }
 .mod .mod-count { font-weight: 400; color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .delay-tag { font-weight: 400; color: var(--ink-3); }
+.target-link { margin-top: 6px; font-size: 12px; }
+.target-link a { color: inherit; }
 .squares { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px 0 0; }
 .squares .key { cursor: default; }
 .key.in-progress { outline: 1.5px solid var(--ink-2); }
 .meta { color: var(--ink-2); margin: 0; grid-column: span 2; }
-.banner { border: 1px solid var(--uncovered); border-left-width: 4px; padding: 8px 12px;
-  margin: 0 0 16px; border-radius: 4px; }
+.badge { display: inline-block; vertical-align: 2px; margin-left: 4px; padding: 1px 6px;
+  border-radius: 4px; background: var(--uncovered); color: #0b0b0b;
+  font: 600 11px/16px system-ui, sans-serif; cursor: help; }
 .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin: 0 0 16px;
   padding: 12px 0; border-bottom: 1px solid var(--rule); position: sticky; top: 0;
   background: var(--surface); z-index: 2; }
@@ -562,6 +577,8 @@ const tip = document.getElementById('tip');
 const esc = s => String(s).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'}[c]));
 const exports = [];
 for (const dll of DATA.dlls) for (const x of dll.exports) exports.push(x);
+// The imports no spec resolves (the executables' cards' squares only), after the exports.
+for (const x of DATA.unresolved) exports.push(x);
 
 // The DLLs' rectangles: a squarified treemap of the map's whole area (each DLL's area its export
 // count; rows of rectangles laid along the shorter side, each row taking DLLs, largest first, while
@@ -752,10 +769,12 @@ function fallback(text) {
   area.remove();
   return ok;
 }
+// Every square, the map's and the executables' cards', names its entry by data-index: the same
+// tooltip, the same copy on click.
 const under = e => e.target.dataset && e.target.dataset.index !== undefined ? exports[e.target.dataset.index] : null;
-map.addEventListener('mousemove', e => { const x = under(e); if (x) show(x, e.clientX, e.clientY); else tip.style.display = 'none'; });
-map.addEventListener('mouseleave', () => tip.style.display = 'none');
-map.addEventListener('click', e => { const x = under(e); if (x) copy(x); });
+document.addEventListener('mousemove', e => { const x = under(e); if (x) show(x, e.clientX, e.clientY); else tip.style.display = 'none'; });
+document.documentElement.addEventListener('mouseleave', () => tip.style.display = 'none');
+document.addEventListener('click', e => { const x = under(e); if (x) copy(x); });
 
 // The search dims the exports whose names don't match: the squares keep their places.
 const search = document.getElementById('search');
@@ -772,21 +791,6 @@ document.getElementById('hide-empty').addEventListener('change', () => { drawnSi
 let pending = 0;
 addEventListener('resize', () => { cancelAnimationFrame(pending); pending = requestAnimationFrame(draw); });
 
-// The executables' squares: the same tooltip as the map's, from their data attributes.
-function showKey(el, cx, cy) {
-  let h = '<b>' + esc(el.dataset.pin) + '</b><span class="st">' + esc(el.dataset.label)
-        + (el.dataset.progress === '1' ? ' · in progress' : '') + '</span>';
-  if (el.dataset.facts) h += '<div class="st">' + esc(el.dataset.facts) + '</div>';
-  tip.innerHTML = h;
-  tip.style.display = 'block';
-  const r = tip.getBoundingClientRect();
-  tip.style.left = Math.min(cx + 14, innerWidth - r.width - 8) + 'px';
-  tip.style.top = (cy + 14 + r.height > innerHeight ? cy - r.height - 10 : cy + 14) + 'px';
-}
-document.querySelectorAll('.squares .key[data-pin]').forEach(el => {
-  el.addEventListener('mousemove', e => showKey(el, e.clientX, e.clientY));
-  el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
-});
 draw();
 """
 
@@ -808,6 +812,13 @@ def load_compat():
     return programs
 
 
+def compat_targets():
+    """The compatibility targets: the DLLs among the studied binaries, which F2K runs as the real
+    thing rather than building its own. {module key (module_key): the TOML's name}."""
+    return {module_key(program["image"].get("file", program["name"])): program["name"]
+            for program in load_compat() if program["image"].get("kind") == "dll"}
+
+
 def ordinal_index(specs):
     """Each DLL's exports by ordinal, for imports by ordinal (an import "#256" names the spec's
     record whose ordinal is 256)."""
@@ -815,88 +826,124 @@ def ordinal_index(specs):
             for dll, (_, exports) in specs.items()}
 
 
-def import_status(specs, by_ordinal, dll, name):
-    """One imported name's square: its status in the DLL's spec, whether a pinning test is pending
-    or skipped (the square's outline), and the tooltip's facts."""
+def resolve_import(specs, by_ordinal, dll, name):
+    """One imported name: the spec's export it names (by name, or by ordinal for "#<ordinal>"), or
+    None and why there is none."""
     key = module_key(dll)
-    exports = specs.get(key, ({}, {}))[1]
-    export = exports.get(name)
+    export = specs.get(key, ({}, {}))[1].get(name)
     if export is None and name.startswith("#") and name[1:].isdecimal():
         export = by_ordinal.get(key, {}).get(int(name[1:]))
-    if export is None:
-        if key not in specs:
-            note = f"no F2K module for {dll}"
-        elif name.startswith("#"):
-            note = "no export at that ordinal in F2K's spec"
-        else:
-            note = "not in F2K's spec"
-        return "unimplemented", False, {"pin": f"{dll} {name}", "note": note}
+    if export is not None:
+        return export, None
+    if key not in specs:
+        return None, f"no F2K module for {dll}"
+    if name.startswith("#"):
+        return None, "no export at that ordinal in F2K's spec"
+    return None, "not in F2K's spec"
+
+
+def tooltip_entry(export, index):
+    """An export's entry in the report's data: its square's status and outline, and the facts its
+    tooltip shows, wherever the square is (the treemap, an executable's card)."""
     impl = export.spec.get("impl", {})
     info = {
-        "pin": export.pin,
-        "group": f"group: {export.group}" if export.group else None,
-        "impl": next((f"impl: {k} {v}" for k, v in impl.items()), None),
-        "tests": tally(export.evidence),
+        "pin": export.pin, "group": export.group,
+        "impl": next((f"{k} {v}" for k, v in impl.items()), None),
+        "ordinal": export.spec.get("ordinal"), "data": export.spec.get("data"),
+        "version": export.spec.get("version"), "note": export.spec.get("note"),
+        "implemented": export.implemented, "tests": tally(export.evidence),
     }
-    return export.status, export.in_progress, {k: v for k, v in info.items() if v}
+    entry = {"n": export.name, "s": export.status, "index": index,
+             "i": {k: v for k, v in info.items() if v}}
+    if export.in_progress:
+        entry["w"] = 1
+    return entry
 
 
-def executable_sections(specs):
-    """One section per executable's dependency TOML, most covered first: its imports as squares
-    in the map's own representation (the same colours and marks), grouped by module alphabetically.
-    A delay-loaded module's import carries a tag; a solid outline marks an in-progress pin."""
+def executable_sections(specs, data):
+    """One section per executable's dependency TOML, closest to complete first (the fewest imports
+    still missing): its imports as squares in the map's own representation (the same colours and
+    marks), grouped by module alphabetically. A delay-loaded module's import carries a tag; a solid
+    outline marks an in-progress pin. Each square names its entry in `data` (data-index): an
+    export's, or one appended to data["unresolved"] for an import no spec resolves, so its tooltip is
+    the treemap's."""
     e = html.escape
     programs = load_compat()
     if not programs:
+        data["unresolved"] = []
         return ['<div class="container"><h2>Executables\' imports</h2>',
                 '<p class=meta>No dependency TOMLs under tests/compat/ yet: run '
                 "<code>scripts/pe_deps.py</code> over the studied binaries "
                 "(tests/compat/README.md).</p></div>"]
     icons_rel = os.path.relpath(COMPAT, REPORT.parent)
     by_ordinal = ordinal_index(specs)
+    targets = compat_targets()
+    first_unresolved = sum(len(d["exports"]) for d in data["dlls"])
+    unresolved = {}
+
+    def entry_of(dll, name):
+        """The import's entry in `data`: (its status, whether in progress, its index, the name the
+        search matches: the export's, which an import by ordinal does not spell)."""
+        export, note = resolve_import(specs, by_ordinal, dll, name)
+        if export is not None:
+            return export.status, export.in_progress, export.index, export.name
+        pin = f"{module_key(dll)}.{name}"
+        if pin not in unresolved:
+            unresolved[pin] = {"n": name, "s": "unimplemented",
+                               "index": first_unresolved + len(unresolved),
+                               "i": {"pin": pin, "note": note}}
+        return "unimplemented", False, unresolved[pin]["index"], name
 
     def coverage(program):
         """The program's implemented imports: (percent, implemented, total), where implemented is
-        any status but unimplemented or stubbed — the DLL headers' number."""
+        any status but unimplemented or stubbed — the DLL headers' number. A compatibility target's
+        imports are not F2K's to implement: they count on its own card."""
         total = implemented = 0
         for module in program["imports"]:
+            if module_key(module["dll"]) in targets:
+                continue
             for name in module["names"]:
-                status, _, _ = import_status(specs, by_ordinal, module["dll"], name)
+                export, _ = resolve_import(specs, by_ordinal, module["dll"], name)
+                status = export.status if export is not None else "unimplemented"
                 total += 1
                 implemented += status in ("passing", "failing", "uncovered")
         pct = round(100 * implemented / total) if total else 0
         return pct, implemented, total
 
     measured = {p["name"]: coverage(p) for p in programs}
-    ordered = sorted(programs, key=lambda p: (-measured[p["name"]][0], p["name"]))
+    # Closest to complete first: the fewest imports not implemented yet.
+    ordered = sorted(programs, key=lambda p: (measured[p["name"]][2] - measured[p["name"]][1], p["name"]))
     parts = ['<div class="container">', "<h2>Studied binaries' imports</h2>",
              "<p class=meta>One section per <code>tests/compat/&lt;name&gt;.toml</code> "
-             "(<code>pe_deps.py</code> over the studied SP4 binaries), most covered first: each "
+             "(<code>pe_deps.py</code> over the studied SP4 binaries), the fewest imports missing first: each "
              "imported name a square in the map's colours and marks, grouped by module. Hover a "
-             "square for the export's facts.</p>"]
+             "square for the export's facts. A compatibility target is a DLL F2K runs as the real "
+             "one, copied off the machine: its card shows what it needs, and the programs "
+             "importing from it link there.</p>"]
     parts.append('<div class="exe-list">')
     for program in ordered:
         blocks = []
         for module in sorted(program["imports"], key=lambda m: m["dll"].lower()):
+            tag = ' <span class="delay-tag">delay-loaded</span>' if module["delay"] else ""
+            target = targets.get(module_key(module["dll"]))
+            if target is not None:
+                count = len(module["names"])
+                blocks.append(f'<div class=mod>{e(module["dll"])} <span class="mod-count">{count} '
+                              f'import{"s" if count != 1 else ""}</span>{tag}</div>'
+                              f'<div class="meta target-link">Compatibility target: the real DLL, '
+                              f'<a href="#compat-{e(target)}">see its card</a></div>')
+                continue
             squares = []
             implemented = 0
             for name in module["names"]:
-                status, in_progress, info = import_status(specs, by_ordinal, module["dll"], name)
+                status, in_progress, index, found = entry_of(module["dll"], name)
                 implemented += status in ("passing", "failing", "uncovered")
                 cls = f"key {status}" + (" in-progress" if in_progress else "")
-                facts = " · ".join(str(info[k]) for k in ("group", "impl", "note", "tests")
-                                   if info.get(k))
-                squares.append(
-                    f'<span class="{cls}" '
-                    f'data-export="{e(info.get("pin", "").split(".")[1].lower())}" '
-                    f'data-pin="{e(info.get("pin", ""))}" '
-                    f'data-label="{e(LABELS[status])}" '
-                    f'data-progress="{1 if in_progress else 0}" '
-                    f'data-facts="{e(facts)}">{e(mark(status))}</span>')
+                squares.append(f'<span class="{cls}" data-export="{e(found.lower())}" '
+                               f'data-index="{index}">{e(mark(status))}</span>')
             total = len(module["names"])
             pct = round(100 * implemented / total) if total else 0
             count = f' <span class="mod-count">{implemented}/{total}{f" ({pct}%)" if pct else ""}</span>'
-            tag = ' <span class="delay-tag">delay-loaded</span>' if module["delay"] else ""
             blocks.append(f'<div class=mod>{e(module["dll"])}{count}{tag}</div>'
                           f'<div class=squares>{"".join(squares)}</div>')
         icon = ""
@@ -906,10 +953,13 @@ def executable_sections(specs):
         file_name = program["image"].get("file", program["name"])
         pct, implemented, total = measured[program["name"]]
         share = f"{implemented}/{total}" + (f" ({pct}%)" if pct else "")
-        parts.append(f'<section class=exe><h3>{icon}{e(file_name)} '
+        if module_key(file_name) in targets:
+            share += " · compatibility target"
+        parts.append(f'<section class=exe id="compat-{e(program["name"])}"><h3>{icon}{e(file_name)} '
                      f'<span class=meta>{e(share)}</span></h3>{"".join(blocks)}</section>')
     parts.append("</div>")
     parts.append("</div>")
+    data["unresolved"] = list(unresolved.values())
     return parts
 
 
@@ -922,7 +972,7 @@ def render(specs, missing, pytest_run, scenario_run):
     for what, run, gaps, how in (("on-target suite", pytest_run, missing["blocks"], "make test"),
                                  ("host scenarios", scenario_run, missing["scenarios"], "make compat")):
         if run is None:
-            notes.append(f"No {what} results yet (<code>{how}</code>): the exports they pin show as uncovered.")
+            notes.append(f"No {what} results yet ({how}): the exports they pin show as uncovered.")
         elif gaps:
             # The blocks by fixture ("files: 12 of 30"), the scenarios by name.
             if what == "on-target suite":
@@ -932,11 +982,10 @@ def render(specs, missing, pytest_run, scenario_run):
                 shown = ", ".join(f"{fixture} ({len(blocks)})" for fixture, blocks in left.items())
             else:
                 shown = ", ".join(gaps[:8]) + (", ..." if len(gaps) > 8 else "")
-            notes.append(f"Partial run: the {what}'s last run left {len(gaps)} out: {e(shown)}. "
+            notes.append(f"The {what}'s last run left {len(gaps)} out: {shown}. "
                          f"The exports only they pin show as uncovered.")
-    when = lambda run: e(run["finished"][:16].replace("T", " "))  # noqa: E731
-    runs = [f"on-target suite {when(pytest_run)}" if pytest_run else None,
-            f"host scenarios {when(scenario_run)}" if scenario_run else None]
+    # Results missing or partial: a badge after the title, before the checkboxes, the details in its tooltip.
+    badge = (f'<span class=badge title="{e(" ".join(notes))}">Partial</span>' if notes else "")
     data = {"statuses": STATUSES, "labels": LABELS, "marks": {s: mark(s) for s in STATUSES if mark(s)},
             "dlls": []}
     # The exports the studied executables import (tests/compat/*.toml): the "Hide untracked
@@ -950,25 +999,16 @@ def render(specs, missing, pytest_run, scenario_run):
         counts = {s: sum(x.status == s for x in ordered) for s in STATUSES}
         entries = []
         for export in ordered:
-            impl = export.spec.get("impl", {})
-            info = {
-                "pin": export.pin, "group": export.group,
-                "impl": next((f"{k} {v}" for k, v in impl.items()), None),
-                "ordinal": export.spec.get("ordinal"), "data": export.spec.get("data"),
-                "version": export.spec.get("version"), "note": export.spec.get("note"),
-                "implemented": export.implemented, "tests": tally(export.evidence),
-            }
-            entry = {"n": export.name, "s": export.status, "index": index,
-                     "i": {k: v for k, v in info.items() if v}}
+            export.index = index
+            entry = tooltip_entry(export, index)
             if (dll, export.name) in tracked:
                 entry["t"] = 1
-            if export.in_progress:
-                entry["w"] = 1
             entries.append(entry)
             index += 1
         summary = f"{dll}.dll: {len(ordered)} exports · " + " · ".join(
             f"{counts[s]} {LABELS[s].lower()}" for s in STATUSES if counts[s])
         data["dlls"].append({"dll": dll, "summary": summary, "exports": entries})
+    sections = executable_sections(specs, data)  # completes data: the unresolved imports' entries
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     parts = [
         "<!doctype html><html lang=en><head><meta charset=utf-8>",
@@ -977,18 +1017,16 @@ def render(specs, missing, pytest_run, scenario_run):
         "<main>",
         '<div class="full-screen">',
         '<header class="container">'
-        "<h1>F2K DLL compatibility "
+        f"<h1>F2K DLL compatibility {badge}"
         '<label class="hide-toggle"><input type="checkbox" id="hide-untracked">'
         " Hide untracked exports</label>"
         '<label class="hide-toggle"><input type="checkbox" id="hide-empty" checked>'
         " Hide empty DLLs</label></h1>",
         '<input type="search" id="search" placeholder="Find an export" aria-label="Find an export">',
-        f"<p class=meta>Results: {'; '.join(r for r in runs if r) or 'none'}.</p>",
-        *(f"<p class=banner>{note}</p>" for note in notes),
         "</header>",
         '<div class="flex-1 container"><svg id=map role=img aria-label="Every export of every DLL, by status"></svg></div>',
         '</div>',
-        *executable_sections(specs),
+        *sections,
         f"</main><div id=tip role=tooltip></div><script type=application/json id=data>{payload}</script>",
         f"<script>{SCRIPT}</script></body></html>",
     ]
