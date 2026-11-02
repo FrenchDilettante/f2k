@@ -1,0 +1,51 @@
+# F2K capture of guiclass (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:13:41.82
+guiclass F2KT-SOURCE-CRC=0xA4382AF7
+>>> guiclass.exe register
+== register
+RegisterClassA("F2KGuiClass"): nonzero yes err=2
+RegisterClassExA("F2KGuiClassEx"): nonzero yes err=2
+RegisterClassExW(L"F2KGuiClassExW"): nonzero yes err=2
+RegisterClassW(L"F2KGuiClassW"): nonzero yes err=2
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe query
+== query
+GetClassInfoA(hinst, atom): nonzero yes same atom yes err=-
+GetClassInfoA read back: style yes hbrBackground yes lpfnWndProc yes
+GetClassInfoW(hinst, wide atom): nonzero yes same atom yes err=-
+GetClassInfoW read back: style yes hbrBackground yes lpfnWndProc yes
+CreateWindowExA("F2KGuiClass", 320x200): non-NULL yes err=-
+GetClassNameA: ret=11 err=-
+GetClassNameA buffer: F2KGuiClass
+GetClassNameW: ret=11 err=-
+GetClassNameW buffer: F2KGuiClass
+DestroyWindow: ret=1 err=-
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe duplicate
+== duplicate
+RegisterClassA("F2KGuiClass") again: nonzero no err=1410
+RegisterClassW(L"F2KGuiClassW") again: nonzero no err=1410
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe unregister
+== unregister
+CreateWindowExA("F2KGuiClass", 320x200): non-NULL yes err=-
+DestroyWindow: ret=1 err=-
+UnregisterClassA(atom): ret=1 err=-
+UnregisterClassA(atom) again: ret=0 err=1411
+UnregisterClassW(wide atom): ret=1 err=-
+GetClassNameA(the destroyed window): ret=0 err=1400
+GetClassInfoA(the unregistered atom): nonzero no err=1411
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe errors
+== errors
+RegisterClassA(lpfnWndProc NULL): nonzero yes err=2
+GetClassInfoA(atom 0x7FFF): ret=0 err=1411
+guiclass: done
+<<< exit code=0

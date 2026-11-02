@@ -1,0 +1,49 @@
+# F2K capture of guigeo (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:13:41.88
+guigeo F2KT-SOURCE-CRC=0xD4BA014F
+>>> guigeo.exe show
+== show
+ShowWindow(SW_SHOW): ret=0 err=-
+IsWindowVisible: yes err=-
+ShowWindow(SW_HIDE): ret=16 err=-
+IsWindowVisible: no err=-
+ShowWindow(SW_SHOW) again: ret=0 err=-
+IsWindowVisible: yes err=-
+ShowWindowAsync(SW_HIDE): ret=1 err=-
+IsWindowVisible after the queue drained: no err=-
+ShowWindowAsync(SW_SHOW): ret=1 err=-
+IsWindowVisible after the queue drained: yes err=-
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe move
+== move
+MoveWindow(100, 100, 300, 250, TRUE): ret=1 err=-
+GetWindowRect: ret=1 err=- rect=100 100 400 350
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe setpos
+== setpos
+SetWindowPos(HWND_TOP, 50, 60, 200, 150, SWP_NOACTIVATE): ret=1 err=-
+GetWindowRect: ret=1 err=- rect=50 60 250 210
+SetWindowPos(HWND_TOP, SWP_NOSIZE|SWP_NOMOVE): ret=1 err=-
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe update
+== update
+ShowWindow(SW_SHOW): ret=0 err=-
+InvalidateRect(NULL, TRUE): ret=1 err=-
+UpdateWindow: ret=1 err=- paints=1
+UpdateWindow again: ret=1 err=- paints=1
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe errors
+== errors
+MoveWindow(a bogus handle): ret=0 err=1400
+GetWindowRect(a bogus handle): ret=0 err=1400
+SetWindowPos(a bogus handle): ret=0 err=1400
+IsWindowVisible(a bogus handle): no err=1400
+guigeo: done
+<<< exit code=0

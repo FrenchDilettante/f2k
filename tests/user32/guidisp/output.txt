@@ -1,0 +1,79 @@
+# F2K capture of guidisp (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:24:18.93
+guidisp F2KT-SOURCE-CRC=0xE2442A5A
+>>> guidisp.exe enum
+== enum
+EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm): ret=1 err=- dmSize=124 dmPelsWidth=1024 dmPelsHeight=768 dmBitsPerPel=32 dmFields=0x7E0020
+EnumDisplaySettingsA(NULL, 0, &dm): ret=1 err=- dmSize=124 dmPelsWidth=800 dmPelsHeight=600 dmBitsPerPel=8 dmFields=0x7C0000
+EnumDisplaySettingsA(NULL, 9999, &dm): ret=0 err=-
+EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dmw): ret=1 err=- dmSize=188 dmPelsWidth=1024 dmPelsHeight=768 dmBitsPerPel=32 dmFields=0x7E0020
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe change
+== change
+ChangeDisplaySettingsA(&dm current, 0): ret=0 err=-
+ChangeDisplaySettingsA(&dm current, CDS_TEST): ret=0 err=-
+ChangeDisplaySettingsA(&dm 1x1x1, 0): ret=-2 err=-
+ChangeDisplaySettingsA(NULL, 0): ret=0 err=-
+ChangeDisplaySettingsW(&dmw current, 0): ret=0 err=-
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe devices
+== devices
+GetModuleHandleA("user32.dll"): non-NULL yes err=-
+GetProcAddress(user32, EnumDisplayDevicesA): non-NULL yes err=-
+GetProcAddress(user32, EnumDisplayDevicesW): non-NULL yes err=-
+EnumDisplayDevicesA(NULL, 0, &dd, 0): ret=1 err=- DeviceName=\\.\DISPLAY1 DeviceString nonempty yes
+EnumDisplayDevicesA(NULL, 1, &dd, 0): ret=1 err=-
+EnumDisplayDevicesW(NULL, 0, &ddw, 0): ret=1 err=- DeviceName=\\.\DISPLAY1 DeviceString nonempty yes
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe caps
+== caps
+CreateDCA("DISPLAY", NULL, NULL, NULL): non-NULL yes err=-
+GetDeviceCaps(HORZRES): ret=1024 err=-
+GetDeviceCaps(VERTRES): ret=768 err=-
+GetDeviceCaps(BITSPIXEL): ret=32 err=-
+GetDeviceCaps(PLANES): ret=1 err=-
+GetDeviceCaps(LOGPIXELSX): ret=96 err=-
+GetDeviceCaps(NUMCOLORS): ret=-1 err=-
+DeleteDC(sdc): ret=1 err=-
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe metrics
+== metrics
+GetSystemMetrics(SM_CXSCREEN): ret=1024 err=-
+GetSystemMetrics(SM_CYSCREEN): ret=768 err=-
+GetSystemMetrics(SM_CMOUSEBUTTONS): ret=5 err=-
+GetSystemMetrics(SM_CYCAPTION): ret=19 err=-
+GetSystemMetrics(SM_CXFRAME): ret=4 err=-
+SystemParametersInfoA(SPI_GETWORKAREA, 0, &rc, 0): ret=1 err=- workarea=0 0 1024 740
+SystemParametersInfoW(SPI_GETWORKAREA, 0, &rc, 0): ret=1 err=- workarea=0 0 1024 740
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe colors
+== colors
+GetSysColor(COLOR_WINDOW): color=0xFFFFFF err=-
+GetSysColor(COLOR_DESKTOP): color=0xA56E3A err=-
+GetSysColor(COLOR_BTNTEXT): color=0x000000 err=-
+GetSysColorBrush(COLOR_WINDOW): non-NULL yes err=-
+SetSysColors(1, {COLOR_WINDOW}, {RGB(1,2,3)}): ret=1 err=-
+GetSysColor(COLOR_WINDOW) after the set: color=0x030201 err=-
+SetSysColors(1, {COLOR_WINDOW}, old): ret=1 err=-
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe monitors
+== monitors
+EnumDisplayMonitors(NULL, NULL, count_monitor, &count): ret=1 err=- count=1
+RegisterClass(F2KGuidispMon): atom nonzero yes err=2
+CreateWindowEx(F2KGuidispMon, hidden, 320x200 at 0,0): non-NULL yes err=-
+MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY): non-NULL yes err=-
+GetMonitorInfoA(hm, &mi): ret=1 err=- rcMonitor=0 0 1024 768 rcWork=0 0 1024 740 primary yes
+MonitorFromPoint({-10000, -10000}, MONITOR_DEFAULTTONULL): NULL yes err=-
+MonitorFromRect({0, 0, 100, 100}, MONITOR_DEFAULTTOPRIMARY): non-NULL yes err=-
+DestroyWindow(h): ret=1 err=-
+guidisp: done
+<<< exit code=0

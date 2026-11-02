@@ -1,0 +1,72 @@
+# F2K capture of guimsg (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:30:48.34
+guimsg F2KT-SOURCE-CRC=0x35786CB5
+>>> guimsg.exe post
+== post
+RegisterClass(F2KGuimsgPost): atom nonzero yes err=2
+CreateWindowEx(F2KGuimsgPost, hidden, 320x200): non-NULL yes err=-
+PostMessageA(h, WM_USER+1, 11, 22): ret=1 err=-
+GetMessageA(&msg, NULL, 0, 0): ret=1 err=- message==WM_USER+1 yes wParam=11 lParam=22 hwnd==h yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe peek
+== peek
+RegisterClass(F2KGuimsgPeek): atom nonzero yes err=2
+CreateWindowEx(F2KGuimsgPeek, hidden, 320x200): non-NULL yes err=-
+PostMessageA(h, WM_USER+1, 1, 0): ret=1 err=-
+PostMessageA(h, WM_USER+2, 2, 0): ret=1 err=-
+PeekMessageA(&m, NULL, 0, 0, PM_NOREMOVE): ret=1 err=- message=1025 wParam=1
+PeekMessageA(..., PM_NOREMOVE), again: ret=1 err=- message=1025 wParam=1
+PeekMessageA(..., PM_REMOVE): ret=1 err=- message=1025 wParam=1
+PeekMessageA(..., PM_REMOVE), again: ret=1 err=- message=1026 wParam=2
+PeekMessageA(..., PM_REMOVE), empty queue: ret=0 err=-
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe quit
+== quit
+PostQuitMessage(7): err=-
+GetMessageA(&msg, NULL, 0, 0): ret=0 err=- message==WM_QUIT yes wParam=7
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe dispatch
+== dispatch
+RegisterClass(F2KGuimsgDispatch): atom nonzero yes err=2
+CreateWindowEx(F2KGuimsgDispatch, hidden, 320x200): non-NULL yes err=-
+PostMessageA(h, WM_USER+5, 33, 44): ret=1 err=-
+GetMessageA(&msg, NULL, 0, 0): ret=1 err=- message=1029 wParam=33 lParam=44
+TranslateMessage(&msg): ret=0 err=-
+DispatchMessageA(&msg): ret=0 err=-
+wndproc recorded: message=1029 wParam=33 lParam=44 count=6 ret=0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe send
+== send
+RegisterClass(F2KGuimsgSend): atom nonzero yes err=2
+CreateWindowEx(F2KGuimsgSend, hidden, 320x200): non-NULL yes err=-
+SendMessageA(h, WM_USER+6, 55, 66): ret=0 err=-
+wndproc recorded: message=1030 wParam=55 lParam=66 count=6 ret=0
+SendMessageW(h, WM_USER+6, 55, 66): ret=0 err=-
+wndproc recorded: message=1030 wParam=55 lParam=66 count=1 ret=0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe defproc
+== defproc
+RegisterClass(F2KGuimsgDefproc): atom nonzero yes err=2
+CreateWindowEx(F2KGuimsgDefproc, hidden, 320x200): non-NULL yes err=-
+CreateWindowEx(F2KGuimsgDefproc, hidden, 320x200), second: non-NULL yes err=-
+DefWindowProcA(h, WM_CLOSE, 0, 0): ret=0 err=-
+wndproc recorded: message=130 wParam=0 lParam=0 count=12 ret=0
+IsWindow(h) after the WM_CLOSE: no err=-
+DefWindowProcW(h2, WM_NULL, 0, 0): ret=0 err=-
+wndproc recorded: message=0 wParam=0 lParam=0 count=0 ret=0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe threadmsg
+== threadmsg
+PostThreadMessageA(GetCurrentThreadId(), WM_USER+7, 1, 2): ret=1 err=-
+GetMessageA(&m, NULL, 0, 0): ret=1 err=- hwnd==NULL yes message=1031 wParam=1 lParam=2
+guimsg: done
+<<< exit code=0

@@ -1,0 +1,51 @@
+# guidisp: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA)."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+enum = "graphics kernel not landed yet"
+change = "graphics kernel not landed yet"
+devices = "graphics kernel not landed yet"
+caps = "graphics kernel not landed yet"
+metrics = "graphics kernel not landed yet"
+colors = "graphics kernel not landed yet"
+monitors = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+enum = [
+    "user32.EnumDisplaySettingsA",
+    "user32.EnumDisplaySettingsW",
+]
+change = [
+    "user32.ChangeDisplaySettingsA",
+    "user32.ChangeDisplaySettingsW",
+]
+devices = [
+    "user32.EnumDisplayDevicesA",
+    "user32.EnumDisplayDevicesW",
+]
+caps = [
+    "gdi32.CreateDCA",
+    "gdi32.GetDeviceCaps",
+    "gdi32.DeleteDC",
+]
+metrics = [
+    "user32.GetSystemMetrics",
+    "user32.SystemParametersInfoA",
+    "user32.SystemParametersInfoW",
+]
+colors = [
+    "user32.GetSysColor",
+    "user32.GetSysColorBrush",
+    "user32.SetSysColors",
+]
+monitors = [
+    "user32.EnumDisplayMonitors",
+    "user32.MonitorFromWindow",
+    "user32.MonitorFromPoint",
+    "user32.MonitorFromRect",
+    "user32.GetMonitorInfoA",
+]

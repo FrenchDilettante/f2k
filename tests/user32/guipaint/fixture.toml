@@ -1,0 +1,46 @@
+# guipaint: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guipaint - painting in user32: InvalidateRect (whole and subrect) with GetUpdateRect/ValidateRect, the WM_PAINT path through ShowWindow/UpdateWindow with BeginPaint/EndPaint recording PAINTSTRUCT (hdc, fErase, rcPaint in client coordinates), and the bogus-handle errors (1400)."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+invalidate = "graphics kernel not landed yet"
+subrect = "graphics kernel not landed yet"
+paint = "graphics kernel not landed yet"
+beginend = "graphics kernel not landed yet"
+errors = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+invalidate = [
+    "user32.InvalidateRect",
+    "user32.GetUpdateRect",
+    "user32.ValidateRect",
+]
+subrect = [
+    "user32.InvalidateRect",
+    "user32.GetUpdateRect",
+    "user32.ValidateRect",
+    "user32.BeginPaint",
+    "user32.EndPaint",
+]
+paint = [
+    "user32.ShowWindow",
+    "user32.InvalidateRect",
+    "user32.UpdateWindow",
+    "user32.BeginPaint",
+    "user32.EndPaint",
+    "user32.GetUpdateRect",
+]
+beginend = [
+    "user32.InvalidateRect",
+    "user32.BeginPaint",
+    "user32.EndPaint",
+]
+errors = [
+    "user32.BeginPaint",
+    "user32.EndPaint",
+    "user32.InvalidateRect",
+    "user32.GetUpdateRect",
+]

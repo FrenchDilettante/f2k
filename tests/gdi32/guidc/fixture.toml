@@ -1,0 +1,48 @@
+# guidc: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guidc - device contexts and text output (gdi32 over user32): GetDC/GetDCEx/GetWindowDC/ReleaseDC/WindowFromDC, TextOutA/W and ExtTextOutA/W, SetTextColor/SetBkColor/SetBkMode previous values, GetTextExtentPoint32A/W and GetTextMetricsA/W against the default font, GetStockObject/SelectObject/DeleteObject, SetPixel/GetPixel on the screen DC."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+dc = "graphics kernel not landed yet"
+text = "graphics kernel not landed yet"
+extent = "graphics kernel not landed yet"
+objects = "graphics kernel not landed yet"
+pixel = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+dc = [
+    "user32.GetDC",
+    "user32.GetDCEx",
+    "user32.GetWindowDC",
+    "user32.ReleaseDC",
+    "user32.WindowFromDC",
+]
+text = [
+    "gdi32.TextOutA",
+    "gdi32.TextOutW",
+    "gdi32.ExtTextOutA",
+    "gdi32.ExtTextOutW",
+    "gdi32.SetTextColor",
+    "gdi32.SetBkColor",
+    "gdi32.SetBkMode",
+]
+extent = [
+    "gdi32.GetTextExtentPoint32A",
+    "gdi32.GetTextExtentPoint32W",
+    "gdi32.GetTextMetricsA",
+    "gdi32.GetTextMetricsW",
+]
+objects = [
+    "gdi32.GetStockObject",
+    "gdi32.SelectObject",
+    "gdi32.DeleteObject",
+]
+pixel = [
+    "gdi32.SetPixel",
+    "gdi32.GetPixel",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]

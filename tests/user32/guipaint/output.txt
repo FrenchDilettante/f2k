@@ -1,0 +1,49 @@
+# F2K capture of guipaint (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:13:41.96
+guipaint F2KT-SOURCE-CRC=0x2F02E1A4
+>>> guipaint.exe invalidate
+== invalidate
+InvalidateRect(h, NULL, TRUE): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE): ret=0 err=- rc=0 0 0 0
+ValidateRect(h, NULL): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE) after ValidateRect: ret=0 err=-
+guipaint: done
+<<< exit code=0
+>>> guipaint.exe subrect
+== subrect
+InvalidateRect(h, {10 10 50 40}, FALSE): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE): ret=0 err=- rc=0 0 0 0
+ValidateRect(h, {10 10 50 40}): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE) after ValidateRect: ret=0 err=-
+InvalidateRect(h, {10 10 50 40}, TRUE): ret=1 err=-
+BeginPaint(h, &ps) on the erased subrect: non-NULL yes err=- fErase=0 rcPaint=0 0 0 0
+EndPaint(h, &ps): ret=1 err=-
+guipaint: done
+<<< exit code=0
+>>> guipaint.exe paint
+== paint
+ShowWindow(h, SW_SHOW): ret=0 err=-
+InvalidateRect(h, NULL, TRUE): ret=1 err=-
+UpdateWindow(h): ret=1 err=-
+wndproc WM_PAINT: count=1 hdc non-NULL yes fErase=0 rcPaint=0 0 320 200 EndPaint ret=1
+GetUpdateRect(h, &rc, FALSE) after the paint: ret=0 err=-
+guipaint: done
+<<< exit code=0
+>>> guipaint.exe beginend
+== beginend
+InvalidateRect(h, NULL, TRUE): ret=1 err=-
+BeginPaint(h, &ps): non-NULL yes err=- fErase=0 rcPaint=0 0 0 0
+EndPaint(h, &ps): ret=1 err=-
+guipaint: done
+<<< exit code=0
+>>> guipaint.exe errors
+== errors
+BeginPaint(a bogus handle, &ps): NULL yes err=1400
+EndPaint(h, NULL): ret=0 err=998
+InvalidateRect(a bogus handle, NULL, TRUE): ret=0 err=1400
+GetUpdateRect(a bogus handle, &rc, FALSE): ret=0 err=1400
+guipaint: done
+<<< exit code=0

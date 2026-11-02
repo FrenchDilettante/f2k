@@ -1,0 +1,39 @@
+# guigeo: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400)."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+show = "graphics kernel not landed yet"
+move = "graphics kernel not landed yet"
+setpos = "graphics kernel not landed yet"
+update = "graphics kernel not landed yet"
+errors = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+show = [
+    "user32.ShowWindow",
+    "user32.ShowWindowAsync",
+    "user32.IsWindowVisible",
+]
+move = [
+    "user32.MoveWindow",
+    "user32.GetWindowRect",
+]
+setpos = [
+    "user32.SetWindowPos",
+    "user32.GetWindowRect",
+]
+update = [
+    "user32.ShowWindow",
+    "user32.InvalidateRect",
+    "user32.UpdateWindow",
+]
+errors = [
+    "user32.MoveWindow",
+    "user32.GetWindowRect",
+    "user32.SetWindowPos",
+    "user32.IsWindowVisible",
+]

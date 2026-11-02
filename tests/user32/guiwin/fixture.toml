@@ -1,0 +1,31 @@
+# guiwin: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+create = "graphics kernel not landed yet"
+desktop = "graphics kernel not landed yet"
+destroy = "graphics kernel not landed yet"
+cursor = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+create = [
+    "user32.CreateWindowExA",
+    "user32.CreateWindowExW",
+    "user32.IsWindow",
+]
+desktop = [
+    "user32.GetDesktopWindow",
+    "user32.IsWindow",
+]
+destroy = [
+    "user32.DestroyWindow",
+    "user32.IsWindow",
+]
+cursor = [
+    "user32.LoadCursorA",
+    "user32.LoadCursorW",
+]

@@ -14,7 +14,8 @@ tests/
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility
-├── user32/     # hellogui, winsta
+├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp
+├── gdi32/      # guidc
 ├── advapi32/   # registry
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)

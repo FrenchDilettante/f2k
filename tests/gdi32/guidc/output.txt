@@ -1,0 +1,69 @@
+# F2K capture of guidc (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:13:41.99
+guidc F2KT-SOURCE-CRC=0x29C34506
+>>> guidc.exe dc
+== dc
+RegisterClass(F2KGuidcDc): atom nonzero yes err=2
+CreateWindowEx(F2KGuidcDc, hidden, 0,0 320x200): non-NULL yes err=-
+GetDC(h): non-NULL yes err=-
+WindowFromDC(hdc)==h: yes err=-
+ReleaseDC(h, hdc): ret=1 err=-
+GetDC(NULL) (the screen): non-NULL yes err=-
+GetWindowDC(h): non-NULL yes err=-
+GetDCEx(h, NULL, DCX_WINDOW): non-NULL no err=-
+ReleaseDC(h, the GetDCEx DC): ret=0 err=-
+ReleaseDC(h, the GetWindowDC DC): ret=1 err=-
+ReleaseDC(NULL, the screen DC): ret=1 err=-
+guidc: done
+<<< exit code=0
+>>> guidc.exe text
+== text
+RegisterClass(F2KGuidcText): atom nonzero yes err=2
+CreateWindowEx(F2KGuidcText, hidden, 0,0 320x200): non-NULL yes err=-
+GetDC(h): non-NULL yes err=-
+TextOutA(hdc, 5, 5, "Hi", 2): ret=1 err=-
+TextOutW(hdc, 5, 25, L"Hi", 2): ret=1 err=-
+ExtTextOutA(hdc, 0, 40, ETO_OPAQUE, rect 0 40 100 60, "abc", 3, NULL): ret=1 err=-
+ExtTextOutW(hdc, 0, 40, ETO_OPAQUE, rect 0 40 100 60, L"abc", 3, NULL): ret=1 err=-
+SetTextColor(hdc, RGB(255,0,0)): previous=0x000000 err=-
+SetBkColor(hdc, RGB(0,0,255)): previous=0xFFFFFF err=-
+SetBkMode(hdc, TRANSPARENT): previous=2 err=-
+SetBkMode(hdc, OPAQUE): previous=1 err=-
+ReleaseDC(h, hdc): ret=1 err=-
+guidc: done
+<<< exit code=0
+>>> guidc.exe extent
+== extent
+RegisterClass(F2KGuidcExtent): atom nonzero yes err=2
+CreateWindowEx(F2KGuidcExtent, hidden, 0,0 320x200): non-NULL yes err=-
+GetDC(h): non-NULL yes err=-
+GetTextExtentPoint32A(hdc, "Hello", 5, &sz): ret=1 err=- cx=34 cy=16
+GetTextExtentPoint32W(hdc, L"Hello", 5, &sz): ret=1 err=- cx=34 cy=16
+GetTextMetricsA(hdc, &tm): ret=1 err=- tmHeight=16 tmAveCharWidth=7
+GetTextMetricsW(hdc, &tm): ret=1 err=- tmHeight=16 tmAveCharWidth=7
+ReleaseDC(h, hdc): ret=1 err=-
+guidc: done
+<<< exit code=0
+>>> guidc.exe objects
+== objects
+RegisterClass(F2KGuidcObjects): atom nonzero yes err=2
+CreateWindowEx(F2KGuidcObjects, hidden, 0,0 320x200): non-NULL yes err=-
+GetDC(h): non-NULL yes err=-
+GetStockObject(WHITE_BRUSH): non-NULL yes err=-
+GetStockObject(SYSTEM_FONT): non-NULL yes err=-
+SelectObject(hdc, the WHITE_BRUSH): previous non-NULL yes err=-
+DeleteObject(the WHITE_BRUSH): ret=1 err=-
+ReleaseDC(h, hdc): ret=1 err=-
+guidc: done
+<<< exit code=0
+>>> guidc.exe pixel
+== pixel
+GetDC(NULL) (the screen): non-NULL yes err=-
+SetPixel(sdc, 100, 100, RGB(1,2,3)): previous=0x030201 err=-
+GetPixel(sdc, 100, 100): 0x030201 err=-
+ReleaseDC(NULL, sdc): ret=1 err=-
+guidc: done
+<<< exit code=0

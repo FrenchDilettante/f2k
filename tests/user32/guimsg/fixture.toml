@@ -1,0 +1,49 @@
+# guimsg: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages."
+kind = "sectioned"
+screenshots = true
+
+[pending]
+post = "graphics kernel not landed yet"
+peek = "graphics kernel not landed yet"
+quit = "graphics kernel not landed yet"
+dispatch = "graphics kernel not landed yet"
+send = "graphics kernel not landed yet"
+defproc = "graphics kernel not landed yet"
+threadmsg = "graphics kernel not landed yet"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+post = [
+    "user32.PostMessageA",
+    "user32.GetMessageA",
+]
+peek = [
+    "user32.PeekMessageA",
+    "user32.PostMessageA",
+]
+quit = [
+    "user32.PostQuitMessage",
+    "user32.GetMessageA",
+]
+dispatch = [
+    "user32.PostMessageA",
+    "user32.GetMessageA",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageA",
+]
+send = [
+    "user32.SendMessageA",
+    "user32.SendMessageW",
+]
+defproc = [
+    "user32.DefWindowProcA",
+    "user32.DefWindowProcW",
+    "user32.IsWindow",
+    "user32.DestroyWindow",
+]
+threadmsg = [
+    "user32.PostThreadMessageA",
+    "user32.GetMessageA",
+]

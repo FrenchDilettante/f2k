@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta registry hellomd crt seh fd wide strings process) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -348,6 +348,76 @@ call :stamp winsta.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% winsta.c user32.lib
 if errorlevel 1 (echo build.bat: winsta failed & exit /b 1)
 del winsta.obj
+cd ..\..
+goto :eof
+
+:guiclass
+echo === guiclass
+cd user32\guiclass
+call :stamp guiclass.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guiclass.c user32.lib
+if errorlevel 1 (echo build.bat: guiclass failed & exit /b 1)
+del guiclass.obj
+cd ..\..
+goto :eof
+
+:guiwin
+echo === guiwin
+cd user32\guiwin
+call :stamp guiwin.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guiwin.c user32.lib
+if errorlevel 1 (echo build.bat: guiwin failed & exit /b 1)
+del guiwin.obj
+cd ..\..
+goto :eof
+
+:guigeo
+echo === guigeo
+cd user32\guigeo
+call :stamp guigeo.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guigeo.c user32.lib
+if errorlevel 1 (echo build.bat: guigeo failed & exit /b 1)
+del guigeo.obj
+cd ..\..
+goto :eof
+
+:guimsg
+echo === guimsg
+cd user32\guimsg
+call :stamp guimsg.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guimsg.c user32.lib
+if errorlevel 1 (echo build.bat: guimsg failed & exit /b 1)
+del guimsg.obj
+cd ..\..
+goto :eof
+
+:guipaint
+echo === guipaint
+cd user32\guipaint
+call :stamp guipaint.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guipaint.c user32.lib
+if errorlevel 1 (echo build.bat: guipaint failed & exit /b 1)
+del guipaint.obj
+cd ..\..
+goto :eof
+
+:guidc
+echo === guidc
+cd gdi32\guidc
+call :stamp guidc.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guidc.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: guidc failed & exit /b 1)
+del guidc.obj
+cd ..\..
+goto :eof
+
+:guidisp
+echo === guidisp
+cd user32\guidisp
+call :stamp guidisp.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guidisp.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: guidisp failed & exit /b 1)
+del guidisp.obj
 cd ..\..
 goto :eof
 

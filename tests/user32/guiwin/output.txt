@@ -1,0 +1,45 @@
+# F2K capture of guiwin (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/02/2026 13:13:41.85
+guiwin F2KT-SOURCE-CRC=0xCE6591FA
+>>> guiwin.exe create
+== create
+GetModuleHandleA(NULL): non-NULL yes err=-
+RegisterClassA(F2KGuiWin): nonzero yes err=2
+CreateWindowExA(F2KGuiWin): non-NULL yes err=-
+IsWindow(the new window): yes err=-
+wndproc: WM_NCCREATE=1 WM_CREATE=1 last=0x1
+UpdateWindow: ret=1 err=-
+CreateWindowExW(F2KGuiWin): non-NULL yes err=-
+CreateWindowExA(NoSuchClass): NULL yes err=1407
+wndproc: WM_NCCREATE=2 WM_CREATE=2 WM_DESTROY=0 last=0x1
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe desktop
+== desktop
+GetDesktopWindow: non-NULL yes err=-
+IsWindow(the desktop window): yes err=-
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe destroy
+== destroy
+GetModuleHandleA(NULL): non-NULL yes err=-
+RegisterClassA(F2KGuiWin): nonzero yes err=2
+CreateWindowExA(F2KGuiWin): non-NULL yes err=-
+DestroyWindow: ret=1 err=-
+wndproc: WM_DESTROY=1 last=0x82
+IsWindow(the destroyed window): no err=-
+DestroyWindow(the destroyed window): ret=0 err=1400
+wndproc: WM_DESTROY=1 last=0x82
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe cursor
+== cursor
+LoadCursorA(IDC_ARROW): non-NULL yes err=-
+LoadCursorW(IDC_ARROW): non-NULL yes err=-
+the A and W cursors are the same: yes
+LoadCursorA(32767): NULL yes err=1813
+guiwin: done
+<<< exit code=0
