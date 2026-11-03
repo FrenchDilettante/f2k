@@ -82,6 +82,7 @@ core::arch::global_asm!(
     include_str!("critsec.s"),
     include_str!("heap.s"),
     include_str!("dbgprint.s"),
+    include_str!("chkstk.s"),
 );
 
 use rtl::critsec::{CriticalSection, STATUS_SUCCESS};

@@ -1,8 +1,23 @@
 //! What the compiler expects of an MSVC environment without its C runtime, for every image the
 //! userland workspace links (the system DLLs, through rtl, and F2K's own programs, through exe):
 //! the 64-bit division helpers LLVM calls on i686-*-windows-msvc, `_aulldiv`, `_aullrem`,
-//! `_alldiv` and `_allrem`, and the `_fltused` marker. Only on that target; their cores are
-//! host-tested.
+//! `_alldiv` and `_allrem`, the stack probe `_chkstk` (and its second name, `_alloca_probe`), and
+//! the `_fltused` marker. Only on that target; the division helpers' cores are host-tested.
+//!
+//! The stack probe is what lets a function's frame reach a page or more. A thread's stack is
+//! committed a little at a time: a guard page sits below the committed pages, and touching it
+//! commits it and moves the guard a page down. A frame of a page or more, lowered in one step,
+//! could skip the guard and fault, so for such a frame LLVM (the target spec's stack probes
+//! `none`: its native Windows probe) calls `_chkstk` with the frame's size in EAX, as MSVC's
+//! code does, and `_chkstk` touches each page in order and lowers ESP itself. An image that calls
+//! it links its own copy, as MSVC programs link the C runtime's; ntdll exports the same routine
+//! under both names, as Windows 2000's does.
+//!
+//! The probe is a handful of instructions with nothing to test on the host. To check it, build a
+//! function with a frame of several pages (a local buffer touched at both ends) into a program,
+//! see `call __chkstk` in its prologue (`llvm-objdump -d --x86-asm-syntax=intel`), and run it on a
+//! thread started with the default stack (its initial commit and the guard page only). Without
+//! the probe's touches, the frame's first store lands below the guard page and faults.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -48,8 +63,9 @@ fn idivmod(dividend: i64, divisor: i64) -> (i64, i64) {
 
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod msvc {
-    //! The MSVC helpers: both operands on the stack (low dword first), the result in EDX:EAX, the
-    //! callee popping the 16 argument bytes. Each re-pushes the operands for a cdecl Rust body.
+    //! The MSVC helpers. The division helpers take both operands on the stack (low dword first),
+    //! answer in EDX:EAX, and pop the 16 argument bytes; each re-pushes the operands for a cdecl
+    //! Rust body. The stack probe has a convention of its own (below).
 
     extern "C" fn udiv(a: u64, b: u64) -> u64 {
         super::udivmod(a, b).0
@@ -86,6 +102,47 @@ mod msvc {
     helper!(_aullrem, urem);
     helper!(_alldiv, sdiv);
     helper!(_allrem, srem);
+
+    // _chkstk (`__chkstk`, decorated) and _alloca_probe, one routine under two names: MSVC's x86
+    // stack probe. EAX holds the bytes to allocate. Each page from the caller's ESP down to ESP
+    // less EAX is touched in order (a read: enough to fire the guard page), then ESP is lowered by
+    // EAX and the routine returns to its caller through the return address it saved, the new
+    // frame below. Only EAX and the flags change: ECX is saved and restored, EDX untouched (LLVM
+    // counts on that, as MSVC's callers do: a fastcall or thiscall prologue, and Rust's own calls
+    // on this target, still hold arguments there). Its section is a COMDAT keyed on `__chkstk`, so
+    // an image that never calls it leaves it out, as a link takes a library's probe only when
+    // it is called.
+    core::arch::global_asm!(
+        ".section .text$__chkstk,\"xr\",discard,__chkstk",
+        ".p2align 4",
+        ".globl __chkstk",
+        ".globl __alloca_probe",
+        "__chkstk:",
+        "__alloca_probe:",
+        // ECX saved; ECX the caller's ESP (above the saved ECX and the return address).
+        "    push ecx",
+        "    lea ecx, [esp + 8]",
+        "    cmp eax, 0x1000",
+        "    jb 2f",
+        // A page at a time while a whole page remains: each touch a page below the last.
+        "1:",
+        "    sub ecx, 0x1000",
+        "    sub eax, 0x1000",
+        "    test dword ptr [ecx], eax",
+        "    cmp eax, 0x1000",
+        "    jae 1b",
+        // The rest, under a page: the new ESP, touched too.
+        "2:",
+        "    sub ecx, eax",
+        "    test dword ptr [ecx], eax",
+        // The new ESP installed (the saved ECX and return address now above it), ECX restored,
+        // and back to the caller.
+        "    mov eax, esp",
+        "    mov esp, ecx",
+        "    mov ecx, dword ptr [eax]",
+        "    push dword ptr [eax + 4]",
+        "    ret",
+    );
 
     /// The marker MSVC objects reference when they use floating point.
     #[unsafe(no_mangle)]

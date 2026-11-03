@@ -15,8 +15,9 @@
 # narrow calls, file times and TLS slots go through; the handle tables, the resources and the
 # message calls kernel32's Local and Global memory and FormatMessage go through; RtlOpenCurrentUser,
 # advapi32's HKEY_CURRENT_USER; an image's NT headers and execution options; LdrInitializeThunk, a
-# fresh thread's first user-mode work), and the F2K-internal entry point the
-# kernel sends a thread to (`internal = true`: not a Windows 2000 export).
+# fresh thread's first user-mode work; _chkstk, the stack probe a frame of a page or more calls),
+# and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a Windows
+# 2000 export).
 
 [[group]]
 key = "nt"
@@ -77,6 +78,10 @@ title = "the loader"
 [[group]]
 key = "debug"
 title = "the debugger's print"
+
+[[group]]
+key = "stack"
+title = "the stack probe"
 
 [[group]]
 key = "internal"
@@ -833,6 +838,26 @@ impl = { native = "DbgBreakPoint" }
 ordinal = 20
 fails = "void"
 note = "an int3 and a return: the breakpoint exception is raised inside ntdll, as the runtime capture's DebugBreak shows"
+
+# --- the stack probe (src/chkstk.s over compiler-helpers' __chkstk) -------------------------------
+
+[[export]]
+name = "_chkstk"
+group = "stack"
+args = []
+impl = { native = "_chkstk" }
+ordinal = 1079
+fails = "void"
+note = "MSVC's x86 stack probe, called by a prologue whose frame is a page or more: EAX the bytes to allocate, each page from the caller's ESP down touched in order (the guard page grows the stack), ESP lowered by EAX on return; only EAX and the flags change"
+
+[[export]]
+name = "_alloca_probe"
+group = "stack"
+args = []
+impl = { native = "_alloca_probe" }
+ordinal = 1071
+fails = "void"
+note = "_chkstk under its second name, at the same address"
 
 # --- critical sections and the PEB lock (src/critsec.s over rtl::critsec) ----------------------
 
@@ -4736,10 +4761,6 @@ name = "_allmul"
 ordinal = 1070
 
 [[export]]
-name = "_alloca_probe"
-ordinal = 1071
-
-[[export]]
 name = "_allrem"
 ordinal = 1072
 
@@ -4766,10 +4787,6 @@ ordinal = 1077
 [[export]]
 name = "_aullshr"
 ordinal = 1078
-
-[[export]]
-name = "_chkstk"
-ordinal = 1079
 
 [[export]]
 name = "_fltused"

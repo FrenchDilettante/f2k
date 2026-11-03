@@ -32,7 +32,7 @@
   "debuginfo-kind": "pdb",
   "emit-debug-gdb-scripts": false,
   "stack-probes": {
-    "kind": "inline"
+    "kind": "none"
   },
   "pre-link-args": {
     "msvc-lld": [

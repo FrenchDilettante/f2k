@@ -79,8 +79,8 @@ pub mod sync;
 pub mod sys;
 pub mod time;
 
-// What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers
-// and the `_fltused` marker, linked into every DLL with this library.
+// What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers,
+// the stack probe and the `_fltused` marker, linked into every DLL with this library.
 extern crate compiler_helpers as _;
 
 /// A panic in user-mode support code faults the process (an invalid opcode), never the system.

@@ -13,6 +13,7 @@ fn main() {
             "src/critsec.s",
             "src/heap.s",
             "src/dbgprint.s",
+            "src/chkstk.s",
         ],
     );
 }

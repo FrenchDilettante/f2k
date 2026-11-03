@@ -16,7 +16,8 @@
 #![cfg_attr(not(test), no_std)]
 
 // What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers
-// and the `_fltused` marker (core's formatting calls them), linked into every program.
+// and the `_fltused` marker (core's formatting calls them) and the stack probe, linked into every
+// program.
 extern crate compiler_helpers as _;
 
 mod output;
