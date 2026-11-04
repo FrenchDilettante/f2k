@@ -96,6 +96,9 @@ pub fn memory(magic: u32, multiboot_info: u32) {
     crate::mem::paging::init_kernel_stack_tables();
     // The nonpaged pool's tables, shared alike.
     crate::mem::paging::init_pool_tables();
+    // The framebuffer region's tables, shared alike: the display's linear framebuffer is mapped
+    // into them when the graphics mode is set.
+    crate::mem::paging::init_framebuffer_tables();
 }
 
 /// The executive's tables: the console and the registry.

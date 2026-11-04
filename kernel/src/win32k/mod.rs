@@ -1,5 +1,6 @@
 //! win32k: the window manager's kernel side, as far as F2K has one: window stations and desktops
-//! ([`winsta`]), and the second service table their services come through.
+//! ([`winsta`]), the display settings ([`display`]), and the second service table their services
+//! come through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -14,8 +15,10 @@
 //! user32 calls them. They answer as the NT services do, an NTSTATUS in EAX and the results through
 //! the caller's pointers, never touching the last error: user32 maps a failure through ntdll's
 //! RtlNtStatusToDosError. (Windows 2000's win32k answers with the Win32 result and sets the last
-//! error itself.)
+//! error itself.) One answers as Windows 2000's does: NtUserChangeDisplaySettings, whose answer
+//! is ChangeDisplaySettingsEx's own DISP_CHANGE code, which sets no last error ([`display`]).
 
+pub mod display;
 pub mod winsta;
 
 use crate::user::syscall::ServiceFn;

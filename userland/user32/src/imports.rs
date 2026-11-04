@@ -16,6 +16,7 @@ use core::ffi::CStr;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+use rtl::display::DevModeW;
 use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::status::NtStatus;
 
@@ -23,6 +24,8 @@ use crate::Out;
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
+    use rtl::display::DevModeW;
+
     #[link(
         name = "kernel32",
         kind = "raw-dylib",
@@ -55,6 +58,14 @@ mod raw {
             unicode: *const u16,
             unicode_bytes: u32,
         ) -> u32;
+        /// RtlMultiByteToUnicodeN: the ANSI code page to UTF-16, what fits.
+        pub fn RtlMultiByteToUnicodeN(
+            unicode: *mut u16,
+            max_bytes: u32,
+            bytes_written: *mut u32,
+            multi_byte: *const u8,
+            multi_byte_bytes: u32,
+        ) -> u32;
     }
 
     // win32k's services: user32's own stubs (generated from its spec's internal syscall records),
@@ -83,6 +94,16 @@ mod raw {
             length: u32,
             needed: *mut u32,
         ) -> u32;
+        /// NtUserChangeDisplaySettings: ChangeDisplaySettingsExW's change, answered with its
+        /// DISP_CHANGE code.
+        #[link_name = "\u{1}_f2k_nt_NtUserChangeDisplaySettings"]
+        pub fn NtUserChangeDisplaySettings(
+            device: *const u16,
+            dev_mode: *const DevModeW,
+            window: usize,
+            flags: u32,
+            param: usize,
+        ) -> i32;
     }
 
     /// The process heap (the PEB's ProcessHeap).
@@ -277,6 +298,49 @@ pub fn object_information(
     })
 }
 
+/// NtUserChangeDisplaySettings: the display change ChangeDisplaySettingsExW asks for (the
+/// display's NUL-terminated name, null for the primary one; the DEVMODEW, null for the default
+/// mode; the reserved window and parameter; the CDS_ flags), answered with its DISP_CHANGE code.
+/// The two addresses (zero for none) are handed to the kernel unread: it reads them through its
+/// fault-tolerant copies (a bad address fails the change), and nothing here dereferences them.
+pub fn change_display_settings(
+    device: usize,
+    dev_mode: usize,
+    window: usize,
+    flags: u32,
+    param: usize,
+) -> i32 {
+    // SAFETY: the kernel only reads the name and the DEVMODEW, through its fault-tolerant copies,
+    // before the call returns; it writes no memory.
+    unsafe {
+        raw::NtUserChangeDisplaySettings(
+            device as *const u16,
+            dev_mode as *const DevModeW,
+            window,
+            flags,
+            param,
+        )
+    }
+}
+
+/// RtlMultiByteToUnicodeN: as much of `source` as `destination` holds, from the ANSI code page to
+/// UTF-16: the units written.
+pub fn multi_byte_to_unicode(destination: &mut [u16], source: &[u8]) -> usize {
+    let mut written = 0u32;
+    // SAFETY: the call reads the source's bytes and writes at most the destination's units, and
+    // the count into the local.
+    unsafe {
+        raw::RtlMultiByteToUnicodeN(
+            destination.as_mut_ptr(),
+            2 * destination.len() as u32,
+            &mut written,
+            source.as_ptr(),
+            source.len() as u32,
+        )
+    };
+    written as usize / 2
+}
+
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given.
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -295,6 +359,20 @@ pub mod host {
         pub static THREAD_ID: Cell<u32> = const { Cell::new(0x10) };
         /// How many win32k services were called.
         pub static SERVICES: Cell<u32> = const { Cell::new(0) };
+        /// What NtUserChangeDisplaySettings was last given (the name's units, the DEVMODEW as far
+        /// as its dmSize goes, the window, the flags, the parameter), and what it answers.
+        pub static DISPLAY_CHANGES: RefCell<std::vec::Vec<DisplayChange>> = const { RefCell::new(std::vec::Vec::new()) };
+        pub static DISPLAY_ANSWER: Cell<i32> = const { Cell::new(0) };
+    }
+
+    /// One NtUserChangeDisplaySettings call, as the stand-in read it.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct DisplayChange {
+        pub device: Option<std::vec::Vec<u16>>,
+        pub dev_mode: Option<rtl::display::DevModeW>,
+        pub window: usize,
+        pub flags: u32,
+        pub param: usize,
     }
 
     pub unsafe extern "system" fn SetLastError(code: u32) {
@@ -350,6 +428,63 @@ pub mod host {
             );
         }
         1
+    }
+
+    pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
+        unicode: *mut u16,
+        max_bytes: u32,
+        bytes_written: *mut u32,
+        multi_byte: *const u8,
+        multi_byte_bytes: u32,
+    ) -> u32 {
+        // SAFETY: the caller's buffers, of the sizes given.
+        let written = unsafe {
+            rtl::string::multi_byte_to_unicode(
+                core::slice::from_raw_parts_mut(unicode, max_bytes as usize / 2),
+                core::slice::from_raw_parts(multi_byte, multi_byte_bytes as usize),
+            )
+        };
+        if !bytes_written.is_null() {
+            // SAFETY: the caller's count.
+            unsafe { bytes_written.write(2 * written as u32) };
+        }
+        0
+    }
+
+    /// The kernel's reads, as the service makes them: the name to its NUL, the DEVMODEW as far as
+    /// its dmSize goes; the answer is [`DISPLAY_ANSWER`].
+    pub unsafe extern "system" fn NtUserChangeDisplaySettings(
+        device: *const u16,
+        dev_mode: *const rtl::display::DevModeW,
+        window: usize,
+        flags: u32,
+        param: usize,
+    ) -> i32 {
+        use rtl::pod::Pod;
+        SERVICES.with(|count| count.set(count.get() + 1));
+        // SAFETY: the tests' own name, NUL-terminated.
+        let device =
+            (!device.is_null()).then(|| unsafe { rtl::cstr::units_until_nul(device) }.to_vec());
+        let dev_mode = (!dev_mode.is_null()).then(|| {
+            // SAFETY: the tests' own DEVMODEW, at least as long as its dmSize says (capped).
+            let size = unsafe { (*dev_mode).size } as usize;
+            let mut copy = rtl::display::DevModeW::zeroed();
+            let length = size.min(core::mem::size_of::<rtl::display::DevModeW>());
+            // SAFETY: as above.
+            let bytes = unsafe { core::slice::from_raw_parts(dev_mode.cast::<u8>(), length) };
+            copy.as_bytes_mut()[..length].copy_from_slice(bytes);
+            copy
+        });
+        DISPLAY_CHANGES.with(|changes| {
+            changes.borrow_mut().push(DisplayChange {
+                device,
+                dev_mode,
+                window,
+                flags,
+                param,
+            })
+        });
+        DISPLAY_ANSWER.with(Cell::get)
     }
 
     pub unsafe extern "system" fn RtlUnicodeToMultiByteN(

@@ -20,6 +20,10 @@ key = "winsta"
 title = "window stations / desktops"
 
 [[group]]
+key = "display"
+title = "display settings"
+
+[[group]]
 key = "sound"
 title = "sounds"
 
@@ -80,6 +84,50 @@ name = "NtUserGetObjectInformation"
 group = "winsta"
 args = ["handle Object", "u32 Index", "ptr Information", "u32 Length", "ptr<u32> LengthNeeded"]
 impl = { syscall = "crate::win32k::winsta::get_object_information" }
+internal = true
+
+# --- display settings -----------------------------------------------------------------------------
+
+[[export]]
+name = "ChangeDisplaySettingsA"
+group = "display"
+args = ["ptr lpDevMode", "u32 dwflags"]
+impl = { native = "ChangeDisplaySettingsA" }
+ordinal = 28
+note = "ChangeDisplaySettingsExA for the primary display"
+
+[[export]]
+name = "ChangeDisplaySettingsExA"
+group = "display"
+args = ["strA? lpszDeviceName", "ptr lpDevMode", "handle hwnd", "u32 dwflags", "ptr lParam"]
+impl = { native = "ChangeDisplaySettingsExA" }
+ordinal = 29
+note = "the name and the DEVMODEA (as far as its dmSize goes) converted to their wide forms, then ChangeDisplaySettingsExW's change"
+
+[[export]]
+name = "ChangeDisplaySettingsExW"
+group = "display"
+args = ["strW? lpszDeviceName", "ptr lpDevMode", "handle hwnd", "u32 dwflags", "ptr lParam"]
+impl = { native = "ChangeDisplaySettingsExW" }
+ordinal = 30
+note = "the kernel's subset: the primary display alone, its graphics mode set once (a VBE mode with a linear framebuffer, 32 bpp, 640x480 unless the DEVMODE asks another the BIOS lists), the flags 0, CDS_FULLSCREEN and CDS_TEST (kernel/src/win32k/display.rs)"
+
+[[export]]
+name = "ChangeDisplaySettingsW"
+group = "display"
+args = ["ptr lpDevMode", "u32 dwflags"]
+impl = { native = "ChangeDisplaySettingsW" }
+ordinal = 31
+note = "ChangeDisplaySettingsExW for the primary display"
+
+# win32k's display service behind them: user32's internal call, with ChangeDisplaySettingsExW's
+# arguments as they are; it answers the DISP_CHANGE code, not an NTSTATUS, as Windows 2000's does.
+
+[[export]]
+name = "NtUserChangeDisplaySettings"
+group = "display"
+args = ["ptr DeviceName", "ptr DevMode", "handle Window", "u32 Flags", "ptr Param"]
+impl = { syscall = "crate::win32k::display::change_display_settings" }
 internal = true
 
 # --- sounds ---------------------------------------------------------------------------------------
@@ -203,21 +251,9 @@ ordinal = 26
 name = "ChangeClipboardChain"
 ordinal = 27
 
-[[export]]
-name = "ChangeDisplaySettingsA"
-ordinal = 28
 
-[[export]]
-name = "ChangeDisplaySettingsExA"
-ordinal = 29
 
-[[export]]
-name = "ChangeDisplaySettingsExW"
-ordinal = 30
 
-[[export]]
-name = "ChangeDisplaySettingsW"
-ordinal = 31
 
 [[export]]
 name = "ChangeMenuA"

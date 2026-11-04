@@ -112,10 +112,16 @@ impl<IoT: Io + Copy> Pic<IoT> {
     }
 
     /// The two chips' interrupt mask registers, (master, slave): a set bit is a masked line.
-    #[cfg(any(test, feature = "irq-smoke"))]
     pub fn line_masks(&self) -> (u8, u8) {
         let mut io = self.io();
         (io.read(MASTER_DATA), io.read(SLAVE_DATA))
+    }
+
+    /// Write both chips' interrupt mask registers back from an image [`Pic::line_masks`] read.
+    pub fn set_line_masks(&self, (master, slave): (u8, u8)) {
+        let mut io = self.io();
+        io.out(MASTER_DATA, master);
+        io.out(SLAVE_DATA, slave);
     }
 
     /// Mask all 16 lines (the data-port image after reset).

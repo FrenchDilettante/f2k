@@ -13,7 +13,7 @@ Five of Windows 2000's system DLLs are F2K's own code:
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 
-F2K's own programs, written in Rust, live under `userland/<name>`, each with its README: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md) and [`cmd.exe`](userland/cmd/README.md).
+F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
@@ -266,7 +266,8 @@ f2k/
         ├── process/      # Process lifetime
         ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary
-        ├── win32k/       # Window stations and desktops: win32k's services, user32's calls
+        ├── win32k/       # Window stations and desktops, and the display-mode service
+                          # behind the VBE framebuffer: win32k's services, user32's calls
         ├── c_lib.rs      # C library stubs (linker support)
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         └── main.rs       # Kernel binary: links the ELF; panic handler

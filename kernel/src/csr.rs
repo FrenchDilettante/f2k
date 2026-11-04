@@ -232,7 +232,14 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 args[2],
                 args[3],
             );
-            present(&mut server.console.screen, &mut crate::hw::vga::screen());
+            // The text screen shows the console until the graphics mode is set; from then on the
+            // VGA text page is not on the screen (and in a VBE mode the legacy window may reach
+            // video memory), so its cells and cursor are left alone and the changes dropped.
+            if crate::hw::vbe::graphics_mode_set() {
+                server.console.screen.take_damage();
+            } else {
+                present(&mut server.console.screen, &mut crate::hw::vga::screen());
+            }
             let staged = server.staged.length != 0 && server.staged.owner.is_none();
             if staged {
                 server.staged.owner = Some(crate::sched::current_thread());

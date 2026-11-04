@@ -1,0 +1,18 @@
+[package]
+name = "fish"
+version = "0.1.0"
+edition = "2021"
+
+# FiSH's command-line rules and exit codes, host-testable.
+[lib]
+name = "fish"
+path = "src/lib.rs"
+
+# The program: fish.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "fish"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

@@ -743,12 +743,24 @@ mod target {
     pub fn clock_requested() -> bool {
         CONTROLLER.requested(super::clock::CLOCK_VECTOR)
     }
+
+    /// Run `f` with every line of the 8259 pair masked, then put the masks back: the real-mode
+    /// BIOS calls, whose vector table sends the remapped hardware vectors (0x30-0x3F) to the BIOS's
+    /// default handlers, which end no interrupt. A request raised meanwhile stays in the request
+    /// register and is taken once the masks are back and interrupts are open.
+    pub fn with_lines_masked<R>(f: impl FnOnce() -> R) -> R {
+        let saved = CONTROLLER.line_masks();
+        CONTROLLER.mask_all();
+        let result = f();
+        CONTROLLER.set_line_masks(saved);
+        result
+    }
 }
 
 #[cfg(target_arch = "x86")]
 // `audit` has no caller outside the irq-smoke diagnostic; the subsystem API stays complete.
 #[allow(unused_imports)]
-pub use target::{audit, clock_requested, connect, init, spurious_count};
+pub use target::{audit, clock_requested, connect, init, spurious_count, with_lines_masked};
 
 /// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
 /// vector, service the interrupt, drain the deferred work.

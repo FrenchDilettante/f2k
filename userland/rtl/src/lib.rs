@@ -21,8 +21,9 @@
 //! ([`console`]: kernel32's side and the kernel's stand-in for csrss share them), and structured
 //! exception handling's walks ([`seh`]: ntdll's RtlDispatchException and RtlUnwind, with the
 //! CONTEXT and record layouts the kernel writes), the stubs' log line ([`stub`]: the system DLLs'
-//! exports not written yet, and the paths their code does not handle) and DbgPrint's formatting
-//! ([`printf`]).
+//! exports not written yet, and the paths their code does not handle), DbgPrint's formatting
+//! ([`printf`]), and the display settings' DEVMODE and DISP_CHANGE codes ([`display`]: user32's
+//! ChangeDisplaySettings family and win32k's service share them).
 //!
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
 //! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width, and the query
@@ -48,6 +49,7 @@ pub mod console;
 pub mod cp1252;
 pub mod critsec;
 pub mod cstr;
+pub mod display;
 pub mod edge;
 pub mod env;
 pub mod execution_options;

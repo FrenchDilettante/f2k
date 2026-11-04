@@ -1,5 +1,6 @@
 //! The runtime of F2K's own programs: Win32 console programs written in Rust, without a C runtime,
-//! that import kernel32 alone, so they run unchanged on Windows 2000 too.
+//! that import kernel32 (and user32, for one that sets the display mode) as Windows 2000's own
+//! programs do, so they run unchanged on Windows 2000 too.
 //!
 //! A program is a crate of its own (userland/<program>) whose binary names its `main` with
 //! [`entry!`] and builds with build-support/exe.rs's `build_exe`. This crate gives it:
@@ -10,15 +11,17 @@
 //! - a panic handler: the panic's message on the standard error, then exit code 3;
 //! - the standard input's lines, from a console ([`read_line`]), and a shell's survival of Ctrl+C
 //!   and Ctrl+Break ([`outlive_interrupts`], [`take_interrupt`]);
-//! - the kernel32 calls the programs make, wrapped safely ([`command_line`], [`current_directory`],
+//! - the calls the programs make, wrapped safely ([`command_line`], [`current_directory`],
 //!   [`set_current_directory`], [`create_process`] and [`create_process_of`] and the [`Process`]
 //!   they start, [`exit`]; the environment's variables and block; the local time; whether a file
-//!   exists, and its bytes; OEM text decoded; the console's screen cleared), and the system's
-//!   process list ([`ProcessSnapshot`], kernel32's ToolHelp).
+//!   exists, and its bytes; OEM text decoded; the console's screen cleared), the system's
+//!   process list ([`ProcessSnapshot`], kernel32's ToolHelp), the child processes FiSH starts
+//!   ([`create_child`] over a NUL-terminated [`CommandLine`]), and the display mode it sets
+//!   through user32 ([`change_display_mode`]).
 //!
-//! `unsafe` lives here, at the seam to kernel32 (src/sys.rs, src/toolhelp.rs); the programs are
-//! safe Rust. The writer's buffering (src/output.rs) is host-tested; the rest is only built for
-//! F2K's target.
+//! `unsafe` lives here, at the seam to the system's DLLs (src/sys.rs, src/toolhelp.rs); the
+//! programs are safe Rust. The writer's buffering (src/output.rs) and the command line
+//! (src/command.rs) are host-tested; the rest is only built for F2K's target.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -27,17 +30,22 @@
 // program.
 extern crate compiler_helpers as _;
 
+mod command;
 mod output;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod sys;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod toolhelp;
 
+pub use command::CommandLine;
 pub use output::{Error, Sink, Writer};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use sys::{
+    change_display_mode,
     clear_screen,
     command_line,
+    command_line_a,
+    create_child,
     create_process,
     create_process_of,
     current_directory,
@@ -56,12 +64,14 @@ pub use sys::{
     stdout,
     take_interrupt,
     write_stdout_bytes,
+    Child,
     Environment,
     File,
     Input,
     Process,
     Stream,
     SystemTime,
+    INFINITE,
     MAX_PATH,
 };
 #[cfg(all(target_arch = "x86", target_os = "windows"))]

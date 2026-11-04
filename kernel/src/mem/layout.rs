@@ -11,6 +11,7 @@
 //! | [`KERNEL_STACKS`]  | `0xA4000000` | 656-659   | additional system PTEs                    |
 //! | [`PAGE_TABLES`]    | `0xC0000000` | 768       | the process page tables (self-map)        |
 //! | [`HYPERSPACE`]     | `0xC0400000` | 769       | hyperspace                                |
+//! | [`FRAMEBUFFER`]    | `0xC0800000` | 770-777   | the display's linear framebuffer          |
 //! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
@@ -107,6 +108,14 @@ pub const HYPERSPACE: Region = Region {
     entries: 1,
 };
 
+/// The display's linear framebuffer (the VBE mode's LFB), mapped when the graphics mode is set.
+/// Its page tables are made at boot like the pool's, so every address space shares them; the frames
+/// are filled from the mode information, never assumed. Eight entries: 32 MiB of video memory.
+pub const FRAMEBUFFER: Region = Region {
+    start: 0xC080_0000,
+    entries: 8,
+};
+
 /// The nonpaged pool: blocks of kernel memory taken and released at runtime, mapped in every
 /// address space ([`crate::mem::pool`]).
 pub const NONPAGED_POOL: Region = Region {
@@ -132,11 +141,12 @@ const _: () = {
 mod tests {
     use super::*;
 
-    const REGIONS: [(&str, Region); 6] = [
+    const REGIONS: [(&str, Region); 7] = [
         ("kernel image", KERNEL_IMAGE),
         ("kernel stacks", KERNEL_STACKS),
         ("page tables", PAGE_TABLES),
         ("hyperspace", HYPERSPACE),
+        ("framebuffer", FRAMEBUFFER),
         ("nonpaged pool", NONPAGED_POOL),
         ("shared data", SHARED_DATA),
     ];
@@ -157,6 +167,11 @@ mod tests {
         assert_eq!(KERNEL_STACKS.end(), 0xA500_0000);
         assert_eq!(PAGE_TABLES.first_entry(), 768);
         assert_eq!(HYPERSPACE.first_entry(), 769);
+        assert_eq!(
+            (FRAMEBUFFER.first_entry(), FRAMEBUFFER.end_entry()),
+            (770, 778)
+        );
+        assert_eq!(FRAMEBUFFER.end(), 0xC280_0000);
         assert_eq!(
             (NONPAGED_POOL.first_entry(), NONPAGED_POOL.end_entry()),
             (1019, 1023)

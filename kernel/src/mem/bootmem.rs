@@ -9,11 +9,27 @@
 //! The database then lives in the memory manager's database ([`super::Database`]), and serves the
 //! rest of the kernel through [`with_frame_db`].
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::layout::KERNEL_IMAGE;
 use super::multiboot::{self, MultibootInfo, UsableRange};
 use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
 use crate::sync::StaticBuf;
+
+/// The first frame of the run of conventional memory the real-mode trampoline owns (physical
+/// 0x90000, below the extended BIOS data area and the VGA hole): its code, its save area and the
+/// BIOS's reply blocks, its real-mode stack and the mode-info buffer (see
+/// `hw::vbe::trampoline`). Fixed, because the trampoline's real-mode segment is derived from it.
+pub const TRAMPOLINE_FIRST_FRAME: u32 = 0x90;
+/// How many frames the trampoline's run holds: 0x90000-0x9AFFF.
+pub const TRAMPOLINE_FRAMES: u32 = 11;
+
+/// Whether the trampoline's run was taken out of the free lists at boot: then no other owner ever
+/// has those frames, and the trampoline and the BIOS write them freely. False when a frame of the
+/// run was not free (a firmware reservation, or a boot without a memory map, whose low frames
+/// never enter the database), which leaves the VBE mode set unservable.
+pub static TRAMPOLINE_RESERVED: AtomicBool = AtomicBool::new(false);
 
 /// The per-frame bookkeeping table. Sized for the full development memory; frames past the highest
 /// usable frame stay unreleased.
@@ -131,6 +147,19 @@ pub fn boot_init(multiboot_info_addr: u32) {
         };
         for range in multiboot::usable_ranges(map, MAX_FRAMES) {
             release_range(&mut db, range, kernel, Some(map));
+        }
+        // Reserve the trampoline's run for the real-mode VBE mode set, all or none: every byte the
+        // trampoline and the BIOS write while it runs is in it, so they write no frame another
+        // owner holds. Without a memory map the low frames never entered the database, and the
+        // mode set reports none.
+        let run = TRAMPOLINE_FIRST_FRAME..TRAMPOLINE_FIRST_FRAME + TRAMPOLINE_FRAMES;
+        if run.clone().all(|frame| {
+            db.entry(frame).state.has_color_chain() && !multiboot::frame_is_reserved(map, frame)
+        }) {
+            for frame in run {
+                db.take(frame);
+            }
+            TRAMPOLINE_RESERVED.store(true, Ordering::Relaxed);
         }
     } else if mbi.flags & multiboot::flags::MEM_INFO != 0 && mbi.mem_upper != 0 {
         // No memory map: usable memory is one region starting at 1 MiB.

@@ -1,9 +1,11 @@
-//! The programs' seam to the system: every kernel32 call they make, imported by name from
-//! kernel32.dll (their only import, so they run on Windows 2000 unchanged), each wrapped once in a
+//! The programs' seam to the system: every call they make, imported by name from kernel32.dll (and
+//! user32.dll for the display settings, which only a program that changes them links), as Windows
+//! 2000's own programs import them, so they run on Windows 2000 unchanged; each wrapped once in a
 //! safe function. The only `unsafe` the programs reach is here.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use crate::command::CommandLine;
 use crate::output::{Error, Sink, Writer, BUFFER};
 
 /// The longest path a current directory can be, its terminator included (MAX_PATH).
@@ -16,7 +18,7 @@ const STD_ERROR_HANDLE: u32 = -12i32 as u32;
 /// WideCharToMultiByte's code page: the OEM code page, the console's.
 const CP_OEMCP: u32 = 1;
 /// WaitForSingleObject's timeout that never expires.
-const INFINITE: u32 = u32::MAX;
+pub const INFINITE: u32 = u32::MAX;
 /// WaitForSingleObject's answer when the object is signaled.
 const WAIT_OBJECT_0: u32 = 0;
 /// ERROR_INVALID_PARAMETER: a command line without its terminator.
@@ -823,4 +825,223 @@ pub fn stdout() -> Writer<Stream> {
 /// The standard error's writer.
 pub fn stderr() -> Writer<Stream> {
     Writer::new(Stream::standard(STD_ERROR_HANDLE))
+}
+
+// --- The display settings (user32) ---------------------------------------------------------------
+
+/// DEVMODEA, Windows 2000's (156 bytes): the fields ChangeDisplaySettingsA reads for a display
+/// mode, and the printer ones it ignores.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct DevModeA {
+    device_name: [u8; 32],
+    spec_version: u16,
+    driver_version: u16,
+    size: u16,
+    driver_extra: u16,
+    fields: u32,
+    printer: [i16; 13],
+    form_name: [u8; 32],
+    log_pixels: u16,
+    bits_per_pel: u32,
+    pels_width: u32,
+    pels_height: u32,
+    display_flags: u32,
+    display_frequency: u32,
+    icm_and_panning: [u32; 8],
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<DevModeA>() == 156);
+    assert!(core::mem::offset_of!(DevModeA, bits_per_pel) == 104);
+};
+
+/// dmFields' bits for the display fields asked.
+const DM_BITSPERPEL: u32 = 0x0004_0000;
+const DM_PELSWIDTH: u32 = 0x0008_0000;
+const DM_PELSHEIGHT: u32 = 0x0010_0000;
+
+#[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
+unsafe extern "system" {
+    /// Change the display's mode to the one the DEVMODEA asks: a DISP_CHANGE code.
+    fn ChangeDisplaySettingsA(dev_mode: *const DevModeA, flags: u32) -> i32;
+}
+
+/// Set the display's mode to `width` by `height` at `bits_per_pixel`, dynamically (no flags): as a
+/// Windows 2000 program asks it, through user32's ChangeDisplaySettingsA. The failure's
+/// DISP_CHANGE code (negative).
+pub fn change_display_mode(width: u32, height: u32, bits_per_pixel: u32) -> Result<(), i32> {
+    let mode = DevModeA {
+        device_name: [0; 32],
+        spec_version: 0x0401, // DM_SPECVERSION, Windows 2000's
+        driver_version: 0,
+        size: core::mem::size_of::<DevModeA>() as u16,
+        driver_extra: 0,
+        fields: DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT,
+        printer: [0; 13],
+        form_name: [0; 32],
+        log_pixels: 0,
+        bits_per_pel: bits_per_pixel,
+        pels_width: width,
+        pels_height: height,
+        display_flags: 0,
+        display_frequency: 0,
+        icm_and_panning: [0; 8],
+    };
+    // SAFETY: the call reads the DEVMODEA, as long as its dmSize says.
+    match unsafe { ChangeDisplaySettingsA(&mode, 0) } {
+        0 => Ok(()),
+        code => Err(code),
+    }
+}
+
+// --- The process calls (FiSH's) ------------------------------------------------------------------
+
+/// STARTUPINFOA, as CreateProcessA takes it (68 bytes).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct StartupInfoA {
+    pub cb: u32,
+    pub reserved: *const u8,
+    pub desktop: *const u8,
+    pub title: *const u8,
+    pub values: [u32; 7],
+    pub flags: u32,
+    pub show_window: u16,
+    pub reserved2_length: u16,
+    pub reserved2: *const u8,
+    pub standard_input: u32,
+    pub standard_output: u32,
+    pub standard_error: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<StartupInfoA>() == 68);
+
+/// PROCESS_INFORMATION, as CreateProcessA fills it.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ProcessInformationA {
+    pub process: usize,
+    pub thread: usize,
+    pub process_id: u32,
+    pub thread_id: u32,
+}
+
+#[link(
+    name = "kernel32",
+    kind = "raw-dylib",
+    import_name_type = "undecorated"
+)]
+unsafe extern "system" {
+    /// The calling process's command line, NUL-terminated.
+    fn GetCommandLineA() -> *const u8;
+    /// Start a process from `command_line` (the image is its first token), inheriting the
+    /// standard handles; nonzero on success.
+    fn CreateProcessA(
+        application_name: *const u8,
+        command_line: *mut u8,
+        process_attributes: *const u8,
+        thread_attributes: *const u8,
+        inherit_handles: u32,
+        flags: u32,
+        environment_block: *const u8,
+        current_directory: *const u8,
+        startup_info: *const StartupInfoA,
+        process_information: *mut ProcessInformationA,
+    ) -> u32;
+}
+
+/// The calling process's command line as bytes up to its terminator (empty when none), as
+/// GetCommandLineA gives it.
+pub fn command_line_a() -> &'static [u8] {
+    // SAFETY: the call returns the command line's address, NUL-terminated, for the process's life.
+    let pointer = unsafe { GetCommandLineA() };
+    if pointer.is_null() {
+        return &[];
+    }
+    // SAFETY: the pointer is the command line's, NUL-terminated.
+    let mut length = 0;
+    unsafe {
+        while *pointer.add(length) != 0 {
+            length += 1;
+        }
+        core::slice::from_raw_parts(pointer, length)
+    }
+}
+
+/// A child process: its process and thread handles, closed when it is dropped.
+pub struct Child {
+    process: usize,
+    thread: usize,
+}
+
+/// Start the child `command_line` names (its first token is the image), inheriting the standard
+/// handles. The failure's last error.
+pub fn create_child(command_line: &mut CommandLine) -> Result<Child, Error> {
+    let startup = StartupInfoA {
+        cb: 68,
+        reserved: core::ptr::null(),
+        desktop: core::ptr::null(),
+        title: core::ptr::null(),
+        values: [0; 7],
+        flags: 0,
+        show_window: 0,
+        reserved2_length: 0,
+        reserved2: core::ptr::null(),
+        standard_input: 0,
+        standard_output: 0,
+        standard_error: 0,
+    };
+    let mut information = ProcessInformationA::default();
+    // SAFETY: the command line is a writable buffer holding its terminator (`CommandLine`'s
+    // invariant), which the call reads to and may write within; `startup` and `information` are
+    // the structures the call reads and writes; the rest are null/zero.
+    let ok = unsafe {
+        CreateProcessA(
+            core::ptr::null(),
+            command_line.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            1,
+            0,
+            core::ptr::null(),
+            core::ptr::null(),
+            &startup,
+            &mut information,
+        )
+    };
+    if ok == 0 {
+        return Err(last_error());
+    }
+    Ok(Child {
+        process: information.process,
+        thread: information.thread,
+    })
+}
+
+impl Child {
+    /// Wait for the child to end, then its exit code. The wait's or the query's last error on
+    /// failure. The handles are closed either way.
+    pub fn wait_exit_code(self) -> Result<u32, Error> {
+        // SAFETY: the process handle is open; INFINITE waits for its end.
+        if unsafe { WaitForSingleObject(self.process, INFINITE) } != 0 {
+            return Err(last_error());
+        }
+        let mut code = 0;
+        // SAFETY: `code` is a dword the call writes.
+        if unsafe { GetExitCodeProcess(self.process, &mut code) } == 0 {
+            return Err(last_error());
+        }
+        Ok(code)
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        // SAFETY: both handles are the child's, open until now, closed once.
+        unsafe {
+            CloseHandle(self.process);
+            CloseHandle(self.thread);
+        }
+    }
 }

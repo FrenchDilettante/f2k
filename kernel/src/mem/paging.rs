@@ -41,6 +41,9 @@ pub const PAGE_PRESENT: u32 = 1 << 0;
 pub const PAGE_WRITE: u32 = 1 << 1;
 /// Entry bit 2: user-accessible (supervisor-only when clear).
 pub const PAGE_USER: u32 = 1 << 2;
+/// Entry bit 3: the page's caches disabled (PCD) — for device memory such as the display's
+/// framebuffer, whose writes must reach the device rather than sit in a cache line.
+pub const PAGE_CACHE_DISABLE: u32 = 1 << 3;
 /// Mask selecting the address bits of a page-table entry.
 pub const PAGE_ADDR_MASK: u32 = 0xFFFF_F000;
 
@@ -186,6 +189,12 @@ impl Pte {
     /// and the runtime access windows' directory entries.
     pub const fn kernel_rw(frame: u32) -> Pte {
         Pte(frame | PAGE_PRESENT | PAGE_WRITE)
+    }
+
+    /// A present, writable, supervisor-only, uncached entry for `frame`: device memory such as the
+    /// display's framebuffer (see [`PAGE_CACHE_DISABLE`]).
+    pub const fn kernel_rw_uncached(frame: u32) -> Pte {
+        Pte(frame | PAGE_PRESENT | PAGE_WRITE | PAGE_CACHE_DISABLE)
     }
 
     /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`PAGE_WRITE`] for a
@@ -400,6 +409,25 @@ pub fn init_pool_tables() {
             frames, scratch, ..
         } = database.parts();
         for window in layout::NONPAGED_POOL.first_entry()..layout::NONPAGED_POOL.end_entry() {
+            install_kernel_table(window, new_table_in(frames, scratch));
+        }
+    });
+}
+
+/// Make the framebuffer region's page tables, shared by every address space like the pool's: the
+/// display's linear framebuffer is mapped into them when the graphics mode is set (its frames come
+/// from the VBE mode information, not from here).
+#[cfg(target_arch = "x86")]
+pub fn init_framebuffer_tables() {
+    assert!(
+        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+        "the framebuffer's tables made after the first process directory"
+    );
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        for window in layout::FRAMEBUFFER.first_entry()..layout::FRAMEBUFFER.end_entry() {
             install_kernel_table(window, new_table_in(frames, scratch));
         }
     });
@@ -803,8 +831,21 @@ fn map_kernel_page_in(
     vaddr: u32,
     frame_phys: u32,
 ) {
-    assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
     assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
+    map_kernel_page_pte_in(frames, scratch, vaddr, Pte::kernel_rw(frame_phys));
+}
+
+/// [`map_kernel_page_in`]'s work with the entry to install given directly (uncached for the
+/// framebuffer): the frame it names must be page-aligned.
+#[cfg(target_arch = "x86")]
+fn map_kernel_page_pte_in(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    vaddr: u32,
+    entry: Pte,
+) {
+    assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
+    assert!(entry.frame() % PAGE_SIZE == 0, "frame not page-aligned");
     let window = (vaddr >> 22) as usize;
     assert!(
         vaddr >= KERNEL_BASE,
@@ -830,8 +871,93 @@ fn map_kernel_page_in(
         !self_map::pte(vaddr).is_some_and(Pte::present),
         "kernel page already mapped"
     );
-    self_map::set_pte(vaddr, Pte::kernel_rw(frame_phys));
+    self_map::set_pte(vaddr, entry);
     invlpg(vaddr);
+}
+
+/// Map the frame `frame_phys` at the kernel-half page `vaddr` with the caches disabled: the
+/// display's framebuffer, whose writes must reach the device. Like [`map_kernel_page`] otherwise.
+#[cfg(target_arch = "x86")]
+pub fn map_kernel_page_uncached(vaddr: u32, frame_phys: u32) {
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        map_kernel_page_pte_in(frames, scratch, vaddr, Pte::kernel_rw_uncached(frame_phys));
+    });
+}
+
+/// Map `bytes` of physical memory from `base_phys` into the framebuffer region
+/// ([`layout::FRAMEBUFFER`]), uncached, starting at the region's first page; the region's tables
+/// exist from boot, so this works in any address space. The region's virtual start is returned.
+/// The size comes from the VBE mode information, so the page count is computed, never assumed.
+///
+/// # Panics
+///
+/// `base_phys` is not page-aligned, `bytes` is zero, the range runs past the region's end, or a
+/// page of it is mapped already.
+#[cfg(target_arch = "x86")]
+pub fn map_framebuffer(base_phys: u32, bytes: u32) -> u32 {
+    assert!(
+        base_phys % PAGE_SIZE == 0,
+        "framebuffer base not page-aligned"
+    );
+    assert!(bytes > 0, "an empty framebuffer");
+    let pages = (bytes as u64).div_ceil(PAGE_SIZE as u64);
+    assert!(
+        pages * PAGE_SIZE as u64 <= layout::FRAMEBUFFER.size() as u64,
+        "the framebuffer ({pages} pages) does not fit its region"
+    );
+    for page in 0..pages as u32 {
+        map_kernel_page_uncached(
+            layout::FRAMEBUFFER.start + page * PAGE_SIZE,
+            base_phys + page * PAGE_SIZE,
+        );
+    }
+    layout::FRAMEBUFFER.start
+}
+
+/// Re-install the low identity window (physical `[0, 16 MiB)` at its own addresses) in the current
+/// directory, pointing its first entries at the boot tables again: the real-mode trampoline runs
+/// with paging off, where addresses are physical. Removed by [`remove_low_identity`] before ring 3
+/// runs again. The boot's own install lives in the entry stub; this is the runtime form.
+#[cfg(target_arch = "x86")]
+pub fn install_low_identity() {
+    for (i, table) in BOOT_TABLES.0.iter().enumerate() {
+        self_map::set_pde(i, Pte::kernel_rw(table.as_ptr() as u32 - KERNEL_BASE));
+    }
+    reload_cr3();
+}
+
+/// Remove the low identity window from the current directory (the trampoline's
+/// [`install_low_identity`]): entries `[0, BOOT_TABLE_COUNT)` cleared, TLB flushed.
+#[cfg(target_arch = "x86")]
+pub fn remove_low_identity() {
+    for entry in 0..BOOT_TABLE_COUNT {
+        self_map::set_pde(entry, Pte::EMPTY);
+    }
+    reload_cr3();
+}
+
+/// The current directory's physical address (CR3's frame).
+#[cfg(target_arch = "x86")]
+pub fn current_directory_phys() -> u32 {
+    let cr3: u32;
+    // SAFETY: reading CR3 changes nothing.
+    unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
+    directory_cr3(cr3)
+}
+
+/// Reload CR3 with the current directory, flushing the TLB.
+#[cfg(target_arch = "x86")]
+fn reload_cr3() {
+    let cr3: u32;
+    // SAFETY: reading CR3 changes nothing; reloading it with the current directory keeps every
+    // present mapping (the kernel half above all) in place.
+    unsafe {
+        asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
+    }
 }
 
 /// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,

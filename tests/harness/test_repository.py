@@ -245,6 +245,9 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
+    "kernel/src/hw/vbe/trampoline.rs": "the trampoline's run of conventional memory, taken out of"
+    " the free lists at boot (no program's page is ever there), the BIOS's mode list and the"
+    " framebuffer, through the kernel window",
     "kernel/src/hw/vga.rs": "the text screen's cells, device memory through the kernel window",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
