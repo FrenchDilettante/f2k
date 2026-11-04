@@ -9,15 +9,17 @@ The tests are grouped by the DLL they exercise, one directory per group:
 
 ```text
 tests/
-├── core/       # the kernel's own boots (kernel/), the Limine, input and screen tests
-│               # (test_limine.py, test_input.py, test_textscreen.py and its screens/), and the
-│               # fixtures exit0, ret0, hello and bare
+├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
+│               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
+│               # test_cmd.py), and the fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp
 ├── gdi32/      # guidc
 ├── advapi32/   # registry
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
+├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
+│               # batver, battype, batredir
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
@@ -48,6 +50,7 @@ Build intermediates (`.obj` etc.) are ignored, not committed.
 A fixture's name is unique across the groups: the disk carries every program in one directory, and the declarations, pins and results name a fixture by its name alone (`f2kboot.fixture_directory` finds its directory, and refuses a name two groups declare).
 
 Shared pieces sit beside the groups: `common/f2kt.h` (the reporting and section helpers the sectioned fixtures include), `build.bat`, `capture.bat` (the real-machine capture of the sectioned fixtures), and the pytest side: `conftest.py` and `f2kboot.py` (building, booting, comparing), `core/kernel/test_kernel.py`, the kernel's own boots (the fault stubs, the Limine disk path, the multi-process suite, the interrupt and IDE diagnostics, and the single-path program smokes below), which have no sectioned capture to compare against, and `core/test_limine.py`, a few corpus blocks booted through Limine instead of QEMU's Multiboot loader.
+`core/test_cmd.py` boots into F2K's own `cmd.exe`, added to a copy of the disk (the disk the tests boot leaves it out), types `pwd` and Return at its prompt through QMP, and checks the text screen row by row.
 
 ## Sectioned fixtures
 
@@ -210,6 +213,19 @@ The sampling rate is `SAMPLES_PER_TICK` in kernel/src/perf.rs (samples per platf
 Above 1 the interrupt source runs faster, which can quantize a timed wait one tick longer, so the tick-exact pins (the sleep smoke's) hold only at the default 1 — a profiling build is for inspection, not verification.
 A boot longer than the buffer's 1024 samples keeps its most recent ones, up to 24 frames deep.
 Every booting suite gets its profile — the corpus blocks, the Limine blocks, and the kernel cases alike; a boot that halts before its teardown (a fault case's kernel halt) has no dump to take, and a case whose last expectation passes before the teardown may cut the dump short.
+
+## Script fixtures
+
+A script fixture, `cmd/<name>/`, is a batch script, `<name>.cmd` (CRLF line endings), whose output under Windows 2000's own cmd.exe is the expectation for F2K's cmd.exe.
+It holds the script, `fixture.toml` (`kind = "script"`), `test_<name>.py` binding `corpus_test("<name>")` as the sectioned fixtures' do, and, once captured, `output.txt`; nothing is built.
+Its capture is one block, `>>> cmd /c <name>.cmd`: `capture.bat` runs the script by a cmd.exe of its own from the fixture's directory, its standard output and error into `output.txt` in order, and refuses to capture unless a cmd.exe started afresh has command extensions on, Windows 2000's default.
+On F2K the block's boot attaches a copy of the disk with F2K's cmd.exe in `\WINNT\system32` and in `\CORPUS`, and the script in `\CORPUS` (`f2kboot.script_disk`), and runs `CORPUS\cmd /c <name>.cmd`: the kernel starts a program in its image's directory, so the script runs from `\CORPUS`, as on the real machine it runs from its own directory.
+The disk the tests boot carries neither.
+A script may run `spawnkid.exe`, the spawn fixture's companion: it sits in `\CORPUS` on F2K, and `capture.bat` copies it beside the script for the capture.
+A script prints nothing machine-specific where it can (`@echo off` first, no absolute paths), creates its files under its own name, and deletes them at its start and its end.
+Its `masks` are a list, its one block's (`masks = ["**>echo two"]`), and its `pending` a string, its one block's reason, beside `gate = true` (`pending = "redirection not implemented"`); its declaration takes `gate`, `timeout` and `retake` too, and no per-section field.
+A script fixture without its capture is awaited: one skipped test, and no boot.
+A script's name is no internal command's, since cmd.exe reads `echo.cmd` as `echo` followed by `.cmd`: the scripts are named `bat` and what they observe.
 
 ## Legacy fixtures
 

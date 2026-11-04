@@ -8,13 +8,13 @@ import pytest
 
 import f2kboot
 
-BATCH_FILES = sorted(f2kboot.TESTS.rglob("*.bat"))
+BATCH_FILES = sorted([*f2kboot.TESTS.rglob("*.bat"), *f2kboot.TESTS.rglob("*.cmd")])
 
 
 @pytest.mark.parametrize("path", BATCH_FILES, ids=lambda p: str(p.relative_to(f2kboot.REPO_ROOT)))
 def test_batch_files_keep_crlf_line_endings(path: Path):
     """cmd.exe misreads LF-only batch files (it can resume mid-line between its reads), which mangles
-    commands: the Windows 2000 scripts must keep CRLF on every line."""
+    commands: the Windows 2000 scripts, and the script fixtures, must keep CRLF on every line."""
     data = path.read_bytes()
     bare_lf = data.count(b"\n") - data.count(b"\r\n")
     assert bare_lf == 0, f"{bare_lf} line(s) end in a bare LF"
@@ -38,6 +38,12 @@ LISTED = [name for name in SECTIONED
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins",
                     "screenshots", "keys"}
+# A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
+# a string (the block's reason).
+SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
+# The script fixtures (tests/cmd/<name>/), and those whose capture is checked in.
+SCRIPTS = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "script"]
+CAPTURED_SCRIPTS = [name for name in SCRIPTS if not f2kboot.awaited(name)]
 
 
 def declared_sections(fixture: str) -> set[str]:
@@ -54,8 +60,14 @@ def test_fixture_declarations_read(fixture: str):
     """A declaration holds only the fields the reader knows (f2kboot), and a sectioned fixture has
     a capture while a smoke one has none."""
     declared = f2kboot.declaration(fixture)
+    assert declared["kind"] in ("sectioned", "smoke", "script")
+    if declared["kind"] == "script":
+        assert set(declared) <= SCRIPT_DECLARATION_KEYS, set(declared) - SCRIPT_DECLARATION_KEYS
+        assert isinstance(declared.get("masks", []), list), "a script's masks are a list"
+        assert isinstance(declared.get("pending", "-"), str), "a script's pending is its block's reason"
+        assert "pending" not in declared or declared.get("gate"), "a script is pending once gated"
+        return  # test_script_fixtures_hold_their_script checks the rest
     assert set(declared) <= DECLARATION_KEYS, set(declared) - DECLARATION_KEYS
-    assert declared["kind"] in ("sectioned", "smoke")
     if declared["kind"] == "sectioned" and f2kboot.awaited(fixture):
         return  # declared ahead of its program and capture: none of them is there
     if declared["kind"] == "sectioned":
@@ -94,6 +106,31 @@ def test_captures_match_their_sources(fixture: str):
         for step in f2kboot.key_steps(section, steps):
             assert step.after is None or step.after in by_section[section].lines, (
                 f"a key step waits for a line {section!r} never prints: {step.after!r}"
+            )
+
+
+@pytest.mark.parametrize("fixture", SCRIPTS)
+def test_script_fixtures_hold_their_script(fixture: str):
+    """A script fixture sits in the scripts' group (tests/cmd/<name>/) and holds its script,
+    <name>.cmd, and its test module; nothing built (no program, no DLL)."""
+    directory = f2kboot.fixture_directory(fixture)
+    assert directory.parent.name == f2kboot.SCRIPT_GROUP, f"not under tests/{f2kboot.SCRIPT_GROUP}/"
+    assert f2kboot.script_path(fixture).is_file(), f"{fixture}.cmd is missing"
+    assert (directory / f"test_{fixture}.py").is_file(), f"test_{fixture}.py is missing"
+    built = sorted(path.name for pattern in ("*.exe", "*.dll") for path in directory.glob(pattern))
+    assert not built, f"a script fixture holds no binaries: {built}"
+
+
+def test_script_captures_are_their_scripts_one_block():
+    """A captured script fixture's capture is one block, its script run by `cmd /c`, and each of
+    its masks matches a line of that block."""
+    for fixture in CAPTURED_SCRIPTS:
+        blocks = f2kboot.read_capture(fixture)
+        f2kboot.script_masks(fixture, f2kboot.declaration(fixture), blocks)
+        for mask in f2kboot.declaration(fixture).get("masks", []):
+            pattern = f2kboot.mask_pattern(mask)
+            assert any(pattern.fullmatch(line) for line in blocks[0].lines), (
+                f"{fixture}: the mask matches no line of its block: {mask!r}"
             )
 
 
@@ -144,20 +181,25 @@ def test_the_corpus_names_are_8_3_and_distinct():
     """The disk build puts every sectioned fixture's program and its companions (the other programs
     and the DLLs beside it, and the DLLs in its subdirectories) in \\CORPUS, by their upper-cased
     names (the Makefile's corpus loop): each must be an 8.3 name, and no two may meet, or one would
-    replace another. An awaited fixture's program counts by its name already."""
+    replace another. An awaited fixture's program counts by its name already. A script fixture's
+    boot puts its script there, and cmd.exe beside it (`f2kboot.script_disk`)."""
     def is_8_3(part: str) -> bool:
         stem, dot, extension = part.partition(".")
         return 1 <= len(stem) <= 8 and len(extension) <= 3 and "." not in extension and " " not in part
 
-    seen: dict[str, str] = {}
+    seen: dict[str, str] = {"CMD.EXE": "the script fixtures' boots"}
     for fixture in DECLARED:
-        if f2kboot.declaration(fixture)["kind"] != "sectioned":
+        kind = f2kboot.declaration(fixture)["kind"]
+        if kind == "script":
+            names = {f"{fixture}.cmd"}
+        elif kind == "sectioned":
+            directory = f2kboot.fixture_directory(fixture)
+            names = {f"{fixture}.exe"} | {
+                path.relative_to(directory).as_posix()
+                for pattern in ("*.exe", "*.dll", "*/*.dll") for path in directory.glob(pattern)
+            }
+        else:
             continue
-        directory = f2kboot.fixture_directory(fixture)
-        names = {f"{fixture}.exe"} | {
-            path.relative_to(directory).as_posix()
-            for pattern in ("*.exe", "*.dll", "*/*.dll") for path in directory.glob(pattern)
-        }
         for name in sorted(names):
             placed = name.upper()
             assert all(is_8_3(part) for part in placed.split("/")), f"{fixture}: {name} is not 8.3"

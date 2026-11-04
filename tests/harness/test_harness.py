@@ -366,6 +366,84 @@ def test_pins_name_sections_and_exports():
         f2kboot.blocks("memory", gate=True, pins={"heap": ["HeapAlloc"]})
 
 
+# --- Script fixtures: one block, its script run by cmd /c ----------------------------------------
+
+SCRIPT_CAPTURE = """# F2K capture of batfake (tests\\capture.bat)
+>>> cmd /c batfake.cmd
+one
+C:\\some\\where>echo two
+<<< exit code=0
+"""
+
+
+def script_fixture(tmp_path, monkeypatch, declaration: str, capture: str | None) -> str:
+    """A script fixture, batfake, under `tmp_path` (tests/cmd/batfake/), the declaration and capture
+    given (none: awaited), with the harness's fixture lookup pointed at it."""
+    directory = tmp_path / "cmd" / "batfake"
+    directory.mkdir(parents=True)
+    (directory / "batfake.cmd").write_bytes(b"@echo off\r\necho one\r\n")
+    (directory / "fixture.toml").write_text(declaration)
+    if capture is not None:
+        (directory / "output.txt").write_text(capture)
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"batfake": directory})
+    return "batfake"
+
+
+def test_an_awaited_script_fixture_is_one_skipped_test(tmp_path, monkeypatch):
+    """A script fixture without its capture is awaited (it has no program to wait for): one skipped
+    test, so no boot."""
+    fixture = script_fixture(tmp_path, monkeypatch, 'kind = "script"\n', None)
+    assert f2kboot.awaited(fixture)
+    [param] = f2kboot.corpus_params(fixture)
+    assert param.id == "awaited"
+    skip = next(mark for mark in param.marks if mark.name == "skip")
+    assert "output.txt" in skip.kwargs["reason"] and ".exe" not in skip.kwargs["reason"]
+
+
+def test_a_script_fixtures_capture_is_one_block_its_masks_apply_to(tmp_path, monkeypatch):
+    """A captured script fixture is one test, its block the script run by `cmd /c`, its masks (a
+    list) that block's; ungated, it runs as an expected failure. On F2K the block runs the cmd.exe
+    in the corpus's directory, so the script's current directory is the corpus's."""
+    declaration = 'kind = "script"\nmasks = ["**>echo two"]\n'
+    fixture = script_fixture(tmp_path, monkeypatch, declaration, SCRIPT_CAPTURE)
+    assert not f2kboot.awaited(fixture)
+    [param] = f2kboot.corpus_params(fixture)
+    captured = param.values[0]
+    assert captured.block.command == "cmd /c batfake.cmd"
+    assert captured.block.lines == ["one", "C:\\some\\where>echo two"]
+    assert any(mask.fullmatch("C:\\CORPUS>echo two") for mask in captured.masks)
+    assert [mark.name for mark in param.marks].count("xfail") == 1
+    assert f2kboot.batch_command_line([captured.block.command]) == "CORPUS\\cmd /c batfake.cmd"
+
+
+def test_a_script_capture_of_another_command_or_masks_by_section_is_refused(tmp_path, monkeypatch):
+    fixture = script_fixture(tmp_path, monkeypatch, 'kind = "script"\n',
+                             SCRIPT_CAPTURE.replace("batfake.cmd", "other.cmd"))
+    with pytest.raises(ValueError, match="one block"):
+        f2kboot.corpus_params(fixture)
+    blocks = f2kboot.parse_capture(tmp_path / "cmd" / "batfake" / "output.txt")
+    with pytest.raises(ValueError, match="a list"):
+        f2kboot.script_masks("batfake", {"masks": {"/c batfake.cmd": ["x"]}},
+                             [f2kboot.Block("cmd /c batfake.cmd", blocks[0].lines, 0)])
+
+
+def test_a_pending_script_gives_its_block_s_reason(tmp_path, monkeypatch):
+    """A gated script's `pending`, a string, is its one block's reason: the block runs as a strict
+    expected failure with it. Anything but a string is refused."""
+    declaration = 'kind = "script"\ngate = true\npending = "redirection not implemented"\n'
+    fixture = script_fixture(tmp_path, monkeypatch, declaration, SCRIPT_CAPTURE)
+    [param] = f2kboot.corpus_params(fixture)
+    [xfail] = [mark for mark in param.marks if mark.name == "xfail"]
+    assert xfail.kwargs == {"reason": "redirection not implemented", "strict": True}
+    declared = tmp_path / "cmd" / "batfake" / "fixture.toml"
+    declared.write_text('kind = "script"\ngate = true\n')
+    [param] = f2kboot.corpus_params(fixture)
+    assert not [mark for mark in param.marks if mark.name == "xfail"]
+    declared.write_text('kind = "script"\ngate = true\npending = {a = "b"}\n')
+    with pytest.raises(ValueError, match="a string"):
+        f2kboot.corpus_params(fixture)
+
+
 # --- Stale build directories and logs are pruned-----------------------------------------------
 
 

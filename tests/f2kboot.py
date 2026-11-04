@@ -741,6 +741,34 @@ def limine_disk(build: Build, cmdline: str, path: Path, kernel_options: str = ""
     return path
 
 
+# F2K's own programs as the userland workspace builds them (the Makefile's `userland` copies each
+# <name>.dll the target links to its <name>.exe), and where the disk carries the system's programs.
+BUILT_PROGRAMS = REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release"
+SYSTEM_DIRECTORY = "::/WINNT/system32/"
+
+
+def disk_with_programs(build: Build, programs: list[Path], path: Path, *,
+                       corpus: list[Path] = ()) -> Path:
+    """A copy of `build`'s disk at `path` with `programs` added to its system directory
+    (\\WINNT\\system32): programs the disk the tests boot leaves out, cmd.exe for one. The files in
+    `corpus` go to \\CORPUS, by their upper-cased names, as the disk build places the corpus's."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(build.disk, path)
+    copies = [[*map(str, programs), SYSTEM_DIRECTORY]]
+    copies += [[str(file), f"::/{CORPUS_DIRECTORY}/{file.name.upper()}"] for file in corpus]
+    try:
+        for copy in copies:
+            subprocess.run(
+                ["mcopy", "-i", f"{path}{PARTITION}", *copy],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+    except subprocess.CalledProcessError as error:
+        path.unlink(missing_ok=True)
+        added = ", ".join(p.name for p in [*programs, *corpus])
+        raise RuntimeError(f"adding {added} to the disk failed:\n{error.stdout}") from None
+    return path
+
+
 # The marker before QEMU's stderr in a boot's log.
 QEMU_STDERR = "--- QEMU stderr ---"
 
@@ -1177,12 +1205,18 @@ def declaration(fixture: str) -> dict:
 # they are checked in has neither: it is awaited (its source may lead them, written here and built
 # and captured on the real machine).
 REAL_MACHINE_FILES = ("{name}.exe", "output.txt")
+# A script fixture's real-machine file: its capture alone (its script is written here, and nothing
+# is built).
+SCRIPT_REAL_MACHINE_FILES = ("output.txt",)
 
 
 def real_machine_files(fixture: str) -> list[Path]:
-    """A sectioned fixture's real-machine files (REAL_MACHINE_FILES), by path."""
+    """A fixture's real-machine files (REAL_MACHINE_FILES, or SCRIPT_REAL_MACHINE_FILES for a
+    script fixture), by path."""
     directory = fixture_directory(fixture)
-    return [directory / name.format(name=fixture) for name in REAL_MACHINE_FILES]
+    script = declaration(fixture).get("kind") == "script"
+    names = SCRIPT_REAL_MACHINE_FILES if script else REAL_MACHINE_FILES
+    return [directory / name.format(name=fixture) for name in names]
 
 
 def awaited(fixture: str) -> bool:
@@ -1191,19 +1225,85 @@ def awaited(fixture: str) -> bool:
     return not any(path.exists() for path in real_machine_files(fixture))
 
 
+# --- Script fixtures ------------------------------------------------------------------------------
+#
+# A script fixture, tests/cmd/<name>/, is a batch script, <name>.cmd, that a cmd.exe of its own runs
+# (`cmd /c <name>.cmd`) from the script's directory: Windows 2000's cmd.exe on the real machine
+# (tests/capture.bat), F2K's on F2K. Its capture is one block, that command line's. On F2K the
+# script goes into \CORPUS on a copy of the disk, with F2K's cmd.exe beside it (and in
+# \WINNT\system32, where ComSpec names it): the kernel starts a program in its image's own
+# directory, so the cmd.exe in \CORPUS runs the script from there, as the real machine runs it from
+# its own. The corpus's programs sit beside it there (spawnkid.exe, which capture.bat copies beside
+# the script on the real machine).
+
+# The script fixtures' group: tests/cmd/<name>/.
+SCRIPT_GROUP = "cmd"
+# F2K's command interpreter as the userland workspace builds it (the disk the tests boot leaves it
+# out).
+SCRIPT_INTERPRETER = BUILT_PROGRAMS / "cmd.exe"
+
+
+def script_path(fixture: str) -> Path:
+    """A script fixture's script, tests/cmd/<fixture>/<fixture>.cmd."""
+    return fixture_directory(fixture) / f"{fixture}.cmd"
+
+
+def script_command(fixture: str) -> str:
+    """The command line of a script fixture's one block: its script, run by a cmd.exe of its own."""
+    return f"cmd /c {fixture}.cmd"
+
+
+def script_disk(build: Build, fixture: str, path: Path) -> Path:
+    """A copy of `build`'s disk at `path` for a script fixture's boot: F2K's cmd.exe in
+    \\WINNT\\system32 and in \\CORPUS, and the fixture's script in \\CORPUS."""
+    if not SCRIPT_INTERPRETER.exists():
+        raise RuntimeError(f"{SCRIPT_INTERPRETER} is missing: `make disk` builds and copies it")
+    return disk_with_programs(build, [SCRIPT_INTERPRETER], path,
+                              corpus=[SCRIPT_INTERPRETER, script_path(fixture)])
+
+
+def script_masks(fixture: str, declared: dict, captured: list[Block]) -> dict[str, tuple[str, ...]]:
+    """A script fixture's masks, its declaration's `masks` (a list: the fixture has one block), by
+    that block's section, as `blocks` takes them. The capture must be `script_command`'s one
+    block."""
+    commands = [block.command for block in captured]
+    if commands != [script_command(fixture)]:
+        raise ValueError(f"{fixture}: a script's capture is one block, [{script_command(fixture)}];"
+                         f" it holds {commands}")
+    masks = declared.get("masks", [])
+    if not isinstance(masks, list):
+        raise ValueError(f"{fixture}: a script's masks are a list, its one block's")
+    return {captured[0].section: tuple(masks)} if masks else {}
+
+
 def corpus_params(fixture: str) -> list:
-    """A sectioned fixture's blocks as pytest parameters, as its declaration says to compare them;
-    one skipped parameter for a fixture still awaiting its real-machine files."""
+    """A sectioned or script fixture's blocks as pytest parameters, as its declaration says to
+    compare them; one skipped parameter for a fixture still awaiting its real-machine files."""
     import pytest
 
     declared = declaration(fixture)
-    if declared.get("kind") != "sectioned":
+    kind = declared.get("kind")
+    if kind not in ("sectioned", "script"):
         raise ValueError(f"{fixture_directory(fixture).relative_to(REPO_ROOT)}/fixture.toml does not declare"
-                         " a sectioned fixture")
+                         " a sectioned or script fixture")
     if awaited(fixture):
-        reason = (f"{fixture} awaits its real-machine build and capture "
+        what = "capture" if kind == "script" else "build and capture"
+        reason = (f"{fixture} awaits its real-machine {what} "
                   f"({', '.join(path.name for path in real_machine_files(fixture))})")
         return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
+    if kind == "script":
+        captured = read_capture(fixture)
+        reason = declared.get("pending")
+        if reason is not None and not (isinstance(reason, str) and reason.strip()):
+            raise ValueError(f"{fixture}: a script's pending is its one block's reason, a string")
+        return blocks(
+            fixture,
+            gate=declared.get("gate", False),
+            pending={captured[0].section: reason} if reason is not None else None,
+            masks=script_masks(fixture, declared, captured),
+            timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),
+            retake=declared.get("retake"),
+        )
     return blocks(
         fixture,
         gate=declared.get("gate", False),
@@ -1217,10 +1317,10 @@ def corpus_params(fixture: str) -> list:
 
 
 def corpus_test(fixture: str) -> Callable:
-    """A sectioned fixture's test function, from its declaration: one test per captured block, run
-    through the `run_block` fixture (tests/conftest.py), which runs the fixture's selected blocks
-    in one boot. A fixture's module binds it to test_<fixture>, the name the test ids carry and its
-    batch is named after."""
+    """A sectioned or script fixture's test function, from its declaration: one test per captured
+    block, run through the `run_block` fixture (tests/conftest.py), which runs the fixture's
+    selected blocks in one boot. A fixture's module binds it to test_<fixture>, the name the test
+    ids carry and its batch is named after."""
     import pytest
 
     declared = declaration(fixture)

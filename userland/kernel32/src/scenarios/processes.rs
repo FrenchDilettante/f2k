@@ -633,6 +633,161 @@ fn what_cannot_run_fails_as_on_windows_2000() {
     }
 }
 
+/// The text files' refusal: NtCreateSection's, a file with no MZ signature.
+const STATUS_INVALID_IMAGE_NOT_MZ: u32 = 0xC000_012F;
+
+/// The image opens' names, in order.
+fn opened_names() -> Vec<String> {
+    calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Open { name, .. } => Some(name),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A batch file — a file with no MZ signature whose name ends in `.bat` or `.cmd`, in any case —
+/// runs under the command processor, as Windows 2000 hands it over: its handle closed, `cmd`
+/// searched for as a command line's first name (the program's directory, the current one, the
+/// system directory, `.exe` added), the child cmd.exe with the command line `cmd /c` and the
+/// caller's, quotes and arguments as given; the batch file's path found goes nowhere. Without a
+/// command line, the one made from the application name follows `cmd /c`.
+///
+/// Pins: kernel32.CreateProcessW
+#[test]
+fn a_batch_file_runs_under_the_command_processor() {
+    let batch = |command_line: &str, file: &str| {
+        setup();
+        existing(&[file, "C:\\WINNT\\system32\\CMD.EXE"]);
+        fail("NtCreateSection", STATUS_INVALID_IMAGE_NOT_MZ);
+        let (created, error, _) = run(command_line);
+        assert_eq!((created, error), (1, UNTOUCHED), "{command_line}");
+        child_names()
+    };
+    assert_eq!(
+        batch("x.bat", "C:\\CORPUS\\X.BAT"),
+        ("C:\\WINNT\\system32\\cmd.exe".into(), "cmd /c x.bat".into())
+    );
+    let names = opened_names();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names[0].ends_with("C:\\CORPUS\\x.bat"), "{names:?}");
+    assert!(
+        names[1].ends_with("C:\\WINNT\\system32\\cmd.exe"),
+        "{names:?}"
+    );
+    assert_eq!(
+        closed(),
+        [HANDLE, HANDLE, HANDLE],
+        "the batch file before cmd.exe's open, then cmd.exe's file and section"
+    );
+    let asked = EXISTENCE_ASKED.with(|asked| asked.borrow().clone());
+    assert_eq!(
+        asked[1..],
+        [
+            "C:\\CORPUS\\cmd.exe",
+            ".\\cmd.exe",
+            "C:\\WINNT\\system32\\cmd.exe"
+        ],
+        "cmd searched for as a command line's first name"
+    );
+    OPTIONS_ASKED.with(|asked| {
+        assert_eq!(
+            *asked.borrow(),
+            [(
+                "C:\\WINNT\\system32\\cmd.exe".to_string(),
+                "Debugger".to_string()
+            )]
+        )
+    });
+
+    assert_eq!(
+        batch("\"a b\\x.cmd\" arg", "C:\\CORPUS\\A B\\X.CMD"),
+        (
+            "C:\\WINNT\\system32\\cmd.exe".into(),
+            "cmd /c \"a b\\x.cmd\" arg".into()
+        )
+    );
+    assert_eq!(
+        batch("TOOLS\\X.BAT one  two", "C:\\CORPUS\\TOOLS\\X.BAT").1,
+        "cmd /c TOOLS\\X.BAT one  two",
+        "an upper-case extension"
+    );
+
+    setup();
+    existing(&["C:\\WINNT\\system32\\CMD.EXE"]);
+    fail("NtCreateSection", STATUS_INVALID_IMAGE_NOT_MZ);
+    let (created, _, _) = create(
+        Some("x.bat"),
+        Some("anything at all"),
+        0,
+        core::ptr::null(),
+        None,
+        &startup(),
+    );
+    assert_eq!(created, 1);
+    assert_eq!(
+        child_names().1,
+        "cmd /c anything at all",
+        "the application name goes nowhere"
+    );
+    setup();
+    existing(&["C:\\WINNT\\system32\\CMD.EXE"]);
+    fail("NtCreateSection", STATUS_INVALID_IMAGE_NOT_MZ);
+    let (created, _, _) = create(Some("x.bat"), None, 0, core::ptr::null(), None, &startup());
+    assert_eq!(created, 1);
+    assert_eq!(child_names().1, "cmd /c \"x.bat\"");
+}
+
+/// What a batch file's handing over leaves refused: a text file of another name (193, nothing
+/// searched for after it); a batch file the section refuses otherwise, an empty one (193); a
+/// batch file with no cmd.exe to be found (the search's error, 2), the batch file closed. Nothing
+/// is made.
+///
+/// Pins: kernel32.CreateProcessW
+#[test]
+fn only_a_batch_file_goes_to_the_command_processor() {
+    for (name, status) in [
+        ("notes.txt", STATUS_INVALID_IMAGE_NOT_MZ),
+        ("notes.bat.txt", STATUS_INVALID_IMAGE_NOT_MZ),
+        ("bat", STATUS_INVALID_IMAGE_NOT_MZ),
+        ("empty.bat", 0xC000_011E),
+        ("dos.bat", 0xC000_0130),
+    ] {
+        setup();
+        existing(&["C:\\WINNT\\system32\\CMD.EXE"]);
+        fail("NtCreateSection", status);
+        let (created, error, _) = create(
+            Some(name),
+            Some(name),
+            0,
+            core::ptr::null(),
+            None,
+            &startup(),
+        );
+        assert_eq!((created, error), (0, 193), "{name}");
+        assert_eq!(opened_names().len(), 1, "{name}");
+        EXISTENCE_ASKED.with(|asked| assert!(asked.borrow().is_empty(), "{name}"));
+        assert_eq!(closed(), [HANDLE], "{name}: the file");
+        assert!(CHILD.with(|child| child.borrow().is_none()));
+    }
+
+    setup();
+    fail("NtCreateSection", STATUS_INVALID_IMAGE_NOT_MZ);
+    let (created, error, _) = create(
+        Some("x.bat"),
+        Some("x.bat"),
+        0,
+        core::ptr::null(),
+        None,
+        &startup(),
+    );
+    assert_eq!((created, error), (0, 2), "no cmd.exe");
+    assert_eq!(opened_names().len(), 1);
+    assert_eq!(closed(), [HANDLE], "the batch file");
+    assert!(CHILD.with(|child| child.borrow().is_none()));
+}
+
 /// No application name and no command line: a fault for the caller (the export raises
 /// STATUS_ACCESS_VIOLATION in it), as Windows 2000's reads through the missing command line;
 /// nothing is looked for. CreateProcessW's work is asked directly: the stand-in's raise is a

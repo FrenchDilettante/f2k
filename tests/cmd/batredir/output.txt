@@ -1,0 +1,21 @@
+# F2K capture of batredir (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 10:30:33.94
+>>> cmd /c batredir.cmd
+one
+two
+replaced
+the redirection first
+kid: read: ret=1 err=- [a line to read]
+kid: to the standard error
+kid: to the standard output
+kid: to the standard output
+kid: to the standard error
+The system cannot find the file specified.
+kid: to the standard output
+kid: to the standard error
+kid: to the standard error
+kid: to the standard output
+<<< exit code=0

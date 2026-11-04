@@ -1,0 +1,14 @@
+# batcd: one test, the script's one block (`cmd /c batcd.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batcd - cd in a batch file, into a subdirectory and back: cd printing the current directory, the current directory a child sees, the drive's hidden =C: variable a child inherits, and cd to a directory that does not exist."
+kind = "script"
+gate = true
+pending = "redirection (> nul, 2> nul), md and rd not implemented"
+# cd prints the current directory, under the script's directory (\CORPUS on F2K); the drive's hidden
+# variable is named after the drive the script runs from.
+masks = [
+    "**\\batcdsub",
+    "kid: =*=[<home>\\batcdsub]",
+    "kid: =*=[<home>]",
+]

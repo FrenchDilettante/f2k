@@ -1,5 +1,6 @@
 """Shared fixtures for the on-target QEMU tests: the kernel's own boots (tests/core/kernel/test_kernel.py)
-and the sectioned corpus (tests/<dll>/<name>/test_<name>.py)."""
+and the corpus (tests/<dll>/<name>/test_<name>.py: the sectioned fixtures, and the script fixtures
+under tests/cmd/)."""
 from __future__ import annotations
 
 import json
@@ -215,10 +216,11 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     """Run one captured block on F2K, in its batch: the first block of a test function to run boots
     the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
     block of the function this session runs, in order, each its own process, run from the corpus's
-    directory; each block's test then reads its own part of that boot's log. It fails unless the
-    program's output equals the block line for line (masks applied), the process ends with the
-    block's exit code, and its teardown audits clean; a block the boot never reached fails as not
-    run, naming the block the boot stopped in."""
+    directory (a script fixture's on a copy of the disk with cmd.exe and the script there,
+    `f2kboot.script_disk`); each block's test then reads its own part of that boot's log. It fails
+    unless the program's output equals the block line for line (masks applied), the process ends
+    with the block's exit code, and its teardown audits clean; a block the boot never reached fails
+    as not run, naming the block the boot stopped in."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)
@@ -233,15 +235,27 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
             screenshots = declared.get("screenshots", False)
             keys = {section: f2kboot.key_steps(section, steps)
                     for section, steps in declared.get("keys", {}).items()}
-            batch = f2kboot.boot_batch(
-                build,
-                [each.block for each in selected],
-                image=image,
-                log_path=f2kboot.log_path_for(name),
-                timeouts=[boot_timeout(each.timeout) for each in selected],
-                screens=f2kboot.SCREENS / captured.fixture if screenshots else None,
-                keys=keys,
-            )
+            # A script fixture boots a copy of the disk with cmd.exe and its script in \CORPUS.
+            variant = None
+            if declared.get("kind") == "script":
+                try:
+                    variant = f2kboot.script_disk(build, captured.fixture,
+                                                  f2kboot.WORK / "variants" / f"{name}.img")
+                except RuntimeError as error:
+                    pytest.fail(str(error), pytrace=False)
+            try:
+                batch = f2kboot.boot_batch(
+                    build if variant is None else f2kboot.Build(build.kernel, variant),
+                    [each.block for each in selected],
+                    image=image,
+                    log_path=f2kboot.log_path_for(name),
+                    timeouts=[boot_timeout(each.timeout) for each in selected],
+                    screens=f2kboot.SCREENS / captured.fixture if screenshots else None,
+                    keys=keys,
+                )
+            finally:
+                if variant is not None:
+                    variant.unlink(missing_ok=True)
             BATCHES[name] = batch
             profile_writer(batch.log, build, f2kboot.profile_path_for(name))
         index = next(i for i, item in enumerate(items) if item is request.node)

@@ -15,13 +15,20 @@
 //!    `C:\a b\c.exe`, then the whole — and a name found with spaces in it is quoted in the command
 //!    line the new process gets. The searches' misses leave their error even when a later one
 //!    succeeds (the spawn capture's "ret=1 err=2").
-//! 4. The image: opened for execution (NtOpenFile), an image section made of it (NtCreateSection
-//!    with SEC_IMAGE: a file that is no image is ERROR_BAD_EXE_FORMAT — Windows 2000 hands DOS
-//!    programs and batch files to NTVDM and cmd.exe, F2K has neither), described (NtQuerySection: a
-//!    DLL, an image for another machine or for another subsystem than the Windows GUI and console
-//!    ones is ERROR_BAD_EXE_FORMAT), and its Image File Execution Options asked
+//! 4. The image ([`image_section`]): opened for execution (NtOpenFile), an image section made of it
+//!    (NtCreateSection with SEC_IMAGE), described (NtQuerySection: a DLL, an image for another
+//!    machine or for another subsystem than the Windows GUI and console ones is
+//!    ERROR_BAD_EXE_FORMAT), and its Image File Execution Options asked
 //!    (LdrQueryImageFileExecutionOptions: Windows 2000 starts the Debugger they name in the
-//!    program's place; F2K starts no debugger, so the answer goes unused).
+//!    program's place; F2K starts no debugger, so the answer goes unused). A file the section finds
+//!    no MZ signature in (STATUS_INVALID_IMAGE_NOT_MZ) whose name ends in `.bat` or `.cmd`, in any
+//!    case, is a batch file, which the command processor runs, as Windows 2000 hands it over: the
+//!    batch file's handle closed, the creation starts again with no application name and the
+//!    command line `cmd /c ` followed by the caller's (or the one made from the application name,
+//!    when none was given), so `cmd` is searched for as the third step searches (`.exe` added; the
+//!    program's directory and the current one first), and the command processor finds the batch
+//!    file again from its command line. Every other file that is no image is ERROR_BAD_EXE_FORMAT:
+//!    Windows 2000 hands DOS and 16-bit Windows programs to NTVDM, which F2K has not.
 //! 5. The process: NtCreateProcess of the section, the caller its parent, the caller's inheritable
 //!    handles copied when bInheritHandles asks; its PEB's address (ProcessBasicInformation); its
 //!    priority class (the flags', else the caller's when idle or below normal, else normal) and its
@@ -188,6 +195,9 @@ const fn ascii<const N: usize>(text: &[u8; N]) -> [u16; N] {
 /// The extension the search adds, and the execution option asked.
 const EXE: [u16; 4] = ascii(b".exe");
 const DEBUGGER: [u16; 9] = ascii(b"Debugger\0");
+/// A batch file's extensions, in lower case, and the start of the command line that runs one.
+const BATCH_EXTENSIONS: [[u16; 4]; 2] = [ascii(b".bat"), ascii(b".cmd")];
+const RUN_BATCH: [u16; 7] = ascii(b"cmd /c ");
 
 const QUOTE: u16 = b'"' as u16;
 const SPACE: u16 = b' ' as u16;
@@ -366,22 +376,65 @@ fn find_program<'a>(
     Err(Failure::Error(error))
 }
 
-/// The program's image section: the file opened for execution, the section made of it (the file's
-/// handle closed either way).
+/// The file at `path` opened for execution and an image section made of it: the section, or
+/// NtCreateSection's refusal (the file's handle closed either way); the open's failure.
 #[inline(never)]
-fn open_image(path: &Wide) -> Result<Owned, Failure> {
+fn open_image(path: &Wide) -> Result<Result<Owned, NtStatus>, Failure> {
     let path = NtPath::of(path.terminated()).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))?;
     let file =
         Owned(files::open(&path, OPEN_ACCESS, OPEN_SHARE, OPEN_OPTIONS).map_err(Failure::Status)?);
-    ntcall::create_image_section(file.0)
-        .map(Owned)
-        .map_err(|status| {
-            if NOT_AN_IMAGE.contains(&status) {
-                Failure::Error(ERROR_BAD_EXE_FORMAT)
-            } else {
-                Failure::Status(status)
-            }
-        })
+    Ok(ntcall::create_image_section(file.0).map(Owned))
+}
+
+/// Whether a program's path names a batch file: it ends in `.bat` or `.cmd`, in any case.
+fn is_batch(path: &[u16]) -> bool {
+    let Some(extension) = path.len().checked_sub(4).map(|at| &path[at..]) else {
+        return false;
+    };
+    let lower = |unit: u16| match unit {
+        0x41..=0x5A => unit + 0x20,
+        _ => unit,
+    };
+    BATCH_EXTENSIONS.iter().any(|batch| {
+        extension
+            .iter()
+            .zip(batch)
+            .all(|(&unit, &wanted)| lower(unit) == wanted)
+    })
+}
+
+/// The command processor running a batch file (see the module's fourth step): the command line
+/// `cmd /c ` followed by the batch file's, its program found as a command line's first name is.
+#[inline(never)]
+fn command_processor<'a>(command_line: &[u16]) -> Result<Program<'a>, Failure> {
+    let line = HeapArray::joined(&[&RUN_BATCH, command_line])?;
+    let path = find_program(None, Some(&line))?.path;
+    Ok(Program {
+        path,
+        command_line: CommandLine::Made(line),
+    })
+}
+
+/// The program's image section (see the module's fourth step). A batch file's program becomes the
+/// command processor, whose section it is: `program` is replaced, its command line made from the
+/// caller's `command_line` (from the one `program` made when the caller gave none). A file that is
+/// no image is ERROR_BAD_EXE_FORMAT.
+#[inline(never)]
+fn image_section(program: &mut Program, command_line: Option<&[u16]>) -> Result<Owned, Failure> {
+    const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
+    let mut section = open_image(&program.path)?;
+    if section.as_ref().err() == Some(&STATUS_INVALID_IMAGE_NOT_MZ) && is_batch(program.path.text())
+    {
+        *program = command_processor(command_line.unwrap_or(&program.command_line))?;
+        section = open_image(&program.path)?;
+    }
+    section.map_err(|status| {
+        if NOT_AN_IMAGE.contains(&status) {
+            Failure::Error(ERROR_BAD_EXE_FORMAT)
+        } else {
+            Failure::Status(status)
+        }
+    })
 }
 
 /// Whether the section's image is a program F2K runs: an executable for the i386, for the Windows
@@ -735,8 +788,8 @@ fn start(
 /// CreateProcessW's work (see the module doc): the new process and its first thread.
 pub fn create_process(request: &Request) -> Result<ProcessInformation, Failure> {
     let current_directory = request.current_directory.map(directory).transpose()?;
-    let program = find_program(request.application_name, request.command_line)?;
-    let section = open_image(&program.path)?;
+    let mut program = find_program(request.application_name, request.command_line)?;
+    let section = image_section(&mut program, request.command_line)?;
     let image = ntcall::query_image(section.0).map_err(Failure::Status)?;
     check_image(&image)?;
     ask_execution_options(&program.path);

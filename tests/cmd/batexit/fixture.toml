@@ -1,0 +1,5 @@
+# batexit: one test, the script's one block (`cmd /c batexit.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+description = "batexit - exit /b 3: the script ends there, and the cmd.exe running it ends with 0, its last command's return code (exit /b sets the ERRORLEVEL, not the return code)."
+kind = "script"
+gate = true

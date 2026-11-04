@@ -1,0 +1,8 @@
+# batecho: one test, the script's one block (`cmd /c batecho.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+description = "batecho - echo in a batch file: text, blanks after echo, echo. for an empty line, echo alone with echo off and on, and with echo on each command echoed after the prompt, a fixed one ($G) and the default one ($P$G)."
+kind = "script"
+gate = true
+# The default prompt is the current directory: the script's on the real machine, \CORPUS on F2K. The
+# echoed command ends with a blank, as a command with arguments echoes.
+masks = ["**>echo under the current directory's prompt "]

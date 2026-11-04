@@ -1,0 +1,412 @@
+//! Batch files: their arguments (`%0` to `%9`, `%*`), their lines as read from the file, and
+//! `exit`'s forms.
+
+use crate::{is_blank, skip_blanks, trim_blanks, EQUALS, QUOTE};
+
+/// The calls a batch may nest (`call`, or a batch run from another): past it, the shell stops
+/// every batch, as Windows' cmd does once its stack runs out.
+pub const DEPTH: usize = 32;
+
+/// What the shell prints when batches nest past [`DEPTH`].
+pub const RECURSION: &str = "****** B A T C H   R E C U R S I O N  exceeds STACK limits ******\r\n";
+
+/// What the shell asks when Ctrl+C or Ctrl+Break interrupts a batch.
+pub const TERMINATE: &str = "Terminate batch job (Y/N)? ";
+
+/// The bytes a batch file is read in at once.
+pub const CHUNK: usize = 512;
+
+/// Whether `unit` separates a batch's arguments: a blank, `,`, `;` or `=`.
+fn separates(unit: u16) -> bool {
+    is_blank(unit) || unit == u16::from(b',') || unit == u16::from(b';') || unit == EQUALS
+}
+
+/// `arguments` (the batch's name as typed, then what followed it on its line) from its first
+/// argument on: its leading separators skipped.
+fn skip_separators(arguments: &[u16]) -> &[u16] {
+    let start = arguments
+        .iter()
+        .position(|&unit| !separates(unit))
+        .unwrap_or(arguments.len());
+    &arguments[start..]
+}
+
+/// `text`'s first argument and what follows it: an argument runs to a separator outside quotes,
+/// its quotes kept.
+fn split_argument(text: &[u16]) -> (&[u16], &[u16]) {
+    let text = skip_separators(text);
+    let mut quoted = false;
+    let end = text
+        .iter()
+        .position(|&unit| {
+            if unit == QUOTE {
+                quoted = !quoted;
+            }
+            !quoted && separates(unit)
+        })
+        .unwrap_or(text.len());
+    text.split_at(end)
+}
+
+/// The batch's argument `n` (`%0` its name as typed, `%1` to `%9` the arguments after it), quotes
+/// kept: None when there are fewer.
+pub fn argument(arguments: &[u16], n: usize) -> Option<&[u16]> {
+    let mut rest = arguments;
+    for _ in 0..n {
+        rest = split_argument(rest).1;
+    }
+    let (argument, _) = split_argument(rest);
+    (!argument.is_empty()).then_some(argument)
+}
+
+/// `%*`: every argument after the name, as they were typed, from the first one's start to the
+/// line's end.
+pub fn all(arguments: &[u16]) -> &[u16] {
+    skip_separators(split_argument(arguments).1)
+}
+
+/// An argument without the quotes around it (`%~1`): a leading quote goes, and a trailing one.
+pub fn unquote(argument: &[u16]) -> &[u16] {
+    let argument = argument.strip_prefix(&[QUOTE]).unwrap_or(argument);
+    argument.strip_suffix(&[QUOTE]).unwrap_or(argument)
+}
+
+/// A batch file's lines, read a chunk at a time: a line ends at LF, a CR before it dropped.
+pub struct LineReader {
+    chunk: [u8; CHUNK],
+    start: usize,
+    end: usize,
+    done: bool,
+}
+
+impl Default for LineReader {
+    fn default() -> Self {
+        LineReader {
+            chunk: [0; CHUNK],
+            start: 0,
+            end: 0,
+            done: false,
+        }
+    }
+}
+
+impl LineReader {
+    /// The next line, into `line`, without its line break: what does not fit is dropped. `read`
+    /// fills a buffer from the file, zero at its end. None at the file's end; a last line without
+    /// a line break is a line.
+    pub fn next_line<'a, E>(
+        &mut self,
+        read: &mut dyn FnMut(&mut [u8]) -> Result<usize, E>,
+        line: &'a mut [u8],
+    ) -> Result<Option<&'a [u8]>, E> {
+        let mut length = 0;
+        let mut any = false;
+        loop {
+            if self.start == self.end {
+                if self.done {
+                    break;
+                }
+                self.start = 0;
+                self.end = read(&mut self.chunk)?.min(CHUNK);
+                if self.end == 0 {
+                    self.done = true;
+                    break;
+                }
+            }
+            any = true;
+            let available = &self.chunk[self.start..self.end];
+            let (taken, ended) = match available.iter().position(|&byte| byte == b'\n') {
+                Some(lf) => (&available[..lf], Some(lf + 1)),
+                None => (available, None),
+            };
+            let room = line.len().saturating_sub(length).min(taken.len());
+            line[length..length + room].copy_from_slice(&taken[..room]);
+            length += room;
+            match ended {
+                Some(consumed) => {
+                    self.start += consumed;
+                    if length > 0 && line[length - 1] == b'\r' {
+                        length -= 1;
+                    }
+                    return Ok(Some(&line[..length]));
+                }
+                None => self.start = self.end,
+            }
+        }
+        if !any {
+            return Ok(None);
+        }
+        if length > 0 && line[length - 1] == b'\r' {
+            length -= 1;
+        }
+        Ok(Some(&line[..length]))
+    }
+}
+
+/// `exit`'s argument: `/B`, ending the batch rather than the shell, and the exit code.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Exit {
+    pub batch: bool,
+    /// The code, read as C's `atoi` reads a number (a sign, then decimal digits, 0 without any):
+    /// None when there is no argument.
+    pub code: Option<u32>,
+}
+
+/// `exit`'s argument read.
+pub fn exit(argument: &[u16]) -> Exit {
+    let mut rest = trim_blanks(argument);
+    let mut batch = false;
+    if rest.len() >= 2
+        && rest[0] == u16::from(b'/')
+        && (rest[1] == u16::from(b'b') || rest[1] == u16::from(b'B'))
+        && rest.get(2).is_none_or(|&unit| is_blank(unit))
+    {
+        batch = true;
+        rest = skip_blanks(&rest[2..]);
+    }
+    if rest.is_empty() {
+        return Exit { batch, code: None };
+    }
+    let (negative, digits) = match rest[0] {
+        unit if unit == u16::from(b'-') => (true, &rest[1..]),
+        unit if unit == u16::from(b'+') => (false, &rest[1..]),
+        _ => (false, rest),
+    };
+    let mut value: u32 = 0;
+    for &unit in digits {
+        let Some(digit) = char::from_u32(u32::from(unit)).and_then(|c| c.to_digit(10)) else {
+            break;
+        };
+        value = value.wrapping_mul(10).wrapping_add(digit);
+    }
+    Exit {
+        batch,
+        code: Some(if negative {
+            value.wrapping_neg()
+        } else {
+            value
+        }),
+    }
+}
+
+/// Whether a line read from a batch file is skipped without being echoed: an empty one, or a
+/// label (`:name`, which `::` comments are too).
+pub fn skipped(line: &[u16]) -> bool {
+    match trim_blanks(line).first() {
+        None => true,
+        Some(&unit) => unit == u16::from(b':'),
+    }
+}
+
+/// What a batch file's line (expanded) echoes while echo is on, after the prompt (see
+/// [`Echoed`]). None for a line a leading `@` hides, or one of blanks only.
+pub fn echoed(line: &[u16]) -> Option<Echoed<'_>> {
+    let line = skip_blanks(crate::without_break(line));
+    match line.first() {
+        Some(&unit) if unit != u16::from(b'@') && !crate::trim_blanks(line).is_empty() => {
+            Some(Echoed(line))
+        }
+        _ => None,
+    }
+}
+
+/// A batch file's line as echo shows it, its leading blanks dropped: a command with arguments
+/// (text after its first word) is followed by a blank, as Windows 2000's cmd writes it
+/// (`>echo with echo on `); a word alone is not (`>echo`).
+pub struct Echoed<'a>(pub &'a [u16]);
+
+impl core::fmt::Display for Echoed<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let word = self
+            .0
+            .iter()
+            .position(|&unit| is_blank(unit))
+            .unwrap_or(self.0.len());
+        if skip_blanks(&self.0[word..]).is_empty() {
+            crate::Text(&self.0[..word]).fmt(f)
+        } else {
+            write!(f, "{} ", crate::Text(self.0))
+        }
+    }
+}
+
+/// The answer to [`TERMINATE`] a line gives: Some(true) for Y, Some(false) for N, None for
+/// anything else (the question is asked again).
+pub fn answer(line: &[u16]) -> Option<bool> {
+    match trim_blanks(crate::without_break(line)) {
+        [unit] if *unit == u16::from(b'y') || *unit == u16::from(b'Y') => Some(true),
+        [unit] if *unit == u16::from(b'n') || *unit == u16::from(b'N') => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    fn narrow(units: &[u16]) -> String {
+        String::from_utf16(units).unwrap()
+    }
+
+    #[test]
+    fn arguments_by_number() {
+        let line = wide("t.cmd one,\"two three\"  ;four=five");
+        let of = |n| argument(&line, n).map(narrow);
+        assert_eq!(of(0).as_deref(), Some("t.cmd"));
+        assert_eq!(of(1).as_deref(), Some("one"));
+        assert_eq!(of(2).as_deref(), Some("\"two three\""));
+        assert_eq!(of(3).as_deref(), Some("four"));
+        assert_eq!(of(4).as_deref(), Some("five"));
+        assert_eq!(of(5), None);
+        assert_eq!(narrow(all(&line)), "one,\"two three\"  ;four=five");
+        assert_eq!(narrow(all(&wide("t"))), "");
+        assert_eq!(narrow(all(&wide("t   "))), "");
+        assert_eq!(narrow(unquote(&wide("\"a b\""))), "a b");
+        assert_eq!(narrow(unquote(&wide("ab"))), "ab");
+    }
+
+    /// The lines a reader gives, the file handed over `step` bytes a read.
+    fn lines(text: &[u8], step: usize, room: usize) -> Vec<Vec<u8>> {
+        let mut reader = LineReader::default();
+        let mut at = 0;
+        let mut read = |buffer: &mut [u8]| -> Result<usize, ()> {
+            let count = step.min(buffer.len()).min(text.len() - at);
+            buffer[..count].copy_from_slice(&text[at..at + count]);
+            at += count;
+            Ok(count)
+        };
+        let mut out = Vec::new();
+        let mut line = vec![0; room];
+        while let Some(got) = reader.next_line(&mut read, &mut line).unwrap() {
+            out.push(got.to_vec());
+        }
+        out
+    }
+
+    #[test]
+    fn lines_end_at_lf_a_cr_before_it_dropped() {
+        for step in [1, 2, 3, 7, CHUNK] {
+            assert_eq!(
+                lines(b"a\r\nbc\n\r\nd", step, 16),
+                [b"a".to_vec(), b"bc".to_vec(), b"".to_vec(), b"d".to_vec()]
+            );
+            assert_eq!(lines(b"x\r\n", step, 16), [b"x".to_vec()]);
+            assert!(lines(b"", step, 16).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_line_too_long_is_cut() {
+        assert_eq!(
+            lines(b"abcdef\r\ngh", 2, 4),
+            [b"abcd".to_vec(), b"gh".to_vec()]
+        );
+        let long = vec![b'x'; 3 * CHUNK];
+        let mut text = long.clone();
+        text.extend_from_slice(b"\nend");
+        let got = lines(&text, CHUNK, 3 * CHUNK);
+        assert_eq!(got, [long, b"end".to_vec()]);
+    }
+
+    #[test]
+    fn exit_s_forms() {
+        let of = |text: &str| exit(&wide(text));
+        assert_eq!(
+            of(""),
+            Exit {
+                batch: false,
+                code: None
+            }
+        );
+        assert_eq!(
+            of(" 3 "),
+            Exit {
+                batch: false,
+                code: Some(3)
+            }
+        );
+        assert_eq!(
+            of("/B"),
+            Exit {
+                batch: true,
+                code: None
+            }
+        );
+        assert_eq!(
+            of("/b 4"),
+            Exit {
+                batch: true,
+                code: Some(4)
+            }
+        );
+        assert_eq!(
+            of("-1"),
+            Exit {
+                batch: false,
+                code: Some(u32::MAX)
+            }
+        );
+        assert_eq!(
+            of("12abc"),
+            Exit {
+                batch: false,
+                code: Some(12)
+            }
+        );
+        assert_eq!(
+            of("abc"),
+            Exit {
+                batch: false,
+                code: Some(0)
+            }
+        );
+        // `/bx` is no /B: atoi reads nothing of it.
+        assert_eq!(
+            of("/bx"),
+            Exit {
+                batch: false,
+                code: Some(0)
+            }
+        );
+    }
+
+    #[test]
+    fn labels_and_empty_lines_are_skipped() {
+        assert!(skipped(&wide("")));
+        assert!(skipped(&wide("  \t")));
+        assert!(skipped(&wide(":end")));
+        assert!(skipped(&wide("  :: comment")));
+        assert!(!skipped(&wide("echo :")));
+    }
+
+    #[test]
+    fn a_line_echoes_without_its_leading_blanks_unless_at_hides_it() {
+        let shown = |line: &str| echoed(&wide(line)).map(|echoed| echoed.to_string());
+        assert_eq!(shown("  echo hi").as_deref(), Some("echo hi "));
+        assert_eq!(shown(" @echo off"), None);
+        assert_eq!(shown("   "), None);
+    }
+
+    #[test]
+    fn a_command_with_arguments_echoes_with_a_blank_after_it() {
+        // batecho's capture: `>echo with echo on ` and `>echo`.
+        let shown = |line: &str| echoed(&wide(line)).unwrap().to_string();
+        assert_eq!(shown("echo with echo on"), "echo with echo on ");
+        assert_eq!(shown("echo"), "echo");
+        assert_eq!(shown("echo  "), "echo");
+        assert_eq!(shown("echo   three  "), "echo   three   ");
+        assert_eq!(shown("spawnkid exit 3"), "spawnkid exit 3 ");
+    }
+
+    #[test]
+    fn the_terminate_question_s_answers() {
+        assert_eq!(answer(&wide("y\r\n")), Some(true));
+        assert_eq!(answer(&wide(" N \r\n")), Some(false));
+        assert_eq!(answer(&wide("yes\r\n")), None);
+        assert_eq!(answer(&wide("\r\n")), None);
+    }
+}

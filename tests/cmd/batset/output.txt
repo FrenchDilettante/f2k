@@ -1,0 +1,20 @@
+# F2K capture of batset (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 10:30:33.74
+>>> cmd /c batset.cmd
+BATSX=1
+[1]
+[1]
+[two words]
+Environment variable BATSNOPE not defined
+ERRORLEVEL after set BATSNOPE: 1
+ERRORLEVEL after set BATSX=3: 0
+[3]
+Environment variable BATSX not defined
+[]
+[]
+100% and %BATSY%
+ERRORLEVEL at the end: 1
+<<< exit code=0

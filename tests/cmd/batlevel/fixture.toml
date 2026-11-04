@@ -1,0 +1,6 @@
+# batlevel: one test, the script's one block (`cmd /c batlevel.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batlevel - a program's exit code through %ERRORLEVEL% (spawnkid.exe exiting with 3, 0, 256, 0xFFFFFFFF and an NTSTATUS), ERRORLEVEL across an internal command, a command naming no program, and the script's exit code, its last program's."
+kind = "script"
+gate = true

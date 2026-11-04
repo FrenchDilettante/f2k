@@ -177,14 +177,16 @@ pub fn header(fields: &Header) -> ProcessParameters<u32> {
 }
 
 /// The module file name the image at volume path `module` has (the parameters' ImagePathName,
-/// GetModuleFileNameA's answer): its Win32 form, drive and all, upper-cased as the volume's 8.3
-/// entries store it ("C:\CORPUS\RUNTIME.EXE"). CreateFileA resolves it back to the image.
+/// GetModuleFileNameA's answer): its Win32 form, drive and all, in the case the command line gives
+/// it ("C:\CORPUS\runtime.exe"). Windows 2000 keeps a path's case as its creator passes it: the
+/// path SearchPath makes from the PATH entry and the name as typed, which turning it into an NT
+/// name leaves as it is. CreateFileA resolves it back to the image (the volume's names match
+/// whatever their case).
 pub fn module_file_name(module: &[u8], out: &mut [u8; MODULE_ROOM]) -> usize {
     let path = crate::user::volume_path(module);
     let length = (3 + path.len()).min(MODULE_ROOM - 1);
     out[..3].copy_from_slice(b"C:\\");
     out[3..length].copy_from_slice(&path[..length - 3]);
-    out[..length].make_ascii_uppercase();
     length
 }
 
@@ -348,14 +350,17 @@ mod tests {
         assert_eq!(block.as_bytes(), blank.as_bytes());
     }
 
-    /// A process starts in its image's directory, its trailing separator kept (a root's too).
+    /// A process starts in its image's directory, its trailing separator kept (a root's too), in
+    /// the image path's case.
     #[test]
     fn the_starting_directory_is_the_images() {
         let mut out = [0u8; MODULE_ROOM];
-        let length = starting_directory(b"C:\\CORPUS\\FILES.EXE", &mut out);
+        let length = starting_directory(b"C:\\CORPUS\\files.exe", &mut out);
         assert_eq!(&out[..length], b"C:\\CORPUS\\");
-        let length = starting_directory(b"C:\\RET0.EXE", &mut out);
+        let length = starting_directory(b"C:\\ret0.exe", &mut out);
         assert_eq!(&out[..length], b"C:\\");
+        let length = starting_directory(b"C:\\WINNT\\system32\\cmd.exe", &mut out);
+        assert_eq!(&out[..length], b"C:\\WINNT\\system32\\");
     }
 
     /// The pages' contents do not overlap: the block and its strings, all on the two pages; the
@@ -420,15 +425,17 @@ mod tests {
         );
     }
 
-    /// The module file name is the image's Win32 path: drive-qualified, upper-cased like the
-    /// volume's short names, and it resolves back to the volume path the image came from.
+    /// The module file name is the image's Win32 path: drive-qualified, in the case the command
+    /// line gives it, and it resolves back to the volume path the image came from.
     #[test]
     fn the_module_file_name_is_absolute() {
         let mut out = [0u8; MODULE_ROOM];
         let length = module_file_name(b"fileio.exe", &mut out);
-        assert_eq!(&out[..length], b"C:\\FILEIO.EXE");
-        assert!(crate::user::volume_path(&out[..length]).eq_ignore_ascii_case(b"fileio.exe"));
+        assert_eq!(&out[..length], b"C:\\fileio.exe");
+        assert_eq!(crate::user::volume_path(&out[..length]), b"fileio.exe");
         let length = module_file_name(b"CORPUS\\runtime.exe", &mut out);
-        assert_eq!(&out[..length], b"C:\\CORPUS\\RUNTIME.EXE");
+        assert_eq!(&out[..length], b"C:\\CORPUS\\runtime.exe");
+        let length = module_file_name(b"WINNT\\system32\\cmd.exe", &mut out);
+        assert_eq!(&out[..length], b"C:\\WINNT\\system32\\cmd.exe");
     }
 }

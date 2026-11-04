@@ -42,26 +42,27 @@ BOOT_DIR ?= boot
 KERNEL_DIR ?= kernel
 BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
-# make vbox-image: the files to add to the VirtualBox disk (at their paths in the volume), the VDI,
-# and the program its boot runs (empty: the kernel's default), e.g. CMDLINE='WINNT\system32\cmd.exe'.
+# What a manual boot (make run, make vbox-image) runs: the program's path on the volume and its
+# arguments, the Limine entry's command line after the kernel's "--".
+CMDLINE ?= WINNT\system32\cmd.exe
+# make vbox-image: the files laid over the VirtualBox disk's volume (at their paths in it), and the
+# VDI.
 VBOX_EXTRAS ?= vbox-image
 VBOX_VDI ?= $(BUILD_DIR)/f2k.vdi
-CMDLINE ?=
 EXPORTGEN_DIR ?= tools/exportgen
 USERLAND_DIR ?= userland
 
 # Tools
-OBJCOPY ?= x86_64-elf-objcopy
 NASM ?= nasm
 DD ?= dd
 
-# QEMU settings
+# QEMU settings: make run's machine is interactive. QEMU's window shows the VGA text screen and
+# takes the PS/2 keyboard, and COM1, the kernel's log, goes to the terminal.
 QEMU ?= qemu-system-i386
-QEMU_FLAGS ?= -m 256M -nographic -no-reboot -no-shutdown -net none
+QEMU_FLAGS ?= -m 256M -serial stdio -no-reboot -no-shutdown -net none
 
 # Disk image settings
 DISK_IMG ?= $(OUT_DIR)/f2k-disk.img
-ISO_IMG ?= $(OUT_DIR)/f2k.iso
 # 64MB disk image (131072 * 512 bytes): large enough for a spec-compliant FAT32 partition
 DISK_SIZE ?= 131072
 # A fixture's directory, tests/<dll>/<name>: the fixtures are grouped by the DLL they exercise, and
@@ -90,11 +91,16 @@ SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
 # DLLs are its binaries too), so `userland` copies each program to its .exe name beside it.
 SYSTEM_PROGRAMS = pwd ps
 SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
+# F2K's command interpreter (userland/cmd), built and copied to its .exe name as the programs are,
+# but kept off the disk the tests boot: it goes on its own disk (`cmd-disk`), a copy of that one
+# whose boot runs CMDLINE, the disk make run and make vbox-image boot.
+CMD_PROGRAM = cmd
+CMD_EXE = $(BUILD_DIR)/userland/i686-f2k-pe/release/$(CMD_PROGRAM).exe
+CMD_DISK_IMG ?= $(OUT_DIR)/f2k-cmd-disk.img
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
 LIMINE_BIN ?= $(LIMINE_DIR)/limine
-LIMINE_CD_BIN ?= $(LIMINE_DIR)/limine-bios-cd.bin
 LIMINE_SYS ?= $(LIMINE_DIR)/limine-bios.sys
 LIMINE_CONF ?= $(BOOT_DIR)/limine.conf
 
@@ -108,10 +114,10 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
-	@echo "                 msvcrt.dll, advapi32.dll and user32.dll) and F2K's own programs (pwd.exe, ps.exe)"
+	@echo "                 msvcrt.dll, advapi32.dll and user32.dll) and F2K's own programs (pwd.exe,"
+	@echo "                 ps.exe, cmd.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
-	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
-	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"
+	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib, and the kernel's doc tests)"
 	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run,"
 	@echo "                 and the DLL compatibility report written (target/compat/report.html)"
@@ -119,14 +125,12 @@ help:
 	@echo "  check        - cargo check + clippy"
 	@echo "  fmt          - Format the Rust sources (rustfmt) and the Markdown files (rumdl)"
 	@echo "  fmt-check    - Fail if a Rust source or a Markdown file is not formatted"
-	@echo "  kernel-bin   - Convert kernel to raw binary"
-	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools)"
+	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools), the one the tests boot"
+	@echo "  cmd-disk     - The disk with cmd.exe added, its boot running CMDLINE"
 	@echo "  limine       - Download/setup limine bootloader (if needed)"
-	@echo "  iso          - Create bootable ISO with limine"
-	@echo "  qemu_iso     - Create ISO and run in QEMU"
-	@echo "  run          - Build and run in QEMU (raw disk)"
-	@echo "  vbox-image   - The disk as a VirtualBox VDI, with vbox-image/'s files added"
-	@echo "                 (CMDLINE='<program> [arguments]': what the boot runs)"
+	@echo "  run          - Boot the cmd disk in a QEMU window: cmd.exe, or what CMDLINE names"
+	@echo "                 (keyboard and screen in the window, COM1 on the terminal)"
+	@echo "  vbox-image   - The cmd disk as a VirtualBox VDI, vbox-image/'s files laid over its volume"
 	@echo "  clean        - Clean build artifacts"
 	@echo "  clobber      - Remove all build artifacts"
 	@echo ""
@@ -134,6 +138,8 @@ help:
 	@echo "  ARCH=x86             - Target architecture (default: x86)"
 	@echo "  TARGET=x86-f2k       - Rust target (default: x86-f2k)"
 	@echo "  DISK_IMG=...         - Disk image path"
+	@echo "  CMDLINE='...'        - What make run and make vbox-image boot into: the program's path"
+	@echo "                         on the volume and its arguments (default: F2K's cmd.exe)"
 	@echo "  KERNEL_PROFILE=dev   - Kernel cargo profile: dev, or dev-opt (optimized, checks kept)"
 
 .PHONY: all
@@ -147,7 +153,7 @@ all: disk
 userland:
 	@echo "Building the system DLLs and programs..."
 	cd $(USERLAND_DIR) && cargo build --release
-	for exe in $(SYSTEM_EXES); do cp $${exe%.exe}.dll $$exe || exit 1; done
+	for exe in $(SYSTEM_EXES) $(CMD_EXE); do cp $${exe%.exe}.dll $$exe || exit 1; done
 
 .PHONY: kernel
 kernel: userland
@@ -156,17 +162,6 @@ kernel: userland
 	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
 	printf '$(BUILD_STAMP)\n' > $(KERNEL_STAMP)
 	@echo "Kernel built: $(KERNEL_ELF)"
-
-.PHONY: qemu
-qemu: disk
-	@echo "Booting F2K in QEMU (Multiboot via -kernel, the disk attached). Exit with Ctrl-A X."
-	$(QEMU) $(QEMU_FLAGS) -kernel $(KERNEL_ELF) -drive file=$(DISK_IMG),format=raw,if=ide
-
-.PHONY: kernel-bin
-kernel-bin:
-	@echo "Converting kernel to raw binary..."
-	$(OBJCOPY) -O binary $(KERNEL_ELF) $(KERNEL_ELF).raw
-	@echo "Raw kernel: $(KERNEL_ELF).raw"
 
 .PHONY: disk
 disk: kernel limine
@@ -220,20 +215,33 @@ disk: kernel limine
 	cp $(KERNEL_STAMP) $(DISK_STAMP)
 	@echo "Disk image created: $(DISK_IMG)"
 
+# The cmd disk: the disk with cmd.exe beside the system's programs, and its Limine entry's command
+# line, after the kernel's path, `-- $(CMDLINE)`.
+.PHONY: cmd-disk
+cmd-disk: disk
+	@printf 'Creating the disk that boots into %s...\n' '$(CMDLINE)'
+	rm -f $(CMD_DISK_IMG)
+	cp $(DISK_IMG) $(CMD_DISK_IMG)
+	mcopy -i $(CMD_DISK_IMG)@@1M $(CMD_EXE) ::/WINNT/system32/
+	grep -q '^    path: boot():/f2k-kernel$$' $(LIMINE_CONF)
+	{ sed '/^    path: boot():\/f2k-kernel$$/q' $(LIMINE_CONF); \
+	  printf '    cmdline: -- %s\n' '$(CMDLINE)'; \
+	  sed '1,/^    path: boot():\/f2k-kernel$$/d' $(LIMINE_CONF); } > $(CMD_DISK_IMG).conf
+	mcopy -o -i $(CMD_DISK_IMG)@@1M $(CMD_DISK_IMG).conf ::/boot/limine/limine.conf
+	rm -f $(CMD_DISK_IMG).conf
+	@echo "Disk image created: $(CMD_DISK_IMG)"
+
+# The cmd disk booted through Limine, in a QEMU window.
 .PHONY: run
-run: disk
-	@echo "Booting $(DISK_IMG) in QEMU. Exit with Ctrl-A X."
-	$(QEMU) $(QEMU_FLAGS) -drive file=$(DISK_IMG),format=raw,if=ide
+run: cmd-disk
+	@printf 'Booting %s in QEMU: %s\n' '$(CMD_DISK_IMG)' '$(CMDLINE)'
+	$(QEMU) $(QEMU_FLAGS) -drive file=$(CMD_DISK_IMG),format=raw,if=ide
 
+# The cmd disk as a VirtualBox VDI, vbox-image/'s files laid over its volume after cmd.exe (so
+# `vbox-image/WINNT/system32/cmd.exe` replaces F2K's).
 .PHONY: vbox-image
-vbox-image: disk
-	python3 $(SCRIPTS_DIR)/vbox_image.py $(DISK_IMG) $(VBOX_EXTRAS) $(VBOX_VDI) --cmdline '$(CMDLINE)'
-
-.PHONY: release
-release: userland
-	@echo "Building F2K kernel (release mode)..."
-	cd $(KERNEL_DIR) && cargo build --release
-	@echo "Kernel built: $(BUILD_DIR)/$(TARGET)/release/f2k-kernel"
+vbox-image: cmd-disk
+	python3 $(SCRIPTS_DIR)/vbox_image.py $(CMD_DISK_IMG) $(VBOX_EXTRAS) $(VBOX_VDI)
 
 .PHONY: clean
 clean:
@@ -304,7 +312,7 @@ run-tests: userland
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries.
-	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS); do \
+	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM); do \
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 
@@ -334,8 +342,6 @@ fmt-check:
 # Limine Bootloader Targets
 # =============================================================================
 
-ISO_DIR ?= $(OUT_DIR)/iso
-
 .PHONY: limine
 limine:
 	@echo "Setting up limine bootloader..."
@@ -350,42 +356,7 @@ limine:
 		tar xJf "$$tmp/limine.tar.xz" -C "$$tmp" && \
 		$(MAKE) -C "$$tmp/limine-binary" limine && \
 		cp "$$tmp/limine-binary/limine-bios.sys" $(LIMINE_DIR)/ && \
-		cp "$$tmp/limine-binary/limine-bios-cd.bin" $(LIMINE_DIR)/ && \
 		cp "$$tmp/limine-binary/limine" $(LIMINE_DIR)/ && \
 		chmod +x $(LIMINE_BIN) ; \
 	fi
 	@echo "Limine bootloader ready in $(LIMINE_DIR)/"
-
-.PHONY: iso
-iso: kernel limine
-	@echo "Creating limine bootable ISO..."
-	# Create ISO directory structure
-	rm -rf $(ISO_DIR)
-	mkdir -p $(ISO_DIR)/boot/limine
-	cp $(LIMINE_CD_BIN) $(ISO_DIR)/
-	cp $(LIMINE_SYS) $(ISO_DIR)/boot/limine/
-	# The kernel is a 32-bit Multiboot 1 ELF (Limine's own protocol is 64-bit only)
-	cp $(KERNEL_ELF) $(ISO_DIR)/f2k-kernel
-	cp $(LIMINE_CONF) $(ISO_DIR)/boot/limine/
-	# Create ISO with xorriso
-	@echo "Creating ISO image..."
-	@if ! command -v xorriso >/dev/null 2>&1; then \
-		echo "ERROR: xorriso not found. Install with: brew install xorriso" && \
-		false; \
-	fi
-	xorriso -as mkisofs \
-		-R -r -J \
-		-b limine-bios-cd.bin \
-		-no-emul-boot \
-		-boot-load-size 4 \
-		-boot-info-table \
-		$(ISO_DIR) -o $(ISO_IMG)
-	# Install limine bootloader on the ISO image
-	@echo "Installing limine bootloader on ISO image..."
-	$(LIMINE_BIN) bios-install --force $(ISO_IMG)
-	@echo "ISO created: $(ISO_IMG)"
-
-.PHONY: qemu_iso
-qemu_iso: iso disk
-	@echo "Starting F2K ISO in QEMU (the disk attached for the volume)..."
-	$(QEMU) $(QEMU_FLAGS) -cdrom $(ISO_IMG) -boot d -drive file=$(DISK_IMG),format=raw,if=ide

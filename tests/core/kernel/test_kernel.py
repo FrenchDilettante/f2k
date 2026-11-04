@@ -369,9 +369,9 @@ CASES = (
         timeout=30.0,
     ),
     # F2K's own pwd.exe, from the system directory: a boot's program starts in its image's directory
-    # (kernel/src/user/params.rs, `starting_directory`: the volume path upper-cased), which
-    # GetCurrentDirectoryW gives without its trailing separator. pwd prints that one line, the
-    # boot's console its standard output, and ends with 0.
+    # (kernel/src/user/params.rs, `starting_directory`: the image path in the command line's case),
+    # which GetCurrentDirectoryW gives without its trailing separator. pwd prints that one line,
+    # the boot's console its standard output, and ends with 0.
     *both_paths(
         "process-pwd",
         "F2K's own pwd.exe, run from \\WINNT\\system32, prints the directory it started in and exits 0",
@@ -381,7 +381,7 @@ CASES = (
             *BOOTED,
             "F2K: image loaded",
             "F2K: entering ring 3",
-            r"re:^C:\\WINNT\\SYSTEM32$",
+            r"re:^C:\\WINNT\\system32$",
             *EXITED_CLEAN,
         ),
     ),

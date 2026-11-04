@@ -1,0 +1,7 @@
+# batredir: one test, the script's one block (`cmd /c batredir.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batredir - the redirections in a batch file, each observed through type of its file: >, >> and a redirection before its command, < into a program's read, 2> of a program's and of cmd's own error output, > with 2>&1, and nul."
+kind = "script"
+gate = true
+pending = "redirection and del not implemented"

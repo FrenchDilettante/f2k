@@ -1,0 +1,5 @@
+# batset: one test, the script's one block (`cmd /c batset.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+description = "batset - set and variables in a batch file: setting, listing by a name's start, expansion without regard to case, a value with blanks, an undefined name's message and ERRORLEVEL, ERRORLEVEL after a set that succeeds, clearing, an undefined variable expanding to nothing in a batch file, and %% for one percent sign."
+kind = "script"
+gate = true

@@ -8,12 +8,17 @@
 //!   console as UTF-16 (WriteConsoleW), redirected as bytes in the OEM code page (WriteFile), as
 //!   Windows 2000's own console tools write theirs;
 //! - a panic handler: the panic's message on the standard error, then exit code 3;
-//! - the kernel32 calls the programs make, wrapped safely ([`current_directory`], [`exit`]), and
-//!   the system's process list ([`ProcessSnapshot`], kernel32's ToolHelp).
+//! - the standard input's lines, from a console ([`read_line`]), and a shell's survival of Ctrl+C
+//!   and Ctrl+Break ([`outlive_interrupts`], [`take_interrupt`]);
+//! - the kernel32 calls the programs make, wrapped safely ([`command_line`], [`current_directory`],
+//!   [`set_current_directory`], [`create_process`] and [`create_process_of`] and the [`Process`]
+//!   they start, [`exit`]; the environment's variables and block; the local time; whether a file
+//!   exists, and its bytes; OEM text decoded; the console's screen cleared), and the system's
+//!   process list ([`ProcessSnapshot`], kernel32's ToolHelp).
 //!
 //! `unsafe` lives here, at the seam to kernel32 (src/sys.rs, src/toolhelp.rs); the programs are
-//! safe Rust. The
-//! writer's buffering (src/output.rs) is host-tested; the rest is only built for F2K's target.
+//! safe Rust. The writer's buffering (src/output.rs) is host-tested; the rest is only built for
+//! F2K's target.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -30,7 +35,35 @@ mod toolhelp;
 
 pub use output::{Error, Sink, Writer};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
-pub use sys::{current_directory, exit, stderr, stdout, Stream, MAX_PATH};
+pub use sys::{
+    clear_screen,
+    command_line,
+    create_process,
+    create_process_of,
+    current_directory,
+    environment,
+    environment_variable,
+    exit,
+    file_exists,
+    local_time,
+    oem_to_wide,
+    open_file,
+    outlive_interrupts,
+    read_line,
+    set_current_directory,
+    set_environment_variable,
+    stderr,
+    stdout,
+    take_interrupt,
+    write_stdout_bytes,
+    Environment,
+    File,
+    Input,
+    Process,
+    Stream,
+    SystemTime,
+    MAX_PATH,
+};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use toolhelp::{ProcessEntry, ProcessSnapshot, Processes};
 

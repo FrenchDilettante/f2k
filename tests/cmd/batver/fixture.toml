@@ -1,0 +1,9 @@
+# batver: one test, the script's one block (`cmd /c batver.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+description = "batver - ver's text: the lines around it and the version in brackets, the product's name masked."
+kind = "script"
+gate = true
+# The product's name is F2K's own: F2K's banner reads "F2K [Version 5.00.2195]" where Windows 2000's
+# reads "Microsoft Windows 2000 [Version 5.00.2195]". The version in brackets, which scripts parse,
+# stays Windows 2000's.
+masks = ["** [Version 5.00.2195]"]

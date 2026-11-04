@@ -27,6 +27,10 @@ rem grouped by the DLL they exercise). Fixtures' names (capture.bat dll,
 rem or capture.bat threads files) recapture only those, in the order
 rem given.
 rem
+rem The script fixtures, cmd\<name>\<name>.cmd, are captured the same way:
+rem each is one block, "cmd /c <name>.cmd" run from its own directory,
+rem with command extensions on (see :script).
+rem
 rem This file keeps CRLF line endings: cmd's label search misreads
 rem LF-only batch files. Every redirection leads its command: cmd reads
 rem a digit after "=" and before ">>" as a handle number, so a trailing
@@ -52,6 +56,7 @@ call :listed advapi32 registry
 call :cap_hellomd
 call :cap_crt
 for %%F in (seh fd wide process strings) do call :listed crt %%F
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir) do call :script %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe keys"
@@ -78,6 +83,7 @@ for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp) do if /I "%%F
 for %%F in (guidc) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings) do if /I "%%F"=="%~1" set F2KT_DLL=crt
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1
@@ -107,6 +113,10 @@ if /I "%~1"=="hellomd" (
 )
 if /I "%~1"=="crt" (
     call :cap_crt
+    goto done
+)
+if /I "%F2KT_DLL%"=="cmd" (
+    call :script %~1
     goto done
 )
 call :listed %F2KT_DLL% %~1
@@ -187,6 +197,36 @@ call :fixture %1 %2
 call :sections %2.exe
 cd ..\..
 goto :eof
+
+rem Capture a script fixture, cmd\%1\%1.cmd: one block, the script run by
+rem a cmd.exe of its own (cmd /c, as F2K's harness runs it) from its
+rem directory, its standard output and error into output.txt in order.
+rem spawnkid.exe, the spawn fixture's companion, is copied beside it for
+rem the run and deleted after: on F2K the scripts run from \CORPUS, where
+rem it sits. Nothing is captured unless command extensions are on.
+:script
+call :extensions
+if errorlevel 1 goto :eof
+call :fixture cmd %1 nostamp
+copy ..\..\kernel32\spawn\spawnkid.exe . > nul
+call :cap cmd /c %1.cmd
+del spawnkid.exe
+cd ..\..
+goto :eof
+
+rem Whether a cmd.exe started afresh, as each script's is, runs with
+rem command extensions on, Windows 2000's default (no EnableExtensions of
+rem 0 under HKLM's or HKCU's Software\Microsoft\Command Processor): only
+rem then does it expand CMDEXTVERSION. for /f runs its command by such a
+rem cmd.exe. The scripts also expect no AutoRun command there.
+:extensions
+set F2KT_EXT=
+for /f %%V in ('echo %%CMDEXTVERSION%%') do set F2KT_EXT=%%V
+if not "%F2KT_EXT%"=="%%CMDEXTVERSION%%" if not "%F2KT_EXT%"=="" exit /b 0
+echo capture.bat: cmd.exe starts with command extensions off (EnableExtensions
+echo under Software\Microsoft\Command Processor): the scripts are captured
+echo with them on, Windows 2000's default.
+exit /b 1
 
 rem Capture every section %1 lists (%1 --list), but the interactive ones
 rem and the one named %2 (captured by the caller with its own arguments).

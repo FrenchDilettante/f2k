@@ -13,7 +13,7 @@ Five of Windows 2000's system DLLs are F2K's own code:
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 
-F2K's own programs, written in Rust, live under `userland/<name>`, each with its README: [`pwd`](userland/pwd/README.md) and [`ps`](userland/ps/README.md).
+F2K's own programs, written in Rust, live under `userland/<name>`, each with its README: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md) and [`cmd.exe`](userland/cmd/README.md).
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
@@ -31,7 +31,7 @@ A distribution `rustc`/`cargo` (Homebrew's `rust`, apt's `rustc cargo`) ignores 
 ### macOS (ARM64 or x86_64)
 
 ```bash
-brew install rustup x86_64-elf-binutils xorriso mtools qemu uv
+brew install rustup x86_64-elf-binutils mtools qemu uv
 rustup-init
 # The Python tooling (pytest for the on-target tests) in a
 # repository-local .venv, from pyproject.toml
@@ -42,7 +42,7 @@ uv sync
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-sudo apt install binutils xorriso mtools qemu-system-x86
+sudo apt install binutils mtools qemu-system-x86
 curl -LsSf https://astral.sh/uv/install.sh | sh && uv sync
 ```
 
@@ -60,8 +60,8 @@ make userland
 # Build the kernel (the system DLLs first)
 make kernel
 
-# Build bootable ISO with Limine (boots the kernel via Multiboot 1)
-make iso
+# Build the disk image the tests boot (Limine on an MBR/FAT32 hard disk)
+make disk
 
 # Clean build artifacts
 make clean
@@ -74,36 +74,19 @@ Several programs, ` ;; ` between two, run one after another, or side by side wit
 A program the boot runs starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
 A child process starts with what its parent hands it: its environment, its current directory and its inheritable handles.
 
-### QEMU (ISO with Limine)
+### QEMU and VirtualBox
+
+`make run` boots into F2K's `cmd.exe` in a QEMU window: the window shows the screen and takes the keyboard, and COM1, the kernel's log, goes to the terminal.
+It boots `target/x86-f2k/debug/f2k-cmd-disk.img` (`make cmd-disk`), the disk with `cmd.exe` added to `\WINNT\system32`, through Limine.
+`CMDLINE` overrides what the boot runs, the program's path on the volume and its arguments:
 
 ```bash
-make iso          # Create ISO first
-make qemu_iso    # Boot ISO in QEMU
+make run
+make run CMDLINE='CORPUS\sync.exe event'
 ```
 
-### QEMU (Direct kernel)
-
-The kernel is a Multiboot 1 ELF, so QEMU can load it without a bootloader (the disk image is still attached: the kernel loads its programs from the disk's volume):
-
-```bash
-make qemu        # Exit with Ctrl-A X
-```
-
-### Disk image (Limine on an MBR/FAT32 hard disk)
-
-```bash
-make run         # Builds target/x86-f2k/debug/f2k-disk.img and boots it in QEMU
-```
-
-### VirtualBox
-
-`make vbox-image` writes the disk as a VirtualBox disk, `target/f2k.vdi` (with `qemu-img`).
-Every file under `vbox-image/` is added to the volume at the same path, directories merged with the disk's own (`vbox-image/WINNT/system32/cmd.exe` lands beside the system DLLs); nothing there is committed.
-`CMDLINE` sets what the boot runs, the program's path on the volume and its arguments; without it the boot runs `exit0`:
-
-```bash
-make vbox-image CMDLINE='WINNT\system32\cmd.exe'
-```
+`make vbox-image` writes the same disk as a VirtualBox disk, `target/f2k.vdi` (with `qemu-img`), with every file under `vbox-image/` laid over its volume at the same path; nothing there is committed.
+A file there replaces the disk's own: `vbox-image/WINNT/system32/cmd.exe` replaces F2K's `cmd.exe`.
 
 The VDI keeps the same UUID across rebuilds, so a VM keeps it attached: rebuild with the VM powered off.
 F2K's disk driver is IDE, so the VM's disk goes on an IDE controller:
@@ -200,7 +183,7 @@ uv run pytest --no-build ...                        # reuse the last make disk (
 make test KERNEL_PROFILE=dev-opt                    # the kernel's dependencies optimized
 ```
 
-`KERNEL_PROFILE` picks the kernel's cargo profile (`make kernel`, `disk`, `qemu`, `test`...; the suite reads it as `F2K_KERNEL_PROFILE`): `dev`, the default, or `dev-opt` (Cargo.toml), which optimizes the kernel's dependencies (core, alloc, memcpy and memset) and keeps the debug assertions and overflow checks.
+`KERNEL_PROFILE` picks the kernel's cargo profile (`make kernel`, `disk`, `run`, `test`...; the suite reads it as `F2K_KERNEL_PROFILE`): `dev`, the default, or `dev-opt` (Cargo.toml), which optimizes the kernel's dependencies (core, alloc, memcpy and memset) and keeps the debug assertions and overflow checks.
 The kernel crate itself stays unoptimized: an optimized kernel hangs (see the profile's comment).
 
 ### Check code
@@ -233,7 +216,7 @@ f2k/
 │
 ├── boot/             # Bootloader files
 │   ├── *.asm, *.S        # Early custom boot sector experiments (unused)
-│   ├── limine.conf       # Limine config (ISO and disk image)
+│   ├── limine.conf       # Limine config (the disk images)
 │   └── limine/           # Limine bootloader (git submodule)
 │
 ├── scripts/          # Build and test scripts
@@ -245,7 +228,7 @@ f2k/
 │   ├── compat.py          # The DLL compatibility: the pins checked, the scenarios run, the report
 │   ├── dump_exports.py    # A real DLL's export and import tables, dumped
 │   ├── catalogue_exports.py  # A dumped export table folded into its DLL's spec
-│   └── vbox_image.py      # The boot disk as a VirtualBox disk (make vbox-image)
+│   └── vbox_image.py      # The cmd disk as a VirtualBox disk (make vbox-image)
 │
 ├── pyproject.toml    # The Python tooling (uv): pytest for the on-target tests
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
@@ -254,13 +237,15 @@ f2k/
 │   ├── user32/           # The user32 fixtures (hellogui, winsta)
 │   ├── advapi32/         # The advapi32 fixture (registry)
 │   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)
+│   ├── cmd/              # The script fixtures, batch files run by cmd /c
 │   ├── harness/          # Checks of the tests and the repository (no QEMU)
 │   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
 │
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl (the shared runtime),
 │                     # ntdll, kernel32, msvcrt, advapi32, user32; each DLL's export spec in
-│                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone
+│                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone;
+│                     # F2K's own programs (pwd, ps, cmd), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │
 └── kernel/           # F2K Kernel
@@ -289,23 +274,21 @@ f2k/
 
 ## Targets
 
-| Target               | Description                                                                      |
-| -------------------- | -------------------------------------------------------------------------------- |
-| `make userland`      | Build the system DLLs (`target/userland/`)                                       |
-| `make kernel`        | Build the kernel (ELF), the system DLLs first                                    |
-| `make qemu`          | Build the disk and boot the kernel directly in QEMU, the disk attached           |
-| `make test`          | Run every on-target QEMU test (pytest: the kernel boots and the corpus)          |
-| `make run-tests`     | Run host unit tests                                                              |
-| `make compat`        | Check the tests' pins, run the host scenarios, write the compatibility report    |
-| `make check-all`     | `run-tests`, `compat` and `test`, in that order                                  |
-| `make check`         | `cargo check` + clippy (the kernel and the userland crates)                      |
-| `make fmt`           | Format the Rust sources and the Markdown files                                   |
-| `make fmt-check`     | Fail if a Rust source or a Markdown file is unformatted                          |
-| `make limine`        | Download Limine bootloader                                                       |
-| `make iso`           | Create bootable ISO with Limine                                                  |
-| `make qemu_iso`      | Build ISO and run in QEMU                                                        |
-| `make disk`          | Create Limine-bootable disk image                                                |
-| `make run`           | Build disk and run in QEMU                                                       |
-| `make vbox-image`    | The disk as a VirtualBox disk (`target/f2k.vdi`), with `vbox-image/` added       |
-| `make clean`         | Clean build artifacts                                                            |
-| `make clobber`       | Remove all build artifacts                                                       |
+| Target            | Description                                                                      |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `make userland`   | Build the system DLLs (`target/userland/`)                                       |
+| `make kernel`     | Build the kernel (ELF), the system DLLs first                                    |
+| `make test`       | Run every on-target QEMU test (pytest: the kernel boots and the corpus)          |
+| `make run-tests`  | Run host unit tests                                                              |
+| `make compat`     | Check the tests' pins, run the host scenarios, write the compatibility report    |
+| `make check-all`  | `run-tests`, `compat` and `test`, in that order                                  |
+| `make check`      | `cargo check` + clippy (the kernel and the userland crates)                      |
+| `make fmt`        | Format the Rust sources and the Markdown files                                   |
+| `make fmt-check`  | Fail if a Rust source or a Markdown file is unformatted                          |
+| `make limine`     | Download Limine bootloader                                                       |
+| `make disk`       | Create Limine-bootable disk image, the one the tests boot                        |
+| `make cmd-disk`   | The disk with `cmd.exe` added, its boot running `CMDLINE` (default `cmd.exe`)    |
+| `make run`        | Boot the cmd disk in a QEMU window, into `cmd.exe` or what `CMDLINE` names       |
+| `make vbox-image` | The cmd disk as a VirtualBox disk (`target/f2k.vdi`), `vbox-image/` laid over it |
+| `make clean`      | Clean build artifacts                                                            |
+| `make clobber`    | Remove all build artifacts                                                       |

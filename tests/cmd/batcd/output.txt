@@ -1,0 +1,18 @@
+# F2K capture of batcd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 10:30:33.84
+>>> cmd /c batcd.cmd
+Z:\cmd\batcd\batcdsub
+kid: image SPAWNKID.EXE
+kid: current directory BATCDSUB
+kid: =Z:=[<home>\batcdsub]
+kid: image SPAWNKID.EXE
+kid: current directory .
+kid: =Z:=[<home>]
+The system cannot find the path specified.
+cd batcdnone: 1
+kid: image SPAWNKID.EXE
+kid: current directory .
+<<< exit code=0
