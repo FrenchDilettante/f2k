@@ -684,13 +684,35 @@ impl Directory {
         self.header(id).is_some()
     }
 
-    /// Whether the live process object `id` names is held by its process's own reference alone:
-    /// no handle, and no reference beside that one (see [`crate::process::Process`]'s object).
-    pub fn only_its_own_reference(&mut self, id: ObjectId) -> bool {
-        id.kind == ObjectType::Process
-            && self
-                .header(id)
-                .is_some_and(|header| header.pointers == 1 && header.handles == 0)
+    /// Claim the deletion of the live process object `id` names when its process's own reference
+    /// alone holds it — no handle, and no reference beside that one (see
+    /// [`crate::process::Process`]'s object) — taking a reference for the deletion in the same
+    /// hold: no second caller finds the object so meanwhile, and the object, with its record,
+    /// outlives the deletion's work. Whether it was claimed.
+    pub fn claim_deletion(&mut self, id: ObjectId) -> bool {
+        if id.kind != ObjectType::Process {
+            return false;
+        }
+        match self.header(id) {
+            Some(header) if header.pointers == 1 && header.handles == 0 => {
+                header.pointers += 1;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A deletion claimed by [`Directory::claim_deletion`] is done: the process's own reference and
+    /// the claim's go in one hold, and the object with them (a process object's deletion leaves
+    /// nothing to finish).
+    pub fn end_claimed_deletion(&mut self, id: ObjectId) {
+        debug_assert_eq!(
+            self.counts(id),
+            Some((2, 0)),
+            "a claimed deletion holds the object"
+        );
+        assert_eq!(self.dereference(id), None);
+        assert_eq!(self.dereference(id), None);
     }
 
     /// An object's (pointer, handle) counts; none for an id that names nothing.
@@ -1585,8 +1607,9 @@ mod target {
     }
 
     /// Drop a reference on `id` (the last one deletes the object, the caller finishing what the
-    /// deletion leaves once the directory is released). A process that never had a thread goes
-    /// once only its own reference is left (see [`crate::process::threads::delete_if_abandoned`]).
+    /// deletion leaves once the directory is released). A process that never had a thread, or one
+    /// reaped, goes once only its own reference is left (see
+    /// [`crate::process::threads::delete_if_abandoned`]).
     pub fn release(id: ObjectId) {
         if let Some(followup) = locked(|directory| directory.dereference(id)) {
             finish(followup);
@@ -1659,8 +1682,8 @@ mod target {
         }
         let result = wait();
         locked(|directory| directory.release_wait(index));
-        // A process that never had a thread goes with the last reference beside its own, a
-        // wait's included.
+        // A process that never had a thread, or one reaped, goes with the last reference beside
+        // its own, a wait's included.
         for &id in objects {
             if id.kind == ObjectType::Process {
                 crate::process::threads::delete_if_abandoned(id);
@@ -2315,28 +2338,31 @@ mod tests {
         assert_eq!(namespace_name(b"Session\\1"), b"Session\\1");
     }
 
-    /// A process object is held by its own reference alone while nothing else references it: the
-    /// moment a process that never had a thread is deleted. A handle or another reference holds
-    /// it, and no other kind is a process's.
+    /// A process object's deletion is claimed while its own reference alone holds it: the moment
+    /// a process that never had a thread, or one reaped, is deleted. A handle or another reference
+    /// holds it, and no other kind is a process's. The claim takes a reference, so a second claim
+    /// finds the object held, until the deletion's end drops both at once.
     #[test]
-    fn a_process_object_held_by_its_own_reference_alone() {
+    fn a_process_objects_deletion_is_claimed_once_its_own_reference_alone_holds_it() {
         let directory = directory();
         let id = directory.create_process().unwrap();
-        assert!(directory.only_its_own_reference(id), "made with its own");
         assert!(directory.handle_opened(id));
-        assert!(!directory.only_its_own_reference(id), "a handle holds it");
+        assert!(!directory.claim_deletion(id), "a handle holds it");
         assert!(directory.reference(id));
         assert!(directory.handle_closed(id).iter().next().is_none());
-        assert!(
-            !directory.only_its_own_reference(id),
-            "a reference holds it"
-        );
+        assert!(!directory.claim_deletion(id), "a reference holds it");
         assert_eq!(directory.dereference(id), None);
-        assert!(directory.only_its_own_reference(id));
         let event = directory.create_event(EventKind::Notification, false);
-        assert!(event.is_some_and(|event| !directory.only_its_own_reference(event)));
-        assert_eq!(directory.dereference(id), None);
-        assert!(!directory.only_its_own_reference(id), "gone");
+        assert!(event.is_some_and(|event| !directory.claim_deletion(event)));
+        assert!(directory.claim_deletion(id), "its own reference alone");
+        assert_eq!(directory.counts(id), Some((2, 0)), "the claim's reference");
+        assert!(!directory.claim_deletion(id), "claimed once");
+        // The deletion's end drops the process's own reference and the claim's: the object goes.
+        directory.end_claimed_deletion(id);
+        assert!(
+            !directory.is_live(id) && !directory.claim_deletion(id),
+            "gone"
+        );
     }
 
     /// A process object: waitable, still active and unsignaled until its end, signaled with its

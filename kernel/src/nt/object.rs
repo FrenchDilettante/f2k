@@ -156,8 +156,11 @@ impl ProcessRef {
 
     /// Run `access` with the process's address space the live one: the calling process's already
     /// is; another process's is attached to for the scope (see [`crate::sched::attach`]), whose
-    /// teardown waits for the scope's end ([`crate::process::pool`]). Only inside
-    /// [`ProcessRef::visit`].
+    /// reap waits for the scope's end ([`crate::process::pool`]). The address space outlives the
+    /// scope whatever happens meanwhile: the process may end and be reaped between the visit's
+    /// check and the attach (a switch away at any raise or lower between them), but it goes only
+    /// with the process's deletion, which this reference on its object holds off (see
+    /// [`crate::process::delete_if_unreferenced`]). Only inside [`ProcessRef::visit`].
     pub fn reach<R>(&self, access: impl FnOnce() -> R) -> R {
         if self.current {
             return access();

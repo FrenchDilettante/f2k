@@ -1771,6 +1771,39 @@ mod tests {
         assert_eq!(d.audit(), Ok(()));
     }
 
+    /// G2d: a thread terminated between its creation and its create's suspend (its process's exit,
+    /// run while the creator was switched away mid-create): the suspend is refused and touches
+    /// nothing, the readying schedules the thread with its exit APC alone, its first delivery runs
+    /// the exit with the termination's status, and the creator's resume finds a count of 0.
+    #[test]
+    fn a_thread_terminated_before_its_creates_suspend_runs_its_exit() {
+        let d = dispatcher();
+        let p = process(8);
+        let fresh = thread(p);
+        let creator = thread(p);
+        run(d, creator);
+
+        assert!(d.request_termination(fresh, recording_exit, 3));
+        assert_eq!(
+            d.suspend_thread(fresh),
+            Err(crate::status::STATUS_THREAD_IS_TERMINATING)
+        );
+        assert_eq!(fresh.suspend_count, 0);
+        assert!(!fresh.suspend_apc.inserted());
+        assert_eq!(queued(fresh), vec![ApcId::Exit(fresh.id())]);
+
+        d.make_ready(fresh);
+        assert_eq!(d.resume_thread(fresh), 0, "nothing to resume");
+        assert_eq!(fresh.suspend_semaphore.count(), 0, "no count released");
+        assert_eq!(d.select_next(), Some(fresh.id()));
+        run(d, fresh);
+        assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
+        assert_eq!(recorded_calls(), vec!["exit"]);
+        assert_eq!(recorded_arguments(), vec![3]);
+        assert_eq!(fresh.exit_status(), 3);
+        assert_eq!(d.audit(), Ok(()));
+    }
+
     /// G2c: the outermost critical region's end arms the delivery of the normal APCs it held off
     /// (KeLeaveCriticalRegion), so the next window runs them; an inner region's end, or one with
     /// nothing queued, arms nothing.

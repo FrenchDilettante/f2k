@@ -26,8 +26,8 @@
 //! As on Windows 2000, only a process's last thread ending ends the process: its object signals and
 //! takes its exit code then. A process that never had a thread never ends: another process
 //! terminating it only closes it to new threads, and it goes, unsignalled, when its object's last
-//! reference beside its own does ([`delete_if_abandoned`]). Otherwise a termination's end is
-//! decided and held for whichever of its threads exits last.
+//! reference beside its own does ([`delete_if_abandoned`]), as an ended process goes once reaped.
+//! Otherwise a termination's end is decided and held for whichever of its threads exits last.
 //!
 //! The exit path, in its order: the thread's APC queue closes; the process-ending service's or a
 //! fault's end is decided for the process and every other thread is terminated (both end the whole
@@ -308,7 +308,7 @@ fn end_thread(end: ThreadEnd) -> ! {
     // From here on the thread runs its own exit: nothing more is queued on it, what is queued goes
     // (a kernel APC that had no window yet: a suspend, or a termination's exit APC this exit
     // supersedes), and no termination is requested for it again.
-    let started = raised::<Dispatch, _>(|dispatch| {
+    raised::<Dispatch, _>(|dispatch| {
         let dispatcher = DISPATCHER.get(dispatch);
         let record = dispatcher.thread_mut(current);
         assert!(
@@ -318,9 +318,7 @@ fn end_thread(end: ThreadEnd) -> ! {
         record.exit_status = status;
         record.exiting = true;
         record.terminate_pending = true;
-        let started = record.user_started;
         dispatcher.close_apc_queue(current);
-        started
     });
 
     // The process's end, step 1 (see `process`'s notes on its order): NtTerminateProcess's and a
@@ -366,7 +364,7 @@ fn end_thread(end: ThreadEnd) -> ! {
     // The last thread's route: a process with no threads must not linger — the last thread's end
     // is the process's end.
     let process_end = last.then(|| {
-        let end = end.last_thread_end(process.handed_end(), started);
+        let end = end.last_thread_end(process.handed_end());
         // The process's end, step 2: every handle closes while this thread still runs, as
         // CloseHandle would — the objects go with their last references (a timer leaves the timer
         // table, an owned mutex its owner's list); then its views are unmapped, on its own address
@@ -519,22 +517,20 @@ pub fn terminate_process(process: &Process, status: u32) -> Result<(), Terminati
 }
 
 /// A reference to the process object `id` has gone (a handle's among them): when what is left is
-/// the process's own and the process never had a thread (NtCreateProcess makes a process with
-/// none, and its creator may close it unstarted, terminated or not), the process is deleted, as
-/// Windows 2000 deletes such a process with its object (see [`Process::delete_threadless`]).
-/// Nothing signals and nothing reports: it never ran. A process that had a thread, or whose object
-/// went, is left alone.
+/// the process's own, and the process never had a thread (NtCreateProcess makes a process with
+/// none, and its creator may close it unstarted, terminated or not) or has ended and been reaped,
+/// the process is deleted, as Windows 2000 deletes a process with its object (see
+/// [`crate::process::delete_if_unreferenced`]). Nothing signals and nothing reports. A process
+/// whose threads, or whose reap, are still to come, or whose object went, is left alone: the reap
+/// deletes a process nothing else holds by then.
 pub fn delete_if_abandoned(id: crate::ob::ObjectId) {
-    if !crate::ob::locked(|directory| directory.only_its_own_reference(id)) {
-        return;
-    }
     let Some(process) = crate::process::pool::of_object(id) else {
         return;
     };
-    if process.has_main_thread() {
+    if process.deleting() || (process.has_main_thread() && !process.torn_down()) {
         return;
     }
-    critical_region(|| process.delete_threadless());
+    critical_region(|| crate::process::delete_if_unreferenced(id));
 }
 
 /// Whether the calling thread is its process's only one (ThreadAmILastThread): no other thread is

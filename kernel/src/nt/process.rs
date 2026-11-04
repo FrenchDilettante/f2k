@@ -281,7 +281,7 @@ pub fn create_process(
                 super::object::process_access(access),
                 inherit,
             ) else {
-                child.delete_threadless();
+                child.delete();
                 return Err(STATUS_INSUFFICIENT_RESOURCES);
             };
             let handle = handle.get();

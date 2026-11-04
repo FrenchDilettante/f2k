@@ -11,7 +11,7 @@
 //! later by its creator, is its main thread. Until then nothing ends it: a termination only closes
 //! it to new threads, and as on Windows 2000 it neither signals nor takes an exit code. It goes
 //! when its object's last reference beside its own does, deleted on the calling thread
-//! ([`Process::delete_threadless`]).
+//! ([`delete_if_unreferenced`]).
 //!
 //! The per-thread state split: the ring-0 gate stack (the thread's kernel stack, what the TSS
 //! `esp0` points into) is per-thread, a slot of the kernel stack region numbered system-wide and
@@ -46,15 +46,18 @@
 //!    2000's MmCleanProcessAddressSpace: an image's file is closed once nothing maps it);
 //! 3. the last thread's object signals, then the process object with the exit code: their waiters
 //!    wake, and the switch away from the last thread may select one of them;
-//! 4. the address space goes: every frame;
-//! 5. the record is freed with the object's last reference.
+//! 4. the last thread's gate stack goes, and the object audit runs;
+//! 5. the process is deleted with its object's last reference beside its own (Windows 2000's
+//!    process deletion): its whole address space goes — every frame, whatever a service of another
+//!    process committed in it after its end included — then the object and the record.
 //!
 //! Steps 1 to 3 run on the last thread, in [`threads`]: by its switch away the process has ended
-//! for everyone who can observe it, however long the reap waits for the processor. Steps 4 and 5
-//! run on the idle thread's reap, in [`reap`], with the object audit between them and the teardown
-//! audit after 5; their checks over the whole system, and the audit lines, wait for quiescence.
-//! What the reap does can't run on the dying thread: the directory and its page tables are the
-//! ones it runs on, and its gate stack the one it runs on.
+//! for everyone who can observe it, however long the reap waits for the processor. Step 4 runs on
+//! the idle thread's reap, in [`reap`], and step 5 there too when nothing else holds the object —
+//! otherwise on the thread that drops the last handle or reference to it; the teardown audit
+//! follows the reap. Their checks over the whole system, and the audit lines, wait for quiescence,
+//! when no handle to an ended process is left. What the reap does can't run on the dying thread:
+//! its gate stack is the one it runs on, and its directory and page tables the ones it runs on.
 //!
 //! The records live in the process pool ([`pool`]), which also answers which process is current:
 //! kernel state (like CR3 and the TSS), not per-process state. Everything per-process lives inside
@@ -136,7 +139,7 @@ struct Identity {
     /// `runner`); none for a process another process started. Its end reports by it.
     leg: Option<u32>,
     /// The process's object: what a handle to the process names and a wait on it waits for. It
-    /// holds the process's own reference until the teardown's end, and its index is the record's
+    /// holds the process's own reference until its deletion, and its index is the record's
     /// in the pool.
     object: crate::ob::ObjectId,
     /// The process's page-directory frame.
@@ -209,10 +212,10 @@ struct ProcessState {
     /// `threads::terminate_process`): it takes no new thread, and is not terminated twice. Nothing
     /// ends it: it goes with its object's last reference.
     ending: bool,
-    /// Whether the deletion of a process that never had a thread has begun (see
-    /// [`Process::delete_threadless`]): it runs once.
+    /// Whether the process's deletion has begun (see [`Process::delete`]): it runs once.
     deleting: bool,
-    /// Whether the teardown has run (the record waits for its object's last reference).
+    /// Whether the teardown has run: the reap's, or a deletion's. A reaped process is deleted
+    /// with its object's last reference beside its own.
     torn_down: bool,
 }
 
@@ -616,7 +619,8 @@ impl Process {
     }
 
     /// Release what one closed handle named. A process's last reference beside its own going
-    /// deletes the process if it never had a thread (see `threads::delete_if_abandoned`).
+    /// deletes the process if it never had a thread or has been reaped (see
+    /// `threads::delete_if_abandoned`).
     fn release_entry(&self, entry: crate::ob::Entry) {
         match entry.target {
             #[cfg(target_arch = "x86")]
@@ -875,19 +879,34 @@ impl Process {
         free_directory(dir_phys);
     }
 
-    /// Delete a process that never had a thread, as Windows 2000 deletes one with its object
-    /// (PspProcessDelete): its handles (inherited ones) close, its views and its address space go,
-    /// then its own reference on its object, which takes the object and the record with it.
-    /// Nothing signals and nothing reports: only a last thread's exit ends a process. Two callers:
-    /// a creation refused after the address space was built (no handle to the process exists),
-    /// and the object's last reference beside the process's own going
-    /// ([`threads::delete_if_abandoned`]). Runs on the calling thread, detached from the process
-    /// (the directory goes here), with none of the reap's conditions: no thread ever ran on the
-    /// directory, and nothing else references the object. Once: a second call does nothing.
-    pub fn delete_threadless(&self) {
+    /// Delete the process with its object, as Windows 2000 deletes one (PspProcessDelete): its
+    /// handles close, its views and its whole address space go, then its own reference on its
+    /// object, which takes the object and the record with it (see [`Process::release_contents`]).
+    /// For a process that never had a thread whose creation was refused after its address space
+    /// was built: no handle to it exists, so nothing else references the object. Every other
+    /// deletion waits for the object's last reference beside the process's own
+    /// ([`delete_if_unreferenced`]). Once: a second call does nothing.
+    pub fn delete(&self) {
+        if self.release_contents() {
+            release_record(self);
+        }
+    }
+
+    /// The deletion's work, short of the object's references: its handles (a process that never
+    /// had a thread may hold inherited ones; an ended one closed its own at its end), then its
+    /// views and its whole address space, the directory last — whatever a service of another
+    /// process committed in it after its end among them (Windows 2000's
+    /// MmDeleteProcessAddressSpace, at the object's deletion): a service that found the process
+    /// running may attach to it, and commit, after its last thread's exit and its reap. Nothing
+    /// signals and nothing reports: only a last thread's exit ends a process. Runs on the calling
+    /// thread, detached from the process (the directory goes here): no thread runs on the
+    /// directory any more — none ever did, or the reap followed the last one's end — and nothing
+    /// else references the object, so no thread attaches to it. Returns whether this call did the
+    /// work: false once the deletion has begun.
+    fn release_contents(&self) -> bool {
         assert!(
-            self.stack_count() == 0 && !self.has_main_thread(),
-            "a deleted process never had a thread"
+            self.stack_count() == 0 && (self.torn_down() || !self.has_main_thread()),
+            "a deleted process has no thread: it never had one, or its reap has run"
         );
         assert_eq!(
             self.attach_count(),
@@ -897,16 +916,15 @@ impl Process {
         if locked(&self.state, |state| {
             core::mem::replace(&mut state.deleting, true)
         }) {
-            return;
+            return false;
         }
         self.release_handles();
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
-        release_record(self);
+        true
     }
 
-    /// Whether the deletion of the process, one that never had a thread, has begun: its client id
-    /// names nothing from then on.
+    /// Whether the deletion of the process has begun: its client id names nothing from then on.
     pub fn deleting(&self) -> bool {
         locked(&self.state, |state| state.deleting)
     }
@@ -1085,16 +1103,16 @@ pub fn reap() {
     crate::user::check_volume_after_teardown();
 }
 
-/// Tear the ended `process` down, steps 4 and 5 of its end (see the module notes): its address
-/// space goes, then its own reference on the object goes (the record is free for the next process
-/// once nothing else references the object). Between the two, the object audit: its threads'
-/// records start over, and at a `quiescent` reap the leak sweep runs. Nothing here is observable
-/// to the process's waiters: its object signalled at its last thread's exit, which the teardown
-/// checks first.
+/// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack
+/// goes, then the object audit — its threads' records start over, and at a `quiescent` reap the
+/// leak sweep runs — then, step 5, the process is deleted if nothing beside its own reference holds
+/// its object (see [`delete_if_unreferenced`]); otherwise the last handle or reference to go
+/// deletes it. Nothing here is observable to the process's waiters: its object signalled at its
+/// last thread's exit, which the teardown checks first.
 ///
-/// Must run on the boot address space, attached to nothing — the walk reads the dead directory
-/// through the scratch window, never through a mapping, and nothing else here reaches the process's
-/// user pages (its views' sections give their frames back through the frame database).
+/// Runs on the idle thread, on the boot address space: the deletion's walk reads the dead
+/// directory through the scratch window, never through a mapping, and nothing else here reaches the
+/// process's user pages (its views' sections give their frames back through the frame database).
 #[cfg(target_arch = "x86")]
 fn teardown(process: &'static Process, quiescent: bool) {
     let end = process.end().expect("a torn-down process has ended");
@@ -1112,16 +1130,35 @@ fn teardown(process: &'static Process, quiescent: bool) {
     );
     // Per thread first: the parked gate stack (the last exit's, or a later exit's in another
     // process: whichever is parked, its owner off it for good, since this runs on the idle
-    // thread's boot stack). Then per process.
+    // thread's boot stack). Then per process: the audit, with the record still the process's,
+    // then the deletion, which may free it.
     crate::mem::kstacks::release_parked();
-    release_address_space_of(process);
     audit_objects(process, quiescent);
     locked(&process.state, |state| state.torn_down = true);
-    release_record(process);
+    delete_if_unreferenced(process.object());
 }
 
-/// Step 4: the address space goes — every frame the process owns (see [`release_process`]); the
-/// reap releases the parked gate stack before it. The process is torn down in place: its record
+/// Step 5: delete the process whose object `id` is, once nothing beside the process's own
+/// reference holds it — when it is reaped (see [`teardown`]), or when it never had a thread (see
+/// [`threads::delete_if_abandoned`]) — as Windows 2000 deletes a process with its object
+/// ([`Process::delete`]): its whole address space goes, whatever was committed in it after its
+/// end. The deletion is claimed in one hold of the directory, which takes a reference for it: a
+/// second caller (the reap and a handle's close, racing) finds the object held, and the record
+/// stays the process's until the deletion's end drops the claim and the process's own reference
+/// together. Nothing is done while another reference holds the object: its release calls here
+/// again.
+#[cfg(target_arch = "x86")]
+pub fn delete_if_unreferenced(id: crate::ob::ObjectId) {
+    if !crate::ob::locked(|directory| directory.claim_deletion(id)) {
+        return;
+    }
+    // The claim holds the object, so the record at its index is its process's.
+    pool::record(id.index).release_contents();
+    crate::ob::locked(|directory| directory.end_claimed_deletion(id));
+}
+
+/// The deletion's address space: every frame the process owns goes (see [`release_process`]); the
+/// reap released the parked gate stack before it. The process is torn down in place: its record
 /// holds absolute addresses into itself.
 #[cfg(target_arch = "x86")]
 fn release_address_space_of(process: &Process) {
@@ -1192,8 +1229,7 @@ fn audit_objects(process: &Process, quiescent: bool) {
     }
 }
 
-/// Step 5: the process's own reference on its object goes. The record is reused once the object is
-/// gone — now, unless a handle to the process outlives it.
+/// The process's own reference on its object goes. The record is reused once the object is gone.
 #[cfg(target_arch = "x86")]
 fn release_record(process: &Process) {
     crate::ob::release(process.object());
@@ -1405,13 +1441,24 @@ mod tests {
             self.frames[&frame][index]
         }
 
-        /// Run the teardown's releases over the fake memory, in the target's order: the parked
-        /// gate stack first (the system's kernel stacks give its frames back), then the real
-        /// collection of the process's own frames.
+        /// Run the teardown's releases over the fake memory, in the target's order for a process
+        /// nothing else holds at its reap: the reap's, then the deletion's.
         fn tear_down(&mut self, stacks: &mut KernelStacks, process: &Process) {
+            self.reap(stacks);
+            self.delete(process);
+        }
+
+        /// The reap's release: the parked gate stack (the system's kernel stacks give its frames
+        /// back).
+        fn reap(&mut self, stacks: &mut KernelStacks) {
             if let Some((_, frames)) = stacks.take_parked() {
                 self.released.extend_from_slice(&frames);
             }
+        }
+
+        /// The deletion's release: the real collection of the process's own frames, as its
+        /// address space stands then.
+        fn delete(&mut self, process: &Process) {
             let mut released = core::mem::take(&mut self.released);
             release_process(
                 process,
@@ -1614,6 +1661,58 @@ mod tests {
         assert_eq!(stacks.take_parked(), None);
     }
 
+    /// A commit into the process after its reap is released at its deletion, each frame once, the
+    /// directory last: a service of another process, which found the process running, attaches
+    /// and commits once the last thread has exited and the reap has run (CreateRemoteThread into
+    /// an exiting child, the spawn fixture's remoteexit block: a stack's fresh table, its committed
+    /// page and its guard page). The reap releases the parked gate stack alone; the deletion, held
+    /// off by the service's reference on the object, walks the address space as it stands then.
+    #[test]
+    fn a_commit_after_the_reap_is_released_at_the_deletion() {
+        let dir = 0x0090_0000;
+        let (mut mem, process, main, child) = planted_process(dir);
+        let mut stacks = KernelStacks::empty();
+        exit(&mut stacks, child);
+        exit(&mut stacks, main);
+        mem.reap(&mut stacks);
+        assert_eq!(
+            mem.released, MAIN_STACK,
+            "the reap releases the parked stack alone"
+        );
+
+        // The late commit, attached: a fresh table, the stack's top page and the guard page below.
+        let late_table = 0x00A1_0000;
+        let mut directory = mem.frames[&dir];
+        directory[2] = late_table | PAGE_PRESENT;
+        mem.frames.insert(dir, directory);
+        mem.plant(
+            late_table,
+            &[
+                (
+                    PT_ENTRIES - 2,
+                    encode(0x00E5_0000, PAGE_READWRITE | PAGE_GUARD),
+                ),
+                (PT_ENTRIES - 1, 0x00E6_0000 | PAGE_PRESENT),
+            ],
+        );
+
+        mem.delete(process);
+        for frame in [
+            late_table,
+            0x00E5_0000,
+            0x00E6_0000,
+            0x00A0_0000,
+            0x00E0_0000,
+            0x00E1_0000,
+            0x00E2_0000,
+            dir,
+        ] {
+            assert_eq!(mem.count(frame), 1, "frame {frame:#x}");
+        }
+        assert_eq!(mem.released.len(), MAIN_STACK.len() + 8);
+        assert_eq!(mem.released.last(), Some(&dir), "the directory last");
+    }
+
     /// Teardown never precedes the last thread's end: a process with a thread still attached is
     /// refused.
     #[test]
@@ -1646,6 +1745,44 @@ mod tests {
         assert_eq!(process.stack_count(), 0, "the sentinel reads as none");
         mem.tear_down(&mut KernelStacks::empty(), process);
         assert_eq!(mem.released, vec![0x00E0_0000, user_table, dir]);
+    }
+
+    /// A termination's exit APC whose normal half does nothing: the host model never runs it.
+    fn exit_normal(_thread: ThreadId, _status: usize, _argument1: usize, _argument2: usize) {}
+
+    /// ExitProcess racing a remote thread's own ExitThread: the remote thread, inside its exit
+    /// with status 0 (its queue closed, its termination its own), is switched away before its
+    /// last-thread check; the main thread's ExitProcess(3) decides the end, passes the remote
+    /// thread (a thread running its own exit is not terminated again) and retires, not the last;
+    /// the remote thread then retires last. The process ends with ExitProcess's 3, as the spawn
+    /// fixture's remoteexit capture shows, not with the last thread's 0.
+    #[test]
+    fn exit_process_outlives_a_remote_thread_that_retires_last() {
+        use exit::{ProcessEnd, ThreadEnd};
+        let process = Box::leak(Box::new(record_at(0x0090_0000)));
+        let dispatcher = crate::sched::testkit::dispatcher();
+        let main = crate::sched::testkit::thread(process.sched_ptr());
+        let mut remote = crate::sched::testkit::thread(process.sched_ptr());
+
+        // The remote thread's ExitThread(0) has begun: no termination reaches it any more.
+        remote.exiting = true;
+        remote.terminate_pending = true;
+        dispatcher.close_apc_queue(remote.id());
+
+        // The main thread's ExitProcess(3): the end decided, the remote thread passed over.
+        dispatcher.enter(main.id());
+        assert!(process.decide_end(ProcessEnd::Exited(3)));
+        assert!(!dispatcher.request_termination(remote.id(), exit_normal, 3));
+        assert_eq!(process.stack_count(), 2, "the main thread is not the last");
+        dispatcher.terminate();
+
+        // The remote thread's exit resumes and finds itself the last.
+        dispatcher.enter(remote.id());
+        assert_eq!(process.stack_count(), 1);
+        assert_eq!(
+            ThreadEnd::Exit(0).last_thread_end(process.handed_end()),
+            ProcessEnd::Exited(3)
+        );
     }
 
     /// The walk's user range ends below the kernel stack region: the region's entries are in the

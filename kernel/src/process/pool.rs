@@ -2,8 +2,9 @@
 //! current process.
 //!
 //! A record is in use while its process object lives ([`crate::ob`]'s process pool, same index):
-//! the object is created with the record and holds the process's own reference until its teardown
-//! ends, so a handle to the process outlives the record's resources but not its slot. The capacity
+//! the object is created with the record and holds the process's own reference until its deletion,
+//! so a handle to the process keeps its record and its address space, as Windows 2000's keeps
+//! the process until its object's deletion. The capacity
 //! is fixed: a process created while every record is in use is refused ([`create`]). The records
 //! are shared: what changes in one sits behind its own locks (see [`Process`]), so every accessor
 //! hands out `&'static Process`, which every thread of the process may hold at once.
@@ -144,8 +145,9 @@ pub fn reap_pending() -> bool {
 /// Whether `process`, whose object lives, awaits its reap: it has ended, it is not torn down, its
 /// last thread has retired (it records the end before its retire, and nothing else runs between
 /// its retire and its switch away), and no thread of another process runs attached to its address
-/// space (a service reaching into it, see [`crate::sched::attach`]) — its teardown waits for that
-/// scope to end, so the directory the thread runs on is never freed under it.
+/// space (a service reaching into it, see [`crate::sched::attach`]) — the reap follows that scope's
+/// end. The address space itself outlives any such service: it goes with the process's deletion,
+/// which the service's reference on the object holds off.
 #[cfg(target_arch = "x86")]
 fn awaits_reap(process: &Process) -> bool {
     let retired = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {

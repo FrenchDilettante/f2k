@@ -229,7 +229,8 @@ pub fn initial_context(context: &crate::user::seh::Context) -> crate::sched::sta
 /// (STATUS_PROCESS_IS_TERMINATING), a full handle table (STATUS_INSUFFICIENT_RESOURCES), no free
 /// thread record (STATUS_NO_MEMORY). The handle exists before the thread is made schedulable, so
 /// the creator can always wait on what it created; CreateSuspended (a BOOLEAN) parks it before its
-/// first instruction until a resume.
+/// first instruction until a resume, unless its process's exit has terminated it meanwhile (it then
+/// runs that exit instead).
 #[allow(clippy::too_many_arguments)]
 pub fn create_thread(
     call: &mut NtCall,
@@ -290,11 +291,21 @@ pub fn create_thread(
         if create_suspended {
             // The suspend APC queues on the never-run thread; its startup delivers it before the
             // first user instruction, parking it until a resume. A fresh thread is never at the
-            // count's maximum nor terminating, so the suspend cannot be refused.
+            // count's maximum, but it may be terminating already: the create's raises to the
+            // dispatch level run with interrupts open, so a tick can switch the creator away once
+            // the thread is attached to its process, and the process's own exit (ExitProcess's
+            // NtTerminateProcess with no handle, then its own end) terminates every thread of it,
+            // this one included. Its end then supersedes the suspend: the refusal leaves it
+            // unsuspended, its exit APC queued, and its startup runs that exit before its first
+            // user instruction. The creator still holds its handle, which signals at that exit,
+            // and its resume finds a count of 0.
             let suspended = DISPATCHER
                 .get(&mut call.passive().raise::<Dispatch>())
                 .suspend_thread(thread);
-            assert_eq!(suspended, Ok(0), "a fresh thread suspends");
+            assert!(
+                matches!(suspended, Ok(0) | Err(STATUS_THREAD_IS_TERMINATING)),
+                "a fresh thread suspends unless it is terminating: {suspended:?}"
+            );
         }
         // A clock tick that fell inside the create (the gate masks interrupts, and a create maps
         // and zeroes pages) is taken before the new thread is schedulable — on Windows the
