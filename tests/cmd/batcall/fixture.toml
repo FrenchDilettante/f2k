@@ -1,0 +1,6 @@
+# batcall: one test, the script's one block (`cmd /c batcall.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batcall - call and batch files: a called batch file's arguments by number, all of them, without their quotes and its name's forms, before and after shift, its last program's ERRORLEVEL back in the caller; call by the name with its extension and quoted; call of a program, of an echo expanded a second time, and alone; and a batch file run without call, which never returns to the one that ran it."
+kind = "script"
+gate = true

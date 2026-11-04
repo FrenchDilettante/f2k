@@ -26,9 +26,13 @@
 //!    batch file's handle closed, the creation starts again with no application name and the
 //!    command line `cmd /c ` followed by the caller's (or the one made from the application name,
 //!    when none was given), so `cmd` is searched for as the third step searches (`.exe` added; the
-//!    program's directory and the current one first), and the command processor finds the batch
-//!    file again from its command line. Every other file that is no image is ERROR_BAD_EXE_FORMAT:
-//!    Windows 2000 hands DOS and 16-bit Windows programs to NTVDM, which F2K has not.
+//!    program's directory and the current one first; ComSpec is not read), and the command
+//!    processor finds the batch file again from its command line. The caller's line goes as given,
+//!    the application name then going nowhere, except that a line whose program name holds a blank,
+//!    quoted or found at a space, goes inside a pair of quotes of its own (`cmd /c "with
+//!    space\job.bat x"`, `cmd /c ""with space\job.bat" x"`: the batspawn capture). Every other file
+//!    that is no image is ERROR_BAD_EXE_FORMAT: Windows 2000 hands DOS and 16-bit Windows programs
+//!    to NTVDM, which F2K has not.
 //! 5. The process: NtCreateProcess of the section, the caller its parent, the caller's inheritable
 //!    handles copied when bInheritHandles asks; its PEB's address (ProcessBasicInformation); its
 //!    priority class (the flags', else the caller's when idle or below normal, else normal) and its
@@ -269,10 +273,13 @@ impl Deref for CommandLine<'_> {
     }
 }
 
-/// The program a creation runs: its full DOS path, and the command line the new process gets.
+/// The program a creation runs: its full DOS path, the command line the new process gets, and
+/// whether the program's name, taken from the caller's command line, holds a blank (a batch file's
+/// command line then goes to the command processor inside quotes).
 struct Program<'a> {
     path: Wide,
     command_line: CommandLine<'a>,
+    blank_in_name: bool,
 }
 
 /// A name made full against the current directory (RtlGetFullPathName_U); none past MAX_PATH or
@@ -321,7 +328,11 @@ fn find_program<'a>(
             Some(line) => CommandLine::Given(line),
             None => CommandLine::Made(HeapArray::joined(&[&[QUOTE], name.text(), &[QUOTE]])?),
         };
-        return Ok(Program { path, command_line });
+        return Ok(Program {
+            path,
+            command_line,
+            blank_in_name: false,
+        });
     }
     let Some(line) = command_line else {
         return Err(Failure::Fault(STATUS_ACCESS_VIOLATION));
@@ -340,6 +351,7 @@ fn find_program<'a>(
         return Ok(Program {
             path,
             command_line: CommandLine::Given(line),
+            blank_in_name: has_blank(name.text()),
         });
     }
     let ends = line
@@ -360,7 +372,7 @@ fn find_program<'a>(
             error = last_error();
             continue;
         };
-        let spaced = name.text().iter().any(|&unit| unit == SPACE || unit == TAB);
+        let spaced = has_blank(name.text());
         let command_line = if spaced {
             CommandLine::Made(HeapArray::joined(&[
                 &[QUOTE],
@@ -371,9 +383,18 @@ fn find_program<'a>(
         } else {
             CommandLine::Given(line)
         };
-        return Ok(Program { path, command_line });
+        return Ok(Program {
+            path,
+            command_line,
+            blank_in_name: spaced,
+        });
     }
     Err(Failure::Error(error))
+}
+
+/// Whether a name holds a blank: a space or a tab.
+fn has_blank(name: &[u16]) -> bool {
+    name.iter().any(|&unit| unit == SPACE || unit == TAB)
 }
 
 /// The file at `path` opened for execution and an image section made of it: the section, or
@@ -404,28 +425,33 @@ fn is_batch(path: &[u16]) -> bool {
 }
 
 /// The command processor running a batch file (see the module's fourth step): the command line
-/// `cmd /c ` followed by the batch file's, its program found as a command line's first name is.
+/// `cmd /c ` followed by the batch file's, inside quotes when `quoted`, its program found as a
+/// command line's first name is.
 #[inline(never)]
-fn command_processor<'a>(command_line: &[u16]) -> Result<Program<'a>, Failure> {
-    let line = HeapArray::joined(&[&RUN_BATCH, command_line])?;
+fn command_processor<'a>(command_line: &[u16], quoted: bool) -> Result<Program<'a>, Failure> {
+    let quote: &[u16] = if quoted { &[QUOTE] } else { &[] };
+    let line = HeapArray::joined(&[&RUN_BATCH, quote, command_line, quote])?;
     let path = find_program(None, Some(&line))?.path;
     Ok(Program {
         path,
         command_line: CommandLine::Made(line),
+        blank_in_name: false,
     })
 }
 
 /// The program's image section (see the module's fourth step). A batch file's program becomes the
 /// command processor, whose section it is: `program` is replaced, its command line made from the
-/// caller's `command_line` (from the one `program` made when the caller gave none). A file that is
-/// no image is ERROR_BAD_EXE_FORMAT.
+/// caller's `command_line`, inside quotes when the batch file's name in it holds a blank (from the
+/// one `program` made when the caller gave none). A file that is no image is
+/// ERROR_BAD_EXE_FORMAT.
 #[inline(never)]
 fn image_section(program: &mut Program, command_line: Option<&[u16]>) -> Result<Owned, Failure> {
     const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
     let mut section = open_image(&program.path)?;
     if section.as_ref().err() == Some(&STATUS_INVALID_IMAGE_NOT_MZ) && is_batch(program.path.text())
     {
-        *program = command_processor(command_line.unwrap_or(&program.command_line))?;
+        let line = command_line.unwrap_or(&program.command_line);
+        *program = command_processor(line, program.blank_in_name)?;
         section = open_image(&program.path)?;
     }
     section.map_err(|status| {

@@ -13,13 +13,14 @@ tests/
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
 │               # test_cmd.py), and the fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp
+│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
 ├── gdi32/      # guidc
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
-│               # batver, battype, batredir
+│               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
+│               # batstd, batops, batline, bathelp; HAND-CAPTURES.md, the interactive checks
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
@@ -136,6 +137,12 @@ The fixtures:
   The real machine runs other processes that vary from boot to boot, so only the program's own processes and threads print, found by their ids, and the idle and System processes' ids and thread counts print as relations.
   Built with `/MD`.
   Gated; the system block stays pending while F2K's System process holds one system thread, and the child block while its suspended child's exit code rests on timing.
+- `batspawn` - `CreateProcessA`/`CreateProcessW` on batch files the program writes, with its companion program `blkid.exe` (built beside it from `blkid.c`), a stand-in command processor that prints its command line and its image's path and runs nothing.
+  `ComSpec` names it and a copy of it sits in the current directory as `cmd.exe`, so the output shows whether the command processor is found through `ComSpec` or by searching for `cmd`.
+  Its cases: the application name NULL and set, a `.cmd`, an upper-case `.BAT`, quoted arguments, a name with a space quoted and not, the name without its extension, an empty `.bat` and a `.txt`.
+  Its `realcmd` section runs the machine's own `cmd.exe` on them, with the exit codes `exit` and `exit /b` leave; the disk the tests boot carries no `cmd.exe`.
+  Each section removes its scratch directory at its end, so no `cmd.exe` is left behind.
+  Built with `/MD`.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.
@@ -233,10 +240,12 @@ Its capture is one block, `>>> cmd /c <name>.cmd`: `capture.bat` runs the script
 On F2K the block's boot attaches a copy of the disk with F2K's cmd.exe in `\WINNT\system32` and in `\CORPUS`, and the script in `\CORPUS` (`f2kboot.script_disk`), and runs `CORPUS\cmd /c <name>.cmd`: the kernel starts a program in its image's directory, so the script runs from `\CORPUS`, as on the real machine it runs from its own directory.
 The disk the tests boot carries neither.
 A script may run `spawnkid.exe`, the spawn fixture's companion: it sits in `\CORPUS` on F2K, and `capture.bat` copies it beside the script for the capture.
+A script that needs other batch files (one to `call`, a `.bat` twin, a name `PATHEXT` searches for) writes them itself with `echo` and redirections, named after it: the disk carries the script alone.
 A script prints nothing machine-specific where it can (`@echo off` first, no absolute paths), creates its files under its own name, and deletes them at its start and its end.
 Its `masks` are a list, its one block's (`masks = ["**>echo two"]`), and its `pending` a string, its one block's reason, beside `gate = true` (`pending = "redirection not implemented"`); its declaration takes `gate`, `timeout` and `retake` too, and no per-section field.
 A script fixture without its capture is awaited: one skipped test, and no boot.
 A script's name is no internal command's, since cmd.exe reads `echo.cmd` as `echo` followed by `.cmd`: the scripts are named `bat` and what they observe.
+What no script can capture (the interactive prompt, Ctrl+C and Ctrl+Break, a case that would open a window) is a checklist done by hand on the real machine, `cmd/HAND-CAPTURES.md`, each result pasted under its item there, since a script's capture holds its one block only.
 
 ## Legacy fixtures
 

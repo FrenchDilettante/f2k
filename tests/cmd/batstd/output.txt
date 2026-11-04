@@ -1,0 +1,95 @@
+# F2K capture of batstd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.78
+>>> cmd /c batstd.cmd
+output to a file, then error to output:
+kid: to the standard output
+kid: to the standard error
+error to output, then output to a file:
+kid: to the standard error
+kid: to the standard output
+output to error, then error to a file:
+kid: to the standard output
+kid: to the standard error
+error to a file, then output to error:
+kid: to the standard output
+kid: to the standard error
+in the middle of an echo:
+one  two
+in the middle of a program's arguments:
+kid: command line [spawnkid args a  b]
+kid: argc 4
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a]
+kid: argv[3] [b]
+a digit after a letter:
+x2
+a digit after an equals sign:
+x=
+a digit after a blank:
+x 
+a digit alone after echo:
+ECHO is off.
+type of two files:
+ERRORLEVEL 0, its output:
+one
+two
+its error:
+
+batstd1.bst
+
+
+
+batstd2.bst
+
+
+type of a missing file between two:
+ERRORLEVEL 1, its output:
+one
+two
+its error:
+
+batstd1.bst
+
+
+The system cannot find the file specified.
+Error occurred while processing: batstdz.bst.
+
+batstd2.bst
+
+
+type of a wildcard name matching both:
+ERRORLEVEL 0, its output:
+one
+two
+its error:
+
+batstd1.bst
+
+
+
+batstd2.bst
+
+
+type of a wildcard name matching one:
+ERRORLEVEL 0, its output:
+one
+its error:
+
+batstd1.bst
+
+
+type of a wildcard name matching none:
+ERRORLEVEL 1, its output:
+its error:
+The system cannot find the file specified.
+a Ctrl+Z between two lines:
+  the file holds 10 bytes
+  type wrote 10 bytes
+a file cmd /u wrote:
+  the file holds 10 bytes
+  type wrote 10 bytes
+<<< exit code=0

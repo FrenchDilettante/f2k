@@ -11,6 +11,9 @@
 //! (STATUS_NOT_IMPLEMENTED). No `\??\PIPE` link leads there yet: Win32's `\\.\pipe\` names
 //! come with named pipes.
 //!
+//! `\Device\Null`, and the DOS device `\??\NUL` that links to it (ntdll makes `nul`, in any
+//! directory and with any extension, `\??\NUL`), is the null device.
+//!
 //! The boot volume is C:; `\??\C:` alone is the volume itself. Another drive is missing, as is any
 //! other name under `\??` (STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND with more
 //! after it); a name outside `\??` is no path there. A component is a FAT long name: no control
@@ -140,6 +143,18 @@ fn components(units: &[u16], name: &mut FileName) -> Result<(), NtStatus> {
 pub enum Absolute {
     Disk(FileName),
     Pipe(PipeName),
+}
+
+/// The null device's names: its own, and the DOS device's that links to it.
+const NULL_DEVICE: [&[u8]; 3] = [b"\\Device\\Null", b"\\??\\NUL", b"\\DosDevices\\NUL"];
+
+/// Whether an absolute NT name is the null device's (see the module notes): the whole name, in any
+/// case. Asked before [`absolute`], so that the name needs no large answer of its own: the system
+/// services' frames, at opt-level 0, keep a slot for each.
+pub fn null_device(units: &[u16]) -> bool {
+    NULL_DEVICE
+        .iter()
+        .any(|name| units.len() == name.len() && starts_with(units, name))
 }
 
 /// The named-pipe file system's device.
@@ -302,6 +317,22 @@ mod tests {
             path(absolute(&wide("\\Device\\NamedPipeX\\a"))).err(),
             Some(STATUS_OBJECT_PATH_NOT_FOUND)
         );
+    }
+
+    /// `\Device\Null` and the DOS device `NUL` are the null device, the whole name only.
+    #[test]
+    fn the_null_device_s_names() {
+        for text in [
+            "\\Device\\Null",
+            "\\??\\NUL",
+            "\\??\\nul",
+            "\\DosDevices\\NUL",
+        ] {
+            assert!(null_device(&wide(text)), "{text}");
+        }
+        for text in ["\\??\\NUL\\x", "\\Device\\Nullx", "\\??\\C:\\NUL", "NUL"] {
+            assert!(!null_device(&wide(text)), "{text}");
+        }
     }
 
     /// What no component may be.

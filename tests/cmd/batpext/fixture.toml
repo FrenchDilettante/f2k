@@ -1,0 +1,5 @@
+# batpext: one test, the script's one block (`cmd /c batpext.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+description = "batpext - the program search through PATHEXT between a .bat and a .cmd file of one name: PATHEXT as found, with .CMD first, unset, with .CMD alone (and the .bat named outright) and .EXE alone; a name with an extension PATHEXT does not list; a batch file found through a quoted PATH entry among empty ones, and not found with PATH unset."
+kind = "script"
+gate = true

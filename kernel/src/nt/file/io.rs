@@ -126,6 +126,8 @@ fn read_file_held(
             })
             .and_then(|read| read)
         }
+        // The null device holds nothing: every read is at its end.
+        Context::Null => Err(STATUS_END_OF_FILE),
     };
     finish(transfer, io_status, result)
 }
@@ -226,6 +228,11 @@ fn write_file_held(
             })
             .and_then(|written| written)
         }
+        // The null device takes every byte and keeps none.
+        Context::Null => {
+            buffer.probe(length)?;
+            Ok(length)
+        }
     };
     finish(transfer, io_status, result)
 }
@@ -317,7 +324,7 @@ pub fn flush_buffers_file(_call: &mut NtCall, handle: Handle, io_status: UserAdd
     check_access(&object, rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA)?;
     io_status.probe(8)?;
     match object.context {
-        Context::Disk(_) => {}
+        Context::Disk(_) | Context::Null => {}
         Context::Pipe(end) => {
             io::serialized_interruptible(&object, |_| crate::fs::pipes::flush(end))
                 .and_then(|flushed| flushed)?;

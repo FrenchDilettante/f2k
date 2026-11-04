@@ -1,0 +1,7 @@
+# batclr: one test, the script's one block (`cmd /c batclr.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batclr - which built-in commands set ERRORLEVEL to 0 when they succeed (cd, type, ver, echo, rem, path shown and set, prompt, cls, set), in a .bat file and its .cmd twin, each called and each run by cmd /c; and cls alone, with a bad switch and with a word, its output to a file (its size, and the ERRORLEVEL after it)."
+kind = "script"
+gate = true
+pending = "for is not implemented: the lines after cls read the size of its output through for and %~z"

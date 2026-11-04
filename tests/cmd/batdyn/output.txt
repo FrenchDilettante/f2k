@@ -1,0 +1,32 @@
+# F2K capture of batdyn (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.40
+>>> cmd /c batdyn.cmd
+CMDEXTVERSION [2]
+RANDOM a number from 0 to 32767: yes
+CMDCMDLINE [cmd /c batdyn.cmd]
+TIME separators [::.] past 11 []
+DATE separators [ //] past 14 []
+ERRORLEVEL with a variable of that name [42]
+if errorlevel 4: yes
+ERRORLEVEL with the variable removed [0]
+CD with a variable of that name [batdyn]
+CD with the variable removed, its second character [:]
+[three] [two] [th] [one two]
+[one 2 three] [1 two three] [X three] [ne tw three]
+[] [one two three] [] [] [one]
+hexadecimal offset [two three]
+letter for an offset [BATDYNS:~a]
+Environment variable BATDYNS   not defined
+set BATDYNS with blanks after it: 1
+The syntax of the command is incorrect.
+set =x: 1
+no closing quote [a b]
+text after the closing quote [c d]
+300-character name [a value under a 300-character name]
+set of the 300-character name: 0
+undefined [~0,2]
+50 off
+<<< exit code=0

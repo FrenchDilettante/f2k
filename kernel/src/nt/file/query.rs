@@ -84,6 +84,21 @@ fn query_information_file_held(
                 _ => query_pipe(end, class, &mut answer)?,
             }
         }
+        Context::Null => {
+            let position = io::serialized_interruptible(&object, |held| held.position)?;
+            match class {
+                QueryClass::Position => info::position(position, &mut answer),
+                // Empty, as the null device always is: a file of no bytes.
+                QueryClass::Standard => info::put(
+                    &mut answer,
+                    &FileStandardInformation {
+                        number_of_links: 1,
+                        ..Default::default()
+                    },
+                ),
+                _ => return Err(STATUS_NOT_IMPLEMENTED),
+            }
+        }
     };
     information.write(&answer[..written])?;
     complete(io_status, STATUS_SUCCESS, written as u32);
@@ -321,15 +336,15 @@ fn set_information_file_held(
         Context::Disk(record) => crate::process::threads::critical_region(|| {
             set_disk(&object, record, setting, length, information)
         })?,
-        Context::Pipe(_) => set_pipe(&object, setting)?,
+        Context::Pipe(_) | Context::Null => set_pipe(&object, setting)?,
     }
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)
 }
 
-/// A pipe's set: the position (the I/O manager's, as for any device; the pipe never reads it, and
-/// the capture's SetFilePointer reads back what it set). The pipe's other classes are not served
-/// yet (STATUS_NOT_IMPLEMENTED).
+/// A pipe's set, and the null device's: the position (the I/O manager's, as for any device; neither
+/// reads it, and the capture's SetFilePointer reads back what it set). Their other classes are not
+/// served yet (STATUS_NOT_IMPLEMENTED).
 fn set_pipe(object: &Referenced<FileObject>, setting: Setting) -> Result<(), NtStatus> {
     match setting {
         Setting::Position(position) => set_position(object, position),
@@ -352,7 +367,9 @@ fn set_position(
     }
     match object.context {
         Context::Disk(_) => io::serialized(object, |held| held.position = position),
-        Context::Pipe(_) => io::serialized_interruptible(object, |held| held.position = position)?,
+        Context::Pipe(_) | Context::Null => {
+            io::serialized_interruptible(object, |held| held.position = position)?
+        }
     }
     Ok(())
 }

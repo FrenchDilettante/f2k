@@ -71,8 +71,9 @@ fn join<'a>(parts: &[&[u16]], out: &'a mut [u16]) -> Option<&'a [u16]> {
 /// The file the word `name` (its quotes already removed) names, in `found`, as cmd.exe finds a
 /// program: in the current directory (the name as it is, a relative path), then in each of
 /// `path`'s directories in turn, unless the name holds a path of its own (a `\`, `/` or `:`), which
-/// restricts the search to that place. In each place, the name as given when its extension is one
-/// of `pathext`'s, otherwise the name with each of `pathext`'s extensions in turn. `exists` says
+/// restricts the search to that place. In each place, a name with an extension as given, whether
+/// `pathext` lists it or not (`x.bat` with PATHEXT `.CMD`), and a name without one with each of
+/// `pathext`'s extensions in turn, as Windows 2000's `start /?` says PATHEXT is read. `exists` says
 /// whether a file (not a directory) goes by a path. None when nothing is found.
 pub fn search<'a>(
     name: &[u16],
@@ -84,8 +85,7 @@ pub fn search<'a>(
     if name.is_empty() {
         return None;
     }
-    let as_given = extension(name)
-        .is_some_and(|extension| entries(pathext).any(|listed| same(listed, extension)));
+    let as_given = extension(name).is_some();
     let restricted = name.iter().any(|&unit| is_separator(unit));
     let here: &[u16] = &[];
     let places = core::iter::once(here).chain(entries(path).filter(|_| !restricted));
@@ -187,13 +187,23 @@ mod tests {
     }
 
     #[test]
-    fn a_listed_extension_is_tried_as_given() {
+    fn a_name_with_an_extension_is_tried_as_given() {
         let (found, tried) = find("x.Cmd", "C:\\a", &["C:\\a\\x.cmd"]);
         assert_eq!(found.as_deref(), Some("C:\\a\\x.Cmd"));
         assert_eq!(tried, ["x.Cmd", "C:\\a\\x.Cmd"]);
-        // Another extension gets PATHEXT's after it.
+        // An extension PATHEXT does not list too, and PATHEXT's are not added to it.
         let (_, tried) = find("x.txt", "", &[]);
-        assert_eq!(tried, ["x.txt.COM", "x.txt.EXE", "x.txt.BAT", "x.txt.CMD"]);
+        assert_eq!(tried, ["x.txt"]);
+        // batpext: with PATHEXT .CMD alone, x.bat named outright is found.
+        let mut found = [0; PROGRAM_PATH];
+        let hit = search(
+            &wide("x.bat"),
+            &[],
+            &wide(".CMD"),
+            &mut |candidate| narrow(candidate) == "x.bat",
+            &mut found,
+        );
+        assert_eq!(hit.map(narrow).as_deref(), Some("x.bat"));
     }
 
     #[test]

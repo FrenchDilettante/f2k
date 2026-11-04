@@ -1,0 +1,25 @@
+# F2K capture of batops (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.64
+>>> cmd /c batops.cmd
+and-then after exit 0
+ERRORLEVEL 3
+or-else after exit 3
+or-else after the and-then
+or-else after a cd that fails
+ERRORLEVEL 1
+or-else after clearing an undefined variable
+ERRORLEVEL 1
+always, ERRORLEVEL expanded before [2]
+ERRORLEVEL 3
+ERRORLEVEL after exit 3 piped into exit 5: 5
+ERRORLEVEL after exit 5 piped into exit 0: 0
+kid: read: ret=1 err=- [x]
+kid: read: ret=1 err=- [x ]
+a & b | c > d < e
+caret ^
+"a ^& b"
+one two
+<<< exit code=0

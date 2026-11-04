@@ -1,0 +1,82 @@
+# F2K capture of batline (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.54
+>>> cmd /c batline.cmd
+cd.. from the subdirectory:
+kid: image SPAWNKID.EXE
+kid: current directory .
+cd\ from the subdirectory:
+kid: image SPAWNKID.EXE
+kid: current directory outside the parent's directory
+cd/ from the subdirectory:
+The syntax of the command is incorrect.
+kid: image SPAWNKID.EXE
+kid: current directory BATLINED
+dot
+comma
+semicolon
+equals
+colon
+slash
+backslash
+paren
+bracket
+bracket
+plus
+a tab after echo
+a tab after a program's name: 4
+kid: unknown mode [,one]
+kid: image SPAWNKID.EXE
+kid: current directory .
+kid: unknown mode [;one]
+kid: image SPAWNKID.EXE
+kid: current directory .
+kid: unknown mode [=one]
+kid: image SPAWNKID.EXE
+kid: current directory .
+three at signs
+two at signs, a blank between
+
+>echo with echo on 
+with echo on
+
+>echo  OFF   
+after echo OFF
+"spawnkid" exit 3: 3
+kid: unknown mode [kid]
+kid: image SPAWNKID.EXE
+kid: current directory .
+"spawn"kid exit 2: 100
+kid: command line ["spawnkid" args one]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [one]
+'"batlinez"' is not recognized as an internal or external command,
+operable program or batch file.
+"batlinez" one: 9009
+the subdirectory's name as a command:
+'batlined' is not recognized as an internal or external command,
+operable program or batch file.
+batlined: 9009
+kid: image SPAWNKID.EXE
+kid: current directory .
+
+[arem an unknown code 
+
+[c]rem a dollar at the end 
+a prompt of 4 characters, echoed with rem: 11 bytes
+a prompt of 600 characters, echoed with rem: 1030 bytes
+after the line, ERRORLEVEL 7
+2046 characters in a batch file: exit code 0
+2046 characters as a cmd /c string: exit code 7
+after the line, ERRORLEVEL 7
+2047 characters in a batch file: exit code 0
+2047 characters as a cmd /c string: exit code 7
+The input line is too long.
+Z:\cmd\batline\spawnkid.exe was unexpected at this time.
+2048 characters in a batch file: exit code 255
+2048 characters as a cmd /c string: exit code 7
+<<< exit code=0

@@ -173,6 +173,8 @@ pub const FILE_DEVICE_DISK: u32 = 7;
 /// FILE_DEVICE_NAMED_PIPE: the named-pipe file system's device type (kernel32's GetFileType makes
 /// it FILE_TYPE_PIPE).
 pub const FILE_DEVICE_NAMED_PIPE: u32 = 0x11;
+/// FILE_DEVICE_NULL: the null device's type (kernel32's GetFileType makes it FILE_TYPE_CHAR).
+pub const FILE_DEVICE_NULL: u32 = 0x15;
 /// FILE_CASE_PRESERVED_NAMES | FILE_UNICODE_ON_DISK: what FAT32 reports.
 pub const FAT32_ATTRIBUTES: u32 = 0x2 | 0x4;
 /// The longest component FAT32 stores.

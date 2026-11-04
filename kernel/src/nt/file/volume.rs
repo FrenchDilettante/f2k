@@ -79,6 +79,7 @@ pub fn query_volume_information_file(
         let device_type = match object.context {
             Context::Disk(_) => info::FILE_DEVICE_DISK,
             Context::Pipe(_) => info::FILE_DEVICE_NAMED_PIPE,
+            Context::Null => info::FILE_DEVICE_NULL,
         };
         Ok(info::device(device_type, room))
     } else {
@@ -87,6 +88,8 @@ pub fn query_volume_information_file(
             // The named-pipe file system keeps no volume to describe: the capture's
             // GetFileInformationByHandle on a pipe fails 50, its volume query's error.
             Context::Pipe(_) => return Err(STATUS_NOT_SUPPORTED),
+            // Nor does the null device.
+            Context::Null => return Err(STATUS_NOT_SUPPORTED),
         }
     };
     let (code, written) = match answer {

@@ -1,0 +1,38 @@
+# F2K capture of batcode (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.29
+>>> cmd /c batcode.cmd
+call batcode1: 5
+call batcode2: 6
+cmd /c batcode1.cmd: 0
+cmd /c batcode2.cmd: 0
+The system cannot find the path specified.
+cmd /c batcode3.cmd: 1
+The system cannot find the path specified.
+cmd /c batcode4.cmd: 1
+cmd /c batcode5.cmd: 5
+cmd /c batcode6.cmd: 3
+cmd /c batcode7.cmd: 9
+The system cannot find the path specified.
+cmd /c cd batcodez: 1
+The system cannot find the file specified.
+cmd /c type batcodez.txt: 1
+cmd /c exit /b 5: 5
+cmd /c of exit /b after a program that exited with 7: 7
+cmd/c with no blank, then spawnkid exit 3: 3
+cmd /j /c spawnkid exit 3, an unknown switch first: 3
+cmd /c with no string: 0
+cmd /c with two quotes for its string: 0
+cmd /c of exit alone after a program that exited with 7: 7
+cmd /c of exit alone after a cd that fails: 1
+cmd /c of exit /b alone after a cd that fails: 1
+cmd /c exit 0x10: 0
+cmd /c exit 010: 10
+cmd /c exit 3abc: 3
+cmd /c exit -1: -1
+cmd /c exit abc: 0
+cmd /c exit /b 0x10: 0
+cmd /c exit /b 3abc: 3
+<<< exit code=0

@@ -118,16 +118,23 @@ mod common {
     #[allow(clippy::large_enum_variant)]
     pub enum Named {
         Disk(Target),
-        Pipe { name: PipeName, inherit: bool },
+        Pipe {
+            name: PipeName,
+            inherit: bool,
+        },
+        /// The null device (whether a handle made for it is inheritable).
+        Null {
+            inherit: bool,
+        },
     }
 
     /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service (see [`named`]), for a
-    /// service that serves the boot volume's names alone: a pipe's name is not served yet
-    /// (STATUS_NOT_IMPLEMENTED).
+    /// service that serves the boot volume's names alone: a pipe's name, or the null device's, is
+    /// not served yet (STATUS_NOT_IMPLEMENTED).
     pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
         match named(attributes)? {
             Named::Disk(target) => Ok(target),
-            Named::Pipe { .. } => Err(STATUS_NOT_IMPLEMENTED),
+            Named::Pipe { .. } | Named::Null { .. } => Err(STATUS_NOT_IMPLEMENTED),
         }
     }
 
@@ -146,6 +153,7 @@ mod common {
         let units = read.units();
         let (name, start) = match attributes::root_of(read.root)? {
             Root::None if units.is_empty() => return Err(STATUS_OBJECT_NAME_INVALID),
+            Root::None if name::null_device(units) => return null(read.inherit()),
             Root::None => match name::absolute(units)? {
                 Absolute::Disk(name) => (name, None),
                 Absolute::Pipe(name) => {
@@ -174,6 +182,12 @@ mod common {
             start,
             inherit: read.inherit(),
         }))
+    }
+
+    /// The null device's answer, made here so that [`named`]'s frame keeps no slot for it.
+    #[inline(never)]
+    fn null(inherit: bool) -> Result<Named, NtStatus> {
+        Ok(Named::Null { inherit })
     }
 
     /// What a walk found: the entry the name names, or the directory its last component would be

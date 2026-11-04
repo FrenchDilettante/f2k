@@ -1,0 +1,44 @@
+# F2K capture of batquot (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.73
+>>> cmd /c batquot.cmd
+no quote first:
+kid: command line [spawnkid args a "b c"]
+kid: argc 4
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a]
+kid: argv[3] [b c]
+the whole string quoted:
+kid: command line [spawnkid args a b]
+kid: argc 4
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [a]
+kid: argv[3] [b]
+the name quoted, more quotes after:
+'spawnkid" args "b' is not recognized as an internal or external command,
+operable program or batch file.
+two quotes around a name with no blank:
+kid: command line [spawnkid.exe args]
+kid: argc 2
+kid: argv[0] [spawnkid.exe]
+kid: argv[1] [args]
+two quotes around a name with a blank:
+batq x.cmd ran []
+the same without its extension:
+batq x.cmd ran []
+that name quoted inside a quoted string:
+batq x.cmd ran [one]
+that name quoted, with /s:
+'batq' is not recognized as an internal or external command,
+operable program or batch file.
+blanks before the quote:
+kid: command line [spawnkid args d]
+kid: argc 3
+kid: argv[0] [spawnkid]
+kid: argv[1] [args]
+kid: argv[2] [d]
+<<< exit code=0

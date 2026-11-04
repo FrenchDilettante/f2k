@@ -1,0 +1,193 @@
+# F2K capture of batspawn (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.85
+batspawn F2KT-SOURCE-CRC=0xF3CD7886
+>>> batspawn.exe comspec
+== comspec
+CreateProcessA(ComSpec blkid.exe: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(ComSpec unset: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(ComSpec a missing file: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(ComSpec blkid.exe: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(ComSpec unset: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(ComSpec a missing file: NULL, job.bat one):
+blkid: command line [cmd /c job.bat one]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+batspawn: done
+<<< exit code=0
+>>> batspawn.exe cmdline
+== cmdline
+CreateProcessA(NULL, job.bat):
+blkid: command line [cmd /c job.bat]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, job.bat with arguments):
+blkid: command line [cmd /c job.bat one "two words" three]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, job.cmd x):
+blkid: command line [cmd /c job.cmd x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, JOB.BAT x):
+blkid: command line [cmd /c JOB.BAT x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(job.bat, NULL):
+blkid: command line [cmd /c "job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(job.bat, job.bat x):
+blkid: command line [cmd /c job.bat x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(job.bat, other words y):
+blkid: command line [cmd /c other words y]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(job.cmd, job.bat z):
+blkid: command line [cmd /c job.bat z]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(job.bat by its absolute path, NULL):
+blkid: command line [cmd /c "<home>\SCRATCH\job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, with space\job.bat x unquoted):
+blkid: command line [cmd /c "with space\job.bat x"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=2; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, with space\job.bat x quoted):
+blkid: command line [cmd /c ""with space\job.bat" x"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(with space\job.bat, NULL):
+blkid: command line [cmd /c "with space\job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(with space\job.bat, job x):
+blkid: command line [cmd /c job x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(NULL, job x):
+  ret=0 err=2
+CreateProcessA(NULL, empty.bat):
+  ret=0 err=193
+CreateProcessA(NULL, notbat.txt):
+  ret=0 err=193
+CreateProcessA(notbat.txt, NULL):
+  ret=0 err=193
+CreateProcessW(NULL, job.bat):
+blkid: command line [cmd /c job.bat]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, job.bat with arguments):
+blkid: command line [cmd /c job.bat one "two words" three]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, job.cmd x):
+blkid: command line [cmd /c job.cmd x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, JOB.BAT x):
+blkid: command line [cmd /c JOB.BAT x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(job.bat, NULL):
+blkid: command line [cmd /c "job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(job.bat, job.bat x):
+blkid: command line [cmd /c job.bat x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(job.bat, other words y):
+blkid: command line [cmd /c other words y]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(job.cmd, job.bat z):
+blkid: command line [cmd /c job.bat z]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(job.bat by its absolute path, NULL):
+blkid: command line [cmd /c "<home>\SCRATCH\job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, with space\job.bat x unquoted):
+blkid: command line [cmd /c "with space\job.bat x"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=2; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, with space\job.bat x quoted):
+blkid: command line [cmd /c ""with space\job.bat" x"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(with space\job.bat, NULL):
+blkid: command line [cmd /c "with space\job.bat"]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(with space\job.bat, job x):
+blkid: command line [cmd /c job x]
+blkid: image SCRATCH\CMD.EXE
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(NULL, job x):
+  ret=0 err=2
+CreateProcessW(NULL, empty.bat):
+  ret=0 err=193
+CreateProcessW(NULL, notbat.txt):
+  ret=0 err=193
+CreateProcessW(notbat.txt, NULL):
+  ret=0 err=193
+batspawn: done
+<<< exit code=0
+>>> batspawn.exe realcmd
+== realcmd
+ComSpec when the program started: set
+CreateProcessA(ComSpec as found: NULL, job.bat one):
+job.bat ran: [job.bat] [one]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+CreateProcessA(ComSpec as found: NULL, job.cmd two):
+job.cmd ran: [job.cmd] [two]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessA(ComSpec as found: NULL, with space\job.bat three quoted):
+spaced job.bat ran: [three]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 5
+CreateProcessA(ComSpec unset: NULL, job.bat four):
+job.bat ran: [job.bat] [four]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+CreateProcessA(ComSpec blkid.exe: NULL, job.bat five):
+job.bat ran: [job.bat] [five]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+CreateProcessW(ComSpec as found: NULL, job.bat one):
+job.bat ran: [job.bat] [one]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+CreateProcessW(ComSpec as found: NULL, job.cmd two):
+job.cmd ran: [job.cmd] [two]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 0
+CreateProcessW(ComSpec as found: NULL, with space\job.bat three quoted):
+spaced job.bat ran: [three]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 5
+CreateProcessW(ComSpec unset: NULL, job.bat four):
+job.bat ran: [job.bat] [four]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+CreateProcessW(ComSpec blkid.exe: NULL, job.bat five):
+job.bat ran: [job.bat] [five]
+  ret=1 err=-; the child's end: WAIT_OBJECT_0, exit code 4
+batspawn: done
+<<< exit code=0

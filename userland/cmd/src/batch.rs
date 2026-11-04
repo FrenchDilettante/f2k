@@ -59,10 +59,10 @@ pub fn argument(arguments: &[u16], n: usize) -> Option<&[u16]> {
     (!argument.is_empty()).then_some(argument)
 }
 
-/// `%*`: every argument after the name, as they were typed, from the first one's start to the
-/// line's end.
+/// `%*`: everything after the name, as it was typed, the blanks after the name left out (the
+/// separators after them kept: `x ,;a b` gives `,;a b`).
 pub fn all(arguments: &[u16]) -> &[u16] {
-    skip_separators(split_argument(arguments).1)
+    skip_blanks(split_argument(arguments).1)
 }
 
 /// An argument without the quotes around it (`%~1`): a leading quote goes, and a trailing one.
@@ -227,6 +227,37 @@ impl core::fmt::Display for Echoed<'_> {
         } else {
             write!(f, "{} ", crate::Text(self.0))
         }
+    }
+}
+
+/// A batch file's line that holds one command, as echo shows it: the command with its redirections
+/// taken out and its escapes resolved (see [`Echoed`]), then each redirection after a blank, as
+/// cmd rebuilds them (`echo hi>out` echoes as `echo hi 1>out`).
+pub struct EchoedCommand<'a> {
+    /// The command's text, as [`crate::syntax::simple`] gives it.
+    pub command: &'a [u16],
+    pub redirections: &'a [crate::syntax::Redirection<'a>],
+}
+
+impl core::fmt::Display for EchoedCommand<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let command = skip_blanks(self.command);
+        Echoed(command).fmt(f)?;
+        let word = command
+            .iter()
+            .position(|&unit| is_blank(unit))
+            .unwrap_or(command.len());
+        // Echoed writes a blank after a command's arguments, none after a word alone.
+        let mut separator = if skip_blanks(&command[word..]).is_empty() {
+            " "
+        } else {
+            ""
+        };
+        for redirection in self.redirections {
+            write!(f, "{separator}{redirection}")?;
+            separator = " ";
+        }
+        Ok(())
     }
 }
 
@@ -400,6 +431,26 @@ mod tests {
         assert_eq!(shown("echo  "), "echo");
         assert_eq!(shown("echo   three  "), "echo   three   ");
         assert_eq!(shown("spawnkid exit 3"), "spawnkid exit 3 ");
+    }
+
+    #[test]
+    fn a_command_echoes_with_its_redirections_rebuilt() {
+        let shown = |line: &str| {
+            let line = wide(line);
+            let mut text = [0; 64];
+            let mut redirections = crate::syntax::Redirections::default();
+            let command = crate::syntax::simple(&line, &mut text, &mut redirections).unwrap();
+            EchoedCommand {
+                command,
+                redirections: redirections.list(),
+            }
+            .to_string()
+        };
+        assert_eq!(shown("echo hi>out"), "echo hi 1>out");
+        assert_eq!(shown("echo hi > out"), "echo hi  1>out");
+        assert_eq!(shown("echo>out 2>&1"), "echo 1>out 2>&1");
+        assert_eq!(shown("x < in"), "x 0<in");
+        assert_eq!(shown("echo a^&b"), "echo a&b ");
     }
 
     #[test]

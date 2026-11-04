@@ -11,6 +11,10 @@
 //! drive-relative path (`C:name`) on the current directory's drive is relative to it, on another
 //! drive relative to that drive's root (no per-drive directories are kept: the `=C:` environment
 //! variables are not consulted). A UNC path keeps its `\\server\share` prefix.
+//!
+//! A path whose last component is a DOS device's name (`NUL`, `CON`, `AUX`, `PRN`, `COM1` to
+//! `COM9`, `LPT1` to `LPT9`, in any directory, with any extension: [`dos_device_name`]) names the
+//! device, `\??\NUL` for `nul.txt`, as RtlIsDosDeviceName_U tells RtlDosPathNameToNtPathName_U.
 
 /// The longest path the functions build, in units, the terminator included (MAX_PATH).
 pub const MAX_PATH: usize = 260;
@@ -253,11 +257,59 @@ pub struct NtName {
     pub relative: Option<usize>,
 }
 
+/// The DOS devices a file name names whatever its directory and extension (RtlIsDosDeviceName_U's).
+const DOS_DEVICES: [&str; 4] = ["NUL", "CON", "AUX", "PRN"];
+
+/// The DOS device `path` names, as RtlIsDosDeviceName_U reads it, upper-cased: none for a UNC or
+/// `\\.\` path. The device is the last component's name (after the last separator, or a drive's
+/// colon), up to its first `.` or `:`, its trailing spaces dropped: `NUL`, `CON`, `AUX` or `PRN`,
+/// or `COM` or `LPT` and a digit from 1 to 9, in any case (`C:\x\nul.txt` and `Nul: ` are NUL).
+pub fn dos_device_name(path: &[u16]) -> Option<[u8; 4]> {
+    if matches!(
+        path_type(path),
+        PathType::UncAbsolute | PathType::LocalDevice | PathType::RootLocalDevice
+    ) {
+        return None;
+    }
+    let start = path
+        .iter()
+        .rposition(|&unit| is_separator(unit))
+        .map(|at| at + 1)
+        .or_else(|| drive_of(path).map(|_| 2))
+        .unwrap_or(0);
+    let last = &path[start..];
+    let end = last
+        .iter()
+        .position(|&unit| unit == u16::from(b'.') || unit == COLON)
+        .unwrap_or(last.len());
+    let name = &last[..last[..end]
+        .iter()
+        .rposition(|&unit| unit != u16::from(b' '))
+        .map_or(0, |at| at + 1)];
+    let mut upper = [0u8; 4];
+    if !(3..=4).contains(&name.len()) {
+        return None;
+    }
+    for (byte, &unit) in upper.iter_mut().zip(name) {
+        if unit >= 0x80 {
+            return None;
+        }
+        *byte = (unit as u8).to_ascii_uppercase();
+    }
+    let device = match name.len() {
+        3 => DOS_DEVICES
+            .iter()
+            .any(|device| device.as_bytes() == &upper[..3]),
+        _ => (&upper[..3] == b"COM" || &upper[..3] == b"LPT") && (b'1'..=b'9').contains(&upper[3]),
+    };
+    device.then_some(upper)
+}
+
 /// RtlDosPathNameToNtPathName_U's work: the NT path of `path`, made absolute against `current` (the
 /// current directory's DOS path, its trailing separator included) and folded, into `out`. A
 /// `\\?\` path passes untouched (its `\\?\` becomes `\??\`); a `\\.\` one keeps its device prefix,
-/// its rest folded. The full path must fit [`MAX_PATH`] units with its terminator, as the
-/// platform's buffer is that long.
+/// its rest folded; a DOS device's name ([`dos_device_name`]) is the device, `\??\NUL`. The full
+/// path must fit [`MAX_PATH`] units with its terminator, as the platform's buffer is that long.
 pub fn dos_path_to_nt(
     path: &[u16],
     current: &[u16],
@@ -269,6 +321,24 @@ pub fn dos_path_to_nt(
     }
     let kind = path_type(path);
     let prefix = [BACKSLASH, u16::from(b'?'), u16::from(b'?'), BACKSLASH];
+    if let Some(device) = dos_device_name(path) {
+        let mut built = Builder {
+            out,
+            len: 0,
+            root: 0,
+        };
+        built.push_all(&prefix)?;
+        for &byte in device.iter().filter(|&&byte| byte != 0) {
+            built.push(u16::from(byte))?;
+        }
+        let len = built.len;
+        built.out[len] = 0;
+        return Ok(NtName {
+            length: len,
+            file_part: Some(prefix.len()),
+            relative: None,
+        });
+    }
     if matches!(kind, PathType::RootLocalDevice | PathType::LocalDevice) {
         let rest = &path[4..];
         let mut built = Builder {
@@ -428,6 +498,47 @@ mod tests {
         Ok((text(0), name.file_part.map(text), name.relative.map(text)))
     }
 
+    /// The DOS devices' names, in any directory, with any extension, as RtlIsDosDeviceName_U
+    /// reads them.
+    #[test]
+    fn dos_device_names() {
+        let device = |path: &str| {
+            dos_device_name(&wide(path)).map(|name| {
+                String::from_utf8(name.iter().copied().filter(|&byte| byte != 0).collect()).unwrap()
+            })
+        };
+        for (path, name) in [
+            ("nul", "NUL"),
+            ("NUL", "NUL"),
+            ("Nul.txt", "NUL"),
+            ("nul: ", "NUL"),
+            ("nul  .x", "NUL"),
+            ("C:\\CORPUS\\nul", "NUL"),
+            ("c:nul", "NUL"),
+            ("x/con", "CON"),
+            ("aux", "AUX"),
+            ("prn.log", "PRN"),
+            ("com1", "COM1"),
+            ("LPT9.txt", "LPT9"),
+        ] {
+            assert_eq!(device(path).as_deref(), Some(name), "{path}");
+        }
+        for path in [
+            "null",
+            "nul\\x",
+            "com0",
+            "com",
+            "lpt10",
+            "anul",
+            "\\\\srv\\nul",
+            "\\\\.\\nul",
+            "",
+            "C:",
+        ] {
+            assert_eq!(device(path), None, "{path}");
+        }
+    }
+
     /// The path types, as RtlDetermineDosPathNameType_U tells them apart.
     #[test]
     fn path_types() {
@@ -508,6 +619,11 @@ mod tests {
             ("\\??\\C:".into(), Some("C:".into()), None)
         );
         assert_eq!(nt("", current, true), Err(PathError::Empty));
+        assert_eq!(
+            nt("nul", current, true).unwrap(),
+            ("\\??\\NUL".into(), Some("NUL".into()), None),
+            "a DOS device"
+        );
         let long = "x".repeat(250);
         assert_eq!(
             nt(&long, current, true).err(),

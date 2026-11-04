@@ -1,0 +1,9 @@
+# bathelp: one test, the script's one block (`cmd /c bathelp.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine. F2K words its help texts
+# its own way, so the script prints none: whether an output is a command's help is told by its
+# size against the size of what the switch alone prints.
+description = "bathelp - the built-in commands' help switch (/?): the ERRORLEVEL after it alone (cd, type, ver, set, path, prompt, echo, cls, call) and the exit code of rem's and exit's by cmd /c; where it counts (after a path given to cd, run into more text after cd, echo and set, after a word given to echo and set, after cd and echo run into a comma or a dot, after call cd); and cmd.exe's own, alone, before /c, and inside the /c string."
+kind = "script"
+gate = true
+pending = "for, and if with else and commands in parentheses, are not implemented"

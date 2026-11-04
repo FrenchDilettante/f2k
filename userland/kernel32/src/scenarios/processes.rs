@@ -651,8 +651,11 @@ fn opened_names() -> Vec<String> {
 /// runs under the command processor, as Windows 2000 hands it over: its handle closed, `cmd`
 /// searched for as a command line's first name (the program's directory, the current one, the
 /// system directory, `.exe` added), the child cmd.exe with the command line `cmd /c` and the
-/// caller's, quotes and arguments as given; the batch file's path found goes nowhere. Without a
-/// command line, the one made from the application name follows `cmd /c`.
+/// caller's, quotes and arguments as given; the batch file's path found goes nowhere. A line whose
+/// batch file's name holds a blank, quoted or found at a space, goes inside quotes of its own, the
+/// caller's line and not the one the search re-quoted (the batspawn capture); a quoted name with
+/// no blank stays as given. Without a command line, the one made from the application name follows
+/// `cmd /c`.
 ///
 /// Pins: kernel32.CreateProcessW
 #[test]
@@ -705,8 +708,27 @@ fn a_batch_file_runs_under_the_command_processor() {
         batch("\"a b\\x.cmd\" arg", "C:\\CORPUS\\A B\\X.CMD"),
         (
             "C:\\WINNT\\system32\\cmd.exe".into(),
-            "cmd /c \"a b\\x.cmd\" arg".into()
+            "cmd /c \"\"a b\\x.cmd\" arg\"".into()
         )
+    );
+    assert_eq!(
+        batch("\"x.bat\" arg", "C:\\CORPUS\\X.BAT").1,
+        "cmd /c \"x.bat\" arg",
+        "a quoted name with no blank"
+    );
+    setup();
+    existing(&["C:\\CORPUS\\A B\\X.BAT", "C:\\WINNT\\system32\\CMD.EXE"]);
+    fail("NtCreateSection", STATUS_INVALID_IMAGE_NOT_MZ);
+    let (created, error, _) = run("a b\\x.bat one");
+    assert_eq!(
+        (created, error),
+        (1, 2),
+        "the miss at the first space leaves its error"
+    );
+    assert_eq!(
+        child_names().1,
+        "cmd /c \"a b\\x.bat one\"",
+        "an unquoted name found at a space: the caller's line, quoted whole"
     );
     assert_eq!(
         batch("TOOLS\\X.BAT one  two", "C:\\CORPUS\\TOOLS\\X.BAT").1,

@@ -1,0 +1,22 @@
+# F2K capture of batpext (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.69
+>>> cmd /c batpext.cmd
+batpext1.bat ran as [batpext1]
+batpext1.cmd ran as [batpext1]
+batpext1.bat ran as [batpext1]
+batpext1.cmd ran as [batpext1]
+batpext1.bat ran as [batpext1.bat]
+'batpext1' is not recognized as an internal or external command,
+operable program or batch file.
+ERRORLEVEL 1
+'batpext1.f2k' is not recognized as an internal or external command,
+operable program or batch file.
+ERRORLEVEL 1
+batpext2.bat ran as [batpext2]
+'batpext2' is not recognized as an internal or external command,
+operable program or batch file.
+ERRORLEVEL 1
+<<< exit code=0

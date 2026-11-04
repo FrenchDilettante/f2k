@@ -173,6 +173,9 @@ pub enum Context {
     /// One end of a pipe instance, served by the named-pipe file system (NPFS's CCB and the end
     /// it opens, its FsContext and FsContext2).
     Pipe(crate::fs::pipes::PipeEnd),
+    /// The null device (`\Device\Null`, the DOS device NUL): its reads find the end at once, its
+    /// writes take every byte and keep none. It keeps no state of its own.
+    Null,
 }
 
 /// A file object's body: one open of one file.
@@ -245,7 +248,7 @@ impl FileObject {
     pub fn disk(&self) -> Option<FileRecordId> {
         match self.context {
             Context::Disk(record) => Some(record),
-            Context::Pipe(_) => None,
+            Context::Pipe(_) | Context::Null => None,
         }
     }
 

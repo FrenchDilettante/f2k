@@ -1,0 +1,33 @@
+# F2K capture of batcall (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.11
+>>> cmd /c batcall.cmd
+batcall1 arg0 [batcall1]
+batcall1 args [one] ["two words"] [three] [four] [five] [six] [""] ["a,b"] [seven]
+batcall1 all [one "two words" three,four;five=six "" "a,b" seven eight nine ten]
+batcall1 unquoted [one] [two words]
+batcall1 name [batcall1] [.cmd] [batcall1.cmd]
+batcall1 shifted [one] ["two words"] [three] [eight] all [one "two words" three,four;five=six "" "a,b" seven eight nine ten]
+ERRORLEVEL after the call: 4
+batcall1 arg0 [batcall1.cmd]
+batcall1 args [x] [y] [] [] [] [] [] [] []
+batcall1 all [,;x y]
+batcall1 unquoted [x] [y]
+batcall1 name [batcall1] [.cmd] [batcall1.cmd]
+batcall1 shifted [x] [y] [] [] all [,;x y]
+batcall1 arg0 ["batcall1"]
+batcall1 args ["y z"] [] [] [] [] [] [] [] []
+batcall1 all ["y z"]
+batcall1 unquoted [y z] []
+batcall1 name [batcall1] [] [batcall1]
+batcall1 shifted ["y z"] [] [] [] all ["y z"]
+call spawnkid exit 6: 6
+second expansion [expanded twice]
+after call echo: 0
+after call alone: 1
+batcall2 runs batcall3 without call
+batcall3 [batcall3] [from batcall2]
+back in batcall
+<<< exit code=0

@@ -104,7 +104,7 @@ fn query_directory_file_held(
     // lists pipes).
     let directory: File = match object.context {
         Context::Disk(record) => crate::fs::io::file_at(record),
-        Context::Pipe(_) => return Err(STATUS_INVALID_PARAMETER),
+        Context::Pipe(_) | Context::Null => return Err(STATUS_INVALID_PARAMETER),
     };
     if !directory.directory {
         return Err(STATUS_INVALID_PARAMETER);

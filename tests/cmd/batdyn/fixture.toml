@@ -1,0 +1,10 @@
+# batdyn: one test, the script's one block (`cmd /c batdyn.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batdyn - the dynamic variables in machine-independent forms: CMDEXTVERSION, RANDOM's range, CMDCMDLINE, the separators and lengths of TIME and DATE, ERRORLEVEL and CD shadowed by real variables and after their removal; substrings from either end, replacements, an undefined variable's substring, and a lone percent sign; substrings at the value's edges and with malformed offsets; set with blanks after a name, an empty name, an unclosed quote and text after a closing one; and a variable under a 300-character name."
+kind = "script"
+# CMDCMDLINE is the command line of the cmd.exe running the script, which starts with the name it
+# was started by: cmd on the real machine, CORPUS\cmd on F2K.
+masks = ["CMDCMDLINE [** /c batdyn.cmd]"]
+gate = true
+pending = "if and set /a are not implemented"

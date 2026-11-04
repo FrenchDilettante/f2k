@@ -1,0 +1,6 @@
+# batquot: one test, the script's one block (`cmd /c batquot.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batquot - the quote rules of cmd /c, each string run by a cmd.exe of its own: spawnkid.exe's args shows the command line the program is given, and a batch file with a blank in its name shows whether its quoted name survives: no quote first, the whole string quoted, a quoted name with quotes after it, two quotes around a name with and without a blank, with and without its extension, a quoted name inside a quoted string, /s, blanks before the quote."
+kind = "script"
+gate = true

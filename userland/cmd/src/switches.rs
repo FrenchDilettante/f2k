@@ -19,6 +19,8 @@ pub struct Switches<'a> {
     pub echo_off: bool,
     /// `/S`: the string's first and last quotes are stripped whatever it holds.
     pub strip: bool,
+    /// `/?`: the shell prints its help and ends, running nothing.
+    pub help: bool,
     /// `/C` or `/K` and what follows it (the rest of the command line, its leading blanks
     /// skipped); None without either, for an interactive shell.
     pub run: Option<(Then, &'a [u16])>,
@@ -35,6 +37,7 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
     let mut switches = Switches {
         echo_off: false,
         strip: false,
+        help: false,
         run: None,
     };
     loop {
@@ -59,6 +62,7 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
             }
             Ok(b'q') => switches.echo_off = true,
             Ok(b's') => switches.strip = true,
+            Ok(b'?') => switches.help = true,
             _ => {}
         }
         // A value (`/E:ON`) runs to a blank or the next switch.
@@ -76,7 +80,8 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
     switches
 }
 
-/// The command line after the program's name.
+/// The command line after the program's name, which ends at a blank or at a switch's `/`
+/// (`cmd/c x`).
 fn skip_program(command_line: &[u16]) -> &[u16] {
     let line = skip_blanks(command_line);
     match line.split_first() {
@@ -87,7 +92,7 @@ fn skip_program(command_line: &[u16]) -> &[u16] {
         _ => {
             let end = line
                 .iter()
-                .position(|&unit| is_blank(unit))
+                .position(|&unit| is_blank(unit) || unit == u16::from(b'/'))
                 .unwrap_or(line.len());
             &line[end..]
         }
@@ -166,6 +171,7 @@ mod tests {
             Switches {
                 echo_off: false,
                 strip: false,
+                help: false,
                 run: None
             }
         );

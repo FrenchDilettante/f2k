@@ -3,4 +3,3 @@
 description = "battype - type of a file the script writes itself (echo redirected, then appended) and of a file that does not exist: the message and ERRORLEVEL."
 kind = "script"
 gate = true
-pending = "redirection (>, >>, > nul, 2> nul) and del not implemented"

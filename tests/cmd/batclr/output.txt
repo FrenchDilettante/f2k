@@ -1,0 +1,59 @@
+# F2K capture of batclr (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.16
+>>> cmd /c batclr.cmd
+called .bat:
+cd: 0
+type: 0
+ver: 0
+echo: 1
+rem: 1
+path shown: 0
+path set: 0
+prompt: 0
+cls: 1
+set: 0
+called .cmd:
+cd: 0
+type: 0
+ver: 0
+echo: 1
+rem: 1
+path shown: 0
+path set: 0
+prompt: 0
+cls: 1
+set: 0
+a cmd.exe of its own, .bat:
+cd: 0
+type: 0
+ver: 0
+echo: 1
+rem: 1
+path shown: 1
+path set: 1
+prompt: 1
+cls: 1
+set: 1
+a cmd.exe of its own, .cmd:
+cd: 0
+type: 0
+ver: 0
+echo: 1
+rem: 1
+path shown: 0
+path set: 0
+prompt: 0
+cls: 1
+set: 0
+cls, its output to a file:
+cls: 3
+  it wrote 1 bytes
+The syntax of the command is incorrect.
+cls /x: 1
+  it wrote 0 bytes
+cls foo: 3
+  it wrote 1 bytes
+<<< exit code=0

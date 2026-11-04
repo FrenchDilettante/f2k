@@ -1,0 +1,50 @@
+# F2K capture of bathelp (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:36:29.44
+>>> cmd /c bathelp.cmd
+cd's help: ERRORLEVEL 3
+type's help: ERRORLEVEL 3
+ver's help: ERRORLEVEL 3
+set's help: ERRORLEVEL 3
+path's help: ERRORLEVEL 3
+prompt's help: ERRORLEVEL 3
+echo's help: ERRORLEVEL 3
+cls's help: ERRORLEVEL 3
+call's help: ERRORLEVEL 3
+rem's help, by a cmd.exe of its own: exit code 0
+  text on its output
+exit's help, by a cmd.exe of its own: exit code 1
+  text on its output
+cd bathelpz, the switch after it: ERRORLEVEL 3
+  cd's help
+cd, the switch run into an x: ERRORLEVEL 3
+  cd's help
+cd run into a comma, then the switch: ERRORLEVEL 3
+  cd's help
+echo, the switch run into an x: ERRORLEVEL 3
+  echo's help
+echo x, the switch after it: ERRORLEVEL 3
+  not echo's help, its output:
+x /?
+echo run into a dot, then the switch: ERRORLEVEL 3
+  not echo's help, its output:
+/?
+set, the switch run into an x: ERRORLEVEL 3
+  set's help
+Environment variable bathelpz not defined
+set bathelpz, the switch after it: ERRORLEVEL 1
+  not set's help, its output:
+call cd, the switch after it: ERRORLEVEL 3
+  call's help
+cmd.exe's help: exit code 1
+cmd.exe with the switch before /c spawnkid exit 4: exit code 1
+  cmd.exe's help
+'/?' is not recognized as an internal or external command,
+operable program or batch file.
+cmd.exe with the switch alone as its /c string: exit code 1
+  not cmd.exe's help, its output:
+cmd.exe with cd and the switch as its /c string: exit code 1
+  cd's help
+<<< exit code=0

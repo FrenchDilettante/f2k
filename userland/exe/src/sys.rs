@@ -43,11 +43,28 @@ const FILE_SHARE_READ: u32 = 1;
 const FILE_SHARE_WRITE: u32 = 2;
 const OPEN_EXISTING: u32 = 3;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+/// CreateFileW's access and dispositions for a redirection's file: written, made anew (or emptied),
+/// made when missing (or kept).
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const CREATE_ALWAYS: u32 = 2;
+const OPEN_ALWAYS: u32 = 4;
+/// SetFilePointer's origin at the file's end, and its failure.
+const FILE_END: u32 = 2;
+const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
+/// DuplicateHandle's option: the new handle has the source's access.
+const DUPLICATE_SAME_ACCESS: u32 = 2;
+/// GetCurrentProcess's pseudo-handle.
+const CURRENT_PROCESS: usize = usize::MAX;
+/// STARTUPINFO's flag that makes its standard-handle fields the new process's.
+const STARTF_USESTDHANDLES: u32 = 0x100;
+/// ERROR_BROKEN_PIPE: a read of a pipe whose writing end is closed, the input's end.
+const ERROR_BROKEN_PIPE: u32 = 109;
 /// CreateFileW's failure.
 const INVALID_HANDLE_VALUE: usize = usize::MAX;
 /// The units a name and a value [`set_environment_variable`] takes hold together, their
-/// terminators included: a console line's and two.
-const VARIABLE: usize = 1026;
+/// terminators included, and a name [`environment_variable`] reads at most, its terminator
+/// included: a command line's (2,047 units on Windows 2000) and two.
+const VARIABLE: usize = 2049;
 
 #[link(
     name = "kernel32",
@@ -121,6 +138,30 @@ unsafe extern "system" {
     fn GetExitCodeProcess(process: usize, code: *mut u32) -> i32;
     /// A handle closed.
     fn CloseHandle(object: usize) -> i32;
+    /// A standard handle replaced: what GetStdHandle answers from then on.
+    fn SetStdHandle(which: u32, handle: usize) -> i32;
+    /// A handle duplicated, from a process into a process (the current one's pseudo-handle).
+    fn DuplicateHandle(
+        source_process: usize,
+        source: usize,
+        target_process: usize,
+        target: *mut usize,
+        access: u32,
+        inherit: i32,
+        options: u32,
+    ) -> i32;
+    /// An anonymous pipe: its reading end and its writing end.
+    fn CreatePipe(
+        read: *mut usize,
+        write: *mut usize,
+        attributes: *const SecurityAttributes,
+        size: u32,
+    ) -> i32;
+    /// A file's position moved: the new position's low dword, INVALID_SET_FILE_POINTER on failure.
+    fn SetFilePointer(file: usize, distance: i32, high: *mut i32, method: u32) -> u32;
+    /// The path of a module's file (the program's for none) into a buffer of `size` units: its
+    /// length, `size` when it was cut short, zero on failure.
+    fn GetModuleFileNameW(module: usize, buffer: *mut u16, size: u32) -> u32;
     /// The current directory changed to a NUL-terminated path.
     fn SetCurrentDirectoryW(path: *const u16) -> i32;
     /// The calling thread's last error set.
@@ -174,6 +215,7 @@ unsafe extern "system" {
         path: *const u16,
         access: u32,
         share: u32,
+        // A SECURITY_ATTRIBUTES's address, or 0 (src/files.rs declares the call so too).
         security: usize,
         disposition: u32,
         attributes: u32,
@@ -198,7 +240,8 @@ unsafe extern "system" {
 }
 
 /// STARTUPINFOW: how a new process's window and standard handles start. A zeroed one, its size
-/// set, asks for the defaults: a console program shares its parent's console and standard handles.
+/// set, asks for the defaults: a console program shares its parent's console and standard handles;
+/// STARTF_USESTDHANDLES hands it the three handles given instead.
 #[repr(C)]
 #[derive(Default)]
 struct StartupInfo {
@@ -221,6 +264,21 @@ struct StartupInfo {
     std_output: usize,
     std_error: usize,
 }
+
+/// SECURITY_ATTRIBUTES: whether a handle made is inheritable (no security descriptor).
+#[repr(C)]
+struct SecurityAttributes {
+    length: u32,
+    descriptor: usize,
+    inherit: i32,
+}
+
+/// The attributes of a handle a child process inherits.
+const INHERITABLE: SecurityAttributes = SecurityAttributes {
+    length: core::mem::size_of::<SecurityAttributes>() as u32,
+    descriptor: 0,
+    inherit: 1,
+};
 
 /// PROCESS_INFORMATION: what CreateProcessW made, a process and its first thread, by handle and id.
 #[repr(C)]
@@ -399,17 +457,17 @@ pub fn outlive_interrupts() -> Result<(), Error> {
 }
 
 /// The variable `name`'s value, read into `value`: None when there is no such variable (or its
-/// name is MAX_PATH units or more), ERROR_INSUFFICIENT_BUFFER when it does not fit with its
+/// name is longer than a command line), ERROR_INSUFFICIENT_BUFFER when it does not fit with its
 /// terminator.
 #[inline(never)]
 pub fn environment_variable<'a>(
     name: &[u16],
     value: &'a mut [u16],
 ) -> Result<Option<&'a [u16]>, Error> {
-    if name.len() >= MAX_PATH {
+    if name.len() >= VARIABLE {
         return Ok(None);
     }
-    let mut terminated = [0u16; MAX_PATH];
+    let mut terminated = [0u16; VARIABLE];
     terminated[..name.len()].copy_from_slice(name);
     let size = value.len().min(u32::MAX as usize) as u32;
     // SAFETY: no pointers.
@@ -679,8 +737,10 @@ impl Drop for Process {
 /// without an application name (the program's directory, the current directory, the system
 /// directories, PATH; `.exe` added to a name without an extension). `command_line` holds the line
 /// then a NUL, and CreateProcessW may write within it. The process inherits the caller's
-/// inheritable handles and shares its console, standard handles, environment and current
-/// directory.
+/// inheritable handles and shares its console, environment and current directory; its standard
+/// handles are the caller's as they are now ([`standard_handle`], handed through STARTUPINFO's
+/// STARTF_USESTDHANDLES), which a shell's redirection may have replaced ([`set_standard_handle`]):
+/// they must be inheritable, or console handles.
 pub fn create_process(command_line: &mut [u16]) -> Result<Process, Error> {
     start(None, command_line)
 }
@@ -706,6 +766,10 @@ fn start(application: Option<&[u16]>, command_line: &mut [u16]) -> Result<Proces
     }
     let startup = StartupInfo {
         cb: core::mem::size_of::<StartupInfo>() as u32,
+        flags: STARTF_USESTDHANDLES,
+        std_input: standard_handle(Standard::Input),
+        std_output: standard_handle(Standard::Output),
+        std_error: standard_handle(Standard::Error),
         ..StartupInfo::default()
     };
     let mut information = ProcessInformation::default();
@@ -734,6 +798,183 @@ fn start(application: Option<&[u16]>, command_line: &mut [u16]) -> Result<Proces
         process: information.process,
         thread: information.thread,
     })
+}
+
+/// The three standard handles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standard {
+    Input,
+    Output,
+    Error,
+}
+
+impl Standard {
+    /// GetStdHandle's selector for it.
+    fn selector(self) -> u32 {
+        match self {
+            Standard::Input => STD_INPUT_HANDLE,
+            Standard::Output => STD_OUTPUT_HANDLE,
+            Standard::Error => STD_ERROR_HANDLE,
+        }
+    }
+}
+
+/// The standard handle `which`, as GetStdHandle gives it (a console's, a file's, a pipe's, or
+/// none: 0 or INVALID_HANDLE_VALUE).
+pub fn standard_handle(which: Standard) -> usize {
+    // SAFETY: no pointers.
+    unsafe { GetStdHandle(which.selector()) }
+}
+
+/// The standard handle `which` replaced by `handle`: the program's own output ([`stdout`],
+/// [`stderr`]) and input then go there, and so do the standard handles of the processes it starts.
+pub fn set_standard_handle(which: Standard, handle: usize) -> Result<(), Error> {
+    // SAFETY: no pointers.
+    if unsafe { SetStdHandle(which.selector(), handle) } == 0 {
+        return Err(last_error());
+    }
+    Ok(())
+}
+
+/// Whether the standard input is a console (GetConsoleMode takes it), whose lines [`read_line`]
+/// reads; otherwise it is a file or a pipe, which [`read_standard_input`] reads.
+pub fn standard_input_is_console() -> bool {
+    matches!(Stream::standard(STD_INPUT_HANDLE), Stream::Console(_))
+}
+
+/// Bytes from the standard input, a file or a pipe, into `buffer`: how many, zero at its end (a
+/// pipe whose writer has closed included).
+pub fn read_standard_input(buffer: &mut [u8]) -> Result<usize, Error> {
+    let input = standard_handle(Standard::Input);
+    let count = buffer.len().min(u32::MAX as usize) as u32;
+    let mut read = 0u32;
+    // SAFETY: the call writes at most `count` bytes into `buffer` and a dword into `read`; no
+    // OVERLAPPED.
+    if unsafe { ReadFile(input, buffer.as_mut_ptr(), count, &mut read, 0) } == 0 {
+        let error = last_error();
+        return if error == Error(ERROR_BROKEN_PIPE) {
+            Ok(0)
+        } else {
+            Err(error)
+        };
+    }
+    Ok((read as usize).min(buffer.len()))
+}
+
+/// A handle the program owns, closed when the value is dropped: a redirection's file, a duplicate,
+/// a pipe's end.
+pub struct Handle(usize);
+
+impl Handle {
+    /// The handle's value, for [`set_standard_handle`].
+    pub fn raw(&self) -> usize {
+        self.0
+    }
+}
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        // SAFETY: no pointers; the handle is this value's own, closed once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// How a redirection opens its file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Redirect {
+    /// Read from its start (`<`): the file must exist.
+    Read,
+    /// Written from its start, made or emptied (`>`).
+    Truncate,
+    /// Written after its end, made when missing (`>>`).
+    Append,
+}
+
+/// The file `path` names (MAX_PATH - 1 units at most) opened as a shell's redirection opens it,
+/// others allowed to read and write it meanwhile, its handle inheritable so that a program the
+/// shell starts can be handed it. A device's name opens the device (`nul`, `con`).
+#[inline(never)]
+pub fn open_redirection(path: &[u16], redirect: Redirect) -> Result<Handle, Error> {
+    if path.len() >= MAX_PATH {
+        return Err(Error(ERROR_FILENAME_EXCED_RANGE));
+    }
+    let mut terminated = [0u16; MAX_PATH];
+    terminated[..path.len()].copy_from_slice(path);
+    let (access, disposition) = match redirect {
+        Redirect::Read => (GENERIC_READ, OPEN_EXISTING),
+        Redirect::Truncate => (GENERIC_WRITE, CREATE_ALWAYS),
+        Redirect::Append => (GENERIC_WRITE, OPEN_ALWAYS),
+    };
+    let inheritable = INHERITABLE;
+    // SAFETY: the path ends with a NUL within `terminated`; `inheritable` is a SECURITY_ATTRIBUTES
+    // the call reads; no template.
+    let handle = unsafe {
+        CreateFileW(
+            terminated.as_ptr(),
+            access,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            &inheritable as *const SecurityAttributes as usize,
+            disposition,
+            FILE_ATTRIBUTE_NORMAL,
+            0,
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    let handle = Handle(handle);
+    if redirect == Redirect::Append {
+        // SAFETY: no high dword is passed or read back.
+        let moved = unsafe { SetFilePointer(handle.0, 0, core::ptr::null_mut(), FILE_END) };
+        if moved == INVALID_SET_FILE_POINTER {
+            return Err(last_error());
+        }
+    }
+    Ok(handle)
+}
+
+/// An inheritable duplicate of `handle` (a console's included), with its access: it shares the
+/// original's file object, and its position with it.
+pub fn duplicate(handle: usize) -> Result<Handle, Error> {
+    let mut copy = 0;
+    // SAFETY: `copy` is the handle the call writes; both processes are the current one.
+    let done = unsafe {
+        DuplicateHandle(
+            CURRENT_PROCESS,
+            handle,
+            CURRENT_PROCESS,
+            &mut copy,
+            0,
+            1,
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+    if done == 0 {
+        return Err(last_error());
+    }
+    Ok(Handle(copy))
+}
+
+/// An anonymous pipe, its reading end then its writing end, neither inheritable: a program started
+/// is handed the end it needs as an inheritable [`duplicate`], so that it holds no other.
+pub fn create_pipe() -> Result<(Handle, Handle), Error> {
+    let (mut read, mut write) = (0, 0);
+    // SAFETY: the call writes the two handles; no attributes; the default size.
+    if unsafe { CreatePipe(&mut read, &mut write, core::ptr::null(), 0) } == 0 {
+        return Err(last_error());
+    }
+    Ok((Handle(read), Handle(write)))
+}
+
+/// The program's own file's path, in `buffer`.
+pub fn program_path(buffer: &mut [u16; MAX_PATH]) -> Result<&[u16], Error> {
+    // SAFETY: the buffer holds the MAX_PATH units the call is told of.
+    let length = unsafe { GetModuleFileNameW(0, buffer.as_mut_ptr(), MAX_PATH as u32) } as usize;
+    match length {
+        0 => Err(last_error()),
+        MAX_PATH.. => Err(Error(ERROR_FILENAME_EXCED_RANGE)),
+        _ => Ok(&buffer[..length]),
+    }
 }
 
 /// A standard stream, as Windows 2000's console programs write one: UTF-16 to a console, and to

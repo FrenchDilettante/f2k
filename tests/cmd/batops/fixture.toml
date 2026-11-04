@@ -1,0 +1,6 @@
+# batops: one test, the script's one block (`cmd /c batops.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batops - the command operators and the caret: && and || after programs exiting 0 and 3, a cd that fails, a set clearing an undefined variable, and the two in one line, with the ERRORLEVEL each leaves; & with its line expanded before either command; a pipeline's ERRORLEVEL; echo piped into a program's read, with and without a blank before the bar; ^ escaping the operators and itself, kept inside quotes, and joining two lines."
+kind = "script"
+gate = true

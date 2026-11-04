@@ -1,7 +1,8 @@
 //! NtCreateFile and NtOpenFile: the I/O manager's checks of the arguments, then the create of the
 //! device the name is on: FastFat's — the walk, the disposition's decision against what the name
 //! names, a new file or directory made, the open (its share check), and an overwrite's truncation
-//! — or the named-pipe file system's, a pipe's client end connected ([`super::pipe`]).
+//! — or the named-pipe file system's, a pipe's client end connected ([`super::pipe`]), or the null
+//! device's.
 
 use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, deliver, named, walk, Found, Named, Target};
@@ -10,7 +11,7 @@ use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::volume::Volume;
 use crate::fs::fat32::write;
-use crate::fs::file::{rights, FileRecordId};
+use crate::fs::file::{rights, Context, FileRecordId};
 use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
 use crate::status::*;
 
@@ -193,6 +194,34 @@ fn overwrite(record: FileRecordId, attributes: u32) -> Result<(), NtStatus> {
     })
 }
 
+/// The null device opened, whatever the disposition asks: there is one, always there, and every
+/// open of it shares it. Its handle has the rights asked for; the I/O status says FILE_OPENED.
+fn open_null(
+    access: u32,
+    share: u32,
+    options: u32,
+    inherit: bool,
+    slot: UserPtr<u32>,
+    io_status: UserAddr,
+) -> NtResult {
+    let process = crate::user::args::calling_process();
+    if process.handles_full() {
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    let open = io::Open {
+        granted: rights::mapped(access),
+        share: share as u8,
+        inherit,
+        synchronous: options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0,
+        delete_on_close: false,
+    };
+    let access = rights::share_access(open.granted);
+    let handle = io::insert(process, Context::Null, access, &open, || {})?;
+    deliver(slot, handle)?;
+    complete(io_status, STATUS_SUCCESS, FILE_OPENED);
+    Ok(STATUS_SUCCESS)
+}
+
 /// The create both services share.
 #[allow(clippy::too_many_arguments)]
 fn create(
@@ -219,6 +248,11 @@ fn create(
                 inherit,
             };
             return super::pipe::open_client(&name, &open, slot, io_status);
+        }
+        Named::Null { inherit } => {
+            slot.addr().probe(4)?;
+            io_status.probe(8)?;
+            return open_null(access, share, options, inherit, slot, io_status);
         }
     };
     slot.addr().probe(4)?;

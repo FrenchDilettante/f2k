@@ -67,6 +67,12 @@ COM1 as a corpus program's does: `cmd.exe /c echo hi` prints `hi` and ends with 
 last command's return code, and `exit /b 4` sets the ERRORLEVEL to 4 but returns 0 (as
 tests/cmd/batexit's capture shows).
 
+Four more `/c` boots run lines of commands, with the spawn fixture's companion (spawnkid.exe)
+beside cmd.exe: `echo` redirected into a file and appended to it, then `type` of it back, a
+program's standard error into a file and its output into nul; a built-in piped into a program (the
+built-in in a `cmd /c` of its own) and a program's `2>&1` down a pipe; `&&` and `||` deciding by
+the return code, and `^&`; and `echo ver| cmd`, a shell reading its commands from a pipe.
+
     uv run pytest tests/core/test_cmd.py
 """
 from __future__ import annotations
@@ -336,3 +342,65 @@ def test_c_runs_a_batch_file(builder, log_path, boot_timeout, tmp_path):
         "in f2ksub.cmd sub",
         "back 2",
     ], 0)
+
+
+# The spawn fixture's companion, which the redirection boots add beside cmd.exe: `spawnkid out`
+# writes a line to its standard output, then one to its standard error; `spawnkid read` reads its
+# standard input once and prints what it read.
+SPAWNKID = f2kboot.REPO_ROOT / "tests" / "kernel32" / "spawn" / "spawnkid.exe"
+
+
+@pytest.mark.kernel
+def test_c_redirects_and_types_back(builder, log_path, boot_timeout):
+    """`cmd /c` of a line of commands `&` joins, redirected: `echo` into a new file, then appended
+    to it, `type` of it back (the blank before `&` is echo's text, as on Windows); a program's
+    standard error into a file of its own and its standard output into nul; a command not
+    recognized, its message into nul; and the exit code 0."""
+    string = ("echo one> f2kred.txt & echo two>>f2kred.txt & type f2kred.txt"
+              " & spawnkid out 2> f2kerr.txt > nul & type f2kerr.txt"
+              " & f2knope 2> nul || echo f2knope failed")
+    output, code = run_with_c(builder, log_path, boot_timeout, string, [SPAWNKID])
+    assert (output, code) == ([
+        "one ",
+        "two ",
+        "kid: to the standard error",
+        "f2knope failed",
+    ], 0)
+
+
+@pytest.mark.kernel
+def test_c_pipes_into_a_program(builder, log_path, boot_timeout):
+    """`cmd /c echo piped line| spawnkid read`: echo, a built-in, runs in a `cmd /c` of its own,
+    its output through a pipe into spawnkid's one read; the pipeline ends with spawnkid's code,
+    and `2>&1` sends the program's standard error down the pipe after its output."""
+    output, code = run_with_c(builder, log_path, boot_timeout,
+                              "echo piped line| spawnkid read & spawnkid out 2>&1 | spawnkid read",
+                              [SPAWNKID])
+    assert (output, code) == ([
+        "kid: read: ret=1 err=- [piped line]",
+        "kid: read: ret=1 err=- [kid: to the standard output]",
+    ], 0)
+
+
+@pytest.mark.kernel
+def test_c_runs_on_success_or_failure(builder, log_path, boot_timeout):
+    """`&&` runs its second command when the first succeeds, `||` when it fails; a `^` makes `&`
+    text; and `/c` ends with the last command's return code: a `type` of a missing file fails with
+    1, `||` runs the echo, which returns 0."""
+    string = ("ver > nul && echo and ran || echo or skipped & type f2knone.txt 2> nul"
+              " && echo and skipped || echo or ran & echo a ^& b")
+    output, code = run_with_c(builder, log_path, boot_timeout, string, [])
+    assert (output, code) == (["and ran ", "or ran ", "a & b"], 0)
+
+
+
+@pytest.mark.kernel
+def test_commands_from_a_pipe(builder, log_path, boot_timeout):
+    """`echo ver| cmd`: a cmd.exe whose standard input is a pipe reads its commands from it, each
+    line echoed after the prompt as the console would have echoed it, and ends at the input's end,
+    after its last prompt, with 0."""
+    output, code = run_with_c(builder, log_path, boot_timeout, "echo ver| cmd", [])
+    # The last prompt ends no line: COM1's next line (the kernel's, of the child's end) follows it.
+    assert (output[:6], code) == ([BANNER, "", PROMPT + "ver", "", BANNER, ""], 0), \
+        "\n".join(output)
+    assert len(output) == 7 and output[6].startswith(PROMPT), "\n".join(output)

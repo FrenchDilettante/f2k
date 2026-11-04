@@ -1,25 +1,34 @@
 //! cmd: F2K's command interpreter, Windows 2000's cmd.exe with its command extensions on. Started
 //! with `/C` or `/K` (src/switches.rs) it runs a command line first; interactively it prompts as
-//! the PROMPT variable says (`$P$G` without one) and reads lines from the console. Each line has
-//! its `%NAME%` variables expanded, then either runs a built-in command (`call`, `cd` or `chdir`,
-//! `cls`, `echo`, `exit`, `path`, `prompt`, `rem`, `set`, `type`, `ver`) or names a program, found
-//! as cmd.exe finds one (src/search.rs): a Windows program is started and waited for, a batch file
-//! (src/batch.rs) runs its lines in the shell. No `goto`, `if`, `for` or `shift`, no pipes, no
-//! redirection. The program (src/main.rs) makes the calls; this library reads the lines and says
-//! what is printed.
+//! the PROMPT variable says (`$P$G` without one) and reads lines from the console, or from the
+//! file or pipe its standard input is. Each line has its `%NAME%` variables expanded, then is read
+//! as src/syntax.rs says: commands joined by `&`, `&&`, `||` and `|`, groups in parentheses,
+//! redirections. Each command either runs a built-in (`call`, `cd` or `chdir`, `cls`, `echo`,
+//! `exit`, `path`, `prompt`, `rem`, `set`, `shift`, `type`, `ver`) or names a program, found as
+//! cmd.exe finds one (src/search.rs): a Windows program is started and waited for, a batch file
+//! (src/batch.rs) runs its lines in the shell. No `goto`, `if` or `for`. The program
+//! (src/main.rs) makes the calls; this library reads the lines and says what is printed.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod builtins;
+pub mod help;
 pub mod search;
 pub mod switches;
+pub mod syntax;
 
 use core::fmt;
 
-/// The units a line read holds: the console's line, its CR LF included (a line-mode read's
-/// longest). A line expanded holds as many.
-pub const LINE: usize = 1024;
+/// The longest command line, in characters: Windows 2000's, as Microsoft documents it (2,047 on
+/// Windows 2000 and Windows NT 4.0, 8,191 from Windows XP on). A line typed, read or given to `/C`,
+/// and a line once its variables are expanded, holds this many at most; a batch file's line is cut
+/// there.
+pub const MAX_LINE: usize = 2047;
+
+/// The units a line read holds: [`MAX_LINE`], and its line break (CR LF).
+pub const LINE: usize = MAX_LINE + 2;
 
 /// The units a PROMPT variable's value is read into: a longer one prompts as the default does.
 pub const PROMPT_TEXT: usize = 512;
@@ -97,6 +106,8 @@ pub struct State {
     /// Whether the next prompt follows an empty line, as it does after a command. An empty line,
     /// an abandoned one and `cls` leave none.
     pub spaced: bool,
+    /// The directories `pushd` saved, for `popd`.
+    pub directories: builtins::console::Directories,
 }
 
 impl Default for State {
@@ -108,6 +119,7 @@ impl Default for State {
             return_code: 0,
             echo: true,
             spaced: true,
+            directories: builtins::console::Directories::default(),
         }
     }
 }
@@ -123,17 +135,28 @@ impl State {
     pub fn failed(&mut self) {
         self.ended(1);
     }
+
+    /// No program goes by a command's word: it returns 1, as Windows 2000's cmd's does (`cmd /c`
+    /// of it ends with 1, and `call` of it leaves the ERRORLEVEL 1), and the ERRORLEVEL becomes
+    /// [`NOT_RECOGNIZED`].
+    pub fn not_recognized(&mut self) {
+        self.return_code = 1;
+        self.errorlevel = NOT_RECOGNIZED;
+    }
 }
 
 /// Whether `command`, a built-in, sets the ERRORLEVEL to 0 when it succeeds (its failures set it
-/// to 1). `cd`, `type` and `ver` always do; `set`, `path` and `prompt` do in a batch file named
-/// `.cmd` (`in_cmd_script`), and leave it at the prompt and in a `.bat` file, as Windows 2000's
-/// documentation of the two extensions says; `echo`, `rem` and `cls` never touch it. Programs,
-/// `call` and `exit` set it their own way.
+/// to 1). `cd`, `type` and `ver` always do; `set`, `path` and `prompt` do when the batch file run
+/// from the prompt (or `/C`'s string) is named `.cmd` (`in_cmd_script`), whatever the batch files
+/// it runs are named, and leave it at the prompt and under a `.bat` file, as Windows 2000's
+/// documentation of the two extensions says and its cmd does (a `.bat` file called from a `.cmd`
+/// one clears it); `echo`, `rem` and `cls` never touch it. Programs, `call` and `exit` set it
+/// their own way.
 pub fn clears_errorlevel(command: &Command<'_>, in_cmd_script: bool) -> bool {
     match command {
         Command::ChangeDirectory(_) | Command::Type(_) | Command::Version => true,
         Command::Set(_) | Command::Path(_) | Command::Prompt(_) => in_cmd_script,
+        Command::Builtin(builtin) => builtin.clears_errorlevel(),
         _ => false,
     }
 }
@@ -143,16 +166,25 @@ pub fn clears_errorlevel(command: &Command<'_>, in_cmd_script: bool) -> bool {
 pub enum Command<'a> {
     /// Nothing but blanks (and `@`): prompt again.
     Empty,
-    /// `call`: the command its argument holds; a batch file it names returns to the caller.
+    /// `call`: the command its argument holds, expanded a second time; a batch file it names
+    /// returns to the caller.
     Call(&'a [u16]),
     /// `exit`, its argument (see [`batch::exit`]): the shell ends, or with `/B` the batch.
     Exit(&'a [u16]),
     /// `rem`: a remark, nothing done.
     Remark,
-    /// `cd` or `chdir`: without an argument, print the current directory; with one, change to it.
+    /// `cd` or `chdir`: without an argument, print the current directory; with one, change to it
+    /// (the quotes around it dropped).
     ChangeDirectory(Option<&'a [u16]>),
-    /// `cls`: the screen cleared (its arguments ignored).
+    /// `cls`: the screen cleared (its arguments ignored, but for a switch: see
+    /// [`Command::Incorrect`]).
     ClearScreen,
+    /// `shift`: a batch file's arguments from `%n` on move down one (`%n` takes `%n+1`'s value);
+    /// `%*` stays.
+    Shift(usize),
+    /// A built-in whose arguments it refuses (`cd/`, `cls /x`, `shift /x`): `The syntax of the
+    /// command is incorrect.`, and it fails.
+    Incorrect,
     /// `echo`, in one of its forms.
     Echo(Echo<'a>),
     /// `path`: without an argument, show PATH; with one, set it (`;` alone clears it).
@@ -165,6 +197,8 @@ pub enum Command<'a> {
     Type(&'a [u16]),
     /// `ver`: the version (its arguments ignored).
     Version,
+    /// A file, console or clock built-in (see [`builtins`]).
+    Builtin(builtins::Builtin<'a>),
     /// Anything else: the program the line's first word names (see [`program_name`]), run with
     /// the line (blanks trimmed) as its command line.
     Run { line: &'a [u16], word: &'a [u16] },
@@ -207,9 +241,22 @@ pub(crate) fn is_blank(unit: u16) -> bool {
     unit == SPACE || unit == TAB
 }
 
-/// Whether `unit` ends a built-in command's word: a blank, or one of cmd's delimiters `,` `;` `=`.
-fn ends_word(unit: u16) -> bool {
+/// Whether `unit` separates words as cmd's delimiters do: a blank, `,`, `;` or `=`.
+pub(crate) fn is_delimiter(unit: u16) -> bool {
     is_blank(unit) || unit == u16::from(b',') || unit == u16::from(b';') || unit == EQUALS
+}
+
+/// Whether `unit` ends a built-in command's word: a delimiter, or one of the characters Windows'
+/// cmd splits its internal commands' names at, `+` `/` `[` `]` `(` and `.` `\` `:`, so that
+/// `cd..`, `cd\` and `cd/` are `cd` and its argument.
+pub(crate) fn ends_word(unit: u16) -> bool {
+    is_delimiter(unit) || b"+/[](.\\:".iter().any(|&byte| unit == u16::from(byte))
+}
+
+/// Whether `unit`, outside quotes, ends a program's word: a delimiter, or `/` (`cmd/c` runs `cmd`
+/// with `/c`, as Windows 2000's cmd reads it).
+fn ends_program(unit: u16) -> bool {
+    is_delimiter(unit) || unit == u16::from(b'/')
 }
 
 /// Whether `unit`, right after `echo`, separates it from its text: a blank, or one of the
@@ -220,7 +267,7 @@ fn ends_echo(unit: u16) -> bool {
 }
 
 /// `text` without its leading blanks.
-pub(crate) fn skip_blanks(text: &[u16]) -> &[u16] {
+pub fn skip_blanks(text: &[u16]) -> &[u16] {
     let start = text
         .iter()
         .position(|&unit| !is_blank(unit))
@@ -243,7 +290,7 @@ pub(crate) fn trim_blanks(text: &[u16]) -> &[u16] {
 }
 
 /// A line as read, without its line break (CR LF, or the part of it there is).
-pub(crate) fn without_break(line: &[u16]) -> &[u16] {
+pub fn without_break(line: &[u16]) -> &[u16] {
     let end = line
         .iter()
         .rposition(|&unit| unit != u16::from(b'\r') && unit != u16::from(b'\n'))
@@ -278,11 +325,8 @@ fn is_named(word: &[u16], name: &str) -> bool {
         })
 }
 
-/// What a line read says to do, once expanded. Leading `@`s go (a batch file's line hides its
-/// echo with one). The command word is the line's first; a built-in's ends at a blank or `,` `;`
-/// `=` (`echo`'s at one of the characters it runs into), a program's at a blank, and built-ins
-/// are recognized whatever their case.
-pub fn parse(line: &[u16]) -> Command<'_> {
+/// `line` without its leading blanks and `@`s (a batch file's line hides its echo with one).
+pub(crate) fn command_start(line: &[u16]) -> &[u16] {
     let mut line = without_break(line);
     loop {
         line = skip_blanks(line);
@@ -291,6 +335,42 @@ pub fn parse(line: &[u16]) -> Command<'_> {
             _ => break,
         }
     }
+    line
+}
+
+/// A line's command word as a built-in's is read ([`ends_word`]), and the rest of the line.
+pub(crate) fn command_word(line: &[u16]) -> (&[u16], &[u16]) {
+    let end = line
+        .iter()
+        .position(|&unit| ends_word(unit))
+        .unwrap_or(line.len());
+    line.split_at(end)
+}
+
+/// Whether some word of `argument`, outside quotes, starts with a switch's `/`: words are
+/// separated by blanks and by `,` `;` `=`.
+fn has_switch(argument: &[u16]) -> bool {
+    let mut quoted = false;
+    let mut start = true;
+    for &unit in argument {
+        if unit == QUOTE {
+            quoted = !quoted;
+        }
+        if !quoted && start && unit == u16::from(b'/') {
+            return true;
+        }
+        start = !quoted && is_delimiter(unit);
+    }
+    false
+}
+
+/// What a line read says to do, once expanded. Leading `@`s go (a batch file's line hides its
+/// echo with one). The command word is the line's first: a built-in's ends at a delimiter or one
+/// of the characters [`ends_word`] lists (`echo`'s at one of the characters it runs into), and
+/// built-ins are recognized whatever their case; a program's word ends at a delimiter or a `/`
+/// after its first character, outside quotes.
+pub fn parse(line: &[u16]) -> Command<'_> {
+    let line = command_start(line);
     if trim_end(line).is_empty() {
         return Command::Empty;
     }
@@ -301,11 +381,7 @@ pub fn parse(line: &[u16]) -> Command<'_> {
             Some(_) => {}
         }
     }
-    let end = line
-        .iter()
-        .position(|&unit| ends_word(unit))
-        .unwrap_or(line.len());
-    let (word, rest) = line.split_at(end);
+    let (word, rest) = command_word(line);
     let argument = skip_blanks(rest);
     if is_named(word, "exit") {
         return Command::Exit(trim_blanks(argument));
@@ -316,11 +392,17 @@ pub fn parse(line: &[u16]) -> Command<'_> {
     if is_named(word, "call") {
         return Command::Call(argument);
     }
+    if is_named(word, "shift") {
+        return shift(trim_blanks(argument));
+    }
     if is_named(word, "cd") || is_named(word, "chdir") {
-        let argument = trim_blanks(argument);
-        return Command::ChangeDirectory((!argument.is_empty()).then_some(argument));
+        return change_directory(trim_blanks(argument));
     }
     if is_named(word, "cls") {
+        // A switch it does not take (any, as `cls /x`) is refused; other words are ignored.
+        if has_switch(argument) {
+            return Command::Incorrect;
+        }
         return Command::ClearScreen;
     }
     if is_named(word, "ver") {
@@ -340,18 +422,54 @@ pub fn parse(line: &[u16]) -> Command<'_> {
         let argument = after_equals(argument);
         return Command::Prompt((!trim_end(argument).is_empty()).then_some(argument));
     }
+    if let Some(builtin) = builtins::parse(word, argument) {
+        return Command::Builtin(builtin);
+    }
     let line = trim_end(line);
     let mut quoted = false;
     let word = &line[..line
         .iter()
-        .position(|&unit| {
+        .enumerate()
+        .position(|(at, &unit)| {
             if unit == QUOTE {
                 quoted = !quoted;
             }
-            !quoted && is_blank(unit)
+            !quoted && (is_blank(unit) || (at > 0 && ends_program(unit)))
         })
         .unwrap_or(line.len())];
     Command::Run { line, word }
+}
+
+/// `cd`'s argument read: none, a path (its quotes removed), or, after `/D` (which changes the
+/// drive too, as changing the directory does here), a path; any other switch is refused (`cd/`).
+fn change_directory(argument: &[u16]) -> Command<'_> {
+    let mut argument = argument;
+    if argument.first() == Some(&u16::from(b'/')) {
+        let drive = argument.len() >= 2
+            && fold(argument[1]) == u16::from(b'D')
+            && argument.get(2).is_none_or(|&unit| is_blank(unit));
+        if !drive {
+            return Command::Incorrect;
+        }
+        argument = skip_blanks(&argument[2..]);
+    }
+    let argument = unquote(argument);
+    Command::ChangeDirectory((!argument.is_empty()).then_some(argument))
+}
+
+/// `shift`'s argument read: none (or words, ignored) shifts from `%0`, `/n` (a digit from 0 to 8)
+/// from `%n`; any other switch is refused.
+fn shift(argument: &[u16]) -> Command<'_> {
+    match argument {
+        [slash, digit] if *slash == u16::from(b'/') => {
+            match char::from_u32(u32::from(*digit)).and_then(|c| c.to_digit(10)) {
+                Some(digit @ 0..=8) => Command::Shift(digit as usize),
+                _ => Command::Incorrect,
+            }
+        }
+        [slash, ..] if *slash == u16::from(b'/') => Command::Incorrect,
+        _ => Command::Shift(0),
+    }
 }
 
 /// The name a program's word gives, in `out`: the word without its quotes (`"C:\a b\x"` names
@@ -363,6 +481,18 @@ pub fn program_name<'a>(word: &[u16], out: &'a mut [u16]) -> Option<&'a [u16]> {
         length += 1;
     }
     Some(&out[..length])
+}
+
+/// `text` without the quotes around it: a leading quote and the last one after it go, the text
+/// after that last quote too (`cd "C:\Program Files"`, as `cd /?` writes it).
+fn unquote(text: &[u16]) -> &[u16] {
+    match text.split_first() {
+        Some((&QUOTE, rest)) => match rest.iter().rposition(|&unit| unit == QUOTE) {
+            Some(last) => &rest[..last],
+            None => rest,
+        },
+        _ => text,
+    }
 }
 
 /// `argument` without an `=` it starts with and the blanks after that (`path=x`, `prompt=$g`).
@@ -408,8 +538,23 @@ pub fn set(argument: &[u16]) -> Set<'_> {
             value: &argument[equals + 1..],
         },
         None => {
-            let prefix = trim_end(argument);
-            Set::Show((!prefix.is_empty()).then_some(prefix))
+            if trim_end(argument).is_empty() {
+                return Set::Show(None);
+            }
+            // A `/?` after the prefix goes, and what follows it; then the prefix loses one
+            // trailing blank and keeps the others (`set X   ` lists no `X`, but `set X > nul`
+            // lists it), as Windows 2000's set reads it.
+            let help = argument.windows(3).position(|units| {
+                is_blank(units[0]) && units[1] == u16::from(b'/') && units[2] == u16::from(b'?')
+            });
+            let prefix = match help {
+                Some(blank) => &argument[..=blank],
+                None => argument,
+            };
+            Set::Show(Some(match prefix.split_last() {
+                Some((&last, rest)) if is_blank(last) => rest,
+                _ => prefix,
+            }))
         }
     }
 }
@@ -497,6 +642,50 @@ pub trait Variables {
 
     /// The shell's own command line (`%CMDCMDLINE%`).
     fn command_line(&self) -> &[u16];
+
+    /// `name`'s full path, as GetFullPathNameW makes it, written to the start of `value`: its
+    /// length, None when it cannot be made or does not fit.
+    fn full_path(&mut self, name: &[u16], value: &mut [u16]) -> Option<usize>;
+
+    /// The file or directory at `path`: its attributes and size, None when there is none.
+    fn file(&mut self, path: &[u16]) -> Option<(u32, u64)>;
+}
+
+/// A batch file's arguments, as its lines' expansion reads them.
+#[derive(Clone, Copy)]
+pub struct Arguments<'a> {
+    /// The batch's name as typed, then what followed it on its line (see [`batch::argument`]).
+    pub line: &'a [u16],
+    /// Which argument `%0` to `%9` each stand for, as `shift` left them: `%n` is the argument
+    /// `shifted[n]`.
+    pub shifted: [usize; 10],
+    /// The batch file's path, as it was found: what `%~0`'s modifiers read when its name was not
+    /// quoted.
+    pub path: &'a [u16],
+}
+
+impl<'a> Arguments<'a> {
+    /// A batch file's arguments before any `shift`.
+    pub fn new(line: &'a [u16], path: &'a [u16]) -> Self {
+        Arguments {
+            line,
+            shifted: core::array::from_fn(|n| n),
+            path,
+        }
+    }
+
+    /// `%n`, quotes kept: None past the last argument.
+    pub fn get(&self, n: usize) -> Option<&'a [u16]> {
+        batch::argument(self.line, self.shifted[n])
+    }
+
+    /// `shift /n`: `%n` to `%8` take the next one's argument, and `%9` the one after it.
+    pub fn shift(&mut self, from: usize) {
+        for n in from..9 {
+            self.shifted[n] = self.shifted[n + 1];
+        }
+        self.shifted[9] += 1;
+    }
 }
 
 /// The command extensions' version `%CMDEXTVERSION%` shows: Windows 2000's.
@@ -572,26 +761,47 @@ fn variable(
 }
 
 /// The letters a batch argument's `%~` may carry before its digit (`call /?`): the argument as a
-/// full path, its drive, path, name, extension, short name, attributes, time, size.
+/// full path, its drive, path, name, extension, short name, attributes, time and size.
 const MODIFIERS: &[u8] = b"fdpnxsatz";
 
-/// `line` with its variables expanded, in `expanded`: `%NAME%` becomes NAME's value (see
-/// [`variable`]; names compare whatever the case of their letters), and `%NAME:~n,m%` the part of
-/// its value [`substring`] and [`cut`] say.
+/// The modifiers the shell does not expand, short names and the time: a `%~` with either stays as
+/// typed.
+const UNEXPANDED: [u16; 2] = [b's' as u16, b't' as u16];
+
+/// The attributes `%~a1` shows, in its order, by their FILE_ATTRIBUTE_ bits: directory,
+/// read-only, archive, hidden, system, compressed, offline, temporary, reparse point; a `-` for
+/// each the file has not.
+const ATTRIBUTES: [(u8, u32); 9] = [
+    (b'd', 0x10),
+    (b'r', 0x01),
+    (b'a', 0x20),
+    (b'h', 0x02),
+    (b's', 0x04),
+    (b'c', 0x800),
+    (b'o', 0x1000),
+    (b't', 0x100),
+    (b'l', 0x400),
+];
+
+/// `line` with its variables expanded, in `expanded`, [`MAX_LINE`] units at most, its line break
+/// aside: `%NAME%` becomes NAME's value (see [`variable`]; names compare whatever the case of
+/// their letters), `%NAME:~n,m%` the part of its value [`substring`] and [`cut`] say, and
+/// `%NAME:old=new%` its value with `old` replaced ([`replace`]).
 ///
 /// Interactively (`batch` None), an undefined `%NAME%` keeps its `%` and name, its closing `%`
 /// free to open the next variable, and a `%` without a closing one stays.
 ///
-/// In a batch file (`batch` the batch's arguments, see [`batch::argument`]), `%0` to `%9` are its
-/// arguments (nothing past the last), `%*` all of them after its name, `%~1` an argument without
-/// its quotes; `%%` is `%`; an undefined `%NAME%` is nothing, and a `%` without a closing one
-/// goes. `%~` with modifier letters (`%~dp0`) is left as it is.
+/// In a batch file (`batch` its arguments), `%0` to `%9` are its arguments (nothing past the
+/// last), `%*` all of them after its name, `%~1` an argument without its quotes, and `%~f1` with
+/// [`MODIFIERS`] the parts of its path ([`modified`]); `%%` is `%`; an undefined `%NAME%` is
+/// nothing, an undefined `%NAME:...` loses `%NAME:` and the scan goes on after the colon, and a
+/// `%` without a closing one goes.
 ///
 /// TooLong when the expanded line does not fit `expanded`.
 pub fn expand<'a>(
     line: &[u16],
     errorlevel: u32,
-    batch: Option<&[u16]>,
+    batch: Option<&Arguments<'_>>,
     variables: &mut dyn Variables,
     expanded: &'a mut [u16],
 ) -> Result<&'a [u16], TooLong> {
@@ -619,33 +829,41 @@ pub fn expand<'a>(
                 continue;
             }
             if let Some(n) = digit(next) {
-                copy(
-                    batch::argument(arguments, n).unwrap_or(&[]),
-                    expanded,
-                    &mut length,
-                )?;
+                copy(arguments.get(n).unwrap_or(&[]), expanded, &mut length)?;
                 at += 2;
                 continue;
             }
             if next == Some(u16::from(b'*')) {
-                copy(batch::all(arguments), expanded, &mut length)?;
+                copy(batch::all(arguments.line), expanded, &mut length)?;
                 at += 2;
                 continue;
             }
             if next == Some(u16::from(b'~')) {
-                let letters = line[at + 2..]
+                let letters = &line[at + 2..];
+                let letters = &letters[..letters
                     .iter()
                     .take_while(|&&unit| {
                         u8::try_from(unit).is_ok_and(|byte| MODIFIERS.contains(&byte))
                     })
-                    .count();
-                let end = at + 2 + letters;
+                    .count()];
+                let end = at + 2 + letters.len();
                 if let Some(n) = digit(line.get(end).copied()) {
-                    if letters == 0 {
-                        let argument = batch::argument(arguments, n).unwrap_or(&[]);
-                        copy(batch::unquote(argument), expanded, &mut length)?;
-                    } else {
+                    let argument = batch::unquote(arguments.get(n).unwrap_or(&[]));
+                    if letters.is_empty() {
+                        copy(argument, expanded, &mut length)?;
+                    } else if letters.iter().any(|letter| UNEXPANDED.contains(letter)) {
                         copy(&line[at..=end], expanded, &mut length)?;
+                    } else {
+                        // `%0` unquoted is the batch file found, its extension included.
+                        let quoted = arguments
+                            .get(n)
+                            .is_some_and(|text| text.first() == Some(&QUOTE));
+                        let name = if n == 0 && !quoted && arguments.shifted[0] == 0 {
+                            arguments.path
+                        } else {
+                            argument
+                        };
+                        length += modified(name, letters, variables, &mut expanded[length..])?;
                     }
                     at = end + 1;
                     continue;
@@ -661,14 +879,23 @@ pub fn expand<'a>(
         };
         let close = at + 1 + close;
         let name = &line[at + 1..close];
-        if let Some((base, offset, count)) = substring(name) {
-            if let Some(value) = variable(base, errorlevel, variables, &mut expanded[length..])? {
-                let range = cut(value, offset, count);
-                let kept = range.len();
-                expanded.copy_within(length + range.start..length + range.end, length);
-                length += kept;
-                at = close + 1;
-                continue;
+        if let Some(colon) = name.iter().position(|&unit| unit == u16::from(b':')) {
+            let (base, spec) = (&name[..colon], &name[colon + 1..]);
+            let edited = spec.first() == Some(&u16::from(b'~')) || spec.contains(&EQUALS);
+            if edited {
+                match variable(base, errorlevel, variables, &mut expanded[length..])? {
+                    Some(value) => {
+                        length += edit(name, colon, value, &mut expanded[length..])?;
+                        at = close + 1;
+                        continue;
+                    }
+                    None if batch.is_some() => {
+                        // `%NAME:` goes; what follows the colon is read on.
+                        at += 1 + colon + 1;
+                        continue;
+                    }
+                    None => {}
+                }
             }
         }
         match variable(name, errorlevel, variables, &mut expanded[length..])? {
@@ -683,37 +910,230 @@ pub fn expand<'a>(
             }
         }
     }
+    if without_break(&expanded[..length]).len() > MAX_LINE {
+        return Err(TooLong);
+    }
     Ok(&expanded[..length])
 }
 
-/// A decimal number with an optional sign, the whole of `text`: None for anything else.
-fn signed(text: &[u16]) -> Option<i64> {
-    let (negative, digits) = match text.split_first() {
+/// A variable's value, at the start of `buffer` and `length` units long, edited as `name` (the
+/// text between its `%`s, its colon at `colon`) says: `~offset,count` keeps the part [`cut`]
+/// says, and `old=new` replaces `old` ([`replace`]). A substring whose numbers cannot be read
+/// gives `name` itself, as Windows 2000's cmd expands it. The units the result holds.
+fn edit(name: &[u16], colon: usize, length: usize, buffer: &mut [u16]) -> Result<usize, TooLong> {
+    let spec = &name[colon + 1..];
+    if spec.first() == Some(&u16::from(b'~')) {
+        return Ok(match offsets(&spec[1..]) {
+            Some((offset, count)) => {
+                let range = cut(length, offset, count);
+                buffer.copy_within(range.clone(), 0);
+                range.len()
+            }
+            None => {
+                let mut written = 0;
+                copy(name, buffer, &mut written)?;
+                written
+            }
+        });
+    }
+    let equals = spec
+        .iter()
+        .position(|&unit| unit == EQUALS)
+        .unwrap_or(spec.len());
+    let new = spec.get(equals + 1..).unwrap_or(&[]);
+    replace(&spec[..equals], new, length, buffer)
+}
+
+/// `%NAME:old=new%`'s value, from the value at the start of `buffer` (`length` units): every
+/// `old` replaced by `new`, whatever the case of their ASCII letters; `*old` replaces everything
+/// up to the first `old`, that `old` included. An empty `old` changes nothing. The units the
+/// result holds.
+#[inline(never)]
+fn replace(old: &[u16], new: &[u16], length: usize, buffer: &mut [u16]) -> Result<usize, TooLong> {
+    let mut value = [0; LINE];
+    let value = value.get_mut(..length).ok_or(TooLong)?;
+    value.copy_from_slice(&buffer[..length]);
+    let (old, first) = match old.split_first() {
+        Some((&star, rest)) if star == u16::from(b'*') => (rest, true),
+        _ => (old, false),
+    };
+    if old.is_empty() {
+        return Ok(length);
+    }
+    let matches = |at: usize| {
+        value
+            .get(at..at + old.len())
+            .is_some_and(|text| same_name(text, old))
+    };
+    let mut written = 0;
+    let mut at = 0;
+    if first {
+        if let Some(found) = (0..length).find(|&at| matches(at)) {
+            copy(new, buffer, &mut written)?;
+            at = found + old.len();
+        }
+    } else {
+        while at < length {
+            if matches(at) {
+                copy(new, buffer, &mut written)?;
+                at += old.len();
+            } else {
+                copy(&value[at..at + 1], buffer, &mut written)?;
+                at += 1;
+            }
+        }
+    }
+    copy(&value[at..], buffer, &mut written)?;
+    Ok(written)
+}
+
+/// A batch argument's `%~` modifiers applied to `name` (the argument without its quotes), in
+/// `value`: the attributes (`a`) and size (`z`) of the file it names, then the parts of its full
+/// path (`f` all of it, else `d` its drive, `p` its directory, `n` its name, `x` its extension, in
+/// that order), separated by blanks; the attributes and size are left out for a name that names
+/// nothing. An empty argument gives nothing. The units written.
+#[inline(never)]
+fn modified(
+    name: &[u16],
+    letters: &[u16],
+    variables: &mut dyn Variables,
+    value: &mut [u16],
+) -> Result<usize, TooLong> {
+    if name.is_empty() {
+        return Ok(0);
+    }
+    let has = |letter: u8| letters.contains(&u16::from(letter));
+    let mut full = [0; MAX_LINE];
+    let full = match variables.full_path(name, &mut full) {
+        Some(length) => &full[..length],
+        None => name,
+    };
+    let file = variables.file(full);
+    let mut length = 0;
+    let gap = |length: &mut usize, value: &mut [u16]| {
+        if *length > 0 {
+            copy(&[SPACE], value, length)
+        } else {
+            Ok(())
+        }
+    };
+    if let (true, Some((attributes, _))) = (has(b'a'), file) {
+        for (letter, bit) in ATTRIBUTES {
+            let shown = if attributes & bit != 0 { letter } else { b'-' };
+            copy(&[u16::from(shown)], value, &mut length)?;
+        }
+    }
+    if let (true, Some((_, size))) = (has(b'z'), file) {
+        gap(&mut length, value)?;
+        length += format(&mut value[length..], format_args!("{size}"))?;
+    }
+    let (drive, directory, stem, extension) = path_parts(full);
+    let parts = [
+        (b'd', drive),
+        (b'p', directory),
+        (b'n', stem),
+        (b'x', extension),
+    ];
+    if parts.iter().any(|&(letter, _)| has(letter)) || has(b'f') {
+        gap(&mut length, value)?;
+        for (letter, part) in parts {
+            if has(b'f') || has(letter) {
+                copy(part, value, &mut length)?;
+            }
+        }
+    }
+    Ok(length)
+}
+
+/// A full path's drive (`C:`), directory (`\WINNT\`), name and extension (`.exe`, its dot
+/// included; none without a dot in the last component).
+fn path_parts(path: &[u16]) -> (&[u16], &[u16], &[u16], &[u16]) {
+    let drive = match path {
+        [_, colon, ..] if *colon == u16::from(b':') => 2,
+        _ => 0,
+    };
+    let name = path
+        .iter()
+        .rposition(|&unit| unit == u16::from(b'\\') || unit == u16::from(b'/'))
+        .map_or(drive, |separator| separator + 1)
+        .max(drive);
+    let dot = path[name..]
+        .iter()
+        .rposition(|&unit| unit == u16::from(b'.'))
+        .map_or(path.len(), |dot| name + dot);
+    (
+        &path[..drive],
+        &path[drive..name],
+        &path[name..dot],
+        &path[dot..],
+    )
+}
+
+/// A number as C's `strtol` reads it with base 0, at the start of `text`: an optional sign, then
+/// `0x` and hexadecimal digits, `0` and octal digits, or decimal digits. The number and the text
+/// after it; None without a digit.
+fn number(text: &[u16]) -> Option<(i64, &[u16])> {
+    let (negative, text) = match text.split_first() {
         Some((&unit, rest)) if unit == u16::from(b'-') => (true, rest),
         Some((&unit, rest)) if unit == u16::from(b'+') => (false, rest),
         _ => (false, text),
     };
-    if digits.is_empty() {
+    let zero = u16::from(b'0');
+    let (radix, digits) = match text {
+        [first, x, rest @ ..]
+            if *first == zero
+                && fold(*x) == u16::from(b'X')
+                && rest
+                    .first()
+                    .is_some_and(|&unit| hex_digit(unit, 16).is_some()) =>
+        {
+            (16, rest)
+        }
+        [first, ..] if *first == zero => (8, text),
+        _ => (10, text),
+    };
+    let count = digits
+        .iter()
+        .take_while(|&&unit| hex_digit(unit, radix).is_some())
+        .count();
+    if count == 0 {
         return None;
     }
     let mut value: i64 = 0;
-    for &unit in digits {
-        let digit = char::from_u32(u32::from(unit))?.to_digit(10)?;
-        value = value.saturating_mul(10).saturating_add(i64::from(digit));
+    for &unit in &digits[..count] {
+        let digit = i64::from(hex_digit(unit, radix)?);
+        value = value.saturating_mul(i64::from(radix)).saturating_add(digit);
     }
-    Some(if negative { -value } else { value })
+    Some((if negative { -value } else { value }, &digits[count..]))
+}
+
+/// `unit`'s value as a digit of `radix`: None for no such digit.
+fn hex_digit(unit: u16, radix: u32) -> Option<u32> {
+    char::from_u32(u32::from(unit))?.to_digit(radix)
+}
+
+/// A substring's numbers, the text after its `~`: `offset` or `offset,count`, each as
+/// [`number`] reads it, nothing after them; None when they cannot be read.
+fn offsets(spec: &[u16]) -> Option<(i64, Option<i64>)> {
+    let (offset, rest) = number(spec)?;
+    match rest.split_first() {
+        None => Some((offset, None)),
+        Some((&comma, rest)) if comma == u16::from(b',') => match number(rest)? {
+            (count, []) => Some((offset, Some(count))),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// A variable's name with a substring after it (`set /?`): `NAME:~offset` or
 /// `NAME:~offset,count`, read as the name, the offset and the count (None for the rest of the
-/// value). None for a name without one, or one whose numbers are not decimal.
+/// value), the numbers as [`number`] reads them. None for a name without one, or one whose numbers
+/// cannot be read.
 pub fn substring(name: &[u16]) -> Option<(&[u16], i64, Option<i64>)> {
     let colon = name.iter().position(|&unit| unit == u16::from(b':'))?;
     let spec = name[colon + 1..].strip_prefix(&[u16::from(b'~')])?;
-    let (offset, count) = match spec.iter().position(|&unit| unit == u16::from(b',')) {
-        Some(comma) => (signed(&spec[..comma])?, Some(signed(&spec[comma + 1..])?)),
-        None => (signed(spec)?, None),
-    };
+    let (offset, count) = offsets(spec)?;
     Some((&name[..colon], offset, count))
 }
 
@@ -748,12 +1168,25 @@ fn copy(units: &[u16], buffer: &mut [u16], length: &mut usize) -> Result<(), Too
     Ok(())
 }
 
-/// `line` copied into `buffer` then a NUL, the command line CreateProcessW takes: None when it does
-/// not fit.
-pub fn command_line<'a>(line: &[u16], buffer: &'a mut [u16]) -> Option<&'a mut [u16]> {
-    let command = buffer.get_mut(..line.len() + 1)?;
-    command[..line.len()].copy_from_slice(line);
-    command[line.len()] = 0;
+/// `line`, which starts with the program's `word`, copied into `buffer` then a NUL, the command
+/// line CreateProcessW takes: a blank goes between the word and what follows it when the word
+/// ended at another delimiter (`x,a` runs `x` with `x ,a`), as Windows 2000's cmd hands it on.
+/// None when it does not fit.
+pub fn command_line<'a>(
+    line: &[u16],
+    word: &[u16],
+    buffer: &'a mut [u16],
+) -> Option<&'a mut [u16]> {
+    let (word, rest) = line.split_at(word.len().min(line.len()));
+    let blank = rest.first().is_some_and(|&unit| !is_blank(unit));
+    let length = line.len() + usize::from(blank);
+    let command = buffer.get_mut(..length + 1)?;
+    command[..word.len()].copy_from_slice(word);
+    if blank {
+        command[word.len()] = SPACE;
+    }
+    command[length - rest.len()..length].copy_from_slice(rest);
+    command[length] = 0;
     Some(command)
 }
 
@@ -826,14 +1259,16 @@ impl fmt::Display for Clock<'_> {
 /// `prompt /?` lists them: `$A` &, `$B` |, `$C` (, `$D` the date, `$E` escape, `$F` ), `$G` >,
 /// `$H` a backspace (the character before erased), `$L` <, `$N` the drive, `$P` the drive and
 /// path, `$Q` =, `$S` a space, `$T` the time, `$V` the version, `$_` CR LF, `$$` $; and, with
-/// command extensions, `$+` (one `+` per pushd level: none, as there is no pushd) and `$M` (the
-/// remote name of a network drive: none). Any other code shows nothing, and neither does a `$`
-/// that ends the text.
+/// command extensions, `$+` (one `+` per directory `pushd` saved) and `$M` (the
+/// remote name of a network drive: none). Any other code ends the prompt, what follows it not
+/// shown; a `$` that ends the text shows nothing.
 pub struct Prompt<'a> {
     pub text: &'a [u16],
     /// The current directory, empty when it cannot be read.
     pub directory: &'a [u16],
     pub time: &'a Time,
+    /// How many directories `pushd` saved: `$+` shows a `+` for each.
+    pub depth: usize,
 }
 
 impl fmt::Display for Prompt<'_> {
@@ -868,10 +1303,27 @@ impl fmt::Display for Prompt<'_> {
                 b'V' => f.write_str(VERSION)?,
                 b'_' => f.write_str("\r\n")?,
                 b'$' => f.write_str("$")?,
-                _ => {}
+                b'+' => (0..self.depth).try_for_each(|_| f.write_str("+"))?,
+                // An unknown code ends the prompt: what follows it is not shown.
+                _ => break,
             }
         }
         Ok(())
+    }
+}
+
+/// The name of the hidden variable that keeps the current directory of `directory`'s drive: `=`,
+/// the drive's letter upper-cased, `:` (`=C:` for `c:\x`). None for a path without a drive (a UNC
+/// path).
+pub fn drive_variable(directory: &[u16]) -> Option<[u16; 3]> {
+    match directory {
+        [letter, colon, ..] if *colon == u16::from(b':') && *letter < 0x80 => {
+            let letter = (*letter as u8).to_ascii_uppercase();
+            letter
+                .is_ascii_alphabetic()
+                .then_some([EQUALS, u16::from(letter), *colon])
+        }
+        _ => None,
     }
 }
 
@@ -1027,6 +1479,16 @@ mod tests {
             parse(&wide("chdir\t\\\r\n")),
             Command::ChangeDirectory(Some(&wide("\\")))
         );
+        // The quotes around the path go.
+        assert_eq!(
+            parse(&wide("cd \"C:\\Program Files\" \r\n")),
+            Command::ChangeDirectory(Some(&path))
+        );
+        assert_eq!(
+            parse(&wide("cd \"C:\\Program Files")),
+            Command::ChangeDirectory(Some(&path))
+        );
+        assert_eq!(parse(&wide("cd \"\"")), Command::ChangeDirectory(None));
     }
 
     #[test]
@@ -1039,16 +1501,51 @@ mod tests {
                 word: &line
             }
         );
-        let line = wide("exit.exe");
-        assert_eq!(
-            parse(&wide("exit.exe\r\n")),
-            Command::Run {
-                line: &line,
-                word: &line
-            }
-        );
         assert_eq!(parse(&wide("ver;\r\n")), Command::Version);
         assert_eq!(parse(&wide("CLS x\r\n")), Command::ClearScreen);
+        // And at the characters Windows' cmd splits its internal commands' names at.
+        let (up, root) = (wide(".."), wide("\\"));
+        assert_eq!(parse(&wide("cd..")), Command::ChangeDirectory(Some(&up)));
+        assert_eq!(parse(&wide("cd\\")), Command::ChangeDirectory(Some(&root)));
+        assert_eq!(parse(&wide("cd/")), Command::Incorrect);
+        assert_eq!(parse(&wide("exit.exe")), Command::Exit(&wide(".exe")));
+        assert_eq!(parse(&wide("ver+")), Command::Version);
+        assert_eq!(parse(&wide("ver(")), Command::Version);
+        assert_eq!(parse(&wide("ver:")), Command::Version);
+    }
+
+    #[test]
+    fn cd_s_switches() {
+        let path = wide("D:\\x");
+        assert_eq!(
+            parse(&wide("cd /d D:\\x")),
+            Command::ChangeDirectory(Some(&path))
+        );
+        assert_eq!(
+            parse(&wide("cd /D \"D:\\x\"")),
+            Command::ChangeDirectory(Some(&path))
+        );
+        assert_eq!(parse(&wide("cd /d")), Command::ChangeDirectory(None));
+        assert_eq!(parse(&wide("cd /x")), Command::Incorrect);
+        assert_eq!(parse(&wide("cd /dx")), Command::Incorrect);
+    }
+
+    #[test]
+    fn cls_refuses_a_switch_and_ignores_a_word() {
+        assert_eq!(parse(&wide("cls /x")), Command::Incorrect);
+        assert_eq!(parse(&wide("cls a,/x")), Command::Incorrect);
+        assert_eq!(parse(&wide("cls foo")), Command::ClearScreen);
+        assert_eq!(parse(&wide("cls a/x")), Command::ClearScreen);
+        assert_eq!(parse(&wide("cls \"/x\"")), Command::ClearScreen);
+    }
+
+    #[test]
+    fn shift_s_forms() {
+        assert_eq!(parse(&wide("shift")), Command::Shift(0));
+        assert_eq!(parse(&wide("SHIFT /3")), Command::Shift(3));
+        assert_eq!(parse(&wide("shift x")), Command::Shift(0));
+        assert_eq!(parse(&wide("shift /9")), Command::Incorrect);
+        assert_eq!(parse(&wide("shift /x")), Command::Incorrect);
     }
 
     #[test]
@@ -1061,14 +1558,27 @@ mod tests {
                 word: &wide("pwd")
             }
         );
-        let line = wide("a=b c");
-        assert_eq!(
-            parse(&wide("a=b c\r\n")),
-            Command::Run {
-                line: &line,
-                word: &wide("a=b")
-            }
-        );
+        // A program's word ends at a delimiter, and at a `/` after its first character, outside
+        // quotes.
+        for (text, word) in [
+            ("a=b c", "a"),
+            ("spawnkid,one", "spawnkid"),
+            ("x;y", "x"),
+            ("cmd/c x", "cmd"),
+            ("/? x", "/?"),
+            ("\"a,b/c\" d", "\"a,b/c\""),
+            ("\"spawn\"kid exit 2", "\"spawn\"kid"),
+        ] {
+            let line = wide(text);
+            assert_eq!(
+                parse(&line),
+                Command::Run {
+                    line: &line,
+                    word: &wide(word)
+                },
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -1159,8 +1669,13 @@ mod tests {
     fn set_s_forms() {
         assert_eq!(set(&[]), Set::Show(None));
         assert_eq!(set(&wide("  ")), Set::Show(None));
+        // The prefix loses one trailing blank and keeps the others, and a `/?` after it goes.
+        let prefix = wide("P  ");
+        assert_eq!(set(&wide("P   ")), Set::Show(Some(&prefix)));
         let prefix = wide("P");
-        assert_eq!(set(&wide("P  ")), Set::Show(Some(&prefix)));
+        assert_eq!(set(&wide("P ")), Set::Show(Some(&prefix)));
+        assert_eq!(set(&wide("P /?")), Set::Show(Some(&prefix)));
+        assert_eq!(set(&wide("P /?x y")), Set::Show(Some(&prefix)));
         let (name, value) = (wide("X"), wide("a=b "));
         assert_eq!(
             set(&wide("X=a=b ")),
@@ -1289,10 +1804,12 @@ mod tests {
         assert_eq!(message(1), None);
     }
 
-    /// An environment for the expansion's tests: names compared upper-cased.
+    /// An environment for the expansion's tests: names compared upper-cased, and files by their
+    /// full paths, upper-cased, with their attributes and sizes.
     struct Fake {
         variables: BTreeMap<String, String>,
         directory: String,
+        files: BTreeMap<String, (u32, u64)>,
     }
 
     impl Fake {
@@ -1303,6 +1820,7 @@ mod tests {
                     .map(|(name, value)| (name.to_uppercase(), value.to_string()))
                     .collect(),
                 directory: "C:\\WINNT".to_string(),
+                files: BTreeMap::new(),
             }
         }
     }
@@ -1339,6 +1857,20 @@ mod tests {
         fn command_line(&self) -> &[u16] {
             &COMMAND_LINE
         }
+
+        fn full_path(&mut self, name: &[u16], value: &mut [u16]) -> Option<usize> {
+            let name = narrow(name);
+            let full = if name.get(1..2) == Some(":") {
+                name
+            } else {
+                format!("{}\\{name}", self.directory)
+            };
+            put(&full, value).ok()
+        }
+
+        fn file(&mut self, path: &[u16]) -> Option<(u32, u64)> {
+            self.files.get(&narrow(path).to_uppercase()).copied()
+        }
     }
 
     /// The shell's command line, as the fake environment gives it.
@@ -1349,10 +1881,17 @@ mod tests {
         expand(&wide(line), errorlevel, None, fake, &mut buffer).map(narrow)
     }
 
-    /// `line` expanded in a batch whose arguments are `arguments`.
+    /// `line` expanded in a batch whose arguments are `arguments`, found as `C:\\D\\t.cmd`.
     fn in_batch(line: &str, arguments: &str, fake: &mut Fake) -> String {
-        let mut buffer = [0; 64];
-        narrow(expand(&wide(line), 7, Some(&wide(arguments)), fake, &mut buffer).unwrap())
+        let arguments = wide(arguments);
+        let path = wide("C:\\D\\t.cmd");
+        in_shifted_batch(line, Arguments::new(&arguments, &path), fake)
+    }
+
+    /// `line` expanded in a batch whose arguments are `arguments`.
+    fn in_shifted_batch(line: &str, arguments: Arguments<'_>, fake: &mut Fake) -> String {
+        let mut buffer = [0; 128];
+        narrow(expand(&wide(line), 7, Some(&arguments), fake, &mut buffer).unwrap())
     }
 
     #[test]
@@ -1366,7 +1905,113 @@ mod tests {
         assert_eq!(in_batch("[%*]", arguments, &mut fake), "[a \"b c\" d]");
         assert_eq!(in_batch("[%*]", "t", &mut fake), "[]");
         assert_eq!(in_batch("%~2 %~1", arguments, &mut fake), "b c a");
-        assert_eq!(in_batch("%~dp0 %~x9", arguments, &mut fake), "%~dp0 %~x9");
+        assert_eq!(in_batch("%~s1 %~t1", arguments, &mut fake), "%~s1 %~t1");
+    }
+
+    #[test]
+    fn a_batch_argument_s_modifiers() {
+        let mut fake = Fake::new(&[]);
+        fake.files
+            .insert("C:\\WINNT\\A.TXT".to_string(), (0x21, 42));
+        let arguments = "t \"a.txt\" b.c.d e";
+        assert_eq!(
+            in_batch("[%~f1][%~d1][%~p1][%~n1][%~x1]", arguments, &mut fake),
+            "[C:\\WINNT\\a.txt][C:][\\WINNT\\][a][.txt]"
+        );
+        assert_eq!(
+            in_batch("[%~nx2][%~xn2][%~n3%~x3]", arguments, &mut fake),
+            "[b.c.d][b.c.d][e]"
+        );
+        // The attributes and size of a file there is; nothing of them for one there is not.
+        assert_eq!(
+            in_batch("[%~a1][%~z1]", arguments, &mut fake),
+            "[-ra------][42]"
+        );
+        assert_eq!(
+            in_batch("[%~zanx1][%~az2][%~z4]", arguments, &mut fake),
+            "[-ra------ 42 a.txt][][]"
+        );
+        // %0 not quoted is the batch file found; quoted, its name as typed.
+        assert_eq!(
+            in_batch("[%~nx0][%~x0][%~dp0]", arguments, &mut fake),
+            "[t.cmd][.cmd][C:\\D\\]"
+        );
+        assert_eq!(in_batch("[%~nx0][%~x0]", "\"t\" x", &mut fake), "[t][]");
+    }
+
+    #[test]
+    fn shift_moves_the_arguments_down() {
+        let mut fake = Fake::new(&[]);
+        let line = wide("t a b c d e f g h i j k");
+        let path = wide("C:\\D\\t.cmd");
+        let mut arguments = Arguments::new(&line, &path);
+        arguments.shift(0);
+        assert_eq!(
+            in_shifted_batch("[%0][%1][%9][%*]", arguments, &mut fake),
+            "[a][b][j][a b c d e f g h i j k]"
+        );
+        let mut arguments = Arguments::new(&line, &path);
+        arguments.shift(2);
+        assert_eq!(
+            in_shifted_batch("[%0][%1][%2][%9]", arguments, &mut fake),
+            "[t][a][c][j]"
+        );
+        // Shifted, %0's modifiers read the argument it now is.
+        let mut arguments = Arguments::new(&line, &path);
+        arguments.shift(0);
+        assert_eq!(
+            in_shifted_batch("[%~f0]", arguments, &mut fake),
+            "[C:\\WINNT\\a]"
+        );
+    }
+
+    #[test]
+    fn percent_star_keeps_the_separators_after_the_name_s_blanks() {
+        let mut fake = Fake::new(&[]);
+        assert_eq!(in_batch("[%*]", "t.cmd ,;x y", &mut fake), "[,;x y]");
+        assert_eq!(in_batch("[%1][%2]", "t.cmd ,;x y", &mut fake), "[x][y]");
+    }
+
+    #[test]
+    fn a_value_s_replacements() {
+        let mut fake = Fake::new(&[("S", "one two three")]);
+        assert_eq!(
+            in_batch("[%S:two=2%][%S:ONE=1%][%S:*two=X%][%S:o=%]", "t", &mut fake),
+            "[one 2 three][1 two three][X three][ne tw three]"
+        );
+        assert_eq!(
+            expanded("[%S:e=EE%][%S:=x%]", 0, &mut fake),
+            Ok("[onEE two thrEEEE][one two three]".to_string())
+        );
+        assert_eq!(
+            expanded("[%S:*zz=x%]", 0, &mut fake),
+            Ok("[one two three]".to_string())
+        );
+        // A hidden variable whose name ends with a colon still expands whole.
+        let mut fake = Fake::new(&[("=C:", "C:\\x")]);
+        assert_eq!(expanded("%=C:%", 0, &mut fake), Ok("C:\\x".to_string()));
+    }
+
+    #[test]
+    fn substrings_at_the_value_s_edges_and_malformed() {
+        let mut fake = Fake::new(&[("S", "one two three")]);
+        assert_eq!(
+            in_batch(
+                "[%S:~0,0%][%S:~-100%][%S:~5,-100%][%S:~100%][%S:~-100,3%]",
+                "t",
+                &mut fake
+            ),
+            "[][one two three][][][one]"
+        );
+        // Numbers as strtol reads them, base 0; others leave the name between the percents.
+        assert_eq!(
+            in_batch("[%S:~0x4%][%S:~010%]", "t", &mut fake),
+            "[two three][three]"
+        );
+        assert_eq!(
+            in_batch("[%S:~a%][%S:~4x%][%S:~1,%]", "t", &mut fake),
+            "[S:~a][S:~4x][S:~1,]"
+        );
     }
 
     #[test]
@@ -1439,6 +2084,22 @@ mod tests {
     }
 
     #[test]
+    fn an_expansion_past_the_longest_line_is_too_long() {
+        let mut fake = Fake::new(&[]);
+        let mut buffer = [0; LINE];
+        let line = wide(&"x".repeat(MAX_LINE));
+        assert!(expand(&line, 0, None, &mut fake, &mut buffer).is_ok());
+        let mut with_break = line.clone();
+        with_break.extend(wide("\r\n"));
+        assert!(expand(&with_break, 0, None, &mut fake, &mut buffer).is_ok());
+        let longer = wide(&"x".repeat(MAX_LINE + 1));
+        assert_eq!(
+            expand(&longer, 0, None, &mut fake, &mut buffer),
+            Err(TooLong)
+        );
+    }
+
+    #[test]
     fn an_expansion_past_the_buffer_is_too_long() {
         let long = "v".repeat(60);
         let mut fake = Fake::new(&[("A", &long)]);
@@ -1464,6 +2125,7 @@ mod tests {
             text: &wide(text),
             directory: &wide(directory),
             time,
+            depth: 0,
         }
         .to_string()
     }
@@ -1487,7 +2149,9 @@ mod tests {
         assert_eq!(prompt("$n", "\\\\server\\share", &TIME), "");
         assert_eq!(prompt("$v", "C:\\", &TIME), "F2K [Version 5.00.2195]");
         assert_eq!(prompt("$+$m", "C:\\", &TIME), "");
-        assert_eq!(prompt("a$xb$", "C:\\", &TIME), "ab");
+        // An unknown code ends the prompt; a `$` at its end shows nothing.
+        assert_eq!(prompt("[a$xb]", "C:\\", &TIME), "[a");
+        assert_eq!(prompt("[c]$", "C:\\", &TIME), "[c]");
         assert_eq!(prompt("caf\u{e9} $G", "C:\\", &TIME), "caf\u{e9} >");
     }
 
@@ -1531,6 +2195,13 @@ mod tests {
         assert_eq!((state.errorlevel, state.return_code), (u32::MAX, u32::MAX));
         state.failed();
         assert_eq!((state.errorlevel, state.return_code), (1, 1));
+    }
+
+    #[test]
+    fn a_command_not_recognized_returns_1_its_errorlevel_9009() {
+        let mut state = State::default();
+        state.not_recognized();
+        assert_eq!((state.return_code, state.errorlevel), (1, NOT_RECOGNIZED));
     }
 
     #[test]
@@ -1596,8 +2267,10 @@ mod tests {
             in_batch("[%P:~2%][%errorlevel:~0,1%]", "t", &mut fake),
             "[cdef][7]"
         );
-        // An undefined variable's substring: nothing in a batch, as typed at the prompt.
-        assert_eq!(in_batch("[%NOPE:~0,2%]", "t", &mut fake), "[]");
+        // An undefined variable's substring: in a batch, `%NOPE:` goes and the rest is read on
+        // (its closing `%`, alone, goes too); as typed at the prompt.
+        assert_eq!(in_batch("[%NOPE:~0,2%]", "t", &mut fake), "[~0,2]");
+        assert_eq!(in_batch("[%NOPE:a=b%]", "t", &mut fake), "[a=b]");
         assert_eq!(
             expanded("[%NOPE:~0,2%]", 0, &mut fake),
             Ok("[%NOPE:~0,2%]".to_string())
@@ -1607,13 +2280,28 @@ mod tests {
     #[test]
     fn the_command_line_ends_with_a_nul() {
         let mut buffer = [0xFFFF; 8];
-        let command = command_line(&wide("pwd x"), &mut buffer).unwrap();
+        let command = command_line(&wide("pwd x"), &wide("pwd"), &mut buffer).unwrap();
         assert_eq!(command, wide("pwd x\0"));
-        assert!(command_line(&wide("12345678"), &mut buffer).is_none());
+        assert!(command_line(&wide("12345678"), &wide("1"), &mut buffer).is_none());
         assert_eq!(
-            command_line(&wide("1234567"), &mut buffer).unwrap().len(),
+            command_line(&wide("1234567"), &wide("1234567"), &mut buffer)
+                .unwrap()
+                .len(),
             8
         );
+    }
+
+    #[test]
+    fn a_blank_follows_a_word_ended_by_another_delimiter() {
+        let mut buffer = [0; 32];
+        let line = |line: &str, word: &str, buffer: &mut [u16]| {
+            narrow(command_line(&wide(line), &wide(word), buffer).unwrap())
+        };
+        assert_eq!(line("x,one", "x", &mut buffer), "x ,one\0");
+        assert_eq!(line("cmd/c y", "cmd", &mut buffer), "cmd /c y\0");
+        assert_eq!(line("x  a  b", "x", &mut buffer), "x  a  b\0");
+        assert_eq!(line("\"x\"y z", "\"x\"y", &mut buffer), "\"x\"y z\0");
+        assert_eq!(line("x", "x", &mut buffer), "x\0");
     }
 
     #[test]
@@ -1637,6 +2325,14 @@ mod tests {
             CannotRun(&wide("x"), 193).to_string(),
             "'x' cannot be run (error 193).\r\n"
         );
+    }
+
+    #[test]
+    fn a_drive_s_hidden_variable() {
+        assert_eq!(drive_variable(&wide("c:\\x")), Some([EQUALS, 0x43, 0x3A]));
+        assert_eq!(drive_variable(&wide("Z:")), Some([EQUALS, 0x5A, 0x3A]));
+        assert_eq!(drive_variable(&wide("\\\\srv\\share")), None);
+        assert_eq!(drive_variable(&wide("1:\\")), None);
     }
 
     #[test]

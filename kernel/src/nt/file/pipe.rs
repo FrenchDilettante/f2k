@@ -187,7 +187,7 @@ pub fn create_named_pipe_file(
     }
     let (name, inherit) = match named(attributes)? {
         Named::Pipe { name, inherit } => (name, inherit),
-        Named::Disk(_) => return Err(STATUS_INVALID_DEVICE_REQUEST),
+        Named::Disk(_) | Named::Null { .. } => return Err(STATUS_INVALID_DEVICE_REQUEST),
     };
     slot.addr().probe(4)?;
     io_status.probe(8)?;

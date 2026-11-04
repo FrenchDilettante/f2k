@@ -1,0 +1,9 @@
+# batcode: one test, the script's one block (`cmd /c batcode.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine.
+description = "batcode - how a batch file ends: exit /b with a number and alone after a program, called (the caller's ERRORLEVEL) and run by cmd /c (its exit code); the exit code of cmd /c when the batch file's last command is a cd that fails, a call of a batch file or of a program, or a call of a batch file ending with exit 9; and of cmd /c command strings: a cd and a type that fail, exit /b 5, exit /b alone after a program; cmd.exe's switches (cmd/c with no blank, an unknown switch, /c with no string and with two quotes); exit and exit /b alone after a program and after a cd that fails; and exit's number in other forms (hexadecimal, a leading zero, trailing letters, a minus sign, letters alone)."
+kind = "script"
+gate = true
+# It starts some thirty cmd.exe and spawnkid processes, past the boot's default budget on the opt-0
+# kernel: it is expected to time out until boots get faster.
+pending = "times out: some thirty cmd.exe and spawnkid processes take longer than the boot's budget on the opt-0 kernel"

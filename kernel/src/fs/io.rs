@@ -206,6 +206,7 @@ mod target {
         match context {
             Context::Disk(record) => disk_cleanup(record, access, share, delete_on_close),
             Context::Pipe(end) => crate::fs::pipes::cleanup(end),
+            Context::Null => {}
         }
     }
 
@@ -215,6 +216,7 @@ mod target {
         match context {
             Context::Disk(record) => with_records(|records| records.close(record)),
             Context::Pipe(end) => crate::fs::pipes::close(end),
+            Context::Null => {}
         }
     }
 
