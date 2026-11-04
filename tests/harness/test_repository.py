@@ -36,7 +36,7 @@ LISTED = [name for name in SECTIONED
 # Set once tests/build.bat has rebuilt every fixture: a binary without its source stamp then fails
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
-DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "pins",
+DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
                     "screenshots", "keys"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
@@ -46,12 +46,17 @@ SCRIPTS = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "sc
 CAPTURED_SCRIPTS = [name for name in SCRIPTS if not f2kboot.awaited(name)]
 
 
+def section_table(source: str) -> set[str]:
+    """The sections an f2kt.h fixture's source lists in its section table."""
+    table = re.search(r"section_t sections\[\] = \{(.*?)\n\};", source, re.S).group(1)
+    return set(re.findall(r'\{\s*"([\w-]+)",', table))
+
+
 def declared_sections(fixture: str) -> set[str]:
     """The sections a fixture's source declares: its f2kt.h section table, or bare's modes."""
     source = (f2kboot.fixture_directory(fixture) / f"{fixture}.c").read_text(encoding="latin-1")
     if fixture in LISTED:
-        table = re.search(r"section_t sections\[\] = \{(.*?)\n\};", source, re.S).group(1)
-        return set(re.findall(r'\{\s*"([\w-]+)",', table))
+        return section_table(source)
     return {"(default)"} | set(re.findall(r'str_eq\(mode, "([\w-]+)"\)', source))
 
 
@@ -92,6 +97,9 @@ def test_captures_match_their_sources(fixture: str):
     declaration = f2kboot.declaration(fixture)
     assert set(declaration.get("pending", {})) <= {block.section for block in blocks}, (
         "pending blocks that do not exist"
+    )
+    assert set(declaration.get("skip", {})) <= {block.section for block in blocks}, (
+        "skipped blocks that do not exist"
     )
     by_section = {block.section: block for block in blocks}
     for section, masks in declaration.get("masks", {}).items():
@@ -139,6 +147,28 @@ def test_pending_blocks_give_their_reason(fixture: str):
     """Every pending block says why it is still on the work list ("not yet implemented")."""
     for section, reason in f2kboot.declaration(fixture).get("pending", {}).items():
         assert reason.strip(), f"{section!r}: no reason given"
+
+
+# Every sectioned fixture, an awaited one included: its skipped sections are declared before its
+# capture, so that its first capture never runs them on F2K.
+ALL_SECTIONED = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "sectioned"]
+
+
+@pytest.mark.parametrize("fixture", ALL_SECTIONED)
+def test_skipped_blocks_give_their_reason_and_are_not_pending(fixture: str):
+    """`skip` is a table of the sections that must never run on F2K, each with why; none of them is
+    also pending, and each is a section of the fixture's source (its f2kt.h section table)."""
+    declared = f2kboot.declaration(fixture)
+    skip = declared.get("skip", {})
+    assert isinstance(skip, dict), "skip is a table: section = reason"
+    for section, reason in skip.items():
+        assert isinstance(reason, str) and reason.strip(), f"{section!r}: no reason given"
+    both = set(skip) & set(declared.get("pending", {}))
+    assert not both, f"sections both pending and skipped: {sorted(both)}"
+    source = (f2kboot.fixture_directory(fixture) / f"{fixture}.c").read_text(encoding="latin-1")
+    if skip and '"../common/f2kt.h"' in source:
+        unknown = set(skip) - section_table(source)
+        assert not unknown, f"skipped sections the source does not declare: {sorted(unknown)}"
 
 
 def test_the_capture_script_lists_bares_modes():

@@ -1,0 +1,151 @@
+# F2K capture of token (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:35:19.90
+token F2KT-SOURCE-CRC=0x7F0D1BD0
+>>> token.exe open
+== open
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+  type: status=0x00000000 [Token]
+  basic information: status=0x00000000; attributes 0x0, granted access 0x00000008
+  CloseHandle: ret=1 err=-
+  CloseHandle again: ret=0 err=6
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+  type: status=0x00000000 [Token]
+  basic information: status=0x00000000; attributes 0x0, granted access 0x00000028
+  CloseHandle: ret=1 err=-
+  CloseHandle again: ret=0 err=6
+OpenProcess(PROCESS_QUERY_INFORMATION, this process): a handle: yes err=-
+OpenProcessToken(that handle, TOKEN_QUERY): ret=1 err=-, a handle
+  type: status=0x00000000 [Token]
+  basic information: status=0x00000000; attributes 0x0, granted access 0x00000008
+  CloseHandle: ret=1 err=-
+  CloseHandle again: ret=0 err=6
+token: done
+<<< exit code=0
+>>> token.exe openerr
+== openerr
+OpenProcessToken(NULL, TOKEN_QUERY): ret=0 err=6, untouched
+OpenProcessToken(GetCurrentThread(), TOKEN_QUERY): ret=0 err=6, untouched
+OpenProcessToken(an event, TOKEN_QUERY): ret=0 err=6, untouched
+OpenProcess(SYNCHRONIZE, this process): a handle: yes err=-
+OpenProcessToken(that handle, TOKEN_QUERY): ret=0 err=5, untouched
+OpenProcessToken(GetCurrentProcess(), no access): ret=0 err=5, untouched
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, NULL): ret=0 err=998
+token: done
+<<< exit code=0
+>>> token.exe lookup
+== lookup
+LookupPrivilegeValueA(NULL, "SeShutdownPrivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeValueW(NULL, "SeShutdownPrivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeValueA(NULL, "SeChangeNotifyPrivilege"): ret=1 err=997 luid=0:23
+LookupPrivilegeValueW(NULL, "SeChangeNotifyPrivilege"): ret=1 err=997 luid=0:23
+LookupPrivilegeValueA(NULL, "SeDebugPrivilege"): ret=1 err=997 luid=0:20
+LookupPrivilegeValueW(NULL, "SeDebugPrivilege"): ret=1 err=997 luid=0:20
+LookupPrivilegeValueA(NULL, "seshutdownprivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeValueW(NULL, "seshutdownprivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeValueA(NULL, "SeNoSuchPrivilege"): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueW(NULL, "SeNoSuchPrivilege"): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueA(NULL, ""): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueW(NULL, ""): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueA("", "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueW("", "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueA(the local computer's name, "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueW(the local computer's name, "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueA(\\ and the local computer's name, "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueW(\\ and the local computer's name, "SeShutdownPrivilege"): ret=1 err=997, the NULL case's LUID: yes
+LookupPrivilegeValueA(NULL, NULL): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueW(NULL, NULL): ret=0 err=1313 luid=0:0
+LookupPrivilegeValueA(NULL, "SeShutdownPrivilege", a NULL LUID pointer): ret=0 err=998
+LookupPrivilegeValueW(NULL, "SeShutdownPrivilege", a NULL LUID pointer): ret=0 err=998
+token: done
+<<< exit code=0
+>>> token.exe adjust
+== adjust
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+before: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+AdjustTokenPrivileges(enable SeShutdownPrivilege): ret=1 err=0; PreviousState: count 1, [0:19 0x0]; ReturnLength 16
+AdjustTokenPrivileges(enable it again): ret=1 err=0; PreviousState: count 0; ReturnLength 4
+while enabled: SeShutdownPrivilege listed: yes, attributes 0x2; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+AdjustTokenPrivileges(disable it): ret=1 err=0; PreviousState: count 1, [0:19 0x2]; ReturnLength 16
+AdjustTokenPrivileges(disable it again): ret=1 err=0; PreviousState: count 0; ReturnLength 4
+after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+AdjustTokenPrivileges(enable SeShutdownPrivilege, no PreviousState): ret=1 err=0
+AdjustTokenPrivileges(disable it, no PreviousState): ret=1 err=0
+after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+token: done
+<<< exit code=0
+>>> token.exe prevshort
+== prevshort
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+before: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+AdjustTokenPrivileges(enable SeShutdownPrivilege, PreviousState of 4 bytes): ret=0 err=122; PreviousState untouched; ReturnLength 16
+  ReturnLength more than the buffer given: yes; one entry's TOKEN_PRIVILEGES (16): yes
+AdjustTokenPrivileges(disable it): ret=1 err=0; PreviousState: count 0; ReturnLength 4
+AdjustTokenPrivileges(enable SeShutdownPrivilege, PreviousState of 0 bytes): ret=0 err=122; PreviousState untouched; ReturnLength 16
+  ReturnLength more than the buffer given: yes; one entry's TOKEN_PRIVILEGES (16): yes
+AdjustTokenPrivileges(disable it): ret=1 err=0; PreviousState: count 0; ReturnLength 4
+after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+token: done
+<<< exit code=0
+>>> token.exe disableall
+== disableall
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+before: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+AdjustTokenPrivileges(DisableAllPrivileges): ret=1 err=0
+  PreviousState: at least one entry: yes; ReturnLength the count and its entries: yes
+  SeChangeNotifyPrivilege in PreviousState: listed: yes, attributes 0x3
+  SeShutdownPrivilege in PreviousState: listed: no
+after it: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x1
+AdjustTokenPrivileges(NewState = that PreviousState): ret=1 err=0
+after the restore: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+token: done
+<<< exit code=0
+>>> token.exe notheld
+== notheld
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+before: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+before: SeTcbPrivilege listed: no
+AdjustTokenPrivileges(enable SeTcbPrivilege): ret=1 err=1300; PreviousState: count 0; ReturnLength 4
+AdjustTokenPrivileges(disable SeTcbPrivilege): ret=1 err=1300; PreviousState: count 0; ReturnLength 4
+AdjustTokenPrivileges(enable LUID 0:65536, no privilege's): ret=1 err=1300; PreviousState: count 0; ReturnLength 4
+AdjustTokenPrivileges(enable SeTcbPrivilege and SeShutdownPrivilege): ret=1 err=1300; PreviousState: count 1, [0:19 0x0]; ReturnLength 16
+AdjustTokenPrivileges(disable SeShutdownPrivilege): ret=1 err=0; PreviousState: count 1, [0:19 0x2]; ReturnLength 16
+after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+after: SeTcbPrivilege listed: no
+token: done
+<<< exit code=0
+>>> token.exe query
+== query
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+GetTokenInformation(TokenPrivileges, no buffer): ret=0 err=122; ReturnLength the count and whole entries: yes
+GetTokenInformation(TokenPrivileges, 4 bytes): ret=0 err=122; ReturnLength the same: yes; the buffer untouched: yes
+GetTokenInformation(TokenPrivileges, the size asked for): ret=1 err=-; ReturnLength the same: yes
+  count: at least 2: yes; the size the count's entries take: yes
+  SeShutdownPrivilege listed: yes, attributes 0x0
+  SeChangeNotifyPrivilege listed: yes, attributes 0x3
+OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+GetTokenInformation(TokenPrivileges) without TOKEN_QUERY: ret=0 err=5; ReturnLength untouched
+GetTokenInformation(NULL, TokenPrivileges): ret=0 err=6; ReturnLength untouched
+token: done
+<<< exit code=0
+>>> token.exe native
+== native
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): status=0x00000000, a handle
+  type: status=0x00000000 [Token]
+  basic information: status=0x00000000; attributes 0x0, granted access 0x00000028
+NtOpenProcessToken(NULL, TOKEN_QUERY): status=0xC0000008, untouched
+NtOpenProcessToken(GetCurrentThread(), TOKEN_QUERY): status=0xC0000024, untouched
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, NULL): status=0xC0000005
+before: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+NtAdjustPrivilegesToken(enable SeShutdownPrivilege): status=0x00000000; PreviousState: count 1, [0:19 0x0]; ReturnLength 16
+NtAdjustPrivilegesToken(disable it): status=0x00000000; PreviousState: count 1, [0:19 0x2]; ReturnLength 16
+NtAdjustPrivilegesToken(enable SeShutdownPrivilege, PreviousState of 4 bytes): status=0xC0000023; PreviousState untouched; ReturnLength 16
+NtAdjustPrivilegesToken(disable it): status=0x00000000; PreviousState: count 0; ReturnLength 4
+after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege listed: yes, attributes 0x3
+NtAdjustPrivilegesToken(enable SeTcbPrivilege, not held): status=0x00000106; PreviousState: count 0; ReturnLength 4
+NtAdjustPrivilegesToken(no NewState, DisableAllPrivileges FALSE): status=0xC000000D
+NtAdjustPrivilegesToken(NULL, no NewState): status=0xC000000D
+token: done
+<<< exit code=0

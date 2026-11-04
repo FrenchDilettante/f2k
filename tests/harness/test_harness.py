@@ -5,6 +5,7 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -355,6 +356,67 @@ def test_a_mask_or_pending_block_naming_no_section_is_refused():
         f2kboot.blocks("memory", gate=True, masks={"nosuch": ("x *",)})
     with pytest.raises(ValueError, match="nosuch"):
         f2kboot.blocks("memory", gate=True, pending={"nosuch": "GAP-X: y"})
+
+
+SECTIONED_CAPTURE = """# F2K capture of fakesec (tests\\capture.bat)
+>>> fakesec.exe a
+A
+<<< exit code=0
+>>> fakesec.exe down
+down: ret=0 err=1314
+<<< exit code=0
+>>> fakesec.exe c
+C
+<<< exit code=0
+"""
+
+
+def test_a_skipped_block_is_neither_booted_nor_compared(tmp_path, monkeypatch):
+    """A `skip` section's block is skipped with its reason, never an expected failure: the batch
+    leaves it out of its boot (conftest's `batch_items`), so the boot's command line lists the
+    other blocks alone, and each of them is judged on its own part of the log."""
+    import conftest
+
+    directory = tmp_path / "user32" / "fakesec"
+    directory.mkdir(parents=True)
+    (directory / "fakesec.exe").write_bytes(b"MZ")
+    (directory / "output.txt").write_text(SECTIONED_CAPTURE)
+    (directory / "fixture.toml").write_text(
+        'kind = "sectioned"\ngate = true\n\n[skip]\ndown = "the call would shut the test boot down"\n')
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"fakesec": directory})
+    params = {param.id: param for param in f2kboot.corpus_params("fakesec")}
+    [skip] = [mark for mark in params["down"].marks if mark.name == "skip"]
+    assert skip.kwargs["reason"] == "never run on F2K: the call would shut the test boot down"
+    assert not [mark for mark in params["down"].marks if mark.name == "xfail"]
+    assert not [mark for param in (params["a"], params["c"]) for mark in param.marks if mark.name == "skip"]
+
+    def test():
+        pass
+
+    def item(param):
+        marks = [decorator.mark for decorator in param.marks]
+        return SimpleNamespace(function=test, callspec=SimpleNamespace(params={"captured": param.values[0]}),
+                               get_closest_marker=lambda name: next((m for m in marks if m.name == name), None))
+
+    selected = conftest.batch_items(SimpleNamespace(items=[item(param) for param in params.values()]), test)
+    blocks = [each.callspec.params["captured"].block for each in selected]
+    assert f2kboot.batch_command_line([block.command for block in blocks]) == (
+        "CORPUS\\fakesec.exe a ;; CORPUS\\fakesec.exe c")
+    log = "\n".join(BATCH_BOOT + [line.replace("t.exe", "fakesec.exe").replace(" of 3", " of 2")
+                                  for line in leg(1, "t.exe a", "A") + leg(2, "t.exe c", "C")]
+                    + ["F2K: process suite complete: 2 run, 0 faulted, 0 leaks"]) + "\n"
+    batch = f2kboot.Batch([block.command for block in blocks], log, tmp_path / "fakesec.log", "done",
+                          *f2kboot.split_programs(log))
+    assert [batch.verdict(index, [], block) for index, block in enumerate(blocks)] == [None, None]
+
+
+def test_a_section_both_pending_and_skipped_is_refused():
+    with pytest.raises(ValueError, match="both pending and skipped"):
+        f2kboot.blocks("memory", gate=True, pending={"heap": "GAP-X: y"}, skip={"heap": "never"})
+    with pytest.raises(ValueError, match="nosuch"):
+        f2kboot.blocks("memory", gate=True, skip={"nosuch": "never"})
+    with pytest.raises(ValueError, match="no reason"):
+        f2kboot.blocks("memory", gate=True, skip={"heap": " "})
 
 
 def test_pins_name_sections_and_exports():

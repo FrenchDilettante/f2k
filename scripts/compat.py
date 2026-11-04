@@ -36,8 +36,8 @@ writes). A report over a partial run says so.
 Options:
   --check   check the pins against the repository: every pin names an export of a spec, every
             fixture's pinned section has a captured block, every scenario pins something, every
-            ignore reason leads with a gap id and every pending block gives its reason; and the
-            layering: every import of a DLL
+            ignore reason leads with a gap id and every pending or skipped block gives its
+            reason; and the layering: every import of a DLL
             F2K builds is one Windows 2000's DLL makes too, from the same module (its import table,
             userland/<dll>/imports-<version>.txt, dumped by scripts/dump_exports.py), but for the
             stubs' log line, ntdll's DbgPrint (STUB_LOG_IMPORT)
@@ -230,9 +230,10 @@ def check(specs, fixtures, scenarios):
             for pin in pins:
                 if (why := unknown(pin)) is not None:
                     problems.append(f"{where}: pins {section!r}: {pin} {why}")
-        for section, reason in declared.get("pending", {}).items():
-            if not reason.strip():
-                problems.append(f"{where}: pending {section!r}: no reason given")
+        for field_name in ("pending", "skip"):
+            for section, reason in declared.get(field_name, {}).items():
+                if not reason.strip():
+                    problems.append(f"{where}: {field_name} {section!r}: no reason given")
     for dll, (_, exports) in specs.items():
         for export in exports.values():
             if "impl" in export.spec and "ordinal" not in export.spec:

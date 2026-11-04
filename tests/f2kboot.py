@@ -1105,6 +1105,7 @@ def blocks(
     *,
     gate: bool = False,
     pending: dict[str, str] | None = None,
+    skip: dict[str, str] | None = None,
     masks: dict[str, tuple[str, ...]] | None = None,
     pins: dict[str, list[str]] | None = None,
     timeout: float = CORPUS_TIMEOUT,
@@ -1118,12 +1119,16 @@ def blocks(
       fail).
     - `pending`: in a gated fixture, the sections still on the work list, each with what it waits
       for: those blocks run as expected failures.
+    - `skip`: the sections that must never run on F2K, each with why (a call the real machine
+      refuses that F2K would carry out): those blocks are skipped, so their batch's boot leaves
+      them out (tests/conftest.py, `batch_items`) and nothing compares them. A section both pending
+      and skipped is an error.
     - `masks`: per section, the capture lines that carry machine-specific values F2K cannot
       reproduce (an address, the size of a free region the real machine's other allocations bound).
       In that section's block, a capture line matching a mask matches any line that matches the
       same mask; each "*" stands for one value (a run of non-blank characters).
 
-    A `pending` or `masks` section the capture has no block for is an error.
+    A `pending`, `skip` or `masks` section the capture has no block for is an error.
     - `pins`: per section name (a block's first argument), the exports its block pins, as
       `dll.Export`; `"*"` for every block. scripts/compat.py reads them (and checks that each names
       an export); a section the capture has no block for is an error here.
@@ -1141,10 +1146,18 @@ def blocks(
         marks.append(pytest.mark.xfail(reason=f"{fixture} is not served yet", strict=True))
     captured = read_capture(fixture)
     sections = {block.section for block in captured}
-    for field_name, keyed in (("pending", pending or {}), ("masks", masks or {}), ("keys", keys or {})):
+    for field_name, keyed in (("pending", pending or {}), ("skip", skip or {}), ("masks", masks or {}),
+                              ("keys", keys or {})):
         unknown = sorted(set(keyed) - sections)
         if unknown:
             raise ValueError(f"{fixture}: {field_name} names sections with no captured block: {unknown}")
+    both = sorted(set(pending or {}) & set(skip or {}))
+    if both:
+        raise ValueError(f"{fixture}: sections both pending and skipped: {both}")
+    unexplained = sorted(section for section, reason in (skip or {}).items()
+                         if not (isinstance(reason, str) and reason.strip()))
+    if unexplained:
+        raise ValueError(f"{fixture}: skip gives no reason for {unexplained}")
     unknown = sorted(set(pins or {}) - {block.name for block in captured} - {"*"})
     if unknown:
         raise ValueError(f"{fixture}: pins names sections with no captured block: {unknown}")
@@ -1162,7 +1175,10 @@ def blocks(
         seen[block.section] = seen.get(block.section, 0) + 1
         case_id = block.section if seen[block.section] == 1 else f"{block.section}#{seen[block.section]}"
         block_marks = marks
-        if gate and pending and block.section in pending:
+        if skip and block.section in skip:
+            # Never run on F2K: skipped, not expected to fail.
+            block_marks = [pytest.mark.corpus, pytest.mark.skip(reason=f"never run on F2K: {skip[block.section]}")]
+        elif gate and pending and block.section in pending:
             block_marks = marks + [pytest.mark.xfail(reason=pending[block.section], strict=True)]
         captured_block = Captured(fixture, block, patterns.get(block.section, ()), timeout)
         params.append(pytest.param(captured_block, id=case_id, marks=block_marks))
@@ -1308,6 +1324,7 @@ def corpus_params(fixture: str) -> list:
         fixture,
         gate=declared.get("gate", False),
         pending=declared.get("pending"),
+        skip=declared.get("skip"),
         masks={section: tuple(lines) for section, lines in declared.get("masks", {}).items()},
         pins=declared.get("pins"),
         timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),

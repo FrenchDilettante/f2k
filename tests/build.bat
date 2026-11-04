@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp exitwin registry token hellomd crt seh fd wide strings process) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp exitwin registry token hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -435,6 +435,16 @@ del guidisp.obj
 cd ..\..
 goto :eof
 
+:exitwin
+echo === exitwin
+cd user32\exitwin
+call :stamp exitwin.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% exitwin.c user32.lib advapi32.lib
+if errorlevel 1 (echo build.bat: exitwin failed & exit /b 1)
+del exitwin.obj
+cd ..\..
+goto :eof
+
 :registry
 echo === registry
 cd advapi32\registry
@@ -442,6 +452,16 @@ call :stamp registry.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% registry.c advapi32.lib
 if errorlevel 1 (echo build.bat: registry failed & exit /b 1)
 del registry.obj
+cd ..\..
+goto :eof
+
+:token
+echo === token
+cd advapi32\token
+call :stamp token.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% token.c advapi32.lib
+if errorlevel 1 (echo build.bat: token failed & exit /b 1)
+del token.obj
 cd ..\..
 goto :eof
 

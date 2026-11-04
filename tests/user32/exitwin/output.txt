@@ -1,0 +1,46 @@
+# F2K capture of exitwin (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 12:35:19.95
+exitwin F2KT-SOURCE-CRC=0xDB7CA7B1
+>>> exitwin.exe actions
+== actions
+guard: SeShutdownPrivilege held and disabled, no thread token: yes
+ExitWindowsEx(EWX_SHUTDOWN): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCEIFHUNG): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE | EWX_FORCEIFHUNG): ret=0 err=1314
+ExitWindowsEx(EWX_REBOOT): ret=0 err=1314
+ExitWindowsEx(EWX_REBOOT | EWX_FORCE): ret=0 err=1314
+ExitWindowsEx(EWX_REBOOT | EWX_FORCEIFHUNG): ret=0 err=1314
+ExitWindowsEx(EWX_REBOOT | EWX_FORCE | EWX_FORCEIFHUNG): ret=0 err=1314
+ExitWindowsEx(EWX_POWEROFF): ret=0 err=1314
+ExitWindowsEx(EWX_POWEROFF | EWX_FORCE): ret=0 err=1314
+ExitWindowsEx(EWX_POWEROFF | EWX_FORCEIFHUNG): ret=0 err=1314
+ExitWindowsEx(EWX_POWEROFF | EWX_FORCE | EWX_FORCEIFHUNG): ret=0 err=1314
+exitwin: done
+<<< exit code=0
+>>> exitwin.exe flags
+== flags
+guard: SeShutdownPrivilege held and disabled, no thread token: yes
+ExitWindowsEx(EWX_SHUTDOWN | EWX_REBOOT): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_POWEROFF): ret=0 err=1314
+ExitWindowsEx(EWX_REBOOT | EWX_POWEROFF): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_REBOOT | EWX_POWEROFF): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN | EWX_QUICKRESOLVE): ret=0 err=5
+ExitWindowsEx(EWX_SHUTDOWN | EWX_RESTARTAPPS): ret=0 err=5
+ExitWindowsEx(EWX_REBOOT | EWX_QUICKRESOLVE): ret=0 err=5
+ExitWindowsEx(EWX_SHUTDOWN, dwReserved 1): ret=0 err=1314
+exitwin: done
+<<< exit code=0
+>>> exitwin.exe ntshutdown
+== ntshutdown
+guard: SeShutdownPrivilege held and disabled, no thread token: yes
+NtShutdownSystem(ShutdownNoReboot (0)): status=0xC0000061
+NtShutdownSystem(ShutdownReboot (1)): status=0xC0000061
+NtShutdownSystem(ShutdownPowerOff (2)): status=0xC0000061
+NtShutdownSystem(3, out of range): status=0xC000000D
+NtShutdownSystem(0xFFFFFFFF, out of range): status=0xC000000D
+exitwin: done
+<<< exit code=0

@@ -14,9 +14,9 @@ tests/
 │               # test_cmd.py), and the fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp
-├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp
+├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
 ├── gdi32/      # guidc
-├── advapi32/   # registry
+├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir
@@ -138,6 +138,14 @@ The fixtures:
   Gated; the system block stays pending while F2K's System process holds one system thread, and the child block while its suspended child's exit code rests on timing.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
+- `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.
+  Captured on an administrator account; only `SeShutdownPrivilege`, `SeChangeNotifyPrivilege` and `SeTcbPrivilege` print, by their public LUIDs, never the token's whole list, and the computer's name never prints.
+  `SeShutdownPrivilege` is enabled only to observe the calls that enable it, and disabled again before the section does anything but adjust or query the token.
+  Built with `/MD`.
+- `exitwin` (user32) - `ExitWindowsEx` (`EWX_SHUTDOWN`, `EWX_REBOOT` and `EWX_POWEROFF`, with `EWX_FORCE` and `EWX_FORCEIFHUNG`, several action bits, undefined bits) and ntdll's `NtShutdownSystem` (each action, and out-of-range ones), all refused on the real machine for want of `SeShutdownPrivilege` enabled.
+  Before each call the program checks that its token holds the privilege disabled and its thread has no token of its own, and it never calls a logoff (`EWX_LOGOFF` is 0 and needs no privilege); every section runs only when named.
+  F2K checks no shutdown privilege, so these calls would really shut its test boot down: every block is skipped on F2K (`[skip]`).
+  Built with `/MD`.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
@@ -183,6 +191,9 @@ Each block keeps its `timeout` (the boot's start counts against the first).
 The disk build puts the sectioned fixtures in `\CORPUS` (the files fixture's data tree beside them), the way each runs from its own directory on the real machine.
 The fixture's declaration, `fixture.toml`, states what its comparison allows: `gate = true` once F2K passes every block, `[pending]` for the blocks still on the work list (each with its reason: `search = "not yet implemented"`), both run as strict expected failures (a block that starts passing fails the run, so the marker goes with the fix; `--runxfail` shows each failure's first differing line), `[masks]` for the few capture lines that carry machine-specific values (per section, `"virtual" = ["... region * ..."]`: each `*` one value, a run of non-blank characters, each `**` any text, blanks included, and only in that section's block), `[pins]` for the exports each section pins (`event = ["kernel32.CreateEventA", "ntdll.NtCreateEvent"]`, `"*"` for every block: what the C runtime's startup calls; `scripts/compat.py` reports each export's coverage from them), a `timeout`, `retake` for a capture to be retaken (its blocks skipped), and `screenshots = true` for a fixture whose blocks deal with the screen: its boot pauses as each block's process ends (the kernel option `screens`), the harness saves the screen as QEMU shows it to `target/qemu/screens/<fixture>/<section>.png` and lets the boot go on (through a CMOS byte it writes with QEMU's monitor).
 The screenshots are recorded only, never compared.
+`[skip]` names the blocks that must never run on F2K, each with its reason (`actions = "F2K checks no shutdown privilege; the call would shut the test boot down"`): a call the real machine refuses, which F2K would carry out.
+The batch boot leaves those blocks out, and each is reported as skipped with its reason, never compared.
+A section both pending and skipped is an error.
 `[keys]` gives an interactive block the keys a person presses on the real machine while it runs: per section, a list of steps, each a table of what it waits for and what it presses, taken in order:
 
 - `after`: the line of the block's own output to wait for, after the line the step before waited for (the block's markers: `ctrl keys` prints `step N: ...` before each of its waits);
@@ -194,7 +205,7 @@ A chord is QEMU's key names (its qcodes: `a`, `ctrl`, `pause`, `ret`...) joined 
 The keys go through QMP's `input-send-event`, each press and release sent explicitly, in order: the monitor's `sendkey` queues each release behind a hold time of its own, which a chord held from another command would overtake.
 As `tests/core/test_input.py` found, the emulator never repeats a held key, sends Pause's make and break together (`E1 1D 45 E1 9D C5`), and with Ctrl held sends Break's, together too (`E0 46 E0 C6`).
 A step whose wait never comes leaves the rest of its block's keys unpressed: the block fails on its output, or its timeout.
-A `[pending]`, `[masks]`, `[pins]` or `[keys]` section with no captured block is an error, as is a mask that matches none of its block's lines.
+A `[pending]`, `[skip]`, `[masks]`, `[pins]` or `[keys]` section with no captured block is an error, as is a mask that matches none of its block's lines.
 The fixture's `test_<name>.py` only binds `f2kboot.corpus_test("<name>")`.
 A sectioned fixture may be declared ahead of its real-machine files (`<name>.exe` and `output.txt`, both absent; its sources may come first, for the real machine to build): it is then one skipped test, and the disk build leaves it out; `harness/test_repository.py` refuses a fixture holding only one of them.
 A fixture's companion DLLs and programs (`tests/<dll>/<name>/*.dll`, and the `*.exe` other than its own) go into `\CORPUS` beside its program, by their uppercase names (8.3, and distinct across the fixtures: `harness/test_repository.py` checks both), as they sit beside it on the real machine, and the DLLs in a subdirectory of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that subdirectory of `\CORPUS`.
