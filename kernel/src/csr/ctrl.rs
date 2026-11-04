@@ -21,7 +21,7 @@
 //! thread goes through ntdll's thread initialization first, as every thread does.
 //!
 //! The control thread is the kernel's first worker thread, the stand-in for csrss's input thread
-//! (a system thread of the kernel's own process, see `crate::sched::idle::start_system_thread`):
+//! (a system thread of the System process, see `crate::sched::idle::start_system_thread`):
 //! it waits on its work event, a synchronization event the raise sets, and delivers whatever is
 //! queued each time it wakes. A DPC cannot make a thread — making one waits for locks, and maps
 //! and writes another process's memory — so the keyboard's events wait for it.

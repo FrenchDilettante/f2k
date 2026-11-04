@@ -252,10 +252,12 @@ pub fn closable(entry: Entry) -> Result<(), NtStatus> {
 }
 
 /// OBJECT_INFORMATION_CLASS: ObjectHandleFlagInformation, the one class NtSetInformationObject
-/// takes, and NtQueryObject answers beside ObjectBasicInformation and ObjectNameInformation.
+/// takes, and NtQueryObject answers beside ObjectBasicInformation, ObjectNameInformation and
+/// ObjectTypeInformation.
 pub const OBJECT_HANDLE_FLAG_INFORMATION: u32 = 4;
 pub const OBJECT_BASIC_INFORMATION: u32 = 0;
 pub const OBJECT_NAME_INFORMATION: u32 = 1;
+pub const OBJECT_TYPE_INFORMATION: u32 = 2;
 
 /// PUBLIC_OBJECT_BASIC_INFORMATION's size.
 pub const OBJECT_BASIC_INFORMATION_SIZE: u32 =
@@ -328,6 +330,60 @@ pub fn name_information(units: usize, buffer: u32) -> (UnicodeString<u32>, u32) 
     (string, header + u32::from(length) + 2)
 }
 
+/// PUBLIC_OBJECT_TYPE_INFORMATION (winternl.h), NtQueryObject's ObjectTypeInformation: the type's
+/// name, then twenty-two reserved dwords (where the native structure keeps the type's object and
+/// handle counts and their peaks, its invalid attributes, generic mapping, valid access and pool
+/// use, which F2K keeps no record of per type: they are zero), 96 bytes; the name's characters
+/// follow it, terminated.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObjectTypeInformation {
+    pub type_name: UnicodeString<u32>,
+    pub reserved: [u32; 22],
+}
+
+// SAFETY: a UNICODE_STRING of 32-bit fields and u32s, without padding (the size asserted below is
+// their sum): every bit pattern is a value.
+unsafe impl rtl::pod::Pod for ObjectTypeInformation {}
+
+const _: () = assert!(core::mem::size_of::<ObjectTypeInformation>() == 96);
+
+/// The name of an object type, as Windows 2000 names its object type objects (a mutex's type is
+/// the kernel's mutant).
+pub fn type_name(kind: ObjectType) -> &'static str {
+    match kind {
+        ObjectType::Event => "Event",
+        ObjectType::Semaphore => "Semaphore",
+        ObjectType::Mutex => "Mutant",
+        ObjectType::Timer => "Timer",
+        ObjectType::Thread => "Thread",
+        ObjectType::Process => "Process",
+        ObjectType::Section => "Section",
+        ObjectType::File => "File",
+        ObjectType::Directory => "Directory",
+        ObjectType::WindowStation => "WindowStation",
+        ObjectType::Desktop => "Desktop",
+        ObjectType::Key => "Key",
+    }
+}
+
+/// ObjectTypeInformation's answer for the type named `name`, the caller's structure at `buffer`:
+/// the structure, the name's characters after it (the name information's layout: MaximumLength
+/// Length + 2), and the bytes the whole answer takes.
+pub fn type_information(name: &str, buffer: u32) -> (ObjectTypeInformation, u32) {
+    let header = core::mem::size_of::<ObjectTypeInformation>() as u32;
+    let length = 2 * name.len() as u16;
+    let information = ObjectTypeInformation {
+        type_name: UnicodeString {
+            length,
+            maximum_length: length + 2,
+            buffer: buffer.wrapping_add(header),
+        },
+        reserved: [0; 22],
+    };
+    (information, header + u32::from(length) + 2)
+}
+
 /// OBJECT_HANDLE_FLAG_INFORMATION: a handle's two attributes, as BOOLEANs.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,9 +437,9 @@ pub enum FlagLength {
     Exactly,
 }
 
-/// The checks NtQueryObject (past its basic and name classes) and NtSetInformationObject make of
-/// their class and length before the handle: a class other than ObjectHandleFlagInformation is
-/// STATUS_INVALID_INFO_CLASS (the object's type and all-types information are not answered, and
+/// The checks NtQueryObject (past its basic, name and type classes) and NtSetInformationObject make
+/// of their class and length before the handle: a class other than ObjectHandleFlagInformation is
+/// STATUS_INVALID_INFO_CLASS (the all-types information is not answered, and
 /// NtSetInformationObject takes the flags alone), a length the service does not take (see
 /// [`FlagLength`]) STATUS_INFO_LENGTH_MISMATCH.
 pub fn handle_flag_arguments(class: u32, length: u32, rule: FlagLength) -> Result<(), NtStatus> {
@@ -411,14 +467,14 @@ pub fn pseudo_handle_flags(handle: u32) -> Option<ObjectHandleFlagInformation> {
 
 /// NtQueryObject(Handle, ObjectInformationClass, ObjectInformation, ObjectInformationLength,
 /// ReturnLength): ObjectBasicInformation ([`query_basic`]), ObjectNameInformation
-/// ([`query_name`]), or ObjectHandleFlagInformation: the handle's inheritance and its protection
-/// from close, from its entry in the calling process's handle table (kernel32's
-/// GetHandleInformation), its size written to ReturnLength when given. The class and length are
-/// checked first (see [`handle_flag_arguments`]: a buffer too short still has the size written to
-/// ReturnLength, as the service's documentation has it), then the handle: a pseudo-handle answers
-/// no flags set ([`pseudo_handle_flags`]), any other handle naming no entry (a console handle has
-/// none) is STATUS_INVALID_HANDLE. Only the structure's bytes are written, whatever the buffer's
-/// length.
+/// ([`query_name`]), ObjectTypeInformation ([`query_type`]), or ObjectHandleFlagInformation: the
+/// handle's inheritance and its protection from close, from its entry in the calling process's
+/// handle table (kernel32's GetHandleInformation), its size written to ReturnLength when given. The
+/// class and length are checked first (see [`handle_flag_arguments`]: a buffer too short still has
+/// the size written to ReturnLength, as the service's documentation has it), then the handle: a
+/// pseudo-handle answers no flags set ([`pseudo_handle_flags`]), any other handle naming no entry
+/// (a console handle has none) is STATUS_INVALID_HANDLE. Only the structure's bytes are written,
+/// whatever the buffer's length.
 pub fn query_object(
     call: &mut NtCall,
     handle: Handle,
@@ -433,6 +489,9 @@ pub fn query_object(
         }
         OBJECT_NAME_INFORMATION => {
             return query_name(call, handle, information, length, return_length)
+        }
+        OBJECT_TYPE_INFORMATION => {
+            return query_type(call, handle, information, length, return_length)
         }
         _ => {}
     }
@@ -504,6 +563,45 @@ fn query_name(
         let header = core::mem::size_of::<UnicodeString<u32>>() as u32;
         information.offset(header).write(&bytes[..2 * count + 2])?;
     }
+    return_length.write_optional(needed)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// ObjectTypeInformation of the handle's object (see [`type_information`]): its type's name, a
+/// pseudo-handle's too (the current process's or thread's). A buffer too short for the answer is
+/// STATUS_INFO_LENGTH_MISMATCH, the size it needs written to ReturnLength; a handle naming no
+/// entry is STATUS_INVALID_HANDLE.
+fn query_type(
+    call: &mut NtCall,
+    handle: Handle,
+    information: UserAddr,
+    length: u32,
+    return_length: UserPtr<u32>,
+) -> NtResult {
+    let kind = match handle.raw() {
+        CURRENT_PROCESS => ObjectType::Process,
+        CURRENT_THREAD => ObjectType::Thread,
+        _ => {
+            let entry = handle_entry(call, handle)?;
+            entry.object_id().ok_or(STATUS_INVALID_HANDLE)?.kind
+        }
+    };
+    let name = type_name(kind);
+    let (answer, needed) = type_information(name, information.raw());
+    if length < needed {
+        return_length.write_optional(needed)?;
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    information.write(rtl::pod::Pod::as_bytes(&answer))?;
+    // The name's characters and their terminator, ASCII all of them.
+    let mut units = [0u8; 2 * 16];
+    for (pair, byte) in units.chunks_exact_mut(2).zip(name.bytes()) {
+        pair[0] = byte;
+    }
+    let header = core::mem::size_of::<ObjectTypeInformation>() as u32;
+    information
+        .offset(header)
+        .write(&units[..2 * name.len() + 2])?;
     return_length.write_optional(needed)?;
     Ok(STATUS_SUCCESS)
 }
@@ -1164,6 +1262,28 @@ mod tests {
             ..event()
         };
         assert_eq!(basic_information(protected, (1, 1)).attributes, 0x1);
+    }
+
+    /// ObjectTypeInformation's layout: the 96-byte structure, the name's characters right after it,
+    /// MaximumLength Length + 2; every type's name fits the answer's room for one.
+    #[test]
+    fn type_information_lays_the_name_after_the_structure() {
+        let (answer, needed) = type_information("Section", 0x0040_1000);
+        assert_eq!(
+            (answer.type_name.length, answer.type_name.maximum_length),
+            (14, 16)
+        );
+        assert_eq!(answer.type_name.buffer, 0x0040_1000 + 96);
+        assert_eq!(answer.reserved, [0; 22]);
+        assert_eq!(needed, 96 + 16);
+        assert_eq!(type_name(ObjectType::Mutex), "Mutant");
+        for kind in [
+            ObjectType::WindowStation,
+            ObjectType::Section,
+            ObjectType::Key,
+        ] {
+            assert!(type_name(kind).len() < 16);
+        }
     }
 
     /// ObjectNameInformation's layout: the characters right after the structure, MaximumLength

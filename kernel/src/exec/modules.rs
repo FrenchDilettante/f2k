@@ -473,10 +473,10 @@ mod tests {
         // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale,
         // clock, virtual-memory, mapping, synchronization, handle-information, timer, sleep, APC,
         // affinity, TLS-index, environment, file (the write side's included), current-directory,
-        // binary-type, process-creation, process, pipe and module calls and RaiseException its
-        // Rust, the heap and Local/Global calls its own over ntdll's heap). The internal start
-        // thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 303);
+        // binary-type, process-creation, process, ToolHelp, pipe and module calls and
+        // RaiseException its Rust, the heap and Local/Global calls its own over ntdll's
+        // heap). The internal start thunks are not among them.
+        assert_eq!(NATIVE_EXPORTS.len(), 310);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -653,6 +653,11 @@ mod tests {
     /// waits now.
     const AWAITED: [&str; 0] = [];
 
+    /// The exports a corpus binary reaches through GetProcAddress rather than its import table: the
+    /// toolhelp fixture's W walk (MSVC 6's tlhelp32.h and kernel32.lib predate the W forms, which
+    /// Windows 2000's kernel32 added).
+    const BY_NAME: [&str; 2] = ["Process32FirstW", "Process32NextW"];
+
     /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
     /// msvcrt's _kbhit and _getch read the console's key events through the A forms (Windows
     /// 2000's msvcrt imports them), the W forms their twins.
@@ -691,12 +696,12 @@ mod tests {
     /// kernel32 implements exactly what the corpus binaries import: every import of every corpus
     /// binary resolves, and every export it implements is imported by some corpus binary, the
     /// binaries loading the other system DLLs ([`LOADED_CORPUS`]) included (its stubs are for
-    /// programs outside the corpus; the awaited fixtures' exports wait for theirs, and a few serve
-    /// the system DLLs). The export names are unique.
+    /// programs outside the corpus; the awaited fixtures' exports wait for theirs, a few are
+    /// reached by name, and a few serve the system DLLs). The export names are unique.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 312, "the corpus's import surface");
+        assert_eq!(names.len(), 319, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -733,6 +738,7 @@ mod tests {
             assert!(
                 imported.iter().any(|import| import == name)
                     || AWAITED.contains(&name)
+                    || BY_NAME.contains(&name)
                     || FOR_SYSTEM_DLLS.contains(&name),
                 "{name} is exported but no corpus binary imports it"
             );
@@ -1069,7 +1075,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
     /// gdi32, which F2K does not have).
-    const LOADED_CORPUS: [(&str, &[u8]); 17] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 19] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1125,6 +1131,14 @@ mod tests {
         (
             "utility",
             include_bytes!("../../../tests/kernel32/utility/utility.exe"),
+        ),
+        (
+            "toolhelp",
+            include_bytes!("../../../tests/kernel32/toolhelp/toolhelp.exe"),
+        ),
+        (
+            "thkid",
+            include_bytes!("../../../tests/kernel32/toolhelp/thkid.exe"),
         ),
     ];
 

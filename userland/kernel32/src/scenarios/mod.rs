@@ -28,6 +28,7 @@ mod pipes;
 mod processes;
 mod startup;
 mod threads;
+mod toolhelp;
 
 /// An address the scenarios pass where the call must not read: unmapped on every host.
 const UNREAD: usize = 0x10;

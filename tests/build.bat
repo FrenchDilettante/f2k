@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp winsta guiclass guiwin guigeo guimsg guipaint guidc guidisp registry hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -328,6 +328,20 @@ call :stamp utility.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% utility.c
 if errorlevel 1 (echo build.bat: utility failed & exit /b 1)
 del utility.obj
+cd ..\..
+goto :eof
+
+rem toolhelp's companion program, thkid.exe (the child its child section
+rem starts), builds beside it with no source stamp; both with /MD.
+:toolhelp
+echo === toolhelp
+cd kernel32\toolhelp
+cl /nologo /MD thkid.c
+if errorlevel 1 (echo build.bat: thkid failed & exit /b 1)
+call :stamp toolhelp.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% toolhelp.c
+if errorlevel 1 (echo build.bat: toolhelp failed & exit /b 1)
+del toolhelp.obj thkid.obj
 cd ..\..
 goto :eof
 

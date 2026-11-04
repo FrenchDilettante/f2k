@@ -1,8 +1,12 @@
 //! The system queries: NtQuerySystemInformation (the classes F2K answers) and the performance
 //! counter, and the system time's setting (NtSetSystemTime). kernel32's GetSystemInfo and
 //! GlobalMemoryStatus are Win32 code over the first (with the process's counters, `nt::process`),
+//! its ToolHelp snapshots over the first's process listing ([`listing`]),
 //! GetTimeZoneInformation and QueryPerformanceCounter/Frequency over the others, SetLocalTime over
 //! the last, as on Windows 2000.
+
+/// The process information: the listing of every process and its threads.
+pub mod listing;
 
 use rtl::nt::info::{
     RtlTimeZoneInformation,
@@ -27,6 +31,9 @@ info_class! {
         /// SYSTEM_PERFORMANCE_INFORMATION: the memory manager's page counts among the system's
         /// counters.
         Performance = 2,
+        /// The process listing: a SYSTEM_PROCESS_INFORMATION record per process, its threads'
+        /// SYSTEM_THREAD_INFORMATION after it (see [`listing`]).
+        Process = 5,
         /// The RTL_TIME_ZONE_INFORMATION in effect.
         CurrentTimeZone = 44,
     }
@@ -118,7 +125,8 @@ impl Answer {
 /// information and the time zone (no zone configured: a zero bias, no names, no daylight-saving
 /// dates) take their structure's length exactly, the performance information at least its
 /// structure's, as Windows 2000 checks them. STATUS_INVALID_INFO_CLASS for the classes F2K does not
-/// answer.
+/// answer. The process listing is no structure of a fixed size: [`query_system_information`]
+/// answers it apart, never through here.
 pub fn system_information(
     class: u32,
     length: u32,
@@ -151,11 +159,12 @@ pub fn system_information(
             exactly(size_of::<RtlTimeZoneInformation>())?;
             Answer::TimeZone(RtlTimeZoneInformation::default())
         }
+        SystemClass::Process => unreachable!("the process listing is answered apart"),
     })
 }
 
 /// NtQuerySystemInformation: the basic, processor and performance information, and the current
-/// time zone (see [`system_information`]).
+/// time zone (see [`system_information`]); the process listing (see [`listing`]).
 pub fn query_system_information(
     _call: &mut NtCall,
     class: u32,
@@ -163,6 +172,13 @@ pub fn query_system_information(
     length: u32,
     return_length: UserPtr<u32>,
 ) -> NtResult {
+    if SystemClass::try_from(class) == Ok(SystemClass::Process) {
+        #[cfg(target_arch = "x86")]
+        return listing::query_processes(information, length, return_length);
+        // Host builds have no processes to list.
+        #[cfg(not(target_arch = "x86"))]
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
     let answer = system_information(class, length, memory_pages())?;
     information.write(answer.bytes())?;
     return_length.write_optional(answer.bytes().len() as u32)?;

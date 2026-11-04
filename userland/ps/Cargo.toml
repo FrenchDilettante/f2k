@@ -1,0 +1,18 @@
+[package]
+name = "ps"
+version = "0.1.0"
+edition = "2021"
+
+# ps's output, host-testable.
+[lib]
+name = "ps"
+path = "src/lib.rs"
+
+# The program: ps.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "ps"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

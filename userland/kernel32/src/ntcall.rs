@@ -732,8 +732,68 @@ pub fn map_view_of_section(section: u32, process: u32, view: View) -> Result<usi
     Ok(base)
 }
 
+/// A view of a section kernel32 maps for itself, read-write, into the calling process: its bytes,
+/// as many as the view spans, unmapped when dropped. The section's pages may be mapped in other
+/// views as well (another thread's view of the same section): its bytes are shared memory, as a
+/// file mapping's are, which kernel32 reads and writes through one view at a time.
+pub struct MappedView {
+    base: usize,
+    size: usize,
+}
+
+impl MappedView {
+    /// NtMapViewOfSection: the whole section mapped read-write anywhere in the calling process
+    /// (ViewShare), as kernel32 maps a section it reads and writes itself (a ToolHelp snapshot).
+    pub fn map(section: u32) -> Result<MappedView, NtStatus> {
+        const PAGE_READWRITE: u32 = 0x04;
+        const VIEW_SHARE: u32 = 1;
+        let (mut base, mut size, mut offset) = (0usize, 0usize, 0i64);
+        // SAFETY: ntdll's export: it reads and writes the locals above. The view is new memory:
+        // it overlays nothing of the process's.
+        checked(unsafe {
+            nt::NtMapViewOfSection(
+                section,
+                crate::base::CURRENT_PROCESS,
+                &mut base,
+                0,
+                0,
+                &mut offset,
+                &mut size,
+                VIEW_SHARE,
+                0,
+                PAGE_READWRITE,
+            )
+        })?;
+        Ok(MappedView { base, size })
+    }
+}
+
+impl core::ops::Deref for MappedView {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        // SAFETY: the view's `size` bytes are mapped read-write from its mapping to its drop, and
+        // reached through this value alone in kernel32 (see `MappedView`).
+        unsafe { core::slice::from_raw_parts(self.base as *const u8, self.size) }
+    }
+}
+
+impl core::ops::DerefMut for MappedView {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in `deref`, borrowed mutably through the view.
+        unsafe { core::slice::from_raw_parts_mut(self.base as *mut u8, self.size) }
+    }
+}
+
+impl Drop for MappedView {
+    fn drop(&mut self) {
+        let _ = unmap_view_of_section(crate::base::CURRENT_PROCESS, self.base);
+    }
+}
+
 /// NtUnmapViewOfSection: the view of the process holding `base` unmapped (kernel32 maps no view
-/// for itself: a view is its caller's, unmapped when the caller asks).
+/// for itself beyond a [`MappedView`]'s life: a view is its caller's, unmapped when the caller
+/// asks).
 pub fn unmap_view_of_section(process: u32, base: usize) -> Result<(), NtStatus> {
     // SAFETY: ntdll's export, over plain values; nothing kernel32 itself uses lies in a caller's
     // view.
@@ -2101,6 +2161,28 @@ pub fn query_system_information<T: Pod>(class: u32) -> Result<T, NtStatus> {
         )
     })?;
     Ok(value)
+}
+
+/// NtQuerySystemInformation of a class of no fixed size (the process listing) into kernel32's own
+/// bytes: the length the class's answer took, or the failed status with the length the service
+/// reported (STATUS_INFO_LENGTH_MISMATCH's: the length it needs).
+pub fn query_system_information_into(
+    class: u32,
+    buffer: &mut [u8],
+) -> Result<usize, (NtStatus, usize)> {
+    let mut returned = 0u32;
+    // SAFETY: ntdll's export, into kernel32's buffer, of its length, and the local length.
+    let status = unsafe {
+        nt::NtQuerySystemInformation(
+            class,
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+            &mut returned,
+        )
+    };
+    checked(status)
+        .map(|()| returned as usize)
+        .map_err(|status| (status, returned as usize))
 }
 
 /// NtQueryPerformanceCounter: the counter into its place and, when asked, its frequency into

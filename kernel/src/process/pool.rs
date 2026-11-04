@@ -55,6 +55,17 @@ fn live() -> impl Iterator<Item = (&'static Process, crate::ob::ObjectId)> {
     })
 }
 
+/// Every process that has not ended, in pool order: the process listing's. As the toolhelp
+/// fixture's capture shows Windows 2000's, a process leaves the listing when its last thread ends,
+/// while its object lives on for the handles that hold it — the processes [`by_client_id`] finds.
+/// One created without a thread yet is listed.
+#[cfg(target_arch = "x86")]
+pub fn listed() -> impl Iterator<Item = &'static Process> {
+    live().filter_map(|(process, _)| {
+        (process.end().is_none() && !process.deleting()).then_some(process)
+    })
+}
+
 /// Create a process: its object and its record at the same index, the record taken in place over
 /// the address space at `dir_phys`, named `name`, created by the process whose client id is
 /// `parent_id` (zero: none), running as leg `leg` (none for a child).

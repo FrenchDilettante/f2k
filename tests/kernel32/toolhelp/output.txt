@@ -1,0 +1,219 @@
+# F2K capture of toolhelp (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 10:26:50.70
+toolhelp F2KT-SOURCE-CRC=0xEEF0E2F2
+>>> toolhelp.exe layout
+== layout
+tlhelp32.h (MSVC 6):
+sizeof(PROCESSENTRY32) 296
+  dwSize at 0x00
+  cntUsage at 0x04
+  th32ProcessID at 0x08
+  th32DefaultHeapID at 0x0C
+  th32ModuleID at 0x10
+  cntThreads at 0x14
+  th32ParentProcessID at 0x18
+  pcPriClassBase at 0x1C
+  dwFlags at 0x20
+  szExeFile at 0x24
+sizeof(THREADENTRY32) 28
+  dwSize at 0x00
+  cntUsage at 0x04
+  th32ThreadID at 0x08
+  th32OwnerProcessID at 0x0C
+  tpBasePri at 0x10
+  tpDeltaPri at 0x14
+  dwFlags at 0x18
+declared here, PROCESSENTRY32W:
+sizeof(proc_entry_w_t) 556
+  szExeFile at 0x24
+declared here, SYSTEM_PROCESS_INFORMATION:
+sizeof(sys_process_t) 184
+  NextEntryOffset at 0x00
+  NumberOfThreads at 0x04
+  Reserved1 at 0x08
+  CreateTime at 0x20
+  UserTime at 0x28
+  KernelTime at 0x30
+  ImageName at 0x38
+  ImageName.Buffer at 0x3C
+  BasePriority at 0x40
+  UniqueProcessId at 0x44
+  InheritedFromUniqueProcessId at 0x48
+  HandleCount at 0x4C
+  SessionId at 0x50
+  PageDirectoryBase at 0x54
+  PeakVirtualSize at 0x58
+  VirtualSize at 0x5C
+  PageFaultCount at 0x60
+  PeakWorkingSetSize at 0x64
+  WorkingSetSize at 0x68
+  QuotaPeakPagedPoolUsage at 0x6C
+  QuotaPagedPoolUsage at 0x70
+  QuotaPeakNonPagedPoolUsage at 0x74
+  QuotaNonPagedPoolUsage at 0x78
+  PagefileUsage at 0x7C
+  PeakPagefileUsage at 0x80
+  PrivatePageCount at 0x84
+  ReadOperationCount at 0x88
+  WriteOperationCount at 0x90
+  OtherOperationCount at 0x98
+  ReadTransferCount at 0xA0
+  WriteTransferCount at 0xA8
+  OtherTransferCount at 0xB0
+declared here, SYSTEM_THREAD_INFORMATION:
+sizeof(sys_thread_t) 64
+  KernelTime at 0x00
+  UserTime at 0x08
+  CreateTime at 0x10
+  WaitTime at 0x18
+  StartAddress at 0x1C
+  ClientId.UniqueProcess at 0x20
+  ClientId.UniqueThread at 0x24
+  Priority at 0x28
+  BasePriority at 0x2C
+  ContextSwitches at 0x30
+  ThreadState at 0x34
+  WaitReason at 0x38
+NtQuerySystemInformation(SystemProcessInformation), read through these declarations:
+  status=0x00000000
+  every entry and its threads inside the buffer: yes; more than two entries: yes
+  every NextEntryOffset a multiple of 8: yes; every thread's ClientId.UniqueProcess its entry's UniqueProcessId: yes; every ImageName inside the buffer or empty: yes
+  this program's entry: found
+  NumberOfThreads 1, BasePriority 8, SessionId 0, HandleCount nonzero: yes
+  ImageName [TOOLHELP.EXE], the name alone: yes, MaximumLength = Length + 2: no
+  InheritedFromUniqueProcessId: itself: no, an entry of the chain: yes
+  the peaks at least the current values: virtual size yes, working set yes, pagefile usage yes
+  this thread among its threads: yes
+  this thread: BasePriority 8, Priority at least BasePriority: yes, ThreadState 2
+toolhelp: done
+<<< exit code=0
+>>> toolhelp.exe self
+== self
+CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0): a handle: yes err=-
+Process32First: ret=1 err=-; Process32Next while it finds entries: err=-; at the end: ret=0 err=18
+more than two entries: yes
+this program: listed 1 time(s)
+  szExeFile: the name alone: yes, [TOOLHELP.EXE]
+  cntThreads 1, pcPriClassBase 8
+  th32ParentProcessID: itself: no, listed: yes
+  cntUsage 0, th32ModuleID 0, th32DefaultHeapID zero: yes, dwFlags 0x0
+Process32FirstW and Process32NextW, the same walk:
+  Process32FirstW: ret=1 err=-; at the end: ret=0 err=18
+  this program: listed 1 time(s)
+  szExeFile: the name alone: yes, [TOOLHELP.EXE]
+  the same as Process32First's: name yes, cntThreads yes, parent yes, pcPriClassBase yes
+a second thread, waiting:
+  CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0): a handle: yes err=-
+  Thread32First: ret=1 err=-; Thread32Next while it finds entries: err=-; at the end: ret=0 err=18
+  cntThreads 2; Thread32 entries for this program 2; this thread among them yes, the new one yes
+  this thread: tpBasePri 8, cntUsage 0, dwFlags 0x0
+  the new thread: tpBasePri 8, tpDeltaPri 0, cntUsage 0, dwFlags 0x0
+SetThreadPriority(the new thread, THREAD_PRIORITY_HIGHEST): ret=1 err=-
+  the new thread: tpBasePri 10, tpDeltaPri 0; this thread: tpBasePri 8
+SetPriorityClass(HIGH_PRIORITY_CLASS): ret=1 err=-
+  pcPriClassBase 13; tpBasePri: this thread 13, the new thread 15
+back to NORMAL_PRIORITY_CLASS and THREAD_PRIORITY_NORMAL: pcPriClassBase 8; tpBasePri: this thread 8, the new thread 8
+the new thread ended (WAIT_OBJECT_0), its handle closed: cntThreads back to 1 within 2 s: yes
+toolhelp: done
+<<< exit code=0
+>>> toolhelp.exe child
+== child
+a child holding, with one more thread (thkid hold):
+  CreateProcessA: ret=1 err=-
+  ready: WAIT_OBJECT_0
+  running: listed: yes; [THKID.EXE], the name alone: yes; its parent is this program: yes
+  running: cntThreads 2, Thread32 entries for it 2, its first thread among them yes, pcPriClassBase 8
+  told to end: WAIT_OBJECT_0, exit code 0
+  ended, its handles open: listed: no
+  its handles closed: gone within 2 s: yes
+a child created suspended, never resumed:
+  CreateProcessA: ret=1 err=-
+  suspended: listed: yes; [THKID.EXE], the name alone: yes; its parent is this program: yes
+  suspended: cntThreads 1, Thread32 entries for it 1, its first thread among them yes, pcPriClassBase 8
+  TerminateProcess(7): ret=1 err=-
+  terminated: WAIT_OBJECT_0, exit code 7
+  its handles closed: gone within 2 s: yes
+a child that starts a grandchild and ends (thkid nest):
+  CreateProcessA: ret=1 err=-
+  the child ended: WAIT_OBJECT_0, exit code 0
+  the grandchild ready: WAIT_OBJECT_0
+  a process whose parent is the ended child: listed
+  it: [THKID.EXE], cntThreads 1
+  the ended child, its handles open: listed as this program's child: no
+  OpenProcess on the grandchild: a handle: yes err=-
+  the grandchild, told to end: WAIT_OBJECT_0
+toolhelp: done
+<<< exit code=0
+>>> toolhelp.exe system
+== system
+CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0): a handle: yes err=-
+the first entry is PID 0: yes
+PID 0: [[System Process]]; parent PID 0: yes; pcPriClassBase 0; cntThreads as many as the processors: yes
+  its Thread32 entries: as many as its cntThreads: yes; every one's thread id 0: yes, tpBasePri 0: yes
+an entry named System: yes [System]; the second entry: yes
+  its PID: nonzero yes, a multiple of 4 yes, the lowest after 0 yes, below this program's yes
+  parent PID 0: yes; pcPriClassBase 8; cntThreads more than one: yes; as many Thread32 entries: yes
+every PID a multiple of 4: yes; distinct: yes
+Thread32 entries: as many as the cntThreads summed: yes; each owned by a listed process: yes
+NtQuerySystemInformation(SystemProcessInformation):
+  status=0x00000000
+  the first entry: UniqueProcessId 0: yes; ImageName Length 0, Buffer NULL: yes; InheritedFromUniqueProcessId 0: yes
+  its NumberOfThreads as many as the processors: yes; BasePriority 0
+  the System process's entry: ImageName [System]; InheritedFromUniqueProcessId 0: yes; BasePriority 8; NumberOfThreads more than one: yes
+toolhelp: done
+<<< exit code=0
+>>> toolhelp.exe errors
+== errors
+Process32Next on a fresh snapshot: ret=1 err=-, PID 0 (the first entry): yes
+Process32First after two entries: ret=1 err=-, PID 0 again: yes
+Process32First, dwSize 0: ret=0 err=24, dwSize left 0
+Process32First, dwSize sizeof - 1: ret=0 err=24, dwSize left 295
+Process32First, dwSize sizeof + 4: ret=1 err=-, dwSize left 300
+Process32First, dwSize sizeof(PROCESSENTRY32W): ret=1 err=-, dwSize left 556
+Process32FirstW, dwSize sizeof(PROCESSENTRY32): ret=0 err=24
+Process32FirstW, dwSize 0: ret=0 err=24
+Thread32First, dwSize 0: ret=0 err=24
+Thread32First, dwSize sizeof - 1: ret=0 err=24
+Process32Next past the end: ret=0 err=18
+Process32Next past the end again: ret=0 err=18
+Thread32Next past the end: ret=0 err=18
+Thread32Next past the end again: ret=0 err=18
+Thread32First on a TH32CS_SNAPPROCESS snapshot: ret=1 err=-
+Process32First on a TH32CS_SNAPTHREAD snapshot: ret=1 err=-
+CreateToolhelp32Snapshot(0, 0): a handle: yes err=-
+  Process32First on it: ret=0 err=18
+  Thread32First on it: ret=0 err=18
+CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, a PID no process has): a handle: yes, INVALID_HANDLE_VALUE: no err=-
+CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0): a handle: yes, INVALID_HANDLE_VALUE: no err=-
+CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, a PID no process has): a handle: no, INVALID_HANDLE_VALUE: yes err=87
+Process32First on an event: ret=0 err=6
+Thread32First on an event: ret=0 err=6
+Process32First on NULL: ret=0 err=6
+Thread32First on NULL: ret=0 err=6
+Process32First on INVALID_HANDLE_VALUE: ret=0 err=6
+Thread32First on INVALID_HANDLE_VALUE: ret=0 err=6
+NtQuerySystemInformation(SystemProcessInformation) into 16 bytes: status=0xC0000004, the length it reports: zero
+NtQuerySystemInformation(SystemProcessInformation) into none: status=0xC0000004, the length it reports: zero
+NtQuerySystemInformation(SystemProcessInformation) into 16 bytes, no ReturnLength: status=0xC0000004
+toolhelp: done
+<<< exit code=0
+>>> toolhelp.exe handle
+== handle
+CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0): a handle: yes err=-
+  basic information: status=0x00000000; attributes 0x0, granted access 0x000F0007, handle count 1
+  type: status=0x00000000 [Section]
+  GetHandleInformation: ret=1 err=-, flags 0x0
+CloseHandle: ret=1 err=-
+CloseHandle again: ret=0 err=6
+Process32First on the closed handle: ret=0 err=6
+CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_INHERIT, 0): a handle: yes err=-
+  basic information: status=0x00000000; attributes 0x2, granted access 0x000F0007, handle count 1
+  type: status=0x00000000 [Section]
+  GetHandleInformation: ret=1 err=-, flags 0x1
+  Process32First: ret=1 err=-
+  CloseHandle: ret=1 err=-
+toolhelp: done
+<<< exit code=0

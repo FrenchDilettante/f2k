@@ -241,51 +241,83 @@ impl ProcessState {
 /// A process's name: its image's file name without the extension, as its end report shows it — at
 /// most [`NAME_ROOM`] bytes, as Windows 2000 keeps an image's name in its process
 /// (EPROCESS.ImageFileName, sixteen bytes with the terminator). A byte past ASCII reads as `?`.
+///
+/// Beside it, the image's file name itself, its extension included and cut at the same room:
+/// EPROCESS.ImageFileName proper, what the process listing (NtQuerySystemInformation's process
+/// information, ToolHelp's `szExeFile` over it) names the process by on Windows 2000.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ProcessName {
     bytes: [u8; NAME_ROOM],
     length: u8,
+    image: [u8; NAME_ROOM],
+    image_length: u8,
 }
 
 /// A process name's room in bytes.
 pub const NAME_ROOM: usize = 15;
+
+/// `name`'s first [`NAME_ROOM`] bytes, a byte past ASCII (or a NUL) as `?`, and their count.
+fn cut(name: &[u8]) -> ([u8; NAME_ROOM], u8) {
+    let mut bytes = [0u8; NAME_ROOM];
+    let length = name.len().min(NAME_ROOM);
+    for (out, &byte) in bytes.iter_mut().zip(&name[..length]) {
+        *out = if byte.is_ascii() && byte != 0 {
+            byte
+        } else {
+            b'?'
+        };
+    }
+    (bytes, length as u8)
+}
 
 impl ProcessName {
     /// The empty name (a record no process holds).
     const EMPTY: ProcessName = ProcessName {
         bytes: [0; NAME_ROOM],
         length: 0,
+        image: [0; NAME_ROOM],
+        image_length: 0,
     };
 
-    /// The name `name` gives, cut at its room.
+    /// The name `name` gives, cut at its room; with no file known, it is the image's name too.
     pub fn new(name: &[u8]) -> Self {
-        let mut bytes = [0u8; NAME_ROOM];
-        let length = name.len().min(NAME_ROOM);
-        for (out, &byte) in bytes.iter_mut().zip(&name[..length]) {
-            *out = if byte.is_ascii() && byte != 0 {
-                byte
-            } else {
-                b'?'
-            };
-        }
+        let (bytes, length) = cut(name);
         ProcessName {
             bytes,
-            length: length as u8,
+            length,
+            image: bytes,
+            image_length: length,
         }
     }
 
-    /// The stem of the file name `file_name`: what precedes its first dot.
+    /// The name, its image's file name being `file_name`.
+    pub fn with_image(self, file_name: &[u8]) -> Self {
+        let (image, image_length) = cut(file_name);
+        ProcessName {
+            image,
+            image_length,
+            ..self
+        }
+    }
+
+    /// The stem of the file name `file_name`: what precedes its first dot; the image's name is the
+    /// file name.
     pub fn of_file(file_name: &[u8]) -> Self {
         let stem = file_name
             .iter()
             .position(|&byte| byte == b'.')
             .map_or(file_name, |dot| &file_name[..dot]);
-        Self::new(stem)
+        Self::new(stem).with_image(file_name)
     }
 
     /// The name, as text.
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.bytes[..self.length as usize]).unwrap_or("?")
+    }
+
+    /// The image's file name (EPROCESS.ImageFileName), as text.
+    pub fn image_file_name(&self) -> &str {
+        core::str::from_utf8(&self.image[..self.image_length as usize]).unwrap_or("?")
     }
 }
 
@@ -819,11 +851,11 @@ impl Process {
     /// refusal leaves nothing behind: what was taken before it — the address space, the process
     /// object and its record, the slot — is given back, in the reverse order.
     pub fn start(
-        name: &str,
+        name: ProcessName,
         leg: Option<u32>,
     ) -> Result<&'static Process, crate::status::NtStatus> {
         use crate::status::STATUS_INSUFFICIENT_RESOURCES;
-        let process = Process::create(ProcessName::new(name.as_bytes()), leg, 0)?;
+        let process = Process::create(name, leg, 0)?;
 
         // The main thread's gate stack, taken before its record (as a created thread's is): a
         // release undoes it when the record is not to be had, and nothing is attached before both
@@ -1001,8 +1033,14 @@ impl Process {
 static NEXT_CLIENT_ID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(FIRST_CLIENT_ID);
 
-/// The first client id: NT never hands out 0 (no object) or 4 (the System process).
-pub const FIRST_CLIENT_ID: u32 = 8;
+/// The System process's client id: Windows 2000's (the toolhelp fixture's capture lists it as the
+/// lowest id after the idle process's 0, and Windows 2000's is 8). The process listing shows it
+/// (`crate::nt::system::listing`); its threads are the kernel's system threads.
+pub const SYSTEM_PROCESS_ID: u32 = 8;
+
+/// The first client id handed out: NT never hands out 0 (no object) or 4, and 8 is the System
+/// process's.
+pub const FIRST_CLIENT_ID: u32 = SYSTEM_PROCESS_ID + CLIENT_ID_STEP;
 
 /// How far apart client ids are: four, as the platform's are (handle-table indices there).
 pub const CLIENT_ID_STEP: u32 = 4;
@@ -1323,6 +1361,26 @@ mod tests {
         assert_eq!(ProcessName::new(b"").as_str(), "");
     }
 
+    /// The image's file name keeps its extension, cut at the same fifteen bytes (Windows 2000's
+    /// EPROCESS.ImageFileName); a name made without a file is its own image name.
+    #[test]
+    fn the_image_name_keeps_its_extension() {
+        assert_eq!(
+            ProcessName::of_file(b"spawnkid.exe").image_file_name(),
+            "spawnkid.exe"
+        );
+        assert_eq!(
+            ProcessName::of_file(b"averyveryverylongname.exe").image_file_name(),
+            "averyveryverylo"
+        );
+        assert_eq!(ProcessName::new(b"stub").image_file_name(), "stub");
+        let named = ProcessName::new(b"sched").with_image(b"sched.exe");
+        assert_eq!(
+            (named.as_str(), named.image_file_name()),
+            ("sched", "sched.exe")
+        );
+    }
+
     /// A fresh record: no end under way, none recorded.
     #[test]
     fn a_fresh_process_is_not_ending() {
@@ -1331,11 +1389,12 @@ mod tests {
         assert!(process.end().is_none() && !process.awaits_teardown());
     }
 
-    /// Client ids are NT's: never 0 or 4 (the System process), stepping by four, one space for
+    /// Client ids are NT's: never 0 or 4, 8 the System process's, stepping by four, one space for
     /// processes and threads.
     #[test]
-    fn client_ids_step_by_four_from_eight() {
-        assert_eq!(FIRST_CLIENT_ID, 8);
+    fn client_ids_step_by_four_past_the_system_process() {
+        assert_eq!(SYSTEM_PROCESS_ID, 8);
+        assert_eq!(FIRST_CLIENT_ID, 12);
         assert_eq!(CLIENT_ID_STEP, 4);
         assert_eq!(record_at(0x0090_0000).id(), FIRST_CLIENT_ID);
     }

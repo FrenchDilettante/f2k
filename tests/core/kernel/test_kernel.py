@@ -111,6 +111,27 @@ PROCESS_CONCURRENT = (
     "F2K: process 1 teardown audit: frame database ok",
     "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
+# F2K's own ps.exe beside a sleeping program: sched's sleep section is still asleep when ps lists
+# the processes (kernel32's ToolHelp over NtQuerySystemInformation's listing), so its lines show
+# the idle process, the System process (PID 8, the console's control thread its one thread), sched
+# and ps itself, sorted by id, each a boot's program (no creator) at the normal class's base
+# priority; ps ends first, then sched, both torn down clean.
+PROCESS_PS = (
+    *BOOTED,
+    "F2K: process 1 of 2: CORPUS\\sched.exe sleep",
+    "F2K: process 2 of 2: WINNT\\system32\\ps.exe",
+    "  PID  PPID  THR  PRI  NAME",
+    "    0     0    1    0  [System Process]",
+    "    8     0    1    8  System",
+    r"re:^ +\d+     0 +\d+    8  sched\.exe$",
+    r"re:^ +\d+     0    1    8  ps\.exe$",
+    "F2K: process 2 (ps) exited normally (exit code=0)",
+    "sched: done",
+    "F2K: process 1 (sched) exited normally (exit code=0)",
+    "F2K: process 2 teardown audit: frame database ok",
+    "F2K: process 1 teardown audit: frame database ok",
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+)
 # The same image twice, alive together at the same image base and the same TEB addresses, each in
 # its own address space: both print their section's header before either ends, so the scheduler
 # ran one while the other slept; both run to their own end, in either order.
@@ -363,6 +384,14 @@ CASES = (
             r"re:^C:\\WINNT\\SYSTEM32$",
             *EXITED_CLEAN,
         ),
+    ),
+    *both_paths(
+        "process-ps",
+        "F2K's own ps.exe beside sched's sleep section lists the idle process, the System process, sched and itself, sorted by id; both legs end clean, then the summary",
+        cmdline="CORPUS\\sched.exe sleep ;; WINNT\\system32\\ps.exe",
+        kernel_options="concurrent",
+        ordered=True,
+        expects=PROCESS_PS,
     ),
     Case(
         name="process-concurrent-too-many",

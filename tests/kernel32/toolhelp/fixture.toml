@@ -1,0 +1,71 @@
+# toolhelp: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD. Its companion program, thkid.exe (built beside toolhelp.exe from thkid.c, with /MD), is
+# the child the child section starts; it goes into \CORPUS beside the program, as it sits beside it
+# on the real machine. The real machine runs other processes that vary from boot to boot, so the
+# fixture prints only its own processes and threads, found by their ids, and the idle and System
+# processes' ids and thread counts as relations: nothing needs a mask. Gated. The system block is
+# pending until F2K's System process holds more than one system thread; the child block while its
+# suspended child's exit code rests on timing (see its reason).
+description = "toolhelp - the ToolHelp snapshot (toolhelp.c, with its companion program thkid.c): PROCESSENTRY32, PROCESSENTRY32W and THREADENTRY32, and SYSTEM_PROCESS_INFORMATION and SYSTEM_THREAD_INFORMATION as declared and as NtQuerySystemInformation fills them; the program's own entry (its name, threads, priority class, parent) through Process32First/Next and Process32FirstW/NextW, its threads through Thread32First/Next, after CreateThread, SetThreadPriority and SetPriorityClass; children listed with the program as their parent, ended with their handles open, gone once closed, created suspended, and a grandchild outliving its parent; the idle and System processes; the calls' errors (wrong dwSize, past the end, handles that are no snapshot, module snapshots, NtQuerySystemInformation into a short buffer); the snapshot handle's object type, access and inheritance."
+kind = "sectioned"
+gate = true
+
+[pending]
+child = "the capture's suspended child, terminated with 7 after a snapshot, ends with 7: its thread had been dispatched up to its suspend meanwhile, a matter of timing on Windows 2000 (the spawn capture's child, terminated at once, ends with 0); F2K's never-resumed thread ends its process with 0"
+system = "F2K's System process holds one system thread, the console's control thread; Windows 2000's holds more than one"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself and observes, not the helpers around it (the events and
+# waits that pace the children).
+layout = ["ntdll.NtQuerySystemInformation", "kernel32.GetCurrentProcessId", "kernel32.GetCurrentThreadId"]
+self = [
+    "kernel32.CreateToolhelp32Snapshot",
+    "kernel32.Process32First",
+    "kernel32.Process32Next",
+    "kernel32.Process32FirstW",
+    "kernel32.Process32NextW",
+    "kernel32.Thread32First",
+    "kernel32.Thread32Next",
+    "kernel32.GetCurrentProcessId",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.CreateThread",
+    "kernel32.SetThreadPriority",
+    "kernel32.SetPriorityClass",
+]
+child = [
+    "kernel32.CreateToolhelp32Snapshot",
+    "kernel32.Process32First",
+    "kernel32.Process32Next",
+    "kernel32.Thread32First",
+    "kernel32.Thread32Next",
+    "kernel32.CreateProcessA",
+    "kernel32.TerminateProcess",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.OpenProcess",
+]
+system = [
+    "kernel32.CreateToolhelp32Snapshot",
+    "kernel32.Process32First",
+    "kernel32.Process32Next",
+    "kernel32.Thread32First",
+    "kernel32.Thread32Next",
+    "kernel32.GetSystemInfo",
+    "ntdll.NtQuerySystemInformation",
+]
+errors = [
+    "kernel32.CreateToolhelp32Snapshot",
+    "kernel32.Process32First",
+    "kernel32.Process32Next",
+    "kernel32.Process32FirstW",
+    "kernel32.Thread32First",
+    "kernel32.Thread32Next",
+    "ntdll.NtQuerySystemInformation",
+]
+handle = [
+    "kernel32.CreateToolhelp32Snapshot",
+    "kernel32.Process32First",
+    "ntdll.NtQueryObject",
+    "kernel32.GetHandleInformation",
+    "kernel32.CloseHandle",
+]

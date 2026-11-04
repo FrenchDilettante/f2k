@@ -89,6 +89,11 @@ mod target {
     /// cross-process switch to the idle thread loads.
     static IDLE_PROCESS: PinnedProcess = PinnedProcess::new(0, 0);
 
+    /// The System process's record: the system threads' owner, as Windows 2000's System process
+    /// owns its kernel's worker threads, at its base priority 8. It runs in the boot directory, as
+    /// the idle process does: a system thread runs under no process of its own.
+    static SYSTEM_PROCESS: PinnedProcess = PinnedProcess::new(0, 8);
+
     // The boot stack's top, exported by the entry stub's assembly.
     unsafe extern "C" {
         static boot_stack_top: u8;
@@ -105,6 +110,9 @@ mod target {
             // The idle process owns the boot directory: a switch to the idle thread across a
             // process boundary loads it.
             IDLE_PROCESS
+                .get_mut(dispatcher)
+                .set_dir_phys(crate::mem::paging::boot_directory_phys());
+            SYSTEM_PROCESS
                 .get_mut(dispatcher)
                 .set_dir_phys(crate::mem::paging::boot_directory_phys());
             install(IDLE_THREAD, &IDLE_PROCESS, dispatcher, stack_top);
@@ -177,13 +185,14 @@ mod target {
 
     /// Start a system thread (Windows' PsCreateSystemThread, as small as the kernel needs it): the
     /// record `thread`, one of the dispatcher database's system records that no object names,
-    /// attached to the kernel's own process — the idle thread's, as Windows' system threads are
-    /// the System process's — on a gate stack of its own, at `priority`, entering `routine` at its
-    /// first dispatch, at the passive level. It has no TEB and no client id, never enters user mode
-    /// and never ends: its routine waits for its work and never returns (the startup stub halts if
-    /// it does). Readied with interrupts masked, as a boot's main thread is, so its first switch
-    /// waits for the idle loop or the next interrupt. Called at boot, before the allocator's
-    /// baseline: its stack is the boot's for good.
+    /// attached to the System process, as Windows' system threads are, on a gate stack of its own,
+    /// at `priority`, entering `routine` at its first dispatch, at the passive level. It takes a
+    /// client id from the processes' and threads' space, as Windows' do (the process listing shows
+    /// it). It has no TEB, never enters user mode and never ends: its routine waits for its work
+    /// and never returns (the startup stub halts if it does). Readied with interrupts masked,
+    /// as a boot's main thread is, so its first switch waits for the idle loop or the next
+    /// interrupt. Called at boot, before the allocator's baseline: its stack is the boot's for
+    /// good.
     ///
     /// # Panics
     ///
@@ -195,6 +204,7 @@ mod target {
     ) {
         let (slot, frames) =
             crate::mem::kstacks::create().expect("a system thread's stack is the boot's");
+        let thread_id = crate::process::new_client_id();
         let params = crate::sched::startup::StartParams {
             system_routine: routine as usize as u32,
             start_routine: 0,
@@ -205,8 +215,9 @@ mod target {
         level::raised::<Dispatch, _>(|dispatch| {
             let dispatcher = DISPATCHER.get(dispatch);
             dispatcher.renew_thread(thread);
-            IDLE_PROCESS.attach(dispatcher, thread);
+            SYSTEM_PROCESS.attach(dispatcher, thread);
             let record = dispatcher.thread_mut(thread);
+            record.thread_id = thread_id;
             record.gate_slot = slot;
             record.gate_frames = frames;
             record.initial_stack = crate::mem::paging::gate_slot_top(slot as u32);
@@ -219,10 +230,17 @@ mod target {
             dispatcher.make_ready(thread);
         });
     }
+
+    /// The kernel's two process records, the idle process's and the System process's, as the
+    /// process listing reads them (`crate::sched::census`): their addresses, pinned for the
+    /// kernel's life.
+    pub(crate) fn kernel_processes() -> (&'static PinnedProcess, &'static PinnedProcess) {
+        (&IDLE_PROCESS, &SYSTEM_PROCESS)
+    }
 }
 
 #[cfg(target_arch = "x86")]
-pub(crate) use target::{boot, idle_loop, on_idle_thread, start_system_thread};
+pub(crate) use target::{boot, idle_loop, kernel_processes, on_idle_thread, start_system_thread};
 
 #[cfg(test)]
 mod tests {

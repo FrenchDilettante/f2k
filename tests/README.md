@@ -13,7 +13,7 @@ tests/
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility
+│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp
 ├── gdi32/      # guidc
 ├── advapi32/   # registry
@@ -129,6 +129,10 @@ The fixtures:
   Built with `/MD`.
   Gated.
   Its `stringtype` block (`CT_CTYPE2` and `CT_CTYPE3`, which F2K's `GetStringTypeA`/`GetStringTypeW` do not answer) is expected to stay failing.
+- `toolhelp` - the ToolHelp snapshot, with its companion program `thkid.exe` (built beside it from `thkid.c`), which holds on named events the program sets, so each snapshot finds it where the section expects: `PROCESSENTRY32`, `PROCESSENTRY32W` and `THREADENTRY32`, and `SYSTEM_PROCESS_INFORMATION` and `SYSTEM_THREAD_INFORMATION` (declared in the program from public documentation, MSVC 6's headers having neither) with the chain `NtQuerySystemInformation` fills read through them; the program's own entry through `Process32First`/`Process32Next` and `Process32FirstW`/`Process32NextW` (its name, thread count, priority class and parent) and its threads through `Thread32First`/`Thread32Next`, after `CreateThread`, `SetThreadPriority` and `SetPriorityClass`; children listed with the program as their parent, ended with their handles open, gone once they are closed, created suspended, and a grandchild outliving its parent; the idle and System processes; the calls' errors; and the snapshot handle's object type, access and inheritance.
+  The real machine runs other processes that vary from boot to boot, so only the program's own processes and threads print, found by their ids, and the idle and System processes' ids and thread counts print as relations.
+  Built with `/MD`.
+  Gated; the system block stays pending while F2K's System process holds one system thread, and the child block while its suspended child's exit code rests on timing.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 

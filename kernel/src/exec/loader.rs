@@ -239,9 +239,10 @@ impl fmt::Display for Report<'_> {
     }
 }
 
-/// The image staging size: the largest in-memory image the loader accepts. Sized like the file
-/// staging; the corpus's biggest fixture image is 0x8000 bytes.
-const STAGING_SIZE: usize = 0x8_0000;
+/// The image staging size: the largest in-memory image the loader accepts. Twice the file
+/// staging: an image's uninitialized data takes room in memory, none in its file (the toolhelp
+/// fixture's static entry arrays make its image 0x8D000 bytes, from a 0x9000-byte file).
+const STAGING_SIZE: usize = 0x10_0000;
 
 /// The largest ntdll image the staging holds.
 #[cfg(target_arch = "x86")]
@@ -642,6 +643,14 @@ fn load_image(
     staging.fill(0);
     image.map_into(file, staging).map_err(LoadError::Rejected)?;
 
+    // The process is named by the image's stem, and listed by its file name (the path's last
+    // component, its extension included).
+    let file_name = &path[path
+        .iter()
+        .rposition(|&byte| byte == b'\\')
+        .map_or(0, |at| at + 1)..];
+    let name = crate::process::ProcessName::new(name.as_bytes()).with_image(file_name);
+
     // The process's own state, all in one place: a fresh address space (kernel half inherited) and
     // the main thread's ring-0 gate stack (mapped supervisor-only with its guard page; the switch
     // into the thread installs it as the TSS esp0). A refused creation is undone by the start
@@ -799,13 +808,17 @@ mod tests {
     const RET0: &[u8] = include_bytes!("../../../tests/core/ret0/ret0.exe");
 
     /// The corpus the disk carries (see the Makefile's disk target), by fixture name.
-    const CORPUS: [(&str, &[u8]); 3] = [
+    const CORPUS: [(&str, &[u8]); 4] = [
         (
             "hello",
             include_bytes!("../../../tests/core/hello/hello.exe"),
         ),
         ("exit0", EXIT0),
         ("ret0", RET0),
+        (
+            "toolhelp",
+            include_bytes!("../../../tests/kernel32/toolhelp/toolhelp.exe"),
+        ),
     ];
 
     /// Every corpus file fits the file staging, and every image it describes fits the image
@@ -1307,8 +1320,8 @@ mod tests {
             "image rejected by the loader: NotPe"
         );
         assert_eq!(
-            report(LoadError::TooBig(0x10_0000)),
-            "image rejected by the loader: image 0x100000 exceeds the staging 0x80000"
+            report(LoadError::TooBig(0x20_0000)),
+            "image rejected by the loader: image 0x200000 exceeds the staging 0x100000"
         );
         assert_eq!(
             report(LoadError::Conflict {

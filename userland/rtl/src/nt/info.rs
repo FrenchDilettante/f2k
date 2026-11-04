@@ -4,8 +4,9 @@
 //! FileAllInformation gathers, FILE_NETWORK_OPEN_INFORMATION, and the ones a set takes), the
 //! directory listings' records, the volume classes (FILE_FS_*), the process and thread classes
 //! (PROCESS_BASIC_INFORMATION, VM_COUNTERS, PROCESS_PRIORITY_CLASS, THREAD_BASIC_INFORMATION), the
-//! system classes (SYSTEM_*, RTL_TIME_ZONE_INFORMATION), MEMORY_BASIC_INFORMATION, and the key and
-//! value replies (KEY_*_INFORMATION, KEY_VALUE_*_INFORMATION).
+//! system classes (SYSTEM_*, among them the process listing's records, and
+//! RTL_TIME_ZONE_INFORMATION), MEMORY_BASIC_INFORMATION, and the key and value replies
+//! (KEY_*_INFORMATION, KEY_VALUE_*_INFORMATION).
 //!
 //! Every pointer-sized field is a `u32` (a 32-bit process's), every LARGE_INTEGER a `u64` (a time
 //! or a size, never negative here), every BOOLEAN a `u8`. A structure that ends in a
@@ -17,7 +18,7 @@
 
 use core::mem::{offset_of, size_of};
 
-use super::ClientId;
+use super::{ClientId, UnicodeString};
 use crate::pod::Pod;
 use crate::time::TimeFields;
 
@@ -420,6 +421,66 @@ pub struct SystemPerformanceInformation {
     pub counters: [u32; 63],
 }
 
+/// IO_COUNTERS: a process's read, write and other I/O operations and the bytes they moved.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IoCounters {
+    pub read_operation_count: u64,
+    pub write_operation_count: u64,
+    pub other_operation_count: u64,
+    pub read_transfer_count: u64,
+    pub write_transfer_count: u64,
+    pub other_transfer_count: u64,
+}
+
+/// SYSTEM_PROCESS_INFORMATION, Windows 2000's (SystemProcessInformation, class 5): one process of
+/// the listing — the next record's offset (zero for the last), its thread count, three spare
+/// quadwords, its creation time and CPU times, its image's name (a UNICODE_STRING whose buffer lies
+/// in the caller's buffer), its base priority, its client id and its creator's, its handle count,
+/// its session, its page directory, its VM_COUNTERS, its private pages and its IO_COUNTERS. Its
+/// threads' SYSTEM_THREAD_INFORMATION records follow it. (The I/O counters are Windows 2000's
+/// addition: NT 4's record ends at `private_page_count`'s offset.)
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemProcessInformation {
+    pub next_entry_offset: u32,
+    pub number_of_threads: u32,
+    pub spare: [u64; 3],
+    pub create_time: u64,
+    pub user_time: u64,
+    pub kernel_time: u64,
+    pub image_name: UnicodeString<u32>,
+    pub base_priority: i32,
+    pub unique_process_id: u32,
+    pub inherited_from_unique_process_id: u32,
+    pub handle_count: u32,
+    pub session_id: u32,
+    pub page_directory_base: u32,
+    pub vm_counters: VmCounters,
+    pub private_page_count: u32,
+    pub io_counters: IoCounters,
+}
+
+/// SYSTEM_THREAD_INFORMATION: one thread of a listed process — its CPU times and creation time,
+/// the tick its wait began, its start address, its client id, its current and base priorities, its
+/// context switches, its state (KTHREAD_STATE) and why it waits (KWAIT_REASON).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemThreadInformation {
+    pub kernel_time: u64,
+    pub user_time: u64,
+    pub create_time: u64,
+    pub wait_time: u32,
+    pub start_address: u32,
+    pub client_id: ClientId<u32>,
+    pub priority: i32,
+    pub base_priority: i32,
+    pub context_switches: u32,
+    pub thread_state: u32,
+    pub wait_reason: u32,
+    pub padding: u32,
+}
+
 /// RTL_TIME_ZONE_INFORMATION (TIME_ZONE_INFORMATION's layout, its dates TIME_FIELDS): the bias in
 /// minutes, and the standard and daylight-saving names, start dates and biases.
 #[repr(C)]
@@ -574,6 +635,9 @@ plain!(
     SystemBasicInformation,
     SystemProcessorInformation,
     SystemPerformanceInformation,
+    IoCounters,
+    SystemProcessInformation,
+    SystemThreadInformation,
     RtlTimeZoneInformation,
     MemoryBasicInformation,
     KeyBasicInformation,
@@ -678,6 +742,22 @@ const _: () = {
     assert!(size_of::<SystemPerformanceInformation>() == 0x138);
     assert!(offset_of!(SystemPerformanceInformation, available_pages) == 0x2C);
     assert!(offset_of!(SystemPerformanceInformation, counters) == 0x3C);
+    assert!(size_of::<IoCounters>() == 48);
+    assert!(size_of::<SystemProcessInformation>() == 0xB8);
+    assert!(offset_of!(SystemProcessInformation, create_time) == 0x20);
+    assert!(offset_of!(SystemProcessInformation, image_name) == 0x38);
+    assert!(offset_of!(SystemProcessInformation, base_priority) == 0x40);
+    assert!(offset_of!(SystemProcessInformation, unique_process_id) == 0x44);
+    assert!(offset_of!(SystemProcessInformation, handle_count) == 0x4C);
+    assert!(offset_of!(SystemProcessInformation, vm_counters) == 0x58);
+    assert!(offset_of!(SystemProcessInformation, private_page_count) == 0x84);
+    assert!(offset_of!(SystemProcessInformation, io_counters) == 0x88);
+    assert!(size_of::<SystemThreadInformation>() == 0x40);
+    assert!(offset_of!(SystemThreadInformation, wait_time) == 0x18);
+    assert!(offset_of!(SystemThreadInformation, client_id) == 0x20);
+    assert!(offset_of!(SystemThreadInformation, priority) == 0x28);
+    assert!(offset_of!(SystemThreadInformation, thread_state) == 0x34);
+    assert!(offset_of!(SystemThreadInformation, wait_reason) == 0x38);
     assert!(size_of::<RtlTimeZoneInformation>() == 172);
     assert!(offset_of!(RtlTimeZoneInformation, standard_start) == 68);
     assert!(offset_of!(RtlTimeZoneInformation, daylight_name) == 88);

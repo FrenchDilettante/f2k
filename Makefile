@@ -88,7 +88,7 @@ SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
 # F2K's own programs the userland workspace builds (userland/<program>), which the disk carries in
 # the system directory beside the DLLs. The target names every image it links <name>.dll (the
 # DLLs are its binaries too), so `userland` copies each program to its .exe name beside it.
-SYSTEM_PROGRAMS = pwd
+SYSTEM_PROGRAMS = pwd ps
 SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 
 # Limine bootloader settings
@@ -108,7 +108,7 @@ help:
 	@echo "Targets:"
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
-	@echo "                 msvcrt.dll, advapi32.dll and user32.dll) and F2K's own programs (pwd.exe)"
+	@echo "                 msvcrt.dll, advapi32.dll and user32.dll) and F2K's own programs (pwd.exe, ps.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first)"
 	@echo "  qemu         - Build the disk and boot the kernel directly in QEMU (Multiboot, disk attached)"
 	@echo "  test         - Run every on-target QEMU test (kernel boots and the corpus)"

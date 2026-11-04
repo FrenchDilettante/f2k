@@ -57,6 +57,9 @@ pub mod processor;
 /// The process record's scheduling side: base priority, quantum.
 pub mod process;
 
+/// The dispatcher's thread facts a listing of the processes reads.
+pub mod census;
+
 /// The context switch: the swap assembly, the startup stub, and the machine-state offsets they
 /// address threads through.
 pub mod switch;

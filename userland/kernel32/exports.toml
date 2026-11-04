@@ -2459,6 +2459,65 @@ impl = { native = "GetProcessVersion" }
 ordinal = 352
 fails = "0"
 
+[[export]]
+name = "CreateToolhelp32Snapshot"
+group = "processes"
+args = ["u32 dwFlags", "u32 th32ProcessID"]
+impl = { native = "CreateToolhelp32Snapshot" }
+ordinal = 85
+fails = "INVALID_HANDLE_VALUE"
+note = "NtQuerySystemInformation's process listing converted into a section of the paging file, the processes and the threads both for either flag; TH32CS_SNAPMODULE and TH32CS_SNAPHEAPLIST check their process and record no entries"
+
+[[export]]
+name = "Process32FirstW"
+group = "processes"
+args = ["handle hSnapshot", "ptr lppe"]
+impl = { native = "Process32FirstW" }
+ordinal = 551
+fails = "FALSE"
+
+[[export]]
+name = "Process32NextW"
+group = "processes"
+args = ["handle hSnapshot", "ptr lppe"]
+impl = { native = "Process32NextW" }
+ordinal = 553
+fails = "FALSE"
+
+[[export]]
+name = "Process32First"
+group = "processes"
+args = ["handle hSnapshot", "ptr lppe"]
+impl = { native = "Process32First" }
+ordinal = 550
+fails = "FALSE"
+note = "Process32FirstW's entry, its file name through the ANSI code page"
+
+[[export]]
+name = "Process32Next"
+group = "processes"
+args = ["handle hSnapshot", "ptr lppe"]
+impl = { native = "Process32Next" }
+ordinal = 552
+fails = "FALSE"
+note = "Process32NextW's entry, its file name through the ANSI code page"
+
+[[export]]
+name = "Thread32First"
+group = "processes"
+args = ["handle hSnapshot", "ptr lpte"]
+impl = { native = "Thread32First" }
+ordinal = 723
+fails = "FALSE"
+
+[[export]]
+name = "Thread32Next"
+group = "processes"
+args = ["handle hSnapshot", "ptr lpte"]
+impl = { native = "Thread32Next" }
+ordinal = 724
+fails = "FALSE"
+
 # --- pipes ----------------------------------------------------------------------------------------
 
 [[export]]
@@ -2720,10 +2779,6 @@ ordinal = 83
 [[export]]
 name = "CreateTimerQueueTimer"
 ordinal = 84
-
-[[export]]
-name = "CreateToolhelp32Snapshot"
-ordinal = 85
 
 [[export]]
 name = "CreateVirtualBuffer"
@@ -3847,22 +3902,6 @@ name = "PrivMoveFileIdentityW"
 ordinal = 549
 
 [[export]]
-name = "Process32First"
-ordinal = 550
-
-[[export]]
-name = "Process32FirstW"
-ordinal = 551
-
-[[export]]
-name = "Process32Next"
-ordinal = 552
-
-[[export]]
-name = "Process32NextW"
-ordinal = 553
-
-[[export]]
 name = "ProcessIdToSessionId"
 ordinal = 554
 
@@ -4296,14 +4335,6 @@ ordinal = 719
 [[export]]
 name = "TermsrvAppInstallMode"
 ordinal = 722
-
-[[export]]
-name = "Thread32First"
-ordinal = 723
-
-[[export]]
-name = "Thread32Next"
-ordinal = 724
 
 [[export]]
 name = "Toolhelp32ReadProcessMemory"
