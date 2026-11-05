@@ -1,6 +1,6 @@
-//! The programs' console calls beyond writing and reading lines: the window's title, the screen
-//! buffer's colours, and one key read. Each kernel32 call is imported by name and wrapped once,
-//! safely.
+//! The programs' console calls beyond writing and reading lines: the window's title and size, the
+//! screen buffer's colours, and one key read. Each kernel32 call is imported by name and wrapped
+//! once, safely.
 
 use crate::output::Error;
 
@@ -121,6 +121,17 @@ fn screen() -> Result<Option<(usize, ScreenBufferInfo)>, Error> {
 /// is no console.
 pub fn screen_attribute() -> Result<Option<u16>, Error> {
     Ok(screen()?.map(|(_, info)| info.attributes))
+}
+
+/// The standard output's console window: its columns and rows. None when the standard output is
+/// no console.
+pub fn window_size() -> Result<Option<(u16, u16)>, Error> {
+    Ok(screen()?.map(|(_, info)| {
+        let [left, top, right, bottom] = info.window;
+        let span =
+            |from: i16, to: i16| u16::try_from(i32::from(to) - i32::from(from) + 1).unwrap_or(0);
+        (span(left, right), span(top, bottom))
+    }))
 }
 
 /// The standard output's whole screen buffer coloured with `attribute`, every cell's characters

@@ -216,8 +216,9 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     """Run one captured block on F2K, in its batch: the first block of a test function to run boots
     the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
     block of the function this session runs, in order, each its own process, run from the corpus's
-    directory (a script fixture's on a copy of the disk with cmd.exe and the script there,
-    `f2kboot.script_disk`); each block's test then reads its own part of that boot's log. It fails
+    directory (a script fixture's on a copy of the disk with cmd.exe and the script there, a
+    fixture declaring `system_programs` on a copy with those programs added: `f2kboot.corpus_disk`);
+    each block's test then reads its own part of that boot's log. It fails
     unless the program's output equals the block line for line (masks applied), the process ends
     with the block's exit code, and its teardown audits clean; a block the boot never reached fails
     as not run, naming the block the boot stopped in."""
@@ -235,14 +236,13 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
             screenshots = declared.get("screenshots", False)
             keys = {section: f2kboot.key_steps(section, steps)
                     for section, steps in declared.get("keys", {}).items()}
-            # A script fixture boots a copy of the disk with cmd.exe and its script in \CORPUS.
-            variant = None
-            if declared.get("kind") == "script":
-                try:
-                    variant = f2kboot.script_disk(build, captured.fixture,
-                                                  f2kboot.WORK / "variants" / f"{name}.img")
-                except RuntimeError as error:
-                    pytest.fail(str(error), pytrace=False)
+            # A script fixture boots a copy of the disk with cmd.exe and its script in \CORPUS, and a
+            # sectioned one declaring `system_programs` a copy with them in \WINNT\system32.
+            try:
+                variant = f2kboot.corpus_disk(build, captured.fixture,
+                                              f2kboot.WORK / "variants" / f"{name}.img")
+            except RuntimeError as error:
+                pytest.fail(str(error), pytrace=False)
             try:
                 batch = f2kboot.boot_batch(
                     build if variant is None else f2kboot.Build(build.kernel, variant),

@@ -21,6 +21,8 @@ pub struct Switches<'a> {
     pub strip: bool,
     /// `/?`: the shell prints its help and ends, running nothing.
     pub help: bool,
+    /// `/U` (and not a later `/A`): the built-ins' output to a file or a pipe is UTF-16LE.
+    pub unicode: bool,
     /// `/C` or `/K` and what follows it (the rest of the command line, its leading blanks
     /// skipped); None without either, for an interactive shell.
     pub run: Option<(Then, &'a [u16])>,
@@ -29,15 +31,17 @@ pub struct Switches<'a> {
 /// The switches on cmd.exe's command line (as GetCommandLineW gives it, the program's name first:
 /// a quoted name runs to its closing quote, another to the first blank). Each switch is `/` and a
 /// letter, whatever its case, and may run into the next (`/q/c`). `/C` and `/K` end the switches:
-/// the rest of the line is their string. `/Q` and `/S` are kept; `/A`, `/U`, `/D`, `/E:...`,
-/// `/F:...`, `/V:...` and `/T:...` (and any other letter) are accepted and ignored, their `:`
-/// values with them. A word that is not a switch ends the switches, the shell interactive.
+/// the rest of the line is their string. `/Q`, `/S` and `/U` are kept, and `/A` undoes a `/U`
+/// before it (the last of the two counts); `/D`, `/E:...`, `/F:...`, `/V:...` and `/T:...` (and
+/// any other letter) are accepted and ignored, their `:` values with them. A word that is not a
+/// switch ends the switches, the shell interactive.
 pub fn switches(command_line: &[u16]) -> Switches<'_> {
     let mut rest = skip_program(command_line);
     let mut switches = Switches {
         echo_off: false,
         strip: false,
         help: false,
+        unicode: false,
         run: None,
     };
     loop {
@@ -63,6 +67,8 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
             Ok(b'q') => switches.echo_off = true,
             Ok(b's') => switches.strip = true,
             Ok(b'?') => switches.help = true,
+            Ok(b'u') => switches.unicode = true,
+            Ok(b'a') => switches.unicode = false,
             _ => {}
         }
         // A value (`/E:ON`) runs to a blank or the next switch.
@@ -172,6 +178,7 @@ mod tests {
                 echo_off: false,
                 strip: false,
                 help: false,
+                unicode: false,
                 run: None
             }
         );
@@ -214,6 +221,20 @@ mod tests {
         let switches = super::switches(&line);
         assert!(switches.echo_off && !switches.strip);
         assert_eq!(switches.run.map(|(_, rest)| narrow(rest)), Some("x".into()));
+    }
+
+    #[test]
+    fn u_asks_for_unicode_output_and_a_for_bytes() {
+        let unicode = |line: &str| switches(&wide(line)).unicode;
+        assert!(unicode("cmd /u /c echo one"));
+        assert!(unicode("cmd /U/c x"));
+        assert!(!unicode("cmd /a /c x"));
+        assert!(!unicode("cmd /c x"));
+        // The last of the two counts.
+        assert!(!unicode("cmd /u /a /c x"));
+        assert!(unicode("cmd /a /u /c x"));
+        // A /U in the string is the string's.
+        assert!(!unicode("cmd /c cmd /u /c x"));
     }
 
     #[test]

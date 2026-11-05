@@ -3,14 +3,12 @@
 # stands in for the command processor: ComSpec names it and a copy sits in the current directory as
 # cmd.exe, so it prints the command line CreateProcess gives a batch file's command processor; it
 # goes into \CORPUS beside the program, as it sits beside it on the real machine. Gated. The realcmd
-# block runs the machine's own cmd.exe, which the disk the tests boot does not carry (a disk of its
-# own, with F2K's cmd.exe in \WINNT\system32, would let it run), so it stays pending.
+# block runs the machine's own cmd.exe, which the disk the tests boot does not carry: the fixture's
+# boot adds F2K's to \WINNT\system32 (system_programs).
 description = "batspawn - CreateProcessA/W on batch files it writes (batspawn.c, with its companion program blkid.c, a stand-in command processor): whether the command processor is found through ComSpec or by searching for cmd; the command line it is given with the application name NULL and set, a .cmd, an upper-case .BAT, quoted arguments, a name with a space quoted and not; the name without its extension, an empty .bat and a .txt; and the machine's own cmd.exe running them, with the exit codes exit and exit /b leave."
 kind = "sectioned"
 gate = true
-
-[pending]
-realcmd = "no cmd.exe on the disk the corpus boots: the section runs the machine's own, and the base disk carries none"
+system_programs = ["cmd"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

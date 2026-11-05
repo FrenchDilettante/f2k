@@ -15,6 +15,7 @@ use cmd::builtins::files::{
     Mode,
     RemoveSwitches,
     Tokens,
+    Written,
     DIRECTORY,
     ERROR_ALREADY_EXISTS,
     ERROR_FILENAME_EXCED_RANGE,
@@ -632,8 +633,9 @@ fn copy_one(from: &[u16], to: &[u16], (from_mode, to_mode): (Mode, Mode), copyin
         exe::copy_file(from, to, false)
     } else {
         exe::create_file(to, false).and_then(|output| {
-            append(from, from_mode, &output)?;
-            end(&output, to_mode)
+            let mut written = Written::default();
+            append(from, from_mode, &output, &mut written)?;
+            end(&output, to_mode, &written)
         })
     };
     match copied {
@@ -645,32 +647,42 @@ fn copy_one(from: &[u16], to: &[u16], (from_mode, to_mode): (Mode, Mode), copyin
     }
 }
 
-/// The file `from`'s bytes written to `output`: in ASCII mode, those before its first Ctrl+Z.
+/// The file `from`'s bytes written to `output`, after what `written` has written: in ASCII mode,
+/// those before its first Ctrl+Z; in binary mode all of them, over a Ctrl+Z ending the source
+/// before (see [`Written`]).
 #[inline(never)]
-fn append(from: &[u16], mode: Mode, output: &exe::OutputFile) -> Result<(), exe::Error> {
+fn append(
+    from: &[u16],
+    mode: Mode,
+    output: &exe::OutputFile,
+    written: &mut Written,
+) -> Result<(), exe::Error> {
     let file = exe::open_file(from)?;
+    written.source();
     let mut buffer = [0u8; 1024];
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             return Ok(());
         }
-        let bytes = &buffer[..read];
-        if mode == Mode::Ascii {
-            if let Some(end) = bytes.iter().position(|&byte| byte == rules::END_OF_FILE) {
-                return output.write(&bytes[..end]);
-            }
+        let write = written.read(&buffer[..read], mode);
+        if write.held {
+            output.write(&[rules::END_OF_FILE])?;
         }
-        output.write(bytes)?;
+        output.write(write.bytes)?;
+        if write.ended {
+            return Ok(());
+        }
     }
 }
 
-/// A destination written in ASCII mode ended with a Ctrl+Z.
-fn end(output: &exe::OutputFile, mode: Mode) -> Result<(), exe::Error> {
-    match mode {
-        Mode::Ascii => output.write(&[rules::END_OF_FILE]),
-        Mode::Binary => Ok(()),
+/// A destination written in `mode` ended: with a Ctrl+Z in ASCII mode, or the one ending its last
+/// binary source.
+fn end(output: &exe::OutputFile, mode: Mode, written: &Written) -> Result<(), exe::Error> {
+    if written.end(mode) {
+        output.write(&[rules::END_OF_FILE])?;
     }
+    Ok(())
 }
 
 /// The files each of `sources` matches joined into `target`, each one's name printed: one file
@@ -687,6 +699,7 @@ fn join_files(
     let mut full_target = [0; MAX_PATH];
     let full_target = exe::full_path(target, &mut full_target).unwrap_or(target);
     let mut output: Option<exe::OutputFile> = None;
+    let mut written = Written::default();
     for (index, source) in sources.iter().enumerate() {
         let mut path = [0; MAX_PATH];
         let path = match unquoted(source.name, &mut path) {
@@ -739,7 +752,7 @@ fn join_files(
                 }
             }
             if let Some(output) = &output {
-                if let Err(error) = append(from, source.mode(true), output) {
+                if let Err(error) = append(from, source.mode(true), output, &mut written) {
                     report(error);
                     copying.failed = true;
                 }
@@ -751,7 +764,7 @@ fn join_files(
         copying.failed = true;
         return;
     };
-    match end(&output, target_mode.unwrap_or(Mode::Ascii)) {
+    match end(&output, target_mode.unwrap_or(Mode::Ascii), &written) {
         Ok(()) => copying.copied += 1,
         Err(error) => failed(error, copying),
     }

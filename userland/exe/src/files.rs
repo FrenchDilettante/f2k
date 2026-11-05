@@ -1,7 +1,8 @@
 //! The programs' file system calls beyond reading a file: names resolved, files found by a
-//! pattern, files and directories created, deleted, copied and moved, a file written, and the
-//! local time set. Each kernel32 call is imported by name and wrapped once, safely; a path is
-//! handed over NUL-terminated in a buffer of MAX_PATH units, as src/sys.rs hands one.
+//! pattern, files and directories created, deleted, copied and moved, a file written, a volume's
+//! label, serial number and free space, a file time made local, and the local time set. Each
+//! kernel32 call is imported by name and wrapped once, safely; a path is handed over NUL-terminated
+//! in a buffer of MAX_PATH units, as src/sys.rs hands one.
 
 use crate::output::Error;
 use crate::sys::MAX_PATH;
@@ -75,6 +76,10 @@ unsafe extern "system" {
         buffer: *mut u16,
         file_part: *mut usize,
     ) -> u32;
+    /// A NUL-terminated path of something that exists, each long name in it replaced by its 8.3
+    /// name, into a buffer of `size` units: its length, the size it needs when it does not fit,
+    /// zero on failure.
+    fn GetShortPathNameW(long: *const u16, short: *mut u16, size: u32) -> u32;
     /// A NUL-terminated path's attributes: INVALID_FILE_ATTRIBUTES when nothing goes by it.
     fn GetFileAttributesW(path: *const u16) -> u32;
     /// A NUL-terminated path's attributes set.
@@ -120,6 +125,30 @@ unsafe extern "system" {
     fn SetFilePointer(file: usize, distance: i32, distance_high: *mut i32, method: u32) -> u32;
     /// The local date and time set (the day of the week ignored).
     fn SetLocalTime(time: *const SystemTime) -> i32;
+    /// What a volume says of itself, by its root (`C:\`): its label and serial number into the
+    /// buffers given, its longest component, its file system's flags and name.
+    fn GetVolumeInformationW(
+        root: *const u16,
+        label: *mut u16,
+        label_size: u32,
+        serial: *mut u32,
+        component: *mut u32,
+        flags: *mut u32,
+        file_system: *mut u16,
+        file_system_size: u32,
+    ) -> i32;
+    /// The bytes free on the disk a directory is on: those the caller may use, the disk's size,
+    /// all the free ones.
+    fn GetDiskFreeSpaceExW(
+        directory: *const u16,
+        available: *mut u64,
+        total: *mut u64,
+        free: *mut u64,
+    ) -> i32;
+    /// A FILETIME (UTC) made local.
+    fn FileTimeToLocalFileTime(time: *const [u32; 2], local: *mut [u32; 2]) -> i32;
+    /// A FILETIME as a date and time.
+    fn FileTimeToSystemTime(time: *const [u32; 2], system: *mut SystemTime) -> i32;
 }
 
 /// The calling thread's last error, as an [`Error`].
@@ -155,6 +184,22 @@ pub fn full_path<'a>(path: &[u16], buffer: &'a mut [u16; MAX_PATH]) -> Result<&'
             &mut file_part,
         )
     } as usize;
+    match length {
+        0 => Err(last_error()),
+        MAX_PATH.. => Err(Error(ERROR_FILENAME_EXCED_RANGE)),
+        _ => Ok(&buffer[..length]),
+    }
+}
+
+/// `path` (which must name something) with each long name in it replaced by its 8.3 name, in
+/// `buffer`, as GetShortPathNameW makes it: a component already 8.3 stays as written.
+#[inline(never)]
+pub fn short_path<'a>(path: &[u16], buffer: &'a mut [u16; MAX_PATH]) -> Result<&'a [u16], Error> {
+    let path = terminated(path)?;
+    // SAFETY: the path ends with a NUL within `path`; the call writes at most MAX_PATH units into
+    // `buffer`.
+    let length =
+        unsafe { GetShortPathNameW(path.as_ptr(), buffer.as_mut_ptr(), MAX_PATH as u32) } as usize;
     match length {
         0 => Err(last_error()),
         MAX_PATH.. => Err(Error(ERROR_FILENAME_EXCED_RANGE)),
@@ -247,19 +292,36 @@ pub fn move_file(from: &[u16], to: &[u16], replace: bool) -> Result<(), Error> {
     Ok(())
 }
 
-/// A file [`find`] found: its name (no directory), attributes and size.
+/// A file [`find`] found: its name (no directory) and short name, attributes, times and size.
 pub struct Found {
     pub attributes: u32,
     /// Its size in bytes.
     pub size: u64,
+    /// When it was created, last read and last written, as FILETIMEs (UTC, in 100 ns units since
+    /// 1601; see [`local_file_time`]).
+    pub creation_time: u64,
+    pub access_time: u64,
+    pub write_time: u64,
     name: [u16; MAX_PATH],
     length: usize,
+    short_name: [u16; 14],
+    short_length: usize,
 }
 
 impl Found {
     /// The file's name, without its directory.
     pub fn name(&self) -> &[u16] {
         &self.name[..self.length]
+    }
+
+    /// Its 8.3 name, when its name is not one itself (empty otherwise).
+    pub fn short_name(&self) -> &[u16] {
+        &self.short_name[..self.short_length]
+    }
+
+    /// When the file was last written, in local time: None when the time cannot be converted.
+    pub fn written(&self) -> Option<SystemTime> {
+        local_file_time(self.write_time).ok()
     }
 }
 
@@ -274,16 +336,23 @@ pub struct Find {
 impl Find {
     /// The entry `data` holds, owned.
     fn found(data: &FindData) -> Found {
-        let length = data
-            .name
-            .iter()
-            .position(|&unit| unit == 0)
-            .unwrap_or(MAX_PATH);
+        let length = |units: &[u16]| {
+            units
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(units.len())
+        };
+        let time = |[low, high]: [u32; 2]| u64::from(high) << 32 | u64::from(low);
         Found {
             attributes: data.attributes,
             size: u64::from(data.size_high) << 32 | u64::from(data.size_low),
+            creation_time: time(data.creation_time),
+            access_time: time(data.last_access_time),
+            write_time: time(data.last_write_time),
             name: data.name,
-            length,
+            length: length(&data.name),
+            short_name: data.alternate_name,
+            short_length: length(&data.alternate_name),
         }
     }
 }
@@ -403,4 +472,84 @@ pub fn set_local_time(time: &SystemTime) -> Result<(), Error> {
         return Err(last_error());
     }
     Ok(())
+}
+
+/// What a volume says of itself ([`volume`]): its label and serial number.
+pub struct Volume {
+    /// Its serial number, as `dir` shows it in two halves (`1C2E-3F4A`).
+    pub serial: u32,
+    label: [u16; 64],
+    length: usize,
+}
+
+impl Volume {
+    /// The volume's label: empty when it has none.
+    pub fn label(&self) -> &[u16] {
+        &self.label[..self.length]
+    }
+}
+
+/// The volume whose root directory is `root` (`C:\`, its separator included): its label and
+/// serial number.
+#[inline(never)]
+pub fn volume(root: &[u16]) -> Result<Volume, Error> {
+    let root = terminated(root)?;
+    let mut volume = Volume {
+        serial: 0,
+        label: [0; 64],
+        length: 0,
+    };
+    let (mut component, mut flags) = (0, 0);
+    let mut file_system = [0u16; 32];
+    // SAFETY: the root ends with a NUL within `root`; each buffer is as long as the size given
+    // with it, and the dwords are the call's to write.
+    let done = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(),
+            volume.label.as_mut_ptr(),
+            volume.label.len() as u32,
+            &mut volume.serial,
+            &mut component,
+            &mut flags,
+            file_system.as_mut_ptr(),
+            file_system.len() as u32,
+        )
+    };
+    if done == 0 {
+        return Err(last_error());
+    }
+    volume.length = volume
+        .label
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(volume.label.len());
+    Ok(volume)
+}
+
+/// The bytes free for the caller on the disk `directory` is on.
+#[inline(never)]
+pub fn free_bytes(directory: &[u16]) -> Result<u64, Error> {
+    let directory = terminated(directory)?;
+    let (mut available, mut total, mut free) = (0, 0, 0);
+    // SAFETY: the directory ends with a NUL within `directory`; the call writes three qwords.
+    if unsafe { GetDiskFreeSpaceExW(directory.as_ptr(), &mut available, &mut total, &mut free) }
+        == 0
+    {
+        return Err(last_error());
+    }
+    Ok(available)
+}
+
+/// A FILETIME ([`Found`]'s) as the local date and time.
+pub fn local_file_time(time: u64) -> Result<SystemTime, Error> {
+    let time = [time as u32, (time >> 32) as u32];
+    let mut local = [0; 2];
+    let mut system = SystemTime::default();
+    // SAFETY: each call reads its first argument and writes its second, each its own type.
+    if unsafe { FileTimeToLocalFileTime(&time, &mut local) } == 0
+        || unsafe { FileTimeToSystemTime(&local, &mut system) } == 0
+    {
+        return Err(last_error());
+    }
+    Ok(system)
 }

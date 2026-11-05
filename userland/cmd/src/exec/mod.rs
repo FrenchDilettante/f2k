@@ -1,6 +1,6 @@
-//! The built-ins src/builtins reads, run: the file built-ins (src/exec/files.rs) and the console
-//! and clock built-ins (src/exec/console.rs), each with the calls it makes and the questions it
-//! asks.
+//! The built-ins src/builtins reads, run: the file built-ins (src/exec/files.rs), the console
+//! and clock built-ins (src/exec/console.rs), `dir` (src/exec/dir.rs) and `start`
+//! (src/exec/start.rs), each with the calls it makes and the questions it asks.
 //!
 //! What a built-in leaves the ERRORLEVEL and its return code as follows the shell's rules (see
 //! [`cmd::clears_errorlevel`]): a failure sets both to 1, and success leaves the dispatcher to set
@@ -9,7 +9,9 @@
 //! returns 1 for.
 
 mod console;
+mod dir;
 mod files;
+mod start;
 
 use core::fmt;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -43,6 +45,8 @@ pub fn run(builtin: Builtin<'_>, state: &mut cmd::State, in_batch: bool) {
         Builtin::Date(argument) => console::date(argument, state),
         Builtin::Time(argument) => console::time(argument, state),
         Builtin::Pause => console::pause(),
+        Builtin::Directory(argument) => dir::list(argument, state),
+        Builtin::Start(argument) => start::start(argument, state),
     }
     DEPTH.store(state.directories.depth(), Ordering::Relaxed);
 }

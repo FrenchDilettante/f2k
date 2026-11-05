@@ -5,5 +5,5 @@ description = "batcode - how a batch file ends: exit /b with a number and alone 
 kind = "script"
 gate = true
 # It starts some thirty cmd.exe and spawnkid processes, past the boot's default budget on the opt-0
-# kernel: it is expected to time out until boots get faster.
-pending = "times out: some thirty cmd.exe and spawnkid processes take longer than the boot's budget on the opt-0 kernel"
+# kernel.
+timeout = 60

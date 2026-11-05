@@ -4,4 +4,3 @@
 description = "batstd - where the standard output and error go, through type of the files: > with 2>&1 in both orders, 1>&2 with 2> in both orders, a redirection in the middle of an echo and of a program's arguments, and a digit right before > after a letter, an equals sign and a blank, and alone after echo; type's output and error apart for two files, a missing one between them, and wildcard names matching two, one and none; and the bytes type copies from a file holding a Ctrl+Z and from one cmd /u wrote."
 kind = "script"
 gate = true
-pending = "for is not implemented, and neither is cmd /u (Unicode output)"

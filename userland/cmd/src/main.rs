@@ -1,17 +1,19 @@
 //! cmd.exe: F2K's command interpreter. It outlives Ctrl+C and Ctrl+Break, and reads its switches
 //! (`cmd /?`'s). With `/C` it runs the string that follows and ends with its last command's return
 //! code (not the ERRORLEVEL: see [`cmd::State::return_code`]); with `/K`
-//! it runs it and goes on interactively; without either it prints its banner. Interactively it
-//! prompts (as PROMPT says, `$P$G` without it) and reads a line from the console, again and again,
-//! or from the file or pipe its standard input is, echoing each line after the prompt.
+//! it runs it and goes on interactively; without either it prints its banner. With `/U`, what it
+//! writes to a file or a pipe (its built-ins' output and its messages) is UTF-16LE. Interactively
+//! it prompts (as PROMPT says, `$P$G` without it) and reads a line from the console, again and
+//! again, or from the file or pipe its standard input is, echoing each line after the prompt.
 //!
-//! A line's `%NAME%` variables are expanded first, then its commands run as its operators say
-//! (`&`, `&&`, `||`, `|`, groups in parentheses: cmd::syntax), each with its redirections: the
-//! shell's standard handles replaced while it runs, so that a built-in writes to them and a program
-//! is handed them. `exit` ends the shell; `call`, `cd` (or `chdir`), `cls`, `echo`, `path`,
-//! `prompt`, `rem`, `set`, `shift`, `type` and `ver` are built in, with the file, console and clock
-//! built-ins (src/exec/); any other command names a program, found in the current directory and
-//! PATH with PATHEXT's extensions. A Windows program is started,
+//! A line's `%NAME%` variables are expanded first (a block's lines each as it is read, until the
+//! group it opens closes), then its commands run as its operators say (`&`, `&&`, `||`, `|`,
+//! groups in parentheses: cmd::syntax), `if` and `for` as src/control.rs runs them, each with its
+//! redirections: the shell's standard handles replaced while it runs, so that a built-in writes to
+//! them and a program is handed them. `exit` ends the shell; `call`, `cd` (or `chdir`), `cls`,
+//! `echo`, `goto`, `path`, `prompt`, `rem`, `set`, `shift`, `type` and `ver` are built in, with the
+//! file, console and clock built-ins (src/exec/); any other command names a program, found in the
+//! current directory and PATH with PATHEXT's extensions. A Windows program is started,
 //! sharing the console, and waited for (Ctrl+C then reaches the program, and the shell waits on); a
 //! batch file's lines run in the shell. The commands a pipe joins run at once, each a process: a
 //! program itself, anything else a `cmd /c` of its own. A line Ctrl+C abandons leaves what was
@@ -22,17 +24,20 @@
 #![no_main]
 #![forbid(unsafe_code)]
 
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use core::fmt::Write;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use cmd::batch::{self, LineReader};
 use cmd::builtins::files;
+use cmd::flow::label;
 use cmd::switches::{self, Then};
-use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Target};
+use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Syntax, Target};
 use cmd::{search, Command, Echo, Set, TooLong};
 
+mod control;
 mod exec;
+mod set_switch;
 
 exe::entry!(main);
 
@@ -46,26 +51,129 @@ enum Flow {
     Abort,
     /// `exit`: the shell ends with the code.
     Exit(u32),
+    /// `goto`: the batch file goes on after the label its [`Batch::label`] holds.
+    Goto,
+    /// A batch file run without `call`: it takes the place of the one running, whose
+    /// [`Batch::arguments`] now hold its path and its line.
+    Chain,
 }
 
-/// The batch file a line comes from.
-struct Batch<'a> {
-    /// Its `%0` to `%9` and `%*`: its name as typed, then what followed it on its line, as `shift`
-    /// leaves them.
-    arguments: Cell<cmd::Arguments<'a>>,
+/// The units a block (a line and the lines a group it opens holds, expanded) may hold in a batch
+/// file, at the prompt and in `/C`'s string.
+const BLOCK: usize = 4096;
+
+/// The units a typed line or `/C`'s string, a block of them included, may hold once expanded.
+const COMMAND: usize = cmd::MAX_COMMAND + 1;
+
+/// The units a label `goto` goes to may hold.
+const LABEL: usize = 128;
+
+/// A batch file's arguments, its own copy: its name as typed and what followed it on its line,
+/// its path as found, and how `shift` moved them.
+struct Arguments {
+    line: [u16; cmd::LINE],
+    length: usize,
+    path: [u16; exe::MAX_PATH],
+    path_length: usize,
+    shifted: [usize; 10],
+}
+
+impl Arguments {
+    /// The batch file at `path`, run with `line`, as it starts (what does not fit is cut).
+    fn new(line: &[u16], path: &[u16]) -> Self {
+        let mut arguments = Arguments {
+            line: [0; cmd::LINE],
+            length: 0,
+            path: [0; exe::MAX_PATH],
+            path_length: 0,
+            shifted: [0; 10],
+        };
+        arguments.set(line, path);
+        arguments
+    }
+
+    /// The batch file at `path`, run with `line`, in place of the one these were.
+    fn set(&mut self, line: &[u16], path: &[u16]) {
+        self.length = line.len().min(self.line.len());
+        self.line[..self.length].copy_from_slice(&line[..self.length]);
+        self.path_length = path.len().min(self.path.len());
+        self.path[..self.path_length].copy_from_slice(&path[..self.path_length]);
+        self.shifted = core::array::from_fn(|n| n);
+    }
+
+    /// The batch file's path.
+    fn path(&self) -> &[u16] {
+        &self.path[..self.path_length]
+    }
+
+    /// The arguments as the expansion reads them.
+    fn view(&self) -> cmd::Arguments<'_> {
+        cmd::Arguments {
+            line: &self.line[..self.length],
+            shifted: self.shifted,
+            path: self.path(),
+        }
+    }
+}
+
+/// The batch file a line comes from, or what `call :label` runs of one (a batch file of its own,
+/// with its own arguments).
+struct Batch {
+    /// Its `%0` to `%9` and `%*`, and its path.
+    arguments: RefCell<Arguments>,
     /// How many batch files run around it: 0 for one run from the prompt or `/C`'s string.
     depth: usize,
     /// Whether the batch file run from the prompt (or `/C`'s string), around it, is a `.cmd`
     /// script (see [`cmd::clears_errorlevel`]): the batch files it runs read their commands as
     /// it does, whatever their own extension.
     cmd_script: bool,
+    /// The label `goto` goes to, and its length.
+    label: RefCell<([u16; LABEL], usize)>,
+    /// Where its file is read: the bytes before the line after the one running, where `call
+    /// :label` starts looking for its label.
+    offset: Cell<u64>,
+}
+
+impl Batch {
+    fn new(line: &[u16], path: &[u16], depth: usize, cmd_script: bool) -> Self {
+        Batch {
+            arguments: RefCell::new(Arguments::new(line, path)),
+            depth,
+            cmd_script,
+            label: RefCell::new(([0; LABEL], 0)),
+            offset: Cell::new(0),
+        }
+    }
+}
+
+/// Where the shell's stack was when it started: the address of a local of [`main`]'s.
+static STACK_TOP: AtomicUsize = AtomicUsize::new(0);
+
+/// The stack a batch file may start nesting in: the thread's 1 MiB (its image's reserve), less
+/// what the deepest batch file's line may still need below it (blocks, `for` and `if` in each
+/// other, a `call`). Past it, a batch file nesting another one stops every batch file, as
+/// Windows' cmd does once its stack runs out (`batch::RECURSION`).
+const STACK_BUDGET: usize = 0x10_0000 - 0x1_8000;
+
+/// The bytes of stack in use below [`main`]'s frame, as the address of a local here tells.
+#[inline(never)]
+fn stack_used() -> usize {
+    let here = 0u8;
+    let at = core::hint::black_box(&here) as *const u8 as usize;
+    STACK_TOP.load(Ordering::Relaxed).saturating_sub(at)
 }
 
 fn main() -> u32 {
+    let top = 0u8;
+    STACK_TOP.store(
+        core::hint::black_box(&top) as *const u8 as usize,
+        Ordering::Relaxed,
+    );
     // A shell that could not outlive Ctrl+C still runs: the key would end it.
     let _ = exe::outlive_interrupts();
     let mut state = cmd::State::default();
     let switches = switches::switches(exe::command_line());
+    exe::set_unicode_output(switches.unicode);
     if switches.help {
         let _ = exe::stdout().print(format_args!("{}", cmd::help::CMD));
         return cmd::help::SHOWN;
@@ -93,15 +201,22 @@ fn main() -> u32 {
 /// `/C` or `/K`'s string, its quotes handled as `cmd /?` says, run as a typed line would be.
 #[inline(never)]
 fn run_string(string: &[u16], strip: bool, state: &mut cmd::State) -> Flow {
-    let mut buffer = [0; cmd::MAX_LINE];
+    let mut buffer = [0; cmd::LINE];
     let mut found = [0; exe::MAX_PATH];
     let mut executable = |name: &[u16]| find_program(name, &mut found).is_some();
-    let Some(line) = switches::command_string(string, strip, &mut executable, &mut buffer) else {
+    let Some(line) =
+        switches::command_string(string, strip, &mut executable, &mut buffer[..cmd::MAX_LINE])
+    else {
         let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
         state.failed();
         return Flow::Next;
     };
-    execute(line, state, None)
+    let length = line.len();
+    let mut block = [0; COMMAND];
+    // The string is all there is: a group it leaves open stays open.
+    execute(&mut buffer, length, &mut block, state, None, &mut |_| {
+        More::End
+    })
 }
 
 /// The interactive shell: prompt, read a line, run it, until `exit` or the input's end. A standard
@@ -112,6 +227,7 @@ fn interactive(state: &mut cmd::State) -> u32 {
         return redirected_input(state);
     }
     let mut line = [0; cmd::LINE];
+    let mut block = [0; COMMAND];
     loop {
         if state.echo {
             prompt(state.spaced);
@@ -120,7 +236,23 @@ fn interactive(state: &mut cmd::State) -> u32 {
         let _ = exe::take_interrupt();
         match exe::read_line(&mut line) {
             Ok(exe::Input::Line(read)) => {
-                if let Flow::Exit(code) = execute(read, state, None) {
+                let length = read.len();
+                // A line ending with `^`, or leaving a group open, goes on with the next one,
+                // read after `More? `.
+                let mut more = |raw: &mut [u16]| {
+                    let _ = exe::stdout().print(format_args!("{MORE}"));
+                    match exe::read_line(raw) {
+                        Ok(exe::Input::Line(read)) => More::Line(read.len()),
+                        Ok(exe::Input::Aborted) => {
+                            let _ = exe::stdout().print(format_args!("\r\n"));
+                            More::Abandon
+                        }
+                        Ok(exe::Input::End) | Err(_) => More::End,
+                    }
+                };
+                if let Flow::Exit(code) =
+                    execute(&mut line, length, &mut block, state, None, &mut more)
+                {
                     return code;
                 }
             }
@@ -150,15 +282,16 @@ fn interactive(state: &mut cmd::State) -> u32 {
 fn redirected_input(state: &mut cmd::State) -> u32 {
     let mut reader = LineReader::default();
     let mut units = [0; cmd::LINE];
+    let mut block = [0; COMMAND];
+    let read = |buffer: &mut [u8]| {
+        let byte = buffer.len().min(1);
+        exe::read_standard_input(&mut buffer[..byte])
+    };
     loop {
         if state.echo {
             prompt(state.spaced);
         }
         let _ = exe::take_interrupt();
-        let read = |buffer: &mut [u8]| {
-            let byte = buffer.len().min(1);
-            exe::read_standard_input(&mut buffer[..byte])
-        };
         let line = match next_line(read, &mut reader, &mut units) {
             Ok(Some(line)) => line,
             Ok(None) => return 0,
@@ -169,38 +302,76 @@ fn redirected_input(state: &mut cmd::State) -> u32 {
                 return cmd::FAILED;
             }
         };
-        if state.echo {
+        let echo = state.echo;
+        if echo {
             let _ = exe::stdout().print(format_args!("{}\r\n", cmd::Text(line)));
         }
-        if let Flow::Exit(code) = execute(line, state, None) {
+        let length = line.len();
+        // A line going on (`^`, a group left open) reads the next one, echoed after `More? `.
+        let mut more = |raw: &mut [u16]| match next_line(read, &mut reader, raw) {
+            Ok(Some(line)) => {
+                if echo {
+                    let _ = exe::stdout().print(format_args!("{MORE}{}\r\n", cmd::Text(line)));
+                }
+                More::Line(line.len())
+            }
+            _ => More::End,
+        };
+        if let Flow::Exit(code) = execute(&mut units, length, &mut block, state, None, &mut more) {
             return code;
         }
     }
 }
 
+/// What the shell prints before reading the next line of a line that goes on.
+const MORE: &str = "More? ";
+
+/// The next line of a line that goes on (what [`execute`] reads it from gives).
+enum More {
+    /// Its length, in the buffer handed over.
+    Line(usize),
+    /// None: the input ended (or there is no more, as after `/C`'s string).
+    End,
+    /// Ctrl+C abandoned it, and the line with it.
+    Abandon,
+}
+
 /// The prompt: an empty line first when `spaced`, then the PROMPT variable's text with its codes
 /// replaced (the default's when there is none, or when it is too long to read).
+///
+/// A text of [`cmd::PROMPT_TEXT`] units or more shows its first 511 units, then its first 512:
+/// batline's capture has a 600-character prompt (no codes) written as 1,023 bytes where a
+/// 4-character one is written as 4, which is neither the text cut at 511 (the size public sources
+/// describe) nor the default prompt. Windows 2000's cmd keeps the prompt in a 512-unit buffer,
+/// and its output reads as that buffer, filled with no end, shown on into the text after it.
 #[inline(never)]
 fn prompt(spaced: bool) {
-    let mut text = [0; cmd::PROMPT_TEXT];
+    let mut text = [0; cmd::LINE];
     let mut default = [0; cmd::DEFAULT_PROMPT.len()];
     let mut name = [0; cmd::PROMPT.len()];
     let text = match exe::environment_variable(wide(cmd::PROMPT, &mut name), &mut text) {
         Ok(Some(text)) => text,
         _ => wide(cmd::DEFAULT_PROMPT, &mut default),
     };
+    let (first, second) = if text.len() >= cmd::PROMPT_TEXT {
+        (&text[..cmd::PROMPT_TEXT - 1], &text[..cmd::PROMPT_TEXT])
+    } else {
+        (text, &text[..0])
+    };
     let mut buffer = [0; exe::MAX_PATH];
     let directory = exe::current_directory(&mut buffer).unwrap_or(&[]);
     let time = time();
+    let shown = |text| cmd::Prompt {
+        text,
+        directory,
+        time: &time,
+        depth: exec::depth(),
+    };
     let _ = exe::stdout().print(format_args!(
-        "{}{}",
+        "{}{}{}",
         if spaced { "\r\n" } else { "" },
-        cmd::Prompt {
-            text,
-            directory,
-            time: &time,
-            depth: exec::depth(),
-        }
+        shown(first),
+        shown(second),
     ));
 }
 
@@ -214,7 +385,11 @@ fn wide<'a>(text: &str, buffer: &'a mut [u16]) -> &'a [u16] {
 
 /// The local time, as the prompt shows it.
 fn time() -> cmd::Time {
-    let time = exe::local_time();
+    shell_time(&exe::local_time())
+}
+
+/// A SYSTEMTIME as the shell's own time.
+fn shell_time(time: &exe::SystemTime) -> cmd::Time {
     cmd::Time {
         year: time.year,
         month: time.month,
@@ -277,6 +452,18 @@ impl cmd::Variables for Shell {
         let found = exe::find(path).ok()?.next()?;
         Some((found.attributes, found.size))
     }
+
+    fn short_path(&mut self, path: &[u16], value: &mut [u16]) -> Option<usize> {
+        let mut buffer = [0; exe::MAX_PATH];
+        let short = exe::short_path(path, &mut buffer).ok()?;
+        value.get_mut(..short.len())?.copy_from_slice(short);
+        Some(short.len())
+    }
+
+    fn written(&mut self, path: &[u16]) -> Option<cmd::Time> {
+        let found = exe::find(path).ok()?.next()?;
+        found.written().map(|time| shell_time(&time))
+    }
 }
 
 /// `%RANDOM%`'s generator's state: 0 until its first use seeds it from the clock.
@@ -308,29 +495,72 @@ fn copy_current_directory(value: &mut [u16]) -> Result<usize, TooLong> {
     Ok(directory.len())
 }
 
-/// A line, typed or read from `batch`: its variables expanded (as that batch's line when there is
-/// one), read (a line that cannot run is reported, and fails), echoed after the prompt when it is
-/// a batch's and echo is on (unless `@` hides it), then what it says done.
+/// A line, typed or read from `batch`, in `raw` (`length` units): its variables expanded into
+/// `block` (as that batch's line when there is one), and, while it leaves a group open (or, typed,
+/// ends with `^`), the lines `more` gives after it, each expanded as it comes, a line feed between
+/// them (a `^` ending a typed line goes instead; a batch file's lines join at a `^` as they are
+/// read); empty lines and labels in a block are skipped. The line is then read (a line that
+/// cannot run is reported, and fails), echoed after the prompt when it is a batch's and echo is on
+/// (unless `@` hides it), then what it says done.
+///
+/// In a batch file, a line that expands past [`cmd::MAX_LINE`] or cannot run ends every batch
+/// file, its return code [`syntax::FATAL`], as Windows 2000's does; typed, it fails.
 #[inline(never)]
-fn execute(read: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
-    let mut buffer = [0; cmd::LINE];
-    let arguments = batch.map(|batch| batch.arguments.get());
-    let Ok(line) = cmd::expand(
-        read,
-        state.errorlevel,
-        arguments.as_ref(),
-        &mut Shell,
-        &mut buffer,
-    ) else {
-        let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
-        state.spaced = true;
-        state.return_code = 1;
-        return Flow::Next;
+fn execute(
+    raw: &mut [u16],
+    length: usize,
+    block: &mut [u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    more: &mut dyn FnMut(&mut [u16]) -> More,
+) -> Flow {
+    let limit = if batch.is_some() {
+        cmd::MAX_LINE
+    } else {
+        cmd::MAX_COMMAND
     };
-    let line = cmd::without_break(line);
+    let Ok(mut used) = expand_into(&raw[..length], limit, state.errorlevel, batch, block) else {
+        return too_long(state, batch);
+    };
+    loop {
+        let caret = batch.is_none() && syntax::continues(&block[..used]);
+        if !caret && !syntax::open(&block[..used]) {
+            break;
+        }
+        let next = match more(raw) {
+            More::Line(next) => next,
+            More::End => break,
+            More::Abandon => {
+                state.spaced = false;
+                return Flow::Next;
+            }
+        };
+        let next = cmd::without_break(&raw[..next]);
+        if caret {
+            used -= 1;
+        } else {
+            if batch::skipped(next) {
+                continue;
+            }
+            match block.get_mut(used) {
+                Some(slot) => *slot = u16::from(b'\n'),
+                None => return too_long(state, batch),
+            }
+            used += 1;
+        }
+        match expand_into(next, limit, state.errorlevel, batch, &mut block[used..]) {
+            Ok(added) => used += added,
+            Err(TooLong) => return too_long(state, batch),
+        }
+    }
+    let line = &block[..used];
     if let Err(error) = syntax::check(line) {
         let _ = exe::stderr().print(format_args!("{error}"));
         state.spaced = true;
+        if batch.is_some() {
+            state.return_code = syntax::FATAL;
+            return Flow::Abort;
+        }
         state.failed();
         return Flow::Next;
     }
@@ -338,6 +568,43 @@ fn execute(read: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow 
         echo_line(line, state.spaced);
     }
     run_line(line, state, batch)
+}
+
+/// `line` expanded into the start of `out` (as `batch`'s line when there is one), `limit` units
+/// at most: the units written, its line break left out.
+fn expand_into(
+    line: &[u16],
+    limit: usize,
+    errorlevel: u32,
+    batch: Option<&Batch>,
+    out: &mut [u16],
+) -> Result<usize, TooLong> {
+    let arguments = batch.map(|batch| batch.arguments.borrow());
+    let view = arguments.as_ref().map(|arguments| arguments.view());
+    cmd::expand_within(line, limit, errorlevel, view.as_ref(), &mut Shell, out)
+        .map(|text| cmd::without_break(text).len())
+}
+
+/// A line expanded past its bound: `The input line is too long.`; typed, the line fails. In a
+/// batch file, Windows 2000's cmd then names the last program it found as unexpected (batline's
+/// capture: the path of the program the line before ran) and ends every batch file, its return
+/// code [`syntax::FATAL`].
+#[inline(never)]
+fn too_long(state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+    let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
+    state.spaced = true;
+    if batch.is_none() {
+        state.return_code = 1;
+        return Flow::Next;
+    }
+    let found = &state.found[..state.found_length];
+    let _ = if found.is_empty() {
+        exe::stderr().print(format_args!("{}", Syntax::Incorrect))
+    } else {
+        exe::stderr().print(format_args!("{}", Syntax::Unexpected(found)))
+    };
+    state.return_code = syntax::FATAL;
+    Flow::Abort
 }
 
 /// A batch file's line echoed after the prompt, unless `@` hides it: a line of one command as cmd
@@ -429,6 +696,7 @@ fn run_element(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> F
             }
             run_line(inner, state, batch)
         }
+        Ok(Element::Flow(keyword, text)) => control::run(keyword, text, state, batch),
         Ok(Element::Simple(text)) => run_simple(text, state, batch),
         // The line was checked before it ran.
         Err(_) => Flow::Next,
@@ -761,6 +1029,7 @@ fn dispatch(
             // either ends it with the ERRORLEVEL.
             return Flow::Exit(exit.code.unwrap_or(state.errorlevel));
         }
+        Command::Goto(argument) => return control::goto(argument, state, batch),
         Command::ChangeDirectory(None) => print_current_directory(state),
         Command::ChangeDirectory(Some(path)) => {
             if exe::set_current_directory(path).is_err() {
@@ -790,16 +1059,24 @@ fn dispatch(
             assign(cmd::PATH, value, state);
         }
         Command::Prompt(text) => assign(cmd::PROMPT, text, state),
-        Command::Set(argument) => set(argument, state),
+        Command::Set(argument) => {
+            if !set_switch::run(argument, state, batch.is_some()) {
+                set(argument, state);
+            }
+        }
         Command::Type(argument) => type_files(argument, state),
         Command::Version => {
             let _ = exe::stdout().print(format_args!("\r\n{}", cmd::BANNER));
         }
         Command::Shift(from) => {
             if let Some(batch) = batch {
-                let mut arguments = batch.arguments.get();
-                arguments.shift(from);
-                batch.arguments.set(arguments);
+                let shifted = {
+                    let arguments = batch.arguments.borrow();
+                    let mut view = arguments.view();
+                    view.shift(from);
+                    view.shifted
+                };
+                batch.arguments.borrow_mut().shifted = shifted;
             }
         }
         Command::Incorrect => {
@@ -819,29 +1096,54 @@ fn dispatch(
 /// `%%X%%` in a batch file reads X's value), then run as a command, a batch file it names coming
 /// back here once it ends. The ERRORLEVEL becomes what the command returns: 0 after `call echo`,
 /// a program's exit code, the ERRORLEVEL a batch file leaves, 1 for a command not recognized.
-/// `call` alone fails.
-#[inline(never)]
+/// `call :label` runs the batch file from its label (see [`control::call_label`]). `call` alone
+/// fails.
 fn call(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     if cmd::trim(argument).is_empty() {
         state.failed();
         return Flow::Next;
     }
+    let flow = if argument.contains(&u16::from(b'%')) {
+        call_expanded(argument, state, batch)
+    } else {
+        // Nothing to expand: the line as it is, with no buffer held while what it runs runs (a
+        // batch file `call` nests takes its share of the stack).
+        call_line(argument, state, batch)
+    };
+    state.errorlevel = state.return_code;
+    flow
+}
+
+/// `call`'s argument expanded a second time, then run ([`call_line`]).
+#[inline(never)]
+fn call_expanded(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     let mut buffer = [0; cmd::LINE];
-    let arguments = batch.map(|batch| batch.arguments.get());
-    let Ok(line) = cmd::expand(
-        argument,
-        state.errorlevel,
-        arguments.as_ref(),
-        &mut Shell,
-        &mut buffer,
-    ) else {
+    let expanded = {
+        let arguments = batch.map(|batch| batch.arguments.borrow());
+        let view = arguments.as_ref().map(|arguments| arguments.view());
+        cmd::expand(
+            argument,
+            state.errorlevel,
+            view.as_ref(),
+            &mut Shell,
+            &mut buffer,
+        )
+    };
+    let Ok(line) = expanded else {
         let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
         state.failed();
         return Flow::Next;
     };
-    let flow = dispatch(cmd::parse(line), state, batch, true);
-    state.errorlevel = state.return_code;
-    flow
+    call_line(line, state, batch)
+}
+
+/// What `call` runs: a label of the batch file, or a command.
+fn call_line(line: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+    if label::calls_label(line) {
+        control::call_label(line, state, batch)
+    } else {
+        dispatch(cmd::parse(line), state, batch, true)
+    }
 }
 
 /// The current directory kept in its drive's hidden variable (`=C:=C:\WINNT`), as Windows' cmd
@@ -1061,16 +1363,20 @@ fn run(
         return Flow::Next;
     };
     let path = &found[..length];
+    keep_found(path, state);
     if !search::is_batch(path) {
         start_program(path, line, word, state);
         return Flow::Next;
     }
+    if let (Some(batch), false) = (batch, called) {
+        // The batch file takes the place of the one running: control does not come back.
+        batch.arguments.borrow_mut().set(line, path);
+        return Flow::Chain;
+    }
     let depth = batch.map_or(0, |batch| batch.depth + 1);
     let cmd_script = batch.map_or_else(|| search::is_cmd_script(path), |batch| batch.cmd_script);
-    match run_batch(path, line, depth, cmd_script, state) {
+    match run_batch(path, line, depth, cmd_script, Entry::Top, state) {
         flow @ (Flow::Exit(_) | Flow::Abort) => flow,
-        // Control does not come back to a batch file that ran another without `call`.
-        _ if batch.is_some() && !called => Flow::EndBatch,
         _ => {
             // A batch file `call` ran returns the ERRORLEVEL it leaves (`exit /b 5`'s 5).
             if called {
@@ -1079,6 +1385,17 @@ fn run(
             Flow::Next
         }
     }
+}
+
+/// The full path of the program found at `path`, kept for the message a batch file's line too
+/// long gives (see [`too_long`]).
+#[inline(never)]
+fn keep_found(path: &[u16], state: &mut cmd::State) {
+    let mut buffer = [0; exe::MAX_PATH];
+    let full = exe::full_path(path, &mut buffer).unwrap_or(path);
+    let kept = full.len().min(state.found.len());
+    state.found[..kept].copy_from_slice(&full[..kept]);
+    state.found_length = kept;
 }
 
 /// The program `word` (quotes and all) names, found as cmd.exe finds one: its path's length in
@@ -1107,58 +1424,183 @@ fn find_program(word: &[u16], found: &mut [u16; exe::MAX_PATH]) -> Option<usize>
     search::search(name, path, pathext, &mut exe::file_exists, found).map(<[u16]>::len)
 }
 
-/// A batch file's lines run in the shell, `arguments` its `%0` to `%9` and `%*`, `depth` the
-/// batch files around it. Before each line, a Ctrl+C or Ctrl+Break since the last asks whether to
-/// end every batch file. Its labels and empty lines are skipped. It ends at its last line or
-/// `exit /b`; the ERRORLEVEL is then its last command's (or `exit /b`'s), and so is its return
-/// code (`exit /b` returning 0). The echo a batch file run from the prompt (or `/C`, `/K`) turns
-/// on or off is put back once it ends, so that the prompt shows as before.
+/// Where a batch file starts running.
+#[derive(Clone, Copy)]
+enum Entry<'a> {
+    /// At its first line.
+    Top,
+    /// After its label, looked for from the offset (`call :label`: where the batch file that
+    /// calls is).
+    Label(&'a [u16], u64),
+}
+
+/// A batch file open, and where it is read.
+struct Source {
+    file: exe::File,
+    reader: LineReader,
+}
+
+impl Source {
+    /// The batch file at `path`, read from its start.
+    fn open(path: &[u16]) -> Result<Source, exe::Error> {
+        Ok(Source {
+            file: exe::open_file(path)?,
+            reader: LineReader::default(),
+        })
+    }
+
+    /// The lines up to the label `label` read, from where the file is: whether it was found.
+    #[inline(never)]
+    fn find(&mut self, label: &[u16]) -> bool {
+        let mut bytes = [0; cmd::MAX_LINE];
+        let mut units = [0; cmd::LINE];
+        let file = &self.file;
+        self.reader.seek_label(
+            &mut |buffer| file.read(buffer),
+            |line: &[u8], units: &mut [u16]| exe::oem_to_wide(line, units).ok().map(<[u16]>::len),
+            label,
+            &mut bytes,
+            &mut units,
+        )
+    }
+
+    /// The lines before byte `offset` (a line's start) read.
+    #[inline(never)]
+    fn skip_to(&mut self, offset: u64) {
+        let mut units = [0; cmd::LINE];
+        while self.reader.offset() < offset {
+            match next_line(
+                |buffer| self.file.read(buffer),
+                &mut self.reader,
+                &mut units,
+            ) {
+                Ok(Some(_)) => {}
+                _ => return,
+            }
+        }
+    }
+}
+
+/// The label `label` looked for in the batch file at `path`, `source` reading it: from where it
+/// is to its end, then from its start, as `goto /?` says. Its message when there is none.
+fn find_label(source: &mut Source, path: &[u16], label: &[u16]) -> bool {
+    if source.find(label) {
+        return true;
+    }
+    if let Ok(from_start) = Source::open(path) {
+        *source = from_start;
+        if source.find(label) {
+            return true;
+        }
+    }
+    let _ = exe::stderr().print(format_args!("{}", label::NotFound(label)));
+    false
+}
+
+/// A batch file's lines run in the shell, `line` its `%0` to `%9` and `%*`, `depth` the batch
+/// files around it, from its start or a label. Before each line, a Ctrl+C or Ctrl+Break since the
+/// last asks whether to end every batch file. Its labels and empty lines are skipped. `goto`
+/// goes on after a label ([`find_label`]; a label not found ends the batch file, the ERRORLEVEL
+/// 1), and a batch file run without `call` takes its place, at the same depth. It ends at its last
+/// line, `exit /b` or `goto :eof`; the ERRORLEVEL is then its last command's (or `exit /b`'s), and
+/// so is its return code (`exit /b` returning 0). The echo a batch file run from the prompt (or
+/// `/C`, `/K`) turns on or off is put back once it ends, so that the prompt shows as before.
 #[inline(never)]
 fn run_batch(
     path: &[u16],
-    arguments: &[u16],
+    line: &[u16],
     depth: usize,
     cmd_script: bool,
+    start: Entry<'_>,
     state: &mut cmd::State,
 ) -> Flow {
-    if depth >= batch::DEPTH {
+    if depth >= batch::DEPTH || stack_used() > STACK_BUDGET {
         let _ = exe::stderr().print(format_args!("{}", batch::RECURSION));
         return Flow::Abort;
     }
-    let file = match exe::open_file(path) {
-        Ok(file) => file,
+    let mut source = match Source::open(path) {
+        Ok(source) => source,
         Err(error) => {
             report(error);
             state.failed();
             return Flow::Next;
         }
     };
+    let batch = Batch::new(line, path, depth, cmd_script);
+    if let Entry::Label(label, offset) = start {
+        source.skip_to(offset);
+        if !find_label(&mut source, path, label) {
+            state.failed();
+            return Flow::Next;
+        }
+    }
     let echo = state.echo;
-    let batch = Batch {
-        arguments: Cell::new(cmd::Arguments::new(arguments, path)),
-        depth,
-        cmd_script,
-    };
-    let mut reader = LineReader::default();
     let mut units = [0; cmd::LINE];
+    let mut block = [0; BLOCK];
     let flow = loop {
         if exe::take_interrupt() && terminate() {
             break Flow::Abort;
         }
-        let line = match next_batch_line(&file, &mut reader, &mut units) {
-            Ok(Some(line)) => line,
+        let length = match next_batch_line(&source.file, &mut source.reader, &mut units) {
+            Ok(Some(line)) => line.len(),
             Ok(None) => break Flow::Next,
             Err(error) => {
                 report(error);
                 break Flow::Next;
             }
         };
-        if batch::skipped(line) {
+        batch.offset.set(source.reader.offset());
+        if batch::skipped(&units[..length]) {
             continue;
         }
-        match execute(line, state, Some(&batch)) {
+        let flow = {
+            // The lines of a block the line opens.
+            let mut more =
+                |raw: &mut [u16]| match next_batch_line(&source.file, &mut source.reader, raw) {
+                    Ok(Some(line)) => {
+                        let length = line.len();
+                        batch.offset.set(source.reader.offset());
+                        More::Line(length)
+                    }
+                    _ => More::End,
+                };
+            execute(
+                &mut units,
+                length,
+                &mut block,
+                state,
+                Some(&batch),
+                &mut more,
+            )
+        };
+        match flow {
             Flow::Next => {}
             Flow::EndBatch => break Flow::Next,
+            Flow::Goto => {
+                let (label, length) = *batch.label.borrow();
+                let mut path = [0; exe::MAX_PATH];
+                let path = {
+                    let arguments = batch.arguments.borrow();
+                    let own = arguments.path();
+                    path[..own.len()].copy_from_slice(own);
+                    &path[..own.len()]
+                };
+                if !find_label(&mut source, path, &label[..length]) {
+                    state.failed();
+                    break Flow::Next;
+                }
+            }
+            Flow::Chain => {
+                let opened = Source::open(batch.arguments.borrow().path());
+                match opened {
+                    Ok(opened) => source = opened,
+                    Err(error) => {
+                        report(error);
+                        state.failed();
+                        break Flow::Next;
+                    }
+                }
+            }
             flow => break flow,
         }
     };

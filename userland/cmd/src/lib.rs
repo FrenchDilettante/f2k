@@ -6,14 +6,17 @@
 //! redirections. Each command either runs a built-in (`call`, `cd` or `chdir`, `cls`, `echo`,
 //! `exit`, `path`, `prompt`, `rem`, `set`, `shift`, `type`, `ver`) or names a program, found as
 //! cmd.exe finds one (src/search.rs): a Windows program is started and waited for, a batch file
-//! (src/batch.rs) runs its lines in the shell. No `goto`, `if` or `for`. The program
-//! (src/main.rs) makes the calls; this library reads the lines and says what is printed.
+//! (src/batch.rs) runs its lines in the shell. `if`, `for` and `goto` and its labels are the
+//! batch language's control flow (src/flow/). The program (src/main.rs) makes the calls; this
+//! library reads the lines and says what is printed.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod arith;
 pub mod batch;
 pub mod builtins;
+pub mod flow;
 pub mod help;
 pub mod search;
 pub mod switches;
@@ -29,6 +32,11 @@ pub const MAX_LINE: usize = 2047;
 
 /// The units a line read holds: [`MAX_LINE`], and its line break (CR LF).
 pub const LINE: usize = MAX_LINE + 2;
+
+/// The longest line a typed command line or `/C`'s string may expand to: Windows 2000 runs a `/C`
+/// string that expands past [`MAX_LINE`] (batline's 2,048 characters), where a batch file's line
+/// is too long. No capture shows a bound; this is Windows XP's documented line, 8,191 characters.
+pub const MAX_COMMAND: usize = 8191;
 
 /// The units a PROMPT variable's value is read into: a longer one prompts as the default does.
 pub const PROMPT_TEXT: usize = 512;
@@ -108,7 +116,15 @@ pub struct State {
     pub spaced: bool,
     /// The directories `pushd` saved, for `popd`.
     pub directories: builtins::console::Directories,
+    /// The path of the last program the shell found, and its length: what Windows 2000's cmd
+    /// names as unexpected when a batch file's line expands past [`MAX_LINE`] (see
+    /// [`syntax::FATAL`]).
+    pub found: [u16; FOUND],
+    pub found_length: usize,
 }
+
+/// The units [`State::found`] keeps: a path's.
+pub const FOUND: usize = 260;
 
 impl Default for State {
     /// The shell as it starts: echo on, ERRORLEVEL 0, the first prompt after an empty line (below
@@ -120,6 +136,8 @@ impl Default for State {
             echo: true,
             spaced: true,
             directories: builtins::console::Directories::default(),
+            found: [0; FOUND],
+            found_length: 0,
         }
     }
 }
@@ -171,6 +189,8 @@ pub enum Command<'a> {
     Call(&'a [u16]),
     /// `exit`, its argument (see [`batch::exit`]): the shell ends, or with `/B` the batch.
     Exit(&'a [u16]),
+    /// `goto`, its argument (see [`flow::label::goto`]): the batch file goes on at a label.
+    Goto(&'a [u16]),
     /// `rem`: a remark, nothing done.
     Remark,
     /// `cd` or `chdir`: without an argument, print the current directory; with one, change to it
@@ -236,9 +256,13 @@ pub(crate) const QUOTE: u16 = b'"' as u16;
 const AT: u16 = b'@' as u16;
 const DOLLAR: u16 = b'$' as u16;
 
-/// Whether `unit` separates words: a space or a tab.
+/// The unit that separates a block's lines once they are read (see [`syntax`]): a line feed,
+/// which no line read holds.
+pub(crate) const LF: u16 = b'\n' as u16;
+
+/// Whether `unit` separates words: a space or a tab, or the line feed between a block's lines.
 pub(crate) fn is_blank(unit: u16) -> bool {
-    unit == SPACE || unit == TAB
+    unit == SPACE || unit == TAB || unit == LF
 }
 
 /// Whether `unit` separates words as cmd's delimiters do: a blank, `,`, `;` or `=`.
@@ -313,12 +337,12 @@ pub(crate) fn fold(unit: u16) -> u16 {
 }
 
 /// Whether two names are the same, ignoring the case of ASCII letters.
-fn same_name(a: &[u16], b: &[u16]) -> bool {
+pub(crate) fn same_name(a: &[u16], b: &[u16]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| fold(a) == fold(b))
 }
 
 /// Whether `word` is `name` (lowercase ASCII), ignoring case.
-fn is_named(word: &[u16], name: &str) -> bool {
+pub(crate) fn is_named(word: &[u16], name: &str) -> bool {
     word.len() == name.len()
         && word.iter().zip(name.bytes()).all(|(&unit, byte)| {
             u8::try_from(unit).is_ok_and(|unit| unit.to_ascii_lowercase() == byte)
@@ -391,6 +415,9 @@ pub fn parse(line: &[u16]) -> Command<'_> {
     }
     if is_named(word, "call") {
         return Command::Call(argument);
+    }
+    if is_named(word, "goto") {
+        return Command::Goto(argument);
     }
     if is_named(word, "shift") {
         return shift(trim_blanks(argument));
@@ -649,6 +676,15 @@ pub trait Variables {
 
     /// The file or directory at `path`: its attributes and size, None when there is none.
     fn file(&mut self, path: &[u16]) -> Option<(u32, u64)>;
+
+    /// The full path `path` with each long name in it replaced by its 8.3 name, as
+    /// GetShortPathNameW makes it, written to the start of `value`: its length, None when nothing
+    /// goes by `path` or it does not fit.
+    fn short_path(&mut self, path: &[u16], value: &mut [u16]) -> Option<usize>;
+
+    /// When the file or directory at `path` was last written, in local time: None when there is
+    /// none.
+    fn written(&mut self, path: &[u16]) -> Option<Time>;
 }
 
 /// A batch file's arguments, as its lines' expansion reads them.
@@ -762,11 +798,7 @@ fn variable(
 
 /// The letters a batch argument's `%~` may carry before its digit (`call /?`): the argument as a
 /// full path, its drive, path, name, extension, short name, attributes, time and size.
-const MODIFIERS: &[u8] = b"fdpnxsatz";
-
-/// The modifiers the shell does not expand, short names and the time: a `%~` with either stays as
-/// typed.
-const UNEXPANDED: [u16; 2] = [b's' as u16, b't' as u16];
+pub(crate) const MODIFIERS: &[u8] = b"fdpnxsatz";
 
 /// The attributes `%~a1` shows, in its order, by their FILE_ATTRIBUTE_ bits: directory,
 /// read-only, archive, hidden, system, compressed, offline, temporary, reparse point; a `-` for
@@ -800,6 +832,19 @@ const ATTRIBUTES: [(u8, u32); 9] = [
 /// TooLong when the expanded line does not fit `expanded`.
 pub fn expand<'a>(
     line: &[u16],
+    errorlevel: u32,
+    batch: Option<&Arguments<'_>>,
+    variables: &mut dyn Variables,
+    expanded: &'a mut [u16],
+) -> Result<&'a [u16], TooLong> {
+    expand_within(line, MAX_LINE, errorlevel, batch, variables, expanded)
+}
+
+/// [`expand`], the expanded line `limit` units at most (its line break aside): [`MAX_LINE`] for a
+/// batch file's line, [`MAX_COMMAND`] for a typed one or `/C`'s string.
+pub fn expand_within<'a>(
+    line: &[u16],
+    limit: usize,
     errorlevel: u32,
     batch: Option<&Arguments<'_>>,
     variables: &mut dyn Variables,
@@ -851,8 +896,6 @@ pub fn expand<'a>(
                     let argument = batch::unquote(arguments.get(n).unwrap_or(&[]));
                     if letters.is_empty() {
                         copy(argument, expanded, &mut length)?;
-                    } else if letters.iter().any(|letter| UNEXPANDED.contains(letter)) {
-                        copy(&line[at..=end], expanded, &mut length)?;
                     } else {
                         // `%0` unquoted is the batch file found, its extension included.
                         let quoted = arguments
@@ -910,7 +953,7 @@ pub fn expand<'a>(
             }
         }
     }
-    if without_break(&expanded[..length]).len() > MAX_LINE {
+    if without_break(&expanded[..length]).len() > limit {
         return Err(TooLong);
     }
     Ok(&expanded[..length])
@@ -988,12 +1031,15 @@ fn replace(old: &[u16], new: &[u16], length: usize, buffer: &mut [u16]) -> Resul
 }
 
 /// A batch argument's `%~` modifiers applied to `name` (the argument without its quotes), in
-/// `value`: the attributes (`a`) and size (`z`) of the file it names, then the parts of its full
-/// path (`f` all of it, else `d` its drive, `p` its directory, `n` its name, `x` its extension, in
-/// that order), separated by blanks; the attributes and size are left out for a name that names
-/// nothing. An empty argument gives nothing. The units written.
+/// `value`, in the order of the directory-listing line `for /?`'s `%~ftzaI` shows: the attributes
+/// (`a`), last write's date and time (`t`, as [`Written`] shows them) and size (`z`) of the file
+/// it names, then the parts of its full path (`f` all of it, else `d` its drive, `p` its
+/// directory, `n` its name, `x` its extension, in that order), separated by blanks. With `s` the
+/// parts are those of its short path ([`short_path`]), all of it when no other letter picks a
+/// part. The attributes, time and size are left out for a name that names nothing. An empty
+/// argument gives nothing. The units written.
 #[inline(never)]
-fn modified(
+pub(crate) fn modified(
     name: &[u16],
     letters: &[u16],
     variables: &mut dyn Variables,
@@ -1023,26 +1069,77 @@ fn modified(
             copy(&[u16::from(shown)], value, &mut length)?;
         }
     }
+    let written = if has(b't') {
+        file.and_then(|_| variables.written(full))
+    } else {
+        None
+    };
+    if let Some(time) = written {
+        gap(&mut length, value)?;
+        length += format(&mut value[length..], format_args!("{}", Written(&time)))?;
+    }
     if let (true, Some((_, size))) = (has(b'z'), file) {
         gap(&mut length, value)?;
         length += format(&mut value[length..], format_args!("{size}"))?;
     }
-    let (drive, directory, stem, extension) = path_parts(full);
+    let mut short = [0; MAX_LINE];
+    let path = if has(b's') {
+        short_path(full, variables, &mut short)
+    } else {
+        full
+    };
+    let (drive, directory, stem, extension) = path_parts(path);
     let parts = [
         (b'd', drive),
         (b'p', directory),
         (b'n', stem),
         (b'x', extension),
     ];
-    if parts.iter().any(|&(letter, _)| has(letter)) || has(b'f') {
+    let picked = parts.iter().any(|&(letter, _)| has(letter));
+    let whole = has(b'f') || (has(b's') && !picked);
+    if picked || whole {
         gap(&mut length, value)?;
         for (letter, part) in parts {
-            if has(b'f') || has(letter) {
+            if whole || has(letter) {
                 copy(part, value, &mut length)?;
             }
         }
     }
     Ok(length)
+}
+
+/// `%~s`'s path: the full path `full` with each long name in it replaced by its 8.3 name
+/// ([`Variables::short_path`]), in `buffer`; `full` itself when the short path cannot be made
+/// (nothing goes by it).
+fn short_path<'a>(
+    full: &'a [u16],
+    variables: &mut dyn Variables,
+    buffer: &'a mut [u16],
+) -> &'a [u16] {
+    match variables.short_path(full, buffer) {
+        Some(length) => &buffer[..length],
+        None => full,
+    }
+}
+
+/// A file's last write as `%~t1` shows it, the US short date then the time on a 12-hour clock
+/// without seconds, as `time /t` shows it: `11/04/2026 06:31 PM`.
+pub struct Written<'a>(pub &'a Time);
+
+impl fmt::Display for Written<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let time = self.0;
+        let hour = match time.hour % 12 {
+            0 => 12,
+            hour => hour,
+        };
+        let half = if time.hour < 12 { "AM" } else { "PM" };
+        write!(
+            f,
+            "{:02}/{:02}/{:04} {hour:02}:{:02} {half}",
+            time.month, time.day, time.year, time.minute
+        )
+    }
 }
 
 /// A full path's drive (`C:`), directory (`\WINNT\`), name and extension (`.exe`, its dot
@@ -1072,7 +1169,7 @@ fn path_parts(path: &[u16]) -> (&[u16], &[u16], &[u16], &[u16]) {
 /// A number as C's `strtol` reads it with base 0, at the start of `text`: an optional sign, then
 /// `0x` and hexadecimal digits, `0` and octal digits, or decimal digits. The number and the text
 /// after it; None without a digit.
-fn number(text: &[u16]) -> Option<(i64, &[u16])> {
+pub(crate) fn number(text: &[u16]) -> Option<(i64, &[u16])> {
     let (negative, text) = match text.split_first() {
         Some((&unit, rest)) if unit == u16::from(b'-') => (true, rest),
         Some((&unit, rest)) if unit == u16::from(b'+') => (false, rest),
@@ -1159,7 +1256,7 @@ pub fn cut(length: usize, offset: i64, count: Option<i64>) -> core::ops::Range<u
 }
 
 /// `units` appended to `buffer`'s first `length`: TooLong when they do not fit.
-fn copy(units: &[u16], buffer: &mut [u16], length: &mut usize) -> Result<(), TooLong> {
+pub(crate) fn copy(units: &[u16], buffer: &mut [u16], length: &mut usize) -> Result<(), TooLong> {
     buffer
         .get_mut(*length..*length + units.len())
         .ok_or(TooLong)?
@@ -1805,11 +1902,13 @@ mod tests {
     }
 
     /// An environment for the expansion's tests: names compared upper-cased, and files by their
-    /// full paths, upper-cased, with their attributes and sizes.
+    /// full paths, upper-cased, with their attributes and sizes (each last written at [`TIME`]),
+    /// and their short paths.
     struct Fake {
         variables: BTreeMap<String, String>,
         directory: String,
         files: BTreeMap<String, (u32, u64)>,
+        short: BTreeMap<String, String>,
     }
 
     impl Fake {
@@ -1821,6 +1920,7 @@ mod tests {
                     .collect(),
                 directory: "C:\\WINNT".to_string(),
                 files: BTreeMap::new(),
+                short: BTreeMap::new(),
             }
         }
     }
@@ -1871,6 +1971,15 @@ mod tests {
         fn file(&mut self, path: &[u16]) -> Option<(u32, u64)> {
             self.files.get(&narrow(path).to_uppercase()).copied()
         }
+
+        fn short_path(&mut self, path: &[u16], value: &mut [u16]) -> Option<usize> {
+            let short = self.short.get(&narrow(path).to_uppercase())?;
+            put(short, value).ok()
+        }
+
+        fn written(&mut self, path: &[u16]) -> Option<Time> {
+            self.file(path).map(|_| TIME)
+        }
     }
 
     /// The shell's command line, as the fake environment gives it.
@@ -1905,7 +2014,6 @@ mod tests {
         assert_eq!(in_batch("[%*]", arguments, &mut fake), "[a \"b c\" d]");
         assert_eq!(in_batch("[%*]", "t", &mut fake), "[]");
         assert_eq!(in_batch("%~2 %~1", arguments, &mut fake), "b c a");
-        assert_eq!(in_batch("%~s1 %~t1", arguments, &mut fake), "%~s1 %~t1");
     }
 
     #[test]
@@ -1937,6 +2045,68 @@ mod tests {
             "[t.cmd][.cmd][C:\\D\\]"
         );
         assert_eq!(in_batch("[%~nx0][%~x0]", "\"t\" x", &mut fake), "[t][]");
+    }
+
+    #[test]
+    fn s_reads_the_short_path_and_t_the_last_write() {
+        let mut fake = Fake::new(&[]);
+        fake.files.insert(
+            "C:\\WINNT\\LONG NAME\\A LONG FILE.TEXT".to_string(),
+            (0x20, 7),
+        );
+        fake.short.insert(
+            "C:\\WINNT\\LONG NAME\\A LONG FILE.TEXT".to_string(),
+            "C:\\WINNT\\LONGNA~1\\ALONGF~1.TEX".to_string(),
+        );
+        let arguments = "t \"long name\\a long file.text\" missing.txt";
+        // `s` alone is the whole short path; with part letters, those parts of it.
+        assert_eq!(
+            in_batch("[%~s1][%~sf1][%~fs1]", arguments, &mut fake),
+            "[C:\\WINNT\\LONGNA~1\\ALONGF~1.TEX][C:\\WINNT\\LONGNA~1\\ALONGF~1.TEX]\
+             [C:\\WINNT\\LONGNA~1\\ALONGF~1.TEX]"
+        );
+        assert_eq!(
+            in_batch("[%~snx1][%~sp1][%~sd1][%~nx1]", arguments, &mut fake),
+            "[ALONGF~1.TEX][\\WINNT\\LONGNA~1\\][C:][a long file.text]"
+        );
+        // A name with no short path (nothing goes by it) keeps its full path.
+        assert_eq!(
+            in_batch("[%~s2][%~snx2]", arguments, &mut fake),
+            "[C:\\WINNT\\missing.txt][missing.txt]"
+        );
+        // The last write as `11/03/2026 06:31 PM`, in the directory-listing order with the
+        // attributes, the size and the path; nothing of it for a file there is not.
+        assert_eq!(
+            in_batch("[%~t1][%~t2]", arguments, &mut fake),
+            "[11/03/2026 06:31 PM][]"
+        );
+        assert_eq!(
+            in_batch("[%~ftza1]", arguments, &mut fake),
+            "[--a------ 11/03/2026 06:31 PM 7 C:\\WINNT\\long name\\a long file.text]"
+        );
+        assert_eq!(
+            in_batch("[%~tsnx1][%~tnx2]", arguments, &mut fake),
+            "[11/03/2026 06:31 PM ALONGF~1.TEX][missing.txt]"
+        );
+    }
+
+    #[test]
+    fn written_is_the_us_date_and_a_twelve_hour_clock() {
+        let at = |hour, minute| {
+            let time = Time {
+                year: 2026,
+                month: 1,
+                day: 9,
+                hour,
+                minute,
+                ..TIME
+            };
+            Written(&time).to_string()
+        };
+        assert_eq!(at(0, 5), "01/09/2026 12:05 AM");
+        assert_eq!(at(9, 30), "01/09/2026 09:30 AM");
+        assert_eq!(at(12, 0), "01/09/2026 12:00 PM");
+        assert_eq!(at(23, 59), "01/09/2026 11:59 PM");
     }
 
     #[test]

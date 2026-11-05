@@ -7,4 +7,3 @@ kind = "script"
 # was started by: cmd on the real machine, CORPUS\cmd on F2K.
 masks = ["CMDCMDLINE [** /c batdyn.cmd]"]
 gate = true
-pending = "if and set /a are not implemented"

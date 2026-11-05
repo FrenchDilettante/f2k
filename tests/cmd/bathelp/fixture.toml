@@ -6,4 +6,5 @@
 description = "bathelp - the built-in commands' help switch (/?): the ERRORLEVEL after it alone (cd, type, ver, set, path, prompt, echo, cls, call) and the exit code of rem's and exit's by cmd /c; where it counts (after a path given to cd, run into more text after cd, echo and set, after a word given to echo and set, after cd and echo run into a comma or a dot, after call cd); and cmd.exe's own, alone, before /c, and inside the /c string."
 kind = "script"
 gate = true
-pending = "for, and if with else and commands in parentheses, are not implemented"
+# Its boot takes about 18 s on the opt-0 kernel, at the edge of the default budget.
+timeout = 40

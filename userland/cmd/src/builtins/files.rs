@@ -309,6 +309,72 @@ impl CopyFile<'_> {
     }
 }
 
+/// What `copy` writes of its sources into one destination, read by read. An ASCII source ends at
+/// its first Ctrl+Z; a binary source is written whole, but a Ctrl+Z ending it is held back, since
+/// the next source written goes over it, as cmd writes over a Ctrl+Z ending a file it appends to.
+/// At the end, an ASCII destination gets its Ctrl+Z, in place of one held back; a binary one gets
+/// the one held back, if any.
+#[derive(Debug, Default)]
+pub struct Written {
+    /// Whether the last byte read is a Ctrl+Z ending a binary source, not yet written.
+    held: bool,
+}
+
+/// What [`Written::read`] says to write of one read, in this order.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Write<'a> {
+    /// A Ctrl+Z held back from the read before, which these bytes come after.
+    pub held: bool,
+    pub bytes: &'a [u8],
+    /// Whether the source ends here (an ASCII one's Ctrl+Z): nothing more is read of it.
+    pub ended: bool,
+}
+
+impl Written {
+    /// A new source starts: a Ctrl+Z held back from the one before is dropped.
+    pub fn source(&mut self) {
+        self.held = false;
+    }
+
+    /// What to write of `bytes`, the next read of a source in `mode`.
+    pub fn read<'a>(&mut self, bytes: &'a [u8], mode: Mode) -> Write<'a> {
+        if mode == Mode::Ascii {
+            if let Some(end) = bytes.iter().position(|&byte| byte == END_OF_FILE) {
+                return Write {
+                    held: false,
+                    bytes: &bytes[..end],
+                    ended: true,
+                };
+            }
+        }
+        if bytes.is_empty() {
+            return Write {
+                held: false,
+                bytes,
+                ended: false,
+            };
+        }
+        let held = core::mem::take(&mut self.held);
+        let bytes = match bytes.split_last() {
+            Some((&END_OF_FILE, rest)) if mode == Mode::Binary => {
+                self.held = true;
+                rest
+            }
+            _ => bytes,
+        };
+        Write {
+            held,
+            bytes,
+            ended: false,
+        }
+    }
+
+    /// Whether the destination, written in `mode`, ends with a Ctrl+Z.
+    pub fn end(&self, mode: Mode) -> bool {
+        mode == Mode::Ascii || self.held
+    }
+}
+
 /// The sources one `copy` takes at most.
 pub const SOURCES: usize = 16;
 
@@ -880,6 +946,73 @@ mod tests {
         };
         assert_eq!(file.mode(true), Mode::Ascii);
         assert_eq!(file.mode(false), Mode::Binary);
+    }
+
+    /// The bytes [`Written`] writes of `sources`, each read in reads of `size` bytes, into a
+    /// destination in `mode`.
+    fn written(sources: &[(&[u8], Mode)], size: usize, mode: Mode) -> Vec<u8> {
+        let mut written = Written::default();
+        let mut out = Vec::new();
+        for &(source, source_mode) in sources {
+            written.source();
+            for read in source.chunks(size) {
+                let write = written.read(read, source_mode);
+                if write.held {
+                    out.push(END_OF_FILE);
+                }
+                out.extend_from_slice(write.bytes);
+                if write.ended {
+                    break;
+                }
+            }
+        }
+        if written.end(mode) {
+            out.push(END_OF_FILE);
+        }
+        out
+    }
+
+    #[test]
+    fn copy_writes_an_ascii_destination_s_ctrl_z_over_a_binary_source_s() {
+        use Mode::{Ascii, Binary};
+        // batstd's `copy /b one c /a`, then `copy /b c + two d`: ten bytes, the Ctrl+Z gone.
+        let c = written(&[(b"one\r\n", Binary)], 1024, Ascii);
+        assert_eq!(c, b"one\r\n\x1a");
+        let d = written(
+            &[(c.as_slice(), Binary), (b"two\r\n", Binary)],
+            1024,
+            Binary,
+        );
+        assert_eq!(d, b"one\r\ntwo\r\n");
+        // The same whatever the reads' size, a Ctrl+Z ending one read kept when more follows.
+        for size in 1..8 {
+            assert_eq!(
+                written(
+                    &[(c.as_slice(), Binary), (b"two\r\n", Binary)],
+                    size,
+                    Binary
+                ),
+                d
+            );
+            assert_eq!(
+                written(&[(b"a\x1a\x1ab", Binary)], size, Binary),
+                b"a\x1a\x1ab"
+            );
+        }
+        // A binary destination keeps the last source's Ctrl+Z; an ASCII one writes one alone.
+        assert_eq!(written(&[(b"a\x1a", Binary)], 1024, Binary), b"a\x1a");
+        assert_eq!(written(&[(b"a\x1a", Binary)], 1024, Ascii), b"a\x1a");
+        // An ASCII source ends at its first Ctrl+Z, whatever follows.
+        assert_eq!(
+            written(&[(b"a\x1ab", Ascii), (b"c", Ascii)], 1024, Ascii),
+            b"ac\x1a"
+        );
+        assert_eq!(written(&[(b"a\x1ab", Ascii)], 1, Binary), b"a");
+        // Empty sources write nothing, and drop a Ctrl+Z held back.
+        assert_eq!(
+            written(&[(b"a\x1a", Binary), (b"", Binary)], 4, Binary),
+            b"a"
+        );
     }
 
     #[test]

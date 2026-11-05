@@ -4,5 +4,6 @@
 description = "batline - how a line is read: where a command word ends (cd.. cd\\ cd/, echo run into each of its separators, a tab after echo and after a program's name, a program's name run into a comma, a semicolon and an equals sign), leading at signs, echo ON and OFF with blanks around the word, quoted command words, a directory's name typed as a command, the prompt a line is echoed after (an unknown dollar code, a dollar at its end, a prompt over 511 characters by its echoed size), and lines of 2046 to 2048 characters after expansion in a batch file and as a cmd /c string."
 kind = "script"
 gate = true
+# Its boot takes about 25 s on the opt-0 kernel, past the default budget.
+timeout = 40
 masks = ["* was unexpected at this time."]
-pending = "for is not implemented; and a 2,048-character batch line ends its batch file (exit code 255, after a second message), a /C string expanding past 2,047 characters runs, rem echoed under a 600-character prompt writes 1,030 bytes, and msvcrt reads a program name quoted in part (\"spawn\"kid) as its quoted part alone"

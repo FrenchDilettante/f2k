@@ -10,8 +10,11 @@
 //!
 //! - argv is the command line split as MSDN's "Parsing C Command-Line Arguments" says (blanks
 //!   separate; quotes group, `\"` is a quote, backslashes are literal unless a quote follows, 2n of
-//!   them before a quote are n and the quote groups, 2n+1 are n and a literal quote); argv[0] ends
-//!   at its closing quote or first blank, backslashes literal. `__argc` is 0 until then.
+//!   them before a quote are n and the quote groups, 2n+1 are n and a literal quote; `""` inside
+//!   quotes is a quote, and ends them). argv[0], the program's name, follows rules of its own,
+//!   backslashes literal: quoted, it ends at its closing quote, where the next argument starts
+//!   (`"spawn"kid exit 2` is `spawn`, `kid`, `exit`, `2`, as batline's capture shows); unquoted, it
+//!   ends at its first blank, a quote in it kept. `__argc` is 0 until then.
 //! - envp, `_environ` and `__initenv` are one array: the environment block's entries, in order,
 //!   less those starting with `=` (cmd.exe's per-drive current directories). `_putenv` (as MSDN
 //!   documents it) changes both `_environ`, a new array each time (envp stays as `main` got it),
@@ -305,7 +308,9 @@ pub unsafe extern "C" fn initterm(
 pub fn split(line: &[u8], mut each: impl FnMut(Option<u8>)) {
     let blank = |b: u8| b == b' ' || b == b'\t';
     let mut i = 0;
-    // argv[0]: to its closing quote, or to a blank.
+    // argv[0], the program's name: from an opening quote to the next quote (the next argument
+    // starts right after it, blank or not), else to the first blank, quotes kept; backslashes are
+    // literal either way.
     if line.first() == Some(&b'"') {
         i = 1;
         while i < line.len() && line[i] != b'"' {
@@ -313,10 +318,11 @@ pub fn split(line: &[u8], mut each: impl FnMut(Option<u8>)) {
             i += 1;
         }
         i += 1;
-    }
-    while i < line.len() && !blank(line[i]) {
-        each(Some(line[i]));
-        i += 1;
+    } else {
+        while i < line.len() && !blank(line[i]) {
+            each(Some(line[i]));
+            i += 1;
+        }
     }
     each(None);
     loop {
@@ -864,6 +870,69 @@ mod tests {
         );
         assert_eq!(arguments(b"a.exe  \t "), ["a.exe"]);
         assert_eq!(arguments(br#"a "x""y z"#), ["a", "x\"y", "z"]);
+    }
+
+    /// MSDN's "Parsing C Command-Line Arguments": each of its examples, after a program name.
+    #[test]
+    fn the_documented_examples() {
+        assert_eq!(arguments(br#"p "a b c" d e"#), ["p", "a b c", "d", "e"]);
+        assert_eq!(
+            arguments(br#"p "ab\"c" "\\" d"#),
+            ["p", r#"ab"c"#, r"\", "d"]
+        );
+        assert_eq!(
+            arguments(br#"p a\\\b d"e f"g h"#),
+            ["p", r"a\\\b", "de fg", "h"]
+        );
+        assert_eq!(arguments(br#"p a\\\"b c d"#), ["p", r#"a\"b"#, "c", "d"]);
+        assert_eq!(
+            arguments(br#"p a\\\\"b c" d e"#),
+            ["p", r"a\\b c", "d", "e"]
+        );
+    }
+
+    /// Each documented rule on its own: blanks (spaces and tabs) separate, runs of them as one;
+    /// quotes group and may sit inside an argument; backslashes are literal unless a quote follows;
+    /// before a quote, 2n are n and the quote groups, 2n+1 are n and a literal quote; `""` inside
+    /// quotes is a literal quote that ends them, and an unclosed quote runs to the line's end.
+    #[test]
+    fn the_documented_rules() {
+        assert_eq!(arguments(b"p a\t b  \t c"), ["p", "a", "b", "c"]);
+        assert_eq!(arguments(br#"p x"a b"y"#), ["p", "xa by"]);
+        assert_eq!(arguments(br"p \a\\b\ c\\"), ["p", r"\a\\b\", r"c\\"]);
+        assert_eq!(arguments(br#"p \" \\" x""#), ["p", "\"", r"\ x"]);
+        assert_eq!(
+            arguments(br#"p \\\\" a" \\\\\"b"#),
+            ["p", r"\\ a", r#"\\"b"#]
+        );
+        assert_eq!(arguments(br#"p "a""b c""#), ["p", "a\"b", "c"]);
+        assert_eq!(arguments(br#"p """a""" b"#), ["p", "\"a\"", "b"]);
+        assert_eq!(arguments(br#"p a""b"#), ["p", "ab"]);
+        assert_eq!(arguments(br#"p "" """#), ["p", "", ""]);
+        assert_eq!(arguments(br#"p "a b"#), ["p", "a b"]);
+        assert_eq!(arguments(b"p"), ["p"]);
+    }
+
+    /// The program's name: quoted, it ends at its closing quote and the next argument starts right
+    /// after it (batline's `"spawn"kid exit 2` reaches spawnkid as `spawn`, `kid`: an unknown
+    /// mode); unquoted, it ends at a blank and keeps any quote; backslashes are literal in both.
+    #[test]
+    fn the_program_name() {
+        assert_eq!(
+            arguments(br#""spawn"kid exit 2"#),
+            ["spawn", "kid", "exit", "2"]
+        );
+        assert_eq!(
+            arguments(br#""spawnkid" exit 3"#),
+            ["spawnkid", "exit", "3"]
+        );
+        assert_eq!(arguments(br#""C:\dir\"x"#), [r"C:\dir\", "x"]);
+        assert_eq!(arguments(br#""a\"b c"#), [r"a\", "b", "c"]);
+        assert_eq!(arguments(br#"a"b c" d"#), [r#"a"b"#, "c d"]);
+        assert_eq!(arguments(br#"C:\a\\"b x"#), [r#"C:\a\\"b"#, "x"]);
+        assert_eq!(arguments(br#""no end"#), ["no end"]);
+        assert_eq!(arguments(br#""" x"#), ["", "x"]);
+        assert_eq!(arguments(b"\tp x"), ["", "p", "x"]);
     }
 
     /// crt's modes block: the start-up's precision, the fields, a change and its restoring.

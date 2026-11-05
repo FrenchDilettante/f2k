@@ -1292,6 +1292,40 @@ def script_masks(fixture: str, declared: dict, captured: list[Block]) -> dict[st
     return {captured[0].section: tuple(masks)} if masks else {}
 
 
+# --- A fixture's disk ----------------------------------------------------------------------------
+#
+# A batch boots the disk the tests boot, unless its fixture needs more on it: a script fixture boots
+# `script_disk`, and a sectioned fixture declaring `system_programs` boots a copy with those of
+# F2K's own programs added to \WINNT\system32 (cmd.exe, for a section running the machine's own).
+
+
+def system_programs(fixture: str) -> list[Path]:
+    """The programs a sectioned fixture's declaration adds to \\WINNT\\system32 for its boot, its
+    `system_programs` (a list of names, `["cmd"]`: userland/<name>, built as <name>.exe), by path;
+    none by default."""
+    names = declaration(fixture).get("system_programs", [])
+    if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
+        raise ValueError(f"{fixture}: system_programs is a list of program names, [\"cmd\"]")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{fixture}: system_programs names a program twice: {names}")
+    return [BUILT_PROGRAMS / f"{name}.exe" for name in names]
+
+
+def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
+    """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
+    fixture's (`script_disk`) or a sectioned one's with its `system_programs` added; None for the
+    disk the tests boot."""
+    if declaration(fixture).get("kind") == "script":
+        return script_disk(build, fixture, path)
+    programs = system_programs(fixture)
+    if not programs:
+        return None
+    missing = [program.name for program in programs if not program.exists()]
+    if missing:
+        raise RuntimeError(f"{', '.join(missing)} missing from {BUILT_PROGRAMS}: `make disk` builds the programs")
+    return disk_with_programs(build, programs, path)
+
+
 def corpus_params(fixture: str) -> list:
     """A sectioned or script fixture's blocks as pytest parameters, as its declaration says to
     compare them; one skipped parameter for a fixture still awaiting its real-machine files."""
@@ -1320,6 +1354,7 @@ def corpus_params(fixture: str) -> list:
             timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),
             retake=declared.get("retake"),
         )
+    system_programs(fixture)  # a malformed list fails the collection, not the boot
     return blocks(
         fixture,
         gate=declared.get("gate", False),

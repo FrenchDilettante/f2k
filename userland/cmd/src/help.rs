@@ -67,7 +67,14 @@ pub static CMD: Help = Help {
             "/S",
             "Removes the first and the last quote of string, whatever it holds.",
         ),
-        ("/A, /U", "Accepted and ignored."),
+        (
+            "/A",
+            "Writes to a file or a pipe in the OEM code page (the default).",
+        ),
+        (
+            "/U",
+            "Writes to a file or a pipe in Unicode (UTF-16LE). Programs write their own way.",
+        ),
         ("/D", "Accepted and ignored: there is no AutoRun command."),
         (
             "/E:ON, /E:OFF",
@@ -105,7 +112,10 @@ pub static HELP: &[Help] = &[
         names: &["call"],
         summary: "Runs a batch file from another one, then goes on with the line after the \
                   call.",
-        syntax: &["CALL [drive:][path]filename [arguments]"],
+        syntax: &[
+            "CALL [drive:][path]filename [arguments]",
+            "CALL :label [arguments]",
+        ],
         parameters: &[
             (
                 "filename",
@@ -115,6 +125,11 @@ pub static HELP: &[Help] = &[
                 "arguments",
                 "What the batch file sees as %1 to %9, and all of them as %*.",
             ),
+            (
+                ":label",
+                "Runs the batch file from the line after the label, as a batch file of its \
+                 own: %0 is :label, its arguments its own, and EXIT /B or GOTO :EOF come back.",
+            ),
         ],
         notes: &[
             "The line after CALL has its %variables% replaced a second time, then runs: a \
@@ -123,8 +138,9 @@ pub static HELP: &[Help] = &[
              that succeeds. CALL alone fails.",
             "In a batch file, %0 is its name as typed, and %~1 to %~9 are its arguments without \
              the quotes around them. %~f1 is the first argument as a full path, %~d1 its drive, \
-             %~p1 its directory, %~n1 its name, %~x1 its extension, %~a1 its attributes and \
-             %~z1 its size; the letters combine (%~dp0, %~nx1).",
+             %~p1 its directory, %~n1 its name, %~x1 its extension, %~s1 its short (8.3) path, \
+             %~a1 its attributes, %~t1 the date and time it was last written and %~z1 its size; \
+             the letters combine (%~dp0, %~snx1, %~ftza1).",
         ],
     },
     Help {
@@ -249,6 +265,74 @@ pub static HELP: &[Help] = &[
         notes: &[],
     },
     Help {
+        names: &["dir"],
+        summary: "Lists the files and subdirectories in a directory.",
+        syntax: &[
+            "DIR [drive:][path][filename] [/A[[:]attributes]] [/B] [/C] [/D] [/L] [/N]",
+            "  [/O[[:]sortorder]] [/P] [/Q] [/S] [/T[[:]timefield]] [/W] [/X] [/4]",
+        ],
+        parameters: &[
+            (
+                "[drive:][path][filename]",
+                "The directory, or the files, to list; wildcards select several. Without it, \
+                 the current directory.",
+            ),
+            (
+                "/A",
+                "Lists the entries with the attributes given: D directories, R read-only, \
+                 H hidden, A ready for archiving, S system. A - before a letter lists the \
+                 entries without that attribute. /A alone lists every entry; without /A, \
+                 hidden and system files are left out.",
+            ),
+            (
+                "/B",
+                "Lists the names alone, without headings or totals (full paths with /S).",
+            ),
+            (
+                "/C",
+                "Shows the sizes with a thousands separator, as without it. /-C shows them \
+                 without.",
+            ),
+            ("/D", "As /W, the entries sorted down the columns."),
+            ("/L", "Shows the names in lowercase."),
+            (
+                "/N",
+                "The long format, the names on the right: always the one shown.",
+            ),
+            (
+                "/O",
+                "Lists the entries sorted: N by name, E by extension, S by size (smallest \
+                 first), D by date and time (oldest first), G directories first. A - before \
+                 a letter reverses its order. /O alone is /O:GN.",
+            ),
+            ("/P", "Pauses after each screenful."),
+            ("/Q", "Accepted and ignored: owners are not shown."),
+            (
+                "/S",
+                "Lists the matching entries in every subdirectory too, then their totals.",
+            ),
+            (
+                "/T",
+                "The time shown, and sorted by: C creation, A last access, W last written \
+                 (the default).",
+            ),
+            (
+                "/W",
+                "Lists the names side by side, directories in brackets.",
+            ),
+            (
+                "/X",
+                "Shows each entry's short name before its name, or blanks for a name that is \
+                 one itself.",
+            ),
+            ("/4", "Shows years with four digits, as without it."),
+        ],
+        notes: &[
+            "The DIRCMD variable may hold switches, which the command line overrides. A - \
+             after the / turns a switch off: /-W, /-O.",
+        ],
+    },
+    Help {
         names: &["echo"],
         summary: "Prints a line of text, or turns the echo of commands on or off.",
         syntax: &["ECHO [ON | OFF]", "ECHO [message]", "ECHO."],
@@ -284,6 +368,133 @@ pub static HELP: &[Help] = &[
         notes: &[
             "Without exitCode, EXIT ends the shell with the ERRORLEVEL, and EXIT /B in a batch \
              file leaves the ERRORLEVEL as it is.",
+        ],
+    },
+    Help {
+        names: &["for"],
+        summary: "Runs a command once for each file, word, number or line of a set.",
+        syntax: &[
+            "FOR %variable IN (set) DO command",
+            "FOR /D %variable IN (set) DO command",
+            "FOR /R [[drive:]path] %variable IN (set) DO command",
+            "FOR /L %variable IN (start,step,end) DO command",
+            "FOR /F [\"options\"] %variable IN (file-set) DO command",
+            "FOR /F [\"options\"] %variable IN (\"string\") DO command",
+            "FOR /F [\"options\"] %variable IN ('command') DO command",
+        ],
+        parameters: &[
+            (
+                "%variable",
+                "One character, its case counting. In a batch file it is written %%variable.",
+            ),
+            (
+                "set",
+                "Words separated by blanks, commas, semicolons or equals signs. A word with * \
+                 or ? stands for the files it matches, hidden and system ones left out.",
+            ),
+            (
+                "command",
+                "What runs each time, the rest of the line, & and | included, with %variable \
+                 replaced.",
+            ),
+            (
+                "/D",
+                "The words with * or ? match directories instead of files.",
+            ),
+            (
+                "/R",
+                "The set is looked for in the directory path (the current one without it), \
+                 then in each directory below it; a word without * or ? is joined to each \
+                 directory's full path.",
+            ),
+            (
+                "/L",
+                "Counts from start, by step, until it passes end: (1,1,5) is 1 to 5, (5,-1,1) \
+                 5 down to 1.",
+            ),
+            (
+                "/F",
+                "Reads lines: from the files of file-set, from string, or from what command \
+                 writes, run by a CMD /C of its own. Empty lines are skipped.",
+            ),
+        ],
+        notes: &[
+            "The options of /F, in one quoted string: eol=c skips the lines starting with c \
+             (; without it); skip=n skips the first n lines; delims=xxx are the characters \
+             between the tokens of a line (a blank and a tab without it; put it last to have \
+             a blank among them); tokens=x,y,m-n hands the variable and the letters after it \
+             the tokens asked for (the first without it), a * at the end handing the next one \
+             the rest of the line; usebackq reads \"file\" as a file name, 'string' as a \
+             string and `command` as a command.",
+            "%~variable is the value without its quotes, and %~ with the letters f, d, p, n, \
+             x, s, a, t and z its full path, drive, directory, name, extension, short path, \
+             attributes, time of its last write and size, as with a batch file's %~1; %~$PATH:variable is the full path of the first file \
+             of that name in PATH's directories, empty when there is none.",
+            "While echo is on, each command runs after the prompt and its text, unless it \
+             starts with @.",
+        ],
+    },
+    Help {
+        names: &["goto"],
+        summary: "Goes on with the batch file's line after a label.",
+        syntax: &["GOTO label"],
+        parameters: &[(
+            "label",
+            "The label, a line of the batch file starting with a colon and the label's word.",
+        )],
+        notes: &[
+            "The label is looked for from the line after GOTO to the end of the batch file, \
+             then from its start, whatever the case of its letters. A label that is not there \
+             ends the batch file.",
+            "GOTO :EOF ends the batch file, or the part of it CALL :label runs.",
+        ],
+    },
+    Help {
+        names: &["if"],
+        summary: "Runs a command when a condition holds, or another when it does not.",
+        syntax: &[
+            "IF [NOT] ERRORLEVEL number command",
+            "IF [/I] [NOT] string1==string2 command",
+            "IF [NOT] EXIST filename command",
+            "IF [/I] string1 compare-op string2 command",
+            "IF [NOT] DEFINED variable command",
+            "IF [NOT] CMDEXTVERSION number command",
+            "IF condition (command) ELSE command",
+        ],
+        parameters: &[
+            ("NOT", "Runs the command when the condition does not hold."),
+            ("ERRORLEVEL", "Holds when the ERRORLEVEL is number or more."),
+            (
+                "==",
+                "Holds when the two strings are the same text, quotes included.",
+            ),
+            (
+                "EXIST",
+                "Holds when a file or directory goes by filename (* and ? allowed).",
+            ),
+            (
+                "compare-op",
+                "EQU, NEQ, LSS, LEQ, GTR or GEQ: equal, not equal, less, less or equal, \
+                 greater, greater or equal. Two numbers compare as numbers (010 is octal, \
+                 0x10 hexadecimal), anything else as text.",
+            ),
+            ("/I", "Compares text whatever the case of its letters."),
+            ("DEFINED", "Holds when the environment has the variable."),
+            (
+                "CMDEXTVERSION",
+                "Holds when the command extensions' version, 2, is number or more.",
+            ),
+            (
+                "command",
+                "The rest of the line, & and | included, or the commands in parentheses \
+                 before ELSE.",
+            ),
+        ],
+        notes: &[
+            "ELSE must follow the closing parenthesis on its line; the command after it takes \
+             the rest of the line. Commands in parentheses may span lines, in a batch file or \
+             after More? at the prompt: their variables are replaced as each line is read, \
+             before any of them runs.",
         ],
     },
     Help {
@@ -438,17 +649,39 @@ pub static HELP: &[Help] = &[
     Help {
         names: &["set"],
         summary: "Shows, sets or deletes environment variables.",
-        syntax: &["SET [variable=[string]]", "SET \"variable=string\""],
+        syntax: &[
+            "SET [variable=[string]]",
+            "SET \"variable=string\"",
+            "SET /A expression",
+            "SET /P variable=[promptString]",
+        ],
         parameters: &[
             ("variable", "The variable's name."),
             (
                 "string",
                 "Its value; nothing after the = deletes the variable.",
             ),
+            (
+                "/A",
+                "Evaluates expression, a calculation on 32-bit signed integers.",
+            ),
+            (
+                "/P",
+                "Prints promptString, then sets the variable to a line read from the input.",
+            ),
         ],
         notes: &[
             "SET alone lists every variable. SET and a name with no = lists the variables \
              whose names start with it. In the quoted form, the value ends at the last quote.",
+            "SET /A's operators, the tightest first: ( ) grouping; ! ~ - (not, bitwise not, \
+             negation); * / % (in a batch file, %% for %); + -; << >> (shifts); & (and); ^ \
+             (exclusive or); | (or); = *= /= %= += -= &= ^= |= <<= >>= (assignments); and , \
+             between expressions. Any other word is a variable's name, its value read as a \
+             number (0 when it is not set). Numbers are decimal (17), hexadecimal (0x11) or \
+             octal (021). Quote an expression that holds & | ^ < or >. At the prompt, SET /A \
+             prints the last expression's value; in a batch file it prints nothing.",
+            "SET /P with an empty line, or none, leaves the variable as it is and sets \
+             ERRORLEVEL to 1.",
             "Before a line runs, each %variable% in it is replaced by the variable's value. \
              %variable:~offset,count% is part of the value: offset characters are skipped, then \
              count kept (the rest without ,count). A negative offset counts from the end, and a \
@@ -468,6 +701,65 @@ pub static HELP: &[Help] = &[
             "Starts at %n (a digit from 0 to 8): the arguments before it stay.",
         )],
         notes: &["%0 takes %1's value without /n. %* is not changed."],
+    },
+    Help {
+        names: &["start"],
+        summary: "Starts a program, or a command, without waiting for it to end.",
+        syntax: &[
+            "START [\"title\"] [/Dpath] [/I] [/MIN] [/MAX] [/SEPARATE | /SHARED]",
+            "      [/LOW | /NORMAL | /HIGH | /REALTIME | /ABOVENORMAL | /BELOWNORMAL]",
+            "      [/WAIT] [/B] [command/program] [parameters]",
+        ],
+        parameters: &[
+            (
+                "\"title\"",
+                "A title for a new window. Accepted and ignored: the program shares this \
+                 console.",
+            ),
+            ("/Dpath", "The directory the program starts in."),
+            (
+                "/I",
+                "Accepted and ignored: the program gets the shell's environment as it is.",
+            ),
+            (
+                "/MIN, /MAX",
+                "Accepted and ignored: there is no new window.",
+            ),
+            (
+                "/SEPARATE, /SHARED",
+                "Accepted and ignored: there are no 16-bit programs.",
+            ),
+            ("/LOW", "Starts the program in the idle priority class."),
+            ("/NORMAL", "Starts it in the normal priority class."),
+            ("/HIGH", "Starts it in the high priority class."),
+            ("/REALTIME", "Starts it in the realtime priority class."),
+            (
+                "/ABOVENORMAL",
+                "Starts it in the above normal priority class.",
+            ),
+            (
+                "/BELOWNORMAL",
+                "Starts it in the below normal priority class.",
+            ),
+            (
+                "/WAIT",
+                "Waits for the program to end; its exit code becomes the ERRORLEVEL.",
+            ),
+            (
+                "/B",
+                "Starts the program in this console, as START always does here.",
+            ),
+            (
+                "command/program",
+                "The program, looked for as the shell looks for one. A built-in command or \
+                 a batch file runs in a shell of its own, CMD /K, which stays once it is done.",
+            ),
+            ("parameters", "What the program gets on its command line."),
+        ],
+        notes: &[
+            "The first quoted word is the title: START \"\" \"C:\\a b\\x.exe\" starts a program \
+             whose name is in quotes. START alone starts a shell.",
+        ],
     },
     Help {
         names: &["time"],

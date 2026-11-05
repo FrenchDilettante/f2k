@@ -37,7 +37,7 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "screenshots", "keys"}
+                    "screenshots", "keys", "system_programs"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
 SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
@@ -115,6 +115,32 @@ def test_captures_match_their_sources(fixture: str):
             assert step.after is None or step.after in by_section[section].lines, (
                 f"a key step waits for a line {section!r} never prints: {step.after!r}"
             )
+
+
+def makefile_programs(variable: str) -> list[str]:
+    """The program names a Makefile variable lists (`SYSTEM_PROGRAMS = pwd ps fish`)."""
+    text = (f2kboot.REPO_ROOT / "Makefile").read_text()
+    return re.search(rf"^{variable} = (.*)$", text, re.M).group(1).split()
+
+
+# The fixtures declaring `system_programs`.
+ADDING_PROGRAMS = [name for name in DECLARED if "system_programs" in f2kboot.declaration(name)]
+
+
+@pytest.mark.parametrize("fixture", ADDING_PROGRAMS)
+def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
+    """A sectioned fixture's `system_programs` names programs the userland workspace builds and
+    `make userland` copies to their .exe names (userland/<name>), which the disk the tests boot
+    leaves out of \\WINNT\\system32 (the ones it carries need no declaration): cmd.exe."""
+    assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture adds programs"
+    names = [path.stem for path in f2kboot.system_programs(fixture)]
+    assert names, "an empty system_programs: leave it out"
+    on_disk = makefile_programs("SYSTEM_PROGRAMS")
+    built = on_disk + makefile_programs("CMD_PROGRAM")
+    for name in names:
+        assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
+        assert name in built, f"{name}: not a program `make userland` copies to its .exe name"
+        assert name not in on_disk, f"{name}: the disk the tests boot carries it already"
 
 
 @pytest.mark.parametrize("fixture", SCRIPTS)

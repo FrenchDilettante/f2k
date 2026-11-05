@@ -77,6 +77,8 @@ pub struct LineReader {
     start: usize,
     end: usize,
     done: bool,
+    /// The bytes of the lines given so far, their line breaks included.
+    offset: u64,
 }
 
 impl Default for LineReader {
@@ -86,11 +88,17 @@ impl Default for LineReader {
             start: 0,
             end: 0,
             done: false,
+            offset: 0,
         }
     }
 }
 
 impl LineReader {
+    /// Where the next line starts: the bytes of the lines given so far.
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+
     /// The next line, into `line`, without its line break: what does not fit is dropped. `read`
     /// fills a buffer from the file, zero at its end. None at the file's end; a last line without
     /// a line break is a line.
@@ -125,12 +133,16 @@ impl LineReader {
             match ended {
                 Some(consumed) => {
                     self.start += consumed;
+                    self.offset += consumed as u64;
                     if length > 0 && line[length - 1] == b'\r' {
                         length -= 1;
                     }
                     return Ok(Some(&line[..length]));
                 }
-                None => self.start = self.end,
+                None => {
+                    self.offset += taken.len() as u64;
+                    self.start = self.end;
+                }
             }
         }
         if !any {
@@ -140,6 +152,27 @@ impl LineReader {
             length -= 1;
         }
         Ok(Some(&line[..length]))
+    }
+
+    /// The lines `read` gives read, from where the reader is, up to the label `label` (see
+    /// [`crate::flow::label::names`]), each decoded into `units` by `decode` (its length, None
+    /// when it cannot be): whether the label was found, the reader then at the line after it.
+    pub fn seek_label<E>(
+        &mut self,
+        read: &mut dyn FnMut(&mut [u8]) -> Result<usize, E>,
+        mut decode: impl FnMut(&[u8], &mut [u16]) -> Option<usize>,
+        label: &[u16],
+        bytes: &mut [u8],
+        units: &mut [u16],
+    ) -> bool {
+        while let Ok(Some(line)) = self.next_line(read, bytes) {
+            if let Some(length) = decode(line, units) {
+                if crate::flow::label::names(&units[..length], label) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -225,8 +258,24 @@ impl core::fmt::Display for Echoed<'_> {
         if skip_blanks(&self.0[word..]).is_empty() {
             crate::Text(&self.0[..word]).fmt(f)
         } else {
-            write!(f, "{} ", crate::Text(self.0))
+            write!(f, "{} ", Lines(self.0))
         }
+    }
+}
+
+/// A block's text as echo shows it: its lines, as they were read, each but the last ended with
+/// CR LF.
+struct Lines<'a>(&'a [u16]);
+
+impl core::fmt::Display for Lines<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (index, line) in self.0.split(|&unit| unit == crate::LF).enumerate() {
+            if index > 0 {
+                f.write_str("\r\n")?;
+            }
+            crate::Text(line).fmt(f)?;
+        }
+        Ok(())
     }
 }
 
@@ -316,6 +365,60 @@ mod tests {
             out.push(got.to_vec());
         }
         out
+    }
+
+    #[test]
+    fn the_offset_is_where_the_next_line_starts() {
+        let text = b"a\r\nbcd\nlast";
+        let mut reader = LineReader::default();
+        let mut at = 0;
+        let mut read = |buffer: &mut [u8]| -> Result<usize, ()> {
+            let count = 2.min(buffer.len()).min(text.len() - at);
+            buffer[..count].copy_from_slice(&text[at..at + count]);
+            at += count;
+            Ok(count)
+        };
+        let mut line = [0; 16];
+        let mut offsets = Vec::new();
+        while reader.next_line(&mut read, &mut line).unwrap().is_some() {
+            offsets.push(reader.offset());
+        }
+        assert_eq!(offsets, [3, 7, 11]);
+    }
+
+    #[test]
+    fn a_label_is_looked_for_from_where_the_reader_is() {
+        let text = b"@echo off\r\n:top\r\necho one\r\n:END rest\r\necho two\r\n:top\r\nlast\r\n";
+        let mut at = 0;
+        let mut read = |buffer: &mut [u8]| -> Result<usize, ()> {
+            let count = 3.min(buffer.len()).min(text.len() - at);
+            buffer[..count].copy_from_slice(&text[at..at + count]);
+            at += count;
+            Ok(count)
+        };
+        let mut decode = |line: &[u8], units: &mut [u16]| {
+            for (unit, &byte) in units.iter_mut().zip(line) {
+                *unit = u16::from(byte);
+            }
+            Some(line.len())
+        };
+        let mut reader = LineReader::default();
+        let (mut bytes, mut units) = ([0; 64], [0; 64]);
+        let mut seek = |reader: &mut LineReader, label: &str| {
+            reader.seek_label(&mut read, &mut decode, &wide(label), &mut bytes, &mut units)
+        };
+        assert!(seek(&mut reader, "end"));
+        // The reader is at the line after the label.
+        assert_eq!(reader.offset(), 38);
+        // The first `:top` is behind: the one ahead is found.
+        assert!(seek(&mut reader, "TOP"));
+        assert!(!seek(&mut reader, "top"));
+    }
+
+    #[test]
+    fn a_block_echoes_line_by_line() {
+        let shown = Echoed(&wide("if a==a (\n  echo x\n)")).to_string();
+        assert_eq!(shown, "if a==a (\r\n  echo x\r\n) ");
     }
 
     #[test]

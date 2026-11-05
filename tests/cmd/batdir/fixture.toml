@@ -1,0 +1,26 @@
+# batdir: one test, the script's one block (`cmd /c batdir.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs spawnkid.exe, the spawn fixture's companion: beside the script in
+# \CORPUS on F2K, copied beside it by capture.bat on the real machine. Plain `start` would open a
+# console window of its own on Windows: the script starts spawnkid with /B only.
+description = "batdir - dir over a directory the script makes: the long format sorted by name, one file in the directory's order, /B, /A:D, /A:-D, /O:-S, /-C, /S, the DIRCMD variable's switches and /-B overriding one, and a file that does not exist; then start /WAIT /B of spawnkid (its exit code and output, a title, /D) and start /B, which does not wait, with the ERRORLEVEL after each."
+kind = "script"
+# dir's lines carry what varies by machine and by run: the volume's label and serial number, the
+# directory's full path (the script's directory, \CORPUS on F2K), each entry's date and time, and
+# the bytes free. The rest of each line, its columns, stays compared.
+masks = [
+    "**Volume in drive **",
+    " Volume Serial Number is *",
+    " Directory of **\\batdird",
+    " Directory of **\\batdird\\sub",
+    "*  *      <DIR>          .",
+    "*  *      <DIR>          ..",
+    "*  *      <DIR>          sub",
+    "*  *                   7 a.txt",
+    "*  *                 120 b.txt",
+    "*  *               1,200 c.dat",
+    "*  *                1200 c.dat",
+    "*  *                   6 d.txt",
+    "               0 Dir(s) ** bytes free",
+    "               3 Dir(s) ** bytes free",
+    "               5 Dir(s) ** bytes free",
+]

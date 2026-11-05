@@ -8,11 +8,18 @@
 //! A `(` where a command starts opens a group, which its matching `)` closes; anywhere else, and a
 //! `)` outside a group, is text. Outside quotes, `^` makes the unit after it text, and goes; inside
 //! quotes every unit is text, the quotes kept.
+//!
+//! A group may span a block's lines: they are read into one text, a line feed between each two
+//! (see [`open`]), and a line feed ends a command as `&` does. `if` and `for` where a command
+//! starts are read with their headers (src/flow/): the command after a header takes the rest of
+//! the line, its operators too, up to the `)` closing a group around it or the end of a block's
+//! line; after an `if`'s command in parentheses, `else` starts another command.
 
 use core::fmt;
 use core::ops::Range;
 
-use crate::{is_blank, is_delimiter, QUOTE};
+use crate::flow::{self, condition, repeat, Keyword};
+use crate::{command_word, is_blank, is_delimiter, is_named, skip_blanks, LF, QUOTE};
 
 const CARET: u16 = b'^' as u16;
 const AMPERSAND: u16 = b'&' as u16;
@@ -74,6 +81,8 @@ enum Token {
     /// A redirection's operator, with its handle and duplicated handle when they are written
     /// (`>`, `2>>`, `<`, `2>&1`): its target follows unless it duplicates a handle.
     Redirection,
+    /// An `if`'s header, or a `for`'s (its keyword alone when it cannot be read).
+    Flow(Keyword),
 }
 
 /// Whether `unit`, before a digit, lets the digit be a redirection's handle: a delimiter (a
@@ -97,6 +106,12 @@ struct Tokens<'a> {
     depth: usize,
     /// Whether a command starts here: a `(` opens a group.
     start: bool,
+    /// The depth an `if` or a `for` started at, while its command lasts: the operators there are
+    /// its command's text, not joins of the line's.
+    swallow: Option<usize>,
+    /// Whether the last token but blanks closed a group inside an `if` or a `for`: an `else`
+    /// after it starts a command.
+    after_close: bool,
 }
 
 impl<'a> Tokens<'a> {
@@ -107,6 +122,17 @@ impl<'a> Tokens<'a> {
             quoted: false,
             depth: 0,
             start: true,
+            swallow: None,
+            after_close: false,
+        }
+    }
+
+    /// An operator's token: text inside an `if`'s or a `for`'s command at its own depth.
+    fn join(&self, join: Join) -> Token {
+        if self.swallow == Some(self.depth) {
+            Token::Text
+        } else {
+            Token::Join(join)
         }
     }
 
@@ -146,11 +172,27 @@ impl Iterator for Tokens<'_> {
         let at = self.at;
         let unit = *self.line.get(at)?;
         let next = self.line.get(at + 1).copied();
+        let after_close = core::mem::take(&mut self.after_close);
+        // A block's line feed ends a quote left open on its line.
+        if unit == LF {
+            self.quoted = false;
+        }
         let (token, length) = if self.quoted {
             self.quoted = unit != QUOTE;
             (Token::Text, 1)
         } else {
             match unit {
+                // A line feed where a command starts (the text's first, after an operator, a
+                // `(` or another line feed) is a blank; after a command it ends the command,
+                // and the `if` or `for` whose command it was.
+                LF if self.start => (Token::Blank, 1),
+                LF => {
+                    self.start = true;
+                    if self.swallow == Some(self.depth) {
+                        self.swallow = None;
+                    }
+                    (Token::Join(Join::Then), 1)
+                }
                 QUOTE => {
                     self.quoted = true;
                     self.start = false;
@@ -163,17 +205,17 @@ impl Iterator for Tokens<'_> {
                 AMPERSAND => {
                     self.start = true;
                     if next == Some(AMPERSAND) {
-                        (Token::Join(Join::AndThen), 2)
+                        (self.join(Join::AndThen), 2)
                     } else {
-                        (Token::Join(Join::Then), 1)
+                        (self.join(Join::Then), 1)
                     }
                 }
                 BAR => {
                     self.start = true;
                     if next == Some(BAR) {
-                        (Token::Join(Join::OrElse), 2)
+                        (self.join(Join::OrElse), 2)
                     } else {
-                        (Token::Join(Join::Pipe), 1)
+                        (self.join(Join::Pipe), 1)
                     }
                 }
                 OPEN if self.start => {
@@ -182,17 +224,39 @@ impl Iterator for Tokens<'_> {
                 }
                 CLOSE if self.depth > 0 => {
                     self.depth -= 1;
+                    if self.swallow.is_some_and(|depth| self.depth < depth) {
+                        self.swallow = None;
+                    }
+                    self.after_close = self.swallow.is_some();
                     self.start = false;
                     (Token::Close, 1)
                 }
-                _ if is_blank(unit) => (Token::Blank, 1),
-                _ => match self.redirection(at) {
-                    0 => {
-                        // `@` before a command hides its echo: the command still starts after it.
-                        self.start &= unit == AT;
-                        (Token::Text, 1)
+                _ if is_blank(unit) => {
+                    self.after_close = after_close;
+                    (Token::Blank, 1)
+                }
+                _ if after_close && is_named(command_word(&self.line[at..]).0, "else") => {
+                    self.start = true;
+                    (Token::Text, 4)
+                }
+                _ => match (self.start && unit != AT)
+                    .then(|| flow::header(&self.line[at..]))
+                    .flatten()
+                {
+                    Some((keyword, length)) => {
+                        self.swallow.get_or_insert(self.depth);
+                        self.start = length.is_ok();
+                        (Token::Flow(keyword), length.unwrap_or_else(|word| word))
                     }
-                    length => (Token::Redirection, length),
+                    None => match self.redirection(at) {
+                        0 => {
+                            // `@` before a command hides its echo: the command still starts
+                            // after it.
+                            self.start &= unit == AT;
+                            (Token::Text, 1)
+                        }
+                        length => (Token::Redirection, length),
+                    },
                 },
             }
         };
@@ -280,18 +344,24 @@ pub enum Element<'a> {
         inner: &'a [u16],
         redirections: &'a [u16],
     },
+    /// `if` or `for`: the text from its keyword on (see [`condition::parse`],
+    /// [`repeat::parse`]).
+    Flow(Keyword, &'a [u16]),
     /// A command, its redirections among its words.
     Simple(&'a [u16]),
 }
 
 /// What `text`, a command between the operators, is: a group when a `(` opens it (Incorrect when
-/// no `)` closes it), otherwise a simple command.
+/// no `)` closes it), `if` or `for` when one starts it, otherwise a simple command. `@`s before
+/// it are left out.
 pub fn element(text: &[u16]) -> Result<Element<'_>, Syntax<'_>> {
     let mut tokens = Tokens::new(text);
     let mut opened = None;
     for (token, range) in tokens.by_ref() {
         match token {
             Token::Blank => {}
+            Token::Text if text[range.clone()] == [AT] => {}
+            Token::Flow(keyword) => return Ok(Element::Flow(keyword, &text[range.start..])),
             Token::Open => {
                 opened = Some(range.end);
                 break;
@@ -369,12 +439,73 @@ fn check_element(text: &[u16]) -> Result<(), Syntax<'_>> {
                 Some(word) => Err(Syntax::Unexpected(word)),
             }
         }
+        Element::Flow(Keyword::If, text) => match condition::parse(text)? {
+            condition::Header::Help(_) => Ok(()),
+            condition::Header::If(header) => {
+                let (then, otherwise) = branches(header.command());
+                check(then)?;
+                match otherwise {
+                    Some(otherwise) if blank(otherwise) => Err(Syntax::Incorrect),
+                    Some(otherwise) => check(otherwise),
+                    None => Ok(()),
+                }
+            }
+        },
+        Element::Flow(Keyword::For, text) => match repeat::parse(text)? {
+            repeat::Header::Help(_) => Ok(()),
+            repeat::Header::For(header) => check(header.command()),
+        },
         Element::Simple(text) => {
             let mut list = Redirections::default();
             scan(text, &mut |_| {}, &mut list).map(|_| ())
         }
     }
 }
+
+/// An `if`'s command, split at its `else`: when the command is a group (`(x) else y`) and `else`
+/// follows its `)`, the group, and what follows `else`; otherwise the whole command, which takes
+/// an `else` after anything but a group as its text.
+pub fn branches(command: &[u16]) -> (&[u16], Option<&[u16]>) {
+    let mut depth = 0usize;
+    let mut closed = None;
+    for (token, range) in Tokens::new(command) {
+        match token {
+            Token::Blank if depth == 0 => {}
+            Token::Open => depth += 1,
+            Token::Close => {
+                depth -= 1;
+                if depth == 0 {
+                    closed = Some(range.end);
+                    break;
+                }
+            }
+            _ if depth == 0 => break,
+            _ => {}
+        }
+    }
+    let Some(end) = closed else {
+        return (command, None);
+    };
+    let (word, after) = command_word(skip_blanks(&command[end..]));
+    if is_named(word, "else") {
+        (&command[..end], Some(after))
+    } else {
+        (command, None)
+    }
+}
+
+/// Whether `text` leaves a group open: a block whose next line goes on it (in a batch file, or
+/// after `More? ` at the prompt).
+pub fn open(text: &[u16]) -> bool {
+    let mut tokens = Tokens::new(text);
+    tokens.by_ref().for_each(drop);
+    tokens.depth > 0
+}
+
+/// The return code a batch file's line that cannot be read leaves, as it ends every batch file
+/// (batline: `cmd /c` of a batch file whose line expands past [`crate::MAX_LINE`] ends with
+/// 255).
+pub const FATAL: u32 = 255;
 
 /// What a redirection does with its handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,7 +714,12 @@ pub fn group_redirections<'a>(text: &'a [u16], redirections: &mut Redirections<'
 /// resolved (`"a b.txt"` names `a b.txt`). None when it does not fit.
 pub fn file_name<'a>(target: &[u16], out: &'a mut [u16]) -> Option<&'a [u16]> {
     let mut length = 0;
-    for (token, range) in Tokens::new(target) {
+    // No command starts in a file's name.
+    let tokens = Tokens {
+        start: false,
+        ..Tokens::new(target)
+    };
+    for (token, range) in tokens {
         let units = match token {
             Token::Escape => &target[(range.start + 1).min(range.end)..range.end],
             _ => &target[range],
@@ -604,10 +740,11 @@ pub fn continues(line: &[u16]) -> bool {
         .is_some_and(|(token, range)| token == Token::Escape && range.len() == 1)
 }
 
-/// Whether `line` is one simple command (no operator, no group): its redirections are echoed as
-/// cmd rebuilds them.
+/// Whether `line` is one simple command (no operator, no group, no `if` or `for`): its
+/// redirections are echoed as cmd rebuilds them.
 pub fn single(line: &[u16]) -> bool {
-    !Tokens::new(line).any(|(token, _)| matches!(token, Token::Join(_) | Token::Open))
+    !Tokens::new(line)
+        .any(|(token, _)| matches!(token, Token::Join(_) | Token::Open | Token::Flow(_)))
 }
 
 #[cfg(test)]
@@ -822,6 +959,117 @@ mod tests {
         assert!(single(&wide("echo a^&b \"|\"")));
         assert!(!single(&wide("echo a & b")));
         assert!(!single(&wide("(echo a)")));
+    }
+
+    #[test]
+    fn if_and_for_take_the_rest_of_the_line() {
+        // `if`'s command holds the operators after it, at every level.
+        assert_eq!(split("if a==a echo x & echo y", Join::Then).len(), 1);
+        assert_eq!(
+            split("echo a & if a==a echo x & echo y", Join::Then).len(),
+            2
+        );
+        assert_eq!(
+            split("echo a && if a==a echo x || y | z", Join::AndThen).len(),
+            2
+        );
+        assert_eq!(split("@for %a in (x) do a & b", Join::Then).len(), 1);
+        // Up to the `)` closing a group around it.
+        assert_eq!(split("(if a==a echo x) & echo y", Join::Then).len(), 2);
+        // A `for`'s set holds parentheses of its own.
+        assert_eq!(
+            split("(for %a in (x) do echo %a) & echo y", Join::Then).len(),
+            2
+        );
+        let text = wide("@if a==a (echo x)");
+        assert_eq!(
+            element(&text),
+            Ok(Element::Flow(Keyword::If, &wide("if a==a (echo x)")))
+        );
+        assert!(!single(&wide("if a==a echo x")));
+    }
+
+    #[test]
+    fn else_follows_a_group() {
+        let branches_of = |text: &str| {
+            let text = wide(text);
+            let (then, otherwise) = branches(&text);
+            (narrow(then), otherwise.map(narrow))
+        };
+        assert_eq!(
+            branches_of("(echo y) else echo n & echo m"),
+            ("(echo y)".into(), Some(" echo n & echo m".into()))
+        );
+        assert_eq!(
+            branches_of("(echo y)  ELSE (echo n)"),
+            ("(echo y)".into(), Some(" (echo n)".into()))
+        );
+        // After anything but a group, `else` is text.
+        assert_eq!(
+            branches_of("echo y else echo n"),
+            ("echo y else echo n".into(), None)
+        );
+        assert_eq!(
+            branches_of("(echo y) & echo z"),
+            ("(echo y) & echo z".into(), None)
+        );
+        // The `(` after `else` opens a group: the `)` after it closes it, not the outer one.
+        assert_eq!(split("(if a==b (x) else (y)) & z", Join::Then).len(), 2);
+        // bathelp's line, once its sizes are replaced.
+        assert_eq!(
+            checked("if 11==11 (echo   cd's help) else (echo   not:& type bathelp.out)"),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_block_spans_lines() {
+        assert!(open(&wide("if a==a (")));
+        assert!(open(&wide("for %a in (x) do (")));
+        assert!(open(&wide("(echo a")));
+        assert!(open(&wide("if a==a (\n  echo x\n) else (")));
+        assert!(!open(&wide("if a==a (\n  echo x\n) else (\n  echo y\n)")));
+        assert!(!open(&wide("echo (")));
+        assert!(!open(&wide("for %a in (x) do echo (")));
+        // A quote left open ends with its line.
+        assert!(!open(&wide("(echo \"a\n)")));
+        // A line feed ends a command, a blank where a command starts.
+        let block = "(\n  echo a\n\n  echo b\n)";
+        let text = wide(block);
+        let Ok(Element::Group { inner, .. }) = element(&text) else {
+            panic!("no group");
+        };
+        let commands: Vec<_> = parts(inner, Join::Then)
+            .map(|(part, _)| narrow(part).trim().to_string())
+            .filter(|part| !part.is_empty())
+            .collect();
+        assert_eq!(commands, ["echo a", "echo b"]);
+        assert_eq!(checked(block), Ok(()));
+        // An `if` ends with its line.
+        assert_eq!(split("if a==a echo x\necho y", Join::Then).len(), 2);
+        assert_eq!(
+            checked("if a==a (\n  echo x\n) else (\n  echo y\n)"),
+            Ok(())
+        );
+        assert_eq!(checked("echo a &&\necho b"), Ok(()));
+    }
+
+    #[test]
+    fn malformed_flow() {
+        let incorrect = Err(crate::SYNTAX.to_string());
+        assert_eq!(checked("if a==a"), incorrect);
+        assert_eq!(checked("if a==a (echo x) else"), incorrect);
+        assert_eq!(
+            checked("if a b c"),
+            Err("b was unexpected at this time.\r\n".into())
+        );
+        assert_eq!(
+            checked("for %a in (x) echo"),
+            Err("echo was unexpected at this time.\r\n".into())
+        );
+        assert_eq!(checked("for %a in (x) do (echo"), incorrect);
+        assert_eq!(checked("if a==a (echo &)"), Ok(()));
+        assert_eq!(checked("if /?"), Ok(()));
     }
 
     #[test]

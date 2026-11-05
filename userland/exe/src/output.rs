@@ -1,6 +1,7 @@
 //! The standard streams' writer: text formatted into UTF-16 units, buffered, handed to its sink a
 //! buffer at a time (one WriteConsoleW or WriteFile per buffer, not one per piece the formatter
-//! produces), a surrogate pair never split between two.
+//! produces), a surrogate pair never split between two; and the units' UTF-16LE bytes, for a
+//! redirected stream written as Unicode.
 
 use core::fmt;
 
@@ -21,6 +22,17 @@ impl fmt::Display for Error {
 pub trait Sink {
     /// Write `units` (at most [`BUFFER`], whole characters) in full.
     fn write(&mut self, units: &[u16]) -> Result<(), Error>;
+}
+
+/// UTF-16 units as UTF-16LE bytes, the low byte of each unit first and no byte-order mark (what
+/// `cmd /u` writes to a file or a pipe), at the start of `bytes`: as many units as fit, two bytes
+/// each.
+pub fn little_endian<'a>(units: &[u16], bytes: &'a mut [u8]) -> &'a [u8] {
+    let count = units.len().min(bytes.len() / 2);
+    for (pair, unit) in bytes.chunks_exact_mut(2).zip(&units[..count]) {
+        pair.copy_from_slice(&unit.to_le_bytes());
+    }
+    &bytes[..2 * count]
 }
 
 /// A buffered writer of text to a sink. Formatting into it (`core::fmt::Write`) fills its buffer;
@@ -154,6 +166,28 @@ mod tests {
         assert_eq!(writer.flush(), Err(Error(232)));
         drop(writer);
         assert_eq!(recorder.writes.len(), 1);
+    }
+
+    #[test]
+    fn little_endian_is_two_bytes_a_unit_low_first() {
+        // `one` CR LF, as `cmd /u /c echo one> file` writes it: ten bytes, no byte-order mark.
+        let units: Vec<u16> = "one\r\n".encode_utf16().collect();
+        let mut bytes = [0; 2 * BUFFER];
+        assert_eq!(little_endian(&units, &mut bytes), b"o\0n\0e\0\r\0\n\0");
+        // A character past Latin-1, and a surrogate pair, unit by unit.
+        let units: Vec<u16> = "\u{20AC}\u{1F600}".encode_utf16().collect();
+        assert_eq!(
+            little_endian(&units, &mut bytes),
+            [0xAC, 0x20, 0x3D, 0xD8, 0x00, 0xDE]
+        );
+    }
+
+    #[test]
+    fn little_endian_writes_what_fits() {
+        let units: Vec<u16> = "abc".encode_utf16().collect();
+        let mut bytes = [0; 5];
+        assert_eq!(little_endian(&units, &mut bytes), b"a\0b\0");
+        assert_eq!(little_endian(&[], &mut bytes), b"");
     }
 
     #[test]

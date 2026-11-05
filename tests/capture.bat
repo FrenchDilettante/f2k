@@ -57,7 +57,7 @@ for %%F in (registry token) do call :listed advapi32 %%F
 call :cap_hellomd
 call :cap_crt
 for %%F in (seh fd wide process strings) do call :listed crt %%F
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp) do call :script %%F
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir) do call :script %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe keys"
@@ -84,7 +84,7 @@ for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin) do if
 for %%F in (guidc gditext) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings) do if /I "%%F"=="%~1" set F2KT_DLL=crt
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1

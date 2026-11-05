@@ -21,7 +21,8 @@ tests/
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
-│               # batstd, batops, batline, bathelp; HAND-CAPTURES.md, the interactive checks
+│               # batstd, batops, batline, bathelp, batdir; HAND-CAPTURES.md, the interactive
+│               # checks
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
@@ -141,7 +142,7 @@ The fixtures:
 - `batspawn` - `CreateProcessA`/`CreateProcessW` on batch files the program writes, with its companion program `blkid.exe` (built beside it from `blkid.c`), a stand-in command processor that prints its command line and its image's path and runs nothing.
   `ComSpec` names it and a copy of it sits in the current directory as `cmd.exe`, so the output shows whether the command processor is found through `ComSpec` or by searching for `cmd`.
   Its cases: the application name NULL and set, a `.cmd`, an upper-case `.BAT`, quoted arguments, a name with a space quoted and not, the name without its extension, an empty `.bat` and a `.txt`.
-  Its `realcmd` section runs the machine's own `cmd.exe` on them, with the exit codes `exit` and `exit /b` leave; the disk the tests boot carries no `cmd.exe`.
+  Its `realcmd` section runs the machine's own `cmd.exe` on them, with the exit codes `exit` and `exit /b` leave: the disk the tests boot carries no `cmd.exe`, so the fixture's boot adds F2K's (`system_programs`).
   Each section removes its scratch directory at its end, so no `cmd.exe` is left behind.
   Built with `/MD`.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
@@ -202,6 +203,8 @@ The screenshots are recorded only, never compared.
 `[skip]` names the blocks that must never run on F2K, each with its reason (`actions = "F2K checks no shutdown privilege; the call would shut the test boot down"`): a call the real machine refuses, which F2K would carry out.
 The batch boot leaves those blocks out, and each is reported as skipped with its reason, never compared.
 A section both pending and skipped is an error.
+`system_programs` names F2K's own programs, built by `make userland` from `userland/<name>`, that the fixture's boot needs in `\WINNT\system32` and the disk the tests boot leaves out (`system_programs = ["cmd"]`, for a section running the machine's own `cmd.exe`): its batch boots a copy of the disk with them added (`f2kboot.corpus_disk`), all its blocks in that one boot.
+`harness/test_repository.py` checks each name is a program the Makefile builds and the base disk does not carry.
 `[keys]` gives an interactive block the keys a person presses on the real machine while it runs: per section, a list of steps, each a table of what it waits for and what it presses, taken in order:
 
 - `after`: the line of the block's own output to wait for, after the line the step before waited for (the block's markers: `ctrl keys` prints `step N: ...` before each of its waits);

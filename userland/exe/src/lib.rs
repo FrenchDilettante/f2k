@@ -7,7 +7,8 @@
 //! - the entry point the linker names: the program's `main`, then ExitProcess with its code;
 //! - the standard output and error ([`stdout`], [`stderr`]): `core::fmt::Write` writers, to a
 //!   console as UTF-16 (WriteConsoleW), redirected as bytes in the OEM code page (WriteFile), as
-//!   Windows 2000's own console tools write theirs;
+//!   Windows 2000's own console tools write theirs, or as UTF-16LE once a shell started with `/U`
+//!   asks for it ([`set_unicode_output`]);
 //! - a panic handler: the panic's message on the standard error, then exit code 3;
 //! - the standard input's lines, from a console ([`read_line`]), or its bytes from a file or a pipe
 //!   ([`read_standard_input`]), and a shell's survival of Ctrl+C and Ctrl+Break
@@ -16,20 +17,22 @@
 //!   what a shell's redirections open: a file or a device ([`open_redirection`]), a handle's
 //!   duplicate ([`duplicate`]), an anonymous pipe ([`create_pipe`]);
 //! - the calls the programs make, wrapped safely ([`command_line`], [`current_directory`],
-//!   [`set_current_directory`], [`create_process`] and [`create_process_of`] and the [`Process`]
-//!   they start, [`exit`], the program's own path; the environment's variables and block; the local
-//!   time; whether a file exists, and its bytes; OEM text decoded; the console's screen cleared),
-//!   the system's process list ([`ProcessSnapshot`], kernel32's ToolHelp), the child processes FiSH
-//!   starts ([`create_child`] over a NUL-terminated [`CommandLine`]), and the display mode it sets
-//!   through user32 ([`change_display_mode`]);
-//! - the file system's calls a shell's built-ins make (src/files.rs: names made full, files found
-//!   by a pattern, created, deleted, copied, moved and written, the local time set) and its
-//!   console's (src/console.rs: the title, the screen's colours, one key read).
+//!   [`set_current_directory`], [`create_process`], [`create_process_of`] and [`create_process_in`]
+//!   and the [`Process`] they start, [`exit`], the program's own path; the environment's variables
+//!   and block; the local time; whether a file exists, and its bytes; OEM text decoded; the
+//!   console's screen cleared), the system's process list ([`ProcessSnapshot`], kernel32's
+//!   ToolHelp), the child processes FiSH starts ([`create_child`] over a NUL-terminated
+//!   [`CommandLine`]), and the display mode it sets through user32 ([`change_display_mode`]);
+//! - the file system's calls a shell's built-ins make (src/files.rs: names made full or short,
+//!   files found by a pattern with their times, created, deleted, copied, moved and written, a
+//!   volume's label, serial number and free space, a file time made local, the local time set) and
+//!   its console's (src/console.rs: the title, the window's size, the screen's colours, one key
+//!   read), and a buffer from the process heap ([`Buffer`], src/heap.rs).
 //!
 //! `unsafe` lives here, at the seam to the system's DLLs (src/sys.rs, src/toolhelp.rs,
-//! src/files.rs, src/console.rs); the programs are safe Rust. The writer's buffering
-//! (src/output.rs) and the command line (src/command.rs) are host-tested; the rest is only built
-//! for F2K's target.
+//! src/files.rs, src/console.rs, src/heap.rs); the programs are safe Rust. The writer's buffering
+//! and its UTF-16LE bytes (src/output.rs) and the command line (src/command.rs) are host-tested;
+//! the rest is only built for F2K's target.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -43,6 +46,8 @@ mod command;
 mod console;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod files;
+#[cfg(all(target_arch = "x86", target_os = "windows"))]
+mod heap;
 mod output;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod sys;
@@ -51,7 +56,7 @@ mod toolhelp;
 
 pub use command::CommandLine;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
-pub use console::{colour_screen, read_key, screen_attribute, set_title};
+pub use console::{colour_screen, read_key, screen_attribute, set_title, window_size};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use files::{
     attributes,
@@ -60,16 +65,23 @@ pub use files::{
     create_file,
     delete_file,
     find,
+    free_bytes,
     full_path,
+    local_file_time,
     move_file,
     remove_directory,
     set_attributes,
     set_local_time,
+    short_path,
+    volume,
     Find,
     Found,
     OutputFile,
+    Volume,
 };
-pub use output::{Error, Sink, Writer};
+#[cfg(all(target_arch = "x86", target_os = "windows"))]
+pub use heap::Buffer;
+pub use output::{little_endian, Error, Sink, Writer};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use sys::{
     change_display_mode,
@@ -79,6 +91,7 @@ pub use sys::{
     create_child,
     create_pipe,
     create_process,
+    create_process_in,
     create_process_of,
     current_directory,
     duplicate,
@@ -97,6 +110,7 @@ pub use sys::{
     set_current_directory,
     set_environment_variable,
     set_standard_handle,
+    set_unicode_output,
     standard_handle,
     standard_input_is_console,
     stderr,

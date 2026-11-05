@@ -6,7 +6,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::command::CommandLine;
-use crate::output::{Error, Sink, Writer, BUFFER};
+use crate::output::{little_endian, Error, Sink, Writer, BUFFER};
 
 /// The longest path a current directory can be, its terminator included (MAX_PATH).
 pub const MAX_PATH: usize = 260;
@@ -674,8 +674,23 @@ pub fn open_file(path: &[u16]) -> Result<File, Error> {
 }
 
 /// Bytes to the standard output as they are: to a console in its output code page
-/// (WriteConsoleA), to anything else unchanged (WriteFile).
+/// (WriteConsoleA), to anything else unchanged (WriteFile), or, once [`set_unicode_output`] has
+/// turned Unicode output on, read in the OEM code page and written as UTF-16LE (`cmd /u`'s `type`
+/// of a file that is not Unicode).
 pub fn write_stdout_bytes(bytes: &[u8]) -> Result<(), Error> {
+    if UNICODE_OUTPUT.load(Ordering::Relaxed) {
+        if let Stream::File(file) = Stream::standard(STD_OUTPUT_HANDLE) {
+            // An OEM code page's byte is one unit at most: a chunk's units fit a buffer of
+            // as many.
+            let mut units = [0u16; BUFFER];
+            let mut little = [0u8; 2 * BUFFER];
+            for chunk in bytes.chunks(BUFFER) {
+                let units = oem_to_wide(chunk, &mut units)?;
+                write_all(file, little_endian(units, &mut little))?;
+            }
+            return Ok(());
+        }
+    }
     match Stream::standard(STD_OUTPUT_HANDLE) {
         Stream::Console(console) => {
             let mut rest = bytes;
@@ -742,7 +757,7 @@ impl Drop for Process {
 /// STARTF_USESTDHANDLES), which a shell's redirection may have replaced ([`set_standard_handle`]):
 /// they must be inheritable, or console handles.
 pub fn create_process(command_line: &mut [u16]) -> Result<Process, Error> {
-    start(None, command_line)
+    start(None, command_line, 0, None)
 }
 
 /// A new process running the program file `application` (a path, MAX_PATH - 1 units at most,
@@ -751,17 +766,49 @@ pub fn create_process(command_line: &mut [u16]) -> Result<Process, Error> {
 /// as [`create_process`].
 #[inline(never)]
 pub fn create_process_of(application: &[u16], command_line: &mut [u16]) -> Result<Process, Error> {
-    if application.len() >= MAX_PATH {
-        return Err(Error(ERROR_FILENAME_EXCED_RANGE));
-    }
-    let mut terminated = [0u16; MAX_PATH];
-    terminated[..application.len()].copy_from_slice(application);
-    start(Some(&terminated), command_line)
+    create_process_in(application, command_line, 0, None)
 }
 
-/// CreateProcessW with `application` (NUL-terminated, or None) and `command_line`.
-fn start(application: Option<&[u16]>, command_line: &mut [u16]) -> Result<Process, Error> {
-    if !command_line.contains(&0) || application.is_some_and(|name| !name.contains(&0)) {
+/// [`create_process_of`] with CreateProcessW's creation `flags` (a priority class's, as `start`
+/// gives them) and, when there is one, the `directory` the process starts in (MAX_PATH - 1 units
+/// at most) rather than the caller's.
+#[inline(never)]
+pub fn create_process_in(
+    application: &[u16],
+    command_line: &mut [u16],
+    flags: u32,
+    directory: Option<&[u16]>,
+) -> Result<Process, Error> {
+    let terminated = |path: &[u16]| {
+        if path.len() >= MAX_PATH {
+            return Err(Error(ERROR_FILENAME_EXCED_RANGE));
+        }
+        let mut terminated = [0u16; MAX_PATH];
+        terminated[..path.len()].copy_from_slice(path);
+        Ok(terminated)
+    };
+    let application = terminated(application)?;
+    let directory = directory.map(terminated).transpose()?;
+    start(
+        Some(&application),
+        command_line,
+        flags,
+        directory.as_ref().map(|directory| &directory[..]),
+    )
+}
+
+/// CreateProcessW with `application` (NUL-terminated, or None), `command_line`, the creation
+/// `flags` and the current `directory` (NUL-terminated, or None for the caller's).
+fn start(
+    application: Option<&[u16]>,
+    command_line: &mut [u16],
+    flags: u32,
+    directory: Option<&[u16]>,
+) -> Result<Process, Error> {
+    if !command_line.contains(&0)
+        || application.is_some_and(|name| !name.contains(&0))
+        || directory.is_some_and(|path| !path.contains(&0))
+    {
         return Err(Error(ERROR_INVALID_PARAMETER));
     }
     let startup = StartupInfo {
@@ -774,9 +821,9 @@ fn start(application: Option<&[u16]>, command_line: &mut [u16]) -> Result<Proces
     };
     let mut information = ProcessInformation::default();
     // SAFETY: the command line ends with a NUL within `command_line`, which the call may write up
-    // to that terminator, and the application name, when there is one, with a NUL within it;
-    // `startup` is read and `information` written, each its own type; no attributes, environment
-    // or directory.
+    // to that terminator, and the application name and the directory, when there are, each with a
+    // NUL within it; `startup` is read and `information` written, each its own type; no attributes
+    // or environment.
     let done = unsafe {
         CreateProcessW(
             application.map_or(core::ptr::null(), <[u16]>::as_ptr),
@@ -784,9 +831,9 @@ fn start(application: Option<&[u16]>, command_line: &mut [u16]) -> Result<Proces
             0,
             0,
             1,
+            flags,
             0,
-            0,
-            core::ptr::null(),
+            directory.map_or(core::ptr::null(), <[u16]>::as_ptr),
             &startup,
             &mut information,
         )
@@ -977,8 +1024,21 @@ pub fn program_path(buffer: &mut [u16; MAX_PATH]) -> Result<&[u16], Error> {
     }
 }
 
+/// Whether a redirected standard stream is written as UTF-16LE rather than OEM bytes: off until
+/// [`set_unicode_output`] turns it on. The process's alone: a program it starts writes its own
+/// way.
+static UNICODE_OUTPUT: AtomicBool = AtomicBool::new(false);
+
+/// From now on, the standard output and error, and [`write_stdout_bytes`]' bytes, reach a file or
+/// a pipe as UTF-16LE without a byte-order mark (`on`, `cmd /u`), or as bytes in the OEM code page
+/// (off, the default, `cmd /a`). A console is written UTF-16 either way.
+pub fn set_unicode_output(on: bool) {
+    UNICODE_OUTPUT.store(on, Ordering::Relaxed);
+}
+
 /// A standard stream, as Windows 2000's console programs write one: UTF-16 to a console, and to
-/// anything else (a file, a pipe: the stream redirected) bytes in the OEM code page.
+/// anything else (a file, a pipe: the stream redirected) bytes in the OEM code page, or UTF-16LE
+/// once [`set_unicode_output`] says so.
 pub enum Stream {
     Console(usize),
     File(usize),
@@ -1014,9 +1074,12 @@ impl Sink for Stream {
                 Ok(())
             }
             Stream::File(file) => {
-                // Two bytes a unit at most, in a double-byte code page: room for the [`BUFFER`]
-                // units a writer hands on at once.
+                // Two bytes a unit at most, in a double-byte code page, and two a unit in
+                // UTF-16LE: room for the [`BUFFER`] units a writer hands on at once.
                 let mut bytes = [0u8; 2 * BUFFER];
+                if UNICODE_OUTPUT.load(Ordering::Relaxed) {
+                    return write_all(file, little_endian(units, &mut bytes));
+                }
                 // SAFETY: the call reads `units` and writes at most `bytes.len()` bytes; no
                 // default character, no report of its use.
                 let count = unsafe {

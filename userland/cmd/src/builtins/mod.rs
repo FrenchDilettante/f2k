@@ -1,11 +1,14 @@
 //! The built-in commands that work on files and directories (`del` or `erase`, `md` or `mkdir`,
-//! `rd` or `rmdir`, `copy`, `ren` or `rename`, `move`, `pushd`, `popd`) and on the console and
-//! the clock (`title`, `color`, `date`, `time`, `pause`), as Windows 2000's cmd.exe has them with
-//! its command extensions on: which word names which ([`parse`]), what their arguments say
-//! ([`files`], [`console`]), and what they print. The program (src/exec) makes the calls.
+//! `rd` or `rmdir`, `copy`, `ren` or `rename`, `move`, `pushd`, `popd`, `dir`), on the console and
+//! the clock (`title`, `color`, `date`, `time`, `pause`), and that start programs (`start`), as
+//! Windows 2000's cmd.exe has them with its command extensions on: which word names which
+//! ([`parse`]), what their arguments say ([`files`], [`console`], [`dir`], [`start`]), and what
+//! they print. The program (src/exec) makes the calls.
 
 pub mod console;
+pub mod dir;
 pub mod files;
+pub mod start;
 
 use crate::{is_named, trim_blanks, trim_end};
 
@@ -40,6 +43,10 @@ pub enum Builtin<'a> {
     Time(&'a [u16]),
     /// `pause`: a key waited for (its arguments ignored).
     Pause,
+    /// `dir`: a directory's entries listed (see [`dir::Switches`]).
+    Directory(&'a [u16]),
+    /// `start`: a program started, without waiting for it unless asked (see [`start::parse`]).
+    Start(&'a [u16]),
 }
 
 /// The built-in `word` names, with its `argument`: None for a word naming none of this module's.
@@ -71,6 +78,10 @@ pub fn parse<'a>(word: &[u16], argument: &'a [u16]) -> Option<Builtin<'a>> {
         Builtin::Time(argument)
     } else if named(&["pause"]) {
         Builtin::Pause
+    } else if named(&["dir"]) {
+        Builtin::Directory(argument)
+    } else if named(&["start"]) {
+        Builtin::Start(argument)
     } else {
         return None;
     })
@@ -78,9 +89,9 @@ pub fn parse<'a>(word: &[u16], argument: &'a [u16]) -> Option<Builtin<'a>> {
 
 impl Builtin<'_> {
     /// Whether the built-in sets the ERRORLEVEL to 0 when it succeeds, wherever it runs: `copy`,
-    /// `date`, `del`, `md`, `move`, `pushd`, `ren`, `time` and `color` do; `rd`, `popd`, `title`
-    /// and `pause` leave it as it is (each sets it to 1 when it fails, `del` excepted: see
-    /// src/exec).
+    /// `date`, `del`, `md`, `move`, `pushd`, `ren`, `time`, `color`, `dir` and `start` do (`start
+    /// /wait` sets it to the program's exit code); `rd`, `popd`, `title` and `pause` leave it as it
+    /// is (each sets it to 1 when it fails, `del` excepted: see src/exec).
     pub fn clears_errorlevel(&self) -> bool {
         !matches!(
             self,
@@ -121,10 +132,12 @@ mod tests {
             ("date", Builtin::Date(&argument)),
             ("time", Builtin::Time(&argument)),
             ("pause", Builtin::Pause),
+            ("DIR", Builtin::Directory(&argument)),
+            ("start", Builtin::Start(&argument)),
         ] {
             assert_eq!(parse(&wide(word), &argument), Some(builtin), "{word}");
         }
-        assert_eq!(parse(&wide("dir"), &argument), None);
+        assert_eq!(parse(&wide("vol"), &argument), None);
         assert_eq!(parse(&wide("colour"), &argument), None);
     }
 
@@ -170,6 +183,8 @@ mod tests {
             Builtin::Colour(none),
             Builtin::Date(none),
             Builtin::Time(none),
+            Builtin::Directory(none),
+            Builtin::Start(none),
         ] {
             assert!(builtin.clears_errorlevel(), "{builtin:?}");
         }

@@ -506,6 +506,37 @@ def test_a_pending_script_gives_its_block_s_reason(tmp_path, monkeypatch):
         f2kboot.corpus_params(fixture)
 
 
+def test_system_programs_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, monkeypatch):
+    """A sectioned fixture declaring `system_programs` boots a copy of the disk with those built
+    programs added to \\WINNT\\system32; one declaring none boots the disk the tests boot. A
+    program not built, and anything but a list of distinct names, are refused."""
+    directory = tmp_path / "kernel32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    built = tmp_path / "built"
+    built.mkdir()
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    monkeypatch.setattr(f2kboot, "BUILT_PROGRAMS", built)
+    copies = []
+    monkeypatch.setattr(f2kboot, "disk_with_programs",
+                        lambda build, programs, path, **rest: copies.append((programs, path, rest)) or path)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    variant = tmp_path / "variant.img"
+
+    declared.write_text('kind = "sectioned"\n')
+    assert f2kboot.corpus_disk(build, "secfake", variant) is None
+    declared.write_text('kind = "sectioned"\nsystem_programs = ["cmd"]\n')
+    with pytest.raises(RuntimeError, match="cmd.exe missing"):
+        f2kboot.corpus_disk(build, "secfake", variant)
+    (built / "cmd.exe").write_bytes(b"MZ")
+    assert f2kboot.corpus_disk(build, "secfake", variant) == variant
+    assert copies == [([built / "cmd.exe"], variant, {})]
+    for wrong in ('"cmd"', '[1]', '[""]', '["cmd", "cmd"]'):
+        declared.write_text(f'kind = "sectioned"\nsystem_programs = {wrong}\n')
+        with pytest.raises(ValueError, match="system_programs"):
+            f2kboot.system_programs("secfake")
+
+
 # --- Stale build directories and logs are pruned-----------------------------------------------
 
 
