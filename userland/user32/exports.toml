@@ -245,6 +245,50 @@ args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
 
+# The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
+# ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
+# NtUserQueryWindow answers what Windows 2000's user32 reads from the window manager's records
+# mapped into its process (GetWindowRect's rectangle, IsWindowVisible's answer): an index from
+# rtl::window, the answer into a buffer of exactly its length.
+
+[[export]]
+name = "NtUserSetWindowPos"
+group = "window"
+args = [
+    "handle Window", "handle InsertAfter", "i32 X", "i32 Y", "i32 Width", "i32 Height",
+    "u32 Flags",
+]
+impl = { syscall = "crate::win32k::window::set_window_pos" }
+internal = true
+
+[[export]]
+name = "NtUserMoveWindow"
+group = "window"
+args = ["handle Window", "i32 X", "i32 Y", "i32 Width", "i32 Height", "u32 Repaint"]
+impl = { syscall = "crate::win32k::window::move_window" }
+internal = true
+
+[[export]]
+name = "NtUserShowWindow"
+group = "window"
+args = ["handle Window", "i32 Command", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::window::show_window" }
+internal = true
+
+[[export]]
+name = "NtUserShowWindowAsync"
+group = "window"
+args = ["handle Window", "i32 Command"]
+impl = { syscall = "crate::win32k::window::show_window_async" }
+internal = true
+
+[[export]]
+name = "NtUserQueryWindow"
+group = "window"
+args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
+impl = { syscall = "crate::win32k::window::query_window" }
+internal = true
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]

@@ -1419,6 +1419,11 @@ impl Registry {
         }
     }
 
+    /// The class `id`'s atom.
+    pub fn class_atom(&self, id: ClassId) -> Atom {
+        self.classes.at(id).atom
+    }
+
     /// How many classes the processes' lists hold (the system list aside): with no process left,
     /// each is one a process's end missed.
     pub fn process_classes(&self) -> usize {

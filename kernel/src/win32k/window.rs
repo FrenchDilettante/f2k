@@ -1,5 +1,5 @@
-//! Windows: the window records behind HWNDs, and the create/destroy decision logic that runs
-//! over them.
+//! Windows: the window records behind HWNDs, and the create/destroy, show and position decision
+//! logic that runs over them.
 //!
 //! A window is a record in the window pool ([`Windows`]), named by a generation-tagged id
 //! ([`WindowId`]), the object manager's pattern, with a handle into the window handle table
@@ -23,6 +23,14 @@
 //! parent before children, unlink, and the free — where a still-referenced window becomes a
 //! zombie re-classed to the icon-title class instead of being freed.
 //!
+//! The show path ([`Windows::show_window`]) decides a show command: WM_SHOWWINDOW, the visibility
+//! change through the position path, the activation, and a tiled window's deferred WM_SIZE and
+//! WM_MOVE. The position path ([`Windows::set_window_pos`]) is SetWindowPos's: WM_WINDOWPOSCHANGING
+//! (whose WINDOWPOS the handler may change), the new rectangles (WM_NCCALCSIZE for a new size, the
+//! children moved with the client area), the place among the siblings (the topmost pile first),
+//! the visibility, the activation, and WM_WINDOWPOSCHANGED. The create path's show and the destroy
+//! path's hide run through them.
+//!
 //! Both registries, this one and the class registry ([`super::class`]), sit behind one lock, the
 //! window manager's ([`WindowManager`]): the decisions hold both at once, through every callback.
 //! The boot makes each desktop's own windows, the desktop window and the message window, on a
@@ -35,11 +43,20 @@
 //!
 //! - NtUserCreateWindowEx (0x114D): CreateWindowExW's arguments, the expected-version word, and the
 //!   new window's handle through the last pointer;
-//! - NtUserDestroyWindow (0x1159): destroy a window of the calling thread's.
+//! - NtUserDestroyWindow (0x1159): destroy a window of the calling thread's;
+//! - NtUserSetWindowPos (0x120F) and NtUserMoveWindow (0x11C1): SetWindowPos's and MoveWindow's
+//!   arguments;
+//! - NtUserShowWindow (0x1218): ShowWindow's arguments, its answer through the last pointer;
+//! - NtUserShowWindowAsync (0x1219): ShowWindowAsync's arguments, the show carried out at once;
+//! - NtUserQueryWindow (0x11D2): what Windows 2000's user32 reads from the window records mapped
+//!   into its process — the window's WINDOWINFO (GetWindowRect's rectangle), IsWindowVisible's
+//!   answer — by an index of F2K's own ([`rtl::window`]).
 //!
 //! Seams recorded: message sending and the queue (the message slice) — every send and
-//! window-manager call the decisions make goes through the [`Pump`] trait, and the services run
-//! them with [`DefaultProcedure`], whose answers are the default procedure's; monitors and frame
+//! window-manager call the decisions make goes through the [`Pump`] trait (the activation and the
+//! minimize/maximize among them), and the services run them with [`DefaultProcedure`], whose
+//! answers are the default procedure's (so nothing answers WM_WINDOWPOSCHANGED with WM_SIZE and
+//! WM_MOVE yet, and ShowWindowAsync has no queue to defer its show to); monitors and frame
 //! metrics come from the display slice (the boot sets the primary monitor's work area). A
 //! process's end takes its windows, its classes and its threads' records, at its teardown
 //! ([`WindowManager::end_process`]); a thread's records outlive the thread until then.
@@ -47,6 +64,8 @@
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
 #![allow(dead_code)]
+
+pub use rtl::window::{WindowInfo, WindowPos};
 
 use super::class;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
@@ -115,23 +134,48 @@ pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
 pub const WM_PARENTNOTIFY: u32 = 0x0210;
+/// The messages the show and position decisions send.
+pub const WM_SHOWWINDOW: u32 = 0x0018;
+pub const WM_WINDOWPOSCHANGING: u32 = 0x0046;
+pub const WM_WINDOWPOSCHANGED: u32 = 0x0047;
 
-/// The show commands (winuser.h's SW_*) the decisions use.
+/// The show commands (winuser.h's SW_*).
 pub const SW_HIDE: i32 = 0;
+pub const SW_SHOWNORMAL: i32 = 1;
+pub const SW_SHOWMINIMIZED: i32 = 2;
+pub const SW_SHOWMAXIMIZED: i32 = 3;
+pub const SW_SHOWNOACTIVATE: i32 = 4;
 pub const SW_SHOW: i32 = 5;
+pub const SW_MINIMIZE: i32 = 6;
 pub const SW_SHOWMINNOACTIVE: i32 = 7;
 pub const SW_SHOWNA: i32 = 8;
-pub const SW_SHOWMAXIMIZED: i32 = 3;
+pub const SW_RESTORE: i32 = 9;
+pub const SW_SHOWDEFAULT: i32 = 10;
+pub const SW_FORCEMINIMIZE: i32 = 11;
+/// The highest show command.
+pub const SW_MAX: i32 = SW_FORCEMINIMIZE;
 
-/// The SetWindowPos flags (winuser.h's SWP_*) the destroy's hide uses.
+/// The SetWindowPos flags (winuser.h's SWP_*).
 pub const SWP_NOSIZE: u32 = 0x0001;
 pub const SWP_NOMOVE: u32 = 0x0002;
 pub const SWP_NOZORDER: u32 = 0x0004;
+pub const SWP_NOREDRAW: u32 = 0x0008;
 pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SWP_FRAMECHANGED: u32 = 0x0020;
+pub const SWP_SHOWWINDOW: u32 = 0x0040;
 pub const SWP_HIDEWINDOW: u32 = 0x0080;
+pub const SWP_NOSENDCHANGING: u32 = 0x0400;
 
-/// SIZENORMAL (winuser.h's SIZE_*).
+/// SetWindowPos's special insert-after handles (winuser.h's HWND_*).
+pub const HWND_TOP: Hwnd = 0;
+pub const HWND_BOTTOM: Hwnd = 1;
+pub const HWND_TOPMOST: Hwnd = -1i32 as Hwnd;
+pub const HWND_NOTOPMOST: Hwnd = -2i32 as Hwnd;
+
+/// WM_SIZE's commands (winuser.h's SIZE_*).
 pub const SIZENORMAL: u32 = 0;
+pub const SIZE_MINIMIZED: u32 = 1;
+pub const SIZE_MAXIMIZED: u32 = 2;
 
 /// The startup-info flags (winbase.h's STARTF_*).
 pub const STARTF_USEPOSITION: u32 = 0x0000_0004;
@@ -457,6 +501,25 @@ pub enum Payload {
     None,
     Rect(Rect),
     Create(CreateParams),
+    /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS (a WM_WINDOWPOSCHANGING handler
+    /// may change it).
+    WindowPos(WindowPos),
+}
+
+/// Where SetWindowPos puts a window in its parent's child list (its hWndInsertAfter).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsertAfter {
+    /// HWND_TOP: at the top (behind the topmost windows, for a window that is not one).
+    Top,
+    /// HWND_BOTTOM: at the bottom; a topmost window stops being one.
+    Bottom,
+    /// HWND_TOPMOST: at the top, a topmost window from then on.
+    TopMost,
+    /// HWND_NOTOPMOST: a topmost window stops being one, above every window that is not; no
+    /// effect on another window.
+    NoTopMost,
+    /// Directly after this sibling.
+    After(WindowId),
 }
 
 /// The message pump's seam (the message slice): every message and window-manager call the
@@ -2016,9 +2079,10 @@ impl Windows {
             }
         }
 
-        // A window created with WS_VISIBLE is shown last.
+        // A window created with WS_VISIBLE is shown last (a show command that is none is not
+        // carried out).
         if args.style & WS_VISIBLE != 0 {
-            pump.show(self, id, sw as u32);
+            let _ = self.show_window(classes, id, sw, pump);
         }
 
         // The process's hotkey lands on the first tiled/APPWINDOW window.
@@ -2234,14 +2298,21 @@ impl Windows {
             self.at_mut(window).flags.in_destroy = true;
         }
         if self.at(window).is_visible() {
+            // A child through ShowWindow's decision; a top-level window hidden without activating
+            // anyone else or moving/resizing/reordering. Whether the hide took is the check below.
             if self.at(window).is_child() {
-                pump.show(self, window, SW_HIDE as u32);
+                let _ = self.show_window(classes, window, SW_HIDE, pump);
             } else {
-                // Hide without activating anyone else or moving/resizing/reordering.
-                pump.set_window_pos(
-                    self,
+                let _ = self.set_window_pos(
+                    classes,
                     window,
+                    InsertAfter::Top,
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    pump,
                 );
             }
             if self.at(window).is_visible() {
@@ -2745,6 +2816,541 @@ impl Windows {
     }
 }
 
+// --- Show, position and the geometry queries
+// ------------------------------------------------------------------
+
+/// The show commands that pass through the min/max seam ([`Pump::min_maximize`]) before the show:
+/// the minimizing ones and the maximizing one, always; restoring ones only from a minimized or
+/// maximized window.
+fn min_max_command(command: i32, style: u32) -> bool {
+    match command {
+        SW_SHOWMINIMIZED | SW_MINIMIZE | SW_SHOWMINNOACTIVE | SW_FORCEMINIMIZE
+        | SW_SHOWMAXIMIZED => true,
+        SW_SHOWNORMAL | SW_RESTORE | SW_SHOWDEFAULT => style & (WS_MINIMIZE | WS_MAXIMIZE) != 0,
+        _ => false,
+    }
+}
+
+impl Windows {
+    /// ShowWindow's decision for `window` and the show command `command`: the answer is whether
+    /// the window was visible before. ERROR_INVALID_PARAMETER for a command past SW_MAX.
+    ///
+    /// A command that changes the window's visibility sends WM_SHOWWINDOW (SW_SHOWNORMAL's aside,
+    /// as the WM_SHOWWINDOW documentation lists) and then shows or hides it through
+    /// [`Windows::set_window_pos`], without moving, sizing or reordering it; the commands that do
+    /// not activate (SW_SHOWNA, SW_SHOWNOACTIVATE, the minimizing ones) and every child window's
+    /// show leave the activation alone. A visible window shown again is only activated. Hiding
+    /// the thread's active top-level window activates the next one. The minimizing and maximizing
+    /// commands, and the restoring ones of a minimized or maximized window, go through the min/max
+    /// seam first. A tiled window's first show sends the WM_SIZE and WM_MOVE its creation
+    /// deferred.
+    pub fn show_window(
+        &mut self,
+        classes: &mut class::Registry,
+        window: WindowId,
+        command: i32,
+        pump: &mut dyn Pump,
+    ) -> Result<bool, Failure> {
+        if !(SW_HIDE..=SW_MAX).contains(&command) {
+            return Err(Failure::InvalidParameter);
+        }
+        let was_visible = self.at(window).is_visible();
+        let child = self.at(window).is_child();
+        let show = command != SW_HIDE;
+        let activate = !child
+            && !matches!(
+                command,
+                SW_HIDE
+                    | SW_SHOWNA
+                    | SW_SHOWNOACTIVATE
+                    | SW_SHOWMINNOACTIVE
+                    | SW_MINIMIZE
+                    | SW_FORCEMINIMIZE
+            );
+
+        if min_max_command(command, self.at(window).style) {
+            pump.min_maximize(self, window, command as u32);
+        }
+
+        if show != was_visible {
+            if command != SW_SHOWNORMAL {
+                pump.send(
+                    self,
+                    classes,
+                    window,
+                    &mut Message {
+                        message: WM_SHOWWINDOW,
+                        wparam: show as WParam,
+                        lparam: 0,
+                        payload: Payload::None,
+                    },
+                );
+                if !self.pool.is_live(window) {
+                    return Ok(was_visible);
+                }
+            }
+            let flags = SWP_NOMOVE
+                | SWP_NOSIZE
+                | SWP_NOZORDER
+                | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW }
+                | if activate { 0 } else { SWP_NOACTIVATE };
+            self.set_window_pos(classes, window, InsertAfter::Top, 0, 0, 0, 0, flags, pump)?;
+        } else if show && activate {
+            pump.activate(self, window, Activate::Try);
+        }
+        // A handler may have destroyed the window: nothing is left to do.
+        if !self.pool.is_live(window) {
+            return Ok(was_visible);
+        }
+
+        // The hidden window was its thread's active one: the next one is activated.
+        if !show && was_visible && !child {
+            let thread = self.at(window).thread;
+            if self.thread(thread).active == Some(window) {
+                pump.activate(self, window, Activate::Skip);
+            }
+        }
+
+        // The size and position messages a tiled window's creation deferred to its first show.
+        if self.at(window).flags.sendsizemove {
+            self.at_mut(window).flags.sendsizemove = false;
+            let style = self.at(window).style;
+            let size = if style & WS_MINIMIZE != 0 {
+                SIZE_MINIMIZED
+            } else if style & WS_MAXIMIZE != 0 {
+                SIZE_MAXIMIZED
+            } else {
+                SIZENORMAL
+            };
+            pump.send_size(self, classes, window, size);
+            let (x, y) = self.client_position(window);
+            pump.send(
+                self,
+                classes,
+                window,
+                &mut Message {
+                    message: WM_MOVE,
+                    wparam: 0,
+                    lparam: makelong(x as u16, y as u16) as LParam,
+                    payload: Payload::None,
+                },
+            );
+        }
+        Ok(was_visible)
+    }
+
+    /// SetWindowPos's decision for `window`: its new position (`x`, `y`, in its parent's client
+    /// coordinates for a child), size (`cx`, `cy`, a negative one taken as zero) and place in the
+    /// z-order (`after`), each unless the SWP_ `flags` leave it alone, and its visibility.
+    ///
+    /// WM_WINDOWPOSCHANGING goes first (unless SWP_NOSENDCHANGING), its WINDOWPOS the handler may
+    /// change; then the window's rectangles change — WM_NCCALCSIZE answers the client rectangle
+    /// when the size changes or the frame does (SWP_FRAMECHANGED), the client rectangle moves with
+    /// the window otherwise, and the children move with the client area — the window takes its
+    /// place among its siblings, is shown or hidden, and is activated (a top-level window, unless
+    /// SWP_NOACTIVATE); then WM_WINDOWPOSCHANGED reports what happened (SWP_NOMOVE and SWP_NOSIZE
+    /// added for what did not change). A window being shown or hidden is neither moved nor sized,
+    /// as the SetWindowPos documentation has it; a window without a parent (the desktop's own
+    /// windows) keeps its place. The WM_SIZE and WM_MOVE that follow are the default window
+    /// procedure's answer to WM_WINDOWPOSCHANGED, not this decision's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_window_pos(
+        &mut self,
+        classes: &mut class::Registry,
+        window: WindowId,
+        after: InsertAfter,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        let mut flags = flags;
+        if flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW) != 0 {
+            flags |= SWP_NOMOVE | SWP_NOSIZE;
+        }
+        if self.at(window).parent.is_none() {
+            flags |= SWP_NOZORDER;
+        }
+        let old = self.at(window).window_rect;
+        let origin = self.parent_origin(window);
+        let mut pos = WindowPos {
+            hwnd: self.at(window).handle,
+            insert_after: self.insert_after_handle(after),
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+        };
+        if flags & SWP_NOMOVE != 0 {
+            pos.x = old.left - origin.0;
+            pos.y = old.top - origin.1;
+        }
+        if flags & SWP_NOSIZE != 0 {
+            pos.cx = old.right - old.left;
+            pos.cy = old.bottom - old.top;
+        }
+
+        // The handler may change the new place, the flags among it.
+        let mut after = after;
+        if flags & SWP_NOSENDCHANGING == 0 {
+            let mut message = Message {
+                message: WM_WINDOWPOSCHANGING,
+                wparam: 0,
+                lparam: 0,
+                payload: Payload::WindowPos(pos),
+            };
+            pump.send(self, classes, window, &mut message);
+            if !self.pool.is_live(window) {
+                return Err(Failure::InvalidWindowHandle);
+            }
+            if let Payload::WindowPos(changed) = message.payload {
+                if changed.insert_after != pos.insert_after {
+                    after = self.insert_after_of(changed.insert_after).unwrap_or(after);
+                }
+                pos = changed;
+            }
+        }
+        let mut flags = pos.flags;
+
+        // The rectangles.
+        let mut rect = old;
+        if flags & SWP_NOMOVE == 0 {
+            rect.left = pos.x + origin.0;
+            rect.top = pos.y + origin.1;
+        }
+        let (width, height) = if flags & SWP_NOSIZE == 0 {
+            (pos.cx.max(0), pos.cy.max(0))
+        } else {
+            (old.right - old.left, old.bottom - old.top)
+        };
+        rect.right = rect.left + width;
+        rect.bottom = rect.top + height;
+        let moved = (rect.left, rect.top) != (old.left, old.top);
+        let sized = (width, height) != (old.right - old.left, old.bottom - old.top);
+        if !moved {
+            flags |= SWP_NOMOVE;
+        }
+        if !sized {
+            flags |= SWP_NOSIZE;
+        }
+        let old_client = self.at(window).client_rect;
+        let client = if sized || flags & SWP_FRAMECHANGED != 0 {
+            let mut message = Message {
+                message: WM_NCCALCSIZE,
+                wparam: 0,
+                lparam: 0,
+                payload: Payload::Rect(rect),
+            };
+            pump.send(self, classes, window, &mut message);
+            if !self.pool.is_live(window) {
+                return Err(Failure::InvalidWindowHandle);
+            }
+            match message.payload {
+                Payload::Rect(client) => client,
+                _ => rect,
+            }
+        } else {
+            offset_rect(old_client, rect.left - old.left, rect.top - old.top)
+        };
+        {
+            let w = self.at_mut(window);
+            w.window_rect = rect;
+            w.client_rect = client;
+        }
+        self.offset_descendants(
+            window,
+            client.left - old_client.left,
+            client.top - old_client.top,
+        );
+
+        // The z-order.
+        if flags & SWP_NOZORDER == 0 {
+            self.reorder(window, after);
+        }
+
+        // The visibility.
+        let visible = self.at(window).is_visible();
+        if flags & SWP_SHOWWINDOW != 0 && !visible {
+            self.at_mut(window).style |= WS_VISIBLE;
+        } else if flags & SWP_HIDEWINDOW != 0 && visible {
+            self.at_mut(window).style &= !WS_VISIBLE;
+        } else {
+            flags &= !(SWP_SHOWWINDOW | SWP_HIDEWINDOW);
+        }
+
+        // The activation.
+        if flags & SWP_NOACTIVATE == 0
+            && !self.at(window).is_child()
+            && self.at(window).is_visible()
+        {
+            pump.activate(self, window, Activate::Try);
+            if !self.pool.is_live(window) {
+                return Err(Failure::InvalidWindowHandle);
+            }
+        }
+
+        let done = WindowPos {
+            x: rect.left - origin.0,
+            y: rect.top - origin.1,
+            cx: width,
+            cy: height,
+            flags,
+            ..pos
+        };
+        pump.send(
+            self,
+            classes,
+            window,
+            &mut Message {
+                message: WM_WINDOWPOSCHANGED,
+                wparam: 0,
+                lparam: 0,
+                payload: Payload::WindowPos(done),
+            },
+        );
+        Ok(())
+    }
+
+    /// The window `handle` names; ERROR_INVALID_WINDOW_HANDLE for none.
+    pub fn window_of(&self, handle: Hwnd) -> Result<WindowId, Failure> {
+        self.window_from_handle(handle)
+            .ok_or(Failure::InvalidWindowHandle)
+    }
+
+    /// The services' SetWindowPos over handles: the window and, unless SWP_NOZORDER, the
+    /// insert-after handle (HWND_TOP, HWND_BOTTOM, HWND_TOPMOST, HWND_NOTOPMOST or a window) must
+    /// name something; ERROR_INVALID_WINDOW_HANDLE otherwise.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_window_pos_handle(
+        &mut self,
+        classes: &mut class::Registry,
+        handle: Hwnd,
+        insert_after: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        let window = self.window_of(handle)?;
+        let after = if flags & SWP_NOZORDER != 0 {
+            InsertAfter::Top
+        } else {
+            self.insert_after_of(insert_after)
+                .ok_or(Failure::InvalidWindowHandle)?
+        };
+        self.set_window_pos(classes, window, after, x, y, cx, cy, flags, pump)
+    }
+
+    /// The insert-after handle's meaning: a special handle, or a live window; none otherwise.
+    fn insert_after_of(&self, handle: Hwnd) -> Option<InsertAfter> {
+        Some(match handle {
+            HWND_TOP => InsertAfter::Top,
+            HWND_BOTTOM => InsertAfter::Bottom,
+            HWND_TOPMOST => InsertAfter::TopMost,
+            HWND_NOTOPMOST => InsertAfter::NoTopMost,
+            handle => InsertAfter::After(self.window_from_handle(handle)?),
+        })
+    }
+
+    /// The handle WINDOWPOS's hwndInsertAfter carries for `after`.
+    fn insert_after_handle(&self, after: InsertAfter) -> Hwnd {
+        match after {
+            InsertAfter::Top => HWND_TOP,
+            InsertAfter::Bottom => HWND_BOTTOM,
+            InsertAfter::TopMost => HWND_TOPMOST,
+            InsertAfter::NoTopMost => HWND_NOTOPMOST,
+            InsertAfter::After(w) => self.at(w).handle,
+        }
+    }
+
+    /// The screen position of the origin `window`'s coordinates are relative to: its parent's
+    /// client area for a child window, the screen's for any other.
+    fn parent_origin(&self, window: WindowId) -> (i32, i32) {
+        let w = self.at(window);
+        match w.parent {
+            Some(p) if w.is_child() && self.pool.is_live(p) => {
+                let client = self.at(p).client_rect;
+                (client.left, client.top)
+            }
+            _ => (0, 0),
+        }
+    }
+
+    /// The position of `window`'s client area as WM_MOVE reports it: in its parent's client
+    /// coordinates for a child window, in screen coordinates for any other.
+    fn client_position(&self, window: WindowId) -> (i32, i32) {
+        let client = self.at(window).client_rect;
+        let origin = self.parent_origin(window);
+        (client.left - origin.0, client.top - origin.1)
+    }
+
+    /// Move every window below `window` (its children, theirs, and so on) by `dx`, `dy`: their
+    /// rectangles are in screen coordinates, and they keep their place in their parents' client
+    /// areas. The walk follows the child, sibling and parent links, without recursing.
+    fn offset_descendants(&mut self, window: WindowId, dx: i32, dy: i32) {
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        let Some(mut current) = self.at(window).child else {
+            return;
+        };
+        loop {
+            {
+                let w = self.at_mut(current);
+                w.window_rect = offset_rect(w.window_rect, dx, dy);
+                w.client_rect = offset_rect(w.client_rect, dx, dy);
+            }
+            if let Some(child) = self.at(current).child {
+                current = child;
+                continue;
+            }
+            loop {
+                if let Some(next) = self.at(current).next {
+                    current = next;
+                    break;
+                }
+                current = self.at(current).parent.expect("a child has its parent");
+                if current == window {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Put `window` at its new place among its siblings. A top-level window's topmost status
+    /// decides the pile it goes in: the topmost windows head the list, the others follow them.
+    /// HWND_TOPMOST makes it topmost, at the top; HWND_NOTOPMOST makes a topmost window an
+    /// ordinary one, at the top of the others (and leaves any other window alone); HWND_BOTTOM
+    /// makes it an ordinary one at the bottom; HWND_TOP puts it at the top of its pile; a window to
+    /// go after must be a sibling, and a window that would land in the other pile goes to the
+    /// boundary between the piles instead. Child windows have no topmost status: HWND_TOPMOST is
+    /// HWND_TOP for them, and HWND_NOTOPMOST nothing.
+    fn reorder(&mut self, window: WindowId, after: InsertAfter) {
+        /// Where the window goes.
+        enum Place {
+            Top,
+            Bottom,
+            After(WindowId),
+            /// After the last topmost sibling (the top of the ordinary windows, the bottom of the
+            /// topmost ones).
+            Boundary,
+        }
+        let Some(parent) = self.at(window).parent else {
+            return;
+        };
+        let child = self.at(window).is_child();
+        let topmost = |s: &Self, id: WindowId| s.at(id).ex_style & WS_EX_TOPMOST != 0;
+        let is_topmost = !child && topmost(self, window);
+        let (place, make_topmost) = match after {
+            InsertAfter::After(w) => {
+                if w == window || !self.pool.is_live(w) || self.at(w).parent != Some(parent) {
+                    return;
+                }
+                if child || topmost(self, w) == is_topmost {
+                    (Place::After(w), None)
+                } else {
+                    (Place::Boundary, None)
+                }
+            }
+            InsertAfter::Top if child || is_topmost => (Place::Top, None),
+            InsertAfter::Top => (Place::Boundary, None),
+            InsertAfter::TopMost if child => (Place::Top, None),
+            InsertAfter::TopMost => (Place::Top, Some(true)),
+            InsertAfter::NoTopMost if !is_topmost => return,
+            InsertAfter::NoTopMost => (Place::Boundary, Some(false)),
+            InsertAfter::Bottom if child => (Place::Bottom, None),
+            InsertAfter::Bottom => (Place::Bottom, Some(false)),
+        };
+        self.unlink_window(window, parent);
+        match make_topmost {
+            Some(true) => self.at_mut(window).ex_style |= WS_EX_TOPMOST,
+            Some(false) => self.at_mut(window).ex_style &= !WS_EX_TOPMOST,
+            None => {}
+        }
+        let z = match place {
+            Place::Top => ZOrder::Top,
+            Place::Bottom => ZOrder::Bottom,
+            Place::After(w) => ZOrder::After(w),
+            Place::Boundary => {
+                let mut last = None;
+                let mut current = self.at(parent).child;
+                while let Some(c) = current {
+                    if !topmost(self, c) {
+                        break;
+                    }
+                    last = Some(c);
+                    current = self.at(c).next;
+                }
+                last.map_or(ZOrder::Top, ZOrder::After)
+            }
+        };
+        self.link_window(window, z, parent);
+    }
+
+    /// Whether `window` and every window above it have WS_VISIBLE: IsWindowVisible's answer. The
+    /// desktop window is visible and the message window is not, so no message-only window is.
+    pub fn is_window_visible(&self, window: WindowId) -> bool {
+        let mut current = Some(window);
+        while let Some(w) = current {
+            if !self.pool.is_live(w) {
+                break;
+            }
+            if !self.at(w).is_visible() {
+                return false;
+            }
+            current = self.at(w).parent;
+        }
+        true
+    }
+
+    /// `window`'s state as GetWindowInfo describes it (WINDOWINFO): its rectangles in screen
+    /// coordinates, its styles, whether it is its thread's active window, its borders (the client
+    /// area's inset from the window's left and bottom edges), its class atom and the Windows
+    /// version its creator expects (4.0 for a 4.0-or-later creator, 3.1 otherwise: the records
+    /// keep no finer version).
+    pub fn window_info(&self, classes: &class::Registry, window: WindowId) -> WindowInfo {
+        let w = self.at(window);
+        let rect = |r: Rect| rtl::gdi::Rect {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+        };
+        let active = self.thread(w.thread).active == Some(window);
+        WindowInfo {
+            size: core::mem::size_of::<WindowInfo>() as u32,
+            window: rect(w.window_rect),
+            client: rect(w.client_rect),
+            style: w.style,
+            ex_style: w.ex_style,
+            status: if active {
+                rtl::window::WS_ACTIVECAPTION
+            } else {
+                0
+            },
+            cx_window_borders: (w.client_rect.left - w.window_rect.left).max(0) as u32,
+            cy_window_borders: (w.window_rect.bottom - w.client_rect.bottom).max(0) as u32,
+            atom_window_type: w.class.map_or(0, |c| classes.class_atom(c)),
+            creator_version: if w.flags.win40_compat { 0x0400 } else { 0x030A },
+        }
+    }
+}
+
+/// `rect` moved by `dx`, `dy`.
+fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
+    Rect {
+        left: rect.left + dx,
+        top: rect.top + dy,
+        right: rect.right + dx,
+        bottom: rect.bottom + dy,
+    }
+}
+
 // --- The window manager: both registries behind one lock
 // ------------------------------------------
 
@@ -2810,8 +3416,8 @@ impl WindowManager {
     /// work area, the desktop's two system classes ("#32769" and "Message"), the desktop's own
     /// thread — the window manager's, with no desktop handle, which lets it create the desktop's
     /// root windows — and those windows: the message window, the parent of message-only windows,
-    /// and the desktop window, covering the work area, the parent of every top-level window. Both
-    /// are made before the desktop names either, so neither has a parent.
+    /// and the desktop window, covering the work area, the parent of every top-level window, and
+    /// visible. Both are made before the desktop names either, so neither has a parent.
     pub fn boot_desktop(&mut self, desktop: u32, work_area: Rect) -> Result<(), Failure> {
         self.windows.set_monitor(PRIMARY_MONITOR, work_area);
         self.windows.set_desktop(desktop, None, None);
@@ -2887,6 +3493,11 @@ impl WindowManager {
         let id = |handle| self.windows.window_from_handle(handle);
         let (window, message) = (id(window), id(message));
         self.windows.set_desktop(desktop, window, message);
+        // The desktop window is visible from the boot on (the one desktop is the one on the
+        // screen): a top-level window's visibility goes up to it. The message window never is.
+        if let Some(window) = window {
+            self.windows.at_mut(window).style |= WS_VISIBLE;
+        }
         Ok(())
     }
 
@@ -2937,6 +3548,104 @@ impl WindowManager {
     /// no process left, the teardown audit counts each as a leak.
     pub fn process_records(&self) -> usize {
         self.windows.process_windows() + self.classes.process_classes()
+    }
+
+    /// NtUserShowWindow's decision over a handle ([`Windows::show_window`]). The answer is
+    /// ShowWindow's: the window's former visibility as the style's state byte holds it, WS_VISIBLE
+    /// shifted down to it — 16 for a window that was visible, 0 for one that was not, as Windows
+    /// 2000's ShowWindow answers (the guigeo capture).
+    pub fn show_window(
+        &mut self,
+        handle: Hwnd,
+        command: i32,
+        pump: &mut dyn Pump,
+    ) -> Result<u32, Failure> {
+        let window = self.windows.window_of(handle)?;
+        let was_visible = self
+            .windows
+            .show_window(&mut self.classes, window, command, pump)?;
+        Ok(if was_visible { WS_VISIBLE >> 24 } else { 0 })
+    }
+
+    /// NtUserShowWindowAsync's decision over a handle: the show carried out at once (the
+    /// message queue that would carry it to the window's thread comes with the message slice).
+    /// The command is checked first; nothing is answered but the call's success.
+    pub fn show_window_async(
+        &mut self,
+        handle: Hwnd,
+        command: i32,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        self.show_window(handle, command, pump).map(|_| ())
+    }
+
+    /// NtUserMoveWindow's decision over a handle: MoveWindow is SetWindowPos with the window's
+    /// place in the z-order and the activation left alone, and without the redraw when `repaint`
+    /// is false (the MoveWindow documentation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn move_window(
+        &mut self,
+        handle: Hwnd,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        repaint: bool,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | if repaint { 0 } else { SWP_NOREDRAW };
+        self.windows.set_window_pos_handle(
+            &mut self.classes,
+            handle,
+            HWND_TOP,
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+            pump,
+        )
+    }
+
+    /// NtUserQueryWindow's answer for the window `handle` names and the index `index` (one
+    /// [`query_length`] knows).
+    pub fn query_window(&self, handle: Hwnd, index: u32) -> Result<Query, Failure> {
+        let window = self.windows.window_of(handle)?;
+        Ok(match index {
+            rtl::window::QUERY_WINDOW_INFO => {
+                Query::Info(self.windows.window_info(&self.classes, window))
+            }
+            _ => Query::Visible(self.windows.is_window_visible(window) as u32),
+        })
+    }
+}
+
+/// NtUserQueryWindow's answer, by its index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Query {
+    /// QUERY_WINDOW_INFO: the window's WINDOWINFO.
+    Info(WindowInfo),
+    /// QUERY_WINDOW_VISIBLE: IsWindowVisible's answer, a 32-bit boolean.
+    Visible(u32),
+}
+
+impl Query {
+    /// The answer's bytes, as the caller's buffer receives them.
+    pub fn bytes(&self) -> &[u8] {
+        use rtl::pod::Pod;
+        match self {
+            Query::Info(info) => info.as_bytes(),
+            Query::Visible(visible) => visible.as_bytes(),
+        }
+    }
+}
+
+/// The length of NtUserQueryWindow's answer for `index`: none for an index it has no answer for.
+pub fn query_length(index: u32) -> Option<usize> {
+    match index {
+        rtl::window::QUERY_WINDOW_INFO => Some(core::mem::size_of::<WindowInfo>()),
+        rtl::window::QUERY_WINDOW_VISIBLE => Some(core::mem::size_of::<u32>()),
+        _ => None,
     }
 }
 
@@ -3089,6 +3798,117 @@ pub fn destroy_window(call: &mut NtCall, window: Handle) -> NtResult {
     }
 }
 
+/// NtUserSetWindowPos(Window, InsertAfter, X, Y, Width, Height, Flags): SetWindowPos's arguments
+/// as they are ([`Windows::set_window_pos_handle`]).
+#[cfg(target_arch = "x86")]
+#[allow(clippy::too_many_arguments)]
+pub fn set_window_pos(
+    call: &mut NtCall,
+    window: Handle,
+    insert_after: Handle,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    flags: u32,
+) -> NtResult {
+    let mut manager = lock(call.passive());
+    let WindowManager {
+        windows, classes, ..
+    } = &mut *manager;
+    windows
+        .set_window_pos_handle(
+            classes,
+            window.raw(),
+            insert_after.raw(),
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+            &mut DefaultProcedure,
+        )
+        .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserMoveWindow(Window, X, Y, Width, Height, Repaint): MoveWindow's arguments as they are
+/// ([`WindowManager::move_window`]).
+#[cfg(target_arch = "x86")]
+pub fn move_window(
+    call: &mut NtCall,
+    window: Handle,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    repaint: u32,
+) -> NtResult {
+    lock(call.passive())
+        .move_window(
+            window.raw(),
+            x,
+            y,
+            cx,
+            cy,
+            repaint != 0,
+            &mut DefaultProcedure,
+        )
+        .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserShowWindow(Window, Command, Previous): ShowWindow's arguments, and its answer through
+/// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go.
+#[cfg(target_arch = "x86")]
+pub fn show_window(
+    call: &mut NtCall,
+    window: Handle,
+    command: i32,
+    previous: UserPtr<u32>,
+) -> NtResult {
+    let answer = lock(call.passive())
+        .show_window(window.raw(), command, &mut DefaultProcedure)
+        .map_err(Failure::status)?;
+    previous.write(answer)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserShowWindowAsync(Window, Command): ShowWindowAsync's arguments
+/// ([`WindowManager::show_window_async`]).
+#[cfg(target_arch = "x86")]
+pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtResult {
+    lock(call.passive())
+        .show_window_async(window.raw(), command, &mut DefaultProcedure)
+        .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserQueryWindow(Window, Index, Information, Length): what `index` asks about the window
+/// (rtl::window's QUERY_ indexes) into `information`, whose `length` must be the answer's own:
+/// STATUS_INVALID_INFO_CLASS for an index there is none for, STATUS_INFO_LENGTH_MISMATCH for
+/// another length (both checked before the window, as the NT query services check them), then
+/// STATUS_INVALID_HANDLE for a handle naming no window. The answer is copied out once the window
+/// manager's lock is let go.
+#[cfg(target_arch = "x86")]
+pub fn query_window(
+    call: &mut NtCall,
+    window: Handle,
+    index: u32,
+    information: UserAddr,
+    length: u32,
+) -> NtResult {
+    let expected = query_length(index).ok_or(STATUS_INVALID_INFO_CLASS)?;
+    if length as usize != expected {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    let answer = lock(call.passive())
+        .query_window(window.raw(), index)
+        .map_err(Failure::status)?;
+    information.write(answer.bytes())?;
+    Ok(STATUS_SUCCESS)
+}
+
 // The host builds have no processes and no user memory: the services answer nothing (the host
 // tests drive the window manager itself).
 
@@ -3119,9 +3939,46 @@ pub fn destroy_window(_: &mut NtCall, _: Handle) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 
+#[cfg(not(target_arch = "x86"))]
+#[allow(clippy::too_many_arguments)]
+pub fn set_window_pos(
+    _: &mut NtCall,
+    _: Handle,
+    _: Handle,
+    _: i32,
+    _: i32,
+    _: i32,
+    _: i32,
+    _: u32,
+) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn move_window(_: &mut NtCall, _: Handle, _: i32, _: i32, _: i32, _: i32, _: u32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn show_window(_: &mut NtCall, _: Handle, _: i32, _: UserPtr<u32>) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn show_window_async(_: &mut NtCall, _: Handle, _: i32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn query_window(_: &mut NtCall, _: Handle, _: u32, _: UserAddr, _: u32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
 #[cfg(test)]
 mod tests {
     //! The create/destroy decision logic's host tests, over a registry of each test's own.
+
+    use rtl::window::{QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
 
     use super::*;
     use crate::win32k::class::{self, RegisterFlags};
@@ -3349,6 +4206,12 @@ mod tests {
         parents: Vec<(WindowId, Option<WindowId>)>,
         /// The target's stored style at each send.
         styles: Vec<(WindowId, u32)>,
+        /// (target, message, WINDOWPOS) for every WM_WINDOWPOSCHANGING/WM_WINDOWPOSCHANGED.
+        positions: Vec<(WindowId, u32, WindowPos)>,
+        /// The WINDOWPOS a WM_WINDOWPOSCHANGING handler answers instead of the one it got.
+        changing_answer: Option<WindowPos>,
+        /// The client rectangle a WM_NCCALCSIZE handler answers, as an inset of the window's.
+        nccalc_inset: i32,
         nccreate_answer: LResult,
         create_answer: LResult,
         hide_works: bool,
@@ -3374,6 +4237,9 @@ mod tests {
                 params: Vec::new(),
                 parents: Vec::new(),
                 styles: Vec::new(),
+                positions: Vec::new(),
+                changing_answer: None,
+                nccalc_inset: 0,
                 nccreate_answer: 1,
                 create_answer: 0,
                 hide_works: true,
@@ -3405,6 +4271,15 @@ mod tests {
         fn messages(&self) -> Vec<u32> {
             self.sends().iter().map(|(_, m)| *m).collect()
         }
+
+        /// The flags of every WM_WINDOWPOSCHANGING, by target.
+        fn changing_flags(&self) -> Vec<(WindowId, u32)> {
+            self.positions
+                .iter()
+                .filter(|(_, m, _)| *m == WM_WINDOWPOSCHANGING)
+                .map(|(id, _, pos)| (*id, pos.flags))
+                .collect()
+        }
     }
 
     impl Pump for Rec {
@@ -3432,6 +4307,29 @@ mod tests {
                     let w = windows.at_mut(target);
                     w.title = TextBuf::from_units(&units);
                     w.flags.title_set = true;
+                }
+            }
+            if let Payload::WindowPos(ref mut pos) = message.payload {
+                if message.message == WM_WINDOWPOSCHANGING {
+                    if let Some(answer) = self.changing_answer {
+                        *pos = answer;
+                    }
+                }
+                self.positions.push((target, message.message, *pos));
+                // A handler that shows the window again undoes the hide.
+                if message.message == WM_WINDOWPOSCHANGED
+                    && pos.flags & SWP_HIDEWINDOW != 0
+                    && !self.hide_works
+                {
+                    windows.at_mut(target).style |= WS_VISIBLE;
+                }
+            }
+            if message.message == WM_NCCALCSIZE && self.nccalc_inset != 0 {
+                if let Payload::Rect(ref mut r) = message.payload {
+                    r.left += self.nccalc_inset;
+                    r.top += self.nccalc_inset;
+                    r.right -= self.nccalc_inset;
+                    r.bottom -= self.nccalc_inset;
                 }
             }
             if message.message == WM_DESTROY {
@@ -4008,31 +4906,20 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.x = CW_USEDEFAULT;
         a.y = SW_SHOWNA;
-        let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
-        let shows: Vec<u32> = pump
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                Ev::Show(_, cmd) => Some(*cmd),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(shows, vec![SW_SHOWNA as u32]);
-        // With y also default: SW_SHOW.
+        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        // SW_SHOWNA: shown, not activated.
+        let show = SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
+        assert_eq!(pump.changing_flags(), vec![(id, show | SWP_NOACTIVATE)]);
+        assert!(!pump.events.iter().any(|e| matches!(e, Ev::Activate(..))));
+        assert!(w.at(id).is_visible());
+        // With y also default: SW_SHOW, which activates.
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.x = CW_USEDEFAULT;
         a.y = CW_USEDEFAULT;
-        let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
-        let shows: Vec<u32> = pump
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                Ev::Show(_, cmd) => Some(*cmd),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(shows, vec![SW_SHOW as u32]);
+        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        assert_eq!(pump.changing_flags(), vec![(id, show)]);
+        assert!(pump.events.contains(&Ev::Activate(id, Activate::Try)));
     }
 
     /// The cascade default rect: 3/4 by 3/4 of the monitor's work area, offset by the window
@@ -4567,8 +5454,22 @@ mod tests {
         // at the end sets the visible bit again).
         let (_, _, p) = &pump.params[0];
         assert_eq!(p.style & WS_VISIBLE, WS_VISIBLE);
-        assert!(pump.events.contains(&Ev::Show(id, SW_SHOW as u32)));
-        // The show is the last window-manager step; the hotkey send follows it.
+        assert!(w.at(id).is_visible());
+        // The show is the last window-manager step: WM_SHOWWINDOW, the position change, then the
+        // size and move its creation deferred; the hotkey send follows it.
+        let messages = pump.messages();
+        let show = messages.iter().position(|&m| m == WM_SHOWWINDOW).unwrap();
+        assert_eq!(
+            &messages[show..],
+            &[
+                WM_SHOWWINDOW,
+                WM_WINDOWPOSCHANGING,
+                WM_WINDOWPOSCHANGED,
+                WM_SIZE,
+                WM_MOVE,
+                WM_SETHOTKEY
+            ]
+        );
         assert_eq!(
             pump.events.last(),
             Some(&Ev::Send(id, WM_SETHOTKEY, 0x1234, 0))
@@ -4576,8 +5477,9 @@ mod tests {
         assert_eq!(w.thread(t).hotkey, 0, "the hotkey was consumed");
         // Without WS_VISIBLE: no show.
         let mut pump = Rec::new(t);
-        create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
-        assert!(!pump.events.iter().any(|e| matches!(e, Ev::Show(..))));
+        let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        assert!(!pump.messages().contains(&WM_SHOWWINDOW));
+        assert!(!w.at(id).is_visible());
     }
 
     // --- Destroy entry
@@ -4670,11 +5572,15 @@ mod tests {
         let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
         let handle = w.at(id).handle;
         pump.events.clear();
+        pump.positions.clear();
         assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
         assert_eq!(
             pump.sends(),
             vec![
                 (parent, WM_PARENTNOTIFY),
+                (id, WM_SHOWWINDOW),
+                (id, WM_WINDOWPOSCHANGING),
+                (id, WM_WINDOWPOSCHANGED),
                 (id, WM_DESTROY),
                 (id, WM_NCDESTROY)
             ]
@@ -4695,23 +5601,35 @@ mod tests {
         let hide = pump
             .events
             .iter()
-            .position(|e| matches!(e, Ev::Show(_, cmd) if *cmd == SW_HIDE as u32))
+            .position(|e| *e == Ev::Send(id, WM_SHOWWINDOW, 0, 0))
             .unwrap();
         assert!(hide < first_destroy);
-        // A top-level window gets the hide-only SetWindowPos instead.
+        assert_eq!(
+            pump.changing_flags(),
+            vec![(
+                id,
+                SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+            )],
+            "a child's hide does not activate"
+        );
+        // A top-level window gets the hide-only SetWindowPos instead (no WM_SHOWWINDOW).
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_OVERLAPPED | WS_VISIBLE, &mut pump).unwrap();
         pump.events.clear();
+        pump.positions.clear();
         assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
-        assert!(pump.events.contains(&Ev::SetPos(
-            id,
-            SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
-        )));
+        assert_eq!(
+            pump.changing_flags(),
+            vec![(
+                id,
+                SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER
+            )]
+        );
+        assert!(!pump.messages().contains(&WM_SHOWWINDOW));
         // A hide that does not take: the visible bit is forced off and below is redrawn.
         let mut pump = Rec::new(t);
-        pump.hide_works = false;
+        pump.hide_works = false; // a WM_WINDOWPOSCHANGED handler shows the window again
         let id = create(w, c, t, atom, WS_OVERLAPPED | WS_VISIBLE, &mut pump).unwrap();
-        w.at_mut(id).style |= WS_VISIBLE; // the show ran, but did not stick
         pump.events.clear();
         assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
         assert!(pump.events.contains(&Ev::Redraw(id)));
@@ -4912,7 +5830,11 @@ mod tests {
         }
         pump.events.clear();
         assert!(w.destroy_window(c, t, root, &mut pump).unwrap());
-        let sends = pump.sends();
+        let sends: Vec<(WindowId, u32)> = pump
+            .sends()
+            .into_iter()
+            .filter(|(_, m)| *m == WM_DESTROY || *m == WM_NCDESTROY)
+            .collect();
         let expected: Vec<(WindowId, u32)> = chain
             .iter()
             .rev()
@@ -4921,14 +5843,23 @@ mod tests {
         assert_eq!(sends, expected);
         // Every hide comes before the first WM_DESTROY, the root's first.
         let hides: Vec<WindowId> = pump
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                Ev::SetPos(id, flags) if flags & SWP_HIDEWINDOW != 0 => Some(*id),
-                _ => None,
-            })
+            .changing_flags()
+            .into_iter()
+            .filter(|(_, flags)| flags & SWP_HIDEWINDOW != 0)
+            .map(|(id, _)| id)
             .collect();
         assert_eq!(hides, chain);
+        let first_destroy = pump
+            .messages()
+            .iter()
+            .position(|&m| m == WM_DESTROY)
+            .unwrap();
+        let last_hide = pump
+            .messages()
+            .iter()
+            .rposition(|&m| m == WM_WINDOWPOSCHANGED)
+            .unwrap();
+        assert!(last_hide < first_destroy);
         assert!(chain.iter().all(|&id| !w.pool.is_live(id)));
         assert_eq!(w.thread(t).window_count, 0);
     }
@@ -5405,5 +6336,742 @@ mod tests {
         let desktop = *m.windows.desktop_by_id(DESKTOP).unwrap();
         assert_eq!(m.windows.at(desktop.window.unwrap()).child, None);
         assert_eq!(live(&m.windows), 2, "the desktop's own windows");
+    }
+
+    // --- Show and position
+    // ------------------------------------------------------------------------------
+
+    /// The flags every visibility-only position change carries.
+    const SHOW_ONLY: u32 = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
+
+    /// ShowWindow's answers and messages, as the guigeo capture's show block runs them: the former
+    /// visibility each time; WM_SHOWWINDOW and the position change only when the visibility
+    /// changes; a hide of a hidden window does nothing; SW_SHOWNORMAL sends no WM_SHOWWINDOW; a
+    /// command past SW_MAX is ERROR_INVALID_PARAMETER.
+    #[test]
+    fn show_window_answers_the_former_visibility() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_SHOW, &mut pump), Ok(false));
+        assert!(w.at(id).is_visible());
+        assert_eq!(
+            pump.sends(),
+            vec![
+                (id, WM_SHOWWINDOW),
+                (id, WM_WINDOWPOSCHANGING),
+                (id, WM_WINDOWPOSCHANGED)
+            ]
+        );
+        assert!(pump.events.contains(&Ev::Send(id, WM_SHOWWINDOW, 1, 0)));
+        assert_eq!(
+            pump.changing_flags(),
+            vec![(id, SHOW_ONLY | SWP_SHOWWINDOW)]
+        );
+        assert!(pump.events.contains(&Ev::Activate(id, Activate::Try)));
+
+        pump.events.clear();
+        pump.positions.clear();
+        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(true));
+        assert!(!w.at(id).is_visible());
+        assert!(pump.events.contains(&Ev::Send(id, WM_SHOWWINDOW, 0, 0)));
+        assert_eq!(
+            pump.changing_flags(),
+            vec![(id, SHOW_ONLY | SWP_HIDEWINDOW | SWP_NOACTIVATE)]
+        );
+
+        // Hidden already: nothing happens.
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(false));
+        assert!(pump.events.is_empty());
+
+        // SW_SHOWNORMAL: no WM_SHOWWINDOW (its documentation), the show all the same.
+        assert_eq!(w.show_window(c, id, SW_SHOWNORMAL, &mut pump), Ok(false));
+        assert!(w.at(id).is_visible());
+        assert!(!pump.messages().contains(&WM_SHOWWINDOW));
+
+        // Visible already: activated, nothing else.
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_SHOW, &mut pump), Ok(true));
+        assert_eq!(pump.events, vec![Ev::Activate(id, Activate::Try)]);
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_SHOWNA, &mut pump), Ok(true));
+        assert!(pump.events.is_empty());
+
+        for command in [-1, SW_MAX + 1, 0x100] {
+            assert_eq!(
+                w.show_window(c, id, command, &mut pump),
+                Err(Failure::InvalidParameter)
+            );
+        }
+    }
+
+    /// The service's answer: 16 for a window that was visible — WS_VISIBLE in the style's state
+    /// byte, as the capture's ShowWindow(SW_HIDE) answers — 0 for one that was not; the async
+    /// show is carried out at once; a bogus handle is ERROR_INVALID_WINDOW_HANDLE.
+    #[test]
+    fn the_show_services_answer_as_the_capture() {
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        register(
+            &mut m.classes,
+            class::Name::Text(&units("App")),
+            &wnd_class(),
+        );
+        let t = m
+            .windows
+            .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let name = units("App");
+        let mut a = args(0, WS_OVERLAPPEDWINDOW);
+        a.class_name = class::Name::Text(&name);
+        let h = m
+            .create_window(t, 0, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        let p = &mut DefaultProcedure;
+        assert_eq!(m.show_window(h, SW_SHOW, p), Ok(0));
+        assert_eq!(m.show_window(h, SW_HIDE, p), Ok(16));
+        assert_eq!(m.show_window(h, SW_SHOW, p), Ok(0));
+        assert_eq!(m.show_window_async(h, SW_HIDE, p), Ok(()));
+        assert_eq!(
+            m.query_window(h, QUERY_WINDOW_VISIBLE),
+            Ok(Query::Visible(0))
+        );
+        assert_eq!(m.show_window_async(h, SW_SHOW, p), Ok(()));
+        assert_eq!(
+            m.query_window(h, QUERY_WINDOW_VISIBLE),
+            Ok(Query::Visible(1))
+        );
+        let bogus = 0x7FFF_FFFC;
+        assert_eq!(
+            m.show_window(bogus, SW_SHOW, p),
+            Err(Failure::InvalidWindowHandle)
+        );
+        assert_eq!(
+            m.show_window_async(bogus, SW_SHOW, p),
+            Err(Failure::InvalidWindowHandle)
+        );
+    }
+
+    /// The geometry block of the capture: MoveWindow and SetWindowPos at explicit coordinates,
+    /// GetWindowRect's rectangle read back through the query; SetWindowPos changing the z-order
+    /// alone; the bogus-handle errors.
+    #[test]
+    fn move_and_set_pos_read_back_as_the_capture() {
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        register(
+            &mut m.classes,
+            class::Name::Text(&units("App")),
+            &wnd_class(),
+        );
+        let t = m
+            .windows
+            .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let name = units("App");
+        let mut a = args(0, WS_OVERLAPPEDWINDOW);
+        a.class_name = class::Name::Text(&name);
+        (a.x, a.y, a.cx, a.cy) = (0, 0, 320, 200);
+        let h = m
+            .create_window(t, 0, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        let p = &mut DefaultProcedure;
+        let rect = |m: &WindowManager| match m.query_window(h, QUERY_WINDOW_INFO).unwrap() {
+            Query::Info(info) => {
+                assert_eq!(info.size, 60);
+                let r = info.window;
+                (r.left, r.top, r.right, r.bottom)
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(rect(m), (0, 0, 320, 200));
+        assert_eq!(m.move_window(h, 100, 100, 300, 250, true, p), Ok(()));
+        assert_eq!(rect(m), (100, 100, 400, 350));
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                h,
+                HWND_TOP,
+                50,
+                60,
+                200,
+                150,
+                SWP_NOACTIVATE,
+                p
+            ),
+            Ok(())
+        );
+        assert_eq!(rect(m), (50, 60, 250, 210));
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                h,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE,
+                p
+            ),
+            Ok(())
+        );
+        assert_eq!(rect(m), (50, 60, 250, 210));
+
+        let bogus = 0x7FFF_FFFC;
+        assert_eq!(
+            m.move_window(bogus, 1, 2, 3, 4, true, p),
+            Err(Failure::InvalidWindowHandle)
+        );
+        assert_eq!(
+            m.query_window(bogus, QUERY_WINDOW_INFO),
+            Err(Failure::InvalidWindowHandle)
+        );
+        assert_eq!(
+            m.query_window(bogus, QUERY_WINDOW_VISIBLE),
+            Err(Failure::InvalidWindowHandle)
+        );
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                bogus,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE,
+                p
+            ),
+            Err(Failure::InvalidWindowHandle)
+        );
+        // A bogus insert-after handle, unless the z-order is left alone.
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                h,
+                bogus,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE,
+                p
+            ),
+            Err(Failure::InvalidWindowHandle)
+        );
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                h,
+                bogus,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER,
+                p
+            ),
+            Ok(())
+        );
+    }
+
+    /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's 4, nothing else.
+    #[test]
+    fn the_query_lengths() {
+        assert_eq!(query_length(QUERY_WINDOW_INFO), Some(60));
+        assert_eq!(query_length(QUERY_WINDOW_VISIBLE), Some(4));
+        assert_eq!(query_length(2), None);
+        assert_eq!(Query::Visible(1).bytes(), &[1, 0, 0, 0]);
+        assert_eq!(Query::Info(WindowInfo::default()).bytes().len(), 60);
+    }
+
+    /// SetWindowPos's messages and rectangles: WM_WINDOWPOSCHANGING with the asked place, a new
+    /// size's WM_NCCALCSIZE answering the client rectangle, WM_WINDOWPOSCHANGED with what happened
+    /// (SWP_NOMOVE and SWP_NOSIZE for what did not); a move alone carries the client rectangle and
+    /// the children along; a child's position is in its parent's client coordinates.
+    #[test]
+    fn set_window_pos_moves_sizes_and_reports() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.nccalc_inset = 4;
+        let top = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let mut a = args(atom, WS_CHILD);
+        (a.x, a.y, a.cx, a.cy) = (5, 6, 20, 10);
+        a.parent = Some(top);
+        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        // The create: window 10,20 100x80, client inset by 4; the child at 5,6 in the client.
+        assert_eq!(
+            w.at(top).client_rect,
+            Rect {
+                left: 14,
+                top: 24,
+                right: 106,
+                bottom: 96
+            }
+        );
+        assert_eq!(
+            w.at(child).window_rect,
+            Rect {
+                left: 19,
+                top: 30,
+                right: 39,
+                bottom: 40
+            }
+        );
+        pump.events.clear();
+
+        // A move and a size.
+        assert_eq!(
+            w.set_window_pos(
+                c,
+                top,
+                InsertAfter::Top,
+                50,
+                60,
+                200,
+                150,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+                &mut pump
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            pump.messages(),
+            vec![WM_WINDOWPOSCHANGING, WM_NCCALCSIZE, WM_WINDOWPOSCHANGED]
+        );
+        assert_eq!(
+            w.at(top).window_rect,
+            Rect {
+                left: 50,
+                top: 60,
+                right: 250,
+                bottom: 210
+            }
+        );
+        assert_eq!(
+            w.at(top).client_rect,
+            Rect {
+                left: 54,
+                top: 64,
+                right: 246,
+                bottom: 206
+            }
+        );
+        assert_eq!(
+            w.at(child).window_rect,
+            Rect {
+                left: 59,
+                top: 70,
+                right: 79,
+                bottom: 80
+            }
+        );
+        let (_, _, changed) = *pump.positions.last().unwrap();
+        assert_eq!(
+            (changed.x, changed.y, changed.cx, changed.cy),
+            (50, 60, 200, 150)
+        );
+        assert_eq!(changed.flags, SWP_NOZORDER | SWP_NOACTIVATE);
+
+        // A move alone: no WM_NCCALCSIZE, the client rectangle moves along; WM_WINDOWPOSCHANGED
+        // says the size did not change.
+        pump.events.clear();
+        pump.positions.clear();
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        assert_eq!(
+            w.set_window_pos(c, top, InsertAfter::Top, 0, 0, 200, 150, flags, &mut pump),
+            Ok(())
+        );
+        assert_eq!(
+            pump.messages(),
+            vec![WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED]
+        );
+        assert_eq!(
+            w.at(top).client_rect,
+            Rect {
+                left: 4,
+                top: 4,
+                right: 196,
+                bottom: 146
+            }
+        );
+        assert_eq!(
+            w.at(child).window_rect,
+            Rect {
+                left: 9,
+                top: 10,
+                right: 29,
+                bottom: 20
+            }
+        );
+        assert_eq!(pump.positions[1].2.flags, flags | SWP_NOSIZE);
+
+        // A child's position is in its parent's client coordinates, and is reported so.
+        pump.positions.clear();
+        assert_eq!(
+            w.set_window_pos(
+                c,
+                child,
+                InsertAfter::Top,
+                1,
+                2,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER,
+                &mut pump
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            w.at(child).window_rect,
+            Rect {
+                left: 5,
+                top: 6,
+                right: 25,
+                bottom: 16
+            }
+        );
+        let (_, _, changed) = pump.positions[1];
+        assert_eq!((changed.x, changed.y), (1, 2));
+
+        // A negative size is taken as zero.
+        assert_eq!(
+            w.set_window_pos(
+                c,
+                child,
+                InsertAfter::Top,
+                1,
+                2,
+                -5,
+                -5,
+                SWP_NOZORDER,
+                &mut pump
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            w.at(child).window_rect,
+            Rect {
+                left: 5,
+                top: 6,
+                right: 5,
+                bottom: 6
+            }
+        );
+    }
+
+    /// The handler of WM_WINDOWPOSCHANGING may change the place; SWP_NOSENDCHANGING skips it; a
+    /// show or a hide neither moves nor sizes the window (the SetWindowPos documentation).
+    #[test]
+    fn set_window_pos_takes_the_handlers_changes() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        pump.changing_answer = Some(WindowPos {
+            hwnd: w.at(id).handle,
+            insert_after: HWND_TOP,
+            x: 7,
+            y: 8,
+            cx: 9,
+            cy: 10,
+            flags: SWP_NOZORDER | SWP_NOACTIVATE,
+        });
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        assert_eq!(
+            w.set_window_pos(c, id, InsertAfter::Top, 1, 1, 1, 1, flags, &mut pump),
+            Ok(())
+        );
+        assert_eq!(
+            w.at(id).window_rect,
+            Rect {
+                left: 7,
+                top: 8,
+                right: 16,
+                bottom: 18
+            }
+        );
+        pump.positions.clear();
+        assert_eq!(
+            w.set_window_pos(
+                c,
+                id,
+                InsertAfter::Top,
+                1,
+                1,
+                1,
+                1,
+                flags | SWP_NOSENDCHANGING,
+                &mut pump
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            w.at(id).window_rect,
+            Rect {
+                left: 1,
+                top: 1,
+                right: 2,
+                bottom: 2
+            }
+        );
+        assert_eq!(pump.positions.len(), 1, "WM_WINDOWPOSCHANGED alone");
+        pump.changing_answer = None;
+        assert_eq!(
+            w.set_window_pos(
+                c,
+                id,
+                InsertAfter::Top,
+                30,
+                30,
+                30,
+                30,
+                flags | SWP_SHOWWINDOW,
+                &mut pump
+            ),
+            Ok(())
+        );
+        assert!(w.at(id).is_visible());
+        assert_eq!(
+            w.at(id).window_rect,
+            Rect {
+                left: 1,
+                top: 1,
+                right: 2,
+                bottom: 2
+            }
+        );
+    }
+
+    /// The z-order: HWND_TOP and HWND_BOTTOM, after a sibling; the topmost pile heads the list —
+    /// HWND_TOPMOST joins it, HWND_NOTOPMOST and HWND_BOTTOM leave it, an ordinary window's
+    /// HWND_TOP or a place after a topmost window lands below it; a window to go after that is no
+    /// sibling changes nothing; a child has no topmost status.
+    #[test]
+    fn the_z_order_keeps_the_topmost_pile_first() {
+        let (w, c, t, atom, desk, _) = setup();
+        let mut pump = Rec::new(t);
+        // Created in order, each on top: the list is d c b a.
+        let [a, b, cc, d] = [0; 4].map(|_| create(w, c, t, atom, WS_POPUP, &mut pump).unwrap());
+        let order = |w: &Windows| {
+            let mut list = Vec::new();
+            let mut cur = w.at(desk).child;
+            while let Some(x) = cur {
+                list.push(x);
+                cur = w.at(x).next;
+            }
+            list
+        };
+        assert_eq!(order(w), vec![d, cc, b, a]);
+        let pos = |w: &mut Windows, c: &mut class::Registry, id, after, pump: &mut Rec| {
+            w.set_window_pos(
+                c,
+                id,
+                after,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                pump,
+            )
+            .unwrap()
+        };
+        pos(w, c, a, InsertAfter::Top, &mut pump);
+        assert_eq!(order(w), vec![a, d, cc, b]);
+        pos(w, c, a, InsertAfter::Bottom, &mut pump);
+        assert_eq!(order(w), vec![d, cc, b, a]);
+        pos(w, c, a, InsertAfter::After(d), &mut pump);
+        assert_eq!(order(w), vec![d, a, cc, b]);
+
+        // b joins the topmost pile; an ordinary window's HWND_TOP stays below it.
+        pos(w, c, b, InsertAfter::TopMost, &mut pump);
+        assert_eq!(order(w), vec![b, d, a, cc]);
+        assert_ne!(w.at(b).ex_style & WS_EX_TOPMOST, 0);
+        pos(w, c, cc, InsertAfter::Top, &mut pump);
+        assert_eq!(order(w), vec![b, cc, d, a]);
+        pos(w, c, d, InsertAfter::After(b), &mut pump);
+        assert_eq!(order(w), vec![b, d, cc, a], "after the topmost pile");
+        // HWND_NOTOPMOST: no effect on an ordinary window; b leaves the pile, on top of the rest.
+        pos(w, c, a, InsertAfter::NoTopMost, &mut pump);
+        assert_eq!(order(w), vec![b, d, cc, a]);
+        pos(w, c, cc, InsertAfter::TopMost, &mut pump);
+        assert_eq!(order(w), vec![cc, b, d, a]);
+        pos(w, c, cc, InsertAfter::NoTopMost, &mut pump);
+        assert_eq!(order(w), vec![b, cc, d, a]);
+        assert_eq!(w.at(cc).ex_style & WS_EX_TOPMOST, 0);
+        // A topmost window sent to the bottom leaves the pile.
+        pos(w, c, b, InsertAfter::Bottom, &mut pump);
+        assert_eq!(order(w), vec![cc, d, a, b]);
+        assert_eq!(w.at(b).ex_style & WS_EX_TOPMOST, 0);
+        // Not a sibling, or the window itself: nothing changes.
+        let mut ca = args(atom, WS_CHILD);
+        ca.parent = Some(a);
+        let kid = w.create_window_ex(c, t, &ca, &mut pump).unwrap();
+        pos(w, c, d, InsertAfter::After(kid), &mut pump);
+        pos(w, c, d, InsertAfter::After(d), &mut pump);
+        assert_eq!(order(w), vec![cc, d, a, b]);
+        // A child: HWND_TOPMOST is HWND_TOP, without the topmost bit.
+        let kid2 = w.create_window_ex(c, t, &ca, &mut pump).unwrap();
+        assert_eq!(w.at(a).child, Some(kid), "children stack at the bottom");
+        pos(w, c, kid2, InsertAfter::TopMost, &mut pump);
+        assert_eq!(w.at(a).child, Some(kid2));
+        assert_eq!(w.at(kid2).ex_style & WS_EX_TOPMOST, 0);
+        // The WINDOWPOS carries the insert-after handle.
+        let (_, _, last) = *pump.positions.last().unwrap();
+        assert_eq!(last.insert_after, HWND_TOPMOST);
+    }
+
+    /// The activation: a top-level window shown or moved without SWP_NOACTIVATE is activated, a
+    /// child never; hiding the thread's active window activates the next.
+    #[test]
+    fn the_activation_follows_the_flags() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let top = create(w, c, t, atom, WS_POPUP | WS_VISIBLE, &mut pump).unwrap();
+        pump.events.clear();
+        w.set_window_pos(c, top, InsertAfter::Top, 1, 1, 0, 0, SWP_NOSIZE, &mut pump)
+            .unwrap();
+        assert!(pump.events.contains(&Ev::Activate(top, Activate::Try)));
+        pump.events.clear();
+        w.set_window_pos(
+            c,
+            top,
+            InsertAfter::Top,
+            2,
+            2,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE,
+            &mut pump,
+        )
+        .unwrap();
+        assert!(!pump.events.iter().any(|e| matches!(e, Ev::Activate(..))));
+
+        let mut a = args(atom, WS_CHILD | WS_VISIBLE);
+        a.parent = Some(top);
+        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        assert!(!pump
+            .events
+            .iter()
+            .any(|e| matches!(e, Ev::Activate(x, _) if *x == child)));
+
+        w.thread_mut(t).active = Some(top);
+        pump.events.clear();
+        assert_eq!(w.show_window(c, top, SW_HIDE, &mut pump), Ok(true));
+        assert!(pump.events.contains(&Ev::Activate(top, Activate::Skip)));
+    }
+
+    /// The minimizing and maximizing commands go through the min/max seam first, and so do the
+    /// restoring ones of a minimized window; a tiled window's first show sends the WM_SIZE and
+    /// WM_MOVE its creation deferred, once.
+    #[test]
+    fn min_max_and_the_deferred_size() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        assert!(w.at(id).flags.sendsizemove);
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_SHOWMAXIMIZED, &mut pump), Ok(false));
+        assert_eq!(pump.events[0], Ev::MinMax(id, SW_SHOWMAXIMIZED as u32));
+        let messages = pump.messages();
+        assert_eq!(&messages[messages.len() - 2..], &[WM_SIZE, WM_MOVE]);
+        assert!(!w.at(id).flags.sendsizemove);
+        // The client at 10,20 (the create's position): WM_MOVE carries it.
+        assert!(pump
+            .events
+            .contains(&Ev::Send(id, WM_MOVE, 0, makelong(10, 20) as LParam)));
+        pump.events.clear();
+        assert_eq!(w.show_window(c, id, SW_RESTORE, &mut pump), Ok(true));
+        assert!(pump.events.iter().all(|e| !matches!(e, Ev::MinMax(..))));
+        assert!(!pump.messages().contains(&WM_SIZE), "sent once");
+        w.at_mut(id).style |= WS_MINIMIZE;
+        pump.events.clear();
+        w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+        assert_eq!(pump.events[0], Ev::MinMax(id, SW_RESTORE as u32));
+    }
+
+    /// IsWindowVisible: the window and every window above it; the desktop window is visible, the
+    /// message window is not, so a message-only window never is.
+    #[test]
+    fn visibility_runs_up_to_the_desktop() {
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        register(
+            &mut m.classes,
+            class::Name::Text(&units("App")),
+            &wnd_class(),
+        );
+        let t = m
+            .windows
+            .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let name = units("App");
+        let make = |m: &mut WindowManager, parent, style| {
+            let mut a = args(0, style);
+            a.class_name = class::Name::Text(&name);
+            m.create_window(t, parent, &mut a, &mut DefaultProcedure)
+                .unwrap()
+        };
+        let top = make(m, 0, WS_OVERLAPPED | WS_VISIBLE);
+        let child = make(m, top, WS_CHILD | WS_VISIBLE);
+        let only = make(m, HWND_MESSAGE, WS_CHILD | WS_VISIBLE);
+        let visible = |m: &WindowManager, h| m.query_window(h, QUERY_WINDOW_VISIBLE).unwrap();
+        assert_eq!(visible(m, top), Query::Visible(1));
+        assert_eq!(visible(m, child), Query::Visible(1));
+        assert_eq!(visible(m, only), Query::Visible(0), "a message-only window");
+        m.show_window(top, SW_HIDE, &mut DefaultProcedure).unwrap();
+        assert_eq!(visible(m, child), Query::Visible(0), "its parent is hidden");
+        let desktop = m.windows.desktop_by_id(DESKTOP).unwrap().window.unwrap();
+        assert!(m.windows.is_window_visible(desktop));
+    }
+
+    /// WINDOWINFO: the rectangles, the styles, the active window's status, the borders, the class
+    /// atom and the creator's version.
+    #[test]
+    fn the_window_info() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.nccalc_inset = 3;
+        let id = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        w.thread_mut(t).active = Some(id);
+        let info = w.window_info(c, id);
+        assert_eq!(
+            info.window,
+            rtl::gdi::Rect {
+                left: 10,
+                top: 20,
+                right: 110,
+                bottom: 100
+            }
+        );
+        assert_eq!(
+            info.client,
+            rtl::gdi::Rect {
+                left: 13,
+                top: 23,
+                right: 107,
+                bottom: 97
+            }
+        );
+        assert_eq!(info.style, w.at(id).style);
+        assert_eq!(info.ex_style, w.at(id).ex_style);
+        assert_eq!(info.status, rtl::window::WS_ACTIVECAPTION);
+        assert_eq!((info.cx_window_borders, info.cy_window_borders), (3, 3));
+        assert_eq!(info.atom_window_type, atom);
+        assert_eq!(info.creator_version, 0x0400);
+        w.thread_mut(t).active = None;
+        assert_eq!(w.window_info(c, id).status, 0);
     }
 }
