@@ -1,0 +1,17 @@
+# gditext: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "gditext - a screen DC of gdi32's own, no window: CreateDCA of the DISPLAY driver, TextOutA in the default colors, SetTextColor/SetBkColor previous values, ExtTextOutA with ETO_OPAQUE over its rectangle, DeleteDC. tests/core/test_textout.py runs it under FiSH, in the graphics mode, and dumps the screen."
+kind = "sectioned"
+gate = true
+screenshots = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+paint = [
+    "gdi32.CreateDCA",
+    "gdi32.TextOutA",
+    "gdi32.SetTextColor",
+    "gdi32.SetBkColor",
+    "gdi32.ExtTextOutA",
+    "gdi32.DeleteDC",
+]

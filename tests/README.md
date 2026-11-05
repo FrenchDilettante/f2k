@@ -11,11 +11,12 @@ The tests are grouped by the DLL they exercise, one directory per group:
 tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
-│               # test_cmd.py), and the fixtures exit0, ret0, hello and bare
+│               # test_cmd.py, test_framebuffer.py, test_textout.py), and the fixtures exit0,
+│               # ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
-├── gdi32/      # guidc
+├── gdi32/      # guidc, gditext
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,

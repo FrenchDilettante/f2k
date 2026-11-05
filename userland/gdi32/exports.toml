@@ -1,9 +1,325 @@
 # GDI32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# None is implemented yet: each record is catalogued from GDI32.dll 5.0.2195.6660's export table
-# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
-# prototype and implementation.
+# F2K's gdi32 exports the screen DC's surface: CreateDC of the display and DeleteDC, the stock
+# objects and their selection, the text and background colors and the background mode, text
+# drawn with the one built-in font and its metrics, and single pixels. Its own code runs over
+# ntdll and kernel32 as Windows 2000's gdi32 imports them, and enters the kernel itself, as
+# Windows 2000's does: through win32k's services (`impl = { syscall = "<the kernel's typed
+# handler>" }`, `internal = true`: its own calls, never exported; see userland/user32/exports.toml
+# for the stubs' shape). Their argument lists are F2K's own (only gdi32 calls them; the kernel's
+# handlers in kernel/src/win32k/dc.rs describe them). The rest of the records are catalogued from
+# GDI32.dll 5.0.2195.6660's export table (scripts/catalogue_exports.py): their name and ordinal.
+# Implementing one gives it its group, prototype and implementation.
+
+[[group]]
+key = "dc"
+title = "device contexts"
+
+[[group]]
+key = "objects"
+title = "stock objects"
+
+[[group]]
+key = "attributes"
+title = "colors and modes"
+
+[[group]]
+key = "text"
+title = "text"
+
+[[group]]
+key = "pixels"
+title = "pixels"
+
+# --- device contexts ------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateDCA"
+group = "dc"
+args = ["strA? lpszDriver", "strA? lpszDevice", "strA? lpszOutput", "ptr lpInitData"]
+impl = { native = "CreateDCA" }
+ordinal = 45
+fails = "NULL"
+note = "the names converted to their wide forms, then CreateDCW's"
+
+[[export]]
+name = "CreateDCW"
+group = "dc"
+args = ["strW? lpszDriver", "strW? lpszDevice", "strW? lpszOutput", "ptr lpInitData"]
+impl = { native = "CreateDCW" }
+ordinal = 46
+fails = "NULL"
+note = "the display's screen DC alone (the DISPLAY driver, or the device \\\\.\\DISPLAY1); another driver is a stub"
+
+[[export]]
+name = "DeleteDC"
+group = "dc"
+args = ["handle hdc"]
+impl = { native = "DeleteDC" }
+ordinal = 82
+fails = "FALSE"
+
+# win32k's services behind them: gdi32's internal calls.
+
+[[export]]
+name = "NtGdiOpenDCW"
+group = "dc"
+args = ["ptr Device", "ptr<u32> Dc"]
+impl = { syscall = "crate::win32k::dc::open_dc" }
+internal = true
+
+[[export]]
+name = "NtGdiDeleteObjectApp"
+group = "dc"
+args = ["handle Object"]
+impl = { syscall = "crate::win32k::dc::delete_object" }
+internal = true
+
+# --- stock objects --------------------------------------------------------------------------------
+
+[[export]]
+name = "DeleteObject"
+group = "objects"
+args = ["handle hObject"]
+impl = { native = "DeleteObject" }
+ordinal = 85
+fails = "FALSE"
+note = "a stock object is never deleted: the call succeeds"
+
+[[export]]
+name = "GetStockObject"
+group = "objects"
+args = ["i32 fnObject"]
+impl = { native = "GetStockObject" }
+ordinal = 360
+fails = "NULL"
+note = "a constant handle per stock object; there are no other objects yet"
+
+[[export]]
+name = "SelectObject"
+group = "objects"
+args = ["handle hdc", "handle hgdiobj"]
+impl = { native = "SelectObject" }
+ordinal = 463
+fails = "NULL"
+note = "a stock brush, pen or font, by the kind its handle carries"
+
+[[export]]
+name = "NtGdiGetStockObject"
+group = "objects"
+args = ["u32 Index", "ptr<u32> Object"]
+impl = { syscall = "crate::win32k::dc::get_stock_object" }
+internal = true
+
+[[export]]
+name = "NtGdiSelectBrush"
+group = "objects"
+args = ["handle Dc", "handle Object", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::dc::select_brush" }
+internal = true
+
+[[export]]
+name = "NtGdiSelectFont"
+group = "objects"
+args = ["handle Dc", "handle Object", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::dc::select_font" }
+internal = true
+
+[[export]]
+name = "NtGdiSelectPen"
+group = "objects"
+args = ["handle Dc", "handle Object", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::dc::select_pen" }
+internal = true
+
+# --- colors and modes -----------------------------------------------------------------------------
+
+[[export]]
+name = "GetBkColor"
+group = "attributes"
+args = ["handle hdc"]
+impl = { native = "GetBkColor" }
+ordinal = 272
+fails = "-1"
+
+[[export]]
+name = "GetTextColor"
+group = "attributes"
+args = ["handle hdc"]
+impl = { native = "GetTextColor" }
+ordinal = 370
+fails = "-1"
+
+[[export]]
+name = "SetBkColor"
+group = "attributes"
+args = ["handle hdc", "u32 crColor"]
+impl = { native = "SetBkColor" }
+ordinal = 469
+fails = "-1"
+
+[[export]]
+name = "SetBkMode"
+group = "attributes"
+args = ["handle hdc", "i32 iBkMode"]
+impl = { native = "SetBkMode" }
+ordinal = 470
+fails = "0"
+
+[[export]]
+name = "SetTextColor"
+group = "attributes"
+args = ["handle hdc", "u32 crColor"]
+impl = { native = "SetTextColor" }
+ordinal = 507
+fails = "-1"
+
+[[export]]
+name = "NtGdiGetAndSetDCDword"
+group = "attributes"
+args = ["handle Dc", "u32 Index", "u32 Value", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::dc::get_and_set_dc_dword" }
+internal = true
+
+[[export]]
+name = "NtGdiGetDCDword"
+group = "attributes"
+args = ["handle Dc", "u32 Index", "ptr<u32> Value"]
+impl = { syscall = "crate::win32k::dc::get_dc_dword" }
+internal = true
+
+# --- text -----------------------------------------------------------------------------------------
+
+[[export]]
+name = "ExtTextOutA"
+group = "text"
+args = ["handle hdc", "i32 X", "i32 Y", "u32 fuOptions", "ptr lprc", "ptr lpString", "u32 cbCount", "ptr lpDx"]
+impl = { native = "ExtTextOutA" }
+ordinal = 163
+fails = "FALSE"
+note = "the string converted to its wide form, then ExtTextOutW's"
+
+[[export]]
+name = "ExtTextOutW"
+group = "text"
+args = ["handle hdc", "i32 X", "i32 Y", "u32 fuOptions", "ptr lprc", "ptr lpString", "u32 cbCount", "ptr lpDx"]
+impl = { native = "ExtTextOutW" }
+ordinal = 164
+fails = "FALSE"
+note = "the built-in 8x16 font whatever font is selected; ETO_OPAQUE and ETO_CLIPPED (kernel/src/win32k/dc.rs)"
+
+[[export]]
+name = "GetTextExtentPoint32A"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 c", "ptr lpSize"]
+impl = { native = "GetTextExtentPoint32A" }
+ordinal = 375
+fails = "FALSE"
+
+[[export]]
+name = "GetTextExtentPoint32W"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 c", "ptr lpSize"]
+impl = { native = "GetTextExtentPoint32W" }
+ordinal = 376
+fails = "FALSE"
+note = "the font's cells side by side: 8 pixels a character, 16 high"
+
+[[export]]
+name = "GetTextMetricsA"
+group = "text"
+args = ["handle hdc", "ptr lptm"]
+impl = { native = "GetTextMetricsA" }
+ordinal = 383
+fails = "FALSE"
+
+[[export]]
+name = "GetTextMetricsW"
+group = "text"
+args = ["handle hdc", "ptr lptm"]
+impl = { native = "GetTextMetricsW" }
+ordinal = 384
+fails = "FALSE"
+note = "the font's cell: height 16, average width 8, the rest zero"
+
+[[export]]
+name = "TextOutA"
+group = "text"
+args = ["handle hdc", "i32 nXStart", "i32 nYStart", "ptr lpString", "i32 cbString"]
+impl = { native = "TextOutA" }
+ordinal = 525
+fails = "FALSE"
+
+[[export]]
+name = "TextOutW"
+group = "text"
+args = ["handle hdc", "i32 nXStart", "i32 nYStart", "ptr lpString", "i32 cbString"]
+impl = { native = "TextOutW" }
+ordinal = 526
+fails = "FALSE"
+note = "ExtTextOutW's, without options"
+
+[[export]]
+name = "NtGdiEngTextOut"
+group = "text"
+args = ["handle Dc", "i32 X", "i32 Y", "u32 Options", "ptr Rect", "ptr String", "u32 Count", "ptr Dx"]
+impl = { syscall = "crate::win32k::dc::eng_text_out" }
+internal = true
+
+[[export]]
+name = "NtGdiExtTextOutW"
+group = "text"
+args = ["handle Dc", "i32 X", "i32 Y", "u32 Options", "ptr Rect", "ptr String", "u32 Count", "ptr Dx"]
+impl = { syscall = "crate::win32k::dc::ext_text_out_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetTextExtent"
+group = "text"
+args = ["handle Dc", "ptr String", "u32 Count", "ptr Size"]
+impl = { syscall = "crate::win32k::dc::get_text_extent" }
+internal = true
+
+[[export]]
+name = "NtGdiGetTextMetricsW"
+group = "text"
+args = ["handle Dc", "ptr Metric"]
+impl = { syscall = "crate::win32k::dc::get_text_metrics_w" }
+internal = true
+
+# --- pixels ---------------------------------------------------------------------------------------
+
+[[export]]
+name = "GetPixel"
+group = "pixels"
+args = ["handle hdc", "i32 nXPos", "i32 nYPos"]
+impl = { native = "GetPixel" }
+ordinal = 351
+fails = "-1"
+
+[[export]]
+name = "SetPixel"
+group = "pixels"
+args = ["handle hdc", "i32 X", "i32 Y", "u32 crColor"]
+impl = { native = "SetPixel" }
+ordinal = 496
+fails = "-1"
+note = "the color set: the one asked for, the framebuffer being 32 bpp"
+
+[[export]]
+name = "NtGdiGetPixel"
+group = "pixels"
+args = ["handle Dc", "i32 X", "i32 Y", "ptr<u32> Color"]
+impl = { syscall = "crate::win32k::dc::get_pixel" }
+internal = true
+
+[[export]]
+name = "NtGdiSetPixel"
+group = "pixels"
+args = ["handle Dc", "i32 X", "i32 Y", "u32 Color", "ptr<u32> Set"]
+impl = { syscall = "crate::win32k::dc::set_pixel" }
+internal = true
 
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 
@@ -184,14 +500,6 @@ name = "CreateCompatibleDC"
 ordinal = 44
 
 [[export]]
-name = "CreateDCA"
-ordinal = 45
-
-[[export]]
-name = "CreateDCW"
-ordinal = 46
-
-[[export]]
 name = "CreateDIBPatternBrush"
 ordinal = 47
 
@@ -332,20 +640,12 @@ name = "DeleteColorSpace"
 ordinal = 81
 
 [[export]]
-name = "DeleteDC"
-ordinal = 82
-
-[[export]]
 name = "DeleteEnhMetaFile"
 ordinal = 83
 
 [[export]]
 name = "DeleteMetaFile"
 ordinal = 84
-
-[[export]]
-name = "DeleteObject"
-ordinal = 85
 
 [[export]]
 name = "DescribePixelFormat"
@@ -654,14 +954,6 @@ ordinal = 161
 [[export]]
 name = "ExtSelectClipRgn"
 ordinal = 162
-
-[[export]]
-name = "ExtTextOutA"
-ordinal = 163
-
-[[export]]
-name = "ExtTextOutW"
-ordinal = 164
 
 [[export]]
 name = "FONTOBJ_cGetAllGlyphHandles"
@@ -1092,10 +1384,6 @@ name = "GetBitmapDimensionEx"
 ordinal = 271
 
 [[export]]
-name = "GetBkColor"
-ordinal = 272
-
-[[export]]
 name = "GetBkMode"
 ordinal = 273
 
@@ -1408,10 +1696,6 @@ name = "GetPath"
 ordinal = 350
 
 [[export]]
-name = "GetPixel"
-ordinal = 351
-
-[[export]]
 name = "GetPixelFormat"
 ordinal = 352
 
@@ -1442,10 +1726,6 @@ ordinal = 358
 [[export]]
 name = "GetRgnBox"
 ordinal = 359
-
-[[export]]
-name = "GetStockObject"
-ordinal = 360
 
 [[export]]
 name = "GetStretchBltMode"
@@ -1484,10 +1764,6 @@ name = "GetTextCharsetInfo"
 ordinal = 369
 
 [[export]]
-name = "GetTextColor"
-ordinal = 370
-
-[[export]]
 name = "GetTextExtentExPointA"
 ordinal = 371
 
@@ -1502,14 +1778,6 @@ ordinal = 373
 [[export]]
 name = "GetTextExtentExPointWPri"
 ordinal = 374
-
-[[export]]
-name = "GetTextExtentPoint32A"
-ordinal = 375
-
-[[export]]
-name = "GetTextExtentPoint32W"
-ordinal = 376
 
 [[export]]
 name = "GetTextExtentPointA"
@@ -1534,14 +1802,6 @@ ordinal = 381
 [[export]]
 name = "GetTextFaceW"
 ordinal = 382
-
-[[export]]
-name = "GetTextMetricsA"
-ordinal = 383
-
-[[export]]
-name = "GetTextMetricsW"
-ordinal = 384
 
 [[export]]
 name = "GetTransform"
@@ -1856,10 +2116,6 @@ name = "SelectFontLocal"
 ordinal = 462
 
 [[export]]
-name = "SelectObject"
-ordinal = 463
-
-[[export]]
 name = "SelectPalette"
 ordinal = 464
 
@@ -1878,14 +2134,6 @@ ordinal = 467
 [[export]]
 name = "SetBitmapDimensionEx"
 ordinal = 468
-
-[[export]]
-name = "SetBkColor"
-ordinal = 469
-
-[[export]]
-name = "SetBkMode"
-ordinal = 470
 
 [[export]]
 name = "SetBoundsRect"
@@ -1988,10 +2236,6 @@ name = "SetPaletteEntries"
 ordinal = 495
 
 [[export]]
-name = "SetPixel"
-ordinal = 496
-
-[[export]]
 name = "SetPixelFormat"
 ordinal = 497
 
@@ -2030,10 +2274,6 @@ ordinal = 505
 [[export]]
 name = "SetTextCharacterExtra"
 ordinal = 506
-
-[[export]]
-name = "SetTextColor"
-ordinal = 507
 
 [[export]]
 name = "SetTextJustification"
@@ -2102,14 +2342,6 @@ ordinal = 523
 [[export]]
 name = "SwapBuffers"
 ordinal = 524
-
-[[export]]
-name = "TextOutA"
-ordinal = 525
-
-[[export]]
-name = "TextOutW"
-ordinal = 526
 
 [[export]]
 name = "TranslateCharsetInfo"

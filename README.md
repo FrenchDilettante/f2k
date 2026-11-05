@@ -5,13 +5,14 @@ A Windows 2000-compatible operating system written in Rust.
 ## What runs today
 
 F2K boots on a PC (QEMU or VirtualBox) from a FAT32 disk and runs Win32 console programs built for Windows 2000, unmodified.
-Five of Windows 2000's system DLLs are F2K's own code:
+Six of Windows 2000's system DLLs are F2K's own code:
 
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
 - **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, and starting child processes (`_spawn`, `_cwait`).
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
+- **gdi32**: screen device contexts drawn on the VBE framebuffer: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
 
@@ -112,7 +113,7 @@ make run-tests
 Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's header documents its records): name, API group, prototype and implementation.
 `tools/exportgen` reads the specs and generates what derives from them: the kernel's system-call tables, the `.def` files, and the system-call stubs.
 
-As on Windows 2000, only three DLLs call into the kernel: ntdll for the NT system calls, and user32 and gdi32 for the window manager's (gdi32 has none yet).
+As on Windows 2000, only three DLLs call into the kernel: ntdll for the NT system calls, and user32 and gdi32 for the window manager's and GDI's.
 Both tables use Windows 2000's own call numbers (`userland/ntdll/w2k-services.txt`, `userland/user32/w2k-services.txt`).
 Every other DLL is user-mode code on top of them, and the kernel has no Win32 layer.
 
@@ -235,6 +236,7 @@ f2k/
 │   ├── core/             # The kernel's own boots and the smoke fixtures
 │   ├── kernel32/         # The kernel32 fixtures
 │   ├── user32/           # The user32 fixtures (hellogui, winsta)
+│   ├── gdi32/            # The gdi32 fixtures (guidc, gditext)
 │   ├── advapi32/         # The advapi32 fixture (registry)
 │   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)
 │   ├── cmd/              # The script fixtures, batch files run by cmd /c
@@ -243,7 +245,7 @@ f2k/
 │
 ├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl (the shared runtime),
-│                     # ntdll, kernel32, msvcrt, advapi32, user32; each DLL's export spec in
+│                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32; each DLL's export spec in
 │                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone;
 │                     # F2K's own programs (pwd, ps, cmd), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
@@ -266,8 +268,9 @@ f2k/
         ├── process/      # Process lifetime
         ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary
-        ├── win32k/       # Window stations and desktops, and the display-mode service
-                          # behind the VBE framebuffer: win32k's services, user32's calls
+        ├── win32k/       # Window stations and desktops, the display-mode service behind
+                          # the VBE framebuffer, and the screen DCs and their text:
+                          # win32k's services, user32's and gdi32's calls
         ├── c_lib.rs      # C library stubs (linker support)
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         └── main.rs       # Kernel binary: links the ELF; panic handler

@@ -75,8 +75,9 @@ pub static KERNEL32: SystemDll = SystemDll {
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/kernel32.dll")),
 };
 
-/// msvcrt, advapi32 and user32, as the userland build left them, at Windows 2000's bases for them:
-/// the tests check them against their specs and the corpus (ntdll loads them from the volume).
+/// msvcrt, advapi32, user32 and gdi32, as the userland build left them, at Windows 2000's bases for
+/// them: the tests check them against their specs and the corpus (ntdll loads them from the
+/// volume).
 #[cfg(test)]
 pub static MSVCRT: SystemDll = SystemDll {
     file_name: "msvcrt.dll",
@@ -94,6 +95,12 @@ pub static USER32: SystemDll = SystemDll {
     file_name: "user32.dll",
     base: 0x77E1_0000,
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/user32.dll")),
+};
+#[cfg(test)]
+pub static GDI32: SystemDll = SystemDll {
+    file_name: "gdi32.dll",
+    base: 0x77F4_0000,
+    file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/gdi32.dll")),
 };
 
 /// A DLL file's SizeOfImage, at build time (the system regions reserve the image's extent): the
@@ -146,7 +153,7 @@ const FORWARD_DEPTH: u32 = 4;
 #[cfg(not(test))]
 static SYSTEM_DLLS: [&SystemDll; 1] = [&NTDLL];
 #[cfg(test)]
-static SYSTEM_DLLS: [&SystemDll; 5] = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32];
+static SYSTEM_DLLS: [&SystemDll; 6] = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32];
 
 /// The DLL `name` (as an import descriptor or a forwarder spells it) designates.
 fn system_dll(name: &str) -> Option<&'static SystemDll> {
@@ -420,8 +427,8 @@ mod tests {
         );
     }
 
-    /// Exports resolve by exact name, kernel32's forwarder lands in ntdll, unknown names and
-    /// modules do not resolve, and the kernel's internal entry point exists (in ntdll only:
+    /// Exports resolve by exact name (gdi32's among them), kernel32's forwarder lands in ntdll,
+    /// unknown names and modules do not resolve, and the kernel's internal entry point exists (in ntdll only:
     /// kernel32's surface carries Windows 2000's names alone).
     #[test]
     fn exports_resolve_through_the_module_table() {
@@ -434,7 +441,12 @@ mod tests {
             resolve("KERNEL32.dll", "exitprocess"),
             Err(Unresolved::NoEntry)
         );
-        assert_eq!(resolve("GDI32.dll", "TextOutA"), Err(Unresolved::NoModule));
+        assert_eq!(
+            resolve("SHELL32.dll", "ShellExecuteA"),
+            Err(Unresolved::NoModule)
+        );
+        let text_out = resolve("GDI32.dll", "TextOutA").unwrap();
+        assert!((GDI32.base..GDI32.base + GDI32.image().size_of_image()).contains(&text_out));
         let unwind = resolve("KERNEL32.dll", "RtlUnwind").unwrap();
         assert_eq!(resolve("ntdll.dll", "RtlUnwind"), Ok(unwind));
         assert!(
@@ -915,6 +927,11 @@ mod tests {
         include!(concat!(env!("OUT_DIR"), "/user32_stubs.rs"));
         include!(concat!(env!("OUT_DIR"), "/user32_data.rs"));
     }
+    mod gdi32 {
+        include!(concat!(env!("OUT_DIR"), "/gdi32_exports.rs"));
+        include!(concat!(env!("OUT_DIR"), "/gdi32_stubs.rs"));
+        include!(concat!(env!("OUT_DIR"), "/gdi32_data.rs"));
+    }
 
     /// A system DLL ntdll loads on a program's demand, with its spec's tables: the exports it
     /// implements, its stubs, its variables.
@@ -925,8 +942,8 @@ mod tests {
         data: &'static [&'static str],
     }
 
-    /// msvcrt, advapi32 and user32.
-    fn loaded_dlls() -> [Loaded; 3] {
+    /// msvcrt, advapi32, user32 and gdi32.
+    fn loaded_dlls() -> [Loaded; 4] {
         [
             Loaded {
                 dll: &MSVCRT,
@@ -946,6 +963,12 @@ mod tests {
                 stubs: &user32::STUB_EXPORTS,
                 data: &user32::DATA_EXPORTS,
             },
+            Loaded {
+                dll: &GDI32,
+                exports: &gdi32::DLL_EXPORTS,
+                stubs: &gdi32::STUB_EXPORTS,
+                data: &gdi32::DATA_EXPORTS,
+            },
         ]
     }
 
@@ -956,13 +979,14 @@ mod tests {
             .find(|s| (s.virtual_address..s.virtual_address + image.extent(s)).contains(&rva))
     }
 
-    /// msvcrt, advapi32 and user32: i386 DLL images at Windows 2000's bases for them (images are
-    /// never relocated), clear of each other, of ntdll and kernel32, and of kernel space; each has
-    /// an entry point in its code, which ntdll's loader calls, and imports from kernel32 and ntdll
-    /// at most (scripts/compat.py holds each import against Windows 2000's table).
+    /// msvcrt, advapi32, user32 and gdi32: i386 DLL images at Windows 2000's bases for them (images
+    /// are never relocated), clear of each other, of ntdll and kernel32, and of kernel space;
+    /// each has an entry point in its code, which ntdll's loader calls, and imports from
+    /// kernel32 and ntdll at most (scripts/compat.py holds each import against Windows 2000's
+    /// table).
     #[test]
     fn the_loaded_dlls_are_images_at_their_bases() {
-        let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32]
+        let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32]
             .into_iter()
             .map(|dll| (dll.base, dll.base + dll.image().size_of_image()))
             .collect();
@@ -1036,7 +1060,11 @@ mod tests {
                 "_iob"
             ]
         );
-        assert!(advapi32::DATA_EXPORTS.is_empty() && user32::DATA_EXPORTS.is_empty());
+        assert!(
+            advapi32::DATA_EXPORTS.is_empty()
+                && user32::DATA_EXPORTS.is_empty()
+                && gdi32::DATA_EXPORTS.is_empty()
+        );
     }
 
     /// The variables are writable data: each lies in a writable section that holds no code,
@@ -1073,8 +1101,8 @@ mod tests {
         }
     }
 
-    /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: it draws through
-    /// gdi32, which F2K does not have).
+    /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: its window calls
+    /// are not user32's exports yet).
     const LOADED_CORPUS: [(&str, &[u8]); 19] = [
         (
             "hellomd",

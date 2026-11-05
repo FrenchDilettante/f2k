@@ -130,6 +130,30 @@ args = ["ptr DeviceName", "ptr DevMode", "handle Window", "u32 Flags", "ptr Para
 impl = { syscall = "crate::win32k::display::change_display_settings" }
 internal = true
 
+# win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, served
+# ahead of the exports (which come with the windows): each answers a screen DC's handle.
+
+[[export]]
+name = "NtUserGetDC"
+group = "display"
+args = ["handle Window", "ptr<u32> Dc"]
+impl = { syscall = "crate::win32k::dc::get_dc" }
+internal = true
+
+[[export]]
+name = "NtUserGetDCEx"
+group = "display"
+args = ["handle Window", "handle Region", "u32 Flags", "ptr<u32> Dc"]
+impl = { syscall = "crate::win32k::dc::get_dc_ex" }
+internal = true
+
+[[export]]
+name = "NtUserGetWindowDC"
+group = "display"
+args = ["handle Window", "ptr<u32> Dc"]
+impl = { syscall = "crate::win32k::dc::get_window_dc" }
+internal = true
+
 # --- sounds ---------------------------------------------------------------------------------------
 
 [[export]]

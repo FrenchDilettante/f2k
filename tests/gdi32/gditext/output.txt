@@ -1,0 +1,16 @@
+# F2K capture of gditext (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/04/2026 13:32:22.36
+gditext F2KT-SOURCE-CRC=0xF04723CB
+>>> gditext.exe paint
+== paint
+CreateDCA("DISPLAY", NULL, NULL, NULL): non-NULL yes err=-
+TextOutA(sdc, 8, 8, "TextOutA on the screen DC", 25): ret=1 err=-
+SetTextColor(sdc, RGB(255,0,0)): previous=0x000000 err=-
+SetBkColor(sdc, RGB(255,255,0)): previous=0xFFFFFF err=-
+ExtTextOutA(sdc, 8, 32, ETO_OPAQUE, rect 4 28 260 52, "ExtTextOutA, red on yellow", 26, NULL): ret=1 err=-
+DeleteDC(sdc): ret=1 err=-
+gditext: done
+<<< exit code=0

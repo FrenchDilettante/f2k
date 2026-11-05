@@ -21,7 +21,12 @@ use core::sync::atomic::{AtomicU8, Ordering};
 pub mod trampoline;
 
 #[cfg(target_arch = "x86")]
-pub use trampoline::{enter_graphics_mode, graphics_mode_set, test_graphics_mode};
+pub use trampoline::{
+    enter_graphics_mode,
+    graphics_mode_set,
+    test_graphics_mode,
+    with_framebuffer,
+};
 
 /// The host build has no trampoline: the mode set is not servable there.
 #[cfg(not(target_arch = "x86"))]
@@ -112,6 +117,8 @@ pub trait Bios {
 pub trait PixelMemory {
     /// Store the 32-bit pixel `value` at byte `offset`.
     fn store(&mut self, offset: usize, value: u32);
+    /// The 32-bit pixel at byte `offset` (GetPixel's read).
+    fn load(&mut self, offset: usize) -> u32;
 }
 
 /// The geometry of the mode that was set, decoded from its mode information block: the scan-line
@@ -166,6 +173,30 @@ impl Geometry {
         let blue = rgb & 0xFF;
         (red << self.red_field) | (green << self.green_field) | (blue << self.blue_field)
     }
+
+    /// The `0xRRGGBB` color of a 32-bit pixel value in this mode's masks ([`Geometry::pixel`]'s
+    /// inverse).
+    pub fn rgb(&self, pixel: u32) -> u32 {
+        let red = (pixel >> self.red_field) & 0xFF;
+        let green = (pixel >> self.green_field) & 0xFF;
+        let blue = (pixel >> self.blue_field) & 0xFF;
+        (red << 16) | (green << 8) | blue
+    }
+
+    /// A `width` by `height` 32-bpp mode, its scan lines packed, its masks 8/8/8 at 16/8/0: the
+    /// fakes' geometry in the host tests of the framebuffer's consumers.
+    #[cfg(test)]
+    pub fn packed(width: usize, height: usize) -> Geometry {
+        Geometry {
+            width,
+            height,
+            pitch: width * 4,
+            lfb_phys: 0xE000_0000,
+            red_field: 16,
+            green_field: 8,
+            blue_field: 0,
+        }
+    }
 }
 
 /// The screen in the linear framebuffer mode: the geometry, and the pixel memory the pixels land
@@ -192,6 +223,16 @@ impl<M: PixelMemory> Framebuffer<M> {
             let offset = y * self.geometry.pitch + x * 4;
             let pixel = self.geometry.pixel(rgb);
             self.memory.store(offset, pixel);
+        }
+    }
+
+    /// The `0xRRGGBB` pixel at (`x`, `y`); none outside the mode's resolution.
+    pub fn get_pixel(&mut self, x: usize, y: usize) -> Option<u32> {
+        if x < self.geometry.width && y < self.geometry.height {
+            let offset = y * self.geometry.pitch + x * 4;
+            Some(self.geometry.rgb(self.memory.load(offset)))
+        } else {
+            None
         }
     }
 
@@ -423,6 +464,10 @@ mod tests {
         fn store(&mut self, offset: usize, value: u32) {
             self.0[offset / 4] = value;
         }
+
+        fn load(&mut self, offset: usize) -> u32 {
+            self.0[offset / 4]
+        }
     }
 
     /// The geometry decodes, and the pixel composition follows the masks.
@@ -574,8 +619,9 @@ mod tests {
         }
     }
 
-    /// Pixels land at their scan-line offset, composed through the masks; writes outside the mode
-    /// do nothing; a clear covers every pixel.
+    /// Pixels land at their scan-line offset, composed through the masks, and read back as the
+    /// colors they were; writes outside the mode do nothing and reads there answer none; a clear
+    /// covers every pixel.
     #[test]
     fn pixels_land_in_the_framebuffer() {
         let geometry = Geometry::decode(&mode_info_block()).unwrap();
@@ -584,6 +630,10 @@ mod tests {
         assert_eq!(fb.memory().0[0], 0x00FF_FFFF);
         fb.put_pixel(3, 2, 0x00FF_0000);
         assert_eq!(fb.memory().0[2 * 2560 / 4 + 3], 0x00FF_0000);
+        assert_eq!(fb.get_pixel(3, 2), Some(0x00FF_0000));
+        assert_eq!(fb.get_pixel(640, 0), None);
+        assert_eq!(fb.get_pixel(0, 480), None);
+        assert_eq!(geometry.rgb(geometry.pixel(0x0003_0201)), 0x0003_0201);
         fb.put_pixel(640, 0, 0x00FF_FFFF);
         fb.put_pixel(0, 480, 0x00FF_FFFF);
         assert_eq!(

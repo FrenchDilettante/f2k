@@ -4,11 +4,11 @@ kind = "sectioned"
 screenshots = true
 
 [pending]
-dc = "graphics kernel not landed yet"
-text = "graphics kernel not landed yet"
-extent = "graphics kernel not landed yet"
-objects = "graphics kernel not landed yet"
-pixel = "graphics kernel not landed yet"
+dc = "windows (RegisterClass, CreateWindowEx) and user32's GetDC family not yet implemented"
+text = "windows (RegisterClass, CreateWindowEx) and user32's GetDC and ReleaseDC not yet implemented"
+extent = "windows and user32's GetDC not yet implemented; then the System font's widths (Hello 34 wide, average 7): F2K's 8x16 font answers 40 and 8"
+objects = "windows (RegisterClass, CreateWindowEx) and user32's GetDC and ReleaseDC not yet implemented"
+pixel = "user32's GetDC and ReleaseDC not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

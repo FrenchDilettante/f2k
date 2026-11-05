@@ -364,6 +364,7 @@ pub fn type_name(kind: ObjectType) -> &'static str {
         ObjectType::WindowStation => "WindowStation",
         ObjectType::Desktop => "Desktop",
         ObjectType::Key => "Key",
+        ObjectType::Dc => "Dc",
     }
 }
 
@@ -649,7 +650,8 @@ fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
         ObjectType::Directory
         | ObjectType::WindowStation
         | ObjectType::Desktop
-        | ObjectType::Key => Err(STATUS_NOT_IMPLEMENTED),
+        | ObjectType::Key
+        | ObjectType::Dc => Err(STATUS_NOT_IMPLEMENTED),
         #[cfg(target_arch = "x86")]
         ObjectType::File => {
             let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;

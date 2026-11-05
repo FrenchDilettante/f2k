@@ -89,6 +89,8 @@ pub enum ObjectType {
     Desktop,
     /// A key object: one open of a registry key (see [`crate::cm`]).
     Key,
+    /// A device context: win32k's, a screen DC (see [`crate::win32k::dc`]).
+    Dc,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -103,7 +105,7 @@ impl ObjectId {
     /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
     /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
     /// at the object's own index. None for a section, a file object (its I/O completes at once:
-    /// nothing waits on it), the directory, a window station, a desktop or a key. The id's
+    /// nothing waits on it), the directory, a window station, a desktop, a key or a DC. The id's
     /// liveness is the caller's to know (a reference it holds).
     pub fn waitable(self) -> Option<WaitableId> {
         let index = self.index;
@@ -119,7 +121,8 @@ impl ObjectId {
             | ObjectType::Directory
             | ObjectType::WindowStation
             | ObjectType::Desktop
-            | ObjectType::Key => None,
+            | ObjectType::Key
+            | ObjectType::Dc => None,
         }
     }
 
@@ -207,6 +210,8 @@ pub const WINDOW_STATIONS: usize = 1;
 pub const DESKTOPS: usize = 1;
 /// How many key objects (opens of registry keys) can exist at once.
 pub const KEY_OBJECTS: usize = 256;
+/// How many device contexts can exist at once.
+pub const DCS: usize = 64;
 /// How many names can be bound at once.
 pub const NAMES: usize = 64;
 /// The longest object name: MAX_PATH.
@@ -615,6 +620,7 @@ pools! {
         WINDOW_STATIONS;
     Desktop => desktops: DesktopObject = DesktopObject::none, DESKTOPS;
     Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
+    Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
 }
 
 // SAFETY: the directory's raw pointers are the links of the file objects' embedded lock headers,
@@ -663,6 +669,7 @@ bodies! {
     WindowStationObject => WindowStation, window_stations, window_station;
     DesktopObject => Desktop, desktops, desktop;
     crate::cm::KeyBody => Key, keys, key;
+    crate::win32k::dc::Dc => Dc, dcs, dc;
 }
 
 impl Directory {
@@ -935,6 +942,11 @@ impl Directory {
         self.insert(body)
     }
 
+    /// A device context in the state `body` holds; none when the pool is exhausted.
+    pub fn create_dc(&mut self, body: crate::win32k::dc::Dc) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     /// The body index of the live dispatcher object `id`, when it is of `kind`.
@@ -1160,7 +1172,8 @@ impl Directory {
             | ObjectType::Directory
             | ObjectType::WindowStation
             | ObjectType::Desktop
-            | ObjectType::Key => None,
+            | ObjectType::Key
+            | ObjectType::Dc => None,
         };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
@@ -1322,6 +1335,7 @@ impl Directory {
             ObjectType::Section,
             ObjectType::File,
             ObjectType::Key,
+            ObjectType::Dc,
         ] {
             let live = self.headers(kind).iter().position(|header| header.live);
             if let Some(index) = live {
@@ -2174,6 +2188,52 @@ mod tests {
         }
         assert_eq!(sweep(directory).0, 0);
         assert!(directory.is_live(station) && directory.is_live(desktop));
+    }
+
+    /// A device context, as win32k's services make one: typed, never waited on, its state the
+    /// body's; its handle's close deletes it, its id going stale; one a process left behind is a
+    /// leak the sweep takes; the pool refuses a DC past its capacity.
+    #[test]
+    fn a_dc_lives_while_its_handle_does() {
+        use crate::win32k::dc::Dc;
+        let directory = directory();
+        let id = directory.create_dc(Dc::screen(640, 480)).unwrap();
+        assert_eq!(id.kind, ObjectType::Dc);
+        assert_eq!(directory.waitable(id), None);
+        assert_eq!(directory.dc(id).copied(), Some(Dc::screen(640, 480)));
+        assert!(directory.key(id).is_none(), "typed");
+        published(directory, id);
+        directory.dc(id).unwrap().text_color = 0xFF;
+        assert_eq!(
+            directory.dc(id).unwrap().text_color,
+            0xFF,
+            "the body holds the state"
+        );
+        assert_eq!(directory.counts(id), Some((1, 1)));
+        assert_eq!(
+            closed(directory, id),
+            vec![],
+            "nothing outside the directory"
+        );
+        assert!(!directory.is_live(id));
+        assert!(directory.dc(id).is_none(), "the id is stale");
+
+        let leaked = directory.create_dc(Dc::screen(640, 480)).unwrap();
+        published(directory, leaked);
+        assert_eq!(sweep(directory), (1, vec![]), "a DC left behind is a leak");
+        assert!(!directory.is_live(leaked));
+
+        let made: Vec<_> = (0..DCS)
+            .map(|_| directory.create_dc(Dc::screen(1, 1)).unwrap())
+            .collect();
+        assert_eq!(
+            directory.create_dc(Dc::screen(1, 1)),
+            None,
+            "the pool is full"
+        );
+        for id in made {
+            assert_eq!(directory.dereference(id), None);
+        }
     }
 
     /// The sweep at quiescence deletes whatever outlived its process (a reference leak, reported)

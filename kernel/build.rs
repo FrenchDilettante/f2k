@@ -1,20 +1,20 @@
 //! Generates the tables that derive from the system DLLs' export specs
 //! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's two service tables
 //! (`nt`'s `NT_SERVICES`, ntdll's system services, and `win32k`'s `WIN32K_SERVICES`, user32's
-//! internal NtUser* calls, both by Windows 2000's numbers), and, for the tests
-//! that check the built DLLs against the specs, kernel32's native exports' and every DLL's exports'
-//! declared argument blocks, stubs and variables. The generated files land in OUT_DIR, included
-//! where the tables live.
+//! internal NtUser* calls and gdi32's NtGdi* ones, both by Windows 2000's numbers), and, for the
+//! tests that check the built DLLs against the specs, kernel32's native exports' and every DLL's
+//! exports' declared argument blocks, stubs and variables. The generated files land in OUT_DIR,
+//! included where the tables live.
 //!
 //! It also points the kernel at the system DLLs the userland workspace builds (userland/):
 //! ntdll.dll, which it embeds and maps into every process, and kernel32.dll, msvcrt.dll,
-//! advapi32.dll and user32.dll, which its tests read (the disk image carries them for ntdll to
-//! load). They are built first (`make userland`); the kernel rebuilds when they change.
+//! advapi32.dll, user32.dll and gdi32.dll, which its tests read (the disk image carries them for
+//! ntdll to load). They are built first (`make userland`); the kernel rebuilds when they change.
 
 use std::path::{Path, PathBuf};
 
 /// The system DLLs the userland workspace builds, ntdll first.
-const DLLS: [&str; 5] = ["ntdll", "kernel32", "msvcrt", "advapi32", "user32"];
+const DLLS: [&str; 6] = ["ntdll", "kernel32", "msvcrt", "advapi32", "user32", "gdi32"];
 
 fn main() {
     let manifest =

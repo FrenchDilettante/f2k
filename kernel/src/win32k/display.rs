@@ -169,7 +169,7 @@ fn names_primary_display(at: UserAddr) -> Result<bool, i32> {
 }
 
 /// Whether `units` name the primary display, without regard to case.
-fn is_primary_display(units: &[u16]) -> bool {
+pub(super) fn is_primary_display(units: &[u16]) -> bool {
     units.len() == PRIMARY_DISPLAY.len()
         && units
             .iter()

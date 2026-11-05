@@ -519,6 +519,13 @@ impl PixelMemory for LfbMemory {
             ((self.base + offset as u32) as *mut u32).write_volatile(value);
         }
     }
+
+    fn load(&mut self, offset: usize) -> u32 {
+        // SAFETY: as for a store: the LFB is mapped for the kernel's lifetime once the mode is
+        // set, and the framebuffer's clipping keeps the offset inside the mode's size. The load
+        // is device memory: volatile.
+        unsafe { ((self.base + offset as u32) as *const u32).read_volatile() }
+    }
 }
 
 /// The graphics mode's state: set once, by the first caller to find it unset.
@@ -589,9 +596,8 @@ pub fn test_graphics_mode(request: &ModeRequest) -> Result<Geometry, ModeError> 
     }
 }
 
-/// Run `f` against the framebuffer, when the graphics mode is set; none before it. (For the DC
-/// and rasterizer, its first consumers.)
-#[allow(dead_code)]
+/// Run `f` against the framebuffer, when the graphics mode is set; none before it (win32k's DCs
+/// paint and read the screen through it).
 pub fn with_framebuffer<R>(f: impl FnOnce(&mut Framebuffer<LfbMemory>) -> R) -> Option<R> {
     if !STATE.is_set() {
         return None;

@@ -1,24 +1,30 @@
-//! win32k: the window manager's kernel side, as far as F2K has one: window stations and desktops
-//! ([`winsta`]), the display settings ([`display`]), and the second service table their services
-//! come through.
+//! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window stations and
+//! desktops ([`winsta`]), the display settings ([`display`]), device contexts ([`dc`]) and what is
+//! drawn through them ([`raster`], in the built-in font, [`font`]), and the second service table
+//! their services come through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
 //! 12-13 (numbers from 0x1000; ntoskrnl's services are table 0), and the dispatcher routes them
-//! here by those bits (`user::syscall`). The table is generated from user32's export spec (its
-//! `internal` `impl = { syscall = ... }` records, through tools/exportgen), by Windows 2000's
-//! numbers (userland/user32/w2k-services.txt): [`WIN32K_SERVICES`], each entry a wrapper that
-//! decodes the argument block by the spec's kinds and calls the typed handler,
+//! here by those bits (`user::syscall`). The table is generated from user32's and gdi32's export
+//! specs (their `internal` `impl = { syscall = ... }` records, through tools/exportgen), by Windows
+//! 2000's numbers (userland/user32/w2k-services.txt): [`WIN32K_SERVICES`], each entry a wrapper
+//! that decodes the argument block by the spec's kinds and calls the typed handler,
 //! `fn(&mut NtCall, <arguments>) -> NtResult`, as the NT services' do.
 //!
 //! The services' argument lists are F2K's own: Windows 2000 documents none of them, and only F2K's
-//! user32 calls them. They answer as the NT services do, an NTSTATUS in EAX and the results through
-//! the caller's pointers, never touching the last error: user32 maps a failure through ntdll's
-//! RtlNtStatusToDosError. (Windows 2000's win32k answers with the Win32 result and sets the last
-//! error itself.) One answers as Windows 2000's does: NtUserChangeDisplaySettings, whose answer
-//! is ChangeDisplaySettingsEx's own DISP_CHANGE code, which sets no last error ([`display`]).
+//! user32 and gdi32 call them. They answer as the NT services do, an NTSTATUS in EAX and the
+//! results through the caller's pointers, never touching the last error: user32 maps a failure
+//! through ntdll's RtlNtStatusToDosError, gdi32 through rtl's table (Windows 2000's gdi32 imports
+//! no RtlNtStatusToDosError). (Windows 2000's win32k answers with the Win32 result and sets the
+//! last error itself.) One answers as Windows 2000's does: NtUserChangeDisplaySettings, whose
+//! answer is ChangeDisplaySettingsEx's own DISP_CHANGE code, which sets no last error
+//! ([`display`]).
 
+pub mod dc;
 pub mod display;
+pub mod font;
+pub mod raster;
 pub mod winsta;
 
 use crate::user::syscall::ServiceFn;
@@ -68,17 +74,27 @@ mod tests {
         assert_eq!(entry("NtUserGetObjectInformation"), Some((0x119C, 20)));
         assert_eq!(entry("NtUserGetProcessWindowStation"), Some((0x119F, 4)));
         assert_eq!(entry("NtUserGetThreadDesktop"), Some((0x11A2, 8)));
+        assert_eq!(entry("NtGdiExtTextOutW"), Some((0x108E, 32)));
+        assert_eq!(entry("NtGdiEngTextOut"), Some((0x1257, 32)));
+        assert_eq!(entry("NtUserGetDC"), Some((0x1186, 8)));
+        assert_eq!(entry("NtGdiSetPixel"), Some((0x1110, 20)));
         assert_eq!(lookup(0x19C).map(|(bytes, _)| bytes), Some(20));
         assert!(lookup(0).is_none(), "NtGdiAbortDoc: not served");
     }
 
-    /// user32 enters win32k through its own stubs, Windows 2000's shape: mov eax,number /
-    /// lea edx,[esp+4] / int 2Eh / ret imm16, one per service, none exported. A DLL built from
-    /// another version of the spec fails here.
+    /// user32 and gdi32 enter win32k through their own stubs, Windows 2000's shape: mov
+    /// eax,number / lea edx,[esp+4] / int 2Eh / ret imm16, one per service (an `NtUser*` in
+    /// user32, an `NtGdi*` in gdi32), none exported. A DLL built from another version of the spec
+    /// fails here.
     #[test]
-    fn user32s_stubs_raise_windows_2000s_numbers() {
-        use crate::exec::modules::USER32;
+    fn the_clients_stubs_raise_windows_2000s_numbers() {
+        use crate::exec::modules::{GDI32, USER32};
         for &(number, name, bytes, _) in &WIN32K_SERVICES {
+            let dll = if name.starts_with("NtGdi") {
+                &GDI32
+            } else {
+                &USER32
+            };
             let mut stub = std::vec![0xB8];
             stub.extend_from_slice(&number.to_le_bytes());
             stub.extend_from_slice(&[0x8D, 0x54, 0x24, 0x04, 0xCD, 0x2E]);
@@ -88,15 +104,16 @@ mod tests {
                 stub.push(0xC2);
                 stub.extend_from_slice(&(bytes as u16).to_le_bytes());
             }
-            let found = USER32
+            let found = dll
                 .file
                 .windows(stub.len())
                 .filter(|window| *window == &stub[..])
                 .count();
             assert_eq!(found, 1, "{name}'s stub");
             assert!(
-                crate::exec::modules::resolve_in(&USER32, name, 0).is_err(),
-                "{name} is user32's internal call, not an export"
+                crate::exec::modules::resolve_in(dll, name, 0).is_err(),
+                "{name} is {}'s internal call, not an export",
+                dll.file_name
             );
         }
     }
