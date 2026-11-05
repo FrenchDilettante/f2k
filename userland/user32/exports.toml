@@ -36,6 +36,10 @@ key = "window"
 title = "windows"
 
 [[group]]
+key = "message"
+title = "messages, timers and painting"
+
+[[group]]
 key = "shutdown"
 title = "ending the session"
 
@@ -342,6 +346,126 @@ name = "NtUserQueryWindow"
 group = "window"
 args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
 impl = { syscall = "crate::win32k::window::query_window" }
+internal = true
+
+# --- messages --------------------------------------------------------------------------------------
+
+# --- messages and painting -------------------------------------------------------------------------
+
+# --- messages, timers and painting ---------------------------------------------------------------
+
+# win32k's queue, timer and paint services: user32's internal calls, behind the message loop's
+# exports (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
+# ReplyMessage), SetTimer and KillTimer, and the paint calls (InvalidateRect, ValidateRect,
+# GetUpdateRect, BeginPaint, EndPaint, UpdateWindow). GetMessage and PeekMessage write F2K's
+# receipt (rtl::user::Receipt): a posted message, or a sent one with the window procedure to call;
+# NtUserCallOneParam and NtUserCallHwndLock take rtl::user's routine numbers.
+
+[[export]]
+name = "NtUserPostMessage"
+group = "message"
+args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { syscall = "crate::win32k::queue::post_message" }
+internal = true
+
+[[export]]
+name = "NtUserPostThreadMessage"
+group = "message"
+args = ["u32 ThreadId", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { syscall = "crate::win32k::queue::post_thread_message" }
+internal = true
+
+[[export]]
+name = "NtUserGetMessage"
+group = "message"
+args = ["ptr Receipt", "handle Window", "u32 MsgFilterMin", "u32 MsgFilterMax"]
+impl = { syscall = "crate::win32k::queue::get_message" }
+internal = true
+
+[[export]]
+name = "NtUserPeekMessage"
+group = "message"
+args = ["ptr Receipt", "handle Window", "u32 MsgFilterMin", "u32 MsgFilterMax", "u32 RemoveMsg"]
+impl = { syscall = "crate::win32k::queue::peek_message" }
+internal = true
+
+[[export]]
+name = "NtUserMessageCall"
+group = "message"
+args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "ptr<u32> Proc", "ptr<i32> Result"]
+impl = { syscall = "crate::win32k::queue::message_call" }
+internal = true
+
+[[export]]
+name = "NtUserDispatchMessage"
+group = "message"
+args = ["ptr Msg", "ptr<u32> Proc"]
+impl = { syscall = "crate::win32k::queue::dispatch_message" }
+internal = true
+
+[[export]]
+name = "NtUserCallOneParam"
+group = "message"
+args = ["u32 Param", "u32 Routine", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::queue::call_one_param" }
+internal = true
+
+# --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
+
+[[export]]
+name = "NtUserSetTimer"
+group = "message"
+args = ["handle Window", "u32 IdEvent", "u32 Elapse", "u32 TimerFunc", "ptr<u32> Id"]
+impl = { syscall = "crate::win32k::timer::set_timer" }
+internal = true
+
+[[export]]
+name = "NtUserKillTimer"
+group = "message"
+args = ["handle Window", "u32 IdEvent"]
+impl = { syscall = "crate::win32k::timer::kill_timer" }
+internal = true
+
+[[export]]
+name = "NtUserInvalidateRect"
+group = "message"
+args = ["handle Window", "ptr Rect", "bool Erase"]
+impl = { syscall = "crate::win32k::paint::invalidate_rect" }
+internal = true
+
+[[export]]
+name = "NtUserValidateRect"
+group = "message"
+args = ["handle Window", "ptr Rect"]
+impl = { syscall = "crate::win32k::paint::validate_rect" }
+internal = true
+
+[[export]]
+name = "NtUserGetUpdateRect"
+group = "message"
+args = ["handle Window", "ptr Rect", "bool Erase", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::paint::get_update_rect" }
+internal = true
+
+[[export]]
+name = "NtUserBeginPaint"
+group = "message"
+args = ["handle Window", "ptr Paint"]
+impl = { syscall = "crate::win32k::paint::begin_paint" }
+internal = true
+
+[[export]]
+name = "NtUserEndPaint"
+group = "message"
+args = ["handle Window", "ptr Paint"]
+impl = { syscall = "crate::win32k::paint::end_paint" }
+internal = true
+
+[[export]]
+name = "NtUserCallHwndLock"
+group = "message"
+args = ["handle Window", "u32 Routine"]
+impl = { syscall = "crate::win32k::paint::call_hwnd_lock" }
 internal = true
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------

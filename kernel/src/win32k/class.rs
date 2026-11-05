@@ -1124,6 +1124,12 @@ impl Registry {
         name.atom(&self.atoms)
     }
 
+    /// The atom of the class `id`: its name's string atom, or the integer atom it was registered
+    /// with.
+    pub fn atom(&self, id: ClassId) -> Atom {
+        self.classes.at(id).atom
+    }
+
     /// The name of the class `id` into `out` (no terminator), GetClassName's text: the string the
     /// atom names in the atom table, '#' and the decimal digits for an integer atom. The answer is
     /// the units written, the name cut at `out`'s length.

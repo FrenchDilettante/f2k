@@ -24,9 +24,11 @@
 //! exports not written yet, and the paths their code does not handle), DbgPrint's formatting
 //! ([`printf`]), the display settings' shapes, DEVMODE among them ([`display`]: user32's
 //! display calls and win32k's display services share them), GDI's constants, stock objects and
-//! TEXTMETRIC ([`gdi`]: gdi32's exports and win32k's DC services share them), and the window
+//! TEXTMETRIC ([`gdi`]: gdi32's exports and win32k's DC services share them), the window
 //! manager's WINDOWINFO and WINDOWPOS ([`window`]: user32's window calls and win32k's window
-//! services share them).
+//! services share them), and USER's message constants and structures ([`user`]: user32's
+//! message calls and win32k's queue share them, the receipt of a retrieved message among
+//! them).
 //!
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
 //! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width, and the query
@@ -84,6 +86,7 @@ pub mod sync;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
 pub mod time;
+pub mod user;
 pub mod window;
 
 // What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers,

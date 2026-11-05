@@ -1,7 +1,9 @@
 //! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window classes
-//! ([`class`]), windows ([`window`]), window stations and desktops ([`winsta`]), the display
-//! settings ([`display`]), device contexts ([`dc`]) and what is drawn through them ([`raster`],
-//! in the built-in font, [`font`]), and the second service table their services come through.
+//! ([`class`]), windows ([`window`]), the threads' message queues ([`queue`]), their timers
+//! ([`timer`]) and the windows' painting ([`paint`]), window stations and desktops ([`winsta`]),
+//! the display settings ([`display`]), device contexts ([`dc`]) and what is drawn through them
+//! ([`raster`], in the built-in font, [`font`]), and the second service table their services come
+//! through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -25,7 +27,10 @@ pub mod class;
 pub mod dc;
 pub mod display;
 pub mod font;
+pub mod paint;
+pub mod queue;
 pub mod raster;
+pub mod timer;
 pub mod window;
 pub mod winsta;
 

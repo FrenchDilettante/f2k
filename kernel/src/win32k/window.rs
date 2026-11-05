@@ -52,14 +52,13 @@
 //!   into its process — the window's WINDOWINFO (GetWindowRect's rectangle), IsWindowVisible's
 //!   answer — by an index of F2K's own ([`rtl::window`]).
 //!
-//! Seams recorded: message sending and the queue (the message slice) — every send and
-//! window-manager call the decisions make goes through the [`Pump`] trait (the activation and the
-//! minimize/maximize among them), and the services run them with [`DefaultProcedure`], whose
-//! answers are the default procedure's (so nothing answers WM_WINDOWPOSCHANGED with WM_SIZE and
-//! WM_MOVE yet, and ShowWindowAsync has no queue to defer its show to); monitors and frame
-//! metrics come from the display slice (the boot sets the primary monitor's work area). A
-//! process's end takes its windows, its classes and its threads' records, at its teardown
-//! ([`WindowManager::end_process`]); a thread's records outlive the thread until then.
+//! Seams recorded: every send and window-manager call the decisions make goes through the [`Pump`]
+//! trait; the services run them with the queue's pump ([`super::queue::QueuePump`]), which queues
+//! each message for the window's thread and answers as the default procedure does, and the boot
+//! with [`DefaultProcedure`]; monitors and frame metrics come from the display slice (the boot sets
+//! the primary monitor's work area). A process's end takes its windows, its classes and its
+//! threads' records, at its teardown ([`WindowManager::end_process`]); a thread's records outlive
+//! the thread until then.
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -68,6 +67,8 @@
 pub use rtl::window::{WindowInfo, WindowPos};
 
 use super::class;
+#[cfg(target_arch = "x86")]
+use super::queue::QueuePump;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::sched::object::HandleTable;
 use crate::sched::thread::ThreadId;
@@ -1087,6 +1088,9 @@ pub struct Windows {
     pub clipboard_owner: Option<WindowId>,
     /// The foreground thread's queue.
     pub foreground_thread: Option<ThreadId>,
+    /// The threads' message queues, the timers and the windows' update regions
+    /// ([`super::queue`]).
+    pub queues: super::queue::Queues,
 }
 
 impl Windows {
@@ -1122,6 +1126,7 @@ impl Windows {
             }
             addr_of_mut!((*windows).clipboard_owner).write(None);
             addr_of_mut!((*windows).foreground_thread).write(None);
+            super::queue::Queues::write_empty(addr_of_mut!((*windows).queues));
         }
     }
 
@@ -1317,6 +1322,100 @@ fn view_of(class: class::ClassId) -> class::WindowView {
         class,
         query_drag_icon: false,
         has_own_icon_sm: false,
+    }
+}
+
+// --- The message layer's view: what the queue, the timers and the painting read of a window
+// ---------------------------------------------------------------------------------------------
+
+impl Windows {
+    /// Whether `id` names a live window.
+    pub fn is_live(&self, id: WindowId) -> bool {
+        self.pool.is_live(id)
+    }
+
+    /// The thread whose queue the window's messages go to.
+    pub fn window_thread(&self, id: WindowId) -> ThreadId {
+        self.at(id).thread
+    }
+
+    /// The process the window belongs to, as the class registry keys it.
+    pub fn window_process(&self, id: WindowId) -> class::Owner {
+        self.at(id).process
+    }
+
+    /// The client-side procedure the window's messages go to; none for a window whose procedure
+    /// is the window manager's own (the desktop's windows, a zombie).
+    pub fn client_proc(&self, id: WindowId) -> Option<u32> {
+        let w = self.at(id);
+        match w.proc {
+            Proc::Client(proc) if proc != 0 && !w.flags.server_side_proc => Some(proc),
+            _ => None,
+        }
+    }
+
+    /// The window's public style.
+    pub fn window_style(&self, id: WindowId) -> u32 {
+        self.at(id).style
+    }
+
+    /// The window's client rectangle, in screen coordinates.
+    pub fn client_rect(&self, id: WindowId) -> Rect {
+        self.at(id).client_rect
+    }
+
+    /// The window's parent, its first child and its next sibling: the links a walk of a window's
+    /// subtree follows.
+    pub fn parent_of(&self, id: WindowId) -> Option<WindowId> {
+        self.at(id).parent
+    }
+
+    pub fn first_child(&self, id: WindowId) -> Option<WindowId> {
+        self.at(id).child
+    }
+
+    pub fn next_sibling(&self, id: WindowId) -> Option<WindowId> {
+        self.at(id).next
+    }
+
+    /// The desktop window and the message window of the window's desktop: where a window's chain
+    /// of parents ends.
+    pub fn desktop_roots(&self, id: WindowId) -> (Option<WindowId>, Option<WindowId>) {
+        self.desktop_by_id(self.at(id).desktop)
+            .map_or((None, None), |d| (d.window, d.message_window))
+    }
+
+    /// The desktop window of the thread `thread`'s desktop, the parent of its top-level windows.
+    pub fn thread_desktop_window(&self, thread: ThreadId) -> Option<WindowId> {
+        self.desktop_by_id(self.thread(thread).desktop)
+            .and_then(|d| d.window)
+    }
+
+    /// The thread record `thread` serves, when it is a process's.
+    pub fn thread_key(&self, thread: ThreadId) -> Option<ThreadKey> {
+        let t = self.thread(thread);
+        if t.live {
+            t.key
+        } else {
+            None
+        }
+    }
+
+    /// The process of the thread record `thread`.
+    pub fn thread_process(&self, thread: ThreadId) -> class::Owner {
+        self.thread(thread).process
+    }
+
+    /// Set or clear the window's WS_VISIBLE: the message layer's tests' stand-in for showing and
+    /// hiding a window.
+    #[cfg(test)]
+    pub fn set_visible_for_tests(&mut self, id: WindowId, visible: bool) {
+        let w = self.at_mut(id);
+        if visible {
+            w.style |= WS_VISIBLE;
+        } else {
+            w.style &= !WS_VISIBLE;
+        }
     }
 }
 
@@ -3371,8 +3470,8 @@ fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
 // --- The window manager: both registries behind one lock
 // ------------------------------------------
 
-/// The pump the services run the decisions with until the message queue lands: every send answers
-/// as the default window procedure does, and every window-manager call is [`Pump`]'s default.
+/// The pump the boot runs the desktop's own windows' creation with: every send answers as the
+/// default window procedure does, and every window-manager call is [`Pump`]'s default.
 pub struct DefaultProcedure;
 
 impl Pump for DefaultProcedure {}
@@ -3804,9 +3903,10 @@ pub fn create_window_ex(
         params: param,
         version,
     };
-    let created = lock(call.passive())
-        .create_window(caller, parent.raw(), &mut args, &mut DefaultProcedure)
-        .map_err(Failure::status)?;
+    let created = super::queue::with_manager(call.passive(), |manager| {
+        manager.create_window(caller, parent.raw(), &mut args, &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
     window.write(created)?;
     Ok(STATUS_SUCCESS)
 }
@@ -3816,13 +3916,13 @@ pub fn create_window_ex(
 #[cfg(target_arch = "x86")]
 pub fn destroy_window(call: &mut NtCall, window: Handle) -> NtResult {
     let caller = super::winsta::gui_thread(call)?.thread;
-    let mut manager = lock(call.passive());
-    let WindowManager {
-        windows, classes, ..
-    } = &mut *manager;
-    let destroyed = windows
-        .destroy_window_handle(classes, caller, window.raw(), &mut DefaultProcedure)
-        .map_err(Failure::status)?;
+    let destroyed = super::queue::with_manager(call.passive(), |manager| {
+        let WindowManager {
+            windows, classes, ..
+        } = manager;
+        windows.destroy_window_handle(classes, caller, window.raw(), &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
     if destroyed {
         Ok(STATUS_SUCCESS)
     } else {
