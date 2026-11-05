@@ -27,6 +27,14 @@ title = "display settings"
 key = "sound"
 title = "sounds"
 
+[[group]]
+key = "class"
+title = "window classes"
+
+[[group]]
+key = "window"
+title = "windows"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -164,6 +172,78 @@ impl = { native = "MessageBeep" }
 ordinal = 451
 fails = "FALSE"
 note = "there is no sound device: it succeeds and nothing sounds"
+
+# --- window classes -------------------------------------------------------------------------------
+
+# win32k's class services, behind the RegisterClass family, UnregisterClass, GetClassInfo,
+# GetClassName and the SetClassLong/SetClassWord family: user32's internal calls. A class name is
+# a string pointer or an integer atom (its high word zero), as lpszClassName is.
+
+[[export]]
+name = "NtUserRegisterClassExWOW"
+group = "class"
+args = ["ptr WndClass", "u32 ClassName", "u32 Flags", "ptr<u32> Atom", "ptr<u32> Wow"]
+impl = { syscall = "crate::win32k::class::register_class_ex_wow" }
+internal = true
+
+[[export]]
+name = "NtUserUnregisterClass"
+group = "class"
+args = ["u32 ClassName", "u32 Instance"]
+impl = { syscall = "crate::win32k::class::unregister_class" }
+internal = true
+
+[[export]]
+name = "NtUserGetClassInfo"
+group = "class"
+args = ["handle Instance", "u32 ClassName", "ptr WndClass"]
+impl = { syscall = "crate::win32k::class::get_class_info" }
+internal = true
+
+[[export]]
+name = "NtUserGetClassName"
+group = "class"
+args = ["handle Window", "ptr ClassName", "u32 MaxCount", "ptr<u32> Copied"]
+impl = { syscall = "crate::win32k::class::get_class_name" }
+internal = true
+
+[[export]]
+name = "NtUserSetClassLong"
+group = "class"
+args = ["handle Window", "i32 Index", "u32 Value", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::class::set_class_long" }
+internal = true
+
+[[export]]
+name = "NtUserSetClassWord"
+group = "class"
+args = ["handle Window", "i32 Index", "u32 Value", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::class::set_class_word" }
+internal = true
+
+# --- windows --------------------------------------------------------------------------------------
+
+# win32k's window services, behind CreateWindowExA/W and DestroyWindow: user32's internal calls.
+# NtUserCreateWindowEx takes CreateWindowExW's arguments as they are, then the caller's
+# expected-version word and the new window's handle's slot.
+
+[[export]]
+name = "NtUserCreateWindowEx"
+group = "window"
+args = [
+    "u32 ExStyle", "u32 ClassName", "ptr WindowName", "u32 Style", "i32 X", "i32 Y",
+    "i32 Width", "i32 Height", "handle Parent", "u32 Menu", "u32 Instance", "u32 Param",
+    "u32 ExpectedVersion", "ptr<u32> Window",
+]
+impl = { syscall = "crate::win32k::window::create_window_ex" }
+internal = true
+
+[[export]]
+name = "NtUserDestroyWindow"
+group = "window"
+args = ["handle Window"]
+impl = { syscall = "crate::win32k::window::destroy_window" }
+internal = true
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 

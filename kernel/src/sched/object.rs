@@ -42,6 +42,28 @@ impl<E: Copy> HandleTable<E> {
         }
     }
 
+    /// Write an empty table at `table`, element by element: the in-place form of [`Self::empty`],
+    /// for a table built inside a larger record at its final address (by value it would pass
+    /// through the caller's stack).
+    ///
+    /// # Safety
+    ///
+    /// `table` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    pub unsafe fn write_empty(table: *mut Self) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field is written, the arrays element by element.
+        unsafe {
+            let slots = addr_of_mut!((*table).slots) as *mut Option<E>;
+            let freed = addr_of_mut!((*table).freed) as *mut u32;
+            for index in 0..HANDLE_SLOTS {
+                slots.add(index).write(None);
+                freed.add(index).write(0);
+            }
+            addr_of_mut!((*table).freed_top).write(0);
+            addr_of_mut!((*table).next_fresh).write(1);
+        }
+    }
+
     /// Make the table the empty one again, field by field in place: by value the table would pass
     /// through the caller's stack, and it is larger than a kernel stack has room for.
     pub fn reset(&mut self) {
@@ -244,6 +266,26 @@ mod tests {
         assert_eq!(table.live(), 0);
         assert_eq!(table.insert(event_entry()), 4);
         assert_eq!(table.insert(event_entry()), 8);
+    }
+
+    /// A table written in place over any bytes is the empty table.
+    #[test]
+    fn a_table_written_in_place_is_empty() {
+        let mut table = Box::<HandleTable>::new_uninit();
+        // SAFETY: the box is valid for writes and aligned.
+        unsafe {
+            core::ptr::write_bytes(
+                table.as_mut_ptr().cast::<u8>(),
+                0xA5,
+                size_of::<HandleTable>(),
+            );
+            HandleTable::write_empty(table.as_mut_ptr());
+        }
+        // SAFETY: written whole just above.
+        let mut table = unsafe { table.assume_init() };
+        assert_eq!(table.live(), 0);
+        assert_eq!(table.insert(event_entry()), 4);
+        assert_eq!(table.lookup(8), None);
     }
 
     /// A freed slot is reused before a fresh one, the most recently freed first; the closed value

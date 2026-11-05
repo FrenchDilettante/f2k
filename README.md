@@ -268,9 +268,9 @@ f2k/
         ├── process/      # Process lifetime
         ├── sched/        # The scheduler
         ├── user/         # Ring 3: the user-mode boundary
-        ├── win32k/       # Window stations and desktops, the display-mode service behind
-                          # the VBE framebuffer, and the screen DCs and their text:
-                          # win32k's services, user32's and gdi32's calls
+        ├── win32k/       # Window stations and desktops, window classes and windows, the
+                          # display-mode service behind the VBE framebuffer, and the screen
+                          # DCs and their text: win32k's services, user32's and gdi32's calls
         ├── c_lib.rs      # C library stubs (linker support)
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
         └── main.rs       # Kernel binary: links the ELF; panic handler

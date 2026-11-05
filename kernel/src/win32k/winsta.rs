@@ -12,7 +12,9 @@
 //! Which ones follows Windows 2000's documented rules for an interactive console process: a process
 //! inherits its parent's window station and desktop, and the first one gets WinSta0\Default. No
 //! process creates another yet, so every process gets WinSta0\Default. Every thread of a process
-//! is on its desktop (SetThreadDesktop does not exist).
+//! is on its desktop (SetThreadDesktop does not exist). Each thread gets its record in the window
+//! registry at its own first win32k service ([`gui_thread`]), and the boot gives the desktop its
+//! own windows ([`super::window::WindowManager::boot_desktop`]).
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -177,8 +179,19 @@ struct Interactive {
 #[cfg(target_arch = "x86")]
 static INTERACTIVE: crate::sync::InitOnce<Interactive> = crate::sync::InitOnce::new();
 
-/// The boot's step: the interactive window station, WinSta0, and its Default desktop. Their
-/// creator's references are never dropped: they outlive every process.
+/// The primary monitor's work area: the whole screen of the display's default graphics mode,
+/// 640x480 (the VBE driver's preferred mode), as no taskbar takes any of it.
+#[cfg(target_arch = "x86")]
+const WORK_AREA: super::window::Rect = super::window::Rect {
+    left: 0,
+    top: 0,
+    right: 640,
+    bottom: 480,
+};
+
+/// The boot's step: the interactive window station, WinSta0, and its Default desktop, then the
+/// desktop's own windows in the window manager ([`super::window::WindowManager::boot_desktop`]).
+/// The objects' creator's references are never dropped: they outlive every process.
 #[cfg(target_arch = "x86")]
 pub fn init() {
     let (station, desktop) = crate::ob::locked(|directory| {
@@ -191,13 +204,82 @@ pub fn init() {
         (station, desktop)
     });
     INTERACTIVE.set(Interactive { station, desktop });
+    super::window::locked(|manager| manager.boot_desktop(desktop_key(desktop), WORK_AREA))
+        .expect("the boot makes the desktop's windows");
+}
+
+/// A desktop as the window manager's records name it: its object id, the generation in the high
+/// word and the pool index in the low one.
+#[cfg(target_arch = "x86")]
+pub fn desktop_key(id: crate::ob::ObjectId) -> u32 {
+    (id.generation as u32) << 16 | id.index as u32
+}
+
+/// The calling thread as the window manager knows it, once its first win32k service connected it
+/// ([`gui_thread`]).
+#[cfg(target_arch = "x86")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuiThread {
+    /// Its record in the window registry.
+    pub thread: crate::sched::thread::ThreadId,
+    /// Its process, as the class registry keys it.
+    pub owner: super::class::Owner,
+    /// Its desktop, as the window manager's records name it ([`desktop_key`]).
+    pub desktop: u32,
+}
+
+/// The calling thread, connected (see [`connect`]).
+#[cfg(target_arch = "x86")]
+pub fn gui_thread(call: &mut NtCall) -> Result<GuiThread, NtStatus> {
+    let process = call.process();
+    let connection = connect_process(process)?;
+    connect_thread(process, connection)
+}
+
+/// Connect the calling thread and its process, at each win32k service, as Windows 2000's first
+/// win32k call makes a thread a GUI thread: the process's handles to its window station and desktop
+/// ([`Connection`]), made at its first service, and the thread's record in the window registry,
+/// on the process's desktop, made at the thread's first. STATUS_INSUFFICIENT_RESOURCES when the
+/// handle table or the window registry's thread records are full.
+#[cfg(target_arch = "x86")]
+pub fn connect(process: &crate::process::Process) -> Result<Connection, NtStatus> {
+    let connection = connect_process(process)?;
+    connect_thread(process, connection)?;
+    Ok(connection)
+}
+
+/// The calling thread's record in the window registry: on the process's desktop (every process's
+/// is the interactive one), through the process's desktop handle with its access.
+#[cfg(target_arch = "x86")]
+fn connect_thread(
+    process: &crate::process::Process,
+    connection: Connection,
+) -> Result<GuiThread, NtStatus> {
+    let thread = crate::ob::current_thread().expect("a service runs on a pooled thread");
+    let key = super::window::ThreadKey {
+        index: thread.index,
+        generation: thread.generation,
+    };
+    let owner = process.object().index;
+    let desktop = desktop_key(INTERACTIVE.get().desktop);
+    let thread = super::window::locked(|manager| {
+        manager
+            .windows
+            .connect_thread(key, owner, desktop, DESKTOP_ALL_ACCESS, connection.desktop)
+    })
+    .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    Ok(GuiThread {
+        thread,
+        owner,
+        desktop,
+    })
 }
 
 /// Connect the calling process to its window station and desktop, if its first win32k service has
 /// not already: a handle to each, not inheritable, in its handle table (see the module notes for
 /// which ones). STATUS_INSUFFICIENT_RESOURCES when the handle table is full.
 #[cfg(target_arch = "x86")]
-pub fn connect(process: &crate::process::Process) -> Result<Connection, NtStatus> {
+fn connect_process(process: &crate::process::Process) -> Result<Connection, NtStatus> {
     if let Some(connection) = process.win32k() {
         return Ok(connection);
     }
@@ -235,7 +317,7 @@ fn insert(
 /// The calling process's connection (its first win32k service made it).
 #[cfg(target_arch = "x86")]
 fn connection(call: &mut NtCall) -> Result<Connection, NtStatus> {
-    connect(call.process())
+    connect_process(call.process())
 }
 
 /// Whether a thread of the calling process that has not ended has client id `thread_id` (another
