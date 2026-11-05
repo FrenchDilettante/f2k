@@ -14,7 +14,7 @@ Six of Windows 2000's system DLLs are F2K's own code:
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 - **gdi32**: screen device contexts drawn on the VBE framebuffer: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
 
-F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
+F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
@@ -72,7 +72,7 @@ make clean
 
 A boot runs the program its kernel command line names (`-- <program> [arguments]`; `exit0` without one).
 Several programs, ` ;; ` between two, run one after another, or side by side with the kernel option `concurrent` before the `--` (`concurrent -- CORPUS\sched.exe sleep ;; hello`).
-With the kernel option `shutdown` or `reboot`, the boot ends through `NtShutdownSystem` once its programs have: the boot volume is flushed and marked clean, then the machine halts on "It is now safe to turn off your computer." or restarts.
+A program ends the session with `ExitWindowsEx` (`shutdown /l /y` does, from the command line): each console program is asked to end (`CTRL_SHUTDOWN_EVENT`, its default handler ending it), then the boot volume is flushed and marked clean, and the machine halts on "It is now safe to turn off your computer." or restarts.
 A program the boot runs starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
 A child process starts with what its parent hands it: its environment, its current directory and its inheritable handles.
 
@@ -169,7 +169,6 @@ The on-target tests run through pytest, so an IDE lists and runs them one by one
   Fixtures that draw on the screen can save a screenshot per block (`target/qemu/screens/`), not compared yet.
 - **The kernel's own boots** (the fault stubs, the Limine disk path, the program smokes, the multi-process suite and its concurrent runs, the interrupt and IDE diagnostics) are cases in `tests/core/kernel/test_kernel.py`: the kernel features to build with, the image to boot, the program's command line, the COM1 strings expected (anywhere, in order, as one block of lines) or forbidden.
   A kernel panic fails every case.
-  The shutdown's boots (`tests/core/kernel/test_shutdown.py`) run a program that writes to the volume, shut down or restart through the kernel options, and read the disk image from the host after: FAT[1]'s clean-shutdown bit, and FSInfo's free count against the FAT's.
 
 Each test builds the kernel and disk for its feature set (once per run, cached under `target/qemu/builds/`); each run removes earlier runs' builds and logs older than two days.
 Boots attach the disk as a snapshot, so tests run in parallel (`-n 4` by default in `make test`; `--dist loadgroup`, set in `pyproject.toml`, keeps a fixture's tests on one worker).
@@ -250,7 +249,7 @@ f2k/
 ├── userland/         # The system DLLs (own workspace and target): rtl (the shared runtime),
 │                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32; each DLL's export spec in
 │                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone;
-│                     # F2K's own programs (pwd, ps, cmd), each with its README
+│                     # F2K's own programs (pwd, ps, shutdown, cmd), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │
 └── kernel/           # F2K Kernel

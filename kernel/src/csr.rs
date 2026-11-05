@@ -33,7 +33,9 @@
 //! GenerateConsoleCtrlEvent — are [`ctrl`]'s: the console's processes, and the control thread that
 //! delivers each event to them. The base server's one API F2K serves, kernel32's announcement of a
 //! process it created (`rtl::console::base`), comes through the same service: it puts the process
-//! in its process group.
+//! in its process group. So does the user server's one API (`rtl::console::user`), user32's
+//! ExitWindowsEx: the request for the session's end, which the control thread carries out
+//! ([`crate::session`]).
 
 pub mod ctrl;
 
@@ -191,8 +193,19 @@ fn show_fresh<M: CellMemory, P: Io>(vga: &mut TextScreen<M, P>) {
 #[cfg(target_arch = "x86")]
 fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Passive>) {
     let mut call = crate::nt::call::NtCall::new(frame, passive);
-    if args[2] >> 16 == rtl::console::base::BASE_SERVER {
-        let result = base_call_server(UserAddr(args[0]), UserAddr(args[1]), args[2], args[3]);
+    let other = match args[2] >> 16 {
+        rtl::console::base::BASE_SERVER => Some(base_call_server as OtherServer),
+        rtl::console::user::USER_SERVER => Some(user_call_server as OtherServer),
+        _ => None,
+    };
+    if let Some(serve) = other {
+        let result = serve_message(
+            UserAddr(args[0]),
+            UserAddr(args[1]),
+            args[2],
+            args[3],
+            serve,
+        );
         call.finish(result);
         return;
     }
@@ -527,15 +540,22 @@ pub fn client_call_server(
     }
 }
 
-/// Serve one message of the base server's (`rtl::console::base`), read and answered as
-/// [`client_call_server`] reads and answers the console's: BasepCreateProcess, the creator's
-/// announcement of a process it made, puts the process (the creator's handle to it names it) in the
-/// creator's process group, or in a group of its own for CREATE_NEW_PROCESS_GROUP, as Windows
-/// 2000's base server decides. Any other API is STATUS_ILLEGAL_FUNCTION; a handle that names no
-/// process is refused as the process services refuse it.
+/// A server's API beside the console's: the API number, and the message's data as far as the
+/// call's length goes, answered in place; the status.
 #[cfg(target_arch = "x86")]
-fn base_call_server(message: UserAddr, capture: UserAddr, api: u32, length: u32) -> NtResult {
-    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS};
+type OtherServer = fn(u32, &mut [u8]) -> NtStatus;
+
+/// Serve one message of a server beside the console's, read and answered as [`client_call_server`]
+/// reads and answers the console's: the data handed to `serve`, which answers it in place, then
+/// the capture buffer, the API number, the status and the data written back.
+#[cfg(target_arch = "x86")]
+fn serve_message(
+    message: UserAddr,
+    capture: UserAddr,
+    api: u32,
+    length: u32,
+    serve: OtherServer,
+) -> NtResult {
     let length = length as usize;
     if length > 4 * DATA_WORDS || !length.is_multiple_of(4) {
         return Err(STATUS_INVALID_PARAMETER);
@@ -543,22 +563,7 @@ fn base_call_server(message: UserAddr, capture: UserAddr, api: u32, length: u32)
     let size = offset_of!(CsrApiMsg, data) + length;
     let mut msg = CsrApiMsg::zeroed();
     message.read(&mut msg.as_bytes_mut()[..size])?;
-    let request = CreateProcess::<u32>::from_bytes(&msg.data.as_bytes()[..length]);
-    let status = match request {
-        _ if api != CREATE_PROCESS => NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION),
-        None => STATUS_INVALID_PARAMETER,
-        Some(request) => {
-            let announced = crate::nt::object::reference_process(request.process, 0).map(|made| {
-                let group = if request.creation_flags & CREATE_NEW_PROCESS_GROUP != 0 {
-                    made.record().id()
-                } else {
-                    crate::user::args::calling_process().process_group()
-                };
-                made.record().set_process_group(group);
-            });
-            announced.map_or_else(|status| status, |()| STATUS_SUCCESS)
-        }
-    };
+    let status = serve(api, &mut msg.data.as_bytes_mut()[..length]);
     msg.capture_buffer = capture.raw();
     msg.api_number = api;
     msg.return_value = status.0;
@@ -571,6 +576,85 @@ fn base_call_server(message: UserAddr, capture: UserAddr, api: u32, length: u32)
     } else {
         Err(status)
     }
+}
+
+/// The base server's one API F2K serves (`rtl::console::base`): BasepCreateProcess, the creator's
+/// announcement of a process it made, puts the process (the creator's handle to it names it) in
+/// the creator's process group, or in a group of its own for CREATE_NEW_PROCESS_GROUP, as Windows
+/// 2000's base server decides. Any other API is STATUS_ILLEGAL_FUNCTION; a handle that names no
+/// process is refused as the process services refuse it.
+#[cfg(target_arch = "x86")]
+fn base_call_server(api: u32, data: &mut [u8]) -> NtStatus {
+    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS};
+    if api != CREATE_PROCESS {
+        return NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION);
+    }
+    let Some(request) = CreateProcess::<u32>::from_bytes(data) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let announced = crate::nt::object::reference_process(request.process, 0).map(|made| {
+        let group = if request.creation_flags & CREATE_NEW_PROCESS_GROUP != 0 {
+            made.record().id()
+        } else {
+            crate::user::args::calling_process().process_group()
+        };
+        made.record().set_process_group(group);
+    });
+    announced.map_or_else(|status| status, |()| STATUS_SUCCESS)
+}
+
+/// The user server's one API (`rtl::console::user`), for the calling process: UserpExitWindowsEx,
+/// the request for the session's end, its flags checked as Windows 2000 checks them before its
+/// privilege check (a bit it does not know is STATUS_ACCESS_DENIED), then taken for the control
+/// thread, which ends the session once the call has returned ([`crate::session`]). A request made
+/// while the session ends already changes nothing, and is answered as taken. Any other API is
+/// STATUS_ILLEGAL_FUNCTION; data too short for the message STATUS_INVALID_PARAMETER.
+#[cfg(target_arch = "x86")]
+fn user_call_server(api: u32, data: &mut [u8]) -> NtStatus {
+    use rtl::console::user::{check_flags, ExitWindowsEx, EXIT_WINDOWS_EX};
+    if api != EXIT_WINDOWS_EX {
+        return NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION);
+    }
+    let Some(request) = ExitWindowsEx::<u32>::from_bytes(data) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if let Err(status) = check_flags(request.flags) {
+        return NtStatus(status);
+    }
+    // Windows 2000 refuses every action but EWX_LOGOFF here unless the caller's token holds
+    // SeShutdownPrivilege enabled (ERROR_PRIVILEGE_NOT_HELD, the exitwin capture). F2K checks no
+    // privilege: a known deviation, the owner's decision while F2K has no security.
+    request_session_end(ctrl::SessionRequest {
+        flags: request.flags,
+        caller: crate::user::args::calling_process().object(),
+    });
+    STATUS_SUCCESS
+}
+
+/// Take `request` for the control thread, and wake it.
+#[cfg(target_arch = "x86")]
+fn request_session_end(request: ctrl::SessionRequest) {
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        let control = &mut SERVER.get(dispatch).ctrl;
+        control.request_session_end(request);
+        let pending = control.has_pending();
+        if pending {
+            ctrl::wake(crate::sched::DISPATCHER.get(dispatch));
+        }
+    });
+}
+
+/// The session's end's step (see [`crate::session`]): the next of the console's processes to ask
+/// to end, with its CtrlRoutine (see [`Control::next_to_end`]).
+#[cfg(target_arch = "x86")]
+pub fn next_to_end(caller: ObjectId) -> Option<(ObjectId, u32)> {
+    crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.next_to_end(caller))
+}
+
+/// The session's end is done: another may be asked for.
+#[cfg(target_arch = "x86")]
+pub fn session_ended() {
+    crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.session_ended());
 }
 
 /// The calling client: its bytes read through a kernel chunk, each chunk to the serial line, then
@@ -689,8 +773,20 @@ impl Client for Dual<'_> {
         }
     }
 
+    /// The event raised for the group; under the kernel option `end-session`, the boot's first
+    /// one is taken instead for a request for the session's end from the caller (see
+    /// [`crate::session`]).
     fn generate_ctrl_event(&mut self, event: u32, group: u32) -> Result<(), u32> {
-        let (_, control) = self.caller.as_mut().ok_or(STATUS_INVALID_PARAMETER.0)?;
+        let (caller, control) = self.caller.as_mut().ok_or(STATUS_INVALID_PARAMETER.0)?;
+        if let Some(flags) = crate::session::option_flags() {
+            if control.divert() {
+                control.request_session_end(ctrl::SessionRequest {
+                    flags,
+                    caller: caller.process,
+                });
+                return Ok(());
+            }
+        }
         control.generate(event, group)
     }
 

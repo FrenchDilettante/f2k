@@ -56,12 +56,6 @@
 //! of what the process left on the screen: the runner announces `F2K: screen: process N ended`
 //! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
 //! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
-//!
-//! With the kernel option `shutdown` or `reboot`, the boot ends through NtShutdownSystem's own
-//! path once its programs have (after the last audit line, or the summary): the volume flushed and
-//! marked clean, then the halt on "It is now safe to turn off your computer." (`shutdown`) or the
-//! restart (`reboot`), which QEMU's `-no-reboot` turns into its exit. No program calls the service
-//! for these boots: they test the shutdown's own steps on the machine.
 
 use crate::level::{self, High, LevelCell};
 use crate::process::exit::{self, AtQuiescence, Identity, ProcessEnd, Suite};
@@ -154,28 +148,8 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
             #[cfg(feature = "perf-trace")]
             crate::perf::report();
             crate::serial_println!("{}", tally);
-            shut_down_if_asked();
         }
-        AtQuiescence::Rest => {
-            if with_suite(|suite| suite.finished()) {
-                shut_down_if_asked();
-            }
-        }
-    }
-}
-
-/// With the kernel option `shutdown` or `reboot`, once every program has ended: shut the system
-/// down through NtShutdownSystem's own path, ShutdownNoReboot or ShutdownReboot (see the module's
-/// documentation). Otherwise the idle thread rests, as it always has.
-fn shut_down_if_asked() {
-    use crate::boot::cmdline::{kernel_command_line, kernel_option};
-    use crate::nt::shutdown::{shut_down, ShutdownAction};
-    let line = kernel_command_line();
-    if kernel_option(line, b"reboot") {
-        shut_down(ShutdownAction::Reboot);
-    }
-    if kernel_option(line, b"shutdown") {
-        shut_down(ShutdownAction::NoReboot);
+        AtQuiescence::Rest => {}
     }
 }
 

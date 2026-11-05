@@ -25,6 +25,12 @@
 //! it waits on its work event, a synchronization event the raise sets, and delivers whatever is
 //! queued each time it wakes. A DPC cannot make a thread — making one waits for locks, and maps
 //! and writes another process's memory — so the keyboard's events wait for it.
+//!
+//! The session's end goes through the same console ([`crate::session`]): a request
+//! (ExitWindowsEx's, through the user server) waits here for the control thread, as an event does,
+//! and the control thread then asks each of the console's processes to end in turn, through the
+//! same thread at its CtrlRoutine, with CTRL_LOGOFF_EVENT or CTRL_SHUTDOWN_EVENT, and marks each
+//! process the session's end has reached.
 
 use crate::ob::ObjectId;
 use crate::status::STATUS_INVALID_PARAMETER;
@@ -35,12 +41,33 @@ pub const CONSOLE_PROCESSES: usize = crate::process::MAX_PROCESSES;
 /// How many raised events wait for the control thread at most (one more is dropped).
 const PENDING_EVENTS: usize = 16;
 
-/// One of the console's processes: its object, the group it belongs to, and its CtrlRoutine.
+/// One of the console's processes: its object, the group it belongs to, its CtrlRoutine, and
+/// whether the session's end under way has reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConsoleProcess {
     pub process: ObjectId,
     pub group: u32,
     pub routine: u32,
+    pub reached: bool,
+}
+
+/// A request for the session's end: ExitWindowsEx's flags, and the process that asked (ended
+/// last).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SessionRequest {
+    pub flags: u32,
+    pub caller: ObjectId,
+}
+
+/// Where the session's end stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Session {
+    /// No end asked for, or the last one done.
+    Running,
+    /// Asked for, waiting for the control thread.
+    Requested(SessionRequest),
+    /// Under way on the control thread.
+    Ending,
 }
 
 /// An event to deliver, and the processes it goes to (each with its CtrlRoutine), as the console
@@ -60,6 +87,10 @@ pub struct Control {
     pending: [(u32, u32); PENDING_EVENTS],
     first: usize,
     count: usize,
+    session: Session,
+    /// Whether a program's control event has been taken for a request for the session's end, as
+    /// the kernel option `end-session` asks (see [`crate::session`]): once a boot.
+    diverted: bool,
 }
 
 impl Control {
@@ -70,6 +101,8 @@ impl Control {
             pending: [(0, 0); PENDING_EVENTS],
             first: 0,
             count: 0,
+            session: Session::Running,
+            diverted: false,
         }
     }
 
@@ -80,6 +113,7 @@ impl Control {
             process,
             group,
             routine,
+            reached: false,
         };
         let slot = match self.slot_of(process) {
             Some(slot) => Some(slot),
@@ -140,9 +174,9 @@ impl Control {
         true
     }
 
-    /// Whether events wait for the control thread.
+    /// Whether events, or a request for the session's end, wait for the control thread.
     pub fn has_pending(&self) -> bool {
-        self.count != 0
+        self.count != 0 || matches!(self.session, Session::Requested(_))
     }
 
     /// The oldest event waiting, taken, with the processes it goes to now.
@@ -158,6 +192,66 @@ impl Control {
             *target = Some((held.process, held.routine));
         }
         Some(Delivery { event, targets })
+    }
+
+    /// A request for the session's end, for the control thread to take. One already waiting or
+    /// under way stays the one: the session ends once, as first asked, and the request is
+    /// answered all the same (true when it was taken).
+    pub fn request_session_end(&mut self, request: SessionRequest) -> bool {
+        if self.session != Session::Running {
+            return false;
+        }
+        self.session = Session::Requested(request);
+        true
+    }
+
+    /// The kernel option `end-session`'s step (see [`crate::session`]): whether this control event
+    /// a program generates is the one taken for a request for the session's end instead — the
+    /// first of the boot.
+    pub fn divert(&mut self) -> bool {
+        !core::mem::replace(&mut self.diverted, true)
+    }
+
+    /// The control thread's step: the request for the session's end waiting, taken, the session
+    /// now ending; none reached by it yet.
+    pub fn take_session_end(&mut self) -> Option<SessionRequest> {
+        let Session::Requested(request) = self.session else {
+            return None;
+        };
+        self.session = Session::Ending;
+        for held in self.processes.iter_mut().flatten() {
+            held.reached = false;
+        }
+        Some(request)
+    }
+
+    /// The next process the session's end asks to end, marked reached, with its CtrlRoutine: the
+    /// first the console holds that the end has not reached, the caller once no other is left. A
+    /// process that connects while the session ends is reached in its turn. None once every
+    /// process has been reached.
+    ///
+    /// Windows 2000 asks the processes by their shutdown level, the highest first, the caller
+    /// last; a process changes its own with SetProcessShutdownParameters, and every process
+    /// starts at 0x280. F2K does not serve SetProcessShutdownParameters yet (no program it runs
+    /// calls it), so every process stands at 0x280, and the order among equals is the console's.
+    pub fn next_to_end(&mut self, caller: ObjectId) -> Option<(ObjectId, u32)> {
+        let unreached = |held: &Option<ConsoleProcess>| held.is_some_and(|held| !held.reached);
+        let others = self
+            .processes
+            .iter()
+            .position(|held| unreached(held) && held.is_some_and(|held| held.process != caller));
+        let slot = others.or_else(|| {
+            self.slot_of(caller)
+                .filter(|&slot| unreached(&self.processes[slot]))
+        })?;
+        let held = self.processes[slot].as_mut()?;
+        held.reached = true;
+        Some((held.process, held.routine))
+    }
+
+    /// The session's end is done: another may be asked for.
+    pub fn session_ended(&mut self) {
+        self.session = Session::Running;
     }
 }
 
@@ -233,15 +327,25 @@ mod target {
         dispatcher.set_event(WORK.id(), EVENT_WAKE_INCREMENT);
     }
 
-    /// The control thread's routine: wait for work, deliver every event waiting, again. Never
-    /// returns.
+    /// The control thread's routine: wait for work, deliver every event waiting, then end the
+    /// session when that was asked for (see [`crate::session`]), again. Events raised while the
+    /// session ends wait for its end. Never returns.
     extern "C" fn control_thread(_start: u32, _context: u32) -> ! {
         loop {
             crate::sched::wait::wait_current_for(WORK.id(), WaitReason::Executive, None);
-            while let Some(delivery) =
-                raised::<Dispatch, _>(|dispatch| super::super::SERVER.get(dispatch).ctrl.take())
-            {
-                deliver(&delivery);
+            loop {
+                while let Some(delivery) =
+                    raised::<Dispatch, _>(|dispatch| super::super::SERVER.get(dispatch).ctrl.take())
+                {
+                    deliver(&delivery);
+                }
+                let request = raised::<Dispatch, _>(|dispatch| {
+                    super::super::SERVER.get(dispatch).ctrl.take_session_end()
+                });
+                match request {
+                    Some(request) => crate::session::end(request),
+                    None => break,
+                }
             }
         }
     }
@@ -345,7 +449,7 @@ mod target {
     /// RtlCreateUserThread's work for the console: a thread of the process `id` names, started at
     /// `routine` with `event` as its argument, and readied. The process's own failures refuse it:
     /// it has ended or is ending, its address space has no room, it can take no thread.
-    fn start_ctrl_thread(id: ObjectId, routine: u32, event: u32) -> Result<(), NtStatus> {
+    pub fn start_ctrl_thread(id: ObjectId, routine: u32, event: u32) -> Result<(), NtStatus> {
         // The process's object held for the delivery: its record stays the process's.
         let _reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
         let process = crate::process::pool::of_object(id).ok_or(STATUS_INVALID_HANDLE)?;
@@ -377,7 +481,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::{start, wake};
+pub use target::{start, start_ctrl_thread, wake};
 
 #[cfg(test)]
 mod tests {
@@ -424,6 +528,66 @@ mod tests {
         );
         assert_eq!(control.take(), None);
         assert!(!control.has_pending());
+    }
+
+    /// The session's end asks the console's processes in turn, in the console's order, the caller
+    /// last; a process that connects meanwhile in its turn, one that disconnects never.
+    #[test]
+    fn the_session_ends_with_the_caller_last() {
+        let mut control = Control::new();
+        for index in 1..=4 {
+            assert!(control.connect(process(index), 8, 0x1000 * index as u32));
+        }
+        let caller = process(2);
+        assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
+        assert!(control.has_pending());
+        assert!(
+            !control.request_session_end(SessionRequest { flags: 2, caller }),
+            "the first request stands"
+        );
+        assert_eq!(
+            control.take_session_end(),
+            Some(SessionRequest { flags: 1, caller })
+        );
+        assert!(!control.has_pending());
+        assert_eq!(control.next_to_end(caller), Some((process(1), 0x1000)));
+        assert!(control.connect(process(5), 8, 0x5000));
+        control.disconnect(process(1));
+        assert_eq!(control.next_to_end(caller), Some((process(3), 0x3000)));
+        control.disconnect(process(4));
+        assert_eq!(control.next_to_end(caller), Some((process(5), 0x5000)));
+        assert_eq!(control.next_to_end(caller), Some((process(2), 0x2000)));
+        assert_eq!(control.next_to_end(caller), None);
+        assert!(
+            !control.request_session_end(SessionRequest { flags: 0, caller }),
+            "still ending"
+        );
+        control.session_ended();
+        // Another session's end reaches every process again; a caller that is not the console's
+        // is never reached.
+        assert!(control.request_session_end(SessionRequest {
+            flags: 0,
+            caller: process(9)
+        }));
+        control.take_session_end();
+        let reached =
+            core::iter::from_fn(|| control.next_to_end(process(9))).collect::<std::vec::Vec<_>>();
+        assert_eq!(
+            reached,
+            [
+                (process(2), 0x2000),
+                (process(3), 0x3000),
+                (process(5), 0x5000)
+            ]
+        );
+    }
+
+    /// The `end-session` option takes one control event a boot.
+    #[test]
+    fn one_event_is_diverted() {
+        let mut control = Control::new();
+        assert!(control.divert());
+        assert!(!control.divert());
     }
 
     /// GenerateConsoleCtrlEvent's group: one the console's processes are in, or 0; any other is

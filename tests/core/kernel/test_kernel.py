@@ -174,6 +174,80 @@ PROCESS_CONCURRENT_TOO_MANY = (
     "F2K: process not created (status 0xc000009a)",
 )
 
+# The session's end (kernel/src/session.rs), driven by the kernel option `end-session=<flags>`: no
+# program of the corpus calls ExitWindowsEx (a real one would shut the capture machine down), so
+# the option takes the boot's first generated control event for ExitWindowsEx(<flags>) from the
+# program that generates it. The ctrl fixture generates its first event into its child's group once
+# the child's handlers are in place, so the session ends at a known point: ctrl.exe the caller
+# (asked last), its child ctrlkid, and beside them spawnkid sleeping a minute with no handler (a
+# leg of its own, connected to the console before the child). `session-wait=2000` shortens the wait
+# from Windows 2000's 20 s. A process the session's end ends exits with 0xC000013A
+# (STATUS_CONTROL_C_EXIT, 3221225786), as its default handler would.
+SESSION_KID = "re:^F2K: child process \\d+ \\(CTRLKID\\) exited normally \\(exit code={}\\)$"
+SESSION_ENDED_AFTER_WAIT = "re:^F2K: session: process \\d+ \\({}\\) still running after 2000 ms: ended$"
+SESSION_LEGS = ("CORPUS\\ctrl.exe {}", "CORPUS\\spawnkid.exe sleep 60000")
+# The machine's end once the session has ended: NtShutdownSystem's steps with its action (the ctrl
+# fixture writes no file, so the volume is the one the boot mounted), then the halt's closing line
+# or the restart's.
+SESSION_MACHINE_END = (
+    "F2K: shutdown: {}",
+    "F2K: shutdown: volume unchanged since its mount",
+    "F2K: shutdown: registry flushed (no hive on disk)",
+    "F2K: shutdown complete",
+)
+# A shutdown: CTRL_SHUTDOWN_EVENT (6) to each process. spawnkid's default handler ends it; the
+# child's handlers run, the last registered first, and the one answering TRUE lets its main thread
+# end it with 0; ctrl.exe's own handler answers TRUE and keeps it running, so it is ended after the
+# wait. The child ctrl.exe started meanwhile (the next case of its section, its Ctrl+Break held
+# while the session ends) is reached after it. The last process's reap reports the runner's
+# summary, every process torn down clean; then the machine's end, last.
+SESSION_SHUTDOWN = (
+    *BOOTED,
+    "kid: registered [TFF]: every call ret=1 yes",
+    "F2K: process 2 (spawnkid) exited normally (exit code=3221225786)",
+    "kid: handler 3: event 6, on the main thread no, on the first handler's thread yes, answers FALSE",
+    "kid: handler 2: event 6, on the main thread no, on the first handler's thread yes, answers FALSE",
+    "kid: handler 1: event 6, on the main thread no, on the first handler's thread yes, answers TRUE",
+    "kid: a handler answered TRUE: the main thread runs on",
+    SESSION_KID.format(0),
+    SESSION_ENDED_AFTER_WAIT.format("ctrl"),
+    "F2K: process 1 (ctrl) exited normally (exit code=3221225786)",
+    "kid: handler 2: event 6, on the main thread no, on the first handler's thread yes, answers TRUE",
+    SESSION_KID.format(0),
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+    *(line.format("ShutdownNoReboot") for line in SESSION_MACHINE_END),
+    "It is now safe to turn off your computer.",
+)
+# A logoff: CTRL_LOGOFF_EVENT (5) to each process. The child (ctrlkid listen) records the event
+# and answers TRUE, then waits five seconds for a Ctrl+Break that is held while the session ends:
+# it is ended after the wait, which ctrl.exe sees as its child's end. ctrl.exe and the child it
+# starts next are ended after the wait too. No machine's end follows a logoff: the runner sees its
+# programs end, as on any boot.
+SESSION_LOGOFF = (
+    *BOOTED,
+    "F2K: process 2 (spawnkid) exited normally (exit code=3221225786)",
+    SESSION_ENDED_AFTER_WAIT.format("CTRLKID"),
+    SESSION_KID.format(3221225786),
+    "the child's end: WAIT_OBJECT_0, exit code 0xC000013A",
+    SESSION_ENDED_AFTER_WAIT.format("ctrl"),
+    "F2K: process 1 (ctrl) exited normally (exit code=3221225786)",
+    SESSION_ENDED_AFTER_WAIT.format("CTRLKID"),
+    SESSION_KID.format(3221225786),
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+)
+# A forced restart (EWX_REBOOT | EWX_FORCE): each process ended without an event or a wait, the
+# caller last, then the machine's end with ShutdownReboot (1).
+SESSION_FORCED = (
+    *BOOTED,
+    "kid: registered [TFF]: every call ret=1 yes",
+    "F2K: process 2 (spawnkid) exited normally (exit code=3221225786)",
+    SESSION_KID.format(3221225786),
+    "F2K: process 1 (ctrl) exited normally (exit code=3221225786)",
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+    *(line.format("ShutdownReboot") for line in SESSION_MACHINE_END),
+    f2kboot.RESTARTING,
+)
+
 # What a one-process boot reports once its program has run and its process is gone.
 EXITED_CLEAN = (
     "F2K: user process exited normally (exit code=0)",
@@ -392,6 +466,38 @@ CASES = (
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_PS,
+    ),
+    Case(
+        name="session-shutdown",
+        description="a shutdown asked for by the ctrl fixture (the end-session option): CTRL_SHUTDOWN_EVENT to each console process in turn, the caller last; a handler sees it and its process ends, the default handler ends a process without one, a handler answering TRUE without ending is ended after the wait; then the machine's end, last",
+        image="kernel",
+        cmdline=" ;; ".join(SESSION_LEGS).format("order"),
+        kernel_options="concurrent end-session=0x1 session-wait=2000",
+        ordered=True,
+        expects=SESSION_SHUTDOWN,
+        timeout=40.0,
+    ),
+    Case(
+        name="session-logoff",
+        description="a logoff asked for by the ctrl fixture (the end-session option): CTRL_LOGOFF_EVENT to each console process; a child whose handler answers TRUE and waits on is ended after the wait, its parent sees its end; no machine's end, the runner's summary once every program has ended",
+        image="kernel",
+        cmdline=" ;; ".join(SESSION_LEGS).format("ctrlc"),
+        kernel_options="concurrent end-session=0x0 session-wait=2000",
+        ordered=True,
+        expects=SESSION_LOGOFF,
+        forbids=("F2K: shutdown",),
+        timeout=40.0,
+    ),
+    Case(
+        name="session-forced",
+        description="a forced restart asked for by the ctrl fixture (the end-session option, EWX_REBOOT | EWX_FORCE): each console process ended without an event or a wait, the caller last, then the machine's end with ShutdownReboot",
+        image="kernel",
+        cmdline=" ;; ".join(SESSION_LEGS).format("order"),
+        kernel_options="concurrent end-session=0x6 session-wait=2000",
+        ordered=True,
+        expects=SESSION_FORCED,
+        forbids=("event 6", "still running after"),
+        timeout=40.0,
     ),
     Case(
         name="process-concurrent-too-many",

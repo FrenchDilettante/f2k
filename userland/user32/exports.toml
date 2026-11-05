@@ -35,6 +35,10 @@ title = "window classes"
 key = "window"
 title = "windows"
 
+[[group]]
+key = "shutdown"
+title = "ending the session"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -244,6 +248,17 @@ group = "window"
 args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
+
+# --- ending the session ---------------------------------------------------------------------------
+
+[[export]]
+name = "ExitWindowsEx"
+group = "shutdown"
+args = ["u32 uFlags", "u32 dwReserved"]
+impl = { native = "ExitWindowsEx" }
+ordinal = 214
+fails = "FALSE"
+note = "the request goes to the console server stand-in, which ends the session after the call returns; no privilege is checked (Windows 2000 requires SeShutdownPrivilege for every action but EWX_LOGOFF)"
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
@@ -1086,10 +1101,6 @@ ordinal = 212
 [[export]]
 name = "ExcludeUpdateRgn"
 ordinal = 213
-
-[[export]]
-name = "ExitWindowsEx"
-ordinal = 214
 
 [[export]]
 name = "FillRect"

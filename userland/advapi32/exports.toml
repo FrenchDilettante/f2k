@@ -205,6 +205,15 @@ ordinal = 241
 fails = "FALSE"
 note = "TokenPrivileges (3) alone; the other classes are stubbed"
 
+[[export]]
+name = "OpenThreadToken"
+group = "security"
+args = ["handle ThreadHandle", "u32 DesiredAccess", "bool OpenAsSelf", "ptr<u32> TokenHandle"]
+impl = { stub = "not yet implemented" }
+ordinal = 372
+fails = "FALSE"
+note = "exitwin.exe imports it for its guard, whose blocks never run on F2K"
+
 # --- not implemented yet: the rest of ADVAPI32.dll 5.0.2195.6710's export table, by ordinal ------
 
 [[export]]
@@ -1666,10 +1675,6 @@ ordinal = 370
 [[export]]
 name = "OpenServiceW"
 ordinal = 371
-
-[[export]]
-name = "OpenThreadToken"
-ordinal = 372
 
 [[export]]
 name = "OpenTraceA"

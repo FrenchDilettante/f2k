@@ -485,11 +485,12 @@ pub struct Terminating;
 ///
 /// # Panics
 ///
-/// The process is the caller's own (it ends through [`exit_process`]).
+/// The process is the caller's own (it ends through [`exit_process`]). A system thread (the
+/// console's control thread, ending the session) is no process's.
 pub fn terminate_process(process: &Process, status: u32) -> Result<(), Terminating> {
     use crate::status::STATUS_THREAD_IS_TERMINATING;
     assert!(
-        !core::ptr::eq(crate::process::current(), process),
+        crate::pcr::pcr().threads.process() != Some(process.object().index),
         "the calling process ends through its own exit"
     );
     critical_region(|| {

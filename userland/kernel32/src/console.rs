@@ -19,7 +19,8 @@
 //! connection. For each Ctrl+C or Ctrl+Break that reaches the process — a key, or
 //! GenerateConsoleCtrlEvent — the server starts a thread of the process there ([`ctrl_routine`]),
 //! which runs the process's handlers, the last registered first, and the default handler, which
-//! ends the process, when none takes the event.
+//! ends the process, when none takes the event. The session's end (ExitWindowsEx) reaches the
+//! process the same way, with CTRL_LOGOFF_EVENT or CTRL_SHUTDOWN_EVENT.
 
 use rtl::console::api::{self, InputRecords, Message};
 use rtl::console::{Api, Coord, SmallRect};
@@ -1269,9 +1270,10 @@ pub extern "system" fn set_console_ctrl_handler(routine: usize, add: u32) -> u32
 }
 
 /// The control events a CtrlRoutine runs the handlers for (a HandlerRoutine's dwCtrlType): Ctrl+C's
-/// and Ctrl+Break's, the two GenerateConsoleCtrlEvent raises.
-const CTRL_C_EVENT: u32 = 0;
-const CTRL_BREAK_EVENT: u32 = 1;
+/// and Ctrl+Break's, the two GenerateConsoleCtrlEvent raises; and the session's end's,
+/// CTRL_LOGOFF_EVENT and CTRL_SHUTDOWN_EVENT, which only the server sends.
+const CTRL_C_EVENT: u32 = rtl::console::CTRL_C_EVENT;
+const CTRL_BREAK_EVENT: u32 = rtl::console::CTRL_BREAK_EVENT;
 
 /// IMAGE_SUBSYSTEM_WINDOWS_CUI: a console program's subsystem.
 const SUBSYSTEM_CONSOLE: u32 = 3;
@@ -1311,7 +1313,9 @@ pub fn run_ctrl_handlers(event: u32) -> Option<u32> {
 /// control event that reaches it, the event its argument (stdcall, under a null return address:
 /// it never returns). It runs the handlers ([`run_ctrl_handlers`]) and ends its thread with their
 /// answer; when none took the event, the default handler ends the process with
-/// STATUS_CONTROL_C_EXIT, as Windows 2000's does.
+/// STATUS_CONTROL_C_EXIT, as Windows 2000's does. The session's end's events go the same way: a
+/// handler that answers TRUE to CTRL_LOGOFF_EVENT or CTRL_SHUTDOWN_EVENT keeps the process
+/// running, and the server ends it once its wait has passed.
 pub extern "system" fn ctrl_routine(event: u32) -> ! {
     match run_ctrl_handlers(event) {
         Some(answer) => crate::thread::exit_thread(answer),

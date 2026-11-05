@@ -1,6 +1,6 @@
 //! The runtime of F2K's own programs: Win32 console programs written in Rust, without a C runtime,
-//! that import kernel32 (and user32, for one that sets the display mode) as Windows 2000's own
-//! programs do, so they run unchanged on Windows 2000 too.
+//! that import kernel32 (and user32 and advapi32, for one that sets the display mode or shuts the
+//! machine down) as Windows 2000's own programs do, so they run unchanged on Windows 2000 too.
 //!
 //! A program is a crate of its own (userland/<program>) whose binary names its `main` with
 //! [`entry!`] and builds with build-support/exe.rs's `build_exe`. This crate gives it:
@@ -27,12 +27,15 @@
 //!   files found by a pattern with their times, created, deleted, copied, moved and written, a
 //!   volume's label, serial number and free space, a file time made local, the local time set) and
 //!   its console's (src/console.rs: the title, the window's size, the screen's colours, one key
-//!   read), and a buffer from the process heap ([`Buffer`], src/heap.rs).
+//!   read), and a buffer from the process heap ([`Buffer`], src/heap.rs);
+//! - the calls that shut the machine down (src/shutdown.rs: the computer's name, a privilege
+//!   enabled in the process's token through advapi32, ExitWindowsEx through user32), and a
+//!   [`sleep`].
 //!
 //! `unsafe` lives here, at the seam to the system's DLLs (src/sys.rs, src/toolhelp.rs,
-//! src/files.rs, src/console.rs, src/heap.rs); the programs are safe Rust. The writer's buffering
-//! and its UTF-16LE bytes (src/output.rs) and the command line (src/command.rs) are host-tested;
-//! the rest is only built for F2K's target.
+//! src/files.rs, src/console.rs, src/heap.rs, src/shutdown.rs); the programs are safe Rust. The
+//! writer's buffering and its UTF-16LE bytes (src/output.rs) and the command line (src/command.rs)
+//! are host-tested; the rest is only built for F2K's target.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -49,6 +52,8 @@ mod files;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod heap;
 mod output;
+#[cfg(all(target_arch = "x86", target_os = "windows"))]
+mod shutdown;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod sys;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
@@ -83,6 +88,21 @@ pub use files::{
 pub use heap::Buffer;
 pub use output::{little_endian, Error, Sink, Writer};
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
+pub use shutdown::{
+    computer_name,
+    exit_windows,
+    lookup_privilege,
+    Luid,
+    Token,
+    EWX_FORCE,
+    EWX_REBOOT,
+    EWX_SHUTDOWN,
+    MAX_COMPUTERNAME_LENGTH,
+    SE_SHUTDOWN_NAME,
+    TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_QUERY,
+};
+#[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use sys::{
     change_display_mode,
     clear_screen,
@@ -111,6 +131,7 @@ pub use sys::{
     set_environment_variable,
     set_standard_handle,
     set_unicode_output,
+    sleep,
     standard_handle,
     standard_input_is_console,
     stderr,

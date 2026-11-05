@@ -1,8 +1,8 @@
 // Shared by the build scripts of F2K's own programs (`include!`d): link the crate's binary as a
 // Win32 console program with the header MSVC 6's linker writes for one (the corpus's programs,
 // built with it on Windows 2000, carry the same fields), so it loads on F2K and on Windows 2000
-// alike. Its imports are the runtime crate's (userland/exe): kernel32's, and user32's for a program
-// that sets the display mode.
+// alike. Its imports are the runtime crate's (userland/exe): kernel32's, user32's for a program
+// that sets the display mode or shuts the machine down, and advapi32's for the latter.
 
 /// The program's entry point, the runtime's (`exe::entry!`): a cdecl function, as MSVC's
 /// `mainCRTStartup` is, that never returns.

@@ -384,12 +384,12 @@ def test_a_kept_boot_attaches_its_disk_and_a_restart_ends_it(tmp_path, monkeypat
     build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
     kept = tmp_path / "kept.img"
     log, stopped = f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20,
-                                done=lambda log: False, kernel_options="reboot", kept=kept)
+                                done=lambda log: False, kernel_options="redirected", kept=kept)
     assert stopped == reason, log
     arguments = json.loads(record.read_text())
     assert arguments[arguments.index("-drive") + 1] == f"file={kept},format=raw,if=ide"
     assert "-no-reboot" in arguments
-    assert arguments[arguments.index("-append") + 1] == "reboot --"
+    assert arguments[arguments.index("-append") + 1] == "redirected --"
 
 
 def volume_image(path, *, fat1=0x0FFF_FFFF, free_count=0xFFFF_FFFF, next_free=0xFFFF_FFFF,

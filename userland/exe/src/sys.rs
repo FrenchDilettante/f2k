@@ -134,6 +134,8 @@ unsafe extern "system" {
     ) -> i32;
     /// A wait for an object to be signaled: why the wait ended, WAIT_FAILED on failure.
     fn WaitForSingleObject(object: usize, milliseconds: u32) -> u32;
+    /// The calling thread suspended for the milliseconds given.
+    fn Sleep(milliseconds: u32);
     /// A process's exit code (STILL_ACTIVE while it runs).
     fn GetExitCodeProcess(process: usize, code: *mut u32) -> i32;
     /// A handle closed.
@@ -294,6 +296,12 @@ struct ProcessInformation {
 fn last_error() -> Error {
     // SAFETY: no arguments; it reads the thread's own TEB.
     Error(unsafe { GetLastError() })
+}
+
+/// Suspend the calling thread for `milliseconds`.
+pub fn sleep(milliseconds: u32) {
+    // SAFETY: no pointers.
+    unsafe { Sleep(milliseconds) }
 }
 
 /// End the process with `code`.

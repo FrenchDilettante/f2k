@@ -23,45 +23,11 @@
 
 use core::fmt;
 
+use rtl::nt::ShutdownAction;
+
 use super::call::{NtCall, NtResult};
 use crate::fs::fat32::volume::Flushed;
 use crate::status::*;
-
-/// SHUTDOWN_ACTION: what the machine does once the system is shut down.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ShutdownAction {
-    /// Halt on "It is now safe to turn off your computer".
-    NoReboot = 0,
-    /// Restart the machine.
-    Reboot = 1,
-    /// Turn the machine off; without ACPI, the same halt as ShutdownNoReboot.
-    PowerOff = 2,
-}
-
-impl TryFrom<u32> for ShutdownAction {
-    type Error = NtStatus;
-
-    /// The action `action` names: STATUS_INVALID_PARAMETER past ShutdownPowerOff.
-    fn try_from(action: u32) -> Result<Self, NtStatus> {
-        match action {
-            0 => Ok(ShutdownAction::NoReboot),
-            1 => Ok(ShutdownAction::Reboot),
-            2 => Ok(ShutdownAction::PowerOff),
-            _ => Err(STATUS_INVALID_PARAMETER),
-        }
-    }
-}
-
-impl ShutdownAction {
-    /// The action's name in the NT enumeration.
-    pub fn name(self) -> &'static str {
-        match self {
-            ShutdownAction::NoReboot => "ShutdownNoReboot",
-            ShutdownAction::Reboot => "ShutdownReboot",
-            ShutdownAction::PowerOff => "ShutdownPowerOff",
-        }
-    }
-}
 
 /// What a halted shutdown leaves on the screen and on COM1.
 pub const SAFE_TO_TURN_OFF: &str = "It is now safe to turn off your computer.";
@@ -175,8 +141,9 @@ mod target {
     const PLAIN: u16 = 0x07;
 
     /// Shut the system down with `action`: the steps ([`run`]), then the halt or the reset. The
-    /// service's path once its action is checked, and the kernel's own (the runner's `shutdown`
-    /// and `reboot` options).
+    /// service's path once its action is checked, and the session's end's
+    /// (`crate::session::shut_down`), winlogon's call on Windows 2000. Called at the passive
+    /// level, holding no console or volume lock, from a thread that can wait for the volume's.
     pub fn shut_down(action: ShutdownAction) -> ! {
         match run(action, &mut Kernel) {
             Ending::Halt => crate::halt(),
@@ -285,21 +252,6 @@ mod tests {
         count: 90_100,
         next_free: Some(36_900),
     })));
-
-    /// The actions are 0, 1 and 2; anything past them is STATUS_INVALID_PARAMETER, as the
-    /// capture's 3 and 0xFFFFFFFF are.
-    #[test]
-    fn the_action_is_one_of_three() {
-        assert_eq!(ShutdownAction::try_from(0), Ok(ShutdownAction::NoReboot));
-        assert_eq!(ShutdownAction::try_from(1), Ok(ShutdownAction::Reboot));
-        assert_eq!(ShutdownAction::try_from(2), Ok(ShutdownAction::PowerOff));
-        for action in [3, 4, 0x8000_0000, 0xFFFF_FFFF] {
-            assert_eq!(
-                ShutdownAction::try_from(action),
-                Err(STATUS_INVALID_PARAMETER)
-            );
-        }
-    }
 
     /// The service checks the action before anything else: an action out of range is
     /// STATUS_INVALID_PARAMETER through the service table, as the capture's; a valid one goes on

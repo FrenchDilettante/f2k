@@ -72,6 +72,9 @@ mod win32k;
 // ntdll's CsrClientCallServer
 mod csr;
 
+// The session's end: ExitWindowsEx's work, carried out by the console server's control thread
+mod session;
+
 // The debugger's print channel: ntdll's DbgPrint, written to COM1
 mod dbgprint;
 

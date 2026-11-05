@@ -11,8 +11,8 @@
 //! `screens` pauses the boot after each program for the test harness's screenshot,
 //! `concurrent` runs the programs side by side instead of one after another (`process::runner`),
 //! `redirected` keeps the standard handles' writes off the screen (`csr::REDIRECTED`), and
-//! `shutdown` or `reboot` ends the boot through NtShutdownSystem's path once its programs have
-//! (`process::runner`).
+//! `end-session=<flags>` and `session-wait=<ms>` drive the session's end in its tests
+//! (`crate::session`; their values through [`kernel_option_value`]).
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.
@@ -93,6 +93,19 @@ pub fn kernel_option(kernel: &[u8], option: &[u8]) -> bool {
         None => kernel,
     };
     find_word(own, option).is_some()
+}
+
+/// The value the kernel's own part of the command line gives option `name`, written as a word of
+/// its own `name=value`: the text after the `=`; none when no such word stands there.
+pub fn kernel_option_value<'a>(kernel: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    let own = match find_word(kernel, SEPARATOR) {
+        Some(at) => &kernel[..at],
+        None => kernel,
+    };
+    own.split(is_blank).find_map(|word| {
+        word.strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix(b"="))
+    })
 }
 
 /// The programs' command lines a user command line lists, in order: the text between the ` ;; `
@@ -188,6 +201,28 @@ mod tests {
         // A `--` glued to other text is not the separator.
         assert_eq!(user_command_line(b"kernel --verbose"), None);
         assert_eq!(user_command_line(b"kernel a--b"), None);
+    }
+
+    /// An option's value is the text after its `name=`, before the separator only.
+    #[test]
+    fn an_option_takes_a_value() {
+        let line =
+            b"/path/f2k-kernel concurrent end-session=0x5 session-wait=2000 -- x end-session=1";
+        assert_eq!(kernel_option_value(line, b"end-session"), Some(&b"0x5"[..]));
+        assert_eq!(
+            kernel_option_value(line, b"session-wait"),
+            Some(&b"2000"[..])
+        );
+        assert_eq!(kernel_option_value(line, b"concurrent"), None);
+        assert_eq!(kernel_option_value(line, b"end"), None);
+        assert_eq!(
+            kernel_option_value(b"k -- end-session=1", b"end-session"),
+            None
+        );
+        assert_eq!(
+            kernel_option_value(b"end-session=", b"end-session"),
+            Some(&b""[..])
+        );
     }
 
     /// The user command line lists the programs, ` ;; ` between two; one without a separator is a

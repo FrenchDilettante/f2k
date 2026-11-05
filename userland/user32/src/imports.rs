@@ -66,6 +66,14 @@ mod raw {
             multi_byte: *const u8,
             multi_byte_bytes: u32,
         ) -> u32;
+        /// CsrClientCallServer: a message to csrss's servers (F2K: the kernel's stand-in), its
+        /// API's data answered in place; the server's status.
+        pub fn CsrClientCallServer(
+            message: *mut rtl::console::CsrApiMsg,
+            capture_buffer: *mut u8,
+            api: u32,
+            length: u32,
+        ) -> u32;
     }
 
     // win32k's services: user32's own stubs (generated from its spec's internal syscall records),
@@ -244,6 +252,20 @@ pub fn dos_error(status: NtStatus) -> u32 {
     unsafe { raw::RtlNtStatusToDosError(status.0) }
 }
 
+/// CsrClientCallServer: API `api`'s data `data` sent to its server (no capture buffer: F2K's server
+/// reads the client's memory where it is), as the data after the message's header; the server's
+/// status, `data` as the server answered it.
+pub fn call_server(api: u32, data: &mut [u8]) -> u32 {
+    use rtl::pod::Pod;
+    let mut message = rtl::console::CsrApiMsg::default();
+    let length = data.len();
+    message.data.as_bytes_mut()[..length].copy_from_slice(data);
+    // SAFETY: the message is this function's own, its data as long as the length says.
+    unsafe { raw::CsrClientCallServer(&mut message, core::ptr::null_mut(), api, length as u32) };
+    data.copy_from_slice(&message.data.as_bytes()[..length]);
+    message.return_value
+}
+
 /// RtlUnicodeToMultiByteN: as many of `source`'s units as `destination` holds, converted: the bytes
 /// written.
 pub fn unicode_to_multi_byte(destination: &mut [u8], source: &[u16]) -> usize {
@@ -359,6 +381,10 @@ pub mod host {
         pub static THREAD_ID: Cell<u32> = const { Cell::new(0x10) };
         /// How many win32k services were called.
         pub static SERVICES: Cell<u32> = const { Cell::new(0) };
+        /// The messages CsrClientCallServer was given (the API number and the data words the
+        /// length names), and the status the server answers.
+        pub static SERVER_CALLS: RefCell<std::vec::Vec<(u32, std::vec::Vec<u32>)>> = const { RefCell::new(std::vec::Vec::new()) };
+        pub static SERVER_ANSWER: Cell<u32> = const { Cell::new(0) };
         /// What NtUserChangeDisplaySettings was last given (the name's units, the DEVMODEW as far
         /// as its dmSize goes, the window, the flags, the parameter), and what it answers.
         pub static DISPLAY_CHANGES: RefCell<std::vec::Vec<DisplayChange>> = const { RefCell::new(std::vec::Vec::new()) };
@@ -396,6 +422,25 @@ pub mod host {
                 .push(text.to_string_lossy().into_owned())
         });
         0
+    }
+
+    /// CsrClientCallServer: the message kept, answered with [`SERVER_ANSWER`] as the server
+    /// answers it (its ReturnValue, the API number and capture buffer as the call named them).
+    pub unsafe extern "system" fn CsrClientCallServer(
+        message: *mut rtl::console::CsrApiMsg,
+        capture_buffer: *mut u8,
+        api: u32,
+        length: u32,
+    ) -> u32 {
+        // SAFETY: the caller's message.
+        let message = unsafe { &mut *message };
+        let words = message.data[..length as usize / 4].to_vec();
+        SERVER_CALLS.with(|calls| calls.borrow_mut().push((api, words)));
+        let status = SERVER_ANSWER.with(Cell::get);
+        message.capture_buffer = capture_buffer as usize as u32;
+        message.api_number = api;
+        message.return_value = status;
+        status
     }
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {

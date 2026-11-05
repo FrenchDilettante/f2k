@@ -43,6 +43,7 @@ pub mod input;
 pub mod layout;
 pub mod line;
 pub mod screen;
+pub mod user;
 
 pub use api::Api;
 use api::{Message, Word};
@@ -185,6 +186,11 @@ const VALID_ATTRIBUTES: u32 = 0xDFFF;
 /// the two a key or GenerateConsoleCtrlEvent raises.
 pub const CTRL_C_EVENT: u32 = 0;
 pub const CTRL_BREAK_EVENT: u32 = 1;
+
+/// The control events the session's end sends each console process (see `user`): the logoff's
+/// (EWX_LOGOFF) and every other action's. No program generates them.
+pub const CTRL_LOGOFF_EVENT: u32 = 5;
+pub const CTRL_SHUTDOWN_EVENT: u32 = 6;
 
 /// The filter the input buffer takes for an input mode: whether it processes input decides which
 /// control keys the console takes for itself.

@@ -957,6 +957,50 @@ fn control_events_run_the_handlers_last_registered_first() {
     assert_eq!(set_console_ctrl_handler(passing, 0), 1);
 }
 
+/// The session's end's events reach the handlers as Ctrl+Break does: the last registered first,
+/// TRUE ending the chain, none taking it leaving it to the default handler (which ends the
+/// process). The ignoring of Ctrl+C keeps neither from them (HandlerRoutine's documentation:
+/// CTRL_LOGOFF_EVENT and CTRL_SHUTDOWN_EVENT reach every console process's handlers).
+///
+/// Pins: kernel32.SetConsoleCtrlHandler
+#[test]
+fn the_session_s_events_run_the_handlers() {
+    use std::cell::RefCell;
+    use std::vec::Vec;
+    std::thread_local! {
+        static SEEN: RefCell<Vec<(u32, u32)>> = const { RefCell::new(Vec::new()) };
+    }
+    extern "system" fn taking(event: u32) -> u32 {
+        SEEN.with(|seen| seen.borrow_mut().push((1, event)));
+        1
+    }
+    extern "system" fn passing(event: u32) -> u32 {
+        SEEN.with(|seen| seen.borrow_mut().push((2, event)));
+        0
+    }
+    let seen = || SEEN.with(|seen| core::mem::take(&mut *seen.borrow_mut()));
+    let taking = taking as extern "system" fn(u32) -> u32 as usize;
+    let passing = passing as extern "system" fn(u32) -> u32 as usize;
+    use rtl::console::{CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT};
+    assert_eq!(run_ctrl_handlers(CTRL_SHUTDOWN_EVENT), None);
+    assert_eq!(set_console_ctrl_handler(passing, 1), 1);
+    assert_eq!(
+        run_ctrl_handlers(CTRL_LOGOFF_EVENT),
+        None,
+        "the default one's"
+    );
+    assert_eq!(seen(), [(2, 5)]);
+    assert_eq!(set_console_ctrl_handler(taking, 1), 1);
+    assert_eq!(set_console_ctrl_handler(passing, 1), 1);
+    assert_eq!(set_console_ctrl_handler(0, 1), 1);
+    assert_eq!(run_ctrl_handlers(CTRL_SHUTDOWN_EVENT), Some(1));
+    assert_eq!(seen(), [(2, 6), (1, 6)]);
+    assert_eq!(set_console_ctrl_handler(0, 0), 1);
+    assert_eq!(set_console_ctrl_handler(passing, 0), 1);
+    assert_eq!(set_console_ctrl_handler(taking, 0), 1);
+    assert_eq!(set_console_ctrl_handler(passing, 0), 1);
+}
+
 /// GenerateConsoleCtrlEvent: CTRL_C_EVENT and CTRL_BREAK_EVENT go to the server, the last error
 /// untouched; any other event is ERROR_INVALID_PARAMETER before the server sees it (Windows 2000's
 /// ctrl capture: 2, 3, 5, 6, 0xFFFFFFFF).

@@ -1,8 +1,9 @@
 //! The NT structures the system services and the runtime library take, as NT 5.0 lays them out on
 //! x86, one definition for every side: UNICODE_STRING and ANSI_STRING ([`UnicodeString`],
 //! [`AnsiString`]), OBJECT_ATTRIBUTES ([`ObjectAttributes`]), CLIENT_ID ([`ClientId`]),
-//! IO_STATUS_BLOCK ([`IoStatusBlock`]), and LUID and LUID_AND_ATTRIBUTES ([`Luid`],
-//! [`LuidAndAttributes`]), a token's privileges.
+//! IO_STATUS_BLOCK ([`IoStatusBlock`]), LUID and LUID_AND_ATTRIBUTES ([`Luid`],
+//! [`LuidAndAttributes`]), a token's privileges, and SHUTDOWN_ACTION ([`ShutdownAction`]),
+//! NtShutdownSystem's argument.
 //!
 //! Their pointer-sized fields are generic, as [`crate::params::ProcessParameters`]' are: `u32` for
 //! a 32-bit process's addresses read from anywhere (the kernel, which reads them from user memory
@@ -15,6 +16,7 @@
 use core::mem::{offset_of, size_of};
 
 use crate::pod::Pod;
+use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};
 
 pub mod info;
 
@@ -114,6 +116,46 @@ pub struct Luid {
 pub struct LuidAndAttributes {
     pub luid: Luid,
     pub attributes: u32,
+}
+
+/// SHUTDOWN_ACTION: what NtShutdownSystem does once the system is shut down. The kernel's service
+/// takes it, and the console server's stand-in asks for it once ExitWindowsEx's session has ended
+/// ([`crate::console::user::action`]).
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShutdownAction {
+    /// Halt on "It is now safe to turn off your computer".
+    NoReboot = 0,
+    /// Restart the machine.
+    Reboot = 1,
+    /// Turn the machine off; without ACPI, the same halt as ShutdownNoReboot.
+    PowerOff = 2,
+}
+
+impl TryFrom<u32> for ShutdownAction {
+    type Error = NtStatus;
+
+    /// The action `action` names: STATUS_INVALID_PARAMETER past ShutdownPowerOff, as Windows
+    /// 2000's NtShutdownSystem answers before its privilege check.
+    fn try_from(action: u32) -> Result<Self, NtStatus> {
+        match action {
+            0 => Ok(ShutdownAction::NoReboot),
+            1 => Ok(ShutdownAction::Reboot),
+            2 => Ok(ShutdownAction::PowerOff),
+            _ => Err(NtStatus(STATUS_INVALID_PARAMETER)),
+        }
+    }
+}
+
+impl ShutdownAction {
+    /// The action's name in the NT enumeration.
+    pub fn name(self) -> &'static str {
+        match self {
+            ShutdownAction::NoReboot => "ShutdownNoReboot",
+            ShutdownAction::Reboot => "ShutdownReboot",
+            ShutdownAction::PowerOff => "ShutdownPowerOff",
+        }
+    }
 }
 
 impl UnicodeString<*mut u16> {
@@ -307,6 +349,23 @@ mod tests {
         };
         // SAFETY: the buffer holds the length.
         assert_eq!(unsafe { string.bytes() }, b"ab");
+    }
+
+    /// The actions are 0, 1 and 2; anything past them is STATUS_INVALID_PARAMETER, as the exitwin
+    /// capture's 3 and 0xFFFFFFFF are.
+    #[test]
+    fn the_shutdown_action_is_one_of_three() {
+        assert_eq!(ShutdownAction::try_from(0), Ok(ShutdownAction::NoReboot));
+        assert_eq!(ShutdownAction::try_from(1), Ok(ShutdownAction::Reboot));
+        assert_eq!(ShutdownAction::try_from(2), Ok(ShutdownAction::PowerOff));
+        for action in [3, 4, 0x8000_0000, 0xFFFF_FFFF] {
+            assert_eq!(
+                ShutdownAction::try_from(action),
+                Err(NtStatus(STATUS_INVALID_PARAMETER))
+            );
+        }
+        assert_eq!(ShutdownAction::PowerOff as u32, 2);
+        assert_eq!(ShutdownAction::Reboot.name(), "ShutdownReboot");
     }
 
     #[test]
