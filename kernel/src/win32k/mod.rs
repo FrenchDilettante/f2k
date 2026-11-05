@@ -80,6 +80,16 @@ mod tests {
         assert_eq!(entry("NtGdiEngTextOut"), Some((0x1257, 32)));
         assert_eq!(entry("NtUserGetDC"), Some((0x1186, 8)));
         assert_eq!(entry("NtGdiSetPixel"), Some((0x1110, 20)));
+        assert_eq!(entry("NtUserSetWindowPos"), Some((0x120F, 28)));
+        assert_eq!(entry("NtUserMoveWindow"), Some((0x11C1, 24)));
+        assert_eq!(entry("NtUserShowWindow"), Some((0x1218, 12)));
+        assert_eq!(entry("NtUserShowWindowAsync"), Some((0x1219, 8)));
+        assert_eq!(entry("NtUserQueryWindow"), Some((0x11D2, 16)));
+        assert_eq!(entry("NtUserEnumDisplaySettings"), Some((0x116B, 16)));
+        assert_eq!(entry("NtUserEnumDisplayDevices"), Some((0x1169, 16)));
+        assert_eq!(entry("NtUserEnumDisplayMonitors"), Some((0x116A, 24)));
+        assert_eq!(entry("NtUserSetSysColors"), Some((0x1204, 16)));
+        assert_eq!(entry("NtUserSystemParametersInfo"), Some((0x121C, 16)));
         assert_eq!(lookup(0x19C).map(|(bytes, _)| bytes), Some(20));
         assert!(lookup(0).is_none(), "NtGdiAbortDoc: not served");
     }

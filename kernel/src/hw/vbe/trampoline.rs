@@ -31,7 +31,7 @@
 //! hardware error (parity, a channel check) raises one, and that is fatal anyway.
 
 use core::mem::offset_of;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
     Bios,
@@ -39,6 +39,7 @@ use super::{
     Framebuffer,
     Geometry,
     ModeError,
+    ModeList,
     ModeRequest,
     ModeSet,
     PixelMemory,
@@ -539,10 +540,56 @@ pub fn graphics_mode_set() -> bool {
     STATE.is_set()
 }
 
+/// The display's modes, listed once ([`super::ModeList`]): by the mode set, from the BIOS answers
+/// it reads anyway, or by a caller asking before it, through a run of the trampoline. Only the
+/// caller [`STATE`] lets set the mode lists them, so the list is set once.
+static MODES: InitOnce<ModeList> = InitOnce::new();
+/// Whether [`MODES`] is set.
+static LISTED: AtomicBool = AtomicBool::new(false);
+
+/// The display's modes ([`super::ModeList`]). A call while another caller sets the mode or lists
+/// them is answered [`ModeError::Busy`] at once, never made to wait.
+pub fn display_modes() -> Result<&'static ModeList, ModeError> {
+    if LISTED.load(Ordering::Acquire) {
+        return Ok(MODES.get());
+    }
+    match STATE.enter() {
+        // The mode set lists the modes before it sets one: none means its BIOS listed none.
+        Entry::Set => Err(ModeError::Unsupported),
+        Entry::Busy => Err(ModeError::Busy),
+        Entry::Proceed => {
+            let result = TrampolineBios::new()
+                .ok_or(ModeError::Unsupported)
+                .and_then(|mut bios| record_modes(&mut bios));
+            STATE.finish(false);
+            result
+        }
+    }
+}
+
+/// List the modes through `bios`, once: the caller is the one [`STATE`] lets set the mode.
+fn record_modes(bios: &mut TrampolineBios) -> Result<&'static ModeList, ModeError> {
+    if !LISTED.load(Ordering::Acquire) {
+        let mut list = ModeList::EMPTY;
+        super::list_modes(bios, &mut list)?;
+        MODES.set(list);
+        LISTED.store(true, Ordering::Release);
+    }
+    Ok(MODES.get())
+}
+
+/// The geometry of the mode that was set; none before it is.
+pub fn current_geometry() -> Option<Geometry> {
+    STATE.is_set().then(|| MODE.get().0)
+}
+
 /// The work of the mode set: the trampoline's BIOS, the LFB mapped into the framebuffer region,
 /// the screen cleared to the desktop color.
 fn do_set(request: &ModeRequest) -> Result<(Geometry, u32), ModeError> {
     let mut bios = TrampolineBios::new().ok_or(ModeError::Unsupported)?;
+    // The modes are listed from the answers the mode set reads anyway (a failure leaves them for
+    // the mode set's own to report).
+    let _ = record_modes(&mut bios);
     let (geometry, lfb_va) = super::set_graphics_mode(&mut bios, request, &mut |base, bytes| {
         crate::mem::paging::map_framebuffer(base, bytes)
     })?;

@@ -179,14 +179,15 @@ struct Interactive {
 #[cfg(target_arch = "x86")]
 static INTERACTIVE: crate::sync::InitOnce<Interactive> = crate::sync::InitOnce::new();
 
-/// The primary monitor's work area: the whole screen of the display's default graphics mode,
-/// 640x480 (the VBE driver's preferred mode), as no taskbar takes any of it.
+/// The primary monitor's work area at boot: the whole screen of the display's default graphics
+/// mode (the VBE driver's preferred one), as no taskbar takes any of it. A mode change replaces
+/// it ([`super::display`]).
 #[cfg(target_arch = "x86")]
 const WORK_AREA: super::window::Rect = super::window::Rect {
     left: 0,
     top: 0,
-    right: 640,
-    bottom: 480,
+    right: crate::hw::vbe::DEFAULT_WIDTH as i32,
+    bottom: crate::hw::vbe::DEFAULT_HEIGHT as i32,
 };
 
 /// The boot's step: the interactive window station, WinSta0, and its Default desktop, then the

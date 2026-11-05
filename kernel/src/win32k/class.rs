@@ -20,7 +20,9 @@
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
-//! - NtUserRegisterClassExWOW (0x11D5): register, the class-name atom as the answer;
+//! - NtUserRegisterClassExWOW (0x11D5): register, the class-name atom as the answer (a caller
+//!   asking for a system class or a server-side procedure is refused: only the window manager
+//!   registers those, on its own boot path);
 //! - NtUserUnregisterClass (0x1229): unregister, refused while the class still has windows;
 //! - NtUserGetClassInfo (0x1178): the class's fields back into a WNDCLASSEXW;
 //! - NtUserGetClassName (0x1179): the name of a window's class;
@@ -979,6 +981,17 @@ impl RegisterFlags {
             server_class: bits & REGISTER_SERVER_CLASS != 0,
         }
     }
+
+    /// A user-mode registration's flags word: the caller may ask for the 4.0 compatibility and a
+    /// server class, never for a system class or a server-side procedure — only the window
+    /// manager registers those, on its own boot path
+    /// ([`super::window::WindowManager::boot_desktop`]). ERROR_INVALID_PARAMETER for either.
+    pub fn from_user_bits(bits: u32) -> Result<Self, Failure> {
+        if bits & (REGISTER_SYSTEM_CLASS | REGISTER_SERVER_SIDE_PROC) != 0 {
+            return Err(Failure::InvalidParameter);
+        }
+        Ok(Self::from_bits(bits))
+    }
 }
 
 /// A class's fields as GetClassInfo answers them.
@@ -1396,13 +1409,38 @@ impl Registry {
         Ok(())
     }
 
-    /// A process's end: its classes go, the private list first, then the public one.
+    /// A process's end: its classes go, the private list first, then the public one. Its windows
+    /// went first ([`super::window::WindowManager::end_process`]), so none of its classes has one.
     pub fn destroy_owner_classes(&mut self, owner: Owner) {
         for list in [List::Private(owner), List::Public(owner)] {
             while let Some(id) = self.list_head(list) {
                 self.destroy_class(id, list, owner);
             }
         }
+    }
+
+    /// The class `id`'s atom.
+    pub fn class_atom(&self, id: ClassId) -> Atom {
+        self.classes.at(id).atom
+    }
+
+    /// How many classes the processes' lists hold (the system list aside): with no process left,
+    /// each is one a process's end missed.
+    pub fn process_classes(&self) -> usize {
+        let mut count = 0;
+        for owner in 0..MAX_OWNERS as Owner {
+            if owner == SYSTEM_OWNER {
+                continue;
+            }
+            for list in [List::Private(owner), List::Public(owner)] {
+                let mut cursor = self.list_head(list);
+                while let Some(id) = cursor {
+                    count += 1;
+                    cursor = self.classes.at(id).next;
+                }
+            }
+        }
+        count
     }
 
     /// Destroy the class `id` linked in `list`: the teardown in order — the clones, the atom, the
@@ -2157,13 +2195,13 @@ pub fn register_class_ex_wow(
     atom: UserPtr<u32>,
     wow: UserPtr<u32>,
 ) -> NtResult {
+    let flags = RegisterFlags::from_user_bits(flags).map_err(Failure::status)?;
     let wc = wc.cast::<WndClassExW>().read()?;
     let mut name_units = [0u16; MAX_ATOM_NAME];
     let name = read_name(class_name, &mut name_units)?;
     let mut menu_units = [0u16; MAX_MENU_NAME];
     let menu = read_menu(wc.menu_name, &mut menu_units)?;
     let caller = super::winsta::gui_thread(call)?;
-    let flags = RegisterFlags::from_bits(flags);
     let registered = super::window::lock(call.passive()).classes.register_class(
         &wc,
         name,
@@ -2422,6 +2460,34 @@ mod tests {
         RegisterFlags {
             win40_compat: true,
             ..RegisterFlags::default()
+        }
+    }
+
+    /// A user-mode registration may ask for the 4.0 compatibility and a server class; a system
+    /// class or a server-side procedure is refused with ERROR_INVALID_PARAMETER (87).
+    #[test]
+    fn user_mode_registers_no_system_class() {
+        assert_eq!(
+            RegisterFlags::from_user_bits(REGISTER_WIN40_COMPAT | REGISTER_SERVER_CLASS),
+            Ok(RegisterFlags {
+                win40_compat: true,
+                server_class: true,
+                ..RegisterFlags::default()
+            })
+        );
+        assert_eq!(
+            RegisterFlags::from_user_bits(0),
+            Ok(RegisterFlags::default())
+        );
+        for bits in [
+            REGISTER_SYSTEM_CLASS,
+            REGISTER_SERVER_SIDE_PROC,
+            REGISTER_WIN40_COMPAT | REGISTER_SYSTEM_CLASS | REGISTER_SERVER_SIDE_PROC,
+        ] {
+            let refused = RegisterFlags::from_user_bits(bits).unwrap_err();
+            assert_eq!(refused, Failure::InvalidParameter);
+            assert_eq!(refused.code(), 87);
+            assert_eq!(refused.status(), STATUS_INVALID_PARAMETER);
         }
     }
 

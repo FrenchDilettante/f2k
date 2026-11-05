@@ -22,6 +22,8 @@ pub mod trampoline;
 
 #[cfg(target_arch = "x86")]
 pub use trampoline::{
+    current_geometry,
+    display_modes,
     enter_graphics_mode,
     graphics_mode_set,
     test_graphics_mode,
@@ -46,11 +48,27 @@ pub fn graphics_mode_set() -> bool {
     false
 }
 
+/// Nor lists the display's modes.
+#[cfg(not(target_arch = "x86"))]
+pub fn display_modes() -> Result<&'static ModeList, ModeError> {
+    Err(ModeError::Unsupported)
+}
+
+/// Nor has a mode's geometry.
+#[cfg(not(target_arch = "x86"))]
+pub fn current_geometry() -> Option<Geometry> {
+    None
+}
+
 /// How many modes of the list the driver looks at, at most: the trampoline's scan fetches as many
 /// mode information blocks.
 pub const MAX_MODES: usize = 128;
 /// The `AX=4F02h` BX bit 14: request the linear framebuffer rather than a banked one.
 pub const LFB_REQUEST: u16 = 0x4000;
+/// The resolution the mode set prefers where its caller leaves it open: the display's default
+/// mode, which the boot's work area assumes until a mode is set.
+pub const DEFAULT_WIDTH: usize = 640;
+pub const DEFAULT_HEIGHT: usize = 480;
 
 /// Why the graphics mode was not set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -288,7 +306,10 @@ pub fn choose_mode<B: Bios>(
     if !vbe_present(bios) {
         return Err(ModeError::Unsupported);
     }
-    let preferred = (request.width.unwrap_or(640), request.height.unwrap_or(480));
+    let preferred = (
+        request.width.unwrap_or(DEFAULT_WIDTH),
+        request.height.unwrap_or(DEFAULT_HEIGHT),
+    );
     let mut chosen: Option<(u16, Geometry)> = None;
     for index in 0..MAX_MODES {
         let Some(mode) = bios.mode(index) else {
@@ -312,6 +333,55 @@ pub fn choose_mode<B: Bios>(
         }
     }
     chosen.ok_or(ModeError::Unsupported)
+}
+
+/// The display modes the driver can set, as EnumDisplaySettings numbers them: the resolutions of
+/// the BIOS list's 32-bpp linear modes, in the list's order, each once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModeList {
+    sizes: [(u16, u16); MAX_MODES],
+    count: usize,
+}
+
+impl ModeList {
+    pub const EMPTY: Self = ModeList {
+        sizes: [(0, 0); MAX_MODES],
+        count: 0,
+    };
+
+    /// The resolution of the mode numbered `index`; none past the list.
+    pub fn get(&self, index: usize) -> Option<(usize, usize)> {
+        self.sizes[..self.count]
+            .get(index)
+            .map(|&(width, height)| (width as usize, height as usize))
+    }
+}
+
+/// List the modes the driver can set into `list` ([`ModeList`]), from the BIOS's mode list and
+/// mode information blocks; unsupported without a VBE 2.0 BIOS.
+pub fn list_modes<B: Bios>(bios: &mut B, list: &mut ModeList) -> Result<(), ModeError> {
+    if !vbe_present(bios) {
+        return Err(ModeError::Unsupported);
+    }
+    list.count = 0;
+    for index in 0..MAX_MODES {
+        let Some(mode) = bios.mode(index) else {
+            break;
+        };
+        let mut info = [0u8; MODE_INFO_BYTES];
+        if !bios.mode_info(mode, &mut info) {
+            continue;
+        }
+        let Some(geometry) = Geometry::decode(&info) else {
+            continue;
+        };
+        let size = (geometry.width as u16, geometry.height as u16);
+        if !list.sizes[..list.count].contains(&size) {
+            list.sizes[list.count] = size;
+            list.count += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Set the graphics mode `request` asks for: choose it ([`choose_mode`]), set it with the linear
@@ -414,6 +484,54 @@ mod tests {
                 asked_set: Vec::new(),
             }
         }
+    }
+
+    /// The mode list: the 32-bpp linear modes in the BIOS's order, each resolution once; none
+    /// without a VBE BIOS.
+    #[test]
+    fn the_mode_list_is_the_bioss_32_bpp_modes() {
+        struct Several;
+        impl Bios for Several {
+            fn vbe_info(&mut self, info: &mut [u8; VBE_HEADER_BYTES]) -> bool {
+                info[..4].copy_from_slice(b"VESA");
+                info[4..6].copy_from_slice(&0x0300u16.to_le_bytes());
+                true
+            }
+
+            fn mode(&mut self, index: usize) -> Option<u16> {
+                [0x100, 0x101, 0x102, 0x103, 0x104].get(index).copied()
+            }
+
+            fn mode_info(&mut self, mode: u16, bytes: &mut [u8; MODE_INFO_BYTES]) -> bool {
+                *bytes = mode_info_block();
+                let (width, height, bpp): (u16, u16, u8) = match mode {
+                    0x100 => (800, 600, 8),
+                    0x101 => (640, 480, 32),
+                    0x102 => (1024, 768, 32),
+                    0x103 => (640, 480, 32),
+                    _ => return false,
+                };
+                bytes[MI_WIDTH..MI_WIDTH + 2].copy_from_slice(&width.to_le_bytes());
+                bytes[MI_HEIGHT..MI_HEIGHT + 2].copy_from_slice(&height.to_le_bytes());
+                bytes[MI_BPP] = bpp;
+                true
+            }
+
+            fn set_mode(&mut self, _mode: u16) -> bool {
+                false
+            }
+        }
+        let mut list = ModeList::EMPTY;
+        list_modes(&mut Several, &mut list).unwrap();
+        assert_eq!(list.get(0), Some((640, 480)));
+        assert_eq!(list.get(1), Some((1024, 768)));
+        assert_eq!(list.get(2), None);
+        let mut bios = FakeBios::new();
+        bios.info_ok = false;
+        assert_eq!(
+            list_modes(&mut bios, &mut list),
+            Err(ModeError::Unsupported)
+        );
     }
 
     /// The mode information block for 640x480x32 with the LFB at 0xE0000000, masks 8/8/8 at

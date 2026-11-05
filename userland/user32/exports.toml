@@ -142,6 +142,46 @@ args = ["ptr DeviceName", "ptr DevMode", "handle Window", "u32 Flags", "ptr Para
 impl = { syscall = "crate::win32k::display::change_display_settings" }
 internal = true
 
+# The display's other services, behind EnumDisplaySettings, EnumDisplayDevices,
+# EnumDisplayMonitors, SetSysColors and SystemParametersInfo: their W forms' arguments as they are,
+# but NtUserEnumDisplayMonitors', which selects the monitors (handles and rectangles into the
+# caller's arrays, their count through the last pointer) and leaves the callback to user32.
+
+[[export]]
+name = "NtUserEnumDisplaySettings"
+group = "display"
+args = ["ptr DeviceName", "u32 ModeNum", "ptr DevMode", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::enum_display_settings" }
+internal = true
+
+[[export]]
+name = "NtUserEnumDisplayDevices"
+group = "display"
+args = ["ptr DeviceName", "u32 DevNum", "ptr DisplayDevice", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::enum_display_devices" }
+internal = true
+
+[[export]]
+name = "NtUserEnumDisplayMonitors"
+group = "display"
+args = ["handle Dc", "ptr Clip", "ptr Monitors", "ptr Rects", "u32 Count", "ptr<u32> Found"]
+impl = { syscall = "crate::win32k::display::enum_display_monitors" }
+internal = true
+
+[[export]]
+name = "NtUserSetSysColors"
+group = "display"
+args = ["u32 Count", "ptr Indexes", "ptr Colors", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::set_sys_colors" }
+internal = true
+
+[[export]]
+name = "NtUserSystemParametersInfo"
+group = "display"
+args = ["u32 Action", "u32 UiParam", "ptr Param", "u32 WinIni"]
+impl = { syscall = "crate::win32k::display::system_parameters_info" }
+internal = true
+
 # win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, served
 # ahead of the exports (which come with the windows): each answers a screen DC's handle.
 
@@ -259,6 +299,50 @@ impl = { native = "ExitWindowsEx" }
 ordinal = 214
 fails = "FALSE"
 note = "the request goes to the console server stand-in, which ends the session after the call returns; no privilege is checked (Windows 2000 requires SeShutdownPrivilege for every action but EWX_LOGOFF)"
+
+# The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
+# ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
+# NtUserQueryWindow answers what Windows 2000's user32 reads from the window manager's records
+# mapped into its process (GetWindowRect's rectangle, IsWindowVisible's answer): an index from
+# rtl::window, the answer into a buffer of exactly its length.
+
+[[export]]
+name = "NtUserSetWindowPos"
+group = "window"
+args = [
+    "handle Window", "handle InsertAfter", "i32 X", "i32 Y", "i32 Width", "i32 Height",
+    "u32 Flags",
+]
+impl = { syscall = "crate::win32k::window::set_window_pos" }
+internal = true
+
+[[export]]
+name = "NtUserMoveWindow"
+group = "window"
+args = ["handle Window", "i32 X", "i32 Y", "i32 Width", "i32 Height", "u32 Repaint"]
+impl = { syscall = "crate::win32k::window::move_window" }
+internal = true
+
+[[export]]
+name = "NtUserShowWindow"
+group = "window"
+args = ["handle Window", "i32 Command", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::window::show_window" }
+internal = true
+
+[[export]]
+name = "NtUserShowWindowAsync"
+group = "window"
+args = ["handle Window", "i32 Command"]
+impl = { syscall = "crate::win32k::window::show_window_async" }
+internal = true
+
+[[export]]
+name = "NtUserQueryWindow"
+group = "window"
+args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
+impl = { syscall = "crate::win32k::window::query_window" }
+internal = true
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
