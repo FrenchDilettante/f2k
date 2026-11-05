@@ -78,6 +78,10 @@ pub mod runner;
 /// The process pool and the current process.
 pub mod pool;
 
+/// The reap step's signal, and the wait for the ended processes' teardowns.
+#[cfg(target_arch = "x86")]
+pub mod teardowns;
+
 /// The process's thread ordinals: which thread holds which TEB page.
 pub mod ordinals;
 
@@ -1132,9 +1136,11 @@ pub fn release_process(
 /// follows by the process's own leg — the teardown audit, and on a boot of several programs the
 /// next one (or the summary); the idle thread rests after the last. Whether the reap is quiescent —
 /// no other process remains that has not been torn down — is decided once, before the teardown: it
-/// decides whether the system-wide checks run now.
+/// decides whether the system-wide checks run now. Last, the reap is signaled to a thread waiting
+/// for the teardowns ([`teardowns`]).
 #[cfg(target_arch = "x86")]
 pub fn reap() {
+    teardowns::reap_begins();
     let process = pool::ended().expect("reap with no ended process");
     let end = process.end().expect("an ended process recorded its end");
     let leg = process.leg();
@@ -1143,6 +1149,7 @@ pub fn reap() {
     runner::process_reaped(leg, end, quiescent);
     #[cfg(feature = "fault-test-exitio")]
     crate::user::check_volume_after_teardown();
+    teardowns::signal_reaped();
 }
 
 /// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack

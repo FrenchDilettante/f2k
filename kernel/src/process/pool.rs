@@ -153,6 +153,20 @@ pub fn reap_pending() -> bool {
     live().any(|(process, _)| awaits_reap(process))
 }
 
+/// How many processes have ended, or are ending, and are not torn down yet: the teardowns the
+/// session's end waits for before the shutdown (see [`super::teardowns`]). A process counts from
+/// the decision of its end (its termination, before its last thread has ended) when it has a
+/// thread to end it; one terminated before its first thread is deleted, never reaped.
+#[cfg(target_arch = "x86")]
+pub fn teardowns_pending() -> usize {
+    live()
+        .filter(|(process, _)| {
+            process.awaits_teardown()
+                || (process.terminating() && !process.torn_down() && process.has_main_thread())
+        })
+        .count()
+}
+
 /// Whether `process`, whose object lives, awaits its reap: it has ended, it is not torn down, its
 /// last thread has retired (it records the end before its retire, and nothing else runs between
 /// its retire and its switch away), and no thread of another process runs attached to its address

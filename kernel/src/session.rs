@@ -23,7 +23,10 @@
 //! - A process ended by the session's end exits with STATUS_CONTROL_C_EXIT, the code its default
 //!   handler would have given it.
 //! - Then the machine's end: nothing more for EWX_LOGOFF (with no logon to return to, the boot's
-//!   runner sees its programs end and halts, as for any boot), [`shut_down`] for the rest.
+//!   runner sees its programs end and halts, as for any boot), [`shut_down`] for the rest, once
+//!   every ended process has been torn down (`await_teardowns`): the waits above end at each
+//!   process's end, which its waiters see before the idle thread reaps it, and the reap's report
+//!   lines (the teardown audit, the suite's summary) come before the shutdown's first line.
 //!
 //! Two kernel options serve the test boots, as no program of the corpus calls ExitWindowsEx (a
 //! real one would shut the capture machine down):
@@ -105,7 +108,27 @@ pub fn end(request: crate::csr::ctrl::SessionRequest) {
     }
     crate::csr::session_ended();
     if let Some(action) = action {
+        await_teardowns();
         shut_down(action);
+    }
+}
+
+/// Wait, before the machine's end, until every process that has ended or is ending has been torn
+/// down: the processes the session ended, and one that was leaving its console already (passed
+/// over above). Their teardown audit and the runner's summary then come before the shutdown's
+/// first line. The bound is the wait a process has to end (WaitToKillAppTimeout's default, not
+/// the `session-wait` option, which shortens only the ending): a reap needs the idle thread, which
+/// a process still running and never ending could keep off. Past it, a COM1 line says so and the
+/// shutdown goes on.
+#[cfg(target_arch = "x86")]
+fn await_teardowns() {
+    let interval = i64::from(WAIT_TO_KILL_APP_TIMEOUT_MS) * 10_000;
+    if let Err(pending) = crate::process::teardowns::await_all(interval) {
+        crate::serial_println!(
+            "F2K: session: {} ended process(es) not torn down after {} ms: shutting down",
+            pending,
+            WAIT_TO_KILL_APP_TIMEOUT_MS
+        );
     }
 }
 

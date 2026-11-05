@@ -12,8 +12,9 @@ the base disk). shutdown.exe enables SeShutdownPrivilege and calls ExitWindowsEx
 server stand-in then ends the session: cmd.exe, which has no handler for CTRL_SHUTDOWN_EVENT (its
 Ctrl+C handler answers FALSE for any other event), is ended by kernel32's default handler with
 STATUS_CONTROL_C_EXIT (3221225786), without the 20 s wait; shutdown.exe, the caller, last (it may
-have ended by itself first, with 0). Then NtShutdownSystem's steps on COM1: the volume flushed and
-marked clean, the registry's empty flush, and either "It is now safe to turn off your computer.",
+have ended by itself first, with 0). Once both are torn down (the boot's teardown audit line),
+NtShutdownSystem's steps follow on COM1: the volume flushed and marked clean, the registry's empty
+flush, and either "It is now safe to turn off your computer.",
 alone and centered on the text screen, or the restart, which QEMU's -no-reboot turns into its exit
 (the boot's end "reset").
 
@@ -57,13 +58,14 @@ WRITE = "echo kept> C:\\KEPT.TXT"
 FORBIDS = ["KERNEL PANIC", "F2K: object audit FAILED", "CPU EXCEPTION",
            # cmd.exe ends on the event: the session's end never waits it out.
            "F2K: session: process"]
-# The session's end: cmd.exe, the boot's program, ended by its default handler. Its teardown audit
-# and shutdown.exe's end race the shutdown's steps (the session's end waits for a process's end,
-# not its teardown, and passes over a process already leaving its console), so they are not
-# ordered against them.
+# The session's end: cmd.exe, the boot's program, ended by its default handler. Its end and
+# shutdown.exe's come in either order; the session's end then waits for every ended process's
+# teardown, so the boot's teardown audit line comes after both, and the shutdown's first line
+# right after it.
 SESSION_END = "F2K: user process exited normally (exit code=3221225786)"
-# shutdown.exe's own end, when COM1 shows it: by itself (0), or by the session's end (3221225786)
-# if it had not ended by then.
+TORN_DOWN = "F2K: teardown audit: frame database ok"
+# shutdown.exe's own end: by itself (0), or by the session's end (3221225786) if it had not ended
+# by then.
 SHUTDOWN_EXE_END = re.compile(r"^F2K: child process \d+ \(shutdown\) exited normally \(exit code=(\d+)\)$",
                               re.IGNORECASE)
 
@@ -79,6 +81,17 @@ def keys_of(text: str) -> list[str]:
         else:
             keys.append(character)
     return keys + ["ret"]
+
+
+def assert_torn_down_first(log: str, log_path: Path) -> None:
+    """The session's end waited for the teardowns: shutdown.exe's end, then the teardown audit,
+    then the shutdown's first line on the next line."""
+    lines = f2kboot.lines_of(log)
+    first = next(index for index, line in enumerate(lines) if line.startswith("F2K: shutdown: "))
+    assert lines[first - 1] == TORN_DOWN, failure(f"the line before the shutdown's: {lines[first - 1]!r}",
+                                                  log_path, log)
+    assert any(SHUTDOWN_EXE_END.match(line) for line in lines[:first]), failure(
+        "shutdown.exe's end is not before the shutdown's lines", log_path, log)
 
 
 def machine_end(action: str) -> list[str]:
@@ -216,6 +229,7 @@ def shut_down(build: f2kboot.Build, disk: Path, log_path: Path, timeout: float, 
     for line in f2kboot.lines_of(log):
         if (end := SHUTDOWN_EXE_END.match(line)) is not None:
             assert end.group(1) in ("0", "3221225786"), failure(f"shutdown.exe's end: {line}", log_path, log)
+    assert_torn_down_first(log, log_path)
     return log, screens
 
 
