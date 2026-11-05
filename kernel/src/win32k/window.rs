@@ -1212,6 +1212,18 @@ impl Windows {
         self.monitors[index as usize].rect
     }
 
+    /// Every desktop window covers `screen`, the display's new extent (its client area too: a
+    /// desktop window has no frame).
+    pub fn cover_screen(&mut self, screen: Rect) {
+        for index in 0..DESKTOPS {
+            if let Some(window) = self.desktops[index].window {
+                let w = self.at_mut(window);
+                w.window_rect = screen;
+                w.client_rect = screen;
+            }
+        }
+    }
+
     // --- Lookups
     // -----------------------------------------------------------------------------------
 
@@ -3535,6 +3547,21 @@ impl WindowManager {
             .windows
             .create_window_ex(&mut self.classes, caller, args, pump)?;
         Ok(self.windows.handle_of(id))
+    }
+
+    /// The display's mode is now `width` by `height` (the display side's call, at a mode change):
+    /// the primary monitor's work area is the whole screen — no taskbar takes any of it — and every
+    /// desktop window covers the screen. (The WM_DISPLAYCHANGE every top-level window would be
+    /// sent comes with the message queue.)
+    pub fn display_changed(&mut self, width: i32, height: i32) {
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        self.windows.set_monitor(PRIMARY_MONITOR, screen);
+        self.windows.cover_screen(screen);
     }
 
     /// The process `owner`'s end, at its teardown: its windows go ([`Windows::end_process`]),
@@ -7078,5 +7105,25 @@ mod tests {
         assert_eq!(info.creator_version, 0x0400);
         w.thread_mut(t).active = None;
         assert_eq!(w.window_info(c, id).status, 0);
+    }
+
+    /// A display mode change: the primary monitor's work area becomes the new screen, and the
+    /// desktop window covers it.
+    #[test]
+    fn the_work_area_follows_the_display_mode() {
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        assert_eq!(m.windows.work_area(PRIMARY_MONITOR), SCREEN);
+        m.display_changed(1024, 768);
+        let screen = Rect {
+            left: 0,
+            top: 0,
+            right: 1024,
+            bottom: 768,
+        };
+        assert_eq!(m.windows.work_area(PRIMARY_MONITOR), screen);
+        let desktop = m.windows.desktop_by_id(DESKTOP).unwrap().window.unwrap();
+        assert_eq!(m.windows.at(desktop).window_rect, screen);
+        assert_eq!(m.windows.at(desktop).client_rect, screen);
     }
 }

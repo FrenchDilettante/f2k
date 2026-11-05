@@ -12,10 +12,10 @@
 //!
 //! What the minimal subset serves: one display, `\\.\DISPLAY1`; its graphics mode set once (a VBE
 //! mode with a linear framebuffer, 32 bpp, 640x480 unless the DEVMODE asks another resolution the
-//! BIOS lists), after which only requests that mode answers succeed; and the flags 0 (a dynamic
-//! change), CDS_FULLSCREEN (the same, here) and CDS_TEST (the mode checked, nothing set). The
-//! registry holds no display settings, so CDS_UPDATEREGISTRY and the rest are refused as flags the
-//! subset does not take.
+//! BIOS lists; the window manager's work area and desktop windows follow it), after which only
+//! requests that mode answers succeed; and the flags 0 (a dynamic change), CDS_FULLSCREEN (the
+//! same, here) and CDS_TEST (the mode checked, nothing set). The registry holds no display
+//! settings, so CDS_UPDATEREGISTRY and the rest are refused as flags the subset does not take.
 //!
 //! The other services answer from the same geometry (F2K's argument lists, see [`crate::win32k`];
 //! Windows 2000's numbers), each an NTSTATUS:
@@ -95,6 +95,12 @@ fn change(
         geometry.lfb_phys,
         crate::mem::layout::FRAMEBUFFER.start,
     );
+    // The window manager follows the screen: the primary monitor's work area and the desktop
+    // windows.
+    #[cfg(target_arch = "x86")]
+    super::window::locked(|manager| {
+        manager.display_changed(geometry.width as i32, geometry.height as i32)
+    });
     #[cfg(not(target_arch = "x86"))]
     let _ = geometry;
     Ok(DISP_CHANGE_SUCCESSFUL)
