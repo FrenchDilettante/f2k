@@ -169,6 +169,7 @@ The on-target tests run through pytest, so an IDE lists and runs them one by one
   Fixtures that draw on the screen can save a screenshot per block (`target/qemu/screens/`), not compared yet.
 - **The kernel's own boots** (the fault stubs, the Limine disk path, the program smokes, the multi-process suite and its concurrent runs, the interrupt and IDE diagnostics) are cases in `tests/core/kernel/test_kernel.py`: the kernel features to build with, the image to boot, the program's command line, the COM1 strings expected (anywhere, in order, as one block of lines) or forbidden.
   A kernel panic fails every case.
+- **The shutdown's boots** (`tests/core/test_shutdown.py`) type a file's creation, then `shutdown`, at cmd.exe's prompt, and read the disk image from the host after the halt or the restart: FAT[1]'s clean-shutdown bit, and FSInfo's free count against the FAT's; a second boot of the same disk finds the file.
 
 Each test builds the kernel and disk for its feature set (once per run, cached under `target/qemu/builds/`); each run removes earlier runs' builds and logs older than two days.
 Boots attach the disk as a snapshot, so tests run in parallel (`-n 4` by default in `make test`; `--dist loadgroup`, set in `pyproject.toml`, keeps a fixture's tests on one worker).

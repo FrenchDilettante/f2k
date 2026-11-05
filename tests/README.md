@@ -11,8 +11,8 @@ The tests are grouped by the DLL they exercise, one directory per group:
 tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
-│               # test_cmd.py, test_framebuffer.py, test_textout.py), and the fixtures exit0,
-│               # ret0, hello and bare
+│               # test_cmd.py, test_framebuffer.py, test_textout.py, test_shutdown.py), and the
+│               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
@@ -54,6 +54,7 @@ A fixture's name is unique across the groups: the disk carries every program in 
 
 Shared pieces sit beside the groups: `common/f2kt.h` (the reporting and section helpers the sectioned fixtures include), `build.bat`, `capture.bat` (the real-machine capture of the sectioned fixtures), and the pytest side: `conftest.py` and `f2kboot.py` (building, booting, comparing), `core/kernel/test_kernel.py`, the kernel's own boots (the fault stubs, the Limine disk path, the multi-process suite, the interrupt and IDE diagnostics, and the single-path program smokes below), which have no sectioned capture to compare against, and `core/test_limine.py`, a few corpus blocks booted through Limine instead of QEMU's Multiboot loader.
 `core/test_cmd.py` boots into F2K's own `cmd.exe`, added to a copy of the disk (the disk the tests boot leaves it out), types `pwd` and Return at its prompt through QMP, and checks the text screen row by row.
+`core/test_shutdown.py` types a file's creation and then `shutdown` at that prompt, on a copy of the disk with cmd.exe added, kept between two boots (`f2kboot.boot`'s `kept`: attached without QEMU's snapshot): the first boot ends the session and halts on "It is now safe to turn off your computer." or restarts (QEMU's `-no-reboot` turns the restart into its exit, which the harness takes for the boot's end after the kernel's restart line); the host then reads the image (`f2kboot.read_volume`: FAT[1]'s clean-shutdown bit, FSInfo's free count against the FAT's), and the second boot finds the file.
 
 ## Sectioned fixtures
 
