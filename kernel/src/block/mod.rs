@@ -71,6 +71,23 @@ pub trait BlockDevice: Sync {
         let _ = (lba, buffer);
         Err(crate::status::STATUS_MEDIA_WRITE_PROTECTED)
     }
+
+    /// Write what the device holds in a write cache out to its medium, blocking until it is done,
+    /// as Windows 2000's disk drivers do for a flush request (IRP_MJ_FLUSH_BUFFERS) or at the
+    /// shutdown. A device with no cache to flush, or none it can be told to flush, has nothing to
+    /// do (the default).
+    fn flush_cache(&self) -> Result<CacheFlush, NtStatus> {
+        Ok(CacheFlush::Unsupported)
+    }
+}
+
+/// What a device's cache flush did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CacheFlush {
+    /// The device wrote its cache out.
+    Flushed,
+    /// The device has no cache it can be told to flush: nothing was done.
+    Unsupported,
 }
 
 /// The checks every device's `read` starts with: the buffer holds whole sectors (a contract

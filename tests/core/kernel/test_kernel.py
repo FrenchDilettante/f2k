@@ -187,11 +187,12 @@ SESSION_KID = "re:^F2K: child process \\d+ \\(CTRLKID\\) exited normally \\(exit
 SESSION_ENDED_AFTER_WAIT = "re:^F2K: session: process \\d+ \\({}\\) still running after 2000 ms: ended$"
 SESSION_LEGS = ("CORPUS\\ctrl.exe {}", "CORPUS\\spawnkid.exe sleep 60000")
 # The machine's end once the session has ended: NtShutdownSystem's steps with its action (the ctrl
-# fixture writes no file, so the volume is the one the boot mounted), then the halt's closing line
-# or the restart's.
+# fixture writes no file, so the volume is the one the boot mounted; the disk's write cache flushed
+# all the same), then the halt's closing line or the restart's.
 SESSION_MACHINE_END = (
     "F2K: shutdown: {}",
     "F2K: shutdown: volume unchanged since its mount",
+    "F2K: shutdown: disk cache flushed",
     "F2K: shutdown: registry flushed (no hive on disk)",
     "F2K: shutdown complete",
 )

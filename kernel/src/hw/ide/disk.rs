@@ -37,7 +37,8 @@ mod target {
 
     use super::*;
     use crate::block::lock::DeviceLock;
-    use crate::block::{check_request, BlockDevice, BusType, DeviceInfo, DeviceKind};
+    use crate::block::{check_request, BlockDevice, BusType, CacheFlush, DeviceInfo, DeviceKind};
+    use crate::hw::ide::flush;
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::{Completion, Latch};
     use crate::hw::ide::read;
@@ -202,6 +203,19 @@ mod target {
                     buffer,
                 )
             }))
+        }
+
+        /// Flush the drive's write cache by the command IDENTIFY named, holding the channel until
+        /// the drive is done (the read's failures); nothing to do on a drive whose IDENTIFY names
+        /// none.
+        fn flush_cache(&self) -> Result<CacheFlush, NtStatus> {
+            let Some(command) = self.identity().and_then(|identity| identity.flush) else {
+                return Ok(CacheFlush::Unsupported);
+            };
+            completed(self.channel.with(|channel| {
+                flush::flush(channel, &self.latch, &mut EventWait(&self.event), command)
+            }))
+            .map(|()| CacheFlush::Flushed)
         }
     }
 

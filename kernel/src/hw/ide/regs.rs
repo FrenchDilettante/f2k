@@ -37,6 +37,10 @@ pub const IDENTIFY_DEVICE: u8 = 0xEC;
 pub const READ_SECTORS: u8 = 0x20;
 /// WRITE SECTORS (PIO data-out, LBA28).
 pub const WRITE_SECTORS: u8 = 0x30;
+/// FLUSH CACHE (non-data): the drive writes its write cache to the medium.
+pub const FLUSH_CACHE: u8 = 0xE7;
+/// FLUSH CACHE EXT (non-data): FLUSH CACHE for a drive of the 48-bit address feature set.
+pub const FLUSH_CACHE_EXT: u8 = 0xEA;
 /// CHECK POWER MODE: no data; its completion asserts INTRQ (the `nest-smoke` diagnostic's
 /// interrupt).
 #[cfg(feature = "nest-smoke")]
@@ -58,3 +62,8 @@ pub const MAX_SECTORS_PER_COMMAND: u32 = 256;
 /// Alternate-status reads before a poll gives up: far beyond any settle time, short enough that a
 /// wedged device fails the request instead of hanging the caller.
 pub const POLL_BOUND: u32 = 100_000;
+
+/// The completion waits (about a second each in the kernel) a cache flush is given before it fails
+/// as timed out: a drive may take tens of seconds to write a large cache out, where a sector's
+/// transfer takes one wait.
+pub const FLUSH_WAITS: u32 = 30;

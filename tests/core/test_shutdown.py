@@ -13,8 +13,8 @@ server stand-in then ends the session: cmd.exe, which has no handler for CTRL_SH
 Ctrl+C handler answers FALSE for any other event), is ended by kernel32's default handler with
 STATUS_CONTROL_C_EXIT (3221225786), without the 20 s wait; shutdown.exe, the caller, last (it may
 have ended by itself first, with 0). Once both are torn down (the boot's teardown audit line),
-NtShutdownSystem's steps follow on COM1: the volume flushed and marked clean, the registry's empty
-flush, and either "It is now safe to turn off your computer.",
+NtShutdownSystem's steps follow on COM1: the volume flushed and marked clean, the disk's write
+cache flushed, the registry's empty flush, and either "It is now safe to turn off your computer.",
 alone and centered on the text screen, or the restart, which QEMU's -no-reboot turns into its exit
 (the boot's end "reset").
 
@@ -99,6 +99,7 @@ def machine_end(action: str) -> list[str]:
     return [
         f"F2K: shutdown: {action}",
         r"re:^F2K: shutdown: volume flushed \(\d+ clusters free, next free \d+\), marked clean$",
+        "F2K: shutdown: disk cache flushed",
         "F2K: shutdown: registry flushed (no hive on disk)",
         "F2K: shutdown complete",
     ]

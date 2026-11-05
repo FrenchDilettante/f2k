@@ -3,7 +3,7 @@
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
-use super::regs::{IDENTIFY_DEVICE, SECTOR_SIZE};
+use super::regs::{FLUSH_CACHE, FLUSH_CACHE_EXT, IDENTIFY_DEVICE, SECTOR_SIZE};
 use super::taskfile::TaskFile;
 use crate::hw::portio::Io;
 use crate::status::NtStatus;
@@ -17,15 +17,34 @@ pub struct Identity {
     pub sectors: u32,
     /// Word 47 low byte: the largest READ MULTIPLE block, in sectors.
     pub max_multiple: u8,
+    /// The command that flushes the drive's write cache, from word 83: FLUSH CACHE EXT on a drive
+    /// that supports it (bit 13, a drive of the 48-bit address feature set), else FLUSH CACHE
+    /// (bit 12); none when the word advertises neither, or is not valid.
+    pub flush: Option<u8>,
 }
+
+/// Word 83's validity mark: bit 14 set and bit 15 clear (a word of all ones or all zeros is no
+/// report).
+const WORD_83_VALID: (u16, u16) = (0xC000, 0x4000);
 
 /// Decode the IDENTIFY DEVICE block (256 little-endian words).
 pub fn decode_identify(block: &[u8; SECTOR_SIZE]) -> Identity {
     let word = |index: usize| u16::from_le_bytes([block[2 * index], block[2 * index + 1]]);
+    let commands = word(83);
+    let flush = if commands & WORD_83_VALID.0 != WORD_83_VALID.1 {
+        None
+    } else if commands & (1 << 13) != 0 {
+        Some(FLUSH_CACHE_EXT)
+    } else if commands & (1 << 12) != 0 {
+        Some(FLUSH_CACHE)
+    } else {
+        None
+    };
     Identity {
         lba: word(49) & (1 << 9) != 0,
         sectors: word(60) as u32 | (word(61) as u32) << 16,
         max_multiple: word(47) as u8,
+        flush,
     }
 }
 
@@ -85,7 +104,7 @@ mod tests {
     use super::*;
 
     /// IDENTIFY decode: word 49 bit 9 is LBA support, words 60-61 the LBA28 count (low word
-    /// first), word 47's low byte the multiple setting.
+    /// first), word 47's low byte the multiple setting, word 83 the flush command.
     #[test]
     fn identify_decodes_lba_count_and_multiple() {
         let identity = decode_identify(&identify_block(131_072));
@@ -94,7 +113,8 @@ mod tests {
             Identity {
                 lba: true,
                 sectors: 131_072,
-                max_multiple: 16
+                max_multiple: 16,
+                flush: Some(FLUSH_CACHE),
             }
         );
 
@@ -107,6 +127,28 @@ mod tests {
         let mut no_lba = identify_block(131_072);
         no_lba[2 * 49 + 1] &= !0x02; // clear bit 9
         assert!(!decode_identify(&no_lba).lba);
+    }
+
+    /// The flush command from word 83: FLUSH CACHE EXT where bit 13 says the drive takes it,
+    /// FLUSH CACHE where bit 12 alone does, none where neither does or the word is not valid
+    /// (bits 15-14 other than 01).
+    #[test]
+    fn identify_decodes_the_flush_command() {
+        let with_word_83 = |word: u16| {
+            let mut block = identify_block(131_072);
+            block[2 * 83..2 * 83 + 2].copy_from_slice(&word.to_le_bytes());
+            decode_identify(&block).flush
+        };
+        let valid = 1 << 14;
+        assert_eq!(
+            with_word_83(valid | 1 << 13 | 1 << 12 | 1 << 10),
+            Some(FLUSH_CACHE_EXT)
+        );
+        assert_eq!(with_word_83(valid | 1 << 12), Some(FLUSH_CACHE));
+        assert_eq!(with_word_83(valid), None);
+        assert_eq!(with_word_83(0), None, "no word 83 (an older drive)");
+        assert_eq!(with_word_83(0xFFFF), None, "bit 15 set: not valid");
+        assert_eq!(with_word_83(1 << 12), None, "bit 14 clear: not valid");
     }
 
     /// IDENTIFY bring-up: clear nIEN, select the master, then the task file and the command —
@@ -122,7 +164,8 @@ mod tests {
             Identity {
                 lba: true,
                 sectors: DISK,
-                max_multiple: 16
+                max_multiple: 16,
+                flush: Some(FLUSH_CACHE),
             }
         );
 

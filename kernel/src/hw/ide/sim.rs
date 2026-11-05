@@ -7,7 +7,9 @@
 //! asserts it when each sector's data is ready; draining a sector's last word starts the next
 //! sector, and the final drain asserts nothing. A data-out command asks for its first sector with
 //! DRQ and no interrupt; filling a sector's last word makes the device busy writing it, and it
-//! asserts INTRQ when the sector is taken (DRQ set again while sectors remain). A data-port read
+//! asserts INTRQ when the sector is taken (DRQ set again while sectors remain). A non-data command
+//! (FLUSH CACHE, FLUSH CACHE EXT) is BUSY for the configured reads, then asserts INTRQ with its
+//! completion, ERR set when `flush_fails` says so. A data-port read
 //! with DRQ clear returns 0, a data-port write is dropped. While BUSY or DRQ is set, register and
 //! command writes are ignored. A real device may take up to 400 ns after a command write to show
 //! BUSY: `command_latency` models it as status reads that still return the status from before the
@@ -50,6 +52,10 @@ pub struct SimChannel {
     /// Assert INTRQ after the final sector's drain as well (a device that interrupts at
     /// completion): the driver must still end with the line acknowledged.
     pub interrupt_after_last: bool,
+    /// Cache flushes the drive completed.
+    pub flushes: u32,
+    /// Fail every cache flush with ERR|ABRT (a drive that cannot write its cache out).
+    pub flush_fails: bool,
     pub log: Vec<Access>,
     buffer: Vec<u8>,
     position: usize,
@@ -58,6 +64,8 @@ pub struct SimChannel {
     busy_left: u32,
     /// Whether the command in progress is a data-out one (its BUSY phases end in a sector taken).
     data_out: bool,
+    /// Whether the command in progress is a non-data one (its BUSY phase ends in its completion).
+    non_data: bool,
     /// The status reads still in the command latency, and the status they return.
     latency_left: u32,
     stale: u8,
@@ -94,6 +102,8 @@ impl SimChannel {
             busy_reads: 0,
             command_latency: 0,
             interrupt_after_last: false,
+            flushes: 0,
+            flush_fails: false,
             log: Vec::new(),
             buffer: Vec::new(),
             position: 0,
@@ -101,6 +111,7 @@ impl SimChannel {
             remaining: 0,
             busy_left: 0,
             data_out: false,
+            non_data: false,
             latency_left: 0,
             stale: 0,
         }
@@ -155,6 +166,7 @@ impl SimChannel {
         self.stale = self.status;
         self.latency_left = self.command_latency;
         self.data_out = command == WRITE_SECTORS;
+        self.non_data = matches!(command, FLUSH_CACHE | FLUSH_CACHE_EXT);
         match command {
             IDENTIFY_DEVICE => {
                 self.buffer = identify_block(self.sectors() as u32).to_vec();
@@ -181,8 +193,24 @@ impl SimChannel {
                     self.request_sector();
                 }
             }
+            FLUSH_CACHE | FLUSH_CACHE_EXT if self.flush_fails => self.abort(),
+            FLUSH_CACHE | FLUSH_CACHE_EXT => {
+                self.status = DRDY | SEEK | BUSY;
+                self.busy_left = self.busy_reads;
+                if self.busy_left == 0 {
+                    self.end_busy();
+                }
+            }
             _ => self.abort(),
         }
+    }
+
+    /// A non-data command's BUSY phase is over: the cache is written out, and the completion
+    /// interrupts.
+    fn flushed(&mut self) {
+        self.flushes += 1;
+        self.status = DRDY | SEEK;
+        self.raise();
     }
 
     /// Ask for the next data-out sector.
@@ -216,7 +244,9 @@ impl SimChannel {
     }
 
     fn end_busy(&mut self) {
-        if self.data_out {
+        if self.non_data {
+            self.flushed();
+        } else if self.data_out {
             self.sector_taken();
         } else {
             self.data_ready();
@@ -347,7 +377,8 @@ pub fn pattern(lba: u32, offset: usize) -> u8 {
 }
 
 /// The IDENTIFY block a disk of `sectors` sectors reports: LBA supported, the LBA28 count, a
-/// 16-sector multiple setting.
+/// 16-sector multiple setting, FLUSH CACHE supported (word 83, valid, bit 12; no 48-bit feature
+/// set).
 pub fn identify_block(sectors: u32) -> [u8; SECTOR_SIZE] {
     let mut block = [0u8; SECTOR_SIZE];
     let mut put = |index: usize, word: u16| {
@@ -357,6 +388,7 @@ pub fn identify_block(sectors: u32) -> [u8; SECTOR_SIZE] {
     put(49, (1 << 11) | (1 << 9) | (1 << 8));
     put(60, sectors as u16);
     put(61, (sectors >> 16) as u16);
+    put(83, (1 << 14) | (1 << 12));
     block
 }
 

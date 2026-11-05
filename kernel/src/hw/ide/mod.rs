@@ -1,5 +1,5 @@
-//! The IDE (ATA) disk controller: the primary channel's master disk, LBA28 PIO reads driven by
-//! IRQ 14.
+//! The IDE (ATA) disk controller: the primary channel's master disk, LBA28 PIO reads and writes
+//! driven by IRQ 14, and the write cache's flush.
 //!
 //! The register machine — the port layout, the task-file packing, the IDENTIFY decode, the
 //! interrupt latch the service routine fills, and the per-command protocol — is generic over
@@ -19,6 +19,7 @@
 
 mod channel;
 pub mod disk;
+mod flush;
 mod identify;
 mod latch;
 mod read;

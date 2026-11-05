@@ -11,10 +11,14 @@
 //!    writer under way finishes first, holding the volume's lock (`fs::fat32::volume`);
 //! 2. the boot volume flushed: FSInfo's free count and next-free hint from a FAT scan, then
 //!    FAT[1]'s clean-shutdown bit, as FastFat marks its volumes clean when the system shuts down;
-//! 3. the registry's hives flushed, as Windows 2000's kernel flushes them (`cm::flush_hives`, which
+//! 3. the volume's disk told to write its cache out (ATA FLUSH CACHE, `hw::ide`), as FastFat's
+//!    shutdown sends its volume's device a flush once the volume is marked clean: a drive that
+//!    caches writes could otherwise lose the clean mark and the last writes with its power. It runs
+//!    whatever the volume step did, a failed flush included;
+//! 4. the registry's hives flushed, as Windows 2000's kernel flushes them (`cm::flush_hives`, which
 //!    has nothing to write while the hives live in memory alone);
-//! 4. the end announced on COM1;
-//! 5. for ShutdownNoReboot and ShutdownPowerOff, "It is now safe to turn off your computer." on the
+//! 5. the end announced on COM1;
+//! 6. for ShutdownNoReboot and ShutdownPowerOff, "It is now safe to turn off your computer." on the
 //!    screen and on COM1, and the processor halts (F2K has no ACPI, so a power-off ends there too,
 //!    as Windows 2000's does on a machine without it); for ShutdownReboot, the keyboard
 //!    controller's reset line, then a triple fault if the machine still runs.
@@ -26,6 +30,7 @@ use core::fmt;
 use rtl::nt::ShutdownAction;
 
 use super::call::{NtCall, NtResult};
+use crate::block::CacheFlush;
 use crate::fs::fat32::volume::Flushed;
 use crate::status::*;
 
@@ -59,6 +64,8 @@ pub trait Machine {
     fn close_volume(&mut self);
     /// Flush the boot volume: none when no volume is mounted.
     fn flush_volume(&mut self) -> Option<Result<Flushed, NtStatus>>;
+    /// Flush the write cache of the boot volume's disk: none when no volume is mounted.
+    fn flush_disk_cache(&mut self) -> Option<Result<CacheFlush, NtStatus>>;
     /// Flush the registry's hives.
     fn flush_registry(&mut self);
     /// A line on COM1.
@@ -99,6 +106,21 @@ pub fn run(action: ShutdownAction, machine: &mut impl Machine) -> Ending {
         // it.
         Some(Err(status)) => machine.report(format_args!(
             "F2K: shutdown: volume flush failed (status {:#010x}), left dirty",
+            status.0
+        )),
+    }
+    match machine.flush_disk_cache() {
+        None => machine.report(format_args!("F2K: shutdown: no disk cache to flush")),
+        Some(Ok(CacheFlush::Flushed)) => {
+            machine.report(format_args!("F2K: shutdown: disk cache flushed"))
+        }
+        Some(Ok(CacheFlush::Unsupported)) => {
+            machine.report(format_args!("F2K: shutdown: the disk takes no cache flush"))
+        }
+        // The shutdown goes on: what the drive still holds may be lost, as it would be with no
+        // flush at all.
+        Some(Err(status)) => machine.report(format_args!(
+            "F2K: shutdown: disk cache flush failed (status {:#010x})",
             status.0
         )),
     }
@@ -171,6 +193,10 @@ mod target {
             with_boot_volume(|volume| volume.flush())
         }
 
+        fn flush_disk_cache(&mut self) -> Option<Result<CacheFlush, NtStatus>> {
+            with_boot_volume(|volume| volume.device().flush_cache())
+        }
+
         fn flush_registry(&mut self) {
             crate::cm::flush_hives();
         }
@@ -210,16 +236,19 @@ mod tests {
     use super::*;
     use crate::fs::fat32::volume::FreeClusters;
 
-    /// A machine that records each step, and answers the flush as told.
+    /// A machine that records each step, and answers the flushes as told.
     struct Recording {
         flush: Option<Result<Flushed, NtStatus>>,
+        cache: Option<Result<CacheFlush, NtStatus>>,
         steps: Vec<String>,
     }
 
     impl Recording {
+        /// The volume's flush answered with `flush`, the disk's cache flushed.
         fn answering(flush: Option<Result<Flushed, NtStatus>>) -> Self {
             Recording {
                 flush,
+                cache: Some(Ok(CacheFlush::Flushed)),
                 steps: Vec::new(),
             }
         }
@@ -233,6 +262,11 @@ mod tests {
         fn flush_volume(&mut self) -> Option<Result<Flushed, NtStatus>> {
             self.steps.push("flush volume".into());
             self.flush
+        }
+
+        fn flush_disk_cache(&mut self) -> Option<Result<CacheFlush, NtStatus>> {
+            self.steps.push("flush disk cache".into());
+            self.cache
         }
 
         fn flush_registry(&mut self) {
@@ -276,8 +310,9 @@ mod tests {
         }
     }
 
-    /// A shutdown that halts: the volume closed, then flushed, then the registry, the end on COM1,
-    /// and the closing line on the screen and COM1. A power-off ends the same way.
+    /// A shutdown that halts: the volume closed, then flushed, then the disk's cache, then the
+    /// registry, the end on COM1, and the closing line on the screen and COM1. A power-off ends
+    /// the same way.
     #[test]
     fn a_shutdown_closes_then_flushes_then_halts() {
         let mut machine = Recording::answering(FLUSHED);
@@ -289,6 +324,8 @@ mod tests {
                 "close volume",
                 "flush volume",
                 "COM1: F2K: shutdown: volume flushed (90100 clusters free, next free 36900), marked clean",
+                "flush disk cache",
+                "COM1: F2K: shutdown: disk cache flushed",
                 "flush registry",
                 "COM1: F2K: shutdown: registry flushed (no hive on disk)",
                 "COM1: F2K: shutdown complete",
@@ -321,8 +358,9 @@ mod tests {
         assert!(!machine.steps.iter().any(|step| step.starts_with("screen:")));
     }
 
-    /// The flush's other outcomes are reported, and the shutdown goes on through each: no volume,
-    /// a volume never changed, a full one (no next free cluster), and a failed flush.
+    /// The flush's other outcomes are reported, and the shutdown goes on through each, the disk's
+    /// cache flushed after each: no volume, a volume never changed, a full one (no next free
+    /// cluster), and a failed flush.
     #[test]
     fn every_flush_outcome_is_reported_and_the_shutdown_goes_on() {
         let full = Some(Ok(Flushed::Clean(FreeClusters {
@@ -347,7 +385,38 @@ mod tests {
             let mut machine = Recording::answering(flush);
             assert_eq!(run(ShutdownAction::NoReboot, &mut machine), Ending::Halt);
             assert_eq!(machine.steps[3], std::format!("COM1: {line}"));
-            assert_eq!(machine.steps[4], "flush registry");
+            assert_eq!(machine.steps[4], "flush disk cache");
+            assert_eq!(machine.steps[6], "flush registry");
+        }
+    }
+
+    /// The cache flush's outcomes are reported, and the shutdown goes on through each: no volume
+    /// (so no disk to flush), a disk that takes no flush, and a failed flush.
+    #[test]
+    fn every_cache_flush_outcome_is_reported_and_the_shutdown_goes_on() {
+        for (cache, line) in [
+            (None, "F2K: shutdown: no disk cache to flush"),
+            (
+                Some(Ok(CacheFlush::Unsupported)),
+                "F2K: shutdown: the disk takes no cache flush",
+            ),
+            (
+                Some(Err(STATUS_IO_TIMEOUT)),
+                "F2K: shutdown: disk cache flush failed (status 0xc00000b5)",
+            ),
+        ] {
+            let mut machine = Recording {
+                cache,
+                ..Recording::answering(FLUSHED)
+            };
+            assert_eq!(run(ShutdownAction::Reboot, &mut machine), Ending::Reset);
+            assert_eq!(machine.steps[4], "flush disk cache");
+            assert_eq!(machine.steps[5], std::format!("COM1: {line}"));
+            assert_eq!(machine.steps[6], "flush registry");
+            assert_eq!(
+                machine.steps.last().unwrap(),
+                "COM1: F2K: shutdown: restarting"
+            );
         }
     }
 }

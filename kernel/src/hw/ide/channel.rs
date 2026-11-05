@@ -2,7 +2,7 @@
 //! check the status the service routine acknowledged, confirm the data on the alternate status,
 //! drain it; end the command with one status-register read. Data out: settle after the command,
 //! then per sector poll for the device's request, fill it, and wait for the interrupt that reports
-//! it taken.
+//! it taken. No data: wait for the interrupt that reports the command done, then check the status.
 
 use super::latch::{Completion, Latch};
 use super::regs::{
@@ -189,6 +189,43 @@ impl<IoT: Io> Channel<IoT> {
             return STATUS_IO_DEVICE_ERROR;
         }
         STATUS_SUCCESS
+    }
+
+    /// Run one non-data command: the device is BUSY until it is done, then interrupts with its
+    /// completion. The caller waits up to `waits` completion waits for that interrupt (a long
+    /// command takes more than one), then checks the status the service routine acknowledged and
+    /// that the device is no longer BUSY. Returns an NT status: success, timeout, or device error.
+    #[must_use]
+    pub fn non_data<C: Completion<IoT>>(
+        &mut self,
+        latch: &Latch,
+        completion: &mut C,
+        task_file: TaskFile,
+        command: u8,
+        waits: u32,
+    ) -> NtStatus {
+        if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
+            return STATUS_IO_TIMEOUT;
+        }
+        self.write_task_file(task_file);
+        self.settle();
+        // Armed before the command write: the completion can follow it at once.
+        latch.arm();
+        self.io.out(self.base + COMMAND, command);
+        // A wait that gave up leaves the latch armed: the next one waits on for the same interrupt.
+        if !(0..waits).any(|_| completion.wait(&mut self.io, latch)) {
+            latch.disarm();
+            return STATUS_IO_TIMEOUT;
+        }
+        if latch.status() & ERR != 0 {
+            return self.device_error();
+        }
+        match self.poll(|status| status & BUSY == 0) {
+            None => STATUS_IO_TIMEOUT,
+            Some(status) if status & ERR != 0 => self.device_error(),
+            Some(status) if status & DRQ != 0 => STATUS_IO_DEVICE_ERROR,
+            Some(_) => STATUS_SUCCESS,
+        }
     }
 
     /// Fill one sector into the data port, 256 words.

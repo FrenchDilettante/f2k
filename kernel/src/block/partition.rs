@@ -9,7 +9,7 @@ use core::mem::{offset_of, size_of};
 
 use rtl::pod::Pod;
 
-use super::{check_request, BlockDevice, DeviceInfo};
+use super::{check_request, BlockDevice, CacheFlush, DeviceInfo};
 use crate::status::NtStatus;
 
 /// The boot-sector signature word at offset 510.
@@ -184,6 +184,11 @@ impl BlockDevice for Partition {
         check_request(&self.info(), lba, buffer)?;
         self.disk.write(self.entry.start + lba, buffer)
     }
+
+    /// The disk's cache: a partition has none of its own.
+    fn flush_cache(&self) -> Result<CacheFlush, NtStatus> {
+        self.disk.flush_cache()
+    }
 }
 
 /// An MBR with the given entries (slot, boot flag, type, start, length) and the signature.
@@ -314,6 +319,42 @@ mod tests {
         assert_eq!(
             partition.read(49, &mut buffer),
             Err(STATUS_INVALID_PARAMETER)
+        );
+    }
+
+    /// A partition's cache flush is its disk's: the disk's answer, whatever it is.
+    #[test]
+    fn a_partition_flushes_its_disk() {
+        struct Cached(CacheFlush);
+        impl BlockDevice for Cached {
+            fn info(&self) -> DeviceInfo {
+                MemoryDisk::patterned(1).info()
+            }
+
+            fn read(&self, _: u64, _: &mut [u8]) -> Result<(), NtStatus> {
+                Ok(())
+            }
+
+            fn flush_cache(&self) -> Result<CacheFlush, NtStatus> {
+                Ok(self.0)
+            }
+        }
+        let entry = MbrEntry {
+            index: 0,
+            kind: 0x0C,
+            bootable: false,
+            start: 1,
+            sectors: 1,
+        };
+        for answer in [CacheFlush::Flushed, CacheFlush::Unsupported] {
+            let disk: &'static Cached = Box::leak(Box::new(Cached(answer)));
+            assert_eq!(Partition::new(disk, entry).flush_cache(), Ok(answer));
+        }
+        let memory: &'static MemoryDisk = Box::leak(Box::new(MemoryDisk::patterned(4)));
+        assert_eq!(
+            Partition::new(memory, entry).flush_cache(),
+            Ok(CacheFlush::Unsupported),
+            "a device with no cache has nothing to flush"
         );
     }
 }
