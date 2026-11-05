@@ -138,6 +138,46 @@ args = ["ptr DeviceName", "ptr DevMode", "handle Window", "u32 Flags", "ptr Para
 impl = { syscall = "crate::win32k::display::change_display_settings" }
 internal = true
 
+# The display's other services, behind EnumDisplaySettings, EnumDisplayDevices,
+# EnumDisplayMonitors, SetSysColors and SystemParametersInfo: their W forms' arguments as they are,
+# but NtUserEnumDisplayMonitors', which selects the monitors (handles and rectangles into the
+# caller's arrays, their count through the last pointer) and leaves the callback to user32.
+
+[[export]]
+name = "NtUserEnumDisplaySettings"
+group = "display"
+args = ["ptr DeviceName", "u32 ModeNum", "ptr DevMode", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::enum_display_settings" }
+internal = true
+
+[[export]]
+name = "NtUserEnumDisplayDevices"
+group = "display"
+args = ["ptr DeviceName", "u32 DevNum", "ptr DisplayDevice", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::enum_display_devices" }
+internal = true
+
+[[export]]
+name = "NtUserEnumDisplayMonitors"
+group = "display"
+args = ["handle Dc", "ptr Clip", "ptr Monitors", "ptr Rects", "u32 Count", "ptr<u32> Found"]
+impl = { syscall = "crate::win32k::display::enum_display_monitors" }
+internal = true
+
+[[export]]
+name = "NtUserSetSysColors"
+group = "display"
+args = ["u32 Count", "ptr Indexes", "ptr Colors", "u32 Flags"]
+impl = { syscall = "crate::win32k::display::set_sys_colors" }
+internal = true
+
+[[export]]
+name = "NtUserSystemParametersInfo"
+group = "display"
+args = ["u32 Action", "u32 UiParam", "ptr Param", "u32 WinIni"]
+impl = { syscall = "crate::win32k::display::system_parameters_info" }
+internal = true
+
 # win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, served
 # ahead of the exports (which come with the windows): each answers a screen DC's handle.
 

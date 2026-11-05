@@ -1,8 +1,11 @@
 //! The display settings' shared shapes: DEVMODEA and DEVMODEW as Windows 2000's wingdi.h lays them
 //! out on x86 ([`DevModeA`], [`DevModeW`]), the fields and flags ChangeDisplaySettings reads, and
-//! the DISP_CHANGE codes it answers. user32's ChangeDisplaySettings family converts the narrow form
-//! to the wide one ([`wide_dev_mode`]) and hands it to win32k's NtUserChangeDisplaySettings, which
-//! the kernel serves from the same definitions.
+//! the DISP_CHANGE codes it answers; DISPLAY_DEVICEA and DISPLAY_DEVICEW ([`DisplayDeviceA`],
+//! [`DisplayDeviceW`]) and their state flags, EnumDisplaySettings' mode numbers, the monitor
+//! handles, the SystemParametersInfo actions and the system colors win32k answers. user32's
+//! ChangeDisplaySettings family converts the narrow form to the wide one ([`wide_dev_mode`]) and
+//! hands it to win32k's NtUserChangeDisplaySettings, which the kernel serves from the same
+//! definitions.
 //!
 //! A DEVMODE's dmSize says which version of the structure the caller has: the fields past it are
 //! not there. The display fields (dmBitsPerPel to dmDisplayFrequency) are in every version from
@@ -133,6 +136,123 @@ pub const DEV_MODE_A_SIZE: usize = offset_of!(DevModeA, size);
 pub const DISPLAY_FIELDS_END_W: usize = offset_of!(DevModeW, icm_method);
 /// The narrow form's: the two names are 32 bytes each shorter.
 pub const DISPLAY_FIELDS_END_A: usize = offset_of!(DevModeA, icm_method);
+
+/// dmFields' bits for the fields a display mode's description carries besides the display
+/// fields: the desktop's position on the virtual screen and the logical pixels per inch.
+pub const DM_POSITION: u32 = 0x0000_0020;
+pub const DM_LOGPIXELS: u32 = 0x0002_0000;
+
+/// DM_SPECVERSION: the DEVMODE version Windows 2000 describes its modes in.
+pub const DM_SPECVERSION: u16 = 0x0401;
+
+/// EnumDisplaySettings' mode numbers for the current mode and the registry's.
+pub const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF;
+pub const ENUM_REGISTRY_SETTINGS: u32 = 0xFFFF_FFFE;
+
+/// DISPLAY_DEVICE's StateFlags.
+pub const DISPLAY_DEVICE_ATTACHED_TO_DESKTOP: u32 = 0x0000_0001;
+pub const DISPLAY_DEVICE_PRIMARY_DEVICE: u32 = 0x0000_0004;
+pub const DISPLAY_DEVICE_VGA_COMPATIBLE: u32 = 0x0000_0010;
+/// A monitor's StateFlags: it is on, and attached to its adapter.
+pub const DISPLAY_DEVICE_ACTIVE: u32 = 0x0000_0001;
+pub const DISPLAY_DEVICE_ATTACHED: u32 = 0x0000_0002;
+
+/// DISPLAY_DEVICE's string fields' room, in characters.
+pub const DEVICE_STRING_CHARS: usize = 128;
+
+/// DISPLAY_DEVICEW, Windows 2000's (840 bytes): a display device's names and state, as
+/// EnumDisplayDevicesW answers them. Its `cb` says which version of the structure the caller has:
+/// Windows NT 4.0's ends at StateFlags ([`DISPLAY_DEVICE_STATE_END_W`]).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayDeviceW {
+    pub cb: u32,
+    pub device_name: [u16; CCHDEVICENAME],
+    pub device_string: [u16; DEVICE_STRING_CHARS],
+    pub state_flags: u32,
+    pub device_id: [u16; DEVICE_STRING_CHARS],
+    pub device_key: [u16; DEVICE_STRING_CHARS],
+}
+
+/// DISPLAY_DEVICEA, Windows 2000's (424 bytes): DISPLAY_DEVICEW with its strings in bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DisplayDeviceA {
+    pub cb: u32,
+    pub device_name: [u8; CCHDEVICENAME],
+    pub device_string: [u8; DEVICE_STRING_CHARS],
+    pub state_flags: u32,
+    pub device_id: [u8; DEVICE_STRING_CHARS],
+    pub device_key: [u8; DEVICE_STRING_CHARS],
+}
+
+const _: () = {
+    assert!(size_of::<DisplayDeviceW>() == 840);
+    assert!(offset_of!(DisplayDeviceW, device_string) == 68);
+    assert!(offset_of!(DisplayDeviceW, state_flags) == 324);
+    assert!(offset_of!(DisplayDeviceW, device_id) == 328);
+    assert!(offset_of!(DisplayDeviceW, device_key) == 584);
+    assert!(size_of::<DisplayDeviceA>() == 424);
+    assert!(offset_of!(DisplayDeviceA, state_flags) == 164);
+};
+
+// SAFETY: integers and arrays of them, without padding (the asserts above pin the offsets and the
+// sizes, which leave no gap); any bit pattern is a value.
+unsafe impl Pod for DisplayDeviceW {}
+// SAFETY: as DisplayDeviceW's.
+unsafe impl Pod for DisplayDeviceA {}
+
+/// The end of a DISPLAY_DEVICEW's StateFlags: the smallest `cb` a caller's structure may have.
+pub const DISPLAY_DEVICE_STATE_END_W: usize = offset_of!(DisplayDeviceW, device_id);
+
+/// The primary monitor's HMONITOR, as win32k's monitor services answer it (F2K's own value, a
+/// user handle's shape: the first index, the first generation); the others follow it.
+pub const PRIMARY_MONITOR_HANDLE: u32 = 0x0001_0001;
+
+/// SystemParametersInfo's actions win32k answers.
+///
+/// SPI_GETWORKAREA: the primary monitor's work area, a RECT into pvParam.
+pub const SPI_GETWORKAREA: u32 = 0x0030;
+
+/// The system colors' indexes (winuser.h's COLOR_*), and how many Windows 2000 has.
+pub const COLOR_DESKTOP: u32 = 1;
+pub const COLOR_WINDOW: u32 = 5;
+pub const COLOR_BTNTEXT: u32 = 18;
+pub const SYSTEM_COLORS: usize = 29;
+
+/// The system colors of Windows 2000's default scheme ("Windows Standard"), by index, as
+/// COLORREFs (0x00BBGGRR). Index 25 has no name in winuser.h.
+pub const DEFAULT_SYSTEM_COLORS: [u32; SYSTEM_COLORS] = [
+    0x00C8_D0D4, // COLOR_SCROLLBAR
+    0x00A5_6E3A, // COLOR_BACKGROUND (COLOR_DESKTOP)
+    0x006A_240A, // COLOR_ACTIVECAPTION
+    0x0080_8080, // COLOR_INACTIVECAPTION
+    0x00C8_D0D4, // COLOR_MENU
+    0x00FF_FFFF, // COLOR_WINDOW
+    0x0000_0000, // COLOR_WINDOWFRAME
+    0x0000_0000, // COLOR_MENUTEXT
+    0x0000_0000, // COLOR_WINDOWTEXT
+    0x00FF_FFFF, // COLOR_CAPTIONTEXT
+    0x00C8_D0D4, // COLOR_ACTIVEBORDER
+    0x00C8_D0D4, // COLOR_INACTIVEBORDER
+    0x0080_8080, // COLOR_APPWORKSPACE
+    0x006A_240A, // COLOR_HIGHLIGHT
+    0x00FF_FFFF, // COLOR_HIGHLIGHTTEXT
+    0x00C8_D0D4, // COLOR_BTNFACE
+    0x0080_8080, // COLOR_BTNSHADOW
+    0x0080_8080, // COLOR_GRAYTEXT
+    0x0000_0000, // COLOR_BTNTEXT
+    0x00C8_D0D4, // COLOR_INACTIVECAPTIONTEXT
+    0x00FF_FFFF, // COLOR_BTNHIGHLIGHT
+    0x0040_4040, // COLOR_3DDKSHADOW
+    0x00C8_D0D4, // COLOR_3DLIGHT
+    0x0000_0000, // COLOR_INFOTEXT
+    0x00E1_FFFF, // COLOR_INFOBK
+    0x00B5_B5B5, // (index 25)
+    0x0080_0000, // COLOR_HOTLIGHT
+    0x00F0_CAA6, // COLOR_GRADIENTACTIVECAPTION
+    0x00C0_C0C0, // COLOR_GRADIENTINACTIVECAPTION
+];
 
 /// The wide form of the narrow `mode`, as ChangeDisplaySettingsExA hands it on: the two names
 /// converted through `convert` (into the units' room, from the bytes up to their NUL), every other

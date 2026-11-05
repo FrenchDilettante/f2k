@@ -1207,6 +1207,11 @@ impl Windows {
         self.monitors[index as usize].rect = rect;
     }
 
+    /// A monitor's work area (SystemParametersInfo's SPI_GETWORKAREA, for the primary).
+    pub fn work_area(&self, index: u16) -> Rect {
+        self.monitors[index as usize].rect
+    }
+
     // --- Lookups
     // -----------------------------------------------------------------------------------
 
