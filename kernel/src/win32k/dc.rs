@@ -421,17 +421,42 @@ fn screen_extent() -> (i32, i32) {
 #[cfg(target_arch = "x86")]
 fn screen_dc(call: &mut NtCall, out: UserPtr<u32>) -> NtResult {
     let (width, height) = screen_extent();
-    let id = crate::ob::locked(|directory| directory.create_dc(Dc::screen(width, height)))
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    let process = call.process();
-    let handle = crate::ob::publish(process, id, DC_ACCESS, false)
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
-        .get();
+    let handle = publish_dc(call, Dc::screen(width, height))?;
     if out.write(handle).is_err() {
-        process.close_handle(handle);
+        call.process().close_handle(handle);
         return Err(STATUS_ACCESS_VIOLATION);
     }
     Ok(STATUS_SUCCESS)
+}
+
+/// BeginPaint's DC: a screen DC clipped to `clip` (screen coordinates: the window's client area
+/// its update region covers), its handle in the calling process (not inheritable);
+/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the handle table is full. Its coordinates
+/// are the screen's (the seam where a window's DC, its origin the client area's, lands).
+#[cfg(target_arch = "x86")]
+pub(super) fn paint_dc(call: &mut NtCall, clip: Rect) -> Result<u32, NtStatus> {
+    let (width, height) = screen_extent();
+    let mut dc = Dc::screen(width, height);
+    dc.clip = super::raster::intersect(dc.clip, clip);
+    publish_dc(call, dc)
+}
+
+/// EndPaint's release of BeginPaint's DC: its handle closed; STATUS_INVALID_HANDLE when the handle
+/// names no DC.
+#[cfg(target_arch = "x86")]
+pub(super) fn release_paint_dc(call: &mut NtCall, handle: u32) -> Result<(), NtStatus> {
+    close_dc(call, Handle(handle))
+}
+
+/// A DC of state `dc` made, its handle in the calling process (not inheritable);
+/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the handle table is full.
+#[cfg(target_arch = "x86")]
+fn publish_dc(call: &mut NtCall, dc: Dc) -> Result<u32, NtStatus> {
+    let id = crate::ob::locked(|directory| directory.create_dc(dc))
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    crate::ob::publish(call.process(), id, DC_ACCESS, false)
+        .map(core::num::NonZeroU32::get)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
 /// Close the calling process's handle `handle` when it names a DC; STATUS_INVALID_HANDLE

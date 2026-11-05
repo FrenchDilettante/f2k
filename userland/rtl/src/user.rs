@@ -1,9 +1,9 @@
 //! USER's shared shapes: the message constants user32's message calls and win32k's queue agree on
 //! (the messages the queue makes or reads, PeekMessage's flags, the queue-status bits), the
-//! structures Windows 2000's winuser.h lays out on x86 (MSG, CREATESTRUCTW), and F2K's
+//! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services
-//! hand user32 ([`Receipt`]), and the routines of NtUserCallOneParam ([`ONE_PARAM_*`]). Only
-//! F2K's user32 calls those services, so their shapes are F2K's.
+//! hand user32 ([`Receipt`]), and the routines of the NtUserCall* services ([`ONE_PARAM_*`],
+//! [`HWND_LOCK_*`]). Only F2K's user32 calls those services, so their shapes are F2K's.
 //!
 //! A message another thread sent, or one win32k sent on its own behalf (the window's creation and
 //! destruction messages), reaches the window procedure through the receiving thread's own message
@@ -11,6 +11,7 @@
 //! ([`ONE_PARAM_END_SENT_MESSAGE`]).
 //!
 //! [`ONE_PARAM_*`]: ONE_PARAM_POST_QUIT_MESSAGE
+//! [`HWND_LOCK_*`]: HWND_LOCK_UPDATE_WINDOW
 
 use crate::gdi::Rect;
 use crate::pod::Pod;
@@ -98,6 +99,23 @@ pub struct Msg {
 // SAFETY: integers only.
 unsafe impl Pod for Msg {}
 
+/// PAINTSTRUCT: what BeginPaint hands its caller.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PaintStruct {
+    pub hdc: u32,
+    /// fErase: the background still needs erasing (a BOOL).
+    pub erase: i32,
+    /// rcPaint: the area to paint, in client coordinates.
+    pub paint: Rect,
+    pub restore: i32,
+    pub inc_update: i32,
+    pub reserved: [u8; 32],
+}
+
+// SAFETY: integers and bytes only.
+unsafe impl Pod for PaintStruct {}
+
 /// CREATESTRUCTW: WM_NCCREATE's and WM_CREATE's lParam.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -169,7 +187,7 @@ pub struct ReceiptHead {
 // SAFETY: integers only.
 unsafe impl Pod for ReceiptHead {}
 
-// --- NtUserCallOneParam's routines (F2K's numbering) ---------------------------------------------
+// --- The NtUserCall* services' routines (F2K's numbering) ----------------------------------------
 
 /// NtUserCallOneParam's routines: PostQuitMessage (the parameter is the exit code), ReplyMessage
 /// (the parameter is the answer; the result is whether the thread was answering another thread's
@@ -178,6 +196,15 @@ unsafe impl Pod for ReceiptHead {}
 pub const ONE_PARAM_POST_QUIT_MESSAGE: u32 = 0;
 pub const ONE_PARAM_REPLY_MESSAGE: u32 = 1;
 pub const ONE_PARAM_END_SENT_MESSAGE: u32 = 2;
+
+/// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
+/// region is not empty).
+pub const HWND_LOCK_UPDATE_WINDOW: u32 = 0;
+
+/// NtUserGetUpdateRect's answer bits: the update region is not empty; the caller is to send the
+/// window WM_ERASEBKGND (it asked for the erase, and one was pending).
+pub const UPDATE_NOT_EMPTY: u32 = 0x1;
+pub const UPDATE_ERASE: u32 = 0x2;
 
 #[cfg(test)]
 mod tests {
@@ -193,6 +220,9 @@ mod tests {
         assert_eq!(size_of::<Msg>(), 28);
         assert_eq!(offset_of!(Msg, time), 16);
         assert_eq!(offset_of!(Msg, pt), 20);
+        assert_eq!(size_of::<PaintStruct>(), 64);
+        assert_eq!(offset_of!(PaintStruct, paint), 8);
+        assert_eq!(offset_of!(PaintStruct, reserved), 32);
         assert_eq!(size_of::<CreateStructW>(), 48);
         assert_eq!(offset_of!(CreateStructW, cy), 16);
         assert_eq!(offset_of!(CreateStructW, x), 28);

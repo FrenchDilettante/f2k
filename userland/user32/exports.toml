@@ -37,7 +37,7 @@ title = "windows"
 
 [[group]]
 key = "message"
-title = "messages"
+title = "messages and painting"
 
 # --- window stations / desktops -------------------------------------------------------------------
 
@@ -249,13 +249,14 @@ args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
 
-# --- messages --------------------------------------------------------------------------------------
+# --- messages and painting -------------------------------------------------------------------------
 
-# win32k's queue services: user32's internal calls, behind the message loop's exports
+# win32k's queue and paint services: user32's internal calls, behind the message loop's exports
 # (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
-# ReplyMessage). GetMessage and PeekMessage write F2K's receipt (rtl::user::Receipt): a posted
-# message, or a sent one with the window procedure to call; NtUserCallOneParam takes rtl::user's
-# routine numbers.
+# ReplyMessage) and the paint calls (InvalidateRect, ValidateRect,
+# GetUpdateRect, BeginPaint, EndPaint, UpdateWindow). GetMessage and PeekMessage write F2K's
+# receipt (rtl::user::Receipt): a posted message, or a sent one with the window procedure to call;
+# NtUserCallOneParam and NtUserCallHwndLock take rtl::user's routine numbers.
 
 [[export]]
 name = "NtUserPostMessage"
@@ -305,6 +306,50 @@ group = "message"
 args = ["u32 Param", "u32 Routine", "ptr<u32> Result"]
 impl = { syscall = "crate::win32k::queue::call_one_param" }
 internal = true
+
+[[export]]
+name = "NtUserInvalidateRect"
+group = "message"
+args = ["handle Window", "ptr Rect", "bool Erase"]
+impl = { syscall = "crate::win32k::paint::invalidate_rect" }
+internal = true
+
+[[export]]
+name = "NtUserValidateRect"
+group = "message"
+args = ["handle Window", "ptr Rect"]
+impl = { syscall = "crate::win32k::paint::validate_rect" }
+internal = true
+
+[[export]]
+name = "NtUserGetUpdateRect"
+group = "message"
+args = ["handle Window", "ptr Rect", "bool Erase", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::paint::get_update_rect" }
+internal = true
+
+[[export]]
+name = "NtUserBeginPaint"
+group = "message"
+args = ["handle Window", "ptr Paint"]
+impl = { syscall = "crate::win32k::paint::begin_paint" }
+internal = true
+
+[[export]]
+name = "NtUserEndPaint"
+group = "message"
+args = ["handle Window", "ptr Paint"]
+impl = { syscall = "crate::win32k::paint::end_paint" }
+internal = true
+
+[[export]]
+name = "NtUserCallHwndLock"
+group = "message"
+args = ["handle Window", "u32 Routine"]
+impl = { syscall = "crate::win32k::paint::call_hwnd_lock" }
+internal = true
+
+# --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
 name = "ActivateKeyboardLayout"

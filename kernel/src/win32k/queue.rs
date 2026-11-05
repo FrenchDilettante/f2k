@@ -8,10 +8,11 @@
 //! ([`QueueId`]), the object manager's pattern. Posted messages are entries of one pool the queues
 //! share, linked oldest first. A read ([`take`]) answers, in the documented order: the messages
 //! sent to the thread's windows; the posted messages its filter takes; the WM_QUIT PostQuitMessage
-//! left. WM_QUIT is never posted: it is made when a read finds nothing posted before it, as
-//! Windows 2000 makes it. A read that finds nothing for its filter blocks GetMessage's caller on
-//! its queue's event, set by whatever gives the queue something: a post, a send, an answer. The
-//! wait is the scheduler's, outside the lock.
+//! left; a WM_PAINT for a window of the thread's with an update region ([`super::paint`]).
+//! WM_QUIT and WM_PAINT are never posted: they are made when a read finds nothing posted before
+//! them, as Windows 2000 makes them. A read that finds nothing for its filter blocks GetMessage's
+//! caller on its queue's event, set by whatever gives the queue something: a post, a send, an
+//! answer, an invalidation. The wait is the scheduler's, outside the lock.
 //!
 //! A sent message reaches its window procedure through the receiving thread's own GetMessage or
 //! PeekMessage: there is no way for the kernel to call user-mode code and return (Windows 2000's
@@ -68,6 +69,7 @@ use rtl::user::{
     RECEIVED_QUIT,
     RECEIVED_SENT,
     WM_NCCREATE,
+    WM_PAINT,
     WM_QUIT,
     WM_TIMER,
 };
@@ -271,8 +273,9 @@ struct CreateSlot {
     params: CreateParams,
 }
 
-/// The queues and the pools their messages come from: the message layer's state, in the window
-/// registry, behind the window manager's lock.
+/// The queues, the pools their messages come from and the windows' update regions
+/// ([`super::paint`]): the message layer's state, in the window registry, behind the window
+/// manager's lock.
 pub struct Queues {
     queues: [Queue; THREADS],
     posted: [Posted; POSTED],
@@ -280,6 +283,7 @@ pub struct Queues {
     free_posted: Option<u16>,
     sent: [Sent; SENT],
     creates: [CreateSlot; CREATES],
+    pub updates: super::paint::Updates,
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
     /// once the lock is let go.
     wakes: [u32; WAKE_WORDS],
@@ -335,6 +339,7 @@ impl Queues {
                     },
                 });
             }
+            super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
             addr_of_mut!((*queues).wakes).write([0; WAKE_WORDS]);
         }
     }
@@ -346,6 +351,14 @@ impl Queues {
             index: thread.0,
             generation: queue.generation,
         })
+    }
+
+    /// Mark the queue of the thread record `thread` as given something: its event is set once the
+    /// lock is let go.
+    pub fn wake_thread(&mut self, thread: ThreadId) {
+        if self.queue_of(thread).is_some() {
+            self.wakes[thread.0 as usize / 32] |= 1 << (thread.0 % 32);
+        }
     }
 
     fn wake(&mut self, id: QueueId) {
@@ -511,6 +524,7 @@ impl Queues {
                 }
             }
         }
+        self.updates.thread_gone(ThreadId(index));
         let queue = &mut self.queues[index as usize];
         *queue = Queue {
             generation: queue.generation.wrapping_add(1),
@@ -741,7 +755,7 @@ pub enum Taken {
     /// A sent message, handed out: its receipt is written from the record ([`receipt_head`]), its
     /// answer comes back with [`end_sent`].
     Sent(SentId),
-    /// A posted message, or one the queue made (WM_QUIT).
+    /// A posted message, or one the queue made (WM_QUIT, WM_PAINT).
     Message(Msg),
     /// Nothing for the filter; when to look again unwoken (interrupt time), if ever.
     Nothing { due: Option<u64> },
@@ -761,7 +775,7 @@ impl Taken {
 /// GetMessage's and PeekMessage's read of the caller's queue at `now` (interrupt time, 100 ns
 /// units), the messages it takes out when `remove`: in the documented order, the messages sent to
 /// the thread (whatever the filter), the posted messages the filter takes, WM_QUIT (whatever the
-/// range). STATUS_INVALID_HANDLE when the filter names a window there is not.
+/// range), WM_PAINT. STATUS_INVALID_HANDLE when the filter names a window there is not.
 pub fn take(
     windows: &mut Windows,
     caller: ThreadId,
@@ -830,6 +844,13 @@ pub fn take(
                 }
                 return Ok(Taken::Message(made(0, WM_QUIT, code, 0, time)));
             }
+        }
+    }
+
+    // WM_PAINT, for a window of the thread's with an update region.
+    if filter.looks_at(QS_PAINT) && filter.in_range(WM_PAINT) {
+        if let Some(hwnd) = super::paint::next_paint(windows, caller, filter) {
+            return Ok(Taken::Message(made(hwnd, WM_PAINT, 0, 0, time)));
         }
     }
 
@@ -1117,7 +1138,8 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     queues.push_sent(receiver, id.index);
 }
 
-/// The window `window` is being freed: the messages posted to it go.
+/// The window `window` is being freed: the messages posted to it go, its update region with
+/// them.
 pub fn window_gone(windows: &mut Windows, window: WindowId) {
     let hwnd = windows.handle_of(window);
     let queues = &mut windows.queues;
@@ -1126,12 +1148,13 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
             queues.purge_posted(index, |msg| msg.hwnd == hwnd);
         }
     }
+    queues.updates.window_gone(window);
 }
 
 /// The pump the services run the window manager's decisions with: every message to a window with a
 /// client-side procedure is queued for its thread ([`defer`]) and answered as the default procedure
-/// answers; a window's end takes its posted messages with it. The other window-manager calls are
-/// [`Pump`]'s defaults.
+/// answers; a window's end takes its posted messages and update region with it. The other
+/// window-manager calls are [`Pump`]'s defaults.
 pub struct QueuePump;
 
 impl Pump for QueuePump {
