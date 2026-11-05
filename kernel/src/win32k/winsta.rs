@@ -204,6 +204,7 @@ pub fn init() {
         (station, desktop)
     });
     INTERACTIVE.set(Interactive { station, desktop });
+    super::queue::init();
     super::window::locked(|manager| manager.boot_desktop(desktop_key(desktop), WORK_AREA))
         .expect("the boot makes the desktop's windows");
 }
@@ -249,7 +250,8 @@ pub fn connect(process: &crate::process::Process) -> Result<Connection, NtStatus
 }
 
 /// The calling thread's record in the window registry: on the process's desktop (every process's
-/// is the interactive one), through the process's desktop handle with its access.
+/// is the interactive one), through the process's desktop handle with its access; and its message
+/// queue, as a thread's first win32k service makes one on Windows 2000 ([`super::queue::attach`]).
 #[cfg(target_arch = "x86")]
 fn connect_thread(
     process: &crate::process::Process,
@@ -262,10 +264,22 @@ fn connect_thread(
     };
     let owner = process.object().index;
     let desktop = desktop_key(INTERACTIVE.get().desktop);
+    let client_id = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .thread(crate::sched::current_thread())
+            .thread_id()
+    });
     let thread = super::window::locked(|manager| {
-        manager
-            .windows
-            .connect_thread(key, owner, desktop, DESKTOP_ALL_ACCESS, connection.desktop)
+        let thread = manager.windows.connect_thread(
+            key,
+            owner,
+            desktop,
+            DESKTOP_ALL_ACCESS,
+            connection.desktop,
+        )?;
+        super::queue::attach(&mut manager.windows, thread, key, client_id);
+        Some(thread)
     })
     .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     Ok(GuiThread {

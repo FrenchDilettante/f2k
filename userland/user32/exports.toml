@@ -35,6 +35,10 @@ title = "window classes"
 key = "window"
 title = "windows"
 
+[[group]]
+key = "message"
+title = "messages"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -245,7 +249,62 @@ args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
 
-# --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
+# --- messages --------------------------------------------------------------------------------------
+
+# win32k's queue services: user32's internal calls, behind the message loop's exports
+# (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
+# ReplyMessage). GetMessage and PeekMessage write F2K's receipt (rtl::user::Receipt): a posted
+# message, or a sent one with the window procedure to call; NtUserCallOneParam takes rtl::user's
+# routine numbers.
+
+[[export]]
+name = "NtUserPostMessage"
+group = "message"
+args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { syscall = "crate::win32k::queue::post_message" }
+internal = true
+
+[[export]]
+name = "NtUserPostThreadMessage"
+group = "message"
+args = ["u32 ThreadId", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { syscall = "crate::win32k::queue::post_thread_message" }
+internal = true
+
+[[export]]
+name = "NtUserGetMessage"
+group = "message"
+args = ["ptr Receipt", "handle Window", "u32 MsgFilterMin", "u32 MsgFilterMax"]
+impl = { syscall = "crate::win32k::queue::get_message" }
+internal = true
+
+[[export]]
+name = "NtUserPeekMessage"
+group = "message"
+args = ["ptr Receipt", "handle Window", "u32 MsgFilterMin", "u32 MsgFilterMax", "u32 RemoveMsg"]
+impl = { syscall = "crate::win32k::queue::peek_message" }
+internal = true
+
+[[export]]
+name = "NtUserMessageCall"
+group = "message"
+args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "ptr<u32> Proc", "ptr<i32> Result"]
+impl = { syscall = "crate::win32k::queue::message_call" }
+internal = true
+
+[[export]]
+name = "NtUserDispatchMessage"
+group = "message"
+args = ["ptr Msg", "ptr<u32> Proc"]
+impl = { syscall = "crate::win32k::queue::dispatch_message" }
+internal = true
+
+[[export]]
+name = "NtUserCallOneParam"
+group = "message"
+args = ["u32 Param", "u32 Routine", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::queue::call_one_param" }
+internal = true
 
 [[export]]
 name = "ActivateKeyboardLayout"
