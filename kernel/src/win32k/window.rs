@@ -40,8 +40,9 @@
 //! Seams recorded: message sending and the queue (the message slice) — every send and
 //! window-manager call the decisions make goes through the [`Pump`] trait, and the services run
 //! them with [`DefaultProcedure`], whose answers are the default procedure's; monitors and frame
-//! metrics come from the display slice (the boot sets the primary monitor's work area); nothing
-//! ends a thread's or a process's records yet (their windows and classes outlive them).
+//! metrics come from the display slice (the boot sets the primary monitor's work area). A
+//! process's end takes its windows, its classes and its threads' records, at its teardown
+//! ([`WindowManager::end_process`]); a thread's records outlive the thread until then.
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -1090,8 +1091,8 @@ impl Windows {
     /// The record of the process thread `key`, made at its first win32k service: the one it has,
     /// or a fresh one for the process `process` on the desktop `desktop`, through the desktop
     /// handle `desktop_handle` with the access `desktop_access`. A record an ended thread of the
-    /// same slot left is reused when it holds no windows (nothing ends a thread's record yet).
-    /// None when every record is taken.
+    /// same slot left is reused when it holds no windows (a thread's record outlives it until its
+    /// process's end). None when every record is taken.
     pub fn connect_thread(
         &mut self,
         key: ThreadKey,
@@ -2657,6 +2658,91 @@ impl Windows {
         w.style &= 0x0000_FFFF;
         w.menu = Menu::None;
     }
+
+    // --- A process's end
+    // ---------------------------------------------------------------------------
+
+    /// The process `owner`'s end: its threads' records go into cleanup (no hook vetoes their
+    /// destroys), each of its windows is destroyed as its own thread, top of each tree first,
+    /// and its threads' records go. A window whose destroy left a zombie (another reference holds
+    /// it) is left to that reference; a window left without its parent — a child of another
+    /// thread's window, whose destroy event found no queue — is destroyed as a top-level one.
+    pub fn end_process(
+        &mut self,
+        classes: &mut class::Registry,
+        owner: class::Owner,
+        pump: &mut dyn Pump,
+    ) {
+        for t in self.threads.iter_mut() {
+            if t.live && t.process == owner {
+                t.in_cleanup = true;
+            }
+        }
+        while let Some(window) = self.process_window(owner) {
+            if self
+                .at(window)
+                .parent
+                .is_some_and(|p| !self.pool.is_live(p))
+            {
+                self.at_mut(window).parent = None;
+            }
+            let thread = self.at(window).thread;
+            if self.destroy_window(classes, thread, window, pump) != Ok(true) {
+                // Not reachable (the window's own thread, in cleanup, destroys it); never loop.
+                break;
+            }
+        }
+        for (index, t) in self.threads.iter_mut().enumerate() {
+            if t.live && t.process == owner {
+                *t = Thread::EMPTY;
+                if self.foreground_thread == Some(ThreadId(index as u16)) {
+                    self.foreground_thread = None;
+                }
+            }
+        }
+    }
+
+    /// A live window of the process `owner` that is not a zombie: the top of its tree among the
+    /// process's windows.
+    fn process_window(&self, owner: class::Owner) -> Option<WindowId> {
+        let doomed = |id: WindowId| {
+            let w = self.at(id);
+            w.process == owner
+                && !self
+                    .handles
+                    .lookup(w.handle)
+                    .is_some_and(|e| e.marked_destroy)
+        };
+        let mut window = self.live_windows().find(|&id| doomed(id))?;
+        while let Some(parent) = self.at(window).parent {
+            if !self.pool.is_live(parent) || !doomed(parent) {
+                break;
+            }
+            window = parent;
+        }
+        Some(window)
+    }
+
+    /// The live windows, in pool order.
+    fn live_windows(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.pool
+            .headers
+            .iter()
+            .enumerate()
+            .filter(|(_, header)| header.live)
+            .map(|(index, header)| WindowId {
+                index: index as u16,
+                generation: header.generation,
+            })
+    }
+
+    /// How many live windows belong to processes (the window manager's own aside): with no
+    /// process left, each is one a process's end missed.
+    pub fn process_windows(&self) -> usize {
+        self.live_windows()
+            .filter(|&id| self.at(id).process != class::SYSTEM_OWNER)
+            .count()
+    }
 }
 
 // --- The window manager: both registries behind one lock
@@ -2833,6 +2919,24 @@ impl WindowManager {
             .windows
             .create_window_ex(&mut self.classes, caller, args, pump)?;
         Ok(self.windows.handle_of(id))
+    }
+
+    /// The process `owner`'s end, at its teardown: its windows go ([`Windows::end_process`]),
+    /// then its classes. Windows 2000 destroys a thread's windows at the thread's end and a
+    /// process's classes at the process's; F2K does both at the process's teardown, where the
+    /// window manager learns of an end (its thread records outlive their threads until then).
+    pub fn end_process(&mut self, owner: class::Owner) {
+        let WindowManager {
+            windows, classes, ..
+        } = self;
+        windows.end_process(classes, owner, &mut DefaultProcedure);
+        classes.destroy_owner_classes(owner);
+    }
+
+    /// What the processes' ends left behind: the processes' live windows and their classes. With
+    /// no process left, the teardown audit counts each as a leak.
+    pub fn process_records(&self) -> usize {
+        self.windows.process_windows() + self.classes.process_classes()
     }
 }
 
@@ -5225,5 +5329,81 @@ mod tests {
             MenuInput::Handle(0x1_0040)
         );
         assert_eq!(MenuInput::of(WS_OVERLAPPED, 0), MenuInput::None);
+    }
+
+    /// A process's end: its windows go — the trees, the owned windows, a second thread's — then
+    /// its classes and its threads' records; another process's windows and classes stay, a child
+    /// of the ended process's window left without its parent among them. Nothing of the process is
+    /// left for the audit to count.
+    #[test]
+    fn a_process_end_takes_its_windows_and_classes() {
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        register(
+            &mut m.classes,
+            class::Name::Text(&units("App")),
+            &wnd_class(),
+        );
+        register_on(
+            &mut m.classes,
+            class::Name::Text(&units("Other")),
+            &wnd_class(),
+            DESKTOP,
+            OTHER_OWNER,
+            class::MenuArg::None,
+        );
+        let t = m
+            .windows
+            .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let t2 = m
+            .windows
+            .connect_thread(key(2, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let other = m
+            .windows
+            .connect_thread(key(3, 0), OTHER_OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x20)
+            .unwrap();
+        let app = units("App");
+        let create = |m: &mut WindowManager, thread, parent, name: &[u16], style| {
+            let mut a = args(0, style);
+            a.class_name = class::Name::Text(name);
+            m.create_window(thread, parent, &mut a, &mut DefaultProcedure)
+                .unwrap()
+        };
+        let top = create(m, t, 0, &app, WS_OVERLAPPED);
+        let child = create(m, t, top, &app, WS_CHILD);
+        let _grandchild = create(m, t, child, &app, WS_CHILD);
+        let _owned = create(m, t, top, &app, WS_POPUP);
+        let _second = create(m, t2, 0, &app, WS_POPUP);
+        let other_name = units("Other");
+        let survivor = create(m, other, 0, &other_name, WS_OVERLAPPED);
+        let foster = create(m, other, top, &other_name, WS_CHILD);
+        assert_eq!(m.process_records(), 7 + 2);
+
+        m.end_process(OWNER);
+        assert_eq!(
+            m.windows.process_windows(),
+            2,
+            "the other process's windows stay"
+        );
+        assert!(m.windows.window_from_handle(top).is_none());
+        assert!(m.windows.window_from_handle(survivor).is_some());
+        let foster = m.windows.window_from_handle(foster).unwrap();
+        assert!(
+            m.windows.at(foster).flags.destroyed,
+            "its destroy event is posted"
+        );
+        assert_eq!(m.classes.process_classes(), 1, "the other process's class");
+        assert!(!m.windows.thread(t).live);
+        assert!(!m.windows.thread(t2).live);
+        assert!(m.windows.thread(other).live);
+
+        // The other process's end takes the rest, the orphaned child included.
+        m.end_process(OTHER_OWNER);
+        assert_eq!(m.process_records(), 0);
+        let desktop = *m.windows.desktop_by_id(DESKTOP).unwrap();
+        assert_eq!(m.windows.at(desktop.window.unwrap()).child, None);
+        assert_eq!(live(&m.windows), 2, "the desktop's own windows");
     }
 }

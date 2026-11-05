@@ -46,7 +46,8 @@
 //!    2000's MmCleanProcessAddressSpace: an image's file is closed once nothing maps it);
 //! 3. the last thread's object signals, then the process object with the exit code: their waiters
 //!    wake, and the switch away from the last thread may select one of them;
-//! 4. the last thread's gate stack goes, and the object audit runs;
+//! 4. the last thread's gate stack goes, the process's windows and window classes go, and the
+//!    object audit runs;
 //! 5. the process is deleted with its object's last reference beside its own (Windows 2000's
 //!    process deletion): its whole address space goes — every frame, whatever a service of another
 //!    process committed in it after its end included — then the object and the record.
@@ -1142,11 +1143,12 @@ pub fn reap() {
 }
 
 /// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack
-/// goes, then the object audit — its threads' records start over, and at a `quiescent` reap the
-/// leak sweep runs — then, step 5, the process is deleted if nothing beside its own reference holds
-/// its object (see [`delete_if_unreferenced`]); otherwise the last handle or reference to go
-/// deletes it. Nothing here is observable to the process's waiters: its object signalled at its
-/// last thread's exit, which the teardown checks first.
+/// goes, then its windows and window classes (see `crate::win32k::window`), then the object audit
+/// — its threads' records start over, and at a `quiescent` reap the leak sweep runs — then, step 5,
+/// the process is deleted if nothing beside its own reference holds its object (see
+/// [`delete_if_unreferenced`]); otherwise the last handle or reference to go deletes it. Nothing
+/// here is observable to the process's waiters: its object signalled at its last thread's exit,
+/// which the teardown checks first.
 ///
 /// Runs on the idle thread, on the boot address space: the deletion's walk reads the dead
 /// directory through the scratch window, never through a mapping, and nothing else here reaches the
@@ -1168,9 +1170,14 @@ fn teardown(process: &'static Process, quiescent: bool) {
     );
     // Per thread first: the parked gate stack (the last exit's, or a later exit's in another
     // process: whichever is parked, its owner off it for good, since this runs on the idle
-    // thread's boot stack). Then per process: the audit, with the record still the process's,
-    // then the deletion, which may free it.
+    // thread's boot stack). Then per process: its windows and window classes, if it ever entered
+    // win32k; the audit, with the record still the process's; then the deletion, which may free
+    // it.
     crate::mem::kstacks::release_parked();
+    if process.win32k().is_some() {
+        let owner = process.object().index;
+        crate::win32k::window::locked(|manager| manager.end_process(owner));
+    }
     audit_objects(process, quiescent);
     locked(&process.state, |state| state.torn_down = true);
     delete_if_unreferenced(process.object());
@@ -1259,6 +1266,9 @@ fn audit_objects(process: &Process, quiescent: bool) {
     crate::ob::locked(crate::ob::Directory::sweep_end);
     leaked += crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
     leaked += crate::fs::pipes::sweep();
+    // A window or window class of a process is one its end left behind (they are counted, not
+    // swept: the window manager's records hold no frames).
+    leaked += crate::win32k::window::locked(|manager| manager.process_records());
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",

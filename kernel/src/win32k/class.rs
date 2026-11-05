@@ -1409,13 +1409,33 @@ impl Registry {
         Ok(())
     }
 
-    /// A process's end: its classes go, the private list first, then the public one.
+    /// A process's end: its classes go, the private list first, then the public one. Its windows
+    /// went first ([`super::window::WindowManager::end_process`]), so none of its classes has one.
     pub fn destroy_owner_classes(&mut self, owner: Owner) {
         for list in [List::Private(owner), List::Public(owner)] {
             while let Some(id) = self.list_head(list) {
                 self.destroy_class(id, list, owner);
             }
         }
+    }
+
+    /// How many classes the processes' lists hold (the system list aside): with no process left,
+    /// each is one a process's end missed.
+    pub fn process_classes(&self) -> usize {
+        let mut count = 0;
+        for owner in 0..MAX_OWNERS as Owner {
+            if owner == SYSTEM_OWNER {
+                continue;
+            }
+            for list in [List::Private(owner), List::Public(owner)] {
+                let mut cursor = self.list_head(list);
+                while let Some(id) = cursor {
+                    count += 1;
+                    cursor = self.classes.at(id).next;
+                }
+            }
+        }
+        count
     }
 
     /// Destroy the class `id` linked in `list`: the teardown in order — the clones, the atom, the
