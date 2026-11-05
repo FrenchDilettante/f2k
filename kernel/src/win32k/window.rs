@@ -708,6 +708,36 @@ struct Window {
     /// The object's lock count: 1 at creation, dropped by the free; more than that means
     /// someone else still holds a reference and the free makes a zombie instead.
     locks: u32,
+    /// The destroy cascade's bookkeeping for this window, while a cascade visits it.
+    walk: Walk,
+}
+
+/// What the destroy cascade keeps in a window's record while it visits the window. The cascade
+/// walks the window trees without recursing — a level of recursion costs more than a kilobyte of
+/// the gate stack at opt-level 0, and both the parent chain and the owner chain may be 100 deep —
+/// so the state a recursive walk would keep in its frames lives here: each window is on one walk
+/// at a time, and a handler that destroys another window starts a walk of that window's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Walk {
+    /// The sibling the WM_DESTROY walk visits after this window, read before this window's
+    /// subtree is messaged: a handler that destroys it ends the walk of their parent's children.
+    next: Option<WindowId>,
+    /// The window whose owned-window cascade is destroying this one (none for the window the
+    /// destroy was asked for).
+    owner: Option<WindowId>,
+    /// This window's destroy is a re-entry: it was marked for destruction already.
+    already: bool,
+    /// The calling thread's hooks-disabled flag from before a re-entry's destroy set it.
+    saved_hooks: Option<bool>,
+}
+
+impl Walk {
+    const NONE: Self = Walk {
+        next: None,
+        owner: None,
+        already: false,
+        saved_hooks: None,
+    };
 }
 
 impl Window {
@@ -756,6 +786,7 @@ impl Window {
         cb_wnd_extra: 0,
         title: TextBuf::EMPTY,
         locks: 0,
+        walk: Walk::NONE,
     };
 
     /// The window's kind, from the style's type bits.
@@ -1284,17 +1315,34 @@ impl Windows {
         max <= NESTED_WINDOW_LIMIT
     }
 
-    /// The deepest level in `w`'s subtree (children and their siblings), `depth` being `w`'s
-    /// own level.
+    /// The deepest level in `w`'s subtree (its children, theirs, and so on), `depth` being `w`'s
+    /// own level. The walk follows the child, sibling and parent links, without recursing.
     fn subtree_depth(&self, w: WindowId, depth: u32) -> u32 {
         let mut max = depth;
-        if let Some(child) = self.at(w).child {
-            max = max.max(self.subtree_depth(child, depth + 1));
+        let Some(mut current) = self.at(w).child else {
+            return max;
+        };
+        let mut level = depth + 1;
+        loop {
+            max = max.max(level);
+            if let Some(child) = self.at(current).child {
+                current = child;
+                level += 1;
+                continue;
+            }
+            // Up to the nearest ancestor below `w` with a next sibling.
+            loop {
+                if let Some(next) = self.at(current).next {
+                    current = next;
+                    break;
+                }
+                current = self.at(current).parent.expect("a child has its parent");
+                level -= 1;
+                if current == w {
+                    return max;
+                }
+            }
         }
-        if let Some(next) = self.at(w).next {
-            max = max.max(self.subtree_depth(next, depth));
-        }
-        max
     }
 
     /// The owner-chain limit: no loop (the new window may not appear in it) and no chain deeper
@@ -2020,9 +2068,74 @@ impl Windows {
     /// a window (unless it is already marked for destruction: then the current thread adopts it
     /// and the destroy proceeds). The answer says whether the destroy ran; a hook's veto answers
     /// false with the window untouched.
+    ///
+    /// A window's destroy is its prologue ([`Windows::destroy_prologue`]: the input sharing's
+    /// end, the parent notify, the hide), then the destroy of every window it owns, each in full,
+    /// then its epilogue ([`Windows::destroy_epilogue`]: the activation fixups, WM_DESTROY to it
+    /// and its children, the unlink and the free). The owned windows' destroys nest — each
+    /// destroys its own owned windows first — and the cascade descends the owner chain through
+    /// the records rather than by recursing (see [`Walk`]).
     pub fn destroy_window(
         &mut self,
         classes: &mut class::Registry,
+        caller: ThreadId,
+        window: WindowId,
+        pump: &mut dyn Pump,
+    ) -> Result<bool, Failure> {
+        if !self.begin_destroy(caller, window, pump)? {
+            return Ok(false);
+        }
+        self.destroy_prologue(classes, window, pump);
+        let mut current = window;
+        loop {
+            // The windows `current` owns are destroyed before its own WM_DESTROY.
+            if let Some(owned) = self.next_owned_window(current) {
+                match self.begin_destroy(caller, owned, pump) {
+                    Ok(true) => {
+                        self.at_mut(owned).walk.owner = Some(current);
+                        self.destroy_prologue(classes, owned, pump);
+                        current = owned;
+                    }
+                    // One that cannot be destroyed loses its owner (a vetoed one included: the
+                    // scan would find it again otherwise).
+                    Ok(false) | Err(_) => self.at_mut(owned).owner = None,
+                }
+                continue;
+            }
+            let walk = self.at(current).walk;
+            self.destroy_epilogue(classes, caller, current, walk.already, pump);
+            if let Some(saved) = walk.saved_hooks {
+                self.thread_mut(caller).hooks_disabled = saved;
+            }
+            match walk.owner {
+                Some(owner) => current = owner,
+                None => return Ok(true),
+            }
+        }
+    }
+
+    /// The destroy service over a handle: the handle validation first (an invalid handle is
+    /// ERROR_INVALID_WINDOW_HANDLE), then the destroy.
+    pub fn destroy_window_handle(
+        &mut self,
+        classes: &mut class::Registry,
+        caller: ThreadId,
+        handle: Hwnd,
+        pump: &mut dyn Pump,
+    ) -> Result<bool, Failure> {
+        let Some(window) = self.window_from_handle(handle) else {
+            return Err(Failure::InvalidWindowHandle);
+        };
+        self.destroy_window(classes, caller, window, pump)
+    }
+
+    /// The entry checks of `window`'s destroy: its handle must still name it, and only its thread
+    /// may destroy it — unless it is marked for destruction already, when the calling thread
+    /// adopts it (a re-entry, which runs with the thread's hooks disabled until its end). A hook
+    /// can veto a first destroy: false, the window untouched. The re-entry state goes into the
+    /// window's walk, for the epilogue.
+    fn begin_destroy(
+        &mut self,
         caller: ThreadId,
         window: WindowId,
         pump: &mut dyn Pump,
@@ -2044,6 +2157,16 @@ impl Windows {
         } else if self.at(window).thread != caller {
             return Err(Failure::AccessDenied);
         }
+        // A hook can veto a first destroy.
+        let vetoed = !already
+            && {
+                let t = self.thread(caller);
+                !t.in_cleanup && !t.hooks_disabled
+            }
+            && pump.cbt_destroy_veto(self, window);
+        if vetoed {
+            return Ok(false);
+        }
         // Hooks are disabled for the duration of a re-entry's destroy.
         let saved_hooks = if already {
             let t = self.thread_mut(caller);
@@ -2053,51 +2176,23 @@ impl Windows {
         } else {
             None
         };
-        // A hook can veto the destroy.
-        let vetoed = !already
-            && {
-                let t = self.thread(caller);
-                !t.in_cleanup && !t.hooks_disabled
-            }
-            && pump.cbt_destroy_veto(self, window);
-        let result = if vetoed {
-            Ok(false)
-        } else {
-            self.destroy_window_inner(classes, caller, window, already, pump)
+        self.at_mut(window).walk = Walk {
+            already,
+            saved_hooks,
+            ..Walk::NONE
         };
-        if let Some(saved) = saved_hooks {
-            self.thread_mut(caller).hooks_disabled = saved;
-        }
-        result
+        Ok(true)
     }
 
-    /// The destroy service over a handle: the handle validation first (an invalid handle is
-    /// ERROR_INVALID_WINDOW_HANDLE), then the destroy.
-    pub fn destroy_window_handle(
+    /// The first part of `window`'s destroy, before the windows it owns go: a cross-thread
+    /// owner's input sharing ends, a child tells its parent, and the window is hidden before
+    /// anything is messaged.
+    fn destroy_prologue(
         &mut self,
         classes: &mut class::Registry,
-        caller: ThreadId,
-        handle: Hwnd,
-        pump: &mut dyn Pump,
-    ) -> Result<bool, Failure> {
-        let Some(window) = self.window_from_handle(handle) else {
-            return Err(Failure::InvalidWindowHandle);
-        };
-        self.destroy_window(classes, caller, window, pump)
-    }
-
-    fn destroy_window_inner(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
         window: WindowId,
-        already: bool,
         pump: &mut dyn Pump,
-    ) -> Result<bool, Failure> {
-        let desktop_window = self
-            .desktop_by_id(self.at(window).desktop)
-            .and_then(|d| d.window);
-
+    ) {
         // A cross-thread owner's input sharing ends here.
         {
             let w = self.at(window);
@@ -2154,11 +2249,42 @@ impl Windows {
                 pump.redraw_below(self, window);
             }
         }
+    }
 
-        // Owned windows are destroyed before the owner's own WM_DESTROY.
-        if !self.at(window).is_child() {
-            self.destroy_owned_windows(classes, caller, window, pump);
+    /// The first window `owner` owns on its desktop window's child list, scanning from the head
+    /// (each destroy restarts the scan: callbacks may have created or reordered windows); none
+    /// for a child window, which owns none.
+    fn next_owned_window(&self, owner: WindowId) -> Option<WindowId> {
+        if self.at(owner).is_child() {
+            return None;
         }
+        let desktop_window = self
+            .desktop_by_id(self.at(owner).desktop)
+            .and_then(|d| d.window)?;
+        let mut current = self.at(desktop_window).child;
+        while let Some(w) = current {
+            if self.at(w).owner == Some(owner) {
+                return Some(w);
+            }
+            current = self.at(w).next;
+        }
+        None
+    }
+
+    /// The last part of `window`'s destroy, once the windows it owned are gone: the activation
+    /// fixups and the destroy messages (both skipped on the re-entry path, `already`), the
+    /// unlink, and the free.
+    fn destroy_epilogue(
+        &mut self,
+        classes: &mut class::Registry,
+        caller: ThreadId,
+        window: WindowId,
+        already: bool,
+        pump: &mut dyn Pump,
+    ) {
+        let desktop_window = self
+            .desktop_by_id(self.at(window).desktop)
+            .and_then(|d| d.window);
 
         // Activation fixups (skipped on the re-entry path).
         if !already {
@@ -2227,44 +2353,58 @@ impl Windows {
 
         // Free it.
         self.free_window(classes, caller, window, pump);
-        Ok(true)
     }
 
-    /// The owned-window cascade: scan the desktop window's child list from the head and destroy
-    /// every window owned by `owner` (a full destroy each); one that cannot be destroyed loses
-    /// its owner, and the scan restarts from the head after each destroy, since callbacks may
-    /// have created or reordered windows.
-    fn destroy_owned_windows(
+    /// The WM_DESTROY cascade: the window itself first, then its children depth-first (parents
+    /// assume their children still exist during WM_DESTROY), each window's focus check after its
+    /// subtree's; a handler that destroys the sibling the walk visits next ends the walk of their
+    /// parent's children. The walk follows the child and parent links, the next sibling kept in
+    /// the record ([`Walk::next`]).
+    fn send_destroy_messages(
         &mut self,
         classes: &mut class::Registry,
-        caller: ThreadId,
-        owner: WindowId,
+        window: WindowId,
         pump: &mut dyn Pump,
     ) {
-        let Some(desktop_window) = self
-            .desktop_by_id(self.at(owner).desktop)
-            .and_then(|d| d.window)
-        else {
-            return;
-        };
-        let mut current = self.at(desktop_window).child;
-        while let Some(w) = current {
-            if self.at(w).owner == Some(owner) {
-                if self.destroy_window(classes, caller, w, pump).is_err() {
-                    self.at_mut(w).owner = None;
+        self.send_destroy(classes, window, pump);
+        let mut current = window;
+        let mut descend = true;
+        loop {
+            if descend {
+                if let Some(child) = self.at(current).child {
+                    let next = self.at(child).next;
+                    self.at_mut(child).walk.next = next;
+                    current = child;
+                    self.send_destroy(classes, current, pump);
+                    continue;
                 }
-                // Restart from the head.
-                current = self.at(desktop_window).child;
-            } else {
-                current = self.at(w).next;
+            }
+            // `current`'s subtree is done.
+            pump.check_focus(self, current);
+            if current == window {
+                return;
+            }
+            let parent = self.at(current).parent.expect("a child has its parent");
+            // Continue only while the next sibling is still a live child of the parent.
+            match self.at_mut(current).walk.next.take() {
+                Some(next) if self.pool.is_live(next) && self.at(next).parent == Some(parent) => {
+                    let after = self.at(next).next;
+                    self.at_mut(next).walk.next = after;
+                    current = next;
+                    self.send_destroy(classes, current, pump);
+                    descend = true;
+                }
+                _ => {
+                    current = parent;
+                    descend = false;
+                }
             }
         }
     }
 
-    /// The WM_DESTROY cascade: the window itself first, then its children depth-first (parents
-    /// assume their children still exist during WM_DESTROY), stopping if a handler destroyed
-    /// the next sibling.
-    fn send_destroy_messages(
+    /// One window's step of the WM_DESTROY cascade, before its children's: the focus check, the
+    /// clipboard, and WM_DESTROY itself.
+    fn send_destroy(
         &mut self,
         classes: &mut class::Registry,
         window: WindowId,
@@ -2285,51 +2425,13 @@ impl Windows {
                 payload: Payload::None,
             },
         );
-        let mut child = self.at(window).child;
-        while let Some(c) = child {
-            let next = self.at(c).next;
-            self.send_destroy_messages(classes, c, pump);
-            // The handler may have destroyed the next sibling: continue only while it is still
-            // a live child of this window.
-            child = match next {
-                Some(n) if self.pool.is_live(n) && self.at(n).parent == Some(window) => Some(n),
-                _ => None,
-            };
-        }
-        pump.check_focus(self, window);
     }
 
-    /// The child teardown inside the free: every child is unlinked and marked destroyed; a
-    /// same-thread child is freed right away (its WM_NCDESTROY happens in the recursion), a
-    /// cross-thread child gets a destroy event posted to its own queue instead.
-    fn destroy_all_children(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
-        parent: WindowId,
-        pump: &mut dyn Pump,
-    ) {
-        while let Some(c) = self.at(parent).child {
-            {
-                let w = self.at_mut(c);
-                // Don't try to hide a child whose parent is dying.
-                w.style &= !WS_VISIBLE;
-                w.flags.destroyed = true;
-            }
-            self.unlink_window(c, parent);
-            let child_thread = self.at(c).thread;
-            if child_thread != caller {
-                pump.post_destroy_event(child_thread, c);
-            } else {
-                self.free_window(classes, caller, c, pump);
-            }
-        }
-    }
-
-    /// The free: the cleanup ordering, then the free-vs-zombie decision. The children go first
-    /// (their WM_NCDESTROY precedes this window's own), then WM_NCDESTROY to this window, then
-    /// the backpointers, menus, properties, the class dereference, and the handle marks. The
-    /// last lock frees the record and the handle; any other lock count leaves a zombie.
+    /// The free of `window` and its children: every child is unlinked and marked destroyed; a
+    /// same-thread child is freed — its own children first, so each child's WM_NCDESTROY precedes
+    /// its parent's — and a cross-thread child gets a destroy event posted to its own queue
+    /// instead. The walk descends through the child links and climbs back through the parent
+    /// links, which the unlink leaves in place; each record's free is [`Windows::free_record`].
     fn free_window(
         &mut self,
         classes: &mut class::Registry,
@@ -2337,9 +2439,38 @@ impl Windows {
         window: WindowId,
         pump: &mut dyn Pump,
     ) {
-        let handle = self.at(window).handle;
+        self.adopt_marked(caller, window);
+        let mut current = window;
+        loop {
+            if let Some(child) = self.at(current).child {
+                {
+                    let w = self.at_mut(child);
+                    // Don't try to hide a child whose parent is dying.
+                    w.style &= !WS_VISIBLE;
+                    w.flags.destroyed = true;
+                }
+                self.unlink_window(child, current);
+                let child_thread = self.at(child).thread;
+                if child_thread != caller {
+                    pump.post_destroy_event(child_thread, child);
+                } else {
+                    self.adopt_marked(caller, child);
+                    current = child;
+                }
+                continue;
+            }
+            let parent = self.at(current).parent;
+            self.free_record(classes, caller, current, pump);
+            if current == window {
+                return;
+            }
+            current = parent.expect("a freed child's parent");
+        }
+    }
 
-        // A window marked for destruction is adopted by the current thread.
+    /// A window marked for destruction is adopted by the current thread at its free.
+    fn adopt_marked(&mut self, caller: ThreadId, window: WindowId) {
+        let handle = self.at(window).handle;
         if self
             .handles
             .lookup(handle)
@@ -2351,9 +2482,20 @@ impl Windows {
             });
             self.at_mut(window).thread = caller;
         }
+    }
 
-        // The children go first.
-        self.destroy_all_children(classes, caller, window, pump);
+    /// The free of one window whose children are gone: the cleanup ordering, then the
+    /// free-vs-zombie decision. WM_NCDESTROY to this window, then the backpointers, menus,
+    /// properties, the class dereference, and the handle marks. The last lock frees the record
+    /// and the handle; any other lock count leaves a zombie.
+    fn free_record(
+        &mut self,
+        classes: &mut class::Registry,
+        caller: ThreadId,
+        window: WindowId,
+        pump: &mut dyn Pump,
+    ) {
+        let handle = self.at(window).handle;
 
         // WM_NCDESTROY to this window.
         pump.send(
@@ -3107,6 +3249,8 @@ mod tests {
         create_answer: LResult,
         hide_works: bool,
         veto_destroy: bool,
+        /// A window whose destroy alone the hook vetoes.
+        veto_window: Option<WindowId>,
         activate_ok: bool,
         no_menus: bool,
         mmi: MinMaxInfo,
@@ -3130,6 +3274,7 @@ mod tests {
                 create_answer: 0,
                 hide_works: true,
                 veto_destroy: false,
+                veto_window: None,
                 activate_ok: true,
                 no_menus: false,
                 mmi: MinMaxInfo::unbounded(),
@@ -3327,8 +3472,8 @@ mod tests {
             false
         }
 
-        fn cbt_destroy_veto(&mut self, _windows: &mut Windows, _target: WindowId) -> bool {
-            self.veto_destroy
+        fn cbt_destroy_veto(&mut self, _windows: &mut Windows, target: WindowId) -> bool {
+            self.veto_destroy || self.veto_window == Some(target)
         }
 
         fn disown_clipboard(&mut self, _windows: &mut Windows, target: WindowId) {
@@ -4608,6 +4753,137 @@ mod tests {
                 (p, WM_NCDESTROY),
             ]
         );
+    }
+
+    /// A chain of children as deep as the nesting limit allows goes in one destroy: WM_DESTROY
+    /// from the top down, WM_NCDESTROY from the bottom up, every record freed (the cascade keeps
+    /// its place in the records, not in recursion).
+    #[test]
+    fn the_deepest_nesting_is_destroyed() {
+        let (w, c, t, atom, desk, _) = setup();
+        let mut pump = Rec::new(t);
+        let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        let mut chain = vec![top];
+        for _ in 0..98 {
+            let mut a = args(atom, WS_CHILD);
+            a.ex_style = WS_EX_NOPARENTNOTIFY;
+            a.parent = chain.last().copied();
+            chain.push(w.create_window_ex(c, t, &a, &mut pump).unwrap());
+        }
+        pump.events.clear();
+        assert!(w.destroy_window(c, t, top, &mut pump).unwrap());
+        let destroys: Vec<WindowId> = pump
+            .sends()
+            .iter()
+            .filter(|(_, m)| *m == WM_DESTROY)
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(destroys, chain);
+        let ncdestroys: Vec<WindowId> = pump
+            .sends()
+            .iter()
+            .filter(|(_, m)| *m == WM_NCDESTROY)
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ncdestroys, chain.iter().rev().copied().collect::<Vec<_>>());
+        assert!(chain.iter().all(|&id| !w.pool.is_live(id)));
+        assert_eq!(w.at(desk).child, None);
+        assert_eq!(w.thread(t).window_count, 0);
+    }
+
+    /// An owner chain goes deepest first: each owned window's destroy runs whole before its
+    /// owner's WM_DESTROY, each hidden before the windows it owns go.
+    #[test]
+    fn an_owner_chain_is_destroyed_deepest_first() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let root = create(w, c, t, atom, WS_OVERLAPPED | WS_VISIBLE, &mut pump).unwrap();
+        let mut chain = vec![root];
+        for _ in 0..40 {
+            let mut a = args(atom, WS_POPUP | WS_VISIBLE);
+            a.parent = chain.last().copied();
+            let owned = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+            assert_eq!(w.at(owned).owner, chain.last().copied());
+            chain.push(owned);
+        }
+        pump.events.clear();
+        assert!(w.destroy_window(c, t, root, &mut pump).unwrap());
+        let sends = pump.sends();
+        let expected: Vec<(WindowId, u32)> = chain
+            .iter()
+            .rev()
+            .flat_map(|&id| [(id, WM_DESTROY), (id, WM_NCDESTROY)])
+            .collect();
+        assert_eq!(sends, expected);
+        // Every hide comes before the first WM_DESTROY, the root's first.
+        let hides: Vec<WindowId> = pump
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                Ev::SetPos(id, flags) if flags & SWP_HIDEWINDOW != 0 => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(hides, chain);
+        assert!(chain.iter().all(|&id| !w.pool.is_live(id)));
+        assert_eq!(w.thread(t).window_count, 0);
+    }
+
+    /// An owned window whose destroy a hook vetoes loses its owner, and so does one of another
+    /// thread's; the owner's destroy goes on (the scan would find them again otherwise).
+    #[test]
+    fn an_owned_window_that_cannot_go_loses_its_owner() {
+        let (w, c, t, atom, desk, _) = setup();
+        let mut pump = Rec::new(t);
+        let owner = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        let mut a = args(atom, WS_POPUP);
+        a.parent = Some(owner);
+        let owned = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let t2 = w
+            .add_thread(OTHER_OWNER, DESKTOP, DESKTOP_CREATEWINDOW, Some(0x70), None)
+            .unwrap();
+        let foreign = raw_window(w, t2, WS_POPUP, Some(desk));
+        w.link_window(foreign, ZOrder::Top, desk);
+        w.at_mut(foreign).owner = Some(owner);
+        // The hook vetoes the owned window's destroy alone.
+        pump.veto_window = Some(owned);
+        assert!(w.destroy_window(c, t, owner, &mut pump).unwrap());
+        assert!(!w.pool.is_live(owner));
+        assert!(w.pool.is_live(owned));
+        assert_eq!(w.at(owned).owner, None, "the vetoed window lost its owner");
+        assert!(w.pool.is_live(foreign));
+        assert_eq!(
+            w.at(foreign).owner,
+            None,
+            "the foreign window lost its owner"
+        );
+    }
+
+    /// The subtree depth counts the window's own descendants, not its siblings'.
+    #[test]
+    fn the_subtree_depth_is_the_windows_own() {
+        let (w, _c, t, _atom, desk, _) = setup();
+        let a = raw_window(w, t, WS_OVERLAPPED, Some(desk));
+        let b = raw_window(w, t, WS_OVERLAPPED, Some(desk));
+        w.link_window(b, ZOrder::Top, desk);
+        w.link_window(a, ZOrder::Top, desk);
+        assert_eq!(w.at(a).next, Some(b));
+        // b has a chain of 5 below it; a has 2.
+        let mut parent = b;
+        for _ in 0..5 {
+            let id = raw_window(w, t, WS_CHILD, Some(parent));
+            w.link_window(id, ZOrder::Bottom, parent);
+            parent = id;
+        }
+        let a1 = raw_window(w, t, WS_CHILD, Some(a));
+        w.link_window(a1, ZOrder::Bottom, a);
+        let a2 = raw_window(w, t, WS_CHILD, Some(a));
+        w.link_window(a2, ZOrder::Bottom, a);
+        let a21 = raw_window(w, t, WS_CHILD, Some(a2));
+        w.link_window(a21, ZOrder::Bottom, a2);
+        assert_eq!(w.subtree_depth(a, 1), 3);
+        assert_eq!(w.subtree_depth(b, 1), 6);
+        assert_eq!(w.subtree_depth(a21, 4), 4);
     }
 
     /// The free's cleanup calls run after WM_NCDESTROY, in order: the window teardown, the quit
