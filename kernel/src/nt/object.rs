@@ -365,6 +365,7 @@ pub fn type_name(kind: ObjectType) -> &'static str {
         ObjectType::Desktop => "Desktop",
         ObjectType::Key => "Key",
         ObjectType::Dc => "Dc",
+        ObjectType::Token => "Token",
     }
 }
 
@@ -1285,6 +1286,7 @@ mod tests {
             ObjectType::WindowStation,
             ObjectType::Section,
             ObjectType::Key,
+            ObjectType::Token,
         ] {
             assert!(type_name(kind).len() < 16);
         }

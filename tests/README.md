@@ -151,6 +151,7 @@ The fixtures:
   Captured on an administrator account; only `SeShutdownPrivilege`, `SeChangeNotifyPrivilege` and `SeTcbPrivilege` print, by their public LUIDs, never the token's whole list, and the computer's name never prints.
   `SeShutdownPrivilege` is enabled only to observe the calls that enable it, and disabled again before the section does anything but adjust or query the token.
   Built with `/MD`.
+  Gated.
 - `exitwin` (user32) - `ExitWindowsEx` (`EWX_SHUTDOWN`, `EWX_REBOOT` and `EWX_POWEROFF`, with `EWX_FORCE` and `EWX_FORCEIFHUNG`, several action bits, undefined bits) and ntdll's `NtShutdownSystem` (each action, and out-of-range ones), all refused on the real machine for want of `SeShutdownPrivilege` enabled.
   Before each call the program checks that its token holds the privilege disabled and its thread has no token of its own, and it never calls a logoff (`EWX_LOGOFF` is 0 and needs no privilege); every section runs only when named.
   F2K checks no shutdown privilege, so these calls would really shut its test boot down: every block is skipped on F2K (`[skip]`).
@@ -285,4 +286,5 @@ A child, a process another process starts, ends with its own line, `F2K: child p
 The harness never takes that line as a program's end, and takes the child's own output, which the real machine's capture shows inside its parent's block, as its parent's output.
 A block ends when its whole process tree has ended: the kernel prints a program's teardown audit line, and starts the next program, only once the program and every process descended from it have ended, and the harness takes the program's output up to that line, past the program's own end line (a `_P_OVERLAY` child prints after its parent has ended, as capture.bat's block holds it); the block's exit code is the program's own.
 A kernel case can pass the kernel its own options, the text before `--` (`screens`), through its `kernel_options`.
+The options `shutdown` and `reboot` end the boot through `NtShutdownSystem`'s path once its programs have (`core/kernel/test_shutdown.py`): those boots run on a kept copy of the disk (`f2kboot.kept_disk`), which the host reads after (`f2kboot.read_volume`), and a restart ends QEMU (its `-no-reboot`), which the harness takes for the boot's end after the kernel's restart line.
 Host unit tests still read the checked-in `.exe` files directly (`include_bytes!`, test builds only).

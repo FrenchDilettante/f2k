@@ -161,6 +161,50 @@ ordinal = 227
 fails = "1204"
 note = "the error it returns is ERROR_BAD_PROVIDER, which is what cmd.exe needs from it"
 
+[[export]]
+name = "OpenProcessToken"
+group = "security"
+args = ["handle ProcessHandle", "u32 DesiredAccess", "ptr<u32> TokenHandle"]
+impl = { native = "OpenProcessToken" }
+ordinal = 367
+fails = "FALSE"
+
+[[export]]
+name = "LookupPrivilegeValueA"
+group = "security"
+args = ["strA? lpSystemName", "strA? lpName", "ptr lpLuid"]
+impl = { native = "LookupPrivilegeValueA" }
+ordinal = 287
+fails = "FALSE"
+note = "the public privilege names and LUIDs, on the local computer alone"
+
+[[export]]
+name = "LookupPrivilegeValueW"
+group = "security"
+args = ["strW? lpSystemName", "strW? lpName", "ptr lpLuid"]
+impl = { native = "LookupPrivilegeValueW" }
+ordinal = 288
+fails = "FALSE"
+note = "the public privilege names and LUIDs, on the local computer alone"
+
+[[export]]
+name = "AdjustTokenPrivileges"
+group = "security"
+args = ["handle TokenHandle", "bool DisableAllPrivileges", "ptr NewState", "u32 BufferLength", "ptr PreviousState", "ptr<u32> ReturnLength"]
+impl = { native = "AdjustTokenPrivileges" }
+ordinal = 29
+fails = "FALSE"
+note = "bookkeeping only: nothing in F2K checks a privilege"
+
+[[export]]
+name = "GetTokenInformation"
+group = "security"
+args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation", "u32 TokenInformationLength", "ptr<u32> ReturnLength"]
+impl = { native = "GetTokenInformation" }
+ordinal = 241
+fails = "FALSE"
+note = "TokenPrivileges (3) alone; the other classes are stubbed"
+
 # --- not implemented yet: the rest of ADVAPI32.dll 5.0.2195.6710's export table, by ordinal ------
 
 [[export]]
@@ -274,10 +318,6 @@ ordinal = 27
 [[export]]
 name = "AdjustTokenGroups"
 ordinal = 28
-
-[[export]]
-name = "AdjustTokenPrivileges"
-ordinal = 29
 
 [[export]]
 name = "AllocateAndInitializeSid"
@@ -1120,10 +1160,6 @@ name = "GetSiteSidFromUrl"
 ordinal = 240
 
 [[export]]
-name = "GetTokenInformation"
-ordinal = 241
-
-[[export]]
 name = "GetTraceEnableFlags"
 ordinal = 242
 
@@ -1302,14 +1338,6 @@ ordinal = 285
 [[export]]
 name = "LookupPrivilegeNameW"
 ordinal = 286
-
-[[export]]
-name = "LookupPrivilegeValueA"
-ordinal = 287
-
-[[export]]
-name = "LookupPrivilegeValueW"
-ordinal = 288
 
 [[export]]
 name = "LookupSecurityDescriptorPartsA"
@@ -1622,10 +1650,6 @@ ordinal = 365
 [[export]]
 name = "OpenEventLogW"
 ordinal = 366
-
-[[export]]
-name = "OpenProcessToken"
-ordinal = 367
 
 [[export]]
 name = "OpenSCManagerA"

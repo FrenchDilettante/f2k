@@ -98,6 +98,10 @@ mod ob;
 // The configuration manager: the registry's keys and values, in kernel memory
 mod cm;
 
+// The security reference monitor's stand-in: the process's token and the privileges it lists,
+// bookkeeping only (nothing checks them)
+mod se;
+
 // Wall-clock time and the performance counter: the boot's real-time clock reading, the FILETIME
 // the system services and the shared data page report
 mod time;

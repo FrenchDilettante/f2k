@@ -91,6 +91,8 @@ pub enum ObjectType {
     Key,
     /// A device context: win32k's, a screen DC (see [`crate::win32k::dc`]).
     Dc,
+    /// A token: a process's, made at its first open (see [`crate::se`]).
+    Token,
 }
 
 /// An object's identity: its kind, its record in that kind's pool, and the record's generation.
@@ -105,8 +107,8 @@ impl ObjectId {
     /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
     /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
     /// at the object's own index. None for a section, a file object (its I/O completes at once:
-    /// nothing waits on it), the directory, a window station, a desktop, a key or a DC. The id's
-    /// liveness is the caller's to know (a reference it holds).
+    /// nothing waits on it), the directory, a window station, a desktop, a key, a DC or a token.
+    /// The id's liveness is the caller's to know (a reference it holds).
     pub fn waitable(self) -> Option<WaitableId> {
         let index = self.index;
         match self.kind {
@@ -122,7 +124,8 @@ impl ObjectId {
             | ObjectType::WindowStation
             | ObjectType::Desktop
             | ObjectType::Key
-            | ObjectType::Dc => None,
+            | ObjectType::Dc
+            | ObjectType::Token => None,
         }
     }
 
@@ -212,6 +215,9 @@ pub const DESKTOPS: usize = 1;
 pub const KEY_OBJECTS: usize = 256;
 /// How many device contexts can exist at once.
 pub const DCS: usize = 64;
+/// How many tokens can exist at once: one per process that opened its own, and those whose
+/// handles outlive their process.
+pub const TOKENS: usize = 64;
 /// How many names can be bound at once.
 pub const NAMES: usize = 64;
 /// The longest object name: MAX_PATH.
@@ -621,6 +627,7 @@ pools! {
     Desktop => desktops: DesktopObject = DesktopObject::none, DESKTOPS;
     Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
     Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
+    Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none, TOKENS;
 }
 
 // SAFETY: the directory's raw pointers are the links of the file objects' embedded lock headers,
@@ -670,6 +677,7 @@ bodies! {
     DesktopObject => Desktop, desktops, desktop;
     crate::cm::KeyBody => Key, keys, key;
     crate::win32k::dc::Dc => Dc, dcs, dc;
+    crate::se::TokenBody => Token, tokens, token;
 }
 
 impl Directory {
@@ -947,6 +955,30 @@ impl Directory {
         self.insert(body)
     }
 
+    /// The token of the process `process` names: the one it holds, or a new one made for it (none
+    /// when the pool is exhausted). A new token's creator's reference is the process's, which it
+    /// holds until it lets go of the token ([`Directory::take_process_token`]).
+    pub fn process_token(&mut self, process: ObjectId) -> Option<ObjectId> {
+        let held = (0..TOKENS).find(|&index| {
+            self.tokens.headers[index].live && self.tokens.records[index].owner == Some(process)
+        });
+        match held {
+            Some(index) => Some(self.id(ObjectType::Token, index as u16)),
+            None => self.insert(crate::se::TokenBody::of(process)),
+        }
+    }
+
+    /// The process `process` names lets go of its token, if it holds one: the token no longer
+    /// names it, and the process's reference on it is the caller's to drop (the token lives on
+    /// while handles to it are open).
+    pub fn take_process_token(&mut self, process: ObjectId) -> Option<ObjectId> {
+        let index = (0..TOKENS).find(|&index| {
+            self.tokens.headers[index].live && self.tokens.records[index].owner == Some(process)
+        })?;
+        self.tokens.records[index].owner = None;
+        Some(self.id(ObjectType::Token, index as u16))
+    }
+
     // --- Typed access ------------------------------------------------------------------------
 
     /// The body index of the live dispatcher object `id`, when it is of `kind`.
@@ -1173,7 +1205,8 @@ impl Directory {
             | ObjectType::WindowStation
             | ObjectType::Desktop
             | ObjectType::Key
-            | ObjectType::Dc => None,
+            | ObjectType::Dc
+            | ObjectType::Token => None,
         };
         self.forget_name(id);
         let header = self.header(id).expect("deleting a live object");
@@ -1336,6 +1369,7 @@ impl Directory {
             ObjectType::File,
             ObjectType::Key,
             ObjectType::Dc,
+            ObjectType::Token,
         ] {
             let live = self.headers(kind).iter().position(|header| header.live);
             if let Some(index) = live {
@@ -1618,6 +1652,25 @@ mod target {
             let id = directory.lookup_name(name)?;
             directory.reference(id).then(|| ObRef { id })
         })
+    }
+
+    /// The token of the process `process` names, referenced: the one it holds, or a new one made
+    /// for it, found or made and referenced in one hold of the directory, so the process's end
+    /// cannot take it between them. None when the token pool is exhausted.
+    pub fn reference_process_token(process: ObjectId) -> Option<ObRef> {
+        locked(|directory| {
+            let id = directory.process_token(process)?;
+            directory.reference(id).then(|| ObRef { id })
+        })
+    }
+
+    /// The process `process` names lets go of its token, if it holds one (its end, or its
+    /// deletion: whichever comes first): the process's reference goes, and the token with it once
+    /// no handle holds it.
+    pub fn release_process_token(process: ObjectId) {
+        if let Some(token) = locked(|directory| directory.take_process_token(process)) {
+            release(token);
+        }
     }
 
     /// Drop a reference on `id` (the last one deletes the object, the caller finishing what the
@@ -2044,7 +2097,12 @@ mod tests {
             id(ObjectType::Process).waitable(),
             Some(WaitableId::Process(5))
         );
-        for kind in [ObjectType::Section, ObjectType::File, ObjectType::Key] {
+        for kind in [
+            ObjectType::Section,
+            ObjectType::File,
+            ObjectType::Key,
+            ObjectType::Token,
+        ] {
             assert_eq!(id(kind).waitable(), None);
         }
     }
@@ -2709,5 +2767,33 @@ mod tests {
                 Followup::FileClose { context: five },
             ]
         );
+    }
+
+    /// A process's token is made at the first ask and found again after; its handles keep it
+    /// once the process lets go of it, and the last one deletes it. Another process gets a token
+    /// of its own.
+    #[test]
+    fn a_process_token_is_made_once_and_outlives_its_process() {
+        let directory = directory();
+        let process = |index| ObjectId {
+            kind: ObjectType::Process,
+            index,
+            generation: 0,
+        };
+        let token = directory.process_token(process(1)).unwrap();
+        assert_eq!(token.kind, ObjectType::Token);
+        assert_eq!(directory.process_token(process(1)), Some(token));
+        assert_ne!(directory.process_token(process(2)), Some(token));
+        assert!(directory.handle_opened(token));
+        assert_eq!(directory.counts(token), Some((2, 1)));
+        assert_eq!(directory.take_process_token(process(1)), Some(token));
+        assert_eq!(directory.take_process_token(process(1)), None, "once");
+        assert_eq!(directory.dereference(token), None);
+        assert!(directory.is_live(token), "its handle holds it");
+        assert!(closed(directory, token).is_empty());
+        assert!(!directory.is_live(token));
+        // A new ask after the process let go makes a new token.
+        let again = directory.process_token(process(1)).unwrap();
+        assert_ne!(again, token);
     }
 }

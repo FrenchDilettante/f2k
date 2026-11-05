@@ -498,6 +498,12 @@ impl Suite {
         self.legs
     }
 
+    /// Whether every program the boot runs has been reaped (never on a boot the runner does not
+    /// drive).
+    pub fn finished(&self) -> bool {
+        self.legs > 0 && self.reaped == self.legs
+    }
+
     /// Leg `index` has started.
     pub fn started(&mut self, index: u32) {
         self.started = self.started.max(index);
@@ -1057,6 +1063,7 @@ mod tests {
                 })
             };
             assert_eq!(after, expected);
+            assert_eq!(suite.finished(), index == 3, "every leg reaped");
             if let AtQuiescence::Start(next) = after {
                 suite.started(next);
             }
@@ -1088,6 +1095,7 @@ mod tests {
                 )
             );
             assert_eq!(suite.tally, SuiteTally::new());
+            assert_eq!(suite.finished(), legs == 1, "a boot the runner drives");
         }
     }
 

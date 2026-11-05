@@ -7,6 +7,7 @@
 # anything but adjust or query the token.
 description = "token - the process token as a program that shuts the machine down prepares it: OpenProcessToken with TOKEN_QUERY and TOKEN_ADJUST_PRIVILEGES (the handle's type and granted access, CloseHandle) and its errors; LookupPrivilegeValueA/W for SeShutdownPrivilege, SeChangeNotifyPrivilege and SeDebugPrivilege (their LUIDs), an unknown or empty name, NULL pointers, and an empty or the local computer's system name; AdjustTokenPrivileges enabling and disabling SeShutdownPrivilege (the return, the error, PreviousState and ReturnLength), PreviousState too short, DisableAllPrivileges and its restore, a privilege the token does not hold (ERROR_NOT_ALL_ASSIGNED); GetTokenInformation(TokenPrivileges) and its sizes; ntdll's NtOpenProcessToken and NtAdjustPrivilegesToken."
 kind = "sectioned"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

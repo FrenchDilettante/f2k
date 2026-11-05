@@ -23,6 +23,8 @@ pub fn built_layout() -> Layout {
         data_start: 2018,
         cluster_count: 127_006,
         root_cluster: 2,
+        fsinfo_sector: Some(1),
+        backup_fsinfo_sector: Some(7),
     }
 }
 
@@ -202,10 +204,11 @@ pub fn record(name: &[u8; 11], attributes: u8, cluster: u32, size: u32) -> [u8; 
 /// sector, entries for clusters 0-127, unless it is a [`Crafted::full`] one), and the data region
 /// right after it — cluster `c` at `2 + (c - 2) * sectors_per_cluster` for the one-sector FAT. The
 /// boot sector claims enough clusters to pass the gates; the image holds only the clusters the test
-/// writes.
+/// writes. A [`Crafted::formatted`] one has eight reserved sectors, its FSInfo among them.
 pub struct Crafted {
     image: Vec<u8>,
     sectors_per_cluster: usize,
+    reserved: usize,
     fat_sectors: usize,
 }
 
@@ -213,16 +216,36 @@ impl Crafted {
     /// A volume whose image holds clusters 2..`2 + clusters`, every FAT entry free, the root
     /// directory (cluster 2) one empty cluster ending its chain.
     pub fn new(sectors_per_cluster: u8, clusters: usize) -> Crafted {
-        Crafted::build(sectors_per_cluster, clusters, 1, 70_000)
+        Crafted::build(sectors_per_cluster, clusters, 1, 1, 70_000)
     }
 
     /// A volume of one-sector clusters with no room beyond the image's: a FAT covering every
     /// cluster the boot sector claims, clusters 3..`2 + clusters` free (the root, cluster 2, ends
     /// its chain), and every other cluster marked bad — so the volume has `clusters - 1` free.
     pub fn full(clusters: usize) -> Crafted {
+        Crafted::full_after(1, clusters)
+    }
+
+    /// A [`Crafted::full`] volume as a formatter leaves it: eight reserved sectors, the boot
+    /// sector's FSInfo at 1 and its backup boot record at 6 (FSInfo's copy at 7), both FSInfo
+    /// sectors carrying the true free count (`clusters - 1`) and the hint 3.
+    pub fn formatted(clusters: usize) -> Crafted {
+        let mut crafted = Crafted::full_after(8, clusters);
+        let mut fsinfo = [0u8; 512];
+        fsinfo[0..4].copy_from_slice(&0x4161_5252u32.to_le_bytes());
+        fsinfo[484..488].copy_from_slice(&0x6141_7272u32.to_le_bytes());
+        fsinfo[488..492].copy_from_slice(&(clusters as u32 - 1).to_le_bytes());
+        fsinfo[492..496].copy_from_slice(&3u32.to_le_bytes());
+        fsinfo[508..512].copy_from_slice(&0xAA55_0000u32.to_le_bytes());
+        crafted.image[512..1024].copy_from_slice(&fsinfo);
+        crafted.image[7 * 512..8 * 512].copy_from_slice(&fsinfo);
+        crafted
+    }
+
+    fn full_after(reserved: usize, clusters: usize) -> Crafted {
         const CLAIMED: u32 = 65_530;
         let fat_sectors = (CLAIMED as usize + 2).div_ceil(128);
-        let mut crafted = Crafted::build(1, clusters, fat_sectors, CLAIMED);
+        let mut crafted = Crafted::build(1, clusters, reserved, fat_sectors, CLAIMED);
         for cluster in 2 + clusters as u32..CLAIMED + 2 {
             crafted.fat(cluster, 0x0FFF_FFF7);
         }
@@ -232,21 +255,24 @@ impl Crafted {
     fn build(
         sectors_per_cluster: u8,
         clusters: usize,
+        reserved: usize,
         fat_sectors: usize,
         claimed: u32,
     ) -> Crafted {
         let spc = sectors_per_cluster as usize;
-        let mut image = vec![0u8; (1 + fat_sectors + clusters * spc) * 512];
+        let mut image = vec![0u8; (reserved + fat_sectors + clusters * spc) * 512];
         image[..512].copy_from_slice(BUILT);
         image[13] = sectors_per_cluster;
-        image[14..16].copy_from_slice(&1u16.to_le_bytes());
+        image[14..16].copy_from_slice(&(reserved as u16).to_le_bytes());
         image[16] = 1;
         image[36..40].copy_from_slice(&(fat_sectors as u32).to_le_bytes());
-        image[32..36]
-            .copy_from_slice(&(1 + fat_sectors as u32 + claimed * spc as u32).to_le_bytes());
+        image[32..36].copy_from_slice(
+            &((reserved + fat_sectors) as u32 + claimed * spc as u32).to_le_bytes(),
+        );
         let mut crafted = Crafted {
             image,
             sectors_per_cluster: spc,
+            reserved,
             fat_sectors,
         };
         crafted
@@ -262,7 +288,7 @@ impl Crafted {
             (cluster as usize) < 128 * self.fat_sectors,
             "past the crafted FAT"
         );
-        let at = 512 + cluster as usize * 4;
+        let at = self.reserved * 512 + cluster as usize * 4;
         self.image[at..at + 4].copy_from_slice(&value.to_le_bytes());
         self
     }
@@ -279,7 +305,9 @@ impl Crafted {
     pub fn cluster(&mut self, cluster: u32, bytes: &[u8]) -> &mut Crafted {
         let cluster_bytes = self.sectors_per_cluster * 512;
         assert!(bytes.len() <= cluster_bytes, "more than a cluster");
-        let at = (1 + self.fat_sectors + (cluster as usize - 2) * self.sectors_per_cluster) * 512;
+        let at =
+            (self.reserved + self.fat_sectors + (cluster as usize - 2) * self.sectors_per_cluster)
+                * 512;
         self.image[at..at + bytes.len()].copy_from_slice(bytes);
         self
     }

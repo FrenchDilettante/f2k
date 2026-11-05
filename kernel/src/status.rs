@@ -37,6 +37,9 @@ statuses! {
     /// The operation has not completed: a live process's exit status (kernel32's STILL_ACTIVE).
     #[cfg(test)]
     STATUS_PENDING,
+    /// A privilege adjustment that named a privilege the token does not hold: the others were
+    /// changed (AdjustTokenPrivileges succeeds, its last error ERROR_NOT_ALL_ASSIGNED).
+    STATUS_NOT_ALL_ASSIGNED,
 
     // Informational.
     /// A create that opened an object of the name that already existed.
@@ -223,6 +226,8 @@ statuses! {
     STATUS_KEY_DELETED,
     /// A device reported an error.
     STATUS_IO_DEVICE_ERROR,
+    /// A change to a volume after the shutdown has closed it to changes.
+    STATUS_TOO_LATE,
     /// An image section whose alignment the mapping cannot honour.
     STATUS_MAPPED_ALIGNMENT,
     /// NtClose of a handle protected from close (ntstatus.h: "NtClose was called on a handle that

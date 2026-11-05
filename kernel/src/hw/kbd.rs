@@ -55,6 +55,9 @@ pub const READ_CONFIGURATION: u8 = 0x20;
 pub const WRITE_CONFIGURATION: u8 = 0x60;
 pub const DISABLE_KEYBOARD: u8 = 0xAD;
 pub const ENABLE_KEYBOARD: u8 = 0xAE;
+/// Controller command: pulse the output port's bit 0, the processor's reset line (the machine
+/// restarts, the PC/AT's way).
+pub const PULSE_RESET: u8 = 0xFE;
 
 /// The configuration byte: the keyboard interrupt (IRQ 1), the mouse interrupt (left as found),
 /// scan-code translation (left as found: on).
@@ -259,6 +262,12 @@ impl<IoT: Io> Controller<IoT> {
             self.io.out(COMMAND, command);
         }
         ready
+    }
+
+    /// Restart the machine through the controller's reset line: false when the controller never
+    /// took the command (no controller, or one stuck busy), and the machine runs on.
+    pub fn pulse_reset(&mut self) -> bool {
+        self.command(PULSE_RESET)
     }
 
     /// A byte to the data port: the keyboard's, or a controller command's argument.
@@ -559,10 +568,17 @@ mod target {
             }
         }
     }
+
+    /// Restart the machine through the controller (the shutdown's reset): the driver's own
+    /// controller, at its level, as every command it sends. False when the controller never took
+    /// the command; the caller then restarts the machine another way.
+    pub fn reset_machine() -> bool {
+        level::raised::<Dispatch, _>(|dispatch| EXTENSION.get(dispatch).controller.pulse_reset())
+    }
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::init;
+pub use target::{init, reset_machine};
 
 #[cfg(test)]
 mod tests {
@@ -680,6 +696,21 @@ mod tests {
         let mut controller = fresh();
         controller.io().present = false;
         assert_eq!(controller.bring_up(0, &mut bounded), Err(NoController));
+    }
+
+    /// The machine's reset: 0xFE to the controller's command port, once it takes a byte; a missing
+    /// controller (every status bit set, the input buffer never empty) is sent nothing, and says
+    /// so.
+    #[test]
+    fn the_reset_pulses_the_controllers_reset_line() {
+        let mut controller = fresh();
+        assert!(controller.pulse_reset());
+        assert_eq!(controller.io().commands(), [PULSE_RESET]);
+        assert_eq!(controller.io().writes, [(COMMAND, 0xFE)]);
+        let mut absent = fresh();
+        absent.io().present = false;
+        assert!(!absent.pulse_reset());
+        assert!(absent.io().writes.is_empty());
     }
 
     /// The service routine reads the waiting byte, and nothing when none waits.

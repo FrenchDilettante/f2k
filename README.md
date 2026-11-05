@@ -10,7 +10,7 @@ Six of Windows 2000's system DLLs are F2K's own code:
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
 - **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, and starting child processes (`_spawn`, `_cwait`).
-- **advapi32**: the registry calls, over a registry the kernel keeps in memory.
+- **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
 - **user32**: window stations, desktops and `MessageBeep`; no windows yet.
 - **gdi32**: screen device contexts drawn on the VBE framebuffer: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
 
@@ -72,6 +72,7 @@ make clean
 
 A boot runs the program its kernel command line names (`-- <program> [arguments]`; `exit0` without one).
 Several programs, ` ;; ` between two, run one after another, or side by side with the kernel option `concurrent` before the `--` (`concurrent -- CORPUS\sched.exe sleep ;; hello`).
+With the kernel option `shutdown` or `reboot`, the boot ends through `NtShutdownSystem` once its programs have: the boot volume is flushed and marked clean, then the machine halts on "It is now safe to turn off your computer." or restarts.
 A program the boot runs starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
 A child process starts with what its parent hands it: its environment, its current directory and its inheritable handles.
 
@@ -168,9 +169,11 @@ The on-target tests run through pytest, so an IDE lists and runs them one by one
   Fixtures that draw on the screen can save a screenshot per block (`target/qemu/screens/`), not compared yet.
 - **The kernel's own boots** (the fault stubs, the Limine disk path, the program smokes, the multi-process suite and its concurrent runs, the interrupt and IDE diagnostics) are cases in `tests/core/kernel/test_kernel.py`: the kernel features to build with, the image to boot, the program's command line, the COM1 strings expected (anywhere, in order, as one block of lines) or forbidden.
   A kernel panic fails every case.
+  The shutdown's boots (`tests/core/kernel/test_shutdown.py`) run a program that writes to the volume, shut down or restart through the kernel options, and read the disk image from the host after: FAT[1]'s clean-shutdown bit, and FSInfo's free count against the FAT's.
 
 Each test builds the kernel and disk for its feature set (once per run, cached under `target/qemu/builds/`); each run removes earlier runs' builds and logs older than two days.
 Boots attach the disk as a snapshot, so tests run in parallel (`-n 4` by default in `make test`; `--dist loadgroup`, set in `pyproject.toml`, keeps a fixture's tests on one worker).
+A boot whose writes must outlast it (the shutdown's) attaches a private copy of the disk instead, removed once its test is done.
 
 ```bash
 make test        # every on-target test: the kernel boots and the corpus
@@ -237,7 +240,7 @@ f2k/
 │   ├── kernel32/         # The kernel32 fixtures
 │   ├── user32/           # The user32 fixtures (hellogui, winsta)
 │   ├── gdi32/            # The gdi32 fixtures (guidc, gditext)
-│   ├── advapi32/         # The advapi32 fixture (registry)
+│   ├── advapi32/         # The advapi32 fixtures (registry, token)
 │   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)
 │   ├── cmd/              # The script fixtures, batch files run by cmd /c
 │   ├── harness/          # Checks of the tests and the repository (no QEMU)

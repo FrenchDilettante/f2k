@@ -65,10 +65,12 @@ pub mod memory;
 pub mod object;
 pub mod process;
 pub mod section;
+pub mod shutdown;
 #[cfg(target_arch = "x86")]
 pub mod sync;
 pub mod system;
 pub mod thread;
+pub mod token;
 
 /// The host builds' synchronization services (see [`unserved`]).
 #[cfg(not(target_arch = "x86"))]

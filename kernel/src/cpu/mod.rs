@@ -142,6 +142,21 @@ pub unsafe fn init() {
     }
 }
 
+/// Reset the processor without a device's help: an empty IDT loaded, then an exception, which
+/// finds no gate (a general protection fault), whose fault finds none either (a double fault),
+/// whose own fault shuts the processor down — the triple fault a PC answers with a reset. The
+/// shutdown's last way to restart the machine, when the keyboard controller has not.
+#[cfg(target_arch = "x86")]
+pub fn triple_fault() -> ! {
+    let empty = DescriptorTablePointer { limit: 0, base: 0 };
+    // SAFETY: ring 0. Nothing runs after it: the IDT loaded is empty, so the breakpoint that
+    // follows faults past every vector until the processor shuts down; no memory is touched but
+    // the pointer, read from this frame.
+    unsafe {
+        core::arch::asm!("cli", "lidt [{}]", "int3", in(reg) &empty, options(noreturn));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

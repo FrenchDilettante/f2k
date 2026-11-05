@@ -371,6 +371,11 @@ fn end_thread(end: ThreadEnd) -> ! {
         // space (a thread ends detached), each one's section or image segment losing its
         // reference.
         process.release_handles();
+        // It lets go of its token: what its handles to it held went above, and the token goes
+        // with them once no other process holds a handle to it. Windows 2000 keeps a process's
+        // token until the process object's deletion; F2K lets go of it with the handles, so the
+        // object audit after the reap finds nothing the ended process still holds.
+        crate::ob::release_process_token(process.object());
         // It leaves its console: no control event reaches it any more, and its group leads
         // nothing once its last process has left.
         crate::csr::disconnect(process.object());

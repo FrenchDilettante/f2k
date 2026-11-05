@@ -1,7 +1,8 @@
 //! The NT structures the system services and the runtime library take, as NT 5.0 lays them out on
 //! x86, one definition for every side: UNICODE_STRING and ANSI_STRING ([`UnicodeString`],
-//! [`AnsiString`]), OBJECT_ATTRIBUTES ([`ObjectAttributes`]), CLIENT_ID ([`ClientId`]) and
-//! IO_STATUS_BLOCK ([`IoStatusBlock`]).
+//! [`AnsiString`]), OBJECT_ATTRIBUTES ([`ObjectAttributes`]), CLIENT_ID ([`ClientId`]),
+//! IO_STATUS_BLOCK ([`IoStatusBlock`]), and LUID and LUID_AND_ATTRIBUTES ([`Luid`],
+//! [`LuidAndAttributes`]), a token's privileges.
 //!
 //! Their pointer-sized fields are generic, as [`crate::params::ProcessParameters`]' are: `u32` for
 //! a 32-bit process's addresses read from anywhere (the kernel, which reads them from user memory
@@ -95,6 +96,24 @@ pub struct FilePipePeekBuffer {
     pub read_data_available: u32,
     pub number_of_messages: u32,
     pub message_length: u32,
+}
+
+/// A LUID: a locally unique identifier, as a privilege is named by one (winnt.h's
+/// SE_*_PRIVILEGE values are their low parts, the high part zero).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Luid {
+    pub low_part: u32,
+    pub high_part: i32,
+}
+
+/// A LUID_AND_ATTRIBUTES: a privilege and its SE_PRIVILEGE_* attributes, one entry of a
+/// TOKEN_PRIVILEGES (which is a count, then that many entries).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LuidAndAttributes {
+    pub luid: Luid,
+    pub attributes: u32,
 }
 
 impl UnicodeString<*mut u16> {
@@ -194,6 +213,10 @@ unsafe impl Pod for IoStatusBlock<u32> {}
 unsafe impl Pod for FilePipePeekBuffer {}
 // SAFETY: fourteen u32s.
 unsafe impl Pod for ObjectBasicInformation {}
+// SAFETY: two dwords.
+unsafe impl Pod for Luid {}
+// SAFETY: a LUID and a u32, 12 bytes without padding.
+unsafe impl Pod for LuidAndAttributes {}
 
 const _: () = {
     // NT 5.0's layouts, with 32-bit pointers on any host.
@@ -217,6 +240,9 @@ const _: () = {
     assert!(size_of::<ObjectBasicInformation>() == 56);
     assert!(offset_of!(ObjectBasicInformation, reserved) == 16);
     assert!(offset_of!(FilePipePeekBuffer, message_length) == 12);
+    assert!(size_of::<Luid>() == 8);
+    assert!(size_of::<LuidAndAttributes>() == 12);
+    assert!(offset_of!(LuidAndAttributes, attributes) == 8);
 };
 
 // The DLLs' native forms lay out as the 32-bit ones on their target.

@@ -4,14 +4,36 @@
 //!
 //! Every change goes through [`Volume::set_fat_entry`] or [`Volume::write_sector`], and the first
 //! one after the mount (or after [`Volume::mark_clean`]) is preceded by the dirty mark: FAT[1]'s
-//! [`CLEAN_SHUTDOWN`] bit cleared in every FAT copy, as FastFat marks a volume it is changing.
+//! [`CLEAN_SHUTDOWN`] bit cleared in every FAT copy, as FastFat marks a volume it is changing. With
+//! the mark, FSInfo's two hints become unknown (0xFFFFFFFF), so a volume left dirty never carries
+//! a stale count; the shutdown's flush ([`Volume::flush`]) writes the counted ones back before it
+//! marks the volume clean.
+//!
+//! The volume keeps its free-cluster count once it has one ([`Volume::free_clusters`]): FSInfo's
+//! on a volume marked clean, else a FAT scan's, then kept in step with every FAT change.
+//!
+//! The shutdown closes the volume to changes ([`Volume::close`]): every change after it is refused
+//! with STATUS_TOO_LATE, the status NT documents for a write to a volume after its dismount, before
+//! anything is written (the dirty mark included), so the volume stays as the flush left it. Its
+//! users hold the volume's lock across each whole operation, so a writer under way when the
+//! shutdown comes finishes first, and the next one finds the volume closed.
+
+use rtl::pod::Pod;
 
 use super::boot_sector::{validate, Refusal};
-use super::fat::{decode_entry, entry_position, FatCache, FatEntry, ENTRY_MASK};
+use super::fat::{
+    decode_entry,
+    entry_position,
+    FatCache,
+    FatEntry,
+    ENTRIES_PER_SECTOR,
+    ENTRY_MASK,
+};
+use super::fsinfo::{FsInfo, UNKNOWN};
 use super::layout::Layout;
 use super::raw::to_block;
 use crate::block::BlockDevice;
-use crate::status::{NtStatus, STATUS_UNRECOGNIZED_VOLUME};
+use crate::status::{NtStatus, STATUS_TOO_LATE, STATUS_UNRECOGNIZED_VOLUME};
 
 /// FAT[1]'s clean-shutdown bit: set while the volume on disk is consistent, clear (dirty) from a
 /// writer's first change until it marks the volume clean again — a volume found dirty gets a check
@@ -49,6 +71,31 @@ pub struct Volume {
     next_free: u32,
     /// Whether this mount has marked the volume dirty since it was mounted or last marked clean.
     dirty: bool,
+    /// The free clusters, once counted (or read from FSInfo), kept in step with the FAT's changes.
+    free: Option<u32>,
+    /// Whether the shutdown has closed the volume to changes.
+    closed: bool,
+    /// The FSInfo sector while it is read and rewritten: the volume's own buffer, so the update
+    /// takes no sector-sized frame on the stack of the service whose change triggers it.
+    fsinfo: FsInfo,
+}
+
+/// What a FAT scan found: the free clusters, and the first free one at or after the allocator's
+/// hint (wrapping to the volume's first free cluster; none on a full volume).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct FreeClusters {
+    pub count: u32,
+    pub next_free: Option<u32>,
+}
+
+/// What the flush did.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flushed {
+    /// FSInfo carries the scan's count and hint, and the volume is marked clean.
+    Clean(FreeClusters),
+    /// This mount never changed the volume: nothing to write (a volume found dirty at the mount
+    /// stays dirty, for the check its mark asks for).
+    Unchanged,
 }
 
 impl Volume {
@@ -68,6 +115,9 @@ impl Volume {
             cache: FatCache::new(),
             next_free: 2,
             dirty: false,
+            free: None,
+            closed: false,
+            fsinfo: FsInfo::zeroed(),
         })
     }
 
@@ -113,23 +163,31 @@ impl Volume {
         );
         self.changing()?;
         let (sector, index) = entry_position(cluster);
-        self.patch_fat(sector, index, |old| old & !ENTRY_MASK | value & ENTRY_MASK)
+        let old = self.patch_fat(sector, index, |old| old & !ENTRY_MASK | value & ENTRY_MASK)?;
+        if let Some(free) = self.free.as_mut() {
+            match (old & ENTRY_MASK == 0, value & ENTRY_MASK == 0) {
+                (true, false) => *free = free.saturating_sub(1),
+                (false, true) => *free += 1,
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Rewrite the raw 32-bit FAT entry `index` of FAT sector `sector` through `update`, in every
-    /// FAT copy and the cache (nothing is written when it stays the same).
+    /// FAT copy and the cache (nothing is written when it stays the same): the entry as it was.
     fn patch_fat(
         &mut self,
         sector: u64,
         index: usize,
         update: impl FnOnce(u32) -> u32,
-    ) -> Result<(), NtStatus> {
+    ) -> Result<u32, NtStatus> {
         let lba = self.layout.fat_start + sector;
         let mut data = *self.cache.sector(self.device, lba)?;
         let old = data[index].get();
         let raw = update(old);
         if raw == old {
-            return Ok(());
+            return Ok(old);
         }
         data[index].set(raw);
         let bytes = to_block(&data);
@@ -137,26 +195,119 @@ impl Volume {
             self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &bytes)?;
         }
         self.cache.store(lba, &data);
-        Ok(())
+        Ok(old)
     }
 
-    /// Before a change: the dirty mark, when this mount has not made it yet.
+    /// Before a change: refused once the volume is closed; else the dirty mark, when this mount
+    /// has not made it yet, and FSInfo's hints made unknown with it.
     fn changing(&mut self) -> Result<(), NtStatus> {
+        if self.closed {
+            return Err(STATUS_TOO_LATE);
+        }
         if !self.dirty {
             self.patch_fat(0, 1, |old| old & !CLEAN_SHUTDOWN)?;
             self.dirty = true;
+            self.write_fsinfo(UNKNOWN, UNKNOWN)?;
         }
         Ok(())
     }
 
     /// Mark the volume clean (FAT[1]'s [`CLEAN_SHUTDOWN`] bit set again), once its changes are all
-    /// on disk; the next change marks it dirty first. Nothing calls it yet: F2K has no unmount or
-    /// flush of its own, so a volume it changed stays marked dirty.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// on disk; the next change marks it dirty first.
     pub fn mark_clean(&mut self) -> Result<(), NtStatus> {
         if self.dirty {
             self.patch_fat(0, 1, |old| old | CLEAN_SHUTDOWN)?;
             self.dirty = false;
+        }
+        Ok(())
+    }
+
+    /// Close the volume to changes: every later change is refused with STATUS_TOO_LATE (see the
+    /// module's documentation). The flush still writes.
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
+
+    /// Flush the volume for the shutdown: when this mount changed it, count its free clusters with
+    /// a FAT scan, write the count and the next-free hint to FSInfo (and its backup copy), then
+    /// mark the volume clean. The FAT and the data are written through as they change, so nothing
+    /// else waits to be written.
+    pub fn flush(&mut self) -> Result<Flushed, NtStatus> {
+        if !self.dirty {
+            return Ok(Flushed::Unchanged);
+        }
+        let free = self.scan_free()?;
+        self.free = Some(free.count);
+        self.write_fsinfo(free.count, free.next_free.unwrap_or(UNKNOWN))?;
+        self.mark_clean()?;
+        Ok(Flushed::Clean(free))
+    }
+
+    /// Count the free clusters in the FAT, a FAT sector at a time through the cache: the count, and
+    /// the first free cluster at or after the allocator's hint (see [`FreeClusters`]).
+    pub fn scan_free(&mut self) -> Result<FreeClusters, NtStatus> {
+        let max = self.layout.max_cluster();
+        let hint = self.next_free.clamp(2, max);
+        let (mut count, mut first, mut after_hint) = (0u32, None, None);
+        for sector in 0..=max / ENTRIES_PER_SECTOR {
+            let data = self
+                .cache
+                .sector(self.device, self.layout.fat_start + sector as u64)?;
+            let base = sector * ENTRIES_PER_SECTOR;
+            for (index, entry) in data.iter().enumerate() {
+                let cluster = base + index as u32;
+                if !(2..=max).contains(&cluster) || entry.get() & ENTRY_MASK != 0 {
+                    continue;
+                }
+                count += 1;
+                first.get_or_insert(cluster);
+                if cluster >= hint {
+                    after_hint.get_or_insert(cluster);
+                }
+            }
+        }
+        Ok(FreeClusters {
+            count,
+            next_free: after_hint.or(first),
+        })
+    }
+
+    /// The volume's free clusters: the count it keeps, else FSInfo's on a volume marked clean
+    /// (FAT[1]'s bit set: no change is missing from FSInfo) when the volume can have that many,
+    /// else a FAT scan's; kept from then on.
+    pub fn free_clusters(&mut self) -> Result<u32, NtStatus> {
+        if let Some(free) = self.free {
+            return Ok(free);
+        }
+        let fat1 = self.cache.sector(self.device, self.layout.fat_start)?[1].get();
+        let mut free = None;
+        if let (true, Some(lba)) = (fat1 & CLEAN_SHUTDOWN != 0, self.layout.fsinfo_sector) {
+            self.device.read(lba, self.fsinfo.as_bytes_mut())?;
+            if self.fsinfo.is_valid() {
+                free = self.fsinfo.plausible_free_count(self.layout.cluster_count);
+            }
+        }
+        let free = match free {
+            Some(free) => free,
+            None => self.scan_free()?.count,
+        };
+        self.free = Some(free);
+        Ok(free)
+    }
+
+    /// Write FSInfo's hints, in the FSInfo sector and its backup copy, each rewritten only when it
+    /// holds FSInfo's signatures (a sector without them keeps what it holds).
+    fn write_fsinfo(&mut self, free_count: u32, next_free: u32) -> Result<(), NtStatus> {
+        for lba in [self.layout.fsinfo_sector, self.layout.backup_fsinfo_sector]
+            .into_iter()
+            .flatten()
+        {
+            self.device.read(lba, self.fsinfo.as_bytes_mut())?;
+            if !self.fsinfo.is_valid() {
+                continue;
+            }
+            self.fsinfo.set_hints(free_count, next_free);
+            self.device.write(lba, self.fsinfo.as_bytes())?;
         }
         Ok(())
     }
@@ -246,7 +397,7 @@ pub use target::{boot_mount, mount_boot_volume, with_boot_volume};
 mod tests {
     use super::super::fixtures::{built_layout, built_volume, Counting, Crafted, Crashing, BUILT};
     use super::*;
-    use crate::block::memory::MemoryDisk;
+    use crate::block::memory::{MemoryDisk, RamDisk};
     use crate::status::STATUS_IO_DEVICE_ERROR;
 
     /// The built volume's real boot sector mounts, with the built layout.
@@ -379,6 +530,165 @@ mod tests {
         volume.set_fat_entry(4, 0x0FFF_FFFF).unwrap();
         assert!(!clean(fat1()), "dirty again");
         assert_eq!(fat1() & 0x0400_0000, 0x0400_0000, "no hard error");
+    }
+
+    /// FSInfo's hints as the image holds them at `lba`: the free count and the next-free hint.
+    fn hints(device: &RamDisk, lba: usize) -> (u32, u32) {
+        let image = device.image();
+        let word = |at: usize| {
+            let at = lba * 512 + at;
+            u32::from_le_bytes([image[at], image[at + 1], image[at + 2], image[at + 3]])
+        };
+        (word(488), word(492))
+    }
+
+    /// FAT[1] as the image holds it, on a formatted volume (the FAT at LBA 8).
+    fn formatted_fat1(device: &RamDisk) -> u32 {
+        let image = device.image();
+        u32::from_le_bytes([
+            image[8 * 512 + 4],
+            image[8 * 512 + 5],
+            image[8 * 512 + 6],
+            image[8 * 512 + 7],
+        ])
+    }
+
+    /// The first change after the mount makes FSInfo's hints unknown, in the sector and its backup
+    /// copy, after the dirty mark; later changes leave them so.
+    #[test]
+    fn the_first_change_makes_fsinfos_hints_unknown() {
+        let device = Crafted::formatted(8).writable();
+        let mut volume = Volume::mount(device).unwrap();
+        assert_eq!(hints(device, 1), (7, 3), "as formatted");
+        assert_eq!(hints(device, 7), (7, 3));
+        volume.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        assert_eq!(formatted_fat1(device) & CLEAN_SHUTDOWN, 0, "the dirty mark");
+        assert_eq!(hints(device, 1), (UNKNOWN, UNKNOWN));
+        assert_eq!(hints(device, 7), (UNKNOWN, UNKNOWN));
+        volume.set_fat_entry(4, 0x0FFF_FFFF).unwrap();
+        assert_eq!(hints(device, 1), (UNKNOWN, UNKNOWN));
+    }
+
+    /// A sector that does not carry FSInfo's signatures is never written as one: a sector named
+    /// FSInfo whose lead signature is gone keeps what it holds, while the copy is still updated.
+    #[test]
+    fn a_sector_without_fsinfos_signatures_is_left_alone() {
+        let device = Crafted::formatted(8).writable();
+        device.image()[512] = 0;
+        let mut volume = Volume::mount(device).unwrap();
+        volume.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        assert_eq!(hints(device, 1), (7, 3), "not FSInfo: untouched");
+        assert_eq!(hints(device, 7), (UNKNOWN, UNKNOWN), "the copy is");
+    }
+
+    /// The flush counts the free clusters with a FAT scan and writes the count and the first free
+    /// cluster at or after the allocator's hint (wrapping to the first free one) to FSInfo and its
+    /// copy, then marks the volume clean. A volume the mount never changed is left as it is.
+    #[test]
+    fn the_flush_writes_the_counted_hints_then_marks_the_volume_clean() {
+        let device = Crafted::formatted(8).writable();
+        let mut volume = Volume::mount(device).unwrap();
+        assert_eq!(volume.flush(), Ok(Flushed::Unchanged));
+        assert_eq!(hints(device, 1), (7, 3), "nothing written");
+
+        for cluster in [3, 4, 9] {
+            volume.set_fat_entry(cluster, 0x0FFF_FFFF).unwrap();
+        }
+        volume.set_next_free(9);
+        let counted = FreeClusters {
+            count: 4,
+            next_free: Some(5),
+        };
+        assert_eq!(volume.scan_free(), Ok(counted), "9 is taken: wrapped to 5");
+        assert_eq!(volume.flush(), Ok(Flushed::Clean(counted)));
+        assert_eq!(hints(device, 1), (4, 5));
+        assert_eq!(hints(device, 7), (4, 5));
+        assert_ne!(formatted_fat1(device) & CLEAN_SHUTDOWN, 0, "marked clean");
+        assert_eq!(volume.free_clusters(), Ok(4));
+
+        volume.set_next_free(6);
+        assert_eq!(volume.scan_free().unwrap().next_free, Some(6));
+        assert_eq!(volume.flush(), Ok(Flushed::Unchanged), "clean since");
+    }
+
+    /// A full volume has no next free cluster: its hint is unknown.
+    #[test]
+    fn a_full_volume_has_no_next_free_hint() {
+        let device = Crafted::formatted(3).writable();
+        let mut volume = Volume::mount(device).unwrap();
+        volume.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        volume.set_fat_entry(4, 0x0FFF_FFFF).unwrap();
+        let full = FreeClusters {
+            count: 0,
+            next_free: None,
+        };
+        assert_eq!(volume.flush(), Ok(Flushed::Clean(full)));
+        assert_eq!(hints(device, 1), (0, UNKNOWN));
+    }
+
+    /// Once closed, every change is refused with STATUS_TOO_LATE before anything is written, the
+    /// dirty mark included; the flush still writes, and leaves the volume clean for good.
+    #[test]
+    fn a_closed_volume_refuses_changes() {
+        let device = Crafted::formatted(8).writable();
+        let mut volume = Volume::mount(device).unwrap();
+        volume.close();
+        assert_eq!(volume.set_fat_entry(3, 0x0FFF_FFFF), Err(STATUS_TOO_LATE));
+        let data = volume.layout().cluster_lba(3);
+        assert_eq!(
+            volume.write_sector(data, &[0xAB; 512]),
+            Err(STATUS_TOO_LATE)
+        );
+        assert_ne!(
+            formatted_fat1(device) & CLEAN_SHUTDOWN,
+            0,
+            "never marked dirty"
+        );
+        assert_eq!(volume.fat_entry(3), Ok(FatEntry::Free));
+
+        let device = Crafted::formatted(8).writable();
+        let mut volume = Volume::mount(device).unwrap();
+        volume.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        volume.close();
+        assert_eq!(volume.set_fat_entry(4, 0x0FFF_FFFF), Err(STATUS_TOO_LATE));
+        assert!(matches!(volume.flush(), Ok(Flushed::Clean(_))));
+        assert_eq!(hints(device, 1), (6, 4));
+        assert_eq!(volume.set_fat_entry(4, 0x0FFF_FFFF), Err(STATUS_TOO_LATE));
+        assert_ne!(formatted_fat1(device) & CLEAN_SHUTDOWN, 0, "clean for good");
+    }
+
+    /// The free count: FSInfo's on a volume marked clean, when the volume can have that many; a
+    /// FAT scan's on a dirty volume or past an implausible count; then kept in step with the FAT's
+    /// changes, a cluster taken or given back.
+    #[test]
+    fn the_free_count_is_fsinfos_on_a_clean_volume_and_kept_in_step() {
+        let formatted_with = |count: u32, clean: bool| {
+            let device = Crafted::formatted(8).writable();
+            let mut image = device.image();
+            image[512 + 488..512 + 492].copy_from_slice(&count.to_le_bytes());
+            if !clean {
+                image[8 * 512 + 7] &= !0x08;
+            }
+            drop(image);
+            device
+        };
+        let mut trusted = Volume::mount(formatted_with(100, true)).unwrap();
+        assert_eq!(trusted.free_clusters(), Ok(100), "FSInfo's, trusted");
+        trusted.set_fat_entry(3, 0x0FFF_FFFF).unwrap();
+        assert_eq!(trusted.free_clusters(), Ok(99));
+        trusted.set_fat_entry(3, 0x0FFF_FFF8).unwrap();
+        assert_eq!(trusted.free_clusters(), Ok(99), "used to used");
+        trusted.set_fat_entry(3, 0).unwrap();
+        assert_eq!(trusted.free_clusters(), Ok(100));
+
+        let mut dirty = Volume::mount(formatted_with(100, false)).unwrap();
+        assert_eq!(dirty.free_clusters(), Ok(7), "a dirty volume's is scanned");
+        let mut implausible = Volume::mount(formatted_with(70_000, true)).unwrap();
+        assert_eq!(
+            implausible.free_clusters(),
+            Ok(7),
+            "more than the volume holds"
+        );
     }
 
     #[test]

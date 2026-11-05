@@ -42,6 +42,7 @@
 pub mod base;
 pub mod binary_type;
 pub mod collate;
+pub mod computer;
 pub mod console;
 pub mod create;
 pub mod curdir;

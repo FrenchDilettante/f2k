@@ -347,6 +347,17 @@ unsafe extern "system" {
         length: u32,
         return_length: *mut u32,
     ) -> u32;
+    /// NtOpenKey and NtQueryValueKey: the registry key the attributes name, and one of its
+    /// values' information of a class (GetComputerName reads the computer's name through them).
+    pub fn NtOpenKey(key: *mut u32, access: u32, attributes: *const ObjectAttributes) -> u32;
+    pub fn NtQueryValueKey(
+        key: u32,
+        name: *const UnicodeString,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        result_length: *mut u32,
+    ) -> u32;
     /// NtSetInformationObject: the class's structure set (F2K answers ObjectHandleFlagInformation,
     /// 4, alone).
     pub fn NtSetInformationObject(
@@ -1721,6 +1732,66 @@ pub mod host {
             unsafe { handle.write(HANDLE) };
         }
         status
+    }
+
+    std::thread_local! {
+        /// The value NtQueryValueKey answers, as REG_SZ units (none: STATUS_OBJECT_NAME_NOT_FOUND),
+        /// and the value names it was asked for.
+        pub static KEY_VALUE: RefCell<Option<std::vec::Vec<u16>>> = const { RefCell::new(None) };
+        pub static VALUE_NAMES: RefCell<std::vec::Vec<std::vec::Vec<u16>>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// NtOpenKey: the name recorded, the handle handed out (see [`opened`]).
+    pub unsafe extern "system" fn NtOpenKey(
+        key: *mut u32,
+        _access: u32,
+        attributes: *const super::ObjectAttributes,
+    ) -> u32 {
+        // SAFETY: the caller's arguments.
+        unsafe { opened(key, attributes) }
+    }
+
+    /// NtQueryValueKey: [`KEY_VALUE`] as a KEY_VALUE_PARTIAL_INFORMATION (class 2 alone), its
+    /// size into the result length; STATUS_BUFFER_OVERFLOW when the buffer holds less.
+    pub unsafe extern "system" fn NtQueryValueKey(
+        _key: u32,
+        name: *const super::UnicodeString,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        result_length: *mut u32,
+    ) -> u32 {
+        assert_eq!(
+            class, 2,
+            "the stand-in answers KeyValuePartialInformation alone"
+        );
+        // SAFETY: the caller's name.
+        VALUE_NAMES.with(|names| names.borrow_mut().push(unsafe { units(name) }.to_vec()));
+        let status = answer();
+        if status != 0 {
+            return status;
+        }
+        let Some(mut data) = KEY_VALUE.with(|value| value.borrow().clone()) else {
+            return 0xC000_0034;
+        };
+        data.push(0);
+        let mut answer = std::vec::Vec::new();
+        for word in [0u32, 1, 2 * data.len() as u32] {
+            answer.extend_from_slice(&word.to_le_bytes());
+        }
+        for unit in data {
+            answer.extend_from_slice(&unit.to_le_bytes());
+        }
+        // SAFETY: the caller's length slot and buffer, of `length` bytes.
+        unsafe {
+            result_length.write(answer.len() as u32);
+            let fits = answer.len().min(length as usize);
+            information.copy_from_nonoverlapping(answer.as_ptr(), fits);
+            if fits < answer.len() {
+                return 0x8000_0005;
+            }
+        }
+        0
     }
 
     pub unsafe extern "system" fn NtCreateSection(

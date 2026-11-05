@@ -1,6 +1,6 @@
-//! advapi32's user-mode code: the bodies of its exports (the registry first), as Windows 2000's
-//! advapi32 runs them, over ntdll's and kernel32's exports ([`imports`], as Windows 2000's
-//! advapi32 imports them).
+//! advapi32's user-mode code: the bodies of its exports (the registry, the process token), as
+//! Windows 2000's advapi32 runs them, over ntdll's and kernel32's exports ([`imports`], as Windows
+//! 2000's advapi32 imports them).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
 //! module-definition file exports under its name (build-support/stubs.rs finds them; the export
@@ -18,6 +18,7 @@
 pub mod imports;
 pub mod registry;
 pub mod stub;
+pub mod token;
 
 /// A caller's out parameter and buffers, as every system DLL's exports take them.
 pub use rtl::edge::{caller_bytes, caller_bytes_mut, Out};

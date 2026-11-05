@@ -1,7 +1,10 @@
-"""Checks on the harness's own judgements: the logs, the build stamps, the boots' QEMU."""
+"""Checks on the harness's own judgements: the logs, the build stamps, the boots' QEMU, the kept
+disks and the host's read of their volume."""
+import json
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time
@@ -318,6 +321,127 @@ def alive(pid: int) -> bool:
     # A zombie (not yet reaped by launchd/init) is gone for our purposes.
     state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout
     return bool(state.strip()) and not state.strip().startswith("Z")
+
+
+# --- Kept disks: a boot's writes kept for the host and a later boot ---------------------------
+
+
+def test_a_kept_disk_is_a_private_copy_removed_after(tmp_path):
+    disk = tmp_path / "f2k-disk.img"
+    disk.write_bytes(b"built" * 100)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", disk)
+    with f2kboot.kept_disk(build, tmp_path / "kept" / "boot.img") as kept:
+        assert kept.read_bytes() == disk.read_bytes()
+        kept.write_bytes(b"written by a boot")
+        assert disk.read_bytes() == b"built" * 100, "the build's disk is never written"
+    assert not kept.exists()
+    with pytest.raises(RuntimeError), f2kboot.kept_disk(build, tmp_path / "failed.img") as kept:
+        raise RuntimeError("a failed check")
+    assert not kept.exists(), "removed after a failure too"
+
+
+def test_a_kept_disk_is_attached_without_a_snapshot(tmp_path):
+    disk = tmp_path / "disk.img"
+    assert f2kboot.drive(disk) == f"file={disk},format=raw,if=ide,snapshot=on"
+    assert f2kboot.drive(disk, kept=True) == f"file={disk},format=raw,if=ide"
+
+
+def test_a_reset_after_the_restart_line_ends_the_boot():
+    restarted = "\n".join([*f2kboot.BOOT_CHECKS, "F2K: shutdown complete", f2kboot.RESTARTING, ""])
+    assert f2kboot.ended_by_reset(restarted)
+    assert f2kboot.ended_by_reset(f"{restarted}\n{f2kboot.QEMU_STDERR}\nqemu: a warning\n")
+    crashed = f"{restarted}CPU EXCEPTION: general protection fault (vector 13)\n"
+    assert not f2kboot.ended_by_reset(crashed), "a fault after the line is a crash"
+    assert not f2kboot.ended_by_reset("F2K Booted Successfully\n")
+    assert not f2kboot.ended_by_reset("")
+
+
+FAKE_QEMU = """#!{python}
+import json, sys
+arguments = sys.argv[1:]
+with open({record!r}, "w") as record:
+    json.dump(arguments, record)
+serial = arguments[arguments.index("-serial") + 1].removeprefix("file:")
+with open(serial, "w") as com1:
+    com1.write({output!r})
+"""
+
+
+@pytest.mark.parametrize("output, reason", [
+    ("F2K Booted Successfully\nF2K: shutdown complete\nF2K: shutdown: restarting\n", "reset"),
+    ("F2K Booted Successfully\nCPU EXCEPTION: double fault (vector 8)\n", "exited"),
+], ids=["restart", "crash"])
+def test_a_kept_boot_attaches_its_disk_and_a_restart_ends_it(tmp_path, monkeypatch, output, reason):
+    """A boot on a kept disk attaches that disk without a snapshot, and QEMU's exit after the
+    kernel's restart line (its -no-reboot exit) is the boot's end, "reset"; any other exit stays
+    "exited". A stand-in QEMU records its arguments and writes COM1, then exits."""
+    record = tmp_path / "arguments.json"
+    qemu = tmp_path / "qemu"
+    qemu.write_text(FAKE_QEMU.format(python=sys.executable, record=str(record), output=output))
+    qemu.chmod(0o755)
+    monkeypatch.setattr(f2kboot, "QEMU", str(qemu))
+    monkeypatch.setattr(f2kboot, "exit_with_parent", lambda: [])
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    kept = tmp_path / "kept.img"
+    log, stopped = f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20,
+                                done=lambda log: False, kernel_options="reboot", kept=kept)
+    assert stopped == reason, log
+    arguments = json.loads(record.read_text())
+    assert arguments[arguments.index("-drive") + 1] == f"file={kept},format=raw,if=ide"
+    assert "-no-reboot" in arguments
+    assert arguments[arguments.index("-append") + 1] == "reboot --"
+
+
+def volume_image(path, *, fat1=0x0FFF_FFFF, free_count=0xFFFF_FFFF, next_free=0xFFFF_FFFF,
+                 used=(), fsinfo=True):
+    """A small FAT32-shaped volume at the partition's offset in a disk image: 8 reserved sectors
+    (FSInfo at 1), two one-sector FATs, 100 one-sector clusters; the root (cluster 2) and `used`
+    taken, the rest free."""
+    clusters = 100
+    boot = bytearray(512)
+    boot[0:3] = b"\xeb\x58\x90"
+    struct.pack_into("<HBHB", boot, 11, 512, 1, 8, 2)
+    struct.pack_into("<II", boot, 32, 8 + 2 + clusters, 1)
+    struct.pack_into("<H", boot, 48, 1)
+    boot[510:512] = b"\x55\xaa"
+    info = bytearray(512)
+    if fsinfo:
+        for at, value in f2kboot.FSINFO_SIGNATURES:
+            struct.pack_into("<I", info, at, value)
+    struct.pack_into("<II", info, 488, free_count, next_free)
+    fat = bytearray(512)
+    struct.pack_into("<III", fat, 0, 0x0FFF_FFF8, fat1, 0x0FFF_FFFF)
+    for cluster in used:
+        struct.pack_into("<I", fat, cluster * 4, 0x0FFF_FFFF)
+    image = bytearray(f2kboot.PARTITION_OFFSET + (8 + 2 + clusters) * 512)
+    at = f2kboot.PARTITION_OFFSET
+    image[at:at + 512] = boot
+    image[at + 512:at + 1024] = info
+    image[at + 8 * 512:at + 9 * 512] = fat
+    image[at + 9 * 512:at + 10 * 512] = fat
+    path.write_bytes(bytes(image))
+    return path
+
+
+def test_a_volume_image_reads_its_clean_bit_fsinfo_and_free_clusters(tmp_path):
+    flushed = f2kboot.read_volume(volume_image(tmp_path / "clean.img", free_count=96, next_free=6,
+                                               used=(3, 4, 5)))
+    assert flushed == f2kboot.VolumeState(clean=True, fsinfo_free=96, fsinfo_next_free=6, free=96,
+                                          clusters=100, hint_is_free=True)
+    dirty = f2kboot.read_volume(volume_image(tmp_path / "dirty.img", fat1=0x07FF_FFFF, used=(3,)))
+    assert not dirty.clean
+    assert (dirty.fsinfo_free, dirty.fsinfo_next_free, dirty.free) == (0xFFFF_FFFF, 0xFFFF_FFFF, 98)
+    assert not dirty.hint_is_free, "an unknown hint names no cluster"
+    taken = f2kboot.read_volume(volume_image(tmp_path / "taken.img", free_count=97, next_free=3,
+                                             used=(3, 4)))
+    assert not taken.hint_is_free and taken.free == 97
+
+
+def test_a_volume_without_fsinfo_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="not an FSInfo sector"):
+        f2kboot.read_volume(volume_image(tmp_path / "plain.img", fsinfo=False))
+    with pytest.raises(ValueError, match="no FAT32 boot sector"):
+        f2kboot.read_volume(volume_image(tmp_path / "shifted.img"), offset=0)
 
 
 # --- Masks: one value each, in their own section-----------------------------------------------

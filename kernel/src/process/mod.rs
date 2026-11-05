@@ -951,6 +951,9 @@ impl Process {
             return false;
         }
         self.release_handles();
+        // A token opened after the process's end (or on one that never had a thread) goes with
+        // the deletion; an ended process let go of its own at its end.
+        crate::ob::release_process_token(self.object());
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         true

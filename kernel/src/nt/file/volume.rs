@@ -1,14 +1,13 @@
 //! NtQueryVolumeInformationFile: the device type of the device a file object is open on (the I/O
 //! manager's own answer), and the rest from that device: the boot volume's facts through any of
 //! its file objects — its label and serial number (the boot sector's), its size and free clusters
-//! (the FSInfo sector's count when it carries a plausible one, else a FAT scan), and its file
+//! (the count the volume keeps: FSInfo's on a volume marked clean, else a FAT scan's), and its file
 //! system's name, flags and longest component (FAT32's). A pipe's end has its device type alone
 //! (STATUS_NOT_SUPPORTED for the rest).
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, file_object};
 use super::info::{self, Volume, VolumeClass};
-use crate::fs::fat32::fat::FatEntry;
 use crate::fs::file::Context;
 use crate::status::*;
 
@@ -23,27 +22,7 @@ fn volume_facts() -> Result<Volume, NtStatus> {
         let serial = u32::from_le_bytes([sector[67], sector[68], sector[69], sector[70]]);
         let mut label = [0u8; 11];
         label.copy_from_slice(&sector[71..82]);
-        let info_sector = u16::from_le_bytes([sector[48], sector[49]]) as u64;
-        let mut free = None;
-        if info_sector != 0
-            && info_sector != 0xFFFF
-            && volume.device().read(info_sector, &mut sector).is_ok()
-        {
-            let word = |at: usize| {
-                u32::from_le_bytes([sector[at], sector[at + 1], sector[at + 2], sector[at + 3]])
-            };
-            if word(0) == 0x4161_5252
-                && word(484) == 0x6141_7272
-                && word(488) <= layout.cluster_count
-            {
-                free = Some(word(488));
-            }
-        }
-        let free = free.unwrap_or_else(|| {
-            (2..layout.cluster_count + 2)
-                .filter(|&cluster| matches!(volume.fat_entry(cluster), Ok(FatEntry::Free)))
-                .count() as u32
-        });
+        let free = volume.free_clusters()?;
         Ok(Volume {
             serial,
             label,

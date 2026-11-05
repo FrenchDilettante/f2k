@@ -14,6 +14,11 @@ pub struct Layout {
     pub cluster_count: u32,
     /// The root directory's first cluster.
     pub root_cluster: u32,
+    /// The FSInfo sector: none when the boot sector names none inside the reserved area.
+    pub fsinfo_sector: Option<u64>,
+    /// FSInfo's copy in the backup boot record (the backup boot sector's offset plus FSInfo's):
+    /// none without a backup boot sector, or when the copy would fall outside the reserved area.
+    pub backup_fsinfo_sector: Option<u64>,
 }
 
 impl Layout {

@@ -238,6 +238,14 @@ pub fn validate(sector: &[u8; 512]) -> Result<Layout, Refusal> {
     if boot.fsinfo_sector == 0 {
         return Err(Refusal::NoFsInfo);
     }
+    // FSInfo and the backup boot record live in the reserved area, before the first FAT: a sector
+    // named anywhere else (0xFFFF, "none", included) is not one the volume writes.
+    let reserved = |sector: u64| (1..boot.reserved_sectors as u64).contains(&sector);
+    let fsinfo_sector = Some(boot.fsinfo_sector as u64).filter(|&sector| reserved(sector));
+    let backup_fsinfo_sector = fsinfo_sector
+        .filter(|_| boot.backup_boot_sector != 0)
+        .map(|sector| boot.backup_boot_sector as u64 + sector)
+        .filter(|&sector| reserved(sector));
     let layout = Layout {
         sectors_per_cluster: boot.sectors_per_cluster as u32,
         fat_start: boot.reserved_sectors as u64,
@@ -245,6 +253,8 @@ pub fn validate(sector: &[u8; 512]) -> Result<Layout, Refusal> {
         data_start,
         cluster_count,
         root_cluster: boot.root_cluster,
+        fsinfo_sector,
+        backup_fsinfo_sector,
     };
     if !layout.is_data_cluster(boot.root_cluster) {
         return Err(Refusal::RootCluster(boot.root_cluster));
@@ -380,6 +390,23 @@ mod tests {
             validate(&built_with(|s| put32(s, 32, 100))),
             Err(Refusal::TooFewClusters(0))
         );
+    }
+
+    /// FSInfo and its backup copy are sectors of the reserved area: the built volume's 1 and 6 + 1;
+    /// none named outside it (0xFFFF among them), and no copy without a backup boot sector or past
+    /// the reserved area.
+    #[test]
+    fn fsinfo_and_its_copy_lie_in_the_reserved_area() {
+        let sectors = |change: fn(&mut [u8; 512])| {
+            let layout = validate(&built_with(change)).unwrap();
+            (layout.fsinfo_sector, layout.backup_fsinfo_sector)
+        };
+        assert_eq!(sectors(|_| {}), (Some(1), Some(7)));
+        assert_eq!(sectors(|s| put16(s, 48, 0xFFFF)), (None, None));
+        assert_eq!(sectors(|s| put16(s, 48, 32)), (None, None));
+        assert_eq!(sectors(|s| put16(s, 50, 0)), (Some(1), None));
+        assert_eq!(sectors(|s| put16(s, 50, 31)), (Some(1), None));
+        assert_eq!(sectors(|s| put16(s, 14, 4)), (Some(1), None));
     }
 
     /// The root cluster must be a data cluster: 2 through the cluster count plus one.

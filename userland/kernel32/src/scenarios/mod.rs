@@ -17,6 +17,7 @@
 
 mod binary_type;
 mod clocks;
+mod computer;
 mod console;
 mod curdir;
 mod environment;

@@ -10,7 +10,9 @@
 //! the boot runs exit0. Before the separator stand the kernel's own options ([`kernel_option`]):
 //! `screens` pauses the boot after each program for the test harness's screenshot,
 //! `concurrent` runs the programs side by side instead of one after another (`process::runner`),
-//! and `redirected` keeps the standard handles' writes off the screen (`csr::REDIRECTED`).
+//! `redirected` keeps the standard handles' writes off the screen (`csr::REDIRECTED`), and
+//! `shutdown` or `reboot` ends the boot through NtShutdownSystem's path once its programs have
+//! (`process::runner`).
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.

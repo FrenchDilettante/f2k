@@ -8,7 +8,8 @@
 //! sector cache [`fat`], the mount and the boot volume [`volume`], directory records [`dirent`],
 //! path components [`path`], the directory walk with its long names [`dir`], path lookup
 //! [`lookup`], the chain read [`read`], the writes (allocation, data, sizes and directory entries)
-//! [`write`], and the host tests' shared volumes, devices, and captured sectors [`fixtures`].
+//! [`write`], the FSInfo sector's free-cluster hints [`fsinfo`], and the host tests' shared
+//! volumes, devices, and captured sectors [`fixtures`].
 
 pub mod boot_sector;
 pub mod dir;
@@ -16,6 +17,7 @@ pub mod dirent;
 pub mod fat;
 #[cfg(test)]
 pub(crate) mod fixtures;
+pub mod fsinfo;
 pub mod layout;
 pub mod lookup;
 pub mod path;

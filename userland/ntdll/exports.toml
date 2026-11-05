@@ -221,6 +221,15 @@ zw_ordinal = 921
 note = "the system time set (a NULL SystemTime only reads the previous one); no privilege is checked: F2K has no tokens"
 
 [[export]]
+name = "NtShutdownSystem"
+group = "nt"
+args = ["u32 Action"]
+impl = { syscall = "crate::nt::shutdown::shutdown_system" }
+ordinal = 283
+zw_ordinal = 928
+note = "closes the boot volume to changes, flushes it and marks it clean, then halts (ShutdownNoReboot, and ShutdownPowerOff without ACPI) or restarts the machine (ShutdownReboot); no privilege is checked, and no process is ended"
+
+[[export]]
 name = "NtQueryInformationProcess"
 group = "nt"
 args = ["handle ProcessHandle", "u32 ProcessInformationClass", "ptr ProcessInformation", "u32 ProcessInformationLength", "ptr<u32> ReturnLength"]
@@ -758,6 +767,35 @@ args = ["handle KeyHandle", "ptr ValueName"]
 impl = { syscall = "crate::nt::key::delete_value_key" }
 ordinal = 116
 zw_ordinal = 761
+
+# --- the token services (kernel/src/nt/token.rs, over the process's token, kernel/src/se.rs) -----
+
+[[export]]
+name = "NtOpenProcessToken"
+group = "nt"
+args = ["handle ProcessHandle", "u32 DesiredAccess", "ptr<u32> TokenHandle"]
+impl = { syscall = "crate::nt::token::open_process_token" }
+ordinal = 170
+zw_ordinal = 815
+note = "the process's one token, made at its first open; every access asked for is granted"
+
+[[export]]
+name = "NtAdjustPrivilegesToken"
+group = "nt"
+args = ["handle TokenHandle", "boolean DisableAllPrivileges", "ptr NewState", "u32 BufferLength", "ptr PreviousState", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::token::adjust_privileges_token" }
+ordinal = 69
+zw_ordinal = 715
+note = "bookkeeping only: the token's privileges change and report as Windows 2000's do, and nothing in F2K checks them"
+
+[[export]]
+name = "NtQueryInformationToken"
+group = "nt"
+args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation", "u32 TokenInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::token::query_information_token" }
+ordinal = 198
+zw_ordinal = 843
+note = "answers TokenPrivileges (3) alone"
 
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
@@ -1605,10 +1643,6 @@ name = "NtAdjustGroupsToken"
 ordinal = 68
 
 [[export]]
-name = "NtAdjustPrivilegesToken"
-ordinal = 69
-
-[[export]]
 name = "NtAlertResumeThread"
 ordinal = 70
 
@@ -1877,10 +1911,6 @@ name = "NtOpenObjectAuditAlarm"
 ordinal = 168
 
 [[export]]
-name = "NtOpenProcessToken"
-ordinal = 170
-
-[[export]]
 name = "NtOpenSymbolicLinkObject"
 ordinal = 173
 
@@ -1943,10 +1973,6 @@ ordinal = 194
 [[export]]
 name = "NtQueryInformationPort"
 ordinal = 195
-
-[[export]]
-name = "NtQueryInformationToken"
-ordinal = 198
 
 [[export]]
 name = "NtQueryInstallUILanguage"
@@ -2187,10 +2213,6 @@ ordinal = 280
 [[export]]
 name = "NtSetVolumeInformationFile"
 ordinal = 282
-
-[[export]]
-name = "NtShutdownSystem"
-ordinal = 283
 
 [[export]]
 name = "NtStartProfile"
@@ -3649,10 +3671,6 @@ name = "ZwAdjustGroupsToken"
 ordinal = 714
 
 [[export]]
-name = "ZwAdjustPrivilegesToken"
-ordinal = 715
-
-[[export]]
 name = "ZwAlertResumeThread"
 ordinal = 716
 
@@ -3917,10 +3935,6 @@ name = "ZwOpenObjectAuditAlarm"
 ordinal = 813
 
 [[export]]
-name = "ZwOpenProcessToken"
-ordinal = 815
-
-[[export]]
 name = "ZwOpenSymbolicLinkObject"
 ordinal = 818
 
@@ -3983,10 +3997,6 @@ ordinal = 839
 [[export]]
 name = "ZwQueryInformationPort"
 ordinal = 840
-
-[[export]]
-name = "ZwQueryInformationToken"
-ordinal = 843
 
 [[export]]
 name = "ZwQueryInstallUILanguage"
@@ -4227,10 +4237,6 @@ ordinal = 925
 [[export]]
 name = "ZwSetVolumeInformationFile"
 ordinal = 927
-
-[[export]]
-name = "ZwShutdownSystem"
-ordinal = 928
 
 [[export]]
 name = "ZwStartProfile"

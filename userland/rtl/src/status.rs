@@ -70,6 +70,7 @@ pub const STATUS_KERNEL_APC: u32 = 0x0000_0100;
 pub const STATUS_ALERTED: u32 = 0x0000_0101;
 pub const STATUS_TIMEOUT: u32 = 0x0000_0102;
 pub const STATUS_PENDING: u32 = 0x0000_0103;
+pub const STATUS_NOT_ALL_ASSIGNED: u32 = 0x0000_0106;
 pub const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
 pub const STATUS_IMAGE_NOT_AT_BASE: u32 = 0x4000_0003;
 pub const STATUS_NO_YIELD_PERFORMED: u32 = 0x4000_0024;
@@ -162,6 +163,8 @@ pub const STATUS_PIPE_BROKEN: u32 = 0xC000_014B;
 pub const STATUS_UNRECOGNIZED_VOLUME: u32 = 0xC000_014F;
 pub const STATUS_KEY_DELETED: u32 = 0xC000_017C;
 pub const STATUS_IO_DEVICE_ERROR: u32 = 0xC000_0185;
+/// A write to a volume once it was shut down (dismounted, in the status's own words).
+pub const STATUS_TOO_LATE: u32 = 0xC000_0189;
 pub const STATUS_MAPPED_ALIGNMENT: u32 = 0xC000_0220;
 pub const STATUS_HANDLE_NOT_CLOSABLE: u32 = 0xC000_0235;
 pub const STATUS_USER_MAPPED_FILE: u32 = 0xC000_0243;

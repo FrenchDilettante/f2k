@@ -773,6 +773,24 @@ impl = { native = "GetWindowsDirectoryW" }
 ordinal = 413
 fails = "0"
 
+[[export]]
+name = "GetComputerNameA"
+group = "environment"
+args = ["ptr lpBuffer", "ptr<u32> nSize"]
+impl = { native = "GetComputerNameA" }
+ordinal = 227
+fails = "FALSE"
+note = "the registry's ComputerName\\ComputerName value (QEMU)"
+
+[[export]]
+name = "GetComputerNameW"
+group = "environment"
+args = ["ptr lpBuffer", "ptr<u32> nSize"]
+impl = { native = "GetComputerNameW" }
+ordinal = 230
+fails = "FALSE"
+note = "the registry's ComputerName\\ComputerName value (QEMU)"
+
 # --- heap -------------------------------------------------------------------------------------------
 
 [[export]]
@@ -3193,20 +3211,12 @@ name = "GetCompressedFileSizeW"
 ordinal = 226
 
 [[export]]
-name = "GetComputerNameA"
-ordinal = 227
-
-[[export]]
 name = "GetComputerNameExA"
 ordinal = 228
 
 [[export]]
 name = "GetComputerNameExW"
 ordinal = 229
-
-[[export]]
-name = "GetComputerNameW"
-ordinal = 230
 
 [[export]]
 name = "GetConsoleAliasA"

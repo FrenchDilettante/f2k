@@ -8,7 +8,8 @@
 //! import is here. The strings and blocks the services take are types that hold what they point
 //! at: [`Counted`] (a UNICODE_STRING over borrowed units), [`Wide`] (one a conversion allocated),
 //! [`HeapBlock`] (a block of the process heap) and [`KeyAttributes`] (an OBJECT_ATTRIBUTES naming a
-//! key).
+//! key). The caller's memory a token service reads or writes for an export's caller is handed
+//! through as its address ([`Passed`]), which the service probes.
 
 use core::ffi::CStr;
 use core::marker::PhantomData;
@@ -37,6 +38,9 @@ mod raw {
         /// RaiseException: an exception raised with the code, flags and arguments (a
         /// noncontinuable one does not return).
         pub fn RaiseException(code: u32, flags: u32, count: u32, arguments: *const usize);
+        /// GetComputerNameW: the computer's name and its terminator into the buffer of the size's
+        /// characters, the size then its length.
+        pub fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> u32;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -97,6 +101,26 @@ mod raw {
         ) -> u32;
         /// NtClose: the handle closed.
         pub fn NtClose(handle: u32) -> u32;
+        /// NtOpenProcessToken: a handle to the token of the process the handle names.
+        pub fn NtOpenProcessToken(process: u32, access: u32, token: *mut u32) -> u32;
+        /// NtAdjustPrivilegesToken: the token's privileges enabled or disabled as the new state
+        /// says (or all disabled), what changed reported in the previous state.
+        pub fn NtAdjustPrivilegesToken(
+            token: u32,
+            disable_all: u8,
+            new_state: *const u8,
+            length: u32,
+            previous_state: *mut u8,
+            return_length: *mut u32,
+        ) -> u32;
+        /// NtQueryInformationToken: the token's information of a class.
+        pub fn NtQueryInformationToken(
+            token: u32,
+            class: u32,
+            information: *mut u8,
+            length: u32,
+            return_length: *mut u32,
+        ) -> u32;
         /// RtlOpenCurrentUser: the current user's hive, HKEY_CURRENT_USER's key.
         pub fn RtlOpenCurrentUser(desired_access: u32, key: *mut u32) -> u32;
         /// RtlNtStatusToDosError: the Win32 error an NTSTATUS maps to.
@@ -310,6 +334,27 @@ impl<'a> KeyAttributes<'a> {
     }
 }
 
+/// A caller's memory the kernel reads or writes for it, handed through as its address (null for
+/// none): the service probes it, and advapi32 itself never touches it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Passed(usize);
+
+impl Passed {
+    /// No memory: a null pointer.
+    pub const NONE: Passed = Passed(0);
+
+    /// The caller's memory at `address`.
+    ///
+    /// # Safety
+    ///
+    /// `address` is what the export's caller passed for the service to read or write under the
+    /// API's contract (or an address it cannot reach, which the service refuses): nothing of
+    /// advapi32's own lives there.
+    pub unsafe fn new(address: usize) -> Self {
+        Passed(address)
+    }
+}
+
 // --- kernel32
 // ----------------------------------------------------------------------------------------
 
@@ -324,6 +369,16 @@ pub fn set_last_error(code: u32) {
 pub fn raise_exception(code: u32, flags: u32, arguments: &[usize]) {
     // SAFETY: the call reads the arguments' count of them.
     unsafe { raw::RaiseException(code, flags, arguments.len() as u32, arguments.as_ptr()) }
+}
+
+/// GetComputerNameW: the computer's name into `buffer`: its length (the terminator written after
+/// it), or none when it does not fit (or cannot be read).
+pub fn computer_name(buffer: &mut [u16]) -> Option<usize> {
+    let mut size = buffer.len() as u32;
+    // SAFETY: the call writes at most the buffer's size of characters into it, and the length
+    // into the local.
+    let ok = unsafe { raw::GetComputerNameW(buffer.as_mut_ptr(), &mut size) };
+    (ok != 0).then_some(size as usize)
 }
 
 // --- ntdll -------------------------------------------------------------------------------------------
@@ -394,6 +449,59 @@ pub fn delete_key(key: u32) -> Result<(), NtStatus> {
 pub fn close(handle: u32) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtClose(handle) })
+}
+
+/// NtOpenProcessToken: a handle to the token of the process `process` names, opened with
+/// `access`, written to the caller's `token`.
+pub fn open_process_token(process: u32, access: u32, token: Passed) -> Result<(), NtStatus> {
+    // SAFETY: the one place the service writes is the caller's, which it probes.
+    checked(unsafe { raw::NtOpenProcessToken(process, access, token.0 as *mut u32) })
+}
+
+/// NtAdjustPrivilegesToken: the token's privileges adjusted as the caller's `new_state` says (or
+/// all disabled), what changed reported in its `previous_state` of `length` bytes and its size in
+/// `return_length`: the service's status, a success among several (STATUS_NOT_ALL_ASSIGNED).
+pub fn adjust_privileges_token(
+    token: u32,
+    disable_all: bool,
+    new_state: Passed,
+    length: u32,
+    previous_state: Passed,
+    return_length: Passed,
+) -> NtStatus {
+    // SAFETY: the service reads and writes only the caller's memory handed through, which it
+    // probes.
+    NtStatus(unsafe {
+        raw::NtAdjustPrivilegesToken(
+            token,
+            u8::from(disable_all),
+            new_state.0 as *const u8,
+            length,
+            previous_state.0 as *mut u8,
+            return_length.0 as *mut u32,
+        )
+    })
+}
+
+/// NtQueryInformationToken: the token's information of `class` into the caller's `information`
+/// of `length` bytes, its size into `return_length`.
+pub fn query_information_token(
+    token: u32,
+    class: u32,
+    information: Passed,
+    length: u32,
+    return_length: Passed,
+) -> Result<(), NtStatus> {
+    // SAFETY: the service writes only the caller's memory handed through, which it probes.
+    checked(unsafe {
+        raw::NtQueryInformationToken(
+            token,
+            class,
+            information.0 as *mut u8,
+            length,
+            return_length.0 as *mut u32,
+        )
+    })
 }
 
 /// NtEnumerateKey: subkey `index` of `key`'s information of `class`, into `information`: the
@@ -648,6 +756,77 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
         rtl::status::dos_error(status)
+    }
+
+    std::thread_local! {
+        /// The status the token services answer (success unless a test sets one), and the
+        /// arguments each was last handed: the process or token handle, and the access, the
+        /// DisableAllPrivileges flag or the class.
+        pub static TOKEN_STATUS: Cell<u32> = const { Cell::new(0) };
+        pub static TOKEN_CALLS: RefCell<std::vec::Vec<(&'static str, u32, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// The handle NtOpenProcessToken hands out.
+    pub const TOKEN: u32 = 0x58;
+
+    fn token_call(service: &'static str, handle: u32, value: u32) -> u32 {
+        TOKEN_CALLS.with(|calls| calls.borrow_mut().push((service, handle, value)));
+        TOKEN_STATUS.with(|status| status.get())
+    }
+
+    pub unsafe extern "system" fn NtOpenProcessToken(
+        process: u32,
+        access: u32,
+        token: *mut u32,
+    ) -> u32 {
+        let status = token_call("NtOpenProcessToken", process, access);
+        if status == 0 {
+            if token.is_null() {
+                return 0xC000_0005;
+            }
+            // SAFETY: the caller's handle slot.
+            unsafe { token.write(TOKEN) };
+        }
+        status
+    }
+
+    pub unsafe extern "system" fn NtAdjustPrivilegesToken(
+        token: u32,
+        disable_all: u8,
+        _: *const u8,
+        _: u32,
+        _: *mut u8,
+        _: *mut u32,
+    ) -> u32 {
+        token_call("NtAdjustPrivilegesToken", token, u32::from(disable_all))
+    }
+
+    pub unsafe extern "system" fn NtQueryInformationToken(
+        token: u32,
+        class: u32,
+        _: *mut u8,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        token_call("NtQueryInformationToken", token, class)
+    }
+
+    /// GetComputerNameW: the computer's name, QEMU (ERROR_BUFFER_OVERFLOW for a buffer without
+    /// room for it and its terminator).
+    pub unsafe extern "system" fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> u32 {
+        let name: std::vec::Vec<u16> = "QEMU".encode_utf16().collect();
+        // SAFETY: the caller's size and buffer of that many characters.
+        unsafe {
+            if (*size as usize) <= name.len() {
+                *size = name.len() as u32 + 1;
+                LAST_ERROR.with(|error| error.set(111));
+                return 0;
+            }
+            buffer.copy_from_nonoverlapping(name.as_ptr(), name.len());
+            buffer.add(name.len()).write(0);
+            *size = name.len() as u32;
+        }
+        1
     }
 
     /// The host heap's blocks, zeroed, by address, with their layouts.

@@ -789,6 +789,11 @@ pub fn with_registry<R>(step: impl FnOnce(&mut Registry) -> R) -> R {
     level::raised::<High, _>(|high| step(REGISTRY.get(high)))
 }
 
+/// Flush the hives to their files, the shutdown's step before the file systems are done, as
+/// Windows 2000's kernel flushes them when it shuts down. Nothing to write yet: the hives live in
+/// kernel memory alone, none of them on disk.
+pub fn flush_hives() {}
+
 #[cfg(test)]
 mod tests {
     //! The registry's tree over a registry of the tests' own: names, the listing's order, deletes

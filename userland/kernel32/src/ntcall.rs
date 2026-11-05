@@ -285,6 +285,40 @@ pub fn duplicate_object(
     })
 }
 
+// --- The registry --------------------------------------------------------------------------------
+
+/// NtOpenKey: the key the attributes name, opened with `access`.
+pub fn open_key(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
+    let mut key = 0;
+    // SAFETY: ntdll's export: it writes the local handle and reads the attributes and their name.
+    checked(unsafe { nt::NtOpenKey(&mut key, access, attributes) })?;
+    Ok(key)
+}
+
+/// NtQueryValueKey: `key`'s value `name`, its information of `class` into `information`: the
+/// bytes the information takes. STATUS_BUFFER_OVERFLOW is a failure that wrote what fits.
+pub fn query_value_key(
+    key: u32,
+    name: &UnicodeString,
+    class: u32,
+    information: &mut [u8],
+) -> Result<u32, NtStatus> {
+    let mut length = 0;
+    // SAFETY: ntdll's export: it reads the name, writes at most the buffer's length into it, and
+    // the length into the local.
+    checked(unsafe {
+        nt::NtQueryValueKey(
+            key,
+            name,
+            class,
+            information.as_mut_ptr(),
+            information.len() as u32,
+            &mut length,
+        )
+    })?;
+    Ok(length)
+}
+
 // --- Events, mutants, semaphores and timers ------------------------------------------------------
 
 /// A named kind's create: the handle, and whether the name bound an object that already existed

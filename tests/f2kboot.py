@@ -6,7 +6,8 @@ Three pieces the test modules share:
   and reused for the rest of the test run (the builds serialize across pytest-xdist workers on a
   file lock: they share cargo's target directory);
 - boots: QEMU with COM1 logged to a file, the disk attached as a snapshot (so boots run side by
-  side), stopped as soon as the caller's check has its answer;
+  side), or a kept copy of it attached as it is, for a boot whose writes a later boot or the host
+  reads (`kept_disk`, `read_volume`), stopped as soon as the caller's check has its answer;
 - checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
   tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`); a
@@ -21,6 +22,7 @@ Three pieces the test modules share:
 """
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import functools
 import json
@@ -36,7 +38,7 @@ import tomllib
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS = REPO_ROOT / "tests"
@@ -270,31 +272,37 @@ def boot(
     observe: Callable[[Path], None] | None = None,
     kernel_options: str = "",
     during: Callable[[Path, str], None] | None = None,
+    kept: Path | None = None,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
     exits, or `timeout` seconds pass. `cmdline` is the user program's command line, passed after
     the kernel command line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's
     -append on a kernel boot, by the Limine entry's `cmdline` on a disk boot (a copy of the disk
-    with its configuration rewritten, removed after the boot). With `observe` or `during`, QEMU
-    also carries a QMP socket: `during` is called with the socket's path and the log at each look
-    while the boot runs, and once `done(log)` holds `observe` is called with the socket's path
-    while QEMU still runs (the machine's state, read before it is stopped). Returns the log and why
-    the boot stopped ("done", "exited", "timeout")."""
+    with its configuration rewritten, removed after the boot). With `kept` (a `kept_disk` copy),
+    that disk is attached instead, without a snapshot: what the boot writes stays on it (a disk
+    boot's Limine entry is rewritten on it, in place). With `observe` or `during`, QEMU also
+    carries a QMP socket: `during` is called with the socket's path and the log at each look while
+    the boot runs, and once `done(log)` holds `observe` is called with the socket's path while QEMU
+    still runs (the machine's state, read before it is stopped). Returns the log and why the boot
+    stopped: "done", "timeout", "exited", or "reset" when QEMU's exit followed the kernel's restart
+    line (`ended_by_reset`)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.unlink(missing_ok=True)
-    disk = build.disk
+    disk = kept or build.disk
     variant = None
     args = [QEMU]
     if image == "kernel":
         args += ["-kernel", str(build.kernel)]
         if cmdline or kernel_options:
             args += ["-append", f"{kernel_options} -- {cmdline or ''}".strip()]
+    elif (cmdline or kernel_options) and kept is not None:
+        write_limine_entry(kept, cmdline or "", kernel_options)
     elif cmdline or kernel_options:
         variant = disk = limine_disk(build, cmdline or "", WORK / "variants" / f"{log_path.stem}.img",
                                      kernel_options)
     args += [
-        "-drive", f"file={disk},format=raw,if=ide,snapshot=on",
+        "-drive", drive(disk, kept=kept is not None),
         "-m", memory, "-display", "none", "-monitor", "none", "-net", "none",
         # -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast.
         "-no-reboot", "-serial", f"file:{log_path}",
@@ -333,6 +341,8 @@ def boot(
     log = read_log(log_path)
     if reason != "done" and done(log):
         reason = "done"  # QEMU wrote the answer just before it stopped
+    elif reason == "exited" and ended_by_reset(log):
+        reason = "reset"
     if stderr:
         # QEMU's own complaints (an image it could not open, an option it refused) go into the log
         # file too, after COM1's lines, so a failure read from the file shows them.
@@ -341,6 +351,38 @@ def boot(
         with open(log_path, "a", encoding="latin-1", errors="replace") as file:
             file.write(section)
     return log, reason
+
+
+def drive(disk: Path, *, kept: bool = False) -> str:
+    """QEMU's -drive value for `disk`: a snapshot, which every write lands in and QEMU's exit
+    discards (boots of one disk run side by side), or, for a kept disk, the image itself."""
+    return f"file={disk},format=raw,if=ide" + ("" if kept else ",snapshot=on")
+
+
+# The kernel's last line before it restarts the machine (kernel/src/nt/shutdown.rs, RESTARTING).
+RESTARTING = "F2K: shutdown: restarting"
+
+
+def ended_by_reset(log: str) -> bool:
+    """Whether a boot whose QEMU exited ended on the kernel's restart: QEMU's -no-reboot turns the
+    reset into its exit, and the restart line is the last COM1 carries. A crash's triple fault
+    exits QEMU the same way, after other lines."""
+    com1, _, _ = log.partition(QEMU_STDERR)
+    lines = [line for line in lines_of(com1) if line.strip()]
+    return bool(lines) and lines[-1] == RESTARTING
+
+
+@contextlib.contextmanager
+def kept_disk(build: Build, path: Path) -> Iterator[Path]:
+    """A private copy of `build`'s disk at `path`, for boots that keep what they write (`boot`'s
+    `kept`): the caller boots it, reads it (`read_volume`), boots it again; it is removed when the
+    block ends."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(build.disk, path)
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @functools.cache
@@ -709,13 +751,28 @@ def lit_pixels(image: Image, cell: tuple[int, int]) -> int:
                for x in range(column * CELL_WIDTH, (column + 1) * CELL_WIDTH))
 
 
-# The disk's FAT32 partition, as mtools addresses it (the Makefile's disk target puts it at 1 MiB).
-PARTITION = "@@1M"
+# The disk's FAT32 partition: its offset in the image (the Makefile's disk target puts it at
+# 1 MiB), and as mtools addresses it.
+PARTITION_OFFSET = 1 << 20
+PARTITION = f"@@{PARTITION_OFFSET >> 20}M"
 LIMINE_CONF = REPO_ROOT / "boot" / "limine.conf"
 
 
 def limine_disk(build: Build, cmdline: str, path: Path, kernel_options: str = "") -> Path:
     """A copy of `build`'s disk at `path` whose Limine entry hands the kernel `cmdline` as the user
+    program's command line (after the kernel command line's "--", `kernel_options` before it)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(build.disk, path)
+    try:
+        write_limine_entry(path, cmdline, kernel_options)
+    except (RuntimeError, ValueError):
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def write_limine_entry(disk: Path, cmdline: str, kernel_options: str = "") -> None:
+    """Rewrite the Limine entry on `disk`, in place, to hand the kernel `cmdline` as the user
     program's command line (after the kernel command line's "--", `kernel_options` before it)."""
     if "\n" in cmdline + kernel_options:
         raise ValueError("a Limine command line is one line")
@@ -723,22 +780,78 @@ def limine_disk(build: Build, cmdline: str, path: Path, kernel_options: str = ""
     marker = "    path: boot():/f2k-kernel\n"
     if marker not in entry:
         raise ValueError(f"{LIMINE_CONF} has no kernel path line to add the command line after")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conf = path.with_suffix(".conf")
+    conf = disk.with_suffix(".conf")
     line = f"{kernel_options} -- {cmdline}".strip()
     conf.write_text(entry.replace(marker, f"{marker}    cmdline: {line}\n"))
-    shutil.copyfile(build.disk, path)
     try:
         subprocess.run(
-            ["mcopy", "-o", "-i", f"{path}{PARTITION}", str(conf), "::/boot/limine/limine.conf"],
+            ["mcopy", "-o", "-i", f"{disk}{PARTITION}", str(conf), "::/boot/limine/limine.conf"],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
     except subprocess.CalledProcessError as error:
-        path.unlink(missing_ok=True)
         raise RuntimeError(f"rewriting the Limine configuration failed:\n{error.stdout}") from None
     finally:
         conf.unlink(missing_ok=True)
-    return path
+
+
+# --- A disk image's volume, read on the host -----------------------------------------------------
+#
+# The FAT32 volume of a disk a boot kept (`kept_disk`), read as the FAT32 specification lays it out:
+# the boot sector's geometry, FAT[1]'s clean-shutdown bit, the FSInfo sector's two hints, and the
+# FAT's free entries, counted.
+
+# FAT[1]'s clean-shutdown bit: set on a volume its last writer marked clean.
+CLEAN_SHUTDOWN = 0x0800_0000
+# The FSInfo sector's signatures: lead (offset 0), structure (484), trail (508).
+FSINFO_SIGNATURES = ((0, 0x4161_5252), (484, 0x6141_7272), (508, 0xAA55_0000))
+
+
+@dataclass(frozen=True)
+class VolumeState:
+    """What a disk image's volume says of its last writer: FAT[1]'s clean bit, FSInfo's free count
+    and next-free hint (0xFFFFFFFF: unknown), and what the FAT holds, counted: its free clusters,
+    and whether the hint names one of them."""
+
+    clean: bool
+    fsinfo_free: int
+    fsinfo_next_free: int
+    free: int
+    clusters: int
+    hint_is_free: bool
+
+
+def read_volume(image: Path, offset: int = PARTITION_OFFSET) -> VolumeState:
+    """The state of the FAT32 volume at `offset` in the disk image `image`."""
+    with open(image, "rb") as file:
+        def sectors(first: int, count: int = 1) -> bytes:
+            file.seek(offset + first * 512)
+            data = file.read(count * 512)
+            if len(data) != count * 512:
+                raise ValueError(f"{image}: the volume's sector {first} lies past the image's end")
+            return data
+
+        boot = sectors(0)
+        bytes_per_sector, per_cluster, reserved, fats = struct.unpack_from("<HBHB", boot, 11)
+        if bytes_per_sector != 512 or boot[510:512] != b"\x55\xaa":
+            raise ValueError(f"{image}: no FAT32 boot sector at offset {offset:#x}")
+        total, per_fat = struct.unpack_from("<II", boot, 32)
+        (fsinfo_sector,) = struct.unpack_from("<H", boot, 48)
+        clusters = (total - reserved - fats * per_fat) // per_cluster
+        fsinfo = sectors(fsinfo_sector)
+        if any(struct.unpack_from("<I", fsinfo, at)[0] != value for at, value in FSINFO_SIGNATURES):
+            raise ValueError(f"{image}: sector {fsinfo_sector} is not an FSInfo sector")
+        fsinfo_free, fsinfo_next_free = struct.unpack_from("<II", fsinfo, 488)
+        fat = sectors(reserved, (clusters + 2 + 127) // 128)
+    entries = struct.unpack_from(f"<{clusters + 2}I", fat)
+    free = {cluster for cluster in range(2, clusters + 2) if entries[cluster] & 0x0FFF_FFFF == 0}
+    return VolumeState(
+        clean=bool(entries[1] & CLEAN_SHUTDOWN),
+        fsinfo_free=fsinfo_free,
+        fsinfo_next_free=fsinfo_next_free,
+        free=len(free),
+        clusters=clusters,
+        hint_is_free=fsinfo_next_free in free,
+    )
 
 
 # F2K's own programs as the userland workspace builds them (the Makefile's `userland` copies each
