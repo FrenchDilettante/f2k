@@ -8,11 +8,13 @@
 //! ([`QueueId`]), the object manager's pattern. Posted messages are entries of one pool the queues
 //! share, linked oldest first. A read ([`take`]) answers, in the documented order: the messages
 //! sent to the thread's windows; the posted messages its filter takes; the WM_QUIT PostQuitMessage
-//! left; a WM_PAINT for a window of the thread's with an update region ([`super::paint`]).
-//! WM_QUIT and WM_PAINT are never posted: they are made when a read finds nothing posted before
-//! them, as Windows 2000 makes them. A read that finds nothing for its filter blocks GetMessage's
-//! caller on its queue's event, set by whatever gives the queue something: a post, a send, an
-//! answer, an invalidation. The wait is the scheduler's, outside the lock.
+//! left; a WM_PAINT for a window of the thread's with an update region ([`super::paint`]); a
+//! WM_TIMER for one of its timers that came due ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
+//! are never posted: they are made when a read finds nothing posted before them, as Windows 2000
+//! makes them. A read that finds nothing for its filter blocks GetMessage's caller on its queue's
+//! event, set by whatever gives the queue something: a post, a send, an answer, a timer set, an
+//! invalidation. The wait is the scheduler's, outside the lock; its timeout is the thread's next
+//! timer's due.
 //!
 //! A sent message reaches its window procedure through the receiving thread's own GetMessage or
 //! PeekMessage: there is no way for the kernel to call user-mode code and return (Windows 2000's
@@ -273,9 +275,9 @@ struct CreateSlot {
     params: CreateParams,
 }
 
-/// The queues, the pools their messages come from and the windows' update regions
-/// ([`super::paint`]): the message layer's state, in the window registry, behind the window
-/// manager's lock.
+/// The queues, the pools their messages come from, the timers ([`super::timer`]) and the windows'
+/// update regions ([`super::paint`]): the message layer's state, in the window registry, behind the
+/// window manager's lock.
 pub struct Queues {
     queues: [Queue; THREADS],
     posted: [Posted; POSTED],
@@ -283,6 +285,7 @@ pub struct Queues {
     free_posted: Option<u16>,
     sent: [Sent; SENT],
     creates: [CreateSlot; CREATES],
+    pub timers: super::timer::Timers,
     pub updates: super::paint::Updates,
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
     /// once the lock is let go.
@@ -339,6 +342,7 @@ impl Queues {
                     },
                 });
             }
+            super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
             addr_of_mut!((*queues).wakes).write([0; WAKE_WORDS]);
         }
@@ -497,7 +501,7 @@ impl Queues {
     }
 
     /// End the queue at `index`: what was posted to it goes, what was sent to it is answered 0, a
-    /// send it waits on is left to be dropped when answered.
+    /// send it waits on is left to be dropped when answered, its timers go.
     fn end_queue(&mut self, index: u16) {
         self.purge_posted(index, |_| true);
         let id = QueueId {
@@ -524,6 +528,7 @@ impl Queues {
                 }
             }
         }
+        self.timers.thread_gone(ThreadId(index));
         self.updates.thread_gone(ThreadId(index));
         let queue = &mut self.queues[index as usize];
         *queue = Queue {
@@ -559,8 +564,8 @@ pub fn attach(windows: &mut Windows, thread: ThreadId, key: ThreadKey, client_id
 }
 
 /// The thread record `thread`'s thread ended: its queue ends with it. What was posted to it goes;
-/// what was sent to it is answered 0. (Nothing ends a thread's record yet: a record another thread
-/// takes over ends its queue through [`attach`].)
+/// what was sent to it is answered 0; its timers go. (Nothing ends a thread's record yet: a record
+/// another thread takes over ends its queue through [`attach`].)
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn detach(windows: &mut Windows, thread: ThreadId) {
     if windows.queues.queue_of(thread).is_some() {
@@ -755,9 +760,9 @@ pub enum Taken {
     /// A sent message, handed out: its receipt is written from the record ([`receipt_head`]), its
     /// answer comes back with [`end_sent`].
     Sent(SentId),
-    /// A posted message, or one the queue made (WM_QUIT, WM_PAINT).
+    /// A posted message, or one the queue made (WM_QUIT, WM_PAINT, WM_TIMER).
     Message(Msg),
-    /// Nothing for the filter; when to look again unwoken (interrupt time), if ever.
+    /// Nothing for the filter; the thread's next timer's due (interrupt time), if it has timers.
     Nothing { due: Option<u64> },
 }
 
@@ -775,7 +780,7 @@ impl Taken {
 /// GetMessage's and PeekMessage's read of the caller's queue at `now` (interrupt time, 100 ns
 /// units), the messages it takes out when `remove`: in the documented order, the messages sent to
 /// the thread (whatever the filter), the posted messages the filter takes, WM_QUIT (whatever the
-/// range), WM_PAINT. STATUS_INVALID_HANDLE when the filter names a window there is not.
+/// range), WM_PAINT, WM_TIMER. STATUS_INVALID_HANDLE when the filter names a window there is not.
 pub fn take(
     windows: &mut Windows,
     caller: ThreadId,
@@ -854,7 +859,23 @@ pub fn take(
         }
     }
 
-    Ok(Taken::Nothing { due: None })
+    // WM_TIMER, for a timer of the thread's that came due.
+    let timers = &mut windows.queues.timers;
+    timers.expire(caller, now);
+    if filter.looks_at(QS_TIMER) && filter.in_range(WM_TIMER) {
+        if let Some((hwnd, id, func)) = timers.next_ready(caller, filter, remove) {
+            return Ok(Taken::Message(made(
+                hwnd,
+                WM_TIMER,
+                id,
+                func as LParam,
+                time,
+            )));
+        }
+    }
+    Ok(Taken::Nothing {
+        due: timers.next_due(caller),
+    })
 }
 
 /// A message the queue makes, stamped `time`.
@@ -1138,8 +1159,8 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     queues.push_sent(receiver, id.index);
 }
 
-/// The window `window` is being freed: the messages posted to it go, its update region with
-/// them.
+/// The window `window` is being freed: the messages posted to it go, its timers and its update
+/// region with them.
 pub fn window_gone(windows: &mut Windows, window: WindowId) {
     let hwnd = windows.handle_of(window);
     let queues = &mut windows.queues;
@@ -1148,12 +1169,13 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
             queues.purge_posted(index, |msg| msg.hwnd == hwnd);
         }
     }
+    queues.timers.window_gone(window);
     queues.updates.window_gone(window);
 }
 
 /// The pump the services run the window manager's decisions with: every message to a window with a
 /// client-side procedure is queued for its thread ([`defer`]) and answered as the default procedure
-/// answers; a window's end takes its posted messages and update region with it. The other
+/// answers; a window's end takes its posted messages, timers and update region with it. The other
 /// window-manager calls are [`Pump`]'s defaults.
 pub struct QueuePump;
 
@@ -1360,8 +1382,9 @@ mod services {
     }
 
     /// NtUserGetMessage(Receipt, Window, MsgFilterMin, MsgFilterMax): the next message the filter
-    /// takes, taken out, into the receipt; on a queue with none, the caller waits on its queue.
-    /// STATUS_INVALID_HANDLE when the filter names a window there is not.
+    /// takes, taken out, into the receipt; on a queue with none, the caller waits on its queue
+    /// (until its next timer's due, when it has timers). STATUS_INVALID_HANDLE when the filter
+    /// names a window there is not.
     pub fn get_message(
         call: &mut NtCall,
         receipt: UserAddr,

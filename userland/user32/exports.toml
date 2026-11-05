@@ -37,7 +37,7 @@ title = "windows"
 
 [[group]]
 key = "message"
-title = "messages and painting"
+title = "messages, timers and painting"
 
 # --- window stations / desktops -------------------------------------------------------------------
 
@@ -249,11 +249,11 @@ args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
 
-# --- messages and painting -------------------------------------------------------------------------
+# --- messages, timers and painting ---------------------------------------------------------------
 
-# win32k's queue and paint services: user32's internal calls, behind the message loop's exports
-# (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
-# ReplyMessage) and the paint calls (InvalidateRect, ValidateRect,
+# win32k's queue, timer and paint services: user32's internal calls, behind the message loop's
+# exports (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
+# ReplyMessage), SetTimer and KillTimer, and the paint calls (InvalidateRect, ValidateRect,
 # GetUpdateRect, BeginPaint, EndPaint, UpdateWindow). GetMessage and PeekMessage write F2K's
 # receipt (rtl::user::Receipt): a posted message, or a sent one with the window procedure to call;
 # NtUserCallOneParam and NtUserCallHwndLock take rtl::user's routine numbers.
@@ -305,6 +305,20 @@ name = "NtUserCallOneParam"
 group = "message"
 args = ["u32 Param", "u32 Routine", "ptr<u32> Result"]
 impl = { syscall = "crate::win32k::queue::call_one_param" }
+internal = true
+
+[[export]]
+name = "NtUserSetTimer"
+group = "message"
+args = ["handle Window", "u32 IdEvent", "u32 Elapse", "u32 TimerFunc", "ptr<u32> Id"]
+impl = { syscall = "crate::win32k::timer::set_timer" }
+internal = true
+
+[[export]]
+name = "NtUserKillTimer"
+group = "message"
+args = ["handle Window", "u32 IdEvent"]
+impl = { syscall = "crate::win32k::timer::kill_timer" }
 internal = true
 
 [[export]]
