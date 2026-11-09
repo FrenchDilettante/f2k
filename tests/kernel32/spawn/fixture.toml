@@ -1,16 +1,17 @@
 # spawn: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD. Its companion program, spawnkid.exe (built beside spawn.exe from spawnkid.c, with /MD), is the
 # child every section starts; it goes into \CORPUS beside the program, as it sits beside it on the
-# real machine. Gated. The system block (no cmd.exe on F2K's disk) and the detach block (F2K's stub
-# path) are expected to stay pending. The create block starts some sixty processes, hence the
-# longer timeout.
+# real machine. Gated. The system block runs the command processor COMSPEC names, which the disk
+# the tests boot does not carry: the fixture's boot adds F2K's cmd.exe to \WINNT\system32
+# (system_programs). The detach block (F2K's stub path) is expected to stay pending. The create
+# block starts some sixty processes, hence the longer timeout.
 description = "spawn - child processes (spawn.c, with its companion program spawnkid.c): Windows 2000's fixed addresses of the TEB, PEB and their fields in the parent, a second thread and a child; CreateProcessA/W's names, search order, quoting and errors; waits and exit codes; process and thread handles, OpenProcess, CREATE_SUSPENDED, TerminateProcess and DuplicateHandle into a child; inherited standard handles; environment blocks and the current directory; ReadProcessMemory and WriteProcessMemory; GetBinaryTypeA/W, on programs and on made-up headers; an ended process, a child never started, DUPLICATE_CLOSE_SOURCE, another process's memory (VirtualAllocEx and the rest, FlushInstructionCache), handle flags in a child; msvcrt's descriptor block for a child, its _spawn family, _cwait, _P_OVERLAY, system(); DETACHED_PROCESS, CREATE_NEW_CONSOLE and _P_DETACH; a child terminated twice, a process's exit code when its threads end it in turn, racing terminations, CreateRemoteThread into an exiting child, and NtCreateProcess with no thread."
 kind = "sectioned"
 gate = true
 timeout = 60
+system_programs = ["cmd"]
 
 [pending]
-system = "no cmd.exe on F2K's disk"
 detach = "F2K's stub path (logged, error 120)"
 
 [masks]
