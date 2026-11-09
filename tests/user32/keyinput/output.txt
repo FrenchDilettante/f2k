@@ -1,0 +1,293 @@
+# F2K capture of keyinput (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:24.52
+keyinput F2KT-SOURCE-CRC=0x2ECAC17C
+>>> keyinput.exe letters
+== letters
+RegisterClassW(F2KKeyinputLetters): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputLetters, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- 'A'
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0061 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC01E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Shift+A
+SendInput(4 events): ret=4 err=-
+the batch arrived: yes
+received: 5 message(s)
+  WM_KEYDOWN wParam=0x0010 lParam=0x002A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_KEYDOWN wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_CHAR wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC01E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 1, transition 1) down: shift yes ctrl no alt no key no
+  WM_KEYUP wParam=0x0010 lParam=0xC02A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- '2'
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0032 lParam=0x00030001 (repeat 1, scan 0x03, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0032 lParam=0x00030001 (repeat 1, scan 0x03, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0032 lParam=0xC0030001 (repeat 1, scan 0x03, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe symbols
+== symbols
+RegisterClassW(F2KKeyinputSymbols): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputSymbols, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- Shift+'='
+SendInput(4 events): ret=4 err=-
+the batch arrived: yes
+received: 5 message(s)
+  WM_KEYDOWN wParam=0x0010 lParam=0x002A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_KEYDOWN wParam=0x00BB lParam=0x000D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_CHAR wParam=0x002B lParam=0x000D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no
+  WM_KEYUP wParam=0x00BB lParam=0xC00D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 1, transition 1) down: shift yes ctrl no alt no key no
+  WM_KEYUP wParam=0x0010 lParam=0xC02A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- '='
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x00BB lParam=0x000D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x003D lParam=0x000D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x00BB lParam=0xC00D0001 (repeat 1, scan 0x0D, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- '.'
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x00BE lParam=0x00340001 (repeat 1, scan 0x34, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002E lParam=0x00340001 (repeat 1, scan 0x34, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x00BE lParam=0xC0340001 (repeat 1, scan 0x34, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- keypad +
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x006B lParam=0x004E0001 (repeat 1, scan 0x4E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002B lParam=0x004E0001 (repeat 1, scan 0x4E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x006B lParam=0xC04E0001 (repeat 1, scan 0x4E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- keypad -
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x006D lParam=0x004A0001 (repeat 1, scan 0x4A, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002D lParam=0x004A0001 (repeat 1, scan 0x4A, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x006D lParam=0xC04A0001 (repeat 1, scan 0x4A, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- keypad *
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x006A lParam=0x00370001 (repeat 1, scan 0x37, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002A lParam=0x00370001 (repeat 1, scan 0x37, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x006A lParam=0xC0370001 (repeat 1, scan 0x37, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- keypad / (extended)
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x006F lParam=0x01350001 (repeat 1, scan 0x35, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002F lParam=0x01350001 (repeat 1, scan 0x35, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x006F lParam=0xC1350001 (repeat 1, scan 0x35, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- keypad decimal point
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x006E lParam=0x00530001 (repeat 1, scan 0x53, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x002E lParam=0x00530001 (repeat 1, scan 0x53, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x006E lParam=0xC0530001 (repeat 1, scan 0x53, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe control
+== control
+RegisterClassW(F2KKeyinputControl): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputControl, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- Enter
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x000D lParam=0xC01C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Escape
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x001B lParam=0x00010001 (repeat 1, scan 0x01, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x001B lParam=0x00010001 (repeat 1, scan 0x01, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x001B lParam=0xC0010001 (repeat 1, scan 0x01, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Backspace
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0008 lParam=0x000E0001 (repeat 1, scan 0x0E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0008 lParam=0x000E0001 (repeat 1, scan 0x0E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0008 lParam=0xC00E0001 (repeat 1, scan 0x0E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Tab
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0009 lParam=0x000F0001 (repeat 1, scan 0x0F, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0009 lParam=0x000F0001 (repeat 1, scan 0x0F, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0009 lParam=0xC00F0001 (repeat 1, scan 0x0F, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Ctrl+C
+SendInput(4 events): ret=4 err=-
+the batch arrived: yes
+received: 5 message(s)
+  WM_KEYDOWN wParam=0x0011 lParam=0x001D0001 (repeat 1, scan 0x1D, extended 0, context 0, previous 0, transition 0) down: shift no ctrl yes alt no key yes
+  WM_KEYDOWN wParam=0x0043 lParam=0x002E0001 (repeat 1, scan 0x2E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl yes alt no key yes
+  WM_CHAR wParam=0x0003 lParam=0x002E0001 (repeat 1, scan 0x2E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl yes alt no
+  WM_KEYUP wParam=0x0043 lParam=0xC02E0001 (repeat 1, scan 0x2E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl yes alt no key no
+  WM_KEYUP wParam=0x0011 lParam=0xC01D0001 (repeat 1, scan 0x1D, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe alt
+== alt
+RegisterClassW(F2KKeyinputAlt): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputAlt, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- Alt+F
+SendInput(4 events): ret=4 err=-
+the batch arrived: yes
+received: 5 message(s)
+  WM_SYSKEYDOWN wParam=0x0012 lParam=0x20380001 (repeat 1, scan 0x38, extended 0, context 1, previous 0, transition 0) down: shift no ctrl no alt yes key yes
+  WM_SYSKEYDOWN wParam=0x0046 lParam=0x20210001 (repeat 1, scan 0x21, extended 0, context 1, previous 0, transition 0) down: shift no ctrl no alt yes key yes
+  WM_SYSCHAR wParam=0x0066 lParam=0x20210001 (repeat 1, scan 0x21, extended 0, context 1, previous 0, transition 0) down: shift no ctrl no alt yes
+  WM_SYSKEYUP wParam=0x0046 lParam=0xE0210001 (repeat 1, scan 0x21, extended 0, context 1, previous 1, transition 1) down: shift no ctrl no alt yes key no
+  WM_KEYUP wParam=0x0012 lParam=0xC0380001 (repeat 1, scan 0x38, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Alt alone
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_SYSKEYDOWN wParam=0x0012 lParam=0x20380001 (repeat 1, scan 0x38, extended 0, context 1, previous 0, transition 0) down: shift no ctrl no alt yes key yes
+  WM_SYSKEYUP wParam=0x0012 lParam=0xC0380001 (repeat 1, scan 0x38, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe extended
+== extended
+RegisterClassW(F2KKeyinputExtended): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputExtended, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- Left
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_KEYDOWN wParam=0x0025 lParam=0x014B0001 (repeat 1, scan 0x4B, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_KEYUP wParam=0x0025 lParam=0xC14B0001 (repeat 1, scan 0x4B, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Right
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_KEYDOWN wParam=0x0027 lParam=0x014D0001 (repeat 1, scan 0x4D, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_KEYUP wParam=0x0027 lParam=0xC14D0001 (repeat 1, scan 0x4D, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Up
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_KEYDOWN wParam=0x0026 lParam=0x01480001 (repeat 1, scan 0x48, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_KEYUP wParam=0x0026 lParam=0xC1480001 (repeat 1, scan 0x48, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Down
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_KEYDOWN wParam=0x0028 lParam=0x01500001 (repeat 1, scan 0x50, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_KEYUP wParam=0x0028 lParam=0xC1500001 (repeat 1, scan 0x50, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Delete
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_KEYDOWN wParam=0x002E lParam=0x01530001 (repeat 1, scan 0x53, extended 1, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_KEYUP wParam=0x002E lParam=0xC1530001 (repeat 1, scan 0x53, extended 1, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe scancode
+== scancode
+RegisterClassW(F2KKeyinputScancode): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputScancode, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- scan code 0x1E alone (KEYEVENTF_SCANCODE)
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0061 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC01E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- 'A' with wScan 0
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0041 lParam=0x00000001 (repeat 1, scan 0x00, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0061 lParam=0x00000001 (repeat 1, scan 0x00, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC0000001 (repeat 1, scan 0x00, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe repeat
+== repeat
+RegisterClassW(F2KKeyinputRepeat): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputRepeat, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- 'B' down twice, then up
+SendInput(3 events): ret=3 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0042 lParam=0x00300002 (repeat 2, scan 0x30, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0062 lParam=0x00300002 (repeat 2, scan 0x30, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0042 lParam=0xC0300001 (repeat 1, scan 0x30, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe ansi
+== ansi
+RegisterClassA(F2KKeyinputAnsi): atom nonzero yes err=2
+CreateWindowExA(F2KKeyinputAnsi, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- 'A'
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0061 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC01E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Shift+A
+SendInput(4 events): ret=4 err=-
+the batch arrived: yes
+received: 5 message(s)
+  WM_KEYDOWN wParam=0x0010 lParam=0x002A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_KEYDOWN wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no key yes
+  WM_CHAR wParam=0x0041 lParam=0x001E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 0, transition 0) down: shift yes ctrl no alt no
+  WM_KEYUP wParam=0x0041 lParam=0xC01E0001 (repeat 1, scan 0x1E, extended 0, context 0, previous 1, transition 1) down: shift yes ctrl no alt no key no
+  WM_KEYUP wParam=0x0010 lParam=0xC02A0001 (repeat 1, scan 0x2A, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+-- Enter
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x000D lParam=0xC01C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0

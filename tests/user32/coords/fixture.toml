@@ -1,0 +1,40 @@
+# coords: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# windows are hidden but for childpt's parent, at fixed screen positions, so their coordinates print
+# as they are; a framed or captioned window's client area prints only less its metrics. No handle
+# or address prints: a window prints by its label, a character pointer as its offset.
+description = "coords - window coordinates: GetClientRect and GetWindowRect (a borderless popup and its children, a bordered and a captioned window less their metrics), MapWindowPoints between children, parents, the screen and a window itself (the points and the return's halves), ScreenToClient and ClientToScreen, ChildWindowFromPoint and ChildWindowFromPointEx (CWP_ALL, CWP_SKIPINVISIBLE, CWP_SKIPDISABLED) over visible, hidden and disabled children and a grandchild, IsChild, OffsetRect, and CharNextA/W and CharPrevA/W walks over plain text, the empty string, combining marks and a surrogate pair."
+kind = "sectioned"
+
+# Not gated: the program imports user32 exports F2K does not export yet (ChildWindowFromPoint,
+# ChildWindowFromPointEx, MapWindowPoints, ScreenToClient, ClientToScreen, IsChild, OffsetRect,
+# CharNextA/W, CharPrevA/W), so it does not load. Every section is on the work list.
+[pending]
+client = "GetClientRect and ClientToScreen not yet implemented"
+map = "MapWindowPoints not yet implemented"
+screen = "ScreenToClient and ClientToScreen not yet implemented"
+childpt = "ChildWindowFromPoint and ChildWindowFromPointEx not yet implemented"
+ischild = "IsChild not yet implemented"
+rect = "OffsetRect not yet implemented, and the program's other imports keep it from loading"
+charnext = "CharNextA/W and CharPrevA/W not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the windows'
+# creation and destruction, ShowWindow).
+client = [
+    "user32.GetClientRect",
+    "user32.GetWindowRect",
+    "user32.ClientToScreen",
+    "user32.GetSystemMetrics",
+]
+map = ["user32.MapWindowPoints"]
+screen = ["user32.ScreenToClient", "user32.ClientToScreen"]
+childpt = ["user32.ChildWindowFromPoint", "user32.ChildWindowFromPointEx"]
+ischild = ["user32.IsChild"]
+rect = ["user32.OffsetRect"]
+charnext = [
+    "user32.CharNextA",
+    "user32.CharNextW",
+    "user32.CharPrevA",
+    "user32.CharPrevW",
+]

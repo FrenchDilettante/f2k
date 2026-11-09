@@ -1,0 +1,43 @@
+# focus: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# windows show on the screen while a section runs: activation needs them visible. Each block prints
+# whether its first window took the foreground, which the messages' order may depend on. No handle,
+# address or thread id prints: a window prints by its label.
+description = "focus - keyboard focus, enabling and activation: SetFocus and GetFocus over a window, its children, a hidden child, NULL and a destroyed window; EnableWindow and IsWindowEnabled (a focused child disabled, a disabled child given the focus, the top-level window disabled); SetActiveWindow and GetActiveWindow between two top-level windows, onto a child and onto a disabled window; DestroyWindow of the focused child and of the active window; the WM_SETFOCUS, WM_KILLFOCUS, WM_ENABLE, WM_ACTIVATE, WM_NCACTIVATE, WM_ACTIVATEAPP and WM_CANCELMODE each call brings, in order, and the foreground window."
+kind = "sectioned"
+
+# Not gated: F2K has no keyboard focus, enabling or activation yet, and the program imports user32
+# exports F2K does not export (SetFocus, GetFocus, EnableWindow, IsWindowEnabled, SetActiveWindow,
+# GetActiveWindow, SetForegroundWindow, GetForegroundWindow), so it does not load. Every section is
+# on the work list.
+[pending]
+focus = "SetFocus and GetFocus not yet implemented: no keyboard focus, no WM_SETFOCUS or WM_KILLFOCUS"
+enable = "EnableWindow and IsWindowEnabled not yet implemented: no WM_ENABLE, no focus to move off a disabled window"
+active = "SetActiveWindow, GetActiveWindow and the foreground window not yet implemented: no WM_ACTIVATE, WM_NCACTIVATE or WM_ACTIVATEAPP"
+destroy = "focus and activation not yet implemented: nothing moves them when DestroyWindow takes their window"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the windows'
+# creation, ShowWindow, the setup's SetForegroundWindow and the message pump).
+focus = ["user32.SetFocus", "user32.GetFocus"]
+enable = [
+    "user32.EnableWindow",
+    "user32.IsWindowEnabled",
+    "user32.SetFocus",
+    "user32.GetFocus",
+    "user32.GetActiveWindow",
+]
+active = [
+    "user32.SetActiveWindow",
+    "user32.GetActiveWindow",
+    "user32.GetFocus",
+    "user32.GetForegroundWindow",
+    "user32.EnableWindow",
+]
+destroy = [
+    "user32.DestroyWindow",
+    "user32.SetFocus",
+    "user32.GetFocus",
+    "user32.GetActiveWindow",
+    "user32.GetForegroundWindow",
+]

@@ -1,0 +1,138 @@
+# F2K capture of coords (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:24.40
+coords F2KT-SOURCE-CRC=0x52783030
+>>> coords.exe client
+== client
+setup: the class, the parent, its children and the grandchild created: yes
+GetClientRect(parent): ret=1 err=- rect=(0,0)-(300,200)
+GetClientRect(child1): ret=1 err=- rect=(0,0)-(50,30)
+GetClientRect(grandchild): ret=1 err=- rect=(0,0)-(20,10)
+GetClientRect(hidden): ret=1 err=- rect=(0,0)-(40,40)
+GetWindowRect(parent): ret=1 err=- rect=(200,150)-(500,350)
+GetWindowRect(child1): ret=1 err=- rect=(210,170)-(260,200)
+GetWindowRect(grandchild): ret=1 err=- rect=(305,175)-(325,185)
+GetWindowRect(hidden): ret=1 err=- rect=(210,250)-(250,290)
+GetWindowRect(disabled): ret=1 err=- rect=(300,250)-(340,290)
+GetClientRect(NULL): ret=0 err=1400 rect=(-1,-1)-(-1,-1)
+GetWindowRect(a destroyed window): ret=0 err=1400 rect=(-1,-1)-(-1,-1)
+CreateWindowExA(WS_POPUP | WS_BORDER, hidden, 240x160): non-NULL yes
+  GetWindowRect ret=1 err=-, GetClientRect ret=1 err=-, ClientToScreen ret=1 err=-
+  GetClientRect's origin: (0,0)
+  the client origin's offset less the frame and caption: (0,0)
+  the client size's shortfall less the frame and caption: (0,0)
+CreateWindowExA(WS_OVERLAPPED | WS_CAPTION, hidden, 240x160): non-NULL yes
+  GetWindowRect ret=1 err=-, GetClientRect ret=1 err=-, ClientToScreen ret=1 err=-
+  GetClientRect's origin: (0,0)
+  the client origin's offset less the frame and caption: (0,0)
+  the client size's shortfall less the frame and caption: (0,0)
+coords: done
+<<< exit code=0
+>>> coords.exe map
+== map
+setup: the class, the parent, its children and the grandchild created: yes
+MapWindowPoints(child1, parent, (0,0)): ret=(10,20) err=- point=(10,20)
+MapWindowPoints(parent, child1, (15,25)): ret=(-10,-20) err=- point=(5,5)
+MapWindowPoints(grandchild, parent, (1,1)): ret=(105,25) err=- point=(106,26)
+MapWindowPoints(hidden, parent, (0,0)): ret=(10,100) err=- point=(10,100)
+MapWindowPoints(parent, NULL, (0,0)): ret=(200,150) err=- point=(200,150)
+MapWindowPoints(child1, NULL, (3,4)): ret=(210,170) err=- point=(213,174)
+MapWindowPoints(NULL, child1, (215,175)): ret=(-210,-170) err=- point=(5,5)
+MapWindowPoints(NULL, grandchild, (0,0)): ret=(-305,-175) err=- point=(-305,-175)
+MapWindowPoints(child1, child1, (3,4)): ret=(0,0) err=- point=(3,4)
+MapWindowPoints(NULL, NULL, (3,4)): ret=(0,0) err=- point=(3,4)
+MapWindowPoints(a destroyed window, parent, (0,0)): ret=(0,0) err=1400 point=(0,0)
+MapWindowPoints(parent, a destroyed window, (0,0)): ret=(0,0) err=1400 point=(0,0)
+MapWindowPoints(child1, child2, RECT (0,0)-(50,30) as 2 points): ret=(-90,0) err=- rect=(-90,0)-(-40,30)
+coords: done
+<<< exit code=0
+>>> coords.exe screen
+== screen
+setup: the class, the parent, its children and the grandchild created: yes
+ScreenToClient(child1, (215,175)): ret=1 err=- point=(5,5)
+ScreenToClient(parent, (0,0)): ret=1 err=- point=(-200,-150)
+ScreenToClient(grandchild, (305,175)): ret=1 err=- point=(0,0)
+ScreenToClient(hidden, (210,250)): ret=1 err=- point=(0,0)
+ScreenToClient(NULL, (10,10)): ret=0 err=1400 point=(10,10)
+ScreenToClient(a destroyed window, (10,10)): ret=0 err=1400 point=(10,10)
+ClientToScreen(child2, (1,2)): ret=1 err=- point=(301,172)
+ClientToScreen(grandchild, (0,0)): ret=1 err=- point=(305,175)
+ClientToScreen(parent, (-10,-20)): ret=1 err=- point=(190,130)
+ClientToScreen(disabled, (0,0)): ret=1 err=- point=(300,250)
+ClientToScreen(NULL, (10,10)): ret=0 err=1400 point=(10,10)
+ClientToScreen(a destroyed window, (10,10)): ret=0 err=1400 point=(10,10)
+coords: done
+<<< exit code=0
+>>> coords.exe childpt
+== childpt
+setup: the class, the parent, its children and the grandchild created: yes
+the parent hidden:
+parent, in child1 (15,25): ChildWindowFromPoint child1 err=-; Ex CWP_ALL child1 err=-, CWP_SKIPINVISIBLE child1 err=-, CWP_SKIPDISABLED child1 err=-, both child1 err=-
+the parent shown (SW_SHOWNA): visible yes
+parent, in child1 (15,25): ChildWindowFromPoint child1 err=-; Ex CWP_ALL child1 err=-, CWP_SKIPINVISIBLE child1 err=-, CWP_SKIPDISABLED child1 err=-, both child1 err=-
+parent, in child2 (105,40): ChildWindowFromPoint child2 err=-; Ex CWP_ALL child2 err=-, CWP_SKIPINVISIBLE child2 err=-, CWP_SKIPDISABLED child2 err=-, both child2 err=-
+parent, in the grandchild (107,27): ChildWindowFromPoint child2 err=-; Ex CWP_ALL child2 err=-, CWP_SKIPINVISIBLE child2 err=-, CWP_SKIPDISABLED child2 err=-, both child2 err=-
+parent, in the hidden child (15,105): ChildWindowFromPoint hidden err=-; Ex CWP_ALL hidden err=-, CWP_SKIPINVISIBLE parent err=-, CWP_SKIPDISABLED hidden err=-, both parent err=-
+parent, in the disabled child (105,105): ChildWindowFromPoint disabled err=-; Ex CWP_ALL disabled err=-, CWP_SKIPINVISIBLE disabled err=-, CWP_SKIPDISABLED parent err=-, both parent err=-
+parent, in the parent alone (250,180): ChildWindowFromPoint parent err=-; Ex CWP_ALL parent err=-, CWP_SKIPINVISIBLE parent err=-, CWP_SKIPDISABLED parent err=-, both parent err=-
+parent, child1's top-left corner (10,20): ChildWindowFromPoint child1 err=-; Ex CWP_ALL child1 err=-, CWP_SKIPINVISIBLE child1 err=-, CWP_SKIPDISABLED child1 err=-, both child1 err=-
+parent, child1's bottom-right corner (59,49): ChildWindowFromPoint child1 err=-; Ex CWP_ALL child1 err=-, CWP_SKIPINVISIBLE child1 err=-, CWP_SKIPDISABLED child1 err=-, both child1 err=-
+parent, just past child1's right edge (60,25): ChildWindowFromPoint parent err=-; Ex CWP_ALL parent err=-, CWP_SKIPINVISIBLE parent err=-, CWP_SKIPDISABLED parent err=-, both parent err=-
+parent, the parent's bottom-right corner (299,199): ChildWindowFromPoint parent err=-; Ex CWP_ALL parent err=-, CWP_SKIPINVISIBLE parent err=-, CWP_SKIPDISABLED parent err=-, both parent err=-
+parent, outside, left (-5,10): ChildWindowFromPoint NULL err=-; Ex CWP_ALL NULL err=-, CWP_SKIPINVISIBLE NULL err=-, CWP_SKIPDISABLED NULL err=-, both NULL err=-
+parent, outside, right (300,10): ChildWindowFromPoint NULL err=-; Ex CWP_ALL NULL err=-, CWP_SKIPINVISIBLE NULL err=-, CWP_SKIPDISABLED NULL err=-, both NULL err=-
+parent, outside, below (10,200): ChildWindowFromPoint NULL err=-; Ex CWP_ALL NULL err=-, CWP_SKIPINVISIBLE NULL err=-, CWP_SKIPDISABLED NULL err=-, both NULL err=-
+child2, in the grandchild (7,7): ChildWindowFromPoint grandchild err=-; Ex CWP_ALL grandchild err=-, CWP_SKIPINVISIBLE grandchild err=-, CWP_SKIPDISABLED grandchild err=-, both grandchild err=-
+NULL, in child1 (15,25): ChildWindowFromPoint NULL err=1400; Ex CWP_ALL NULL err=1400, CWP_SKIPINVISIBLE NULL err=1400, CWP_SKIPDISABLED NULL err=1400, both NULL err=1400
+coords: done
+<<< exit code=0
+>>> coords.exe ischild
+== ischild
+setup: the class, the parent, its children and the grandchild created: yes
+IsChild(parent, child1): ret=1 err=-
+IsChild(parent, hidden): ret=1 err=-
+IsChild(parent, disabled): ret=1 err=-
+IsChild(parent, grandchild): ret=1 err=-
+IsChild(child2, grandchild): ret=1 err=-
+IsChild(child1, grandchild): ret=0 err=-
+IsChild(child1, child2): ret=0 err=-
+IsChild(child1, parent): ret=0 err=-
+IsChild(grandchild, parent): ret=0 err=-
+IsChild(parent, parent): ret=0 err=-
+IsChild(NULL, child1): ret=0 err=1400
+IsChild(parent, NULL): ret=0 err=1400
+IsChild(parent, a destroyed window): ret=0 err=1400
+coords: done
+<<< exit code=0
+>>> coords.exe rect
+== rect
+OffsetRect((1,2)-(3,4), 5, -7): ret=1 err=- rect=(6,-5)-(8,-3)
+OffsetRect((10,20)-(30,40), -10, 10): ret=1 err=- rect=(0,30)-(20,50)
+OffsetRect((10,20)-(30,40), 0, 0): ret=1 err=- rect=(10,20)-(30,40)
+OffsetRect((0,0)-(0,0), -3, -4): ret=1 err=- rect=(-3,-4)-(-3,-4)
+OffsetRect((5,5)-(1,1), 2, 2): ret=1 err=- rect=(7,7)-(3,3)
+OffsetRect((-100,-100)-(100,100), 1000, -1000): ret=1 err=- rect=(900,-1100)-(1100,-900)
+coords: done
+<<< exit code=0
+>>> coords.exe charnext
+== charnext
+CharNextA over "abc": 0 -> 1 -> 2 -> 3 -> 3 err=-
+CharPrevA over "abc": 3 -> 2 -> 1 -> 0 -> 0 err=-
+CharNextA over "": 0 -> 0 err=-
+CharPrevA over "": 0 -> 0 err=-
+CharNextW over "abc": 0 -> 1 -> 2 -> 3 -> 3 err=-
+CharPrevW over "abc": 3 -> 2 -> 1 -> 0 -> 0 err=-
+CharNextW over "": 0 -> 0 err=-
+CharPrevW over "": 0 -> 0 err=-
+CharNextW over "e" U+0301 "x": 0 -> 2 -> 3 -> 3 err=-
+CharPrevW over "e" U+0301 "x": 3 -> 2 -> 0 -> 0 err=-
+CharNextW over U+0301 "x": 0 -> 1 -> 2 -> 2 err=-
+CharPrevW over U+0301 "x": 2 -> 1 -> 1 err=-
+CharNextW over "a" U+0300 U+0301 "b": 0 -> 3 -> 4 -> 4 err=-
+CharPrevW over "a" U+0300 U+0301 "b": 4 -> 3 -> 0 -> 0 err=-
+CharNextW over "a" U+D800 U+DC00 "x": 0 -> 1 -> 2 -> 3 -> 4 -> 4 err=-
+CharPrevW over "a" U+D800 U+DC00 "x": 4 -> 3 -> 2 -> 1 -> 0 -> 0 err=-
+coords: done
+<<< exit code=0

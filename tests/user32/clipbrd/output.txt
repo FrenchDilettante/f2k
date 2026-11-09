@@ -1,0 +1,236 @@
+# F2K capture of clipbrd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:05:33.49
+clipbrd F2KT-SOURCE-CRC=0x58D89E96
+>>> clipbrd.exe open
+== open
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+OpenClipboard(first): ret=1 err=-
+GetOpenClipboardWindow: first
+OpenClipboard(first), already open: ret=1 err=-
+CloseClipboard: ret=1 err=-
+GetOpenClipboardWindow: NULL
+CloseClipboard: ret=0 err=1418
+EmptyClipboard: ret=0 err=1418
+SetClipboardData(CF_UNICODETEXT, L"closed"): non-NULL no err=1418 the block given no
+GetClipboardData(CF_UNICODETEXT), closed: non-NULL no err=1418
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=0 err=-
+OpenClipboard(NULL): ret=1 err=-
+GetOpenClipboardWindow: NULL
+EmptyClipboard: ret=1 err=-
+GetClipboardOwner: NULL
+SetClipboardData(CF_UNICODETEXT, L"no owner"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+GetClipboardOwner: first
+CloseClipboard: ret=1 err=-
+GetClipboardOwner, closed: first
+clipbrd: done
+<<< exit code=0
+>>> clipbrd.exe unicode
+== unicode
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+ANSI code page 1252: yes, OEM code page 437: yes
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_UNICODETEXT, L"Hello, clipboard: caf<U+00E9> <U+4E00>!\r\nline two"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_TEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_OEMTEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_LOCALE): ret=1 err=-
+IsClipboardFormatAvailable(CF_BITMAP): ret=0 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [Hello, clipboard: café <U+4E00>!
+line two] NUL within the block yes, size the text and its NUL exactly yes
+  the handle SetClipboardData gave back: yes
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [Hello, clipboard: caf\xE9 ?!\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_OEMTEXT): non-NULL yes err=-
+  text [Hello, clipboard: caf\x82 ?!\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_LOCALE): non-NULL yes err=-
+  size 4: yes, the keyboard layout's language: yes
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [Hello, clipboard: caf\xE9 ?!\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+  the same handle as the first CF_TEXT: no
+GetClipboardData(CF_BITMAP): non-NULL no err=-
+CloseClipboard: ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [Hello, clipboard: caf\xE9 ?!\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+  the same handle as the first open's CF_TEXT: no
+CloseClipboard: ret=1 err=-
+clipbrd: done
+<<< exit code=0
+>>> clipbrd.exe text
+== text
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+ANSI code page 1252: yes, OEM code page 437: yes
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_TEXT, "Caf\xE9 text\r\nline two"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+IsClipboardFormatAvailable(CF_TEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_OEMTEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_LOCALE): ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [Caf\xE9 text\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+  the handle SetClipboardData gave back: yes
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [Café text
+line two] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_OEMTEXT): non-NULL yes err=-
+  text [Caf\x82 text\x0D\x0Aline two] NUL within the block yes, size the text and its NUL exactly yes
+CloseClipboard: ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_OEMTEXT, "Caf\x82 oem"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+IsClipboardFormatAvailable(CF_OEMTEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_TEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_LOCALE): ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_OEMTEXT): non-NULL yes err=-
+  text [Caf\x82 oem] NUL within the block yes, size the text and its NUL exactly yes
+  the handle SetClipboardData gave back: yes
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [Caf\xE9 oem] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [Café oem] NUL within the block yes, size the text and its NUL exactly yes
+CloseClipboard: ret=1 err=-
+clipbrd: done
+<<< exit code=0
+>>> clipbrd.exe formats
+== formats
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+CountClipboardFormats, open, emptied: ret=0 err=-
+EnumClipboardFormats, open, emptied: [] ends err=0
+SetClipboardData(CF_UNICODETEXT, L"wide"): non-NULL yes err=0 the block given yes
+CountClipboardFormats, open, after the put: ret=1 err=-
+EnumClipboardFormats, open, after the put: [CF_UNICODETEXT] ends err=0
+CloseClipboard: ret=1 err=-
+CountClipboardFormats, closed: ret=4 err=-
+EnumClipboardFormats, closed: [] ends err=1418
+OpenClipboard(first): ret=1 err=-
+CountClipboardFormats, the next open: ret=4 err=-
+EnumClipboardFormats, the next open: [CF_UNICODETEXT CF_LOCALE CF_TEXT CF_OEMTEXT] ends err=0
+CloseClipboard: ret=1 err=-
+RegisterClipboardFormatW(L"F2K Clipbrd Format"): in 0xC000-0xFFFF yes err=-
+RegisterClipboardFormatA("f2k clipbrd format"): the same format yes err=-
+GetClipboardFormatNameW(registered, 64): ret=18 err=- [F2K Clipbrd Format]
+GetClipboardFormatNameA(registered, 64): ret=18 err=- [F2K Clipbrd Format]
+GetClipboardFormatNameA(registered, 4): ret=3 err=- NUL at 3 yes
+GetClipboardFormatNameW(CF_TEXT, 64): ret=0 err=87
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_TEXT, "ansi"): non-NULL yes err=0 the block given yes
+SetClipboardData(CF_UNICODETEXT, L"wide"): non-NULL yes err=0 the block given yes
+SetClipboardData(registered, 4 bytes): non-NULL yes err=0 the block given yes
+CountClipboardFormats, open, three put: ret=3 err=-
+EnumClipboardFormats, open, three put: [CF_TEXT CF_UNICODETEXT registered] ends err=0
+CloseClipboard: ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+CountClipboardFormats, the next open: ret=5 err=-
+EnumClipboardFormats, the next open: [CF_TEXT CF_UNICODETEXT registered CF_LOCALE CF_OEMTEXT] ends err=0
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [ansi] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [wide] NUL within the block yes, size the text and its NUL exactly yes
+GetClipboardData(CF_OEMTEXT): non-NULL yes err=-
+  text [wide] NUL within the block yes, size the text and its NUL exactly yes
+CloseClipboard: ret=1 err=-
+clipbrd: done
+<<< exit code=0
+>>> clipbrd.exe owner
+== owner
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_UNICODETEXT, L"first's"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+GetClipboardOwner: first
+OpenClipboard(second): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+messages received: 1
+  WM_DESTROYCLIPBOARD to first
+GetClipboardOwner: second
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=0 err=-
+SetClipboardData(CF_UNICODETEXT, L"second's"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+OpenClipboard(second): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+messages received: 1
+  WM_DESTROYCLIPBOARD to second
+SetClipboardData(CF_UNICODETEXT, L"second's again"): non-NULL yes err=0 the block given yes
+CloseClipboard: ret=1 err=-
+DestroyWindow(second), the owner: ret=1 err=-
+messages received: 1
+  WM_RENDERALLFORMATS to second
+GetClipboardOwner: NULL
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [second's again] NUL within the block yes, size the text and its NUL exactly yes
+CloseClipboard: ret=1 err=-
+clipbrd: done
+<<< exit code=0
+>>> clipbrd.exe delayed
+== delayed
+RegisterClassA(F2KClipbrd): atom nonzero yes err=2
+CreateWindowExA(F2KClipbrd, hidden, 320x200): non-NULL yes err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_UNICODETEXT, NULL): non-NULL no err=-
+CloseClipboard: ret=1 err=-
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_TEXT): ret=1 err=-
+IsClipboardFormatAvailable(CF_OEMTEXT): ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=0
+  text [rendered text] NUL within the block yes, size the text and its NUL exactly yes
+messages received: 1
+  WM_RENDERFORMAT to first, wParam=CF_UNICODETEXT
+  the procedure's SetClipboardData: non-NULL yes err=0
+GetClipboardData(CF_TEXT): non-NULL yes err=-
+  text [rendered text] NUL within the block yes, size the text and its NUL exactly yes
+messages received: 0
+CloseClipboard: ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_UNICODETEXT, NULL): non-NULL no err=-
+GetClipboardData(CF_TEXT): non-NULL no err=-
+messages received: 0
+CloseClipboard: ret=1 err=-
+OpenClipboard(first): ret=1 err=-
+EmptyClipboard: ret=1 err=-
+SetClipboardData(CF_UNICODETEXT, NULL): non-NULL no err=-
+CloseClipboard: ret=1 err=-
+DestroyWindow(first), the owner, CF_UNICODETEXT delayed: ret=1 err=0
+messages received: 1
+  WM_RENDERALLFORMATS to first
+  the procedure's OpenClipboard: ret=1
+  the procedure's SetClipboardData: non-NULL yes err=0
+GetClipboardOwner: NULL
+IsClipboardFormatAvailable(CF_UNICODETEXT): ret=1 err=-
+OpenClipboard(NULL): ret=1 err=-
+GetClipboardData(CF_UNICODETEXT): non-NULL yes err=-
+  text [rendered text] NUL within the block yes, size the text and its NUL exactly yes
+CloseClipboard: ret=1 err=-
+clipbrd: done
+<<< exit code=0

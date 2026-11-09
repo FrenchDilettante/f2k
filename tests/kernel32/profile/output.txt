@@ -1,0 +1,551 @@
+# F2K capture of profile (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:05:33.53
+profile F2KT-SOURCE-CRC=0x4B5A5091
+>>> profile.exe winini
+== winini
+GetProfileIntW(L"F2KProfile", L"Mode", 7), no such key: ret=7 err=-
+GetProfileIntA("F2KProfile", "Mode", 7), no such key: ret=7 err=-
+GetProfileStringW(L"F2KProfile", L"Mode", L"dflt", 64), no such key: ret=4 err=- [dflt|#]
+GetProfileStringA("F2KProfile", "Mode", "dflt", 64), no such key: ret=4 err=- [dflt|#]
+GetProfileStringW(NULL, NULL, L"", 16384): ret>0 yes err=0 F2KProfile among them: no
+WriteProfileStringW(L"F2KProfile", L"Mode", L"1"): ret=1 err=-
+GetProfileIntW(L"F2KProfile", L"Mode", 7): ret=1 err=0
+GetProfileIntA("F2KProfile", "mode", 7): ret=1 err=0
+GetProfileStringW(NULL, NULL, L"", 16384): ret>0 yes err=0 F2KProfile among them: yes
+WriteProfileStringW(L"F2KProfile", L"Value", L"  42  "): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=42 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=2 err=0 [42|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L"-5"): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=-5 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=2 err=0 [-5|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L"0x10"): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=16 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=4 err=0 [0x10|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L"12abc"): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=12 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=5 err=0 [12abc|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L"abc"): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=0 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=3 err=0 [abc|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L""quoted value""): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=0 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=12 err=0 [quoted value|#]
+WriteProfileStringW(L"F2KProfile", L"Value", L""): ret=1 err=-
+  GetProfileIntW(..., L"Value", 99): ret=99 err=0
+  GetProfileStringW(..., L"Value", L"dflt", 64): ret=0 err=0 [|#]
+WriteProfileStringA("F2KProfile", "Value", "  42  "): ret=1 err=-
+  GetProfileIntA(..., "Value", 99): ret=42 err=0
+  GetProfileStringA(..., "Value", "dflt", 64): ret=2 err=0 [42|#]
+WriteProfileStringA("F2KProfile", "Value", "-5"): ret=1 err=-
+  GetProfileIntA(..., "Value", 99): ret=-5 err=0
+  GetProfileStringA(..., "Value", "dflt", 64): ret=2 err=0 [-5|#]
+WriteProfileStringA("F2KProfile", "Value", "0x10"): ret=1 err=-
+  GetProfileIntA(..., "Value", 99): ret=16 err=0
+  GetProfileStringA(..., "Value", "dflt", 64): ret=4 err=0 [0x10|#]
+WriteProfileStringA("F2KProfile", "Value", "ansi text"): ret=1 err=-
+  GetProfileIntA(..., "Value", 99): ret=0 err=0
+  GetProfileStringA(..., "Value", "dflt", 64): ret=9 err=0 [ansi text|#]
+GetProfileStringW(..., L"Value", L"dflt", 5): ret=4 err=- [ansi|#]
+GetProfileStringA(..., "Value", "dflt", 5): ret=4 err=- [ansi|#]
+GetProfileStringW(L"F2KProfile", NULL, L"", 64): ret=11 err=0 [Mode|Value||#]
+GetProfileStringA("F2KProfile", NULL, "", 64): ret=11 err=0 [Mode|Value||#]
+WriteProfileStringA("F2KProfile", "Mode", NULL): ret=1 err=-
+GetProfileIntW(L"F2KProfile", L"Mode", 7): ret=7 err=-
+GetProfileStringW(L"F2KProfile", NULL, L"", 64): ret=6 err=0 [Value||#]
+WriteProfileStringW(L"F2KProfile", NULL, NULL): ret=1 err=-
+GetProfileStringW(L"F2KProfile", L"Value", L"dflt", 64): ret=4 err=- [dflt|#]
+GetProfileStringW(NULL, NULL, L"", 16384): ret>0 yes err=0 F2KProfile among them: no
+profile: done
+<<< exit code=0
+>>> profile.exe read
+== read
+GetPrivateProfileStringA("First", "Name", "dflt", 64): ret=9 err=0 [value one|#]
+GetPrivateProfileStringA("First", "Spaced", "dflt", 64): ret=12 err=0 [padded value|#]
+GetPrivateProfileStringA("First", "Quoted", "dflt", 64): ret=16 err=0 [in double quotes|#]
+GetPrivateProfileStringA("First", "Single", "dflt", 64): ret=16 err=0 [in single quotes|#]
+GetPrivateProfileStringA("First", "Half", "dflt", 64): ret=12 err=0 ["opened only|#]
+GetPrivateProfileStringA("First", "Number", "dflt", 64): ret=2 err=0 [42|#]
+GetPrivateProfileStringA("First", "Blank", "dflt", 64): ret=0 err=0 [|#]
+GetPrivateProfileStringA("First", "Empty", "dflt", 64): ret=0 err=0 [|#]
+GetPrivateProfileStringA("First", "NoEquals", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("First", "Orphan", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("FIRST", "name", "dflt", 64): ret=9 err=0 [value one|#]
+GetPrivateProfileStringA("first", "Again", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("First", "Again", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("Second", "Key", "dflt", 64): ret=14 err=0 [second section|#]
+GetPrivateProfileStringA("Second", "Hidden", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("Padded", "Inner", "dflt", 64): ret=24 err=0 [in a padded section name|#]
+GetPrivateProfileStringA(" Padded ", "Inner", "dflt", 64): ret=24 err=0 [in a padded section name|#]
+GetPrivateProfileStringA("Missing", "Name", "dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("First", "Missing", "dflt  ", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringA("First", "Missing", NULL, 64): ret=0 err=- [|#]
+GetPrivateProfileStringA("First", "Name", "dflt", 5): ret=4 err=- [valu|]
+GetPrivateProfileStringA("First", "Name", "dflt", 1): ret=0 err=- [|]
+GetPrivateProfileStringA("First", NULL, "", 512): ret=73 err=0 [Name|Spaced|Quoted|Single|Half|Number|Negative|Hex|Lead|Blank|Empty|NAME||#]
+GetPrivateProfileStringA("First", NULL, "", 10): ret=8 err=- [Name|Spa||]
+GetPrivateProfileStringA(NULL, NULL, "", 512): ret=32 err=0 [First|Second|first|Empty|Padded||#]
+GetPrivateProfileStringA(NULL, NULL, "", 10): ret=8 err=- [First|Se||]
+GetPrivateProfileStringW(L"First", L"Name", L"dflt", 64): ret=9 err=0 [value one|#]
+GetPrivateProfileStringW(L"First", L"Spaced", L"dflt", 64): ret=12 err=0 [padded value|#]
+GetPrivateProfileStringW(L"First", L"Quoted", L"dflt", 64): ret=16 err=0 [in double quotes|#]
+GetPrivateProfileStringW(L"First", L"Single", L"dflt", 64): ret=16 err=0 [in single quotes|#]
+GetPrivateProfileStringW(L"First", L"Empty", L"dflt", 64): ret=0 err=0 [|#]
+GetPrivateProfileStringW(L"FIRST", L"name", L"dflt", 64): ret=9 err=0 [value one|#]
+GetPrivateProfileStringW(L"first", L"Again", L"dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringW(L"Second", L"Hidden", L"dflt", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringW(L"First", L"Missing", L"dflt  ", 64): ret=4 err=- [dflt|#]
+GetPrivateProfileStringW(L"First", L"Missing", NULL, 64): ret=0 err=- [|#]
+GetPrivateProfileStringW(L"First", L"Name", L"dflt", 5): ret=4 err=- [valu|]
+GetPrivateProfileStringW(L"First", L"Name", L"dflt", 1): ret=0 err=- [|]
+GetPrivateProfileStringW(L"First", NULL, L"", 512): ret=73 err=0 [Name|Spaced|Quoted|Single|Half|Number|Negative|Hex|Lead|Blank|Empty|NAME||#]
+GetPrivateProfileStringW(L"First", NULL, L"", 10): ret=8 err=- [Name|Spa||]
+GetPrivateProfileStringW(NULL, NULL, L"", 512): ret=32 err=0 [First|Second|first|Empty|Padded||#]
+GetPrivateProfileStringW(NULL, NULL, L"", 10): ret=8 err=- [First|Se||]
+GetPrivateProfileStringA("First", "Name", "dflt", 0): ret=0 err=- first byte untouched yes
+GetPrivateProfileStringW(L"First", L"Name", L"dflt", 0): ret=0 err=- first unit untouched yes
+GetPrivateProfileStringA("First", "Name", "dflt", 64), no such file: ret=4 err=- [dflt|#]
+GetPrivateProfileStringW(L"First", L"Name", L"dflt", 64), no such file: ret=4 err=- [dflt|#]
+profile: done
+<<< exit code=0
+>>> profile.exe int
+== int
+GetPrivateProfileIntA("First", "Number", 99): ret=42 err=0
+GetPrivateProfileIntA("First", "Negative", 99): ret=-7 err=0
+GetPrivateProfileIntA("First", "Hex", 99): ret=31 err=0
+GetPrivateProfileIntA("First", "Lead", 99): ret=12 err=0
+GetPrivateProfileIntA("First", "Name", 99): ret=0 err=0
+GetPrivateProfileIntA("First", "Spaced", 99): ret=0 err=0
+GetPrivateProfileIntA("First", "Quoted", 99): ret=0 err=0
+GetPrivateProfileIntA("First", "Blank", 99): ret=99 err=0
+GetPrivateProfileIntA("First", "Empty", 99): ret=99 err=0
+GetPrivateProfileIntA("First", "NoEquals", 99): ret=99 err=-
+GetPrivateProfileIntA("First", "Missing", 99): ret=99 err=-
+GetPrivateProfileIntA("First", "Missing", -3): ret=-3 err=-
+GetPrivateProfileIntW(L"First", L"Number", 99): ret=42 err=0
+GetPrivateProfileIntW(L"First", L"Negative", 99): ret=-7 err=0
+GetPrivateProfileIntW(L"First", L"Hex", 99): ret=31 err=0
+GetPrivateProfileIntW(L"First", L"Lead", 99): ret=12 err=0
+GetPrivateProfileIntW(L"First", L"Name", 99): ret=0 err=0
+GetPrivateProfileIntW(L"First", L"Blank", 99): ret=99 err=0
+GetPrivateProfileIntW(L"First", L"Empty", 99): ret=99 err=0
+GetPrivateProfileIntW(L"First", L"Missing", 99): ret=99 err=-
+GetPrivateProfileIntA("First", "Number", 99), no such file: ret=99 err=-
+GetPrivateProfileIntW(L"First", L"Number", 99), no such file: ret=99 err=-
+profile: done
+<<< exit code=0
+>>> profile.exe sections
+== sections
+GetPrivateProfileSectionA("First", 512): ret=202 err=0 [Name=value one|Spaced=padded value|Quoted="in double quotes"|Single='in single quotes'|Half="opened only|Number=42|Negative=-7|Hex=0x1F|Lead=12abc|Blank=|Empty=|NoEquals|NAME=the same key in upper case||#]
+GetPrivateProfileSectionA("first", 512): ret=202 err=0 [Name=value one|Spaced=padded value|Quoted="in double quotes"|Single='in single quotes'|Half="opened only|Number=42|Negative=-7|Hex=0x1F|Lead=12abc|Blank=|Empty=|NoEquals|NAME=the same key in upper case||#]
+GetPrivateProfileSectionA("Second", 512): ret=19 err=0 [Key=second section||#]
+GetPrivateProfileSectionA("Empty", 512): ret=0 err=0 [|#]
+GetPrivateProfileSectionA("Missing", 512): ret=0 err=2 [|#]
+GetPrivateProfileSectionA("First", 20): ret=18 err=- [Name=value one|Spa||]
+GetPrivateProfileSectionW(L"First", 512): ret=202 err=0 [Name=value one|Spaced=padded value|Quoted="in double quotes"|Single='in single quotes'|Half="opened only|Number=42|Negative=-7|Hex=0x1F|Lead=12abc|Blank=|Empty=|NoEquals|NAME=the same key in upper case||#]
+GetPrivateProfileSectionW(L"Second", 512): ret=19 err=0 [Key=second section||#]
+GetPrivateProfileSectionW(L"Empty", 512): ret=0 err=0 [|#]
+GetPrivateProfileSectionW(L"Missing", 512): ret=0 err=2 [|#]
+GetPrivateProfileSectionW(L"First", 20): ret=18 err=- [Name=value one|Spa||]
+GetPrivateProfileSectionNamesA(512): ret=32 err=0 [First|Second|first|Empty|Padded||#]
+GetPrivateProfileSectionNamesA(10): ret=8 err=- [First|Se||]
+GetPrivateProfileSectionNamesW(512): ret=32 err=0 [First|Second|first|Empty|Padded||#]
+GetPrivateProfileSectionNamesW(10): ret=8 err=- [First|Se||]
+GetPrivateProfileSectionNamesA(512), no such file: ret=0 err=- [|#]
+profile: done
+<<< exit code=0
+>>> profile.exe write
+== write
+profwork.ini, copied: 558 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Spaced  =   padded value   
+| Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number=42
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| [Second]
+| Key=second section
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini, copied ends with CR LF: yes
+WritePrivateProfileStringA("Second", "Added", "new value"): ret=1 err=-
+profwork.ini: 575 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Spaced  =   padded value   
+| Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number=42
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| [Second]
+| Key=second section
+| Added=new value
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringW(L"First", L"number", L" 43 "): ret=1 err=-
+profwork.ini: 577 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Spaced  =   padded value   
+| Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| [Second]
+| Key=second section
+| Added=new value
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringA("First", "Spaced", NULL): ret=1 err=-
+profwork.ini: 548 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| [Second]
+| Key=second section
+| Added=new value
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringA("First", "NoEquals", "now set"): ret=1 err=-
+profwork.ini: 566 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| [Second]
+| Key=second section
+| Added=new value
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringW(L"Second", NULL, NULL): ret=1 err=-
+profwork.ini: 519 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringA("Third", "Key", "in a new section"): ret=1 err=-
+profwork.ini: 550 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Key=in a new section
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringA("first", "Again", "changed"): ret=1 err=-
+profwork.ini: 565 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| Again=changed
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Key=in a new section
+profwork.ini ends with CR LF: yes
+WritePrivateProfileStringA("Missing", "Key", NULL), no such section: ret=1 err=-
+profwork.ini: 565 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| Again=changed
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Key=in a new section
+profwork.ini ends with CR LF: yes
+WritePrivateProfileSectionA("Empty", "One=1|Two = 2|Bare||"): ret=1 err=-
+profwork.ini: 587 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| Again=changed
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| One=1
+| Two = 2
+| Bare
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Key=in a new section
+profwork.ini ends with CR LF: yes
+WritePrivateProfileSectionW(L"Third", L"Only=w||"): ret=1 err=-
+profwork.ini: 573 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| Again=changed
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| One=1
+| Two = 2
+| Bare
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Only=w
+profwork.ini ends with CR LF: yes
+WritePrivateProfileSectionA("Fourth", "Made=by section||"), a new section: ret=1 err=-
+profwork.ini: 600 bytes
+| Orphan=before any section
+| ; profile.ini: the profile fixture's own file, read by its read, int and
+| ; sections sections and copied by its write section; never written itself.
+| [First]
+| Name=value one
+|   Quoted="in double quotes"
+| Single='in single quotes'
+| Half="opened only
+| Number= 43 
+| Negative=-7
+| Hex=0x1F
+| Lead=12abc
+| Blank=   
+| Empty=
+| NoEquals
+| NAME=the same key in upper case
+| NoEquals=now set
+| Again=changed
+| ;Hidden=commented out
+| [first]
+| Again=in a repeated section
+| [Empty]
+| One=1
+| Two = 2
+| Bare
+| [ Padded ]
+| Inner=in a padded section name
+| [Third]
+| Only=w
+| [Fourth]
+| Made=by section
+profwork.ini ends with CR LF: yes
+profile: done
+<<< exit code=0
+>>> profile.exe new
+== new
+WritePrivateProfileStringA("New", "Key", "value"), profnew.ini absent: ret=1 err=-
+profnew.ini: 18 bytes
+| [New]
+| Key=value
+profnew.ini ends with CR LF: yes
+WritePrivateProfileStringW(L"New", L"Accent", L"caf<U+00E9>"): ret=1 err=-
+WritePrivateProfileStringW(L"New", L"Ideograph", L"x<U+4E00>y"): ret=1 err=-
+profnew.ini: 46 bytes
+| [New]
+| Key=value
+| Accent=caf\xE9
+| Ideograph=x?y
+profnew.ini ends with CR LF: yes
+WritePrivateProfileStringW(L"New", L"Key", L"value"), profneww.ini absent: ret=1 err=-
+profneww.ini: 18 bytes
+| [New]
+| Key=value
+profneww.ini ends with CR LF: yes
+WritePrivateProfileStringW(L"New", L"Accent", L"caf<U+00E9>"): ret=1 err=-
+WritePrivateProfileStringW(L"New", L"Ideograph", L"x<U+4E00>y"): ret=1 err=-
+profneww.ini: 46 bytes
+| [New]
+| Key=value
+| Accent=caf\xE9
+| Ideograph=x?y
+profneww.ini ends with CR LF: yes
+GetPrivateProfileStringW(L"New", L"Accent"), profnew.ini: ret=4 err=0 [café|#]
+GetPrivateProfileStringW(L"New", L"Ideograph"), profnew.ini: ret=3 err=0 [x?y|#]
+GetPrivateProfileStringA("New", "Accent"), profnew.ini: ret=4 err=0 [caf\xE9|#]
+GetPrivateProfileStringW(L"New", L"Accent"), profneww.ini: ret=4 err=0 [café|#]
+GetPrivateProfileStringW(L"New", L"Ideograph"), profneww.ini: ret=3 err=0 [x?y|#]
+GetPrivateProfileStringA("New", "Accent"), profneww.ini: ret=4 err=0 [caf\xE9|#]
+WritePrivateProfileStringA("New", "Key", "value"), in a directory that does not exist: ret=0 err=3
+profile: done
+<<< exit code=0

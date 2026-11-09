@@ -1,0 +1,63 @@
+/*
+ * dialog's resources: rc compiles them into dialog.res, which links into
+ * dialog.exe. No header is included, so every style is a number:
+ *
+ *   0x80C80080  WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME (the
+ *               dialogs; FONT adds DS_SETFONT)
+ *   0x50010001  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON
+ *   0x50010000  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON
+ *   0x58010000  the same, WS_DISABLED
+ *   0x50020000  WS_CHILD | WS_VISIBLE | WS_GROUP | SS_LEFT
+ *   0x50000000  WS_CHILD | WS_VISIBLE (SS_LEFT for a Static)
+ *   0x50000007  WS_CHILD | WS_VISIBLE | BS_GROUPBOX
+ *   0x50030009  WS_CHILD | WS_VISIBLE | WS_GROUP | WS_TABSTOP |
+ *               BS_AUTORADIOBUTTON
+ *   0x50000009  WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON
+ *   0x50030003  WS_CHILD | WS_VISIBLE | WS_GROUP | WS_TABSTOP |
+ *               BS_AUTOCHECKBOX
+ *   0x50010002  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX
+ *   0x00000001  WS_EX_DLGMODALFRAME; 0x00000200 WS_EX_CLIENTEDGE
+ *
+ * The coordinates are dialog units. dialog.c's tables repeat every
+ * control's id and rectangle: change both together.
+ */
+
+LANGUAGE 9, 1
+
+/* The main dialog: a DIALOG template with the dialog font. */
+100 DIALOG 20, 20, 200, 110
+STYLE 0x80C80080
+CAPTION "F2K dialog"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "OK", 1, "Button", 0x50010001, 140, 8, 50, 14
+    CONTROL "Cancel", 2, "Button", 0x50010000, 140, 26, 50, 14
+    CONTROL "Disabled", 132, "Button", 0x58010000, 140, 44, 50, 14
+    CONTROL "Label:", 110, "Static", 0x50020000, 8, 8, 40, 8
+    CONTROL "123", 111, "Static", 0x50000000, 52, 8, 60, 8
+    CONTROL "Mode", 120, "Button", 0x50000007, 8, 22, 120, 50
+    CONTROL "Standard", 121, "Button", 0x50030009, 14, 34, 60, 10
+    CONTROL "Scientific", 122, "Button", 0x50000009, 14, 46, 60, 10
+    CONTROL "Other", 123, "Button", 0x50000009, 14, 58, 60, 10
+    CONTROL "Grouping", 130, "Button", 0x50030003, 8, 78, 80, 10
+    CONTROL "Plain", 131, "Button", 0x50010002, 8, 92, 80, 10
+END
+
+/* A DIALOGEX template: extended styles on the dialog and a control. */
+101 DIALOGEX 0, 0, 120, 60
+STYLE 0x80C80080
+EXSTYLE 0x00000001
+CAPTION "F2K dialogex"
+FONT 8, "MS Shell Dlg", 0, 0, 0x1
+BEGIN
+    CONTROL "Ex", 140, "Static", 0x50000000, 6, 6, 50, 10, 0x00000200
+    CONTROL "OK", 1, "Button", 0x50010001, 64, 40, 50, 14
+END
+
+/* No FONT: the dialog is in the system font. */
+102 DIALOG 0, 0, 100, 50
+STYLE 0x80C80080
+CAPTION "F2K system font"
+BEGIN
+    CONTROL "OK", 1, "Button", 0x50010001, 25, 30, 50, 14
+END

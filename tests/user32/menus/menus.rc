@@ -1,0 +1,37 @@
+/*
+ * menus' resources: rc compiles them into menus.res, which links into
+ * menus.exe. The language is given as numbers (no header is included):
+ * 9, 1 is LANG_ENGLISH, SUBLANG_ENGLISH_US (0x0409).
+ *
+ * Menu 200, by position:
+ *   0  &File          a popup: 0 &New (201), 1 &Open (202, grayed),
+ *                     2 a separator, 3 &Recent (a popup: 0 First, 205),
+ *                     4 E&xit (203, checked)
+ *   1  &View          a popup: 0 &Standard (211, checked),
+ *                     1 S&cientific (212), 2 &Programmer (213)
+ *   2  &Help          an item of the bar itself (220), no popup
+ */
+
+LANGUAGE 9, 1
+
+200 MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&New", 201
+        MENUITEM "&Open", 202, GRAYED
+        MENUITEM SEPARATOR
+        POPUP "&Recent"
+        BEGIN
+            MENUITEM "First", 205
+        END
+        MENUITEM "E&xit", 203, CHECKED
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Standard", 211, CHECKED
+        MENUITEM "S&cientific", 212
+        MENUITEM "&Programmer", 213
+    END
+    MENUITEM "&Help", 220
+END

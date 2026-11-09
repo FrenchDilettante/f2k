@@ -1,0 +1,65 @@
+# wintext: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# windows are hidden. No handle or address prints; the texts, lengths, buffers and what each window
+# procedure received do.
+description = "wintext - a window's text: CreateWindowExA/W's title, SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W (a text, the empty text, NULL, NULL and destroyed windows), buffers of 0, 1, 4, 8, 9 and 64 units, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH through SendMessageA/W and DefWindowProcA/W, text crossing the A and W forms with U+00E9 and U+4E00, and a procedure answering WM_GETTEXT itself or refusing WM_SETTEXT; what each procedure receives."
+kind = "sectioned"
+
+# Not gated: F2K's windows hold no text readable through user32 yet, and the program imports user32
+# exports F2K does not export (SetWindowTextA/W, GetWindowTextA/W, GetWindowTextLengthA/W,
+# PeekMessageW), so it does not load. Every section is on the work list.
+[pending]
+create = "window text not yet implemented: GetWindowTextA/W and GetWindowTextLengthA/W not exported"
+setget = "SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W not yet implemented"
+trunc = "GetWindowTextA/W not yet implemented"
+messages = "DefWindowProcA/W's WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH not yet implemented"
+cross = "window text not yet implemented, nor its conversion between the A and W forms"
+custom = "GetWindowTextA/W, GetWindowTextLengthA/W and SetWindowTextW not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the classes'
+# registration, DestroyWindow).
+create = [
+    "user32.CreateWindowExA",
+    "user32.CreateWindowExW",
+    "user32.GetWindowTextA",
+    "user32.GetWindowTextW",
+    "user32.GetWindowTextLengthA",
+    "user32.GetWindowTextLengthW",
+]
+setget = [
+    "user32.SetWindowTextA",
+    "user32.SetWindowTextW",
+    "user32.GetWindowTextA",
+    "user32.GetWindowTextW",
+    "user32.GetWindowTextLengthA",
+    "user32.GetWindowTextLengthW",
+]
+trunc = ["user32.GetWindowTextA", "user32.GetWindowTextW"]
+messages = [
+    "user32.SendMessageA",
+    "user32.SendMessageW",
+    "user32.DefWindowProcA",
+    "user32.DefWindowProcW",
+    "user32.GetWindowTextA",
+    "user32.GetWindowTextW",
+    "user32.GetWindowTextLengthA",
+    "user32.GetWindowTextLengthW",
+]
+cross = [
+    "user32.SetWindowTextA",
+    "user32.SetWindowTextW",
+    "user32.GetWindowTextA",
+    "user32.GetWindowTextW",
+    "user32.GetWindowTextLengthA",
+    "user32.GetWindowTextLengthW",
+]
+custom = [
+    "user32.CreateWindowExW",
+    "user32.SetWindowTextW",
+    "user32.DefWindowProcW",
+    "user32.GetWindowTextA",
+    "user32.GetWindowTextW",
+    "user32.GetWindowTextLengthA",
+    "user32.GetWindowTextLengthW",
+]

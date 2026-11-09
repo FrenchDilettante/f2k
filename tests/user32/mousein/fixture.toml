@@ -1,0 +1,63 @@
+# mousein: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# mouse input is injected with SendInput into its own window, and only while that window is the
+# foreground window and the window under each press is the one meant: each block prints whether it
+# was, and sends nothing when it was not. Its points are computed from the window's own rectangle
+# and the system metrics, and print only as relations to the points sent, never as coordinates.
+description = "mousein - mouse input injected with SendInput into the program's own foreground window: DefWindowProcW's WM_NCHITTEST codes on the caption, its boxes, the borders, corners, client area and outside; WM_MOUSEMOVE, WM_LBUTTONDOWN and WM_LBUTTONUP with their client points (relations to the points sent) and MK_ flags, and GetCursorPos; SetCapture, GetCapture, ReleaseCapture and WM_CAPTURECHANGED between the window and its button, and a press dragged onto the caption under capture; a click on a Button control and its BN_CLICKED."
+kind = "sectioned"
+
+# Not gated: F2K has no mouse yet (deferred: the mouse driver, the cursor, hit-testing and capture
+# come with it). Every section is on the work list.
+[pending]
+hittest = "the non-client area's hit-testing (DefWindowProc's WM_NCHITTEST) not yet implemented"
+move = "no mouse yet: SendInput's mouse events, the cursor and WM_MOUSEMOVE not yet implemented"
+click = "no mouse yet: SendInput's mouse events, the cursor, WindowFromPoint and the button messages not yet implemented"
+capture = "no mouse yet: SetCapture, GetCapture, ReleaseCapture, WM_CAPTURECHANGED and SendInput's mouse events not yet implemented"
+button = "no mouse yet: SendInput's mouse events and the Button control's click not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the class and
+# windows, the metrics, the rectangles and point mapping, SetCursorPos, GetProcAddress).
+hittest = [
+    "user32.SendMessageW",
+    "user32.DefWindowProcW",
+]
+move = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.DispatchMessageW",
+    "user32.GetCursorPos",
+]
+click = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.WindowFromPoint",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.DispatchMessageW",
+    "user32.GetCursorPos",
+]
+capture = [
+    "user32.SetCapture",
+    "user32.GetCapture",
+    "user32.ReleaseCapture",
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.WindowFromPoint",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.DispatchMessageW",
+    "user32.GetCursorPos",
+]
+button = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.WindowFromPoint",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.DispatchMessageW",
+    "user32.GetCursorPos",
+]

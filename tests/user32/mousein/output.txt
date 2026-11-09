@@ -1,0 +1,113 @@
+# F2K capture of mousein (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:11:12.16
+mousein F2KT-SOURCE-CRC=0x5D9A4614
+>>> mousein.exe hittest
+== hittest
+RegisterClassW(F2KMouseinHittest): atom nonzero yes err=2
+CreateWindowExW(F2KMouseinHittest, visible, top-most, centred, 320x240): non-NULL yes err=-
+CreateWindowExW(Button, BS_PUSHBUTTON, id 101): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes
+WM_NCHITTEST at the caption's middle: ret=2 (HTCAPTION) err=-
+WM_NCHITTEST at the system-menu box (SM_CXSIZE/2 in from the frame): ret=3 (HTSYSMENU) err=-
+WM_NCHITTEST at the close box (SM_CXSIZE/2 + 2 in from the frame): ret=20 (HTCLOSE) err=-
+WM_NCHITTEST at the top border (1 in): ret=12 (HTTOP) err=-
+WM_NCHITTEST at the left border (1 in): ret=10 (HTLEFT) err=-
+WM_NCHITTEST at the right border (2 in): ret=11 (HTRIGHT) err=-
+WM_NCHITTEST at the bottom border (2 in): ret=15 (HTBOTTOM) err=-
+WM_NCHITTEST at the top-left corner (1 in): ret=13 (HTTOPLEFT) err=-
+WM_NCHITTEST at the bottom-right corner (2 in): ret=17 (HTBOTTOMRIGHT) err=-
+WM_NCHITTEST at the client area's centre: ret=1 (HTCLIENT) err=-
+WM_NCHITTEST at the button's centre: ret=1 (HTCLIENT) err=-
+WM_NCHITTEST at 10 left of the window: ret=0 (HTNOWHERE) err=-
+WM_NCHITTEST at 10 right of the window: ret=0 (HTNOWHERE) err=-
+mousein: done
+<<< exit code=0
+>>> mousein.exe move
+== move
+RegisterClassW(F2KMouseinMove): atom nonzero yes err=2
+CreateWindowExW(F2KMouseinMove, visible, top-most, centred, 320x240): non-NULL yes err=-
+CreateWindowExW(Button, BS_PUSHBUTTON, id 101): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes
+SM_SWAPBUTTON: no
+the cursor placed at the start point: yes
+SendInput(1 events): ret=1 err=-
+the batch arrived: yes
+received: 1 message(s)
+  WM_MOUSEMOVE wParam=0x0000 at the point sent (off by 0, 0); outside the client area: no
+GetCursorPos: at the point sent (off by 0, 0)
+mousein: done
+<<< exit code=0
+>>> mousein.exe click
+== click
+RegisterClassW(F2KMouseinClick): atom nonzero yes err=2
+CreateWindowExW(F2KMouseinClick, visible, top-most, centred, 320x240): non-NULL yes err=-
+CreateWindowExW(Button, BS_PUSHBUTTON, id 101): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes
+SM_SWAPBUTTON: no
+the cursor placed at the start point: yes
+WindowFromPoint(the point sent): the window err=-
+SendInput(3 events): ret=3 err=-
+the batch arrived: yes
+received: 2 message(s)
+  WM_LBUTTONDOWN wParam=0x0001 at the point sent (off by 0, 0); outside the client area: no
+  WM_LBUTTONUP wParam=0x0000 at the point sent (off by 0, 0); outside the client area: no
+GetCursorPos: at the point sent (off by 0, 0)
+mousein: done
+<<< exit code=0
+>>> mousein.exe capture
+== capture
+RegisterClassW(F2KMouseinCapture): atom nonzero yes err=2
+CreateWindowExW(F2KMouseinCapture, visible, top-most, centred, 320x240): non-NULL yes err=-
+CreateWindowExW(Button, BS_PUSHBUTTON, id 101): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes
+SM_SWAPBUTTON: no
+GetCapture at the start: NULL err=-
+SetCapture(the window): previous NULL err=-; GetCapture: the window
+SetCapture(the button): previous the window err=-; GetCapture: the button
+SetCapture(the window): previous the button err=-; GetCapture: the window
+ReleaseCapture: ret=1 err=-; GetCapture: NULL
+received: 2 message(s)
+  WM_CAPTURECHANGED: the capture goes to the button
+  WM_CAPTURECHANGED: the capture goes to NULL
+the cursor placed at the start point: yes
+WindowFromPoint(the start point): the window err=-
+WindowFromPoint(the caption point): the window err=-
+SetCapture(the window): previous NULL err=-; GetCapture: the window
+SendInput(3 events): ret=3 err=-
+the batch arrived: yes
+received: 4 message(s)
+  WM_MOUSEMOVE wParam=0x0000 at the start point (off by 0, 0); outside the client area: no
+  WM_LBUTTONDOWN wParam=0x0001 at the start point (off by 0, 0); outside the client area: no
+  WM_MOUSEMOVE wParam=0x0001 at the caption point (off by 0, 0); outside the client area: yes
+  WM_LBUTTONUP wParam=0x0000 at the caption point (off by 0, 0); outside the client area: yes
+GetCursorPos: at the caption point (off by 0, 0)
+GetCapture after the release: the window err=-
+ReleaseCapture: ret=1 err=-; GetCapture: NULL
+received: 1 message(s)
+  WM_CAPTURECHANGED: the capture goes to NULL
+mousein: done
+<<< exit code=0
+>>> mousein.exe button
+== button
+RegisterClassW(F2KMouseinButton): atom nonzero yes err=2
+CreateWindowExW(F2KMouseinButton, visible, top-most, centred, 320x240): non-NULL yes err=-
+CreateWindowExW(Button, BS_PUSHBUTTON, id 101): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes
+SM_SWAPBUTTON: no
+the cursor placed at the start point: yes
+WindowFromPoint(the button's centre): the button err=-
+SendInput(3 events): ret=3 err=-
+the batch arrived: yes
+received: 1 message(s)
+  WM_COMMAND: id=101 code=0 (BN_CLICKED) from the button
+GetCursorPos: at the button's centre (off by 0, 0)
+mousein: done
+<<< exit code=0

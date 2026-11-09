@@ -1,0 +1,39 @@
+# accel: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# accelerator table and menu are compiled from accel.rc (rc) and linked into accel.exe. No handle
+# or address prints: a table prints as found or not and as the same table as another call's or not,
+# its entries as fVirt, key and cmd, a translation as its return and the messages the window
+# received.
+description = "accel - an ACCELERATORS resource of the program's own (accel.rc): LoadAcceleratorsW/A, CopyAcceleratorTableW/A's entries and DestroyAcceleratorTable; TranslateAcceleratorW/A on WM_KEYDOWN, WM_KEYUP, WM_CHAR and WM_SYSKEYDOWN posted to the program's own window, with Ctrl, Shift and Alt set in the thread's key state, the return and the WM_COMMAND the window receives; a window with a menu holding the commands, one grayed, and a disabled window."
+kind = "sectioned"
+
+# Not gated: win32k has no accelerator objects yet, and accel.exe imports catalogued records user32
+# does not export yet, so it does not load. Every section is on the work list.
+[pending]
+load = "LoadAcceleratorsW/A, CopyAcceleratorTableW/A and DestroyAcceleratorTable not yet implemented: win32k has no accelerator objects"
+translate = "TranslateAcceleratorW not yet implemented"
+ansi = "TranslateAcceleratorA not yet implemented"
+menu = "TranslateAcceleratorW not yet implemented, nor the menus it consults (WM_INITMENU, a grayed item's command)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the window, the
+# posted messages and PeekMessage, SetKeyboardState, the menu and its item, EnableWindow).
+load = [
+    "user32.LoadAcceleratorsW",
+    "user32.LoadAcceleratorsA",
+    "user32.CopyAcceleratorTableW",
+    "user32.CopyAcceleratorTableA",
+    "user32.DestroyAcceleratorTable",
+]
+translate = [
+    "user32.LoadAcceleratorsW",
+    "user32.TranslateAcceleratorW",
+]
+ansi = [
+    "user32.LoadAcceleratorsA",
+    "user32.TranslateAcceleratorA",
+]
+menu = [
+    "user32.LoadAcceleratorsW",
+    "user32.TranslateAcceleratorW",
+]

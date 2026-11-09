@@ -1,0 +1,40 @@
+/*
+ * accel's resources: rc compiles them into accel.res, which links into
+ * accel.exe. The language is given as numbers (no header is included):
+ * 9, 1 is LANG_ENGLISH, SUBLANG_ENGLISH_US (0x0409). Virtual keys are
+ * given as numbers too: 116 is VK_F5, 46 VK_DELETE.
+ *
+ * Accelerator table 300:
+ *   301  "A"     the character A (ASCII: case-sensitive, from WM_CHAR)
+ *   302  "^C"    the character Ctrl+C makes (3)
+ *   303  F5      a virtual key
+ *   304  Ctrl+Z
+ *   305  Alt+X
+ *   306  Shift+Delete
+ *   307  K       a virtual key, NOINVERT
+ *
+ * Menu 310: one popup, &Edit, holding &Refresh (303) and &Undo (304,
+ * grayed): two of the table's commands; 307 has no item.
+ */
+
+LANGUAGE 9, 1
+
+300 ACCELERATORS
+BEGIN
+    "A", 301
+    "^C", 302
+    116, 303, VIRTKEY
+    "Z", 304, VIRTKEY, CONTROL
+    "X", 305, VIRTKEY, ALT
+    46, 306, VIRTKEY, SHIFT
+    "K", 307, VIRTKEY, NOINVERT
+END
+
+310 MENU
+BEGIN
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "&Refresh", 303
+        MENUITEM "&Undo", 304, GRAYED
+    END
+END

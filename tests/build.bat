@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess registry token hellomd crt seh fd wide strings process msvcrt) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -393,6 +393,18 @@ del resource.obj resource.res
 cd ..\..
 goto :eof
 
+rem profile's profile.ini, the private profile it reads, is checked in
+rem beside its source: nothing to build.
+:profile
+echo === profile
+cd kernel32\profile
+call :stamp profile.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% profile.c
+if errorlevel 1 (echo build.bat: profile failed & exit /b 1)
+del profile.obj
+cd ..\..
+goto :eof
+
 :lstr
 echo === lstr
 cd kernel32\lstr
@@ -527,6 +539,140 @@ call :stamp endsess.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% endsess.c user32.lib
 if errorlevel 1 (echo build.bat: endsess failed & exit /b 1)
 del endsess.obj endkid.obj
+cd ..\..
+goto :eof
+
+rem dialog's dialogs: rc compiles dialog.rc into dialog.res, which
+rem links into the program.
+:dialog
+echo === dialog
+cd user32\dialog
+for %%I in (rc.exe) do if "%%~$PATH:I"=="" (
+    echo build.bat: rc.exe not found on PATH - dialog needs the resource compiler
+    exit /b 1
+)
+call :stamp dialog.c
+rc dialog.rc
+if errorlevel 1 (echo build.bat: dialog's rc failed & exit /b 1)
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dialog.c dialog.res user32.lib
+if errorlevel 1 (echo build.bat: dialog failed & exit /b 1)
+del dialog.obj dialog.res
+cd ..\..
+goto :eof
+
+:wndlong
+echo === wndlong
+cd user32\wndlong
+call :stamp wndlong.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wndlong.c user32.lib
+if errorlevel 1 (echo build.bat: wndlong failed & exit /b 1)
+del wndlong.obj
+cd ..\..
+goto :eof
+
+:wintext
+echo === wintext
+cd user32\wintext
+call :stamp wintext.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wintext.c user32.lib
+if errorlevel 1 (echo build.bat: wintext failed & exit /b 1)
+del wintext.obj
+cd ..\..
+goto :eof
+
+:focus
+echo === focus
+cd user32\focus
+call :stamp focus.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% focus.c user32.lib
+if errorlevel 1 (echo build.bat: focus failed & exit /b 1)
+del focus.obj
+cd ..\..
+goto :eof
+
+:controls
+echo === controls
+cd user32\controls
+call :stamp controls.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib
+if errorlevel 1 (echo build.bat: controls failed & exit /b 1)
+del controls.obj
+cd ..\..
+goto :eof
+
+rem menus's menu: rc compiles menus.rc into menus.res, which
+rem links into the program.
+:menus
+echo === menus
+cd user32\menus
+for %%I in (rc.exe) do if "%%~$PATH:I"=="" (
+    echo build.bat: rc.exe not found on PATH - menus needs the resource compiler
+    exit /b 1
+)
+call :stamp menus.c
+rc menus.rc
+if errorlevel 1 (echo build.bat: menus's rc failed & exit /b 1)
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% menus.c menus.res user32.lib
+if errorlevel 1 (echo build.bat: menus failed & exit /b 1)
+del menus.obj menus.res
+cd ..\..
+goto :eof
+
+rem accel's accelerator table and menu: rc compiles accel.rc into accel.res, which
+rem links into the program.
+:accel
+echo === accel
+cd user32\accel
+for %%I in (rc.exe) do if "%%~$PATH:I"=="" (
+    echo build.bat: rc.exe not found on PATH - accel needs the resource compiler
+    exit /b 1
+)
+call :stamp accel.c
+rc accel.rc
+if errorlevel 1 (echo build.bat: accel's rc failed & exit /b 1)
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% accel.c accel.res user32.lib
+if errorlevel 1 (echo build.bat: accel failed & exit /b 1)
+del accel.obj accel.res
+cd ..\..
+goto :eof
+
+:coords
+echo === coords
+cd user32\coords
+call :stamp coords.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% coords.c user32.lib
+if errorlevel 1 (echo build.bat: coords failed & exit /b 1)
+del coords.obj
+cd ..\..
+goto :eof
+
+:keyinput
+echo === keyinput
+cd user32\keyinput
+call :stamp keyinput.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% keyinput.c user32.lib
+if errorlevel 1 (echo build.bat: keyinput failed & exit /b 1)
+del keyinput.obj
+cd ..\..
+goto :eof
+
+:mousein
+echo === mousein
+cd user32\mousein
+call :stamp mousein.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% mousein.c user32.lib
+if errorlevel 1 (echo build.bat: mousein failed & exit /b 1)
+del mousein.obj
+cd ..\..
+goto :eof
+
+:clipbrd
+echo === clipbrd
+cd user32\clipbrd
+call :stamp clipbrd.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% clipbrd.c user32.lib
+if errorlevel 1 (echo build.bat: clipbrd failed & exit /b 1)
+del clipbrd.obj
 cd ..\..
 goto :eof
 

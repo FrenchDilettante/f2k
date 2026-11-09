@@ -1,0 +1,102 @@
+# keyinput: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# keystrokes are injected with SendInput into its own window, and only while that window is the
+# foreground window: each block prints whether it was, and sends nothing when it was not. No handle
+# or address prints; the messages, their wParam and lParam, and GetKeyState's down bits do.
+description = "keyinput - keystrokes injected with SendInput into the program's own foreground window: WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP and TranslateMessage's WM_CHAR and WM_SYSCHAR for the US layout (wParam, lParam's repeat count, scan code and flags), GetKeyState's down bits during each; letters, Shift, digits, calc's symbols and the keypad's operators, Enter, Escape, Backspace, Tab, Ctrl+C, Alt+F and Alt alone, the extended arrows and Delete, a scan code alone and a virtual key with no scan code, a key pressed twice before its release, and an A window pumped through PeekMessageA and DispatchMessageA."
+kind = "sectioned"
+
+# Not gated: win32k delivers no keyboard input to windows yet. Every section is on the work list.
+[pending]
+letters = "the keyboard input path to windows (SendInput, the foreground thread's key messages, the US layout's characters) not yet implemented"
+symbols = "the keyboard input path to windows (SendInput, the foreground thread's key messages, the US layout's characters) not yet implemented"
+control = "the keyboard input path to windows (SendInput, the foreground thread's key messages, the US layout's characters) not yet implemented"
+alt = "the keyboard input path to windows (SendInput, WM_SYSKEYDOWN and WM_SYSCHAR with Alt) not yet implemented"
+extended = "the keyboard input path to windows (SendInput, extended keys) not yet implemented"
+scancode = "the keyboard input path to windows (SendInput's KEYEVENTF_SCANCODE, scan codes to virtual keys) not yet implemented"
+repeat = "the keyboard input path to windows (SendInput, the key state's previous bit) not yet implemented"
+ansi = "the keyboard input path to windows (SendInput, the US layout's characters through PeekMessageA and DispatchMessageA) not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the class and
+# window, SetFocus, GetProcAddress).
+letters = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+symbols = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+control = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+alt = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+extended = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+scancode = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+repeat = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageW",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageW",
+    "user32.GetKeyState",
+]
+ansi = [
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+    "user32.GetKeyboardLayout",
+    "user32.SendInput",
+    "user32.PeekMessageA",
+    "user32.TranslateMessage",
+    "user32.DispatchMessageA",
+    "user32.GetKeyState",
+]

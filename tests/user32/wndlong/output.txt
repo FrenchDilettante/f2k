@@ -1,0 +1,177 @@
+# F2K capture of wndlong (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:20.28
+wndlong F2KT-SOURCE-CRC=0xEA34E567
+>>> wndlong.exe style
+== style
+RegisterClassW(F2KWndlongStyle, 0 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongStyle, top-level): non-NULL yes err=-
+GetWindowLongW(GWL_STYLE): ret=0x04C00000 err=-; GetWindowLongA the same yes err=-
+GetWindowLongW(GWL_EXSTYLE): ret=0x00000100 err=-; GetWindowLongA the same yes err=-
+SetWindowLongW(GWL_STYLE, 0x04C40000): ret=0x04C00000 err=-
+  GetWindowLongW after: 0x04C40000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C00000 new=0x04C40000
+    WM_STYLECHANGED wParam=-16 old=0x04C00000 new=0x04C40000
+SetWindowLongW(GWL_STYLE, 0x04C00000): ret=0x04C40000 err=-
+  GetWindowLongW after: 0x04C00000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C40000 new=0x04C00000
+    WM_STYLECHANGED wParam=-16 old=0x04C40000 new=0x04C00000
+SetWindowLongW(GWL_EXSTYLE, 0x00000180): ret=0x00000100 err=-
+  GetWindowLongW after: 0x00000180
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-20 old=0x00000100 new=0x00000180
+    WM_STYLECHANGED wParam=-20 old=0x00000100 new=0x00000180
+SetWindowLongW(GWL_EXSTYLE, 0x00000100): ret=0x00000180 err=-
+  GetWindowLongW after: 0x00000100
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-20 old=0x00000180 new=0x00000100
+    WM_STYLECHANGED wParam=-20 old=0x00000180 new=0x00000100
+SetWindowLongA(GWL_STYLE, | WS_SYSMENU): ret=0x04C00000 err=- after 0x04C80000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C00000 new=0x04C80000
+    WM_STYLECHANGED wParam=-16 old=0x04C00000 new=0x04C80000
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe id
+== id
+RegisterClassW(F2KWndlongId, 0 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongId, top-level): non-NULL yes err=-
+CreateWindowExW(F2KWndlongId, child): non-NULL yes err=-
+GetWindowLongW(child, GWL_ID): ret=0x0000004D err=-; GetWindowLongA the same yes err=-
+SetWindowLongW(child, GWL_ID, 88): ret=77 err=- after 88
+SetWindowLongA(child, GWL_ID, 99): ret=88 err=- after 99
+GetWindowLongW(top-level, GWL_ID): ret=0x00000000 err=-; GetWindowLongA the same yes err=-
+GetWindowLongW(child, GWL_HWNDPARENT): the parent yes non-NULL yes err=-
+GetWindowLongW(top-level, GWL_HWNDPARENT): non-NULL no err=-
+GetWindowLongW(child, GWL_HINSTANCE): the module yes err=-
+GetWindowLongA(top-level, GWL_HINSTANCE): the module yes err=-
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe userdata
+== userdata
+RegisterClassW(F2KWndlongUser, 0 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongUser, top-level): non-NULL yes err=-
+GetWindowLongW(GWL_USERDATA): ret=0x00000000 err=-; GetWindowLongA the same yes err=-
+SetWindowLongW(GWL_USERDATA, 0x12345678): ret=0x00000000 err=-
+GetWindowLongW(GWL_USERDATA): ret=0x12345678 err=-; GetWindowLongA the same yes err=-
+SetWindowLongA(GWL_USERDATA, -5): ret=0x12345678 err=-
+GetWindowLongW(GWL_USERDATA): ret=0xFFFFFFFB err=-; GetWindowLongA the same yes err=-
+SetWindowLongW(GWL_USERDATA, 0): ret=0xFFFFFFFB err=-
+SetWindowLongW(GWL_USERDATA, 0) again: ret=0x00000000 err=-
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe extra
+== extra
+RegisterClassW(F2KWndlongExtra, 12 extra bytes): atom nonzero yes err=2
+RegisterClassW(F2KWndlongNone, 0 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongExtra, top-level): non-NULL yes err=-
+GetWindowLongW(0): ret=0x00000000 err=-
+GetWindowLongW(4): ret=0x00000000 err=-
+GetWindowLongW(8): ret=0x00000000 err=-
+SetWindowLongW(0, 0x11111111): ret=0x00000000 err=-
+SetWindowLongW(4, 0x22222222): ret=0x00000000 err=-
+SetWindowLongW(8, 0x33333333): ret=0x00000000 err=-
+SetWindowLongW(0, 0x44444444): ret=0x11111111 err=-
+GetWindowLongW(0): ret=0x44444444 err=-
+GetWindowLongW(4): ret=0x22222222 err=-
+GetWindowLongW(8): ret=0x33333333 err=-
+GetWindowLongW(2): ret=0x22224444 err=-
+SetWindowLongW(9, 0x55555555): ret=0x00000000 err=1413
+GetWindowLongW(9): ret=0x00000000 err=1413
+SetWindowLongW(12, 0x66666666): ret=0x00000000 err=1413
+GetWindowLongW(12): ret=0x00000000 err=1413
+GetWindowLongW(-100): ret=0x00000000 err=1413
+SetWindowLongW(-100, 0x00000001): ret=0x00000000 err=1413
+GetWindowLongW(8): ret=0x33333333 err=-
+SetWindowWord(0, 0xABCD): ret=0x4444 err=-
+GetWindowWord(0): ret=0xABCD err=-
+GetWindowLongW(0): ret=0x4444ABCD err=-
+SetWindowWord(10, 0x1234): ret=0x3333 err=-
+GetWindowWord(10): ret=0x1234 err=-
+GetWindowLongW(8): ret=0x12343333 err=-
+GetWindowWord(11): ret=0x0000 err=1413
+SetWindowWord(11, 1): ret=0x0000 err=1413
+CreateWindowExW(F2KWndlongNone, top-level): non-NULL yes err=-
+GetWindowLongW(0): ret=0x00000000 err=1413
+SetWindowLongW(0, 0x00000001): ret=0x00000000 err=1413
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe wndproc
+== wndproc
+RegisterClassW(F2KWndlongProc, 0 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongProc, top-level): non-NULL yes err=-
+W class: GWL_WNDPROC through W: base yes subclass W no subclass A no
+W class: GWL_WNDPROC through A: base no subclass W no subclass A no; the same as through W no
+W class: IsWindowUnicode yes
+SendMessageW(WM_PROBE): ret=10 err=-
+  the chain: base
+SetWindowLongW(GWL_WNDPROC, subclass W): previous is base yes non-NULL yes err=-
+subclassed W: GWL_WNDPROC through W: base no subclass W yes subclass A no
+subclassed W: GWL_WNDPROC through A: base no subclass W no subclass A no; the same as through W no
+subclassed W: IsWindowUnicode yes
+SendMessageW(WM_PROBE): ret=110 err=-
+  the chain: subclass W -> base
+SendMessageA(WM_PROBE): ret=110 err=-
+  the chain: subclass W -> base
+SetWindowLongA(GWL_WNDPROC, subclass A): previous is subclass W no non-NULL yes err=-
+subclassed A over W: GWL_WNDPROC through W: base no subclass W no subclass A no
+subclassed A over W: GWL_WNDPROC through A: base no subclass W no subclass A yes; the same as through W no
+subclassed A over W: IsWindowUnicode no
+SendMessageW(WM_PROBE): ret=1110 err=-
+  the chain: subclass A -> subclass W -> base
+SendMessageA(WM_PROBE): ret=1110 err=-
+  the chain: subclass A -> subclass W -> base
+SetWindowLongA(GWL_WNDPROC, the value it returned): previous is subclass A yes err=-
+A subclass removed: GWL_WNDPROC through W: base no subclass W yes subclass A no
+A subclass removed: GWL_WNDPROC through A: base no subclass W no subclass A no; the same as through W no
+A subclass removed: IsWindowUnicode yes
+SetWindowLongW(GWL_WNDPROC, the value it returned): previous is subclass W yes err=-
+restored: GWL_WNDPROC through W: base yes subclass W no subclass A no
+restored: GWL_WNDPROC through A: base no subclass W no subclass A no; the same as through W no
+restored: IsWindowUnicode yes
+SendMessageW(WM_PROBE): ret=10 err=-
+  the chain: base
+RegisterClassA(F2KWndlongProcA): atom nonzero yes err=2
+CreateWindowExA(F2KWndlongProcA, top-level): non-NULL yes err=-
+A class: GWL_WNDPROC through A is its procedure yes, through W no; IsWindowUnicode no
+SendMessageW(WM_PROBE): ret=10 err=-
+  the chain: base A
+SetWindowLongW(A window, GWL_WNDPROC, subclass W): previous is its procedure no non-NULL yes err=- IsWindowUnicode yes
+SendMessageA(WM_PROBE): ret=110 err=-
+  the chain: subclass W -> base A
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe dialog
+== dialog
+CreateDialogIndirectParamW(no controls, system font): non-NULL yes err=-
+class #32770 IsWindowUnicode yes
+GetWindowLongW(DWL_DLGPROC): the procedure yes non-NULL yes err=-
+GetWindowLongA(DWL_DLGPROC): the procedure no the same as through W no err=-
+GWL_WNDPROC through W: DefDlgProcW yes DefDlgProcA no; through A: DefDlgProcW no DefDlgProcA yes
+GetWindowLongW(DWL_USER): ret=0x00000000 err=-; GetWindowLongA the same yes err=-
+SetWindowLongW(DWL_USER, 0x0BADF00D): ret=0x00000000 err=-
+GetWindowLongW(DWL_USER): ret=0x0BADF00D err=-; GetWindowLongA the same yes err=-
+GetWindowLongW(DWL_MSGRESULT): ret=0x00000000 err=-; GetWindowLongA the same yes err=-
+SendMessageW(WM_USER+2: DWL_MSGRESULT 55, TRUE): ret=55 err=-
+  the chain: dialog procedure, TRUE
+GetWindowLongW(DWL_MSGRESULT): ret=0x00000037 err=-; GetWindowLongA the same yes err=-
+SendMessageW(WM_USER+3: DWL_MSGRESULT 66, FALSE): ret=0 err=-
+  the chain: dialog procedure, FALSE
+GetWindowLongW(DWL_MSGRESULT): ret=0x00000042 err=-; GetWindowLongA the same yes err=-
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe errors
+== errors
+GetWindowLongW(NULL, GWL_STYLE): ret=0x00000000 err=1400
+SetWindowLongW(NULL, GWL_USERDATA, 1): ret=0x00000000 err=1400
+RegisterClassW(F2KWndlongGone, 4 extra bytes): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongGone, top-level): non-NULL yes err=-
+GetWindowLongW(a destroyed window, GWL_STYLE): ret=0x00000000 err=1400
+GetWindowLongA(a destroyed window, 0): ret=0x00000000 err=1400
+SetWindowLongW(a destroyed window, GWL_USERDATA, 1): ret=0x00000000 err=1400
+wndlong: done
+<<< exit code=0

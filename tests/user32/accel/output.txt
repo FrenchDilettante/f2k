@@ -1,0 +1,146 @@
+# F2K capture of accel (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:24.48
+accel F2KT-SOURCE-CRC=0xE387AB3E
+>>> accel.exe load
+== load
+LoadAcceleratorsW(300): non-NULL yes err=-
+LoadAcceleratorsW(300) again: non-NULL yes err=- the same table yes
+LoadAcceleratorsA(300): non-NULL yes err=- the same table as LoadAcceleratorsW's yes
+LoadAcceleratorsW("#300"): non-NULL yes err=- the same table as LoadAcceleratorsW's yes
+LoadAcceleratorsW(399): non-NULL no err=1814
+LoadAcceleratorsA(399): non-NULL no err=1814
+CopyAcceleratorTableW(table, NULL, 0): ret=7 err=-
+CopyAcceleratorTableW(table, buffer, 16): ret=7 err=-
+  entry 0: fVirt=0x00 key=65 cmd=301
+  entry 1: fVirt=0x00 key=3 cmd=302
+  entry 2: fVirt=0x01 key=116 cmd=303
+  entry 3: fVirt=0x09 key=90 cmd=304
+  entry 4: fVirt=0x11 key=88 cmd=305
+  entry 5: fVirt=0x05 key=46 cmd=306
+  entry 6: fVirt=0x03 key=75 cmd=307
+CopyAcceleratorTableA(table, buffer, 16): ret=7 err=-
+  entry 0: fVirt=0x00 key=65 cmd=301
+  entry 1: fVirt=0x00 key=3 cmd=302
+  entry 2: fVirt=0x01 key=116 cmd=303
+  entry 3: fVirt=0x09 key=90 cmd=304
+  entry 4: fVirt=0x11 key=88 cmd=305
+  entry 5: fVirt=0x05 key=46 cmd=306
+  entry 6: fVirt=0x03 key=75 cmd=307
+  CopyAcceleratorTableA's entries the same as CopyAcceleratorTableW's: yes
+CopyAcceleratorTableW(table, buffer, 3): ret=3 err=-
+  entry 0: fVirt=0x00 key=65 cmd=301
+  entry 1: fVirt=0x00 key=3 cmd=302
+  entry 2: fVirt=0x01 key=116 cmd=303
+  the entry past the third untouched: yes
+CopyAcceleratorTableW(NULL, NULL, 0): ret=0 err=1403
+DestroyAcceleratorTable(LoadAcceleratorsW's): ret=0 err=-
+CopyAcceleratorTableW(it, NULL, 0) after: ret=7 err=-
+DestroyAcceleratorTable(it, again): ret=0 err=-
+accel: done
+<<< exit code=0
+>>> accel.exe translate
+== translate
+RegisterClassW(F2KAccelTranslate): atom nonzero yes err=2
+CreateWindowExW(F2KAccelTranslate, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+LoadAcceleratorsW(300): non-NULL yes err=-
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN F5): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=303 lParam=0
+TranslateAcceleratorW(WM_KEYUP F5): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_KEYDOWN Z): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_KEYDOWN K): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=307 lParam=0
+TranslateAcceleratorW(WM_KEYDOWN A): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_KEYDOWN Delete): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_CHAR 'A'): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=301 lParam=0
+TranslateAcceleratorW(WM_CHAR 'a'): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_CHAR 3): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=302 lParam=0
+TranslateAcceleratorW(WM_SYSKEYDOWN X, context bit, Alt up): ret=0 err=-
+  received: nothing
+keys: Ctrl down yes, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN Z, Ctrl down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=304 lParam=0
+TranslateAcceleratorW(WM_KEYDOWN F5, Ctrl down): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_CHAR 3, Ctrl down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=302 lParam=0
+keys: Ctrl down no, Shift down yes, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN Delete, Shift down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=306 lParam=0
+TranslateAcceleratorW(WM_CHAR 'A', Shift down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=301 lParam=0
+keys: Ctrl down no, Shift down no, Alt down yes
+TranslateAcceleratorW(WM_SYSKEYDOWN X, context bit, Alt down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=305 lParam=0
+TranslateAcceleratorW(WM_SYSKEYDOWN F5, context bit, Alt down): ret=0 err=-
+  received: nothing
+TranslateAcceleratorW(WM_KEYDOWN X, no context bit, Alt down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=305 lParam=0
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN F5, a NULL table): ret=0 err=1403
+  received: nothing
+TranslateAcceleratorW(WM_KEYDOWN F5, a NULL window): ret=0 err=-
+  received: nothing
+accel: done
+<<< exit code=0
+>>> accel.exe ansi
+== ansi
+RegisterClassA(F2KAccelAnsi): atom nonzero yes err=2
+CreateWindowExA(F2KAccelAnsi, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+LoadAcceleratorsA(300): non-NULL yes err=-
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAcceleratorA(WM_KEYDOWN F5): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=303 lParam=0
+TranslateAcceleratorA(WM_KEYDOWN K): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=307 lParam=0
+TranslateAcceleratorA(WM_CHAR 'A'): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=301 lParam=0
+TranslateAcceleratorA(WM_KEYDOWN Z): ret=0 err=-
+  received: nothing
+keys: Ctrl down yes, Shift down no, Alt down no
+TranslateAcceleratorA(WM_KEYDOWN Z, Ctrl down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=304 lParam=0
+keys: Ctrl down no, Shift down no, Alt down yes
+TranslateAcceleratorA(WM_SYSKEYDOWN X, context bit, Alt down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=305 lParam=0
+accel: done
+<<< exit code=0
+>>> accel.exe menu
+== menu
+RegisterClassW(F2KAccelMenu): atom nonzero yes err=2
+CreateWindowExW(F2KAccelMenu, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+LoadAcceleratorsW(300): non-NULL yes err=-
+SetMenu(window, menu 310): ret=1 err=-
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN F5, Refresh's command): ret=1 err=-
+  received WM_INITMENU: wParam == the window's menu yes lParam=0
+  received WM_INITMENUPOPUP: wParam == the Edit popup yes LOWORD(lParam)=0 HIWORD(lParam)=0
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=303 lParam=0
+TranslateAcceleratorW(WM_KEYDOWN K, no item's command): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=307 lParam=0
+keys: Ctrl down yes, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN Z, Ctrl down, Undo's command (grayed)): ret=1 err=-
+  received WM_INITMENU: wParam == the window's menu yes lParam=0
+  received WM_INITMENUPOPUP: wParam == the Edit popup yes LOWORD(lParam)=0 HIWORD(lParam)=0
+EnableMenuItem(menu, 304 Undo, MF_ENABLED): ret=1 err=-
+TranslateAcceleratorW(WM_KEYDOWN Z, Ctrl down, Undo's command (enabled)): ret=1 err=-
+  received WM_INITMENU: wParam == the window's menu yes lParam=0
+  received WM_INITMENUPOPUP: wParam == the Edit popup yes LOWORD(lParam)=0 HIWORD(lParam)=0
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=304 lParam=0
+keys: Ctrl down no, Shift down no, Alt down no
+EnableWindow(window, FALSE): ret=0 err=-
+TranslateAcceleratorW(WM_KEYDOWN F5, the window disabled): ret=1 err=-
+  received WM_INITMENU: wParam == the window's menu yes lParam=0
+  received WM_INITMENUPOPUP: wParam == the Edit popup yes LOWORD(lParam)=0 HIWORD(lParam)=0
+accel: done
+<<< exit code=0

@@ -1,0 +1,73 @@
+# clipbrd: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# section leaves the machine's clipboard empty and closed at its start and end. No handle or address
+# prints: a handle prints as non-NULL or not and as the same as another or not, a registered format
+# as "registered", the clipboard's data as its text and its size as a relation.
+description = "clipbrd - the clipboard in user32: OpenClipboard, CloseClipboard and EmptyClipboard (with a window, with none, twice, closed), GetOpenClipboardWindow and GetClipboardOwner; SetClipboardData of CF_UNICODETEXT, CF_TEXT and CF_OEMTEXT, IsClipboardFormatAvailable and GetClipboardData of the formats the system synthesises from each (the text, its NUL and size, CF_LOCALE); CountClipboardFormats and EnumClipboardFormats' order; RegisterClipboardFormatA/W and GetClipboardFormatNameA/W; the owner's WM_DESTROYCLIPBOARD; delayed rendering through WM_RENDERFORMAT and WM_RENDERALLFORMATS."
+kind = "sectioned"
+
+# Not gated: user32's clipboard functions are catalogued, not exported, so the program does not
+# load on F2K yet. Every section is on the work list.
+[pending]
+open = "OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData, GetClipboardData, IsClipboardFormatAvailable, GetOpenClipboardWindow and GetClipboardOwner not yet implemented: no clipboard in win32k"
+unicode = "SetClipboardData, GetClipboardData and IsClipboardFormatAvailable not yet implemented, nor the text formats' synthesis from CF_UNICODETEXT"
+text = "SetClipboardData, GetClipboardData and IsClipboardFormatAvailable not yet implemented, nor the text formats' synthesis from CF_TEXT and CF_OEMTEXT"
+formats = "CountClipboardFormats, EnumClipboardFormats, RegisterClipboardFormatA/W and GetClipboardFormatNameA/W not yet implemented"
+owner = "EmptyClipboard, GetClipboardOwner and WM_DESTROYCLIPBOARD not yet implemented"
+delayed = "delayed rendering (SetClipboardData with no data, WM_RENDERFORMAT, WM_RENDERALLFORMATS) not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the window, the
+# memory blocks, the unprinted opens and empties at the section's ends).
+open = [
+    "user32.OpenClipboard",
+    "user32.CloseClipboard",
+    "user32.EmptyClipboard",
+    "user32.SetClipboardData",
+    "user32.GetClipboardData",
+    "user32.IsClipboardFormatAvailable",
+    "user32.GetOpenClipboardWindow",
+    "user32.GetClipboardOwner",
+]
+unicode = [
+    "user32.OpenClipboard",
+    "user32.CloseClipboard",
+    "user32.EmptyClipboard",
+    "user32.SetClipboardData",
+    "user32.GetClipboardData",
+    "user32.IsClipboardFormatAvailable",
+]
+text = [
+    "user32.OpenClipboard",
+    "user32.CloseClipboard",
+    "user32.EmptyClipboard",
+    "user32.SetClipboardData",
+    "user32.GetClipboardData",
+    "user32.IsClipboardFormatAvailable",
+]
+formats = [
+    "user32.CountClipboardFormats",
+    "user32.EnumClipboardFormats",
+    "user32.RegisterClipboardFormatW",
+    "user32.RegisterClipboardFormatA",
+    "user32.GetClipboardFormatNameW",
+    "user32.GetClipboardFormatNameA",
+    "user32.SetClipboardData",
+    "user32.GetClipboardData",
+]
+owner = [
+    "user32.OpenClipboard",
+    "user32.EmptyClipboard",
+    "user32.GetClipboardOwner",
+    "user32.SetClipboardData",
+    "user32.IsClipboardFormatAvailable",
+    "user32.GetClipboardData",
+    "user32.DestroyWindow",
+]
+delayed = [
+    "user32.SetClipboardData",
+    "user32.GetClipboardData",
+    "user32.IsClipboardFormatAvailable",
+    "user32.GetClipboardOwner",
+    "user32.DestroyWindow",
+]

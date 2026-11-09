@@ -1,0 +1,331 @@
+# F2K capture of dialog (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:11:18.32
+dialog F2KT-SOURCE-CRC=0xCC4B4B1C
+>>> dialog.exe create
+== create
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+the procedure received 2 of the recorded messages
+  WM_SETFONT: font non-NULL yes lParam=0
+  WM_INITDIALOG: lParam=0x1234 focus control id=1
+dialog: class #32770 style=0x84C800C4 exstyle=0x00010101 caption "F2K dialog" visible no
+IsWindowUnicode: yes
+  control 0: class Button id=1 style=0x50010001 exstyle=0x00000004 text "OK"
+    template rect mapped minus window rect: 0 0 0 0
+  control 1: class Button id=2 style=0x50010000 exstyle=0x00000004 text "Cancel"
+    template rect mapped minus window rect: 0 0 0 0
+  control 2: class Button id=132 style=0x58010000 exstyle=0x00000004 text "Disabled"
+    template rect mapped minus window rect: 0 0 0 -1
+  control 3: class Static id=110 style=0x50020000 exstyle=0x00000004 text "Label:"
+    template rect mapped minus window rect: 0 0 0 0
+  control 4: class Static id=111 style=0x50000000 exstyle=0x00000004 text "123"
+    template rect mapped minus window rect: 0 0 0 0
+  control 5: class Button id=120 style=0x50000007 exstyle=0x00000004 text "Mode"
+    template rect mapped minus window rect: 0 0 0 0
+  control 6: class Button id=121 style=0x50030009 exstyle=0x00000004 text "Standard"
+    template rect mapped minus window rect: 0 0 0 1
+  control 7: class Button id=122 style=0x50000009 exstyle=0x00000004 text "Scientific"
+    template rect mapped minus window rect: 0 0 0 0
+  control 8: class Button id=123 style=0x50000009 exstyle=0x00000004 text "Other"
+    template rect mapped minus window rect: 0 0 0 1
+  control 9: class Button id=130 style=0x50030003 exstyle=0x00000004 text "Grouping"
+    template rect mapped minus window rect: 0 0 0 0
+  control 10: class Button id=131 style=0x50010002 exstyle=0x00000004 text "Plain"
+    template rect mapped minus window rect: 0 0 0 0
+  11 controls
+focus: id 1
+on DestroyWindow, the procedure received 2 of the recorded messages
+  WM_DESTROY
+  WM_NCDESTROY
+CreateDialogParamA(100, NULL, proc, 0x5678): non-NULL yes err=-
+the procedure received 2 of the recorded messages
+  WM_SETFONT: font non-NULL yes lParam=0
+  WM_INITDIALOG: lParam=0x5678 focus control id=1
+dialog: class #32770 style=0x84C800C4 exstyle=0x00010101 caption "F2K dialog" visible no
+IsWindowUnicode: no
+  control 0: class Button id=1 style=0x50010001 exstyle=0x00000004 text "OK"
+    template rect mapped minus window rect: 0 0 0 0
+  control 1: class Button id=2 style=0x50010000 exstyle=0x00000004 text "Cancel"
+    template rect mapped minus window rect: 0 0 0 0
+  control 2: class Button id=132 style=0x58010000 exstyle=0x00000004 text "Disabled"
+    template rect mapped minus window rect: 0 0 0 -1
+  control 3: class Static id=110 style=0x50020000 exstyle=0x00000004 text "Label:"
+    template rect mapped minus window rect: 0 0 0 0
+  control 4: class Static id=111 style=0x50000000 exstyle=0x00000004 text "123"
+    template rect mapped minus window rect: 0 0 0 0
+  control 5: class Button id=120 style=0x50000007 exstyle=0x00000004 text "Mode"
+    template rect mapped minus window rect: 0 0 0 0
+  control 6: class Button id=121 style=0x50030009 exstyle=0x00000004 text "Standard"
+    template rect mapped minus window rect: 0 0 0 1
+  control 7: class Button id=122 style=0x50000009 exstyle=0x00000004 text "Scientific"
+    template rect mapped minus window rect: 0 0 0 0
+  control 8: class Button id=123 style=0x50000009 exstyle=0x00000004 text "Other"
+    template rect mapped minus window rect: 0 0 0 1
+  control 9: class Button id=130 style=0x50030003 exstyle=0x00000004 text "Grouping"
+    template rect mapped minus window rect: 0 0 0 0
+  control 10: class Button id=131 style=0x50010002 exstyle=0x00000004 text "Plain"
+    template rect mapped minus window rect: 0 0 0 0
+  11 controls
+CreateDialogParamW(999, a template that does not exist): non-NULL no err=1814
+the procedure received 0 of the recorded messages
+dialog: done
+<<< exit code=0
+>>> dialog.exe ex
+== ex
+CreateDialogParamW(101, DIALOGEX): non-NULL yes err=-
+the procedure received 2 of the recorded messages
+  WM_SETFONT: font non-NULL yes lParam=0
+  WM_INITDIALOG: lParam=0x2222 focus control id=1
+dialog: class #32770 style=0x84C800C4 exstyle=0x00010101 caption "F2K dialogex" visible no
+  control 0: class Static id=140 style=0x50000000 exstyle=0x00000204 text "Ex"
+    template rect mapped minus window rect: 0 0 0 0
+  control 1: class Button id=1 style=0x50010001 exstyle=0x00000004 text "OK"
+    template rect mapped minus window rect: 0 0 0 0
+  2 controls
+client size minus the mapped template size: 0 0
+dialog: done
+<<< exit code=0
+>>> dialog.exe items
+== items
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+GetDlgItem(dlg, 1): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 1 err=-
+GetDlgItem(dlg, 2): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 2 err=-
+GetDlgItem(dlg, 132): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 132 err=-
+GetDlgItem(dlg, 110): non-NULL yes err=- class Static
+GetDlgCtrlID of it: 110 err=-
+GetDlgItem(dlg, 111): non-NULL yes err=- class Static
+GetDlgCtrlID of it: 111 err=-
+GetDlgItem(dlg, 120): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 120 err=-
+GetDlgItem(dlg, 121): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 121 err=-
+GetDlgItem(dlg, 122): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 122 err=-
+GetDlgItem(dlg, 123): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 123 err=-
+GetDlgItem(dlg, 130): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 130 err=-
+GetDlgItem(dlg, 131): non-NULL yes err=- class Button
+GetDlgCtrlID of it: 131 err=-
+GetDlgItem(dlg, 555, no such control): non-NULL no err=1421
+GetDlgItem(NULL, 1): non-NULL no err=1400
+GetDlgCtrlID(the dialog): 0 err=-
+GetDlgCtrlID(NULL): 0 err=1400
+GetDlgItemTextW(dlg, 110, 32): ret=6 err=- "Label:"
+SetDlgItemTextW(dlg, 111, L"Wide <U+00E9>"): ret=1 err=-
+GetDlgItemTextW(dlg, 111, 32): ret=8 err=- "Wide <é>"
+GetDlgItemTextA(dlg, 111, 32): ret=8 err=- "Wide <é>"
+GetDlgItemTextW(dlg, 111, 4): ret=3 err=- "Wid"
+GetDlgItemTextA(dlg, 111, 4): ret=3 err=- "Wid"
+GetDlgItemTextW(dlg, 111, 0): ret=0 err=- buffer "xxxxxxxxxx"
+SetDlgItemTextA(dlg, 111, "Narrow"): ret=1 err=-
+GetDlgItemTextW(dlg, 111, 32): ret=6 err=- "Narrow"
+SetDlgItemTextW(dlg, 111, L""): ret=1 err=-
+GetDlgItemTextW(dlg, 111, 32): ret=0 err=- ""
+SetDlgItemTextW(dlg, 555, no such control): ret=0 err=1421
+GetDlgItemTextW(dlg, 555, no such control): ret=0 err=1421 buffer ""
+SetDlgItemTextW(dlg, 1, L"Fine"): ret=1 err=-
+SendDlgItemMessageW(dlg, 1, WM_GETTEXTLENGTH): ret=4 err=-
+SendDlgItemMessageW(dlg, 555, WM_GETTEXTLENGTH): ret=0 err=1421
+dialog: done
+<<< exit code=0
+>>> dialog.exe ints
+== ints
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+SetDlgItemInt(dlg, 111, -42, signed): ret=1 err=- text "-42"
+SetDlgItemInt(dlg, 111, -42, unsigned): ret=1 err=- text "4294967254"
+SetDlgItemInt(dlg, 111, 0, signed): ret=1 err=- text "0"
+SetDlgItemInt(dlg, 555, no such control): ret=0 err=1421
+"123" signed: ret=123 translated=1 err=-
+"123" unsigned: ret=123 translated=1 err=-
+"-42" signed: ret=-42 translated=1 err=-
+"-42" unsigned: ret=0 translated=0 err=-
+"+5" signed: ret=0 translated=0 err=-
+"+5" unsigned: ret=0 translated=0 err=-
+"  7" signed: ret=7 translated=1 err=-
+"  7" unsigned: ret=7 translated=1 err=-
+"7  " signed: ret=7 translated=0 err=-
+"7  " unsigned: ret=7 translated=0 err=-
+"12abc" signed: ret=12 translated=0 err=-
+"12abc" unsigned: ret=12 translated=0 err=-
+"abc" signed: ret=0 translated=0 err=-
+"abc" unsigned: ret=0 translated=0 err=-
+"" signed: ret=0 translated=0 err=-
+"" unsigned: ret=0 translated=0 err=-
+"2147483647" signed: ret=2147483647 translated=1 err=-
+"2147483647" unsigned: ret=2147483647 translated=1 err=-
+"2147483648" signed: ret=0 translated=0 err=-
+"2147483648" unsigned: ret=2147483648 translated=1 err=-
+"-2147483648" signed: ret=-2147483648 translated=0 err=-
+"-2147483648" unsigned: ret=0 translated=0 err=-
+"4294967295" signed: ret=0 translated=0 err=-
+"4294967295" unsigned: ret=4294967295 translated=1 err=-
+"4294967296" signed: ret=0 translated=0 err=-
+"4294967296" unsigned: ret=0 translated=0 err=-
+"0x10" signed: ret=0 translated=0 err=-
+"0x10" unsigned: ret=0 translated=0 err=-
+"99" signed, NULL translated: ret=99 err=-
+GetDlgItemInt(dlg, 555, no such control): ret=0 translated=0 err=1421
+dialog: done
+<<< exit code=0
+>>> dialog.exe buttons
+== buttons
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+  checked: 121=0 122=0 123=0 130=0 131=0
+CheckDlgButton(dlg, 130, 1) (auto check box): ret=1 err=-
+IsDlgButtonChecked(dlg, 130): ret=1 err=-
+CheckDlgButton(dlg, 130, 0) (auto check box): ret=1 err=-
+IsDlgButtonChecked(dlg, 130): ret=0 err=-
+CheckDlgButton(dlg, 131, 1) (check box): ret=1 err=-
+IsDlgButtonChecked(dlg, 131): ret=1 err=-
+CheckDlgButton(dlg, 131, 2) (a two-state check box): ret=1 err=-
+IsDlgButtonChecked(dlg, 131): ret=1 err=-
+CheckDlgButton(dlg, 131, 0) (check box): ret=1 err=-
+IsDlgButtonChecked(dlg, 131): ret=0 err=-
+CheckDlgButton(dlg, 122, 1) (radio button): ret=1 err=-
+IsDlgButtonChecked(dlg, 122): ret=1 err=-
+  checked: 121=0 122=1 123=0 130=0 131=0
+CheckDlgButton(dlg, 1, 1) (push button): ret=1 err=-
+IsDlgButtonChecked(dlg, 1): ret=0 err=-
+CheckDlgButton(dlg, 110, 1) (static): ret=1 err=-
+IsDlgButtonChecked(dlg, 110): ret=0 err=-
+CheckDlgButton(dlg, 555, 1) (no such control): ret=0 err=1421
+IsDlgButtonChecked(dlg, 555): ret=0 err=1421
+IsDlgButtonChecked(NULL, 130): ret=0 err=1400
+CheckRadioButton(dlg, 121, 123, 121): ret=1 err=-
+  checked: 121=1 122=0 123=0 130=0 131=0
+CheckRadioButton(dlg, 121, 123, 123): ret=1 err=-
+  checked: 121=0 122=0 123=1 130=0 131=0
+CheckRadioButton(dlg, 121, 122, 122): ret=1 err=-
+  checked: 121=0 122=1 123=1 130=0 131=0
+CheckRadioButton(dlg, 121, 123, 130): ret=1 err=-
+  checked: 121=0 122=0 123=0 130=0 131=0
+CheckRadioButton(dlg, 123, 121, 122): ret=1 err=-
+  checked: 121=0 122=0 123=0 130=0 131=0
+CheckRadioButton(dlg, 121, 123, 555): ret=1 err=-
+  checked: 121=0 122=0 123=0 130=0 131=0
+dialog: done
+<<< exit code=0
+>>> dialog.exe modal
+== modal
+DialogBoxParamW(100, NULL, proc, 0x5678), ended by EndDialog(1234): ret=1234 err=-
+the procedure received 2 of the recorded messages
+  WM_INITDIALOG: lParam=0x5678 focus control id=1
+  WM_COMMAND: id=900 code=0 lParam NULL
+WM_INITDIALOG lParam=0x5678 IsWindowUnicode=1 visible at the command=0 timed out no
+DialogBoxParamA(100, NULL, proc, 0x9ABC), ended by EndDialog(1234): ret=1234 err=-
+the procedure received 2 of the recorded messages
+  WM_INITDIALOG: lParam=0x9ABC focus control id=1
+  WM_COMMAND: id=900 code=0 lParam NULL
+WM_INITDIALOG lParam=0x9ABC IsWindowUnicode=0 visible at the command=0 timed out no
+DialogBoxParamW(100), EndDialog(77) inside WM_INITDIALOG: ret=77 err=-
+the procedure received 1 of the recorded messages
+  WM_INITDIALOG: lParam=0x1111 focus control id=1
+WM_INITDIALOG lParam=0x1111 IsWindowUnicode=1 visible at the command=-1 timed out no
+DialogBoxParamW(999, a template that does not exist): ret=-1 err=1814
+the procedure received 0 of the recorded messages
+WM_INITDIALOG lParam=0x0 IsWindowUnicode=-1 visible at the command=-1 timed out no
+EndDialog(a Static window, 5): ret=0 err=1420 IsWindow after yes
+EndDialog(NULL, 5): ret=0 err=1400
+dialog: done
+<<< exit code=0
+>>> dialog.exe units
+== units
+GetDialogBaseUnits: ret x=8 y=16 err=-
+CreateDialogParamW(102, no font): non-NULL yes
+MapDialogRect(102, 0,0,4,8): ret=1 err=- right==base x yes bottom==base y yes
+MapDialogRect(102, 0,0,100,50): right==MulDiv(100, base x, 4) yes bottom==MulDiv(50, base y, 8) yes
+MapDialogRect(102, no font, 0,0,4,8): ret=1 err=- -> 0,0,8,16
+  client size minus the mapped template size: 0 0
+dialog: class #32770 style=0x84C80084 exstyle=0x00010101 caption "F2K system font" visible no
+CreateDialogParamW(100, MS Shell Dlg 8): non-NULL yes
+MapDialogRect(100, 0,0,4,8): ret=1 err=- -> 0,0,6,13
+  client size minus the mapped template size: 0 0
+CreateDialogParamW(101, DIALOGEX, MS Shell Dlg 8): non-NULL yes
+MapDialogRect(101, 0,0,4,8): ret=1 err=- -> 0,0,6,13
+  client size minus the mapped template size: 0 0
+MapDialogRect(NULL): ret=0 err=1400
+dialog: done
+<<< exit code=0
+>>> dialog.exe keys
+== keys
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+the dialog shown: foreground yes active yes focus id 1
+DM_GETDEFID: has one yes id=1
+Tab, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 2
+  the procedure received 0 of the recorded messages
+Tab, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 121
+  the procedure received 1 of the recorded messages
+  WM_COMMAND: id=121 code=0 lParam the control
+Shift+Tab (VK_SHIFT down in the thread's key state), through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 2
+  the procedure received 0 of the recorded messages
+DM_GETDEFID: has one yes id=1
+Enter, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x0D): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x0D): ret=1
+  focus after: id 2
+  the procedure received 1 of the recorded messages
+  WM_COMMAND: id=2 code=0 lParam the control
+DM_GETDEFID: has one yes id=1
+SetFocus(122): focus id 122
+DM_GETDEFID: has one yes id=1
+Enter, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x0D): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x0D): ret=1
+  focus after: id 122
+  the procedure received 1 of the recorded messages
+  WM_COMMAND: id=1 code=0 lParam the control
+Esc, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x1B): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x1B): ret=1
+  focus after: id 122
+  the procedure received 1 of the recorded messages
+  WM_COMMAND: id=2 code=0 lParam the control
+Tab, through IsDialogMessageA:
+  IsDialogMessageA(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageA(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 130
+  the procedure received 0 of the recorded messages
+IsDialogMessageW(dlg, Tab for another top-level window): ret=0 err=- focus id 130
+dialog: done
+<<< exit code=0
+>>> dialog.exe msgbox
+== msgbox
+MessageBoxW(NULL, MB_OK), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: class #32770 caption "F2K caption", 2 controls
+    class Button id=2 text "OK"
+    class Static id=65535 text "F2K message box"
+MessageBoxW(NULL, MB_OKCANCEL), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: class #32770 caption "F2K caption", 3 controls
+    class Button id=1 text "OK"
+    class Button id=2 text "Cancel"
+    class Static id=65535 text "Second <é>"
+MessageBoxW(NULL, MB_YESNO), IDNO posted: ret=7 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: class #32770 caption "F2K caption", 3 controls
+    class Button id=6 text "&Yes"
+    class Button id=7 text "&No"
+    class Static id=65535 text "Third"
+MessageBoxA(NULL, MB_OK), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: class #32770 caption "F2K narrow caption", 2 controls
+    class Button id=2 text "OK"
+    class Static id=65535 text "F2K narrow box"
+dialog: done
+<<< exit code=0

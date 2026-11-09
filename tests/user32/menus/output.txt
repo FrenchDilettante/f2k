@@ -1,0 +1,196 @@
+# F2K capture of menus (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:24.45
+menus F2KT-SOURCE-CRC=0xE56E469D
+>>> menus.exe load
+== load
+LoadMenuW(200): non-NULL yes err=-
+IsMenu(LoadMenuW's): ret=1 err=-
+LoadMenuA(200): non-NULL yes err=- the same menu as LoadMenuW's no
+IsMenu(LoadMenuA's): ret=1 err=-
+LoadMenuW("#200"): non-NULL yes err=- the same menu as LoadMenuW's no
+LoadMenuW(299): non-NULL no err=1814
+LoadMenuA(299): non-NULL no err=1814
+DestroyMenu(LoadMenuW's): ret=1 err=-
+IsMenu(it) after: ret=0 err=1401
+DestroyMenu(it) again: ret=0 err=1401
+DestroyMenu(LoadMenuA's): ret=1 err=-
+DestroyMenu("#200"'s): ret=1 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe items
+== items
+LoadMenuW(200): non-NULL yes
+GetMenuItemCount(bar): ret=3 err=-
+GetMenuItemCount(File): ret=5 err=-
+GetMenuItemCount(View): ret=3 err=-
+GetMenuItemCount(Recent): ret=1 err=-
+GetMenuItemCount(NULL): ret=-1 err=1401
+GetMenuItemID(bar, 0): ret=-1 err=-
+GetMenuState(bar, 0, MF_BYPOSITION): ret=0x510 err=-
+GetSubMenu(bar, 0): non-NULL yes err=-
+GetMenuStringW(bar, 0, 32, MF_BYPOSITION): ret=5 err=- buffer "&File"
+GetMenuItemID(bar, 1): ret=-1 err=-
+GetMenuState(bar, 1, MF_BYPOSITION): ret=0x310 err=-
+GetSubMenu(bar, 1): non-NULL yes err=-
+GetMenuStringW(bar, 1, 32, MF_BYPOSITION): ret=5 err=- buffer "&View"
+GetMenuItemID(bar, 2): ret=220 err=-
+GetMenuState(bar, 2, MF_BYPOSITION): ret=0x0 err=-
+GetSubMenu(bar, 2): non-NULL no err=-
+GetMenuStringW(bar, 2, 32, MF_BYPOSITION): ret=5 err=- buffer "&Help"
+GetMenuItemID(bar, 3): ret=-1 err=-
+GetMenuState(bar, 3, MF_BYPOSITION): ret=-1 err=-
+GetSubMenu(bar, 3): non-NULL no err=-
+GetMenuStringW(bar, 3, 32, MF_BYPOSITION): ret=0 err=1456 buffer ""
+GetMenuItemID(File, 0): ret=201 err=-
+GetMenuState(File, 0, MF_BYPOSITION): ret=0x0 err=-
+GetSubMenu(File, 0): non-NULL no err=-
+GetMenuStringW(File, 0, 32, MF_BYPOSITION): ret=4 err=- buffer "&New"
+GetMenuItemID(File, 1): ret=202 err=-
+GetMenuState(File, 1, MF_BYPOSITION): ret=0x1 err=-
+GetSubMenu(File, 1): non-NULL no err=-
+GetMenuStringW(File, 1, 32, MF_BYPOSITION): ret=5 err=- buffer "&Open"
+GetMenuItemID(File, 2): ret=0 err=-
+GetMenuState(File, 2, MF_BYPOSITION): ret=0x803 err=-
+GetSubMenu(File, 2): non-NULL no err=-
+GetMenuStringW(File, 2, 32, MF_BYPOSITION): ret=0 err=- buffer ""
+GetMenuItemID(File, 3): ret=-1 err=-
+GetMenuState(File, 3, MF_BYPOSITION): ret=0x110 err=-
+GetSubMenu(File, 3): non-NULL yes err=-
+GetMenuStringW(File, 3, 32, MF_BYPOSITION): ret=7 err=- buffer "&Recent"
+GetMenuItemID(File, 4): ret=203 err=-
+GetMenuState(File, 4, MF_BYPOSITION): ret=0x8 err=-
+GetSubMenu(File, 4): non-NULL no err=-
+GetMenuStringW(File, 4, 32, MF_BYPOSITION): ret=5 err=- buffer "E&xit"
+GetMenuItemID(File, 5): ret=-1 err=-
+GetMenuState(File, 5, MF_BYPOSITION): ret=-1 err=-
+GetSubMenu(File, 5): non-NULL no err=-
+GetMenuStringW(File, 5, 32, MF_BYPOSITION): ret=0 err=1456 buffer ""
+GetMenuItemID(Recent, 0): ret=205 err=-
+GetMenuState(Recent, 0, MF_BYPOSITION): ret=0x0 err=-
+GetSubMenu(Recent, 0): non-NULL no err=-
+GetMenuStringW(Recent, 0, 32, MF_BYPOSITION): ret=5 err=- buffer "First"
+GetSubMenu(bar, 0) again: the same popup yes err=-
+GetSubMenu(File, 3) again: the same popup yes err=-
+GetMenuState(bar, 201 New, MF_BYCOMMAND): ret=0x0 err=-
+GetMenuState(bar, 202 Open, MF_BYCOMMAND): ret=0x1 err=-
+GetMenuState(bar, 203 Exit, MF_BYCOMMAND): ret=0x8 err=-
+GetMenuState(bar, 205 First, MF_BYCOMMAND): ret=0x0 err=-
+GetMenuState(bar, 211 Standard, MF_BYCOMMAND): ret=0x8 err=-
+GetMenuState(bar, 220 Help, MF_BYCOMMAND): ret=0x0 err=-
+GetMenuState(bar, 299, MF_BYCOMMAND): ret=-1 err=-
+GetMenuState(File, 205 First, MF_BYCOMMAND): ret=0x0 err=-
+GetMenuStringW(bar, 203, 32, MF_BYCOMMAND): ret=5 err=- buffer "E&xit"
+GetMenuStringW(bar, 205, 32, MF_BYCOMMAND): ret=5 err=- buffer "First"
+GetMenuStringW(bar, 220, 32, MF_BYCOMMAND): ret=5 err=- buffer "&Help"
+GetMenuStringW(bar, 299, 32, MF_BYCOMMAND): ret=0 err=1456 buffer ""
+GetMenuStringW(bar, 203, 3, MF_BYCOMMAND): ret=2 err=- buffer "E&"
+GetMenuStringW(bar, 203, 1, MF_BYCOMMAND): ret=0 err=- buffer ""
+GetMenuStringW(bar, 203, NULL, 0, MF_BYCOMMAND): ret=5 err=-
+GetMenuStringA(bar, 203, 32, MF_BYCOMMAND): ret=5 err=- buffer "E&xit"
+GetMenuStringA(bar, 0, 32, MF_BYPOSITION): ret=5 err=- buffer "&File"
+GetMenuStringA(File, 2, 32, MF_BYPOSITION): ret=0 err=- buffer ""
+GetMenuStringA(bar, 299, 32, MF_BYCOMMAND): ret=0 err=1456 buffer ""
+GetMenuStringA(bar, 203, 3, MF_BYCOMMAND): ret=2 err=- buffer "E&"
+GetMenuStringA(bar, 203, NULL, 0, MF_BYCOMMAND): ret=5 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe check
+== check
+LoadMenuW(200): non-NULL yes
+CheckMenuItem(bar, 203 Exit, MF_BYCOMMAND | MF_UNCHECKED): ret=0x8 err=-
+GetMenuState(bar, 203 Exit): ret=0x0 err=-
+CheckMenuItem(bar, 203 Exit, MF_UNCHECKED again): ret=0x0 err=-
+CheckMenuItem(bar, 201 New, MF_BYCOMMAND | MF_CHECKED): ret=0x0 err=-
+GetMenuState(bar, 201 New): ret=0x8 err=-
+CheckMenuItem(bar, 201 New, MF_CHECKED again): ret=0x8 err=-
+CheckMenuItem(File, 1 Open (grayed), MF_BYPOSITION | MF_CHECKED): ret=0x0 err=-
+GetMenuState(File, 1 Open): ret=0x9 err=-
+CheckMenuItem(bar, 205 First (nested), MF_CHECKED): ret=0x0 err=-
+GetMenuState(bar, 205 First): ret=0x8 err=-
+CheckMenuItem(bar, 1 View (a popup), MF_BYPOSITION | MF_CHECKED): ret=0x0 err=-
+GetMenuState(bar, 1 View): ret=0x318 err=-
+CheckMenuItem(bar, 1 View, MF_BYPOSITION | MF_UNCHECKED): ret=0x8 err=-
+CheckMenuItem(bar, 299, MF_CHECKED): ret=-1 err=-
+CheckMenuItem(File, 9, MF_BYPOSITION | MF_CHECKED): ret=-1 err=-
+GetMenuState(View, 0 Standard): ret=0x8 err=-
+GetMenuState(View, 1 Scientific): ret=0x0 err=-
+GetMenuState(View, 2 Programmer): ret=0x0 err=-
+CheckMenuRadioItem(View, 211-213, 212, MF_BYCOMMAND): ret=1 err=-
+GetMenuState(View, 0 Standard): ret=0x0 err=-
+GetMenuState(View, 1 Scientific): ret=0x208 err=-
+GetMenuState(View, 2 Programmer): ret=0x0 err=-
+CheckMenuRadioItem(View, 0-2, 2, MF_BYPOSITION): ret=1 err=-
+GetMenuState(View, 0 Standard): ret=0x0 err=-
+GetMenuState(View, 1 Scientific): ret=0x200 err=-
+GetMenuState(View, 2 Programmer): ret=0x208 err=-
+CheckMenuRadioItem(bar, 211-213, 211, MF_BYCOMMAND): ret=1 err=-
+GetMenuState(View, 0 Standard): ret=0x208 err=-
+GetMenuState(View, 1 Scientific): ret=0x200 err=-
+GetMenuState(View, 2 Programmer): ret=0x200 err=-
+CheckMenuRadioItem(View, 0-1, 2 (outside), MF_BYPOSITION): ret=0 err=-
+GetMenuState(View, 0 Standard): ret=0x200 err=-
+GetMenuState(View, 1 Scientific): ret=0x200 err=-
+GetMenuState(View, 2 Programmer): ret=0x200 err=-
+CheckMenuRadioItem(View, 290-295, 291 (no such items), MF_BYCOMMAND): ret=0 err=1456
+GetMenuState(View, 0 Standard): ret=0x200 err=-
+GetMenuState(View, 1 Scientific): ret=0x200 err=-
+GetMenuState(View, 2 Programmer): ret=0x200 err=-
+CheckMenuItem(View, 212 Scientific, MF_CHECKED): ret=0x0 err=-
+GetMenuState(View, 0 Standard): ret=0x200 err=-
+GetMenuState(View, 1 Scientific): ret=0x208 err=-
+GetMenuState(View, 2 Programmer): ret=0x200 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe enable
+== enable
+LoadMenuW(200): non-NULL yes
+EnableMenuItem(bar, 202 Open (grayed), MF_ENABLED): ret=1 err=-
+GetMenuState(bar, 202 Open): ret=0x0 err=-
+EnableMenuItem(bar, 202 Open, MF_ENABLED again): ret=0 err=-
+EnableMenuItem(bar, 201 New, MF_DISABLED): ret=0 err=-
+GetMenuState(bar, 201 New): ret=0x2 err=-
+EnableMenuItem(bar, 201 New, MF_GRAYED): ret=2 err=-
+GetMenuState(bar, 201 New): ret=0x1 err=-
+EnableMenuItem(bar, 201 New, MF_GRAYED | MF_DISABLED): ret=1 err=-
+GetMenuState(bar, 201 New): ret=0x3 err=-
+EnableMenuItem(bar, 201 New, MF_ENABLED): ret=3 err=-
+GetMenuState(bar, 201 New): ret=0x0 err=-
+EnableMenuItem(File, 4 Exit (checked), MF_BYPOSITION | MF_GRAYED): ret=0 err=-
+GetMenuState(File, 4 Exit): ret=0x9 err=-
+EnableMenuItem(bar, 205 First (nested), MF_GRAYED): ret=0 err=-
+GetMenuState(bar, 205 First): ret=0x1 err=-
+EnableMenuItem(bar, 0 File (a popup), MF_BYPOSITION | MF_GRAYED): ret=0 err=-
+GetMenuState(bar, 0 File): ret=0x511 err=-
+EnableMenuItem(bar, 0 File, MF_BYPOSITION | MF_ENABLED): ret=1 err=-
+EnableMenuItem(bar, 220 Help, MF_DISABLED): ret=0 err=-
+GetMenuState(bar, 220 Help): ret=0x2 err=-
+EnableMenuItem(bar, 299, MF_ENABLED): ret=-1 err=-
+EnableMenuItem(bar, 7, MF_BYPOSITION | MF_ENABLED): ret=-1 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe window
+== window
+RegisterClassW(F2KMenusWindow): atom nonzero yes err=2
+CreateWindowExW(F2KMenusWindow, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+GetMenu(window) with none: NULL yes err=-
+LoadMenuW(200): non-NULL yes
+SetMenu(window, menu): ret=1 err=-
+GetMenu(window): the menu yes err=-
+SetMenu(window, NULL): ret=1 err=-
+GetMenu(window): NULL yes err=-
+IsMenu(menu) once taken off: ret=1 err=-
+SetMenu(window, menu) again: ret=1 err=-
+DestroyWindow(window): ret=1 err=-
+IsMenu(menu) after its window's destruction: ret=0 err=1401
+CreateWindowExW(F2KMenusWindow, WS_OVERLAPPEDWINDOW, hMenu the menu): non-NULL yes err=-
+GetMenu(window): the menu yes err=-
+CreateWindowExW(F2KMenusWindow, WS_CHILD, id 7): non-NULL yes err=-
+SetMenu(child window, a second menu): ret=0 err=1436
+IsMenu(the second menu) after: ret=1 err=-
+SetMenu(window, a destroyed menu): ret=0 err=1401
+GetMenu(window): the menu it was created with yes err=-
+menus: done
+<<< exit code=0

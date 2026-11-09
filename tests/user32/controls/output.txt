@@ -1,0 +1,328 @@
+# F2K capture of controls (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:06:20.22
+controls F2KT-SOURCE-CRC=0xF60A1E3E
+>>> controls.exe create
+== create
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+CreateWindowExW("Button", BS_PUSHBUTTON, id 101): non-NULL yes err=-
+  class Button style=0x50000000 id=101 text "Push"
+  WM_GETDLGCODE: ret=0x2020 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_DEFPUSHBUTTON, id 102): non-NULL yes err=-
+  class Button style=0x50000001 id=102 text "Default"
+  WM_GETDLGCODE: ret=0x2010 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_CHECKBOX, id 103): non-NULL yes err=-
+  class Button style=0x50000002 id=103 text "Check"
+  WM_GETDLGCODE: ret=0x2000 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_AUTOCHECKBOX, id 104): non-NULL yes err=-
+  class Button style=0x50000003 id=104 text "Auto check"
+  WM_GETDLGCODE: ret=0x2000 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_AUTORADIOBUTTON | WS_GROUP, id 105): non-NULL yes err=-
+  class Button style=0x50020009 id=105 text "Radio 1"
+  WM_GETDLGCODE: ret=0x2040 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_AUTORADIOBUTTON, id 106): non-NULL yes err=-
+  class Button style=0x50000009 id=106 text "Radio 2"
+  WM_GETDLGCODE: ret=0x2040 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_AUTORADIOBUTTON, id 107): non-NULL yes err=-
+  class Button style=0x50000009 id=107 text "Radio 3"
+  WM_GETDLGCODE: ret=0x2040 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_GROUPBOX | WS_GROUP, id 108): non-NULL yes err=-
+  class Button style=0x50020007 id=108 text "Group"
+  WM_GETDLGCODE: ret=0x0100 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_3STATE, id 109): non-NULL yes err=-
+  class Button style=0x50000005 id=109 text "Three"
+  WM_GETDLGCODE: ret=0x2000 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_AUTO3STATE, id 110): non-NULL yes err=-
+  class Button style=0x50000006 id=110 text "Auto three"
+  WM_GETDLGCODE: ret=0x2000 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExW("Button", BS_RADIOBUTTON | WS_GROUP, id 111): non-NULL yes err=-
+  class Button style=0x50020004 id=111 text "Plain radio"
+  WM_GETDLGCODE: ret=0x2040 err=-
+  BM_GETCHECK: ret=0 err=-
+  BM_GETSTATE: ret=0x0000 err=-
+CreateWindowExA("BUTTON", BS_PUSHBUTTON, id 120): non-NULL yes err=-
+  class Button style=0x50000000 IsWindowUnicode no
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe check
+== check
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+BM_SETCHECK(101, BS_PUSHBUTTON, 1): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(101, BS_PUSHBUTTON, 2): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(101, BS_PUSHBUTTON, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(102, BS_DEFPUSHBUTTON, 1): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(102, BS_DEFPUSHBUTTON, 2): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(102, BS_DEFPUSHBUTTON, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(103, BS_CHECKBOX, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(103, BS_CHECKBOX, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(103, BS_CHECKBOX, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(104, BS_AUTOCHECKBOX, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(104, BS_AUTOCHECKBOX, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(104, BS_AUTOCHECKBOX, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(105, BS_AUTORADIOBUTTON | WS_GROUP, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(105, BS_AUTORADIOBUTTON | WS_GROUP, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(105, BS_AUTORADIOBUTTON | WS_GROUP, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(106, BS_AUTORADIOBUTTON, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(106, BS_AUTORADIOBUTTON, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(106, BS_AUTORADIOBUTTON, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(107, BS_AUTORADIOBUTTON, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(107, BS_AUTORADIOBUTTON, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(107, BS_AUTORADIOBUTTON, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(108, BS_GROUPBOX | WS_GROUP, 1): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(108, BS_GROUPBOX | WS_GROUP, 2): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(108, BS_GROUPBOX | WS_GROUP, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(109, BS_3STATE, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(109, BS_3STATE, 2): ret=0 err=-
+  BM_GETCHECK: ret=2 err=- BM_GETSTATE=0x0002
+  the parent received no WM_COMMAND
+BM_SETCHECK(109, BS_3STATE, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(110, BS_AUTO3STATE, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(110, BS_AUTO3STATE, 2): ret=0 err=-
+  BM_GETCHECK: ret=2 err=- BM_GETSTATE=0x0002
+  the parent received no WM_COMMAND
+BM_SETCHECK(110, BS_AUTO3STATE, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(111, BS_RADIOBUTTON | WS_GROUP, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(111, BS_RADIOBUTTON | WS_GROUP, 2): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(111, BS_RADIOBUTTON | WS_GROUP, 0): ret=0 err=-
+  BM_GETCHECK: ret=0 err=- BM_GETSTATE=0x0000
+  the parent received no WM_COMMAND
+BM_SETCHECK(105, BS_AUTORADIOBUTTON | WS_GROUP, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+BM_SETCHECK(106, BS_AUTORADIOBUTTON, 1): ret=0 err=-
+  BM_GETCHECK: ret=1 err=- BM_GETSTATE=0x0001
+  the parent received no WM_COMMAND
+the auto radio group after checking 105 then 106 by BM_SETCHECK:
+  checks: 105=1 106=1 107=0
+controls: done
+<<< exit code=0
+>>> controls.exe click
+== click
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+the parent: foreground yes active yes
+BM_CLICK(101, BS_PUSHBUTTON): ret=0 err=-
+  the parent received WM_COMMAND id=101 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 101
+BM_CLICK(102, BS_DEFPUSHBUTTON): ret=0 err=-
+  the parent received WM_COMMAND id=102 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 102
+BM_CLICK(103, BS_CHECKBOX): ret=0 err=-
+  the parent received WM_COMMAND id=103 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 103
+BM_CLICK(104, BS_AUTOCHECKBOX): ret=0 err=-
+  the parent received WM_COMMAND id=104 code=0 lParam is the control yes
+  BM_GETCHECK=1 BM_GETSTATE=0x0009 focus id 104
+BM_CLICK(104, BS_AUTOCHECKBOX, again): ret=0 err=-
+  the parent received WM_COMMAND id=104 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 104
+BM_CLICK(106, BS_AUTORADIOBUTTON): ret=0 err=-
+  the parent received WM_COMMAND id=106 code=0 lParam is the control yes
+  BM_GETCHECK=1 BM_GETSTATE=0x0009 focus id 106
+  checks: 105=0 106=1 107=0
+BM_CLICK(107, BS_AUTORADIOBUTTON): ret=0 err=-
+  the parent received WM_COMMAND id=107 code=0 lParam is the control yes
+  BM_GETCHECK=1 BM_GETSTATE=0x0009 focus id 107
+  checks: 105=0 106=0 107=1
+BM_CLICK(108, BS_GROUPBOX | WS_GROUP): ret=0 err=-
+  the parent received WM_COMMAND id=108 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 108
+BM_CLICK(109, BS_3STATE): ret=0 err=-
+  the parent received WM_COMMAND id=109 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 109
+BM_CLICK(110, BS_AUTO3STATE): ret=0 err=-
+  the parent received WM_COMMAND id=110 code=0 lParam is the control yes
+  BM_GETCHECK=1 BM_GETSTATE=0x0009 focus id 110
+BM_CLICK(110, BS_AUTO3STATE, again): ret=0 err=-
+  the parent received WM_COMMAND id=110 code=0 lParam is the control yes
+  BM_GETCHECK=2 BM_GETSTATE=0x000A focus id 110
+BM_CLICK(110, BS_AUTO3STATE, a third time): ret=0 err=-
+  the parent received WM_COMMAND id=110 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 110
+BM_CLICK(111, BS_RADIOBUTTON | WS_GROUP): ret=0 err=-
+  the parent received WM_COMMAND id=111 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0008 focus id 111
+BM_CLICK(101, BS_PUSHBUTTON, disabled): ret=0 err=-
+  the parent received WM_COMMAND id=101 code=0 lParam is the control yes
+  BM_GETCHECK=0 BM_GETSTATE=0x0000 focus id 111
+controls: done
+<<< exit code=0
+>>> controls.exe default
+== default
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+BM_SETSTYLE(101, BS_DEFPUSHBUTTON, redraw): ret=0 err=-
+  style=0x50000001 WM_GETDLGCODE=0x2010
+BM_SETSTYLE(102, BS_PUSHBUTTON, redraw): ret=0 err=-
+  style=0x50000000 WM_GETDLGCODE=0x2020
+BM_SETSTYLE(101, BS_PUSHBUTTON, redraw): ret=0 err=-
+  style=0x50000000 WM_GETDLGCODE=0x2020
+BM_SETSTYLE(104, BS_CHECKBOX, redraw): ret=0 err=-
+  style=0x50000002 WM_GETDLGCODE=0x2000
+BM_SETSTATE(101, TRUE): ret=0 err=- BM_GETSTATE=0x0004 pushed yes
+BM_SETSTATE(101, FALSE): ret=0 err=- BM_GETSTATE=0x0000
+SetFocus(101): focus id 101 BM_GETSTATE=0x0008 focus bit yes
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe static
+== static
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+CreateWindowExW("Static", SS_LEFT, id 201): non-NULL yes err=-
+  class Static style=0x50000000 WM_GETTEXT: ret=9 err=- "Left text"
+  WM_GETTEXTLENGTH=9 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_CENTER, id 202): non-NULL yes err=-
+  class Static style=0x50000001 WM_GETTEXT: ret=7 err=- "Centred"
+  WM_GETTEXTLENGTH=7 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_RIGHT, id 203): non-NULL yes err=-
+  class Static style=0x50000002 WM_GETTEXT: ret=5 err=- "Right"
+  WM_GETTEXTLENGTH=5 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_SIMPLE, id 204): non-NULL yes err=-
+  class Static style=0x5000000B WM_GETTEXT: ret=6 err=- "Simple"
+  WM_GETTEXTLENGTH=6 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_LEFTNOWORDWRAP, id 205): non-NULL yes err=-
+  class Static style=0x5000000C WM_GETTEXT: ret=7 err=- "No wrap"
+  WM_GETTEXTLENGTH=7 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_LEFT | SS_NOPREFIX, id 206): non-NULL yes err=-
+  class Static style=0x50000080 WM_GETTEXT: ret=10 err=- "&No prefix"
+  WM_GETTEXTLENGTH=10 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_BLACKFRAME, id 207): non-NULL yes err=-
+  class Static style=0x50000007 WM_GETTEXT: ret=5 err=- "frame"
+  WM_GETTEXTLENGTH=5 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_GRAYFRAME, id 208): non-NULL yes err=-
+  class Static style=0x50000008 WM_GETTEXT: ret=0 err=- ""
+  WM_GETTEXTLENGTH=0 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_ETCHEDFRAME, id 209): non-NULL yes err=-
+  class Static style=0x50000012 WM_GETTEXT: ret=6 err=- "etched"
+  WM_GETTEXTLENGTH=6 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_ETCHEDHORZ, id 210): non-NULL yes err=-
+  class Static style=0x50000010 WM_GETTEXT: ret=0 err=- ""
+  WM_GETTEXTLENGTH=0 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_ETCHEDVERT, id 211): non-NULL yes err=-
+  class Static style=0x50000011 WM_GETTEXT: ret=0 err=- ""
+  WM_GETTEXTLENGTH=0 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_BLACKRECT, id 212): non-NULL yes err=-
+  class Static style=0x50000004 WM_GETTEXT: ret=4 err=- "rect"
+  WM_GETTEXTLENGTH=4 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+CreateWindowExW("Static", SS_WHITERECT, id 213): non-NULL yes err=-
+  class Static style=0x50000006 WM_GETTEXT: ret=0 err=- ""
+  WM_GETTEXTLENGTH=0 WM_GETDLGCODE=0x0100 STM_GETICON non-NULL no
+WM_SETTEXT(201, L"New <U+00E9> text"): ret=1 err=-
+  SendMessageW WM_GETTEXT: ret=12 err=- "New <é> text"
+  SendMessageA WM_GETTEXT: ret=12 err=- "New <é> text"
+  SendMessageW WM_GETTEXT, 4 units: ret=3 err=- "New"
+  SendMessageA WM_GETTEXTLENGTH: ret=12 err=-
+WM_SETTEXT(207, SS_BLACKFRAME, L"framed"): ret=0 err=- read back "frame"
+CreateWindowExA("STATIC", SS_LEFT, id 220): non-NULL yes err=-
+  class Static IsWindowUnicode no WM_GETTEXT "Narrow static"
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe icon
+== icon
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+LoadIconW(NULL, IDI_APPLICATION) non-NULL yes, IDI_HAND non-NULL yes, the same no
+CreateWindowExW("Static", SS_ICON, empty text, 0x0): non-NULL yes err=-
+  style=0x50000003 WM_GETDLGCODE=0x0100
+STM_GETICON: non-NULL no err=-
+STM_SETICON(IDI_APPLICATION): previous non-NULL no err=-
+STM_GETICON: == IDI_APPLICATION yes err=-
+  size minus (SM_CXICON, SM_CYICON): 0 0
+STM_SETIMAGE(IMAGE_ICON, IDI_HAND): previous == IDI_APPLICATION yes non-NULL yes err=-
+STM_GETIMAGE(IMAGE_ICON): == IDI_HAND yes err=-
+STM_GETICON: == IDI_HAND yes err=-
+STM_GETIMAGE(IMAGE_BITMAP): non-NULL no err=-
+STM_SETICON(NULL): previous == IDI_HAND yes err=-
+STM_GETICON: non-NULL no err=-
+STM_SETICON(IDI_APPLICATION) on an SS_LEFT static: previous non-NULL no err=-
+  STM_GETICON: == IDI_APPLICATION no non-NULL no err=- style=0x50000000
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0

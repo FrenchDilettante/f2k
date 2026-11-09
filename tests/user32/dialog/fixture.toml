@@ -1,0 +1,71 @@
+# dialog: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# dialogs are compiled from dialog.rc (rc) and linked into dialog.exe. No handle or address prints: a
+# control prints by its id, its position as its mapped template rectangle less its window's; only
+# the units block prints base units in pixels (the capture taken at 96 DPI). Every dialog and
+# message box ends itself: a posted command and a timer, never a person.
+description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
+kind = "sectioned"
+
+# Not gated: user32 has no dialog manager yet, and dialog.exe imports catalogued records user32 does
+# not export yet, so it does not load. Every section is on the work list.
+[pending]
+create = "CreateDialogParamW/A not yet implemented: no dialog manager (templates, #32770, DefDlgProc) and no Button or Static controls"
+ex = "CreateDialogParamW of a DIALOGEX template not yet implemented: no dialog manager"
+items = "GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW not yet implemented"
+ints = "SetDlgItemInt and GetDlgItemInt not yet implemented"
+buttons = "CheckDlgButton, IsDlgButtonChecked and CheckRadioButton not yet implemented, nor the Button control"
+modal = "DialogBoxParamW/A and EndDialog not yet implemented: no modal dialog loop"
+units = "GetDialogBaseUnits and MapDialogRect not yet implemented, and the dialog font is the built-in 8x16 one"
+keys = "IsDialogMessageW/A not yet implemented: no dialog keyboard navigation"
+msgbox = "MessageBoxW/A not yet implemented: no dialog manager"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (DestroyWindow,
+# GetClassNameW, GetWindowLongW, SetTimer, SetKeyboardState, PostMessageW, EnumThreadWindows).
+create = [
+    "user32.CreateDialogParamW",
+    "user32.CreateDialogParamA",
+    "user32.MapDialogRect",
+    "user32.GetFocus",
+]
+ex = [
+    "user32.CreateDialogParamW",
+    "user32.MapDialogRect",
+]
+items = [
+    "user32.GetDlgItem",
+    "user32.GetDlgCtrlID",
+    "user32.SetDlgItemTextW",
+    "user32.SetDlgItemTextA",
+    "user32.GetDlgItemTextW",
+    "user32.GetDlgItemTextA",
+    "user32.SendDlgItemMessageW",
+]
+ints = [
+    "user32.SetDlgItemInt",
+    "user32.GetDlgItemInt",
+]
+buttons = [
+    "user32.CheckDlgButton",
+    "user32.IsDlgButtonChecked",
+    "user32.CheckRadioButton",
+]
+modal = [
+    "user32.DialogBoxParamW",
+    "user32.DialogBoxParamA",
+    "user32.EndDialog",
+]
+units = [
+    "user32.GetDialogBaseUnits",
+    "user32.MapDialogRect",
+]
+keys = [
+    "user32.IsDialogMessageW",
+    "user32.IsDialogMessageA",
+    "user32.GetFocus",
+]
+msgbox = [
+    "user32.MessageBoxW",
+    "user32.MessageBoxA",
+]
