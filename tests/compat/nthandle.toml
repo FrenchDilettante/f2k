@@ -1,0 +1,26 @@
+# Nthandle.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# From the Inside Windows 2000 CD companion (not the machine copy);
+# sha256 880b207c3f7d5325..., linked 2000-07-14T12:28:43Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+# Note: all its Nt* calls are resolved at runtime via GetProcAddress
+# over ntdll (only KERNEL32/ADVAPI32 appear in the static table).
+
+[image]
+file = "Nthandle.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "console"
+base = "0x00400000"
+size_bytes = 49152
+link_timestamp = "2000-07-14T12:28:43Z"
+sha256 = "880b207c3f7d5325be78e3f8eee290376eafc6cd90fb799587e62ad3fd358f35"
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["FormatMessageA", "DeviceIoControl", "SetLastError", "LocalFree", "GetModuleHandleA", "OpenProcess", "GetWindowsDirectoryA", "GetVersion", "GetProcAddress", "LoadResource", "CreateFileA", "FindResourceA", "GetCurrentProcess", "SizeofResource", "LockResource", "CloseHandle", "GetDriveTypeA", "GetCommandLineA", "HeapFree", "HeapAlloc", "ExitProcess", "TerminateProcess", "GetLastError", "WriteFile", "HeapDestroy", "HeapCreate", "VirtualFree", "VirtualAlloc", "HeapReAlloc", "UnhandledExceptionFilter", "GetModuleFileNameA", "FreeEnvironmentStringsA", "FreeEnvironmentStringsW", "WideCharToMultiByte", "GetEnvironmentStrings", "GetEnvironmentStringsW", "SetHandleCount", "GetStdHandle", "GetFileType", "GetStartupInfoA", "RtlUnwind", "SetStdHandle", "FlushFileBuffers", "SetFilePointer", "GetCPInfo", "GetACP", "GetOEMCP", "LoadLibraryA", "SetEndOfFile", "ReadFile", "MultiByteToWideChar", "LCMapStringA", "LCMapStringW", "GetStringTypeA", "GetStringTypeW"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["GetTokenInformation", "LookupAccountSidA", "RegSetValueExA", "RegCloseKey", "RegCreateKeyA", "OpenProcessToken", "LookupPrivilegeValueA", "RegDeleteKeyA", "AdjustTokenPrivileges"]

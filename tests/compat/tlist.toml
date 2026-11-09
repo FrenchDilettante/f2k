@@ -1,0 +1,49 @@
+# tlist.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# From the Inside Windows 2000 CD companion (not the machine copy);
+# sha256 b9c1454f9e846b3f..., linked 2000-06-03T00:48:29Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+
+[image]
+file = "tlist.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "console"
+base = "0x01000000"
+size_bytes = 15360
+link_timestamp = "2000-06-03T00:48:29Z"
+sha256 = "b9c1454f9e846b3ff0c6dbdded46c7ddbcd8a6755a688f38d75c3380cc79c6a6"
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["CloseDesktop", "EnumWindowStationsA", "SetProcessWindowStation", "GetProcessWindowStation", "GetWindowThreadProcessId", "GetWindow", "GetWindowLongA", "GetWindowTextA", "EnumWindows", "FindWindowExA", "EnumDesktopsA", "CloseWindowStation", "GetThreadDesktop", "OpenWindowStationA", "SetThreadDesktop", "wsprintfA", "OpenDesktopA"]
+
+[[imports]]
+dll = "ntdll.dll"
+delay = false
+names = ["strchr", "atol", "_strlwr", "NtQueryInformationThread", "RtlNtStatusToDosError", "NtQueryInformationProcess", "NtClose", "_strupr", "strncpy", "RtlUnwind", "RtlUnicodeStringToAnsiString", "NtQuerySystemInformation"]
+
+[[imports]]
+dll = "DBGHELP.dll"
+delay = false
+names = ["EnumerateLoadedModules"]
+
+[[imports]]
+dll = "VERSION.dll"
+delay = false
+names = ["GetFileVersionInfoSizeA", "VerQueryValueA", "GetFileVersionInfoA"]
+
+[[imports]]
+dll = "MSVCRT.dll"
+delay = false
+names = ["_initterm", "strncat", "strrchr", "_strdup", "toupper", "_exit", "_XcptFilter", "exit", "__p___initenv", "__getmainargs", "_iob", "__setusermatherr", "_adjust_fdiv", "__p__commode", "__p__fmode", "__set_app_type", "_controlfp", "fprintf", "free", "printf", "malloc", "wprintf"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["AdjustTokenPrivileges", "OpenSCManagerA", "LookupPrivilegeValueA", "CloseServiceHandle", "EnumServicesStatusExA", "OpenProcessToken"]
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["OpenThread", "GetLastError", "VirtualFree", "VirtualAlloc", "GetCurrentProcess", "ReadProcessMemory", "CloseHandle", "ExitProcess", "GetCurrentThreadId", "SetLastError", "OpenProcess"]
