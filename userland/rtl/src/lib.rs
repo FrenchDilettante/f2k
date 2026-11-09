@@ -24,7 +24,8 @@
 //! exports not written yet, and the paths their code does not handle), DbgPrint's formatting
 //! ([`printf`]), the display settings' shapes, DEVMODE among them ([`display`]: user32's
 //! display calls and win32k's display services share them), GDI's constants, stock objects and
-//! TEXTMETRIC ([`gdi`]: gdi32's exports and win32k's DC services share them), the window
+//! TEXTMETRIC ([`gdi`]: gdi32's exports and win32k's DC services share them), the TrueType font
+//! reader ([`truetype`]: win32k's font driver reads its font files through it), the window
 //! manager's WINDOWINFO and WINDOWPOS ([`window`]: user32's window calls and win32k's window
 //! services share them), and USER's message constants and structures ([`user`]: user32's
 //! message calls and win32k's queue share them, the receipt of a retrieved message among
@@ -86,6 +87,7 @@ pub mod sync;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
 pub mod time;
+pub mod truetype;
 pub mod user;
 pub mod window;
 
