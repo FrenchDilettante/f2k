@@ -16,6 +16,7 @@
 //! too, unmasks the keyboard's line, and lets both in at once — the keyboard's first, its line
 //! outranking the cascade.
 
+use crate::hal::{Hal, PLATFORM};
 use crate::hw::ide::disk;
 use crate::hw::kbd;
 use crate::interrupt::clock;
@@ -56,11 +57,13 @@ fn halt_while(ticks: u64, mut waiting: impl FnMut() -> bool) -> bool {
 pub fn run() {
     // The controller is the kernel's own, touched here with the line masks the diagnostic changes
     // and restores.
-    let controller = &super::target::CONTROLLER;
-    controller.mask(kbd::VECTOR);
+    let controller = PLATFORM;
+    controller.disable_system_interrupt(kbd::VECTOR);
     serial_println!("F2K: nest-smoke: keyboard line held at the controller; press a key");
-    if !halt_while(KEY_TICKS, || !controller.requested(kbd::VECTOR)) {
-        controller.unmask(kbd::VECTOR);
+    if !halt_while(KEY_TICKS, || {
+        !controller.system_interrupt_requested(kbd::VECTOR)
+    }) {
+        controller.enable_system_interrupt(kbd::VECTOR);
         serial_println!("F2K: nest-smoke: FAILED (no key came)");
         return;
     }
@@ -69,22 +72,22 @@ pub fn run() {
     let unsolicited = disk::unsolicited();
     disk::request_interrupt();
     let mut polls = 0;
-    while !controller.requested(disk::VECTOR) && polls < DISK_POLLS {
+    while !controller.system_interrupt_requested(disk::VECTOR) && polls < DISK_POLLS {
         polls += 1;
     }
     if polls == DISK_POLLS {
-        controller.unmask(kbd::VECTOR);
+        controller.enable_system_interrupt(kbd::VECTOR);
         pcr().unmask_interrupts();
         serial_println!("F2K: nest-smoke: FAILED (the disk's interrupt never came)");
         return;
     }
-    controller.unmask(kbd::VECTOR);
+    controller.enable_system_interrupt(kbd::VECTOR);
     serial_println!("F2K: nest-smoke: keyboard and disk interrupts pending together");
 
     // Both in: the keyboard's claim, its end, then the disk's.
     let served = halt_while(SERVED_TICKS, || {
-        controller.requested(kbd::VECTOR)
-            || controller.requested(disk::VECTOR)
+        controller.system_interrupt_requested(kbd::VECTOR)
+            || controller.system_interrupt_requested(disk::VECTOR)
             || disk::unsolicited() == unsolicited
     });
     if !served {

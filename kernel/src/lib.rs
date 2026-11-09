@@ -28,6 +28,11 @@ mod cpu;
 // serial port, reached through abstract port I/O
 mod hw;
 
+// The hardware abstraction layer: the one interface the kernel reaches the platform's system
+// hardware through (the port space, the interrupt controller, the interval timer, the real-time
+// clock, the display's mode)
+mod hal;
+
 // The interrupt core: interrupt objects, the vector table, the level discipline, the deferred
 // procedure call queue, and the interval clock
 mod interrupt;

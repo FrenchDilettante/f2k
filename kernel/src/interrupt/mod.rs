@@ -12,8 +12,8 @@
 //! the delivered interrupt (a spurious one — the chip's acknowledge-time quirk — is dropped without
 //! raising anything, and the controller performs the partial acknowledgment the quirk demands), end
 //! lowers back and acknowledges, enable/disable drive the line masks. The core is hardware-neutral:
-//! the programmable-controller implementation sits behind the same seam a future implementation can
-//! replace.
+//! on target the seam is the hardware abstraction layer's ([`crate::hal::SystemInterrupts`] over
+//! the platform's controller), and the host tests supply fakes.
 
 pub mod clock;
 pub mod dpc;
@@ -33,11 +33,11 @@ use crate::interrupt::irql::{Irql, OldIrql, HIGH, SYNCH};
 use crate::level::{At, Clock, Ide, Keyboard, Level};
 use crate::pcr::pcr;
 
-/// First hardware vector (the band the remap programs the chips with; IRQ 0).
-pub const FIRST_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
+/// First hardware vector (the platform's band; IRQ 0).
+pub const FIRST_VECTOR: u8 = crate::hal::FIRST_VECTOR;
 
 /// Last hardware vector (IRQ 15).
-pub const LAST_VECTOR: u8 = crate::hw::pic::LAST_VECTOR;
+pub const LAST_VECTOR: u8 = crate::hal::LAST_VECTOR;
 
 /// How many hardware vectors the band holds.
 pub const VECTOR_COUNT: usize = (LAST_VECTOR - FIRST_VECTOR + 1) as usize;
@@ -579,56 +579,18 @@ mod target {
 
     use super::*;
     use crate::cpu::idt::ExceptionFrame;
-    use crate::hw::pic::{self, Pic, Verdict};
+    use crate::hal::{Hal, StandardPc, SystemInterrupts, PLATFORM};
     use crate::hw::portio::Ports;
 
     /// The kernel's vector table.
     static TABLE: VectorTable = VectorTable::zeroed();
 
-    /// The kernel's interrupt controller (the 8259A pair, remapped to the hardware band).
-    pub(super) static CONTROLLER: Pic<Ports> =
-        Pic::new(Ports, pic::MASTER_VECTOR_BASE, pic::SLAVE_VECTOR_BASE);
-
     /// Spurious interrupts counted so far (see [`spurious_count`]).
     static SPURIOUS: AtomicU32 = AtomicU32::new(0);
 
-    /// The kernel's controller as the core's seam reaches it: the static pair.
-    struct Chip;
-
-    impl Controller for Chip {
-        fn claim(&mut self, vector: u8, level: Irql) -> Claim {
-            match CONTROLLER.claim(vector) {
-                // Real: raise to the service level. The ledger performs the interrupt-flag
-                // transition.
-                Verdict::Real => Claim::Accepted(pcr().raise(level)),
-                // Spurious: the chip work is already done inside the controller; nothing was
-                // raised.
-                Verdict::SpuriousNoEoi | Verdict::SpuriousCascadeEnded => Claim::Spurious,
-            }
-        }
-
-        fn end(&mut self, previous: OldIrql, vector: u8) {
-            // Acknowledged with interrupts masked: a line the claim held off waits for the lower
-            // (see `IrqlState::end_claim`).
-            pcr().end_claim(previous, || CONTROLLER.end_of_interrupt(vector));
-        }
-
-        fn enable(&mut self, vector: u8) -> bool {
-            CONTROLLER.unmask(vector);
-            true
-        }
-
-        fn disable(&mut self, vector: u8) {
-            CONTROLLER.mask(vector);
-        }
-
-        fn is_enabled(&mut self, vector: u8) -> bool {
-            CONTROLLER.is_unmasked(vector)
-        }
-
-        fn in_service_clear(&mut self) -> bool {
-            CONTROLLER.in_service_clear()
-        }
+    /// The kernel's controller as the core's seam reaches it: the platform's.
+    fn chip() -> SystemInterrupts<'static, StandardPc> {
+        SystemInterrupts(&PLATFORM)
     }
 
     /// The interval clock's interrupt object: IRQ 0, served at the clock level.
@@ -658,7 +620,7 @@ mod target {
             crate::perf::sample(frame);
             pcr().leave_gate(enabled);
         }
-        match service_interrupt(&TABLE, &mut Chip, vector) {
+        match service_interrupt(&TABLE, &mut chip(), vector) {
             Outcome::Served => {
                 crate::interrupt::dpc::drain();
                 crate::sched::dispatcher::deliver_pending();
@@ -688,15 +650,15 @@ mod target {
         dispatch(frame)
     }
 
-    /// Bring up the interrupt subsystem: remap the chips, program the interval timer, connect the
+    /// Bring up the interrupt subsystem: program the controller, the interval timer, connect the
     /// clock, and let interrupts fly.
     ///
     /// # Safety
     ///
     /// Boot CPU, ring 0, with interrupts disabled, before any code that expects the tick.
     pub unsafe fn init() {
-        // The 8259 pair: vectors 0x30-0x3F, every line masked.
-        CONTROLLER.remap();
+        // The controller: the device lines on the hardware vectors, every line masked.
+        PLATFORM.initialize_interrupts();
         // The 8254: the captured platform interval.
         let mut ports = Ports;
         crate::hw::pit::program_interval(&mut ports, crate::hw::pit::INTERVAL_DIVISOR);
@@ -711,7 +673,7 @@ mod target {
         crate::perf::init();
 
         // The interval clock.
-        let connected = TABLE.connect(&CLOCK_OBJECT, &mut Chip);
+        let connected = TABLE.connect(&CLOCK_OBJECT, &mut chip());
         assert!(connected, "connecting the interval clock failed");
 
         // Interrupts fly from here on.
@@ -722,14 +684,14 @@ mod target {
     /// enable the line (see [`VectorTable::connect`]). The object is a static: the table keeps its
     /// address for the kernel's lifetime.
     pub fn connect(object: &'static InterruptObject) -> bool {
-        TABLE.connect(object, &mut Chip)
+        TABLE.connect(object, &mut chip())
     }
 
     /// The interrupt subsystem's audit: the level transitions are balanced, no line is enabled
     /// without an object, and the chip carries no stuck in-service state.
     pub fn audit() -> Result<(), &'static str> {
         pcr().audit()?;
-        TABLE.audit(&mut Chip)
+        TABLE.audit(&mut chip())
     }
 
     /// Spurious interrupts counted so far (diagnostic).
@@ -741,19 +703,12 @@ mod target {
     /// performance counter's reader must count, interrupts masked around it (no claim runs between
     /// the select and the read).
     pub fn clock_requested() -> bool {
-        CONTROLLER.requested(super::clock::CLOCK_VECTOR)
+        PLATFORM.system_interrupt_requested(super::clock::CLOCK_VECTOR)
     }
 
-    /// Run `f` with every line of the 8259 pair masked, then put the masks back: the real-mode
-    /// BIOS calls, whose vector table sends the remapped hardware vectors (0x30-0x3F) to the BIOS's
-    /// default handlers, which end no interrupt. A request raised meanwhile stays in the request
-    /// register and is taken once the masks are back and interrupts are open.
+    /// Run `f` with every line masked, then put the masks back (see [`Hal::with_lines_masked`]).
     pub fn with_lines_masked<R>(f: impl FnOnce() -> R) -> R {
-        let saved = CONTROLLER.line_masks();
-        CONTROLLER.mask_all();
-        let result = f();
-        CONTROLLER.set_line_masks(saved);
-        result
+        PLATFORM.with_lines_masked(f)
     }
 }
 

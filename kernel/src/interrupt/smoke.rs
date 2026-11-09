@@ -9,8 +9,7 @@
 
 use core::arch::asm;
 
-use crate::hw::pit::{self, Programming};
-use crate::hw::portio::Ports;
+use crate::hal::{Hal, PLATFORM};
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
 use crate::pcr::pcr;
 use crate::sched::timer::TimerId;
@@ -32,34 +31,33 @@ fn wait_for_interrupt() {
 /// driver connects a line.
 pub fn run() {
     // The controller is the kernel's own; these reads change no state.
-    let controller = &super::target::CONTROLLER;
-    let (master_base, slave_base) = controller.vector_bases();
+    let (master_base, slave_base) = PLATFORM.vector_bases();
     serial_println!(
         "F2K: irq-smoke: PIC remapped (master {:#04x}, slave {:#04x}, IRQ0 {})",
         master_base,
         slave_base,
-        if controller.is_unmasked(CLOCK_VECTOR) {
+        if PLATFORM.system_interrupt_enabled(CLOCK_VECTOR) {
             "unmasked"
         } else {
             "masked"
         }
     );
-    let (master_mask, slave_mask) = controller.line_masks();
+    let (master_mask, slave_mask) = PLATFORM.line_masks();
     serial_println!(
         "F2K: irq-smoke: PIC line masks: master {:#04x}, slave {:#04x}",
         master_mask,
         slave_mask
     );
 
-    let programmed = Programming::decode(pit::MODE2_LO_HIBYTE);
+    let timer = PLATFORM.timer_programming();
     serial_println!(
         "F2K: irq-smoke: PIT programmed (mode {}, divisor {}, {}.{:04} ms tick)",
-        programmed.mode,
-        pit::INTERVAL_DIVISOR,
-        pit::INTERVAL_100NS / 10_000,
-        pit::INTERVAL_100NS % 10_000
+        timer.programmed.mode,
+        timer.divisor,
+        timer.interval / 10_000,
+        timer.interval % 10_000
     );
-    let status = Programming::decode(pit::read_back_status(&mut Ports));
+    let status = timer.status;
     serial_println!(
         "F2K: irq-smoke: PIT channel 0 read-back: mode {}, {}, {}",
         status.mode,
@@ -89,7 +87,7 @@ pub fn run() {
         let now = clock::read_at(dispatch, clock::Clock::interrupt_time);
         crate::sched::DISPATCHER.get(dispatch).set_waitable_timer(
             TimerId::Waitable(timer.index),
-            now + pit::INTERVAL_100NS as u64,
+            now + clock::INTERVAL_100NS as u64,
             now,
             0,
             false,
