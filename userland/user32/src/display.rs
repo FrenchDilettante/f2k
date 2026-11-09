@@ -170,8 +170,9 @@ fn narrow_text(units: &[u16], out: &mut [u8]) {
 // --- The display modes ---------------------------------------------------------------------------
 
 /// EnumDisplaySettingsW: mode `mode` of the display (NULL: the primary one; ENUM_CURRENT_SETTINGS:
-/// the current mode) described into the caller's DEVMODEW as far as its dmSize goes (its dmSize
-/// kept); FALSE past the modes, the last error untouched (as the guidisp capture shows).
+/// the current mode) described into the caller's DEVMODEW in the version win32k describes modes in,
+/// dmSize 188 whatever the caller's (as the guidisp capture shows), the caller's bytes past it
+/// untouched; FALSE past the modes, the last error untouched (as the capture shows too).
 #[unsafe(export_name = "f2k_export_EnumDisplaySettingsW")]
 pub extern "system" fn enum_display_settings_w(
     device: *const u16,
@@ -183,9 +184,9 @@ pub extern "system" fn enum_display_settings_w(
 
 /// EnumDisplaySettingsA: EnumDisplaySettingsW's description, asked into a DEVMODEW of the same
 /// version (the caller's dmSize and the names' 64 bytes) and converted to the narrow form, which
-/// the caller's DEVMODEA receives as far as its dmSize goes; its dmSize the narrow form of the
-/// version the wide answer names (the guidisp capture shows Windows 2000 answering its own version
-/// there, whatever the caller's).
+/// the caller's DEVMODEA receives as far as the shorter of its dmSize and the narrow form's goes;
+/// its dmSize the narrow form of the version the wide answer names (124: the guidisp capture shows
+/// Windows 2000 answering its own version there, whatever the caller's).
 ///
 /// # Safety
 ///
@@ -227,8 +228,8 @@ fn settings_a(device: Option<InStr>, mode: u32, size: u16, out: Option<&mut [u8]
     let Some(out) = out else {
         return 0;
     };
-    let length = out.len();
-    out.copy_from_slice(&narrow.as_bytes()[..length]);
+    let length = out.len().min(narrow.size as usize);
+    out[..length].copy_from_slice(&narrow.as_bytes()[..length]);
     1
 }
 
@@ -896,20 +897,24 @@ mod tests {
         assert_eq!(seen[1].device.as_deref(), Some(&name[..name.len() - 1]));
     }
 
-    /// EnumDisplaySettingsA: the current mode, converted, into a DEVMODEA of the caller's size;
-    /// past the modes FALSE with the last error untouched; the wide form's dmSize kept.
+    /// EnumDisplaySettingsA: the current mode, converted, into the caller's DEVMODEA, its dmSize
+    /// answered as 124 (the guidisp capture's, for MSVC 6's 156-byte DEVMODEA) and nothing past
+    /// that written; past the modes FALSE with the last error untouched; the wide form's dmSize
+    /// answered as 188 (the capture's, for the 220-byte DEVMODEW), nothing past it written.
     ///
     /// Pins: user32.EnumDisplaySettingsA, user32.EnumDisplaySettingsW
     #[test]
     fn modes_are_described() {
         let mut mode = DevModeA::zeroed();
-        mode.size = DISPLAY_FIELDS_END_A as u16;
+        mode.size = size_of::<DevModeA>() as u16;
+        mode.icm_method = 0x5A5A;
         let current = ENUM_CURRENT_SETTINGS;
         // SAFETY: a DEVMODEA of the tests' own, as long as it says.
         assert_eq!(
             unsafe { enum_display_settings_a(core::ptr::null(), current, &mut mode) },
             1
         );
+        assert_eq!(mode.size, 124);
         assert_eq!(mode.size as usize, DISPLAY_FIELDS_END_A);
         assert_eq!(
             (
@@ -920,7 +925,10 @@ mod tests {
             ),
             (640, 480, 32, 0x7E_0020)
         );
-        assert_eq!(mode.icm_method, 0, "past dmSize: not written");
+        assert_eq!(
+            mode.icm_method, 0x5A5A,
+            "past the answered dmSize: not written"
+        );
         // SAFETY: as above.
         assert_eq!(
             unsafe { enum_display_settings_a(core::ptr::null(), 0, &mut mode) },
@@ -935,15 +943,15 @@ mod tests {
         );
         assert_eq!(LAST_ERROR.with(|error| error.get()), 0xF2F2_F2F2);
         let mut wide = DevModeW::zeroed();
-        wide.size = DISPLAY_FIELDS_END_W as u16;
+        wide.size = size_of::<DevModeW>() as u16;
+        wide.panning_height = 0x5A5A;
         assert_eq!(
             enum_display_settings_w(core::ptr::null(), current, &mut wide),
             1
         );
-        assert_eq!(
-            (wide.size as usize, wide.pels_width),
-            (DISPLAY_FIELDS_END_W, 640)
-        );
+        assert_eq!((wide.size, wide.pels_width), (188, 640));
+        assert_eq!(wide.size as usize, DISPLAY_FIELDS_END_W);
+        assert_eq!(wide.panning_height, 0x5A5A, "past the answered dmSize");
     }
 
     /// EnumDisplayDevicesA: the adapters' names and strings converted; past them FALSE.

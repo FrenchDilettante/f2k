@@ -1,14 +1,21 @@
 # guidisp: one test per block of the real-machine capture (output.txt); see tests/README.md.
+#
+# The capture machine ran 1024x768; F2K runs 640x480. In output.txt, resolution values edited from
+# 1024x768 to 640x480 by hand, with the owner's permission; nothing else changed. The six lines
+# edited are those whose only machine-specific values are the screen's width and height: the
+# current mode's dmPelsWidth and dmPelsHeight (EnumDisplaySettingsA and W), GetDeviceCaps(HORZRES)
+# and (VERTRES), GetSystemMetrics(SM_CXSCREEN) and (SM_CYSCREEN). The lines that also hold the
+# taskbar's work area (SPI_GETWORKAREA, GetMonitorInfoA) or the VM driver's own mode list (mode 0)
+# are as captured.
 description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA)."
 kind = "sectioned"
 gate = true
 screenshots = true
 
 [pending]
-enum = "the capture's display runs 1024x768 (F2K's default mode is 640x480), and its EnumDisplaySettings answers its own DEVMODE version's dmSize (124, 188) where F2K's win32k keeps the caller's"
-caps = "the capture's display runs 1024x768: F2K's default mode is 640x480"
-metrics = "the capture's display runs 1024x768 with a taskbar's work area and a five-button mouse: F2K's runs 640x480, its work area the whole screen, and it has no mouse"
-monitors = "the capture's monitor is 1024x768 with a taskbar's work area: F2K's is 640x480, its work area the whole screen"
+enum = "mode 0 is the capture machine's display driver's own first mode (VirtualBox's 800x600x8): F2K's VBE driver lists 320x200x32 first"
+metrics = "the capture's taskbar takes 28 pixels off the work area (0 0 1024 740), where F2K's, with no taskbar, is the whole 640x480 screen; and its five-button mouse answers SM_CMOUSEBUTTONS 5, where F2K, with no mouse, answers 0"
+monitors = "the capture's GetMonitorInfoA line holds the taskbar's work area (rcWork 0 0 1024 740), so it stays as captured, its 1024x768 monitor with it: F2K's monitor and work area are both the whole 640x480 screen"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

@@ -1247,9 +1247,11 @@ pub unsafe extern "system" fn NtUserEnumDisplaySettings(
         0 => (LISTED_MODE.0, LISTED_MODE.1, false),
         _ => return STATUS_NO_MORE_ENTRIES,
     };
+    // As win32k's: the description in its own version, the DEVMODEW ending at dmDisplayFrequency,
+    // whatever the caller's dmSize; the caller's bytes past it untouched.
     let mut described = DevModeW::zeroed();
     described.spec_version = DM_SPECVERSION;
-    described.size = size;
+    described.size = DISPLAY_FIELDS_END_W as u16;
     described.fields =
         DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
     if current {
@@ -1260,10 +1262,13 @@ pub unsafe extern "system" fn NtUserEnumDisplaySettings(
     described.pels_width = width;
     described.pels_height = height;
     described.display_frequency = 1;
-    let length = (size as usize).min(size_of::<DevModeW>());
-    // SAFETY: the caller's DEVMODEW, as long as its dmSize says.
+    // SAFETY: the caller's DEVMODEW, at least DISPLAY_FIELDS_END_W long (its dmSize, checked).
     unsafe {
-        core::ptr::copy_nonoverlapping(described.as_bytes().as_ptr(), dev_mode as *mut u8, length)
+        core::ptr::copy_nonoverlapping(
+            described.as_bytes().as_ptr(),
+            dev_mode as *mut u8,
+            DISPLAY_FIELDS_END_W,
+        )
     };
     STATUS_SUCCESS
 }

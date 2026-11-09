@@ -252,15 +252,21 @@ fn setting(
     })
 }
 
-/// The DEVMODEW describing `setting`, for a caller whose dmSize is `size`: the spec version, the
-/// caller's dmSize, no driver extra; the display fields, 32 bpp at the hardware's default
+/// The dmSize a mode's description answers, whatever the caller's: the DEVMODEW ending at
+/// dmDisplayFrequency, the version Windows 2000 describes display modes in (the guidisp capture
+/// shows 188 for a DEVMODEW, and so 124 for a DEVMODEA, where the caller's structures are longer).
+/// A caller's DEVMODEW holds at least that much, or the service refuses it.
+const DESCRIBED_SIZE: usize = DISPLAY_FIELDS_END_W;
+
+/// The DEVMODEW describing `setting`: the spec version, the described version's dmSize
+/// ([`DESCRIBED_SIZE`]), no driver extra; the display fields, 32 bpp at the hardware's default
 /// frequency, no display flags; the current mode also with its position on the virtual screen
 /// (the origin) and its logical pixels per inch — the dmFields the guidisp capture shows
 /// (0x7C0000 for a listed mode, 0x7E0020 for the current one).
-fn describe(setting: &Setting, size: u16) -> DevModeW {
+fn describe(setting: &Setting) -> DevModeW {
     let mut mode = DevModeW::zeroed();
     mode.spec_version = DM_SPECVERSION;
-    mode.size = size;
+    mode.size = DESCRIBED_SIZE as u16;
     mode.fields =
         DM_BITSPERPEL | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFLAGS | DM_DISPLAYFREQUENCY;
     if setting.current {
@@ -275,12 +281,13 @@ fn describe(setting: &Setting, size: u16) -> DevModeW {
 }
 
 /// NtUserEnumDisplaySettings(DeviceName, ModeNum, DevMode, Flags): EnumDisplaySettingsW's
-/// arguments, the mode described into the caller's DEVMODEW as far as its dmSize goes (at least
-/// the display fields: STATUS_INVALID_PARAMETER otherwise), its dmSize kept. The device is the
-/// primary display (null names it too); the mode one [`setting`] knows. The modes are the VBE
-/// driver's list ([`vbe::display_modes`]); a list being made by another caller at that moment is
-/// STATUS_UNSUCCESSFUL (a call that may be tried again). The flags (EDS_RAWMODE) change nothing:
-/// every mode listed is one the driver sets.
+/// arguments, the mode described into the caller's DEVMODEW (its dmSize covering at least the
+/// display fields: STATUS_INVALID_PARAMETER otherwise) as far as the described version goes, its
+/// dmSize answered as that version's ([`DESCRIBED_SIZE`]), the caller's bytes past it untouched.
+/// The device is the primary display (null names it too); the mode one [`setting`] knows. The modes
+/// are the VBE driver's list ([`vbe::display_modes`]); a list being made by another caller at that
+/// moment is STATUS_UNSUCCESSFUL (a call that may be tried again). The flags (EDS_RAWMODE) change
+/// nothing: every mode listed is one the driver sets.
 pub fn enum_display_settings(
     _call: &mut NtCall,
     device: UserAddr,
@@ -307,9 +314,8 @@ pub fn enum_display_settings(
             Err(_) => None,
         }
     };
-    let described = describe(&setting(number, current_mode(), listed)?, size);
-    let length = (size as usize).min(size_of::<DevModeW>());
-    dev_mode.write(&described.as_bytes()[..length])?;
+    let described = describe(&setting(number, current_mode(), listed)?);
+    dev_mode.write(&described.as_bytes()[..DESCRIBED_SIZE])?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -786,18 +792,15 @@ mod tests {
     }
 
     /// A mode's description: dmFields as the guidisp capture shows them (0x7E0020 for the current
-    /// mode, 0x7C0000 for a listed one), 32 bpp, the resolution, the caller's dmSize, the spec
-    /// version, 96 logical pixels per inch.
+    /// mode, 0x7C0000 for a listed one), 32 bpp, the resolution, dmSize 188 (the capture's), the
+    /// spec version, 96 logical pixels per inch.
     #[test]
     fn the_descriptions_are_the_captures() {
-        let mode = describe(
-            &Setting {
-                width: 1024,
-                height: 768,
-                current: true,
-            },
-            188,
-        );
+        let mode = describe(&Setting {
+            width: 1024,
+            height: 768,
+            current: true,
+        });
         assert_eq!(mode.fields, 0x7E_0020);
         assert_eq!(mode.size, 188);
         assert_eq!(mode.driver_extra, 0);
@@ -809,24 +812,23 @@ mod tests {
         assert_eq!(mode.log_pixels, 96);
         assert_eq!(mode.display_flags, 0);
         assert!(mode.display_frequency <= 1, "the hardware's default");
-        let listed = describe(
-            &Setting {
-                width: 800,
-                height: 600,
-                current: false,
-            },
-            220,
-        );
-        assert_eq!(listed.fields, 0x7C_0000);
+        let listed = describe(&Setting {
+            width: 800,
+            height: 600,
+            current: false,
+        });
+        assert_eq!((listed.fields, listed.size), (0x7C_0000, 188));
         // ChangeDisplaySettings takes the current mode's description back as it is.
         assert!(parse(Some(&mode), 0).is_ok());
     }
 
-    /// The service: the description written as far as the caller's dmSize goes, dmSize kept; the
-    /// display named by its name or by none; a DEVMODE too short for the display fields, or another
-    /// display's name, STATUS_INVALID_PARAMETER; a number past the list STATUS_NO_MORE_ENTRIES.
+    /// The service: the description written as far as its own version goes (188 bytes), its
+    /// dmSize that version's whatever the caller's (the guidisp capture's 188 for MSVC 6's 220-byte
+    /// DEVMODEW), the caller's bytes past it untouched; the display named by its name or by none; a
+    /// DEVMODE too short for the display fields, or another display's name,
+    /// STATUS_INVALID_PARAMETER; a number past the list STATUS_NO_MORE_ENTRIES.
     #[test]
-    fn the_settings_service_writes_as_far_as_dm_size() {
+    fn the_settings_service_answers_its_own_dm_size() {
         let (page, _installed) = page();
         let dev_mode = UserAddr(0x1100);
         let set_size = |size: u16| {
@@ -836,26 +838,33 @@ mod tests {
                 .write(size)
                 .unwrap()
         };
-        set_size(188);
-        assert_eq!(
-            with_call(|call| enum_display_settings(
-                call,
-                UserAddr(0),
-                ENUM_CURRENT_SETTINGS,
-                dev_mode,
-                0
-            )),
-            Ok(STATUS_SUCCESS)
-        );
-        let mode = DevModeW::from_bytes(&page.borrow().0[0x100..0x100 + 220]).unwrap();
-        assert_eq!(mode.size, 188);
-        assert_eq!(
-            (mode.pels_width, mode.pels_height),
-            (640, 480),
-            "the default mode"
-        );
-        assert_eq!(mode.fields, 0x7E_0020);
-        assert_eq!(page.borrow().0[0x100 + 188], 0xCC, "nothing past dmSize");
+        for size in [220, 188] {
+            set_size(size);
+            assert_eq!(
+                with_call(|call| enum_display_settings(
+                    call,
+                    UserAddr(0),
+                    ENUM_CURRENT_SETTINGS,
+                    dev_mode,
+                    0
+                )),
+                Ok(STATUS_SUCCESS)
+            );
+            let mode = DevModeW::from_bytes(&page.borrow().0[0x100..0x100 + 220]).unwrap();
+            assert_eq!(mode.size, 188, "a caller's dmSize of {size}");
+            assert_eq!(
+                (mode.pels_width, mode.pels_height),
+                (640, 480),
+                "the default mode"
+            );
+            assert_eq!(mode.fields, 0x7E_0020);
+            assert!(
+                page.borrow().0[0x100 + 188..0x100 + 220]
+                    .iter()
+                    .all(|&byte| byte == 0xCC),
+                "nothing past the described version"
+            );
+        }
 
         // The display by its name.
         page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16("\\\\.\\DISPLAY1"));

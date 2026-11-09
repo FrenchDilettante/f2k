@@ -889,7 +889,8 @@ pub fn get_window_dc(window: usize) -> Result<u32, NtStatus> {
 // --- win32k: the display -------------------------------------------------------------------------
 
 /// NtUserEnumDisplaySettings: mode `mode` of the display named at `device` (zero: the primary
-/// one), described into the DEVMODEW at `dev_mode` as far as its dmSize goes.
+/// one), described into the DEVMODEW at `dev_mode` in win32k's own version (dmSize 188, whatever
+/// the caller's; a dmSize short of that refused).
 pub fn enum_display_settings(
     device: usize,
     mode: u32,

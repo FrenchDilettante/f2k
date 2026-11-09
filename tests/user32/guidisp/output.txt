@@ -6,10 +6,10 @@ Microsoft Windows 2000 [Version 5.00.2195]
 guidisp F2KT-SOURCE-CRC=0xE2442A5A
 >>> guidisp.exe enum
 == enum
-EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm): ret=1 err=- dmSize=124 dmPelsWidth=1024 dmPelsHeight=768 dmBitsPerPel=32 dmFields=0x7E0020
+EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm): ret=1 err=- dmSize=124 dmPelsWidth=640 dmPelsHeight=480 dmBitsPerPel=32 dmFields=0x7E0020
 EnumDisplaySettingsA(NULL, 0, &dm): ret=1 err=- dmSize=124 dmPelsWidth=800 dmPelsHeight=600 dmBitsPerPel=8 dmFields=0x7C0000
 EnumDisplaySettingsA(NULL, 9999, &dm): ret=0 err=-
-EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dmw): ret=1 err=- dmSize=188 dmPelsWidth=1024 dmPelsHeight=768 dmBitsPerPel=32 dmFields=0x7E0020
+EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dmw): ret=1 err=- dmSize=188 dmPelsWidth=640 dmPelsHeight=480 dmBitsPerPel=32 dmFields=0x7E0020
 guidisp: done
 <<< exit code=0
 >>> guidisp.exe change
@@ -34,8 +34,8 @@ guidisp: done
 >>> guidisp.exe caps
 == caps
 CreateDCA("DISPLAY", NULL, NULL, NULL): non-NULL yes err=-
-GetDeviceCaps(HORZRES): ret=1024 err=-
-GetDeviceCaps(VERTRES): ret=768 err=-
+GetDeviceCaps(HORZRES): ret=640 err=-
+GetDeviceCaps(VERTRES): ret=480 err=-
 GetDeviceCaps(BITSPIXEL): ret=32 err=-
 GetDeviceCaps(PLANES): ret=1 err=-
 GetDeviceCaps(LOGPIXELSX): ret=96 err=-
@@ -45,8 +45,8 @@ guidisp: done
 <<< exit code=0
 >>> guidisp.exe metrics
 == metrics
-GetSystemMetrics(SM_CXSCREEN): ret=1024 err=-
-GetSystemMetrics(SM_CYSCREEN): ret=768 err=-
+GetSystemMetrics(SM_CXSCREEN): ret=640 err=-
+GetSystemMetrics(SM_CYSCREEN): ret=480 err=-
 GetSystemMetrics(SM_CMOUSEBUTTONS): ret=5 err=-
 GetSystemMetrics(SM_CYCAPTION): ret=19 err=-
 GetSystemMetrics(SM_CXFRAME): ret=4 err=-
