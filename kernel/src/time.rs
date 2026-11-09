@@ -2,17 +2,19 @@
 //! timestamps' conversions, and the performance counter.
 //!
 //! The kernel's clock counts from boot; the wall clock is that count plus the boot's own wall-clock
-//! reading, taken once from the real-time clock (see [`crate::hw::rtc`]). A FILETIME is 100 ns
-//! units since 1601-01-01 UTC, the same unit as the kernel's clock, so the sum needs no scaling.
-//! With no time zone configured, local time is UTC: the time-zone services report a zero bias and
-//! no daylight saving.
+//! reading, taken once from the real-time clock (see [`crate::hal::Hal::query_real_time_clock`]). A
+//! FILETIME is 100 ns units since 1601-01-01 UTC, the same unit as the kernel's clock, so the sum
+//! needs no scaling. With no time zone configured, local time is UTC: the time-zone services report
+//! a zero bias and no daylight saving.
 //!
 //! The performance counter runs at the interval timer's input clock, 1193182 Hz — what the
 //! platform's uniprocessor HAL reports — as that HAL reads it: the ticks taken (the kernel's
 //! interrupt time on the counter's scale) plus what the timer has run down since the last one, so
 //! it resolves well below a tick, and it never goes back.
 
-use crate::hw::rtc::CivilTime;
+use crate::hal::CivilTime;
+#[cfg(target_arch = "x86")]
+use crate::hal::{Hal, PLATFORM};
 #[cfg(target_arch = "x86")]
 use crate::level::{self, At, Clock, LevelCell};
 
@@ -122,9 +124,9 @@ static PERFORMANCE_COUNTER: LevelCell<Clock, PerformanceCounter> =
 pub fn performance_counter() -> u64 {
     let _masked = crate::pcr::pcr().mask_guard();
     let base = performance_count(crate::interrupt::clock::interrupt_time());
-    let count = crate::hw::pit::read_count(&mut crate::hw::portio::Ports);
+    let count = PLATFORM.interval_timer_count();
     let pending = crate::interrupt::clock_requested();
-    let divisor = crate::hw::pit::programmed_divisor();
+    let divisor = PLATFORM.interval_timer_period();
     level::raised::<Clock, _>(|at_clock| {
         PERFORMANCE_COUNTER
             .get(at_clock)
@@ -142,8 +144,10 @@ static BOOT_FILETIME: LevelCell<Clock, u64> = LevelCell::new(FALLBACK_BOOT);
 /// Record the boot's wall-clock reading from the real-time clock (the fallback when it has none).
 /// Call once, at boot, while the kernel clock still reads zero.
 #[cfg(target_arch = "x86")]
-pub fn init<IoT: crate::hw::portio::Io>(io: &mut IoT) {
-    let boot = crate::hw::rtc::read(io).map_or(FALLBACK_BOOT, filetime_from_civil);
+pub fn init() {
+    let boot = PLATFORM
+        .query_real_time_clock()
+        .map_or(FALLBACK_BOOT, filetime_from_civil);
     level::raised::<Clock, _>(|at_clock| *BOOT_FILETIME.get(at_clock) = boot);
 }
 
@@ -268,7 +272,8 @@ mod tests {
     /// more; and a reading never goes back.
     #[test]
     fn the_performance_counter_counts_within_a_tick() {
-        use crate::hw::pit::INTERVAL_DIVISOR as N;
+        // The interval timer's period at the platform's rate, in its input clocks.
+        const N: u16 = 11_949;
         let base = performance_count(10 * 100_144);
         let mut counter = PerformanceCounter::new();
         // Just after the tick: the count is at the divisor, nothing elapsed.

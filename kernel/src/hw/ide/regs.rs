@@ -5,8 +5,8 @@
 pub const PRIMARY_BASE: u16 = 0x1F0;
 pub const PRIMARY_CONTROL: u16 = 0x3F6;
 
-/// The primary channel's interrupt: ISA IRQ 14, vector 0x3E after the controller remap.
-pub const PRIMARY_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE + 14;
+/// The primary channel's interrupt: ISA IRQ 14, vector 0x3E on the platform's band.
+pub const PRIMARY_VECTOR: u8 = crate::hal::interrupt_vector(14);
 
 // Command-block register offsets. Offsets 1 and 7 read and write different registers.
 pub(super) const DATA: u16 = 0;

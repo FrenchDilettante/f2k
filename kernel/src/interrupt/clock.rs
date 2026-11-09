@@ -218,7 +218,7 @@ fn balance_routine(
 }
 
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
-pub const CLOCK_VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE;
+pub const CLOCK_VECTOR: u8 = crate::hal::interrupt_vector(0);
 
 /// The clock's interrupt service body, handed the clock-level token by the interrupt dispatch once
 /// the interrupt has been claimed (interrupts masked). Updates the clock and enqueues the deferred
@@ -498,20 +498,12 @@ mod tests {
     }
 
     /// The captured constants: the interval a real machine of this family reports, and the finest
-    /// rate it offers for slewing.
+    /// rate it offers for slewing. The interval timer's divisors for them are the platform's (see
+    /// `hal`'s tests).
     #[test]
     fn captured_platform_rates() {
         assert_eq!(INTERVAL_100NS, 100_144);
         assert_eq!(FINEST_100NS, 10_032);
-        assert_eq!(
-            crate::hw::pit::divisor_for_100ns(INTERVAL_100NS),
-            crate::hw::pit::INTERVAL_DIVISOR
-        );
-        assert_eq!(
-            crate::hw::pit::divisor_for_100ns(FINEST_100NS),
-            1_197,
-            "the finest rate's divisor"
-        );
     }
 
     /// The full-tick arm is the only charge site: a fractional interrupt advances the time but

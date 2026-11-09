@@ -28,7 +28,7 @@
 
 #[cfg(target_arch = "x86")]
 use crate::hw::portio::Ports;
-pub use crate::hw::rtc::CivilTime;
+pub use crate::hw::rtc::{CivilTime, SCREEN_MAILBOX};
 use crate::interrupt::irql::{Irql, OldIrql};
 use crate::interrupt::{Claim, Controller};
 use crate::pcr::pcr;
@@ -426,6 +426,24 @@ mod tests {
             .map(|&(step, vector, _)| (step, vector))
             .collect();
         assert_eq!(steps, [("enable", 0x31), ("disable", 0x31)]);
+    }
+
+    /// The clock's captured rates are ones the 8254 runs: the interval at the platform's captured
+    /// divisor (the one the timer's period starts at, before the boot sets it), the finest rate at
+    /// a divisor of its own.
+    #[test]
+    fn the_clock_rates_are_interval_timer_divisors() {
+        use crate::hw::pit;
+        use crate::interrupt::clock::{FINEST_100NS, INTERVAL_100NS};
+        assert_eq!(
+            pit::divisor_for_100ns(INTERVAL_100NS),
+            pit::INTERVAL_DIVISOR
+        );
+        assert_eq!(
+            pit::divisor_for_100ns(FINEST_100NS),
+            1_197,
+            "the finest rate's divisor"
+        );
     }
 
     /// The vector band: sixteen device lines from 0x30, clear of the processor's exceptions and the

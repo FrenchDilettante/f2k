@@ -80,7 +80,7 @@ pub const NUM_LOCK_LIGHT: u8 = 1 << 1;
 pub const CAPS_LOCK_LIGHT: u8 = 1 << 2;
 
 /// IRQ 1's vector.
-pub const VECTOR: u8 = crate::hw::pic::MASTER_VECTOR_BASE + 1;
+pub const VECTOR: u8 = crate::hal::interrupt_vector(1);
 
 /// How many status reads a wait for the controller to take a byte makes before giving up.
 const INPUT_POLLS: u32 = 100_000;

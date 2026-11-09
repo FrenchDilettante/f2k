@@ -55,7 +55,7 @@
 //! process's end pauses the boot before its audit line, for the test harness to take a screenshot
 //! of what the process left on the screen: the runner announces `F2K: screen: process N ended`
 //! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
-//! monitor ([`crate::hw::rtc::await_mailbox`]), or a few seconds' worth of reads pass.
+//! monitor ([`crate::hal::Hal::await_cmos_mailbox`]), or a few seconds' worth of reads pass.
 
 use crate::level::{self, High, LevelCell};
 use crate::process::exit::{self, AtQuiescence, Identity, ProcessEnd, Suite};
@@ -160,18 +160,13 @@ const SCREEN_PAUSE_READS: u32 = 20_000_000;
 /// screenshot (see the module's documentation).
 fn pause_for_screen(index: u32) {
     use crate::boot::cmdline::{kernel_command_line, kernel_option};
-    use crate::hw::rtc::{await_mailbox, SCREEN_MAILBOX};
+    use crate::hal::{Hal, PLATFORM, SCREEN_MAILBOX};
     if !kernel_option(kernel_command_line(), b"screens") {
         return;
     }
-    let answered = await_mailbox(
-        &mut crate::hw::portio::Ports,
-        SCREEN_MAILBOX,
-        SCREEN_PAUSE_READS,
-        || {
-            crate::serial_println!("F2K: screen: process {} ended", index);
-        },
-    );
+    let answered = PLATFORM.await_cmos_mailbox(SCREEN_MAILBOX, SCREEN_PAUSE_READS, || {
+        crate::serial_println!("F2K: screen: process {} ended", index);
+    });
     if !answered {
         crate::serial_println!("F2K: screen: no answer, going on");
     }

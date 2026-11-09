@@ -580,7 +580,6 @@ mod target {
     use super::*;
     use crate::cpu::idt::ExceptionFrame;
     use crate::hal::{Hal, StandardPc, SystemInterrupts, PLATFORM};
-    use crate::hw::portio::Ports;
 
     /// The kernel's vector table.
     static TABLE: VectorTable = VectorTable::zeroed();
@@ -659,11 +658,10 @@ mod target {
     pub unsafe fn init() {
         // The controller: the device lines on the hardware vectors, every line masked.
         PLATFORM.initialize_interrupts();
-        // The 8254: the captured platform interval.
-        let mut ports = Ports;
-        crate::hw::pit::program_interval(&mut ports, crate::hw::pit::INTERVAL_DIVISOR);
+        // The interval timer: the captured platform interval.
+        PLATFORM.set_time_increment(super::clock::INTERVAL_100NS);
         // The wall clock's origin, read while the kernel clock still reads zero.
-        crate::time::init(&mut ports);
+        crate::time::init();
         // The shared data page, its system time that reading, before the first tick updates it.
         crate::user::shared::init(crate::time::boot_filetime());
 

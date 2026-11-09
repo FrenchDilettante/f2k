@@ -201,14 +201,11 @@ fn kernel_text() -> core::ops::Range<u32> {
 /// source. Called from the interrupt init, before interrupts fly.
 #[cfg(target_arch = "x86")]
 pub fn init() {
+    use crate::hal::{Hal, PLATFORM};
     if SAMPLES_PER_TICK == 1 {
         return;
     }
-    let mut ports = crate::hw::portio::Ports;
-    crate::hw::pit::program_interval(
-        &mut ports,
-        crate::hw::pit::divisor_for_100ns(SAMPLE_INTERVAL),
-    );
+    PLATFORM.set_time_increment(SAMPLE_INTERVAL);
     crate::interrupt::clock::set_source_per_tick(SAMPLES_PER_TICK);
 }
 
