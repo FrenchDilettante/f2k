@@ -1,0 +1,117 @@
+# F2K capture of batdir (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:05:20.50
+>>> cmd /c batdir.cmd
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p      <DIR>          .
+11/09/2026  02:05p      <DIR>          ..
+11/09/2026  02:05p                   7 a.txt
+11/09/2026  02:05p                 120 b.txt
+11/09/2026  02:05p               1,200 c.dat
+11/09/2026  02:05p      <DIR>          sub
+               3 File(s)         13,615 bytes
+               3 Dir(s)  425,290,670,080 bytes free
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p               1,200 c.dat
+               1 File(s)          1,200 bytes
+               0 Dir(s)  425,290,670,080 bytes free
+a.txt
+b.txt
+c.dat
+sub
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p      <DIR>          .
+11/09/2026  02:05p      <DIR>          ..
+11/09/2026  02:05p      <DIR>          sub
+               0 File(s)         12,288 bytes
+               3 Dir(s)  425,290,670,080 bytes free
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p                   7 a.txt
+11/09/2026  02:05p                 120 b.txt
+11/09/2026  02:05p               1,200 c.dat
+               3 File(s)          1,327 bytes
+               0 Dir(s)  425,290,670,080 bytes free
+c.dat
+b.txt
+a.txt
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p                   7 a.txt
+11/09/2026  02:05p                 120 b.txt
+11/09/2026  02:05p                1200 c.dat
+               3 File(s)           1327 bytes
+               0 Dir(s)    425290670080 bytes free
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p      <DIR>          .
+11/09/2026  02:05p      <DIR>          ..
+11/09/2026  02:05p                   7 a.txt
+11/09/2026  02:05p                 120 b.txt
+11/09/2026  02:05p               1,200 c.dat
+11/09/2026  02:05p      <DIR>          sub
+               3 File(s)         13,615 bytes
+
+ Directory of Z:\cmd\batdir\batdird\sub
+
+11/09/2026  02:05p      <DIR>          .
+11/09/2026  02:05p      <DIR>          ..
+11/09/2026  02:05p                   6 d.txt
+               1 File(s)          8,198 bytes
+
+     Total Files Listed:
+               4 File(s)         21,813 bytes
+               5 Dir(s)  425,290,670,080 bytes free
+a.txt
+b.txt
+c.dat
+sub
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+11/09/2026  02:05p                   7 a.txt
+11/09/2026  02:05p                 120 b.txt
+11/09/2026  02:05p               1,200 c.dat
+               3 File(s)          1,327 bytes
+               0 Dir(s)  425,290,670,080 bytes free
+ Volume in drive Z is VBOX_tests
+ Volume Serial Number is 0001-0304
+
+ Directory of Z:\cmd\batdir\batdird
+
+File Not Found
+dir batdird\none.txt: 1
+start /WAIT /B: 9
+start /WAIT /B spawnkid out: 9
+kid: to the standard output
+kid: to the standard error
+start /D: 0
+kid: image SPAWNKID.EXE
+kid: current directory BATDIRD
+start /B: 9
+<<< exit code=0
