@@ -681,17 +681,19 @@ internal = true
 name = "LoadStringA"
 group = "resources"
 args = ["handle hInstance", "u32 uID", "ptr lpBuffer", "i32 nBufferMax"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadStringA" }
 ordinal = 432
 fails = "0"
+note = "the string table's UTF-16 string converted to the ANSI code page; an nBufferMax of 0 answers -1, the buffer untouched"
 
 [[export]]
 name = "LoadStringW"
 group = "resources"
 args = ["handle hInstance", "u32 uID", "ptr lpBuffer", "i32 nBufferMax"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadStringW" }
 ordinal = 433
 fails = "0"
+note = "an nBufferMax of 0 hands back the string's address in the module's image; one of 1 writes nothing"
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
 # ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).

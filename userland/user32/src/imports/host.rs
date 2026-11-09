@@ -57,6 +57,89 @@ pub unsafe extern "system" fn SetLastError(code: u32) {
     LAST_ERROR.with(|error| error.set(code));
 }
 
+// --- The resources -------------------------------------------------------------------------------
+
+/// The module NULL names in the resource calls: the program's.
+pub const PROGRAM: usize = 0x0040_0000;
+
+/// One resource of the stand-ins' modules: its module (never NULL), numbered type and name, and
+/// data (leaked: a module's image outlives the calls).
+pub struct HostResource {
+    pub module: usize,
+    pub kind: u16,
+    pub name: u16,
+    pub data: &'static [u8],
+}
+
+std::thread_local! {
+    /// The resources FindResourceExW finds, and the languages it was asked for, in order.
+    pub static RESOURCES: RefCell<Vec<HostResource>> = const { RefCell::new(Vec::new()) };
+    pub static RESOURCE_LANGUAGES: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A resource added to the module `module`'s, its data `data`; its data's address.
+pub fn add_resource(module: usize, kind: u16, name: u16, data: &[u8]) -> usize {
+    let data: &'static [u8] = std::boxed::Box::leak(data.to_vec().into_boxed_slice());
+    RESOURCES.with(|resources| {
+        resources.borrow_mut().push(HostResource {
+            module,
+            kind,
+            name,
+            data,
+        })
+    });
+    data.as_ptr() as usize
+}
+
+/// FindResourceExW over [`RESOURCES`], for numbered types and names, whatever the language: an
+/// HRSRC of the stand-in's (the resource's index plus one); kernel32's level errors otherwise,
+/// ERROR_RESOURCE_TYPE_NOT_FOUND (1813) and ERROR_RESOURCE_NAME_NOT_FOUND (1814).
+pub unsafe extern "system" fn FindResourceExW(
+    module: usize,
+    kind: *const u16,
+    name: *const u16,
+    language: u32,
+) -> usize {
+    let module = if module == 0 { PROGRAM } else { module };
+    let (kind, name) = (kind as usize, name as usize);
+    assert!(
+        kind >> 16 == 0 && name >> 16 == 0,
+        "the stand-in serves numbers"
+    );
+    RESOURCE_LANGUAGES.with(|languages| languages.borrow_mut().push(language));
+    RESOURCES.with(|resources| {
+        let resources = resources.borrow();
+        let mine = |r: &&HostResource| r.module == module && r.kind as usize == kind;
+        if !resources.iter().any(|r| mine(&r)) {
+            LAST_ERROR.with(|error| error.set(1813));
+            return 0;
+        }
+        match resources
+            .iter()
+            .position(|r| mine(&r) && r.name as usize == name)
+        {
+            Some(index) => index + 1,
+            None => {
+                LAST_ERROR.with(|error| error.set(1814));
+                0
+            }
+        }
+    })
+}
+
+/// LoadResource: the data's address, as kernel32's handle is.
+pub unsafe extern "system" fn LoadResource(_module: usize, resource: usize) -> usize {
+    RESOURCES.with(|resources| resources.borrow()[resource - 1].data.as_ptr() as usize)
+}
+
+pub unsafe extern "system" fn SizeofResource(_module: usize, resource: usize) -> u32 {
+    RESOURCES.with(|resources| resources.borrow()[resource - 1].data.len() as u32)
+}
+
+pub unsafe extern "system" fn LockResource(data: usize) -> usize {
+    data
+}
+
 /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that
 /// format alone), kept.
 pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const core::ffi::c_char) -> u32 {

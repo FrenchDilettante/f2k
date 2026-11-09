@@ -45,6 +45,20 @@ mod raw {
     unsafe extern "system" {
         /// SetLastError: the calling thread's last error.
         pub fn SetLastError(code: u32);
+        /// FindResourceExW: the HRSRC of a module's resource of a type, a name and a language
+        /// (NULL: the program's module); NULL, the last error set, when there is none.
+        pub fn FindResourceExW(
+            module: usize,
+            kind: *const u16,
+            name: *const u16,
+            language: u32,
+        ) -> usize;
+        /// LoadResource: the handle of an HRSRC's data; NULL, the last error set, when it fails.
+        pub fn LoadResource(module: usize, resource: usize) -> usize;
+        /// SizeofResource: an HRSRC's data's size in bytes; 0, the last error set, when it fails.
+        pub fn SizeofResource(module: usize, resource: usize) -> u32;
+        /// LockResource: the address of the data LoadResource's handle names.
+        pub fn LockResource(data: usize) -> usize;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -448,6 +462,56 @@ impl Drop for HeapBlock {
 pub fn set_last_error(code: u32) {
     // SAFETY: no pointers; it writes the thread's own TEB.
     unsafe { raw::SetLastError(code) }
+}
+
+/// A resource FindResourceExW found: its HRSRC (kernel32's handle, never zero).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hrsrc(usize);
+
+/// FindResourceExW, for a numbered type and name (MAKEINTRESOURCE: no string to read): the
+/// resource of type `kind` numbered `name` in `language`, in the module `module` (NULL: the
+/// program's); none, with kernel32's last error, when the module has none.
+pub fn find_resource(module: usize, kind: u16, name: u16, language: u16) -> Option<Hrsrc> {
+    // SAFETY: the type and the name are numbers in a pointer's place (their high word zero),
+    // which kernel32 takes as numbers; it dereferences neither.
+    let found = unsafe {
+        raw::FindResourceExW(
+            module,
+            kind as usize as *const u16,
+            name as usize as *const u16,
+            language as u32,
+        )
+    };
+    (found != 0).then_some(Hrsrc(found))
+}
+
+/// LoadResource, SizeofResource and LockResource: the data of the resource `resource` of the
+/// module `module` (as [`find_resource`] found it there), where it lies in the module's mapped
+/// image; none, with kernel32's last error, when it cannot be loaded.
+///
+/// The data stays mapped for as long as the module stays loaded: the slice's `'static` stands
+/// for that. Its callers hold it only for the call that found it, whose caller keeps the module
+/// it named loaded meanwhile, as the platform's resource calls presume.
+pub fn resource_data(module: usize, resource: Hrsrc) -> Option<&'static [u8]> {
+    // SAFETY: no pointers; an HRSRC kernel32 answered for this module.
+    let data = unsafe { raw::LoadResource(module, resource.0) };
+    if data == 0 {
+        return None;
+    }
+    // SAFETY: as above; then LoadResource's handle, which LockResource takes as it is.
+    let (size, at) = unsafe {
+        (
+            raw::SizeofResource(module, resource.0),
+            raw::LockResource(data),
+        )
+    };
+    if size == 0 || at == 0 {
+        return Some(&[]);
+    }
+    // SAFETY: kernel32 answers the address and the size of the resource's data in the module's
+    // mapped image, which nothing writes and which stays mapped while the module is loaded (see
+    // above); bytes need no alignment.
+    Some(unsafe { core::slice::from_raw_parts(at as *const u8, size as usize) })
 }
 
 // --- ntdll -------------------------------------------------------------------------------------------

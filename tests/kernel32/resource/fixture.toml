@@ -6,10 +6,6 @@ description = "resource - a module's resources: FindResourceA/W and FindResource
 kind = "sectioned"
 gate = true
 
-[pending]
-stringa = "user32's LoadStringA not yet implemented"
-stringw = "user32's LoadStringW not yet implemented"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them.
