@@ -1,10 +1,11 @@
-//! Generates the tables that derive from the system DLLs' export specs
+//! Generates the tables that derive from the export specs, the system DLLs'
 //! (`userland/<dll>/exports.toml`, read through `tools/exportgen`): the kernel's two service tables
 //! (`nt`'s `NT_SERVICES`, ntdll's system services, and `win32k`'s `WIN32K_SERVICES`, user32's
 //! internal NtUser* calls and gdi32's NtGdi* ones, both by Windows 2000's numbers), and, for the
 //! tests that check the built DLLs against the specs, kernel32's native exports' and every DLL's
-//! exports' declared argument blocks, stubs and variables. The generated files land in OUT_DIR,
-//! included where the tables live.
+//! exports' declared argument blocks, stubs and variables. From the kernel's own spec
+//! (`kernel/exports.toml`), the table that keeps every export the kernel implements in its link
+//! (`exports`). The generated files land in OUT_DIR, included where the tables live.
 //!
 //! It also points the kernel at the system DLLs the userland workspace builds (userland/):
 //! ntdll.dll, which it embeds and maps into every process, and kernel32.dll, msvcrt.dll,
@@ -15,6 +16,9 @@ use std::path::{Path, PathBuf};
 
 /// The system DLLs the userland workspace builds, ntdll first.
 const DLLS: [&str; 6] = ["ntdll", "kernel32", "msvcrt", "advapi32", "user32", "gdi32"];
+
+/// The kernel's own export spec, repository-relative.
+const KERNEL_SPEC: &str = "kernel/exports.toml";
 
 fn main() {
     let manifest =
@@ -70,6 +74,17 @@ fn main() {
             exportgen::emit::data_exports(spec, &source),
         );
     }
+
+    // The kernel's own exports (kernel/exports.toml): every body it implements kept in the link,
+    // where the image's export directory names it.
+    let kernel = load(repo, KERNEL_SPEC);
+    exportgen::check_kernel(&kernel)
+        .unwrap_or_else(|error| panic!("the kernel's export spec: {error}"));
+    write(
+        &out,
+        "ntoskrnl_exports.rs",
+        exportgen::emit::kernel_exports(&kernel, KERNEL_SPEC),
+    );
 
     let dlls = manifest.join("../target/userland/i686-f2k-pe/release");
     for dll in DLLS {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-The system DLLs' compatibility: every export of every spec (userland/<dll>/exports.toml), and how
-far the tests cover it.
+The system DLLs' and the kernel's compatibility: every export of every spec (userland/<dll>/exports.toml,
+and ntoskrnl's, kernel/exports.toml), and how far the tests cover it.
 
 The tests declare what they pin, as `dll.Export`: a corpus fixture's `[pins]`
 (tests/<dll>/<fixture>/fixture.toml: per block section, "*" for every block of the fixture) and a host
@@ -70,7 +70,9 @@ sys.path.insert(0, str(TESTS))
 import f2kboot  # noqa: E402  (the corpus's declarations and captures, read as the suite reads them)
 import dump_exports  # noqa: E402  (the PE reader: the built DLLs' import tables)
 
-SPECS = sorted((REPO_ROOT / "userland").glob("*/exports.toml"))
+# Every spec, by its module's name: the system DLLs', and ntoskrnl's (the kernel's own exports).
+SPECS = {path.parent.name: path for path in sorted((REPO_ROOT / "userland").glob("*/exports.toml"))}
+SPECS["ntoskrnl"] = REPO_ROOT / "kernel" / "exports.toml"
 # The DLLs F2K builds (`make userland`), whose import tables --check holds against the real DLLs'.
 BUILT_DLLS = REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release"
 RESULTS = REPO_ROOT / "target" / "test-results"
@@ -152,8 +154,7 @@ def load_specs():
     name)."""
     specs = {}
     targets = compat_targets()
-    for path in SPECS:
-        dll = path.parent.name
+    for dll, path in SPECS.items():
         if dll in targets:
             continue
         with open(path, "rb") as f:
@@ -218,7 +219,7 @@ def check(specs, fixtures, scenarios):
         if dll not in specs:
             return f"names no spec (userland/{dll}/exports.toml)"
         if name not in specs[dll][1]:
-            return f"is no export of userland/{dll}/exports.toml"
+            return f"is no export of {SPECS[dll].relative_to(REPO_ROOT)}"
         return None
 
     for fixture, (declared, blocks) in fixtures.items():

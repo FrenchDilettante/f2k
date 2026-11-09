@@ -237,6 +237,46 @@ pub fn stub_exports(spec: &Spec, source: &str) -> String {
     out
 }
 
+/// The kernel's implemented exports kept in its link (`kernel/exports.toml`'s natives):
+/// `NTOSKRNL_EXPORTS`, a `Kept` table of each body's address (`f2k_export_<body>`: a function, or
+/// the kernel's own storage for a variable), in spec order, in the section the kernel's linker
+/// script keeps. Nothing calls through it: it holds every body in the link, so the image's export
+/// directory ([`crate::pe`]) finds each one. `Kept` resolves in the including module's scope.
+pub fn kernel_exports(spec: &Spec, source: &str) -> String {
+    let natives = spec.natives();
+    let mut out = banner(source);
+    if !natives.is_empty() {
+        out.push_str("#[allow(non_upper_case_globals)]\nunsafe extern \"C\" {\n");
+        for export in &natives {
+            let symbol = format!("{}{}", crate::pe::EXPORT_PREFIX, export.body());
+            if export.data {
+                writeln!(out, "    static {symbol}: u8;").unwrap();
+            } else {
+                writeln!(out, "    fn {symbol}();").unwrap();
+            }
+        }
+        out.push_str("}\n\n");
+    }
+    out.push_str("/// The bodies of the kernel's exports, in spec order.\n#[used]\n");
+    out.push_str("#[unsafe(link_section = \".rodata.ntoskrnl_exports\")]\n");
+    writeln!(
+        out,
+        "static NTOSKRNL_EXPORTS: Kept<{}> = Kept([",
+        natives.len()
+    )
+    .unwrap();
+    for export in &natives {
+        let symbol = format!("{}{}", crate::pe::EXPORT_PREFIX, export.body());
+        if export.data {
+            writeln!(out, "    &raw const {symbol} as *const (),").unwrap();
+        } else {
+            writeln!(out, "    {symbol} as *const (),").unwrap();
+        }
+    }
+    out.push_str("]);\n");
+    out
+}
+
 /// The variables the DLL exports (its data exports, its own storage): `DATA_EXPORTS`, their names
 /// in file order, for the tests that check where the built DLL keeps them.
 pub fn data_exports(spec: &Spec, source: &str) -> String {
@@ -495,26 +535,10 @@ pub fn dll_def(
         }
     }
     // The next free ordinal skips every one the platform's table holds, catalogued ones included.
-    let taken: Vec<u16> = own
-        .exports
-        .iter()
-        .flat_map(|e| [e.ordinal, e.zw_ordinal])
-        .flatten()
-        .chain(own.catalogued.iter().map(|c| c.ordinal))
-        .collect();
-    let mut next = 1u16;
+    let mut ordinals = own.ordinals();
     let mut out = format!("LIBRARY {dll}.dll\nEXPORTS\n");
     for (ordinal, line, data) in lines {
-        let ordinal = match ordinal {
-            Some(ordinal) => ordinal,
-            None => {
-                while taken.contains(&next) {
-                    next += 1;
-                }
-                next += 1;
-                next - 1
-            }
-        };
+        let ordinal = ordinals.assign(ordinal);
         let data = if data { " DATA" } else { "" };
         writeln!(out, "  {line} @{ordinal}{data}").unwrap();
     }
@@ -880,6 +904,43 @@ impl = { syscall = "crate::nt::object::close" }
         );
         assert!(!dll_rust(&specs, "kernel32", "t").contains("_iob"));
         assert!(dll_exports(&kernel32, "t").contains("    (\"_iob\", 0),"));
+    }
+
+    /// The kernel's keep table: each native's body by its symbol, a variable's by its storage's
+    /// address, in spec order, nothing for a catalogued record; an empty table for a spec that
+    /// implements nothing.
+    #[test]
+    fn the_kernels_exports_are_kept_in_its_link() {
+        let spec = parse_spec(
+            "[[group]]\nkey = \"k\"\ntitle = \"k\"\n\n[[export]]\nname = \"RtlInitAnsiString\"\n\
+             group = \"k\"\nargs = [\"ptr d\", \"strA? s\"]\nimpl = { native = \"RtlInitAnsiString\" }\n\
+             fails = \"void\"\n\n[[export]]\nname = \"KeTickCount\"\ngroup = \"k\"\n\
+             impl = { native = \"KeTickCount\" }\ndata = true\n\n[[export]]\nname = \"KeBugCheckEx\"\n",
+        )
+        .unwrap();
+        let rust = kernel_exports(&spec, "t");
+        assert!(
+            rust.contains("    fn f2k_export_RtlInitAnsiString();\n"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains("    static f2k_export_KeTickCount: u8;\n"),
+            "{rust}"
+        );
+        assert!(
+            rust.contains(
+                "static NTOSKRNL_EXPORTS: Kept<2> = Kept([\n    f2k_export_RtlInitAnsiString as *const (),\n    \
+                 &raw const f2k_export_KeTickCount as *const (),\n]);"
+            ),
+            "{rust}"
+        );
+        assert!(!rust.contains("KeBugCheckEx"));
+        let empty = kernel_exports(&parse_spec("").unwrap(), "t");
+        assert!(
+            empty.contains("static NTOSKRNL_EXPORTS: Kept<0> = Kept([\n]);"),
+            "{empty}"
+        );
+        assert!(!empty.contains("extern"));
     }
 
     /// A C++ decorated name (operator new's) is a native's: its body names its code's symbol and

@@ -1,0 +1,389 @@
+# ntoskrnl.exe's exports: the one source every list of them derives from.
+#
+# tools/exportgen emits the kernel's image, the PE32 ntoskrnl.exe, from the kernel's link, its
+# export directory generated from this file; the kernel's build script keeps every implemented
+# export's body in that link. scripts/compat.py reports over it beside the system DLLs' specs.
+# Never copy an export's facts elsewhere: derive them from here.
+#
+# The format is the system DLLs' (userland/kernel32/exports.toml's header documents every key),
+# in the subset tools/exportgen/src/toml.rs reads, on the kernel's terms:
+#
+# [[group]]      an API group, the unit the compatibility report groups by: one per family of the
+#                kernel's interface, by its prefix (Ke, Mm, Ob, Io, Ps, Ex, Se, Lpc, Rtl)
+#
+# [[export]]     one export the kernel implements, in its group's section, with `name`, `group`,
+#                `args` and `impl = { native = "<body>" }`: the kernel's own code, or, with
+#                `data = true`, its own storage, an `f2k_export_<body>` symbol its Rust defines,
+#                which the image exports by name at its `ordinal` (Windows 2000's own; without one,
+#                the next free one). Nothing else: ntoskrnl's system services are ntdll's records
+#                (userland/ntdll/exports.toml), the kernel serves them from its service table and
+#                they are not exported from here; the kernel forwards nothing, and it has no
+#                generated stub bodies: what it does not implement stays catalogued.
+#
+# A record without an impl is one of ntoskrnl's exports F2K does not implement yet: its name,
+# `data = true` for a variable, a `note`, and its `ordinal`. Nothing is generated for it. The
+# records below are seeded from the Windows 2000 DDK's documented names, without ordinals; Windows
+# 2000's own export table, dumped from the real machine, takes their place, ordinals and all, and
+# adds the names the DDK does not document. Implementing one moves its record to its group's
+# section, with its group, args and impl.
+#
+# The image imports nothing: Windows 2000's ntoskrnl.exe imports from hal.dll (and its boot
+# drivers' modules), where F2K compiles its hardware layer into the kernel.
+
+[[group]]
+key = "ke"
+title = "kernel core (Ke)"
+
+[[group]]
+key = "mm"
+title = "memory manager (Mm)"
+
+[[group]]
+key = "ob"
+title = "object manager (Ob)"
+
+[[group]]
+key = "io"
+title = "I/O manager (Io)"
+
+[[group]]
+key = "ps"
+title = "processes and threads (Ps)"
+
+[[group]]
+key = "ex"
+title = "executive support (Ex)"
+
+[[group]]
+key = "se"
+title = "security reference monitor (Se)"
+
+[[group]]
+key = "lpc"
+title = "local procedure calls (Lpc)"
+
+[[group]]
+key = "rtl"
+title = "runtime library (Rtl)"
+
+# --- Catalogued: the Windows 2000 DDK's names, F2K's seed until the real table is folded in -----
+
+[[export]]
+name = "ExAcquireResourceExclusiveLite"
+
+[[export]]
+name = "ExAcquireResourceSharedLite"
+
+[[export]]
+name = "ExAllocatePool"
+
+[[export]]
+name = "ExAllocatePoolWithTag"
+
+[[export]]
+name = "ExDeleteResourceLite"
+
+[[export]]
+name = "ExEventObjectType"
+data = true
+
+[[export]]
+name = "ExFreePool"
+
+[[export]]
+name = "ExGetPreviousMode"
+
+[[export]]
+name = "ExInitializeResourceLite"
+
+[[export]]
+name = "ExRaiseStatus"
+
+[[export]]
+name = "ExReleaseResourceForThreadLite"
+
+[[export]]
+name = "ExSystemTimeToLocalTime"
+
+[[export]]
+name = "IoAllocateIrp"
+
+[[export]]
+name = "IoAllocateMdl"
+
+[[export]]
+name = "IoAttachDeviceToDeviceStack"
+
+[[export]]
+name = "IoBuildDeviceIoControlRequest"
+
+[[export]]
+name = "IoCreateDevice"
+
+[[export]]
+name = "IoCreateSymbolicLink"
+
+[[export]]
+name = "IoDeleteDevice"
+
+[[export]]
+name = "IoDeleteSymbolicLink"
+
+[[export]]
+name = "IoDetachDevice"
+
+[[export]]
+name = "IoFileObjectType"
+data = true
+
+[[export]]
+name = "IoFreeIrp"
+
+[[export]]
+name = "IoFreeMdl"
+
+[[export]]
+name = "IoGetCurrentProcess"
+
+[[export]]
+name = "IoGetDeviceObjectPointer"
+
+[[export]]
+name = "IofCallDriver"
+note = "fastcall: IoCallDriver is the DDK's macro over it"
+
+[[export]]
+name = "IofCompleteRequest"
+note = "fastcall: IoCompleteRequest is the DDK's macro over it"
+
+[[export]]
+name = "KeBugCheckEx"
+
+[[export]]
+name = "KeCancelTimer"
+
+[[export]]
+name = "KeDelayExecutionThread"
+
+[[export]]
+name = "KeGetCurrentThread"
+
+[[export]]
+name = "KeInitializeDpc"
+
+[[export]]
+name = "KeInitializeEvent"
+
+[[export]]
+name = "KeInitializeSpinLock"
+
+[[export]]
+name = "KeInitializeTimer"
+
+[[export]]
+name = "KeInsertQueueDpc"
+
+[[export]]
+name = "KeNumberProcessors"
+data = true
+
+[[export]]
+name = "KeQuerySystemTime"
+
+[[export]]
+name = "KeResetEvent"
+
+[[export]]
+name = "KeServiceDescriptorTable"
+data = true
+note = "the system service tables' descriptors: each table's base, counts, limit and argument bytes"
+
+[[export]]
+name = "KeSetEvent"
+
+[[export]]
+name = "KeSetTimer"
+
+[[export]]
+name = "KeTickCount"
+data = true
+
+[[export]]
+name = "KeWaitForMultipleObjects"
+
+[[export]]
+name = "KeWaitForSingleObject"
+
+[[export]]
+name = "LpcRequestPort"
+
+[[export]]
+name = "LpcRequestWaitReplyPort"
+
+[[export]]
+name = "MmAllocateContiguousMemory"
+
+[[export]]
+name = "MmBuildMdlForNonPagedPool"
+
+[[export]]
+name = "MmFreeContiguousMemory"
+
+[[export]]
+name = "MmGetPhysicalAddress"
+
+[[export]]
+name = "MmGetSystemRoutineAddress"
+
+[[export]]
+name = "MmIsAddressValid"
+
+[[export]]
+name = "MmMapIoSpace"
+
+[[export]]
+name = "MmMapLockedPages"
+
+[[export]]
+name = "MmProbeAndLockPages"
+
+[[export]]
+name = "MmUnlockPages"
+
+[[export]]
+name = "MmUnmapIoSpace"
+
+[[export]]
+name = "MmUnmapLockedPages"
+
+[[export]]
+name = "ObReferenceObjectByHandle"
+
+[[export]]
+name = "ObReferenceObjectByPointer"
+
+[[export]]
+name = "ObfDereferenceObject"
+note = "fastcall: ObDereferenceObject is the DDK's macro over it"
+
+[[export]]
+name = "ObfReferenceObject"
+note = "fastcall: ObReferenceObject is the DDK's macro over it"
+
+[[export]]
+name = "PsCreateSystemThread"
+
+[[export]]
+name = "PsGetCurrentProcessId"
+
+[[export]]
+name = "PsGetCurrentThreadId"
+
+[[export]]
+name = "PsGetVersion"
+
+[[export]]
+name = "PsInitialSystemProcess"
+data = true
+
+[[export]]
+name = "PsLookupProcessByProcessId"
+
+[[export]]
+name = "PsProcessType"
+data = true
+
+[[export]]
+name = "PsSetCreateProcessNotifyRoutine"
+
+[[export]]
+name = "PsSetCreateThreadNotifyRoutine"
+
+[[export]]
+name = "PsSetLoadImageNotifyRoutine"
+
+[[export]]
+name = "PsTerminateSystemThread"
+
+[[export]]
+name = "PsThreadType"
+data = true
+
+[[export]]
+name = "RtlAnsiStringToUnicodeString"
+
+[[export]]
+name = "RtlCompareMemory"
+
+[[export]]
+name = "RtlCompareUnicodeString"
+
+[[export]]
+name = "RtlCopyUnicodeString"
+
+[[export]]
+name = "RtlEqualUnicodeString"
+
+[[export]]
+name = "RtlFreeAnsiString"
+
+[[export]]
+name = "RtlFreeUnicodeString"
+
+[[export]]
+name = "RtlInitAnsiString"
+
+[[export]]
+name = "RtlInitString"
+
+[[export]]
+name = "RtlInitUnicodeString"
+
+[[export]]
+name = "RtlIntegerToUnicodeString"
+
+[[export]]
+name = "RtlQueryRegistryValues"
+
+[[export]]
+name = "RtlTimeFieldsToTime"
+
+[[export]]
+name = "RtlTimeToTimeFields"
+
+[[export]]
+name = "RtlUnicodeStringToAnsiString"
+
+[[export]]
+name = "RtlUnicodeStringToInteger"
+
+[[export]]
+name = "RtlUpcaseUnicodeChar"
+
+[[export]]
+name = "RtlWriteRegistryValue"
+
+[[export]]
+name = "SeAccessCheck"
+
+[[export]]
+name = "SeAssignSecurity"
+
+[[export]]
+name = "SeCaptureSubjectContext"
+
+[[export]]
+name = "SeExports"
+data = true
+
+[[export]]
+name = "SeLockSubjectContext"
+
+[[export]]
+name = "SeReleaseSubjectContext"
+
+[[export]]
+name = "SeSinglePrivilegeCheck"
+
+[[export]]
+name = "SeUnlockSubjectContext"

@@ -114,6 +114,9 @@ mod time;
 #[cfg(feature = "perf-trace")]
 mod perf;
 
+// ntoskrnl.exe's exports: the bodies kernel/exports.toml implements, kept in the link
+mod exports;
+
 // The C library's memory routines for the target (linker support).
 #[cfg(target_arch = "x86")]
 mod c_lib;

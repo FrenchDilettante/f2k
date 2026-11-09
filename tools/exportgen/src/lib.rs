@@ -1,4 +1,4 @@
-//! exportgen: the system DLLs' export specs, and everything generated from them.
+//! exportgen: the system DLLs' and the kernel's export specs, and everything generated from them.
 //!
 //! Each system DLL's exports are declared once, in `userland/<dll>/exports.toml` (the file's own
 //! header documents its records). This crate reads a spec ([`load`]), checks it, and emits what
@@ -17,10 +17,17 @@
 //! tables and the DLLs' stubs both come from here, so the two sides agree by construction. Every
 //! other export is user-mode code: a native body, or a forwarder to another DLL's export.
 //!
+//! The kernel's own exports are declared the same way, in `kernel/exports.toml` ([`check_kernel`]
+//! holds it to the kernel's terms), and the kernel's image is emitted from its link ([`pe`]: the
+//! PE32 `ntoskrnl.exe`, its export directory from that spec; [`elf`] reads the link and writes the
+//! object the boot image carries the image in).
+//!
 //! The specs are TOML read through [`toml`], a strict reader for the subset they are written in.
 
 pub mod abi;
+pub mod elf;
 pub mod emit;
+pub mod pe;
 pub mod toml;
 pub mod w2k;
 
@@ -44,12 +51,14 @@ pub struct Spec {
 }
 
 /// One of the platform's exports F2K does not implement yet: catalogued from the platform's own
-/// export table.
+/// export table, or, in the kernel's spec until that table is folded in, named from the DDK.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Catalogued {
     pub name: String,
-    /// The export ordinal, from the platform's own table.
-    pub ordinal: u16,
+    /// The export ordinal, from the platform's own table. A DLL's records always carry it
+    /// ([`check_together`] holds them to it); the kernel's DDK-named records have none until its
+    /// table is dumped ([`check_kernel`]).
+    pub ordinal: Option<u16>,
     /// A variable, not a function (an export in a section without code).
     pub data: bool,
     /// A fact worth keeping beside the export.
@@ -380,6 +389,13 @@ pub const WIN32K_CLIENTS: [&str; 2] = ["user32", "gdi32"];
 /// user32's or gdi32's ([`WIN32K_CLIENTS`]).
 pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
     for (dll, spec) in specs {
+        // A DLL's catalogue is its real table's: every record carries the platform's ordinal.
+        if let Some(record) = spec.catalogued.iter().find(|c| c.ordinal.is_none()) {
+            return Err(format!(
+                "{dll}/{}: a catalogued export has its platform ordinal",
+                record.name
+            ));
+        }
         for export in &spec.exports {
             // Which DLL enters which table: ntdll ntoskrnl's, user32 and gdi32 win32k's.
             if export.is_nt_service() && *dll != "ntdll" {
@@ -426,6 +442,28 @@ pub fn check_together(specs: &[(&str, &Spec)]) -> Result<(), String> {
     Ok(())
 }
 
+/// The kernel's spec (`kernel/exports.toml`, ntoskrnl.exe's exports) checked on its own terms: what
+/// it implements is the kernel's own code or storage (a native, the `f2k_export_<body>` symbol its
+/// Rust defines), exported by the image's export directory ([`pe`]). ntoskrnl's system services are
+/// ntdll's records (the kernel serves them from its service table), it forwards nothing, and it
+/// has no generated stub bodies: an export the kernel does not implement stays catalogued.
+pub fn check_kernel(spec: &Spec) -> Result<(), String> {
+    for export in &spec.exports {
+        let refusal = match &export.implementation {
+            Implementation::Native(_) => continue,
+            Implementation::Syscall(_) => {
+                "a system service is ntdll's record: the kernel serves it from its service table"
+            }
+            Implementation::Forward(_) => "the kernel forwards nothing",
+            Implementation::Stub(_) => {
+                "the kernel has no generated stub bodies: catalogue the export until it is written"
+            }
+        };
+        return Err(format!("ntoskrnl/{}: {refusal}", export.name));
+    }
+    Ok(())
+}
+
 impl Spec {
     /// The native exports, in file order.
     pub fn natives(&self) -> Vec<&Export> {
@@ -451,6 +489,41 @@ impl Spec {
     /// The export named `name`.
     pub fn export(&self, name: &str) -> Option<&Export> {
         self.exports.iter().find(|e| e.name == name)
+    }
+
+    /// The ordinals the spec hands out ([`Ordinals`]).
+    pub fn ordinals(&self) -> Ordinals {
+        Ordinals {
+            taken: self
+                .exports
+                .iter()
+                .flat_map(|e| [e.ordinal, e.zw_ordinal])
+                .flatten()
+                .chain(self.catalogued.iter().filter_map(|c| c.ordinal))
+                .collect(),
+            next: 1,
+        }
+    }
+}
+
+/// A spec's ordinals as its exports take them: a record's own (the platform's) when it gives one,
+/// otherwise the next one no record of the spec holds, catalogued ones included.
+pub struct Ordinals {
+    taken: Vec<u16>,
+    next: u16,
+}
+
+impl Ordinals {
+    /// The ordinal of an export whose record gives `own`.
+    pub fn assign(&mut self, own: Option<u16>) -> u16 {
+        if let Some(ordinal) = own {
+            return ordinal;
+        }
+        while self.taken.contains(&self.next) {
+            self.next += 1;
+        }
+        self.next += 1;
+        self.next - 1
     }
 }
 
@@ -517,7 +590,11 @@ pub fn parse_spec(text: &str) -> Result<Spec, String> {
             (name, claimed)
         } else {
             let record = read_catalogued(table, index)?;
-            let claimed = vec![(record.ordinal, record.name.clone())];
+            let claimed: Vec<(u16, String)> = record
+                .ordinal
+                .map(|o| (o, record.name.clone()))
+                .into_iter()
+                .collect();
             let name = record.name.clone();
             catalogued.push(record);
             (name, claimed)
@@ -578,8 +655,7 @@ fn read_catalogued(table: &Table, index: usize) -> Result<Catalogued, String> {
         ));
     }
     Ok(Catalogued {
-        ordinal: ordinal_field(table, "ordinal", &context)?
-            .ok_or_else(|| format!("{context}: a catalogued export has its platform ordinal"))?,
+        ordinal: ordinal_field(table, "ordinal", &context)?,
         data: boolean(table, "data", &context)?,
         note: optional_string(table, "note", &context)?,
         name,
@@ -1232,9 +1308,13 @@ ordinal = 0x10
             assert!(error.contains(message), "{error}");
         }
         // The catalogued records: name, ordinal, data and note only; their names and ordinals
-        // are the spec's like any other's; a system service's Zw alias is not catalogued apart.
+        // are the spec's like any other's; a system service's Zw alias is not catalogued apart. A
+        // DLL's carries its platform ordinal (the kernel's DDK-named seed may not: check_kernel).
+        let unnumbered = parse_spec(&format!("{SPEC}\n[[export]]\nname = \"AddAtomA\"\n")).unwrap();
+        assert_eq!(unnumbered.catalogued[0].ordinal, None);
+        let error = check_together(&[("kernel32", &unnumbered)]).unwrap_err();
+        assert!(error.contains("platform ordinal"), "{error}");
         for (record, message) in [
-            ("name = \"AddAtomA\"", "platform ordinal"),
             (
                 "name = \"AddAtomA\"\nordinal = 1\ngroup = \"termination\"",
                 "unknown key",

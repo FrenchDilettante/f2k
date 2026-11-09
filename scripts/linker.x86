@@ -33,6 +33,9 @@ SECTIONS
 
     .kernel : AT(0x101000) {
         *(.text .text.*)
+        /* The table of the kernel's exports' bodies (kernel/src/exports.rs): nothing references
+         * it, and it is what keeps each body in the link. */
+        KEEP(*(.rodata.ntoskrnl_exports))
         *(.rodata .rodata.*)
         *(.data .data.*)
         . = ALIGN(4096);
