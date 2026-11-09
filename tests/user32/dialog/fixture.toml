@@ -6,8 +6,8 @@
 description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
 kind = "sectioned"
 
-# Not gated: user32 has no dialog manager yet, and dialog.exe imports catalogued records user32 does
-# not export yet, so it does not load. Every section is on the work list.
+# Not gated: user32 has no dialog manager yet; dialog.exe loads against user32's stubs. Every
+# section is on the work list.
 [pending]
 create = "CreateDialogParamW/A not yet implemented: no dialog manager (templates, #32770, DefDlgProc) and no Button or Static controls"
 ex = "CreateDialogParamW of a DIALOGEX template not yet implemented: no dialog manager"

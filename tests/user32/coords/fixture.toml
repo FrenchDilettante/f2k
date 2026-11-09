@@ -5,16 +5,16 @@
 description = "coords - window coordinates: GetClientRect and GetWindowRect (a borderless popup and its children, a bordered and a captioned window less their metrics), MapWindowPoints between children, parents, the screen and a window itself (the points and the return's halves), ScreenToClient and ClientToScreen, ChildWindowFromPoint and ChildWindowFromPointEx (CWP_ALL, CWP_SKIPINVISIBLE, CWP_SKIPDISABLED) over visible, hidden and disabled children and a grandchild, IsChild, OffsetRect, and CharNextA/W and CharPrevA/W walks over plain text, the empty string, combining marks and a surrogate pair."
 kind = "sectioned"
 
-# Not gated: the program imports user32 exports F2K does not export yet (ChildWindowFromPoint,
+# Not gated: the program imports user32 exports F2K stubs (ChildWindowFromPoint,
 # ChildWindowFromPointEx, MapWindowPoints, ScreenToClient, ClientToScreen, IsChild, OffsetRect,
-# CharNextA/W, CharPrevA/W), so it does not load. Every section is on the work list.
+# CharNextA/W, CharPrevA/W); it loads against the stubs. Every section is on the work list.
 [pending]
 client = "GetClientRect and ClientToScreen not yet implemented"
 map = "MapWindowPoints not yet implemented"
 screen = "ScreenToClient and ClientToScreen not yet implemented"
 childpt = "ChildWindowFromPoint and ChildWindowFromPointEx not yet implemented"
 ischild = "IsChild not yet implemented"
-rect = "OffsetRect not yet implemented, and the program's other imports keep it from loading"
+rect = "OffsetRect not yet implemented"
 charnext = "CharNextA/W and CharPrevA/W not yet implemented"
 
 [pins]

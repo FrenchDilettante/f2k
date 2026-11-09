@@ -284,8 +284,13 @@ pub enum Implementation {
     /// Not written yet: a generated body logs the call, every argument, and the reason (what is
     /// missing: `not yet implemented`), then fails as the export fails (its `fails` value, the
     /// last error ERROR_CALL_NOT_IMPLEMENTED); one that returns nothing (`void`) returns,
-    /// having no failure to report, and one that cannot fail (`never`) raises.
-    Stub(String),
+    /// having no failure to report, and one that cannot fail (`never`) raises. Its body, the
+    /// identifier its generated code carries, is the export's name, or, for a C++ decorated name
+    /// (`??1type_info@@UAE@XZ`), which no symbol can spell, the one its record gives.
+    Stub {
+        reason: String,
+        body: Option<String>,
+    },
 }
 
 impl Implementation {
@@ -311,13 +316,17 @@ impl Export {
         }
     }
 
-    /// The name its code carries: `f2k_export_<body>` in the DLL's sources, and its `spec` entry. A
-    /// native's body is the one its record names: the export's own name, or, for a C++ decorated
-    /// name (`??2@YAPAXI@Z`, operator new), which no symbol of the DLL's sources can spell, a name
-    /// of its own. Any other export's is its name.
+    /// The name its code carries: `f2k_export_<body>` in the DLL's sources (a stub's generated
+    /// body), and its `spec` entry. A native's body is the one its record names: the export's own
+    /// name, or, for a C++ decorated name (`??2@YAPAXI@Z`, operator new), which no symbol of the
+    /// DLL's sources can spell, a name of its own; a stub of a decorated name gives its own the
+    /// same way. Any other export's is its name.
     pub fn body(&self) -> &str {
         match &self.implementation {
-            Implementation::Native(body) => body,
+            Implementation::Native(body)
+            | Implementation::Stub {
+                body: Some(body), ..
+            } => body,
             _ => &self.name,
         }
     }
@@ -455,7 +464,7 @@ pub fn check_kernel(spec: &Spec) -> Result<(), String> {
                 "a system service is ntdll's record: the kernel serves it from its service table"
             }
             Implementation::Forward(_) => "the kernel forwards nothing",
-            Implementation::Stub(_) => {
+            Implementation::Stub { .. } => {
                 "the kernel has no generated stub bodies: catalogue the export until it is written"
             }
         };
@@ -482,7 +491,7 @@ impl Spec {
     pub fn stubs(&self) -> Vec<&Export> {
         self.exports
             .iter()
-            .filter(|e| matches!(e.implementation, Implementation::Stub(_)))
+            .filter(|e| matches!(e.implementation, Implementation::Stub { .. }))
             .collect()
     }
 
@@ -744,8 +753,27 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
         }
     }
     let implementation = match table.get("impl") {
-        Some(Value::Table(spec)) if spec.entries.len() == 1 => {
+        Some(Value::Table(spec)) if !spec.entries.is_empty() => {
             let (kind, value) = &spec.entries[0];
+            // A stub's second key, its body's identifier (a C++ decorated name's); no other kind
+            // has one.
+            let stub_body = match &spec.entries[1..] {
+                [] => None,
+                [(key, Value::String(body))] if kind == "stub" && key == "body" => {
+                    if !is_identifier(body) {
+                        return Err(format!(
+                            "{context}: a stub's body {body:?} must be an identifier"
+                        ));
+                    }
+                    Some(body.clone())
+                }
+                _ => {
+                    return Err(format!(
+                        "{context}: impl is an inline table with one key (a stub's may add its \
+                         body)"
+                    ))
+                }
+            };
             let Value::String(value) = value else {
                 return Err(format!("{context}: impl.{kind} must be a string"));
             };
@@ -775,7 +803,10 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                             "{context}: a stub gives its reason (\"not yet implemented\")"
                         ));
                     }
-                    Implementation::Stub(value.clone())
+                    Implementation::Stub {
+                        reason: value.clone(),
+                        body: stub_body,
+                    }
                 }
                 "forward" => {
                     let valid = value.split_once('.').is_some_and(|(module, export)| {
@@ -795,14 +826,29 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
                 }
             }
         }
-        Some(_) => return Err(format!("{context}: impl is an inline table with one key")),
+        Some(_) => {
+            return Err(format!(
+                "{context}: impl is an inline table with one key (a stub's may add its body)"
+            ))
+        }
         None => return Err(format!("{context}: missing impl")),
     };
-    // A C++ decorated name is a native's alone: its body names its code.
-    if !is_identifier(&name) && !matches!(implementation, Implementation::Native(_)) {
+    // A C++ decorated name is a native's, or a stub's that gives its body: the body names its
+    // code. A stub of any other name has none to give.
+    let named_body = matches!(
+        implementation,
+        Implementation::Native(_) | Implementation::Stub { body: Some(_), .. }
+    );
+    if !is_identifier(&name) && !named_body {
         return Err(format!(
-            "{context}: the name must be an identifier (a native's need not be: its body names \
-             its code)"
+            "{context}: the name must be an identifier (a native's need not be, nor a stub's that \
+             gives its body: the body names its code)"
+        ));
+    }
+    if is_identifier(&name) && matches!(implementation, Implementation::Stub { body: Some(_), .. })
+    {
+        return Err(format!(
+            "{context}: a stub gives its body for a C++ decorated name alone; {name}'s is its name"
         ));
     }
     let ordinal = ordinal_field(table, "ordinal", &context)?;
@@ -840,7 +886,7 @@ fn read_export(table: &Table, index: usize, groups: &[Group]) -> Result<Export, 
             "{context}: a syscall returns its NTSTATUS: it declares no failure return (fails)"
         ));
     }
-    if matches!(implementation, Implementation::Stub(_)) && fails.is_none() {
+    if matches!(implementation, Implementation::Stub { .. }) && fails.is_none() {
         return Err(format!(
             "{context}: a stub fails as the export fails: it declares its failure return (fails; \
              void or never when it has none)"
@@ -1386,7 +1432,10 @@ ordinal = 0x10
         let stubbed = spec.export("Stubbed").unwrap();
         assert_eq!(
             stubbed.implementation,
-            Implementation::Stub("not yet implemented".into())
+            Implementation::Stub {
+                reason: "not yet implemented".into(),
+                body: None
+            }
         );
         assert_eq!(stubbed.arg_bytes(), 4);
         assert_eq!(stubbed.args[1].to_string(), "...");

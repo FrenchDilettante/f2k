@@ -187,7 +187,7 @@ pub fn dll_exports(spec: &Spec, source: &str) -> String {
     let exports: Vec<_> = spec
         .exports
         .iter()
-        .filter(|e| !e.internal && !matches!(e.implementation, Implementation::Stub(_)))
+        .filter(|e| !e.internal && !matches!(e.implementation, Implementation::Stub { .. }))
         .collect();
     let mut out = banner(source);
     out.push_str(
@@ -312,7 +312,7 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
         !e.data
             && matches!(
                 e.implementation,
-                Implementation::Native(_) | Implementation::Stub(_)
+                Implementation::Native(_) | Implementation::Stub { .. }
             )
     }) {
         let args: Vec<String> = export
@@ -337,7 +337,7 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
     }
     out.push_str("}\n");
     for export in own.stubs() {
-        let Implementation::Stub(reason) = &export.implementation else {
+        let Implementation::Stub { reason, .. } = &export.implementation else {
             unreachable!()
         };
         let fixed: Vec<_> = export
@@ -362,8 +362,8 @@ pub fn dll_rust(specs: &[(&str, &Spec)], dll: &str, source: &str) -> String {
         let values: Vec<String> = (0..fixed.len()).map(|i| format!("a{i} as u64")).collect();
         writeln!(
             out,
-            "\n/// {name}: stubbed ({reason}).\n#[allow(non_snake_case, clippy::too_many_arguments)]\n#[unsafe(export_name = \"f2k_export_{name}\")]\npub unsafe extern \"{abi}\" fn f2k_stub_{name}({params}) -> u32 {{\n    // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    unsafe {{ crate::stub::stubbed(&spec::{name}, {reason_text}, &[{values}]) }}\n}}",
-            name = export.name,
+            "\n/// {name}: stubbed ({reason}).\n///\n/// # Safety\n///\n/// The arguments are the caller's, as the export's kinds say.\n#[allow(non_snake_case, clippy::too_many_arguments)]\n#[unsafe(export_name = \"f2k_export_{name}\")]\npub unsafe extern \"{abi}\" fn f2k_stub_{name}({params}) -> u32 {{\n    // SAFETY: the arguments are the caller's, read as its export's kinds say.\n    unsafe {{ crate::stub::stubbed(&spec::{name}, {reason_text}, &[{values}]) }}\n}}",
+            name = export.body(),
             reason = reason,
             abi = match export.convention(own.convention) {
                 Convention::Cdecl => "C",
@@ -515,7 +515,7 @@ pub fn dll_def(
     for export in own.stubs() {
         lines.push((
             export.ordinal,
-            format!("{}={}", export.name, &hand_symbol(&export.name)[1..]),
+            format!("{}={}", export.name, &hand_symbol(export.body())[1..]),
             false,
         ));
     }
@@ -877,6 +877,72 @@ impl = { syscall = "crate::nt::object::close" }
                 && stubs.contains("    (\"CreateProcessW\", 16),\n    (\"Trace\", 4),"),
             "{stubs}"
         );
+    }
+
+    /// A stub of a C++ decorated name: its generated body and its description carry the body its
+    /// record gives, and the `.def` exports the decorated name to it; a body is refused for any
+    /// other name, and a decorated name's stub without one is refused.
+    #[test]
+    fn a_decorated_stub_carries_its_body() {
+        let record = |name: &str, implementation: &str| {
+            format!(
+                "convention = \"cdecl\"\n{SPEC}\n[[export]]\nname = \"{name}\"\ngroup = \
+                 \"termination\"\nargs = []\nimpl = {implementation}\nordinal = 14\nfails = \"void\"\n"
+            )
+        };
+        let msvcrt = parse_spec(&record(
+            "??1type_info@@UAE@XZ",
+            "{ stub = \"not yet implemented\", body = \"type_info_destructor\" }",
+        ))
+        .unwrap();
+        let ntdll = parse_spec(NTDLL).unwrap();
+        let specs = [("msvcrt", &msvcrt), ("ntdll", &ntdll)];
+        let rust = dll_rust(&specs, "msvcrt", "t");
+        assert!(
+            rust.contains(
+                "    pub static type_info_destructor: Entry = Entry {\n        dll: \"msvcrt\",\n        \
+                 name: \"??1type_info@@UAE@XZ\","
+            ),
+            "{rust}"
+        );
+        assert!(
+            rust.contains(
+                "#[unsafe(export_name = \"f2k_export_type_info_destructor\")]\npub unsafe extern \
+                 \"C\" fn f2k_stub_type_info_destructor() -> u32"
+            ),
+            "{rust}"
+        );
+        let def = dll_def(&specs, "msvcrt", &natives()).unwrap();
+        assert!(
+            def.contains("  ??1type_info@@UAE@XZ=f2k_export_type_info_destructor @14\n"),
+            "{def}"
+        );
+        assert!(stub_exports(&msvcrt, "t").contains("(\"??1type_info@@UAE@XZ\", 0)"));
+        for (name, implementation, refusal) in [
+            (
+                "??1type_info@@UAE@XZ",
+                "{ stub = \"not yet implemented\" }",
+                "must be an identifier",
+            ),
+            (
+                "Plain",
+                "{ stub = \"not yet implemented\", body = \"plain\" }",
+                "decorated name alone",
+            ),
+            (
+                "??1type_info@@UAE@XZ",
+                "{ stub = \"not yet implemented\", body = \"type info\" }",
+                "must be an identifier",
+            ),
+            (
+                "Plain",
+                "{ native = \"Plain\", body = \"plain\" }",
+                "one key",
+            ),
+        ] {
+            let error = parse_spec(&record(name, implementation)).unwrap_err();
+            assert!(error.contains(refusal), "{implementation}: {error}");
+        }
     }
 
     /// A variable: exported as DATA, at its ordinal, from the DLL's own storage; listed for the

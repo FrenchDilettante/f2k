@@ -58,7 +58,9 @@
 #                                             STATUS_NOT_IMPLEMENTED). The reason says what is
 #                                             missing ("not yet implemented"). A native's code
 #                                             takes the same path on what it does not handle:
-#                                             crate::stub::stubbed
+#                                             crate::stub::stubbed. A stub of a C++ decorated
+#                                             name gives its body an identifier, as a native
+#                                             does: { stub = "<reason>", body = "<body>" }
 #                only ntdll, user32 and gdi32 enter the kernel, as on Windows 2000: kernel32 is
 #                user code over ntdll
 #   ordinal      the export ordinal, from Windows 2000's own table (an F2K-internal export has
@@ -962,6 +964,14 @@ group = "heap"
 args = ["u32 hMem", "u32 dwBytes", "u32 uFlags"]
 impl = { native = "GlobalReAlloc" }
 ordinal = 431
+
+[[export]]
+name = "GlobalCompact"
+group = "heap"
+args = ["u32 dwMinFree"]
+impl = { stub = "not yet implemented" }
+ordinal = 418
+fails = "0"
 
 # --- locale / string conversion -------------------------------------------------------------------
 
@@ -3821,10 +3831,6 @@ ordinal = 415
 [[export]]
 name = "GlobalAddAtomW"
 ordinal = 416
-
-[[export]]
-name = "GlobalCompact"
-ordinal = 418
 
 [[export]]
 name = "GlobalDeleteAtom"

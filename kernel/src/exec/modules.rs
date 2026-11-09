@@ -1100,9 +1100,9 @@ mod tests {
         }
     }
 
-    /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: its window calls
-    /// are not user32's exports yet).
-    const LOADED_CORPUS: [(&str, &[u8]); 24] = [
+    /// Corpus binaries that import msvcrt, advapi32, user32 or gdi32: among them the GUI fixtures
+    /// whose blocks are all still pending, which load against user32's and gdi32's stubs.
+    const LOADED_CORPUS: [(&str, &[u8]); 37] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1186,6 +1186,58 @@ mod tests {
         (
             "shutkid",
             include_bytes!("../../../tests/kernel32/shutparm/shutkid.exe"),
+        ),
+        (
+            "hellogui",
+            include_bytes!("../../../tests/user32/hellogui/hellogui.exe"),
+        ),
+        (
+            "dialog",
+            include_bytes!("../../../tests/user32/dialog/dialog.exe"),
+        ),
+        (
+            "controls",
+            include_bytes!("../../../tests/user32/controls/controls.exe"),
+        ),
+        (
+            "wndlong",
+            include_bytes!("../../../tests/user32/wndlong/wndlong.exe"),
+        ),
+        (
+            "wintext",
+            include_bytes!("../../../tests/user32/wintext/wintext.exe"),
+        ),
+        (
+            "focus",
+            include_bytes!("../../../tests/user32/focus/focus.exe"),
+        ),
+        (
+            "coords",
+            include_bytes!("../../../tests/user32/coords/coords.exe"),
+        ),
+        (
+            "menus",
+            include_bytes!("../../../tests/user32/menus/menus.exe"),
+        ),
+        (
+            "accel",
+            include_bytes!("../../../tests/user32/accel/accel.exe"),
+        ),
+        (
+            "keyinput",
+            include_bytes!("../../../tests/user32/keyinput/keyinput.exe"),
+        ),
+        (
+            "mousein",
+            include_bytes!("../../../tests/user32/mousein/mousein.exe"),
+        ),
+        (
+            "clipbrd",
+            include_bytes!("../../../tests/user32/clipbrd/clipbrd.exe"),
+        ),
+        (
+            "ttfont",
+            include_bytes!("../../../tests/gdi32/ttfont/ttfont.exe"),
         ),
     ];
 

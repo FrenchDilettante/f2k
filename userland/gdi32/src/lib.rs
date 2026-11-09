@@ -15,8 +15,9 @@
 //! service's failure becomes the last error ([`answered`]); a success leaves the last error as it
 //! was.
 //!
-//! The exports not written yet are not exported (their records are the catalogue's); the paths an
-//! implemented export does not handle go to the stub routine ([`stub`]).
+//! The exports not written yet that the corpus imports are stubs: their generated bodies log the
+//! call and fail, as do the paths an implemented export does not handle ([`stub`]). The rest are
+//! not exported (their records are the catalogue's).
 
 #![cfg_attr(not(test), no_std)]
 

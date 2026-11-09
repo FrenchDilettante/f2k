@@ -1,9 +1,9 @@
 # USER32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# F2K's user32 exports what the corpus fixtures (tests/user32, tests/gdi32's guidc) and cmd.exe
-# import: its own code over ntdll and kernel32, as Windows 2000's user32 imports them, and stubs
-# for what is not written yet. The rest of the records are catalogued from
+# F2K's user32 exports what the corpus fixtures (tests/user32, tests/gdi32's guidc), cmd.exe and
+# calc.exe import: its own code over ntdll and kernel32, as Windows 2000's user32 imports them,
+# and stubs for what is not written yet. The rest of the records are catalogued from
 # USER32.dll 5.0.2195.6688's export table (scripts/catalogue_exports.py): their name and ordinal.
 # Implementing one gives it its group, prototype and implementation.
 #
@@ -46,6 +46,38 @@ title = "ending the session"
 [[group]]
 key = "resources"
 title = "resources"
+
+[[group]]
+key = "input"
+title = "keyboard and mouse input: focus, activation, key state, capture and the cursor"
+
+[[group]]
+key = "dialog"
+title = "dialog boxes and message boxes"
+
+[[group]]
+key = "menu"
+title = "menus"
+
+[[group]]
+key = "accelerator"
+title = "keyboard accelerators"
+
+[[group]]
+key = "clipboard"
+title = "the clipboard"
+
+[[group]]
+key = "rect"
+title = "rectangles"
+
+[[group]]
+key = "string"
+title = "strings and characters"
+
+[[group]]
+key = "help"
+title = "help"
 
 # --- window stations / desktops -------------------------------------------------------------------
 
@@ -653,6 +685,222 @@ impl = { native = "UpdateWindow" }
 ordinal = 663
 fails = "FALSE"
 
+[[export]]
+name = "GetClientRect"
+group = "window"
+args = ["handle hWnd", "ptr lpRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 244
+fails = "FALSE"
+
+[[export]]
+name = "MapWindowPoints"
+group = "window"
+args = ["handle hWndFrom", "handle hWndTo", "ptr lpPoints", "u32 cPoints"]
+impl = { stub = "not yet implemented" }
+ordinal = 447
+fails = "0"
+
+[[export]]
+name = "ClientToScreen"
+group = "window"
+args = ["handle hWnd", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 60
+fails = "FALSE"
+
+[[export]]
+name = "ScreenToClient"
+group = "window"
+args = ["handle hWnd", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 527
+fails = "FALSE"
+
+[[export]]
+name = "ChildWindowFromPoint"
+group = "window"
+args = ["handle hWndParent", "i32 x", "i32 y"]
+impl = { stub = "not yet implemented" }
+ordinal = 56
+fails = "NULL"
+
+[[export]]
+name = "ChildWindowFromPointEx"
+group = "window"
+args = ["handle hwndParent", "i32 x", "i32 y", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 57
+fails = "NULL"
+
+[[export]]
+name = "WindowFromPoint"
+group = "window"
+args = ["i32 x", "i32 y"]
+impl = { stub = "not yet implemented" }
+ordinal = 689
+fails = "NULL"
+
+[[export]]
+name = "IsChild"
+group = "window"
+args = ["handle hWndParent", "handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 394
+fails = "FALSE"
+
+[[export]]
+name = "GetWindow"
+group = "window"
+args = ["handle hWnd", "u32 uCmd"]
+impl = { stub = "not yet implemented" }
+ordinal = 343
+fails = "NULL"
+
+[[export]]
+name = "FindWindowW"
+group = "window"
+args = ["ptr lpClassName", "strW? lpWindowName"]
+impl = { stub = "not yet implemented" }
+ordinal = 219
+fails = "NULL"
+
+[[export]]
+name = "IsWindowUnicode"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 406
+fails = "FALSE"
+
+[[export]]
+name = "GetWindowLongA"
+group = "window"
+args = ["handle hWnd", "i32 nIndex"]
+impl = { stub = "not yet implemented" }
+ordinal = 347
+fails = "0"
+
+[[export]]
+name = "GetWindowLongW"
+group = "window"
+args = ["handle hWnd", "i32 nIndex"]
+impl = { stub = "not yet implemented" }
+ordinal = 348
+fails = "0"
+
+[[export]]
+name = "SetWindowLongA"
+group = "window"
+args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
+impl = { stub = "not yet implemented" }
+ordinal = 606
+fails = "0"
+
+[[export]]
+name = "SetWindowLongW"
+group = "window"
+args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
+impl = { stub = "not yet implemented" }
+ordinal = 607
+fails = "0"
+
+[[export]]
+name = "GetWindowWord"
+group = "window"
+args = ["handle hWnd", "i32 nIndex"]
+impl = { stub = "not yet implemented" }
+ordinal = 360
+fails = "0"
+
+[[export]]
+name = "SetWindowWord"
+group = "window"
+args = ["handle hWnd", "i32 nIndex", "u32 wNewWord"]
+impl = { stub = "not yet implemented" }
+ordinal = 614
+fails = "0"
+
+[[export]]
+name = "CallWindowProcA"
+group = "window"
+args = ["ptr lpPrevWndFunc", "handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 23
+fails = "0"
+
+[[export]]
+name = "CallWindowProcW"
+group = "window"
+args = ["ptr lpPrevWndFunc", "handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 24
+fails = "0"
+
+[[export]]
+name = "GetWindowTextA"
+group = "window"
+args = ["handle hWnd", "ptr lpString", "i32 nMaxCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 355
+fails = "0"
+
+[[export]]
+name = "GetWindowTextW"
+group = "window"
+args = ["handle hWnd", "ptr lpString", "i32 nMaxCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 358
+fails = "0"
+
+[[export]]
+name = "GetWindowTextLengthA"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 356
+fails = "0"
+
+[[export]]
+name = "GetWindowTextLengthW"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 357
+fails = "0"
+
+[[export]]
+name = "SetWindowTextA"
+group = "window"
+args = ["handle hWnd", "strA? lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 612
+fails = "FALSE"
+
+[[export]]
+name = "SetWindowTextW"
+group = "window"
+args = ["handle hWnd", "strW? lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 613
+fails = "FALSE"
+
+[[export]]
+name = "GetProcessDefaultLayout"
+group = "window"
+args = ["ptr<u32> pdwDefaultLayout"]
+impl = { stub = "not yet implemented" }
+ordinal = 315
+fails = "FALSE"
+
+[[export]]
+name = "SetProcessDefaultLayout"
+group = "window"
+args = ["u32 dwDefaultLayout"]
+impl = { stub = "not yet implemented" }
+ordinal = 581
+fails = "FALSE"
+
 # win32k's window services, behind CreateWindowExA/W and DestroyWindow: user32's internal calls.
 # NtUserCreateWindowEx takes CreateWindowExW's arguments as they are, then the caller's
 # expected-version word and the new window's handle's slot.
@@ -694,6 +942,14 @@ impl = { native = "LoadStringW" }
 ordinal = 433
 fails = "0"
 note = "an nBufferMax of 0 hands back the string's address in the module's image; one of 1 writes nothing"
+
+[[export]]
+name = "LoadIconW"
+group = "resources"
+args = ["handle hInstance", "ptr lpIconName"]
+impl = { stub = "not yet implemented" }
+ordinal = 420
+fails = "NULL"
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
 # ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
@@ -872,6 +1128,94 @@ impl = { native = "EndPaint" }
 ordinal = 190
 fails = "FALSE"
 
+[[export]]
+name = "GetMessageW"
+group = "message"
+args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax"]
+impl = { stub = "not yet implemented" }
+ordinal = 306
+fails = "-1"
+
+[[export]]
+name = "PeekMessageW"
+group = "message"
+args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax", "u32 wRemoveMsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 483
+fails = "FALSE"
+
+[[export]]
+name = "PostMessageW"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 485
+fails = "FALSE"
+
+[[export]]
+name = "PostThreadMessageW"
+group = "message"
+args = ["u32 idThread", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 488
+fails = "FALSE"
+
+[[export]]
+name = "DispatchMessageW"
+group = "message"
+args = ["ptr lpmsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 153
+fails = "0"
+
+[[export]]
+name = "InSendMessage"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 372
+fails = "FALSE"
+
+[[export]]
+name = "MsgWaitForMultipleObjects"
+group = "message"
+args = ["u32 nCount", "ptr pHandles", "bool fWaitAll", "u32 dwMilliseconds", "u32 dwWakeMask"]
+impl = { stub = "not yet implemented" }
+ordinal = 464
+fails = "WAIT_FAILED"
+
+[[export]]
+name = "SetTimer"
+group = "message"
+args = ["handle hWnd", "u32 nIDEvent", "u32 uElapse", "ptr lpTimerFunc"]
+impl = { stub = "not yet implemented" }
+ordinal = 600
+fails = "0"
+
+[[export]]
+name = "KillTimer"
+group = "message"
+args = ["handle hWnd", "u32 uIDEvent"]
+impl = { stub = "not yet implemented" }
+ordinal = 410
+fails = "FALSE"
+
+[[export]]
+name = "DrawEdge"
+group = "message"
+args = ["handle hdc", "ptr qrc", "u32 edge", "u32 grfFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 168
+fails = "FALSE"
+
+[[export]]
+name = "DrawTextW"
+group = "message"
+args = ["handle hDC", "ptr lpString", "i32 nCount", "ptr lpRect", "u32 uFormat"]
+impl = { stub = "not yet implemented" }
+ordinal = 181
+fails = "0"
+
 # win32k's queue, timer and paint services: user32's internal calls, behind the message loop's
 # exports (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
 # ReplyMessage), SetTimer and KillTimer, and the paint calls (InvalidateRect, ValidateRect,
@@ -995,6 +1339,725 @@ ordinal = 214
 fails = "FALSE"
 note = "the request goes to the console server stand-in, which ends the session after the call returns; no privilege is checked (Windows 2000 requires SeShutdownPrivilege for every action but EWX_LOGOFF)"
 
+# --- keyboard and mouse input: focus, activation, key state, capture and the cursor ---------------
+
+[[export]]
+name = "GetFocus"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 267
+fails = "NULL"
+
+[[export]]
+name = "SetFocus"
+group = "input"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 564
+fails = "NULL"
+
+[[export]]
+name = "GetActiveWindow"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 224
+fails = "NULL"
+
+[[export]]
+name = "SetActiveWindow"
+group = "input"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 545
+fails = "NULL"
+
+[[export]]
+name = "GetForegroundWindow"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 268
+fails = "NULL"
+
+[[export]]
+name = "SetForegroundWindow"
+group = "input"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 565
+fails = "FALSE"
+
+[[export]]
+name = "EnableWindow"
+group = "input"
+args = ["handle hWnd", "bool bEnable"]
+impl = { stub = "not yet implemented" }
+ordinal = 186
+fails = "FALSE"
+
+[[export]]
+name = "IsWindowEnabled"
+group = "input"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 405
+fails = "FALSE"
+
+[[export]]
+name = "GetKeyState"
+group = "input"
+args = ["i32 nVirtKey"]
+impl = { stub = "not yet implemented" }
+ordinal = 278
+fails = "0"
+
+[[export]]
+name = "GetKeyboardState"
+group = "input"
+args = ["ptr lpKeyState"]
+impl = { stub = "not yet implemented" }
+ordinal = 283
+fails = "FALSE"
+
+[[export]]
+name = "SetKeyboardState"
+group = "input"
+args = ["ptr lpKeyState"]
+impl = { stub = "not yet implemented" }
+ordinal = 567
+fails = "FALSE"
+
+[[export]]
+name = "GetKeyboardLayout"
+group = "input"
+args = ["u32 idThread"]
+impl = { stub = "not yet implemented" }
+ordinal = 279
+fails = "NULL"
+
+[[export]]
+name = "GetCapture"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 232
+fails = "NULL"
+
+[[export]]
+name = "SetCapture"
+group = "input"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 546
+fails = "NULL"
+
+[[export]]
+name = "ReleaseCapture"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 519
+fails = "FALSE"
+
+[[export]]
+name = "GetCursorPos"
+group = "input"
+args = ["ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 256
+fails = "FALSE"
+
+[[export]]
+name = "SetCursorPos"
+group = "input"
+args = ["i32 X", "i32 Y"]
+impl = { stub = "not yet implemented" }
+ordinal = 557
+fails = "FALSE"
+
+[[export]]
+name = "SetCursor"
+group = "input"
+args = ["handle hCursor"]
+impl = { stub = "not yet implemented" }
+ordinal = 555
+fails = "NULL"
+
+# --- dialog boxes and message boxes ---------------------------------------------------------------
+
+[[export]]
+name = "CreateDialogParamA"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 81
+fails = "NULL"
+
+[[export]]
+name = "CreateDialogParamW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 82
+fails = "NULL"
+
+[[export]]
+name = "CreateDialogIndirectParamW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 80
+fails = "NULL"
+
+[[export]]
+name = "DialogBoxParamA"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 150
+fails = "-1"
+
+[[export]]
+name = "DialogBoxParamW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 151
+fails = "-1"
+
+[[export]]
+name = "EndDialog"
+group = "dialog"
+args = ["handle hDlg", "i32 nResult"]
+impl = { stub = "not yet implemented" }
+ordinal = 188
+fails = "FALSE"
+
+[[export]]
+name = "IsDialogMessageA"
+group = "dialog"
+args = ["handle hDlg", "ptr lpMsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 397
+fails = "FALSE"
+
+[[export]]
+name = "IsDialogMessageW"
+group = "dialog"
+args = ["handle hDlg", "ptr lpMsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 398
+fails = "FALSE"
+
+[[export]]
+name = "GetDlgItem"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 262
+fails = "NULL"
+
+[[export]]
+name = "GetDlgCtrlID"
+group = "dialog"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 261
+fails = "0"
+
+[[export]]
+name = "GetDlgItemInt"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "ptr<u32> lpTranslated", "bool bSigned"]
+impl = { stub = "not yet implemented" }
+ordinal = 263
+fails = "0"
+
+[[export]]
+name = "SetDlgItemInt"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "u32 uValue", "bool bSigned"]
+impl = { stub = "not yet implemented" }
+ordinal = 560
+fails = "FALSE"
+
+[[export]]
+name = "GetDlgItemTextA"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "ptr lpString", "i32 cchMax"]
+impl = { stub = "not yet implemented" }
+ordinal = 264
+fails = "0"
+
+[[export]]
+name = "GetDlgItemTextW"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "ptr lpString", "i32 cchMax"]
+impl = { stub = "not yet implemented" }
+ordinal = 265
+fails = "0"
+
+[[export]]
+name = "SetDlgItemTextA"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "strA? lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 561
+fails = "FALSE"
+
+[[export]]
+name = "SetDlgItemTextW"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "strW? lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 562
+fails = "FALSE"
+
+[[export]]
+name = "SendDlgItemMessageW"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 533
+fails = "0"
+
+[[export]]
+name = "CheckDlgButton"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDButton", "u32 uCheck"]
+impl = { stub = "not yet implemented" }
+ordinal = 52
+fails = "FALSE"
+
+[[export]]
+name = "CheckRadioButton"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDFirstButton", "i32 nIDLastButton", "i32 nIDCheckButton"]
+impl = { stub = "not yet implemented" }
+ordinal = 55
+fails = "FALSE"
+
+[[export]]
+name = "IsDlgButtonChecked"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDButton"]
+impl = { stub = "not yet implemented" }
+ordinal = 399
+fails = "0"
+
+[[export]]
+name = "GetDialogBaseUnits"
+group = "dialog"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 260
+fails = "0"
+
+[[export]]
+name = "MapDialogRect"
+group = "dialog"
+args = ["handle hDlg", "ptr lpRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 442
+fails = "FALSE"
+
+[[export]]
+name = "MessageBoxA"
+group = "dialog"
+args = ["handle hWnd", "strA? lpText", "strA? lpCaption", "u32 uType"]
+impl = { stub = "not yet implemented" }
+ordinal = 452
+fails = "0"
+
+[[export]]
+name = "MessageBoxW"
+group = "dialog"
+args = ["handle hWnd", "strW? lpText", "strW? lpCaption", "u32 uType"]
+impl = { stub = "not yet implemented" }
+ordinal = 457
+fails = "0"
+
+# --- menus ----------------------------------------------------------------------------------------
+
+[[export]]
+name = "LoadMenuA"
+group = "menu"
+args = ["handle hInstance", "ptr lpMenuName"]
+impl = { stub = "not yet implemented" }
+ordinal = 427
+fails = "NULL"
+
+[[export]]
+name = "LoadMenuW"
+group = "menu"
+args = ["handle hInstance", "ptr lpMenuName"]
+impl = { stub = "not yet implemented" }
+ordinal = 430
+fails = "NULL"
+
+[[export]]
+name = "GetMenu"
+group = "menu"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 288
+fails = "NULL"
+
+[[export]]
+name = "SetMenu"
+group = "menu"
+args = ["handle hWnd", "handle hMenu"]
+impl = { stub = "not yet implemented" }
+ordinal = 571
+fails = "FALSE"
+
+[[export]]
+name = "GetSubMenu"
+group = "menu"
+args = ["handle hMenu", "i32 nPos"]
+impl = { stub = "not yet implemented" }
+ordinal = 326
+fails = "NULL"
+
+[[export]]
+name = "IsMenu"
+group = "menu"
+args = ["handle hMenu"]
+impl = { stub = "not yet implemented" }
+ordinal = 402
+fails = "FALSE"
+
+[[export]]
+name = "DestroyMenu"
+group = "menu"
+args = ["handle hMenu"]
+impl = { stub = "not yet implemented" }
+ordinal = 144
+fails = "FALSE"
+
+[[export]]
+name = "CheckMenuItem"
+group = "menu"
+args = ["handle hMenu", "u32 uIDCheckItem", "u32 uCheck"]
+impl = { stub = "not yet implemented" }
+ordinal = 53
+fails = "-1"
+
+[[export]]
+name = "CheckMenuRadioItem"
+group = "menu"
+args = ["handle hmenu", "u32 idFirst", "u32 idLast", "u32 idCheck", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 54
+fails = "FALSE"
+
+[[export]]
+name = "EnableMenuItem"
+group = "menu"
+args = ["handle hMenu", "u32 uIDEnableItem", "u32 uEnable"]
+impl = { stub = "not yet implemented" }
+ordinal = 184
+fails = "-1"
+
+[[export]]
+name = "GetMenuItemCount"
+group = "menu"
+args = ["handle hMenu"]
+impl = { stub = "not yet implemented" }
+ordinal = 294
+fails = "-1"
+
+[[export]]
+name = "GetMenuItemID"
+group = "menu"
+args = ["handle hMenu", "i32 nPos"]
+impl = { stub = "not yet implemented" }
+ordinal = 295
+fails = "-1"
+
+[[export]]
+name = "GetMenuState"
+group = "menu"
+args = ["handle hMenu", "u32 uId", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 299
+fails = "-1"
+
+[[export]]
+name = "GetMenuStringA"
+group = "menu"
+args = ["handle hMenu", "u32 uIDItem", "ptr lpString", "i32 nMaxCount", "u32 uFlag"]
+impl = { stub = "not yet implemented" }
+ordinal = 300
+fails = "0"
+
+[[export]]
+name = "GetMenuStringW"
+group = "menu"
+args = ["handle hMenu", "u32 uIDItem", "ptr lpString", "i32 nMaxCount", "u32 uFlag"]
+impl = { stub = "not yet implemented" }
+ordinal = 301
+fails = "0"
+
+[[export]]
+name = "TrackPopupMenuEx"
+group = "menu"
+args = ["handle hmenu", "u32 fuFlags", "i32 x", "i32 y", "handle hwnd", "ptr lptpm"]
+impl = { stub = "not yet implemented" }
+ordinal = 643
+fails = "FALSE"
+
+# --- keyboard accelerators ------------------------------------------------------------------------
+
+[[export]]
+name = "LoadAcceleratorsA"
+group = "accelerator"
+args = ["handle hInstance", "ptr lpTableName"]
+impl = { stub = "not yet implemented" }
+ordinal = 411
+fails = "NULL"
+
+[[export]]
+name = "LoadAcceleratorsW"
+group = "accelerator"
+args = ["handle hInstance", "ptr lpTableName"]
+impl = { stub = "not yet implemented" }
+ordinal = 412
+fails = "NULL"
+
+[[export]]
+name = "TranslateAcceleratorA"
+group = "accelerator"
+args = ["handle hWnd", "handle hAccTable", "ptr lpMsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 645
+fails = "0"
+
+[[export]]
+name = "TranslateAcceleratorW"
+group = "accelerator"
+args = ["handle hWnd", "handle hAccTable", "ptr lpMsg"]
+impl = { stub = "not yet implemented" }
+ordinal = 646
+fails = "0"
+
+[[export]]
+name = "CopyAcceleratorTableA"
+group = "accelerator"
+args = ["handle hAccelSrc", "ptr lpAccelDst", "i32 cAccelEntries"]
+impl = { stub = "not yet implemented" }
+ordinal = 66
+fails = "0"
+
+[[export]]
+name = "CopyAcceleratorTableW"
+group = "accelerator"
+args = ["handle hAccelSrc", "ptr lpAccelDst", "i32 cAccelEntries"]
+impl = { stub = "not yet implemented" }
+ordinal = 67
+fails = "0"
+
+[[export]]
+name = "DestroyAcceleratorTable"
+group = "accelerator"
+args = ["handle hAccel"]
+impl = { stub = "not yet implemented" }
+ordinal = 140
+fails = "FALSE"
+
+# --- the clipboard --------------------------------------------------------------------------------
+
+[[export]]
+name = "OpenClipboard"
+group = "clipboard"
+args = ["handle hWndNewOwner"]
+impl = { stub = "not yet implemented" }
+ordinal = 473
+fails = "FALSE"
+
+[[export]]
+name = "CloseClipboard"
+group = "clipboard"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 62
+fails = "FALSE"
+
+[[export]]
+name = "EmptyClipboard"
+group = "clipboard"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 183
+fails = "FALSE"
+
+[[export]]
+name = "GetClipboardData"
+group = "clipboard"
+args = ["u32 uFormat"]
+impl = { stub = "not yet implemented" }
+ordinal = 246
+fails = "NULL"
+
+[[export]]
+name = "SetClipboardData"
+group = "clipboard"
+args = ["u32 uFormat", "handle hMem"]
+impl = { stub = "not yet implemented" }
+ordinal = 552
+fails = "NULL"
+
+[[export]]
+name = "IsClipboardFormatAvailable"
+group = "clipboard"
+args = ["u32 format"]
+impl = { stub = "not yet implemented" }
+ordinal = 395
+fails = "FALSE"
+
+[[export]]
+name = "CountClipboardFormats"
+group = "clipboard"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 71
+fails = "0"
+
+[[export]]
+name = "EnumClipboardFormats"
+group = "clipboard"
+args = ["u32 format"]
+impl = { stub = "not yet implemented" }
+ordinal = 193
+fails = "0"
+
+[[export]]
+name = "RegisterClipboardFormatA"
+group = "clipboard"
+args = ["strA lpszFormat"]
+impl = { stub = "not yet implemented" }
+ordinal = 507
+fails = "0"
+
+[[export]]
+name = "RegisterClipboardFormatW"
+group = "clipboard"
+args = ["strW lpszFormat"]
+impl = { stub = "not yet implemented" }
+ordinal = 508
+fails = "0"
+
+[[export]]
+name = "GetClipboardFormatNameA"
+group = "clipboard"
+args = ["u32 format", "ptr lpszFormatName", "i32 cchMaxCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 247
+fails = "0"
+
+[[export]]
+name = "GetClipboardFormatNameW"
+group = "clipboard"
+args = ["u32 format", "ptr lpszFormatName", "i32 cchMaxCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 248
+fails = "0"
+
+[[export]]
+name = "GetClipboardOwner"
+group = "clipboard"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 249
+fails = "NULL"
+
+[[export]]
+name = "GetOpenClipboardWindow"
+group = "clipboard"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 312
+fails = "NULL"
+
+# --- rectangles -----------------------------------------------------------------------------------
+
+[[export]]
+name = "SetRect"
+group = "rect"
+args = ["ptr lprc", "i32 xLeft", "i32 yTop", "i32 xRight", "i32 yBottom"]
+impl = { stub = "not yet implemented" }
+ordinal = 586
+fails = "FALSE"
+
+[[export]]
+name = "OffsetRect"
+group = "rect"
+args = ["ptr lprc", "i32 dx", "i32 dy"]
+impl = { stub = "not yet implemented" }
+ordinal = 472
+fails = "FALSE"
+
+# --- strings and characters -----------------------------------------------------------------------
+
+[[export]]
+name = "CharNextA"
+group = "string"
+args = ["strA lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 38
+fails = "NULL"
+
+[[export]]
+name = "CharNextW"
+group = "string"
+args = ["strW lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 40
+fails = "NULL"
+
+[[export]]
+name = "CharPrevA"
+group = "string"
+args = ["strA lpszStart", "ptr lpszCurrent"]
+impl = { stub = "not yet implemented" }
+ordinal = 41
+fails = "NULL"
+
+[[export]]
+name = "CharPrevW"
+group = "string"
+args = ["strW lpszStart", "ptr lpszCurrent"]
+impl = { stub = "not yet implemented" }
+ordinal = 43
+fails = "NULL"
+
+# --- help -----------------------------------------------------------------------------------------
+
+[[export]]
+name = "WinHelpW"
+group = "help"
+args = ["handle hWndMain", "strW? lpszHelp", "u32 uCommand", "u32 dwData"]
+impl = { stub = "not yet implemented" }
+ordinal = 687
+fails = "FALSE"
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
@@ -1082,14 +2145,6 @@ name = "CallNextHookEx"
 ordinal = 22
 
 [[export]]
-name = "CallWindowProcA"
-ordinal = 23
-
-[[export]]
-name = "CallWindowProcW"
-ordinal = 24
-
-[[export]]
 name = "CascadeChildWindows"
 ordinal = 25
 
@@ -1130,28 +2185,12 @@ name = "CharLowerW"
 ordinal = 37
 
 [[export]]
-name = "CharNextA"
-ordinal = 38
-
-[[export]]
 name = "CharNextExA"
 ordinal = 39
 
 [[export]]
-name = "CharNextW"
-ordinal = 40
-
-[[export]]
-name = "CharPrevA"
-ordinal = 41
-
-[[export]]
 name = "CharPrevExA"
 ordinal = 42
-
-[[export]]
-name = "CharPrevW"
-ordinal = 43
 
 [[export]]
 name = "CharToOemA"
@@ -1186,30 +2225,6 @@ name = "CharUpperW"
 ordinal = 51
 
 [[export]]
-name = "CheckDlgButton"
-ordinal = 52
-
-[[export]]
-name = "CheckMenuItem"
-ordinal = 53
-
-[[export]]
-name = "CheckMenuRadioItem"
-ordinal = 54
-
-[[export]]
-name = "CheckRadioButton"
-ordinal = 55
-
-[[export]]
-name = "ChildWindowFromPoint"
-ordinal = 56
-
-[[export]]
-name = "ChildWindowFromPointEx"
-ordinal = 57
-
-[[export]]
 name = "CliImmSetHotKey"
 ordinal = 58
 
@@ -1218,16 +2233,8 @@ name = "ClientThreadSetup"
 ordinal = 59
 
 [[export]]
-name = "ClientToScreen"
-ordinal = 60
-
-[[export]]
 name = "ClipCursor"
 ordinal = 61
-
-[[export]]
-name = "CloseClipboard"
-ordinal = 62
 
 [[export]]
 name = "CloseDesktop"
@@ -1242,14 +2249,6 @@ name = "CloseWindowStation"
 ordinal = 65
 
 [[export]]
-name = "CopyAcceleratorTableA"
-ordinal = 66
-
-[[export]]
-name = "CopyAcceleratorTableW"
-ordinal = 67
-
-[[export]]
 name = "CopyIcon"
 ordinal = 68
 
@@ -1260,10 +2259,6 @@ ordinal = 69
 [[export]]
 name = "CopyRect"
 ordinal = 70
-
-[[export]]
-name = "CountClipboardFormats"
-ordinal = 71
 
 [[export]]
 name = "CreateAcceleratorTableA"
@@ -1296,18 +2291,6 @@ ordinal = 78
 [[export]]
 name = "CreateDialogIndirectParamAorW"
 ordinal = 79
-
-[[export]]
-name = "CreateDialogIndirectParamW"
-ordinal = 80
-
-[[export]]
-name = "CreateDialogParamA"
-ordinal = 81
-
-[[export]]
-name = "CreateDialogParamW"
-ordinal = 82
 
 [[export]]
 name = "CreateIcon"
@@ -1522,10 +2505,6 @@ name = "DeregisterShellHookWindow"
 ordinal = 139
 
 [[export]]
-name = "DestroyAcceleratorTable"
-ordinal = 140
-
-[[export]]
 name = "DestroyCaret"
 ordinal = 141
 
@@ -1536,10 +2515,6 @@ ordinal = 142
 [[export]]
 name = "DestroyIcon"
 ordinal = 143
-
-[[export]]
-name = "DestroyMenu"
-ordinal = 144
 
 [[export]]
 name = "DeviceEventWorker"
@@ -1556,18 +2531,6 @@ ordinal = 148
 [[export]]
 name = "DialogBoxIndirectParamW"
 ordinal = 149
-
-[[export]]
-name = "DialogBoxParamA"
-ordinal = 150
-
-[[export]]
-name = "DialogBoxParamW"
-ordinal = 151
-
-[[export]]
-name = "DispatchMessageW"
-ordinal = 153
 
 [[export]]
 name = "DlgDirListA"
@@ -1626,10 +2589,6 @@ name = "DrawCaptionTempW"
 ordinal = 167
 
 [[export]]
-name = "DrawEdge"
-ordinal = 168
-
-[[export]]
 name = "DrawFocusRect"
 ordinal = 169
 
@@ -1678,36 +2637,16 @@ name = "DrawTextExW"
 ordinal = 180
 
 [[export]]
-name = "DrawTextW"
-ordinal = 181
-
-[[export]]
 name = "EditWndProc"
 ordinal = 182
-
-[[export]]
-name = "EmptyClipboard"
-ordinal = 183
-
-[[export]]
-name = "EnableMenuItem"
-ordinal = 184
 
 [[export]]
 name = "EnableScrollBar"
 ordinal = 185
 
 [[export]]
-name = "EnableWindow"
-ordinal = 186
-
-[[export]]
 name = "EndDeferWindowPos"
 ordinal = 187
-
-[[export]]
-name = "EndDialog"
-ordinal = 188
 
 [[export]]
 name = "EndMenu"
@@ -1720,10 +2659,6 @@ ordinal = 191
 [[export]]
 name = "EnumChildWindows"
 ordinal = 192
-
-[[export]]
-name = "EnumClipboardFormats"
-ordinal = 193
 
 [[export]]
 name = "EnumDesktopWindows"
@@ -1802,10 +2737,6 @@ name = "FindWindowExW"
 ordinal = 218
 
 [[export]]
-name = "FindWindowW"
-ordinal = 219
-
-[[export]]
 name = "FlashWindow"
 ordinal = 220
 
@@ -1820,10 +2751,6 @@ ordinal = 222
 [[export]]
 name = "FreeDDElParam"
 ordinal = 223
-
-[[export]]
-name = "GetActiveWindow"
-ordinal = 224
 
 [[export]]
 name = "GetAltTabInfo"
@@ -1854,10 +2781,6 @@ name = "GetAsyncKeyState"
 ordinal = 231
 
 [[export]]
-name = "GetCapture"
-ordinal = 232
-
-[[export]]
 name = "GetCaretBlinkTime"
 ordinal = 233
 
@@ -1886,28 +2809,8 @@ name = "GetClassWord"
 ordinal = 243
 
 [[export]]
-name = "GetClientRect"
-ordinal = 244
-
-[[export]]
 name = "GetClipCursor"
 ordinal = 245
-
-[[export]]
-name = "GetClipboardData"
-ordinal = 246
-
-[[export]]
-name = "GetClipboardFormatNameA"
-ordinal = 247
-
-[[export]]
-name = "GetClipboardFormatNameW"
-ordinal = 248
-
-[[export]]
-name = "GetClipboardOwner"
-ordinal = 249
 
 [[export]]
 name = "GetClipboardSequenceNumber"
@@ -1934,44 +2837,8 @@ name = "GetCursorInfo"
 ordinal = 255
 
 [[export]]
-name = "GetCursorPos"
-ordinal = 256
-
-[[export]]
-name = "GetDialogBaseUnits"
-ordinal = 260
-
-[[export]]
-name = "GetDlgCtrlID"
-ordinal = 261
-
-[[export]]
-name = "GetDlgItem"
-ordinal = 262
-
-[[export]]
-name = "GetDlgItemInt"
-ordinal = 263
-
-[[export]]
-name = "GetDlgItemTextA"
-ordinal = 264
-
-[[export]]
-name = "GetDlgItemTextW"
-ordinal = 265
-
-[[export]]
 name = "GetDoubleClickTime"
 ordinal = 266
-
-[[export]]
-name = "GetFocus"
-ordinal = 267
-
-[[export]]
-name = "GetForegroundWindow"
-ordinal = 268
 
 [[export]]
 name = "GetGUIThreadInfo"
@@ -2010,14 +2877,6 @@ name = "GetKeyNameTextW"
 ordinal = 277
 
 [[export]]
-name = "GetKeyState"
-ordinal = 278
-
-[[export]]
-name = "GetKeyboardLayout"
-ordinal = 279
-
-[[export]]
 name = "GetKeyboardLayoutList"
 ordinal = 280
 
@@ -2028,10 +2887,6 @@ ordinal = 281
 [[export]]
 name = "GetKeyboardLayoutNameW"
 ordinal = 282
-
-[[export]]
-name = "GetKeyboardState"
-ordinal = 283
 
 [[export]]
 name = "GetKeyboardType"
@@ -2048,10 +2903,6 @@ ordinal = 286
 [[export]]
 name = "GetListBoxInfo"
 ordinal = 287
-
-[[export]]
-name = "GetMenu"
-ordinal = 288
 
 [[export]]
 name = "GetMenuBarInfo"
@@ -2074,14 +2925,6 @@ name = "GetMenuInfo"
 ordinal = 293
 
 [[export]]
-name = "GetMenuItemCount"
-ordinal = 294
-
-[[export]]
-name = "GetMenuItemID"
-ordinal = 295
-
-[[export]]
 name = "GetMenuItemInfoA"
 ordinal = 296
 
@@ -2094,18 +2937,6 @@ name = "GetMenuItemRect"
 ordinal = 298
 
 [[export]]
-name = "GetMenuState"
-ordinal = 299
-
-[[export]]
-name = "GetMenuStringA"
-ordinal = 300
-
-[[export]]
-name = "GetMenuStringW"
-ordinal = 301
-
-[[export]]
 name = "GetMessageExtraInfo"
 ordinal = 303
 
@@ -2116,10 +2947,6 @@ ordinal = 304
 [[export]]
 name = "GetMessageTime"
 ordinal = 305
-
-[[export]]
-name = "GetMessageW"
-ordinal = 306
 
 [[export]]
 name = "GetMonitorInfoW"
@@ -2138,20 +2965,12 @@ name = "GetNextDlgTabItem"
 ordinal = 311
 
 [[export]]
-name = "GetOpenClipboardWindow"
-ordinal = 312
-
-[[export]]
 name = "GetParent"
 ordinal = 313
 
 [[export]]
 name = "GetPriorityClipboardFormat"
 ordinal = 314
-
-[[export]]
-name = "GetProcessDefaultLayout"
-ordinal = 315
 
 [[export]]
 name = "GetProgmanWindow"
@@ -2190,10 +3009,6 @@ name = "GetShellWindow"
 ordinal = 325
 
 [[export]]
-name = "GetSubMenu"
-ordinal = 326
-
-[[export]]
 name = "GetSystemMenu"
 ordinal = 329
 
@@ -2230,24 +3045,12 @@ name = "GetWinStationInfo"
 ordinal = 342
 
 [[export]]
-name = "GetWindow"
-ordinal = 343
-
-[[export]]
 name = "GetWindowContextHelpId"
 ordinal = 344
 
 [[export]]
 name = "GetWindowInfo"
 ordinal = 346
-
-[[export]]
-name = "GetWindowLongA"
-ordinal = 347
-
-[[export]]
-name = "GetWindowLongW"
-ordinal = 348
 
 [[export]]
 name = "GetWindowModuleFileName"
@@ -2270,28 +3073,8 @@ name = "GetWindowRgn"
 ordinal = 354
 
 [[export]]
-name = "GetWindowTextA"
-ordinal = 355
-
-[[export]]
-name = "GetWindowTextLengthA"
-ordinal = 356
-
-[[export]]
-name = "GetWindowTextLengthW"
-ordinal = 357
-
-[[export]]
-name = "GetWindowTextW"
-ordinal = 358
-
-[[export]]
 name = "GetWindowThreadProcessId"
 ordinal = 359
-
-[[export]]
-name = "GetWindowWord"
-ordinal = 360
 
 [[export]]
 name = "GrayStringA"
@@ -2336,10 +3119,6 @@ ordinal = 370
 [[export]]
 name = "ImpersonateDdeClientWindow"
 ordinal = 371
-
-[[export]]
-name = "InSendMessage"
-ordinal = 372
 
 [[export]]
 name = "InSendMessageEx"
@@ -2422,28 +3201,8 @@ name = "IsCharUpperW"
 ordinal = 393
 
 [[export]]
-name = "IsChild"
-ordinal = 394
-
-[[export]]
-name = "IsClipboardFormatAvailable"
-ordinal = 395
-
-[[export]]
 name = "IsDialogMessage"
 ordinal = 396
-
-[[export]]
-name = "IsDialogMessageA"
-ordinal = 397
-
-[[export]]
-name = "IsDialogMessageW"
-ordinal = 398
-
-[[export]]
-name = "IsDlgButtonChecked"
-ordinal = 399
 
 [[export]]
 name = "IsHungAppWindow"
@@ -2454,20 +3213,8 @@ name = "IsIconic"
 ordinal = 401
 
 [[export]]
-name = "IsMenu"
-ordinal = 402
-
-[[export]]
 name = "IsRectEmpty"
 ordinal = 403
-
-[[export]]
-name = "IsWindowEnabled"
-ordinal = 405
-
-[[export]]
-name = "IsWindowUnicode"
-ordinal = 406
 
 [[export]]
 name = "IsZoomed"
@@ -2476,18 +3223,6 @@ ordinal = 408
 [[export]]
 name = "KillSystemTimer"
 ordinal = 409
-
-[[export]]
-name = "KillTimer"
-ordinal = 410
-
-[[export]]
-name = "LoadAcceleratorsA"
-ordinal = 411
-
-[[export]]
-name = "LoadAcceleratorsW"
-ordinal = 412
 
 [[export]]
 name = "LoadBitmapA"
@@ -2508,10 +3243,6 @@ ordinal = 417
 [[export]]
 name = "LoadIconA"
 ordinal = 419
-
-[[export]]
-name = "LoadIconW"
-ordinal = 420
 
 [[export]]
 name = "LoadImageA"
@@ -2538,20 +3269,12 @@ name = "LoadLocalFonts"
 ordinal = 426
 
 [[export]]
-name = "LoadMenuA"
-ordinal = 427
-
-[[export]]
 name = "LoadMenuIndirectA"
 ordinal = 428
 
 [[export]]
 name = "LoadMenuIndirectW"
 ordinal = 429
-
-[[export]]
-name = "LoadMenuW"
-ordinal = 430
 
 [[export]]
 name = "LoadRemoteFonts"
@@ -2590,10 +3313,6 @@ name = "MB_GetString"
 ordinal = 441
 
 [[export]]
-name = "MapDialogRect"
-ordinal = 442
-
-[[export]]
 name = "MapVirtualKeyA"
 ordinal = 443
 
@@ -2610,10 +3329,6 @@ name = "MapVirtualKeyW"
 ordinal = 446
 
 [[export]]
-name = "MapWindowPoints"
-ordinal = 447
-
-[[export]]
 name = "MenuItemFromPoint"
 ordinal = 448
 
@@ -2624,10 +3339,6 @@ ordinal = 449
 [[export]]
 name = "MenuWindowProcW"
 ordinal = 450
-
-[[export]]
-name = "MessageBoxA"
-ordinal = 452
 
 [[export]]
 name = "MessageBoxExA"
@@ -2646,20 +3357,12 @@ name = "MessageBoxIndirectW"
 ordinal = 456
 
 [[export]]
-name = "MessageBoxW"
-ordinal = 457
-
-[[export]]
 name = "ModifyMenuA"
 ordinal = 458
 
 [[export]]
 name = "ModifyMenuW"
 ordinal = 459
-
-[[export]]
-name = "MsgWaitForMultipleObjects"
-ordinal = 464
 
 [[export]]
 name = "MsgWaitForMultipleObjectsEx"
@@ -2688,14 +3391,6 @@ ordinal = 470
 [[export]]
 name = "OemToCharW"
 ordinal = 471
-
-[[export]]
-name = "OffsetRect"
-ordinal = 472
-
-[[export]]
-name = "OpenClipboard"
-ordinal = 473
 
 [[export]]
 name = "OpenDesktopA"
@@ -2728,18 +3423,6 @@ ordinal = 480
 [[export]]
 name = "PaintDesktop"
 ordinal = 481
-
-[[export]]
-name = "PeekMessageW"
-ordinal = 483
-
-[[export]]
-name = "PostMessageW"
-ordinal = 485
-
-[[export]]
-name = "PostThreadMessageW"
-ordinal = 488
 
 [[export]]
 name = "PrivateExtractIconExA"
@@ -2798,14 +3481,6 @@ name = "RedrawWindow"
 ordinal = 502
 
 [[export]]
-name = "RegisterClipboardFormatA"
-ordinal = 507
-
-[[export]]
-name = "RegisterClipboardFormatW"
-ordinal = 508
-
-[[export]]
 name = "RegisterDeviceNotificationA"
 ordinal = 509
 
@@ -2846,10 +3521,6 @@ name = "RegisterWindowMessageW"
 ordinal = 518
 
 [[export]]
-name = "ReleaseCapture"
-ordinal = 519
-
-[[export]]
 name = "RemoveMenu"
 ordinal = 521
 
@@ -2874,10 +3545,6 @@ name = "ReuseDDElParam"
 ordinal = 526
 
 [[export]]
-name = "ScreenToClient"
-ordinal = 527
-
-[[export]]
 name = "ScrollChildren"
 ordinal = 528
 
@@ -2896,10 +3563,6 @@ ordinal = 531
 [[export]]
 name = "SendDlgItemMessageA"
 ordinal = 532
-
-[[export]]
-name = "SendDlgItemMessageW"
-ordinal = 533
 
 [[export]]
 name = "SendIMEMessageExA"
@@ -2938,14 +3601,6 @@ name = "SendNotifyMessageW"
 ordinal = 544
 
 [[export]]
-name = "SetActiveWindow"
-ordinal = 545
-
-[[export]]
-name = "SetCapture"
-ordinal = 546
-
-[[export]]
 name = "SetCaretBlinkTime"
 ordinal = 547
 
@@ -2966,10 +3621,6 @@ name = "SetClassWord"
 ordinal = 551
 
 [[export]]
-name = "SetClipboardData"
-ordinal = 552
-
-[[export]]
 name = "SetClipboardViewer"
 ordinal = 553
 
@@ -2978,16 +3629,8 @@ name = "SetConsoleReserveKeys"
 ordinal = 554
 
 [[export]]
-name = "SetCursor"
-ordinal = 555
-
-[[export]]
 name = "SetCursorContents"
 ordinal = 556
-
-[[export]]
-name = "SetCursorPos"
-ordinal = 557
 
 [[export]]
 name = "SetDebugErrorLevel"
@@ -2998,36 +3641,12 @@ name = "SetDeskWallpaper"
 ordinal = 559
 
 [[export]]
-name = "SetDlgItemInt"
-ordinal = 560
-
-[[export]]
-name = "SetDlgItemTextA"
-ordinal = 561
-
-[[export]]
-name = "SetDlgItemTextW"
-ordinal = 562
-
-[[export]]
 name = "SetDoubleClickTime"
 ordinal = 563
 
 [[export]]
-name = "SetFocus"
-ordinal = 564
-
-[[export]]
-name = "SetForegroundWindow"
-ordinal = 565
-
-[[export]]
 name = "SetInternalWindowPos"
 ordinal = 566
-
-[[export]]
-name = "SetKeyboardState"
-ordinal = 567
 
 [[export]]
 name = "SetLastErrorEx"
@@ -3040,10 +3659,6 @@ ordinal = 569
 [[export]]
 name = "SetLogonNotifyWindow"
 ordinal = 570
-
-[[export]]
-name = "SetMenu"
-ordinal = 571
 
 [[export]]
 name = "SetMenuContextHelpId"
@@ -3082,10 +3697,6 @@ name = "SetParent"
 ordinal = 580
 
 [[export]]
-name = "SetProcessDefaultLayout"
-ordinal = 581
-
-[[export]]
 name = "SetProcessWindowStation"
 ordinal = 582
 
@@ -3100,10 +3711,6 @@ ordinal = 584
 [[export]]
 name = "SetPropW"
 ordinal = 585
-
-[[export]]
-name = "SetRect"
-ordinal = 586
 
 [[export]]
 name = "SetRectEmpty"
@@ -3154,10 +3761,6 @@ name = "SetThreadDesktop"
 ordinal = 599
 
 [[export]]
-name = "SetTimer"
-ordinal = 600
-
-[[export]]
 name = "SetUserObjectInformationA"
 ordinal = 601
 
@@ -3178,14 +3781,6 @@ name = "SetWindowContextHelpId"
 ordinal = 605
 
 [[export]]
-name = "SetWindowLongA"
-ordinal = 606
-
-[[export]]
-name = "SetWindowLongW"
-ordinal = 607
-
-[[export]]
 name = "SetWindowPlacement"
 ordinal = 608
 
@@ -3196,18 +3791,6 @@ ordinal = 610
 [[export]]
 name = "SetWindowStationUser"
 ordinal = 611
-
-[[export]]
-name = "SetWindowTextA"
-ordinal = 612
-
-[[export]]
-name = "SetWindowTextW"
-ordinal = 613
-
-[[export]]
-name = "SetWindowWord"
-ordinal = 614
 
 [[export]]
 name = "SetWindowsHookA"
@@ -3306,20 +3889,8 @@ name = "TrackPopupMenu"
 ordinal = 642
 
 [[export]]
-name = "TrackPopupMenuEx"
-ordinal = 643
-
-[[export]]
 name = "TranslateAccelerator"
 ordinal = 644
-
-[[export]]
-name = "TranslateAcceleratorA"
-ordinal = 645
-
-[[export]]
-name = "TranslateAcceleratorW"
-ordinal = 646
 
 [[export]]
 name = "TranslateMDISysAccel"
@@ -3460,14 +4031,6 @@ ordinal = 685
 [[export]]
 name = "WinHelpA"
 ordinal = 686
-
-[[export]]
-name = "WinHelpW"
-ordinal = 687
-
-[[export]]
-name = "WindowFromPoint"
-ordinal = 689
 
 [[export]]
 name = "keybd_event"

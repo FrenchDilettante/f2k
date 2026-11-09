@@ -4,8 +4,8 @@
 description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE."
 kind = "sectioned"
 
-# Not gated: user32 registers no Button or Static class yet, and controls.exe imports catalogued
-# records user32 does not export yet, so it does not load. Every section is on the work list.
+# Not gated: user32 registers no Button or Static class yet; controls.exe loads against user32's
+# stubs. Every section is on the work list.
 [pending]
 create = "the Button control not yet implemented: user32 registers no Button class"
 check = "the Button control's BM_SETCHECK, BM_GETCHECK and BM_GETSTATE not yet implemented"

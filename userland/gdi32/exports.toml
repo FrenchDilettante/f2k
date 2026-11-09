@@ -3,7 +3,8 @@
 #
 # F2K's gdi32 exports the screen DC's surface: CreateDC of the display, DeleteDC and its device
 # capabilities, the stock objects and their selection, the text and background colors and the
-# background mode, text drawn with the one built-in font and its metrics, and single pixels. Its
+# background mode, text drawn with the one built-in font and its metrics, and single pixels; and
+# stubs for what the corpus fixtures import beyond it (tests/gdi32's ttfont: fonts, bitmaps). Its
 # own code runs over ntdll, kernel32 and user32 as Windows 2000's gdi32 imports them, and enters the
 # kernel itself, as Windows 2000's does: through win32k's services (`impl = { syscall = "<the
 # kernel's typed handler>" }`, `internal = true`: its own calls, never exported; see
@@ -32,6 +33,14 @@ title = "text"
 [[group]]
 key = "pixels"
 title = "pixels"
+
+[[group]]
+key = "fonts"
+title = "fonts"
+
+[[group]]
+key = "bitmaps"
+title = "bitmaps"
 
 # --- device contexts ------------------------------------------------------------------------------
 
@@ -69,6 +78,14 @@ impl = { native = "GetDeviceCaps" }
 ordinal = 302
 fails = "0"
 note = "the screen DC's: its size, the screen's (user32's GetSystemMetrics: no service answers a capability), 32 bpp, one plane, 96 dpi, NUMCOLORS -1; another index is a stub"
+
+[[export]]
+name = "CreateCompatibleDC"
+group = "dc"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 44
+fails = "NULL"
 
 # win32k's services behind them: gdi32's internal calls.
 
@@ -114,6 +131,22 @@ impl = { native = "SelectObject" }
 ordinal = 463
 fails = "NULL"
 note = "a stock brush, pen or font, by the kind its handle carries"
+
+[[export]]
+name = "GetObjectA"
+group = "objects"
+args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
+impl = { stub = "not yet implemented" }
+ordinal = 344
+fails = "0"
+
+[[export]]
+name = "GetObjectW"
+group = "objects"
+args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
+impl = { stub = "not yet implemented" }
+ordinal = 346
+fails = "0"
 
 [[export]]
 name = "NtGdiGetStockObject"
@@ -331,6 +364,229 @@ args = ["handle Dc", "i32 X", "i32 Y", "u32 Color", "ptr<u32> Set"]
 impl = { syscall = "crate::win32k::dc::set_pixel" }
 internal = true
 
+# --- fonts ----------------------------------------------------------------------------------------
+
+[[export]]
+name = "AddFontResourceA"
+group = "fonts"
+args = ["strA lpszFilename"]
+impl = { stub = "not yet implemented" }
+ordinal = 4
+fails = "0"
+
+[[export]]
+name = "AddFontResourceW"
+group = "fonts"
+args = ["strW lpszFilename"]
+impl = { stub = "not yet implemented" }
+ordinal = 8
+fails = "0"
+
+[[export]]
+name = "RemoveFontResourceA"
+group = "fonts"
+args = ["strA lpFileName"]
+impl = { stub = "not yet implemented" }
+ordinal = 441
+fails = "FALSE"
+
+[[export]]
+name = "RemoveFontResourceW"
+group = "fonts"
+args = ["strW lpFileName"]
+impl = { stub = "not yet implemented" }
+ordinal = 445
+fails = "FALSE"
+
+[[export]]
+name = "CreateFontA"
+group = "fonts"
+args = [
+    "i32 nHeight", "i32 nWidth", "i32 nEscapement", "i32 nOrientation", "i32 fnWeight",
+    "u32 fdwItalic", "u32 fdwUnderline", "u32 fdwStrikeOut", "u32 fdwCharSet",
+    "u32 fdwOutputPrecision", "u32 fdwClipPrecision", "u32 fdwQuality", "u32 fdwPitchAndFamily",
+    "strA? lpszFace",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 56
+fails = "NULL"
+
+[[export]]
+name = "CreateFontW"
+group = "fonts"
+args = [
+    "i32 nHeight", "i32 nWidth", "i32 nEscapement", "i32 nOrientation", "i32 fnWeight",
+    "u32 fdwItalic", "u32 fdwUnderline", "u32 fdwStrikeOut", "u32 fdwCharSet",
+    "u32 fdwOutputPrecision", "u32 fdwClipPrecision", "u32 fdwQuality", "u32 fdwPitchAndFamily",
+    "strW? lpszFace",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 61
+fails = "NULL"
+
+[[export]]
+name = "CreateFontIndirectA"
+group = "fonts"
+args = ["ptr lplf"]
+impl = { stub = "not yet implemented" }
+ordinal = 57
+fails = "NULL"
+
+[[export]]
+name = "CreateFontIndirectW"
+group = "fonts"
+args = ["ptr lplf"]
+impl = { stub = "not yet implemented" }
+ordinal = 60
+fails = "NULL"
+
+[[export]]
+name = "EnumFontFamiliesA"
+group = "fonts"
+args = ["handle hdc", "strA? lpszFamily", "ptr lpEnumFontFamProc", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 143
+fails = "0"
+
+[[export]]
+name = "EnumFontFamiliesW"
+group = "fonts"
+args = ["handle hdc", "strW? lpszFamily", "ptr lpEnumFontFamProc", "i32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 146
+fails = "0"
+
+[[export]]
+name = "EnumFontFamiliesExA"
+group = "fonts"
+args = ["handle hdc", "ptr lpLogfont", "ptr lpEnumFontFamExProc", "i32 lParam", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 144
+fails = "0"
+
+[[export]]
+name = "EnumFontFamiliesExW"
+group = "fonts"
+args = ["handle hdc", "ptr lpLogfont", "ptr lpEnumFontFamExProc", "i32 lParam", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 145
+fails = "0"
+
+[[export]]
+name = "GetTextFaceA"
+group = "fonts"
+args = ["handle hdc", "i32 nCount", "ptr lpFaceName"]
+impl = { stub = "not yet implemented" }
+ordinal = 380
+fails = "0"
+
+[[export]]
+name = "GetTextFaceW"
+group = "fonts"
+args = ["handle hdc", "i32 nCount", "ptr lpFaceName"]
+impl = { stub = "not yet implemented" }
+ordinal = 382
+fails = "0"
+
+[[export]]
+name = "GetCharWidth32A"
+group = "fonts"
+args = ["handle hdc", "u32 iFirstChar", "u32 iLastChar", "ptr lpBuffer"]
+impl = { stub = "not yet implemented" }
+ordinal = 281
+fails = "FALSE"
+
+[[export]]
+name = "GetCharWidth32W"
+group = "fonts"
+args = ["handle hdc", "u32 iFirstChar", "u32 iLastChar", "ptr lpBuffer"]
+impl = { stub = "not yet implemented" }
+ordinal = 282
+fails = "FALSE"
+
+[[export]]
+name = "GetCharABCWidthsA"
+group = "fonts"
+args = ["handle hdc", "u32 uFirstChar", "u32 uLastChar", "ptr lpabc"]
+impl = { stub = "not yet implemented" }
+ordinal = 276
+fails = "FALSE"
+
+[[export]]
+name = "GetCharABCWidthsW"
+group = "fonts"
+args = ["handle hdc", "u32 uFirstChar", "u32 uLastChar", "ptr lpabc"]
+impl = { stub = "not yet implemented" }
+ordinal = 280
+fails = "FALSE"
+
+[[export]]
+name = "GetOutlineTextMetricsA"
+group = "fonts"
+args = ["handle hdc", "u32 cbData", "ptr lpOTM"]
+impl = { stub = "not yet implemented" }
+ordinal = 347
+fails = "0"
+
+[[export]]
+name = "GetOutlineTextMetricsW"
+group = "fonts"
+args = ["handle hdc", "u32 cbData", "ptr lpOTM"]
+impl = { stub = "not yet implemented" }
+ordinal = 348
+fails = "0"
+
+[[export]]
+name = "GetGlyphOutlineA"
+group = "fonts"
+args = [
+    "handle hdc", "u32 uChar", "u32 uFormat", "ptr lpgm", "u32 cbBuffer", "ptr lpvBuffer",
+    "ptr lpmat2",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 323
+fails = "0xFFFFFFFF"
+note = "GDI_ERROR"
+
+[[export]]
+name = "GetGlyphOutlineW"
+group = "fonts"
+args = [
+    "handle hdc", "u32 uChar", "u32 uFormat", "ptr lpgm", "u32 cbBuffer", "ptr lpvBuffer",
+    "ptr lpmat2",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 324
+fails = "0xFFFFFFFF"
+note = "GDI_ERROR"
+
+[[export]]
+name = "GetFontData"
+group = "fonts"
+args = ["handle hdc", "u32 dwTable", "u32 dwOffset", "ptr lpvBuffer", "u32 cbData"]
+impl = { stub = "not yet implemented" }
+ordinal = 316
+fails = "0xFFFFFFFF"
+note = "GDI_ERROR"
+
+# --- bitmaps --------------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateDIBSection"
+group = "bitmaps"
+args = ["handle hdc", "ptr pbmi", "u32 iUsage", "ptr ppvBits", "handle hSection", "u32 dwOffset"]
+impl = { stub = "not yet implemented" }
+ordinal = 49
+fails = "NULL"
+
+[[export]]
+name = "PatBlt"
+group = "bitmaps"
+args = ["handle hdc", "i32 nXLeft", "i32 nYLeft", "i32 nWidth", "i32 nHeight", "u32 dwRop"]
+impl = { stub = "not yet implemented" }
+ordinal = 414
+fails = "FALSE"
+
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 
 [[export]]
@@ -346,10 +602,6 @@ name = "AddFontMemResourceEx"
 ordinal = 3
 
 [[export]]
-name = "AddFontResourceA"
-ordinal = 4
-
-[[export]]
 name = "AddFontResourceExA"
 ordinal = 5
 
@@ -360,10 +612,6 @@ ordinal = 6
 [[export]]
 name = "AddFontResourceTracking"
 ordinal = 7
-
-[[export]]
-name = "AddFontResourceW"
-ordinal = 8
 
 [[export]]
 name = "AngleArc"
@@ -506,20 +754,12 @@ name = "CreateCompatibleBitmap"
 ordinal = 43
 
 [[export]]
-name = "CreateCompatibleDC"
-ordinal = 44
-
-[[export]]
 name = "CreateDIBPatternBrush"
 ordinal = 47
 
 [[export]]
 name = "CreateDIBPatternBrushPt"
 ordinal = 48
-
-[[export]]
-name = "CreateDIBSection"
-ordinal = 49
 
 [[export]]
 name = "CreateDIBitmap"
@@ -546,28 +786,12 @@ name = "CreateEnhMetaFileW"
 ordinal = 55
 
 [[export]]
-name = "CreateFontA"
-ordinal = 56
-
-[[export]]
-name = "CreateFontIndirectA"
-ordinal = 57
-
-[[export]]
 name = "CreateFontIndirectExA"
 ordinal = 58
 
 [[export]]
 name = "CreateFontIndirectExW"
 ordinal = 59
-
-[[export]]
-name = "CreateFontIndirectW"
-ordinal = 60
-
-[[export]]
-name = "CreateFontW"
-ordinal = 61
 
 [[export]]
 name = "CreateHalftonePalette"
@@ -884,22 +1108,6 @@ ordinal = 141
 [[export]]
 name = "EnumEnhMetaFile"
 ordinal = 142
-
-[[export]]
-name = "EnumFontFamiliesA"
-ordinal = 143
-
-[[export]]
-name = "EnumFontFamiliesExA"
-ordinal = 144
-
-[[export]]
-name = "EnumFontFamiliesExW"
-ordinal = 145
-
-[[export]]
-name = "EnumFontFamiliesW"
-ordinal = 146
 
 [[export]]
 name = "EnumFontsA"
@@ -1406,10 +1614,6 @@ name = "GetBrushOrgEx"
 ordinal = 275
 
 [[export]]
-name = "GetCharABCWidthsA"
-ordinal = 276
-
-[[export]]
 name = "GetCharABCWidthsFloatA"
 ordinal = 277
 
@@ -1420,18 +1624,6 @@ ordinal = 278
 [[export]]
 name = "GetCharABCWidthsI"
 ordinal = 279
-
-[[export]]
-name = "GetCharABCWidthsW"
-ordinal = 280
-
-[[export]]
-name = "GetCharWidth32A"
-ordinal = 281
-
-[[export]]
-name = "GetCharWidth32W"
-ordinal = 282
 
 [[export]]
 name = "GetCharWidthA"
@@ -1562,10 +1754,6 @@ name = "GetFontAssocStatus"
 ordinal = 315
 
 [[export]]
-name = "GetFontData"
-ordinal = 316
-
-[[export]]
 name = "GetFontLanguageInfo"
 ordinal = 317
 
@@ -1588,14 +1776,6 @@ ordinal = 321
 [[export]]
 name = "GetGlyphOutline"
 ordinal = 322
-
-[[export]]
-name = "GetGlyphOutlineA"
-ordinal = 323
-
-[[export]]
-name = "GetGlyphOutlineW"
-ordinal = 324
 
 [[export]]
 name = "GetGlyphOutlineWow"
@@ -1674,24 +1854,8 @@ name = "GetNearestPaletteIndex"
 ordinal = 343
 
 [[export]]
-name = "GetObjectA"
-ordinal = 344
-
-[[export]]
 name = "GetObjectType"
 ordinal = 345
-
-[[export]]
-name = "GetObjectW"
-ordinal = 346
-
-[[export]]
-name = "GetOutlineTextMetricsA"
-ordinal = 347
-
-[[export]]
-name = "GetOutlineTextMetricsW"
-ordinal = 348
 
 [[export]]
 name = "GetPaletteEntries"
@@ -1798,16 +1962,8 @@ name = "GetTextExtentPointW"
 ordinal = 379
 
 [[export]]
-name = "GetTextFaceA"
-ordinal = 380
-
-[[export]]
 name = "GetTextFaceAliasW"
 ordinal = 381
-
-[[export]]
-name = "GetTextFaceW"
-ordinal = 382
 
 [[export]]
 name = "GetTransform"
@@ -1926,10 +2082,6 @@ name = "PaintRgn"
 ordinal = 413
 
 [[export]]
-name = "PatBlt"
-ordinal = 414
-
-[[export]]
 name = "PathToRegion"
 ordinal = 415
 
@@ -2034,10 +2186,6 @@ name = "RemoveFontMemResourceEx"
 ordinal = 440
 
 [[export]]
-name = "RemoveFontResourceA"
-ordinal = 441
-
-[[export]]
 name = "RemoveFontResourceExA"
 ordinal = 442
 
@@ -2048,10 +2196,6 @@ ordinal = 443
 [[export]]
 name = "RemoveFontResourceTracking"
 ordinal = 444
-
-[[export]]
-name = "RemoveFontResourceW"
-ordinal = 445
 
 [[export]]
 name = "ResetDCA"

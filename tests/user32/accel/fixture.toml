@@ -6,8 +6,8 @@
 description = "accel - an ACCELERATORS resource of the program's own (accel.rc): LoadAcceleratorsW/A, CopyAcceleratorTableW/A's entries and DestroyAcceleratorTable; TranslateAcceleratorW/A on WM_KEYDOWN, WM_KEYUP, WM_CHAR and WM_SYSKEYDOWN posted to the program's own window, with Ctrl, Shift and Alt set in the thread's key state, the return and the WM_COMMAND the window receives; a window with a menu holding the commands, one grayed, and a disabled window."
 kind = "sectioned"
 
-# Not gated: win32k has no accelerator objects yet, and accel.exe imports catalogued records user32
-# does not export yet, so it does not load. Every section is on the work list.
+# Not gated: win32k has no accelerator objects yet; accel.exe loads against user32's stubs. Every
+# section is on the work list.
 [pending]
 load = "LoadAcceleratorsW/A, CopyAcceleratorTableW/A and DestroyAcceleratorTable not yet implemented: win32k has no accelerator objects"
 translate = "TranslateAcceleratorW not yet implemented"

@@ -4,8 +4,8 @@
 description = "wndlong - a window's data through GetWindowLongW/A and SetWindowLongW/A: GWL_STYLE and GWL_EXSTYLE with WM_STYLECHANGING/WM_STYLECHANGED, GWL_ID, GWL_HWNDPARENT, GWL_HINSTANCE, GWL_USERDATA, the class's extra bytes (and GetWindowWord/SetWindowWord) and their bounds, GWL_WNDPROC subclassing through both forms (the chain through CallWindowProcW/A, IsWindowUnicode), a dialog's DWL_DLGPROC, DWL_USER and DWL_MSGRESULT (CreateDialogIndirectParamW), and the errors on NULL and destroyed windows."
 kind = "sectioned"
 
-# Not gated: win32k keeps no window data beyond geometry yet, and wndlong.exe imports catalogued
-# records user32 does not export yet, so it does not load. Every section is on the work list.
+# Not gated: win32k keeps no window data beyond geometry yet; wndlong.exe loads against user32's
+# stubs. Every section is on the work list.
 [pending]
 style = "GetWindowLongW/A and SetWindowLongW/A of GWL_STYLE and GWL_EXSTYLE not yet implemented"
 id = "GetWindowLongW/A and SetWindowLongW/A of GWL_ID, GWL_HWNDPARENT and GWL_HINSTANCE not yet implemented"
