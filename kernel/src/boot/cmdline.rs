@@ -21,9 +21,6 @@
 /// its own program's command line.
 pub const MAX_LEN: usize = 4096;
 
-/// Multiboot information flag: `cmdline` is valid.
-const FLAG_CMDLINE: u32 = 1 << 2;
-
 /// The separator between the kernel's own arguments and the user command line.
 const SEPARATOR: &[u8] = b"--";
 
@@ -36,40 +33,44 @@ static CAPTURED: crate::sync::InitOnce<rtl::array_vec::ArrayVec<u8, MAX_LEN>> =
     crate::sync::InitOnce::new();
 
 /// Copy the kernel command line out of the Multiboot information at `info_phys` (identity-mapped
-/// physical memory at this point of the boot). A structure without one leaves the line empty.
+/// physical memory at this point of the boot). A structure without one leaves the line empty, and
+/// so does one whose structure or string lies outside the boot identity window: every read is cut
+/// at the window's end ([`crate::mem::bootmem::with_identity_bytes`]).
 #[cfg(target_arch = "x86")]
 pub fn capture(info_phys: u32) {
-    use crate::mem::bootmem::assert_identity_readable;
-    use crate::mem::multiboot::MultibootInfo;
+    use crate::mem::bootmem::{with_identity_bytes, BOOT_IDENTITY_LIMIT};
+    use crate::mem::multiboot::{InfoBytes, MultibootInfo};
 
-    assert_identity_readable(
-        "the Multiboot information",
-        info_phys,
-        core::mem::size_of::<MultibootInfo>(),
-    );
-    // SAFETY: the loader's information structure, inside the boot identity window (checked
-    // above), where physical reads at its own address; the caller runs before the frame allocator
-    // and before the window's teardown, and the boot is single-threaded, so nothing writes it
-    // while it is borrowed.
-    let info = unsafe { &*(info_phys as *const MultibootInfo) };
+    let info_len = core::mem::size_of::<MultibootInfo>();
+    let string = with_identity_bytes(info_phys, info_len, |info| {
+        line_window(InfoBytes(info), BOOT_IDENTITY_LIMIT)
+    });
     let mut line = rtl::array_vec::ArrayVec::new();
-    if info.flags & FLAG_CMDLINE != 0 && info.cmdline != 0 {
-        let start = info.cmdline;
-        assert_identity_readable("the kernel command line", start, 1);
-        // What can be read of the string: up to the window's end, and no more than is kept.
-        let room = (crate::mem::bootmem::BOOT_IDENTITY_LIMIT - u64::from(start)).min(MAX_LEN as u64)
-            as usize;
-        // SAFETY: `[start, start + room)` lies in the boot identity window (its start checked and
-        // its length clamped above), all of it mapped at its own address until the window's
-        // teardown, which comes later in the boot; nothing writes the loader's memory while the
-        // single-threaded boot reads it here.
-        let window = unsafe { core::slice::from_raw_parts(start as *const u8, room) };
-        let text =
-            core::ffi::CStr::from_bytes_until_nul(window).map_or(window, core::ffi::CStr::to_bytes);
-        line.try_extend_from_slice(text)
-            .expect("the window is no longer than the line kept");
+    if let Some((start, room)) = string {
+        with_identity_bytes(start, room, |window| {
+            line.try_extend_from_slice(line_text(window))
+                .expect("the window is no longer than the line kept");
+        });
     }
     CAPTURED.set(line);
+}
+
+/// Where the command line's readable bytes lie in loader memory: its address and how much of it can
+/// be read, up to the window `[0, window_end)`'s end and no more than [`MAX_LEN`]; none when the
+/// structure carries no command line or it starts outside the window.
+pub fn line_window(
+    info: crate::mem::multiboot::InfoBytes,
+    window_end: u64,
+) -> Option<(u32, usize)> {
+    let start = info.cmdline().filter(|&start| start != 0)?;
+    let room = crate::mem::multiboot::readable_len(start, MAX_LEN, window_end);
+    (room != 0).then_some((start, room))
+}
+
+/// The command line's text in the bytes read of it: up to its NUL, all of them when the NUL lies
+/// past what could be read.
+pub fn line_text(window: &[u8]) -> &[u8] {
+    core::ffi::CStr::from_bytes_until_nul(window).map_or(window, core::ffi::CStr::to_bytes)
 }
 
 /// The captured kernel command line.
@@ -170,6 +171,52 @@ pub fn program_token(command_line: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mem::multiboot::{flags, InfoBytes, MultibootInfo};
+
+    /// The host tests' boot identity window's end.
+    const WINDOW: u64 = 0x2_0000;
+
+    /// An information structure whose command line, flagged or not, is at `cmdline`.
+    fn info(flagged: bool, cmdline: u32) -> Vec<u8> {
+        MultibootInfo {
+            flags: if flagged { flags::CMDLINE } else { 0 },
+            cmdline,
+            ..MultibootInfo::default()
+        }
+        .to_bytes()
+    }
+
+    /// A command line inside the window is read up to its NUL; one whose NUL lies past the window's
+    /// end is cut there, and the line is what was read.
+    #[test]
+    fn the_line_is_read_up_to_its_nul_or_the_window() {
+        let window = |cmdline| line_window(InfoBytes(&info(true, cmdline)), WINDOW);
+        assert_eq!(window(0x1000), Some((0x1000, MAX_LEN)));
+        assert_eq!(line_text(b"kernel -- A.EXE\0garbage"), b"kernel -- A.EXE");
+
+        // Five bytes before the window's end, and no NUL among them.
+        let start = WINDOW as u32 - 5;
+        assert_eq!(window(start), Some((start, 5)));
+        let mut memory = vec![0xAAu8; WINDOW as usize];
+        memory[start as usize..].copy_from_slice(b"k -- ");
+        let read = &memory[start as usize..][..5];
+        assert_eq!(line_text(read), b"k -- ");
+    }
+
+    /// A command line starting outside the window, at address 0, or not flagged: no line.
+    #[test]
+    fn a_line_outside_the_window_is_no_line() {
+        let window = |flagged, cmdline| line_window(InfoBytes(&info(flagged, cmdline)), WINDOW);
+        assert_eq!(window(true, WINDOW as u32), None);
+        assert_eq!(window(true, u32::MAX), None);
+        assert_eq!(window(true, 0), None);
+        assert_eq!(window(false, 0x1000), None);
+        // A structure cut before its `cmdline` field.
+        assert_eq!(
+            line_window(InfoBytes(&info(true, 0x1000)[..16]), WINDOW),
+            None
+        );
+    }
 
     /// The user command line follows the separator, whatever leads it (QEMU's kernel path, or
     /// nothing).

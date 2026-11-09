@@ -297,7 +297,6 @@ def test_check_all_runs_the_test_systems():
 # containment. The files below use the raw forms on memory that is not the program's, or before
 # any program runs; a new file needs its reason here (or the copy instead).
 RAW_ACCESS_ALLOWED = {
-    "kernel/src/boot/cmdline.rs": "the Multiboot command line, read at boot before any process",
     "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",

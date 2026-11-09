@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::layout::KERNEL_IMAGE;
-use super::multiboot::{self, MultibootInfo, UsableRange};
+use super::multiboot::{self, BootMemoryPlan, InfoBytes, MemorySource, MultibootInfo, UsableRange};
 use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
 use crate::sync::StaticBuf;
 
@@ -69,54 +69,43 @@ fn kernel_frame_bounds() -> (u32, u32) {
 /// structures are read through it.
 pub(crate) const BOOT_IDENTITY_LIMIT: u64 = KERNEL_IMAGE.size() as u64;
 
-/// Release every frame of `range` except those the kernel occupies, those a reserved record of
-/// `map` covers, and those an earlier (overlapping) available record already released.
-fn release_range(
-    db: &mut FrameDb<NoHooks>,
-    range: UsableRange,
-    kernel: (u32, u32),
-    map: Option<&[u8]>,
-) {
+/// Release every frame of `range` the plan releases (see [`BootMemoryPlan::releases`]), except
+/// those an earlier (overlapping) range already released.
+fn release_range(db: &mut FrameDb<NoHooks>, range: UsableRange, plan: &BootMemoryPlan) {
     for frame in range.frames() {
-        if frame >= kernel.0 && frame < kernel.1 {
-            continue;
-        }
-        if db.entry(frame).state.is_list_state() {
-            continue;
-        }
-        if map.is_some_and(|map| multiboot::frame_is_reserved(map, frame)) {
+        if db.entry(frame).state.is_list_state() || !plan.releases(frame) {
             continue;
         }
         db.release(frame, FrameState::Free);
     }
 }
 
-/// Panic unless `[addr, addr + len)` lies inside the boot identity window, naming `what`: a loader
-/// may place its structures anywhere below 4 GiB, and reading one past the window would fault with
-/// no diagnostic.
-pub(crate) fn assert_identity_readable(what: &str, addr: u32, len: usize) {
-    let end = addr as u64 + len as u64;
-    assert!(
-        end <= BOOT_IDENTITY_LIMIT,
-        "{what} at {addr:#010x} (+{len:#x}) lies outside the boot identity window"
-    );
+/// Run `read` on the loader memory `[addr, addr + len)` cut at the boot identity window's end (see
+/// [`multiboot::readable_len`]): an empty slice when `addr` lies outside the window. Nothing past
+/// the window is read, whatever the loader's values say, and the slice does not outlive the call.
+pub(crate) fn with_identity_bytes<R>(addr: u32, len: usize, read: impl FnOnce(&[u8]) -> R) -> R {
+    let len = multiboot::readable_len(addr, len, BOOT_IDENTITY_LIMIT);
+    if len == 0 {
+        return read(&[]);
+    }
+    // SAFETY: `[addr, addr + len)` lies inside the boot identity window (cut above), where physical
+    // memory reads at its own address: the boot reads loader memory only in `boot::memory`'s steps
+    // that run before the window's teardown. The single-threaded boot writes none of it while the
+    // slice, which `read` cannot keep, is borrowed (the frame database's releases write no frame).
+    read(unsafe { core::slice::from_raw_parts(addr as *const u8, len) })
 }
 
 /// Build the frame database from the Multiboot information at `multiboot_info_addr`.
 ///
-/// Prefers the memory map (flags bit 6); falls back to the `mem_upper` size hint (flags bit 0).
-/// Panics on a structure that provides neither: without a memory picture the kernel cannot manage
-/// frames at all.
+/// Every read of loader memory is cut at the boot identity window before it is made, and the
+/// decisions are the pure plan's ([`multiboot::memory_source`], [`BootMemoryPlan`]): the memory map
+/// when the structure offers a sound one, the `mem_upper` size hint otherwise.
+///
+/// # Panics
+///
+/// The structure carries no usable memory information, or lies outside the window: without a
+/// memory picture the kernel cannot manage frames at all.
 pub fn boot_init(multiboot_info_addr: u32) {
-    assert_identity_readable(
-        "the Multiboot information",
-        multiboot_info_addr,
-        core::mem::size_of::<MultibootInfo>(),
-    );
-    // SAFETY: the address is the one the Multiboot loader left in EBX, inside the boot identity
-    // window (checked above), where physical == linear; the Multiboot contract guarantees the
-    // structure is readable. Single-threaded boot.
-    let mbi: &MultibootInfo = unsafe { &*(multiboot_info_addr as *const MultibootInfo) };
     // The database holds the frame table and the color tables for the kernel's lifetime.
     let table: &'static mut [FrameEntry] = FRAME_TABLE.take();
     // The frame table lives in BSS; loaders are required to zero it, but this table is large enough
@@ -131,46 +120,38 @@ pub fn boot_init(multiboot_info_addr: u32) {
         NoHooks,
     );
 
-    let kernel = kernel_frame_bounds();
+    let (kernel_first, kernel_end) = kernel_frame_bounds();
 
-    if mbi.flags & multiboot::flags::MMAP != 0
-        && mbi.mmap_addr != 0
-        && mbi.mmap_length != 0
-        && (mbi.mmap_length as usize) < 0x10_0000
-    {
-        assert_identity_readable("the memory map", mbi.mmap_addr, mbi.mmap_length as usize);
-        // SAFETY: mmap_addr/mmap_length describe the loader-owned memory-map record stream, inside
-        // the boot identity window (checked above); the parser bounds-checks every record before
-        // reading it.
-        let map: &[u8] = unsafe {
-            core::slice::from_raw_parts(mbi.mmap_addr as *const u8, mbi.mmap_length as usize)
-        };
-        for range in multiboot::usable_ranges(map, MAX_FRAMES) {
-            release_range(&mut db, range, kernel, Some(map));
+    let info_len = core::mem::size_of::<MultibootInfo>();
+    let source = with_identity_bytes(multiboot_info_addr, info_len, |info| {
+        multiboot::memory_source(InfoBytes(info), BOOT_IDENTITY_LIMIT)
+    });
+    let Some(source) = source else {
+        panic!("Multiboot info carries no memory information");
+    };
+    // The map's range, already inside the window (the source vouches for it), so the read returns
+    // it whole; nothing is read for the fallback.
+    let (map_addr, map_len) = match source {
+        MemorySource::Map { addr, len } => (addr, len),
+        MemorySource::UpperMemory { .. } => (0, 0),
+    };
+    with_identity_bytes(map_addr, map_len, |map| {
+        let plan = BootMemoryPlan::new(source, map, kernel_first..kernel_end, MAX_FRAMES);
+        for range in plan.ranges() {
+            release_range(&mut db, range, &plan);
         }
         // Reserve the trampoline's run for the real-mode VBE mode set, all or none: every byte the
         // trampoline and the BIOS write while it runs is in it, so they write no frame another
         // owner holds. Without a memory map the low frames never entered the database, and the
         // mode set reports none.
         let run = TRAMPOLINE_FIRST_FRAME..TRAMPOLINE_FIRST_FRAME + TRAMPOLINE_FRAMES;
-        if run.clone().all(|frame| {
-            db.entry(frame).state.has_color_chain() && !multiboot::frame_is_reserved(map, frame)
-        }) {
+        if plan.reserves(run.clone()) {
             for frame in run {
                 db.take(frame);
             }
             TRAMPOLINE_RESERVED.store(true, Ordering::Relaxed);
         }
-    } else if mbi.flags & multiboot::flags::MEM_INFO != 0 && mbi.mem_upper != 0 {
-        // No memory map: usable memory is one region starting at 1 MiB.
-        if let Some(range) =
-            multiboot::usable_frames_in(0x100000, mbi.mem_upper as u64 * 1024, MAX_FRAMES)
-        {
-            release_range(&mut db, range, kernel, None);
-        }
-    } else {
-        panic!("Multiboot info carries no memory information");
-    }
+    });
 
     super::with_database(|database| {
         assert!(database.frames.is_none(), "the frame database built twice");
