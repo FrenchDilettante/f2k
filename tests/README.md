@@ -14,7 +14,8 @@ tests/
 │               # test_cmd.py, test_framebuffer.py, test_textout.py, test_shutdown.py), and the
 │               # fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
-│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn
+│               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
+│               # shutparm
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
 ├── gdi32/      # guidc, gditext
 ├── advapi32/   # registry, token
@@ -146,6 +147,10 @@ The fixtures:
   Its `realcmd` section runs the machine's own `cmd.exe` on them, with the exit codes `exit` and `exit /b` leave: the disk the tests boot carries no `cmd.exe`, so the fixture's boot adds F2K's (`system_programs`).
   Each section removes its scratch directory at its end, so no `cmd.exe` is left behind.
   Built with `/MD`.
+- `shutparm` - a process's shutdown parameters, with its companion program `shutkid.exe` (built beside it from `shutkid.c`): `GetProcessShutdownParameters`' default (level 0x280, no flag), `SetProcessShutdownParameters` at each band's edges with and without `SHUTDOWN_NORETRY`, read back, levels outside 0x100-0x3FF (Windows 2000 keeps them) and flags other than `SHUTDOWN_NORETRY` (TRUE, the parameters unchanged), and a child's own parameters beside its parent's.
+  It never calls `ExitWindowsEx`: the parameters only order a session's end, and each process's are its own.
+  Built with `/MD`.
+  Awaited: built and captured on the next trip to the real machine.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.

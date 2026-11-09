@@ -48,7 +48,7 @@ call :cap_runtime
 for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
 call :cap_spawn
 call :listed kernel32 pipe
-for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn) do call :listed kernel32 %%F
+for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm) do call :listed kernel32 %%F
 call :listed user32 winsta
 for %%F in (guiclass guiwin guigeo guimsg guipaint guidisp) do call :listed user32 %%F
 call :listed user32 exitwin
@@ -79,7 +79,7 @@ rem saying so.
 :group
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (guidc gditext) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32

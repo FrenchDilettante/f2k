@@ -30,7 +30,9 @@
 //! (ExitWindowsEx's, through the user server) waits here for the control thread, as an event does,
 //! and the control thread then asks each of the console's processes to end in turn, through the
 //! same thread at its CtrlRoutine, with CTRL_LOGOFF_EVENT or CTRL_SHUTDOWN_EVENT, and marks each
-//! process the session's end has reached.
+//! process the session's end has reached. It asks them by their shutdown level, the highest first
+//! (SetProcessShutdownParameters, through the base server: Windows 2000's csrss keeps each
+//! process's level and flags with the process, and F2K's console keeps them with its entry).
 
 use crate::ob::ObjectId;
 use crate::status::STATUS_INVALID_PARAMETER;
@@ -41,13 +43,16 @@ pub const CONSOLE_PROCESSES: usize = crate::process::MAX_PROCESSES;
 /// How many raised events wait for the control thread at most (one more is dropped).
 const PENDING_EVENTS: usize = 16;
 
-/// One of the console's processes: its object, the group it belongs to, its CtrlRoutine, and
-/// whether the session's end under way has reached it.
+/// One of the console's processes: its object, the group it belongs to, its CtrlRoutine, its
+/// shutdown level and flags (SetProcessShutdownParameters'), and whether the session's end under
+/// way has reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ConsoleProcess {
     pub process: ObjectId,
     pub group: u32,
     pub routine: u32,
+    pub shutdown_level: u32,
+    pub shutdown_flags: u32,
     pub reached: bool,
 }
 
@@ -106,13 +111,16 @@ impl Control {
         }
     }
 
-    /// Connect `process`, of group `group`, its CtrlRoutine `routine`: a connection it made before
-    /// is replaced. False when the console has no room for it.
+    /// Connect `process`, of group `group`, its CtrlRoutine `routine`, at the default shutdown
+    /// level with no shutdown flag: a connection it made before is replaced, its shutdown level
+    /// and flags kept. False when the console has no room for it.
     pub fn connect(&mut self, process: ObjectId, group: u32, routine: u32) -> bool {
-        let entry = ConsoleProcess {
+        let mut entry = ConsoleProcess {
             process,
             group,
             routine,
+            shutdown_level: rtl::console::base::DEFAULT_SHUTDOWN_LEVEL,
+            shutdown_flags: 0,
             reached: false,
         };
         let slot = match self.slot_of(process) {
@@ -121,11 +129,39 @@ impl Control {
         };
         match slot {
             Some(slot) => {
+                if let Some(held) = self.processes[slot] {
+                    entry.shutdown_level = held.shutdown_level;
+                    entry.shutdown_flags = held.shutdown_flags;
+                }
                 self.processes[slot] = Some(entry);
                 true
             }
             None => false,
         }
+    }
+
+    /// SetProcessShutdownParameters' work for `process`, its flags taken already (any level is
+    /// kept, as Windows 2000 keeps it): false, nothing kept, when the console does not hold it.
+    pub fn set_shutdown_parameters(&mut self, process: ObjectId, level: u32, flags: u32) -> bool {
+        let Some(held) = self
+            .slot_of(process)
+            .and_then(|slot| self.processes[slot].as_mut())
+        else {
+            return false;
+        };
+        held.shutdown_level = level;
+        held.shutdown_flags = flags;
+        true
+    }
+
+    /// GetProcessShutdownParameters' work: `process`'s shutdown level and flags, the defaults for
+    /// a process the console does not hold.
+    pub fn shutdown_parameters(&self, process: ObjectId) -> (u32, u32) {
+        self.slot_of(process)
+            .and_then(|slot| self.processes[slot])
+            .map_or((rtl::console::base::DEFAULT_SHUTDOWN_LEVEL, 0), |held| {
+                (held.shutdown_level, held.shutdown_flags)
+            })
     }
 
     /// Disconnect `process` (its end): no event reaches it from now on. Nothing for a process the
@@ -225,21 +261,29 @@ impl Control {
         Some(request)
     }
 
-    /// The next process the session's end asks to end, marked reached, with its CtrlRoutine: the
-    /// first the console holds that the end has not reached, the caller once no other is left. A
-    /// process that connects while the session ends is reached in its turn. None once every
-    /// process has been reached.
+    /// The next process the session's end asks to end, marked reached, with its CtrlRoutine: of
+    /// those the console holds that the end has not reached, the one with the highest shutdown
+    /// level, the first in the console's order among equals; the caller once no other is left,
+    /// whatever its level. A process that connects while the session ends, or changes its level,
+    /// is reached in its turn. None once every process has been reached.
     ///
-    /// Windows 2000 asks the processes by their shutdown level, the highest first, the caller
-    /// last; a process changes its own with SetProcessShutdownParameters, and every process
-    /// starts at 0x280. F2K does not serve SetProcessShutdownParameters yet (no program it runs
-    /// calls it), so every process stands at 0x280, and the order among equals is the console's.
+    /// That is Windows 2000's order: the highest level first, the caller last, every process
+    /// starting at 0x280 until it changes its own with SetProcessShutdownParameters. Its flag,
+    /// SHUTDOWN_NORETRY, changes nothing here: Windows ends such a process without its "End
+    /// Program" dialog once the wait has passed, and F2K, which has no dialog, ends every process
+    /// that way.
     pub fn next_to_end(&mut self, caller: ObjectId) -> Option<(ObjectId, u32)> {
         let unreached = |held: &Option<ConsoleProcess>| held.is_some_and(|held| !held.reached);
         let others = self
             .processes
             .iter()
-            .position(|held| unreached(held) && held.is_some_and(|held| held.process != caller));
+            .enumerate()
+            .filter_map(|(slot, held)| {
+                held.filter(|held| !held.reached && held.process != caller)
+                    .map(|held| (slot, held.shutdown_level))
+            })
+            .max_by_key(|&(slot, level)| (level, core::cmp::Reverse(slot)))
+            .map(|(slot, _)| slot);
         let slot = others.or_else(|| {
             self.slot_of(caller)
                 .filter(|&slot| unreached(&self.processes[slot]))
@@ -579,6 +623,59 @@ mod tests {
                 (process(3), 0x3000),
                 (process(5), 0x5000)
             ]
+        );
+    }
+
+    /// Each process starts at the default shutdown level with no flag, and keeps what it set
+    /// across a second connection; one the console does not hold keeps nothing and reads the
+    /// defaults. The session's end asks the highest level first, levels outside the
+    /// applications' 0x100-0x3FF included, the console's order among equals, and the caller last
+    /// whatever its level.
+    #[test]
+    fn the_session_ends_by_shutdown_level() {
+        use rtl::console::base::{DEFAULT_SHUTDOWN_LEVEL, SHUTDOWN_NORETRY};
+        let mut control = Control::new();
+        for index in 1..=5 {
+            assert!(control.connect(process(index), 8, 0x1000 * index as u32));
+        }
+        assert_eq!(
+            control.shutdown_parameters(process(1)),
+            (DEFAULT_SHUTDOWN_LEVEL, 0)
+        );
+        assert!(control.set_shutdown_parameters(process(4), 0x3FF, SHUTDOWN_NORETRY));
+        assert!(control.set_shutdown_parameters(process(2), 0x100, 0));
+        assert!(control.set_shutdown_parameters(process(5), 0x3FF, 0));
+        assert!(control.set_shutdown_parameters(process(1), 0x0, 0));
+        assert!(control.set_shutdown_parameters(process(3), 0xFFFF_FFFF, 0));
+        assert!(control.connect(process(4), 8, 0x4100));
+        assert_eq!(
+            control.shutdown_parameters(process(4)),
+            (0x3FF, SHUTDOWN_NORETRY)
+        );
+        assert!(!control.set_shutdown_parameters(process(9), 0x300, 0));
+        assert_eq!(
+            control.shutdown_parameters(process(9)),
+            (DEFAULT_SHUTDOWN_LEVEL, 0)
+        );
+        // The caller, process 5, at 0x3FF, is asked last all the same, after process 1 at 0x000.
+        let caller = process(5);
+        assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
+        control.take_session_end();
+        assert_eq!(control.next_to_end(caller), Some((process(3), 0x3000)));
+        assert_eq!(control.next_to_end(caller), Some((process(4), 0x4100)));
+        // A level changed while the session ends counts from then on.
+        assert!(control.set_shutdown_parameters(process(2), 0x301, 0));
+        assert_eq!(control.next_to_end(caller), Some((process(2), 0x2000)));
+        assert_eq!(control.next_to_end(caller), Some((process(1), 0x1000)));
+        assert_eq!(control.next_to_end(caller), Some((process(5), 0x5000)));
+        assert_eq!(control.next_to_end(caller), None);
+        control.session_ended();
+        // A process that disconnects and connects again starts over at the default level.
+        control.disconnect(process(4));
+        assert!(control.connect(process(4), 8, 0x4000));
+        assert_eq!(
+            control.shutdown_parameters(process(4)),
+            (DEFAULT_SHUTDOWN_LEVEL, 0)
         );
     }
 

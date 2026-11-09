@@ -7,8 +7,8 @@
 //! (`crate::csr`, the user server's API), and its control thread carries out the whole of it here,
 //! after ExitWindowsEx has returned TRUE to its caller:
 //! - Each of the console's processes is asked to end in turn, as csrss asks them: by shutdown
-//!   level, the highest first, the caller last (see `Control::next_to_end`: every process stands at
-//!   the default level, 0x280, until SetProcessShutdownParameters is served, so the console's order
+//!   level, the highest first, the caller last (see `Control::next_to_end`: each process starts at
+//!   the default level, 0x280, until SetProcessShutdownParameters sets another; the console's order
 //!   decides among them). The request is a control event — CTRL_LOGOFF_EVENT for EWX_LOGOFF,
 //!   CTRL_SHUTDOWN_EVENT for every other action — delivered as Ctrl+C is, a thread of the process
 //!   at its CtrlRoutine, which runs its handlers, the last registered first; the default handler

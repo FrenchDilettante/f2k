@@ -1,0 +1,102 @@
+# F2K capture of shutparm (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 10:13:53.52
+shutparm F2KT-SOURCE-CRC=0xA7B94249
+>>> shutparm.exe default
+== default
+at the start: ret=1 err=- level=0x280 flags=0x0
+shutparm: done
+<<< exit code=0
+>>> shutparm.exe bands
+== bands
+set 0x100, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x100 flags=0x0
+set 0x100, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x100 flags=0x1
+set 0x1FF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x1FF flags=0x0
+set 0x1FF, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x1FF flags=0x1
+set 0x200, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x200 flags=0x0
+set 0x200, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x200 flags=0x1
+set 0x280, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x280 flags=0x0
+set 0x280, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x280 flags=0x1
+set 0x2FF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x2FF flags=0x0
+set 0x2FF, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x2FF flags=0x1
+set 0x300, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x300 flags=0x0
+set 0x300, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x300 flags=0x1
+set 0x3FF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x3FF flags=0x0
+set 0x3FF, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x3FF flags=0x1
+shutparm: done
+<<< exit code=0
+>>> shutparm.exe invalid
+== invalid
+the known setting:
+set 0x300, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x300 flags=0x1
+levels:
+set 0x0, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x0 flags=0x0
+set 0x1, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x1 flags=0x0
+set 0x80, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x80 flags=0x0
+set 0xFF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0xFF flags=0x0
+set 0x400, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x400 flags=0x0
+set 0x401, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x401 flags=0x0
+set 0x4FF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x4FF flags=0x0
+set 0x500, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x500 flags=0x0
+set 0xFFF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0xFFF flags=0x0
+set 0x10000, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x10000 flags=0x0
+set 0x7FFFFFFF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0x7FFFFFFF flags=0x0
+set 0xFFFFFFFF, 0x0: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+flags:
+set 0x280, 0x2: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+set 0x280, 0x3: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+set 0x280, 0x4: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+set 0x280, 0x80000000: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+set 0x280, 0xFFFFFFFF: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+both:
+set 0xFF, 0x2: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+set 0x400, 0x2: ret=1 err=-
+read back: ret=1 err=- level=0xFFFFFFFF flags=0x0
+shutparm: done
+<<< exit code=0
+>>> shutparm.exe child
+== child
+set 0x3FF, 0x1: ret=1 err=-
+read back: ret=1 err=- level=0x3FF flags=0x1
+kid: started with: ret=1 err=- level=0x280 flags=0x0
+kid: set 0x101, 0: ret=1 err=-
+kid: then: ret=1 err=- level=0x101 flags=0x0
+the child's end: WAIT_OBJECT_0, exit code 0
+this process after the child: ret=1 err=- level=0x3FF flags=0x1
+shutparm: done
+<<< exit code=0

@@ -428,6 +428,62 @@ fn remote<T: Pod>(process: u32, address: usize) -> Result<T, Failure> {
     Ok(value)
 }
 
+/// SetProcessShutdownParameters: the calling process's shutdown level (the order the session's end
+/// asks the processes in, the highest first: 0x100-0x1FF last, 0x200-0x2FF in between, 0x300-0x3FF
+/// first) and flags (SHUTDOWN_NORETRY), sent to the base server (BasepSetProcessShutdownParam),
+/// which keeps them, as Windows 2000's kernel32 sends them to csrss. As Windows 2000's, the server
+/// keeps any level, the documentation's ranges notwithstanding, and leaves the parameters as they
+/// were for a flag bit other than SHUTDOWN_NORETRY, TRUE either way with the last error untouched;
+/// FALSE with the server's status's error should the call itself fail.
+#[unsafe(export_name = "f2k_export_SetProcessShutdownParameters")]
+pub extern "system" fn set_process_shutdown_parameters(level: u32, flags: u32) -> u32 {
+    use rtl::console::base::{ShutdownParameters, SET_PROCESS_SHUTDOWN_PARAM};
+    let mut message = ShutdownParameters::<usize> {
+        level: level as usize,
+        flags: flags as usize,
+    };
+    let status = crate::console::call_csr(SET_PROCESS_SHUTDOWN_PARAM, message.as_bytes_mut());
+    bool_answer(nt_result(status))
+}
+
+/// GetProcessShutdownParameters: the calling process's shutdown level and flags, as the base
+/// server keeps them (BasepGetProcessShutdownParam: 0x280 and none until the process sets its
+/// own), written to the caller's places, as Windows 2000's kernel32 writes them (a place it cannot
+/// reach faults it); FALSE with the server's status's error.
+///
+/// # Safety
+///
+/// `level` and `flags` are writable.
+#[unsafe(export_name = "f2k_export_GetProcessShutdownParameters")]
+pub unsafe extern "system" fn get_process_shutdown_parameters(
+    level: *mut u32,
+    flags: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's places (the contract); one it cannot reach faults it, as on Windows.
+    let (level, flags) = unsafe { (Out::new(level), Out::new(flags)) };
+    bool_answer(shutdown_parameters(level, flags))
+}
+
+/// GetProcessShutdownParameters' work.
+fn shutdown_parameters(mut level: Out<'_, u32>, mut flags: Out<'_, u32>) -> Result<(), Failure> {
+    use rtl::console::base::{ShutdownParameters, GET_PROCESS_SHUTDOWN_PARAM};
+    let mut message = ShutdownParameters::<usize>::default();
+    let status = crate::console::call_csr(GET_PROCESS_SHUTDOWN_PARAM, message.as_bytes_mut());
+    nt_result(status)?;
+    level.set(message.level as u32);
+    flags.set(message.flags as u32);
+    Ok(())
+}
+
+/// A server's status as a result: its failure reported as its error (BaseSetLastNTError).
+fn nt_result(status: u32) -> Result<(), Failure> {
+    if rtl::status::nt_success(status) {
+        Ok(())
+    } else {
+        Err(Failure::Status(status))
+    }
+}
+
 /// SEM_FAILCRITICALERRORS: the one mode bit the process's hard-error mode stores inverted (its
 /// hard-error mode's 1 is "report hard errors").
 const SEM_FAILCRITICALERRORS: u32 = 0x0001;
@@ -472,6 +528,45 @@ mod tests {
             assert_eq!(flag_of(class), flag);
         }
         assert_eq!(flag_of(0), NORMAL_PRIORITY_CLASS);
+    }
+
+    /// SetProcessShutdownParameters and GetProcessShutdownParameters, as the shutparm fixture's
+    /// capture shows them: the defaults (0x280, no flag) to start; each band's edges, with and
+    /// without SHUTDOWN_NORETRY, read back as set; levels outside 0x100-0x3FF kept all the same;
+    /// a flag bit other than SHUTDOWN_NORETRY TRUE, the last error untouched, the parameters kept
+    /// as they were.
+    #[test]
+    fn shutdown_parameters_round_trip() {
+        use crate::base::last_error;
+        const UNTOUCHED: u32 = 0x0F2F_2F2F;
+        let get = || {
+            let (mut level, mut flags) = (0xDEAD_BEEF, 0xDEAD_BEEF);
+            // SAFETY: two places of the test's.
+            let ok = unsafe { get_process_shutdown_parameters(&mut level, &mut flags) };
+            assert_eq!(ok, 1);
+            (level, flags)
+        };
+        let set = |level, flags| {
+            set_last_error(UNTOUCHED);
+            assert_eq!(set_process_shutdown_parameters(level, flags), 1);
+            assert_eq!(last_error(), UNTOUCHED, "{level:#x} {flags:#x}");
+        };
+        assert_eq!(get(), (0x280, 0));
+        for level in [0x100, 0x1FF, 0x200, 0x2FF, 0x300, 0x3FF] {
+            for flags in [0, 1] {
+                set(level, flags);
+                assert_eq!(get(), (level, flags));
+            }
+        }
+        for level in [0, 0x1, 0xFF, 0x400, 0x4FF, 0x1_0000, 0xFFFF_FFFF] {
+            set(level, 0);
+            assert_eq!(get(), (level, 0));
+        }
+        set(0x300, 1);
+        for (level, flags) in [(0x280, 2), (0x280, 3), (0x280, 0xFFFF_FFFF), (0xFF, 2)] {
+            set(level, flags);
+            assert_eq!(get(), (0x300, 1), "{level:#x} {flags:#x}: nothing kept");
+        }
     }
 
     /// FlushInstructionCache: TRUE through a handle the service takes (the calling process's,

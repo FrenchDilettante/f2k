@@ -2478,6 +2478,24 @@ ordinal = 352
 fails = "0"
 
 [[export]]
+name = "SetProcessShutdownParameters"
+group = "processes"
+args = ["u32 dwLevel", "u32 dwFlags"]
+impl = { native = "SetProcessShutdownParameters" }
+ordinal = 683
+fails = "FALSE"
+note = "the base server's BasepSetProcessShutdownParam (1:12), which keeps them with the process's console entry: any level, the flags only when they hold nothing but SHUTDOWN_NORETRY (TRUE either way, as on Windows 2000); the session's end asks the highest level first, the caller last"
+
+[[export]]
+name = "GetProcessShutdownParameters"
+group = "processes"
+args = ["ptr<u32> lpdwLevel", "ptr<u32> lpdwFlags"]
+impl = { native = "GetProcessShutdownParameters" }
+ordinal = 350
+fails = "FALSE"
+note = "the base server's BasepGetProcessShutdownParam (1:13): 0x280 and no flag until the process sets its own"
+
+[[export]]
 name = "CreateToolhelp32Snapshot"
 group = "processes"
 args = ["u32 dwFlags", "u32 th32ProcessID"]
@@ -3501,10 +3519,6 @@ name = "GetProcessPriorityBoost"
 ordinal = 349
 
 [[export]]
-name = "GetProcessShutdownParameters"
-ordinal = 350
-
-[[export]]
 name = "GetProcessTimes"
 ordinal = 351
 
@@ -4241,10 +4255,6 @@ ordinal = 679
 [[export]]
 name = "SetProcessPriorityBoost"
 ordinal = 682
-
-[[export]]
-name = "SetProcessShutdownParameters"
-ordinal = 683
 
 [[export]]
 name = "SetProcessWorkingSetSize"

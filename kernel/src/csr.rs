@@ -31,11 +31,12 @@
 //!
 //! The console's control events — Ctrl+C and Ctrl+Break, from the keyboard or
 //! GenerateConsoleCtrlEvent — are [`ctrl`]'s: the console's processes, and the control thread that
-//! delivers each event to them. The base server's one API F2K serves, kernel32's announcement of a
-//! process it created (`rtl::console::base`), comes through the same service: it puts the process
-//! in its process group. So does the user server's one API (`rtl::console::user`), user32's
-//! ExitWindowsEx: the request for the session's end, which the control thread carries out
-//! ([`crate::session`]).
+//! delivers each event to them. The base server's APIs F2K serves (`rtl::console::base`) come
+//! through the same service: kernel32's announcement of a process it created, which puts the
+//! process in its process group, and the process's shutdown level and flags, which the console
+//! keeps with its entry for the session's end. So does the user server's one API
+//! (`rtl::console::user`), user32's ExitWindowsEx: the request for the session's end, which the
+//! control thread carries out ([`crate::session`]).
 
 pub mod ctrl;
 
@@ -578,17 +579,76 @@ fn serve_message(
     }
 }
 
-/// The base server's one API F2K serves (`rtl::console::base`): BasepCreateProcess, the creator's
-/// announcement of a process it made, puts the process (the creator's handle to it names it) in
-/// the creator's process group, or in a group of its own for CREATE_NEW_PROCESS_GROUP, as Windows
-/// 2000's base server decides. Any other API is STATUS_ILLEGAL_FUNCTION; a handle that names no
-/// process is refused as the process services refuse it.
+/// The base server's APIs F2K serves (`rtl::console::base`), for the calling process:
+/// BasepCreateProcess (see [`announce_process`]), and BasepSetProcessShutdownParam and
+/// BasepGetProcessShutdownParam (see [`set_shutdown_parameters`] and [`get_shutdown_parameters`]).
+/// Any other API is STATUS_ILLEGAL_FUNCTION; data too short for the message
+/// STATUS_INVALID_PARAMETER.
 #[cfg(target_arch = "x86")]
 fn base_call_server(api: u32, data: &mut [u8]) -> NtStatus {
-    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP, CREATE_PROCESS};
-    if api != CREATE_PROCESS {
-        return NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION);
+    use rtl::console::base::{
+        CREATE_PROCESS,
+        GET_PROCESS_SHUTDOWN_PARAM,
+        SET_PROCESS_SHUTDOWN_PARAM,
+    };
+    match api {
+        CREATE_PROCESS => announce_process(data),
+        SET_PROCESS_SHUTDOWN_PARAM => set_shutdown_parameters(data),
+        GET_PROCESS_SHUTDOWN_PARAM => get_shutdown_parameters(data),
+        _ => NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION),
     }
+}
+
+/// BasepSetProcessShutdownParam: the calling process's shutdown level and flags, kept with its
+/// console entry, where the session's end reads them ([`Control::next_to_end`]). Any level is
+/// kept; flags holding any bit but SHUTDOWN_NORETRY leave the parameters as they were
+/// (`rtl::console::base::shutdown_parameters_kept`), and either way the answer is a success, as
+/// Windows 2000's caller sees it. Windows 2000's csrss keeps them for every process it knows;
+/// F2K's console knows only its own processes, so a process that never connected to it (one of
+/// another subsystem) has its call answered and nothing kept: the session's end reaches no such
+/// process.
+#[cfg(target_arch = "x86")]
+fn set_shutdown_parameters(data: &mut [u8]) -> NtStatus {
+    use rtl::console::base::{shutdown_parameters_kept, ShutdownParameters};
+    let Some(request) = ShutdownParameters::<u32>::from_bytes(data) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    if !shutdown_parameters_kept(request.flags) {
+        return STATUS_SUCCESS;
+    }
+    let caller = crate::user::args::calling_process().object();
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        SERVER
+            .get(dispatch)
+            .ctrl
+            .set_shutdown_parameters(caller, request.level, request.flags)
+    });
+    STATUS_SUCCESS
+}
+
+/// BasepGetProcessShutdownParam: the calling process's shutdown level and flags, answered in the
+/// message (the defaults, 0x280 and none, until it sets its own).
+#[cfg(target_arch = "x86")]
+fn get_shutdown_parameters(data: &mut [u8]) -> NtStatus {
+    use rtl::console::base::ShutdownParameters;
+    let Some(answer) = data.get_mut(..core::mem::size_of::<ShutdownParameters<u32>>()) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let caller = crate::user::args::calling_process().object();
+    let (level, flags) = crate::level::raised::<Dispatch, _>(|dispatch| {
+        SERVER.get(dispatch).ctrl.shutdown_parameters(caller)
+    });
+    answer.copy_from_slice(ShutdownParameters { level, flags }.as_bytes());
+    STATUS_SUCCESS
+}
+
+/// BasepCreateProcess, the creator's announcement of a process it made: the process (the
+/// creator's handle to it names it) put in the creator's process group, or in a group of its own
+/// for CREATE_NEW_PROCESS_GROUP, as Windows 2000's base server decides. A handle that names no
+/// process is refused as the process services refuse it.
+#[cfg(target_arch = "x86")]
+fn announce_process(data: &mut [u8]) -> NtStatus {
+    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP};
     let Some(request) = CreateProcess::<u32>::from_bytes(data) else {
         return STATUS_INVALID_PARAMETER;
     };

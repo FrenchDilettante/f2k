@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -357,6 +357,21 @@ call :stamp batspawn.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% batspawn.c
 if errorlevel 1 (echo build.bat: batspawn failed & exit /b 1)
 del batspawn.obj blkid.obj
+cd ..\..
+goto :eof
+
+rem shutparm's companion program, shutkid.exe (the child its child
+rem section starts), builds beside it with no source stamp; both with
+rem /MD.
+:shutparm
+echo === shutparm
+cd kernel32\shutparm
+cl /nologo /MD shutkid.c
+if errorlevel 1 (echo build.bat: shutkid failed & exit /b 1)
+call :stamp shutparm.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% shutparm.c
+if errorlevel 1 (echo build.bat: shutparm failed & exit /b 1)
+del shutparm.obj shutkid.obj
 cd ..\..
 goto :eof
 

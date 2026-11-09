@@ -1,0 +1,31 @@
+# shutparm: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD. Its companion program, shutkid.exe (built beside shutparm.exe from shutkid.c, with /MD),
+# is the child the child section starts; it goes into \CORPUS beside the program, as it sits beside
+# it on the real machine. Nothing here calls ExitWindowsEx: the parameters only order a session's
+# end, and are the program's own. Gated, nothing pending.
+description = "shutparm - a process's shutdown parameters (shutparm.c, with its companion program shutkid.c): SetProcessShutdownParameters and GetProcessShutdownParameters, the default (0x280, no flag), each band's edges with and without SHUTDOWN_NORETRY read back, levels outside 0x100-0x3FF (kept all the same) and flags other than SHUTDOWN_NORETRY (TRUE, nothing changed), and a child's own parameters (inherited or not) beside its parent's."
+kind = "sectioned"
+gate = true
+timeout = 30
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, and shutkid's own calls in that section's run.
+default = [
+    "kernel32.GetProcessShutdownParameters",
+]
+bands = [
+    "kernel32.SetProcessShutdownParameters",
+    "kernel32.GetProcessShutdownParameters",
+]
+invalid = [
+    "kernel32.SetProcessShutdownParameters",
+    "kernel32.GetProcessShutdownParameters",
+]
+child = [
+    "kernel32.SetProcessShutdownParameters",
+    "kernel32.GetProcessShutdownParameters",
+    "kernel32.CreateProcessA",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+]

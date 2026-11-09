@@ -729,6 +729,9 @@ pub mod host {
         pub static CONSOLE_STATE: RefCell<rtl::console::Console> = const { RefCell::new(rtl::console::Console::new()) };
         /// The bytes each console write showed, with its handle.
         pub static CONSOLE: RefCell<std::vec::Vec<(u32, std::vec::Vec<u8>)>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// The test's process's shutdown level and flags, as the base server keeps them (a fresh
+        /// process's to start).
+        pub static SHUTDOWN_PARAMETERS: Cell<(u32, u32)> = const { Cell::new((rtl::console::base::DEFAULT_SHUTDOWN_LEVEL, 0)) };
     }
 
     /// The status the next service answers with: the one FAIL_NEXT holds (reset), or success.
@@ -1987,20 +1990,38 @@ pub mod host {
     /// CsrClientCallServer, over the console server's own rules (`rtl::console`, as the kernel
     /// serves them): the data words the length names, answered in place; the ReturnValue. The
     /// base server's announcement of a new process (`rtl::console::base`) is taken as the
-    /// kernel takes it, its process group the stand-in's to ignore.
+    /// kernel takes it, its process group the stand-in's to ignore; the process's shutdown level
+    /// and flags are kept, or left as they were, as the kernel's server keeps them.
     pub unsafe extern "system" fn CsrClientCallServer(
         message: *mut super::ApiMessage,
         capture_buffer: *mut u8,
         api: u32,
         length: u32,
     ) -> u32 {
+        use rtl::console::base;
         // SAFETY: the caller's message.
         let message = unsafe { &mut *message };
-        if api == rtl::console::base::CREATE_PROCESS {
+        if api >> 16 == base::BASE_SERVER {
+            let [level, flags, ..] = &mut message.data;
+            let status = match api {
+                base::SET_PROCESS_SHUTDOWN_PARAM => {
+                    let (level, flags) = (*level as u32, *flags as u32);
+                    if base::shutdown_parameters_kept(flags) {
+                        SHUTDOWN_PARAMETERS.with(|kept| kept.set((level, flags)));
+                    }
+                    0
+                }
+                base::GET_PROCESS_SHUTDOWN_PARAM => {
+                    let (kept_level, kept_flags) = SHUTDOWN_PARAMETERS.with(Cell::get);
+                    (*level, *flags) = (kept_level as _, kept_flags as _);
+                    0
+                }
+                _ => 0,
+            };
             message.capture_buffer = capture_buffer as usize;
             message.api_number = api;
-            message.return_value = 0;
-            return 0;
+            message.return_value = status;
+            return status;
         }
         let mut handles = CONSOLE_HANDLES.with(Cell::get);
         let status = CONSOLE_STATE.with(|console| {
