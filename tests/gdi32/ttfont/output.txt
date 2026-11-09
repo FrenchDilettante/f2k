@@ -1,0 +1,1467 @@
+# F2K capture of ttfont (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 14:05:54.52
+ttfont F2KT-SOURCE-CRC=0xF23BE2D0
+>>> ttfont.exe load
+== load
+gdi32 exports AddFontResourceExA: yes, AddFontResourceExW: yes
+gdi32 exports RemoveFontResourceExA: yes, RemoveFontResourceExW: yes
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+AddFontResourceExA("f2ktahom.ttf", FR_PRIVATE, 0) (the same file again): ret=1 err=2
+RemoveFontResourceExA("f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0) (once more): ret=0 err=2
+AddFontResourceExW(L"f2knone.ttf", FR_PRIVATE, 0) (no such file): ret=0 err=2
+AddFontResourceExA("f2knone.ttf", FR_PRIVATE, 0) (no such file): ret=0 err=2
+RemoveFontResourceExW(L"f2knone.ttf", FR_PRIVATE, 0): ret=0 err=2
+RemoveFontResourceExA("f2knone.ttf", FR_PRIVATE, 0): ret=0 err=2
+AddFontResourceW(L"f2ktahom.ttf"): ret=1 err=2
+RemoveFontResourceW(L"f2ktahom.ttf"): ret=1 err=2
+RemoveFontResourceW(L"f2ktahom.ttf") (once more): ret=0 err=2
+AddFontResourceA("f2ktahom.ttf"): ret=1 err=2
+RemoveFontResourceA("f2ktahom.ttf"): ret=1 err=2
+RemoveFontResourceA("f2ktahom.ttf") (once more): ret=0 err=2
+AddFontResourceW(L"f2knone.ttf") (no such file): ret=0 err=2
+AddFontResourceA("f2knone.ttf") (no such file): ret=0 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe create
+== create
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+-- lfHeight -11, lfWeight 400
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-11 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-11 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -11, lfWeight 700
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-11 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-11 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -13, lfWeight 400
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-13 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-13 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -13, lfWeight 700
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-13 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-13 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -16, lfWeight 400
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -16, lfWeight 700
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -24, lfWeight 400
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-24 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-24 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight -24, lfWeight 700
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=-24 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=-24 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight 16, lfWeight 400
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- lfHeight 16, lfWeight 700
+CreateFontIndirectW: non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=-
+  lfHeight=16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetObjectA(font, sizeof(LOGFONTA)): ret=60 err=-
+  lfHeight=16 lfWidth=0 lfEscapement=0 lfOrientation=0 lfWeight=700 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=1
+  lfOutPrecision=0 lfClipPrecision=0 lfQuality=0 lfPitchAndFamily=0x00 lfFaceName="F2K Tahoma"
+GetTextFaceW(dc, 32, buf): ret=11 err=- face="F2K Tahoma"
+GetTextFaceA(dc, 32, buf): ret=10 err=- face="F2K Tahoma"
+CreateFontIndirectA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontA: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+CreateFontW: non-NULL yes err=-
+  its LOGFONTW the same as CreateFontIndirectW's: yes (GetObjectW ret=92); its face the same: yes
+-- the buffers, at lfHeight -11
+GetObjectW(font, 0, NULL): ret=92 err=-
+GetObjectA(font, 0, NULL): ret=60 err=-
+GetTextFaceW(dc, 0, NULL): ret=11 err=-
+GetTextFaceA(dc, 0, NULL): ret=11 err=-
+GetTextFaceW(dc, 4, buf) (buf filled with '#'): ret=4 err=- buf=F2K<U+0000>##
+GetTextFaceA(dc, 4, buf) (buf filled with '#'): ret=3 err=- buf=F2K<00>##
+-- a face no font has, at lfHeight -11
+CreateFontIndirectW("F2K No Such Face"): non-NULL yes err=-
+GetObjectW(font, sizeof(LOGFONTW)): ret=92 err=- lfFaceName="F2K No Such Face"
+selected, the same face as an empty face name's: yes; "F2K Tahoma": no
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe metrics
+== metrics
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+-- lfHeight -11, lfWeight 400
+GetTextMetricsW: ret=1 err=-
+  tmHeight=13 tmAscent=11 tmDescent=2 tmInternalLeading=2 tmExternalLeading=0 tmAveCharWidth=5 tmMaxCharWidth=16
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=13 tmAscent=11 tmDescent=2 tmInternalLeading=2 tmExternalLeading=0 tmAveCharWidth=5 tmMaxCharWidth=16
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetOutlineTextMetricsW(dc, 0, NULL): ret=298 err=-
+GetOutlineTextMetricsW(dc, 298, buf): ret=298 err=-
+  otmSize=298 otmTextMetrics the same as GetTextMetricsW's: yes
+  otmPanoseNumber=2 11 6 4 3 5 4 4 2 4
+  otmfsSelection=0x0040 otmfsType=0x0000 otmsCharSlopeRise=1 otmsCharSlopeRun=0 otmItalicAngle=0 otmEMSquare=2048
+  otmAscent=8 otmDescent=-2 otmLineGap=0 otmsCapEmHeight=6 otmsXHeight=3
+  otmrcFontBox=-1 13 15 -5 otmMacAscent=11 otmMacDescent=-2 otmMacLineGap=0 otmusMinimumPPEM=8
+  otmptSubscriptSize=8,7 otmptSubscriptOffset=0,2 otmptSuperscriptSize=8,7 otmptSuperscriptOffset=0,5
+  otmsStrikeoutSize=1 otmsStrikeoutPosition=4 otmsUnderscoreSize=1 otmsUnderscorePosition=-1
+  otmpFamilyName="F2K Tahoma" otmpFaceName="F2K Tahoma"
+  otmpStyleName="Regular" otmpFullName="F2K Tahoma"
+GetOutlineTextMetricsA(dc, 0, NULL): ret=253 err=-
+GetOutlineTextMetricsA(dc, 253, buf): ret=253 err=-
+  otmSize=253; otmEMSquare, otmAscent, otmDescent, otmLineGap and otmrcFontBox the same as W's: yes
+  otmpFamilyName="F2K Tahoma" otmpFaceName="F2K Tahoma"
+  otmpStyleName="Regular" otmpFullName="F2K Tahoma"
+-- lfHeight -11, lfWeight 700
+GetTextMetricsW: ret=1 err=-
+  tmHeight=13 tmAscent=11 tmDescent=2 tmInternalLeading=2 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=17
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=13 tmAscent=11 tmDescent=2 tmInternalLeading=2 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=17
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight -13, lfWeight 400
+GetTextMetricsW: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=19
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=19
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight -13, lfWeight 700
+GetTextMetricsW: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=20
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=20
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight -16, lfWeight 400
+GetTextMetricsW: ret=1 err=-
+  tmHeight=19 tmAscent=16 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=23
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=19 tmAscent=16 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=23
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight -16, lfWeight 700
+GetTextMetricsW: ret=1 err=-
+  tmHeight=19 tmAscent=16 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=8 tmMaxCharWidth=24
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=19 tmAscent=16 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=8 tmMaxCharWidth=24
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight -24, lfWeight 400
+GetTextMetricsW: ret=1 err=-
+  tmHeight=29 tmAscent=24 tmDescent=5 tmInternalLeading=5 tmExternalLeading=0 tmAveCharWidth=11 tmMaxCharWidth=35
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=29 tmAscent=24 tmDescent=5 tmInternalLeading=5 tmExternalLeading=0 tmAveCharWidth=11 tmMaxCharWidth=35
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetOutlineTextMetricsW(dc, 0, NULL): ret=298 err=-
+GetOutlineTextMetricsW(dc, 298, buf): ret=298 err=-
+  otmSize=298 otmTextMetrics the same as GetTextMetricsW's: yes
+  otmPanoseNumber=2 11 6 4 3 5 4 4 2 4
+  otmfsSelection=0x0040 otmfsType=0x0000 otmsCharSlopeRise=1 otmsCharSlopeRun=0 otmItalicAngle=0 otmEMSquare=2048
+  otmAscent=18 otmDescent=-5 otmLineGap=1 otmsCapEmHeight=12 otmsXHeight=6
+  otmrcFontBox=-2 28 32 -10 otmMacAscent=24 otmMacDescent=-5 otmMacLineGap=0 otmusMinimumPPEM=8
+  otmptSubscriptSize=17,16 otmptSubscriptOffset=0,3 otmptSuperscriptSize=17,16 otmptSuperscriptOffset=0,11
+  otmsStrikeoutSize=2 otmsStrikeoutPosition=8 otmsUnderscoreSize=2 otmsUnderscorePosition=-3
+  otmpFamilyName="F2K Tahoma" otmpFaceName="F2K Tahoma"
+  otmpStyleName="Regular" otmpFullName="F2K Tahoma"
+GetOutlineTextMetricsA(dc, 0, NULL): ret=253 err=-
+GetOutlineTextMetricsA(dc, 253, buf): ret=253 err=-
+  otmSize=253; otmEMSquare, otmAscent, otmDescent, otmLineGap and otmrcFontBox the same as W's: yes
+  otmpFamilyName="F2K Tahoma" otmpFaceName="F2K Tahoma"
+  otmpStyleName="Regular" otmpFullName="F2K Tahoma"
+-- lfHeight -24, lfWeight 700
+GetTextMetricsW: ret=1 err=-
+  tmHeight=29 tmAscent=24 tmDescent=5 tmInternalLeading=5 tmExternalLeading=0 tmAveCharWidth=12 tmMaxCharWidth=36
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=29 tmAscent=24 tmDescent=5 tmInternalLeading=5 tmExternalLeading=0 tmAveCharWidth=12 tmMaxCharWidth=36
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight 16, lfWeight 400
+GetTextMetricsW: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=19
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=6 tmMaxCharWidth=19
+  tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+-- lfHeight 16, lfWeight 700
+GetTextMetricsW: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=20
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+GetTextMetricsA: ret=1 err=-
+  tmHeight=16 tmAscent=13 tmDescent=3 tmInternalLeading=3 tmExternalLeading=0 tmAveCharWidth=7 tmMaxCharWidth=20
+  tmWeight=700 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe widths
+== widths
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+-- lfHeight -11, lfWeight 400
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 3 4 4 8 6 11 7 2 4 4 6 8 4 4 4 4
+  0x30: 6 6 6 6 6 6 6 6 6 6 4 4 8 8 8 5
+  0x40: 10 7 6 7 7 6 6 7 7 4 5 6 5 8 7 8
+  0x50: 6 8 7 6 6 7 6 10 6 6 6 4 4 4 8 6
+  0x60: 6 6 6 5 6 6 4 6 6 2 3 5 2 8 6 6
+  0x70: 6 6 4 5 4 6 6 8 6 6 5 5 4 5 8
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 3 4 4 8 6 11 7 2 4 4 6 8 4 4 4 4
+  0x30: 6 6 6 6 6 6 6 6 6 6 4 4 8 8 8 5
+  0x40: 10 7 6 7 7 6 6 7 7 4 5 6 5 8 7 8
+  0x50: 6 8 7 6 6 7 6 10 6 6 6 4 4 4 8 6
+  0x60: 6 6 6 5 6 6 4 6 6 2 3 5 2 8 6 6
+  0x70: 6 6 4 5 4 6 6 8 6 6 5 5 4 5 8
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 2 1 1 2 0 3 1 0 7 1 0 5 1 0
+  0x30: 10 1 1 6 0 0 1 1
+  0x28: 0 3 1 0 3 1 0 5 1 0 7 1 0 2 2 0
+  0x38: 3 1 1 1 2 0 3 1
+  0x30: 0 5 1 1 3 2 0 5 1 0 5 1 0 5 1 0
+  0x40: 5 1 0 5 1 0 5 1
+  0x38: 0 5 1 0 5 1 1 1 2 0 2 2 1 6 1 0
+  0x48: 7 1 1 6 1 0 4 1
+  0x40: 0 9 1 0 6 1 0 5 1 0 6 1 0 6 1 0
+  0x50: 5 1 0 5 1 0 6 1
+  0x48: 0 6 1 0 3 1 0 3 2 0 5 1 0 4 1 0
+  0x58: 7 1 0 6 1 0 7 1
+  0x50: 0 5 1 0 7 1 0 6 1 0 5 1 0 5 1 0
+  0x60: 6 1 0 5 1 0 9 1
+  0x58: 0 5 1 0 5 1 0 5 1 0 3 1 0 3 1 0
+  0x68: 3 1 0 7 1 0 6 0
+  0x60: 1 2 3 0 5 1 0 5 1 0 4 1 0 5 1 0
+  0x70: 5 1 0 3 1 0 5 1
+  0x68: 0 5 1 0 1 1 0 2 1 0 5 0 0 1 1 0
+  0x78: 7 1 0 5 1 0 5 1
+  0x70: 0 5 1 0 5 1 0 3 1 0 4 1 0 3 1 0
+  0x80: 5 1 0 5 1 0 7 1
+  0x78: 0 5 1 0 5 1 0 4 1 0 4 1 1 1 2 0
+  0x88: 4 1 0 7 1
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=23 cy=13
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=23 cy=13
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=59 cy=13
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=59 cy=13
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=219 cy=13
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=219 cy=13
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=20 cy=13
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=20 cy=13
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=100 cy=13
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=100 cy=13
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=24 cy=13
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=11 cy=13
+-- lfHeight -13, lfWeight 400
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 4 5 9 7 12 9 3 5 5 8 8 4 5 4 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 12 8 7 8 8 7 7 8 8 4 5 7 6 10 8 9
+  0x50: 7 9 8 8 8 8 8 12 8 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 4 7 7 3 4 6 3 11 7 7
+  0x70: 7 7 5 6 4 7 6 10 6 6 6 6 6 6 9
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 4 5 9 7 12 9 3 5 5 8 8 4 5 4 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 12 8 7 8 8 7 7 8 8 4 5 7 6 10 8 9
+  0x50: 7 9 8 8 8 8 8 12 8 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 4 7 7 3 4 6 3 11 7 7
+  0x70: 7 7 5 6 4 7 6 10 6 6 6 6 6 6 9
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 3 1 1 2 1 3 1 1 7 1 0 6 1 1
+  0x30: 10 1 1 7 1 1 1 1
+  0x28: 1 4 0 0 4 1 1 5 2 0 7 1 0 2 2 0
+  0x38: 4 1 1 1 2 0 5 0
+  0x30: 0 6 1 1 5 1 0 6 1 0 6 1 0 6 1 0
+  0x40: 6 1 0 6 1 0 6 1
+  0x38: 0 6 1 0 6 1 2 1 2 1 2 2 1 7 1 1
+  0x48: 7 1 1 7 1 0 5 1
+  0x40: 0 11 1 0 7 1 0 6 1 0 7 1 0 7 1 0
+  0x50: 6 1 0 6 1 0 7 1
+  0x48: 0 7 1 0 3 1 0 3 2 0 6 1 0 5 1 0
+  0x58: 9 1 0 7 1 0 8 1
+  0x50: 0 6 1 0 8 1 0 7 1 0 7 1 0 7 1 0
+  0x60: 7 1 0 7 1 0 11 1
+  0x58: 0 7 1 0 7 0 0 6 1 1 3 1 0 5 0 1
+  0x68: 3 1 1 8 0 0 7 0
+  0x60: 2 2 3 0 6 1 0 6 1 0 5 1 0 6 1 0
+  0x70: 6 1 0 4 0 0 6 1
+  0x68: 0 6 1 1 1 1 0 3 1 0 5 1 1 1 1 1
+  0x78: 9 1 0 6 1 0 6 1
+  0x70: 0 6 1 0 6 1 0 4 1 0 5 1 0 4 0 0
+  0x80: 6 1 0 5 1 0 9 1
+  0x78: 0 5 1 0 5 1 0 5 1 0 5 1 2 1 3 0
+  0x88: 5 1 1 7 1
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=72 cy=16
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=72 cy=16
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=261 cy=16
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=261 cy=16
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=30 cy=16
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=30 cy=16
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=120 cy=16
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=120 cy=16
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=13 cy=16
+-- lfHeight -16, lfWeight 400
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 5 4 6 12 9 16 11 3 6 6 9 12 5 6 5 6
+  0x30: 9 9 9 9 9 9 9 9 9 9 6 6 12 12 12 8
+  0x40: 15 11 9 10 11 9 8 11 11 6 7 9 8 12 11 12
+  0x50: 9 12 10 9 10 11 10 14 9 10 9 6 6 6 12 9
+  0x60: 9 8 9 7 9 8 5 9 9 4 5 8 4 14 9 9
+  0x70: 9 9 6 7 5 9 8 12 8 8 7 8 6 8 12
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 5 4 6 12 9 16 11 3 6 6 9 12 5 6 5 6
+  0x30: 9 9 9 9 9 9 9 9 9 9 6 6 12 12 12 8
+  0x40: 15 11 9 10 11 9 8 11 11 6 7 9 8 12 11 12
+  0x50: 9 12 10 9 10 11 10 14 9 10 9 6 6 6 12 9
+  0x60: 9 8 9 7 9 8 5 9 9 4 5 8 4 14 9 9
+  0x70: 9 9 6 7 5 9 8 12 8 8 7 8 6 8 12
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 4 1 1 2 1 4 1 0 11 1 1 7 1 1
+  0x30: 14 1 1 9 1 1 1 1
+  0x28: 1 4 1 1 4 1 1 7 1 1 9 2 1 2 2 0
+  0x38: 5 1 2 1 2 0 6 0
+  0x30: 0 8 1 2 5 2 1 7 1 1 7 1 0 8 1 1
+  0x40: 7 1 0 8 1 1 7 1
+  0x38: 0 8 1 0 8 1 2 1 3 1 2 3 2 8 2 2
+  0x48: 9 1 2 8 2 1 6 1
+  0x40: 1 13 1 0 10 1 0 8 1 0 9 1 0 10 1 0
+  0x50: 8 1 0 7 1 0 10 1
+  0x48: 0 10 1 1 3 2 0 4 3 0 8 1 0 7 1 0
+  0x58: 11 1 0 10 1 0 11 1
+  0x50: 0 8 1 0 11 1 0 9 1 0 8 1 0 9 1 0
+  0x60: 10 1 0 9 1 0 13 1
+  0x58: 0 8 1 0 9 1 0 8 1 1 4 1 0 6 0 1
+  0x68: 4 1 1 10 1 0 9 0
+  0x60: 2 2 5 0 7 1 0 8 1 0 6 1 0 8 1 0
+  0x70: 7 1 0 5 0 0 8 1
+  0x68: 0 8 1 1 1 2 1 3 1 0 7 1 1 1 2 1
+  0x78: 11 2 0 8 1 0 8 1
+  0x70: 0 8 1 0 8 1 0 5 1 0 6 1 0 5 0 0
+  0x80: 8 1 0 7 1 0 11 1
+  0x78: 0 7 1 0 7 1 0 6 1 0 7 1 2 1 3 0
+  0x88: 7 1 1 10 1
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=36 cy=19
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=36 cy=19
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=89 cy=19
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=89 cy=19
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=327 cy=19
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=327 cy=19
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=40 cy=19
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=40 cy=19
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=140 cy=19
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=140 cy=19
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=36 cy=19
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=16 cy=19
+-- lfHeight -24, lfWeight 400
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 7 8 10 17 13 23 16 5 9 9 13 17 7 9 7 9
+  0x30: 13 13 13 13 13 13 13 13 13 13 9 9 17 17 17 11
+  0x40: 22 14 14 14 16 13 13 16 16 9 10 14 12 19 16 17
+  0x50: 13 17 15 13 14 16 14 22 14 14 13 9 9 9 17 13
+  0x60: 13 13 13 11 13 13 8 13 13 6 7 12 6 20 13 13
+  0x70: 13 13 9 11 8 13 12 18 12 12 11 12 9 12 17
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 7 8 10 17 13 23 16 5 9 9 13 17 7 9 7 9
+  0x30: 13 13 13 13 13 13 13 13 13 13 9 9 17 17 17 11
+  0x40: 22 14 14 14 16 13 13 16 16 9 10 14 12 19 16 17
+  0x50: 13 17 15 13 14 16 14 22 14 14 13 9 9 9 17 13
+  0x60: 13 13 13 11 13 13 8 13 13 6 7 12 6 20 13 13
+  0x70: 13 13 9 11 8 13 12 18 12 12 11 12 9 12 17
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 6 3 2 3 1 7 2 2 14 1 1 12 0 1
+  0x30: 21 1 1 15 0 1 2 2
+  0x28: 1 6 2 1 6 2 1 11 1 2 14 1 1 3 3 1
+  0x38: 6 2 2 3 2 0 8 1
+  0x30: 1 11 1 3 9 1 1 11 1 1 11 1 0 13 0 1
+  0x40: 11 1 1 11 1 1 11 1
+  0x38: 1 12 0 1 12 0 3 2 4 1 4 4 2 13 2 2
+  0x48: 13 2 3 12 2 1 10 0
+  0x40: 2 19 1 0 15 -1 2 12 0 1 13 0 2 14 0 2
+  0x50: 11 0 2 10 1 1 14 1
+  0x48: 2 12 2 1 7 1 0 6 4 2 13 -1 2 10 0 2
+  0x58: 15 2 2 12 2 1 15 1
+  0x50: 2 11 0 1 15 1 2 12 1 1 12 0 0 14 0 2
+  0x60: 13 1 0 14 0 0 21 1
+  0x58: 0 14 0 0 14 0 1 12 0 2 5 2 1 8 0 1
+  0x68: 5 3 2 14 1 0 12 1
+  0x60: 3 5 5 1 10 2 2 11 0 1 10 0 1 11 1 1
+  0x70: 11 1 0 8 0 1 11 1
+  0x68: 2 10 1 1 3 2 -1 5 3 2 10 0 2 2 2 2
+  0x78: 17 1 2 10 1 1 11 1
+  0x70: 2 10 1 1 11 1 2 7 0 1 9 1 0 8 0 1
+  0x80: 11 1 0 12 0 0 17 1
+  0x78: 0 12 0 0 12 0 1 9 1 1 9 2 4 2 3 1
+  0x88: 9 2 2 15 0
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=54 cy=29
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=54 cy=29
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=133 cy=29
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=133 cy=29
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=483 cy=29
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=483 cy=29
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=60 cy=29
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=60 cy=29
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=220 cy=29
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=220 cy=29
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=51 cy=29
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=24 cy=29
+-- lfHeight 16, lfWeight 400
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 4 5 9 7 12 9 3 5 5 8 8 4 5 4 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 12 8 7 8 8 7 7 8 8 4 5 7 6 10 8 9
+  0x50: 7 9 8 8 8 8 8 12 8 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 4 7 7 3 4 6 3 11 7 7
+  0x70: 7 7 5 6 4 7 6 10 6 6 6 6 6 6 9
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 4 5 9 7 12 9 3 5 5 8 8 4 5 4 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 12 8 7 8 8 7 7 8 8 4 5 7 6 10 8 9
+  0x50: 7 9 8 8 8 8 8 12 8 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 4 7 7 3 4 6 3 11 7 7
+  0x70: 7 7 5 6 4 7 6 10 6 6 6 6 6 6 9
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 3 1 1 2 1 3 1 1 7 1 0 6 1 1
+  0x30: 10 1 1 7 1 1 1 1
+  0x28: 1 4 0 0 4 1 1 5 2 0 7 1 0 2 2 0
+  0x38: 4 1 1 1 2 0 5 0
+  0x30: 0 6 1 1 5 1 0 6 1 0 6 1 0 6 1 0
+  0x40: 6 1 0 6 1 0 6 1
+  0x38: 0 6 1 0 6 1 2 1 2 1 2 2 1 7 1 1
+  0x48: 7 1 1 7 1 0 5 1
+  0x40: 0 11 1 0 7 1 0 6 1 0 7 1 0 7 1 0
+  0x50: 6 1 0 6 1 0 7 1
+  0x48: 0 7 1 0 3 1 0 3 2 0 6 1 0 5 1 0
+  0x58: 9 1 0 7 1 0 8 1
+  0x50: 0 6 1 0 8 1 0 7 1 0 7 1 0 7 1 0
+  0x60: 7 1 0 7 1 0 11 1
+  0x58: 0 7 1 0 7 0 0 6 1 1 3 1 0 5 0 1
+  0x68: 3 1 1 8 0 0 7 0
+  0x60: 2 2 3 0 6 1 0 6 1 0 5 1 0 6 1 0
+  0x70: 6 1 0 4 0 0 6 1
+  0x68: 0 6 1 1 1 1 0 3 1 0 5 1 1 1 1 1
+  0x78: 9 1 0 6 1 0 6 1
+  0x70: 0 6 1 0 6 1 0 4 1 0 5 1 0 4 0 0
+  0x80: 6 1 0 5 1 0 9 1
+  0x78: 0 5 1 0 5 1 0 5 1 0 5 1 2 1 3 0
+  0x88: 5 1 1 7 1
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=72 cy=16
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=72 cy=16
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=261 cy=16
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=261 cy=16
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=30 cy=16
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=30 cy=16
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=120 cy=16
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=120 cy=16
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=28 cy=16
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=13 cy=16
+-- lfHeight -11, lfWeight 700
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 5 5 9 7 12 8 3 5 5 7 9 5 5 5 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 11 8 7 8 8 7 7 8 8 5 6 7 6 9 8 9
+  0x50: 7 9 8 7 7 8 7 11 7 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 5 7 7 3 4 6 3 9 7 7
+  0x70: 7 7 5 6 5 7 7 9 7 7 6 6 5 6 9
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 4 5 5 9 7 12 8 3 5 5 7 9 5 5 5 5
+  0x30: 7 7 7 7 7 7 7 7 7 7 5 5 9 9 9 6
+  0x40: 11 8 7 8 8 7 7 8 8 5 6 7 6 9 8 9
+  0x50: 7 9 8 7 7 8 7 11 7 7 7 5 5 5 9 7
+  0x60: 7 7 7 6 7 7 5 7 7 3 4 6 3 9 7 7
+  0x70: 7 7 5 6 5 7 7 9 7 7 6 6 5 6 9
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 3 1 2 2 0 4 1 0 8 1 0 6 1 0
+  0x30: 11 1 1 7 0 0 2 1
+  0x28: 0 4 1 0 4 1 0 6 1 0 8 1 0 3 2 0
+  0x38: 4 1 1 2 2 0 4 1
+  0x30: 0 6 1 1 4 2 0 6 1 0 6 1 0 6 1 0
+  0x40: 6 1 0 6 1 0 6 1
+  0x38: 0 6 1 0 6 1 1 2 2 0 3 2 1 7 1 0
+  0x48: 8 1 1 7 1 0 5 1
+  0x40: 0 10 1 0 7 1 0 6 1 0 7 1 0 7 1 0
+  0x50: 6 1 0 6 1 0 7 1
+  0x48: 0 7 1 0 4 1 0 4 2 0 6 1 0 5 1 0
+  0x58: 8 1 0 7 1 0 8 1
+  0x50: 0 6 1 0 8 1 0 7 1 0 6 1 0 6 1 0
+  0x60: 7 1 0 6 1 0 10 1
+  0x58: 0 6 1 0 6 1 0 6 1 0 4 1 0 4 1 0
+  0x68: 4 1 0 8 1 0 7 0
+  0x60: 1 3 3 0 6 1 0 6 1 0 5 1 0 6 1 0
+  0x70: 6 1 0 4 1 0 6 1
+  0x68: 0 6 1 0 2 1 0 3 1 0 6 0 0 2 1 0
+  0x78: 8 1 0 6 1 0 6 1
+  0x70: 0 6 1 0 6 1 0 4 1 0 5 1 0 4 1 0
+  0x80: 6 1 0 6 1 0 8 1
+  0x78: 0 6 1 0 6 1 0 5 1 0 5 1 1 2 2 0
+  0x88: 5 1 0 8 1
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=28 cy=13
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=28 cy=13
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=69 cy=13
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=69 cy=13
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=263 cy=13
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=263 cy=13
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=30 cy=13
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=30 cy=13
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=110 cy=13
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=110 cy=13
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=27 cy=13
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=12 cy=13
+-- lfHeight -24, lfWeight 700
+GetCharWidth32W(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 8 9 11 18 14 24 17 6 10 10 14 18 8 10 8 10
+  0x30: 14 14 14 14 14 14 14 14 14 14 10 10 18 18 18 12
+  0x40: 23 15 15 15 17 14 14 17 17 10 11 15 13 20 17 18
+  0x50: 14 18 16 14 15 17 15 23 15 15 14 10 10 10 18 14
+  0x60: 14 14 14 12 14 14 9 14 14 7 8 13 7 21 14 14
+  0x70: 14 14 10 12 9 14 13 19 13 13 12 13 10 13 18
+GetCharWidth32A(dc, 0x20, 0x7E): ret=1 err=-
+  0x20: 8 9 11 18 14 24 17 6 10 10 14 18 8 10 8 10
+  0x30: 14 14 14 14 14 14 14 14 14 14 10 10 18 18 18 12
+  0x40: 23 15 15 15 17 14 14 17 17 10 11 15 13 20 17 18
+  0x50: 14 18 16 14 15 17 15 23 15 15 14 10 10 10 18 14
+  0x60: 14 14 14 12 14 14 9 14 14 7 8 13 7 21 14 14
+  0x70: 14 14 10 12 9 14 13 19 13 13 12 13 10 13 18
+GetCharABCWidthsW(dc, 0x20, 0x7E): ret=1 err=- (A, B, C for each)
+  0x20: 0 1 7 3 3 3 1 8 2 2 15 1 1 13 0 1
+  0x30: 22 1 1 16 0 1 3 2
+  0x28: 1 7 2 1 7 2 1 12 1 2 15 1 1 4 3 1
+  0x38: 7 2 2 4 2 0 9 1
+  0x30: 1 12 1 3 10 1 1 12 1 1 12 1 0 14 0 1
+  0x40: 12 1 1 12 1 1 12 1
+  0x38: 1 13 0 1 13 0 3 3 4 1 5 4 2 14 2 2
+  0x48: 14 2 3 13 2 1 11 0
+  0x40: 2 20 1 0 16 -1 2 13 0 1 14 0 2 15 0 2
+  0x50: 12 0 2 11 1 1 15 1
+  0x48: 2 13 2 1 8 1 0 7 4 2 14 -1 2 11 0 2
+  0x58: 16 2 2 13 2 1 16 1
+  0x50: 2 12 0 1 16 1 2 13 1 1 13 0 0 15 0 2
+  0x60: 14 1 0 15 0 0 22 1
+  0x58: 0 15 0 0 15 0 1 13 0 2 6 2 1 9 0 1
+  0x68: 6 3 2 15 1 0 13 1
+  0x60: 3 6 5 1 11 2 2 12 0 1 11 0 1 12 1 1
+  0x70: 12 1 0 9 0 1 12 1
+  0x68: 2 11 1 1 4 2 -1 6 3 2 11 0 2 3 2 2
+  0x78: 18 1 2 11 1 1 12 1
+  0x70: 2 11 1 1 12 1 2 8 0 1 10 1 0 9 0 1
+  0x80: 12 1 0 13 0 0 18 1
+  0x78: 0 13 0 0 13 0 1 10 1 1 10 2 4 3 3 1
+  0x88: 10 2 2 16 0
+GetCharABCWidthsA(dc, 0x20, 0x7E): ret=1 err=- the same as W's: yes
+GetTextExtentPoint32W(L"", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32A("", 0): ret=1 err=- cx=0 cy=0
+GetTextExtentPoint32W(L"Hello", 5): ret=1 err=- cx=59 cy=29
+GetTextExtentPoint32A("Hello", 5): ret=1 err=- cx=59 cy=29
+GetTextExtentPoint32W(L"F2K Tahoma", 10): ret=1 err=- cx=143 cy=29
+GetTextExtentPoint32A("F2K Tahoma", 10): ret=1 err=- cx=143 cy=29
+GetTextExtentPoint32W(L"The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=527 cy=29
+GetTextExtentPoint32A("The quick brown fox jumps over the lazy dog.", 44): ret=1 err=- cx=527 cy=29
+GetTextExtentPoint32W(L"iiiiiiiiii", 10): ret=1 err=- cx=70 cy=29
+GetTextExtentPoint32A("iiiiiiiiii", 10): ret=1 err=- cx=70 cy=29
+GetTextExtentPoint32W(L"WWWWWWWWWW", 10): ret=1 err=- cx=230 cy=29
+GetTextExtentPoint32A("WWWWWWWWWW", 10): ret=1 err=- cx=230 cy=29
+GetTextExtentPoint32W(L"A<U+4E00>Z", 3): ret=1 err=- cx=54 cy=29
+GetTextExtentPoint32W(L"<U+4E00>", 1): ret=1 err=- cx=25 cy=29
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe enum
+== enum
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+EnumFontFamiliesExW("F2K Tahoma", DEFAULT_CHARSET):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Western"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 2: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=178
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Arabic"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=178
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 3: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=162
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Turkish"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=162
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 4: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=238
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Central European"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=238
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 5: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=204
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Cyrillic"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=204
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ ret=1 err=- callbacks=5
+EnumFontFamiliesExW("F2K Tahoma", ANSI_CHARSET):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Western"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ ret=1 err=- callbacks=1
+EnumFontFamiliesExW("F2K No Such Face", DEFAULT_CHARSET):
+ ret=1 err=- callbacks=0
+EnumFontFamiliesExA("F2K Tahoma", DEFAULT_CHARSET):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Western"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 2: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=178
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Arabic"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=178
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 3: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=162
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Turkish"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=162
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 4: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=238
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Central European"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=238
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ callback 5: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=204
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Cyrillic"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=204
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ ret=1 err=- callbacks=5
+EnumFontFamiliesExA("F2K Tahoma", ANSI_CHARSET):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular" elfScript="Western"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+  ntmFontSig fsUsb=800022EF C000205A 00000008 00000000 fsCsb=20000057 00080000
+ ret=1 err=- callbacks=1
+EnumFontFamiliesExA("F2K No Such Face", DEFAULT_CHARSET):
+ ret=1 err=- callbacks=0
+EnumFontFamiliesW("F2K Tahoma"):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x0020 tmLastChar=0xFEFC tmDefaultChar=0x001F tmBreakChar=0x0020 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+ ret=1 err=- callbacks=1
+EnumFontFamiliesA("F2K Tahoma"):
+ callback 1: FontType=0x4
+  elfLogFont lfHeight=39 lfWidth=14 lfEscapement=0 lfOrientation=0 lfWeight=400 lfItalic=0 lfUnderline=0 lfStrikeOut=0 lfCharSet=0
+  elfLogFont lfOutPrecision=3 lfClipPrecision=2 lfQuality=1 lfPitchAndFamily=0x22 lfFaceName="F2K Tahoma"
+  elfFullName="F2K Tahoma" elfStyle="Regular"
+  ntmTm tmHeight=39 tmAscent=32 tmDescent=7 tmInternalLeading=7 tmExternalLeading=0 tmAveCharWidth=14 tmMaxCharWidth=47
+  ntmTm tmWeight=400 tmOverhang=0 tmDigitizedAspectX=96 tmDigitizedAspectY=96
+  ntmTm tmFirstChar=0x1E tmLastChar=0xFF tmDefaultChar=0x1F tmBreakChar=0x20 tmItalic=0 tmUnderlined=0 tmStruckOut=0 tmPitchAndFamily=0x27 tmCharSet=0
+  ntmFlags=0x00000040 ntmSizeEM=2048 ntmCellHeight=2472 ntmAvgWidth=910
+ ret=1 err=- callbacks=1
+EnumFontFamiliesW("F2K No Such Face"):
+ ret=1 err=- callbacks=0
+EnumFontFamiliesA("F2K No Such Face"):
+ ret=1 err=- callbacks=0
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe data
+== data
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+GetFontData('head', 0, NULL, 0): ret=54 err=-
+GetFontData('head', 0, buf, 54): ret=54 err=- crc32=0x879B561D
+GetFontData('hhea', 0, NULL, 0): ret=36 err=-
+GetFontData('hhea', 0, buf, 36): ret=36 err=- crc32=0x9BBDDFFC
+GetFontData('maxp', 0, NULL, 0): ret=32 err=-
+GetFontData('maxp', 0, buf, 32): ret=32 err=- crc32=0xFC5807AF
+GetFontData('OS/2', 0, NULL, 0): ret=96 err=-
+GetFontData('OS/2', 0, buf, 96): ret=96 err=- crc32=0xD08008B9
+GetFontData('hmtx', 0, NULL, 0): ret=3938 err=-
+GetFontData('hmtx', 0, buf, 3938): ret=3938 err=- crc32=0x6EC424E7
+GetFontData('cmap', 0, NULL, 0): ret=1238 err=-
+GetFontData('cmap', 0, buf, 1238): ret=1238 err=- crc32=0x90F32A02
+GetFontData('name', 0, NULL, 0): ret=3630 err=-
+GetFontData('name', 0, buf, 3630): ret=3630 err=- crc32=0xDB65332E
+GetFontData('post', 0, NULL, 0): ret=9023 err=-
+GetFontData('post', 0, buf, 9023): ret=9023 err=- crc32=0xC446BF73
+GetFontData('loca', 0, NULL, 0): ret=1978 err=-
+GetFontData('loca', 0, buf, 1978): ret=1978 err=- crc32=0xC309BFA7
+GetFontData('glyf', 0, NULL, 0): ret=53344 err=-
+GetFontData('glyf', 0, buf, 53344): ret=53344 err=- crc32=0x40B3F402
+GetFontData('cvt ', 0, NULL, 0): ret=4 err=-
+GetFontData('cvt ', 0, buf, 4): ret=4 err=- crc32=0x41102EB7
+GetFontData('gasp', 0, NULL, 0): ret=16 err=-
+GetFontData('gasp', 0, buf, 16): ret=16 err=- crc32=0x48981006
+GetFontData('VDMX', 0, NULL, 0): ret=1504 err=-
+GetFontData('VDMX', 0, buf, 1504): ret=1504 err=- crc32=0xAEC3F016
+GetFontData('EBLC', 0, NULL, 0): ret=14940 err=-
+GetFontData('EBLC', 0, buf, 14940): ret=14940 err=- crc32=0x238F4CB8
+GetFontData('EBDT', 0, NULL, 0): ret=35699 err=-
+GetFontData('EBDT', 0, buf, 35699): ret=35699 err=- crc32=0x9A9313ED
+GetFontData('fpgm', 0, NULL, 0): ret=GDI_ERROR err=-
+GetFontData('prep', 0, NULL, 0): ret=GDI_ERROR err=-
+GetFontData('kern', 0, NULL, 0): ret=GDI_ERROR err=-
+GetFontData('hdmx', 0, NULL, 0): ret=GDI_ERROR err=-
+GetFontData(0 (the whole file), 0, NULL, 0): ret=143612 err=-
+GetFontData(0 (the whole file), 0, buf, 143612): ret=143612 err=- crc32=0x86FE87CA
+GetFontData(0 (the whole file), 0, buf, 12): ret=12 err=- buf=000100000014010000040040
+GetFontData('head', 0, buf, 16): ret=16 err=- buf=00010000000000412BCD80775F0F3CF5
+GetFontData('head', 50, buf, 8): ret=4 err=- buf=00000000EEEEEEEE
+GetFontData('head', 54, buf, 4): ret=GDI_ERROR err=- buf=EEEEEEEE
+GetFontData('head', 100, buf, 4): ret=GDI_ERROR err=- buf=EEEEEEEE
+GetFontData('name', 0, buf, 6): ret=6 err=- buf=00000017011A
+GetFontData('hhea', 4, buf, 6): ret=6 err=- buf=0801FE590000
+GetFontData('head', 0, NULL, 0) with the stock SYSTEM_FONT selected: ret=GDI_ERROR err=-
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe glyphs
+== glyphs
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+-- lfHeight -11, lfWeight 400
+U+0041 GetGlyphOutlineW(GGO_METRICS): ret=24 err=-
+  gmBlackBoxX=6 gmBlackBoxY=8 gmptGlyphOrigin=0,8 gmCellIncX=7 gmCellIncY=0
+U+0041 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0041 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 30
+  row  1: 30
+  row  2: 48
+  row  3: 48
+  row  4: 48
+  row  5: FC
+  row  6: 84
+  row  7: 84
+U+0067 GetGlyphOutlineW(GGO_METRICS): ret=24 err=-
+  gmBlackBoxX=5 gmBlackBoxY=8 gmptGlyphOrigin=0,6 gmCellIncX=6 gmCellIncY=0
+U+0067 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0067 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 78
+  row  1: 88
+  row  2: 88
+  row  3: 88
+  row  4: 88
+  row  5: 78
+  row  6: 08
+  row  7: 70
+U+0057 GetGlyphOutlineW(GGO_METRICS): ret=32 err=-
+  gmBlackBoxX=9 gmBlackBoxY=8 gmptGlyphOrigin=0,8 gmCellIncX=10 gmCellIncY=0
+U+0057 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0057 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 8880
+  row  1: 8880
+  row  2: 8880
+  row  3: 5500
+  row  4: 5500
+  row  5: 5500
+  row  6: 2200
+  row  7: 2200
+U+0069 GetGlyphOutlineW(GGO_METRICS): ret=24 err=-
+  gmBlackBoxX=1 gmBlackBoxY=8 gmptGlyphOrigin=0,8 gmCellIncX=2 gmCellIncY=0
+U+0069 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0069 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 80
+  row  1: 00
+  row  2: 80
+  row  3: 80
+  row  4: 80
+  row  5: 80
+  row  6: 80
+  row  7: 80
+U+006A GetGlyphOutlineW(GGO_METRICS): ret=28 err=-
+  gmBlackBoxX=2 gmBlackBoxY=10 gmptGlyphOrigin=0,8 gmCellIncX=3 gmCellIncY=0
+U+006A GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=40 err=-
+U+006A GetGlyphOutlineW(GGO_BITMAP, 40, buf): ret=40 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 40
+  row  1: 00
+  row  2: 40
+  row  3: 40
+  row  4: 40
+  row  5: 40
+  row  6: 40
+  row  7: 40
+  row  8: 40
+  row  9: 80
+U+0079 GetGlyphOutlineW(GGO_METRICS): ret=24 err=-
+  gmBlackBoxX=5 gmBlackBoxY=8 gmptGlyphOrigin=0,6 gmCellIncX=6 gmCellIncY=0
+U+0079 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0079 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 88
+  row  1: 88
+  row  2: 50
+  row  3: 50
+  row  4: 20
+  row  5: 20
+  row  6: 40
+  row  7: 40
+U+0030 GetGlyphOutlineW(GGO_METRICS): ret=24 err=-
+  gmBlackBoxX=5 gmBlackBoxY=8 gmptGlyphOrigin=0,8 gmCellIncX=6 gmCellIncY=0
+U+0030 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0030 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 70
+  row  1: 88
+  row  2: 88
+  row  3: 88
+  row  4: 88
+  row  5: 88
+  row  6: 88
+  row  7: 70
+U+0040 GetGlyphOutlineW(GGO_METRICS): ret=36 err=-
+  gmBlackBoxX=9 gmBlackBoxY=9 gmptGlyphOrigin=0,8 gmCellIncX=10 gmCellIncY=0
+U+0040 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=36 err=-
+U+0040 GetGlyphOutlineW(GGO_BITMAP, 36, buf): ret=36 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 3E00
+  row  1: 4100
+  row  2: 9C80
+  row  3: A480
+  row  4: A480
+  row  5: A480
+  row  6: 9F00
+  row  7: 4000
+  row  8: 3C00
+U+002E GetGlyphOutlineW(GGO_METRICS): ret=20 err=-
+  gmBlackBoxX=1 gmBlackBoxY=2 gmptGlyphOrigin=1,2 gmCellIncX=4 gmCellIncY=0
+U+002E GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=8 err=-
+U+002E GetGlyphOutlineW(GGO_BITMAP, 8, buf): ret=8 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 80
+  row  1: 80
+U+0020 GetGlyphOutlineW(GGO_METRICS): ret=20 err=-
+  gmBlackBoxX=1 gmBlackBoxY=1 gmptGlyphOrigin=0,0 gmCellIncX=3 gmCellIncY=0
+U+0020 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=0 err=-
+U+00E9 GetGlyphOutlineW(GGO_METRICS): ret=28 err=-
+  gmBlackBoxX=5 gmBlackBoxY=9 gmptGlyphOrigin=0,9 gmCellIncX=6 gmCellIncY=0
+U+00E9 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=36 err=-
+U+00E9 GetGlyphOutlineW(GGO_BITMAP, 36, buf): ret=36 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 10
+  row  1: 20
+  row  2: 00
+  row  3: 70
+  row  4: 88
+  row  5: F8
+  row  6: 80
+  row  7: 88
+  row  8: 70
+U+0416 GetGlyphOutlineW(GGO_METRICS): ret=32 err=-
+  gmBlackBoxX=9 gmBlackBoxY=8 gmptGlyphOrigin=0,8 gmCellIncX=10 gmCellIncY=0
+U+0416 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+0416 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 8880
+  row  1: 4900
+  row  2: 2A00
+  row  3: 1C00
+  row  4: 2A00
+  row  5: 4900
+  row  6: 4900
+  row  7: 8880
+U+4E00 GetGlyphOutlineW(GGO_METRICS): ret=32 err=-
+  gmBlackBoxX=9 gmBlackBoxY=8 gmptGlyphOrigin=1,8 gmCellIncX=11 gmCellIncY=0
+U+4E00 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=32 err=-
+U+4E00 GetGlyphOutlineW(GGO_BITMAP, 32, buf): ret=32 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 8080
+  row  1: 8080
+  row  2: 8080
+  row  3: 8080
+  row  4: 8080
+  row  5: 8080
+  row  6: 8080
+  row  7: FF80
+-- lfHeight -24, lfWeight 400
+U+0041 GetGlyphOutlineW(GGO_METRICS): ret=52 err=-
+  gmBlackBoxX=15 gmBlackBoxY=18 gmptGlyphOrigin=0,18 gmCellIncX=14 gmCellIncY=0
+U+0041 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+0041 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 0380
+  row  1: 0380
+  row  2: 0780
+  row  3: 07C0
+  row  4: 0EC0
+  row  5: 0CC0
+  row  6: 0CE0
+  row  7: 1C60
+  row  8: 1860
+  row  9: 1870
+  row 10: 3830
+  row 11: 3FF0
+  row 12: 3FF8
+  row 13: 7018
+  row 14: 6018
+  row 15: 601C
+  row 16: E00C
+  row 17: C00C
+U+0067 GetGlyphOutlineW(GGO_METRICS): ret=56 err=-
+  gmBlackBoxX=11 gmBlackBoxY=19 gmptGlyphOrigin=1,14 gmCellIncX=13 gmCellIncY=0
+U+0067 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=76 err=-
+U+0067 GetGlyphOutlineW(GGO_BITMAP, 76, buf): ret=76 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 0C00
+  row  1: 3FE0
+  row  2: 73E0
+  row  3: E1E0
+  row  4: C0E0
+  row  5: C0E0
+  row  6: C0E0
+  row  7: C0E0
+  row  8: C0E0
+  row  9: C0E0
+  row 10: E0E0
+  row 11: 61E0
+  row 12: 7FE0
+  row 13: 1CE0
+  row 14: 00C0
+  row 15: 00C0
+  row 16: 41C0
+  row 17: 7F80
+  row 18: 3E00
+U+0057 GetGlyphOutlineW(GGO_METRICS): ret=72 err=-
+  gmBlackBoxX=21 gmBlackBoxY=18 gmptGlyphOrigin=0,18 gmCellIncX=22 gmCellIncY=0
+U+0057 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+0057 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 007000
+  row  1: 607018
+  row  2: 607818
+  row  3: 607838
+  row  4: 707830
+  row  5: 30D830
+  row  6: 30CC30
+  row  7: 30CC70
+  row  8: 38CC60
+  row  9: 198C60
+  row 10: 198460
+  row 11: 1986E0
+  row 12: 1D86C0
+  row 13: 0D06C0
+  row 14: 0F02C0
+  row 15: 0F03C0
+  row 16: 0F0380
+  row 17: 060380
+U+0069 GetGlyphOutlineW(GGO_METRICS): ret=36 err=-
+  gmBlackBoxX=3 gmBlackBoxY=18 gmptGlyphOrigin=1,18 gmCellIncX=6 gmCellIncY=0
+U+0069 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+0069 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: E0
+  row  1: E0
+  row  2: E0
+  row  3: 00
+  row  4: 00
+  row  5: E0
+  row  6: E0
+  row  7: E0
+  row  8: E0
+  row  9: E0
+  row 10: E0
+  row 11: E0
+  row 12: E0
+  row 13: E0
+  row 14: E0
+  row 15: E0
+  row 16: E0
+  row 17: E0
+U+006A GetGlyphOutlineW(GGO_METRICS): ret=40 err=-
+  gmBlackBoxX=5 gmBlackBoxY=23 gmptGlyphOrigin=-1,18 gmCellIncX=7 gmCellIncY=0
+U+006A GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=92 err=-
+U+006A GetGlyphOutlineW(GGO_BITMAP, 92, buf): ret=92 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 18
+  row  1: 18
+  row  2: 00
+  row  3: 00
+  row  4: 00
+  row  5: 18
+  row  6: 18
+  row  7: 18
+  row  8: 18
+  row  9: 18
+  row 10: 18
+  row 11: 18
+  row 12: 18
+  row 13: 18
+  row 14: 18
+  row 15: 18
+  row 16: 18
+  row 17: 18
+  row 18: 18
+  row 19: 18
+  row 20: 30
+  row 21: F0
+  row 22: E0
+U+0079 GetGlyphOutlineW(GGO_METRICS): ret=52 err=-
+  gmBlackBoxX=12 gmBlackBoxY=18 gmptGlyphOrigin=0,13 gmCellIncX=12 gmCellIncY=0
+U+0079 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+0079 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: E070
+  row  1: 6060
+  row  2: 6060
+  row  3: 70E0
+  row  4: 30C0
+  row  5: 30C0
+  row  6: 1980
+  row  7: 1980
+  row  8: 1980
+  row  9: 0F00
+  row 10: 0F00
+  row 11: 0700
+  row 12: 0600
+  row 13: 0600
+  row 14: 0600
+  row 15: 0C00
+  row 16: 7C00
+  row 17: 7800
+U+0030 GetGlyphOutlineW(GGO_METRICS): ret=52 err=-
+  gmBlackBoxX=11 gmBlackBoxY=18 gmptGlyphOrigin=1,18 gmCellIncX=13 gmCellIncY=0
+U+0030 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+0030 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 0F00
+  row  1: 3F80
+  row  2: 71C0
+  row  3: 60C0
+  row  4: 60E0
+  row  5: E060
+  row  6: C060
+  row  7: C060
+  row  8: C060
+  row  9: C060
+  row 10: C060
+  row 11: C060
+  row 12: E060
+  row 13: E0E0
+  row 14: 60E0
+  row 15: 60C0
+  row 16: 3FC0
+  row 17: 1F80
+U+0040 GetGlyphOutlineW(GGO_METRICS): ret=80 err=-
+  gmBlackBoxX=19 gmBlackBoxY=21 gmptGlyphOrigin=2,18 gmCellIncX=22 gmCellIncY=0
+U+0040 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=84 err=-
+U+0040 GetGlyphOutlineW(GGO_BITMAP, 84, buf): ret=84 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 03F000
+  row  1: 0FFC00
+  row  2: 1C0600
+  row  3: 300300
+  row  4: 600180
+  row  5: 43ECC0
+  row  6: C7FCC0
+  row  7: CE1C40
+  row  8: 8C0C60
+  row  9: 8C0C60
+  row 10: 8C0C60
+  row 11: 8C0C60
+  row 12: 8C1CC0
+  row 13: C73CC0
+  row 14: C3EF80
+  row 15: 400F00
+  row 16: 600000
+  row 17: 380100
+  row 18: 1E0780
+  row 19: 07FE00
+  row 20: 006000
+U+002E GetGlyphOutlineW(GGO_METRICS): ret=20 err=-
+  gmBlackBoxX=3 gmBlackBoxY=3 gmptGlyphOrigin=2,3 gmCellIncX=7 gmCellIncY=0
+U+002E GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=12 err=-
+U+002E GetGlyphOutlineW(GGO_BITMAP, 12, buf): ret=12 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: E0
+  row  1: E0
+  row  2: E0
+U+0020 GetGlyphOutlineW(GGO_METRICS): ret=20 err=-
+  gmBlackBoxX=1 gmBlackBoxY=1 gmptGlyphOrigin=0,0 gmCellIncX=7 gmCellIncY=0
+U+0020 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=0 err=-
+U+00E9 GetGlyphOutlineW(GGO_METRICS): ret=56 err=-
+  gmBlackBoxX=11 gmBlackBoxY=20 gmptGlyphOrigin=1,20 gmCellIncX=13 gmCellIncY=0
+U+00E9 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=80 err=-
+U+00E9 GetGlyphOutlineW(GGO_BITMAP, 80, buf): ret=80 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 01C0
+  row  1: 0380
+  row  2: 0300
+  row  3: 0600
+  row  4: 0E00
+  row  5: 0000
+  row  6: 0000
+  row  7: 3F80
+  row  8: 79C0
+  row  9: 60E0
+  row 10: C060
+  row 11: C060
+  row 12: FFE0
+  row 13: FFE0
+  row 14: C000
+  row 15: C000
+  row 16: E000
+  row 17: 6020
+  row 18: 7FE0
+  row 19: 1FC0
+U+0416 GetGlyphOutlineW(GGO_METRICS): ret=68 err=-
+  gmBlackBoxX=21 gmBlackBoxY=17 gmptGlyphOrigin=0,17 gmCellIncX=21 gmCellIncY=0
+U+0416 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=68 err=-
+U+0416 GetGlyphOutlineW(GGO_BITMAP, 68, buf): ret=68 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: 703030
+  row  1: 383060
+  row  2: 1C30E0
+  row  3: 0C31C0
+  row  4: 063380
+  row  5: 073700
+  row  6: 03B600
+  row  7: 01FE00
+  row  8: 03BE00
+  row  9: 073700
+  row 10: 073380
+  row 11: 0E33C0
+  row 12: 1C31C0
+  row 13: 1C30E0
+  row 14: 383070
+  row 15: 703070
+  row 16: E03038
+U+4E00 GetGlyphOutlineW(GGO_METRICS): ret=72 err=-
+  gmBlackBoxX=18 gmBlackBoxY=18 gmptGlyphOrigin=3,18 gmCellIncX=24 gmCellIncY=0
+U+4E00 GetGlyphOutlineW(GGO_BITMAP, 0, NULL): ret=72 err=-
+U+4E00 GetGlyphOutlineW(GGO_BITMAP, 72, buf): ret=72 err=-; its metrics the same as GGO_METRICS's: yes
+  row  0: FFFFC0
+  row  1: FFFFC0
+  row  2: C000C0
+  row  3: C000C0
+  row  4: C000C0
+  row  5: C000C0
+  row  6: C000C0
+  row  7: C000C0
+  row  8: C000C0
+  row  9: C000C0
+  row 10: C000C0
+  row 11: C000C0
+  row 12: C000C0
+  row 13: C000C0
+  row 14: C000C0
+  row 15: C000C0
+  row 16: FFFFC0
+  row 17: FFFFC0
+-- GetGlyphOutlineA, lfHeight -11 and -24, lfWeight 400
+'A' GetGlyphOutlineA(GGO_METRICS): ret=24 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'A' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=32 err=-
+'A' GetGlyphOutlineA(GGO_BITMAP, 32, buf): ret=32 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+'g' GetGlyphOutlineA(GGO_METRICS): ret=24 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'g' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=32 err=-
+'g' GetGlyphOutlineA(GGO_BITMAP, 32, buf): ret=32 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+'@' GetGlyphOutlineA(GGO_METRICS): ret=36 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'@' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=36 err=-
+'@' GetGlyphOutlineA(GGO_BITMAP, 36, buf): ret=36 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+'A' GetGlyphOutlineA(GGO_METRICS): ret=52 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'A' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=72 err=-
+'A' GetGlyphOutlineA(GGO_BITMAP, 72, buf): ret=72 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+'g' GetGlyphOutlineA(GGO_METRICS): ret=56 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'g' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=76 err=-
+'g' GetGlyphOutlineA(GGO_BITMAP, 76, buf): ret=76 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+'@' GetGlyphOutlineA(GGO_METRICS): ret=80 err=-
+  ret and GLYPHMETRICS the same as GetGlyphOutlineW's: yes
+'@' GetGlyphOutlineA(GGO_BITMAP, 0, NULL): ret=84 err=-
+'@' GetGlyphOutlineA(GGO_BITMAP, 84, buf): ret=84 err=-
+  ret, GLYPHMETRICS and rows the same as GetGlyphOutlineW's: yes
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe mapper
+== mapper
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+CreateFontW(-11, "MS Shell Dlg 2"): non-NULL yes err=-
+  GetTextFaceW: ret=15 err=- face="MS Shell Dlg 2"
+CreateFontA(-11, "MS Shell Dlg 2"): non-NULL yes err=-
+  GetTextFaceA: ret=14 err=- face="MS Shell Dlg 2"
+CreateFontW(-11, "MS Shell Dlg"): non-NULL yes err=-
+  GetTextFaceW: ret=13 err=- face="MS Shell Dlg"
+CreateFontA(-11, "MS Shell Dlg"): non-NULL yes err=-
+  GetTextFaceA: ret=12 err=- face="MS Shell Dlg"
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0
+>>> ttfont.exe pixels
+== pixels
+AddFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+-- lfHeight -11, lfWeight 400, NONANTIALIASED_QUALITY: 64x18, the text at 2,2
+CreateCompatibleDC(screen): non-NULL yes err=-
+CreateDIBSection(64x18, 32 bits, top-down): non-NULL yes bits non-NULL yes err=8
+SelectObject(mem, the DIB section): previous non-NULL yes err=-
+PatBlt(mem, 0, 0, 64, 18, WHITENESS): ret=1 err=-
+CreateFontIndirectW: non-NULL yes err=-
+SetTextColor(mem, black): previous=0x000000 err=-
+SetBkMode(mem, TRANSPARENT): previous=2 err=-
+TextOutW(mem, 2, 2, L"Wg0@ Hij!", 9): ret=1 err=-
+row  0: ................................................................
+row  1: ................................................................
+row  2: ................................................................
+row  3: ................................................................
+row  4: ................................................................
+row  5: ..#...#...#........###....#####......#....#.#..#..#.............
+row  6: ..#...#...#.......#...#..#.....#.....#....#.......#.............
+row  7: ..#...#...#..####.#...#.#..###..#....#....#.#..#..#.............
+row  8: ...#.#.#.#..#...#.#...#.#.#..#..#....######.#..#..#.............
+row  9: ...#.#.#.#..#...#.#...#.#.#..#..#....#....#.#..#..#.............
+row 10: ...#.#.#.#..#...#.#...#.#.#..#..#....#....#.#..#..#.............
+row 11: ....#...#...#...#.#...#.#..#####.....#....#.#..#................
+row 12: ....#...#....####..###...#...........#....#.#..#..#.............
+row 13: ................#.........####.................#................
+row 14: .............###..............................#.................
+row 15: ................................................................
+row 16: ................................................................
+row 17: ................................................................
+GetPixel: pixels neither black nor white: 0
+DeleteObject(the DIB section): ret=1 err=-
+DeleteDC(mem): ret=1 err=-
+-- lfHeight -24, lfWeight 400, NONANTIALIASED_QUALITY: 128x34, the text at 2,2
+CreateCompatibleDC(screen): non-NULL yes err=-
+CreateDIBSection(128x34, 32 bits, top-down): non-NULL yes bits non-NULL yes err=8
+SelectObject(mem, the DIB section): previous non-NULL yes err=-
+PatBlt(mem, 0, 0, 128, 34, WHITENESS): ret=1 err=-
+CreateFontIndirectW: non-NULL yes err=-
+SetTextColor(mem, black): previous=0x000000 err=-
+SetBkMode(mem, TRANSPARENT): previous=2 err=-
+TextOutW(mem, 2, 2, L"Wg0@ Hij!", 9): ret=1 err=-
+row  0: ................................................................................................................................
+row  1: ................................................................................................................................
+row  2: ................................................................................................................................
+row  3: ................................................................................................................................
+row  4: ................................................................................................................................
+row  5: ................................................................................................................................
+row  6: ................................................................................................................................
+row  7: ................................................................................................................................
+row  8: ...........###............................####............######................................###....##......##...............
+row  9: ...##......###.......##.................#######.........##########...............##........##...###....##......##...............
+row 10: ...##......####......##................###...###.......###.......##..............##........##...###............##...............
+row 11: ...##......####.....###................##.....##......##..........##.............##........##..................##...............
+row 12: ...###.....####.....##.......##........##.....###....##............##............##........##..................##...............
+row 13: ....##....##.##.....##.....#########..###......##....#....#####.##..##...........##........##...###....##......##...............
+row 14: ....##....##..##....##....###..#####..##.......##...##...#########..##...........##........##...###....##......##...............
+row 15: ....##....##..##...###...###....####..##.......##...##..###....###...#...........############...###....##......##...............
+row 16: ....###...##..##...##....##......###..##.......##...#...##......##...##..........############...###....##......##...............
+row 17: .....##..##...##...##....##......###..##.......##...#...##......##...##..........##........##...###....##......##...............
+row 18: .....##..##....#...##....##......###..##.......##...#...##......##...##..........##........##...###....##......##...............
+row 19: .....##..##....##.###....##......###..##.......##...#...##......##...##..........##........##...###....##......##...............
+row 20: .....###.##....##.##.....##......###..###......##...#...##.....###..##...........##........##...###....##.......................
+row 21: ......##.#.....##.##.....##......###..###.....###...##...###..####..##...........##........##...###....##.......................
+row 22: ......####......#.##.....###.....###...##.....###...##....#####.#####............##........##...###....##.......................
+row 23: ......####......####......##....####...##.....##.....#..........####.............##........##...###....##......##...............
+row 24: ......####......###.......##########....########.....##..........................##........##...###....##......##...............
+row 25: .......##.......###.........###..###.....######.......###..........#.............##........##...###....##......##...............
+row 26: .................................##....................####......####..................................##.......................
+row 27: .................................##......................##########....................................##.......................
+row 28: ..........................#.....###..........................##.......................................##........................
+row 29: ..........................########..................................................................####........................
+row 30: ...........................#####....................................................................###.........................
+row 31: ................................................................................................................................
+row 32: ................................................................................................................................
+row 33: ................................................................................................................................
+GetPixel: pixels neither black nor white: 0
+DeleteObject(the DIB section): ret=1 err=-
+DeleteDC(mem): ret=1 err=-
+RemoveFontResourceExW(L"f2ktahom.ttf", FR_PRIVATE, 0): ret=1 err=2
+ttfont: done
+<<< exit code=0

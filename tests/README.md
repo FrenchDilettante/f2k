@@ -18,7 +18,7 @@ tests/
 │               # shutparm
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess
-├── gdi32/      # guidc, gditext
+├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -175,6 +175,12 @@ The fixtures:
   Gated.
 - `hellogui` (user32) - the GUI rung end to end: registers a window class, creates and shows a window, paints "Hello, world!" once with `TextOut` in WM_PAINT, then closes itself (WM_CLOSE, WM_DESTROY's PostQuitMessage, GetMessage's 0) and exits 0; the first test to import user32.dll and gdi32.dll.
   Its one block (`hellogui.exe`, no arguments) was captured by hand on the real machine — the exit code 0 alone: a self-closing GUI program's screen cannot be captured — and it boots under FiSH (`boot_under`), which sets the graphics mode before the program runs; its boot's screen is saved under `target/qemu/screens/` like any `screenshots` fixture's (`screenshots`).
+- `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
+  The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
+  Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.
+  The sections: `AddFontResourceExA`/`W` and `RemoveFontResourceExA`/`W` with `FR_PRIVATE`, and `AddFontResourceA`/`W` and `RemoveFontResourceA`/`W` without it (`load`); `CreateFontIndirectA`/`W` and `CreateFontA`/`W` at lfHeight -11, -13, -16, -24 and +16, weights 400 and 700, `GetObjectA`/`W` and `GetTextFaceA`/`W`, and an unknown face's fallback as a relation (`create`); every `TEXTMETRIC` field and `GetOutlineTextMetricsA`/`W` (`metrics`); `GetCharWidth32A`/`W`, `GetCharABCWidthsA`/`W` and `GetTextExtentPoint32A`/`W` (`widths`); `EnumFontFamiliesExA`/`W` and `EnumFontFamiliesA`/`W` for the copy's face alone (`enum`); `GetFontData`'s tables, the whole file and partial reads, as sizes, bytes and CRC-32s (`data`); `GetGlyphOutlineA`/`W` with `GGO_METRICS` and `GGO_BITMAP`, the rows in hex (`glyphs`); the faces "MS Shell Dlg 2" and "MS Shell Dlg" resolve to (`mapper`); and `TextOutW` into a memory DC's DIB section, read back with `GetPixel` as rows of `#` and `.` (`pixels`).
+  F2K's boot adds the font to `\CORPUS` beside the program (`data_files`).
+  Not gated: every section is pending until F2K serves TrueType fonts, `pixels` until memory DCs and bitmaps exist too.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
@@ -229,6 +235,7 @@ The screenshots are recorded only, never compared.
 The batch boot leaves those blocks out, and each is reported as skipped with its reason, never compared.
 A section both pending and skipped is an error.
 `system_programs` names F2K's own programs, built by `make userland` from `userland/<name>`, that the fixture's boot needs in `\WINNT\system32` and the disk the tests boot leaves out (`system_programs = ["cmd"]`, for a section running the machine's own `cmd.exe`): its batch boots a copy of the disk with them added (`f2kboot.corpus_disk`), all its blocks in that one boot.
+`data_files` names files of the fixture's own directory that its program reads beside it, as on the real machine (`data_files = ["f2ktahom.ttf"]`, a font the program loads): its batch boots a copy of the disk with them in `\CORPUS` (`f2kboot.corpus_disk`), so the disk the tests boot carries none of them.
 `harness/test_repository.py` checks each name is a program the Makefile builds and the base disk does not carry.
 `boot_under` names one program on the boot volume, with no arguments (`boot_under = "WINNT\\system32\\fish.exe"`): the batch's command line wraps each of the fixture's block commands as `<boot_under> \\CORPUS\\<command>` (the corpus path rooted, so CreateProcess finds it from the program's own directory), so the boot runs that program first — FiSH sets the graphics mode before the block's program runs — and the process ends with the block's exit code, which is what the block compares (`f2kboot.block_command`, where the batch command line is built and where the run is judged).
 `harness/test_repository.py` checks that only a sectioned fixture declares it and that its value is one program path with no arguments.

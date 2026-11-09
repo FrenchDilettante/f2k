@@ -654,11 +654,34 @@ def test_system_programs_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, mo
         f2kboot.corpus_disk(build, "secfake", variant)
     (built / "cmd.exe").write_bytes(b"MZ")
     assert f2kboot.corpus_disk(build, "secfake", variant) == variant
-    assert copies == [([built / "cmd.exe"], variant, {})]
+    assert copies == [([built / "cmd.exe"], variant, {"corpus": []})]
     for wrong in ('"cmd"', '[1]', '[""]', '["cmd", "cmd"]'):
         declared.write_text(f'kind = "sectioned"\nsystem_programs = {wrong}\n')
         with pytest.raises(ValueError, match="system_programs"):
             f2kboot.system_programs("secfake")
+
+
+def test_data_files_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, monkeypatch):
+    """A sectioned fixture declaring `data_files` boots a copy of the disk with those files of its
+    directory added to \\CORPUS, and no program added; anything but a list of distinct names is
+    refused."""
+    directory = tmp_path / "gdi32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    copies = []
+    monkeypatch.setattr(f2kboot, "disk_with_programs",
+                        lambda build, programs, path, **rest: copies.append((programs, path, rest)) or path)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    variant = tmp_path / "variant.img"
+
+    declared.write_text('kind = "sectioned"\ndata_files = ["f2ktahom.ttf"]\n')
+    assert f2kboot.corpus_disk(build, "secfake", variant) == variant
+    assert copies == [([], variant, {"corpus": [directory / "f2ktahom.ttf"]})]
+    for wrong in ('"f2ktahom.ttf"', '[1]', '[""]', '["a.ttf", "a.ttf"]'):
+        declared.write_text(f'kind = "sectioned"\ndata_files = {wrong}\n')
+        with pytest.raises(ValueError, match="data_files"):
+            f2kboot.data_files("secfake")
 
 
 # --- Stale build directories and logs are pruned-----------------------------------------------

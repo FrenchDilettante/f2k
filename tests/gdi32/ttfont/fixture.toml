@@ -1,0 +1,85 @@
+# ttfont: one test per block of the real-machine capture (output.txt); see tests/README.md. Its font,
+# f2ktahom.ttf, is Wine's Tahoma (fonts/tahoma.ttf) renamed "F2K Tahoma" by scripts/font_rename.py:
+# it sits beside the program on the real machine, and goes into \CORPUS beside it for F2K's boot
+# (data_files). No handle or address prints; the font's metrics, widths, tables and glyphs do.
+description = "ttfont - a TrueType font file the program loads itself (f2ktahom.ttf, Wine's Tahoma renamed \"F2K Tahoma\"): AddFontResourceExA/W and RemoveFontResourceExA/W with FR_PRIVATE, AddFontResourceA/W and RemoveFontResourceA/W; CreateFontIndirectA/W and CreateFontA/W at lfHeight -11, -13, -16, -24 and +16, weights 400 and 700, GetObjectA/W and GetTextFaceA/W, an unknown face's fallback; GetTextMetricsA/W and GetOutlineTextMetricsA/W; GetCharWidth32A/W, GetCharABCWidthsA/W and GetTextExtentPoint32A/W; EnumFontFamiliesExA/W and EnumFontFamiliesA/W for the face alone; GetFontData's tables, whole file and partial reads; GetGlyphOutlineA/W with GGO_METRICS and GGO_BITMAP; the dialog faces MS Shell Dlg 2 and MS Shell Dlg; TextOutW into a memory DC's DIB section, read back with GetPixel."
+kind = "sectioned"
+data_files = ["f2ktahom.ttf"]
+
+# Not gated: F2K serves no TrueType font yet. Every section is on the work list.
+[pending]
+load = "AddFontResourceA/W, AddFontResourceExA/W and their removals not yet implemented: win32k loads no font file"
+create = "CreateFontIndirectA/W, CreateFontA/W, GetObjectA/W of a font and GetTextFaceA/W not yet implemented"
+metrics = "no TrueType font: GetTextMetricsA/W answer the built-in 8x16 font's, and GetOutlineTextMetricsA/W are not yet implemented"
+widths = "GetCharWidth32A/W and GetCharABCWidthsA/W not yet implemented, and the text extents are the built-in 8x16 font's"
+enum = "EnumFontFamiliesA/W and EnumFontFamiliesExA/W not yet implemented"
+data = "GetFontData not yet implemented: no TrueType table reader"
+glyphs = "GetGlyphOutlineA/W not yet implemented: no TrueType rasteriser"
+mapper = "the font mapper and its face substitutes (MS Shell Dlg 2, MS Shell Dlg) not yet implemented"
+pixels = "memory DCs and bitmaps (CreateCompatibleDC, CreateDIBSection, PatBlt on them) not yet implemented, nor TrueType text output"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the screen DC,
+# SelectObject of a font, the private load and removal every section but load makes).
+load = [
+    "gdi32.AddFontResourceExA",
+    "gdi32.AddFontResourceExW",
+    "gdi32.RemoveFontResourceExA",
+    "gdi32.RemoveFontResourceExW",
+    "gdi32.AddFontResourceA",
+    "gdi32.AddFontResourceW",
+    "gdi32.RemoveFontResourceA",
+    "gdi32.RemoveFontResourceW",
+]
+create = [
+    "gdi32.CreateFontIndirectA",
+    "gdi32.CreateFontIndirectW",
+    "gdi32.CreateFontA",
+    "gdi32.CreateFontW",
+    "gdi32.GetObjectA",
+    "gdi32.GetObjectW",
+    "gdi32.GetTextFaceA",
+    "gdi32.GetTextFaceW",
+]
+metrics = [
+    "gdi32.GetTextMetricsA",
+    "gdi32.GetTextMetricsW",
+    "gdi32.GetOutlineTextMetricsA",
+    "gdi32.GetOutlineTextMetricsW",
+]
+widths = [
+    "gdi32.GetCharWidth32A",
+    "gdi32.GetCharWidth32W",
+    "gdi32.GetCharABCWidthsA",
+    "gdi32.GetCharABCWidthsW",
+    "gdi32.GetTextExtentPoint32A",
+    "gdi32.GetTextExtentPoint32W",
+]
+enum = [
+    "gdi32.EnumFontFamiliesExA",
+    "gdi32.EnumFontFamiliesExW",
+    "gdi32.EnumFontFamiliesA",
+    "gdi32.EnumFontFamiliesW",
+]
+data = ["gdi32.GetFontData"]
+glyphs = ["gdi32.GetGlyphOutlineA", "gdi32.GetGlyphOutlineW"]
+mapper = [
+    "gdi32.CreateFontA",
+    "gdi32.CreateFontW",
+    "gdi32.GetTextFaceA",
+    "gdi32.GetTextFaceW",
+]
+pixels = [
+    "gdi32.CreateCompatibleDC",
+    "gdi32.CreateDIBSection",
+    "gdi32.SelectObject",
+    "gdi32.PatBlt",
+    "gdi32.CreateFontIndirectW",
+    "gdi32.SetTextColor",
+    "gdi32.SetBkMode",
+    "gdi32.TextOutW",
+    "gdi32.GetPixel",
+    "gdi32.DeleteObject",
+    "gdi32.DeleteDC",
+]

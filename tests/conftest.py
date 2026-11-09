@@ -217,8 +217,9 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
     block of the function this session runs, in order, each its own process, run from the corpus's
     directory as its `block_command` (under the fixture's `boot_under` program where it declares
-    one, a script fixture's on a copy of the disk with cmd.exe and the script there, a
-    fixture declaring `system_programs` on a copy with those programs added: `f2kboot.corpus_disk`);
+    one, a script fixture's on a copy of the disk with cmd.exe and the script there, a fixture
+    declaring `system_programs` or `data_files` on a copy with those programs or files added:
+    `f2kboot.corpus_disk`);
     each block's test then reads its own part of that boot's log. It fails
     unless the program's output equals the block line for line (masks applied), the process ends
     with the block's exit code, and its teardown audits clean; a block the boot never reached fails
@@ -237,7 +238,8 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
                 for section, steps in f2kboot.declaration(each.fixture).get("keys", {}).items():
                     keys[section] = f2kboot.key_steps(section, steps)
             # A script fixture boots a copy of the disk with cmd.exe and its script in \CORPUS, and a
-            # sectioned one declaring `system_programs` a copy with them in \WINNT\system32.
+            # sectioned one declaring `system_programs` a copy with them in \WINNT\system32, and
+            # its `data_files` in \CORPUS.
             try:
                 variant = f2kboot.corpus_disk(build, captured.fixture,
                                               f2kboot.WORK / "variants" / f"{name}.img")

@@ -37,7 +37,7 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "screenshots", "keys", "system_programs", "boot_under"}
+                    "screenshots", "keys", "system_programs", "boot_under", "data_files"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
 SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
@@ -159,6 +159,23 @@ def test_boot_under_is_one_program_path_with_no_arguments(fixture: str):
     assert not any(character.isspace() for character in under), f"{under!r}: boot_under names no arguments"
 
 
+# The fixtures declaring `data_files`.
+ADDING_FILES = [name for name in DECLARED if "data_files" in f2kboot.declaration(name)]
+
+
+@pytest.mark.parametrize("fixture", ADDING_FILES)
+def test_data_files_are_the_fixtures_own(fixture: str):
+    """A sectioned fixture's `data_files` names files in its own directory (beside its program, as
+    on the real machine), neither programs nor DLLs (the disk build places those already)."""
+    assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture adds files"
+    files = f2kboot.data_files(fixture)
+    assert files, "an empty data_files: leave it out"
+    for path in files:
+        assert path.parent == f2kboot.fixture_directory(fixture), f"{path.name}: not a file of its own directory"
+        assert path.is_file(), f"{path.name} is missing"
+        assert path.suffix.lower() not in (".exe", ".dll"), f"{path.name}: the disk build places it already"
+
+
 @pytest.mark.parametrize("fixture", SCRIPTS)
 def test_script_fixtures_hold_their_script(fixture: str):
     """A script fixture sits in the scripts' group (tests/cmd/<name>/) and holds its script,
@@ -254,7 +271,8 @@ def test_the_corpus_names_are_8_3_and_distinct():
     and the DLLs beside it, and the DLLs in its subdirectories) in \\CORPUS, by their upper-cased
     names (the Makefile's corpus loop): each must be an 8.3 name, and no two may meet, or one would
     replace another. An awaited fixture's program counts by its name already. A script fixture's
-    boot puts its script there, and cmd.exe beside it (`f2kboot.script_disk`)."""
+    boot puts its script there, and cmd.exe beside it (`f2kboot.script_disk`), and a sectioned
+    fixture's boot its `data_files` (`f2kboot.corpus_disk`)."""
     def is_8_3(part: str) -> bool:
         stem, dot, extension = part.partition(".")
         return 1 <= len(stem) <= 8 and len(extension) <= 3 and "." not in extension and " " not in part
@@ -269,7 +287,7 @@ def test_the_corpus_names_are_8_3_and_distinct():
             names = {f"{fixture}.exe"} | {
                 path.relative_to(directory).as_posix()
                 for pattern in ("*.exe", "*.dll", "*/*.dll") for path in directory.glob(pattern)
-            }
+            } | {path.name for path in f2kboot.data_files(fixture)}
         else:
             continue
         for name in sorted(names):

@@ -870,7 +870,7 @@ def disk_with_programs(build: Build, programs: list[Path], path: Path, *,
     `corpus` go to \\CORPUS, by their upper-cased names, as the disk build places the corpus's."""
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(build.disk, path)
-    copies = [[*map(str, programs), SYSTEM_DIRECTORY]]
+    copies = [[*map(str, programs), SYSTEM_DIRECTORY]] if programs else []
     copies += [[str(file), f"::/{CORPUS_DIRECTORY}/{file.name.upper()}"] for file in corpus]
     try:
         for copy in copies:
@@ -1412,7 +1412,9 @@ def script_masks(fixture: str, declared: dict, captured: list[Block]) -> dict[st
 #
 # A batch boots the disk the tests boot, unless its fixture needs more on it: a script fixture boots
 # `script_disk`, and a sectioned fixture declaring `system_programs` boots a copy with those of
-# F2K's own programs added to \WINNT\system32 (cmd.exe, for a section running the machine's own).
+# F2K's own programs added to \WINNT\system32 (cmd.exe, for a section running the machine's own),
+# and one declaring `data_files` a copy with those files of its directory added to \CORPUS beside
+# its program (a font file it loads, which sits beside it on the real machine).
 
 
 def system_programs(fixture: str) -> list[Path]:
@@ -1441,19 +1443,31 @@ def boot_under(fixture: str) -> str | None:
     return under
 
 
+def data_files(fixture: str) -> list[Path]:
+    """The files of a sectioned fixture's directory its declaration adds to \\CORPUS for its boot,
+    its `data_files` (a list of file names, `["f2ktahom.ttf"]`), by path; none by default."""
+    names = declaration(fixture).get("data_files", [])
+    if not isinstance(names, list) or not all(isinstance(name, str) and name for name in names):
+        raise ValueError(f"{fixture}: data_files is a list of file names, [\"f2ktahom.ttf\"]")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{fixture}: data_files names a file twice: {names}")
+    return [fixture_directory(fixture) / name for name in names]
+
+
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
-    fixture's (`script_disk`) or a sectioned one's with its `system_programs` added; None for the
-    disk the tests boot."""
+    fixture's (`script_disk`) or a sectioned one's with its `system_programs` and `data_files`
+    added; None for the disk the tests boot."""
     if declaration(fixture).get("kind") == "script":
         return script_disk(build, fixture, path)
     programs = system_programs(fixture)
-    if not programs:
+    files = data_files(fixture)
+    if not programs and not files:
         return None
     missing = [program.name for program in programs if not program.exists()]
     if missing:
         raise RuntimeError(f"{', '.join(missing)} missing from {BUILT_PROGRAMS}: `make disk` builds the programs")
-    return disk_with_programs(build, programs, path)
+    return disk_with_programs(build, programs, path, corpus=files)
 
 
 def corpus_params(fixture: str) -> list:
@@ -1486,6 +1500,7 @@ def corpus_params(fixture: str) -> list:
         )
     system_programs(fixture)  # a malformed list fails the collection, not the boot
     boot_under(fixture)  # likewise, its boot_under
+    data_files(fixture)  # likewise, its data_files
     return blocks(
         fixture,
         gate=declared.get("gate", False),
