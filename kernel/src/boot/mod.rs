@@ -45,7 +45,7 @@ pub fn early() {
 
 /// The loader's hand-off and physical memory: the Multiboot magic checked (a kernel some other way
 /// started halts), the boot banner, the kernel command line captured, every usable frame handed to
-/// the frame database, and paging moved onto the kernel's own tables.
+/// the frame database, and paging moved onto the kernel's own tables, in frames of their own.
 #[cfg(target_arch = "x86")]
 pub fn memory(magic: u32, multiboot_info: u32) {
     if magic != MULTIBOOT_BOOTLOADER_MAGIC {
@@ -83,6 +83,9 @@ pub fn memory(magic: u32, multiboot_info: u32) {
         );
     });
 
+    // Paging moves off the entry stub's statics onto the boot directory and tables, built in frames
+    // of their own with the same picture: the processor never walks the statics again.
+    crate::mem::paging::install_boot_directory();
     // The memory map is consumed: remove the low identity window. Nothing below KERNEL_BASE is
     // mapped from here on.
     crate::mem::paging::teardown_low_identity();
@@ -186,10 +189,12 @@ core::arch::global_asm!(
     "_start:",
     "    mov esi, eax", // Multiboot magic, kept across the switch
     "    mov edi, ebx", // Multiboot info physical address
-    // The boot page directory and tables are kernel statics: their physical addresses are the
+    // The stub's page directory and tables are kernel statics: their physical addresses are the
     // linked addresses minus KERNEL_BASE (0x80000000). Zero the directory, then point entry i of
     // the low identity window (entries 0-3) and of the kernel image window (entries 512-515) at
-    // boot table i, for each of the tables (physical [0, 16 MiB), 4 MiB per table).
+    // boot table i, for each of the tables (physical [0, 16 MiB), 4 MiB per table). They are
+    // boot-only: once the frame database exists, `paging::install_boot_directory` moves paging
+    // onto runtime copies in frames of their own, and nothing walks the statics again.
     "    mov eax, offset BOOT_PD",
     "    sub eax, 0x80000000",
     "    mov edx, eax",

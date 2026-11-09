@@ -1,19 +1,23 @@
 //! Paging: the kernel window and the runtime user mappings.
 //!
 //! 32-bit x86 two-level paging, 4 KiB pages. The kernel half's regions are laid out in
-//! [`crate::mem::layout`]. The kernel is linked at `KERNEL_BASE + 1 MiB` and runs there; the boot
-//! trampoline builds the initial directory:
+//! [`crate::mem::layout`]. The kernel is linked at `KERNEL_BASE + 1 MiB` and runs there. The boot
+//! directory maps:
 //!
 //! - `[0, 16 MiB)`: physical identity, the boot transition window (entry stub, Multiboot info)
 //!   until [`teardown_low_identity`] removes it;
 //! - `[KERNEL_BASE, KERNEL_BASE + 16 MiB)`: the kernel image window ([`layout::KERNEL_IMAGE`]) over
 //!   physical `[0, 16 MiB)`.
 //!
-//! The boot tables are link-time identity constants; the directory is filled by the entry stub,
-//! which addresses it physically before paging is on. Everything below `KERNEL_BASE` is unmapped
-//! after the teardown; user pages and their tables are created at runtime ([`init_frame`],
-//! [`set_user_pte`]). The user entries' only writer is the address-space manager
-//! ([`crate::mem::vm`]): the raw entry access here serves it alone.
+//! Two directories carry that picture in turn. The entry stub, before paging is on and before any
+//! Rust code, can only use tables at link-time-known addresses: the image's statics [`BOOT_PD`]
+//! and [`BOOT_TABLES`]. As soon as the frame database exists, [`install_boot_directory`] builds
+//! the same directory and tables in frames of their own ([`BootTables`]) and switches to it; the
+//! statics are never walked again, so the processor's accessed and dirty bits land only in tables
+//! the kernel owns outright. Everything below `KERNEL_BASE` is unmapped after the teardown; user
+//! pages and their tables are created at runtime ([`init_frame`], [`set_user_pte`]). The user
+//! entries' only writer is the address-space manager ([`crate::mem::vm`]): the raw entry access
+//! here serves it alone.
 
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
@@ -21,13 +25,10 @@ use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use super::frame::{FrameDb, FrameHooks};
 use super::layout;
 #[cfg(target_arch = "x86")]
-use super::{
-    frame::{FrameDb, PRIMARY_COLOR},
-    with_database,
-    Parts,
-};
+use super::{frame::PRIMARY_COLOR, with_database, Parts};
 
 /// Virtual base of kernel space (user space is the low 2 GiB): the kernel image window's start.
 pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
@@ -53,16 +54,28 @@ pub const PT_ENTRIES: usize = 1024;
 /// Page size (32-bit paging: 4 KiB).
 pub const PAGE_SIZE: u32 = 4096;
 
+/// The identity entry for page `page`: present, writable, mapping physical page `page`.
+const fn identity_entry(page: usize) -> u32 {
+    (page * 4096) as u32 | PAGE_PRESENT | PAGE_WRITE
+}
+
 /// Build one page table mapping `first_page + i` to physical page `first_page + i` (identity), for
-/// i in 0..1024.
+/// i in 0..1024. Link time only: at run time a table is filled in place ([`fill_identity_table`]).
 const fn identity_page_table(first_page: usize) -> [u32; PT_ENTRIES] {
     let mut table = [0u32; PT_ENTRIES];
     let mut i = 0;
     while i < PT_ENTRIES {
-        table[i] = ((first_page + i) * 4096) as u32 | PAGE_PRESENT | PAGE_WRITE;
+        table[i] = identity_entry(first_page + i);
         i += 1;
     }
     table
+}
+
+/// Fill `table` as [`identity_page_table`]`(first_page)` builds it.
+fn fill_identity_table(table: &mut [u32; PT_ENTRIES], first_page: usize) {
+    for (i, entry) in table.iter_mut().enumerate() {
+        *entry = identity_entry(first_page + i);
+    }
 }
 
 /// 4 KiB-aligned wrapper: CR3 and directory entries require page-aligned tables.
@@ -84,77 +97,169 @@ const fn boot_tables() -> [[u32; PT_ENTRIES]; BOOT_TABLE_COUNT] {
     tables
 }
 
-/// The boot page tables, mapping physical `[0, 16 MiB)` 4 MiB apiece. The entry stub points the
-/// low identity window's entries and the kernel image window's at them, in order; each table is
-/// one page, so every one of them is page-aligned.
+/// The entry stub's page tables, mapping physical `[0, 16 MiB)` 4 MiB apiece. The entry stub
+/// points the low identity window's entries and the kernel image window's at them, in order; each
+/// table is one page, so every one of them is page-aligned. Boot-only: from
+/// [`install_boot_directory`] on, nothing maps through them (their frames are part of the kernel
+/// image and never enter the frame database), and no Rust code on the target reads them.
 #[no_mangle]
 pub static BOOT_TABLES: Aligned<[[u32; PT_ENTRIES]; BOOT_TABLE_COUNT]> = Aligned(boot_tables());
 
-/// A page table or directory kept in the kernel image: page-aligned, as CR3 and directory entries
-/// require, and shared with the processor, which walks it and sets accessed bits in it, hence the
-/// cell. The boot sets its entries up ([`ImageTable::boot_edit`]); from then on they change only
-/// through the self-map ([`self_map`]), as every directory's do.
+/// The entry stub's page directory: page-aligned, as CR3 requires, and written by the stub alone,
+/// through its symbol, before paging is on, hence the cell. Boot-only, as [`BOOT_TABLES`]: the
+/// processor walks it from the stub until [`install_boot_directory`] switches away, and never
+/// again.
 #[repr(C, align(4096))]
-struct ImageTable(UnsafeCell<[u32; PT_ENTRIES]>);
+pub struct StubDirectory(UnsafeCell<[u32; PT_ENTRIES]>);
 
-// SAFETY: the entries are reached as Rust data only inside `boot_edit`, which runs on the boot's
-// own thread before any other exists, and never inside another edit; everything else reaches them
-// through the processor's walks and the self-map's volatile accesses, none of which runs inside an
-// edit.
-unsafe impl Sync for ImageTable {}
+// SAFETY: no Rust code on the target reaches the entries; the entry stub writes them before any
+// Rust code runs, and the processor walks them only until the boot switches to its runtime
+// directory.
+unsafe impl Sync for StubDirectory {}
 
-impl ImageTable {
-    /// A table with no entry present.
-    const fn empty() -> Self {
-        ImageTable(UnsafeCell::new([0; PT_ENTRIES]))
+/// The entry stub's directory. Zero-initialized; the entry stub zeroes it again and fills entries
+/// `[0, BOOT_TABLE_COUNT)` (low identity window) and the kernel image window's, all pointing at
+/// [`BOOT_TABLES`].
+#[no_mangle]
+pub static BOOT_PD: StubDirectory = StubDirectory(UnsafeCell::new([0; PT_ENTRIES]));
+
+/// The boot directory and the tables it owns, each in a frame of its own taken from the frame
+/// database, by physical address: the directory the kernel runs in between processes, and whose
+/// kernel half every process directory inherits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BootTables {
+    /// The directory.
+    pub directory: u32,
+    /// The identity tables over physical `[0, 16 MiB)`, 4 MiB apiece: the kernel image window's,
+    /// and the low identity window's while it lasts.
+    pub identity: [u32; BOOT_TABLE_COUNT],
+    /// The scratch window's table ([`SCRATCH_SLOT`]), shared by every directory.
+    pub scratch: u32,
+}
+
+impl BootTables {
+    /// The frames for the directory and its tables, from `allocate` (each call one page-aligned
+    /// physical address): the directory first, then the identity tables in order, then the
+    /// scratch table.
+    pub fn allocate(mut allocate: impl FnMut() -> u32) -> BootTables {
+        let directory = allocate();
+        let mut identity = [0; BOOT_TABLE_COUNT];
+        for table in &mut identity {
+            *table = allocate();
+        }
+        let scratch = allocate();
+        BootTables {
+            directory,
+            identity,
+            scratch,
+        }
     }
 
-    /// The table's linked address, in the kernel image window.
-    fn address(&self) -> usize {
-        self.0.get() as usize
+    /// Fill `directory` (the directory's frame) as the entry stub fills its own, the self-map
+    /// added: the low identity window's entries and the kernel image window's point at the identity
+    /// tables, in order, and the self-map entry ([`SELF_MAP_SLOT`]) at the directory itself, so the
+    /// directory is reached through the self-map from its first load on, like every other. Every
+    /// other entry is empty, the scratch window's included ([`init_table_access`] installs it).
+    pub fn fill_directory(&self, directory: &mut [u32; PT_ENTRIES]) {
+        directory.fill(0);
+        let image = layout::KERNEL_IMAGE.first_entry();
+        for (i, &table) in self.identity.iter().enumerate() {
+            directory[i] = Pte::kernel_rw(table).raw();
+            directory[image + i] = Pte::kernel_rw(table).raw();
+        }
+        directory[SELF_MAP_SLOT] = Pte::kernel_rw(self.directory).raw();
     }
 
-    /// The table's physical address: its frame is part of the kernel image and never enters the
-    /// frame database.
-    #[cfg(target_arch = "x86")]
-    fn phys(&self) -> u32 {
-        self.address() as u32 - KERNEL_BASE
-    }
-
-    /// Run `edit` on the entries: the boot's setup, before the first process directory.
-    ///
-    /// # Panics
-    ///
-    /// The first process directory is made (no thread but the boot's may edit, and that one only
-    /// before others exist), or `edit` edits an image table itself.
-    #[cfg(target_arch = "x86")]
-    fn boot_edit<R>(&self, edit: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R) -> R {
-        assert!(
-            !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
-            "an image table edited after the boot"
-        );
-        assert!(
-            !EDITING.swap(true, Ordering::Acquire),
-            "an image table edited inside another edit"
-        );
-        // SAFETY: the boot's thread is the only one (no process directory, so no other thread,
-        // exists yet), the flag refuses an edit inside this one, and the edits reach no entry
-        // through the self-map: this is the only reference to the entries until `edit` returns.
-        let result = edit(unsafe { &mut *self.0.get() });
-        EDITING.store(false, Ordering::Release);
-        result
+    /// Fill `table` (identity table `index`'s frame): pages `[index * 1024, (index + 1) * 1024)`
+    /// mapped to themselves, as [`BOOT_TABLES`]`[index]` holds them.
+    pub fn fill_identity(index: usize, table: &mut [u32; PT_ENTRIES]) {
+        fill_identity_table(table, index * PT_ENTRIES);
     }
 }
 
-/// Set while an image table is edited ([`ImageTable::boot_edit`]).
+/// The boot directory and its tables, set once by [`install_boot_directory`].
 #[cfg(target_arch = "x86")]
-static EDITING: AtomicBool = AtomicBool::new(false);
+static BOOT_DIRECTORY: crate::sync::InitOnce<BootTables> = crate::sync::InitOnce::new();
 
-/// The boot page directory. Zero-initialized; the entry stub fills entries `[0, BOOT_TABLE_COUNT)`
-/// (low identity window) and the kernel image window's, all pointing at [`BOOT_TABLES`], through
-/// its symbol.
-#[no_mangle]
-static BOOT_PD: ImageTable = ImageTable::empty();
+/// The boot directory and its tables.
+///
+/// # Panics
+///
+/// Called before [`install_boot_directory`].
+#[cfg(target_arch = "x86")]
+fn boot_directory() -> &'static BootTables {
+    BOOT_DIRECTORY.get()
+}
+
+/// The frames the kernel image window maps: physical `[0, 16 MiB)`, reachable at `KERNEL_BASE +
+/// phys` from the entry stub's directory on.
+const IMAGE_WINDOW_FRAMES: u32 = layout::KERNEL_IMAGE.size() / PAGE_SIZE;
+
+/// Take the highest free frame below `limit` out of the frame database's free lists: a frame the
+/// kernel image window maps (with `limit` its frame count), so it can be written before any runtime
+/// access window exists. The highest first: the low frames serve the firmware and the real-mode
+/// trampoline. Physical address; none when no frame below `limit` is free.
+pub fn take_window_frame<H: FrameHooks>(frames: &mut FrameDb<H>, limit: u32) -> Option<u32> {
+    let frame = (1..limit)
+        .rev()
+        .find(|&frame| frames.entry(frame).state.has_color_chain())?;
+    frames.take(frame);
+    Some(frame * PAGE_SIZE)
+}
+
+/// Build the boot directory and its tables in frames of their own and switch to it, once, right
+/// after the frame database is built and before [`teardown_low_identity`]: the same picture the
+/// entry stub set up ([`BootTables::fill_directory`]), so execution carries on unchanged, and from
+/// here on the processor never walks the stub's statics again.
+///
+/// The frames are taken from the frame database below the kernel image window's end
+/// ([`take_window_frame`]) and filled through that window, the one mapping that reaches them
+/// before the self-map exists; they are never released. Once the directory is loaded, it is
+/// reached only through the self-map.
+///
+/// # Panics
+///
+/// Called twice, or the window holds no free frame for a table.
+#[cfg(target_arch = "x86")]
+pub fn install_boot_directory() {
+    let tables = with_database(|database| {
+        let frames = database.frames();
+        let tables = BootTables::allocate(|| {
+            take_window_frame(frames, IMAGE_WINDOW_FRAMES)
+                .expect("no free frame in the kernel image window for the boot tables")
+        });
+        fill_new_table(tables.directory, |directory| {
+            tables.fill_directory(directory)
+        });
+        for (index, &table) in tables.identity.iter().enumerate() {
+            fill_new_table(table, |table| BootTables::fill_identity(index, table));
+        }
+        fill_new_table(tables.scratch, |scratch| scratch.fill(0));
+        tables
+    });
+    BOOT_DIRECTORY.set(tables);
+    activate_address_space(tables.directory);
+}
+
+/// Run `fill` on the boot table at `frame_phys`, through the kernel image window, while it is
+/// built.
+///
+/// # Panics
+///
+/// The frame is not page-aligned or lies outside the kernel image window.
+#[cfg(target_arch = "x86")]
+fn fill_new_table(frame_phys: u32, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
+    assert!(
+        frame_phys.is_multiple_of(PAGE_SIZE) && frame_phys / PAGE_SIZE < IMAGE_WINDOW_FRAMES,
+        "a boot table outside the kernel image window"
+    );
+    // SAFETY: the frame lies in the kernel image window (checked above), which maps physical
+    // `[0, 16 MiB)` at `KERNEL_BASE + phys` from the entry stub on; page-aligned, so aligned for
+    // words. `install_boot_directory` just took it out of the free lists, so no other owner holds
+    // it, and no directory names it yet, so the processor does not walk it: the reference, which
+    // `fill` cannot keep, is the only access to it.
+    fill(unsafe { &mut *((KERNEL_BASE + frame_phys) as *mut [u32; PT_ENTRIES]) });
+}
 
 /// A page-directory or page-table entry: the frame (or page table) it names and its flag bits.
 #[repr(transparent)]
@@ -204,30 +309,36 @@ impl Pte {
     }
 }
 
-/// Remove the low identity window (called once the Multiboot info is consumed): clears entries
-/// `[0, BOOT_TABLE_COUNT)` and flushes the TLB via a CR3 reload. User space is unmapped from here
-/// on.
+/// Remove the boot directory's low identity window (called once the Multiboot info is consumed),
+/// through the self-map: clears entries `[0, BOOT_TABLE_COUNT)` and flushes the TLB via a CR3
+/// reload. User space is unmapped from here on.
+///
+/// # Panics
+///
+/// The boot directory is not the current one ([`install_boot_directory`] has not run), its kernel
+/// window does not point at its identity tables, or the low window is gone already.
 #[cfg(target_arch = "x86")]
 pub fn teardown_low_identity() {
-    BOOT_PD.boot_edit(|pd| {
-        // The kernel window must be established before the low window goes away; this also catches
-        // a directory the stub never filled.
-        let image = layout::KERNEL_IMAGE.first_entry();
-        for (i, table) in BOOT_TABLES.0.iter().enumerate() {
-            assert_eq!(
-                Pte::from_raw(pd[image + i]).frame(),
-                table.as_ptr() as u32 - KERNEL_BASE,
-                "kernel window is not mapped"
-            );
-        }
-        assert_ne!(pd[0], 0, "low identity window is already gone");
-
-        for entry in &mut pd[..BOOT_TABLE_COUNT] {
-            *entry = 0;
-        }
-    });
-    // Reloading CR3 with the (same) directory flushes the TLB, dropping the low mappings.
-    activate_address_space(boot_directory_phys());
+    let tables = boot_directory();
+    assert_eq!(
+        current_directory_phys(),
+        tables.directory,
+        "the low identity window torn down outside the boot directory"
+    );
+    // The kernel window must be established before the low window goes away.
+    let image = layout::KERNEL_IMAGE.first_entry();
+    for (i, &table) in tables.identity.iter().enumerate() {
+        assert_eq!(
+            self_map::pde(image + i).frame(),
+            table,
+            "kernel window is not mapped"
+        );
+    }
+    assert!(
+        self_map::pde(0).present(),
+        "low identity window is already gone"
+    );
+    remove_low_identity();
 }
 
 // --- Runtime table access (user mappings) ---------------------------------
@@ -286,28 +397,28 @@ pub const fn gate_slot_top(index: u32) -> u32 {
     gate_slot_base(index) + GATE_SLOT_STRIDE
 }
 
-/// Install the self-map and the scratch table, once, right after [`teardown_low_identity`]. No TLB
-/// flushes needed: neither window was mapped before.
+/// Install the scratch table in the boot directory, once, right after [`teardown_low_identity`],
+/// through the self-map the directory carries from its construction ([`BootTables`]); the table
+/// was zeroed there too. No TLB flush needed: the window was not mapped before.
+///
+/// # Panics
+///
+/// The boot directory's self-map is not in place, or the scratch table is installed already.
 #[cfg(target_arch = "x86")]
 pub fn init_table_access() {
-    // The scratch table is a kernel static (its frame is part of the image and never enters the
-    // frame database), so it can be zeroed directly through the kernel window before it is
-    // reachable through its own window. BSS is loader-zeroed in theory; zeroing explicitly keeps
-    // that from being load-bearing.
-    SCRATCH_TABLE.boot_edit(|table| *table = [0; PT_ENTRIES]);
-    let (pd_phys, scratch_phys) = (BOOT_PD.phys(), SCRATCH_TABLE.phys());
-    BOOT_PD.boot_edit(|pd| {
-        assert_eq!(pd[SELF_MAP_SLOT], 0, "self-map already installed");
-        assert_eq!(pd[SCRATCH_SLOT], 0, "scratch table already installed");
-        pd[SELF_MAP_SLOT] = Pte::kernel_rw(pd_phys).raw();
-        pd[SCRATCH_SLOT] = Pte::kernel_rw(scratch_phys).raw();
-    });
+    let tables = boot_directory();
+    // The frame only: the processor sets accessed and dirty bits in the entry as it walks it.
+    let self_entry = self_map::pde(SELF_MAP_SLOT);
+    assert!(
+        self_entry.present() && self_entry.frame() == tables.directory,
+        "the boot directory's self-map is not in place"
+    );
+    assert!(
+        !self_map::pde(SCRATCH_SLOT).present(),
+        "scratch table already installed"
+    );
+    self_map::set_pde(SCRATCH_SLOT, Pte::kernel_rw(tables.scratch));
 }
-
-/// The scratch table: the page table of the scratch window's directory entry, shared by every
-/// directory. A kernel static (its frame never enters the frame database).
-#[cfg(target_arch = "x86")]
-static SCRATCH_TABLE: ImageTable = ImageTable::empty();
 
 /// The current directory's entries and page tables, reached through its self-map: the directory
 /// maps itself at [`SELF_MAP_SLOT`], so its entry `i` sits at `DIRECTORY_ENTRY_VA + i*4` and the
@@ -316,10 +427,11 @@ static SCRATCH_TABLE: ImageTable = ImageTable::empty();
 /// processor sets accessed and dirty bits in these entries as a side effect of ordinary memory
 /// traffic, so every access is volatile.
 ///
-/// Every directory holds the self-map: the boot's from [`init_table_access`] on, and each process's
-/// from its creation ([`assemble_process_directory`]). The writers own the entries they write: the
-/// address-space manager ([`crate::mem::vm`]) its process's user windows; the boot, and steps under
-/// the memory manager's database (the kernel stacks, the scratch window), the kernel half's.
+/// Every directory holds the self-map from its construction: the boot's ([`BootTables`],
+/// [`install_boot_directory`]) and each process's ([`assemble_process_directory`]). The writers own
+/// the entries they write: the address-space manager ([`crate::mem::vm`]) its process's user
+/// windows; the boot, and steps under the memory manager's database (the kernel stacks, the scratch
+/// window), the kernel half's.
 #[cfg(target_arch = "x86")]
 mod self_map {
     use super::{Pte, DIRECTORY_ENTRY_VA, PT_ENTRIES, SELF_MAP_VA};
@@ -729,18 +841,17 @@ pub const fn directory_cr3(dir_phys: u32) -> u32 {
     dir_phys & PAGE_ADDR_MASK
 }
 
-/// The shared scratch table's physical address (its frame is part of the kernel image and never
-/// enters the frame database).
+/// The shared scratch table's physical address (one of the boot's tables, never released).
 #[cfg(target_arch = "x86")]
 pub fn scratch_table_phys() -> u32 {
-    SCRATCH_TABLE.phys()
+    boot_directory().scratch
 }
 
 /// The boot directory's physical address: the address space the kernel returns to between
 /// processes.
 #[cfg(target_arch = "x86")]
 pub fn boot_directory_phys() -> u32 {
-    BOOT_PD.phys()
+    boot_directory().directory
 }
 
 /// Create a fresh process address space and return its directory's physical address. The directory
@@ -918,13 +1029,14 @@ pub fn map_framebuffer(base_phys: u32, bytes: u32) -> u32 {
 }
 
 /// Re-install the low identity window (physical `[0, 16 MiB)` at its own addresses) in the current
-/// directory, pointing its first entries at the boot tables again: the real-mode trampoline runs
-/// with paging off, where addresses are physical. Removed by [`remove_low_identity`] before ring 3
-/// runs again. The boot's own install lives in the entry stub; this is the runtime form.
+/// directory, pointing its first entries at the boot directory's identity tables again: the
+/// real-mode trampoline runs with paging off, where addresses are physical. Removed by
+/// [`remove_low_identity`] before ring 3 runs again. The boot's own install lives in the boot
+/// directory's construction ([`BootTables::fill_directory`]); this is the runtime form.
 #[cfg(target_arch = "x86")]
 pub fn install_low_identity() {
-    for (i, table) in BOOT_TABLES.0.iter().enumerate() {
-        self_map::set_pde(i, Pte::kernel_rw(table.as_ptr() as u32 - KERNEL_BASE));
+    for (i, &table) in boot_directory().identity.iter().enumerate() {
+        self_map::set_pde(i, Pte::kernel_rw(table));
     }
     reload_cr3();
 }
@@ -1131,7 +1243,7 @@ mod tests {
         for table in &BOOT_TABLES.0 {
             assert_eq!(table.as_ptr() as usize % 4096, 0);
         }
-        assert_eq!(BOOT_PD.address() % 4096, 0);
+        assert_eq!(BOOT_PD.0.get() as usize % 4096, 0);
     }
 
     /// One boot table per entry of the kernel image window: four, 16 MiB.
@@ -1181,6 +1293,131 @@ mod tests {
         // SAFETY: no boot code runs in the host tests, so nothing writes the directory.
         let pd = unsafe { &*BOOT_PD.0.get() };
         assert!(pd.iter().all(|&e| e == 0));
+    }
+
+    /// The boot tables from a frame-allocator stand-in handing out the frames `frames` names, in
+    /// order.
+    fn allocated(frames: &[u32]) -> BootTables {
+        let mut next = frames.iter().copied();
+        BootTables::allocate(|| next.next().expect("the stand-in ran out of frames"))
+    }
+
+    /// The frames are taken in order: the directory, the identity tables, the scratch table.
+    #[test]
+    fn the_boot_tables_take_their_frames_in_order() {
+        let tables = allocated(&[
+            0x7F_0000, 0x7E_0000, 0x7D_0000, 0x10_5000, 0x20_0000, 0x3000,
+        ]);
+        assert_eq!(
+            tables,
+            BootTables {
+                directory: 0x7F_0000,
+                identity: [0x7E_0000, 0x7D_0000, 0x10_5000, 0x20_0000],
+                scratch: 0x3000,
+            }
+        );
+    }
+
+    /// The built directory holds exactly the stub's picture plus the self-map: the low identity
+    /// window's entries and the kernel image window's at the allocated identity tables, in order,
+    /// the self-map entry at the directory's own frame, and nothing else (whatever the frame held
+    /// before).
+    #[test]
+    fn the_boot_directory_names_its_own_tables_and_nothing_else() {
+        let tables = allocated(&[
+            0xFF_F000, 0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000, 0xFF_A000,
+        ]);
+        let mut directory = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+        tables.fill_directory(&mut directory);
+
+        let image = layout::KERNEL_IMAGE.first_entry();
+        assert_eq!(image, 512);
+        let mut expected = [0u32; PT_ENTRIES];
+        for (i, table) in [0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000]
+            .into_iter()
+            .enumerate()
+        {
+            expected[i] = table | PAGE_PRESENT | PAGE_WRITE;
+            expected[image + i] = table | PAGE_PRESENT | PAGE_WRITE;
+        }
+        expected[SELF_MAP_SLOT] = 0xFF_F000 | PAGE_PRESENT | PAGE_WRITE;
+        assert_eq!(*directory, expected);
+        // The scratch table is installed later, by the table access's own step.
+        assert_eq!(directory[SCRATCH_SLOT], 0);
+        // No user bit anywhere: the low window is the kernel's until its teardown.
+        assert!(directory.iter().all(|&entry| entry & PAGE_USER == 0));
+    }
+
+    /// The runtime identity tables hold what the stub's statics hold, entry for entry.
+    #[test]
+    fn the_runtime_identity_tables_match_the_stub_tables() {
+        let mut table = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+        for index in 0..BOOT_TABLE_COUNT {
+            BootTables::fill_identity(index, &mut table);
+            assert_eq!(
+                *table,
+                identity_page_table(index * PT_ENTRIES),
+                "table {index}"
+            );
+            assert_eq!(*table, BOOT_TABLES.0[index], "table {index}");
+        }
+    }
+
+    /// A process directory built over the boot directory inherits its kernel window, with the
+    /// identity tables the boot allocated.
+    #[test]
+    fn process_directories_inherit_the_boot_directorys_kernel_window() {
+        let tables = allocated(&[
+            0x50_0000, 0x51_0000, 0x52_0000, 0x53_0000, 0x54_0000, 0x55_0000,
+        ]);
+        let mut boot = Box::new([0u32; PT_ENTRIES]);
+        tables.fill_directory(&mut boot);
+        let process = assembled(&boot, 0x60_0000, tables.scratch);
+        let image = layout::KERNEL_IMAGE.first_entry();
+        for (i, &table) in tables.identity.iter().enumerate() {
+            assert_eq!(Pte::from_raw(process[image + i]).frame(), table);
+            assert_eq!(process[i], 0, "the low window is not inherited");
+        }
+        assert_eq!(process[SELF_MAP_SLOT], Pte::kernel_rw(0x60_0000).raw());
+        assert_eq!(process[SCRATCH_SLOT], Pte::kernel_rw(0x55_0000).raw());
+    }
+
+    /// The boot's frames come from below the window's end, the highest free one first, and leave
+    /// the free lists; none when the window holds no free frame.
+    #[test]
+    fn window_frames_are_the_highest_free_ones_below_the_limit() {
+        use crate::mem::frame::{
+            ColorTables,
+            FrameEntry,
+            FrameState,
+            NoHooks,
+            DEFAULT_COLOR_COUNT,
+        };
+        let table: &'static mut [FrameEntry] =
+            Box::leak(vec![FrameEntry::new(); 0x2000].into_boxed_slice());
+        let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
+        let mut db = FrameDb::new(table, buckets, DEFAULT_COLOR_COUNT, NoHooks);
+        for frame in [5, 9, 0xFFE, 0x1000, 0x1800] {
+            db.release(frame, FrameState::Free);
+        }
+        let available = db.available();
+
+        assert_eq!(take_window_frame(&mut db, 0x1000), Some(0xFFE * PAGE_SIZE));
+        assert_eq!(db.entry(0xFFE).state, FrameState::Active);
+        assert_eq!(take_window_frame(&mut db, 0x1000), Some(9 * PAGE_SIZE));
+        assert_eq!(take_window_frame(&mut db, 0x1000), Some(5 * PAGE_SIZE));
+        assert_eq!(take_window_frame(&mut db, 0x1000), None);
+        assert_eq!(db.available(), available - 3);
+        // The frames past the window stay free.
+        assert_eq!(db.entry(0x1000).state, FrameState::Free);
+        assert_eq!(db.entry(0x1800).state, FrameState::Free);
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    /// The image window's frame count is its 16 MiB.
+    #[test]
+    fn the_image_window_holds_4096_frames() {
+        assert_eq!(IMAGE_WINDOW_FRAMES, 4096);
     }
 
     /// Independent bit check: entry bit 0 is present, bit 1 is R/W, bit 2 is user/supervisor. The
