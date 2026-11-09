@@ -24,8 +24,9 @@ mod boot;
 // hardware-vector stubs)
 mod cpu;
 
-// The hardware layer: the interrupt controller pair, the interval timer, the IDE disk, and the
-// serial port, reached through abstract port I/O
+// The hardware layer: the system hardware behind the hardware abstraction layer (port I/O, the
+// interrupt controller pair, the interval timer, the real-time clock, the VBE framebuffer) and the
+// device drivers (the IDE disk, the keyboard, the serial port, the VGA text screen)
 mod hw;
 
 // The hardware abstraction layer: the one interface the kernel reaches the platform's system

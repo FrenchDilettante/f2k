@@ -8,8 +8,8 @@
 //! and this module is its interface:
 //!
 //! - **Port I/O:** the port space, [`Io`], and the real one, [`Ports`] — what READ_PORT_UCHAR,
-//!   WRITE_PORT_UCHAR and their word forms do. Every driver holds its registers over it, so a
-//!   driver's logic runs against a simulated register file in the host tests.
+//!   WRITE_PORT_UCHAR and their word forms do. The drivers hold their registers over it, so their
+//!   logic runs against a simulated register file in the host tests.
 //! - **The interrupt controller:** the hardware vector band ([`FIRST_VECTOR`] to [`LAST_VECTOR`])
 //!   and a device line's vector in it ([`interrupt_vector`], HalGetInterruptVector's mapping); the
 //!   [`Hal`] methods that settle, acknowledge, enable and disable a vector; and
@@ -19,8 +19,9 @@
 //! [`Hal`] is the platform's side, implemented on target by [`StandardPc`] — the 8259A pair, the
 //! 8254 and the CMOS clock of a PC/AT, and the VESA BIOS's mode set — over the hardware modules
 //! `hw::portio`, `hw::pic`, `hw::pit`, `hw::rtc` and `hw::vbe`. Outside this module and those, the
-//! kernel names none of them; a host test below holds that by reading the sources, with its named
-//! exceptions. A separate hal.dll would take [`StandardPc`]'s place behind the same interface.
+//! kernel names none of them, save the exceptions a host test below lists; the test holds that by
+//! reading the sources. A separate hal.dll would take [`StandardPc`]'s place behind the same
+//! interface.
 //!
 //! The device drivers — the IDE disk, the keyboard, the serial line, the VGA text screen — are not
 //! part of this layer. The kernel calls them directly; they reach the hardware through this
@@ -29,7 +30,9 @@
 pub use crate::hw::portio::Io;
 #[cfg(target_arch = "x86")]
 pub use crate::hw::portio::Ports;
-pub use crate::hw::rtc::{CivilTime, SCREEN_MAILBOX};
+pub use crate::hw::rtc::CivilTime;
+#[cfg(target_arch = "x86")]
+pub use crate::hw::rtc::SCREEN_MAILBOX;
 use crate::interrupt::irql::{Irql, OldIrql};
 use crate::interrupt::{Claim, Controller};
 use crate::pcr::pcr;
@@ -456,5 +459,168 @@ mod tests {
         assert_eq!(interrupt_vector(0), FIRST_VECTOR);
         assert_eq!(interrupt_vector(14), 0x3E);
         assert_eq!(interrupt_vector(15), LAST_VECTOR);
+    }
+
+    /// The modules behind the seam, as a path names them.
+    const SURFACE: [&str; 5] = ["pic", "pit", "rtc", "portio", "vbe"];
+
+    /// The files that may name them: this interface, the hardware layer's module list, and the
+    /// modules themselves (paths under `kernel/src`; a trailing `/` takes a directory).
+    const BEHIND_THE_SEAM: [&str; 7] = [
+        "hal.rs",
+        "hw/mod.rs",
+        "hw/pic.rs",
+        "hw/pit.rs",
+        "hw/rtc.rs",
+        "hw/portio.rs",
+        "hw/vbe/",
+    ];
+
+    /// The port instructions a string may open with: an `asm!` doing port I/O of its own.
+    const PORT_INSTRUCTIONS: [&str; 5] = ["out dx", "out 0x", "in al", "in ax", "in eax"];
+
+    /// The named exceptions: files outside this layer's reach that still reach the hardware past
+    /// it, each with what it reaches. Each must still do so; one that no longer does leaves the
+    /// list.
+    const EXCEPTIONS: [(&str, &str); 5] = [
+        (
+            "boot/mod.rs",
+            "the POST code's write to port 0x80, an inline `out` before the serial line is up",
+        ),
+        (
+            "win32k/dc.rs",
+            "the display driver's framebuffer (hw::vbe's Framebuffer, PixelMemory, LfbMemory and \
+             with_framebuffer)",
+        ),
+        (
+            "win32k/display.rs",
+            "the display driver's mode set, mode test, mode list and geometry (hw::vbe)",
+        ),
+        (
+            "win32k/raster.rs",
+            "the display driver's pixel memory and geometry (hw::vbe)",
+        ),
+        (
+            "win32k/winsta.rs",
+            "the display's default size (hw::vbe's DEFAULT_WIDTH and DEFAULT_HEIGHT)",
+        ),
+    ];
+
+    /// Every `.rs` file under `dir`, as its path under `root` and its text.
+    fn sources(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("the kernel's sources are readable")
+            .map(|entry| entry.expect("a readable directory entry").path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                sources(root, &path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+
+    /// Whether a line of `file` names one of the modules behind the seam: `hw::pic` and the like,
+    /// a `hw::{...}` group holding one, or (in a module of the hardware layer itself) `super::pic`.
+    fn names_the_surface(file: &str, line: &str) -> bool {
+        let in_hw = file.starts_with("hw/") && file.matches('/').count() == 1;
+        let direct = SURFACE.iter().any(|module| {
+            line.contains(&std::format!("hw::{module}"))
+                || (in_hw && line.contains(&std::format!("super::{module}")))
+        });
+        let grouped = line.split("hw::{").skip(1).any(|group| {
+            group
+                .split('}')
+                .next()
+                .unwrap_or("")
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|word| SURFACE.contains(&word))
+        });
+        direct || grouped
+    }
+
+    /// Whether a line holds a string that opens with a port instruction.
+    fn issues_port_io(line: &str) -> bool {
+        line.split('"').skip(1).step_by(2).any(|string| {
+            let string = string.trim_start();
+            PORT_INSTRUCTIONS
+                .iter()
+                .any(|instruction| string.starts_with(instruction))
+        })
+    }
+
+    /// The audit: outside this interface and the modules behind it, nothing in the kernel names
+    /// `hw::pic`, `hw::pit`, `hw::rtc`, `hw::portio` or `hw::vbe`, and nothing issues port I/O of
+    /// its own, save the named exceptions, each still holding. Comment lines are not code. By
+    /// hand, the first half is `grep -rnE 'hw::(pic|pit|rtc|portio|vbe)' kernel/src`, less comments
+    /// and the files behind the seam.
+    #[test]
+    fn only_the_hal_reaches_the_system_hardware() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        sources(&root, &root, &mut files);
+        assert!(files.iter().any(|(name, _)| name == "hal.rs"));
+
+        let mut reaching = std::collections::BTreeSet::new();
+        let mut unexpected = Vec::new();
+        for (name, text) in &files {
+            let behind = BEHIND_THE_SEAM.iter().any(|behind| {
+                name == behind || (behind.ends_with('/') && name.starts_with(behind))
+            });
+            if behind {
+                continue;
+            }
+            for (number, line) in text.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if names_the_surface(name, line) || issues_port_io(line) {
+                    reaching.insert(name.as_str());
+                    if !EXCEPTIONS.iter().any(|(file, _)| file == name) {
+                        unexpected.push(std::format!("{name}:{}: {}", number + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "reached past the HAL:\n{}",
+            unexpected.join("\n")
+        );
+        for (file, what) in EXCEPTIONS {
+            assert!(
+                reaching.contains(file),
+                "{file} no longer reaches past the HAL ({what}): take it off the exceptions"
+            );
+        }
+    }
+
+    /// The audit's matchers: a path, a group and a hardware module's `super::` form are seen; a
+    /// device driver's path and a string that merely starts with "out" are not.
+    #[test]
+    fn the_audit_sees_the_surface_and_only_it() {
+        assert!(names_the_surface(
+            "time.rs",
+            "use crate::hw::rtc::CivilTime;"
+        ));
+        assert!(names_the_surface("csr.rs", "use crate::hw::{vga, pit};"));
+        assert!(names_the_surface("hw/vga.rs", "use super::portio::Io;"));
+        assert!(!names_the_surface(
+            "hw/ide/read.rs",
+            "use super::regs::DATA;"
+        ));
+        assert!(!names_the_surface("csr.rs", "crate::hw::vga::screen()"));
+        assert!(!names_the_surface("csr.rs", "use crate::hw::{ide, kbd};"));
+        assert!(issues_port_io(r#"asm!("out 0x80, al", in("al") 0xFEu8)"#));
+        assert!(issues_port_io(r#"    "    in al, dx","#));
+        assert!(!issues_port_io(r#"(1, "out of range"),"#));
+        assert!(!issues_port_io(r#""nothing handed out yet""#));
     }
 }
