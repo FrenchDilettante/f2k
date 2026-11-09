@@ -91,7 +91,7 @@ pub fn memory(magic: u32, multiboot_info: u32) {
     crate::mem::paging::teardown_low_identity();
     crate::serial_println!(
         "F2K: paging on: kernel at {:#010x}, low identity removed",
-        0x8010_1000u32
+        crate::mem::layout::NTOSKRNL_BASE
     );
     // Install the runtime table access (self-map, scratch table).
     crate::mem::paging::init_table_access();

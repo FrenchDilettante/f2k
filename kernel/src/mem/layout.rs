@@ -16,9 +16,13 @@
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
 //! The kernel image window is the only region mapped from the first instruction on: the boot stub
-//! maps it over physical `[0, 16 MiB)`, and the kernel image (loaded at physical 1 MiB: its code
-//! and every fixed-size table, the frame table and the process pool among them) must end inside it
-//! (the linker script and the boot both check). The other regions get their tables at runtime.
+//! maps it over physical `[0, 16 MiB)`. Its first directory entry's span, the entry span
+//! (`[0x80000000, 0x80400000)`), is the boot's: the first megabyte's firmware areas and the VGA
+//! text page, and from 1 MiB the boot's entry stub. The kernel's image sits behind it, at
+//! [`NTOSKRNL_BASE`], `0x80400000`, Windows 2000's kernel base (physical 4 MiB): its headers' page,
+//! its code and every fixed-size table, the frame table and the process pool among them. It must
+//! end inside the window (the linker script and the boot both check). The other regions get their
+//! tables at runtime.
 //!
 //! Kernel stacks sit in a region of their own, as Windows 2000's do: it takes them from its system
 //! PTEs, the pool of kernel address space for mappings that come and go, and its published x86 map
@@ -79,13 +83,18 @@ impl Region {
     }
 }
 
-/// The kernel image window: the image (the entry stub, code, statics, the boot stack) and the rest
-/// of physical `[0, 16 MiB)` (the VGA text page among it), mapped by the boot tables at a fixed
-/// offset (virtual = physical + `0x80000000`). Shared by every address space.
+/// The kernel image window: the entry span and the kernel's image behind it (code, statics, the
+/// boot stack), and the rest of physical `[0, 16 MiB)` (the VGA text page among it), mapped by the
+/// boot tables at a fixed offset (virtual = physical + `0x80000000`). Shared by every address
+/// space.
 pub const KERNEL_IMAGE: Region = Region {
     start: 0x8000_0000,
     entries: 4,
 };
+
+/// The kernel's image base, where ntoskrnl.exe is linked and runs: right behind the window's entry
+/// span, as Windows 2000's kernel sits at `0x80400000`. The linker script's `__ImageBase`.
+pub const NTOSKRNL_BASE: u32 = KERNEL_IMAGE.start + ENTRY_SPAN;
 
 /// The kernel stacks: each thread's ring-0 stack, a guard page below every one. Each process maps
 /// its own threads' stacks at the region's start, in a table of its own.
@@ -131,9 +140,12 @@ pub const SHARED_DATA: Region = Region {
 };
 
 // Checked whenever the kernel builds, not by the host tests alone: the addresses other modules fix
-// lie in their regions, and the stack region stays clear of the image window's growth.
+// lie in their regions, the image sits in its window past the entry span, and the stack region
+// stays clear of the image window's growth.
 const _: () = {
     assert!(SHARED_DATA.holds(crate::user::shared::KERNEL_ADDRESS));
+    assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE) && NTOSKRNL_BASE % ENTRY_SPAN == 0);
+    assert!(NTOSKRNL_BASE / ENTRY_SPAN == KERNEL_IMAGE.first_entry() as u32 + 1);
     assert!(KERNEL_STACKS.start as u64 >= KERNEL_IMAGE.end());
 };
 
@@ -205,13 +217,25 @@ mod tests {
         }
     }
 
-    /// The image window maps physical `[0, 16 MiB)`: the kernel's load address and the VGA text
-    /// page lie inside it.
+    /// The image window maps physical `[0, 16 MiB)`: the boot's load address and the VGA text page
+    /// lie in its entry span, the kernel's image right behind it.
     #[test]
     fn the_image_window_covers_the_load_address() {
         assert_eq!(KERNEL_IMAGE.size(), 16 * 0x10_0000);
-        assert!(KERNEL_IMAGE.holds(KERNEL_IMAGE.start + crate::mem::paging::KERNEL_PHYS_BASE));
-        assert!(KERNEL_IMAGE.holds(crate::hw::vga::VIRT_BASE));
+        let entry_span = KERNEL_IMAGE.start..NTOSKRNL_BASE;
+        assert!(entry_span.contains(&(KERNEL_IMAGE.start + crate::mem::paging::KERNEL_PHYS_BASE)));
+        assert!(entry_span.contains(&crate::hw::vga::VIRT_BASE));
+        assert_eq!(entry_span.len() as u32, ENTRY_SPAN);
+    }
+
+    /// The kernel's image base is Windows 2000's, the window's second directory entry, physical 4
+    /// MiB.
+    #[test]
+    fn the_image_sits_behind_the_entry_span() {
+        assert_eq!(NTOSKRNL_BASE, 0x8040_0000);
+        assert_eq!(NTOSKRNL_BASE >> 22, 513);
+        assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE));
+        assert_eq!(NTOSKRNL_BASE - KERNEL_IMAGE.start, 0x40_0000);
     }
 
     /// The stack region holds a slot for every thread record at today's stride, with room to

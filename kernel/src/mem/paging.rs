@@ -1,8 +1,8 @@
 //! Paging: the kernel window and the runtime user mappings.
 //!
 //! 32-bit x86 two-level paging, 4 KiB pages. The kernel half's regions are laid out in
-//! [`crate::mem::layout`]. The kernel is linked at `KERNEL_BASE + 1 MiB` and runs there. The boot
-//! directory maps:
+//! [`crate::mem::layout`]. The kernel's image is linked at [`layout::NTOSKRNL_BASE`] and runs
+//! there. The boot directory maps:
 //!
 //! - `[0, 16 MiB)`: physical identity, the boot transition window (entry stub, Multiboot info)
 //!   until [`teardown_low_identity`] removes it;
@@ -33,7 +33,8 @@ use super::{frame::PRIMARY_COLOR, with_database, Parts};
 /// Virtual base of kernel space (user space is the low 2 GiB): the kernel image window's start.
 pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
 
-/// Physical load address of the kernel image (also the start of the frames the kernel occupies).
+/// Physical load address of the boot's entry stub, 1 MiB: the start of the frames the kernel
+/// occupies (the stub, and the kernel's image behind the entry span).
 pub const KERNEL_PHYS_BASE: u32 = 0x0010_0000;
 
 /// Page-table flag: page/directory entry is present.

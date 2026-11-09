@@ -3,8 +3,8 @@
 //! Reads the Multiboot information structure the loader pointed EBX at, turns every available
 //! region into usable frame ranges, and releases all of them to the [`FrameDb`] except:
 //! - frame 0 (never allocatable), and
-//! - the frames the kernel image itself occupies, [`_kernel_start`, `_kernel_end`) from the linker
-//!   script.
+//! - the frames the kernel occupies: from the boot's load address (its entry stub) to the end of
+//!   the kernel's image (`_kernel_end` from the linker script).
 //!
 //! The database then lives in the memory manager's database ([`super::Database`]), and serves the
 //! rest of the kernel through [`with_frame_db`].

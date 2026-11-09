@@ -5,13 +5,16 @@ OUTPUT_ARCH(i386)
 
 ENTRY(_start)
 
+/* The kernel's image base: the kernel image window's start plus its first directory entry's span,
+ * the entry span (layout::NTOSKRNL_BASE in kernel/src/mem/layout.rs). */
+__ImageBase = 0x80400000;
+
 SECTIONS
 {
     /* Entry trampoline: exactly one page at the physical load address,
      * 1 MiB. Entered with paging off, so its virtual and physical
      * addresses are equal. It builds the boot page tables, enables
-     * paging and continues in the kernel window. Padded to a page so
-     * the kernel's physical layout is exact (see below). */
+     * paging and continues in the kernel window. */
     . = 0x100000;
     .boot : {
         /* Multiboot header: must be 4-byte aligned and within the
@@ -22,35 +25,39 @@ SECTIONS
         . = ALIGN(4096);
     }
 
-    /* The kernel proper, linked in the kernel window. The physical
-     * mapping is exact: physical = virtual - 0x80000000, for code,
-     * statics and BSS alike; the boot stub and the frame allocator
-     * rely on it, and ld must not insert physical padding of its own.
-     * One file-backed section (padded to a page) plus one BSS section
-     * keeps VMA-LMA alignment arithmetic trivial. */
-    . = 0x80101000;
-    _kernel_start = .;
+    /* The kernel image, linked in the kernel window from the image base, laid out as its PE32
+     * image maps it: a page for the headers, then code, constant data, data and BSS, each starting
+     * on a page. The physical mapping is exact: physical = virtual - 0x80000000, for code, statics
+     * and BSS alike; the boot stub and the frame allocator rely on it. */
+    . = __ImageBase + 0x1000;
 
-    .kernel : AT(0x101000) {
+    .text : AT(ADDR(.text) - 0x80000000) {
+        _kernel_start = .;
         *(.text .text.*)
+    }
+
+    . = ALIGN(4096);
+    .rdata : AT(ADDR(.rdata) - 0x80000000) {
         /* The table of the kernel's exports' bodies (kernel/src/exports.rs): nothing references
          * it, and it is what keeps each body in the link. */
         KEEP(*(.rodata.ntoskrnl_exports))
         *(.rodata .rodata.*)
-        *(.data .data.*)
-        . = ALIGN(4096);
     }
 
-    .bss (NOLOAD) : AT(0x101000 + SIZEOF(.kernel)) {
+    . = ALIGN(4096);
+    .data : AT(ADDR(.data) - 0x80000000) {
+        *(.data .data.*)
+    }
+
+    . = ALIGN(4096);
+    .bss (NOLOAD) : AT(ADDR(.bss) - 0x80000000) {
         *(.bss .bss.*)
         *(COMMON)
+        /* End of the kernel image, 4 KiB aligned so the frame allocator can treat the image's
+         * frames as whole occupied frames. */
         . = ALIGN(4096);
+        _kernel_end = .;
     }
-
-    /* End of the kernel image, 4 KiB aligned so the frame allocator can
-     * treat [kernel_start, kernel_end) as whole occupied frames. */
-    . = ALIGN(4096);
-    _kernel_end = .;
 
     /* The boot maps the kernel image window over physical [0, 16 MiB) (KERNEL_IMAGE in
      * kernel/src/mem/layout.rs): the image (its statics, the process pool's records among them)

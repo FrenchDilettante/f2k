@@ -182,7 +182,7 @@ const SAMPLE_INTERVAL: u32 = crate::interrupt::clock::INTERVAL_100NS / SAMPLES_P
 #[cfg(target_arch = "x86")]
 const WINDOW_END: u32 = crate::mem::layout::KERNEL_IMAGE.end() as u32;
 
-// The kernel image's bounds, exported by the linker script.
+// The kernel image's bounds, exported by the linker script: the start of its code, and its end.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" {
     static _kernel_start: u8;
