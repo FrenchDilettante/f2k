@@ -1,0 +1,45 @@
+# Winobj.exe: its DLL dependencies, written by scripts/pe_deps.py.
+# Copied off the real machine; sha256 3931059236bd4d95..., linked 2000-06-27T19:26:39Z.
+# Regenerate: python3 f2k/scripts/pe_deps.py <image> [--icons]
+# Note: its object-manager calls (NtOpen*/NtQuery*Directory/Object/*,
+# NtClose, the Rtl* string conversions) are resolved at runtime via
+# GetProcAddress over ntdll, so they are not in the static table.
+
+[image]
+file = "Winobj.exe"
+kind = "exe"
+machine = "i386"
+subsystem = "gui"
+base = "0x00400000"
+size_bytes = 77824
+link_timestamp = "2000-06-27T19:26:39Z"
+sha256 = "3931059236bd4d959382f682b38ed4f41e3055ec08e693c3d622866bd8298e10"
+
+[icon]
+files = ["icons/winobj.ico"]
+images = 1
+
+[[imports]]
+dll = "KERNEL32.dll"
+delay = false
+names = ["FileTimeToLocalFileTime", "LoadLibraryA", "lstrlenA", "GetModuleHandleA", "GetProcAddress", "FileTimeToSystemTime", "CreateFileA", "GetLastError", "CloseHandle", "LocalFree", "FreeLibrary", "GetCurrentProcess", "GetStringTypeW", "LCMapStringW", "LCMapStringA", "MultiByteToWideChar", "GetOEMCP", "GetACP", "GetCPInfo", "HeapReAlloc", "VirtualAlloc", "WriteFile", "RtlUnwind", "VirtualFree", "HeapCreate", "HeapDestroy", "GetFileType", "GetStdHandle", "SetHandleCount", "GetEnvironmentStringsW", "GetEnvironmentStrings", "GetStringTypeA", "LocalAlloc", "WideCharToMultiByte", "FreeEnvironmentStringsW", "FreeEnvironmentStringsA", "GetModuleFileNameA", "UnhandledExceptionFilter", "TerminateProcess", "HeapFree", "HeapAlloc", "ExitProcess", "GetVersion", "GetCommandLineA", "GetStartupInfoA"]
+
+[[imports]]
+dll = "USER32.dll"
+delay = false
+names = ["ShowWindow", "GetDlgItem", "EnableWindow", "MessageBoxA", "CheckDlgButton", "SetDlgItemTextA", "EndDialog", "ScreenToClient", "GetWindowLongA", "SetWindowLongA", "GetClientRect", "CreateWindowExA", "SendMessageA", "LoadIconA", "PostMessageA", "LoadBitmapA", "IsZoomed", "IsIconic", "GetWindowRect", "DispatchMessageA", "TranslateMessage", "TranslateAcceleratorA", "GetMessageA", "LoadAcceleratorsA", "DeferWindowPos", "EndDeferWindowPos", "SetFocus", "GetParent", "GetDC", "InvertRect", "ReleaseDC", "SetCapture", "ReleaseCapture", "PostQuitMessage", "InvalidateRect", "DefWindowProcA", "WinHelpA", "DialogBoxParamA", "LoadStringA", "UpdateWindow", "GetSysColor", "LoadCursorA", "RegisterClassA", "wsprintfA", "GetMessagePos", "BeginDeferWindowPos"]
+
+[[imports]]
+dll = "GDI32.dll"
+delay = false
+names = ["DeleteObject", "CreateBrushIndirect"]
+
+[[imports]]
+dll = "ADVAPI32.dll"
+delay = false
+names = ["RegCreateKeyA", "MapGenericMask", "GetKernelObjectSecurity", "SetKernelObjectSecurity", "IsValidSecurityDescriptor", "RegQueryValueExA", "RegSetValueExA", "RegOpenKeyA", "AdjustTokenPrivileges", "LookupPrivilegeValueA", "OpenProcessToken"]
+
+[[imports]]
+dll = "COMCTL32.dll"
+delay = false
+names = ["ImageList_Add", "ImageList_Destroy", "CreateToolbarEx", "#17", "#6", "ImageList_ReplaceIcon", "ImageList_GetImageCount", "CreatePropertySheetPageA", "PropertySheetA", "ImageList_Create"]
