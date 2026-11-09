@@ -8,9 +8,6 @@ description = "utility - small kernel32 exports: MulDiv's rounding and overflow,
 kind = "sectioned"
 gate = true
 
-[pending]
-stringtype = "CT_CTYPE2 and CT_CTYPE3 not yet implemented: GetStringTypeA/W answer CT_CTYPE1 only, without the character tables the other two need"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them.

@@ -169,6 +169,114 @@ fn beyond_flags(wide: u16) -> u16 {
     }
 }
 
+/// The C2_* bidirectional classes GetStringTypeW reports (CT_CTYPE2, dwInfoType 2): one value per
+/// character, not bits.
+pub const C2_NOTAPPLICABLE: u16 = 0x0000;
+pub const C2_LEFTTORIGHT: u16 = 0x0001;
+pub const C2_RIGHTTOLEFT: u16 = 0x0002;
+pub const C2_EUROPENUMBER: u16 = 0x0003;
+pub const C2_EUROPESEPARATOR: u16 = 0x0004;
+pub const C2_EUROPETERMINATOR: u16 = 0x0005;
+pub const C2_ARABICNUMBER: u16 = 0x0006;
+pub const C2_COMMONSEPARATOR: u16 = 0x0007;
+pub const C2_BLOCKSEPARATOR: u16 = 0x0008;
+pub const C2_SEGMENTSEPARATOR: u16 = 0x0009;
+pub const C2_WHITESPACE: u16 = 0x000A;
+pub const C2_OTHERNEUTRAL: u16 = 0x000B;
+
+/// The C3_* extended character-type bits GetStringTypeW reports (CT_CTYPE3, dwInfoType 4).
+pub const C3_NONSPACING: u16 = 0x0001;
+pub const C3_DIACRITIC: u16 = 0x0002;
+pub const C3_VOWELMARK: u16 = 0x0004;
+pub const C3_SYMBOL: u16 = 0x0008;
+pub const C3_KATAKANA: u16 = 0x0010;
+pub const C3_HIRAGANA: u16 = 0x0020;
+pub const C3_HALFWIDTH: u16 = 0x0040;
+pub const C3_FULLWIDTH: u16 = 0x0080;
+pub const C3_IDEOGRAPH: u16 = 0x0100;
+pub const C3_KASHIDA: u16 = 0x0200;
+pub const C3_LEXICAL: u16 = 0x0400;
+pub const C3_ALPHA: u16 = 0x8000;
+
+/// The bidirectional class of one wide character (CT_CTYPE2), over the characters [`c1_flags`]
+/// classifies, by Unicode's bidirectional categories. Windows 2000's own, which the utility
+/// fixture's capture pins: the full stop is a European separator (Unicode calls it a common
+/// one), and the controls Unicode calls boundary neutrals, which have no C2 class, are not
+/// applicable (U+0001, and the terminator). The fullwidth forms of ASCII's characters take their
+/// ASCII counterparts' classes; the letters and the other scripts' digits are left-to-right.
+pub fn c2_class(wide: u16) -> u16 {
+    match wide {
+        0x09 | 0x0B | 0x1F => C2_SEGMENTSEPARATOR,
+        0x0A | 0x0D | 0x1C..=0x1E | 0x85 | 0x2029 => C2_BLOCKSEPARATOR,
+        // The boundary neutrals: the other controls, the soft hyphen, the zero-width space and
+        // the byte order mark.
+        0x00..=0x08 | 0x0E..=0x1B | 0x7F..=0x84 | 0x86..=0x9F | 0xAD | 0x200B | 0xFEFF => {
+            C2_NOTAPPLICABLE
+        }
+        0x0C | 0x20 | 0x2000..=0x200A | 0x2028 | 0x3000 => C2_WHITESPACE,
+        0x30..=0x39 | 0xB2 | 0xB3 | 0xB9 | 0x06F0..=0x06F9 => C2_EUROPENUMBER,
+        0x0660..=0x0669 => C2_ARABICNUMBER,
+        0x2B | 0x2D | 0x2E => C2_EUROPESEPARATOR,
+        0x23..=0x25 | 0xA2..=0xA5 | 0xB0 | 0xB1 | 0x2030 | 0x20AC => C2_EUROPETERMINATOR,
+        0x2C | 0x2F | 0x3A | 0xA0 => C2_COMMONSEPARATOR,
+        // Latin-1's ordinal indicators and micro sign: letters to Unicode, punctuation to C1.
+        0xAA | 0xB5 | 0xBA => C2_LEFTTORIGHT,
+        0xFF01..=0xFF5E => c2_class(wide - 0xFEE0),
+        _ => match c1_flags(wide) {
+            c1 if c1 & (C1_ALPHA | C1_DIGIT) != 0 => C2_LEFTTORIGHT,
+            c1 if c1 & C1_PUNCT != 0 => C2_OTHERNEUTRAL,
+            _ => C2_NOTAPPLICABLE,
+        },
+    }
+}
+
+/// The extended character-type flags of one wide character (CT_CTYPE3), over the characters
+/// [`c1_flags`] classifies: its letters are alphabetic, its punctuation and spaces symbols; ASCII's
+/// printable characters are halfwidth, the fullwidth forms and the ideographic space fullwidth;
+/// kana are hiragana or katakana, the ideographs ideographs (and neither fullwidth). Windows 2000's
+/// own, which the utility fixture's capture pins: a precomposed letter is a diacritic and
+/// nonspacing besides (é, here every Latin, Greek and Cyrillic letter with a canonical
+/// decomposition), the tab is a symbol, and U+0001 nothing.
+pub fn c3_flags(wide: u16) -> u16 {
+    let width = match wide {
+        0x20..=0x7E => C3_HALFWIDTH,
+        0x3000 | 0xFF01..=0xFF5E => C3_FULLWIDTH,
+        _ => 0,
+    };
+    let kind = match wide {
+        0x3041..=0x3094 => C3_ALPHA | C3_HIRAGANA,
+        0x30A1..=0x30FA => C3_ALPHA | C3_KATAKANA,
+        0x4E00..=0x9FA5 | 0xF900..=0xFA2D => C3_ALPHA | C3_IDEOGRAPH,
+        _ if precomposed(wide) => C3_ALPHA | C3_DIACRITIC | C3_NONSPACING,
+        _ => match c1_flags(wide) {
+            c1 if c1 & C1_ALPHA != 0 => C3_ALPHA,
+            c1 if c1 & (C1_PUNCT | C1_SPACE) != 0 => C3_SYMBOL,
+            _ => 0,
+        },
+    };
+    width | kind
+}
+
+/// Whether a letter has a canonical decomposition into a base letter and diacritics: Latin-1's
+/// accented letters and ÿ; Latin Extended-A's but for the letters with a stroke or a bar, the
+/// dotless i, ĸ, ŋ, the ligatures and the compatibility forms (Ŀ, ŉ, ſ); Greek's letters with
+/// tonos or dialytika; Cyrillic's with a breve, a grave, an acute or a diaeresis.
+fn precomposed(wide: u16) -> bool {
+    match wide {
+        0xC0..=0xC5 | 0xC7..=0xCF | 0xD1..=0xD6 | 0xD9..=0xDD => true,
+        0xE0..=0xE5 | 0xE7..=0xEF | 0xF1..=0xF6 | 0xF9..=0xFD | 0xFF => true,
+        0x110 | 0x111 | 0x126 | 0x127 | 0x131..=0x133 | 0x138 | 0x13F..=0x142 | 0x149..=0x14B => {
+            false
+        }
+        0x152 | 0x153 | 0x166 | 0x167 | 0x17F => false,
+        0x100..=0x17E => true,
+        0x386 | 0x388..=0x38A | 0x38C | 0x38E..=0x390 | 0x3AA..=0x3B0 | 0x3CA..=0x3CE => true,
+        0x400 | 0x401 | 0x403 | 0x407 | 0x40C..=0x40E | 0x419 => true,
+        0x439 | 0x450 | 0x451 | 0x453 | 0x457 | 0x45C..=0x45E => true,
+        _ => false,
+    }
+}
+
 /// Case mapping for one wide character (the LCMapStringW core); `upper` selects LCMAP_UPPERCASE.
 /// Quirk: sharp s has no single-character uppercase and maps to itself.
 pub fn map_case(wide: u16, upper: bool) -> u16 {
@@ -381,6 +489,108 @@ mod tests {
             (map_case(0x3C2, true), map_case(0x386, false)),
             (0x3A3, 0x3AC)
         );
+    }
+
+    /// The utility fixture's capture: CT_CTYPE1, CT_CTYPE2 and CT_CTYPE3 of its fifteen characters
+    /// (A z 0 9, the space, ! . and the tab, U+0001, é, Α, 中, the ideographic space, Ａ and the
+    /// terminator).
+    #[test]
+    fn the_captured_ctype2_and_ctype3_words() {
+        for (unit, c1, c2, c3) in [
+            (0x0041, 0x0181, 0x0001, 0x8040),
+            (0x007A, 0x0102, 0x0001, 0x8040),
+            (0x0030, 0x0084, 0x0003, 0x0040),
+            (0x0039, 0x0084, 0x0003, 0x0040),
+            (0x0020, 0x0048, 0x000A, 0x0048),
+            (0x0021, 0x0010, 0x000B, 0x0048),
+            (0x002E, 0x0010, 0x0004, 0x0048),
+            (0x0009, 0x0068, 0x0009, 0x0008),
+            (0x0001, 0x0020, 0x0000, 0x0000),
+            (0x00E9, 0x0102, 0x0001, 0x8003),
+            (0x0391, 0x0101, 0x0001, 0x8000),
+            (0x4E2D, 0x0100, 0x0001, 0x8100),
+            (0x3000, 0x0048, 0x000A, 0x0088),
+            (0xFF21, 0x0181, 0x0001, 0x8080),
+            (0x0000, 0x0020, 0x0000, 0x0000),
+        ] {
+            assert_eq!(c1_flags(unit), c1, "U+{unit:04X} CT_CTYPE1");
+            assert_eq!(c2_class(unit), c2, "U+{unit:04X} CT_CTYPE2");
+            assert_eq!(c3_flags(unit), c3, "U+{unit:04X} CT_CTYPE3");
+        }
+    }
+
+    /// Beyond the capture, the documented classes: the bidirectional categories of ASCII's
+    /// separators and terminators, Latin-1's numbers and neutrals, the Arabic digits and the
+    /// fullwidth forms; the extended types of the letters with and without diacritics, the kana,
+    /// and the controls that are not spaces.
+    #[test]
+    fn the_documented_classes_beyond_the_capture() {
+        for (unit, c2) in [
+            (0x000A, C2_BLOCKSEPARATOR),
+            (0x000B, C2_SEGMENTSEPARATOR),
+            (0x000C, C2_WHITESPACE),
+            (0x0023, C2_EUROPETERMINATOR),
+            (0x002B, C2_EUROPESEPARATOR),
+            (0x002C, C2_COMMONSEPARATOR),
+            (0x002F, C2_COMMONSEPARATOR),
+            (0x003A, C2_COMMONSEPARATOR),
+            (0x007F, C2_NOTAPPLICABLE),
+            (0x0085, C2_BLOCKSEPARATOR),
+            (0x00A0, C2_COMMONSEPARATOR),
+            (0x00A3, C2_EUROPETERMINATOR),
+            (0x00AA, C2_LEFTTORIGHT),
+            (0x00B2, C2_EUROPENUMBER),
+            (0x00D7, C2_OTHERNEUTRAL),
+            (0x0192, C2_LEFTTORIGHT),
+            (0x0660, C2_ARABICNUMBER),
+            (0x06F0, C2_EUROPENUMBER),
+            (0x0966, C2_LEFTTORIGHT),
+            (0x2014, C2_OTHERNEUTRAL),
+            (0x2028, C2_WHITESPACE),
+            (0x2029, C2_BLOCKSEPARATOR),
+            (0x20AC, C2_EUROPETERMINATOR),
+            (0xFEFF, C2_NOTAPPLICABLE),
+            (0xFF0C, C2_COMMONSEPARATOR),
+            (0xFF10, C2_EUROPENUMBER),
+            (0xFF01, C2_OTHERNEUTRAL),
+            (0x05D0, C2_NOTAPPLICABLE),
+        ] {
+            assert_eq!(c2_class(unit), c2, "U+{unit:04X}");
+        }
+        const LETTER: u16 = C3_ALPHA | C3_DIACRITIC | C3_NONSPACING;
+        for (unit, c3) in [
+            (0x000A, C3_SYMBOL),
+            (0x001B, 0),
+            (0x007E, C3_HALFWIDTH | C3_SYMBOL),
+            (0x00A0, C3_SYMBOL),
+            (0x00C6, C3_ALPHA),
+            (0x00C9, LETTER),
+            (0x00DF, C3_ALPHA),
+            (0x00F8, C3_ALPHA),
+            (0x00FF, LETTER),
+            (0x0110, C3_ALPHA),
+            (0x0141, C3_ALPHA),
+            (0x0152, C3_ALPHA),
+            (0x0160, LETTER),
+            (0x017E, LETTER),
+            (0x0386, LETTER),
+            (0x03B1, C3_ALPHA),
+            (0x03CA, LETTER),
+            (0x0401, LETTER),
+            (0x0416, C3_ALPHA),
+            (0x0419, LETTER),
+            (0x0660, 0),
+            (0x20AC, C3_SYMBOL),
+            (0x3042, C3_ALPHA | C3_HIRAGANA),
+            (0x30A2, C3_ALPHA | C3_KATAKANA),
+            (0xAC00, C3_ALPHA),
+            (0xF900, C3_ALPHA | C3_IDEOGRAPH),
+            (0xFF10, C3_FULLWIDTH),
+            (0xFF01, C3_FULLWIDTH | C3_SYMBOL),
+            (0xFF41, C3_ALPHA | C3_FULLWIDTH),
+        ] {
+            assert_eq!(c3_flags(unit), c3, "U+{unit:04X}");
+        }
     }
 
     /// The runtime capture's CT_CTYPE1 tables: GetStringTypeA over every code page 1252 byte (each

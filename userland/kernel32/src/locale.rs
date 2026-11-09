@@ -316,8 +316,30 @@ fn to_narrow(
 const LCMAP_LOWERCASE: u32 = 0x0000_0100;
 const LCMAP_UPPERCASE: u32 = 0x0000_0200;
 
-/// GetStringType's one information type.
+/// GetStringType's information types: one at a time, each a classifier of one character.
 const CT_CTYPE1: u32 = 1;
+const CT_CTYPE2: u32 = 2;
+const CT_CTYPE3: u32 = 4;
+
+/// The classifier of a GetStringType information type: CT_CTYPE1's character types, CT_CTYPE2's
+/// bidirectional classes or CT_CTYPE3's extended types (`rtl::cp1252`). ERROR_INVALID_FLAGS for
+/// anything else, combinations included.
+fn classifier(info: u32) -> Result<fn(u16) -> u16, Failure> {
+    match info {
+        CT_CTYPE1 => Ok(cp1252::c1_flags),
+        CT_CTYPE2 => Ok(cp1252::c2_class),
+        CT_CTYPE3 => Ok(cp1252::c3_flags),
+        _ => refused(ERROR_INVALID_FLAGS),
+    }
+}
+
+/// GetStringType's output: ERROR_INVALID_PARAMETER for none (the utility fixture's capture).
+fn check_types(out: &OutBuf<'_, u16>) -> Result<(), Failure> {
+    if out.is_null() {
+        return refused(ERROR_INVALID_PARAMETER);
+    }
+    Ok(())
+}
 
 /// A narrow source: -1 is through its terminator, which counts; zero and anything below -1 are
 /// ERROR_INVALID_PARAMETER.
@@ -446,8 +468,9 @@ fn map_wide(
     Ok(count as i32)
 }
 
-/// GetStringTypeA: CT_CTYPE1 classification of code page 1252 bytes, through Unicode (the locale is
-/// the one this surface has). ERROR_INVALID_FLAGS for another information type.
+/// GetStringTypeA: the CT_CTYPE1, CT_CTYPE2 or CT_CTYPE3 classification of code page 1252 bytes,
+/// through Unicode (the locale is the one this surface has). ERROR_INVALID_FLAGS for another
+/// information type; ERROR_INVALID_PARAMETER for a zero count or no output.
 ///
 /// # Safety
 ///
@@ -461,7 +484,7 @@ pub unsafe extern "system" fn get_string_type_a(
     out: *mut u16,
 ) -> u32 {
     // SAFETY: the caller's source and output (the contract: a flag word for each source unit,
-    // which bounds the call's writes).
+    // which bounds the call's writes; a null output, which the call refuses, holds none).
     let (src, out) = unsafe { (Counted::new(src, count), OutBuf::new(out, usize::MAX)) };
     bool_answer(string_type_narrow(info, src, out))
 }
@@ -472,20 +495,20 @@ fn string_type_narrow(
     src: Counted<'_, u8>,
     mut out: OutBuf<'_, u16>,
 ) -> Result<(), Failure> {
-    if info != CT_CTYPE1 {
-        return refused(ERROR_INVALID_FLAGS);
-    }
+    let classify = classifier(info)?;
     let src = narrow_source(&src)?;
+    check_types(&out)?;
     for (at, byte) in src.iter().enumerate() {
-        out.set(at, cp1252::c1_flags(cp1252::MB_TO_WC[byte as usize]));
+        out.set(at, classify(cp1252::MB_TO_WC[byte as usize]));
     }
     Ok(())
 }
 
-/// GetStringTypeW: classify each wide char (CT_CTYPE1 only), writing the flag words, with the NLS
-/// calls' conventions (those GetStringTypeA follows): a NUL-terminated source for a negative count,
-/// the terminator classified too; ERROR_INVALID_FLAGS for another information type. A zero count
-/// is ERROR_INVALID_PARAMETER, the output untouched (the runtime capture), as GetStringTypeA's is.
+/// GetStringTypeW: classify each wide char (CT_CTYPE1, CT_CTYPE2 or CT_CTYPE3), writing the flag
+/// words, with the NLS calls' conventions (those GetStringTypeA follows): a NUL-terminated source
+/// for a negative count, the terminator classified too; ERROR_INVALID_FLAGS for another
+/// information type. A zero count is ERROR_INVALID_PARAMETER, the output untouched (the runtime
+/// capture), as GetStringTypeA's is, and so is no output (the utility capture).
 ///
 /// # Safety
 ///
@@ -498,7 +521,7 @@ pub unsafe extern "system" fn get_string_type_w(
     out: *mut u16,
 ) -> u32 {
     // SAFETY: the caller's source and output (the contract: a flag word for each source unit,
-    // which bounds the call's writes).
+    // which bounds the call's writes; a null output, which the call refuses, holds none).
     let (src, out) = unsafe { (Counted::new(src, count), OutBuf::new(out, usize::MAX)) };
     bool_answer(string_type_wide(info, src, out))
 }
@@ -544,12 +567,11 @@ fn string_type_wide(
     src: Counted<'_, u16>,
     mut out: OutBuf<'_, u16>,
 ) -> Result<(), Failure> {
-    if info != CT_CTYPE1 {
-        return refused(ERROR_INVALID_FLAGS);
-    }
+    let classify = classifier(info)?;
     let src = wide_source(&src)?;
+    check_types(&out)?;
     for (at, unit) in src.iter().enumerate() {
-        out.set(at, cp1252::c1_flags(unit));
+        out.set(at, classify(unit));
     }
     Ok(())
 }

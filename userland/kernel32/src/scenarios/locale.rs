@@ -16,6 +16,7 @@ const LCMAP_UPPERCASE: u32 = 0x200;
 const LCMAP_SORTKEY: u32 = 0x400;
 const CT_CTYPE1: u32 = 1;
 const CT_CTYPE2: u32 = 2;
+const CT_CTYPE3: u32 = 4;
 const LOCALE_US: u32 = 0x409;
 
 /// Bytes whose conversions differ from Latin-1 or exercise the table's edges: ASCII, the euro sign,
@@ -244,19 +245,66 @@ fn get_string_type_w_classifies_ctype1() {
     );
 }
 
-/// GetStringTypeW refuses every info type but CT_CTYPE1 with 0; an empty count succeeds with
-/// nothing written (Windows 2000's GetStringTypeW checks its pointers, takes a
-/// negative count as terminated, and classifies `count` characters, none for zero — unlike the A
-/// form, whose conversion refuses a zero count). The source is not read for any of them.
+/// GetStringTypeA and GetStringTypeW answer CT_CTYPE2's bidirectional classes and CT_CTYPE3's
+/// extended types: the utility fixture's words for its string, through the code page for the A
+/// form (é as its byte), the terminator classified too.
+///
+/// Pins: kernel32.GetStringTypeA, kernel32.GetStringTypeW
+#[test]
+fn get_string_type_classifies_ctype2_and_ctype3() {
+    let narrow = b"Az09 !.\t\x01\xE9\0";
+    let wide: [u16; 15] = [
+        0x41, 0x7A, 0x30, 0x39, 0x20, 0x21, 0x2E, 0x09, 0x01, 0xE9, 0x0391, 0x4E2D, 0x3000, 0xFF21,
+        0,
+    ];
+    let ctype2: [u16; 15] = [1, 1, 3, 3, 0xA, 0xB, 4, 9, 0, 1, 1, 1, 0xA, 1, 0];
+    let ctype3: [u16; 15] = [
+        0x8040, 0x8040, 0x0040, 0x0040, 0x0048, 0x0048, 0x0048, 0x0008, 0x0000, 0x8003, 0x8000,
+        0x8100, 0x0088, 0x8080, 0x0000,
+    ];
+    for (info, words) in [(CT_CTYPE2, ctype2), (CT_CTYPE3, ctype3)] {
+        let mut out = [0xBEEFu16; 16];
+        assert_eq!(
+            unsafe { get_string_type_w(info, wide.as_ptr(), -1, out.as_mut_ptr()) },
+            1
+        );
+        assert_eq!(out[..15], words, "GetStringTypeW, info type {info}");
+        assert_eq!(out[15], 0xBEEF);
+
+        let mut out = [0xBEEFu16; 12];
+        assert_eq!(
+            unsafe { get_string_type_a(LOCALE_US, info, narrow.as_ptr(), -1, out.as_mut_ptr()) },
+            1
+        );
+        assert_eq!(out[..10], words[..10], "GetStringTypeA, info type {info}");
+        assert_eq!(
+            out[10..],
+            [words[14], 0xBEEF],
+            "the terminator, then untouched"
+        );
+    }
+}
+
+/// GetStringTypeW refuses an info type that is none of CT_CTYPE1, 2 and 3 (or a combination of
+/// them) with ERROR_INVALID_FLAGS, and a zero count or no output with ERROR_INVALID_PARAMETER,
+/// writing nothing. The source is not read for any of them.
 ///
 /// Pins: kernel32.GetStringTypeW
 #[test]
 fn get_string_type_w_refusals_and_empty_counts() {
     let mut out = [0xCCCCu16; 4];
+    for info in [0, 3, 8, CT_CTYPE1 | CT_CTYPE3] {
+        assert_eq!(
+            unsafe { get_string_type_w(info, unread(), 4, out.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(last_error(), 1004, "info type {info}");
+    }
     assert_eq!(
-        unsafe { get_string_type_w(CT_CTYPE2, unread(), 4, out.as_mut_ptr()) },
+        unsafe { get_string_type_w(CT_CTYPE1, unread(), 4, core::ptr::null_mut()) },
         0
     );
+    assert_eq!(last_error(), 87, "no output");
     assert_eq!(
         unsafe { get_string_type_w(CT_CTYPE1, unread(), 0, out.as_mut_ptr()) },
         0
@@ -987,6 +1035,7 @@ fn get_string_type_ex_answers_as_get_string_type() {
         for (info, count) in [
             (CT_CTYPE1, -1),
             (CT_CTYPE2, -1),
+            (CT_CTYPE3, -1),
             (3, -1),
             (CT_CTYPE1, 4),
             (CT_CTYPE1, 0),
@@ -1023,6 +1072,18 @@ fn get_string_type_ex_answers_as_get_string_type() {
             );
         }
     }
+    // No output: ERROR_INVALID_PARAMETER, as the plain forms answer it.
+    let none = core::ptr::null_mut();
+    assert_eq!(
+        unsafe { get_string_type_ex_a(0x0400, CT_CTYPE1, narrow.as_ptr(), -1, none) },
+        0
+    );
+    assert_eq!(last_error(), 87);
+    assert_eq!(
+        unsafe { get_string_type_ex_w(0x0400, CT_CTYPE1, wide.as_ptr(), -1, none) },
+        0
+    );
+    assert_eq!(last_error(), 87);
     let mut out = [0xBEEFu16; 20];
     assert_eq!(
         unsafe { get_string_type_ex_w(0x0400, CT_CTYPE1, wide.as_ptr(), -1, out.as_mut_ptr()) },
