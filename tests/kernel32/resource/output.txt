@@ -1,0 +1,180 @@
+# F2K capture of resource (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 10:14:35.67
+resource F2KT-SOURCE-CRC=0xC0D5EEA2
+>>> resource.exe finda
+== finda
+FindResourceA(101, RT_RCDATA): found=yes err=-
+FindResourceA("#101", RT_RCDATA): found=yes err=- same=yes
+FindResourceA("#0101", RT_RCDATA): found=yes err=- same=yes
+FindResourceA("#101", "#10"): found=yes err=- same=yes
+FindResourceA(NULL module, 101, RT_RCDATA): found=yes err=- same=yes
+FindResourceA("MIXEDNAME", RT_RCDATA): found=yes err=-
+FindResourceA("mixedname", RT_RCDATA): found=yes err=- same=yes
+FindResourceA("MixedName", RT_RCDATA): found=yes err=- same=yes
+FindResourceA(NULL module, "mixedName", RT_RCDATA): found=yes err=- same=yes
+FindResourceA("ITEM", "MYTYPE"): found=yes err=-
+FindResourceA("item", "mytype"): found=yes err=- same=yes
+FindResourceA("Item", "MyType"): found=yes err=- same=yes
+FindResourceA(7, 300): found=yes err=-
+FindResourceA("#7", "#300"): found=yes err=- same=yes
+FindResourceA(1, RT_STRING): found=yes err=-
+FindResourceA(200, RT_RCDATA) (two languages): found=yes err=-
+FindResourceA(201, RT_RCDATA) (neutral): found=yes err=-
+FindResourceA("#abc", RT_RCDATA): found=no err=1814
+FindResourceA("", RT_RCDATA): found=no err=1814
+FindResourceA(999, RT_RCDATA): found=no err=1814
+FindResourceA("NOSUCHNAME", RT_RCDATA): found=no err=1814
+FindResourceA(101, "NOSUCHTYPE"): found=no err=1813
+FindResourceA(101, 999): found=no err=1813
+FindResourceA(kernel32, 1, "MYTYPE"): found=no err=1813
+resource: done
+<<< exit code=0
+>>> resource.exe findw
+== findw
+FindResourceW(101, RT_RCDATA): found=yes err=-
+FindResourceW("#101", RT_RCDATA): found=yes err=- same=yes
+FindResourceW("#0101", RT_RCDATA): found=yes err=- same=yes
+FindResourceW("#101", "#10"): found=yes err=- same=yes
+FindResourceW(NULL module, 101, RT_RCDATA): found=yes err=- same=yes
+FindResourceW("MIXEDNAME", RT_RCDATA): found=yes err=-
+FindResourceW("mixedname", RT_RCDATA): found=yes err=- same=yes
+FindResourceW("MixedName", RT_RCDATA): found=yes err=- same=yes
+FindResourceW(NULL module, "mixedName", RT_RCDATA): found=yes err=- same=yes
+FindResourceW("ITEM", "MYTYPE"): found=yes err=-
+FindResourceW("item", "mytype"): found=yes err=- same=yes
+FindResourceW("Item", "MyType"): found=yes err=- same=yes
+FindResourceW(7, 300): found=yes err=-
+FindResourceW("#7", "#300"): found=yes err=- same=yes
+FindResourceW(1, RT_STRING): found=yes err=-
+FindResourceW(200, RT_RCDATA) (two languages): found=yes err=-
+FindResourceW(201, RT_RCDATA) (neutral): found=yes err=-
+FindResourceW("#abc", RT_RCDATA): found=no err=1814
+FindResourceW("", RT_RCDATA): found=no err=1814
+FindResourceW(999, RT_RCDATA): found=no err=1814
+FindResourceW("NOSUCHNAME", RT_RCDATA): found=no err=1814
+FindResourceW(101, "NOSUCHTYPE"): found=no err=1813
+FindResourceW(101, 999): found=no err=1813
+FindResourceW(kernel32, 1, "MYTYPE"): found=no err=1813
+resource: done
+<<< exit code=0
+>>> resource.exe findexa
+== findexa
+FindResourceExA(RT_RCDATA, 200, 0x0409): found=yes err=-
+FindResourceExA(RT_RCDATA, 200, 0x040C): found=yes err=-
+0x0409's and 0x040C's the same: no
+FindResourceExA(RT_RCDATA, 200, LANG_NEUTRAL) against 0x0409's: found=yes err=- same=yes
+FindResourceExA(RT_RCDATA, 200, SUBLANG_DEFAULT) against 0x0409's: found=yes err=- same=yes
+FindResourceExA(RT_RCDATA, 200, SUBLANG_SYS_DEFAULT) against 0x0409's: found=yes err=- same=yes
+FindResourceExA(RT_RCDATA, 200, 0x0809): found=no err=1815
+FindResourceExA(RT_RCDATA, 200, 0x0407): found=no err=1815
+FindResourceExA(RT_RCDATA, 201, 0x0409) (neutral): found=yes err=-
+FindResourceExA(RT_RCDATA, 201, LANG_NEUTRAL) (neutral): found=yes err=-
+FindResourceExA("MYTYPE", "ITEM", 0x0409): found=yes err=-
+FindResourceExA("mytype", "item", 0x0409): found=yes err=- same=yes
+FindResourceExA("#300", "#7", 0x0409): found=yes err=-
+FindResourceExA(RT_RCDATA, 101, 0x0409): found=yes err=-
+FindResourceExA(NULL module, RT_RCDATA, 101, 0x0409): found=yes err=- same=yes
+FindResourceExA(101, RT_RCDATA, 0x0409) (the name as the type): found=no err=1813
+FindResourceExA(RT_RCDATA, 999, 0x0409): found=no err=1814
+FindResourceExA("NOSUCHTYPE", 101, 0x0409): found=no err=1813
+resource: done
+<<< exit code=0
+>>> resource.exe findexw
+== findexw
+FindResourceExW(RT_RCDATA, 200, 0x0409): found=yes err=-
+FindResourceExW(RT_RCDATA, 200, 0x040C): found=yes err=-
+0x0409's and 0x040C's the same: no
+FindResourceExW(RT_RCDATA, 200, LANG_NEUTRAL) against 0x0409's: found=yes err=- same=yes
+FindResourceExW(RT_RCDATA, 200, SUBLANG_DEFAULT) against 0x0409's: found=yes err=- same=yes
+FindResourceExW(RT_RCDATA, 200, SUBLANG_SYS_DEFAULT) against 0x0409's: found=yes err=- same=yes
+FindResourceExW(RT_RCDATA, 200, 0x0809): found=no err=1815
+FindResourceExW(RT_RCDATA, 200, 0x0407): found=no err=1815
+FindResourceExW(RT_RCDATA, 201, 0x0409) (neutral): found=yes err=-
+FindResourceExW(RT_RCDATA, 201, LANG_NEUTRAL) (neutral): found=yes err=-
+FindResourceExW("MYTYPE", "ITEM", 0x0409): found=yes err=-
+FindResourceExW("mytype", "item", 0x0409): found=yes err=- same=yes
+FindResourceExW("#300", "#7", 0x0409): found=yes err=-
+FindResourceExW(RT_RCDATA, 101, 0x0409): found=yes err=-
+FindResourceExW(NULL module, RT_RCDATA, 101, 0x0409): found=yes err=- same=yes
+FindResourceExW(101, RT_RCDATA, 0x0409) (the name as the type): found=no err=1813
+FindResourceExW(RT_RCDATA, 999, 0x0409): found=no err=1814
+FindResourceExW("NOSUCHTYPE", 101, 0x0409): found=no err=1813
+resource: done
+<<< exit code=0
+>>> resource.exe load
+== load
+101 RT_RCDATA: SizeofResource=11 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 69 64 20 31 30 31 20 64 61 74 61 "id 101 data"
+MIXEDNAME RT_RCDATA: SizeofResource=10 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 6E 61 6D 65 64 20 64 61 74 61 "named data"
+ITEM MYTYPE: SizeofResource=11 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 63 75 73 74 6F 6D 20 74 79 70 65 "custom type"
+7 300: SizeofResource=8 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 74 79 70 65 20 33 30 30 "type 300"
+200 RT_RCDATA 0x0409: SizeofResource=7 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 65 6E 67 6C 69 73 68 "english"
+200 RT_RCDATA 0x040C: SizeofResource=8 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 66 72 61 6E 63 61 69 73 "francais"
+200 RT_RCDATA (FindResourceA): SizeofResource=7 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 65 6E 67 6C 69 73 68 "english"
+201 RT_RCDATA: SizeofResource=7 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 6E 65 75 74 72 61 6C "neutral"
+1 RT_STRING: SizeofResource=68 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 00 00 0C 00 66 00 69 00 72 00 73 00 74 00 20 00 73 00 74 00 72 00 69 00 6E 00 67 00 06 00 73 00 ... "....f.i.r.s.t. .s.t.r.i.n.g...s."
+7 RT_STRING: SizeofResource=106 err=- LoadResource: non-NULL=yes err=- LockResource: its argument=yes err=-
+  through NULL: SizeofResource the same=yes err=- LoadResource the same=yes err=-
+  inside the image: yes bytes: 00 00 00 00 00 00 00 00 25 00 61 00 20 00 6C 00 6F 00 6E 00 67 00 65 00 72 00 20 00 73 00 74 00 ... "........%.a. .l.o.n.g.e.r. .s.t."
+SizeofResource(NULL) = 0 err=1812
+LoadResource(NULL): non-NULL=no err=1812
+LockResource(NULL): non-NULL=no err=-
+resource: done
+<<< exit code=0
+>>> resource.exe free
+== free
+FreeResource(loaded) = 0 err=-
+the data still there: yes
+FreeResource(loaded) again = 0 err=-
+FreeResource(NULL) = 0 err=-
+resource: done
+<<< exit code=0
+>>> resource.exe stringa
+== stringa
+LoadStringA(1, 64) = 12 err=- text="first string" NUL at: 12
+LoadStringA(2, 64) = 6 err=- text="second" NUL at: 6
+LoadStringA(17, 64) = 9 err=- text="seventeen" NUL at: 9
+LoadStringA(100, 64) = 37 err=- text="a longer string for the short buffers" NUL at: 37
+LoadStringA(100, 8) = 7 err=- text="a longe" NUL at: 7
+LoadStringA(100, 1) = 0 err=- text="" NUL at: 0
+LoadStringA(100, 0) = -1 err=- text="################################################################" NUL at: -1
+LoadStringA(3, 64) = 0 err=- text="" NUL at: 0
+LoadStringA(500, 64) = 0 err=1814 text="" NUL at: 0
+LoadStringA(NULL instance, 1, 64) = 12 err=- text="first string" NUL at: 12
+resource: done
+<<< exit code=0
+>>> resource.exe stringw
+== stringw
+LoadStringW(1, 64) = 12 err=- text="first string" NUL at: 12
+LoadStringW(2, 64) = 6 err=- text="second" NUL at: 6
+LoadStringW(17, 64) = 9 err=- text="seventeen" NUL at: 9
+LoadStringW(100, 64) = 37 err=- text="a longer string for the short buffers" NUL at: 37
+LoadStringW(100, 8) = 7 err=- text="a longe" NUL at: 7
+LoadStringW(100, 1) = 0 err=- text="################################################################" NUL at: -1
+LoadStringW(3, 64) = 0 err=- text="" NUL at: 0
+LoadStringW(500, 64) = 0 err=1814 text="" NUL at: 0
+LoadStringW(NULL instance, 1, 64) = 12 err=- text="first string" NUL at: 12
+LoadStringW(100, size 0) = 37 err=- pointer given: yes
+  the string there: "a longer string for the short buffers"
+resource: done
+<<< exit code=0

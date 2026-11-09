@@ -1,0 +1,64 @@
+/*
+ * resource's resources: rc compiles them into resource.res, which links
+ * into resource.exe. The languages are given as numbers (no header is
+ * included): 9, 1 is LANG_ENGLISH, SUBLANG_ENGLISH_US (0x0409); 12, 1
+ * LANG_FRENCH, SUBLANG_FRENCH (0x040C); 0, 0 LANG_NEUTRAL,
+ * SUBLANG_NEUTRAL. rc stores a resource's name and a type's name in
+ * upper case, and writes RCDATA's strings without a terminator.
+ */
+
+LANGUAGE 9, 1
+
+/* RCDATA (type 10) by number, and by a name given in mixed case. */
+101 RCDATA
+BEGIN
+    "id 101 data"
+END
+
+MixedName RCDATA
+BEGIN
+    "named data"
+END
+
+/* A type of its own, by name and by number. */
+Item MyType
+BEGIN
+    "custom type"
+END
+
+7 300
+BEGIN
+    "type 300"
+END
+
+/* One resource in two languages, and one in the neutral language alone. */
+200 RCDATA
+BEGIN
+    "english"
+END
+
+LANGUAGE 12, 1
+
+200 RCDATA
+BEGIN
+    "francais"
+END
+
+LANGUAGE 0, 0
+
+201 RCDATA
+BEGIN
+    "neutral"
+END
+
+/* The strings (type 6, in blocks of 16: block 1 holds ids 0 to 15,
+ * block 2 ids 16 to 31, block 7 ids 96 to 111), in US English. */
+LANGUAGE 9, 1
+
+STRINGTABLE
+BEGIN
+    1 "first string"
+    2 "second"
+    17 "seventeen"
+    100 "a longer string for the short buffers"
+END

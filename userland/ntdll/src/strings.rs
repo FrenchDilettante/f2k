@@ -1,6 +1,7 @@
 //! The counted strings and the ANSI code page (`rtl::string`): the conversions kernel32's narrow
-//! calls hand their strings to, as Windows 2000's kernel32 does. A string a conversion allocates
-//! comes from the process heap, and RtlFreeUnicodeString returns it there.
+//! calls hand their strings to, and the upper-casing and number reading its resource names go
+//! through, as Windows 2000's kernel32 does. A string a conversion allocates comes from the process
+//! heap, and RtlFreeUnicodeString returns it there.
 
 use rtl::status::STATUS_SUCCESS;
 use rtl::string::{self, AnsiString, UnicodeString};
@@ -84,6 +85,56 @@ pub unsafe extern "system" fn rtl_free_unicode_string(string: *mut UnicodeString
     string::free_unicode_string(unsafe { &mut *string }, |buffer| {
         sys::process_heap().free(&Native, 0, buffer as usize);
     });
+}
+
+/// RtlUpcaseUnicodeString: the string upper-cased into the destination, its buffer from the process
+/// heap when asked, or the destination's own, which may be the source's (see
+/// `rtl::string::upcase_unicode_string`).
+///
+/// # Safety
+///
+/// The source's buffer holds its length; unless allocating, the destination's holds its room.
+#[unsafe(export_name = "f2k_export_RtlUpcaseUnicodeString")]
+pub unsafe extern "system" fn rtl_upcase_unicode_string(
+    destination: *mut UnicodeString,
+    source: *const UnicodeString,
+    allocate_destination: u32,
+) -> u32 {
+    // SAFETY: the caller's contract. The source is read whole first: the destination may be the
+    // same structure, upper-cased in place.
+    unsafe {
+        let source = source.read();
+        string::upcase_unicode_string(
+            &mut *destination,
+            &source,
+            allocate_destination as u8 != 0,
+            allocate,
+        )
+    }
+}
+
+/// RtlUnicodeStringToInteger: the number the string spells in the base (0: decimal unless a prefix
+/// says otherwise), written to `value` (see `rtl::string::unicode_string_to_integer`);
+/// STATUS_INVALID_PARAMETER for a base other than 0, 2, 8, 10 and 16.
+///
+/// # Safety
+///
+/// The string's buffer holds its length; `value` is writable.
+#[unsafe(export_name = "f2k_export_RtlUnicodeStringToInteger")]
+pub unsafe extern "system" fn rtl_unicode_string_to_integer(
+    text: *const UnicodeString,
+    base: u32,
+    value: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's string, its buffer holding its length.
+    match string::unicode_string_to_integer(unsafe { (*text).units() }, base) {
+        Ok(number) => {
+            // SAFETY: the caller's place.
+            unsafe { value.write_unaligned(number) };
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
 }
 
 /// RtlUnicodeToMultiByteN: as many of the UTF-16 bytes' units as the ANSI buffer holds, converted;

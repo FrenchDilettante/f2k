@@ -13,8 +13,9 @@
 //!
 //! A path element (ULONG_PTR, as LdrFindResource_U takes them) is a numbered identifier when its
 //! high word is zero (IS_INTRESOURCE), else the address of a NUL-terminated UTF-16 name, matched
-//! exactly against the table's names. The third element, a language, is searched as the
-//! FormatMessage documentation describes ([`languages`]).
+//! exactly against the table's names. The third element, a language, is searched as [`languages`]
+//! orders it: zero as the FormatMessage documentation describes, any other language before its
+//! primary language's neutral sublanguage and the neutral language.
 //!
 //! The structures are plain data ([`Pod`]), each read whole through [`Memory`], by 32-bit user
 //! address: the process's own memory on the target, a model in the tests.
@@ -146,35 +147,39 @@ impl Defaults {
 /// The languages a search for `language` tries, in order, and whether it then takes any language
 /// the name has. The FormatMessage documentation's order for zero: the neutral language, the
 /// thread's, the user's default, the system's default, US English, then any. LANG_NEUTRAL with
-/// SUBLANG_DEFAULT is the user's default language, with SUBLANG_SYS_DEFAULT the system's (winnt.h);
-/// any other language is that language only.
+/// SUBLANG_DEFAULT is the user's default language, with SUBLANG_SYS_DEFAULT the system's (winnt.h).
+/// Any other language is that language, then its primary language's neutral sublanguage, then the
+/// neutral language, never another sublanguage of its own: Windows 2000 finds a neutral-only
+/// resource for 0x0409, and none for 0x0809 or 0x0407 among 0x0409 and 0x040C (the resource
+/// fixture's capture).
 pub fn languages(language: u16, defaults: Defaults) -> ([u16; 5], usize, bool) {
-    let mut list = [0u16; 5];
-    let count = match language {
+    let specific = match language {
         0 => {
-            list = [
+            let list = [
                 0,
                 defaults.thread,
                 defaults.user,
                 defaults.system,
                 LANG_ENGLISH_US,
             ];
-            5
+            return (list, 5, true);
         }
-        _ if language & 0x3FF == 0 && language >> 10 == SUBLANG_DEFAULT => {
-            list[0] = defaults.user;
-            1
-        }
-        _ if language & 0x3FF == 0 && language >> 10 == SUBLANG_SYS_DEFAULT => {
-            list[0] = defaults.system;
-            1
-        }
-        _ => {
-            list[0] = language;
-            1
-        }
+        _ if language & 0x3FF == 0 && language >> 10 == SUBLANG_DEFAULT => defaults.user,
+        _ if language & 0x3FF == 0 && language >> 10 == SUBLANG_SYS_DEFAULT => defaults.system,
+        _ => language,
     };
-    (list, count, language == 0)
+    let mut list = [specific, 0, 0, 0, 0];
+    let mut count = 1;
+    let primary = specific & 0x3FF;
+    if primary != specific {
+        list[count] = primary;
+        count += 1;
+    }
+    if primary != 0 {
+        // The neutral language, the list's zero.
+        count += 1;
+    }
+    (list, count, false)
 }
 
 /// A path element (ULONG_PTR): a numbered identifier, or the address of a NUL-terminated UTF-16
@@ -523,7 +528,7 @@ mod tests {
     }
 
     /// The documented search order for language zero; the defaults LANG_NEUTRAL stands for; any
-    /// other language alone.
+    /// other language, then its primary language's neutral sublanguage, then the neutral one.
     #[test]
     fn the_languages_a_search_tries() {
         let defaults = Defaults {
@@ -535,12 +540,22 @@ mod tests {
             languages(0, defaults),
             ([0, 0x0407, 0x040C, 0x0410, 0x0409], 5, true)
         );
-        assert_eq!(languages(0x0400, defaults).0[0], 0x040C);
-        assert_eq!(languages(0x0400, defaults).1, 1);
-        assert_eq!(languages(0x0800, defaults).0[0], 0x0410);
         assert_eq!(
-            languages(0x040C, defaults),
-            ([0x040C, 0, 0, 0, 0], 1, false)
+            languages(0x0400, defaults),
+            ([0x040C, 0x000C, 0, 0, 0], 3, false)
+        );
+        assert_eq!(
+            languages(0x0800, defaults),
+            ([0x0410, 0x0010, 0, 0, 0], 3, false)
+        );
+        assert_eq!(
+            languages(0x0809, defaults),
+            ([0x0809, 0x0009, 0, 0, 0], 3, false)
+        );
+        // A primary language's neutral sublanguage falls back on the neutral language alone.
+        assert_eq!(
+            languages(0x0009, defaults),
+            ([0x0009, 0, 0, 0, 0], 2, false)
         );
     }
 
@@ -584,6 +599,22 @@ mod tests {
             .copy_from_slice(&0x0809u32.to_le_bytes());
         let entry = find_message(&memory, BASE, 11, 0, 2, defaults).unwrap();
         assert_eq!(text(&memory, entry), "fichier\r\n");
+    }
+
+    /// A language given finds the neutral language's resource when it has none of its own, but
+    /// never another sublanguage's: the messages are US English and French.
+    #[test]
+    fn a_language_falls_back_on_the_neutral_one() {
+        let memory = process();
+        let hello = 0x0001_0000;
+        for language in [0x0409, 0x0407, 0x0400] {
+            let neutral = find_data(&memory, BASE, &[6, hello, language], Defaults::F2K);
+            assert!(neutral.is_ok(), "{language:#06x}");
+        }
+        assert_eq!(
+            find_message(&memory, BASE, 11, 0x0809, 2, Defaults::F2K),
+            Err(STATUS_RESOURCE_LANG_NOT_FOUND)
+        );
     }
 
     /// Names match exactly; each level's miss has its own status; the directory walk finds tables,

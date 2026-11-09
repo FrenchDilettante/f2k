@@ -28,7 +28,8 @@
 //! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the lstr string functions ([`lstr`],
 //! their work under the pointer probes' exception handler), the clocks ([`time`], over the shared
 //! data page, [`shared`]), the system messages ([`message`], over ntdll's message calls and
-//! kernel32's own message table), virtual memory and the system's memory facts ([`vm`]), the
+//! kernel32's own message table), a module's resources ([`resource`], over ntdll's resource
+//! walk), virtual memory and the system's memory facts ([`vm`]), the
 //! paging file's mappings ([`filemap`]) and the ToolHelp snapshots of the processes and threads
 //! ([`toolhelp`]). The heap and Local/Global functions are the DLL's
 //! (src/main.rs and src/memory.s, over ntdll's heap and handle-table exports). The trivial natives
@@ -62,6 +63,7 @@ pub mod nt;
 pub mod ntcall;
 pub mod pipes;
 pub mod process;
+pub mod resource;
 pub mod shared;
 pub mod startup;
 pub mod stub;

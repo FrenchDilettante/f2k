@@ -43,6 +43,10 @@ title = "messages, timers and painting"
 key = "shutdown"
 title = "ending the session"
 
+[[group]]
+key = "resources"
+title = "resources"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -670,6 +674,24 @@ group = "window"
 args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
+
+# --- resources ------------------------------------------------------------------------------------
+
+[[export]]
+name = "LoadStringA"
+group = "resources"
+args = ["handle hInstance", "u32 uID", "ptr lpBuffer", "i32 nBufferMax"]
+impl = { stub = "not yet implemented" }
+ordinal = 432
+fails = "0"
+
+[[export]]
+name = "LoadStringW"
+group = "resources"
+args = ["handle hInstance", "u32 uID", "ptr lpBuffer", "i32 nBufferMax"]
+impl = { stub = "not yet implemented" }
+ordinal = 433
+fails = "0"
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
 # ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
@@ -2532,14 +2554,6 @@ ordinal = 430
 [[export]]
 name = "LoadRemoteFonts"
 ordinal = 431
-
-[[export]]
-name = "LoadStringA"
-ordinal = 432
-
-[[export]]
-name = "LoadStringW"
-ordinal = 433
 
 [[export]]
 name = "LockSetForegroundWindow"

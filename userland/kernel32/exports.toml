@@ -136,6 +136,10 @@ title = "processes"
 key = "pipes"
 title = "pipes"
 
+[[group]]
+key = "resources"
+title = "resources"
+
 # --- termination ----------------------------------------------------------------------------------
 
 [[export]]
@@ -2572,6 +2576,78 @@ impl = { native = "PeekNamedPipe" }
 ordinal = 545
 note = "NtFsControlFile's FSCTL_PIPE_PEEK into a block of the process heap"
 
+# --- resources ------------------------------------------------------------------------------------
+
+[[export]]
+name = "FindResourceA"
+group = "resources"
+args = ["handle hModule", "ptr lpName", "ptr lpType"]
+impl = { native = "FindResourceA" }
+ordinal = 183
+fails = "NULL"
+note = "the name, then the type: each a number (MAKEINTRESOURCE), \"#\" and what RtlUnicodeStringToInteger reads after it in base 10 (\"#abc\" is 0; past a word ERROR_INVALID_PARAMETER), or a name matched without regard to case (converted through the ANSI code page, upper-cased by RtlUpcaseUnicodeString); LdrFindResource_U in language 0; NULL is the program's module"
+
+[[export]]
+name = "FindResourceW"
+group = "resources"
+args = ["handle hModule", "ptr lpName", "ptr lpType"]
+impl = { native = "FindResourceW" }
+ordinal = 186
+fails = "NULL"
+note = "FindResourceA's, the names UTF-16"
+
+[[export]]
+name = "FindResourceExA"
+group = "resources"
+args = ["handle hModule", "ptr lpType", "ptr lpName", "u32 wLanguage"]
+impl = { native = "FindResourceExA" }
+ordinal = 184
+fails = "NULL"
+note = "the type, then the name, then the language: FindResourceA's lookup in the language given, then its primary language's neutral sublanguage, then the neutral language"
+
+[[export]]
+name = "FindResourceExW"
+group = "resources"
+args = ["handle hModule", "ptr lpType", "ptr lpName", "u32 wLanguage"]
+impl = { native = "FindResourceExW" }
+ordinal = 185
+fails = "NULL"
+note = "FindResourceExA's, the names UTF-16"
+
+[[export]]
+name = "LoadResource"
+group = "resources"
+args = ["handle hModule", "u32 hResInfo"]
+impl = { native = "LoadResource" }
+ordinal = 489
+fails = "NULL"
+note = "LdrAccessResource: the data's address in the mapped image; a NULL hResInfo is ERROR_RESOURCE_DATA_NOT_FOUND"
+
+[[export]]
+name = "SizeofResource"
+group = "resources"
+args = ["handle hModule", "u32 hResInfo"]
+impl = { native = "SizeofResource" }
+ordinal = 711
+fails = "0"
+note = "LdrAccessResource: the data's size; a NULL hResInfo is ERROR_RESOURCE_DATA_NOT_FOUND"
+
+[[export]]
+name = "LockResource"
+group = "resources"
+args = ["u32 hResData"]
+impl = { native = "LockResource" }
+ordinal = 503
+note = "its argument: LoadResource's handle is the data's address"
+
+[[export]]
+name = "FreeResource"
+group = "resources"
+args = ["u32 hResData"]
+impl = { native = "FreeResource" }
+ordinal = 202
+note = "obsolete on NT: FALSE, the last error untouched"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -3111,22 +3187,6 @@ name = "FindNextVolumeW"
 ordinal = 182
 
 [[export]]
-name = "FindResourceA"
-ordinal = 183
-
-[[export]]
-name = "FindResourceExA"
-ordinal = 184
-
-[[export]]
-name = "FindResourceExW"
-ordinal = 185
-
-[[export]]
-name = "FindResourceW"
-ordinal = 186
-
-[[export]]
 name = "FindVolumeClose"
 ordinal = 187
 
@@ -3154,10 +3214,6 @@ ordinal = 197
 [[export]]
 name = "FreeLibraryAndExitThread"
 ordinal = 201
-
-[[export]]
-name = "FreeResource"
-ordinal = 202
 
 [[export]]
 name = "FreeUserPhysicalPages"
@@ -3797,10 +3853,6 @@ name = "LoadModule"
 ordinal = 488
 
 [[export]]
-name = "LoadResource"
-ordinal = 489
-
-[[export]]
 name = "LocalCompact"
 ordinal = 491
 
@@ -3815,10 +3867,6 @@ ordinal = 501
 [[export]]
 name = "LockFileEx"
 ordinal = 502
-
-[[export]]
-name = "LockResource"
-ordinal = 503
 
 [[export]]
 name = "MapUserPhysicalPages"
@@ -4335,10 +4383,6 @@ ordinal = 708
 [[export]]
 name = "ShowConsoleCursor"
 ordinal = 709
-
-[[export]]
-name = "SizeofResource"
-ordinal = 711
 
 [[export]]
 name = "SwitchToFiber"

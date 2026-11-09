@@ -1,0 +1,23 @@
+# resource: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# resources are compiled from resource.rc (rc) and linked into resource.exe. Built with /MD. No
+# handle or address prints: a FindResource result prints as found or not and as the same resource
+# as another call's or not, a resource's data as its size and bytes.
+description = "resource - a module's resources: FindResourceA/W and FindResourceExA/W by number, \"#number\" and name in any case, through the module and NULL, in two languages and the neutral one, and their errors at each level; LoadResource, LockResource, SizeofResource and FreeResource over the found data; user32's LoadStringA/W over a string table."
+kind = "sectioned"
+gate = true
+
+[pending]
+stringa = "user32's LoadStringA not yet implemented"
+stringw = "user32's LoadStringW not yet implemented"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them.
+finda = ["kernel32.FindResourceA"]
+findw = ["kernel32.FindResourceW"]
+findexa = ["kernel32.FindResourceExA"]
+findexw = ["kernel32.FindResourceExW"]
+load = ["kernel32.LoadResource", "kernel32.LockResource", "kernel32.SizeofResource"]
+free = ["kernel32.FreeResource"]
+stringa = ["user32.LoadStringA"]
+stringw = ["user32.LoadStringW"]

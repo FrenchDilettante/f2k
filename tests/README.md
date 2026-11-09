@@ -151,6 +151,10 @@ The fixtures:
   It never calls `ExitWindowsEx`: the parameters only order a session's end, and each process's are its own.
   Built with `/MD`.
   Awaited: built and captured on the next trip to the real machine.
+- `resource` - the program's own resources (`resource.rc`, compiled by the resource compiler and linked in): `FindResourceA`/`W` and `FindResourceExA`/`W` by number, by `"#number"` and by name in any case, through the module and through NULL, a resource in two languages and one in the neutral language, the arguments in the wrong order, and each level's error (type, name, language), kernel32's module included; `LoadResource`, `LockResource` and `SizeofResource` over each resource found, `FreeResource`'s return, and user32's `LoadStringA`/`W` over a string table (buffers that fit, short ones, missing ids).
+  No handle or address prints: a lookup prints whether it found the resource and whether it found the same one as another call, a resource's data its size and bytes.
+  Built with `/MD`, linking `user32.lib`.
+  Its `stringa` and `stringw` blocks wait for user32's `LoadStringA`/`W`.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.

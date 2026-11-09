@@ -27,6 +27,7 @@ mod lstr;
 mod modules;
 mod pipes;
 mod processes;
+mod resources;
 mod startup;
 mod threads;
 mod toolhelp;

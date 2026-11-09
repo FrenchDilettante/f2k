@@ -2164,6 +2164,40 @@ pub fn unicode_to_ansi_on_heap(units: &[u16]) -> Option<NonNull<u8>> {
     NonNull::new(narrow.buffer)
 }
 
+/// RtlUpcaseUnicodeString into kernel32's own buffer: `units` upper-cased into the first
+/// `units.len()` units of `out` (ntdll adds no terminator, so what follows them stays); the
+/// conversion's status when it fails.
+///
+/// # Panics
+///
+/// When `out` is shorter than `units`, or `units` past a counted string's reach: the callers check
+/// both.
+pub fn upcase_into(units: &[u16], out: &mut [u16]) -> Result<(), NtStatus> {
+    let source = UnicodeString::from_units(units).expect("a string within a counted one's reach");
+    let mut upper = crate::base::unicode_string(out, 0);
+    assert!(
+        upper.maximum_length >= source.length,
+        "a buffer short of the string"
+    );
+    // SAFETY: ntdll's export, over the string above (the caller's units) and into kernel32's
+    // buffer, no more than its room, which holds the string.
+    checked(unsafe { nt::RtlUpcaseUnicodeString(&mut upper, &source, 0) })
+}
+
+/// RtlUnicodeStringToInteger: the number `units` spell in `base` (0: decimal unless a prefix says
+/// otherwise); STATUS_INVALID_PARAMETER for a base ntdll does not read.
+///
+/// # Panics
+///
+/// When `units` are past a counted string's reach: the callers check.
+pub fn unicode_string_to_integer(units: &[u16], base: u32) -> Result<u32, NtStatus> {
+    let text = UnicodeString::from_units(units).expect("a string within a counted one's reach");
+    let mut value = 0;
+    // SAFETY: ntdll's export, over the string above (the caller's units) and into the local.
+    checked(unsafe { nt::RtlUnicodeStringToInteger(&text, base, &mut value) })?;
+    Ok(value)
+}
+
 // --- The clocks ----------------------------------------------------------------------------------
 
 /// RtlTimeToTimeFields: a time's civil fields.
@@ -2321,6 +2355,68 @@ pub fn find_message(
             MessageText::Ansi(InStr::new(text))
         })
     }
+}
+
+/// A resource's type or name as LdrFindResource_U takes it: a number, or a name, NUL-terminated
+/// (`ResourceId::name`).
+#[derive(Clone, Copy)]
+pub enum ResourceId<'a> {
+    Number(u16),
+    Name(TerminatedName<'a>),
+}
+
+/// A name's UTF-16 units, a terminator among them: ntdll reads to the first NUL, inside the slice.
+#[derive(Clone, Copy)]
+pub struct TerminatedName<'a>(&'a [u16]);
+
+impl<'a> TerminatedName<'a> {
+    /// The units, when they hold a terminator.
+    pub fn new(units: &'a [u16]) -> Option<Self> {
+        units.contains(&0).then_some(TerminatedName(units))
+    }
+}
+
+impl ResourceId<'_> {
+    /// The path element: the number, or the name's address. A name's address is never below 64
+    /// KiB (no allocation lies there), so its high word tells it from a number, as IS_INTRESOURCE
+    /// does.
+    fn element(&self) -> usize {
+        match self {
+            ResourceId::Number(number) => usize::from(*number),
+            ResourceId::Name(name) => name.0.as_ptr() as usize,
+        }
+    }
+}
+
+/// LdrFindResource_U: the IMAGE_RESOURCE_DATA_ENTRY that the type, the name and the language lead
+/// to in the module's resource directory, by its address; the walk's status for an element not
+/// found (STATUS_RESOURCE_TYPE_NOT_FOUND, _NAME_, _LANG_), STATUS_RESOURCE_DATA_NOT_FOUND for a
+/// module without resources.
+pub fn find_resource(
+    module: usize,
+    kind: ResourceId<'_>,
+    name: ResourceId<'_>,
+    language: u16,
+) -> Result<usize, NtStatus> {
+    let path = [kind.element(), name.element(), usize::from(language)];
+    let mut entry = 0;
+    // SAFETY: ntdll's export, over the module's mapped image (a module handle that is not one
+    // faults the caller, as on the platform), the path's names terminated inside their slices,
+    // into the local.
+    checked(unsafe { nt::LdrFindResource_U(module, path.as_ptr(), 3, &mut entry) })?;
+    Ok(entry)
+}
+
+/// LdrAccessResource: the data of the module's resource whose IMAGE_RESOURCE_DATA_ENTRY is at
+/// `entry` (an address LdrFindResource_U answered), its address and its size;
+/// STATUS_RESOURCE_DATA_NOT_FOUND for data that does not lie inside the image.
+pub fn access_resource(module: usize, entry: usize) -> Result<(usize, u32), NtStatus> {
+    let (mut address, mut size) = (0, 0);
+    // SAFETY: ntdll's export, reading the data entry at the caller's address in the module's
+    // mapped image (one that is not a data entry faults the caller, as on the platform), into the
+    // locals.
+    checked(unsafe { nt::LdrAccessResource(module, entry, &mut address, &mut size) })?;
+    Ok((address, size))
 }
 
 /// The arguments a message's inserts take, as FormatMessage's caller passes them: the address of

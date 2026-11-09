@@ -12,8 +12,9 @@
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
 # forward to; the environment; the process parameters and the environment a new process starts
 # with; the counted strings, the time conversions and the bitmaps kernel32's
-# narrow calls, file times and TLS slots go through; the handle tables, the resources and the
-# message calls kernel32's Local and Global memory and FormatMessage go through; RtlOpenCurrentUser,
+# narrow calls, resource names, file times and TLS slots go through; the handle tables, the
+# resources and the message calls kernel32's Local and Global memory, FindResource and
+# FormatMessage go through; RtlOpenCurrentUser,
 # advapi32's HKEY_CURRENT_USER; an image's NT headers and execution options; LdrInitializeThunk, a
 # fresh thread's first user-mode work; _chkstk, the stack probe a frame of a page or more calls),
 # and the F2K-internal entry point the kernel sends a thread to (`internal = true`: not a Windows
@@ -1212,6 +1213,22 @@ args = ["ptr<u32> BytesInMultiByteString", "ptr UnicodeString", "u32 BytesInUnic
 impl = { native = "RtlUnicodeToMultiByteSize" }
 ordinal = 662
 note = "code page 1252: a byte per unit"
+
+[[export]]
+name = "RtlUpcaseUnicodeString"
+group = "strings"
+args = ["ptr DestinationString", "ptr SourceString", "u32 AllocateDestinationString"]
+impl = { native = "RtlUpcaseUnicodeString" }
+ordinal = 668
+note = "each unit as LCMapString's LCMAP_UPPERCASE maps it; no terminator added. An allocated buffer is the process heap's, its room the length; into the caller's buffer (the source's for in place), STATUS_BUFFER_OVERFLOW (nothing written) when its room is short"
+
+[[export]]
+name = "RtlUnicodeStringToInteger"
+group = "strings"
+args = ["ptr String", "u32 Base", "ptr<u32> Value"]
+impl = { native = "RtlUnicodeStringToInteger" }
+ordinal = 657
+note = "blanks, a sign, a 0x/0o/0b prefix for base 0, then the digits up to the first that is not one, wrapping (none is 0); STATUS_INVALID_PARAMETER for a base other than 0, 2, 8, 10, 16"
 
 # --- the registry (src/registry.rs) ----------------------------------------------------------------
 
@@ -3459,10 +3476,6 @@ name = "RtlUnicodeStringToCountedOemString"
 ordinal = 656
 
 [[export]]
-name = "RtlUnicodeStringToInteger"
-ordinal = 657
-
-[[export]]
 name = "RtlUnicodeStringToOemSize"
 ordinal = 658
 
@@ -3485,10 +3498,6 @@ ordinal = 664
 [[export]]
 name = "RtlUpcaseUnicodeChar"
 ordinal = 667
-
-[[export]]
-name = "RtlUpcaseUnicodeString"
-ordinal = 668
 
 [[export]]
 name = "RtlUpcaseUnicodeStringToAnsiString"

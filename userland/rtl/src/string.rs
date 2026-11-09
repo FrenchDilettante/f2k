@@ -1,8 +1,10 @@
 //! Counted strings and the ANSI code page, as ntdll's string functions convert them
 //! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
-//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize): kernel32's narrow
-//! calls hand their strings to these, as Windows 2000's kernel32 does. The ANSI code page is 1252
-//! ([`crate::cp1252`]), a single-byte one: a character is one byte one way and one unit the other.
+//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize), upper-case them
+//! (RtlUpcaseUnicodeString) and read their numbers (RtlUnicodeStringToInteger): kernel32's narrow
+//! calls and its resource names hand their strings to these, as Windows 2000's kernel32 does. The
+//! ANSI code page is 1252 ([`crate::cp1252`]), a single-byte one: a character is one byte one way
+//! and one unit the other.
 //!
 //! The structures are the documented ANSI_STRING and UNICODE_STRING: the length and the room in
 //! bytes, then the buffer. A string a conversion allocates comes from the process heap, through the
@@ -11,6 +13,7 @@
 use crate::cp1252;
 use crate::status::{
     STATUS_BUFFER_OVERFLOW,
+    STATUS_INVALID_PARAMETER,
     STATUS_INVALID_PARAMETER_2,
     STATUS_NO_MEMORY,
     STATUS_SUCCESS,
@@ -196,6 +199,86 @@ pub fn free_unicode_string(string: &mut UnicodeString, free: impl FnOnce(*mut u8
     };
 }
 
+/// RtlUpcaseUnicodeString: `source` upper-cased into `destination`, each unit as LCMapString's
+/// LCMAP_UPPERCASE maps it ([`cp1252::map_case`]), no terminator added. With `allocate`, the buffer
+/// comes from `heap`, its room the string's length: STATUS_NO_MEMORY when it has none. Otherwise
+/// `destination`'s own buffer, which may be `source`'s (the string upper-cased in place):
+/// STATUS_BUFFER_OVERFLOW, nothing written, when its room is short of the string's length.
+///
+/// # Safety
+///
+/// `source`'s buffer holds its length; without `allocate`, `destination`'s holds its room.
+pub unsafe fn upcase_unicode_string(
+    destination: &mut UnicodeString,
+    source: &UnicodeString,
+    allocate: bool,
+    heap: impl FnOnce(usize) -> *mut u8,
+) -> u32 {
+    let length = source.length & !1;
+    if allocate {
+        let buffer = heap(usize::from(length)) as *mut u16;
+        if buffer.is_null() {
+            return STATUS_NO_MEMORY;
+        }
+        destination.buffer = buffer;
+        destination.maximum_length = length;
+    } else if length > destination.maximum_length {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    destination.length = length;
+    for index in 0..usize::from(length) / 2 {
+        // SAFETY: the caller's source holds `length` bytes and the destination's buffer as many;
+        // each unit is read before its place is written, the two buffers being one in place.
+        unsafe {
+            let unit = source.buffer.add(index).read();
+            destination
+                .buffer
+                .add(index)
+                .write(cp1252::map_case(unit, true));
+        }
+    }
+    STATUS_SUCCESS
+}
+
+/// RtlUnicodeStringToInteger: the number `text` spells in `base` (2, 8, 10 or 16; 0 for decimal
+/// unless a prefix says otherwise): blanks skipped, a sign, with base 0 a prefix `0x`
+/// (hexadecimal), `0o` (octal) or `0b` (binary), then the digits up to the first that is not one,
+/// wrapping around (no digits is zero). STATUS_INVALID_PARAMETER for any other base.
+pub fn unicode_string_to_integer(text: &[u16], base: u32) -> Result<u32, u32> {
+    if ![0, 2, 8, 10, 16].contains(&base) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut at = text.iter().take_while(|&&unit| unit <= b' ' as u16).count();
+    let negative = text.get(at) == Some(&(b'-' as u16));
+    if negative || text.get(at) == Some(&(b'+' as u16)) {
+        at += 1;
+    }
+    let mut base = base;
+    if base == 0 {
+        let prefix = (text.get(at), text.get(at + 1).map(|&unit| unit | 0x20));
+        base = match prefix {
+            (Some(0x30), Some(0x78)) => 16,
+            (Some(0x30), Some(0x6F)) => 8,
+            (Some(0x30), Some(0x62)) => 2,
+            _ => 10,
+        };
+        if base != 10 {
+            at += 2;
+        }
+    }
+    let value = text[at.min(text.len())..]
+        .iter()
+        .map_while(|&unit| char::from_u32(unit.into())?.to_digit(base))
+        .fold(0u32, |value, digit| {
+            value.wrapping_mul(base).wrapping_add(digit)
+        });
+    Ok(if negative {
+        value.wrapping_neg()
+    } else {
+        value
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +454,84 @@ mod tests {
             assert_eq!((allocated.length, allocated.maximum_length), (4, 5));
             assert_eq!(block, *b"A\x80CD\0");
         }
+    }
+
+    /// RtlUpcaseUnicodeString upper-cases each unit as LCMapString does: into a buffer of the
+    /// caller's (STATUS_BUFFER_OVERFLOW, untouched, when it is short), onto the heap, and in
+    /// place; it adds no terminator.
+    #[test]
+    fn a_unicode_string_upper_cases() {
+        let mut text: Vec<u16> = "Caf\u{E9} \u{FF}x1".encode_utf16().collect();
+        let upper: Vec<u16> = "CAF\u{C9} \u{178}X1".encode_utf16().collect();
+        let source = UnicodeString {
+            length: (2 * text.len()) as u16,
+            maximum_length: (2 * text.len()) as u16,
+            buffer: text.as_mut_ptr(),
+        };
+        let refuse = |_| -> *mut u8 { panic!("no allocation") };
+        let mut out = [0xFFFFu16; 9];
+        // SAFETY: the strings above, their buffers holding their lengths and rooms.
+        unsafe {
+            let mut short = empty_unicode(&mut out[..7]);
+            assert_eq!(
+                upcase_unicode_string(&mut short, &source, false, refuse),
+                STATUS_BUFFER_OVERFLOW
+            );
+            assert_eq!(out, [0xFFFF; 9]);
+            let mut destination = empty_unicode(&mut out[..8]);
+            assert_eq!(
+                upcase_unicode_string(&mut destination, &source, false, refuse),
+                STATUS_SUCCESS
+            );
+            assert_eq!(destination.length, 16);
+            assert_eq!(out[..8], upper[..]);
+            assert_eq!(out[8], 0xFFFF, "no terminator");
+            let mut block = [0u16; 8];
+            let mut allocated = UnicodeString::empty();
+            let status = upcase_unicode_string(&mut allocated, &source, true, |size| {
+                assert_eq!(size, 16);
+                block.as_mut_ptr() as *mut u8
+            });
+            assert_eq!(status, STATUS_SUCCESS);
+            assert_eq!((allocated.length, allocated.maximum_length), (16, 16));
+            assert_eq!(block[..], upper[..]);
+            let mut in_place = source;
+            assert_eq!(
+                upcase_unicode_string(&mut in_place, &source, false, refuse),
+                STATUS_SUCCESS
+            );
+        }
+        assert_eq!(text, upper);
+    }
+
+    /// RtlUnicodeStringToInteger reads the digits of its base up to the first that is not one (no
+    /// digits is zero); base 0 reads a prefix; another base is refused.
+    #[test]
+    fn a_unicode_string_reads_as_a_number() {
+        let read = |text: &str, base| {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            unicode_string_to_integer(&units, base)
+        };
+        for (text, base, value) in [
+            ("101", 10, 101u32),
+            ("0101", 10, 101),
+            ("abc", 10, 0),
+            ("", 10, 0),
+            ("1a", 10, 1),
+            ("70000", 10, 70000),
+            (" -2", 10, u32::MAX - 1),
+            ("+7", 10, 7),
+            ("0x10", 10, 0),
+            ("0x10", 0, 16),
+            ("0X1f", 0, 31),
+            ("ff", 16, 255),
+            ("0o17", 0, 15),
+            ("0b101", 0, 5),
+            ("101", 2, 5),
+            ("4294967296", 10, 0),
+        ] {
+            assert_eq!(read(text, base), Ok(value), "{text} in base {base}");
+        }
+        assert_eq!(read("10", 7), Err(STATUS_INVALID_PARAMETER));
     }
 }

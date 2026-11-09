@@ -32,37 +32,11 @@ pub fn key_name(image: &[u16], out: &mut [u16]) -> Option<usize> {
     Some(length)
 }
 
-/// The number a text spells, as RtlUnicodeStringToInteger reads it with base 0: blanks skipped, a
-/// sign, then `0x` (hexadecimal), `0o` (octal) or `0b` (binary), decimal otherwise; the digits up
-/// to the first that is not one (or the text's NUL), wrapping around.
+/// The number a text spells, as RtlUnicodeStringToInteger reads it with base 0
+/// ([`crate::string::unicode_string_to_integer`]), up to the text's NUL.
 pub fn text_number(text: &[u16]) -> u32 {
     let text = &text[..crate::cstr::nul_len(text)];
-    let mut at = text.iter().take_while(|&&unit| unit <= b' ' as u16).count();
-    let negative = text.get(at) == Some(&(b'-' as u16));
-    if negative || text.get(at) == Some(&(b'+' as u16)) {
-        at += 1;
-    }
-    let prefix = (text.get(at), text.get(at + 1).map(|&unit| unit | 0x20));
-    let base = match prefix {
-        (Some(0x30), Some(0x78)) => 16,
-        (Some(0x30), Some(0x6F)) => 8,
-        (Some(0x30), Some(0x62)) => 2,
-        _ => 10,
-    };
-    if base != 10 {
-        at += 2;
-    }
-    let value = text[at..]
-        .iter()
-        .map_while(|&unit| char::from_u32(unit.into())?.to_digit(base))
-        .fold(0u32, |value, digit| {
-            value.wrapping_mul(base).wrapping_add(digit)
-        });
-    if negative {
-        value.wrapping_neg()
-    } else {
-        value
-    }
+    crate::string::unicode_string_to_integer(text, 0).unwrap_or(0)
 }
 
 /// The units a REG_SZ value's number is read from: more than a dword's digits and the blanks
