@@ -197,9 +197,11 @@ disk: kernel limine
 	# the system DLLs the userland workspace builds. ntdll loads kernel32 from here into every
 	# process, and msvcrt, advapi32, user32 and gdi32 into the programs that import them (the
 	# kernel maps ntdll itself and reads kernel32's start thunk from here at boot). F2K's own
-	# programs go beside them, on the PATH every process starts with.
+	# programs go beside them, on the PATH every process starts with. The kernel's image,
+	# ntoskrnl.exe, sits there too, where Windows 2000 keeps its kernel; the boot itself never
+	# reads it (the boot loader carries the image it maps).
 	mmd -i $(DISK_IMG)@@1M ::/WINNT ::/WINNT/system32
-	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) $(SYSTEM_EXES) ::/WINNT/system32/
+	mcopy -i $(DISK_IMG)@@1M $(SYSTEM_DLLS) $(SYSTEM_EXES) $(NTOSKRNL_EXE) ::/WINNT/system32/
 	# The sectioned corpus in \CORPUS, with the files fixture's data tree beside
 	# FILES.EXE and the two attributes git cannot carry (tests/kernel32/files/setup.bat
 	# sets them on the real machine).
