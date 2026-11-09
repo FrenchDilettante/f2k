@@ -16,7 +16,8 @@ tests/
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
 │               # shutparm
-├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
+├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
+│               # endsess
 ├── gdi32/      # guidc, gditext
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -162,10 +163,16 @@ The fixtures:
   `SeShutdownPrivilege` is enabled only to observe the calls that enable it, and disabled again before the section does anything but adjust or query the token.
   Built with `/MD`.
   Gated.
-- `exitwin` (user32) - `ExitWindowsEx` (`EWX_SHUTDOWN`, `EWX_REBOOT` and `EWX_POWEROFF`, with `EWX_FORCE` and `EWX_FORCEIFHUNG`, several action bits, undefined bits) and ntdll's `NtShutdownSystem` (each action, and out-of-range ones), all refused on the real machine for want of `SeShutdownPrivilege` enabled.
-  Before each call the program checks that its token holds the privilege disabled and its thread has no token of its own, and it never calls a logoff (`EWX_LOGOFF` is 0 and needs no privilege); every section runs only when named.
-  F2K checks no shutdown privilege, so these calls would really shut its test boot down: every block is skipped on F2K (`[skip]`).
+- `exitwin` (user32) - `ExitWindowsEx` (`EWX_SHUTDOWN`, `EWX_REBOOT` and `EWX_POWEROFF`, with `EWX_FORCE` and `EWX_FORCEIFHUNG`, several action bits, a nonzero `dwReserved`) and ntdll's `NtShutdownSystem` (each action, and out-of-range ones), all refused on the real machine for want of `SeShutdownPrivilege` enabled; and `ExitWindowsEx` with bits Windows 2000 does not define (0x20, 0x40), refused with `ERROR_ACCESS_DENIED` before the privilege check.
+  Before each call the program checks that its token holds the privilege disabled (and, but for the undefined bits' section, that its thread has no token of its own), and it never calls a logoff (`EWX_LOGOFF` is 0 and needs no privilege); every section runs only when named.
+  F2K checks no shutdown privilege, so the calls refused for want of it would really shut its test boot down: their blocks are skipped on F2K (`[skip]`).
+  The undefined bits' block runs on F2K, which refuses them as Windows 2000 does.
   Built with `/MD`.
+  Gated.
+- `endsess` (user32) - the session's end as a window procedure sees it, with its companion program `endkid.exe` (built beside it from `endkid.c`): `WM_QUERYENDSESSION` and `WM_ENDSESSION` sent with `SendMessageA`/`W` to the program's own windows, lParam 0 and `ENDSESSION_LOGOFF`, to a procedure answering TRUE, FALSE or `DefWindowProc`'s answer (the return, wParam, lParam, the thread it runs on), the window still there after `WM_ENDSESSION`, `DefWindowProcA`/`W`'s answers to both messages, and both sent to another thread's window.
+  The real machine's session's end cannot be captured: `endkid.exe`, a window answering `WM_QUERYENDSESSION` TRUE or FALSE that may ask for the session's end itself, is F2K's own, run by the session cases of `core/kernel/test_kernel.py`, never by the capture.
+  Built with `/MD`.
+  Awaited: built and captured on the next trip to the real machine.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
@@ -302,4 +309,5 @@ The harness never takes that line as a program's end, and takes the child's own 
 A block ends when its whole process tree has ended: the kernel prints a program's teardown audit line, and starts the next program, only once the program and every process descended from it have ended, and the harness takes the program's output up to that line, past the program's own end line (a `_P_OVERLAY` child prints after its parent has ended, as capture.bat's block holds it); the block's exit code is the program's own.
 A kernel case can pass the kernel its own options, the text before `--` (`screens`), through its `kernel_options`.
 The options `end-session=<flags>` and `session-wait=<ms>` drive the session's end (the `session-*` cases of `core/kernel/test_kernel.py`): the boot's first generated control event is taken for `ExitWindowsEx(<flags>)`, and each process's wait is shortened; a restart ends QEMU (its `-no-reboot`), which the harness takes for the boot's end after the kernel's restart line.
+The `session-windows` cases need no option: their program, the `endsess` fixture's companion `endkid.exe`, asks for the session's end itself, and they are skipped while that fixture awaits its real-machine build (a case's `awaits`).
 Host unit tests still read the checked-in `.exe` files directly (`include_bytes!`, test builds only).

@@ -26,34 +26,54 @@
 //! queued each time it wakes. A DPC cannot make a thread — making one waits for locks, and maps
 //! and writes another process's memory — so the keyboard's events wait for it.
 //!
-//! The session's end goes through the same console ([`crate::session`]): a request
+//! The session's end goes through the same server ([`crate::session`]): a request
 //! (ExitWindowsEx's, through the user server) waits here for the control thread, as an event does,
-//! and the control thread then asks each of the console's processes to end in turn, through the
-//! same thread at its CtrlRoutine, with CTRL_LOGOFF_EVENT or CTRL_SHUTDOWN_EVENT, and marks each
+//! and the control thread then asks each process the server knows to end in turn, and marks each
 //! process the session's end has reached. It asks them by their shutdown level, the highest first
 //! (SetProcessShutdownParameters, through the base server: Windows 2000's csrss keeps each
-//! process's level and flags with the process, and F2K's console keeps them with its entry).
+//! process's level and flags with the process, and F2K's server keeps them with its entry).
+//!
+//! The server knows more processes than the console's, as Windows 2000's csrss knows the session's
+//! processes, not only those attached to a console: one that enters win32k (at its first service,
+//! where Windows 2000's user32 has connected to csrss's user server already), one that sets its
+//! shutdown parameters, and the one that asks for the session's end are held too, without a
+//! CtrlRoutine until they connect to the console. No control event reaches such a process; the
+//! session's end does, through its windows ([`crate::session`]).
 
 use crate::ob::ObjectId;
 use crate::status::STATUS_INVALID_PARAMETER;
 
-/// How many processes the console holds: any process can be one of its.
-pub const CONSOLE_PROCESSES: usize = crate::process::MAX_PROCESSES;
+/// How many processes the server holds: any process can be one of its.
+pub const SERVER_PROCESSES: usize = crate::process::MAX_PROCESSES;
 
 /// How many raised events wait for the control thread at most (one more is dropped).
 const PENDING_EVENTS: usize = 16;
 
-/// One of the console's processes: its object, the group it belongs to, its CtrlRoutine, its
-/// shutdown level and flags (SetProcessShutdownParameters'), and whether the session's end under
-/// way has reached it.
+/// A process the server knows: its object; the group it belongs to and its CtrlRoutine once it is
+/// one of the console's (none for a process the console does not hold); its shutdown level and
+/// flags (SetProcessShutdownParameters'); and whether the session's end under way has reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ConsoleProcess {
+pub struct ServerProcess {
     pub process: ObjectId,
     pub group: u32,
-    pub routine: u32,
+    pub routine: Option<u32>,
     pub shutdown_level: u32,
     pub shutdown_flags: u32,
     pub reached: bool,
+}
+
+impl ServerProcess {
+    /// `process`, off the console, at the default shutdown level with no shutdown flag.
+    fn known(process: ObjectId) -> Self {
+        ServerProcess {
+            process,
+            group: 0,
+            routine: None,
+            shutdown_level: rtl::console::base::DEFAULT_SHUTDOWN_LEVEL,
+            shutdown_flags: 0,
+            reached: false,
+        }
+    }
 }
 
 /// A request for the session's end: ExitWindowsEx's flags, and the process that asked (ended
@@ -80,14 +100,15 @@ enum Session {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Delivery {
     pub event: u32,
-    pub targets: [Option<(ObjectId, u32)>; CONSOLE_PROCESSES],
+    pub targets: [Option<(ObjectId, u32)>; SERVER_PROCESSES],
 }
 
-/// The console's side of its control events, at the server's level: its processes, and the
-/// events raised and not yet taken by the control thread, oldest first.
+/// The console's side of its control events and the session's end, at the server's level: the
+/// processes the server knows, and the events raised and not yet taken by the control thread,
+/// oldest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Control {
-    processes: [Option<ConsoleProcess>; CONSOLE_PROCESSES],
+    processes: [Option<ServerProcess>; SERVER_PROCESSES],
     /// The raised events, each with its group: a ring, `first` the oldest, `count` of them.
     pending: [(u32, u32); PENDING_EVENTS],
     first: usize,
@@ -99,10 +120,10 @@ pub struct Control {
 }
 
 impl Control {
-    /// A console with no process and no event.
+    /// A server that knows no process, with no event.
     pub const fn new() -> Self {
         Control {
-            processes: [None; CONSOLE_PROCESSES],
+            processes: [None; SERVER_PROCESSES],
             pending: [(0, 0); PENDING_EVENTS],
             first: 0,
             count: 0,
@@ -111,23 +132,17 @@ impl Control {
         }
     }
 
-    /// Connect `process`, of group `group`, its CtrlRoutine `routine`, at the default shutdown
-    /// level with no shutdown flag: a connection it made before is replaced, its shutdown level
-    /// and flags kept. False when the console has no room for it.
+    /// Connect `process`, of group `group`, its CtrlRoutine `routine`, to the console, at the
+    /// default shutdown level with no shutdown flag: a connection it made before, or what the
+    /// server knew of it, is replaced, its shutdown level and flags kept. False when the server
+    /// has no room for it.
     pub fn connect(&mut self, process: ObjectId, group: u32, routine: u32) -> bool {
-        let mut entry = ConsoleProcess {
-            process,
+        let mut entry = ServerProcess {
             group,
-            routine,
-            shutdown_level: rtl::console::base::DEFAULT_SHUTDOWN_LEVEL,
-            shutdown_flags: 0,
-            reached: false,
+            routine: Some(routine),
+            ..ServerProcess::known(process)
         };
-        let slot = match self.slot_of(process) {
-            Some(slot) => Some(slot),
-            None => self.processes.iter().position(Option::is_none),
-        };
-        match slot {
+        match self.slot_for(process) {
             Some(slot) => {
                 if let Some(held) = self.processes[slot] {
                     entry.shutdown_level = held.shutdown_level;
@@ -140,9 +155,29 @@ impl Control {
         }
     }
 
+    /// The server learns of `process`: held from now on, off the console, at the default shutdown
+    /// level with no shutdown flag, unless it is held already (and stays as it is). False when the
+    /// server has no room for it.
+    pub fn know(&mut self, process: ObjectId) -> bool {
+        if self.slot_of(process).is_some() {
+            return true;
+        }
+        match self.slot_for(process) {
+            Some(slot) => {
+                self.processes[slot] = Some(ServerProcess::known(process));
+                true
+            }
+            None => false,
+        }
+    }
+
     /// SetProcessShutdownParameters' work for `process`, its flags taken already (any level is
-    /// kept, as Windows 2000 keeps it): false, nothing kept, when the console does not hold it.
+    /// kept, as Windows 2000 keeps it), the server learning of it if it had not: false, nothing
+    /// kept, only when the server has no room for it.
     pub fn set_shutdown_parameters(&mut self, process: ObjectId, level: u32, flags: u32) -> bool {
+        if !self.know(process) {
+            return false;
+        }
         let Some(held) = self
             .slot_of(process)
             .and_then(|slot| self.processes[slot].as_mut())
@@ -155,7 +190,7 @@ impl Control {
     }
 
     /// GetProcessShutdownParameters' work: `process`'s shutdown level and flags, the defaults for
-    /// a process the console does not hold.
+    /// a process the server does not know.
     pub fn shutdown_parameters(&self, process: ObjectId) -> (u32, u32) {
         self.slot_of(process)
             .and_then(|slot| self.processes[slot])
@@ -164,28 +199,34 @@ impl Control {
             })
     }
 
-    /// Disconnect `process` (its end): no event reaches it from now on. Nothing for a process the
-    /// console does not hold.
+    /// Forget `process` (its end): no event, nor the session's end, reaches it from now on, and its
+    /// shutdown parameters go. Nothing for a process the server does not know.
     pub fn disconnect(&mut self, process: ObjectId) {
         if let Some(slot) = self.slot_of(process) {
             self.processes[slot] = None;
         }
     }
 
-    /// The slot holding `process`'s connection.
+    /// The slot holding `process`.
     fn slot_of(&self, process: ObjectId) -> Option<usize> {
         self.processes
             .iter()
             .position(|held| held.is_some_and(|held| held.process == process))
     }
 
-    /// The console's processes in `group`, every one for group 0.
-    fn in_group(&self, group: u32) -> impl Iterator<Item = ConsoleProcess> + '_ {
+    /// The slot holding `process`, or a free one for it.
+    fn slot_for(&self, process: ObjectId) -> Option<usize> {
+        self.slot_of(process)
+            .or_else(|| self.processes.iter().position(Option::is_none))
+    }
+
+    /// The console's processes in `group`, every one for group 0, each with its CtrlRoutine.
+    fn in_group(&self, group: u32) -> impl Iterator<Item = (ObjectId, u32)> + '_ {
         self.processes
             .iter()
             .flatten()
-            .copied()
             .filter(move |held| group == 0 || held.group == group)
+            .filter_map(|held| held.routine.map(|routine| (held.process, routine)))
     }
 
     /// GenerateConsoleCtrlEvent's work: `event` raised for group `group`; STATUS_INVALID_PARAMETER,
@@ -223,20 +264,23 @@ impl Control {
         let (event, group) = self.pending[self.first];
         self.first = (self.first + 1) % PENDING_EVENTS;
         self.count -= 1;
-        let mut targets = [None; CONSOLE_PROCESSES];
+        let mut targets = [None; SERVER_PROCESSES];
         for (target, held) in targets.iter_mut().zip(self.in_group(group)) {
-            *target = Some((held.process, held.routine));
+            *target = Some(held);
         }
         Some(Delivery { event, targets })
     }
 
-    /// A request for the session's end, for the control thread to take. One already waiting or
-    /// under way stays the one: the session ends once, as first asked, and the request is
-    /// answered all the same (true when it was taken).
+    /// A request for the session's end, for the control thread to take, the server learning of
+    /// its caller if it had not (ExitWindowsEx's documentation: a logoff ends every process of the
+    /// session, so the caller's too). One already waiting or under way stays the one: the session
+    /// ends once, as first asked, and the request is answered all the same (true when it was
+    /// taken).
     pub fn request_session_end(&mut self, request: SessionRequest) -> bool {
         if self.session != Session::Running {
             return false;
         }
+        self.know(request.caller);
         self.session = Session::Requested(request);
         true
     }
@@ -261,19 +305,20 @@ impl Control {
         Some(request)
     }
 
-    /// The next process the session's end asks to end, marked reached, with its CtrlRoutine: of
-    /// those the console holds that the end has not reached, the one with the highest shutdown
-    /// level, the first in the console's order among equals; the caller once no other is left,
-    /// whatever its level. A process that connects while the session ends, or changes its level,
-    /// is reached in its turn. None once every process has been reached.
+    /// The next process the session's end asks to end, marked reached, with its CtrlRoutine when
+    /// it is one of the console's: of those the server knows that the end has not reached, the one
+    /// with the highest shutdown level, the first in the server's order among equals; the caller
+    /// once no other is left, whatever its level. A process the server learns of while the session
+    /// ends, or that changes its level meanwhile, is reached in its turn. None once every process
+    /// has been reached.
     ///
     /// That is Windows 2000's order: the highest level first, the caller last, every process
     /// starting at 0x280 until it changes its own with SetProcessShutdownParameters. Its flag,
     /// SHUTDOWN_NORETRY, changes nothing here: Windows ends such a process without its "End
     /// Program" dialog once the wait has passed, and F2K, which has no dialog, ends every process
     /// that way.
-    pub fn next_to_end(&mut self, caller: ObjectId) -> Option<(ObjectId, u32)> {
-        let unreached = |held: &Option<ConsoleProcess>| held.is_some_and(|held| !held.reached);
+    pub fn next_to_end(&mut self, caller: ObjectId) -> Option<(ObjectId, Option<u32>)> {
+        let unreached = |held: &Option<ServerProcess>| held.is_some_and(|held| !held.reached);
         let others = self
             .processes
             .iter()
@@ -574,7 +619,7 @@ mod tests {
         assert!(!control.has_pending());
     }
 
-    /// The session's end asks the console's processes in turn, in the console's order, the caller
+    /// The session's end asks the server's processes in turn, in the server's order, the caller
     /// last; a process that connects meanwhile in its turn, one that disconnects never.
     #[test]
     fn the_session_ends_with_the_caller_last() {
@@ -594,13 +639,25 @@ mod tests {
             Some(SessionRequest { flags: 1, caller })
         );
         assert!(!control.has_pending());
-        assert_eq!(control.next_to_end(caller), Some((process(1), 0x1000)));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(1), Some(0x1000)))
+        );
         assert!(control.connect(process(5), 8, 0x5000));
         control.disconnect(process(1));
-        assert_eq!(control.next_to_end(caller), Some((process(3), 0x3000)));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(3), Some(0x3000)))
+        );
         control.disconnect(process(4));
-        assert_eq!(control.next_to_end(caller), Some((process(5), 0x5000)));
-        assert_eq!(control.next_to_end(caller), Some((process(2), 0x2000)));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(5), Some(0x5000)))
+        );
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(2), Some(0x2000)))
+        );
         assert_eq!(control.next_to_end(caller), None);
         assert!(
             !control.request_session_end(SessionRequest { flags: 0, caller }),
@@ -608,7 +665,7 @@ mod tests {
         );
         control.session_ended();
         // Another session's end reaches every process again; a caller that is not the console's
-        // is never reached.
+        // is known from its request on, and reached last, with no CtrlRoutine.
         assert!(control.request_session_end(SessionRequest {
             flags: 0,
             caller: process(9)
@@ -619,18 +676,71 @@ mod tests {
         assert_eq!(
             reached,
             [
-                (process(2), 0x2000),
-                (process(3), 0x3000),
-                (process(5), 0x5000)
+                (process(2), Some(0x2000)),
+                (process(3), Some(0x3000)),
+                (process(5), Some(0x5000)),
+                (process(9), None)
             ]
         );
     }
 
+    /// The server knows processes the console does not hold: off the console, no event reaches
+    /// them and GenerateConsoleCtrlEvent finds none in their group, but the session's end does, in
+    /// their turn by level, with no CtrlRoutine. Knowing a process twice changes nothing; its
+    /// connection to the console keeps its parameters and gives it its routine; its end forgets
+    /// it.
+    #[test]
+    fn the_server_knows_processes_off_the_console() {
+        let mut control = Control::new();
+        assert!(control.connect(process(1), 8, 0x1000));
+        assert!(control.know(process(2)));
+        assert!(control.set_shutdown_parameters(process(3), 0x300, 0));
+        assert!(control.know(process(3)));
+        assert_eq!(control.shutdown_parameters(process(3)), (0x300, 0));
+        assert_eq!(
+            control.generate(0, process(2).index as u32),
+            Err(STATUS_INVALID_PARAMETER.0)
+        );
+        assert!(control.raise(0, 0));
+        let delivery = control.take().unwrap();
+        assert_eq!(
+            delivery
+                .targets
+                .iter()
+                .flatten()
+                .copied()
+                .collect::<std::vec::Vec<_>>(),
+            [(process(1), 0x1000)]
+        );
+        let caller = process(1);
+        assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
+        control.take_session_end();
+        assert_eq!(control.next_to_end(caller), Some((process(3), None)));
+        assert!(control.connect(process(2), 8, 0x2000));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(2), Some(0x2000)))
+        );
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(1), Some(0x1000)))
+        );
+        assert_eq!(control.next_to_end(caller), None);
+        control.session_ended();
+        assert!(control.connect(process(3), 12, 0x3000));
+        assert_eq!(control.shutdown_parameters(process(3)), (0x300, 0));
+        control.disconnect(process(3));
+        assert_eq!(
+            control.shutdown_parameters(process(3)),
+            (rtl::console::base::DEFAULT_SHUTDOWN_LEVEL, 0)
+        );
+    }
+
     /// Each process starts at the default shutdown level with no flag, and keeps what it set
-    /// across a second connection; one the console does not hold keeps nothing and reads the
-    /// defaults. The session's end asks the highest level first, levels outside the
-    /// applications' 0x100-0x3FF included, the console's order among equals, and the caller last
-    /// whatever its level.
+    /// across a second connection; one the console does not hold is known from its call on and
+    /// keeps what it set until its end. The session's end asks the highest level first, levels
+    /// outside the applications' 0x100-0x3FF included, the server's order among equals, and the
+    /// caller last whatever its level.
     #[test]
     fn the_session_ends_by_shutdown_level() {
         use rtl::console::base::{DEFAULT_SHUTDOWN_LEVEL, SHUTDOWN_NORETRY};
@@ -652,7 +762,9 @@ mod tests {
             control.shutdown_parameters(process(4)),
             (0x3FF, SHUTDOWN_NORETRY)
         );
-        assert!(!control.set_shutdown_parameters(process(9), 0x300, 0));
+        assert!(control.set_shutdown_parameters(process(9), 0x300, 0));
+        assert_eq!(control.shutdown_parameters(process(9)), (0x300, 0));
+        control.disconnect(process(9));
         assert_eq!(
             control.shutdown_parameters(process(9)),
             (DEFAULT_SHUTDOWN_LEVEL, 0)
@@ -661,13 +773,28 @@ mod tests {
         let caller = process(5);
         assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
         control.take_session_end();
-        assert_eq!(control.next_to_end(caller), Some((process(3), 0x3000)));
-        assert_eq!(control.next_to_end(caller), Some((process(4), 0x4100)));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(3), Some(0x3000)))
+        );
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(4), Some(0x4100)))
+        );
         // A level changed while the session ends counts from then on.
         assert!(control.set_shutdown_parameters(process(2), 0x301, 0));
-        assert_eq!(control.next_to_end(caller), Some((process(2), 0x2000)));
-        assert_eq!(control.next_to_end(caller), Some((process(1), 0x1000)));
-        assert_eq!(control.next_to_end(caller), Some((process(5), 0x5000)));
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(2), Some(0x2000)))
+        );
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(1), Some(0x1000)))
+        );
+        assert_eq!(
+            control.next_to_end(caller),
+            Some((process(5), Some(0x5000)))
+        );
         assert_eq!(control.next_to_end(caller), None);
         control.session_ended();
         // A process that disconnects and connects again starts over at the default level.

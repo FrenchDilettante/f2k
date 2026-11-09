@@ -41,7 +41,8 @@ The arguments are split as Microsoft's C runtime splits a command line: blanks s
 4. It prints `Shutting down QEMU.` (or `Restarting QEMU.`) and calls `ExitWindowsEx` with `EWX_SHUTDOWN` (or `EWX_REBOOT`), plus `EWX_FORCE` with `/c`.
 
 `ExitWindowsEx` returns once the request is taken.
-Then each console program is asked to end (`CTRL_SHUTDOWN_EVENT`; a program without a handler for it ends), `shutdown` itself last, and the computer stops on "It is now safe to turn off your computer." or restarts.
+Then each program is asked to end, `shutdown` itself last: a program with windows through them (`WM_QUERYENDSESSION`, then `WM_ENDSESSION`), a console program through `CTRL_SHUTDOWN_EVENT` (a program without a handler for it ends).
+The computer then stops on "It is now safe to turn off your computer." or restarts, unless a window answered FALSE, which cancels the shutdown.
 As on Windows 2000, `EWX_SHUTDOWN` does not turn the power off.
 
 ## Exit status

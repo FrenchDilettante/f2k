@@ -292,7 +292,8 @@ fn connect_thread(
 
 /// Connect the calling process to its window station and desktop, if its first win32k service has
 /// not already: a handle to each, not inheritable, in its handle table (see the module notes for
-/// which ones). STATUS_INSUFFICIENT_RESOURCES when the handle table is full.
+/// which ones), and the console server told of it (`crate::csr::know`).
+/// STATUS_INSUFFICIENT_RESOURCES when the handle table is full.
 #[cfg(target_arch = "x86")]
 fn connect_process(process: &crate::process::Process) -> Result<Connection, NtStatus> {
     if let Some(connection) = process.win32k() {
@@ -312,6 +313,9 @@ fn connect_process(process: &crate::process::Process) -> Result<Connection, NtSt
         desktop,
     };
     process.set_win32k(connection);
+    // The console server learns of the process, as Windows 2000's csrss learns of a process that
+    // loads user32: the session's end reaches it from now on, whether or not the console holds it.
+    crate::csr::know(process.object());
     Ok(connection)
 }
 

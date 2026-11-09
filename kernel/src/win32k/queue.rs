@@ -33,7 +33,9 @@
 //!
 //! SendMessage to another thread's window goes the same way, its sender waiting for the answer
 //! ([`send`], [`collect_reply`]); to a window of its own thread, the service names the
-//! procedure and user32 calls it itself, as Windows 2000's user32 does.
+//! procedure and user32 calls it itself, as Windows 2000's user32 does. So do the console server's
+//! WM_QUERYENDSESSION and WM_ENDSESSION at the session's end ([`server_send`]), the server, which
+//! has no queue, waiting on an event of its own ([`wait_for_server`]).
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -72,6 +74,7 @@ use rtl::user::{
     RECEIVED_SENT,
     WM_NCCREATE,
     WM_PAINT,
+    WM_QUERYENDSESSION,
     WM_QUIT,
     WM_TIMER,
 };
@@ -110,10 +113,11 @@ const WAKE_WORDS: usize = THREADS.div_ceil(32);
 /// Every kind of message a read takes when its caller names none.
 const ALL_KINDS: u32 = QS_INPUT | QS_POSTMESSAGE | QS_TIMER | QS_PAINT | QS_SENDMESSAGE | QS_HOTKEY;
 
-/// The default window procedure's answer: 1 to WM_NCCREATE (the creation goes on), 0 to the rest.
+/// The default window procedure's answer: 1 to WM_NCCREATE (the creation goes on) and to
+/// WM_QUERYENDSESSION (the session may end), 0 to the rest.
 pub fn default_answer(message: u32) -> LResult {
     match message {
-        WM_NCCREATE => 1,
+        WM_NCCREATE | WM_QUERYENDSESSION => 1,
         _ => 0,
     }
 }
@@ -214,6 +218,10 @@ enum State {
     Received,
     /// Answered: the sender collects the answer.
     Answered,
+    /// Never answered: its window or its receiver's queue went first. Only a send the server waits
+    /// on stays in this state, for the server to collect ([`server_reply`]); any other is answered
+    /// 0 then.
+    Dropped,
 }
 
 /// The structure a sent message's lParam points at, carried with it.
@@ -234,8 +242,12 @@ struct Sent {
     live: bool,
     generation: u16,
     receiver: Option<QueueId>,
-    /// The thread waiting for the answer; none for a message the window manager sent.
+    /// The thread waiting for the answer; none for a message the window manager or the server
+    /// sent.
     sender: Option<QueueId>,
+    /// The console server waits for the answer (the session's end, on its control thread, which
+    /// has no queue: see [`server_send`]).
+    server: bool,
     window: Option<WindowId>,
     hwnd: Hwnd,
     proc: u32,
@@ -255,6 +267,7 @@ impl Sent {
         generation: 0,
         receiver: None,
         sender: None,
+        server: false,
         window: None,
         hwnd: 0,
         proc: 0,
@@ -292,6 +305,9 @@ pub struct Queues {
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
     /// once the lock is let go.
     wakes: [u32; WAKE_WORDS],
+    /// A send the server waits on was answered or dropped since the last
+    /// [`Queues::take_server_wake`]: the server's event is set once the lock is let go.
+    server_wake: bool,
 }
 
 impl Queues {
@@ -347,6 +363,7 @@ impl Queues {
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
             addr_of_mut!((*queues).wakes).write([0; WAKE_WORDS]);
+            addr_of_mut!((*queues).server_wake).write(false);
         }
     }
 
@@ -374,6 +391,12 @@ impl Queues {
     /// The queues to wake, as a bit a thread record, the set emptied.
     pub fn take_wakes(&mut self) -> [u32; WAKE_WORDS] {
         core::mem::replace(&mut self.wakes, [0; WAKE_WORDS])
+    }
+
+    /// Whether the server's event is to be set (a send it waits on was answered or dropped), the
+    /// mark cleared.
+    pub fn take_server_wake(&mut self) -> bool {
+        core::mem::replace(&mut self.server_wake, false)
     }
 
     // --- The posted messages' pool ---------------------------------------------------------------
@@ -475,11 +498,17 @@ impl Queues {
         self.wake(receiver);
     }
 
-    /// Answer the sent message at `index` with `result`: its sender, if it still waits, collects
-    /// the answer; one nobody waits on goes back to the pool.
+    /// Answer the sent message at `index` with `result`: its sender, if it still waits, or the
+    /// server, collects the answer; one nobody waits on goes back to the pool.
     fn answer(&mut self, index: u16, result: LResult) {
         let sent = &mut self.sent[index as usize];
         sent.next = None;
+        if sent.server {
+            sent.state = State::Answered;
+            sent.result = result;
+            self.server_wake = true;
+            return;
+        }
         match sent.sender {
             Some(sender) if self.queues[sender.index as usize].generation == sender.generation => {
                 sent.state = State::Answered;
@@ -487,6 +516,43 @@ impl Queues {
                 self.wake(sender);
             }
             _ => self.free_sent(index),
+        }
+    }
+
+    /// The sent message at `index` will never be answered (its window or its receiver's queue
+    /// went): a send the server waits on is dropped, for the server to see, as no answer of the
+    /// window's; any other is answered 0, what SendMessage gives back then.
+    fn drop_unanswered(&mut self, index: u16) {
+        let sent = &mut self.sent[index as usize];
+        if sent.server {
+            sent.next = None;
+            sent.state = State::Dropped;
+            self.server_wake = true;
+        } else {
+            self.answer(index, 0);
+        }
+    }
+
+    /// Take the sent message at `index` off its receiver's list, where it waits to be handed out.
+    fn unlink_sent(&mut self, receiver: QueueId, index: u16) {
+        let mut previous = None;
+        let mut at = self.queues[receiver.index as usize].sent.head;
+        while let Some(entry) = at {
+            let next = self.sent[entry as usize].next;
+            if entry == index {
+                let list = &mut self.queues[receiver.index as usize].sent;
+                match previous {
+                    Some(p) => self.sent[p as usize].next = next,
+                    None => list.head = next,
+                }
+                if list.tail == Some(entry) {
+                    list.tail = previous;
+                }
+                self.sent[entry as usize].next = None;
+                return;
+            }
+            previous = Some(entry);
+            at = next;
         }
     }
 
@@ -502,8 +568,9 @@ impl Queues {
         Some(index)
     }
 
-    /// End the queue at `index`: what was posted to it goes, what was sent to it is answered 0, a
-    /// send it waits on is left to be dropped when answered, its timers go.
+    /// End the queue at `index`: what was posted to it goes, what was sent to it is answered 0 (or
+    /// dropped, for the server), a send it waits on is left to be dropped when answered, its
+    /// timers go.
     fn end_queue(&mut self, index: u16) {
         self.purge_posted(index, |_| true);
         let id = QueueId {
@@ -511,12 +578,12 @@ impl Queues {
             generation: self.queues[index as usize].generation,
         };
         while let Some(sent) = self.pop_sent(id) {
-            self.answer(sent, 0);
+            self.drop_unanswered(sent);
         }
         while let Some(sent) = self.queues[index as usize].receiving {
             self.queues[index as usize].receiving = self.sent[sent as usize].next;
             if self.sent[sent as usize].state == State::Received {
-                self.answer(sent, 0);
+                self.drop_unanswered(sent);
             } else {
                 self.sent[sent as usize].next = None;
             }
@@ -800,13 +867,14 @@ pub fn take(
     };
     let time = millis(now);
 
-    // The sent messages: a message another thread sent to a window destroyed since is answered 0
-    // and skipped (the window manager's own sends are delivered whatever became of the window).
+    // The sent messages: a message another thread or the server sent to a window destroyed since
+    // is answered 0 (dropped, for the server) and skipped (the window manager's own sends are
+    // delivered whatever became of the window).
     while let Some(index) = windows.queues.pop_sent(id) {
         let sent = windows.queues.sent[index as usize];
         let window_gone = sent.window.is_none_or(|w| !windows.is_live(w));
-        if sent.sender.is_some() && window_gone {
-            windows.queues.answer(index, 0);
+        if (sent.sender.is_some() || sent.server) && window_gone {
+            windows.queues.drop_unanswered(index);
             continue;
         }
         let queues = &mut windows.queues;
@@ -1007,7 +1075,7 @@ pub fn end_sent(windows: &mut Windows, caller: ThreadId, result: LResult) -> boo
 }
 
 /// ReplyMessage: answer the caller's innermost sent message with `result` now, when another thread
-/// sent it and waits; true when it did.
+/// or the server sent it and waits; true when it did.
 pub fn reply(windows: &mut Windows, caller: ThreadId, result: LResult) -> bool {
     let queues = &mut windows.queues;
     let Some(id) = queues.queue_of(caller) else {
@@ -1017,13 +1085,16 @@ pub fn reply(windows: &mut Windows, caller: ThreadId, result: LResult) -> bool {
         return false;
     };
     let sent = &mut queues.sent[index as usize];
-    if sent.sender.is_none() || sent.state != State::Received {
+    if (sent.sender.is_none() && !sent.server) || sent.state != State::Received {
         return false;
     }
-    let sender = sent.sender.expect("checked above");
+    let sender = sent.sender;
     sent.state = State::Answered;
     sent.result = result;
-    queues.wake(sender);
+    match sender {
+        Some(sender) => queues.wake(sender),
+        None => queues.server_wake = true,
+    }
     true
 }
 
@@ -1097,6 +1168,101 @@ pub fn collect_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Opt
         queues.queues[queue.index as usize].awaiting = None;
     }
     Some(result)
+}
+
+// --- The server's sends --------------------------------------------------------------------------
+
+/// Where a message the server sends goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerSending {
+    /// Queued for the window's thread: the server waits for the answer ([`server_reply`]).
+    Waiting(SentId),
+    /// Nowhere: the handle names no window, the window's procedure is the window manager's, its
+    /// thread has no queue, or the sent messages' pool is full.
+    Unreachable,
+}
+
+/// What became of a message the server sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerReply {
+    /// The window procedure's answer.
+    Answered(LResult),
+    /// Its window or its receiver's queue went before it was answered.
+    Dropped,
+}
+
+/// The console server's SendMessage, for the session's end (`crate::session`): `message` queued
+/// for the window `hwnd`'s thread as another thread's send is, the server, which has no queue,
+/// waiting for its answer on its own event ([`wait_for_server`]). Windows 2000's csrss sends its
+/// WM_QUERYENDSESSION and WM_ENDSESSION from a thread of its own, a GUI thread with a queue; F2K's
+/// server is the console's control thread, a system thread, so the answer is marked for it instead.
+pub fn server_send(
+    windows: &mut Windows,
+    hwnd: Hwnd,
+    message: u32,
+    wparam: WParam,
+    lparam: LParam,
+) -> ServerSending {
+    let Some(window) = windows.window_from_handle(hwnd) else {
+        return ServerSending::Unreachable;
+    };
+    let Some(proc) = windows.client_proc(window) else {
+        return ServerSending::Unreachable;
+    };
+    let thread = windows.window_thread(window);
+    let queues = &mut windows.queues;
+    let Some(receiver) = queues.queue_of(thread) else {
+        return ServerSending::Unreachable;
+    };
+    let Some(id) = queues.allocate_sent(Sent {
+        receiver: Some(receiver),
+        server: true,
+        window: Some(window),
+        hwnd,
+        proc,
+        message,
+        wparam,
+        lparam,
+        ..Sent::EMPTY
+    }) else {
+        return ServerSending::Unreachable;
+    };
+    queues.push_sent(receiver, id.index);
+    ServerSending::Waiting(id)
+}
+
+/// What became of the server's send `id`, once its receiver answered it or it was dropped (the
+/// record goes back to the pool); none while it waits.
+pub fn server_reply(windows: &mut Windows, id: SentId) -> Option<ServerReply> {
+    let queues = &mut windows.queues;
+    let sent = queues.sent_at(id)?;
+    let reply = match sent.state {
+        State::Answered => ServerReply::Answered(sent.result),
+        State::Dropped => ServerReply::Dropped,
+        State::Queued | State::Received => return None,
+    };
+    queues.free_sent(id.index);
+    Some(reply)
+}
+
+/// The server waits no more on its send `id` (its time ran out, or the receiving process ended): a
+/// message not handed out yet goes; one being delivered is left to its receiver, its answer then
+/// going nowhere; one answered or dropped goes back to the pool.
+pub fn server_abandon(windows: &mut Windows, id: SentId) {
+    let queues = &mut windows.queues;
+    let Some(sent) = queues.sent_at(id) else {
+        return;
+    };
+    match sent.state {
+        State::Queued => {
+            if let Some(receiver) = sent.receiver {
+                queues.unlink_sent(receiver, id.index);
+            }
+            queues.free_sent(id.index);
+        }
+        State::Received => queues.sent[id.index as usize].server = false,
+        State::Answered | State::Dropped => queues.free_sent(id.index),
+    }
 }
 
 /// DispatchMessage's step: the procedure the message goes to — WM_TIMER's TimerProc when its
@@ -1248,7 +1414,31 @@ mod target {
         }
     }
 
-    /// Name the queues' events. Once, at boot, before the first process.
+    /// The server's event: a synchronization event, set whenever a send the server waits on is
+    /// answered or dropped (see [`Queues::take_server_wake`]), waited on by the console's control
+    /// thread alone, which carries the session's end. Named and reached as the queues' events are.
+    struct ServerEvent(UnsafeCell<Event>);
+
+    // SAFETY: as for `QueueEvents`: touched directly once, by `init` at boot, then only through
+    // the dispatcher, by its address, at the dispatch level.
+    unsafe impl Sync for ServerEvent {}
+
+    static SERVER: ServerEvent = ServerEvent(UnsafeCell::new(Event::new(
+        EventKind::Synchronization,
+        false,
+    )));
+
+    impl ServerEvent {
+        /// The event's name: its header's address. No reference to the event is formed.
+        fn id(&self) -> WaitableId {
+            // SAFETY: a projection inside the static's own cell: it computes the header's address
+            // and reads nothing.
+            let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
+            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
+        }
+    }
+
+    /// Name the queues' events and the server's. Once, at boot, before the first process.
     pub fn init() {
         let _masked = crate::pcr::pcr().mask_guard();
         for event in &EVENTS.0 {
@@ -1256,6 +1446,8 @@ mod target {
             // on it or sets it yet, and interrupts are masked for the reference's life.
             unsafe { (*event.get()).init() };
         }
+        // SAFETY: as above, for the server's event.
+        unsafe { (*SERVER.0.get()).init() };
     }
 
     /// Run `f` on the locked window manager, then set the events of the queues it gave something,
@@ -1264,12 +1456,13 @@ mod target {
         passive: &mut At<Passive>,
         f: impl FnOnce(&mut WindowManager) -> R,
     ) -> R {
-        let (result, wakes) = {
+        let (result, wakes, server) = {
             let mut manager = crate::win32k::window::lock(passive);
             let result = f(&mut manager);
-            (result, manager.windows.queues.take_wakes())
+            let queues = &mut manager.windows.queues;
+            (result, queues.take_wakes(), queues.take_server_wake())
         };
-        if wakes.iter().any(|&word| word != 0) {
+        if server || wakes.iter().any(|&word| word != 0) {
             let mut dispatch = passive.raise::<Dispatch>();
             let dispatcher = crate::sched::DISPATCHER.get(&mut dispatch);
             for (word, bits) in wakes.iter().enumerate() {
@@ -1279,8 +1472,54 @@ mod target {
                     }
                 }
             }
+            if server {
+                dispatcher.set_event(SERVER.id(), EVENT_WAKE_INCREMENT);
+            }
         }
         result
+    }
+
+    /// [`with_manager`] for a caller that holds no passive token: the console's control thread,
+    /// carrying the session's end.
+    ///
+    /// # Panics
+    ///
+    /// The processor is above the passive level (see `crate::win32k::window::locked`).
+    pub fn locked<R>(f: impl FnOnce(&mut WindowManager) -> R) -> R {
+        assert_eq!(
+            crate::pcr::pcr().current(),
+            crate::interrupt::irql::PASSIVE,
+            "the window manager's bridge entered above the passive level"
+        );
+        // SAFETY: a passive entry (see `At::enter`): the ledger reads the passive level, and the
+        // token stays on this thread, dropped with this frame.
+        let mut passive = unsafe { At::<Passive>::enter() };
+        with_manager(&mut passive, f)
+    }
+
+    /// The server's wait for an answer to its send: until its event is set, or `also` (the
+    /// receiving process's object) signals, or for `interval` (100 ns units, relative). A system
+    /// thread's wait, in kernel mode.
+    pub fn wait_for_server(also: WaitableId, interval: i64) {
+        let objects = [SERVER.id(), also];
+        let _ = wait::wait_current_with(|dispatcher, me, stamp, replay| {
+            let timeout = wait::replay_timeout(
+                dispatcher.thread(me),
+                replay,
+                Some(interval),
+                stamp.interrupt_time,
+            );
+            dispatcher.wait_for_multiple(
+                me,
+                &objects,
+                false,
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                timeout,
+                stamp,
+            )
+        });
     }
 
     /// Wait on the queue of the thread record `thread` until something sets its event, or for
@@ -1310,7 +1549,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::{init, now, wait_on_queue, with_manager};
+pub use target::{init, locked, now, wait_for_server, wait_on_queue, with_manager};
 
 #[cfg(target_arch = "x86")]
 mod services {
@@ -1694,6 +1933,12 @@ pub(crate) mod rig {
             },
         )
         .unwrap();
+        let atom = register(m, OWNER);
+        (m, atom)
+    }
+
+    /// The class "Rig" registered for the process `owner`: its atom.
+    pub fn register(m: &mut WindowManager, owner: class::Owner) -> class::Atom {
         let name: Vec<u16> = "Rig".encode_utf16().collect();
         let wc = class::WndClassExW {
             cb_size: 48,
@@ -1713,18 +1958,16 @@ pub(crate) mod rig {
             win40_compat: true,
             ..class::RegisterFlags::default()
         };
-        let atom = m
-            .classes
+        m.classes
             .register_class(
                 &wc,
                 class::Name::Text(&name),
                 class::MenuArg::None,
-                OWNER,
+                owner,
                 flags,
                 DESKTOP,
             )
-            .unwrap();
-        (m, atom)
+            .unwrap()
     }
 
     /// A thread of the process `owner` (its thread object's slot `slot`, client id `client_id`),
@@ -2196,6 +2439,187 @@ mod tests {
         assert!(queue_by_client_id(&m.windows, 0x300).is_some());
         detach(&mut m.windows, b);
         assert_eq!(m.windows.queues.queue_of(b), None);
+    }
+
+    /// The server's sends: queued for the window's thread as another thread's are, the receiver
+    /// woken; the procedure's answer, or ReplyMessage's, marks the server's event and is collected
+    /// once. The default procedure answers WM_QUERYENDSESSION TRUE. A window the window manager
+    /// runs, or no window, is unreachable.
+    #[test]
+    fn the_server_sends_and_collects_the_answer() {
+        use rtl::user::{WM_ENDSESSION, WM_QUERYENDSESSION};
+        assert_eq!(default_answer(WM_QUERYENDSESSION), 1);
+        assert_eq!(default_answer(WM_ENDSESSION), 0);
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let ha = popup(m, atom, a);
+        deliver(m, a);
+        let desktop = m.windows.thread_desktop_window(a).unwrap();
+        let desktop = m.windows.handle_of(desktop);
+        assert_eq!(
+            server_send(&mut m.windows, desktop, WM_QUERYENDSESSION, 0, 0),
+            ServerSending::Unreachable
+        );
+        assert_eq!(
+            server_send(&mut m.windows, 0x7FFF_FFFC, WM_QUERYENDSESSION, 0, 0),
+            ServerSending::Unreachable
+        );
+
+        m.windows.queues.take_wakes();
+        let logoff = rtl::user::ENDSESSION_LOGOFF as LParam;
+        let ServerSending::Waiting(id) =
+            server_send(&mut m.windows, ha, WM_QUERYENDSESSION, 0, logoff)
+        else {
+            panic!("queued for the window's thread");
+        };
+        assert_eq!(
+            m.windows.queues.take_wakes()[0],
+            1 << a.0,
+            "the receiver woken"
+        );
+        assert!(!m.windows.queues.take_server_wake());
+        assert_eq!(server_reply(&mut m.windows, id), None);
+        let Taken::Sent(got) = read(m, a, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        let head = receipt_head(&m.windows, a, got, 0, 0).unwrap();
+        assert_eq!(
+            (
+                head.proc,
+                head.msg.hwnd,
+                head.msg.message,
+                head.msg.wparam,
+                head.msg.lparam
+            ),
+            (PROC, ha, WM_QUERYENDSESSION, 0, logoff)
+        );
+        assert_eq!(server_reply(&mut m.windows, id), None, "being delivered");
+        assert!(end_sent(&mut m.windows, a, 1));
+        assert!(m.windows.queues.take_server_wake());
+        assert_eq!(
+            m.windows.queues.take_wakes(),
+            [0; WAKE_WORDS],
+            "no thread woken"
+        );
+        assert_eq!(
+            server_reply(&mut m.windows, id),
+            Some(ServerReply::Answered(1))
+        );
+        assert_eq!(server_reply(&mut m.windows, id), None, "collected once");
+
+        // ReplyMessage answers the server too; the procedure's own answer is dropped.
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, ha, WM_ENDSESSION, 1, 0)
+        else {
+            panic!("queued");
+        };
+        read(m, a, &all(), 0);
+        assert!(reply(&mut m.windows, a, 0));
+        assert!(m.windows.queues.take_server_wake());
+        assert!(end_sent(&mut m.windows, a, 9));
+        assert_eq!(
+            server_reply(&mut m.windows, id),
+            Some(ServerReply::Answered(0))
+        );
+    }
+
+    /// A server's send whose window goes before it is read, or whose receiver's queue ends, is
+    /// dropped, not answered 0 (which would read as a refusal); one the server stops waiting on
+    /// goes from the receiver's list, or is left to the delivery under way, its answer going
+    /// nowhere.
+    #[test]
+    fn a_server_send_is_dropped_or_abandoned() {
+        use rtl::user::WM_QUERYENDSESSION;
+        let (m, atom) = manager();
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, hb, WM_QUERYENDSESSION, 0, 0)
+        else {
+            panic!("queued");
+        };
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        windows
+            .destroy_window_handle(classes, b, hb, &mut QueuePump)
+            .unwrap();
+        assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
+        assert!(m.windows.queues.take_server_wake());
+        assert_eq!(server_reply(&mut m.windows, id), Some(ServerReply::Dropped));
+
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, hb, WM_QUERYENDSESSION, 0, 0)
+        else {
+            panic!("queued");
+        };
+        detach(&mut m.windows, b);
+        assert_eq!(server_reply(&mut m.windows, id), Some(ServerReply::Dropped));
+
+        // Abandoned while queued: the receiver never sees it.
+        let b = thread(m, 3, 0x300);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, hb, WM_QUERYENDSESSION, 0, 0)
+        else {
+            panic!("queued");
+        };
+        server_abandon(&mut m.windows, id);
+        assert_eq!(server_reply(&mut m.windows, id), None);
+        assert_eq!(deliver(m, b), vec![]);
+        // Abandoned while delivered: the delivery ends with nobody to answer.
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, hb, WM_QUERYENDSESSION, 0, 0)
+        else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        server_abandon(&mut m.windows, id);
+        m.windows.queues.take_server_wake();
+        assert!(end_sent(&mut m.windows, b, 1));
+        assert!(!m.windows.queues.take_server_wake());
+        assert_eq!(server_reply(&mut m.windows, id), None);
+        assert!(
+            m.windows.queues.sent.iter().all(|s| !s.live),
+            "every record back"
+        );
+    }
+
+    /// The session's end's walk of a process's windows: its top-level windows only (not its
+    /// children, nor another process's, nor the desktop's), each asked once in z-order, then each
+    /// told once in the same order; the marks forgotten on demand.
+    #[test]
+    fn the_session_walks_a_process_s_top_level_windows() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread_of(m, 2, 0x200, OTHER_OWNER);
+        let first = popup(m, atom, a);
+        let second = popup(m, atom, a);
+        window_at(m, atom, a, WS_CHILD, first, 0, 0, 10, 10);
+        let other_atom = register(m, OTHER_OWNER);
+        let other = popup(m, other_atom, b);
+        deliver(m, a);
+        deliver(m, b);
+        let desktop = m.windows.thread_desktop_window(a).unwrap();
+        let z_order: Vec<Hwnd> = core::iter::successors(m.windows.first_child(desktop), |&w| {
+            m.windows.next_sibling(w)
+        })
+        .map(|w| m.windows.handle_of(w))
+        .filter(|&h| h == first || h == second)
+        .collect();
+        assert_eq!(z_order.len(), 2);
+        assert!(m.windows.has_session_windows(OWNER));
+        assert!(m.windows.has_session_windows(OTHER_OWNER));
+        assert!(!m.windows.has_session_windows(5));
+        let asked: Vec<Hwnd> =
+            core::iter::from_fn(|| m.windows.session_next_to_ask(OWNER)).collect();
+        assert_eq!(asked, z_order);
+        assert_eq!(m.windows.session_next_to_ask(OTHER_OWNER), Some(other));
+        let told: Vec<Hwnd> = core::iter::from_fn(|| m.windows.session_next_asked(OWNER)).collect();
+        assert_eq!(told, z_order);
+        assert_eq!(m.windows.session_next_asked(OWNER), None);
+        m.windows.session_forget(OTHER_OWNER);
+        assert_eq!(m.windows.session_next_asked(OTHER_OWNER), None);
+        assert_eq!(m.windows.session_next_to_ask(OTHER_OWNER), Some(other));
     }
 
     /// HWND_BROADCAST posts to every top-level window of the caller's desktop, its children not.

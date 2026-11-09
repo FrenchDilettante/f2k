@@ -7,12 +7,13 @@
  * Safety: this program must never shut down, restart or log
  * off the machine it is captured on.
  *
- * - Before every ExitWindowsEx or NtShutdownSystem call, guard() checks
- *   that this process's token holds SeShutdownPrivilege (its LUID looked
- *   up, and the public value 19) and that it is disabled, and that the
- *   thread has no token of its own (OpenThreadToken: ERROR_NO_TOKEN). If
- *   any of that fails, the section prints why and stops before the call.
- *   Nothing in this program enables a privilege.
+ * - Before every ExitWindowsEx or NtShutdownSystem call, the section's
+ *   guard checks that this process's token holds SeShutdownPrivilege (its
+ *   LUID looked up, and the public value 19) and that it is disabled
+ *   (token_guard()); in every section but undefined, guard() also checks
+ *   that the thread has no token of its own (OpenThreadToken:
+ *   ERROR_NO_TOKEN). If any of that fails, the section prints why and
+ *   stops before the call. Nothing in this program enables a privilege.
  * - Every ExitWindowsEx call carries an action bit, EWX_SHUTDOWN,
  *   EWX_REBOOT or EWX_POWEROFF, each of which needs the privilege.
  *   EWX_LOGOFF is 0, so a value with no action bit would be a logoff,
@@ -22,23 +23,28 @@
  *   program with no argument calls nothing. tests\capture.bat runs each
  *   by name.
  *
- * On F2K these sections never run (fixture.toml's skip): F2K checks no
- * shutdown privilege, so a call Windows 2000 refuses would really shut
- * the test boot down.
+ * On F2K the actions, flags and ntshutdown sections never run
+ * (fixture.toml's skip): F2K checks no shutdown privilege, so a call
+ * Windows 2000 refuses for want of it would really shut the test boot
+ * down. The undefined section runs on F2K too: Windows 2000 refuses its
+ * values before it looks at a privilege, and so does F2K. It checks only
+ * the process's token, as F2K serves no OpenThreadToken.
  *
  * Sections (each by name only):
  *
  *   actions     ExitWindowsEx with EWX_SHUTDOWN, EWX_REBOOT and
  *               EWX_POWEROFF, each alone, with EWX_FORCE, with
  *               EWX_FORCEIFHUNG and with both: the return and the error
- *   flags       ExitWindowsEx with values Windows 2000 does not document:
- *               two or three action bits together, an action with
- *               EWX_QUICKRESOLVE (0x20) or EWX_RESTARTAPPS (0x40), the
- *               later versions' names for bits Windows 2000 does not
- *               define, EWX_SHUTDOWN with a nonzero
- *               dwReserved: the return and the error (whether Windows 2000
- *               checks the flags before the privilege is not documented,
- *               so these are guarded and skipped on F2K like the rest)
+ *   flags       ExitWindowsEx with values Windows 2000 does not document
+ *               that reach its privilege check (ERROR_PRIVILEGE_NOT_HELD in
+ *               the capture): two or three action bits together, and
+ *               EWX_SHUTDOWN with a nonzero dwReserved: the return and the
+ *               error
+ *   undefined   ExitWindowsEx with an action and EWX_QUICKRESOLVE (0x20) or
+ *               EWX_RESTARTAPPS (0x40), the later versions' names for bits
+ *               Windows 2000 does not define: refused with
+ *               ERROR_ACCESS_DENIED before the privilege check, as the
+ *               capture shows: the return and the error
  *   ntshutdown  NtShutdownSystem (through GetProcAddress) with the
  *               actions ShutdownNoReboot (0), ShutdownReboot (1) and
  *               ShutdownPowerOff (2), and the out-of-range 3 and
@@ -80,10 +86,10 @@ static shutdown_system_fn shutdown_system;  /* NtShutdownSystem */
 
 static ULONG guard_buf[1024];           /* 4 KiB, aligned for the structure */
 
-/* 1 when SeShutdownPrivilege is held, disabled, in this process's token,
- * and the thread has no token of its own; 0 otherwise, having printed
- * why. `quiet`: print nothing when it holds. */
-static int guard(int quiet)
+/* 1 when SeShutdownPrivilege is held, disabled, in this process's token;
+ * 0 otherwise, having printed why. `quiet`: print nothing when it
+ * holds. */
+static int token_guard(int quiet)
 {
     TOKEN_PRIVILEGES *tp = (TOKEN_PRIVILEGES *)guard_buf;
     HANDLE token = NULL;
@@ -98,16 +104,6 @@ static int guard(int quiet)
     }
     if (luid.LowPart != SHUTDOWN_LUID || luid.HighPart != 0) {
         line("guard: SeShutdownPrivilege is not LUID 19 here: not calling");
-        return 0;
-    }
-    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &token)) {
-        CloseHandle(token);
-        line("guard: this thread has a token of its own: not calling");
-        return 0;
-    }
-    e = GetLastError();
-    if (e != ERROR_NO_TOKEN) {
-        line("guard: OpenThreadToken failed with err=%lu, not ERROR_NO_TOKEN: not calling", e);
         return 0;
     }
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
@@ -141,14 +137,42 @@ static int guard(int quiet)
         return 0;
     }
     if (!quiet) {
+        line("guard: SeShutdownPrivilege held and disabled in the process token: yes");
+    }
+    return 1;
+}
+
+/* 1 when the thread has no token of its own and SeShutdownPrivilege is
+ * held, disabled, in this process's token; 0 otherwise, having printed
+ * why. `quiet`: print nothing when it holds. */
+static int guard(int quiet)
+{
+    HANDLE token = NULL;
+    DWORD e;
+
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &token)) {
+        CloseHandle(token);
+        line("guard: this thread has a token of its own: not calling");
+        return 0;
+    }
+    e = GetLastError();
+    if (e != ERROR_NO_TOKEN) {
+        line("guard: OpenThreadToken failed with err=%lu, not ERROR_NO_TOKEN: not calling", e);
+        return 0;
+    }
+    if (!token_guard(1)) {
+        return 0;
+    }
+    if (!quiet) {
         line("guard: SeShutdownPrivilege held and disabled, no thread token: yes");
     }
     return 1;
 }
 
-/* ExitWindowsEx(flags, reserved), the guard checked first; 0 when the
- * section must stop (the guard failed, or the call succeeded). */
-static int exit_windows(const char *label, UINT flags, DWORD reserved)
+/* ExitWindowsEx(flags, reserved), the section's guard (`check`) checked
+ * first; 0 when the section must stop (the guard failed, or the call
+ * succeeded). */
+static int exit_windows(const char *label, UINT flags, DWORD reserved, int (*check)(int))
 {
     BOOL r;
 
@@ -156,7 +180,7 @@ static int exit_windows(const char *label, UINT flags, DWORD reserved)
         line("%s: no action bit, a logoff: never called", label);
         return 0;
     }
-    if (!guard(1)) {
+    if (!check(1)) {
         return 0;
     }
     arm();
@@ -195,7 +219,7 @@ static void sec_actions(void)
     for (a = 0; a < 3; a++) {
         for (m = 0; m < 4; m++) {
             sprintf(label, "%s%s", actions[a].name, modifiers[m].name);
-            if (!exit_windows(label, actions[a].flags | modifiers[m].flags, 0)) {
+            if (!exit_windows(label, actions[a].flags | modifiers[m].flags, 0, guard)) {
                 return;
             }
         }
@@ -215,9 +239,6 @@ static void sec_flags(void)
         { EWX_SHUTDOWN | EWX_POWEROFF, 0, "EWX_SHUTDOWN | EWX_POWEROFF" },
         { EWX_REBOOT | EWX_POWEROFF, 0, "EWX_REBOOT | EWX_POWEROFF" },
         { EWX_SHUTDOWN | EWX_REBOOT | EWX_POWEROFF, 0, "EWX_SHUTDOWN | EWX_REBOOT | EWX_POWEROFF" },
-        { EWX_SHUTDOWN | EWX_QUICKRESOLVE, 0, "EWX_SHUTDOWN | EWX_QUICKRESOLVE" },
-        { EWX_SHUTDOWN | EWX_RESTARTAPPS, 0, "EWX_SHUTDOWN | EWX_RESTARTAPPS" },
-        { EWX_REBOOT | EWX_QUICKRESOLVE, 0, "EWX_REBOOT | EWX_QUICKRESOLVE" },
         { EWX_SHUTDOWN, 1, "EWX_SHUTDOWN, dwReserved 1" },
     };
     int i;
@@ -226,7 +247,31 @@ static void sec_flags(void)
         return;
     }
     for (i = 0; i < (int)(sizeof calls / sizeof calls[0]); i++) {
-        if (!exit_windows(calls[i].name, calls[i].flags, calls[i].reserved)) {
+        if (!exit_windows(calls[i].name, calls[i].flags, calls[i].reserved, guard)) {
+            return;
+        }
+    }
+}
+
+/* --- undefined ----------------------------------------------------- */
+
+static void sec_undefined(void)
+{
+    static const struct {
+        UINT flags;
+        const char *name;
+    } calls[] = {
+        { EWX_SHUTDOWN | EWX_QUICKRESOLVE, "EWX_SHUTDOWN | EWX_QUICKRESOLVE" },
+        { EWX_SHUTDOWN | EWX_RESTARTAPPS, "EWX_SHUTDOWN | EWX_RESTARTAPPS" },
+        { EWX_REBOOT | EWX_QUICKRESOLVE, "EWX_REBOOT | EWX_QUICKRESOLVE" },
+    };
+    int i;
+
+    if (!token_guard(0)) {
+        return;
+    }
+    for (i = 0; i < (int)(sizeof calls / sizeof calls[0]); i++) {
+        if (!exit_windows(calls[i].name, calls[i].flags, 0, token_guard)) {
             return;
         }
     }
@@ -275,6 +320,7 @@ static void sec_ntshutdown(void)
 static const section_t sections[] = {
     { "actions", sec_actions, F2KT_NAMED },
     { "flags", sec_flags, F2KT_NAMED },
+    { "undefined", sec_undefined, F2KT_NAMED },
     { "ntshutdown", sec_ntshutdown, F2KT_NAMED },
     { NULL, NULL, 0 }
 };

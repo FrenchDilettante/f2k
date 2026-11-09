@@ -1,15 +1,18 @@
 # exitwin: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
-# with /MD. Every block is a shutdown Windows 2000 refuses for want of SeShutdownPrivilege enabled:
-# each call is made only after the program has checked its token holds the privilege disabled, and
-# no call is a logoff (EWX_LOGOFF needs no privilege). F2K checks no shutdown privilege, so the same
-# calls would really shut its test boot down: every block is skipped on F2K, never booted. Their
-# captures are what F2K's ExitWindowsEx and NtShutdownSystem leave out, documented.
-description = "exitwin - ExitWindowsEx and ntdll's NtShutdownSystem refused without SeShutdownPrivilege enabled: ExitWindowsEx with EWX_SHUTDOWN, EWX_REBOOT and EWX_POWEROFF, alone and with EWX_FORCE and EWX_FORCEIFHUNG; with several action bits, undefined bits and a nonzero dwReserved; NtShutdownSystem with each action and out-of-range ones. Never run on F2K."
+# with /MD. The actions, flags and ntshutdown blocks are shutdowns Windows 2000 refuses for want of
+# SeShutdownPrivilege enabled: each call is made only after the program has checked its token holds
+# the privilege disabled, and no call is a logoff (EWX_LOGOFF needs no privilege). F2K checks no
+# shutdown privilege, so the same calls would really shut its test boot down: those blocks are
+# skipped on F2K, never booted, their captures what F2K's ExitWindowsEx and NtShutdownSystem leave
+# out, documented. The undefined block's values carry bits Windows 2000 does not define, which it
+# refuses with ERROR_ACCESS_DENIED before its privilege check, as F2K does: that block runs on F2K.
+description = "exitwin - ExitWindowsEx and ntdll's NtShutdownSystem refused without SeShutdownPrivilege enabled: ExitWindowsEx with EWX_SHUTDOWN, EWX_REBOOT and EWX_POWEROFF, alone and with EWX_FORCE and EWX_FORCEIFHUNG; with several action bits and a nonzero dwReserved; NtShutdownSystem with each action and out-of-range ones: never run on F2K. ExitWindowsEx with bits Windows 2000 does not define (0x20, 0x40), refused before the privilege check: run on F2K."
 kind = "sectioned"
+gate = true
 
 [skip]
 actions = "F2K checks no shutdown privilege; the call would shut the test boot down"
-flags = "F2K checks no shutdown privilege; the call would shut the test boot down (Windows 2000's flag checks are not documented to come before its privilege check)"
+flags = "F2K checks no shutdown privilege; the call would shut the test boot down"
 ntshutdown = "F2K checks no shutdown privilege; the call would shut the test boot down"
 
 [pins]

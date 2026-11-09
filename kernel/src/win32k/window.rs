@@ -730,6 +730,9 @@ struct Flags {
     bottommost: bool,
     /// The window has a palette.
     has_palette: bool,
+    /// The session's end asked the window WM_QUERYENDSESSION and has not sent it WM_ENDSESSION
+    /// yet (see [`Windows::session_next_to_ask`]).
+    session_asked: bool,
 }
 
 /// The window procedure a record points at.
@@ -826,6 +829,7 @@ impl Window {
             title_set: false,
             bottommost: false,
             has_palette: false,
+            session_asked: false,
         },
         parent: None,
         child: None,
@@ -2929,6 +2933,74 @@ impl Windows {
         self.live_windows()
             .filter(|&id| self.at(id).process != class::SYSTEM_OWNER)
             .count()
+    }
+}
+
+// --- The session's end
+// ---------------------------------------------------------------------------
+
+impl Windows {
+    /// The windows of the process `owner` the session's end sends its messages to (see
+    /// `crate::session`): its top-level windows — the children of a desktop's window, hidden ones
+    /// included, message-only ones not (they are the message window's) — with a client-side
+    /// procedure and not being destroyed, each desktop's in z-order, the top first.
+    fn session_windows(&self, owner: class::Owner) -> impl Iterator<Item = WindowId> + '_ {
+        self.desktops
+            .iter()
+            .filter_map(|desktop| desktop.window)
+            .filter(|&root| self.pool.is_live(root))
+            .flat_map(move |root| {
+                core::iter::successors(self.at(root).child, move |&window| self.at(window).next)
+            })
+            .filter(move |&window| {
+                let w = self.at(window);
+                w.process == owner
+                    && !w.flags.destroyed
+                    && !w.flags.in_destroy
+                    && self.client_proc(window).is_some()
+            })
+    }
+
+    /// Whether the process `owner` has a window the session's end would ask.
+    pub fn has_session_windows(&self, owner: class::Owner) -> bool {
+        self.session_windows(owner).next().is_some()
+    }
+
+    /// The next window of the process `owner` the session's end asks WM_QUERYENDSESSION, marked
+    /// asked: the first of its top-level windows (in z-order) not asked yet. None once every one
+    /// has been asked; a window made meanwhile is asked in its turn.
+    pub fn session_next_to_ask(&mut self, owner: class::Owner) -> Option<Hwnd> {
+        let window = self
+            .session_windows(owner)
+            .find(|&window| !self.at(window).flags.session_asked)?;
+        let w = self.at_mut(window);
+        w.flags.session_asked = true;
+        Some(w.handle)
+    }
+
+    /// The next window of the process `owner` the session's end sends WM_ENDSESSION, its mark
+    /// cleared: the first of its top-level windows (in z-order) asked WM_QUERYENDSESSION. None once
+    /// every window asked has been told; a window that stopped being a top-level one, or went,
+    /// meanwhile is not.
+    pub fn session_next_asked(&mut self, owner: class::Owner) -> Option<Hwnd> {
+        let window = self
+            .session_windows(owner)
+            .find(|&window| self.at(window).flags.session_asked)?;
+        let w = self.at_mut(window);
+        w.flags.session_asked = false;
+        Some(w.handle)
+    }
+
+    /// Clear the marks a session's end left on the windows of the process `owner`: before it asks
+    /// the process, so a window an earlier end asked, then left (when the process did not answer),
+    /// is asked again.
+    pub fn session_forget(&mut self, owner: class::Owner) {
+        let pool = &mut self.pool;
+        for (header, w) in pool.headers.iter().zip(pool.records.iter_mut()) {
+            if header.live && w.process == owner {
+                w.flags.session_asked = false;
+            }
+        }
     }
 }
 

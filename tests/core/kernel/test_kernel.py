@@ -256,6 +256,35 @@ SESSION_FORCED = (
     *session_end("ShutdownReboot", f2kboot.RESTARTING),
 )
 
+# The session's end through a program's windows: the endsess fixture's companion, endkid.exe, the
+# boot's one program, makes a hidden window answering WM_QUERYENDSESSION as told, then asks for a
+# shutdown itself (ExitWindowsEx(EWX_SHUTDOWN), which Windows 2000 refuses without the privilege
+# and F2K, checking none, takes), and pumps its messages. The caller is asked last, and here alone:
+# WM_QUERYENDSESSION with lParam 0, then WM_ENDSESSION with the outcome. The program lives in the
+# endsess fixture's directory, so these cases await its real-machine build.
+ENDKID = "CORPUS\\endkid.exe {} shutdown"
+ENDKID_ASKED = (
+    *BOOTED,
+    "endkid: window made; it answers WM_QUERYENDSESSION {0}",
+    "endkid: ExitWindowsEx(EWX_SHUTDOWN): ret=1 err=-",
+    "endkid: WM_QUERYENDSESSION wParam=0 lParam=0x00000000: answers {0}",
+)
+# It answers TRUE: told the session ends, it is ended (its windows go with it), torn down, and the
+# machine's end follows.
+SESSION_WINDOWS_AGREE = (
+    *(line.format("TRUE") for line in ENDKID_ASKED),
+    "endkid: WM_ENDSESSION wParam=1 lParam=0x00000000",
+    "F2K: user process exited normally (exit code=3221225786)",
+)
+# It answers FALSE: told the session goes on, it ends itself with 0; the session's end is
+# cancelled, with no machine's end.
+SESSION_WINDOWS_REFUSE = (
+    *(line.format("FALSE") for line in ENDKID_ASKED),
+    "endkid: WM_ENDSESSION wParam=0 lParam=0x00000000",
+    "re:^F2K: session: process \\d+ \\(endkid\\) refused to end: the session's end is cancelled$",
+    "F2K: user process exited normally (exit code=0)",
+)
+
 # What a one-process boot reports once its program has run and its process is gone.
 EXITED_CLEAN = (
     "F2K: user process exited normally (exit code=0)",
@@ -281,6 +310,9 @@ class Case:
     # The boot's seconds before the case fails as timed out (a boot loading many programs needs room
     # under a parallel run's load).
     timeout: float = DEFAULT_TIMEOUT
+    # The corpus fixture whose real-machine build brings the case's programs (a companion program
+    # beside it): the case is skipped while that fixture is awaited.
+    awaits: str | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -510,6 +542,33 @@ CASES = (
         timeout=40.0,
     ),
     Case(
+        name="session-windows",
+        description="a shutdown asked for by a program with a window (endsess's companion endkid, answering TRUE): WM_QUERYENDSESSION, then WM_ENDSESSION TRUE, then the program ended, torn down, and the machine's end right after it",
+        image="kernel",
+        cmdline=ENDKID.format("yes"),
+        ordered=True,
+        expects=SESSION_WINDOWS_AGREE,
+        contiguous=(
+            "F2K: teardown audit: frame database ok",
+            *(line.format("ShutdownNoReboot") for line in SESSION_MACHINE_END),
+            "It is now safe to turn off your computer.",
+        ),
+        forbids=("refused to end", "not answering after"),
+        timeout=40.0,
+        awaits="endsess",
+    ),
+    Case(
+        name="session-windows-refused",
+        description="a shutdown asked for by a program with a window answering FALSE (endsess's companion endkid): WM_QUERYENDSESSION, then WM_ENDSESSION FALSE, the session's end cancelled with a COM1 line, the program ending itself with 0, and no machine's end",
+        image="kernel",
+        cmdline=ENDKID.format("no"),
+        ordered=True,
+        expects=(*SESSION_WINDOWS_REFUSE, "F2K: teardown audit: frame database ok"),
+        forbids=("F2K: shutdown", "not answering after"),
+        timeout=40.0,
+        awaits="endsess",
+    ),
+    Case(
         name="process-concurrent-too-many",
         description="seventeen legs side by side, one more than the process pool holds: the seventeenth's creation is refused with its status after its start line, and the boot halts with no leg run",
         image="kernel",
@@ -624,6 +683,8 @@ class KeyPress:
 )
 def test_kernel(case, builder, log_path, boot_timeout, write_profile):
     """The case's description, as the case states it."""
+    if case.awaits is not None and f2kboot.awaited(case.awaits):
+        pytest.skip(f"{case.awaits} awaits its real-machine build and capture (tests/build.bat {case.awaits})")
     build = builder(list(case.features))
     expectation = f2kboot.Expectation(
         expects=list(case.expects),

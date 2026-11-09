@@ -33,7 +33,7 @@
 //! GenerateConsoleCtrlEvent — are [`ctrl`]'s: the console's processes, and the control thread that
 //! delivers each event to them. The base server's APIs F2K serves (`rtl::console::base`) come
 //! through the same service: kernel32's announcement of a process it created, which puts the
-//! process in its process group, and the process's shutdown level and flags, which the console
+//! process in its process group, and the process's shutdown level and flags, which the server
 //! keeps with its entry for the session's end. So does the user server's one API
 //! (`rtl::console::user`), user32's ExitWindowsEx: the request for the session's end, which the
 //! control thread carries out ([`crate::session`]).
@@ -460,12 +460,24 @@ pub fn start_control_thread() {
     ctrl::start();
 }
 
-/// The console's step at a process's end: it leaves the console, and no control event reaches it
-/// from then on, as Windows 2000's csrss takes a process off its console when it ends. Its group
-/// leads nothing any more (GenerateConsoleCtrlEvent refuses it).
+/// The server's step at a process's end: it leaves the console, and no control event nor the
+/// session's end reaches it from then on, as Windows 2000's csrss takes a process off its console
+/// and forgets it when it ends. Its group leads nothing any more (GenerateConsoleCtrlEvent refuses
+/// it).
 #[cfg(target_arch = "x86")]
 pub fn disconnect(process: ObjectId) {
     crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.disconnect(process));
+}
+
+/// The server learns of `process` (see [`ctrl`]), at its first win32k service: from then on the
+/// session's end reaches it, through its windows, whether or not the console holds it. Windows
+/// 2000's user32 connects each process that loads it to csrss's user server; F2K's user32 makes
+/// no connection of its own, so its first service stands for it.
+#[cfg(target_arch = "x86")]
+pub fn know(process: ObjectId) {
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        SERVER.get(dispatch).ctrl.know(process);
+    });
 }
 
 /// Copy what the screen buffer changed since the last look to the text screen: the window's rows
@@ -600,13 +612,12 @@ fn base_call_server(api: u32, data: &mut [u8]) -> NtStatus {
 }
 
 /// BasepSetProcessShutdownParam: the calling process's shutdown level and flags, kept with its
-/// console entry, where the session's end reads them ([`Control::next_to_end`]). Any level is
-/// kept; flags holding any bit but SHUTDOWN_NORETRY leave the parameters as they were
+/// entry, where the session's end reads them ([`Control::next_to_end`]). Any level is kept; flags
+/// holding any bit but SHUTDOWN_NORETRY leave the parameters as they were
 /// (`rtl::console::base::shutdown_parameters_kept`), and either way the answer is a success, as
-/// Windows 2000's caller sees it. Windows 2000's csrss keeps them for every process it knows;
-/// F2K's console knows only its own processes, so a process that never connected to it (one of
-/// another subsystem) has its call answered and nothing kept: the session's end reaches no such
-/// process.
+/// Windows 2000's caller sees it. Windows 2000's csrss keeps them for every process it knows, and
+/// so does F2K's server: a process the console does not hold (a program with windows and no
+/// console) is known from its call on, and the session's end reaches it at its level.
 #[cfg(target_arch = "x86")]
 fn set_shutdown_parameters(data: &mut [u8]) -> NtStatus {
     use rtl::console::base::{shutdown_parameters_kept, ShutdownParameters};
@@ -704,10 +715,10 @@ fn request_session_end(request: ctrl::SessionRequest) {
     });
 }
 
-/// The session's end's step (see [`crate::session`]): the next of the console's processes to ask
-/// to end, with its CtrlRoutine (see [`Control::next_to_end`]).
+/// The session's end's step (see [`crate::session`]): the next of the server's processes to ask
+/// to end, with its CtrlRoutine when it is one of the console's (see [`Control::next_to_end`]).
 #[cfg(target_arch = "x86")]
-pub fn next_to_end(caller: ObjectId) -> Option<(ObjectId, u32)> {
+pub fn next_to_end(caller: ObjectId) -> Option<(ObjectId, Option<u32>)> {
     crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.next_to_end(caller))
 }
 

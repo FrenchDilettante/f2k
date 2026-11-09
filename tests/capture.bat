@@ -52,6 +52,7 @@ for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm resourc
 call :listed user32 winsta
 for %%F in (guiclass guiwin guigeo guimsg guipaint guidisp) do call :listed user32 %%F
 call :listed user32 exitwin
+call :listed user32 endsess
 for %%F in (guidc gditext) do call :listed gdi32 %%F
 for %%F in (registry token) do call :listed advapi32 %%F
 call :cap_hellomd
@@ -80,7 +81,7 @@ rem saying so.
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
 for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
-for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin) do if /I "%%F"=="%~1" set F2KT_DLL=user32
+for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endsess) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (guidc gditext) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings msvcrt) do if /I "%%F"=="%~1" set F2KT_DLL=crt

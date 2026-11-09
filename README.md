@@ -72,7 +72,7 @@ make clean
 
 A boot runs the program its kernel command line names (`-- <program> [arguments]`; `exit0` without one).
 Several programs, ` ;; ` between two, run one after another, or side by side with the kernel option `concurrent` before the `--` (`concurrent -- CORPUS\sched.exe sleep ;; hello`).
-A program ends the session with `ExitWindowsEx` (`shutdown /l /y` does, from the command line): each console program is asked to end (`CTRL_SHUTDOWN_EVENT`, its default handler ending it), then the boot volume is flushed and marked clean, the disk is told to write its cache out, and the machine halts on "It is now safe to turn off your computer." or restarts.
+A program ends the session with `ExitWindowsEx` (`shutdown /l /y` does, from the command line): each program is asked to end, a program with windows through them (`WM_QUERYENDSESSION`, then `WM_ENDSESSION`; a window answering FALSE cancels the session's end), a console program through `CTRL_SHUTDOWN_EVENT` (its default handler ending it); then the boot volume is flushed and marked clean, the disk is told to write its cache out, and the machine halts on "It is now safe to turn off your computer." or restarts.
 A program the boot runs starts in its program's directory with the same environment (`kernel/src/user/params.rs`): `COMPUTERNAME=QEMU`, `ComSpec=C:\WINNT\system32\cmd.exe`, `PATH=C:\WINNT\system32;C:\WINNT`, `PATHEXT=.COM;.EXE;.BAT;.CMD`, `SystemRoot=C:\WINNT`, `USERNAME=jeb` and `windir=C:\WINNT`.
 A child process starts with what its parent hands it: its environment, its current directory and its inheritable handles.
 

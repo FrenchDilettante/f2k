@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process msvcrt) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin endsess registry token hellomd crt seh fd wide strings process msvcrt) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource winsta guiclass guiwin guigeo guimsg guipaint guidc gditext guidisp exitwin endsess registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -500,6 +500,21 @@ call :stamp exitwin.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% exitwin.c user32.lib advapi32.lib
 if errorlevel 1 (echo build.bat: exitwin failed & exit /b 1)
 del exitwin.obj
+cd ..\..
+goto :eof
+
+rem endsess's companion program, endkid.exe (F2K's own boots of the
+rem session's end run it; the capture never does), builds beside it
+rem with no source stamp; both with /MD.
+:endsess
+echo === endsess
+cd user32\endsess
+cl /nologo /MD endkid.c user32.lib
+if errorlevel 1 (echo build.bat: endkid failed & exit /b 1)
+call :stamp endsess.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% endsess.c user32.lib
+if errorlevel 1 (echo build.bat: endsess failed & exit /b 1)
+del endsess.obj endkid.obj
 cd ..\..
 goto :eof
 

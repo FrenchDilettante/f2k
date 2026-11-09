@@ -26,8 +26,10 @@ pub const WM_MOVE: u32 = 0x0003;
 pub const WM_SIZE: u32 = 0x0005;
 pub const WM_PAINT: u32 = 0x000F;
 pub const WM_CLOSE: u32 = 0x0010;
+pub const WM_QUERYENDSESSION: u32 = 0x0011;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_ERASEBKGND: u32 = 0x0014;
+pub const WM_ENDSESSION: u32 = 0x0016;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
@@ -35,6 +37,10 @@ pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_CHAR: u32 = 0x0102;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_USER: u32 = 0x0400;
+
+/// WM_QUERYENDSESSION's and WM_ENDSESSION's lParam for a logoff (winuser.h's ENDSESSION_LOGOFF): 0
+/// for a shutdown.
+pub const ENDSESSION_LOGOFF: u32 = 0x8000_0000;
 
 /// PostMessage's window that names every top-level window (HWND_BROADCAST).
 pub const HWND_BROADCAST: u32 = 0xFFFF;

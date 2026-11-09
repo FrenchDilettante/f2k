@@ -264,11 +264,13 @@ fn translate(msg: &Msg) -> u32 {
 /// The default window procedure's answer to a message: WM_NCCREATE TRUE (the creation goes on);
 /// WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and EndPaint;
 /// WM_ERASEBKGND TRUE (the background counts as erased: there is no fill to draw it with yet);
-/// WM_NCCALCSIZE the rectangle left as it is (the client area is the window's: windows have no
-/// decoration yet); 0 to everything else.
+/// WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
+/// DefWindowProc's answer), whatever its lParam; WM_NCCALCSIZE the rectangle left as it is (the
+/// client area is the window's: windows have no decoration yet); 0 to everything else,
+/// WM_ENDSESSION included.
 pub fn default_procedure(window: usize, message: u32, _wparam: u32, _lparam: i32) -> i32 {
     match message {
-        WM_NCCREATE | WM_ERASEBKGND => 1,
+        WM_NCCREATE | WM_ERASEBKGND | WM_QUERYENDSESSION => 1,
         WM_CLOSE => {
             window::destroy_window(window);
             0
@@ -498,7 +500,8 @@ mod tests {
     }
 
     /// DefWindowProc: WM_CLOSE destroys the window (its procedure sees the destruction), WM_NULL
-    /// and the rest answer 0, WM_NCCREATE and WM_ERASEBKGND TRUE.
+    /// and the rest answer 0, WM_ENDSESSION among them; WM_NCCREATE, WM_ERASEBKGND and
+    /// WM_QUERYENDSESSION TRUE, a logoff's WM_QUERYENDSESSION too.
     ///
     /// Pins: user32.DefWindowProcA, user32.DefWindowProcW
     #[test]
@@ -511,6 +514,11 @@ mod tests {
         assert_eq!(def_window_proc_w(window, WM_NULL, 0, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_NCCREATE, 0, 0), 1);
         assert_eq!(def_window_proc_w(window, WM_ERASEBKGND, 0, 0), 1);
+        assert_eq!(def_window_proc_a(window, WM_QUERYENDSESSION, 0, 0), 1);
+        let logoff = ENDSESSION_LOGOFF as i32;
+        assert_eq!(def_window_proc_w(window, WM_QUERYENDSESSION, 0, logoff), 1);
+        assert_eq!(def_window_proc_a(window, WM_ENDSESSION, 1, 0), 0);
+        assert_eq!(def_window_proc_w(window, WM_ENDSESSION, 0, logoff), 0);
         assert!(seen().is_empty());
     }
 
