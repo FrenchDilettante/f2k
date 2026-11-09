@@ -12,8 +12,10 @@ target = "x86-f2k"
 
 # The kernel binary has no test harness (it is no_std/no_main); unit tests
 # run against the library target on the host instead (`make run-tests`).
+# It is the kernel's link, target/x86-f2k/<profile>/ntoskrnl, an ELF that the
+# boot loader's build (kernel/loader) turns into the PE32 image ntoskrnl.exe.
 [[bin]]
-name = "f2k-kernel"
+name = "ntoskrnl"
 path = "src/main.rs"
 test = false
 doctest = false

@@ -225,7 +225,8 @@ f2k/
 │
 ├── scripts/          # Build and test scripts
 │   ├── x86-elf-ld         # Linker wrapper
-│   ├── linker.x86         # Custom linker script
+│   ├── linker.x86         # The kernel's linker script: its image's layout at 0x80400000
+│   ├── loader.x86         # The boot loader's linker script: the loader and the image it carries
 │   ├── create_partition_table.py  # MBR partition table for the disk image
 │   ├── gen-files-data.py  # The files fixture's data tree (tests/kernel32/files/DATA)
 │   ├── gen-nt-tables.py   # Windows 2000's service numbers and the status table, regenerated
@@ -246,7 +247,8 @@ f2k/
 │   ├── harness/          # Checks of the tests and the repository (no QEMU)
 │   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
 │
-├── tools/exportgen/  # The export specs' reader and generator (a host crate, outside the workspace)
+├── tools/exportgen/  # The export specs' reader and generator, and the kernel's PE32 image's
+│                     # emitter (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl (the shared runtime),
 │                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32; each DLL's export spec in
 │                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone;
@@ -256,6 +258,9 @@ f2k/
 └── kernel/           # F2K Kernel
     ├── Cargo.toml        # Kernel package
     ├── build.rs          # The service tables from the export specs; the embedded ntdll
+    ├── exports.toml      # ntoskrnl.exe's export spec
+    ├── loader/           # The boot loader: the Multiboot image the loaders boot, carrying the
+    │                     # kernel's image, ntoskrnl.exe, which it maps, relocates and enters
     └── src/
         ├── block/        # Block devices, partitions, and the device registry
         ├── boot/         # Boot-related code
@@ -276,7 +281,7 @@ f2k/
                           # DCs and their text: win32k's services, user32's and gdi32's calls
         ├── c_lib.rs      # C library stubs (linker support)
         ├── lib.rs        # Kernel library: kmain and all modules (unit-testable)
-        └── main.rs       # Kernel binary: links the ELF; panic handler
+        └── main.rs       # Kernel binary: links the kernel (ntoskrnl); panic handler
 ```
 
 ## Targets
@@ -284,12 +289,12 @@ f2k/
 | Target            | Description                                                                      |
 | ----------------- | -------------------------------------------------------------------------------- |
 | `make userland`   | Build the system DLLs (`target/userland/`)                                       |
-| `make kernel`     | Build the kernel (ELF), the system DLLs first                                    |
+| `make kernel`     | Build the kernel, its image `ntoskrnl.exe` and the boot loader, the DLLs first   |
 | `make test`       | Run every on-target QEMU test (pytest: the kernel boots and the corpus)          |
 | `make run-tests`  | Run host unit tests                                                              |
 | `make compat`     | Check the tests' pins, run the host scenarios, write the compatibility report    |
 | `make check-all`  | `run-tests`, `compat` and `test`, in that order                                  |
-| `make check`      | `cargo check` + clippy (the kernel and the userland crates)                      |
+| `make check`      | `cargo check` + clippy (the kernel, the boot loader and the userland crates)     |
 | `make fmt`        | Format the Rust sources and the Markdown files                                   |
 | `make fmt-check`  | Fail if a Rust source or a Markdown file is unformatted                          |
 | `make limine`     | Download Limine bootloader                                                       |

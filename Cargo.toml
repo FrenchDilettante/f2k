@@ -4,6 +4,8 @@
 [workspace]
 members = [
     "kernel",
+    # The boot loader: the Multiboot image that carries the kernel's image, ntoskrnl.exe.
+    "kernel/loader",
 ]
 exclude = [
     # The ring-3 code (the system DLLs) is its own workspace, with its own target: userland/.

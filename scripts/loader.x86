@@ -1,0 +1,53 @@
+/* Linker script for F2K's boot loader (Multiboot 1, 32-bit x86): kernel/loader. */
+
+OUTPUT_FORMAT("elf32-i386")
+OUTPUT_ARCH(i386)
+
+ENTRY(_start)
+
+SECTIONS
+{
+    /* The loader, at its physical load address, 1 MiB, in the kernel image window's entry span.
+     * Entered with paging off, so its virtual and physical addresses are equal. */
+    . = 0x100000;
+    .loader : {
+        /* Multiboot header: must be 4-byte aligned and within the first 8 KiB of the file. KEEP
+         * stops --gc-sections from discarding it, since no code references it. */
+        KEEP(*(.multiboot))
+        *(.text.entry)
+        *(.text .text.*)
+        *(.rodata .rodata.*)
+        *(.data .data.*)
+    }
+
+    /* Its stack and page tables: memory the Multiboot loader zeroes. */
+    .loader_bss (NOLOAD) : {
+        *(.bss .bss.*)
+        *(COMMON)
+    }
+    . = ALIGN(4096);
+    _loader_end = .;
+
+    /* The kernel's image, ntoskrnl.exe (the build script's object, kernel/loader/build.rs): its
+     * file placed at physical 4 MiB, where it runs, its first byte at the address the loader maps
+     * it at, 0x80400000 (the kernel image window over physical [0, 16 MiB) puts the one at the
+     * other). The rest of its memory follows it without file contents, so the Multiboot loader
+     * places nothing of its own there. */
+    .image 0x80400000 : AT(0x400000) {
+        KEEP(*(.image))
+    }
+    .image_reserve (NOLOAD) : AT(LOADADDR(.image) + SIZEOF(.image)) {
+        KEEP(*(.image_reserve))
+    }
+
+    /* What the loader reads of the image's place: where it runs, where its file lies, its file's
+     * size. */
+    __image_va = ADDR(.image);
+    __image_phys = LOADADDR(.image);
+    __image_file_size = SIZEOF(.image);
+
+    ASSERT(SIZEOF(.image) > 0, "the loader carries no kernel image: build the kernel first (make kernel)")
+    ASSERT(_loader_end <= LOADADDR(.image), "the loader outgrows the space below the kernel image")
+    ASSERT(LOADADDR(.image_reserve) + SIZEOF(.image_reserve) <= 0x1000000,
+           "the kernel image outgrows the 16 MiB kernel image window")
+}

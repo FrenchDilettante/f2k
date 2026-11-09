@@ -1,0 +1,32 @@
+[package]
+name = "f2k-loader"
+version = "0.1.0"
+edition = "2021"
+authors = ["F2K Team"]
+description = "F2K's boot loader: the Multiboot image that carries ntoskrnl.exe, maps it and enters it"
+license = "MIT OR Apache-2.0"
+
+# The loader's work on the image, host-tested (`make run-tests`).
+[lib]
+name = "f2k_loader"
+path = "src/lib.rs"
+doctest = false
+
+# The Multiboot image the loaders boot: target/x86-f2k/<profile>/f2k-kernel.
+[[bin]]
+name = "f2k-kernel"
+path = "src/main.rs"
+test = false
+doctest = false
+
+# The image's headers, as the runtime library defines them.
+[dependencies]
+rtl = { path = "../../userland/rtl" }
+
+# The build script emits the kernel's image from its link, through the export generator.
+[build-dependencies]
+exportgen = { path = "../../tools/exportgen" }
+
+# The tests emit the images they load the same way.
+[dev-dependencies]
+exportgen = { path = "../../tools/exportgen" }

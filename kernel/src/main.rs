@@ -1,12 +1,13 @@
 //! F2K kernel binary.
 //!
-//! All kernel code lives in the `f2k-kernel` library crate: the Multiboot `_start` stub in its
-//! `boot` module calls `kmain` there. This binary exists only to link the kernel ELF. The
-//! `#[panic_handler]` must be defined exactly once, in the final binary (a library must not define
-//! one), so it lives here and forwards to the library's shared path.
+//! All kernel code lives in the `f2k-kernel` library crate: the image's entry point, `_start` in
+//! its `boot` module, calls `kmain` there. This binary exists only to link the kernel, `ntoskrnl`,
+//! the ELF the boot loader's build turns into ntoskrnl.exe. The `#[panic_handler]` must be defined
+//! exactly once, in the final binary (a library must not define one), so it lives here and
+//! forwards to the library's shared path.
 
 #![no_std] // No standard library (we are the OS)
-#![no_main] // No main(): the Multiboot stub in the library calls kmain()
+#![no_main] // No main(): the entry point in the library calls kmain()
 
 use core::panic::PanicInfo;
 

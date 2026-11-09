@@ -1,8 +1,12 @@
-/* Linker script for the F2K kernel (Multiboot 1, 32-bit x86) */
+/* Linker script for the F2K kernel, ntoskrnl (32-bit x86). The link is an ELF the export generator
+ * turns into the PE32 image ntoskrnl.exe (tools/exportgen/src/pe.rs), which the boot loader
+ * (kernel/loader) maps at its base and enters; the build script links it with --emit-relocs, so
+ * the image carries its base relocations. */
 
 OUTPUT_FORMAT("elf32-i386")
 OUTPUT_ARCH(i386)
 
+/* The image's entry point (AddressOfEntryPoint): kernel/src/boot/mod.rs. */
 ENTRY(_start)
 
 /* The kernel's image base: the kernel image window's start plus its first directory entry's span,
@@ -11,33 +15,19 @@ __ImageBase = 0x80400000;
 
 SECTIONS
 {
-    /* Entry trampoline: exactly one page at the physical load address,
-     * 1 MiB. Entered with paging off, so its virtual and physical
-     * addresses are equal. It builds the boot page tables, enables
-     * paging and continues in the kernel window. */
-    . = 0x100000;
-    .boot : {
-        /* Multiboot header: must be 4-byte aligned and within the
-         * first 8 KiB of the file. KEEP stops --gc-sections from
-         * discarding it, since no code references it. */
-        KEEP(*(.multiboot))
-        *(.text._start)
-        . = ALIGN(4096);
-    }
-
-    /* The kernel image, linked in the kernel window from the image base, laid out as its PE32
-     * image maps it: a page for the headers, then code, constant data, data and BSS, each starting
-     * on a page. The physical mapping is exact: physical = virtual - 0x80000000, for code, statics
-     * and BSS alike; the boot stub and the frame allocator rely on it. */
+    /* The image as its PE32 form maps it: a page for the headers at the base, then code, constant
+     * data, data and BSS, each starting on a page right after the previous one. Mapped through the
+     * kernel image window, the image lies at physical = virtual - 0x80000000; the frame allocator
+     * relies on it. */
     . = __ImageBase + 0x1000;
 
-    .text : AT(ADDR(.text) - 0x80000000) {
+    .text : {
         _kernel_start = .;
         *(.text .text.*)
     }
 
     . = ALIGN(4096);
-    .rdata : AT(ADDR(.rdata) - 0x80000000) {
+    .rdata : {
         /* The table of the kernel's exports' bodies (kernel/src/exports.rs): nothing references
          * it, and it is what keeps each body in the link. */
         KEEP(*(.rodata.ntoskrnl_exports))
@@ -45,12 +35,12 @@ SECTIONS
     }
 
     . = ALIGN(4096);
-    .data : AT(ADDR(.data) - 0x80000000) {
+    .data : {
         *(.data .data.*)
     }
 
     . = ALIGN(4096);
-    .bss (NOLOAD) : AT(ADDR(.bss) - 0x80000000) {
+    .bss (NOLOAD) : {
         *(.bss .bss.*)
         *(COMMON)
         /* End of the kernel image, 4 KiB aligned so the frame allocator can treat the image's
@@ -59,8 +49,8 @@ SECTIONS
         _kernel_end = .;
     }
 
-    /* The boot maps the kernel image window over physical [0, 16 MiB) (KERNEL_IMAGE in
-     * kernel/src/mem/layout.rs): the image (its statics, the process pool's records among them)
-     * must end inside it. */
+    /* The loader maps the kernel image window over physical [0, 16 MiB) (KERNEL_IMAGE in
+     * kernel/src/mem/layout.rs): the image (its statics, the process pool's records among them),
+     * and the export directory and base relocations the image adds after it, must end inside it. */
     ASSERT(_kernel_end <= 0x81000000, "the kernel image outgrows the 16 MiB kernel image window")
 }

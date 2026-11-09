@@ -15,13 +15,17 @@ RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 KERNEL_PROFILE ?= dev
 PROFILE_DIR = $(if $(filter dev,$(KERNEL_PROFILE)),debug,$(KERNEL_PROFILE))
 OUT_DIR = $(BUILD_DIR)/$(TARGET)/$(PROFILE_DIR)
+# What the loaders boot: the boot loader (kernel/loader), a Multiboot ELF carrying the kernel's
+# image and naming its symbols. Beside it lie the kernel's link (ntoskrnl, an ELF with its symbols
+# and debugging information) and the PE32 image the loader's build emits from it, ntoskrnl.exe.
 KERNEL_ELF ?= $(OUT_DIR)/f2k-kernel
+NTOSKRNL_EXE = $(OUT_DIR)/ntoskrnl.exe
 # Cargo features for kernel builds (comma-separated, no spaces). The
 # on-target suite passes them per case; manual builds accept them too
 # (e.g. `make disk CARGO_FEATURES=run-ret0`).
 CARGO_FEATURES ?=
 FEATURE_FLAGS = $(if $(CARGO_FEATURES),--features $(CARGO_FEATURES),)
-# The build stamps: what the kernel ELF and the disk image were built with, beside each (the
+# The build stamps: what the boot image and the disk image were built with, beside each (the
 # suite's --no-build refuses a build whose stamps differ from what a test needs). Removed before a
 # build, written once it succeeded.
 KERNEL_STAMP = $(KERNEL_ELF).build
@@ -40,6 +44,7 @@ endif
 # Directories
 BOOT_DIR ?= boot
 KERNEL_DIR ?= kernel
+LOADER_DIR ?= kernel/loader
 BUILD_DIR ?= target
 SCRIPTS_DIR ?= scripts
 # What a manual boot (make run, make vbox-image) runs: the program's path on the volume and its
@@ -117,7 +122,8 @@ help:
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
 	@echo "                 msvcrt.dll, advapi32.dll, user32.dll and gdi32.dll) and F2K's own programs"
 	@echo "                 (pwd.exe, ps.exe, shutdown.exe, fish.exe, cmd.exe)"
-	@echo "  kernel       - Build the kernel (the system DLLs first)"
+	@echo "  kernel       - Build the kernel (the system DLLs first), its image ntoskrnl.exe, and the"
+	@echo "                 boot loader that carries it (f2k-kernel, what the loaders boot)"
 	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
 	@echo "  run-tests    - Run host unit tests (cargo test --lib, and the kernel's doc tests)"
 	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run,"
@@ -156,13 +162,15 @@ userland:
 	cd $(USERLAND_DIR) && cargo build --release
 	for exe in $(SYSTEM_EXES) $(CMD_EXE); do cp $${exe%.exe}.dll $$exe || exit 1; done
 
+# The kernel's link first, then the boot loader, whose build emits the kernel's image from it.
 .PHONY: kernel
 kernel: userland
 	@echo "Building F2K kernel..."
 	rm -f $(KERNEL_STAMP)
 	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
+	cd $(LOADER_DIR) && cargo build --profile $(KERNEL_PROFILE)
 	printf '$(BUILD_STAMP)\n' > $(KERNEL_STAMP)
-	@echo "Kernel built: $(KERNEL_ELF)"
+	@echo "Kernel built: $(NTOSKRNL_EXE), booted as $(KERNEL_ELF)"
 
 .PHONY: disk
 disk: kernel limine
@@ -302,6 +310,8 @@ run-tests: userland
 	# The kernel's documentation tests: the compile-fail examples of the level tokens and the
 	# locks, each checked for the error code it names (against the library's plain host build).
 	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --doc --target $(RUST_HOST_TARGET)
+	# The boot loader's work on the kernel's image (its library).
+	cd $(LOADER_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
 	# The export-spec generator the build scripts run (a host crate of its own).
 	cd $(EXPORTGEN_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --target $(RUST_HOST_TARGET)
 	# The userland runtime's host tests, under the root configuration as the kernel's are (std
@@ -323,6 +333,7 @@ check: userland
 	cd $(USERLAND_DIR) && cargo clippy --release
 	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy
+	cd $(LOADER_DIR) && cargo clippy
 
 # Formatting: the Rust sources' settings live in rustfmt.toml at the workspace root, the Markdown
 # files' (rumdl) in pyproject.toml.

@@ -168,14 +168,16 @@ mod tests {
     /// The boot window maps the text page where the screen reaches it.
     #[test]
     fn the_kernel_window_maps_the_text_page() {
-        use crate::mem::paging::{BOOT_TABLES, KERNEL_BASE, PAGE_PRESENT, PAGE_WRITE};
+        use crate::mem::paging::{BootTables, KERNEL_BASE, PAGE_PRESENT, PAGE_WRITE, PT_ENTRIES};
         assert_eq!(VIRT_BASE, 0x800B_8000);
         assert_eq!(
             (VIRT_BASE >> 22) as usize,
             (KERNEL_BASE >> 22) as usize,
             "the window's table"
         );
-        let entry = BOOT_TABLES.0[0][((VIRT_BASE >> 12) & 0x3FF) as usize];
+        let mut table = Box::new([0u32; PT_ENTRIES]);
+        BootTables::fill_identity(0, &mut table);
+        let entry = table[((VIRT_BASE >> 12) & 0x3FF) as usize];
         assert_eq!(entry, PHYS_BASE | PAGE_PRESENT | PAGE_WRITE);
     }
 

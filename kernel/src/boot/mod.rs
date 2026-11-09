@@ -1,9 +1,12 @@
-//! Boot entry: Multiboot 1 header and the `_start` stub, and the boot's phases `kmain` runs.
+//! Boot entry: the image's entry point, `_start`, and the boot's phases `kmain` runs.
 //!
-//! Any Multiboot 1 loader can start this kernel: QEMU's `-kernel`, Limine (`protocol: multiboot1`)
-//! and GRUB. The loader jumps to `_start` in 32-bit protected mode with paging off, EAX = Multiboot
-//! magic and EBX = physical address of the Multiboot information structure. It does not provide a
-//! stack, so `_start` sets one up before calling into Rust.
+//! Any Multiboot 1 loader starts the boot loader (`kernel/loader`) that carries this image: QEMU's
+//! `-kernel`, Limine (`protocol: multiboot1`) and GRUB. The boot loader maps the image at its base,
+//! relocates it if it must, maps the kernel image window over physical `[0, 16 MiB)` with the low
+//! 16 MiB identity-mapped beside it, turns paging on, and jumps to `_start` with EAX = the
+//! Multiboot magic and EBX = the physical address of the Multiboot information structure, as the
+//! Multiboot loader left them. It provides no stack, so `_start` sets one up before calling into
+//! Rust.
 
 /// Value a Multiboot 1 loader leaves in EAX when it enters the kernel.
 pub const MULTIBOOT_BOOTLOADER_MAGIC: u32 = 0x2BAD_B002;
@@ -69,7 +72,8 @@ pub fn memory(magic: u32, multiboot_info: u32) {
         );
     }
 
-    // Hand every usable frame (minus the kernel image) to the frame allocator.
+    // Hand every usable frame (minus the kernel image's and, for now, the boot loader's) to the
+    // frame allocator.
     crate::mem::bootmem::boot_init(multiboot_info);
     crate::mem::bootmem::with_frame_db(|db| {
         crate::serial_println!(
@@ -83,9 +87,11 @@ pub fn memory(magic: u32, multiboot_info: u32) {
         );
     });
 
-    // Paging moves off the entry stub's statics onto the boot directory and tables, built in frames
-    // of their own with the same picture: the processor never walks the statics again.
+    // Paging moves off the boot loader's tables onto the boot directory and tables, built in frames
+    // of the kernel's own with the same picture: the processor never walks the loader's again, and
+    // the loader's memory goes back to the frame database.
     crate::mem::paging::install_boot_directory();
+    crate::mem::bootmem::release_loader_memory();
     // The memory map is consumed: remove the low identity window. Nothing below KERNEL_BASE is
     // mapped from here on.
     crate::mem::paging::teardown_low_identity();
@@ -160,13 +166,6 @@ pub fn devices() {
 
 #[cfg(target_arch = "x86")]
 core::arch::global_asm!(
-    // Multiboot header. Must be 4-byte aligned and within the first 8 KiB of the file; the linker
-    // script places .multiboot first in .text.
-    ".section .multiboot, \"a\"",
-    ".align 4",
-    ".long 0x1BADB002",                 // header magic
-    ".long 0x00000003",                 // flags: page-align modules, provide memory info
-    ".long -(0x1BADB002 + 0x00000003)", // checksum: magic + flags + checksum == 0
     // 64 KiB boot stack. Generously sized: early boot code keeps whole subsystem structures (frame
     // database, formatting state) as stack locals, and overflowing the stack corrupts adjacent
     // statics. The top is exported: the multi-process runner's context switch lands here between
@@ -177,57 +176,12 @@ core::arch::global_asm!(
     ".skip 65536",
     ".global boot_stack_top",
     "boot_stack_top:",
-    // Entry point. Runs at the physical load address with paging off (this section is linked VMA
-    // == PMA; the rest of the kernel runs in the kernel window at 0x80000000+).
-    // Responsibilities:
-    //   1. keep the loader state (EAX magic, EBX Multiboot info),
-    //   2. build the boot page directory (physical addressing),
-    //   3. enable paging and continue in the kernel window,
-    //   4. set up the boot stack and call kmain.
+    // The image's entry point. The boot loader jumps here with paging on, the image mapped at its
+    // linked addresses, interrupts off, EAX the Multiboot magic and EBX the Multiboot
+    // information's physical address; it leaves no stack to run on.
     ".section .text._start, \"ax\"",
     ".global _start",
     "_start:",
-    "    mov esi, eax", // Multiboot magic, kept across the switch
-    "    mov edi, ebx", // Multiboot info physical address
-    // The stub's page directory and tables are kernel statics: their physical addresses are the
-    // linked addresses minus KERNEL_BASE (0x80000000). Zero the directory, then point entry i of
-    // the low identity window (entries 0-3) and of the kernel image window (entries 512-515) at
-    // boot table i, for each of the tables (physical [0, 16 MiB), 4 MiB per table). They are
-    // boot-only: once the frame database exists, `paging::install_boot_directory` moves paging
-    // onto runtime copies in frames of their own, and nothing walks the statics again.
-    "    mov eax, offset BOOT_PD",
-    "    sub eax, 0x80000000",
-    "    mov edx, eax",
-    "    xor ecx, ecx",
-    "1:",
-    "    mov dword ptr [edx + ecx*4], 0",
-    "    inc ecx",
-    "    cmp ecx, 1024",
-    "    jne 1b",
-    "    mov edx, offset BOOT_TABLES",
-    "    sub edx, 0x80000000",
-    "    or edx, 3", // present | writable
-    "    xor ecx, ecx",
-    "3:",
-    "    mov [eax + ecx*4], edx",
-    "    mov [eax + ecx*4 + {image_window}], edx",
-    "    add edx, 4096", // the next table
-    "    inc ecx",
-    "    cmp ecx, {tables}",
-    "    jne 3b",
-    // Paging on: CR3 = physical directory, CR0.PG = 1, CR0.WP = 1. WP makes read-only mappings
-    // bind ring-0 writes too, which the user/kernel split (and later copy-on-write) relies on.
-    // Execution continues at the physical EIP through the low identity window.
-    "    mov cr3, eax",
-    "    mov eax, cr0",
-    "    or eax, 0x80010000",
-    "    mov cr0, eax",
-    // Switch to the kernel window: the same code, at its virtual alias (the low 16 MiB appear
-    // identically at 0x80000000+).
-    "    mov edx, offset start_high",
-    "    add edx, 0x80000000",
-    "    jmp edx",
-    "start_high:",
     "    cld",
     "    mov esp, offset boot_stack_top",
     // kmain's entry alignment: the ABI wants ESP + 4 a multiple of 16 at entry (the stack slot
@@ -235,16 +189,10 @@ core::arch::global_asm!(
     // words and the return address below the 16-aligned stack top reach only 4 mod 16, so 8 bytes
     // of padding go between the stack top and the first argument.
     "    sub esp, 8",
-    "    push edi", // kmain arg 2: Multiboot info physical address
-    "    push esi", // kmain arg 1: Multiboot magic
-    // Absolute call: a relative call would be encoded against this trampoline's low address and
-    // land on kmain's physical alias, leaving the kernel executing in the (temporary) low window.
-    "    mov edx, offset kmain",
-    "    call edx",
+    "    push ebx", // kmain arg 2: Multiboot info physical address
+    "    push eax", // kmain arg 1: Multiboot magic
+    "    call kmain",
     "2:  cli",
     "    hlt",
     "    jmp 2b",
-    // The kernel image window's first directory entry, as a byte offset into the directory.
-    image_window = const crate::mem::layout::KERNEL_IMAGE.first_entry() * 4,
-    tables = const crate::mem::paging::BOOT_TABLE_COUNT,
 );

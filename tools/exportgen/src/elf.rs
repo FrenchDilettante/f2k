@@ -35,10 +35,13 @@ pub const STT_OBJECT: u8 = 1;
 pub const STT_FUNC: u8 = 2;
 pub const STB_LOCAL: u8 = 0;
 /// The i386 relocation types the kernel's link holds: none, a word's absolute address (S + A),
-/// a word's PC-relative displacement (S + A - P).
+/// a word's PC-relative displacement (S + A - P), and a call's displacement through the procedure
+/// linkage table (L + A - P), which a static link without one resolves to the function itself, as
+/// a PC-relative displacement.
 pub const R_386_NONE: u8 = 0;
 pub const R_386_32: u8 = 1;
 pub const R_386_PC32: u8 = 2;
+pub const R_386_PLT32: u8 = 4;
 
 /// `Elf32_Ehdr`'s size, `Elf32_Shdr`'s, `Elf32_Sym`'s and `Elf32_Rel`'s.
 const EHDR_SIZE: usize = 52;

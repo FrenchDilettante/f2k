@@ -15,14 +15,14 @@
 //! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
-//! The kernel image window is the only region mapped from the first instruction on: the boot stub
-//! maps it over physical `[0, 16 MiB)`. Its first directory entry's span, the entry span
+//! The kernel image window is the only region mapped from the first instruction on: the boot
+//! loader maps it over physical `[0, 16 MiB)`. Its first directory entry's span, the entry span
 //! (`[0x80000000, 0x80400000)`), is the boot's: the first megabyte's firmware areas and the VGA
-//! text page, and from 1 MiB the boot's entry stub. The kernel's image sits behind it, at
-//! [`NTOSKRNL_BASE`], `0x80400000`, Windows 2000's kernel base (physical 4 MiB): its headers' page,
-//! its code and every fixed-size table, the frame table and the process pool among them. It must
-//! end inside the window (the linker script and the boot both check). The other regions get their
-//! tables at runtime.
+//! text page, and from 1 MiB the boot loader (`kernel/loader`). The kernel's image, ntoskrnl.exe,
+//! sits behind it, at [`NTOSKRNL_BASE`], `0x80400000`, Windows 2000's kernel base (physical 4 MiB):
+//! its headers' page, its code and every fixed-size table, the frame table and the process pool
+//! among them, then its export directory and base relocations. It must end inside the window (the
+//! linker scripts and the boot loader check). The other regions get their tables at runtime.
 //!
 //! Kernel stacks sit in a region of their own, as Windows 2000's do: it takes them from its system
 //! PTEs, the pool of kernel address space for mappings that come and go, and its published x86 map
@@ -144,7 +144,7 @@ pub const SHARED_DATA: Region = Region {
 // stays clear of the image window's growth.
 const _: () = {
     assert!(SHARED_DATA.holds(crate::user::shared::KERNEL_ADDRESS));
-    assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE) && NTOSKRNL_BASE % ENTRY_SPAN == 0);
+    assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE) && NTOSKRNL_BASE.is_multiple_of(ENTRY_SPAN));
     assert!(NTOSKRNL_BASE / ENTRY_SPAN == KERNEL_IMAGE.first_entry() as u32 + 1);
     assert!(KERNEL_STACKS.start as u64 >= KERNEL_IMAGE.end());
 };
@@ -217,13 +217,13 @@ mod tests {
         }
     }
 
-    /// The image window maps physical `[0, 16 MiB)`: the boot's load address and the VGA text page
-    /// lie in its entry span, the kernel's image right behind it.
+    /// The image window maps physical `[0, 16 MiB)`: the boot loader's load address and the VGA
+    /// text page lie in its entry span, the kernel's image right behind it.
     #[test]
     fn the_image_window_covers_the_load_address() {
         assert_eq!(KERNEL_IMAGE.size(), 16 * 0x10_0000);
         let entry_span = KERNEL_IMAGE.start..NTOSKRNL_BASE;
-        assert!(entry_span.contains(&(KERNEL_IMAGE.start + crate::mem::paging::KERNEL_PHYS_BASE)));
+        assert!(entry_span.contains(&(KERNEL_IMAGE.start + crate::mem::paging::LOADER_PHYS_BASE)));
         assert!(entry_span.contains(&crate::hw::vga::VIRT_BASE));
         assert_eq!(entry_span.len() as u32, ENTRY_SPAN);
     }

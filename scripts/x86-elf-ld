@@ -2,14 +2,13 @@
 # Wrapper script to handle linking for x86-elf (32-bit)
 # Uses the first linker that supports elf_i386: i686-elf-ld, x86_64-elf-ld,
 # then the host's GNU ld (works on x86_64 Linux)
-# Trampoline at 0x100000 (1MB); kernel linked at 0x80000000+ (see linker.x86)
-
-# $0, not BASH_SOURCE: this runs under /bin/sh, which is dash on Debian/Ubuntu
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Each binary's build script names its linker script (-T): the kernel's link
+# (linker.x86, the image at 0x80400000) and the boot loader's (loader.x86, at
+# 0x100000, carrying the image)
 
 for LD in i686-elf-ld x86_64-elf-ld ld; do
     if command -v "$LD" >/dev/null 2>&1 && "$LD" -V 2>/dev/null | grep -q elf_i386; then
-        exec "$LD" -m elf_i386 -e _start -T "$SCRIPT_DIR/linker.x86" "$@"
+        exec "$LD" -m elf_i386 -e _start "$@"
     fi
 done
 

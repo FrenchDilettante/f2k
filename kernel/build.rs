@@ -5,7 +5,8 @@
 //! tests that check the built DLLs against the specs, kernel32's native exports' and every DLL's
 //! exports' declared argument blocks, stubs and variables. From the kernel's own spec
 //! (`kernel/exports.toml`), the table that keeps every export the kernel implements in its link
-//! (`exports`). The generated files land in OUT_DIR, included where the tables live.
+//! (`exports`). The generated files land in OUT_DIR, included where the tables live. And it links
+//! the kernel by its linker script (`scripts/linker.x86`), its relocations kept.
 //!
 //! It also points the kernel at the system DLLs the userland workspace builds (userland/):
 //! ntdll.dll, which it embeds and maps into every process, and kernel32.dll, msvcrt.dll,
@@ -74,6 +75,13 @@ fn main() {
             exportgen::emit::data_exports(spec, &source),
         );
     }
+
+    // The kernel's link, which the boot loader's build turns into the PE32 image ntoskrnl.exe: laid
+    // out by its linker script, its relocations kept, so the image carries its base relocations.
+    let script = repo.join("scripts/linker.x86");
+    println!("cargo:rerun-if-changed={}", script.display());
+    println!("cargo:rustc-link-arg-bins=-T{}", script.display());
+    println!("cargo:rustc-link-arg-bins=--emit-relocs");
 
     // The kernel's own exports (kernel/exports.toml): every body it implements kept in the link,
     // where the image's export directory names it.

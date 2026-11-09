@@ -1,7 +1,7 @@
 //! F2K kernel library.
 //!
-//! Built two ways: as the `f2k-kernel` binary (entered by the Multiboot `_start` stub), and as a
-//! host test harness where the x86-only assembly is cfg'd out and the pure-Rust parts get unit
+//! Built two ways: as the `ntoskrnl` binary, the image the boot loader enters at its `_start`, and
+//! as a host test harness where the x86-only assembly is cfg'd out and the pure-Rust parts get unit
 //! tests (`make run-tests`). The host's plain library build exists for the documentation tests:
 //! the compile-fail examples of the level tokens and the locks, which `make run-tests` runs too.
 
@@ -17,7 +17,7 @@
 #[cfg(all(not(test), not(target_arch = "x86")))]
 extern crate std;
 
-// Boot module (Multiboot header and _start stub)
+// Boot module (the image's entry point and the boot's phases)
 mod boot;
 
 // The CPU tables: GDT (segments, TEB, TSS) and IDT (exceptions, the syscall gate, the
@@ -149,7 +149,8 @@ pub(crate) fn halt() -> ! {
 
 /// Kernel entry point
 ///
-/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX. The
+/// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX,
+/// which the boot loader hands on as it found them. The
 /// boot's phases run in order ([`boot`]), each diagnostic boot at its place in them, then the
 /// boot context becomes the idle thread under the first user process.
 #[cfg(target_arch = "x86")]

@@ -152,9 +152,10 @@ impl Linked {
     /// The link as the ELF `elf` holds it: its four sections where the image maps them (the first
     /// a page past `__ImageBase`, each page-aligned right after the previous one), its entry, its
     /// symbols, and the fixups its `R_386_32` relocations call for. A relocation against a symbol
-    /// of the image moves with it; one against an absolute symbol whose value lies outside the
-    /// image needs nothing; the other cases cannot be rebased and are refused, as is any other
-    /// relocation type.
+    /// of the image moves with it: an absolute one needs a fixup, a PC-relative one (`R_386_PC32`,
+    /// or `R_386_PLT32`, a call the static link resolves to the function itself) none. An absolute
+    /// relocation against an absolute symbol whose value lies outside the image needs nothing; the
+    /// other cases cannot be rebased and are refused, as is any other relocation type.
     pub fn from_elf(elf: &Elf) -> Result<Linked, String> {
         let image_base = elf
             .symbol("__ImageBase")
@@ -268,8 +269,8 @@ impl Linked {
                             ));
                         }
                     }
-                    elf::R_386_PC32 if names_image => {}
-                    kind @ (elf::R_386_32 | elf::R_386_PC32) => {
+                    elf::R_386_PC32 | elf::R_386_PLT32 if names_image => {}
+                    kind @ (elf::R_386_32 | elf::R_386_PC32 | elf::R_386_PLT32) => {
                         return Err(format!(
                             "{:#x}: a relocation of type {kind} against {} (outside the image) \
                              cannot be rebased",
@@ -279,8 +280,8 @@ impl Linked {
                     }
                     kind => {
                         return Err(format!(
-                            "{:#x}: relocation type {kind} (only R_386_32 and R_386_PC32 can be \
-                             carried into the image)",
+                            "{:#x}: relocation type {kind} (only R_386_32, R_386_PC32 and \
+                             R_386_PLT32 can be carried into the image)",
                             relocation.offset
                         ))
                     }
@@ -1352,6 +1353,7 @@ name = "KeBugCheckEx"
                 (BASE + 0x1004, elf::R_386_32, 4),
                 (BASE + 0x1008, elf::R_386_32, 5),
                 (BASE + 0x1010, elf::R_386_PC32, 3),
+                (BASE + 0x1014, elf::R_386_PLT32, 3),
                 (BASE + 0x1018, elf::R_386_32, 1),
                 (BASE + 0x101C, elf::R_386_NONE, 0),
             ],

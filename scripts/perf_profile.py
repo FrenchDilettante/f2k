@@ -10,11 +10,17 @@ boot's end dumps the samples on COM1:
     F2K: perf sample: t=1523092 cs=0x08 eip=0x80135f70 stack=0x8012a1d0,0x8013d063
 
 This script parses those lines out of a boot's log (target/qemu/logs/<test>.log),
-symbolizes the kernel pointers against the kernel ELF's symbol table (the ring-3
-pointers keep their raw addresses; the fixtures carry no symbols), and writes a
-profile in the Firefox Profiler's processed format, loadable at
-profiler.firefox.com with "Load profile from file": the kernel's samples one
-thread, the ring-3 samples another, the flame graph the call tree.
+symbolizes the kernel pointers against an ELF symbol table naming the kernel's
+functions (the ring-3 pointers keep their raw addresses; the fixtures carry no
+symbols), and writes a profile in the Firefox Profiler's processed format,
+loadable at profiler.firefox.com with "Load profile from file": the kernel's
+samples one thread, the ring-3 samples another, the flame graph the call tree.
+
+The kernel's symbols are in two ELF files of a build: the kernel's link,
+ntoskrnl, the symbol sidecar beside the image ntoskrnl.exe (which carries none),
+and the boot image f2k-kernel, the loader that carries the image, whose symbol
+table names the kernel's functions at the addresses the image runs at. Either
+symbolizes a boot; the suite's --perf-trace reads the boot image it booted.
 
 Usage:
   perf_profile.py <log> [--kernel <elf>] [-o <profile.json>]
@@ -37,9 +43,9 @@ SAMPLE = re.compile(
     r"^F2K: perf sample: t=(\d+) cs=(0x[0-9a-f]+) eip=(0x[0-9a-f]+)(?: stack=((?:0x[0-9a-f]+,)*0x[0-9a-f]+))?$"
 )
 
-# The kernel ELF's default place (the profile the suite's builds keep is under target/qemu/builds,
-# but any built kernel names the same symbols).
-DEFAULT_KERNEL = REPO / "target" / "x86-f2k" / "debug" / "f2k-kernel"
+# The kernel's link, the image's symbol sidecar, at its default place (the boot images the suite's
+# builds keep are under target/qemu/builds; any build of the same sources names the same symbols).
+DEFAULT_KERNEL = REPO / "target" / "x86-f2k" / "debug" / "ntoskrnl"
 
 # The two profile categories, one per ring; their indexes into meta.categories.
 KERNEL_CATEGORY = 0
@@ -357,7 +363,7 @@ def build_profile(samples: list[tuple[int, int, list[int]]], tick: int, name_of)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("log", type=Path, help="a boot's COM1 log (the perf trace's lines)")
-    parser.add_argument("--kernel", type=Path, default=DEFAULT_KERNEL, help="the kernel ELF to symbolize against")
+    parser.add_argument("--kernel", type=Path, default=DEFAULT_KERNEL, help="the ELF to symbolize against: the kernel's link (ntoskrnl) or the boot image (f2k-kernel)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="the profile to write (default: beside the log, .json)")
     args = parser.parse_args(argv)
 

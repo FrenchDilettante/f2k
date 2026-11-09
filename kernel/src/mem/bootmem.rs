@@ -2,20 +2,28 @@
 //!
 //! Reads the Multiboot information structure the loader pointed EBX at, turns every available
 //! region into usable frame ranges, and releases all of them to the [`FrameDb`] except:
-//! - frame 0 (never allocatable), and
-//! - the frames the kernel occupies: from the boot's load address (its entry stub) to the end of
-//!   the kernel's image (`_kernel_end` from the linker script).
+//! - frame 0 (never allocatable),
+//! - the frames the kernel's image occupies: from its base to the end of its last section, as its
+//!   own headers give its size, and
+//! - the boot loader's memory, from its load address to the kernel's image: its page tables are the
+//!   ones the processor walks until the kernel's own boot directory replaces them. The boot gives
+//!   those frames back then ([`release_loader_memory`]), as Windows 2000 frees its loader's memory
+//!   once the kernel no longer needs it.
 //!
 //! The database then lives in the memory manager's database ([`super::Database`]), and serves the
 //! rest of the kernel through [`with_frame_db`].
 
+use core::ops::Range;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use rtl::image::{nt_headers_offset, ImageNtHeaders32, NT_SIGNATURE, PE32_MAGIC};
+use rtl::pod::Pod;
+
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
-use super::layout::KERNEL_IMAGE;
+use super::layout::{KERNEL_IMAGE, NTOSKRNL_BASE};
 use super::multiboot::{self, BootMemoryPlan, InfoBytes, MemorySource, MultibootInfo, UsableRange};
-use super::paging::{KERNEL_BASE, KERNEL_PHYS_BASE};
-use crate::sync::StaticBuf;
+use super::paging::{KERNEL_BASE, LOADER_PHYS_BASE, PAGE_SIZE};
+use crate::sync::{InitOnce, StaticBuf};
 
 /// The first frame of the run of conventional memory the real-mode trampoline owns (physical
 /// 0x90000, below the extended BIOS data area and the VGA hole): its code, its save area and the
@@ -39,29 +47,61 @@ static FRAME_TABLE: StaticBuf<[FrameEntry; MAX_FRAMES]> =
 /// Color chain heads, kept beside the database the same way.
 static COLOR_TABLES: StaticBuf<ColorTables> = StaticBuf::new(ColorTables::new());
 
-// Kernel image end, exported by the linker script (4 KiB aligned, a kernel-window address).
-extern "C" {
-    static _kernel_end: u8;
+/// The kernel's image's first frame: its base's, its headers' page.
+const IMAGE_FIRST_FRAME: u32 = (NTOSKRNL_BASE - KERNEL_BASE) / PAGE_SIZE;
+
+/// The boot loader's frames: from its load address to the kernel's image, the rest of the kernel
+/// image window's entry span.
+const LOADER_FRAMES: Range<u32> = LOADER_PHYS_BASE / PAGE_SIZE..IMAGE_FIRST_FRAME;
+
+/// Which of the boot loader's frames are memory to release once the loader's tables are no longer
+/// walked: the ones the memory picture releases (usable, not reserved), one bit per frame of
+/// [`LOADER_FRAMES`].
+struct LoaderMemory([u32; LOADER_WORDS]);
+
+/// The words of [`LoaderMemory`]'s bits.
+const LOADER_WORDS: usize = (LOADER_FRAMES.end - LOADER_FRAMES.start).div_ceil(32) as usize;
+
+impl LoaderMemory {
+    fn holds(&self, frame: u32) -> bool {
+        let bit = frame - LOADER_FRAMES.start;
+        self.0[(bit / 32) as usize] & 1 << (bit % 32) != 0
+    }
 }
 
-/// Frames in [first, end) are occupied by the kernel image: from the physical load address up to
-/// the aligned end of the image.
+/// The boot loader's frames to release, recorded by [`boot_init`].
+static LOADER_MEMORY: InitOnce<LoaderMemory> = InitOnce::new();
+
+/// The size of an image in memory (its SizeOfImage), from its headers' bytes: none when they are
+/// not a PE32 image's.
+fn image_size(headers: &[u8]) -> Option<u32> {
+    let offset = nt_headers_offset(&Pod::from_bytes(headers)?)?;
+    let nt: ImageNtHeaders32 = Pod::from_bytes(headers.get(offset..)?)?;
+    (nt.signature == NT_SIGNATURE && nt.optional_header.magic == PE32_MAGIC)
+        .then_some(nt.optional_header.size_of_image)
+}
+
+/// The frames the kernel's image occupies: from its base to the end of its last section, its
+/// export directory and base relocations past its statics included, as its own headers give its
+/// size.
 ///
 /// # Panics
 ///
-/// The image ends past the kernel image window (the linker script checks the same at link time):
-/// its last statics would be unmapped.
-fn kernel_frame_bounds() -> (u32, u32) {
-    let start = KERNEL_PHYS_BASE / 4096;
-    // The linker-provided symbol's address (fixed at link time); its byte is never read.
-    let image_end = core::ptr::addr_of!(_kernel_end) as u32;
+/// The headers are not a PE32 image's, or the image ends past the kernel image window (the boot
+/// loader checks the same before it enters the kernel): its last pages would be unmapped.
+fn image_frames() -> Range<u32> {
+    // SAFETY: the boot loader mapped the image at its base, its headers in its first page, inside
+    // the kernel image window; nothing writes the headers.
+    let headers =
+        unsafe { core::slice::from_raw_parts(NTOSKRNL_BASE as *const u8, PAGE_SIZE as usize) };
+    let size = image_size(headers).expect("the kernel's image headers are not a PE32 image's");
+    let end = NTOSKRNL_BASE as u64 + size as u64;
     assert!(
-        image_end as u64 <= KERNEL_IMAGE.end(),
-        "the kernel image ends at {image_end:#010x}, past its window's end {:#010x}",
+        end <= KERNEL_IMAGE.end(),
+        "the kernel image ends at {end:#010x}, past its window's end {:#010x}",
         KERNEL_IMAGE.end()
     );
-    let end = (image_end - KERNEL_BASE).div_ceil(4096);
-    (start, end)
+    IMAGE_FIRST_FRAME..(end as u32 - KERNEL_BASE).div_ceil(PAGE_SIZE)
 }
 
 /// The end of the boot identity window: until the low identity mapping is torn down, physical
@@ -120,7 +160,7 @@ pub fn boot_init(multiboot_info_addr: u32) {
         NoHooks,
     );
 
-    let (kernel_first, kernel_end) = kernel_frame_bounds();
+    let image = image_frames();
 
     let info_len = core::mem::size_of::<MultibootInfo>();
     let source = with_identity_bytes(multiboot_info_addr, info_len, |info| {
@@ -136,10 +176,21 @@ pub fn boot_init(multiboot_info_addr: u32) {
         MemorySource::UpperMemory { .. } => (0, 0),
     };
     with_identity_bytes(map_addr, map_len, |map| {
-        let plan = BootMemoryPlan::new(source, map, kernel_first..kernel_end, MAX_FRAMES);
+        // The loader's frames and the image's are kept; which of the loader's to release once its
+        // tables are no longer walked is the plan the image's frames alone would make.
+        let plan = BootMemoryPlan::new(source, map, LOADER_FRAMES.start..image.end, MAX_FRAMES);
         for range in plan.ranges() {
             release_range(&mut db, range, &plan);
         }
+        let after = BootMemoryPlan::new(source, map, image.clone(), MAX_FRAMES);
+        let mut loader = LoaderMemory([0; LOADER_WORDS]);
+        for frame in LOADER_FRAMES {
+            if after.releases(frame) && after.ranges().any(|range| range.holds(frame)) {
+                let bit = frame - LOADER_FRAMES.start;
+                loader.0[(bit / 32) as usize] |= 1 << (bit % 32);
+            }
+        }
+        LOADER_MEMORY.set(loader);
         // Reserve the trampoline's run for the real-mode VBE mode set, all or none: every byte the
         // trampoline and the BIOS write while it runs is in it, so they write no frame another
         // owner holds. Without a memory map the low frames never entered the database, and the
@@ -159,6 +210,23 @@ pub fn boot_init(multiboot_info_addr: u32) {
     });
 }
 
+/// Give the boot loader's memory back to the frame database: the frames of it the memory picture
+/// releases ([`boot_init`] recorded them). Called once, as soon as the kernel's own boot directory
+/// has replaced the loader's: nothing walks the loader's tables or runs on its stack from then on,
+/// and the boot reads none of its structures.
+///
+/// # Panics
+///
+/// Called before [`boot_init`], or twice.
+pub fn release_loader_memory() {
+    let loader = LOADER_MEMORY.get();
+    with_frame_db(|db| {
+        for frame in LOADER_FRAMES.filter(|&frame| loader.holds(frame)) {
+            db.release(frame, FrameState::Free);
+        }
+    });
+}
+
 /// Run `f` against the frame database: the bridge for code that does not hold the memory manager's
 /// database, which it borrows for the call (see [`super::with_database`]), interrupts masked.
 ///
@@ -167,4 +235,60 @@ pub fn boot_init(multiboot_info_addr: u32) {
 /// Called before [`boot_init`], or from inside a borrow of the memory manager's database.
 pub fn with_frame_db<R>(f: impl FnOnce(&mut FrameDb<NoHooks>) -> R) -> R {
     super::with_database(|database| f(database.frames()))
+}
+
+#[cfg(test)]
+mod tests {
+    use rtl::image::{ImageDosHeader, DOS_MAGIC};
+
+    use super::*;
+
+    /// A headers' page: the DOS header pointing at NT headers of `signature` and `magic`, whose
+    /// SizeOfImage is `size`.
+    fn headers(signature: u32, magic: u16, size: u32) -> Vec<u8> {
+        let dos = ImageDosHeader {
+            e_magic: DOS_MAGIC,
+            e_dos: [0; 29],
+            e_lfanew: 0x80,
+        };
+        let mut nt = ImageNtHeaders32::zeroed();
+        nt.signature = signature;
+        nt.optional_header.magic = magic;
+        nt.optional_header.size_of_image = size;
+        let mut page = vec![0; PAGE_SIZE as usize];
+        page[..dos.as_bytes().len()].copy_from_slice(dos.as_bytes());
+        page[0x80..0x80 + nt.as_bytes().len()].copy_from_slice(nt.as_bytes());
+        page
+    }
+
+    /// The image's size comes from its PE32 headers, and nothing else passes for them.
+    #[test]
+    fn the_image_size_is_its_headers() {
+        assert_eq!(
+            image_size(&headers(NT_SIGNATURE, PE32_MAGIC, 0x8C_5000)),
+            Some(0x8C_5000)
+        );
+        assert_eq!(image_size(&headers(0, PE32_MAGIC, 0x8C_5000)), None);
+        assert_eq!(image_size(&headers(NT_SIGNATURE, 0x20B, 0x8C_5000)), None);
+        let mut not_mz = headers(NT_SIGNATURE, PE32_MAGIC, 0x8C_5000);
+        not_mz[0] = 0;
+        assert_eq!(image_size(&not_mz), None);
+        assert_eq!(image_size(&[0x4D, 0x5A]), None);
+    }
+
+    /// The boot loader's frames are the entry span's past its load address: from 1 MiB to the
+    /// image, which starts on the window's second directory entry.
+    #[test]
+    fn the_loader_frames_lead_up_to_the_image() {
+        assert_eq!(LOADER_FRAMES, 0x100..0x400);
+        assert_eq!(IMAGE_FIRST_FRAME, LOADER_FRAMES.end);
+        assert_eq!(
+            LOADER_WORDS * 32,
+            (LOADER_FRAMES.end - LOADER_FRAMES.start) as usize
+        );
+        let mut loader = LoaderMemory([0; LOADER_WORDS]);
+        loader.0[1] = 1 << 3;
+        assert!(loader.holds(0x100 + 35));
+        assert!(!loader.holds(0x100 + 34) && !loader.holds(0x100));
+    }
 }

@@ -94,7 +94,7 @@ mod target {
     /// the idle process does: a system thread runs under no process of its own.
     static SYSTEM_PROCESS: PinnedProcess = PinnedProcess::new(0, 8);
 
-    // The boot stack's top, exported by the entry stub's assembly.
+    // The boot stack's top, exported by the image's entry point's assembly (boot/mod.rs).
     unsafe extern "C" {
         static boot_stack_top: u8;
     }
