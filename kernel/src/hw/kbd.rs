@@ -33,7 +33,7 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU8, Ordering::SeqCst};
 
-use crate::hw::portio::Io;
+use crate::hal::Io;
 
 #[cfg(test)]
 mod sim;
@@ -446,7 +446,7 @@ impl rtl::console::input::Lights for LightsRequest {
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
-    use crate::hw::portio::Ports;
+    use crate::hal::Ports;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::InterruptObject;
     use crate::level::{self, At, Dispatch, Keyboard as KeyboardLevel, LevelCell};

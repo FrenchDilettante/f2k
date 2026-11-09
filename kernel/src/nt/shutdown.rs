@@ -151,7 +151,7 @@ mod target {
 
     use super::*;
     use crate::fs::fat32::volume::with_boot_volume;
-    use crate::hw::portio::{Io, Ports};
+    use crate::hal::{Hal, Io, Ports, PLATFORM};
     use crate::hw::vga::{COLUMNS, ROWS};
 
     /// How many status reads the reset waits for the controller's line to take the processor: a
@@ -210,7 +210,7 @@ mod target {
         /// graphics mode the text screen is not shown: COM1 alone carries the line.
         fn show(&mut self, text: &str) {
             crate::pcr::pcr().mask_interrupts();
-            if crate::hw::vbe::graphics_mode_set() {
+            if PLATFORM.graphics_mode_set() {
                 return;
             }
             let mut screen = crate::hw::vga::screen();

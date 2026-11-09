@@ -15,7 +15,7 @@
 //! nothing, so the caller ends a command with one status read of its own, which also clears an
 //! interrupt a device might still hold.
 //!
-//! [`Io`]: crate::hw::portio::Io
+//! [`Io`]: crate::hal::Io
 
 mod channel;
 pub mod disk;

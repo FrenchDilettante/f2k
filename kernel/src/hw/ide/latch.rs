@@ -4,7 +4,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering::SeqCst};
 
 use super::regs::STATUS;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 
 /// What the service routine hands the waiting caller: the status its acknowledging read saw, and
 /// whether a wait was armed for it. One processor, but the routine runs between any two caller

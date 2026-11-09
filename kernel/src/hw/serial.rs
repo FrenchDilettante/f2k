@@ -5,7 +5,7 @@
 //! a simulated register file. The line is programmed once, at boot, and written by polling: each
 //! byte waits for the transmit holding register to empty, so output never needs an interrupt.
 
-use crate::hw::portio::Io;
+use crate::hal::Io;
 
 /// COM1's base port.
 pub const COM1: u16 = 0x3F8;
@@ -85,8 +85,8 @@ impl<IoT: Io> core::fmt::Write for Uart<IoT> {
 /// COM1 over the real ports. The line holds no state of its own beyond the chip's, so every
 /// writer makes its own.
 #[cfg(target_arch = "x86")]
-pub fn com1() -> Uart<crate::hw::portio::Ports> {
-    Uart::new(crate::hw::portio::Ports, COM1)
+pub fn com1() -> Uart<crate::hal::Ports> {
+    Uart::new(crate::hal::Ports, COM1)
 }
 
 /// Program COM1 (boot, before the first line).

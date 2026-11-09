@@ -23,7 +23,7 @@ use super::regs::{
     STATUS,
 };
 use super::taskfile::TaskFile;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 use crate::status::{NtStatus, STATUS_IO_DEVICE_ERROR, STATUS_IO_TIMEOUT, STATUS_SUCCESS};
 
 /// One channel's registers.

@@ -49,6 +49,7 @@ use super::{
     VBE_INFO_BYTES,
     VBE_INFO_MODE_LIST,
 };
+use crate::hal::{Hal, PLATFORM};
 use crate::mem::bootmem::{TRAMPOLINE_FIRST_FRAME, TRAMPOLINE_FRAMES};
 use crate::mem::paging::KERNEL_BASE;
 use crate::sync::InitOnce;
@@ -422,7 +423,7 @@ impl TrampolineBios {
             let caller_dir = crate::mem::paging::current_directory_phys();
             crate::mem::paging::activate_address_space(crate::mem::paging::boot_directory_phys());
             crate::mem::paging::install_low_identity();
-            crate::interrupt::with_lines_masked(|| vbe_enter());
+            PLATFORM.with_lines_masked(|| vbe_enter());
             crate::mem::paging::remove_low_identity();
             crate::mem::paging::activate_address_space(caller_dir);
         }

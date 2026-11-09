@@ -12,7 +12,7 @@
 
 use rtl::console::screen::Cell;
 
-use super::portio::Io;
+use crate::hal::Io;
 
 /// Mode 3's columns.
 pub const COLUMNS: usize = 80;
@@ -114,8 +114,8 @@ impl CellMemory for VgaMemory {
 
 /// The machine's text screen.
 #[cfg(target_arch = "x86")]
-pub fn screen() -> TextScreen<VgaMemory, super::portio::Ports> {
-    TextScreen::new(VgaMemory, super::portio::Ports)
+pub fn screen() -> TextScreen<VgaMemory, crate::hal::Ports> {
+    TextScreen::new(VgaMemory, crate::hal::Ports)
 }
 
 #[cfg(test)]

@@ -703,17 +703,12 @@ mod target {
     pub fn clock_requested() -> bool {
         PLATFORM.system_interrupt_requested(super::clock::CLOCK_VECTOR)
     }
-
-    /// Run `f` with every line masked, then put the masks back (see [`Hal::with_lines_masked`]).
-    pub fn with_lines_masked<R>(f: impl FnOnce() -> R) -> R {
-        PLATFORM.with_lines_masked(f)
-    }
 }
 
 #[cfg(target_arch = "x86")]
 // `audit` has no caller outside the irq-smoke diagnostic; the subsystem API stays complete.
 #[allow(unused_imports)]
-pub use target::{audit, clock_requested, connect, init, spurious_count, with_lines_masked};
+pub use target::{audit, clock_requested, connect, init, spurious_count};
 
 /// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
 /// vector, service the interrupt, drain the deferred work.

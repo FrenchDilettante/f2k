@@ -5,7 +5,7 @@ use super::channel::Channel;
 use super::latch::{Completion, Latch};
 use super::regs::{FLUSH_CACHE, FLUSH_CACHE_EXT, IDENTIFY_DEVICE, SECTOR_SIZE};
 use super::taskfile::TaskFile;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 use crate::status::NtStatus;
 
 /// What IDENTIFY DEVICE reports that the driver uses.

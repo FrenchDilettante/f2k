@@ -7,7 +7,7 @@ use super::channel::Channel;
 use super::latch::{Completion, Latch};
 use super::regs::FLUSH_WAITS;
 use super::taskfile::TaskFile;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 use crate::status::NtStatus;
 
 /// Flush the drive's write cache with `command` (FLUSH CACHE or FLUSH CACHE EXT), a non-data

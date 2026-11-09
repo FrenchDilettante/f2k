@@ -26,8 +26,9 @@
 //! part of this layer. The kernel calls them directly; they reach the hardware through this
 //! layer's port space and vector mapping, as a Windows 2000 driver does through hal.dll.
 
+pub use crate::hw::portio::Io;
 #[cfg(target_arch = "x86")]
-use crate::hw::portio::Ports;
+pub use crate::hw::portio::Ports;
 pub use crate::hw::rtc::{CivilTime, SCREEN_MAILBOX};
 use crate::interrupt::irql::{Irql, OldIrql};
 use crate::interrupt::{Claim, Controller};

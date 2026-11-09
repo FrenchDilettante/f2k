@@ -20,7 +20,7 @@ use super::channel::Channel;
 use super::latch::{Completion, Latch};
 use super::regs::*;
 use super::taskfile::decode_count;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 
 /// One logged port access.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -47,7 +47,9 @@ use rtl::console::{Client, Console, CsrApiMsg, Handles, DATA_WORDS};
 use rtl::pod::Pod;
 
 use self::ctrl::Control;
-use crate::hw::portio::Io;
+use crate::hal::Io;
+#[cfg(target_arch = "x86")]
+use crate::hal::{Hal, PLATFORM};
 use crate::hw::vga::{CellMemory, TextScreen};
 #[cfg(target_arch = "x86")]
 use crate::level::{At, Dispatch, LevelCell, Passive};
@@ -249,7 +251,7 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
             // The text screen shows the console until the graphics mode is set; from then on the
             // VGA text page is not on the screen (and in a VBE mode the legacy window may reach
             // video memory), so its cells and cursor are left alone and the changes dropped.
-            if crate::hw::vbe::graphics_mode_set() {
+            if PLATFORM.graphics_mode_set() {
                 server.console.screen.take_damage();
             } else {
                 present(&mut server.console.screen, &mut crate::hw::vga::screen());

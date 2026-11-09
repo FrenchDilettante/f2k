@@ -5,7 +5,7 @@ use super::channel::Channel;
 use super::latch::{Completion, Latch};
 use super::regs::{MAX_SECTORS_PER_COMMAND, SECTOR_SIZE, WRITE_SECTORS};
 use super::taskfile::pack_lba28;
-use crate::hw::portio::Io;
+use crate::hal::Io;
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS};
 
 /// Write `buffer.len() / 512` contiguous sectors starting at `lba` to a disk of `capacity` sectors

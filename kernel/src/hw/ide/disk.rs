@@ -38,13 +38,13 @@ mod target {
     use super::*;
     use crate::block::lock::DeviceLock;
     use crate::block::{check_request, BlockDevice, BusType, CacheFlush, DeviceInfo, DeviceKind};
+    use crate::hal::Ports;
     use crate::hw::ide::flush;
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::{Completion, Latch};
     use crate::hw::ide::read;
     use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR, SECTOR_SIZE};
     use crate::hw::ide::write;
-    use crate::hw::portio::Ports;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::InterruptObject;
     use crate::level::{At, Dispatch, Ide};
@@ -358,8 +358,8 @@ mod target {
     /// acknowledges it and counts it unsolicited ([`unsolicited`]).
     #[cfg(feature = "nest-smoke")]
     pub fn request_interrupt() {
+        use crate::hal::Io;
         use crate::hw::ide::regs::{CHECK_POWER_MODE, COMMAND};
-        use crate::hw::portio::Io;
         // Bring-up left the master selected and the interrupt enabled.
         IDE.channel
             .with(|channel| channel.io().out(PRIMARY_BASE + COMMAND, CHECK_POWER_MODE));
@@ -393,7 +393,7 @@ mod tests {
     };
     use super::super::sim::{SimChannel, DISK};
     use super::*;
-    use crate::hw::portio::Io;
+    use crate::hal::Io;
     use crate::status::STATUS_SUCCESS;
 
     /// The interrupt path end to end on the host: the object connected at the IDE vector and
