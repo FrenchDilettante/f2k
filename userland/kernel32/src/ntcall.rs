@@ -2561,6 +2561,13 @@ pub fn validate_heap(heap: usize, flags: u32, block: usize) -> bool {
     unsafe { nt::RtlValidateHeap(heap, flags, block as *const u8) != 0 }
 }
 
+/// RtlCompactHeap: the size of the heap's largest free block (0 for none).
+#[cfg(not(test))]
+pub fn compact_heap(heap: usize, flags: u32) -> usize {
+    // SAFETY: ntdll's export; a handle naming no heap answers 0, not followed.
+    unsafe { nt::RtlCompactHeap(heap, flags) }
+}
+
 /// RtlSizeHeap: the size of the heap's block; none for what is not a block.
 #[cfg(not(test))]
 pub fn size_heap(heap: usize, flags: u32, block: usize) -> Option<usize> {

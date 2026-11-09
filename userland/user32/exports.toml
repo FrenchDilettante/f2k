@@ -889,17 +889,19 @@ fails = "FALSE"
 name = "GetProcessDefaultLayout"
 group = "window"
 args = ["ptr<u32> pdwDefaultLayout"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetProcessDefaultLayout" }
 ordinal = 315
 fails = "FALSE"
+note = "no mirroring: the default layout is always 0"
 
 [[export]]
 name = "SetProcessDefaultLayout"
 group = "window"
 args = ["u32 dwDefaultLayout"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetProcessDefaultLayout" }
 ordinal = 581
 fails = "FALSE"
+note = "no mirroring: 0 and LAYOUT_RTL are accepted as documented, and the default layout stays 0; any other value is ERROR_INVALID_PARAMETER"
 
 # win32k's window services, behind CreateWindowExA/W and DestroyWindow: user32's internal calls.
 # NtUserCreateWindowEx takes CreateWindowExW's arguments as they are, then the caller's

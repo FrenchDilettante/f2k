@@ -24,7 +24,16 @@ use rtl::user::HWND_LOCK_UPDATE_WINDOW;
 use rtl::window::{WindowInfo, QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
 
 use crate::imports::{self, Creation};
-use crate::{answered, failed_with, message, window_error, NameA, Out};
+use crate::{
+    answered,
+    failed,
+    failed_with,
+    message,
+    window_error,
+    NameA,
+    Out,
+    ERROR_INVALID_PARAMETER,
+};
 
 /// The private extended-style bit a narrow caller's creation carries (the window remembers it was
 /// made through the ANSI entry point; the kernel takes it out of the stored style).
@@ -297,6 +306,33 @@ pub extern "system" fn update_window(window: usize) -> u32 {
     answered(answer).is_some() as u32
 }
 
+/// LAYOUT_RTL: a right-to-left (mirrored) default layout.
+const LAYOUT_RTL: u32 = 1;
+
+/// GetProcessDefaultLayout: the layout windows the process creates take by default; always 0, left
+/// to right: F2K mirrors no window. TRUE.
+///
+/// # Safety
+///
+/// The caller's DWORD, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetProcessDefaultLayout")]
+pub unsafe extern "system" fn get_process_default_layout(layout: *mut u32) -> u32 {
+    // SAFETY: the caller's DWORD.
+    unsafe { Out::new(layout) }.set(0);
+    1
+}
+
+/// SetProcessDefaultLayout: TRUE for the two layouts Windows 2000 documents, 0 and LAYOUT_RTL,
+/// FALSE with ERROR_INVALID_PARAMETER for any other. F2K mirrors no window, so the default layout
+/// stays 0 whichever is asked.
+#[unsafe(export_name = "f2k_export_SetProcessDefaultLayout")]
+pub extern "system" fn set_process_default_layout(layout: u32) -> u32 {
+    match layout {
+        0 | LAYOUT_RTL => 1,
+        _ => failed(ERROR_INVALID_PARAMETER).unwrap_or(0),
+    }
+}
+
 /// A wide name's units, for the tests' reading of what a creation was given.
 #[cfg(test)]
 fn units(name: &str) -> std::vec::Vec<u16> {
@@ -509,5 +545,25 @@ mod tests {
         arm();
         assert_eq!(is_window_visible(bogus), 0);
         assert_eq!(last_error(), 1400);
+    }
+
+    /// The default layout is 0, left to right, and stays so: setting accepts 0 and LAYOUT_RTL and
+    /// refuses any other value with ERROR_INVALID_PARAMETER.
+    #[test]
+    fn the_default_layout_is_left_to_right() {
+        let mut layout = UNSET;
+        // SAFETY: the tests' own DWORD.
+        assert_eq!(unsafe { get_process_default_layout(&mut layout) }, 1);
+        assert_eq!(layout, 0);
+        arm();
+        assert_eq!(set_process_default_layout(0), 1);
+        assert_eq!(set_process_default_layout(LAYOUT_RTL), 1);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(set_process_default_layout(2), 0);
+        assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
+        layout = UNSET;
+        // SAFETY: as above.
+        assert_eq!(unsafe { get_process_default_layout(&mut layout) }, 1);
+        assert_eq!(layout, 0);
     }
 }

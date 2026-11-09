@@ -323,6 +323,32 @@ pub fn validate_area(region: &[u8], top: usize) -> bool {
     true
 }
 
+/// The largest block the area could hand out without growing (RtlCompactHeap's answer): the
+/// largest run of free blocks below `top`, a run counted as the one block an allocation's walk
+/// would merge it into, or the room above `top` less a header, whichever is larger; none when a
+/// header on the walk is not a block.
+pub fn largest_free(region: &[u8], top: usize) -> Option<usize> {
+    if top > region.len() {
+        return None;
+    }
+    let mut largest = (region.len() - top).saturating_sub(HEADER_SIZE);
+    let mut offset = 0;
+    // The free run being walked: where it starts.
+    let mut run = None;
+    while offset < top {
+        let (size, state) = read_header(region, offset);
+        let next = next_block(offset, size, top)?;
+        if state_of(state) == STATE_FREE {
+            let start = *run.get_or_insert(offset);
+            largest = largest.max(next - start - HEADER_SIZE);
+        } else {
+            run = None;
+        }
+        offset = next;
+    }
+    Some(largest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +431,34 @@ mod tests {
             .alloc(0x300 + 2 * HEADER_SIZE, false)
             .expect("merged span");
         assert_eq!(merged, a);
+    }
+
+    /// The largest free block: the room above the top until a freed block below it is larger, then
+    /// that block (a merged run counting as one); a header that is not a block answers none.
+    #[test]
+    fn the_largest_free_block_is_found() {
+        let mut arena = Arena::new();
+        let room = |arena: &Arena| arena.bytes.len() - arena.top - HEADER_SIZE;
+        assert_eq!(largest_free(&arena.bytes, 0), Some(0x8000 - HEADER_SIZE));
+        let a = arena.alloc(0x1000, false).unwrap();
+        let b = arena.alloc(0x2000, false).unwrap();
+        let _c = arena.alloc(0x40, false).unwrap();
+        assert_eq!(largest_free(&arena.bytes, arena.top), Some(room(&arena)));
+        let _d = arena.alloc(room(&arena) - 0x100, false).unwrap();
+        assert_eq!(
+            largest_free(&arena.bytes, arena.top),
+            Some(0x100 - HEADER_SIZE)
+        );
+        assert!(arena.free(b));
+        assert_eq!(largest_free(&arena.bytes, arena.top), Some(0x2000));
+        assert!(arena.free(a));
+        assert_eq!(
+            largest_free(&arena.bytes, arena.top),
+            Some(0x3000 + HEADER_SIZE)
+        );
+        arena.bytes[..4].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(largest_free(&arena.bytes, arena.top), None);
+        assert_eq!(largest_free(&arena.bytes, arena.bytes.len() + 1), None);
     }
 
     /// First-fit: a freed block is reused ahead of the bump edge, split, and the tail serves;

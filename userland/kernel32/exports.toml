@@ -969,9 +969,10 @@ ordinal = 431
 name = "GlobalCompact"
 group = "heap"
 args = ["u32 dwMinFree"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalCompact" }
 ordinal = 418
 fails = "0"
+note = "obsolete: no heap compacts; it answers the largest free block the process heap could give, as Windows 2000's does"
 
 # --- locale / string conversion -------------------------------------------------------------------
 

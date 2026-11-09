@@ -36,6 +36,7 @@ use crate::heapcore::{
     alloc_block,
     block_size,
     free_block,
+    largest_free,
     resize_in_place,
     round_up,
     validate_area,
@@ -308,6 +309,11 @@ impl Seg {
     /// Whether every header of the area describes a block.
     fn validate(self) -> bool {
         validate_area(self.area(), self.info.top.get())
+    }
+
+    /// The largest block the committed area could hand out; none for a corrupt area.
+    fn largest_free(self) -> Option<usize> {
+        largest_free(self.area(), self.info.top.get())
     }
 }
 
@@ -696,6 +702,19 @@ impl Heap {
         })
     }
 
+    /// RtlCompactHeap's work: the size of the largest free block, over every segment's committed
+    /// area (a big block is never free). Nothing moves: a free block already merges with its free
+    /// neighbors. Zero when a segment is corrupt, or when nothing is free.
+    pub fn compact(self, system: &impl System, flags: u32) -> usize {
+        self.locked(system, flags, || {
+            self.segments()
+                .try_fold(0, |largest: usize, segment| {
+                    Some(largest.max(segment.largest_free()?))
+                })
+                .unwrap_or(0)
+        })
+    }
+
     /// HeapDestroy's work: every page given back — the big blocks, the further segments, then the
     /// first (each link read before its reservation goes).
     pub fn destroy(self, system: &(impl System + Vm)) {
@@ -1078,6 +1097,23 @@ pub(crate) mod tests {
         assert!(heap.validate(&host, 0, 0));
         assert!(heap.validate(&host, 0, z));
         assert!(!heap.validate(&host, 0, z + 8));
+        heap.destroy(&host);
+    }
+
+    /// Compacting answers the largest free block of the committed area: the room past the last
+    /// block at first, then a freed block larger than that room.
+    #[test]
+    fn compacting_answers_the_largest_free_block() {
+        let host = Host::new();
+        let heap = create(&host, 0, 0, 0).unwrap();
+        // The first page committed, the header's area taken from it.
+        assert_eq!(heap.compact(&host, 0), PAGE - AREA - HEADER_SIZE);
+        let a = heap.alloc(&host, 0, 0x800).unwrap();
+        let _b = heap.alloc(&host, 0, 0x700).unwrap();
+        let room = PAGE - AREA - 2 * HEADER_SIZE - 0x800 - 0x700 - HEADER_SIZE;
+        assert_eq!(heap.compact(&host, 0), room);
+        assert!(heap.free(&host, 0, a));
+        assert_eq!(heap.compact(&host, 0), 0x800);
         heap.destroy(&host);
     }
 

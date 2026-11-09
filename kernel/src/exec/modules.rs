@@ -487,8 +487,9 @@ mod tests {
         // affinity, TLS-index, environment, computer-name, file (the write side's included),
         // current-directory, binary-type, process-creation, process, ToolHelp, pipe, module,
         // resource and profile calls and RaiseException its Rust, the heap and Local/Global calls
-        // its own over ntdll's heap). The internal start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 340);
+        // its own over ntdll's heap, GlobalCompact over its RtlCompactHeap). The internal start
+        // thunks are not among them.
+        assert_eq!(NATIVE_EXPORTS.len(), 341);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -680,6 +681,10 @@ mod tests {
         "ReadConsoleInputW",
     ];
 
+    /// The exports kernel32 implements for a studied program outside the corpus (tests/compat,
+    /// run by hand, never by a test): calc.exe's GlobalCompact.
+    const FOR_STUDIED_PROGRAMS: [&str; 1] = ["GlobalCompact"];
+
     /// The corpus's own companion DLLs that a corpus binary imports (dllmain's): built beside it on
     /// the real machine and loaded from \CORPUS, not system DLLs, so the checks of kernel32's
     /// surface leave their imports aside.
@@ -709,11 +714,12 @@ mod tests {
     /// binary resolves, and every export it implements is imported by some corpus binary, the
     /// binaries loading the other system DLLs ([`LOADED_CORPUS`]) included (its stubs are for
     /// programs outside the corpus; the awaited fixtures' exports wait for theirs, a few are
-    /// reached by name, and a few serve the system DLLs). The export names are unique.
+    /// reached by name, a few serve the system DLLs, and a few a studied program outside the
+    /// corpus). The export names are unique.
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 349, "the corpus's import surface");
+        assert_eq!(names.len(), 350, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -751,8 +757,15 @@ mod tests {
                 imported.iter().any(|import| import == name)
                     || AWAITED.contains(&name)
                     || BY_NAME.contains(&name)
-                    || FOR_SYSTEM_DLLS.contains(&name),
+                    || FOR_SYSTEM_DLLS.contains(&name)
+                    || FOR_STUDIED_PROGRAMS.contains(&name),
                 "{name} is exported but no corpus binary imports it"
+            );
+        }
+        for name in FOR_STUDIED_PROGRAMS {
+            assert!(
+                !imported.iter().any(|import| import == name),
+                "{name} has a corpus binary importing it: it leaves FOR_STUDIED_PROGRAMS"
             );
         }
         for name in AWAITED {

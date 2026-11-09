@@ -1037,6 +1037,15 @@ impl = { native = "RtlUnlockHeap" }
 ordinal = 665
 fails = "FALSE"
 
+[[export]]
+name = "RtlCompactHeap"
+group = "heap"
+args = ["u32 HeapHandle", "u32 Flags"]
+impl = { native = "RtlCompactHeap" }
+ordinal = 359
+fails = "0"
+note = "nothing moves (a free block already merges with its free neighbors): the size of the largest free block of the committed segments; kernel32's GlobalCompact answers it"
+
 # --- the current directory (src/curdir.rs over rtl::path) -----------------------------------------
 
 [[export]]
@@ -2466,10 +2475,6 @@ ordinal = 356
 [[export]]
 name = "RtlClearAllBits"
 ordinal = 357
-
-[[export]]
-name = "RtlCompactHeap"
-ordinal = 359
 
 [[export]]
 name = "RtlCompareMemory"

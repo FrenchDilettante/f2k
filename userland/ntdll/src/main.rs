@@ -319,6 +319,15 @@ pub extern "system" fn rtl_unlock_heap(handle: usize) -> u32 {
     }
 }
 
+/// RtlCompactHeap: the size of the heap's largest free block (kernel32's GlobalCompact and
+/// LocalCompact answer it); 0 for a handle naming no heap.
+#[unsafe(export_name = "f2k_export_RtlCompactHeap")]
+pub extern "system" fn rtl_compact_heap(handle: usize, flags: u32) -> usize {
+    process::heaps()
+        .heap(handle)
+        .map_or(0, |heap| heap.compact(&Native, flags))
+}
+
 /// RtlValidateHeap: the whole heap's headers (a null pointer), or one block.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_validate_heap(handle: usize, flags: u32, pointer: usize) -> u32 {

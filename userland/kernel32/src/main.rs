@@ -254,6 +254,14 @@ extern "C" fn f2k_k32_local_realloc(handle: usize, size: usize, flags: u32) -> u
     finish(with_memory(|memory| memory.realloc(handle, size, flags)))
 }
 
+/// GlobalCompact: obsolete, as Windows 2000 documents it: no block moves or is discarded, and
+/// `dwMinFree` is not read; the answer is the size of the process heap's largest free block,
+/// ntdll's RtlCompactHeap's (Windows 2000's kernel32 imports it for this).
+#[unsafe(export_name = "f2k_export_GlobalCompact")]
+extern "system" fn global_compact(_min_free: u32) -> usize {
+    ntcall::compact_heap(sys::process_heap_handle(), 0)
+}
+
 /// TlsSetValue's first use of an expansion index on this thread: its 1024 expansion slots, zeroed,
 /// on the process heap, recorded in its TEB; null when the heap has no room (src/natives.s).
 #[unsafe(no_mangle)]
