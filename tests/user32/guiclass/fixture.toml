@@ -1,14 +1,8 @@
 # guiclass: one test per block of the real-machine capture (output.txt); see tests/README.md.
 description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom)."
 kind = "sectioned"
+gate = true
 screenshots = true
-
-[pending]
-register = "graphics kernel not landed yet"
-query = "graphics kernel not landed yet"
-duplicate = "graphics kernel not landed yet"
-unregister = "graphics kernel not landed yet"
-errors = "graphics kernel not landed yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

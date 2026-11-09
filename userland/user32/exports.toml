@@ -1,9 +1,9 @@
 # USER32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# F2K's user32 exports what the corpus fixtures (tests/user32, hellogui aside: it draws through
-# gdi32) and cmd.exe import: its own code over ntdll and kernel32, as Windows 2000's user32 imports
-# them, and stubs for what is not written yet. The rest of the records are catalogued from
+# F2K's user32 exports what the corpus fixtures (tests/user32, tests/gdi32's guidc) and cmd.exe
+# import: its own code over ntdll and kernel32, as Windows 2000's user32 imports them, and stubs
+# for what is not written yet. The rest of the records are catalogued from
 # USER32.dll 5.0.2195.6688's export table (scripts/catalogue_exports.py): their name and ordinal.
 # Implementing one gives it its group, prototype and implementation.
 #
@@ -21,7 +21,7 @@ title = "window stations / desktops"
 
 [[group]]
 key = "display"
-title = "display settings"
+title = "the display: settings, devices, monitors, metrics, colors and DCs"
 
 [[group]]
 key = "sound"
@@ -102,7 +102,7 @@ args = ["handle Object", "u32 Index", "ptr Information", "u32 Length", "ptr<u32>
 impl = { syscall = "crate::win32k::winsta::get_object_information" }
 internal = true
 
-# --- display settings -----------------------------------------------------------------------------
+# --- the display: settings, devices, monitors, metrics, colors and DCs ----------------------------
 
 [[export]]
 name = "ChangeDisplaySettingsA"
@@ -135,6 +135,175 @@ args = ["ptr lpDevMode", "u32 dwflags"]
 impl = { native = "ChangeDisplaySettingsW" }
 ordinal = 31
 note = "ChangeDisplaySettingsExW for the primary display"
+
+[[export]]
+name = "EnumDisplaySettingsA"
+group = "display"
+args = ["strA? lpszDeviceName", "u32 iModeNum", "ptr lpDevMode"]
+impl = { native = "EnumDisplaySettingsA" }
+ordinal = 200
+fails = "FALSE"
+note = "the mode asked into a DEVMODEW of the same version, converted into the caller's DEVMODEA"
+
+[[export]]
+name = "EnumDisplaySettingsW"
+group = "display"
+args = ["strW? lpszDeviceName", "u32 iModeNum", "ptr lpDevMode"]
+impl = { native = "EnumDisplaySettingsW" }
+ordinal = 203
+fails = "FALSE"
+
+[[export]]
+name = "EnumDisplayDevicesA"
+group = "display"
+args = ["strA? lpDevice", "u32 iDevNum", "ptr lpDisplayDevice", "u32 dwFlags"]
+impl = { native = "EnumDisplayDevicesA" }
+ordinal = 197
+fails = "FALSE"
+
+[[export]]
+name = "EnumDisplayDevicesW"
+group = "display"
+args = ["strW? lpDevice", "u32 iDevNum", "ptr lpDisplayDevice", "u32 dwFlags"]
+impl = { native = "EnumDisplayDevicesW" }
+ordinal = 198
+fails = "FALSE"
+
+[[export]]
+name = "EnumDisplayMonitors"
+group = "display"
+args = ["handle hdc", "ptr lprcClip", "ptr lpfnEnum", "u32 dwData"]
+impl = { native = "EnumDisplayMonitors" }
+ordinal = 199
+fails = "FALSE"
+note = "the kernel selects the monitors, user32 calls the callback"
+
+[[export]]
+name = "GetMonitorInfoA"
+group = "display"
+args = ["handle hMonitor", "ptr lpmi"]
+impl = { native = "GetMonitorInfoA" }
+ordinal = 307
+fails = "FALSE"
+
+[[export]]
+name = "MonitorFromWindow"
+group = "display"
+args = ["handle hwnd", "u32 dwFlags"]
+impl = { native = "MonitorFromWindow" }
+ordinal = 462
+fails = "NULL"
+
+[[export]]
+name = "MonitorFromPoint"
+group = "display"
+args = ["i32 x", "i32 y", "u32 dwFlags"]
+impl = { native = "MonitorFromPoint" }
+ordinal = 460
+fails = "NULL"
+note = "the POINT by value: x, then y"
+
+[[export]]
+name = "MonitorFromRect"
+group = "display"
+args = ["ptr lprc", "u32 dwFlags"]
+impl = { native = "MonitorFromRect" }
+ordinal = 461
+fails = "NULL"
+
+[[export]]
+name = "SetSysColors"
+group = "display"
+args = ["i32 cElements", "ptr lpaElements", "ptr lpaRgbValues"]
+impl = { native = "SetSysColors" }
+ordinal = 593
+fails = "FALSE"
+
+[[export]]
+name = "SystemParametersInfoA"
+group = "display"
+args = ["u32 uiAction", "u32 uiParam", "ptr pvParam", "u32 fWinIni"]
+impl = { native = "SystemParametersInfoA" }
+ordinal = 631
+fails = "FALSE"
+
+[[export]]
+name = "SystemParametersInfoW"
+group = "display"
+args = ["u32 uiAction", "u32 uiParam", "ptr pvParam", "u32 fWinIni"]
+impl = { native = "SystemParametersInfoW" }
+ordinal = 632
+fails = "FALSE"
+note = "SPI_GETWORKAREA alone; another action is a stub"
+
+[[export]]
+name = "GetSystemMetrics"
+group = "display"
+args = ["i32 nIndex"]
+impl = { native = "GetSystemMetrics" }
+ordinal = 330
+fails = "0"
+note = "the screen and the work area from the services, Windows 2000's standard scheme's constants; another index is a stub"
+
+[[export]]
+name = "GetSysColor"
+group = "display"
+args = ["i32 nIndex"]
+impl = { native = "GetSysColor" }
+ordinal = 327
+fails = "0"
+note = "this process's copy of the colors: win32k serves no read of its table yet"
+
+[[export]]
+name = "GetSysColorBrush"
+group = "display"
+args = ["i32 nIndex"]
+impl = { native = "GetSysColorBrush" }
+ordinal = 328
+fails = "NULL"
+note = "a constant handle per color: no brush objects yet"
+
+[[export]]
+name = "GetDC"
+group = "display"
+args = ["handle hWnd"]
+impl = { native = "GetDC" }
+ordinal = 257
+fails = "NULL"
+
+[[export]]
+name = "GetDCEx"
+group = "display"
+args = ["handle hWnd", "handle hrgnClip", "u32 flags"]
+impl = { native = "GetDCEx" }
+ordinal = 258
+fails = "NULL"
+
+[[export]]
+name = "GetWindowDC"
+group = "display"
+args = ["handle hWnd"]
+impl = { native = "GetWindowDC" }
+ordinal = 345
+fails = "NULL"
+
+[[export]]
+name = "ReleaseDC"
+group = "display"
+args = ["handle hWnd", "handle hDC"]
+impl = { native = "ReleaseDC" }
+ordinal = 520
+fails = "0"
+note = "the DCs the GetDC family handed out alone, their handles closed (NtClose)"
+
+[[export]]
+name = "WindowFromDC"
+group = "display"
+args = ["handle hDC"]
+impl = { native = "WindowFromDC" }
+ordinal = 688
+fails = "NULL"
+note = "the window a DC of the GetDC family was handed out for"
 
 # win32k's display service behind them: user32's internal call, with ChangeDisplaySettingsExW's
 # arguments as they are; it answers the DISP_CHANGE code, not an NTSTATUS, as Windows 2000's does.
@@ -186,8 +355,8 @@ args = ["u32 Action", "u32 UiParam", "ptr Param", "u32 WinIni"]
 impl = { syscall = "crate::win32k::display::system_parameters_info" }
 internal = true
 
-# win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, served
-# ahead of the exports (which come with the windows): each answers a screen DC's handle.
+# win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, each
+# answering a screen DC's handle (ReleaseDC closes it through ntdll's NtClose).
 
 [[export]]
 name = "NtUserGetDC"
@@ -222,6 +391,108 @@ fails = "FALSE"
 note = "there is no sound device: it succeeds and nothing sounds"
 
 # --- window classes -------------------------------------------------------------------------------
+
+[[export]]
+name = "RegisterClassA"
+group = "class"
+args = ["ptr lpWndClass"]
+impl = { native = "RegisterClassA" }
+ordinal = 503
+fails = "0"
+note = "the class name and the menu name converted to UTF-16, then RegisterClassW's registration"
+
+[[export]]
+name = "RegisterClassExA"
+group = "class"
+args = ["ptr lpwcx"]
+impl = { native = "RegisterClassExA" }
+ordinal = 504
+fails = "0"
+note = "cbSize checked, the names converted to UTF-16, then RegisterClassExW's registration"
+
+[[export]]
+name = "RegisterClassExW"
+group = "class"
+args = ["ptr lpwcx"]
+impl = { native = "RegisterClassExW" }
+ordinal = 505
+fails = "0"
+note = "cbSize checked, then RegisterClassW's registration with the small icon"
+
+[[export]]
+name = "RegisterClassW"
+group = "class"
+args = ["ptr lpWndClass"]
+impl = { native = "RegisterClassW" }
+ordinal = 506
+fails = "0"
+note = "4.0-compatible; a stock cursor goes to the kernel as none (no cursor objects yet); a success leaves the last error 2, as the captures show"
+
+[[export]]
+name = "UnregisterClassA"
+group = "class"
+args = ["ptr lpClassName", "handle hInstance"]
+impl = { native = "UnregisterClassA" }
+ordinal = 657
+fails = "FALSE"
+
+[[export]]
+name = "UnregisterClassW"
+group = "class"
+args = ["ptr lpClassName", "handle hInstance"]
+impl = { native = "UnregisterClassW" }
+ordinal = 658
+fails = "FALSE"
+
+[[export]]
+name = "GetClassInfoA"
+group = "class"
+args = ["handle hInstance", "ptr lpClassName", "ptr lpWndClass"]
+impl = { native = "GetClassInfoA" }
+ordinal = 235
+fails = "FALSE"
+
+[[export]]
+name = "GetClassInfoW"
+group = "class"
+args = ["handle hInstance", "ptr lpClassName", "ptr lpWndClass"]
+impl = { native = "GetClassInfoW" }
+ordinal = 238
+fails = "FALSE"
+note = "the class atom for a name that is one, TRUE for a string (the service answers no atom)"
+
+[[export]]
+name = "GetClassNameA"
+group = "class"
+args = ["handle hWnd", "ptr lpClassName", "i32 nMaxCount"]
+impl = { native = "GetClassNameA" }
+ordinal = 241
+fails = "0"
+
+[[export]]
+name = "GetClassNameW"
+group = "class"
+args = ["handle hWnd", "ptr lpClassName", "i32 nMaxCount"]
+impl = { native = "GetClassNameW" }
+ordinal = 242
+fails = "0"
+
+[[export]]
+name = "LoadCursorA"
+group = "class"
+args = ["handle hInstance", "ptr lpCursorName"]
+impl = { native = "LoadCursorA" }
+ordinal = 415
+fails = "NULL"
+note = "the stock cursors alone, constant handles (no cursor objects yet); a module's cursor is a stub"
+
+[[export]]
+name = "LoadCursorW"
+group = "class"
+args = ["handle hInstance", "ptr lpCursorName"]
+impl = { native = "LoadCursorW" }
+ordinal = 418
+fails = "NULL"
 
 # win32k's class services, behind the RegisterClass family, UnregisterClass, GetClassInfo,
 # GetClassName and the SetClassLong/SetClassWord family: user32's internal calls. A class name is
@@ -271,6 +542,113 @@ internal = true
 
 # --- windows --------------------------------------------------------------------------------------
 
+[[export]]
+name = "CreateWindowExA"
+group = "window"
+args = [
+    "u32 dwExStyle", "ptr lpClassName", "strA? lpWindowName", "u32 dwStyle", "i32 X", "i32 Y",
+    "i32 nWidth", "i32 nHeight", "handle hWndParent", "handle hMenu", "handle hInstance",
+    "ptr lpParam",
+]
+impl = { native = "CreateWindowExA" }
+ordinal = 91
+fails = "NULL"
+note = "the names converted to UTF-16, the ANSI-creator bit set, then CreateWindowExW's window"
+
+[[export]]
+name = "CreateWindowExW"
+group = "window"
+args = [
+    "u32 dwExStyle", "ptr lpClassName", "strW? lpWindowName", "u32 dwStyle", "i32 X", "i32 Y",
+    "i32 nWidth", "i32 nHeight", "handle hWndParent", "handle hMenu", "handle hInstance",
+    "ptr lpParam",
+]
+impl = { native = "CreateWindowExW" }
+ordinal = 92
+fails = "NULL"
+note = "the creation's messages delivered to the window procedure before it returns"
+
+[[export]]
+name = "DestroyWindow"
+group = "window"
+args = ["handle hWnd"]
+impl = { native = "DestroyWindow" }
+ordinal = 145
+fails = "FALSE"
+
+[[export]]
+name = "GetDesktopWindow"
+group = "window"
+args = []
+impl = { native = "GetDesktopWindow" }
+ordinal = 259
+fails = "NULL"
+note = "the window of class #32769 among the window table's first handles: no service names it"
+
+[[export]]
+name = "IsWindow"
+group = "window"
+args = ["handle hWnd"]
+impl = { native = "IsWindow" }
+ordinal = 404
+fails = "FALSE"
+
+[[export]]
+name = "IsWindowVisible"
+group = "window"
+args = ["handle hWnd"]
+impl = { native = "IsWindowVisible" }
+ordinal = 407
+fails = "FALSE"
+
+[[export]]
+name = "GetWindowRect"
+group = "window"
+args = ["handle hWnd", "ptr lpRect"]
+impl = { native = "GetWindowRect" }
+ordinal = 353
+fails = "FALSE"
+
+[[export]]
+name = "ShowWindow"
+group = "window"
+args = ["handle hWnd", "i32 nCmdShow"]
+impl = { native = "ShowWindow" }
+ordinal = 624
+fails = "FALSE"
+
+[[export]]
+name = "ShowWindowAsync"
+group = "window"
+args = ["handle hWnd", "i32 nCmdShow"]
+impl = { native = "ShowWindowAsync" }
+ordinal = 625
+fails = "FALSE"
+
+[[export]]
+name = "SetWindowPos"
+group = "window"
+args = ["handle hWnd", "handle hWndInsertAfter", "i32 X", "i32 Y", "i32 cx", "i32 cy", "u32 uFlags"]
+impl = { native = "SetWindowPos" }
+ordinal = 609
+fails = "FALSE"
+
+[[export]]
+name = "MoveWindow"
+group = "window"
+args = ["handle hWnd", "i32 X", "i32 Y", "i32 nWidth", "i32 nHeight", "bool bRepaint"]
+impl = { native = "MoveWindow" }
+ordinal = 463
+fails = "FALSE"
+
+[[export]]
+name = "UpdateWindow"
+group = "window"
+args = ["handle hWnd"]
+impl = { native = "UpdateWindow" }
+ordinal = 663
+fails = "FALSE"
+
 # win32k's window services, behind CreateWindowExA/W and DestroyWindow: user32's internal calls.
 # NtUserCreateWindowEx takes CreateWindowExW's arguments as they are, then the caller's
 # expected-version word and the new window's handle's slot.
@@ -292,17 +670,6 @@ group = "window"
 args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
-
-# --- ending the session ---------------------------------------------------------------------------
-
-[[export]]
-name = "ExitWindowsEx"
-group = "shutdown"
-args = ["u32 uFlags", "u32 dwReserved"]
-impl = { native = "ExitWindowsEx" }
-ordinal = 214
-fails = "FALSE"
-note = "the request goes to the console server stand-in, which ends the session after the call returns; no privilege is checked (Windows 2000 requires SeShutdownPrivilege for every action but EWX_LOGOFF)"
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
 # ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
@@ -348,11 +715,138 @@ args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
 impl = { syscall = "crate::win32k::window::query_window" }
 internal = true
 
-# --- messages --------------------------------------------------------------------------------------
-
-# --- messages and painting -------------------------------------------------------------------------
-
 # --- messages, timers and painting ---------------------------------------------------------------
+
+[[export]]
+name = "GetMessageA"
+group = "message"
+args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax"]
+impl = { native = "GetMessageA" }
+ordinal = 302
+fails = "-1"
+note = "the sent messages it meets delivered first, as PeekMessageA's"
+
+[[export]]
+name = "PeekMessageA"
+group = "message"
+args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax", "u32 wRemoveMsg"]
+impl = { native = "PeekMessageA" }
+ordinal = 482
+fails = "FALSE"
+
+[[export]]
+name = "PostMessageA"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "PostMessageA" }
+ordinal = 484
+fails = "FALSE"
+
+[[export]]
+name = "PostThreadMessageA"
+group = "message"
+args = ["u32 idThread", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "PostThreadMessageA" }
+ordinal = 487
+fails = "FALSE"
+
+[[export]]
+name = "PostQuitMessage"
+group = "message"
+args = ["i32 nExitCode"]
+impl = { native = "PostQuitMessage" }
+ordinal = 486
+fails = "void"
+
+[[export]]
+name = "SendMessageA"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "SendMessageA" }
+ordinal = 537
+fails = "0"
+
+[[export]]
+name = "SendMessageW"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "SendMessageW" }
+ordinal = 542
+fails = "0"
+note = "a window of the calling thread's: its procedure called at once; no A/W translation of the message"
+
+[[export]]
+name = "DispatchMessageA"
+group = "message"
+args = ["ptr lpmsg"]
+impl = { native = "DispatchMessageA" }
+ordinal = 152
+fails = "0"
+
+[[export]]
+name = "TranslateMessage"
+group = "message"
+args = ["ptr lpMsg"]
+impl = { native = "TranslateMessage" }
+ordinal = 648
+fails = "FALSE"
+note = "WM_CHAR for the keys whose character needs no shift state (there is no keyboard state yet)"
+
+[[export]]
+name = "DefWindowProcA"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "DefWindowProcA" }
+ordinal = 135
+
+[[export]]
+name = "DefWindowProcW"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "DefWindowProcW" }
+ordinal = 136
+note = "WM_NCCREATE and WM_ERASEBKGND TRUE, WM_CLOSE destroys the window, WM_PAINT validates it, the rest 0"
+
+[[export]]
+name = "InvalidateRect"
+group = "message"
+args = ["handle hWnd", "ptr lpRect", "bool bErase"]
+impl = { native = "InvalidateRect" }
+ordinal = 383
+fails = "FALSE"
+
+[[export]]
+name = "ValidateRect"
+group = "message"
+args = ["handle hWnd", "ptr lpRect"]
+impl = { native = "ValidateRect" }
+ordinal = 673
+fails = "FALSE"
+
+[[export]]
+name = "GetUpdateRect"
+group = "message"
+args = ["handle hWnd", "ptr lpRect", "bool bErase"]
+impl = { native = "GetUpdateRect" }
+ordinal = 337
+fails = "FALSE"
+
+[[export]]
+name = "BeginPaint"
+group = "message"
+args = ["handle hwnd", "ptr lpPaint"]
+impl = { native = "BeginPaint" }
+ordinal = 13
+fails = "NULL"
+note = "WM_ERASEBKGND sent here when the erase is pending; fErase whether the procedure left it undone"
+
+[[export]]
+name = "EndPaint"
+group = "message"
+args = ["handle hWnd", "ptr lpPaint"]
+impl = { native = "EndPaint" }
+ordinal = 190
+fails = "FALSE"
 
 # win32k's queue, timer and paint services: user32's internal calls, behind the message loop's
 # exports (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
@@ -410,8 +904,6 @@ args = ["u32 Param", "u32 Routine", "ptr<u32> Result"]
 impl = { syscall = "crate::win32k::queue::call_one_param" }
 internal = true
 
-# --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
-
 [[export]]
 name = "NtUserSetTimer"
 group = "message"
@@ -468,6 +960,17 @@ args = ["handle Window", "u32 Routine"]
 impl = { syscall = "crate::win32k::paint::call_hwnd_lock" }
 internal = true
 
+# --- ending the session ---------------------------------------------------------------------------
+
+[[export]]
+name = "ExitWindowsEx"
+group = "shutdown"
+args = ["u32 uFlags", "u32 dwReserved"]
+impl = { native = "ExitWindowsEx" }
+ordinal = 214
+fails = "FALSE"
+note = "the request goes to the console server stand-in, which ends the session after the call returns; no privilege is checked (Windows 2000 requires SeShutdownPrivilege for every action but EWX_LOGOFF)"
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
@@ -517,10 +1020,6 @@ ordinal = 11
 [[export]]
 name = "BeginDeferWindowPos"
 ordinal = 12
-
-[[export]]
-name = "BeginPaint"
-ordinal = 13
 
 [[export]]
 name = "BlockInput"
@@ -819,14 +1318,6 @@ name = "CreatePopupMenu"
 ordinal = 90
 
 [[export]]
-name = "CreateWindowExA"
-ordinal = 91
-
-[[export]]
-name = "CreateWindowExW"
-ordinal = 92
-
-[[export]]
 name = "CreateWindowStationA"
 ordinal = 93
 
@@ -995,14 +1486,6 @@ name = "DefMDIChildProcW"
 ordinal = 134
 
 [[export]]
-name = "DefWindowProcA"
-ordinal = 135
-
-[[export]]
-name = "DefWindowProcW"
-ordinal = 136
-
-[[export]]
 name = "DeferWindowPos"
 ordinal = 137
 
@@ -1035,10 +1518,6 @@ name = "DestroyMenu"
 ordinal = 144
 
 [[export]]
-name = "DestroyWindow"
-ordinal = 145
-
-[[export]]
 name = "DeviceEventWorker"
 ordinal = 146
 
@@ -1061,10 +1540,6 @@ ordinal = 150
 [[export]]
 name = "DialogBoxParamW"
 ordinal = 151
-
-[[export]]
-name = "DispatchMessageA"
-ordinal = 152
 
 [[export]]
 name = "DispatchMessageW"
@@ -1215,10 +1690,6 @@ name = "EndMenu"
 ordinal = 189
 
 [[export]]
-name = "EndPaint"
-ordinal = 190
-
-[[export]]
 name = "EndTask"
 ordinal = 191
 
@@ -1243,32 +1714,12 @@ name = "EnumDesktopsW"
 ordinal = 196
 
 [[export]]
-name = "EnumDisplayDevicesA"
-ordinal = 197
-
-[[export]]
-name = "EnumDisplayDevicesW"
-ordinal = 198
-
-[[export]]
-name = "EnumDisplayMonitors"
-ordinal = 199
-
-[[export]]
-name = "EnumDisplaySettingsA"
-ordinal = 200
-
-[[export]]
 name = "EnumDisplaySettingsExA"
 ordinal = 201
 
 [[export]]
 name = "EnumDisplaySettingsExW"
 ordinal = 202
-
-[[export]]
-name = "EnumDisplaySettingsW"
-ordinal = 203
 
 [[export]]
 name = "EnumPropsA"
@@ -1391,10 +1842,6 @@ name = "GetCaretPos"
 ordinal = 234
 
 [[export]]
-name = "GetClassInfoA"
-ordinal = 235
-
-[[export]]
 name = "GetClassInfoExA"
 ordinal = 236
 
@@ -1403,24 +1850,12 @@ name = "GetClassInfoExW"
 ordinal = 237
 
 [[export]]
-name = "GetClassInfoW"
-ordinal = 238
-
-[[export]]
 name = "GetClassLongA"
 ordinal = 239
 
 [[export]]
 name = "GetClassLongW"
 ordinal = 240
-
-[[export]]
-name = "GetClassNameA"
-ordinal = 241
-
-[[export]]
-name = "GetClassNameW"
-ordinal = 242
 
 [[export]]
 name = "GetClassWord"
@@ -1477,18 +1912,6 @@ ordinal = 255
 [[export]]
 name = "GetCursorPos"
 ordinal = 256
-
-[[export]]
-name = "GetDC"
-ordinal = 257
-
-[[export]]
-name = "GetDCEx"
-ordinal = 258
-
-[[export]]
-name = "GetDesktopWindow"
-ordinal = 259
 
 [[export]]
 name = "GetDialogBaseUnits"
@@ -1659,10 +2082,6 @@ name = "GetMenuStringW"
 ordinal = 301
 
 [[export]]
-name = "GetMessageA"
-ordinal = 302
-
-[[export]]
 name = "GetMessageExtraInfo"
 ordinal = 303
 
@@ -1677,10 +2096,6 @@ ordinal = 305
 [[export]]
 name = "GetMessageW"
 ordinal = 306
-
-[[export]]
-name = "GetMonitorInfoA"
-ordinal = 307
 
 [[export]]
 name = "GetMonitorInfoW"
@@ -1755,20 +2170,8 @@ name = "GetSubMenu"
 ordinal = 326
 
 [[export]]
-name = "GetSysColor"
-ordinal = 327
-
-[[export]]
-name = "GetSysColorBrush"
-ordinal = 328
-
-[[export]]
 name = "GetSystemMenu"
 ordinal = 329
-
-[[export]]
-name = "GetSystemMetrics"
-ordinal = 330
 
 [[export]]
 name = "GetTabbedTextExtentA"
@@ -1791,10 +2194,6 @@ name = "GetTopWindow"
 ordinal = 336
 
 [[export]]
-name = "GetUpdateRect"
-ordinal = 337
-
-[[export]]
 name = "GetUpdateRgn"
 ordinal = 338
 
@@ -1813,10 +2212,6 @@ ordinal = 343
 [[export]]
 name = "GetWindowContextHelpId"
 ordinal = 344
-
-[[export]]
-name = "GetWindowDC"
-ordinal = 345
 
 [[export]]
 name = "GetWindowInfo"
@@ -1845,10 +2240,6 @@ ordinal = 351
 [[export]]
 name = "GetWindowPlacement"
 ordinal = 352
-
-[[export]]
-name = "GetWindowRect"
-ordinal = 353
 
 [[export]]
 name = "GetWindowRgn"
@@ -1967,10 +2358,6 @@ name = "IntersectRect"
 ordinal = 382
 
 [[export]]
-name = "InvalidateRect"
-ordinal = 383
-
-[[export]]
 name = "InvalidateRgn"
 ordinal = 384
 
@@ -2051,20 +2438,12 @@ name = "IsRectEmpty"
 ordinal = 403
 
 [[export]]
-name = "IsWindow"
-ordinal = 404
-
-[[export]]
 name = "IsWindowEnabled"
 ordinal = 405
 
 [[export]]
 name = "IsWindowUnicode"
 ordinal = 406
-
-[[export]]
-name = "IsWindowVisible"
-ordinal = 407
 
 [[export]]
 name = "IsZoomed"
@@ -2095,20 +2474,12 @@ name = "LoadBitmapW"
 ordinal = 414
 
 [[export]]
-name = "LoadCursorA"
-ordinal = 415
-
-[[export]]
 name = "LoadCursorFromFileA"
 ordinal = 416
 
 [[export]]
 name = "LoadCursorFromFileW"
 ordinal = 417
-
-[[export]]
-name = "LoadCursorW"
-ordinal = 418
 
 [[export]]
 name = "LoadIconA"
@@ -2271,22 +2642,6 @@ name = "ModifyMenuW"
 ordinal = 459
 
 [[export]]
-name = "MonitorFromPoint"
-ordinal = 460
-
-[[export]]
-name = "MonitorFromRect"
-ordinal = 461
-
-[[export]]
-name = "MonitorFromWindow"
-ordinal = 462
-
-[[export]]
-name = "MoveWindow"
-ordinal = 463
-
-[[export]]
 name = "MsgWaitForMultipleObjects"
 ordinal = 464
 
@@ -2359,28 +2714,12 @@ name = "PaintDesktop"
 ordinal = 481
 
 [[export]]
-name = "PeekMessageA"
-ordinal = 482
-
-[[export]]
 name = "PeekMessageW"
 ordinal = 483
 
 [[export]]
-name = "PostMessageA"
-ordinal = 484
-
-[[export]]
 name = "PostMessageW"
 ordinal = 485
-
-[[export]]
-name = "PostQuitMessage"
-ordinal = 486
-
-[[export]]
-name = "PostThreadMessageA"
-ordinal = 487
 
 [[export]]
 name = "PostThreadMessageW"
@@ -2443,22 +2782,6 @@ name = "RedrawWindow"
 ordinal = 502
 
 [[export]]
-name = "RegisterClassA"
-ordinal = 503
-
-[[export]]
-name = "RegisterClassExA"
-ordinal = 504
-
-[[export]]
-name = "RegisterClassExW"
-ordinal = 505
-
-[[export]]
-name = "RegisterClassW"
-ordinal = 506
-
-[[export]]
 name = "RegisterClipboardFormatA"
 ordinal = 507
 
@@ -2509,10 +2832,6 @@ ordinal = 518
 [[export]]
 name = "ReleaseCapture"
 ordinal = 519
-
-[[export]]
-name = "ReleaseDC"
-ordinal = 520
 
 [[export]]
 name = "RemoveMenu"
@@ -2579,10 +2898,6 @@ name = "SendInput"
 ordinal = 536
 
 [[export]]
-name = "SendMessageA"
-ordinal = 537
-
-[[export]]
 name = "SendMessageCallbackA"
 ordinal = 538
 
@@ -2597,10 +2912,6 @@ ordinal = 540
 [[export]]
 name = "SendMessageTimeoutW"
 ordinal = 541
-
-[[export]]
-name = "SendMessageW"
-ordinal = 542
 
 [[export]]
 name = "SendNotifyMessageA"
@@ -2803,10 +3114,6 @@ name = "SetShellWindowEx"
 ordinal = 592
 
 [[export]]
-name = "SetSysColors"
-ordinal = 593
-
-[[export]]
 name = "SetSysColorsTemp"
 ordinal = 594
 
@@ -2867,10 +3174,6 @@ name = "SetWindowPlacement"
 ordinal = 608
 
 [[export]]
-name = "SetWindowPos"
-ordinal = 609
-
-[[export]]
 name = "SetWindowRgn"
 ordinal = 610
 
@@ -2927,14 +3230,6 @@ name = "ShowStartGlass"
 ordinal = 623
 
 [[export]]
-name = "ShowWindow"
-ordinal = 624
-
-[[export]]
-name = "ShowWindowAsync"
-ordinal = 625
-
-[[export]]
 name = "SoftModalMessageBox"
 ordinal = 626
 
@@ -2953,14 +3248,6 @@ ordinal = 629
 [[export]]
 name = "SwitchToThisWindow"
 ordinal = 630
-
-[[export]]
-name = "SystemParametersInfoA"
-ordinal = 631
-
-[[export]]
-name = "SystemParametersInfoW"
-ordinal = 632
 
 [[export]]
 name = "TabbedTextOutA"
@@ -3023,10 +3310,6 @@ name = "TranslateMDISysAccel"
 ordinal = 647
 
 [[export]]
-name = "TranslateMessage"
-ordinal = 648
-
-[[export]]
 name = "TranslateMessageEx"
 ordinal = 649
 
@@ -3059,14 +3342,6 @@ name = "UnpackDDElParam"
 ordinal = 656
 
 [[export]]
-name = "UnregisterClassA"
-ordinal = 657
-
-[[export]]
-name = "UnregisterClassW"
-ordinal = 658
-
-[[export]]
 name = "UnregisterDeviceNotification"
 ordinal = 659
 
@@ -3081,10 +3356,6 @@ ordinal = 661
 [[export]]
 name = "UpdatePerUserSystemParameters"
 ordinal = 662
-
-[[export]]
-name = "UpdateWindow"
-ordinal = 663
 
 [[export]]
 name = "User32InitializeImmEntryTable"
@@ -3121,10 +3392,6 @@ ordinal = 671
 [[export]]
 name = "VTagOutput"
 ordinal = 672
-
-[[export]]
-name = "ValidateRect"
-ordinal = 673
 
 [[export]]
 name = "ValidateRgn"
@@ -3181,10 +3448,6 @@ ordinal = 686
 [[export]]
 name = "WinHelpW"
 ordinal = 687
-
-[[export]]
-name = "WindowFromDC"
-ordinal = 688
 
 [[export]]
 name = "WindowFromPoint"

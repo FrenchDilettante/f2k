@@ -1,8 +1,8 @@
-//! The screen DC: CreateDC of the display and DeleteDC, the stock objects (GetStockObject,
-//! SelectObject, DeleteObject), the text and background colors and the background mode, and single
-//! pixels, each over its win32k service ([`imports`]: gdi32's own stubs, as Windows 2000's gdi32
-//! enters the kernel itself). What the kernel serves is in its DC services' notes
-//! (kernel/src/win32k/dc.rs): screen DCs, stock objects as constant handles, one font.
+//! The screen DC: CreateDC of the display, DeleteDC and GetDeviceCaps, the stock objects
+//! (GetStockObject, SelectObject, DeleteObject), the text and background colors and the background
+//! mode, and single pixels, each over its win32k service ([`imports`]: gdi32's own stubs, as
+//! Windows 2000's gdi32 enters the kernel itself). What the kernel serves is in its DC services'
+//! notes (kernel/src/win32k/dc.rs): screen DCs, stock objects as constant handles, one font.
 
 use rtl::edge::{InStr, InWStr};
 use rtl::gdi::*;
@@ -206,6 +206,85 @@ pub extern "system" fn set_pixel(dc: usize, x: i32, y: i32, color: u32) -> u32 {
 #[unsafe(export_name = "f2k_export_GetPixel")]
 pub extern "system" fn get_pixel(dc: usize, x: i32, y: i32) -> u32 {
     answered(imports::get_pixel(dc, x, y)).unwrap_or(CLR_INVALID)
+}
+
+/// GetDeviceCaps' indexes (wingdi.h) the screen DC answers.
+const TECHNOLOGY: i32 = 2;
+const HORZRES: i32 = 8;
+const VERTRES: i32 = 10;
+const BITSPIXEL: i32 = 12;
+const PLANES: i32 = 14;
+const NUMCOLORS: i32 = 24;
+const LOGPIXELSX: i32 = 88;
+const LOGPIXELSY: i32 = 90;
+const SIZEPALETTE: i32 = 104;
+const NUMRESERVED: i32 = 106;
+const DESKTOPVERTRES: i32 = 117;
+const DESKTOPHORZRES: i32 = 118;
+
+/// TECHNOLOGY's answer for the display: a raster display.
+const DT_RASDISPLAY: i32 = 1;
+
+/// The farthest a DC's extent is looked for, in either direction: past any screen a VBE mode has.
+const MOST_PIXELS: i32 = 0x8000;
+
+/// The extent of `dc` along one axis: the first pixel past its clipping region, walking from the
+/// origin along the axis `at` names (a coordinate to its pixel), found by bisection over GetPixel,
+/// which answers CLR_INVALID outside the region alone (a pixel's color is RGB, never all ones).
+/// A screen DC's clipping region is the screen's extent from the origin when the DC was made
+/// (kernel/src/win32k/dc.rs): its size, 0 before a graphics mode is set.
+fn extent(dc: usize, at: impl Fn(i32) -> (i32, i32)) -> i32 {
+    let inside = |n: i32| {
+        let (x, y) = at(n);
+        imports::get_pixel(dc, x, y).is_ok_and(|color| color != CLR_INVALID)
+    };
+    if !inside(0) {
+        return 0;
+    }
+    // `inside(low)` holds and `inside(high)` does not.
+    let (mut low, mut high) = (0, MOST_PIXELS);
+    while high - low > 1 {
+        let middle = low + (high - low) / 2;
+        if inside(middle) {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    high
+}
+
+/// GetDeviceCaps: a capability of the screen DC — its size (its clipping region's extent, read
+/// through GetPixel: no DC service answers a capability), its 32 bits per pixel in one plane (the
+/// framebuffer's), 96 logical pixels per inch, more colors than a palette holds (NUMCOLORS -1, no
+/// palette); 0 with the last error for a DC that is none. Another index goes to the stub routine.
+#[unsafe(export_name = "f2k_export_GetDeviceCaps")]
+pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
+    if answered(imports::dc_dword(dc, DC_TEXT_COLOR)).is_none() {
+        return 0;
+    }
+    match index {
+        TECHNOLOGY => DT_RASDISPLAY,
+        HORZRES | DESKTOPHORZRES => extent(dc, |x| (x, 0)),
+        VERTRES | DESKTOPVERTRES => extent(dc, |y| (0, y)),
+        BITSPIXEL => 32,
+        PLANES => 1,
+        NUMCOLORS => -1,
+        LOGPIXELSX | LOGPIXELSY => 96,
+        SIZEPALETTE | NUMRESERVED => 0,
+        _ => {
+            let args = [dc as u64, index as u32 as u64];
+            // SAFETY: the arguments as GetDeviceCaps' kinds read them: no memory.
+            let answer = unsafe {
+                stub::stubbed(
+                    &crate::spec::GetDeviceCaps,
+                    "the capability is not served yet",
+                    &args,
+                )
+            };
+            answer as i32
+        }
+    }
 }
 
 #[cfg(test)]
@@ -420,5 +499,27 @@ mod tests {
         assert_eq!(last_error(), 0xF2F2);
         assert_eq!(get_pixel(BAD, 100, 100), CLR_INVALID);
         assert_eq!(last_error(), ERROR_INVALID_HANDLE);
+    }
+
+    /// The screen DC's capabilities: its clipping region's size, 32 bits in one plane, 96 pixels
+    /// per inch, NUMCOLORS -1; a DC that is none is 0 with ERROR_INVALID_HANDLE; another
+    /// index is a stub.
+    ///
+    /// Pins: gdi32.GetDeviceCaps
+    #[test]
+    fn device_caps_describe_the_screen() {
+        reset();
+        let answers: std::vec::Vec<i32> =
+            [HORZRES, VERTRES, BITSPIXEL, PLANES, LOGPIXELSX, NUMCOLORS]
+                .into_iter()
+                .map(|index| get_device_caps(DC, index))
+                .collect();
+        assert_eq!(answers, [640, 480, 32, 1, 96, -1]);
+        assert_eq!(get_device_caps(DC, TECHNOLOGY), DT_RASDISPLAY);
+        assert_eq!(last_error(), 0xF2F2);
+        assert_eq!(get_device_caps(BAD, HORZRES), 0);
+        assert_eq!(last_error(), ERROR_INVALID_HANDLE);
+        assert_eq!(get_device_caps(DC, 36), 0);
+        assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
     }
 }

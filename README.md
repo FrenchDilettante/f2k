@@ -11,8 +11,8 @@ Six of Windows 2000's system DLLs are F2K's own code:
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
 - **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, and starting child processes (`_spawn`, `_cwait`).
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
-- **user32**: window stations, desktops and `MessageBeep`; no windows yet.
-- **gdi32**: screen device contexts drawn on the VBE framebuffer: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
+- **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility; no frame or caption is drawn); the message loop, sent and posted messages and the default window procedure; painting (`BeginPaint`, the update regions) and the `GetDC` family; the display's settings, devices, monitor, metrics and system colors; `MessageBeep`.
+- **gdi32**: screen device contexts drawn on the VBE framebuffer, and their capabilities: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
 
@@ -238,7 +238,7 @@ f2k/
 ├── tests/            # Windows 2000 test corpus and the pytest suite (see tests/README.md)
 │   ├── core/             # The kernel's own boots and the smoke fixtures
 │   ├── kernel32/         # The kernel32 fixtures
-│   ├── user32/           # The user32 fixtures (hellogui, winsta)
+│   ├── user32/           # The user32 fixtures (hellogui, winsta, the gui* fixtures)
 │   ├── gdi32/            # The gdi32 fixtures (guidc, gditext)
 │   ├── advapi32/         # The advapi32 fixtures (registry, token)
 │   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)

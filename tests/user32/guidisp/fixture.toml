@@ -1,16 +1,14 @@
 # guidisp: one test per block of the real-machine capture (output.txt); see tests/README.md.
 description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA)."
 kind = "sectioned"
+gate = true
 screenshots = true
 
 [pending]
-enum = "graphics kernel not landed yet"
-change = "graphics kernel not landed yet"
-devices = "graphics kernel not landed yet"
-caps = "graphics kernel not landed yet"
-metrics = "graphics kernel not landed yet"
-colors = "graphics kernel not landed yet"
-monitors = "graphics kernel not landed yet"
+enum = "the capture's display runs 1024x768 (F2K's default mode is 640x480), and its EnumDisplaySettings answers its own DEVMODE version's dmSize (124, 188) where F2K's win32k keeps the caller's"
+caps = "the capture's display runs 1024x768: F2K's default mode is 640x480"
+metrics = "the capture's display runs 1024x768 with a taskbar's work area and a five-button mouse: F2K's runs 640x480, its work area the whole screen, and it has no mouse"
+monitors = "the capture's monitor is 1024x768 with a taskbar's work area: F2K's is 640x480, its work area the whole screen"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

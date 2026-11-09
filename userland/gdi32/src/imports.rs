@@ -384,6 +384,9 @@ pub mod host {
     pub const DC: usize = 0x7C;
     /// A handle that names nothing.
     pub const BAD: usize = 0x80;
+    /// The stand-ins' screen, the DC's clipping region: its pixels other than (100, 100) are white.
+    pub const SCREEN_WIDTH: i32 = 640;
+    pub const SCREEN_HEIGHT: i32 = 480;
 
     /// One NtGdiExtTextOutW call, as the stand-in read it.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -742,10 +745,10 @@ pub mod host {
         with_dc(dc, |state| {
             answer(
                 color,
-                if (x, y) == (100, 100) {
-                    state.pixel
-                } else {
-                    CLR_INVALID
+                match (x, y) {
+                    (100, 100) => state.pixel,
+                    (0..SCREEN_WIDTH, 0..SCREEN_HEIGHT) => DEFAULT_BK_COLOR,
+                    _ => CLR_INVALID,
                 },
             )
         })

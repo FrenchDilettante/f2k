@@ -1,5 +1,6 @@
-//! user32.dll: the window manager's client side; for now the window station and desktop calls
-//! cmd.exe and the corpus import.
+//! user32.dll: the window manager's client side: the window stations and desktops, the window
+//! classes, the windows, their messages and their painting, and the display's face, as cmd.exe and
+//! the corpus import them.
 //!
 //! The library (src/lib.rs) is the home of user32's user-mode code; this binary links it into the
 //! DLL beside its entry point, which ntdll's loader calls with each DLL_PROCESS_ and DLL_THREAD_

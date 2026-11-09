@@ -7,7 +7,10 @@
 //! Each import is wrapped once here in a safe function over references and slices, a service's
 //! failure an `Err` of its status; the only `unsafe` the rest of the DLL's code reaches for an
 //! import is here. Memory a service writes for the caller is a [`UserBuffer`], handed to the
-//! kernel unread.
+//! kernel unread; memory it only reads, or writes as a structure the caller gave the address of, is
+//! handed over as its address (`usize`, zero for none), never dereferenced here. The window
+//! procedures and callbacks the program registered are called here too ([`call_procedure`],
+//! [`call_monitor_procedure`]): the kernel answers their addresses, it never calls them itself.
 //!
 //! One import is not Windows 2000's: ntdll's DbgPrint, which the stub routine logs through
 //! (`scripts/compat.py` tolerates exactly that one, for the stubs' log line).
@@ -17,14 +20,22 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use rtl::display::DevModeW;
+use rtl::gdi::Rect;
 use rtl::heap::HEAP_ZERO_MEMORY;
+use rtl::pod::Pod;
 use rtl::status::NtStatus;
+use rtl::user::{Msg, Receipt};
 
+use crate::class::WndClassExW;
 use crate::Out;
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
     use rtl::display::DevModeW;
+    use rtl::gdi::Rect;
+    use rtl::user::{Msg, Receipt};
+
+    use crate::class::WndClassExW;
 
     #[link(
         name = "kernel32",
@@ -74,6 +85,8 @@ mod raw {
             api: u32,
             length: u32,
         ) -> u32;
+        /// NtClose: the handle closed (a DC's: the DC goes with it).
+        pub fn NtClose(handle: usize) -> u32;
     }
 
     // win32k's services: user32's own stubs (generated from its spec's internal syscall records),
@@ -112,11 +125,192 @@ mod raw {
             flags: u32,
             param: usize,
         ) -> i32;
+
+        // The window classes (kernel/src/win32k/class.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserRegisterClassExWOW"]
+        pub fn NtUserRegisterClassExWOW(
+            class: *const WndClassExW,
+            name: usize,
+            flags: u32,
+            atom: *mut u32,
+            wow: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserUnregisterClass"]
+        pub fn NtUserUnregisterClass(name: usize, instance: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetClassInfo"]
+        pub fn NtUserGetClassInfo(instance: usize, name: usize, class: *mut WndClassExW) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetClassName"]
+        pub fn NtUserGetClassName(window: usize, name: *mut u8, max: u32, copied: *mut u32) -> u32;
+
+        // The windows (kernel/src/win32k/window.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserCreateWindowEx"]
+        pub fn NtUserCreateWindowEx(
+            ex_style: u32,
+            class: usize,
+            name: usize,
+            style: u32,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            parent: usize,
+            menu: usize,
+            instance: usize,
+            param: usize,
+            version: u32,
+            window: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDestroyWindow"]
+        pub fn NtUserDestroyWindow(window: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserQueryWindow"]
+        pub fn NtUserQueryWindow(window: usize, index: u32, answer: *mut u8, length: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetWindowPos"]
+        pub fn NtUserSetWindowPos(
+            window: usize,
+            insert_after: usize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserMoveWindow"]
+        pub fn NtUserMoveWindow(
+            window: usize,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            repaint: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserShowWindow"]
+        pub fn NtUserShowWindow(window: usize, command: i32, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserShowWindowAsync"]
+        pub fn NtUserShowWindowAsync(window: usize, command: i32) -> u32;
+
+        // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
+        pub fn NtUserPostMessage(window: usize, message: u32, wparam: u32, lparam: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserPostThreadMessage"]
+        pub fn NtUserPostThreadMessage(thread: u32, message: u32, wparam: u32, lparam: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetMessage"]
+        pub fn NtUserGetMessage(receipt: *mut Receipt, window: usize, min: u32, max: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserPeekMessage"]
+        pub fn NtUserPeekMessage(
+            receipt: *mut Receipt,
+            window: usize,
+            min: u32,
+            max: u32,
+            flags: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserMessageCall"]
+        pub fn NtUserMessageCall(
+            window: usize,
+            message: u32,
+            wparam: u32,
+            lparam: i32,
+            proc: *mut u32,
+            result: *mut i32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDispatchMessage"]
+        pub fn NtUserDispatchMessage(msg: *const Msg, proc: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCallOneParam"]
+        pub fn NtUserCallOneParam(param: u32, routine: u32, result: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCallHwndLock"]
+        pub fn NtUserCallHwndLock(window: usize, routine: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserInvalidateRect"]
+        pub fn NtUserInvalidateRect(window: usize, rect: usize, erase: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserValidateRect"]
+        pub fn NtUserValidateRect(window: usize, rect: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetUpdateRect"]
+        pub fn NtUserGetUpdateRect(window: usize, rect: usize, erase: u32, result: *mut u32)
+            -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserBeginPaint"]
+        pub fn NtUserBeginPaint(window: usize, paint: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEndPaint"]
+        pub fn NtUserEndPaint(window: usize, paint: usize) -> u32;
+
+        // The DCs (kernel/src/win32k/dc.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserGetDC"]
+        pub fn NtUserGetDC(window: usize, dc: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetDCEx"]
+        pub fn NtUserGetDCEx(window: usize, region: usize, flags: u32, dc: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetWindowDC"]
+        pub fn NtUserGetWindowDC(window: usize, dc: *mut u32) -> u32;
+
+        // The display (kernel/src/win32k/display.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserEnumDisplaySettings"]
+        pub fn NtUserEnumDisplaySettings(
+            device: usize,
+            mode: u32,
+            dev_mode: usize,
+            flags: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEnumDisplayDevices"]
+        pub fn NtUserEnumDisplayDevices(device: usize, number: u32, out: usize, flags: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEnumDisplayMonitors"]
+        pub fn NtUserEnumDisplayMonitors(
+            dc: usize,
+            clip: usize,
+            monitors: *mut u32,
+            rects: *mut Rect,
+            count: u32,
+            found: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetSysColors"]
+        pub fn NtUserSetSysColors(count: u32, indexes: usize, colors: usize, flags: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSystemParametersInfo"]
+        pub fn NtUserSystemParametersInfo(
+            action: u32,
+            ui_param: u32,
+            param: usize,
+            win_ini: u32,
+        ) -> u32;
     }
 
     /// The process heap (the PEB's ProcessHeap).
     pub fn process_heap() -> usize {
         rtl::sys::process_heap_handle()
+    }
+
+    /// Call the window procedure (or a TimerProc: the same shape) at `proc` with a message.
+    ///
+    /// # Safety
+    ///
+    /// `proc` is the address of a function of the WNDPROC shape: one the program registered or
+    /// handed over (a class's lpfnWndProc, a timer's TimerProc), as the kernel answers it.
+    pub unsafe fn call_procedure(
+        proc: u32,
+        window: u32,
+        message: u32,
+        wparam: u32,
+        lparam: i32,
+    ) -> i32 {
+        type WndProc = unsafe extern "system" fn(u32, u32, u32, i32) -> i32;
+        // SAFETY: the caller's contract: a nonzero address of a WNDPROC-shaped function.
+        let proc = unsafe { core::mem::transmute::<usize, WndProc>(proc as usize) };
+        // SAFETY: as above; the program's own code, called as Windows calls it.
+        unsafe { proc(window, message, wparam, lparam) }
+    }
+
+    /// Call EnumDisplayMonitors' callback at `proc` with a monitor.
+    ///
+    /// # Safety
+    ///
+    /// `proc` is the address of a MonitorEnumProc the program handed over; `rect` lives for the
+    /// call.
+    pub unsafe fn call_monitor_procedure(
+        proc: u32,
+        monitor: u32,
+        dc: usize,
+        rect: *const Rect,
+        data: usize,
+    ) -> u32 {
+        type MonitorEnumProc = unsafe extern "system" fn(u32, usize, *const Rect, usize) -> u32;
+        // SAFETY: the caller's contract: a nonzero address of a MonitorEnumProc.
+        let proc = unsafe { core::mem::transmute::<usize, MonitorEnumProc>(proc as usize) };
+        // SAFETY: as above; the program's own code, called as Windows calls it.
+        unsafe { proc(monitor, dc, rect, data) }
     }
 }
 
@@ -193,6 +387,17 @@ impl<'a> From<&'a mut [u8]> for UserBuffer<'a> {
     }
 }
 
+impl<'a> From<&'a mut [u16]> for UserBuffer<'a> {
+    /// A buffer of UTF-16 units of this DLL's own, lent to the service (its length in bytes).
+    fn from(units: &'a mut [u16]) -> Self {
+        UserBuffer {
+            at: units.as_mut_ptr().cast(),
+            length: 2 * units.len() as u32,
+            memory: PhantomData,
+        }
+    }
+}
+
 /// A zeroed block of the process heap, freed when dropped.
 pub struct HeapBlock {
     at: NonNull<u8>,
@@ -212,6 +417,13 @@ impl HeapBlock {
     pub fn bytes_mut(&mut self) -> &mut [u8] {
         // SAFETY: the block holds `size` initialized (zeroed) bytes, ours alone while it lives.
         unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.size) }
+    }
+
+    /// The block's bytes as UTF-16 units, to write (an odd last byte left out).
+    pub fn units_mut(&mut self) -> &mut [u16] {
+        // SAFETY: the heap's blocks are 8-aligned (its granularity); the block holds `size`
+        // initialized (zeroed) bytes, ours alone while it lives, any of which make a unit.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), self.size / 2) }
     }
 
     /// The block's bytes as UTF-16 units (an odd last byte left out).
@@ -363,268 +575,399 @@ pub fn multi_byte_to_unicode(destination: &mut [u16], source: &[u8]) -> usize {
     written as usize / 2
 }
 
-/// The host tests' imports: stand-ins with the imports' shapes, recording what they were given.
+/// NtClose: `handle` closed.
+pub fn close(handle: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtClose(handle) })
+}
+
+// --- win32k: window classes ----------------------------------------------------------------------
+
+/// NtUserRegisterClassExWOW: the class `class` describes, named `name` (a NUL-terminated UTF-16
+/// string's address, or an integer atom), registered with the flags word `flags`: its atom. The
+/// service answers a duplicate with STATUS_OBJECT_NAME_EXISTS, an informational status, so any
+/// status but STATUS_SUCCESS is the registration's failure.
+pub fn register_class(class: &WndClassExW, name: usize, flags: u32) -> Result<u16, NtStatus> {
+    let (mut atom, mut wow) = (0u32, 0u32);
+    // SAFETY: the kernel reads the structure, the name and the menu name it points at (this DLL's
+    // own, or the caller's, alive for the call), and writes the two locals.
+    let status = unsafe { raw::NtUserRegisterClassExWOW(class, name, flags, &mut atom, &mut wow) };
+    if status != rtl::status::STATUS_SUCCESS {
+        return Err(NtStatus(status));
+    }
+    Ok(atom as u16)
+}
+
+/// NtUserUnregisterClass: the class `name` (as [`register_class`] takes it) of the module
+/// `instance` unregistered.
+pub fn unregister_class(name: usize, instance: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the name through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserUnregisterClass(name, instance) })
+}
+
+/// NtUserGetClassInfo: the fields of the class `name` (as [`register_class`] takes it) the module
+/// `instance` sees, into `class`.
+pub fn class_info(instance: usize, name: usize, class: &mut WndClassExW) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the name through its fault-tolerant copies, and reads and writes the
+    // local structure.
+    checked(unsafe { raw::NtUserGetClassInfo(instance, name, class) })
+}
+
+/// NtUserGetClassName: the name of `window`'s class, at most `max` units into `name` (its
+/// terminator included); the units copied, the terminator not counted.
+pub fn class_name(window: usize, name: UserBuffer, max: u32) -> Result<u32, NtStatus> {
+    let mut copied = 0u32;
+    // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
+    // holds a reference into), and the count into the local.
+    checked(unsafe { raw::NtUserGetClassName(window, name.at, max, &mut copied) })?;
+    Ok(copied)
+}
+
+// --- win32k: windows -----------------------------------------------------------------------------
+
+/// What NtUserCreateWindowEx takes: CreateWindowExW's arguments, the strings as the addresses of
+/// NUL-terminated UTF-16 strings (the class name an integer atom when its high word is zero, the
+/// window name zero for none), the private ANSI-creator bit in the extended style for a narrow
+/// caller.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Creation {
+    pub ex_style: u32,
+    pub class: usize,
+    pub name: usize,
+    pub style: u32,
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+    pub cy: i32,
+    pub parent: usize,
+    pub menu: usize,
+    pub instance: usize,
+    pub param: usize,
+    /// The Windows version the caller expects, its major version in the high word.
+    pub version: u32,
+}
+
+/// NtUserCreateWindowEx: the window `creation` describes, made: its handle.
+pub fn create_window(creation: &Creation) -> Result<u32, NtStatus> {
+    let mut window = 0u32;
+    let c = creation;
+    // SAFETY: the kernel reads the two strings through its fault-tolerant copies (this DLL's own,
+    // or the caller's, alive for the call), and writes the handle into the local.
+    checked(unsafe {
+        raw::NtUserCreateWindowEx(
+            c.ex_style,
+            c.class,
+            c.name,
+            c.style,
+            c.x,
+            c.y,
+            c.cx,
+            c.cy,
+            c.parent,
+            c.menu,
+            c.instance,
+            c.param,
+            c.version,
+            &mut window,
+        )
+    })?;
+    Ok(window)
+}
+
+/// NtUserDestroyWindow: `window` destroyed.
+pub fn destroy_window(window: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserDestroyWindow(window) })
+}
+
+/// NtUserQueryWindow: what `index` (rtl::window's QUERY_ indexes) asks about `window`, into
+/// `answer`, whose size is the answer's.
+pub fn query_window<T: Pod>(window: usize, index: u32, answer: &mut T) -> Result<(), NtStatus> {
+    let bytes = answer.as_bytes_mut();
+    // SAFETY: the kernel writes the local answer, as long as its length.
+    checked(unsafe {
+        raw::NtUserQueryWindow(window, index, bytes.as_mut_ptr(), bytes.len() as u32)
+    })
+}
+
+/// NtUserSetWindowPos: SetWindowPos's change.
+#[allow(clippy::too_many_arguments)]
+pub fn set_window_pos(
+    window: usize,
+    insert_after: usize,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetWindowPos(window, insert_after, x, y, cx, cy, flags) })
+}
+
+/// NtUserMoveWindow: MoveWindow's change.
+pub fn move_window(
+    window: usize,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    repaint: bool,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserMoveWindow(window, x, y, cx, cy, repaint as u32) })
+}
+
+/// NtUserShowWindow: ShowWindow's change, its answer (the window's visibility before it).
+pub fn show_window(window: usize, command: i32) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserShowWindow(window, command, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserShowWindowAsync: ShowWindowAsync's change.
+pub fn show_window_async(window: usize, command: i32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserShowWindowAsync(window, command) })
+}
+
+// --- win32k: messages ----------------------------------------------------------------------------
+
+/// NtUserPostMessage: a message posted to `window`'s thread.
+pub fn post_message(window: usize, message: u32, wparam: u32, lparam: i32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserPostMessage(window, message, wparam, lparam) })
+}
+
+/// NtUserPostThreadMessage: a message posted to the thread whose id is `thread`.
+pub fn post_thread_message(
+    thread: u32,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserPostThreadMessage(thread, message, wparam, lparam) })
+}
+
+/// NtUserGetMessage: the next message the filter takes, waiting for one, into `receipt`.
+pub fn get_message(
+    receipt: &mut Receipt,
+    window: usize,
+    min: u32,
+    max: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the local receipt.
+    checked(unsafe { raw::NtUserGetMessage(receipt, window, min, max) })
+}
+
+/// NtUserPeekMessage: the next message the filter and `flags` (PM_*, the PM_QS_ kinds) take, into
+/// `receipt` (RECEIVED_NONE when there is none).
+pub fn peek_message(
+    receipt: &mut Receipt,
+    window: usize,
+    min: u32,
+    max: u32,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the local receipt.
+    checked(unsafe { raw::NtUserPeekMessage(receipt, window, min, max, flags) })
+}
+
+/// NtUserMessageCall: SendMessage's kernel side: the window procedure to call for a window of the
+/// calling thread's (nonzero), or 0 and the answer.
+pub fn message_call(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> Result<(u32, i32), NtStatus> {
+    let (mut proc, mut result) = (0u32, 0i32);
+    // SAFETY: the kernel writes the two locals.
+    checked(unsafe {
+        raw::NtUserMessageCall(window, message, wparam, lparam, &mut proc, &mut result)
+    })?;
+    Ok((proc, result))
+}
+
+/// NtUserDispatchMessage: the procedure DispatchMessage calls with `msg` (0 for none).
+pub fn dispatch_target(msg: &Msg) -> Result<u32, NtStatus> {
+    let mut proc = 0u32;
+    // SAFETY: the kernel reads the local message and writes the local procedure.
+    checked(unsafe { raw::NtUserDispatchMessage(msg, &mut proc) })?;
+    Ok(proc)
+}
+
+/// NtUserCallOneParam: the routine `routine` (rtl::user's ONE_PARAM_*) with `param`: its result.
+pub fn call_one_param(param: u32, routine: u32) -> Result<u32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the local result.
+    checked(unsafe { raw::NtUserCallOneParam(param, routine, &mut result) })?;
+    Ok(result)
+}
+
+/// NtUserCallHwndLock: the routine `routine` (rtl::user's HWND_LOCK_*) on `window`.
+pub fn call_hwnd_lock(window: usize, routine: u32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserCallHwndLock(window, routine) })
+}
+
+/// The window procedure (or TimerProc) `proc` the kernel answered, called with a message: its
+/// answer.
+pub fn call_procedure(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+    // SAFETY: `proc` is an address the kernel answered for the message: a window procedure a class
+    // was registered with, or a TimerProc a timer was set with, both the program's own functions
+    // of that shape.
+    unsafe { raw::call_procedure(proc, window, message, wparam, lparam) }
+}
+
+// --- win32k: painting ----------------------------------------------------------------------------
+
+/// NtUserInvalidateRect: the rectangle at `rect` (zero: the client area) added to `window`'s update
+/// region.
+pub fn invalidate_rect(window: usize, rect: usize, erase: bool) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the rectangle through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserInvalidateRect(window, rect, erase as u32) })
+}
+
+/// NtUserValidateRect: the rectangle at `rect` (zero: all of it) taken out of `window`'s update
+/// region.
+pub fn validate_rect(window: usize, rect: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the rectangle through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserValidateRect(window, rect) })
+}
+
+/// NtUserGetUpdateRect: `window`'s update region's box into the RECT at `rect` (zero: none), its
+/// answer bits (rtl::user's UPDATE_*).
+pub fn update_rect(window: usize, rect: usize, erase: bool) -> Result<u32, NtStatus> {
+    let mut bits = 0u32;
+    // SAFETY: the kernel writes the rectangle through its fault-tolerant copies, and the bits into
+    // the local.
+    checked(unsafe { raw::NtUserGetUpdateRect(window, rect, erase as u32, &mut bits) })?;
+    Ok(bits)
+}
+
+/// NtUserBeginPaint: the PAINTSTRUCT at `paint` filled, its DC made, `window` validated.
+pub fn begin_paint(window: usize, paint: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the structure through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserBeginPaint(window, paint) })
+}
+
+/// NtUserEndPaint: the DC of the PAINTSTRUCT at `paint` released.
+pub fn end_paint(window: usize, paint: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the structure through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserEndPaint(window, paint) })
+}
+
+// --- win32k: DCs ---------------------------------------------------------------------------------
+
+/// NtUserGetDC: a DC of `window` (zero: the screen).
+pub fn get_dc(window: usize) -> Result<u32, NtStatus> {
+    let mut dc = 0u32;
+    // SAFETY: the kernel writes the handle into the local.
+    checked(unsafe { raw::NtUserGetDC(window, &mut dc) })?;
+    Ok(dc)
+}
+
+/// NtUserGetDCEx: a DC of `window` with GetDCEx's region and flags.
+pub fn get_dc_ex(window: usize, region: usize, flags: u32) -> Result<u32, NtStatus> {
+    let mut dc = 0u32;
+    // SAFETY: the kernel writes the handle into the local.
+    checked(unsafe { raw::NtUserGetDCEx(window, region, flags, &mut dc) })?;
+    Ok(dc)
+}
+
+/// NtUserGetWindowDC: a DC of `window`'s whole rectangle.
+pub fn get_window_dc(window: usize) -> Result<u32, NtStatus> {
+    let mut dc = 0u32;
+    // SAFETY: the kernel writes the handle into the local.
+    checked(unsafe { raw::NtUserGetWindowDC(window, &mut dc) })?;
+    Ok(dc)
+}
+
+// --- win32k: the display -------------------------------------------------------------------------
+
+/// NtUserEnumDisplaySettings: mode `mode` of the display named at `device` (zero: the primary
+/// one), described into the DEVMODEW at `dev_mode` as far as its dmSize goes.
+pub fn enum_display_settings(
+    device: usize,
+    mode: u32,
+    dev_mode: usize,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the name and reads and writes the structure through its
+    // fault-tolerant copies.
+    checked(unsafe { raw::NtUserEnumDisplaySettings(device, mode, dev_mode, flags) })
+}
+
+/// NtUserEnumDisplayDevices: device `number` under the one named at `device` (zero: the
+/// adapters), into the DISPLAY_DEVICEW at `out` as far as its cb goes.
+pub fn enum_display_devices(
+    device: usize,
+    number: u32,
+    out: usize,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the name and reads and writes the structure through its
+    // fault-tolerant copies.
+    checked(unsafe { raw::NtUserEnumDisplayDevices(device, number, out, flags) })
+}
+
+/// NtUserEnumDisplayMonitors: the monitors the DC `dc` (zero: none) and the RECT at `clip` (zero:
+/// none) meet, their handles and rectangles into the arrays (as many as both hold): how many there
+/// are.
+pub fn enum_display_monitors(
+    dc: usize,
+    clip: usize,
+    monitors: &mut [u32],
+    rects: &mut [Rect],
+) -> Result<u32, NtStatus> {
+    let count = monitors.len().min(rects.len()) as u32;
+    let mut found = 0u32;
+    // SAFETY: the kernel reads the clipping rectangle through its fault-tolerant copies, and
+    // writes at most `count` entries of the local arrays and the count into the local.
+    checked(unsafe {
+        raw::NtUserEnumDisplayMonitors(
+            dc,
+            clip,
+            monitors.as_mut_ptr(),
+            rects.as_mut_ptr(),
+            count,
+            &mut found,
+        )
+    })?;
+    Ok(found)
+}
+
+/// The MonitorEnumProc `proc` the program handed EnumDisplayMonitors, called with a monitor: its
+/// answer (zero stops the enumeration).
+pub fn call_monitor_procedure(proc: u32, monitor: u32, dc: usize, rect: &Rect, data: usize) -> u32 {
+    // SAFETY: `proc` is the program's own callback, handed to EnumDisplayMonitors for this; the
+    // rectangle lives for the call.
+    unsafe { raw::call_monitor_procedure(proc, monitor, dc, rect, data) }
+}
+
+/// NtUserSetSysColors: `count` system colors set, their indexes and COLORREFs in the arrays at
+/// `indexes` and `colors`.
+pub fn set_sys_colors(count: u32, indexes: usize, colors: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the arrays through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserSetSysColors(count, indexes, colors, 0) })
+}
+
+/// NtUserSystemParametersInfo: SystemParametersInfoW's action, its answer at `param`.
+pub fn system_parameters_info(
+    action: u32,
+    ui_param: u32,
+    param: usize,
+    win_ini: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads and writes the parameter through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserSystemParametersInfo(action, ui_param, param, win_ini) })
+}
+
+/// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,
+/// and a window manager of their own behind the services ([`host::Wm`]).
 #[cfg(test)]
 #[allow(non_snake_case)]
-pub mod host {
-    use std::cell::{Cell, RefCell};
-
-    std::thread_local! {
-        /// The calling thread's last error, as SetLastError left it.
-        pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
-        /// The text each DbgPrint printed, in order.
-        pub static DEBUG_PRINTS: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
-        /// The window station handle, the desktop handle and the thread the services know, as the
-        /// kernel answers them.
-        pub static WINDOW_STATION: Cell<u32> = const { Cell::new(0x18) };
-        pub static DESKTOP: Cell<u32> = const { Cell::new(0x1C) };
-        pub static THREAD_ID: Cell<u32> = const { Cell::new(0x10) };
-        /// How many win32k services were called.
-        pub static SERVICES: Cell<u32> = const { Cell::new(0) };
-        /// The messages CsrClientCallServer was given (the API number and the data words the
-        /// length names), and the status the server answers.
-        pub static SERVER_CALLS: RefCell<std::vec::Vec<(u32, std::vec::Vec<u32>)>> = const { RefCell::new(std::vec::Vec::new()) };
-        pub static SERVER_ANSWER: Cell<u32> = const { Cell::new(0) };
-        /// What NtUserChangeDisplaySettings was last given (the name's units, the DEVMODEW as far
-        /// as its dmSize goes, the window, the flags, the parameter), and what it answers.
-        pub static DISPLAY_CHANGES: RefCell<std::vec::Vec<DisplayChange>> = const { RefCell::new(std::vec::Vec::new()) };
-        pub static DISPLAY_ANSWER: Cell<i32> = const { Cell::new(0) };
-    }
-
-    /// One NtUserChangeDisplaySettings call, as the stand-in read it.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct DisplayChange {
-        pub device: Option<std::vec::Vec<u16>>,
-        pub dev_mode: Option<rtl::display::DevModeW>,
-        pub window: usize,
-        pub flags: u32,
-        pub param: usize,
-    }
-
-    pub unsafe extern "system" fn SetLastError(code: u32) {
-        LAST_ERROR.with(|error| error.set(code));
-    }
-
-    /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that
-    /// format alone), kept.
-    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const core::ffi::c_char) -> u32 {
-        // SAFETY: the caller's NUL-terminated format and text.
-        let (format, text) = unsafe {
-            (
-                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
-                core::ffi::CStr::from_ptr(text.cast()),
-            )
-        };
-        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
-        DEBUG_PRINTS.with(|prints| {
-            prints
-                .borrow_mut()
-                .push(text.to_string_lossy().into_owned())
-        });
-        0
-    }
-
-    /// CsrClientCallServer: the message kept, answered with [`SERVER_ANSWER`] as the server
-    /// answers it (its ReturnValue, the API number and capture buffer as the call named them).
-    pub unsafe extern "system" fn CsrClientCallServer(
-        message: *mut rtl::console::CsrApiMsg,
-        capture_buffer: *mut u8,
-        api: u32,
-        length: u32,
-    ) -> u32 {
-        // SAFETY: the caller's message.
-        let message = unsafe { &mut *message };
-        let words = message.data[..length as usize / 4].to_vec();
-        SERVER_CALLS.with(|calls| calls.borrow_mut().push((api, words)));
-        let status = SERVER_ANSWER.with(Cell::get);
-        message.capture_buffer = capture_buffer as usize as u32;
-        message.api_number = api;
-        message.return_value = status;
-        status
-    }
-
-    pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
-        rtl::status::dos_error(status)
-    }
-
-    /// The heap: the host's allocator, a block zeroed, its size kept before it.
-    pub unsafe extern "system" fn RtlAllocateHeap(
-        _heap: usize,
-        _flags: u32,
-        size: usize,
-    ) -> *mut u8 {
-        let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
-        // SAFETY: a non-zero layout; the size goes in the first word.
-        unsafe {
-            let block = std::alloc::alloc_zeroed(layout);
-            (block as *mut usize).write(size);
-            block.add(8)
-        }
-    }
-
-    pub unsafe extern "system" fn RtlFreeHeap(_heap: usize, _flags: u32, block: *mut u8) -> u32 {
-        // SAFETY: a block RtlAllocateHeap made.
-        unsafe {
-            let start = block.sub(8);
-            let size = (start as *const usize).read();
-            std::alloc::dealloc(
-                start,
-                std::alloc::Layout::from_size_align(size + 8, 8).unwrap(),
-            );
-        }
-        1
-    }
-
-    pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
-        unicode: *mut u16,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        multi_byte: *const u8,
-        multi_byte_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::multi_byte_to_unicode(
-                core::slice::from_raw_parts_mut(unicode, max_bytes as usize / 2),
-                core::slice::from_raw_parts(multi_byte, multi_byte_bytes as usize),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(2 * written as u32) };
-        }
-        0
-    }
-
-    /// The kernel's reads, as the service makes them: the name to its NUL, the DEVMODEW as far as
-    /// its dmSize goes; the answer is [`DISPLAY_ANSWER`].
-    pub unsafe extern "system" fn NtUserChangeDisplaySettings(
-        device: *const u16,
-        dev_mode: *const rtl::display::DevModeW,
-        window: usize,
-        flags: u32,
-        param: usize,
-    ) -> i32 {
-        use rtl::pod::Pod;
-        SERVICES.with(|count| count.set(count.get() + 1));
-        // SAFETY: the tests' own name, NUL-terminated.
-        let device =
-            (!device.is_null()).then(|| unsafe { rtl::cstr::units_until_nul(device) }.to_vec());
-        let dev_mode = (!dev_mode.is_null()).then(|| {
-            // SAFETY: the tests' own DEVMODEW, at least as long as its dmSize says (capped).
-            let size = unsafe { (*dev_mode).size } as usize;
-            let mut copy = rtl::display::DevModeW::zeroed();
-            let length = size.min(core::mem::size_of::<rtl::display::DevModeW>());
-            // SAFETY: as above.
-            let bytes = unsafe { core::slice::from_raw_parts(dev_mode.cast::<u8>(), length) };
-            copy.as_bytes_mut()[..length].copy_from_slice(bytes);
-            copy
-        });
-        DISPLAY_CHANGES.with(|changes| {
-            changes.borrow_mut().push(DisplayChange {
-                device,
-                dev_mode,
-                window,
-                flags,
-                param,
-            })
-        });
-        DISPLAY_ANSWER.with(Cell::get)
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
-        multi_byte: *mut u8,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        unicode: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::unicode_to_multi_byte(
-                core::slice::from_raw_parts_mut(multi_byte, max_bytes as usize),
-                core::slice::from_raw_parts(unicode, unicode_bytes as usize / 2),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(written as u32) };
-        }
-        0
-    }
-
-    pub unsafe extern "system" fn NtUserGetProcessWindowStation(window_station: *mut u32) -> u32 {
-        SERVICES.with(|count| count.set(count.get() + 1));
-        // SAFETY: the caller's out-pointer.
-        unsafe { window_station.write(WINDOW_STATION.with(Cell::get)) };
-        0
-    }
-
-    pub unsafe extern "system" fn NtUserGetThreadDesktop(thread_id: u32, desktop: *mut u32) -> u32 {
-        SERVICES.with(|count| count.set(count.get() + 1));
-        if thread_id != THREAD_ID.with(Cell::get) {
-            return 0xC000_000D;
-        }
-        // SAFETY: the caller's out-pointer.
-        unsafe { desktop.write(DESKTOP.with(Cell::get)) };
-        0
-    }
-
-    /// The kernel's answers for the stand-ins' window station: its name, its type's name and its
-    /// flags (WSF_VISIBLE), with the kernel's lengths and statuses.
-    pub unsafe extern "system" fn NtUserGetObjectInformation(
-        object: usize,
-        index: u32,
-        information: *mut u8,
-        length: u32,
-        needed: *mut u32,
-    ) -> u32 {
-        SERVICES.with(|count| count.set(count.get() + 1));
-        let answer: std::vec::Vec<u8> = match index {
-            _ if object != WINDOW_STATION.with(Cell::get) as usize => {
-                // SAFETY: the caller's out-pointer.
-                unsafe { needed.write(u32::MAX) };
-                return 0xC000_0008;
-            }
-            1 => [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0].to_vec(),
-            2 | 3 => {
-                let text = if index == 2 {
-                    "WinSta0"
-                } else {
-                    "WindowStation"
-                };
-                text.encode_utf16()
-                    .chain([0])
-                    .flat_map(u16::to_le_bytes)
-                    .collect()
-            }
-            _ => {
-                // SAFETY: the caller's out-pointer.
-                unsafe { needed.write(0) };
-                return 0xC000_000D;
-            }
-        };
-        // SAFETY: the caller's out-pointer and buffer, of the length given.
-        unsafe {
-            needed.write(answer.len() as u32);
-            if (length as usize) < answer.len() {
-                return 0xC000_0023;
-            }
-            core::ptr::copy_nonoverlapping(answer.as_ptr(), information, answer.len());
-        }
-        0
-    }
-
-    pub fn process_heap() -> usize {
-        0x0014_0000
-    }
-
-    /// The host process's memory: every address the tests hand over is their own.
-    pub struct Probed;
-
-    impl rtl::stub::Memory for Probed {
-        fn readable(&self, _address: usize) -> bool {
-            true
-        }
-    }
-}
+pub mod host;

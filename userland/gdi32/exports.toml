@@ -1,16 +1,17 @@
 # GDI32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# F2K's gdi32 exports the screen DC's surface: CreateDC of the display and DeleteDC, the stock
-# objects and their selection, the text and background colors and the background mode, text
-# drawn with the one built-in font and its metrics, and single pixels. Its own code runs over
-# ntdll and kernel32 as Windows 2000's gdi32 imports them, and enters the kernel itself, as
-# Windows 2000's does: through win32k's services (`impl = { syscall = "<the kernel's typed
-# handler>" }`, `internal = true`: its own calls, never exported; see userland/user32/exports.toml
-# for the stubs' shape). Their argument lists are F2K's own (only gdi32 calls them; the kernel's
-# handlers in kernel/src/win32k/dc.rs describe them). The rest of the records are catalogued from
-# GDI32.dll 5.0.2195.6660's export table (scripts/catalogue_exports.py): their name and ordinal.
-# Implementing one gives it its group, prototype and implementation.
+# F2K's gdi32 exports the screen DC's surface: CreateDC of the display, DeleteDC and its device
+# capabilities, the stock objects and their selection, the text and background colors and the
+# background mode, text drawn with the one built-in font and its metrics, and single pixels. Its
+# own code runs over ntdll and kernel32 as Windows 2000's gdi32 imports them, and enters the
+# kernel itself, as Windows 2000's does: through win32k's services (`impl = { syscall = "<the
+# kernel's typed handler>" }`, `internal = true`: its own calls, never exported; see
+# userland/user32/exports.toml for the stubs' shape). Their argument lists are F2K's own (only
+# gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs describe them). The rest of
+# the records are catalogued from GDI32.dll 5.0.2195.6660's export table
+# (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
+# prototype and implementation.
 
 [[group]]
 key = "dc"
@@ -59,6 +60,15 @@ args = ["handle hdc"]
 impl = { native = "DeleteDC" }
 ordinal = 82
 fails = "FALSE"
+
+[[export]]
+name = "GetDeviceCaps"
+group = "dc"
+args = ["handle hdc", "i32 nIndex"]
+impl = { native = "GetDeviceCaps" }
+ordinal = 302
+fails = "0"
+note = "the screen DC's: its size, its clipping region's extent (read through GetPixel: no service answers a capability), 32 bpp, one plane, 96 dpi, NUMCOLORS -1; another index is a stub"
 
 # win32k's services behind them: gdi32's internal calls.
 
@@ -1498,10 +1508,6 @@ ordinal = 300
 [[export]]
 name = "GetDIBits"
 ordinal = 301
-
-[[export]]
-name = "GetDeviceCaps"
-ordinal = 302
 
 [[export]]
 name = "GetDeviceGammaRamp"
