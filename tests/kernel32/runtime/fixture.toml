@@ -8,37 +8,9 @@ gate = true
 seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]
 
 [pins]
-# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
-# calls); scripts/compat.py derives each export's coverage from them.
-"*" = [
-    "kernel32.ExitProcess",
-    "kernel32.GetCommandLineA",
-    "kernel32.GetStartupInfoA",
-    "kernel32.GetModuleFileNameA",
-    "kernel32.GetVersion",
-    "kernel32.GetStdHandle",
-    "kernel32.GetFileType",
-    "kernel32.SetHandleCount",
-    "kernel32.WriteFile",
-    "kernel32.GetEnvironmentStringsW",
-    "kernel32.FreeEnvironmentStringsA",
-    "kernel32.HeapAlloc",
-    "kernel32.HeapCreate",
-    "kernel32.HeapFree",
-    "kernel32.GetACP",
-    "kernel32.GetCPInfo",
-    "kernel32.MultiByteToWideChar",
-    "kernel32.WideCharToMultiByte",
-    "kernel32.LCMapStringW",
-    "kernel32.GetStringTypeW",
-    "kernel32.VirtualAlloc",
-    "ntdll.NtAllocateVirtualMemory",
-    "ntdll.RtlAllocateHeap",
-    "ntdll.RtlFreeHeap",
-    "ntdll.LdrInitializeThunk",
-    "ntdll.RtlUnicodeStringToAnsiString",
-    "ntdll.RtlUnicodeToMultiByteN",
-]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
 unhandled = [
     "kernel32.UnhandledExceptionFilter",
     "kernel32.SetErrorMode",
@@ -58,6 +30,7 @@ module = [
     "kernel32.SetLastError",
     "kernel32.GetTickCount",
     "kernel32.GetModuleFileNameW",
+    "kernel32.GetModuleFileNameA",
     "ntdll.LdrGetDllHandle",
     "ntdll.LdrLoadDll",
     "ntdll.LdrUnloadDll",
@@ -79,7 +52,13 @@ teb = [
     "kernel32.GetCurrentThreadId",
     "kernel32.GetCurrentProcessId",
 ]
-version = ["kernel32.GetVersionExA", "kernel32.GetVersionExW", "kernel32.GetLastError", "kernel32.SetLastError"]
+version = [
+    "kernel32.GetVersionExA",
+    "kernel32.GetVersionExW",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetVersion",
+]
 lasterror = [
     "kernel32.FormatMessageA",
     "kernel32.FormatMessageW",
@@ -87,6 +66,7 @@ lasterror = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "kernel32.GetTickCount",
+    "kernel32.GetStdHandle",
     "ntdll.RtlFindMessage",
     "ntdll.RtlFormatMessage",
     "ntdll.LdrFindResource_U",
@@ -98,6 +78,9 @@ args = [
     "kernel32.GetCommandLineW",
     "kernel32.GetModuleFileNameW",
     "kernel32.GetStartupInfoW",
+    "kernel32.GetCommandLineA",
+    "kernel32.GetStartupInfoA",
+    "kernel32.GetModuleFileNameA",
 ]
 console = [
     "kernel32.GetLastError",
@@ -107,6 +90,9 @@ console = [
     "kernel32.GetConsoleMode",
     "kernel32.WriteConsoleA",
     "kernel32.WriteConsoleW",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.WriteFile",
     "ntdll.CsrClientCallServer",
 ]
 env = [
@@ -120,6 +106,8 @@ env = [
     "kernel32.SetEnvironmentVariableA",
     "kernel32.ExpandEnvironmentStringsA",
     "kernel32.ExpandEnvironmentStringsW",
+    "kernel32.GetEnvironmentStringsW",
+    "kernel32.FreeEnvironmentStringsA",
     "ntdll.RtlQueryEnvironmentVariable_U",
     "ntdll.RtlSetEnvironmentVariable",
     "ntdll.RtlExpandEnvironmentStrings_U",
@@ -141,6 +129,12 @@ locale = [
     "kernel32.EnumSystemLocalesA",
     "kernel32.EnumSystemLocalesW",
     "kernel32.IsValidCodePage",
+    "kernel32.GetACP",
+    "kernel32.GetCPInfo",
+    "kernel32.MultiByteToWideChar",
+    "kernel32.WideCharToMultiByte",
+    "kernel32.LCMapStringW",
+    "kernel32.GetStringTypeW",
 ]
 exit = ["ntdll.NtTerminateProcess", "ntdll.LdrShutdownProcess"]
 windir = ["kernel32.GetWindowsDirectoryA", "kernel32.GetWindowsDirectoryW"]

@@ -18,8 +18,8 @@ metrics = "the capture's taskbar takes 28 pixels off the work area (0 0 1024 740
 monitors = "the capture's GetMonitorInfoA line holds the taskbar's work area (rcWork 0 0 1024 740), so it stays as captured, its 1024x768 monitor with it: F2K's monitor and work area are both the whole 640x480 screen"
 
 [pins]
-# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
-# calls); scripts/compat.py derives each export's coverage from them.
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
 enum = [
     "user32.EnumDisplaySettingsA",
     "user32.EnumDisplaySettingsW",

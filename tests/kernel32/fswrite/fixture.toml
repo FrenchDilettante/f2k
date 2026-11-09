@@ -6,42 +6,9 @@ gate = true
 timeout = 40
 
 [pins]
-# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
-# calls); scripts/compat.py derives each export's coverage from them.
-"*" = [
-    "kernel32.ExitProcess",
-    "kernel32.GetCommandLineA",
-    "kernel32.GetStartupInfoA",
-    "kernel32.GetModuleFileNameA",
-    "kernel32.GetVersion",
-    "kernel32.GetStdHandle",
-    "kernel32.GetFileType",
-    "kernel32.SetHandleCount",
-    "kernel32.WriteFile",
-    "kernel32.GetEnvironmentStringsW",
-    "kernel32.FreeEnvironmentStringsA",
-    "kernel32.HeapAlloc",
-    "kernel32.HeapCreate",
-    "kernel32.HeapFree",
-    "kernel32.GetACP",
-    "kernel32.GetCPInfo",
-    "kernel32.MultiByteToWideChar",
-    "kernel32.WideCharToMultiByte",
-    "kernel32.LCMapStringW",
-    "kernel32.GetStringTypeW",
-    "kernel32.FindClose",
-    "kernel32.FindFirstFileA",
-    "kernel32.CreateDirectoryA",
-    "kernel32.DeleteFileA",
-    "kernel32.RemoveDirectoryA",
-    "kernel32.SetFileAttributesA",
-    "kernel32.FindNextFileA",
-    "kernel32.VirtualAlloc",
-    "ntdll.NtAllocateVirtualMemory",
-    "ntdll.NtCreateFile",
-    "ntdll.RtlAllocateHeap",
-    "ntdll.RtlFreeHeap",
-]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
 create = [
     "kernel32.CloseHandle",
     "kernel32.GetLastError",
@@ -50,6 +17,13 @@ create = [
     "kernel32.CreateFileW",
     "kernel32.GetFileAttributesExA",
     "kernel32.GetFileAttributesExW",
+    "kernel32.WriteFile",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindNextFileA",
+    "kernel32.FindClose",
+    "kernel32.DeleteFileA",
+    "kernel32.RemoveDirectoryA",
+    "kernel32.SetFileAttributesA",
     "ntdll.NtWriteFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -66,6 +40,13 @@ dirs = [
     "kernel32.RemoveDirectoryW",
     "kernel32.FindFirstFileW",
     "kernel32.FindNextFileW",
+    "kernel32.WriteFile",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindNextFileA",
+    "kernel32.FindClose",
+    "kernel32.CreateDirectoryA",
+    "kernel32.DeleteFileA",
+    "kernel32.RemoveDirectoryA",
     "ntdll.NtOpenFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -87,6 +68,14 @@ names = [
     "kernel32.DeleteFileW",
     "kernel32.SetFileAttributesW",
     "kernel32.FindFirstFileW",
+    "kernel32.WriteFile",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindNextFileA",
+    "kernel32.FindClose",
+    "kernel32.CreateDirectoryA",
+    "kernel32.DeleteFileA",
+    "kernel32.RemoveDirectoryA",
+    "kernel32.SetFileAttributesA",
     "ntdll.NtOpenFile",
     "ntdll.NtSetInformationFile",
 ]
@@ -99,6 +88,8 @@ share = [
     "kernel32.GetFileAttributesA",
     "kernel32.GetFileAttributesW",
     "kernel32.DeleteFileW",
+    "kernel32.WriteFile",
+    "kernel32.DeleteFileA",
     "ntdll.NtOpenFile",
 ]
 times = [
@@ -110,6 +101,7 @@ times = [
     "kernel32.SetFileTime",
     "kernel32.SystemTimeToFileTime",
     "kernel32.GetFileTime",
+    "kernel32.WriteFile",
     "ntdll.NtSetInformationFile",
     "ntdll.RtlTimeToTimeFields",
     "ntdll.RtlTimeFieldsToTime",
@@ -128,10 +120,23 @@ write = [
     "kernel32.GetFileAttributesExW",
     "kernel32.GetFileSize",
     "kernel32.SetEndOfFile",
+    "kernel32.WriteFile",
     "ntdll.NtReadFile",
     "ntdll.NtWriteFile",
     "ntdll.NtFlushBuffersFile",
     "ntdll.NtSetInformationFile",
 ]
 crt = ["kernel32.GetFileAttributesExA", "kernel32.GetFileAttributesExW", "ntdll.NtWriteFile"]
-movex = ["kernel32.MoveFileExA", "kernel32.MoveFileExW", "ntdll.NtSetInformationFile"]
+movex = [
+    "kernel32.MoveFileExA",
+    "kernel32.MoveFileExW",
+    "kernel32.WriteFile",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindNextFileA",
+    "kernel32.FindClose",
+    "kernel32.CreateDirectoryA",
+    "kernel32.DeleteFileA",
+    "kernel32.RemoveDirectoryA",
+    "kernel32.SetFileAttributesA",
+    "ntdll.NtSetInformationFile",
+]

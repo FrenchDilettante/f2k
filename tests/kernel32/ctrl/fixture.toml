@@ -12,7 +12,7 @@ gate = true
 timeout = 60
 
 [pending]
-lone = "CREATE_NEW_CONSOLE not yet implemented: the section's child opens a console of its own"
+lone = "kernel32's CreateProcess takes its stub path for CREATE_NEW_CONSOLE (logged, error 120): F2K's console server holds one console, which every process shares; and the child prints through the standard output it inherits, capture.bat's file on the real machine but under redirected a console handle of that one console, which a child in a console of its own could not write through"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

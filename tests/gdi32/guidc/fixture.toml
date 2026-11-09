@@ -12,8 +12,8 @@ dc = "Windows 2000's GetDCEx(h, NULL, DCX_WINDOW) answers NULL here (and Release
 extent = "the System font's widths (Hello 34 wide, average 7): F2K's 8x16 font answers 40 and 8"
 
 [pins]
-# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
-# calls); scripts/compat.py derives each export's coverage from them.
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
 dc = [
     "user32.GetDC",
     "user32.GetDCEx",

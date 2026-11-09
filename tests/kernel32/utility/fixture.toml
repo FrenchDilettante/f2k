@@ -13,7 +13,12 @@ gate = true
 # them. Only the exports a section observes, not the helpers it calls around them.
 muldiv = ["kernel32.MulDiv"]
 dbcs = ["kernel32.IsDBCSLeadByte", "kernel32.IsDBCSLeadByteEx"]
-stringtype = ["kernel32.GetStringTypeExA", "kernel32.GetStringTypeExW"]
+stringtype = [
+    "kernel32.GetStringTypeExA",
+    "kernel32.GetStringTypeExW",
+    "kernel32.GetStringTypeA",
+    "kernel32.GetStringTypeW",
+]
 langid = ["kernel32.GetUserDefaultLangID"]
 sysdir = ["kernel32.GetSystemDirectoryA", "kernel32.GetSystemDirectoryW"]
 temppath = ["kernel32.GetTempPathA", "kernel32.GetTempPathW"]
