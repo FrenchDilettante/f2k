@@ -5,7 +5,7 @@ A Windows 2000-compatible operating system written in Rust.
 ## What runs today
 
 F2K boots on a PC (QEMU or VirtualBox) from a FAT32 disk and runs Win32 console programs built for Windows 2000, unmodified.
-Six of Windows 2000's system DLLs are F2K's own code:
+Seven of Windows 2000's system DLLs are F2K's own code:
 
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
@@ -13,6 +13,7 @@ Six of Windows 2000's system DLLs are F2K's own code:
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
 - **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility; no frame or caption is drawn); the message loop, sent and posted messages and the default window procedure; painting (`BeginPaint`, the update regions) and the `GetDC` family; the display's settings, devices, monitor, metrics and system colors; `MessageBeep`.
 - **gdi32**: screen device contexts drawn on the VBE framebuffer, and their capabilities: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
+- **shell32**: only `ShellAboutW`, a stub that answers FALSE, so programs that import it (Windows 2000's `calc.exe`) load.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
 
@@ -250,8 +251,9 @@ f2k/
 ├── tools/exportgen/  # The export specs' reader and generator, and the kernel's PE32 image's
 │                     # emitter (a host crate, outside the workspace)
 ├── userland/         # The system DLLs (own workspace and target): rtl (the shared runtime),
-│                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32; each DLL's export spec in
-│                     # userland/<dll>/exports.toml, the DLLs F2K doesn't build their spec alone;
+│                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32, shell32; each DLL's
+│                     # export spec in userland/<dll>/exports.toml, the DLLs F2K doesn't build
+│                     # their spec alone;
 │                     # F2K's own programs (pwd, ps, shutdown, cmd), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │

@@ -1,9 +1,25 @@
 # SHELL32.dll's exports: the one source every list of them derives from (the format is
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
-# None is implemented yet: each record is catalogued from SHELL32.dll 5.0.3700.6705's export table
-# (scripts/catalogue_exports.py): its name and ordinal. Implementing one gives it its group,
+# F2K's shell32 exports what calc.exe imports: ShellAboutW, a stub (there is no dialog manager to
+# show the About box with), its stub routine over kernel32 as Windows 2000's shell32 imports it.
+# The rest of the records are catalogued from SHELL32.dll 5.0.3700.6705's export table
+# (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
 # prototype and implementation.
+
+[[group]]
+key = "dialogs"
+title = "the shell's dialogs"
+
+# --- the shell's dialogs --------------------------------------------------------------------------
+
+[[export]]
+name = "ShellAboutW"
+group = "dialogs"
+args = ["handle hWnd", "strW? szApp", "strW? szOtherStuff", "handle hIcon"]
+impl = { stub = "not yet implemented" }
+ordinal = 365
+fails = "FALSE"
 
 # --- not implemented yet: the rest of SHELL32.dll 5.0.3700.6705's export table, by ordinal -------
 
@@ -538,10 +554,6 @@ ordinal = 363
 [[export]]
 name = "ShellAboutA"
 ordinal = 364
-
-[[export]]
-name = "ShellAboutW"
-ordinal = 365
 
 [[export]]
 name = "ShellExec_RunDLL"

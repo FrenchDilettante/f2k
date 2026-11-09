@@ -427,7 +427,7 @@ def dll_exports(dll: str) -> list[dict]:
 
 
 # The DLLs F2K builds: the userland workspace's crates with an export spec (ntdll, kernel32, msvcrt,
-# advapi32, user32), by module name.
+# advapi32, user32, gdi32, shell32), by module name.
 BUILT_DLLS = sorted(path.parent.name for path in (f2kboot.REPO_ROOT / "userland").glob("*/exports.toml")
                     if (path.parent / "Cargo.toml").is_file())
 

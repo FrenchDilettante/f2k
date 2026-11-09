@@ -17,7 +17,9 @@
 use std::path::{Path, PathBuf};
 
 /// The system DLLs whose specs are read and checked together (a forward names another's export).
-const DLLS: [&str; 6] = ["kernel32", "ntdll", "msvcrt", "advapi32", "user32", "gdi32"];
+const DLLS: [&str; 7] = [
+    "kernel32", "ntdll", "msvcrt", "advapi32", "user32", "gdi32", "shell32",
+];
 
 /// The hand-written exports a source declares: an assembly source's `.globl _f2k_export_<Name>`
 /// lines, a Rust source's `#[unsafe(export_name = "f2k_export_<Name>")]` functions (stdcall: the

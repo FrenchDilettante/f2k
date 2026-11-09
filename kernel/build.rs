@@ -10,13 +10,16 @@
 //!
 //! It also points the kernel at the system DLLs the userland workspace builds (userland/):
 //! ntdll.dll, which it embeds and maps into every process, and kernel32.dll, msvcrt.dll,
-//! advapi32.dll, user32.dll and gdi32.dll, which its tests read (the disk image carries them for
-//! ntdll to load). They are built first (`make userland`); the kernel rebuilds when they change.
+//! advapi32.dll, user32.dll, gdi32.dll and shell32.dll, which its tests read (the disk image
+//! carries them for ntdll to load). They are built first (`make userland`); the kernel rebuilds
+//! when they change.
 
 use std::path::{Path, PathBuf};
 
 /// The system DLLs the userland workspace builds, ntdll first.
-const DLLS: [&str; 6] = ["ntdll", "kernel32", "msvcrt", "advapi32", "user32", "gdi32"];
+const DLLS: [&str; 7] = [
+    "ntdll", "kernel32", "msvcrt", "advapi32", "user32", "gdi32", "shell32",
+];
 
 /// The kernel's own export spec, repository-relative.
 const KERNEL_SPEC: &str = "kernel/exports.toml";

@@ -75,9 +75,9 @@ pub static KERNEL32: SystemDll = SystemDll {
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/kernel32.dll")),
 };
 
-/// msvcrt, advapi32, user32 and gdi32, as the userland build left them, at Windows 2000's bases for
-/// them: the tests check them against their specs and the corpus (ntdll loads them from the
-/// volume).
+/// msvcrt, advapi32, user32, gdi32 and shell32, as the userland build left them, at Windows 2000's
+/// bases for them: the tests check them against their specs and the corpus (ntdll loads them from
+/// the volume).
 #[cfg(test)]
 pub static MSVCRT: SystemDll = SystemDll {
     file_name: "msvcrt.dll",
@@ -101,6 +101,12 @@ pub static GDI32: SystemDll = SystemDll {
     file_name: "gdi32.dll",
     base: 0x77F4_0000,
     file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/gdi32.dll")),
+};
+#[cfg(test)]
+pub static SHELL32: SystemDll = SystemDll {
+    file_name: "shell32.dll",
+    base: 0x782F_0000,
+    file: include_bytes!(concat!(env!("F2K_SYSTEM_DLLS"), "/shell32.dll")),
 };
 
 /// A DLL file's SizeOfImage, at build time (the system regions reserve the image's extent): the
@@ -153,7 +159,9 @@ const FORWARD_DEPTH: u32 = 4;
 #[cfg(not(test))]
 static SYSTEM_DLLS: [&SystemDll; 1] = [&NTDLL];
 #[cfg(test)]
-static SYSTEM_DLLS: [&SystemDll; 6] = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32];
+static SYSTEM_DLLS: [&SystemDll; 7] = [
+    &NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32, &SHELL32,
+];
 
 /// The DLL `name` (as an import descriptor or a forwarder spells it) designates.
 fn system_dll(name: &str) -> Option<&'static SystemDll> {
@@ -428,8 +436,8 @@ mod tests {
     }
 
     /// Exports resolve by exact name (gdi32's among them), kernel32's forwarder lands in ntdll,
-    /// unknown names and modules do not resolve, and the kernel's internal entry point exists (in ntdll only:
-    /// kernel32's surface carries Windows 2000's names alone).
+    /// unknown names and modules do not resolve, and the kernel's internal entry point exists (in
+    /// ntdll only: kernel32's surface carries Windows 2000's names alone).
     #[test]
     fn exports_resolve_through_the_module_table() {
         let kernel32_size = KERNEL32.image().size_of_image();
@@ -442,8 +450,13 @@ mod tests {
             Err(Unresolved::NoEntry)
         );
         assert_eq!(
-            resolve("SHELL32.dll", "ShellExecuteA"),
+            resolve("COMDLG32.dll", "GetOpenFileNameA"),
             Err(Unresolved::NoModule)
+        );
+        assert_eq!(
+            resolve("SHELL32.dll", "ShellExecuteA"),
+            Err(Unresolved::NoEntry),
+            "a catalogued export is not exported"
         );
         let text_out = resolve("GDI32.dll", "TextOutA").unwrap();
         assert!((GDI32.base..GDI32.base + GDI32.image().size_of_image()).contains(&text_out));
@@ -945,6 +958,11 @@ mod tests {
         include!(concat!(env!("OUT_DIR"), "/gdi32_stubs.rs"));
         include!(concat!(env!("OUT_DIR"), "/gdi32_data.rs"));
     }
+    mod shell32 {
+        include!(concat!(env!("OUT_DIR"), "/shell32_exports.rs"));
+        include!(concat!(env!("OUT_DIR"), "/shell32_stubs.rs"));
+        include!(concat!(env!("OUT_DIR"), "/shell32_data.rs"));
+    }
 
     /// A system DLL ntdll loads on a program's demand, with its spec's tables: the exports it
     /// implements, its stubs, its variables.
@@ -955,8 +973,8 @@ mod tests {
         data: &'static [&'static str],
     }
 
-    /// msvcrt, advapi32, user32 and gdi32.
-    fn loaded_dlls() -> [Loaded; 4] {
+    /// msvcrt, advapi32, user32, gdi32 and shell32.
+    fn loaded_dlls() -> [Loaded; 5] {
         [
             Loaded {
                 dll: &MSVCRT,
@@ -982,6 +1000,12 @@ mod tests {
                 stubs: &gdi32::STUB_EXPORTS,
                 data: &gdi32::DATA_EXPORTS,
             },
+            Loaded {
+                dll: &SHELL32,
+                exports: &shell32::DLL_EXPORTS,
+                stubs: &shell32::STUB_EXPORTS,
+                data: &shell32::DATA_EXPORTS,
+            },
         ]
     }
 
@@ -992,15 +1016,15 @@ mod tests {
             .find(|s| (s.virtual_address..s.virtual_address + image.extent(s)).contains(&rva))
     }
 
-    /// msvcrt, advapi32, user32 and gdi32: i386 DLL images at Windows 2000's bases for them (images
-    /// are never relocated), clear of each other, of ntdll and kernel32, and of kernel space;
-    /// each has an entry point in its code, which ntdll's loader calls, and every import it has
-    /// resolves: its module is one of the system DLLs the loader serves, and that DLL exports the
-    /// name. Which module an import comes from is Windows 2000's own import table's to say, and
-    /// scripts/compat.py holds each import against it.
+    /// msvcrt, advapi32, user32, gdi32 and shell32: i386 DLL images at Windows 2000's bases for
+    /// them (images are never relocated), clear of each other, of ntdll and kernel32, and of
+    /// kernel space; each has an entry point in its code, which ntdll's loader calls, and every
+    /// import it has resolves: its module is one of the system DLLs the loader serves, and that
+    /// DLL exports the name. Which module an import comes from is Windows 2000's own import
+    /// table's to say, and scripts/compat.py holds each import against it.
     #[test]
     fn the_loaded_dlls_are_images_at_their_bases() {
-        let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32]
+        let mut extents: Vec<(u32, u32)> = SYSTEM_DLLS
             .into_iter()
             .map(|dll| (dll.base, dll.base + dll.image().size_of_image()))
             .collect();
@@ -1076,7 +1100,11 @@ mod tests {
             advapi32::DATA_EXPORTS.is_empty()
                 && user32::DATA_EXPORTS.is_empty()
                 && gdi32::DATA_EXPORTS.is_empty()
+                && shell32::DATA_EXPORTS.is_empty()
         );
+        // shell32 exports what calc.exe imports from it, a stub, and nothing it implements.
+        assert!(shell32::DLL_EXPORTS.is_empty());
+        assert_eq!(shell32::STUB_EXPORTS, [("ShellAboutW", 16)]);
     }
 
     /// The variables are writable data: each lies in a writable section that holds no code,
