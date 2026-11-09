@@ -14,7 +14,14 @@ use core::ffi::CStr;
 
 use rtl::critsec::CriticalSection;
 
-use crate::imports::{self, ProcessInformation, SecurityAttributes, StartupInfoA};
+use crate::edge::WideUnit;
+use crate::imports::{
+    self,
+    ProcessInformation,
+    SecurityAttributes,
+    StartupInfoA,
+    TimeZoneInformation,
+};
 
 /// A Win32 error code: the thread's last error after a call that failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -575,6 +582,92 @@ pub fn system_time() -> u64 {
     // SAFETY: the call writes the FILETIME's two dwords.
     unsafe { imports::GetSystemTimeAsFileTime(&mut time) };
     time
+}
+
+/// GetTimeZoneInformation: the system's time zone; none when it cannot be had.
+pub fn time_zone_information() -> Option<TimeZoneInformation> {
+    let mut information = TimeZoneInformation::UTC;
+    // SAFETY: the call writes the structure.
+    let answer = unsafe { imports::GetTimeZoneInformation(&mut information) };
+    (answer != u32::MAX).then_some(information)
+}
+
+/// Why a path call gave no path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathError {
+    /// The buffer was too small: the units it needs, the NUL included.
+    Needs(usize),
+    /// The call failed, with this last error.
+    Failed(Win32Error),
+}
+
+/// A path call's answer over a buffer of `size` units: the path's length when it fit with its NUL.
+fn path_answer(answer: u32, size: usize) -> Result<usize, PathError> {
+    match answer as usize {
+        0 => Err(PathError::Failed(failure())),
+        length if length < size => Ok(length),
+        needed => Err(PathError::Needs(needed)),
+    }
+}
+
+/// A path call's output buffer, as the call takes it: none for an empty one.
+fn out_units<U>(buffer: &mut [U]) -> *mut U {
+    if buffer.is_empty() {
+        core::ptr::null_mut()
+    } else {
+        buffer.as_mut_ptr()
+    }
+}
+
+/// GetFullPathNameW: the full path of `name` (its units, then a NUL) into `buffer`, its length.
+pub fn full_path_w(name: &[WideUnit], buffer: &mut [WideUnit]) -> Result<usize, PathError> {
+    debug_assert_eq!(name.last().map(|unit| unit.get()), Some(0));
+    // SAFETY: the call reads the terminated name and writes at most `buffer.len()` units (a
+    // WideUnit is a UTF-16 unit's two bytes).
+    let answer = unsafe {
+        imports::GetFullPathNameW(
+            name.as_ptr().cast(),
+            buffer.len() as u32,
+            out_units(buffer).cast(),
+            core::ptr::null_mut(),
+        )
+    };
+    path_answer(answer, buffer.len())
+}
+
+/// GetFullPathNameA: as [`full_path_w`], in bytes.
+pub fn full_path_a(name: &CStr, buffer: &mut [u8]) -> Result<usize, PathError> {
+    // SAFETY: the call reads the terminated name and writes at most `buffer.len()` bytes.
+    let answer = unsafe {
+        imports::GetFullPathNameA(
+            name.as_ptr().cast(),
+            buffer.len() as u32,
+            out_units(buffer),
+            core::ptr::null_mut(),
+        )
+    };
+    path_answer(answer, buffer.len())
+}
+
+/// GetCurrentDirectoryW: the current directory into `buffer`, as [`full_path_w`] answers.
+pub fn current_directory_w(buffer: &mut [WideUnit]) -> Result<usize, PathError> {
+    // SAFETY: the call writes at most `buffer.len()` units.
+    let answer =
+        unsafe { imports::GetCurrentDirectoryW(buffer.len() as u32, out_units(buffer).cast()) };
+    path_answer(answer, buffer.len())
+}
+
+/// GetCurrentDirectoryA: the current directory into `buffer`, as [`full_path_a`] answers.
+pub fn current_directory_a(buffer: &mut [u8]) -> Result<usize, PathError> {
+    // SAFETY: the call writes at most `buffer.len()` bytes.
+    let answer = unsafe { imports::GetCurrentDirectoryA(buffer.len() as u32, out_units(buffer)) };
+    path_answer(answer, buffer.len())
+}
+
+/// GetDriveTypeA: the type of the drive whose root is `root` (DRIVE_NO_ROOT_DIR, 1, for none).
+pub fn drive_type(root: &CStr) -> u32 {
+    // SAFETY: the call reads the terminated name.
+    unsafe { imports::GetDriveTypeA(root.as_ptr().cast()) }
 }
 
 /// CreateProcessA of the program `application` with the command line (which CreateProcessA may

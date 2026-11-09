@@ -1,7 +1,9 @@
 /*
  * wide - the breadth of msvcrt.dll cmd.exe calls under /MD: wide
  * strings, wide character classes, wide formatting and scanning,
- * number conversions, the heap, qsort, rand, time and setlocale.
+ * number conversions, the heap, qsort, rand, time and setlocale; and
+ * beside them iswctype, the class functions' common form, and the
+ * broken-down times (gmtime, localtime, mktime, _tzset).
  *
  * Deterministic inputs only. The wide functions' narrow twins are not
  * called: cmd.exe imports the wide ones alone, and every other import
@@ -19,6 +21,9 @@
  *            Greek, Cyrillic, Arabic-Indic digits, the Unicode spaces,
  *            CJK, fullwidth forms), in the "C" locale and after
  *            setlocale(LC_ALL, "")
+ *   wctype   iswctype over ASCII, Latin-1, Greek, Arabic-Indic and
+ *            ideographic characters, U+2028 and WEOF, for each class
+ *            mask and a mask of two classes, in the "C" locale
  *   locale   setlocale's answers: the startup's locale, "", "C", a name
  *            that does not exist, one category set alone
  *   format   swprintf (MSVC 6's, without a count): integer conversions,
@@ -39,6 +44,17 @@
  *   rand     rand's first values without srand, after srand(1) and
  *            after srand(42)
  *   time     time(NULL) against time(&t), and after 2000-01-01
+ *   calendar gmtime of fixed values (the epoch, a leap day, 2^31-1, a
+ *            negative time); localtime under TZ=PST8PDT around 2001's
+ *            daylight saving changes, in 2007, at the epoch and at
+ *            2^31-1; whether gmtime and localtime share one buffer;
+ *            mktime normalizing out-of-range fields, filling tm_wday
+ *            and tm_yday, its tm_isdst answers, and its bounds (local
+ *            times on either side of 1970-01-01 00:00:00 and
+ *            2038-01-19 03:14:07 UTC); localtime under TZ=EST5, GMT0,
+ *            IST-5:30 and NST3:30NDT. The time zone is the one the section sets
+ *            itself (TZ, through _putenv, then _tzset), never the
+ *            machine's, and every time_t is a fixed value
  *
  * The character class functions are called as (iswalpha)(c): MSVC 6's
  * headers define them as macros over iswctype, and cmd.exe imports them
@@ -257,6 +273,38 @@ static void sec_ctype(void)
     line("setlocale(LC_ALL, \"\"): %s", str_or_null(setlocale(LC_ALL, "")));
     ctype_round("\"\"");
     setlocale(LC_ALL, "C");
+}
+
+/* --- wctype ------------------------------------------------------- */
+
+static void sec_wctype(void)
+{
+    static const unsigned short chars[] = {
+        'A', 'z', '5', 'f', 'G', ' ', '\t', '\n', '!', '_', 0x7F, 0xA0, 0xB2, 0xC0, 0xE9, 0xD7,
+        0x391, 0x3B1, 0x660, 0x2028, 0x3000, 0x4E00, 0xFFFF
+    };
+    static const struct {
+        const char *name;
+        unsigned short mask;
+    } masks[] = {
+        { "_UPPER", _UPPER }, { "_LOWER", _LOWER }, { "_DIGIT", _DIGIT },
+        { "_SPACE", _SPACE }, { "_PUNCT", _PUNCT }, { "_CONTROL", _CONTROL },
+        { "_BLANK", _BLANK }, { "_HEX", _HEX }, { "_ALPHA", _ALPHA },
+        { "_ALPHA|_DIGIT", _ALPHA | _DIGIT }, { "0", 0 }
+    };
+    char text[512];
+    int len;
+    int i;
+    int j;
+
+    for (i = 0; i < (int)(sizeof chars / sizeof chars[0]); i++) {
+        len = sprintf(text, "U+%04X:", (unsigned)chars[i]);
+        for (j = 0; j < (int)(sizeof masks / sizeof masks[0]); j++) {
+            len += sprintf(text + len, " %s %X", masks[j].name,
+                           (unsigned)iswctype(chars[i], masks[j].mask));
+        }
+        line("%s", text);
+    }
 }
 
 /* --- locale -------------------------------------------------------- */
@@ -711,10 +759,153 @@ static void sec_time(void)
     line("after 2000-01-01 00:00:00 UTC: %s", yesno(a > (time_t)946684800L));
 }
 
+/* --- calendar ----------------------------------------------------- */
+
+static void show_tm(const char *what, const struct tm *t)
+{
+    if (t == NULL) {
+        line("%s: NULL", what);
+        return;
+    }
+    line("%s: %04d-%02d-%02d %02d:%02d:%02d wday %d yday %d isdst %d", what, t->tm_year + 1900,
+         t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec, t->tm_wday, t->tm_yday,
+         t->tm_isdst);
+}
+
+static void show_gmtime(long value)
+{
+    char what[64];
+    time_t t = value;
+
+    sprintf(what, "gmtime(%ld)", value);
+    show_tm(what, gmtime(&t));
+}
+
+static void show_localtime(long value)
+{
+    char what[64];
+    time_t t = value;
+
+    sprintf(what, "localtime(%ld)", value);
+    show_tm(what, localtime(&t));
+}
+
+/* mktime over the fields given (tm_year from 1900, tm_mon from 0), its
+ * tm_wday and tm_yday set to -9 so their filling shows. */
+static void show_mktime(const char *what, int year, int mon, int mday, int hour, int min, int sec,
+                        int isdst)
+{
+    struct tm t;
+    time_t r;
+    char label[96];
+
+    t.tm_year = year;
+    t.tm_mon = mon;
+    t.tm_mday = mday;
+    t.tm_hour = hour;
+    t.tm_min = min;
+    t.tm_sec = sec;
+    t.tm_isdst = isdst;
+    t.tm_wday = -9;
+    t.tm_yday = -9;
+    r = mktime(&t);
+    if (r == (time_t)-1) {
+        line("mktime(%s): -1", what);
+        return;
+    }
+    sprintf(label, "mktime(%s): %ld", what, (long)r);
+    show_tm(label, &t);
+}
+
+static void set_zone(const char *setting)
+{
+    int r = _putenv(setting);
+
+    _tzset();
+    line("_putenv(\"%s\") %d, _tzset", setting, r);
+}
+
+static void sec_calendar(void)
+{
+    time_t t = 0;
+    struct tm *g;
+    struct tm *l;
+
+    set_zone("TZ=PST8PDT");
+
+    show_gmtime(0);
+    show_gmtime(86399);
+    show_gmtime(86400);
+    show_gmtime(951782400);     /* 2000-02-29 00:00:00 */
+    show_gmtime(978307199);     /* 2000-12-31 23:59:59 */
+    show_gmtime(1004259600);    /* 2001-10-28 09:00:00 */
+    show_gmtime(2147483647);
+    show_gmtime(-1);
+
+    show_localtime(0);
+    show_localtime(28799);
+    show_localtime(28800);
+    show_localtime(986119199);  /* 2001-04-01 09:59:59 UTC */
+    show_localtime(986119200);
+    show_localtime(992606400);  /* 2001-06-15 12:00:00 UTC */
+    show_localtime(1004255999); /* 2001-10-28 07:59:59 UTC */
+    show_localtime(1004256000);
+    show_localtime(1004259599);
+    show_localtime(1004259600);
+    show_localtime(1174392000); /* 2007-03-20 12:00:00 UTC */
+    show_localtime(2147483647);
+    show_localtime(-1);
+
+    g = gmtime(&t);
+    l = localtime(&t);
+    line("gmtime and localtime share one buffer: %s", yesno(g == l));
+
+    show_mktime("2001-06-15 12:00:00, isdst -1", 101, 5, 15, 12, 0, 0, -1);
+    show_mktime("2001-06-15 12:00:00, isdst 0", 101, 5, 15, 12, 0, 0, 0);
+    show_mktime("2001-06-15 12:00:00, isdst 1", 101, 5, 15, 12, 0, 0, 1);
+    show_mktime("2001-01-15 12:00:00, isdst -1", 101, 0, 15, 12, 0, 0, -1);
+    show_mktime("2001-01-15 12:00:00, isdst 1", 101, 0, 15, 12, 0, 0, 1);
+    show_mktime("2001-02-31", 101, 1, 31, 0, 0, 0, -1);
+    show_mktime("2001-03-00", 101, 2, 0, 0, 0, 0, -1);
+    show_mktime("month -1 of 2001", 101, -1, 15, 0, 0, 0, -1);
+    show_mktime("month 12 of 2001", 101, 12, 1, 0, 0, 0, -1);
+    show_mktime("month -13 of 2001", 101, -13, 1, 0, 0, 0, -1);
+    show_mktime("2001-01-01 second 90061", 101, 0, 1, 0, 0, 90061, -1);
+    show_mktime("2001-01-01 minute -1", 101, 0, 1, 0, -1, 0, -1);
+    show_mktime("2000-02-28 hour 48", 100, 1, 28, 48, 0, 0, -1);
+    show_mktime("2001-01-01 day 366", 101, 0, 366, 0, 0, 0, -1);
+    show_mktime("2001-04-01 02:30:00, isdst -1", 101, 3, 1, 2, 30, 0, -1);
+    show_mktime("2001-10-28 01:30:00, isdst -1", 101, 9, 28, 1, 30, 0, -1);
+    show_mktime("2001-10-28 01:30:00, isdst 1", 101, 9, 28, 1, 30, 0, 1);
+    show_mktime("1970-01-01 00:00:00, isdst 0", 70, 0, 1, 0, 0, 0, 0);
+    show_mktime("1969-12-31 23:59:59, isdst 0", 69, 11, 31, 23, 59, 59, 0);
+    show_mktime("1970-01-00 23:59:59, isdst 0", 70, 0, 0, 23, 59, 59, 0);
+    show_mktime("2038-01-18 19:14:07, isdst 0", 138, 0, 18, 19, 14, 7, 0);
+    show_mktime("2038-01-18 19:14:08, isdst 0", 138, 0, 18, 19, 14, 8, 0);
+    show_mktime("2039-01-01", 139, 0, 1, 0, 0, 0, -1);
+    show_mktime("1900-01-01", 0, 0, 1, 0, 0, 0, -1);
+
+    set_zone("TZ=EST5");
+    show_localtime(992606400);
+    show_mktime("2001-06-15 12:00:00, isdst -1", 101, 5, 15, 12, 0, 0, -1);
+    set_zone("TZ=GMT0");
+    show_localtime(0);
+    show_mktime("1970-01-01 00:00:00, isdst -1", 70, 0, 1, 0, 0, 0, -1);
+    set_zone("TZ=IST-5:30");
+    show_localtime(0);
+    show_localtime(992606400);
+    show_mktime("1970-01-01 05:30:00, isdst 0", 70, 0, 1, 5, 30, 0, 0);
+    show_mktime("1970-01-01 05:29:59, isdst 0", 70, 0, 1, 5, 29, 59, 0);
+    set_zone("TZ=NST3:30NDT");
+    show_localtime(992606400);
+    show_localtime(978307199);
+}
+
 static const section_t sections[] = {
     { "wcs", sec_wcs, F2KT_ALWAYS },
     { "case", sec_case, F2KT_ALWAYS },
     { "ctype", sec_ctype, F2KT_ALWAYS },
+    { "wctype", sec_wctype, F2KT_ALWAYS },
     { "locale", sec_locale, F2KT_ALWAYS },
     { "format", sec_format, F2KT_ALWAYS },
     { "scan", sec_scan, F2KT_ALWAYS },
@@ -723,6 +914,7 @@ static const section_t sections[] = {
     { "sort", sec_sort, F2KT_ALWAYS },
     { "rand", sec_rand, F2KT_ALWAYS },
     { "time", sec_time, F2KT_ALWAYS },
+    { "calendar", sec_calendar, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

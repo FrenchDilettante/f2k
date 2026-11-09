@@ -1,7 +1,8 @@
 /*
  * fd - msvcrt.dll's descriptor layer and stdio streams under /MD, as
  * cmd.exe uses them: descriptors over Win32 handles, duplication and
- * redirection, text and binary modes, _iob's streams, fgets, _getch.
+ * redirection, text and binary modes, _iob's streams, fgets, _getch;
+ * and the streams' block reads and writes, seeks and wide lines.
  *
  * Works inside SCRATCH, a directory next to the program's image, which
  * each section that uses it empties silently first, so every run starts
@@ -30,6 +31,19 @@
  *              short buffer, an empty line, the last line without its
  *              newline, the end of the file, the descriptor closed by
  *              fclose
+ *   streams    fwrite in text and binary mode (items written, ftell
+ *              counting the file's bytes, the bytes on disk); fread in
+ *              text mode (CR LF as LF, short reads, the end of the
+ *              file, partial items, ftell), clearerr, fseek from each
+ *              origin and its errors, fseek clearing the end of the
+ *              file, Ctrl-Z ending a text read; a "w+" stream switching
+ *              from writing to reading and back; fwrite on a stream
+ *              opened for reading
+ *   wstreams   fputws and fgetws in text mode (a byte per character in
+ *              the "C" locale; U+03B1 has none: fputws's answer, errno
+ *              and the bytes it leaves) and in binary mode (UTF-16 as
+ *              it is): a short buffer, the end of the file, a lone last
+ *              byte
  *   getch      _getch over key events the section queues itself
  *              (WriteConsoleInputW on CONIN$): characters, Enter,
  *              Escape, a lone Shift, an arrow key and a function key
@@ -40,6 +54,10 @@
  * call; a file, as on the real machine: when full): the stdio section
  * sets the standard streams' buffers itself (setvbuf, _IOFBF), so the
  * order of its lines is the same either way.
+ *
+ * The streams and wstreams sections open their file with fopen, for
+ * its modes ("w+" among them); feof and ferror are stdio.h's macros,
+ * reading the stream's flags.
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat fd):
  *   cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% fd.c
@@ -175,8 +193,8 @@ static const char *contents(const char *rel)
 }
 
 /* A stream over a file under SCRATCH: CreateFileA, then _open_osfhandle
-   with `flags` (the descriptor's mode), then _fdopen with `mode`. (fopen
-   would be one more import: cmd.exe does not use it.) */
+   with `flags` (the descriptor's mode), then _fdopen with `mode`, as
+   cmd.exe opens its streams (it does not call fopen). */
 static FILE *open_stream(const char *rel, DWORD access, DWORD disposition, int flags, const char *mode)
 {
     HANDLE h = CreateFileA(at(rel), access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, disposition,
@@ -487,6 +505,287 @@ static void sec_fgets(void)
     }
 }
 
+/* --- streams ------------------------------------------------------- */
+
+/* The file the streams and wstreams sections work on, under SCRATCH. */
+#define STREAM_FILE "stream.txt"
+
+/* STREAM_FILE's bytes as printed, with their count. */
+static void on_disk(const char *what)
+{
+    char buf[256];
+    DWORD got = 0;
+    HANDLE h = CreateFileA(at(STREAM_FILE), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                           OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        line("%s: cannot open", what);
+        return;
+    }
+    ReadFile(h, buf, sizeof buf, &got, NULL);
+    CloseHandle(h);
+    line("%s: %lu bytes [%s]", what, got, esc(buf, (int)got));
+}
+
+/* fopen of STREAM_FILE in `mode`: the C runtime's own reading of the
+   mode, the "+" streams included. */
+static FILE *open_file(const char *mode)
+{
+    FILE *f = fopen(at(STREAM_FILE), mode);
+
+    if (f == NULL) {
+        line("fopen(\"%s\") failed", mode);
+    }
+    return f;
+}
+
+/* fread(buf, size, count) as printed, with ftell and the flags after. */
+static void show_fread(const char *what, FILE *f, size_t size, size_t count)
+{
+    char buf[128];
+    size_t n;
+    long where;
+    int bytes;
+
+    n = fread(buf, size, count, f);
+    where = ftell(f);
+    bytes = (int)(n * size);
+    line("%s: fread(%u, %u) %u [%s], ftell %ld, feof %s, ferror %s", what, (unsigned)size,
+         (unsigned)count, (unsigned)n, esc(buf, bytes), where, yesno(feof(f) != 0),
+         yesno(ferror(f) != 0));
+}
+
+static void show_fseek(const char *what, FILE *f, long offset, int origin)
+{
+    int r;
+    int e;
+
+    errno = 0;
+    r = fseek(f, offset, origin);
+    e = errno;
+    line("%s: fseek(%ld, %d) %d errno %d, ftell %ld, feof %s", what, offset, origin, r, e,
+         ftell(f), yesno(feof(f) != 0));
+}
+
+/* fwrite(text, size, count) as printed, with ftell after. */
+static void show_fwrite(const char *what, FILE *f, const char *text, size_t size, size_t count)
+{
+    size_t n = fwrite(text, size, count, f);
+
+    line("%s: fwrite(\"%s\", %u, %u) %u, ftell %ld, ferror %s", what, esc(text, (int)(size * count)),
+         (unsigned)size, (unsigned)count, (unsigned)n, ftell(f), yesno(ferror(f) != 0));
+}
+
+static void sec_streams(void)
+{
+    FILE *f;
+
+    scratch();
+
+    /* Writing in text mode, then in binary mode. */
+    f = open_file("w");
+    if (f == NULL) {
+        return;
+    }
+    line("\"w\": ftell at the start %ld", ftell(f));
+    show_fwrite("\"w\"", f, "ab\ncd\n", 1, 6);
+    show_fwrite("\"w\"", f, "xy\nz", 2, 2);
+    show_fwrite("\"w\"", f, "q", 1, 0);
+    show_fwrite("\"w\"", f, "q", 0, 1);
+    show_fwrite("\"w\"", f, "abc", 2, 1);
+    fclose(f);
+    on_disk("\"w\" on disk");
+
+    f = open_file("wb");
+    if (f == NULL) {
+        return;
+    }
+    show_fwrite("\"wb\"", f, "ab\ncd\n", 1, 6);
+    show_fwrite("\"wb\"", f, "xy\nz", 2, 2);
+    fclose(f);
+    on_disk("\"wb\" on disk");
+
+    /* Reading in text mode. */
+    make_file(STREAM_FILE, "ab\r\ncd\r\nef", 10);
+    f = open_file("r");
+    if (f == NULL) {
+        return;
+    }
+    line("\"r\": ftell at the start %ld", ftell(f));
+    show_fread("\"r\"", f, 1, 4);
+    show_fread("\"r\" short", f, 1, 100);
+    show_fread("\"r\" at the end", f, 1, 100);
+    clearerr(f);
+    line("\"r\": clearerr, feof %s, ferror %s", yesno(feof(f) != 0), yesno(ferror(f) != 0));
+    show_fseek("\"r\"", f, 0, SEEK_SET);
+    show_fread("\"r\" items", f, 3, 2);
+    show_fread("\"r\" a partial item", f, 3, 1);
+    show_fseek("\"r\"", f, 4, SEEK_SET);
+    show_fread("\"r\" from 4", f, 1, 2);
+    show_fseek("\"r\"", f, 3, SEEK_SET);
+    show_fread("\"r\" from 3, the LF of a CR LF", f, 1, 2);
+    show_fseek("\"r\"", f, -2, SEEK_END);
+    show_fread("\"r\" from the end", f, 1, 100);
+    show_fseek("\"r\" at the end", f, 0, SEEK_END);
+    show_fseek("\"r\"", f, 2, SEEK_SET);
+    show_fseek("\"r\"", f, 2, SEEK_CUR);
+    show_fread("\"r\" after SEEK_CUR", f, 1, 2);
+    show_fseek("\"r\"", f, -1, SEEK_CUR);
+    show_fread("\"r\" one back", f, 1, 2);
+    show_fseek("\"r\" before the start", f, -1, SEEK_SET);
+    show_fseek("\"r\" a bad origin", f, 0, 7);
+    show_fwrite("\"r\"", f, "x", 1, 1);
+    clearerr(f);
+    line("\"r\": clearerr, feof %s, ferror %s", yesno(feof(f) != 0), yesno(ferror(f) != 0));
+    fclose(f);
+
+    /* Ctrl-Z ends a text read; binary reads past it. */
+    make_file(STREAM_FILE, "ab\r\ncd\x1A" "ef", 9);
+    f = open_file("r");
+    if (f == NULL) {
+        return;
+    }
+    show_fread("Ctrl-Z \"r\"", f, 1, 100);
+    show_fread("Ctrl-Z \"r\" again", f, 1, 100);
+    show_fseek("Ctrl-Z \"r\"", f, 0, SEEK_SET);
+    show_fread("Ctrl-Z \"r\" from the start", f, 1, 100);
+    fclose(f);
+    f = open_file("rb");
+    if (f == NULL) {
+        return;
+    }
+    show_fread("Ctrl-Z \"rb\"", f, 1, 100);
+    fclose(f);
+
+    /* A "w+" stream: written, read back, written again at the end. */
+    DeleteFileA(at(STREAM_FILE));
+    f = open_file("w+");
+    if (f == NULL) {
+        return;
+    }
+    show_fwrite("\"w+\"", f, "hello\nworld", 1, 11);
+    show_fseek("\"w+\"", f, 0, SEEK_SET);
+    show_fread("\"w+\"", f, 1, 100);
+    show_fseek("\"w+\"", f, 0, SEEK_END);
+    show_fwrite("\"w+\"", f, "!\n", 1, 2);
+    fclose(f);
+    on_disk("\"w+\" on disk");
+}
+
+/* --- wstreams ------------------------------------------------------ */
+
+/* A wide string as printed, to its terminator: printable ASCII as
+   itself, CR and LF escaped so a line stays one line, any other unit
+   as <U+XXXX>. */
+static const char *wesc(const WCHAR *s)
+{
+    static char bufs[4][512];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int len = 0;
+    int i;
+
+    for (i = 0; s[i] != 0 && len < (int)sizeof bufs[0] - 10; i++) {
+        if (s[i] == '\r') {
+            len += sprintf(b + len, "\\r");
+        } else if (s[i] == '\n') {
+            len += sprintf(b + len, "\\n");
+        } else if (s[i] >= 0x20 && s[i] < 0x7F) {
+            b[len++] = (char)s[i];
+        } else {
+            len += sprintf(b + len, "<U+%04X>", (unsigned)s[i]);
+        }
+    }
+    b[len] = 0;
+    return b;
+}
+
+static void show_fgetws(const char *what, FILE *f, int n)
+{
+    WCHAR buf[32];
+    WCHAR *r;
+
+    r = fgetws(buf, n, f);
+    if (r == NULL) {
+        line("%s: fgetws(%d) NULL, feof %s, ferror %s", what, n, yesno(feof(f) != 0),
+             yesno(ferror(f) != 0));
+        return;
+    }
+    line("%s: fgetws(%d) [%s] returns the buffer %s, feof %s", what, n, wesc(buf),
+         yesno(r == buf), yesno(feof(f) != 0));
+}
+
+static void show_fputws(const char *what, FILE *f, const WCHAR *s)
+{
+    int r;
+    int e;
+
+    errno = 0;
+    r = fputws(s, f);
+    e = errno;
+    line("%s: fputws(\"%s\") %d errno %d, ferror %s", what, wesc(s), r, e, yesno(ferror(f) != 0));
+}
+
+static void sec_wstreams(void)
+{
+    FILE *f;
+
+    scratch();
+
+    /* Written in text mode, then in binary mode. */
+    f = open_file("w");
+    if (f == NULL) {
+        return;
+    }
+    show_fputws("\"w\"", f, L"a\x00E9z\n");
+    show_fputws("\"w\"", f, L"[\x03B1]");
+    show_fputws("\"w\"", f, L"");
+    fclose(f);
+    on_disk("fputws \"w\" on disk");
+
+    f = open_file("wb");
+    if (f == NULL) {
+        return;
+    }
+    show_fputws("\"wb\"", f, L"a\n");
+    show_fputws("\"wb\"", f, L"[\x03B1]");
+    fclose(f);
+    on_disk("fputws \"wb\" on disk");
+
+    /* Read in text mode, then in binary mode. */
+    make_file(STREAM_FILE, "a\xE9z\r\nline2", 10);
+    f = open_file("r");
+    if (f == NULL) {
+        return;
+    }
+    show_fgetws("\"r\"", f, 32);
+    show_fgetws("\"r\"", f, 32);
+    show_fgetws("\"r\" at the end", f, 32);
+    show_fseek("\"r\"", f, 0, SEEK_SET);
+    show_fgetws("\"r\" short", f, 3);
+    show_fgetws("\"r\" the rest", f, 32);
+    fclose(f);
+
+    make_file(STREAM_FILE, "a\0\n\0b\0", 6);
+    f = open_file("rb");
+    if (f == NULL) {
+        return;
+    }
+    show_fgetws("\"rb\"", f, 32);
+    show_fgetws("\"rb\"", f, 32);
+    show_fgetws("\"rb\" at the end", f, 32);
+    fclose(f);
+
+    make_file(STREAM_FILE, "a\0b", 3);
+    f = open_file("rb");
+    if (f == NULL) {
+        return;
+    }
+    show_fgetws("\"rb\" an odd byte", f, 32);
+    show_fgetws("\"rb\" an odd byte, again", f, 32);
+    fclose(f);
+}
+
 /* --- getch --------------------------------------------------------- */
 
 static void key(INPUT_RECORD *r, BOOL down, WORD vk, WORD scan, WCHAR ch, DWORD state)
@@ -579,6 +878,8 @@ static const section_t sections[] = {
     { "setmode", sec_setmode, F2KT_ALWAYS },
     { "stdio", sec_stdio, F2KT_ALWAYS },
     { "fgets", sec_fgets, F2KT_ALWAYS },
+    { "streams", sec_streams, F2KT_ALWAYS },
+    { "wstreams", sec_wstreams, F2KT_ALWAYS },
     { "getch", sec_getch, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };

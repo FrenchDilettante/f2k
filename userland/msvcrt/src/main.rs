@@ -2,8 +2,8 @@
 //!
 //! The library (src/lib.rs) is the home of msvcrt's user-mode code and its exported variables;
 //! this binary links it into the DLL beside the exception handling and setjmp exports
-//! (src/seh.s) and its entry point, which ntdll's loader calls with each DLL_PROCESS_ and
-//! DLL_THREAD_ reason.
+//! (src/seh.s), the compiler's _ftol (src/math.s) and its entry point, which ntdll's loader calls
+//! with each DLL_PROCESS_ and DLL_THREAD_ reason.
 
 #![no_std]
 #![no_main]
@@ -14,6 +14,7 @@ extern crate rtl;
 extern crate msvcrt;
 
 core::arch::global_asm!(include_str!("seh.s"));
+core::arch::global_asm!(include_str!("math.s"));
 
 /// The DLL's entry point: the C runtime's per-process and per-thread set-up and tear-down
 /// (msvcrt::dll_main).

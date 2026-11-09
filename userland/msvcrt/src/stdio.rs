@@ -15,11 +15,19 @@
 //! - fgets reads to a newline (kept), to `n - 1` bytes, or to the end; NULL when the end comes
 //!   first; the end sets `_IOEOF` (feof).
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
+//! - fread and fwrite move bytes through the buffer, as getc and putc do, and answer the items
+//!   moved whole. ftell counts the file's bytes: in text mode each LF the buffer still holds, or
+//!   has pending, counts as the CR LF it is in the file (MSDN's ftell: only fseek need take the
+//!   value back). fseek writes what is pending, drops what is buffered, clears the end of the file
+//!   (the descriptor's Ctrl-Z too), and leaves a `+` stream free to read or write next; clearerr
+//!   clears the end-of-file and error indicators alone.
 //! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
 //!
 //! wprintf and fwprintf write each wide character as MSDN's "Unicode Stream I/O in Text and Binary
 //! Modes" says: on a text-mode descriptor converted as wctomb converts it (the LC_CTYPE locale's
 //! code page; one it lacks fails the call: -1, errno EILSEQ), on a binary one as its two bytes.
+//! fputws writes the same way (-1 for a character the code page lacks), and fgetws reads the
+//! same way back: a byte per character in text mode, as mbtowc reads it, two in binary mode.
 //!
 //! Each stream has its own lock, as on Windows 2000 ([`with_stream`]): a call holds its stream's
 //! across the descriptor's reads and writes, so a thread waiting on stdin (reading the console)
@@ -1108,6 +1116,318 @@ pub unsafe extern "C" fn fputs(text: *const u8, stream: *mut File) -> i32 {
     }
 }
 
+/// The bytes of `bytes` read from the stream's buffer (refilled from its descriptor as it empties):
+/// the count, short at the end of the file or an error. A stream writing reads nothing (`_IOERR`,
+/// as fill sets it).
+fn read_bytes(s: &mut File, bytes: &mut [u8]) -> usize {
+    let mut done = 0;
+    while done < bytes.len() {
+        if s.flag & (IOREAD | IOWRT) == IOREAD && s.cnt > 0 {
+            // What the buffer holds, at once.
+            let count = (s.cnt as usize).min(bytes.len() - done);
+            // SAFETY: a `FILE` the C runtime keeps (see `with_stream`): reading, its `_cnt` bytes
+            // at `_ptr` are the buffer's.
+            let held = unsafe { core::slice::from_raw_parts(s.ptr, count) };
+            bytes[done..done + count].copy_from_slice(held);
+            // SAFETY: as above: `_ptr` moves within the bytes held.
+            s.ptr = unsafe { s.ptr.add(count) };
+            s.cnt -= count as i32;
+            done += count;
+            continue;
+        }
+        match fill(s) {
+            EOF => break,
+            c => {
+                bytes[done] = c as u8;
+                done += 1;
+            }
+        }
+    }
+    done
+}
+
+/// A byte written to the stream: through its buffer while it is writing, else as the buffer's
+/// first (a stream reading cannot switch at once: `_IOERR`, as flush_and_put sets it).
+fn write_byte(c: u8, s: &mut File, index: Option<usize>) -> i32 {
+    if s.flag & IOWRT != 0 {
+        put(c, s, index)
+    } else {
+        flush_and_put(c, s, index)
+    }
+}
+
+/// The bytes of `count` items of `size` bytes: none for an empty request, or one past the address
+/// space.
+fn total(size: usize, count: usize) -> Option<usize> {
+    size.checked_mul(count).filter(|&total| total > 0)
+}
+
+/// fread: up to `count` items of `size` bytes from the stream into `buffer`: the count of complete
+/// items (short at the end of the file or an error, feof and ferror tell which); 0 for an empty
+/// request, the stream untouched.
+///
+/// # Safety
+///
+/// `buffer` holds `size * count` bytes; `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fread")]
+pub unsafe extern "C" fn fread(
+    buffer: *mut u8,
+    size: usize,
+    count: usize,
+    stream: *mut File,
+) -> usize {
+    let Some(total) = total(size, count) else {
+        return 0;
+    };
+    // SAFETY: the caller's buffer of `total` bytes, the call's alone.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(buffer, total) };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, |s, _| read_bytes(s, bytes)) / size }
+}
+
+/// fwrite: `count` items of `size` bytes from `buffer` to the stream (stdout or stderr on a device
+/// through a buffer lent for the call, as fputs writes): the count of items written whole; 0 for an
+/// empty request.
+///
+/// # Safety
+///
+/// `buffer` holds `size * count` bytes; `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fwrite")]
+pub unsafe extern "C" fn fwrite(
+    buffer: *const u8,
+    size: usize,
+    count: usize,
+    stream: *mut File,
+) -> usize {
+    let Some(total) = total(size, count) else {
+        return 0;
+    };
+    // SAFETY: the caller's buffer of `total` bytes, unchanged during the call.
+    let bytes = unsafe { core::slice::from_raw_parts(buffer, total) };
+    let mut written = 0;
+    // SAFETY: the caller's stream.
+    unsafe {
+        output(stream, |out| {
+            for &byte in bytes.iter() {
+                if write_byte(byte, out.file, out.index) == EOF {
+                    break;
+                }
+                written += 1;
+            }
+            0
+        })
+    };
+    written / size
+}
+
+/// The stream's position as ftell answers it ([`file_position`] over its descriptor's); -1 (errno)
+/// when the descriptor has no position.
+fn position(s: &mut File) -> i32 {
+    if s.cnt < 0 {
+        s.cnt = 0;
+    }
+    let at = lowio::position(s.file);
+    if at < 0 {
+        return -1;
+    }
+    file_position(s, at, lowio::is_text(s.file))
+}
+
+/// The stream's position in its file's bytes, its descriptor's being `at`: less the bytes buffered
+/// for reading, or plus the bytes pending to be written, each LF among them counted as the CR LF
+/// it is in the file when `text`.
+fn file_position(s: &File, at: i32, text: bool) -> i32 {
+    let file_bytes = |bytes: &[u8]| {
+        let lines = if text {
+            bytes.iter().filter(|&&byte| byte == b'\n').count()
+        } else {
+            0
+        };
+        (bytes.len() + lines) as i32
+    };
+    if s.flag & IOREAD != 0 && s.cnt > 0 {
+        // SAFETY: a `FILE` the C runtime keeps (see `with_stream`): reading, its `_cnt` bytes at
+        // `_ptr` are the buffer's.
+        let held = unsafe { core::slice::from_raw_parts(s.ptr, s.cnt as usize) };
+        return at - file_bytes(held);
+    }
+    if s.flag & IOWRT != 0 && s.flag & (IOMYBUF | IOYOURBUF) != 0 {
+        return at + file_bytes(pending(s).1);
+    }
+    at
+}
+
+/// ftell: the stream's position, as a count of the file's bytes ([`position`]); -1 (errno) on an
+/// error.
+///
+/// # Safety
+///
+/// `stream` is a stream.
+#[unsafe(export_name = "f2k_export_ftell")]
+pub unsafe extern "C" fn ftell(stream: *mut File) -> i32 {
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, |s, _| position(s)) }
+}
+
+/// fseek's origins (stdio.h's SEEK_SET, SEEK_CUR and SEEK_END).
+const SEEK_SET: u32 = 0;
+const SEEK_CUR: u32 = 1;
+const SEEK_END: u32 = 2;
+
+/// fseek: the stream moved to `offset` from `origin` (the start, the current position, the end):
+/// its pending output written, its buffered input dropped, its end of the file cleared (the
+/// descriptor's Ctrl-Z too), and a stream opened for update free to read or write next. 0, or -1:
+/// EINVAL for another origin, the descriptor's error for a position it refuses.
+///
+/// # Safety
+///
+/// `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fseek")]
+pub unsafe extern "C" fn fseek(stream: *mut File, offset: i32, origin: i32) -> i32 {
+    let origin = origin as u32;
+    if !matches!(origin, SEEK_SET | SEEK_CUR | SEEK_END) {
+        set_errno(EINVAL);
+        return -1;
+    }
+    let body = |s: &mut File, _| {
+        s.flag &= !IOEOF;
+        let (offset, origin) = if origin == SEEK_CUR {
+            let at = position(s);
+            if at < 0 {
+                return -1;
+            }
+            (at.wrapping_add(offset), SEEK_SET)
+        } else {
+            (offset, origin)
+        };
+        if flush(s) == EOF {
+            return -1;
+        }
+        if s.flag & IORW != 0 {
+            s.flag &= !(IOREAD | IOWRT);
+        }
+        if lowio::seek(s.file, offset, origin) < 0 {
+            -1
+        } else {
+            0
+        }
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
+}
+
+/// clearerr: the stream's end-of-file and error indicators cleared.
+///
+/// # Safety
+///
+/// `stream` is a stream.
+#[unsafe(export_name = "f2k_export_clearerr")]
+pub unsafe extern "C" fn clearerr(stream: *mut File) {
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, |s, _| s.flag &= !(IOEOF | IOERR)) }
+}
+
+/// fputws: the wide string written to the stream as wprintf writes each character
+/// ([`WideStream`]): in text mode in the LC_CTYPE locale's code page, in binary mode as its two
+/// bytes. 0, or -1 (EOF, not the WEOF MSDN names: Windows 2000's capture answers -1): errno EILSEQ
+/// for a character the code page lacks (the ones before it written), or a write that failed.
+///
+/// # Safety
+///
+/// `text` is NUL-terminated; `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fputws")]
+pub unsafe extern "C" fn fputws(text: *const u16, stream: *mut File) -> i32 {
+    // SAFETY: the caller's string.
+    let units = unsafe { edge::wide(text) };
+    let mut unconverted = false;
+    // SAFETY: the caller's stream.
+    let written = unsafe {
+        output(stream, |out| {
+            let text_mode = lowio::is_text(out.file.file);
+            let mut wide = WideStream {
+                stream: out,
+                text: text_mode,
+                unconverted: false,
+            };
+            for &unit in units {
+                wide.put(u32::from(unit.get()));
+                if wide.unconverted {
+                    break;
+                }
+            }
+            unconverted = wide.unconverted;
+            0
+        })
+    };
+    if unconverted {
+        set_errno(EILSEQ);
+        return -1;
+    }
+    if written < 0 {
+        -1
+    } else {
+        0
+    }
+}
+
+/// A wide character read from the stream: in text mode a byte, as mbtowc reads it in the LC_CTYPE
+/// locale's code page; in binary mode two bytes, low first. None at the end (a lone last byte in
+/// binary mode is no character) or on an error.
+fn get_wide(s: &mut File, text: bool) -> Option<u16> {
+    let low = get(s);
+    if low == EOF {
+        return None;
+    }
+    if text {
+        return Some(ctype::byte_to_wide(low as u8));
+    }
+    let high = get(s);
+    if high == EOF {
+        return None;
+    }
+    Some(u16::from_le_bytes([low as u8, high as u8]))
+}
+
+/// fgetws: a line of wide characters (its newline kept), at most `n - 1` of them, NUL-terminated
+/// into `buffer` ([`get_wide`] reads each); NULL at the end before any character, or on an error.
+///
+/// # Safety
+///
+/// `buffer` holds `n` wide characters; `stream` is a stream.
+#[unsafe(export_name = "f2k_export_fgetws")]
+pub unsafe extern "C" fn fgetws(buffer: *mut u16, n: i32, stream: *mut File) -> *mut u16 {
+    if n <= 0 || stream.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's buffer of `n` wide characters.
+    let out = unsafe { edge::wide_parts_mut(buffer, n as usize) };
+    let body = |s: &mut File, _| {
+        let text = lowio::is_text(s.file);
+        let mut length = 0usize;
+        while length + 1 < out.len() {
+            let Some(c) = get_wide(s, text) else {
+                if length == 0 {
+                    return false;
+                }
+                break;
+            };
+            out[length] = WideUnit::new(c);
+            length += 1;
+            if c == u16::from(b'\n') {
+                break;
+            }
+        }
+        out[length] = WideUnit::new(0);
+        true
+    };
+    // SAFETY: the caller's stream.
+    if unsafe { with_stream(stream, body) } {
+        buffer
+    } else {
+        core::ptr::null_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1272,5 +1592,143 @@ mod tests {
             run(false, "[α]\n"),
             (4, false, b"[\0\xB1\x03]\0\n\0".to_vec())
         );
+    }
+
+    /// A stream reading over `buffer` as a fill left it: every byte buffered, none taken yet. Its
+    /// descriptor is not open, so a refill fails (`_IOERR`).
+    fn reading(buffer: &mut [u8]) -> File {
+        File {
+            base: buffer.as_mut_ptr(),
+            ptr: buffer.as_mut_ptr(),
+            cnt: buffer.len() as i32,
+            bufsiz: buffer.len() as i32,
+            flag: IOREAD | IOYOURBUF,
+            file: 2000,
+            ..File::UNUSED
+        }
+    }
+
+    /// A stream writing into `buffer`, nothing pending.
+    fn writing(buffer: &mut [u8]) -> File {
+        File {
+            base: buffer.as_mut_ptr(),
+            ptr: buffer.as_mut_ptr(),
+            cnt: buffer.len() as i32,
+            bufsiz: buffer.len() as i32,
+            flag: IOWRT | IOYOURBUF,
+            file: 2000,
+            ..File::UNUSED
+        }
+    }
+
+    /// fd's streams block, its text-mode reads: "ab\r\ncd\r\nef" is buffered as "ab\ncd\nef" (the
+    /// descriptor 10 bytes in); fread takes what the buffer holds, its complete items counted, and
+    /// ftell counts each LF still buffered as its CR LF. In binary mode the buffer is the file's.
+    #[test]
+    fn fread_and_ftell_count_the_files_bytes() {
+        let mut text = *b"ab\ncd\nef";
+        let mut file = reading(&mut text);
+        let stream = core::ptr::addr_of_mut!(file);
+        let mut out = [0u8; 16];
+        // SAFETY: the test's stream and buffers.
+        unsafe {
+            assert_eq!(file_position(&*stream, 10, true), 0);
+            assert_eq!(fread(out.as_mut_ptr(), 1, 4, stream), 4);
+            assert_eq!(&out[..4], b"ab\nc");
+            assert_eq!(file_position(&*stream, 10, true), 5);
+            assert_eq!(fread(out.as_mut_ptr(), 3, 1, stream), 1);
+            assert_eq!(&out[..3], b"d\ne");
+            assert_eq!(file_position(&*stream, 10, true), 9);
+            // "f", then the refill fails: no whole item.
+            assert_eq!(fread(out.as_mut_ptr(), 3, 1, stream), 0);
+            assert_eq!(out[0], b'f');
+            assert_eq!((*stream).flag & IOERR, IOERR);
+            assert_eq!(fread(out.as_mut_ptr(), 0, 5, stream), 0);
+            assert_eq!(fread(out.as_mut_ptr(), 5, 0, stream), 0);
+        }
+        let mut binary = *b"ab\r\ncd\r\nef";
+        let mut file = reading(&mut binary);
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(fread(out.as_mut_ptr(), 2, 2, stream), 2);
+            assert_eq!(&out[..4], b"ab\r\n");
+            assert_eq!(file_position(&*stream, 10, false), 4);
+        }
+    }
+
+    /// fd's streams block, its text-mode writes: fwrite buffers the caller's bytes, its complete
+    /// items counted, and ftell counts each LF pending as the CR LF it goes out as; a stream
+    /// opened for reading takes none (`_IOERR`), and clearerr clears its indicators.
+    #[test]
+    fn fwrite_and_ftell_count_the_files_bytes() {
+        let mut buffer = [0u8; 64];
+        let mut file = writing(&mut buffer);
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream and buffers.
+        unsafe {
+            assert_eq!(file_position(&*stream, 0, true), 0);
+            assert_eq!(fwrite(b"ab\ncd\n".as_ptr(), 1, 6, stream), 6);
+            assert_eq!(file_position(&*stream, 0, true), 8);
+            assert_eq!(fwrite(b"xy\nz".as_ptr(), 2, 2, stream), 2);
+            assert_eq!(file_position(&*stream, 0, true), 13);
+            assert_eq!(file_position(&*stream, 0, false), 10);
+            assert_eq!(fwrite(b"q".as_ptr(), 1, 0, stream), 0);
+            assert_eq!(fwrite(b"q".as_ptr(), 0, 1, stream), 0);
+            assert_eq!(pending(&*stream).1, b"ab\ncd\nxy\nz");
+        }
+        let mut text = *b"ab";
+        let mut file = File {
+            flag: IOREAD,
+            ..reading(&mut text)
+        };
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: as above.
+        unsafe {
+            assert_eq!(fwrite(b"x".as_ptr(), 1, 1, stream), 0);
+            assert_eq!((*stream).flag & IOERR, IOERR);
+            (*stream).flag |= IOEOF;
+            clearerr(stream);
+            assert_eq!((*stream).flag & (IOERR | IOEOF), 0);
+        }
+    }
+
+    /// fseek refuses an origin other than SEEK_SET, SEEK_CUR and SEEK_END (EINVAL), the stream
+    /// untouched; one whose descriptor has no position fails.
+    #[test]
+    fn fseek_checks_its_origin() {
+        let mut text = *b"abc";
+        let mut file = File {
+            flag: IOREAD | IOYOURBUF | IOEOF,
+            ..reading(&mut text)
+        };
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream.
+        unsafe {
+            set_errno(0);
+            assert_eq!(fseek(stream, 0, 7), -1);
+            assert_eq!(crate::thread::errno(), EINVAL);
+            assert_eq!(((*stream).cnt, (*stream).flag & IOEOF), (3, IOEOF));
+            assert_eq!(fseek(stream, 1, SEEK_CUR as i32), -1);
+            assert_eq!((*stream).flag & IOEOF, 0);
+        }
+    }
+
+    /// fgetws's characters: in text mode one byte each, as mbtowc reads it in the "C" locale; in
+    /// binary mode two bytes each, low first, a lone last byte no character.
+    #[test]
+    fn wide_characters_are_read_as_the_mode_says() {
+        let _locale = ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
+        let mut text = *b"a\xE9\n";
+        let mut file = reading(&mut text);
+        let read: Vec<u16> = (0..3).filter_map(|_| get_wide(&mut file, true)).collect();
+        assert_eq!(read, [0x61, 0xE9, 0x0A]);
+        let mut binary = *b"a\0\xB1\x03b";
+        let mut file = reading(&mut binary);
+        assert_eq!(get_wide(&mut file, false), Some(0x61));
+        assert_eq!(get_wide(&mut file, false), Some(0x3B1));
+        assert_eq!(get_wide(&mut file, false), None);
     }
 }

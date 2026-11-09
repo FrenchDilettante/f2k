@@ -156,6 +156,18 @@ unsafe extern "system" {
 
     /// The time of day, as a FILETIME.
     pub fn GetSystemTimeAsFileTime(time: *mut u64);
+    /// The system's time zone (_tzset's, when TZ is not set): its biases and its daylight saving
+    /// dates.
+    pub fn GetTimeZoneInformation(information: *mut TimeZoneInformation) -> u32;
+
+    /// The path calls _wfullpath and _getdcwd make: a name made a full path, the current
+    /// directory, and whether a drive's root exists.
+    pub fn GetFullPathNameA(name: *const u8, size: u32, buffer: *mut u8, part: *mut usize) -> u32;
+    pub fn GetFullPathNameW(name: *const u16, size: u32, buffer: *mut u16, part: *mut usize)
+        -> u32;
+    pub fn GetCurrentDirectoryA(size: u32, buffer: *mut u8) -> u32;
+    pub fn GetCurrentDirectoryW(size: u32, buffer: *mut u16) -> u32;
+    pub fn GetDriveTypeA(root: *const u8) -> u32;
 
     /// The process calls the _spawn family makes: a process made (its handles and ids into the
     /// PROCESS_INFORMATION), waited for, its exit code; a file's attributes (the program's
@@ -250,6 +262,66 @@ impl SecurityAttributes {
 
 #[cfg(target_arch = "x86")]
 const _: () = assert!(core::mem::size_of::<SecurityAttributes>() == 12);
+
+/// SYSTEMTIME: a date and a time of day, each part a word (the month 1 to 12, the day of the
+/// week 0 for Sunday). In a time zone's daylight saving dates, a year of 0 makes the date a rule:
+/// the `day`th (1 to 5, 5 the last) `day_of_week` of the month, every year.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SystemTime {
+    pub year: u16,
+    pub month: u16,
+    pub day_of_week: u16,
+    pub day: u16,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub milliseconds: u16,
+}
+
+/// TIME_ZONE_INFORMATION: the minutes UTC is ahead of local time (Bias), the standard time's name,
+/// the date it starts and its bias added to Bias, then the same for daylight saving time.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TimeZoneInformation {
+    pub bias: i32,
+    pub standard_name: [u16; 32],
+    pub standard_date: SystemTime,
+    pub standard_bias: i32,
+    pub daylight_name: [u16; 32],
+    pub daylight_date: SystemTime,
+    pub daylight_bias: i32,
+}
+
+impl SystemTime {
+    /// No date: in a time zone, no daylight saving time.
+    pub const ZERO: SystemTime = SystemTime {
+        year: 0,
+        month: 0,
+        day_of_week: 0,
+        day: 0,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milliseconds: 0,
+    };
+}
+
+impl TimeZoneInformation {
+    /// UTC, without daylight saving time.
+    pub const UTC: TimeZoneInformation = TimeZoneInformation {
+        bias: 0,
+        standard_name: [0; 32],
+        standard_date: SystemTime::ZERO,
+        standard_bias: 0,
+        daylight_name: [0; 32],
+        daylight_date: SystemTime::ZERO,
+        daylight_bias: 0,
+    };
+}
+
+const _: () = assert!(core::mem::size_of::<SystemTime>() == 16);
+const _: () = assert!(core::mem::size_of::<TimeZoneInformation>() == 172);
 
 /// PROCESS_INFORMATION: the new process's and its first thread's handles and ids.
 #[repr(C)]
@@ -917,6 +989,116 @@ pub mod host {
 
     pub unsafe extern "system" fn GetSystemTimeAsFileTime(_: *mut u64) {
         unreachable("GetSystemTimeAsFileTime")
+    }
+
+    std::thread_local! {
+        /// The time zone GetTimeZoneInformation answers.
+        pub static TIME_ZONE: Cell<super::TimeZoneInformation> =
+            const { Cell::new(super::TimeZoneInformation::UTC) };
+        /// The current directory GetCurrentDirectoryA/W answer, and GetFullPathNameA/W put a
+        /// relative name under.
+        pub static CURRENT_DIRECTORY: RefCell<String> = RefCell::new(String::from("C:\\CORPUS"));
+    }
+
+    /// GetTimeZoneInformation: [`TIME_ZONE`]; TIME_ZONE_ID_UNKNOWN.
+    pub unsafe extern "system" fn GetTimeZoneInformation(
+        information: *mut super::TimeZoneInformation,
+    ) -> u32 {
+        // SAFETY: the caller's structure.
+        unsafe { information.write(TIME_ZONE.with(Cell::get)) };
+        0
+    }
+
+    /// `path`'s units into a buffer of `size` units as the path calls answer: its length when it
+    /// fits with its NUL, else the size it needs (with the NUL), the buffer untouched.
+    unsafe fn answer_path<U: Copy + From<u8>>(path: &[U], size: u32, buffer: *mut U) -> u32 {
+        if path.len() as u32 >= size {
+            return path.len() as u32 + 1;
+        }
+        // SAFETY: the caller's buffer of `size` units, which holds the path and its NUL.
+        unsafe {
+            core::ptr::copy_nonoverlapping(path.as_ptr(), buffer, path.len());
+            buffer.add(path.len()).write(U::from(0));
+        }
+        path.len() as u32
+    }
+
+    /// A name made a full path, as the stand-in makes it: one starting with a drive is kept, any
+    /// other is put under [`CURRENT_DIRECTORY`]; dots are left alone.
+    fn full_path(name: &str) -> String {
+        if name.as_bytes().get(1) == Some(&b':') {
+            String::from(name)
+        } else {
+            CURRENT_DIRECTORY.with(|directory| std::format!("{}\\{name}", directory.borrow()))
+        }
+    }
+
+    /// GetFullPathNameA: [`full_path`]; an empty name fails (ERROR_INVALID_NAME).
+    pub unsafe extern "system" fn GetFullPathNameA(
+        name: *const u8,
+        size: u32,
+        buffer: *mut u8,
+        _part: *mut usize,
+    ) -> u32 {
+        // SAFETY: the caller's string.
+        let name = unsafe { text(name) };
+        if name.is_empty() {
+            LAST_ERROR.with(|last| last.set(123));
+            return 0;
+        }
+        // SAFETY: the caller's buffer of `size` bytes.
+        unsafe { answer_path(full_path(&name).as_bytes(), size, buffer) }
+    }
+
+    /// GetFullPathNameW: as GetFullPathNameA.
+    pub unsafe extern "system" fn GetFullPathNameW(
+        name: *const u16,
+        size: u32,
+        buffer: *mut u16,
+        _part: *mut usize,
+    ) -> u32 {
+        let mut units = Vec::new();
+        loop {
+            // SAFETY: the caller's terminated string, read to its NUL.
+            let unit = unsafe { name.add(units.len()).read() };
+            if unit == 0 {
+                break;
+            }
+            units.push(unit);
+        }
+        let name = String::from_utf16_lossy(&units);
+        if name.is_empty() {
+            LAST_ERROR.with(|last| last.set(123));
+            return 0;
+        }
+        let path: Vec<u16> = full_path(&name).encode_utf16().collect();
+        // SAFETY: the caller's buffer of `size` units.
+        unsafe { answer_path(&path, size, buffer) }
+    }
+
+    /// GetCurrentDirectoryA: [`CURRENT_DIRECTORY`].
+    pub unsafe extern "system" fn GetCurrentDirectoryA(size: u32, buffer: *mut u8) -> u32 {
+        let path = CURRENT_DIRECTORY.with(|directory| directory.borrow().clone());
+        // SAFETY: the caller's buffer of `size` bytes.
+        unsafe { answer_path(path.as_bytes(), size, buffer) }
+    }
+
+    /// GetCurrentDirectoryW: [`CURRENT_DIRECTORY`].
+    pub unsafe extern "system" fn GetCurrentDirectoryW(size: u32, buffer: *mut u16) -> u32 {
+        let path: Vec<u16> =
+            CURRENT_DIRECTORY.with(|directory| directory.borrow().encode_utf16().collect());
+        // SAFETY: the caller's buffer of `size` units.
+        unsafe { answer_path(&path, size, buffer) }
+    }
+
+    /// GetDriveTypeA: C: and D: are fixed drives (DRIVE_FIXED), any other has no root
+    /// (DRIVE_NO_ROOT_DIR).
+    pub unsafe extern "system" fn GetDriveTypeA(root: *const u8) -> u32 {
+        // SAFETY: the caller's string.
+        match unsafe { text(root) }.to_ascii_uppercase().as_str() {
+            "C:\\" | "D:\\" => 3,
+            _ => 1,
+        }
     }
 
     /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that

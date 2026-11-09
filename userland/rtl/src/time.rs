@@ -44,8 +44,9 @@ impl SystemTime {
     }
 }
 
-/// Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's days_from_civil).
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+/// Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's days_from_civil; `month` 1 to
+/// 12).
+pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
     let era = year.div_euclid(400);
     let year_of_era = year - era * 400;
@@ -56,8 +57,9 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// The date of a day count since 1970-01-01 (H. Hinnant's civil_from_days).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+/// The date of a day count since 1970-01-01 (H. Hinnant's civil_from_days): the year, the month (1
+/// to 12) and the day.
+pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let days = days + 719_468;
     let era = days.div_euclid(146_097);
     let day_of_era = days - era * 146_097;

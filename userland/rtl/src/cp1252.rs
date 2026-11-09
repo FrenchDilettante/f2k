@@ -121,8 +121,9 @@ pub fn c1_flags(wide: u16) -> u16 {
 /// The CT_CTYPE1 flags of a character beyond the code page's: Latin Extended-A's, Greek's and
 /// Cyrillic's letters with their case ([`beyond_case`] pairs them), the ideographs, kana and Hangul
 /// syllables as letters without case, the other scripts' decimal digits (digits, not hex digits),
-/// the Unicode spaces (the line and paragraph separators are none: msvcrt's capture), and the
-/// fullwidth forms of ASCII's digits, letters (both hex digits where ASCII's are) and punctuation.
+/// the Unicode spaces, the line and paragraph separators (punctuation and controls, not spaces:
+/// the wide fixture's iswctype capture of U+2028), and the fullwidth forms of ASCII's digits,
+/// letters (both hex digits where ASCII's are) and punctuation.
 fn beyond_flags(wide: u16) -> u16 {
     const UPPER: u16 = C1_UPPER | C1_ALPHA;
     const LOWER: u16 = C1_LOWER | C1_ALPHA;
@@ -154,6 +155,7 @@ fn beyond_flags(wide: u16) -> u16 {
         | 0x0ED0..=0x0ED9
         | 0x0F20..=0x0F29 => C1_DIGIT,
         0x2000..=0x200B | 0x3000 | 0xFEFF => C1_SPACE | C1_BLANK,
+        0x2028 | 0x2029 => C1_PUNCT | C1_CNTRL,
         0x3041..=0x3094 | 0x30A1..=0x30FA | 0x4E00..=0x9FA5 | 0xAC00..=0xD7A3 | 0xF900..=0xFA2D => {
             C1_ALPHA
         }
@@ -349,7 +351,7 @@ mod tests {
             (0x0660, 0x004, 0x0660, 0x0660),
             (0x0669, 0x004, 0x0669, 0x0669),
             (0x2000, 0x048, 0x2000, 0x2000),
-            (0x2028, 0x000, 0x2028, 0x2028),
+            (0x2028, 0x030, 0x2028, 0x2028),
             (0x3000, 0x048, 0x3000, 0x3000),
             (0x4E00, 0x100, 0x4E00, 0x4E00),
             (0xFEFF, 0x048, 0xFEFF, 0xFEFF),

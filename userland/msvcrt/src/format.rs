@@ -14,9 +14,10 @@
 //!   wide character or string), `L`, `I64` and `ll` (a 64-bit integer; `L` a double), `I32`;
 //! - types `d` `i` `u` `o` `x` `X`, `c` and `C`, `s` and `S` (the format's own width and the other,
 //!   `(null)` for NULL; a precision bounds the units written), `e` `E` `f` `g` `G` (a double, its
-//!   exponent of three digits at least, its digits those of [`crate::float`]; an infinity or NaN as
-//!   `1.#INF`, `1.#QNAN`, `1.#SNAN`, `-1.#IND`), `p` (eight upper-case hex digits), `n` (the count
-//!   so far, stored), `Z` (an ANSI_STRING, or with `w`/`l` a UNICODE_STRING); `%%`.
+//!   exponent of three digits at least, its digits those of [`crate::float`], a zero unsigned; an
+//!   infinity or NaN as `1.#INF`, `1.#QNAN`, `1.#SNAN`, `-1.#IND`, padded with zeros to the
+//!   precision, which `g` trims), `p` (eight upper-case hex digits), `n` (the count so far,
+//!   stored), `Z` (an ANSI_STRING, or with `w`/`l` a UNICODE_STRING); `%%`.
 //!
 //! An unknown type writes its letter. A narrow string or character written to a wide output, or a
 //! wide one to a narrow output, is converted in the LC_CTYPE locale ([`crate::ctype`]); a wide
@@ -611,7 +612,8 @@ fn real<O: Output>(w: &mut Writer<O>, spec: Spec, value: f64, conversion: u8) {
                     }
                 }
             }
-            decimal.negative
+            // A zero prints unsigned, negative or not (the capture's `%g` of -0.0 is `0`).
+            decimal.negative && !decimal.is_zero()
         }
         special => {
             let (negative, name): (bool, &[u8]) = match special {
@@ -630,9 +632,13 @@ fn real<O: Output>(w: &mut Writer<O>, spec: Spec, value: f64, conversion: u8) {
             for &b in name {
                 n.push(b);
             }
-            // The precision's digits after the point, zeros past the name's.
+            // The precision's digits after the point, zeros past the name's; `g` without `#`
+            // trims them again, as it trims a number's (`%g` of an infinity is `1.#INF`).
             for _ in name.len() - 2..precision {
                 n.push(b'0');
+            }
+            if conversion.eq_ignore_ascii_case(&b'g') && !spec.alternate {
+                trim(&mut n);
             }
             negative
         }
@@ -1028,6 +1034,18 @@ pub(crate) mod tests {
             "-003.142|0.0e+000|"
         );
         assert_eq!(narrow("%f", &[D(f64::INFINITY)]), "1.#INF00");
+        assert_eq!(
+            narrow(
+                "%g %g %g",
+                &[
+                    D(f64::NEG_INFINITY),
+                    D(f64::from_bits(0x7FF8_0000_0000_0000)),
+                    D(f64::from_bits(0xFFF8_0000_0000_0000))
+                ]
+            ),
+            "-1.#INF 1.#QNAN -1.#IND"
+        );
+        assert_eq!(narrow("%g", &[D(-0.0)]), "0");
         assert_eq!(
             narrow("%f", &[D(f64::from_bits(0xFFF8_0000_0000_0000))]),
             "-1.#IND00"

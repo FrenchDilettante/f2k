@@ -1,0 +1,84 @@
+# F2K capture of msvcrt (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 10:25:58.53
+msvcrt F2KT-SOURCE-CRC=0xD1016547
+>>> msvcrt.exe math
+== math
+2.5 [4004000000000000]: ceil 3 [4008000000000000] errno 0, floor 2 [4000000000000000] errno 0, fabs 2.5 [4004000000000000]
+-2.5 [C004000000000000]: ceil -2 [C000000000000000] errno 0, floor -3 [C008000000000000] errno 0, fabs 2.5 [4004000000000000]
+2 [4000000000000000]: ceil 2 [4000000000000000] errno 0, floor 2 [4000000000000000] errno 0, fabs 2 [4000000000000000]
+-2 [C000000000000000]: ceil -2 [C000000000000000] errno 0, floor -2 [C000000000000000] errno 0, fabs 2 [4000000000000000]
+0.5 [3FE0000000000000]: ceil 1 [3FF0000000000000] errno 0, floor 0 [0000000000000000] errno 0, fabs 0.5 [3FE0000000000000]
+-0.5 [BFE0000000000000]: ceil 0 [8000000000000000] errno 0, floor -1 [BFF0000000000000] errno 0, fabs 0.5 [3FE0000000000000]
+0.2 [3FC999999999999A]: ceil 1 [3FF0000000000000] errno 0, floor 0 [0000000000000000] errno 0, fabs 0.2 [3FC999999999999A]
+-0.2 [BFC999999999999A]: ceil 0 [8000000000000000] errno 0, floor -1 [BFF0000000000000] errno 0, fabs 0.2 [3FC999999999999A]
+0 [0000000000000000]: ceil 0 [0000000000000000] errno 0, floor 0 [0000000000000000] errno 0, fabs 0 [0000000000000000]
+0 [8000000000000000]: ceil 0 [8000000000000000] errno 0, floor 0 [8000000000000000] errno 0, fabs 0 [0000000000000000]
+4.5036e+015 [432FFFFFFFFFFFFF]: ceil 4.5036e+015 [4330000000000000] errno 0, floor 4.5036e+015 [432FFFFFFFFFFFFE] errno 0, fabs 4.5036e+015 [432FFFFFFFFFFFFF]
+-4.5036e+015 [C32FFFFFFFFFFFFF]: ceil -4.5036e+015 [C32FFFFFFFFFFFFE] errno 0, floor -4.5036e+015 [C330000000000000] errno 0, fabs 4.5036e+015 [432FFFFFFFFFFFFF]
+1e+300 [7E37E43C8800759C]: ceil 1e+300 [7E37E43C8800759C] errno 0, floor 1e+300 [7E37E43C8800759C] errno 0, fabs 1e+300 [7E37E43C8800759C]
+-1e-300 [81A56E1FC2F8F359]: ceil 0 [8000000000000000] errno 0, floor -1 [BFF0000000000000] errno 0, fabs 1e-300 [01A56E1FC2F8F359]
+1.#INF [7FF0000000000000]: ceil 1.#INF [7FF0000000000000] errno 0, floor 1.#INF [7FF0000000000000] errno 0, fabs 1.#INF [7FF0000000000000]
+-1.#INF [FFF0000000000000]: ceil -1.#INF [FFF0000000000000] errno 0, floor -1.#INF [FFF0000000000000] errno 0, fabs 1.#INF [7FF0000000000000]
+1.#QNAN [7FF8000000000000]: ceil 1.#QNAN [7FF8000000000000] errno 33, floor 1.#QNAN [7FF8000000000000] errno 33, fabs 1.#QNAN [7FF8000000000000]
+-1.#IND [FFF8000000000000]: ceil -1.#IND [FFF8000000000000] errno 33, floor -1.#IND [FFF8000000000000] errno 33, fabs -1.#IND [FFF8000000000000]
+modf(2.5 [4004000000000000]): 0.5 [3FE0000000000000], integer part 2 [4000000000000000], errno 0
+modf(-2.5 [C004000000000000]): -0.5 [BFE0000000000000], integer part -2 [C000000000000000], errno 0
+modf(2 [4000000000000000]): 0 [0000000000000000], integer part 2 [4000000000000000], errno 0
+modf(-2 [C000000000000000]): 0 [0000000000000000], integer part -2 [C000000000000000], errno 0
+modf(0.5 [3FE0000000000000]): 0.5 [3FE0000000000000], integer part 0 [0000000000000000], errno 0
+modf(-0.5 [BFE0000000000000]): -0.5 [BFE0000000000000], integer part 0 [8000000000000000], errno 0
+modf(0.2 [3FC999999999999A]): 0.2 [3FC999999999999A], integer part 0 [0000000000000000], errno 0
+modf(-0.2 [BFC999999999999A]): -0.2 [BFC999999999999A], integer part 0 [8000000000000000], errno 0
+modf(0 [0000000000000000]): 0 [0000000000000000], integer part 0 [0000000000000000], errno 0
+modf(0 [8000000000000000]): 0 [8000000000000000], integer part 0 [8000000000000000], errno 0
+modf(4.5036e+015 [432FFFFFFFFFFFFF]): 0.5 [3FE0000000000000], integer part 4.5036e+015 [432FFFFFFFFFFFFE], errno 0
+modf(-4.5036e+015 [C32FFFFFFFFFFFFF]): -0.5 [BFE0000000000000], integer part -4.5036e+015 [C32FFFFFFFFFFFFE], errno 0
+modf(1e+300 [7E37E43C8800759C]): 0 [0000000000000000], integer part 1e+300 [7E37E43C8800759C], errno 0
+modf(-1e-300 [81A56E1FC2F8F359]): -1e-300 [81A56E1FC2F8F359], integer part 0 [8000000000000000], errno 0
+modf(1.#INF [7FF0000000000000]): 0 [0000000000000000], integer part 1.#INF [7FF0000000000000], errno 0
+modf(-1.#INF [FFF0000000000000]): 0 [8000000000000000], integer part -1.#INF [FFF0000000000000], errno 0
+modf(1.#QNAN [7FF8000000000000]): 1.#QNAN [7FF8000000000000], integer part 1.#QNAN [7FF8000000000000], errno 33
+modf(-1.#IND [FFF8000000000000]): -1.#IND [FFF8000000000000], integer part -1.#IND [FFF8000000000000], errno 33
+_ftol(2.7 [400599999999999A]): __int64 2, long 2, control word kept yes
+_ftol(-2.7 [C00599999999999A]): __int64 -2, long -2, control word kept yes
+_ftol(3.5 [400C000000000000]): __int64 3, long 3, control word kept yes
+_ftol(-3.5 [C00C000000000000]): __int64 -3, long -3, control word kept yes
+_ftol(0.999 [3FEFF7CED916872B]): __int64 0, long 0, control word kept yes
+_ftol(-0.999 [BFEFF7CED916872B]): __int64 0, long 0, control word kept yes
+_ftol(0 [0000000000000000]): __int64 0, long 0, control word kept yes
+_ftol(0 [8000000000000000]): __int64 0, long 0, control word kept yes
+_ftol(2.14748e+009 [41DFFFFFFFC00000]): __int64 2147483647, long 2147483647, control word kept yes
+_ftol(-2.14748e+009 [C1E0000000000000]): __int64 -2147483648, long -2147483648, control word kept yes
+_ftol(3e+009 [41E65A0BC0000000]): __int64 3000000000, long -1294967296, control word kept yes
+_ftol(1e+010 [4202A05F20000000]): __int64 10000000000, long 1410065408, control word kept yes
+_ftol(-1e+010 [C202A05F20000000]): __int64 -10000000000, long -1410065408, control word kept yes
+_ftol(9.2e+018 [43DFEB3DD0676600]): __int64 9200000000000000000, long -1650982912, control word kept yes
+_ftol(1e+019 [43E158E460913D00]): __int64 -9223372036854775808, long 0, control word kept yes
+_ftol(-1e+019 [C3E158E460913D00]): __int64 -9223372036854775808, long 0, control word kept yes
+_ftol(1.#INF [7FF0000000000000]): __int64 -9223372036854775808, long 0, control word kept yes
+_ftol(1.#QNAN [7FF8000000000000]): __int64 -9223372036854775808, long 0, control word kept yes
+msvcrt: done
+<<< exit code=0
+>>> msvcrt.exe paths
+== paths
+_wfullpath("fullpath.tmp", 260): the buffer yes, GetFullPathNameW's answer yes, ends with "fullpath.tmp" yes
+_wfullpath("..\\x\\.\\y.txt", 260): the buffer yes, GetFullPathNameW's answer yes, ends with "..\x\.\y.txt" no
+_wfullpath("sub/dir/../f.c", 260): the buffer yes, GetFullPathNameW's answer yes, ends with "sub/dir/../f.c" no
+_wfullpath(NULL buffer, 0): the buffer allocated, GetFullPathNameW's answer yes, ends with "fullpath.tmp" yes
+_wfullpath(NULL buffer, size 3, 3): the buffer allocated, GetFullPathNameW's answer yes, ends with "fullpath.tmp" yes
+_wfullpath(a buffer of 3, 3): NULL errno 34
+_wfullpath("", 260): the buffer yes, GetFullPathNameW's answer no, ends with "" yes
+_wfullpath("C:\\a\\b\\..\\c\\.\\d"): [C:\a\c\d]
+_wfullpath("C:\\a\\..\\..\\b\\"): [C:\b\]
+_getdcwd(0, 260): the buffer yes, GetCurrentDirectoryA's answer yes
+_getdcwd(the current drive, 260): the buffer yes, GetCurrentDirectoryA's answer yes
+_getdcwd(0, NULL buffer, 0): allocated, GetCurrentDirectoryA's answer yes, _msize at least 0 yes
+_getdcwd(0, NULL buffer, 1000): allocated, GetCurrentDirectoryA's answer yes, _msize at least 1000 yes
+_getdcwd(0, a buffer of 2, 2): NULL errno 34
+_getdcwd(0, NULL buffer of 2, 2): allocated, GetCurrentDirectoryA's answer yes, _msize at least 2 yes
+_getdcwd(27, 260): NULL errno 13
+msvcrt: done
+<<< exit code=0

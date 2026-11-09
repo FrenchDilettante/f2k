@@ -552,6 +552,13 @@ pub unsafe extern "C" fn setlocale(category: i32, locale: *const u8) -> *const u
         .unwrap_or(core::ptr::null())
 }
 
+/// iswctype: the classes of `mask` (ctype.h's `_UPPER` to `_ALPHA`, or several) that `c` is in:
+/// nonzero when it is in any; WEOF is in none. The isw* functions are each iswctype of one mask.
+#[unsafe(export_name = "f2k_export_iswctype")]
+pub extern "C" fn iswctype(c: u32, mask: u32) -> i32 {
+    wide_class(c as u16, mask as u16) as i32
+}
+
 /// iswalpha: a letter (`_ALPHA`'s classes).
 #[unsafe(export_name = "f2k_export_iswalpha")]
 pub extern "C" fn iswalpha(c: u32) -> i32 {

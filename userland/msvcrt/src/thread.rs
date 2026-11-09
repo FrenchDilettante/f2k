@@ -1,18 +1,19 @@
 //! The C runtime's per-thread data and its locks.
 //!
-//! Each thread has its own `errno`, `_doserrno` and rand seed, as the multithreaded C runtime keeps
-//! them: a block from the C runtime's heap, found through a TLS slot the DLL allocates when it is
-//! loaded, made on the thread's first need and freed at its DLL_THREAD_DETACH. Finding it keeps the
-//! thread's last error as it was (TlsGetValue clears it), so a C runtime call never disturbs a
-//! program's GetLastError.
+//! Each thread has its own `errno`, `_doserrno`, rand seed and `struct tm` (gmtime's and
+//! localtime's), as the multithreaded C runtime keeps them: a block from the C runtime's heap,
+//! found through a TLS slot the DLL allocates when it is loaded, made on the thread's first need
+//! and freed at its DLL_THREAD_DETACH. Finding it keeps the thread's last error as it was
+//! (TlsGetValue clears it), so a C runtime call never disturbs a program's GetLastError.
 //!
 //! The process-wide state is split by lock, as Windows 2000's msvcrt splits it: each stream has a
 //! lock of its own ([`crate::stdio`]), each descriptor one beside the descriptor table's
 //! ([`crate::lowio`]), and the exit functions, the environment ([`crate::startup`]), the locale
-//! ([`crate::ctype`]) and the console input ([`crate::conio`]) one each. A lock is a critical
-//! section entered through kernel32 ([`Lock`]); the state it guards is an `rtl::sync::Locked`
-//! value, reached only inside its `with`. A thread waiting on one stream or descriptor (stdin,
-//! reading the console) holds that one's locks alone, so another thread's output goes on.
+//! ([`crate::ctype`]), the console input ([`crate::conio`]) and the time zone ([`crate::utility`])
+//! one each. A lock is a critical section entered through kernel32 ([`Lock`]); the state it guards
+//! is an `rtl::sync::Locked` value, reached only inside its `with`. A thread waiting on one stream
+//! or descriptor (stdin, reading the console) holds that one's locks alone, so another thread's
+//! output goes on.
 //!
 //! The locks a call holds while it reads or writes its caller's memory (a stream's and the buffer
 //! it is lent, a descriptor's across its reads and writes, the exit functions') are let go when an
@@ -22,8 +23,8 @@
 //!
 //! The locks nest in one order, outermost first: a stream's, then the buffer it is lent for a call;
 //! a descriptor's (two at once in ascending order); the descriptor table's. The exit functions',
-//! the environment's, the locale's and the console input's take none of the C runtime's locks
-//! inside them.
+//! the environment's, the locale's, the console input's and the time zone's take none of the C
+//! runtime's locks inside them.
 
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
@@ -43,6 +44,9 @@ pub struct ThreadData {
     pub doserrno: AtomicU32,
     /// rand's seed (srand's), 1 until the thread seeds it.
     pub seed: AtomicU32,
+    /// The `struct tm` gmtime, localtime and mktime answer through (time.h's nine ints): one per
+    /// thread, as the multithreaded C runtime keeps it.
+    pub tm: [AtomicI32; 9],
 }
 
 /// The TLS slot holding each thread's [`ThreadData`] (TLS_OUT_OF_INDEXES before the DLL's
@@ -63,6 +67,7 @@ static FALLBACK: ThreadData = ThreadData {
     errno: AtomicI32::new(0),
     doserrno: AtomicU32::new(0),
     seed: AtomicU32::new(1),
+    tm: [const { AtomicI32::new(0) }; 9],
 };
 
 /// The lock of the C runtime's locks: held while one of them is initialized on its first use (a
@@ -136,6 +141,7 @@ pub const ENFILE: i32 = 23;
 pub const EMFILE: i32 = 24;
 pub const ENOSPC: i32 = 28;
 pub const EPIPE: i32 = 32;
+pub const EDOM: i32 = 33;
 pub const ERANGE: i32 = 34;
 pub const EILSEQ: i32 = 42;
 

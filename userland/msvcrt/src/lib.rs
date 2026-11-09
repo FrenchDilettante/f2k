@@ -7,15 +7,18 @@
 //! exports it under its name (build-support/stubs.rs finds them; the export spec declares it
 //! `impl = { native = "<Name>" }`, a variable `data = true`). The exports taking variable
 //! arguments are thunks handing their arguments' address to a body here ([`stdio`]); the exception
-//! handling and setjmp exports are assembly (src/seh.s, linked into the DLL). The DLL
-//! (src/main.rs) links this library; the host tests run its code against [`imports`]' stand-ins.
+//! handling and setjmp exports, and the compiler's _ftol, are assembly (src/seh.s and src/math.s,
+//! linked into the DLL). The DLL (src/main.rs) links this library; the host tests run its code
+//! against [`imports`]' stand-ins.
 //!
 //! The areas: program start-up and exit ([`startup`]), the per-thread data and the locks
 //! ([`thread`]), the allocator ([`heap`]), the descriptors ([`lowio`]), console input ([`conio`]),
 //! the streams ([`stdio`]) and the formatter and scanner they share ([`format`], [`float`],
 //! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system, _popen and
 //! _pclose), the locale and the character functions ([`ctype`]), strings ([`string`]), number
-//! conversions ([`convert`]), and qsort, rand, abs and time ([`utility`]).
+//! conversions ([`convert`]), the floating-point functions ([`math`]), the current directory and
+//! full paths ([`directory`]), and qsort, rand, abs, time and the broken-down times
+//! ([`utility`]).
 //!
 //! The exports not written yet are stubs: their generated bodies log the call and fail ([`stub`]).
 
@@ -25,6 +28,7 @@ pub mod conio;
 pub mod convert;
 pub mod ctype;
 pub mod data;
+pub mod directory;
 pub mod edge;
 pub mod float;
 pub mod format;
@@ -32,6 +36,7 @@ pub mod heap;
 pub mod imports;
 pub mod kernel32;
 pub mod lowio;
+pub mod math;
 pub mod process;
 pub mod scan;
 pub mod startup;

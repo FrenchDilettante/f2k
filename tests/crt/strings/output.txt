@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026  7:05:29.80
-strings F2KT-SOURCE-CRC=0x54F13320
+# date: Mon 11/09/2026 10:25:58.37
+strings F2KT-SOURCE-CRC=0xAC5C5D66
 >>> strings.exe itow
 == itow
 _itow(0): 2 [0] 8 [0] 10 [0] 16 [0] 36 [0]; returned the buffer yes
@@ -97,6 +97,20 @@ _strcmpi("_", "a"): -1
 _strcmpi("a", "["): 1
 _strcmpi("A", "["): 1
 _strcmpi("[", "a"): -1
+strings: done
+<<< exit code=0
+>>> strings.exe catdup
+== catdup
+strncat("ab", "cdef", 2): [abcd\0###########] returns the buffer yes
+strncat("ab", "cdef", 4): [abcdef\0#########] returns the buffer yes
+strncat("ab", "cdef", 9): [abcdef\0#########] returns the buffer yes
+strncat("ab", "cdef", 0): [ab\0#############] returns the buffer yes
+strncat("", "xyz", 2): [xy\0#############] returns the buffer yes
+strncat("ab", "", 3): [ab\0#############] returns the buffer yes
+strncat("", "", 1): [\0###############] returns the buffer yes
+_strdup("duplicate me"): [duplicate me] equal yes, a distinct block yes
+_strdup("caf\xE9"): [caf\xE9] equal yes, a distinct block yes
+_strdup(""): [] equal yes, a distinct block yes
 strings: done
 <<< exit code=0
 >>> strings.exe split

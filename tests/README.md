@@ -19,7 +19,7 @@ tests/
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin
 ├── gdi32/      # guidc, gditext
 ├── advapi32/   # registry, token
-├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings (built with /MD)
+├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
 │               # batstd, batops, batline, bathelp, batdir; HAND-CAPTURES.md, the interactive
@@ -150,7 +150,7 @@ The fixtures:
 - `shutparm` - a process's shutdown parameters, with its companion program `shutkid.exe` (built beside it from `shutkid.c`): `GetProcessShutdownParameters`' default (level 0x280, no flag), `SetProcessShutdownParameters` at each band's edges with and without `SHUTDOWN_NORETRY`, read back, levels outside 0x100-0x3FF (Windows 2000 keeps them) and flags other than `SHUTDOWN_NORETRY` (TRUE, the parameters unchanged), and a child's own parameters beside its parent's.
   It never calls `ExitWindowsEx`: the parameters only order a session's end, and each process's are its own.
   Built with `/MD`.
-  Awaited: built and captured on the next trip to the real machine.
+  Gated.
 - `resource` - the program's own resources (`resource.rc`, compiled by the resource compiler and linked in): `FindResourceA`/`W` and `FindResourceExA`/`W` by number, by `"#number"` and by name in any case, through the module and through NULL, a resource in two languages and one in the neutral language, the arguments in the wrong order, and each level's error (type, name, language), kernel32's module included; `LoadResource`, `LockResource` and `SizeofResource` over each resource found, `FreeResource`'s return, and user32's `LoadStringA`/`W` over a string table (buffers that fit, short ones, missing ids).
   No handle or address prints: a lookup prints whether it found the resource and whether it found the same one as another call, a resource's data its size and bytes.
   Built with `/MD`, linking `user32.lib`.
@@ -175,15 +175,20 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
   Gated.
 - `seh` - structured exception handling compiled against msvcrt's `_except_handler3`: faults, filters, `__finally`, nesting, `RaiseException`, `setjmp`/`longjmp`, `longjmp` out of `__try` blocks, faults inside msvcrt's locked calls (`printf`, `fprintf`, `fgets`, `_write`) unwinding out of them, and `printf` from an `__except` filter.
   Gated.
-- `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`, `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in `_iob`, `fgets`, and `_getch` over console input the program queues itself.
+- `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`, `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in `_iob`, `fgets`, `fread`, `fwrite`, `fseek`, `ftell` and `clearerr` in text and binary mode (CR LF translation, short reads, partial items, the end of the file, Ctrl-Z, a `w+` stream switching direction), `fgetws` and `fputws`, and `_getch` over console input the program queues itself.
   Gated.
-- `wide` - the wide string, character-class and conversion functions, `swprintf` and `swscanf`, number parsing, the allocator, `qsort`, `rand`, `setlocale` and `time`.
+- `wide` - the wide string, character-class and conversion functions, `iswctype` over each class mask, `swprintf` and `swscanf`, number parsing, the allocator, `qsort`, `rand`, `setlocale` and `time`, and `gmtime`, `localtime` and `mktime` under time zones the program sets itself through `TZ` and `_tzset`.
+  Those times are fixed values, so they depend on neither the machine's clock nor its zone.
   Gated.
-- `strings` - `_itow`, `_ltow` and `_ultow` in several radixes, `_wtoi` and `atol` with `errno`, `abs` and `labs`, `strstr`, `wcspbrk` and `wcscspn`, `_wcsdup`, `_wcsrev` and `_strcmpi`, `_splitpath` and `_wsplitpath`, `vswprintf`, and `wprintf` and `fwprintf` to the standard output and into a file in text and binary mode, its bytes read back.
+- `strings` - `_itow`, `_ltow` and `_ultow` in several radixes, `_wtoi` and `atol` with `errno`, `abs` and `labs`, `strstr`, `wcspbrk` and `wcscspn`, `_wcsdup`, `_wcsrev` and `_strcmpi`, `strncat` and `_strdup`, `_splitpath` and `_wsplitpath`, `vswprintf`, and `wprintf` and `fwprintf` to the standard output and into a file in text and binary mode, its bytes read back.
   Radix 2 converts only values below 65536: Windows 2000's `_itow` overruns an internal buffer on longer radix-2 conversions.
   Gated.
 - `process` - msvcrt's view of its process: the data exports `_acmdln`, `_wcmdln`, `__argc` and `__argv` against `GetCommandLineA`/`GetCommandLineW` and the `__p___argc`/`__p___argv` accessors, `getenv` over variables the program sets itself (`_putenv`, and `SetEnvironmentVariableA` behind the C runtime's back), operator `new` and `delete`, `_msize` and `_expand`.
   The data exports and the C++ operators are reached through `GetProcAddress`, so the program stays C rather than C++.
+  Gated.
+- `msvcrt` - the exports no other crt fixture takes in: `ceil`, `floor`, `fabs` and `modf` over halves, signed zeros, infinities and NaNs, `_ftol`, the compiler's conversion to an integer, and `_wfullpath` and `_getdcwd` against kernel32's answers.
+  Its paths print only as relations, so nothing depends on the machine's directories.
+  Its program shares the DLL's name: the loader tells `msvcrt.exe` from `MSVCRT.dll` by the full name.
   Gated.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot volume is FAT32, and file-system details differ elsewhere — NTFS has its own names and timestamps, and a VirtualBox shared folder has no short names, no attribute bits and reports a remote drive.

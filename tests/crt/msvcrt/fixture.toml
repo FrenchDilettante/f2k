@@ -1,0 +1,46 @@
+# msvcrt: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does; the program's own name is
+# the DLL's, which the loader tells apart by the full name (MSVCRT.dll against msvcrt.exe).
+description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under /MD (msvcrt.c): ceil, floor, fabs and modf over halves, signed zeros, infinities and NaNs; _ftol to __int64 and long, within and beyond their limits; _wfullpath and _getdcwd against kernel32's answers."
+kind = "sectioned"
+gate = true
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
+# calls); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "msvcrt.__set_app_type",
+    "msvcrt.__p__fmode",
+    "msvcrt.__p__commode",
+    "msvcrt._controlfp",
+    "msvcrt.__setusermatherr",
+    "msvcrt._initterm",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___initenv",
+    "msvcrt.exit",
+    "msvcrt._vsnprintf",
+    "msvcrt.strcmp",
+    "msvcrt._stricmp",
+]
+math = [
+    "msvcrt.ceil",
+    "msvcrt.floor",
+    "msvcrt.fabs",
+    "msvcrt.modf",
+    "msvcrt._ftol",
+    "msvcrt._controlfp",
+    "msvcrt._errno",
+    "msvcrt.sprintf",
+]
+paths = [
+    "msvcrt._wfullpath",
+    "msvcrt._getdcwd",
+    "msvcrt.free",
+    "msvcrt._msize",
+    "msvcrt._errno",
+    "msvcrt.wcscmp",
+    "msvcrt.strcmp",
+    "msvcrt.sprintf",
+    "kernel32.GetFullPathNameW",
+    "kernel32.GetCurrentDirectoryA",
+]

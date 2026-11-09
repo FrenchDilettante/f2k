@@ -1,7 +1,7 @@
 # fd: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. Works in a SCRATCH directory
 # beside the program, which each section empties first.
-description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, and _getch over queued console key events."
+description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, fread, fwrite, fseek, ftell and clearerr in text and binary mode, fgetws and fputws, and _getch over queued console key events."
 kind = "sectioned"
 gate = true
 
@@ -83,6 +83,36 @@ fgets = [
     "msvcrt._get_osfhandle",
     "kernel32.CreateFileA",
     "kernel32.WriteFile",
+    "msvcrt.sprintf",
+]
+streams = [
+    "msvcrt.fopen",
+    "msvcrt.fclose",
+    "msvcrt.fread",
+    "msvcrt.fwrite",
+    "msvcrt.fseek",
+    "msvcrt.ftell",
+    "msvcrt.clearerr",
+    "msvcrt._errno",
+    "kernel32.CreateFileA",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "msvcrt.sprintf",
+]
+wstreams = [
+    "msvcrt.fopen",
+    "msvcrt.fclose",
+    "msvcrt.fgetws",
+    "msvcrt.fputws",
+    "msvcrt.fseek",
+    "msvcrt.ftell",
+    "msvcrt._errno",
+    "kernel32.CreateFileA",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "kernel32.CloseHandle",
     "msvcrt.sprintf",
 ]
 getch = [

@@ -1,6 +1,6 @@
 # strings: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
 # with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does.
-description = "strings - msvcrt.dll's number conversions, searches, path splitting and wide formatting under /MD (strings.c): _itow, _ltow and _ultow, _wtoi and atol, abs and labs, strstr, wcspbrk and wcscspn, _wcsdup, _wcsrev and _strcmpi, _splitpath and _wsplitpath, vswprintf, wprintf and fwprintf."
+description = "strings - msvcrt.dll's number conversions, searches, path splitting and wide formatting under /MD (strings.c): _itow, _ltow and _ultow, _wtoi and atol, abs and labs, strstr, wcspbrk and wcscspn, _wcsdup, _wcsrev and _strcmpi, strncat and _strdup, _splitpath and _wsplitpath, vswprintf, wprintf and fwprintf."
 kind = "sectioned"
 gate = true
 
@@ -26,5 +26,13 @@ atoi = ["msvcrt._wtoi", "msvcrt.atol"]
 abs = ["msvcrt.abs", "msvcrt.labs"]
 search = ["msvcrt.strstr", "msvcrt.wcspbrk", "msvcrt.wcscspn"]
 dupcase = ["msvcrt._wcsdup", "msvcrt._wcsrev", "msvcrt._strcmpi"]
+catdup = [
+    "msvcrt.strncat",
+    "msvcrt._strdup",
+    "msvcrt.strcpy",
+    "msvcrt.strcmp",
+    "msvcrt.free",
+    "msvcrt.sprintf",
+]
 split = ["msvcrt._splitpath", "msvcrt._wsplitpath"]
 wformat = ["msvcrt.vswprintf", "msvcrt.wprintf", "msvcrt.fwprintf"]

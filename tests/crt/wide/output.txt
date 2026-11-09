@@ -1,9 +1,9 @@
 # F2K capture of wide (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:51:18.29
-wide F2KT-SOURCE-CRC=0x52408459
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 10:25:58.42
+wide F2KT-SOURCE-CRC=0xDB61A47D
 >>> wide.exe wcs
 == wcs
 wcslen: "" 0, "abc" 3, U+00E9 1, mixed 16
@@ -121,6 +121,33 @@ setlocale(LC_ALL, ""): English_United States.1252
 "": U+FF10: alpha 0 digit 4 space 0 xdigit 80 lower U+FF10 upper U+FF10
 "": U+FF21: alpha 101 digit 0 space 0 xdigit 80 lower U+FF41 upper U+FF21
 "": U+FF41: alpha 102 digit 0 space 0 xdigit 80 lower U+FF41 upper U+FF21
+wide: done
+<<< exit code=0
+>>> wide.exe wctype
+== wctype
+U+0041: _UPPER 1 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 80 _ALPHA 1 _ALPHA|_DIGIT 1 0 0
+U+007A: _UPPER 0 _LOWER 2 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 2 _ALPHA|_DIGIT 2 0 0
+U+0035: _UPPER 0 _LOWER 0 _DIGIT 4 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 80 _ALPHA 0 _ALPHA|_DIGIT 4 0 0
+U+0066: _UPPER 0 _LOWER 2 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 80 _ALPHA 2 _ALPHA|_DIGIT 2 0 0
+U+0047: _UPPER 1 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 1 _ALPHA|_DIGIT 1 0 0
+U+0020: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 8 _PUNCT 0 _CONTROL 0 _BLANK 40 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+0009: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 8 _PUNCT 0 _CONTROL 20 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+000A: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 8 _PUNCT 0 _CONTROL 20 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+0021: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 10 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+005F: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 10 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+007F: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 20 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+00A0: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+00B2: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+00C0: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+00E9: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+00D7: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+0391: _UPPER 1 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 101 _ALPHA|_DIGIT 101 0 0
+U+03B1: _UPPER 0 _LOWER 2 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 102 _ALPHA|_DIGIT 102 0 0
+U+0660: _UPPER 0 _LOWER 0 _DIGIT 4 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 4 0 0
+U+2028: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 10 _CONTROL 20 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+3000: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 8 _PUNCT 0 _CONTROL 0 _BLANK 40 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
+U+4E00: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 100 _ALPHA|_DIGIT 100 0 0
+U+FFFF: _UPPER 0 _LOWER 0 _DIGIT 0 _SPACE 0 _PUNCT 0 _CONTROL 0 _BLANK 0 _HEX 0 _ALPHA 0 _ALPHA|_DIGIT 0 0 0
 wide: done
 <<< exit code=0
 >>> wide.exe locale
@@ -269,5 +296,70 @@ wide: done
 time(&t) returned t: yes
 time(NULL) within a second of time(&t): yes
 after 2000-01-01 00:00:00 UTC: yes
+wide: done
+<<< exit code=0
+>>> wide.exe calendar
+== calendar
+_putenv("TZ=PST8PDT") 0, _tzset
+gmtime(0): 1970-01-01 00:00:00 wday 4 yday 0 isdst 0
+gmtime(86399): 1970-01-01 23:59:59 wday 4 yday 0 isdst 0
+gmtime(86400): 1970-01-02 00:00:00 wday 5 yday 1 isdst 0
+gmtime(951782400): 2000-02-29 00:00:00 wday 2 yday 59 isdst 0
+gmtime(978307199): 2000-12-31 23:59:59 wday 0 yday 365 isdst 0
+gmtime(1004259600): 2001-10-28 09:00:00 wday 0 yday 300 isdst 0
+gmtime(2147483647): 2038-01-19 03:14:07 wday 2 yday 18 isdst 0
+gmtime(-1): NULL
+localtime(0): 1969-12-31 16:00:00 wday 3 yday 364 isdst 0
+localtime(28799): 1969-12-31 23:59:59 wday 3 yday 364 isdst 0
+localtime(28800): 1970-01-01 00:00:00 wday 4 yday 0 isdst 0
+localtime(986119199): 2001-04-01 01:59:59 wday 0 yday 90 isdst 0
+localtime(986119200): 2001-04-01 03:00:00 wday 0 yday 90 isdst 1
+localtime(992606400): 2001-06-15 05:00:00 wday 5 yday 165 isdst 1
+localtime(1004255999): 2001-10-28 00:59:59 wday 0 yday 300 isdst 1
+localtime(1004256000): 2001-10-28 01:00:00 wday 0 yday 300 isdst 1
+localtime(1004259599): 2001-10-28 01:59:59 wday 0 yday 300 isdst 1
+localtime(1004259600): 2001-10-28 01:00:00 wday 0 yday 300 isdst 0
+localtime(1174392000): 2007-03-20 04:00:00 wday 2 yday 78 isdst 0
+localtime(2147483647): 2038-01-18 19:14:07 wday 1 yday 17 isdst 0
+localtime(-1): NULL
+gmtime and localtime share one buffer: yes
+mktime(2001-06-15 12:00:00, isdst -1): 992631600: 2001-06-15 12:00:00 wday 5 yday 165 isdst 1
+mktime(2001-06-15 12:00:00, isdst 0): 992635200: 2001-06-15 13:00:00 wday 5 yday 165 isdst 1
+mktime(2001-06-15 12:00:00, isdst 1): 992631600: 2001-06-15 12:00:00 wday 5 yday 165 isdst 1
+mktime(2001-01-15 12:00:00, isdst -1): 979588800: 2001-01-15 12:00:00 wday 1 yday 14 isdst 0
+mktime(2001-01-15 12:00:00, isdst 1): 979585200: 2001-01-15 11:00:00 wday 1 yday 14 isdst 0
+mktime(2001-02-31): 983606400: 2001-03-03 00:00:00 wday 6 yday 61 isdst 0
+mktime(2001-03-00): 983347200: 2001-02-28 00:00:00 wday 3 yday 58 isdst 0
+mktime(month -1 of 2001): 976867200: 2000-12-15 00:00:00 wday 5 yday 349 isdst 0
+mktime(month 12 of 2001): 1009872000: 2002-01-01 00:00:00 wday 2 yday 0 isdst 0
+mktime(month -13 of 2001): 944035200: 1999-12-01 00:00:00 wday 3 yday 334 isdst 0
+mktime(2001-01-01 second 90061): 978426061: 2001-01-02 01:01:01 wday 2 yday 1 isdst 0
+mktime(2001-01-01 minute -1): 978335940: 2000-12-31 23:59:00 wday 0 yday 365 isdst 0
+mktime(2000-02-28 hour 48): 951897600: 2000-03-01 00:00:00 wday 3 yday 60 isdst 0
+mktime(2001-01-01 day 366): 1009872000: 2002-01-01 00:00:00 wday 2 yday 0 isdst 0
+mktime(2001-04-01 02:30:00, isdst -1): 986117400: 2001-04-01 01:30:00 wday 0 yday 90 isdst 0
+mktime(2001-10-28 01:30:00, isdst -1): 1004261400: 2001-10-28 01:30:00 wday 0 yday 300 isdst 0
+mktime(2001-10-28 01:30:00, isdst 1): 1004257800: 2001-10-28 01:30:00 wday 0 yday 300 isdst 1
+mktime(1970-01-01 00:00:00, isdst 0): 28800: 1970-01-01 00:00:00 wday 4 yday 0 isdst 0
+mktime(1969-12-31 23:59:59, isdst 0): 28799: 1969-12-31 23:59:59 wday 3 yday 364 isdst 0
+mktime(1970-01-00 23:59:59, isdst 0): 28799: 1969-12-31 23:59:59 wday 3 yday 364 isdst 0
+mktime(2038-01-18 19:14:07, isdst 0): 2147483647: 2038-01-18 19:14:07 wday 1 yday 17 isdst 0
+mktime(2038-01-18 19:14:08, isdst 0): -1
+mktime(2039-01-01): -1
+mktime(1900-01-01): -1
+_putenv("TZ=EST5") 0, _tzset
+localtime(992606400): 2001-06-15 07:00:00 wday 5 yday 165 isdst 0
+mktime(2001-06-15 12:00:00, isdst -1): 992624400: 2001-06-15 12:00:00 wday 5 yday 165 isdst 0
+_putenv("TZ=GMT0") 0, _tzset
+localtime(0): 1970-01-01 00:00:00 wday 4 yday 0 isdst 0
+mktime(1970-01-01 00:00:00, isdst -1): 0: 1970-01-01 00:00:00 wday 4 yday 0 isdst 0
+_putenv("TZ=IST-5:30") 0, _tzset
+localtime(0): 1970-01-01 05:30:00 wday 4 yday 0 isdst 0
+localtime(992606400): 2001-06-15 17:30:00 wday 5 yday 165 isdst 0
+mktime(1970-01-01 05:30:00, isdst 0): 0: 1970-01-01 05:30:00 wday 4 yday 0 isdst 0
+mktime(1970-01-01 05:29:59, isdst 0): -1
+_putenv("TZ=NST3:30NDT") 0, _tzset
+localtime(992606400): 2001-06-15 09:30:00 wday 5 yday 165 isdst 1
+localtime(978307199): 2000-12-31 20:29:59 wday 0 yday 365 isdst 0
 wide: done
 <<< exit code=0

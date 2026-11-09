@@ -3,8 +3,9 @@
 #
 # Every export is cdecl, as the C runtime's functions are (the convention below). F2K's msvcrt
 # exports what the corpus fixtures (tests/crt) and cmd.exe import: its own code (src/lib.rs, and
-# src/seh.s for the exception handling and setjmp exports) over kernel32, as Windows 2000's msvcrt
-# imports kernel32 alone, and stubs for what is not written yet (pipes).
+# src/seh.s and src/math.s for the exception handling and setjmp exports and _ftol) over
+# kernel32, as Windows 2000's msvcrt imports kernel32 alone, and stubs for what is not written yet
+# (pipes).
 # Its variables (`data = true`) are its own storage (src/data.rs). The rest of the records are
 # catalogued from MSVCRT.dll 6.1.9844.0's export table (scripts/catalogue_exports.py): their name
 # and ordinal. Implementing one gives it its group, prototype and implementation.
@@ -46,6 +47,14 @@ title = "sorting / random numbers / absolute values / time / locale"
 [[group]]
 key = "process"
 title = "child processes"
+
+[[group]]
+key = "math"
+title = "floating-point math"
+
+[[group]]
+key = "paths"
+title = "current directory / full paths"
 
 # --- program start-up and exit --------------------------------------------------------------------
 
@@ -591,6 +600,62 @@ impl = { native = "fwprintf" }
 ordinal = 635
 fails = "-1"
 
+[[export]]
+name = "fread"
+group = "stdio"
+args = ["ptr buffer", "u32 size", "u32 count", "ptr stream"]
+impl = { native = "fread" }
+ordinal = 627
+fails = "0"
+
+[[export]]
+name = "fwrite"
+group = "stdio"
+args = ["ptr buffer", "u32 size", "u32 count", "ptr stream"]
+impl = { native = "fwrite" }
+ordinal = 636
+fails = "0"
+
+[[export]]
+name = "fseek"
+group = "stdio"
+args = ["ptr stream", "i32 offset", "i32 origin"]
+impl = { native = "fseek" }
+ordinal = 632
+fails = "-1"
+
+[[export]]
+name = "ftell"
+group = "stdio"
+args = ["ptr stream"]
+impl = { native = "ftell" }
+ordinal = 634
+fails = "-1"
+
+[[export]]
+name = "clearerr"
+group = "stdio"
+args = ["ptr stream"]
+impl = { native = "clearerr" }
+ordinal = 600
+fails = "void"
+
+[[export]]
+name = "fgetws"
+group = "stdio"
+args = ["ptr str", "i32 n", "ptr stream"]
+impl = { native = "fgetws" }
+ordinal = 618
+fails = "NULL"
+
+[[export]]
+name = "fputws"
+group = "stdio"
+args = ["strW str", "ptr stream"]
+impl = { native = "fputws" }
+ordinal = 626
+fails = "0xFFFF"
+
 # --- strings / conversions ------------------------------------------------------------------------
 
 [[export]]
@@ -949,6 +1014,22 @@ impl = { native = "_wsplitpath" }
 ordinal = 568
 fails = "void"
 
+[[export]]
+name = "strncat"
+group = "strings"
+args = ["ptr strDest", "strA strSource", "u32 count"]
+impl = { native = "strncat" }
+ordinal = 725
+fails = "never"
+
+[[export]]
+name = "_strdup"
+group = "strings"
+args = ["strA? strSource"]
+impl = { native = "_strdup" }
+ordinal = 462
+fails = "NULL"
+
 # --- wide characters ------------------------------------------------------------------------------
 
 [[export]]
@@ -1005,6 +1086,14 @@ group = "characters"
 args = ["i32 c"]
 impl = { native = "toupper" }
 ordinal = 746
+fails = "never"
+
+[[export]]
+name = "iswctype"
+group = "characters"
+args = ["u32 c", "u32 desc"]
+impl = { native = "iswctype" }
+ordinal = 661
 fails = "never"
 
 # --- memory ---------------------------------------------------------------------------------------
@@ -1142,6 +1231,38 @@ ordinal = 742
 fails = "-1"
 
 [[export]]
+name = "_tzset"
+group = "utility"
+args = []
+impl = { native = "_tzset" }
+ordinal = 486
+fails = "void"
+
+[[export]]
+name = "gmtime"
+group = "utility"
+args = ["ptr<u32> timer"]
+impl = { native = "gmtime" }
+ordinal = 644
+fails = "NULL"
+
+[[export]]
+name = "localtime"
+group = "utility"
+args = ["ptr<u32> timer"]
+impl = { native = "localtime" }
+ordinal = 675
+fails = "NULL"
+
+[[export]]
+name = "mktime"
+group = "utility"
+args = ["ptr timeptr"]
+impl = { native = "mktime" }
+ordinal = 688
+fails = "-1"
+
+[[export]]
 name = "setlocale"
 group = "utility"
 args = ["i32 category", "strA? locale"]
@@ -1229,6 +1350,71 @@ impl = { native = "system" }
 ordinal = 739
 fails = "-1"
 note = "%COMSPEC% /c, else cmd.exe on PATH: F2K has no cmd.exe on its disk"
+
+# --- floating-point math --------------------------------------------------------------------------
+
+[[export]]
+name = "ceil"
+group = "math"
+args = ["u64 x"]
+impl = { native = "ceil" }
+ordinal = 599
+fails = "never"
+note = "a double, in two dwords; the result in ST0"
+
+[[export]]
+name = "floor"
+group = "math"
+args = ["u64 x"]
+impl = { native = "floor" }
+ordinal = 619
+fails = "never"
+note = "a double, in two dwords; the result in ST0"
+
+[[export]]
+name = "fabs"
+group = "math"
+args = ["u64 x"]
+impl = { native = "fabs" }
+ordinal = 609
+fails = "never"
+note = "a double, in two dwords; the result in ST0"
+
+[[export]]
+name = "modf"
+group = "math"
+args = ["u64 x", "ptr intptr"]
+impl = { native = "modf" }
+ordinal = 689
+fails = "never"
+note = "a double, in two dwords; the result in ST0"
+
+[[export]]
+name = "_ftol"
+group = "math"
+args = []
+impl = { native = "_ftol" }
+ordinal = 249
+fails = "never"
+note = "the compiler's helper: the value in ST0, the 64-bit result in EDX:EAX (src/math.s)"
+
+# --- current directory / full paths ---------------------------------------------------------------
+
+[[export]]
+name = "_wfullpath"
+group = "paths"
+args = ["ptr absPath", "strW? relPath", "u32 maxLength"]
+impl = { native = "_wfullpath" }
+ordinal = 538
+fails = "NULL"
+
+[[export]]
+name = "_getdcwd"
+group = "paths"
+args = ["i32 drive", "ptr buffer", "i32 maxlen"]
+impl = { native = "_getdcwd" }
+ordinal = 260
+fails = "NULL"
 
 # --- not implemented yet: the rest of MSVCRT.dll 6.1.9844.0's export table, by ordinal -----------
 
@@ -2128,10 +2314,6 @@ name = "_ftime64"
 ordinal = 248
 
 [[export]]
-name = "_ftol"
-ordinal = 249
-
-[[export]]
 name = "_fullpath"
 ordinal = 250
 
@@ -2162,10 +2344,6 @@ ordinal = 258
 [[export]]
 name = "_getcwd"
 ordinal = 259
-
-[[export]]
-name = "_getdcwd"
-ordinal = 260
 
 [[export]]
 name = "_getdiskfree"
@@ -2867,10 +3045,6 @@ name = "_strdate"
 ordinal = 461
 
 [[export]]
-name = "_strdup"
-ordinal = 462
-
-[[export]]
 name = "_strerror"
 ordinal = 463
 
@@ -2953,10 +3127,6 @@ ordinal = 484
 name = "_tzname"
 ordinal = 485
 data = true
-
-[[export]]
-name = "_tzset"
-ordinal = 486
 
 [[export]]
 name = "_ui64toa"
@@ -3118,10 +3288,6 @@ ordinal = 536
 [[export]]
 name = "_wfsopen"
 ordinal = 537
-
-[[export]]
-name = "_wfullpath"
-ordinal = 538
 
 [[export]]
 name = "_wgetcwd"
@@ -3336,14 +3502,6 @@ name = "bsearch"
 ordinal = 597
 
 [[export]]
-name = "ceil"
-ordinal = 599
-
-[[export]]
-name = "clearerr"
-ordinal = 600
-
-[[export]]
 name = "clock"
 ordinal = 601
 
@@ -3372,10 +3530,6 @@ name = "exp"
 ordinal = 608
 
 [[export]]
-name = "fabs"
-ordinal = 609
-
-[[export]]
 name = "feof"
 ordinal = 611
 
@@ -3396,14 +3550,6 @@ name = "fgetwc"
 ordinal = 617
 
 [[export]]
-name = "fgetws"
-ordinal = 618
-
-[[export]]
-name = "floor"
-ordinal = 619
-
-[[export]]
 name = "fmod"
 ordinal = 620
 
@@ -3414,14 +3560,6 @@ ordinal = 623
 [[export]]
 name = "fputwc"
 ordinal = 625
-
-[[export]]
-name = "fputws"
-ordinal = 626
-
-[[export]]
-name = "fread"
-ordinal = 627
 
 [[export]]
 name = "freopen"
@@ -3436,20 +3574,8 @@ name = "fscanf"
 ordinal = 631
 
 [[export]]
-name = "fseek"
-ordinal = 632
-
-[[export]]
 name = "fsetpos"
 ordinal = 633
-
-[[export]]
-name = "ftell"
-ordinal = 634
-
-[[export]]
-name = "fwrite"
-ordinal = 636
 
 [[export]]
 name = "fwscanf"
@@ -3474,10 +3600,6 @@ ordinal = 642
 [[export]]
 name = "getwchar"
 ordinal = 643
-
-[[export]]
-name = "gmtime"
-ordinal = 644
 
 [[export]]
 name = "is_wctype"
@@ -3540,10 +3662,6 @@ name = "iswcntrl"
 ordinal = 660
 
 [[export]]
-name = "iswctype"
-ordinal = 661
-
-[[export]]
 name = "iswgraph"
 ordinal = 663
 
@@ -3580,10 +3698,6 @@ name = "localeconv"
 ordinal = 674
 
 [[export]]
-name = "localtime"
-ordinal = 675
-
-[[export]]
 name = "log"
 ordinal = 676
 
@@ -3606,14 +3720,6 @@ ordinal = 682
 [[export]]
 name = "memchr"
 ordinal = 683
-
-[[export]]
-name = "mktime"
-ordinal = 688
-
-[[export]]
-name = "modf"
-ordinal = 689
 
 [[export]]
 name = "perror"
@@ -3698,10 +3804,6 @@ ordinal = 722
 [[export]]
 name = "strftime"
 ordinal = 723
-
-[[export]]
-name = "strncat"
-ordinal = 725
 
 [[export]]
 name = "strpbrk"

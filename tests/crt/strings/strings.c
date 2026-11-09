@@ -2,15 +2,15 @@
  * strings - msvcrt.dll's number conversions, searches, path splitting
  * and wide formatting under /MD: _itow and its kin, _wtoi and atol,
  * abs and labs, strstr, wcspbrk and wcscspn, _wcsdup, _wcsrev,
- * _strcmpi, _splitpath and _wsplitpath, vswprintf, wprintf and
- * fwprintf.
+ * _strcmpi, strncat and _strdup, _splitpath and _wsplitpath,
+ * vswprintf, wprintf and fwprintf.
  *
  * Deterministic inputs only. Besides the functions under test, the
  * program calls only exports F2K's msvcrt already has (sprintf,
- * strcpy, wcscpy, wcscmp, free, errno, fopen, fclose, fflush, _open,
- * _read and _close) and kernel32's DeleteFileA: every other import is
- * one more export the fixture needs before it loads. So the narrow and
- * wide twins are called only where both are under test.
+ * strcpy, strcmp, wcscpy, wcscmp, free, errno, fopen, fclose, fflush,
+ * _open, _read and _close) and kernel32's DeleteFileA: every other
+ * import is one more export the fixture needs before it loads. So the
+ * narrow and wide twins are called only where both are under test.
  *
  * Sections (run all with no argument, or one by name):
  *
@@ -26,6 +26,10 @@
  *   dupcase  _wcsdup (contents, a distinct block), _wcsrev (odd, even
  *            and empty lengths, the return), _strcmpi's sign (case,
  *            prefixes, Latin-1 bytes, letters against '_' and '[')
+ *   catdup   strncat appending at most `count` characters and a NUL
+ *            (the bytes after it untouched), counts of 0 and past the
+ *            source, empty strings; _strdup's copy (equal, a distinct
+ *            block)
  *   split    _splitpath and _wsplitpath over drive, UNC, relative,
  *            dotted and forward-slash paths, and NULL components
  *   wformat  vswprintf (MSVC 6's, without a count); wprintf and
@@ -139,6 +143,38 @@ static void fill_w(WCHAR *buf, int n, WCHAR c)
 static int sign(int v)
 {
     return v < 0 ? -1 : v > 0 ? 1 : 0;
+}
+
+/* `n` bytes as printed, NULs included: printable ASCII as itself, CR,
+ * LF, NUL and the backslash escaped, any other byte as \xHH. Rotates
+ * through four buffers. */
+static const char *bytes_of(const char *s, int n)
+{
+    static char bufs[4][512];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int len = 0;
+    int i;
+
+    for (i = 0; i < n && len < (int)sizeof bufs[0] - 5; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == '\r') {
+            len += sprintf(b + len, "\\r");
+        } else if (c == '\n') {
+            len += sprintf(b + len, "\\n");
+        } else if (c == 0) {
+            len += sprintf(b + len, "\\0");
+        } else if (c == '\\') {
+            len += sprintf(b + len, "\\\\");
+        } else if (c >= 0x20 && c < 0x7F) {
+            b[len++] = (char)c;
+        } else {
+            len += sprintf(b + len, "\\x%02X", c);
+        }
+    }
+    b[len] = 0;
+    return b;
 }
 
 static const WCHAR e_acute[] = { 0x00E9, 0 };
@@ -392,6 +428,53 @@ static void sec_dupcase(void)
     show_strcmpi("[", "a");
 }
 
+/* --- catdup -------------------------------------------------------- */
+
+/* strncat(dest, src, count) into a 16-byte buffer of '#' holding dest:
+ * every byte of the buffer afterwards. */
+static void show_strncat(const char *dest, const char *src, unsigned count)
+{
+    char buf[16];
+    char *r;
+    int i;
+
+    for (i = 0; i < (int)sizeof buf; i++) {
+        buf[i] = '#';
+    }
+    strcpy(buf, dest);
+    r = strncat(buf, src, count);
+    line("strncat(\"%s\", \"%s\", %u): [%s] returns the buffer %s", dest, src, count,
+         bytes_of(buf, sizeof buf), yesno(r == buf));
+}
+
+static void show_strdup(const char *what, const char *src)
+{
+    char *p = _strdup(src);
+
+    if (p == NULL) {
+        line("_strdup(%s): NULL", what);
+        return;
+    }
+    line("_strdup(%s): [%s] equal %s, a distinct block %s", what, qa(p),
+         yesno(strcmp(p, src) == 0), yesno(p != src));
+    free(p);
+}
+
+static void sec_catdup(void)
+{
+    show_strncat("ab", "cdef", 2);
+    show_strncat("ab", "cdef", 4);
+    show_strncat("ab", "cdef", 9);
+    show_strncat("ab", "cdef", 0);
+    show_strncat("", "xyz", 2);
+    show_strncat("ab", "", 3);
+    show_strncat("", "", 1);
+
+    show_strdup("\"duplicate me\"", "duplicate me");
+    show_strdup("\"caf\\xE9\"", "caf\xE9");
+    show_strdup("\"\"", "");
+}
+
 /* --- split --------------------------------------------------------- */
 
 static const char *paths[] = {
@@ -557,6 +640,7 @@ static const section_t sections[] = {
     { "abs", sec_abs, F2KT_ALWAYS },
     { "search", sec_search, F2KT_ALWAYS },
     { "dupcase", sec_dupcase, F2KT_ALWAYS },
+    { "catdup", sec_catdup, F2KT_ALWAYS },
     { "split", sec_split, F2KT_ALWAYS },
     { "wformat", sec_wformat, F2KT_ALWAYS },
     { NULL, NULL, 0 }

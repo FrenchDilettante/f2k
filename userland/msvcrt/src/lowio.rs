@@ -906,6 +906,22 @@ pub fn seek(fd: i32, offset: i32, origin: u32) -> i32 {
     position as i32
 }
 
+/// The descriptor's file position, or -1, its end-of-file mark kept (ftell's question, which moves
+/// nothing).
+pub fn position(fd: i32) -> i32 {
+    let _io = hold(fd);
+    let Some(entry) = open(fd) else {
+        return -1;
+    };
+    match kernel32::set_file_pointer(entry.handle, 0, 1) {
+        Ok(position) => position as i32,
+        Err(Win32Error(error)) => {
+            set_dos_error(error);
+            -1
+        }
+    }
+}
+
 /// _tell: the descriptor's file position.
 #[unsafe(export_name = "f2k_export__tell")]
 pub extern "C" fn tell(fd: i32) -> i32 {

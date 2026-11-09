@@ -1,13 +1,14 @@
 //! The string functions: strcmp and _stricmp (and _strcmpi, its other name), the narrow ones
 //! spawn's, pipe's and the console fixtures' programs call (strlen, strcpy, strncpy, strcat,
-//! strcspn, strchr, strrchr, strstr, strncmp, _strnicmp), the wide ones cmd.exe calls, and
-//! _splitpath and _wsplitpath.
+//! strncat, _strdup, strcspn, strchr, strrchr, strstr, strncmp, _strnicmp), the wide ones cmd.exe
+//! calls, and _splitpath and _wsplitpath.
 //!
 //! The narrow ones as the C runtime reference documents them: strncpy pads with NULs and leaves a
-//! full destination unterminated, as wcsncpy does; strchr and strrchr find the terminator for 0;
-//! strncmp compares at most `count` characters, answering the difference of the first that differ
-//! as wcsncmp does; _strnicmp compares at most `count` characters, each lowered in the LC_CTYPE
-//! locale, answering the difference of the first that differ as _stricmp does.
+//! full destination unterminated, as wcsncpy does; strncat appends at most `count` bytes and always
+//! a NUL; strchr and strrchr find the terminator for 0; strncmp compares at most `count`
+//! characters, answering the difference of the first that differ as wcsncmp does; _strnicmp
+//! compares at most `count` characters, each lowered in the LC_CTYPE locale, answering the
+//! difference of the first that differ as _stricmp does.
 //!
 //! As wide's capture pins them: wcscmp and strcmp answer -1, 0 or 1; wcsncmp, _wcsicmp and
 //! _wcsnicmp the difference of the first units that differ (each lowered first, in the LC_CTYPE
@@ -474,6 +475,55 @@ pub unsafe extern "C" fn strcat(destination: *mut u8, source: *const u8) -> *mut
     destination
 }
 
+/// strncat: at most `count` bytes of `source` (fewer at its NUL) appended to `destination`, then a
+/// NUL, always; answers `destination`.
+///
+/// # Safety
+///
+/// `destination` is NUL-terminated with room for the bytes and the NUL; `source` is NUL-terminated
+/// or holds `count` bytes, apart from `destination`.
+#[unsafe(export_name = "f2k_export_strncat")]
+pub unsafe extern "C" fn strncat(destination: *mut u8, source: *const u8, count: usize) -> *mut u8 {
+    // SAFETY: the caller's strings: `source` read to its NUL or `count` bytes, `destination` to
+    // its NUL.
+    let (source, length) = unsafe {
+        (
+            edge::bytes_bounded(source, count),
+            bytes_until_nul(destination).len(),
+        )
+    };
+    // SAFETY: the caller's room after `destination`'s bytes, for the appended bytes and the NUL.
+    let out = unsafe { core::slice::from_raw_parts_mut(destination.add(length), source.len() + 1) };
+    let (appended, nul) = out.split_at_mut(source.len());
+    appended.copy_from_slice(source);
+    nul[0] = 0;
+    destination
+}
+
+/// _strdup: a copy of the string and its NUL in a block from malloc (the caller frees it); NULL
+/// for a NULL string or when the heap has no room.
+///
+/// # Safety
+///
+/// `string` is null or NUL-terminated.
+#[unsafe(export_name = "f2k_export__strdup")]
+pub unsafe extern "C" fn strdup(string: *const u8) -> *mut u8 {
+    if string.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    let copy = crate::heap::allocate(bytes.len() + 1, false);
+    if copy.is_null() {
+        return copy;
+    }
+    // SAFETY: a fresh block of the bytes and the NUL, the call's alone.
+    let out = unsafe { core::slice::from_raw_parts_mut(copy, bytes.len() + 1) };
+    out[..bytes.len()].copy_from_slice(bytes);
+    out[bytes.len()] = 0;
+    copy
+}
+
 /// The length of `string`'s first run of bytes that are not in `set`.
 fn complement_span(string: &[u8], set: &[u8]) -> usize {
     string
@@ -836,6 +886,45 @@ mod tests {
             strncpy(buf.as_mut_ptr(), b"xyz\0".as_ptr(), 0);
             assert_eq!(&buf, b"abcd\0###");
         }
+    }
+
+    /// strings' catdup block: strncat appends at most `count` bytes and always a NUL, nothing
+    /// written past it; a count of 0 or an empty source appends only the NUL (over the old one).
+    #[test]
+    fn strncat_appends_a_bounded_tail() {
+        let run = |dest: &[u8], src: &[u8], count: usize| {
+            let mut buf = [b'#'; 16];
+            buf[..dest.len()].copy_from_slice(dest);
+            buf[dest.len()] = 0;
+            let src: Vec<u8> = src.iter().copied().chain([0]).collect();
+            // SAFETY: a terminated destination with room, a terminated source.
+            let got = unsafe { strncat(buf.as_mut_ptr(), src.as_ptr(), count) };
+            assert_eq!(got, buf.as_mut_ptr());
+            buf
+        };
+        assert_eq!(&run(b"ab", b"cdef", 2), b"abcd\0###########");
+        assert_eq!(&run(b"ab", b"cdef", 4), b"abcdef\0#########");
+        assert_eq!(&run(b"ab", b"cdef", 9), b"abcdef\0#########");
+        assert_eq!(&run(b"ab", b"cdef", 0), b"ab\0#############");
+        assert_eq!(&run(b"", b"xyz", 2), b"xy\0#############");
+        assert_eq!(&run(b"ab", b"", 3), b"ab\0#############");
+    }
+
+    /// _strdup: an equal copy in a block of its own; NULL for NULL.
+    #[test]
+    fn strdup_copies_into_a_new_block() {
+        crate::heap::initialize();
+        for text in [&b"duplicate me\0"[..], b"caf\xE9\0", b"\0"] {
+            // SAFETY: a terminated string; the copy is terminated, then freed.
+            unsafe {
+                let copy = strdup(text.as_ptr());
+                assert!(!copy.is_null() && copy.cast_const() != text.as_ptr());
+                assert_eq!(bytes_until_nul(copy), &text[..text.len() - 1]);
+                crate::heap::free(copy.cast());
+            }
+        }
+        // SAFETY: NULL is answered at once.
+        assert!(unsafe { strdup(core::ptr::null()) }.is_null());
     }
 
     /// strcspn, strrchr and strchr.
