@@ -156,6 +156,19 @@ impl<'b> Outline<'b> {
         ))
     }
 
+    /// Appends a contour of `points`, for an outline made rather than read from a font.
+    pub fn push_contour(&mut self, points: &[Point]) -> Result<(), Error> {
+        if points.is_empty() {
+            return Ok(());
+        }
+        if self.contour_count >= self.ends.len() {
+            return Err(Error::BufferTooSmall);
+        }
+        let first = self.point_count;
+        self.grow(points.len())?.copy_from_slice(points);
+        self.end_contour(first + points.len() - 1)
+    }
+
     /// Makes room for `count` more points, none of them yet read.
     fn grow(&mut self, count: usize) -> Result<&mut [Point], Error> {
         let start = self.point_count;

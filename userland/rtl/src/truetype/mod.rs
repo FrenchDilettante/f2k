@@ -7,7 +7,9 @@
 //! ([`header`]: `head`, `hhea`, `maxp`, `OS/2`, `post`), the names ([`name`]), the character map
 //! ([`cmap`]), the horizontal metrics ([`hmtx`]), the per-size tables ([`device`]: `hdmx`, `VDMX`,
 //! `gasp`), the outlines ([`glyf`]: `loca` and `glyf`, in the units [`scale`] gives) and the
-//! embedded bitmaps ([`embedded`]: `EBLC` and `EBDT`).
+//! embedded bitmaps ([`embedded`]: `EBLC` and `EBDT`). A glyph at a size, as GetGlyphOutline
+//! answers for it ([`glyph`]), comes from a strike or from its outline, scan-converted by
+//! [`raster`].
 //!
 //! A font file is untrusted input: every read is bounded by the slice ([`read`]), and a file that
 //! is truncated, points past its end or nests its composites without end gives an [`Error`],
@@ -19,9 +21,11 @@ pub mod device;
 pub mod directory;
 pub mod embedded;
 pub mod glyf;
+pub mod glyph;
 pub mod header;
 pub mod hmtx;
 pub mod name;
+pub mod raster;
 mod read;
 pub mod scale;
 
@@ -225,5 +229,7 @@ impl<'a> Font<'a> {
     }
 }
 
+#[cfg(test)]
+mod glyph_tests;
 #[cfg(test)]
 mod tests;
