@@ -3,6 +3,7 @@
 # F2K's own: the session cases of tests/core/kernel/test_kernel.py run it, the capture never does.
 description = "endsess - WM_QUERYENDSESSION and WM_ENDSESSION sent to the program's own windows (endsess.c, with its companion program endkid.c): SendMessageA/W with lParam 0 and ENDSESSION_LOGOFF, a procedure answering TRUE, FALSE or DefWindowProc's answer (the return, wParam, lParam, the thread it runs on), WM_ENDSESSION TRUE and FALSE (the window stays), DefWindowProcA/W's answers to both messages, and both sent to another thread's window."
 kind = "sectioned"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -24,8 +25,10 @@ defproc = [
     "user32.IsWindow",
 ]
 thread = [
+    "kernel32.CreateThread",
     "user32.SendMessageA",
     "user32.GetMessageA",
     "user32.DispatchMessageA",
     "user32.PostMessageA",
+    "user32.PostQuitMessage",
 ]

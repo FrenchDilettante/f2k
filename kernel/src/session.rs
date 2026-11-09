@@ -46,8 +46,9 @@
 //!   the idle thread reaps it, and the reap's report lines (the teardown audit, the suite's
 //!   summary) come before the shutdown's first line.
 //!
-//! Two kernel options serve the test boots, as no program of the corpus calls ExitWindowsEx (a
-//! real one would shut the capture machine down):
+//! Two kernel options serve the test boots, as no program of the corpus asks for a session's end
+//! the real machine would grant (it would shut the capture machine down; the ExitWindowsEx calls
+//! of exitwin and endkid are refused there for want of SeShutdownPrivilege):
 //! - `end-session=<flags>`: the first control event a program generates (GenerateConsoleCtrlEvent)
 //!   is taken instead for ExitWindowsEx(<flags>) from that program, raised at the same point. The
 //!   ctrl fixture generates its first event only once its child's handlers are in place, so a boot

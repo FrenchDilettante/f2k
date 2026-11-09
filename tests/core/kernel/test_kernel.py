@@ -175,14 +175,14 @@ PROCESS_CONCURRENT_TOO_MANY = (
 )
 
 # The session's end (kernel/src/session.rs), driven by the kernel option `end-session=<flags>`: no
-# program of the corpus calls ExitWindowsEx (a real one would shut the capture machine down), so
-# the option takes the boot's first generated control event for ExitWindowsEx(<flags>) from the
-# program that generates it. The ctrl fixture generates its first event into its child's group once
-# the child's handlers are in place, so the session ends at a known point: ctrl.exe the caller
-# (asked last), its child ctrlkid, and beside them spawnkid sleeping a minute with no handler (a
-# leg of its own, connected to the console before the child). `session-wait=2000` shortens the wait
-# from Windows 2000's 20 s. A process the session's end ends exits with 0xC000013A
-# (STATUS_CONTROL_C_EXIT, 3221225786), as its default handler would.
+# program of the corpus asks for a session's end the real machine would grant (it would shut the
+# capture machine down), so the option takes the boot's first generated control event for
+# ExitWindowsEx(<flags>) from the program that generates it. The ctrl fixture generates its first
+# event into its child's group once the child's handlers are in place, so the session ends at a
+# known point: ctrl.exe the caller (asked last), its child ctrlkid, and beside them spawnkid
+# sleeping a minute with no handler (a leg of its own, connected to the console before the child).
+# `session-wait=2000` shortens the wait from Windows 2000's 20 s. A process the session's end ends
+# exits with 0xC000013A (STATUS_CONTROL_C_EXIT, 3221225786), as its default handler would.
 SESSION_KID = "re:^F2K: child process \\d+ \\(CTRLKID\\) exited normally \\(exit code={}\\)$"
 SESSION_ENDED_AFTER_WAIT = "re:^F2K: session: process \\d+ \\({}\\) still running after 2000 ms: ended$"
 SESSION_LEGS = ("CORPUS\\ctrl.exe {}", "CORPUS\\spawnkid.exe sleep 60000")
@@ -260,8 +260,8 @@ SESSION_FORCED = (
 # boot's one program, makes a hidden window answering WM_QUERYENDSESSION as told, then asks for a
 # shutdown itself (ExitWindowsEx(EWX_SHUTDOWN), which Windows 2000 refuses without the privilege
 # and F2K, checking none, takes), and pumps its messages. The caller is asked last, and here alone:
-# WM_QUERYENDSESSION with lParam 0, then WM_ENDSESSION with the outcome. The program lives in the
-# endsess fixture's directory, so these cases await its real-machine build.
+# WM_QUERYENDSESSION with lParam 0, then WM_ENDSESSION with the outcome. The program is built
+# beside the endsess fixture on the real machine.
 ENDKID = "CORPUS\\endkid.exe {} shutdown"
 ENDKID_ASKED = (
     *BOOTED,
@@ -310,9 +310,6 @@ class Case:
     # The boot's seconds before the case fails as timed out (a boot loading many programs needs room
     # under a parallel run's load).
     timeout: float = DEFAULT_TIMEOUT
-    # The corpus fixture whose real-machine build brings the case's programs (a companion program
-    # beside it): the case is skipped while that fixture is awaited.
-    awaits: str | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -541,10 +538,9 @@ CASES = (
         forbids=("event 6", "still running after"),
         timeout=40.0,
     ),
-    Case(
-        name="session-windows",
-        description="a shutdown asked for by a program with a window (endsess's companion endkid, answering TRUE): WM_QUERYENDSESSION, then WM_ENDSESSION TRUE, then the program ended, torn down, and the machine's end right after it",
-        image="kernel",
+    *both_paths(
+        "session-windows",
+        "a shutdown asked for by a program with a window (endsess's companion endkid, answering TRUE): WM_QUERYENDSESSION, then WM_ENDSESSION TRUE, then the program ended, torn down, and the machine's end right after it",
         cmdline=ENDKID.format("yes"),
         ordered=True,
         expects=SESSION_WINDOWS_AGREE,
@@ -555,18 +551,15 @@ CASES = (
         ),
         forbids=("refused to end", "not answering after"),
         timeout=40.0,
-        awaits="endsess",
     ),
-    Case(
-        name="session-windows-refused",
-        description="a shutdown asked for by a program with a window answering FALSE (endsess's companion endkid): WM_QUERYENDSESSION, then WM_ENDSESSION FALSE, the session's end cancelled with a COM1 line, the program ending itself with 0, and no machine's end",
-        image="kernel",
+    *both_paths(
+        "session-windows-refused",
+        "a shutdown asked for by a program with a window answering FALSE (endsess's companion endkid): WM_QUERYENDSESSION, then WM_ENDSESSION FALSE, the session's end cancelled with a COM1 line, the program ending itself with 0, and no machine's end",
         cmdline=ENDKID.format("no"),
         ordered=True,
         expects=(*SESSION_WINDOWS_REFUSE, "F2K: teardown audit: frame database ok"),
         forbids=("F2K: shutdown", "not answering after"),
         timeout=40.0,
-        awaits="endsess",
     ),
     Case(
         name="process-concurrent-too-many",
@@ -683,8 +676,6 @@ class KeyPress:
 )
 def test_kernel(case, builder, log_path, boot_timeout, write_profile):
     """The case's description, as the case states it."""
-    if case.awaits is not None and f2kboot.awaited(case.awaits):
-        pytest.skip(f"{case.awaits} awaits its real-machine build and capture (tests/build.bat {case.awaits})")
     build = builder(list(case.features))
     expectation = f2kboot.Expectation(
         expects=list(case.expects),

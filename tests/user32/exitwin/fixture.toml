@@ -21,3 +21,4 @@ ntshutdown = "F2K checks no shutdown privilege; the call would shut the test boo
 actions = ["user32.ExitWindowsEx"]
 flags = ["user32.ExitWindowsEx"]
 ntshutdown = ["ntdll.NtShutdownSystem"]
+undefined = ["user32.ExitWindowsEx"]

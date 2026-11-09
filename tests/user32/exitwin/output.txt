@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 12:35:19.95
-exitwin F2KT-SOURCE-CRC=0xDB7CA7B1
+# date: Mon 11/09/2026 11:43:33.47
+exitwin F2KT-SOURCE-CRC=0x59359F25
 >>> exitwin.exe actions
 == actions
 guard: SeShutdownPrivilege held and disabled, no thread token: yes
@@ -28,10 +28,15 @@ ExitWindowsEx(EWX_SHUTDOWN | EWX_REBOOT): ret=0 err=1314
 ExitWindowsEx(EWX_SHUTDOWN | EWX_POWEROFF): ret=0 err=1314
 ExitWindowsEx(EWX_REBOOT | EWX_POWEROFF): ret=0 err=1314
 ExitWindowsEx(EWX_SHUTDOWN | EWX_REBOOT | EWX_POWEROFF): ret=0 err=1314
+ExitWindowsEx(EWX_SHUTDOWN, dwReserved 1): ret=0 err=1314
+exitwin: done
+<<< exit code=0
+>>> exitwin.exe undefined
+== undefined
+guard: SeShutdownPrivilege held and disabled in the process token: yes
 ExitWindowsEx(EWX_SHUTDOWN | EWX_QUICKRESOLVE): ret=0 err=5
 ExitWindowsEx(EWX_SHUTDOWN | EWX_RESTARTAPPS): ret=0 err=5
 ExitWindowsEx(EWX_REBOOT | EWX_QUICKRESOLVE): ret=0 err=5
-ExitWindowsEx(EWX_SHUTDOWN, dwReserved 1): ret=0 err=1314
 exitwin: done
 <<< exit code=0
 >>> exitwin.exe ntshutdown

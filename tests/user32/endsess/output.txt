@@ -1,0 +1,62 @@
+# F2K capture of endsess (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Mon 11/09/2026 11:43:33.51
+endsess F2KT-SOURCE-CRC=0x85A4C65F
+>>> endsess.exe query
+== query
+RegisterClass(F2KEndsessQuery): atom nonzero yes err=2
+CreateWindowEx(F2KEndsessQuery, hidden, 320x200): non-NULL yes err=-
+SendMessageA(h, WM_QUERYENDSESSION, 0, 0), answering TRUE: ret=1 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x00000000 on the window's thread yes count=1 ret=1
+SendMessageA(h, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF), answering TRUE: ret=1 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x80000000 on the window's thread yes count=1 ret=1
+SendMessageA(h, WM_QUERYENDSESSION, 0, 0), answering FALSE: ret=0 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x00000000 on the window's thread yes count=1 ret=0
+SendMessageW(h, WM_QUERYENDSESSION, 0, 0), DefWindowProc's answer: ret=1 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x00000000 on the window's thread yes count=1 ret=1
+SendMessageW(h, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF), DefWindowProc's answer: ret=1 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x80000000 on the window's thread yes count=1 ret=1
+endsess: done
+<<< exit code=0
+>>> endsess.exe end
+== end
+RegisterClass(F2KEndsessEnd): atom nonzero yes err=2
+CreateWindowEx(F2KEndsessEnd, hidden, 320x200): non-NULL yes err=-
+SendMessageA(h, WM_ENDSESSION, TRUE, 0), DefWindowProc's answer: ret=0 err=-
+procedure recorded: message=WM_ENDSESSION wParam=1 lParam=0x00000000 on the window's thread yes count=1 ret=0
+IsWindow(h) after it: yes err=-
+SendMessageA(h, WM_ENDSESSION, FALSE, ENDSESSION_LOGOFF), DefWindowProc's answer: ret=0 err=-
+procedure recorded: message=WM_ENDSESSION wParam=0 lParam=0x80000000 on the window's thread yes count=1 ret=0
+IsWindow(h) after it: yes err=-
+SendMessageW(h, WM_ENDSESSION, TRUE, ENDSESSION_LOGOFF), DefWindowProc's answer: ret=0 err=-
+procedure recorded: message=WM_ENDSESSION wParam=1 lParam=0x80000000 on the window's thread yes count=1 ret=0
+IsWindow(h) after it: yes err=-
+endsess: done
+<<< exit code=0
+>>> endsess.exe defproc
+== defproc
+RegisterClass(F2KEndsessDefproc): atom nonzero yes err=2
+CreateWindowEx(F2KEndsessDefproc, hidden, 320x200): non-NULL yes err=-
+DefWindowProcA(h, WM_QUERYENDSESSION, 0, 0): ret=1 err=-
+DefWindowProcA(h, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF): ret=1 err=-
+DefWindowProcW(h, WM_QUERYENDSESSION, 0, 0): ret=1 err=-
+DefWindowProcW(h, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF): ret=1 err=-
+DefWindowProcA(h, WM_ENDSESSION, FALSE, 0): ret=0 err=-
+DefWindowProcW(h, WM_ENDSESSION, FALSE, 0): ret=0 err=-
+procedure called: no
+IsWindow(h) after them: yes err=-
+endsess: done
+<<< exit code=0
+>>> endsess.exe thread
+== thread
+RegisterClass(F2KEndsessThread): atom nonzero yes err=2
+the second thread's window: made yes err=- (wait WAIT_OBJECT_0)
+SendMessageA(h, WM_QUERYENDSESSION, 0, ENDSESSION_LOGOFF), answering TRUE: ret=1 err=-
+procedure recorded: message=WM_QUERYENDSESSION wParam=0 lParam=0x80000000 on the window's thread yes count=1 ret=1
+SendMessageA(h, WM_ENDSESSION, TRUE, ENDSESSION_LOGOFF): ret=0 err=-
+procedure recorded: message=WM_ENDSESSION wParam=1 lParam=0x80000000 on the window's thread yes count=2 ret=0
+the second thread's end: WAIT_OBJECT_0
+endsess: done
+<<< exit code=0
