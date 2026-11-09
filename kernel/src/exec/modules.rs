@@ -981,9 +981,10 @@ mod tests {
 
     /// msvcrt, advapi32, user32 and gdi32: i386 DLL images at Windows 2000's bases for them (images
     /// are never relocated), clear of each other, of ntdll and kernel32, and of kernel space;
-    /// each has an entry point in its code, which ntdll's loader calls, and imports from
-    /// kernel32 and ntdll at most (scripts/compat.py holds each import against Windows 2000's
-    /// table).
+    /// each has an entry point in its code, which ntdll's loader calls, and every import it has
+    /// resolves: its module is one of the system DLLs the loader serves, and that DLL exports the
+    /// name. Which module an import comes from is Windows 2000's own import table's to say, and
+    /// scripts/compat.py holds each import against it.
     #[test]
     fn the_loaded_dlls_are_images_at_their_bases() {
         let mut extents: Vec<(u32, u32)> = [&NTDLL, &KERNEL32, &MSVCRT, &ADVAPI32, &USER32, &GDI32]
@@ -1007,10 +1008,8 @@ mod tests {
             assert!(entry != 0 && code.protection().execute, "{}", dll.file_name);
             for (module, name) in imports_of(dll.file) {
                 assert!(
-                    ["kernel32.dll", "ntdll.dll"]
-                        .iter()
-                        .any(|known| module.eq_ignore_ascii_case(known)),
-                    "{} imports {module}!{name}",
+                    resolve(&module, &name).is_ok(),
+                    "{} imports {module}!{name}, which no system DLL serves",
                     dll.file_name
                 );
             }

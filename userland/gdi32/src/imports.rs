@@ -1,8 +1,8 @@
 //! gdi32's seam to the rest of the system: what its code calls, imported by name as Windows 2000's
-//! gdi32 imports it (ntdll and kernel32), win32k's services through gdi32's own stubs (as Windows
-//! 2000's gdi32 enters the kernel itself), the process heap through the PEB, and the memory probe
-//! its stub routine reads arguments through. The host tests replace the imports with stand-ins of
-//! the same shape ([`host`]).
+//! gdi32 imports it (ntdll, kernel32 and user32), win32k's services through gdi32's own stubs (as
+//! Windows 2000's gdi32 enters the kernel itself), the process heap through the PEB, and the
+//! memory probe its stub routine reads arguments through. The host tests replace the imports with
+//! stand-ins of the same shape ([`host`]).
 //!
 //! Each import is wrapped once here in a safe function over references and slices, a service's
 //! failure an `Err` of its status; the only `unsafe` the rest of the DLL's code reaches for an
@@ -33,6 +33,12 @@ mod raw {
     unsafe extern "system" {
         /// SetLastError: the calling thread's last error.
         pub fn SetLastError(code: u32);
+    }
+
+    #[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
+    unsafe extern "system" {
+        /// GetSystemMetrics: a system metric (the screen's size among them).
+        pub fn GetSystemMetrics(index: i32) -> i32;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -197,6 +203,14 @@ impl Drop for HeapBlock {
 pub fn set_last_error(code: u32) {
     // SAFETY: no pointers; it writes the thread's own TEB.
     unsafe { raw::SetLastError(code) }
+}
+
+// --- user32 --------------------------------------------------------------------------------------
+
+/// GetSystemMetrics: the system metric `index` names (winuser.h's SM_*), 0 for one it does not.
+pub fn system_metric(index: i32) -> i32 {
+    // SAFETY: no pointers.
+    unsafe { raw::GetSystemMetrics(index) }
 }
 
 // --- ntdll ---------------------------------------------------------------------------------------
@@ -384,7 +398,8 @@ pub mod host {
     pub const DC: usize = 0x7C;
     /// A handle that names nothing.
     pub const BAD: usize = 0x80;
-    /// The stand-ins' screen, the DC's clipping region: its pixels other than (100, 100) are white.
+    /// The stand-ins' screen, the DC's clipping region and the size GetSystemMetrics answers: its
+    /// pixels other than (100, 100) are white.
     pub const SCREEN_WIDTH: i32 = 640;
     pub const SCREEN_HEIGHT: i32 = 480;
 
@@ -472,6 +487,16 @@ pub mod host {
 
     pub unsafe extern "system" fn SetLastError(code: u32) {
         LAST_ERROR.with(|error| error.set(code));
+    }
+
+    /// GetSystemMetrics: the screen's width (SM_CXSCREEN) and height (SM_CYSCREEN), 0 for another
+    /// index.
+    pub unsafe extern "system" fn GetSystemMetrics(index: i32) -> i32 {
+        match index {
+            crate::dc::SM_CXSCREEN => SCREEN_WIDTH,
+            crate::dc::SM_CYSCREEN => SCREEN_HEIGHT,
+            _ => 0,
+        }
     }
 
     /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that

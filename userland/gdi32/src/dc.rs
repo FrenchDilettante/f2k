@@ -1,8 +1,9 @@
 //! The screen DC: CreateDC of the display, DeleteDC and GetDeviceCaps, the stock objects
 //! (GetStockObject, SelectObject, DeleteObject), the text and background colors and the background
 //! mode, and single pixels, each over its win32k service ([`imports`]: gdi32's own stubs, as
-//! Windows 2000's gdi32 enters the kernel itself). What the kernel serves is in its DC services'
-//! notes (kernel/src/win32k/dc.rs): screen DCs, stock objects as constant handles, one font.
+//! Windows 2000's gdi32 enters the kernel itself), the screen's size over user32's
+//! GetSystemMetrics. What the kernel serves is in its DC services' notes
+//! (kernel/src/win32k/dc.rs): screen DCs, stock objects as constant handles, one font.
 
 use rtl::edge::{InStr, InWStr};
 use rtl::gdi::*;
@@ -225,39 +226,15 @@ const DESKTOPHORZRES: i32 = 118;
 /// TECHNOLOGY's answer for the display: a raster display.
 const DT_RASDISPLAY: i32 = 1;
 
-/// The farthest a DC's extent is looked for, in either direction: past any screen a VBE mode has.
-const MOST_PIXELS: i32 = 0x8000;
+/// GetSystemMetrics' indexes (winuser.h) for the screen's size.
+pub(crate) const SM_CXSCREEN: i32 = 0;
+pub(crate) const SM_CYSCREEN: i32 = 1;
 
-/// The extent of `dc` along one axis: the first pixel past its clipping region, walking from the
-/// origin along the axis `at` names (a coordinate to its pixel), found by bisection over GetPixel,
-/// which answers CLR_INVALID outside the region alone (a pixel's color is RGB, never all ones).
-/// A screen DC's clipping region is the screen's extent from the origin when the DC was made
-/// (kernel/src/win32k/dc.rs): its size, 0 before a graphics mode is set.
-fn extent(dc: usize, at: impl Fn(i32) -> (i32, i32)) -> i32 {
-    let inside = |n: i32| {
-        let (x, y) = at(n);
-        imports::get_pixel(dc, x, y).is_ok_and(|color| color != CLR_INVALID)
-    };
-    if !inside(0) {
-        return 0;
-    }
-    // `inside(low)` holds and `inside(high)` does not.
-    let (mut low, mut high) = (0, MOST_PIXELS);
-    while high - low > 1 {
-        let middle = low + (high - low) / 2;
-        if inside(middle) {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    high
-}
-
-/// GetDeviceCaps: a capability of the screen DC — its size (its clipping region's extent, read
-/// through GetPixel: no DC service answers a capability), its 32 bits per pixel in one plane (the
-/// framebuffer's), 96 logical pixels per inch, more colors than a palette holds (NUMCOLORS -1, no
-/// palette); 0 with the last error for a DC that is none. Another index goes to the stub routine.
+/// GetDeviceCaps: a capability of the screen DC — its size (the screen's, user32's
+/// GetSystemMetrics as Windows 2000's gdi32 imports it: no DC service answers a capability), its
+/// 32 bits per pixel in one plane (the framebuffer's), 96 logical pixels per inch, more colors
+/// than a palette holds (NUMCOLORS -1, no palette); 0 with the last error for a DC that is none.
+/// Another index goes to the stub routine.
 #[unsafe(export_name = "f2k_export_GetDeviceCaps")]
 pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
     if answered(imports::dc_dword(dc, DC_TEXT_COLOR)).is_none() {
@@ -265,8 +242,8 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
     }
     match index {
         TECHNOLOGY => DT_RASDISPLAY,
-        HORZRES | DESKTOPHORZRES => extent(dc, |x| (x, 0)),
-        VERTRES | DESKTOPVERTRES => extent(dc, |y| (0, y)),
+        HORZRES | DESKTOPHORZRES => imports::system_metric(SM_CXSCREEN),
+        VERTRES | DESKTOPVERTRES => imports::system_metric(SM_CYSCREEN),
         BITSPIXEL => 32,
         PLANES => 1,
         NUMCOLORS => -1,
@@ -290,7 +267,18 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::imports::host::{HostDc, BAD, DC, DEBUG_PRINTS, HOST_DC, LAST_ERROR, OPENED};
+    use crate::imports::host::{
+        HostDc,
+        BAD,
+        DC,
+        DEBUG_PRINTS,
+        HOST_DC,
+        LAST_ERROR,
+        OPENED,
+        SCREEN_HEIGHT,
+        SCREEN_WIDTH,
+        SERVICES,
+    };
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())
@@ -501,20 +489,29 @@ mod tests {
         assert_eq!(last_error(), ERROR_INVALID_HANDLE);
     }
 
-    /// The screen DC's capabilities: its clipping region's size, 32 bits in one plane, 96 pixels
-    /// per inch, NUMCOLORS -1; a DC that is none is 0 with ERROR_INVALID_HANDLE; another
-    /// index is a stub.
+    /// The screen DC's capabilities: the screen's size (GetSystemMetrics', the DC's check the one
+    /// service called), 32 bits in one plane, 96 pixels per inch, NUMCOLORS -1; a DC that is none
+    /// is 0 with ERROR_INVALID_HANDLE; another index is a stub.
     ///
     /// Pins: gdi32.GetDeviceCaps
     #[test]
     fn device_caps_describe_the_screen() {
         reset();
-        let answers: std::vec::Vec<i32> =
-            [HORZRES, VERTRES, BITSPIXEL, PLANES, LOGPIXELSX, NUMCOLORS]
-                .into_iter()
-                .map(|index| get_device_caps(DC, index))
-                .collect();
-        assert_eq!(answers, [640, 480, 32, 1, 96, -1]);
+        let services = SERVICES.with(|count| count.get());
+        let size: std::vec::Vec<i32> = [HORZRES, VERTRES, DESKTOPHORZRES, DESKTOPVERTRES]
+            .into_iter()
+            .map(|index| get_device_caps(DC, index))
+            .collect();
+        assert_eq!(
+            size,
+            [SCREEN_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH, SCREEN_HEIGHT]
+        );
+        assert_eq!(SERVICES.with(|count| count.get()), services + 4);
+        let answers: std::vec::Vec<i32> = [BITSPIXEL, PLANES, LOGPIXELSX, NUMCOLORS]
+            .into_iter()
+            .map(|index| get_device_caps(DC, index))
+            .collect();
+        assert_eq!(answers, [32, 1, 96, -1]);
         assert_eq!(get_device_caps(DC, TECHNOLOGY), DT_RASDISPLAY);
         assert_eq!(last_error(), 0xF2F2);
         assert_eq!(get_device_caps(BAD, HORZRES), 0);
