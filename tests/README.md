@@ -162,7 +162,7 @@ The fixtures:
   `profile.ini` (CRLF) sits beside the program and is only read; the writes go to `profwork.ini` (its copy), `profnew.ini` and `profneww.ini`, deleted at every section's start and end.
   Every file is named by a full path, the program's own directory, which never prints.
   F2K's boot adds `profile.ini` to `\CORPUS` beside the program (`data_files`).
-  Not gated: every section is pending until kernel32 has the profile functions.
+  Gated; `winini` stays pending while F2K's disk carries no `\WINNT\win.ini`: win.ini's section list is empty before `[F2KProfile]` is written and after it is deleted.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.

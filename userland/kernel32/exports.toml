@@ -140,6 +140,10 @@ title = "pipes"
 key = "resources"
 title = "resources"
 
+[[group]]
+key = "profile"
+title = "profile files"
+
 # --- termination ----------------------------------------------------------------------------------
 
 [[export]]
@@ -2648,6 +2652,170 @@ impl = { native = "FreeResource" }
 ordinal = 202
 note = "obsolete on NT: FALSE, the last error untouched"
 
+# --- profile files --------------------------------------------------------------------------------
+
+[[export]]
+name = "GetProfileIntA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "i32 nDefault"]
+impl = { native = "GetProfileIntA" }
+ordinal = 354
+fails = "0"
+note = "GetPrivateProfileIntA's over win.ini (the Windows directory's); its IniFileMapping to the registry not consulted"
+
+[[export]]
+name = "GetProfileIntW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "i32 nDefault"]
+impl = { native = "GetProfileIntW" }
+ordinal = 355
+fails = "0"
+note = "GetProfileIntA's, the strings UTF-16"
+
+[[export]]
+name = "GetProfileStringA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "strA? lpDefault", "ptr lpReturnedString", "u32 nSize"]
+impl = { native = "GetProfileStringA" }
+ordinal = 358
+fails = "0"
+note = "GetPrivateProfileStringA's over win.ini (the Windows directory's); its IniFileMapping to the registry not consulted"
+
+[[export]]
+name = "GetProfileStringW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "strW? lpDefault", "ptr lpReturnedString", "u32 nSize"]
+impl = { native = "GetProfileStringW" }
+ordinal = 359
+fails = "0"
+note = "GetProfileStringA's, the strings UTF-16"
+
+[[export]]
+name = "WriteProfileStringA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "strA? lpString"]
+impl = { native = "WriteProfileStringA" }
+ordinal = 799
+fails = "FALSE"
+note = "WritePrivateProfileStringA's on win.ini (the Windows directory's); its IniFileMapping to the registry not consulted"
+
+[[export]]
+name = "WriteProfileStringW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "strW? lpString"]
+impl = { native = "WriteProfileStringW" }
+ordinal = 800
+fails = "FALSE"
+note = "WriteProfileStringA's, the strings UTF-16"
+
+[[export]]
+name = "GetPrivateProfileStringA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "strA? lpDefault", "ptr lpReturnedString", "u32 nSize", "strA? lpFileName"]
+impl = { native = "GetPrivateProfileStringA" }
+ordinal = 340
+fails = "0"
+note = "kernel32 reads the file itself; a name without a path is the Windows directory's, NULL win.ini. The value (blanks and matching quotes dropped), or the default (trailing blanks dropped); a NULL key lists the keys, a NULL section the sections; cut to nSize - 1 (a list nSize - 2); the last error cleared for a whole answer from the file"
+
+[[export]]
+name = "GetPrivateProfileStringW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "strW? lpDefault", "ptr lpReturnedString", "u32 nSize", "strW? lpFileName"]
+impl = { native = "GetPrivateProfileStringW" }
+ordinal = 341
+fails = "0"
+note = "GetPrivateProfileStringA's, the strings UTF-16"
+
+[[export]]
+name = "GetPrivateProfileIntA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "i32 nDefault", "strA? lpFileName"]
+impl = { native = "GetPrivateProfileIntA" }
+ordinal = 334
+fails = "0"
+note = "the value as RtlUnicodeStringToInteger reads it in base 0; a missing key or an empty value the default"
+
+[[export]]
+name = "GetPrivateProfileIntW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "i32 nDefault", "strW? lpFileName"]
+impl = { native = "GetPrivateProfileIntW" }
+ordinal = 335
+fails = "0"
+note = "GetPrivateProfileIntA's, the strings UTF-16"
+
+[[export]]
+name = "GetPrivateProfileSectionA"
+group = "profile"
+args = ["strA? lpAppName", "ptr lpReturnedString", "u32 nSize", "strA? lpFileName"]
+impl = { native = "GetPrivateProfileSectionA" }
+ordinal = 336
+fails = "0"
+note = "the section's entries as key=value (blanks dropped, quotes kept), an entry without '=' as it is; a missing section ERROR_FILE_NOT_FOUND"
+
+[[export]]
+name = "GetPrivateProfileSectionW"
+group = "profile"
+args = ["strW? lpAppName", "ptr lpReturnedString", "u32 nSize", "strW? lpFileName"]
+impl = { native = "GetPrivateProfileSectionW" }
+ordinal = 339
+fails = "0"
+note = "GetPrivateProfileSectionA's, the strings UTF-16"
+
+[[export]]
+name = "GetPrivateProfileSectionNamesA"
+group = "profile"
+args = ["ptr lpszReturnBuffer", "u32 nSize", "strA? lpFileName"]
+impl = { native = "GetPrivateProfileSectionNamesA" }
+ordinal = 337
+fails = "0"
+note = "every section's name, repeated ones too; a missing file the empty list"
+
+[[export]]
+name = "GetPrivateProfileSectionNamesW"
+group = "profile"
+args = ["ptr lpszReturnBuffer", "u32 nSize", "strW? lpFileName"]
+impl = { native = "GetPrivateProfileSectionNamesW" }
+ordinal = 338
+fails = "0"
+note = "GetPrivateProfileSectionNamesA's, the strings UTF-16"
+
+[[export]]
+name = "WritePrivateProfileStringA"
+group = "profile"
+args = ["strA? lpAppName", "strA? lpKeyName", "strA? lpString", "strA? lpFileName"]
+impl = { native = "WritePrivateProfileStringA" }
+ordinal = 792
+fails = "FALSE"
+note = "the file edited in place and written back whole (a new file ANSI); a NULL value deletes the key, a NULL key the section"
+
+[[export]]
+name = "WritePrivateProfileStringW"
+group = "profile"
+args = ["strW? lpAppName", "strW? lpKeyName", "strW? lpString", "strW? lpFileName"]
+impl = { native = "WritePrivateProfileStringW" }
+ordinal = 793
+fails = "FALSE"
+note = "WritePrivateProfileStringA's, the strings UTF-16 (an ANSI file's narrowed through the ANSI code page)"
+
+[[export]]
+name = "WritePrivateProfileSectionA"
+group = "profile"
+args = ["strA? lpAppName", "ptr lpString", "strA? lpFileName"]
+impl = { native = "WritePrivateProfileSectionA" }
+ordinal = 790
+fails = "FALSE"
+note = "the section's entries replaced by the list's lines as written, or the section added"
+
+[[export]]
+name = "WritePrivateProfileSectionW"
+group = "profile"
+args = ["strW? lpAppName", "ptr lpString", "strW? lpFileName"]
+impl = { native = "WritePrivateProfileSectionW" }
+ordinal = 791
+fails = "FALSE"
+note = "WritePrivateProfileSectionA's, the strings UTF-16"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -3523,38 +3691,6 @@ name = "GetOverlappedResult"
 ordinal = 332
 
 [[export]]
-name = "GetPrivateProfileIntA"
-ordinal = 334
-
-[[export]]
-name = "GetPrivateProfileIntW"
-ordinal = 335
-
-[[export]]
-name = "GetPrivateProfileSectionA"
-ordinal = 336
-
-[[export]]
-name = "GetPrivateProfileSectionNamesA"
-ordinal = 337
-
-[[export]]
-name = "GetPrivateProfileSectionNamesW"
-ordinal = 338
-
-[[export]]
-name = "GetPrivateProfileSectionW"
-ordinal = 339
-
-[[export]]
-name = "GetPrivateProfileStringA"
-ordinal = 340
-
-[[export]]
-name = "GetPrivateProfileStringW"
-ordinal = 341
-
-[[export]]
 name = "GetPrivateProfileStructA"
 ordinal = 342
 
@@ -3583,28 +3719,12 @@ name = "GetProcessWorkingSetSize"
 ordinal = 353
 
 [[export]]
-name = "GetProfileIntA"
-ordinal = 354
-
-[[export]]
-name = "GetProfileIntW"
-ordinal = 355
-
-[[export]]
 name = "GetProfileSectionA"
 ordinal = 356
 
 [[export]]
 name = "GetProfileSectionW"
 ordinal = 357
-
-[[export]]
-name = "GetProfileStringA"
-ordinal = 358
-
-[[export]]
-name = "GetProfileStringW"
-ordinal = 359
 
 [[export]]
 name = "GetQueuedCompletionStatus"
@@ -4567,22 +4687,6 @@ name = "WriteFileGather"
 ordinal = 789
 
 [[export]]
-name = "WritePrivateProfileSectionA"
-ordinal = 790
-
-[[export]]
-name = "WritePrivateProfileSectionW"
-ordinal = 791
-
-[[export]]
-name = "WritePrivateProfileStringA"
-ordinal = 792
-
-[[export]]
-name = "WritePrivateProfileStringW"
-ordinal = 793
-
-[[export]]
 name = "WritePrivateProfileStructA"
 ordinal = 794
 
@@ -4597,14 +4701,6 @@ ordinal = 797
 [[export]]
 name = "WriteProfileSectionW"
 ordinal = 798
-
-[[export]]
-name = "WriteProfileStringA"
-ordinal = 799
-
-[[export]]
-name = "WriteProfileStringW"
-ordinal = 800
 
 [[export]]
 name = "WriteTapemark"

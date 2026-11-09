@@ -7,16 +7,10 @@
 description = "profile - kernel32's profile functions: GetProfileIntA/W, GetProfileStringA/W and WriteProfileStringA/W on win.ini's [F2KProfile] (defaults, values written and read back as numbers and strings, short buffers, the key list, a key and the section deleted, the section names as F2KProfile among them or not); GetPrivateProfileStringA/W, GetPrivateProfileIntA/W, GetPrivateProfileSectionA/W and GetPrivateProfileSectionNamesA/W over the fixture's own profile.ini (comments, blanks, quotes, numbers, repeated keys and sections, short buffers, lists, a missing file); WritePrivateProfileStringA/W and WritePrivateProfileSectionA/W on a copy and on new files, and the bytes they leave."
 kind = "sectioned"
 data_files = ["profile.ini"]
+gate = true
 
-# Not gated: kernel32's profile functions are catalogued, not exported, so the program does not
-# load on F2K yet. Every section is on the work list.
 [pending]
-winini = "GetProfileIntA/W, GetProfileStringA/W and WriteProfileStringA/W not yet implemented: no win.ini"
-read = "GetPrivateProfileStringA/W not yet implemented: no .ini reader"
-int = "GetPrivateProfileIntA/W not yet implemented"
-sections = "GetPrivateProfileSectionA/W and GetPrivateProfileSectionNamesA/W not yet implemented"
-write = "WritePrivateProfileStringA/W and WritePrivateProfileSectionA/W not yet implemented: no .ini writer"
-new = "WritePrivateProfileStringA/W and GetPrivateProfileStringA/W not yet implemented"
+winini = "the disk carries no \\WINNT\\win.ini: win.ini's section list is empty before [F2KProfile] is written and after it is deleted"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

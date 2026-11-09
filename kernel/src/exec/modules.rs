@@ -485,10 +485,10 @@ mod tests {
         // probes its assembly, the TLS slots' reads and writes; the console, start-up, locale,
         // clock, virtual-memory, mapping, synchronization, handle-information, timer, sleep, APC,
         // affinity, TLS-index, environment, computer-name, file (the write side's included),
-        // current-directory, binary-type, process-creation, process, ToolHelp, pipe, module and
-        // resource calls and RaiseException its Rust, the heap and Local/Global calls its own over
-        // ntdll's heap). The internal start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 322);
+        // current-directory, binary-type, process-creation, process, ToolHelp, pipe, module,
+        // resource and profile calls and RaiseException its Rust, the heap and Local/Global calls
+        // its own over ntdll's heap). The internal start thunks are not among them.
+        assert_eq!(NATIVE_EXPORTS.len(), 340);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 331, "the corpus's import surface");
+        assert_eq!(names.len(), 349, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -1102,7 +1102,7 @@ mod tests {
 
     /// The corpus binaries that import msvcrt, advapi32 or user32 (hellogui aside: its window calls
     /// are not user32's exports yet).
-    const LOADED_CORPUS: [(&str, &[u8]); 23] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 24] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1166,6 +1166,10 @@ mod tests {
         (
             "resource",
             include_bytes!("../../../tests/kernel32/resource/resource.exe"),
+        ),
+        (
+            "profile",
+            include_bytes!("../../../tests/kernel32/profile/profile.exe"),
         ),
         (
             "thkid",
