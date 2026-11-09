@@ -3263,6 +3263,10 @@ impl Windows {
         let visible = self.at(window).is_visible();
         if flags & SWP_SHOWWINDOW != 0 && !visible {
             self.at_mut(window).style |= WS_VISIBLE;
+            // A window shown for the first time is invalid over its whole area, to be erased:
+            // the newly exposed client has nothing valid in it yet, so the next read of the
+            // queue makes a WM_PAINT and UpdateWindow sends one at once.
+            super::paint::invalidate(self, window, None, true);
         } else if flags & SWP_HIDEWINDOW != 0 && visible {
             self.at_mut(window).style &= !WS_VISIBLE;
         } else {

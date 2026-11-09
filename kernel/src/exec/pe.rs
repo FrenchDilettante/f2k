@@ -46,8 +46,10 @@ use rtl::pod::Pod;
 /// The only machine type this loader accepts: i386.
 const MACHINE_I386: u16 = 0x014C;
 
-/// The only subsystem this loader accepts for a program: console. A DLL's subsystem field is not
-/// consulted (the system DLLs carry either value).
+/// The subsystems this loader accepts for a program: Windows GUI and console — the two a user
+/// image may carry; anything else (native included) is rejected as not a program. A DLL's
+/// subsystem field is not consulted (the system DLLs carry either value).
+const SUBSYSTEM_GUI: u16 = 2;
 const SUBSYSTEM_CUI: u16 = 3;
 
 /// The file-header characteristic that makes an image a DLL.
@@ -443,10 +445,10 @@ fn round_up(v: u32, align: u32) -> u64 {
     u64::from(v).next_multiple_of(u64::from(align))
 }
 
-/// The identity contracts of the image whose NT headers are `nt`: a program must be a console
-/// image with an entry point; a DLL may be either subsystem and may have no entry point (nothing to
-/// call at attach). Either has sections, and a preferred base at which it fits below user space's
-/// end.
+/// The identity contracts of the image whose NT headers are `nt`: a program must be a Windows
+/// GUI or console image with an entry point; a DLL may be either subsystem and may have no
+/// entry point (nothing to call at attach). Either has sections, and a preferred base at which
+/// it fits below user space's end.
 fn check_identity(nt: &ImageNtHeaders32) -> Result<(), Reject> {
     let optional = &nt.optional_header;
     let dll = nt.file_header.characteristics & FILE_DLL != 0;
@@ -457,7 +459,7 @@ fn check_identity(nt: &ImageNtHeaders32) -> Result<(), Reject> {
     if base == 0 || !base.is_multiple_of(IMAGE_BASE_ALIGNMENT) {
         return Err(Reject::ImageBaseUnaligned);
     }
-    if !dll && optional.subsystem != SUBSYSTEM_CUI {
+    if !dll && !matches!(optional.subsystem, SUBSYSTEM_GUI | SUBSYSTEM_CUI) {
         return Err(Reject::WrongSubsystem);
     }
     if !dll && optional.address_of_entry_point == 0 {
@@ -970,6 +972,8 @@ mod tests {
 
     const EXIT0: &[u8] = include_bytes!("../../../tests/core/exit0/exit0.exe");
     const RET0: &[u8] = include_bytes!("../../../tests/core/ret0/ret0.exe");
+    // The GUI rung: subsystem 2 (windows GUI), linked /SUBSYSTEM:WINDOWS.
+    const HELLOGUI: &[u8] = include_bytes!("../../../tests/user32/hellogui/hellogui.exe");
 
     // exit0: NT at 0xb8, optional header at 0xd0, section table at 0x1b0; ret0: NT at 0xc8,
     // optional header at 0xe0, section table at 0x1c0. Import surfaces: exit0 has one import
@@ -1291,9 +1295,28 @@ mod tests {
     }
 
     #[test]
-    fn non_console_subsystem_rejects() {
-        let bad = patched(EXIT0, |b| w16(b, off_opt(b) + 68, 5));
-        assert_eq!(Image::parse(&bad), Err(Reject::WrongSubsystem));
+    fn foreign_subsystems_reject() {
+        // Native (1) and OS/2 (5) are not programs this loader runs; the rejection maps to the
+        // bad-exe-format error the platform reports for them.
+        for subsystem in [1, 5] {
+            let bad = patched(EXIT0, |b| w16(b, off_opt(b) + 68, subsystem));
+            assert_eq!(Image::parse(&bad), Err(Reject::WrongSubsystem), "subsystem {subsystem}");
+        }
+    }
+
+    #[test]
+    fn a_gui_subsystem_program_accepts() {
+        let gui = patched(EXIT0, |b| w16(b, off_opt(b) + 68, 2));
+        let image = Image::parse_program(&gui).expect("a GUI program parses");
+        assert_eq!(image.subsystem(), 2);
+        assert!(!image.is_dll());
+    }
+
+    #[test]
+    fn the_gui_rung_parses_as_a_program() {
+        let image = Image::parse_program(HELLOGUI).expect("hellogui parses as a program");
+        assert_eq!(image.subsystem(), 2, "hellogui.exe is a windows-GUI image");
+        assert!(!image.is_dll());
     }
 
     // ---- program or DLL ----

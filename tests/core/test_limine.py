@@ -28,6 +28,7 @@ LIMINE_BLOCKS = (
     ("files", "read"),  # fileio
     ("runtime", "args"),  # the command line through a real loader
     ("memory", "sysinfo"),  # the loader's memory map
+    ("hellogui", "(default)"),  # the GUI rung, under FiSH (boot_under)
 )
 
 

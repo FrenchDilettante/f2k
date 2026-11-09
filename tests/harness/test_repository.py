@@ -37,7 +37,7 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "screenshots", "keys", "system_programs"}
+                    "screenshots", "keys", "system_programs", "boot_under"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
 SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
@@ -141,6 +141,22 @@ def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
         assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
         assert name in built, f"{name}: not a program `make userland` copies to its .exe name"
         assert name not in on_disk, f"{name}: the disk the tests boot carries it already"
+
+
+# The fixtures declaring `boot_under`.
+BOOTING_UNDER = [name for name in DECLARED if "boot_under" in f2kboot.declaration(name)]
+
+
+@pytest.mark.parametrize("fixture", BOOTING_UNDER)
+def test_boot_under_is_one_program_path_with_no_arguments(fixture: str):
+    """A sectioned fixture's `boot_under` wraps each of its blocks' command lines under one program
+    the boot runs first (WINNT\\system32\\fish.exe sets the graphics mode before the block's program
+    runs, and ends with its exit code): only a sectioned fixture declares it, and its value is one
+    program path on the boot volume, with no arguments."""
+    assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture boots under a program"
+    under = f2kboot.boot_under(fixture)
+    assert under, "an empty boot_under: leave it out"
+    assert not any(character.isspace() for character in under), f"{under!r}: boot_under names no arguments"
 
 
 @pytest.mark.parametrize("fixture", SCRIPTS)
@@ -422,13 +438,11 @@ def test_no_export_is_a_kernel_served_win32_service():
 def test_the_spec_lists_every_fixture_import():
     """Every import of every served corpus fixture names a DLL F2K builds and an export its spec
     implements or stubs, so every fixture loads: the loader stops at the first missing import. A
-    fixture's own companion DLLs (beside it, as dllmain's) are its own. hellogui imports gdi32,
-    which F2K does not have; a fixture with blocks still pending and no gate (the graphics-kernel
-    fixtures) is declared ahead of the implementation and not served yet."""
+    fixture's own companion DLLs (beside it, as dllmain's) are its own. A fixture with blocks still
+    pending and no gate (the graphics-kernel fixtures) is declared ahead of the implementation and
+    not served yet."""
     exported = {dll: {e["name"] for e in dll_exports(dll)} for dll in BUILT_DLLS}
     for exe in sorted(TESTS.glob("*/*/*.exe")):
-        if exe.parent.name == "hellogui":
-            continue
         # A fixture whose declaration still holds blocks pending and is not gated is
         # declared ahead of the implementation (the GUI fixtures): its imports are
         # not all served yet.

@@ -624,9 +624,12 @@ class KeyPresser:
     released, its own chord held. A block's last held chord is released before the next block's
     steps."""
 
-    def __init__(self, blocks: list[Block], keys: dict[str, list[KeyStep]]):
-        self.plans = [(f"{CORPUS_DIRECTORY}\\{block.command}", keys[block.section])
-                      for block in blocks if block.section in keys]
+    def __init__(self, blocks: list[Block], keys: dict[str, list[KeyStep]],
+                 under: list[str | None] | None = None):
+        if under is None:
+            under = [None] * len(blocks)
+        self.plans = [(block_command(block.command, each), keys[block.section])
+                      for block, each in zip(blocks, under) if block.section in keys]
         self.plan = 0
         self.step = 0
         self.line = 0  # the first log line the next `after` wait may match
@@ -1424,6 +1427,20 @@ def system_programs(fixture: str) -> list[Path]:
     return [BUILT_PROGRAMS / f"{name}.exe" for name in names]
 
 
+def boot_under(fixture: str) -> str | None:
+    """The program a sectioned fixture's declaration wraps its blocks' command lines under, its
+    `boot_under`: the boot runs `<boot_under> \\CORPUS\\<command>`, so the program runs the block's
+    command line itself and its exit code is the block's (FiSH's `WINNT\\system32\\fish.exe` sets
+    the graphics mode before the block's program runs). One program path on the boot volume, no
+    arguments; None by default."""
+    under = declaration(fixture).get("boot_under")
+    if under is None:
+        return None
+    if not isinstance(under, str) or not under or any(character.isspace() for character in under):
+        raise ValueError(f"{fixture}: boot_under is one program path with no arguments, {under!r}")
+    return under
+
+
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
     fixture's (`script_disk`) or a sectioned one's with its `system_programs` added; None for the
@@ -1468,6 +1485,7 @@ def corpus_params(fixture: str) -> list:
             retake=declared.get("retake"),
         )
     system_programs(fixture)  # a malformed list fails the collection, not the boot
+    boot_under(fixture)  # likewise, its boot_under
     return blocks(
         fixture,
         gate=declared.get("gate", False),
@@ -1515,10 +1533,25 @@ SUMMARY = "F2K: process suite complete:"
 KERNEL_COMMAND_LINE = 4096
 
 
-def batch_command_line(commands: list[str]) -> str:
-    """The user command line that runs `commands` (blocks' command lines) from the corpus's
-    directory, one after another."""
-    return " ;; ".join(f"{CORPUS_DIRECTORY}\\{command}" for command in commands)
+def block_command(command: str, under: str | None = None) -> str:
+    """A block's command line as the boot runs it: from the corpus's directory (`CORPUS\\<command>`,
+    a root-relative volume path for the kernel's own boot), or under its fixture's `boot_under`
+    program (`WINNT\\system32\\fish.exe \\CORPUS\\<command>`): the program runs the block's command
+    line itself — the corpus path rooted, so CreateProcess finds it from the program's own
+    directory — and its exit code is the block's."""
+    run = f"{CORPUS_DIRECTORY}\\{command}"
+    return f"{under} \\{run}" if under is not None else run
+
+
+def batch_command_line(commands: list[str], under: list[str | None] | None = None) -> str:
+    """The user command line that runs `commands` (blocks' command lines) one after another, each
+    `block_command` — under its fixture's `boot_under` program where it declares one (`under` the
+    blocks' programs, aligned with `commands`)."""
+    if under is None:
+        under = [None] * len(commands)
+    if len(under) != len(commands):
+        raise ValueError(f"{len(under)} boot_under programs for {len(commands)} commands")
+    return " ;; ".join(block_command(command, each) for command, each in zip(commands, under))
 
 
 def split_programs(log: str) -> tuple[str, list[tuple[str, str]]]:
@@ -1569,7 +1602,8 @@ class BatchWatch:
 @dataclass
 class Batch:
     """A batch boot's outcome: the blocks' command lines it ran, in order; its log (at `log_path`)
-    and why it stopped ("done", "exited", "timeout"); the log split at the programs' starts."""
+    and why it stopped ("done", "exited", "timeout"); the log split at the programs' starts; and
+    each block's `boot_under` program (None for most), as `block_command` wraps its command line."""
 
     commands: list[str]
     log: str
@@ -1577,6 +1611,7 @@ class Batch:
     stopped: str
     prefix: str
     programs: list[tuple[str, str]]
+    under: list[str | None] = field(default_factory=list)
 
     def stopped_in(self) -> str:
         """The block's command line the boot stopped in: the last to start (the first when none
@@ -1590,7 +1625,8 @@ class Batch:
             return f"not run: the boot stopped in {self.stopped_in()} ({self.stopped})"
         if index < len(self.programs):
             ran = self.programs[index][0]
-            expected = f"{CORPUS_DIRECTORY}\\{block.command}"
+            under = self.under[index] if index < len(self.under) else None
+            expected = block_command(block.command, under)
             if ran != expected:
                 return f"the boot ran [{ran}] where [{expected}] was expected"
             part = self.programs[index][1]
@@ -1599,26 +1635,34 @@ class Batch:
         return compare_block(block, self.prefix + part, masks)
 
 
-def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
-               timeouts: list[float], screens: Path | None = None,
-               keys: dict[str, list[KeyStep]] | None = None) -> Batch:
-    """Run `blocks` in one boot of `build` (`image` as `boot` takes it), each its own process, in
-    order; `timeouts` are each block's seconds (the boot's start counts against the first). With
-    `screens`, each block's screen as its process ends is saved there (`ScreenTaker`); with `keys`,
-    each block's section's keys are pressed as the block asks for them (`KeyPresser`)."""
+def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: Path,
+               timeouts: list[float], keys: dict[str, list[KeyStep]] | None = None) -> Batch:
+    """Run `captured`'s blocks in one boot of `build` (`image` as `boot` takes it), each its own
+    process, in order; `timeouts` are each block's seconds (the boot's start counts against the
+    first). Each block runs as its `block_command`: under its fixture's `boot_under` program where
+    it declares one. A fixture declaring `screenshots` has each of its blocks' screens as its
+    process ends saved there (`ScreenTaker`, one per such fixture: a batch may mix fixtures,
+    test_limine's does); with `keys`, each block's section's keys are pressed as the block asks for
+    them (`KeyPresser`)."""
+    blocks = [each.block for each in captured]
+    under = [boot_under(each.fixture) for each in captured]
     watch = BatchWatch(timeouts)
     steps: list[Callable[[Path, str], None]] = []
-    if screens is not None:
-        steps.append(ScreenTaker(blocks, screens))
+    by_directory: dict[Path, list[Block]] = {}
+    for each in captured:
+        if declaration(each.fixture).get("screenshots", False):
+            by_directory.setdefault(SCREENS / each.fixture, []).append(each.block)
+    for directory, fixture_blocks in by_directory.items():
+        steps.append(ScreenTaker(fixture_blocks, directory))
     if keys and any(block.section in keys for block in blocks):
-        steps.append(KeyPresser(blocks, keys))
+        steps.append(KeyPresser(blocks, keys, under))
 
     def during(socket: Path, log: str) -> None:
         for step in steps:
             step(socket, log)
 
     commands = [block.command for block in blocks]
-    cmdline = batch_command_line(commands)
+    cmdline = batch_command_line(commands, under)
     # The kernel keeps the first KERNEL_COMMAND_LINE bytes; QEMU's loader puts the kernel's path
     # first.
     if len(str(build.kernel)) + len(cmdline) + 4 >= KERNEL_COMMAND_LINE:
@@ -1632,13 +1676,13 @@ def boot_batch(build: Build, blocks: list[Block], *, image: str, log_path: Path,
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,
-        kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if screens is not None else [])),
+        kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if by_directory else [])),
         during=during if steps else None,
     )
     if watch.overran is not None:
         stopped = "timeout"
     prefix, programs = split_programs(log)
-    return Batch(commands, log, log_path, stopped, prefix, programs)
+    return Batch(commands, log, log_path, stopped, prefix, programs, under)
 
 
 def log_path_for(nodeid: str) -> Path:

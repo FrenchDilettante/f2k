@@ -1,0 +1,6 @@
+# F2K capture of hellogui, taken by hand on the Windows 2000 machine: hellogui.exe run once,
+# from its directory, exit code 0. tests\capture.bat has no hellogui entry: the program paints
+# once and closes itself, so a self-closing GUI block's screen cannot be captured and the
+# block is its exit code alone.
+>>> hellogui.exe
+<<< exit code=0

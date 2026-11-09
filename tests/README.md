@@ -173,6 +173,8 @@ The fixtures:
   The real machine's session's end cannot be captured: `endkid.exe`, a window answering `WM_QUERYENDSESSION` TRUE or FALSE that may ask for the session's end itself, is F2K's own, run by the session cases of `core/kernel/test_kernel.py`, never by the capture.
   Built with `/MD`.
   Gated.
+- `hellogui` (user32) - the GUI rung end to end: registers a window class, creates and shows a window, paints "Hello, world!" once with `TextOut` in WM_PAINT, then closes itself (WM_CLOSE, WM_DESTROY's PostQuitMessage, GetMessage's 0) and exits 0; the first test to import user32.dll and gdi32.dll.
+  Its one block (`hellogui.exe`, no arguments) was captured by hand on the real machine — the exit code 0 alone: a self-closing GUI program's screen cannot be captured — and it boots under FiSH (`boot_under`), which sets the graphics mode before the program runs; its boot's screen is saved under `target/qemu/screens/` like any `screenshots` fixture's (`screenshots`).
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
@@ -228,6 +230,8 @@ The batch boot leaves those blocks out, and each is reported as skipped with its
 A section both pending and skipped is an error.
 `system_programs` names F2K's own programs, built by `make userland` from `userland/<name>`, that the fixture's boot needs in `\WINNT\system32` and the disk the tests boot leaves out (`system_programs = ["cmd"]`, for a section running the machine's own `cmd.exe`): its batch boots a copy of the disk with them added (`f2kboot.corpus_disk`), all its blocks in that one boot.
 `harness/test_repository.py` checks each name is a program the Makefile builds and the base disk does not carry.
+`boot_under` names one program on the boot volume, with no arguments (`boot_under = "WINNT\\system32\\fish.exe"`): the batch's command line wraps each of the fixture's block commands as `<boot_under> \\CORPUS\\<command>` (the corpus path rooted, so CreateProcess finds it from the program's own directory), so the boot runs that program first — FiSH sets the graphics mode before the block's program runs — and the process ends with the block's exit code, which is what the block compares (`f2kboot.block_command`, where the batch command line is built and where the run is judged).
+`harness/test_repository.py` checks that only a sectioned fixture declares it and that its value is one program path with no arguments.
 `[keys]` gives an interactive block the keys a person presses on the real machine while it runs: per section, a list of steps, each a table of what it waits for and what it presses, taken in order:
 
 - `after`: the line of the block's own output to wait for, after the line the step before waited for (the block's markers: `ctrl keys` prints `step N: ...` before each of its waits);
@@ -243,7 +247,7 @@ A `[pending]`, `[skip]`, `[masks]`, `[pins]` or `[keys]` section with no capture
 The fixture's `test_<name>.py` only binds `f2kboot.corpus_test("<name>")`.
 A sectioned fixture may be declared ahead of its real-machine files (`<name>.exe` and `output.txt`, both absent; its sources may come first, for the real machine to build): it is then one skipped test, and the disk build leaves it out; `harness/test_repository.py` refuses a fixture holding only one of them.
 A fixture's companion DLLs and programs (`tests/<dll>/<name>/*.dll`, and the `*.exe` other than its own) go into `\CORPUS` beside its program, by their uppercase names (8.3, and distinct across the fixtures: `harness/test_repository.py` checks both), as they sit beside it on the real machine, and the DLLs in a subdirectory of the fixture's (`tests/<dll>/<name>/<sub>/*.dll`) into that subdirectory of `\CORPUS`.
-Every corpus boot goes through QEMU's Multiboot loader (`-kernel`, the command line by `-append`), except `core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran on both paths, the command line, the memory map) booted from the disk through Limine, together in one boot, on a copy of the disk whose Limine entry carries their command lines (`cmdline:`), each compared against its own capture with its own declaration.
+Every corpus boot goes through QEMU's Multiboot loader (`-kernel`, the command line by `-append`), except `core/test_limine.py`'s: a few blocks (the scenarios the retired smokes ran on both paths, the command line, the memory map, and hellogui under FiSH) booted from the disk through Limine, together in one boot, on a copy of the disk whose Limine entry carries their command lines (`cmdline:`), each compared against its own capture with its own declaration.
 The Makefile's corpus derives from the declarations too: a new fixture is its directory, in its DLL's group, and its `fixture.toml`.
 Every boot's COM1 log stays under `target/qemu/logs/`, a batch's named after its fixture (`limine.log` for the Limine blocks).
 
@@ -285,7 +289,6 @@ Their checks are the kernel cases in `core/kernel/test_kernel.py`; `exit0`, `ret
 - `ret0` - the default MSVC 6 `/ML` CRT startup around `int main() { return 0; }`; exercises the full CRT initialization surface (35 KERNEL32.dll imports; see `core/ret0/imports.txt`).
 - `hello` - the console rung: the same CRT startup, then `printf` writes "Hello, world!" to stdout and exits 0; the first test with observable output.
   Also carries `trace.txt`, the real-machine import trace (21 of the watched imports called on the happy path, one WriteFile, exit 0 — the real-machine baseline for the console-observable corpus).
-- `hellogui` - the GUI rung: registers a window class, shows a window, paints "Hello, world!" once with `TextOut`, then closes itself and exits 0; the first test to import user32.dll and gdi32.dll.
 
 ## Building
 

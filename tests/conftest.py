@@ -216,7 +216,8 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     """Run one captured block on F2K, in its batch: the first block of a test function to run boots
     the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
     block of the function this session runs, in order, each its own process, run from the corpus's
-    directory (a script fixture's on a copy of the disk with cmd.exe and the script there, a
+    directory as its `block_command` (under the fixture's `boot_under` program where it declares
+    one, a script fixture's on a copy of the disk with cmd.exe and the script there, a
     fixture declaring `system_programs` on a copy with those programs added: `f2kboot.corpus_disk`);
     each block's test then reads its own part of that boot's log. It fails
     unless the program's output equals the block line for line (masks applied), the process ends
@@ -230,12 +231,11 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
         if batch is None:
             build = builder([])
             selected = [item.callspec.params["captured"] for item in items]
-            # A fixture declaring `screenshots` has each block's screen saved as its process ends;
-            # one declaring `keys` has its interactive blocks' keys pressed as they ask for them.
-            declared = f2kboot.declaration(captured.fixture)
-            screenshots = declared.get("screenshots", False)
-            keys = {section: f2kboot.key_steps(section, steps)
-                    for section, steps in declared.get("keys", {}).items()}
+            # One declaring `keys` has its interactive blocks' keys pressed as they ask for them.
+            keys = {}
+            for each in selected:
+                for section, steps in f2kboot.declaration(each.fixture).get("keys", {}).items():
+                    keys[section] = f2kboot.key_steps(section, steps)
             # A script fixture boots a copy of the disk with cmd.exe and its script in \CORPUS, and a
             # sectioned one declaring `system_programs` a copy with them in \WINNT\system32.
             try:
@@ -246,11 +246,10 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
             try:
                 batch = f2kboot.boot_batch(
                     build if variant is None else f2kboot.Build(build.kernel, variant),
-                    [each.block for each in selected],
+                    selected,
                     image=image,
                     log_path=f2kboot.log_path_for(name),
                     timeouts=[boot_timeout(each.timeout) for each in selected],
-                    screens=f2kboot.SCREENS / captured.fixture if screenshots else None,
                     keys=keys,
                 )
             finally:
