@@ -201,6 +201,24 @@ mod raw {
         pub fn NtUserShowWindow(window: usize, command: i32, previous: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserShowWindowAsync"]
         pub fn NtUserShowWindowAsync(window: usize, command: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetWindowLong"]
+        pub fn NtUserSetWindowLong(
+            window: usize,
+            index: i32,
+            value: u32,
+            ansi: u32,
+            previous: *mut u32,
+            previous_ansi: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetWindowWord"]
+        pub fn NtUserSetWindowWord(
+            window: usize,
+            index: i32,
+            value: u32,
+            previous: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDefSetText"]
+        pub fn NtUserDefSetText(window: usize, text: usize) -> u32;
 
         // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
@@ -811,6 +829,48 @@ pub fn show_window(window: usize, command: i32) -> Result<u32, NtStatus> {
 pub fn show_window_async(window: usize, command: i32) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtUserShowWindowAsync(window, command) })
+}
+
+/// NtUserSetWindowLong: SetWindowLong's change of `window`'s field at `index` (rtl::window's GWL_*,
+/// or an offset into its extra bytes) to `value`, through the narrow entry point when `ansi`: the
+/// value the field held, and for GWL_WNDPROC whether the procedure it held took the narrow forms
+/// of the messages.
+pub fn set_window_long(
+    window: usize,
+    index: i32,
+    value: u32,
+    ansi: bool,
+) -> Result<(u32, bool), NtStatus> {
+    let (mut previous, mut previous_ansi) = (0u32, 0u32);
+    // SAFETY: the kernel writes the two locals.
+    checked(unsafe {
+        raw::NtUserSetWindowLong(
+            window,
+            index,
+            value,
+            ansi as u32,
+            &mut previous,
+            &mut previous_ansi,
+        )
+    })?;
+    Ok((previous, previous_ansi != 0))
+}
+
+/// NtUserSetWindowWord: SetWindowWord's change of the word at `index` in `window`'s extra bytes to
+/// `value`: the word it held.
+pub fn set_window_word(window: usize, index: i32, value: u16) -> Result<u16, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserSetWindowWord(window, index, value as u32, &mut previous) })?;
+    Ok(previous as u16)
+}
+
+/// NtUserDefSetText: `window`'s text set to the NUL-terminated UTF-16 string at `text` (zero: the
+/// empty text).
+pub fn def_set_text(window: usize, text: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the string through its fault-tolerant copies (this DLL's own, or the
+    // caller's, alive for the call); it writes no memory.
+    checked(unsafe { raw::NtUserDefSetText(window, text) })
 }
 
 // --- win32k: messages ----------------------------------------------------------------------------

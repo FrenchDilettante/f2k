@@ -17,7 +17,7 @@ use rtl::gdi::Rect;
 use rtl::pod::Pod;
 use rtl::status::*;
 use rtl::user::*;
-use rtl::window::{WindowInfo, QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
+use rtl::window::*;
 
 use crate::class::WndClassExW;
 
@@ -444,10 +444,12 @@ pub struct HostClass {
     /// The menu name's units, when it is a string.
     pub menu: Option<Vec<u16>>,
     pub windows: u32,
+    /// Registered through a narrow call: its procedure takes the narrow forms of the messages.
+    pub ansi: bool,
 }
 
 /// A window the window manager holds.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct HostWindow {
     pub handle: u32,
     pub atom: u16,
@@ -459,6 +461,16 @@ pub struct HostWindow {
     pub alive: bool,
     /// The update region's box and whether its erase is pending.
     pub update: Option<(Rect, bool)>,
+    /// The procedure takes the narrow forms of the messages.
+    pub ansi: bool,
+    /// GWL_ID, GWL_USERDATA, GWL_HINSTANCE.
+    pub id: u32,
+    pub user_data: u32,
+    pub instance: u32,
+    /// The extra bytes (the class's cbWndExtra of them).
+    pub extra: Vec<u8>,
+    /// The text, as DefWindowProc set it.
+    pub text: Vec<u16>,
 }
 
 /// A creation, as NtUserCreateWindowEx was given it: the class (its units, or its atom), the name.
@@ -527,6 +539,7 @@ impl Wm {
                 visible: handle == DESKTOP_WINDOW,
                 alive: true,
                 update: None,
+                ..HostWindow::default()
             });
         }
         wm
@@ -650,7 +663,7 @@ pub unsafe extern "system" fn NtClose(handle: usize) -> u32 {
 pub unsafe extern "system" fn NtUserRegisterClassExWOW(
     class: *const WndClassExW,
     name: usize,
-    _flags: u32,
+    flags: u32,
     atom: *mut u32,
     wow: *mut u32,
 ) -> u32 {
@@ -684,6 +697,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
             class,
             menu,
             windows: 0,
+            ansi: flags & crate::class::REGISTER_ANSI_PROC != 0,
         });
         // SAFETY: the caller's out-pointers.
         unsafe {
@@ -793,7 +807,8 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             return STATUS_OBJECT_NAME_NOT_FOUND;
         };
         class.windows += 1;
-        let (atom, proc) = (class.atom, class.class.wnd_proc as u32);
+        let (atom, proc, ansi) = (class.atom, class.class.wnd_proc as u32, class.ansi);
+        let extra = std::vec![0u8; class.class.cb_wnd_extra.max(0) as usize];
         let handle = 0x20 + 4 * wm.windows.len() as u32;
         let (x, y) = if x == i32::MIN { (0, 0) } else { (x, y) };
         wm.windows.push(HostWindow {
@@ -811,6 +826,11 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             visible: style & WS_VISIBLE_BIT != 0,
             alive: true,
             update: None,
+            ansi,
+            id: menu as u32,
+            instance: instance as u32,
+            extra,
+            ..HostWindow::default()
         });
         let create = CreateStructW {
             create_params: param as u32,
@@ -879,12 +899,15 @@ pub unsafe extern "system" fn NtUserQueryWindow(
     answer: *mut u8,
     length: u32,
 ) -> u32 {
-    let expected = match index {
-        QUERY_WINDOW_INFO => size_of::<WindowInfo>(),
-        QUERY_WINDOW_VISIBLE => 4,
+    let fits = match index {
+        QUERY_WINDOW_INFO => length as usize == size_of::<WindowInfo>(),
+        QUERY_WINDOW_VISIBLE => length == 4,
+        QUERY_WINDOW_DATA => length as usize == size_of::<WindowData>(),
+        QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
+        index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
         _ => return STATUS_INVALID_INFO_CLASS,
     };
-    if length as usize != expected {
+    if !fits {
         return STATUS_INFO_LENGTH_MISMATCH;
     }
     wm(|wm| {
@@ -892,7 +915,33 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             Ok(w) => w.clone(),
             Err(status) => return status,
         };
-        let bytes: Vec<u8> = if index == QUERY_WINDOW_INFO {
+        let bytes: Vec<u8> = if index & QUERY_WINDOW_EXTRA != 0 {
+            let offset = (index & !QUERY_WINDOW_EXTRA) as usize;
+            match w.extra.get(offset..offset + length as usize) {
+                Some(bytes) => bytes.to_vec(),
+                None => return STATUS_INVALID_INFO_CLASS,
+            }
+        } else if index == QUERY_WINDOW_DATA {
+            WindowData {
+                style: w.style,
+                ex_style: w.ex_style,
+                id: w.id,
+                user_data: w.user_data,
+                instance: w.instance,
+                proc: w.proc,
+                flags: if w.ansi { WINDOW_ANSI_PROC } else { 0 },
+                extra: w.extra.len() as u32,
+                ..WindowData::default()
+            }
+            .as_bytes()
+            .to_vec()
+        } else if index == QUERY_WINDOW_TEXT {
+            let mut text = WindowText::default();
+            let length = w.text.len().min(WINDOW_TEXT_UNITS);
+            text.units[..length].copy_from_slice(&w.text[..length]);
+            text.length = length as u32;
+            text.as_bytes().to_vec()
+        } else if index == QUERY_WINDOW_INFO {
             WindowInfo {
                 size: 60,
                 window: w.rect,
@@ -911,6 +960,97 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         // SAFETY: the caller's buffer of the answer's length.
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), answer, bytes.len()) };
         STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserSetWindowLong(
+    window: usize,
+    index: i32,
+    value: u32,
+    ansi: u32,
+    previous: *mut u32,
+    previous_ansi: *mut u32,
+) -> u32 {
+    let answer = wm(|wm| {
+        let w = wm.window(window)?;
+        if index >= 0 {
+            let offset = index as usize;
+            let bytes = w
+                .extra
+                .get_mut(offset..offset + 4)
+                .ok_or(STATUS_INVALID_INFO_CLASS)?;
+            let old = u32::from_le_bytes(bytes.try_into().unwrap());
+            bytes.copy_from_slice(&value.to_le_bytes());
+            return Ok((old, false));
+        }
+        let field = match index {
+            GWL_STYLE => &mut w.style,
+            GWL_EXSTYLE => &mut w.ex_style,
+            GWL_ID => &mut w.id,
+            GWL_USERDATA => &mut w.user_data,
+            GWL_HINSTANCE => &mut w.instance,
+            GWL_WNDPROC => {
+                let old = (w.proc, w.ansi);
+                w.proc = value;
+                w.ansi = ansi != 0;
+                return Ok(old);
+            }
+            _ => return Err(STATUS_INVALID_INFO_CLASS),
+        };
+        Ok((core::mem::replace(field, value), false))
+    });
+    match answer {
+        Ok((old, old_ansi)) => {
+            // SAFETY: the caller's out-pointers.
+            unsafe {
+                previous.write(old);
+                previous_ansi.write(old_ansi as u32);
+            }
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+pub unsafe extern "system" fn NtUserSetWindowWord(
+    window: usize,
+    index: i32,
+    value: u32,
+    previous: *mut u32,
+) -> u32 {
+    let answer = wm(|wm| {
+        let w = wm.window(window)?;
+        let offset = usize::try_from(index).map_err(|_| STATUS_INVALID_INFO_CLASS)?;
+        let bytes = w
+            .extra
+            .get_mut(offset..offset + 2)
+            .ok_or(STATUS_INVALID_INFO_CLASS)?;
+        let old = u16::from_le_bytes(bytes.try_into().unwrap());
+        bytes.copy_from_slice(&(value as u16).to_le_bytes());
+        Ok(old)
+    });
+    match answer {
+        Ok(old) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { previous.write(old as u32) };
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+pub unsafe extern "system" fn NtUserDefSetText(window: usize, text: usize) -> u32 {
+    let units = if text == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the caller's NUL-terminated text.
+        unsafe { rtl::cstr::units_until_nul(text as *const u16) }.to_vec()
+    };
+    wm(|wm| {
+        status(wm.window(window).map(|w| {
+            w.text = units;
+            w.text.truncate(WINDOW_TEXT_UNITS);
+        }))
     })
 }
 
@@ -1055,8 +1195,12 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
                 ..Msg::default()
             };
             if let Some(create) = sent.create {
+                // The structure is in the receipt, as the kernel writes it; its address is the
+                // lParam where it fits one (a 64-bit host's seldom does, and its procedures then
+                // get none to read).
                 answer.create = create;
-                answer.msg.lparam = (base + core::mem::offset_of!(Receipt, create)) as i32;
+                let at = base + core::mem::offset_of!(Receipt, create);
+                answer.msg.lparam = i32::try_from(at).unwrap_or(0);
             }
             return Ok(());
         }

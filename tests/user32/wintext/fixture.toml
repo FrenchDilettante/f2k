@@ -3,17 +3,7 @@
 # procedure received do.
 description = "wintext - a window's text: CreateWindowExA/W's title, SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W (a text, the empty text, NULL, NULL and destroyed windows), buffers of 0, 1, 4, 8, 9 and 64 units, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH through SendMessageA/W and DefWindowProcA/W, text crossing the A and W forms with U+00E9 and U+4E00, and a procedure answering WM_GETTEXT itself or refusing WM_SETTEXT; what each procedure receives."
 kind = "sectioned"
-
-# Not gated: F2K's windows hold no text readable through user32 yet: the program's user32 imports
-# for it (SetWindowTextA/W, GetWindowTextA/W, GetWindowTextLengthA/W, PeekMessageW) are stubs,
-# which it loads against. Every section is on the work list.
-[pending]
-create = "window text not yet implemented: GetWindowTextA/W and GetWindowTextLengthA/W are stubs"
-setget = "SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W not yet implemented"
-trunc = "GetWindowTextA/W not yet implemented"
-messages = "DefWindowProcA/W's WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH not yet implemented"
-cross = "window text not yet implemented, nor its conversion between the A and W forms"
-custom = "GetWindowTextA/W, GetWindowTextLengthA/W and SetWindowTextW not yet implemented"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

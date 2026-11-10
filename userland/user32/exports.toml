@@ -769,7 +769,7 @@ fails = "NULL"
 name = "IsWindowUnicode"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsWindowUnicode" }
 ordinal = 406
 fails = "FALSE"
 
@@ -777,31 +777,34 @@ fails = "FALSE"
 name = "GetWindowLongA"
 group = "window"
 args = ["handle hWnd", "i32 nIndex"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowLongA" }
 ordinal = 347
 fails = "0"
+note = "GWL_STYLE, GWL_EXSTYLE, GWL_ID, GWL_USERDATA, GWL_HINSTANCE, GWL_HWNDPARENT, GWL_WNDPROC (a wide procedure as a handle naming it) and the extra bytes; no DWL_ values: there is no dialog manager"
 
 [[export]]
 name = "GetWindowLongW"
 group = "window"
 args = ["handle hWnd", "i32 nIndex"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowLongW" }
 ordinal = 348
 fails = "0"
+note = "as GetWindowLongA, a narrow procedure as a handle naming it"
 
 [[export]]
 name = "SetWindowLongA"
 group = "window"
 args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowLongA" }
 ordinal = 606
 fails = "0"
+note = "the fields GetWindowLongA reads; GWL_STYLE and GWL_EXSTYLE send WM_STYLECHANGING and WM_STYLECHANGED (a handler cannot change the new style: the messages are queued); GWL_HWNDPARENT changes a top-level window's owner only"
 
 [[export]]
 name = "SetWindowLongW"
 group = "window"
 args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowLongW" }
 ordinal = 607
 fails = "0"
 
@@ -809,31 +812,34 @@ fails = "0"
 name = "GetWindowWord"
 group = "window"
 args = ["handle hWnd", "i32 nIndex"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowWord" }
 ordinal = 360
 fails = "0"
+note = "the extra bytes alone"
 
 [[export]]
 name = "SetWindowWord"
 group = "window"
 args = ["handle hWnd", "i32 nIndex", "u32 wNewWord"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowWord" }
 ordinal = 614
 fails = "0"
+note = "the extra bytes alone"
 
 [[export]]
 name = "CallWindowProcA"
 group = "window"
 args = ["ptr lpPrevWndFunc", "handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CallWindowProcA" }
 ordinal = 23
 fails = "0"
+note = "a handle GetWindowLong answered calls the procedure it names, the text messages translated"
 
 [[export]]
 name = "CallWindowProcW"
 group = "window"
 args = ["ptr lpPrevWndFunc", "handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CallWindowProcW" }
 ordinal = 24
 fails = "0"
 
@@ -841,7 +847,7 @@ fails = "0"
 name = "GetWindowTextA"
 group = "window"
 args = ["handle hWnd", "ptr lpString", "i32 nMaxCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowTextA" }
 ordinal = 355
 fails = "0"
 
@@ -849,15 +855,16 @@ fails = "0"
 name = "GetWindowTextW"
 group = "window"
 args = ["handle hWnd", "ptr lpString", "i32 nMaxCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowTextW" }
 ordinal = 358
 fails = "0"
+note = "another process's window's text read as win32k holds it, no message sent"
 
 [[export]]
 name = "GetWindowTextLengthA"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowTextLengthA" }
 ordinal = 356
 fails = "0"
 
@@ -865,7 +872,7 @@ fails = "0"
 name = "GetWindowTextLengthW"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowTextLengthW" }
 ordinal = 357
 fails = "0"
 
@@ -873,7 +880,7 @@ fails = "0"
 name = "SetWindowTextA"
 group = "window"
 args = ["handle hWnd", "strA? lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowTextA" }
 ordinal = 612
 fails = "FALSE"
 
@@ -881,7 +888,7 @@ fails = "FALSE"
 name = "SetWindowTextW"
 group = "window"
 args = ["handle hWnd", "strW? lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowTextW" }
 ordinal = 613
 fails = "FALSE"
 
@@ -997,6 +1004,34 @@ args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
 impl = { syscall = "crate::win32k::window::query_window" }
 internal = true
 
+# The window's data, behind SetWindowLongA/W, SetWindowWord and DefWindowProc's text: the index
+# and the new value, the narrow or wide entry point (the procedure's form, for GWL_WNDPROC), the
+# value the field held through the pointers. Their reads go through NtUserQueryWindow.
+
+[[export]]
+name = "NtUserSetWindowLong"
+group = "window"
+args = [
+    "handle Window", "i32 Index", "u32 NewLong", "u32 Ansi", "ptr<u32> Previous",
+    "ptr<u32> PreviousAnsi",
+]
+impl = { syscall = "crate::win32k::window::set_window_long" }
+internal = true
+
+[[export]]
+name = "NtUserSetWindowWord"
+group = "window"
+args = ["handle Window", "i32 Index", "u32 NewWord", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::window::set_window_word" }
+internal = true
+
+[[export]]
+name = "NtUserDefSetText"
+group = "window"
+args = ["handle Window", "ptr Text"]
+impl = { syscall = "crate::win32k::window::def_set_text" }
+internal = true
+
 # --- messages, timers and painting ---------------------------------------------------------------
 
 [[export]]
@@ -1055,7 +1090,7 @@ args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
 impl = { native = "SendMessageW" }
 ordinal = 542
 fails = "0"
-note = "a window of the calling thread's: its procedure called at once; no A/W translation of the message"
+note = "a window of the calling thread's: its procedure called at once, the text messages translated for a procedure of the other form; another thread's window's message is not translated"
 
 [[export]]
 name = "DispatchMessageA"
@@ -1087,7 +1122,7 @@ group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
 impl = { native = "DefWindowProcW" }
 ordinal = 136
-note = "WM_NCCREATE and WM_ERASEBKGND TRUE, WM_CLOSE destroys the window, WM_PAINT validates it, the rest 0"
+note = "WM_NCCREATE sets the title, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH over the text win32k holds (128 units at most), WM_ERASEBKGND TRUE, WM_CLOSE destroys the window, WM_PAINT validates it, the rest 0"
 
 [[export]]
 name = "InvalidateRect"

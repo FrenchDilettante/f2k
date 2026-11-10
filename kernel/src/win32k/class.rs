@@ -144,6 +144,9 @@ pub const REGISTER_WIN40_COMPAT: u32 = 0x1;
 pub const REGISTER_SERVER_SIDE_PROC: u32 = 0x2;
 pub const REGISTER_SYSTEM_CLASS: u32 = 0x4;
 pub const REGISTER_SERVER_CLASS: u32 = 0x8;
+/// The class's procedure takes the narrow forms of the messages: RegisterClassA's and
+/// RegisterClassExA's registration (Windows 2000's CSF_ANSIPROC).
+pub const REGISTER_ANSI_PROC: u32 = 0x10;
 
 /// Why a class operation failed: the Win32 error code (winerror.h) the decision reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -634,6 +637,8 @@ struct Flags {
     system_class: bool,
     /// Registered with a server class id.
     server_class: bool,
+    /// The procedure takes the narrow forms of the messages (registered through an A call).
+    ansi_proc: bool,
     /// The small icon is the synthesized copy of the icon (destroyed and hidden as such).
     cached_sm_icon: bool,
     /// A 16-bit class awaiting destroy: skipped by every lookup pass.
@@ -969,6 +974,8 @@ pub struct RegisterFlags {
     pub server_side_proc: bool,
     pub system_class: bool,
     pub server_class: bool,
+    /// The procedure takes the narrow forms of the messages ([`REGISTER_ANSI_PROC`]).
+    pub ansi_proc: bool,
 }
 
 impl RegisterFlags {
@@ -979,6 +986,7 @@ impl RegisterFlags {
             server_side_proc: bits & REGISTER_SERVER_SIDE_PROC != 0,
             system_class: bits & REGISTER_SYSTEM_CLASS != 0,
             server_class: bits & REGISTER_SERVER_CLASS != 0,
+            ansi_proc: bits & REGISTER_ANSI_PROC != 0,
         }
     }
 
@@ -1008,6 +1016,8 @@ pub struct ClassInfo {
     pub background: u32,
     pub menu_name: MenuName,
     pub wnd_proc: u32,
+    /// The procedure takes the narrow forms of the messages.
+    pub ansi_proc: bool,
 }
 
 /// The window-class registry: the atom table, the cursor/icon handle table, the class pool with
@@ -1210,6 +1220,7 @@ impl Registry {
                 server_side_proc: flags.server_side_proc,
                 system_class: flags.system_class,
                 server_class: flags.server_class,
+                ansi_proc: flags.ansi_proc,
                 ..Flags::default()
             };
         }
@@ -1634,6 +1645,7 @@ impl Registry {
             background: class.background,
             menu_name: class.menu_name,
             wnd_proc: class.wnd_proc,
+            ansi_proc: class.flags.ansi_proc,
         })
     }
 

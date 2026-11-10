@@ -1,8 +1,9 @@
 //! user32's user-mode code: the bodies of its exports (the window station and desktop calls,
 //! [`winsta`]; the display settings, devices, monitors, metrics and system colors, [`display`];
 //! MessageBeep, [`sound`]; ExitWindowsEx, [`shutdown`]; the window classes and the stock cursors,
-//! [`class`]; the windows, their geometry and visibility, [`window`]; their focus, enabling and
-//! activation, [`focus`]; the message loop and the default window procedure, [`message`]; the
+//! [`class`]; the windows, their geometry, visibility, data and text, [`window`]; their focus,
+//! enabling and activation, [`focus`]; the message loop and the default window procedure,
+//! [`message`]; the procedures' narrow and wide forms and CallWindowProc, [`procedure`]; the
 //! painting, [`paint`]; the GetDC family, [`dc`]; the string tables, [`resource`]), as Windows
 //! 2000's user32 runs them, over ntdll's and kernel32's exports and win32k's services ([`imports`]:
 //! as Windows 2000's user32 imports the first and enters the kernel itself for the others, through
@@ -16,7 +17,9 @@
 //!
 //! An export converts its caller's pointers once, on entry: a buffer it writes into a slice
 //! ([`caller_bytes_mut`]), one a service writes into an [`imports::UserBuffer`], an out parameter
-//! into an [`Out`]. The code below the exports is safe.
+//! into an [`Out`]. So does a message's lParam that points at memory, where the message is read:
+//! the default procedure's ([`message`]) and the translation of the text messages
+//! ([`procedure`]). The code below them is safe.
 //!
 //! A service answers with an NTSTATUS; a failure becomes the last error. win32k's window
 //! decisions report Win32 errors that have no NTSTATUS of their own, so the kernel answers the
@@ -33,6 +36,7 @@ pub mod focus;
 pub mod imports;
 pub mod message;
 pub mod paint;
+pub mod procedure;
 pub mod resource;
 pub mod shutdown;
 pub mod sound;

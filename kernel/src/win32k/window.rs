@@ -51,7 +51,17 @@
 //! - NtUserShowWindowAsync (0x1219): ShowWindowAsync's arguments, the show carried out at once;
 //! - NtUserQueryWindow (0x11D2): what Windows 2000's user32 reads from the window records mapped
 //!   into its process — the window's WINDOWINFO (GetWindowRect's rectangle), IsWindowVisible's
-//!   answer — by an index of F2K's own ([`rtl::window`]).
+//!   answer, its own fields as GetWindowLong reads them, its extra bytes, its text — by an index of
+//!   F2K's own ([`rtl::window`]);
+//! - NtUserSetWindowLong (0x120D) and NtUserSetWindowWord (0x1214): SetWindowLong's and
+//!   SetWindowWord's changes ([`Windows::set_window_long`]), the previous value through a pointer;
+//! - NtUserDefSetText (0x1153): DefWindowProc's change of the window's text.
+//!
+//! A window's data: its styles, id, user data, module and procedure (with the form of the messages
+//! it takes, narrow or wide) are the record's fields; its text is a fixed buffer in the record
+//! ([`TextBuf`], [`MAX_WINDOW_TEXT`] units: Windows 2000's has no bound); its extra bytes
+//! (cbWndExtra) are a block of an arena of the registry's own ([`ExtraBytes`]), the record naming
+//! the block, as Windows 2000 allocates them with the window from its desktop's heap.
 //!
 //! Seams recorded: every send and window-manager call the decisions make goes through the [`Pump`]
 //! trait; the services run them with the queue's pump ([`super::queue::QueuePump`]), which queues
@@ -65,7 +75,8 @@
 // hook state, the zombie's references).
 #![allow(dead_code)]
 
-pub use rtl::window::{WindowInfo, WindowPos};
+pub use rtl::user::StyleStruct;
+pub use rtl::window::{WindowData, WindowInfo, WindowPos, WindowText};
 
 use super::class;
 #[cfg(target_arch = "x86")]
@@ -204,6 +215,9 @@ pub enum Failure {
     InvalidParameter,
     /// ERROR_INVALID_WINDOW_HANDLE (1400): the handle names no live window.
     InvalidWindowHandle,
+    /// ERROR_INVALID_INDEX (1413): a GetWindowLong/SetWindowLong index that names no field of the
+    /// window, or extra bytes past the window's own.
+    InvalidIndex,
     /// ERROR_TLW_WITH_WSCHILD (1406): a WS_CHILD window was created without a parent.
     TlwWithWsChild,
     /// ERROR_CANNOT_FIND_WND_CLASS (1407): the class name resolved to no visible class.
@@ -218,6 +232,7 @@ impl Failure {
             Failure::OutOfMemory => 14,
             Failure::InvalidParameter => 87,
             Failure::InvalidWindowHandle => 1400,
+            Failure::InvalidIndex => 1413,
             Failure::TlwWithWsChild => 1406,
             Failure::CannotFindWindowClass => 1407,
         }
@@ -232,6 +247,9 @@ impl Failure {
             Failure::OutOfMemory => STATUS_NO_MEMORY,
             Failure::InvalidParameter | Failure::TlwWithWsChild => STATUS_INVALID_PARAMETER,
             Failure::InvalidWindowHandle => STATUS_INVALID_HANDLE,
+            // An index the query or the change does not know: the query services' own refusal of
+            // an information class there is none of.
+            Failure::InvalidIndex => STATUS_INVALID_INFO_CLASS,
             Failure::CannotFindWindowClass => STATUS_OBJECT_NAME_NOT_FOUND,
         }
     }
@@ -259,7 +277,7 @@ pub struct SizeRect {
 }
 
 /// The longest window text the record holds, in UTF-16 units.
-pub const MAX_WINDOW_TEXT: usize = 128;
+pub const MAX_WINDOW_TEXT: usize = rtl::window::WINDOW_TEXT_UNITS;
 
 /// A window text (a title), copied into the record's own fixed buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -326,7 +344,7 @@ pub struct CreateParams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuInput {
     None,
-    Id(u16),
+    Id(u32),
     Handle(Hwnd),
 }
 
@@ -339,7 +357,7 @@ impl MenuInput {
     fn raw(self) -> u32 {
         match self {
             MenuInput::None => 0,
-            MenuInput::Id(id) => id as u32,
+            MenuInput::Id(id) => id,
             MenuInput::Handle(h) => h,
         }
     }
@@ -374,12 +392,12 @@ impl MenuInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Menu {
     None,
-    Id(u16),
+    Id(u32),
     Handle(Hwnd),
 }
 
 impl Menu {
-    fn id(self) -> Option<u16> {
+    fn id(self) -> Option<u32> {
         match self {
             Menu::Id(id) => Some(id),
             _ => None,
@@ -507,6 +525,9 @@ pub enum Payload {
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS (a WM_WINDOWPOSCHANGING handler
     /// may change it).
     WindowPos(WindowPos),
+    /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT (a WM_STYLECHANGING handler may change
+    /// the new style).
+    Style(StyleStruct),
 }
 
 /// Where SetWindowPos puts a window in its parent's child list (its hWndInsertAfter).
@@ -738,6 +759,9 @@ struct Flags {
     win40_compat: bool,
     /// The window procedure runs on the kernel side.
     server_side_proc: bool,
+    /// The window procedure takes the narrow forms of the messages (Windows 2000's WFANSIPROC):
+    /// IsWindowUnicode's FALSE.
+    ansi_proc: bool,
     /// WM_NCCREATE's handler set the window text.
     title_set: bool,
     /// The window sits at the bottom of the z-order.
@@ -786,6 +810,11 @@ struct Window {
     module: u32,
     proc: Proc,
     cb_wnd_extra: i32,
+    /// The window's extra bytes (cbWndExtra of them), when it has any: a block of the registry's
+    /// arena ([`ExtraBytes`]), kept out of the record so its copies stay small.
+    extra: Option<ExtraBlock>,
+    /// GWL_USERDATA.
+    user_data: u32,
     title: TextBuf,
     /// The object's lock count: 1 at creation, dropped by the free; more than that means
     /// someone else still holds a reference and the free makes a zombie instead.
@@ -840,6 +869,7 @@ impl Window {
             win31_compat: false,
             win40_compat: false,
             server_side_proc: false,
+            ansi_proc: false,
             title_set: false,
             bottommost: false,
             has_palette: false,
@@ -867,6 +897,8 @@ impl Window {
         module: 0,
         proc: Proc::Default,
         cb_wnd_extra: 0,
+        extra: None,
+        user_data: 0,
         title: TextBuf::EMPTY,
         locks: 0,
         walk: Walk::NONE,
@@ -965,6 +997,93 @@ impl WindowPool {
         self.headers
             .get(id.index as usize)
             .is_some_and(|h| h.live && h.generation == id.generation)
+    }
+}
+
+/// How many bytes the windows' extra bytes share between them.
+pub const EXTRA_BYTES: usize = 16 * 1024;
+/// The arena's unit: a window's extra bytes take whole granules.
+const EXTRA_GRANULE: usize = 16;
+const EXTRA_GRANULES: usize = EXTRA_BYTES / EXTRA_GRANULE;
+
+/// A window's extra bytes in the arena: a run of granules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExtraBlock {
+    first: u16,
+    granules: u16,
+}
+
+/// The windows' extra bytes (their classes' cbWndExtra), an arena of granules the window records
+/// name. Windows 2000 allocates a window's extra bytes with the window, from its desktop's heap;
+/// this is that heap's stand-in, kept apart from the records so that the records, which the
+/// decisions copy, stay small.
+struct ExtraBytes {
+    bytes: [u8; EXTRA_BYTES],
+    /// Which granules blocks hold, a bit each.
+    taken: [u32; EXTRA_GRANULES / 32],
+}
+
+impl ExtraBytes {
+    fn is_taken(&self, granule: usize) -> bool {
+        self.taken[granule / 32] & (1 << (granule % 32)) != 0
+    }
+
+    fn mark(&mut self, block: ExtraBlock, taken: bool) {
+        for granule in block.first as usize..(block.first + block.granules) as usize {
+            if taken {
+                self.taken[granule / 32] |= 1 << (granule % 32);
+            } else {
+                self.taken[granule / 32] &= !(1 << (granule % 32));
+            }
+        }
+    }
+
+    /// The lowest run of granules that holds `size` bytes, zeroed; none when no run is that long.
+    fn allocate(&mut self, size: usize) -> Option<ExtraBlock> {
+        let granules = size.div_ceil(EXTRA_GRANULE);
+        if granules == 0 || granules > EXTRA_GRANULES {
+            return None;
+        }
+        let mut run = 0;
+        for granule in 0..EXTRA_GRANULES {
+            if self.is_taken(granule) {
+                run = 0;
+                continue;
+            }
+            run += 1;
+            if run == granules {
+                let block = ExtraBlock {
+                    first: (granule + 1 - granules) as u16,
+                    granules: granules as u16,
+                };
+                self.mark(block, true);
+                self.bytes_mut(block).fill(0);
+                return Some(block);
+            }
+        }
+        None
+    }
+
+    fn free(&mut self, block: ExtraBlock) {
+        self.mark(block, false);
+    }
+
+    fn bytes(&self, block: ExtraBlock) -> &[u8] {
+        let first = block.first as usize * EXTRA_GRANULE;
+        &self.bytes[first..first + block.granules as usize * EXTRA_GRANULE]
+    }
+
+    fn bytes_mut(&mut self, block: ExtraBlock) -> &mut [u8] {
+        let first = block.first as usize * EXTRA_GRANULE;
+        &mut self.bytes[first..first + block.granules as usize * EXTRA_GRANULE]
+    }
+
+    /// How many granules blocks hold.
+    fn taken_granules(&self) -> usize {
+        self.taken
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 }
 
@@ -1177,6 +1296,8 @@ pub struct Windows {
     /// The threads' message queues, the timers and the windows' update regions
     /// ([`super::queue`]).
     pub queues: super::queue::Queues,
+    /// The windows' extra bytes.
+    extra: ExtraBytes,
 }
 
 impl Windows {
@@ -1213,6 +1334,8 @@ impl Windows {
             addr_of_mut!((*windows).clipboard_owner).write(None);
             addr_of_mut!((*windows).foreground_thread).write(None);
             super::queue::Queues::write_empty(addr_of_mut!((*windows).queues));
+            // Zero bytes are an empty arena: no granule taken, every byte zero.
+            addr_of_mut!((*windows).extra).write_bytes(0, 1);
         }
     }
 
@@ -1860,6 +1983,17 @@ impl Windows {
             w.locks = 1;
         }
 
+        // The window's extra bytes, zeroed, allocated with it as Windows 2000 allocates them with
+        // the window from its desktop's heap; none to allocate fails the creation.
+        if info.cb_wnd_extra > 0 {
+            let Some(block) = self.extra.allocate(info.cb_wnd_extra as usize) else {
+                self.handles.close(handle);
+                self.pool.free(id);
+                return Err(Failure::OutOfMemory);
+            };
+            self.at_mut(id).extra = Some(block);
+        }
+
         // The class reference (a class of another desktop is cloned for the window; a clone
         // failure frees the record and takes the class failure path).
         let mut view = class::Window {
@@ -1868,6 +2002,9 @@ impl Windows {
             desktop: desktop_id,
         };
         if !classes.reference_class(class_id, &mut view) {
+            if let Some(block) = self.at_mut(id).extra.take() {
+                self.extra.free(block);
+            }
             self.handles.close(handle);
             self.pool.free(id);
             return Err(Failure::CannotFindWindowClass);
@@ -1913,6 +2050,7 @@ impl Windows {
             let w = self.at_mut(id);
             w.module = args.instance;
             w.proc = Proc::Client(info.wnd_proc);
+            w.flags.ansi_proc = info.ansi_proc;
         }
         {
             let w = self.at_mut(id);
@@ -2275,7 +2413,7 @@ impl Windows {
             if let Some(p) = self.at(id).parent {
                 let (menu_id, handle) = {
                     let w = self.at(id);
-                    (w.menu.id().unwrap_or(0), w.handle)
+                    (w.menu.id().unwrap_or(0) as u16, w.handle)
                 };
                 pump.send(
                     self,
@@ -2488,7 +2626,7 @@ impl Windows {
             let w = self.at(window);
             if w.is_child() && w.ex_style & WS_EX_NOPARENTNOTIFY == 0 {
                 if let Some(p) = w.parent {
-                    let (menu_id, handle) = (w.menu.id().unwrap_or(0), w.handle);
+                    let (menu_id, handle) = (w.menu.id().unwrap_or(0) as u16, w.handle);
                     pump.send(
                         self,
                         classes,
@@ -2849,9 +2987,12 @@ impl Windows {
             }
         }
 
-        // The properties and the title string go with the record.
+        // The properties, the title string and the extra bytes go with the record.
         pump.delete_properties(self, window);
         self.at_mut(window).title = TextBuf::EMPTY;
+        if let Some(block) = self.at_mut(window).extra.take() {
+            self.extra.free(block);
+        }
 
         // The links: a zombie window re-points its parent at the desktop window; a freed one
         // drops them.
@@ -3628,6 +3769,258 @@ impl Windows {
     }
 }
 
+// --- The window's data: its fields, its extra bytes, its text
+// --------------------------------------------------------
+
+impl Windows {
+    /// `window`'s own fields as GetWindowLong reads them ([`WindowData`]), for a caller of the
+    /// process `caller`: GWL_ID is a child's id and another window's menu handle; GWL_HWNDPARENT
+    /// a child's parent and another window's owner; the procedure 0 when it is the window
+    /// manager's own.
+    pub fn window_data(&self, window: WindowId, caller: class::Owner) -> WindowData {
+        let w = self.at(window);
+        let id = match w.menu {
+            Menu::None => 0,
+            Menu::Id(id) => id,
+            Menu::Handle(handle) => handle,
+        };
+        let parent = if w.is_child() { w.parent } else { w.owner };
+        let proc = match w.proc {
+            Proc::Client(proc) if !w.flags.server_side_proc => proc,
+            _ => 0,
+        };
+        let mut flags = 0;
+        if w.flags.ansi_proc {
+            flags |= rtl::window::WINDOW_ANSI_PROC;
+        }
+        if w.process != caller {
+            flags |= rtl::window::WINDOW_OTHER_PROCESS;
+        }
+        WindowData {
+            style: w.style,
+            ex_style: w.ex_style,
+            id,
+            user_data: w.user_data,
+            instance: w.module,
+            parent: parent.map_or(0, |p| self.at(p).handle),
+            proc,
+            flags,
+            extra: w.cb_wnd_extra.max(0) as u32,
+        }
+    }
+
+    /// `window`'s text, its title.
+    pub fn window_text(&self, window: WindowId) -> WindowText {
+        let mut text = WindowText::default();
+        let title = self.at(window).title.as_slice();
+        text.units[..title.len()].copy_from_slice(title);
+        text.length = title.len() as u32;
+        text
+    }
+
+    /// The `length` bytes of `window`'s extra bytes at `offset`, where they are; InvalidIndex
+    /// when they are not all inside the window's own (a negative offset included).
+    fn extra_at(
+        &self,
+        window: WindowId,
+        offset: i32,
+        length: usize,
+    ) -> Result<(ExtraBlock, usize), Failure> {
+        let w = self.at(window);
+        let block = w.extra.ok_or(Failure::InvalidIndex)?;
+        let offset = usize::try_from(offset).map_err(|_| Failure::InvalidIndex)?;
+        if offset + length > w.cb_wnd_extra.max(0) as usize {
+            return Err(Failure::InvalidIndex);
+        }
+        Ok((block, offset))
+    }
+
+    /// The `length` (2 or 4) bytes of `window`'s extra bytes at `offset`, as a little-endian
+    /// value (GetWindowWord's and GetWindowLong's answer); InvalidIndex outside the window's own.
+    pub fn extra_value(
+        &self,
+        window: WindowId,
+        offset: i32,
+        length: usize,
+    ) -> Result<u32, Failure> {
+        let (block, offset) = self.extra_at(window, offset, length)?;
+        let bytes = &self.extra.bytes(block)[offset..offset + length];
+        Ok(bytes
+            .iter()
+            .rev()
+            .fold(0, |value, &byte| value << 8 | byte as u32))
+    }
+
+    /// Write the `length` (2 or 4) bytes of `value` into `window`'s extra bytes at `offset`: the
+    /// value they held.
+    fn set_extra_value(
+        &mut self,
+        window: WindowId,
+        offset: i32,
+        length: usize,
+        value: u32,
+    ) -> Result<u32, Failure> {
+        let previous = self.extra_value(window, offset, length)?;
+        let (block, offset) = self.extra_at(window, offset, length)?;
+        let bytes = &mut self.extra.bytes_mut(block)[offset..offset + length];
+        bytes.copy_from_slice(&value.to_le_bytes()[..length]);
+        Ok(previous)
+    }
+
+    /// SetWindowLong's change of the window `handle` names, for a caller of the process `caller`
+    /// through the narrow (`ansi`) or wide entry point: the field at `index` (rtl::window's GWL_*,
+    /// or an offset into the extra bytes) set to `value`. The answer is the value it held, and
+    /// for GWL_WNDPROC whether the procedure it held took the narrow forms of the messages (the
+    /// caller maps a procedure of the other form to a handle of its own, as Windows 2000's
+    /// user32 does).
+    ///
+    /// GWL_STYLE and GWL_EXSTYLE send WM_STYLECHANGING (whose handler may change the new style)
+    /// and WM_STYLECHANGED around the change, their wParam the index and their lParam the
+    /// STYLESTRUCT. GWL_WNDPROC subclasses the window: the procedure and its form (`ansi`) are
+    /// replaced; another process's window is refused it. GWL_HWNDPARENT changes a top-level
+    /// window's owner; a child's parent is SetParent's change, refused here. GWL_ID sets a child's
+    /// id, another window's menu handle. Another index is InvalidIndex.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_window_long(
+        &mut self,
+        classes: &mut class::Registry,
+        caller: class::Owner,
+        handle: Hwnd,
+        index: i32,
+        value: u32,
+        ansi: bool,
+        pump: &mut dyn Pump,
+    ) -> Result<(u32, bool), Failure> {
+        use rtl::window::*;
+        let window = self.window_of(handle)?;
+        if index >= 0 {
+            return Ok((self.set_extra_value(window, index, 4, value)?, false));
+        }
+        let data = self.window_data(window, caller);
+        let previous = match index {
+            GWL_STYLE | GWL_EXSTYLE => self.set_style(classes, window, index, value, pump),
+            GWL_ID => {
+                let w = self.at_mut(window);
+                w.menu = match value {
+                    0 => Menu::None,
+                    id if w.is_child() => Menu::Id(id),
+                    menu => Menu::Handle(menu),
+                };
+                data.id
+            }
+            GWL_USERDATA => core::mem::replace(&mut self.at_mut(window).user_data, value),
+            GWL_HINSTANCE => core::mem::replace(&mut self.at_mut(window).module, value),
+            GWL_WNDPROC => {
+                if self.at(window).process != caller {
+                    return Err(Failure::AccessDenied);
+                }
+                let w = self.at_mut(window);
+                let was_ansi = w.flags.ansi_proc;
+                w.proc = Proc::Client(value);
+                w.flags.ansi_proc = ansi;
+                w.flags.server_side_proc = false;
+                return Ok((data.proc, was_ansi));
+            }
+            GWL_HWNDPARENT => {
+                if self.at(window).is_child() {
+                    return Err(Failure::InvalidParameter);
+                }
+                let owner = match value {
+                    0 => None,
+                    owner => Some(self.window_of(owner)?),
+                };
+                if !self.validate_owner_depth(window, owner) {
+                    return Err(Failure::InvalidParameter);
+                }
+                self.at_mut(window).owner = owner;
+                data.parent
+            }
+            _ => return Err(Failure::InvalidIndex),
+        };
+        Ok((previous, false))
+    }
+
+    /// GWL_STYLE's or GWL_EXSTYLE's change (`index`) of `window` to `value`, between the
+    /// WM_STYLECHANGING and WM_STYLECHANGED the window is sent: the style it had.
+    fn set_style(
+        &mut self,
+        classes: &mut class::Registry,
+        window: WindowId,
+        index: i32,
+        value: u32,
+        pump: &mut dyn Pump,
+    ) -> u32 {
+        fn field(w: &mut Window, index: i32) -> &mut u32 {
+            if index == rtl::window::GWL_STYLE {
+                &mut w.style
+            } else {
+                &mut w.ex_style
+            }
+        }
+        let old = *field(self.at_mut(window), index);
+        // The private ANSI-creator bit is never an extended style a window holds.
+        let value = if index == rtl::window::GWL_EXSTYLE {
+            value & !ANSI_CREATOR_BIT
+        } else {
+            value
+        };
+        let mut changing = Message {
+            message: rtl::user::WM_STYLECHANGING,
+            wparam: index as WParam,
+            lparam: 0,
+            payload: Payload::Style(StyleStruct {
+                style_old: old,
+                style_new: value,
+            }),
+        };
+        pump.send(self, classes, window, &mut changing);
+        let new = match changing.payload {
+            Payload::Style(style) => style.style_new,
+            _ => value,
+        };
+        // A handler may have destroyed the window.
+        if !self.pool.is_live(window) {
+            return old;
+        }
+        *field(self.at_mut(window), index) = new;
+        pump.send(
+            self,
+            classes,
+            window,
+            &mut Message {
+                message: rtl::user::WM_STYLECHANGED,
+                wparam: index as WParam,
+                lparam: 0,
+                payload: Payload::Style(StyleStruct {
+                    style_old: old,
+                    style_new: new,
+                }),
+            },
+        );
+        old
+    }
+
+    /// SetWindowWord's change of the window `handle` names: the word at `offset` in its extra
+    /// bytes set to `value`; the word it held. InvalidIndex outside the window's own.
+    pub fn set_window_word(
+        &mut self,
+        handle: Hwnd,
+        offset: i32,
+        value: u16,
+    ) -> Result<u16, Failure> {
+        let window = self.window_of(handle)?;
+        Ok(self.set_extra_value(window, offset, 2, value as u32)? as u16)
+    }
+
+    /// The window `handle` names given the text `units` (DefWindowProc's WM_SETTEXT, and its
+    /// WM_NCCREATE's title): cut at the record's capacity.
+    pub fn set_window_text(&mut self, handle: Hwnd, units: &[u16]) -> Result<(), Failure> {
+        let window = self.window_of(handle)?;
+        self.at_mut(window).title = TextBuf::from_units(units);
+        Ok(())
+    }
+}
+
 /// `rect` moved by `dx`, `dy`.
 fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
     Rect {
@@ -3713,6 +4106,7 @@ impl WindowManager {
             server_side_proc: true,
             system_class: true,
             server_class: false,
+            ansi_proc: false,
         };
         let wc = class::WndClassExW {
             cb_size: core::mem::size_of::<class::WndClassExW>() as u32,
@@ -3909,15 +4303,28 @@ impl WindowManager {
         )
     }
 
-    /// NtUserQueryWindow's answer for the window `handle` names and the index `index` (one
-    /// [`query_length`] knows).
-    pub fn query_window(&self, handle: Hwnd, index: u32) -> Result<Query, Failure> {
+    /// NtUserQueryWindow's answer for the window `handle` names, the index `index` and the
+    /// answer's length `length` (a pair [`query_accepts`] accepts), for a caller of the process
+    /// `caller`.
+    pub fn query_window(
+        &self,
+        handle: Hwnd,
+        index: u32,
+        length: usize,
+        caller: class::Owner,
+    ) -> Result<Query, Failure> {
+        use rtl::window::*;
         let window = self.windows.window_of(handle)?;
         Ok(match index {
-            rtl::window::QUERY_WINDOW_INFO => {
-                Query::Info(self.windows.window_info(&self.classes, window))
+            QUERY_WINDOW_INFO => Query::Info(self.windows.window_info(&self.classes, window)),
+            QUERY_WINDOW_VISIBLE => Query::Visible(self.windows.is_window_visible(window) as u32),
+            QUERY_WINDOW_DATA => Query::Data(self.windows.window_data(window, caller)),
+            QUERY_WINDOW_TEXT => Query::Text(self.windows.window_text(window)),
+            _ => {
+                let offset = (index & !QUERY_WINDOW_EXTRA) as i32;
+                let value = self.windows.extra_value(window, offset, length)?;
+                Query::Extra(value.to_le_bytes(), length as u8)
             }
-            _ => Query::Visible(self.windows.is_window_visible(window) as u32),
         })
     }
 }
@@ -3929,6 +4336,13 @@ pub enum Query {
     Info(WindowInfo),
     /// QUERY_WINDOW_VISIBLE: IsWindowVisible's answer, a 32-bit boolean.
     Visible(u32),
+    /// QUERY_WINDOW_DATA: the window's own fields.
+    Data(WindowData),
+    /// QUERY_WINDOW_TEXT: the window's text.
+    Text(WindowText),
+    /// QUERY_WINDOW_EXTRA: a value of the window's extra bytes, its first `.1` bytes
+    /// (little-endian) the answer.
+    Extra([u8; 4], u8),
 }
 
 impl Query {
@@ -3938,16 +4352,32 @@ impl Query {
         match self {
             Query::Info(info) => info.as_bytes(),
             Query::Visible(visible) => visible.as_bytes(),
+            Query::Data(data) => data.as_bytes(),
+            Query::Text(text) => text.as_bytes(),
+            Query::Extra(bytes, length) => &bytes[..*length as usize],
         }
     }
 }
 
-/// The length of NtUserQueryWindow's answer for `index`: none for an index it has no answer for.
-pub fn query_length(index: u32) -> Option<usize> {
-    match index {
-        rtl::window::QUERY_WINDOW_INFO => Some(core::mem::size_of::<WindowInfo>()),
-        rtl::window::QUERY_WINDOW_VISIBLE => Some(core::mem::size_of::<u32>()),
-        _ => None,
+/// Whether NtUserQueryWindow answers the index `index` (STATUS_INVALID_INFO_CLASS when it has no
+/// answer for it) with an answer of `length` bytes (STATUS_INFO_LENGTH_MISMATCH when the answer's
+/// length is another): each index's answer has its own length, an extra-bytes value 2 or 4.
+pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
+    use core::mem::size_of;
+
+    use rtl::window::*;
+    let fits = match index {
+        QUERY_WINDOW_INFO => length == size_of::<WindowInfo>(),
+        QUERY_WINDOW_VISIBLE => length == size_of::<u32>(),
+        QUERY_WINDOW_DATA => length == size_of::<WindowData>(),
+        QUERY_WINDOW_TEXT => length == size_of::<WindowText>(),
+        index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
+        _ => return Err(STATUS_INVALID_INFO_CLASS),
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(STATUS_INFO_LENGTH_MISMATCH)
     }
 }
 
@@ -3957,7 +4387,7 @@ impl MenuInput {
         if raw == 0 {
             MenuInput::None
         } else if kind_of(style) == Kind::Child {
-            MenuInput::Id(raw as u16)
+            MenuInput::Id(raw)
         } else {
             MenuInput::Handle(raw)
         }
@@ -4202,14 +4632,82 @@ pub fn query_window(
     information: UserAddr,
     length: u32,
 ) -> NtResult {
-    let expected = query_length(index).ok_or(STATUS_INVALID_INFO_CLASS)?;
-    if length as usize != expected {
-        return Err(STATUS_INFO_LENGTH_MISMATCH);
-    }
+    query_accepts(index, length as usize)?;
+    let caller = call.process().object().index;
     let answer = lock(call.passive())
-        .query_window(window.raw(), index)
+        .query_window(window.raw(), index, length as usize, caller)
         .map_err(Failure::status)?;
     information.write(answer.bytes())?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserSetWindowLong(Window, Index, NewLong, Ansi, Previous, PreviousAnsi): SetWindowLong's
+/// change through the narrow (`ansi` nonzero) or wide entry point
+/// ([`Windows::set_window_long`]): the value the field held into `previous`, and for
+/// GWL_WNDPROC whether the procedure it held took the narrow forms of the messages into
+/// `previous_ansi` (0 for another index). The messages the change sends are queued for the
+/// window's thread; both answers are written once the window manager's lock is let go.
+#[cfg(target_arch = "x86")]
+pub fn set_window_long(
+    call: &mut NtCall,
+    window: Handle,
+    index: i32,
+    value: u32,
+    ansi: u32,
+    previous: UserPtr<u32>,
+    previous_ansi: UserPtr<u32>,
+) -> NtResult {
+    let caller = super::winsta::gui_thread(call)?.owner;
+    let (old, old_ansi) = super::queue::with_manager(call.passive(), |manager| {
+        let WindowManager {
+            windows, classes, ..
+        } = manager;
+        windows.set_window_long(
+            classes,
+            caller,
+            window.raw(),
+            index,
+            value,
+            ansi != 0,
+            &mut QueuePump,
+        )
+    })
+    .map_err(Failure::status)?;
+    previous.write(old)?;
+    previous_ansi.write(old_ansi as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserSetWindowWord(Window, Index, NewWord, Previous): SetWindowWord's change of the word at
+/// `index` in the window's extra bytes ([`Windows::set_window_word`]); the word it held into
+/// `previous`.
+#[cfg(target_arch = "x86")]
+pub fn set_window_word(
+    call: &mut NtCall,
+    window: Handle,
+    index: i32,
+    value: u32,
+    previous: UserPtr<u32>,
+) -> NtResult {
+    let old = lock(call.passive())
+        .windows
+        .set_window_word(window.raw(), index, value as u16)
+        .map_err(Failure::status)?;
+    previous.write(old as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserDefSetText(Window, Text): the window's text set to the NUL-terminated UTF-16 string at
+/// `text` (null: the empty text), cut at the record's capacity: DefWindowProc's WM_SETTEXT and
+/// the title its WM_NCCREATE sets. The text is read before the window manager's lock is taken.
+#[cfg(target_arch = "x86")]
+pub fn def_set_text(call: &mut NtCall, window: Handle, text: UserAddr) -> NtResult {
+    let mut units = [0u16; MAX_WINDOW_TEXT];
+    let text = read_text(text, &mut units)?;
+    lock(call.passive())
+        .windows
+        .set_window_text(window.raw(), text)
+        .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -4275,6 +4773,29 @@ pub fn show_window_async(_: &mut NtCall, _: Handle, _: i32) -> NtResult {
 
 #[cfg(not(target_arch = "x86"))]
 pub fn query_window(_: &mut NtCall, _: Handle, _: u32, _: UserAddr, _: u32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn set_window_long(
+    _: &mut NtCall,
+    _: Handle,
+    _: i32,
+    _: u32,
+    _: u32,
+    _: UserPtr<u32>,
+    _: UserPtr<u32>,
+) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn set_window_word(_: &mut NtCall, _: Handle, _: i32, _: u32, _: UserPtr<u32>) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn def_set_text(_: &mut NtCall, _: Handle, _: UserAddr) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 
@@ -6771,12 +7292,12 @@ mod tests {
         assert_eq!(m.show_window(h, SW_SHOW, p), Ok(0));
         assert_eq!(m.show_window_async(h, SW_HIDE, p), Ok(()));
         assert_eq!(
-            m.query_window(h, QUERY_WINDOW_VISIBLE),
+            m.query_window(h, QUERY_WINDOW_VISIBLE, 4, OWNER),
             Ok(Query::Visible(0))
         );
         assert_eq!(m.show_window_async(h, SW_SHOW, p), Ok(()));
         assert_eq!(
-            m.query_window(h, QUERY_WINDOW_VISIBLE),
+            m.query_window(h, QUERY_WINDOW_VISIBLE, 4, OWNER),
             Ok(Query::Visible(1))
         );
         let bogus = 0x7FFF_FFFC;
@@ -6814,14 +7335,15 @@ mod tests {
             .create_window(t, 0, &mut a, &mut DefaultProcedure)
             .unwrap();
         let p = &mut DefaultProcedure;
-        let rect = |m: &WindowManager| match m.query_window(h, QUERY_WINDOW_INFO).unwrap() {
-            Query::Info(info) => {
-                assert_eq!(info.size, 60);
-                let r = info.window;
-                (r.left, r.top, r.right, r.bottom)
-            }
-            other => panic!("{other:?}"),
-        };
+        let rect =
+            |m: &WindowManager| match m.query_window(h, QUERY_WINDOW_INFO, 60, OWNER).unwrap() {
+                Query::Info(info) => {
+                    assert_eq!(info.size, 60);
+                    let r = info.window;
+                    (r.left, r.top, r.right, r.bottom)
+                }
+                other => panic!("{other:?}"),
+            };
         assert_eq!(rect(m), (0, 0, 320, 200));
         assert_eq!(m.move_window(h, 100, 100, 300, 250, true, p), Ok(()));
         assert_eq!(rect(m), (100, 100, 400, 350));
@@ -6868,11 +7390,11 @@ mod tests {
             Err(Failure::InvalidWindowHandle)
         );
         assert_eq!(
-            m.query_window(bogus, QUERY_WINDOW_INFO),
+            m.query_window(bogus, QUERY_WINDOW_INFO, 60, OWNER),
             Err(Failure::InvalidWindowHandle)
         );
         assert_eq!(
-            m.query_window(bogus, QUERY_WINDOW_VISIBLE),
+            m.query_window(bogus, QUERY_WINDOW_VISIBLE, 4, OWNER),
             Err(Failure::InvalidWindowHandle)
         );
         let WindowManager {
@@ -6923,14 +7445,228 @@ mod tests {
         );
     }
 
-    /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's 4, nothing else.
+    /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's 4, the data's 36,
+    /// the text's 260, an extra-bytes value's 2 or 4, nothing else.
     #[test]
     fn the_query_lengths() {
-        assert_eq!(query_length(QUERY_WINDOW_INFO), Some(60));
-        assert_eq!(query_length(QUERY_WINDOW_VISIBLE), Some(4));
-        assert_eq!(query_length(2), None);
+        use rtl::window::{QUERY_WINDOW_DATA, QUERY_WINDOW_EXTRA, QUERY_WINDOW_TEXT};
+        assert_eq!(query_accepts(QUERY_WINDOW_INFO, 60), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_VISIBLE, 4), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_DATA, 36), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_TEXT, 260), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_EXTRA | 8, 2), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_EXTRA, 4), Ok(()));
+        assert_eq!(
+            query_accepts(QUERY_WINDOW_EXTRA, 3),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            query_accepts(QUERY_WINDOW_VISIBLE, 60),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(query_accepts(9, 4), Err(STATUS_INVALID_INFO_CLASS));
         assert_eq!(Query::Visible(1).bytes(), &[1, 0, 0, 0]);
         assert_eq!(Query::Info(WindowInfo::default()).bytes().len(), 60);
+    }
+
+    /// A class of `extra` window extra bytes, registered through the narrow form when `ansi`.
+    fn register_data_class(
+        c: &mut class::Registry,
+        name: &str,
+        extra: i32,
+        ansi: bool,
+    ) -> class::Atom {
+        let mut wc = wnd_class();
+        wc.cb_wnd_extra = extra;
+        let flags = RegisterFlags {
+            ansi_proc: ansi,
+            ..compat40()
+        };
+        c.register_class(
+            &wc,
+            class::Name::Text(&units(name)),
+            class::MenuArg::None,
+            OWNER,
+            flags,
+            DESKTOP,
+        )
+        .unwrap()
+    }
+
+    /// The extra bytes: zeroed at creation, read and written as LONGs and WORDs little-endian,
+    /// refused past their end and at a negative offset (ERROR_INVALID_INDEX), a window of a class
+    /// with none has none; the arena's granules go back with the window.
+    #[test]
+    fn the_extra_bytes() {
+        let (w, c, t, _, _, _) = setup();
+        let atom = register_data_class(c, "Extra", 12, false);
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        let h = w.handle_of(id);
+        assert_eq!(w.extra.taken_granules(), 1);
+        for offset in [0, 4, 8] {
+            assert_eq!(w.extra_value(id, offset, 4), Ok(0));
+        }
+        let mut set = |w: &mut Windows, index: i32, value: u32| {
+            w.set_window_long(c, OWNER, h, index, value, false, &mut pump)
+                .map(|(previous, _)| previous)
+        };
+        assert_eq!(set(w, 0, 0x1111_1111), Ok(0));
+        assert_eq!(set(w, 4, 0x2222_2222), Ok(0));
+        assert_eq!(set(w, 8, 0x3333_3333), Ok(0));
+        assert_eq!(set(w, 0, 0x4444_4444), Ok(0x1111_1111));
+        assert_eq!(w.extra_value(id, 2, 4), Ok(0x2222_4444));
+        for index in [9, 12, -100] {
+            assert_eq!(set(w, index, 1), Err(Failure::InvalidIndex));
+        }
+        assert_eq!(w.extra_value(id, 9, 4), Err(Failure::InvalidIndex));
+        assert_eq!(w.set_window_word(h, 0, 0xABCD), Ok(0x4444));
+        assert_eq!(w.extra_value(id, 0, 4), Ok(0x4444_ABCD));
+        assert_eq!(w.set_window_word(h, 10, 0x1234), Ok(0x3333));
+        assert_eq!(w.extra_value(id, 8, 4), Ok(0x1234_3333));
+        assert_eq!(w.set_window_word(h, 11, 1), Err(Failure::InvalidIndex));
+        assert_eq!(w.extra_value(id, 11, 2), Err(Failure::InvalidIndex));
+        assert_eq!(w.window_data(id, OWNER).extra, 12);
+
+        let none = register_data_class(c, "None", 0, false);
+        let plain = create(w, c, t, none, WS_OVERLAPPED, &mut pump).unwrap();
+        assert_eq!(w.extra_value(plain, 0, 4), Err(Failure::InvalidIndex));
+
+        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert_eq!(w.extra.taken_granules(), 0);
+        assert_eq!(
+            w.set_window_word(h, 0, 1),
+            Err(Failure::InvalidWindowHandle)
+        );
+    }
+
+    /// GWL_STYLE and GWL_EXSTYLE: WM_STYLECHANGING then WM_STYLECHANGED, their wParam the index,
+    /// the new style stored, the old one answered; the ANSI-creator bit is never stored.
+    #[test]
+    fn the_style_changes_send_their_messages() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPED | WS_CAPTION, &mut pump).unwrap();
+        let h = w.handle_of(id);
+        let style = w.at(id).style;
+        pump.events.clear();
+        assert_eq!(
+            w.set_window_long(
+                c,
+                OWNER,
+                h,
+                rtl::window::GWL_STYLE,
+                style | WS_THICKFRAME,
+                false,
+                &mut pump
+            ),
+            Ok((style, false))
+        );
+        assert_eq!(w.at(id).style, style | WS_THICKFRAME);
+        assert_eq!(
+            pump.events,
+            [
+                Ev::Send(id, rtl::user::WM_STYLECHANGING, -16i32 as u32, 0),
+                Ev::Send(id, rtl::user::WM_STYLECHANGED, -16i32 as u32, 0),
+            ]
+        );
+        let ex = w.at(id).ex_style;
+        assert_eq!(
+            w.set_window_long(
+                c,
+                OWNER,
+                h,
+                rtl::window::GWL_EXSTYLE,
+                ex | WS_EX_TOOLWINDOW | ANSI_CREATOR_BIT,
+                false,
+                &mut pump
+            ),
+            Ok((ex, false))
+        );
+        assert_eq!(w.at(id).ex_style, ex | WS_EX_TOOLWINDOW);
+    }
+
+    /// The window's own fields: GWL_USERDATA, GWL_HINSTANCE and a child's GWL_ID set and answered,
+    /// GWL_HWNDPARENT a child's parent and a top-level window's owner; the procedure and its form,
+    /// replaced by GWL_WNDPROC (another process's window refused); an unknown index refused; the
+    /// text set and read back.
+    #[test]
+    fn the_window_data() {
+        let (w, c, t, _, _, _) = setup();
+        let atom = register_data_class(c, "Narrow", 0, true);
+        let mut pump = Rec::new(t);
+        let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        let mut a = args(atom, WS_CHILD);
+        a.parent = Some(top);
+        a.menu = MenuInput::Id(77);
+        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let (ht, hc) = (w.handle_of(top), w.handle_of(child));
+
+        let data = w.window_data(child, OWNER);
+        assert_eq!((data.id, data.parent, data.instance), (77, ht, MODULE));
+        assert_eq!(data.proc, 0x0040_1000);
+        assert_eq!(data.flags, rtl::window::WINDOW_ANSI_PROC);
+        assert_eq!(
+            w.window_data(child, OTHER_OWNER).flags,
+            rtl::window::WINDOW_ANSI_PROC | rtl::window::WINDOW_OTHER_PROCESS
+        );
+        assert_eq!(
+            (
+                w.window_data(top, OWNER).id,
+                w.window_data(top, OWNER).parent
+            ),
+            (0, 0)
+        );
+
+        let mut set = |w: &mut Windows, h: Hwnd, index: i32, value: u32, ansi: bool| {
+            w.set_window_long(c, OWNER, h, index, value, ansi, &mut pump)
+        };
+        assert_eq!(set(w, hc, rtl::window::GWL_ID, 88, false), Ok((77, false)));
+        assert_eq!(w.window_data(child, OWNER).id, 88);
+        assert_eq!(
+            set(w, ht, rtl::window::GWL_USERDATA, 0x1234_5678, false),
+            Ok((0, false))
+        );
+        assert_eq!(
+            set(w, ht, rtl::window::GWL_USERDATA, -5i32 as u32, true),
+            Ok((0x1234_5678, false))
+        );
+        assert_eq!(w.window_data(top, OWNER).user_data, -5i32 as u32);
+        assert_eq!(
+            set(w, ht, rtl::window::GWL_HINSTANCE, 0x50_0000, false),
+            Ok((MODULE, false))
+        );
+        assert_eq!(set(w, ht, -2, 1, false), Err(Failure::InvalidIndex));
+
+        assert_eq!(
+            set(w, ht, rtl::window::GWL_WNDPROC, 0x0040_2000, false),
+            Ok((0x0040_1000, true))
+        );
+        let data = w.window_data(top, OWNER);
+        assert_eq!((data.proc, data.flags), (0x0040_2000, 0));
+        assert_eq!(
+            set(w, ht, rtl::window::GWL_WNDPROC, 0x0040_1000, true),
+            Ok((0x0040_2000, false))
+        );
+        assert_eq!(
+            w.set_window_long(
+                c,
+                OTHER_OWNER,
+                ht,
+                rtl::window::GWL_WNDPROC,
+                1,
+                false,
+                &mut pump
+            ),
+            Err(Failure::AccessDenied)
+        );
+
+        assert_eq!(w.set_window_text(ht, &units("a title")), Ok(()));
+        assert_eq!(w.window_text(top).as_slice(), &units("a title")[..]);
+        assert_eq!(
+            w.set_window_text(0x7FFF_FFFC, &[]),
+            Err(Failure::InvalidWindowHandle)
+        );
     }
 
     /// SetWindowPos's messages and rectangles: WM_WINDOWPOSCHANGING with the asked place, a new
@@ -7363,7 +8099,8 @@ mod tests {
         let top = make(m, 0, WS_OVERLAPPED | WS_VISIBLE);
         let child = make(m, top, WS_CHILD | WS_VISIBLE);
         let only = make(m, HWND_MESSAGE, WS_CHILD | WS_VISIBLE);
-        let visible = |m: &WindowManager, h| m.query_window(h, QUERY_WINDOW_VISIBLE).unwrap();
+        let visible =
+            |m: &WindowManager, h| m.query_window(h, QUERY_WINDOW_VISIBLE, 4, OWNER).unwrap();
         assert_eq!(visible(m, top), Query::Visible(1));
         assert_eq!(visible(m, child), Query::Visible(1));
         assert_eq!(visible(m, only), Query::Visible(0), "a message-only window");

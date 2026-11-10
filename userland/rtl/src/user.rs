@@ -31,6 +31,9 @@ pub const WM_ACTIVATE: u32 = 0x0006;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_ENABLE: u32 = 0x000A;
+pub const WM_SETTEXT: u32 = 0x000C;
+pub const WM_GETTEXT: u32 = 0x000D;
+pub const WM_GETTEXTLENGTH: u32 = 0x000E;
 pub const WM_PAINT: u32 = 0x000F;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_QUERYENDSESSION: u32 = 0x0011;
@@ -39,6 +42,8 @@ pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_ENDSESSION: u32 = 0x0016;
 pub const WM_ACTIVATEAPP: u32 = 0x001C;
 pub const WM_CANCELMODE: u32 = 0x001F;
+pub const WM_STYLECHANGING: u32 = 0x007C;
+pub const WM_STYLECHANGED: u32 = 0x007D;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
@@ -161,6 +166,18 @@ pub struct CreateStructW {
 // SAFETY: integers only.
 unsafe impl Pod for CreateStructW {}
 
+/// STYLESTRUCT: WM_STYLECHANGING's and WM_STYLECHANGED's lParam, the style before and after a
+/// SetWindowLong of GWL_STYLE or GWL_EXSTYLE (their wParam).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StyleStruct {
+    pub style_old: u32,
+    pub style_new: u32,
+}
+
+// SAFETY: integers only.
+unsafe impl Pod for StyleStruct {}
+
 // --- F2K's receipt -------------------------------------------------------------------------------
 
 /// What a receipt holds: WM_QUIT (GetMessage answers 0 for it), a posted message or one the queue
@@ -179,7 +196,8 @@ pub const RECEIPT_TEXT: usize = 129;
 /// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
 /// parameters; when the message carries a structure, `msg.lparam` points at the receipt's own copy
 /// of it: `create` (WM_NCCREATE, WM_CREATE: its `name` points at `name`, its `class` holds the
-/// class's atom) or `rect` (WM_NCCALCSIZE). The answer goes back with
+/// class's atom), `rect` (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED)
+/// or `style` (WM_STYLECHANGING, WM_STYLECHANGED). The answer goes back with
 /// [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +211,7 @@ pub struct Receipt {
     pub name: [u16; RECEIPT_TEXT],
     /// Keeps the size a multiple of four.
     pub pad: u16,
+    pub style: StyleStruct,
 }
 
 // SAFETY: integers and arrays of them; the trailing unit fills what would be padding.
@@ -269,6 +288,8 @@ mod tests {
         assert_eq!(offset_of!(Receipt, rect), 84);
         assert_eq!(offset_of!(Receipt, window_pos), 100);
         assert_eq!(offset_of!(Receipt, name), 128);
+        assert_eq!(offset_of!(Receipt, style), 388);
+        assert_eq!(size_of::<StyleStruct>(), 8);
         assert_eq!(size_of::<Receipt>() % 4, 0);
     }
 

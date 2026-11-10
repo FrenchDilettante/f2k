@@ -62,6 +62,7 @@ use rtl::user::{
     Point,
     Receipt,
     ReceiptHead,
+    StyleStruct,
     HWND_BROADCAST,
     QS_HOTKEY,
     QS_INPUT,
@@ -234,6 +235,8 @@ enum Carried {
     Create(u16),
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS.
     WindowPos(window::WindowPos),
+    /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT.
+    Style(StyleStruct),
 }
 
 /// A sent message.
@@ -989,6 +992,7 @@ pub fn receipt_head(
         Carried::WindowPos(_) => {
             receipt.wrapping_add(offset_of!(Receipt, window_pos) as u32) as LParam
         }
+        Carried::Style(_) => receipt.wrapping_add(offset_of!(Receipt, style) as u32) as LParam,
     };
     Some(ReceiptHead {
         kind: RECEIVED_SENT,
@@ -1036,6 +1040,14 @@ pub fn receipt_name(windows: &Windows, id: SentId, from: usize, out: &mut [u16])
     let written = rest.len().min(out.len());
     out[..written].copy_from_slice(&rest[..written]);
     written
+}
+
+/// The STYLESTRUCT the sent message `id` carries, when it carries one.
+pub fn receipt_style(windows: &Windows, id: SentId) -> Option<StyleStruct> {
+    match windows.queues.sent_at(id)?.carried {
+        Carried::Style(style) => Some(style),
+        _ => None,
+    }
 }
 
 /// The rectangle the sent message `id` carries, when it carries one.
@@ -1299,6 +1311,7 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
         Payload::None => Carried::None,
         Payload::Rect(r) => Carried::Rect(r),
         Payload::WindowPos(w) => Carried::WindowPos(w),
+        Payload::Style(style) => Carried::Style(style),
         // The parameters are copied in place: by value they would cross the stack under the
         // creation's own large frame.
         Payload::Create(ref params) => {
@@ -1729,12 +1742,13 @@ mod services {
             Taken::Sent(id) => id,
         };
         let base = receipt.raw();
-        let (first, create, rect) = with_manager(call.passive(), |m| {
+        let (first, create, rect, style) = with_manager(call.passive(), |m| {
             let w = &m.windows;
             (
                 receipt_head(w, caller, id, base, time),
                 receipt_create(w, id, base),
                 receipt_rect(w, id),
+                receipt_style(w, id),
             )
         });
         let first = first.ok_or(STATUS_INVALID_PARAMETER)?;
@@ -1744,6 +1758,12 @@ mod services {
                 .offset(offset_of!(Receipt, rect) as u32)
                 .cast::<rtl::gdi::Rect>()
                 .write(rect)?;
+        }
+        if let Some(style) = style {
+            receipt
+                .offset(offset_of!(Receipt, style) as u32)
+                .cast::<StyleStruct>()
+                .write(style)?;
         }
         if let Some(create) = create {
             receipt

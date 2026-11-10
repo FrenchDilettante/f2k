@@ -12,16 +12,25 @@
 //! as soon as their service returns ([`receive_sent`]).
 //!
 //! SendMessage to a window of the calling thread calls its procedure here, as Windows 2000's
-//! user32 does; to another thread's window the kernel waits for that thread's answer. Messages are
-//! not translated between their narrow and wide forms: the A and W calls are the same call.
+//! user32 does; to another thread's window the kernel waits for that thread's answer. A message
+//! reaches a procedure of the other form than its sender's translated ([`procedure`]): SendMessageA
+//! and DispatchMessageA hand over narrow messages, SendMessageW and DispatchMessageW wide ones, the
+//! window manager wide ones; another thread's message reaches the procedure as it was sent. The A
+//! and W forms of the reads and the posts are the same calls: no posted message carries text.
+//!
+//! DefWindowProc keeps the window's text with the window manager, as Windows 2000's does: its
+//! WM_NCCREATE sets the title the creation names, its WM_SETTEXT sets the text, and its WM_GETTEXT
+//! and WM_GETTEXTLENGTH read it, through NtUserDefSetText and NtUserQueryWindow, in the form of the
+//! DefWindowProc called.
 
-use rtl::edge::In;
+use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_INVALID_CID};
 use rtl::user::*;
+use rtl::window::{WindowText, QUERY_WINDOW_TEXT};
 
-use crate::imports;
-use crate::{answered, failed_with, focus, paint, window, Out};
+use crate::procedure::{self, Procedure};
+use crate::{answered, failed_with, focus, imports, paint, window, Out};
 
 /// The messages TranslateMessage looks at (winuser.h): the keys' and the system keys'.
 const WM_KEYUP: u32 = 0x0101;
@@ -32,17 +41,48 @@ const WM_SYSCHAR: u32 = 0x0106;
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
 
-/// The procedure `proc` a sent message's receipt names, called with its message; the answer
-/// handed back to its sender. Both are copies: no reference to the receipt is held while the
-/// procedure runs, which may write the structure its lParam points at in the receipt
-/// (WM_NCCREATE's CREATESTRUCT).
+/// The procedure `proc` a sent message's receipt names, called with its message (the window
+/// manager's are wide: a narrow procedure's creation messages are translated); the answer handed
+/// back to its sender. Both are copies: no reference to the receipt is held while the procedure
+/// runs, which may write the structure its lParam points at in the receipt (WM_NCCREATE's
+/// CREATESTRUCT).
 fn deliver(proc: u32, msg: Msg) {
     let answer = if proc == 0 {
-        default_procedure(msg.hwnd as usize, msg.message, msg.wparam, msg.lparam)
+        default_procedure(
+            msg.hwnd as usize,
+            msg.message,
+            msg.wparam,
+            msg.lparam,
+            false,
+        )
     } else {
-        imports::call_procedure(proc, msg.hwnd, msg.message, msg.wparam, msg.lparam)
+        let wide = matches!(msg.message, WM_NCCREATE | WM_CREATE);
+        call(proc, wide.then_some(false), &msg)
     };
     let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
+}
+
+/// The window procedure `proc` the kernel answered for `msg`'s window, called with the message:
+/// translated from the form `from` (narrow when true) when the message is one that carries text
+/// and the procedure takes the other form (its window's, read only then); as it is otherwise.
+fn call(proc: u32, from: Option<bool>, msg: &Msg) -> i32 {
+    let target = match from {
+        Some(ansi) if procedure::translates(msg.message) => Procedure {
+            address: proc,
+            ansi: window::procedure_is_ansi(msg.hwnd as usize).unwrap_or(ansi),
+        },
+        _ => {
+            return imports::call_procedure(proc, msg.hwnd, msg.message, msg.wparam, msg.lparam);
+        }
+    };
+    procedure::call(
+        target,
+        from == Some(true),
+        msg.hwnd,
+        msg.message,
+        msg.wparam,
+        msg.lparam,
+    )
 }
 
 /// Receive the messages sent to the calling thread's windows: each delivered to its procedure, in
@@ -226,15 +266,28 @@ pub extern "system" fn post_quit_message(code: i32) {
     let _ = imports::call_one_param(code as u32, ONE_PARAM_POST_QUIT_MESSAGE);
 }
 
-/// SendMessage's core: the window procedure's answer (called here for a window of the calling
-/// thread, the kernel's answer otherwise); none with 1400 for a handle naming no window.
-pub fn send(window: usize, message: u32, wparam: u32, lparam: i32) -> Option<i32> {
+/// SendMessage's core, for a message of the narrow (`ansi`) or wide form: the window procedure's
+/// answer (called here for a window of the calling thread, translated for a procedure of the
+/// other form; the kernel's answer otherwise); none with 1400 for a handle naming no window.
+pub fn send_as(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> Option<i32> {
     let (proc, answer) = answered(imports::message_call(window, message, wparam, lparam))?;
     Some(if proc == 0 {
         answer
     } else {
-        imports::call_procedure(proc, window as u32, message, wparam, lparam)
+        let msg = Msg {
+            hwnd: window as u32,
+            message,
+            wparam,
+            lparam,
+            ..Msg::default()
+        };
+        call(proc, Some(ansi), &msg)
     })
+}
+
+/// SendMessageW's core: [`send_as`] for a wide message.
+pub fn send(window: usize, message: u32, wparam: u32, lparam: i32) -> Option<i32> {
+    send_as(window, message, wparam, lparam, false)
 }
 
 /// SendMessageA: the message sent to the window, its procedure's answer; 0 with the last error for
@@ -246,10 +299,10 @@ pub extern "system" fn send_message_a(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    send(window, message, wparam, lparam).unwrap_or(0)
+    send_as(window, message, wparam, lparam, true).unwrap_or(0)
 }
 
-/// SendMessageW: SendMessageA's.
+/// SendMessageW: SendMessageA's, for a wide message.
 #[unsafe(export_name = "f2k_export_SendMessageW")]
 pub extern "system" fn send_message_w(
     window: usize,
@@ -257,7 +310,7 @@ pub extern "system" fn send_message_w(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    send(window, message, wparam, lparam).unwrap_or(0)
+    send_as(window, message, wparam, lparam, false).unwrap_or(0)
 }
 
 /// DispatchMessageA: the message handed to its window's procedure (WM_TIMER with a TimerProc to
@@ -271,10 +324,10 @@ pub extern "system" fn send_message_w(
 pub unsafe extern "system" fn dispatch_message_a(msg: *const Msg) -> i32 {
     // SAFETY: the caller's MSG.
     let msg = unsafe { In::new(msg) }.read();
-    dispatch(&msg)
+    dispatch(&msg, true)
 }
 
-/// DispatchMessageW: DispatchMessageA's.
+/// DispatchMessageW: DispatchMessageA's, for a wide message.
 ///
 /// # Safety
 ///
@@ -283,17 +336,17 @@ pub unsafe extern "system" fn dispatch_message_a(msg: *const Msg) -> i32 {
 pub unsafe extern "system" fn dispatch_message_w(msg: *const Msg) -> i32 {
     // SAFETY: the caller's MSG.
     let msg = unsafe { In::new(msg) }.read();
-    dispatch(&msg)
+    dispatch(&msg, false)
 }
 
-/// DispatchMessage's core.
-fn dispatch(msg: &Msg) -> i32 {
+/// DispatchMessage's core, for a message of the narrow (`ansi`) or wide form.
+fn dispatch(msg: &Msg, ansi: bool) -> i32 {
     match answered(imports::dispatch_target(msg)) {
         None | Some(0) => 0,
         Some(proc) if msg.message == WM_TIMER && msg.lparam != 0 => {
             imports::call_procedure(proc, msg.hwnd, WM_TIMER, msg.wparam, msg.time as i32)
         }
-        Some(proc) => imports::call_procedure(proc, msg.hwnd, msg.message, msg.wparam, msg.lparam),
+        Some(proc) => call(proc, Some(ansi), msg),
     }
 }
 
@@ -335,18 +388,39 @@ fn translate(msg: &Msg) -> u32 {
     1
 }
 
-/// The default window procedure's answer to a message: WM_NCCREATE TRUE (the creation goes on);
-/// WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and EndPaint;
-/// WM_ACTIVATE the focus to a window being activated that is not minimized, as the documentation
-/// gives it; WM_NCACTIVATE TRUE (the change goes on: there is no caption to redraw yet);
-/// WM_ERASEBKGND TRUE (the background counts as erased: there is no fill to draw it with yet);
-/// WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
+/// The default window procedure's answer to a message of the narrow (`ansi`) or wide form:
+/// WM_NCCREATE the title the CREATESTRUCT names set, TRUE (the creation goes on); WM_SETTEXT the
+/// text set, TRUE; WM_GETTEXT the text copied into the buffer (as much as fits with its
+/// terminator; nothing into an empty one), the units or bytes copied; WM_GETTEXTLENGTH the text's
+/// length; WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and
+/// EndPaint; WM_ACTIVATE the focus to a window being activated that is not minimized, as the
+/// documentation gives it; WM_NCACTIVATE TRUE (the change goes on: there is no caption to redraw
+/// yet); WM_ERASEBKGND TRUE (the background counts as erased: there is no fill to draw it with
+/// yet); WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
 /// DefWindowProc's answer), whatever its lParam; WM_NCCALCSIZE the rectangle left as it is (the
 /// client area is the window's: windows have no decoration yet); 0 to everything else,
-/// WM_ENDSESSION included.
-pub fn default_procedure(window: usize, message: u32, wparam: u32, _lparam: i32) -> i32 {
+/// WM_ENDSESSION included, and to a text message for a handle naming no window.
+pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
-        WM_NCCREATE | WM_ERASEBKGND | WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
+        WM_NCCREATE => {
+            if lparam != 0 {
+                // SAFETY: WM_NCCREATE's lParam as the window manager hands it over (or translated
+                // for a narrow procedure): a CREATESTRUCT.
+                let create = unsafe { In::new(lparam as usize as *const CreateStructW) }.read();
+                // A resource id in the name's place (its high word zero) is no text.
+                let name = if create.name >> 16 == 0 {
+                    0
+                } else {
+                    create.name
+                };
+                let _ = set_text(window, name as i32, ansi);
+            }
+            1
+        }
+        WM_SETTEXT => set_text(window, lparam, ansi) as i32,
+        WM_GETTEXT => get_text(window, wparam, lparam, ansi) as i32,
+        WM_GETTEXTLENGTH => text_length(window, ansi) as i32,
+        WM_ERASEBKGND | WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
         WM_ACTIVATE => {
             if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
                 focus::activate_focus(window);
@@ -365,7 +439,64 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, _lparam: i32)
     }
 }
 
-/// DefWindowProcA: the default window procedure's answer.
+/// DefWindowProc's WM_SETTEXT: the window's text set to the string at `text` (the narrow form's
+/// when `ansi`; 0: the empty text). Whether it was.
+fn set_text(window: usize, text: i32, ansi: bool) -> bool {
+    if !ansi || text == 0 {
+        return imports::def_set_text(window, text as usize).is_ok();
+    }
+    // SAFETY: WM_SETTEXT's lParam (or a narrow CREATESTRUCT's name) as its sender hands it over: a
+    // NUL-terminated string, narrow in this form.
+    let text = unsafe { InStr::new(text as usize as *const u8) };
+    crate::with_wide(text.bytes(), |units| {
+        imports::def_set_text(window, units.as_ptr() as usize).is_ok()
+    })
+    .unwrap_or(false)
+}
+
+/// The window's text, as the window manager holds it: none for a handle naming no window.
+pub fn window_text(window: usize) -> Option<WindowText> {
+    let mut text = WindowText::default();
+    imports::query_window(window, QUERY_WINDOW_TEXT, &mut text).ok()?;
+    Some(text)
+}
+
+/// DefWindowProc's WM_GETTEXT: the window's text copied into the buffer of `max` units (bytes in
+/// the narrow form) at `buffer`, cut to leave room for the terminator, terminated: the units (or
+/// bytes) copied before it. An empty buffer is left as it is.
+fn get_text(window: usize, max: u32, buffer: i32, ansi: bool) -> usize {
+    if max == 0 || buffer == 0 {
+        return 0;
+    }
+    let Some(text) = window_text(window) else {
+        return 0;
+    };
+    let text = text.as_slice();
+    if ansi {
+        // SAFETY: WM_GETTEXT's lParam as its sender hands it over: a buffer of wParam bytes.
+        let mut out = unsafe { OutBuf::new(buffer as usize as *mut u8, max as usize) };
+        procedure::put_narrow(&mut out, text)
+    } else {
+        // SAFETY: WM_GETTEXT's lParam as its sender hands it over: a buffer of wParam units.
+        let mut out = unsafe { OutBuf::new(buffer as usize as *mut u16, max as usize) };
+        let length = text.len().min(max as usize - 1);
+        out.put(&text[..length]);
+        out.set(length, 0);
+        length
+    }
+}
+
+/// DefWindowProc's WM_GETTEXTLENGTH: the window's text's length in units (in bytes, the narrow
+/// form's, when `ansi`).
+fn text_length(window: usize, ansi: bool) -> usize {
+    match window_text(window) {
+        Some(text) if ansi => procedure::narrow_length(text.as_slice()),
+        Some(text) => text.as_slice().len(),
+        None => 0,
+    }
+}
+
+/// DefWindowProcA: the default window procedure's answer to a narrow message.
 #[unsafe(export_name = "f2k_export_DefWindowProcA")]
 pub extern "system" fn def_window_proc_a(
     window: usize,
@@ -373,10 +504,10 @@ pub extern "system" fn def_window_proc_a(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    default_procedure(window, message, wparam, lparam)
+    default_procedure(window, message, wparam, lparam, true)
 }
 
-/// DefWindowProcW: DefWindowProcA's.
+/// DefWindowProcW: the default window procedure's answer to a wide message.
 #[unsafe(export_name = "f2k_export_DefWindowProcW")]
 pub extern "system" fn def_window_proc_w(
     window: usize,
@@ -384,7 +515,7 @@ pub extern "system" fn def_window_proc_w(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    default_procedure(window, message, wparam, lparam)
+    default_procedure(window, message, wparam, lparam, false)
 }
 
 #[cfg(test)]

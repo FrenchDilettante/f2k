@@ -1,6 +1,8 @@
 //! The windows: CreateWindowEx and DestroyWindow, the desktop window, the visibility and geometry
 //! calls (IsWindow, IsWindowVisible, GetWindowRect, ShowWindow, ShowWindowAsync, SetWindowPos,
-//! MoveWindow) and UpdateWindow, each over its win32k service ([`imports`]).
+//! MoveWindow) and UpdateWindow, the window's data (GetWindowLong and SetWindowLong,
+//! GetWindowWord and SetWindowWord, IsWindowUnicode) and its text (GetWindowText,
+//! GetWindowTextLength, SetWindowText), each over its win32k service ([`imports`]).
 //!
 //! The messages the window manager sends while it decides (the creation's WM_NCCREATE to WM_MOVE,
 //! the destruction's WM_DESTROY and WM_NCDESTROY, UpdateWindow's WM_PAINT) are queued for the
@@ -9,21 +11,33 @@
 //! called before the call returns, as on Windows 2000.
 //!
 //! NtUserQueryWindow answers what Windows 2000's user32 reads from the window manager's records
-//! mapped into its process: a window's WINDOWINFO, its visibility.
+//! mapped into its process: a window's WINDOWINFO, its visibility, its own fields, its extra bytes
+//! and its text. The changes go through the window manager's services: NtUserSetWindowLong (whose
+//! style changes send WM_STYLECHANGING and WM_STYLECHANGED, received before SetWindowLong returns),
+//! NtUserSetWindowWord.
+//!
+//! A window's text is its procedure's to answer: GetWindowText, GetWindowTextLength and
+//! SetWindowText send it WM_GETTEXT, WM_GETTEXTLENGTH and WM_SETTEXT, in the caller's form, which
+//! its DefWindowProc answers from the text the window manager holds ([`message`]). A window of
+//! another process is not sent WM_GETTEXT or WM_GETTEXTLENGTH: its text is read as the window
+//! manager holds it, as the platform documents.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::edge::OutBuf;
 use rtl::gdi::Rect;
 use rtl::status::{
     NtStatus,
+    STATUS_INVALID_INFO_CLASS,
     STATUS_INVALID_PARAMETER,
     STATUS_NO_MEMORY,
     STATUS_OBJECT_NAME_NOT_FOUND,
 };
-use rtl::user::HWND_LOCK_UPDATE_WINDOW;
-use rtl::window::{WindowInfo, QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
+use rtl::user::{HWND_LOCK_UPDATE_WINDOW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT};
+use rtl::window::*;
 
 use crate::imports::{self, Creation};
+use crate::procedure::{self, Procedure};
 use crate::{
     answered,
     failed,
@@ -333,6 +347,280 @@ pub extern "system" fn set_process_default_layout(layout: u32) -> u32 {
     }
 }
 
+// --- The window's data ---------------------------------------------------------------------------
+
+/// ERROR_INVALID_INDEX: a GetWindowLong/SetWindowLong index that names no field of the window, or
+/// extra bytes past the window's own.
+pub const ERROR_INVALID_INDEX: u32 = 1413;
+
+/// The Win32 error of a failed window-data call: STATUS_INVALID_INFO_CLASS, the window manager's
+/// answer for an index it does not know (its InvalidIndex), is ERROR_INVALID_INDEX; the rest as
+/// [`window_error`] maps them.
+fn data_error(status: NtStatus) -> u32 {
+    match status.0 {
+        STATUS_INVALID_INFO_CLASS => ERROR_INVALID_INDEX,
+        _ => window_error(status),
+    }
+}
+
+/// The window's own fields, as the window manager holds them.
+pub fn window_data(window: usize) -> Result<WindowData, NtStatus> {
+    let mut data = WindowData::default();
+    imports::query_window(window, QUERY_WINDOW_DATA, &mut data)?;
+    Ok(data)
+}
+
+/// Whether the window's procedure takes the narrow forms of the messages; none (the last error
+/// untouched) for a handle naming no window.
+pub fn procedure_is_ansi(window: usize) -> Option<bool> {
+    let data = window_data(window).ok()?;
+    Some(data.flags & WINDOW_ANSI_PROC != 0)
+}
+
+/// The window's procedure as GetWindowLong answers a caller of the narrow (`ansi`) or wide form:
+/// its address, or a handle naming it when it takes the other form ([`procedure::value_for`]).
+/// The window manager's own procedure answers as DefWindowProc of the caller's form.
+fn procedure_value(data: &WindowData, ansi: bool) -> u32 {
+    if data.proc == 0 {
+        return if ansi {
+            message::def_window_proc_a as *const () as usize as u32
+        } else {
+            message::def_window_proc_w as *const () as usize as u32
+        };
+    }
+    let proc = Procedure {
+        address: data.proc,
+        ansi: data.flags & WINDOW_ANSI_PROC != 0,
+    };
+    procedure::value_for(proc, ansi)
+}
+
+/// GetWindowLong's core, for a caller of the narrow (`ansi`) or wide form: the field at `index`
+/// (GWL_*, or an offset into the extra bytes); 0 with the last error for a failure (1400 for a
+/// handle naming no window, 1413 for an index naming no field or bytes past the extra bytes').
+/// The last error is untouched otherwise, whatever the value.
+fn get_long(window: usize, index: i32, ansi: bool) -> i32 {
+    if index >= 0 {
+        let mut value = 0u32;
+        let index = QUERY_WINDOW_EXTRA | index as u32;
+        return failed_with(imports::query_window(window, index, &mut value), data_error)
+            .map_or(0, |()| value as i32);
+    }
+    let Some(data) = answered(window_data(window)) else {
+        return 0;
+    };
+    let value = match index {
+        GWL_STYLE => data.style,
+        GWL_EXSTYLE => data.ex_style,
+        GWL_ID => data.id,
+        GWL_USERDATA => data.user_data,
+        GWL_HINSTANCE => data.instance,
+        GWL_HWNDPARENT => data.parent,
+        GWL_WNDPROC => procedure_value(&data, ansi),
+        _ => return failed(ERROR_INVALID_INDEX).unwrap_or(0),
+    };
+    value as i32
+}
+
+/// SetWindowLong's core, for a caller of the narrow (`ansi`) or wide form: the field at `index`
+/// set to `value`, the messages the change sent received; the value it held (a procedure of the
+/// other form as a handle naming it), or 0 with the last error for a failure. A GWL_WNDPROC value
+/// that is a handle sets the procedure it names, in that procedure's own form.
+fn set_long(window: usize, index: i32, value: i32, ansi: bool) -> i32 {
+    let target = if index == GWL_WNDPROC {
+        procedure::resolve(value as u32, ansi)
+    } else {
+        Procedure {
+            address: value as u32,
+            ansi,
+        }
+    };
+    let answer = imports::set_window_long(window, index, target.address, target.ansi);
+    message::receive_sent();
+    match failed_with(answer, data_error) {
+        Some((previous, previous_ansi)) if index == GWL_WNDPROC => {
+            let previous = Procedure {
+                address: previous,
+                ansi: previous_ansi,
+            };
+            procedure::value_for(previous, ansi) as i32
+        }
+        Some((previous, _)) => previous as i32,
+        None => 0,
+    }
+}
+
+/// GetWindowLongA: the window's field at `index` (GWL_*, or an offset into its extra bytes), a
+/// wide procedure as a handle naming it; 0 with the last error for a failure.
+#[unsafe(export_name = "f2k_export_GetWindowLongA")]
+pub extern "system" fn get_window_long_a(window: usize, index: i32) -> i32 {
+    get_long(window, index, true)
+}
+
+/// GetWindowLongW: GetWindowLongA's, a narrow procedure as a handle naming it.
+#[unsafe(export_name = "f2k_export_GetWindowLongW")]
+pub extern "system" fn get_window_long_w(window: usize, index: i32) -> i32 {
+    get_long(window, index, false)
+}
+
+/// SetWindowLongA: the window's field at `index` set (GWL_WNDPROC subclasses the window with a
+/// narrow procedure, or the one a handle names); the value it held, or 0 with the last error.
+#[unsafe(export_name = "f2k_export_SetWindowLongA")]
+pub extern "system" fn set_window_long_a(window: usize, index: i32, value: i32) -> i32 {
+    set_long(window, index, value, true)
+}
+
+/// SetWindowLongW: SetWindowLongA's, a procedure given as an address taking the wide forms.
+#[unsafe(export_name = "f2k_export_SetWindowLongW")]
+pub extern "system" fn set_window_long_w(window: usize, index: i32, value: i32) -> i32 {
+    set_long(window, index, value, false)
+}
+
+/// GetWindowWord: the word at offset `index` of the window's extra bytes; 0 with the last error
+/// for a failure (1413 for a negative offset or one past the extra bytes).
+#[unsafe(export_name = "f2k_export_GetWindowWord")]
+pub extern "system" fn get_window_word(window: usize, index: i32) -> u16 {
+    if index < 0 {
+        return match answered(window_data(window)) {
+            Some(_) => failed(ERROR_INVALID_INDEX).unwrap_or(0),
+            None => 0,
+        };
+    }
+    let mut value = 0u16;
+    let index = QUERY_WINDOW_EXTRA | index as u32;
+    failed_with(imports::query_window(window, index, &mut value), data_error).map_or(0, |()| value)
+}
+
+/// SetWindowWord: the word at offset `index` of the window's extra bytes set; the word it held,
+/// or 0 with the last error for a failure.
+#[unsafe(export_name = "f2k_export_SetWindowWord")]
+pub extern "system" fn set_window_word(window: usize, index: i32, value: u32) -> u16 {
+    failed_with(
+        imports::set_window_word(window, index, value as u16),
+        data_error,
+    )
+    .unwrap_or(0)
+}
+
+/// IsWindowUnicode: whether the window's procedure takes the wide forms of the messages; FALSE
+/// with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_IsWindowUnicode")]
+pub extern "system" fn is_window_unicode(window: usize) -> u32 {
+    answered(window_data(window)).is_some_and(|data| data.flags & WINDOW_ANSI_PROC == 0) as u32
+}
+
+// --- The window's text ---------------------------------------------------------------------------
+
+/// Whether the window is another process's (its text read as held, not asked for); none, with
+/// 1400, for a handle naming no window.
+fn text_held_elsewhere(window: usize) -> Option<bool> {
+    answered(window_data(window)).map(|data| data.flags & WINDOW_OTHER_PROCESS != 0)
+}
+
+/// GetWindowTextW: the window's text into the caller's buffer of `max` units, cut to leave room for
+/// the terminator, terminated: the units copied before it. The procedure answers it (WM_GETTEXT),
+/// another process's window's text is read as held. A positive `max` empties the buffer first; a
+/// count of 0 or less copies nothing and sends nothing. 0 with 1400 for a handle naming no window.
+///
+/// # Safety
+///
+/// `buffer` holds `max` units the call may write, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetWindowTextW")]
+pub unsafe extern "system" fn get_window_text_w(window: usize, buffer: *mut u16, max: i32) -> i32 {
+    let max = max.max(0) as usize;
+    // SAFETY: the caller's buffer of `max` units.
+    let mut out = unsafe { OutBuf::new(buffer, max) };
+    if max > 0 {
+        out.set(0, 0);
+    }
+    let Some(elsewhere) = text_held_elsewhere(window) else {
+        return 0;
+    };
+    if max == 0 {
+        return 0;
+    }
+    if elsewhere {
+        let text = message::window_text(window).unwrap_or_default();
+        let text = text.as_slice();
+        let length = text.len().min(max - 1);
+        out.put(&text[..length]);
+        out.set(length, 0);
+        return length as i32;
+    }
+    let buffer = out.as_mut_ptr() as i32;
+    message::send_as(window, WM_GETTEXT, max as u32, buffer, false).unwrap_or(0)
+}
+
+/// GetWindowTextA: GetWindowTextW's, into a buffer of `max` bytes, the text in the narrow form.
+///
+/// # Safety
+///
+/// `buffer` holds `max` bytes the call may write, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetWindowTextA")]
+pub unsafe extern "system" fn get_window_text_a(window: usize, buffer: *mut u8, max: i32) -> i32 {
+    let max = max.max(0) as usize;
+    // SAFETY: the caller's buffer of `max` bytes.
+    let mut out = unsafe { OutBuf::new(buffer, max) };
+    if max > 0 {
+        out.set(0, 0);
+    }
+    let Some(elsewhere) = text_held_elsewhere(window) else {
+        return 0;
+    };
+    if max == 0 {
+        return 0;
+    }
+    if elsewhere {
+        let text = message::window_text(window).unwrap_or_default();
+        return procedure::put_narrow(&mut out, text.as_slice()) as i32;
+    }
+    let buffer = out.as_mut_ptr() as i32;
+    message::send_as(window, WM_GETTEXT, max as u32, buffer, true).unwrap_or(0)
+}
+
+/// GetWindowTextLengthW: the window's text's length in units, as its procedure answers it
+/// (WM_GETTEXTLENGTH; another process's window's text as held); 0 with 1400 for a handle naming
+/// no window.
+#[unsafe(export_name = "f2k_export_GetWindowTextLengthW")]
+pub extern "system" fn get_window_text_length_w(window: usize) -> i32 {
+    match text_held_elsewhere(window) {
+        None => 0,
+        Some(true) => message::window_text(window).map_or(0, |text| text.as_slice().len() as i32),
+        Some(false) => message::send_as(window, WM_GETTEXTLENGTH, 0, 0, false).unwrap_or(0),
+    }
+}
+
+/// GetWindowTextLengthA: GetWindowTextLengthW's, in bytes of the narrow form.
+#[unsafe(export_name = "f2k_export_GetWindowTextLengthA")]
+pub extern "system" fn get_window_text_length_a(window: usize) -> i32 {
+    match text_held_elsewhere(window) {
+        None => 0,
+        Some(true) => message::window_text(window)
+            .map_or(0, |text| procedure::narrow_length(text.as_slice()) as i32),
+        Some(false) => message::send_as(window, WM_GETTEXTLENGTH, 0, 0, true).unwrap_or(0),
+    }
+}
+
+/// SetWindowTextW: the window's procedure sent WM_SETTEXT with the text at `text` (null: the empty
+/// text), handed over as it is; TRUE whatever it answers (the wintext capture's refusing
+/// procedure's call answers TRUE), FALSE with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_SetWindowTextW")]
+pub extern "system" fn set_window_text_w(window: usize, text: usize) -> u32 {
+    if text_held_elsewhere(window).is_none() {
+        return 0;
+    }
+    message::send_as(window, WM_SETTEXT, 0, text as i32, false).is_some() as u32
+}
+
+/// SetWindowTextA: SetWindowTextW's, the text in the narrow form.
+#[unsafe(export_name = "f2k_export_SetWindowTextA")]
+pub extern "system" fn set_window_text_a(window: usize, text: usize) -> u32 {
+    if text_held_elsewhere(window).is_none() {
+        return 0;
+    }
+    message::send_as(window, WM_SETTEXT, 0, text as i32, true).is_some() as u32
+}
+
 /// A wide name's units, for the tests' reading of what a creation was given.
 #[cfg(test)]
 fn units(name: &str) -> std::vec::Vec<u16> {
@@ -341,7 +629,7 @@ fn units(name: &str) -> std::vec::Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    use rtl::user::{WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY};
+    use rtl::user::{WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_USER};
 
     use super::*;
     use crate::class::{register_class_a, WndClass};
@@ -565,5 +853,219 @@ mod tests {
         // SAFETY: as above.
         assert_eq!(unsafe { get_process_default_layout(&mut layout) }, 1);
         assert_eq!(layout, 0);
+    }
+
+    /// A window of a class of `proc` named `name` with `extra` extra bytes, registered through the
+    /// narrow form when `ansi`, the wide one otherwise.
+    fn data_window(
+        name: &str,
+        proc: fn(u32, u32, u32, i32) -> i32,
+        extra: i32,
+        ansi: bool,
+    ) -> usize {
+        let wide: std::vec::Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let narrow: std::vec::Vec<u8> = name.bytes().chain([0]).collect();
+        let class = WndClass {
+            wnd_proc: procedure(proc) as usize,
+            cb_wnd_extra: extra,
+            instance: 0x40_0000,
+            class_name: if ansi {
+                narrow.as_ptr() as usize
+            } else {
+                wide.as_ptr() as usize
+            },
+            ..WndClass::default()
+        };
+        // SAFETY: a WNDCLASS of the tests' own, its name alive for the call.
+        let atom = unsafe {
+            if ansi {
+                register_class_a(&class)
+            } else {
+                crate::class::register_class_w(&class)
+            }
+        };
+        assert_ne!(atom, 0);
+        let window = create_window_ex_w(
+            0,
+            wide.as_ptr(),
+            core::ptr::null(),
+            0x00C0_0000,
+            0,
+            0,
+            100,
+            100,
+            0,
+            0,
+            0x40_0000,
+            0,
+        );
+        assert_ne!(window, 0);
+        seen();
+        window
+    }
+
+    /// The window's fields and extra bytes through GetWindowLong/SetWindowLong and
+    /// GetWindowWord/SetWindowWord: the previous values answered, the last error untouched by a
+    /// success; ERROR_INVALID_INDEX past the extra bytes, at a negative offset and for an index
+    /// naming no field; 1400 for no window.
+    ///
+    /// Pins: user32.GetWindowLongA, user32.GetWindowLongW, user32.SetWindowLongA,
+    /// user32.SetWindowLongW, user32.GetWindowWord, user32.SetWindowWord
+    #[test]
+    fn window_longs_and_extra_bytes() {
+        let window = data_window("F2KLongs", recorder, 12, false);
+        arm();
+        assert_eq!(get_window_long_w(window, GWL_USERDATA), 0);
+        assert_eq!(set_window_long_a(window, GWL_USERDATA, 0x1234_5678), 0);
+        assert_eq!(set_window_long_w(window, GWL_USERDATA, -5), 0x1234_5678);
+        assert_eq!(get_window_long_a(window, GWL_USERDATA), -5);
+        assert_eq!(get_window_long_w(window, GWL_STYLE), 0x00C0_0000);
+        assert_eq!(get_window_long_a(window, GWL_HINSTANCE), 0x40_0000);
+        assert_eq!(set_window_long_w(window, 0, 0x1111_1111), 0);
+        assert_eq!(set_window_long_w(window, 4, 0x2222_2222), 0);
+        assert_eq!(get_window_long_w(window, 2), 0x2222_1111);
+        assert_eq!(set_window_word(window, 0, 0xABCD), 0x1111);
+        assert_eq!(get_window_word(window, 0), 0xABCD);
+        assert_eq!(get_window_long_w(window, 0), 0x1111_ABCDu32 as i32);
+        assert_eq!(last_error(), UNSET);
+        let failures: [(&dyn Fn() -> u32, u32); 8] = [
+            (&|| get_window_long_w(window, 9) as u32, ERROR_INVALID_INDEX),
+            (
+                &|| set_window_long_w(window, 12, 1) as u32,
+                ERROR_INVALID_INDEX,
+            ),
+            (
+                &|| get_window_long_w(window, -100) as u32,
+                ERROR_INVALID_INDEX,
+            ),
+            (&|| get_window_word(window, 11) as u32, ERROR_INVALID_INDEX),
+            (
+                &|| set_window_word(window, 11, 1) as u32,
+                ERROR_INVALID_INDEX,
+            ),
+            (&|| get_window_word(window, -2) as u32, ERROR_INVALID_INDEX),
+            (&|| get_window_long_w(0, GWL_STYLE) as u32, 1400),
+            (&|| set_window_long_w(0, GWL_USERDATA, 1) as u32, 1400),
+        ];
+        for (call, error) in failures {
+            arm();
+            assert_eq!((call(), last_error()), (0, error));
+        }
+    }
+
+    std::thread_local! {
+        /// The procedure the subclass hands its messages on to.
+        static PREVIOUS: core::cell::Cell<i32> = const { core::cell::Cell::new(0) };
+    }
+
+    /// The class's procedure: answers WM_USER + 1 with 10.
+    fn base(_: u32, message: u32, _: u32, _: i32) -> i32 {
+        SEEN.with(|seen| seen.borrow_mut().push(message));
+        if message == WM_USER + 1 {
+            10
+        } else {
+            0
+        }
+    }
+
+    /// A narrow subclass: hands WM_USER + 1 on through CallWindowProcA, adding 100.
+    fn subclass(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        let previous = PREVIOUS.with(|previous| previous.get()) as usize;
+        let answer = crate::procedure::call_window_proc_a(
+            previous,
+            window as usize,
+            message,
+            wparam,
+            lparam,
+        );
+        answer + 100
+    }
+
+    /// GWL_WNDPROC across the forms: a wide window's procedure is its address through the W form
+    /// and a handle (high word 0xFFFF) through the A form; a narrow subclass makes the window
+    /// narrow, its previous procedure a handle that CallWindowProcA calls through; setting that
+    /// handle back restores the wide procedure.
+    ///
+    /// Pins: user32.GetWindowLongA, user32.GetWindowLongW, user32.SetWindowLongA,
+    /// user32.CallWindowProcA, user32.CallWindowProcW, user32.IsWindowUnicode
+    #[test]
+    fn subclassing_across_the_forms() {
+        let window = data_window("F2KSubclass", base, 0, false);
+        let wide = get_window_long_w(window, GWL_WNDPROC);
+        let narrow = get_window_long_a(window, GWL_WNDPROC);
+        let class_proc = wm(|wm| wm.windows.last().unwrap().proc);
+        assert_eq!(wide as u32, class_proc, "the class's procedure");
+        assert_eq!(narrow as u32 >> 16, 0xFFFF);
+        assert_eq!(is_window_unicode(window), 1);
+        assert_eq!(
+            crate::procedure::call_window_proc_a(narrow as usize, window, WM_USER + 1, 0, 0),
+            10
+        );
+        assert_eq!(
+            crate::procedure::call_window_proc_w(wide as usize, window, WM_USER + 1, 0, 0),
+            10
+        );
+
+        let sub = procedure(subclass) as i32;
+        let previous = set_window_long_a(window, GWL_WNDPROC, sub);
+        assert_eq!(
+            previous, narrow,
+            "the wide procedure as the A form's handle"
+        );
+        PREVIOUS.with(|cell| cell.set(previous));
+        assert_eq!(is_window_unicode(window), 0);
+        assert_eq!(get_window_long_a(window, GWL_WNDPROC), sub);
+        assert_eq!(get_window_long_w(window, GWL_WNDPROC) as u32 >> 16, 0xFFFF);
+        seen();
+        assert_eq!(
+            crate::message::send_message_w(window, WM_USER + 1, 0, 0),
+            110
+        );
+        assert_eq!(seen(), [WM_USER + 1]);
+
+        assert_eq!(set_window_long_a(window, GWL_WNDPROC, previous), sub);
+        assert_eq!(is_window_unicode(window), 1);
+        assert_eq!(get_window_long_w(window, GWL_WNDPROC), wide);
+        arm();
+        assert_eq!(is_window_unicode(0x7FFF_FFFC), 0);
+        assert_eq!(last_error(), 1400);
+    }
+
+    /// A narrow procedure handing everything to DefWindowProcA.
+    fn narrow_default(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        SEEN.with(|seen| seen.borrow_mut().push(message));
+        crate::message::def_window_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    /// The text calls: the length the procedure answers from the text the window manager holds;
+    /// a buffer emptied first and 1400 for no window; nothing sent for an empty buffer.
+    ///
+    /// Pins: user32.GetWindowTextLengthA, user32.GetWindowTextA, user32.GetWindowTextW,
+    /// user32.SetWindowTextW
+    #[test]
+    fn window_text_lengths_and_errors() {
+        let window = data_window("F2KText", narrow_default, 0, true);
+        wm(|wm| wm.windows.last_mut().unwrap().text = "hello".encode_utf16().collect());
+        assert_eq!(get_window_text_length_a(window), 5);
+        assert_eq!(seen(), [rtl::user::WM_GETTEXTLENGTH]);
+        let mut narrow = [b'#'; 4];
+        // SAFETY: the tests' own buffer, of the length given.
+        assert_eq!(
+            unsafe { get_window_text_a(window, narrow.as_mut_ptr(), 0) },
+            0
+        );
+        assert_eq!(narrow, [b'#'; 4]);
+        assert!(seen().is_empty());
+        let mut wide = [0x23u16; 4];
+        arm();
+        // SAFETY: as above.
+        assert_eq!(unsafe { get_window_text_w(0, wide.as_mut_ptr(), 4) }, 0);
+        assert_eq!((wide[0], wide[1], last_error()), (0, 0x23, 1400));
+        arm();
+        assert_eq!(get_window_text_length_w(0x7FFF_FFFC), 0);
+        assert_eq!(last_error(), 1400);
+        arm();
+        assert_eq!(set_window_text_w(0, 0), 0);
+        assert_eq!(last_error(), 1400);
     }
 }

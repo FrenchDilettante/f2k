@@ -90,8 +90,10 @@ impl WndClassEx {
     }
 }
 
-/// NtUserRegisterClassExWOW's flags word: the caller is 4.0-compatible.
+/// NtUserRegisterClassExWOW's flags word: the caller is 4.0-compatible; the class's procedure
+/// takes the narrow forms of the messages (a narrow registration's, Windows 2000's CSF_ANSIPROC).
 const REGISTER_WIN40_COMPAT: u32 = 0x1;
+pub const REGISTER_ANSI_PROC: u32 = 0x10;
 
 /// The longest class name the services answer, its terminator included: an atom's name, or '#'
 /// and an integer atom's digits.
@@ -206,17 +208,22 @@ fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option
 // --- Registration --------------------------------------------------------------------------------
 
 /// The registration of `class`, its two names already as the service takes them (`name` the class
-/// name's): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures show
-/// leaves it); 0 with the class decision's error. A stock cursor goes to the kernel as none (see
-/// the module notes).
-fn register(mut class: WndClassEx, name: usize) -> u16 {
+/// name's), through the narrow entry point when `ansi` (its procedure takes the narrow forms of the
+/// messages): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures
+/// show leaves it); 0 with the class decision's error. A stock cursor goes to the kernel as none
+/// (see the module notes).
+fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
     if is_stock_cursor(class.cursor) {
         class.cursor = 0;
     }
     class.cb_size = core::mem::size_of::<WndClassEx>() as u32;
     class.class_name = name;
     match failed_with(
-        imports::register_class(&class, name, REGISTER_WIN40_COMPAT),
+        imports::register_class(
+            &class,
+            name,
+            REGISTER_WIN40_COMPAT | if ansi { REGISTER_ANSI_PROC } else { 0 },
+        ),
         class_error,
     ) {
         Some(atom) => {
@@ -243,7 +250,7 @@ unsafe fn register_a(mut class: WndClassEx) -> u16 {
     name.with_wide(|name| {
         menu.with_wide(|menu| {
             class.menu_name = menu;
-            register(class, name)
+            register(class, name, true)
         })
     })
     .flatten()
@@ -260,7 +267,7 @@ unsafe fn register_a(mut class: WndClassEx) -> u16 {
 pub unsafe extern "system" fn register_class_w(class: *const WndClass) -> u16 {
     // SAFETY: the caller's structure.
     let class = unsafe { In::new(class) }.read();
-    register(WndClassEx::of(&class), class.class_name)
+    register(WndClassEx::of(&class), class.class_name, false)
 }
 
 /// RegisterClassA: RegisterClassW's, the class's names converted first.
@@ -287,7 +294,7 @@ pub unsafe extern "system" fn register_class_ex_w(class: *const WndClassEx) -> u
     if class.cb_size as usize != core::mem::size_of::<WndClassEx>() {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     }
-    register(class, class.class_name)
+    register(class, class.class_name, false)
 }
 
 /// RegisterClassExA: RegisterClassExW's, the class's names converted first.
@@ -611,6 +618,7 @@ mod tests {
                 visible: false,
                 alive: true,
                 update: None,
+                ..Default::default()
             });
             0x40
         });
