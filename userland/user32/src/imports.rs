@@ -219,6 +219,14 @@ mod raw {
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserDefSetText"]
         pub fn NtUserDefSetText(window: usize, text: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserChildWindowFromPointEx"]
+        pub fn NtUserChildWindowFromPointEx(
+            parent: usize,
+            x: i32,
+            y: i32,
+            flags: u32,
+            child: *mut u32,
+        ) -> u32;
 
         // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
@@ -871,6 +879,16 @@ pub fn def_set_text(window: usize, text: usize) -> Result<(), NtStatus> {
     // SAFETY: the kernel reads the string through its fault-tolerant copies (this DLL's own, or the
     // caller's, alive for the call); it writes no memory.
     checked(unsafe { raw::NtUserDefSetText(window, text) })
+}
+
+/// NtUserChildWindowFromPointEx: the child of `parent` holding the point of its client area, as
+/// the CWP_ flags pass over children: its handle, `parent` itself when none holds it, 0 for a point
+/// outside `parent`.
+pub fn child_window_from_point(parent: usize, x: i32, y: i32, flags: u32) -> Result<u32, NtStatus> {
+    let mut child = 0u32;
+    // SAFETY: the kernel writes the handle into the local.
+    checked(unsafe { raw::NtUserChildWindowFromPointEx(parent, x, y, flags, &mut child) })?;
+    Ok(child)
 }
 
 // --- win32k: messages ----------------------------------------------------------------------------

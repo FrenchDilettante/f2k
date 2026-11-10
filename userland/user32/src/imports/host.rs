@@ -457,6 +457,8 @@ pub struct HostWindow {
     pub rect: Rect,
     pub style: u32,
     pub ex_style: u32,
+    /// The parent's handle: the desktop window for a top-level window, 0 for the boot's.
+    pub parent: u32,
     pub visible: bool,
     pub alive: bool,
     /// The update region's box and whether its erase is pending.
@@ -536,6 +538,7 @@ impl Wm {
                 rect: SCREEN,
                 style: 0x8000_0000,
                 ex_style: 0,
+                parent: 0,
                 visible: handle == DESKTOP_WINDOW,
                 alive: true,
                 update: None,
@@ -823,6 +826,11 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             },
             style: style & !WS_VISIBLE_BIT,
             ex_style: ex_style & !0x8000_0000,
+            parent: if parent == 0 {
+                DESKTOP_WINDOW
+            } else {
+                parent as u32
+            },
             visible: style & WS_VISIBLE_BIT != 0,
             alive: true,
             update: None,
@@ -901,7 +909,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
 ) -> u32 {
     let fits = match index {
         QUERY_WINDOW_INFO => length as usize == size_of::<WindowInfo>(),
-        QUERY_WINDOW_VISIBLE => length == 4,
+        QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT => length == 4,
         QUERY_WINDOW_DATA => length as usize == size_of::<WindowData>(),
         QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
@@ -954,6 +962,8 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             }
             .as_bytes()
             .to_vec()
+        } else if index == QUERY_WINDOW_PARENT {
+            w.parent.to_le_bytes().to_vec()
         } else {
             (w.visible as u32).to_le_bytes().to_vec()
         };
@@ -1130,6 +1140,30 @@ pub unsafe extern "system" fn NtUserShowWindow(
 
 pub unsafe extern "system" fn NtUserShowWindowAsync(window: usize, command: i32) -> u32 {
     wm(|wm| status(wm.window(window).map(|w| w.visible = command != 0)))
+}
+
+/// The window itself for a point inside it, none outside: the stand-ins' windows have no children
+/// to find.
+pub unsafe extern "system" fn NtUserChildWindowFromPointEx(
+    parent: usize,
+    x: i32,
+    y: i32,
+    _flags: u32,
+    child: *mut u32,
+) -> u32 {
+    let rect = wm(|wm| {
+        wm.windows
+            .iter()
+            .find(|w| w.alive && w.handle as usize == parent && parent != 0)
+            .map(|w| w.rect)
+    });
+    let Some(rect) = rect else {
+        return STATUS_INVALID_HANDLE;
+    };
+    let inside = x >= 0 && y >= 0 && x < rect.right - rect.left && y < rect.bottom - rect.top;
+    // SAFETY: the caller's out-pointer.
+    unsafe { child.write(if inside { parent as u32 } else { 0 }) };
+    STATUS_SUCCESS
 }
 
 pub unsafe extern "system" fn NtUserPostMessage(

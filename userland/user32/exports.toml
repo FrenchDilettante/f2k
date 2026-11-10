@@ -689,7 +689,7 @@ fails = "FALSE"
 name = "GetClientRect"
 group = "window"
 args = ["handle hWnd", "ptr lpRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClientRect" }
 ordinal = 244
 fails = "FALSE"
 
@@ -697,7 +697,7 @@ fails = "FALSE"
 name = "MapWindowPoints"
 group = "window"
 args = ["handle hWndFrom", "handle hWndTo", "ptr lpPoints", "u32 cPoints"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MapWindowPoints" }
 ordinal = 447
 fails = "0"
 
@@ -705,7 +705,7 @@ fails = "0"
 name = "ClientToScreen"
 group = "window"
 args = ["handle hWnd", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ClientToScreen" }
 ordinal = 60
 fails = "FALSE"
 
@@ -713,7 +713,7 @@ fails = "FALSE"
 name = "ScreenToClient"
 group = "window"
 args = ["handle hWnd", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScreenToClient" }
 ordinal = 527
 fails = "FALSE"
 
@@ -721,7 +721,7 @@ fails = "FALSE"
 name = "ChildWindowFromPoint"
 group = "window"
 args = ["handle hWndParent", "i32 x", "i32 y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ChildWindowFromPoint" }
 ordinal = 56
 fails = "NULL"
 
@@ -729,7 +729,7 @@ fails = "NULL"
 name = "ChildWindowFromPointEx"
 group = "window"
 args = ["handle hwndParent", "i32 x", "i32 y", "u32 uFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ChildWindowFromPointEx" }
 ordinal = 57
 fails = "NULL"
 
@@ -745,7 +745,7 @@ fails = "NULL"
 name = "IsChild"
 group = "window"
 args = ["handle hWndParent", "handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsChild" }
 ordinal = 394
 fails = "FALSE"
 
@@ -1002,6 +1002,13 @@ name = "NtUserQueryWindow"
 group = "window"
 args = ["handle Window", "u32 Index", "ptr Information", "u32 Length"]
 impl = { syscall = "crate::win32k::window::query_window" }
+internal = true
+
+[[export]]
+name = "NtUserChildWindowFromPointEx"
+group = "window"
+args = ["handle Parent", "i32 X", "i32 Y", "u32 Flags", "ptr<u32> Child"]
+impl = { syscall = "crate::win32k::window::child_window_from_point_ex" }
 internal = true
 
 # The window's data, behind SetWindowLongA/W, SetWindowWord and DefWindowProc's text: the index
@@ -2080,7 +2087,7 @@ fails = "NULL"
 name = "SetRect"
 group = "rect"
 args = ["ptr lprc", "i32 xLeft", "i32 yTop", "i32 xRight", "i32 yBottom"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetRect" }
 ordinal = 586
 fails = "FALSE"
 
@@ -2088,7 +2095,7 @@ fails = "FALSE"
 name = "OffsetRect"
 group = "rect"
 args = ["ptr lprc", "i32 dx", "i32 dy"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OffsetRect" }
 ordinal = 472
 fails = "FALSE"
 
@@ -2098,15 +2105,16 @@ fails = "FALSE"
 name = "CharNextA"
 group = "string"
 args = ["strA lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharNextA" }
 ordinal = 38
 fails = "NULL"
+note = "the ANSI code page is single-byte (1252, no lead bytes): the next byte"
 
 [[export]]
 name = "CharNextW"
 group = "string"
 args = ["strW lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharNextW" }
 ordinal = 40
 fails = "NULL"
 
@@ -2114,15 +2122,16 @@ fails = "NULL"
 name = "CharPrevA"
 group = "string"
 args = ["strA lpszStart", "ptr lpszCurrent"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharPrevA" }
 ordinal = 41
 fails = "NULL"
+note = "the ANSI code page is single-byte (1252, no lead bytes): the byte before"
 
 [[export]]
 name = "CharPrevW"
 group = "string"
 args = ["strW lpszStart", "ptr lpszCurrent"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharPrevW" }
 ordinal = 43
 fails = "NULL"
 

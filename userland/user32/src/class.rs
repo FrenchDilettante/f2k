@@ -615,6 +615,7 @@ mod tests {
                 rect: Default::default(),
                 style: 0,
                 ex_style: 0,
+                parent: crate::imports::host::DESKTOP_WINDOW,
                 visible: false,
                 alive: true,
                 update: None,

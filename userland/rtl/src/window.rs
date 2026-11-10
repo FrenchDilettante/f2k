@@ -23,10 +23,18 @@ pub const QUERY_WINDOW_VISIBLE: u32 = 1;
 pub const QUERY_WINDOW_DATA: u32 = 2;
 /// The window's text (its title) as DefWindowProc reads it, a [`WindowText`].
 pub const QUERY_WINDOW_TEXT: u32 = 3;
+/// The window's parent's handle, a 32-bit handle: the desktop window for a top-level window, 0
+/// for a window with none (the desktop's own windows). IsChild walks it.
+pub const QUERY_WINDOW_PARENT: u32 = 4;
 /// The window's extra bytes (its class's cbWndExtra) at the offset this index carries in its low
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.
 pub const QUERY_WINDOW_EXTRA: u32 = 0x8000_0000;
+
+/// ChildWindowFromPointEx's flags (winuser.h's CWP_*): which children the search passes over.
+pub const CWP_SKIPINVISIBLE: u32 = 0x0001;
+pub const CWP_SKIPDISABLED: u32 = 0x0002;
+pub const CWP_SKIPTRANSPARENT: u32 = 0x0004;
 
 /// The GetWindowLong and SetWindowLong indexes of a window's own fields (winuser.h's GWL_*); an
 /// index of 0 or more is an offset into the window's extra bytes.

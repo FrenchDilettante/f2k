@@ -10,11 +10,14 @@
 //! them once its service returns ([`message::receive_sent`]), so a program sees its procedure
 //! called before the call returns, as on Windows 2000.
 //!
+//! The coordinate calls (GetClientRect, ClientToScreen, ScreenToClient, MapWindowPoints, IsChild,
+//! ChildWindowFromPoint and ChildWindowFromPointEx) work from the windows' rectangles and parents.
+//!
 //! NtUserQueryWindow answers what Windows 2000's user32 reads from the window manager's records
-//! mapped into its process: a window's WINDOWINFO, its visibility, its own fields, its extra bytes
-//! and its text. The changes go through the window manager's services: NtUserSetWindowLong (whose
-//! style changes send WM_STYLECHANGING and WM_STYLECHANGED, received before SetWindowLong returns),
-//! NtUserSetWindowWord.
+//! mapped into its process: a window's WINDOWINFO, its visibility, its parent, its own fields, its
+//! extra bytes and its text. The changes go through the window manager's services:
+//! NtUserSetWindowLong (whose style changes send WM_STYLECHANGING and WM_STYLECHANGED, received
+//! before SetWindowLong returns), NtUserSetWindowWord.
 //!
 //! A window's text is its procedure's to answer: GetWindowText, GetWindowTextLength and
 //! SetWindowText send it WM_GETTEXT, WM_GETTEXTLENGTH and WM_SETTEXT, in the caller's form, which
@@ -33,7 +36,7 @@ use rtl::status::{
     STATUS_NO_MEMORY,
     STATUS_OBJECT_NAME_NOT_FOUND,
 };
-use rtl::user::{HWND_LOCK_UPDATE_WINDOW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT};
+use rtl::user::{Point, HWND_LOCK_UPDATE_WINDOW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT};
 use rtl::window::*;
 
 use crate::imports::{self, Creation};
@@ -260,6 +263,180 @@ pub unsafe extern "system" fn get_window_rect(window: usize, rect: *mut Rect) ->
         }
         None => 0,
     }
+}
+
+// --- The coordinates
+// -------------------------------------------------------------------------------------
+
+/// GetClientRect: the window's client area in its own coordinates, its origin (0, 0); FALSE with
+/// 1400 for a handle naming no window (the caller's RECT untouched).
+///
+/// # Safety
+///
+/// The caller's RECT, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetClientRect")]
+pub unsafe extern "system" fn get_client_rect(window: usize, rect: *mut Rect) -> u32 {
+    // SAFETY: the caller's RECT.
+    let mut rect = unsafe { Out::new(rect) };
+    match answered(window_info(window)) {
+        Some(info) => {
+            rect.set(Rect {
+                left: 0,
+                top: 0,
+                right: info.client.right - info.client.left,
+                bottom: info.client.bottom - info.client.top,
+            });
+            1
+        }
+        None => 0,
+    }
+}
+
+/// The screen coordinates of `window`'s client area's origin: the screen's own, (0, 0), for NULL.
+fn client_origin(window: usize) -> Result<Point, NtStatus> {
+    if window == 0 {
+        return Ok(Point { x: 0, y: 0 });
+    }
+    let info = window_info(window)?;
+    Ok(Point {
+        x: info.client.left,
+        y: info.client.top,
+    })
+}
+
+/// Move the caller's point by the client origin of `window`, added (ClientToScreen, `sign` 1) or
+/// taken away (ScreenToClient, `sign` -1); FALSE with 1400 for a window there is none of, NULL
+/// included (the point untouched).
+fn shift_point(window: usize, point: &mut Out<'_, Point>, sign: i32) -> u32 {
+    if window == 0 {
+        imports::set_last_error(crate::ERROR_INVALID_WINDOW_HANDLE);
+        return 0;
+    }
+    let Some(origin) = answered(client_origin(window)) else {
+        return 0;
+    };
+    let p = point.get();
+    point.set(Point {
+        x: p.x + sign * origin.x,
+        y: p.y + sign * origin.y,
+    });
+    1
+}
+
+/// ClientToScreen: the point in the window's client coordinates moved into screen coordinates.
+///
+/// # Safety
+///
+/// The caller's POINT, as for the platform's.
+#[unsafe(export_name = "f2k_export_ClientToScreen")]
+pub unsafe extern "system" fn client_to_screen(window: usize, point: *mut Point) -> u32 {
+    // SAFETY: the caller's POINT.
+    let mut point = unsafe { Out::new(point) };
+    shift_point(window, &mut point, 1)
+}
+
+/// ScreenToClient: the point in screen coordinates moved into the window's client coordinates.
+///
+/// # Safety
+///
+/// The caller's POINT, as for the platform's.
+#[unsafe(export_name = "f2k_export_ScreenToClient")]
+pub unsafe extern "system" fn screen_to_client(window: usize, point: *mut Point) -> u32 {
+    // SAFETY: the caller's POINT.
+    let mut point = unsafe { Out::new(point) };
+    shift_point(window, &mut point, -1)
+}
+
+/// MapWindowPoints: the caller's `count` points moved from `from`'s client coordinates to `to`'s
+/// (NULL for either: the screen's). The answer is the move, its horizontal half in the low word
+/// and its vertical half in the high word, as signed 16-bit numbers; 0 with 1400 for a window
+/// there is none of (the points untouched).
+///
+/// # Safety
+///
+/// `points` is the caller's array of `count` POINTs, as for the platform's.
+#[unsafe(export_name = "f2k_export_MapWindowPoints")]
+pub unsafe extern "system" fn map_window_points(
+    from: usize,
+    to: usize,
+    points: *mut Point,
+    count: u32,
+) -> u32 {
+    let (Some(source), Some(target)) = (answered(client_origin(from)), answered(client_origin(to)))
+    else {
+        return 0;
+    };
+    let (dx, dy) = (source.x - target.x, source.y - target.y);
+    for index in 0..count as usize {
+        // SAFETY: one of the caller's `count` POINTs, each reached once.
+        let mut point = unsafe { Out::new(points.wrapping_add(index)) };
+        let p = point.get();
+        point.set(Point {
+            x: p.x + dx,
+            y: p.y + dy,
+        });
+    }
+    (dy as u16 as u32) << 16 | dx as u16 as u32
+}
+
+/// ChildWindowFromPointEx: the child of `parent` whose rectangle holds the point (in `parent`'s
+/// client coordinates), the CWP_ flags passing over the hidden, the disabled or the transparent
+/// ones; `parent` itself when no child holds it; NULL for a point outside `parent`, or with 1400
+/// for a handle naming no window. Only `parent`'s own children are searched (Windows 2000:
+/// NtUserChildWindowFromPointEx).
+#[unsafe(export_name = "f2k_export_ChildWindowFromPointEx")]
+pub extern "system" fn child_window_from_point_ex(
+    parent: usize,
+    x: i32,
+    y: i32,
+    flags: u32,
+) -> usize {
+    answered(imports::child_window_from_point(parent, x, y, flags)).unwrap_or(0) as usize
+}
+
+/// ChildWindowFromPoint: ChildWindowFromPointEx with CWP_ALL, hidden and disabled children found
+/// as any other.
+#[unsafe(export_name = "f2k_export_ChildWindowFromPoint")]
+pub extern "system" fn child_window_from_point(parent: usize, x: i32, y: i32) -> usize {
+    child_window_from_point_ex(parent, x, y, 0)
+}
+
+/// The window's parent (QUERY_WINDOW_PARENT): the desktop window for a top-level window, 0 for
+/// none.
+fn parent_of(window: usize) -> Result<usize, NtStatus> {
+    let mut parent = 0u32;
+    imports::query_window(window, QUERY_WINDOW_PARENT, &mut parent)?;
+    Ok(parent as usize)
+}
+
+/// IsChild: whether `window` is a child or a later descendant of `parent`, up its chain of
+/// parents for as long as each window on it is a child window (WS_CHILD); a window is not its own
+/// child. FALSE with 1400 when either handle names no window.
+#[unsafe(export_name = "f2k_export_IsChild")]
+pub extern "system" fn is_child(parent: usize, window: usize) -> u32 {
+    if answered(window_info(parent)).is_none() {
+        return 0;
+    }
+    let Some(mut info) = answered(window_info(window)) else {
+        return 0;
+    };
+    let mut current = window;
+    while info.style & WS_CHILD != 0 {
+        let Some(above) = answered(parent_of(current)) else {
+            return 0;
+        };
+        if above == 0 {
+            break;
+        }
+        if above == parent {
+            return 1;
+        }
+        let Some(next) = answered(window_info(above)) else {
+            return 0;
+        };
+        (current, info) = (above, next);
+    }
+    0
 }
 
 /// ShowWindow: the show command carried out, the messages it sent received; nonzero when the
@@ -1066,6 +1243,133 @@ mod tests {
         assert_eq!(last_error(), 1400);
         arm();
         assert_eq!(set_window_text_w(0, 0), 0);
+        assert_eq!(last_error(), 1400);
+    }
+
+    /// A window of the class with `style`, child of `parent`, at (`x`, `y`) in screen coordinates
+    /// (the stand-ins place a child where they are told, as on the screen).
+    fn make_at(style: u32, parent: usize, x: i32, y: i32, cx: i32, cy: i32) -> usize {
+        let class: std::vec::Vec<u16> = "F2KGuiWin\0".encode_utf16().collect();
+        let null = core::ptr::null();
+        let w = create_window_ex_w(
+            0,
+            class.as_ptr(),
+            null,
+            style,
+            x,
+            y,
+            cx,
+            cy,
+            parent,
+            0,
+            0,
+            0,
+        );
+        seen();
+        w
+    }
+
+    /// The coords capture's popup at (200, 150), 300x200, and its child1 at (10, 20) and
+    /// child2 at (100, 20) of its client area, a grandchild at (5, 5) of child2's.
+    fn coords_windows() -> (usize, usize, usize, usize) {
+        register();
+        let parent = make_at(0x8000_0000, 0, 200, 150, 300, 200);
+        let child1 = make_at(WS_CHILD, parent, 210, 170, 50, 30);
+        let child2 = make_at(WS_CHILD, parent, 300, 170, 60, 40);
+        let grand = make_at(WS_CHILD, child2, 305, 175, 20, 10);
+        (parent, child1, child2, grand)
+    }
+
+    /// GetClientRect's origin is (0, 0); the client and screen coordinates convert both ways;
+    /// NULL and a dead handle are 1400, the caller's values untouched.
+    ///
+    /// Pins: user32.GetClientRect, user32.ClientToScreen, user32.ScreenToClient
+    #[test]
+    fn client_and_screen_coordinates() {
+        let (parent, child1, _, grand) = coords_windows();
+        let mut rect = Rect::default();
+        // SAFETY: the test's own RECT and POINTs.
+        unsafe {
+            assert_eq!(get_client_rect(parent, &mut rect), 1);
+            assert_eq!(
+                (rect.left, rect.top, rect.right, rect.bottom),
+                (0, 0, 300, 200)
+            );
+            let mut point = Point { x: 215, y: 175 };
+            assert_eq!(screen_to_client(child1, &mut point), 1);
+            assert_eq!(point, Point { x: 5, y: 5 });
+            let mut point = Point { x: 0, y: 0 };
+            assert_eq!(client_to_screen(grand, &mut point), 1);
+            assert_eq!(point, Point { x: 305, y: 175 });
+            for window in [0, 0x7FFC] {
+                let mut point = Point { x: 10, y: 10 };
+                arm();
+                assert_eq!(client_to_screen(window, &mut point), 0);
+                assert_eq!(last_error(), 1400);
+                assert_eq!(point, Point { x: 10, y: 10 });
+                assert_eq!(screen_to_client(window, &mut point), 0);
+                let mut rect = Rect {
+                    left: -1,
+                    top: -1,
+                    right: -1,
+                    bottom: -1,
+                };
+                assert_eq!(get_client_rect(window, &mut rect), 0);
+                assert_eq!(rect.left, -1);
+            }
+        }
+    }
+
+    /// MapWindowPoints moves the points by the client origins' difference (NULL: the screen) and
+    /// answers it in two signed 16-bit halves; a dead handle is 1400, the points untouched.
+    ///
+    /// Pins: user32.MapWindowPoints
+    #[test]
+    fn points_map_between_windows() {
+        let (parent, child1, child2, _) = coords_windows();
+        let map = |from, to, points: &mut [Point]| {
+            // SAFETY: the test's own POINTs.
+            let answer =
+                unsafe { map_window_points(from, to, points.as_mut_ptr(), points.len() as u32) };
+            (answer as u16 as i16, (answer >> 16) as u16 as i16)
+        };
+        let mut points = [Point { x: 15, y: 25 }];
+        assert_eq!(map(parent, child1, &mut points), (-10, -20));
+        assert_eq!(points, [Point { x: 5, y: 5 }]);
+        let mut points = [Point { x: 3, y: 4 }];
+        assert_eq!(map(child1, 0, &mut points), (210, 170));
+        assert_eq!(points, [Point { x: 213, y: 174 }]);
+        assert_eq!(map(0, 0, &mut points), (0, 0));
+        let mut rect = [Point { x: 0, y: 0 }, Point { x: 50, y: 30 }];
+        assert_eq!(map(child1, child2, &mut rect), (-90, 0));
+        assert_eq!(rect, [Point { x: -90, y: 0 }, Point { x: -40, y: 30 }]);
+        arm();
+        let mut points = [Point { x: 0, y: 0 }];
+        assert_eq!(map(0x7FFC, parent, &mut points), (0, 0));
+        assert_eq!(last_error(), 1400);
+        assert_eq!(points, [Point { x: 0, y: 0 }]);
+    }
+
+    /// IsChild walks up the child windows' parents: a grandchild is a child, a sibling, the
+    /// parent and the window itself are not; a dead handle is 1400.
+    ///
+    /// Pins: user32.IsChild
+    #[test]
+    fn children_and_descendants() {
+        let (parent, child1, child2, grand) = coords_windows();
+        arm();
+        assert_eq!(is_child(parent, child1), 1);
+        assert_eq!(is_child(parent, grand), 1);
+        assert_eq!(is_child(child2, grand), 1);
+        assert_eq!(is_child(child1, grand), 0);
+        assert_eq!(is_child(child1, child2), 0);
+        assert_eq!(is_child(child1, parent), 0);
+        assert_eq!(is_child(parent, parent), 0);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(is_child(0, child1), 0);
+        assert_eq!(last_error(), 1400);
+        arm();
+        assert_eq!(is_child(parent, 0), 0);
         assert_eq!(last_error(), 1400);
     }
 }
