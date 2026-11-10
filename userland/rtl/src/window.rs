@@ -26,6 +26,9 @@ pub const QUERY_WINDOW_TEXT: u32 = 3;
 /// The window's parent's handle, a 32-bit handle: the desktop window for a top-level window, 0
 /// for a window with none (the desktop's own windows). IsChild walks it.
 pub const QUERY_WINDOW_PARENT: u32 = 4;
+/// The window's menu (GetMenu's answer): a top-level window's menu handle, a child's id, 0 for
+/// none, a 32-bit value.
+pub const QUERY_WINDOW_MENU: u32 = 5;
 /// The window's extra bytes (its class's cbWndExtra) at the offset this index carries in its low
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.

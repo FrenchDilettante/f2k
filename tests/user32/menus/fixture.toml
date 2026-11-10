@@ -3,15 +3,7 @@
 # prints as found or not and as the same menu as another call's or not, its items' states in hex.
 description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window."
 kind = "sectioned"
-
-# Not gated: win32k has no menu objects yet; menus.exe loads against user32's stubs. Every section
-# is on the work list.
-[pending]
-load = "LoadMenuW/A, IsMenu and DestroyMenu not yet implemented: win32k has no menu objects"
-items = "GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W not yet implemented"
-check = "CheckMenuItem and CheckMenuRadioItem not yet implemented"
-enable = "EnableMenuItem not yet implemented"
-window = "GetMenu and SetMenu not yet implemented: a window holds no menu"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -19,9 +19,12 @@ use core::ffi::CStr;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
+use rtl::accel::Accel;
 use rtl::display::DevModeW;
 use rtl::gdi::Rect;
 use rtl::heap::HEAP_ZERO_MEMORY;
+use rtl::icon::CursorData;
+use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
 use rtl::status::NtStatus;
 use rtl::user::{Msg, Receipt};
@@ -31,8 +34,10 @@ use crate::Out;
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
+    use rtl::accel::Accel;
     use rtl::display::DevModeW;
     use rtl::gdi::Rect;
+    use rtl::icon::CursorData;
     use rtl::user::{Msg, Receipt};
 
     use crate::class::WndClassExW;
@@ -51,6 +56,13 @@ mod raw {
             module: usize,
             kind: *const u16,
             name: *const u16,
+            language: u32,
+        ) -> usize;
+        /// FindResourceExA: FindResourceExW's, its type and name ANSI strings or numbers.
+        pub fn FindResourceExA(
+            module: usize,
+            kind: *const u8,
+            name: *const u8,
             language: u32,
         ) -> usize;
         /// LoadResource: the handle of an HRSRC's data; NULL, the last error set, when it fails.
@@ -274,6 +286,62 @@ mod raw {
             max: u32,
             copied: *mut u32,
         ) -> u32;
+
+        // The menus, the accelerators, the cursors and icons (kernel/src/win32k/menu.rs,
+        // accel.rs, icon.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserCallNoParam"]
+        pub fn NtUserCallNoParam(routine: u32, result: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserThunkedMenuItemInfo"]
+        pub fn NtUserThunkedMenuItemInfo(
+            menu: usize,
+            item: u32,
+            flags: u32,
+            operation: u32,
+            info: *mut u8,
+            text: *const u16,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDestroyMenu"]
+        pub fn NtUserDestroyMenu(menu: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCheckMenuItem"]
+        pub fn NtUserCheckMenuItem(menu: usize, item: u32, check: u32, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEnableMenuItem"]
+        pub fn NtUserEnableMenuItem(menu: usize, item: u32, enable: u32, previous: *mut u32)
+            -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetMenu"]
+        pub fn NtUserSetMenu(window: usize, menu: usize, repaint: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCreateAcceleratorTable"]
+        pub fn NtUserCreateAcceleratorTable(
+            entries: *const Accel,
+            count: u32,
+            module: usize,
+            resource: usize,
+            table: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCopyAcceleratorTable"]
+        pub fn NtUserCopyAcceleratorTable(
+            table: usize,
+            entries: *mut Accel,
+            count: u32,
+            copied: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDestroyAcceleratorTable"]
+        pub fn NtUserDestroyAcceleratorTable(table: usize, destroyed: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserTranslateAccelerator"]
+        pub fn NtUserTranslateAccelerator(
+            window: usize,
+            table: usize,
+            msg: *const Msg,
+            translated: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserFindExistingCursorIcon"]
+        pub fn NtUserFindExistingCursorIcon(
+            module: usize,
+            resource: usize,
+            size: u32,
+            cursor: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetCursorIconData"]
+        pub fn NtUserSetCursorIconData(cursor: usize, data: *const CursorData) -> u32;
 
         // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
@@ -602,6 +670,48 @@ pub fn resource_data(module: usize, resource: Hrsrc) -> Option<&'static [u8]> {
     // mapped image, which nothing writes and which stays mapped while the module is loaded (see
     // above); bytes need no alignment.
     Some(unsafe { core::slice::from_raw_parts(at as *const u8, size as usize) })
+}
+
+/// A resource's name as LoadMenu, LoadAccelerators and LoadIcon take it: a number in a pointer's
+/// place (its high word zero), or a NUL-terminated string's address (`"#200"` names number 200:
+/// kernel32 reads it so), UTF-16 for the W calls and ANSI for the A calls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResourceName {
+    Wide(usize),
+    Narrow(usize),
+}
+
+impl ResourceName {
+    /// The number it names, when it is one.
+    pub fn id(self) -> Option<u16> {
+        let raw = match self {
+            ResourceName::Wide(raw) | ResourceName::Narrow(raw) => raw,
+        };
+        (raw >> 16 == 0).then_some(raw as u16)
+    }
+}
+
+/// FindResourceExW, or FindResourceExA for an ANSI name: the resource of type `kind` named `name`,
+/// in the module `module` (NULL: the program's), in language 0 (FindResource's search); none, with
+/// kernel32's last error, when the module has none.
+///
+/// # Safety
+///
+/// A string name is the address of a NUL-terminated string the call may read.
+pub unsafe fn find_named_resource(module: usize, kind: u16, name: ResourceName) -> Option<Hrsrc> {
+    // SAFETY: the type is a number in a pointer's place, which kernel32 takes as a number; the
+    // name is a number, or the caller's string (the contract).
+    let found = unsafe {
+        match name {
+            ResourceName::Wide(raw) => {
+                raw::FindResourceExW(module, kind as usize as *const u16, raw as *const u16, 0)
+            }
+            ResourceName::Narrow(raw) => {
+                raw::FindResourceExA(module, kind as usize as *const u8, raw as *const u8, 0)
+            }
+        }
+    };
+    (found != 0).then_some(Hrsrc(found))
 }
 
 /// GlobalAlloc: a global memory block of `bytes` bytes, as the GMEM_ `flags` ask: its handle; none,
@@ -1386,6 +1496,174 @@ pub fn system_parameters_info(
 ) -> Result<(), NtStatus> {
     // SAFETY: the kernel reads and writes the parameter through its fault-tolerant copies.
     checked(unsafe { raw::NtUserSystemParametersInfo(action, ui_param, param, win_ini) })
+}
+
+// --- win32k: the menus, the accelerators, the cursors and icons
+// -----------------------------------
+
+/// NtUserCallNoParam: the routine `routine` (rtl::user's NO_PARAM_*): its result.
+pub fn call_no_param(routine: u32) -> Result<u32, NtStatus> {
+    let mut result = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserCallNoParam(routine, &mut result) })?;
+    Ok(result)
+}
+
+/// NtUserThunkedMenuItemInfo's insertion or change (rtl::menu's MENU_ITEM_INSERT, MENU_ITEM_SET):
+/// the item `info` describes, before or on the item `item` names in `menu` (MF_BYPOSITION in
+/// `flags`), its text `text` (`info`'s cch its length).
+pub fn set_menu_item(
+    menu: usize,
+    item: u32,
+    flags: u32,
+    operation: u32,
+    info: &MenuItemInfoW,
+    text: &[u16],
+) -> Result<(), NtStatus> {
+    let mut copy = *info;
+    copy.cch = text.len() as u32;
+    let at = if text.is_empty() {
+        core::ptr::null()
+    } else {
+        text.as_ptr()
+    };
+    // SAFETY: the kernel reads the local structure and the text, as many units as its cch says,
+    // through its fault-tolerant copies.
+    checked(unsafe {
+        raw::NtUserThunkedMenuItemInfo(
+            menu,
+            item,
+            flags,
+            operation,
+            copy.as_bytes_mut().as_mut_ptr(),
+            at,
+        )
+    })
+}
+
+/// NtUserThunkedMenuItemInfo's queries (rtl::menu's MENU_ITEM_QUERY, MENU_QUERY): the item `item`
+/// names in `menu`, or the menu, into `answer`.
+pub fn query_menu(
+    menu: usize,
+    item: u32,
+    flags: u32,
+    operation: u32,
+    answer: &mut MenuItemAnswer,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the local answer.
+    checked(unsafe {
+        raw::NtUserThunkedMenuItemInfo(
+            menu,
+            item,
+            flags,
+            operation,
+            answer.as_bytes_mut().as_mut_ptr(),
+            core::ptr::null(),
+        )
+    })
+}
+
+/// NtUserDestroyMenu: `menu` and its popups destroyed.
+pub fn destroy_menu(menu: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserDestroyMenu(menu) })
+}
+
+/// NtUserCheckMenuItem: CheckMenuItem's change; the item's previous check.
+pub fn check_menu_item(menu: usize, item: u32, check: u32) -> Result<u32, NtStatus> {
+    let mut previous = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserCheckMenuItem(menu, item, check, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserEnableMenuItem: EnableMenuItem's change; the item's previous enabling bits.
+pub fn enable_menu_item(menu: usize, item: u32, enable: u32) -> Result<u32, NtStatus> {
+    let mut previous = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserEnableMenuItem(menu, item, enable, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserSetMenu: the window's menu set (0: none).
+pub fn set_menu(window: usize, menu: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetMenu(window, menu, 1) })
+}
+
+/// NtUserCreateAcceleratorTable: a table of `entries`, or with `resource` (its data's address in
+/// the module `module`) the one loaded from it before; its handle.
+pub fn create_accelerator_table(
+    entries: &[Accel],
+    module: usize,
+    resource: usize,
+) -> Result<usize, NtStatus> {
+    let mut table = 0;
+    // SAFETY: the kernel reads the entries, as many as the count says, and writes the local.
+    checked(unsafe {
+        raw::NtUserCreateAcceleratorTable(
+            entries.as_ptr(),
+            entries.len() as u32,
+            module,
+            resource,
+            &mut table,
+        )
+    })?;
+    Ok(table as usize)
+}
+
+/// NtUserCopyAcceleratorTable: with no buffer the table's entry count; else as many of its entries
+/// as `entries` holds into it, their number.
+pub fn copy_accelerator_table(
+    table: usize,
+    entries: Option<&mut [Accel]>,
+) -> Result<u32, NtStatus> {
+    let (at, count) = match entries {
+        Some(entries) => (entries.as_mut_ptr(), entries.len() as u32),
+        None => (core::ptr::null_mut(), 0),
+    };
+    let mut copied = 0;
+    // SAFETY: the kernel writes at most `count` entries of the buffer, and the local.
+    checked(unsafe { raw::NtUserCopyAcceleratorTable(table, at, count, &mut copied) })?;
+    Ok(copied)
+}
+
+/// NtUserDestroyAcceleratorTable: the table's load count down; whether it was destroyed.
+pub fn destroy_accelerator_table(table: usize) -> Result<bool, NtStatus> {
+    let mut destroyed = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserDestroyAcceleratorTable(table, &mut destroyed) })?;
+    Ok(destroyed != 0)
+}
+
+/// NtUserTranslateAccelerator: `msg` translated for `window` through `table`; whether it was an
+/// accelerator (the messages it sent queued for the window's thread).
+pub fn translate_accelerator(window: usize, table: usize, msg: &Msg) -> Result<bool, NtStatus> {
+    let mut translated = 0;
+    // SAFETY: the kernel reads the local MSG and writes the local answer.
+    checked(unsafe { raw::NtUserTranslateAccelerator(window, table, msg, &mut translated) })?;
+    Ok(translated != 0)
+}
+
+/// NtUserFindExistingCursorIcon: the shared icon loaded from the module's resource at `width` by
+/// `height`; 0 for none.
+pub fn find_existing_cursor_icon(
+    module: usize,
+    resource: usize,
+    width: i32,
+    height: i32,
+) -> Result<usize, NtStatus> {
+    let mut cursor = 0;
+    let size = (width as u16 as u32) | ((height as u16 as u32) << 16);
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserFindExistingCursorIcon(module, resource, size, &mut cursor) })?;
+    Ok(cursor as usize)
+}
+
+/// NtUserSetCursorIconData: the empty record `cursor` filled in from `data`.
+pub fn set_cursor_icon_data(cursor: usize, data: &CursorData) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the local structure.
+    checked(unsafe { raw::NtUserSetCursorIconData(cursor, data) })
 }
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,

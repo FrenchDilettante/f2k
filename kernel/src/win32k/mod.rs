@@ -1,10 +1,10 @@
 //! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window classes
 //! ([`class`]), windows ([`window`]), their focus, enabling and activation ([`focus`]), the
-//! threads' message queues ([`queue`]), their timers
-//! ([`timer`]) and the windows' painting ([`paint`]), window stations and desktops ([`winsta`]),
-//! the display settings ([`display`]), device contexts ([`dc`]) and what is drawn through them
-//! ([`raster`], in the built-in font, [`font`]), the clipboard ([`clipboard`]), and the second
-//! service table their services come through.
+//! threads' message queues ([`queue`]), their timers ([`timer`]) and the windows' painting
+//! ([`paint`]), menus ([`menu`]), keyboard accelerators ([`accel`]), cursors and icons ([`icon`]),
+//! window stations and desktops ([`winsta`]), the display settings ([`display`]), device contexts
+//! ([`dc`]) and what is drawn through them ([`raster`], in the built-in font, [`font`]), the
+//! clipboard ([`clipboard`]), and the second service table their services come through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -24,12 +24,15 @@
 //! answer is ChangeDisplaySettingsEx's own DISP_CHANGE code, which sets no last error
 //! ([`display`]).
 
+pub mod accel;
 pub mod class;
 pub mod clipboard;
 pub mod dc;
 pub mod display;
 pub mod focus;
 pub mod font;
+pub mod icon;
+pub mod menu;
 pub mod paint;
 pub mod queue;
 pub mod raster;

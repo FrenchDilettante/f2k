@@ -912,7 +912,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
 ) -> u32 {
     let fits = match index {
         QUERY_WINDOW_INFO => length as usize == size_of::<WindowInfo>(),
-        QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT => length == 4,
+        QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT | QUERY_WINDOW_MENU => length == 4,
         QUERY_WINDOW_DATA => length as usize == size_of::<WindowData>(),
         QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
@@ -920,6 +920,15 @@ pub unsafe extern "system" fn NtUserQueryWindow(
     };
     if !fits {
         return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    if index == QUERY_WINDOW_MENU {
+        if let Err(status) = wm(|wm| wm.window(window).map(|_| ())) {
+            return status;
+        }
+        let menu = window_menu(window) as u32;
+        // SAFETY: the caller's buffer of the answer's length.
+        unsafe { (answer as *mut u32).write_unaligned(menu) };
+        return STATUS_SUCCESS;
     }
     wm(|wm| {
         let w = match wm.window(window) {
@@ -1823,4 +1832,464 @@ pub unsafe extern "system" fn NtUserSystemParametersInfo(
     // SAFETY: the caller's RECT.
     unsafe { (param as *mut Rect).write_unaligned(SCREEN) };
     STATUS_SUCCESS
+}
+
+// --- The menus, the accelerators, the cursors and icons ------------------------------------------
+
+/// The high words of the stand-ins' menu, table and icon handles (the kernel's tags).
+pub const HOST_MENU_TAG: u32 = 0x0003_0000;
+pub const HOST_TABLE_TAG: u32 = 0x0004_0000;
+pub const HOST_CURSOR_TAG: u32 = 0x0005_0000;
+
+/// An item of one of the stand-ins' menus.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HostItem {
+    pub item_type: u32,
+    pub state: u32,
+    pub id: u32,
+    pub submenu: u32,
+    pub text: Vec<u16>,
+}
+
+/// One of the stand-ins' menus: its items, or none once destroyed.
+#[derive(Clone, Debug, Default)]
+pub struct HostMenu {
+    pub popup: bool,
+    pub items: Option<Vec<HostItem>>,
+}
+
+/// One of the stand-ins' accelerator tables: its entries, its resource, its loads.
+#[derive(Clone, Debug, Default)]
+pub struct HostTable {
+    pub entries: Vec<rtl::accel::Accel>,
+    pub resource: usize,
+    pub loads: u32,
+}
+
+std::thread_local! {
+    /// The menus, by handle (index + 1, tagged); the windows' menus.
+    pub static MENUS: RefCell<Vec<HostMenu>> = const { RefCell::new(Vec::new()) };
+    pub static WINDOW_MENUS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// The accelerator tables, by handle (index + 1, tagged); the MSGs NtUserTranslateAccelerator
+    /// was given, and what it answers.
+    pub static TABLES: RefCell<Vec<Option<HostTable>>> = const { RefCell::new(Vec::new()) };
+    pub static TRANSLATED: RefCell<Vec<Msg>> = const { RefCell::new(Vec::new()) };
+    /// The cursor records, by handle (index + 1, tagged): what NtUserSetCursorIconData filled in.
+    pub static CURSORS: RefCell<Vec<rtl::icon::CursorData>> = const { RefCell::new(Vec::new()) };
+}
+
+fn menu_index(handle: usize) -> Result<usize, u32> {
+    let handle = handle as u32;
+    if handle & 0xFFFF_0000 != HOST_MENU_TAG {
+        return Err(STATUS_OBJECT_TYPE_MISMATCH);
+    }
+    let index = (handle & 0xFFFF) as usize;
+    MENUS.with(|menus| match menus.borrow().get(index.wrapping_sub(1)) {
+        Some(menu) if menu.items.is_some() => Ok(index - 1),
+        _ => Err(STATUS_OBJECT_TYPE_MISMATCH),
+    })
+}
+
+/// The item `item` names in the menu at `index`: the menu holding it and its position.
+fn find_item(menus: &[HostMenu], index: usize, item: u32, flags: u32) -> Option<(usize, usize)> {
+    let items = menus[index].items.as_ref()?;
+    if flags & rtl::menu::MF_BYPOSITION != 0 {
+        return ((item as usize) < items.len()).then_some((index, item as usize));
+    }
+    for (position, entry) in items.iter().enumerate() {
+        if entry.id == item {
+            return Some((index, position));
+        }
+        if entry.submenu != 0 {
+            let sub = (entry.submenu & 0xFFFF) as usize - 1;
+            if let Some(found) = find_item(menus, sub, item, 0) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+pub unsafe extern "system" fn FindResourceExA(
+    module: usize,
+    kind: *const u8,
+    name: *const u8,
+    language: u32,
+) -> usize {
+    // SAFETY: the stand-in serves numbers, which FindResourceExW's takes the same.
+    unsafe { FindResourceExW(module, kind as *const u16, name as *const u16, language) }
+}
+
+pub unsafe extern "system" fn NtUserCallNoParam(routine: u32, result: *mut u32) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    let handle = match routine {
+        NO_PARAM_CREATE_MENU | NO_PARAM_CREATE_POPUP_MENU => MENUS.with(|menus| {
+            let mut menus = menus.borrow_mut();
+            menus.push(HostMenu {
+                popup: routine == NO_PARAM_CREATE_POPUP_MENU,
+                items: Some(Vec::new()),
+            });
+            menus.len() as u32 | HOST_MENU_TAG
+        }),
+        NO_PARAM_CREATE_EMPTY_CURSOR => CURSORS.with(|cursors| {
+            let mut cursors = cursors.borrow_mut();
+            cursors.push(rtl::icon::CursorData::default());
+            cursors.len() as u32 | HOST_CURSOR_TAG
+        }),
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    // SAFETY: the caller's out-pointer.
+    unsafe { result.write(handle) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserThunkedMenuItemInfo(
+    menu: usize,
+    item: u32,
+    flags: u32,
+    operation: u32,
+    info: *mut u8,
+    text: *const u16,
+) -> u32 {
+    use rtl::menu::*;
+    SERVICES.with(|count| count.set(count.get() + 1));
+    let index = match menu_index(menu) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    MENUS.with(|menus| {
+        let mut menus = menus.borrow_mut();
+        match operation {
+            MENU_ITEM_INSERT | MENU_ITEM_SET => {
+                // SAFETY: the caller's MENUITEMINFOW, and the text it names.
+                let given = unsafe { (info as *const MenuItemInfoW).read_unaligned() };
+                let text = if text.is_null() {
+                    Vec::new()
+                } else {
+                    // SAFETY: as above.
+                    unsafe { core::slice::from_raw_parts(text, given.cch as usize) }.to_vec()
+                };
+                let (holder, position) = if operation == MENU_ITEM_INSERT {
+                    let count = menus[index].items.as_ref().unwrap().len();
+                    (index, (item as usize).min(count))
+                } else {
+                    match find_item(&menus, index, item, flags) {
+                        Some(found) => found,
+                        None => return STATUS_OBJECT_NAME_NOT_FOUND,
+                    }
+                };
+                let items = menus[holder].items.as_mut().unwrap();
+                if operation == MENU_ITEM_INSERT {
+                    let mut entry = HostItem {
+                        item_type: given.item_type,
+                        state: given.state,
+                        id: given.id,
+                        submenu: given.submenu,
+                        text,
+                    };
+                    if entry.item_type & MFT_SEPARATOR != 0 {
+                        entry.state |= MFS_GRAYED;
+                    }
+                    items.insert(position, entry);
+                } else {
+                    let entry = &mut items[position];
+                    if given.mask & (MIIM_FTYPE | MIIM_TYPE) != 0 {
+                        entry.item_type = given.item_type;
+                    }
+                    if given.mask & MIIM_STATE != 0 {
+                        entry.state = given.state;
+                    }
+                }
+                STATUS_SUCCESS
+            }
+            MENU_ITEM_QUERY | MENU_QUERY => {
+                let mut answer = MenuItemAnswer::EMPTY;
+                if operation == MENU_QUERY {
+                    answer.count = menus[index].items.as_ref().unwrap().len() as u32;
+                } else {
+                    let Some((holder, position)) = find_item(&menus, index, item, flags) else {
+                        return STATUS_OBJECT_NAME_NOT_FOUND;
+                    };
+                    let items = menus[holder].items.as_ref().unwrap();
+                    let entry = &items[position];
+                    answer.count = items.len() as u32;
+                    answer.holder = (holder as u32 + 1) | HOST_MENU_TAG;
+                    answer.position = position as u32;
+                    answer.item_type = entry.item_type;
+                    answer.state = entry.state;
+                    answer.id = entry.id;
+                    answer.submenu = entry.submenu;
+                    if entry.submenu != 0 {
+                        let sub = (entry.submenu & 0xFFFF) as usize - 1;
+                        answer.submenu_count =
+                            menus[sub].items.as_ref().map_or(0, |i| i.len() as u32);
+                    }
+                    answer.text_length = entry.text.len() as u32;
+                    answer.text[..entry.text.len()].copy_from_slice(&entry.text);
+                }
+                // SAFETY: the caller's answer.
+                unsafe { (info as *mut MenuItemAnswer).write_unaligned(answer) };
+                STATUS_SUCCESS
+            }
+            _ => STATUS_INVALID_PARAMETER,
+        }
+    })
+}
+
+pub unsafe extern "system" fn NtUserDestroyMenu(menu: usize) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    match menu_index(menu) {
+        Ok(index) => {
+            MENUS.with(|menus| menus.borrow_mut()[index].items = None);
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+/// CheckMenuItem's and EnableMenuItem's change: `bits` of the item's state set to `value`'s.
+fn change_state(menu: usize, item: u32, flags: u32, bits: u32, previous: *mut u32) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    let index = match menu_index(menu) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    MENUS.with(|menus| {
+        let mut menus = menus.borrow_mut();
+        let Some((holder, position)) = find_item(&menus, index, item, flags) else {
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        };
+        let entry = &mut menus[holder].items.as_mut().unwrap()[position];
+        // SAFETY: the caller's out-pointer.
+        unsafe { previous.write(entry.state & bits) };
+        entry.state = entry.state & !bits | flags & bits;
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserCheckMenuItem(
+    menu: usize,
+    item: u32,
+    check: u32,
+    previous: *mut u32,
+) -> u32 {
+    change_state(menu, item, check, rtl::menu::MF_CHECKED, previous)
+}
+
+pub unsafe extern "system" fn NtUserEnableMenuItem(
+    menu: usize,
+    item: u32,
+    enable: u32,
+    previous: *mut u32,
+) -> u32 {
+    change_state(menu, item, enable, 3, previous)
+}
+
+pub unsafe extern "system" fn NtUserSetMenu(window: usize, menu: usize, _repaint: u32) -> u32 {
+    if let Err(status) = wm(|wm| wm.window(window).map(|_| ())) {
+        return status;
+    }
+    if menu != 0 {
+        if let Err(status) = menu_index(menu) {
+            return status;
+        }
+    }
+    WINDOW_MENUS.with(|menus| {
+        let mut menus = menus.borrow_mut();
+        menus.retain(|&(w, _)| w != window);
+        menus.push((window, menu));
+    });
+    STATUS_SUCCESS
+}
+
+/// The menu SetMenu gave the window (0 for none).
+pub fn window_menu(window: usize) -> usize {
+    WINDOW_MENUS.with(|menus| {
+        menus
+            .borrow()
+            .iter()
+            .find(|&&(w, _)| w == window)
+            .map_or(0, |&(_, m)| m)
+    })
+}
+
+fn table_index(table: usize) -> Result<usize, u32> {
+    let table = table as u32;
+    if table & 0xFFFF_0000 != HOST_TABLE_TAG {
+        return Err(STATUS_OBJECT_TYPE_MISMATCH);
+    }
+    let index = (table & 0xFFFF) as usize;
+    TABLES.with(|tables| match tables.borrow().get(index.wrapping_sub(1)) {
+        Some(Some(_)) => Ok(index - 1),
+        _ => Err(STATUS_OBJECT_TYPE_MISMATCH),
+    })
+}
+
+pub unsafe extern "system" fn NtUserCreateAcceleratorTable(
+    entries: *const rtl::accel::Accel,
+    count: u32,
+    _module: usize,
+    resource: usize,
+    table: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let handle = TABLES.with(|tables| {
+        let mut tables = tables.borrow_mut();
+        if resource != 0 {
+            if let Some(index) = tables
+                .iter()
+                .position(|t| t.as_ref().is_some_and(|t| t.resource == resource))
+            {
+                tables[index].as_mut().unwrap().loads += 1;
+                return Some(index as u32 + 1 | HOST_TABLE_TAG);
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        // SAFETY: the caller's entries, `count` of them.
+        let entries = unsafe { core::slice::from_raw_parts(entries, count as usize) }.to_vec();
+        tables.push(Some(HostTable {
+            entries,
+            resource,
+            loads: 1,
+        }));
+        Some(tables.len() as u32 | HOST_TABLE_TAG)
+    });
+    match handle {
+        Some(handle) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { table.write(handle) };
+            STATUS_SUCCESS
+        }
+        None => STATUS_INVALID_PARAMETER,
+    }
+}
+
+pub unsafe extern "system" fn NtUserCopyAcceleratorTable(
+    table: usize,
+    entries: *mut rtl::accel::Accel,
+    count: u32,
+    copied: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let index = match table_index(table) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    TABLES.with(|tables| {
+        let tables = tables.borrow();
+        let source = &tables[index].as_ref().unwrap().entries;
+        let n = if entries.is_null() {
+            source.len()
+        } else {
+            let n = source.len().min(count as usize);
+            for (at, entry) in source[..n].iter().enumerate() {
+                // SAFETY: the caller's buffer of `count` entries.
+                unsafe { entries.add(at).write_unaligned(*entry) };
+            }
+            n
+        };
+        // SAFETY: the caller's out-pointer.
+        unsafe { copied.write(n as u32) };
+    });
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserDestroyAcceleratorTable(
+    table: usize,
+    destroyed: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let index = match table_index(table) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    let gone = TABLES.with(|tables| {
+        let mut tables = tables.borrow_mut();
+        let entry = tables[index].as_mut().unwrap();
+        entry.loads -= 1;
+        if entry.loads == 0 {
+            tables[index] = None;
+            true
+        } else {
+            false
+        }
+    });
+    // SAFETY: the caller's out-pointer.
+    unsafe { destroyed.write(gone as u32) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserTranslateAccelerator(
+    window: usize,
+    table: usize,
+    msg: *const Msg,
+    translated: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let index = match table_index(table) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    // SAFETY: the caller's MSG.
+    let msg = unsafe { msg.read() };
+    TRANSLATED.with(|seen| seen.borrow_mut().push(msg));
+    let found = window != 0
+        && TABLES.with(|tables| {
+            let tables = tables.borrow();
+            rtl::accel::find(
+                &tables[index].as_ref().unwrap().entries,
+                msg.message,
+                msg.wparam,
+                rtl::accel::Modifiers::default(),
+            )
+            .is_some()
+        });
+    // SAFETY: the caller's out-pointer.
+    unsafe { translated.write(found as u32) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserFindExistingCursorIcon(
+    module: usize,
+    resource: usize,
+    size: u32,
+    cursor: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let found = CURSORS.with(|cursors| {
+        cursors
+            .borrow()
+            .iter()
+            .position(|data| {
+                data.shared != 0
+                    && data.module == module as u32
+                    && data.resource == resource as u32
+                    && (data.width as u32 | (data.height as u32) << 16) == size
+            })
+            .map_or(0, |index| index as u32 + 1 | HOST_CURSOR_TAG)
+    });
+    // SAFETY: the caller's out-pointer.
+    unsafe { cursor.write(found) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserSetCursorIconData(
+    cursor: usize,
+    data: *const rtl::icon::CursorData,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    // SAFETY: the caller's structure.
+    let data = unsafe { data.read() };
+    CURSORS.with(|cursors| {
+        let mut cursors = cursors.borrow_mut();
+        match cursors.get_mut((cursor & 0xFFFF).wrapping_sub(1)) {
+            Some(slot) if cursor as u32 & 0xFFFF_0000 == HOST_CURSOR_TAG => {
+                *slot = data;
+                STATUS_SUCCESS
+            }
+            _ => STATUS_INVALID_HANDLE,
+        }
+    })
 }

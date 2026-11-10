@@ -3,8 +3,8 @@
 //! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services
 //! hand user32 ([`Receipt`]), and the routines of the NtUserCall* services ([`ONE_PARAM_*`],
-//! [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of NtUserGetThreadState ([`THREAD_STATE_*`]). Only
-//! F2K's user32 calls those services, so their shapes are F2K's.
+//! [`NO_PARAM_*`], [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of NtUserGetThreadState
+//! ([`THREAD_STATE_*`]). Only F2K's user32 calls those services, so their shapes are F2K's.
 //!
 //! A message another thread sent, or one win32k sent on its own behalf (the window's creation and
 //! destruction messages), reaches the window procedure through the receiving thread's own message
@@ -12,6 +12,7 @@
 //! ([`ONE_PARAM_END_SENT_MESSAGE`]).
 //!
 //! [`ONE_PARAM_*`]: ONE_PARAM_POST_QUIT_MESSAGE
+//! [`NO_PARAM_*`]: NO_PARAM_CREATE_MENU
 //! [`HWND_LOCK_*`]: HWND_LOCK_UPDATE_WINDOW
 //! [`HWND_PARAM_LOCK_*`]: HWND_PARAM_LOCK_ENABLE_WINDOW
 //! [`THREAD_STATE_*`]: THREAD_STATE_FOCUS_WINDOW
@@ -248,6 +249,13 @@ pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
 /// halves), the one layout F2K has. GetKeyboardLayout answers it, and the clipboard's CF_LOCALE
 /// is its language.
 pub const KEYBOARD_LAYOUT: u32 = 0x0409_0409;
+
+/// NtUserCallNoParam's routines: CreateMenu and CreatePopupMenu (the result is the new menu's
+/// handle), and the empty cursor or icon object LoadIcon fills in with NtUserSetCursorIconData
+/// (the result is its handle).
+pub const NO_PARAM_CREATE_MENU: u32 = 0;
+pub const NO_PARAM_CREATE_POPUP_MENU: u32 = 1;
+pub const NO_PARAM_CREATE_EMPTY_CURSOR: u32 = 2;
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
 /// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the
