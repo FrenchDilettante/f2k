@@ -27,8 +27,10 @@
 //! TEXTMETRIC ([`gdi`]: gdi32's exports and win32k's DC services share them), the TrueType font
 //! reader ([`truetype`]: win32k's font driver reads its font files through it), the window
 //! manager's WINDOWINFO and WINDOWPOS ([`window`]: user32's window calls and win32k's window
-//! services share them), and USER's message constants and structures ([`user`]: user32's
+//! services share them), USER's message constants and structures ([`user`]: user32's
 //! message calls and win32k's queue share them, the receipt of a retrieved message among
+//! them), and the menus', accelerators' and icons' shapes and resource layouts ([`menu`],
+//! [`accel`], [`icon`]: user32's calls and win32k's menu, accelerator and cursor services share
 //! them).
 //!
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
@@ -48,6 +50,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod accel;
 pub mod array_vec;
 pub mod bitmap;
 pub mod codepage;
@@ -63,9 +66,11 @@ pub mod gdi;
 pub mod handles;
 pub mod heap;
 pub mod heapcore;
+pub mod icon;
 pub mod image;
 pub mod ldr;
 pub mod localmem;
+pub mod menu;
 pub mod message;
 pub mod modules;
 pub mod nt;

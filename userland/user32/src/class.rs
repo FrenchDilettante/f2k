@@ -210,11 +210,17 @@ fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option
 /// The registration of `class`, its two names already as the service takes them (`name` the class
 /// name's), through the narrow entry point when `ansi` (its procedure takes the narrow forms of the
 /// messages): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures
-/// show leaves it); 0 with the class decision's error. A stock cursor goes to the kernel as none
-/// (see the module notes).
+/// show leaves it); 0 with the class decision's error. A stock cursor or icon goes to the kernel as
+/// none (see the module notes).
 fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
     if is_stock_cursor(class.cursor) {
         class.cursor = 0;
+    }
+    if crate::icon::is_stock_icon(class.icon) {
+        class.icon = 0;
+    }
+    if crate::icon::is_stock_icon(class.icon_sm) {
+        class.icon_sm = 0;
     }
     class.cb_size = core::mem::size_of::<WndClassEx>() as u32;
     class.class_name = name;

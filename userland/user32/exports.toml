@@ -956,9 +956,36 @@ note = "an nBufferMax of 0 hands back the string's address in the module's image
 name = "LoadIconW"
 group = "resources"
 args = ["handle hInstance", "ptr lpIconName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadIconW" }
 ordinal = 420
 fails = "NULL"
+
+[[export]]
+name = "LoadIconA"
+group = "resources"
+args = ["handle hInstance", "ptr lpIconName"]
+impl = { native = "LoadIconA" }
+ordinal = 419
+fails = "NULL"
+
+# win32k's cursor and icon services, behind LoadIcon: user32's internal calls (the empty record
+# comes from NtUserCallNoParam, with the menus' services). A shared icon is found by its module,
+# its group resource's data address and its size (the width in the low word, the height in the
+# high).
+
+[[export]]
+name = "NtUserFindExistingCursorIcon"
+group = "resources"
+args = ["u32 Module", "u32 Resource", "u32 Size", "ptr<u32> Cursor"]
+impl = { syscall = "crate::win32k::icon::find_existing_cursor_icon" }
+internal = true
+
+[[export]]
+name = "NtUserSetCursorIconData"
+group = "resources"
+args = ["handle Cursor", "ptr Data"]
+impl = { syscall = "crate::win32k::icon::set_cursor_icon_data" }
+internal = true
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
 # ShowWindowAsync: their arguments as they are (ShowWindow's answer through the last pointer).
@@ -1786,7 +1813,7 @@ fails = "0"
 name = "LoadMenuA"
 group = "menu"
 args = ["handle hInstance", "ptr lpMenuName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadMenuA" }
 ordinal = 427
 fails = "NULL"
 
@@ -1794,7 +1821,7 @@ fails = "NULL"
 name = "LoadMenuW"
 group = "menu"
 args = ["handle hInstance", "ptr lpMenuName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadMenuW" }
 ordinal = 430
 fails = "NULL"
 
@@ -1802,7 +1829,7 @@ fails = "NULL"
 name = "GetMenu"
 group = "menu"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenu" }
 ordinal = 288
 fails = "NULL"
 
@@ -1810,7 +1837,7 @@ fails = "NULL"
 name = "SetMenu"
 group = "menu"
 args = ["handle hWnd", "handle hMenu"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetMenu" }
 ordinal = 571
 fails = "FALSE"
 
@@ -1818,7 +1845,7 @@ fails = "FALSE"
 name = "GetSubMenu"
 group = "menu"
 args = ["handle hMenu", "i32 nPos"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetSubMenu" }
 ordinal = 326
 fails = "NULL"
 
@@ -1826,7 +1853,7 @@ fails = "NULL"
 name = "IsMenu"
 group = "menu"
 args = ["handle hMenu"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsMenu" }
 ordinal = 402
 fails = "FALSE"
 
@@ -1834,7 +1861,7 @@ fails = "FALSE"
 name = "DestroyMenu"
 group = "menu"
 args = ["handle hMenu"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DestroyMenu" }
 ordinal = 144
 fails = "FALSE"
 
@@ -1842,7 +1869,7 @@ fails = "FALSE"
 name = "CheckMenuItem"
 group = "menu"
 args = ["handle hMenu", "u32 uIDCheckItem", "u32 uCheck"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CheckMenuItem" }
 ordinal = 53
 fails = "-1"
 
@@ -1850,7 +1877,7 @@ fails = "-1"
 name = "CheckMenuRadioItem"
 group = "menu"
 args = ["handle hmenu", "u32 idFirst", "u32 idLast", "u32 idCheck", "u32 uFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CheckMenuRadioItem" }
 ordinal = 54
 fails = "FALSE"
 
@@ -1858,7 +1885,7 @@ fails = "FALSE"
 name = "EnableMenuItem"
 group = "menu"
 args = ["handle hMenu", "u32 uIDEnableItem", "u32 uEnable"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnableMenuItem" }
 ordinal = 184
 fails = "-1"
 
@@ -1866,7 +1893,7 @@ fails = "-1"
 name = "GetMenuItemCount"
 group = "menu"
 args = ["handle hMenu"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuItemCount" }
 ordinal = 294
 fails = "-1"
 
@@ -1874,7 +1901,7 @@ fails = "-1"
 name = "GetMenuItemID"
 group = "menu"
 args = ["handle hMenu", "i32 nPos"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuItemID" }
 ordinal = 295
 fails = "-1"
 
@@ -1882,7 +1909,7 @@ fails = "-1"
 name = "GetMenuState"
 group = "menu"
 args = ["handle hMenu", "u32 uId", "u32 uFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuState" }
 ordinal = 299
 fails = "-1"
 
@@ -1890,7 +1917,7 @@ fails = "-1"
 name = "GetMenuStringA"
 group = "menu"
 args = ["handle hMenu", "u32 uIDItem", "ptr lpString", "i32 nMaxCount", "u32 uFlag"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuStringA" }
 ordinal = 300
 fails = "0"
 
@@ -1898,7 +1925,7 @@ fails = "0"
 name = "GetMenuStringW"
 group = "menu"
 args = ["handle hMenu", "u32 uIDItem", "ptr lpString", "i32 nMaxCount", "u32 uFlag"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuStringW" }
 ordinal = 301
 fails = "0"
 
@@ -1910,13 +1937,60 @@ impl = { stub = "not yet implemented" }
 ordinal = 643
 fails = "FALSE"
 
+# win32k's menu services, behind CreateMenu (NtUserCallNoParam), LoadMenu, the item calls and
+# SetMenu: user32's internal calls. NtUserThunkedMenuItemInfo also answers what Windows 2000's
+# user32 reads from a menu's record (an operation of F2K's own, rtl::menu's MENU_ITEM_QUERY and
+# MENU_QUERY); GetMenu reads the window's menu through NtUserQueryWindow.
+
+[[export]]
+name = "NtUserCallNoParam"
+group = "menu"
+args = ["u32 Routine", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::menu::call_no_param" }
+internal = true
+
+[[export]]
+name = "NtUserThunkedMenuItemInfo"
+group = "menu"
+args = ["handle Menu", "u32 Item", "u32 Flags", "u32 Operation", "ptr Info", "ptr Text"]
+impl = { syscall = "crate::win32k::menu::thunked_menu_item_info" }
+internal = true
+
+[[export]]
+name = "NtUserDestroyMenu"
+group = "menu"
+args = ["handle Menu"]
+impl = { syscall = "crate::win32k::menu::destroy_menu" }
+internal = true
+
+[[export]]
+name = "NtUserCheckMenuItem"
+group = "menu"
+args = ["handle Menu", "u32 Item", "u32 Check", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::menu::check_menu_item" }
+internal = true
+
+[[export]]
+name = "NtUserEnableMenuItem"
+group = "menu"
+args = ["handle Menu", "u32 Item", "u32 Enable", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::menu::enable_menu_item" }
+internal = true
+
+[[export]]
+name = "NtUserSetMenu"
+group = "menu"
+args = ["handle Window", "handle Menu", "bool Repaint"]
+impl = { syscall = "crate::win32k::menu::set_menu" }
+internal = true
+
 # --- keyboard accelerators ------------------------------------------------------------------------
 
 [[export]]
 name = "LoadAcceleratorsA"
 group = "accelerator"
 args = ["handle hInstance", "ptr lpTableName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadAcceleratorsA" }
 ordinal = 411
 fails = "NULL"
 
@@ -1924,7 +1998,7 @@ fails = "NULL"
 name = "LoadAcceleratorsW"
 group = "accelerator"
 args = ["handle hInstance", "ptr lpTableName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadAcceleratorsW" }
 ordinal = 412
 fails = "NULL"
 
@@ -1932,7 +2006,7 @@ fails = "NULL"
 name = "TranslateAcceleratorA"
 group = "accelerator"
 args = ["handle hWnd", "handle hAccTable", "ptr lpMsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "TranslateAcceleratorA" }
 ordinal = 645
 fails = "0"
 
@@ -1940,7 +2014,7 @@ fails = "0"
 name = "TranslateAcceleratorW"
 group = "accelerator"
 args = ["handle hWnd", "handle hAccTable", "ptr lpMsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "TranslateAcceleratorW" }
 ordinal = 646
 fails = "0"
 
@@ -1948,7 +2022,7 @@ fails = "0"
 name = "CopyAcceleratorTableA"
 group = "accelerator"
 args = ["handle hAccelSrc", "ptr lpAccelDst", "i32 cAccelEntries"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CopyAcceleratorTableA" }
 ordinal = 66
 fails = "0"
 
@@ -1956,7 +2030,7 @@ fails = "0"
 name = "CopyAcceleratorTableW"
 group = "accelerator"
 args = ["handle hAccelSrc", "ptr lpAccelDst", "i32 cAccelEntries"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CopyAcceleratorTableW" }
 ordinal = 67
 fails = "0"
 
@@ -1964,9 +2038,40 @@ fails = "0"
 name = "DestroyAcceleratorTable"
 group = "accelerator"
 args = ["handle hAccel"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DestroyAcceleratorTable" }
 ordinal = 140
 fails = "FALSE"
+
+# win32k's accelerator services: user32's internal calls. A table LoadAccelerators makes names its
+# resource (the module and the resource data's address), which answers the table loaded before.
+
+[[export]]
+name = "NtUserCreateAcceleratorTable"
+group = "accelerator"
+args = ["ptr Entries", "u32 Count", "u32 Module", "u32 Resource", "ptr<u32> Table"]
+impl = { syscall = "crate::win32k::accel::create_accelerator_table" }
+internal = true
+
+[[export]]
+name = "NtUserCopyAcceleratorTable"
+group = "accelerator"
+args = ["handle Table", "ptr Entries", "u32 Count", "ptr<u32> Copied"]
+impl = { syscall = "crate::win32k::accel::copy_accelerator_table" }
+internal = true
+
+[[export]]
+name = "NtUserDestroyAcceleratorTable"
+group = "accelerator"
+args = ["handle Table", "ptr<u32> Destroyed"]
+impl = { syscall = "crate::win32k::accel::destroy_accelerator_table" }
+internal = true
+
+[[export]]
+name = "NtUserTranslateAccelerator"
+group = "accelerator"
+args = ["handle Window", "handle Table", "ptr Msg", "ptr<u32> Translated"]
+impl = { syscall = "crate::win32k::accel::translate_accelerator" }
+internal = true
 
 # --- the clipboard --------------------------------------------------------------------------------
 
@@ -3429,10 +3534,6 @@ ordinal = 416
 [[export]]
 name = "LoadCursorFromFileW"
 ordinal = 417
-
-[[export]]
-name = "LoadIconA"
-ordinal = 419
 
 [[export]]
 name = "LoadImageA"

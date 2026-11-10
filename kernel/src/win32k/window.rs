@@ -404,6 +404,15 @@ impl Menu {
             _ => None,
         }
     }
+
+    /// The value GetMenu answers: the menu's handle, a child's id, 0 for none.
+    fn raw(self) -> u32 {
+        match self {
+            Menu::None => 0,
+            Menu::Id(id) => u32::from(id),
+            Menu::Handle(h) => h,
+        }
+    }
 }
 
 /// Where a new window goes in its parent's child list.
@@ -643,8 +652,10 @@ pub trait Pump {
         None
     }
 
-    /// Destroy a menu.
-    fn destroy_menu(&mut self, _windows: &mut Windows, _menu: Hwnd) {}
+    /// Destroy a menu (its window's end): the menu and its popups go ([`super::menu`]).
+    fn destroy_menu(&mut self, windows: &mut Windows, menu: Hwnd) {
+        let _ = windows.destroy_menu_handle(menu);
+    }
 
     /// Create the window's cache DC (CS_OWNDC/CS_CLASSDC); false on failure.
     fn create_window_dc(
@@ -1299,6 +1310,8 @@ pub struct Windows {
     pub queues: super::queue::Queues,
     /// The windows' extra bytes.
     extra: ExtraBytes,
+    /// The menus ([`super::menu`]): a window's menu is its record's, under the same lock.
+    pub menus: super::menu::Menus,
 }
 
 impl Windows {
@@ -1337,6 +1350,7 @@ impl Windows {
             super::queue::Queues::write_empty(addr_of_mut!((*windows).queues));
             // Zero bytes are an empty arena: no granule taken, every byte zero.
             addr_of_mut!((*windows).extra).write_bytes(0, 1);
+            super::menu::Menus::write_empty(addr_of_mut!((*windows).menus));
         }
     }
 
@@ -1576,6 +1590,39 @@ impl Windows {
             w.style |= WS_DISABLED;
         } else {
             w.style &= !WS_DISABLED;
+        }
+    }
+
+    /// Whether the window is a child window (one with no menu of its own).
+    pub fn window_is_child(&self, id: WindowId) -> bool {
+        self.at(id).is_child()
+    }
+
+    /// The window's menu, as GetMenu answers it: a top-level window's menu handle, a child's id,
+    /// 0 for none.
+    pub fn window_menu(&self, id: WindowId) -> u32 {
+        self.at(id).menu.raw()
+    }
+
+    /// Set a top-level window's menu handle (0: none).
+    pub fn set_window_menu(&mut self, id: WindowId, menu: u32) {
+        self.at_mut(id).menu = if menu == 0 {
+            Menu::None
+        } else {
+            Menu::Handle(menu)
+        };
+    }
+
+    /// Leave every top-level window holding the menu `menu` without one: the menu was destroyed.
+    pub fn forget_menu(&mut self, menu: u32) {
+        for index in 0..WINDOWS {
+            if !self.pool.headers[index].live {
+                continue;
+            }
+            let w = &mut self.pool.records[index];
+            if !w.is_child() && w.menu == Menu::Handle(menu) {
+                w.menu = Menu::None;
+            }
         }
     }
 
@@ -4082,6 +4129,8 @@ pub struct WindowManager {
     pub classes: class::Registry,
     /// The clipboard of the one window station, WinSta0 ([`super::clipboard`]).
     pub clipboard: super::clipboard::Clipboard,
+    /// The accelerator tables ([`super::accel`]).
+    pub accels: super::accel::Accelerators,
     /// The icon-change notification's windows (see [`Windows::class_views`]).
     pub views: [class::WindowView; WINDOWS],
 }
@@ -4102,6 +4151,7 @@ impl WindowManager {
             Windows::write_empty(addr_of_mut!((*manager).windows));
             class::Registry::write_empty(addr_of_mut!((*manager).classes));
             super::clipboard::Clipboard::write_empty(addr_of_mut!((*manager).clipboard));
+            super::accel::Accelerators::write_empty(addr_of_mut!((*manager).accels));
             let views = addr_of_mut!((*manager).views) as *mut class::WindowView;
             core::ptr::write_bytes(views, 0, WINDOWS);
         }
@@ -4253,17 +4303,29 @@ impl WindowManager {
             windows,
             classes,
             clipboard,
+            accels,
             ..
         } = self;
         clipboard.process_gone(windows, owner);
         windows.end_process(classes, owner, &mut DefaultProcedure);
         classes.destroy_owner_classes(owner);
+        // The process's own user objects, as Windows 2000 destroys them at its end: its menus
+        // (those its windows held went with them), its accelerator tables, its cursors and icons
+        // (once its classes, which held them, are gone).
+        windows.menus.destroy_owner(owner);
+        accels.destroy_owner(owner);
+        classes.cursors.destroy_owner(owner);
     }
 
-    /// What the processes' ends left behind: the processes' live windows and their classes. With
-    /// no process left, the teardown audit counts each as a leak.
+    /// What the processes' ends left behind: the processes' live windows and their classes, menus,
+    /// accelerator tables, cursors and icons. With no process left, the teardown audit counts each
+    /// as a leak.
     pub fn process_records(&self) -> usize {
-        self.windows.process_windows() + self.classes.process_classes()
+        self.windows.process_windows()
+            + self.classes.process_classes()
+            + self.windows.menus.live()
+            + self.accels.live()
+            + self.classes.cursors.process_records()
     }
 
     /// NtUserShowWindow's decision over a handle ([`Windows::show_window`]). The answer is
@@ -4345,6 +4407,7 @@ impl WindowManager {
                     .parent_of(window)
                     .map_or(0, |parent| self.windows.handle_of(parent)),
             ),
+            QUERY_WINDOW_MENU => Query::Menu(self.windows.window_menu(window)),
             _ => {
                 let offset = (index & !QUERY_WINDOW_EXTRA) as i32;
                 let value = self.windows.extra_value(window, offset, length)?;
@@ -4406,6 +4469,8 @@ pub enum Query {
     Extra([u8; 4], u8),
     /// QUERY_WINDOW_PARENT: the parent's handle, 0 for none.
     Parent(u32),
+    /// QUERY_WINDOW_MENU: GetMenu's answer.
+    Menu(u32),
 }
 
 impl Query {
@@ -4414,7 +4479,9 @@ impl Query {
         use rtl::pod::Pod;
         match self {
             Query::Info(info) => info.as_bytes(),
-            Query::Visible(visible) | Query::Parent(visible) => visible.as_bytes(),
+            Query::Visible(visible) | Query::Parent(visible) | Query::Menu(visible) => {
+                visible.as_bytes()
+            }
             Query::Data(data) => data.as_bytes(),
             Query::Text(text) => text.as_bytes(),
             Query::Extra(bytes, length) => &bytes[..*length as usize],
@@ -4431,7 +4498,9 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
     use rtl::window::*;
     let fits = match index {
         QUERY_WINDOW_INFO => length == size_of::<WindowInfo>(),
-        QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT => length == size_of::<u32>(),
+        QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT | QUERY_WINDOW_MENU => {
+            length == size_of::<u32>()
+        }
         QUERY_WINDOW_DATA => length == size_of::<WindowData>(),
         QUERY_WINDOW_TEXT => length == size_of::<WindowText>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
@@ -7539,19 +7608,22 @@ mod tests {
         );
     }
 
-    /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's and the parent's 4,
-    /// the data's 36, the text's 260, an extra-bytes value's 2 or 4, nothing else.
+    /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's, the parent's and
+    /// the menu's 4, the data's 36, the text's 260, an extra-bytes value's 2 or 4, nothing
+    /// else.
     #[test]
     fn the_query_lengths() {
         use rtl::window::{
             QUERY_WINDOW_DATA,
             QUERY_WINDOW_EXTRA,
+            QUERY_WINDOW_MENU,
             QUERY_WINDOW_PARENT,
             QUERY_WINDOW_TEXT,
         };
         assert_eq!(query_accepts(QUERY_WINDOW_INFO, 60), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_VISIBLE, 4), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_PARENT, 4), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_MENU, 4), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_DATA, 36), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_TEXT, 260), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_EXTRA | 8, 2), Ok(()));

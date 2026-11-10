@@ -35,10 +35,10 @@
 //! The registry sits in the window manager, behind one lock with the window registry
 //! ([`super::window::WindowManager`]): the window a class change names is the window registry's
 //! record, and the icon-change notification visits that registry's windows
-//! ([`super::window::Windows::class_views`]). Seams recorded: the cursor/icon objects (the GDI
-//! slice) — until they land, their handles are validated against the class registry's own handle
-//! table; what the icon-change notice does to a window (the painting) — the window records cache
-//! no small icon and draw no caption yet.
+//! ([`super::window::Windows::class_views`]). The cursor and icon records are the class
+//! registry's table ([`super::icon`]), which a class's handles are validated against. Seams
+//! recorded: what the icon-change notice does to a window (the painting) — the window records
+//! cache no small icon and draw no caption yet.
 
 // Parts of the registry have no caller yet: the SetClassLongPtr form, the pinned atoms, the
 // process-end teardown.
@@ -46,6 +46,7 @@
 
 use rtl::pod::Pod;
 
+pub use super::icon::{CursorId, CursorTable};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
 
@@ -421,186 +422,6 @@ impl Atoms {
         self.entries
             .iter()
             .any(|e| e.live && e.atom == atom && e.pinned)
-    }
-}
-
-// --- The cursor/icon handle table
-// ---------------------------------------------------------------------------
-
-/// How many cursor and icon records the table holds.
-pub const CURSORS: usize = 64;
-
-/// A cursor or icon's id: its record in the pool and the record's generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CursorId {
-    index: u16,
-    generation: u16,
-}
-
-/// One cursor/icon record's header.
-#[derive(Clone, Copy)]
-struct CursorHeader {
-    live: bool,
-    generation: u16,
-}
-
-impl CursorHeader {
-    const DEAD: Self = CursorHeader {
-        live: false,
-        generation: 0,
-    };
-}
-
-/// One cursor or icon record.
-#[derive(Clone, Copy)]
-struct Cursor {
-    handle: u32,
-    locks: u32,
-    /// A system-created copy, which apps never see (hidden as null by GetClassInfo).
-    secret: bool,
-    is_icon: bool,
-}
-
-impl Cursor {
-    const EMPTY: Self = Cursor {
-        handle: 0,
-        locks: 0,
-        secret: false,
-        is_icon: false,
-    };
-}
-
-/// A handle-table entry naming a cursor or icon.
-#[derive(Clone, Copy)]
-struct CursorEntry {
-    id: CursorId,
-}
-
-/// The cursor/icon handle table: records behind generation-tagged ids, handles over them (the
-/// object manager's handle-table shape). The seam where the GDI cursor objects land: until then
-/// this is the whole table.
-struct CursorTable {
-    headers: [CursorHeader; CURSORS],
-    records: [Cursor; CURSORS],
-    handles: crate::sched::object::HandleTable<CursorEntry>,
-}
-
-impl CursorTable {
-    /// Write an empty table at `table`, element by element (by value it would pass through the
-    /// stack, which is smaller than it).
-    ///
-    /// # Safety
-    ///
-    /// `table` is valid for writes and aligned; its previous contents are overwritten, not
-    /// dropped.
-    unsafe fn write_empty(table: *mut CursorTable) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the arrays element by element.
-        unsafe {
-            let headers = addr_of_mut!((*table).headers) as *mut CursorHeader;
-            let records = addr_of_mut!((*table).records) as *mut Cursor;
-            for index in 0..CURSORS {
-                headers.add(index).write(CursorHeader::DEAD);
-                records.add(index).write(Cursor::EMPTY);
-            }
-            crate::sched::object::HandleTable::write_empty(addr_of_mut!((*table).handles));
-        }
-    }
-
-    /// A new cursor or icon record with its handle; none when the pool is full.
-    fn make(&mut self, is_icon: bool, secret: bool) -> Option<(CursorId, u32)> {
-        let index = self.headers.iter().position(|h| !h.live)?;
-        let header = &mut self.headers[index];
-        header.live = true;
-        let id = CursorId {
-            index: index as u16,
-            generation: header.generation,
-        };
-        let handle = self.handles.insert(CursorEntry { id });
-        self.records[index] = Cursor {
-            handle,
-            locks: 0,
-            secret,
-            is_icon,
-        };
-        Some((id, handle))
-    }
-
-    /// The cursor or icon `handle` names, when the handle is live (its record's generation
-    /// matches); none otherwise.
-    fn validate(&self, handle: u32) -> Option<CursorId> {
-        let entry = self.handles.lookup(handle)?;
-        let header = self.headers.get(entry.id.index as usize)?;
-        (header.live && header.generation == entry.id.generation).then_some(entry.id)
-    }
-
-    /// The same, for an old handle about to be answered: a cursor destroyed meanwhile answers
-    /// none.
-    fn revalidate(&self, handle: u32) -> Option<CursorId> {
-        self.validate(handle)
-    }
-
-    /// The handle of `id` (0 for none): the inverse of [`CursorTable::validate`].
-    fn handle_of(&self, id: Option<CursorId>) -> u32 {
-        id.map_or(0, |id| self.records[id.index as usize].handle)
-    }
-
-    /// Lock `id` (its reference count up), for a class holding it.
-    fn lock(&mut self, id: CursorId) {
-        self.records[id.index as usize].locks += 1;
-    }
-
-    /// Set `slot` to `id`: the old value is unlocked, the new one locked; the slot's previous
-    /// value.
-    fn lock_slot(&mut self, slot: &mut Option<CursorId>, id: Option<CursorId>) -> Option<CursorId> {
-        let old = *slot;
-        *slot = id;
-        if let Some(old) = old {
-            let locks = &mut self.records[old.index as usize].locks;
-            *locks = locks.saturating_sub(1);
-        }
-        if let Some(id) = id {
-            self.lock(id);
-        }
-        old
-    }
-
-    /// Unlock `slot` (its reference count down), clearing it.
-    fn unlock_slot(&mut self, slot: &mut Option<CursorId>) {
-        if let Some(id) = *slot {
-            let locks = &mut self.records[id.index as usize].locks;
-            *locks = locks.saturating_sub(1);
-        }
-        *slot = None;
-    }
-
-    /// Destroy `id`: its record goes, its handle with it.
-    fn destroy(&mut self, id: CursorId) {
-        let handle = self.records[id.index as usize].handle;
-        self.handles.close(handle);
-        let header = &mut self.headers[id.index as usize];
-        header.live = false;
-        header.generation = header.generation.wrapping_add(1);
-    }
-
-    /// A copy of `id`'s image as a small icon: a synthesized record, hidden from apps; none when
-    /// the pool is full (the lock then simply does not land).
-    fn copy_image(&mut self, id: CursorId, as_icon: bool) -> Option<CursorId> {
-        let _ = id;
-        self.make(as_icon, true).map(|(id, _)| id)
-    }
-
-    fn secret(&self, id: CursorId) -> bool {
-        self.records[id.index as usize].secret
-    }
-
-    fn is_icon(&self, id: CursorId) -> bool {
-        self.records[id.index as usize].is_icon
-    }
-
-    /// How many locks `id` holds (the tests read this).
-    fn locks(&self, id: CursorId) -> u32 {
-        self.records[id.index as usize].locks
     }
 }
 
@@ -1041,7 +862,8 @@ pub struct ClassInfo {
 /// the system list and every process's private and public lists.
 pub struct Registry {
     atoms: Atoms,
-    cursors: CursorTable,
+    /// The cursor and icon records ([`super::icon`]), which classes hold locked.
+    pub cursors: CursorTable,
     classes: ClassPool,
     system: Option<ClassId>,
     owners: [OwnerLists; MAX_OWNERS],

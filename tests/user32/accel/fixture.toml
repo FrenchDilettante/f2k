@@ -5,14 +5,14 @@
 # received.
 description = "accel - an ACCELERATORS resource of the program's own (accel.rc): LoadAcceleratorsW/A, CopyAcceleratorTableW/A's entries and DestroyAcceleratorTable; TranslateAcceleratorW/A on WM_KEYDOWN, WM_KEYUP, WM_CHAR and WM_SYSKEYDOWN posted to the program's own window, with Ctrl, Shift and Alt set in the thread's key state, the return and the WM_COMMAND the window receives; a window with a menu holding the commands, one grayed, and a disabled window."
 kind = "sectioned"
+gate = true
 
-# Not gated: win32k has no accelerator objects yet; accel.exe loads against user32's stubs. Every
-# section is on the work list.
+# The translations need the thread's key state: the cases with a modifier down set it with
+# SetKeyboardState and read it back with GetKeyState, and win32k keeps no key state yet.
 [pending]
-load = "LoadAcceleratorsW/A, CopyAcceleratorTableW/A and DestroyAcceleratorTable not yet implemented: win32k has no accelerator objects"
-translate = "TranslateAcceleratorW not yet implemented"
-ansi = "TranslateAcceleratorA not yet implemented"
-menu = "TranslateAcceleratorW not yet implemented, nor the menus it consults (WM_INITMENU, a grayed item's command)"
+translate = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which the modifiers' cases set and read back)"
+ansi = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which the modifiers' cases set and read back)"
+menu = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which Ctrl+Z's cases set and read back)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
