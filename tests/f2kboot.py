@@ -23,6 +23,8 @@ Three pieces the test modules share:
 from __future__ import annotations
 
 import contextlib
+import ctypes
+import ctypes.util
 import fcntl
 import functools
 import json
@@ -32,6 +34,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -257,6 +260,116 @@ def build_mismatch(build: Build, features: list[str], profile: str | None = None
             f"(`{make}`, or run without --no-build)")
 
 
+# --- The boots' clock -------------------------------------------------------------------------
+
+# A boot's bounds (a kernel case's timeout, each corpus block's) say how long the boot may take on
+# an idle machine. The suite runs its boots side by side (`-n`), and there a QEMU waits for a core,
+# or runs on a slower one (an efficiency core), so its guest gets less done per second of the wall
+# clock. Measured on a 12-core M2 Pro (8 performance and 4 efficiency cores), the boots of a
+# `-n 12` run took 1.54 times their wall time at `-n 4` (the median; 1.77 at the 90th percentile),
+# while QEMU's own work, the instructions it retired, stayed within 2%. So the bounds are counted on
+# each boot's own clock (`BootClock`): the wall clock less the time the load took from that QEMU.
+# With that, the same boots came to 1.05 times their `-n 4` time (1.10 at the 90th percentile). A
+# guest waiting (a Sleep, a hang at HLT) gives none of its time back: only waiting for a core and
+# slower cores are taken out.
+
+
+class _RusageInfoV6(ctypes.Structure):
+    """macOS's `struct rusage_info_v6` (<sys/resource.h>), read by `proc_pid_rusage`. Its times are
+    in Mach absolute time units."""
+
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+        "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups", "ri_interrupt_wkups", "ri_pageins",
+        "ri_wired_size", "ri_resident_size", "ri_phys_footprint", "ri_proc_start_abstime",
+        "ri_proc_exit_abstime", "ri_child_user_time", "ri_child_system_time",
+        "ri_child_pkg_idle_wkups", "ri_child_interrupt_wkups", "ri_child_pageins",
+        "ri_child_elapsed_abstime", "ri_diskio_bytesread", "ri_diskio_byteswritten",
+        "ri_cpu_time_qos_default", "ri_cpu_time_qos_maintenance", "ri_cpu_time_qos_background",
+        "ri_cpu_time_qos_utility", "ri_cpu_time_qos_legacy", "ri_cpu_time_qos_user_initiated",
+        "ri_cpu_time_qos_user_interactive", "ri_billed_system_time", "ri_serviced_system_time",
+        "ri_logical_writes", "ri_lifetime_max_phys_footprint", "ri_instructions", "ri_cycles",
+        "ri_billed_energy", "ri_serviced_energy", "ri_interval_max_phys_footprint",
+        "ri_runnable_time", "ri_flags", "ri_user_ptime", "ri_system_ptime", "ri_pinstructions",
+        "ri_pcycles", "ri_energy_nj", "ri_penergy_nj", "ri_secure_time_in_system",
+        "ri_secure_ptime_in_system", "ri_neural_footprint", "ri_lifetime_max_neural_footprint",
+        "ri_interval_max_neural_footprint")] + [("ri_reserved", ctypes.c_uint64 * 9)]
+
+
+RUSAGE_INFO_V6 = 6
+# The performance-core time a QEMU must have run before its rate there is trusted (seconds).
+RATE_SAMPLE = 0.5
+
+
+@functools.cache
+def _darwin_libc() -> tuple[ctypes.CDLL, float] | None:
+    """The C library and the seconds in one Mach absolute time unit, on macOS; None elsewhere."""
+    if sys.platform != "darwin":
+        return None
+
+    class Timebase(ctypes.Structure):
+        _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    timebase = Timebase()
+    if libc.mach_timebase_info(ctypes.byref(timebase)) != 0 or timebase.denom == 0:
+        return None
+    return libc, timebase.numer / timebase.denom / 1e9
+
+
+def time_lost(pid: int) -> float | None:
+    """The seconds the host's load has taken from process `pid` so far, or None where the host does
+    not tell (or the process is gone).
+
+    On macOS (`proc_pid_rusage`): the time its threads were runnable but not running, and the time
+    its work took beyond what it would have on the performance cores (its instructions at its own
+    rate there, once it has run there long enough to measure it). On Linux: the time its threads
+    waited on a run queue (/proc/<pid>/task/*/schedstat)."""
+    darwin = _darwin_libc()
+    if darwin is not None:
+        libc, tick = darwin
+        info = _RusageInfoV6()
+        if libc.proc_pid_rusage(pid, RUSAGE_INFO_V6, ctypes.byref(info)) != 0:
+            return None
+        cpu = (info.ri_user_time + info.ri_system_time) * tick
+        waiting = max(info.ri_runnable_time * tick - cpu, 0.0)
+        on_performance = (info.ri_user_ptime + info.ri_system_ptime) * tick
+        slower = 0.0
+        if on_performance >= RATE_SAMPLE and info.ri_pinstructions:
+            at_performance_rate = info.ri_instructions * on_performance / info.ri_pinstructions
+            slower = max(cpu - at_performance_rate, 0.0)
+        return waiting + slower
+    if sys.platform.startswith("linux"):
+        try:
+            tasks = list(Path(f"/proc/{pid}/task").iterdir())
+            return sum(int((task / "schedstat").read_text().split()[1]) for task in tasks) / 1e9
+        except (OSError, ValueError, IndexError):
+            return None
+    return None
+
+
+class BootClock:
+    """A boot's clock, which its bounds are counted on: the seconds since it was made, less the time
+    the host's load has taken from the boot's QEMU (`time_lost`) once `attach` names it. Never runs
+    backwards; where the host does not tell, it is the wall clock."""
+
+    def __init__(self):
+        self.started = time.monotonic()
+        self.pid: int | None = None
+        self.lost = 0.0
+        self.last = 0.0
+
+    def attach(self, pid: int) -> None:
+        self.pid = pid
+
+    def elapsed(self) -> float:
+        if self.pid is not None:
+            lost = time_lost(self.pid)
+            if lost is not None:  # None once QEMU is gone: the last reading stands
+                self.lost = max(self.lost, lost)
+        self.last = max(self.last, time.monotonic() - self.started - self.lost)
+        return self.last
+
+
 # --- Boots ------------------------------------------------------------------------------------
 
 
@@ -273,20 +386,22 @@ def boot(
     kernel_options: str = "",
     during: Callable[[Path, str], None] | None = None,
     kept: Path | None = None,
+    clock: BootClock | None = None,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
-    exits, or `timeout` seconds pass. `cmdline` is the user program's command line, passed after
-    the kernel command line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's
-    -append on a kernel boot, by the Limine entry's `cmdline` on a disk boot (a copy of the disk
-    with its configuration rewritten, removed after the boot). With `kept` (a `kept_disk` copy),
-    that disk is attached instead, without a snapshot: what the boot writes stays on it (a disk
-    boot's Limine entry is rewritten on it, in place). With `observe` or `during`, QEMU also
-    carries a QMP socket: `during` is called with the socket's path and the log at each look while
-    the boot runs, and once `done(log)` holds `observe` is called with the socket's path while QEMU
-    still runs (the machine's state, read before it is stopped). Returns the log and why the boot
-    stopped: "done", "timeout", "exited", or "reset" when QEMU's exit followed the kernel's restart
-    line (`ended_by_reset`)."""
+    exits, or `timeout` seconds pass on the boot's clock (`clock`, a new one by default: see
+    `BootClock`). `cmdline` is the user program's command line, passed after the kernel command
+    line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's -append on a kernel boot,
+    by the Limine entry's `cmdline` on a disk boot (a copy of the disk with its configuration
+    rewritten, removed after the boot). With `kept` (a `kept_disk` copy), that disk is attached
+    instead, without a snapshot: what the boot writes stays on it (a disk boot's Limine entry is
+    rewritten on it, in place). With `observe` or `during`, QEMU also carries a QMP socket: `during`
+    is called with the socket's path and the log at each look while the boot runs, and once
+    `done(log)` holds `observe` is called with the socket's path while QEMU still runs (the
+    machine's state, read before it is stopped). Returns the log and why the boot stopped: "done",
+    "timeout", "exited", or "reset" when QEMU's exit followed the kernel's restart line
+    (`ended_by_reset`)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.unlink(missing_ok=True)
     disk = kept or build.disk
@@ -314,11 +429,12 @@ def boot(
     if qmp_directory is not None:
         args += ["-qmp", f"unix:{qmp_directory / 'qmp.sock'},server,nowait"]
     args += exit_with_parent()
+    clock = clock or BootClock()
     qemu = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-    deadline = time.monotonic() + timeout
+    clock.attach(qemu.pid)
     reason = "timeout"
     try:
-        while time.monotonic() < deadline:
+        while clock.elapsed() < timeout:
             log = read_log(log_path)
             if during is not None:
                 during(qmp_directory / "qmp.sock", log)
@@ -1589,12 +1705,14 @@ def split_programs(log: str) -> tuple[str, list[tuple[str, str]]]:
 class BatchWatch:
     """A batch boot's stop check: true once the last program is torn down (with several, once the
     summary follows), the kernel panicked, or the running program overran its own timeout (the
-    boot's start counts against the first). `overran` then names that program's index."""
+    boot's start counts against the first), on the boot's clock (`clock`, a new one by default).
+    `overran` then names that program's index."""
 
-    def __init__(self, timeouts: list[float]):
+    def __init__(self, timeouts: list[float], clock: BootClock | None = None):
         self.timeouts = timeouts
+        self.clock = clock or BootClock()
         self.started = 0
-        self.since = time.monotonic()
+        self.since = self.clock.elapsed()
         self.overran: int | None = None
 
     def __call__(self, log: str) -> bool:
@@ -1606,9 +1724,9 @@ class BatchWatch:
             return True
         started = sum(1 for line in lines if START.match(line))
         if started != self.started:
-            self.started, self.since = started, time.monotonic()
+            self.started, self.since = started, self.clock.elapsed()
         running = max(started, 1) - 1
-        if time.monotonic() - self.since > self.timeouts[min(running, len(self.timeouts) - 1)]:
+        if self.clock.elapsed() - self.since > self.timeouts[min(running, len(self.timeouts) - 1)]:
             self.overran = running
             return True
         return False
@@ -1653,15 +1771,16 @@ class Batch:
 def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: Path,
                timeouts: list[float], keys: dict[str, list[KeyStep]] | None = None) -> Batch:
     """Run `captured`'s blocks in one boot of `build` (`image` as `boot` takes it), each its own
-    process, in order; `timeouts` are each block's seconds (the boot's start counts against the
-    first). Each block runs as its `block_command`: under its fixture's `boot_under` program where
-    it declares one. A fixture declaring `screenshots` has each of its blocks' screens as its
-    process ends saved there (`ScreenTaker`, one per such fixture: a batch may mix fixtures,
-    test_limine's does); with `keys`, each block's section's keys are pressed as the block asks for
-    them (`KeyPresser`)."""
+    process, in order; `timeouts` are each block's seconds on the boot's clock (`BootClock`; the
+    boot's start counts against the first). Each block runs as its `block_command`: under its
+    fixture's `boot_under` program where it declares one. A fixture declaring `screenshots` has
+    each of its blocks' screens as its process ends saved there (`ScreenTaker`, one per such
+    fixture: a batch may mix fixtures, test_limine's does); with `keys`, each block's section's
+    keys are pressed as the block asks for them (`KeyPresser`)."""
     blocks = [each.block for each in captured]
     under = [boot_under(each.fixture) for each in captured]
-    watch = BatchWatch(timeouts)
+    clock = BootClock()
+    watch = BatchWatch(timeouts, clock)
     steps: list[Callable[[Path, str], None]] = []
     by_directory: dict[Path, list[Block]] = {}
     for each in captured:
@@ -1693,6 +1812,7 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         done=watch,
         kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if by_directory else [])),
         during=during if steps else None,
+        clock=clock,
     )
     if watch.overran is not None:
         stopped = "timeout"

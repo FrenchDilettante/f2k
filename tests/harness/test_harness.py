@@ -177,6 +177,57 @@ def test_a_batch_keeps_a_childs_lines_in_its_parents_part():
     assert alone("\n".join(WITH_CHILDREN + [ENDED[-1], CLEAN]))
 
 
+class SetClock:
+    """A boot clock the test sets."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def elapsed(self) -> float:
+        return self.now
+
+
+def test_a_batch_counts_each_programs_timeout_on_the_boots_clock():
+    clock = SetClock()
+    watch = f2kboot.BatchWatch([5.0, 8.0, 5.0], clock)
+    # The boot's start counts against the first program.
+    clock.now = 4.9
+    assert not watch("\n".join(BATCH_BOOT))
+    clock.now = 4.95
+    first = BATCH_BOOT + leg(1, "t.exe a", "A")
+    assert not watch("\n".join(first + leg(2, "t.exe b", "B")[:2]))
+    # The second runs from its start, 4.95, against its own 8 seconds.
+    clock.now = 12.9
+    assert not watch("\n".join(first + leg(2, "t.exe b", "B")[:2]))
+    assert watch.overran is None
+    clock.now = 13.0
+    assert watch("\n".join(first + leg(2, "t.exe b", "B")[:2]))
+    assert watch.overran == 1
+
+
+def test_a_boots_clock_leaves_out_what_the_load_took():
+    # Unattached, it is the wall clock.
+    clock = f2kboot.BootClock()
+    before = clock.elapsed()
+    time.sleep(0.05)
+    assert clock.elapsed() >= before + 0.05
+    # Attached to a busy process (this one), it runs no faster than the wall clock, nor backwards.
+    clock = f2kboot.BootClock()
+    clock.attach(os.getpid())
+    started = time.monotonic()
+    readings = []
+    while time.monotonic() - started < 0.3:
+        readings.append(clock.elapsed())
+    assert readings == sorted(readings)
+    assert 0.0 <= readings[-1] <= time.monotonic() - clock.started
+    if sys.platform == "darwin" or sys.platform.startswith("linux"):
+        assert f2kboot.time_lost(os.getpid()) >= 0.0
+        # A process that is gone tells nothing.
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        assert f2kboot.time_lost(gone.pid) is None
+
+
 # A parent replaced by its child (_P_OVERLAY): the parent ends first, its child prints after it.
 OVERLAID = [
     "F2K: entering ring 3",

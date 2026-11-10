@@ -34,7 +34,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type=float,
         default=None,
         help="seconds per boot (per block in a corpus batch), overriding the cases' own (kernel cases"
-        " default 10, corpus blocks 20)",
+        " default 10, corpus blocks 20); counted on the boot's own clock, which leaves out what the"
+        " host's load takes from its QEMU (f2kboot.BootClock)",
     )
     group.addoption(
         "--update-screens",
