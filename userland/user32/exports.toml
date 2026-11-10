@@ -968,6 +968,22 @@ impl = { native = "LoadIconA" }
 ordinal = 419
 fails = "NULL"
 
+[[export]]
+name = "CopyIcon"
+group = "resources"
+args = ["handle hIcon"]
+impl = { stub = "not yet implemented" }
+ordinal = 68
+fails = "NULL"
+
+[[export]]
+name = "DestroyIcon"
+group = "resources"
+args = ["handle hIcon"]
+impl = { stub = "not yet implemented" }
+ordinal = 143
+fails = "FALSE"
+
 # win32k's cursor and icon services, behind LoadIcon: user32's internal calls (the empty record
 # comes from NtUserCallNoParam, with the menus' services). A shared icon is found by its module,
 # its group resource's data address and its size (the width in the low word, the height in the
@@ -1826,6 +1842,14 @@ ordinal = 430
 fails = "NULL"
 
 [[export]]
+name = "CreateMenu"
+group = "menu"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 89
+fails = "NULL"
+
+[[export]]
 name = "GetMenu"
 group = "menu"
 args = ["handle hWnd"]
@@ -2041,6 +2065,14 @@ args = ["handle hAccel"]
 impl = { native = "DestroyAcceleratorTable" }
 ordinal = 140
 fails = "FALSE"
+
+[[export]]
+name = "CreateAcceleratorTableW"
+group = "accelerator"
+args = ["ptr lpaccl", "i32 cEntries"]
+impl = { stub = "not yet implemented" }
+ordinal = 73
+fails = "NULL"
 
 # win32k's accelerator services: user32's internal calls. A table LoadAccelerators makes names its
 # resource (the module and the resource data's address), which answers the table loaded before.
@@ -2544,10 +2576,6 @@ name = "CloseWindowStation"
 ordinal = 65
 
 [[export]]
-name = "CopyIcon"
-ordinal = 68
-
-[[export]]
 name = "CopyImage"
 ordinal = 69
 
@@ -2558,10 +2586,6 @@ ordinal = 70
 [[export]]
 name = "CreateAcceleratorTableA"
 ordinal = 72
-
-[[export]]
-name = "CreateAcceleratorTableW"
-ordinal = 73
 
 [[export]]
 name = "CreateCaret"
@@ -2610,10 +2634,6 @@ ordinal = 87
 [[export]]
 name = "CreateMDIWindowW"
 ordinal = 88
-
-[[export]]
-name = "CreateMenu"
-ordinal = 89
 
 [[export]]
 name = "CreatePopupMenu"
@@ -2806,10 +2826,6 @@ ordinal = 141
 [[export]]
 name = "DestroyCursor"
 ordinal = 142
-
-[[export]]
-name = "DestroyIcon"
-ordinal = 143
 
 [[export]]
 name = "DeviceEventWorker"
