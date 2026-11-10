@@ -1,11 +1,12 @@
 //! Block devices: the description and read contract every storage device implements, partition
 //! views over them, and the registry the boot fills.
 //!
-//! Everything that stores sectors — the IDE disk today; later CD media, SATA, NVMe, USB — sits
-//! behind [`BlockDevice`], so the consumers (the partition walk now, the filesystems and the file
-//! API later) never know which controller holds the data. The layer's pieces: partition views
-//! ([`partition`]), the device registry the boot fills ([`registry`]), the per-device lock that
-//! queues concurrent readers ([`lock`]), and an in-memory device for the host tests ([`memory`]).
+//! Everything that stores sectors — the IDE disk and the test boots' RAM disk today; later CD
+//! media, SATA, NVMe, USB — sits behind [`BlockDevice`], so the consumers (the partition walk now,
+//! the filesystems and the file API later) never know which controller holds the data. The layer's
+//! pieces: partition views ([`partition`]), the device registry the boot fills ([`registry`]), the
+//! per-device lock that queues concurrent readers ([`lock`]), the RAM disk over a boot module
+//! ([`ramdisk`]), and in-memory devices for the host tests ([`memory`]).
 //! The description carries what the Windows device queries will report (drive type, size,
 //! removable, read-only, the bus); the internal shape is the kernel's own.
 //!
@@ -20,6 +21,7 @@ pub mod lock;
 #[cfg(test)]
 pub mod memory;
 pub mod partition;
+pub mod ramdisk;
 pub mod registry;
 
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};

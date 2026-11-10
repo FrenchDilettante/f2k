@@ -397,7 +397,7 @@ pub use target::{boot_mount, mount_boot_volume, with_boot_volume};
 mod tests {
     use super::super::fixtures::{built_layout, built_volume, Counting, Crafted, Crashing, BUILT};
     use super::*;
-    use crate::block::memory::{MemoryDisk, RamDisk};
+    use crate::block::memory::{MemoryDisk, WritableDisk};
     use crate::status::STATUS_IO_DEVICE_ERROR;
 
     /// The built volume's real boot sector mounts, with the built layout.
@@ -533,7 +533,7 @@ mod tests {
     }
 
     /// FSInfo's hints as the image holds them at `lba`: the free count and the next-free hint.
-    fn hints(device: &RamDisk, lba: usize) -> (u32, u32) {
+    fn hints(device: &WritableDisk, lba: usize) -> (u32, u32) {
         let image = device.image();
         let word = |at: usize| {
             let at = lba * 512 + at;
@@ -543,7 +543,7 @@ mod tests {
     }
 
     /// FAT[1] as the image holds it, on a formatted volume (the FAT at LBA 8).
-    fn formatted_fat1(device: &RamDisk) -> u32 {
+    fn formatted_fat1(device: &WritableDisk) -> u32 {
         let image = device.image();
         u32::from_le_bytes([
             image[8 * 512 + 4],

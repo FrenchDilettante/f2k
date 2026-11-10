@@ -10,6 +10,7 @@ SECTIONS
     /* The loader, at its physical load address, 1 MiB, in the kernel image window's entry span.
      * Entered with paging off, so its virtual and physical addresses are equal. */
     . = 0x100000;
+    __loader_start = .;
     .loader : {
         /* Multiboot header: must be 4-byte aligned and within the first 8 KiB of the file. KEEP
          * stops --gc-sections from discarding it, since no code references it. */

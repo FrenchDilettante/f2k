@@ -111,14 +111,14 @@ impl BlockDevice for Counting {
 /// dropped (and reported done, as a drive's cache would), so the image shows what a crash at that
 /// point leaves. It counts the writes that reached the image and the ones dropped.
 pub struct Crashing {
-    inner: &'static crate::block::memory::RamDisk,
+    inner: &'static crate::block::memory::WritableDisk,
     budget: AtomicU32,
     written: AtomicU32,
     dropped: AtomicU32,
 }
 
 impl Crashing {
-    pub fn over(inner: &'static crate::block::memory::RamDisk) -> &'static Crashing {
+    pub fn over(inner: &'static crate::block::memory::WritableDisk) -> &'static Crashing {
         Box::leak(Box::new(Crashing {
             inner,
             budget: AtomicU32::new(u32::MAX),
@@ -133,7 +133,7 @@ impl Crashing {
     }
 
     /// The image as the writes that reached it left it.
-    pub fn image(&self) -> &'static crate::block::memory::RamDisk {
+    pub fn image(&self) -> &'static crate::block::memory::WritableDisk {
         self.inner
     }
 
@@ -319,8 +319,8 @@ impl Crafted {
     }
 
     /// The volume as a device that takes writes.
-    pub fn writable(&self) -> &'static crate::block::memory::RamDisk {
-        Box::leak(Box::new(crate::block::memory::RamDisk::new(
+    pub fn writable(&self) -> &'static crate::block::memory::WritableDisk {
+        Box::leak(Box::new(crate::block::memory::WritableDisk::new(
             self.image.clone(),
         )))
     }

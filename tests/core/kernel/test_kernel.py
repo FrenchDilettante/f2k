@@ -310,10 +310,14 @@ class Case:
     # The boot's seconds before the case fails as timed out (a boot loading many programs needs room
     # under a parallel run's load).
     timeout: float = DEFAULT_TIMEOUT
+    # Where a kernel-path boot reads its disk (`f2kboot.STORAGES`): "ide", the IDE disk, or "ram",
+    # the image as a Multiboot module that the kernel's RAM disk reads.
+    storage: str = "ide"
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
         assert self.expects and all(self.expects), f"{self.name}: expects is non-empty"
+        assert self.storage in f2kboot.STORAGES, f"{self.name}: storage is one of {f2kboot.STORAGES}"
 
 
 def both_paths(name: str, description: str, **fields) -> tuple[Case, Case]:
@@ -447,6 +451,27 @@ CASES = (
         "the console fixture prints \"Hello, world!\" as its own COM1 output and exits 0",
         expects=("Hello, world!",),
         ordered=True,
+    ),
+    # The disk from memory: the image loaded as the `f2k-disk` Multiboot module, no disk attached.
+    # The kernel withholds the module's frames, registers the RAM disk over them ahead of the IDE
+    # controller (whose channel is empty), mounts its first partition as the boot volume, and runs a
+    # program from it whose DLLs (kernel32, msvcrt) are mapped from it too.
+    Case(
+        name="ramdisk-smoke",
+        description="the disk image as a Multiboot module: the RAM disk is registered, its first partition is the boot volume, and a C-runtime program and its DLLs load from it and run",
+        image="kernel",
+        storage="ram",
+        cmdline="CORPUS\\hellomd.exe",
+        ordered=True,
+        expects=(
+            *BOOTED,
+            "F2K: ram disk: 131072 sectors from the boot module at",
+            "F2K: ide: no disk on the primary master",
+            "F2K: image loaded",
+            "F2K: entering ring 3",
+            "Hello, world!",
+            *EXITED_CLEAN,
+        ),
     ),
     *both_paths(
         "process-suite",
@@ -692,6 +717,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         timeout=boot_timeout(case.timeout),
         done=lambda log: expectation.check(log)[0] != "pending",
         during=KeyPress(case.press_on) if case.press_on else None,
+        storage=case.storage,
     )
     write_profile(log, build)
     status, detail = expectation.check(log)

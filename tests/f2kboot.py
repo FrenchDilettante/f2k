@@ -372,6 +372,31 @@ class BootClock:
 
 # --- Boots ------------------------------------------------------------------------------------
 
+# Where a kernel boot reads its disk: "ide", the image attached to the IDE controller as a snapshot;
+# "ram", the image loaded into guest memory as a Multiboot module, which the kernel's RAM disk reads
+# in place (kernel/src/block/ramdisk.rs), with no disk attached.
+STORAGES = ("ide", "ram")
+# The module's name, a word of its command line: the kernel takes the module so named for its disk
+# (kernel/src/mem/multiboot.rs, DISK_MODULE).
+DISK_MODULE = "f2k-disk"
+# Guest memory for a boot from memory: the 64 MiB image beside the memory the boot itself uses
+# (the frame database covers 256 MiB, kernel/src/mem/frame.rs MAX_FRAMES).
+RAM_MEMORY = "256M"
+
+
+def storage_args(disk: Path, storage: str, memory: str, *, kept: bool = False) -> list[str]:
+    """QEMU's options that give the machine `disk` by `storage` (see STORAGES), and its guest
+    memory: the module and RAM_MEMORY for "ram", the drive (`drive`) and `memory` for "ide"."""
+    if storage == "ram":
+        if kept:
+            raise ValueError("a kept disk boots from the IDE disk: its writes must reach the image")
+        if " " in str(disk) or "," in str(disk):
+            raise ValueError(f"{disk}: QEMU's -initrd splits a module's path at spaces and commas")
+        return ["-initrd", f"{disk} {DISK_MODULE}", "-m", RAM_MEMORY]
+    if storage == "ide":
+        return ["-drive", drive(disk, kept=kept), "-m", memory]
+    raise ValueError(f"storage is one of {STORAGES}, not {storage!r}")
+
 
 def boot(
     build: Build,
@@ -387,11 +412,14 @@ def boot(
     during: Callable[[Path, str], None] | None = None,
     kept: Path | None = None,
     clock: BootClock | None = None,
+    storage: str = "ide",
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
     exits, or `timeout` seconds pass on the boot's clock (`clock`, a new one by default: see
-    `BootClock`). `cmdline` is the user program's command line, passed after the kernel command
+    `BootClock`). A kernel boot reads its disk by `storage` (see STORAGES): with "ram" the image is a
+    Multiboot module and the guest has RAM_MEMORY, whatever `memory` says; a disk boot and a kept
+    disk's always read it from the IDE disk. `cmdline` is the user program's command line, passed after the kernel command
     line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's -append on a kernel boot,
     by the Limine entry's `cmdline` on a disk boot (a copy of the disk with its configuration
     rewritten, removed after the boot). With `kept` (a `kept_disk` copy), that disk is attached
@@ -416,9 +444,11 @@ def boot(
     elif cmdline or kernel_options:
         variant = disk = limine_disk(build, cmdline or "", WORK / "variants" / f"{log_path.stem}.img",
                                      kernel_options)
+    if image != "kernel" or kept is not None:
+        storage = "ide"
     args += [
-        "-drive", drive(disk, kept=kept is not None),
-        "-m", memory, "-display", "none", "-monitor", "none", "-net", "none",
+        *storage_args(disk, storage, memory, kept=kept is not None),
+        "-display", "none", "-monitor", "none", "-net", "none",
         # -no-reboot turns a triple fault into a QEMU exit, so crashes fail fast.
         "-no-reboot", "-serial", f"file:{log_path}",
     ]

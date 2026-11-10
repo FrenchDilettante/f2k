@@ -2,8 +2,9 @@
 //!
 //! Two layers:
 //! - pure, host-testable logic: the information structure's fields, the boot memory plan (which
-//!   memory picture applies, which frames it releases, whether the trampoline's run is free), and
-//!   the memory-map record stream turned into usable frame ranges;
+//!   memory picture applies, which frames it releases, whether the trampoline's run is free), the
+//!   memory-map record stream turned into usable frame ranges, and the module list (the disk image
+//!   a boot loader loaded beside the kernel, [`DISK_MODULE`]);
 //! - the loader-provided structures, read by the kernel from the physical address passed in EBX,
 //!   each read bounded by the boot identity window before it is made ([`readable_len`]).
 //!
@@ -22,6 +23,8 @@ pub mod flags {
     pub const MEM_INFO: u32 = 1 << 0;
     /// `cmdline` is valid.
     pub const CMDLINE: u32 = 1 << 2;
+    /// `mods_count` / `mods_addr` are valid.
+    pub const MODS: u32 = 1 << 3;
     /// `mmap_length` / `mmap_addr` are valid.
     pub const MMAP: u32 = 1 << 6;
 }
@@ -32,6 +35,18 @@ pub const MAP_LENGTH_LIMIT: usize = 0x10_0000;
 
 /// Memory-map record type: usable RAM.
 pub const MEMORY_AVAILABLE: u32 = 1;
+
+/// The module records kept: a list claiming more is read only this far (a loader's list is a few
+/// records).
+pub const MODULE_LIMIT: u32 = 64;
+
+/// The bytes of a module's command line read: a longer one is cut here (a disk module's is its
+/// path and its name).
+pub const MODULE_COMMAND_LINE_LIMIT: usize = 256;
+
+/// The name the disk image's module carries as a word of its command line: QEMU's `-initrd "<path>
+/// f2k-disk"`, GRUB's `module <path> f2k-disk`, Limine's `module_cmdline: f2k-disk`.
+pub const DISK_MODULE: &[u8] = b"f2k-disk";
 
 /// Smallest well-formed memory-map record payload: `size` (4 bytes, excluded from itself), base
 /// (8), length (8), type (4).
@@ -60,6 +75,50 @@ pub struct MultibootInfo {
     pub mmap_length: u32,
     /// Physical address of the memory-map record stream.
     pub mmap_addr: u32,
+}
+
+/// One record of the module list at `mods_addr` (Multiboot 1's module structure): the module's
+/// bytes are physical `[start, end)`, its command line the NUL-terminated string at `string`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Module {
+    pub start: u32,
+    pub end: u32,
+    pub string: u32,
+    pub reserved: u32,
+}
+
+/// A module record's size.
+pub const MODULE_RECORD: usize = core::mem::size_of::<Module>();
+
+impl Module {
+    /// The module's bytes, physical; none when it holds none.
+    pub fn bytes(&self) -> Option<Range<u32>> {
+        (self.start < self.end).then_some(self.start..self.end)
+    }
+
+    /// The frames holding any byte of the module.
+    pub fn frames(&self) -> Range<FrameId> {
+        self.start / 4096..self.end.div_ceil(4096)
+    }
+}
+
+/// The records of the module list `list` (its bytes, `mods_count` records long or cut short), in
+/// order; a partial record at the end is none.
+pub fn module_records(list: &[u8]) -> impl Iterator<Item = Module> + '_ {
+    list.chunks_exact(MODULE_RECORD).map(|record| Module {
+        start: read_u32(record, offset_of!(Module, start)).unwrap_or(0),
+        end: read_u32(record, offset_of!(Module, end)).unwrap_or(0),
+        string: read_u32(record, offset_of!(Module, string)).unwrap_or(0),
+        reserved: read_u32(record, offset_of!(Module, reserved)).unwrap_or(0),
+    })
+}
+
+/// Whether the module command line `line` (its bytes up to its NUL, or all of them) holds `name`
+/// as a whitespace-separated word.
+pub fn names(line: &[u8], name: &[u8]) -> bool {
+    let line = line.split(|&byte| byte == 0).next().unwrap_or(&[]);
+    line.split(u8::is_ascii_whitespace).any(|word| word == name)
 }
 
 /// A validated run of usable frames: `first`, `first + 1`, ..., `first + count - 1`, where every
@@ -123,6 +182,13 @@ impl InfoBytes<'_> {
         self.flagged(flags::CMDLINE, offset_of!(MultibootInfo, cmdline))
     }
 
+    /// The module list's `(mods_addr, mods_count)`, as the structure states them.
+    pub fn modules(self) -> Option<(u32, u32)> {
+        let addr = self.flagged(flags::MODS, offset_of!(MultibootInfo, mods_addr))?;
+        let count = self.flagged(flags::MODS, offset_of!(MultibootInfo, mods_count))?;
+        Some((addr, count))
+    }
+
     /// The memory map's `(mmap_addr, mmap_length)`, as the structure states them.
     pub fn mmap(self) -> Option<(u32, u32)> {
         let addr = self.flagged(flags::MMAP, offset_of!(MultibootInfo, mmap_addr))?;
@@ -174,6 +240,8 @@ pub struct BootMemoryPlan<'a> {
     upper: Option<UsableRange>,
     /// The frames the kernel image occupies.
     kernel: Range<FrameId>,
+    /// The frames a boot module occupies (the disk image's), none by default.
+    module: Range<FrameId>,
     /// The frame table's capacity.
     max_frames: usize,
 }
@@ -200,8 +268,15 @@ impl<'a> BootMemoryPlan<'a> {
             map,
             upper,
             kernel,
+            module: 0..0,
             max_frames,
         }
+    }
+
+    /// The plan, its frames `module` (a boot module's, which the kernel keeps reading) withheld as
+    /// the kernel image's are: never released.
+    pub fn withholding(self, module: Range<FrameId>) -> Self {
+        BootMemoryPlan { module, ..self }
     }
 
     /// Whether the plan follows the memory map (rather than the `mem_upper` fallback).
@@ -215,10 +290,12 @@ impl<'a> BootMemoryPlan<'a> {
         usable_ranges(self.map.unwrap_or(&[]), self.max_frames).chain(self.upper)
     }
 
-    /// Whether a frame of a usable range is released: not the kernel image's, and not covered by a
-    /// reservation record.
+    /// Whether a frame of a usable range is released: not the kernel image's nor the withheld
+    /// module's, and not covered by a reservation record.
     pub fn releases(&self, frame: FrameId) -> bool {
-        !self.kernel.contains(&frame) && !self.map.is_some_and(|map| frame_is_reserved(map, frame))
+        !self.kernel.contains(&frame)
+            && !self.module.contains(&frame)
+            && !self.map.is_some_and(|map| frame_is_reserved(map, frame))
     }
 
     /// Whether every frame of `run` is released, so the run can be taken out of the free lists
@@ -605,6 +682,83 @@ mod tests {
         assert!(plan.releases(0x200));
         assert!(!plan.releases(0x300));
         assert!(plan.releases(0x301));
+    }
+
+    /// A withheld module's frames are kept as the kernel's are, every frame holding any of its
+    /// bytes; the frames around it are released, and a run over it is not reservable.
+    #[test]
+    fn the_plan_withholds_the_module() {
+        let map = record(0, 0x80_0000, MEMORY_AVAILABLE);
+        let memory = memory(&[
+            (0x100, &info_with_map(0x200, map.len() as u32, 0)),
+            (0x200, &map),
+        ]);
+        let module = Module {
+            start: 0x40_0800,
+            end: 0x50_0001,
+            ..Module::default()
+        };
+        assert_eq!(module.frames(), 0x400..0x501);
+        let plan = plan_in(&memory, 0x100)
+            .unwrap()
+            .withholding(module.frames());
+        assert!(plan.releases(0x3FF));
+        assert!(!plan.releases(0x400) && !plan.releases(0x500));
+        assert!(plan.releases(0x501));
+        assert!(!plan.reserves(0x3FF..0x401));
+        assert!(!plan.releases(0x100), "the kernel's are still withheld");
+    }
+
+    /// The module list's records, in order: a partial record at the end is none, and an empty
+    /// module holds no bytes.
+    #[test]
+    fn the_module_list_is_read_record_by_record() {
+        let list: Vec<u8> = [
+            [0x40_0000u32, 0x80_0000, 0x1234, 0],
+            [0x90_0000, 0x90_0000, 0x5678, 0],
+        ]
+        .iter()
+        .flatten()
+        .flat_map(|field| field.to_le_bytes())
+        .chain([1, 2, 3])
+        .collect();
+        let modules: Vec<Module> = module_records(&list).collect();
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0].bytes(), Some(0x40_0000..0x80_0000));
+        assert_eq!(modules[0].string, 0x1234);
+        assert_eq!(modules[1].bytes(), None);
+        assert_eq!(MODULE_RECORD, 16);
+    }
+
+    /// The module list is offered only when its flag is set.
+    #[test]
+    fn the_module_list_needs_its_flag() {
+        let mut info = MultibootInfo {
+            mods_count: 1,
+            mods_addr: 0x9000,
+            ..MultibootInfo::default()
+        };
+        assert_eq!(InfoBytes(&info.to_bytes()).modules(), None);
+        info.flags = flags::MODS;
+        assert_eq!(InfoBytes(&info.to_bytes()).modules(), Some((0x9000, 1)));
+        assert_eq!(
+            InfoBytes(&info.to_bytes()[..24]).modules(),
+            None,
+            "cut short"
+        );
+    }
+
+    /// The disk module is named by a word of its command line, up to its NUL: QEMU's path and name,
+    /// Limine's name alone; a word that merely holds the name does not count.
+    #[test]
+    fn a_module_is_named_by_a_word_of_its_command_line() {
+        assert!(names(b"/tmp/disk.img f2k-disk\0", DISK_MODULE));
+        assert!(names(b"f2k-disk", DISK_MODULE));
+        assert!(names(b"f2k-disk\0garbage", DISK_MODULE));
+        assert!(names(b"  f2k-disk\tother", DISK_MODULE));
+        assert!(!names(b"/tmp/f2k-disk.img\0", DISK_MODULE));
+        assert!(!names(b"/tmp/disk.img\0 f2k-disk", DISK_MODULE));
+        assert!(!names(b"", DISK_MODULE));
     }
 
     /// The trampoline's run is reservable only when the map lists all of it as available, nothing

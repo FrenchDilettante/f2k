@@ -144,10 +144,14 @@ pub fn interrupts() {
     crate::win32k::winsta::init();
 }
 
-/// The devices: the IDE disk and the keyboard (both need the interrupt core), the block devices,
-/// and the boot volume.
+/// The devices: the RAM disk, the IDE disk and the keyboard (the last two need the interrupt core),
+/// the block devices, and the boot volume.
 #[cfg(target_arch = "x86")]
 pub fn devices() {
+    // The RAM disk: the disk image a boot loader loaded as the `f2k-disk` module, if it loaded one
+    // (the test boots' disk), over the frames the boot memory plan withheld for it.
+    crate::block::ramdisk::init();
+
     // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
     // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
     crate::hw::ide::disk::init();
@@ -156,11 +160,16 @@ pub fn devices() {
     // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
     crate::hw::kbd::init();
 
-    // The block devices: the disk, if there is one, and a view per primary partition on it.
-    crate::block::registry::boot_scan(crate::hw::ide::disk::block_device());
+    // The block devices: the RAM disk and the IDE disk, those there are, in that order, and a view
+    // per primary partition on each.
+    crate::block::registry::boot_scan(
+        crate::block::ramdisk::block_device()
+            .into_iter()
+            .chain(crate::hw::ide::disk::block_device()),
+    );
 
-    // The boot volume: the first registered partition, mounted as FAT32. Silent — a boot without
-    // a volume is normal, and a refused volume is left unmounted.
+    // The boot volume: the first registered partition (the RAM disk's, when there is one), mounted
+    // as FAT32. Silent — a boot without a volume is normal, and a refused volume is left unmounted.
     crate::fs::fat32::volume::mount_boot_volume();
 }
 

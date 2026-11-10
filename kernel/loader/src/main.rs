@@ -12,6 +12,9 @@
 //! image's entry point with the Multiboot loader's EAX and EBX as it left them. The kernel takes
 //! over its own tables once its frame database exists; it keeps the loader's frames until then.
 //!
+//! The Multiboot loader's modules (the test boots' disk image) stay where it put them: the loader
+//! refuses a module in the memory it writes, its own or the image's, before it writes any.
+//!
 //! An image the loader refuses is reported on COM1, and the machine halts.
 
 #![no_std]
@@ -33,6 +36,8 @@ const PRESENT_WRITABLE: u32 = 0x3;
 // The image's place, from the linker script: the address it runs at, the physical address of its
 // file (where the Multiboot loader put it), and its file's size. Only their addresses are taken.
 unsafe extern "C" {
+    static __loader_start: u8;
+    static _loader_end: u8;
     static __image_va: u8;
     static __image_phys: u8;
     static __image_file_size: u8;
@@ -189,6 +194,7 @@ extern "C" fn loader_main(magic: u32, info: u32) -> ! {
     if physical as u64 + size as u64 > WINDOW_SIZE as u64 {
         fail(f2k_loader::Refusal::TooLarge.text());
     }
+    check_modules(info, physical..physical + size as u32);
     // SAFETY: paging is off, so physical memory reads at its own address; `[physical, physical +
     // size)` is the image's memory (its file, then the reservation the linker script gives it,
     // which the Multiboot loader keeps clear of its own structures), inside the window, and the
@@ -208,6 +214,28 @@ extern "C" fn loader_main(magic: u32, info: u32) -> ! {
     // SAFETY: the directory maps the window and the identity the loader runs in; the image is
     // mapped and relocated for `load`, and its entry point lies in it.
     unsafe { loader_enter(directory, load.wrapping_add(image.entry()), magic, info) }
+}
+
+/// Refuse a Multiboot module (`info`'s module list) lying in memory the loader writes: its own
+/// (its stack and tables), or the image's, `image`. The kernel reads the modules where they lie.
+fn check_modules(info: u32, image: core::ops::Range<u32>) {
+    // SAFETY: paging is off, so physical memory reads at its own address; the Multiboot loader put
+    // its information structure at `info`, its fields through `mods_addr` included, and nothing
+    // writes it while the loader runs.
+    let fields =
+        unsafe { core::slice::from_raw_parts(info as *const u8, f2k_loader::MULTIBOOT_INFO_LEN) };
+    let Some((list, count)) = f2k_loader::module_list(fields) else {
+        return;
+    };
+    // SAFETY: as above, for the module list the structure names (its records, at most
+    // MODULE_LIMIT of them).
+    let list = unsafe {
+        core::slice::from_raw_parts(list as *const u8, count * f2k_loader::MODULE_RECORD)
+    };
+    let loader = &raw const __loader_start as u32..&raw const _loader_end as u32;
+    if f2k_loader::module_overlapping(list, &[loader, image]).is_some() {
+        fail(f2k_loader::Refusal::ModuleInTheWay.text());
+    }
 }
 
 /// Build the boot directory: the kernel image window's entries and the low identity window's (the

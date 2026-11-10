@@ -9,10 +9,15 @@
 //! file and sections, only the sections the image keeps past its uninitialized data move), and
 //! everything the file does not carry zeroed. [`Image::relocate`] applies the image's base
 //! relocations for a load away from its base.
+//!
+//! Before it writes anything, the loader checks that the Multiboot loader's modules (the test
+//! boots' disk image, which the kernel reads in place) lie clear of the memory it writes
+//! ([`module_list`], [`module_overlapping`]).
 
 #![cfg_attr(not(test), no_std)]
 
 use core::mem::size_of;
+use core::ops::Range;
 
 use rtl::image::{
     data_directory,
@@ -70,6 +75,8 @@ pub enum Refusal {
     NotRelocatable,
     /// A base relocation of a type the loader does not apply, or outside the image.
     BadRelocation,
+    /// A Multiboot module lies in memory the loader writes: its own, or the kernel image's.
+    ModuleInTheWay,
 }
 
 impl Refusal {
@@ -83,8 +90,53 @@ impl Refusal {
             Refusal::TooLarge => "the kernel image outgrows its memory",
             Refusal::NotRelocatable => "the kernel image must move and has no base relocations",
             Refusal::BadRelocation => "the kernel image has a base relocation the loader refuses",
+            Refusal::ModuleInTheWay => {
+                "a boot module lies in the loader's or the kernel image's memory"
+            }
         }
     }
+}
+
+/// The Multiboot information's flag saying its module list is valid.
+pub const MULTIBOOT_MODS: u32 = 1 << 3;
+/// The bytes of the Multiboot information the loader reads: `flags` through `mods_addr`.
+pub const MULTIBOOT_INFO_LEN: usize = 28;
+/// The offsets of `flags`, `mods_count` and `mods_addr` in the Multiboot information.
+const INFO_FLAGS: usize = 0;
+const INFO_MODS_COUNT: usize = 20;
+const INFO_MODS_ADDR: usize = 24;
+/// A module record's size (`mod_start`, `mod_end`, `string`, reserved).
+pub const MODULE_RECORD: usize = 16;
+/// The module records the loader checks: a list claiming more is checked this far (a loader's
+/// list is a few records).
+pub const MODULE_LIMIT: usize = 64;
+
+fn word(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// The module list the Multiboot information `info` (its first [`MULTIBOOT_INFO_LEN`] bytes)
+/// offers: its physical address and its record count, at most [`MODULE_LIMIT`]. None when its flag
+/// is clear.
+pub fn module_list(info: &[u8]) -> Option<(u32, usize)> {
+    if word(info, INFO_FLAGS)? & MULTIBOOT_MODS == 0 {
+        return None;
+    }
+    let count = word(info, INFO_MODS_COUNT)? as usize;
+    Some((word(info, INFO_MODS_ADDR)?, count.min(MODULE_LIMIT)))
+}
+
+/// The first module of the module list `list` (its records' bytes) whose bytes overlap any of
+/// `written`, as its physical range. A module holding no bytes overlaps nothing.
+pub fn module_overlapping(list: &[u8], written: &[Range<u32>]) -> Option<Range<u32>> {
+    list.chunks_exact(MODULE_RECORD)
+        .filter_map(|record| Some(word(record, 0)?..word(record, 4)?))
+        .find(|module| {
+            !module.is_empty()
+                && written
+                    .iter()
+                    .any(|memory| module.start < memory.end && memory.start < module.end)
+        })
 }
 
 /// A section as the loader places it.
@@ -287,6 +339,61 @@ mod tests {
     use exportgen::pe::{self, Linked, LinkedSection, LinkedSymbol, SectionKind};
 
     use super::*;
+
+    /// The Multiboot information's first fields: `flags`, then `mods_count` and `mods_addr`.
+    fn info(flags: u32, count: u32, addr: u32) -> Vec<u8> {
+        let mut info = vec![0u8; MULTIBOOT_INFO_LEN];
+        info[..4].copy_from_slice(&flags.to_le_bytes());
+        info[20..24].copy_from_slice(&count.to_le_bytes());
+        info[24..28].copy_from_slice(&addr.to_le_bytes());
+        info
+    }
+
+    /// Module records, each `[start, end)`.
+    fn modules(runs: &[Range<u32>]) -> Vec<u8> {
+        runs.iter()
+            .flat_map(|run| [run.start, run.end, 0x9000, 0])
+            .flat_map(u32::to_le_bytes)
+            .collect()
+    }
+
+    /// The module list is offered only under its flag, its count capped.
+    #[test]
+    fn the_module_list_needs_its_flag() {
+        assert_eq!(module_list(&info(0, 1, 0x9000)), None);
+        assert_eq!(
+            module_list(&info(MULTIBOOT_MODS | 0x41, 1, 0x9000)),
+            Some((0x9000, 1))
+        );
+        assert_eq!(
+            module_list(&info(MULTIBOOT_MODS, u32::MAX, 0x9000)),
+            Some((0x9000, MODULE_LIMIT))
+        );
+        assert_eq!(module_list(&info(MULTIBOOT_MODS, 1, 0x9000)[..24]), None);
+    }
+
+    /// A module touching any written run by a byte is in the way; one beside it, or empty, is not.
+    #[test]
+    fn a_module_in_written_memory_is_found() {
+        let written = [0x10_0000..0x12_0000, 0x40_0000..0xCC_5000];
+        let clear = modules(&[
+            0x12_0000..0x40_0000,
+            0xCC_5000..0x4CC_5000,
+            0x40_1000..0x40_1000,
+        ]);
+        assert_eq!(module_overlapping(&clear, &written), None);
+        let list = modules(&[0xCC_5000..0x4CC_5000, 0xCC_4FFF..0xCC_6000]);
+        assert_eq!(
+            module_overlapping(&list, &written),
+            Some(0xCC_4FFF..0xCC_6000)
+        );
+        let list = modules(&[0x11_F000..0x13_0000]);
+        assert_eq!(
+            module_overlapping(&list, &written),
+            Some(0x11_F000..0x13_0000)
+        );
+        assert_eq!(module_overlapping(&list[..12], &written), None, "partial");
+    }
 
     const BASE: u32 = 0x8040_0000;
 

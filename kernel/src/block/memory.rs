@@ -51,15 +51,15 @@ impl BlockDevice for MemoryDisk {
 }
 
 /// A writable disk over a byte image (the FAT32 write tests').
-pub struct RamDisk {
+pub struct WritableDisk {
     bytes: Mutex<Vec<u8>>,
 }
 
-impl RamDisk {
+impl WritableDisk {
     /// A disk over `bytes`, which holds whole sectors.
     pub fn new(bytes: Vec<u8>) -> Self {
         assert_eq!(bytes.len() % 512, 0, "a disk image holds whole sectors");
-        RamDisk {
+        WritableDisk {
             bytes: Mutex::new(bytes),
         }
     }
@@ -70,7 +70,7 @@ impl RamDisk {
     }
 }
 
-impl BlockDevice for RamDisk {
+impl BlockDevice for WritableDisk {
     fn info(&self) -> DeviceInfo {
         DeviceInfo {
             kind: DeviceKind::Disk,

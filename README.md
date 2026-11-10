@@ -264,7 +264,7 @@ f2k/
     ├── loader/           # The boot loader: the Multiboot image the loaders boot, carrying the
     │                     # kernel's image, ntoskrnl.exe, which it maps, relocates and enters
     └── src/
-        ├── block/        # Block devices, partitions, and the device registry
+        ├── block/        # Block devices, partitions, the device registry, and the RAM disk
         ├── boot/         # Boot-related code
         ├── cm/           # The configuration manager: the registry, in kernel memory
         ├── cpu/          # The CPU tables

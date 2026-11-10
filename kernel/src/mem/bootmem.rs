@@ -8,7 +8,9 @@
 //! - the boot loader's memory, from its load address to the kernel's image: its page tables are the
 //!   ones the processor walks until the kernel's own boot directory replaces them. The boot gives
 //!   those frames back then ([`release_loader_memory`]), as Windows 2000 frees its loader's memory
-//!   once the kernel no longer needs it.
+//!   once the kernel no longer needs it, and
+//! - the disk image a boot loader loaded as a module ([`multiboot::DISK_MODULE`]): the RAM disk
+//!   reads and writes its frames for the kernel's lifetime ([`disk_module`]).
 //!
 //! The database then lives in the memory manager's database ([`super::Database`]), and serves the
 //! rest of the kernel through [`with_frame_db`].
@@ -21,7 +23,15 @@ use rtl::pod::Pod;
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::layout::{KERNEL_IMAGE, NTOSKRNL_BASE};
-use super::multiboot::{self, BootMemoryPlan, InfoBytes, MemorySource, MultibootInfo, UsableRange};
+use super::multiboot::{
+    self,
+    BootMemoryPlan,
+    InfoBytes,
+    MemorySource,
+    Module,
+    MultibootInfo,
+    UsableRange,
+};
 use super::paging::{KERNEL_BASE, LOADER_PHYS_BASE, PAGE_SIZE};
 use crate::sync::{InitOnce, StaticBuf};
 
@@ -71,6 +81,10 @@ impl LoaderMemory {
 
 /// The boot loader's frames to release, recorded by [`boot_init`].
 static LOADER_MEMORY: InitOnce<LoaderMemory> = InitOnce::new();
+
+/// The disk image's module, physical bytes, recorded by [`boot_init`]: none when the boot loader
+/// loaded none.
+static DISK_MODULE: InitOnce<Option<Range<u32>>> = InitOnce::new();
 
 /// The size of an image in memory (its SizeOfImage), from its headers' bytes: none when they are
 /// not a PE32 image's.
@@ -135,11 +149,31 @@ pub(crate) fn with_identity_bytes<R>(addr: u32, len: usize, read: impl FnOnce(&[
     read(unsafe { core::slice::from_raw_parts(addr as *const u8, len) })
 }
 
+/// The module the boot loader loaded with the name [`multiboot::DISK_MODULE`], the first so named:
+/// none when the structure offers no module list, or no module of it carries the name. The list
+/// and each command line are read through the boot identity window, so a list or a command line
+/// past it names nothing.
+fn find_disk_module(info: InfoBytes) -> Option<Module> {
+    let (addr, count) = info.modules()?;
+    let len = count.min(multiboot::MODULE_LIMIT) as usize * multiboot::MODULE_RECORD;
+    with_identity_bytes(addr, len, |list| {
+        multiboot::module_records(list).find(|module| {
+            with_identity_bytes(
+                module.string,
+                multiboot::MODULE_COMMAND_LINE_LIMIT,
+                |line| multiboot::names(line, multiboot::DISK_MODULE),
+            )
+        })
+    })
+}
+
 /// Build the frame database from the Multiboot information at `multiboot_info_addr`.
 ///
 /// Every read of loader memory is cut at the boot identity window before it is made, and the
 /// decisions are the pure plan's ([`multiboot::memory_source`], [`BootMemoryPlan`]): the memory map
-/// when the structure offers a sound one, the `mem_upper` size hint otherwise.
+/// when the structure offers a sound one, the `mem_upper` size hint otherwise. The disk image's
+/// module, when the boot loader loaded one, is found first, and its frames are withheld as the
+/// kernel image's are.
 ///
 /// # Panics
 ///
@@ -163,9 +197,17 @@ pub fn boot_init(multiboot_info_addr: u32) {
     let image = image_frames();
 
     let info_len = core::mem::size_of::<MultibootInfo>();
-    let source = with_identity_bytes(multiboot_info_addr, info_len, |info| {
-        multiboot::memory_source(InfoBytes(info), BOOT_IDENTITY_LIMIT)
+    let (source, module) = with_identity_bytes(multiboot_info_addr, info_len, |info| {
+        (
+            multiboot::memory_source(InfoBytes(info), BOOT_IDENTITY_LIMIT),
+            find_disk_module(InfoBytes(info)),
+        )
     });
+    // A module holding no bytes is no disk; one that does is withheld whole, every frame holding
+    // any of its bytes.
+    let module = module.filter(|module| module.bytes().is_some());
+    let withheld = module.map_or(0..0, |module| module.frames());
+    DISK_MODULE.set(module.and_then(|module| module.bytes()));
     let Some(source) = source else {
         panic!("Multiboot info carries no memory information");
     };
@@ -178,11 +220,13 @@ pub fn boot_init(multiboot_info_addr: u32) {
     with_identity_bytes(map_addr, map_len, |map| {
         // The loader's frames and the image's are kept; which of the loader's to release once its
         // tables are no longer walked is the plan the image's frames alone would make.
-        let plan = BootMemoryPlan::new(source, map, LOADER_FRAMES.start..image.end, MAX_FRAMES);
+        let plan = BootMemoryPlan::new(source, map, LOADER_FRAMES.start..image.end, MAX_FRAMES)
+            .withholding(withheld.clone());
         for range in plan.ranges() {
             release_range(&mut db, range, &plan);
         }
-        let after = BootMemoryPlan::new(source, map, image.clone(), MAX_FRAMES);
+        let after =
+            BootMemoryPlan::new(source, map, image.clone(), MAX_FRAMES).withholding(withheld);
         let mut loader = LoaderMemory([0; LOADER_WORDS]);
         for frame in LOADER_FRAMES {
             if after.releases(frame) && after.ranges().any(|range| range.holds(frame)) {
@@ -225,6 +269,16 @@ pub fn release_loader_memory() {
             db.release(frame, FrameState::Free);
         }
     });
+}
+
+/// The disk image's module, physical bytes `[start, end)`: the frames [`boot_init`] withheld for
+/// it. None when the boot loader loaded no module named [`multiboot::DISK_MODULE`].
+///
+/// # Panics
+///
+/// Called before [`boot_init`].
+pub fn disk_module() -> Option<Range<u32>> {
+    DISK_MODULE.get().clone()
 }
 
 /// Run `f` against the frame database: the bridge for code that does not hold the memory manager's
