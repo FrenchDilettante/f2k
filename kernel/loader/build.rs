@@ -45,6 +45,10 @@ fn main() {
     let link = built.join("ntoskrnl");
     let spec_path = repo.join("kernel/exports.toml");
     println!("cargo:rerun-if-changed={}", link.display());
+    // The link's modification time alone can miss a new link: cargo going back to a feature set it
+    // built before puts that build's cached link back with its old time, older than this script's
+    // last run. `make kernel` passes the link's checksum, so a different link reruns the script.
+    println!("cargo:rerun-if-env-changed=F2K_KERNEL_LINK_CHECKSUM");
     println!("cargo:rerun-if-changed={}", spec_path.display());
     if !link.exists() {
         println!(

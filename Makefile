@@ -163,13 +163,17 @@ userland:
 	cd $(USERLAND_DIR) && cargo build --release
 	for exe in $(SYSTEM_EXES) $(CMD_EXE); do cp $${exe%.exe}.dll $$exe || exit 1; done
 
-# The kernel's link first, then the boot loader, whose build emits the kernel's image from it.
+# The kernel's link first, then the boot loader, whose build emits the kernel's image from it. The
+# loader's build is handed the link's checksum (F2K_KERNEL_LINK_CHECKSUM): cargo going back to a
+# feature set it built before puts that build's cached link back with its old modification time,
+# which cargo's own check of the link (newer than the image's last emission) would miss.
 .PHONY: kernel
 kernel: userland
 	@echo "Building F2K kernel..."
 	rm -f $(KERNEL_STAMP)
 	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
-	cd $(LOADER_DIR) && cargo build --profile $(KERNEL_PROFILE)
+	cd $(LOADER_DIR) && F2K_KERNEL_LINK_CHECKSUM="$$(cksum < $(abspath $(OUT_DIR))/ntoskrnl)" \
+		cargo build --profile $(KERNEL_PROFILE)
 	printf '$(BUILD_STAMP)\n' > $(KERNEL_STAMP)
 	@echo "Kernel built: $(NTOSKRNL_EXE), booted as $(KERNEL_ELF)"
 
