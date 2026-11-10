@@ -37,10 +37,10 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "screenshots", "keys", "system_programs", "boot_under", "data_files"}
+                    "screenshots", "keys", "system_programs", "boot_under", "data_files", "storage"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
-SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending"}
+SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "storage"}
 # The script fixtures (tests/cmd/<name>/), and those whose capture is checked in.
 SCRIPTS = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "script"]
 CAPTURED_SCRIPTS = [name for name in SCRIPTS if not f2kboot.awaited(name)]

@@ -1,10 +1,12 @@
 """kernel - the kernel's own boots: fault stubs, the Limine disk path, the program smokes, the
-multi-process suite, its concurrent runs, and the interrupt and IDE diagnostics.
+multi-process suite, its concurrent runs, the RAM disk, and the interrupt and IDE diagnostics.
 
 These boots carry no sectioned capture to compare against: each case builds the kernel and disk
 with its cargo features (once per feature set per test run), boots the kernel ELF through QEMU's
-Multiboot loader with the disk attached (`image="kernel"`) or the disk itself through Limine
-(`image="disk"`), and passes once its expected strings have appeared on COM1 by its rules (see
+Multiboot loader (`image="kernel"`), its disk in memory for the kernel's RAM disk or, where the
+case declares `storage="ide"` or the run asks for it (F2K_STORAGE=ide; see `f2kboot.STORAGES`),
+attached to the IDE controller, or the disk itself through Limine (`image="disk"`, always on the
+IDE disk), and passes once its expected strings have appeared on COM1 by its rules (see
 `f2kboot.Expectation`): each a substring of some line, in any order, or in order with `ordered`;
 `contiguous` strings must match consecutive lines, `forbids` strings fail the case on sight, and
 "KERNEL PANIC" fails every case. `cmdline` is the user program's command line: QEMU's `-append`
@@ -310,14 +312,17 @@ class Case:
     # The boot's seconds before the case fails as timed out (a boot loading many programs needs room
     # under a parallel run's load).
     timeout: float = DEFAULT_TIMEOUT
-    # Where a kernel-path boot reads its disk (`f2kboot.STORAGES`): "ide", the IDE disk, or "ram",
-    # the image as a Multiboot module that the kernel's RAM disk reads.
-    storage: str = "ide"
+    # Where a kernel-path boot reads its disk (`f2kboot.STORAGES`): "ide", the IDE disk (a case of
+    # the IDE path: the disk's interrupts, a read that blocks), or "ram", the image as a Multiboot
+    # module the kernel's RAM disk reads; None, by default, the run's (F2K_STORAGE, "ram" unless
+    # set). A Limine boot always reads the IDE disk.
+    storage: str | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
         assert self.expects and all(self.expects), f"{self.name}: expects is non-empty"
-        assert self.storage in f2kboot.STORAGES, f"{self.name}: storage is one of {f2kboot.STORAGES}"
+        assert self.storage in (None, *f2kboot.STORAGES), f"{self.name}: storage is one of {f2kboot.STORAGES}"
+        assert self.image == "kernel" or self.storage != "ram", f"{self.name}: a Limine boot reads the IDE disk"
 
 
 def both_paths(name: str, description: str, **fields) -> tuple[Case, Case]:
@@ -418,11 +423,13 @@ CASES = (
     # NtSetInformationThread); the main thread runs again only while the child waits on the drive,
     # and calls NtTerminateProcess there. The child must finish its read — releasing the volume
     # and the drive — before it ends, so the process's end is reported by the child, and the idle
-    # thread's lookup after the teardown finds the volume usable.
+    # thread's lookup after the teardown finds the volume usable. The IDE disk: a RAM disk's read
+    # never blocks, so the exit would never land inside one.
     Case(
         name="fault-exitio",
         description="ExitProcess while another thread is blocked inside a disk read leaves the volume usable after the teardown",
         image="kernel",
+        storage="ide",
         features=("fault-test-exitio",),
         ordered=True,
         expects=(
@@ -660,11 +667,12 @@ CASES = (
     # once. The disk's must be claimed after the keyboard's has lowered: claimed between the
     # keyboard's acknowledgment and its lower, on top of the keyboard's level, its raise goes
     # below the current level — the panic a `dir` hit when a key's release came in during its
-    # disk reads.
+    # disk reads. The IDE disk: the diagnostic drives the drive's interrupt.
     Case(
         name="nest-smoke",
         description="a disk interrupt held behind the keyboard's is claimed after the keyboard's claim has ended, both served and the interrupt audit clean, then the default image exits 0",
         image="kernel",
+        storage="ide",
         features=("nest-smoke",),
         ordered=True,
         press_on="F2K: nest-smoke: keyboard line held at the controller; press a key",

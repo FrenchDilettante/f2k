@@ -1,5 +1,5 @@
-"""Checks on the harness's own judgements: the logs, the build stamps, the boots' QEMU, the kept
-disks and the host's read of their volume."""
+"""Checks on the harness's own judgements: the logs, the build stamps, the boots' QEMU and where
+they read their disk, the kept disks and the host's read of their volume."""
 import json
 import os
 import shutil
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
@@ -441,6 +442,108 @@ def test_a_kept_boot_attaches_its_disk_and_a_restart_ends_it(tmp_path, monkeypat
     assert arguments[arguments.index("-drive") + 1] == f"file={kept},format=raw,if=ide"
     assert "-no-reboot" in arguments
     assert arguments[arguments.index("-append") + 1] == "redirected --"
+
+
+# --- Storage: the disk in memory, or on the IDE controller ------------------------------------
+
+
+def stand_in_qemu(tmp_path, monkeypatch) -> Callable[[], list[str]]:
+    """A stand-in QEMU that records its arguments and writes a line on COM1, then exits; returns
+    the reader of the last boot's arguments."""
+    record = tmp_path / "arguments.json"
+    qemu = tmp_path / "qemu"
+    qemu.write_text(FAKE_QEMU.format(python=sys.executable, record=str(record), output="F2K Booted Successfully\n"))
+    qemu.chmod(0o755)
+    monkeypatch.setattr(f2kboot, "QEMU", str(qemu))
+    monkeypatch.setattr(f2kboot, "exit_with_parent", lambda: [])
+    return lambda: json.loads(record.read_text())
+
+
+def storage_of(arguments: list[str]) -> tuple[str, str, str]:
+    """A boot's storage as its QEMU arguments give it: "ram" with the module's value or "ide" with
+    the drive's, and the guest memory."""
+    memory = arguments[arguments.index("-m") + 1]
+    assert ("-initrd" in arguments) != ("-drive" in arguments), "one disk, one way"
+    if "-initrd" in arguments:
+        return "ram", arguments[arguments.index("-initrd") + 1], memory
+    return "ide", arguments[arguments.index("-drive") + 1], memory
+
+
+@pytest.mark.parametrize("run, declared, expected", [
+    (None, None, "ram"),
+    ("ram", None, "ram"),
+    ("ide", None, "ide"),
+    (None, "ide", "ide"),
+    ("ram", "ide", "ide"),
+    ("ide", "ram", "ram"),
+], ids=["default", "run-ram", "run-ide", "declared-ide", "declared-ide-over-run", "declared-ram-over-run"])
+def test_a_kernel_boot_reads_its_disk_by_its_storage(tmp_path, monkeypatch, run, declared, expected):
+    """A kernel boot reads its disk from memory, the image as the f2k-disk Multiboot module with
+    256M of guest memory and no drive, unless its test declares the IDE disk or the run asks for it
+    (F2K_STORAGE=ide): then the image is a snapshot drive, at the memory the caller asked for. A
+    test's declaration wins over the run's."""
+    arguments = stand_in_qemu(tmp_path, monkeypatch)
+    if run is None:
+        monkeypatch.delenv("F2K_STORAGE", raising=False)
+    else:
+        monkeypatch.setenv("F2K_STORAGE", run)
+    disk = tmp_path / "f2k-disk.img"
+    build = f2kboot.Build(tmp_path / "f2k-kernel", disk)
+    f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20,
+                 done=lambda log: False, storage=declared)
+    if expected == "ram":
+        assert storage_of(arguments()) == ("ram", f"{disk} f2k-disk", "256M")
+    else:
+        assert storage_of(arguments()) == ("ide", f2kboot.drive(disk), "64M")
+
+
+def test_a_limine_or_kept_boot_reads_the_ide_disk(tmp_path, monkeypatch):
+    """Limine reads the disk through the BIOS, and a kept disk's writes must reach the image: both
+    attach the IDE disk whatever the run or the test asks for."""
+    arguments = stand_in_qemu(tmp_path, monkeypatch)
+    monkeypatch.setenv("F2K_STORAGE", "ram")
+    disk = tmp_path / "f2k-disk.img"
+    build = f2kboot.Build(tmp_path / "f2k-kernel", disk)
+    f2kboot.boot(build, image="disk", log_path=tmp_path / "com1.log", timeout=20,
+                 done=lambda log: False, storage="ram", memory="256M")
+    assert storage_of(arguments()) == ("ide", f2kboot.drive(disk), "256M")
+    kept = tmp_path / "kept.img"
+    f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20,
+                 done=lambda log: False, storage="ram", kept=kept)
+    assert storage_of(arguments()) == ("ide", f2kboot.drive(kept, kept=True), "64M")
+
+
+def test_a_storage_that_cannot_be_is_refused(tmp_path, monkeypatch):
+    """F2K_STORAGE and a test's storage are "ram" or "ide"; a module path QEMU would split at a
+    space or a comma is refused rather than misread."""
+    monkeypatch.setenv("F2K_STORAGE", "floppy")
+    with pytest.raises(ValueError, match="F2K_STORAGE"):
+        f2kboot.run_storage()
+    with pytest.raises(ValueError, match="storage"):
+        f2kboot.storage_args(tmp_path / "disk.img", "floppy", "64M")
+    for path in ("with space/disk.img", "with,comma.img"):
+        with pytest.raises(ValueError, match="splits"):
+            f2kboot.storage_args(tmp_path / path, "ram", "64M")
+    with pytest.raises(ValueError, match="kept"):
+        f2kboot.storage_args(tmp_path / "disk.img", "ram", "64M", kept=True)
+
+
+def test_a_fixture_declares_its_storage(tmp_path, monkeypatch):
+    """A fixture's `storage` is "ide" or "ram" (none by default: the run's); anything else is
+    refused."""
+    directory = tmp_path / "kernel32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    declared.write_text('kind = "sectioned"\n')
+    assert f2kboot.fixture_storage("secfake") is None
+    for storage in f2kboot.STORAGES:
+        declared.write_text(f'kind = "sectioned"\nstorage = "{storage}"\n')
+        assert f2kboot.fixture_storage("secfake") == storage
+    for wrong in ('"floppy"', '["ide"]', "1"):
+        declared.write_text(f'kind = "sectioned"\nstorage = {wrong}\n')
+        with pytest.raises(ValueError, match="storage"):
+            f2kboot.fixture_storage("secfake")
 
 
 def volume_image(path, *, fat1=0x0FFF_FFFF, free_count=0xFFFF_FFFF, next_free=0xFFFF_FFFF,

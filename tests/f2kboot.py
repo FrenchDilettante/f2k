@@ -5,8 +5,10 @@ Three pieces the test modules share:
 - builds: `make disk` with a set of cargo features, kept per feature set under target/qemu/builds
   and reused for the rest of the test run (the builds serialize across pytest-xdist workers on a
   file lock: they share cargo's target directory);
-- boots: QEMU with COM1 logged to a file, the disk attached as a snapshot (so boots run side by
-  side), or a kept copy of it attached as it is, for a boot whose writes a later boot or the host
+- boots: QEMU with COM1 logged to a file, the disk loaded into guest memory as a Multiboot module
+  for the kernel's RAM disk (`storage_args`), or attached to the IDE controller as a snapshot (a
+  test declaring `storage = "ide"`, a Limine boot, or a run with F2K_STORAGE=ide), so boots run side
+  by side, or a kept copy of it attached as it is, for a boot whose writes a later boot or the host
   reads (`kept_disk`, `read_volume`), stopped as soon as the caller's check has its answer;
 - checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
@@ -374,14 +376,26 @@ class BootClock:
 
 # Where a kernel boot reads its disk: "ide", the image attached to the IDE controller as a snapshot;
 # "ram", the image loaded into guest memory as a Multiboot module, which the kernel's RAM disk reads
-# in place (kernel/src/block/ramdisk.rs), with no disk attached.
+# in place (kernel/src/block/ramdisk.rs), with no disk attached. A test declares "ide" when it
+# exercises the IDE path (the disk's interrupts, a read that blocks); one declaring nothing boots
+# by the run's storage, F2K_STORAGE: "ram" by default, "ide" for a run that boots everything from
+# the IDE disk, as every boot did before the RAM disk.
 STORAGES = ("ide", "ram")
+DEFAULT_STORAGE = "ram"
 # The module's name, a word of its command line: the kernel takes the module so named for its disk
 # (kernel/src/mem/multiboot.rs, DISK_MODULE).
 DISK_MODULE = "f2k-disk"
 # Guest memory for a boot from memory: the 64 MiB image beside the memory the boot itself uses
 # (the frame database covers 256 MiB, kernel/src/mem/frame.rs MAX_FRAMES).
 RAM_MEMORY = "256M"
+
+
+def run_storage() -> str:
+    """The run's storage for a test that declares none: F2K_STORAGE, DEFAULT_STORAGE when unset."""
+    storage = os.environ.get("F2K_STORAGE") or DEFAULT_STORAGE
+    if storage not in STORAGES:
+        raise ValueError(f"F2K_STORAGE is one of {STORAGES}, not {storage!r}")
+    return storage
 
 
 def storage_args(disk: Path, storage: str, memory: str, *, kept: bool = False) -> list[str]:
@@ -412,14 +426,15 @@ def boot(
     during: Callable[[Path, str], None] | None = None,
     kept: Path | None = None,
     clock: BootClock | None = None,
-    storage: str = "ide",
+    storage: str | None = None,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
     exits, or `timeout` seconds pass on the boot's clock (`clock`, a new one by default: see
-    `BootClock`). A kernel boot reads its disk by `storage` (see STORAGES): with "ram" the image is a
-    Multiboot module and the guest has RAM_MEMORY, whatever `memory` says; a disk boot and a kept
-    disk's always read it from the IDE disk. `cmdline` is the user program's command line, passed after the kernel command
+    `BootClock`). A kernel boot reads its disk by `storage` (see STORAGES), the test's declaration,
+    or the run's (`run_storage`) when it declares none: with "ram" the image is a Multiboot module
+    and the guest has RAM_MEMORY, whatever `memory` says; a disk boot and a kept disk's always read
+    it from the IDE disk. `cmdline` is the user program's command line, passed after the kernel command
     line's "--" (`kernel_options`, the kernel's own, before it): by QEMU's -append on a kernel boot,
     by the Limine entry's `cmdline` on a disk boot (a copy of the disk with its configuration
     rewritten, removed after the boot). With `kept` (a `kept_disk` copy), that disk is attached
@@ -446,6 +461,8 @@ def boot(
                                      kernel_options)
     if image != "kernel" or kept is not None:
         storage = "ide"
+    elif storage is None:
+        storage = run_storage()
     args += [
         *storage_args(disk, storage, memory, kept=kept is not None),
         "-display", "none", "-monitor", "none", "-net", "none",
@@ -1600,6 +1617,15 @@ def data_files(fixture: str) -> list[Path]:
     return [fixture_directory(fixture) / name for name in names]
 
 
+def fixture_storage(fixture: str) -> str | None:
+    """Where a fixture's boot reads its disk, its declaration's `storage` (see STORAGES): "ide" for
+    a fixture exercising the IDE path; None, the run's storage, by default."""
+    storage = declaration(fixture).get("storage")
+    if storage is not None and storage not in STORAGES:
+        raise ValueError(f"{fixture}: storage is one of {STORAGES}, not {storage!r}")
+    return storage
+
+
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
     fixture's (`script_disk`) or a sectioned one's with its `system_programs` and `data_files`
@@ -1631,6 +1657,7 @@ def corpus_params(fixture: str) -> list:
         reason = (f"{fixture} awaits its real-machine {what} "
                   f"({', '.join(path.name for path in real_machine_files(fixture))})")
         return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
+    fixture_storage(fixture)  # a storage it cannot have fails the collection, not the boot
     if kind == "script":
         captured = read_capture(fixture)
         reason = declared.get("pending")
@@ -1799,14 +1826,16 @@ class Batch:
 
 
 def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: Path,
-               timeouts: list[float], keys: dict[str, list[KeyStep]] | None = None) -> Batch:
+               timeouts: list[float], keys: dict[str, list[KeyStep]] | None = None,
+               storage: str | None = None) -> Batch:
     """Run `captured`'s blocks in one boot of `build` (`image` as `boot` takes it), each its own
     process, in order; `timeouts` are each block's seconds on the boot's clock (`BootClock`; the
     boot's start counts against the first). Each block runs as its `block_command`: under its
     fixture's `boot_under` program where it declares one. A fixture declaring `screenshots` has
     each of its blocks' screens as its process ends saved there (`ScreenTaker`, one per such
     fixture: a batch may mix fixtures, test_limine's does); with `keys`, each block's section's
-    keys are pressed as the block asks for them (`KeyPresser`)."""
+    keys are pressed as the block asks for them (`KeyPresser`). `storage` is where the boot reads
+    its disk, as `boot` takes it."""
     blocks = [each.block for each in captured]
     under = [boot_under(each.fixture) for each in captured]
     clock = BootClock()
@@ -1843,6 +1872,7 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if by_directory else [])),
         during=during if steps else None,
         clock=clock,
+        storage=storage,
     )
     if watch.overran is not None:
         stopped = "timeout"

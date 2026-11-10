@@ -173,7 +173,8 @@ The on-target tests run through pytest, so an IDE lists and runs them one by one
 - **The shutdown's boots** (`tests/core/test_shutdown.py`) type a file's creation, then `shutdown`, at cmd.exe's prompt, and read the disk image from the host after the halt or the restart: FAT[1]'s clean-shutdown bit, and FSInfo's free count against the FAT's; a second boot of the same disk finds the file.
 
 Each test builds the kernel and disk for its feature set (once per run, cached under `target/qemu/builds/`); each run removes earlier runs' builds and logs older than two days.
-Boots attach the disk as a snapshot, so tests run in parallel (`-n 4` by default in `make test`; `--dist loadgroup`, set in `pyproject.toml`, keeps a fixture's tests on one worker).
+Boots read the disk from guest memory (the kernel's RAM disk, over the image loaded as a Multiboot module) or, for the tests of the IDE path and the Limine boots, attach it as a snapshot, so tests run in parallel (`-n 4` by default in `make test`; `--dist loadgroup`, set in `pyproject.toml`, keeps a fixture's tests on one worker).
+`F2K_STORAGE=ide make test` boots every test from the IDE disk instead (`tests/README.md`).
 A boot whose writes must outlast it (the shutdown's) attaches a private copy of the disk instead, removed once its test is done.
 
 ```bash

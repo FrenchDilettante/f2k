@@ -224,7 +224,9 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     each block's test then reads its own part of that boot's log. It fails
     unless the program's output equals the block line for line (masks applied), the process ends
     with the block's exit code, and its teardown audits clean; a block the boot never reached fails
-    as not run, naming the block the boot stopped in."""
+    as not run, naming the block the boot stopped in. The boot reads its disk from memory (the
+    kernel's RAM disk) unless the fixture declares `storage = "ide"` or the run asks for the IDE
+    disk (F2K_STORAGE=ide): `f2kboot.boot`."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)
@@ -254,6 +256,7 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
                     log_path=f2kboot.log_path_for(name),
                     timeouts=[boot_timeout(each.timeout) for each in selected],
                     keys=keys,
+                    storage=f2kboot.fixture_storage(captured.fixture),
                 )
             finally:
                 if variant is not None:
