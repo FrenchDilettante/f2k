@@ -1,14 +1,28 @@
-# menus: one test per block of the real-machine capture (output.txt); see tests/README.md. Its menu
-# is compiled from menus.rc (rc) and linked into menus.exe. No handle or address prints: a menu
+# menus: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# menu is compiled from menus.rc (rc) and linked into menus.exe. No handle or address prints: a menu
 # prints as found or not and as the same menu as another call's or not, its items' states in hex.
-description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window."
+# kinds, reuse and slots settle how the handles of user objects of different kinds relate (windows,
+# menus, accelerator tables, cursors and icons): each kind's calls on the others' handles, before
+# and after many reuses of a slot, and the handles' low words (the slot) and high words, printed
+# only as relations. reuse's and slots' relations hold while no other process makes a user object
+# meanwhile: a "no" in one capture can be another process's allocation.
+description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word."
 kind = "sectioned"
 gate = true
+
+# F2K's windows, menus, accelerator tables and cursors and icons each have handles of their own: a
+# window's carries its slot's uniqueness count in its high word, while the other kinds' are tagged
+# by kind in theirs, so a window's handle can equal another kind's once its slot has been reused.
+[pending]
+kinds = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu, CreateAcceleratorTableW, CopyIcon and DestroyIcon not yet implemented"
+reuse = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu and CreateAcceleratorTableW not yet implemented"
+slots = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu, CreateAcceleratorTableW, CopyIcon and DestroyIcon not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the load and
-# destruction of the menu in the sections but load, RegisterClassW, CreateWindowExW).
+# destruction of the menu in the sections but load, RegisterClassW and UnregisterClassW,
+# CreateWindowExW but in reuse and slots, LoadCursorA and LoadIconA of the stock cursor and icon).
 load = [
     "user32.LoadMenuW",
     "user32.LoadMenuA",
@@ -37,4 +51,42 @@ window = [
     "user32.SetMenu",
     "user32.IsMenu",
     "user32.DestroyWindow",
+]
+kinds = [
+    "user32.CreateMenu",
+    "user32.CreateAcceleratorTableW",
+    "user32.CopyIcon",
+    "user32.IsWindow",
+    "user32.IsMenu",
+    "user32.GetMenuItemCount",
+    "user32.CopyAcceleratorTableW",
+    "user32.GetWindowLongW",
+    "user32.DestroyMenu",
+    "user32.DestroyAcceleratorTable",
+    "user32.DestroyIcon",
+    "user32.DestroyWindow",
+]
+# reuse and slots observe the handles the creating calls hand back, so those calls are pinned there.
+reuse = [
+    "user32.CreateWindowExW",
+    "user32.CreateMenu",
+    "user32.CreateAcceleratorTableW",
+    "user32.DestroyWindow",
+    "user32.DestroyMenu",
+    "user32.DestroyAcceleratorTable",
+    "user32.IsWindow",
+    "user32.IsMenu",
+    "user32.CopyAcceleratorTableW",
+]
+slots = [
+    "user32.CreateWindowExW",
+    "user32.CreateMenu",
+    "user32.CreateAcceleratorTableW",
+    "user32.CopyIcon",
+    "user32.DestroyWindow",
+    "user32.DestroyMenu",
+    "user32.DestroyAcceleratorTable",
+    "user32.DestroyIcon",
+    "user32.IsWindow",
+    "user32.IsMenu",
 ]

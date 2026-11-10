@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:24.45
-menus F2KT-SOURCE-CRC=0xE56E469D
+# date: Tue 11/10/2026 15:17:02.18
+menus F2KT-SOURCE-CRC=0x3820D09C
 >>> menus.exe load
 == load
 LoadMenuW(200): non-NULL yes err=-
@@ -192,5 +192,142 @@ SetMenu(child window, a second menu): ret=0 err=1436
 IsMenu(the second menu) after: ret=1 err=-
 SetMenu(window, a destroyed menu): ret=0 err=1401
 GetMenu(window): the menu it was created with yes err=-
+menus: done
+<<< exit code=0
+>>> menus.exe kinds
+== kinds
+RegisterClassW(F2KKindsWindow): atom nonzero yes err=2
+CreateWindowExW(F2KKindsWindow, WS_POPUP, hidden): non-NULL yes err=-
+CreateMenu: non-NULL yes err=-
+LoadMenuW(200): non-NULL yes
+CreateAcceleratorTableW(one entry): non-NULL yes err=-
+LoadCursorA(NULL, IDC_ARROW): non-NULL yes
+LoadIconA(NULL, IDI_APPLICATION): non-NULL yes
+CopyIcon(the application icon): non-NULL yes err=- the same icon no
+the seven handles all different: yes; their low words all different: yes
+IsWindow(window): ret=1 err=-
+IsMenu(window): ret=0 err=1401
+GetMenuItemCount(window): ret=-1 err=1401
+CopyAcceleratorTableW(window, NULL, 0): ret=0 err=1403
+GetWindowLongW(window, GWL_STYLE): nonzero yes err=-
+IsWindow(CreateMenu's menu): ret=0 err=-
+IsMenu(CreateMenu's menu): ret=1 err=-
+GetMenuItemCount(CreateMenu's menu): ret=0 err=-
+CopyAcceleratorTableW(CreateMenu's menu, NULL, 0): ret=0 err=1403
+GetWindowLongW(CreateMenu's menu, GWL_STYLE): nonzero no err=1400
+IsWindow(menu 200): ret=0 err=-
+IsMenu(menu 200): ret=1 err=-
+GetMenuItemCount(menu 200): ret=3 err=-
+CopyAcceleratorTableW(menu 200, NULL, 0): ret=0 err=1403
+GetWindowLongW(menu 200, GWL_STYLE): nonzero no err=1400
+IsWindow(table): ret=0 err=-
+IsMenu(table): ret=0 err=1401
+GetMenuItemCount(table): ret=-1 err=1401
+CopyAcceleratorTableW(table, NULL, 0): ret=1 err=-
+GetWindowLongW(table, GWL_STYLE): nonzero no err=1400
+IsWindow(the arrow cursor): ret=0 err=-
+IsMenu(the arrow cursor): ret=0 err=1401
+GetMenuItemCount(the arrow cursor): ret=-1 err=1401
+CopyAcceleratorTableW(the arrow cursor, NULL, 0): ret=0 err=1403
+GetWindowLongW(the arrow cursor, GWL_STYLE): nonzero no err=1400
+IsWindow(the application icon): ret=0 err=-
+IsMenu(the application icon): ret=0 err=1401
+GetMenuItemCount(the application icon): ret=-1 err=1401
+CopyAcceleratorTableW(the application icon, NULL, 0): ret=0 err=1403
+GetWindowLongW(the application icon, GWL_STYLE): nonzero no err=1400
+IsWindow(CopyIcon's icon): ret=0 err=-
+IsMenu(CopyIcon's icon): ret=0 err=1401
+GetMenuItemCount(CopyIcon's icon): ret=-1 err=1401
+CopyAcceleratorTableW(CopyIcon's icon, NULL, 0): ret=0 err=1403
+GetWindowLongW(CopyIcon's icon, GWL_STYLE): nonzero no err=1400
+DestroyMenu(window): ret=0 err=1401
+DestroyMenu(table): ret=0 err=1401
+DestroyMenu(CopyIcon's icon): ret=0 err=1401
+DestroyAcceleratorTable(CreateMenu's menu): ret=0 err=1403
+DestroyAcceleratorTable(window): ret=0 err=1403
+DestroyAcceleratorTable(CopyIcon's icon): ret=0 err=1403
+DestroyIcon(CreateMenu's menu): ret=0 err=1402
+DestroyIcon(window): ret=0 err=1402
+DestroyIcon(table): ret=0 err=1402
+DestroyWindow(CreateMenu's menu): ret=0 err=1400
+DestroyWindow(table): ret=0 err=1400
+DestroyWindow(CopyIcon's icon): ret=0 err=1400
+after them: IsWindow(window) 1, IsMenu(CreateMenu's menu) 1, IsMenu(menu 200) 1, CopyAcceleratorTableW(table, NULL, 0) 1
+DestroyIcon(CopyIcon's icon): ret=1 err=-
+DestroyAcceleratorTable(table): ret=1 err=-
+DestroyMenu(menu 200): ret=1 err=-
+DestroyMenu(CreateMenu's menu): ret=1 err=-
+DestroyWindow(window): ret=1 err=-
+IsWindow(the destroyed window): ret=0 err=-
+IsMenu(the destroyed CreateMenu's menu): ret=0 err=1401
+CopyAcceleratorTableW(the destroyed table, NULL, 0): ret=0 err=1403
+menus: done
+<<< exit code=0
+>>> menus.exe reuse
+== reuse
+RegisterClassW(F2KReuseWindow): atom nonzero yes err=2
+held: a window yes, a menu yes, a table yes, the arrow cursor yes
+windows made and destroyed one after another: 40 of 40 made
+IsMenu TRUE for a new window: 0 of 40, the first call's err=1401, the same err in 40
+CopyAcceleratorTableW(NULL, 0) nonzero for a new window: 0 of 40, the first call's err=1403, the same err in 40
+IsWindow TRUE for the live menu: 0 of 40, the first call's err=-, the same err in 40
+IsWindow TRUE for the live table: 0 of 40, the first call's err=-, the same err in 40
+IsWindow TRUE for the live arrow cursor: 0 of 40, the first call's err=-, the same err in 40
+a new window's handle equal to a live object's: 0 of 40
+a new window's handle different from every earlier one's: 40 of 40
+a new window in an earlier one's slot (the same low word): 39 of 40
+its high word less the slot's last earlier one's: 1 in 39, 2 in 0, 3 in 0, otherwise in 0
+IsWindow TRUE for an earlier, destroyed window in the new one's slot: 0 of 780
+IsWindow TRUE for any earlier, destroyed window: 0 of 780
+menus made and destroyed one after another: 40 of 40 made
+IsWindow TRUE for a new menu: 0 of 40, the first call's err=-, the same err in 40
+CopyAcceleratorTableW(NULL, 0) nonzero for a new menu: 0 of 40, the first call's err=1403, the same err in 40
+IsMenu TRUE for the live window: 0 of 40, the first call's err=1401, the same err in 40
+IsMenu TRUE for the live table: 0 of 40, the first call's err=1401, the same err in 40
+IsMenu TRUE for the live arrow cursor: 0 of 40, the first call's err=1401, the same err in 40
+a new menu's handle equal to a live object's: 0 of 40
+a new menu's handle different from every earlier one's: 40 of 40
+a new menu in an earlier one's slot (the same low word): 39 of 40
+its high word less the slot's last earlier one's: 1 in 39, 2 in 0, 3 in 0, otherwise in 0
+IsMenu TRUE for an earlier, destroyed menu in the new one's slot: 0 of 780
+IsMenu TRUE for any earlier, destroyed menu: 0 of 780
+tables made and destroyed one after another: 40 of 40 made
+IsWindow TRUE for a new table: 0 of 40, the first call's err=-, the same err in 40
+IsMenu TRUE for a new table: 0 of 40, the first call's err=1401, the same err in 40
+CopyAcceleratorTableW(NULL, 0) nonzero for the live window: 0 of 40, the first call's err=1403, the same err in 40
+CopyAcceleratorTableW(NULL, 0) nonzero for the live menu: 0 of 40, the first call's err=1403, the same err in 40
+CopyAcceleratorTableW(NULL, 0) nonzero for the live arrow cursor: 0 of 40, the first call's err=1403, the same err in 40
+a new table's handle equal to a live object's: 0 of 40
+a new table's handle different from every earlier one's: 40 of 40
+a new table in an earlier one's slot (the same low word): 39 of 40
+its high word less the slot's last earlier one's: 1 in 39, 2 in 0, 3 in 0, otherwise in 0
+CopyAcceleratorTableW(NULL, 0) nonzero for an earlier, destroyed table in the new one's slot: 0 of 780
+CopyAcceleratorTableW(NULL, 0) nonzero for any earlier, destroyed table: 0 of 780
+held after: IsWindow(window) 1, IsMenu(menu) 1, CopyAcceleratorTableW(table, NULL, 0) 1
+menus: done
+<<< exit code=0
+>>> menus.exe slots
+== slots
+RegisterClassW(F2KSlotsWindow): atom nonzero yes err=2
+8 each of windows, menus, tables and icons alive at once: made 32 of 32
+pairs of them with the same handle: 0; with the same low word: 0
+window W1, menu M, window W2 made one after another: all three made in 5 of 5
+M's low word strictly between W1's and W2's: 0 of 5
+low(W2) - low(W1) is 2: 0 of 5
+low(M) - low(W1) is 1: 0 of 5
+M's low word equal to W1's or W2's: 0 of 5
+window made at once after a window's destruction: both made in 5 of 5, the same low word in 5, a different high word in 5; the high word's change: +1 +1 +1 +1 +1
+menu made at once after a window's destruction: both made in 5 of 5, the same low word in 0, a different high word in 0; the high word's change: - - - - -
+window made at once after a menu's destruction: both made in 5 of 5, the same low word in 0, a different high word in 0; the high word's change: - - - - -
+table made at once after a menu's destruction: both made in 5 of 5, the same low word in 5, a different high word in 5; the high word's change: +1 +1 +1 +1 +1
+icon made at once after a window's destruction: both made in 5 of 5, the same low word in 0, a different high word in 0; the high word's change: - - - - -
+window made at once after a icon's destruction: both made in 5 of 5, the same low word in 0, a different high word in 0; the high word's change: - - - - -
+a window and a menu: non-NULL yes yes
+IsWindow(the window's low word, high word 0): ret=1 err=-
+IsWindow(the window's low word, high word 0xFFFF): ret=1 err=-
+IsWindow(the window's handle, high word one more): ret=0 err=-
+IsMenu(the menu's low word, high word 0): ret=1 err=-
+IsMenu(the menu's low word, high word 0xFFFF): ret=1 err=-
+IsMenu(the menu's handle, high word one more): ret=0 err=1401
 menus: done
 <<< exit code=0
