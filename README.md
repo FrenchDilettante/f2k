@@ -15,7 +15,7 @@ Seven of Windows 2000's system DLLs are F2K's own code:
 - **gdi32**: device contexts of the screen and of windows, drawn on the VBE framebuffer, and their capabilities: text in one built-in 8x16 font, the stock objects, solid brushes and `PatBlt`, the text and background colors, single pixels.
 - **shell32**: only `ShellAboutW`, a stub that answers FALSE, so programs that import it (Windows 2000's `calc.exe`) load.
 
-F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
+F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code, and [`drawdemo`](userland/drawdemo/README.md), a window of user32's drawing calls for a screenshot.
 A test program, [`keyshow`](userland/keyshow/README.md), is built beside them and kept off the disk.
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
@@ -256,7 +256,7 @@ f2k/
 │                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32, shell32; each DLL's
 │                     # export spec in userland/<dll>/exports.toml, the DLLs F2K doesn't build
 │                     # their spec alone;
-│                     # F2K's own programs (pwd, ps, shutdown, cmd, keyshow), each with its README
+│                     # F2K's own programs (pwd, ps, shutdown, cmd, drawdemo, keyshow), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │
 └── kernel/           # F2K Kernel

@@ -12,7 +12,7 @@ tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
 │               # test_cmd.py, test_guikeys.py, test_framebuffer.py, test_textout.py,
-│               # test_shutdown.py), and the fixtures exit0, ret0, hello and bare
+│               # test_drawing.py, test_shutdown.py), and the fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
 │               # shutparm, profile

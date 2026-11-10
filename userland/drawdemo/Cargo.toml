@@ -1,0 +1,18 @@
+[package]
+name = "drawdemo"
+version = "0.1.0"
+edition = "2021"
+
+# drawdemo's sample sheet, its layout host-testable.
+[lib]
+name = "drawdemo"
+path = "src/lib.rs"
+
+# The program: drawdemo.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "drawdemo"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

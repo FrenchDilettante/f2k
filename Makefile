@@ -96,7 +96,7 @@ SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
 # F2K's own programs the userland workspace builds (userland/<program>), which the disk carries in
 # the system directory beside the DLLs. The target names every image it links <name>.dll (the
 # DLLs are its binaries too), so `userland` copies each program to its .exe name beside it.
-SYSTEM_PROGRAMS = pwd ps shutdown fish
+SYSTEM_PROGRAMS = pwd ps shutdown fish drawdemo
 SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 # F2K's command interpreter (userland/cmd), built and copied to its .exe name as the programs are,
 # but kept off the disk the tests boot: it goes on its own disk (`cmd-disk`), a copy of that one
@@ -126,7 +126,7 @@ help:
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
 	@echo "                 msvcrt.dll, advapi32.dll, user32.dll, gdi32.dll and shell32.dll) and F2K's"
-	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, cmd.exe, keyshow.exe)"
+	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, drawdemo.exe, cmd.exe, keyshow.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first), its image ntoskrnl.exe, and the"
 	@echo "                 boot loader that carries it (f2k-kernel, what the loaders boot)"
 	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
