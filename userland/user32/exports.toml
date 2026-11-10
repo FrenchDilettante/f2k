@@ -1134,23 +1134,25 @@ fails = "FALSE"
 name = "GetMessageW"
 group = "message"
 args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMessageW" }
 ordinal = 306
 fails = "-1"
+note = "GetMessageA's: no queued message carries text"
 
 [[export]]
 name = "PeekMessageW"
 group = "message"
 args = ["ptr lpMsg", "handle hWnd", "u32 wMsgFilterMin", "u32 wMsgFilterMax", "u32 wRemoveMsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PeekMessageW" }
 ordinal = 483
 fails = "FALSE"
+note = "PeekMessageA's: no queued message carries text"
 
 [[export]]
 name = "PostMessageW"
 group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PostMessageW" }
 ordinal = 485
 fails = "FALSE"
 
@@ -1158,7 +1160,7 @@ fails = "FALSE"
 name = "PostThreadMessageW"
 group = "message"
 args = ["u32 idThread", "u32 Msg", "u32 wParam", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PostThreadMessageW" }
 ordinal = 488
 fails = "FALSE"
 
@@ -1166,7 +1168,7 @@ fails = "FALSE"
 name = "DispatchMessageW"
 group = "message"
 args = ["ptr lpmsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DispatchMessageW" }
 ordinal = 153
 fails = "0"
 

@@ -75,6 +75,23 @@ pub unsafe extern "system" fn get_message_a(
     get_message(&mut msg, window, min, max)
 }
 
+/// GetMessageW: GetMessageA's (no message the queue holds carries text).
+///
+/// # Safety
+///
+/// The caller's MSG, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetMessageW")]
+pub unsafe extern "system" fn get_message_w(
+    msg: *mut Msg,
+    window: usize,
+    min: u32,
+    max: u32,
+) -> i32 {
+    // SAFETY: the caller's MSG.
+    let mut msg = unsafe { Out::new(msg) };
+    get_message(&mut msg, window, min, max)
+}
+
 /// GetMessage's core.
 fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32) -> i32 {
     let mut receipt = Receipt::zeroed();
@@ -109,6 +126,29 @@ pub unsafe extern "system" fn peek_message_a(
 ) -> u32 {
     // SAFETY: the caller's MSG.
     let mut msg = unsafe { Out::new(msg) };
+    peek_message(&mut msg, window, min, max, flags)
+}
+
+/// PeekMessageW: PeekMessageA's (no message the queue holds carries text).
+///
+/// # Safety
+///
+/// The caller's MSG, as for the platform's.
+#[unsafe(export_name = "f2k_export_PeekMessageW")]
+pub unsafe extern "system" fn peek_message_w(
+    msg: *mut Msg,
+    window: usize,
+    min: u32,
+    max: u32,
+    flags: u32,
+) -> u32 {
+    // SAFETY: the caller's MSG.
+    let mut msg = unsafe { Out::new(msg) };
+    peek_message(&mut msg, window, min, max, flags)
+}
+
+/// PeekMessage's core.
+fn peek_message(msg: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, flags: u32) -> u32 {
     let mut receipt = Receipt::zeroed();
     loop {
         if answered(imports::peek_message(&mut receipt, window, min, max, flags)).is_none() {
@@ -137,6 +177,17 @@ pub extern "system" fn post_message_a(
     answered(imports::post_message(window, message, wparam, lparam)).is_some() as u32
 }
 
+/// PostMessageW: PostMessageA's.
+#[unsafe(export_name = "f2k_export_PostMessageW")]
+pub extern "system" fn post_message_w(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> u32 {
+    post_message_a(window, message, wparam, lparam)
+}
+
 /// PostThreadMessageA: a thread message posted to the thread whose id is `thread`; TRUE, or FALSE
 /// with ERROR_INVALID_THREAD_ID for an id no thread with a queue has.
 #[unsafe(export_name = "f2k_export_PostThreadMessageA")]
@@ -155,6 +206,17 @@ pub extern "system" fn post_thread_message_a(
         error,
     )
     .is_some() as u32
+}
+
+/// PostThreadMessageW: PostThreadMessageA's.
+#[unsafe(export_name = "f2k_export_PostThreadMessageW")]
+pub extern "system" fn post_thread_message_w(
+    thread: u32,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> u32 {
+    post_thread_message_a(thread, message, wparam, lparam)
 }
 
 /// PostQuitMessage: WM_QUIT with the exit code left for the calling thread's next read (made when
@@ -207,6 +269,18 @@ pub extern "system" fn send_message_w(
 /// The caller's MSG, as for the platform's.
 #[unsafe(export_name = "f2k_export_DispatchMessageA")]
 pub unsafe extern "system" fn dispatch_message_a(msg: *const Msg) -> i32 {
+    // SAFETY: the caller's MSG.
+    let msg = unsafe { In::new(msg) }.read();
+    dispatch(&msg)
+}
+
+/// DispatchMessageW: DispatchMessageA's.
+///
+/// # Safety
+///
+/// The caller's MSG, as for the platform's.
+#[unsafe(export_name = "f2k_export_DispatchMessageW")]
+pub unsafe extern "system" fn dispatch_message_w(msg: *const Msg) -> i32 {
     // SAFETY: the caller's MSG.
     let msg = unsafe { In::new(msg) }.read();
     dispatch(&msg)
@@ -408,6 +482,30 @@ mod tests {
         assert_eq!(last_error(), UNSET);
         assert_eq!(post_message_a(0x7FFF_FFFC, WM_USER, 0, 0), 0);
         assert_eq!(last_error(), 1400);
+    }
+
+    /// The wide forms of the reads, the posts and DispatchMessage are the narrow forms' calls.
+    ///
+    /// Pins: user32.PostMessageW, user32.PostThreadMessageW, user32.PeekMessageW,
+    /// user32.GetMessageW, user32.DispatchMessageW
+    #[test]
+    fn the_wide_forms_are_the_same_calls() {
+        let window = window();
+        assert_eq!(post_message_w(window, WM_USER + 4, 4, 5), 1);
+        let me = THREAD_ID.with(|id| id.get());
+        assert_eq!(post_thread_message_w(me, WM_USER + 8, 0, 0), 1);
+        let mut msg = Msg::default();
+        // SAFETY: the tests' own MSG.
+        assert_eq!(unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_REMOVE) }, 1);
+        assert_eq!((msg.message, msg.wparam, msg.lparam), (WM_USER + 4, 4, 5));
+        // SAFETY: as above.
+        assert_eq!(unsafe { dispatch_message_w(&msg) }, 0);
+        assert_eq!(seen(), [(window as u32, WM_USER + 4, 4, 5)]);
+        // SAFETY: as above.
+        assert_eq!(unsafe { get_message_w(&mut msg, 0, 0, 0) }, 1);
+        assert_eq!((msg.hwnd, msg.message), (0, WM_USER + 8));
+        // SAFETY: as above.
+        assert_eq!(unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_REMOVE) }, 0);
     }
 
     /// PostQuitMessage: GetMessage answers FALSE with WM_QUIT and the exit code.
