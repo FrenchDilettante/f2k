@@ -23,6 +23,7 @@
 
 pub mod brush;
 pub mod dc;
+pub mod font;
 pub mod imports;
 pub mod stub;
 pub mod text;

@@ -104,8 +104,10 @@ SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2
 CMD_PROGRAM = cmd
 CMD_EXE = $(BUILD_DIR)/userland/i686-f2k-pe/release/$(CMD_PROGRAM).exe
 # F2K's own test programs (userland/<program>), built and copied to their .exe names as the
-# programs are, but kept off the disk the tests boot: a test adds the one it runs to a copy of it.
-TEST_PROGRAMS = keyshow
+# programs are, but kept off the disk the tests boot: the test that needs one boots a copy of that
+# disk with it added (keyshow.exe: tests/core/test_guikeys.py; fontshow.exe:
+# tests/core/test_tahoma.py, with the font it draws).
+TEST_PROGRAMS = keyshow fontshow
 TEST_EXES = $(foreach program,$(TEST_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 CMD_DISK_IMG ?= $(OUT_DIR)/f2k-cmd-disk.img
 
@@ -126,7 +128,8 @@ help:
 	@echo "  all           - Build everything and create bootable disk"
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
 	@echo "                 msvcrt.dll, advapi32.dll, user32.dll, gdi32.dll and shell32.dll) and F2K's"
-	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, drawdemo.exe, cmd.exe, keyshow.exe)"
+	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, drawdemo.exe, cmd.exe,"
+	@echo "                 keyshow.exe, fontshow.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first), its image ntoskrnl.exe, and the"
 	@echo "                 boot loader that carries it (f2k-kernel, what the loaders boot)"
 	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
@@ -333,8 +336,10 @@ run-tests: userland
 	for dll in kernel32 msvcrt advapi32 user32 gdi32 shell32; do \
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
-	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries.
+	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries (a program
+	# without one, fontshow, is passed over).
 	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS); do \
+		[ -f $(USERLAND_DIR)/$$crate/src/lib.rs ] || continue; \
 		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 

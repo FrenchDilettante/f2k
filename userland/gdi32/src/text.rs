@@ -1,11 +1,20 @@
 //! Text: TextOut and ExtTextOut, GetTextMetrics and GetTextExtentPoint32, each over its win32k
 //! service ([`imports`]). The wide forms hand the caller's string (and rectangle, advances and
 //! structures) to the kernel unread; the narrow ones convert the string to its wide form first, in
-//! the ANSI code page ([`crate::with_wide`]), and GetTextMetricsA the answer's characters back.
-//! The font is the kernel's one built-in font, whatever font the DC has selected.
+//! the ANSI code page ([`crate::with_wide`]), and GetTextMetricsA the answer's characters back
+//! (a TrueType font's as the ANSI code page sees the font: [`narrow_truetype_metric`]). The font
+//! is the one the DC has selected, as the kernel realises it: a TrueType face, or its built-in
+//! font.
 
 use rtl::edge::InBuf;
-use rtl::gdi::{narrow_text_metric, Size, TextMetricA, TextMetricW};
+use rtl::gdi::{
+    narrow_text_metric,
+    narrow_truetype_metric,
+    Size,
+    TextMetricA,
+    TextMetricW,
+    TMPF_TRUETYPE,
+};
 
 use crate::imports::{self, Caller};
 use crate::{answered, failed, with_wide, Out, ERROR_INVALID_PARAMETER};
@@ -161,6 +170,10 @@ pub unsafe extern "system" fn get_text_metrics_a(dc: usize, metric: *mut TextMet
     let mut wide = TextMetricW::default();
     if answered(imports::text_metrics(dc, Caller::of_mut(&mut wide))).is_none() {
         return 0;
+    }
+    if wide.pitch_and_family & TMPF_TRUETYPE != 0 {
+        out.set(narrow_truetype_metric(&wide));
+        return 1;
     }
     out.set(narrow_text_metric(&wide, |unit| {
         let mut byte = [0u8];

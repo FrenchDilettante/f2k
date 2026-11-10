@@ -2,7 +2,9 @@
 //! background modes, ExtTextOut's options, the stock objects and their handles, the DC attributes
 //! the services get and set), and TEXTMETRICA and TEXTMETRICW as Windows 2000's wingdi.h lays them
 //! out on x86 ([`TextMetricA`], [`TextMetricW`]). gdi32's narrow GetTextMetricsA converts the wide
-//! answer win32k gives ([`narrow_text_metric`]).
+//! answer win32k gives ([`narrow_text_metric`]). The fonts' structures follow: LOGFONT, ABC,
+//! OUTLINETEXTMETRIC, and the enumeration's ENUMLOGFONTEX and NEWTEXTMETRICEX, each in its wide and
+//! narrow forms, and the record win32k's enumeration service answers ([`FontEnumRecord`]).
 
 use crate::pod::Pod;
 
@@ -369,6 +371,366 @@ pub struct Rect {
 // SAFETY: four integers.
 unsafe impl Pod for Rect {}
 
+// --- Fonts ---------------------------------------------------------------------------------------
+
+/// LF_FACESIZE: a face name's room in a LOGFONT, its terminator included.
+pub const LF_FACESIZE: usize = 32;
+/// LF_FULLFACESIZE: a full name's room in an ENUMLOGFONT.
+pub const LF_FULLFACESIZE: usize = 64;
+
+/// The character sets (LOGFONT's lfCharSet) this module names.
+pub const ANSI_CHARSET: u8 = 0;
+pub const DEFAULT_CHARSET: u8 = 1;
+pub const SYMBOL_CHARSET: u8 = 2;
+
+/// LOGFONT's lfWeight: normal and bold.
+pub const FW_NORMAL: i32 = 400;
+pub const FW_BOLD: i32 = 700;
+
+/// TEXTMETRIC's tmPitchAndFamily bits: a variable-pitch font (the bit's name says the opposite, as
+/// wingdi.h owns), an outline font, a TrueType font.
+pub const TMPF_FIXED_PITCH: u8 = 0x01;
+pub const TMPF_VECTOR: u8 = 0x02;
+pub const TMPF_TRUETYPE: u8 = 0x04;
+
+/// LOGFONT's lfPitchAndFamily pitches.
+pub const FIXED_PITCH: u8 = 1;
+pub const VARIABLE_PITCH: u8 = 2;
+
+/// The font families: lfPitchAndFamily's and tmPitchAndFamily's high nibble.
+pub const FF_DONTCARE: u8 = 0x00;
+pub const FF_ROMAN: u8 = 0x10;
+pub const FF_SWISS: u8 = 0x20;
+pub const FF_MODERN: u8 = 0x30;
+pub const FF_SCRIPT: u8 = 0x40;
+pub const FF_DECORATIVE: u8 = 0x50;
+
+/// EnumFontFamilies' FontType for a TrueType font.
+pub const TRUETYPE_FONTTYPE: u32 = 0x0004;
+/// NEWTEXTMETRIC's ntmFlags: an italic face, a bold one, a regular one.
+pub const NTM_ITALIC: u32 = 0x0000_0001;
+pub const NTM_BOLD: u32 = 0x0000_0020;
+pub const NTM_REGULAR: u32 = 0x0000_0040;
+
+/// GetFontData's and GetGlyphOutline's failure value (GDI_ERROR).
+pub const GDI_ERROR: u32 = 0xFFFF_FFFF;
+
+/// GetGlyphOutline's formats: the metrics alone, and the monochrome bitmap.
+pub const GGO_METRICS: u32 = 0;
+pub const GGO_BITMAP: u32 = 1;
+
+/// LOGFONTW, Windows 2000's (92 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogFontW {
+    pub height: i32,
+    pub width: i32,
+    pub escapement: i32,
+    pub orientation: i32,
+    pub weight: i32,
+    pub italic: u8,
+    pub underline: u8,
+    pub strike_out: u8,
+    pub char_set: u8,
+    pub out_precision: u8,
+    pub clip_precision: u8,
+    pub quality: u8,
+    pub pitch_and_family: u8,
+    pub face_name: [u16; LF_FACESIZE],
+}
+
+/// LOGFONTA, Windows 2000's (60 bytes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogFontA {
+    pub height: i32,
+    pub width: i32,
+    pub escapement: i32,
+    pub orientation: i32,
+    pub weight: i32,
+    pub italic: u8,
+    pub underline: u8,
+    pub strike_out: u8,
+    pub char_set: u8,
+    pub out_precision: u8,
+    pub clip_precision: u8,
+    pub quality: u8,
+    pub pitch_and_family: u8,
+    pub face_name: [u8; LF_FACESIZE],
+}
+
+// SAFETY: integers and arrays of them, the eight bytes filling the LONGs' alignment: no padding,
+// and any bits make one.
+unsafe impl Pod for LogFontW {}
+// SAFETY: as above.
+unsafe impl Pod for LogFontA {}
+
+impl LogFontW {
+    /// The face name: its units up to the terminator (all of them, when unterminated).
+    pub fn face(&self) -> &[u16] {
+        let end = self.face_name.iter().position(|&unit| unit == 0);
+        &self.face_name[..end.unwrap_or(LF_FACESIZE)]
+    }
+}
+
+/// The narrow LOGFONT of the wide `font`: every field as it is, the face name converted through
+/// `convert` (the units into the bytes' room, answering how many bytes it wrote), NUL-padded.
+pub fn narrow_log_font(
+    font: &LogFontW,
+    convert: impl FnOnce(&mut [u8], &[u16]) -> usize,
+) -> LogFontA {
+    let mut face_name = [0u8; LF_FACESIZE];
+    let written = convert(&mut face_name[..LF_FACESIZE - 1], font.face());
+    face_name[written.min(LF_FACESIZE - 1)..].fill(0);
+    LogFontA {
+        height: font.height,
+        width: font.width,
+        escapement: font.escapement,
+        orientation: font.orientation,
+        weight: font.weight,
+        italic: font.italic,
+        underline: font.underline,
+        strike_out: font.strike_out,
+        char_set: font.char_set,
+        out_precision: font.out_precision,
+        clip_precision: font.clip_precision,
+        quality: font.quality,
+        pitch_and_family: font.pitch_and_family,
+        face_name,
+    }
+}
+
+/// The wide LOGFONT of the narrow `font`, its face name converted through `convert` (the bytes
+/// into the units' room, answering how many units it wrote), NUL-padded.
+pub fn wide_log_font(
+    font: &LogFontA,
+    convert: impl FnOnce(&mut [u16], &[u8]) -> usize,
+) -> LogFontW {
+    let end = font.face_name.iter().position(|&byte| byte == 0);
+    let face = &font.face_name[..end.unwrap_or(LF_FACESIZE)];
+    let mut face_name = [0u16; LF_FACESIZE];
+    let written = convert(&mut face_name[..LF_FACESIZE - 1], face);
+    face_name[written.min(LF_FACESIZE - 1)..].fill(0);
+    LogFontW {
+        height: font.height,
+        width: font.width,
+        escapement: font.escapement,
+        orientation: font.orientation,
+        weight: font.weight,
+        italic: font.italic,
+        underline: font.underline,
+        strike_out: font.strike_out,
+        char_set: font.char_set,
+        out_precision: font.out_precision,
+        clip_precision: font.clip_precision,
+        quality: font.quality,
+        pitch_and_family: font.pitch_and_family,
+        face_name,
+    }
+}
+
+/// ABC: a character's A, B and C spacing (GetCharABCWidths).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Abc {
+    pub a: i32,
+    pub b: u32,
+    pub c: i32,
+}
+
+// SAFETY: three 32-bit integers.
+unsafe impl Pod for Abc {}
+
+/// POINT.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+// SAFETY: two integers.
+unsafe impl Pod for Point {}
+
+/// OUTLINETEXTMETRIC's members after its TEXTMETRIC and its PANOSE number, the same in the wide
+/// and narrow forms. The four names' members are offsets from the structure's start to the
+/// strings, which follow it in the caller's buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutlineFields {
+    pub fs_selection: u32,
+    pub fs_type: u32,
+    pub char_slope_rise: i32,
+    pub char_slope_run: i32,
+    pub italic_angle: i32,
+    pub em_square: u32,
+    pub ascent: i32,
+    pub descent: i32,
+    pub line_gap: u32,
+    pub cap_em_height: u32,
+    pub x_height: u32,
+    pub font_box: Rect,
+    pub mac_ascent: i32,
+    pub mac_descent: i32,
+    pub mac_line_gap: u32,
+    pub minimum_ppem: u32,
+    pub subscript_size: Point,
+    pub subscript_offset: Point,
+    pub superscript_size: Point,
+    pub superscript_offset: Point,
+    pub strikeout_size: u32,
+    pub strikeout_position: i32,
+    pub underscore_size: i32,
+    pub underscore_position: i32,
+    pub family_name: u32,
+    pub face_name: u32,
+    pub style_name: u32,
+    pub full_name: u32,
+}
+
+/// OUTLINETEXTMETRICW, Windows 2000's (216 bytes, its strings after them): its size, its
+/// TEXTMETRICW, a filler byte, the PANOSE number, a byte of padding, then the outline members.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutlineTextMetricW {
+    pub size: u32,
+    pub text_metrics: TextMetricW,
+    pub filler: u8,
+    pub panose: [u8; 10],
+    pub padding: u8,
+    pub fields: OutlineFields,
+}
+
+/// OUTLINETEXTMETRICA, Windows 2000's (212 bytes, its strings after them).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutlineTextMetricA {
+    pub size: u32,
+    pub text_metrics: TextMetricA,
+    pub filler: u8,
+    pub panose: [u8; 10],
+    pub padding: u8,
+    pub fields: OutlineFields,
+}
+
+// SAFETY: integers, arrays and structures of them; the padding byte is a member of its own, so no
+// byte is padding, and any bits make one.
+unsafe impl Pod for OutlineFields {}
+// SAFETY: as above.
+unsafe impl Pod for OutlineTextMetricW {}
+// SAFETY: as above.
+unsafe impl Pod for OutlineTextMetricA {}
+
+/// FONTSIGNATURE: the Unicode ranges and the code pages a font covers (its OS/2 table's bits).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FontSignature {
+    pub usb: [u32; 4],
+    pub csb: [u32; 2],
+}
+
+/// NEWTEXTMETRICW: TEXTMETRICW's members, then the face's flags and its design metrics.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewTextMetricW {
+    pub text_metric: TextMetricW,
+    pub flags: u32,
+    pub size_em: u32,
+    pub cell_height: u32,
+    pub avg_width: u32,
+}
+
+/// NEWTEXTMETRICA.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewTextMetricA {
+    pub text_metric: TextMetricA,
+    pub flags: u32,
+    pub size_em: u32,
+    pub cell_height: u32,
+    pub avg_width: u32,
+}
+
+/// NEWTEXTMETRICEXW: NEWTEXTMETRICW and the font's signature.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewTextMetricExW {
+    pub metric: NewTextMetricW,
+    pub signature: FontSignature,
+}
+
+/// NEWTEXTMETRICEXA.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NewTextMetricExA {
+    pub metric: NewTextMetricA,
+    pub signature: FontSignature,
+}
+
+/// ENUMLOGFONTEXW: a LOGFONTW, the face's full name, its style and the script of the character
+/// set it is enumerated in. ENUMLOGFONTW is its first three members.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumLogFontExW {
+    pub log_font: LogFontW,
+    pub full_name: [u16; LF_FULLFACESIZE],
+    pub style: [u16; LF_FACESIZE],
+    pub script: [u16; LF_FACESIZE],
+}
+
+/// ENUMLOGFONTEXA.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnumLogFontExA {
+    pub log_font: LogFontA,
+    pub full_name: [u8; LF_FULLFACESIZE],
+    pub style: [u8; LF_FACESIZE],
+    pub script: [u8; LF_FACESIZE],
+}
+
+/// One face an enumeration answers, as win32k's NtGdiEnumFontChunk hands it to gdi32 (F2K's own
+/// record): what EnumFontFamiliesExW's callback receives, and its FontType.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FontEnumRecord {
+    pub log_font: EnumLogFontExW,
+    pub metric: NewTextMetricExW,
+    pub font_type: u32,
+}
+
+// SAFETY: integers, arrays and structures of them, each member's size a multiple of the 32-bit
+// alignment (or closing it): no padding, and any bits make one.
+unsafe impl Pod for FontSignature {}
+// SAFETY: as above.
+unsafe impl Pod for NewTextMetricW {}
+// SAFETY: as above.
+unsafe impl Pod for NewTextMetricA {}
+// SAFETY: as above.
+unsafe impl Pod for NewTextMetricExW {}
+// SAFETY: as above.
+unsafe impl Pod for NewTextMetricExA {}
+// SAFETY: as above.
+unsafe impl Pod for EnumLogFontExW {}
+// SAFETY: as above.
+unsafe impl Pod for EnumLogFontExA {}
+// SAFETY: as above.
+unsafe impl Pod for FontEnumRecord {}
+
+/// The narrow TEXTMETRIC of a TrueType font's wide `metric`, as GetTextMetricsA answers it: every
+/// number as it is, and the four characters as the ANSI code page sees the font rather than
+/// converted: the default character the wide one, the first one below it, the last one 0xFF at
+/// most, the break character the wide one. (The capture of Windows 2000 on the fixtures' font
+/// answers its wide 0x20, 0xFEFC, 0x1F and 0x20 as 0x1E, 0xFF, 0x1F and 0x20.)
+pub fn narrow_truetype_metric(metric: &TextMetricW) -> TextMetricA {
+    let byte = |unit: u16| unit.min(0xFF) as u8;
+    let mut narrow = narrow_text_metric(metric, byte);
+    narrow.default_char = byte(metric.default_char);
+    narrow.first_char = narrow.default_char.saturating_sub(1);
+    narrow.last_char = byte(metric.last_char);
+    narrow.break_char = byte(metric.break_char);
+    narrow
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::{offset_of, size_of};
@@ -388,6 +750,76 @@ mod tests {
         assert_eq!(offset_of!(TextMetricA, char_set), 52);
         assert_eq!(size_of::<Size>(), 8);
         assert_eq!(size_of::<Rect>(), 16);
+        assert_eq!(size_of::<LogFontW>(), 92);
+        assert_eq!(size_of::<LogFontA>(), 60);
+        assert_eq!(size_of::<Abc>(), 12);
+        assert_eq!(size_of::<OutlineTextMetricW>(), 216);
+        assert_eq!(size_of::<OutlineTextMetricA>(), 212);
+        assert_eq!(offset_of!(OutlineTextMetricW, panose), 65);
+        assert_eq!(offset_of!(OutlineTextMetricW, fields), 76);
+        assert_eq!(offset_of!(OutlineTextMetricA, fields), 72);
+        assert_eq!(size_of::<NewTextMetricW>(), 76);
+        assert_eq!(size_of::<NewTextMetricA>(), 72);
+        assert_eq!(size_of::<NewTextMetricExW>(), 100);
+        assert_eq!(size_of::<NewTextMetricExA>(), 96);
+        assert_eq!(size_of::<EnumLogFontExW>(), 348);
+        assert_eq!(size_of::<EnumLogFontExA>(), 188);
+    }
+
+    /// A TrueType font's narrow metrics: the characters as the capture shows them, 0x20, 0xFEFC,
+    /// 0x1F and 0x20 answered as 0x1E, 0xFF, 0x1F and 0x20.
+    #[test]
+    fn a_truetype_fonts_narrow_characters() {
+        let wide = TextMetricW {
+            height: 13,
+            first_char: 0x20,
+            last_char: 0xFEFC,
+            default_char: 0x1F,
+            break_char: 0x20,
+            ..TextMetricW::default()
+        };
+        let narrow = narrow_truetype_metric(&wide);
+        assert_eq!(narrow.height, 13);
+        assert_eq!(
+            (
+                narrow.first_char,
+                narrow.last_char,
+                narrow.default_char,
+                narrow.break_char
+            ),
+            (0x1E, 0xFF, 0x1F, 0x20)
+        );
+    }
+
+    /// A LOGFONT's face name converts both ways, and the rest of its fields go as they are.
+    #[test]
+    fn log_fonts_convert() {
+        let mut wide = LogFontW::zeroed();
+        wide.height = -11;
+        wide.weight = FW_BOLD;
+        wide.char_set = DEFAULT_CHARSET;
+        for (unit, byte) in wide.face_name.iter_mut().zip(b"F2K Tahoma") {
+            *unit = u16::from(*byte);
+        }
+        assert_eq!(wide.face().len(), 10);
+        let narrow = narrow_log_font(&wide, |out, units| {
+            for (byte, &unit) in out.iter_mut().zip(units) {
+                *byte = unit as u8;
+            }
+            units.len().min(out.len())
+        });
+        assert_eq!(&narrow.face_name[..11], b"F2K Tahoma\0");
+        assert_eq!(
+            (narrow.height, narrow.weight, narrow.char_set),
+            (-11, 700, 1)
+        );
+        let back = wide_log_font(&narrow, |out, bytes| {
+            for (unit, &byte) in out.iter_mut().zip(bytes) {
+                *unit = u16::from(byte);
+            }
+            bytes.len().min(out.len())
+        });
+        assert_eq!(back, wide);
     }
 
     /// Every stock index GetStockObject knows has a handle that names it back, with its kind; 9

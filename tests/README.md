@@ -12,7 +12,8 @@ tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
 │               # test_cmd.py, test_guikeys.py, test_framebuffer.py, test_textout.py,
-│               # test_drawing.py, test_shutdown.py), and the fixtures exit0, ret0, hello and bare
+│               # test_drawing.py, test_tahoma.py, test_shutdown.py), and the fixtures exit0, ret0,
+│               # hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
 │               # shutparm, profile
@@ -234,7 +235,7 @@ The fixtures:
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.
   The sections: `AddFontResourceExA`/`W` and `RemoveFontResourceExA`/`W` with `FR_PRIVATE`, and `AddFontResourceA`/`W` and `RemoveFontResourceA`/`W` without it (`load`); `CreateFontIndirectA`/`W` and `CreateFontA`/`W` at lfHeight -11, -13, -16, -24 and +16, weights 400 and 700, `GetObjectA`/`W` and `GetTextFaceA`/`W`, and an unknown face's fallback as a relation (`create`); every `TEXTMETRIC` field and `GetOutlineTextMetricsA`/`W` (`metrics`); `GetCharWidth32A`/`W`, `GetCharABCWidthsA`/`W` and `GetTextExtentPoint32A`/`W` (`widths`); `EnumFontFamiliesExA`/`W` and `EnumFontFamiliesA`/`W` for the copy's face alone (`enum`); `GetFontData`'s tables, the whole file and partial reads, as sizes, bytes and CRC-32s (`data`); `GetGlyphOutlineA`/`W` with `GGO_METRICS` and `GGO_BITMAP`, the rows in hex (`glyphs`); the faces "MS Shell Dlg 2" and "MS Shell Dlg" resolve to (`mapper`); and `TextOutW` into a memory DC's DIB section, read back with `GetPixel` as rows of `#` and `.` (`pixels`).
   F2K's boot adds the font to `\CORPUS` beside the program (`data_files`).
-  Not gated: every section is pending until F2K serves TrueType fonts, `pixels` until memory DCs and bitmaps exist too.
+  Gated; `glyphs` stays pending while F2K scan-converts outlines unhinted (two pixels at lfHeight -24 differ), `pixels` until memory DCs and bitmaps exist.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 

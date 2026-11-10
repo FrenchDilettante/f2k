@@ -24,6 +24,7 @@ pub mod glyf;
 pub mod glyph;
 pub mod header;
 pub mod hmtx;
+pub mod metrics;
 pub mod name;
 pub mod raster;
 mod read;

@@ -5,18 +5,11 @@
 description = "ttfont - a TrueType font file the program loads itself (f2ktahom.ttf, Wine's Tahoma renamed \"F2K Tahoma\"): AddFontResourceExA/W and RemoveFontResourceExA/W with FR_PRIVATE, AddFontResourceA/W and RemoveFontResourceA/W; CreateFontIndirectA/W and CreateFontA/W at lfHeight -11, -13, -16, -24 and +16, weights 400 and 700, GetObjectA/W and GetTextFaceA/W, an unknown face's fallback; GetTextMetricsA/W and GetOutlineTextMetricsA/W; GetCharWidth32A/W, GetCharABCWidthsA/W and GetTextExtentPoint32A/W; EnumFontFamiliesExA/W and EnumFontFamiliesA/W for the face alone; GetFontData's tables, whole file and partial reads; GetGlyphOutlineA/W with GGO_METRICS and GGO_BITMAP; the dialog faces MS Shell Dlg 2 and MS Shell Dlg; TextOutW into a memory DC's DIB section, read back with GetPixel."
 kind = "sectioned"
 data_files = ["f2ktahom.ttf"]
+gate = true
 
-# Not gated: F2K serves no TrueType font yet. Every section is on the work list.
 [pending]
-load = "AddFontResourceA/W, AddFontResourceExA/W and their removals not yet implemented: win32k loads no font file"
-create = "CreateFontIndirectA/W, CreateFontA/W, GetObjectA/W of a font and GetTextFaceA/W not yet implemented"
-metrics = "no TrueType font: GetTextMetricsA/W answer the built-in 8x16 font's, and GetOutlineTextMetricsA/W are not yet implemented"
-widths = "GetCharWidth32A/W and GetCharABCWidthsA/W not yet implemented, and the text extents are the built-in 8x16 font's"
-enum = "EnumFontFamiliesA/W and EnumFontFamiliesExA/W not yet implemented"
-data = "GetFontData not yet implemented: no TrueType table reader"
-glyphs = "GetGlyphOutlineA/W not yet implemented: no TrueType rasteriser"
-mapper = "the font mapper and its face substitutes (MS Shell Dlg 2, MS Shell Dlg) not yet implemented"
-pixels = "memory DCs and bitmaps (CreateCompatibleDC, CreateDIBSection, PatBlt on them) not yet implemented, nor TrueType text output"
+glyphs = "the outlines are scan-converted unhinted: at lfHeight -24, '0''s row 5 and '@''s row 15 each hold a pixel Windows 2000's hinted scan leaves off (the rest of the section matches)"
+pixels = "memory DCs and bitmaps (CreateCompatibleDC, CreateDIBSection, PatBlt on them) not yet implemented"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -1153,8 +1153,9 @@ pub fn reap() {
 }
 
 /// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack
-/// goes, then its windows and window classes (see `crate::win32k::window`), then the object audit
-/// — its threads' records start over, and at a `quiescent` reap the leak sweep runs — then, step 5,
+/// goes, then its windows and window classes (see `crate::win32k::window`) and the fonts it loaded
+/// for itself alone (`crate::win32k::fonts`), then the object audit — its threads' records start
+/// over, and at a `quiescent` reap the leak sweep runs — then, step 5,
 /// the process is deleted if nothing beside its own reference holds its object (see
 /// [`delete_if_unreferenced`]); otherwise the last handle or reference to go deletes it. Nothing
 /// here is observable to the process's waiters: its object signalled at its last thread's exit,
@@ -1180,13 +1181,14 @@ fn teardown(process: &'static Process, quiescent: bool) {
     );
     // Per thread first: the parked gate stack (the last exit's, or a later exit's in another
     // process: whichever is parked, its owner off it for good, since this runs on the idle
-    // thread's boot stack). Then per process: its windows and window classes, if it ever entered
-    // win32k; the audit, with the record still the process's; then the deletion, which may free
-    // it.
+    // thread's boot stack). Then per process: its windows, window classes and private fonts, if
+    // it ever entered win32k; the audit, with the record still the process's; then the deletion,
+    // which may free it.
     crate::mem::kstacks::release_parked();
     if process.win32k().is_some() {
         let owner = process.object().index;
         crate::win32k::window::locked(|manager| manager.end_process(owner));
+        crate::win32k::fonts::end_process(owner);
     }
     audit_objects(process, quiescent);
     locked(&process.state, |state| state.torn_down = true);

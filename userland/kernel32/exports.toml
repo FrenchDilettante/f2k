@@ -784,6 +784,15 @@ ordinal = 413
 fails = "0"
 
 [[export]]
+name = "GetSystemWindowsDirectoryW"
+group = "environment"
+args = ["ptr lpBuffer", "u32 uSize"]
+impl = { native = "GetSystemWindowsDirectoryW" }
+ordinal = 381
+fails = "0"
+note = "the system root: GetWindowsDirectoryW's, without Terminal Services' per-user directories"
+
+[[export]]
 name = "GetComputerNameA"
 group = "environment"
 args = ["ptr lpBuffer", "ptr<u32> nSize"]
@@ -3762,10 +3771,6 @@ ordinal = 378
 [[export]]
 name = "GetSystemWindowsDirectoryA"
 ordinal = 380
-
-[[export]]
-name = "GetSystemWindowsDirectoryW"
-ordinal = 381
 
 [[export]]
 name = "GetTapeParameters"

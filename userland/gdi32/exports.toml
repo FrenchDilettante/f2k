@@ -3,15 +3,16 @@
 #
 # F2K's gdi32 exports the screen DC's surface: CreateDC of the display, DeleteDC and its device
 # capabilities, the stock objects and their selection, solid brushes and PatBlt's fills, the text
-# and background colors and the background mode, text drawn with the one built-in font and its
-# metrics, and single pixels; and stubs for what the corpus fixtures import beyond it (tests/gdi32's
-# ttfont: fonts, bitmaps). Its own code runs over ntdll, kernel32 and user32 as Windows 2000's
-# gdi32 imports them, and enters the kernel itself, as Windows 2000's does: through win32k's
-# services (`impl = { syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls,
-# never exported; see userland/user32/exports.toml for the stubs' shape). Their argument lists are
-# F2K's own (only gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs and brush.rs
-# describe them). The rest of the records are catalogued from GDI32.dll 5.0.2195.6660's export
-# table (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
+# and background colors and the background mode, text drawn with the built-in font or a TrueType
+# font and its metrics, the TrueType fonts themselves (loading, font objects, their metrics, data,
+# glyphs and enumeration), and single pixels; and stubs for what the corpus fixtures import beyond
+# it (bitmaps). Its own code runs over ntdll, kernel32 and user32 as Windows 2000's gdi32 imports
+# them, and enters the kernel itself, as Windows 2000's does: through win32k's services (`impl = {
+# syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls, never exported;
+# see userland/user32/exports.toml for the stubs' shape). Their argument lists are F2K's own (only
+# gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs and fonts describe
+# them). The rest of the records are catalogued from GDI32.dll 5.0.2195.6660's export table
+# (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
 # prototype and implementation.
 
 [[group]]
@@ -134,13 +135,13 @@ args = ["handle hdc", "handle hgdiobj"]
 impl = { native = "SelectObject" }
 ordinal = 463
 fails = "NULL"
-note = "a brush, pen or font: a global object by the kind its handle carries, another by the kind the kernel finds; no pens or fonts but the stock ones yet"
+note = "a brush, pen or font, by the kind its handle carries (a global object's, or a brush or font object's kind bits); no pens but the stock ones yet"
 
 [[export]]
 name = "GetObjectA"
 group = "objects"
 args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetObjectA" }
 ordinal = 344
 fails = "0"
 
@@ -148,9 +149,10 @@ fails = "0"
 name = "GetObjectW"
 group = "objects"
 args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetObjectW" }
 ordinal = 346
 fails = "0"
+note = "a font object's LOGFONTW; another object is a stub"
 
 [[export]]
 name = "NtGdiGetStockObject"
@@ -383,23 +385,42 @@ internal = true
 name = "AddFontResourceA"
 group = "fonts"
 args = ["strA lpszFilename"]
-impl = { stub = "not yet implemented" }
+impl = { native = "AddFontResourceA" }
 ordinal = 4
 fails = "0"
+note = "the name converted to its wide form, then AddFontResourceW's"
 
 [[export]]
 name = "AddFontResourceW"
 group = "fonts"
 args = ["strW lpszFilename"]
-impl = { stub = "not yet implemented" }
+impl = { native = "AddFontResourceW" }
 ordinal = 8
 fails = "0"
+note = "AddFontResourceExW's, public; a TrueType file alone"
+
+[[export]]
+name = "AddFontResourceExA"
+group = "fonts"
+args = ["strA lpszFilename", "u32 fl", "ptr pdv"]
+impl = { native = "AddFontResourceExA" }
+ordinal = 5
+fails = "0"
+
+[[export]]
+name = "AddFontResourceExW"
+group = "fonts"
+args = ["strW lpszFilename", "u32 fl", "ptr pdv"]
+impl = { native = "AddFontResourceExW" }
+ordinal = 6
+fails = "0"
+note = "the file looked for in the system's Fonts directory first, then along the search path; FR_PRIVATE loads it for the process alone"
 
 [[export]]
 name = "RemoveFontResourceA"
 group = "fonts"
 args = ["strA lpFileName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RemoveFontResourceA" }
 ordinal = 441
 fails = "FALSE"
 
@@ -407,8 +428,24 @@ fails = "FALSE"
 name = "RemoveFontResourceW"
 group = "fonts"
 args = ["strW lpFileName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RemoveFontResourceW" }
 ordinal = 445
+fails = "FALSE"
+
+[[export]]
+name = "RemoveFontResourceExA"
+group = "fonts"
+args = ["strA lpFileName", "u32 fl", "ptr pdv"]
+impl = { native = "RemoveFontResourceExA" }
+ordinal = 442
+fails = "FALSE"
+
+[[export]]
+name = "RemoveFontResourceExW"
+group = "fonts"
+args = ["strW lpFileName", "u32 fl", "ptr pdv"]
+impl = { native = "RemoveFontResourceExW" }
+ordinal = 443
 fails = "FALSE"
 
 [[export]]
@@ -420,7 +457,7 @@ args = [
     "u32 fdwOutputPrecision", "u32 fdwClipPrecision", "u32 fdwQuality", "u32 fdwPitchAndFamily",
     "strA? lpszFace",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateFontA" }
 ordinal = 56
 fails = "NULL"
 
@@ -433,7 +470,7 @@ args = [
     "u32 fdwOutputPrecision", "u32 fdwClipPrecision", "u32 fdwQuality", "u32 fdwPitchAndFamily",
     "strW? lpszFace",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateFontW" }
 ordinal = 61
 fails = "NULL"
 
@@ -441,7 +478,7 @@ fails = "NULL"
 name = "CreateFontIndirectA"
 group = "fonts"
 args = ["ptr lplf"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateFontIndirectA" }
 ordinal = 57
 fails = "NULL"
 
@@ -449,15 +486,16 @@ fails = "NULL"
 name = "CreateFontIndirectW"
 group = "fonts"
 args = ["ptr lplf"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateFontIndirectW" }
 ordinal = 60
 fails = "NULL"
+note = "a font object of the LOGFONT; the mapper realises it when a DC uses it (kernel/src/win32k/fonts)"
 
 [[export]]
 name = "EnumFontFamiliesA"
 group = "fonts"
 args = ["handle hdc", "strA? lpszFamily", "ptr lpEnumFontFamProc", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumFontFamiliesA" }
 ordinal = 143
 fails = "0"
 
@@ -465,15 +503,16 @@ fails = "0"
 name = "EnumFontFamiliesW"
 group = "fonts"
 args = ["handle hdc", "strW? lpszFamily", "ptr lpEnumFontFamProc", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumFontFamiliesW" }
 ordinal = 146
 fails = "0"
+note = "each TrueType face once, in its first character set"
 
 [[export]]
 name = "EnumFontFamiliesExA"
 group = "fonts"
 args = ["handle hdc", "ptr lpLogfont", "ptr lpEnumFontFamExProc", "i32 lParam", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumFontFamiliesExA" }
 ordinal = 144
 fails = "0"
 
@@ -481,15 +520,16 @@ fails = "0"
 name = "EnumFontFamiliesExW"
 group = "fonts"
 args = ["handle hdc", "ptr lpLogfont", "ptr lpEnumFontFamExProc", "i32 lParam", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumFontFamiliesExW" }
 ordinal = 145
 fails = "0"
+note = "the TrueType faces loaded, in each character set they cover; the built-in font is not enumerated"
 
 [[export]]
 name = "GetTextFaceA"
 group = "fonts"
 args = ["handle hdc", "i32 nCount", "ptr lpFaceName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetTextFaceA" }
 ordinal = 380
 fails = "0"
 
@@ -497,7 +537,7 @@ fails = "0"
 name = "GetTextFaceW"
 group = "fonts"
 args = ["handle hdc", "i32 nCount", "ptr lpFaceName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetTextFaceW" }
 ordinal = 382
 fails = "0"
 
@@ -505,7 +545,7 @@ fails = "0"
 name = "GetCharWidth32A"
 group = "fonts"
 args = ["handle hdc", "u32 iFirstChar", "u32 iLastChar", "ptr lpBuffer"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCharWidth32A" }
 ordinal = 281
 fails = "FALSE"
 
@@ -513,7 +553,7 @@ fails = "FALSE"
 name = "GetCharWidth32W"
 group = "fonts"
 args = ["handle hdc", "u32 iFirstChar", "u32 iLastChar", "ptr lpBuffer"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCharWidth32W" }
 ordinal = 282
 fails = "FALSE"
 
@@ -521,7 +561,7 @@ fails = "FALSE"
 name = "GetCharABCWidthsA"
 group = "fonts"
 args = ["handle hdc", "u32 uFirstChar", "u32 uLastChar", "ptr lpabc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCharABCWidthsA" }
 ordinal = 276
 fails = "FALSE"
 
@@ -529,15 +569,16 @@ fails = "FALSE"
 name = "GetCharABCWidthsW"
 group = "fonts"
 args = ["handle hdc", "u32 uFirstChar", "u32 uLastChar", "ptr lpabc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCharABCWidthsW" }
 ordinal = 280
 fails = "FALSE"
+note = "a TrueType font's; FALSE for the built-in font"
 
 [[export]]
 name = "GetOutlineTextMetricsA"
 group = "fonts"
 args = ["handle hdc", "u32 cbData", "ptr lpOTM"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetOutlineTextMetricsA" }
 ordinal = 347
 fails = "0"
 
@@ -545,9 +586,10 @@ fails = "0"
 name = "GetOutlineTextMetricsW"
 group = "fonts"
 args = ["handle hdc", "u32 cbData", "ptr lpOTM"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetOutlineTextMetricsW" }
 ordinal = 348
 fails = "0"
+note = "a TrueType font's; 0 for the built-in font"
 
 [[export]]
 name = "GetGlyphOutlineA"
@@ -556,7 +598,7 @@ args = [
     "handle hdc", "u32 uChar", "u32 uFormat", "ptr lpgm", "u32 cbBuffer", "ptr lpvBuffer",
     "ptr lpmat2",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetGlyphOutlineA" }
 ordinal = 323
 fails = "0xFFFFFFFF"
 note = "GDI_ERROR"
@@ -568,19 +610,101 @@ args = [
     "handle hdc", "u32 uChar", "u32 uFormat", "ptr lpgm", "u32 cbBuffer", "ptr lpvBuffer",
     "ptr lpmat2",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetGlyphOutlineW" }
 ordinal = 324
 fails = "0xFFFFFFFF"
-note = "GDI_ERROR"
+note = "GDI_ERROR; GGO_METRICS and GGO_BITMAP under the identity matrix, unhinted; another format or matrix is a stub"
 
 [[export]]
 name = "GetFontData"
 group = "fonts"
 args = ["handle hdc", "u32 dwTable", "u32 dwOffset", "ptr lpvBuffer", "u32 cbData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetFontData" }
 ordinal = 316
 fails = "0xFFFFFFFF"
 note = "GDI_ERROR"
+
+# win32k's services behind them: gdi32's internal calls.
+
+[[export]]
+name = "NtGdiAddFontResourceW"
+group = "fonts"
+args = ["handle File", "u32 Flags", "ptr<u32> Faces"]
+impl = { syscall = "crate::win32k::fonts::add_font_resource_w" }
+internal = true
+
+[[export]]
+name = "NtGdiRemoveFontResourceW"
+group = "fonts"
+args = ["handle File", "u32 Flags", "ptr<u32> Removed"]
+impl = { syscall = "crate::win32k::fonts::remove_font_resource_w" }
+internal = true
+
+[[export]]
+name = "NtGdiHfontCreate"
+group = "fonts"
+args = ["ptr LogFont", "ptr<u32> Font"]
+impl = { syscall = "crate::win32k::fonts::hfont_create" }
+internal = true
+
+[[export]]
+name = "NtGdiExtGetObjectW"
+group = "fonts"
+args = ["handle Object", "u32 Count", "ptr Buffer", "ptr<u32> Size"]
+impl = { syscall = "crate::win32k::fonts::ext_get_object_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetTextFaceW"
+group = "fonts"
+args = ["handle Dc", "u32 Count", "ptr Buffer", "ptr<u32> Length"]
+impl = { syscall = "crate::win32k::fonts::get_text_face_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetOutlineTextMetricsInternalW"
+group = "fonts"
+args = ["handle Dc", "u32 Size", "ptr Buffer", "ptr<u32> Needed"]
+impl = { syscall = "crate::win32k::fonts::get_outline_text_metrics_internal_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetCharWidthW"
+group = "fonts"
+args = ["handle Dc", "u32 First", "u32 Count", "ptr Characters", "ptr Widths"]
+impl = { syscall = "crate::win32k::fonts::get_char_width_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetCharABCWidthsW"
+group = "fonts"
+args = ["handle Dc", "u32 First", "u32 Count", "ptr Characters", "ptr Abc"]
+impl = { syscall = "crate::win32k::fonts::get_char_abc_widths_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetFontData"
+group = "fonts"
+args = ["handle Dc", "u32 Table", "u32 Offset", "ptr Buffer", "u32 Count", "ptr<u32> Answer"]
+impl = { syscall = "crate::win32k::fonts::get_font_data" }
+internal = true
+
+[[export]]
+name = "NtGdiGetGlyphOutline"
+group = "fonts"
+args = [
+    "handle Dc", "u32 Character", "u32 Format", "ptr Metrics", "u32 Size", "ptr Buffer",
+    "ptr<u32> Answer",
+]
+impl = { syscall = "crate::win32k::fonts::get_glyph_outline" }
+internal = true
+
+[[export]]
+name = "NtGdiEnumFontChunk"
+group = "fonts"
+args = ["handle Dc", "ptr Face", "u32 CharSet", "u32 Flags", "u32 Index", "ptr Record"]
+impl = { syscall = "crate::win32k::fonts::enum_font_chunk" }
+internal = true
 
 # --- bitmaps --------------------------------------------------------------------------------------
 
@@ -639,14 +763,6 @@ ordinal = 2
 [[export]]
 name = "AddFontMemResourceEx"
 ordinal = 3
-
-[[export]]
-name = "AddFontResourceExA"
-ordinal = 5
-
-[[export]]
-name = "AddFontResourceExW"
-ordinal = 6
 
 [[export]]
 name = "AddFontResourceTracking"
@@ -2215,14 +2331,6 @@ ordinal = 439
 [[export]]
 name = "RemoveFontMemResourceEx"
 ordinal = 440
-
-[[export]]
-name = "RemoveFontResourceExA"
-ordinal = 442
-
-[[export]]
-name = "RemoveFontResourceExW"
-ordinal = 443
 
 [[export]]
 name = "RemoveFontResourceTracking"

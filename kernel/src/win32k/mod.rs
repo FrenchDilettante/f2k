@@ -5,8 +5,9 @@
 //! the one handle table every one of those user objects' handles names a slot of ([`handle`]),
 //! window stations and desktops ([`winsta`]), keyboard input ([`input`]), the display settings
 //! ([`display`]), device contexts ([`dc`]), the brushes they fill with ([`brush`]) and what is
-//! drawn through them ([`raster`], in the built-in font, [`font`]), the clipboard ([`clipboard`]),
-//! and the second service table their services come through.
+//! drawn through them ([`raster`], in the built-in font, [`font`], or a TrueType font, [`fonts`],
+//! which holds the faces loaded and the font objects too), the clipboard ([`clipboard`]), and the
+//! second service table their services come through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -34,6 +35,7 @@ pub mod dc;
 pub mod display;
 pub mod focus;
 pub mod font;
+pub mod fonts;
 pub mod handle;
 pub mod icon;
 pub mod input;

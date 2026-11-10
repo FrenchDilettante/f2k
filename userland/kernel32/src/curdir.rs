@@ -157,6 +157,21 @@ pub unsafe extern "system" fn get_windows_directory_w(buffer: *mut u16, size: u3
     windows_directory(false, Text::Wide(buffer))
 }
 
+/// GetSystemWindowsDirectoryW: the system root, shared by every session (see
+/// [`windows_directory`]): GetWindowsDirectoryW's own answer on a system without Terminal
+/// Services' per-user Windows directories, as Windows 2000's is out of the box. gdi32 finds the
+/// Fonts directory under it.
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters.
+#[unsafe(export_name = "f2k_export_GetSystemWindowsDirectoryW")]
+pub unsafe extern "system" fn get_system_windows_directory_w(buffer: *mut u16, size: u32) -> u32 {
+    // SAFETY: the caller's buffer (the contract).
+    let buffer = unsafe { OutBuf::new(buffer, size as usize) };
+    windows_directory(false, Text::Wide(buffer))
+}
+
 /// GetSystemDirectoryA (see [`windows_directory`]): `<system root>\system32`.
 ///
 /// # Safety

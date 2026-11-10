@@ -1,4 +1,5 @@
-//! The rasterizer: text in the built-in font ([`super::font`]) and single pixels, drawn into the
+//! The rasterizer: text in the built-in font ([`super::font`]) or in a TrueType font's glyph
+//! bitmaps ([`TextOut::draw_bits`], placed by [`super::fonts`]), and single pixels, drawn into the
 //! framebuffer through its [`PixelMemory`] seam, every pixel clipped to a clipping region. The DC
 //! services ([`super::dc`]) hand it a DC's state; the host tests drive it against a fake pixel
 //! memory and assert exact pixels.
@@ -25,6 +26,7 @@ use rtl::gdi::{
     ETO_OPAQUE,
     RGB_MASK,
 };
+use rtl::truetype::glyph::{stride, GlyphMetrics};
 
 use super::font;
 use crate::hw::vbe::{Framebuffer, PixelMemory};
@@ -126,6 +128,63 @@ impl TextOut {
             pen = pen.saturating_add(advance(advances, index));
         }
         pen
+    }
+
+    /// The row of the cells' top.
+    pub fn row(&self) -> i32 {
+        self.y
+    }
+
+    /// Under OPAQUE, the cells of a run from column `left` to `right`, `height` rows from the
+    /// text's row, filled with the background color (a TrueType font's text, whose glyphs are
+    /// drawn over them); TRANSPARENT leaves them.
+    pub fn fill_run<M: PixelMemory>(
+        &self,
+        screen: &mut Framebuffer<M>,
+        left: i32,
+        right: i32,
+        height: i32,
+    ) {
+        let Some(background) = self.background else {
+            return;
+        };
+        for y in self.y..self.y.saturating_add(height) {
+            for x in left..right {
+                if contains(&self.clip, x, y) {
+                    screen.put_pixel(x as usize, y as usize, background);
+                }
+            }
+        }
+    }
+
+    /// Draw a glyph's monochrome bitmap, laid out as GetGlyphOutline's GGO_BITMAP lays it (rows
+    /// from the top, each whole 32-bit words, bit 7 of a byte its leftmost pixel), its black box
+    /// (`metrics`' size) with its top left at (`x`, `y`): its set pixels in the text color, the
+    /// others left.
+    pub fn draw_bits<M: PixelMemory>(
+        &self,
+        screen: &mut Framebuffer<M>,
+        x: i32,
+        y: i32,
+        metrics: &GlyphMetrics,
+        bits: &[u8],
+    ) {
+        let stride = stride(metrics.black_box_x);
+        for row in 0..metrics.black_box_y as usize {
+            let Some(line) = bits.get(row * stride..(row + 1) * stride) else {
+                return;
+            };
+            let py = y.saturating_add(row as i32);
+            for column in 0..metrics.black_box_x as usize {
+                if line[column / 8] & (0x80 >> (column % 8)) == 0 {
+                    continue;
+                }
+                let px = x.saturating_add(column as i32);
+                if contains(&self.clip, px, py) {
+                    screen.put_pixel(px as usize, py as usize, self.text);
+                }
+            }
+        }
     }
 
     /// Draw one glyph with its cell's top left at (`x`, the text's row).

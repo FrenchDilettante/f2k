@@ -173,6 +173,14 @@ pub fn devices() {
     crate::fs::fat32::volume::mount_boot_volume();
 }
 
+/// The fonts the system loads at its start (win32k's built-in list standing in for the
+/// registry's), from the boot volume: silent when it carries none. After the devices' diagnostics,
+/// whose disk smoke counts the disk's interrupts from the mount on.
+#[cfg(target_arch = "x86")]
+pub fn fonts() {
+    crate::win32k::fonts::load_boot_fonts();
+}
+
 #[cfg(target_arch = "x86")]
 core::arch::global_asm!(
     // 64 KiB boot stack. Generously sized: early boot code keeps whole subsystem structures (frame

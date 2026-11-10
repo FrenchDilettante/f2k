@@ -173,6 +173,7 @@ pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
     boot::diagnostics::interrupts();
     boot::devices();
     boot::diagnostics::devices();
+    boot::fonts();
 
     // The user processes (the programs the kernel command line lists, else exit0, through the PE
     // loader, one after another; the fault-test features substitute their own), each entered as

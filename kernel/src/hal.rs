@@ -482,7 +482,7 @@ mod tests {
     /// The named exceptions: files outside this layer's reach that still reach the hardware past
     /// it, each with what it reaches. Each must still do so; one that no longer does leaves the
     /// list.
-    const EXCEPTIONS: [(&str, &str); 5] = [
+    const EXCEPTIONS: [(&str, &str); 7] = [
         (
             "boot/mod.rs",
             "the POST code's write to port 0x80, an inline `out` before the serial line is up",
@@ -495,6 +495,14 @@ mod tests {
         (
             "win32k/display.rs",
             "the display driver's mode set, mode test, mode list and geometry (hw::vbe)",
+        ),
+        (
+            "win32k/fonts/mod.rs",
+            "the display driver's framebuffer and pixel memory a TrueType run draws into (hw::vbe)",
+        ),
+        (
+            "win32k/fonts/tests.rs",
+            "the display driver's framebuffer, pixel memory and geometry, faked for the glyph runs",
         ),
         (
             "win32k/raster.rs",

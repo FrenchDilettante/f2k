@@ -93,6 +93,8 @@ pub enum ObjectType {
     Dc,
     /// A brush: win32k's, a logical brush a DC selects (see [`crate::win32k::brush`]).
     Brush,
+    /// A font object: win32k's, a LOGFONT (see [`crate::win32k::fonts`]).
+    Font,
     /// A token: a process's, made at its first open (see [`crate::se`]).
     Token,
 }
@@ -109,8 +111,8 @@ impl ObjectId {
     /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
     /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
     /// at the object's own index. None for a section, a file object (its I/O completes at once:
-    /// nothing waits on it), the directory, a window station, a desktop, a key, a DC or a token.
-    /// The id's liveness is the caller's to know (a reference it holds).
+    /// nothing waits on it), the directory, a window station, a desktop, a key, a DC, a font or a
+    /// token. The id's liveness is the caller's to know (a reference it holds).
     pub fn waitable(self) -> Option<WaitableId> {
         let index = self.index;
         match self.kind {
@@ -128,6 +130,7 @@ impl ObjectId {
             | ObjectType::Key
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Font
             | ObjectType::Token => None,
         }
     }
@@ -220,6 +223,8 @@ pub const KEY_OBJECTS: usize = 256;
 pub const DCS: usize = 64;
 /// How many brushes can exist at once (the global brushes are none of them).
 pub const BRUSHES: usize = 128;
+/// How many font objects can exist at once.
+pub const FONTS: usize = 128;
 /// How many tokens can exist at once: one per process that opened its own, and those whose
 /// handles outlive their process.
 pub const TOKENS: usize = 64;
@@ -633,6 +638,7 @@ pools! {
     Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
     Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
     Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none, BRUSHES;
+    Font => fonts: crate::win32k::fonts::FontObject = crate::win32k::fonts::FontObject::none, FONTS;
     Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none, TOKENS;
 }
 
@@ -684,6 +690,7 @@ bodies! {
     crate::cm::KeyBody => Key, keys, key;
     crate::win32k::dc::Dc => Dc, dcs, dc;
     crate::win32k::brush::Brush => Brush, brushes, brush;
+    crate::win32k::fonts::FontObject => Font, fonts, font;
     crate::se::TokenBody => Token, tokens, token;
 }
 
@@ -967,6 +974,11 @@ impl Directory {
         self.insert(body)
     }
 
+    /// A font object holding `body`'s LOGFONT; none when the pool is exhausted.
+    pub fn create_font(&mut self, body: crate::win32k::fonts::FontObject) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     /// The token of the process `process` names: the one it holds, or a new one made for it (none
     /// when the pool is exhausted). A new token's creator's reference is the process's, which it
     /// holds until it lets go of the token ([`Directory::take_process_token`]).
@@ -1219,6 +1231,7 @@ impl Directory {
             | ObjectType::Key
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Font
             | ObjectType::Token => None,
         };
         self.forget_name(id);
@@ -1383,6 +1396,7 @@ impl Directory {
             ObjectType::Key,
             ObjectType::Dc,
             ObjectType::Brush,
+            ObjectType::Font,
             ObjectType::Token,
         ] {
             let live = self.headers(kind).iter().position(|header| header.live);

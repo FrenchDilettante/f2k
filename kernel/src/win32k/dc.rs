@@ -26,14 +26,19 @@
 //!   is MM_TEXT, its window and viewport origins zero);
 //! - the stock objects as constant handles ([`rtl::gdi::stock_handle`]), which a DC selects by
 //!   kind; brushes as objects and global brushes ([`super::brush`]), the DC keeping the selected
-//!   brush's fill beside its handle; no pens or fonts but the stock ones (the seam where they land:
-//!   their handles carry their kind as a brush's does, [`rtl::gdi::object_handle`], and a selection
-//!   of an object of another kind answers STATUS_OBJECT_TYPE_MISMATCH);
-//! - one font, the built-in 8x16 one ([`super::font`]), whatever font is selected: ExtTextOutW
-//!   draws its glyphs at (x, y) as their cells' top left, glyph pixels in the text color, the
-//!   cells' other pixels in the background color when the background mode is OPAQUE (TRANSPARENT
-//!   leaves them), every pixel clipped to the DC's clipping region (and to the rectangle, with
-//!   ETO_CLIPPED); ETO_OPAQUE fills the rectangle with the background color first;
+//!   brush's fill beside its handle; font objects ([`super::fonts`]), the DC keeping the selected
+//!   font's object id beside its handle; no pens but the stock ones (the seam where they land: an
+//!   object's handle carries its kind, [`rtl::gdi::object_handle`], and a selection of an object of
+//!   another kind answers STATUS_OBJECT_TYPE_MISMATCH);
+//! - the stock fonts are the built-in 8x16 one ([`super::font`]): ExtTextOutW draws its glyphs at
+//!   (x, y) as their cells' top left, glyph pixels in the text color, the cells' other pixels in
+//!   the background color when the background mode is OPAQUE (TRANSPARENT leaves them), every pixel
+//!   clipped to the DC's clipping region (and to the rectangle, with ETO_CLIPPED); ETO_OPAQUE fills
+//!   the rectangle with the background color first;
+//! - a font object is realised against the TrueType faces loaded ([`super::fonts`]), the built-in
+//!   font when no face answers it: the text, its metrics and its extent are then the face's, at its
+//!   size, each glyph from the realised font's cache, (x, y) the cell's top left and the baseline
+//!   its ascent below, clipped as the built-in font's;
 //! - SetPixel and GetPixel through the framebuffer, clipped alike.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; a DC handle that names no DC is
@@ -44,12 +49,13 @@
 //! - NtUserGetDC(handle Window, ptr<u32> Dc), NtUserGetDCEx(handle Window, handle Region, u32
 //!   Flags, ptr<u32> Dc), NtUserGetWindowDC(handle Window, ptr<u32> Dc): the window's DC (the
 //!   screen's for no window); STATUS_INVALID_HANDLE for a handle that names no window;
-//! - NtGdiDeleteObjectApp(handle Object): a DC's or a brush's handle closed; a global object (a
-//!   stock object, a global brush) is never deleted (the call succeeds);
+//! - NtGdiDeleteObjectApp(handle Object): a DC's, a brush's or a font's handle closed; a global
+//!   object (a stock object, a global brush) is never deleted (the call succeeds);
 //! - NtGdiGetStockObject(u32 Index, ptr<u32> Object): the stock object's handle;
 //! - NtGdiSelectBrush, NtGdiSelectPen, NtGdiSelectFont(handle Dc, handle Object, ptr<u32>
-//!   Previous): the object selected, the one it replaces answered; STATUS_OBJECT_TYPE_MISMATCH for
-//!   an object of another kind, STATUS_INVALID_HANDLE for a handle that names none;
+//!   Previous): the object selected, the one it replaces answered (NtGdiSelectFont takes a font
+//!   object's handle too); STATUS_OBJECT_TYPE_MISMATCH for an object of another kind,
+//!   STATUS_INVALID_HANDLE for a handle that names none;
 //! - NtGdiGetDCDword(handle Dc, u32 Index, ptr<u32> Value) and NtGdiGetAndSetDCDword(handle Dc, u32
 //!   Index, u32 Value, ptr<u32> Previous): the text color, the background color, the background
 //!   mode ([`rtl::gdi`]'s DC_ indexes);
@@ -67,6 +73,7 @@ use rtl::pod::Pod;
 
 use super::brush::Fill;
 use super::font;
+use super::fonts::table::Realization;
 use super::raster::{advanced, get_pixel_on, set_pixel_on, TextOut};
 use crate::hw::vbe::Framebuffer;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
@@ -91,12 +98,15 @@ pub struct Dc {
     pub text_color: u32,
     pub bk_color: u32,
     pub bk_mode: u32,
-    /// The objects selected, by kind: their handles (the stock pen and font).
+    /// The objects selected, by kind: their handles (the stock pen; a stock font's, or a font
+    /// object's).
     pub brush: u32,
     pub pen: u32,
     pub font: u32,
     /// What the selected brush paints.
     pub brush_fill: Fill,
+    /// The font object selected, beside its handle: none for a stock font.
+    pub font_object: Option<crate::ob::ObjectId>,
 }
 
 impl Dc {
@@ -117,6 +127,7 @@ impl Dc {
             pen: 0,
             font: 0,
             brush_fill: Fill::Null,
+            font_object: None,
         }
     }
 
@@ -140,6 +151,7 @@ impl Dc {
             pen: stock(BLACK_PEN),
             font: stock(SYSTEM_FONT),
             brush_fill: Fill::of_global(GlobalBrush::Stock(WHITE_BRUSH)),
+            font_object: None,
         }
     }
 
@@ -208,7 +220,10 @@ impl Dc {
         }
         let slot = match kind {
             OBJ_PEN => &mut self.pen,
-            OBJ_FONT => &mut self.font,
+            OBJ_FONT => {
+                self.font_object = None;
+                &mut self.font
+            }
             _ => return None,
         };
         Some(core::mem::replace(slot, handle))
@@ -218,6 +233,13 @@ impl Dc {
     pub fn select_brush(&mut self, handle: u32, fill: Fill) -> u32 {
         self.brush_fill = fill;
         core::mem::replace(&mut self.brush, handle)
+    }
+
+    /// Select the font object `id`, whose handle is `handle`, answering the font it replaces (a
+    /// stock font's handle or a font object's).
+    pub fn select_font_object(&mut self, handle: u32, id: crate::ob::ObjectId) -> u32 {
+        self.font_object = Some(id);
+        core::mem::replace(&mut self.font, handle)
     }
 }
 
@@ -258,8 +280,8 @@ pub fn get_window_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> Nt
     window_dc(call, window, true, out)
 }
 
-/// NtGdiDeleteObjectApp(Object): a DC's or a brush's handle closed (the object goes with it); a
-/// global object stays (it is never deleted: the call succeeds); STATUS_INVALID_HANDLE for
+/// NtGdiDeleteObjectApp(Object): a DC's, a brush's or a font's handle closed (the object goes with
+/// it); a global object stays (it is never deleted: the call succeeds); STATUS_INVALID_HANDLE for
 /// anything else.
 pub fn delete_object(call: &mut NtCall, object: Handle) -> NtResult {
     if global_object_kind(object.raw()).is_some() {
@@ -292,9 +314,16 @@ pub fn select_pen(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<u3
     select(call, dc, OBJ_PEN, object, out)
 }
 
-/// NtGdiSelectFont(Dc, Font, Previous).
+/// NtGdiSelectFont(Dc, Font, Previous): a font object the calling process's `object` names (a
+/// handle of the font kind: [`rtl::gdi::object_of`]), or a stock font (see [`select`]).
 pub fn select_font(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<u32>) -> NtResult {
-    select(call, dc, OBJ_FONT, object, out)
+    if !matches!(object_of(object.raw()), Some((OBJ_FONT, _))) {
+        return select(call, dc, OBJ_FONT, object, out);
+    }
+    let id = super::fonts::font_object(object).ok_or(STATUS_INVALID_HANDLE)?;
+    let previous = update_dc(call, dc, |dc| dc.select_font_object(object.raw(), id))?;
+    out.write(previous)?;
+    Ok(STATUS_SUCCESS)
 }
 
 /// Select the stock `object` of `kind` into `dc`, the object it replaces into `out`;
@@ -353,6 +382,7 @@ pub fn ext_text_out_w(
     dx: UserAddr,
 ) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
+    let realization = super::fonts::realize_selected(call, &dc);
     let rect = if rect.is_null() {
         None
     } else {
@@ -386,8 +416,18 @@ pub fn ext_text_out_w(
             Some(&advances[..length])
         };
         let units = &units[..length];
-        pen = with_screen(|screen| text.draw(screen, pen, units, advances))
-            .unwrap_or_else(|| advanced(pen, length, advances));
+        pen = match realization {
+            Realization::BuiltIn { .. } => {
+                with_screen(|screen| text.draw(screen, pen, units, advances))
+                    .unwrap_or_else(|| advanced(pen, length, advances))
+            }
+            Realization::TrueType { key, .. } => with_screen(|screen| {
+                super::fonts::draw_text(Some(screen), &text, key, pen, units, advances)
+            })
+            .unwrap_or_else(|| {
+                super::fonts::draw_text::<ScreenMemory>(None, &text, key, pen, units, advances)
+            }),
+        };
         done += length;
     }
     Ok(STATUS_SUCCESS)
@@ -411,13 +451,21 @@ pub fn eng_text_out(
 
 /// NtGdiGetTextMetricsW(Dc, Metric): the font's TEXTMETRICW.
 pub fn get_text_metrics_w(call: &mut NtCall, dc: Handle, metric: UserAddr) -> NtResult {
-    let (_reference, _) = dc_of(call, dc)?;
-    metric.cast::<TextMetricW>().write(font::text_metric())?;
+    let (_reference, dc) = dc_of(call, dc)?;
+    let answer = match super::fonts::realize_selected(call, &dc) {
+        Realization::BuiltIn { .. } => font::text_metric(),
+        Realization::TrueType { key, char_set, .. } => {
+            super::fonts::text_metric(key, char_set).ok_or(STATUS_INVALID_HANDLE)?
+        }
+    };
+    metric.cast::<TextMetricW>().write(answer)?;
     Ok(STATUS_SUCCESS)
 }
 
 /// NtGdiGetTextExtent(Dc, String, Count, Size): the SIZE of `count` characters of the string (each
-/// read: the font's cells are all one width, but a string the caller cannot read is a fault).
+/// read: the built-in font's cells are all one width, but a string the caller cannot read is a
+/// fault). In a TrueType font, the characters' advances side by side and the cell's height; no
+/// characters, no height.
 pub fn get_text_extent(
     call: &mut NtCall,
     dc: Handle,
@@ -425,17 +473,29 @@ pub fn get_text_extent(
     count: u32,
     size: UserAddr,
 ) -> NtResult {
-    let (_reference, _) = dc_of(call, dc)?;
+    let (_reference, dc) = dc_of(call, dc)?;
+    let realization = super::fonts::realize_selected(call, &dc);
     let mut units = [0u16; CHUNK];
+    let mut width = 0i32;
     let mut done = 0usize;
     while done < count as usize {
         let length = (count as usize - done).min(CHUNK);
         string
             .offset(2 * done as u32)
             .read_units(&mut units[..length])?;
+        if let Realization::TrueType { key, .. } = realization {
+            width = width.saturating_add(super::fonts::text_width(key, &units[..length]));
+        }
         done += length;
     }
-    let (cx, cy) = font::extent(count);
+    let (cx, cy) = match realization {
+        Realization::BuiltIn { .. } => font::extent(count),
+        Realization::TrueType { .. } if count == 0 => (0, 0),
+        Realization::TrueType { key, char_set, .. } => {
+            let metric = super::fonts::text_metric(key, char_set).ok_or(STATUS_INVALID_HANDLE)?;
+            (width, metric.height)
+        }
+    };
     size.cast::<Size>().write(Size { cx, cy })?;
     Ok(STATUS_SUCCESS)
 }
@@ -604,13 +664,14 @@ fn close_dc(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
     close_kind(call, handle, crate::ob::ObjectType::Dc)
 }
 
-/// Close the calling process's handle when `handle` names a DC (its bare handle) or a brush (its
-/// handle-table handle under the brush kind's bits: [`rtl::gdi::object_of`]), DeleteObject's;
+/// Close the calling process's handle when `handle` names a DC (its bare handle), a brush or a
+/// font (its handle-table handle under the kind's bits: [`rtl::gdi::object_of`]), DeleteObject's;
 /// STATUS_INVALID_HANDLE otherwise.
 #[cfg(target_arch = "x86")]
 fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
     match object_of(handle.raw()) {
         Some((OBJ_BRUSH, table)) => close_kind(call, Handle(table), crate::ob::ObjectType::Brush),
+        Some((OBJ_FONT, _)) => super::fonts::delete_font(call, handle),
         Some(_) => Err(STATUS_INVALID_HANDLE),
         None => close_dc(call, handle),
     }
