@@ -363,6 +363,23 @@ impl Atoms {
             .map_or(0, |e| e.atom)
     }
 
+    /// The atom `name` has, its letters matched without regard to case (each unit folded to its
+    /// uppercase form); 0 when the table has none.
+    fn find_folded(&self, name: &[u16]) -> Atom {
+        let fold = |unit: u16| rtl::cp1252::map_case(unit, true);
+        self.entries
+            .iter()
+            .find(|e| {
+                e.live
+                    && e.len as usize == name.len()
+                    && e.units[..name.len()]
+                        .iter()
+                        .zip(name)
+                        .all(|(&a, &b)| fold(a) == fold(b))
+            })
+            .map_or(0, |e| e.atom)
+    }
+
     /// Delete `atom`: 0 on success, the atom itself when it cannot be deleted. Atoms in the
     /// pinned range are never deleted (and answer 0).
     fn delete(&mut self, atom: Atom) -> Atom {
@@ -1155,6 +1172,28 @@ impl Registry {
             *unit = u16::from(byte);
         }
         written
+    }
+
+    /// The atom of a registered name (RegisterClipboardFormat's, and RegisterWindowMessage's on
+    /// Windows 2000, whose two calls register in the one atom table class names live in): the
+    /// atom `name` has already, matched without regard to case as the atom table matches, or a
+    /// fresh one, pinned (a registered name is never deleted). 0 when the name is empty or the
+    /// table cannot take it.
+    pub fn register_name(&mut self, name: &[u16]) -> Atom {
+        if name.is_empty() {
+            return 0;
+        }
+        match self.atoms.find_folded(name) {
+            0 => self.atoms.add(name, true),
+            found => found,
+        }
+    }
+
+    /// The name the string atom `atom` stands for into `out` (no terminator), as
+    /// GetClipboardFormatName gives it: the units written, the name cut at `out`'s length; 0 for
+    /// an atom the table has no name for.
+    pub fn atom_name(&self, atom: Atom, out: &mut [u16]) -> usize {
+        self.atoms.name(atom, out)
     }
 
     // --- Registration
@@ -2339,6 +2378,7 @@ pub fn set_class_long(
             windows,
             classes,
             views,
+            ..
         } = &mut *manager;
         let target = window_of(windows, window).ok_or(STATUS_INVALID_HANDLE)?;
         let view = windows.class_view(window.raw());

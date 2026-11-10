@@ -4069,8 +4069,9 @@ const MESSAGE_CLASS: [u16; 7] = [
     b'e' as u16,
 ];
 
-/// The window manager's state behind its one lock: the window registry, the class registry, and
-/// the buffer the icon-change notification gathers the windows into.
+/// The window manager's state behind its one lock: the window registry, the class registry, the
+/// window station's clipboard, and the buffer the icon-change notification gathers the windows
+/// into.
 ///
 /// One lock guards both registries, as one lock guards all of Windows 2000's window-manager state:
 /// the create and destroy decisions hold both at once, through every callback; and a short lock's
@@ -4079,6 +4080,8 @@ const MESSAGE_CLASS: [u16; 7] = [
 pub struct WindowManager {
     pub windows: Windows,
     pub classes: class::Registry,
+    /// The clipboard of the one window station, WinSta0 ([`super::clipboard`]).
+    pub clipboard: super::clipboard::Clipboard,
     /// The icon-change notification's windows (see [`Windows::class_views`]).
     pub views: [class::WindowView; WINDOWS],
 }
@@ -4098,6 +4101,7 @@ impl WindowManager {
         unsafe {
             Windows::write_empty(addr_of_mut!((*manager).windows));
             class::Registry::write_empty(addr_of_mut!((*manager).classes));
+            super::clipboard::Clipboard::write_empty(addr_of_mut!((*manager).clipboard));
             let views = addr_of_mut!((*manager).views) as *mut class::WindowView;
             core::ptr::write_bytes(views, 0, WINDOWS);
         }
@@ -4239,15 +4243,19 @@ impl WindowManager {
         self.windows.cover_screen(screen);
     }
 
-    /// The process `owner`'s end, at its teardown: its windows go ([`Windows::end_process`]),
-    /// then its classes. Windows 2000 destroys
+    /// The process `owner`'s end, at its teardown: the clipboard closed if one of its threads had
+    /// it open, its windows go ([`Windows::end_process`]), then its classes. Windows 2000 destroys
     /// a thread's windows at the thread's end and a process's classes at the process's; F2K
     /// does both at the process's teardown, where the window manager learns of an end (its
     /// thread records outlive their threads until then).
     pub fn end_process(&mut self, owner: class::Owner) {
         let WindowManager {
-            windows, classes, ..
+            windows,
+            classes,
+            clipboard,
+            ..
         } = self;
+        clipboard.process_gone(windows, owner);
         windows.end_process(classes, owner, &mut DefaultProcedure);
         classes.destroy_owner_classes(owner);
     }

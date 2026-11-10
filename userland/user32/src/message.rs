@@ -1,6 +1,6 @@
 //! The message loop: GetMessage, PeekMessage, PostMessage, PostThreadMessage, PostQuitMessage,
-//! SendMessage, DispatchMessage, TranslateMessage, and the default window procedure,
-//! DefWindowProc; each over its win32k service ([`imports`]).
+//! SendMessage, InSendMessage, DispatchMessage, TranslateMessage, and the default window
+//! procedure, DefWindowProc; each over its win32k service ([`imports`]).
 //!
 //! The kernel calls no user-mode code: a message sent to one of the calling thread's windows (by
 //! another thread, or by the window manager while it decides) reaches its procedure through the
@@ -264,6 +264,14 @@ pub extern "system" fn post_thread_message_w(
 #[unsafe(export_name = "f2k_export_PostQuitMessage")]
 pub extern "system" fn post_quit_message(code: i32) {
     let _ = imports::call_one_param(code as u32, ONE_PARAM_POST_QUIT_MESSAGE);
+}
+
+/// InSendMessage: whether the message the calling thread's procedure is handling was sent by
+/// another thread (TRUE), rather than posted, or sent by the thread itself or by the window manager
+/// on the thread's own call (FALSE); the last error untouched.
+#[unsafe(export_name = "f2k_export_InSendMessage")]
+pub extern "system" fn in_send_message() -> u32 {
+    imports::call_one_param(0, ONE_PARAM_IN_SEND_MESSAGE).unwrap_or(0)
 }
 
 /// SendMessage's core, for a message of the narrow (`ansi`) or wide form: the window procedure's

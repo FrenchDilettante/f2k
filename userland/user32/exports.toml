@@ -1218,7 +1218,7 @@ fails = "0"
 name = "InSendMessage"
 group = "message"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "InSendMessage" }
 ordinal = 372
 fails = "FALSE"
 
@@ -1518,9 +1518,10 @@ fails = "FALSE"
 name = "GetKeyboardLayout"
 group = "input"
 args = ["u32 idThread"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetKeyboardLayout" }
 ordinal = 279
 fails = "NULL"
+note = "US English's layout (0x04090409), the one F2K has, for every thread"
 
 [[export]]
 name = "GetCapture"
@@ -1973,7 +1974,7 @@ fails = "FALSE"
 name = "OpenClipboard"
 group = "clipboard"
 args = ["handle hWndNewOwner"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OpenClipboard" }
 ordinal = 473
 fails = "FALSE"
 
@@ -1981,7 +1982,7 @@ fails = "FALSE"
 name = "CloseClipboard"
 group = "clipboard"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "CloseClipboard" }
 ordinal = 62
 fails = "FALSE"
 
@@ -1989,7 +1990,7 @@ fails = "FALSE"
 name = "EmptyClipboard"
 group = "clipboard"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "EmptyClipboard" }
 ordinal = 183
 fails = "FALSE"
 
@@ -1997,7 +1998,7 @@ fails = "FALSE"
 name = "GetClipboardData"
 group = "clipboard"
 args = ["u32 uFormat"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipboardData" }
 ordinal = 246
 fails = "NULL"
 
@@ -2005,15 +2006,16 @@ fails = "NULL"
 name = "SetClipboardData"
 group = "clipboard"
 args = ["u32 uFormat", "handle hMem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetClipboardData" }
 ordinal = 552
 fails = "NULL"
+note = "delayed rendering (a NULL hMem) is not written: a stub's failure"
 
 [[export]]
 name = "IsClipboardFormatAvailable"
 group = "clipboard"
 args = ["u32 format"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsClipboardFormatAvailable" }
 ordinal = 395
 fails = "FALSE"
 
@@ -2021,7 +2023,7 @@ fails = "FALSE"
 name = "CountClipboardFormats"
 group = "clipboard"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "CountClipboardFormats" }
 ordinal = 71
 fails = "0"
 
@@ -2029,7 +2031,7 @@ fails = "0"
 name = "EnumClipboardFormats"
 group = "clipboard"
 args = ["u32 format"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumClipboardFormats" }
 ordinal = 193
 fails = "0"
 
@@ -2037,7 +2039,7 @@ fails = "0"
 name = "RegisterClipboardFormatA"
 group = "clipboard"
 args = ["strA lpszFormat"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegisterClipboardFormatA" }
 ordinal = 507
 fails = "0"
 
@@ -2045,7 +2047,7 @@ fails = "0"
 name = "RegisterClipboardFormatW"
 group = "clipboard"
 args = ["strW lpszFormat"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RegisterClipboardFormatW" }
 ordinal = 508
 fails = "0"
 
@@ -2053,7 +2055,7 @@ fails = "0"
 name = "GetClipboardFormatNameA"
 group = "clipboard"
 args = ["u32 format", "ptr lpszFormatName", "i32 cchMaxCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipboardFormatNameA" }
 ordinal = 247
 fails = "0"
 
@@ -2061,7 +2063,7 @@ fails = "0"
 name = "GetClipboardFormatNameW"
 group = "clipboard"
 args = ["u32 format", "ptr lpszFormatName", "i32 cchMaxCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipboardFormatNameW" }
 ordinal = 248
 fails = "0"
 
@@ -2069,7 +2071,7 @@ fails = "0"
 name = "GetClipboardOwner"
 group = "clipboard"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipboardOwner" }
 ordinal = 249
 fails = "NULL"
 
@@ -2077,9 +2079,100 @@ fails = "NULL"
 name = "GetOpenClipboardWindow"
 group = "clipboard"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetOpenClipboardWindow" }
 ordinal = 312
 fails = "NULL"
+
+[[export]]
+name = "NtUserOpenClipboard"
+group = "clipboard"
+args = ["handle Window"]
+impl = { syscall = "crate::win32k::clipboard::open_clipboard" }
+internal = true
+
+[[export]]
+name = "NtUserCloseClipboard"
+group = "clipboard"
+args = []
+impl = { syscall = "crate::win32k::clipboard::close_clipboard" }
+internal = true
+
+[[export]]
+name = "NtUserEmptyClipboard"
+group = "clipboard"
+args = []
+impl = { syscall = "crate::win32k::clipboard::empty_clipboard" }
+internal = true
+
+[[export]]
+name = "NtUserConvertMemHandle"
+group = "clipboard"
+args = ["ptr Data", "u32 Length", "ptr<u32> Handle"]
+impl = { syscall = "crate::win32k::clipboard::convert_mem_handle" }
+internal = true
+
+[[export]]
+name = "NtUserSetClipboardData"
+group = "clipboard"
+args = ["u32 Format", "u32 Data"]
+impl = { syscall = "crate::win32k::clipboard::set_clipboard_data" }
+internal = true
+
+[[export]]
+name = "NtUserGetClipboardData"
+group = "clipboard"
+args = ["u32 Format", "ptr<u32> Data", "ptr<u32> Length"]
+impl = { syscall = "crate::win32k::clipboard::get_clipboard_data" }
+internal = true
+
+[[export]]
+name = "NtUserCreateLocalMemHandle"
+group = "clipboard"
+args = ["u32 Data", "ptr Buffer", "u32 Length", "ptr<u32> Needed"]
+impl = { syscall = "crate::win32k::clipboard::create_local_mem_handle" }
+internal = true
+
+[[export]]
+name = "NtUserIsClipboardFormatAvailable"
+group = "clipboard"
+args = ["u32 Format", "ptr<u32> Available"]
+impl = { syscall = "crate::win32k::clipboard::is_clipboard_format_available" }
+internal = true
+
+[[export]]
+name = "NtUserCountClipboardFormats"
+group = "clipboard"
+args = ["ptr<u32> Count"]
+impl = { syscall = "crate::win32k::clipboard::count_clipboard_formats" }
+internal = true
+
+[[export]]
+name = "NtUserGetClipboardOwner"
+group = "clipboard"
+args = ["ptr<u32> Window"]
+impl = { syscall = "crate::win32k::clipboard::get_clipboard_owner" }
+internal = true
+
+[[export]]
+name = "NtUserGetOpenClipboardWindow"
+group = "clipboard"
+args = ["ptr<u32> Window"]
+impl = { syscall = "crate::win32k::clipboard::get_open_clipboard_window" }
+internal = true
+
+[[export]]
+name = "NtUserRegisterWindowMessage"
+group = "clipboard"
+args = ["ptr Name", "ptr<u32> Atom"]
+impl = { syscall = "crate::win32k::clipboard::register_window_message" }
+internal = true
+
+[[export]]
+name = "NtUserGetClipboardFormatName"
+group = "clipboard"
+args = ["u32 Format", "ptr Name", "u32 MaxCount", "ptr<u32> Copied"]
+impl = { syscall = "crate::win32k::clipboard::get_clipboard_format_name" }
+internal = true
 
 # --- rectangles -----------------------------------------------------------------------------------
 

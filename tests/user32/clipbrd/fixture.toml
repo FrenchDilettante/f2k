@@ -4,15 +4,13 @@
 # as "registered", the clipboard's data as its text and its size as a relation.
 description = "clipbrd - the clipboard in user32: OpenClipboard, CloseClipboard and EmptyClipboard (with a window, with none, twice, closed), GetOpenClipboardWindow and GetClipboardOwner; SetClipboardData of CF_UNICODETEXT, CF_TEXT and CF_OEMTEXT, IsClipboardFormatAvailable and GetClipboardData of the formats the system synthesises from each (the text, its NUL and size, CF_LOCALE); CountClipboardFormats and EnumClipboardFormats' order; RegisterClipboardFormatA/W and GetClipboardFormatNameA/W; the owner's WM_DESTROYCLIPBOARD; delayed rendering through WM_RENDERFORMAT and WM_RENDERALLFORMATS."
 kind = "sectioned"
+gate = true
 
-# Not gated: user32's clipboard functions are stubs; the program loads against them. Every section
-# is on the work list.
+# Delayed rendering is not written: SetClipboardData with no data is a stub's failure, so no
+# WM_RENDERFORMAT is sent, and the owner's WM_RENDERALLFORMATS reaches it only after its
+# destruction (the window manager's messages are delivered once its service returns), too late to
+# open the clipboard with it.
 [pending]
-open = "OpenClipboard, CloseClipboard, EmptyClipboard, SetClipboardData, GetClipboardData, IsClipboardFormatAvailable, GetOpenClipboardWindow and GetClipboardOwner not yet implemented: no clipboard in win32k"
-unicode = "SetClipboardData, GetClipboardData and IsClipboardFormatAvailable not yet implemented, nor the text formats' synthesis from CF_UNICODETEXT"
-text = "SetClipboardData, GetClipboardData and IsClipboardFormatAvailable not yet implemented, nor the text formats' synthesis from CF_TEXT and CF_OEMTEXT"
-formats = "CountClipboardFormats, EnumClipboardFormats, RegisterClipboardFormatA/W and GetClipboardFormatNameA/W not yet implemented"
-owner = "EmptyClipboard, GetClipboardOwner and WM_DESTROYCLIPBOARD not yet implemented"
 delayed = "delayed rendering (SetClipboardData with no data, WM_RENDERFORMAT, WM_RENDERALLFORMATS) not yet implemented"
 
 [pins]

@@ -1110,6 +1110,21 @@ pub fn reply(windows: &mut Windows, caller: ThreadId, result: LResult) -> bool {
     true
 }
 
+/// InSendMessage: whether the caller's innermost sent message, the one its procedure is handling,
+/// came from another thread or the server (a message the window manager sent on the caller's own
+/// call, as Windows 2000 sends it within the calling thread, did not).
+pub fn in_send(windows: &Windows, caller: ThreadId) -> bool {
+    let queues = &windows.queues;
+    let Some(id) = queues.queue_of(caller) else {
+        return false;
+    };
+    let Some(index) = queues.queues[id.index as usize].receiving else {
+        return false;
+    };
+    let sent = &queues.sent[index as usize];
+    sent.sender.is_some() || sent.server
+}
+
 // --- Sending -------------------------------------------------------------------------------------
 
 /// Where SendMessage's message goes.
@@ -1405,6 +1420,10 @@ impl Pump for QueuePump {
     fn window_teardown(&mut self, windows: &mut Windows, target: WindowId) {
         window_gone(windows, target);
     }
+
+    fn disown_clipboard(&mut self, windows: &mut Windows, target: WindowId) {
+        crate::win32k::clipboard::disown(windows, target);
+    }
 }
 
 // --- The target's side: the queues' events, the waits, the services ------------------------------
@@ -1589,6 +1608,8 @@ mod services {
     use rtl::pod::Pod;
     use rtl::user::{
         ONE_PARAM_END_SENT_MESSAGE,
+        ONE_PARAM_ENUM_CLIPBOARD_FORMATS,
+        ONE_PARAM_IN_SEND_MESSAGE,
         ONE_PARAM_POST_QUIT_MESSAGE,
         ONE_PARAM_REPLY_MESSAGE,
         RECEIPT_TEXT,
@@ -1848,8 +1869,9 @@ mod services {
 
     /// NtUserCallOneParam(Param, Routine, Result): PostQuitMessage (the result 0), ReplyMessage
     /// (the result whether it answered another thread's message), the end of a sent message's
-    /// delivery (the result whether one was being delivered); STATUS_INVALID_PARAMETER for another
-    /// routine.
+    /// delivery (the result whether one was being delivered), EnumClipboardFormats (the result the
+    /// format after the parameter's), InSendMessage (the result whether another thread sent the
+    /// message being delivered); STATUS_INVALID_PARAMETER for another routine.
     pub fn call_one_param(
         call: &mut NtCall,
         param: u32,
@@ -1866,6 +1888,11 @@ mod services {
             ONE_PARAM_END_SENT_MESSAGE => {
                 Ok(end_sent(&mut m.windows, caller, param as LResult) as u32)
             }
+            ONE_PARAM_ENUM_CLIPBOARD_FORMATS => m
+                .clipboard
+                .next_format(caller, param)
+                .map_err(crate::win32k::clipboard::Refusal::status),
+            ONE_PARAM_IN_SEND_MESSAGE => Ok(in_send(&m.windows, caller) as u32),
             _ => Err(STATUS_INVALID_PARAMETER),
         })?;
         result.write(answer)?;

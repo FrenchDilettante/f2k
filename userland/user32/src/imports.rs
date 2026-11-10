@@ -59,6 +59,15 @@ mod raw {
         pub fn SizeofResource(module: usize, resource: usize) -> u32;
         /// LockResource: the address of the data LoadResource's handle names.
         pub fn LockResource(data: usize) -> usize;
+        /// GlobalAlloc, GlobalLock, GlobalUnlock, GlobalSize and GlobalFree: a global memory
+        /// block (NULL, the last error set, when there is no room), its data's address while it
+        /// is locked (NULL for a handle naming no block), its unlock, its size (0 for no block),
+        /// and its release (NULL on success).
+        pub fn GlobalAlloc(flags: u32, bytes: usize) -> usize;
+        pub fn GlobalLock(memory: usize) -> *mut u8;
+        pub fn GlobalUnlock(memory: usize) -> u32;
+        pub fn GlobalSize(memory: usize) -> usize;
+        pub fn GlobalFree(memory: usize) -> usize;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -226,6 +235,44 @@ mod raw {
             y: i32,
             flags: u32,
             child: *mut u32,
+        ) -> u32;
+
+        // The clipboard (kernel/src/win32k/clipboard.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserOpenClipboard"]
+        pub fn NtUserOpenClipboard(window: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCloseClipboard"]
+        pub fn NtUserCloseClipboard() -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEmptyClipboard"]
+        pub fn NtUserEmptyClipboard() -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserConvertMemHandle"]
+        pub fn NtUserConvertMemHandle(data: usize, length: u32, handle: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetClipboardData"]
+        pub fn NtUserSetClipboardData(format: u32, data: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetClipboardData"]
+        pub fn NtUserGetClipboardData(format: u32, data: *mut u32, length: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCreateLocalMemHandle"]
+        pub fn NtUserCreateLocalMemHandle(
+            data: u32,
+            buffer: *mut u8,
+            length: u32,
+            needed: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserIsClipboardFormatAvailable"]
+        pub fn NtUserIsClipboardFormatAvailable(format: u32, available: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCountClipboardFormats"]
+        pub fn NtUserCountClipboardFormats(count: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetClipboardOwner"]
+        pub fn NtUserGetClipboardOwner(window: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetOpenClipboardWindow"]
+        pub fn NtUserGetOpenClipboardWindow(window: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserRegisterWindowMessage"]
+        pub fn NtUserRegisterWindowMessage(name: usize, atom: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetClipboardFormatName"]
+        pub fn NtUserGetClipboardFormatName(
+            format: u32,
+            name: *mut u8,
+            max: u32,
+            copied: *mut u32,
         ) -> u32;
 
         // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
@@ -555,6 +602,72 @@ pub fn resource_data(module: usize, resource: Hrsrc) -> Option<&'static [u8]> {
     // mapped image, which nothing writes and which stays mapped while the module is loaded (see
     // above); bytes need no alignment.
     Some(unsafe { core::slice::from_raw_parts(at as *const u8, size as usize) })
+}
+
+/// GlobalAlloc: a global memory block of `bytes` bytes, as the GMEM_ `flags` ask: its handle; none,
+/// with kernel32's last error, when there is no room.
+pub fn global_alloc(flags: u32, bytes: usize) -> Option<usize> {
+    // SAFETY: no pointers.
+    let memory = unsafe { raw::GlobalAlloc(flags, bytes) };
+    (memory != 0).then_some(memory)
+}
+
+/// GlobalSize: the size of the block `memory` names; 0 for a handle naming none.
+pub fn global_size(memory: usize) -> usize {
+    // SAFETY: kernel32 checks the handle against its table and the heap before it reads anything.
+    unsafe { raw::GlobalSize(memory) }
+}
+
+/// GlobalFree: the block `memory` names freed (a handle naming none refused by kernel32).
+pub fn global_free(memory: usize) {
+    // SAFETY: as for `global_size`.
+    unsafe { raw::GlobalFree(memory) };
+}
+
+/// A global memory block locked while this lives (GlobalLock, then GlobalUnlock when dropped): its
+/// data's address and size, handed to a service unread.
+pub struct GlobalLocked {
+    memory: usize,
+    at: NonNull<u8>,
+    size: usize,
+}
+
+impl GlobalLocked {
+    /// The block `memory` names, locked; none for a handle naming no block (or a discarded one).
+    pub fn new(memory: usize) -> Option<GlobalLocked> {
+        // SAFETY: kernel32 checks the handle before it reads anything; the lock is undone once,
+        // when the value is dropped.
+        let at = NonNull::new(unsafe { raw::GlobalLock(memory) })?;
+        Some(GlobalLocked {
+            memory,
+            at,
+            size: global_size(memory),
+        })
+    }
+
+    /// The data's address.
+    pub fn address(&self) -> usize {
+        self.at.as_ptr() as usize
+    }
+
+    /// The block's size.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The data as a buffer a service writes.
+    pub fn buffer(&mut self) -> UserBuffer<'_> {
+        // SAFETY: the block's `size` bytes, kernel32's heap memory, locked for the borrow's life;
+        // nothing in this DLL holds a reference into them.
+        unsafe { UserBuffer::new(self.at.as_ptr(), self.size as u32) }
+    }
+}
+
+impl Drop for GlobalLocked {
+    fn drop(&mut self) {
+        // SAFETY: the handle locked in `new`, unlocked once.
+        unsafe { raw::GlobalUnlock(self.memory) };
+    }
 }
 
 // --- ntdll -------------------------------------------------------------------------------------------
@@ -889,6 +1002,110 @@ pub fn child_window_from_point(parent: usize, x: i32, y: i32, flags: u32) -> Res
     // SAFETY: the kernel writes the handle into the local.
     checked(unsafe { raw::NtUserChildWindowFromPointEx(parent, x, y, flags, &mut child) })?;
     Ok(child)
+}
+
+// --- win32k: the clipboard -----------------------------------------------------------------------
+
+/// NtUserOpenClipboard: the clipboard open for the calling thread, with `window` (0 for none).
+pub fn open_clipboard(window: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserOpenClipboard(window) })
+}
+
+/// NtUserCloseClipboard: the clipboard closed.
+pub fn close_clipboard() -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserCloseClipboard() })
+}
+
+/// NtUserEmptyClipboard: the clipboard emptied.
+pub fn empty_clipboard() -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserEmptyClipboard() })
+}
+
+/// NtUserConvertMemHandle: a data object of the `length` bytes at `data` (a locked global memory
+/// block's): its handle.
+pub fn convert_mem_handle(data: usize, length: usize) -> Result<u32, NtStatus> {
+    let mut handle = 0u32;
+    // SAFETY: the kernel reads the bytes through its fault-tolerant copies, and writes the handle
+    // into the local.
+    checked(unsafe { raw::NtUserConvertMemHandle(data, length as u32, &mut handle) })?;
+    Ok(handle)
+}
+
+/// NtUserSetClipboardData: the data object `data` put under `format`.
+pub fn set_clipboard_data(format: u32, data: u32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetClipboardData(format, data) })
+}
+
+/// NtUserGetClipboardData: `format`'s data object and its length (0 and 0 for none).
+pub fn get_clipboard_data(format: u32) -> Result<(u32, usize), NtStatus> {
+    let (mut data, mut length) = (0u32, 0u32);
+    // SAFETY: the kernel writes the two locals.
+    checked(unsafe { raw::NtUserGetClipboardData(format, &mut data, &mut length) })?;
+    Ok((data, length as usize))
+}
+
+/// NtUserCreateLocalMemHandle: the data object `data`'s bytes into `buffer`.
+pub fn create_local_mem_handle(data: u32, buffer: UserBuffer) -> Result<(), NtStatus> {
+    let mut needed = 0u32;
+    // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
+    // holds a reference into), and the length into the local.
+    checked(unsafe { raw::NtUserCreateLocalMemHandle(data, buffer.at, buffer.length, &mut needed) })
+}
+
+/// NtUserIsClipboardFormatAvailable: whether the clipboard has `format`.
+pub fn is_clipboard_format_available(format: u32) -> Result<bool, NtStatus> {
+    let mut available = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserIsClipboardFormatAvailable(format, &mut available) })?;
+    Ok(available != 0)
+}
+
+/// NtUserCountClipboardFormats: how many formats the clipboard has.
+pub fn count_clipboard_formats() -> Result<u32, NtStatus> {
+    let mut count = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserCountClipboardFormats(&mut count) })?;
+    Ok(count)
+}
+
+/// NtUserGetClipboardOwner: the clipboard's owner (0 for none).
+pub fn clipboard_owner() -> Result<u32, NtStatus> {
+    let mut window = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetClipboardOwner(&mut window) })?;
+    Ok(window)
+}
+
+/// NtUserGetOpenClipboardWindow: the window the clipboard is open with (0 for none).
+pub fn open_clipboard_window() -> Result<u32, NtStatus> {
+    let mut window = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetOpenClipboardWindow(&mut window) })?;
+    Ok(window)
+}
+
+/// NtUserRegisterWindowMessage: the atom of the NUL-terminated UTF-16 name at `name`.
+pub fn register_window_message(name: usize) -> Result<u32, NtStatus> {
+    let mut atom = 0u32;
+    // SAFETY: the kernel reads the name through its fault-tolerant copies, and writes the local.
+    checked(unsafe { raw::NtUserRegisterWindowMessage(name, &mut atom) })?;
+    Ok(atom)
+}
+
+/// NtUserGetClipboardFormatName: the registered `format`'s name into `name` (its length in units
+/// holding the NUL too, the name cut to fit): the units copied before the NUL.
+pub fn clipboard_format_name(format: u32, name: UserBuffer) -> Result<u32, NtStatus> {
+    let mut copied = 0u32;
+    // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
+    // holds a reference into), and the count into the local.
+    checked(unsafe {
+        raw::NtUserGetClipboardFormatName(format, name.at, name.length / 2, &mut copied)
+    })?;
+    Ok(copied)
 }
 
 // --- win32k: messages ----------------------------------------------------------------------------

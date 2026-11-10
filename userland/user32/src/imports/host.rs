@@ -21,6 +21,9 @@ use rtl::window::*;
 
 use crate::class::WndClassExW;
 
+mod clipboard;
+pub use clipboard::*;
+
 std::thread_local! {
     /// The calling thread's last error, as SetLastError left it.
     pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
@@ -1351,12 +1354,22 @@ pub unsafe extern "system" fn NtUserCallOneParam(
     routine: u32,
     result: *mut u32,
 ) -> u32 {
+    if let Some(answer) = enum_formats(routine, param) {
+        return match answer {
+            Ok(value) => {
+                // SAFETY: the caller's out-pointer.
+                unsafe { result.write(value) };
+                STATUS_SUCCESS
+            }
+            Err(status) => status,
+        };
+    }
     let answer = wm(|wm| match routine {
         ONE_PARAM_POST_QUIT_MESSAGE => {
             wm.quit = Some(param);
             Ok(0)
         }
-        ONE_PARAM_REPLY_MESSAGE => Ok(0),
+        ONE_PARAM_REPLY_MESSAGE | ONE_PARAM_IN_SEND_MESSAGE => Ok(0),
         ONE_PARAM_END_SENT_MESSAGE => Ok(match wm.receiving.pop() {
             Some(message) => {
                 wm.answers.push((message, param as i32));

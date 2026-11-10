@@ -233,11 +233,21 @@ unsafe impl Pod for ReceiptHead {}
 
 /// NtUserCallOneParam's routines: PostQuitMessage (the parameter is the exit code), ReplyMessage
 /// (the parameter is the answer; the result is whether the thread was answering another thread's
-/// message), and the end of a sent message's delivery (the parameter is the window procedure's
-/// answer, handed to the sender unless ReplyMessage did already).
+/// message), the end of a sent message's delivery (the parameter is the window procedure's
+/// answer, handed to the sender unless ReplyMessage did already), EnumClipboardFormats (the
+/// parameter is the format before, 0 for the first; the result the next one, 0 past the last),
+/// and InSendMessage (no parameter; the result whether the message the thread is delivering was
+/// sent by another thread).
 pub const ONE_PARAM_POST_QUIT_MESSAGE: u32 = 0;
 pub const ONE_PARAM_REPLY_MESSAGE: u32 = 1;
 pub const ONE_PARAM_END_SENT_MESSAGE: u32 = 2;
+pub const ONE_PARAM_ENUM_CLIPBOARD_FORMATS: u32 = 3;
+pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
+
+/// The keyboard layout every thread has, as its HKL: US English's (the language 0x0409 in both
+/// halves), the one layout F2K has. GetKeyboardLayout answers it, and the clipboard's CF_LOCALE
+/// is its language.
+pub const KEYBOARD_LAYOUT: u32 = 0x0409_0409;
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
 /// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the
