@@ -1347,8 +1347,9 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
 
 /// The pump the services run the window manager's decisions with: every message to a window with a
 /// client-side procedure is queued for its thread ([`defer`]) and answered as the default procedure
-/// answers; a window's end takes its posted messages, timers and update region with it. The other
-/// window-manager calls are [`Pump`]'s defaults.
+/// answers; a window's end takes its posted messages, timers and update region with it; the
+/// activation and the destroy's focus check are [`super::focus`]'s. The other window-manager calls
+/// are [`Pump`]'s defaults.
 pub struct QueuePump;
 
 impl Pump for QueuePump {
@@ -1367,6 +1368,25 @@ impl Pump for QueuePump {
         };
         defer(windows, target, message, class_atom);
         default_answer(message.message)
+    }
+
+    fn activate(
+        &mut self,
+        windows: &mut Windows,
+        classes: &mut class::Registry,
+        target: WindowId,
+        command: window::Activate,
+    ) -> bool {
+        super::focus::activate(windows, classes, target, command, self)
+    }
+
+    fn check_focus(
+        &mut self,
+        windows: &mut Windows,
+        classes: &mut class::Registry,
+        target: WindowId,
+    ) {
+        super::focus::check_focus(windows, classes, target, self);
     }
 
     fn window_teardown(&mut self, windows: &mut Windows, target: WindowId) {

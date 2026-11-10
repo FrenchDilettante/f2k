@@ -21,7 +21,7 @@ use rtl::status::{NtStatus, STATUS_INVALID_CID};
 use rtl::user::*;
 
 use crate::imports;
-use crate::{answered, failed_with, paint, window, Out};
+use crate::{answered, failed_with, focus, paint, window, Out};
 
 /// The messages TranslateMessage looks at (winuser.h): the keys' and the system keys'.
 const WM_KEYUP: u32 = 0x0101;
@@ -263,14 +263,22 @@ fn translate(msg: &Msg) -> u32 {
 
 /// The default window procedure's answer to a message: WM_NCCREATE TRUE (the creation goes on);
 /// WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and EndPaint;
+/// WM_ACTIVATE the focus to a window being activated that is not minimized, as the documentation
+/// gives it; WM_NCACTIVATE TRUE (the change goes on: there is no caption to redraw yet);
 /// WM_ERASEBKGND TRUE (the background counts as erased: there is no fill to draw it with yet);
 /// WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
 /// DefWindowProc's answer), whatever its lParam; WM_NCCALCSIZE the rectangle left as it is (the
 /// client area is the window's: windows have no decoration yet); 0 to everything else,
 /// WM_ENDSESSION included.
-pub fn default_procedure(window: usize, message: u32, _wparam: u32, _lparam: i32) -> i32 {
+pub fn default_procedure(window: usize, message: u32, wparam: u32, _lparam: i32) -> i32 {
     match message {
-        WM_NCCREATE | WM_ERASEBKGND | WM_QUERYENDSESSION => 1,
+        WM_NCCREATE | WM_ERASEBKGND | WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
+        WM_ACTIVATE => {
+            if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
+                focus::activate_focus(window);
+            }
+            0
+        }
         WM_CLOSE => {
             window::destroy_window(window);
             0

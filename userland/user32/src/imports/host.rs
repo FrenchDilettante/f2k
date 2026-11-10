@@ -498,6 +498,11 @@ pub struct Wm {
     pub dcs: Vec<u32>,
     /// The system colors SetSysColors set, in order.
     pub colors: Vec<(u32, u32)>,
+    /// The calling thread's focus window and active window, and the foreground window (0 for
+    /// none).
+    pub focus: u32,
+    pub active: u32,
+    pub foreground: u32,
 }
 
 std::thread_local! {
@@ -532,6 +537,53 @@ impl Wm {
             .iter_mut()
             .find(|w| w.alive && w.handle as usize == handle && handle != 0)
             .ok_or(STATUS_INVALID_HANDLE)
+    }
+
+    /// A message with no payload sent to `hwnd`'s procedure.
+    fn send(&mut self, hwnd: u32, message: u32, wparam: u32, lparam: i32) {
+        let proc = self.window(hwnd as usize).map_or(0, |w| w.proc);
+        self.sent.push_back(HostSent {
+            hwnd,
+            message,
+            wparam,
+            lparam,
+            proc,
+            create: None,
+        });
+    }
+
+    /// The focus to `new`: WM_KILLFOCUS to the window that had it, WM_SETFOCUS to `new`.
+    fn move_focus(&mut self, new: u32) {
+        let old = self.focus;
+        if old == new {
+            return;
+        }
+        self.focus = new;
+        if old != 0 {
+            self.send(old, WM_KILLFOCUS, new, 0);
+        }
+        if new != 0 {
+            self.send(new, WM_SETFOCUS, old, 0);
+        }
+    }
+
+    /// `new` made the active window: WM_NCACTIVATE and WM_ACTIVATE to the window that was and to
+    /// `new`, as the kernel sends them.
+    fn activate(&mut self, new: u32) {
+        let old = self.active;
+        if old == new {
+            return;
+        }
+        if old != 0 {
+            self.send(old, WM_NCACTIVATE, 0, 0);
+            self.send(old, WM_ACTIVATE, WA_INACTIVE, new as i32);
+        }
+        self.active = new;
+        self.foreground = new;
+        if new != 0 {
+            self.send(new, WM_NCACTIVATE, 1, 0);
+            self.send(new, WM_ACTIVATE, WA_ACTIVE, old as i32);
+        }
     }
 
     fn class(&mut self, name: &Result<Vec<u16>, u16>) -> Option<&mut HostClass> {
@@ -1152,8 +1204,19 @@ pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) ->
             Ok(w) => (w.update.is_some(), w.handle, w.proc),
             Err(status) => return status,
         };
-        if routine != HWND_LOCK_UPDATE_WINDOW {
-            return STATUS_INVALID_PARAMETER;
+        match routine {
+            HWND_LOCK_UPDATE_WINDOW => {}
+            HWND_LOCK_SET_FOREGROUND_WINDOW => {
+                wm.activate(handle);
+                return STATUS_SUCCESS;
+            }
+            HWND_LOCK_ACTIVATE_FOCUS => {
+                if wm.active == handle {
+                    wm.move_focus(handle);
+                }
+                return STATUS_SUCCESS;
+            }
+            _ => return STATUS_INVALID_PARAMETER,
         }
         if update {
             wm.sent.push_back(HostSent {
@@ -1165,6 +1228,110 @@ pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) ->
                 create: None,
             });
         }
+        STATUS_SUCCESS
+    })
+}
+
+/// WS_DISABLED.
+const WS_DISABLED_BIT: u32 = 0x0800_0000;
+
+/// The window a focus or activation service names: 0 for none, a live window's handle, or
+/// STATUS_INVALID_HANDLE.
+fn named(wm: &mut Wm, window: usize) -> Result<u32, u32> {
+    if window == 0 {
+        return Ok(0);
+    }
+    wm.window(window).map(|w| w.handle)
+}
+
+pub unsafe extern "system" fn NtUserSetFocus(window: usize, previous: *mut u32) -> u32 {
+    wm(|wm| {
+        let handle = match named(wm, window) {
+            Ok(handle) => handle,
+            Err(status) => return status,
+        };
+        let disabled = handle != 0
+            && wm
+                .window(window)
+                .is_ok_and(|w| w.style & WS_DISABLED_BIT != 0);
+        let answer = if disabled {
+            0
+        } else {
+            let old = wm.focus;
+            wm.move_focus(handle);
+            old
+        };
+        // SAFETY: the caller's out-pointer.
+        unsafe { previous.write(answer) };
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserSetActiveWindow(window: usize, previous: *mut u32) -> u32 {
+    wm(|wm| {
+        let handle = match named(wm, window) {
+            Ok(handle) => handle,
+            Err(status) => return status,
+        };
+        let old = wm.active;
+        wm.activate(handle);
+        // SAFETY: the caller's out-pointer.
+        unsafe { previous.write(old) };
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserGetForegroundWindow(window: *mut u32) -> u32 {
+    let answer = wm(|wm| wm.foreground);
+    // SAFETY: the caller's out-pointer.
+    unsafe { window.write(answer) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserGetThreadState(routine: u32, result: *mut u32) -> u32 {
+    let answer = wm(|wm| match routine {
+        THREAD_STATE_FOCUS_WINDOW => Ok(wm.focus),
+        THREAD_STATE_ACTIVE_WINDOW => Ok(wm.active),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    });
+    match answer {
+        Ok(value) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { result.write(value) };
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+pub unsafe extern "system" fn NtUserCallHwndParamLock(
+    window: usize,
+    param: u32,
+    routine: u32,
+    result: *mut u32,
+) -> u32 {
+    wm(|wm| {
+        if routine != HWND_PARAM_LOCK_ENABLE_WINDOW {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let (handle, was) = match wm.window(window) {
+            Ok(w) => (w.handle, w.style & WS_DISABLED_BIT != 0),
+            Err(status) => return status,
+        };
+        if param == 0 {
+            wm.send(handle, WM_CANCELMODE, 0, 0);
+            if wm.focus == handle {
+                wm.move_focus(0);
+            }
+        }
+        if was == (param != 0) {
+            if let Ok(w) = wm.window(window) {
+                w.style ^= WS_DISABLED_BIT;
+            }
+            wm.send(handle, WM_ENABLE, param, 0);
+        }
+        // SAFETY: the caller's out-pointer.
+        unsafe { result.write(if was { 8 } else { 0 }) };
         STATUS_SUCCESS
     })
 }

@@ -3,7 +3,8 @@
 //!
 //! A window is a record in the window pool ([`Windows`]), named by a generation-tagged id
 //! ([`WindowId`]), the object manager's pattern, with a handle into the window handle table
-//! ([`sched::object::HandleTable`], the same shape the class registry's cursor table uses). Its
+//! ([`sched::object::HandleTable`], the same shape the class registry's cursor table uses, its
+//! handles carrying a uniqueness count in their high word, [`WindowHandles`]). Its
 //! parent/child/next/owner links are the z-order and ownership lists the create and destroy
 //! logic splices. Threads ([`Thread`]), desktops ([`Desktop`]) and monitors ([`Monitor`]) are
 //! the calling context the decisions read: the thread's desktop and its access mask, its window
@@ -70,7 +71,7 @@ use super::class;
 #[cfg(target_arch = "x86")]
 use super::queue::QueuePump;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-use crate::sched::object::HandleTable;
+use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -101,6 +102,7 @@ pub const WS_THICKFRAME: u32 = 0x0004_0000;
 pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
 pub const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
 pub const WS_MINIMIZE: u32 = 0x2000_0000;
+pub const WS_DISABLED: u32 = 0x0800_0000;
 pub const WS_MAXIMIZE: u32 = 0x0100_0000;
 /// WS_OVERLAPPEDWINDOW.
 pub const WS_OVERLAPPEDWINDOW: u32 =
@@ -572,7 +574,13 @@ pub trait Pump {
     fn set_window_pos(&mut self, _windows: &mut Windows, _target: WindowId, _flags: u32) {}
 
     /// Activate a window (the AW_* decision as [`Activate`]).
-    fn activate(&mut self, _windows: &mut Windows, _target: WindowId, _command: Activate) -> bool {
+    fn activate(
+        &mut self,
+        _windows: &mut Windows,
+        _classes: &mut class::Registry,
+        _target: WindowId,
+        _command: Activate,
+    ) -> bool {
         true
     }
 
@@ -580,7 +588,13 @@ pub trait Pump {
     fn min_maximize(&mut self, _windows: &mut Windows, _target: WindowId, _command: u32) {}
 
     /// The focus check before and after the destroy messages.
-    fn check_focus(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn check_focus(
+        &mut self,
+        _windows: &mut Windows,
+        _classes: &mut class::Registry,
+        _target: WindowId,
+    ) {
+    }
 
     /// Share (or end sharing) input state between two threads.
     fn attach_input(&mut self, _from: ThreadId, _to: ThreadId, _attach: bool) {}
@@ -967,6 +981,74 @@ struct WindowEntry {
     in_destroy: bool,
 }
 
+/// The window handle table: the handle table's slots, and each slot's uniqueness count, which a
+/// window's handle carries in its high word, as Windows 2000's HWNDs carry one. The count moves on
+/// when the slot's handle is closed, so a destroyed window's handle names no window even once its
+/// slot names another (the focus capture: a handle destroyed before another window's creation
+/// answers ERROR_INVALID_WINDOW_HANDLE). A slot's first handle has a count of 0: the table's own
+/// value.
+struct WindowHandles {
+    table: HandleTable<WindowEntry>,
+    uniq: [u16; HANDLE_SLOTS],
+}
+
+impl WindowHandles {
+    /// Write an empty table at `handles`, field by field.
+    ///
+    /// # Safety
+    ///
+    /// `handles` is valid for writes and aligned; its previous contents are overwritten, not
+    /// dropped.
+    unsafe fn write_empty(handles: *mut WindowHandles) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field is written, the array element by element.
+        unsafe {
+            HandleTable::write_empty(addr_of_mut!((*handles).table));
+            let uniq = addr_of_mut!((*handles).uniq) as *mut u16;
+            for index in 0..HANDLE_SLOTS {
+                uniq.add(index).write(0);
+            }
+        }
+    }
+
+    /// The table's own handle for the window handle `handle`, when its count is the slot's.
+    fn slot_handle(&self, handle: Hwnd) -> Option<(u32, usize)> {
+        let low = handle & 0xFFFF;
+        let index = (low >> HANDLE_SHIFT) as usize;
+        (index < HANDLE_SLOTS && (handle >> 16) as u16 == self.uniq[index]).then_some((low, index))
+    }
+
+    /// Insert `entry`: its window handle, 0 when every slot is taken.
+    fn insert(&mut self, entry: WindowEntry) -> Hwnd {
+        let handle = self.table.insert(entry);
+        if handle == 0 {
+            return 0;
+        }
+        handle | (self.uniq[(handle >> HANDLE_SHIFT) as usize] as u32) << 16
+    }
+
+    /// The entry the window handle `handle` names, or none.
+    fn lookup(&self, handle: Hwnd) -> Option<WindowEntry> {
+        self.table.lookup(self.slot_handle(handle)?.0)
+    }
+
+    /// Change the entry `handle` names in place; false when it names none.
+    fn update(&mut self, handle: Hwnd, change: impl FnOnce(WindowEntry) -> WindowEntry) -> bool {
+        match self.slot_handle(handle) {
+            Some((low, _)) => self.table.update(low, change),
+            None => false,
+        }
+    }
+
+    /// Close `handle`, its slot's count moved on (kept to 15 bits: a handle stays positive).
+    fn close(&mut self, handle: Hwnd) -> Option<WindowEntry> {
+        let (low, index) = self.slot_handle(handle)?;
+        let entry = self.table.close(low)?;
+        self.uniq[index] = self.uniq[index].wrapping_add(1) & 0x7FFF;
+        Some(entry)
+    }
+}
+
 /// A thread's create/destroy context: its process, desktop and desktop access, its window count
 /// and queue state, its startup info and hotkey.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1084,7 +1166,7 @@ impl Monitor {
 /// The window registry: the pool, the handle table, and the calling-context records.
 pub struct Windows {
     pool: WindowPool,
-    handles: HandleTable<WindowEntry>,
+    handles: WindowHandles,
     threads: [Thread; THREADS],
     desktops: [Desktop; DESKTOPS],
     monitors: [Monitor; MONITORS],
@@ -1115,7 +1197,7 @@ impl Windows {
                 headers.add(index).write(Header::DEAD);
                 records.add(index).write(Window::EMPTY);
             }
-            HandleTable::write_empty(addr_of_mut!((*windows).handles));
+            WindowHandles::write_empty(addr_of_mut!((*windows).handles));
             let threads = addr_of_mut!((*windows).threads) as *mut Thread;
             for index in 0..THREADS {
                 threads.add(index).write(Thread::EMPTY);
@@ -1244,11 +1326,11 @@ impl Windows {
         self.pool.at_mut(id)
     }
 
-    fn thread(&self, id: ThreadId) -> &Thread {
+    pub(super) fn thread(&self, id: ThreadId) -> &Thread {
         &self.threads[id.0 as usize]
     }
 
-    fn thread_mut(&mut self, id: ThreadId) -> &mut Thread {
+    pub(super) fn thread_mut(&mut self, id: ThreadId) -> &mut Thread {
         &mut self.threads[id.0 as usize]
     }
 
@@ -1361,6 +1443,16 @@ impl Windows {
     /// The window's public style.
     pub fn window_style(&self, id: WindowId) -> u32 {
         self.at(id).style
+    }
+
+    /// Set or clear the window's WS_DISABLED: EnableWindow's change of state ([`super::focus`]).
+    pub fn set_disabled(&mut self, id: WindowId, disabled: bool) {
+        let w = self.at_mut(id);
+        if disabled {
+            w.style |= WS_DISABLED;
+        } else {
+            w.style &= !WS_DISABLED;
+        }
     }
 
     /// The window's client rectangle, in screen coordinates.
@@ -2501,7 +2593,7 @@ impl Windows {
                 }
             }
             if let Some(t) = target {
-                let ok = pump.activate(self, t, command);
+                let ok = pump.activate(self, classes, t, command);
                 if !ok || (command == Activate::Skip && self.thread(caller).active == Some(window))
                 {
                     let t = self.thread_mut(caller);
@@ -2572,7 +2664,7 @@ impl Windows {
                 }
             }
             // `current`'s subtree is done.
-            pump.check_focus(self, current);
+            pump.check_focus(self, classes, current);
             if current == window {
                 return;
             }
@@ -2602,7 +2694,7 @@ impl Windows {
         window: WindowId,
         pump: &mut dyn Pump,
     ) {
-        pump.check_focus(self, window);
+        pump.check_focus(self, classes, window);
         if self.clipboard_owner == Some(window) {
             pump.disown_clipboard(self, window);
         }
@@ -3027,7 +3119,10 @@ impl Windows {
     /// as the WM_SHOWWINDOW documentation lists) and then shows or hides it through
     /// [`Windows::set_window_pos`], without moving, sizing or reordering it; the commands that do
     /// not activate (SW_SHOWNA, SW_SHOWNOACTIVATE, the minimizing ones) and every child window's
-    /// show leave the activation alone. A visible window shown again is only activated. Hiding
+    /// show leave the activation alone. A top-level window being shown comes to the top of the
+    /// z-order, activated or not (the focus capture: a window shown with SW_SHOWNOACTIVATE is above
+    /// the active window, which activation skips past when it is destroyed); a child keeps its
+    /// place. A visible window shown again is only activated. Hiding
     /// the thread's active top-level window activates the next one. The minimizing and maximizing
     /// commands, and the restoring ones of a minimized or maximized window, go through the min/max
     /// seam first. A tiled window's first show sends the WM_SIZE and WM_MOVE its creation
@@ -3079,12 +3174,12 @@ impl Windows {
             }
             let flags = SWP_NOMOVE
                 | SWP_NOSIZE
-                | SWP_NOZORDER
+                | if show && !child { 0 } else { SWP_NOZORDER }
                 | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW }
                 | if activate { 0 } else { SWP_NOACTIVATE };
             self.set_window_pos(classes, window, InsertAfter::Top, 0, 0, 0, 0, flags, pump)?;
         } else if show && activate {
-            pump.activate(self, window, Activate::Try);
+            pump.activate(self, classes, window, Activate::Try);
         }
         // A handler may have destroyed the window: nothing is left to do.
         if !self.pool.is_live(window) {
@@ -3095,7 +3190,7 @@ impl Windows {
         if !show && was_visible && !child {
             let thread = self.at(window).thread;
             if self.thread(thread).active == Some(window) {
-                pump.activate(self, window, Activate::Skip);
+                pump.activate(self, classes, window, Activate::Skip);
             }
         }
 
@@ -3278,7 +3373,7 @@ impl Windows {
             && !self.at(window).is_child()
             && self.at(window).is_visible()
         {
-            pump.activate(self, window, Activate::Try);
+            pump.activate(self, classes, window, Activate::Try);
             if !self.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
@@ -4007,7 +4102,8 @@ pub fn destroy_window(call: &mut NtCall, window: Handle) -> NtResult {
 }
 
 /// NtUserSetWindowPos(Window, InsertAfter, X, Y, Width, Height, Flags): SetWindowPos's arguments
-/// as they are ([`Windows::set_window_pos_handle`]).
+/// as they are ([`Windows::set_window_pos_handle`]), its messages and its activation through the
+/// queue's pump.
 #[cfg(target_arch = "x86")]
 #[allow(clippy::too_many_arguments)]
 pub fn set_window_pos(
@@ -4020,12 +4116,12 @@ pub fn set_window_pos(
     cy: i32,
     flags: u32,
 ) -> NtResult {
-    let mut manager = lock(call.passive());
-    let WindowManager {
-        windows, classes, ..
-    } = &mut *manager;
-    windows
-        .set_window_pos_handle(
+    super::winsta::gui_thread(call)?;
+    super::queue::with_manager(call.passive(), |manager| {
+        let WindowManager {
+            windows, classes, ..
+        } = manager;
+        windows.set_window_pos_handle(
             classes,
             window.raw(),
             insert_after.raw(),
@@ -4034,9 +4130,10 @@ pub fn set_window_pos(
             cx,
             cy,
             flags,
-            &mut DefaultProcedure,
+            &mut QueuePump,
         )
-        .map_err(Failure::status)?;
+    })
+    .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -4052,22 +4149,17 @@ pub fn move_window(
     cy: i32,
     repaint: u32,
 ) -> NtResult {
-    lock(call.passive())
-        .move_window(
-            window.raw(),
-            x,
-            y,
-            cx,
-            cy,
-            repaint != 0,
-            &mut DefaultProcedure,
-        )
-        .map_err(Failure::status)?;
+    super::winsta::gui_thread(call)?;
+    super::queue::with_manager(call.passive(), |manager| {
+        manager.move_window(window.raw(), x, y, cx, cy, repaint != 0, &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
 }
 
 /// NtUserShowWindow(Window, Command, Previous): ShowWindow's arguments, and its answer through
-/// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go.
+/// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go;
+/// its messages and its activation through the queue's pump.
 #[cfg(target_arch = "x86")]
 pub fn show_window(
     call: &mut NtCall,
@@ -4075,9 +4167,11 @@ pub fn show_window(
     command: i32,
     previous: UserPtr<u32>,
 ) -> NtResult {
-    let answer = lock(call.passive())
-        .show_window(window.raw(), command, &mut DefaultProcedure)
-        .map_err(Failure::status)?;
+    super::winsta::gui_thread(call)?;
+    let answer = super::queue::with_manager(call.passive(), |manager| {
+        manager.show_window(window.raw(), command, &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
     previous.write(answer)?;
     Ok(STATUS_SUCCESS)
 }
@@ -4086,9 +4180,11 @@ pub fn show_window(
 /// ([`WindowManager::show_window_async`]).
 #[cfg(target_arch = "x86")]
 pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtResult {
-    lock(call.passive())
-        .show_window_async(window.raw(), command, &mut DefaultProcedure)
-        .map_err(Failure::status)?;
+    super::winsta::gui_thread(call)?;
+    super::queue::with_manager(call.passive(), |manager| {
+        manager.show_window_async(window.raw(), command, &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -4588,6 +4684,7 @@ mod tests {
         fn activate(
             &mut self,
             _windows: &mut Windows,
+            _classes: &mut class::Registry,
             target: WindowId,
             command: Activate,
         ) -> bool {
@@ -4599,7 +4696,12 @@ mod tests {
             self.events.push(Ev::MinMax(target, command));
         }
 
-        fn check_focus(&mut self, _windows: &mut Windows, target: WindowId) {
+        fn check_focus(
+            &mut self,
+            _windows: &mut Windows,
+            _classes: &mut class::Registry,
+            target: WindowId,
+        ) {
             self.events.push(Ev::Focus(target));
         }
 
@@ -5115,8 +5217,8 @@ mod tests {
         a.x = CW_USEDEFAULT;
         a.y = SW_SHOWNA;
         let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
-        // SW_SHOWNA: shown, not activated.
-        let show = SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER;
+        // SW_SHOWNA: shown at the top of the z-order, not activated.
+        let show = SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE;
         assert_eq!(pump.changing_flags(), vec![(id, show | SWP_NOACTIVATE)]);
         assert!(!pump.events.iter().any(|e| matches!(e, Ev::Activate(..))));
         assert!(w.at(id).is_visible());
@@ -6260,6 +6362,31 @@ mod tests {
         assert_eq!(err.code(), 1400);
     }
 
+    /// A destroyed window's handle names no window once its slot names the next one: the slot's
+    /// uniqueness count in the high word moved on.
+    #[test]
+    fn a_reused_slot_gets_a_new_handle() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let first = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let old = w.handle_of(first);
+        assert_eq!(old >> 16, 0, "a slot's first handle is the table's own");
+        assert!(w.destroy_window_handle(c, t, old, &mut pump).unwrap());
+        let next = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let new = w.handle_of(next);
+        assert_eq!(
+            (new & 0xFFFF, new >> 16),
+            (old, 1),
+            "the same slot, counted on"
+        );
+        assert_eq!(w.window_from_handle(old), None);
+        assert_eq!(w.window_from_handle(new), Some(next));
+        assert_eq!(
+            w.destroy_window_handle(c, t, old, &mut pump),
+            Err(Failure::InvalidWindowHandle)
+        );
+    }
+
     // --- The window manager: the services' side
     // ----------------------------------------------------------
 
@@ -6554,8 +6681,9 @@ mod tests {
 
     /// ShowWindow's answers and messages, as the guigeo capture's show block runs them: the former
     /// visibility each time; WM_SHOWWINDOW and the position change only when the visibility
-    /// changes; a hide of a hidden window does nothing; SW_SHOWNORMAL sends no WM_SHOWWINDOW; a
-    /// command past SW_MAX is ERROR_INVALID_PARAMETER.
+    /// changes, a top-level window shown coming to the top of the z-order; a hide of a hidden
+    /// window does nothing; SW_SHOWNORMAL sends no WM_SHOWWINDOW; a command past SW_MAX is
+    /// ERROR_INVALID_PARAMETER.
     #[test]
     fn show_window_answers_the_former_visibility() {
         let (w, c, t, atom, _, _) = setup();
@@ -6575,7 +6703,7 @@ mod tests {
         assert!(pump.events.contains(&Ev::Send(id, WM_SHOWWINDOW, 1, 0)));
         assert_eq!(
             pump.changing_flags(),
-            vec![(id, SHOW_ONLY | SWP_SHOWWINDOW)]
+            vec![(id, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW)]
         );
         assert!(pump.events.contains(&Ev::Activate(id, Activate::Try)));
 

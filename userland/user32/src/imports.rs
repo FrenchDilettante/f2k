@@ -244,6 +244,23 @@ mod raw {
         #[link_name = "\u{1}_f2k_nt_NtUserEndPaint"]
         pub fn NtUserEndPaint(window: usize, paint: usize) -> u32;
 
+        // The focus and activation (kernel/src/win32k/focus.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserSetFocus"]
+        pub fn NtUserSetFocus(window: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetActiveWindow"]
+        pub fn NtUserSetActiveWindow(window: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetForegroundWindow"]
+        pub fn NtUserGetForegroundWindow(window: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetThreadState"]
+        pub fn NtUserGetThreadState(routine: u32, result: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCallHwndParamLock"]
+        pub fn NtUserCallHwndParamLock(
+            window: usize,
+            param: u32,
+            routine: u32,
+            result: *mut u32,
+        ) -> u32;
+
         // The DCs (kernel/src/win32k/dc.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserGetDC"]
         pub fn NtUserGetDC(window: usize, dc: *mut u32) -> u32;
@@ -884,6 +901,51 @@ pub fn call_procedure(proc: u32, window: u32, message: u32, wparam: u32, lparam:
     // was registered with, or a TimerProc a timer was set with, both the program's own functions
     // of that shape.
     unsafe { raw::call_procedure(proc, window, message, wparam, lparam) }
+}
+
+// --- win32k: the focus and activation ------------------------------------------------------------
+
+/// NtUserSetFocus: the focus to `window` (0: to no window); the window that had it (0 for none, or
+/// for a refusal).
+pub fn set_focus(window: usize) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserSetFocus(window, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserSetActiveWindow: `window` activated; the window that was active (0 for none, or for a
+/// refusal).
+pub fn set_active_window(window: usize) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserSetActiveWindow(window, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserGetForegroundWindow: the foreground window (0 for none).
+pub fn foreground_window() -> Result<u32, NtStatus> {
+    let mut window = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserGetForegroundWindow(&mut window) })?;
+    Ok(window)
+}
+
+/// NtUserGetThreadState: the routine `routine` (rtl::user's THREAD_STATE_*): its result.
+pub fn thread_state(routine: u32) -> Result<u32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the result into the local.
+    checked(unsafe { raw::NtUserGetThreadState(routine, &mut result) })?;
+    Ok(result)
+}
+
+/// NtUserCallHwndParamLock: the routine `routine` (rtl::user's HWND_PARAM_LOCK_*) on `window` with
+/// `param`: its result.
+pub fn call_hwnd_param_lock(window: usize, param: u32, routine: u32) -> Result<u32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the result into the local.
+    checked(unsafe { raw::NtUserCallHwndParamLock(window, param, routine, &mut result) })?;
+    Ok(result)
 }
 
 // --- win32k: painting ----------------------------------------------------------------------------

@@ -3,7 +3,8 @@
 //! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services
 //! hand user32 ([`Receipt`]), and the routines of the NtUserCall* services ([`ONE_PARAM_*`],
-//! [`HWND_LOCK_*`]). Only F2K's user32 calls those services, so their shapes are F2K's.
+//! [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of NtUserGetThreadState ([`THREAD_STATE_*`]). Only
+//! F2K's user32 calls those services, so their shapes are F2K's.
 //!
 //! A message another thread sent, or one win32k sent on its own behalf (the window's creation and
 //! destruction messages), reaches the window procedure through the receiving thread's own message
@@ -12,6 +13,8 @@
 //!
 //! [`ONE_PARAM_*`]: ONE_PARAM_POST_QUIT_MESSAGE
 //! [`HWND_LOCK_*`]: HWND_LOCK_UPDATE_WINDOW
+//! [`HWND_PARAM_LOCK_*`]: HWND_PARAM_LOCK_ENABLE_WINDOW
+//! [`THREAD_STATE_*`]: THREAD_STATE_FOCUS_WINDOW
 
 use crate::gdi::Rect;
 use crate::pod::Pod;
@@ -24,15 +27,22 @@ pub const WM_CREATE: u32 = 0x0001;
 pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_MOVE: u32 = 0x0003;
 pub const WM_SIZE: u32 = 0x0005;
+pub const WM_ACTIVATE: u32 = 0x0006;
+pub const WM_SETFOCUS: u32 = 0x0007;
+pub const WM_KILLFOCUS: u32 = 0x0008;
+pub const WM_ENABLE: u32 = 0x000A;
 pub const WM_PAINT: u32 = 0x000F;
 pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_QUERYENDSESSION: u32 = 0x0011;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_ENDSESSION: u32 = 0x0016;
+pub const WM_ACTIVATEAPP: u32 = 0x001C;
+pub const WM_CANCELMODE: u32 = 0x001F;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
+pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_CHAR: u32 = 0x0102;
 pub const WM_TIMER: u32 = 0x0113;
@@ -41,6 +51,11 @@ pub const WM_USER: u32 = 0x0400;
 /// WM_QUERYENDSESSION's and WM_ENDSESSION's lParam for a logoff (winuser.h's ENDSESSION_LOGOFF): 0
 /// for a shutdown.
 pub const ENDSESSION_LOGOFF: u32 = 0x8000_0000;
+
+/// WM_ACTIVATE's state, its wParam's low word (winuser.h's WA_*): the window is deactivated, or
+/// activated by some other means than a mouse click.
+pub const WA_INACTIVE: u32 = 0;
+pub const WA_ACTIVE: u32 = 1;
 
 /// PostMessage's window that names every top-level window (HWND_BROADCAST).
 pub const HWND_BROADCAST: u32 = 0xFFFF;
@@ -206,8 +221,21 @@ pub const ONE_PARAM_REPLY_MESSAGE: u32 = 1;
 pub const ONE_PARAM_END_SENT_MESSAGE: u32 = 2;
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
-/// region is not empty).
+/// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the
+/// window its active window); the default window procedure's WM_ACTIVATE (the focus to the window
+/// being activated, as DefWindowProc's documentation gives it).
 pub const HWND_LOCK_UPDATE_WINDOW: u32 = 0;
+pub const HWND_LOCK_SET_FOREGROUND_WINDOW: u32 = 1;
+pub const HWND_LOCK_ACTIVATE_FOCUS: u32 = 2;
+
+/// NtUserCallHwndParamLock's routines: EnableWindow (the parameter is bEnable; the result the
+/// window's former WS_DISABLED, as the style's state byte holds it).
+pub const HWND_PARAM_LOCK_ENABLE_WINDOW: u32 = 0;
+
+/// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
+/// window (GetActiveWindow).
+pub const THREAD_STATE_FOCUS_WINDOW: u32 = 0;
+pub const THREAD_STATE_ACTIVE_WINDOW: u32 = 1;
 
 /// NtUserGetUpdateRect's answer bits: the update region is not empty; the caller is to send the
 /// window WM_ERASEBKGND (it asked for the erase, and one was pending).

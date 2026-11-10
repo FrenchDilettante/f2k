@@ -1,5 +1,6 @@
 //! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window classes
-//! ([`class`]), windows ([`window`]), the threads' message queues ([`queue`]), their timers
+//! ([`class`]), windows ([`window`]), their focus, enabling and activation ([`focus`]), the
+//! threads' message queues ([`queue`]), their timers
 //! ([`timer`]) and the windows' painting ([`paint`]), window stations and desktops ([`winsta`]),
 //! the display settings ([`display`]), device contexts ([`dc`]) and what is drawn through them
 //! ([`raster`], in the built-in font, [`font`]), and the second service table their services come
@@ -26,6 +27,7 @@
 pub mod class;
 pub mod dc;
 pub mod display;
+pub mod focus;
 pub mod font;
 pub mod paint;
 pub mod queue;

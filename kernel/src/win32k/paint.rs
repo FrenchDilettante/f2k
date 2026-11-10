@@ -578,10 +578,11 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUserCallHwndLock(Window, Routine): UpdateWindow ([`update_window`]);
-    /// STATUS_INVALID_PARAMETER for another routine.
+    /// NtUserCallHwndLock(Window, Routine): UpdateWindow ([`update_window`]), and the focus and
+    /// activation routines ([`crate::win32k::focus::call_hwnd_lock`]); STATUS_INVALID_PARAMETER
+    /// for another routine.
     pub fn call_hwnd_lock(call: &mut NtCall, window: Handle, routine: u32) -> NtResult {
-        gui_thread(call)?;
+        let caller = gui_thread(call)?.thread;
         with_manager(call.passive(), |m| {
             let id = window_of(&m.windows, window)?;
             match routine {
@@ -589,7 +590,20 @@ mod services {
                     update_window(&mut m.windows, id);
                     Ok(())
                 }
-                _ => Err(STATUS_INVALID_PARAMETER),
+                _ => {
+                    let crate::win32k::window::WindowManager {
+                        windows, classes, ..
+                    } = m;
+                    crate::win32k::focus::call_hwnd_lock(
+                        windows,
+                        classes,
+                        caller,
+                        id,
+                        routine,
+                        &mut crate::win32k::queue::QueuePump,
+                    )
+                    .unwrap_or(Err(STATUS_INVALID_PARAMETER))
+                }
             }
         })?;
         Ok(STATUS_SUCCESS)
