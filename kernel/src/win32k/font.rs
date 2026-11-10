@@ -43,11 +43,18 @@ pub fn extent(count: u32) -> (i32, i32) {
     (count.saturating_mul(WIDTH), HEIGHT)
 }
 
+/// The rows of a glyph cell above its baseline (the capitals' and the digits' rows end on the
+/// twelfth; the descenders take the four below it, the underscore the second of them).
+pub const ASCENT: i32 = 12;
+
 /// The font's metrics, as GetTextMetrics answers them: the cell's height and its width as the
-/// average character width, no overhang, every other field zero.
+/// average character width, its ascent and descent about the baseline, no overhang, every other
+/// field zero.
 pub fn text_metric() -> TextMetricW {
     TextMetricW {
         height: HEIGHT,
+        ascent: ASCENT,
+        descent: HEIGHT - ASCENT,
         ave_char_width: WIDTH,
         overhang: 0,
         ..TextMetricW::default()
@@ -893,9 +900,23 @@ mod tests {
         assert_eq!(metric.height, 16);
         assert_eq!(metric.ave_char_width, 8);
         assert_eq!(metric.overhang, 0);
+        assert_eq!((metric.ascent, metric.descent), (12, 4));
+        assert_eq!(
+            glyph(b'_')[ASCENT as usize + 1],
+            0xFF,
+            "the underscore's row"
+        );
+        assert_eq!(
+            glyph(b'H')[ASCENT as usize - 1],
+            0xC6,
+            "a capital's last row"
+        );
+        assert_eq!(glyph(b'H')[ASCENT as usize], 0x00);
         assert_eq!(
             TextMetricW {
                 height: 0,
+                ascent: 0,
+                descent: 0,
                 ave_char_width: 0,
                 ..metric
             },

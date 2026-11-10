@@ -714,19 +714,12 @@ pub extern "system" fn get_sys_color(index: i32) -> u32 {
         .map_or(0, |color| color.load(Ordering::Relaxed))
 }
 
-/// The handles GetSysColorBrush answers: the stock objects' shape (the stock bit and OBJ_BRUSH)
-/// with the color's index past the stock indexes. They name no object a DC selects: there are no
-/// brush objects yet.
-const SYS_COLOR_BRUSH_BASE: u32 = 0x0080_0000 | (rtl::gdi::OBJ_BRUSH << 16) | 0x40;
-
-/// GetSysColorBrush: the system color `index`'s brush; NULL for an index past the table.
+/// GetSysColorBrush: the system color `index`'s brush, a global brush every process names by the
+/// same handle, which a DC selects and which paints in the system color as it is when it draws
+/// (rtl::gdi's [`sys_color_brush`](rtl::gdi::sys_color_brush)); NULL for an index past the table.
 #[unsafe(export_name = "f2k_export_GetSysColorBrush")]
 pub extern "system" fn get_sys_color_brush(index: i32) -> usize {
-    if (index as u32 as usize) < SYSTEM_COLORS {
-        (SYS_COLOR_BRUSH_BASE + index as u32) as usize
-    } else {
-        0
-    }
+    rtl::gdi::sys_color_brush(index as u32).map_or(0, |brush| brush as usize)
 }
 
 /// SetSysColors: `count` system colors set, their indexes and COLORREFs in the caller's arrays;

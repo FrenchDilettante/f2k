@@ -2,8 +2,8 @@
 # kernel32's, documented in userland/kernel32/exports.toml).
 #
 # F2K's user32 exports what the corpus fixtures (tests/user32, tests/gdi32's guidc), cmd.exe and
-# calc.exe import: its own code over ntdll and kernel32, as Windows 2000's user32 imports them,
-# and stubs for what is not written yet. The rest of the records are catalogued from
+# calc.exe import: its own code over ntdll, kernel32 and gdi32, as Windows 2000's user32 imports
+# them, and stubs for what is not written yet. The rest of the records are catalogued from
 # USER32.dll 5.0.2195.6688's export table (scripts/catalogue_exports.py): their name and ordinal.
 # Implementing one gives it its group, prototype and implementation.
 #
@@ -78,6 +78,10 @@ title = "strings and characters"
 [[group]]
 key = "help"
 title = "help"
+
+[[group]]
+key = "draw"
+title = "drawing: fills, frames, edges and text"
 
 # --- window stations / desktops -------------------------------------------------------------------
 
@@ -297,7 +301,7 @@ args = ["i32 nIndex"]
 impl = { native = "GetSysColorBrush" }
 ordinal = 328
 fails = "NULL"
-note = "a constant handle per color: no brush objects yet"
+note = "a global brush per color, the same handle in every process, painting in the system color as it is when it draws"
 
 [[export]]
 name = "GetDC"
@@ -1312,22 +1316,6 @@ args = ["handle hWnd", "u32 uIDEvent"]
 impl = { stub = "not yet implemented" }
 ordinal = 410
 fails = "FALSE"
-
-[[export]]
-name = "DrawEdge"
-group = "message"
-args = ["handle hdc", "ptr qrc", "u32 edge", "u32 grfFlags"]
-impl = { stub = "not yet implemented" }
-ordinal = 168
-fails = "FALSE"
-
-[[export]]
-name = "DrawTextW"
-group = "message"
-args = ["handle hDC", "ptr lpString", "i32 nCount", "ptr lpRect", "u32 uFormat"]
-impl = { stub = "not yet implemented" }
-ordinal = 181
-fails = "0"
 
 # win32k's queue, timer and paint services: user32's internal calls, behind the message loop's
 # exports (PostMessage, GetMessage, PeekMessage, SendMessage, DispatchMessage, PostQuitMessage,
@@ -2481,6 +2469,69 @@ ordinal = 687
 fails = "FALSE"
 note = "there is no help engine: FALSE, the last error ERROR_FILE_NOT_FOUND"
 
+# --- drawing: fills, frames, edges and text -------------------------------------------------------
+
+[[export]]
+name = "DrawEdge"
+group = "draw"
+args = ["handle hdc", "ptr qrc", "u32 edge", "u32 grfFlags"]
+impl = { native = "DrawEdge" }
+ordinal = 168
+fails = "FALSE"
+note = "the BDR_/EDGE_ borders in the 3D system colors, BF_SOFT, BF_MIDDLE and BF_ADJUST; BF_FLAT and BF_MONO draw as 3D; BF_DIAGONAL is a stub"
+
+[[export]]
+name = "DrawFocusRect"
+group = "draw"
+args = ["handle hDC", "ptr lprc"]
+impl = { native = "DrawFocusRect" }
+ordinal = 169
+fails = "FALSE"
+note = "the dotted frame, every other pixel inverted with the gray brush"
+
+[[export]]
+name = "DrawTextA"
+group = "draw"
+args = ["handle hDC", "ptr lpString", "i32 nCount", "ptr lpRect", "u32 uFormat"]
+impl = { native = "DrawTextA" }
+ordinal = 178
+fails = "0"
+note = "the text converted to its wide form, then DrawTextW's"
+
+[[export]]
+name = "DrawTextW"
+group = "draw"
+args = ["handle hDC", "ptr lpString", "i32 nCount", "ptr lpRect", "u32 uFormat"]
+impl = { native = "DrawTextW" }
+ordinal = 181
+fails = "0"
+note = "in the DC's font: the alignments, DT_SINGLELINE, DT_WORDBREAK, DT_EXPANDTABS, DT_NOCLIP, DT_CALCRECT and the & prefix; the ellipsis flags draw as without them"
+
+[[export]]
+name = "FillRect"
+group = "draw"
+args = ["handle hDC", "ptr lprc", "handle hbr"]
+impl = { native = "FillRect" }
+ordinal = 215
+fails = "0"
+note = "PatBlt's PATCOPY with the brush, or a system color's as COLOR_* + 1"
+
+[[export]]
+name = "FrameRect"
+group = "draw"
+args = ["handle hDC", "ptr lprc", "handle hbr"]
+impl = { native = "FrameRect" }
+ordinal = 222
+fails = "0"
+
+[[export]]
+name = "InvertRect"
+group = "draw"
+args = ["handle hDC", "ptr lprc"]
+impl = { native = "InvertRect" }
+ordinal = 385
+fails = "FALSE"
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
@@ -2988,10 +3039,6 @@ name = "DrawCaptionTempW"
 ordinal = 167
 
 [[export]]
-name = "DrawFocusRect"
-ordinal = 169
-
-[[export]]
 name = "DrawFrame"
 ordinal = 170
 
@@ -3022,10 +3069,6 @@ ordinal = 176
 [[export]]
 name = "DrawStateW"
 ordinal = 177
-
-[[export]]
-name = "DrawTextA"
-ordinal = 178
 
 [[export]]
 name = "DrawTextExA"
@@ -3120,10 +3163,6 @@ name = "ExcludeUpdateRgn"
 ordinal = 213
 
 [[export]]
-name = "FillRect"
-ordinal = 215
-
-[[export]]
 name = "FindWindowA"
 ordinal = 216
 
@@ -3142,10 +3181,6 @@ ordinal = 220
 [[export]]
 name = "FlashWindowEx"
 ordinal = 221
-
-[[export]]
-name = "FrameRect"
-ordinal = 222
 
 [[export]]
 name = "FreeDDElParam"
@@ -3558,10 +3593,6 @@ ordinal = 382
 [[export]]
 name = "InvalidateRgn"
 ordinal = 384
-
-[[export]]
-name = "InvertRect"
-ordinal = 385
 
 [[export]]
 name = "IsCharAlphaA"

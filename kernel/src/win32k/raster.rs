@@ -9,10 +9,22 @@
 //! (TRANSPARENT leaves them as they were); ETO_OPAQUE fills the rectangle with the background
 //! color first, whatever the mode, and ETO_CLIPPED clips the text to the rectangle too.
 //!
+//! Fills are PatBlt's ([`pat_blt`]): a rectangle's pixels combined with a pattern, a brush's
+//! (one color, or an 8x8 monochrome pattern aligned to the brush origin), by a sourceless raster
+//! operation, every pixel clipped.
+//!
 //! The colors come as COLORREFs (`0x00BBGGRR`, the high byte's palette flags ignored: the
 //! framebuffer is 32 bpp) and go to the framebuffer as its `0xRRGGBB` ([`screen_rgb`]).
 
-use rtl::gdi::{Rect, CLR_INVALID, ETO_CLIPPED, ETO_OPAQUE, RGB_MASK};
+use rtl::gdi::{
+    apply_rop,
+    rop_uses_destination,
+    Rect,
+    CLR_INVALID,
+    ETO_CLIPPED,
+    ETO_OPAQUE,
+    RGB_MASK,
+};
 
 use super::font;
 use crate::hw::vbe::{Framebuffer, PixelMemory};
@@ -148,6 +160,71 @@ pub fn advanced(pen: i32, count: usize, advances: Option<&[i32]>) -> i32 {
 /// Character `index`'s advance: its `Dx` entry, or the font's cell width.
 fn advance(advances: Option<&[i32]>, index: usize) -> i32 {
     advances.map_or(font::WIDTH, |advances| advances[index])
+}
+
+/// What a fill paints with: a brush as it draws (its colors the framebuffer's `0xRRGGBB`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pattern {
+    /// One color.
+    Solid(u32),
+    /// An 8x8 monochrome pattern: `rows[y]`'s bit `7 - x` is the pixel at (x, y) from `origin`
+    /// (the brush origin, in screen coordinates), `one` where it is set and `zero` where it is
+    /// clear, repeated across the screen.
+    Mono {
+        rows: [u8; 8],
+        origin: (i32, i32),
+        one: u32,
+        zero: u32,
+    },
+}
+
+impl Pattern {
+    /// The pattern's color at the screen's (`x`, `y`).
+    pub fn at(&self, x: i32, y: i32) -> u32 {
+        match *self {
+            Pattern::Solid(color) => color,
+            Pattern::Mono {
+                rows,
+                origin,
+                one,
+                zero,
+            } => {
+                let row = rows[(y.wrapping_sub(origin.1) & 7) as usize];
+                if row & (0x80 >> (x.wrapping_sub(origin.0) & 7)) != 0 {
+                    one
+                } else {
+                    zero
+                }
+            }
+        }
+    }
+}
+
+/// PatBlt on `screen`: every pixel of `rect` inside `clip` (both screen coordinates, `clip` within
+/// the screen) combined with `pattern` by the sourceless raster operation `rop` (its result for a
+/// source of zero), the pattern taken as black when there is none (a raster operation that reads
+/// none). The destination is read only when the operation reads it.
+pub fn pat_blt<M: PixelMemory>(
+    screen: &mut Framebuffer<M>,
+    clip: Rect,
+    rect: Rect,
+    rop: u32,
+    pattern: Option<&Pattern>,
+) {
+    let area = intersect(clip, rect);
+    let reads = rop_uses_destination(rop);
+    for y in area.top..area.bottom {
+        for x in area.left..area.right {
+            let paint = pattern.map_or(0, |pattern| pattern.at(x, y));
+            let destination = if reads {
+                screen.get_pixel(x as usize, y as usize).unwrap_or(0)
+            } else {
+                0
+            };
+            let color = apply_rop(rop, paint, destination) & RGB_MASK;
+            screen.put_pixel(x as usize, y as usize, color);
+        }
+    }
 }
 
 /// SetPixel on `screen` (none: the graphics mode is not set) inside `clip`: the COLORREF set (the
@@ -503,6 +580,201 @@ mod tests {
         );
         assert_eq!(set_pixel_on::<Memory>(None, &clip, 5, 5, 0), CLR_INVALID);
         assert_eq!(get_pixel_on::<Memory>(None, &clip, 5, 5), CLR_INVALID);
+    }
+
+    /// The screen's pixels in `area` as rows of characters, each pixel's character the one
+    /// `legend` gives its color ('?' for a color not in it).
+    fn picture(
+        screen: &mut Framebuffer<Memory>,
+        area: Rect,
+        legend: &[(u32, char)],
+    ) -> Vec<std::string::String> {
+        (area.top..area.bottom)
+            .map(|y| {
+                (area.left..area.right)
+                    .map(|x| {
+                        let pixel = at(screen, x as usize, y as usize);
+                        legend
+                            .iter()
+                            .find(|&&(color, _)| color == pixel)
+                            .map_or('?', |&(_, c)| c)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    const RED: u32 = 0x00FF_0000;
+    const WHITE: u32 = 0x00FF_FFFF;
+    const BLACK: u32 = 0x0000_0000;
+
+    /// PATCOPY paints the rectangle's pixels in the pattern, its right and bottom edges outside
+    /// it, exactly; BLACKNESS and WHITENESS paint black and white without a pattern.
+    #[test]
+    fn a_fill_paints_its_rectangle_exactly() {
+        let mut screen = desktop(8, 6);
+        let all = rect(0, 0, 8, 6);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(1, 1, 5, 3),
+            rtl::gdi::PATCOPY,
+            Some(&Pattern::Solid(RED)),
+        );
+        pat_blt(
+            &mut screen,
+            all,
+            rect(6, 0, 8, 2),
+            rtl::gdi::BLACKNESS,
+            None,
+        );
+        pat_blt(
+            &mut screen,
+            all,
+            rect(6, 4, 7, 6),
+            rtl::gdi::WHITENESS,
+            None,
+        );
+        let legend = [(DESKTOP, '.'), (RED, 'R'), (BLACK, 'K'), (WHITE, 'W')];
+        assert_eq!(
+            picture(&mut screen, all, &legend),
+            [
+                "......KK", //
+                ".RRRR.KK", ".RRRR...", "........", "......W.", "......W.",
+            ]
+        );
+    }
+
+    /// A fill is clipped to the clipping region and the screen: nothing outside either is written
+    /// (a write past the fake's memory would panic), and an empty or inverted rectangle paints
+    /// nothing.
+    #[test]
+    fn a_fill_is_clipped() {
+        let mut screen = desktop(8, 6);
+        let solid = Pattern::Solid(RED);
+        let clip = rect(2, 1, 6, 5);
+        pat_blt(
+            &mut screen,
+            clip,
+            rect(-10, -10, 100, 100),
+            rtl::gdi::PATCOPY,
+            Some(&solid),
+        );
+        let legend = [(DESKTOP, '.'), (RED, 'R')];
+        assert_eq!(
+            picture(&mut screen, rect(0, 0, 8, 6), &legend),
+            [
+                "........", //
+                "..RRRR..", "..RRRR..", "..RRRR..", "..RRRR..", "........",
+            ]
+        );
+        let mut screen = desktop(8, 6);
+        let all = rect(0, 0, 8, 6);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(5, 5, 2, 2),
+            rtl::gdi::PATCOPY,
+            Some(&solid),
+        );
+        pat_blt(
+            &mut screen,
+            all,
+            rect(3, 3, 3, 6),
+            rtl::gdi::PATCOPY,
+            Some(&solid),
+        );
+        pat_blt(
+            &mut screen,
+            all,
+            rect(i32::MIN, 0, i32::MIN + 2, 2),
+            rtl::gdi::PATCOPY,
+            Some(&solid),
+        );
+        assert!(drawn(&mut screen).is_empty());
+    }
+
+    /// DSTINVERT inverts each pixel (twice: as it was); PATINVERT XORs the pattern in, the
+    /// destination read before it is written.
+    #[test]
+    fn the_inverting_operations_read_the_destination() {
+        let mut screen = desktop(4, 2);
+        let all = rect(0, 0, 4, 2);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(0, 0, 2, 1),
+            rtl::gdi::DSTINVERT,
+            None,
+        );
+        assert_eq!(at(&mut screen, 0, 0), !DESKTOP & 0x00FF_FFFF);
+        assert_eq!(at(&mut screen, 2, 0), DESKTOP);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(0, 0, 2, 1),
+            rtl::gdi::DSTINVERT,
+            None,
+        );
+        assert!(drawn(&mut screen).is_empty(), "inverted back");
+        let red = Pattern::Solid(RED);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(1, 0, 3, 2),
+            rtl::gdi::PATINVERT,
+            Some(&red),
+        );
+        assert_eq!(at(&mut screen, 1, 1), DESKTOP ^ RED);
+        pat_blt(
+            &mut screen,
+            all,
+            rect(1, 0, 3, 2),
+            rtl::gdi::PATINVERT,
+            Some(&red),
+        );
+        assert!(drawn(&mut screen).is_empty(), "XORed back");
+    }
+
+    /// A monochrome pattern repeats every 8 pixels from the brush origin: the gray brush's
+    /// checkerboard, its set bits in `one`, PATINVERTed with white set bits and black clear ones,
+    /// inverts every other pixel, the origin's own among them.
+    #[test]
+    fn a_pattern_repeats_from_its_origin() {
+        let checker = Pattern::Mono {
+            rows: rtl::gdi::HALFTONE_ROWS,
+            origin: (1, 0),
+            one: WHITE,
+            zero: BLACK,
+        };
+        assert_eq!(checker.at(1, 0), WHITE, "the origin's pixel is set");
+        assert_eq!(checker.at(2, 0), BLACK);
+        assert_eq!(checker.at(1, 1), BLACK);
+        assert_eq!(checker.at(9, 8), WHITE, "8 pixels on");
+        assert_eq!(checker.at(-7, -8), WHITE, "and 8 pixels back");
+        let mut screen = desktop(6, 3);
+        let all = rect(0, 0, 6, 3);
+        pat_blt(&mut screen, all, all, rtl::gdi::PATINVERT, Some(&checker));
+        let inverted = !DESKTOP & 0x00FF_FFFF;
+        let legend = [(DESKTOP, '.'), (inverted, 'X')];
+        assert_eq!(
+            picture(&mut screen, all, &legend),
+            [
+                ".X.X.X", //
+                "X.X.X.", ".X.X.X",
+            ]
+        );
+        let stripes = Pattern::Mono {
+            rows: [0xF0; 8],
+            origin: (0, 0),
+            one: RED,
+            zero: BLACK,
+        };
+        let mut screen = desktop(10, 1);
+        let all = rect(0, 0, 10, 1);
+        pat_blt(&mut screen, all, all, rtl::gdi::PATCOPY, Some(&stripes));
+        let legend = [(RED, 'R'), (BLACK, 'K')];
+        assert_eq!(picture(&mut screen, all, &legend), ["RRRRKKKKRR"]);
     }
 
     /// The rectangles' meeting and membership, the right and bottom edges outside.

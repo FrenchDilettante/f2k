@@ -402,12 +402,14 @@ pub fn next_paint(windows: &Windows, thread: ThreadId, filter: &Filter) -> Optio
 }
 
 /// What BeginPaint paints: the region's box in client coordinates (zeros for none), whether the
-/// erase is pending, and the DC's clipping region (the box on the screen).
+/// erase is pending, the DC's clipping region (the box on the screen), and the client area on the
+/// screen (the DC's origin its top left).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PaintArea {
     pub paint: Rect,
     pub erase: bool,
     pub clip: Rect,
+    pub client: Rect,
 }
 
 /// BeginPaint's look at the window, before its DC is made: see [`PaintArea`].
@@ -428,6 +430,7 @@ pub fn paint_area(windows: &Windows, window: WindowId) -> PaintArea {
         paint,
         erase,
         clip: offset(paint, client.left, client.top),
+        client,
     }
 }
 
@@ -547,7 +550,7 @@ mod services {
             let id = window_of(&m.windows, window)?;
             Ok::<_, NtStatus>(paint_area(&m.windows, id))
         })?;
-        let hdc = crate::win32k::dc::paint_dc(call, area.clip)?;
+        let hdc = crate::win32k::dc::paint_dc(call, area.client, area.clip)?;
         with_manager(call.passive(), |m| {
             if let Some(id) = m.windows.window_from_handle(window.raw()) {
                 begin_validate(&mut m.windows, id);
@@ -709,6 +712,7 @@ mod tests {
                 paint: EMPTY,
                 erase: false,
                 clip: EMPTY,
+                client: rect_of(m.windows.client_rect(w)),
             }
         );
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
@@ -743,6 +747,7 @@ mod tests {
                 paint: rect(0, 0, 320, 200),
                 erase: true,
                 clip: rect(30, 40, 350, 240),
+                client: rect(30, 40, 350, 240),
             }
         );
         assert_eq!(

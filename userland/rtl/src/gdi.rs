@@ -91,6 +91,159 @@ pub const fn stock_object(handle: u32) -> Option<(u32, u32)> {
     }
 }
 
+/// The first index past the stock objects' of the system colors' brushes (GetSysColorBrush's):
+/// system color `i`'s brush has the stock objects' shape, a brush's kind and the stock bit, with
+/// the index `SYS_COLOR_BRUSH_FIRST + i`. Like the stock objects, they are global: every process
+/// names them by the same handle, and they are never deleted. Their color is the system color's
+/// as it is when they draw, so SetSysColors recolors them (Windows 2000's own system brushes keep
+/// their handles across SetSysColors too).
+pub const SYS_COLOR_BRUSH_FIRST: u32 = 0x40;
+
+/// user32's gray brush (Windows 2000's `gpsi->hbrGray`, which win32k makes and user32 reads from
+/// the shared information): an 8x8 checkerboard pattern, its pixels alternately the DC's
+/// background and text colors, the background's at the brush origin. DrawFocusRect's dotted frame
+/// is drawn with it. A global brush as the system colors' are, in the stock objects' shape.
+pub const HALFTONE_BRUSH: u32 = STOCK_BIT | (OBJ_BRUSH << KIND_SHIFT) | 0x60;
+
+/// The rows of [`HALFTONE_BRUSH`]'s pattern, from the brush origin's row: a set bit (bit 7 the
+/// leftmost pixel) is the DC's background color, a clear one its text color (a monochrome
+/// pattern's colors, as a pattern brush made from a monochrome bitmap takes them).
+pub const HALFTONE_ROWS: [u8; 8] = [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55];
+
+/// System color `index`'s brush (see [`SYS_COLOR_BRUSH_FIRST`]); none for an index past the
+/// system colors.
+pub const fn sys_color_brush(index: u32) -> Option<u32> {
+    if index < crate::display::SYSTEM_COLORS as u32 {
+        Some(STOCK_BIT | (OBJ_BRUSH << KIND_SHIFT) | (SYS_COLOR_BRUSH_FIRST + index))
+    } else {
+        None
+    }
+}
+
+/// A global brush: one every process names by the same constant handle, never deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlobalBrush {
+    /// A stock brush, by its GetStockObject index.
+    Stock(u32),
+    /// A system color's brush, by the color's index.
+    SysColor(u32),
+    /// user32's gray brush ([`HALFTONE_BRUSH`]).
+    Halftone,
+}
+
+/// The global brush `handle` names; none for another handle.
+pub const fn global_brush(handle: u32) -> Option<GlobalBrush> {
+    if let Some((index, OBJ_BRUSH)) = stock_object(handle) {
+        return Some(GlobalBrush::Stock(index));
+    }
+    if handle == HALFTONE_BRUSH {
+        return Some(GlobalBrush::Halftone);
+    }
+    let index = (handle & INDEX_MASK).wrapping_sub(SYS_COLOR_BRUSH_FIRST);
+    match sys_color_brush(index) {
+        Some(brush) if brush == handle => Some(GlobalBrush::SysColor(index)),
+        _ => None,
+    }
+}
+
+/// The kind of object (OBJ_BRUSH, OBJ_PEN, OBJ_FONT, OBJ_PAL) a global object's handle names — a
+/// stock object, or a global brush — read from the handle alone; none for another handle.
+pub const fn global_object_kind(handle: u32) -> Option<u32> {
+    match stock_object(handle) {
+        Some((_, kind)) => Some(kind),
+        None if global_brush(handle).is_some() => Some(OBJ_BRUSH),
+        None => None,
+    }
+}
+
+/// The handles of the process's GDI objects (a brush CreateSolidBrush made) are the kernel's
+/// handle-table handles, below 0x10000, with the object's kind in bits 16-18 and no stock bit, as
+/// Windows 2000's GDI handles carry their type in their high word: a program's handle never
+/// collides with the small values FillRect takes as COLOR_* + 1, and gdi32 reads an object's kind
+/// from its handle. (A DC's handle is the handle table's own, its kind bits clear.)
+const TABLE_MASK: u32 = 0xFFFF;
+
+/// The handle of the object of `kind` the handle table's `table` names.
+pub const fn object_handle(kind: u32, table: u32) -> u32 {
+    (kind << KIND_SHIFT) | (table & TABLE_MASK)
+}
+
+/// The kind of the object an object's handle names, and its handle-table handle; none for a
+/// handle with no kind bits (a DC's), a global object's, or one past the shape.
+pub const fn object_of(handle: u32) -> Option<(u32, u32)> {
+    let kind = (handle >> KIND_SHIFT) & KIND_MASK;
+    if kind == 0 || handle >> (KIND_SHIFT + 3) != 0 {
+        return None;
+    }
+    Some((kind, handle & TABLE_MASK))
+}
+
+/// The kind of object a handle's own bits say it names: a global object's, or a process's
+/// object's ([`object_of`]); none for another handle.
+pub const fn object_kind(handle: u32) -> Option<u32> {
+    match global_object_kind(handle) {
+        Some(kind) => Some(kind),
+        None => match object_of(handle) {
+            Some((kind, _)) => Some(kind),
+            None => None,
+        },
+    }
+}
+
+/// The raster operations PatBlt takes (wingdi.h's ROP3 codes): the destination painted with the
+/// pattern, inverted where the pattern is set, inverted, black, white.
+pub const PATCOPY: u32 = 0x00F0_0021;
+pub const PATINVERT: u32 = 0x005A_0049;
+pub const DSTINVERT: u32 = 0x0055_0009;
+pub const BLACKNESS: u32 = 0x0000_0042;
+pub const WHITENESS: u32 = 0x00FF_0062;
+
+/// A ternary raster operation's truth table (its code's byte 2): bit `p << 2 | s << 1 | d` is the
+/// result for pattern bit `p`, source bit `s` and destination bit `d`.
+pub const fn rop3(rop: u32) -> u8 {
+    (rop >> 16) as u8
+}
+
+/// Whether a raster operation reads no source (its result is the same for either source bit):
+/// one PatBlt can do.
+pub const fn rop_is_sourceless(rop: u32) -> bool {
+    let table = rop3(rop);
+    (table >> 2) & 0x33 == table & 0x33
+}
+
+/// Whether a raster operation's result depends on the pattern.
+pub const fn rop_uses_pattern(rop: u32) -> bool {
+    let table = rop3(rop);
+    table >> 4 != table & 0x0F
+}
+
+/// Whether a raster operation's result depends on the destination.
+pub const fn rop_uses_destination(rop: u32) -> bool {
+    let table = rop3(rop);
+    (table >> 1) & 0x55 != table & 0x55
+}
+
+/// A sourceless raster operation applied to every bit of a pattern word `pattern` and a
+/// destination word `destination` (the source taken as zero).
+pub const fn apply_rop(rop: u32, pattern: u32, destination: u32) -> u32 {
+    let table = rop3(rop);
+    let (p, d) = (pattern, destination);
+    let mut result = 0;
+    if table & (1 << 0b000) != 0 {
+        result |= !p & !d;
+    }
+    if table & (1 << 0b001) != 0 {
+        result |= !p & d;
+    }
+    if table & (1 << 0b100) != 0 {
+        result |= p & !d;
+    }
+    if table & (1 << 0b101) != 0 {
+        result |= p & d;
+    }
+    result
+}
+
 /// The DC attributes win32k's NtGdiGetDCDword reads and NtGdiGetAndSetDCDword sets (F2K's own
 /// indexes): the text color, the background color, the background mode.
 pub const DC_TEXT_COLOR: u32 = 0;
@@ -263,6 +416,83 @@ mod tests {
             stock_object(stock_handle(WHITE_BRUSH).unwrap() + 0x100),
             None
         );
+    }
+
+    /// The global brushes: the stock brushes, the system colors' and the gray one, each named by
+    /// its handle alone, of the brush kind; a stock pen, a past-the-table color and a handle
+    /// table's handle are none.
+    #[test]
+    fn the_global_brushes_name_themselves() {
+        let white = stock_handle(WHITE_BRUSH).unwrap();
+        assert_eq!(global_brush(white), Some(GlobalBrush::Stock(WHITE_BRUSH)));
+        assert_eq!(global_brush(stock_handle(BLACK_PEN).unwrap()), None);
+        for index in 0..crate::display::SYSTEM_COLORS as u32 {
+            let brush = sys_color_brush(index).unwrap();
+            assert_eq!(global_brush(brush), Some(GlobalBrush::SysColor(index)));
+            assert_eq!(global_object_kind(brush), Some(OBJ_BRUSH));
+            assert_eq!(stock_object(brush), None, "no stock object");
+            assert_ne!(brush, HALFTONE_BRUSH);
+        }
+        assert_eq!(sys_color_brush(29), None);
+        assert_eq!(global_brush(sys_color_brush(0).unwrap() + 29), None);
+        assert_eq!(global_brush(HALFTONE_BRUSH), Some(GlobalBrush::Halftone));
+        assert_eq!(global_object_kind(HALFTONE_BRUSH), Some(OBJ_BRUSH));
+        assert_eq!(
+            global_object_kind(stock_handle(SYSTEM_FONT).unwrap()),
+            Some(OBJ_FONT)
+        );
+        assert_eq!(global_brush(0x7C), None);
+        assert_eq!(global_object_kind(0x7C), None);
+        // GetSysColorBrush's handles before brushes were objects: the same values.
+        assert_eq!(sys_color_brush(5), Some(0x0082_0045));
+    }
+
+    /// A process's object handle carries its kind above the handle table's handle, and gives both
+    /// back; a DC's bare handle, a global object's and a value past the shape carry none.
+    #[test]
+    fn object_handles_carry_their_kind() {
+        let brush = object_handle(OBJ_BRUSH, 0x1C);
+        assert_eq!(brush, 0x0002_001C);
+        assert!(
+            brush as usize > crate::display::SYSTEM_COLORS,
+            "no COLOR_* + 1"
+        );
+        assert_eq!(object_of(brush), Some((OBJ_BRUSH, 0x1C)));
+        assert_eq!(object_kind(brush), Some(OBJ_BRUSH));
+        assert_eq!(
+            object_of(object_handle(OBJ_FONT, 0xFFC)),
+            Some((OBJ_FONT, 0xFFC))
+        );
+        assert_eq!(object_of(0x1C), None, "a DC's handle");
+        assert_eq!(object_kind(0x1C), None);
+        assert_eq!(object_of(stock_handle(WHITE_BRUSH).unwrap()), None);
+        assert_eq!(
+            object_kind(stock_handle(WHITE_BRUSH).unwrap()),
+            Some(OBJ_BRUSH)
+        );
+        assert_eq!(object_of(HALFTONE_BRUSH), None);
+        assert_eq!(object_of(0x0102_001C), None);
+    }
+
+    /// The raster operations PatBlt takes evaluate as their names say, bit by bit; a source's
+    /// operation (SRCCOPY) is no PatBlt's.
+    #[test]
+    fn the_raster_operations_evaluate_their_tables() {
+        let (p, d) = (0x00FF_00F0u32, 0x00F0_F0F0u32);
+        assert_eq!(apply_rop(PATCOPY, p, d) & RGB_MASK, p);
+        assert_eq!(apply_rop(PATINVERT, p, d) & RGB_MASK, p ^ d);
+        assert_eq!(apply_rop(DSTINVERT, p, d) & RGB_MASK, !d & RGB_MASK);
+        assert_eq!(apply_rop(BLACKNESS, p, d) & RGB_MASK, 0);
+        assert_eq!(apply_rop(WHITENESS, p, d) & RGB_MASK, RGB_MASK);
+        for rop in [PATCOPY, PATINVERT, DSTINVERT, BLACKNESS, WHITENESS] {
+            assert!(rop_is_sourceless(rop), "{rop:#x}");
+        }
+        const SRCCOPY: u32 = 0x00CC_0020;
+        assert!(!rop_is_sourceless(SRCCOPY));
+        assert!(rop_uses_pattern(PATCOPY) && rop_uses_pattern(PATINVERT));
+        assert!(!rop_uses_pattern(DSTINVERT) && !rop_uses_pattern(BLACKNESS));
+        assert!(rop_uses_destination(PATINVERT) && rop_uses_destination(DSTINVERT));
+        assert!(!rop_uses_destination(PATCOPY) && !rop_uses_destination(WHITENESS));
     }
 
     /// The narrow metrics keep every number and convert the four characters.

@@ -24,6 +24,21 @@ use crate::class::WndClassExW;
 mod clipboard;
 pub use clipboard::*;
 
+/// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
+pub mod canvas;
+pub use canvas::{
+    CreateSolidBrush,
+    DeleteObject,
+    ExtTextOutW,
+    GetTextColor,
+    GetTextExtentPointW,
+    GetTextMetricsW,
+    PatBlt,
+    SelectObject,
+    SetBkColor,
+    SetTextColor,
+};
+
 std::thread_local! {
     /// The calling thread's last error, as SetLastError left it.
     pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };

@@ -1,5 +1,5 @@
 //! user32's seam to the rest of the system: what its code calls, imported by name as Windows 2000's
-//! user32 imports it (ntdll and kernel32), win32k's services through user32's own stubs (as
+//! user32 imports it (ntdll, kernel32 and gdi32), win32k's services through user32's own stubs (as
 //! Windows 2000's user32 enters the kernel itself), the process heap through the PEB, and the
 //! memory probe its stub routine reads arguments through (its import table holds no memory query).
 //! The host tests replace the imports with stand-ins of the same shape ([`host`]).
@@ -36,11 +36,48 @@ use crate::Out;
 mod raw {
     use rtl::accel::Accel;
     use rtl::display::DevModeW;
-    use rtl::gdi::Rect;
+    use rtl::gdi::{Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
     use rtl::user::{Msg, Receipt};
 
     use crate::class::WndClassExW;
+
+    #[link(name = "gdi32", kind = "raw-dylib", import_name_type = "undecorated")]
+    unsafe extern "system" {
+        /// CreateSolidBrush: a brush of a color; NULL when none could be made.
+        pub fn CreateSolidBrush(color: u32) -> usize;
+        /// DeleteObject: a brush (or a DC) deleted.
+        pub fn DeleteObject(object: usize) -> u32;
+        /// SelectObject: an object selected into a DC, the one of its kind it replaces answered.
+        pub fn SelectObject(dc: usize, object: usize) -> usize;
+        /// PatBlt: a rectangle painted with the DC's brush by a raster operation.
+        pub fn PatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
+        /// GetTextColor, SetTextColor and SetBkColor: the DC's colors (the previous one answered
+        /// by a set).
+        pub fn GetTextColor(dc: usize) -> u32;
+        pub fn SetTextColor(dc: usize, color: u32) -> u32;
+        pub fn SetBkColor(dc: usize, color: u32) -> u32;
+        /// ExtTextOutW: text drawn in the DC's font and colors.
+        pub fn ExtTextOutW(
+            dc: usize,
+            x: i32,
+            y: i32,
+            options: u32,
+            rect: *const Rect,
+            string: *const u16,
+            count: u32,
+            dx: *const i32,
+        ) -> u32;
+        /// GetTextExtentPointW: a string's SIZE in the DC's font.
+        pub fn GetTextExtentPointW(
+            dc: usize,
+            string: *const u16,
+            count: i32,
+            size: *mut Size,
+        ) -> u32;
+        /// GetTextMetricsW: the DC's font's metrics.
+        pub fn GetTextMetricsW(dc: usize, metric: *mut TextMetricW) -> u32;
+    }
 
     #[link(
         name = "kernel32",
@@ -1749,6 +1786,97 @@ pub fn translate_message(msg: &Msg) -> Result<bool, NtStatus> {
     // SAFETY: the kernel reads the local MSG and writes the local answer.
     checked(unsafe { raw::NtUserTranslateMessage(msg, 0, &mut translated) })?;
     Ok(translated != 0)
+}
+
+// --- gdi32 ---------------------------------------------------------------------------------------
+
+/// CreateSolidBrush: a brush of `color`; none when gdi32 could make none.
+pub fn create_solid_brush(color: u32) -> Option<usize> {
+    // SAFETY: no pointers.
+    let brush = unsafe { raw::CreateSolidBrush(color) };
+    (brush != 0).then_some(brush)
+}
+
+/// DeleteObject: `object` deleted.
+pub fn delete_object(object: usize) {
+    // SAFETY: no pointers.
+    unsafe { raw::DeleteObject(object) };
+}
+
+/// SelectObject: `object` selected into `dc`, the object it replaces answered; none when gdi32
+/// refused it.
+pub fn select_object(dc: usize, object: usize) -> Option<usize> {
+    // SAFETY: no pointers.
+    let previous = unsafe { raw::SelectObject(dc, object) };
+    (previous != 0).then_some(previous)
+}
+
+/// PatBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` painted with its brush by
+/// `rop`; whether it was.
+pub fn pat_blt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> bool {
+    // SAFETY: no pointers.
+    unsafe { raw::PatBlt(dc, x, y, width, height, rop) != 0 }
+}
+
+/// GetTextColor: `dc`'s text color.
+pub fn text_color(dc: usize) -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::GetTextColor(dc) }
+}
+
+/// SetTextColor: `dc`'s text color set, the previous one answered.
+pub fn set_text_color(dc: usize, color: u32) -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::SetTextColor(dc, color) }
+}
+
+/// SetBkColor: `dc`'s background color set, the previous one answered.
+pub fn set_bk_color(dc: usize, color: u32) -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::SetBkColor(dc, color) }
+}
+
+/// ExtTextOutW: `units` drawn into `dc` at (`x`, `y`) with ExtTextOut's `options` and rectangle;
+/// whether they were.
+pub fn ext_text_out(
+    dc: usize,
+    x: i32,
+    y: i32,
+    options: u32,
+    rect: Option<&Rect>,
+    units: &[u16],
+) -> bool {
+    let rect = rect.map_or(core::ptr::null(), |rect| rect as *const Rect);
+    // SAFETY: gdi32 reads the rectangle and the units, which live for the call; no advances.
+    unsafe {
+        raw::ExtTextOutW(
+            dc,
+            x,
+            y,
+            options,
+            rect,
+            units.as_ptr(),
+            units.len() as u32,
+            core::ptr::null(),
+        ) != 0
+    }
+}
+
+/// GetTextExtentPointW: the width of `units` in `dc`'s font; none when gdi32 could not say.
+pub fn text_width(dc: usize, units: &[u16]) -> Option<i32> {
+    let mut size = rtl::gdi::Size::default();
+    // SAFETY: gdi32 reads the units and writes the SIZE into the local.
+    let done =
+        unsafe { raw::GetTextExtentPointW(dc, units.as_ptr(), units.len() as i32, &mut size) };
+    (done != 0).then_some(size.cx)
+}
+
+/// GetTextMetricsW: `dc`'s font's metrics; none when gdi32 could not say.
+pub fn text_metrics(dc: usize) -> Option<rtl::gdi::TextMetricW> {
+    let mut metric = rtl::gdi::TextMetricW::default();
+    // SAFETY: gdi32 writes the structure into the local.
+    let done = unsafe { raw::GetTextMetricsW(dc, &mut metric) };
+    (done != 0).then_some(metric)
 }
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,

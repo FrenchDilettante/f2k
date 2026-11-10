@@ -91,6 +91,8 @@ pub enum ObjectType {
     Key,
     /// A device context: win32k's, a screen DC (see [`crate::win32k::dc`]).
     Dc,
+    /// A brush: win32k's, a logical brush a DC selects (see [`crate::win32k::brush`]).
+    Brush,
     /// A token: a process's, made at its first open (see [`crate::se`]).
     Token,
 }
@@ -125,6 +127,7 @@ impl ObjectId {
             | ObjectType::Desktop
             | ObjectType::Key
             | ObjectType::Dc
+            | ObjectType::Brush
             | ObjectType::Token => None,
         }
     }
@@ -215,6 +218,8 @@ pub const DESKTOPS: usize = 1;
 pub const KEY_OBJECTS: usize = 256;
 /// How many device contexts can exist at once.
 pub const DCS: usize = 64;
+/// How many brushes can exist at once (the global brushes are none of them).
+pub const BRUSHES: usize = 128;
 /// How many tokens can exist at once: one per process that opened its own, and those whose
 /// handles outlive their process.
 pub const TOKENS: usize = 64;
@@ -627,6 +632,7 @@ pools! {
     Desktop => desktops: DesktopObject = DesktopObject::none, DESKTOPS;
     Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
     Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
+    Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none, BRUSHES;
     Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none, TOKENS;
 }
 
@@ -677,6 +683,7 @@ bodies! {
     DesktopObject => Desktop, desktops, desktop;
     crate::cm::KeyBody => Key, keys, key;
     crate::win32k::dc::Dc => Dc, dcs, dc;
+    crate::win32k::brush::Brush => Brush, brushes, brush;
     crate::se::TokenBody => Token, tokens, token;
 }
 
@@ -955,6 +962,11 @@ impl Directory {
         self.insert(body)
     }
 
+    /// A brush of `body`'s kind and colors; none when the pool is exhausted.
+    pub fn create_brush(&mut self, body: crate::win32k::brush::Brush) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     /// The token of the process `process` names: the one it holds, or a new one made for it (none
     /// when the pool is exhausted). A new token's creator's reference is the process's, which it
     /// holds until it lets go of the token ([`Directory::take_process_token`]).
@@ -1206,6 +1218,7 @@ impl Directory {
             | ObjectType::Desktop
             | ObjectType::Key
             | ObjectType::Dc
+            | ObjectType::Brush
             | ObjectType::Token => None,
         };
         self.forget_name(id);
@@ -1369,6 +1382,7 @@ impl Directory {
             ObjectType::File,
             ObjectType::Key,
             ObjectType::Dc,
+            ObjectType::Brush,
             ObjectType::Token,
         ] {
             let live = self.headers(kind).iter().position(|header| header.live);

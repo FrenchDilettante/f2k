@@ -120,6 +120,10 @@ mod raw {
         pub fn NtGdiSetPixel(dc: usize, x: i32, y: i32, color: u32, set: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiGetPixel"]
         pub fn NtGdiGetPixel(dc: usize, x: i32, y: i32, color: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreateSolidBrush"]
+        pub fn NtGdiCreateSolidBrush(color: u32, brush: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiPatBlt"]
+        pub fn NtGdiPatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
     }
 
     /// The process heap (the PEB's ProcessHeap).
@@ -384,6 +388,28 @@ pub fn get_pixel(dc: usize, x: i32, y: i32) -> Result<u32, NtStatus> {
     Ok(color)
 }
 
+/// NtGdiCreateSolidBrush: a brush object of `color`, its handle.
+pub fn create_solid_brush(color: u32) -> Result<u32, NtStatus> {
+    let mut brush = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiCreateSolidBrush(color, &mut brush) })?;
+    Ok(brush)
+}
+
+/// NtGdiPatBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` painted with its brush
+/// by the raster operation `rop`.
+pub fn pat_blt(
+    dc: usize,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    rop: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtGdiPatBlt(dc, x, y, width, height, rop) })
+}
+
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given.
 /// The services keep one screen DC's state ([`HOST_DC`], its handle [`DC`]) with the kernel's
 /// rules, and record the text they are asked to draw.
@@ -457,10 +483,36 @@ pub mod host {
         pub static TEXT: RefCell<std::vec::Vec<TextCall>> = const { RefCell::new(std::vec::Vec::new()) };
         /// How many win32k services were called.
         pub static SERVICES: Cell<u32> = const { Cell::new(0) };
+        /// The brush objects NtGdiCreateSolidBrush made and NtGdiDeleteObjectApp has not deleted:
+        /// their handles and colors.
+        pub static BRUSHES: RefCell<std::vec::Vec<(u32, u32)>> = const { RefCell::new(std::vec::Vec::new()) };
+        /// The fills NtGdiPatBlt was asked for, in order.
+        pub static FILLS: RefCell<std::vec::Vec<Fill>> = const { RefCell::new(std::vec::Vec::new()) };
     }
+
+    /// One NtGdiPatBlt call, as the stand-in read it, with the brush the DC had selected.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Fill {
+        pub x: i32,
+        pub y: i32,
+        pub width: i32,
+        pub height: i32,
+        pub rop: u32,
+        pub brush: u32,
+    }
+
+    /// The first brush object's handle (the brush kind's bits over a handle-table handle): each
+    /// next one 4 past the one before.
+    pub const FIRST_BRUSH: u32 = 0x0002_0400;
 
     const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
     const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+    const STATUS_OBJECT_TYPE_MISMATCH: u32 = 0xC000_0024;
+
+    /// Whether `handle` names a live brush object.
+    fn is_brush_object(handle: u32) -> bool {
+        BRUSHES.with(|brushes| brushes.borrow().iter().any(|&(brush, _)| brush == handle))
+    }
 
     fn served() {
         SERVICES.with(|count| count.set(count.get() + 1));
@@ -603,8 +655,17 @@ pub mod host {
     }
 
     pub unsafe extern "system" fn NtGdiDeleteObjectApp(object: usize) -> u32 {
-        if stock_object(object as u32).is_some() {
+        if global_object_kind(object as u32).is_some() {
             served();
+            return 0;
+        }
+        if is_brush_object(object as u32) {
+            served();
+            BRUSHES.with(|brushes| {
+                brushes
+                    .borrow_mut()
+                    .retain(|&(brush, _)| brush as usize != object)
+            });
             return 0;
         }
         with_dc(object, |state| {
@@ -621,6 +682,9 @@ pub mod host {
         }
     }
 
+    /// The kernel's rule: a global object of the kind, or a brush object for a brush, is selected;
+    /// another object is STATUS_OBJECT_TYPE_MISMATCH, a handle that names none
+    /// STATUS_INVALID_HANDLE.
     fn select(dc: usize, kind: u32, object: usize, previous: *mut u32) -> u32 {
         with_dc(dc, |state| {
             let slot = match kind {
@@ -628,12 +692,51 @@ pub mod host {
                 OBJ_PEN => &mut state.pen,
                 _ => &mut state.font,
             };
-            match stock_object(object as u32) {
-                Some((_, found)) if found == kind => {
-                    answer(previous, core::mem::replace(slot, object as u32))
+            let object = object as u32;
+            let live = global_object_kind(object).is_some() || is_brush_object(object);
+            match object_kind(object) {
+                Some(found) if found == kind && live => {
+                    answer(previous, core::mem::replace(slot, object))
                 }
+                Some(_) if live => STATUS_OBJECT_TYPE_MISMATCH,
                 _ => STATUS_INVALID_HANDLE,
             }
+        })
+    }
+
+    pub unsafe extern "system" fn NtGdiCreateSolidBrush(color: u32, brush: *mut u32) -> u32 {
+        served();
+        let handle = BRUSHES.with(|brushes| {
+            let mut brushes = brushes.borrow_mut();
+            let handle = brushes.last().map_or(FIRST_BRUSH, |&(last, _)| last + 4);
+            brushes.push((handle, color & RGB_MASK));
+            handle
+        });
+        answer(brush, handle)
+    }
+
+    pub unsafe extern "system" fn NtGdiPatBlt(
+        dc: usize,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        rop: u32,
+    ) -> u32 {
+        with_dc(dc, |state| {
+            if !rop_is_sourceless(rop) {
+                return STATUS_INVALID_PARAMETER;
+            }
+            let fill = Fill {
+                x,
+                y,
+                width,
+                height,
+                rop,
+                brush: state.brush,
+            };
+            FILLS.with(|fills| fills.borrow_mut().push(fill));
+            0
         })
     }
 

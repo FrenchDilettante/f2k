@@ -1583,7 +1583,7 @@ impl Windows {
         self.at(id).client_rect
     }
 
-    /// The window's rectangle, in screen coordinates.
+    /// The window's rectangle, its non-client area included, in screen coordinates.
     pub fn window_rect(&self, id: WindowId) -> Rect {
         self.at(id).window_rect
     }

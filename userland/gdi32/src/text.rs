@@ -192,6 +192,20 @@ pub extern "system" fn get_text_extent_point32_w(
     .map_or(0, |()| 1)
 }
 
+/// GetTextExtentPointW: GetTextExtentPoint32W's SIZE. (Its documentation calls it the 16-bit
+/// Windows form, GetTextExtentPoint32W's computation the more accurate; over the built-in font's
+/// fixed cells they answer alike.) user32's DrawText measures through it, as Windows 2000's
+/// user32 imports it.
+#[unsafe(export_name = "f2k_export_GetTextExtentPointW")]
+pub extern "system" fn get_text_extent_point_w(
+    dc: usize,
+    string: *const u16,
+    count: i32,
+    size: *mut Size,
+) -> u32 {
+    get_text_extent_point32_w(dc, string, count, size)
+}
+
 /// GetTextExtentPoint32A: the string converted to its wide form, then GetTextExtentPoint32W's
 /// SIZE.
 ///

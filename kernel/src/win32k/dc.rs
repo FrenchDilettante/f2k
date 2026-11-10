@@ -3,9 +3,10 @@
 //! ([`super::raster`]).
 //!
 //! A DC is an object of the object manager ([`crate::ob`]'s Dc type), its body a [`Dc`]: its
-//! target, the screen; its clipping region, the screen's extent when it was made (the framebuffer
-//! the graphics mode set, empty before it is); its text and background colors and background mode;
-//! the stock objects it has selected. Its creator's process holds it through a handle in its handle
+//! target, the screen; its origin, where its logical (0, 0) lands on the screen; its clipping
+//! region, in screen coordinates, within the screen's extent when it was made (the framebuffer the
+//! graphics mode set, empty before it is); its text and background colors and background mode; the
+//! objects it has selected. Its creator's process holds it through a handle in its handle
 //! table, as every object is held, so a DC closes with its process's other handles at its end, and
 //! the teardown's leak sweep counts one left behind. (Windows 2000 keeps a DC in GDI's own handle
 //! table, its attributes in user-mode memory gdi32 reads; here its state is the kernel's, and every
@@ -13,12 +14,21 @@
 //!
 //! What the minimal subset serves:
 //!
-//! - screen DCs only: gdi32's CreateDC of the display ([`open_dc`]) and user32's GetDC family
-//!   ([`get_dc`], [`get_dc_ex`], [`get_window_dc`]) make one; there are no windows yet, so the
-//!   window a GetDC names is not looked at and every DC is the screen's (the seam where a window's
-//!   DC, clipped to the window, lands with the windows);
+//! - the screen's DCs and the windows': gdi32's CreateDC of the display ([`open_dc`]) and user32's
+//!   GetDC family of no window make a DC of the whole screen, its origin the screen's; GetDC and
+//!   GetDCEx of a window ([`get_dc`], [`get_dc_ex`]) a DC of its client area, GetWindowDC
+//!   ([`get_window_dc`]) and GetDCEx with DCX_WINDOW of its window rectangle, and BeginPaint
+//!   ([`paint_dc`]) one of its client area clipped to the update region: the DC's origin is the
+//!   area's top left, its clipping region the area (on the screen). A window's DC is not clipped by
+//!   the windows above it or by its children, whatever WS_CLIPCHILDREN says: there are no visible
+//!   regions yet;
+//! - the coordinates a drawing service takes are logical, the DC's origin added (the mapping mode
+//!   is MM_TEXT, its window and viewport origins zero);
 //! - the stock objects as constant handles ([`rtl::gdi::stock_handle`]), which a DC selects by
-//!   kind; there are no other objects (the seam where real brushes, pens and fonts land);
+//!   kind; brushes as objects and global brushes ([`super::brush`]), the DC keeping the selected
+//!   brush's fill beside its handle; no pens or fonts but the stock ones (the seam where they land:
+//!   their handles carry their kind as a brush's does, [`rtl::gdi::object_handle`], and a selection
+//!   of an object of another kind answers STATUS_OBJECT_TYPE_MISMATCH);
 //! - one font, the built-in 8x16 one ([`super::font`]), whatever font is selected: ExtTextOutW
 //!   draws its glyphs at (x, y) as their cells' top left, glyph pixels in the text color, the
 //!   cells' other pixels in the background color when the background mode is OPAQUE (TRANSPARENT
@@ -32,12 +42,14 @@
 //! - NtGdiOpenDCW(ptr Device, ptr<u32> Dc): a screen DC, for the primary display (a null device, or
 //!   `\\.\DISPLAY1`);
 //! - NtUserGetDC(handle Window, ptr<u32> Dc), NtUserGetDCEx(handle Window, handle Region, u32
-//!   Flags, ptr<u32> Dc), NtUserGetWindowDC(handle Window, ptr<u32> Dc): a screen DC;
-//! - NtGdiDeleteObjectApp(handle Object): a DC's handle closed; a stock object is never deleted
-//!   (the call succeeds);
+//!   Flags, ptr<u32> Dc), NtUserGetWindowDC(handle Window, ptr<u32> Dc): the window's DC (the
+//!   screen's for no window); STATUS_INVALID_HANDLE for a handle that names no window;
+//! - NtGdiDeleteObjectApp(handle Object): a DC's or a brush's handle closed; a global object (a
+//!   stock object, a global brush) is never deleted (the call succeeds);
 //! - NtGdiGetStockObject(u32 Index, ptr<u32> Object): the stock object's handle;
 //! - NtGdiSelectBrush, NtGdiSelectPen, NtGdiSelectFont(handle Dc, handle Object, ptr<u32>
-//!   Previous): the object selected, the one it replaces answered;
+//!   Previous): the object selected, the one it replaces answered; STATUS_OBJECT_TYPE_MISMATCH for
+//!   an object of another kind, STATUS_INVALID_HANDLE for a handle that names none;
 //! - NtGdiGetDCDword(handle Dc, u32 Index, ptr<u32> Value) and NtGdiGetAndSetDCDword(handle Dc, u32
 //!   Index, u32 Value, ptr<u32> Previous): the text color, the background color, the background
 //!   mode ([`rtl::gdi`]'s DC_ indexes);
@@ -53,6 +65,7 @@
 use rtl::gdi::*;
 use rtl::pod::Pod;
 
+use super::brush::Fill;
 use super::font;
 use super::raster::{advanced, get_pixel_on, set_pixel_on, TextOut};
 use crate::hw::vbe::Framebuffer;
@@ -68,23 +81,29 @@ const CHUNK: usize = 64;
 /// A DC's body: its target (the screen, the one there is) and its state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dc {
-    /// The clipping region: the screen's extent when the DC was made, empty before the graphics
-    /// mode is set.
+    /// Where the logical (0, 0) lands on the screen: the screen's own, or a window's area's top
+    /// left. It is the brush origin too.
+    pub origin: (i32, i32),
+    /// The clipping region, in screen coordinates: the screen's extent when the DC was made (a
+    /// window's area within it), empty before the graphics mode is set.
     pub clip: Rect,
     /// The text color, the background color (COLORREFs, as set) and the background mode.
     pub text_color: u32,
     pub bk_color: u32,
     pub bk_mode: u32,
-    /// The stock objects selected, by kind.
+    /// The objects selected, by kind: their handles (the stock pen and font).
     pub brush: u32,
     pub pen: u32,
     pub font: u32,
+    /// What the selected brush paints.
+    pub brush_fill: Fill,
 }
 
 impl Dc {
     /// A record holding no DC (a pool's fresh record).
     pub const fn none() -> Self {
         Dc {
+            origin: (0, 0),
             clip: Rect {
                 left: 0,
                 top: 0,
@@ -97,6 +116,7 @@ impl Dc {
             brush: 0,
             pen: 0,
             font: 0,
+            brush_fill: Fill::Null,
         }
     }
 
@@ -106,6 +126,7 @@ impl Dc {
     pub fn screen(width: i32, height: i32) -> Self {
         let stock = |index| stock_handle(index).expect("a stock object");
         Dc {
+            origin: (0, 0),
             clip: Rect {
                 left: 0,
                 top: 0,
@@ -118,6 +139,37 @@ impl Dc {
             brush: stock(WHITE_BRUSH),
             pen: stock(BLACK_PEN),
             font: stock(SYSTEM_FONT),
+            brush_fill: Fill::of_global(GlobalBrush::Stock(WHITE_BRUSH)),
+        }
+    }
+
+    /// A DC of the area `area` (screen coordinates: a window's client area or rectangle) of a
+    /// `width` by `height` screen, as a screen DC starts but for its origin, the area's top left,
+    /// and its clipping region, the area on the screen.
+    pub fn window(width: i32, height: i32, area: Rect) -> Self {
+        let mut dc = Dc::screen(width, height);
+        dc.origin = (area.left, area.top);
+        dc.clip = super::raster::intersect(dc.clip, area);
+        dc
+    }
+
+    /// The screen's point for the logical point (`x`, `y`).
+    pub fn screen_point(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            x.saturating_add(self.origin.0),
+            y.saturating_add(self.origin.1),
+        )
+    }
+
+    /// The screen's rectangle for the logical rectangle `rect`.
+    pub fn screen_rect(&self, rect: Rect) -> Rect {
+        let (left, top) = self.screen_point(rect.left, rect.top);
+        let (right, bottom) = self.screen_point(rect.right, rect.bottom);
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
         }
     }
 
@@ -147,14 +199,25 @@ impl Dc {
     /// OBJ_FONT), answering the one of its kind it replaces; none, the DC untouched, for a handle
     /// that names no stock object of that kind.
     pub fn select(&mut self, kind: u32, handle: u32) -> Option<u32> {
-        let (_, found) = stock_object(handle)?;
+        let (index, found) = stock_object(handle)?;
+        if found != kind {
+            return None;
+        }
+        if kind == OBJ_BRUSH {
+            return Some(self.select_brush(handle, Fill::of_global(GlobalBrush::Stock(index))));
+        }
         let slot = match kind {
-            OBJ_BRUSH => &mut self.brush,
             OBJ_PEN => &mut self.pen,
             OBJ_FONT => &mut self.font,
             _ => return None,
         };
-        (found == kind).then(|| core::mem::replace(slot, handle))
+        Some(core::mem::replace(slot, handle))
+    }
+
+    /// Select the brush `handle`, which paints `fill`, answering the brush it replaces.
+    pub fn select_brush(&mut self, handle: u32, fill: Fill) -> u32 {
+        self.brush_fill = fill;
+        core::mem::replace(&mut self.brush, handle)
     }
 }
 
@@ -169,34 +232,40 @@ pub fn open_dc(call: &mut NtCall, device: UserAddr, out: UserPtr<u32>) -> NtResu
     screen_dc(call, out)
 }
 
-/// NtUserGetDC(Window, Dc): a screen DC (see the module notes: the window is the seam).
-pub fn get_dc(call: &mut NtCall, _window: Handle, out: UserPtr<u32>) -> NtResult {
-    screen_dc(call, out)
+/// GetDCEx's flag for a DC of the window rectangle rather than the client area.
+pub const DCX_WINDOW: u32 = 0x0000_0001;
+
+/// NtUserGetDC(Window, Dc): a DC of the window's client area (the screen's for no window).
+pub fn get_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> NtResult {
+    window_dc(call, window, false, out)
 }
 
-/// NtUserGetDCEx(Window, Region, Flags, Dc): a screen DC, as GetDC's.
+/// NtUserGetDCEx(Window, Region, Flags, Dc): GetDC's DC, or GetWindowDC's with DCX_WINDOW (the
+/// region and the other flags are not looked at: there are no visible regions to clip to yet).
 pub fn get_dc_ex(
     call: &mut NtCall,
-    _window: Handle,
+    window: Handle,
     _region: Handle,
-    _flags: u32,
+    flags: u32,
     out: UserPtr<u32>,
 ) -> NtResult {
-    screen_dc(call, out)
+    window_dc(call, window, flags & DCX_WINDOW != 0, out)
 }
 
-/// NtUserGetWindowDC(Window, Dc): a screen DC, as GetDC's.
-pub fn get_window_dc(call: &mut NtCall, _window: Handle, out: UserPtr<u32>) -> NtResult {
-    screen_dc(call, out)
+/// NtUserGetWindowDC(Window, Dc): a DC of the window's rectangle, its non-client area included
+/// (the screen's for no window).
+pub fn get_window_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> NtResult {
+    window_dc(call, window, true, out)
 }
 
-/// NtGdiDeleteObjectApp(Object): a DC's handle closed (the DC goes with it); a stock object
-/// stays (it is never deleted: the call succeeds); STATUS_INVALID_HANDLE for anything else.
+/// NtGdiDeleteObjectApp(Object): a DC's or a brush's handle closed (the object goes with it); a
+/// global object stays (it is never deleted: the call succeeds); STATUS_INVALID_HANDLE for
+/// anything else.
 pub fn delete_object(call: &mut NtCall, object: Handle) -> NtResult {
-    if stock_object(object.raw()).is_some() {
+    if global_object_kind(object.raw()).is_some() {
         return Ok(STATUS_SUCCESS);
     }
-    close_dc(call, object)?;
+    close_object(call, object)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -208,9 +277,14 @@ pub fn get_stock_object(_call: &mut NtCall, index: u32, out: UserPtr<u32>) -> Nt
     Ok(STATUS_SUCCESS)
 }
 
-/// NtGdiSelectBrush(Dc, Brush, Previous).
+/// NtGdiSelectBrush(Dc, Brush, Previous): a global brush or a brush object (see
+/// [`super::brush::fill_of`]).
 pub fn select_brush(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<u32>) -> NtResult {
-    select(call, dc, OBJ_BRUSH, object, out)
+    dc_of(call, dc)?;
+    let fill = super::brush::fill_of(call, object)?;
+    let previous = update_dc(call, dc, |dc| dc.select_brush(object.raw(), fill))?;
+    out.write(previous)?;
+    Ok(STATUS_SUCCESS)
 }
 
 /// NtGdiSelectPen(Dc, Pen, Previous).
@@ -223,11 +297,17 @@ pub fn select_font(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<u
     select(call, dc, OBJ_FONT, object, out)
 }
 
-/// Select `object` of `kind` into `dc`, the object it replaces into `out`; STATUS_INVALID_HANDLE
-/// for an object that is no stock object of that kind.
+/// Select the stock `object` of `kind` into `dc`, the object it replaces into `out`;
+/// STATUS_OBJECT_TYPE_MISMATCH for an object of another kind (a global one, or one the calling
+/// process's handle names), STATUS_INVALID_HANDLE for a handle that names none.
 fn select(call: &mut NtCall, dc: Handle, kind: u32, object: Handle, out: UserPtr<u32>) -> NtResult {
-    let previous =
-        update_dc(call, dc, |dc| dc.select(kind, object.raw()))?.ok_or(STATUS_INVALID_HANDLE)?;
+    let Some(previous) = update_dc(call, dc, |dc| dc.select(kind, object.raw()))? else {
+        return Err(if names_object(call, object) {
+            STATUS_OBJECT_TYPE_MISMATCH
+        } else {
+            STATUS_INVALID_HANDLE
+        });
+    };
     out.write(previous)?;
     Ok(STATUS_SUCCESS)
 }
@@ -276,8 +356,9 @@ pub fn ext_text_out_w(
     let rect = if rect.is_null() {
         None
     } else {
-        Some(rect.cast::<Rect>().read()?)
+        Some(dc.screen_rect(rect.cast::<Rect>().read()?))
     };
+    let (x, y) = dc.screen_point(x, y);
     let text = TextOut::new(
         dc.clip,
         dc.text_color,
@@ -370,6 +451,7 @@ pub fn set_pixel(
     out: UserPtr<u32>,
 ) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
+    let (x, y) = dc.screen_point(x, y);
     let set = with_screen(|screen| set_pixel_on(Some(screen), &dc.clip, x, y, color))
         .unwrap_or(CLR_INVALID);
     out.write(set)?;
@@ -379,6 +461,7 @@ pub fn set_pixel(
 /// NtGdiGetPixel(Dc, X, Y, Color): the pixel's COLORREF (or CLR_INVALID) into `out`.
 pub fn get_pixel(call: &mut NtCall, dc: Handle, x: i32, y: i32, out: UserPtr<u32>) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
+    let (x, y) = dc.screen_point(x, y);
     let color =
         with_screen(|screen| get_pixel_on(Some(screen), &dc.clip, x, y)).unwrap_or(CLR_INVALID);
     out.write(color)?;
@@ -405,7 +488,7 @@ type ScreenMemory = crate::hw::vbe::trampoline::LfbMemory;
 
 /// Run `f` against the screen, once the graphics mode is set; none before it.
 #[cfg(target_arch = "x86")]
-fn with_screen<R>(f: impl FnOnce(&mut Framebuffer<ScreenMemory>) -> R) -> Option<R> {
+pub(super) fn with_screen<R>(f: impl FnOnce(&mut Framebuffer<ScreenMemory>) -> R) -> Option<R> {
     crate::hw::vbe::with_framebuffer(f)
 }
 
@@ -421,7 +504,41 @@ fn screen_extent() -> (i32, i32) {
 #[cfg(target_arch = "x86")]
 fn screen_dc(call: &mut NtCall, out: UserPtr<u32>) -> NtResult {
     let (width, height) = screen_extent();
-    let handle = publish_dc(call, Dc::screen(width, height))?;
+    hand_out(call, Dc::screen(width, height), out)
+}
+
+/// A new DC of the window `window` names, of its rectangle when `whole` and of its client area
+/// otherwise (the screen's for a null handle), its handle into `out` (see [`screen_dc`]);
+/// STATUS_INVALID_HANDLE for a handle that names no window.
+#[cfg(target_arch = "x86")]
+fn window_dc(call: &mut NtCall, window: Handle, whole: bool, out: UserPtr<u32>) -> NtResult {
+    if window.raw() == 0 {
+        return screen_dc(call, out);
+    }
+    let area = crate::win32k::queue::with_manager(call.passive(), |m| {
+        let id = m.windows.window_from_handle(window.raw())?;
+        Some(if whole {
+            m.windows.window_rect(id)
+        } else {
+            m.windows.client_rect(id)
+        })
+    })
+    .ok_or(STATUS_INVALID_HANDLE)?;
+    let area = Rect {
+        left: area.left,
+        top: area.top,
+        right: area.right,
+        bottom: area.bottom,
+    };
+    let (width, height) = screen_extent();
+    hand_out(call, Dc::window(width, height, area), out)
+}
+
+/// A DC of state `dc` made, its handle into `out`; the DC closed again when `out` cannot be
+/// written.
+#[cfg(target_arch = "x86")]
+fn hand_out(call: &mut NtCall, dc: Dc, out: UserPtr<u32>) -> NtResult {
+    let handle = publish_dc(call, dc)?;
     if out.write(handle).is_err() {
         call.process().close_handle(handle);
         return Err(STATUS_ACCESS_VIOLATION);
@@ -429,14 +546,14 @@ fn screen_dc(call: &mut NtCall, out: UserPtr<u32>) -> NtResult {
     Ok(STATUS_SUCCESS)
 }
 
-/// BeginPaint's DC: a screen DC clipped to `clip` (screen coordinates: the window's client area
-/// its update region covers), its handle in the calling process (not inheritable);
-/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the handle table is full. Its coordinates
-/// are the screen's (the seam where a window's DC, its origin the client area's, lands).
+/// BeginPaint's DC: a DC of the window's client area `client` clipped to `clip` (both screen
+/// coordinates: `clip` the part of the client area its update region covers), its handle in the
+/// calling process (not inheritable); STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the
+/// handle table is full.
 #[cfg(target_arch = "x86")]
-pub(super) fn paint_dc(call: &mut NtCall, clip: Rect) -> Result<u32, NtStatus> {
+pub(super) fn paint_dc(call: &mut NtCall, client: Rect, clip: Rect) -> Result<u32, NtStatus> {
     let (width, height) = screen_extent();
-    let mut dc = Dc::screen(width, height);
+    let mut dc = Dc::window(width, height, client);
     dc.clip = super::raster::intersect(dc.clip, clip);
     publish_dc(call, dc)
 }
@@ -459,27 +576,66 @@ fn publish_dc(call: &mut NtCall, dc: Dc) -> Result<u32, NtStatus> {
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
-/// Close the calling process's handle `handle` when it names a DC; STATUS_INVALID_HANDLE
-/// otherwise. (The look-up and the close are one step: a service runs masked until its first
-/// wait, and neither waits.)
+/// Close the calling process's handle `handle` when it names `kind`'s object;
+/// STATUS_INVALID_HANDLE otherwise. (The look-up and the close are one step: a service runs masked
+/// until its first wait, and neither waits.)
 #[cfg(target_arch = "x86")]
-fn close_dc(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
+fn close_kind(
+    call: &mut NtCall,
+    handle: Handle,
+    kind: crate::ob::ObjectType,
+) -> Result<(), NtStatus> {
     let process = call.process();
-    let is_dc = process
+    let is_kind = process
         .lookup_handle(handle.raw())
         .and_then(|entry| entry.object_id())
-        .is_some_and(|id| id.kind == crate::ob::ObjectType::Dc);
-    if is_dc && process.close_handle(handle.raw()) {
+        .is_some_and(|id| id.kind == kind);
+    if is_kind && process.close_handle(handle.raw()) {
         Ok(())
     } else {
         Err(STATUS_INVALID_HANDLE)
     }
 }
 
+/// Close the calling process's handle `handle` when it names a DC; STATUS_INVALID_HANDLE
+/// otherwise.
+#[cfg(target_arch = "x86")]
+fn close_dc(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
+    close_kind(call, handle, crate::ob::ObjectType::Dc)
+}
+
+/// Close the calling process's handle when `handle` names a DC (its bare handle) or a brush (its
+/// handle-table handle under the brush kind's bits: [`rtl::gdi::object_of`]), DeleteObject's;
+/// STATUS_INVALID_HANDLE otherwise.
+#[cfg(target_arch = "x86")]
+fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
+    match object_of(handle.raw()) {
+        Some((OBJ_BRUSH, table)) => close_kind(call, Handle(table), crate::ob::ObjectType::Brush),
+        Some(_) => Err(STATUS_INVALID_HANDLE),
+        None => close_dc(call, handle),
+    }
+}
+
+/// Whether `handle` is a global object's or an object's of the calling process (one with its
+/// kind's bits, or a DC's bare handle).
+#[cfg(target_arch = "x86")]
+fn names_object(call: &mut NtCall, handle: Handle) -> bool {
+    let table = object_of(handle.raw()).map_or(handle.raw(), |(_, table)| table);
+    global_object_kind(handle.raw()).is_some()
+        || call
+            .process()
+            .lookup_handle(table)
+            .and_then(|entry| entry.object_id())
+            .is_some()
+}
+
 /// The DC `handle` names in the calling process, referenced for as long as the caller keeps the
 /// reference, and its state as it is now.
 #[cfg(target_arch = "x86")]
-fn dc_of(_call: &mut NtCall, handle: Handle) -> Result<(crate::ob::ObRef, Dc), NtStatus> {
+pub(super) fn dc_of(
+    _call: &mut NtCall,
+    handle: Handle,
+) -> Result<(crate::ob::ObRef, Dc), NtStatus> {
     let reference = crate::ob::reference_by_handle(handle.raw(), Some(crate::ob::ObjectType::Dc))
         .ok_or(STATUS_INVALID_HANDLE)?;
     let dc = crate::ob::locked(|directory| directory.dc(reference.id()).copied())
@@ -521,7 +677,7 @@ impl crate::hw::vbe::PixelMemory for NoScreen {
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn with_screen<R>(_: impl FnOnce(&mut Framebuffer<ScreenMemory>) -> R) -> Option<R> {
+pub(super) fn with_screen<R>(_: impl FnOnce(&mut Framebuffer<ScreenMemory>) -> R) -> Option<R> {
     None
 }
 
@@ -531,12 +687,22 @@ fn screen_dc(_: &mut NtCall, _: UserPtr<u32>) -> NtResult {
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn close_dc(_: &mut NtCall, _: Handle) -> Result<(), NtStatus> {
+fn window_dc(_: &mut NtCall, _: Handle, _: bool, _: UserPtr<u32>) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn close_object(_: &mut NtCall, _: Handle) -> Result<(), NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn dc_of(_: &mut NtCall, _: Handle) -> Result<((), Dc), NtStatus> {
+fn names_object(_: &mut NtCall, handle: Handle) -> bool {
+    global_object_kind(handle.raw()).is_some()
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub(super) fn dc_of(_: &mut NtCall, _: Handle) -> Result<((), Dc), NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
 
@@ -596,6 +762,58 @@ mod tests {
         assert_eq!(dc.attribute(DC_BK_COLOR), Some(0xFF_0000));
         assert_eq!(dc.attribute(DC_BK_MODE), Some(OPAQUE));
         assert_eq!(dc.attribute(3), None);
+    }
+
+    /// A window's DC: its origin the area's top left, its clipping region the area cut to the
+    /// screen; the logical coordinates land at the origin.
+    #[test]
+    fn a_window_dc_draws_at_its_origin_clipped() {
+        let dc = Dc::window(640, 480, rect(600, 30, 700, 80));
+        assert_eq!(dc.origin, (600, 30));
+        assert_eq!(dc.clip, rect(600, 30, 640, 80), "cut to the screen");
+        assert_eq!(dc.screen_point(0, 0), (600, 30));
+        assert_eq!(dc.screen_point(-5, 7), (595, 37));
+        assert_eq!(dc.screen_rect(rect(1, 2, 3, 4)), rect(601, 32, 603, 34));
+        assert_eq!(
+            dc.brush,
+            stock_handle(WHITE_BRUSH).unwrap(),
+            "a DC's defaults"
+        );
+        let screen = Dc::screen(640, 480);
+        assert_eq!(screen.origin, (0, 0));
+        assert_eq!(screen.screen_point(3, 4), (3, 4));
+        assert_eq!(
+            Dc::window(640, 480, rect(-10, -10, -1, -1)).clip.right,
+            -1,
+            "off the screen: empty"
+        );
+    }
+
+    /// Selecting a brush keeps its fill beside its handle: a stock brush's by its index, a brush
+    /// object's or a global one's as given; the brush replaced is answered.
+    #[test]
+    fn a_selected_brush_keeps_its_fill() {
+        let mut dc = Dc::screen(640, 480);
+        let stock = |index| stock_handle(index).unwrap();
+        assert_eq!(dc.brush_fill, Fill::Solid(0xFF_FFFF));
+        assert_eq!(
+            dc.select(OBJ_BRUSH, stock(BLACK_BRUSH)),
+            Some(stock(WHITE_BRUSH))
+        );
+        assert_eq!(dc.brush_fill, Fill::Solid(0));
+        assert_eq!(
+            dc.select(OBJ_BRUSH, stock(NULL_BRUSH)),
+            Some(stock(BLACK_BRUSH))
+        );
+        assert_eq!(dc.brush_fill, Fill::Null);
+        assert_eq!(
+            dc.select_brush(0x44, Fill::Solid(0x12_3456)),
+            stock(NULL_BRUSH)
+        );
+        assert_eq!((dc.brush, dc.brush_fill), (0x44, Fill::Solid(0x12_3456)));
+        let face = sys_color_brush(15).unwrap();
+        assert_eq!(dc.select_brush(face, Fill::SysColor(15)), 0x44);
+        assert_eq!(dc.select(OBJ_BRUSH, face), None, "not a stock object");
     }
 
     /// A stock object is selected over the one of its kind, which is answered; one of another

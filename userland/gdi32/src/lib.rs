@@ -1,8 +1,8 @@
 //! gdi32's user-mode code: the bodies of its exports (the screen DC, its stock objects, its colors
-//! and modes and its pixels, [`dc`]; text and its metrics, [`text`]), as Windows 2000's gdi32
-//! runs them, over ntdll's, kernel32's and user32's exports and win32k's services ([`imports`]:
-//! as Windows 2000's gdi32 imports the first and enters the kernel itself for the others, through
-//! its own stubs).
+//! and modes and its pixels, [`dc`]; brushes and fills, [`brush`]; text and its metrics,
+//! [`text`]), as Windows 2000's gdi32 runs them, over ntdll's, kernel32's and user32's exports and
+//! win32k's services ([`imports`]: as Windows 2000's gdi32 imports the first and enters the kernel
+//! itself for the others, through its own stubs).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
 //! module-definition file exports under its name (build-support/stubs.rs finds them; the export
@@ -21,6 +21,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod brush;
 pub mod dc;
 pub mod imports;
 pub mod stub;

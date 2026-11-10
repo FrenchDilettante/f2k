@@ -1,9 +1,9 @@
-//! The screen DC: CreateDC of the display, DeleteDC and GetDeviceCaps, the stock objects
-//! (GetStockObject, SelectObject, DeleteObject), the text and background colors and the background
-//! mode, and single pixels, each over its win32k service ([`imports`]: gdi32's own stubs, as
-//! Windows 2000's gdi32 enters the kernel itself), the screen's size over user32's
-//! GetSystemMetrics. What the kernel serves is in its DC services' notes
-//! (kernel/src/win32k/dc.rs): screen DCs, stock objects as constant handles, one font.
+//! The screen DC: CreateDC of the display, DeleteDC and GetDeviceCaps, the objects (GetStockObject,
+//! SelectObject, DeleteObject), the text and background colors and the background mode, and single
+//! pixels, each over its win32k service ([`imports`]: gdi32's own stubs, as Windows 2000's gdi32
+//! enters the kernel itself), the screen's size over user32's GetSystemMetrics. What the kernel
+//! serves is in its DC services' notes (kernel/src/win32k/dc.rs): the screen's and the windows'
+//! DCs, stock objects as constant handles, brushes ([`crate::brush`]), one font.
 
 use rtl::edge::{InStr, InWStr};
 use rtl::gdi::*;
@@ -125,7 +125,8 @@ pub extern "system" fn delete_dc(dc: usize) -> u32 {
     answered(imports::delete_object(dc)).map_or(0, |()| 1)
 }
 
-/// DeleteObject: the object deleted (a stock object is never deleted: TRUE all the same).
+/// DeleteObject: the object deleted, a DC or a brush (a global object, a stock one or a global
+/// brush, is never deleted: TRUE all the same).
 #[unsafe(export_name = "f2k_export_DeleteObject")]
 pub extern "system" fn delete_object(object: usize) -> u32 {
     answered(imports::delete_object(object)).map_or(0, |()| 1)
@@ -138,16 +139,17 @@ pub extern "system" fn get_stock_object(index: i32) -> usize {
     answered(imports::stock_object(index as u32)).map_or(0, |object| object as usize)
 }
 
-/// SelectObject: the brush, pen or font `object` is (the kind its handle carries) selected into
-/// the DC, the object of its kind it replaces answered; NULL with ERROR_INVALID_HANDLE for a
-/// handle of no kind a DC selects (a palette's is SelectPalette's), with the service's error for a
-/// DC that is none.
+/// SelectObject: the brush, pen or font `object` is selected into the DC, the object of its kind
+/// it replaces answered; the kind is the handle's own (a stock object's, a global brush's, or a
+/// process's object's kind bits: rtl::gdi's `object_kind`), as Windows 2000's gdi32 reads it from
+/// the handle. NULL with ERROR_INVALID_HANDLE for a handle of no kind a DC selects (a palette's is
+/// SelectPalette's, a DC's none), with the service's error for a DC or an object that is none.
 #[unsafe(export_name = "f2k_export_SelectObject")]
 pub extern "system" fn select_object(dc: usize, object: usize) -> usize {
-    let kind = match stock_object(object as u32) {
-        Some((_, OBJ_BRUSH)) => Selected::Brush,
-        Some((_, OBJ_PEN)) => Selected::Pen,
-        Some((_, OBJ_FONT)) => Selected::Font,
+    let kind = match object_kind(object as u32) {
+        Some(OBJ_BRUSH) => Selected::Brush,
+        Some(OBJ_PEN) => Selected::Pen,
+        Some(OBJ_FONT) => Selected::Font,
         _ => return failed(ERROR_INVALID_HANDLE).unwrap_or(0),
     };
     answered(imports::select(kind, dc, object)).map_or(0, |previous| previous as usize)
