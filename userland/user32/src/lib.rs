@@ -6,10 +6,10 @@
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the string tables,
 //! [`resource`]; the clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles,
-//! [`rect`]; the character walks, [`string`]), as Windows 2000's user32 runs them, over ntdll's
-//! and kernel32's exports and win32k's services ([`imports`]: as Windows 2000's user32 imports the
-//! first and enters the kernel itself for the others, through its own stubs), and csrss's user
-//! server (the kernel's stand-in, through ntdll's CsrClientCallServer).
+//! [`rect`]; the character walks, [`string`]; WinHelp, [`help`]), as Windows 2000's user32 runs
+//! them, over ntdll's and kernel32's exports and win32k's services ([`imports`]: as Windows 2000's
+//! user32 imports the first and enters the kernel itself for the others, through its own stubs),
+//! and csrss's user server (the kernel's stand-in, through ntdll's CsrClientCallServer).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
 //! module-definition file exports under its name (build-support/stubs.rs finds them; the export
@@ -35,6 +35,7 @@ pub mod clipboard;
 pub mod dc;
 pub mod display;
 pub mod focus;
+pub mod help;
 pub mod imports;
 pub mod keyboard;
 pub mod message;

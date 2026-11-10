@@ -2231,12 +2231,22 @@ fails = "NULL"
 # --- help -----------------------------------------------------------------------------------------
 
 [[export]]
+name = "WinHelpA"
+group = "help"
+args = ["handle hWndMain", "strA? lpszHelp", "u32 uCommand", "u32 dwData"]
+impl = { native = "WinHelpA" }
+ordinal = 686
+fails = "FALSE"
+note = "there is no help engine: FALSE, the last error ERROR_FILE_NOT_FOUND"
+
+[[export]]
 name = "WinHelpW"
 group = "help"
 args = ["handle hWndMain", "strW? lpszHelp", "u32 uCommand", "u32 dwData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "WinHelpW" }
 ordinal = 687
 fails = "FALSE"
+note = "there is no help engine: FALSE, the last error ERROR_FILE_NOT_FOUND"
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
@@ -4207,10 +4217,6 @@ ordinal = 684
 [[export]]
 name = "Win32PoolAllocationStats"
 ordinal = 685
-
-[[export]]
-name = "WinHelpA"
-ordinal = 686
 
 [[export]]
 name = "keybd_event"
