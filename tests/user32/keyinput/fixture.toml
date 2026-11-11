@@ -2,9 +2,12 @@
 # keystrokes are injected with SendInput into its own window, and only while that window is the
 # foreground window: each block prints whether it was, and sends nothing when it was not. No handle
 # or address prints; the messages, their wParam and lParam, and GetKeyState's down bits do.
-description = "keyinput - keystrokes injected with SendInput into the program's own foreground window: WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP and TranslateMessage's WM_CHAR and WM_SYSCHAR for the US layout (wParam, lParam's repeat count, scan code and flags), GetKeyState's down bits during each; letters, Shift, digits, calc's symbols and the keypad's operators, Enter, Escape, Backspace, Tab, Ctrl+C, Alt+F and Alt alone, the extended arrows and Delete, a scan code alone and a virtual key with no scan code, a key pressed twice before its release, and an A window pumped through PeekMessageA and DispatchMessageA."
+description = "keyinput - keystrokes injected with SendInput into the program's own foreground window: WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP and TranslateMessage's WM_CHAR and WM_SYSCHAR for the US layout (wParam, lParam's repeat count, scan code and flags), GetKeyState's down bits during each; letters, Shift, digits, calc's symbols and the keypad's operators, Enter, Escape, Backspace, Tab, Ctrl+C, Alt+F and Alt alone, the extended arrows and Delete, a scan code alone and a virtual key with no scan code, a key pressed twice before its release, an A window pumped through PeekMessageA and DispatchMessageA, and the window a keystroke goes to when the focus moves, is taken away or is destroyed after the keystroke and before the read, with reads filtered by window and by message (typeahead)."
 kind = "sectioned"
 gate = true
+# typeahead awaits its capture: it is in keyinput.c, not yet in keyinput.exe or output.txt. Until
+# its block is captured it has no [pending] entry (the reader refuses one for a section with no
+# block) and no pins.
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
