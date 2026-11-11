@@ -1815,6 +1815,23 @@ impl = { stub = "not yet implemented" }
 ordinal = 684
 fails = "FALSE"
 
+[[export]]
+name = "GetUpdateRgn"
+group = "message"
+args = ["handle hWnd", "handle hRgn", "bool bErase"]
+impl = { stub = "not yet implemented" }
+ordinal = 338
+fails = "0"
+note = "the region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "InvalidateRgn"
+group = "message"
+args = ["handle hWnd", "handle hRgn", "bool bErase"]
+impl = { stub = "not yet implemented" }
+ordinal = 384
+fails = "FALSE"
+
 # --- ending the session ---------------------------------------------------------------------------
 
 [[export]]
@@ -4178,10 +4195,6 @@ name = "GetTitleBarInfo"
 ordinal = 335
 
 [[export]]
-name = "GetUpdateRgn"
-ordinal = 338
-
-[[export]]
 name = "GetUserObjectSecurity"
 ordinal = 341
 
@@ -4268,10 +4281,6 @@ ordinal = 376
 [[export]]
 name = "InternalGetWindowText"
 ordinal = 381
-
-[[export]]
-name = "InvalidateRgn"
-ordinal = 384
 
 [[export]]
 name = "IsCharAlphaA"

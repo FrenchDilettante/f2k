@@ -1001,6 +1001,161 @@ ordinal = 359
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
 
+[[export]]
+name = "CombineRgn"
+group = "regions"
+args = ["handle hrgnDest", "handle hrgnSrc1", "handle hrgnSrc2", "i32 fnCombineMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 32
+fails = "0"
+note = "the region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "CreatePolygonRgn"
+group = "regions"
+args = ["ptr lppt", "i32 cPoints", "i32 fnPolyFillMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 73
+fails = "NULL"
+
+[[export]]
+name = "CreateRectRgnIndirect"
+group = "regions"
+args = ["ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 75
+fails = "NULL"
+
+[[export]]
+name = "EqualRgn"
+group = "regions"
+args = ["handle hSrcRgn1", "handle hSrcRgn2"]
+impl = { stub = "not yet implemented" }
+ordinal = 153
+fails = "0"
+note = "0 (ERROR) as well for a region that is not one"
+
+[[export]]
+name = "ExcludeClipRect"
+group = "regions"
+args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 157
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "ExtSelectClipRgn"
+group = "regions"
+args = ["handle hdc", "handle hrgn", "i32 fnMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 162
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "FillRgn"
+group = "regions"
+args = ["handle hdc", "handle hrgn", "handle hbr"]
+impl = { stub = "not yet implemented" }
+ordinal = 174
+fails = "FALSE"
+
+[[export]]
+name = "GetClipBox"
+group = "regions"
+args = ["handle hdc", "ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 291
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "GetClipRgn"
+group = "regions"
+args = ["handle hdc", "handle hrgn"]
+impl = { stub = "not yet implemented" }
+ordinal = 292
+fails = "-1"
+note = "1 with a clipping region, 0 without one"
+
+[[export]]
+name = "GetRegionData"
+group = "regions"
+args = ["handle hRgn", "u32 dwCount", "ptr lpRgnData"]
+impl = { stub = "not yet implemented" }
+ordinal = 357
+fails = "0"
+
+[[export]]
+name = "IntersectClipRect"
+group = "regions"
+args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 394
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "OffsetClipRgn"
+group = "regions"
+args = ["handle hdc", "i32 nXOffset", "i32 nYOffset"]
+impl = { stub = "not yet implemented" }
+ordinal = 404
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "OffsetRgn"
+group = "regions"
+args = ["handle hrgn", "i32 nXOffset", "i32 nYOffset"]
+impl = { stub = "not yet implemented" }
+ordinal = 405
+fails = "0"
+note = "the region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "PtInRegion"
+group = "regions"
+args = ["handle hrgn", "i32 X", "i32 Y"]
+impl = { stub = "not yet implemented" }
+ordinal = 433
+fails = "FALSE"
+
+[[export]]
+name = "PtVisible"
+group = "regions"
+args = ["handle hdc", "i32 X", "i32 Y"]
+impl = { stub = "not yet implemented" }
+ordinal = 434
+fails = "-1"
+note = "-1 for a DC that is not one"
+
+[[export]]
+name = "RectVisible"
+group = "regions"
+args = ["handle hdc", "ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 438
+fails = "FALSE"
+
+[[export]]
+name = "SelectClipRgn"
+group = "regions"
+args = ["handle hdc", "handle hrgn"]
+impl = { stub = "not yet implemented" }
+ordinal = 461
+fails = "0"
+note = "the clipping region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "SetRectRgn"
+group = "regions"
+args = ["handle hrgn", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 501
+fails = "FALSE"
+
 # --- pens, lines and shapes -----------------------------------------------------------------------
 
 [[export]]
@@ -1323,10 +1478,6 @@ name = "ColorMatchToTarget"
 ordinal = 31
 
 [[export]]
-name = "CombineRgn"
-ordinal = 32
-
-[[export]]
 name = "CombineTransform"
 ordinal = 33
 
@@ -1429,14 +1580,6 @@ ordinal = 71
 [[export]]
 name = "CreatePolyPolygonRgn"
 ordinal = 72
-
-[[export]]
-name = "CreatePolygonRgn"
-ordinal = 73
-
-[[export]]
-name = "CreateRectRgnIndirect"
-ordinal = 75
 
 [[export]]
 name = "CreateRoundRectRgn"
@@ -1711,10 +1854,6 @@ name = "EnumObjects"
 ordinal = 152
 
 [[export]]
-name = "EqualRgn"
-ordinal = 153
-
-[[export]]
 name = "Escape"
 ordinal = 154
 
@@ -1727,10 +1866,6 @@ name = "EudcUnloadLinkW"
 ordinal = 156
 
 [[export]]
-name = "ExcludeClipRect"
-ordinal = 157
-
-[[export]]
 name = "ExtCreateRegion"
 ordinal = 159
 
@@ -1741,10 +1876,6 @@ ordinal = 160
 [[export]]
 name = "ExtFloodFill"
 ordinal = 161
-
-[[export]]
-name = "ExtSelectClipRgn"
-ordinal = 162
 
 [[export]]
 name = "FONTOBJ_cGetAllGlyphHandles"
@@ -1781,10 +1912,6 @@ ordinal = 172
 [[export]]
 name = "FillPath"
 ordinal = 173
-
-[[export]]
-name = "FillRgn"
-ordinal = 174
 
 [[export]]
 name = "FixBrushOrgEx"
@@ -2219,14 +2346,6 @@ name = "GetCharacterPlacementW"
 ordinal = 290
 
 [[export]]
-name = "GetClipBox"
-ordinal = 291
-
-[[export]]
-name = "GetClipRgn"
-ordinal = 292
-
-[[export]]
 name = "GetColorAdjustment"
 ordinal = 293
 
@@ -2419,10 +2538,6 @@ name = "GetRasterizerCaps"
 ordinal = 356
 
 [[export]]
-name = "GetRegionData"
-ordinal = 357
-
-[[export]]
 name = "GetRelAbs"
 ordinal = 358
 
@@ -2507,10 +2622,6 @@ name = "HT_Get8BPPMaskPalette"
 ordinal = 393
 
 [[export]]
-name = "IntersectClipRect"
-ordinal = 394
-
-[[export]]
 name = "InvertRgn"
 ordinal = 395
 
@@ -2533,14 +2644,6 @@ ordinal = 401
 [[export]]
 name = "NamedEscape"
 ordinal = 403
-
-[[export]]
-name = "OffsetClipRgn"
-ordinal = 404
-
-[[export]]
-name = "OffsetRgn"
-ordinal = 405
 
 [[export]]
 name = "PATHOBJ_bEnum"
@@ -2631,14 +2734,6 @@ name = "PolylineTo"
 ordinal = 432
 
 [[export]]
-name = "PtInRegion"
-ordinal = 433
-
-[[export]]
-name = "PtVisible"
-ordinal = 434
-
-[[export]]
 name = "QueryFontAssocStatus"
 ordinal = 435
 
@@ -2649,10 +2744,6 @@ ordinal = 436
 [[export]]
 name = "RectInRegion"
 ordinal = 437
-
-[[export]]
-name = "RectVisible"
-ordinal = 438
 
 [[export]]
 name = "RemoveFontMemResourceEx"
@@ -2701,10 +2792,6 @@ ordinal = 459
 [[export]]
 name = "SelectClipPath"
 ordinal = 460
-
-[[export]]
-name = "SelectClipRgn"
-ordinal = 461
 
 [[export]]
 name = "SelectFontLocal"
@@ -2821,10 +2908,6 @@ ordinal = 497
 [[export]]
 name = "SetPixelV"
 ordinal = 498
-
-[[export]]
-name = "SetRectRgn"
-ordinal = 501
 
 [[export]]
 name = "SetRelAbs"
