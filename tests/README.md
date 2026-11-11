@@ -19,7 +19,8 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll, caret
+│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
+│               # caret, editctl
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -279,6 +280,10 @@ The fixtures:
   Not gated: awaiting its capture.
 - `caret` (user32) - the caret: `CreateCaret` (solid, gray, the default size), `DestroyCaret`, `SetCaretPos` and `GetCaretPos`, and the calls with no caret (`create`); `ShowCaret` and `HideCaret`'s hide count, `NULL` and a window not owning the caret (`show`); and the caret as the focus moves, on `CreateCaret` by another window, on its owner's destruction, in a window procedure making it on `WM_SETFOCUS` and destroying it on `WM_KILLFOCUS`, and against another thread's caret calls (`focus`).
   Whether the caret shows, its window and its rectangle come from `GetGUIThreadInfo` (through `GetProcAddress`), read at once after each call with no message retrieved between, so the caret's blink cannot turn them.
+  Not gated: awaiting its capture.
+- `editctl` (user32) - the built-in Edit control, single-line and `ES_MULTILINE`, driven by messages: its class, style and answers as created (`create`); `WM_SETTEXT`, `WM_GETTEXT` and `WM_GETTEXTLENGTH` through `SendMessageW` and `SendMessageA`, with short buffers (`text`); `EM_SETSEL`, `EM_GETSEL` and `EM_REPLACESEL`, and the caret's moves as relations (`select`); `EM_LIMITTEXT` and `EM_GETLIMITTEXT` (`limit`); `EM_GETLINECOUNT`, `EM_LINEINDEX`, `EM_LINELENGTH`, `EM_LINEFROMCHAR` and `EM_GETLINE` (`lines`); `EM_SETREADONLY` (`readonly`); `EM_CANUNDO`, `EM_UNDO`, `WM_UNDO` and `EM_EMPTYUNDOBUFFER` (`undo`); `EM_GETMODIFY` and `EM_SETMODIFY` (`modify`); `ES_UPPERCASE`, `ES_LOWERCASE` and `ES_NUMBER` (`case`); and the `EN_SETFOCUS`, `EN_KILLFOCUS`, `EN_UPDATE`, `EN_CHANGE` and `EN_MAXTEXT` notifications the parent receives, in order (`notify`).
+  Typing is `WM_CHAR` posted to the focused edit; no key is pressed.
+  Nothing printed depends on a glyph's width, F2K's fonts being stand-ins: no positions, short texts in `ES_AUTOHSCROLL` edits that never wrap or refuse text, and `EN_HSCROLL` and `EN_VSCROLL` not recorded.
   Not gated: awaiting its capture.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
