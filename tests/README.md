@@ -19,7 +19,7 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf, rects
+│               # keyinput, mousein, clipbrd, wsprintf, rects, chars
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -252,6 +252,10 @@ The fixtures:
   Every line prints the inputs, the return and the rectangle the call left, a destination starting as (111,222,333,444).
   Built with `/MD`.
   Not gated: F2K's user32 has only `SetRect` and `OffsetRect` of them.
+- `chars` (user32) - user32's character case and classification: `CharUpperW`/`A` (`upper`) and `CharLowerW`/`A` (`lower`) on a string converted in place and on single characters in the pointer's low word, over ASCII, Latin-1 (U+00FF, U+00DF), the Turkish i's, Greek, Cyrillic and fullwidth letters and their code page 1252 bytes; `CharUpperBuffW`/`A` and `CharLowerBuffW`/`A` over counts past a NUL, short counts and 0 (`buff`); and `IsCharAlphaNumericW`/`A` over letters, digits, punctuation, superscripts, Arabic-Indic and fullwidth digits, a Roman numeral and a CJK ideograph (`alnum`).
+  Each section prints first whether the user and system default locales are 0x0409 and the ANSI code page 1252, which the case mapping and the character types follow.
+  Built with `/MD`.
+  Not gated: F2K's user32 has none of these calls yet.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.

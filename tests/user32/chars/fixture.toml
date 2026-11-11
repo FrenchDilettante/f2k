@@ -1,0 +1,19 @@
+# chars: one test per block of the real-machine capture (output.txt); see tests/README.md. Each
+# section prints first whether the user and system default locales are 0x0409 and the ANSI code page
+# 1252, which the case mapping and the character types follow. Not gated: F2K's user32 has none of
+# these calls yet, so every section is on the work list.
+description = "chars - user32's character case and classification: CharUpperW/A and CharLowerW/A on a string converted in place and on single characters in the pointer's low word (ASCII, Latin-1 with U+00FF and U+00DF, the Turkish i's, Greek, Cyrillic and fullwidth letters; their code page 1252 bytes); CharUpperBuffW/A and CharLowerBuffW/A over counts past a NUL, short counts and 0; and IsCharAlphaNumericW/A over letters, digits, punctuation, superscripts, fractions, Arabic-Indic and fullwidth digits, a Roman numeral and a CJK ideograph."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
+upper = ["user32.CharUpperW", "user32.CharUpperA"]
+lower = ["user32.CharLowerW", "user32.CharLowerA"]
+buff = [
+    "user32.CharUpperBuffW",
+    "user32.CharLowerBuffW",
+    "user32.CharUpperBuffA",
+    "user32.CharLowerBuffA",
+]
+alnum = ["user32.IsCharAlphaNumericW", "user32.IsCharAlphaNumericA"]

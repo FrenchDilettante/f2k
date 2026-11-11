@@ -2649,6 +2649,90 @@ impl = { stub = "not yet implemented" }
 ordinal = 695
 fails = "0"
 
+[[export]]
+name = "CharLowerA"
+group = "string"
+args = ["ptr lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 34
+fails = "NULL"
+note = "lpsz a string, or a character in its low word"
+
+[[export]]
+name = "CharLowerBuffA"
+group = "string"
+args = ["ptr lpsz", "u32 cchLength"]
+impl = { stub = "not yet implemented" }
+ordinal = 35
+fails = "0"
+
+[[export]]
+name = "CharUpperA"
+group = "string"
+args = ["ptr lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 48
+fails = "NULL"
+note = "lpsz a string, or a character in its low word"
+
+[[export]]
+name = "CharUpperBuffA"
+group = "string"
+args = ["ptr lpsz", "u32 cchLength"]
+impl = { stub = "not yet implemented" }
+ordinal = 49
+fails = "0"
+
+[[export]]
+name = "IsCharAlphaNumericA"
+group = "string"
+args = ["u32 ch"]
+impl = { stub = "not yet implemented" }
+ordinal = 387
+fails = "FALSE"
+
+[[export]]
+name = "CharLowerW"
+group = "string"
+args = ["ptr lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 37
+fails = "NULL"
+note = "lpsz a string, or a character in its low word"
+
+[[export]]
+name = "CharLowerBuffW"
+group = "string"
+args = ["ptr lpsz", "u32 cchLength"]
+impl = { stub = "not yet implemented" }
+ordinal = 36
+fails = "0"
+
+[[export]]
+name = "CharUpperW"
+group = "string"
+args = ["ptr lpsz"]
+impl = { stub = "not yet implemented" }
+ordinal = 51
+fails = "NULL"
+note = "lpsz a string, or a character in its low word"
+
+[[export]]
+name = "CharUpperBuffW"
+group = "string"
+args = ["ptr lpsz", "u32 cchLength"]
+impl = { stub = "not yet implemented" }
+ordinal = 50
+fails = "0"
+
+[[export]]
+name = "IsCharAlphaNumericW"
+group = "string"
+args = ["u32 ch"]
+impl = { stub = "not yet implemented" }
+ordinal = 388
+fails = "FALSE"
+
 # --- help -----------------------------------------------------------------------------------------
 
 [[export]]
@@ -2829,22 +2913,6 @@ name = "ChangeMenuW"
 ordinal = 33
 
 [[export]]
-name = "CharLowerA"
-ordinal = 34
-
-[[export]]
-name = "CharLowerBuffA"
-ordinal = 35
-
-[[export]]
-name = "CharLowerBuffW"
-ordinal = 36
-
-[[export]]
-name = "CharLowerW"
-ordinal = 37
-
-[[export]]
 name = "CharNextExA"
 ordinal = 39
 
@@ -2867,22 +2935,6 @@ ordinal = 46
 [[export]]
 name = "CharToOemW"
 ordinal = 47
-
-[[export]]
-name = "CharUpperA"
-ordinal = 48
-
-[[export]]
-name = "CharUpperBuffA"
-ordinal = 49
-
-[[export]]
-name = "CharUpperBuffW"
-ordinal = 50
-
-[[export]]
-name = "CharUpperW"
-ordinal = 51
 
 [[export]]
 name = "CliImmSetHotKey"
@@ -3749,14 +3801,6 @@ ordinal = 384
 [[export]]
 name = "IsCharAlphaA"
 ordinal = 386
-
-[[export]]
-name = "IsCharAlphaNumericA"
-ordinal = 387
-
-[[export]]
-name = "IsCharAlphaNumericW"
-ordinal = 388
 
 [[export]]
 name = "IsCharAlphaW"
