@@ -1,5 +1,5 @@
 # threx: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "threx - thread-level exception behavior: the second chance ending only the thread (unhandled), the CONTEXT dispatched to a handler carrying the floating-point and debug-register state (context), the entry's return value ending the thread rather than the process (mainret), and NtQueryInformationThread's ThreadQuerySetWin32StartAddress class answering the recorded start address (threadstart)."
+description = "threx - thread-level exception behavior: the second chance in a worker thread ending the whole process with the exception's code (unhandled), the CONTEXT dispatched to a handler carrying the floating-point and debug-register state (context), main's return ending the process through the C runtime's exit before a sleeping worker prints (mainret), NtQueryInformationThread's ThreadQuerySetWin32StartAddress class answering the recorded start address (threadstart), and whether a thread resumes with the x87 and SSE state of the CONTEXT it resumes from, through an exception's continuation and through SetThreadContext (fpresume)."
 kind = "sectioned"
 gate = true
 
@@ -19,7 +19,13 @@ mainret = [
 ]
 threadstart = [
     "ntdll.NtQueryInformationThread",
-    "kernel32.GetProcAddress",
-    "kernel32.GetModuleHandleA",
-    "kernel32.GetCurrentThread",
 ]
+# fpresume has no captured block until the next capture, and a pin for a section without one is
+# refused: once it is captured, its pins are
+# fpresume = [
+#     "kernel32.RaiseException",
+#     "kernel32.GetThreadContext",
+#     "kernel32.SetThreadContext",
+#     "kernel32.SuspendThread",
+#     "kernel32.ResumeThread",
+# ]
