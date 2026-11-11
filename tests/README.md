@@ -335,7 +335,7 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
 - `process` - msvcrt's view of its process: the data exports `_acmdln`, `_wcmdln`, `__argc` and `__argv` against `GetCommandLineA`/`GetCommandLineW` and the `__p___argc`/`__p___argv` accessors, `getenv` over variables the program sets itself (`_putenv`, and `SetEnvironmentVariableA` behind the C runtime's back), operator `new` and `delete`, `_msize` and `_expand`.
   The data exports and the C++ operators are reached through `GetProcAddress`, so the program stays C rather than C++.
   Gated.
-- `msvcrt` - the exports no other crt fixture takes in: `ceil`, `floor`, `fabs` and `modf` over halves, signed zeros, infinities and NaNs, `_ftol`, the compiler's conversion to an integer, and `_wfullpath` and `_getdcwd` against kernel32's answers.
+- `msvcrt` - the exports no other crt fixture takes in: `ceil`, `floor`, `fabs` and `modf` over halves, signed zeros, infinities and NaNs, `_ftol`, the compiler's conversion to an integer, `_wfullpath` and `_getdcwd` against kernel32's answers, and `_ismbblead` over every byte under the single-byte code pages `_setmbcp` sets (1252, 437, 850, `_MB_CP_SBCS`, `_MB_CP_OEM`, `_MB_CP_ANSI`) (`mbblead`).
   Its paths print only as relations, so nothing depends on the machine's directories.
   Its program shares the DLL's name: the loader tells `msvcrt.exe` from `MSVCRT.dll` by the full name.
   Gated.

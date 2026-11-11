@@ -1,16 +1,16 @@
 /*
  * msvcrt - msvcrt.dll exports under /MD that no other crt fixture's
  * subject takes in: the floating-point functions ceil, floor, fabs and
- * modf, the compiler's _ftol, and the full paths _wfullpath and
- * _getdcwd make.
+ * modf, the compiler's _ftol, the full paths _wfullpath and _getdcwd
+ * make, and _ismbblead under single-byte multibyte code pages.
  *
  * Deterministic inputs only: doubles given by their bits where a sign
  * or a NaN matters, and paths printed only as relations (equal to
  * GetFullPathNameW's or GetCurrentDirectoryA's answer, ending with the
  * name given). Besides the functions under test, the program calls only
  * exports F2K's msvcrt already has (sprintf, strcmp, wcscmp, free,
- * _msize, errno, _controlfp) and kernel32's path calls. It creates no
- * file.
+ * _msize, errno, _controlfp) and kernel32's path and code page calls.
+ * It creates no file.
  *
  * Sections (run all with no argument, or one by name):
  *
@@ -26,6 +26,15 @@
  *            for drive 0 and the current drive against
  *            GetCurrentDirectoryA, a NULL buffer, a buffer too small, an
  *            invalid drive number
+ *   mbblead  _ismbblead over every byte under the startup's multibyte
+ *            code page and after _setmbcp(1252) (no lead byte; single
+ *            bytes and values past 0xFF probed), 437, 850, _MB_CP_SBCS,
+ *            a code page that does not exist, _MB_CP_OEM and _MB_CP_ANSI
+ *            (_getmbcp against GetOEMCP and GetACP). No DBCS code page:
+ *            which are installed is the machine's choice, and F2K
+ *            carries no DBCS tables. The three are reached through
+ *            GetProcAddress, so the program still loads where msvcrt.dll
+ *            lacks them.
  *
  * fabs has an intrinsic form: `#pragma function(fabs)` below makes cl
  * call msvcrt's. The program is built without /O, and each conversion
@@ -305,9 +314,108 @@ static void sec_paths(void)
     show_getdcwd("27", 27, 1, MAX_PATH);
 }
 
+/* --- mbblead ------------------------------------------------------ */
+
+/* _setmbcp's pseudo code pages, as MSVC 6's mbctype.h names them. */
+#define MB_CP_SBCS 0
+#define MB_CP_OEM -2
+#define MB_CP_ANSI -3
+
+/* _ismbblead, _setmbcp and _getmbcp are reached through GetProcAddress
+   on msvcrt.dll (cdecl): the program loads where the DLL lacks them, its
+   other sections intact. */
+typedef int (__cdecl *ismbblead_fn)(unsigned int c);
+typedef int (__cdecl *setmbcp_fn)(int cp);
+typedef int (__cdecl *getmbcp_fn)(void);
+
+static ismbblead_fn p_ismbblead;
+static setmbcp_fn p_setmbcp;
+static getmbcp_fn p_getmbcp;
+
+/* The bytes _ismbblead takes as lead bytes under the current multibyte
+   code page: how many, and the first and last. */
+static void lead_bytes(const char *label)
+{
+    int count = 0;
+    int first = -1;
+    int last = -1;
+    int c;
+
+    for (c = 0; c < 256; c++) {
+        if (p_ismbblead((unsigned int)c)) {
+            count++;
+            if (first < 0) {
+                first = c;
+            }
+            last = c;
+        }
+    }
+    if (count == 0) {
+        line("  %s: _ismbblead takes no byte as a lead byte", label);
+    } else {
+        line("  %s: _ismbblead takes %d bytes as lead bytes, 0x%02X to 0x%02X", label, count, first, last);
+    }
+}
+
+static void set_mbcp(const char *label, int cp)
+{
+    int r;
+    int e;
+
+    errno = 0;
+    r = p_setmbcp(cp);
+    e = errno;
+    line("_setmbcp(%s): %d errno %d; _getmbcp() %d", label, r, e, p_getmbcp());
+}
+
+static void sec_mbblead(void)
+{
+    static const unsigned int probes[] = { 0x41, 0x80, 0x81, 0x9F, 0xA0, 0xE0, 0xE9, 0xFC, 0xFF, 0x181, 0xFFFFFF81u };
+    int cp;
+    int i;
+
+    p_ismbblead = (ismbblead_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "_ismbblead");
+    p_setmbcp = (setmbcp_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "_setmbcp");
+    p_getmbcp = (getmbcp_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "_getmbcp");
+    line("msvcrt exports _ismbblead %s, _setmbcp %s, _getmbcp %s", yesno(p_ismbblead != NULL),
+         yesno(p_setmbcp != NULL), yesno(p_getmbcp != NULL));
+    if (p_ismbblead == NULL || p_setmbcp == NULL || p_getmbcp == NULL) {
+        return;
+    }
+    cp = p_getmbcp();
+    line("_getmbcp() at startup: is GetACP() %s, is 1252 %s", yesno(cp == (int)GetACP()), yesno(cp == 1252));
+    lead_bytes("at startup");
+
+    set_mbcp("1252", 1252);
+    lead_bytes("1252");
+    for (i = 0; i < (int)(sizeof probes / sizeof probes[0]); i++) {
+        line("  _ismbblead(0x%X): %d", probes[i], p_ismbblead(probes[i]));
+    }
+    set_mbcp("437", 437);
+    lead_bytes("437");
+    set_mbcp("850", 850);
+    lead_bytes("850");
+    set_mbcp("_MB_CP_SBCS", MB_CP_SBCS);
+    lead_bytes("_MB_CP_SBCS");
+    line("  _ismbblead(0x81): %d", p_ismbblead(0x81));
+    set_mbcp("12345, no such code page", 12345);
+    lead_bytes("after 12345");
+    errno = 0;
+    i = p_setmbcp(MB_CP_OEM);
+    line("_setmbcp(_MB_CP_OEM): %d errno %d; _getmbcp() is GetOEMCP() %s, is 437 %s", i, errno,
+         yesno(p_getmbcp() == (int)GetOEMCP()), yesno(p_getmbcp() == 437));
+    lead_bytes("_MB_CP_OEM");
+    errno = 0;
+    i = p_setmbcp(MB_CP_ANSI);
+    line("_setmbcp(_MB_CP_ANSI): %d errno %d; _getmbcp() is GetACP() %s, is 1252 %s", i, errno,
+         yesno(p_getmbcp() == (int)GetACP()), yesno(p_getmbcp() == 1252));
+    lead_bytes("_MB_CP_ANSI");
+}
+
 static const section_t sections[] = {
     { "math", sec_math, F2KT_ALWAYS },
     { "paths", sec_paths, F2KT_ALWAYS },
+    { "mbblead", sec_mbblead, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
