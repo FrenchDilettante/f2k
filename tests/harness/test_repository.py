@@ -38,7 +38,8 @@ LISTED = [name for name in SECTIONED
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "screenshots", "keys", "system_programs", "boot_under", "data_files", "storage"}
+                    "screenshots", "keys", "system_programs", "boot_under", "data_files", "system_fonts",
+                    "storage"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
 SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "storage"}
@@ -143,6 +144,18 @@ def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
         assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
         assert name in built, f"{name}: not a program `make userland` copies to its .exe name"
         assert name not in on_disk, f"{name}: the disk the tests boot carries it already"
+
+
+# The fixtures declaring `system_fonts`.
+ADDING_FONTS = [name for name in DECLARED if "system_fonts" in f2kboot.declaration(name)]
+
+
+@pytest.mark.parametrize("fixture", ADDING_FONTS)
+def test_system_fonts_are_declared_true(fixture: str):
+    """A sectioned fixture's `system_fonts` is `true`, its boot's disk carrying the system's fonts
+    (a fixture that needs none leaves the field out); only a sectioned fixture declares it."""
+    assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture adds the fonts"
+    assert f2kboot.system_fonts(fixture) is True, "system_fonts = false: leave it out"
 
 
 # The fixtures declaring `boot_under`.

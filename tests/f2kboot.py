@@ -1024,13 +1024,35 @@ def read_volume(image: Path, offset: int = PARTITION_OFFSET) -> VolumeState:
 # <name>.dll the target links to its <name>.exe), and where the disk carries the system's programs.
 BUILT_PROGRAMS = REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release"
 SYSTEM_DIRECTORY = "::/WINNT/system32/"
+# The fonts the system loads at its start (fonts/README.md: Wine's five faces), and where on the
+# volume: win32k's boot list (kernel/src/win32k/fonts, BOOT_FONTS) names them under \WINNT\Fonts by
+# these same file names. The disk the tests boot carries none of them.
+FONTS = REPO_ROOT / "fonts"
+FONTS_DIRECTORY = "::/WINNT/Fonts"
+
+
+def system_font_files() -> list[Path]:
+    """The system's font files, fonts/*.ttf, in name order."""
+    return sorted(FONTS.glob("*.ttf"))
+
+
+def add_system_fonts(disk: Path) -> None:
+    """The system's fonts (`system_font_files`) into \\WINNT\\Fonts on the disk image `disk`, by their
+    own names, the directory made first."""
+    image = f"{disk}{PARTITION}"
+    for command in (
+        ["mmd", "-i", image, FONTS_DIRECTORY],
+        ["mcopy", "-i", image, *map(str, system_font_files()), f"{FONTS_DIRECTORY}/"],
+    ):
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
 def disk_with_programs(build: Build, programs: list[Path], path: Path, *,
-                       corpus: list[Path] = ()) -> Path:
+                       corpus: list[Path] = (), fonts: bool = False) -> Path:
     """A copy of `build`'s disk at `path` with `programs` added to its system directory
     (\\WINNT\\system32): programs the disk the tests boot leaves out, cmd.exe for one. The files in
-    `corpus` go to \\CORPUS, by their upper-cased names, as the disk build places the corpus's."""
+    `corpus` go to \\CORPUS, by their upper-cased names, as the disk build places the corpus's; with
+    `fonts`, the system's fonts go to \\WINNT\\Fonts (`add_system_fonts`)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(build.disk, path)
     copies = [[*map(str, programs), SYSTEM_DIRECTORY]] if programs else []
@@ -1041,9 +1063,11 @@ def disk_with_programs(build: Build, programs: list[Path], path: Path, *,
                 ["mcopy", "-i", f"{path}{PARTITION}", *copy],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
+        if fonts:
+            add_system_fonts(path)
     except subprocess.CalledProcessError as error:
         path.unlink(missing_ok=True)
-        added = ", ".join(p.name for p in [*programs, *corpus])
+        added = ", ".join([*(p.name for p in [*programs, *corpus]), *(["the fonts"] if fonts else [])])
         raise RuntimeError(f"adding {added} to the disk failed:\n{error.stdout}") from None
     return path
 
@@ -1577,7 +1601,9 @@ def script_masks(fixture: str, declared: dict, captured: list[Block]) -> dict[st
 # `script_disk`, and a sectioned fixture declaring `system_programs` boots a copy with those of
 # F2K's own programs added to \WINNT\system32 (cmd.exe, for a section running the machine's own),
 # and one declaring `data_files` a copy with those files of its directory added to \CORPUS beside
-# its program (a font file it loads, which sits beside it on the real machine).
+# its program (a font file it loads, which sits beside it on the real machine), and one declaring
+# `system_fonts = true` a copy with the system's fonts (fonts/*.ttf) in \WINNT\Fonts, which the
+# kernel loads at its start (text in the System font, the dialog faces).
 
 
 def system_programs(fixture: str) -> list[Path]:
@@ -1617,6 +1643,15 @@ def data_files(fixture: str) -> list[Path]:
     return [fixture_directory(fixture) / name for name in names]
 
 
+def system_fonts(fixture: str) -> bool:
+    """Whether a sectioned fixture's declaration adds the system's fonts to \\WINNT\\Fonts for its
+    boot, its `system_fonts` (true or false); false by default."""
+    declared = declaration(fixture).get("system_fonts", False)
+    if not isinstance(declared, bool):
+        raise ValueError(f"{fixture}: system_fonts is true or false, not {declared!r}")
+    return declared
+
+
 def fixture_storage(fixture: str) -> str | None:
     """Where a fixture's boot reads its disk, its declaration's `storage` (see STORAGES): "ide" for
     a fixture exercising the IDE path; None, the run's storage, by default."""
@@ -1628,18 +1663,19 @@ def fixture_storage(fixture: str) -> str | None:
 
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
-    fixture's (`script_disk`) or a sectioned one's with its `system_programs` and `data_files`
-    added; None for the disk the tests boot."""
+    fixture's (`script_disk`) or a sectioned one's with its `system_programs`, `data_files` and
+    `system_fonts` added; None for the disk the tests boot."""
     if declaration(fixture).get("kind") == "script":
         return script_disk(build, fixture, path)
     programs = system_programs(fixture)
     files = data_files(fixture)
-    if not programs and not files:
+    fonts = system_fonts(fixture)
+    if not programs and not files and not fonts:
         return None
     missing = [program.name for program in programs if not program.exists()]
     if missing:
         raise RuntimeError(f"{', '.join(missing)} missing from {BUILT_PROGRAMS}: `make disk` builds the programs")
-    return disk_with_programs(build, programs, path, corpus=files)
+    return disk_with_programs(build, programs, path, corpus=files, fonts=fonts)
 
 
 def corpus_params(fixture: str) -> list:
@@ -1674,6 +1710,7 @@ def corpus_params(fixture: str) -> list:
     system_programs(fixture)  # a malformed list fails the collection, not the boot
     boot_under(fixture)  # likewise, its boot_under
     data_files(fixture)  # likewise, its data_files
+    system_fonts(fixture)  # likewise, its system_fonts
     return blocks(
         fixture,
         gate=declared.get("gate", False),

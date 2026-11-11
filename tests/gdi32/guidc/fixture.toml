@@ -1,15 +1,17 @@
 # guidc: one test per block of the real-machine capture (output.txt); see tests/README.md. It
 # boots under FiSH (boot_under), which sets the graphics mode before each block's program runs: the
 # screen DC's clipping region is empty until a mode is set, and SetPixel would answer CLR_INVALID.
+# Its boot carries the system's fonts (system_fonts): a window DC's default font is the stock
+# SYSTEM_FONT, the System face, whose widths and metrics the extent block prints.
 description = "guidc - device contexts and text output (gdi32 over user32): GetDC/GetDCEx/GetWindowDC/ReleaseDC/WindowFromDC, TextOutA/W and ExtTextOutA/W, SetTextColor/SetBkColor/SetBkMode previous values, GetTextExtentPoint32A/W and GetTextMetricsA/W against the default font, GetStockObject/SelectObject/DeleteObject, SetPixel/GetPixel on the screen DC."
 kind = "sectioned"
 gate = true
 screenshots = true
 boot_under = "WINNT\\system32\\fish.exe"
+system_fonts = true
 
 [pending]
 dc = "Windows 2000's GetDCEx(h, NULL, DCX_WINDOW) answers NULL here (and ReleaseDC of it 0); win32k's GetDCEx answers a screen DC"
-extent = "the System font's widths (Hello 34 wide, average 7): F2K's 8x16 font answers 40 and 8"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

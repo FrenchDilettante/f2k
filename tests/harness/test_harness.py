@@ -2,6 +2,7 @@
 they read their disk, the kept disks and the host's read of their volume."""
 import json
 import os
+import re
 import shutil
 import signal
 import struct
@@ -808,7 +809,7 @@ def test_system_programs_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, mo
         f2kboot.corpus_disk(build, "secfake", variant)
     (built / "cmd.exe").write_bytes(b"MZ")
     assert f2kboot.corpus_disk(build, "secfake", variant) == variant
-    assert copies == [([built / "cmd.exe"], variant, {"corpus": []})]
+    assert copies == [([built / "cmd.exe"], variant, {"corpus": [], "fonts": False})]
     for wrong in ('"cmd"', '[1]', '[""]', '["cmd", "cmd"]'):
         declared.write_text(f'kind = "sectioned"\nsystem_programs = {wrong}\n')
         with pytest.raises(ValueError, match="system_programs"):
@@ -831,11 +832,56 @@ def test_data_files_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, monkeyp
 
     declared.write_text('kind = "sectioned"\ndata_files = ["f2ktahom.ttf"]\n')
     assert f2kboot.corpus_disk(build, "secfake", variant) == variant
-    assert copies == [([], variant, {"corpus": [directory / "f2ktahom.ttf"]})]
+    assert copies == [([], variant, {"corpus": [directory / "f2ktahom.ttf"], "fonts": False})]
     for wrong in ('"f2ktahom.ttf"', '[1]', '[""]', '["a.ttf", "a.ttf"]'):
         declared.write_text(f'kind = "sectioned"\ndata_files = {wrong}\n')
         with pytest.raises(ValueError, match="data_files"):
             f2kboot.data_files("secfake")
+
+
+def test_system_fonts_give_a_sectioned_fixture_a_disk_of_its_own(tmp_path, monkeypatch):
+    """A sectioned fixture declaring `system_fonts = true` boots a copy of the disk with the
+    system's fonts added, and no program or file; `false` boots the disk the tests boot, and
+    anything but true or false is refused."""
+    directory = tmp_path / "gdi32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    copies = []
+    monkeypatch.setattr(f2kboot, "disk_with_programs",
+                        lambda build, programs, path, **rest: copies.append((programs, path, rest)) or path)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    variant = tmp_path / "variant.img"
+
+    declared.write_text('kind = "sectioned"\nsystem_fonts = false\n')
+    assert f2kboot.corpus_disk(build, "secfake", variant) is None
+    declared.write_text('kind = "sectioned"\nsystem_fonts = true\n')
+    assert f2kboot.corpus_disk(build, "secfake", variant) == variant
+    assert copies == [([], variant, {"corpus": [], "fonts": True})]
+    for wrong in ('"yes"', '1', '["tahoma.ttf"]'):
+        declared.write_text(f'kind = "sectioned"\nsystem_fonts = {wrong}\n')
+        with pytest.raises(ValueError, match="system_fonts"):
+            f2kboot.system_fonts("secfake")
+
+
+def test_the_system_fonts_are_the_boot_list_s(tmp_path, monkeypatch):
+    """The system's fonts are fonts/*.ttf, the five files win32k's boot list loads from
+    \\WINNT\\Fonts; `add_system_fonts` puts them there by their own names."""
+    source = (f2kboot.REPO_ROOT / "kernel" / "src" / "win32k" / "fonts" / "mod.rs").read_text()
+    boot_list = source[source.index("pub const BOOT_FONTS"):]
+    boot_list = boot_list[:boot_list.index("];")]
+    loaded = re.findall(r'"WINNT\\\\Fonts\\\\([^"]+)"', boot_list)
+    assert sorted(loaded) == [path.name for path in f2kboot.system_font_files()]
+    assert len(loaded) == 5
+
+    calls = []
+    monkeypatch.setattr(f2kboot.subprocess, "run", lambda command, **_: calls.append(command))
+    f2kboot.add_system_fonts(tmp_path / "disk.img")
+    image = f"{tmp_path / 'disk.img'}{f2kboot.PARTITION}"
+    assert calls == [
+        ["mmd", "-i", image, "::/WINNT/Fonts"],
+        ["mcopy", "-i", image, *map(str, f2kboot.system_font_files()), "::/WINNT/Fonts/"],
+    ]
 
 
 # --- Stale build directories and logs are pruned-----------------------------------------------
