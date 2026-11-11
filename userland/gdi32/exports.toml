@@ -330,6 +330,22 @@ impl = { stub = "not yet implemented" }
 ordinal = 500
 fails = "0"
 
+[[export]]
+name = "GetPolyFillMode"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 353
+fails = "0"
+
+[[export]]
+name = "SetPolyFillMode"
+group = "attributes"
+args = ["handle hdc", "i32 iPolyFillMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 499
+fails = "0"
+
 # --- text -----------------------------------------------------------------------------------------
 
 [[export]]
@@ -1011,6 +1027,65 @@ impl = { stub = "not yet implemented" }
 ordinal = 439
 fails = "FALSE"
 
+[[export]]
+name = "Ellipse"
+group = "drawing"
+args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 90
+fails = "FALSE"
+
+[[export]]
+name = "GetCurrentPositionEx"
+group = "drawing"
+args = ["handle hdc", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 296
+fails = "FALSE"
+
+[[export]]
+name = "LineTo"
+group = "drawing"
+args = ["handle hdc", "i32 nXEnd", "i32 nYEnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 398
+fails = "FALSE"
+
+[[export]]
+name = "MoveToEx"
+group = "drawing"
+args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 402
+fails = "FALSE"
+
+[[export]]
+name = "Polygon"
+group = "drawing"
+args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 430
+fails = "FALSE"
+
+[[export]]
+name = "Polyline"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "i32 cPoints"]
+impl = { stub = "not yet implemented" }
+ordinal = 431
+fails = "FALSE"
+
+[[export]]
+name = "RoundRect"
+group = "drawing"
+args = [
+    "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
+    "i32 nWidth", "i32 nHeight",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 450
+fails = "FALSE"
+
 # --- coordinate spaces and transforms -------------------------------------------------------------
 
 [[export]]
@@ -1402,10 +1477,6 @@ ordinal = 88
 [[export]]
 name = "DrawEscape"
 ordinal = 89
-
-[[export]]
-name = "Ellipse"
-ordinal = 90
 
 [[export]]
 name = "EnableEUDC"
@@ -2164,10 +2235,6 @@ name = "GetColorSpace"
 ordinal = 294
 
 [[export]]
-name = "GetCurrentPositionEx"
-ordinal = 296
-
-[[export]]
 name = "GetDCBrushColor"
 ordinal = 297
 
@@ -2344,10 +2411,6 @@ name = "GetPixelFormat"
 ordinal = 352
 
 [[export]]
-name = "GetPolyFillMode"
-ordinal = 353
-
-[[export]]
 name = "GetRandomRgn"
 ordinal = 355
 
@@ -2456,10 +2519,6 @@ name = "LineDDA"
 ordinal = 397
 
 [[export]]
-name = "LineTo"
-ordinal = 398
-
-[[export]]
 name = "MaskBlt"
 ordinal = 399
 
@@ -2470,10 +2529,6 @@ ordinal = 400
 [[export]]
 name = "ModifyWorldTransform"
 ordinal = 401
-
-[[export]]
-name = "MoveToEx"
-ordinal = 402
 
 [[export]]
 name = "NamedEscape"
@@ -2572,14 +2627,6 @@ name = "PolyTextOutW"
 ordinal = 429
 
 [[export]]
-name = "Polygon"
-ordinal = 430
-
-[[export]]
-name = "Polyline"
-ordinal = 431
-
-[[export]]
 name = "PolylineTo"
 ordinal = 432
 
@@ -2626,10 +2673,6 @@ ordinal = 447
 [[export]]
 name = "ResizePalette"
 ordinal = 448
-
-[[export]]
-name = "RoundRect"
-ordinal = 450
 
 [[export]]
 name = "STROBJ_bEnum"
@@ -2778,10 +2821,6 @@ ordinal = 497
 [[export]]
 name = "SetPixelV"
 ordinal = 498
-
-[[export]]
-name = "SetPolyFillMode"
-ordinal = 499
 
 [[export]]
 name = "SetRectRgn"

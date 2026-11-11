@@ -21,7 +21,7 @@ tests/
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
 │               # caret, editctl
-├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode
+├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -301,6 +301,9 @@ The fixtures:
   The metric modes' extents and `MM_ISOTROPIC`'s adjusted viewport follow the screen's size in millimeters and in pixels, which differ between machines: they print only as relations (their signs, the units per pixel the mode means within 1%, the same as another mode's).
   Built with `/MD`.
   Not gated: F2K's gdi32 has no mapping modes or memory DCs yet.
+- `shapes` (gdi32) - pens, lines and shapes, each drawn into a 32-bit DIB section in a memory DC and read back through its bits pointer as rows of letters: `CreatePen` in each style at widths 0, 1 and 3 with `GetObjectW`'s `LOGPEN`, and each style drawn (`pens`); `ExtCreatePen`, cosmetic (solid, alternate, a user style, dotted) and geometric (end caps, a dash, miter, bevel and round joins), with `GetObjectW`'s `EXTLOGPEN` (`extpen`); `MoveToEx`, `LineTo` with its end pixel left out, and `GetCurrentPositionEx`, diagonals drawn both ways (`lines`); `Polyline`, and `Polygon` under `ALTERNATE` and `WINDING` (`SetPolyFillMode`/`GetPolyFillMode`) and with the null pen and brush (`poly`); `Rectangle`, `Ellipse` and `RoundRect` with the null pen and brush, at small sizes, and with a width-3 `PS_SOLID` and `PS_INSIDEFRAME` pen (`shapes`); and `SetROP2`/`GetROP2` over all sixteen mix modes, in hex (`rop2`).
+  Built with `/MD`.
+  Not gated: F2K's gdi32 has no pens, lines or shapes yet.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
