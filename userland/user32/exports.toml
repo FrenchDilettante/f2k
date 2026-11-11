@@ -1125,6 +1125,65 @@ impl = { stub = "not yet implemented" }
 ordinal = 359
 fails = "0"
 
+[[export]]
+name = "BeginDeferWindowPos"
+group = "window"
+args = ["i32 nNumWindows"]
+impl = { stub = "not yet implemented" }
+ordinal = 12
+fails = "NULL"
+
+[[export]]
+name = "DeferWindowPos"
+group = "window"
+args = [
+    "handle hWinPosInfo", "handle hWnd", "handle hWndInsertAfter", "i32 x", "i32 y", "i32 cx",
+    "i32 cy", "u32 uFlags",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 137
+fails = "NULL"
+
+[[export]]
+name = "EndDeferWindowPos"
+group = "window"
+args = ["handle hWinPosInfo"]
+impl = { stub = "not yet implemented" }
+ordinal = 187
+fails = "FALSE"
+
+[[export]]
+name = "GetWindowPlacement"
+group = "window"
+args = ["handle hWnd", "ptr lpwndpl"]
+impl = { stub = "not yet implemented" }
+ordinal = 352
+fails = "FALSE"
+
+[[export]]
+name = "IsIconic"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 401
+fails = "FALSE"
+
+[[export]]
+name = "IsZoomed"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 408
+fails = "FALSE"
+
+[[export]]
+name = "SetWindowPlacement"
+group = "window"
+args = ["handle hWnd", "ptr lpwndpl"]
+impl = { stub = "not yet implemented" }
+ordinal = 608
+fails = "FALSE"
+
 # --- resources ------------------------------------------------------------------------------------
 
 [[export]]
@@ -3009,10 +3068,6 @@ name = "AttachThreadInput"
 ordinal = 11
 
 [[export]]
-name = "BeginDeferWindowPos"
-ordinal = 12
-
-[[export]]
 name = "BlockInput"
 ordinal = 14
 
@@ -3329,10 +3384,6 @@ name = "DefMDIChildProcW"
 ordinal = 134
 
 [[export]]
-name = "DeferWindowPos"
-ordinal = 137
-
-[[export]]
 name = "DeleteMenu"
 ordinal = 138
 
@@ -3464,10 +3515,6 @@ ordinal = 182
 [[export]]
 name = "EnableScrollBar"
 ordinal = 185
-
-[[export]]
-name = "EndDeferWindowPos"
-ordinal = 187
 
 
 [[export]]
@@ -3819,10 +3866,6 @@ name = "GetWindowModuleFileNameW"
 ordinal = 351
 
 [[export]]
-name = "GetWindowPlacement"
-ordinal = 352
-
-[[export]]
 name = "GetWindowRgn"
 ordinal = 354
 
@@ -3937,14 +3980,6 @@ ordinal = 396
 [[export]]
 name = "IsHungAppWindow"
 ordinal = 400
-
-[[export]]
-name = "IsIconic"
-ordinal = 401
-
-[[export]]
-name = "IsZoomed"
-ordinal = 408
 
 [[export]]
 name = "KillSystemTimer"
@@ -4465,10 +4500,6 @@ ordinal = 604
 [[export]]
 name = "SetWindowContextHelpId"
 ordinal = 605
-
-[[export]]
-name = "SetWindowPlacement"
-ordinal = 608
 
 [[export]]
 name = "SetWindowRgn"

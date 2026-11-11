@@ -1,8 +1,13 @@
 # guigeo: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400)."
+description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400); IsIconic and IsZoomed around ShowWindow SW_MINIMIZE, SW_MAXIMIZE and SW_RESTORE (the WM_SIZE each sends, the rects as relations to the normal one); GetWindowPlacement and SetWindowPlacement (length, flags, showCmd, WPF_RESTORETOMAXIMIZED, rcNormalPosition against the window rect); and BeginDeferWindowPos, DeferWindowPos and EndDeferWindowPos over three windows, one window twice, SWP_NOMOVE, a window and its child, and their errors."
 kind = "sectioned"
 gate = true
 screenshots = true
+
+[pending]
+minmax = "user32 has no IsIconic or IsZoomed yet, and F2K's ShowWindow neither minimizes nor maximizes a window (no WM_SIZE with SIZE_MINIMIZED or SIZE_MAXIMIZED)"
+placement = "user32 has no GetWindowPlacement or SetWindowPlacement yet"
+defer = "user32 has no BeginDeferWindowPos, DeferWindowPos or EndDeferWindowPos yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -30,4 +35,18 @@ errors = [
     "user32.GetWindowRect",
     "user32.SetWindowPos",
     "user32.IsWindowVisible",
+]
+minmax = [
+    "user32.IsIconic",
+    "user32.IsZoomed",
+    "user32.ShowWindow",
+]
+placement = [
+    "user32.GetWindowPlacement",
+    "user32.SetWindowPlacement",
+]
+defer = [
+    "user32.BeginDeferWindowPos",
+    "user32.DeferWindowPos",
+    "user32.EndDeferWindowPos",
 ]
