@@ -106,8 +106,9 @@ CMD_EXE = $(BUILD_DIR)/userland/i686-f2k-pe/release/$(CMD_PROGRAM).exe
 # F2K's own test programs (userland/<program>), built and copied to their .exe names as the
 # programs are, but kept off the disk the tests boot: the test that needs one boots a copy of that
 # disk with it added (keyshow.exe: tests/core/test_guikeys.py; fontshow.exe:
-# tests/core/test_tahoma.py, with the font it draws; dlgshow.exe: tests/core/test_dialogs.py).
-TEST_PROGRAMS = keyshow fontshow dlgshow
+# tests/core/test_tahoma.py, with the font it draws; dlgshow.exe: tests/core/test_dialogs.py;
+# menushow.exe: tests/core/test_nonclient.py).
+TEST_PROGRAMS = keyshow fontshow dlgshow menushow
 TEST_EXES = $(foreach program,$(TEST_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 CMD_DISK_IMG ?= $(OUT_DIR)/f2k-cmd-disk.img
 # The system's fonts (fonts/README.md), which the cmd disk carries in \WINNT\Fonts.
@@ -131,7 +132,7 @@ help:
 	@echo "  userland     - Build the system DLLs (ntdll.dll, which the kernel embeds, kernel32.dll,"
 	@echo "                 msvcrt.dll, advapi32.dll, user32.dll, gdi32.dll and shell32.dll) and F2K's"
 	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, drawdemo.exe, cmd.exe,"
-	@echo "                 keyshow.exe, fontshow.exe, dlgshow.exe)"
+	@echo "                 keyshow.exe, fontshow.exe, dlgshow.exe, menushow.exe)"
 	@echo "  kernel       - Build the kernel (the system DLLs first), its image ntoskrnl.exe, and the"
 	@echo "                 boot loader that carries it (f2k-kernel, what the loaders boot)"
 	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
