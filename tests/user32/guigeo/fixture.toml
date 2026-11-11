@@ -1,8 +1,13 @@
 # guigeo: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400)."
+description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400); IsIconic and IsZoomed around ShowWindow SW_MINIMIZE, SW_MAXIMIZE and SW_RESTORE (the WM_SIZE each sends, the rects as relations to the normal one); GetWindowPlacement and SetWindowPlacement (length, flags, showCmd, WPF_RESTORETOMAXIMIZED, rcNormalPosition against the window rect); and BeginDeferWindowPos, DeferWindowPos and EndDeferWindowPos over three windows, one window twice, SWP_NOMOVE, a window and its child, and their errors."
 kind = "sectioned"
 gate = true
 screenshots = true
+# minmax, placement and defer await their capture: they are in guigeo.c, not yet in guigeo.exe
+# or output.txt. Until their blocks are captured they have no [pending] entry (the reader refuses
+# one for a section with no block) and no pins; then minmax pins IsIconic, IsZoomed and
+# ShowWindow, placement GetWindowPlacement and SetWindowPlacement, defer BeginDeferWindowPos,
+# DeferWindowPos and EndDeferWindowPos.
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
