@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Tue 11/10/2026 15:17:02.18
-menus F2KT-SOURCE-CRC=0x3820D09C
+# date: Wed 11/11/2026 13:05:29.00
+menus F2KT-SOURCE-CRC=0xF2D29A33
 >>> menus.exe load
 == load
 LoadMenuW(200): non-NULL yes err=-
@@ -329,5 +329,671 @@ IsWindow(the window's handle, high word one more): ret=0 err=-
 IsMenu(the menu's low word, high word 0): ret=1 err=-
 IsMenu(the menu's low word, high word 0xFFFF): ret=1 err=-
 IsMenu(the menu's handle, high word one more): ret=0 err=1401
+menus: done
+<<< exit code=0
+>>> menus.exe bar
+== bar
+setup: the class, menu 200 and a hidden WS_OVERLAPPEDWINDOW window with it, 320x200: yes
+created with the menu: the client origin's offset less the frame: 0; less the frame and caption, the menu bar's height: 19 (SM_CYMENU: yes)
+  window 320x200, client 312x154
+SetMenu(h, NULL): ret=1 err=-
+without the menu: the client origin's offset less the frame: 0; less the frame and caption, the menu bar's height: 0 (SM_CYMENU: no)
+  window 320x200, client 312x173
+SetMenu(h, menu): ret=1 err=-
+with the menu again: the client origin's offset less the frame: 0; less the frame and caption, the menu bar's height: 19 (SM_CYMENU: yes)
+  window 320x200, client 312x154
+DrawMenuBar(h): ret=1 err=-
+DrawMenuBar(NULL): ret=0 err=1400
+WM_NCHITTEST down the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,6) 12 HTTOP, [6,25) 2 HTCAPTION, [25,44) 5 HTMENU, [44,198) 1 HTCLIENT, [198,202) 15 HTBOTTOM, [202,204) 0 HTNOWHERE
+IsMenu(the menu) after its window's destruction: ret=0 err=1401
+menus: done
+<<< exit code=0
+>>> menus.exe keyloop
+== keyloop
+setup: the class F2KMenusKeyloop, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
+EndMenu exported: yes
+SetForegroundWindow(h): ret=0 err=-
+the foreground window: no; the focus: yes
+-- Alt, V, Down, Enter
+the window is not the foreground window: no input sent
+GetMenuState(211 after): ret=0x8 err=-
+GetMenuState(212 after): ret=0x0 err=-
+GetMenuState(213 after): ret=0x0 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe keyesc
+== keyesc
+setup: the class F2KMenusKeyesc, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
+EndMenu exported: yes
+SetForegroundWindow(h): ret=0 err=-
+the foreground window: no; the focus: yes
+-- F10, Right, Down, Esc, Esc
+the window is not the foreground window: no input sent
+-- Alt, Z (no item's mnemonic), Esc
+the window is not the foreground window: no input sent
+-- Alt, Esc
+the window is not the foreground window: no input sent
+menus: done
+<<< exit code=0
+>>> menus.exe keychar
+== keychar
+setup: the class F2KMenusKeychar, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
+EndMenu exported: yes
+SetForegroundWindow(h): ret=0 err=-
+the foreground window: no; the focus: yes
+-- Alt+V held, Up, Enter
+the window is not the foreground window: no input sent
+-- Alt, F, Down (onto the grayed Open), Enter, Esc, Esc
+the window is not the foreground window: no input sent
+menus: done
+<<< exit code=0
+>>> menus.exe edit
+== edit
+CreatePopupMenu: non-NULL yes err=-
+AppendMenuW(popup, MF_STRING, 301 &One): ret=1 err=-
+AppendMenuW(popup, MF_STRING, 302 &Two): ret=1 err=-
+AppendMenuW(popup, MF_SEPARATOR, 0, NULL): ret=1 err=-
+AppendMenuA(popup, MF_STRING | MF_CHECKED, 303 T&hree): ret=1 err=-
+AppendMenuW(popup, MF_STRING | MF_GRAYED, 304 Four): ret=1 err=-
+AppendMenuW(popup, MF_STRING, 308, NULL text): ret=1 err=-
+AppendMenuW(NULL, MF_STRING, 309 Nowhere): ret=0 err=1401
+  popup: GetMenuItemCount ret=6 err=-
+  popup 0: id=301 state=0x0 text "&One"
+  popup 1: id=302 state=0x0 text "&Two"
+  popup 2: id=0 state=0x803 text ""
+  popup 3: id=303 state=0x8 text "T&hree"
+  popup 4: id=304 state=0x1 text "Four"
+  popup 5: id=308 state=0x803 text ""
+InsertMenuW(popup, 0, MF_BYPOSITION | MF_STRING, 305 Zero): ret=1 err=-
+InsertMenuW(popup, 302, MF_BYCOMMAND | MF_STRING, 306 Before two): ret=1 err=-
+InsertMenuW(popup, -1, MF_BYPOSITION | MF_STRING, 307 Last): ret=1 err=-
+InsertMenuW(popup, 99 (past the end), MF_BYPOSITION | MF_STRING, 310 Far): ret=1 err=-
+InsertMenuW(popup, 399 (no such item), MF_BYCOMMAND | MF_STRING, 311 Lost): ret=1 err=-
+InsertMenuA(popup, 1, MF_BYPOSITION | MF_STRING, 312 Zero (A)): ret=1 err=-
+  popup: GetMenuItemCount ret=12 err=-
+  popup 0: id=305 state=0x0 text "Zero"
+  popup 1: id=312 state=0x0 text "Zero (A)"
+  popup 2: id=301 state=0x0 text "&One"
+  popup 3: id=306 state=0x0 text "Before two"
+  popup 4: id=302 state=0x0 text "&Two"
+  popup 5: id=0 state=0x803 text ""
+  popup 6: id=303 state=0x8 text "T&hree"
+  popup 7: id=304 state=0x1 text "Four"
+  popup 8: id=308 state=0x803 text ""
+  popup 9: id=307 state=0x0 text "Last"
+  popup 10: id=310 state=0x0 text "Far"
+  popup 11: id=311 state=0x0 text "Lost"
+CreateMenu: non-NULL yes err=-
+AppendMenuW(bar, MF_POPUP | MF_STRING, the popup, &Edit): ret=1 err=-
+AppendMenuW(bar, MF_STRING, 320 &Go): ret=1 err=-
+  bar: GetMenuItemCount ret=2 err=-
+  bar 0: id=-1 state=0xC10 text "&Edit"
+  bar 1: id=320 state=0x0 text "&Go"
+InsertMenuW(bar, 304 (in the popup), MF_BYCOMMAND | MF_STRING, 313 Nested): ret=1 err=-
+  bar: GetMenuItemCount ret=2 err=-
+  bar 0: id=-1 state=0xD10 text "&Edit"
+  bar 1: id=320 state=0x0 text "&Go"
+  popup: GetMenuItemCount ret=13 err=-
+  popup 0: id=305 state=0x0 text "Zero"
+  popup 1: id=312 state=0x0 text "Zero (A)"
+  popup 2: id=301 state=0x0 text "&One"
+  popup 3: id=306 state=0x0 text "Before two"
+  popup 4: id=302 state=0x0 text "&Two"
+  popup 5: id=0 state=0x803 text ""
+  popup 6: id=303 state=0x8 text "T&hree"
+  popup 7: id=313 state=0x0 text "Nested"
+  popup 8: id=304 state=0x1 text "Four"
+  popup 9: id=308 state=0x803 text ""
+  popup 10: id=307 state=0x0 text "Last"
+  popup 11: id=310 state=0x0 text "Far"
+  popup 12: id=311 state=0x0 text "Lost"
+ModifyMenuW(bar, 301 (in the popup), MF_BYCOMMAND | MF_STRING, 321 Uno): ret=1 err=-
+ModifyMenuW(popup, 1, MF_BYPOSITION | MF_STRING | MF_CHECKED, 322 Checked): ret=1 err=-
+ModifyMenuA(popup, 2, MF_BYPOSITION | MF_STRING, 323 Changed (A)): ret=1 err=-
+ModifyMenuW(popup, 304 Four, MF_BYCOMMAND | MF_SEPARATOR): ret=1 err=-
+ModifyMenuW(popup, 303 (checked), MF_BYCOMMAND | MF_STRING, 303 Three again): ret=1 err=-
+ModifyMenuW(popup, 399 (no such item), MF_BYCOMMAND | MF_STRING): ret=0 err=1456
+ModifyMenuW(popup, 50 (past the end), MF_BYPOSITION): ret=0 err=1456
+  popup: GetMenuItemCount ret=13 err=-
+  popup 0: id=305 state=0x0 text "Zero"
+  popup 1: id=322 state=0x8 text "Checked"
+  popup 2: id=323 state=0x0 text "Changed (A)"
+  popup 3: id=306 state=0x0 text "Before two"
+  popup 4: id=302 state=0x0 text "&Two"
+  popup 5: id=0 state=0x803 text ""
+  popup 6: id=303 state=0x0 text "Three again"
+  popup 7: id=313 state=0x0 text "Nested"
+  popup 8: id=0 state=0x803 text "Four"
+  popup 9: id=308 state=0x803 text ""
+  popup 10: id=307 state=0x0 text "Last"
+  popup 11: id=310 state=0x0 text "Far"
+  popup 12: id=311 state=0x0 text "Lost"
+ModifyMenuW(bar, 1 &Go, MF_BYPOSITION | MF_POPUP | MF_STRING, a second popup, &More): ret=1 err=-
+  bar: GetMenuItemCount ret=2 err=-
+  bar 0: id=-1 state=0xD10 text "&Edit"
+  bar 1: id=-1 state=0x110 text "&More"
+  GetSubMenu(bar, 1): the second popup yes err=-
+DeleteMenu(popup, 0, MF_BYPOSITION): ret=1 err=-
+DeleteMenu(bar, 321 (in the popup), MF_BYCOMMAND): ret=0 err=-
+DeleteMenu(popup, 321 again, MF_BYCOMMAND): ret=0 err=-
+DeleteMenu(popup, 399 (no such item), MF_BYCOMMAND): ret=0 err=-
+DeleteMenu(popup, 40 (past the end), MF_BYPOSITION): ret=0 err=-
+RemoveMenu(popup, 0, MF_BYPOSITION): ret=1 err=-
+RemoveMenu(popup, 307 Last, MF_BYCOMMAND): ret=1 err=-
+RemoveMenu(popup, 399 (no such item), MF_BYCOMMAND): ret=0 err=-
+RemoveMenu(popup, 40 (past the end), MF_BYPOSITION): ret=0 err=-
+DeleteMenu(NULL, 0, MF_BYPOSITION): ret=0 err=1401
+RemoveMenu(NULL, 0, MF_BYPOSITION): ret=0 err=1401
+  popup: GetMenuItemCount ret=10 err=-
+  popup 0: id=323 state=0x0 text "Changed (A)"
+  popup 1: id=306 state=0x0 text "Before two"
+  popup 2: id=302 state=0x0 text "&Two"
+  popup 3: id=0 state=0x803 text ""
+  popup 4: id=303 state=0x0 text "Three again"
+  popup 5: id=313 state=0x0 text "Nested"
+  popup 6: id=0 state=0x803 text "Four"
+  popup 7: id=308 state=0x803 text ""
+  popup 8: id=310 state=0x0 text "Far"
+  popup 9: id=311 state=0x0 text "Lost"
+AppendMenuW(a second bar, MF_POPUP, popup K, &Removed): ret=1 err=-
+AppendMenuW(a second bar, MF_POPUP, popup D, &Deleted): ret=1 err=-
+RemoveMenu(the second bar, 0 &Removed (popup K), MF_BYPOSITION): ret=1 err=-
+  IsMenu(popup K) after: ret=1 err=-
+  popup K: GetMenuItemCount ret=1 err=-
+  popup K 0: id=331 state=0x0 text "Kept"
+DeleteMenu(the second bar, 0 &Deleted (popup D), MF_BYPOSITION): ret=1 err=-
+  IsMenu(popup D) after: ret=0 err=1401
+  the second bar: GetMenuItemCount ret=0 err=-
+DestroyMenu(bar): ret=1 err=-
+  IsMenu(the popup) after: ret=0 err=1401
+  IsMenu(the second popup) after: ret=0 err=1401
+menus: done
+<<< exit code=0
+>>> menus.exe info
+== info
+CreatePopupMenu twice (menu A, menu B): non-NULL yes; LoadBitmapW(NULL, OBM_CHECK): non-NULL yes
+  menu A: GetMenuItemCount ret=4 err=-
+  menu A 0: id=401 state=0x8 text "&Alpha"
+  menu A 1: id=-1 state=0x110 text "&Sub"
+  menu A 2: id=0 state=0x803 text ""
+  menu A 3: id=403 state=0x1 text "Gamma"
+GetMenuItemInfoW(A, 0, by position, MIIM_STATE): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0x8 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_ID): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=401 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_SUBMENU): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_CHECKMARKS): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=NULL hbmpUnchecked=NULL
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_TYPE, cch 20): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=NULL
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_DATA): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0x0 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_STRING, cch 20): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=untouched
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_BITMAP): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=NULL
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, MIIM_FTYPE): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, every mask, cch 20): ret=0 err=87
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, by position, no mask): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, MIIM_STRING, dwTypeData NULL, cch 20): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=6 hbmpItem=untouched
+GetMenuItemInfoW(A, 0, MIIM_STRING, dwTypeData NULL, cch 0): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=6 hbmpItem=untouched
+GetMenuItemInfoW(A, 0, MIIM_TYPE, dwTypeData NULL, cch 20): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=6 hbmpItem=NULL
+GetMenuItemInfoW(A, 0, MIIM_STRING, cch 3): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=2 hbmpItem=untouched
+  buffer "&A" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, MIIM_STRING, cch 6 (the length)): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=untouched
+  buffer "&Alph" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, MIIM_STRING, cch 7): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=untouched
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, MIIM_STRING, cch 0): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=6 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer no
+GetMenuItemInfoW(A, 0, MIIM_TYPE, cch 3): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=2 hbmpItem=NULL
+  buffer "&A" dwTypeData the buffer yes
+GetMenuItemInfoA(A, 0, MIIM_STRING, cch 20): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=untouched
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoA(A, 0, MIIM_STRING, dwTypeData NULL, cch 20): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=6 hbmpItem=untouched
+GetMenuItemInfoA(A, 0, MIIM_STRING, cch 3): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=2 hbmpItem=untouched
+  buffer "&A" dwTypeData the buffer yes
+GetMenuItemInfoA(A, 0, MIIM_TYPE, cch 20): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=NULL
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 1 &Sub, by position, MIIM_SUBMENU | MIIM_ID | MIIM_STATE | MIIM_FTYPE | MIIM_STRING): ret=1 err=-
+  fType=0x0 fState=0x0 wID=7078419 hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=4 hbmpItem=untouched
+  buffer "&Sub" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 1 &Sub, by position, MIIM_TYPE): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=4 hbmpItem=NULL
+  buffer "&Sub" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 2 the separator, MIIM_TYPE | MIIM_ID | MIIM_STATE): ret=1 err=-
+  fType=0x800 fState=0x3 wID=0 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=NULL cch=0 hbmpItem=NULL
+  buffer "########" dwTypeData the buffer no
+GetMenuItemInfoW(A, 2 the separator, MIIM_FTYPE | MIIM_STRING): ret=1 err=-
+  fType=0x800 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=0 hbmpItem=untouched
+  buffer "" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 403 Gamma, by command, MIIM_ID | MIIM_STATE | MIIM_STRING): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0x1 wID=403 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=untouched
+  buffer "Gamma" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 411 Inner (in menu B), by command, MIIM_ID | MIIM_STRING): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=411 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=untouched
+  buffer "Inner" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 499 (no such item), by command, MIIM_ID): ret=0 err=1456
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 9 (past the end), by position, MIIM_ID): ret=0 err=1456
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(NULL, 0, by position, MIIM_ID): ret=0 err=87
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, cbSize 44, MIIM_TYPE | MIIM_ID): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=401 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=untouched
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, cbSize 44, MIIM_STRING): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=untouched
+  buffer "&Alpha" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, cbSize 0, MIIM_ID): ret=0 err=87
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 0, cbSize 52, MIIM_ID): ret=0 err=87
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_STRING &Beta, cch 2): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_STRING | MIIM_FTYPE): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=untouched
+  buffer "&Beta" dwTypeData the buffer yes
+SetMenuItemInfoA(A, 0, MIIM_STRING &Beta (A)): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_STRING): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=9 hbmpItem=untouched
+  buffer "&Beta (A)" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_FTYPE MFT_RADIOCHECK | MFT_RIGHTJUSTIFY): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_FTYPE | MIIM_STRING): ret=1 err=-
+  fType=0x4200 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=9 hbmpItem=untouched
+  buffer "&Beta (A)" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_STATE MFS_CHECKED | MFS_DEFAULT | MFS_HILITE): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_STATE): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0x1088 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuState(A, 0 after): ret=0x5288 err=-
+SetMenuItemInfoW(A, 0, MIIM_STATE MFS_DISABLED): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_STATE): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0x1083 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_ID 421): ret=1 err=-
+  GetMenuItemID(A, 0) after: ret=421 err=-
+SetMenuItemInfoW(A, 0, MIIM_DATA 0x1234): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_DATA): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0x1234 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_CHECKMARKS the bitmap, NULL): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_CHECKMARKS): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=the bitmap hbmpUnchecked=NULL
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 0, MIIM_BITMAP HBMMENU_POPUP_CLOSE): ret=1 err=-
+GetMenuItemInfoW(A, 0 after, MIIM_BITMAP | MIIM_FTYPE | MIIM_STRING): ret=1 err=-
+  fType=0x4200 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=9 hbmpItem=a predefined HBMMENU value
+  buffer "&Beta (A)" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 3 Gamma, MIIM_TYPE MFT_STRING Typed): ret=1 err=-
+GetMenuItemInfoW(A, 3 after, MIIM_TYPE): ret=1 err=-
+  fType=0x0 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=NULL
+  buffer "Typed" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 3, MIIM_TYPE | MIIM_STRING Both): ret=0 err=87
+GetMenuItemInfoW(A, 3 after, MIIM_STRING): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=5 hbmpItem=untouched
+  buffer "Typed" dwTypeData the buffer yes
+SetMenuItemInfoW(A, 403, by command, MIIM_SUBMENU a new popup (now menu B)): ret=1 err=-
+GetMenuItemInfoW(A, 3 after, MIIM_SUBMENU | MIIM_ID): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=403 hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuState(A, 3 after): ret=0x111 err=-
+SetMenuItemInfoW(A, 3, MIIM_SUBMENU NULL): ret=1 err=-
+GetMenuItemInfoW(A, 3 after, MIIM_SUBMENU | MIIM_ID): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=403 hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+  IsMenu(menu B) after: ret=0 err=1401
+SetMenuItemInfoW(A, 499 (no such item), by command, MIIM_ID): ret=0 err=1456
+SetMenuItemInfoW(A, 9 (past the end), by position, MIIM_ID): ret=0 err=1456
+SetMenuItemInfoW(NULL, 0, MIIM_ID): ret=0 err=1401
+SetMenuItemInfoW(A, 0, cbSize 0, MIIM_ID): ret=0 err=87
+  menu A: GetMenuItemCount ret=4 err=-
+  menu A 0: id=421 state=0x20005283 text "&Beta (A)"
+  menu A 1: id=-1 state=0x110 text "&Sub"
+  menu A 2: id=0 state=0x803 text ""
+  menu A 3: id=403 state=0x1 text "Typed"
+menus: done
+<<< exit code=0
+>>> menus.exe insitem
+== insitem
+CreatePopupMenu twice (menu A, menu B): non-NULL yes
+InsertMenuItemW(A (empty), 0, by position, MIIM_ID | MIIM_STRING 501 First): ret=1 err=-
+InsertMenuItemW(A, 5 (past the end), by position, 502 Second): ret=1 err=-
+InsertMenuItemW(A, 501, by command, 503 Before first): ret=1 err=-
+InsertMenuItemW(A, 599 (no such item), by command, 504 Lost): ret=1 err=-
+InsertMenuItemW(A, -1, by position, 505 Appended): ret=1 err=-
+InsertMenuItemW(A, 1, MIIM_FTYPE MFT_SEPARATOR): ret=1 err=-
+InsertMenuItemW(A, 0, MIIM_TYPE | MIIM_ID MFT_STRING 506 Typed): ret=1 err=-
+InsertMenuItemW(A, -1, MIIM_ID | MIIM_STRING | MIIM_STATE MFS_CHECKED | MFS_DEFAULT 507): ret=1 err=-
+InsertMenuItemW(A, -1, MIIM_STATE MFS_GRAYED 508 Grayed): ret=1 err=-
+InsertMenuItemW(A, -1, MIIM_SUBMENU menu B | MIIM_STRING | MIIM_ID 509 &Sub): ret=1 err=-
+InsertMenuItemW(A, -1, MIIM_ID | MIIM_DATA 510 0x5678 (no string)): ret=1 err=-
+InsertMenuItemA(A, -1, by position, MIIM_ID | MIIM_STRING 512 Wide? no (A)): ret=1 err=-
+InsertMenuItemW(A, -1, cbSize 44, MIIM_TYPE | MIIM_ID 513 Old size): ret=1 err=-
+InsertMenuItemW(A, -1, cbSize 0, 514 No size): ret=0 err=87
+InsertMenuItemW(NULL, 0, 515 Nowhere): ret=0 err=1401
+  menu A: GetMenuItemCount ret=13 err=-
+  menu A 0: id=506 state=0x0 text "Typed"
+  menu A 1: id=503 state=0x0 text "Before first"
+  menu A 2: id=0 state=0x803 text ""
+  menu A 3: id=501 state=0x0 text "First"
+  menu A 4: id=502 state=0x0 text "Second"
+  menu A 5: id=504 state=0x0 text "Lost"
+  menu A 6: id=505 state=0x0 text "Appended"
+  menu A 7: id=507 state=0x1008 text "Checked default"
+  menu A 8: id=508 state=0x3 text "Grayed"
+  menu A 9: id=-1 state=0x110 text "&Sub"
+  menu A 10: id=510 state=0x803 text ""
+  menu A 11: id=512 state=0x0 text "Wide? no (A)"
+  menu A 12: id=513 state=0x0 text "Old size"
+GetMenuItemInfoW(A, 4, by position, every mask): ret=0 err=87
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=untouched hSubMenu=untouched hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 507, by command, MIIM_STATE | MIIM_FTYPE): ret=1 err=-
+  fType=0x0 fState=0x1008 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 509, by command, MIIM_SUBMENU | MIIM_ID): ret=1 err=-
+  fType=0xA5A5A5A5 fState=0xA5A5A5A5 wID=509 hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0xA5A5A5A5 dwTypeData=set cch=20 hbmpItem=untouched
+  buffer "########" dwTypeData the buffer yes
+GetMenuItemInfoW(A, 510, by command, MIIM_DATA | MIIM_FTYPE | MIIM_STRING): ret=1 err=-
+  fType=0x800 fState=0xA5A5A5A5 wID=untouched hSubMenu=NULL hbmpChecked=untouched hbmpUnchecked=untouched
+  dwItemData=0x5678 dwTypeData=set cch=0 hbmpItem=untouched
+  buffer "" dwTypeData the buffer yes
+menus: done
+<<< exit code=0
+>>> menus.exe default
+== default
+CreatePopupMenu twice (menu A, menu B): non-NULL yes
+-- none set
+GetMenuDefaultItem(A, by command, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by position, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=-1 err=-
+SetMenuDefaultItem(A, 603 C, by command): ret=1 err=-
+GetMenuState(A, 603 C): ret=0x1000 err=-
+GetMenuDefaultItem(A, by command, 0): ret=603 err=-
+GetMenuDefaultItem(A, by position, 0): ret=3 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=603 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=603 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=3 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=603 err=-
+SetMenuDefaultItem(A, 1 B (grayed), by position): ret=1 err=-
+GetMenuState(A, 603 C): ret=0x0 err=-
+GetMenuState(A, 602 B): ret=0x1001 err=-
+GetMenuDefaultItem(A, by command, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by position, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=602 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=602 err=-
+SetMenuDefaultItem(A, 4 &D (the popup), by position): ret=1 err=-
+-- menu B's default none
+GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by position, 0): ret=4 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=7209491 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=4 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=7209491 err=-
+SetMenuDefaultItem(B, 612 Y, by command): ret=1 err=-
+-- menu B's default 612 Y
+GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by position, 0): ret=4 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=612 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=612 err=-
+SetMenuDefaultItem(A, 2 the separator, by position): ret=0 err=-
+GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by position, 0): ret=4 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=612 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=612 err=-
+SetMenuDefaultItem(A, -1 (none), by command): ret=1 err=-
+GetMenuState(A, 4 &D): ret=0x210 err=-
+GetMenuDefaultItem(A, by command, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by position, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=-1 err=-
+SetMenuDefaultItem(A, 699 (no such item), by command): ret=0 err=-
+SetMenuDefaultItem(A, 9 (past the end), by position): ret=0 err=-
+SetMenuDefaultItem(A, 611 X (in menu B), by command): ret=0 err=-
+GetMenuDefaultItem(B, by command, 0): ret=612 err=-
+GetMenuDefaultItem(A, by command, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by position, 0): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=-1 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=-1 err=-
+SetMenuDefaultItem(NULL, 0, by position): ret=0 err=1401
+GetMenuDefaultItem(NULL, by command, 0): ret=-1 err=1401
+SetMenuDefaultItem(A, -1 (none), by command): ret=1 err=-
+SetMenuItemInfoW(A, 3 C, MIIM_STATE MFS_DEFAULT): ret=1 err=-
+GetMenuDefaultItem(A, by command, 0): ret=603 err=-
+SetMenuItemInfoW(A, 0 A, MIIM_STATE MFS_DEFAULT): ret=1 err=-
+GetMenuDefaultItem(A, by command, 0): ret=601 err=-
+GetMenuState(A, 0 A): ret=0x1000 err=-
+GetMenuState(A, 3 C): ret=0x1000 err=-
+menus: done
+<<< exit code=0
+>>> menus.exe sysmenu
+== sysmenu
+RegisterClassW(F2KMenusOwner): atom nonzero yes err=2
+CreateWindowExW(F2KMenusOwner, WS_OVERLAPPEDWINDOW, hidden): non-NULL yes err=-
+GetSystemMenu(the window, FALSE): non-NULL yes err=-
+  IsMenu(it): ret=1 err=-
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF000 state=0x0 text "&Size"
+  system menu 3: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 4: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 5: id=0x0 state=0x803 text ""
+  system menu 6: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+GetSystemMenu(the window, FALSE, again): non-NULL yes err=-
+  the same menu yes
+AppendMenuW(the system menu, MF_STRING, 0x10 Custom): ret=1 err=-
+DeleteMenu(the system menu, SC_SIZE, MF_BYCOMMAND): ret=1 err=-
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 3: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 4: id=0x0 state=0x803 text ""
+  system menu 5: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+  system menu 6: id=0x10 state=0x0 text "Custom"
+GetSystemMenu(the window, TRUE): non-NULL no err=-
+  IsMenu(the copy) after: ret=0 err=1401
+GetSystemMenu(the window, FALSE, after the revert): non-NULL yes err=-
+  the copy reverted from no
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF000 state=0x0 text "&Size"
+  system menu 3: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 4: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 5: id=0x0 state=0x803 text ""
+  system menu 6: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+GetSystemMenu(the window, TRUE, again): non-NULL no err=-
+CreateWindowExW(F2KMenusOwner, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, hidden): non-NULL yes err=-
+GetSystemMenu(that window, FALSE): non-NULL yes err=-
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF000 state=0x0 text "&Size"
+  system menu 3: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 4: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 5: id=0x0 state=0x803 text ""
+  system menu 6: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+CreateWindowExW(F2KMenusOwner, WS_EX_TOOLWINDOW, WS_POPUP | WS_CAPTION | WS_SYSMENU, hidden): non-NULL yes err=-
+GetSystemMenu(that window, FALSE): non-NULL yes err=-
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF000 state=0x0 text "&Size"
+  system menu 3: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 4: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 5: id=0x0 state=0x803 text ""
+  system menu 6: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+CreateWindowExW(F2KMenusOwner, WS_POPUP, hidden): non-NULL yes err=-
+GetSystemMenu(that window (no WS_SYSMENU), FALSE): non-NULL no err=-
+CreateWindowExW(F2KMenusOwner, WS_CHILD | WS_CAPTION | WS_SYSMENU): non-NULL yes err=-
+GetSystemMenu(the child window, FALSE): non-NULL yes err=-
+  system menu: GetMenuItemCount ret=7 err=-
+  system menu 0: id=0xF120 state=0x20000000 text "&Restore"
+  system menu 1: id=0xF010 state=0x0 text "&Move"
+  system menu 2: id=0xF000 state=0x0 text "&Size"
+  system menu 3: id=0xF020 state=0x20000000 text "Mi&nimize"
+  system menu 4: id=0xF030 state=0x20000000 text "Ma&ximize"
+  system menu 5: id=0x0 state=0x803 text ""
+  system menu 6: id=0xF060 state=0x20000000 text "&Close\tAlt+F4"
+GetSystemMenu(the first window, FALSE): non-NULL yes err=-
+DestroyWindow(the first window): ret=1 err=-
+  IsMenu(its system menu) after: ret=0 err=1401
+GetSystemMenu(the destroyed window, FALSE): non-NULL no err=1400
+GetSystemMenu(NULL, FALSE): non-NULL no err=1400
+menus: done
+<<< exit code=0
+>>> menus.exe itemrect
+== itemrect
+RegisterClassW(F2KMenusOwner): atom nonzero yes err=2
+GetMenuCheckMarkDimensions: nonzero yes err=- width (low word) is SM_CXMENUCHECK yes height (high word) is SM_CYMENUCHECK yes
+CreateWindowExW(F2KMenusOwner, WS_OVERLAPPEDWINDOW, hidden, the bar): non-NULL yes err=-
+GetMenuItemRect(the hidden window, the bar, 0): ret=1 err=-
+shown: visible yes
+GetMenuItemRect(the window, the bar, 0): ret=1 err=-
+GetMenuItemRect(the window, the bar, 1): ret=1 err=-
+GetMenuItemRect(the window, the bar, 2): ret=1 err=-
+GetMenuItemRect(the window, the bar, 3): ret=0 err=-
+  item 0: width positive yes height - SM_CYMENU -1 top the same as item 0's yes inside the window rectangle yes
+  item 1: width positive yes height - SM_CYMENU -1 top the same as item 0's yes inside the window rectangle yes
+  item 2: width positive yes height - SM_CYMENU -1 top the same as item 0's yes inside the window rectangle yes
+  item 1's left - item 0's right 0, item 2's left - item 1's right 0
+  item 0's left - the client area's left 0, the client area's top - item 0's bottom 1
+GetMenuItemRect(NULL, the bar, 0): ret=0 err=-
+GetMenuItemRect(the window, &File's popup (not shown), 0): ret=1 err=-
+GetMenuItemRect(NULL, &File's popup (not shown), 0): ret=0 err=-
+GetMenuItemRect(the window, NULL, 0): ret=0 err=1401
+menus: done
+<<< exit code=0
+>>> menus.exe track
+== track
+RegisterClassW(F2KMenusOwner): atom nonzero yes err=2
+CreateWindowExW(F2KMenusOwner, WS_POPUP | WS_CAPTION | WS_VISIBLE): non-NULL yes err=-
+SetForegroundWindow(it): the foreground no
+TrackPopupMenu(the popup, TPM_RETURNCMD, the window): ret=0 err=-, ended after WM_CANCELMODE
+  WM_ENTERMENULOOP wParam=1
+  WM_INITMENU menu the popup
+  WM_INITMENUPOPUP menu the popup index=0 system menu=0
+  WM_CANCELMODE
+  WM_UNINITMENUPOPUP menu the popup
+  WM_MENUSELECT item=0 flags=0xFFFF menu NULL
+  WM_EXITMENULOOP wParam=1
+TrackPopupMenu(the popup, no TPM_RETURNCMD, the window): ret=1 err=-, ended after WM_CANCELMODE
+  WM_ENTERMENULOOP wParam=1
+  WM_INITMENU menu the popup
+  WM_INITMENUPOPUP menu the popup index=0 system menu=0
+  WM_CANCELMODE
+  WM_UNINITMENUPOPUP menu the popup
+  WM_MENUSELECT item=0 flags=0xFFFF menu NULL
+  WM_EXITMENULOOP wParam=1
+TrackPopupMenuEx(the popup, TPM_RETURNCMD, the window, no TPMPARAMS): ret=0 err=-, ended after WM_CANCELMODE
+  WM_ENTERMENULOOP wParam=1
+  WM_INITMENU menu the popup
+  WM_INITMENUPOPUP menu the popup index=0 system menu=0
+  WM_CANCELMODE
+  WM_UNINITMENUPOPUP menu the popup
+  WM_MENUSELECT item=0 flags=0xFFFF menu NULL
+  WM_EXITMENULOOP wParam=1
+TrackPopupMenu(NULL, TPM_RETURNCMD, the window): ret=0 err=1401, ended by itself
+  the owner received no menu message
+TrackPopupMenu(the popup, TPM_RETURNCMD, NULL): ret=0 err=1400, ended by itself
+  the owner received no menu message
 menus: done
 <<< exit code=0

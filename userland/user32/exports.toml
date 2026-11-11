@@ -1367,6 +1367,15 @@ args = [
 impl = { syscall = "crate::win32k::window::find_window_ex" }
 internal = true
 
+[[export]]
+name = "LoadBitmapW"
+group = "resources"
+args = ["handle hInstance", "ptr lpBitmapName"]
+impl = { stub = "not yet implemented" }
+ordinal = 414
+fails = "NULL"
+note = "the name a string, or a resource or system bitmap's ordinal in its low word"
+
 # --- messages, timers and painting ---------------------------------------------------------------
 
 [[export]]
@@ -2473,6 +2482,156 @@ impl = { native = "EndMenu" }
 ordinal = 189
 fails = "FALSE"
 
+[[export]]
+name = "DeleteMenu"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 138
+fails = "FALSE"
+
+[[export]]
+name = "GetMenuCheckMarkDimensions"
+group = "menu"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 290
+fails = "0"
+
+[[export]]
+name = "GetMenuDefaultItem"
+group = "menu"
+args = ["handle hMenu", "u32 fByPos", "u32 gmdiFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 292
+fails = "-1"
+
+[[export]]
+name = "GetMenuItemInfoA"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 296
+fails = "FALSE"
+
+[[export]]
+name = "GetMenuItemInfoW"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 297
+fails = "FALSE"
+
+[[export]]
+name = "GetMenuItemRect"
+group = "menu"
+args = ["handle hWnd", "handle hMenu", "u32 uItem", "ptr lprcItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 298
+fails = "FALSE"
+
+[[export]]
+name = "GetSystemMenu"
+group = "menu"
+args = ["handle hWnd", "bool bRevert"]
+impl = { stub = "not yet implemented" }
+ordinal = 329
+fails = "NULL"
+
+[[export]]
+name = "InsertMenuA"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 377
+fails = "FALSE"
+note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
+
+[[export]]
+name = "InsertMenuItemA"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 378
+fails = "FALSE"
+
+[[export]]
+name = "ModifyMenuA"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 458
+fails = "FALSE"
+note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
+
+[[export]]
+name = "SetMenuItemInfoA"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 576
+fails = "FALSE"
+
+[[export]]
+name = "InsertMenuW"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 380
+fails = "FALSE"
+note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
+
+[[export]]
+name = "InsertMenuItemW"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 379
+fails = "FALSE"
+
+[[export]]
+name = "ModifyMenuW"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { stub = "not yet implemented" }
+ordinal = 459
+fails = "FALSE"
+note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
+
+[[export]]
+name = "SetMenuItemInfoW"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
+impl = { stub = "not yet implemented" }
+ordinal = 577
+fails = "FALSE"
+
+[[export]]
+name = "RemoveMenu"
+group = "menu"
+args = ["handle hMenu", "u32 uPosition", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 521
+fails = "FALSE"
+
+[[export]]
+name = "SetMenuDefaultItem"
+group = "menu"
+args = ["handle hMenu", "u32 uItem", "u32 fByPos"]
+impl = { stub = "not yet implemented" }
+ordinal = 573
+fails = "FALSE"
+
+[[export]]
+name = "TrackPopupMenu"
+group = "menu"
+args = [
+    "handle hMenu", "u32 uFlags", "i32 x", "i32 y", "i32 nReserved", "handle hWnd", "ptr prcRect",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 642
+fails = "FALSE"
+
 # --- keyboard accelerators ------------------------------------------------------------------------
 
 [[export]]
@@ -3462,10 +3621,6 @@ name = "DefMDIChildProcW"
 ordinal = 134
 
 [[export]]
-name = "DeleteMenu"
-ordinal = 138
-
-[[export]]
 name = "DeregisterShellHookWindow"
 ordinal = 139
 
@@ -3804,32 +3959,12 @@ name = "GetMenuBarInfo"
 ordinal = 289
 
 [[export]]
-name = "GetMenuCheckMarkDimensions"
-ordinal = 290
-
-[[export]]
 name = "GetMenuContextHelpId"
 ordinal = 291
 
 [[export]]
-name = "GetMenuDefaultItem"
-ordinal = 292
-
-[[export]]
 name = "GetMenuInfo"
 ordinal = 293
-
-[[export]]
-name = "GetMenuItemInfoA"
-ordinal = 296
-
-[[export]]
-name = "GetMenuItemInfoW"
-ordinal = 297
-
-[[export]]
-name = "GetMenuItemRect"
-ordinal = 298
 
 [[export]]
 name = "GetMessageExtraInfo"
@@ -3882,10 +4017,6 @@ ordinal = 324
 [[export]]
 name = "GetShellWindow"
 ordinal = 325
-
-[[export]]
-name = "GetSystemMenu"
-ordinal = 329
 
 [[export]]
 name = "GetTabbedTextExtentA"
@@ -3996,22 +4127,6 @@ name = "InitializeWin32EntryTable"
 ordinal = 376
 
 [[export]]
-name = "InsertMenuA"
-ordinal = 377
-
-[[export]]
-name = "InsertMenuItemA"
-ordinal = 378
-
-[[export]]
-name = "InsertMenuItemW"
-ordinal = 379
-
-[[export]]
-name = "InsertMenuW"
-ordinal = 380
-
-[[export]]
 name = "InternalGetWindowText"
 ordinal = 381
 
@@ -4058,10 +4173,6 @@ ordinal = 409
 [[export]]
 name = "LoadBitmapA"
 ordinal = 413
-
-[[export]]
-name = "LoadBitmapW"
-ordinal = 414
 
 [[export]]
 name = "LoadCursorFromFileA"
@@ -4182,14 +4293,6 @@ ordinal = 455
 [[export]]
 name = "MessageBoxIndirectW"
 ordinal = 456
-
-[[export]]
-name = "ModifyMenuA"
-ordinal = 458
-
-[[export]]
-name = "ModifyMenuW"
-ordinal = 459
 
 [[export]]
 name = "MsgWaitForMultipleObjectsEx"
@@ -4336,10 +4439,6 @@ name = "RegisterTasklist"
 ordinal = 516
 
 [[export]]
-name = "RemoveMenu"
-ordinal = 521
-
-[[export]]
 name = "ReplyMessage"
 ordinal = 524
 
@@ -4444,24 +4543,12 @@ name = "SetMenuContextHelpId"
 ordinal = 572
 
 [[export]]
-name = "SetMenuDefaultItem"
-ordinal = 573
-
-[[export]]
 name = "SetMenuInfo"
 ordinal = 574
 
 [[export]]
 name = "SetMenuItemBitmaps"
 ordinal = 575
-
-[[export]]
-name = "SetMenuItemInfoA"
-ordinal = 576
-
-[[export]]
-name = "SetMenuItemInfoW"
-ordinal = 577
 
 [[export]]
 name = "SetMessageExtraInfo"
@@ -4642,10 +4729,6 @@ ordinal = 640
 [[export]]
 name = "TrackMouseEvent"
 ordinal = 641
-
-[[export]]
-name = "TrackPopupMenu"
-ordinal = 642
 
 [[export]]
 name = "TranslateAccelerator"
