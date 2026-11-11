@@ -350,10 +350,10 @@ note = "_setjmp3 records it in the jump buffer (UnwindFunc) and msvcrt's own lon
 name = "_EH_prolog"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_EH_prolog" }
 ordinal = 69
 fails = "never"
-note = "C++ exception handling: called on entry to a function with a C++ exception frame (its handler in EAX) to build that frame, EBP its base; it cannot fail, so the stub raises"
+note = "C++ exception handling: called on entry to a function with a C++ exception frame (its handler in EAX) to build that frame, EBP its base (src/seh.s); not a cdecl function despite the spec's convention: it takes EAX and the return address alone, and returns with ESP and EBP moved"
 
 [[export]]
 name = "__CxxFrameHandler"

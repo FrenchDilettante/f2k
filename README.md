@@ -9,7 +9,7 @@ Seven of Windows 2000's system DLLs are F2K's own code:
 
 - **ntdll**: the system calls into the kernel, the program loader, and the runtime library the other DLLs build on.
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
-- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, rounding and the compiler's `_ftol`, full paths and the current directory, the time functions (`gmtime`, `localtime`, `mktime` and `TZ`), and starting child processes (`_spawn`, `_cwait`).
+- **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, the C++ exception frame `_EH_prolog` builds, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, rounding and the compiler's `_ftol`, full paths and the current directory, the time functions (`gmtime`, `localtime`, `mktime` and `TZ`), and starting child processes (`_spawn`, `_cwait`).
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
 - **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility, their coordinates and children); the non-client area (the frame, the caption and its buttons, and the menu bar, drawn in the classic look, `AdjustWindowRectEx`, `WM_NCCALCSIZE` and `WM_NCHITTEST`); menus opened by the keyboard (Alt, F10 and mnemonics, the arrows, Enter and Esc), not yet by the mouse; the message loop, sent and posted messages and the default window procedure; keyboard input (the keyboard's keystrokes and `SendInput`'s to the foreground window's focus, the key states, `TranslateMessage`'s characters for the US layout); painting (`BeginPaint`, the update regions) and the `GetDC` family, their DCs drawing at the window's client area; the drawing calls (`FillRect`, `FrameRect`, `InvertRect`, `DrawFocusRect`, `DrawEdge`, `DrawText`); the clipboard, its text converted between its ANSI, OEM and Unicode forms; the display's settings, devices, monitor, metrics and system colors and their brushes; `MessageBeep`; the rectangle and character-walk helpers.
 - **gdi32**: device contexts of the screen and of windows, drawn on the VBE framebuffer, and their capabilities: text in a built-in 8x16 font or in TrueType fonts, the stock objects, solid brushes and `PatBlt`, the text and background colors, single pixels.
@@ -17,7 +17,7 @@ Seven of Windows 2000's system DLLs are F2K's own code:
 - **shell32**: only `ShellAboutW`, a stub that answers FALSE, so programs that import it (Windows 2000's `calc.exe`) load.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code, and [`drawdemo`](userland/drawdemo/README.md), a window of user32's drawing calls for a screenshot.
-Four test programs are built beside them and kept off the disk: [`keyshow`](userland/keyshow/README.md), which prints the keyboard messages its window receives, [`fontshow`](userland/fontshow/README.md), which draws text in Tahoma on the screen, [`dlgshow`](userland/dlgshow/README.md), a dialog of buttons and static text driven by the keyboard, and [`menushow`](userland/menushow/README.md), a window with a caption, a border and a menu bar, its menus opened by the keyboard.
+Five test programs are built beside them and kept off the disk: [`keyshow`](userland/keyshow/README.md), which prints the keyboard messages its window receives, [`fontshow`](userland/fontshow/README.md), which draws text in Tahoma on the screen, [`dlgshow`](userland/dlgshow/README.md), a dialog of buttons and static text driven by the keyboard, [`menushow`](userland/menushow/README.md), a window with a caption, a border and a menu bar, its menus opened by the keyboard, and [`ehprolog`](userland/ehprolog/README.md), which checks the C++ exception frame msvcrt's `_EH_prolog` builds.
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
@@ -260,7 +260,7 @@ f2k/
 │                     # export spec in userland/<dll>/exports.toml, the DLLs F2K doesn't build
 │                     # their spec alone;
 │                     # F2K's own programs (pwd, ps, shutdown, cmd, drawdemo, keyshow, dlgshow,
-│                     # menushow), each with its README
+│                     # menushow, ehprolog), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │
 └── kernel/           # F2K Kernel
