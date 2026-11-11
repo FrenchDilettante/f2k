@@ -1,9 +1,12 @@
 # process: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
 # with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. The data exports and the
 # C++ operators are reached through GetProcAddress on msvcrt.dll.
-description = "process - msvcrt.dll's view of its process under /MD (process.c): the data exports _acmdln, _wcmdln, __argc and __argv against GetCommandLineA/W and the __p___ accessors, getenv over variables it sets itself, operator new and delete, _msize and _expand."
+description = "process - msvcrt.dll's view of its process under /MD (process.c): the data exports _acmdln, _wcmdln, __argc and __argv against GetCommandLineA/W and the __p___ accessors, getenv over variables it sets itself, operator new and delete, _msize and _expand; _beginthreadex's threads, their exit codes through the handle the C runtime leaves open, and _endthreadex."
 kind = "sectioned"
 gate = true
+
+[pending]
+beginthread = "msvcrt exports no _beginthreadex or _endthreadex yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -42,3 +45,4 @@ heap = [
     "msvcrt.malloc",
     "msvcrt.free",
 ]
+beginthread = ["msvcrt._beginthreadex", "msvcrt._endthreadex"]

@@ -1,7 +1,8 @@
 /*
  * process - msvcrt.dll's view of its process under /MD: the command
  * line's data exports, the environment through getenv, and the C++
- * heap operators beside _msize and _expand.
+ * heap operators beside _msize and _expand, and the threads
+ * _beginthreadex starts.
  *
  * The data exports (_acmdln, _wcmdln, __argc, __argv) and the C++
  * operators (operator new, ??2@YAPAXI@Z, and operator delete,
@@ -12,8 +13,9 @@
  * into (*__p___argc()) and (*__p___argv()). The calls are still the
  * section's own, as the kernel32 fixtures reach ntdll's exports.
  *
- * Every other import is one F2K's msvcrt already implements: each one
- * it lacks is one more export the fixture needs before it loads.
+ * _beginthreadex and _endthreadex are reached the same way. Every
+ * other import is one F2K's msvcrt already implements: each one it
+ * lacks is one more export the fixture needs before it loads.
  *
  * Sections (run all with no argument, or one by name):
  *
@@ -36,6 +38,14 @@
  *            and 5000 bytes, operator delete on each and on NULL;
  *            _expand shrinking a 5000-byte block to 100 and to the
  *            same size
+ *   beginthread  _beginthreadex: a routine's return value as the
+ *            thread's exit code, read through the handle the C runtime
+ *            leaves open once the thread has ended (then closed by the
+ *            section: CloseHandle's answer), the id against the child's
+ *            own; _endthreadex(55) in a thread started suspended (a
+ *            200 ms wait before ResumeThread, the code after the call
+ *            never run); a 64 KiB stack; no id pointer; errno set in the
+ *            thread and this thread's errno untouched
  *
  * Not tested: _expand growing a block (whether there is room after it
  * depends on the heap's layout), and _msize(NULL) and _expand(NULL),
@@ -48,6 +58,7 @@
 #include "../common/f2kt.h"
 #include <stdlib.h>
 #include <malloc.h>
+#include <errno.h>
 
 typedef void *(__cdecl *new_fn)(unsigned int size);
 typedef void (__cdecl *delete_fn)(void *block);
@@ -337,10 +348,120 @@ static void sec_heap(void)
     free(r);
 }
 
+/* --- beginthread -------------------------------------------------- */
+
+/* _beginthreadex and _endthreadex, through GetProcAddress (cdecl, as
+   process.h declares them). */
+typedef unsigned (__stdcall *thread_routine)(void *param);
+typedef unsigned long (__cdecl *beginthreadex_fn)(void *security, unsigned stack, thread_routine routine,
+                                                  void *param, unsigned flags, unsigned *id);
+typedef void (__cdecl *endthreadex_fn)(unsigned code);
+
+static beginthreadex_fn begin_ex;
+static endthreadex_fn end_ex;
+static volatile DWORD child_id;
+static volatile int after_end;
+
+static unsigned __stdcall plus_seventy(void *param)
+{
+    child_id = GetCurrentThreadId();
+    return (unsigned)param + 70;
+}
+
+static unsigned __stdcall ends_with_55(void *param)
+{
+    (void)param;
+    end_ex(55);
+    after_end = 1;
+    return 1;
+}
+
+static unsigned __stdcall own_errno(void *param)
+{
+    (void)param;
+    errno = ERANGE;
+    return (unsigned)errno;
+}
+
+/* Wait for a thread _beginthreadex started, then print its exit code
+   through the handle (which the C runtime leaves open) and close it. */
+static void finish_thread(unsigned long h)
+{
+    DWORD w, code = 0xDEADDEAD;
+    BOOL r;
+    const char *e;
+
+    w = WaitForSingleObject((HANDLE)h, WAIT_MS);
+    arm();
+    r = GetExitCodeThread((HANDLE)h, &code);
+    e = le();
+    line("  its end: %s; GetExitCodeThread through the handle: ret=%d code %lu err=%s", wr(w), r, r ? code : 0, e);
+    arm();
+    r = CloseHandle((HANDLE)h);
+    e = le();
+    line("  CloseHandle: ret=%d err=%s", r, e);
+}
+
+static void sec_beginthread(void)
+{
+    unsigned long h;
+    unsigned tid = 0;
+    DWORD w, n;
+
+    begin_ex = (beginthreadex_fn)crt_export("_beginthreadex");
+    end_ex = (endthreadex_fn)crt_export("_endthreadex");
+    line("msvcrt exports _beginthreadex %s, _endthreadex %s", yesno(begin_ex != NULL), yesno(end_ex != NULL));
+    if (begin_ex == NULL || end_ex == NULL) {
+        return;
+    }
+    child_id = 0;
+    h = begin_ex(NULL, 0, plus_seventy, (void *)7, 0, &tid);
+    line("_beginthreadex(a routine returning its parameter plus 70, 7): a handle %s, an id %s", yesno(h != 0),
+         yesno(tid != 0));
+    if (h != 0) {
+        WaitForSingleObject((HANDLE)h, WAIT_MS);
+        line("  the id the child's own: %s", yesno(tid == child_id));
+        finish_thread(h);
+    }
+
+    after_end = 0;
+    h = begin_ex(NULL, 0, ends_with_55, NULL, CREATE_SUSPENDED, &tid);
+    line("_beginthreadex(a routine calling _endthreadex(55), CREATE_SUSPENDED): a handle %s", yesno(h != 0));
+    if (h != 0) {
+        w = WaitForSingleObject((HANDLE)h, 200);
+        line("  a 200 ms wait while it is suspended: %s", wr(w));
+        n = ResumeThread((HANDLE)h);
+        line("  ResumeThread: %lu", n);
+        finish_thread(h);
+        line("  the code after _endthreadex ran: %s", yesno(after_end));
+    }
+
+    h = begin_ex(NULL, 0x10000, plus_seventy, (void *)1, 0, &tid);
+    line("_beginthreadex(a 64 KiB stack, 1): a handle %s", yesno(h != 0));
+    if (h != 0) {
+        finish_thread(h);
+    }
+
+    h = begin_ex(NULL, 0, plus_seventy, (void *)2, 0, NULL);
+    line("_beginthreadex(no id pointer, 2): a handle %s", yesno(h != 0));
+    if (h != 0) {
+        finish_thread(h);
+    }
+
+    errno = 0;
+    h = begin_ex(NULL, 0, own_errno, NULL, 0, &tid);
+    line("_beginthreadex(a routine setting errno to ERANGE and returning it): a handle %s", yesno(h != 0));
+    if (h != 0) {
+        finish_thread(h);
+        line("  this thread's errno still 0: %s", yesno(errno == 0));
+    }
+}
+
 static const section_t sections[] = {
     { "cmdline", sec_cmdline, F2KT_ALWAYS },
     { "getenv", sec_getenv, F2KT_ALWAYS },
     { "heap", sec_heap, F2KT_ALWAYS },
+    { "beginthread", sec_beginthread, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
