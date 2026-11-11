@@ -1,0 +1,42 @@
+# caret: one test per block of the real-machine capture (output.txt); see tests/README.md. No
+# handle or address prints: a window prints by its label. Whether the caret shows, its window and
+# its rectangle come from GetGUIThreadInfo (through GetProcAddress), read at once after each call
+# with no message retrieved between, so the caret's blink cannot turn them. The caret's sizes and
+# places are the program's own; the default size prints only as a relation to the border metrics.
+description = "caret - the caret: CreateCaret (solid, gray, the default size), DestroyCaret, SetCaretPos and GetCaretPos; ShowCaret and HideCaret's hide count, NULL and a window not owning the caret; the caret as the focus moves between windows, on CreateCaret by another window, its owner's destruction, a window procedure making it on WM_SETFOCUS and destroying it on WM_KILLFOCUS, and another thread's caret calls; each state through GetGUIThreadInfo's hwndCaret, rcCaret and GUI_CARETBLINKING."
+kind = "sectioned"
+
+# Not gated: awaiting its capture.
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the caret calls a section observes and GetGUIThreadInfo, which reads the caret back (not
+# the classes and windows, SetForegroundWindow, the metrics).
+create = [
+    "user32.CreateCaret",
+    "user32.DestroyCaret",
+    "user32.SetCaretPos",
+    "user32.GetCaretPos",
+    "user32.ShowCaret",
+    "user32.HideCaret",
+    "user32.GetGUIThreadInfo",
+]
+show = [
+    "user32.CreateCaret",
+    "user32.DestroyCaret",
+    "user32.ShowCaret",
+    "user32.HideCaret",
+    "user32.SetCaretPos",
+    "user32.GetCaretPos",
+    "user32.GetGUIThreadInfo",
+]
+focus = [
+    "user32.CreateCaret",
+    "user32.DestroyCaret",
+    "user32.ShowCaret",
+    "user32.HideCaret",
+    "user32.SetCaretPos",
+    "user32.SetFocus",
+    "user32.DestroyWindow",
+    "user32.GetGUIThreadInfo",
+]
