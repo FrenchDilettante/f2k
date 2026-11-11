@@ -78,6 +78,18 @@ pub unsafe fn init() {
     }
 }
 
+/// The running thread's floating-point state, as it stands, into `image` (`fxsave`): what an
+/// exception's dispatch hands user mode in its CONTEXT. The state stays loaded, unchanged.
+#[cfg(target_arch = "x86")]
+pub fn save(image: &mut crate::sched::thread::FxSaveArea) {
+    use core::arch::asm;
+    // SAFETY: ring 0 with OSFXSR set (`init`, before the first thread); the image is 512 writable
+    // bytes, 16-byte aligned by its type, as the instruction needs.
+    unsafe {
+        asm!("fxsave [{}]", in(reg) core::ptr::from_mut(image), options(nostack, preserves_flags));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
