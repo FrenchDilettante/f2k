@@ -21,7 +21,7 @@ tests/
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
 │               # caret, editctl
-├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes
+├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes, regions
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -301,6 +301,11 @@ The fixtures:
   Built with `/MD`.
   Declared ahead of its real-machine build and capture.
 - `shapes` (gdi32) - pens, lines and shapes, each drawn into a 32-bit DIB section in a memory DC and read back through its bits pointer as rows of letters: `CreatePen` in each style at widths 0, 1 and 3 with `GetObjectW`'s `LOGPEN`, and each style drawn (`pens`); `ExtCreatePen`, cosmetic (solid, alternate, a user style, dotted) and geometric (end caps, a dash, miter, bevel and round joins), with `GetObjectW`'s `EXTLOGPEN` (`extpen`); `MoveToEx`, `LineTo` with its end pixel left out, and `GetCurrentPositionEx`, diagonals drawn both ways (`lines`); `Polyline`, and `Polygon` under `ALTERNATE` and `WINDING` (`SetPolyFillMode`/`GetPolyFillMode`) and with the null pen and brush (`poly`); `Rectangle`, `Ellipse` and `RoundRect` with the null pen and brush, at small sizes, and with a width-3 `PS_SOLID` and `PS_INSIDEFRAME` pen (`shapes`); and `SetROP2`/`GetROP2` over all sixteen mix modes, in hex (`rop2`).
+  Built with `/MD`.
+  Declared ahead of its real-machine build and capture.
+- `regions` (gdi32) - regions and a DC's clipping: `CreateRectRgn`, `CreateRectRgnIndirect`, `SetRectRgn`, `OffsetRgn`, `GetRgnBox`, `PtInRegion` and `EqualRgn` over plain, reversed, empty and deleted regions (`rect`); `CombineRgn` in each mode and the region type it answers (`combine`); `CreatePolygonRgn` under `ALTERNATE` and `WINDING` (`polygon`); `GetRegionData`'s sizes, header and rectangles (`data`); `FillRgn` (`fill`); `SelectClipRgn`, `IntersectClipRect`, `ExcludeClipRect`, `OffsetClipRgn`, `GetClipBox`, `GetClipRgn`, `PtVisible` and `RectVisible` (`clip`) and `ExtSelectClipRgn` in each mode (`extclip`), each with a drawing clipped into a DIB section and read back; and user32's `InvalidateRgn` and `GetUpdateRgn` on the program's own window (`update`).
+  A region prints as its type, its box, its rectangles or a grid of `PtInRegion` answers.
+  The `update` window is a topmost 64x48 popup at the screen's corner, shown, since a hidden window keeps no update region; its update region prints as its type and as the same as a region the program built or not.
   Built with `/MD`.
   Declared ahead of its real-machine build and capture.
 

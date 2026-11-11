@@ -1,0 +1,45 @@
+# regions: one test per block of the real-machine capture (output.txt); see tests/README.md. Regions
+# print as their types, boxes, rectangles and PtInRegion grids; clipped drawing goes into a 32-bit
+# DIB section in a memory DC, read back through its bits pointer. The update section's window is a
+# topmost 64x48 popup at the screen's corner; its update region prints as its type and as the same as
+# a region the program built or not. No handle or address prints.
+description = "regions - CreateRectRgn(Indirect), CreatePolygonRgn under both fill modes, CombineRgn in each mode with its region type, OffsetRgn, SetRectRgn, GetRgnBox, PtInRegion, EqualRgn and GetRegionData; FillRgn; SelectClipRgn, ExtSelectClipRgn in each mode, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox, GetClipRgn, PtVisible and RectVisible, with clipped drawing read back from a DIB section; user32's InvalidateRgn and GetUpdateRgn on the program's own window."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the canvas's
+# memory DC and DIB section, GdiFlush, PatBlt drawing the clipping region, the window's class).
+rect = [
+    "gdi32.CreateRectRgn",
+    "gdi32.CreateRectRgnIndirect",
+    "gdi32.GetObjectType",
+    "gdi32.GetRgnBox",
+    "gdi32.EqualRgn",
+    "gdi32.PtInRegion",
+    "gdi32.SetRectRgn",
+    "gdi32.OffsetRgn",
+]
+combine = ["gdi32.CombineRgn", "gdi32.GetRgnBox", "gdi32.GetRegionData", "gdi32.PtInRegion"]
+polygon = ["gdi32.CreatePolygonRgn", "gdi32.GetRgnBox", "gdi32.EqualRgn", "gdi32.PtInRegion"]
+data = ["gdi32.GetRegionData"]
+fill = ["gdi32.FillRgn"]
+clip = [
+    "gdi32.SelectClipRgn",
+    "gdi32.IntersectClipRect",
+    "gdi32.ExcludeClipRect",
+    "gdi32.OffsetClipRgn",
+    "gdi32.GetClipBox",
+    "gdi32.GetClipRgn",
+    "gdi32.PtVisible",
+    "gdi32.RectVisible",
+]
+extclip = [
+    "gdi32.ExtSelectClipRgn",
+    "gdi32.ExcludeClipRect",
+    "gdi32.IntersectClipRect",
+    "gdi32.GetClipBox",
+    "gdi32.GetClipRgn",
+    "gdi32.FillRgn",
+]
+update = ["user32.InvalidateRgn", "user32.GetUpdateRgn"]
