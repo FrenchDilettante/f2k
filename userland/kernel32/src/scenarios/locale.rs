@@ -680,6 +680,55 @@ fn the_narrow_nls_calls_take_long_sources() {
     );
 }
 
+/// CompareStringA and W check the locale before anything else: a locale Windows 2000 does not
+/// support (0x9999) is ERROR_INVALID_PARAMETER even with a bad flag; a supported one compares
+/// whether this surface describes it or not (the lcid fixture's block).
+///
+/// Pins: kernel32.CompareStringA, kernel32.CompareStringW
+#[test]
+fn compare_string_checks_the_locale_first() {
+    const CSTR_EQUAL: i32 = 2;
+    const NORM_IGNORECASE: u32 = 1;
+    let (narrow, upper) = (b"abc\0", b"ABC\0");
+    let (wide, wide_upper) = ([0x61u16, 0x62, 0x63, 0], [0x41u16, 0x42, 0x43, 0]);
+    for (locale, flags) in [
+        (0x9999, NORM_IGNORECASE),
+        (0x9999, 0x8000_0000),
+        (0x1_0409, 0),
+    ] {
+        let compared =
+            unsafe { compare_string_a(locale, flags, narrow.as_ptr(), -1, upper.as_ptr(), -1) };
+        assert_eq!((compared, last_error()), (0, 87), "{locale:#x}");
+        let compared =
+            unsafe { compare_string_w(locale, flags, wide.as_ptr(), -1, wide_upper.as_ptr(), -1) };
+        assert_eq!((compared, last_error()), (0, 87), "{locale:#x}");
+    }
+    for locale in [LOCALE_US, 0, 0x0400, 0x0800, 0x040C, 0x0407] {
+        let compared = unsafe {
+            compare_string_a(
+                locale,
+                NORM_IGNORECASE,
+                narrow.as_ptr(),
+                -1,
+                upper.as_ptr(),
+                -1,
+            )
+        };
+        assert_eq!(compared, CSTR_EQUAL, "{locale:#x}");
+        let compared = unsafe {
+            compare_string_w(
+                locale,
+                NORM_IGNORECASE,
+                wide.as_ptr(),
+                -1,
+                wide_upper.as_ptr(),
+                -1,
+            )
+        };
+        assert_eq!(compared, CSTR_EQUAL, "{locale:#x}");
+    }
+}
+
 /// GetLocaleInfoA and W answer the locale's values through the NLS counting rule, and
 /// EnumSystemLocalesA hands its one locale to the callback.
 ///
