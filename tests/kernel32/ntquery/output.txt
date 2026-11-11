@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026  0:28:18.76
-ntquery F2KT-SOURCE-CRC=0x94C920C0
+# date: Wed 11/11/2026 13:05:03.97
+ntquery F2KT-SOURCE-CRC=0xE263D433
 >>> ntquery.exe sysinfo
 == sysinfo
 NtQuerySystemInformation(5): status=0x00000000 err=- filled=yes
@@ -16,12 +16,20 @@ ntquery: done
 <<< exit code=0
 >>> ntquery.exe threadinfo
 == threadinfo
-NtQueryInformationThread(0): status=0xC0000004 err=-
+NtQueryInformationThread(0, 28 bytes): status=0x00000000 err=- length=28
+ExitStatus=0x00000103, TEB set: yes, the one fs points at: yes
+ClientId: the process id: yes, the thread id: yes
+AffinityMask set: yes, BasePriority=0
+NtQueryInformationThread(0, 256 bytes): status=0xC0000004 err=-
 ntquery: done
 <<< exit code=0
 >>> ntquery.exe pebread
 == pebread
-ReadProcessMemory or PEB unavailable
+NtQueryInformationProcess(0): status=0x00000000 err=- peb=set, the TEB's: yes
+ReadProcessMemory(own PEB, 28 bytes): ret=1 err=- read=28
+the bytes a direct read sees: yes
+BeingDebugged=0, ImageBaseAddress the program's module handle: yes
+Ldr set: yes, ProcessParameters set: yes, ProcessHeap the process heap: yes
 ntquery: done
 <<< exit code=0
 >>> ntquery.exe scmfail

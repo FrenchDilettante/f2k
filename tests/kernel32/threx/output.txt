@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026  0:28:18.65
-threx F2KT-SOURCE-CRC=0xEB7883B0
+# date: Wed 11/11/2026 13:05:03.89
+threx F2KT-SOURCE-CRC=0xFA852A03
 >>> threx.exe unhandled
 == unhandled
 <<< exit code=-1073741819
@@ -20,5 +20,22 @@ threx: done
 >>> threx.exe threadstart
 == threadstart
 NtQueryInformationThread(9): status=0x00000000 err=- recorded=yes
+threx: done
+<<< exit code=0
+>>> threx.exe fpresume
+== fpresume
+processor: FXSR and SSE
+raise: dispatched flags=0x0001003F, cw as set: yes, st0 as set: yes
+raise: resumed from FloatSave changed: cw=new st0=new
+raise: xmm0 as set: yes
+raise: resumed from ExtendedRegisters changed: xmm0=new
+thread: SuspendThread: ret=0 err=-
+thread: GetThreadContext(FLOATING_POINT): ret=1 err=-, cw as set: yes, st0 as set: yes
+thread: SetThreadContext(FLOATING_POINT): ret=1 err=-
+thread: GetThreadContext(EXTENDED_REGISTERS): ret=1 err=-, xmm0 as set: yes
+thread: SetThreadContext(EXTENDED_REGISTERS): ret=1 err=-
+thread: ResumeThread: ret=1 err=-
+thread: resumed: WAIT_OBJECT_0, cw=new st0=new
+thread: resumed: xmm0=new
 threx: done
 <<< exit code=0

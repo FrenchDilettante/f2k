@@ -3,6 +3,8 @@ description = "vmedge - the virtual-memory and sections corners: a thread of its
 kind = "sectioned"
 gate = true
 
+[pending]
+guardwalk = "F2K raises STATUS_STACK_OVERFLOW a page lower than Windows 2000: it lets the stack's guard page reach the page above the reservation's last before raising it (the deepest frame two pages above the base), where Windows 2000 raises it a page sooner (three)"
 
 [pins]
 guardwalk = [

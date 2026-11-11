@@ -3,6 +3,8 @@ description = "threx - thread-level exception behavior: the second chance in a w
 kind = "sectioned"
 gate = true
 
+[pending]
+fpresume = "F2K restores no floating-point state from a CONTEXT: its NtContinue takes only the control and integer registers, not FloatSave or the extended registers, and kernel32 has no GetThreadContext or SetThreadContext yet"
 
 [pins]
 unhandled = [
@@ -20,12 +22,10 @@ mainret = [
 threadstart = [
     "ntdll.NtQueryInformationThread",
 ]
-# fpresume has no captured block until the next capture, and a pin for a section without one is
-# refused: once it is captured, its pins are
-# fpresume = [
-#     "kernel32.RaiseException",
-#     "kernel32.GetThreadContext",
-#     "kernel32.SetThreadContext",
-#     "kernel32.SuspendThread",
-#     "kernel32.ResumeThread",
-# ]
+fpresume = [
+    "kernel32.RaiseException",
+    "kernel32.GetThreadContext",
+    "kernel32.SetThreadContext",
+    "kernel32.SuspendThread",
+    "kernel32.ResumeThread",
+]

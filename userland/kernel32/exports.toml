@@ -1823,6 +1823,22 @@ args = []
 impl = { native = "SwitchToThread" }
 ordinal = 716
 
+[[export]]
+name = "GetThreadContext"
+group = "threads"
+args = ["handle hThread", "ptr lpContext"]
+impl = { stub = "not yet implemented" }
+ordinal = 389
+fails = "FALSE"
+
+[[export]]
+name = "SetThreadContext"
+group = "threads"
+args = ["handle hThread", "ptr lpContext"]
+impl = { stub = "not yet implemented" }
+ordinal = 693
+fails = "FALSE"
+
 # --- file handles ---------------------------------------------------------------------------------
 
 [[export]]
@@ -3785,10 +3801,6 @@ name = "GetTapeStatus"
 ordinal = 384
 
 [[export]]
-name = "GetThreadContext"
-ordinal = 389
-
-[[export]]
 name = "GetThreadSelectorEntry"
 ordinal = 393
 
@@ -4467,10 +4479,6 @@ ordinal = 691
 [[export]]
 name = "SetThreadAffinityMask"
 ordinal = 692
-
-[[export]]
-name = "SetThreadContext"
-ordinal = 693
 
 [[export]]
 name = "SetThreadExecutionState"
