@@ -1,0 +1,38 @@
+# mapmode: one test per block of the real-machine capture (output.txt); see tests/README.md. Its DCs
+# are memory DCs; the metric modes' extents and MM_ISOTROPIC's adjusted viewport follow the screen's
+# size in millimeters and pixels, so they print only as relations. No handle or address prints.
+description = "mapmode - SetMapMode/GetMapMode across every mode (the metric modes' extents as relations), Set/Get Window/Viewport Ext/Org in MM_TEXT and MM_ANISOTROPIC, LPtoDP and DPtoLP and their rounding, OffsetViewportOrgEx, OffsetWindowOrgEx, ScaleViewportExtEx and ScaleWindowExtEx, MM_ISOTROPIC's adjustment, PatBlt and Rectangle through a mapping into a DIB section, and SaveDC/RestoreDC relative and absolute."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the memory DCs,
+# the canvas's DIB section, GetDeviceCaps, and the setters that put a mapping in place unobserved).
+modes = ["gdi32.SetMapMode", "gdi32.GetMapMode", "gdi32.LPtoDP"]
+extorg = [
+    "gdi32.SetWindowExtEx",
+    "gdi32.GetWindowExtEx",
+    "gdi32.SetViewportExtEx",
+    "gdi32.GetViewportExtEx",
+    "gdi32.SetWindowOrgEx",
+    "gdi32.GetWindowOrgEx",
+    "gdi32.SetViewportOrgEx",
+    "gdi32.GetViewportOrgEx",
+    "gdi32.LPtoDP",
+    "gdi32.DPtoLP",
+]
+offset = [
+    "gdi32.OffsetViewportOrgEx",
+    "gdi32.OffsetWindowOrgEx",
+    "gdi32.ScaleViewportExtEx",
+    "gdi32.ScaleWindowExtEx",
+    "gdi32.LPtoDP",
+]
+isotropic = [
+    "gdi32.SetMapMode",
+    "gdi32.SetWindowExtEx",
+    "gdi32.SetViewportExtEx",
+    "gdi32.GetViewportExtEx",
+]
+drawing = ["gdi32.PatBlt", "gdi32.Rectangle"]
+savedc = ["gdi32.SaveDC", "gdi32.RestoreDC"]

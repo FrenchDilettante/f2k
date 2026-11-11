@@ -21,7 +21,7 @@ tests/
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
 │               # caret, editctl
-├── gdi32/      # guidc, gditext, ttfont, bitmaps
+├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -294,6 +294,10 @@ The fixtures:
 - `bitmaps` (gdi32) - bitmaps and blits, read back pixel by pixel, with the program's own bitmap (`bitmaps.rc`, compiled by the resource compiler and linked in, with `bitmaps.bmp`, an 8x8 bitmap of 4 bits in the VGA colors, checked in beside it).
   The sections: `CreateCompatibleDC` and the 1x1 monochrome bitmap a new memory DC holds, `CreateCompatibleBitmap` of the screen DC, of a memory DC and of one holding a DIB section, and one bitmap selected into two DCs (`compat`); `CreateBitmap` at 1 to 32 bits per pixel and its refusals, with `GetObjectA`/`W` (`create`); `CreateDIBSection` top-down, bottom-up, palettized and `BI_BITFIELDS`, its `DIBSECTION`, its bits written through the pointer and read back after `GetPixel` and `PatBlt` (`dibsect`); `BitBlt` with twelve raster operations over fixed values, offsets, overlaps, the surface's edge and no source DC (`blit`); monochrome to color through the destination's text and background colors, color to monochrome through the source's background color, and a 1-bit DIB section's color table (`mono`); `SetStretchBltMode`/`GetStretchBltMode` and `StretchBlt` shrinking under each mode, enlarging and mirroring (`stretch`); `GetDIBits` and `SetDIBits` across formats, scan lines and color tables (`dibits`); `SetDIBitsToDevice` and `StretchDIBits` from bottom-up, top-down and 1-bit DIBs (`todevice`); `CreateDIBitmap` (`createdib`); `CreatePatternBrush` with `SetBrushOrgEx`/`GetBrushOrgEx` (`pattern`); `GetObjectType` of each kind of object (`objtype`); and user32's `LoadBitmapA`/`W` and `LoadImageA`/`W` of `OBM_CLOSE`, `OBM_CHECK` and the program's bitmap, as a DIB section, stretched, as a device bitmap and monochrome (`load`).
   Every pixel it prints is read from a DIB section or a bitmap of an explicit format, as hex values or rows of letters; a bitmap of the screen's format (`CreateCompatibleBitmap` and `CreateDIBitmap` of the screen DC, `LoadBitmap`'s) prints its size, and its depth and pixels only as relations (the screen's depth, read back as written).
+  Built with `/MD`.
+  Declared ahead of its real-machine build and capture.
+- `mapmode` (gdi32) - a memory DC's coordinate spaces and saved states: `SetMapMode`/`GetMapMode` across every mode and two invalid ones (`modes`); `SetWindowExtEx`, `SetViewportExtEx`, `SetWindowOrgEx` and `SetViewportOrgEx` with their `Get` forms in `MM_TEXT` and `MM_ANISOTROPIC`, and `LPtoDP` and `DPtoLP` of points whose mapping falls on halves (`extorg`); `OffsetViewportOrgEx`, `OffsetWindowOrgEx`, `ScaleViewportExtEx` and `ScaleWindowExtEx` (`offset`); `MM_ISOTROPIC`'s adjustment of the viewport (`isotropic`); `PatBlt` and `Rectangle` through a window origin and a scaling mapping into a DIB section, upright and flipped (`drawing`); and `SaveDC`/`RestoreDC`, relative and absolute, over the mapping, the colors, the modes and the selected objects (`savedc`).
+  The metric modes' extents and `MM_ISOTROPIC`'s adjusted viewport follow the screen's size in millimeters and in pixels, which differ between machines: they print only as relations (their signs, the units per pixel the mode means within 1%, the same as another mode's).
   Built with `/MD`.
   Declared ahead of its real-machine build and capture.
 
