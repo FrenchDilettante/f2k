@@ -2969,6 +2969,40 @@ ordinal = 421
 fails = "0"
 note = "the name a string, or an integer atom in its low word"
 
+[[export]]
+name = "GlobalAddAtomA"
+group = "atoms"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 415
+fails = "0"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "GlobalFindAtomA"
+group = "atoms"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 420
+fails = "0"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "GlobalGetAtomNameA"
+group = "atoms"
+args = ["u32 nAtom", "ptr lpBuffer", "i32 nSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 425
+fails = "0"
+
+[[export]]
+name = "GlobalGetAtomNameW"
+group = "atoms"
+args = ["u32 nAtom", "ptr lpBuffer", "i32 nSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 426
+fails = "0"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -3920,28 +3954,12 @@ name = "GetWriteWatch"
 ordinal = 414
 
 [[export]]
-name = "GlobalAddAtomA"
-ordinal = 415
-
-[[export]]
-name = "GlobalFindAtomA"
-ordinal = 420
-
-[[export]]
 name = "GlobalFix"
 ordinal = 422
 
 [[export]]
 name = "GlobalFlags"
 ordinal = 423
-
-[[export]]
-name = "GlobalGetAtomNameA"
-ordinal = 425
-
-[[export]]
-name = "GlobalGetAtomNameW"
-ordinal = 426
 
 [[export]]
 name = "GlobalMemoryStatusEx"

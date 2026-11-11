@@ -1,0 +1,58 @@
+# atom: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. The global atom table is the window station's, shared with every program on the desktop: the
+# fixture's names all start with "F2KAtomFixture", and each section removes every reference to them
+# at its start and its end. A string atom's value prints only as a relation; an integer atom's is
+# its number.
+description = "atom - kernel32's global atoms: GlobalAddAtomW/A, GlobalFindAtomW/A, GlobalGetAtomNameW/A and GlobalDeleteAtom: string atoms found in any case, the reference counts GlobalDeleteAtom counts down, integer atoms (\"#123\", MAKEINTATOM and their bounds), the 255-character limit and short buffers, and the errors."
+kind = "sectioned"
+
+# Not gated: kernel32's global atoms (over ntdll's NtAddAtom family) are not implemented yet. Every
+# section is on the work list.
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
+add = [
+    "kernel32.GlobalAddAtomW",
+    "kernel32.GlobalAddAtomA",
+    "kernel32.GlobalFindAtomW",
+    "kernel32.GlobalFindAtomA",
+    "kernel32.GlobalGetAtomNameW",
+    "kernel32.GlobalGetAtomNameA",
+    "kernel32.GlobalDeleteAtom",
+]
+refcount = [
+    "kernel32.GlobalAddAtomW",
+    "kernel32.GlobalAddAtomA",
+    "kernel32.GlobalFindAtomW",
+    "kernel32.GlobalFindAtomA",
+    "kernel32.GlobalGetAtomNameW",
+    "kernel32.GlobalGetAtomNameA",
+    "kernel32.GlobalDeleteAtom",
+]
+integer = [
+    "kernel32.GlobalAddAtomW",
+    "kernel32.GlobalAddAtomA",
+    "kernel32.GlobalFindAtomW",
+    "kernel32.GlobalFindAtomA",
+    "kernel32.GlobalGetAtomNameW",
+    "kernel32.GlobalGetAtomNameA",
+    "kernel32.GlobalDeleteAtom",
+]
+length = [
+    "kernel32.GlobalAddAtomW",
+    "kernel32.GlobalAddAtomA",
+    "kernel32.GlobalFindAtomW",
+    "kernel32.GlobalFindAtomA",
+    "kernel32.GlobalGetAtomNameW",
+    "kernel32.GlobalGetAtomNameA",
+]
+errors = [
+    "kernel32.GlobalAddAtomW",
+    "kernel32.GlobalAddAtomA",
+    "kernel32.GlobalFindAtomW",
+    "kernel32.GlobalFindAtomA",
+    "kernel32.GlobalGetAtomNameW",
+    "kernel32.GlobalGetAtomNameA",
+    "kernel32.GlobalDeleteAtom",
+]
