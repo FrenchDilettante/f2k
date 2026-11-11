@@ -1,5 +1,6 @@
 """Checks on the repository's own files (no QEMU)."""
 import re
+import shutil
 import subprocess
 import zlib
 from pathlib import Path
@@ -516,17 +517,6 @@ def pe_imports(path: Path) -> dict[str, list[str]]:
     return found
 
 
-def int2eh_pairs(path: Path) -> int:
-    """How many `int 2Eh` byte pairs a DLL's executable sections hold."""
-    data = path.read_bytes()
-    _, _, _, table = pe_rva_reader(data)
-    return sum(
-        data[raw:raw + size].count(b"\xcd\x2e")
-        for _, _, raw, characteristics, size in table
-        if characteristics & 0x2000_0000  # IMAGE_SCN_MEM_EXECUTE
-    )
-
-
 def built_dll(builder, dll: str) -> Path:
     builder([])
     return f2kboot.REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release" / f"{dll}.dll"
@@ -542,31 +532,45 @@ def test_kernel32_imports_nothing_but_ntdll(builder):
 # on win32k's numbers (table 1: 0x1000 to 0x1FFF).
 WIN32K_CLIENTS = {"user32", "gdi32"}
 
+# A disassembled instruction (llvm-objdump's and GNU objdump's lines alike): its address, its bytes
+# in hex, then a tab and its mnemonic. A GNU line carrying only the rest of a long instruction's
+# bytes has no mnemonic, and is no instruction of its own.
+INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s*((?:[0-9a-f]{2} ?)+)\s*\t\s*\S")
 
-def win32k_stubs(path: Path) -> int:
-    """How many win32k service stubs a DLL's executable sections hold: `mov eax, <0x1000-0x1FFF>`,
-    `lea edx, [esp+4]`, `int 2Eh`."""
-    data = path.read_bytes()
-    _, _, _, table = pe_rva_reader(data)
-    stub = re.compile(rb"\xb8[\x00-\xff][\x10-\x1f]\x00\x00\x8d\x54\x24\x04\xcd\x2e", re.S)
-    return sum(
-        len(stub.findall(data[raw:raw + size]))
-        for _, _, raw, characteristics, size in table
-        if characteristics & 0x2000_0000  # IMAGE_SCN_MEM_EXECUTE
-    )
+
+def int2eh_gates(path: Path) -> tuple[int, int]:
+    """A DLL's `int 2Eh` instructions, decoded (objdump's disassembly of its executable sections:
+    only an instruction counts, not a CD 2E byte pair inside another one, a call's displacement
+    say): how many are win32k service stubs (`mov eax, <0x1000-0x1FFF>`, `lea edx, [esp+4]`,
+    `int 2Eh`, as exportgen lays them out) and how many are not."""
+    tool = shutil.which("llvm-objdump") or shutil.which("objdump")
+    assert tool, "no objdump to disassemble the DLLs with (llvm-objdump or binutils' objdump)"
+    listing = subprocess.run([tool, "-d", str(path)], capture_output=True, text=True, check=True)
+    code = [found.group(1).split() for line in listing.stdout.splitlines()
+            if (found := INSTRUCTION.match(line))]
+    stubs = others = 0
+    for at, instruction in enumerate(code):
+        if instruction != ["cd", "2e"]:
+            continue
+        mov, lea = code[at - 2] if at >= 2 else [], code[at - 1] if at >= 1 else []
+        number = int("".join(reversed(mov[1:])), 16) if len(mov) == 5 and mov[0] == "b8" else 0
+        stub = 0x1000 <= number <= 0x1FFF and lea == ["8d", "54", "24", "04"]
+        stubs += stub
+        others += not stub
+    return stubs, others
 
 
 @pytest.mark.parametrize("dll", [dll for dll in BUILT_DLLS if dll != "ntdll"])
 def test_the_dlls_enter_the_kernel_as_windows_2000s_do(builder, dll: str):
     """Windows 2000's DLLs above ntdll enter the kernel only as theirs do: user32 and gdi32 through
     win32k's services alone (every `int 2Eh` in their code is one of their stubs on a win32k
-    number), every other DLL never (no `int 2Eh`: its exports are user-mode code over ntdll)."""
+    number, one stub for each service their spec declares), every other DLL never (no `int 2Eh`:
+    its exports are user-mode code over ntdll)."""
     path = built_dll(builder, dll)
-    gates = int2eh_pairs(path)
-    if dll in WIN32K_CLIENTS:
-        stubs = win32k_stubs(path)
-        assert gates == stubs, (
-            f"{gates - stubs} of {dll}'s {gates} int 2Eh byte pairs are no win32k stub's"
-        )
-    else:
-        assert gates == 0, f"{gates} int 2Eh byte pairs in {dll}'s code"
+    stubs, others = int2eh_gates(path)
+    assert others == 0, f"{others} of {dll}'s int 2Eh instructions are no win32k stub's"
+    spec = tomllib.loads((f2kboot.REPO_ROOT / "userland" / dll / "exports.toml").read_text())
+    services = sum("syscall" in export.get("impl", {}) for export in spec["export"])
+    assert stubs == (services if dll in WIN32K_CLIENTS else 0), (
+        f"{dll} holds {stubs} win32k stubs; its spec declares {services} services"
+    )
