@@ -193,6 +193,11 @@ pub struct Thread {
     /// The thread's client id (what GetCurrentThreadId reports, through its TEB): handed out when
     /// a user thread is created; zero for kernel threads.
     pub(crate) thread_id: u32,
+    /// The thread's Win32 start address (NT's ETHREAD Win32StartAddress): its initial context's
+    /// EAX, the routine kernel32's start thunks call — an image's entry point for a process's
+    /// first thread, CreateThread's start routine for another — as ThreadQuerySetWin32StartAddress
+    /// reports it; zero for kernel threads.
+    pub(crate) win32_start_address: u32,
     /// The thread's ordinal within its process: what places its TEB page (0 for the main thread;
     /// see `process::ordinals`, which also holds the pages a terminated thread leaves mapped).
     /// Unrelated to the record's place in the pool.
@@ -413,6 +418,7 @@ impl Thread {
             space: core::ptr::null(),
             space_index: super::process::NOT_POOLED,
             thread_id: 0,
+            win32_start_address: 0,
             ordinal: 0,
             exit_status: STILL_ACTIVE,
             gate_slot: NO_GATE_SLOT,
@@ -598,6 +604,11 @@ impl Thread {
     /// The thread's client id, zero for kernel threads.
     pub fn thread_id(&self) -> u32 {
         self.thread_id
+    }
+
+    /// The thread's Win32 start address, zero for kernel threads.
+    pub fn win32_start_address(&self) -> u32 {
+        self.win32_start_address
     }
 
     /// The thread's ordinal within its process (0 for the main thread).
