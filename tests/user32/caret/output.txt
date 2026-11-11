@@ -1,0 +1,155 @@
+# F2K capture of caret (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:44.70
+caret F2KT-SOURCE-CRC=0xEFFA94AE
+>>> caret.exe create
+== create
+RegisterClassW(F2KCaretTop, F2KCaretEdit): atoms nonzero yes err=2
+the windows top, child1, child2: non-NULL yes
+SetForegroundWindow(top): top is the foreground: yes
+SetFocus(top): focus top
+-- no caret yet
+  caret: none (hwndCaret NULL) visible no
+GetCaretPos(no caret): ret=1 err=- point (0,0)
+CreateCaret(top, NULL, 2, 16): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+GetCaretPos(top's): ret=1 err=- point (0,0)
+SetCaretPos(10, 20): ret=1 err=-
+  caret: window top visible no rect (10,20)-(12,36)
+GetCaretPos(top's): ret=1 err=- point (10,20)
+SetCaretPos(-5, 300): ret=1 err=-
+  caret: window top visible no rect (-5,300)-(-3,316)
+GetCaretPos(top's): ret=1 err=- point (-5,300)
+CreateCaret(top, (HBITMAP)1 (gray), 3, 10): ret=1 err=-
+  caret: window top visible no rect (-5,300)-(-2,310)
+GetCaretPos(the new caret): ret=1 err=- point (-5,300)
+CreateCaret(top, NULL, 0, 0): ret=1 err=-
+  caret: window top visible no rect (-5,300)-(-4,301)
+  width SM_CXBORDER yes height SM_CYBORDER yes
+CreateCaret(child1, NULL, 4, 8): ret=1 err=-
+  caret: window child1 visible no rect (-5,300)-(-1,308)
+CreateCaret(NULL, NULL, 2, 16): ret=0 err=1400
+  caret: window child1 visible no rect (-5,300)-(-1,308)
+CreateCaret(a destroyed window, NULL, 2, 16): ret=0 err=1400
+  caret: window child1 visible no rect (-5,300)-(-1,308)
+DestroyCaret(the caret): ret=1 err=-
+  caret: none (hwndCaret NULL) visible no
+DestroyCaret(no caret): ret=0 err=5
+  caret: none (hwndCaret NULL) visible no
+GetCaretPos(no caret): ret=1 err=- point (-5,300)
+SetCaretPos(1, 1): ret=0 err=5
+  caret: none (hwndCaret NULL) visible no
+ShowCaret(top, no caret): ret=0 err=5
+  caret: none (hwndCaret NULL) visible no
+HideCaret(top, no caret): ret=0 err=5
+  caret: none (hwndCaret NULL) visible no
+caret: done
+<<< exit code=0
+>>> caret.exe show
+== show
+RegisterClassW(F2KCaretTop, F2KCaretEdit): atoms nonzero yes err=2
+the windows top, child1, child2: non-NULL yes
+SetForegroundWindow(top): top is the foreground: yes
+SetFocus(top): focus top
+CreateCaret(top, NULL, 2, 16): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+ShowCaret(top, again): ret=1 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+HideCaret(top): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+HideCaret(top, again): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+HideCaret(NULL): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+ShowCaret(NULL): ret=1 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+HideCaret(child1 (not the owner)): ret=0 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+ShowCaret(child1 (not the owner)): ret=0 err=-
+  caret: window top visible yes rect (0,0)-(2,16)
+HideCaret(a destroyed window): ret=0 err=1400
+  caret: window top visible yes rect (0,0)-(2,16)
+HideCaret(top): ret=1 err=-
+  caret: window top visible no rect (0,0)-(2,16)
+SetCaretPos(30, 40): ret=1 err=-
+  caret: window top visible no rect (30,40)-(32,56)
+GetCaretPos(top's, hidden): ret=1 err=- point (30,40)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible yes rect (30,40)-(32,56)
+HideCaret(top): ret=1 err=-
+  caret: window top visible no rect (30,40)-(32,56)
+HideCaret(top): ret=1 err=-
+  caret: window top visible no rect (30,40)-(32,56)
+HideCaret(top): ret=1 err=-
+  caret: window top visible no rect (30,40)-(32,56)
+CreateCaret(top, NULL, 2, 16, a new caret after three HideCaret): ret=1 err=-
+  caret: window top visible no rect (30,40)-(32,56)
+ShowCaret(top): ret=1 err=-
+  caret: window top visible yes rect (30,40)-(32,56)
+DestroyCaret(top's): ret=1 err=-
+  caret: none (hwndCaret NULL) visible no
+caret: done
+<<< exit code=0
+>>> caret.exe focus
+== focus
+RegisterClassW(F2KCaretTop, F2KCaretEdit): atoms nonzero yes err=2
+the windows top, child1, child2: non-NULL yes
+SetForegroundWindow(top): top is the foreground: yes
+SetFocus(top): focus top
+SetFocus(child1): ret=top err=- focus child1
+  caret: none (hwndCaret NULL) visible no
+CreateCaret(child1, NULL, 2, 16): ret=1 err=-
+  caret: window child1 visible no rect (0,0)-(2,16)
+SetCaretPos(3, 4): ret=1 err=-
+  caret: window child1 visible no rect (3,4)-(5,20)
+ShowCaret(child1): ret=1 err=-
+  caret: window child1 visible yes rect (3,4)-(5,20)
+SetFocus(child2): ret=child1 err=- focus child2
+  caret: window child1 visible yes rect (3,4)-(5,20)
+SetFocus(top): ret=child2 err=- focus top
+  caret: window child1 visible yes rect (3,4)-(5,20)
+HideCaret(child1 (the owner, not the focus)): ret=1 err=-
+  caret: window child1 visible no rect (3,4)-(5,20)
+ShowCaret(child1): ret=1 err=-
+  caret: window child1 visible yes rect (3,4)-(5,20)
+SetFocus(child1): ret=top err=- focus child1
+  caret: window child1 visible yes rect (3,4)-(5,20)
+CreateCaret(child2 (child1 owns the caret and has the focus), NULL, 2, 16): ret=1 err=-
+  caret: window child2 visible no rect (3,4)-(5,20)
+ShowCaret(child2): ret=1 err=-
+  caret: window child2 visible yes rect (3,4)-(5,20)
+HideCaret(child1 (no longer the owner)): ret=0 err=-
+  caret: window child2 visible yes rect (3,4)-(5,20)
+SetFocus(child2): ret=child1 err=- focus child2
+  caret: window child2 visible yes rect (3,4)-(5,20)
+another thread: WAIT_OBJECT_0; its CreateCaret(child2): ret=0 err=-; HideCaret(child2): ret=0 err=5; DestroyCaret: ret=0 err=5
+  caret: window child2 visible yes rect (3,4)-(5,20)
+DestroyWindow(child2, the owner and the focus): ret=1 err=- focus top
+  caret: none (hwndCaret NULL) visible no
+edit1 and edit2, of the class whose procedure makes the caret: non-NULL yes
+SetFocus(edit1): ret=top err=- focus edit1
+  caret: window edit1 visible yes rect (5,5)-(7,21)
+SetFocus(edit2): ret=edit1 err=- focus edit2
+  caret: window edit2 visible yes rect (5,5)-(7,21)
+SetFocus(top): ret=edit2 err=- focus top
+  caret: none (hwndCaret NULL) visible no
+SetFocus(edit1): ret=top err=- focus edit1
+  caret: window edit1 visible yes rect (5,5)-(7,21)
+SetFocus(NULL): ret=edit1 err=- focus NULL
+  caret: none (hwndCaret NULL) visible no
+SetFocus(edit2): ret=NULL err=- focus edit2
+  caret: window edit2 visible yes rect (5,5)-(7,21)
+DestroyWindow(edit2, the focus): ret=1 err=- focus top
+  caret: none (hwndCaret NULL) visible no
+caret: done
+<<< exit code=0

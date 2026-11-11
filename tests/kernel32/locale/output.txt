@@ -1,0 +1,798 @@
+# F2K capture of locale (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:45.03
+locale F2KT-SOURCE-CRC=0x1E33E2C6
+>>> locale.exe date
+== date
+GetUserDefaultLCID is 0x0409: yes, GetSystemDefaultLCID is 0x0409: yes
+GetDateFormatW(user, 0, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(user, DATE_SHORTDATE, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(user, DATE_LONGDATE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(user, DATE_YEARMONTH, 2001-02-03, NULL, 128): ret=15 [February, 2001] err=-
+  (A): ret=15 [February, 2001] err=-
+GetDateFormatW(user, DATE_USE_ALT_CALENDAR, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(user, DATE_LONGDATE|LOCALE_NOUSEROVERRIDE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(system, DATE_SHORTDATE, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(system, DATE_LONGDATE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(system, DATE_YEARMONTH, 2001-02-03, NULL, 128): ret=15 [February, 2001] err=-
+  (A): ret=15 [February, 2001] err=-
+GetDateFormatW(system, DATE_USE_ALT_CALENDAR, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(system, DATE_LONGDATE|LOCALE_NOUSEROVERRIDE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(0x0409, DATE_SHORTDATE, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(0x0409, DATE_YEARMONTH, 2001-02-03, NULL, 128): ret=15 [February, 2001] err=-
+  (A): ret=15 [February, 2001] err=-
+GetDateFormatW(0x0409, DATE_USE_ALT_CALENDAR, 2001-02-03, NULL, 128): ret=9 [2/3/2001] err=-
+  (A): ret=9 [2/3/2001] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE|LOCALE_NOUSEROVERRIDE, 2001-02-03, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "dddd, MMMM dd, yyyy", 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "ddd d MMM yy", 128): ret=13 [Sat 3 Feb 01] err=-
+  (A): ret=13 [Sat 3 Feb 01] err=-
+GetDateFormatW(user, 0, 2001-02-03, "M/d/y", 128): ret=6 [2/3/1] err=-
+  (A): ret=6 [2/3/1] err=-
+GetDateFormatW(user, 0, 2001-02-03, "dd.MM.yyyy", 128): ret=11 [03.02.2001] err=-
+  (A): ret=11 [03.02.2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "'Today is' dddd", 128): ret=18 [Today is Saturday] err=-
+  (A): ret=18 [Today is Saturday] err=-
+GetDateFormatW(user, 0, 2001-02-03, "d''M", 128): ret=3 [32] err=-
+  (A): ret=3 [32] err=-
+GetDateFormatW(user, 0, 2001-02-03, "'it''s' yyyy", 128): ret=10 [it's 2001] err=-
+  (A): ret=10 [it's 2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "gg yyyy", 128): ret=6 [ 2001] err=-
+  (A): ret=6 [ 2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "g y", 128): ret=3 [ 1] err=-
+  (A): ret=3 [ 1] err=-
+GetDateFormatW(user, 0, 2001-02-03, "yyyy-MM-dd'T'", 128): ret=12 [2001-02-03T] err=-
+  (A): ret=12 [2001-02-03T] err=-
+GetDateFormatW(user, 0, 2001-02-03, "MMMMM ddddd yyyyy", 128): ret=23 [February Saturday 2001] err=-
+  (A): ret=23 [February Saturday 2001] err=-
+GetDateFormatW(user, 0, 2001-02-03, "abc xyz", 128): ret=8 [abc x1z] err=-
+  (A): ret=8 [abc x1z] err=-
+GetDateFormatW(user, 0, 2001-02-03, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetDateFormatW(system, 0, 2001-02-03, "dddd, MMMM dd, yyyy", 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, "ddd d MMM yy", 128): ret=13 [Sat 3 Feb 01] err=-
+  (A): ret=13 [Sat 3 Feb 01] err=-
+GetDateFormatW(system, 0, 2001-02-03, "M/d/y", 128): ret=6 [2/3/1] err=-
+  (A): ret=6 [2/3/1] err=-
+GetDateFormatW(system, 0, 2001-02-03, "dd.MM.yyyy", 128): ret=11 [03.02.2001] err=-
+  (A): ret=11 [03.02.2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, "'Today is' dddd", 128): ret=18 [Today is Saturday] err=-
+  (A): ret=18 [Today is Saturday] err=-
+GetDateFormatW(system, 0, 2001-02-03, "d''M", 128): ret=3 [32] err=-
+  (A): ret=3 [32] err=-
+GetDateFormatW(system, 0, 2001-02-03, "'it''s' yyyy", 128): ret=10 [it's 2001] err=-
+  (A): ret=10 [it's 2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, "gg yyyy", 128): ret=6 [ 2001] err=-
+  (A): ret=6 [ 2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, "g y", 128): ret=3 [ 1] err=-
+  (A): ret=3 [ 1] err=-
+GetDateFormatW(system, 0, 2001-02-03, "yyyy-MM-dd'T'", 128): ret=12 [2001-02-03T] err=-
+  (A): ret=12 [2001-02-03T] err=-
+GetDateFormatW(system, 0, 2001-02-03, "MMMMM ddddd yyyyy", 128): ret=23 [February Saturday 2001] err=-
+  (A): ret=23 [February Saturday 2001] err=-
+GetDateFormatW(system, 0, 2001-02-03, "abc xyz", 128): ret=8 [abc x1z] err=-
+  (A): ret=8 [abc x1z] err=-
+GetDateFormatW(system, 0, 2001-02-03, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "dddd, MMMM dd, yyyy", 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "ddd d MMM yy", 128): ret=13 [Sat 3 Feb 01] err=-
+  (A): ret=13 [Sat 3 Feb 01] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "M/d/y", 128): ret=6 [2/3/1] err=-
+  (A): ret=6 [2/3/1] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "dd.MM.yyyy", 128): ret=11 [03.02.2001] err=-
+  (A): ret=11 [03.02.2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "'Today is' dddd", 128): ret=18 [Today is Saturday] err=-
+  (A): ret=18 [Today is Saturday] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "d''M", 128): ret=3 [32] err=-
+  (A): ret=3 [32] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "'it''s' yyyy", 128): ret=10 [it's 2001] err=-
+  (A): ret=10 [it's 2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "gg yyyy", 128): ret=6 [ 2001] err=-
+  (A): ret=6 [ 2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "g y", 128): ret=3 [ 1] err=-
+  (A): ret=3 [ 1] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "yyyy-MM-dd'T'", 128): ret=12 [2001-02-03T] err=-
+  (A): ret=12 [2001-02-03T] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "MMMMM ddddd yyyyy", 128): ret=23 [February Saturday 2001] err=-
+  (A): ret=23 [February Saturday 2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "abc xyz", 128): ret=8 [abc x1z] err=-
+  (A): ret=8 [abc x1z] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetDateFormatW(user, DATE_SHORTDATE, 1999-12-31, NULL, 128): ret=11 [12/31/1999] err=-
+  (A): ret=11 [12/31/1999] err=-
+GetDateFormatW(user, DATE_LONGDATE, 1999-12-31, NULL, 128): ret=26 [Friday, December 31, 1999] err=-
+  (A): ret=26 [Friday, December 31, 1999] err=-
+GetDateFormatW(user, DATE_LONGDATE, 2000-02-29, NULL, 128): ret=27 [Tuesday, February 29, 2000] err=-
+  (A): ret=27 [Tuesday, February 29, 2000] err=-
+GetDateFormatW(system, DATE_SHORTDATE, 1999-12-31, NULL, 128): ret=11 [12/31/1999] err=-
+  (A): ret=11 [12/31/1999] err=-
+GetDateFormatW(system, DATE_LONGDATE, 1999-12-31, NULL, 128): ret=26 [Friday, December 31, 1999] err=-
+  (A): ret=26 [Friday, December 31, 1999] err=-
+GetDateFormatW(system, DATE_LONGDATE, 2000-02-29, NULL, 128): ret=27 [Tuesday, February 29, 2000] err=-
+  (A): ret=27 [Tuesday, February 29, 2000] err=-
+GetDateFormatW(0x0409, DATE_SHORTDATE, 1999-12-31, NULL, 128): ret=11 [12/31/1999] err=-
+  (A): ret=11 [12/31/1999] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 1999-12-31, NULL, 128): ret=26 [Friday, December 31, 1999] err=-
+  (A): ret=26 [Friday, December 31, 1999] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 2000-02-29, NULL, 128): ret=27 [Tuesday, February 29, 2000] err=-
+  (A): ret=27 [Tuesday, February 29, 2000] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, day of week 0, "dddd d MMMM yyyy", 128): ret=25 [Saturday 3 February 2001] err=-
+  (A): ret=25 [Saturday 3 February 2001] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 2001-02-03, day of week 0, NULL, 128): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(user, DATE_LONGDATE), the size query: ret=28 err=-
+GetDateFormatW(user, DATE_LONGDATE, 2001-02-03, NULL, 28): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(user, DATE_LONGDATE, 2001-02-03, NULL, 27): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetDateFormatW(system, DATE_LONGDATE), the size query: ret=28 err=-
+GetDateFormatW(system, DATE_LONGDATE, 2001-02-03, NULL, 28): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(system, DATE_LONGDATE, 2001-02-03, NULL, 27): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetDateFormatW(0x0409, DATE_LONGDATE), the size query: ret=28 err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 2001-02-03, NULL, 28): ret=28 [Saturday, February 03, 2001] err=-
+  (A): ret=28 [Saturday, February 03, 2001] err=-
+GetDateFormatW(0x0409, DATE_LONGDATE, 2001-02-03, NULL, 27): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetDateFormatW(0x0409, 0, 2001-02-03, "yyyy", 0): ret=5 [-] err=-
+  (A): ret=5 [-] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "yyyy", 5): ret=5 [2001] err=-
+  (A): ret=5 [2001] err=-
+GetDateFormatW(0x0409, 0, 2001-02-03, "yyyy", 4): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetDateFormatW(0x0409, DATE_SHORTDATE|DATE_LONGDATE, 2001-02-03, NULL, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetDateFormatW(0x0409, DATE_SHORTDATE, 2001-02-03, "yyyy", 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetDateFormatW(0x0409, DATE_YEARMONTH|DATE_LONGDATE, 2001-02-03, NULL, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetDateFormatW(0x0409, 0x400, 2001-02-03, NULL, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetDateFormatW(0x0409, 0, 2001-13-03, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetDateFormatW(0x0409, 0, 2001-02-30, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetDateFormatW(0x1234, 0, 2001-02-03, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetDateFormatW(0x0409, 0, 2001-02-03, NULL, 10): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetDateFormatW(0x0409, 0, 2001-02-03, NULL, -1): ret=0 err=87
+  (A): ret=0 err=87
+GetDateFormatW(0x0409, DATE_SHORTDATE, NULL): text yes, ret its length plus one yes err=-
+  (A): text yes, ret its length plus one yes err=-
+locale: done
+<<< exit code=0
+>>> locale.exe time
+== time
+GetUserDefaultLCID is 0x0409: yes, GetSystemDefaultLCID is 0x0409: yes
+GetTimeFormatW(user, 0, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(user, 0, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(user, TIME_NOSECONDS, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(user, TIME_NOSECONDS, 13:07:08, NULL, 128): ret=8 [1:07 PM] err=-
+  (A): ret=8 [1:07 PM] err=-
+GetTimeFormatW(user, TIME_NOMINUTESORSECONDS, 04:05:06, NULL, 128): ret=5 [4 AM] err=-
+  (A): ret=5 [4 AM] err=-
+GetTimeFormatW(user, TIME_NOMINUTESORSECONDS, 13:07:08, NULL, 128): ret=5 [1 PM] err=-
+  (A): ret=5 [1 PM] err=-
+GetTimeFormatW(user, TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=8 [4:05:06] err=-
+  (A): ret=8 [4:05:06] err=-
+GetTimeFormatW(user, TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=8 [1:07:08] err=-
+  (A): ret=8 [1:07:08] err=-
+GetTimeFormatW(user, TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(user, TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=12 [13:07:08 PM] err=-
+  (A): ret=12 [13:07:08 PM] err=-
+GetTimeFormatW(user, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(user, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=9 [13:07 PM] err=-
+  (A): ret=9 [13:07 PM] err=-
+GetTimeFormatW(user, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=3 [4 ] err=-
+  (A): ret=3 [4 ] err=-
+GetTimeFormatW(user, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=3 [1 ] err=-
+  (A): ret=3 [1 ] err=-
+GetTimeFormatW(user, LOCALE_NOUSEROVERRIDE, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(user, LOCALE_NOUSEROVERRIDE, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(system, 0, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(system, 0, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(system, TIME_NOSECONDS, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(system, TIME_NOSECONDS, 13:07:08, NULL, 128): ret=8 [1:07 PM] err=-
+  (A): ret=8 [1:07 PM] err=-
+GetTimeFormatW(system, TIME_NOMINUTESORSECONDS, 04:05:06, NULL, 128): ret=5 [4 AM] err=-
+  (A): ret=5 [4 AM] err=-
+GetTimeFormatW(system, TIME_NOMINUTESORSECONDS, 13:07:08, NULL, 128): ret=5 [1 PM] err=-
+  (A): ret=5 [1 PM] err=-
+GetTimeFormatW(system, TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=8 [4:05:06] err=-
+  (A): ret=8 [4:05:06] err=-
+GetTimeFormatW(system, TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=8 [1:07:08] err=-
+  (A): ret=8 [1:07:08] err=-
+GetTimeFormatW(system, TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(system, TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=12 [13:07:08 PM] err=-
+  (A): ret=12 [13:07:08 PM] err=-
+GetTimeFormatW(system, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(system, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=9 [13:07 PM] err=-
+  (A): ret=9 [13:07 PM] err=-
+GetTimeFormatW(system, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=3 [4 ] err=-
+  (A): ret=3 [4 ] err=-
+GetTimeFormatW(system, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=3 [1 ] err=-
+  (A): ret=3 [1 ] err=-
+GetTimeFormatW(system, LOCALE_NOUSEROVERRIDE, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(system, LOCALE_NOUSEROVERRIDE, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS, 13:07:08, NULL, 128): ret=8 [1:07 PM] err=-
+  (A): ret=8 [1:07 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS, 04:05:06, NULL, 128): ret=5 [4 AM] err=-
+  (A): ret=5 [4 AM] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS, 13:07:08, NULL, 128): ret=5 [1 PM] err=-
+  (A): ret=5 [1 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=8 [4:05:06] err=-
+  (A): ret=8 [4:05:06] err=-
+GetTimeFormatW(0x0409, TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=8 [1:07:08] err=-
+  (A): ret=8 [1:07:08] err=-
+GetTimeFormatW(0x0409, TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(0x0409, TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=12 [13:07:08 PM] err=-
+  (A): ret=12 [13:07:08 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 04:05:06, NULL, 128): ret=8 [4:05 AM] err=-
+  (A): ret=8 [4:05 AM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 13:07:08, NULL, 128): ret=9 [13:07 PM] err=-
+  (A): ret=9 [13:07 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 04:05:06, NULL, 128): ret=3 [4 ] err=-
+  (A): ret=3 [4 ] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 13:07:08, NULL, 128): ret=3 [1 ] err=-
+  (A): ret=3 [1 ] err=-
+GetTimeFormatW(0x0409, LOCALE_NOUSEROVERRIDE, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(0x0409, LOCALE_NOUSEROVERRIDE, 13:07:08, NULL, 128): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(user, 0, 04:05:06, "hh:mm:ss tt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(user, 0, 13:07:08, "hh:mm:ss tt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(user, 0, 04:05:06, "H:m:s", 128): ret=6 [4:5:6] err=-
+  (A): ret=6 [4:5:6] err=-
+GetTimeFormatW(user, 0, 13:07:08, "H:m:s", 128): ret=7 [13:7:8] err=-
+  (A): ret=7 [13:7:8] err=-
+GetTimeFormatW(user, 0, 04:05:06, "h t", 128): ret=4 [4 A] err=-
+  (A): ret=4 [4 A] err=-
+GetTimeFormatW(user, 0, 13:07:08, "h t", 128): ret=4 [1 P] err=-
+  (A): ret=4 [1 P] err=-
+GetTimeFormatW(user, 0, 04:05:06, "HH'h'mm", 128): ret=6 [04h05] err=-
+  (A): ret=6 [04h05] err=-
+GetTimeFormatW(user, 0, 13:07:08, "HH'h'mm", 128): ret=6 [13h07] err=-
+  (A): ret=6 [13h07] err=-
+GetTimeFormatW(user, 0, 04:05:06, "tt", 128): ret=3 [AM] err=-
+  (A): ret=3 [AM] err=-
+GetTimeFormatW(user, 0, 13:07:08, "tt", 128): ret=3 [PM] err=-
+  (A): ret=3 [PM] err=-
+GetTimeFormatW(user, 0, 04:05:06, "hhh:mmm:sss ttt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(user, 0, 13:07:08, "hhh:mmm:sss ttt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(user, 0, 04:05:06, "h:mm' o''clock'", 128): ret=13 [4:05 o'clock] err=-
+  (A): ret=13 [4:05 o'clock] err=-
+GetTimeFormatW(user, 0, 13:07:08, "h:mm' o''clock'", 128): ret=13 [1:07 o'clock] err=-
+  (A): ret=13 [1:07 o'clock] err=-
+GetTimeFormatW(user, 0, 04:05:06, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(user, 0, 13:07:08, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(system, 0, 04:05:06, "hh:mm:ss tt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(system, 0, 13:07:08, "hh:mm:ss tt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(system, 0, 04:05:06, "H:m:s", 128): ret=6 [4:5:6] err=-
+  (A): ret=6 [4:5:6] err=-
+GetTimeFormatW(system, 0, 13:07:08, "H:m:s", 128): ret=7 [13:7:8] err=-
+  (A): ret=7 [13:7:8] err=-
+GetTimeFormatW(system, 0, 04:05:06, "h t", 128): ret=4 [4 A] err=-
+  (A): ret=4 [4 A] err=-
+GetTimeFormatW(system, 0, 13:07:08, "h t", 128): ret=4 [1 P] err=-
+  (A): ret=4 [1 P] err=-
+GetTimeFormatW(system, 0, 04:05:06, "HH'h'mm", 128): ret=6 [04h05] err=-
+  (A): ret=6 [04h05] err=-
+GetTimeFormatW(system, 0, 13:07:08, "HH'h'mm", 128): ret=6 [13h07] err=-
+  (A): ret=6 [13h07] err=-
+GetTimeFormatW(system, 0, 04:05:06, "tt", 128): ret=3 [AM] err=-
+  (A): ret=3 [AM] err=-
+GetTimeFormatW(system, 0, 13:07:08, "tt", 128): ret=3 [PM] err=-
+  (A): ret=3 [PM] err=-
+GetTimeFormatW(system, 0, 04:05:06, "hhh:mmm:sss ttt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(system, 0, 13:07:08, "hhh:mmm:sss ttt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(system, 0, 04:05:06, "h:mm' o''clock'", 128): ret=13 [4:05 o'clock] err=-
+  (A): ret=13 [4:05 o'clock] err=-
+GetTimeFormatW(system, 0, 13:07:08, "h:mm' o''clock'", 128): ret=13 [1:07 o'clock] err=-
+  (A): ret=13 [1:07 o'clock] err=-
+GetTimeFormatW(system, 0, 04:05:06, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(system, 0, 13:07:08, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "hh:mm:ss tt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "hh:mm:ss tt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "H:m:s", 128): ret=6 [4:5:6] err=-
+  (A): ret=6 [4:5:6] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "H:m:s", 128): ret=7 [13:7:8] err=-
+  (A): ret=7 [13:7:8] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "h t", 128): ret=4 [4 A] err=-
+  (A): ret=4 [4 A] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "h t", 128): ret=4 [1 P] err=-
+  (A): ret=4 [1 P] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "HH'h'mm", 128): ret=6 [04h05] err=-
+  (A): ret=6 [04h05] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "HH'h'mm", 128): ret=6 [13h07] err=-
+  (A): ret=6 [13h07] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "tt", 128): ret=3 [AM] err=-
+  (A): ret=3 [AM] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "tt", 128): ret=3 [PM] err=-
+  (A): ret=3 [PM] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "hhh:mmm:sss ttt", 128): ret=12 [04:05:06 AM] err=-
+  (A): ret=12 [04:05:06 AM] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "hhh:mmm:sss ttt", 128): ret=12 [01:07:08 PM] err=-
+  (A): ret=12 [01:07:08 PM] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "h:mm' o''clock'", 128): ret=13 [4:05 o'clock] err=-
+  (A): ret=13 [4:05 o'clock] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "h:mm' o''clock'", 128): ret=13 [1:07 o'clock] err=-
+  (A): ret=13 [1:07 o'clock] err=-
+GetTimeFormatW(0x0409, 0, 04:05:06, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, "", 128): ret=1 [] err=-
+  (A): ret=1 [] err=-
+GetTimeFormatW(user, 0, 00:00:00, NULL, 128): ret=12 [12:00:00 AM] err=-
+  (A): ret=12 [12:00:00 AM] err=-
+GetTimeFormatW(user, 0, 12:30:45, NULL, 128): ret=12 [12:30:45 PM] err=-
+  (A): ret=12 [12:30:45 PM] err=-
+GetTimeFormatW(system, 0, 00:00:00, NULL, 128): ret=12 [12:00:00 AM] err=-
+  (A): ret=12 [12:00:00 AM] err=-
+GetTimeFormatW(system, 0, 12:30:45, NULL, 128): ret=12 [12:30:45 PM] err=-
+  (A): ret=12 [12:30:45 PM] err=-
+GetTimeFormatW(0x0409, 0, 00:00:00, NULL, 128): ret=12 [12:00:00 AM] err=-
+  (A): ret=12 [12:00:00 AM] err=-
+GetTimeFormatW(0x0409, 0, 12:30:45, NULL, 128): ret=12 [12:30:45 PM] err=-
+  (A): ret=12 [12:30:45 PM] err=-
+GetTimeFormatW(0x0409, 0, 00:00:00, "h:mm tt H:mm", 128): ret=14 [12:00 AM 0:00] err=-
+  (A): ret=14 [12:00 AM 0:00] err=-
+GetTimeFormatW(0x0409, 0, 12:30:45, "h:mm tt H:mm", 128): ret=15 [12:30 PM 12:30] err=-
+  (A): ret=15 [12:30 PM 12:30] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS, 13:07:08, "hh:mm:ss tt", 128): ret=9 [01:07 PM] err=-
+  (A): ret=9 [01:07 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS, 13:07:08, "tt h 'at' m:s", 128): ret=10 [PM 1 at 7] err=-
+  (A): ret=10 [PM 1 at 7] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS, 13:07:08, "hh:mm:ss tt", 128): ret=6 [01 PM] err=-
+  (A): ret=6 [01 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS, 13:07:08, "tt h 'at' m:s", 128): ret=7 [PM 1at] err=-
+  (A): ret=7 [PM 1at] err=-
+GetTimeFormatW(0x0409, TIME_NOTIMEMARKER, 13:07:08, "hh:mm:ss tt", 128): ret=9 [01:07:08] err=-
+  (A): ret=9 [01:07:08] err=-
+GetTimeFormatW(0x0409, TIME_NOTIMEMARKER, 13:07:08, "tt h 'at' m:s", 128): ret=9 [1 at 7:8] err=-
+  (A): ret=9 [1 at 7:8] err=-
+GetTimeFormatW(0x0409, TIME_FORCE24HOURFORMAT, 13:07:08, "hh:mm:ss tt", 128): ret=12 [13:07:08 PM] err=-
+  (A): ret=12 [13:07:08 PM] err=-
+GetTimeFormatW(0x0409, TIME_FORCE24HOURFORMAT, 13:07:08, "tt h 'at' m:s", 128): ret=13 [PM 13 at 7:8] err=-
+  (A): ret=13 [PM 13 at 7:8] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 13:07:08, "hh:mm:ss tt", 128): ret=9 [13:07 PM] err=-
+  (A): ret=9 [13:07 PM] err=-
+GetTimeFormatW(0x0409, TIME_NOSECONDS|TIME_FORCE24HOURFORMAT, 13:07:08, "tt h 'at' m:s", 128): ret=11 [PM 13 at 7] err=-
+  (A): ret=11 [PM 13 at 7] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 13:07:08, "hh:mm:ss tt", 128): ret=4 [01 ] err=-
+  (A): ret=4 [01 ] err=-
+GetTimeFormatW(0x0409, TIME_NOMINUTESORSECONDS|TIME_NOTIMEMARKER, 13:07:08, "tt h 'at' m:s", 128): ret=4 [1at] err=-
+  (A): ret=4 [1at] err=-
+GetTimeFormatW(0x0409, LOCALE_NOUSEROVERRIDE, 13:07:08, "hh:mm:ss tt", 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetTimeFormatW(0x0409, LOCALE_NOUSEROVERRIDE, 13:07:08, "tt h 'at' m:s", 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetTimeFormatW(user, 0), the size query: ret=11 err=-
+GetTimeFormatW(user, 0, 13:07:08, NULL, 11): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(user, 0, 13:07:08, NULL, 10): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetTimeFormatW(system, 0), the size query: ret=11 err=-
+GetTimeFormatW(system, 0, 13:07:08, NULL, 11): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(system, 0, 13:07:08, NULL, 10): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetTimeFormatW(0x0409, 0), the size query: ret=11 err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, NULL, 11): ret=11 [1:07:08 PM] err=-
+  (A): ret=11 [1:07:08 PM] err=-
+GetTimeFormatW(0x0409, 0, 13:07:08, NULL, 10): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetTimeFormatW(0x0409, 0, 24:00:00, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, 0, 04:60:00, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, 0, 04:05:60, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, 0, 04:05:06.1000, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, 0, month 13, 04:05:06, NULL, 128): ret=11 [4:05:06 AM] err=-
+  (A): ret=11 [4:05:06 AM] err=-
+GetTimeFormatW(0x0409, 0x400, 04:05:06, NULL, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetTimeFormatW(0x1234, 0, 04:05:06, NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, 0, 04:05:06, NULL, 10): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetTimeFormatW(0x0409, TIME_FORCE24HOURFORMAT, NULL): text yes, ret its length plus one yes err=-
+  (A): text yes, ret its length plus one yes err=-
+locale: done
+<<< exit code=0
+>>> locale.exe number
+== number
+GetUserDefaultLCID is 0x0409: yes, GetSystemDefaultLCID is 0x0409: yes
+GetNumberFormatW(user, 0, "1234567.891", NULL, 128): ret=13 [1,234,567.89] err=-
+  (A): ret=13 [1,234,567.89] err=-
+GetNumberFormatW(user, 0, "-1234.5", NULL, 128): ret=10 [-1,234.50] err=-
+  (A): ret=10 [-1,234.50] err=-
+GetNumberFormatW(user, 0, "0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(user, 0, "-0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(user, 0, "0.5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(user, 0, "-0.5", NULL, 128): ret=6 [-0.50] err=-
+  (A): ret=6 [-0.50] err=-
+GetNumberFormatW(user, 0, ".5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(user, 0, "1234", NULL, 128): ret=9 [1,234.00] err=-
+  (A): ret=9 [1,234.00] err=-
+GetNumberFormatW(user, 0, "00012.3400", NULL, 128): ret=6 [12.34] err=-
+  (A): ret=6 [12.34] err=-
+GetNumberFormatW(user, 0, "999999999999999999999.99999", NULL, 128): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+  (A): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+GetNumberFormatW(system, 0, "1234567.891", NULL, 128): ret=13 [1,234,567.89] err=-
+  (A): ret=13 [1,234,567.89] err=-
+GetNumberFormatW(system, 0, "-1234.5", NULL, 128): ret=10 [-1,234.50] err=-
+  (A): ret=10 [-1,234.50] err=-
+GetNumberFormatW(system, 0, "0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(system, 0, "-0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(system, 0, "0.5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(system, 0, "-0.5", NULL, 128): ret=6 [-0.50] err=-
+  (A): ret=6 [-0.50] err=-
+GetNumberFormatW(system, 0, ".5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(system, 0, "1234", NULL, 128): ret=9 [1,234.00] err=-
+  (A): ret=9 [1,234.00] err=-
+GetNumberFormatW(system, 0, "00012.3400", NULL, 128): ret=6 [12.34] err=-
+  (A): ret=6 [12.34] err=-
+GetNumberFormatW(system, 0, "999999999999999999999.99999", NULL, 128): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+  (A): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", NULL, 128): ret=13 [1,234,567.89] err=-
+  (A): ret=13 [1,234,567.89] err=-
+GetNumberFormatW(0x0409, 0, "-1234.5", NULL, 128): ret=10 [-1,234.50] err=-
+  (A): ret=10 [-1,234.50] err=-
+GetNumberFormatW(0x0409, 0, "0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, "-0", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, "0.5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", NULL, 128): ret=6 [-0.50] err=-
+  (A): ret=6 [-0.50] err=-
+GetNumberFormatW(0x0409, 0, ".5", NULL, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(0x0409, 0, "1234", NULL, 128): ret=9 [1,234.00] err=-
+  (A): ret=9 [1,234.00] err=-
+GetNumberFormatW(0x0409, 0, "00012.3400", NULL, 128): ret=6 [12.34] err=-
+  (A): ret=6 [12.34] err=-
+GetNumberFormatW(0x0409, 0, "999999999999999999999.99999", NULL, 128): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+  (A): ret=33 [1,000,000,000,000,000,000,000.00] err=-
+GetNumberFormatW(0x0409, LOCALE_NOUSEROVERRIDE, "-1234567.891", NULL, 128): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(user, LOCALE_NOUSEROVERRIDE, "-1234567.891", NULL, 128): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=13 [1,234,567.89] err=-
+  (A): ret=13 [1,234,567.89] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(0x0409, 0, "0.5", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=5 [0.50] err=-
+  (A): ret=5 [0.50] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=6 [-0.50] err=-
+  (A): ret=6 [-0.50] err=-
+GetNumberFormatW(0x0409, 0, "9.995", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=6 [10.00] err=-
+  (A): ret=6 [10.00] err=-
+GetNumberFormatW(0x0409, 0, "-0.001", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, "123", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=7 [123.00] err=-
+  (A): ret=7 [123.00] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=8 [1234568] err=-
+  (A): ret=8 [1234568] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=10 [(1234568)] err=-
+  (A): ret=10 [(1234568)] err=-
+GetNumberFormatW(0x0409, 0, "0.5", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=2 [1] err=-
+  (A): ret=2 [1] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=4 [(1)] err=-
+  (A): ret=4 [(1)] err=-
+GetNumberFormatW(0x0409, 0, "9.995", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=3 [10] err=-
+  (A): ret=3 [10] err=-
+GetNumberFormatW(0x0409, 0, "-0.001", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=2 [0] err=-
+  (A): ret=2 [0] err=-
+GetNumberFormatW(0x0409, 0, "123", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=4 [123] err=-
+  (A): ret=4 [123] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=17 [1 234 567<>89100] err=-
+  (A): ret=17 [1 234 567<>89100] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=19 [- 1 234 567<>89100] err=-
+  (A): ret=19 [- 1 234 567<>89100] err=-
+GetNumberFormatW(0x0409, 0, "0.5", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=8 [<>50000] err=-
+  (A): ret=8 [<>50000] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=10 [- <>50000] err=-
+  (A): ret=10 [- <>50000] err=-
+GetNumberFormatW(0x0409, 0, "9.995", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=9 [9<>99500] err=-
+  (A): ret=9 [9<>99500] err=-
+GetNumberFormatW(0x0409, 0, "-0.001", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=10 [- <>00100] err=-
+  (A): ret=10 [- <>00100] err=-
+GetNumberFormatW(0x0409, 0, "123", {5, lz 0, group 3, "<>", " ", neg 2}, 128): ret=11 [123<>00000] err=-
+  (A): ret=11 [123<>00000] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=12 [12,34,567.9] err=-
+  (A): ret=12 [12,34,567.9] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=13 [12,34,567.9-] err=-
+  (A): ret=13 [12,34,567.9-] err=-
+GetNumberFormatW(0x0409, 0, "0.5", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=4 [0.5] err=-
+  (A): ret=4 [0.5] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=5 [0.5-] err=-
+  (A): ret=5 [0.5-] err=-
+GetNumberFormatW(0x0409, 0, "9.995", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=5 [10.0] err=-
+  (A): ret=5 [10.0] err=-
+GetNumberFormatW(0x0409, 0, "-0.001", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=4 [0.0] err=-
+  (A): ret=4 [0.0] err=-
+GetNumberFormatW(0x0409, 0, "123", {1, lz 1, group 32, ".", ",", neg 3}, 128): ret=6 [123.0] err=-
+  (A): ret=6 [123.0] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=15 [1'23'45'67.891] err=-
+  (A): ret=15 [1'23'45'67.891] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=17 [1'23'45'67.891 -] err=-
+  (A): ret=17 [1'23'45'67.891 -] err=-
+GetNumberFormatW(0x0409, 0, "0.5", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=6 [0.500] err=-
+  (A): ret=6 [0.500] err=-
+GetNumberFormatW(0x0409, 0, "-0.5", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=8 [0.500 -] err=-
+  (A): ret=8 [0.500 -] err=-
+GetNumberFormatW(0x0409, 0, "9.995", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=6 [9.995] err=-
+  (A): ret=6 [9.995] err=-
+GetNumberFormatW(0x0409, 0, "-0.001", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=8 [0.001 -] err=-
+  (A): ret=8 [0.001 -] err=-
+GetNumberFormatW(0x0409, 0, "123", {3, lz 1, group 2, ".", "'", neg 4}, 128): ret=9 [1'23.000] err=-
+  (A): ret=9 [1'23.000] err=-
+GetNumberFormatW(0x0409, 0, "1234567.891", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234567.891", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "0.5", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-0.5", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "9.995", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-0.001", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "123", {9, lz 1, group 3, "", "", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "1234567.891", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234567.891", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "0.5", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-0.5", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "9.995", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-0.001", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "123", {2, lz 1, group 3, "dec.", "th,", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(user, 0, "-1234567.891", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=10 [(1234568)] err=-
+  (A): ret=10 [(1234568)] err=-
+GetNumberFormatW(system, 0, "-1234567.891", {0, lz 0, group 0, ",", ".", neg 0}, 128): ret=10 [(1234568)] err=-
+  (A): ret=10 [(1234568)] err=-
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 1, group 3, ".", ",", neg 5}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 1, group 3, NULL, ",", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 1, group 3, ".", NULL, neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 2, group 3, ".", ",", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 1, group 10, ".", ",", neg 1}, 128): ret=10 [-123,4.50] err=-
+  (A): ret=10 [-123,4.50] err=-
+GetNumberFormatW(0x0409, 0, "-1234.5", {10, lz 1, group 3, ".", ",", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-1234.5", {2, lz 1, group 3, "12345", ",", neg 1}, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, LOCALE_NOUSEROVERRIDE, "-1234.5", {2, lz 1, group 3, ".", ",", neg 1}, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetNumberFormatW(0x0409, 0x1, "-1234.5", NULL, 128): ret=0 [-] err=1004
+  (A): ret=0 [-] err=1004
+GetNumberFormatW(0x0409, 0, "1e5", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "12a", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, " 12", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "12 ", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "+12", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "-", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, "1,234", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "1.2.3", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "--1", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "1.", NULL, 128): ret=5 [1.00] err=-
+  (A): ret=5 [1.00] err=-
+GetNumberFormatW(0x0409, 0, ".", NULL, 128): ret=5 [0.00] err=-
+  (A): ret=5 [0.00] err=-
+GetNumberFormatW(0x0409, 0, "0x10", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "1-", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(0x0409, 0, "<U+0661>", NULL, 64): ret=0 [-] err=87
+GetNumberFormatW(0x1234, 0, "1234.5", NULL, 128): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+GetNumberFormatW(user, 0, "-1234567.891"), the size query: ret=14 err=-
+GetNumberFormatW(user, 0, "-1234567.891", NULL, 14): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(user, 0, "-1234567.891", NULL, 13): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetNumberFormatW(system, 0, "-1234567.891"), the size query: ret=14 err=-
+GetNumberFormatW(system, 0, "-1234567.891", NULL, 14): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(system, 0, "-1234567.891", NULL, 13): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetNumberFormatW(0x0409, 0, "-1234567.891"), the size query: ret=14 err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", NULL, 14): ret=14 [-1,234,567.89] err=-
+  (A): ret=14 [-1,234,567.89] err=-
+GetNumberFormatW(0x0409, 0, "-1234567.891", NULL, 13): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetNumberFormatW(0x0409, 0, "1234.5", {2, lz 1, group 3, ".", ",", neg 1}, 0): ret=9 [-] err=-
+  (A): ret=9 [-] err=-
+GetNumberFormatW(0x0409, 0, "1234.5", {2, lz 1, group 3, ".", ",", neg 1}, 9): ret=9 [1,234.50] err=-
+  (A): ret=9 [1,234.50] err=-
+GetNumberFormatW(0x0409, 0, "1234.5", {2, lz 1, group 3, ".", ",", neg 1}, 8): ret=0 [-] err=122
+  (A): ret=0 [-] err=122
+GetNumberFormatW(0x0409, 0, "1234.5", {2, lz 1, group 3, ".", ",", neg 1}, 10): ret=0 [-] err=87
+  (A): ret=0 [-] err=87
+locale: done
+<<< exit code=0
+>>> locale.exe fold
+== fold
+FoldStringW(MAP_FOLDCZONE, fullwidth, -1, 64): ret=7 [Ab3<U+3000>x,], NUL last err=-
+FoldStringW(MAP_FOLDDIGITS, digits, -1, 64): ret=8 [2311159], NUL last err=-
+  (A) FoldStringA(MAP_FOLDDIGITS, digits [<B2><B3><B9>9], -1, 64): ret=5 [2319], NUL last err=-
+FoldStringW(MAP_PRECOMPOSED, decomposed, -1, 64): ret=9 [é ä ñ x<U+0301>], NUL last err=-
+FoldStringW(MAP_PRECOMPOSED, precomposed, -1, 64): ret=6 [éÅñüz], NUL last err=-
+  (A) FoldStringA(MAP_PRECOMPOSED, precomposed [<E9><C5><F1><FC>z], -1, 64): ret=6 [<E9><C5><F1><FC>z], NUL last err=-
+FoldStringW(MAP_COMPOSITE, precomposed, -1, 64): ret=10 [e<U+0301>A<U+030A>n<U+0303>u<U+0308>z], NUL last err=-
+  (A) FoldStringA(MAP_COMPOSITE, precomposed [<E9><C5><F1><FC>z], -1, 64): ret=10 [e<B4>A<B0>n~u<A8>z], NUL last err=-
+FoldStringW(MAP_COMPOSITE, decomposed, -1, 64): ret=12 [e<U+0301> a<U+0308> n<U+0303> x<U+0301>], NUL last err=-
+FoldStringW(MAP_EXPAND_LIGATURES, ligatures, -1, 64): ret=12 [aeAEfioesso], NUL last err=-
+  (A) FoldStringA(MAP_EXPAND_LIGATURES, ligatures [<E6><C6><9C><DF>o], -1, 64): ret=10 [aeAEoesso], NUL last err=-
+FoldStringW(MAP_FOLDCZONE, mixed, -1, 64): ret=6 [A²éæq], NUL last err=-
+FoldStringW(MAP_FOLDCZONE|MAP_FOLDDIGITS, mixed, -1, 64): ret=6 [A2éæq], NUL last err=-
+FoldStringW(MAP_FOLDDIGITS|MAP_COMPOSITE, mixed, -1, 64): ret=7 [<U+FF21>2e<U+0301>æq], NUL last err=-
+FoldStringW(MAP_FOLDCZONE|MAP_EXPAND_LIGATURES, mixed, -1, 64): ret=7 [A²éaeq], NUL last err=-
+FoldStringW(MAP_FOLDCZONE, abc, -1, 64): ret=4 [abc], NUL last err=-
+  (A) FoldStringA(MAP_FOLDCZONE, abc [abc], -1, 64): ret=4 [abc], NUL last err=-
+FoldStringW(MAP_PRECOMPOSED, abc, -1, 64): ret=4 [abc], NUL last err=-
+  (A) FoldStringA(MAP_PRECOMPOSED, abc [abc], -1, 64): ret=4 [abc], NUL last err=-
+FoldStringW(MAP_COMPOSITE, abc, -1, 64): ret=4 [abc], NUL last err=-
+  (A) FoldStringA(MAP_COMPOSITE, abc [abc], -1, 64): ret=4 [abc], NUL last err=-
+FoldStringW(0, abc, -1, 64): ret=0 err=1004
+  (A) FoldStringA(0, abc [abc], -1, 64): ret=0 err=1004
+FoldStringW(0x100, abc, -1, 64): ret=0 err=1004
+  (A) FoldStringA(0x100, abc [abc], -1, 64): ret=0 err=1004
+FoldStringW(MAP_PRECOMPOSED|MAP_COMPOSITE, abc, -1, 64): ret=0 err=1004
+  (A) FoldStringA(MAP_PRECOMPOSED|MAP_COMPOSITE, abc [abc], -1, 64): ret=0 err=1004
+FoldStringW(MAP_EXPAND_LIGATURES|MAP_PRECOMPOSED, abc, -1, 64): ret=0 err=1004
+  (A) FoldStringA(MAP_EXPAND_LIGATURES|MAP_PRECOMPOSED, abc [abc], -1, 64): ret=0 err=1004
+FoldStringW(MAP_EXPAND_LIGATURES|MAP_COMPOSITE, abc, -1, 64): ret=0 err=1004
+  (A) FoldStringA(MAP_EXPAND_LIGATURES|MAP_COMPOSITE, abc [abc], -1, 64): ret=0 err=1004
+FoldStringW(MAP_FOLDCZONE, fullwidth, 3, 64): ret=3 [Ab3] err=-
+FoldStringW(MAP_FOLDCZONE, fullwidth, 6, 64): ret=6 [Ab3<U+3000>x,] err=-
+  (A) FoldStringA(MAP_FOLDDIGITS, digits [<B2><B3><B9>9], 2, 64): ret=2 [23] err=-
+  (A) FoldStringA(MAP_FOLDDIGITS, digits [<B2><B3><B9>9], 4, 64): ret=4 [2319] err=-
+FoldStringW(MAP_EXPAND_LIGATURES, ligatures, -1, 0): ret=12 err=-
+  (A) FoldStringA(MAP_EXPAND_LIGATURES, ligatures [<E6><C6><9C><DF>o], -1, 0): ret=10 err=-
+FoldStringW(MAP_COMPOSITE, precomposed, -1, 0): ret=10 err=-
+FoldStringW(MAP_COMPOSITE, precomposed, -1, 10): ret=10 [e<U+0301>A<U+030A>n<U+0303>u<U+0308>z], NUL last err=-
+FoldStringW(MAP_COMPOSITE, precomposed, -1, 9): ret=0 err=122
+FoldStringW(MAP_FOLDCZONE, abc, -1, 4): ret=4 [abc], NUL last err=-
+FoldStringW(MAP_FOLDCZONE, abc, -1, 3): ret=0 err=122
+  (A) FoldStringA(MAP_FOLDCZONE, abc [abc], -1, 4): ret=4 [abc], NUL last err=-
+  (A) FoldStringA(MAP_FOLDCZONE, abc [abc], -1, 3): ret=0 err=122
+FoldStringW(MAP_FOLDCZONE, abc, 0, 64): ret=0 err=87
+  (A) FoldStringA(MAP_FOLDCZONE, abc [abc], 0, 64): ret=0 err=87
+FoldStringW(MAP_FOLDCZONE, the source as the destination): ret=0 err=87
+  (A): ret=0 err=87
+locale: done
+<<< exit code=0
+>>> locale.exe codepages
+== codepages
+EnumSystemCodePagesW(CP_INSTALLED): ret=1 err=-
+  1252 listed yes, 437 yes, 850 yes, 65001 yes; every entry a decimal number yes, IsValidCodePage of each no
+  entries: 35
+  (A) EnumSystemCodePagesA(CP_INSTALLED): ret=1 err=-
+  1252 listed yes, 437 yes, 850 yes, 65001 yes; every entry a decimal number yes, IsValidCodePage of each no
+EnumSystemCodePagesW(CP_SUPPORTED): ret=1 err=-
+  1252 listed yes, 437 yes, 850 yes, 65001 yes; every entry a decimal number yes, IsValidCodePage of each no
+  entries: 133
+  (A) EnumSystemCodePagesA(CP_SUPPORTED): ret=1 err=-
+  1252 listed yes, 437 yes, 850 yes, 65001 yes; every entry a decimal number yes, IsValidCodePage of each no
+the A counts are the W counts: installed yes, supported yes
+installed no more than supported: yes
+EnumSystemCodePagesW(CP_INSTALLED), the callback answering FALSE: ret=1 calls 2 err=-
+  (A): ret=1 calls 2 err=-
+EnumSystemCodePagesW(0): ret=1 calls 133 err=-
+  (A): ret=1 calls 133 err=-
+EnumSystemCodePagesW(CP_INSTALLED|CP_SUPPORTED): ret=0 calls 0 err=1004
+  (A): ret=0 calls 0 err=1004
+EnumSystemCodePagesW(NULL, CP_INSTALLED): ret=0 err=87
+  (A): ret=0 err=87
+locale: done
+<<< exit code=0
+>>> locale.exe langgroup
+== langgroup
+IsValidLanguageGroup: exported yes
+IsValidLanguageGroup(Western Europe (1), LGRPID_INSTALLED): ret=1 err=-
+IsValidLanguageGroup(Western Europe (1), LGRPID_SUPPORTED): ret=1 err=-
+IsValidLanguageGroup(Central Europe (2), LGRPID_SUPPORTED): ret=1 err=-
+IsValidLanguageGroup(Japanese (7), LGRPID_SUPPORTED): ret=1 err=-
+IsValidLanguageGroup(Armenian (17), LGRPID_SUPPORTED): ret=1 err=-
+IsValidLanguageGroup(0, LGRPID_SUPPORTED): ret=0 err=-
+IsValidLanguageGroup(0, LGRPID_INSTALLED): ret=0 err=-
+IsValidLanguageGroup(18, LGRPID_SUPPORTED): ret=0 err=-
+IsValidLanguageGroup(0xFFFF, LGRPID_SUPPORTED): ret=0 err=-
+IsValidLanguageGroup(Western Europe (1), 0): ret=1 err=-
+IsValidLanguageGroup(Western Europe (1), LGRPID_INSTALLED|LGRPID_SUPPORTED): ret=0 err=-
+IsValidLanguageGroup(Western Europe (1), 4): ret=0 err=-
+locale: done
+<<< exit code=0

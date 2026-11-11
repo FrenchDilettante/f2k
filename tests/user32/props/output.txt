@@ -1,0 +1,110 @@
+# F2K capture of props (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:58:48.28
+props F2KT-SOURCE-CRC=0x555DDD45
+>>> props.exe string
+== string
+setup: the window created: yes
+SetPropW(h, L"F2KPropsOne", 0x1111): ret=1 err=-
+GetPropW(h, L"F2KPropsOne"): ret=0x1111 err=-
+GetPropA(h, "F2KPropsOne"): ret=0x1111 err=-
+GetPropW(h, L"f2kpropsONE"): ret=0x1111 err=-
+SetPropW(h, L"F2KPropsTwo", 0x2222): ret=1 err=-
+GetPropW(h, L"F2KPropsOne"): ret=0x1111 err=-
+GetPropW(h, L"F2KPropsTwo"): ret=0x2222 err=-
+SetPropA(h, "F2KPropsOne", 0x3333): ret=1 err=-
+GetPropW(h, L"F2KPropsOne"): ret=0x3333 err=-
+RemovePropW(h, L"F2KPropsOne"): ret=0x3333 err=-
+GetPropW(h, L"F2KPropsOne"): ret=0x0 err=-
+RemovePropW(h, L"F2KPropsOne"): ret=0x0 err=-
+GetPropW(h, L"F2KPropsTwo"): ret=0x2222 err=-
+RemovePropA(h, "f2kpropstwo"): ret=0x2222 err=-
+GetPropA(h, "F2KPropsTwo"): ret=0x0 err=2
+SetPropW(h, L"F2KPropsZero", 0x0): ret=1 err=-
+GetPropW(h, L"F2KPropsZero"): ret=0x0 err=-
+RemovePropW(h, L"F2KPropsZero"): ret=0x0 err=-
+props: done
+<<< exit code=0
+>>> props.exe atom
+== atom
+setup: the window created: yes
+GlobalAddAtomW(L"F2KPropsAtom"): nonzero yes, a string atom (0xC000-0xFFFF) yes
+SetPropW(h, MAKEINTATOM(the atom), 0x4444): ret=1 err=-
+GetPropW(h, L"F2KPropsAtom"): ret=0x4444 err=-
+GetPropA(h, "F2KPropsAtom"): ret=0x4444 err=-
+GetPropW(h, MAKEINTATOM(the atom)): ret=0x4444 err=-
+SetPropW(h, L"F2KPropsAtom", 0x5555): ret=1 err=-
+GetPropW(h, MAKEINTATOM(the atom)): ret=0x5555 err=-
+GetPropA(h, MAKEINTATOM(the atom)): ret=0x5555 err=-
+RemovePropW(h, MAKEINTATOM(the atom)): ret=0x5555 err=-
+GetPropW(h, L"F2KPropsAtom"): ret=0x0 err=-
+SetPropW(h, L"#291", 0x6666): ret=1 err=-
+GetPropW(h, MAKEINTATOM(291)): ret=0x6666 err=-
+RemovePropW(h, MAKEINTATOM(291)): ret=0x6666 err=-
+SetPropW(h, MAKEINTATOM(291), 0x7777): ret=1 err=-
+GetPropW(h, L"#291"): ret=0x7777 err=-
+GetPropA(h, "#291"): ret=0x7777 err=-
+RemovePropA(h, "#291"): ret=0x7777 err=-
+GetPropW(h, MAKEINTATOM(291)): ret=0x0 err=-
+GetPropW(h, MAKEINTATOM(0xBFFF), nothing set): ret=0x0 err=-
+RemovePropW(h, MAKEINTATOM(0xBFFF), nothing set): ret=0x0 err=-
+props: done
+<<< exit code=0
+>>> props.exe refs
+== refs
+setup: the window created: yes
+GlobalFindAtomW(L"F2KPropsRef") before SetPropW: found no err=2
+SetPropW(h, L"F2KPropsRef", 0x1): ret=1 err=-
+GlobalFindAtomW(L"F2KPropsRef") after SetPropW: found yes err=-
+SetPropW(h, L"F2KPropsRef", 0x2): ret=1 err=-
+GlobalFindAtomW(L"F2KPropsRef") after the second SetPropW: found yes err=-
+RemovePropW(h, L"F2KPropsRef"): ret=0x2 err=-
+GlobalFindAtomW(L"F2KPropsRef") after RemovePropW: found yes err=-
+GlobalFindAtomW(L"F2KPropsRef") after its atoms are deleted: found no err=2
+SetPropW(h, L"F2KPropsRef", 0x3): ret=1 err=-
+GlobalFindAtomW(L"F2KPropsRef") after SetPropW: found yes err=-
+DestroyWindow(h), the property still set: ret=1 err=-
+GlobalFindAtomW(L"F2KPropsRef") after DestroyWindow: found yes err=-
+props: done
+<<< exit code=0
+>>> props.exe thread
+== thread
+setup: the window created: yes
+SetPropW(h, L"F2KPropsShared", 0x1234): ret=1 err=-
+the second thread ran: WAIT_OBJECT_0
+second thread: GetPropW(h, L"F2KPropsShared"): ret=0x1234 err=-
+second thread: SetPropW(h, L"F2KPropsThread", 0x8888): ret=1 err=-
+second thread: RemovePropW(h, L"F2KPropsShared"): ret=0x1234 err=-
+GetPropW(h, L"F2KPropsThread"): ret=0x8888 err=-
+GetPropW(h, L"F2KPropsShared"): ret=0x0 err=2
+RemovePropW(h, L"F2KPropsThread"): ret=0x8888 err=-
+RemovePropW(h, L"F2KPropsShared"): ret=0x0 err=2
+props: done
+<<< exit code=0
+>>> props.exe errors
+== errors
+setup: the window created: yes
+setup: the window created: yes
+SetPropW(NULL, L"F2KPropsOne", 0x1): ret=0 err=1400
+GetPropW(NULL, L"F2KPropsOne"): ret=0x0 err=2
+RemovePropW(NULL, L"F2KPropsOne"): ret=0x0 err=2
+SetPropW(a destroyed window, L"F2KPropsOne", 0x1): ret=0 err=1400
+GetPropW(a destroyed window, L"F2KPropsOne"): ret=0x0 err=2
+RemovePropW(a destroyed window, L"F2KPropsOne"): ret=0x0 err=2
+GetPropW(the desktop window, L"F2KPropsNever"): ret=0x0 err=2
+GetPropW(h, L"F2KPropsNever", never set): ret=0x0 err=2
+RemovePropW(h, L"F2KPropsNever", never set): ret=0x0 err=2
+GetPropA(h, "F2KPropsNever", never set): ret=0x0 err=2
+SetPropW(h, L"", 0xAAAA): ret=0 err=123
+GetPropW(h, L""): ret=0x0 err=123
+RemovePropW(h, L""): ret=0x0 err=123
+SetPropW(h, a 300-character name, 0xBBBB): ret=0 err=87
+GetPropW(h, a 300-character name): ret=0x0 err=87
+RemovePropW(h, a 300-character name): ret=0x0 err=87
+SetPropW(h, NULL, 0x9999): ret=0x0 err=87
+GetPropW(h, NULL): ret=0x0 err=-
+RemovePropW(h, NULL): ret=0x0 err=-
+props: done
+<<< exit code=0

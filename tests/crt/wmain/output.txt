@@ -1,0 +1,70 @@
+# F2K capture of wmain (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:45.18
+wmain F2KT-SOURCE-CRC=0xDEB6F4C0
+>>> wmain.exe args
+== args
+argc 2, argv[1] [args], argv[0]'s final component WMAIN.EXE
+argv[argc] NULL yes
+the child's command line: wmain.exe kid args one "two words" back\slash "tail\\" a\\\"b "q\"uote" "" x"y z"w é<U+03B1>
+kid: argc 12
+kid: argv[0] [wmain.exe]
+kid: argv[1] [kid]
+kid: argv[2] [args]
+kid: argv[3] [one]
+kid: argv[4] [two words]
+kid: argv[5] [back\slash]
+kid: argv[6] [tail\]
+kid: argv[7] [a\"b]
+kid: argv[8] [q"uote]
+kid: argv[9] []
+kid: argv[10] [xy zw]
+kid: argv[11] [é<U+03B1>]
+kid: argv[argc] NULL yes
+kid: *__p___wargv() is argv yes, *__p___argc() is argc yes
+the child's exit code: 0
+wmain: done
+<<< exit code=0
+>>> wmain.exe env
+== env
+the child's environment: F2KA=one, =F2K=hidden, F2KB=two words, F2KW=<U+03B1><U+00E9>, f2kc=lower
+kid: envp[0] [F2KA=one]
+kid: envp[1] [F2KB=two words]
+kid: envp[2] [F2KW=aé]
+kid: envp[3] [f2kc=lower]
+kid: envp entries 4
+kid: envp is *__p___winitenv() yes, is *__p__wenviron() yes
+kid: the narrow *__p__environ() NULL no, *__p___initenv() NULL yes
+kid: GetEnvironmentStringsW's entries not starting with '=': 4
+kid: _wgetenv(F2KB) [two words], _wgetenv(F2KC) [lower], _wgetenv(F2K) [(null)]
+kid: getenv(F2KA) [one]; the narrow *__p__environ() NULL after it no
+the child's exit code: 0
+wmain: done
+<<< exit code=0
+>>> wmain.exe accessors
+== accessors
+*__p___wargv() is argv yes, *__p___argc() is argc yes
+*__p___winitenv() is envp yes, *__p__wenviron() is envp yes
+the narrow ones: *__p___argv() NULL yes, *__p__environ() NULL no, *__p___initenv() NULL yes
+GetEnvironmentStringsW: a block yes
+envp entries: as many as the block's not starting with '=': yes
+envp entries: the block's not starting with '=', in order: yes
+envp entries starting with '=': no
+a PATH entry: in envp yes, in the block yes
+wmain: done
+<<< exit code=0
+>>> wmain.exe getmainargs
+== getmainargs
+__wgetmainargs: argc is wmain's yes; argv's strings wmain's yes
+  argv is wmain's no, envp is wmain's yes
+  *__p___wargv() is its argv yes, *__p___winitenv() is its envp yes, *__p__wenviron() is its envp yes
+__wgetmainargs, again: argc the same yes; argv the first call's no, envp the first call's yes
+  argv's strings wmain's yes
+__getmainargs, in the wide program: argc is wmain's yes, argv[1] [getmainargs]
+  *__p___argv() is its argv yes, *__p___initenv() is its envp no, *__p__environ() is its envp yes
+  its envp has as many entries as wmain's: yes
+  *__p___wargv() still the second call's argv yes
+wmain: done
+<<< exit code=0

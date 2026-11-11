@@ -1,0 +1,127 @@
+# F2K capture of chars (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 13:00:05.79
+chars F2KT-SOURCE-CRC=0x26376325
+>>> chars.exe upper
+== upper
+user default LCID is 0x0409: yes, system default LCID is 0x0409: yes, ANSI code page 1252: yes
+CharUpperW(L"abz<U+00E9><U+00FF><U+00DF><U+00B5><U+0131>i<U+03B1><U+03C2><U+0430><U+FF41>1!"): returns the string yes err=-, now "ABZ<U+00C9><U+0178><U+00DF><U+00B5><U+0131>I<U+0391><U+03A3><U+0410><U+FF21>1!"
+CharUpperW(character 0x0061): ret=0x00000041 err=-
+CharUpperW(character 0x0062): ret=0x00000042 err=-
+CharUpperW(character 0x007A): ret=0x0000005A err=-
+CharUpperW(character 0x00E9): ret=0x000000C9 err=-
+CharUpperW(character 0x00FF): ret=0x00000178 err=-
+CharUpperW(character 0x00DF): ret=0x000000DF err=-
+CharUpperW(character 0x00B5): ret=0x000000B5 err=-
+CharUpperW(character 0x0131): ret=0x00000131 err=-
+CharUpperW(character 0x0069): ret=0x00000049 err=-
+CharUpperW(character 0x03B1): ret=0x00000391 err=-
+CharUpperW(character 0x03C2): ret=0x000003A3 err=-
+CharUpperW(character 0x0430): ret=0x00000410 err=-
+CharUpperW(character 0xFF41): ret=0x0000FF21 err=-
+CharUpperW(character 0x0031): ret=0x00000031 err=-
+CharUpperW(character 0x0021): ret=0x00000021 err=-
+CharUpperW(character 0x0000): ret=0x00000000 err=-
+CharUpperA("abz<E9><FF><DF><B5><9A>1!"): returns the string yes err=-, now "ABZ<C9><9F><DF><B5><8A>1!"
+CharUpperA(character 0x61): ret=0x00000041 err=-
+CharUpperA(character 0x62): ret=0x00000042 err=-
+CharUpperA(character 0x7A): ret=0x0000005A err=-
+CharUpperA(character 0xE9): ret=0x000000C9 err=-
+CharUpperA(character 0xFF): ret=0x0000009F err=-
+CharUpperA(character 0xDF): ret=0x000000DF err=-
+CharUpperA(character 0xB5): ret=0x000000B5 err=-
+CharUpperA(character 0x9A): ret=0x0000008A err=-
+CharUpperA(character 0x31): ret=0x00000031 err=-
+CharUpperA(character 0x21): ret=0x00000021 err=-
+CharUpperA(character 0x00): ret=0x00000000 err=-
+chars: done
+<<< exit code=0
+>>> chars.exe lower
+== lower
+user default LCID is 0x0409: yes, system default LCID is 0x0409: yes, ANSI code page 1252: yes
+CharLowerW(L"ABZ<U+00C9><U+0178><U+0130>I<U+0391><U+03A3><U+0410><U+FF21><U+039C>1!"): returns the string yes err=-, now "abz<U+00E9><U+00FF><U+0130>i<U+03B1><U+03C3><U+0430><U+FF41><U+03BC>1!"
+CharLowerW(character 0x0041): ret=0x00000061 err=-
+CharLowerW(character 0x0042): ret=0x00000062 err=-
+CharLowerW(character 0x005A): ret=0x0000007A err=-
+CharLowerW(character 0x00C9): ret=0x000000E9 err=-
+CharLowerW(character 0x0178): ret=0x000000FF err=-
+CharLowerW(character 0x0130): ret=0x00000130 err=-
+CharLowerW(character 0x0049): ret=0x00000069 err=-
+CharLowerW(character 0x0391): ret=0x000003B1 err=-
+CharLowerW(character 0x03A3): ret=0x000003C3 err=-
+CharLowerW(character 0x0410): ret=0x00000430 err=-
+CharLowerW(character 0xFF21): ret=0x0000FF41 err=-
+CharLowerW(character 0x039C): ret=0x000003BC err=-
+CharLowerW(character 0x0031): ret=0x00000031 err=-
+CharLowerW(character 0x0021): ret=0x00000021 err=-
+CharLowerW(character 0x0000): ret=0x00000000 err=-
+CharLowerA("ABZ<C9><9F><8A>1!"): returns the string yes err=-, now "abz<E9><FF><9A>1!"
+CharLowerA(character 0x41): ret=0x00000061 err=-
+CharLowerA(character 0x42): ret=0x00000062 err=-
+CharLowerA(character 0x5A): ret=0x0000007A err=-
+CharLowerA(character 0xC9): ret=0x000000E9 err=-
+CharLowerA(character 0x9F): ret=0x000000FF err=-
+CharLowerA(character 0x8A): ret=0x0000009A err=-
+CharLowerA(character 0x31): ret=0x00000031 err=-
+CharLowerA(character 0x21): ret=0x00000021 err=-
+CharLowerA(character 0x00): ret=0x00000000 err=-
+chars: done
+<<< exit code=0
+>>> chars.exe buff
+== buff
+user default LCID is 0x0409: yes, system default LCID is 0x0409: yes, ANSI code page 1252: yes
+CharUpperBuffW(L"abC|dEf<U+00E9>", 8): ret=8 err=-, now "ABC|DEF<U+00C9>"
+CharUpperBuffW(L"abC|dEf<U+00E9>", 3): ret=3 err=-, now "ABC|dEf<U+00E9>"
+CharUpperBuffW(L"abC|dEf<U+00E9>", 1): ret=1 err=-, now "AbC|dEf<U+00E9>"
+CharUpperBuffW(L"abC|dEf<U+00E9>", 0): ret=0 err=-, now "abC|dEf<U+00E9>"
+CharLowerBuffW(L"abC|dEf<U+00E9>", 8): ret=8 err=-, now "abc|def<U+00E9>"
+CharLowerBuffW(L"abC|dEf<U+00E9>", 3): ret=3 err=-, now "abc|dEf<U+00E9>"
+CharLowerBuffW(L"abC|dEf<U+00E9>", 1): ret=1 err=-, now "abC|dEf<U+00E9>"
+CharLowerBuffW(L"abC|dEf<U+00E9>", 0): ret=0 err=-, now "abC|dEf<U+00E9>"
+CharUpperBuffA("abC|dEf<E9>", 8): ret=8 err=-, now "ABC|DEF<C9>"
+CharUpperBuffA("abC|dEf<E9>", 3): ret=3 err=-, now "ABC|dEf<E9>"
+CharUpperBuffA("abC|dEf<E9>", 1): ret=1 err=-, now "AbC|dEf<E9>"
+CharUpperBuffA("abC|dEf<E9>", 0): ret=0 err=-, now "abC|dEf<E9>"
+CharLowerBuffA("abC|dEf<E9>", 8): ret=8 err=-, now "abc|def<E9>"
+CharLowerBuffA("abC|dEf<E9>", 3): ret=3 err=-, now "abc|dEf<E9>"
+CharLowerBuffA("abC|dEf<E9>", 1): ret=1 err=-, now "abC|dEf<E9>"
+CharLowerBuffA("abC|dEf<E9>", 0): ret=0 err=-, now "abC|dEf<E9>"
+chars: done
+<<< exit code=0
+>>> chars.exe alnum
+== alnum
+user default LCID is 0x0409: yes, system default LCID is 0x0409: yes, ANSI code page 1252: yes
+IsCharAlphaNumericW(0x0061): yes err=-
+IsCharAlphaNumericW(0x005A): yes err=-
+IsCharAlphaNumericW(0x0030): yes err=-
+IsCharAlphaNumericW(0x0039): yes err=-
+IsCharAlphaNumericW(0x005F): no err=-
+IsCharAlphaNumericW(0x0020): no err=-
+IsCharAlphaNumericW(0x002E): no err=-
+IsCharAlphaNumericW(0x00E9): yes err=-
+IsCharAlphaNumericW(0x00B2): yes err=-
+IsCharAlphaNumericW(0x00BD): no err=-
+IsCharAlphaNumericW(0x00AA): no err=-
+IsCharAlphaNumericW(0x0660): yes err=-
+IsCharAlphaNumericW(0x2160): no err=-
+IsCharAlphaNumericW(0x4E00): yes err=-
+IsCharAlphaNumericW(0xFF10): yes err=-
+IsCharAlphaNumericW(0x0000): no err=-
+IsCharAlphaNumericA(0x61): yes err=-
+IsCharAlphaNumericA(0x5A): yes err=-
+IsCharAlphaNumericA(0x30): yes err=-
+IsCharAlphaNumericA(0x39): yes err=-
+IsCharAlphaNumericA(0x5F): no err=-
+IsCharAlphaNumericA(0x20): no err=-
+IsCharAlphaNumericA(0x2E): no err=-
+IsCharAlphaNumericA(0xE9): yes err=-
+IsCharAlphaNumericA(0xB2): yes err=-
+IsCharAlphaNumericA(0xAA): no err=-
+IsCharAlphaNumericA(0x8A): yes err=-
+IsCharAlphaNumericA(0x80): no err=-
+IsCharAlphaNumericA(0xFF): yes err=-
+IsCharAlphaNumericA(0x00): no err=-
+chars: done
+<<< exit code=0

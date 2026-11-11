@@ -1,0 +1,143 @@
+# F2K capture of cxxeh (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:45.13
+cxxeh F2KT-SOURCE-CRC=0x274223DB
+>>> cxxeh.exe catch
+== catch
+throw 42, catch (int v): caught, v=42
+throw 2.5, catch (double d): caught, d is 2.5 yes
+throw "a string literal", catch (const char *s): caught, s=[a string literal]
+throw Thing(1), catch (Thing t): caught, id 1, copies made by then 1, live 2
+  after the handler: live 0
+throw Thing(2), catch (Thing &t): caught, id 2, copies made by then 0, live 1
+  after the handler: live 0
+throw Thing(4), catch (const Thing &t): caught, id 4, copies made by then 0
+  after the handler: live 0
+throw &static_thing, catch (Thing *p): caught, the same pointer yes
+throw &static_thing, catch (void *p): caught, the same pointer yes
+throw 7, catch (long), catch (unsigned int), catch (...): caught by catch (...)
+throw 'c', catch (int), catch (char c): caught by catch (char), c=c
+throw Thing(5), catch (int), catch (...): caught by catch (...), live 1
+  after the handler: live 0
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe derived
+== derived
+throw Derived(), catch (Base &b): caught, b.name() Derived
+throw Derived(), catch (Base b): caught, b.name() Base
+throw Derived(), catch (const Base &b): caught, b.name() Derived
+throw new Derived, catch (Base *p): caught, p->name() Derived
+throw Derived(), catch (Other &), catch (Derived &), catch (Base &): caught by catch (Derived &), Derived
+throw More(), catch (Derived &d): caught, d.name() More
+throw More(), catch (Base &b): caught, b.name() More
+throw Diamond() (Base twice), catch (Base &), catch (LeftBase &): caught by catch (LeftBase &), Base
+throw Hidden() (a private Base), catch (Base &), catch (...): caught by catch (...)
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe rethrow
+== rethrow
+throw; from catch (Thing &) after setting id 11: the outer handler sees id 11, copies 0
+  after: live 0
+throw; from catch (Thing) after setting the copy's id 31: the outer handler sees id 30
+  after: live 0
+throw; from catch (...) of 2.5: caught as double, d is 2.5 yes
+throw; from a function's own catch block to its caller: id 41
+  after: live 0
+throw Thing(21) from catch (Thing &) of Thing(20): the outer handler sees id 21, live 1
+  after: live 0
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe nested
+== nested
+throw 1, inner catch (char), outer catch (int): the outer caught v=1
+a try inside catch (int): the inner caught 2
+  back in the outer catch block: v=1
+  throw; there rethrows the outer exception: 1
+throw 'x' from an inner catch (int): the outer catch (char) caught x
+three levels, Thing(50): the outermost catch (Thing &) caught id 50
+  after: live 0
+a function with its own try, called from catch (int) of 4: returned 30
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe unwind
+== unwind
+locals across three frames, a Tracked thrown: +a1 +b2 +c3 +thrown -c3 -b2 -a1 caught thrown -thrown
+a temporary bound to an argument, the call throwing: +temp take sees temp -temp caught
+a Holder on the stack, its member c throwing: +a +b throwing in c -b -a caught
+new Holder, its member c throwing: Holder's operator new +a +b throwing in c -b -a Holder's operator delete caught
+  the pointer still NULL: yes
+Counted array[4] on the stack, element 2 throwing: +0 +1 throwing in element 2 -1 -0 caught 2
+new Counted[4], element 2 throwing: +0 +1 throwing in element 2 -1 -0 caught 2
+  the pointer still NULL: yes
+Counted whole[3] built, then throw 9: +0 +1 +2 array built -2 -1 -0 caught 9
+objects in a catch block's scope, another throw inside it: +in the handler +deeper -deeper caught 6 -in the handler
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe seh
+== seh
+throw Thing(1) through __except (EXCEPTION_CONTINUE_SEARCH): the C++ handler caught id 1
+  the filter: called 1 time(s); code 0xE06D7363, flags 1, 3 parameter(s), the first 0x19930520
+  after: live 0
+throw Thing(2) into __except (EXCEPTION_EXECUTE_HANDLER): the __except block ran yes
+  the filter: called 1 time(s); code 0xE06D7363, flags 1, 3 parameter(s), the first 0x19930520
+  after: live 1 (the thrown object destroyed: no)
+throw Thing(3) through __finally: the C++ handler caught id 3
+  the __finally block ran yes, AbnormalTermination() 1
+  after: live 0
+RaiseException(0xE0000001) in a try with catch (...): caught by catch (...)
+a write to NULL in a try with catch (...): caught by catch (...)
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe typeid
+== typeid
+typeid(*p), p a Base * to a Derived: name() [class Derived], raw_name() [.?AVDerived@@]
+  == typeid(Derived) 1, == typeid(Base) 0, != typeid(Base) 1
+  the same object as typeid(Derived): yes
+typeid(*b), b a Base * to a Base: name() [class Base], == typeid(Base) 1
+typeid(Derived).before(typeid(Base)) 0, typeid(Base).before(typeid(Derived)) 1, typeid(Base).before(typeid(Base)) 0
+typeid(More).name() [class More], typeid(Other).name() [class Other]
+typeid(int).name() [int], typeid(i).name() [int], typeid(p).name() [class Base *], typeid(Derived *).name() [class Derived *]
+typeid(int) == typeid(i) 1, typeid(int) == typeid(long) 0
+typeid(*(Base *)0): bad_typeid caught, what() [Attempted a typeid of NULL pointer!]
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe purecall
+== purecall
+kid purecall:
+  the child wrote: [kid: constructing a PureDerived]
+  the child wrote: [runtime error R6025]
+  the child wrote: [- pure virtual function call]
+  its exit code: 255 (0x000000FF)
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe terminate
+== terminate
+kid terminate (a handler that ends the child):
+  the child wrote: [kid: set_terminate's previous handler NULL yes]
+  the child wrote: [kid: the terminate handler ran]
+  its exit code: 7 (0x00000007)
+kid termdefault (no handler):
+  the child wrote: [kid: calling terminate() with no handler set]
+  the child wrote: [abnormal program termination]
+  its exit code: 3 (0x00000003)
+kid termreturn (a handler that returns):
+  the child wrote: [kid: calling terminate() with a handler that returns]
+  the child wrote: [kid: the terminate handler ran and returns]
+  the child wrote: [abnormal program termination]
+  its exit code: 3 (0x00000003)
+kid unhandled (a handler that ends the child, an exception nothing catches):
+  the child wrote: [kid: throwing Thing(60), which nothing catches]
+  the child wrote: [kid: the terminate handler ran]
+  its exit code: 7 (0x00000007)
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe abort
+== abort
+kid abort:
+  the child wrote: [kid: calling abort()]
+  the child wrote: [abnormal program termination]
+  its exit code: 3 (0x00000003)
+cxxeh: done
+<<< exit code=0

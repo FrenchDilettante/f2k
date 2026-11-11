@@ -1,0 +1,223 @@
+# F2K capture of mapmode (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:44.88
+mapmode F2KT-SOURCE-CRC=0x68A3B121
+>>> mapmode.exe modes
+== modes
+GetMapMode(a new DC): MM_TEXT err=-
+  window ext 1,1 org 0,0; viewport ext 1,1 org 0,0
+SetMapMode(MM_LOMETRIC): previous=MM_TEXT err=-
+GetMapMode: MM_LOMETRIC err=-
+  window ext positive: yes; viewport ext x positive: yes y negative: yes; origins 0,0: yes
+  units per pixel the mode's (HORZSIZE / HORZRES, VERTSIZE / VERTRES) within 1%: x yes y yes
+  LPtoDP(1000,1000): x positive yes y negative yes
+SetMapMode(MM_HIMETRIC): previous=MM_LOMETRIC err=-
+GetMapMode: MM_HIMETRIC err=-
+  window ext positive: yes; viewport ext x positive: yes y negative: yes; origins 0,0: yes
+  units per pixel the mode's (HORZSIZE / HORZRES, VERTSIZE / VERTRES) within 1%: x yes y yes
+  LPtoDP(1000,1000): x positive yes y negative yes
+SetMapMode(MM_LOENGLISH): previous=MM_HIMETRIC err=-
+GetMapMode: MM_LOENGLISH err=-
+  window ext positive: yes; viewport ext x positive: yes y negative: yes; origins 0,0: yes
+  units per pixel the mode's (HORZSIZE / HORZRES, VERTSIZE / VERTRES) within 1%: x yes y yes
+  LPtoDP(1000,1000): x positive yes y negative yes
+SetMapMode(MM_HIENGLISH): previous=MM_LOENGLISH err=-
+GetMapMode: MM_HIENGLISH err=-
+  window ext positive: yes; viewport ext x positive: yes y negative: yes; origins 0,0: yes
+  units per pixel the mode's (HORZSIZE / HORZRES, VERTSIZE / VERTRES) within 1%: x yes y yes
+  LPtoDP(1000,1000): x positive yes y negative yes
+SetMapMode(MM_TWIPS): previous=MM_HIENGLISH err=-
+GetMapMode: MM_TWIPS err=-
+  window ext positive: yes; viewport ext x positive: yes y negative: yes; origins 0,0: yes
+  units per pixel the mode's (HORZSIZE / HORZRES, VERTSIZE / VERTRES) within 1%: x yes y yes
+  LPtoDP(1000,1000): x positive yes y negative yes
+SetMapMode(MM_ISOTROPIC): previous=MM_TWIPS err=-
+GetMapMode: MM_ISOTROPIC err=-
+  extents MM_TWIPS's: no MM_LOMETRIC's: yes
+SetMapMode(MM_ANISOTROPIC): previous=MM_ISOTROPIC err=-
+GetMapMode: MM_ANISOTROPIC err=-
+  extents MM_ISOTROPIC's: yes MM_LOMETRIC's: yes
+SetMapMode(MM_TEXT): previous=MM_ANISOTROPIC err=-
+GetMapMode: MM_TEXT err=-
+  window ext 1,1 org 0,0; viewport ext 1,1 org 0,0
+SetMapMode(MM_ANISOTROPIC): previous=MM_TEXT err=-
+GetMapMode: MM_ANISOTROPIC err=-
+  extents MM_LOMETRIC's: no; window ext 1,1: yes
+SetMapMode(MM_ISOTROPIC): previous=MM_ANISOTROPIC err=-
+GetMapMode: MM_ISOTROPIC err=-
+  extents MM_LOMETRIC's: yes
+SetMapMode(MM_TEXT): previous=MM_ISOTROPIC err=-
+GetMapMode: MM_TEXT err=-
+SetMapMode(0): previous=0 err=-
+GetMapMode: MM_TEXT err=-
+SetMapMode(9): previous=0 err=-
+GetMapMode: MM_TEXT err=-
+mapmode: done
+<<< exit code=0
+>>> mapmode.exe extorg
+== extorg
+-- MM_TEXT
+GetWindowExtEx 1,1 GetViewportExtEx 1,1 GetWindowOrgEx 0,0 GetViewportOrgEx 0,0: rets 1 1 1 1 err=-
+SetWindowExtEx(2, 3): ret=1 err=- previous=1,1
+SetViewportExtEx(4, 5): ret=1 err=- previous=1,1
+GetWindowExtEx 1,1 GetViewportExtEx 1,1 GetWindowOrgEx 0,0 GetViewportOrgEx 0,0: rets 1 1 1 1 err=-
+SetWindowOrgEx(5, 7): ret=1 err=- previous=0,0
+SetViewportOrgEx(-3, 4): ret=1 err=- previous=0,0
+GetWindowExtEx 1,1 GetViewportExtEx 1,1 GetWindowOrgEx 5,7 GetViewportOrgEx -3,4: rets 1 1 1 1 err=-
+LPtoDP(0,0 5,7 10,20): ret=1 err=- -> -8,-3 -3,4 2,17
+DPtoLP(0,0 -3,4): ret=1 err=- -> 8,3 5,7
+SetWindowOrgEx(0, 0, NULL): ret=1 err=-
+SetViewportOrgEx(0, 0, NULL): ret=1 err=-
+-- MM_ANISOTROPIC, its extents first set to 1,1
+SetWindowExtEx(100, 200): ret=1 err=- previous=1,1
+SetViewportExtEx(50, -400): ret=1 err=- previous=1,1
+SetWindowExtEx(0, 10): ret=0 err=- previous=100,200
+SetWindowExtEx(10, 0): ret=0 err=- previous=100,200
+SetViewportExtEx(0, 0): ret=1 err=- previous=50,-400
+GetWindowExtEx 100,200 GetViewportExtEx 50,-400 GetWindowOrgEx 0,0 GetViewportOrgEx 0,0: rets 1 1 1 1 err=-
+SetWindowOrgEx(10, 20): ret=1 err=- previous=0,0
+SetViewportOrgEx(3, 4): ret=1 err=- previous=0,0
+LPtoDP(10,20 11,20 13,21 9,19 7,20 -10,0 110,220): ret=1 err=- -> 3,4 4,4 5,2 3,6 2,4 -7,44 53,-396
+DPtoLP(3,4 4,4 3,5 4,3 0,0): ret=1 err=- -> 10,20 12,20 10,20 12,21 4,22
+SetWindowExtEx(-100, 200): ret=1 err=- previous=100,200
+GetWindowExtEx -100,200 GetViewportExtEx 50,-400 GetWindowOrgEx 10,20 GetViewportOrgEx 3,4: rets 1 1 1 1 err=-
+LPtoDP(10,20 11,20 13,21): ret=1 err=- -> 3,4 3,4 2,2
+mapmode: done
+<<< exit code=0
+>>> mapmode.exe offset
+== offset
+-- MM_ANISOTROPIC: window ext 100,200, viewport ext 50,-400
+OffsetViewportOrgEx(3, -2): ret=1 err=- previous=0,0
+OffsetViewportOrgEx(3, -2): ret=1 err=- previous=3,-2
+OffsetWindowOrgEx(-5, 6): ret=1 err=- previous=0,0
+OffsetWindowOrgEx(-5, 6): ret=1 err=- previous=-5,6
+GetWindowExtEx 100,200 GetViewportExtEx 50,-400 GetWindowOrgEx -10,12 GetViewportOrgEx 6,-4: rets 1 1 1 1 err=-
+LPtoDP(0,0 20,40): ret=1 err=- -> 11,20 21,-60
+OffsetViewportOrgEx(1, 1, NULL): ret=1 err=-
+OffsetWindowOrgEx(1, 1, NULL): ret=1 err=-
+ScaleViewportExtEx(3/2, 1/4): ret=1 err=- previous=50,-400
+ScaleWindowExtEx(1/2, 5/1): ret=1 err=- previous=100,200
+GetWindowExtEx 50,1000 GetViewportExtEx 75,-100 GetWindowOrgEx -9,13 GetViewportOrgEx 7,-3: rets 1 1 1 1 err=-
+LPtoDP(0,0 20,40): ret=1 err=- -> 21,-2 51,-6
+ScaleViewportExtEx(1/0, 1/1): ret=0 err=- previous=75,-100
+ScaleWindowExtEx(0/1, 1/1): ret=0 err=- previous=-99,-99
+ScaleViewportExtEx(1/100, 1/1000): ret=0 err=- previous=75,-100
+GetWindowExtEx 50,1000 GetViewportExtEx 75,-100 GetWindowOrgEx -9,13 GetViewportOrgEx 7,-3: rets 1 1 1 1 err=-
+ScaleViewportExtEx(2/1, 2/1, NULL): ret=1 err=-
+ScaleWindowExtEx(2/1, 2/1, NULL): ret=1 err=-
+GetWindowExtEx 100,2000 GetViewportExtEx 150,-200 GetWindowOrgEx -9,13 GetViewportOrgEx 7,-3: rets 1 1 1 1 err=-
+-- MM_TEXT
+ScaleViewportExtEx(2/1, 3/1): ret=1 err=- previous=1,1
+ScaleWindowExtEx(2/1, 3/1): ret=1 err=- previous=1,1
+OffsetViewportOrgEx(4, 5): ret=1 err=- previous=0,0
+OffsetWindowOrgEx(1, -1): ret=1 err=- previous=0,0
+GetWindowExtEx 1,1 GetViewportExtEx 1,1 GetWindowOrgEx 1,-1 GetViewportOrgEx 4,5: rets 1 1 1 1 err=-
+LPtoDP(0,0 20,40): ret=1 err=- -> 3,6 23,46
+mapmode: done
+<<< exit code=0
+>>> mapmode.exe isotropic
+== isotropic
+MM_ISOTROPIC
+SetWindowExtEx(1000, 1000): ret=1 err=- previous=3200,2400
+SetViewportExtEx(400, -300): ret=1 err=-
+  window ext 1000,1000; viewport x positive yes y negative yes; x kept (400) no y kept (-300) yes
+  a logical unit as long in x as in y, within 1%: yes; the viewport within the one asked for: yes
+  LPtoDP(1000,1000): the viewport's extents: yes
+SetWindowExtEx(1000, 500): ret=1 err=-
+  the viewport unchanged: no; a logical unit as long in x as in y, within 1%: yes
+SetViewportExtEx(400, -300): ret=1 err=-
+  window ext 1000,500; viewport x positive yes y negative yes; x kept (400) yes y kept (-300) no
+  a logical unit as long in x as in y, within 1%: yes; the viewport within the one asked for: yes
+SetMapMode(MM_ANISOTROPIC): previous=MM_ISOTROPIC err=-
+GetMapMode: MM_ANISOTROPIC err=-
+  extents MM_ISOTROPIC's: yes
+SetViewportExtEx(400, -300): ret=1 err=-
+  viewport ext 400,-300
+mapmode: done
+<<< exit code=0
+>>> mapmode.exe drawing
+== drawing
+MM_TEXT, window origin -2,-1: PatBlt(0, 0, 3, 2, BLACKNESS): ret=1 err=-
+  row  0: ................
+  row  1: ..###...........
+  row  2: ..###...........
+  row  3: ................
+  row  4: ................
+  row  5: ................
+  row  6: ................
+  row  7: ................
+  row  8: ................
+  row  9: ................
+  row 10: ................
+  row 11: ................
+MM_ANISOTROPIC, window ext 8,6, viewport ext 16,12: PatBlt(1, 1, 3, 2, BLACKNESS): ret=1 err=-
+  row  0: ................
+  row  1: ................
+  row  2: ..######........
+  row  3: ..######........
+  row  4: ..######........
+  row  5: ..######........
+  row  6: ................
+  row  7: ................
+  row  8: ................
+  row  9: ................
+  row 10: ................
+  row 11: ................
+the same: Rectangle(1, 1, 6, 5), black pen, red brush: ret=1 err=-
+  row  0: ................
+  row  1: ................
+  row  2: ..##########....
+  row  3: ..#RRRRRRRR#....
+  row  4: ..#RRRRRRRR#....
+  row  5: ..#RRRRRRRR#....
+  row  6: ..#RRRRRRRR#....
+  row  7: ..#RRRRRRRR#....
+  row  8: ..#RRRRRRRR#....
+  row  9: ..##########....
+  row 10: ................
+  row 11: ................
+flipped, viewport ext 16,-12, origin 0,12: PatBlt(1, 1, 3, 2, BLACKNESS): ret=1 err=-
+  row  0: ................
+  row  1: ................
+  row  2: ................
+  row  3: ................
+  row  4: ................
+  row  5: ................
+  row  6: ..######........
+  row  7: ..######........
+  row  8: ..######........
+  row  9: ..######........
+  row 10: ................
+  row 11: ................
+mapmode: done
+<<< exit code=0
+>>> mapmode.exe savedc
+== savedc
+  new: MM_TEXT, window org 0,0, text 0x000000, background mode 2, ROP2 13, brush WHITE_BRUSH, bitmap the canvas's
+SaveDC: ret=1 err=-
+  changed once: MM_ANISOTROPIC, window org 5,5, text 0x0000FF, background mode 1, ROP2 7, brush BLACK_BRUSH, bitmap the canvas's
+SaveDC: ret=2 err=-
+  changed twice: MM_LOMETRIC, window org 7,-7, text 0x00FF00, background mode 2, ROP2 6, brush GRAY_BRUSH, bitmap the other
+SaveDC: ret=3 err=-
+  changed thrice: MM_LOMETRIC, window org 7,-7, text 0xFF0000, background mode 2, ROP2 6, brush GRAY_BRUSH, bitmap the other
+RestoreDC(-1): ret=1 err=-
+  after: MM_LOMETRIC, window org 7,-7, text 0x00FF00, background mode 2, ROP2 6, brush GRAY_BRUSH, bitmap the other
+RestoreDC(-1): ret=1 err=-
+  after: MM_ANISOTROPIC, window org 5,5, text 0x0000FF, background mode 1, ROP2 7, brush BLACK_BRUSH, bitmap the canvas's
+SaveDC: ret=2 err=-
+SaveDC: ret=3 err=-
+RestoreDC(1): ret=1 err=-
+  after: MM_TEXT, window org 0,0, text 0x000000, background mode 2, ROP2 13, brush WHITE_BRUSH, bitmap the canvas's
+RestoreDC(-1): ret=0 err=87
+SaveDC: ret=1 err=-
+RestoreDC(5): ret=0 err=87
+RestoreDC(0): ret=0 err=87
+RestoreDC(-2): ret=0 err=87
+RestoreDC(1): ret=1 err=-
+  after: MM_TEXT, window org 0,0, text 0x000000, background mode 2, ROP2 13, brush WHITE_BRUSH, bitmap the canvas's
+the other bitmap selected into another DC: previous non-NULL yes err=-
+SaveDC(a deleted DC): ret=0 err=-
+mapmode: done
+<<< exit code=0

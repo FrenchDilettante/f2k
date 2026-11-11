@@ -1,0 +1,137 @@
+# F2K capture of atom (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:45.09
+atom F2KT-SOURCE-CRC=0x8142786C
+>>> atom.exe add
+== add
+GlobalAddAtomW(F2KAtomFixtureOne): a string atom err=-
+GlobalAddAtomW(F2KAtomFixtureOne), again: the same atom yes err=-
+GlobalAddAtomW(F2KATOMFIXTUREONE): the same atom yes err=-
+GlobalAddAtomA(f2katomfixtureone): the same atom yes err=-
+GlobalFindAtomW(F2KAtomFixtureOne): the same atom yes err=-
+GlobalFindAtomW(f2katomfixtureone): the same atom yes err=-
+  (A) GlobalFindAtomA(F2KAtomFixtureOne): the same atom yes err=-
+  (A) GlobalFindAtomA(F2KATOMFIXTUREONE): the same atom yes err=-
+GlobalGetAtomNameW(the atom, 64): ret=17 [F2KAtomFixtureOne] err=-
+  (A) GlobalGetAtomNameA(the atom, 64): ret=17 [F2KAtomFixtureOne] err=-
+GlobalDeleteAtom(the atom), reference 1 of 4: ret=0 err=-
+GlobalDeleteAtom(the atom), reference 2 of 4: ret=0 err=-
+GlobalDeleteAtom(the atom), reference 3 of 4: ret=0 err=-
+GlobalDeleteAtom(the atom), reference 4 of 4: ret=0 err=-
+GlobalFindAtomW(F2KAtomFixtureOne), after: ret=0 err=2
+GlobalAddAtomW(F2KAtomFixture<U+00E9>): a string atom err=-
+GlobalFindAtomW(F2KAtomFixture<U+00C9>): the same atom no err=2
+  (A) GlobalFindAtomA(F2KAtomFixture<C9>): the same atom no err=2
+  (A) GlobalGetAtomNameA(the atom, 64): ret=15 [F2KAtomFixtureé] err=-
+atom: done
+<<< exit code=0
+>>> atom.exe refcount
+== refcount
+GlobalAddAtomW(F2KAtomFixtureCount): a string atom
+GlobalAddAtomW(F2KAtomFixtureCount), a second time: the same atom yes
+GlobalAddAtomA(F2KAtomFixtureCount), a third time: the same atom yes
+GlobalDeleteAtom, deletion 1: ret=0 err=-
+  GlobalFindAtomW(F2KAtomFixtureCount): the atom err=-
+  (A) GlobalFindAtomA(F2KAtomFixtureCount): the atom err=-
+GlobalDeleteAtom, deletion 2: ret=0 err=-
+  GlobalFindAtomW(F2KAtomFixtureCount): the atom err=-
+  (A) GlobalFindAtomA(F2KAtomFixtureCount): the atom err=-
+GlobalDeleteAtom, deletion 3: ret=0 err=-
+  GlobalFindAtomW(F2KAtomFixtureCount): 0 err=2
+  (A) GlobalFindAtomA(F2KAtomFixtureCount): 0 err=2
+GlobalDeleteAtom, deletion 4: ret=0 err=6
+  GlobalFindAtomW(F2KAtomFixtureCount): 0 err=2
+  (A) GlobalFindAtomA(F2KAtomFixtureCount): 0 err=2
+GlobalGetAtomNameW(the deleted atom, 64): ret=0 err=6
+  (A) GlobalGetAtomNameA(the deleted atom, 64): ret=0 err=6
+atom: done
+<<< exit code=0
+>>> atom.exe integer
+== integer
+GlobalAddAtomW("#123"): ret=123 err=-
+  (A) GlobalAddAtomA("#123"): ret=123 err=-
+GlobalAddAtomW("#00123"): ret=123 err=-
+  (A) GlobalAddAtomA("#00123"): ret=123 err=-
+GlobalAddAtomW(MAKEINTATOM(123)): ret=123 err=-
+  (A) GlobalAddAtomA(MAKEINTATOM(123)): ret=123 err=-
+GlobalFindAtomW("#123"): ret=123 err=-
+  (A) GlobalFindAtomA("#123"): ret=123 err=-
+GlobalFindAtomW(MAKEINTATOM(456), never added): ret=456 err=-
+  (A) GlobalFindAtomA(MAKEINTATOM(456), never added): ret=456 err=-
+GlobalFindAtomW("#456", never added): ret=456 err=-
+  (A) GlobalFindAtomA("#456", never added): ret=456 err=-
+GlobalGetAtomNameW(123, 64): ret=4 [#123] err=-
+  (A) GlobalGetAtomNameA(123, 64): ret=4 [#123] err=-
+GlobalGetAtomNameW(49151, 64): ret=6 [#49151] err=-
+  (A) GlobalGetAtomNameA(49151, 64): ret=6 [#49151] err=-
+GlobalGetAtomNameW(123, 3): ret=3 [#12] err=-
+  (A) GlobalGetAtomNameA(123, 3): ret=0 [#1] err=234
+GlobalAddAtomW("#0"): ret=0 err=87
+  (A) GlobalAddAtomA("#0"): ret=0 err=87
+GlobalAddAtomW(MAKEINTATOM(0)): ret=0 err=-
+  (A) GlobalAddAtomA(MAKEINTATOM(0)): ret=0 err=-
+GlobalAddAtomW("#49151"): ret=49151 err=-
+  (A) GlobalAddAtomA("#49151"): ret=49151 err=-
+GlobalAddAtomW("#49152"): ret=0 err=87
+  (A) GlobalAddAtomA("#49152"): ret=0 err=87
+GlobalAddAtomW("#65535"): ret=0 err=87
+  (A) GlobalAddAtomA("#65535"): ret=0 err=87
+GlobalAddAtomW("#65536"): ret=0 err=87
+  (A) GlobalAddAtomA("#65536"): ret=0 err=87
+GlobalAddAtomW("#12a"): a string atom err=-
+  (A) GlobalAddAtomA("#12a"): a string atom err=-
+GlobalAddAtomW("#"): ret=0 err=87
+  (A) GlobalAddAtomA("#"): ret=0 err=87
+GlobalAddAtomW("#-1"): a string atom err=-
+  (A) GlobalAddAtomA("#-1"): a string atom err=-
+GlobalAddAtomW("# 12"): a string atom err=-
+  (A) GlobalAddAtomA("# 12"): a string atom err=-
+GlobalDeleteAtom(123): ret=0 err=-
+GlobalDeleteAtom(123), again: ret=0 err=-
+GlobalFindAtomW("#123", after the deletions): ret=123 err=-
+  (A) GlobalFindAtomA("#123", after the deletions): ret=123 err=-
+atom: done
+<<< exit code=0
+>>> atom.exe length
+== length
+GlobalAddAtomW(a 255-character name): a string atom err=-
+  (A) GlobalAddAtomA(a 255-character name): a string atom, the same atom yes err=-
+GlobalFindAtomW(a 255-character name): the same atom yes err=-
+  (A) GlobalFindAtomA(a 255-character name): the same atom yes err=-
+GlobalGetAtomNameW(the atom, 256): ret=255, the name's first 255 characters yes, terminated yes err=-
+  (A) GlobalGetAtomNameA(the atom, 256): ret=255, the name's first 255 characters yes, terminated yes err=-
+GlobalGetAtomNameW(the atom, 255): ret=255, the name's first 255 characters yes, terminated no err=-
+  (A) GlobalGetAtomNameA(the atom, 255): ret=0, the name's first 0 characters yes, terminated no err=234
+GlobalGetAtomNameW(the atom, 10): ret=10, the name's first 10 characters yes, terminated no err=-
+  (A) GlobalGetAtomNameA(the atom, 10): ret=0, the name's first 0 characters yes, terminated no err=234
+GlobalGetAtomNameW(the atom, 1): ret=1, the name's first 1 characters yes, terminated no err=-
+  (A) GlobalGetAtomNameA(the atom, 1): ret=0, the name's first 0 characters yes, terminated yes err=234
+GlobalGetAtomNameW(the atom, 0): ret=0, the name's first 0 characters yes, terminated no err=234
+  (A) GlobalGetAtomNameA(the atom, 0): ret=0, the name's first 0 characters yes, terminated no err=234
+GlobalAddAtomW(a 256-character name): 0 err=87
+  (A) GlobalAddAtomA(a 256-character name): 0 err=87
+GlobalFindAtomW(a 256-character name): 0 err=87
+  (A) GlobalFindAtomA(a 256-character name): 0 err=87
+atom: done
+<<< exit code=0
+>>> atom.exe errors
+== errors
+GlobalFindAtomW(F2KAtomFixtureNever, never added): ret=0 err=2
+  (A) GlobalFindAtomA(F2KAtomFixtureNever, never added): ret=0 err=2
+GlobalAddAtomW(""): ret=0 err=123
+  (A) GlobalAddAtomA(""): ret=0 err=123
+GlobalFindAtomW(""): ret=0 err=123
+  (A) GlobalFindAtomA(""): ret=0 err=123
+GlobalAddAtomW(NULL): ret=0 err=-
+  (A) GlobalAddAtomA(NULL): ret=0 err=-
+GlobalFindAtomW(NULL): ret=0 err=-
+  (A) GlobalFindAtomA(NULL): ret=0 err=-
+GlobalDeleteAtom(0): ret=0 err=-
+GlobalAddAtomW(F2KAtomFixtureGone): a string atom
+GlobalDeleteAtom of it once it is gone: ret=0 err=6
+GlobalGetAtomNameW(0, 64): ret=0 err=87
+  (A) GlobalGetAtomNameA(0, 64): ret=0 err=87
+atom: done
+<<< exit code=0

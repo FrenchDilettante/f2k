@@ -1,0 +1,383 @@
+# F2K capture of scroll (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:58:48.37
+scroll F2KT-SOURCE-CRC=0x278F2ECF
+>>> scroll.exe info
+== info
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL): non-NULL yes err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=100 nPage=0 nPos=0 nTrackPos=0
+GetScrollInfo(the window, SB_HORZ): ret=1 err=-
+  nMin=0 nMax=100 nPage=0 nPos=0 nTrackPos=0
+GetScrollInfo(the window, SIF_POS alone, SB_VERT): ret=1 err=-
+  nMin=untouched nMax=untouched nPage=untouched nPos=0 nTrackPos=untouched
+GetScrollInfo(the window, SIF_TRACKPOS alone, SB_VERT): ret=1 err=-
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=0
+SetScrollInfo(the window, SIF_RANGE 0-99, SB_VERT): ret=0 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=0 nPos=0 nTrackPos=0
+SetScrollInfo(the window, SIF_PAGE 10, SB_VERT): ret=0 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, SIF_POS 50, SB_VERT): ret=50 err=-
+SetScrollInfo(the window, SIF_POS 90 (nMax - nPage + 1), SB_VERT): ret=90 err=-
+SetScrollInfo(the window, SIF_POS 95, SB_VERT): ret=90 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=90 nTrackPos=90
+SetScrollInfo(the window, SIF_POS -5, SB_VERT): ret=0 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, SIF_POS 60, SB_VERT): ret=60 err=-
+SetScrollInfo(the window, SIF_PAGE 50 (position 60 now past the end), SB_VERT): ret=50 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=50 nPos=50 nTrackPos=50
+SetScrollInfo(the window, SIF_PAGE 200 (more than the range), SB_VERT): ret=0 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=100 nPos=0 nTrackPos=0
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+SetScrollInfo(the window, SIF_PAGE 0 | SIF_RANGE 50-10 (inverted), SB_VERT): ret=50 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=50 nMax=50 nPage=0 nPos=50 nTrackPos=50
+SetScrollInfo(the window, SIF_ALL 0-20, page 5, pos 30, SB_VERT): ret=16 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=20 nPage=5 nPos=16 nTrackPos=16
+SetScrollInfo(the window, SIF_ALL -10-10, page 4, pos -20, SB_VERT): ret=-10 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=-10 nMax=10 nPage=4 nPos=-10 nTrackPos=-10
+SetScrollInfo(the window, SIF_TRACKPOS 3, SB_VERT): ret=-10 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=-10 nMax=10 nPage=4 nPos=-10 nTrackPos=-10
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollInfo(the window, 0-9, page 10, pos 0, SB_VERT): ret=0 err=-
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=9 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, 0-9, page 10, SIF_DISABLENOSCROLL, SB_VERT): ret=0 err=-
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=9 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, 0-99, page 10, SB_VERT): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollInfo(the window, SIF_RANGE 0-0 | SIF_DISABLENOSCROLL, SB_VERT): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollInfo(the window, SIF_RANGE 0-0, SB_VERT): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=0 nPage=1 nPos=0 nTrackPos=0
+SetScrollInfo(the window, 0-99, page 10, SB_VERT): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollInfo(the window, 0-49, page 25, pos 40, SB_HORZ): ret=25 err=-
+GetScrollInfo(the window, SB_HORZ): ret=1 err=-
+  nMin=0 nMax=49 nPage=25 nPos=25 nTrackPos=25
+SetScrollInfo(the window, 0-9, page 20, SB_HORZ): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+GetScrollInfo(the window, SB_HORZ): ret=1 err=-
+  nMin=0 nMax=9 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, fMask 0, SB_VERT): ret=0 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, cbSize 0, SIF_POS 7, SB_VERT): ret=7 err=-
+GetScrollInfo(the window, cbSize 0, SB_VERT): ret=0 err=-
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+GetScrollInfo(the window, fMask 0, SB_VERT): ret=0 err=-
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+GetScrollInfo(the window, SB_CTL): ret=1 err=-
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+SetScrollInfo(the window, SIF_POS 5, SB_CTL): ret=0 err=-
+SetScrollInfo(the window, SIF_POS 5, SB_BOTH): ret=5 err=-
+GetScrollInfo(the window, SB_BOTH): ret=0 err=87
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+GetScrollInfo(NULL, SB_VERT): ret=0 err=1400
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+SetScrollInfo(NULL, SIF_POS 5, SB_VERT): ret=0 err=1400
+scroll: done
+<<< exit code=0
+>>> scroll.exe added
+== added
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE): non-NULL yes err=-
+  style WS_VSCROLL no WS_HSCROLL no; the client area narrower by nothing, shorter by nothing
+GetScrollInfo(the window (no bars), SB_VERT): ret=0 err=1447
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+GetScrollInfo(the window (no bars), SB_HORZ): ret=0 err=1447
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+GetScrollPos(the window (no bars), SB_VERT): ret=0 err=1447
+GetScrollRange(the window (no bars), SB_VERT): ret=1 err=1447 min=0 max=0
+SetScrollInfo(the window, 0-99, page 10, pos 30, SB_VERT): ret=30 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=30 nTrackPos=30
+SetScrollInfo(the window, 0-9, page 10 (nothing to scroll), SB_HORZ): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+GetScrollInfo(the window, SB_HORZ): ret=1 err=-
+  nMin=0 nMax=9 nPage=10 nPos=0 nTrackPos=0
+SetScrollInfo(the window, 0-49, page 10, SB_HORZ): ret=0 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+GetScrollInfo(the window, SB_HORZ): ret=1 err=-
+  nMin=0 nMax=49 nPage=10 nPos=0 nTrackPos=0
+scroll: done
+<<< exit code=0
+>>> scroll.exe control
+== control
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE): non-NULL yes err=-
+CreateWindowExW("ScrollBar", SBS_VERT, id 101): non-NULL yes err=-
+CreateWindowExW("ScrollBar", SBS_HORZ, id 102): non-NULL yes err=-
+  class ScrollBar style=0x50000001
+  class ScrollBar style=0x50000000
+GetScrollInfo(the SBS_VERT control, SB_CTL): ret=1 err=-
+  nMin=0 nMax=0 nPage=0 nPos=0 nTrackPos=0
+GetScrollInfo(the SBS_HORZ control, SB_CTL): ret=1 err=-
+  nMin=0 nMax=0 nPage=0 nPos=0 nTrackPos=0
+GetScrollInfo(the SBS_VERT control, SB_VERT): ret=0 err=1447
+  nMin=untouched nMax=untouched nPage=untouched nPos=untouched nTrackPos=untouched
+SetScrollInfo(the SBS_VERT control, 0-99, page 10, pos 95, SB_CTL): ret=90 err=5
+GetScrollInfo(the SBS_VERT control, SB_CTL): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=90 nTrackPos=90
+SetScrollInfo(the SBS_VERT control, SIF_POS -1, SB_CTL): ret=0 err=5
+SetScrollInfo(the SBS_VERT control, SIF_PAGE 500, SB_CTL): ret=0 err=5
+GetScrollInfo(the SBS_VERT control, SB_CTL): ret=1 err=-
+  nMin=0 nMax=99 nPage=100 nPos=0 nTrackPos=0
+SetScrollInfo(the SBS_VERT control, 0-9, page 10, SB_CTL): ret=0 err=5
+  visible yes enabled yes
+SetScrollInfo(the SBS_VERT control, 0-9, page 10, SIF_DISABLENOSCROLL, SB_CTL): ret=0 err=5
+  visible yes enabled no
+SetScrollInfo(the SBS_VERT control, 0-99, page 10, SB_CTL): ret=0 err=5
+  visible yes enabled yes
+SetScrollInfo(the SBS_VERT control, SIF_POS 5, SB_VERT): ret=0 err=1447
+  style WS_VSCROLL no WS_HSCROLL no; the client area narrower by nothing, shorter by nothing
+SendMessageW(the SBS_VERT control, SBM_GETSCROLLINFO, SIF_ALL): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=0 nTrackPos=0
+SendMessageW(the SBS_VERT control, SBM_SETSCROLLINFO, SIF_POS 42): ret=42 err=5
+GetScrollPos(the SBS_VERT control, SB_CTL): ret=42 err=-
+SendMessageW(the SBS_HORZ control, SBM_SETRANGE 5, 25): ret=0 err=-
+SendMessageW(the SBS_HORZ control, SBM_GETRANGE): ret=1638405 err=- min=5 max=25
+SendMessageW(the SBS_HORZ control, SBM_SETPOS 30): ret=5 err=5
+SendMessageW(the SBS_HORZ control, SBM_GETPOS): ret=25 err=-
+SendMessageW(the SBS_HORZ control, SBM_SETPOS 10): ret=25 err=5
+SendMessageW(the SBS_HORZ control, SBM_GETPOS): ret=10 err=-
+GetScrollInfo(the SBS_HORZ control, SB_CTL): ret=1 err=-
+  nMin=5 nMax=25 nPage=0 nPos=10 nTrackPos=10
+scroll: done
+<<< exit code=0
+>>> scroll.exe posrange
+== posrange
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL): non-NULL yes err=-
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=100
+GetScrollPos(the window, SB_VERT): ret=0 err=-
+SetScrollRange(the window, SB_VERT, 0, 50): ret=1 err=-
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=50
+SetScrollPos(the window, SB_VERT, 20): ret=0 err=-
+GetScrollPos(the window, SB_VERT): ret=20 err=-
+SetScrollPos(the window, SB_VERT, 80): ret=20 err=-
+GetScrollPos(the window, SB_VERT): ret=50 err=-
+SetScrollPos(the window, SB_VERT, -3): ret=50 err=-
+GetScrollPos(the window, SB_VERT): ret=0 err=-
+SetScrollPos(the window, SB_VERT, 25): ret=0 err=-
+SetScrollInfo(the window, SIF_PAGE 10, SB_VERT): ret=25 err=-
+SetScrollPos(the window, SB_VERT, 50): ret=25 err=-
+GetScrollPos(the window, SB_VERT): ret=41 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=50 nPage=10 nPos=41 nTrackPos=41
+SetScrollRange(the window (position 41 past the new end), SB_VERT, 0, 30): ret=1 err=-
+GetScrollPos(the window, SB_VERT): ret=21 err=-
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=30 nPage=10 nPos=21 nTrackPos=21
+SetScrollRange(the window (inverted), SB_VERT, 10, 5): ret=0 err=1448
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=30
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=30 nPage=10 nPos=21 nTrackPos=21
+SetScrollRange(the window, SB_VERT, 0, 0): ret=1 err=-
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=0
+SetScrollPos(the window (range 0-0), SB_VERT, 5): ret=0 err=-
+SetScrollRange(the window (0 to MAXLONG), SB_VERT, 0, 2147483647): ret=1 err=-
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=2147483647
+SetScrollRange(the window (wider than MAXLONG), SB_VERT, -1, 2147483647): ret=0 err=1448
+GetScrollRange(the window, SB_VERT): ret=1 err=- min=0 max=2147483647
+SetScrollRange(the window, SB_VERT, 0, 100): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollRange(the window, SB_HORZ, -20, 20): ret=1 err=-
+SetScrollPos(the window, SB_HORZ, -30): ret=0 err=-
+GetScrollPos(the window, SB_HORZ): ret=-20 err=-
+GetScrollRange(the window, SB_HORZ): ret=1 err=- min=-20 max=20
+SetScrollPos(the window, SB_CTL, 5): ret=0 err=-
+SetScrollPos(the window, SB_BOTH, 5): ret=0 err=-
+GetScrollPos(the window, SB_CTL): ret=0 err=-
+SetScrollRange(the window, SB_CTL, 0, 10): ret=1 err=-
+GetScrollRange(the window, SB_CTL): ret=1 err=- min=-7 max=-7
+SetScrollPos(NULL, SB_VERT, 5): ret=0 err=1400
+GetScrollPos(NULL, SB_VERT): ret=0 err=1400
+a second window, hidden, without bars: non-NULL yes
+GetScrollPos(the second window, SB_VERT): ret=0 err=1447
+GetScrollRange(the second window, SB_VERT): ret=1 err=1447 min=0 max=0
+SetScrollPos(the second window, SB_VERT, 5): ret=0 err=1447
+  style WS_VSCROLL no WS_HSCROLL no; the client area narrower by nothing, shorter by nothing
+SetScrollRange(the second window, SB_HORZ, 0, 10): ret=1 err=-
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+GetScrollPos(the second window, SB_HORZ): ret=0 err=-
+CreateWindowExW("ScrollBar", SBS_VERT, id 101): non-NULL yes err=-
+GetScrollRange(the control, SB_CTL): ret=1 err=- min=0 max=0
+SetScrollRange(the control, SB_CTL, 0, 10): ret=1 err=5
+SetScrollPos(the control, SB_CTL, 7): ret=0 err=5
+SetScrollPos(the control, SB_CTL, 70): ret=7 err=5
+GetScrollPos(the control, SB_CTL): ret=10 err=-
+GetScrollRange(the control, SB_CTL): ret=1 err=- min=0 max=10
+scroll: done
+<<< exit code=0
+>>> scroll.exe show
+== show
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL): non-NULL yes err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+SetScrollInfo(the window, 0-99, page 10, pos 30, SB_VERT): ret=30 err=-
+ShowScrollBar(the window, SB_VERT, FALSE): ret=1 err=-
+  style WS_VSCROLL no WS_HSCROLL yes; the client area narrower by nothing, shorter by a bar
+ShowScrollBar(the window, again, SB_VERT, FALSE): ret=1 err=-
+GetScrollInfo(the window (its bar hidden), SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=30 nTrackPos=30
+SetScrollPos(the window (its bar hidden), SB_VERT, 40): ret=30 err=-
+ShowScrollBar(the window, SB_VERT, TRUE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+GetScrollInfo(the window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=99 nPage=10 nPos=40 nTrackPos=40
+ShowScrollBar(the window, SB_HORZ, FALSE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+ShowScrollBar(the window, SB_BOTH, FALSE): ret=1 err=-
+  style WS_VSCROLL no WS_HSCROLL no; the client area narrower by nothing, shorter by nothing
+ShowScrollBar(the window, SB_BOTH, TRUE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+ShowScrollBar(the window, again, SB_VERT, TRUE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL yes; the client area narrower by a bar, shorter by a bar
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE): non-NULL yes err=-
+ShowScrollBar(a window without bars, SB_VERT, TRUE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+GetScrollInfo(that window, SB_VERT): ret=1 err=-
+  nMin=0 nMax=100 nPage=0 nPos=0 nTrackPos=0
+ShowScrollBar(that window, SB_HORZ, FALSE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+ShowScrollBar(that window, a bad bar 7, ?, TRUE): ret=0 err=87
+CreateWindowExW("ScrollBar", SBS_VERT, id 101): non-NULL yes err=-
+ShowScrollBar(the control, SB_CTL, FALSE): ret=1 err=-
+  the control visible no
+ShowScrollBar(the control, SB_CTL, TRUE): ret=1 err=-
+  the control visible yes
+ShowScrollBar(the control, SB_VERT, TRUE): ret=1 err=-
+  style WS_VSCROLL yes WS_HSCROLL no; the client area narrower by a bar, shorter by nothing
+ShowScrollBar(NULL, SB_VERT, TRUE): ret=0 err=1400
+scroll: done
+<<< exit code=0
+>>> scroll.exe enable
+== enable
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL): non-NULL yes err=-
+SetScrollInfo(the window, 0-99, page 10, pos 30, SB_VERT): ret=30 err=-
+SetScrollInfo(the window, 0-99, page 10, pos 30, SB_HORZ): ret=30 err=-
+EnableScrollBar(the window, SB_VERT, ESB_DISABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window, again, SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_VERT, ESB_ENABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window, again, SB_VERT, ESB_ENABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_VERT, ESB_DISABLE_LTUP): ret=1 err=-
+EnableScrollBar(the window, again, SB_VERT, ESB_DISABLE_LTUP): ret=0 err=-
+EnableScrollBar(the window (up disabled), SB_VERT, ESB_DISABLE_RTDN): ret=1 err=-
+EnableScrollBar(the window (both disabled one by one), SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_VERT, ESB_ENABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window, SB_HORZ, ESB_DISABLE_LTUP): ret=1 err=-
+EnableScrollBar(the window, SB_HORZ, ESB_DISABLE_RTDN): ret=1 err=-
+EnableScrollBar(the window, SB_HORZ, ESB_ENABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window, SB_BOTH, ESB_DISABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window (after SB_BOTH), SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window (after SB_BOTH), SB_HORZ, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_BOTH, ESB_ENABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window, SB_VERT, a bad flag 7): ret=1 err=-
+EnableScrollBar(the window, SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+SetScrollInfo(the window, SIF_POS 40, SB_VERT): ret=40 err=-
+EnableScrollBar(the window, a probe after SetScrollInfo(SIF_POS), SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+SetScrollInfo(the window, 0-50, page 10, SB_VERT): ret=40 err=-
+EnableScrollBar(the window, a probe after SetScrollInfo(SIF_RANGE | SIF_PAGE), SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+SetScrollInfo(the window, 0-9, page 10, SIF_DISABLENOSCROLL, SB_VERT): ret=0 err=-
+EnableScrollBar(the window, a probe after SIF_DISABLENOSCROLL, SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_VERT, ESB_ENABLE_BOTH): ret=1 err=-
+SetScrollInfo(the window, 0-99, page 10, SB_VERT): ret=0 err=-
+EnableScrollBar(the window, a probe after a range to scroll, SB_VERT, ESB_ENABLE_BOTH): ret=0 err=-
+EnableScrollBar(the window, SB_VERT, ESB_DISABLE_BOTH): ret=1 err=-
+ShowScrollBar(the window, SB_VERT, FALSE)
+EnableScrollBar(the window (its bar hidden), SB_VERT, ESB_ENABLE_BOTH): ret=1 err=-
+EnableScrollBar(the window (its bar hidden), SB_VERT, ESB_DISABLE_BOTH): ret=1 err=-
+ShowScrollBar(the window, SB_VERT, TRUE)
+EnableScrollBar(the window, a probe after ShowScrollBar, SB_VERT, ESB_DISABLE_BOTH): ret=0 err=-
+CreateWindowExW(F2KScrollWin, WS_POPUP | WS_VISIBLE): non-NULL yes err=-
+EnableScrollBar(a window without bars, SB_VERT, ESB_DISABLE_BOTH): ret=1 err=-
+EnableScrollBar(that window, SB_CTL, ESB_DISABLE_BOTH): ret=8 err=-
+CreateWindowExW("ScrollBar", SBS_VERT, id 101): non-NULL yes err=-
+SetScrollInfo(the control, 0-99, page 10, SB_CTL): ret=0 err=5
+EnableScrollBar(the control, SB_CTL, ESB_DISABLE_BOTH): ret=8 err=-
+  the control enabled no
+EnableScrollBar(the control, again, SB_CTL, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the control, SB_CTL, ESB_ENABLE_BOTH): ret=1 err=-
+  the control enabled yes
+EnableScrollBar(the control, SB_CTL, ESB_DISABLE_LTUP): ret=1 err=-
+  the control enabled yes
+SendMessageW(the control, SBM_ENABLE_ARROWS ESB_ENABLE_BOTH): ret=1 err=-
+SendMessageW(the control, SBM_ENABLE_ARROWS ESB_ENABLE_BOTH again): ret=0 err=-
+EnableWindow(the control, FALSE)
+EnableScrollBar(the control, a probe after EnableWindow(FALSE), SB_CTL, ESB_DISABLE_BOTH): ret=0 err=-
+EnableScrollBar(the control, SB_CTL, ESB_ENABLE_BOTH): ret=1 err=-
+  the control enabled yes
+EnableScrollBar(the control, SB_VERT, ESB_DISABLE_BOTH): ret=1 err=-
+EnableScrollBar(NULL, SB_VERT, ESB_DISABLE_BOTH): ret=0 err=1400
+scroll: done
+<<< exit code=0
+>>> scroll.exe scrollex
+== scrollex
+RegisterClassW(F2KScrollWin): atom nonzero yes err=2
+CreateWindowExW(F2KScrollWin, WS_EX_TOPMOST, WS_POPUP | WS_VISIBLE, 200x100): non-NULL yes err=-
+  the client area 200x100: yes
+ScrollWindowEx(0, -10, NULL, NULL, 0): ret=SIMPLEREGION err=-
+  prcUpdate (0,90)-(200,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region empty
+ScrollWindowEx(0, -10, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (0,90)-(200,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, -10, NULL, NULL, SW_INVALIDATE | SW_ERASE): ret=SIMPLEREGION err=-
+  prcUpdate (0,90)-(200,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, 10, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (0,0)-(200,10): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(20, 0, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (0,0)-(20,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(-20, 0, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (180,0)-(200,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(5, 5, NULL, NULL, SW_INVALIDATE): ret=COMPLEXREGION err=-
+  prcUpdate the client area (its bounds): yes; hrgnUpdate COMPLEXREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, -150, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate the client area: yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, 0, NULL, NULL, SW_INVALIDATE): ret=NULLREGION err=-
+  prcUpdate empty: yes; hrgnUpdate NULLREGION, its box prcUpdate yes; the window's update region empty
+ScrollWindowEx(0, -10, (50,0)-(150,100), NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (50,90)-(150,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, 10, NULL, (0,0)-(200,50), SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (0,0)-(200,10): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, -10, (50,0)-(150,100), (0,50)-(200,100), SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (50,90)-(150,100): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+ScrollWindowEx(0, -10, NULL, NULL, NULL region, NULL rectangle, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  the window's update region (0,90)-(200,100): yes
+a child at (10,10), 30x30: non-NULL yes
+ScrollWindowEx(0, 15, NULL, NULL, SW_INVALIDATE | SW_SCROLLCHILDREN): ret=SIMPLEREGION err=-
+  prcUpdate (0,0)-(200,15): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+  the child moved by (0,15)
+ScrollWindowEx(0, 15, NULL, NULL, SW_INVALIDATE): ret=SIMPLEREGION err=-
+  prcUpdate (0,0)-(200,15): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+  the child moved by (0,0)
+ScrollWindowEx(0, 15, (100,0)-(200,100) (not the child's), NULL, SW_INVALIDATE | SW_SCROLLCHILDREN): ret=SIMPLEREGION err=-
+  prcUpdate (100,0)-(200,15): yes; hrgnUpdate SIMPLEREGION, its box prcUpdate yes; the window's update region prcUpdate
+  the child moved by (0,0)
+ScrollWindow(0, -10, NULL, NULL): ret=1 err=-
+  the window's update region (0,90)-(200,100): yes
+ScrollWindowEx(the window hidden, 0, -10, NULL, NULL, SW_INVALIDATE): ret=NULLREGION err=-
+  prcUpdate empty: yes; hrgnUpdate NULLREGION, its box prcUpdate yes; the window's update region empty
+ScrollWindowEx(NULL, 0, -10): ret=ERROR err=1400
+scroll: done
+<<< exit code=0
