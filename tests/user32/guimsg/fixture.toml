@@ -1,8 +1,18 @@
 # guimsg: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages."
+description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages; RegisterWindowMessageW/A (the range, one value per name in either form and case); GetMessageTime and GetMessagePos against the retrieved MSG; WaitMessage with a message already posted, after a peek, and woken by another thread; SendMessageTimeoutW/A to the same thread, another thread, a busy one (SMTO_NORMAL, SMTO_ABORTIFHUNG) and a hung one, with IsHungAppWindow; SendNotifyMessageW/A to the same thread and another, and a pointer message refused across threads."
 kind = "sectioned"
 gate = true
 screenshots = true
+# hung waits 6.5 s for Windows to deem a thread hung, and the thread sleeps 9 s.
+timeout = 40
+
+[pending]
+regmsg = "user32 has no RegisterWindowMessageW or RegisterWindowMessageA yet"
+msgpos = "user32 has no GetMessageTime or GetMessagePos yet"
+wait = "user32 has no WaitMessage yet"
+smto = "user32 has no SendMessageTimeoutW or SendMessageTimeoutA yet"
+hung = "user32 exports no IsHungAppWindow and has no SendMessageTimeoutW yet"
+notify = "user32 has no SendNotifyMessageW or SendNotifyMessageA yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -38,4 +48,25 @@ defproc = [
 threadmsg = [
     "user32.PostThreadMessageA",
     "user32.GetMessageA",
+]
+regmsg = [
+    "user32.RegisterWindowMessageW",
+    "user32.RegisterWindowMessageA",
+]
+msgpos = [
+    "user32.GetMessageTime",
+    "user32.GetMessagePos",
+]
+wait = ["user32.WaitMessage"]
+smto = [
+    "user32.SendMessageTimeoutW",
+    "user32.SendMessageTimeoutA",
+]
+hung = [
+    "user32.SendMessageTimeoutW",
+    "user32.IsHungAppWindow",
+]
+notify = [
+    "user32.SendNotifyMessageW",
+    "user32.SendNotifyMessageA",
 ]

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:30:48.34
-guimsg F2KT-SOURCE-CRC=0x35786CB5
+# date: Wed 11/11/2026 13:05:33.26
+guimsg F2KT-SOURCE-CRC=0x35094B91
 >>> guimsg.exe post
 == post
 RegisterClass(F2KGuimsgPost): atom nonzero yes err=2
@@ -68,5 +68,108 @@ guimsg: done
 == threadmsg
 PostThreadMessageA(GetCurrentThreadId(), WM_USER+7, 1, 2): ret=1 err=-
 GetMessageA(&m, NULL, 0, 0): ret=1 err=- hwnd==NULL yes message=1031 wParam=1 lParam=2
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe regmsg
+== regmsg
+RegisterWindowMessageW(L"F2KGuimsgRegistered"): in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageW(L"F2KGuimsgRegistered") again: in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageA("F2KGuimsgRegistered"): in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageW(L"f2kguimsgREGISTERED"): in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageA("f2kguimsgREGISTERED"): in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageW(L"F2KGuimsgOther"): in 0xC000-0xFFFF yes, the first value no err=-
+RegisterClipboardFormatW(L"F2KGuimsgRegistered"): in 0xC000-0xFFFF yes, the first value yes err=-
+RegisterWindowMessageW(L""): ret=0 err=123
+RegisterWindowMessageW(NULL): ret=0 err=87
+SendMessageW(h, the registered message, 3, 4): ret=7 err=-
+  procedure saw: count=1 message is the test one no, the registered one yes, wParam=3 lParam=4, on the expected thread yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe msgpos
+== msgpos
+GetMessageTime before any message: 0 yes err=-
+two messages posted 100 ms apart
+GetMessageW: ret=1 err=- wParam=1; its time within the posting's ticks yes
+  after the first GetMessageW: GetMessageTime the message's time yes, GetMessagePos the message's pt yes
+GetMessageW: ret=1 err=- wParam=2; 80-1000 ms after the first yes
+  after the second GetMessageW: GetMessageTime the message's time yes, GetMessagePos the message's pt yes
+SendMessageW(h, WM_USER+30, 3, 0): GetMessageTime inside the procedure the second message's yes
+  after SendMessageW: GetMessageTime the message's time yes, GetMessagePos the message's pt yes
+PeekMessageW(PM_REMOVE): ret=1 err=- wParam=4
+  after PeekMessageW PM_REMOVE: GetMessageTime the message's time yes, GetMessagePos the message's pt yes
+PeekMessageW(PM_NOREMOVE): ret=1 err=- wParam=5; GetMessageTime the third message's no
+  after PeekMessageW PM_NOREMOVE: GetMessageTime the message's time yes, GetMessagePos the message's pt yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe wait
+== wait
+WaitMessage with a message posted: ret=1 err=-, at once (0-300 ms) yes
+PeekMessageW(PM_NOREMOVE): ret=1 err=- the posted message yes
+WaitMessage after the message was peeked, a 300 ms timer set: ret=1 err=-, 200-3000 ms yes
+WaitMessage while a second thread posts after 200 ms: ret=1 err=-, 100-3000 ms yes
+PeekMessageW(WM_USER+30, PM_REMOVE): ret=1 err=- wParam=9
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe smto
+== smto
+SendMessageTimeoutW(h, SMTO_NORMAL, 3, 4, timeout 1000): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=3 lParam=4, on the expected thread yes
+SendMessageTimeoutW(h, SMTO_NORMAL, 5, 6, timeout 0): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=5 lParam=6, on the expected thread yes
+SendMessageTimeoutW(h, SMTO_ABORTIFHUNG, 7, 8, timeout 1000): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=7 lParam=8, on the expected thread yes
+SendMessageTimeoutW(h, SMTO_NORMAL, 9, 10, timeout 1000, no result pointer): ret=1 err=-
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=9 lParam=10, on the expected thread yes
+SendMessageTimeoutA(h, SMTO_NORMAL, 11, 12, timeout 1000): ret=1 err=- result=the procedure's
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=11 lParam=12, on the expected thread yes
+SendMessageTimeoutW(a bogus window, SMTO_NORMAL, 1, 1, timeout 1000): ret=0 err=1400 result=another; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
+the second thread made its window (busy 0 ms after): WAIT_OBJECT_0, yes
+SendMessageTimeoutW(the second thread's window, SMTO_NORMAL, 13, 14, timeout 2000): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=13 lParam=14, on the expected thread yes
+SendMessageTimeoutW(the second thread's window, SMTO_ABORTIFHUNG, 15, 16, timeout 2000): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=15 lParam=16, on the expected thread yes
+the second thread ended: WAIT_OBJECT_0
+the second thread made its window (busy 1500 ms after): WAIT_OBJECT_0, yes
+SendMessageTimeoutW(the busy thread's window, SMTO_NORMAL, 17, 18, timeout 300): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms yes
+  procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
+SendMessageTimeoutW(the busy thread's window, SMTO_ABORTIFHUNG, 19, 20, timeout 300): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms yes
+  procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
+the second thread ended: WAIT_OBJECT_0
+the timed-out messages the busy thread handled once it read its queue: 0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe hung
+== hung
+GetProcAddress(user32, IsHungAppWindow): non-NULL yes
+the second thread made its window (busy 9000 ms after): WAIT_OBJECT_0, yes
+IsHungAppWindow(the second thread's window) at once: ret=0 err=-
+SendMessageTimeoutW(the sleeping thread's window, SMTO_ABORTIFHUNG, 1, 2, timeout 300): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms yes
+  procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
+6.5 s later
+IsHungAppWindow(the second thread's window) after 6.5 s: ret=0 err=-
+SendMessageTimeoutW(the sleeping thread's window, SMTO_ABORTIFHUNG, 3, 4, timeout 2000): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms no
+  procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
+SendMessageTimeoutW(the sleeping thread's window, SMTO_NORMAL, 5, 6, timeout 300): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=5 lParam=6, on the expected thread yes
+the second thread handled a message once it read its queue again: WAIT_TIMEOUT
+IsHungAppWindow(the second thread's window) after it read its queue again: ret=0 err=-
+the second thread ended: WAIT_OBJECT_0
+messages the second thread handled: 0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe notify
+== notify
+SendNotifyMessageW(h, WM_USER+30, 1, 2): ret=1 err=-, handled before the return yes
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=1 lParam=2, on the expected thread yes
+SendNotifyMessageA(h, WM_USER+30, 3, 4): ret=1 err=-, handled before the return yes
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=3 lParam=4, on the expected thread yes
+SendNotifyMessageW(a bogus window): ret=0 err=1400
+the second thread made its window (busy 300 ms after): WAIT_OBJECT_0, yes
+SendNotifyMessageW(the second thread's window, WM_USER+30, 5, 6): ret=1 err=-, under 200 ms yes, handled before the return no
+the second thread handled it: WAIT_OBJECT_0
+  procedure saw: count=1 message is the test one yes, the registered one no, wParam=5 lParam=6, on the expected thread yes
+SendNotifyMessageW(the second thread's window, WM_SETTEXT, 0, L"x"): ret=0 err=1159
+the second thread ended: WAIT_OBJECT_0
 guimsg: done
 <<< exit code=0

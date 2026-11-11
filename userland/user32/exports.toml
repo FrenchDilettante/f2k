@@ -1693,6 +1693,84 @@ args = ["handle Window", "u32 Routine"]
 impl = { syscall = "crate::win32k::paint::call_hwnd_lock" }
 internal = true
 
+[[export]]
+name = "GetMessagePos"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 304
+fails = "0"
+
+[[export]]
+name = "GetMessageTime"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 305
+fails = "0"
+
+[[export]]
+name = "RegisterWindowMessageA"
+group = "message"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 517
+fails = "0"
+
+[[export]]
+name = "SendMessageTimeoutA"
+group = "message"
+args = [
+    "handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 fuFlags", "u32 uTimeout",
+    "ptr<u32> lpdwResult",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 540
+fails = "0"
+
+[[export]]
+name = "SendNotifyMessageA"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 543
+fails = "FALSE"
+
+[[export]]
+name = "RegisterWindowMessageW"
+group = "message"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 518
+fails = "0"
+
+[[export]]
+name = "SendMessageTimeoutW"
+group = "message"
+args = [
+    "handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 fuFlags", "u32 uTimeout",
+    "ptr<u32> lpdwResult",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 541
+fails = "0"
+
+[[export]]
+name = "SendNotifyMessageW"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 544
+fails = "FALSE"
+
+[[export]]
+name = "WaitMessage"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 684
+fails = "FALSE"
+
 # --- ending the session ---------------------------------------------------------------------------
 
 [[export]]
@@ -3758,14 +3836,6 @@ name = "GetMessageExtraInfo"
 ordinal = 303
 
 [[export]]
-name = "GetMessagePos"
-ordinal = 304
-
-[[export]]
-name = "GetMessageTime"
-ordinal = 305
-
-[[export]]
 name = "GetMonitorInfoW"
 ordinal = 308
 
@@ -4266,14 +4336,6 @@ name = "RegisterTasklist"
 ordinal = 516
 
 [[export]]
-name = "RegisterWindowMessageA"
-ordinal = 517
-
-[[export]]
-name = "RegisterWindowMessageW"
-ordinal = 518
-
-[[export]]
 name = "RemoveMenu"
 ordinal = 521
 
@@ -4324,22 +4386,6 @@ ordinal = 538
 [[export]]
 name = "SendMessageCallbackW"
 ordinal = 539
-
-[[export]]
-name = "SendMessageTimeoutA"
-ordinal = 540
-
-[[export]]
-name = "SendMessageTimeoutW"
-ordinal = 541
-
-[[export]]
-name = "SendNotifyMessageA"
-ordinal = 543
-
-[[export]]
-name = "SendNotifyMessageW"
-ordinal = 544
 
 [[export]]
 name = "SetCaretBlinkTime"
@@ -4728,10 +4774,6 @@ ordinal = 682
 [[export]]
 name = "WaitForInputIdle"
 ordinal = 683
-
-[[export]]
-name = "WaitMessage"
-ordinal = 684
 
 [[export]]
 name = "Win32PoolAllocationStats"
