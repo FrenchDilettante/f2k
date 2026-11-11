@@ -2143,11 +2143,37 @@ impl = { syscall = "crate::win32k::menu::set_menu" }
 internal = true
 
 [[export]]
+name = "AppendMenuA"
+group = "menu"
+args = ["handle hMenu", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { native = "AppendMenuA" }
+ordinal = 8
+fails = "FALSE"
+note = "string items, popups and separators; bitmap and owner-drawn items are not served"
+
+[[export]]
+name = "AppendMenuW"
+group = "menu"
+args = ["handle hMenu", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
+impl = { native = "AppendMenuW" }
+ordinal = 9
+fails = "FALSE"
+note = "string items, popups and separators; bitmap and owner-drawn items are not served"
+
+[[export]]
 name = "DrawMenuBar"
 group = "menu"
 args = ["handle hWnd"]
 impl = { native = "DrawMenuBar" }
 ordinal = 174
+fails = "FALSE"
+
+[[export]]
+name = "EndMenu"
+group = "menu"
+args = []
+impl = { native = "EndMenu" }
+ordinal = 189
 fails = "FALSE"
 
 # --- keyboard accelerators ------------------------------------------------------------------------
@@ -2623,13 +2649,7 @@ ordinal = 6
 name = "AnyPopup"
 ordinal = 7
 
-[[export]]
-name = "AppendMenuA"
-ordinal = 8
 
-[[export]]
-name = "AppendMenuW"
-ordinal = 9
 
 [[export]]
 name = "ArrangeIconicWindows"
@@ -3140,9 +3160,6 @@ ordinal = 185
 name = "EndDeferWindowPos"
 ordinal = 187
 
-[[export]]
-name = "EndMenu"
-ordinal = 189
 
 [[export]]
 name = "EndTask"

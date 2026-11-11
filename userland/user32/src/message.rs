@@ -23,6 +23,8 @@
 //! and WM_GETTEXTLENGTH read it, through NtUserDefSetText and NtUserQueryWindow, in the form of the
 //! DefWindowProc called.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_INVALID_CID};
@@ -30,7 +32,7 @@ use rtl::user::*;
 use rtl::window::{WindowText, QUERY_WINDOW_TEXT};
 
 use crate::procedure::{self, Procedure};
-use crate::{answered, failed_with, focus, imports, nonclient, paint, window, Out};
+use crate::{answered, failed_with, focus, imports, menubar, nonclient, paint, window, Out};
 
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
@@ -425,8 +427,10 @@ pub fn translate(msg: &Msg) -> u32 {
 /// WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
 /// DefWindowProc's answer), whatever its lParam; the non-client messages ([`nonclient`]):
 /// WM_NCCALCSIZE the frame taken off the rectangle, WM_NCHITTEST the part under the point,
-/// WM_NCPAINT the frame drawn, WM_NCACTIVATE the caption redrawn, TRUE; 0 to everything else,
-/// WM_ENDSESSION included, and to a text message for a handle naming no window.
+/// WM_NCPAINT the frame drawn, WM_NCACTIVATE the caption redrawn, TRUE; the system keys (Alt or
+/// F10 alone, and Alt with a character, send the top-level window SC_KEYMENU, Alt+F4 SC_CLOSE)
+/// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE); 0 to
+/// everything else, WM_ENDSESSION included, and to a text message for a handle naming no window.
 pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
         WM_NCCREATE => {
@@ -460,6 +464,14 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
         nonclient::WM_NCPAINT => nonclient::paint(window),
         WM_NCACTIVATE => nonclient::activate(window, wparam),
+        WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_SYSCHAR => {
+            system_key(window, message, wparam, lparam);
+            0
+        }
+        menubar::WM_SYSCOMMAND => {
+            system_command(window, wparam, lparam);
+            0
+        }
         WM_ACTIVATE => {
             if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
                 focus::activate_focus(window);
@@ -521,6 +533,88 @@ fn control_colors(dc: usize, message: u32) -> usize {
     imports::set_text_color(dc, crate::display::get_sys_color(COLOR_WINDOWTEXT as i32));
     imports::set_bk_color(dc, crate::display::get_sys_color(background as i32));
     crate::display::get_sys_color_brush(background as i32)
+}
+
+/// The menu key pressed with no other key since (VK_MENU or VK_F10), 0 for none: the default
+/// procedure's WM_SYSKEYUP of that key opens the menu. Windows 2000 keeps this in win32k's input
+/// state; F2K's default procedure keeps it per process, from the key messages it is handed.
+static MENU_KEY_ALONE: AtomicU32 = AtomicU32::new(0);
+
+/// The keys the default procedure acts on (winuser.h's VK_*).
+const VK_MENU: u32 = 0x12;
+const VK_SPACE: u32 = 0x20;
+const VK_F4: u32 = 0x73;
+const VK_F10: u32 = 0x79;
+/// A key message's lParam bits: Alt down (the context code), the key down before (a repeat).
+const KEY_CONTEXT: i32 = 1 << 29;
+const KEY_PREVIOUS: i32 = 1 << 30;
+
+/// WM_SYSCOMMAND's SC_CLOSE.
+const SC_CLOSE: u32 = 0xF060;
+
+/// The top-level window `window` is in: itself, or its first ancestor that is not a child.
+fn top_level(window: usize) -> usize {
+    let mut at = window;
+    while window::style_of(at).is_some_and(|style| style & rtl::nonclient::WS_CHILD != 0) {
+        match window::links(at) {
+            Ok(links) if links.parent != 0 => at = links.parent as usize,
+            _ => break,
+        }
+    }
+    at
+}
+
+/// The default procedure's system keys: Alt or F10 pressed and released alone sends the top-level
+/// window WM_SYSCOMMAND SC_KEYMENU (lParam 0), Alt with a character SC_KEYMENU with the character
+/// (Alt+Space, the system menu's, is not served: F2K has no system menu), Alt+F4 SC_CLOSE.
+fn system_key(window: usize, message: u32, wparam: u32, lparam: i32) {
+    let send_command = |command: u32, parameter: i32| {
+        let _ = send(
+            top_level(window),
+            menubar::WM_SYSCOMMAND,
+            command,
+            parameter,
+        );
+    };
+    match message {
+        WM_SYSKEYDOWN if wparam == VK_MENU || wparam == VK_F10 => {
+            if lparam & KEY_PREVIOUS == 0 {
+                MENU_KEY_ALONE.store(wparam, Ordering::Relaxed);
+            }
+        }
+        WM_SYSKEYDOWN => {
+            MENU_KEY_ALONE.store(0, Ordering::Relaxed);
+            if wparam == VK_F4 && lparam & KEY_CONTEXT != 0 {
+                send_command(SC_CLOSE, 0);
+            }
+        }
+        WM_SYSKEYUP if wparam == VK_MENU || wparam == VK_F10 => {
+            if MENU_KEY_ALONE.swap(0, Ordering::Relaxed) == wparam {
+                send_command(menubar::SC_KEYMENU, 0);
+            }
+        }
+        WM_SYSCHAR => {
+            MENU_KEY_ALONE.store(0, Ordering::Relaxed);
+            if lparam & KEY_CONTEXT != 0 && wparam != VK_SPACE {
+                send_command(menubar::SC_KEYMENU, wparam as i32);
+            }
+        }
+        WM_KEYDOWN => MENU_KEY_ALONE.store(0, Ordering::Relaxed),
+        _ => {}
+    }
+}
+
+/// The default procedure's WM_SYSCOMMAND: SC_KEYMENU runs the window's keyboard menu loop
+/// ([`menubar::track_keyboard`]), SC_CLOSE sends WM_CLOSE; the other commands (the system menu's
+/// moving, sizing, minimizing and maximizing) are not served yet.
+fn system_command(window: usize, wparam: u32, lparam: i32) {
+    match wparam & 0xFFF0 {
+        menubar::SC_KEYMENU => menubar::track_keyboard(window, lparam as u32),
+        SC_CLOSE => {
+            let _ = send(window, WM_CLOSE, 0, 0);
+        }
+        _ => {}
+    }
 }
 
 /// SetTimer: a timer of the window (NULL: a thread timer, its id made) set to come due every
