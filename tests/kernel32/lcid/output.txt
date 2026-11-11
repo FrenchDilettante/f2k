@@ -1,0 +1,14 @@
+# F2K capture of lcid (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026  0:28:18.74
+lcid F2KT-SOURCE-CRC=0xAD2FB6D1
+>>> lcid.exe badlcid
+== badlcid
+CompareStringA(0x9999): ret=0 err=87
+CompareStringW(0x9999): ret=0 err=87
+CompareStringA(0x0409): ret=2 err=-
+CompareStringW(0x0409): ret=2 err=-
+lcid: done
+<<< exit code=0

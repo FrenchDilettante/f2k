@@ -1,0 +1,25 @@
+# threx: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "threx - thread-level exception behavior: the second chance ending only the thread (unhandled), the CONTEXT dispatched to a handler carrying the floating-point and debug-register state (context), the entry's return value ending the thread rather than the process (mainret), and NtQueryInformationThread's ThreadQuerySetWin32StartAddress class answering the recorded start address (threadstart)."
+kind = "sectioned"
+gate = true
+
+
+[pins]
+unhandled = [
+    "kernel32.CreateThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.RaiseException",
+]
+context = [
+    "kernel32.RaiseException",
+]
+mainret = [
+    "kernel32.CreateThread",
+    "kernel32.Sleep",
+]
+threadstart = [
+    "ntdll.NtQueryInformationThread",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetCurrentThread",
+]

@@ -1,0 +1,27 @@
+# F2K capture of vmedge (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026  0:28:18.68
+vmedge F2KT-SOURCE-CRC=0x3F605B83
+>>> vmedge.exe guardwalk
+== guardwalk
+guards=0 code=0xC00000FD
+vmedge: done
+<<< exit code=0
+>>> vmedge.exe commitview
+== commitview
+CreateFileMapping(paging): ret=ok err=0
+MapViewOfFile: ret=ok err=-
+commit over paging view: ret=ok err=-
+CreateFile(own image): ret=ok err=0
+commit over file view: ret=null err=5
+private reserve+commit: ret=ok err=-
+vmedge: done
+<<< exit code=0
+>>> vmedge.exe unmapimage
+== unmapimage
+unmapping own image
+NtUnmapViewOfSection(own image): status=0xC0000008 err=-
+vmedge: done
+<<< exit code=0

@@ -1,0 +1,10 @@
+# startup: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "startup - GetStartupInfoA's three string fields converted from the process parameters: lpDesktop carries the desktop string (Winsta0\\Default for a console-launched process), lpTitle and lpReserved are set, none NULL."
+kind = "sectioned"
+gate = true
+
+
+[pins]
+startup = [
+    "kernel32.GetStartupInfoA",
+]

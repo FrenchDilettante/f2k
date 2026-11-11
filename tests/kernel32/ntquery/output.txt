@@ -1,0 +1,31 @@
+# F2K capture of ntquery (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026  0:28:18.76
+ntquery F2KT-SOURCE-CRC=0x94C920C0
+>>> ntquery.exe sysinfo
+== sysinfo
+NtQuerySystemInformation(5): status=0x00000000 err=- filled=yes
+ntquery: done
+<<< exit code=0
+>>> ntquery.exe procinfo
+== procinfo
+NtQueryInformationProcess(0): status=0x00000000 err=- peb=set
+ntquery: done
+<<< exit code=0
+>>> ntquery.exe threadinfo
+== threadinfo
+NtQueryInformationThread(0): status=0xC0000004 err=-
+ntquery: done
+<<< exit code=0
+>>> ntquery.exe pebread
+== pebread
+ReadProcessMemory or PEB unavailable
+ntquery: done
+<<< exit code=0
+>>> ntquery.exe scmfail
+== scmfail
+OpenSCManagerA: ret=ok err=997
+ntquery: done
+<<< exit code=0

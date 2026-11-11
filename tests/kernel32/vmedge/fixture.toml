@@ -1,0 +1,24 @@
+# vmedge: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "vmedge - the virtual-memory and sections corners: the stack's overflow boundary via the guard-page count before STATUS_STACK_OVERFLOW (guardwalk), MEM_COMMIT over a mapped view succeeding over a paging-file-backed section and answering STATUS_ALREADY_COMMITTED over a file-backed one (commitview), and NtUnmapViewOfSection of the program's own image view (unmapimage)."
+kind = "sectioned"
+gate = true
+
+
+[pins]
+guardwalk = [
+    "kernel32.VirtualAlloc",
+]
+commitview = [
+    "kernel32.VirtualAlloc",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+]
+unmapimage = [
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "ntdll.NtUnmapViewOfSection",
+]

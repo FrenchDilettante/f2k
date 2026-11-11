@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd registry token hellomd crt seh fd wide strings process msvcrt) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -784,4 +784,49 @@ rem shared header), from inside its directory, <dll>\<name>.
 set F2KT_CRC=
 for /f %%H in ('..\..\common\srcsum.exe %1 ..\..\common\f2kt.h') do set F2KT_CRC=%%H
 if "%F2KT_CRC%"=="" (echo build.bat: srcsum failed on %1 & exit /b 1)
+goto :eof
+:threx
+echo === threx
+cd kernel32\threx
+call :stamp threx.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% threx.c kernel32.lib
+if errorlevel 1 (echo build.bat: threx failed & exit /b 1)
+del threx.obj
+cd ..\..
+goto :eof
+:vmedge
+echo === vmedge
+cd kernel32\vmedge
+call :stamp vmedge.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% vmedge.c kernel32.lib
+if errorlevel 1 (echo build.bat: vmedge failed & exit /b 1)
+del vmedge.obj
+cd ..\..
+goto :eof
+:startup
+echo === startup
+cd kernel32\startup
+call :stamp startup.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% startup.c kernel32.lib
+if errorlevel 1 (echo build.bat: startup failed & exit /b 1)
+del startup.obj
+cd ..\..
+goto :eof
+:lcid
+echo === lcid
+cd kernel32\lcid
+call :stamp lcid.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% lcid.c kernel32.lib
+if errorlevel 1 (echo build.bat: lcid failed & exit /b 1)
+del lcid.obj
+cd ..\..
+goto :eof
+:ntquery
+echo === ntquery
+cd kernel32\ntquery
+call :stamp ntquery.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% ntquery.c kernel32.lib advapi32.lib
+if errorlevel 1 (echo build.bat: ntquery failed & exit /b 1)
+del ntquery.obj
+cd ..\..
 goto :eof
