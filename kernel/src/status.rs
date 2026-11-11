@@ -98,6 +98,8 @@ statuses! {
     STATUS_INVALID_VIEW_SIZE,
     /// A file a section cannot be made of.
     STATUS_INVALID_FILE_FOR_SECTION,
+    /// A commit over memory a file's view (or an image's) already backs: its pages are the file's.
+    STATUS_ALREADY_COMMITTED,
     /// The handle or the object was not granted the access the service needs.
     STATUS_ACCESS_DENIED,
     /// The caller's buffer cannot hold the data (a file read into less than the file's size).
