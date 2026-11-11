@@ -2,7 +2,7 @@
 # companion DLL (f2kcom.dll, built beside dll.exe from f2kcom.c and f2kcom.def, with no C runtime
 # and no entry point: nothing runs at load time) goes beside dll.exe in \CORPUS, as it sits beside
 # the program on the real machine.
-description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary."
+description = "dll - a program and its companion DLL: LoadLibraryA of the DLL from the program's directory, GetProcAddress by name and by ordinal, a call into it, and FreeLibrary; LoadLibraryExA/W with flags 0, LOAD_WITH_ALTERED_SEARCH_PATH, LOAD_LIBRARY_AS_DATAFILE and DONT_RESOLVE_DLL_REFERENCES, and their refusals."
 kind = "sectioned"
 gate = true
 
@@ -10,3 +10,4 @@ gate = true
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
 proc = ["kernel32.GetProcAddress", "ntdll.LdrGetProcedureAddress"]
+loadex = ["kernel32.LoadLibraryExA", "kernel32.LoadLibraryExW", "kernel32.FreeLibrary"]
