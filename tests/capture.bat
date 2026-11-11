@@ -48,7 +48,7 @@ call :cap_runtime
 for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console) do call :listed kernel32 %%F
 call :cap_spawn
 call :listed kernel32 pipe
-for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery) do call :listed kernel32 %%F
+for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale) do call :listed kernel32 %%F
 call :listed user32 winsta
 for %%F in (guiclass guiwin guigeo guimsg guipaint guidisp) do call :listed user32 %%F
 call :listed user32 exitwin
@@ -81,7 +81,7 @@ rem saying so.
 :group
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
 for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl) do if /I "%%F"=="%~1" set F2KT_DLL=user32
 for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
