@@ -1,0 +1,35 @@
+# shapes: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# shape is drawn into a 32-bit DIB section in a memory DC and read back through its bits pointer, as
+# rows of letters (or hex for the mix modes). No handle or address prints.
+description = "shapes - CreatePen in each style and width and ExtCreatePen (cosmetic, geometric, end caps, joins) with GetObjectW; MoveToEx/LineTo (the end pixel excluded) and GetCurrentPositionEx; Polyline, Polygon under both fill modes (SetPolyFillMode/GetPolyFillMode), Rectangle, Ellipse and RoundRect with the null pen and the null brush; SetROP2/GetROP2 over every mix mode; all drawn into a DIB section and read back."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the canvas's
+# memory DC and DIB section, GdiFlush, the stock objects and their selection).
+pens = [
+    "gdi32.CreatePen",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.MoveToEx",
+    "gdi32.LineTo",
+]
+extpen = [
+    "gdi32.ExtCreatePen",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.MoveToEx",
+    "gdi32.LineTo",
+    "gdi32.Polyline",
+]
+lines = ["gdi32.MoveToEx", "gdi32.LineTo", "gdi32.GetCurrentPositionEx"]
+poly = [
+    "gdi32.Polyline",
+    "gdi32.Polygon",
+    "gdi32.SetPolyFillMode",
+    "gdi32.GetPolyFillMode",
+    "gdi32.GetCurrentPositionEx",
+]
+shapes = ["gdi32.Rectangle", "gdi32.Ellipse", "gdi32.RoundRect", "gdi32.CreatePen"]
+rop2 = ["gdi32.SetROP2", "gdi32.GetROP2", "gdi32.LineTo", "gdi32.Rectangle"]
