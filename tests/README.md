@@ -19,7 +19,7 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf
+│               # keyinput, mousein, clipbrd, wsprintf, rects
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -248,6 +248,10 @@ The fixtures:
   Every buffer is filled with `#` before a call and prints as its first ret+1 units, so the terminator shows.
   Built with `/MD`.
   Not gated: F2K's user32 has no wsprintf yet.
+- `rects` (user32) - user32's rectangle helpers, which keep no state: `SetRectEmpty`, `IsRectEmpty` and `EqualRect` over empty, inverted and negative rectangles, and `CopyRect` (`empty`); `InflateRect` outwards, inwards past the middle and past the 32-bit limits (`inflate`); `PtInRect` on the edges and corners (`pt`); `IntersectRect` (`intersect`), `UnionRect` (`union`) and `SubtractRect` (`subtract`) over overlapping, touching, nested, disjoint, empty and inverted pairs and into one of their sources, `SubtractRect` with a rectangle covering a whole side, its middle, a corner or a stripe; and every helper with NULL pointers inside `__try` (`nulls`).
+  Every line prints the inputs, the return and the rectangle the call left, a destination starting as (111,222,333,444).
+  Built with `/MD`.
+  Not gated: F2K's user32 has only `SetRect` and `OffsetRect` of them.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.

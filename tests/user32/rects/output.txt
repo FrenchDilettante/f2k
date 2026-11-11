@@ -1,0 +1,145 @@
+# F2K capture of rects (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 13:00:05.75
+rects F2KT-SOURCE-CRC=0xF40A4218
+>>> rects.exe empty
+== empty
+SetRectEmpty((111,222,333,444)): ret=1 err=- rect=(0,0,0,0)
+IsRectEmpty(normal, (0,0,10,10)): ret=0 err=-
+IsRectEmpty(zero width, (5,0,5,10)): ret=1 err=-
+IsRectEmpty(zero height, (0,5,10,5)): ret=1 err=-
+IsRectEmpty(inverted horizontally, (10,0,0,10)): ret=1 err=-
+IsRectEmpty(inverted vertically, (0,10,10,0)): ret=1 err=-
+IsRectEmpty(all zero, (0,0,0,0)): ret=1 err=-
+IsRectEmpty(negative, (-10,-10,-5,-5)): ret=0 err=-
+IsRectEmpty(one by one, (3,3,4,4)): ret=0 err=-
+EqualRect(equal, (1,2,3,4), (1,2,3,4)): ret=1 err=-
+EqualRect(left differs, (1,2,3,4), (0,2,3,4)): ret=0 err=-
+EqualRect(top differs, (1,2,3,4), (1,0,3,4)): ret=0 err=-
+EqualRect(right differs, (1,2,3,4), (1,2,0,4)): ret=0 err=-
+EqualRect(bottom differs, (1,2,3,4), (1,2,3,0)): ret=0 err=-
+EqualRect(two empty, (0,0,0,0), (5,5,5,9)): ret=0 err=-
+EqualRect(two inverted, equal, (10,10,0,0), (10,10,0,0)): ret=1 err=-
+CopyRect(dst, (-1,2,2147483647,-2147483648)): ret=1 err=- rect=(-1,2,2147483647,-2147483648)
+CopyRect(a, a), a (5,6,7,8): ret=1 err=- rect=(5,6,7,8)
+rects: done
+<<< exit code=0
+>>> rects.exe inflate
+== inflate
+InflateRect(outwards (0,0,10,10), 2, 3): ret=1 err=- rect=(-2,-3,12,13)
+InflateRect(inwards (0,0,10,10), -2, -3): ret=1 err=- rect=(2,3,8,7)
+InflateRect(inwards past the middle (0,0,10,10), -6, -7): ret=1 err=- rect=(6,7,4,3)
+InflateRect(by zero (0,0,10,10), 0, 0): ret=1 err=- rect=(0,0,10,10)
+InflateRect(one way only (0,0,10,10), 4, -4): ret=1 err=- rect=(-4,4,14,6)
+InflateRect(inverted (10,10,0,0), 2, 2): ret=1 err=- rect=(8,8,2,2)
+InflateRect(empty (5,5,5,5), 1, 1): ret=1 err=- rect=(4,4,6,6)
+InflateRect(near the limits (-2147483647,0,2147483646,0), 2, 0): ret=1 err=- rect=(2147483647,0,-2147483648,0)
+rects: done
+<<< exit code=0
+>>> rects.exe pt
+== pt
+PtInRect((10,20,30,40), (10,20)), top left corner: ret=1 err=-
+PtInRect((10,20,30,40), (30,20)), top right corner: ret=0 err=-
+PtInRect((10,20,30,40), (10,40)), bottom left corner: ret=0 err=-
+PtInRect((10,20,30,40), (30,40)), bottom right corner: ret=0 err=-
+PtInRect((10,20,30,40), (29,39)), last pixel in: ret=1 err=-
+PtInRect((10,20,30,40), (20,30)), inside: ret=1 err=-
+PtInRect((10,20,30,40), (9,30)), left of it: ret=0 err=-
+PtInRect((10,20,30,40), (30,30)), right edge: ret=0 err=-
+PtInRect((10,20,30,40), (20,19)), above it: ret=0 err=-
+PtInRect((10,20,30,40), (20,40)), bottom edge: ret=0 err=-
+PtInRect((30,40,10,20), (20,30)), inverted, the middle: ret=0 err=-
+PtInRect((30,40,10,20), (30,40)), inverted, its left and top: ret=0 err=-
+PtInRect((10,10,10,10), (10,10)), empty, its corner: ret=0 err=-
+PtInRect((10,10,20,10), (15,10)), zero height: ret=0 err=-
+PtInRect((-30,-30,-10,-10), (-20,-20)), negative, inside: ret=1 err=-
+PtInRect((-30,-30,-10,-10), (-10,-20)), negative, its right edge: ret=0 err=-
+rects: done
+<<< exit code=0
+>>> rects.exe intersect
+== intersect
+IntersectRect(overlapping, (0,0,10,10), (5,5,15,15)): ret=1 err=- rect=(5,5,10,10)
+IntersectRect(overlapping, the other way, (5,5,15,15), (0,0,10,10)): ret=1 err=- rect=(5,5,10,10)
+IntersectRect(touching on the right, (0,0,10,10), (10,0,20,10)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(touching at a corner, (0,0,10,10), (10,10,20,20)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(one pixel over, (0,0,10,10), (9,9,20,20)): ret=1 err=- rect=(9,9,10,10)
+IntersectRect(disjoint, (0,0,10,10), (20,20,30,30)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(overlapping across only, (0,0,10,10), (5,20,15,30)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(nested, (0,0,10,10), (2,2,8,8)): ret=1 err=- rect=(2,2,8,8)
+IntersectRect(equal, (0,0,10,10), (0,0,10,10)): ret=1 err=- rect=(0,0,10,10)
+IntersectRect(an empty one inside, (0,0,10,10), (3,3,3,8)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(an inverted one inside, (0,0,10,10), (8,8,2,2)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(an inverted first, (10,10,0,0), (2,2,8,8)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(both empty, the same, (3,3,3,3), (3,3,3,3)): ret=0 err=- rect=(0,0,0,0)
+IntersectRect(negative, (-10,-10,0,0), (-5,-20,5,-5)): ret=1 err=- rect=(-5,-10,0,-5)
+IntersectRect(a, a, b), a (0,0,10,10), b (5,5,15,15): ret=1 err=- a=(5,5,10,10)
+IntersectRect(b, a, b), a (0,0,10,10), b (20,20,30,30): ret=0 err=- b=(0,0,0,0)
+rects: done
+<<< exit code=0
+>>> rects.exe union
+== union
+UnionRect(overlapping, (0,0,10,10), (5,5,15,15)): ret=1 err=- rect=(0,0,15,15)
+UnionRect(disjoint, (0,0,10,10), (20,20,30,30)): ret=1 err=- rect=(0,0,30,30)
+UnionRect(nested, (0,0,10,10), (2,2,8,8)): ret=1 err=- rect=(0,0,10,10)
+UnionRect(touching, (0,0,10,10), (10,0,20,10)): ret=1 err=- rect=(0,0,20,10)
+UnionRect(the second empty, (0,0,10,10), (50,50,50,60)): ret=1 err=- rect=(0,0,10,10)
+UnionRect(the first empty, (50,50,60,50), (0,0,10,10)): ret=1 err=- rect=(0,0,10,10)
+UnionRect(both empty, (50,50,50,60), (70,70,80,70)): ret=0 err=- rect=(0,0,0,0)
+UnionRect(the second inverted, (0,0,10,10), (30,30,20,20)): ret=1 err=- rect=(0,0,10,10)
+UnionRect(the first inverted, (30,30,20,20), (0,0,10,10)): ret=1 err=- rect=(0,0,10,10)
+UnionRect(both inverted, (30,30,20,20), (10,10,0,0)): ret=0 err=- rect=(0,0,0,0)
+UnionRect(negative, (-10,-10,-5,-5), (5,5,10,10)): ret=1 err=- rect=(-10,-10,10,10)
+UnionRect(a, a, b), a (0,0,10,10), b (5,5,15,15): ret=1 err=- a=(0,0,15,15)
+rects: done
+<<< exit code=0
+>>> rects.exe subtract
+== subtract
+SubtractRect(the left half, (0,0,10,10), (0,0,5,10)): ret=1 err=- rect=(5,0,10,10)
+SubtractRect(the right half, (0,0,10,10), (5,0,10,10)): ret=1 err=- rect=(0,0,5,10)
+SubtractRect(the top, (0,0,10,10), (0,0,10,4)): ret=1 err=- rect=(0,4,10,10)
+SubtractRect(the bottom, (0,0,10,10), (0,6,10,10)): ret=1 err=- rect=(0,0,10,6)
+SubtractRect(the left, past the edges, (0,0,10,10), (-5,-5,5,15)): ret=1 err=- rect=(5,0,10,10)
+SubtractRect(the top, past the edges, (0,0,10,10), (-5,-5,15,5)): ret=1 err=- rect=(0,5,10,10)
+SubtractRect(the right, past three edges, (0,0,10,10), (7,-1,20,11)): ret=1 err=- rect=(0,0,7,10)
+SubtractRect(the left, not the full height, (0,0,10,10), (0,0,5,9)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(the left, one row short at the top, (0,0,10,10), (0,1,5,10)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(the middle, (0,0,10,10), (3,3,7,7)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(a corner, (0,0,10,10), (0,0,5,5)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(a full-height stripe, (0,0,10,10), (3,0,7,10)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(a full-width band, (0,0,10,10), (0,3,10,7)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(all of it, exactly, (0,0,10,10), (0,0,10,10)): ret=0 err=- rect=(0,0,0,0)
+SubtractRect(all of it, and more, (0,0,10,10), (-1,-1,11,11)): ret=0 err=- rect=(0,0,0,0)
+SubtractRect(nothing of it, (0,0,10,10), (20,20,30,30)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(touching on the right, (0,0,10,10), (10,0,20,10)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(an empty one, (0,0,10,10), (0,0,0,10)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(an inverted one over the left, (0,0,10,10), (5,10,0,0)): ret=1 err=- rect=(0,0,10,10)
+SubtractRect(from an empty one, (5,5,5,5), (0,0,10,10)): ret=0 err=- rect=(5,5,5,5)
+SubtractRect(from an empty one, nothing, (5,5,5,5), (20,20,30,30)): ret=0 err=- rect=(5,5,5,5)
+SubtractRect(from an inverted one, (10,10,0,0), (0,0,5,10)): ret=0 err=- rect=(10,10,0,0)
+SubtractRect(a, a, b), a (0,0,10,10), b (0,0,5,10): ret=1 err=- a=(5,0,10,10)
+SubtractRect(a, a, b), a (0,0,10,10), b (-1,-1,11,11): ret=0 err=- a=(0,0,0,0)
+rects: done
+<<< exit code=0
+>>> rects.exe nulls
+== nulls
+SetRectEmpty(NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+IsRectEmpty(NULL), a (0,0,10,10), b (5,5,15,15): ret=1 err=- dst=(111,222,333,444)
+EqualRect(NULL, a), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+EqualRect(a, NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+CopyRect(NULL, a), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+CopyRect(dst, NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+InflateRect(NULL, 1, 1), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+PtInRect(NULL, (1,1)), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+IntersectRect(NULL, a, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+IntersectRect(dst, NULL, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+IntersectRect(dst, a, NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+UnionRect(NULL, a, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+UnionRect(dst, NULL, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+UnionRect(dst, a, NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+SubtractRect(NULL, a, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+SubtractRect(dst, NULL, b), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+SubtractRect(dst, a, NULL), a (0,0,10,10), b (5,5,15,15): ret=0 err=- dst=(111,222,333,444)
+rects: done
+<<< exit code=0

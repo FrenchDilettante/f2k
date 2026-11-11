@@ -2514,6 +2514,71 @@ impl = { stub = "not yet implemented" }
 ordinal = 212
 fails = "FALSE"
 
+[[export]]
+name = "CopyRect"
+group = "rect"
+args = ["ptr lprcDst", "ptr lprcSrc"]
+impl = { stub = "not yet implemented" }
+ordinal = 70
+fails = "FALSE"
+
+[[export]]
+name = "InflateRect"
+group = "rect"
+args = ["ptr lprc", "i32 dx", "i32 dy"]
+impl = { stub = "not yet implemented" }
+ordinal = 374
+fails = "FALSE"
+
+[[export]]
+name = "IntersectRect"
+group = "rect"
+args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
+impl = { stub = "not yet implemented" }
+ordinal = 382
+fails = "FALSE"
+
+[[export]]
+name = "IsRectEmpty"
+group = "rect"
+args = ["ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 403
+fails = "FALSE"
+
+[[export]]
+name = "PtInRect"
+group = "rect"
+args = ["ptr lprc", "i32 x", "i32 y"]
+impl = { stub = "not yet implemented" }
+ordinal = 495
+fails = "FALSE"
+note = "the POINT is passed by value: its x and y"
+
+[[export]]
+name = "SetRectEmpty"
+group = "rect"
+args = ["ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 587
+fails = "FALSE"
+
+[[export]]
+name = "SubtractRect"
+group = "rect"
+args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
+impl = { stub = "not yet implemented" }
+ordinal = 627
+fails = "FALSE"
+
+[[export]]
+name = "UnionRect"
+group = "rect"
+args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
+impl = { stub = "not yet implemented" }
+ordinal = 653
+fails = "FALSE"
+
 # --- strings and characters -----------------------------------------------------------------------
 
 [[export]]
@@ -2846,10 +2911,6 @@ ordinal = 65
 [[export]]
 name = "CopyImage"
 ordinal = 69
-
-[[export]]
-name = "CopyRect"
-ordinal = 70
 
 [[export]]
 name = "CreateCaret"
@@ -3654,10 +3715,6 @@ name = "InSendMessageEx"
 ordinal = 373
 
 [[export]]
-name = "InflateRect"
-ordinal = 374
-
-[[export]]
 name = "InitializeLpkHooks"
 ordinal = 375
 
@@ -3684,10 +3741,6 @@ ordinal = 380
 [[export]]
 name = "InternalGetWindowText"
 ordinal = 381
-
-[[export]]
-name = "IntersectRect"
-ordinal = 382
 
 [[export]]
 name = "InvalidateRgn"
@@ -3736,10 +3789,6 @@ ordinal = 400
 [[export]]
 name = "IsIconic"
 ordinal = 401
-
-[[export]]
-name = "IsRectEmpty"
-ordinal = 403
 
 [[export]]
 name = "IsZoomed"
@@ -3968,10 +4017,6 @@ ordinal = 493
 [[export]]
 name = "PrivateSetRipFlags"
 ordinal = 494
-
-[[export]]
-name = "PtInRect"
-ordinal = 495
 
 [[export]]
 name = "QuerySendMessage"
@@ -4230,10 +4275,6 @@ name = "SetPropW"
 ordinal = 585
 
 [[export]]
-name = "SetRectEmpty"
-ordinal = 587
-
-[[export]]
 name = "SetScrollInfo"
 ordinal = 588
 
@@ -4350,10 +4391,6 @@ name = "SoftModalMessageBox"
 ordinal = 626
 
 [[export]]
-name = "SubtractRect"
-ordinal = 627
-
-[[export]]
 name = "SwapMouseButton"
 ordinal = 628
 
@@ -4428,10 +4465,6 @@ ordinal = 651
 [[export]]
 name = "UnhookWindowsHookEx"
 ordinal = 652
-
-[[export]]
-name = "UnionRect"
-ordinal = 653
 
 [[export]]
 name = "UnloadKeyboardLayout"

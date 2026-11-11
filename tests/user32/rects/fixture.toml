@@ -1,0 +1,27 @@
+# rects: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# line prints the inputs, the return and the rectangle the call left; a destination starts as
+# (111,222,333,444). Not gated: F2K's user32 has none of these helpers yet but SetRect and
+# OffsetRect, so every section is on the work list.
+description = "rects - user32's rectangle helpers: SetRectEmpty, IsRectEmpty and EqualRect over empty, inverted and negative rectangles, CopyRect; InflateRect outwards, inwards past the middle and past the 32-bit limits; PtInRect on the edges and corners; IntersectRect, UnionRect and SubtractRect over overlapping, touching, nested, disjoint, empty and inverted pairs and into one of their sources (SubtractRect's rule: only a rectangle covering a whole side shrinks it); and every helper with NULL pointers, inside __try."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
+empty = ["user32.SetRectEmpty", "user32.IsRectEmpty", "user32.EqualRect", "user32.CopyRect"]
+inflate = ["user32.InflateRect"]
+pt = ["user32.PtInRect"]
+intersect = ["user32.IntersectRect"]
+union = ["user32.UnionRect"]
+subtract = ["user32.SubtractRect"]
+nulls = [
+    "user32.SetRectEmpty",
+    "user32.IsRectEmpty",
+    "user32.EqualRect",
+    "user32.CopyRect",
+    "user32.InflateRect",
+    "user32.PtInRect",
+    "user32.IntersectRect",
+    "user32.UnionRect",
+    "user32.SubtractRect",
+]
