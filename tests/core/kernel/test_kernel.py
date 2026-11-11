@@ -40,6 +40,18 @@ BOOTED = (
     "F2K: frame database audit: ok",
 )
 
+# The PCI enumeration's lines, in order (both boot paths): the development machine's five
+# functions as the boot's `hw::pci` scan reports them, the one interrupt pin in use routed
+# through the ISA bridge's PIRQB to ISA IRQ 10.
+PCI_ENUMERATION = (
+    "F2K: pci: 5 devices",
+    "F2K: pci: 00:00.0 8086:1237 class 060000 rev 02 pin 0 irq -",
+    "F2K: pci: 00:01.0 8086:7000 class 060100 rev 00 pin 0 irq -",
+    "F2K: pci: 00:01.1 8086:7010 class 010180 rev 00 pin 0 irq -",
+    "F2K: pci: 00:01.3 8086:7113 class 068000 rev 03 pin 1 irq 10",
+    "F2K: pci: 00:02.0 1234:1111 class 030000 rev 02 pin 0 irq -",
+)
+
 # The irq-smoke boot's lines, in order (both boot paths). The PIT runs in mode 2, the rate generator.
 IRQ_SMOKE = (
     *BOOTED,
@@ -475,6 +487,20 @@ CASES = (
             *BOOTED,
             "F2K: ram disk: 131072 sectors from the boot module at",
             "F2K: ide: no disk on the primary master",
+            "F2K: image loaded",
+            "F2K: entering ring 3",
+            "Hello, world!",
+            *EXITED_CLEAN,
+        ),
+    ),
+    *both_paths(
+        "pci-enumeration",
+        "the boot enumerates the PCI bus through the config ports and reports the development machine's five functions on COM1, the PM function's pin routed to IRQ 10, then a program loads and runs clean",
+        cmdline="CORPUS\\hellomd.exe",
+        contiguous=PCI_ENUMERATION,
+        expects=(
+            *BOOTED,
+            *PCI_ENUMERATION,
             "F2K: image loaded",
             "F2K: entering ring 3",
             "Hello, world!",

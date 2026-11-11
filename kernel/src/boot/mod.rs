@@ -148,6 +148,11 @@ pub fn interrupts() {
 /// the block devices, and the boot volume.
 #[cfg(target_arch = "x86")]
 pub fn devices() {
+    // The PCI bus: enumerate every reachable function through the config address/data ports,
+    // keep the device table and the PIRQ routes for the driver slices that claim these nodes,
+    // and report the enumeration on COM1. The scan needs no interrupts, so it comes first.
+    crate::hw::pci::init();
+
     // The RAM disk: the disk image a boot loader loaded as the `f2k-disk` module, if it loaded one
     // (the test boots' disk), over the frames the boot memory plan withheld for it.
     crate::block::ramdisk::init();

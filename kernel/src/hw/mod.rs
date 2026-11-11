@@ -2,10 +2,11 @@
 //!
 //! Port I/O, the 8259A interrupt controller pair, the 8254 interval timer, the CMOS real-time
 //! clock, the IDE disk controller, the i8042 keyboard controller and its PS/2 keyboard, the COM1
-//! serial port, the VGA text screen, and the VBE framebuffer (the graphics screen, set from user
-//! mode). The programmable devices reach their registers through the [`portio::Io`] abstraction,
-//! so their logic is identical on target (real ports) and in the host tests (a simulated register
-//! file).
+//! serial port, the PCI bus (enumerated at boot through the config address/data ports behind the
+//! [`pci::ConfigIo`] seam), the VGA text screen, and the VBE framebuffer (the graphics screen,
+//! set from user mode). The programmable devices reach their registers through the
+//! [`portio::Io`] abstraction, so their logic is identical on target (real ports) and in the
+//! host tests (a simulated register file).
 //!
 //! The system hardware among them — the port space, the interrupt controller pair, the interval
 //! timer, the real-time clock and the VBE framebuffer — sits behind the hardware abstraction
@@ -16,6 +17,7 @@
 
 pub mod ide;
 pub mod kbd;
+pub mod pci;
 pub mod pic;
 pub mod pit;
 pub mod portio;
