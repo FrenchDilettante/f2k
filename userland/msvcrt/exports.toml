@@ -245,6 +245,15 @@ impl = { native = "getenv" }
 ordinal = 640
 fails = "NULL"
 
+[[export]]
+name = "abort"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 586
+fails = "never"
+note = "it never returns, so the stub raises"
+
 # --- exception handling / setjmp ------------------------------------------------------------------
 
 [[export]]
@@ -332,6 +341,87 @@ impl = { stub = "not yet implemented", body = "type_info_destructor" }
 ordinal = 14
 fails = "void"
 note = "type_info::~type_info, __thiscall (the object in ECX): it returns nothing"
+
+[[export]]
+name = "??8type_info@@QBEHABV0@@Z"
+group = "exceptions"
+args = ["ptr rhs"]
+impl = { stub = "not yet implemented", body = "type_info_eq" }
+ordinal = 21
+fails = "never"
+note = "type_info::operator==, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+
+[[export]]
+name = "??9type_info@@QBEHABV0@@Z"
+group = "exceptions"
+args = ["ptr rhs"]
+impl = { stub = "not yet implemented", body = "type_info_ne" }
+ordinal = 22
+fails = "never"
+note = "type_info::operator!=, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+
+[[export]]
+name = "?before@type_info@@QBEHABV1@@Z"
+group = "exceptions"
+args = ["ptr rhs"]
+impl = { stub = "not yet implemented", body = "type_info_before" }
+ordinal = 42
+fails = "never"
+note = "type_info::before, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+
+[[export]]
+name = "?name@type_info@@QBEPBDXZ"
+group = "exceptions"
+args = []
+impl = { stub = "not yet implemented", body = "type_info_name" }
+ordinal = 43
+fails = "never"
+note = "type_info::name, __thiscall (the object in ECX): it cannot fail, so the stub raises"
+
+[[export]]
+name = "?raw_name@type_info@@QBEPBDXZ"
+group = "exceptions"
+args = []
+impl = { stub = "not yet implemented", body = "type_info_raw_name" }
+ordinal = 44
+fails = "never"
+note = "type_info::raw_name, __thiscall (the object in ECX): it cannot fail, so the stub raises"
+
+[[export]]
+name = "?set_terminate@@YAP6AXXZP6AXXZ@Z"
+group = "exceptions"
+args = ["ptr pfnTerminate"]
+impl = { stub = "not yet implemented", body = "set_terminate" }
+ordinal = 46
+fails = "NULL"
+note = "set_terminate: the handler it replaces, NULL for none"
+
+[[export]]
+name = "?terminate@@YAXXZ"
+group = "exceptions"
+args = []
+impl = { stub = "not yet implemented", body = "terminate" }
+ordinal = 48
+fails = "never"
+note = "terminate: it never returns, so the stub raises"
+
+[[export]]
+name = "__RTtypeid"
+group = "exceptions"
+args = ["ptr inptr"]
+impl = { stub = "not yet implemented" }
+ordinal = 80
+fails = "never"
+note = "typeid's run-time support: an object's type_info, or a bad_typeid thrown; the stub raises"
+
+[[export]]
+name = "_purecall"
+group = "exceptions"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 416
+fails = "never"
+note = "a pure virtual function's call: it never returns, so the stub raises"
 
 # --- file descriptors / console input -------------------------------------------------------------
 
@@ -1523,14 +1613,6 @@ name = "??4exception@@QAEAAV0@ABV0@@Z"
 ordinal = 20
 
 [[export]]
-name = "??8type_info@@QBEHABV0@@Z"
-ordinal = 21
-
-[[export]]
-name = "??9type_info@@QBEHABV0@@Z"
-ordinal = 22
-
-[[export]]
 name = "??_7__non_rtti_object@@6B@"
 ordinal = 23
 data = true
@@ -1611,32 +1693,12 @@ name = "?_set_se_translator@@YAP6AXIPAU_EXCEPTION_POINTERS@@@ZP6AXI0@Z@Z"
 ordinal = 41
 
 [[export]]
-name = "?before@type_info@@QBEHABV1@@Z"
-ordinal = 42
-
-[[export]]
-name = "?name@type_info@@QBEPBDXZ"
-ordinal = 43
-
-[[export]]
-name = "?raw_name@type_info@@QBEPBDXZ"
-ordinal = 44
-
-[[export]]
 name = "?set_new_handler@@YAP6AXXZP6AXXZ@Z"
 ordinal = 45
 
 [[export]]
-name = "?set_terminate@@YAP6AXXZP6AXXZ@Z"
-ordinal = 46
-
-[[export]]
 name = "?set_unexpected@@YAP6AXXZP6AXXZ@Z"
 ordinal = 47
-
-[[export]]
-name = "?terminate@@YAXXZ"
-ordinal = 48
 
 [[export]]
 name = "?unexpected@@YAXXZ"
@@ -1746,10 +1808,6 @@ ordinal = 78
 [[export]]
 name = "__RTDynamicCast"
 ordinal = 79
-
-[[export]]
-name = "__RTtypeid"
-ordinal = 80
 
 [[export]]
 name = "__STRINGTOLD"
@@ -2940,10 +2998,6 @@ ordinal = 413
 data = true
 
 [[export]]
-name = "_purecall"
-ordinal = 416
-
-[[export]]
 name = "_putch"
 ordinal = 417
 
@@ -3484,10 +3538,6 @@ ordinal = 584
 [[export]]
 name = "_yn"
 ordinal = 585
-
-[[export]]
-name = "abort"
-ordinal = 586
 
 [[export]]
 name = "acos"
