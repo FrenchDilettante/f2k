@@ -47,6 +47,10 @@ title = "bitmaps"
 key = "brushes"
 title = "brushes and fills"
 
+[[group]]
+key = "regions"
+title = "regions and clipping"
+
 # --- device contexts ------------------------------------------------------------------------------
 
 [[export]]
@@ -750,6 +754,25 @@ args = ["handle Dc", "i32 X", "i32 Y", "i32 Width", "i32 Height", "u32 Rop"]
 impl = { syscall = "crate::win32k::brush::pat_blt" }
 internal = true
 
+# --- regions and clipping -------------------------------------------------------------------------
+
+[[export]]
+name = "CreateRectRgn"
+group = "regions"
+args = ["i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 74
+fails = "NULL"
+
+[[export]]
+name = "GetRgnBox"
+group = "regions"
+args = ["handle hrgn", "ptr lprc"]
+impl = { stub = "not yet implemented" }
+ordinal = 359
+fails = "0"
+note = "the region's complexity, 0 (ERROR) failing"
+
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 
 [[export]]
@@ -995,10 +1018,6 @@ ordinal = 72
 [[export]]
 name = "CreatePolygonRgn"
 ordinal = 73
-
-[[export]]
-name = "CreateRectRgn"
-ordinal = 74
 
 [[export]]
 name = "CreateRectRgnIndirect"
@@ -2043,10 +2062,6 @@ ordinal = 357
 [[export]]
 name = "GetRelAbs"
 ordinal = 358
-
-[[export]]
-name = "GetRgnBox"
-ordinal = 359
 
 [[export]]
 name = "GetStretchBltMode"

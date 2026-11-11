@@ -19,7 +19,7 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree
+│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -275,6 +275,9 @@ The fixtures:
   Its windows are hidden but for `popup`'s, which asks for the foreground first and prints whether it got it.
   Built with `/MD`.
   Not gated: F2K's user32 has none of these calls yet but `GetWindow`.
+- `scroll` (user32) - scroll bars: `SetScrollInfo` and `GetScrollInfo` on a window's `WS_VSCROLL` and `WS_HSCROLL` bars, their returns, the range, the page, the position clamped to `nMax - nPage + 1`, a range the page covers with and without `SIF_DISABLENOSCROLL`, and bad arguments (`info`); a window given bars by `SetScrollInfo` (`added`); `ScrollBar` controls and their `SBM_*` messages (`control`); `SetScrollPos`, `SetScrollRange`, `GetScrollPos` and `GetScrollRange` (`posrange`); `ShowScrollBar` (`show`); `EnableScrollBar` with each `ESB_*` flag, the arrows' state probed through its return (`enable`); and `ScrollWindowEx` and `ScrollWindow`, their returns and the regions left to repaint, with `prcScroll`, `prcClip`, `SW_INVALIDATE`, `SW_ERASE` and `SW_SCROLLCHILDREN` (`scrollex`).
+  A bar shows as the borderless window's client area narrower or shorter by a bar's width, never as a size; `scrollex` scrolls a topmost, borderless 200x100 window, so its rectangles, in client coordinates, print as relations to the rectangle each scroll uncovers.
+  Not gated: F2K has no scroll bars yet.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.

@@ -1,0 +1,56 @@
+# scroll: one test per block of the real-machine capture (output.txt); see tests/README.md. No
+# handle or address prints. A bar shows as its window's client area narrower or shorter than the
+# window by a bar (SM_CXVSCROLL, SM_CYHSCROLL), never as a size; a scroll bar's arrows show through
+# EnableScrollBar's return. scrollex's rectangles are in the client coordinates of its own
+# topmost, borderless 200x100 window, the same on every screen, and print as relations to the
+# rectangle each scroll uncovers.
+description = "scroll - scroll bars: SetScrollInfo and GetScrollInfo on a window's WS_VSCROLL and WS_HSCROLL bars and on ScrollBar controls (the range, the page, the position clamped to nMax - nPage + 1, SIF_DISABLENOSCROLL, the returns, a window given bars by SetScrollInfo); the control's SBM_* messages; SetScrollPos, SetScrollRange, GetScrollPos and GetScrollRange; ShowScrollBar and EnableScrollBar, the arrows' state probed; ScrollWindowEx's return and update region (prcUpdate, hrgnUpdate, the window's) as relations, with prcScroll, prcClip, SW_INVALIDATE, SW_ERASE and SW_SCROLLCHILDREN, and ScrollWindow."
+kind = "sectioned"
+
+# Not gated: F2K has no scroll bars yet (its scroll bar calls are stubs, and no ScrollBar class).
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the scroll-bar calls a section observes, not the helpers around them (the class and
+# windows, the rectangles and metrics, IsWindowVisible, IsWindowEnabled, EnableWindow, the region
+# calls and GetUpdateRect).
+info = [
+    "user32.SetScrollInfo",
+    "user32.GetScrollInfo",
+]
+added = [
+    "user32.SetScrollInfo",
+    "user32.GetScrollInfo",
+    "user32.GetScrollPos",
+    "user32.GetScrollRange",
+]
+control = [
+    "user32.CreateWindowExW",
+    "user32.SetScrollInfo",
+    "user32.GetScrollInfo",
+    "user32.GetScrollPos",
+    "user32.SendMessageW",
+]
+posrange = [
+    "user32.SetScrollRange",
+    "user32.SetScrollPos",
+    "user32.GetScrollPos",
+    "user32.GetScrollRange",
+    "user32.SetScrollInfo",
+    "user32.GetScrollInfo",
+]
+show = [
+    "user32.ShowScrollBar",
+    "user32.SetScrollInfo",
+    "user32.GetScrollInfo",
+    "user32.SetScrollPos",
+]
+enable = [
+    "user32.EnableScrollBar",
+    "user32.SetScrollInfo",
+    "user32.SendMessageW",
+]
+scrollex = [
+    "user32.ScrollWindowEx",
+    "user32.ScrollWindow",
+]

@@ -83,6 +83,10 @@ title = "help"
 key = "draw"
 title = "drawing: fills, frames, edges and text"
 
+[[group]]
+key = "scroll"
+title = "scroll bars"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -3272,6 +3276,92 @@ impl = { native = "InvertRect" }
 ordinal = 385
 fails = "FALSE"
 
+# --- scroll bars ----------------------------------------------------------------------------------
+
+[[export]]
+name = "EnableScrollBar"
+group = "scroll"
+args = ["handle hWnd", "u32 wSBflags", "u32 wArrows"]
+impl = { stub = "not yet implemented" }
+ordinal = 185
+fails = "FALSE"
+
+[[export]]
+name = "GetScrollInfo"
+group = "scroll"
+args = ["handle hwnd", "i32 fnBar", "ptr lpsi"]
+impl = { stub = "not yet implemented" }
+ordinal = 322
+fails = "FALSE"
+
+[[export]]
+name = "GetScrollPos"
+group = "scroll"
+args = ["handle hWnd", "i32 nBar"]
+impl = { stub = "not yet implemented" }
+ordinal = 323
+fails = "0"
+
+[[export]]
+name = "GetScrollRange"
+group = "scroll"
+args = ["handle hWnd", "i32 nBar", "ptr<i32> lpMinPos", "ptr<i32> lpMaxPos"]
+impl = { stub = "not yet implemented" }
+ordinal = 324
+fails = "FALSE"
+
+[[export]]
+name = "ScrollWindow"
+group = "scroll"
+args = ["handle hWnd", "i32 XAmount", "i32 YAmount", "ptr lpRect", "ptr lpClipRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 530
+fails = "FALSE"
+
+[[export]]
+name = "ScrollWindowEx"
+group = "scroll"
+args = [
+    "handle hWnd", "i32 dx", "i32 dy", "ptr prcScroll", "ptr prcClip", "handle hrgnUpdate",
+    "ptr prcUpdate", "u32 flags",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 531
+fails = "0"
+note = "the update region's complexity, 0 (ERROR) failing"
+
+[[export]]
+name = "SetScrollInfo"
+group = "scroll"
+args = ["handle hwnd", "i32 fnBar", "ptr lpsi", "bool fRedraw"]
+impl = { stub = "not yet implemented" }
+ordinal = 588
+fails = "0"
+
+[[export]]
+name = "SetScrollPos"
+group = "scroll"
+args = ["handle hWnd", "i32 nBar", "i32 nPos", "bool bRedraw"]
+impl = { stub = "not yet implemented" }
+ordinal = 589
+fails = "0"
+
+[[export]]
+name = "SetScrollRange"
+group = "scroll"
+args = ["handle hWnd", "i32 nBar", "i32 nMinPos", "i32 nMaxPos", "bool bRedraw"]
+impl = { stub = "not yet implemented" }
+ordinal = 590
+fails = "FALSE"
+
+[[export]]
+name = "ShowScrollBar"
+group = "scroll"
+args = ["handle hWnd", "i32 wBar", "bool bShow"]
+impl = { stub = "not yet implemented" }
+ordinal = 622
+fails = "FALSE"
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
@@ -3745,10 +3835,6 @@ ordinal = 180
 name = "EditWndProc"
 ordinal = 182
 
-[[export]]
-name = "EnableScrollBar"
-ordinal = 185
-
 
 [[export]]
 name = "EndTask"
@@ -4001,18 +4087,6 @@ ordinal = 320
 [[export]]
 name = "GetScrollBarInfo"
 ordinal = 321
-
-[[export]]
-name = "GetScrollInfo"
-ordinal = 322
-
-[[export]]
-name = "GetScrollPos"
-ordinal = 323
-
-[[export]]
-name = "GetScrollRange"
-ordinal = 324
 
 [[export]]
 name = "GetShellWindow"
@@ -4459,14 +4533,6 @@ name = "ScrollDC"
 ordinal = 529
 
 [[export]]
-name = "ScrollWindow"
-ordinal = 530
-
-[[export]]
-name = "ScrollWindowEx"
-ordinal = 531
-
-[[export]]
 name = "SendDlgItemMessageA"
 ordinal = 532
 
@@ -4571,18 +4637,6 @@ name = "SetProgmanWindow"
 ordinal = 583
 
 [[export]]
-name = "SetScrollInfo"
-ordinal = 588
-
-[[export]]
-name = "SetScrollPos"
-ordinal = 589
-
-[[export]]
-name = "SetScrollRange"
-ordinal = 590
-
-[[export]]
 name = "SetShellWindow"
 ordinal = 591
 
@@ -4669,10 +4723,6 @@ ordinal = 620
 [[export]]
 name = "ShowOwnedPopups"
 ordinal = 621
-
-[[export]]
-name = "ShowScrollBar"
-ordinal = 622
 
 [[export]]
 name = "ShowStartGlass"
