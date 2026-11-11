@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:20.32
-wintext F2KT-SOURCE-CRC=0xFBCB73B6
+# date: Wed 11/11/2026 13:05:50.07
+wintext F2KT-SOURCE-CRC=0x8A19FDF7
 >>> wintext.exe create
 == create
 setup: the classes registered: yes
@@ -266,5 +266,50 @@ GetWindowTextLengthW(the custom window): ret=9 err=-
   procedure custom saw WM_GETTEXTLENGTH wParam=0 ret=9
 GetWindowTextW(the custom window, buf, 64): ret=9 err=- text="from proc"
   procedure custom saw WM_GETTEXT wParam=64 text="from proc" ret=9
+wintext: done
+<<< exit code=0
+>>> wintext.exe internal
+== internal
+setup: the classes registered: yes
+GetProcAddress(user32, InternalGetWindowText): non-NULL yes
+the W and A windows titled "abcdefgh", the custom window titled "real title" and an untitled W window created: yes
+InternalGetWindowText(the W window, buf, 0): ret=0 err=- buffer=|#########
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 1): ret=0 err=- buffer=|#########
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 4): ret=3 err=- buffer=abc|######
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 8): ret=7 err=- buffer=abcdefg|##
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 9): ret=8 err=- buffer=abcdefgh|#
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 64): ret=8 err=- buffer=abcdefgh|#
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 0): ret=0 err=- buffer=|#########
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 1): ret=0 err=- buffer=|#########
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 4): ret=3 err=- buffer=abc|######
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 8): ret=7 err=- buffer=abcdefg|##
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 9): ret=8 err=- buffer=abcdefgh|#
+  procedures saw: nothing
+InternalGetWindowText(the A window, buf, 64): ret=8 err=- buffer=abcdefgh|#
+  procedures saw: nothing
+InternalGetWindowText(the custom window, buf, 64): ret=10 err=- buffer=real title
+  procedures saw: nothing
+InternalGetWindowText(the untitled window, buf, 64): ret=0 err=- buffer=|#########
+  procedures saw: nothing
+SetWindowTextW(the W window, L"café<U+4E00>"): ret=1 err=-
+  procedure W saw WM_SETTEXT wParam=0 text="café<U+4E00>" ret=1
+InternalGetWindowText(the W window, buf, 64): ret=5 err=- buffer=café<U+4E00>|####
+  procedures saw: nothing
+InternalGetWindowText(the W window, buf, 4): ret=3 err=- buffer=caf|######
+  procedures saw: nothing
+InternalGetWindowText(NULL, buf, 64): ret=0 err=1400 buffer=|#########
+  procedures saw: nothing
+InternalGetWindowText(a destroyed window, buf, 64): ret=0 err=1400 buffer=|#########
+  procedures saw: nothing
 wintext: done
 <<< exit code=0

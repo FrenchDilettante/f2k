@@ -50,6 +50,12 @@
  *             GetWindowTextW/A and GetWindowTextLengthW/A, then
  *             SetWindowTextW refused and accepted, each followed by
  *             DefWindowProcW's own WM_GETTEXT
+ *   internal  InternalGetWindowText, found with GetProcAddress (the
+ *             MSVC 6-era SDK declares it nowhere): the W and A windows
+ *             titled "abcdefgh" into buffers of 0, 1, 4, 8, 9 and 64
+ *             units, the custom window (whether its procedure is
+ *             asked), an untitled window, text with U+00E9 and U+4E00,
+ *             NULL and destroyed windows
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat wintext):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wintext.c user32.lib
@@ -725,6 +731,67 @@ static void sec_custom(void)
     destroy(h);
 }
 
+/* --- internal ------------------------------------------------------ */
+
+typedef int (WINAPI *internal_fn)(HWND, LPWSTR, int);
+
+static void internal_get(internal_fn fn, const char *name, HWND h, int count)
+{
+    WCHAR buf[64];
+    int r;
+
+    fill_w(buf, 64);
+    arm();
+    r = fn(h, buf, count);
+    line("InternalGetWindowText(%s, buf, %d): ret=%d err=%s buffer=%s", name, count, r, le(),
+         units_w(buf));
+    print_records();
+}
+
+static void sec_internal(void)
+{
+    static const int counts[] = { 0, 1, 4, 8, 9, 64 };
+    static const WCHAR mixed[] = { 'c', 'a', 'f', 0x00E9, 0x4E00, 0 };
+    internal_fn fn;
+    HWND hw, ha, hc, hn;
+    int i;
+
+    setup();
+    fn = (internal_fn)GetProcAddress(GetModuleHandleA("user32.dll"), "InternalGetWindowText");
+    line("GetProcAddress(user32, InternalGetWindowText): non-NULL %s", yesno(fn != NULL));
+    if (fn == NULL) {
+        return;
+    }
+    hw = make_w(L"abcdefgh");
+    ha = make_a("abcdefgh");
+    hc = CreateWindowExW(0, L"F2KWintextCustom", L"real title", WS_POPUP, 0, 0, 320, 200, NULL,
+                         NULL, GetModuleHandleA(NULL), NULL);
+    hn = make_w(NULL);
+    line("the W and A windows titled \"abcdefgh\", the custom window titled \"real title\" and an "
+         "untitled W window created: %s",
+         yesno(hw != NULL && ha != NULL && hc != NULL && hn != NULL));
+    reset_records();
+
+    for (i = 0; i < 6; i++) {
+        internal_get(fn, "the W window", hw, counts[i]);
+    }
+    for (i = 0; i < 6; i++) {
+        internal_get(fn, "the A window", ha, counts[i]);
+    }
+    internal_get(fn, "the custom window", hc, 64);
+    internal_get(fn, "the untitled window", hn, 64);
+    set_w("the W window", hw, mixed);
+    internal_get(fn, "the W window", hw, 64);
+    internal_get(fn, "the W window", hw, 4);
+    internal_get(fn, "NULL", NULL, 64);
+    internal_get(fn, "a destroyed window", dead, 64);
+
+    destroy(hw);
+    destroy(ha);
+    destroy(hc);
+    destroy(hn);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "setget", sec_setget, F2KT_ALWAYS },
@@ -732,6 +799,7 @@ static const section_t sections[] = {
     { "messages", sec_messages, F2KT_ALWAYS },
     { "cross", sec_cross, F2KT_ALWAYS },
     { "custom", sec_custom, F2KT_ALWAYS },
+    { "internal", sec_internal, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
