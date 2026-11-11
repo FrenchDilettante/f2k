@@ -2,7 +2,7 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 11:57:10.16
+# date: Wed 11/11/2026 13:00:05.83
 keyinput F2KT-SOURCE-CRC=0x25E385B4
 >>> keyinput.exe letters
 == letters
@@ -117,8 +117,8 @@ Caps Lock on: no; Num Lock on: no
 SendInput(2 events): ret=2 err=-
 the batch arrived: yes
 received: 3 message(s)
-  WM_KEYDOWN wParam=0x000D lParam=0x401C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 0) down: shift no ctrl no alt no key yes
-  WM_CHAR wParam=0x000D lParam=0x401C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 0) down: shift no ctrl no alt no
+  WM_KEYDOWN wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
   WM_KEYUP wParam=0x000D lParam=0xC01C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
 -- Escape
 SendInput(2 events): ret=2 err=-

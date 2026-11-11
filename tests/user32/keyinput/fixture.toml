@@ -6,9 +6,6 @@ description = "keyinput - keystrokes injected with SendInput into the program's 
 kind = "sectioned"
 gate = true
 
-[pending]
-control = "the capture machine held Enter down as the block began (its key-up lost before the capture ran), so the block's first Enter shows the previous-state bit set (lParam 0x401C0001), where F2K's key state starts with Enter up; the same capture's ansi Enter, and the capture before it, show the bit clear: a recapture of the block clears it"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the class and
