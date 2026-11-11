@@ -1,0 +1,100 @@
+# F2K capture of wintree (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:58:48.32
+wintree F2KT-SOURCE-CRC=0x8A2CBF9E
+>>> wintree.exe parent
+== parent
+top: GetParent=NULL err=-, GetWindow(GW_OWNER)=NULL err=-
+popup (owned by top): GetParent=top err=-, GetWindow(GW_OWNER)=top err=-
+overlapped (owned by top): GetParent=NULL err=-, GetWindow(GW_OWNER)=top err=-
+child (of top): GetParent=top err=-, GetWindow(GW_OWNER)=NULL err=-
+grandchild (of child): GetParent=child (of top) err=-, GetWindow(GW_OWNER)=NULL err=-
+popup's style set to WS_CAPTION without WS_POPUP: WS_POPUP no
+popup (owned by top): GetParent=NULL err=-, GetWindow(GW_OWNER)=top err=-
+popup's style put back: WS_POPUP yes
+popup (owned by top): GetParent=top err=-, GetWindow(GW_OWNER)=top err=-
+the desktop: GetParent=NULL err=-, GetWindow(GW_OWNER)=NULL err=-
+NULL: GetParent=NULL err=1400, GetWindow(GW_OWNER)=NULL err=1400
+a destroyed window: GetParent=NULL err=1400, GetWindow(GW_OWNER)=NULL err=1400
+wintree: done
+<<< exit code=0
+>>> wintree.exe ids
+== ids
+GetWindowThreadProcessId(own, &pid): err=-, thread id nonzero yes, the expected thread yes, this thread yes; pid set yes, this process yes
+GetWindowThreadProcessId(own, NULL): err=-, this thread yes
+the second thread made its window: WAIT_OBJECT_0, yes
+GetWindowThreadProcessId(the second thread's window, &pid): err=-, thread id nonzero yes, the expected thread yes, this thread no; pid set yes, this process yes
+the second thread ended: WAIT_OBJECT_0
+GetWindowThreadProcessId(the desktop, &pid): err=-, thread id nonzero yes, the expected thread no, this thread no; pid set yes, this process no
+GetWindowThreadProcessId(NULL, &pid): err=1400, thread id nonzero no, the expected thread yes, this thread no; pid set no, this process no
+GetWindowThreadProcessId(a destroyed window, &pid): err=1400, thread id nonzero no, the expected thread yes, this thread no; pid set no, this process no
+wintree: done
+<<< exit code=0
+>>> wintree.exe enum
+== enum
+EnumWindows: ret=1 err=-, lParam passed yes; ours in order: D (owned by A), C, B, A
+EnumWindows, the callback stopping at our second: ret=0 err=-, lParam passed yes; ours in order: D (owned by A), C
+EnumChildWindows(A): ret=1 err=-, lParam passed yes; ours in order: A1 (child of A), A1a (child of A1), A2 (child of A)
+EnumChildWindows(A1 (child of A)): ret=1 err=-, lParam passed yes; ours in order: A1a (child of A1)
+EnumChildWindows(A1a (child of A1)), no children: ret=0 err=-, lParam passed no; ours in order: none
+EnumChildWindows(B), no children: ret=0 err=-, lParam passed no; ours in order: none
+EnumChildWindows(A), the callback stopping at our first: ret=0 err=-, lParam passed yes; ours in order: A1 (child of A)
+EnumChildWindows(NULL): ret=1 err=-, lParam passed yes; ours in order: D (owned by A), C, B, A
+EnumChildWindows(a destroyed window): ret=0 err=1400, lParam passed no; ours in order: none
+wintree: done
+<<< exit code=0
+>>> wintree.exe zorder
+== zorder
+GetTopWindow(P): K1 (child of P) err=-
+EnumChildWindows(P): ret=1 err=-, lParam passed yes; ours in order: K1 (child of P), K2 (child of P), K3 (child of P)
+BringWindowToTop(K1 (child of P)): ret=1 err=-
+GetTopWindow(P): K1 (child of P) err=-
+EnumChildWindows(P): ret=1 err=-, lParam passed yes; ours in order: K1 (child of P), K2 (child of P), K3 (child of P)
+BringWindowToTop(K3 (child of P)): ret=1 err=-
+GetTopWindow(P): K3 (child of P) err=-
+EnumChildWindows(P): ret=1 err=-, lParam passed yes; ours in order: K3 (child of P), K1 (child of P), K2 (child of P)
+BringWindowToTop(K2 (child of P)): ret=1 err=-
+GetTopWindow(P): K2 (child of P) err=-
+EnumChildWindows(P): ret=1 err=-, lParam passed yes; ours in order: K2 (child of P), K3 (child of P), K1 (child of P)
+GetTopWindow(K1 (child of P)): NULL err=-
+EnumWindows: ret=1 err=-, lParam passed yes; ours in order: T3, T2, T1, P
+BringWindowToTop(T1): ret=1 err=-
+EnumWindows: ret=1 err=-, lParam passed yes; ours in order: T1, T3, T2, P
+BringWindowToTop(T3): ret=1 err=-
+EnumWindows: ret=1 err=-, lParam passed yes; ours in order: T3, T1, T2, P
+BringWindowToTop(T2): ret=1 err=-
+EnumWindows: ret=1 err=-, lParam passed yes; ours in order: T2, T3, T1, P
+BringWindowToTop(NULL): ret=0 err=1400
+GetTopWindow(a destroyed window): NULL err=1400
+BringWindowToTop(a destroyed window): ret=0 err=1400
+wintree: done
+<<< exit code=0
+>>> wintree.exe popup
+== popup
+SetForegroundWindow(owner): owner is the foreground: yes
+GetLastActivePopup(owner): owner err=-; the active window: owner
+GetLastActivePopup(owner): owner err=-; the active window: owner
+P1 shown
+GetLastActivePopup(owner): P1 (owned by owner) err=-; the active window: P1 (owned by owner)
+P2 shown
+GetLastActivePopup(owner): P2 (owned by owner) err=-; the active window: P2 (owned by owner)
+GetLastActivePopup(P1 (owned by owner)): P1 (owned by owner) err=-; the active window: P2 (owned by owner)
+GetLastActivePopup(P2 (owned by owner)): P2 (owned by owner) err=-; the active window: P2 (owned by owner)
+SetActiveWindow(owner)
+GetLastActivePopup(owner): owner err=-; the active window: owner
+SetActiveWindow(P1)
+GetLastActivePopup(owner): P1 (owned by owner) err=-; the active window: P1 (owned by owner)
+P1 hidden
+GetLastActivePopup(owner): owner err=-; the active window: owner
+P1 shown and active again
+GetLastActivePopup(owner): P1 (owned by owner) err=-; the active window: P1 (owned by owner)
+P1 destroyed
+GetLastActivePopup(owner): owner err=-; the active window: owner
+P2 destroyed
+GetLastActivePopup(owner): owner err=-; the active window: owner
+GetLastActivePopup(lone): lone err=-; the active window: owner
+GetLastActivePopup(NULL): NULL err=1400; the active window: owner
+wintree: done
+<<< exit code=0

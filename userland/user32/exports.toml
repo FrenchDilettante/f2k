@@ -1019,6 +1019,62 @@ ordinal = 585
 fails = "FALSE"
 note = "the name a string, or an integer atom in its low word"
 
+[[export]]
+name = "BringWindowToTop"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 15
+fails = "FALSE"
+
+[[export]]
+name = "EnumChildWindows"
+group = "window"
+args = ["handle hWndParent", "ptr lpEnumFunc", "u32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 192
+fails = "FALSE"
+
+[[export]]
+name = "EnumWindows"
+group = "window"
+args = ["ptr lpEnumFunc", "u32 lParam"]
+impl = { stub = "not yet implemented" }
+ordinal = 211
+fails = "FALSE"
+
+[[export]]
+name = "GetLastActivePopup"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 285
+fails = "NULL"
+
+[[export]]
+name = "GetParent"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 313
+fails = "NULL"
+
+[[export]]
+name = "GetTopWindow"
+group = "window"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 336
+fails = "NULL"
+
+[[export]]
+name = "GetWindowThreadProcessId"
+group = "window"
+args = ["handle hWnd", "ptr<u32> lpdwProcessId"]
+impl = { stub = "not yet implemented" }
+ordinal = 359
+fails = "0"
+
 # --- resources ------------------------------------------------------------------------------------
 
 [[export]]
@@ -2911,10 +2967,6 @@ name = "BlockInput"
 ordinal = 14
 
 [[export]]
-name = "BringWindowToTop"
-ordinal = 15
-
-[[export]]
 name = "BroadcastSystemMessage"
 ordinal = 16
 
@@ -3373,10 +3425,6 @@ name = "EndTask"
 ordinal = 191
 
 [[export]]
-name = "EnumChildWindows"
-ordinal = 192
-
-[[export]]
 name = "EnumDesktopWindows"
 ordinal = 194
 
@@ -3423,10 +3471,6 @@ ordinal = 209
 [[export]]
 name = "EnumWindowStationsW"
 ordinal = 210
-
-[[export]]
-name = "EnumWindows"
-ordinal = 211
 
 [[export]]
 name = "ExcludeUpdateRgn"
@@ -3589,10 +3633,6 @@ name = "GetKeyboardType"
 ordinal = 284
 
 [[export]]
-name = "GetLastActivePopup"
-ordinal = 285
-
-[[export]]
 name = "GetLastInputInfo"
 ordinal = 286
 
@@ -3661,10 +3701,6 @@ name = "GetNextDlgTabItem"
 ordinal = 311
 
 [[export]]
-name = "GetParent"
-ordinal = 313
-
-[[export]]
 name = "GetPriorityClipboardFormat"
 ordinal = 314
 
@@ -3717,10 +3753,6 @@ name = "GetTitleBarInfo"
 ordinal = 335
 
 [[export]]
-name = "GetTopWindow"
-ordinal = 336
-
-[[export]]
 name = "GetUpdateRgn"
 ordinal = 338
 
@@ -3759,10 +3791,6 @@ ordinal = 352
 [[export]]
 name = "GetWindowRgn"
 ordinal = 354
-
-[[export]]
-name = "GetWindowThreadProcessId"
-ordinal = 359
 
 [[export]]
 name = "GrayStringA"

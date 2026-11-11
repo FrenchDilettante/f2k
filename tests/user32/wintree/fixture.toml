@@ -1,0 +1,22 @@
+# wintree: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
+# windows are hidden but for popup's. A window prints by its label, never by its handle, and thread
+# and process ids only as relations to the program's own; enumeration keeps the program's own
+# windows only. Not gated: F2K's user32 has none of these calls yet but GetWindow, so every section
+# is on the work list.
+description = "wintree - the window tree: GetParent against GetWindow(GW_OWNER) for unowned, owned pop-up, owned overlapped, child and grandchild windows, and an owned pop-up losing WS_POPUP; GetWindowThreadProcessId of the program's own, a second thread's and the desktop window, NULL and destroyed ones; EnumWindows and EnumChildWindows (the program's windows in order, the lParam, a callback stopping early, NULL and destroyed parents); GetTopWindow and BringWindowToTop over children and top-level pop-ups; and GetLastActivePopup as owned pop-ups are shown, activated, hidden and destroyed."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the class, the
+# windows, ShowWindow, SetActiveWindow, SetForegroundWindow).
+parent = ["user32.GetParent", "user32.GetWindow"]
+ids = ["user32.GetWindowThreadProcessId"]
+enum = ["user32.EnumWindows", "user32.EnumChildWindows"]
+zorder = [
+    "user32.GetTopWindow",
+    "user32.BringWindowToTop",
+    "user32.EnumWindows",
+    "user32.EnumChildWindows",
+]
+popup = ["user32.GetLastActivePopup", "user32.GetActiveWindow"]
