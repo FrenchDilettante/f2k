@@ -1,5 +1,5 @@
 # memory: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, stacks, NtQuerySection, and a console call writing into a thread's stack guard page."
+description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, stacks, NtQuerySection, a console call writing into a thread's stack guard page, and GlobalFlags over the GMEM_ blocks."
 kind = "sectioned"
 gate = true
 [masks]
@@ -135,4 +135,10 @@ guardcall = [
     "kernel32.GetConsoleTitleW",
     "kernel32.GetLastError",
     "kernel32.SetLastError",
+]
+globalflags = [
+    "kernel32.GlobalFlags",
+    "kernel32.GlobalLock",
+    "kernel32.GlobalUnlock",
+    "kernel32.GlobalReAlloc",
 ]

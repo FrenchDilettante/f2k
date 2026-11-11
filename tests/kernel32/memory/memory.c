@@ -48,6 +48,17 @@
  *            GetConsoleTitleW: the call's answer, and whether the page
  *            was committed and a new guard page set below it, as a fault
  *            on the guard page in the thread's own code would have
+ *   globalflags GlobalFlags over GMEM_ blocks: fixed and moveable,
+ *            locked once and twice and unlocked (GlobalUnlock's answers,
+ *            one unlock too many), 300 locks and unlocks (the lock
+ *            count's ceiling), discardable and discarded by GlobalDiscard
+ *            (winbase.h's macro over GlobalReAlloc), GlobalLock and
+ *            GlobalReAlloc of the discarded block, a moveable block of
+ *            0 bytes, GMEM_DDESHARE, GMEM_NOCOMPACT|GMEM_NODISCARD,
+ *            GMEM_ZEROINIT, fixed and discardable, GlobalHandle of a
+ *            pointer, a freed block, NULL; GlobalFlags reached through
+ *            GetProcAddress, so the program still loads where kernel32
+ *            lacks it
  *
  * The named mappings run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)");
@@ -518,6 +529,134 @@ static void sec_local(void)
          p != NULL && check(p, 300, 9) ? "intact" : "lost", GlobalSize(g2));
     GlobalUnlock(g2);
     line("GlobalFree(moveable): returned null %s", yesno(GlobalFree(g2) == NULL));
+}
+
+/* --- globalflags --------------------------------------------------- */
+
+/* GlobalFlags is reached through GetProcAddress: the program loads where
+   kernel32 lacks it, its other sections intact. */
+typedef UINT (WINAPI *global_flags_fn)(HGLOBAL block);
+
+static global_flags_fn global_flags;
+
+/* GlobalFlags of `g`: the flags in hex, its lock count apart, and the
+   last error. */
+static void show_global_flags(const char *label, HGLOBAL g)
+{
+    UINT f;
+    const char *e;
+
+    arm();
+    f = global_flags(g);
+    e = le();
+    line("GlobalFlags(%s): 0x%04X (lock count %u, the rest 0x%04X) err=%s", label, f, f & GMEM_LOCKCOUNT,
+         f & ~(UINT)GMEM_LOCKCOUNT, e);
+}
+
+static void sec_globalflags(void)
+{
+    HGLOBAL g, d;
+    void *p;
+    int i;
+    BOOL r;
+    const char *e;
+
+    global_flags = (global_flags_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GlobalFlags");
+    line("kernel32 exports GlobalFlags: %s", yesno(global_flags != NULL));
+    if (global_flags == NULL) {
+        return;
+    }
+    g = GlobalAlloc(GMEM_FIXED, 64);
+    show_global_flags("GMEM_FIXED", g);
+    GlobalLock(g);
+    show_global_flags("GMEM_FIXED, locked once", g);
+    GlobalUnlock(g);
+    GlobalFree(g);
+
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    show_global_flags("GMEM_MOVEABLE", g);
+    GlobalLock(g);
+    show_global_flags("GMEM_MOVEABLE, locked once", g);
+    GlobalLock(g);
+    show_global_flags("GMEM_MOVEABLE, locked twice", g);
+    arm();
+    r = GlobalUnlock(g);
+    e = le();
+    line("GlobalUnlock, of two locks: ret=%d err=%s", r, e);
+    show_global_flags("GMEM_MOVEABLE, unlocked once", g);
+    arm();
+    r = GlobalUnlock(g);
+    e = le();
+    line("GlobalUnlock, the last lock: ret=%d err=%s", r, e);
+    show_global_flags("GMEM_MOVEABLE, unlocked", g);
+    arm();
+    r = GlobalUnlock(g);
+    e = le();
+    line("GlobalUnlock, not locked: ret=%d err=%s", r, e);
+    show_global_flags("GMEM_MOVEABLE, unlocked once too often", g);
+
+    /* The lock count's ceiling: 300 locks, then 300 unlocks. */
+    for (i = 0; i < 300; i++) {
+        GlobalLock(g);
+    }
+    show_global_flags("GMEM_MOVEABLE, locked 300 times", g);
+    for (i = 0; i < 299; i++) {
+        GlobalUnlock(g);
+    }
+    show_global_flags("GMEM_MOVEABLE, then unlocked 299 times", g);
+    arm();
+    r = GlobalUnlock(g);
+    e = le();
+    line("GlobalUnlock, the 300th: ret=%d err=%s", r, e);
+    show_global_flags("GMEM_MOVEABLE, then unlocked 300 times", g);
+    GlobalFree(g);
+
+    g = GlobalAlloc(GMEM_MOVEABLE | GMEM_DISCARDABLE, 64);
+    show_global_flags("GMEM_MOVEABLE|GMEM_DISCARDABLE", g);
+    arm();
+    d = GlobalDiscard(g);
+    e = le();
+    line("GlobalDiscard: the same handle %s err=%s", yesno(d == g), e);
+    show_global_flags("GMEM_MOVEABLE|GMEM_DISCARDABLE, discarded", g);
+    arm();
+    p = GlobalLock(g);
+    e = le();
+    line("GlobalLock of the discarded block: ret null %s err=%s", yesno(p == NULL), e);
+    if (p != NULL) {
+        GlobalUnlock(g);
+    }
+    g = GlobalReAlloc(g, 32, GMEM_MOVEABLE);
+    show_global_flags("the discarded block, reallocated to 32 bytes", g);
+    GlobalFree(g);
+
+    g = GlobalAlloc(GMEM_MOVEABLE, 0);
+    show_global_flags("GMEM_MOVEABLE of 0 bytes", g);
+    GlobalFree(g);
+
+    g = GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, 64);
+    show_global_flags("GMEM_MOVEABLE|GMEM_DDESHARE", g);
+    GlobalFree(g);
+    g = GlobalAlloc(GMEM_MOVEABLE | GMEM_NOCOMPACT | GMEM_NODISCARD, 64);
+    show_global_flags("GMEM_MOVEABLE|GMEM_NOCOMPACT|GMEM_NODISCARD", g);
+    GlobalFree(g);
+    g = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, 64);
+    show_global_flags("GMEM_MOVEABLE|GMEM_ZEROINIT", g);
+    GlobalFree(g);
+    g = GlobalAlloc(GMEM_FIXED | GMEM_DISCARDABLE, 64);
+    show_global_flags("GMEM_FIXED|GMEM_DISCARDABLE", g);
+    GlobalFree(g);
+
+    /* A block from GlobalAlloc's pointer, and handles that are no block. */
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    p = GlobalLock(g);
+    show_global_flags("GlobalHandle of a locked block's pointer", GlobalHandle(p));
+    GlobalUnlock(g);
+    arm();
+    d = GlobalFree(g);
+    e = le();
+    line("GlobalFree(moveable): returned null %s err=%s", yesno(d == NULL), e);
+    show_global_flags("a freed moveable block", g);
+    show_global_flags("NULL", NULL);
 }
 
 /* --- virtual ------------------------------------------------------- */
@@ -1227,6 +1366,7 @@ static const section_t sections[] = {
     { "stack", sec_stack, 0 },
     { "query", sec_query, 0 },
     { "guardcall", sec_guardcall, 0 },
+    { "globalflags", sec_globalflags, 0 },
     { NULL, NULL, 0 }
 };
 
