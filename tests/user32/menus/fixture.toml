@@ -16,10 +16,10 @@ gate = true
 # pending (the harness refuses a pending section with no block) and carry no pins. Each is to be
 # pending, with the reason below, until F2K passes its capture:
 [pending]
-# bar = "a new section: its capture from the real machine is awaited; F2K has no menu bar in the non-client area and no DrawMenuBar yet"
-# keyloop = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
-# keyesc = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
-# keychar = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
+# bar = "a new section: its capture from the real machine is awaited"
+# keyloop = "a new section: its capture from the real machine is awaited"
+# keyesc = "a new section: its capture from the real machine is awaited"
+# keychar = "a new section: its capture from the real machine is awaited"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

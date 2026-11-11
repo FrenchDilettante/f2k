@@ -225,6 +225,88 @@ pub extern "system" fn create_popup_menu() -> usize {
     .map_or(0, |m| m as usize)
 }
 
+/// AppendMenu's core: an item at the end of `menu`, its type and state from the old flags (a
+/// separator grayed, as a template's is), the popup `item` opens for MF_POPUP (its handle its id,
+/// as a MENU template's popup has), the command id `item` otherwise, its text `text` (none for a
+/// separator); TRUE, or FALSE with the last error. Bitmap and owner-drawn items are not served:
+/// their `item` is taken as text no more.
+fn append(menu: usize, flags: u32, item: usize, text: &[u16]) -> i32 {
+    let (item_type, state) = from_flags(flags);
+    let popup = flags & MF_POPUP != 0;
+    let info = MenuItemInfoW {
+        size: core::mem::size_of::<MenuItemInfoW>() as u32,
+        mask: MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU | MIIM_STRING,
+        item_type,
+        state,
+        id: item as u32,
+        submenu: if popup { item as u32 } else { 0 },
+        ..MenuItemInfoW::default()
+    };
+    let text = &text[..text.len().min(MENU_ITEM_TEXT)];
+    failed_with(
+        imports::set_menu_item(menu, u32::MAX, MF_BYPOSITION, MENU_ITEM_INSERT, &info, text),
+        menu_error,
+    )
+    .is_some() as i32
+}
+
+/// Whether AppendMenu's `flags` make an item whose `item` pointer is its text: a string item, not
+/// a separator, a bitmap or an owner-drawn one, with a text given.
+fn has_text(flags: u32, text: usize) -> bool {
+    flags & (MF_SEPARATOR | MF_OWNERDRAW | MFT_BITMAP) == 0 && text != 0
+}
+
+/// AppendMenuW: an item at the end of the menu (see [`append`]); TRUE, or FALSE with the last
+/// error (ERROR_INVALID_MENU_HANDLE for a handle naming no menu).
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_AppendMenuW")]
+pub unsafe extern "system" fn append_menu_w(
+    menu: usize,
+    flags: u32,
+    item: usize,
+    text: *const u16,
+) -> i32 {
+    if !has_text(flags, text as usize) {
+        return append(menu, flags, item, &[]);
+    }
+    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
+    let text = unsafe { rtl::edge::InWStr::new(text) };
+    let units = text.units();
+    let mut buffer = [0u16; MENU_ITEM_TEXT];
+    let length = units.len().min(MENU_ITEM_TEXT);
+    for (index, unit) in buffer.iter_mut().take(length).enumerate() {
+        *unit = units.get(index);
+    }
+    append(menu, flags, item, &buffer[..length])
+}
+
+/// AppendMenuA: AppendMenuW's, its text narrow.
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_AppendMenuA")]
+pub unsafe extern "system" fn append_menu_a(
+    menu: usize,
+    flags: u32,
+    item: usize,
+    text: *const u8,
+) -> i32 {
+    if !has_text(flags, text as usize) {
+        return append(menu, flags, item, &[]);
+    }
+    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
+    let text = unsafe { rtl::edge::InStr::new(text) };
+    crate::with_wide(text.bytes(), |units| {
+        let length = units.len().saturating_sub(1);
+        append(menu, flags, item, &units[..length])
+    })
+    .unwrap_or(0)
+}
+
 /// IsMenu: TRUE for a handle naming a menu; FALSE with ERROR_INVALID_MENU_HANDLE otherwise.
 #[unsafe(export_name = "f2k_export_IsMenu")]
 pub extern "system" fn is_menu(menu: usize) -> i32 {

@@ -326,18 +326,18 @@ fn system_classes_due() -> bool {
     SYSTEM_CLASSES_WANTED.with(|wanted| wanted.replace(false))
 }
 
-/// user32's own classes registered in the calling process, once: the Button and Static controls
-/// and the dialog class (#32770), as Windows 2000's user32 registers them in every process it
-/// connects. Each names its procedure's two forms, so a window takes the form of the call that
-/// created it (CreateWindowExA's is no Unicode window). They are registered when the process first
-/// creates a window, not when user32 loads, so a console program that loads user32 makes no
-/// connection to the window manager; the last error is left as it was.
+/// user32's own classes registered in the calling process, once: the Button and Static controls,
+/// the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32 registers them
+/// in every process it connects. Each names its procedure's two forms, so a window takes the form
+/// of the call that created it (CreateWindowExA's is no Unicode window). They are registered when
+/// the process first creates a window, not when user32 loads, so a console program that loads
+/// user32 makes no connection to the window manager; the last error is left as it was.
 pub fn register_system_classes() {
     if !system_classes_due() {
         return;
     }
     let arrow = stock(32512, RT_CURSOR);
-    let classes: [(usize, u32, usize, usize, i32); 3] = [
+    let classes: [(usize, u32, usize, usize, i32); 4] = [
         (
             BUTTON_NAME.as_ptr() as usize,
             CS_DBLCLKS | CS_PARENTDC | CS_VREDRAW | CS_HREDRAW,
@@ -358,6 +358,13 @@ pub fn register_system_classes() {
             procedures::dialog().0,
             procedures::dialog().1,
             crate::dialog::DLGWINDOWEXTRA,
+        ),
+        (
+            usize::from(crate::menubar::MENU_CLASS_ATOM),
+            CS_DBLCLKS | CS_SAVEBITS,
+            procedures::menu().0,
+            procedures::menu().1,
+            crate::menubar::MENU_EXTRA,
         ),
     ];
     for (name, style, wide, narrow, extra) in classes {
@@ -415,6 +422,13 @@ mod procedures {
             crate::dialog::def_dlg_proc_a as *const () as usize,
         )
     }
+
+    pub fn menu() -> (usize, usize) {
+        (
+            crate::menubar::menu_proc_w as *const () as usize,
+            crate::menubar::menu_proc_a as *const () as usize,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -455,6 +469,18 @@ mod procedures {
 
     pub fn dialog() -> (usize, usize) {
         (procedure(dialog_w) as usize, procedure(dialog_a) as usize)
+    }
+
+    fn menu_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::menubar::menu_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn menu_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::menubar::menu_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    pub fn menu() -> (usize, usize) {
+        (procedure(menu_w) as usize, procedure(menu_a) as usize)
     }
 }
 
