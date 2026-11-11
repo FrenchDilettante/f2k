@@ -1,0 +1,40 @@
+# cxxeh: one test per block of the real-machine capture (output.txt); see tests/README.md. The
+# corpus's one C++ fixture (cxxeh.cpp), built with /GX /GR /MD. Its purecall, terminate and abort
+# sections run the program itself as a child ("cxxeh kid <mode>", not a section), its standard output
+# and error one pipe the section reads once the child has ended; nothing it prints is an address.
+description = "cxxeh - C++ exception handling through msvcrt.dll under /MD (cxxeh.cpp, /GX /GR): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too), catch (...), rethrow, nested try blocks, the destructors unwinding runs (locals, temporaries, partly built objects and arrays), a C++ exception through __try/__except and __finally (0xE06D7363 in the filter), typeid and type_info's name, raw_name, ==, != and before, bad_typeid; and in children, _purecall, terminate with and without set_terminate's handler, an exception nothing catches, and abort."
+kind = "sectioned"
+
+# Not gated: msvcrt's C++ exception handling (__CxxFrameHandler, _CxxThrowException, type_info,
+# terminate, _purecall) is not implemented yet. Every section is on the work list.
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The compiler's frames call __CxxFrameHandler and its throws _CxxThrowException.
+catch = ["msvcrt.__CxxFrameHandler", "msvcrt._CxxThrowException"]
+derived = ["msvcrt.__CxxFrameHandler", "msvcrt._CxxThrowException"]
+rethrow = ["msvcrt.__CxxFrameHandler", "msvcrt._CxxThrowException"]
+nested = ["msvcrt.__CxxFrameHandler", "msvcrt._CxxThrowException"]
+unwind = ["msvcrt.__CxxFrameHandler", "msvcrt._CxxThrowException", "msvcrt.??2@YAPAXI@Z"]
+seh = [
+    "msvcrt.__CxxFrameHandler",
+    "msvcrt._CxxThrowException",
+    "msvcrt._except_handler3",
+    "kernel32.RaiseException",
+]
+typeid = [
+    "msvcrt.__RTtypeid",
+    "msvcrt.?name@type_info@@QBEPBDXZ",
+    "msvcrt.?raw_name@type_info@@QBEPBDXZ",
+    "msvcrt.??8type_info@@QBEHABV0@@Z",
+    "msvcrt.??9type_info@@QBEHABV0@@Z",
+    "msvcrt.?before@type_info@@QBEHABV1@@Z",
+    "msvcrt.__CxxFrameHandler",
+]
+purecall = ["msvcrt._purecall"]
+terminate = [
+    "msvcrt.?set_terminate@@YAP6AXXZP6AXXZ@Z",
+    "msvcrt.?terminate@@YAXXZ",
+    "msvcrt._CxxThrowException",
+]
+abort = ["msvcrt.abort"]

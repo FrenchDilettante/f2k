@@ -23,7 +23,8 @@ tests/
 │               # caret, editctl
 ├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes, regions
 ├── advapi32/   # registry, token
-├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
+├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt, cxxeh (built
+│               # with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
 │               # batstd, batops, batline, bathelp, batdir; HAND-CAPTURES.md, the interactive
@@ -38,7 +39,7 @@ Inside its group, each test has its own directory, named after the test:
 
 ```text
 tests/<dll>/<name>/
-├── <name>.c        # the source, built on the real Windows 2000 machine
+├── <name>.c        # the source, built on the real Windows 2000 machine (<name>.cpp for C++)
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
 ├── *.dll           # companion DLLs the program loads, if any (committed, built beside it
 │                   # from their checked-in source and .def)
@@ -338,6 +339,8 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
   Its paths print only as relations, so nothing depends on the machine's directories.
   Its program shares the DLL's name: the loader tells `msvcrt.exe` from `MSVCRT.dll` by the full name.
   Gated.
+- `cxxeh` - C++ exception handling, the corpus's one C++ fixture (`cxxeh.cpp`, built with `/GX` and `/GR`): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too) and `catch (...)` (`catch`, `derived`), rethrow (`rethrow`), nested try blocks (`nested`), the destructors unwinding runs for locals, temporaries and partly built objects and arrays (`unwind`), a C++ exception through `__try`/`__except` and `__finally` and what the filter sees (`seh`), `typeid` and `type_info`'s `name`, `raw_name`, `==`, `!=` and `before`, and `bad_typeid` (`typeid`).
+  Its `purecall`, `terminate` and `abort` sections run the program itself as a child (`cxxeh kid <mode>`, not a section), its standard output and error one pipe the section reads once the child has ended: `_purecall`, `terminate` with and without `set_terminate`'s handler and with one that returns, an exception nothing catches, and `abort`, each with the child's exit code.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot volume is FAT32, and file-system details differ elsewhere — NTFS has its own names and timestamps, and a VirtualBox shared folder has no short names, no attribute bits and reports a remote drive.
 

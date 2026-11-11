@@ -27,13 +27,21 @@ TESTS = f2kboot.TESTS
 # Every fixture, by name, in its DLL's directory (tests/<dll>/<name>/); f2kboot refuses a name two
 # groups declare, so a duplicate fails here, at collection.
 DECLARED = sorted(f2kboot.fixture_directories())
+
+
+def fixture_source(fixture: str) -> Path:
+    """A fixture's source: <name>.c, or <name>.cpp for a C++ fixture (crt/cxxeh)."""
+    directory = f2kboot.fixture_directory(fixture)
+    cpp = directory / f"{fixture}.cpp"
+    return cpp if cpp.is_file() else directory / f"{fixture}.c"
+
+
 # The sectioned fixtures declared ahead of their real-machine files (f2kboot.awaited) are left out
 # of the checks on those files.
 SECTIONED = [name for name in DECLARED
              if f2kboot.declaration(name)["kind"] == "sectioned" and not f2kboot.awaited(name)]
 # The fixtures built on common/f2kt.h: their section table lists them (and --list prints it).
-LISTED = [name for name in SECTIONED
-          if '"../common/f2kt.h"' in (f2kboot.fixture_directory(name) / f"{name}.c").read_text()]
+LISTED = [name for name in SECTIONED if '"../common/f2kt.h"' in fixture_source(name).read_text()]
 # Set once tests/build.bat has rebuilt every fixture: a binary without its source stamp then fails
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
@@ -56,7 +64,7 @@ def section_table(source: str) -> set[str]:
 
 def declared_sections(fixture: str) -> set[str]:
     """The sections a fixture's source declares: its f2kt.h section table, or bare's modes."""
-    source = (f2kboot.fixture_directory(fixture) / f"{fixture}.c").read_text(encoding="latin-1")
+    source = fixture_source(fixture).read_text(encoding="latin-1")
     if fixture in LISTED:
         return section_table(source)
     return {"(default)"} | set(re.findall(r'str_eq\(mode, "([\w-]+)"\)', source))
@@ -239,7 +247,7 @@ def test_skipped_blocks_give_their_reason_and_are_not_pending(fixture: str):
         assert isinstance(reason, str) and reason.strip(), f"{section!r}: no reason given"
     both = set(skip) & set(declared.get("pending", {}))
     assert not both, f"sections both pending and skipped: {sorted(both)}"
-    source = (f2kboot.fixture_directory(fixture) / f"{fixture}.c").read_text(encoding="latin-1")
+    source = fixture_source(fixture).read_text(encoding="latin-1")
     if skip and '"../common/f2kt.h"' in source:
         unknown = set(skip) - section_table(source)
         assert not unknown, f"skipped sections the source does not declare: {sorted(unknown)}"
@@ -256,7 +264,7 @@ def source_stamp(fixture: str) -> str:
     """The stamp build.bat computes (common/srcsum.c): the CRC-32 of the source and f2kt.h, LF."""
     data = b"".join(
         path.read_bytes().replace(b"\r\n", b"\n")
-        for path in (f2kboot.fixture_directory(fixture) / f"{fixture}.c", TESTS / "common" / "f2kt.h")
+        for path in (fixture_source(fixture), TESTS / "common" / "f2kt.h")
     )
     return f"0x{zlib.crc32(data):08X}"
 
