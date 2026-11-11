@@ -1,9 +1,9 @@
 # F2K capture of fswrite (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:30:44.27
-fswrite F2KT-SOURCE-CRC=0xE92815BF
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 13:06:22.22
+fswrite F2KT-SOURCE-CRC=0xC9D8593A
 >>> fswrite.exe create
 == create
 CREATE_NEW, new: opened err=0, size now 0
@@ -186,5 +186,64 @@ MoveFileExW(X9.TXT, XR.TXT, REPLACE_EXISTING): ret=0 err=183, X9.TXT 4 bytes, XR
 left in SCRATCH\ (W): X3.TXT 5 bytes, X8.TXT 5 bytes, X9.TXT 4 bytes, XD2 (directory), XD3 (directory), XR.TXT 9 bytes read-only
 left in SCRATCH\XD2\ (W): IN.TXT 6 bytes, X7.TXT 12 bytes
 left in SCRATCH\XD3\ (W): nothing
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe lock
+== lock
+kernel32 exports LockFile yes, UnlockFile yes
+LOCK.DAT: 100 bytes written yes, two handles open yes
+LockFile(the first handle, 10, 20): ret=1 err=-
+LockFile(the first handle, 10, 20): ret=0 err=33
+LockFile(the first handle, 25, 10): ret=0 err=33
+LockFile(the first handle, 5, 10): ret=0 err=33
+LockFile(the first handle, 30, 10): ret=1 err=-
+LockFile(the first handle, 0, 0): ret=0 err=33
+LockFile(the first handle, 1000, 10): ret=1 err=-
+LockFile(the second, 15, 1): ret=0 err=33
+LockFile(the second, 29, 2): ret=0 err=33
+LockFile(the second, 50, 10): ret=1 err=-
+I/O through the second handle into the first's range 10-29:
+  ReadFile(the second, 4 bytes at 12): ret=0 got 0 err=33, the pointer at 12
+  WriteFile(the second, 4 bytes at 12): ret=0 put 0 err=33, the pointer at 12
+  ReadFile(the second, 10 bytes at 5): ret=0 got 0 err=33, the pointer at 5
+  ReadFile(the second, 10 bytes at 0): ret=1 got 10 err=-, the pointer at 10
+  WriteFile(the second, 5 bytes at 0): ret=1 put 5 err=-, the pointer at 5
+I/O through the first handle into its own range and the second's 50-59:
+  ReadFile(the first handle, 4 bytes at 12): ret=1 got 4 err=-, the pointer at 16
+  WriteFile(the first handle, 4 bytes at 12): ret=1 put 4 err=-, the pointer at 16
+  ReadFile(the first handle, 4 bytes at 52): ret=0 got 0 err=33, the pointer at 52
+  WriteFile(the first handle, 4 bytes at 52): ret=0 put 0 err=33, the pointer at 52
+a duplicate of the first handle:
+  ReadFile(the duplicate, 4 bytes at 12): ret=1 got 4 err=-, the pointer at 16
+LockFile(the duplicate, 12, 1): ret=0 err=33
+LockFile(the first handle, 60, 5): ret=1 err=-
+UnlockFile(the duplicate, 60, 5): ret=1 err=-
+  ReadFile(the second, 2 bytes at 61): ret=1 got 2 err=-, the pointer at 63
+UnlockFile(the first handle, 10, 20): ret=1 err=-
+UnlockFile(the first handle, 10, 20): ret=0 err=158
+UnlockFile(the first handle, 30, 5): ret=0 err=158
+UnlockFile(the second, 30, 10): ret=0 err=158
+UnlockFile(the first handle, 70, 5): ret=0 err=158
+I/O through the second handle into 10-29 once unlocked:
+  ReadFile(the second, 4 bytes at 12): ret=1 got 4 err=-, the pointer at 16
+UnlockFile(the first handle, 30, 10): ret=1 err=-
+UnlockFile(the first handle, 0, 0): ret=0 err=158
+UnlockFile(the first handle, 1000, 10): ret=1 err=-
+UnlockFile(the second, 50, 10): ret=1 err=-
+LockFile(the second, 70, 10): ret=1 err=-
+the second handle closed, holding 70-79:
+  ReadFile(the first handle, 4 bytes at 72): ret=1 got 4 err=-, the pointer at 76
+LockFile(the first handle, 70, 10): ret=1 err=-
+UnlockFile(the first handle, 70, 10): ret=1 err=-
+a read-only handle: open yes
+LockFile(the read-only handle, 0, 10): ret=1 err=-
+  WriteFile(the first handle, 2 bytes at 2): ret=0 put 0 err=33, the pointer at 2
+UnlockFile(the read-only handle, 0, 10): ret=1 err=-
+a handle with no access: open yes
+LockFile(the handle with no access, 0, 10): ret=0 err=5
+UnlockFile(the handle with no access, 0, 10): ret=0 err=5
+LockFile(INVALID_HANDLE_VALUE, 0, 10): ret=0 err=6
+UnlockFile(INVALID_HANDLE_VALUE, 0, 10): ret=0 err=6
+LockFile(NULL, 0, 10): ret=0 err=6
 fswrite: done
 <<< exit code=0

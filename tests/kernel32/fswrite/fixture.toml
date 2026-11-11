@@ -1,9 +1,12 @@
 # fswrite: one test per block of the real-machine capture (output.txt); see tests/README.md. The dirs
 # block's hundred files take about twenty seconds in the unoptimized kernel, hence the longer timeout.
-description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, and CRT writes, in a scratch directory."
+description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, CRT writes, and LockFile/UnlockFile between two handles (the I/O a lock refuses, unlocks of ranges never locked), in a scratch directory."
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pending]
+lock = "kernel32 exports no LockFile or UnlockFile yet"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -140,3 +143,4 @@ movex = [
     "kernel32.SetFileAttributesA",
     "ntdll.NtSetInformationFile",
 ]
+lock = ["kernel32.LockFile", "kernel32.UnlockFile", "kernel32.ReadFile", "kernel32.WriteFile"]
