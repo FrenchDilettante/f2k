@@ -9,10 +9,12 @@ etched line. Its loop hands every message to IsDialogMessageW. Once the dialog s
 the focus on OK, it prints `dlgshow: ready, focus 1`; the screen is saved then, at
 target/qemu/screens/dialogs/dialog.png, for the owner to compare by eye with Windows 2000 drawing
 the same (no capture reads screen pixels machine-independently; one pixel of the dialog's face is
-checked). The keys typed next, each once the line of the one before is on COM1: Tab and Tab move the focus from OK to Cancel to the check box, Space
-checks it (its release clicks it: BN_CLICKED), and Enter, with the focus on a control that is no push
-button, presses the default button OK, which ends dlgshow with 0. The kernel option `redirected`
-puts the program's lines on COM1, which are compared line for line.
+checked). The keys typed next, all at once, back to back: Tab and Tab move the focus from OK to
+Cancel to the check box, Space checks it (its release clicks it: BN_CLICKED), and Enter, with the
+focus on a control that is no push button, presses the default button OK, which ends dlgshow with
+0. Each key reaches the control the focus is on when dlgshow reads it, not when it was typed, as
+type-ahead does on Windows. The kernel option `redirected` puts the program's lines on COM1, which
+are compared line for line.
 
     uv run pytest tests/core/test_dialogs.py
 """
@@ -25,16 +27,10 @@ import f2kboot
 DLGSHOW = f2kboot.BUILT_PROGRAMS / "dlgshow.exe"
 CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\dlgshow.exe"
 READY = "dlgshow: ready, focus 1"
-# The chords typed once dlgshow is ready, each pressed then released (QEMU's key names), each once
-# the line before it is on COM1: win32k posts a keystroke to the focus window as the key goes down,
-# where Windows 2000 gives it to the focus window as the thread reads it, so a key typed before the
-# last one's focus change is done would reach the control the focus is leaving.
-CHORDS = [
-    ("tab", "dlgshow: ready, focus 1"),
-    ("tab", "key 0x09: focus 2"),
-    ("spc", "key 0x09: focus 101"),
-    ("ret", "WM_COMMAND id=101 code=0"),
-]
+# The chords typed once dlgshow is ready, each pressed then released (QEMU's key names), all in one
+# command, without waiting for dlgshow to act on any: a key goes to the control the focus is on
+# when dlgshow reads it, so each reaches the control the keys before it moved the focus to.
+CHORDS = ["tab", "tab", "spc", "ret"]
 EXPECTED = [
     READY,
     "key 0x09: focus 2",
@@ -55,27 +51,20 @@ TIMEOUT = 60.0
 
 
 class ShotAndTypist:
-    """The boot's `during` step: once dlgshow's ready line is on COM1, the screen saved; then each
-    of CHORDS typed once its line is on COM1."""
+    """The boot's `during` step: once dlgshow's ready line is on COM1, the screen saved, then
+    CHORDS typed back to back."""
 
     def __init__(self) -> None:
-        self.next = 0
-
-    @property
-    def typed(self) -> bool:
-        return self.next == len(CHORDS)
+        self.typed = False
 
     def __call__(self, socket, log: str) -> None:
-        if self.typed:
+        if self.typed or READY not in f2kboot.lines_of(log):
             return
-        chord, after = CHORDS[self.next]
-        if after not in f2kboot.lines_of(log):
-            return
-        if self.next == 0:
-            f2kboot.screendump(socket, SCREEN)
-        f2kboot.qmp_command(socket, [f2kboot.key_events(chord, True),
-                                     f2kboot.key_events(chord, False)])
-        self.next += 1
+        f2kboot.screendump(socket, SCREEN)
+        f2kboot.qmp_command(socket, [event for chord in CHORDS
+                                     for event in (f2kboot.key_events(chord, True),
+                                                   f2kboot.key_events(chord, False))])
+        self.typed = True
 
 
 @pytest.mark.kernel

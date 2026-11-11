@@ -1,13 +1,24 @@
 //! The input path's host tests: the keyinput fixture's sections, as its procedure records them
-//! (each case's expected records are the capture's), the keyboard's bytes, and the key states.
+//! (each case's expected records are the capture's), the keyboard's bytes, the key states, and the
+//! window a key message is bound to as it is read.
 
 use rtl::user::{INPUT_KEYBOARD, WM_USER};
 
 use super::*;
-use crate::win32k::focus::{focus_window, set_focus, set_foreground_window};
-use crate::win32k::queue::rig::{all, manager, popup, read as read_queue, thread};
-use crate::win32k::queue::{end_sent, QueuePump, Taken};
-use crate::win32k::window::{Hwnd, WindowManager};
+use crate::win32k::class;
+use crate::win32k::focus::{active_window, focus_window, set_focus, set_foreground_window};
+use crate::win32k::queue::rig::{
+    all,
+    deliver,
+    manager,
+    msg_of,
+    popup,
+    read as read_queue,
+    thread,
+    window_at,
+};
+use crate::win32k::queue::{end_sent, take, Filter, QueuePump, Taken};
+use crate::win32k::window::{Hwnd, WindowManager, WS_CHILD, WS_VISIBLE};
 
 const DOWN: u32 = 0;
 const UP: u32 = KEYEVENTF_KEYUP;
@@ -21,6 +32,7 @@ type Record = (u32, u32, u32, bool, bool, bool, Option<bool>);
 /// The keyinput fixture's window: a popup of its own thread, the foreground and focus window.
 struct Rig {
     m: &'static mut WindowManager,
+    atom: class::Atom,
     t: ThreadId,
     window: Hwnd,
 }
@@ -42,7 +54,7 @@ impl Rig {
             &mut QueuePump
         ));
         set_focus(windows, classes, t, Some(id), &mut QueuePump);
-        let mut rig = Rig { m, t, window };
+        let mut rig = Rig { m, atom, t, window };
         rig.pump();
         assert_eq!(focus_window(&rig.m.windows, t), Some(id));
         rig
@@ -79,8 +91,8 @@ impl Rig {
         }
     }
 
-    /// SendInput of the strokes (virtual key, scan code, flags), then the fixture's loop.
-    fn send(&mut self, strokes: &[(u16, u16, u32)]) -> Vec<Record> {
+    /// SendInput of the strokes (virtual key, scan code, flags), nothing read.
+    fn type_ahead(&mut self, strokes: &[(u16, u16, u32)]) {
         for &(vk, scan, flags) in strokes {
             let input = Input {
                 kind: INPUT_KEYBOARD,
@@ -92,7 +104,70 @@ impl Rig {
             let stroke = Keystroke::of_input(&input, &self.m.windows.input.keys).unwrap();
             key_event(&mut self.m.windows, stroke, 0);
         }
+    }
+
+    /// SendInput of the strokes, then the fixture's loop.
+    fn send(&mut self, strokes: &[(u16, u16, u32)]) -> Vec<Record> {
+        self.type_ahead(strokes);
         self.pump()
+    }
+
+    /// A visible child window of the popup's, at `x`: the typeahead section's A and B.
+    fn child(&mut self, x: i32) -> Hwnd {
+        let child = window_at(
+            self.m,
+            self.atom,
+            self.t,
+            WS_CHILD | WS_VISIBLE,
+            self.window,
+            x,
+            10,
+            60,
+            40,
+        );
+        self.pump();
+        child
+    }
+
+    /// SetFocus: the focus moved to the window `hwnd` (0: taken away), the messages it sent
+    /// delivered.
+    fn focus(&mut self, hwnd: Hwnd) {
+        let target = (hwnd != 0).then(|| self.m.windows.window_from_handle(hwnd).unwrap());
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *self.m;
+        set_focus(windows, classes, self.t, target, &mut QueuePump);
+        deliver(self.m, self.t);
+    }
+
+    /// The fixture's loop, each key and character message read noted with its window.
+    fn reads(&mut self) -> Vec<(u32, Hwnd)> {
+        let mut got = Vec::new();
+        loop {
+            match read_queue(self.m, self.t, &all(), 0) {
+                Taken::Sent(_) => assert!(end_sent(&mut self.m.windows, self.t, 0)),
+                Taken::Message(msg) => {
+                    if matches!(
+                        msg.message,
+                        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP | WM_CHAR | WM_SYSCHAR
+                    ) {
+                        got.push((msg.message, msg.hwnd));
+                    }
+                    translate(&mut self.m.windows, self.t, &msg, 0).unwrap();
+                }
+                Taken::Nothing { .. } => return got,
+            }
+        }
+    }
+
+    /// One read with a filter for the window `hwnd` (0: any) and the range `min` to `max`, taking
+    /// out what it finds (not translated): its message and window.
+    fn read_filtered(&mut self, hwnd: Hwnd, min: u32, max: u32) -> Option<(u32, Hwnd)> {
+        let filter = Filter::new(hwnd, min, max, 0);
+        match take(&mut self.m.windows, self.t, &filter, true, 0).unwrap() {
+            Taken::Message(msg) => Some((msg.message, msg.hwnd)),
+            _ => None,
+        }
     }
 
     /// The keyboard's bytes, then the fixture's loop.
@@ -455,4 +530,146 @@ fn no_focus_makes_system_keys() {
     publish(&rig.m.windows);
     assert!(!takes_keyboard());
     assert!(rig.send(&[(0x41, 0x1E, DOWN), (0x41, 0x1E, UP)]).is_empty());
+}
+
+// --- The window a key message is bound to: keyinput's typeahead section -------------------------
+
+/// 'X' pressed and released.
+const KEY_X: [(u16, u16, u32); 2] = [(0x58, 0x2D, DOWN), (0x58, 0x2D, UP)];
+
+/// The first and last key messages: a filter's range over them all.
+const WM_KEYFIRST: u32 = 0x0100;
+const WM_KEYLAST: u32 = 0x0108;
+
+/// Keys typed with the focus on A and read once it has moved to B go to B: the window is the
+/// focus window as the thread reads, not as the key went down.
+#[test]
+fn a_key_goes_to_the_focus_window_of_its_read() {
+    let mut rig = Rig::new();
+    let (a, b) = (rig.child(10), rig.child(80));
+    rig.focus(a);
+    rig.type_ahead(&KEY_X);
+    rig.focus(b);
+    assert_eq!(rig.reads(), [(WM_KEYDOWN, b), (WM_CHAR, b), (WM_KEYUP, b)]);
+}
+
+/// A peek that leaves the message binds it for that read alone: once the focus moves, the read
+/// that takes it out binds it again.
+#[test]
+fn a_peek_binds_the_key_for_itself_alone() {
+    let mut rig = Rig::new();
+    let (a, b) = (rig.child(10), rig.child(80));
+    rig.focus(a);
+    rig.type_ahead(&KEY_X);
+    let filter = Filter::new(0, WM_KEYFIRST, WM_KEYLAST, 0);
+    let peeked = msg_of(take(&mut rig.m.windows, rig.t, &filter, false, 0).unwrap());
+    assert_eq!((peeked.message, peeked.hwnd), (WM_KEYDOWN, a));
+    assert!(
+        !rig.m.windows.thread(rig.t).keys.is_down(0x58),
+        "a peek leaves the key state"
+    );
+    rig.focus(b);
+    assert_eq!(rig.reads(), [(WM_KEYDOWN, b), (WM_CHAR, b), (WM_KEYUP, b)]);
+}
+
+/// A read filtered by window judges the bound window: A's finds nothing once the focus is on B,
+/// B's finds the key.
+#[test]
+fn the_window_filter_sees_the_bound_window() {
+    let mut rig = Rig::new();
+    let (a, b) = (rig.child(10), rig.child(80));
+    rig.focus(a);
+    rig.type_ahead(&KEY_X);
+    rig.focus(b);
+    assert_eq!(rig.read_filtered(a, WM_KEYFIRST, WM_KEYLAST), None);
+    assert_eq!(
+        rig.read_filtered(b, WM_KEYFIRST, WM_KEYLAST),
+        Some((WM_KEYDOWN, b))
+    );
+    assert!(rig.m.windows.thread(rig.t).keys.is_down(0x58));
+    assert_eq!(rig.reads(), [(WM_KEYUP, b)]);
+}
+
+/// With the focus taken away before the read, the keys go to the active window as system keys,
+/// and a read filtered by message judges the system key: WM_KEYDOWN's range finds nothing.
+#[test]
+fn a_key_read_with_no_focus_is_a_system_key_of_the_active_window() {
+    let mut rig = Rig::new();
+    let a = rig.child(10);
+    rig.focus(a);
+    rig.type_ahead(&KEY_X);
+    rig.focus(0);
+    assert_eq!(rig.read_filtered(0, WM_KEYDOWN, WM_KEYDOWN), None);
+    assert_eq!(
+        rig.read_filtered(0, WM_SYSKEYDOWN, WM_SYSKEYDOWN),
+        Some((WM_SYSKEYDOWN, rig.window))
+    );
+    assert_eq!(rig.reads(), [(WM_SYSKEYUP, rig.window)]);
+
+    rig.type_ahead(&KEY_X);
+    assert_eq!(
+        rig.reads(),
+        [
+            (WM_SYSKEYDOWN, rig.window),
+            (WM_SYSCHAR, rig.window),
+            (WM_SYSKEYUP, rig.window)
+        ]
+    );
+}
+
+/// Keys typed with no focus and read once the focus is given are the focus window's plain keys.
+#[test]
+fn a_key_typed_with_no_focus_goes_to_the_window_focused_before_the_read() {
+    let mut rig = Rig::new();
+    let a = rig.child(10);
+    rig.focus(0);
+    rig.type_ahead(&KEY_X);
+    rig.focus(a);
+    assert_eq!(rig.reads(), [(WM_KEYDOWN, a), (WM_CHAR, a), (WM_KEYUP, a)]);
+}
+
+/// The focus window destroyed before the read: its keys go where the focus went, the parent, and
+/// none is lost with the window.
+#[test]
+fn a_key_outlives_the_focus_window_it_was_typed_into() {
+    let mut rig = Rig::new();
+    let a = rig.child(10);
+    rig.focus(a);
+    rig.type_ahead(&KEY_X);
+    let WindowManager {
+        windows, classes, ..
+    } = &mut *rig.m;
+    windows
+        .destroy_window_handle(classes, rig.t, a, &mut QueuePump)
+        .unwrap();
+    let parent = rig.m.windows.window_from_handle(rig.window);
+    assert_eq!(focus_window(&rig.m.windows, rig.t), parent);
+    assert_eq!(
+        rig.reads(),
+        [
+            (WM_KEYDOWN, rig.window),
+            (WM_CHAR, rig.window),
+            (WM_KEYUP, rig.window)
+        ]
+    );
+}
+
+/// A key message read while the thread has neither a focus window nor an active window is
+/// discarded, its key state still moving: no key stays down for the thread.
+#[test]
+fn a_key_with_no_window_to_go_to_is_discarded() {
+    let mut rig = Rig::new();
+    rig.type_ahead(&[(0x58, 0x2D, DOWN)]);
+    assert_eq!(
+        rig.read_filtered(0, WM_KEYDOWN, WM_KEYDOWN),
+        Some((WM_KEYDOWN, rig.window))
+    );
+    assert!(rig.m.windows.thread(rig.t).keys.is_down(0x58));
+    rig.type_ahead(&[(0x58, 0x2D, UP)]);
+    let thread = rig.m.windows.thread_mut(rig.t);
+    thread.focus = None;
+    thread.active = None;
+    assert_eq!(active_window(&rig.m.windows, rig.t), None);
+    assert!(rig.reads().is_empty());
+    assert!(!rig.m.windows.thread(rig.t).keys.is_down(0x58));
 }
