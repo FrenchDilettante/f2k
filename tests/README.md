@@ -21,7 +21,7 @@ tests/
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
 │               # caret, editctl
-├── gdi32/      # guidc, gditext, ttfont, bitmaps
+├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -297,6 +297,10 @@ The fixtures:
   Every pixel it prints is read from a DIB section or a bitmap of an explicit format, as hex values or rows of letters; a bitmap of the screen's format (`CreateCompatibleBitmap` and `CreateDIBitmap` of the screen DC, `LoadBitmap`'s) prints its size, and its depth and pixels only as relations (the screen's depth, read back as written).
   Built with `/MD`.
   Not gated: F2K's gdi32 has no memory DCs, bitmaps or blits yet.
+- `mapmode` (gdi32) - a memory DC's coordinate spaces and saved states: `SetMapMode`/`GetMapMode` across every mode and two invalid ones (`modes`); `SetWindowExtEx`, `SetViewportExtEx`, `SetWindowOrgEx` and `SetViewportOrgEx` with their `Get` forms in `MM_TEXT` and `MM_ANISOTROPIC`, and `LPtoDP` and `DPtoLP` of points whose mapping falls on halves (`extorg`); `OffsetViewportOrgEx`, `OffsetWindowOrgEx`, `ScaleViewportExtEx` and `ScaleWindowExtEx` (`offset`); `MM_ISOTROPIC`'s adjustment of the viewport (`isotropic`); `PatBlt` and `Rectangle` through a window origin and a scaling mapping into a DIB section, upright and flipped (`drawing`); and `SaveDC`/`RestoreDC`, relative and absolute, over the mapping, the colors, the modes and the selected objects (`savedc`).
+  The metric modes' extents and `MM_ISOTROPIC`'s adjusted viewport follow the screen's size in millimeters and in pixels, which differ between machines: they print only as relations (their signs, the units per pixel the mode means within 1%, the same as another mode's).
+  Built with `/MD`.
+  Not gated: F2K's gdi32 has no mapping modes or memory DCs yet.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 

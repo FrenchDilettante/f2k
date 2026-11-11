@@ -55,6 +55,10 @@ title = "regions and clipping"
 key = "drawing"
 title = "pens, lines and shapes"
 
+[[group]]
+key = "coordinates"
+title = "coordinate spaces and transforms"
+
 # --- device contexts ------------------------------------------------------------------------------
 
 [[export]]
@@ -122,6 +126,22 @@ group = "dc"
 args = []
 impl = { stub = "not yet implemented" }
 ordinal = 224
+fails = "FALSE"
+
+[[export]]
+name = "SaveDC"
+group = "dc"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 456
+fails = "0"
+
+[[export]]
+name = "RestoreDC"
+group = "dc"
+args = ["handle hdc", "i32 nSavedDC"]
+impl = { stub = "not yet implemented" }
+ordinal = 449
 fails = "FALSE"
 
 # --- stock objects --------------------------------------------------------------------------------
@@ -284,6 +304,30 @@ group = "attributes"
 args = ["handle hdc", "i32 iStretchMode"]
 impl = { stub = "not yet implemented" }
 ordinal = 503
+fails = "0"
+
+[[export]]
+name = "GetBkMode"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 273
+fails = "0"
+
+[[export]]
+name = "GetROP2"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 354
+fails = "0"
+
+[[export]]
+name = "SetROP2"
+group = "attributes"
+args = ["handle hdc", "i32 fnDrawMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 500
 fails = "0"
 
 # --- text -----------------------------------------------------------------------------------------
@@ -959,6 +1003,144 @@ impl = { stub = "not yet implemented" }
 ordinal = 158
 fails = "NULL"
 
+[[export]]
+name = "Rectangle"
+group = "drawing"
+args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
+ordinal = 439
+fails = "FALSE"
+
+# --- coordinate spaces and transforms -------------------------------------------------------------
+
+[[export]]
+name = "DPtoLP"
+group = "coordinates"
+args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 80
+fails = "FALSE"
+
+[[export]]
+name = "LPtoDP"
+group = "coordinates"
+args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
+impl = { stub = "not yet implemented" }
+ordinal = 396
+fails = "FALSE"
+
+[[export]]
+name = "GetMapMode"
+group = "coordinates"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 336
+fails = "0"
+
+[[export]]
+name = "SetMapMode"
+group = "coordinates"
+args = ["handle hdc", "i32 fnMapMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 490
+fails = "0"
+
+[[export]]
+name = "GetViewportExtEx"
+group = "coordinates"
+args = ["handle hdc", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 386
+fails = "FALSE"
+
+[[export]]
+name = "GetViewportOrgEx"
+group = "coordinates"
+args = ["handle hdc", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 387
+fails = "FALSE"
+
+[[export]]
+name = "SetViewportExtEx"
+group = "coordinates"
+args = ["handle hdc", "i32 nXExtent", "i32 nYExtent", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 509
+fails = "FALSE"
+
+[[export]]
+name = "SetViewportOrgEx"
+group = "coordinates"
+args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 510
+fails = "FALSE"
+
+[[export]]
+name = "OffsetViewportOrgEx"
+group = "coordinates"
+args = ["handle hdc", "i32 nXOffset", "i32 nYOffset", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 406
+fails = "FALSE"
+
+[[export]]
+name = "ScaleViewportExtEx"
+group = "coordinates"
+args = ["handle hdc", "i32 Xnum", "i32 Xdenom", "i32 Ynum", "i32 Ydenom", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 457
+fails = "FALSE"
+
+[[export]]
+name = "GetWindowExtEx"
+group = "coordinates"
+args = ["handle hdc", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 389
+fails = "FALSE"
+
+[[export]]
+name = "GetWindowOrgEx"
+group = "coordinates"
+args = ["handle hdc", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 390
+fails = "FALSE"
+
+[[export]]
+name = "SetWindowExtEx"
+group = "coordinates"
+args = ["handle hdc", "i32 nXExtent", "i32 nYExtent", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 513
+fails = "FALSE"
+
+[[export]]
+name = "SetWindowOrgEx"
+group = "coordinates"
+args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 514
+fails = "FALSE"
+
+[[export]]
+name = "OffsetWindowOrgEx"
+group = "coordinates"
+args = ["handle hdc", "i32 nXOffset", "i32 nYOffset", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 407
+fails = "FALSE"
+
+[[export]]
+name = "ScaleWindowExtEx"
+group = "coordinates"
+args = ["handle hdc", "i32 Xnum", "i32 Xdenom", "i32 Ynum", "i32 Ydenom", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
+ordinal = 458
+fails = "FALSE"
+
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 
 [[export]]
@@ -1192,10 +1374,6 @@ ordinal = 77
 [[export]]
 name = "CreateScalableFontResourceW"
 ordinal = 78
-
-[[export]]
-name = "DPtoLP"
-ordinal = 80
 
 [[export]]
 name = "DeleteColorSpace"
@@ -1922,10 +2100,6 @@ name = "GetBitmapDimensionEx"
 ordinal = 271
 
 [[export]]
-name = "GetBkMode"
-ordinal = 273
-
-[[export]]
 name = "GetBoundsRect"
 ordinal = 274
 
@@ -2130,10 +2304,6 @@ name = "GetLogColorSpaceW"
 ordinal = 335
 
 [[export]]
-name = "GetMapMode"
-ordinal = 336
-
-[[export]]
 name = "GetMetaFileA"
 ordinal = 337
 
@@ -2176,10 +2346,6 @@ ordinal = 352
 [[export]]
 name = "GetPolyFillMode"
 ordinal = 353
-
-[[export]]
-name = "GetROP2"
-ordinal = 354
 
 [[export]]
 name = "GetRandomRgn"
@@ -2262,24 +2428,8 @@ name = "GetTransform"
 ordinal = 385
 
 [[export]]
-name = "GetViewportExtEx"
-ordinal = 386
-
-[[export]]
-name = "GetViewportOrgEx"
-ordinal = 387
-
-[[export]]
 name = "GetWinMetaFileBits"
 ordinal = 388
-
-[[export]]
-name = "GetWindowExtEx"
-ordinal = 389
-
-[[export]]
-name = "GetWindowOrgEx"
-ordinal = 390
 
 [[export]]
 name = "GetWorldTransform"
@@ -2300,10 +2450,6 @@ ordinal = 394
 [[export]]
 name = "InvertRgn"
 ordinal = 395
-
-[[export]]
-name = "LPtoDP"
-ordinal = 396
 
 [[export]]
 name = "LineDDA"
@@ -2340,14 +2486,6 @@ ordinal = 404
 [[export]]
 name = "OffsetRgn"
 ordinal = 405
-
-[[export]]
-name = "OffsetViewportOrgEx"
-ordinal = 406
-
-[[export]]
-name = "OffsetWindowOrgEx"
-ordinal = 407
 
 [[export]]
 name = "PATHOBJ_bEnum"
@@ -2470,10 +2608,6 @@ name = "RectVisible"
 ordinal = 438
 
 [[export]]
-name = "Rectangle"
-ordinal = 439
-
-[[export]]
 name = "RemoveFontMemResourceEx"
 ordinal = 440
 
@@ -2492,10 +2626,6 @@ ordinal = 447
 [[export]]
 name = "ResizePalette"
 ordinal = 448
-
-[[export]]
-name = "RestoreDC"
-ordinal = 449
 
 [[export]]
 name = "RoundRect"
@@ -2520,18 +2650,6 @@ ordinal = 454
 [[export]]
 name = "STROBJ_vEnumStart"
 ordinal = 455
-
-[[export]]
-name = "SaveDC"
-ordinal = 456
-
-[[export]]
-name = "ScaleViewportExtEx"
-ordinal = 457
-
-[[export]]
-name = "ScaleWindowExtEx"
-ordinal = 458
 
 [[export]]
 name = "SelectBrushLocal"
@@ -2634,10 +2752,6 @@ name = "SetMagicColors"
 ordinal = 489
 
 [[export]]
-name = "SetMapMode"
-ordinal = 490
-
-[[export]]
 name = "SetMapperFlags"
 ordinal = 491
 
@@ -2670,10 +2784,6 @@ name = "SetPolyFillMode"
 ordinal = 499
 
 [[export]]
-name = "SetROP2"
-ordinal = 500
-
-[[export]]
 name = "SetRectRgn"
 ordinal = 501
 
@@ -2698,28 +2808,12 @@ name = "SetTextJustification"
 ordinal = 508
 
 [[export]]
-name = "SetViewportExtEx"
-ordinal = 509
-
-[[export]]
-name = "SetViewportOrgEx"
-ordinal = 510
-
-[[export]]
 name = "SetVirtualResolution"
 ordinal = 511
 
 [[export]]
 name = "SetWinMetaFileBits"
 ordinal = 512
-
-[[export]]
-name = "SetWindowExtEx"
-ordinal = 513
-
-[[export]]
-name = "SetWindowOrgEx"
-ordinal = 514
 
 [[export]]
 name = "SetWorldTransform"
