@@ -16,7 +16,7 @@ tests/
 │               # hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
-│               # shutparm, profile, threx, vmedge, startup, lcid, ntquery, locale
+│               # shutparm, profile, threx, vmedge, startup, lcid, ntquery, locale, atom
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
@@ -178,6 +178,9 @@ The fixtures:
   Gated; `scmfail` stays pending while F2K runs no service control manager: `OpenSCManagerA` fails with `ERROR_CALL_NOT_IMPLEMENTED`, where Windows 2000 answers a handle.
 - `locale` - kernel32's locale formatting and queries over fixed inputs: `GetDateFormatW`/`A` with the `DATE_` flags, picture strings and three more dates (`date`), `GetTimeFormatW`/`A` with the `TIME_` flags, picture strings, midnight and noon (`time`) and `GetNumberFormatW`/`A` with the locales' own formats and `NUMBERFMT`'s fields, negatives, rounding and strings that are not numbers (`number`), each with the buffer-size query, a short buffer and its errors; `FoldStringW`/`A` and the `MAP_` flags alone and in pairs (`fold`); `EnumSystemCodePagesW`/`A` under `CP_INSTALLED` and `CP_SUPPORTED`, whether 1252, 437, 850 and 65001 are listed, and the counts (`codepages`); and `IsValidLanguageGroup` (`langgroup`).
   Each formatting call runs under `LOCALE_USER_DEFAULT`, `LOCALE_SYSTEM_DEFAULT` and 0x0409, and the machine's default LCIDs print only as whether they are 0x0409.
+  Built with `/MD`.
+- `atom` - kernel32's global atoms: `GlobalAddAtomW`/`A`, `GlobalFindAtomW`/`A` and `GlobalGetAtomNameW`/`A` on a name added in several cases and outside ASCII (`add`), the reference counts `GlobalDeleteAtom` counts down (`refcount`), integer atoms from `"#123"` and `MAKEINTATOM` and their bounds, and names that only look like numbers (`integer`), names of 255 and 256 characters and short buffers (`length`), and the errors (`errors`).
+  The table is the window station's, shared with every other program, so the fixture's names all start with `F2KAtomFixture`, each section removes every reference to them at its start and its end, and a string atom's value prints only as a relation.
   Built with `/MD`.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
