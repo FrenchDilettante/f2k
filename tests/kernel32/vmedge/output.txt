@@ -2,11 +2,17 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026  0:28:18.68
-vmedge F2KT-SOURCE-CRC=0x3F605B83
+# date: Wed 11/11/2026 13:05:03.93
+vmedge F2KT-SOURCE-CRC=0x66A9D6CE
 >>> vmedge.exe guardwalk
 == guardwalk
-guards=0 code=0xC00000FD
+CreateThread: ret=ok err=-
+wait=WAIT_OBJECT_0
+before: reserve=256 pages, all surveyed: yes, guard pages=1
+walk: guard-page exceptions seen=0 code=0xC00000FD
+after: all surveyed: yes, guard pages=0, uncommitted pages=1
+after: pages below the deepest frame's page=3
+after: stack limit at the lowest committed page: yes
 vmedge: done
 <<< exit code=0
 >>> vmedge.exe commitview
@@ -15,13 +21,21 @@ CreateFileMapping(paging): ret=ok err=0
 MapViewOfFile: ret=ok err=-
 commit over paging view: ret=ok err=-
 CreateFile(own image): ret=ok err=0
+CreateFileMapping(file): ret=ok err=0
+MapViewOfFile(file): ret=ok err=-
 commit over file view: ret=null err=5
 private reserve+commit: ret=ok err=-
 vmedge: done
 <<< exit code=0
 >>> vmedge.exe unmapimage
 == unmapimage
-unmapping own image
-NtUnmapViewOfSection(own image): status=0xC0000008 err=-
+NtUnmapViewOfSection(own private region): status=0xC0000019 err=-
+CreateProcess(suspended copy): ret=1 err=-
+VirtualQueryEx(child, our base): ret=ok err=- image=yes its base=yes
+NtUnmapViewOfSection(child, inside its image): status=0x00000000 err=-
+VirtualQueryEx(child, our base): ret=ok err=- free=yes
+NtUnmapViewOfSection(child, its image again): status=0xC0000019 err=-
+TerminateProcess(child): ret=1 err=-
+child ended: WAIT_OBJECT_0
 vmedge: done
 <<< exit code=0

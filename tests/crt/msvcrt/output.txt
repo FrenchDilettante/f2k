@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 10:25:58.53
-msvcrt F2KT-SOURCE-CRC=0xD1016547
+# date: Wed 11/11/2026 13:05:50.20
+msvcrt F2KT-SOURCE-CRC=0xF390E427
 >>> msvcrt.exe math
 == math
 2.5 [4004000000000000]: ceil 3 [4008000000000000] errno 0, floor 2 [4000000000000000] errno 0, fabs 2.5 [4004000000000000]
@@ -80,5 +80,38 @@ _getdcwd(0, NULL buffer, 1000): allocated, GetCurrentDirectoryA's answer yes, _m
 _getdcwd(0, a buffer of 2, 2): NULL errno 34
 _getdcwd(0, NULL buffer of 2, 2): allocated, GetCurrentDirectoryA's answer yes, _msize at least 2 yes
 _getdcwd(27, 260): NULL errno 13
+msvcrt: done
+<<< exit code=0
+>>> msvcrt.exe mbblead
+== mbblead
+msvcrt exports _ismbblead yes, _setmbcp yes, _getmbcp yes
+_getmbcp() at startup: is GetACP() no, is 1252 no
+  at startup: _ismbblead takes no byte as a lead byte
+_setmbcp(1252): 0 errno 0; _getmbcp() 0
+  1252: _ismbblead takes no byte as a lead byte
+  _ismbblead(0x41): 0
+  _ismbblead(0x80): 0
+  _ismbblead(0x81): 0
+  _ismbblead(0x9F): 0
+  _ismbblead(0xA0): 0
+  _ismbblead(0xE0): 0
+  _ismbblead(0xE9): 0
+  _ismbblead(0xFC): 0
+  _ismbblead(0xFF): 0
+  _ismbblead(0x181): 0
+  _ismbblead(0xFFFFFF81): 0
+_setmbcp(437): 0 errno 0; _getmbcp() 0
+  437: _ismbblead takes no byte as a lead byte
+_setmbcp(850): 0 errno 0; _getmbcp() 0
+  850: _ismbblead takes no byte as a lead byte
+_setmbcp(_MB_CP_SBCS): 0 errno 0; _getmbcp() 0
+  _MB_CP_SBCS: _ismbblead takes no byte as a lead byte
+  _ismbblead(0x81): 0
+_setmbcp(12345, no such code page): -1 errno 0; _getmbcp() 0
+  after 12345: _ismbblead takes no byte as a lead byte
+_setmbcp(_MB_CP_OEM): 0 errno 0; _getmbcp() is GetOEMCP() no, is 437 no
+  _MB_CP_OEM: _ismbblead takes no byte as a lead byte
+_setmbcp(_MB_CP_ANSI): 0 errno 0; _getmbcp() is GetACP() no, is 1252 no
+  _MB_CP_ANSI: _ismbblead takes no byte as a lead byte
 msvcrt: done
 <<< exit code=0

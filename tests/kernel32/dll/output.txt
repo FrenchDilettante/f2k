@@ -1,9 +1,9 @@
 # F2K capture of dll (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026  9:15:30.30
-dll F2KT-SOURCE-CRC=0x7BF9156A
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 13:05:04.09
+dll F2KT-SOURCE-CRC=0x5507930D
 >>> dll.exe load
 == load
 LoadLibraryA(f2kcom.dll): loaded yes err=-
@@ -49,5 +49,76 @@ FreeLibrary: ret=1 err=-
 LoadLibraryA(f2kcom.dll), reloaded: loaded yes err=-
 f2k_next(), after the reload: 1
 FreeLibrary: ret=1 err=-
+dll: done
+<<< exit code=0
+>>> dll.exe loadex
+== loadex
+kernel32 exports LoadLibraryExA yes, LoadLibraryExW yes
+LoadLibraryExA(f2kcom.dll, 0): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  LoadLibraryA after it: the same module yes
+  GetProcAddress(f2k_sum): found
+  f2k_sum(2, 3) = 5
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExA(<the program's directory>\f2kcom.dll, LOAD_WITH_ALTERED_SEARCH_PATH): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExA(f2kcom.dll, LOAD_WITH_ALTERED_SEARCH_PATH): loaded yes err=-
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExA(f2kcom.dll, LOAD_LIBRARY_AS_DATAFILE): a handle yes err=0
+  its low bit set yes, "MZ" at it (low bits cleared) yes
+  GetModuleHandleA(f2kcom.dll) finds a module: no
+  GetProcAddress(f2k_sum) on it: not found
+  FreeLibrary: ret=1 err=-
+LoadLibraryA(f2kcom.dll) first: loaded yes
+LoadLibraryExA(f2kcom.dll, LOAD_LIBRARY_AS_DATAFILE), loaded already: a handle yes, the loaded module yes, its low bit set no err=-
+  FreeLibrary of it: ret=1 err=-; the module still loaded yes
+  FreeLibrary of LoadLibraryA's: ret=1 err=-; unloaded yes
+LoadLibraryExA(f2kcom.dll, DONT_RESOLVE_DLL_REFERENCES): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  GetProcAddress(f2k_sum): found
+  f2k_sum(-40, 42) = 2
+  f2k_next() = 1
+  LoadLibraryA after it: the same module yes
+  FreeLibrary of LoadLibraryA's: ret=1 err=-; still loaded yes
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExA(nosuch.dll, 0): ret null yes err=126
+LoadLibraryExA(nosuch.dll, LOAD_LIBRARY_AS_DATAFILE): ret null yes err=2
+LoadLibraryExA(nosuch.dll, DONT_RESOLVE_DLL_REFERENCES): ret null yes err=126
+LoadLibraryExA(f2kcom.dll, a file handle of 1, 0): ret null no err=-
+LoadLibraryExA(f2kcom.dll, 0x80000000): ret null no err=-
+LoadLibraryExW(f2kcom.dll, 0): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  LoadLibraryA after it: the same module yes
+  GetProcAddress(f2k_sum): found
+  f2k_sum(2, 3) = 5
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExW(<the program's directory>\f2kcom.dll, LOAD_WITH_ALTERED_SEARCH_PATH): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExW(f2kcom.dll, LOAD_WITH_ALTERED_SEARCH_PATH): loaded yes err=-
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExW(f2kcom.dll, LOAD_LIBRARY_AS_DATAFILE): a handle yes err=0
+  its low bit set yes, "MZ" at it (low bits cleared) yes
+  GetModuleHandleA(f2kcom.dll) finds a module: no
+  GetProcAddress(f2k_sum) on it: not found
+  FreeLibrary: ret=1 err=-
+LoadLibraryA(f2kcom.dll) first: loaded yes
+LoadLibraryExW(f2kcom.dll, LOAD_LIBRARY_AS_DATAFILE), loaded already: a handle yes, the loaded module yes, its low bit set no err=-
+  FreeLibrary of it: ret=1 err=-; the module still loaded yes
+  FreeLibrary of LoadLibraryA's: ret=1 err=-; unloaded yes
+LoadLibraryExW(f2kcom.dll, DONT_RESOLVE_DLL_REFERENCES): loaded yes err=-
+  GetModuleHandleA finds the same module: yes
+  GetProcAddress(f2k_sum): found
+  f2k_sum(-40, 42) = 2
+  f2k_next() = 1
+  LoadLibraryA after it: the same module yes
+  FreeLibrary of LoadLibraryA's: ret=1 err=-; still loaded yes
+  FreeLibrary: ret=1 err=-; unloaded yes
+LoadLibraryExW(nosuch.dll, 0): ret null yes err=126
+LoadLibraryExW(nosuch.dll, LOAD_LIBRARY_AS_DATAFILE): ret null yes err=2
+LoadLibraryExW(nosuch.dll, DONT_RESOLVE_DLL_REFERENCES): ret null yes err=126
+LoadLibraryExW(f2kcom.dll, a file handle of 1, 0): ret null no err=-
+LoadLibraryExW(f2kcom.dll, 0x80000000): ret null no err=-
 dll: done
 <<< exit code=0

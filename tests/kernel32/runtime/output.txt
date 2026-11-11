@@ -1,9 +1,9 @@
 # F2K capture of runtime (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:27:30.08
-runtime F2KT-SOURCE-CRC=0x434DC925
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 13:05:04.00
+runtime F2KT-SOURCE-CRC=0xF8667978
 >>> runtime.exe args one "two words" back\slash "tail\\" x
 == args
 argc: 7
@@ -522,6 +522,105 @@ runtime: done
 == debugbreak
 DebugBreak: handled yes, filter calls 1, code 0x80000003 flags 0 params 3
 DebugBreak: exception address inside kernel32 no, inside ntdll yes, inside the program no
+runtime: done
+<<< exit code=0
+>>> runtime.exe debugstr
+== debugstr
+kernel32 exports OutputDebugStringA yes, OutputDebugStringW yes
+OutputDebugStringA(a line): returned yes, the program's filter not called err=2
+OutputDebugStringW(a line): returned yes, the program's filter not called err=2
+OutputDebugStringA(no newline): returned yes, the program's filter not called err=2
+OutputDebugStringW(no newline): returned yes, the program's filter not called err=2
+OutputDebugStringA(Latin-1): returned yes, the program's filter not called err=2
+OutputDebugStringW(Latin-1): returned yes, the program's filter not called err=2
+OutputDebugStringW(U+0436): returned yes, the program's filter not called err=2
+OutputDebugStringA(empty): returned yes, the program's filter not called err=2
+OutputDebugStringW(empty): returned yes, the program's filter not called err=2
+OutputDebugStringA(2000 characters): returned yes, the program's filter not called err=2
+OutputDebugStringW(2000 characters): returned yes, the program's filter not called err=2
+OutputDebugStringA(NULL): returned yes, the program's filter not called err=2
+OutputDebugStringW(NULL): returned yes, the program's filter not called err=2
+OutputDebugStringA after SetLastError(1234): err=2
+OutputDebugStringW after SetLastError(1234): err=2
+runtime: done
+<<< exit code=0
+>>> runtime.exe verify
+== verify
+kernel32 exports VerSetConditionMask yes, VerifyVersionInfoW yes, VerifyVersionInfoA yes
+GetVersionExW, the EX size: ret=1; major is 5 yes, minor is 0 yes, build is 2195 yes, platform is VER_PLATFORM_WIN32_NT yes, service pack major is 4 yes, minor is 0 yes
+VerSetConditionMask(0, VER_MAJORVERSION, VER_GREATER_EQUAL): 0x8000000000000018 err=-
+VerSetConditionMask(0, VER_MINORVERSION, VER_EQUAL): 0x8000000000000001 err=-
+VerSetConditionMask(0, VER_BUILDNUMBER, VER_LESS_EQUAL): 0x8000000000000140 err=-
+VerSetConditionMask(0, VER_PLATFORMID, VER_EQUAL): 0x8000000000000200 err=-
+VerSetConditionMask(0, VER_SERVICEPACKMINOR, VER_GREATER): 0x8000000000002000 err=-
+VerSetConditionMask(0, VER_SERVICEPACKMAJOR, VER_LESS): 0x8000000000020000 err=-
+VerSetConditionMask(0, VER_SUITENAME, VER_AND): 0x8000000000180000 err=-
+VerSetConditionMask(0, VER_PRODUCT_TYPE, VER_OR): 0x8000000000E00000 err=-
+VerSetConditionMask, major, minor and service pack major, each VER_GREATER_EQUAL: 0x800000000001801B
+VerSetConditionMask(major GREATER_EQUAL, VER_MAJORVERSION, VER_LESS): 0x8000000000000038 err=-
+VerSetConditionMask(0, VER_MAJORVERSION|VER_MINORVERSION, VER_EQUAL): 0x8000000000000008 err=-
+VerSetConditionMask(0, 0, VER_EQUAL): 0x0000000000000000 err=-
+VerSetConditionMask(0, VER_MAJORVERSION, 0): 0x8000000000000000 err=-
+VerSetConditionMask(0, VER_MAJORVERSION, 8): 0x8000000000000000 err=-
+VerSetConditionMask(0, 0x100, VER_EQUAL): 0x8000000001000000 err=-
+VerifyVersionInfoW(major == 5): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major >= 5): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 4): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(major < 5): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major > 4): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major <= 6): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 5 and minor == 0): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 5 and minor == 1): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(major.minor >= 5.1): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(major.minor >= 4.90): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major.minor >= 5.0): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(minor == 0 alone): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(build == 2195): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(build >= 2195): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(build > 2195): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(platform == VER_PLATFORM_WIN32_NT): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(platform == VER_PLATFORM_WIN32_WINDOWS): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(service pack major >= 4): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(service pack major == 4): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(service pack major >= 5): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(service pack minor == 0): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(5.0 service pack 4, each >=): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(5.0 service pack 5, each >=): ret=0 err=1150
+  (A) VerifyVersionInfoA: ret=0 err=1150
+VerifyVersionInfoW(4.0 service pack 6, each >=): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(no type): ret=0 err=160
+  (A) VerifyVersionInfoA: ret=0 err=160
+VerifyVersionInfoW(major, no condition): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 5, the condition for minor alone): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 5, OSVERSIONINFO's size): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
+VerifyVersionInfoW(major == 5, size 1): ret=1 err=-
+  (A) VerifyVersionInfoA: ret=1 err=-
 runtime: done
 <<< exit code=0
 >>> runtime.exe unhandled

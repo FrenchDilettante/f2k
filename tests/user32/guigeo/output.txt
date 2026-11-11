@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:13:41.88
-guigeo F2KT-SOURCE-CRC=0xD4BA014F
+# date: Wed 11/11/2026 13:05:30.65
+guigeo F2KT-SOURCE-CRC=0xC5BED17B
 >>> guigeo.exe show
 == show
 ShowWindow(SW_SHOW): ret=0 err=-
@@ -45,5 +45,108 @@ MoveWindow(a bogus handle): ret=0 err=1400
 GetWindowRect(a bogus handle): ret=0 err=1400
 SetWindowPos(a bogus handle): ret=0 err=1400
 IsWindowVisible(a bogus handle): no err=1400
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe minmax
+== minmax
+a hidden window at 100,80 sized 300x200: rect=100 80 400 280
+  IsIconic=0 err=- IsZoomed=0 err=- visible no; WM_SIZE count=0 last wParam=0; the rect: the normal one yes, larger both ways no
+ShowWindow(SW_MINIMIZE): ret=0 err=-
+  IsIconic=1 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=1; the rect: the normal one no, larger both ways no
+ShowWindow(SW_RESTORE): ret=16 err=-
+  IsIconic=0 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=0; the rect: the normal one yes, larger both ways no
+ShowWindow(SW_MAXIMIZE): ret=16 err=-
+  IsIconic=0 err=- IsZoomed=1 err=- visible yes; WM_SIZE count=1 last wParam=2; the rect: the normal one no, larger both ways yes
+ShowWindow(SW_MINIMIZE): ret=16 err=-
+  IsIconic=1 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=1; the rect: the normal one no, larger both ways no
+ShowWindow(SW_RESTORE): ret=16 err=-
+  IsIconic=0 err=- IsZoomed=1 err=- visible yes; WM_SIZE count=1 last wParam=2; the rect: the normal one no, larger both ways yes
+ShowWindow(SW_RESTORE): ret=16 err=-
+  IsIconic=0 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=0; the rect: the normal one yes, larger both ways no
+ShowWindow(SW_MINIMIZE): ret=16 err=-
+  IsIconic=1 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=1; the rect: the normal one no, larger both ways no
+ShowWindow(SW_HIDE): ret=16 err=-
+  IsIconic=1 err=- IsZoomed=0 err=- visible no; WM_SIZE count=1 last wParam=1; the rect: the normal one no, larger both ways no
+ShowWindow(SW_SHOWNORMAL): ret=0 err=-
+  IsIconic=0 err=- IsZoomed=0 err=- visible yes; WM_SIZE count=1 last wParam=0; the rect: the normal one yes, larger both ways no
+IsIconic(a bogus handle): ret=0 err=1400
+IsZoomed(a bogus handle): ret=0 err=1400
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe placement
+== placement
+a hidden window at 100,80 sized 300x200
+GetWindowPlacement: ret=1 err=- length=44 flags=0x0 showCmd=1 ptMinPosition (-1,-1) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect yes, its size yes, the rect set no; IsIconic=0 IsZoomed=0 visible no
+GetWindowPlacement, length 0: ret=1 err=- length=44 showCmd=1
+SetWindowPlacement(length 44, SW_SHOWMINIMIZED, rcNormalPosition 150 120 450 330): ret=1 err=-
+  the window rect: the rcNormalPosition set no
+GetWindowPlacement: ret=1 err=- length=44 flags=0x0 showCmd=2 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect no, its size no, the rect set yes; IsIconic=1 IsZoomed=0 visible yes
+SetWindowPlacement(length 44, SW_SHOWNORMAL, rcNormalPosition 120 90 420 290): ret=1 err=-
+  the window rect: the rcNormalPosition set yes
+GetWindowPlacement: ret=1 err=- length=44 flags=0x0 showCmd=1 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect yes, its size yes, the rect set yes; IsIconic=0 IsZoomed=0 visible yes
+ShowWindow(SW_MAXIMIZE): ret=16 err=-
+GetWindowPlacement: ret=1 err=- length=44 flags=0x2 showCmd=3 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect no, its size no, the rect set yes; IsIconic=0 IsZoomed=1 visible yes
+ShowWindow(SW_MINIMIZE): ret=16 err=-
+GetWindowPlacement: ret=1 err=- length=44 flags=0x2 showCmd=2 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect no, its size no, the rect set yes; IsIconic=1 IsZoomed=0 visible yes
+ShowWindow(SW_RESTORE): ret=16 err=-
+GetWindowPlacement: ret=1 err=- length=44 flags=0x2 showCmd=3 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect no, its size no, the rect set yes; IsIconic=0 IsZoomed=1 visible yes
+ShowWindow(SW_RESTORE): ret=16 err=-
+GetWindowPlacement: ret=1 err=- length=44 flags=0x2 showCmd=1 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect yes, its size yes, the rect set yes; IsIconic=0 IsZoomed=0 visible yes
+SetWindowPlacement(length 0, SW_SHOWNORMAL, rcNormalPosition 150 120 450 330): ret=0 err=87
+  the window rect: the rcNormalPosition set no
+GetWindowPlacement: ret=1 err=- length=44 flags=0x2 showCmd=1 ptMinPosition (-32000,-32000) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect yes, its size yes, the rect set yes; IsIconic=0 IsZoomed=0 visible yes
+SetWindowPlacement(length 44, SW_HIDE, rcNormalPosition 150 120 450 330): ret=1 err=-
+  the window rect: the rcNormalPosition set yes
+GetWindowPlacement: ret=1 err=- length=44 flags=0x0 showCmd=1 ptMinPosition (-1,-1) ptMaxPosition (-1,-1)
+  rcNormalPosition: the window rect yes, its size yes, the rect set yes; IsIconic=0 IsZoomed=0 visible no
+GetWindowPlacement(a bogus handle): ret=0 err=1400
+SetWindowPlacement(length 44, SW_SHOWNORMAL, a bogus handle, rcNormalPosition 150 120 450 330): ret=0 err=1400
+  the window rect: the rcNormalPosition set no
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe defer
+== defer
+three hidden 320x200 windows at 0,0 and a child of the first: yes
+BeginDeferWindowPos(2): non-NULL yes err=-
+DeferWindowPos(w1, 10, 20, 200, 100): non-NULL yes, the first handle yes err=-
+DeferWindowPos(w2, 30, 40, 210, 110): non-NULL yes, the first handle yes err=-
+DeferWindowPos(w3, 50, 60, 220, 120): non-NULL yes, the first handle yes err=-
+before EndDeferWindowPos:
+  w1: rect=0 0 320 200
+EndDeferWindowPos: ret=1 err=-
+  w1: rect=10 20 210 120
+  w2: rect=30 40 240 150
+  w3: rect=50 60 270 180
+BeginDeferWindowPos(1): non-NULL yes err=-
+DeferWindowPos(w1, 1, 2, 100, 50): non-NULL yes, the first handle yes err=-
+DeferWindowPos(w1 again, 5, 6, 150, 70): non-NULL yes, the first handle yes err=-
+EndDeferWindowPos: ret=1 err=-
+  w1: rect=5 6 155 76
+BeginDeferWindowPos(1): non-NULL yes err=-
+DeferWindowPos(w2, SWP_NOMOVE, 999, 999, 90, 80): non-NULL yes, the first handle yes err=-
+EndDeferWindowPos: ret=1 err=-
+  w2: rect=30 40 142 120
+BeginDeferWindowPos(2): non-NULL yes err=-
+DeferWindowPos(w3, 70, 80, 230, 130): non-NULL yes, the first handle yes err=-
+DeferWindowPos(the child of w1, 20, 30, 60, 50): non-NULL yes, the first handle yes err=-
+EndDeferWindowPos: ret=1 err=1441
+  w3: rect=50 60 270 180
+  the child: rect in the parent's client area=1 -8 51 32
+BeginDeferWindowPos(1): non-NULL yes err=-
+DeferWindowPos(a bogus handle, 1, 2, 3, 4): non-NULL no, the first handle no err=1400
+BeginDeferWindowPos(0): non-NULL yes err=-
+DeferWindowPos(w1, 11, 12, 130, 60): non-NULL yes, the first handle yes err=-
+EndDeferWindowPos: ret=1 err=-
+  w1: rect=11 12 141 72
+BeginDeferWindowPos(-1): non-NULL no err=87
+EndDeferWindowPos: ret=0 err=1405
 guigeo: done
 <<< exit code=0

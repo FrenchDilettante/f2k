@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026  7:05:26.61
-process F2KT-SOURCE-CRC=0xE51906D1
+# date: Wed 11/11/2026 13:05:50.23
+process F2KT-SOURCE-CRC=0x1CD53AE8
 >>> process.exe cmdline
 == cmdline
 _acmdln resolved: yes, _wcmdln resolved: yes, __argc resolved: yes, __argv resolved: yes
@@ -47,5 +47,30 @@ delete on each new block: returned
 delete(NULL): returned
 _expand(a 5000-byte block, 100): a block, the same pointer yes, _msize 112, contents kept yes
 _expand(that block, 100): a block, the same pointer yes, _msize 112
+process: done
+<<< exit code=0
+>>> process.exe beginthread
+== beginthread
+msvcrt exports _beginthreadex yes, _endthreadex yes
+_beginthreadex(a routine returning its parameter plus 70, 7): a handle yes, an id yes
+  the id the child's own: yes
+  its end: WAIT_OBJECT_0; GetExitCodeThread through the handle: ret=1 code 77 err=-
+  CloseHandle: ret=1 err=-
+_beginthreadex(a routine calling _endthreadex(55), CREATE_SUSPENDED): a handle yes
+  a 200 ms wait while it is suspended: WAIT_TIMEOUT
+  ResumeThread: 1
+  its end: WAIT_OBJECT_0; GetExitCodeThread through the handle: ret=1 code 55 err=-
+  CloseHandle: ret=1 err=-
+  the code after _endthreadex ran: no
+_beginthreadex(a 64 KiB stack, 1): a handle yes
+  its end: WAIT_OBJECT_0; GetExitCodeThread through the handle: ret=1 code 71 err=-
+  CloseHandle: ret=1 err=-
+_beginthreadex(no id pointer, 2): a handle yes
+  its end: WAIT_OBJECT_0; GetExitCodeThread through the handle: ret=1 code 72 err=-
+  CloseHandle: ret=1 err=-
+_beginthreadex(a routine setting errno to ERANGE and returning it): a handle yes
+  its end: WAIT_OBJECT_0; GetExitCodeThread through the handle: ret=1 code 34 err=-
+  CloseHandle: ret=1 err=-
+  this thread's errno still 0: yes
 process: done
 <<< exit code=0

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:24.40
-coords F2KT-SOURCE-CRC=0x52783030
+# date: Wed 11/11/2026 13:05:28.92
+coords F2KT-SOURCE-CRC=0x0F6A4002
 >>> coords.exe client
 == client
 setup: the class, the parent, its children and the grandchild created: yes
@@ -134,5 +134,195 @@ CharNextW over "a" U+0300 U+0301 "b": 0 -> 3 -> 4 -> 4 err=-
 CharPrevW over "a" U+0300 U+0301 "b": 4 -> 3 -> 0 -> 0 err=-
 CharNextW over "a" U+D800 U+DC00 "x": 0 -> 1 -> 2 -> 3 -> 4 -> 4 err=-
 CharPrevW over "a" U+D800 U+DC00 "x": 4 -> 3 -> 2 -> 1 -> 0 -> 0 err=-
+coords: done
+<<< exit code=0
+>>> coords.exe adjust
+== adjust
+GetSystemMetrics(SM_CXBORDER): 1
+GetSystemMetrics(SM_CYBORDER): 1
+GetSystemMetrics(SM_CXDLGFRAME): 3
+GetSystemMetrics(SM_CYDLGFRAME): 3
+GetSystemMetrics(SM_CXFRAME): 4
+GetSystemMetrics(SM_CYFRAME): 4
+GetSystemMetrics(SM_CXEDGE): 2
+GetSystemMetrics(SM_CYEDGE): 2
+GetSystemMetrics(SM_CYCAPTION): 19
+GetSystemMetrics(SM_CYSMCAPTION): 16
+GetSystemMetrics(SM_CYMENU): 19
+GetSystemMetrics(SM_CXSIZE): 18
+GetSystemMetrics(SM_CYSIZE): 18
+GetSystemMetrics(SM_CXSMSIZE): 12
+GetSystemMetrics(SM_CYSMSIZE): 15
+GetSystemMetrics(SM_CXMENUSIZE): 18
+GetSystemMetrics(SM_CYMENUSIZE): 18
+GetSystemMetrics(SM_CXMENUCHECK): 13
+GetSystemMetrics(SM_CYMENUCHECK): 13
+GetSystemMetrics(SM_CXSMICON): 16
+GetSystemMetrics(SM_CYSMICON): 16
+GetSystemMetrics(SM_CXMIN): 112
+GetSystemMetrics(SM_CYMIN): 27
+GetSystemMetrics(SM_CXMINTRACK): 112
+GetSystemMetrics(SM_CYMINTRACK): 27
+AdjustWindowRectEx(WS_OVERLAPPEDWINDOW, menu FALSE): ret=1 err=- deltas (-4,-23,4,4)
+AdjustWindowRectEx(WS_OVERLAPPEDWINDOW, menu TRUE): ret=1 err=- deltas (-4,-42,4,4)
+AdjustWindowRectEx(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, menu FALSE): ret=1 err=- deltas (-3,-22,3,3)
+AdjustWindowRectEx(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, menu TRUE): ret=1 err=- deltas (-3,-41,3,3)
+AdjustWindowRectEx(WS_POPUP | WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, menu FALSE): ret=1 err=- deltas (-3,-22,3,3)
+AdjustWindowRectEx(WS_POPUP | WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, menu TRUE): ret=1 err=- deltas (-3,-41,3,3)
+AdjustWindowRectEx(WS_POPUP | WS_BORDER, menu FALSE): ret=1 err=- deltas (-1,-1,1,1)
+AdjustWindowRectEx(WS_POPUP, menu FALSE): ret=1 err=- deltas (0,0,0,0)
+AdjustWindowRectEx(WS_POPUP | WS_DLGFRAME, menu FALSE): ret=1 err=- deltas (-3,-3,3,3)
+AdjustWindowRectEx(WS_POPUP | WS_THICKFRAME, menu FALSE): ret=1 err=- deltas (-3,-3,3,3)
+AdjustWindowRectEx(WS_CHILD | WS_BORDER, menu FALSE): ret=1 err=- deltas (-1,-1,1,1)
+AdjustWindowRectEx(WS_CHILD, WS_EX_CLIENTEDGE, menu FALSE): ret=1 err=- deltas (-2,-2,2,2)
+AdjustWindowRectEx(WS_OVERLAPPEDWINDOW, WS_EX_CLIENTEDGE, menu FALSE): ret=1 err=- deltas (-6,-25,6,6)
+AdjustWindowRectEx(WS_POPUP, WS_EX_STATICEDGE, menu FALSE): ret=1 err=- deltas (-1,-1,1,1)
+AdjustWindowRectEx(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, menu FALSE): ret=1 err=- deltas (-3,-19,3,3)
+AdjustWindowRectEx(WS_OVERLAPPED, menu FALSE): ret=1 err=- deltas (0,0,0,0)
+AdjustWindowRectEx(WS_CAPTION | WS_VSCROLL | WS_HSCROLL, menu FALSE): ret=1 err=- deltas (-3,-22,3,3)
+AdjustWindowRectEx(WS_CHILD | WS_CAPTION, menu FALSE): ret=1 err=- deltas (-3,-22,3,3)
+AdjustWindowRectEx(WS_CHILD | WS_CAPTION, menu TRUE): ret=1 err=- deltas (-3,-41,3,3)
+AdjustWindowRect(WS_OVERLAPPEDWINDOW, menu FALSE): ret=1 err=- deltas (-4,-23,4,4)
+AdjustWindowRect(WS_OVERLAPPEDWINDOW, menu TRUE): ret=1 err=- deltas (-4,-42,4,4)
+coords: done
+<<< exit code=0
+>>> coords.exe frames
+== frames
+setup: the class and the children's parent created: yes
+CreateWindowExA(WS_OVERLAPPEDWINDOW, hidden, 240x160): non-NULL yes
+  window 240x160, client 232x133, the client origin's offset (4,23), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x135, the client origin's offset (3,22), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP | WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x135, the client origin's offset (3,22), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP | WS_BORDER, hidden, 240x160): non-NULL yes
+  window 240x160, client 238x158, the client origin's offset (1,1), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP, hidden, 240x160): non-NULL yes
+  window 240x160, client 240x160, the client origin's offset (0,0), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP | WS_DLGFRAME, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x154, the client origin's offset (3,3), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP | WS_THICKFRAME, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x154, the client origin's offset (3,3), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_CHILD | WS_BORDER, hidden, 240x160): non-NULL yes
+  window 240x160, client 238x158, the client origin's offset (1,1), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_CHILD, WS_EX_CLIENTEDGE, hidden, 240x160): non-NULL yes
+  window 240x160, client 236x156, the client origin's offset (2,2), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_OVERLAPPEDWINDOW, WS_EX_CLIENTEDGE, hidden, 240x160): non-NULL yes
+  window 240x160, client 228x129, the client origin's offset (6,25), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_POPUP, WS_EX_STATICEDGE, hidden, 240x160): non-NULL yes
+  window 240x160, client 238x158, the client origin's offset (1,1), captioned: no
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x138, the client origin's offset (3,19), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_OVERLAPPED, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x135, the client origin's offset (3,22), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+CreateWindowExA(WS_CAPTION | WS_VSCROLL | WS_HSCROLL, hidden, 240x160): non-NULL yes
+  window 240x160, client 218x119, the client origin's offset (3,22), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: no
+CreateWindowExA(WS_CHILD | WS_CAPTION, hidden, 240x160): non-NULL yes
+  window 240x160, client 234x135, the client origin's offset (3,22), captioned: yes
+  AdjustWindowRectEx of the client: the window's rect: yes
+coords: done
+<<< exit code=0
+>>> coords.exe nccalc
+== nccalc
+setup: the class and the children's parent created: yes
+CreateWindowExA(WS_OVERLAPPEDWINDOW, hidden, 240x160): non-NULL yes
+  WM_NCCALCSIZE(FALSE, the window's rect): ret=0 err=-
+  the rect: deltas (4,23,-4,-4)
+  WM_NCCALCSIZE(FALSE, (0,0)-(100,50)): ret=0 err=-
+  the rect: deltas (4,23,-4,-4)
+  WM_NCCALCSIZE(TRUE, the window's rect twice and the client's): ret=0x0 err=-
+  rgrc[0]: deltas (4,23,-4,-4)
+  rgrc[1]: deltas (0,0,0,0)
+  rgrc[2]: deltas (0,0,0,0)
+  lppos the same: yes
+CreateWindowExA(WS_POPUP, hidden, 240x160): non-NULL yes
+  WM_NCCALCSIZE(FALSE, the window's rect): ret=0 err=-
+  the rect: deltas (0,0,0,0)
+  WM_NCCALCSIZE(FALSE, (0,0)-(100,50)): ret=0 err=-
+  the rect: deltas (0,0,0,0)
+  WM_NCCALCSIZE(TRUE, the window's rect twice and the client's): ret=0x0 err=-
+  rgrc[0]: deltas (0,0,0,0)
+  rgrc[1]: deltas (0,0,0,0)
+  rgrc[2]: deltas (0,0,0,0)
+  lppos the same: yes
+CreateWindowExA(WS_POPUP | WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, hidden, 240x160): non-NULL yes
+  WM_NCCALCSIZE(FALSE, the window's rect): ret=0 err=-
+  the rect: deltas (3,22,-3,-3)
+  WM_NCCALCSIZE(FALSE, (0,0)-(100,50)): ret=0 err=-
+  the rect: deltas (3,22,-3,-3)
+  WM_NCCALCSIZE(TRUE, the window's rect twice and the client's): ret=0x0 err=-
+  rgrc[0]: deltas (3,22,-3,-3)
+  rgrc[1]: deltas (0,0,0,0)
+  rgrc[2]: deltas (0,0,0,0)
+  lppos the same: yes
+CreateWindowExA(WS_CHILD | WS_BORDER, WS_EX_CLIENTEDGE, hidden, 240x160): non-NULL yes
+  WM_NCCALCSIZE(FALSE, the window's rect): ret=0 err=-
+  the rect: deltas (3,3,-3,-3)
+  WM_NCCALCSIZE(FALSE, (0,0)-(100,50)): ret=0 err=-
+  the rect: deltas (3,3,-3,-3)
+  WM_NCCALCSIZE(TRUE, the window's rect twice and the client's): ret=0x0 err=-
+  rgrc[0]: deltas (3,3,-3,-3)
+  rgrc[1]: deltas (0,0,0,0)
+  rgrc[2]: deltas (0,0,0,0)
+  lppos the same: yes
+CreateWindowExA(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, hidden, 240x160): non-NULL yes
+  WM_NCCALCSIZE(FALSE, the window's rect): ret=0 err=-
+  the rect: deltas (3,19,-3,-3)
+  WM_NCCALCSIZE(FALSE, (0,0)-(100,50)): ret=0 err=-
+  the rect: deltas (3,19,-3,-3)
+  WM_NCCALCSIZE(TRUE, the window's rect twice and the client's): ret=0x0 err=-
+  rgrc[0]: deltas (3,19,-3,-3)
+  rgrc[1]: deltas (0,0,0,0)
+  rgrc[2]: deltas (0,0,0,0)
+  lppos the same: yes
+coords: done
+<<< exit code=0
+>>> coords.exe nchittest
+== nchittest
+RegisterClassW(F2KCoordsHit): atom nonzero yes
+CreateWindowExW(WS_OVERLAPPEDWINDOW, visible, 300x200): non-NULL yes
+  the caption's middle row, from 2 left: [0,2) 0 HTNOWHERE, [2,6) 13 HTTOPLEFT, [6,24) 3 HTSYSMENU, [24,244) 2 HTCAPTION, [244,262) 8 HTMINBUTTON, [262,280) 9 HTMAXBUTTON, [280,298) 20 HTCLOSE, [298,302) 14 HTTOPRIGHT, [302,304) 0 HTNOWHERE
+  the top row (1 in), from 2 left: [0,2) 0 HTNOWHERE, [2,24) 13 HTTOPLEFT, [24,280) 12 HTTOP, [280,302) 14 HTTOPRIGHT, [302,304) 0 HTNOWHERE
+  the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,6) 12 HTTOP, [6,25) 2 HTCAPTION, [25,198) 1 HTCLIENT, [198,202) 15 HTBOTTOM, [202,204) 0 HTNOWHERE
+  the left column (1 in), from 2 above: [0,2) 0 HTNOWHERE, [2,24) 13 HTTOPLEFT, [24,180) 10 HTLEFT, [180,202) 16 HTBOTTOMLEFT, [202,204) 0 HTNOWHERE
+  the bottom row (2 in), from 2 left: [0,2) 0 HTNOWHERE, [2,24) 16 HTBOTTOMLEFT, [24,280) 15 HTBOTTOM, [280,302) 17 HTBOTTOMRIGHT, [302,304) 0 HTNOWHERE
+CreateWindowExW(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, visible, 300x200): non-NULL yes
+  the caption's middle row, from 2 left: [0,2) 0 HTNOWHERE, [2,5) 18 HTBORDER, [5,23) 3 HTSYSMENU, [23,245) 2 HTCAPTION, [245,263) 8 HTMINBUTTON, [263,281) 9 HTMAXBUTTON, [281,299) 20 HTCLOSE, [299,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the top row (1 in), from 2 left: [0,2) 0 HTNOWHERE, [2,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,5) 18 HTBORDER, [5,24) 2 HTCAPTION, [24,199) 1 HTCLIENT, [199,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the left column (1 in), from 2 above: [0,2) 0 HTNOWHERE, [2,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the bottom row (2 in), from 2 left: [0,2) 0 HTNOWHERE, [2,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+CreateWindowExW(WS_POPUP | WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, visible, 300x200): non-NULL yes
+  the caption's middle row, from 2 left: [0,2) 0 HTNOWHERE, [2,5) 18 HTBORDER, [5,281) 2 HTCAPTION, [281,299) 20 HTCLOSE, [299,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the top row (1 in), from 2 left: [0,2) 0 HTNOWHERE, [2,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,5) 18 HTBORDER, [5,24) 2 HTCAPTION, [24,199) 1 HTCLIENT, [199,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the left column (1 in), from 2 above: [0,2) 0 HTNOWHERE, [2,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the bottom row (2 in), from 2 left: [0,2) 0 HTNOWHERE, [2,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+CreateWindowExW(WS_POPUP | WS_BORDER, visible, 300x200): non-NULL yes
+  the caption's middle row, from 2 left: [0,2) 0 HTNOWHERE, [2,3) 18 HTBORDER, [3,301) 1 HTCLIENT, [301,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the top row (1 in), from 2 left: [0,2) 0 HTNOWHERE, [2,3) 18 HTBORDER, [3,301) 1 HTCLIENT, [301,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+  the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,3) 18 HTBORDER, [3,201) 1 HTCLIENT, [201,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the left column (1 in), from 2 above: [0,2) 0 HTNOWHERE, [2,3) 18 HTBORDER, [3,201) 1 HTCLIENT, [201,202) 18 HTBORDER, [202,204) 0 HTNOWHERE
+  the bottom row (2 in), from 2 left: [0,2) 0 HTNOWHERE, [2,3) 18 HTBORDER, [3,301) 1 HTCLIENT, [301,302) 18 HTBORDER, [302,304) 0 HTNOWHERE
+CreateWindowExW(WS_OVERLAPPEDWINDOW, WS_EX_CLIENTEDGE, visible, 300x200): non-NULL yes
+  the caption's middle row, from 2 left: [0,2) 0 HTNOWHERE, [2,6) 13 HTTOPLEFT, [6,24) 3 HTSYSMENU, [24,244) 2 HTCAPTION, [244,262) 8 HTMINBUTTON, [262,280) 9 HTMAXBUTTON, [280,298) 20 HTCLOSE, [298,302) 14 HTTOPRIGHT, [302,304) 0 HTNOWHERE
+  the top row (1 in), from 2 left: [0,2) 0 HTNOWHERE, [2,24) 13 HTTOPLEFT, [24,280) 12 HTTOP, [280,302) 14 HTTOPRIGHT, [302,304) 0 HTNOWHERE
+  the middle column, from 2 above: [0,2) 0 HTNOWHERE, [2,6) 12 HTTOP, [6,25) 2 HTCAPTION, [25,27) 18 HTBORDER, [27,196) 1 HTCLIENT, [196,198) 18 HTBORDER, [198,202) 15 HTBOTTOM, [202,204) 0 HTNOWHERE
+  the left column (1 in), from 2 above: [0,2) 0 HTNOWHERE, [2,24) 13 HTTOPLEFT, [24,180) 10 HTLEFT, [180,202) 16 HTBOTTOMLEFT, [202,204) 0 HTNOWHERE
+  the bottom row (2 in), from 2 left: [0,2) 0 HTNOWHERE, [2,24) 16 HTBOTTOMLEFT, [24,280) 15 HTBOTTOM, [280,302) 17 HTBOTTOMRIGHT, [302,304) 0 HTNOWHERE
 coords: done
 <<< exit code=0
