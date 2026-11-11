@@ -15,6 +15,10 @@ title = "registry"
 key = "security"
 title = "security"
 
+[[group]]
+key = "scm"
+title = "the service control manager"
+
 # --- registry -------------------------------------------------------------------------------------
 
 [[export]]
@@ -149,6 +153,25 @@ group = "registry"
 args = ["handle hKey", "strW? lpValueName", "u32 Reserved", "u32 dwType", "ptr lpData", "u32 cbData"]
 impl = { native = "RegSetValueExW" }
 ordinal = 443
+
+# --- the service control manager ---------------------------------------------------------------
+
+[[export]]
+name = "OpenSCManagerA"
+group = "scm"
+args = ["strA? lpMachineName", "strA? lpDatabaseName", "u32 dwDesiredAccess"]
+impl = { stub = "F2K runs no service manager" }
+ordinal = 368
+fails = "NULL"
+note = "ntquery's scmfail block pins the failure: on the capture machine the service manager answers a handle"
+
+[[export]]
+name = "CloseServiceHandle"
+group = "scm"
+args = ["ptr hSCObject"]
+impl = { stub = "F2K runs no service manager" }
+ordinal = 62
+fails = "FALSE"
 
 # --- security -------------------------------------------------------------------------------------
 
@@ -456,9 +479,6 @@ ordinal = 60
 name = "CloseEventLog"
 ordinal = 61
 
-[[export]]
-name = "CloseServiceHandle"
-ordinal = 62
 
 [[export]]
 name = "CloseTrace"
@@ -1660,9 +1680,6 @@ ordinal = 365
 name = "OpenEventLogW"
 ordinal = 366
 
-[[export]]
-name = "OpenSCManagerA"
-ordinal = 368
 
 [[export]]
 name = "OpenSCManagerW"

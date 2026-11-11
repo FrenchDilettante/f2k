@@ -16,7 +16,7 @@ tests/
 │               # hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
-│               # shutparm, profile
+│               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd
@@ -165,6 +165,16 @@ The fixtures:
   Every file is named by a full path, the program's own directory, which never prints.
   F2K's boot adds `profile.ini` to `\CORPUS` beside the program (`data_files`).
   Gated; `winini` stays pending while F2K's disk carries no `\WINNT\win.ini`: win.ini's section list is empty before `[F2KProfile]` is written and after it is deleted.
+- `threx` - thread-level exception behavior: the second chance ending only the faulting thread (`unhandled`, named-only), the dispatched CONTEXT's floating-point and debug-register flags (`context`), the entry's return value ending the thread rather than the process (`mainret`, named-only), and `NtQueryInformationThread`'s `ThreadQuerySetWin32StartAddress` class answering the recorded start address (`threadstart`).
+  Gated; its blocks fail on F2K until the kernel is fixed.
+- `vmedge` - the virtual-memory and sections corners: the guard-page count before `STATUS_STACK_OVERFLOW` (`guardwalk`), `MEM_COMMIT` over a paging-file-backed view and over a file-backed one (`commitview`), and `NtUnmapViewOfSection` of the own image (`unmapimage`, named-only: the platform unmaps and the process faults).
+  Gated; its blocks fail on F2K until the kernel is fixed.
+- `startup` - `GetStartupInfoA`'s `lpDesktop`/`lpTitle`/`lpReserved` converted from the process parameters, never NULL (`startup`).
+  Gated; its block fails on F2K while the three fields stay NULL.
+- `lcid` - `CompareStringA`/`W` refusing an uninstalled LCID with `ERROR_INVALID_PARAMETER` (0x9999), with the US English LCID as the sanity line (`badlcid`).
+  Gated; its block fails on F2K while an unknown locale still compares.
+- `ntquery` - the introspection surface called ntdll-direct through `GetProcAddress`: `NtQuerySystemInformation` class 5 (`sysinfo`), `NtQueryInformationProcess` class 0 (`procinfo`), `NtQueryInformationThread` class 0 (`threadinfo`), `ReadProcessMemory` of the own PEB (`pebread`), and `OpenSCManagerA` (`scmfail`).
+  Gated; `scmfail` fails on F2K while it runs no service manager.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.

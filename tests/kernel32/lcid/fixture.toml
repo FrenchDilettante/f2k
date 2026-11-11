@@ -1,0 +1,11 @@
+# lcid: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "lcid - CompareStringA/W validate the LCID before comparing: an uninstalled locale (0x9999) returns 0 with ERROR_INVALID_PARAMETER; the US English locale (0x0409) compares as always."
+kind = "sectioned"
+gate = true
+
+
+[pins]
+badlcid = [
+    "kernel32.CompareStringA",
+    "kernel32.CompareStringW",
+]

@@ -1,0 +1,26 @@
+# ntquery: one test per block of the real-machine capture (output.txt); see tests/README.md.
+description = "ntquery - the introspection surface called ntdll-direct through GetProcAddress: NtQuerySystemInformation class 5 (sysinfo), NtQueryInformationProcess class 0 with the PEB address (procinfo), NtQueryInformationThread class 0 (threadinfo), ReadProcessMemory of the own PEB (pebread), and OpenSCManagerA (scmfail)."
+kind = "sectioned"
+gate = true
+
+
+[pins]
+sysinfo = [
+    "ntdll.NtQuerySystemInformation",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+]
+procinfo = [
+    "ntdll.NtQueryInformationProcess",
+    "kernel32.GetCurrentProcess",
+]
+threadinfo = [
+    "ntdll.NtQueryInformationThread",
+    "kernel32.GetCurrentThread",
+]
+pebread = [
+    "kernel32.ReadProcessMemory",
+]
+scmfail = [
+    "advapi32.OpenSCManagerA",
+]
