@@ -520,7 +520,7 @@ args = ["handle hInstance", "ptr lpCursorName"]
 impl = { native = "LoadCursorA" }
 ordinal = 415
 fails = "NULL"
-note = "the stock cursors alone, constant handles (no cursor objects yet); a module's cursor is a stub"
+note = "the stock cursors alone, the system's records; a module's cursor is a stub"
 
 [[export]]
 name = "LoadCursorW"
@@ -972,27 +972,30 @@ fails = "NULL"
 name = "CopyIcon"
 group = "resources"
 args = ["handle hIcon"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CopyIcon" }
 ordinal = 68
 fails = "NULL"
+note = "a new icon of the process's own with the source's size and kind, not shared; no image is copied (icons hold none yet)"
 
 [[export]]
 name = "DestroyIcon"
 group = "resources"
 args = ["handle hIcon"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DestroyIcon" }
 ordinal = 143
 fails = "FALSE"
+note = "a shared icon (LoadIcon's, a stock one) is not destroyed, and the call answers TRUE"
 
-# win32k's cursor and icon services, behind LoadIcon: user32's internal calls (the empty record
-# comes from NtUserCallNoParam, with the menus' services). A shared icon is found by its module,
-# its group resource's data address and its size (the width in the low word, the height in the
-# high).
+# win32k's cursor and icon services, behind LoadIcon, LoadCursor, CopyIcon and DestroyIcon:
+# user32's internal calls (the empty record comes from NtUserCallNoParam, with the menus'
+# services). A shared icon is found by its module, its group resource's data address, its size
+# (the width in the low word, the height in the high) and its kind (RT_ICON or RT_CURSOR); the
+# module 0 names the system's stock ones, by their IDC_ or IDI_ id.
 
 [[export]]
 name = "NtUserFindExistingCursorIcon"
 group = "resources"
-args = ["u32 Module", "u32 Resource", "u32 Size", "ptr<u32> Cursor"]
+args = ["u32 Module", "u32 Resource", "u32 Size", "u32 Kind", "ptr<u32> Cursor"]
 impl = { syscall = "crate::win32k::icon::find_existing_cursor_icon" }
 internal = true
 
@@ -1001,6 +1004,20 @@ name = "NtUserSetCursorIconData"
 group = "resources"
 args = ["handle Cursor", "ptr Data"]
 impl = { syscall = "crate::win32k::icon::set_cursor_icon_data" }
+internal = true
+
+[[export]]
+name = "NtUserGetIconInfo"
+group = "resources"
+args = ["handle Cursor", "ptr Data"]
+impl = { syscall = "crate::win32k::icon::get_icon_info" }
+internal = true
+
+[[export]]
+name = "NtUserDestroyCursor"
+group = "resources"
+args = ["handle Cursor"]
+impl = { syscall = "crate::win32k::icon::destroy_cursor" }
 internal = true
 
 # The geometry and visibility services, behind SetWindowPos, MoveWindow, ShowWindow and
@@ -1845,8 +1862,16 @@ fails = "NULL"
 name = "CreateMenu"
 group = "menu"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateMenu" }
 ordinal = 89
+fails = "NULL"
+
+[[export]]
+name = "CreatePopupMenu"
+group = "menu"
+args = []
+impl = { native = "CreatePopupMenu" }
+ordinal = 90
 fails = "NULL"
 
 [[export]]
@@ -2070,9 +2095,18 @@ fails = "FALSE"
 name = "CreateAcceleratorTableW"
 group = "accelerator"
 args = ["ptr lpaccl", "i32 cEntries"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateAcceleratorTableW" }
 ordinal = 73
 fails = "NULL"
+
+[[export]]
+name = "CreateAcceleratorTableA"
+group = "accelerator"
+args = ["ptr lpaccl", "i32 cEntries"]
+impl = { native = "CreateAcceleratorTableA" }
+ordinal = 72
+fails = "NULL"
+note = "a character entry's key converted from the ANSI code page"
 
 # win32k's accelerator services: user32's internal calls. A table LoadAccelerators makes names its
 # resource (the module and the resource data's address), which answers the table loaded before.
@@ -2584,10 +2618,6 @@ name = "CopyRect"
 ordinal = 70
 
 [[export]]
-name = "CreateAcceleratorTableA"
-ordinal = 72
-
-[[export]]
 name = "CreateCaret"
 ordinal = 74
 
@@ -2634,10 +2664,6 @@ ordinal = 87
 [[export]]
 name = "CreateMDIWindowW"
 ordinal = 88
-
-[[export]]
-name = "CreatePopupMenu"
-ordinal = 90
 
 [[export]]
 name = "CreateWindowStationA"

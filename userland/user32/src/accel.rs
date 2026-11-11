@@ -1,6 +1,7 @@
-//! Keyboard accelerators: LoadAcceleratorsW and LoadAcceleratorsA, CopyAcceleratorTableW and
-//! CopyAcceleratorTableA, DestroyAcceleratorTable, TranslateAcceleratorW and TranslateAcceleratorA,
-//! over win32k's accelerator services ([`imports`]).
+//! Keyboard accelerators: LoadAcceleratorsW and LoadAcceleratorsA, CreateAcceleratorTableW and
+//! CreateAcceleratorTableA, CopyAcceleratorTableW and CopyAcceleratorTableA,
+//! DestroyAcceleratorTable, TranslateAcceleratorW and TranslateAcceleratorA, over win32k's
+//! accelerator services ([`imports`]).
 //!
 //! A table is a win32k object. LoadAccelerators reads an ACCELERATORS resource here, as Windows
 //! 2000's user32 does (rtl::accel's ACCELTABLEENTRY: a character entry's key an ANSI character,
@@ -13,16 +14,16 @@
 //! the window its WM_COMMAND (and WM_INITMENU and WM_INITMENUPOPUP when the window's menu holds the
 //! command), queued for the window's thread: user32 receives them before it returns, so the window
 //! procedure sees them during the call, as on Windows 2000. The A form converts a character
-//! message's character from the ANSI code page first; CopyAcceleratorTableA converts a character
-//! entry's key back.
+//! message's character from the ANSI code page first; CreateAcceleratorTableA converts a character
+//! entry's key from it, and CopyAcceleratorTableA converts one back.
 
 use rtl::accel::{Accel, AccelTableEntry, FVIRTKEY, WM_CHAR, WM_SYSCHAR};
-use rtl::edge::OutBuf;
+use rtl::edge::{InBuf, OutBuf};
 use rtl::status::{NtStatus, STATUS_INVALID_HANDLE, STATUS_OBJECT_TYPE_MISMATCH};
 use rtl::user::Msg;
 
 use crate::imports::{self, ResourceName};
-use crate::{failed_with, message};
+use crate::{failed, failed_with, message, ERROR_INVALID_PARAMETER};
 
 /// RT_ACCELERATOR: an accelerator table's resource type.
 const RT_ACCELERATOR: u16 = 9;
@@ -127,6 +128,69 @@ unsafe fn load_accelerators(instance: usize, name: ResourceName) -> usize {
 
 // --- The table
 // -------------------------------------------------------------------------------------
+
+/// CreateAcceleratorTableW: a table of the caller's `count` entries, the process's own; NULL with
+/// ERROR_INVALID_PARAMETER for no entries or more than a table holds.
+///
+/// # Safety
+///
+/// `entries` is the caller's array of `count` ACCELs, as for the platform's.
+#[unsafe(export_name = "f2k_export_CreateAcceleratorTableW")]
+pub unsafe extern "system" fn create_accelerator_table_w(
+    entries: *const Accel,
+    count: i32,
+) -> usize {
+    // SAFETY: the caller's contract.
+    unsafe { create_table(entries, count, |key| key) }
+}
+
+/// CreateAcceleratorTableA: CreateAcceleratorTableW's, a character entry's key an ANSI character.
+///
+/// # Safety
+///
+/// As CreateAcceleratorTableW's.
+#[unsafe(export_name = "f2k_export_CreateAcceleratorTableA")]
+pub unsafe extern "system" fn create_accelerator_table_a(
+    entries: *const Accel,
+    count: i32,
+) -> usize {
+    // SAFETY: the caller's contract.
+    unsafe {
+        create_table(entries, count, |key| {
+            if key < 0x100 {
+                wide_of(key as u8)
+            } else {
+                key
+            }
+        })
+    }
+}
+
+/// CreateAcceleratorTable's core: the entries copied into a buffer of this DLL's, a character
+/// entry's key through `key`, then the table made of them.
+///
+/// # Safety
+///
+/// As CreateAcceleratorTableW's.
+unsafe fn create_table(entries: *const Accel, count: i32, key: impl Fn(u16) -> u16) -> usize {
+    if count <= 0 || count as usize > MAX_ENTRIES {
+        return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
+    }
+    // SAFETY: the caller's contract.
+    let given = unsafe { InBuf::new(entries, count as usize) };
+    let mut local = [Accel::default(); MAX_ENTRIES];
+    for (slot, entry) in local.iter_mut().zip(given.iter()) {
+        *slot = entry;
+        if entry.virt & FVIRTKEY == 0 {
+            slot.key = key(entry.key);
+        }
+    }
+    failed_with(
+        imports::create_accelerator_table(&local[..count as usize], 0, 0),
+        accel_error,
+    )
+    .unwrap_or(0)
+}
 
 /// CopyAcceleratorTableW: with no buffer the table's entry count; else as many of its entries as
 /// the buffer's `count` takes, their number. 0 with ERROR_INVALID_ACCEL_HANDLE for a handle naming

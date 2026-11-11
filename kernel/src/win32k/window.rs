@@ -2,14 +2,13 @@
 //! logic that runs over them.
 //!
 //! A window is a record in the window pool ([`Windows`]), named by a generation-tagged id
-//! ([`WindowId`]), the object manager's pattern, with a handle into the window handle table
-//! ([`sched::object::HandleTable`], the same shape the class registry's cursor table uses, its
-//! handles carrying a uniqueness count in their high word, [`WindowHandles`]). Its
-//! parent/child/next/owner links are the z-order and ownership lists the create and destroy
-//! logic splices. Threads ([`Thread`]), desktops ([`Desktop`]) and monitors ([`Monitor`]) are
-//! the calling context the decisions read: the thread's desktop and its access mask, its window
-//! count and its queue's active/focus windows, the desktop's own window and message window, the
-//! monitor's work area and cascade counter.
+//! ([`WindowId`]), the object manager's pattern, with a handle into the user handle table
+//! every user object shares ([`super::handle`], its handles carrying a uniqueness count in their
+//! high word). Its parent/child/next/owner links are the z-order and ownership lists the create
+//! and destroy logic splices. Threads ([`Thread`]), desktops ([`Desktop`]) and monitors
+//! ([`Monitor`]) are the calling context the decisions read: the thread's desktop and its access
+//! mask, its window count and its queue's active/focus windows, the desktop's own window and
+//! message window, the monitor's work area and cascade counter.
 //!
 //! The create path ([`Windows::create_window_ex`]) is the decision sequence: validation gates
 //! (parent's desktop, desktop access, child-without-parent, nesting limits), class resolution
@@ -79,10 +78,10 @@ pub use rtl::user::StyleStruct;
 pub use rtl::window::{WindowData, WindowInfo, WindowPos, WindowText};
 
 use super::class;
+use super::handle::{UserHandles, UserObject};
 #[cfg(target_arch = "x86")]
 use super::queue::QueuePump;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -738,6 +737,17 @@ pub struct WindowId {
     generation: u16,
 }
 
+impl WindowId {
+    /// The id of the record `index`, its first generation (the handle table's tests).
+    #[cfg(test)]
+    pub const fn for_tests(index: u16) -> Self {
+        WindowId {
+            index,
+            generation: 0,
+        }
+    }
+}
+
 /// One window record's header.
 #[derive(Clone, Copy)]
 struct Header {
@@ -1099,85 +1109,17 @@ impl ExtraBytes {
     }
 }
 
-/// One window handle-table entry: the window it names, the thread that owns it, and the
-/// destroy flags (the object manager's handle-table pattern).
+/// A window's entry in the user handle table ([`UserHandles`]): the window it names, the thread
+/// that owns it, and the destroy flags (Windows 2000's handle entry's owner and flags).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WindowEntry {
-    id: WindowId,
-    owner: ThreadId,
+pub struct WindowEntry {
+    pub(super) id: WindowId,
+    pub(super) owner: ThreadId,
     /// The handle is marked for destruction: a re-entering destroy proceeds instead of failing
     /// the owner check.
-    marked_destroy: bool,
+    pub(super) marked_destroy: bool,
     /// A free is in progress on the object.
-    in_destroy: bool,
-}
-
-/// The window handle table: the handle table's slots, and each slot's uniqueness count, which a
-/// window's handle carries in its high word, as Windows 2000's HWNDs carry one. The count moves on
-/// when the slot's handle is closed, so a destroyed window's handle names no window even once its
-/// slot names another (the focus capture: a handle destroyed before another window's creation
-/// answers ERROR_INVALID_WINDOW_HANDLE). A slot's first handle has a count of 0: the table's own
-/// value.
-struct WindowHandles {
-    table: HandleTable<WindowEntry>,
-    uniq: [u16; HANDLE_SLOTS],
-}
-
-impl WindowHandles {
-    /// Write an empty table at `handles`, field by field.
-    ///
-    /// # Safety
-    ///
-    /// `handles` is valid for writes and aligned; its previous contents are overwritten, not
-    /// dropped.
-    unsafe fn write_empty(handles: *mut WindowHandles) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the array element by element.
-        unsafe {
-            HandleTable::write_empty(addr_of_mut!((*handles).table));
-            let uniq = addr_of_mut!((*handles).uniq) as *mut u16;
-            for index in 0..HANDLE_SLOTS {
-                uniq.add(index).write(0);
-            }
-        }
-    }
-
-    /// The table's own handle for the window handle `handle`, when its count is the slot's.
-    fn slot_handle(&self, handle: Hwnd) -> Option<(u32, usize)> {
-        let low = handle & 0xFFFF;
-        let index = (low >> HANDLE_SHIFT) as usize;
-        (index < HANDLE_SLOTS && (handle >> 16) as u16 == self.uniq[index]).then_some((low, index))
-    }
-
-    /// Insert `entry`: its window handle, 0 when every slot is taken.
-    fn insert(&mut self, entry: WindowEntry) -> Hwnd {
-        let handle = self.table.insert(entry);
-        if handle == 0 {
-            return 0;
-        }
-        handle | (self.uniq[(handle >> HANDLE_SHIFT) as usize] as u32) << 16
-    }
-
-    /// The entry the window handle `handle` names, or none.
-    fn lookup(&self, handle: Hwnd) -> Option<WindowEntry> {
-        self.table.lookup(self.slot_handle(handle)?.0)
-    }
-
-    /// Change the entry `handle` names in place; false when it names none.
-    fn update(&mut self, handle: Hwnd, change: impl FnOnce(WindowEntry) -> WindowEntry) -> bool {
-        match self.slot_handle(handle) {
-            Some((low, _)) => self.table.update(low, change),
-            None => false,
-        }
-    }
-
-    /// Close `handle`, its slot's count moved on (kept to 15 bits: a handle stays positive).
-    fn close(&mut self, handle: Hwnd) -> Option<WindowEntry> {
-        let (low, index) = self.slot_handle(handle)?;
-        let entry = self.table.close(low)?;
-        self.uniq[index] = self.uniq[index].wrapping_add(1) & 0x7FFF;
-        Some(entry)
-    }
+    pub(super) in_destroy: bool,
 }
 
 /// A thread's create/destroy context: its process, desktop and desktop access, its window count
@@ -1297,7 +1239,10 @@ impl Monitor {
 /// The window registry: the pool, the handle table, and the calling-context records.
 pub struct Windows {
     pool: WindowPool,
-    handles: WindowHandles,
+    /// The user handle table: windows', menus', accelerator tables' and cursors' and icons'
+    /// handles, one table as Windows 2000's ([`super::handle`]). It sits in the window registry,
+    /// the kind looked up most, behind the window manager's lock as every kind's records are.
+    pub handles: UserHandles,
     threads: [Thread; THREADS],
     desktops: [Desktop; DESKTOPS],
     monitors: [Monitor; MONITORS],
@@ -1332,7 +1277,7 @@ impl Windows {
                 headers.add(index).write(Header::DEAD);
                 records.add(index).write(Window::EMPTY);
             }
-            WindowHandles::write_empty(addr_of_mut!((*windows).handles));
+            UserHandles::write_empty(addr_of_mut!((*windows).handles));
             let threads = addr_of_mut!((*windows).threads) as *mut Thread;
             for index in 0..THREADS {
                 threads.add(index).write(Thread::EMPTY);
@@ -1483,7 +1428,7 @@ impl Windows {
     /// The window a handle names, when the handle is live (its record's generation matches);
     /// none otherwise — the handle validation the destroy service runs.
     pub fn window_from_handle(&self, handle: Hwnd) -> Option<WindowId> {
-        let entry = self.handles.lookup(handle)?;
+        let entry = self.handles.window(handle)?;
         self.pool.is_live(entry.id).then_some(entry.id)
     }
 
@@ -2016,12 +1961,12 @@ impl Windows {
         let Some(id) = self.pool.allocate() else {
             return Err(Failure::OutOfMemory);
         };
-        let handle = self.handles.insert(WindowEntry {
+        let handle = self.handles.insert(UserObject::Window(WindowEntry {
             id,
             owner: caller,
             marked_destroy: false,
             in_destroy: false,
-        });
+        }));
         if handle == 0 {
             self.pool.free(id);
             return Err(Failure::OutOfMemory);
@@ -2614,14 +2559,14 @@ impl Windows {
         pump: &mut dyn Pump,
     ) -> Result<bool, Failure> {
         let handle = self.at(window).handle;
-        let Some(entry) = self.handles.lookup(handle) else {
+        let Some(entry) = self.handles.window(handle) else {
             return Err(Failure::InvalidWindowHandle);
         };
         let already = entry.marked_destroy;
         if already {
             // The re-entry path: adopt the current thread as the owner.
             if entry.owner != caller {
-                self.handles.update(handle, |mut e| {
+                self.handles.update_window(handle, |mut e| {
                     e.owner = caller;
                     e
                 });
@@ -2953,10 +2898,10 @@ impl Windows {
         let handle = self.at(window).handle;
         if self
             .handles
-            .lookup(handle)
+            .window(handle)
             .is_some_and(|e| e.marked_destroy)
         {
-            self.handles.update(handle, |mut e| {
+            self.handles.update_window(handle, |mut e| {
                 e.owner = caller;
                 e
             });
@@ -3076,11 +3021,11 @@ impl Windows {
                 owner: self.at(window).process,
                 desktop: self.at(window).desktop,
             };
-            classes.dereference_class(&mut view);
+            classes.dereference_class(&mut self.handles, &mut view);
         }
 
         // Mark the handle for destruction (the in-destroy flag blocks unlock recursion).
-        self.handles.update(handle, |mut e| {
+        self.handles.update_window(handle, |mut e| {
             e.marked_destroy = true;
             e.in_destroy = true;
             e
@@ -3094,7 +3039,7 @@ impl Windows {
         };
         if locks > 0 {
             // Still referenced elsewhere: the window becomes a zombie, not freed.
-            self.handles.update(handle, |mut e| {
+            self.handles.update_window(handle, |mut e| {
                 e.in_destroy = false;
                 e
             });
@@ -3192,7 +3137,7 @@ impl Windows {
             w.process == owner
                 && !self
                     .handles
-                    .lookup(w.handle)
+                    .window(w.handle)
                     .is_some_and(|e| e.marked_destroy)
         };
         let mut window = self.live_windows().find(|&id| doomed(id))?;
@@ -4193,6 +4138,7 @@ impl WindowManager {
         ] {
             self.classes
                 .register_class(
+                    &self.windows.handles,
                     &wc,
                     name,
                     class::MenuArg::None,
@@ -4243,6 +4189,11 @@ impl WindowManager {
         // screen): a top-level window's visibility goes up to it. The message window never is.
         if let Some(window) = window {
             self.windows.at_mut(window).style |= WS_VISIBLE;
+        }
+        // The stock cursors and icons, the system's, once: their handles come after the first
+        // desktop's windows'.
+        if !self.classes.cursors.make_stock(&mut self.windows.handles) {
+            return Err(Failure::OutOfMemory);
         }
         Ok(())
     }
@@ -4308,13 +4259,13 @@ impl WindowManager {
         } = self;
         clipboard.process_gone(windows, owner);
         windows.end_process(classes, owner, &mut DefaultProcedure);
-        classes.destroy_owner_classes(owner);
+        classes.destroy_owner_classes(&mut windows.handles, owner);
         // The process's own user objects, as Windows 2000 destroys them at its end: its menus
         // (those its windows held went with them), its accelerator tables, its cursors and icons
         // (once its classes, which held them, are gone).
-        windows.menus.destroy_owner(owner);
-        accels.destroy_owner(owner);
-        classes.cursors.destroy_owner(owner);
+        windows.menus.destroy_owner(&mut windows.handles, owner);
+        accels.destroy_owner(&mut windows.handles, owner);
+        classes.cursors.destroy_owner(&mut windows.handles, owner);
     }
 
     /// What the processes' ends left behind: the processes' live windows and their classes, menus,
@@ -5030,22 +4981,24 @@ mod tests {
 
     fn register(
         c: &mut class::Registry,
+        handles: &UserHandles,
         name: class::Name,
         wc: &class::WndClassExW,
     ) -> class::Atom {
-        register_on(c, name, wc, DESKTOP, OWNER, class::MenuArg::None)
+        register_on(c, handles, name, wc, DESKTOP, OWNER, class::MenuArg::None)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn register_on(
         c: &mut class::Registry,
+        handles: &UserHandles,
         name: class::Name,
         wc: &class::WndClassExW,
         desktop: u32,
         owner: class::Owner,
         menu: class::MenuArg,
     ) -> class::Atom {
-        c.register_class(wc, name, menu, owner, compat40(), desktop)
+        c.register_class(handles, wc, name, menu, owner, compat40(), desktop)
             .unwrap()
     }
 
@@ -5074,12 +5027,12 @@ mod tests {
         parent: Option<WindowId>,
     ) -> WindowId {
         let id = w.pool.allocate().unwrap();
-        let handle = w.handles.insert(WindowEntry {
+        let handle = w.handles.insert(UserObject::Window(WindowEntry {
             id,
             owner: t,
             marked_destroy: false,
             in_destroy: false,
-        });
+        }));
         let rec = w.pool.at_mut(id);
         rec.handle = handle;
         rec.thread = t;
@@ -5121,7 +5074,12 @@ mod tests {
                 bottom: 480,
             },
         );
-        let atom = register(c, class::Name::Text(&units("Test")), &wnd_class());
+        let atom = register(
+            c,
+            &w.handles,
+            class::Name::Text(&units("Test")),
+            &wnd_class(),
+        );
         (w, c, t, atom, desk, msg)
     }
 
@@ -5639,7 +5597,7 @@ mod tests {
     #[test]
     fn an_integer_atom_names_the_class_directly() {
         let (w, c, t, _atom, _, _) = setup();
-        let atom = register(c, class::Name::Atom(0x8002), &wnd_class());
+        let atom = register(c, &w.handles, class::Name::Atom(0x8002), &wnd_class());
         assert_eq!(atom, 0x8002);
         let mut pump = Rec::new(t);
         let mut a = args(0x8002, WS_OVERLAPPED);
@@ -5666,7 +5624,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.instance = OTHER_MODULE;
-        let atom = register(c, class::Name::Text(&units("Private")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&units("Private")), &wc);
         let mut pump = Rec::new(t);
         let name = units("Private");
         let mut a = args(atom, WS_OVERLAPPED);
@@ -5699,6 +5657,7 @@ mod tests {
         // A class registered on the other desktop.
         let atom = register_on(
             c,
+            &w.handles,
             class::Name::Text(&units("Far")),
             &wnd_class(),
             OTHER_DESKTOP,
@@ -5709,6 +5668,7 @@ mod tests {
         for i in 0..(class::CLASSES - 2) {
             register(
                 c,
+                &w.handles,
                 class::Name::Text(&units(&format!("Fill{i}"))),
                 &wnd_class(),
             );
@@ -5730,7 +5690,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.cb_wnd_extra = 12;
-        let atom = register(c, class::Name::Text(&units("Extra")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&units("Extra")), &wc);
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.ex_style = WS_EX_LAYERED | WS_EX_TOPMOST;
@@ -5749,7 +5709,12 @@ mod tests {
         assert_eq!(rec.cb_wnd_extra, 12);
         assert_eq!(w.thread(t).window_count, 1);
         let err = c
-            .unregister_class(class::Name::Text(&units("Extra")), OWNER, MODULE)
+            .unregister_class(
+                &mut w.handles,
+                class::Name::Text(&units("Extra")),
+                OWNER,
+                MODULE,
+            )
             .unwrap_err();
         assert_eq!(
             err,
@@ -6182,6 +6147,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let atom = register_on(
             c,
+            &w.handles,
             class::Name::Text(&units("Menu")),
             &wnd_class(),
             DESKTOP,
@@ -6230,7 +6196,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.style = class::CS_PARENTDC;
-        let atom = register(c, class::Name::Text(&units("PD")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&units("PD")), &wc);
         let parent = raw_window(w, t, WS_OVERLAPPED, None); // no WS_CLIPCHILDREN
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
@@ -6314,7 +6280,12 @@ mod tests {
         assert_eq!(w.thread(t).window_count, 0);
         // The class reference went back: the class can be unregistered now.
         assert!(c
-            .unregister_class(class::Name::Text(&units("Test")), OWNER, MODULE)
+            .unregister_class(
+                &mut w.handles,
+                class::Name::Text(&units("Test")),
+                OWNER,
+                MODULE
+            )
             .is_ok());
     }
 
@@ -6525,7 +6496,7 @@ mod tests {
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let handle = w.at(id).handle;
         // Marked for destroy, owned by the other thread.
-        w.handles.update(handle, |mut e| {
+        w.handles.update_window(handle, |mut e| {
             e.marked_destroy = true;
             e.owner = t2;
             e
@@ -6943,7 +6914,12 @@ mod tests {
         );
         // The class reference went back.
         assert!(c
-            .unregister_class(class::Name::Text(&units("Test")), OWNER, MODULE)
+            .unregister_class(
+                &mut w.handles,
+                class::Name::Text(&units("Test")),
+                OWNER,
+                MODULE
+            )
             .is_ok());
     }
 
@@ -6959,6 +6935,7 @@ mod tests {
         wc.instance = class::WINDOW_MANAGER_MODULE;
         let icon = c
             .register_class(
+                &w.handles,
                 &wc,
                 class::Name::Atom(ICONTITLE_ATOM),
                 class::MenuArg::None,
@@ -7034,8 +7011,13 @@ mod tests {
         assert_eq!(w.at(desk).child, None);
         assert_eq!(w.thread(t).window_count, 0);
         assert!(
-            c.unregister_class(class::Name::Text(&units("Test")), OWNER, MODULE)
-                .is_ok(),
+            c.unregister_class(
+                &mut w.handles,
+                class::Name::Text(&units("Test")),
+                OWNER,
+                MODULE
+            )
+            .is_ok(),
             "the class reference is back"
         );
         // A second destroy of the same HWND: 1400.
@@ -7047,24 +7029,32 @@ mod tests {
     }
 
     /// A destroyed window's handle names no window once its slot names the next one: the slot's
-    /// uniqueness count in the high word moved on.
+    /// uniqueness count in the high word moved on. A high word of 0 (a slot's first handle's) or
+    /// 0xFFFF names whatever window the slot holds now.
     #[test]
     fn a_reused_slot_gets_a_new_handle() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let first = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
-        let old = w.handle_of(first);
-        assert_eq!(old >> 16, 0, "a slot's first handle is the table's own");
+        let first = w.handle_of(first);
+        assert_eq!(first >> 16, 0, "a slot's first handle is the table's own");
+        assert!(w.destroy_window_handle(c, t, first, &mut pump).unwrap());
+        let second = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let old = w.handle_of(second);
+        assert_eq!(
+            (old & 0xFFFF, old >> 16),
+            (first, 1),
+            "the same slot, counted on"
+        );
         assert!(w.destroy_window_handle(c, t, old, &mut pump).unwrap());
         let next = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let new = w.handle_of(next);
-        assert_eq!(
-            (new & 0xFFFF, new >> 16),
-            (old, 1),
-            "the same slot, counted on"
-        );
+        assert_eq!(new, old + 0x1_0000);
         assert_eq!(w.window_from_handle(old), None);
         assert_eq!(w.window_from_handle(new), Some(next));
+        assert_eq!(w.window_from_handle(first), Some(next), "the wildcard 0");
+        assert_eq!(w.window_from_handle(first | 0xFFFF_0000), Some(next));
+        assert_eq!(w.window_from_handle(new + 0x1_0000), None);
         assert_eq!(
             w.destroy_window_handle(c, t, old, &mut pump),
             Err(Failure::InvalidWindowHandle)
@@ -7182,6 +7172,7 @@ mod tests {
         m.boot_desktop(DESKTOP, SCREEN).unwrap();
         register(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("App")),
             &wnd_class(),
         );
@@ -7291,11 +7282,13 @@ mod tests {
         m.boot_desktop(DESKTOP, SCREEN).unwrap();
         register(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("App")),
             &wnd_class(),
         );
         register_on(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("Other")),
             &wnd_class(),
             DESKTOP,
@@ -7436,6 +7429,7 @@ mod tests {
         m.boot_desktop(DESKTOP, SCREEN).unwrap();
         register(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("App")),
             &wnd_class(),
         );
@@ -7483,6 +7477,7 @@ mod tests {
         m.boot_desktop(DESKTOP, SCREEN).unwrap();
         register(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("App")),
             &wnd_class(),
         );
@@ -7645,6 +7640,7 @@ mod tests {
     /// A class of `extra` window extra bytes, registered through the narrow form when `ansi`.
     fn register_data_class(
         c: &mut class::Registry,
+        handles: &UserHandles,
         name: &str,
         extra: i32,
         ansi: bool,
@@ -7656,6 +7652,7 @@ mod tests {
             ..compat40()
         };
         c.register_class(
+            handles,
             &wc,
             class::Name::Text(&units(name)),
             class::MenuArg::None,
@@ -7672,7 +7669,7 @@ mod tests {
     #[test]
     fn the_extra_bytes() {
         let (w, c, t, _, _, _) = setup();
-        let atom = register_data_class(c, "Extra", 12, false);
+        let atom = register_data_class(c, &w.handles, "Extra", 12, false);
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let h = w.handle_of(id);
@@ -7701,7 +7698,7 @@ mod tests {
         assert_eq!(w.extra_value(id, 11, 2), Err(Failure::InvalidIndex));
         assert_eq!(w.window_data(id, OWNER).extra, 12);
 
-        let none = register_data_class(c, "None", 0, false);
+        let none = register_data_class(c, &w.handles, "None", 0, false);
         let plain = create(w, c, t, none, WS_OVERLAPPED, &mut pump).unwrap();
         assert_eq!(w.extra_value(plain, 0, 4), Err(Failure::InvalidIndex));
 
@@ -7766,7 +7763,7 @@ mod tests {
     #[test]
     fn the_window_data() {
         let (w, c, t, _, _, _) = setup();
-        let atom = register_data_class(c, "Narrow", 0, true);
+        let atom = register_data_class(c, &w.handles, "Narrow", 0, true);
         let mut pump = Rec::new(t);
         let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let mut a = args(atom, WS_CHILD);
@@ -8255,6 +8252,7 @@ mod tests {
         m.boot_desktop(DESKTOP, SCREEN).unwrap();
         register(
             &mut m.classes,
+            &m.windows.handles,
             class::Name::Text(&units("App")),
             &wnd_class(),
         );

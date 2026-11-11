@@ -2027,6 +2027,7 @@ pub(crate) mod rig {
         };
         m.classes
             .register_class(
+                &m.windows.handles,
                 &wc,
                 class::Name::Text(&name),
                 class::MenuArg::None,

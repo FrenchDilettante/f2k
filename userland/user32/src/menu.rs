@@ -1,7 +1,7 @@
-//! Menus: LoadMenuW and LoadMenuA, the item calls (GetMenuItemCount, GetMenuItemID, GetSubMenu,
-//! GetMenuState, GetMenuStringA/W, CheckMenuItem, CheckMenuRadioItem, EnableMenuItem), IsMenu,
-//! DestroyMenu, and a window's menu (GetMenu, SetMenu), over win32k's menu services
-//! ([`imports`]).
+//! Menus: CreateMenu and CreatePopupMenu, LoadMenuW and LoadMenuA, the item calls
+//! (GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState, GetMenuStringA/W, CheckMenuItem,
+//! CheckMenuRadioItem, EnableMenuItem), IsMenu, DestroyMenu, and a window's menu (GetMenu,
+//! SetMenu), over win32k's menu services ([`imports`]).
 //!
 //! A menu is a win32k object. LoadMenu reads a MENU or MENUEX resource here, as Windows 2000's
 //! user32 does (rtl::menu's [`Template`]), and builds the menu through the services: the bar
@@ -208,6 +208,22 @@ fn build_level(template: &mut Template<'_>, menu: usize, depth: u32) -> Result<(
 
 // --- The menu and its items
 // ------------------------------------------------------------------------
+
+/// CreateMenu: a new, empty menu bar; NULL with the last error when win32k has no room.
+#[unsafe(export_name = "f2k_export_CreateMenu")]
+pub extern "system" fn create_menu() -> usize {
+    failed_with(imports::call_no_param(NO_PARAM_CREATE_MENU), menu_error).map_or(0, |m| m as usize)
+}
+
+/// CreatePopupMenu: a new, empty popup menu; NULL with the last error when win32k has no room.
+#[unsafe(export_name = "f2k_export_CreatePopupMenu")]
+pub extern "system" fn create_popup_menu() -> usize {
+    failed_with(
+        imports::call_no_param(NO_PARAM_CREATE_POPUP_MENU),
+        menu_error,
+    )
+    .map_or(0, |m| m as usize)
+}
 
 /// IsMenu: TRUE for a handle naming a menu; FALSE with ERROR_INVALID_MENU_HANDLE otherwise.
 #[unsafe(export_name = "f2k_export_IsMenu")]

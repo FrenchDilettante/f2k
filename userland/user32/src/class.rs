@@ -6,11 +6,13 @@
 //! registration is 4.0-compatible (MSVC 6 links its programs for subsystem 4.0). The kernel answers
 //! the class decisions' errors as the closest documented NTSTATUS ([`class_error`] maps them back).
 //!
-//! The cursors are a seam: there are no cursor objects yet. LoadCursor answers the stock cursors
-//! as constant handles of user32's own ([`stock_cursor`]), which the kernel's cursor table does not
-//! hold, so a class names its stock cursor to the kernel as none.
+//! The stock cursors are the system's records in win32k (made at its boot, as Windows 2000 loads
+//! them from user32's resources): LoadCursor with no module finds the one of its IDC_ id there
+//! (NtUserFindExistingCursorIcon on the module 0), and a class names it to the kernel as any other
+//! cursor. A module's cursors are a seam: LoadCursor loads none yet.
 
 use rtl::edge::In;
+use rtl::icon::{ICON_SIZE, RT_CURSOR};
 use rtl::status::{
     NtStatus,
     STATUS_INVALID_HANDLE,
@@ -123,40 +125,15 @@ pub fn class_error(status: NtStatus) -> u32 {
 
 // --- The stock cursors ---------------------------------------------------------------------------
 
-/// The stock cursors' resource ids (winuser.h's IDC_*), in the order of their handles.
-const STOCK_CURSORS: [u16; 16] = [
-    32512, // IDC_ARROW
-    32513, // IDC_IBEAM
-    32514, // IDC_WAIT
-    32515, // IDC_CROSS
-    32516, // IDC_UPARROW
-    32640, // IDC_SIZE
-    32641, // IDC_ICON
-    32642, // IDC_SIZENWSE
-    32643, // IDC_SIZENESW
-    32644, // IDC_SIZEWE
-    32645, // IDC_SIZENS
-    32646, // IDC_SIZEALL
-    32648, // IDC_NO
-    32649, // IDC_HAND
-    32650, // IDC_APPSTARTING
-    32651, // IDC_HELP
-];
-
-/// The stock cursors' handles: F2K's own constants, the high word 1 and the resource id in the low
-/// one. No handle table's handle reaches that high.
-const STOCK_CURSOR_BASE: u32 = 0x0001_0000;
-
-/// The handle of the stock cursor whose resource id is `id`; none for an id that names none.
-pub fn stock_cursor(id: u16) -> Option<usize> {
-    STOCK_CURSORS
-        .contains(&id)
-        .then_some((STOCK_CURSOR_BASE | u32::from(id)) as usize)
-}
-
-/// Whether `handle` is a stock cursor's.
-pub fn is_stock_cursor(handle: usize) -> bool {
-    stock_cursor(handle as u16) == Some(handle)
+/// The system's stock cursor or icon (`kind` RT_CURSOR or RT_ICON) of the IDC_ or IDI_ id `id`:
+/// its handle, NULL with ERROR_RESOURCE_TYPE_NOT_FOUND for an id that names none.
+pub fn stock(id: u16, kind: u16) -> usize {
+    match imports::find_existing_cursor_icon(0, usize::from(id), ICON_SIZE, ICON_SIZE, kind) {
+        Ok(0) => failed(ERROR_RESOURCE_TYPE_NOT_FOUND),
+        Ok(handle) => Some(handle),
+        Err(status) => failed(imports::dos_error(status)),
+    }
+    .unwrap_or(0)
 }
 
 /// LoadCursorA: a stock cursor (no module, an IDC_ id); see [`load_cursor`].
@@ -184,20 +161,18 @@ pub extern "system" fn load_cursor_w(instance: usize, name: *const u16) -> usize
 
 /// LoadCursor's core: with no module, the stock cursor the id names (the same handle from either
 /// form), NULL with ERROR_RESOURCE_TYPE_NOT_FOUND for an id that names none (as the guiwin capture
-/// shows); a module's cursor, or one by name, goes to the stub routine (there are no cursor
-/// objects to load one into).
+/// shows); a module's cursor, or one by name, goes to the stub routine (LoadCursor reads no
+/// cursor resource yet).
 fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option<u16>) -> usize {
     match (instance, id) {
-        (0, Some(id)) => stock_cursor(id)
-            .or_else(|| failed(ERROR_RESOURCE_TYPE_NOT_FOUND))
-            .unwrap_or(0),
+        (0, Some(id)) => stock(id, RT_CURSOR),
         _ => {
             // SAFETY: the arguments as the export's kinds read them: a handle and an address,
             // neither read as memory.
             unsafe {
                 crate::stub::stubbed(
                     entry,
-                    "cursors from a module's resources: no cursor objects yet",
+                    "cursors from a module's resources: no cursor resource is read yet",
                     &[instance as u64, raw as u64],
                 ) as usize
             }
@@ -210,18 +185,8 @@ fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option
 /// The registration of `class`, its two names already as the service takes them (`name` the class
 /// name's), through the narrow entry point when `ansi` (its procedure takes the narrow forms of the
 /// messages): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures
-/// show leaves it); 0 with the class decision's error. A stock cursor or icon goes to the kernel as
-/// none (see the module notes).
+/// show leaves it); 0 with the class decision's error.
 fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
-    if is_stock_cursor(class.cursor) {
-        class.cursor = 0;
-    }
-    if crate::icon::is_stock_icon(class.icon) {
-        class.icon = 0;
-    }
-    if crate::icon::is_stock_icon(class.icon_sm) {
-        class.icon_sm = 0;
-    }
     class.cb_size = core::mem::size_of::<WndClassEx>() as u32;
     class.class_name = name;
     match failed_with(
@@ -485,14 +450,14 @@ mod tests {
             style: 3,
             wnd_proc: procedure(proc) as usize,
             instance: 0x40_0000,
-            cursor: stock_cursor(32512).unwrap(),
+            cursor: stock(32512, RT_CURSOR),
             background: 6,
             class_name: name.as_ptr() as usize,
             ..WndClass::default()
         }
     }
 
-    /// The narrow form reaches the kernel wide, its stock cursor as none; the atom comes back
+    /// The narrow form reaches the kernel wide, its stock cursor as it is; the atom comes back
     /// with the last error 2; a second registration of the name is 1410.
     ///
     /// Pins: user32.RegisterClassA, user32.RegisterClassW
@@ -511,10 +476,8 @@ mod tests {
             held.name,
             "F2KGuiClass".encode_utf16().collect::<std::vec::Vec<_>>()
         );
-        assert_eq!(
-            held.class.cursor, 0,
-            "the stock cursor is none to the kernel"
-        );
+        assert_eq!(held.class.cursor, class.cursor);
+        assert_ne!(class.cursor, 0);
         assert_eq!(held.class.style, 3);
         arm();
         // SAFETY: as above.
@@ -650,19 +613,18 @@ mod tests {
         assert_eq!(last_error(), 1400);
     }
 
-    /// The stock cursors: the same handle from either form; another id is 1813; a module's cursor
-    /// is a stub.
+    /// The stock cursors: the system's, the same handle from either form; another id is 1813; a
+    /// module's cursor is a stub.
     ///
     /// Pins: user32.LoadCursorA, user32.LoadCursorW
     #[test]
-    fn the_stock_cursors_are_constants() {
+    fn the_stock_cursors_are_the_systems() {
         arm();
         // SAFETY: a resource id.
         let arrow = unsafe { load_cursor_a(0, 32512 as *const u8) };
         assert_ne!(arrow, 0);
         assert_eq!(load_cursor_w(0, 32512 as *const u16), arrow);
         assert_eq!(last_error(), UNSET);
-        assert!(is_stock_cursor(arrow));
         // SAFETY: a resource id.
         assert_eq!(unsafe { load_cursor_a(0, 32767 as *const u8) }, 0);
         assert_eq!(last_error(), ERROR_RESOURCE_TYPE_NOT_FOUND);

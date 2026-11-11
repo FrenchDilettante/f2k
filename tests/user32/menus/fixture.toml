@@ -10,14 +10,6 @@ description = "menus - a MENU resource of the program's own (menus.rc): LoadMenu
 kind = "sectioned"
 gate = true
 
-# F2K's windows, menus, accelerator tables and cursors and icons each have handles of their own: a
-# window's carries its slot's uniqueness count in its high word, while the other kinds' are tagged
-# by kind in theirs, so a window's handle can equal another kind's once its slot has been reused.
-[pending]
-kinds = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu, CreateAcceleratorTableW, CopyIcon and DestroyIcon not yet implemented"
-reuse = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu and CreateAcceleratorTableW not yet implemented"
-slots = "user objects of every kind share one handle table, as Windows 2000's do; CreateMenu, CreateAcceleratorTableW, CopyIcon and DestroyIcon not yet implemented"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the load and

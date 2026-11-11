@@ -1,9 +1,9 @@
-//! Icons: LoadIconW and LoadIconA, the stock icons as constant handles and a module's icons as
-//! win32k's icon records ([`imports`]).
+//! Icons: LoadIconW and LoadIconA, CopyIcon and DestroyIcon, over win32k's cursor and icon records
+//! ([`imports`]).
 //!
-//! The stock icons (IDI_*) are user32's own constant handles, as its stock cursors are
-//! ([`crate::class`]): Windows 2000 loads them from user32's own resources, which F2K's user32 has
-//! none of. No record holds them, and a class names them to the kernel as none.
+//! The stock icons (IDI_*) are the system's records in win32k, as the stock cursors are
+//! ([`crate::class`]): Windows 2000 loads them from user32's own resources at its boot, which F2K's
+//! user32 has none of; LoadIcon with no module finds the one of its id.
 //!
 //! A module's icon is its RT_GROUP_ICON resource: a directory of RT_ICON images, of which LoadIcon
 //! takes the one LookupIconIdFromDirectoryEx picks for SM_CXICON by SM_CYICON on the display
@@ -11,38 +11,35 @@
 //! icon already loaded from the resource at that size, and only failing one is a record made
 //! and filled in (its size, its depth, its resource). The records hold no bits yet: nothing draws
 //! an icon.
+//!
+//! CopyIcon makes a new record of the process's own from what the source holds (NtUserGetIconInfo),
+//! not shared, as Windows 2000's makes a new icon of the source's image; DestroyIcon destroys a
+//! record of the process's own (NtUserDestroyCursor), and leaves a shared one, which lives as long
+//! as its module, answering TRUE. A handle naming no cursor or icon is ERROR_INVALID_CURSOR_HANDLE
+//! for both (the menus capture's DestroyIcon on a window, a menu and an accelerator table).
 
 use rtl::display::{DevModeW, ENUM_CURRENT_SETTINGS};
 use rtl::icon::{best_entry, CursorData, ICON_SIZE, RT_GROUP_ICON, RT_ICON};
 use rtl::pod::Pod;
+use rtl::status::NtStatus;
 use rtl::user::NO_PARAM_CREATE_EMPTY_CURSOR;
 
-use crate::class::ERROR_RESOURCE_TYPE_NOT_FOUND;
 use crate::imports::{self, ResourceName};
 use crate::{failed, failed_with, spec};
 
 /// ERROR_RESOURCE_DATA_NOT_FOUND: a group icon that lists no image.
 const ERROR_RESOURCE_DATA_NOT_FOUND: u32 = 1812;
 
-/// The stock icons' resource ids (winuser.h's IDI_*: IDI_APPLICATION, IDI_HAND, IDI_QUESTION,
-/// IDI_EXCLAMATION, IDI_ASTERISK, IDI_WINLOGO; IDI_ERROR, IDI_WARNING and IDI_INFORMATION are
-/// IDI_HAND's, IDI_EXCLAMATION's and IDI_ASTERISK's).
-const STOCK_ICONS: [u16; 6] = [32512, 32513, 32514, 32515, 32516, 32517];
+/// ERROR_INVALID_CURSOR_HANDLE: a handle naming no cursor or icon.
+pub const ERROR_INVALID_CURSOR_HANDLE: u32 = 1402;
 
-/// The stock icons' handles: F2K's own constants, the high word 2 and the resource id in the low
-/// word (the stock cursors' high word is 1: IDI_APPLICATION and IDC_ARROW share an id).
-const STOCK_ICON_BASE: u32 = 0x0002_0000;
-
-/// The handle of the stock icon whose resource id is `id`; none for an id that names none.
-pub fn stock_icon(id: u16) -> Option<usize> {
-    STOCK_ICONS
-        .contains(&id)
-        .then_some((STOCK_ICON_BASE | u32::from(id)) as usize)
-}
-
-/// Whether `handle` is a stock icon's.
-pub fn is_stock_icon(handle: usize) -> bool {
-    handle >> 16 == (STOCK_ICON_BASE >> 16) as usize && stock_icon(handle as u16) == Some(handle)
+/// The Win32 error of a failed cursor or icon service: a handle naming no cursor or icon is
+/// ERROR_INVALID_CURSOR_HANDLE (the kernel's icon module), anything else what ntdll maps it to.
+fn cursor_error(status: NtStatus) -> u32 {
+    match status.0 {
+        rtl::status::STATUS_INVALID_HANDLE => ERROR_INVALID_CURSOR_HANDLE,
+        _ => imports::dos_error(status),
+    }
 }
 
 /// LoadIconW: a stock icon (no module, an IDI_ id), or the module's group icon `name` at the
@@ -92,9 +89,7 @@ pub unsafe extern "system" fn load_icon_a(instance: usize, name: *const u8) -> u
 unsafe fn load_icon(entry: &rtl::stub::Entry, instance: usize, name: ResourceName) -> usize {
     if instance == 0 {
         return match name.id() {
-            Some(id) => stock_icon(id)
-                .or_else(|| failed(ERROR_RESOURCE_TYPE_NOT_FOUND))
-                .unwrap_or(0),
+            Some(id) => crate::class::stock(id, RT_ICON),
             None => {
                 let raw = match name {
                     ResourceName::Wide(raw) | ResourceName::Narrow(raw) => raw,
@@ -141,7 +136,7 @@ fn module_icon(module: usize, directory: &'static [u8]) -> Option<usize> {
     };
     let resource = directory.as_ptr() as usize;
     let existing = failed_with(
-        imports::find_existing_cursor_icon(module, resource, ICON_SIZE, ICON_SIZE),
+        imports::find_existing_cursor_icon(module, resource, ICON_SIZE, ICON_SIZE, RT_ICON),
         imports::dos_error,
     )?;
     if existing != 0 {
@@ -174,9 +169,41 @@ fn module_icon(module: usize, directory: &'static [u8]) -> Option<usize> {
     Some(icon)
 }
 
+/// CopyIcon: a new icon of the process's own, of the source's size and kind, not shared (see the
+/// module notes); NULL with ERROR_INVALID_CURSOR_HANDLE for a handle naming no cursor or icon.
+#[unsafe(export_name = "f2k_export_CopyIcon")]
+pub extern "system" fn copy_icon(icon: usize) -> usize {
+    copy(icon).unwrap_or(0)
+}
+
+fn copy(icon: usize) -> Option<usize> {
+    let source = failed_with(imports::get_icon_info(icon), cursor_error)?;
+    let data = CursorData {
+        shared: 0,
+        ..source
+    };
+    let copy = failed_with(
+        imports::call_no_param(NO_PARAM_CREATE_EMPTY_CURSOR),
+        imports::dos_error,
+    )? as usize;
+    failed_with(
+        imports::set_cursor_icon_data(copy, &data),
+        imports::dos_error,
+    )?;
+    Some(copy)
+}
+
+/// DestroyIcon: the icon destroyed, a shared one left (see the module notes); FALSE with
+/// ERROR_INVALID_CURSOR_HANDLE for a handle naming no cursor or icon.
+#[unsafe(export_name = "f2k_export_DestroyIcon")]
+pub extern "system" fn destroy_icon(icon: usize) -> i32 {
+    failed_with(imports::destroy_cursor(icon), cursor_error).is_some() as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::class::ERROR_RESOURCE_TYPE_NOT_FOUND;
     use crate::imports::host::{add_resource, CURSORS, LAST_ERROR, PROGRAM};
 
     /// A group icon of two images, 16 by 16 and 32 by 32, and the second's image.
@@ -195,8 +222,9 @@ mod tests {
         add_resource(PROGRAM, RT_ICON, 2, &image);
     }
 
-    /// Stock icons are constants, distinct from the stock cursors; a module's icon is made once
-    /// and shared after.
+    /// Stock icons are the system's, distinct from the stock cursors; a module's icon is made once
+    /// and shared after; a copy is the process's own, not shared, and DestroyIcon refuses what is
+    /// no icon.
     ///
     /// Pins: user32.LoadIconW, user32.LoadIconA
     #[test]
@@ -209,9 +237,7 @@ mod tests {
                 crate::class::load_cursor_w(0, 32512 as *const u16),
             )
         };
-        assert_eq!(app, 0x0002_7F00);
-        assert!(hand != 0 && hand != app && app != cursor);
-        assert!(is_stock_icon(app) && !is_stock_icon(cursor));
+        assert!(app != 0 && hand != 0 && hand != app && app != cursor);
         // SAFETY: as above.
         assert_eq!(unsafe { load_icon_w(0, 12345 as *const u16) }, 0);
         assert_eq!(LAST_ERROR.with(|e| e.get()), ERROR_RESOURCE_TYPE_NOT_FOUND);
@@ -225,10 +251,19 @@ mod tests {
         };
         assert_ne!(first, 0);
         assert_eq!(again, first);
-        let made = CURSORS.with(|cursors| cursors.borrow()[0]);
+        let made = CURSORS.with(|cursors| *cursors.borrow().last().unwrap());
         assert_eq!(
             (made.is_icon, made.width, made.bits_per_pixel, made.shared),
             (1, 32, 4, 1)
         );
+        let copy = copy_icon(first);
+        assert!(copy != 0 && copy != first);
+        let copied = CURSORS.with(|cursors| *cursors.borrow().last().unwrap());
+        assert_eq!((copied.is_icon, copied.width, copied.shared), (1, 32, 0));
+        assert_eq!(destroy_icon(copy), 1);
+        assert_eq!(destroy_icon(0x1234), 0);
+        assert_eq!(LAST_ERROR.with(|e| e.get()), ERROR_INVALID_CURSOR_HANDLE);
+        assert_eq!(copy_icon(0x1234), 0);
+        assert_eq!(LAST_ERROR.with(|e| e.get()), ERROR_INVALID_CURSOR_HANDLE);
     }
 }

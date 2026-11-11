@@ -8,12 +8,39 @@ use core::mem::size_of;
 
 use crate::pod::Pod;
 
-/// The resource types: an icon's image, a group icon's directory.
+/// The resource types: a cursor's image, an icon's image, a group icon's directory.
+pub const RT_CURSOR: u16 = 1;
 pub const RT_ICON: u16 = 3;
 pub const RT_GROUP_ICON: u16 = 14;
 
-/// The size LoadIcon asks for, SM_CXICON by SM_CYICON (Windows 2000's 32 by 32).
+/// The size LoadIcon asks for, SM_CXICON by SM_CYICON (Windows 2000's 32 by 32), which LoadCursor's
+/// SM_CXCURSOR by SM_CYCURSOR is too.
 pub const ICON_SIZE: i32 = 32;
+
+/// The stock cursors' resource ids (winuser.h's IDC_*), in the order the boot makes them.
+pub const STOCK_CURSORS: [u16; 16] = [
+    32512, // IDC_ARROW
+    32513, // IDC_IBEAM
+    32514, // IDC_WAIT
+    32515, // IDC_CROSS
+    32516, // IDC_UPARROW
+    32640, // IDC_SIZE
+    32641, // IDC_ICON
+    32642, // IDC_SIZENWSE
+    32643, // IDC_SIZENESW
+    32644, // IDC_SIZEWE
+    32645, // IDC_SIZENS
+    32646, // IDC_SIZEALL
+    32648, // IDC_NO
+    32649, // IDC_HAND
+    32650, // IDC_APPSTARTING
+    32651, // IDC_HELP
+];
+
+/// The stock icons' resource ids (winuser.h's IDI_*: IDI_APPLICATION, IDI_HAND, IDI_QUESTION,
+/// IDI_EXCLAMATION, IDI_ASTERISK, IDI_WINLOGO; IDI_ERROR, IDI_WARNING and IDI_INFORMATION are
+/// IDI_HAND's, IDI_EXCLAMATION's and IDI_ASTERISK's), in the order the boot makes them.
+pub const STOCK_ICONS: [u16; 6] = [32512, 32513, 32514, 32515, 32516, 32517];
 
 /// GRPICONDIRENTRY (14 bytes, packed): one image of a group icon, its RT_ICON resource's id last.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

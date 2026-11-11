@@ -3,7 +3,8 @@
 //! through.
 //!
 //! A table is a record in the table pool ([`Accelerators`]), named by a generation-tagged id
-//! ([`TableId`]), the object manager's pattern, with a handle into the table handle table. It holds
+//! ([`TableId`]), the object manager's pattern, with a handle into the user handle table
+//! ([`super::handle`]). It holds
 //! its entries (rtl::accel's ACCEL, a character entry's key a UTF-16 unit) and belongs to the
 //! process that made it, which takes it at its end.
 //!
@@ -46,19 +47,15 @@ use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
 
 use super::class::Owner;
+use super::handle::{UserHandles, UserObject};
 use super::menu::ItemRef;
 use super::window::{Message, Payload, Pump, WindowManager};
-use crate::sched::object::HandleTable;
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
 /// How many tables can exist at once, and how many entries one holds.
 pub const TABLES: usize = 64;
 pub const MAX_ENTRIES: usize = 128;
-
-/// The high word of a table's handle: the handle table's value in the low word, this tag above it,
-/// so no table handle is a window's or a menu's.
-const TABLE_TAG: u32 = 0x0004_0000;
 
 /// The messages a translation sends (winuser.h).
 pub const WM_COMMAND: u32 = 0x0111;
@@ -99,6 +96,17 @@ impl Failure {
 pub struct TableId {
     index: u16,
     generation: u16,
+}
+
+impl TableId {
+    /// The id of the record `index`, its first generation (the handle table's tests).
+    #[cfg(test)]
+    pub const fn for_tests(index: u16) -> Self {
+        TableId {
+            index,
+            generation: 0,
+        }
+    }
 }
 
 /// The resource a table was loaded from: its module and its data's address (0 for a table
@@ -144,16 +152,11 @@ impl Table {
     };
 }
 
-/// A handle-table entry naming a table.
-#[derive(Clone, Copy)]
-struct TableEntry {
-    id: TableId,
-}
-
-/// The accelerator registry: the table pool and the handle table over it.
+/// The accelerator registry: the table pool. Its tables' handles are the user handle table's
+/// ([`UserHandles`], the window registry's), which the calls that make, find or destroy a table
+/// are lent.
 pub struct Accelerators {
     tables: [Table; TABLES],
-    handles: HandleTable<TableEntry>,
 }
 
 impl Accelerators {
@@ -172,7 +175,6 @@ impl Accelerators {
             for index in 0..TABLES {
                 tables.add(index).write(Table::DEAD);
             }
-            HandleTable::write_empty(addr_of_mut!((*accels).handles));
         }
     }
 
@@ -184,18 +186,15 @@ impl Accelerators {
         &mut self.tables[id.index as usize]
     }
 
-    /// The table `handle` names, when it is live; ERROR_INVALID_ACCEL_HANDLE otherwise.
-    pub fn table_of(&self, handle: u32) -> Result<TableId, Failure> {
-        if handle & 0xFFFF_0000 != TABLE_TAG {
-            return Err(Failure::InvalidAccelHandle);
-        }
-        let entry = self
-            .handles
-            .lookup(handle & 0xFFFF)
+    /// The table `handle` names in `handles`, when it is live; ERROR_INVALID_ACCEL_HANDLE
+    /// otherwise (another kind's handle among them).
+    pub fn table_of(&self, handles: &UserHandles, handle: u32) -> Result<TableId, Failure> {
+        let id = handles
+            .accelerator_table(handle)
             .ok_or(Failure::InvalidAccelHandle)?;
-        let table = &self.tables[entry.id.index as usize];
-        if table.live && table.generation == entry.id.generation {
-            Ok(entry.id)
+        let table = &self.tables[id.index as usize];
+        if table.live && table.generation == id.generation {
+            Ok(id)
         } else {
             Err(Failure::InvalidAccelHandle)
         }
@@ -218,13 +217,18 @@ impl Accelerators {
     }
 
     /// A new, empty table of the process `owner`, loaded from `source` (none: made); its handle.
-    pub fn create(&mut self, owner: Owner, source: Source) -> Result<u32, Failure> {
+    pub fn create(
+        &mut self,
+        handles: &mut UserHandles,
+        owner: Owner,
+        source: Source,
+    ) -> Result<u32, Failure> {
         let index = self
             .tables
             .iter()
             .position(|t| !t.live)
             .ok_or(Failure::NotEnoughMemory)?;
-        if self.handles.is_full() {
+        if handles.is_full() {
             return Err(Failure::NotEnoughMemory);
         }
         let generation = self.tables[index].generation;
@@ -232,7 +236,7 @@ impl Accelerators {
             index: index as u16,
             generation,
         };
-        let handle = self.handles.insert(TableEntry { id }) | TABLE_TAG;
+        let handle = handles.insert(UserObject::AcceleratorTable(id));
         // Field by field: a whole record would cross the gate stack as a temporary. The entries
         // past the count are never read.
         let table = &mut self.tables[index];
@@ -273,7 +277,7 @@ impl Accelerators {
 
     /// DestroyAcceleratorTable: the table's load count down, the table destroyed with its last
     /// load; whether it was destroyed.
-    pub fn destroy(&mut self, id: TableId) -> bool {
+    pub fn destroy(&mut self, handles: &mut UserHandles, id: TableId) -> bool {
         let table = self.at_mut(id);
         if table.loads > 1 {
             table.loads -= 1;
@@ -283,12 +287,12 @@ impl Accelerators {
         table.live = false;
         table.count = 0;
         table.generation = table.generation.wrapping_add(1);
-        self.handles.close(handle & 0xFFFF);
+        handles.close(handle);
         true
     }
 
     /// Destroy every table of the process `owner`, at its end, whatever its load count.
-    pub fn destroy_owner(&mut self, owner: Owner) {
+    pub fn destroy_owner(&mut self, handles: &mut UserHandles, owner: Owner) {
         for index in 0..TABLES {
             let table = &self.tables[index];
             if table.live && table.owner == owner {
@@ -297,7 +301,7 @@ impl Accelerators {
                     generation: table.generation,
                 };
                 self.at_mut(id).loads = 1;
-                self.destroy(id);
+                self.destroy(handles, id);
             }
         }
     }
@@ -328,7 +332,7 @@ pub fn translate(
     key: u32,
     pump: &mut dyn Pump,
 ) -> Result<bool, Failure> {
-    let table = manager.accels.table_of(table)?;
+    let table = manager.accels.table_of(&manager.windows.handles, table)?;
     if window == 0 {
         return Ok(false);
     }
@@ -364,7 +368,7 @@ pub fn translate(
     let mut enabled = true;
     let bar = windows.window_menu(target);
     if !windows.window_is_child(target) && bar != 0 {
-        if let Ok(bar_id) = windows.menus.menu_of(bar) {
+        if let Ok(bar_id) = windows.menu_of(bar) {
             if let Some((holder, position)) = windows.menus.find(bar_id, ItemRef::Command(command))
             {
                 let state = windows
@@ -425,8 +429,10 @@ mod services {
         if count == 0 || count as usize > MAX_ENTRIES {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let handle = with_manager(call.passive(), |m| m.accels.create(owner, source))
-            .map_err(Failure::status)?;
+        let handle = with_manager(call.passive(), |m| {
+            m.accels.create(&mut m.windows.handles, owner, source)
+        })
+        .map_err(Failure::status)?;
         // The entries, a chunk at a time: read at the passive level, appended under the lock. A
         // fault takes the table back.
         let mut buffer = [Accel::default(); CHUNK];
@@ -448,9 +454,12 @@ mod services {
                 }
             }
             let appended = with_manager(call.passive(), |m| {
-                let id = m.accels.table_of(handle).map_err(Failure::status)?;
+                let id = m
+                    .accels
+                    .table_of(&m.windows.handles, handle)
+                    .map_err(Failure::status)?;
                 if read.is_err() {
-                    m.accels.destroy(id);
+                    m.accels.destroy(&mut m.windows.handles, id);
                     return Err(STATUS_ACCESS_VIOLATION);
                 }
                 m.accels.append(id, &buffer[..n]).map_err(Failure::status)
@@ -474,7 +483,7 @@ mod services {
     ) -> NtResult {
         gui_thread(call)?;
         let total = with_manager(call.passive(), |m| {
-            let id = m.accels.table_of(table.raw())?;
+            let id = m.accels.table_of(&m.windows.handles, table.raw())?;
             Ok(m.accels.entries(id).len())
         })
         .map_err(Failure::status)?;
@@ -488,7 +497,7 @@ mod services {
         while done < wanted {
             let n = (wanted - done).min(CHUNK);
             with_manager(call.passive(), |m| {
-                let id = m.accels.table_of(table.raw())?;
+                let id = m.accels.table_of(&m.windows.handles, table.raw())?;
                 let source = m.accels.entries(id);
                 let n = n.min(source.len().saturating_sub(done));
                 buffer[..n].copy_from_slice(&source[done..done + n]);
@@ -516,8 +525,8 @@ mod services {
     ) -> NtResult {
         gui_thread(call)?;
         let gone = with_manager(call.passive(), |m| {
-            let id = m.accels.table_of(table.raw())?;
-            Ok(m.accels.destroy(id))
+            let id = m.accels.table_of(&m.windows.handles, table.raw())?;
+            Ok(m.accels.destroy(&mut m.windows.handles, id))
         })
         .map_err(Failure::status)?;
         destroyed.write(gone as u32)?;
@@ -611,12 +620,55 @@ mod tests {
 
     const OWNER: Owner = 3;
 
-    fn accelerators() -> Box<Accelerators> {
+    /// The accelerator registry and the handle table its tables' handles are in.
+    struct Fixture {
+        accels: Box<Accelerators>,
+        handles: Box<UserHandles>,
+    }
+
+    impl Fixture {
+        fn create(&mut self, owner: Owner, source: Source) -> Result<u32, Failure> {
+            self.accels.create(&mut self.handles, owner, source)
+        }
+
+        fn table_of(&self, handle: u32) -> Result<TableId, Failure> {
+            self.accels.table_of(&self.handles, handle)
+        }
+
+        fn destroy(&mut self, id: TableId) -> bool {
+            self.accels.destroy(&mut self.handles, id)
+        }
+
+        fn destroy_owner(&mut self, owner: Owner) {
+            self.accels.destroy_owner(&mut self.handles, owner);
+        }
+    }
+
+    impl core::ops::Deref for Fixture {
+        type Target = Accelerators;
+
+        fn deref(&self) -> &Accelerators {
+            &self.accels
+        }
+    }
+
+    impl core::ops::DerefMut for Fixture {
+        fn deref_mut(&mut self) -> &mut Accelerators {
+            &mut self.accels
+        }
+    }
+
+    fn accelerators() -> Fixture {
         let mut boxed = Box::<Accelerators>::new_uninit();
-        // SAFETY: the box's memory, valid and aligned, written whole before it is assumed.
+        let mut handles = Box::<UserHandles>::new_uninit();
+        // SAFETY: the boxes' memory, valid and aligned, written whole before it is assumed.
         unsafe {
             Accelerators::write_empty(boxed.as_mut_ptr());
-            boxed.assume_init()
+            UserHandles::write_empty(handles.as_mut_ptr());
+            Fixture {
+                accels: boxed.assume_init(),
+                handles: handles.assume_init(),
+            }
         }
     }
 
@@ -680,9 +732,9 @@ mod tests {
         assert_eq!(a.live(), 0);
         assert_eq!(a.table_of(made), Err(Failure::InvalidAccelHandle));
         assert_eq!(
-            a.table_of(4),
+            a.table_of(0x7FFC),
             Err(Failure::InvalidAccelHandle),
-            "no window's handle"
+            "a slot holding nothing"
         );
     }
 

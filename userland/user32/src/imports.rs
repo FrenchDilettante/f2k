@@ -338,10 +338,15 @@ mod raw {
             module: usize,
             resource: usize,
             size: u32,
+            kind: u32,
             cursor: *mut u32,
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetCursorIconData"]
         pub fn NtUserSetCursorIconData(cursor: usize, data: *const CursorData) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetIconInfo"]
+        pub fn NtUserGetIconInfo(cursor: usize, data: *mut CursorData) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDestroyCursor"]
+        pub fn NtUserDestroyCursor(cursor: usize) -> u32;
 
         // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
@@ -1645,18 +1650,22 @@ pub fn translate_accelerator(window: usize, table: usize, msg: &Msg) -> Result<b
     Ok(translated != 0)
 }
 
-/// NtUserFindExistingCursorIcon: the shared icon loaded from the module's resource at `width` by
-/// `height`; 0 for none.
+/// NtUserFindExistingCursorIcon: the shared icon or cursor (`kind` RT_ICON or RT_CURSOR) loaded
+/// from the module's resource at `width` by `height`, or with the module 0 the stock one of the
+/// IDC_ or IDI_ id `resource`; 0 for none.
 pub fn find_existing_cursor_icon(
     module: usize,
     resource: usize,
     width: i32,
     height: i32,
+    kind: u16,
 ) -> Result<usize, NtStatus> {
     let mut cursor = 0;
     let size = (width as u16 as u32) | ((height as u16 as u32) << 16);
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserFindExistingCursorIcon(module, resource, size, &mut cursor) })?;
+    checked(unsafe {
+        raw::NtUserFindExistingCursorIcon(module, resource, size, u32::from(kind), &mut cursor)
+    })?;
     Ok(cursor as usize)
 }
 
@@ -1664,6 +1673,20 @@ pub fn find_existing_cursor_icon(
 pub fn set_cursor_icon_data(cursor: usize, data: &CursorData) -> Result<(), NtStatus> {
     // SAFETY: the kernel reads the local structure.
     checked(unsafe { raw::NtUserSetCursorIconData(cursor, data) })
+}
+
+/// NtUserGetIconInfo: what the cursor or icon `cursor` holds.
+pub fn get_icon_info(cursor: usize) -> Result<CursorData, NtStatus> {
+    let mut data = CursorData::default();
+    // SAFETY: the kernel writes the local structure.
+    checked(unsafe { raw::NtUserGetIconInfo(cursor, &mut data) })?;
+    Ok(data)
+}
+
+/// NtUserDestroyCursor: the cursor or icon `cursor` destroyed (a shared one stays).
+pub fn destroy_cursor(cursor: usize) -> Result<(), NtStatus> {
+    // SAFETY: a handle, no memory.
+    checked(unsafe { raw::NtUserDestroyCursor(cursor) })
 }
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,

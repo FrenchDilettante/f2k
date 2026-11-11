@@ -684,8 +684,8 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
         if wm.class(&name).is_some() {
             return STATUS_OBJECT_NAME_EXISTS;
         }
-        // The stand-ins hold no cursor: a 4.0-compatible registration naming one is refused.
-        if class.cursor != 0 {
+        // A 4.0-compatible registration naming no cursor the stand-ins hold is refused.
+        if class.cursor != 0 && cursor_index(class.cursor).is_none() {
             return STATUS_INVALID_PARAMETER;
         }
         let value = match &name {
@@ -2255,24 +2255,72 @@ pub unsafe extern "system" fn NtUserFindExistingCursorIcon(
     module: usize,
     resource: usize,
     size: u32,
+    kind: u32,
     cursor: *mut u32,
 ) -> u32 {
     SERVICES.with(|services| services.set(services.get() + 1));
+    let is_icon = u32::from(kind == u32::from(rtl::icon::RT_ICON));
+    // The stock ones, the system's: a record of each made at the first lookup of one.
+    let stock = module == 0 && {
+        let id = resource as u16;
+        rtl::icon::STOCK_CURSORS.contains(&id) && is_icon == 0
+            || rtl::icon::STOCK_ICONS.contains(&id) && is_icon == 1
+    };
+    let matches = |data: &rtl::icon::CursorData| {
+        data.shared != 0
+            && data.module == module as u32
+            && data.resource == resource as u32
+            && data.is_icon == is_icon
+            && (data.width as u32 | (data.height as u32) << 16) == size
+    };
     let found = CURSORS.with(|cursors| {
+        let mut cursors = cursors.borrow_mut();
+        if stock && !cursors.iter().any(matches) {
+            cursors.push(rtl::icon::CursorData {
+                is_icon,
+                width: rtl::icon::ICON_SIZE,
+                height: rtl::icon::ICON_SIZE,
+                resource: resource as u32,
+                shared: 1,
+                ..rtl::icon::CursorData::default()
+            });
+        }
         cursors
-            .borrow()
             .iter()
-            .position(|data| {
-                data.shared != 0
-                    && data.module == module as u32
-                    && data.resource == resource as u32
-                    && (data.width as u32 | (data.height as u32) << 16) == size
-            })
+            .position(matches)
             .map_or(0, |index| index as u32 + 1 | HOST_CURSOR_TAG)
     });
     // SAFETY: the caller's out-pointer.
     unsafe { cursor.write(found) };
     STATUS_SUCCESS
+}
+
+/// The record `cursor` names: its index.
+fn cursor_index(cursor: usize) -> Option<usize> {
+    let index = (cursor & 0xFFFF).wrapping_sub(1);
+    let live = CURSORS.with(|cursors| index < cursors.borrow().len());
+    (cursor as u32 & 0xFFFF_0000 == HOST_CURSOR_TAG && live).then_some(index)
+}
+
+pub unsafe extern "system" fn NtUserGetIconInfo(
+    cursor: usize,
+    data: *mut rtl::icon::CursorData,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let Some(index) = cursor_index(cursor) else {
+        return STATUS_INVALID_HANDLE;
+    };
+    // SAFETY: the caller's out-pointer.
+    CURSORS.with(|cursors| unsafe { data.write(cursors.borrow()[index]) });
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserDestroyCursor(cursor: usize) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    match cursor_index(cursor) {
+        Some(_) => STATUS_SUCCESS,
+        None => STATUS_INVALID_HANDLE,
+    }
 }
 
 pub unsafe extern "system" fn NtUserSetCursorIconData(

@@ -46,6 +46,7 @@
 
 use rtl::pod::Pod;
 
+use super::handle::UserHandles;
 pub use super::icon::{CursorId, CursorTable};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
@@ -1025,8 +1026,10 @@ impl Registry {
     /// process `owner` on the desktop `desktop`: the record is made, its fields copied, the
     /// icon/cursor handles validated and locked, the strings copied, and the record linked at
     /// the head of its list. The class-name atom is the answer.
+    #[allow(clippy::too_many_arguments)]
     pub fn register_class(
         &mut self,
+        handles: &UserHandles,
         wc: &WndClassExW,
         class_name: Name,
         menu: MenuArg,
@@ -1094,7 +1097,8 @@ impl Registry {
             (Which::Icon, wc.icon),
             (Which::IconSm, wc.icon_sm),
         ] {
-            if let Err(failure) = self.validate_and_lock_cursor(id, which, raw, flags.win40_compat)
+            if let Err(failure) =
+                self.validate_and_lock_cursor(handles, id, which, raw, flags.win40_compat)
             {
                 self.release_unlinked(id);
                 return Err(failure);
@@ -1202,6 +1206,7 @@ impl Registry {
     /// Validate the handle `raw` and lock it into the class `id`'s slot `which`.
     fn validate_and_lock_cursor(
         &mut self,
+        handles: &UserHandles,
         id: ClassId,
         which: Which,
         raw: u32,
@@ -1211,7 +1216,7 @@ impl Registry {
             self.set_cursor_slot(id, which, None);
             return Ok(());
         }
-        match self.cursors.validate(raw) {
+        match self.cursors.validate(handles, raw) {
             Some(cursor) => {
                 self.cursors.lock(cursor);
                 self.set_cursor_slot(id, which, Some(cursor));
@@ -1265,6 +1270,7 @@ impl Registry {
     /// private list is tried first, then the public list. Refused while the class has windows.
     pub fn unregister_class(
         &mut self,
+        handles: &mut UserHandles,
         name: Name,
         owner: Owner,
         module: u32,
@@ -1283,16 +1289,16 @@ impl Registry {
         if self.classes.at(id).window_count != 0 {
             return Err(Failure::ClassHasWindows);
         }
-        self.destroy_class(id, list, owner);
+        self.destroy_class(handles, id, list, owner);
         Ok(())
     }
 
     /// A process's end: its classes go, the private list first, then the public one. Its windows
     /// went first ([`super::window::WindowManager::end_process`]), so none of its classes has one.
-    pub fn destroy_owner_classes(&mut self, owner: Owner) {
+    pub fn destroy_owner_classes(&mut self, handles: &mut UserHandles, owner: Owner) {
         for list in [List::Private(owner), List::Public(owner)] {
             while let Some(id) = self.list_head(list) {
-                self.destroy_class(id, list, owner);
+                self.destroy_class(handles, id, list, owner);
             }
         }
     }
@@ -1324,11 +1330,11 @@ impl Registry {
     /// Destroy the class `id` linked in `list`: the teardown in order — the clones, the atom, the
     /// class DC and the brush (a base class), then the small icon, the icon/cursor unlocks, the
     /// unlink and the record.
-    fn destroy_class(&mut self, id: ClassId, list: List, owner: Owner) {
+    fn destroy_class(&mut self, handles: &mut UserHandles, id: ClassId, list: List, owner: Owner) {
         debug_assert_eq!(self.classes.at(id).window_count, 0, "a class with windows");
         if self.classes.at(id).base == id {
             while let Some(clone) = self.classes.at(id).clones {
-                self.destroy_clone(clone, id);
+                self.destroy_clone(handles, clone, id);
             }
             let (atom, added) = {
                 let class = self.classes.at(id);
@@ -1345,7 +1351,7 @@ impl Registry {
                 delete_gdi_brush(self.classes.at(id).background);
             }
         }
-        self.destroy_class_sm_icon(id);
+        self.destroy_class_sm_icon(handles, id);
         // The icon, small icon and cursor unlocks, in that order.
         let icon = self.classes.at(id).icon;
         let icon_sm = self.classes.at(id).icon_sm;
@@ -1367,8 +1373,8 @@ impl Registry {
 
     /// Destroy a clone of the base class `base`: the shared teardown without the base-only parts
     /// (the atom, the menu name, the class DC, the brush), unlinked from the base's clone list.
-    fn destroy_clone(&mut self, clone: ClassId, base: ClassId) {
-        self.destroy_class_sm_icon(clone);
+    fn destroy_clone(&mut self, handles: &mut UserHandles, clone: ClassId, base: ClassId) {
+        self.destroy_class_sm_icon(handles, clone);
         let icon = self.classes.at(clone).icon;
         let icon_sm = self.classes.at(clone).icon_sm;
         let cursor = self.classes.at(clone).cursor;
@@ -1425,12 +1431,12 @@ impl Registry {
 
     /// Destroy the cached small icon, when the class has one: the cursor destroyed and unlocked,
     /// the flag cleared. Whether there was one.
-    fn destroy_class_sm_icon(&mut self, id: ClassId) -> bool {
+    fn destroy_class_sm_icon(&mut self, handles: &mut UserHandles, id: ClassId) -> bool {
         if !self.classes.at(id).flags.cached_sm_icon {
             return false;
         }
         if let Some(cursor) = self.classes.at(id).icon_sm {
-            self.cursors.destroy(cursor);
+            self.cursors.destroy(handles, cursor);
             self.cursors
                 .unlock_slot(&mut self.classes.at_mut(id).icon_sm);
         }
@@ -1440,13 +1446,13 @@ impl Registry {
 
     /// Synthesize the small icon from the icon, when the class has an icon but no small icon:
     /// the copy is locked in, and the cached flag is set only when the lock landed.
-    fn create_class_sm_icon(&mut self, id: ClassId) {
+    fn create_class_sm_icon(&mut self, handles: &mut UserHandles, id: ClassId) {
         debug_assert!(self.classes.at(id).window_count > 0);
         let Some(icon) = self.classes.at(id).icon else {
             return;
         };
         let is_icon = self.cursors.is_icon(icon);
-        let copy = self.cursors.copy_image(icon, is_icon);
+        let copy = self.cursors.copy_image(handles, icon, is_icon);
         self.cursors
             .lock_slot(&mut self.classes.at_mut(id).icon_sm, copy);
         if self.classes.at(id).icon_sm.is_some() {
@@ -1542,6 +1548,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     pub fn set_class_long(
         &mut self,
+        handles: &mut UserHandles,
         window: &Window,
         caller: Owner,
         index: i32,
@@ -1564,7 +1571,7 @@ impl Registry {
             {
                 return Err(Failure::InvalidIndex);
             }
-            return self.set_class_data(window, index, value, menu, view, windows, notify);
+            return self.set_class_data(handles, window, index, value, menu, view, windows, notify);
         }
         let base = self.classes.at(window.class).base;
         let extra = self.classes.at(base).cb_cls_extra;
@@ -1581,6 +1588,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     pub fn set_class_long_ptr(
         &mut self,
+        handles: &mut UserHandles,
         window: &Window,
         caller: Owner,
         index: i32,
@@ -1594,7 +1602,7 @@ impl Registry {
             return Err(Failure::AccessDenied);
         }
         if index < 0 {
-            return self.set_class_data(window, index, value, menu, view, windows, notify);
+            return self.set_class_data(handles, window, index, value, menu, view, windows, notify);
         }
         let base = self.classes.at(window.class).base;
         let extra = self.classes.at(base).cb_cls_extra;
@@ -1612,6 +1620,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     pub fn set_class_data(
         &mut self,
+        handles: &mut UserHandles,
         window: &Window,
         index: i32,
         value: u32,
@@ -1627,7 +1636,15 @@ impl Registry {
                 Ok(old)
             }
             GCLP_HICON | GCLP_HICONSM | GCLP_HCURSOR => {
-                let set = self.set_class_cursor(window.class, index, value, view, windows, notify);
+                let set = self.set_class_cursor(
+                    handles,
+                    window.class,
+                    index,
+                    value,
+                    view,
+                    windows,
+                    notify,
+                );
                 if let Some(failure) = set.failure {
                     return Err(failure);
                 }
@@ -1673,11 +1690,11 @@ impl Registry {
                 };
                 let base = self.classes.at(window.class).base;
                 let old = self.field_value(base, field.field);
-                self.set_field_value(base, field.field, value);
+                self.set_field_value(handles, base, field.field, value);
                 // The same write propagates to every clone.
                 let mut clone = self.classes.at(base).clones;
                 while let Some(c) = clone {
-                    self.set_field_value(c, field.field, value);
+                    self.set_field_value(handles, c, field.field, value);
                     clone = self.classes.at(c).next;
                 }
                 Ok(old)
@@ -1691,6 +1708,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     fn set_class_cursor(
         &mut self,
+        handles: &mut UserHandles,
         class: ClassId,
         index: i32,
         data: u32,
@@ -1701,7 +1719,7 @@ impl Registry {
         let mut failure = None;
         let mut new = None;
         if data != 0 {
-            match self.cursors.validate(data) {
+            match self.cursors.validate(handles, data) {
                 Some(cursor) => new = Some(cursor),
                 None => {
                     failure = Some(if index == GCLP_HICON || index == GCLP_HICONSM {
@@ -1714,9 +1732,15 @@ impl Registry {
         }
         let base = self.classes.at(class).base;
         let old = match index {
-            GCLP_HICON | GCLP_HICONSM => {
-                self.set_class_icon(base, new, index == GCLP_HICONSM, view, windows, notify)
-            }
+            GCLP_HICON | GCLP_HICONSM => self.set_class_icon(
+                handles,
+                base,
+                new,
+                index == GCLP_HICONSM,
+                view,
+                windows,
+                notify,
+            ),
             GCLP_HCURSOR => self
                 .cursors
                 .lock_slot(&mut self.classes.at_mut(base).cursor, new),
@@ -1727,7 +1751,15 @@ impl Registry {
         while let Some(c) = clone {
             match index {
                 GCLP_HICON | GCLP_HICONSM => {
-                    self.set_class_icon(c, new, index == GCLP_HICONSM, view, windows, notify);
+                    self.set_class_icon(
+                        handles,
+                        c,
+                        new,
+                        index == GCLP_HICONSM,
+                        view,
+                        windows,
+                        notify,
+                    );
                 }
                 GCLP_HCURSOR => {
                     self.cursors
@@ -1751,6 +1783,7 @@ impl Registry {
     #[allow(clippy::too_many_arguments)]
     fn set_class_icon(
         &mut self,
+        handles: &mut UserHandles,
         class: ClassId,
         new: Option<CursorId>,
         small: bool,
@@ -1770,7 +1803,9 @@ impl Registry {
         let mut old_handle = self.cursors.handle_of(old);
         if !small {
             // Setting the icon destroys the cached small icon first; if that fails, no redraw.
-            if self.classes.at(class).icon_sm.is_some() && !self.destroy_class_sm_icon(class) {
+            if self.classes.at(class).icon_sm.is_some()
+                && !self.destroy_class_sm_icon(handles, class)
+            {
                 redraw = false;
             }
             self.cursors
@@ -1778,14 +1813,14 @@ impl Registry {
         } else {
             // A system-created small icon is never answered to the caller.
             if self.classes.at(class).flags.cached_sm_icon {
-                self.destroy_class_sm_icon(class);
+                self.destroy_class_sm_icon(handles, class);
                 old_handle = 0;
             }
             self.cursors
                 .lock_slot(&mut self.classes.at_mut(class).icon_sm, new);
         }
         if self.classes.at(class).icon.is_some() && self.classes.at(class).icon_sm.is_none() {
-            self.create_class_sm_icon(class);
+            self.create_class_sm_icon(handles, class);
         }
         if redraw {
             if self.classes.at(class).window_count > 1 {
@@ -1804,7 +1839,7 @@ impl Registry {
         if old_handle == 0 {
             None
         } else {
-            self.cursors.revalidate(old_handle)
+            self.cursors.revalidate(handles, old_handle)
         }
     }
 
@@ -1864,7 +1899,7 @@ impl Registry {
 
     /// A window of the class is destroyed: the count down, and a clone whose count reaches zero
     /// is destroyed with it (the base's count goes down too).
-    pub fn dereference_class(&mut self, window: &mut Window) {
+    pub fn dereference_class(&mut self, handles: &mut UserHandles, window: &mut Window) {
         let class = window.class;
         debug_assert!(self.classes.at(class).window_count >= 1);
         self.classes.at_mut(class).window_count -= 1;
@@ -1873,7 +1908,7 @@ impl Registry {
             debug_assert!(self.classes.at(base).window_count >= 1);
             self.classes.at_mut(base).window_count -= 1;
             if self.classes.at(class).window_count == 0 {
-                self.destroy_clone(class, base);
+                self.destroy_clone(handles, class, base);
             }
         }
     }
@@ -1936,7 +1971,13 @@ impl Registry {
     }
 
     /// Set the class field `field` of the class `id` to `value`.
-    fn set_field_value(&mut self, id: ClassId, field: ClassField, value: u32) {
+    fn set_field_value(
+        &mut self,
+        handles: &UserHandles,
+        id: ClassId,
+        field: ClassField,
+        value: u32,
+    ) {
         let class = self.classes.at_mut(id);
         match field {
             // The cursor slots are reached through the hub's special cases; this path keeps the
@@ -1945,21 +1986,21 @@ impl Registry {
                 class.icon_sm = if value == 0 {
                     None
                 } else {
-                    self.cursors.validate(value)
+                    self.cursors.validate(handles, value)
                 }
             }
             ClassField::Icon => {
                 class.icon = if value == 0 {
                     None
                 } else {
-                    self.cursors.validate(value)
+                    self.cursors.validate(handles, value)
                 }
             }
             ClassField::Cursor => {
                 class.cursor = if value == 0 {
                     None
                 } else {
-                    self.cursors.validate(value)
+                    self.cursors.validate(handles, value)
                 }
             }
             ClassField::Atom => class.atom = value as u16,
@@ -2081,14 +2122,19 @@ pub fn register_class_ex_wow(
     let mut menu_units = [0u16; MAX_MENU_NAME];
     let menu = read_menu(wc.menu_name, &mut menu_units)?;
     let caller = super::winsta::gui_thread(call)?;
-    let registered = super::window::lock(call.passive()).classes.register_class(
-        &wc,
-        name,
-        menu,
-        caller.owner,
-        flags,
-        caller.desktop,
-    );
+    let registered = {
+        let mut manager = super::window::lock(call.passive());
+        let manager = &mut *manager;
+        manager.classes.register_class(
+            &manager.windows.handles,
+            &wc,
+            name,
+            menu,
+            caller.owner,
+            flags,
+            caller.desktop,
+        )
+    };
     let value = registered.map_err(Failure::status)?;
     atom.write(value as u32)?;
     wow.write(0)?;
@@ -2102,10 +2148,14 @@ pub fn unregister_class(call: &mut NtCall, class_name: u32, instance: u32) -> Nt
     let mut units = [0u16; MAX_ATOM_NAME];
     let name = read_name(class_name, &mut units)?;
     let owner = super::winsta::gui_thread(call)?.owner;
-    super::window::lock(call.passive())
-        .classes
-        .unregister_class(name, owner, instance)
-        .map_err(Failure::status)?;
+    {
+        let mut manager = super::window::lock(call.passive());
+        let manager = &mut *manager;
+        manager
+            .classes
+            .unregister_class(&mut manager.windows.handles, name, owner, instance)
+            .map_err(Failure::status)?;
+    }
     Ok(STATUS_SUCCESS)
 }
 
@@ -2209,6 +2259,7 @@ pub fn set_class_long(
         // no caption until the painting lands.
         classes
             .set_class_long(
+                &mut windows.handles,
                 &target,
                 caller,
                 index,
@@ -2294,13 +2345,112 @@ mod tests {
 
     use super::*;
 
-    /// A fresh registry, leaked at its final address (the pool's records stay put, as on target).
-    fn registry() -> &'static mut Registry {
+    /// A registry and the user handle table its cursors' handles are in (the window registry's on
+    /// target): the registry's calls that take the table, lent it.
+    struct Fixture {
+        registry: &'static mut Registry,
+        handles: Box<UserHandles>,
+    }
+
+    impl core::ops::Deref for Fixture {
+        type Target = Registry;
+
+        fn deref(&self) -> &Registry {
+            self.registry
+        }
+    }
+
+    impl core::ops::DerefMut for Fixture {
+        fn deref_mut(&mut self) -> &mut Registry {
+            self.registry
+        }
+    }
+
+    impl Fixture {
+        fn register_class(
+            &mut self,
+            wc: &WndClassExW,
+            class_name: Name,
+            menu: MenuArg,
+            owner: Owner,
+            flags: RegisterFlags,
+            desktop: u32,
+        ) -> Result<Atom, Failure> {
+            self.registry
+                .register_class(&self.handles, wc, class_name, menu, owner, flags, desktop)
+        }
+
+        fn unregister_class(
+            &mut self,
+            name: Name,
+            owner: Owner,
+            module: u32,
+        ) -> Result<(), Failure> {
+            self.registry
+                .unregister_class(&mut self.handles, name, owner, module)
+        }
+
+        fn destroy_owner_classes(&mut self, owner: Owner) {
+            self.registry
+                .destroy_owner_classes(&mut self.handles, owner);
+        }
+
+        fn dereference_class(&mut self, window: &mut Window) {
+            self.registry.dereference_class(&mut self.handles, window);
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        fn set_class_long(
+            &mut self,
+            window: &Window,
+            caller: Owner,
+            index: i32,
+            value: u32,
+            menu: MenuArg,
+            view: Option<&WindowView>,
+            windows: &[WindowView],
+            notify: &mut dyn FnMut(&WindowView, WindowNotice),
+        ) -> Result<u32, Failure> {
+            self.registry.set_class_long(
+                &mut self.handles,
+                window,
+                caller,
+                index,
+                value,
+                menu,
+                view,
+                windows,
+                notify,
+            )
+        }
+
+        /// A cursor or icon record with its handle, as the GDI side would make one.
+        fn make_cursor_record(&mut self, is_icon: bool, secret: bool) -> Option<(CursorId, u32)> {
+            self.registry
+                .cursors
+                .make(&mut self.handles, is_icon, secret)
+        }
+
+        fn validate_cursor(&self, handle: u32) -> Option<CursorId> {
+            self.registry.cursors.validate(&self.handles, handle)
+        }
+    }
+
+    /// A fresh registry, leaked at its final address (the pool's records stay put, as on target),
+    /// and a fresh handle table.
+    fn registry() -> &'static mut Fixture {
         let mut registry = Box::<Registry>::new_uninit();
-        // SAFETY: the box is valid, aligned and the records' final address once leaked.
-        unsafe { Registry::write_empty(registry.as_mut_ptr()) };
+        let mut handles = Box::<UserHandles>::new_uninit();
+        // SAFETY: the boxes are valid, aligned and the records' final address once leaked.
+        unsafe {
+            Registry::write_empty(registry.as_mut_ptr());
+            UserHandles::write_empty(handles.as_mut_ptr());
+        }
         // SAFETY: written whole just above.
-        Box::leak(unsafe { registry.assume_init() })
+        Box::leak(Box::new(Fixture {
+            registry: Box::leak(unsafe { registry.assume_init() }),
+            handles: unsafe { handles.assume_init() },
+        }))
     }
 
     /// A text as UTF-16 units.
@@ -2373,7 +2523,7 @@ mod tests {
 
     /// Register `name` for the test's process and module.
     fn register(
-        registry: &mut Registry,
+        registry: &mut Fixture,
         name: Name,
         wc: &WndClassExW,
         flags: RegisterFlags,
@@ -2382,8 +2532,8 @@ mod tests {
     }
 
     /// A cursor record with its handle, as the GDI side would make one.
-    fn make_cursor(registry: &mut Registry) -> (CursorId, u32) {
-        registry.cursors.make(false, false).unwrap()
+    fn make_cursor(registry: &mut Fixture) -> (CursorId, u32) {
+        registry.make_cursor_record(false, false).unwrap()
     }
 
     /// A notification sink that ignores everything.
@@ -3295,7 +3445,7 @@ mod tests {
         let registry = registry();
         let (_old_icon, old_handle) = make_cursor(registry);
         let (new_icon, new_handle) = make_cursor(registry);
-        registry.cursors.make(true, false); // a spare record so the synthesis has room
+        registry.make_cursor_record(true, false); // a spare record so the synthesis has room
         let mut wc = wnd_class();
         wc.icon = old_handle;
         let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
@@ -3478,7 +3628,7 @@ mod tests {
         assert_eq!(old, 0, "the system-created small icon is never answered");
         assert!(!registry.classes.at(id).flags.cached_sm_icon);
         assert_eq!(
-            registry.cursors.validate(cached_handle),
+            registry.validate_cursor(cached_handle),
             None,
             "the cached icon was destroyed"
         );
@@ -3663,16 +3813,12 @@ mod tests {
         assert!(!registry.classes.is_live(clone), "the clone went first");
         assert_eq!(registry.cursors.locks(cursor), 0);
         assert_eq!(
-            registry
-                .cursors
-                .validate(registry.cursors.handle_of(Some(icon))),
+            registry.validate_cursor(registry.cursors.handle_of(Some(icon))),
             Some(icon),
             "the icon itself survives"
         );
         assert_eq!(
-            registry
-                .cursors
-                .validate(registry.cursors.handle_of(Some(sm))),
+            registry.validate_cursor(registry.cursors.handle_of(Some(sm))),
             None,
             "the cached small icon was destroyed"
         );
@@ -3839,10 +3985,9 @@ mod tests {
             "pre-4.0 keeps it"
         );
         // A synthesized small icon is hidden as null.
-        let mut wnd = window(registry.class_ptr(atom, OWNER, MODULE).unwrap());
-        assert!(
-            registry.reference_class(registry.class_ptr(atom, OWNER, MODULE).unwrap(), &mut wnd)
-        );
+        let class = registry.class_ptr(atom, OWNER, MODULE).unwrap();
+        let mut wnd = window(class);
+        assert!(registry.reference_class(class, &mut wnd));
         let srv = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(srv);
         let (_, other_handle) = make_cursor(registry);
