@@ -1,0 +1,893 @@
+# F2K capture of editctl (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026 12:59:44.74
+editctl F2KT-SOURCE-CRC=0x23AC6182
+>>> editctl.exe create
+== create
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, ES_LEFT | ES_AUTOHSCROLL, "Hi", id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  class Edit style=0x50000080 id=101
+  text "Hi"
+  text through SendMessageA "Hi"
+WM_GETDLGCODE: ret=137 err=-
+  notifications: none
+EM_GETLIMITTEXT: ret=30000 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+EM_GETSEL(as created): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_GETMODIFY: ret=0 err=-
+  notifications: none
+EM_CANUNDO: ret=0 err=-
+  notifications: none
+CreateWindowExW("Edit", multi, ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL, "Hi\r\nthere", id 102): non-NULL yes err=0
+  notifications: none
+  class Edit style=0x500000C4 id=102
+  text "Hi\r\nthere"
+  text through SendMessageA "Hi\r\nthere"
+WM_GETDLGCODE: ret=141 err=-
+  notifications: none
+EM_GETLIMITTEXT: ret=30000 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=2 err=-
+  notifications: none
+EM_GETSEL(as created): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_GETMODIFY: ret=0 err=-
+  notifications: none
+EM_CANUNDO: ret=0 err=-
+  notifications: none
+CreateWindowExA("EDIT", ES_LEFT | ES_AUTOHSCROLL, id 103, "Hi (A)"): non-NULL yes err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  class Edit style=0x50000080 id=103
+  text "Hi (A)"
+  text through SendMessageA "Hi (A)"
+WM_GETDLGCODE: ret=137 err=-
+  notifications: none
+EM_GETLIMITTEXT: ret=30000 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+EM_GETSEL(as created): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_GETMODIFY: ret=0 err=-
+  notifications: none
+EM_CANUNDO: ret=0 err=-
+  notifications: none
+CreateWindowExW("Edit", single, no text (NULL), id 104): non-NULL yes err=-
+  notifications: none
+  class Edit style=0x50000080 id=104
+  text ""
+  text through SendMessageA ""
+WM_GETDLGCODE: ret=137 err=-
+  notifications: none
+EM_GETLIMITTEXT: ret=30000 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+EM_GETSEL(as created): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_GETMODIFY: ret=0 err=-
+  notifications: none
+EM_CANUNDO: ret=0 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe text
+== text
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=-
+  notifications: none
+-- single
+WM_SETTEXT(single): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello"
+WM_GETTEXTLENGTH(single): ret=5 err=-
+  notifications: none
+WM_GETTEXT(single, 32): ret=5 err=0 buffer "Hello"
+WM_GETTEXT(single, 6): ret=5 err=0 buffer "Hello"
+WM_GETTEXT(single, 5): ret=4 err=0 buffer "Hell"
+WM_GETTEXT(single, 3): ret=2 err=0 buffer "He"
+WM_GETTEXT(single, 1): ret=0 err=0 buffer ""
+WM_GETTEXT(single, 0): ret=0 err=- buffer "########"
+WM_GETTEXT(single, 32) through SendMessageA: ret=5 err=0 buffer "Hello"
+WM_GETTEXT(single, 3) through SendMessageA: ret=2 err=0 buffer "He"
+WM_SETTEXT(single, "Hello (A)") through SendMessageA: ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello (A)"
+WM_SETTEXT(the same text again): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello (A)"
+WM_SETTEXT(an empty text): ret=1 err=-
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text ""
+WM_GETTEXTLENGTH: ret=0 err=-
+  notifications: none
+WM_SETTEXT(Back): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Back"
+WM_SETTEXT(NULL): ret=1 err=-
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text ""
+WM_GETTEXTLENGTH: ret=0 err=-
+  notifications: none
+WM_SETTEXT(one\r\ntwo): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "one\r\ntwo"
+WM_GETTEXTLENGTH: ret=8 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+WM_SETTEXT(a\nb (a bare LF)): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "a\nb"
+WM_GETTEXTLENGTH: ret=3 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+WM_SETTEXT(tab\there): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "tab\there"
+-- multi
+WM_SETTEXT(multi): ret=1 err=0
+  notifications: none
+  text "Hello"
+WM_GETTEXTLENGTH(multi): ret=5 err=-
+  notifications: none
+WM_GETTEXT(multi, 32): ret=5 err=0 buffer "Hello"
+WM_GETTEXT(multi, 6): ret=5 err=0 buffer "Hello"
+WM_GETTEXT(multi, 5): ret=4 err=0 buffer "Hell"
+WM_GETTEXT(multi, 3): ret=2 err=0 buffer "He"
+WM_GETTEXT(multi, 1): ret=0 err=0 buffer ""
+WM_GETTEXT(multi, 0): ret=0 err=- buffer "########"
+WM_GETTEXT(multi, 32) through SendMessageA: ret=5 err=0 buffer "Hello"
+WM_GETTEXT(multi, 3) through SendMessageA: ret=2 err=0 buffer "He"
+WM_SETTEXT(multi, "Hello (A)") through SendMessageA: ret=1 err=0
+  notifications: none
+  text "Hello (A)"
+WM_SETTEXT(the same text again): ret=1 err=0
+  notifications: none
+  text "Hello (A)"
+WM_SETTEXT(an empty text): ret=1 err=-
+  notifications: none
+  text ""
+WM_GETTEXTLENGTH: ret=0 err=-
+  notifications: none
+WM_SETTEXT(Back): ret=1 err=0
+  notifications: none
+  text "Back"
+WM_SETTEXT(NULL): ret=1 err=-
+  notifications: none
+  text ""
+WM_GETTEXTLENGTH: ret=0 err=-
+  notifications: none
+WM_SETTEXT(one\r\ntwo): ret=1 err=0
+  notifications: none
+  text "one\r\ntwo"
+WM_GETTEXTLENGTH: ret=8 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=2 err=-
+  notifications: none
+WM_SETTEXT(a\nb (a bare LF)): ret=1 err=0
+  notifications: none
+  text "a\nb"
+WM_GETTEXTLENGTH: ret=3 err=-
+  notifications: none
+EM_GETLINECOUNT: ret=1 err=-
+  notifications: none
+WM_SETTEXT(tab\there): ret=1 err=0
+  notifications: none
+  text "tab\there"
+editctl: done
+<<< exit code=0
+>>> editctl.exe select
+== select
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+EM_GETSEL(single, focused): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_SETSEL(single, 1, 3): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x00030001 (1, 3) err=- start=1 end=3
+EM_GETSEL(single, NULL, NULL): ret=0x00030001 err=-
+EM_SETSEL(single, 4, 1): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x00040001 (1, 4) err=- start=1 end=4
+EM_SETSEL(single, 0, -1): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x000B0000 (0, 11) err=- start=0 end=11
+EM_SETSEL(single, -1, 0): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x000B000B (11, 11) err=- start=11 end=11
+EM_SETSEL(single, 2, 99): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x000B0002 (2, 11) err=- start=2 end=11
+EM_SETSEL(single, 99, 99): ret=1 err=0
+  notifications: none
+EM_GETSEL(single): ret=0x000B000B (11, 11) err=- start=11 end=11
+EM_SETSEL(single, 0, 0): ret=1 err=0
+  notifications: none
+EM_SETSEL(single, 3, 3): ret=1 err=0
+  notifications: none
+  the caret (GetCaretPos) right of where it was at 0 yes, on the same line yes
+EM_SETSEL(single, 0, 3): ret=1 err=0
+  notifications: none
+  the caret where it was at 3 yes
+EM_SETSEL(single ("world"), 6, 11): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(single, TRUE, "there"): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello there"
+EM_GETSEL(single): ret=0x000B000B (11, 11) err=- start=11 end=11
+EM_SETSEL(single, 5, 5): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(single, FALSE, ","): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello, there"
+EM_GETSEL(single): ret=0x00060006 (6, 6) err=- start=6 end=6
+EM_SETSEL(single, 0, 7): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(single, TRUE, ""): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "there"
+EM_GETSEL(single): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_REPLACESEL(single, TRUE, "(A)") through SendMessageA: ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "(A)there"
+EM_REPLACESEL(single, TRUE, "\r\nx"): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "(A)\r\nxthere"
+EM_GETSEL(single): ret=0x00060006 (6, 6) err=- start=6 end=6
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+EM_GETSEL(multi, focused): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_SETSEL(multi, 3, 3): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(multi, TRUE, "\r\nnew"): ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "one\r\nnew\r\ntwo"
+EM_GETSEL(multi): ret=0x00080008 (8, 8) err=- start=8 end=8
+EM_GETLINECOUNT(multi): ret=3 err=-
+  notifications: none
+EM_SETSEL(multi, 0, -1): ret=1 err=0
+  notifications: none
+EM_GETSEL(multi): ret=0x000D0000 (0, 13) err=- start=0 end=13
+EM_SETSEL(multi (across the line break), 4, 5): ret=1 err=0
+  notifications: none
+EM_GETSEL(multi): ret=0x00050004 (4, 5) err=- start=4 end=5
+EM_REPLACESEL(multi, TRUE, ""): ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "one\rnew\r\ntwo"
+EM_GETLINECOUNT(multi): ret=2 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe limit
+== limit
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=-
+  notifications: none
+EM_GETLIMITTEXT(single): ret=30000 err=-
+  notifications: none
+EM_GETLIMITTEXT(multi): ret=30000 err=-
+  notifications: none
+EM_LIMITTEXT(single, 5): ret=1 err=-
+  notifications: none
+EM_GETLIMITTEXT(single): ret=5 err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+typed "abcdefg" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_MAXTEXT, 101 EN_MAXTEXT
+  text "abcde"
+WM_SETTEXT(single, abc): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "abc"
+EM_SETSEL(single, 3, 3): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(single, TRUE, "XYZW"): ret=1 err=0
+  notifications: 101 EN_MAXTEXT, 101 EN_UPDATE, 101 EN_CHANGE
+  text "abcXY"
+EM_SETSEL(single, 0, 1): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(single (a selection of 1, 3 in its place), TRUE, "123"): ret=1 err=0
+  notifications: 101 EN_MAXTEXT, 101 EN_UPDATE, 101 EN_CHANGE
+  text "1bcXY"
+WM_SETTEXT(single, beyond the limit): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello world"
+WM_GETTEXTLENGTH(single): ret=11 err=-
+  notifications: none
+EM_LIMITTEXT(single, 3), below the text's length: ret=1 err=-
+  notifications: none
+  text "Hello world"
+EM_SETSEL(single (to the end), 99, 99): ret=1 err=0
+  notifications: none
+typed "z" into single (WM_CHAR posted)
+  notifications: 101 EN_MAXTEXT
+  text "Hello world"
+EM_LIMITTEXT(single, 0): ret=1 err=-
+  notifications: none
+EM_GETLIMITTEXT(single): ret=2147483646 err=-
+  notifications: none
+typed "z" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello worldz"
+EM_LIMITTEXT(multi, 8): ret=1 err=-
+  notifications: none
+EM_GETLIMITTEXT(multi): ret=8 err=-
+  notifications: none
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+typed "ab\rcd\refg" into multi (WM_CHAR posted)
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_MAXTEXT, 102 EN_MAXTEXT, 102 EN_MAXTEXT
+  text "ab\r\ncd\r\n"
+WM_GETTEXTLENGTH(multi): ret=8 err=-
+  notifications: none
+EM_LIMITTEXT(multi, 0): ret=1 err=-
+  notifications: none
+EM_GETLIMITTEXT(multi): ret=-1 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe lines
+== lines
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+-- multi, "one\r\ntwo two\r\n\r\nfour"
+EM_GETLINECOUNT(multi): ret=4 err=-
+  notifications: none
+EM_LINEINDEX(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINEINDEX(multi, 1): ret=5 err=-
+  notifications: none
+EM_LINEINDEX(multi, 2): ret=14 err=-
+  notifications: none
+EM_LINEINDEX(multi, 3): ret=16 err=-
+  notifications: none
+EM_LINEINDEX(multi, 4): ret=-1 err=87
+  notifications: none
+EM_LINELENGTH(multi, 0): ret=3 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(multi, 3): ret=3 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 3): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(multi, 5): ret=7 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 5): ret=1 err=-
+  notifications: none
+EM_LINELENGTH(multi, 9): ret=7 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 9): ret=1 err=-
+  notifications: none
+EM_LINELENGTH(multi, 12): ret=7 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 12): ret=1 err=-
+  notifications: none
+EM_LINELENGTH(multi, 14): ret=0 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 14): ret=2 err=-
+  notifications: none
+EM_LINELENGTH(multi, 16): ret=4 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 16): ret=3 err=-
+  notifications: none
+EM_LINELENGTH(multi, 19): ret=4 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 19): ret=3 err=-
+  notifications: none
+EM_LINELENGTH(multi, 20): ret=4 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 20): ret=3 err=-
+  notifications: none
+EM_LINELENGTH(multi, 99): ret=4 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 99): ret=3 err=-
+  notifications: none
+EM_GETLINE(multi, 0, room for 30): ret=3 err=0 copied "one" then U+0023
+EM_GETLINE(multi, 1, room for 30): ret=7 err=0 copied "two two" then U+0023
+EM_GETLINE(multi, 2, room for 30): ret=0 err=0 copied "" then U+001E
+EM_GETLINE(multi, 3, room for 30): ret=4 err=0 copied "four" then U+0023
+EM_GETLINE(multi, 4, room for 30): ret=0 err=87 copied "" then U+001E
+EM_GETLINE(multi, 1, room for 3): ret=3 err=0 copied "two" then U+0023
+EM_GETLINE(multi, 1, room for 7): ret=7 err=0 copied "two two" then U+0023
+EM_GETLINE(multi, 1, room for 0): ret=0 err=0 copied "" then U+0000
+EM_GETLINE(multi, 1, room for 30) through SendMessageA: ret=7 err=0 copied "two two" then 0x00
+EM_SETSEL(multi, 9, 9): ret=1 err=5
+  notifications: none
+EM_LINEINDEX(multi, -1), the caret on line 1: ret=5 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, -1): ret=1 err=-
+  notifications: none
+EM_LINELENGTH(multi, -1), no selection: ret=7 err=0
+  notifications: none
+EM_SETSEL(multi (from line 1 into line 3), 7, 16): ret=1 err=5
+  notifications: none
+EM_LINELENGTH(multi, -1): ret=6 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, -1): ret=1 err=-
+  notifications: none
+EM_SETSEL(multi (inside line 1), 6, 8): ret=1 err=5
+  notifications: none
+EM_LINELENGTH(multi, -1): ret=5 err=0
+  notifications: none
+-- multi, empty
+EM_GETLINECOUNT(multi): ret=1 err=-
+  notifications: none
+EM_LINEINDEX(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINEINDEX(multi, 1): ret=-1 err=87
+  notifications: none
+EM_LINELENGTH(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(multi, 3): ret=0 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 3): ret=0 err=-
+  notifications: none
+EM_GETLINE(multi, 0, room for 30): ret=0 err=- copied "" then U+001E
+EM_GETLINE(multi, 1, room for 30): ret=0 err=87 copied "" then U+001E
+-- multi, "a\r\n"
+EM_GETLINECOUNT(multi): ret=2 err=-
+  notifications: none
+EM_LINEINDEX(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINEINDEX(multi, 1): ret=3 err=-
+  notifications: none
+EM_LINEINDEX(multi, 2): ret=-1 err=87
+  notifications: none
+EM_LINELENGTH(multi, 0): ret=1 err=0
+  notifications: none
+EM_LINEFROMCHAR(multi, 0): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(multi, 3): ret=0 err=-
+  notifications: none
+EM_LINEFROMCHAR(multi, 3): ret=1 err=-
+  notifications: none
+EM_GETLINE(multi, 0, room for 30): ret=1 err=0 copied "a" then U+0023
+EM_GETLINE(multi, 1, room for 30): ret=0 err=- copied "" then U+001E
+EM_GETLINE(multi, 2, room for 30): ret=0 err=87 copied "" then U+001E
+-- single, "Hello"
+EM_GETLINECOUNT(single): ret=1 err=-
+  notifications: none
+EM_LINEINDEX(single, 0): ret=0 err=-
+  notifications: none
+EM_LINEINDEX(single, 1): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(single, 0): ret=5 err=-
+  notifications: none
+EM_LINEFROMCHAR(single, 0): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(single, 3): ret=5 err=-
+  notifications: none
+EM_LINEFROMCHAR(single, 3): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(single, 5): ret=5 err=-
+  notifications: none
+EM_LINEFROMCHAR(single, 5): ret=0 err=-
+  notifications: none
+EM_LINELENGTH(single, 9): ret=5 err=-
+  notifications: none
+EM_LINEFROMCHAR(single, 9): ret=0 err=-
+  notifications: none
+EM_GETLINE(single, 0, room for 30): ret=5 err=0 copied "Hello" then U+0000
+EM_GETLINE(single, 1, room for 30): ret=5 err=0 copied "Hello" then U+0000
+EM_GETLINE(single, 3, room for 30): ret=5 err=0 copied "Hello" then U+0000
+EM_SETSEL(single, 1, 3): ret=1 err=5
+  notifications: none
+EM_LINELENGTH(single, -1): ret=5 err=-
+  notifications: none
+EM_LINEINDEX(single, -1): ret=0 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe readonly
+== readonly
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+  style=0x50000080
+EM_SETREADONLY(single, TRUE): ret=1 err=-
+  notifications: none
+  style=0x50000880
+WM_GETDLGCODE(single): ret=137 err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+EM_SETSEL(single, 5, 5): ret=1 err=0
+  notifications: none
+typed "x" into single, read-only (WM_CHAR posted)
+  notifications: none
+  text "Hello"
+EM_REPLACESEL(single, read-only, TRUE, "X"): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "HelloX"
+WM_SETTEXT(single, read-only, Set): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Set"
+EM_SETREADONLY(single, TRUE) again: ret=1 err=-
+  notifications: none
+EM_SETREADONLY(single, FALSE): ret=1 err=-
+  notifications: none
+  style=0x50000080
+EM_SETSEL(single (to the end), 99, 99): ret=1 err=0
+  notifications: none
+typed "y" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Sety"
+EM_SETREADONLY(multi, TRUE): ret=1 err=-
+  notifications: none
+  style=0x500008C4
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+typed "z\r" into multi, read-only (WM_CHAR posted)
+  notifications: none
+  text "one"
+EM_SETREADONLY(multi, FALSE): ret=1 err=-
+  notifications: none
+typed "z\r" into multi (WM_CHAR posted)
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE
+  text "z\r\none"
+CreateWindowExW("Edit", ES_LEFT | ES_AUTOHSCROLL | ES_READONLY, id 103): non-NULL yes err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  style=0x50000880
+SetFocus(the ES_READONLY edit): the focus yes
+  notifications: 102 EN_KILLFOCUS, 103 EN_SETFOCUS
+typed "q" into the ES_READONLY edit (WM_CHAR posted)
+  notifications: none
+  text "fixed"
+EM_SETREADONLY(the ES_READONLY edit, FALSE): ret=1 err=-
+  notifications: none
+  style=0x50000080
+typed "q" into that edit (WM_CHAR posted)
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  text "qfixed"
+editctl: done
+<<< exit code=0
+>>> editctl.exe undo
+== undo
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=-
+  notifications: none
+EM_CANUNDO(single), as created: ret=0 err=-
+  notifications: none
+EM_SETSEL(single, 5, 5): ret=1 err=5
+  notifications: none
+EM_REPLACESEL(single, TRUE, " world"): ret=1 err=5
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello world"
+EM_CANUNDO(single): ret=1 err=-
+  notifications: none
+EM_UNDO(single): ret=1 err=5
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello"
+EM_GETSEL(single): ret=0x00000000 (0, 0) err=- start=0 end=0
+EM_CANUNDO(single): ret=1 err=-
+  notifications: none
+EM_UNDO(single) again: ret=1 err=5
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello world"
+EM_EMPTYUNDOBUFFER(single): ret=1 err=-
+  notifications: none
+EM_CANUNDO(single): ret=0 err=-
+  notifications: none
+EM_UNDO(single), nothing to undo: ret=1 err=-
+  notifications: none
+  text "Hello world"
+EM_REPLACESEL(single, FALSE, "!"): ret=1 err=5
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello!"
+EM_CANUNDO(single): ret=0 err=-
+  notifications: none
+EM_UNDO(single): ret=1 err=-
+  notifications: none
+  text "Hello!"
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+EM_SETSEL(single (to the end), 99, 99): ret=1 err=0
+  notifications: none
+EM_EMPTYUNDOBUFFER(single): ret=1 err=-
+  notifications: none
+typed "ab" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello!ab"
+EM_CANUNDO(single): ret=1 err=-
+  notifications: none
+WM_UNDO(single): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Hello!"
+WM_SETTEXT(single, New): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "New"
+EM_CANUNDO(single): ret=0 err=-
+  notifications: none
+EM_UNDO(single): ret=1 err=-
+  notifications: none
+  text "New"
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+typed "ab\rc" into multi (WM_CHAR posted)
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE
+  text "ab\r\nc"
+EM_CANUNDO(multi): ret=1 err=-
+  notifications: none
+EM_UNDO(multi): ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text ""
+EM_UNDO(multi) again: ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "ab\r\nc"
+editctl: done
+<<< exit code=0
+>>> editctl.exe modify
+== modify
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+EM_GETMODIFY(single), as created: ret=0 err=-
+  notifications: none
+WM_SETTEXT(single, Set): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Set"
+EM_GETMODIFY(single): ret=0 err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+EM_SETSEL(single (to the end), 99, 99): ret=1 err=0
+  notifications: none
+typed "a" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Seta"
+EM_GETMODIFY(single): ret=1 err=-
+  notifications: none
+EM_SETMODIFY(single, FALSE): ret=1 err=-
+  notifications: none
+EM_GETMODIFY(single): ret=0 err=-
+  notifications: none
+EM_REPLACESEL(single, TRUE, "b"): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Setab"
+EM_GETMODIFY(single): ret=1 err=-
+  notifications: none
+EM_SETMODIFY(single, FALSE): ret=1 err=-
+  notifications: none
+EM_UNDO(single): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+EM_GETMODIFY(single): ret=1 err=-
+  notifications: none
+EM_SETMODIFY(single, TRUE): ret=1 err=-
+  notifications: none
+EM_GETMODIFY(single): ret=1 err=-
+  notifications: none
+WM_SETTEXT(single, Reset): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Reset"
+EM_GETMODIFY(single): ret=0 err=-
+  notifications: none
+EM_SETMODIFY(single, 5): ret=1 err=-
+  notifications: none
+EM_GETMODIFY(single): ret=1 err=-
+  notifications: none
+EM_GETMODIFY(multi), as created: ret=0 err=-
+  notifications: none
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+typed "\r" into multi (WM_CHAR posted)
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "\r\none"
+EM_GETMODIFY(multi): ret=1 err=-
+  notifications: none
+WM_SETTEXT(multi, two): ret=1 err=0
+  notifications: none
+  text "two"
+EM_GETMODIFY(multi): ret=0 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe case
+== case
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", ES_LEFT | ES_AUTOHSCROLL | ES_UPPERCASE, id 103): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", ES_LEFT | ES_AUTOHSCROLL | ES_LOWERCASE, id 104): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", ES_LEFT | ES_AUTOHSCROLL | ES_NUMBER, id 105): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_UPPERCASE, id 106): non-NULL yes err=-
+  notifications: none
+-- the ES_UPPERCASE edit
+  style=0x50000088
+SetFocus(the ES_UPPERCASE edit): the focus yes
+  notifications: 103 EN_SETFOCUS
+typed "aB3c-D" into the ES_UPPERCASE edit (WM_CHAR posted)
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE
+  text "AB3C-D"
+WM_SETTEXT(the ES_UPPERCASE edit): ret=1 err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  text "AB3C"
+EM_SETSEL(the ES_UPPERCASE edit, 99, 99): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(the ES_UPPERCASE edit, TRUE, "xY9"): ret=1 err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  text "AB3CXY9"
+WM_SETTEXT(the ES_UPPERCASE edit, "aB3") through SendMessageA: ret=1 err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+  text "AB3"
+-- the ES_LOWERCASE edit
+  style=0x50000090
+SetFocus(the ES_LOWERCASE edit): the focus yes
+  notifications: 103 EN_KILLFOCUS, 104 EN_SETFOCUS
+typed "aB3c-D" into the ES_LOWERCASE edit (WM_CHAR posted)
+  notifications: 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE
+  text "ab3c-d"
+WM_SETTEXT(the ES_LOWERCASE edit): ret=1 err=0
+  notifications: 104 EN_UPDATE, 104 EN_CHANGE
+  text "ab3c"
+EM_SETSEL(the ES_LOWERCASE edit, 99, 99): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(the ES_LOWERCASE edit, TRUE, "xY9"): ret=1 err=0
+  notifications: 104 EN_UPDATE, 104 EN_CHANGE
+  text "ab3cxy9"
+WM_SETTEXT(the ES_LOWERCASE edit, "aB3") through SendMessageA: ret=1 err=0
+  notifications: 104 EN_UPDATE, 104 EN_CHANGE
+  text "ab3"
+-- the ES_NUMBER edit
+  style=0x50002080
+SetFocus(the ES_NUMBER edit): the focus yes
+  notifications: 104 EN_KILLFOCUS, 105 EN_SETFOCUS
+typed "aB3c-D" into the ES_NUMBER edit (WM_CHAR posted)
+  notifications: 105 EN_UPDATE, 105 EN_CHANGE
+  text "3"
+WM_SETTEXT(the ES_NUMBER edit): ret=1 err=0
+  notifications: 105 EN_UPDATE, 105 EN_CHANGE
+  text "aB3c"
+EM_SETSEL(the ES_NUMBER edit, 99, 99): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(the ES_NUMBER edit, TRUE, "xY9"): ret=1 err=0
+  notifications: 105 EN_UPDATE, 105 EN_CHANGE
+  text "aB3cxY9"
+WM_SETTEXT(the ES_NUMBER edit, "aB3") through SendMessageA: ret=1 err=0
+  notifications: 105 EN_UPDATE, 105 EN_CHANGE
+  text "aB3"
+-- the multiline ES_UPPERCASE edit
+  style=0x500000CC
+SetFocus(the multiline ES_UPPERCASE edit): the focus yes
+  notifications: 105 EN_KILLFOCUS, 106 EN_SETFOCUS
+typed "ab\rcD" into the multiline ES_UPPERCASE edit (WM_CHAR posted)
+  notifications: 106 EN_UPDATE, 106 EN_CHANGE, 106 EN_UPDATE, 106 EN_CHANGE, 106 EN_UPDATE, 106 EN_CHANGE, 106 EN_UPDATE, 106 EN_CHANGE, 106 EN_UPDATE, 106 EN_CHANGE
+  text "AB\r\nCD"
+-- single, ES_UPPERCASE added by SetWindowLongW
+SetWindowLongW(single, GWL_STYLE, | ES_UPPERCASE): err=-
+  style=0x50000088
+SetFocus(single): the focus yes
+  notifications: 106 EN_KILLFOCUS, 101 EN_SETFOCUS
+typed "ab" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE
+  text "AB"
+WM_SETTEXT(single, cd): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "CD"
+editctl: done
+<<< exit code=0
+>>> editctl.exe notify
+== notify
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+typed "a" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "a"
+typed "bc" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE
+  text "abc"
+typed "" into single (a backspace) (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "ab"
+EM_SETSEL(single, 0, 1): ret=1 err=0
+  notifications: none
+typed "" into single (a backspace over a selection) (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "b"
+WM_SETTEXT(single, focused, Set): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Set"
+WM_SETTEXT(multi, not focused, Set): ret=1 err=0
+  notifications: none
+  text "Set"
+SetFocus(multi): the focus yes
+  notifications: 101 EN_KILLFOCUS, 102 EN_SETFOCUS
+WM_SETTEXT(multi, focused, Again): ret=1 err=0
+  notifications: none
+  text "Again"
+WM_SETTEXT(single, not focused, Again): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "Again"
+typed "x\r" into multi (WM_CHAR posted)
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE, 102 EN_UPDATE, 102 EN_CHANGE
+  text "x\r\nAgain"
+EM_SETSEL(multi, 0, 2): ret=1 err=0
+  notifications: none
+WM_CLEAR(multi), a selection: ret=0 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "\nAgain"
+EM_SETSEL(multi, 0, 0): ret=1 err=0
+  notifications: none
+WM_CLEAR(multi), no selection: ret=0 err=-
+  notifications: none
+EM_REPLACESEL(multi, TRUE, "rep"): ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "rep\nAgain"
+EM_REPLACESEL(single, not focused, TRUE, "rep"): ret=1 err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text "repAgain"
+EM_UNDO(multi): ret=1 err=0
+  notifications: 102 EN_UPDATE, 102 EN_CHANGE
+  text "\nAgain"
+EM_LIMITTEXT(single, 2): ret=1 err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 102 EN_KILLFOCUS, 101 EN_SETFOCUS
+WM_SETTEXT(single, empty): ret=1 err=-
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+  text ""
+typed "abc" into single (WM_CHAR posted)
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_UPDATE, 101 EN_CHANGE, 101 EN_MAXTEXT
+  text "ab"
+EM_REPLACESEL(single, at the limit, TRUE, "z"): ret=1 err=-
+  notifications: 101 EN_MAXTEXT
+  text "ab"
+EM_SETREADONLY(single, TRUE): ret=1 err=-
+  notifications: none
+EM_SETMODIFY(single, TRUE): ret=1 err=-
+  notifications: none
+SetFocus(the parent): the focus yes
+  notifications: 101 EN_KILLFOCUS
+editctl: done
+<<< exit code=0

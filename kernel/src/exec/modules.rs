@@ -1145,7 +1145,7 @@ mod tests {
 
     /// Corpus binaries that import msvcrt, advapi32, user32 or gdi32: among them the GUI fixtures
     /// whose blocks are all still pending, which load against user32's and gdi32's stubs.
-    const LOADED_CORPUS: [(&str, &[u8]); 48] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 49] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1293,6 +1293,7 @@ mod tests {
         ("guimsg", include_bytes!("../../../tests/user32/guimsg/guimsg.exe")),
         ("scroll", include_bytes!("../../../tests/user32/scroll/scroll.exe")),
         ("caret", include_bytes!("../../../tests/user32/caret/caret.exe")),
+        ("editctl", include_bytes!("../../../tests/user32/editctl/editctl.exe")),
     ];
 
     /// Every import of those binaries resolves in the system DLL it names: each loads, and runs
