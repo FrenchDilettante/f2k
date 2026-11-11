@@ -2,7 +2,7 @@
 # /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. The case, ctype and locale blocks
 # print what setlocale(LC_ALL, "") gives on the real machine (its user locale). The calendar block sets
 # its time zone itself (TZ, then _tzset) and converts fixed times only.
-description = "wide - the breadth of msvcrt.dll cmd.exe calls under /MD (wide.c): the wcs* functions, _wcsicmp and case mapping, the isw* and tow* classes, setlocale, swprintf, _snwprintf, _vsnwprintf and swscanf, _ultoa, _wtol, wcstol and wcstoul, the heap and memmove, qsort, rand and time; iswctype over each class mask; gmtime, localtime and mktime under fixed TZ settings."
+description = "wide - the breadth of msvcrt.dll cmd.exe calls under /MD (wide.c): the wcs* functions, _wcsicmp and case mapping, the isw* and tow* classes, setlocale, swprintf, _snwprintf, _vsnwprintf and swscanf, _ultoa, _wtol, wcstol and wcstoul, the heap and memmove, qsort, rand and time; iswctype over each class mask; gmtime, localtime and mktime under fixed TZ settings; wcstok's tokens and per-thread position, wcstod's bits, end pointers and errno, and wcsftime's conversions over fixed times."
 kind = "sectioned"
 gate = true
 
@@ -84,3 +84,6 @@ calendar = [
     "msvcrt.mktime",
     "msvcrt.sprintf",
 ]
+wcstok = ["msvcrt.wcstok"]
+wcstod = ["msvcrt.wcstod"]
+wcsftime = ["msvcrt.wcsftime", "msvcrt._putenv", "msvcrt._tzset", "msvcrt.setlocale"]
