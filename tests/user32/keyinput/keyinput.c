@@ -65,6 +65,25 @@
  *   ansi       'A', Shift+A and Enter into a window of a class
  *              registered with RegisterClassA, pumped through
  *              PeekMessageA and DispatchMessageA
+ *   typeahead  which window a keystroke goes to when the focus moves
+ *              after the keystroke and before the read: 'X' (down and
+ *              up) typed into a pop-up holding two child windows, A
+ *              and B, of its class, with nothing read until the focus
+ *              has moved. SendInput is followed by Sleep(100), so the
+ *              keystroke is in the queue before the focus moves
+ *              whether SendInput puts it there itself or the raw input
+ *              thread does. Each key and character message a read
+ *              hands out prints with its window (A, B, the pop-up,
+ *              NULL or other) and GetFocus as the read left it. The
+ *              cases: the focus moved from A to B; the keystroke
+ *              peeked (PM_NOREMOVE) with the focus on A, then the
+ *              focus moved to B; the focus moved to B, then a read
+ *              filtered for A's window, then one for B's; the focus
+ *              taken away (SetFocus(NULL), the pop-up still active);
+ *              the same, then a read filtered for WM_KEYDOWN alone,
+ *              then one for WM_SYSKEYDOWN alone; the keystroke typed
+ *              with no focus, then the focus given to A; and A, the
+ *              focus, destroyed before the read
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat keyinput):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% keyinput.c user32.lib
@@ -631,6 +650,312 @@ static void sec_ansi(void)
     close_window(h, 1, "F2KKeyinputAnsi");
 }
 
+/* --- typeahead ---------------------------------------------------- */
+
+/* The section's windows: the pop-up and its two children. */
+static HWND ta_top;
+static HWND ta_a;
+static HWND ta_b;
+
+/* A key or character message as a read handed it out, and the focus as
+ * the read left it. */
+typedef struct {
+    UINT msg;
+    WPARAM wparam;
+    LPARAM lparam;
+    HWND hwnd;
+    HWND focus;
+} read_t;
+
+static read_t reads[MAX_RECORDS];
+static int read_count;
+static int reads_lost;
+
+static const stroke_t key_x[] = {
+    { 'X', 0x2D, DOWN }, { 'X', 0x2D, UP }
+};
+
+/* A window as it relates to the section's windows. */
+static const char *relation(HWND w)
+{
+    if (w == NULL) {
+        return "NULL";
+    }
+    if (w == ta_a) {
+        return "A";
+    }
+    if (w == ta_b) {
+        return "B";
+    }
+    if (w == ta_top) {
+        return "the pop-up";
+    }
+    return "other";
+}
+
+/* Note a key or character message a read handed out; the batch ends
+ * with the key-up of its key. */
+static void note_read(const MSG *m)
+{
+    read_t *r;
+
+    if (!is_recorded(m->message)) {
+        return;
+    }
+    if (read_count == MAX_RECORDS) {
+        reads_lost++;
+    } else {
+        r = &reads[read_count++];
+        r->msg = m->message;
+        r->wparam = m->wParam;
+        r->lparam = m->lParam;
+        r->hwnd = m->hwnd;
+        r->focus = GetFocus();
+    }
+    if ((m->message == WM_KEYUP || m->message == WM_SYSKEYUP) && m->wParam == wait_vk) {
+        batch_done = 1;
+    }
+}
+
+/* Read out whatever is queued, translated and dispatched, each key and
+ * character message noted. */
+static void read_queued(void)
+{
+    MSG m;
+
+    while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+        note_read(&m);
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+
+/* Read until the batch's key-up is read or 2 seconds pass (a Sleep
+ * between the reads), then print what was read. */
+static void read_batch(void)
+{
+    DWORD start;
+    int i;
+    read_t *r;
+
+    start = GetTickCount();
+    for (;;) {
+        read_queued();
+        if (batch_done || GetTickCount() - start >= 2000) {
+            break;
+        }
+        Sleep(10);
+    }
+    read_queued();
+    line("the batch arrived: %s", yesno(batch_done));
+    line("read: %d message(s)%s", read_count, reads_lost ? ", more lost" : "");
+    for (i = 0; i < read_count; i++) {
+        r = &reads[i];
+        line("  %s wParam=0x%04lX lParam=0x%08lX window %s, focus %s", msg_name(r->msg),
+             (unsigned long)r->wparam, (unsigned long)(DWORD)r->lparam, relation(r->hwnd),
+             relation(r->focus));
+    }
+}
+
+/* One read with a filter, PM_REMOVE, printed: what it found, its
+ * window, the focus. What it takes out is neither translated nor
+ * dispatched. */
+static void filtered_read(const char *what, HWND hwnd, UINT min, UINT max)
+{
+    MSG m;
+
+    if (PeekMessageW(&m, hwnd, min, max, PM_REMOVE)) {
+        line("PeekMessageW(%s, PM_REMOVE): found yes: %s wParam=0x%04lX lParam=0x%08lX window %s, "
+             "focus %s", what, msg_name(m.message), (unsigned long)m.wParam,
+             (unsigned long)(DWORD)m.lParam, relation(m.hwnd), relation(GetFocus()));
+        if ((m.message == WM_KEYUP || m.message == WM_SYSKEYUP) && m.wParam == wait_vk) {
+            batch_done = 1;
+        }
+    } else {
+        line("PeekMessageW(%s, PM_REMOVE): found no", what);
+    }
+}
+
+/* Give the focus to `w` (NULL takes it away), whatever is queued read
+ * out, and print where the focus is. */
+static void focus_on(HWND w)
+{
+    SetFocus(w);
+    read_queued();
+    line("the focus: %s; the active window: %s", relation(GetFocus()), relation(GetActiveWindow()));
+}
+
+/* 'X' typed, if the pop-up is the foreground window, and nothing read;
+ * whether it was sent. */
+static int type_ahead(const char *what)
+{
+    f2k_input in[2];
+    UINT sent;
+    int i;
+
+    line("-- %s", what);
+    if (send_input == NULL) {
+        line("SendInput: not exported by user32, no input sent");
+        return 0;
+    }
+    if (GetForegroundWindow() != ta_top) {
+        line("the window is not the foreground window: no input sent");
+        return 0;
+    }
+    ZeroMemory(in, sizeof in);
+    for (i = 0; i < COUNT(key_x); i++) {
+        in[i].type = INPUT_KEYBOARD;
+        in[i].u.ki.wVk = key_x[i].vk;
+        in[i].u.ki.wScan = key_x[i].scan;
+        in[i].u.ki.dwFlags = key_x[i].flags;
+    }
+    reset_records('X');
+    read_count = 0;
+    reads_lost = 0;
+    arm();
+    sent = send_input((UINT)COUNT(key_x), in, (int)sizeof(f2k_input));
+    line("SendInput(%d events): ret=%u err=%s", COUNT(key_x), sent, le());
+    Sleep(100);
+    return 1;
+}
+
+/* The focus moves from A to B after the keystroke. */
+static void ahead_moved(void)
+{
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, then SetFocus(B), then read")) {
+        return;
+    }
+    SetFocus(ta_b);
+    line("SetFocus(B): the focus: %s", relation(GetFocus()));
+    read_batch();
+}
+
+/* The keystroke peeked while the focus is on A, then the focus moves to
+ * B. */
+static void ahead_peeked(void)
+{
+    MSG m;
+    BOOL got;
+
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, peeked (PM_NOREMOVE), then SetFocus(B), then read")) {
+        return;
+    }
+    got = PeekMessageW(&m, NULL, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE);
+    if (got) {
+        line("PeekMessageW(NULL, WM_KEYFIRST..WM_KEYLAST, PM_NOREMOVE): found yes: %s wParam=0x%04lX "
+             "window %s, focus %s", msg_name(m.message), (unsigned long)m.wParam, relation(m.hwnd),
+             relation(GetFocus()));
+    } else {
+        line("PeekMessageW(NULL, WM_KEYFIRST..WM_KEYLAST, PM_NOREMOVE): found no");
+    }
+    SetFocus(ta_b);
+    line("SetFocus(B): the focus: %s", relation(GetFocus()));
+    read_batch();
+}
+
+/* The focus moves to B, then reads filtered by window: A's, then B's. */
+static void ahead_window_filter(void)
+{
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, then SetFocus(B), then read for A's window, then B's")) {
+        return;
+    }
+    SetFocus(ta_b);
+    line("SetFocus(B): the focus: %s", relation(GetFocus()));
+    filtered_read("A, WM_KEYFIRST..WM_KEYLAST", ta_a, WM_KEYFIRST, WM_KEYLAST);
+    filtered_read("B, WM_KEYFIRST..WM_KEYLAST", ta_b, WM_KEYFIRST, WM_KEYLAST);
+    read_batch();
+}
+
+/* The focus taken away after the keystroke: the pop-up stays active. */
+static void ahead_unfocused(void)
+{
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, then SetFocus(NULL), then read")) {
+        return;
+    }
+    SetFocus(NULL);
+    line("SetFocus(NULL): the focus: %s; the active window: %s", relation(GetFocus()),
+         relation(GetActiveWindow()));
+    read_batch();
+}
+
+/* The focus taken away, then reads filtered by message: WM_KEYDOWN
+ * alone, then WM_SYSKEYDOWN alone. */
+static void ahead_message_filter(void)
+{
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, then SetFocus(NULL), then read for WM_KEYDOWN, then "
+                    "WM_SYSKEYDOWN")) {
+        return;
+    }
+    SetFocus(NULL);
+    line("SetFocus(NULL): the focus: %s; the active window: %s", relation(GetFocus()),
+         relation(GetActiveWindow()));
+    filtered_read("NULL, WM_KEYDOWN..WM_KEYDOWN", NULL, WM_KEYDOWN, WM_KEYDOWN);
+    filtered_read("NULL, WM_SYSKEYDOWN..WM_SYSKEYDOWN", NULL, WM_SYSKEYDOWN, WM_SYSKEYDOWN);
+    read_batch();
+}
+
+/* The keystroke typed with no focus, then the focus given to A. */
+static void ahead_focused(void)
+{
+    focus_on(NULL);
+    if (!type_ahead("'X' with no focus, then SetFocus(A), then read")) {
+        return;
+    }
+    SetFocus(ta_a);
+    line("SetFocus(A): the focus: %s", relation(GetFocus()));
+    read_batch();
+}
+
+/* A, the focus, destroyed after the keystroke. */
+static void ahead_destroyed(void)
+{
+    BOOL r;
+
+    focus_on(ta_a);
+    if (!type_ahead("'X' with the focus on A, then DestroyWindow(A), then read")) {
+        return;
+    }
+    r = DestroyWindow(ta_a);
+    line("DestroyWindow(A): ret=%d; the focus: %s", r, relation(GetFocus()));
+    read_batch();
+}
+
+/* A child window of the section's class, `id` 1 for A, 2 for B. */
+static HWND ahead_child(int id)
+{
+    HWND w;
+
+    w = CreateWindowExW(0, L"F2KKeyinputTypeahead", L"", WS_CHILD | WS_VISIBLE, 10 + 70 * (id - 1), 10,
+                        60, 40, ta_top, (HMENU)id, GetModuleHandle(NULL), NULL);
+    line("CreateWindowExW(F2KKeyinputTypeahead, child %s): non-NULL %s", id == 1 ? "A" : "B",
+         yesno(w != NULL));
+    return w;
+}
+
+static void sec_typeahead(void)
+{
+    ta_top = open_window(0, "F2KKeyinputTypeahead");
+    if (ta_top != NULL) {
+        ta_a = ahead_child(1);
+        ta_b = ahead_child(2);
+        if (ta_a != NULL && ta_b != NULL) {
+            ahead_moved();
+            ahead_peeked();
+            ahead_window_filter();
+            ahead_unfocused();
+            ahead_message_filter();
+            ahead_focused();
+            ahead_destroyed();
+        }
+    }
+    close_window(ta_top, 0, "F2KKeyinputTypeahead");
+}
+
 static const section_t sections[] = {
     { "letters", sec_letters, F2KT_ALWAYS },
     { "symbols", sec_symbols, F2KT_ALWAYS },
@@ -640,6 +965,7 @@ static const section_t sections[] = {
     { "scancode", sec_scancode, F2KT_ALWAYS },
     { "repeat", sec_repeat, F2KT_ALWAYS },
     { "ansi", sec_ansi, F2KT_ALWAYS },
+    { "typeahead", sec_typeahead, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:24.52
-keyinput F2KT-SOURCE-CRC=0x2ECAC17C
+# date: Wed 11/11/2026 11:57:10.16
+keyinput F2KT-SOURCE-CRC=0x25E385B4
 >>> keyinput.exe letters
 == letters
 RegisterClassW(F2KKeyinputLetters): atom nonzero yes err=2
@@ -117,8 +117,8 @@ Caps Lock on: no; Num Lock on: no
 SendInput(2 events): ret=2 err=-
 the batch arrived: yes
 received: 3 message(s)
-  WM_KEYDOWN wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
-  WM_CHAR wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYDOWN wParam=0x000D lParam=0x401C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x000D lParam=0x401C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 0) down: shift no ctrl no alt no
   WM_KEYUP wParam=0x000D lParam=0xC01C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
 -- Escape
 SendInput(2 events): ret=2 err=-
@@ -289,5 +289,81 @@ received: 3 message(s)
   WM_KEYDOWN wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
   WM_CHAR wParam=0x000D lParam=0x001C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
   WM_KEYUP wParam=0x000D lParam=0xC01C0001 (repeat 1, scan 0x1C, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe typeahead
+== typeahead
+RegisterClassW(F2KKeyinputTypeahead): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputTypeahead, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+CreateWindowExW(F2KKeyinputTypeahead, child A): non-NULL yes
+CreateWindowExW(F2KKeyinputTypeahead, child B): non-NULL yes
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, then SetFocus(B), then read
+SendInput(2 events): ret=2 err=-
+SetFocus(B): the focus: B
+the batch arrived: yes
+read: 3 message(s)
+  WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window B, focus B
+  WM_CHAR wParam=0x0078 lParam=0x002D0001 window B, focus B
+  WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window B, focus B
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, peeked (PM_NOREMOVE), then SetFocus(B), then read
+SendInput(2 events): ret=2 err=-
+PeekMessageW(NULL, WM_KEYFIRST..WM_KEYLAST, PM_NOREMOVE): found yes: WM_KEYDOWN wParam=0x0058 window A, focus A
+SetFocus(B): the focus: B
+the batch arrived: yes
+read: 3 message(s)
+  WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window B, focus B
+  WM_CHAR wParam=0x0078 lParam=0x002D0001 window B, focus B
+  WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window B, focus B
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, then SetFocus(B), then read for A's window, then B's
+SendInput(2 events): ret=2 err=-
+SetFocus(B): the focus: B
+PeekMessageW(A, WM_KEYFIRST..WM_KEYLAST, PM_REMOVE): found no
+PeekMessageW(B, WM_KEYFIRST..WM_KEYLAST, PM_REMOVE): found yes: WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window B, focus B
+the batch arrived: yes
+read: 1 message(s)
+  WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window B, focus B
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, then SetFocus(NULL), then read
+SendInput(2 events): ret=2 err=-
+SetFocus(NULL): the focus: NULL; the active window: the pop-up
+the batch arrived: yes
+read: 3 message(s)
+  WM_SYSKEYDOWN wParam=0x0058 lParam=0x002D0001 window the pop-up, focus NULL
+  WM_SYSCHAR wParam=0x0078 lParam=0x002D0001 window the pop-up, focus NULL
+  WM_SYSKEYUP wParam=0x0058 lParam=0xC02D0001 window the pop-up, focus NULL
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, then SetFocus(NULL), then read for WM_KEYDOWN, then WM_SYSKEYDOWN
+SendInput(2 events): ret=2 err=-
+SetFocus(NULL): the focus: NULL; the active window: the pop-up
+PeekMessageW(NULL, WM_KEYDOWN..WM_KEYDOWN, PM_REMOVE): found no
+PeekMessageW(NULL, WM_SYSKEYDOWN..WM_SYSKEYDOWN, PM_REMOVE): found yes: WM_SYSKEYDOWN wParam=0x0058 lParam=0x002D0001 window the pop-up, focus NULL
+the batch arrived: yes
+read: 1 message(s)
+  WM_SYSKEYUP wParam=0x0058 lParam=0xC02D0001 window the pop-up, focus NULL
+the focus: NULL; the active window: the pop-up
+-- 'X' with no focus, then SetFocus(A), then read
+SendInput(2 events): ret=2 err=-
+SetFocus(A): the focus: A
+the batch arrived: yes
+read: 3 message(s)
+  WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window A, focus A
+  WM_CHAR wParam=0x0078 lParam=0x002D0001 window A, focus A
+  WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window A, focus A
+the focus: A; the active window: the pop-up
+-- 'X' with the focus on A, then DestroyWindow(A), then read
+SendInput(2 events): ret=2 err=-
+DestroyWindow(A): ret=1; the focus: the pop-up
+the batch arrived: yes
+read: 3 message(s)
+  WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window the pop-up, focus the pop-up
+  WM_CHAR wParam=0x0078 lParam=0x002D0001 window the pop-up, focus the pop-up
+  WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window the pop-up, focus the pop-up
 keyinput: done
 <<< exit code=0
