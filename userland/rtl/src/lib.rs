@@ -29,9 +29,11 @@
 //! manager's WINDOWINFO and WINDOWPOS ([`window`]: user32's window calls and win32k's window
 //! services share them), USER's message constants and structures ([`user`]: user32's
 //! message calls and win32k's queue share them, the receipt of a retrieved message among
-//! them), and the menus', accelerators' and icons' shapes and resource layouts ([`menu`],
+//! them), the menus', accelerators' and icons' shapes and resource layouts ([`menu`],
 //! [`accel`], [`icon`]: user32's calls and win32k's menu, accelerator and cursor services share
-//! them).
+//! them), and the non-client area's geometry ([`nonclient`]: the frame, the caption and the menu
+//! bar a window's styles give, which win32k's client rectangles and user32's default window
+//! procedure share).
 //!
 //! The building blocks under them: the NT structures every side shares ([`nt`]: UNICODE_STRING,
 //! OBJECT_ATTRIBUTES, CLIENT_ID, IO_STATUS_BLOCK, generic over their pointers' width, and the query
@@ -73,6 +75,7 @@ pub mod localmem;
 pub mod menu;
 pub mod message;
 pub mod modules;
+pub mod nonclient;
 pub mod nt;
 pub mod params;
 pub mod path;

@@ -30,7 +30,7 @@ use rtl::user::*;
 use rtl::window::{WindowText, QUERY_WINDOW_TEXT};
 
 use crate::procedure::{self, Procedure};
-use crate::{answered, failed_with, focus, imports, paint, window, Out};
+use crate::{answered, failed_with, focus, imports, nonclient, paint, window, Out};
 
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
@@ -413,20 +413,20 @@ pub fn translate(msg: &Msg) -> u32 {
 
 /// The default window procedure's answer to a message of the narrow (`ansi`) or wide form:
 /// WM_NCCREATE the title the CREATESTRUCT names set, TRUE (the creation goes on); WM_SETTEXT the
-/// text set, TRUE; WM_GETTEXT the text copied into the buffer (as much as fits with its
-/// terminator; nothing into an empty one), the units or bytes copied; WM_GETTEXTLENGTH the text's
-/// length; WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and
-/// EndPaint; WM_ACTIVATE the focus to a window being activated that is not minimized, as the
-/// documentation gives it; WM_NCACTIVATE TRUE (the change goes on: there is no caption to redraw
-/// yet); WM_ERASEBKGND the client area filled with the class's background brush (GCL_HBRBACKGROUND:
-/// a brush, or a system color's index plus one), TRUE, or FALSE for a class with none;
-/// WM_CTLCOLOR* a control's colors set in its DC and the brush it paints its background with
-/// answered (the window colors for an edit control and a list box, the scroll bar's color for a
-/// scroll bar, the 3D face for the others, the text in COLOR_WINDOWTEXT); WM_QUERYENDSESSION TRUE
-/// (the session may end, as the message's documentation gives DefWindowProc's answer), whatever its
-/// lParam; WM_NCCALCSIZE the rectangle left as it is (the client area is the window's: windows have
-/// no decoration yet); 0 to everything else, WM_ENDSESSION included, and to a text message for a
-/// handle naming no window.
+/// text set (the caption redrawn), TRUE; WM_GETTEXT the text copied into the buffer (as much as
+/// fits with its terminator; nothing into an empty one), the units or bytes copied;
+/// WM_GETTEXTLENGTH the text's length; WM_CLOSE the window destroyed; WM_PAINT the window validated
+/// through BeginPaint and EndPaint; WM_ACTIVATE the focus to a window being activated that is not
+/// minimized, as the documentation gives it; WM_ERASEBKGND the client area filled with the class's
+/// background brush (GCL_HBRBACKGROUND: a brush, or a system color's index plus one), TRUE, or
+/// FALSE for a class with none; WM_CTLCOLOR* a control's colors set in its DC and the brush it
+/// paints its background with answered (the window colors for an edit control and a list box, the
+/// scroll bar's color for a scroll bar, the 3D face for the others, the text in COLOR_WINDOWTEXT);
+/// WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
+/// DefWindowProc's answer), whatever its lParam; the non-client messages ([`nonclient`]):
+/// WM_NCCALCSIZE the frame taken off the rectangle, WM_NCHITTEST the part under the point,
+/// WM_NCPAINT the frame drawn, WM_NCACTIVATE the caption redrawn, TRUE; 0 to everything else,
+/// WM_ENDSESSION included, and to a text message for a handle naming no window.
 pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
         WM_NCCREATE => {
@@ -444,12 +444,22 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
             }
             1
         }
-        WM_SETTEXT => set_text(window, lparam, ansi) as i32,
+        WM_SETTEXT => {
+            let set = set_text(window, lparam, ansi);
+            if set {
+                nonclient::redraw_caption(window);
+            }
+            set as i32
+        }
         WM_GETTEXT => get_text(window, wparam, lparam, ansi) as i32,
         WM_GETTEXTLENGTH => text_length(window, ansi) as i32,
         WM_ERASEBKGND => erase_background(window, wparam as usize) as i32,
         WM_CTLCOLORMSGBOX..=WM_CTLCOLORSTATIC => control_colors(wparam as usize, message) as i32,
-        WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
+        WM_QUERYENDSESSION => 1,
+        nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
+        nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
+        nonclient::WM_NCPAINT => nonclient::paint(window),
+        WM_NCACTIVATE => nonclient::activate(window, wparam),
         WM_ACTIVATE => {
             if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
                 focus::activate_focus(window);

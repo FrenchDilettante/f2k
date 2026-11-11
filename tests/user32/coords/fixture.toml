@@ -8,17 +8,14 @@ description = "coords - window coordinates: GetClientRect and GetWindowRect (a b
 kind = "sectioned"
 gate = true
 
-# The framed and captioned windows' client areas are their whole rectangles: the default window
-# procedure's WM_NCCALCSIZE takes no frame or caption off them yet.
 [pending]
-client = "the non-client area: WM_NCCALCSIZE takes no frame or caption metrics off the client area"
 # The non-client sections are new: they have no captured block yet, so they are not pending (the
 # harness refuses a pending section with no block) and carry no pins. Each is to be pending, with
 # the reason below, until F2K passes its capture:
-# adjust = "a new section: its capture from the real machine is awaited; F2K has no AdjustWindowRect or AdjustWindowRectEx and serves few of these metrics yet"
-# frames = "a new section: its capture from the real machine is awaited; F2K takes no frame, caption or edge off the client area yet"
-# nccalc = "a new section: its capture from the real machine is awaited; F2K's default window procedure leaves WM_NCCALCSIZE's rectangle as it is"
-# nchittest = "a new section: its capture from the real machine is awaited; F2K's default window procedure has no WM_NCHITTEST yet"
+# adjust = "a new section: its capture from the real machine is awaited"
+# frames = "a new section: its capture from the real machine is awaited"
+# nccalc = "a new section: its capture from the real machine is awaited"
+# nchittest = "a new section: its capture from the real machine is awaited"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

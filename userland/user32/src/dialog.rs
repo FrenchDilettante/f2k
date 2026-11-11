@@ -795,11 +795,21 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     }
 
     // Its place: dialog units from the owner's client area (the screen's with DS_ABSALIGN or no
-    // owner), centered with DS_CENTER. The window rectangle is the client area: there is no
-    // non-client area to add yet.
-    let cx = mul_div(header.cx, ux, 4);
-    let cy = mul_div(header.cy, uy, 8);
-    let (mut x, mut y) = (mul_div(header.x, ux, 4), mul_div(header.y, uy, 8));
+    // owner), centered with DS_CENTER. The template's rectangle is the client area: the window
+    // rectangle is the frame around it (AdjustWindowRectEx's, a menu bar's room included), so a
+    // dialog's window starts its frame's width up and left of the template's place (an
+    // assumption: the documentation places the dialog, not which of its rectangles).
+    let client = Rect {
+        left: mul_div(header.x, ux, 4),
+        top: mul_div(header.y, uy, 8),
+        right: mul_div(header.x, ux, 4) + mul_div(header.cx, ux, 4),
+        bottom: mul_div(header.y, uy, 8) + mul_div(header.cy, uy, 8),
+    };
+    let has_menu = !matches!(header.menu, Field::None);
+    let outer = rtl::nonclient::Frame::of(style, ex_style, has_menu).window(client);
+    let cx = outer.right - outer.left;
+    let cy = outer.bottom - outer.top;
+    let (mut x, mut y) = (outer.left, outer.top);
     if style & DS_CENTER != 0 {
         x = (crate::display::get_system_metrics(0) - cx) / 2;
         y = (crate::display::get_system_metrics(1) - cy) / 2;

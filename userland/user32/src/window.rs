@@ -213,7 +213,7 @@ pub extern "system" fn get_desktop_window() -> usize {
 }
 
 /// The window's WINDOWINFO.
-fn window_info(window: usize) -> Result<WindowInfo, NtStatus> {
+pub fn window_info(window: usize) -> Result<WindowInfo, NtStatus> {
     let mut info = WindowInfo {
         size: core::mem::size_of::<WindowInfo>() as u32,
         ..WindowInfo::default()

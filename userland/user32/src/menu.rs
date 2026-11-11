@@ -65,7 +65,7 @@ pub fn menu_error(status: NtStatus) -> u32 {
 }
 
 /// The item `item` names in `menu` (MF_BYPOSITION in `flags`), as the kernel answers it.
-fn query(menu: usize, item: u32, flags: u32) -> Result<MenuItemAnswer, NtStatus> {
+pub fn query(menu: usize, item: u32, flags: u32) -> Result<MenuItemAnswer, NtStatus> {
     let mut answer = MenuItemAnswer::EMPTY;
     imports::query_menu(
         menu,

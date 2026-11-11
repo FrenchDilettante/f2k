@@ -883,7 +883,8 @@ mod tests {
     }
 
     /// A window's update region goes with the window; a WM_PAINT is made only for the filter's
-    /// window.
+    /// window. The window under the one destroyed is uncovered: its whole client area is to be
+    /// painted, and only it.
     #[test]
     fn the_update_region_goes_with_the_window() {
         let (m, atom) = manager();
@@ -900,6 +901,11 @@ mod tests {
             .destroy_window_handle(classes, t, h, &mut QueuePump)
             .unwrap();
         deliver(m, t);
+        assert_eq!(
+            update_of(&m.windows, other),
+            Some((rect(0, 0, 320, 200), true))
+        );
+        validate(&mut m.windows, other, None);
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
     }
 
