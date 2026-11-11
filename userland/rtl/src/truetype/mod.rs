@@ -9,13 +9,15 @@
 //! `gasp`), the outlines ([`glyf`]: `loca` and `glyf`, in the units [`scale`] gives) and the
 //! embedded bitmaps ([`embedded`]: `EBLC` and `EBDT`). A glyph at a size, as GetGlyphOutline
 //! answers for it ([`glyph`]), comes from a strike or from its outline, scan-converted by
-//! [`raster`].
+//! [`raster`]. A face whose strikes are all it draws ([`bitmap`]) is realised as a raster font is,
+//! at its strikes' sizes alone.
 //!
 //! A font file is untrusted input: every read is bounded by the slice ([`read`]), and a file that
 //! is truncated, points past its end or nests its composites without end gives an [`Error`],
 //! never a panic or a read outside it. Nothing here allocates: an outline lands in buffers its
 //! caller lends.
 
+pub mod bitmap;
 pub mod cmap;
 pub mod device;
 pub mod directory;

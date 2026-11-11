@@ -869,7 +869,8 @@ fn narrow_into<const N: usize>(bytes: &mut [u8; N], units: &[u16]) {
 }
 
 /// The narrow forms of an enumeration's record: ENUMLOGFONTEXA and NEWTEXTMETRICEXA (its
-/// TEXTMETRICA as GetTextMetricsA's for a TrueType face).
+/// TEXTMETRICA as GetTextMetricsA's: a TrueType face's characters as the ANSI code page sees the
+/// font, a raster font's converted).
 fn narrow_record(record: &FontEnumRecord) -> (EnumLogFontExA, NewTextMetricExA) {
     let mut log_font = EnumLogFontExA::zeroed();
     log_font.log_font = narrow_log_font(&record.log_font.log_font, imports::unicode_to_multi_byte);
@@ -877,9 +878,18 @@ fn narrow_record(record: &FontEnumRecord) -> (EnumLogFontExA, NewTextMetricExA) 
     narrow_into(&mut log_font.style, &record.log_font.style);
     narrow_into(&mut log_font.script, &record.log_font.script);
     let wide = &record.metric.metric;
+    let text_metric = if record.font_type == TRUETYPE_FONTTYPE {
+        narrow_truetype_metric(&wide.text_metric)
+    } else {
+        narrow_text_metric(&wide.text_metric, |unit| {
+            let mut byte = [0u8];
+            imports::unicode_to_multi_byte(&mut byte, &[unit]);
+            byte[0]
+        })
+    };
     let metric = NewTextMetricExA {
         metric: NewTextMetricA {
-            text_metric: narrow_truetype_metric(&wide.text_metric),
+            text_metric,
             flags: wide.flags,
             size_em: wide.size_em,
             cell_height: wide.cell_height,

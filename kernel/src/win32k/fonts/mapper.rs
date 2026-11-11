@@ -1,19 +1,47 @@
 //! The font mapper's rules: which face a LOGFONT's face name asks for, through the face
 //! substitutes Windows 2000 keeps for the dialog faces; the size its height asks for; whether its
-//! weight emboldens the face. The table ([`super::table`]) applies them to the faces loaded.
+//! weight asks for a bold face; and the stock fonts' LOGFONTs. The table ([`super::table`]) applies
+//! them to the faces loaded.
 //!
 //! - A face name is compared without regard to case (ASCII letters).
 //! - "MS Shell Dlg 2" is Tahoma and "MS Shell Dlg" Microsoft Sans Serif, as Windows 2000's
 //!   `...\Windows NT\CurrentVersion\FontSubstitutes` key says (F2K has no registry on disk: a
 //!   built-in list stands in for the key). GetTextFace answers the name asked for, as Windows 2000
 //!   does for a substitute (the capture's "MS Shell Dlg 2" and "MS Shell Dlg"), whether its face is
-//!   loaded or the built-in font stands in for it.
-//! - A name no loaded face has, or none, is the built-in font, F2K's stand-in for the System font
-//!   (the stock fonts stay on it as well): GetTextFace answers "System".
+//!   loaded or another stands in for it.
+//! - A face F2K has no file of may have a stand-in among the faces it has ([`STAND_INS`]):
+//!   Microsoft Sans Serif's is MS Sans Serif, as fonts/README.md says (a flagged deviation). A name
+//!   reached through its stand-in is answered as asked, as Windows answers the face it has.
+//! - Among the faces of a family, a weight of FW_SEMIBOLD or more asks for a bold one (Tahoma Bold
+//!   for Tahoma), the face's own bold rather than one synthesised from the regular face; the
+//!   regular face is emboldened only when the family has no bold face.
+//! - A name no loaded face has, or none, is the System face, the font mapper's default (a LOGFONT
+//!   left zeroed realises as the System font on Windows 2000), unless the request asks for a fixed
+//!   pitch, which the System face is not. With no System face, or for a fixed pitch, it is the
+//!   built-in font, F2K's stand-in for the System font: GetTextFace answers "System".
 //! - A height of 0 asks for the default size: a cell of 16 pixels, the System font's at 96 DPI (an
 //!   assumption: Windows 2000 documents a default without its value).
+//! - The stock fonts are LOGFONTs the mapper realises as any other ([`stock_log_font`]); one whose
+//!   face is not loaded realises as the built-in font, as every stock font did before F2K had faces
+//!   of its own.
 
-use rtl::gdi::LF_FACESIZE;
+use rtl::gdi::{
+    LogFontW,
+    ANSI_CHARSET,
+    ANSI_FIXED_FONT,
+    ANSI_VAR_FONT,
+    DEFAULT_GUI_FONT,
+    DEVICE_DEFAULT_FONT,
+    FF_SWISS,
+    FIXED_PITCH,
+    FW_BOLD,
+    FW_NORMAL,
+    LF_FACESIZE,
+    OEM_FIXED_FONT,
+    SYSTEM_FIXED_FONT,
+    SYSTEM_FONT,
+    VARIABLE_PITCH,
+};
 
 /// The face substitutes: the name asked for, the face it stands for.
 pub const SUBSTITUTES: [(&str, &str); 2] = [
@@ -21,8 +49,14 @@ pub const SUBSTITUTES: [(&str, &str); 2] = [
     ("MS Shell Dlg", "Microsoft Sans Serif"),
 ];
 
+/// The faces F2K stands another in for: the face asked for, the face that answers for it.
+pub const STAND_INS: [(&str, &str); 1] = [("Microsoft Sans Serif", "MS Sans Serif")];
+
 /// The built-in font's face name, as GetTextFace answers it.
 pub const BUILT_IN_FACE: &str = "System";
+
+/// The face a name no loaded face has realises as: the System face.
+pub const DEFAULT_FACE: &str = "System";
 
 /// The LOGFONT height a height of 0 stands for: a cell of 16 pixels.
 pub const DEFAULT_HEIGHT: i32 = 16;
@@ -56,6 +90,25 @@ pub fn substitute(face: &[u16]) -> Option<&'static str> {
         .map(|&(_, target)| target)
 }
 
+/// The face that stands in for `face` when F2K has no file of it.
+pub fn stand_in(face: &[u16]) -> Option<&'static str> {
+    STAND_INS
+        .iter()
+        .find(|(name, _)| names(face, name))
+        .map(|&(_, target)| target)
+}
+
+/// Whether `log_font` asks for a fixed pitch (the default face, the System face, is not one).
+pub fn asks_fixed_pitch(log_font: &LogFontW) -> bool {
+    log_font.pitch_and_family & 0x03 == FIXED_PITCH
+}
+
+/// Whether a weight of `weight` asks for a bold face (FW_SEMIBOLD and up, the weight from which a
+/// lighter face is emboldened).
+pub fn asks_bold(weight: i32) -> bool {
+    weight >= rtl::truetype::metrics::EMBOLDEN_FROM
+}
+
 /// The LOGFONT height the mapper realises for `height`: the default for 0.
 pub fn height(height: i32) -> i32 {
     if height == 0 {
@@ -63,6 +116,37 @@ pub fn height(height: i32) -> i32 {
     } else {
         height
     }
+}
+
+/// The LOGFONT the stock font `index` is (GetStockObject's fonts, as Windows 2000 defines them),
+/// realised through the mapper as a font object's is; none for an index that is no stock font's,
+/// and for the stock fonts F2K has no face for, which stay the built-in font.
+///
+/// - SYSTEM_FONT is the System font: a cell of 16 pixels, bold (the guidc capture's tmHeight of 16
+///   and tmAveCharWidth of 7 through it).
+/// - DEVICE_DEFAULT_FONT is the display's own font, which is the System font on a display.
+/// - DEFAULT_GUI_FONT is "MS Shell Dlg" at 8 points, an em of 11 pixels at 96 DPI (the platform's
+///   documentation of the time calls it MS Sans Serif, the face "MS Shell Dlg" resolves to).
+/// - ANSI_VAR_FONT, the variable-pitch system font of the ANSI character set, is MS Sans Serif at
+///   its 8-point size, a cell of 13 pixels.
+/// - ANSI_FIXED_FONT (Courier), OEM_FIXED_FONT (Terminal, the OEM code page's) and
+///   SYSTEM_FIXED_FONT (Fixedsys) are fixed-pitch raster fonts F2K has no face for: the built-in
+///   font, a fixed-pitch cell of 8 by 16 in code page 437 (the OEM code page), is the closest.
+pub fn stock_log_font(index: u32) -> Option<LogFontW> {
+    let (face, height, weight) = match index {
+        SYSTEM_FONT | DEVICE_DEFAULT_FONT => (DEFAULT_FACE, 16, FW_BOLD),
+        DEFAULT_GUI_FONT => ("MS Shell Dlg", -11, FW_NORMAL),
+        ANSI_VAR_FONT => ("MS Sans Serif", 13, FW_NORMAL),
+        ANSI_FIXED_FONT | OEM_FIXED_FONT | SYSTEM_FIXED_FONT => return None,
+        _ => return None,
+    };
+    let mut log_font = <LogFontW as rtl::pod::Pod>::zeroed();
+    log_font.height = height;
+    log_font.weight = weight;
+    log_font.char_set = ANSI_CHARSET;
+    log_font.pitch_and_family = FF_SWISS | VARIABLE_PITCH;
+    log_font.face_name = FaceName::ascii(face).padded();
+    Some(log_font)
 }
 
 /// A face name, as a face holds it: up to LF_FACESIZE - 1 units (or a full name's 63).
@@ -139,6 +223,35 @@ mod tests {
         );
         assert_eq!(substitute(&wide("Tahoma")), None);
         assert_eq!(substitute(&wide("")), None);
+    }
+
+    /// Microsoft Sans Serif has MS Sans Serif standing in; a bold request is FW_SEMIBOLD and up.
+    #[test]
+    fn stand_ins_and_bold_requests() {
+        assert_eq!(
+            stand_in(&wide("microsoft sans serif")),
+            Some("MS Sans Serif")
+        );
+        assert_eq!(stand_in(&wide("MS Sans Serif")), None);
+        assert!(!asks_bold(0) && !asks_bold(500) && asks_bold(600) && asks_bold(700));
+    }
+
+    /// The stock fonts: System's cell and weight, the dialog face's 8 points, MS Sans Serif for
+    /// the variable-pitch font, and none for the fixed-pitch ones or another object.
+    #[test]
+    fn the_stock_fonts_are_logfonts() {
+        let system = stock_log_font(SYSTEM_FONT).unwrap();
+        assert_eq!((system.height, system.weight), (16, 700));
+        assert_eq!(system.face(), wide("System"));
+        assert_eq!(stock_log_font(DEVICE_DEFAULT_FONT), Some(system));
+        let gui = stock_log_font(DEFAULT_GUI_FONT).unwrap();
+        assert_eq!((gui.height, gui.weight), (-11, 400));
+        assert_eq!(gui.face(), wide("MS Shell Dlg"));
+        let var = stock_log_font(ANSI_VAR_FONT).unwrap();
+        assert_eq!((var.height, var.face()), (13, &wide("MS Sans Serif")[..]));
+        for index in [ANSI_FIXED_FONT, OEM_FIXED_FONT, SYSTEM_FIXED_FONT, 0, 15] {
+            assert_eq!(stock_log_font(index), None, "{index}");
+        }
     }
 
     /// A height of 0 is the default cell; any other is as asked.

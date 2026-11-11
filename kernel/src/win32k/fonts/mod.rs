@@ -16,6 +16,14 @@
 //!   to map a file into, and the pool, 16 MiB, holds a file of a few hundred KiB);
 //! - FR_PRIVATE loads a face for the calling process alone, which it goes with.
 //!
+//! A face with strikes and no outlines (System and MS Sans Serif) is a raster-style face
+//! ([`table`]'s notes): it realises at its nearest strike, its metrics the strike's, and like a
+//! raster font it has no outline metrics (GetOutlineTextMetrics answers 0), no font data
+//! (GDI_ERROR) and no ABC widths; GetGlyphOutline answers its strike's glyphs. An enumeration
+//! reports it as a raster font (RASTER_FONTTYPE), once per strike: what a program enumerating
+//! Windows 2000's own System or MS Sans Serif sees, and what the file is in use, sizes fixed and
+//! nothing to scale, though its container is a TrueType file.
+//!
 //! A font object is the LOGFONT its creation gave (as GetObject answers it). Its handle carries
 //! the font kind above the handle table's handle, as a brush's carries its own
 //! ([`rtl::gdi::object_handle`]), so gdi32 and the DC services tell a font from another object by
@@ -23,8 +31,10 @@
 //! beside it; the DC's text calls realise it each time, through
 //! the mapper, against the faces the calling process sees: a font whose face is gone, or a font
 //! object deleted while selected, realises as the built-in font. (Windows 2000 keeps a deleted
-//! font selected in a DC alive until it is deselected; here the DC's id of it goes stale.) The
-//! stock fonts stay the built-in font ([`super::font`]).
+//! font selected in a DC alive until it is deselected; here the DC's id of it goes stale.) A stock
+//! font realises its LOGFONT ([`mapper::stock_log_font`]) the same way, and is the built-in font
+//! ([`super::font`]) when its face is not loaded or F2K has none for it: a fresh DC's SYSTEM_FONT
+//! is the System face on a volume that carries it, the built-in font otherwise.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -53,7 +63,9 @@
 //!   enumeration's `Index`th face (an [`rtl::gdi::FontEnumRecord`]), STATUS_NO_MORE_ENTRIES past
 //!   the last: the faces named `Face` (every face for a null one) the process sees, in each
 //!   character set they cover (DEFAULT_CHARSET) or in `CharSet`, or once each in its first
-//!   ([`ENUM_FAMILIES`], EnumFontFamilies' enumeration).
+//!   ([`ENUM_FAMILIES`], EnumFontFamilies' enumeration); every face of a family for a name, one per
+//!   family for none; a raster-style face once per strike for a name, as a raster font's sizes are
+//!   each a font.
 //!
 //! A DC that is none is STATUS_INVALID_HANDLE throughout; GetFontData's and GetGlyphOutline's
 //! GDI_ERROR is an answer, as the capture's calls leave the last error untouched.
@@ -63,6 +75,7 @@ pub mod table;
 
 use rtl::gdi::*;
 use rtl::pod::Pod;
+use rtl::truetype::bitmap;
 use rtl::truetype::glyph::GlyphMetrics;
 use rtl::truetype::metrics::{self, Size as MetricSize};
 use rtl::truetype::{Font, Tag};
@@ -79,8 +92,16 @@ use crate::status::*;
 pub const FONT_ACCESS: u32 = 0x000F_0000;
 
 /// The faces the boot loads, by their paths under the volume's root: the list standing in for
-/// `...\CurrentVersion\Fonts` (see the module notes).
-pub const BOOT_FONTS: [&str; 1] = ["WINNT\\Fonts\\tahoma.ttf"];
+/// `...\CurrentVersion\Fonts` (see the module notes). Wine's five faces (fonts/README.md):
+/// Tahoma and Tahoma Bold, MS Sans Serif (standing in for Microsoft Sans Serif too), System and
+/// Marlett.
+pub const BOOT_FONTS: [&str; 5] = [
+    "WINNT\\Fonts\\tahoma.ttf",
+    "WINNT\\Fonts\\tahomabd.ttf",
+    "WINNT\\Fonts\\ms_sans_serif.ttf",
+    "WINNT\\Fonts\\system.ttf",
+    "WINNT\\Fonts\\marlett.ttf",
+];
 
 /// The largest font file a load reads: 4 MiB of the pool.
 pub const MAX_FONT_FILE: u32 = 4 << 20;
@@ -100,6 +121,9 @@ pub const GGO_GLYPH_INDEX: u32 = 0x80;
 const ENUM_OUT_PRECISION: u8 = 3;
 const ENUM_CLIP_PRECISION: u8 = 2;
 const ENUM_QUALITY: u8 = 1;
+/// A raster font's: OUT_STRING_PRECIS, CLIP_STROKE_PRECIS, DRAFT_QUALITY (an assumption: the
+/// capture holds no raster font's).
+const ENUM_RASTER_OUT_PRECISION: u8 = 1;
 
 /// The units, widths or bytes a service copies to or from the caller at a time.
 const CHUNK: usize = 64;
@@ -131,10 +155,12 @@ impl FontObject {
 
 // --- The text a DC draws in a TrueType font ------------------------------------------------------
 
-/// What a DC's selected font is for a text call: the built-in font, or a font object's LOGFONT.
+/// What a DC's selected font is for a text call: the built-in font, a stock font (by its
+/// index), or a font object's LOGFONT.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selected {
     BuiltIn,
+    Stock(u32),
     Font(LogFontW),
 }
 
@@ -146,9 +172,13 @@ pub struct Cell {
 }
 
 impl<B: Storage> FontTable<B> {
-    /// The TEXTMETRICW of the realised font `key` in `char_set`; none when its face is gone.
+    /// The TEXTMETRICW of the realised font `key` in `char_set` (a raster-style face's its
+    /// strike's); none when its face is gone.
     pub fn text_metric(&self, key: Key, char_set: u8) -> Option<TextMetricW> {
         let font = self.face(key.face)?.font()?;
+        if key.raster {
+            return bitmap::text_metric(&font, key.ppem, key.bold, char_set).ok();
+        }
         metrics::text_metric(&font, MetricSize::Em(key.ppem), key.bold, char_set).ok()
     }
 
@@ -235,8 +265,9 @@ pub fn extent<B: Storage>(table: &mut FontTable<B>, key: Key, units: &[u16]) -> 
 }
 
 /// The `index`th face an enumeration of `process`'s faces answers (see NtGdiEnumFontChunk in the
-/// module notes): those named `name` (every one for none), in `char_set` (each it covers for
-/// DEFAULT_CHARSET), or each once in its first character set when `families`.
+/// module notes): those named `name` (every family once for none), in `char_set` (each it covers
+/// for DEFAULT_CHARSET), or each once in its first character set when `families`; a raster-style
+/// face at each of its strikes for a name, at its first for none.
 pub fn enumerated<B: Storage>(
     table: &FontTable<B>,
     process: u16,
@@ -246,9 +277,17 @@ pub fn enumerated<B: Storage>(
     index: usize,
 ) -> Option<FontEnumRecord> {
     let mut seen = 0;
-    for (_, face) in table.visible(process) {
-        if name.is_some_and(|name| !mapper::same_name(face.family.units(), name)) {
-            continue;
+    for (number, (_, face)) in table.visible(process).enumerate() {
+        match name {
+            Some(name) if !mapper::same_name(face.family.units(), name) => continue,
+            // Every family once: its first face.
+            None if table.visible(process).take(number).any(|(_, earlier)| {
+                mapper::same_name(earlier.family.units(), face.family.units())
+            }) =>
+            {
+                continue
+            }
+            _ => {}
         }
         let Some(font) = face.font() else {
             continue;
@@ -256,20 +295,110 @@ pub fn enumerated<B: Storage>(
         let Ok(signature) = metrics::signature(&font) else {
             continue;
         };
-        for (set, script) in metrics::char_sets(&signature) {
-            if !families && char_set != DEFAULT_CHARSET && set != char_set {
-                continue;
+        // The sizes the face is listed at: a TrueType face once (its record's size the
+        // enumeration's own), a raster-style face at each strike for a name, its first for none.
+        let mut strikes = [0u16; MAX_ENUM_STRIKES];
+        let mut count = 1;
+        if face.raster {
+            count = 0;
+            let sizes = bitmap::sizes(&font).into_iter().flatten();
+            for (slot, size) in strikes.iter_mut().zip(sizes) {
+                *slot = size.ppem;
+                count += 1;
             }
-            if seen == index {
-                return enumeration_record(&font, face, signature, set, script);
+            if name.is_none() {
+                count = count.min(1);
             }
-            seen += 1;
-            if families {
-                break;
+        }
+        for &ppem in &strikes[..count] {
+            for (set, script) in metrics::char_sets(&signature) {
+                if !families && char_set != DEFAULT_CHARSET && set != char_set {
+                    continue;
+                }
+                if seen == index {
+                    return if face.raster {
+                        raster_record(&font, face, signature, ppem, set, script)
+                    } else {
+                        enumeration_record(&font, face, signature, set, script)
+                    };
+                }
+                seen += 1;
+                if families {
+                    break;
+                }
             }
         }
     }
     None
+}
+
+/// The most strikes of a raster-style face an enumeration lists.
+const MAX_ENUM_STRIKES: usize = 8;
+
+/// The enumeration's record of the raster-style `face` at its strike of `ppem` pixels per em, in
+/// `char_set` (its script `script`): a raster font's, its LOGFONT the strike's cell and average
+/// width, its NEWTEXTMETRIC's em, cell and average the strike's own pixels (a bitmap's notional
+/// units).
+fn raster_record<B: Storage>(
+    font: &Font,
+    face: &table::Face<B>,
+    signature: FontSignature,
+    ppem: u16,
+    char_set: u8,
+    script: &str,
+) -> Option<FontEnumRecord> {
+    let metric = bitmap::text_metric(font, ppem, false, char_set).ok()?;
+    let mut log_font = LogFontW::zeroed();
+    log_font.height = metric.height;
+    log_font.width = metric.ave_char_width;
+    log_font.weight = metric.weight;
+    log_font.italic = metric.italic;
+    log_font.char_set = char_set;
+    log_font.out_precision = ENUM_RASTER_OUT_PRECISION;
+    log_font.clip_precision = ENUM_CLIP_PRECISION;
+    log_font.quality = ENUM_QUALITY;
+    let pitch = if metric.pitch_and_family & TMPF_FIXED_PITCH != 0 {
+        VARIABLE_PITCH
+    } else {
+        FIXED_PITCH
+    };
+    log_font.pitch_and_family = (metric.pitch_and_family & 0xF0) | pitch;
+    log_font.face_name = face.family.padded();
+    Some(FontEnumRecord {
+        log_font: EnumLogFontExW {
+            log_font,
+            full_name: face.full.padded(),
+            style: face.style.padded(),
+            script: Name::<LF_FACESIZE>::ascii(script).padded(),
+        },
+        metric: NewTextMetricExW {
+            metric: NewTextMetricW {
+                text_metric: metric,
+                flags: style_flags(font),
+                size_em: ppem as u32,
+                cell_height: metric.height as u32,
+                avg_width: metric.ave_char_width as u32,
+            },
+            signature,
+        },
+        font_type: RASTER_FONTTYPE,
+    })
+}
+
+/// NEWTEXTMETRIC's ntmFlags of `font`: its OS/2 selection's italic, bold and regular bits.
+fn style_flags(font: &Font) -> u32 {
+    let selection = font.os2().ok().flatten().map_or(0, |os2| os2.fs_selection);
+    let mut flags = 0;
+    if selection & 0x01 != 0 {
+        flags |= NTM_ITALIC;
+    }
+    if selection & 0x20 != 0 {
+        flags |= NTM_BOLD;
+    }
+    if selection & 0x40 != 0 {
+        flags |= NTM_REGULAR;
+    }
+    flags
 }
 
 /// The enumeration's record of `face` in `char_set` (its script `script`): its metrics at the
@@ -306,17 +435,7 @@ fn enumeration_record<B: Storage>(
     log_font.quality = ENUM_QUALITY;
     log_font.pitch_and_family = metrics::family(os2.as_ref()) | pitch;
     log_font.face_name = face.family.padded();
-    let selection = os2.as_ref().map_or(0, |os2| os2.fs_selection);
-    let mut flags = 0;
-    if selection & 0x01 != 0 {
-        flags |= NTM_ITALIC;
-    }
-    if selection & 0x20 != 0 {
-        flags |= NTM_BOLD;
-    }
-    if selection & 0x40 != 0 {
-        flags |= NTM_REGULAR;
-    }
+    let flags = style_flags(font);
     let (ascent, descent) = match &os2 {
         Some(os2) => (os2.us_win_ascent as u32, os2.us_win_descent as u32),
         None => (
@@ -503,9 +622,13 @@ pub fn get_outline_text_metrics_internal_w(
     buffer: UserAddr,
     out: UserPtr<u32>,
 ) -> NtResult {
-    let Realization::TrueType { key, char_set, .. } = realize(call, dc)? else {
-        out.write(0)?;
-        return Ok(STATUS_SUCCESS);
+    let (key, char_set) = match realize(call, dc)? {
+        Realization::TrueType { key, char_set, .. } if !key.raster => (key, char_set),
+        // The built-in font and a raster-style face have no outlines.
+        _ => {
+            out.write(0)?;
+            return Ok(STATUS_SUCCESS);
+        }
     };
     let (metric, names) = with_table(|table| outline_metric(table, key, char_set))
         .flatten()
@@ -580,8 +703,11 @@ pub fn get_char_abc_widths_w(
     abc: UserAddr,
 ) -> NtResult {
     const ABCS: usize = 32;
-    let Realization::TrueType { key, .. } = realize(call, dc)? else {
-        return Err(STATUS_INVALID_PARAMETER);
+    // GetCharABCWidths works only with TrueType fonts: the built-in font and a raster-style face
+    // have none.
+    let key = match realize(call, dc)? {
+        Realization::TrueType { key, .. } if !key.raster => key,
+        _ => return Err(STATUS_INVALID_PARAMETER),
     };
     let mut buffer = [0u16; ABCS];
     let mut answers = [Abc::default(); ABCS];
@@ -619,9 +745,13 @@ pub fn get_font_data(
     count: u32,
     out: UserPtr<u32>,
 ) -> NtResult {
-    let Realization::TrueType { key, .. } = realize(call, dc)? else {
-        out.write(GDI_ERROR)?;
-        return Ok(STATUS_SUCCESS);
+    // A raster font has no tables to read (the capture's stock SYSTEM_FONT answers GDI_ERROR).
+    let key = match realize(call, dc)? {
+        Realization::TrueType { key, .. } if !key.raster => key,
+        _ => {
+            out.write(GDI_ERROR)?;
+            return Ok(STATUS_SUCCESS);
+        }
     };
     let available = with_table(|table| {
         let face = table.face(key.face)?;
@@ -787,6 +917,18 @@ pub fn realize_selected(call: &mut NtCall, dc: &Dc) -> Realization {
     };
     match selected(dc) {
         Selected::BuiltIn => built_in,
+        Selected::Stock(index) => {
+            // A stock font whose face is not loaded, or which F2K has no face for, is the built-in
+            // font (see the module notes).
+            let Some(log_font) = mapper::stock_log_font(index) else {
+                return built_in;
+            };
+            let process = process_index(call);
+            match with_table(|table| table.map(&log_font, process)) {
+                Some(found @ Realization::TrueType { .. }) => found,
+                _ => built_in,
+            }
+        }
         Selected::Font(log_font) => {
             let process = process_index(call);
             with_table(|table| table.map(&log_font, process)).unwrap_or(built_in)
@@ -868,13 +1010,17 @@ mod target {
         call.process().object().index
     }
 
-    /// The selected font of the DC state `dc`.
+    /// The selected font of the DC state `dc`: its font object's LOGFONT, its stock font, or the
+    /// built-in font for a font object that is gone.
     pub fn selected(dc: &Dc) -> Selected {
-        dc.font_object
-            .and_then(|id| {
-                crate::ob::locked(|directory| directory.font(id).map(|font| font.log_font))
-            })
-            .map_or(Selected::BuiltIn, Selected::Font)
+        if let Some(id) = dc.font_object {
+            return crate::ob::locked(|directory| directory.font(id).map(|font| font.log_font))
+                .map_or(Selected::BuiltIn, Selected::Font);
+        }
+        match stock_object(dc.font) {
+            Some((index, OBJ_FONT)) => Selected::Stock(index),
+            _ => Selected::BuiltIn,
+        }
     }
 
     /// The DC `handle` names, its state as it is now.

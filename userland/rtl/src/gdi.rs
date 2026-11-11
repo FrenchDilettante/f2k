@@ -405,6 +405,8 @@ pub const FF_MODERN: u8 = 0x30;
 pub const FF_SCRIPT: u8 = 0x40;
 pub const FF_DECORATIVE: u8 = 0x50;
 
+/// EnumFontFamilies' FontType for a raster font.
+pub const RASTER_FONTTYPE: u32 = 0x0001;
 /// EnumFontFamilies' FontType for a TrueType font.
 pub const TRUETYPE_FONTTYPE: u32 = 0x0004;
 /// NEWTEXTMETRIC's ntmFlags: an italic face, a bold one, a regular one.

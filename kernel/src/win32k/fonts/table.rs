@@ -8,6 +8,11 @@
 //! (an outline's points and contour ends, a scan line's crossings) are the table's own, as it is a
 //! static's, never a stack's.
 //!
+//! A face whose strikes are all it draws ([`rtl::truetype::bitmap`]: Wine's System and MS Sans
+//! Serif) is a raster-style one, realised as Windows 2000 realises a raster font: at the strike
+//! nearest the height asked for, never scaled, a glyph its strike lacks drawn as the strike's
+//! missing glyph.
+//!
 //! A realised font is a face at an em size, emboldened or not. Its cache is direct-mapped: a glyph
 //! goes to the slot its index picks, its GLYPHMETRICS and its GGO_BITMAP rows there, displacing
 //! whatever glyph was in it. A glyph whose rows do not fit a slot is rendered each time it is
@@ -20,6 +25,7 @@
 
 use rtl::gdi::{LogFontW, FW_NORMAL};
 use rtl::pod::Pod;
+use rtl::truetype::bitmap;
 use rtl::truetype::glyf::Point;
 use rtl::truetype::glyph::{self, GlyphMetrics, Options, Rendered, Workspace};
 use rtl::truetype::metrics::{self, emboldens};
@@ -78,13 +84,16 @@ impl Owner {
 }
 
 /// A loaded face: its file's bytes, where the file is, whom it is loaded for and how many loads
-/// hold it, and its names (from its naming table: the family, the style, the full name, the
-/// unique name; OUTLINETEXTMETRIC's face name is the full one, its "full" name the unique one).
+/// hold it, its names (from its naming table: the family, the style, the full name, the unique
+/// name; OUTLINETEXTMETRIC's face name is the full one, its "full" name the unique one), its own
+/// weight, and whether it is a raster-style face (see the module notes).
 pub struct Face<B> {
     file: B,
     identity: FileIdentity,
     owner: Owner,
     loads: u32,
+    pub weight: i32,
+    pub raster: bool,
     pub family: FaceName,
     pub style: FaceName,
     pub full: Name<64>,
@@ -111,12 +120,15 @@ pub struct FaceId {
     generation: u16,
 }
 
-/// A font realised at a size: its face, its em, whether it is emboldened.
+/// A font realised at a size: its face, its em, whether it is emboldened, and whether its face is
+/// a raster-style one (its em one of its strikes'; it has no outline metrics, no font data and no
+/// ABC widths, as a raster font has none).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Key {
     pub face: FaceId,
     pub ppem: u16,
     pub bold: bool,
+    pub raster: bool,
 }
 
 /// What a LOGFONT realises to for a process: a TrueType face at a size, or the built-in font; and
@@ -264,8 +276,9 @@ impl<B: Storage> FontTable<B> {
         if self.load_again(identity, owner) {
             return Ok(1);
         }
-        let (family, style, full, unique) = {
+        let (family, style, full, unique, weight, raster) = {
             let font = Font::new(file.as_ref()).map_err(|_| AddError::NotAFont)?;
+            let os2 = font.os2().ok().flatten();
             let names = font.name().ok().flatten();
             let read = |id: u16| {
                 names
@@ -283,6 +296,8 @@ impl<B: Storage> FontTable<B> {
                 }),
                 Name::of(full.utf16()),
                 Name::of(unique.utf16()),
+                metrics::weight(&font, os2.as_ref()),
+                bitmap::is_bitmap_only(&font),
             )
         };
         let slot = self
@@ -296,6 +311,8 @@ impl<B: Storage> FontTable<B> {
             identity,
             owner,
             loads: 1,
+            weight,
+            raster,
             family,
             style,
             full,
@@ -348,17 +365,23 @@ impl<B: Storage> FontTable<B> {
         }
     }
 
-    /// The loaded face named `name` (its family name) that `process` sees.
-    pub fn find(&self, name: &[u16], process: u16) -> Option<FaceId> {
-        self.faces.iter().enumerate().find_map(|(slot, face)| {
-            let face = face.as_ref()?;
-            (face.owner.sees(process) && mapper::same_name(face.family.units(), name)).then_some(
-                FaceId {
-                    slot: slot as u8,
-                    generation: self.generations[slot],
-                },
-            )
-        })
+    /// The face of the family `name` that `process` sees for a request of `weight`: a bold one
+    /// (its own weight FW_SEMIBOLD or more) for a bold request, a lighter one for another, when
+    /// the family has one; else its first face.
+    pub fn find(&self, name: &[u16], process: u16, weight: i32) -> Option<FaceId> {
+        let bold = mapper::asks_bold(weight);
+        let mut family = self
+            .visible(process)
+            .filter(|(_, face)| mapper::same_name(face.family.units(), name));
+        let (first, face) = family.next()?;
+        if mapper::asks_bold(face.weight) == bold {
+            return Some(first);
+        }
+        Some(
+            family
+                .find(|(_, face)| mapper::asks_bold(face.weight) == bold)
+                .map_or(first, |(id, _)| id),
+        )
     }
 
     /// The faces `process` sees, in the table's order.
@@ -379,53 +402,73 @@ impl<B: Storage> FontTable<B> {
     }
 
     /// What `log_font` realises to for `process` (see [`super::mapper`]): the face its name asks
-    /// for (through a substitute), at the em its height asks for, emboldened when its weight
-    /// asks a lighter face for bold; the built-in font for a name no face of the process's has.
+    /// for (through a substitute or a stand-in), of the style its weight asks for, at the em its
+    /// height asks for (a raster-style face's nearest strike), emboldened when its weight asks a
+    /// lighter face for bold; for a name no face of the process's has, the default face, or the
+    /// built-in font.
     pub fn map(&self, log_font: &LogFontW, process: u16) -> Realization {
         let asked = log_font.face();
-        let substitute = mapper::substitute(asked);
-        let found = match substitute {
-            Some(target) => {
-                let target = FaceName::ascii(target);
-                self.find(target.units(), process)
-            }
-            None => self.find(asked, process),
-        };
-        let Some(id) = found else {
-            // A substitute's name is answered as asked, whatever face it reaches.
-            let name = match substitute {
-                Some(_) => FaceName::of(asked.iter().copied()),
-                None => FaceName::ascii(mapper::BUILT_IN_FACE),
-            };
-            return Realization::BuiltIn { name };
-        };
-        let face = self.face(id).expect("a face just found");
-        let built_in = Realization::BuiltIn {
-            name: FaceName::ascii(mapper::BUILT_IN_FACE),
-        };
-        let Some(font) = face.font() else {
-            return built_in;
-        };
-        let Ok(ppem) = glyph::ppem_for_height(&font, mapper::height(log_font.height)) else {
-            return built_in;
-        };
-        let os2 = font.os2().ok().flatten();
         let weight = if log_font.weight == 0 {
             FW_NORMAL
         } else {
             log_font.weight
         };
+        let substitute = mapper::substitute(asked);
+        let target = substitute.map_or(FaceName::of(asked.iter().copied()), FaceName::ascii);
+        let mut found = self.find(target.units(), process, weight);
+        let mut stood_in = false;
+        if found.is_none() {
+            if let Some(stand_in) = mapper::stand_in(target.units()) {
+                found = self.find(FaceName::ascii(stand_in).units(), process, weight);
+                stood_in = found.is_some();
+            }
+        }
+        // A substitute's name, or a stand-in's, is answered as asked, whatever face it reaches.
+        let as_asked = substitute.is_some() || stood_in;
+        let built_in = Realization::BuiltIn {
+            name: if substitute.is_some() {
+                FaceName::of(asked.iter().copied())
+            } else {
+                FaceName::ascii(mapper::BUILT_IN_FACE)
+            },
+        };
+        let found = found.or_else(|| {
+            if mapper::asks_fixed_pitch(log_font) {
+                return None;
+            }
+            let default = FaceName::ascii(mapper::DEFAULT_FACE);
+            self.find(default.units(), process, weight)
+        });
+        let Some(id) = found else {
+            return built_in;
+        };
+        let face = self.face(id).expect("a face just found");
+        let Some(font) = face.font() else {
+            return built_in;
+        };
+        let height = mapper::height(log_font.height);
+        let ppem = if face.raster {
+            bitmap::strike_for_height(&font, height).ok().flatten()
+        } else {
+            glyph::ppem_for_height(&font, height).ok()
+        };
+        let Some(ppem) = ppem else {
+            return built_in;
+        };
+        let os2 = font.os2().ok().flatten();
         let signature = metrics::signature(&font).unwrap_or_default();
         Realization::TrueType {
             key: Key {
                 face: id,
                 ppem: ppem.max(1),
                 bold: emboldens(&font, os2.as_ref(), weight),
+                raster: face.raster,
             },
             char_set: metrics::realised_char_set(&signature, log_font.char_set),
-            name: match substitute {
-                Some(_) => FaceName::of(asked.iter().copied()),
-                None => face.family,
+            name: if as_asked {
+                FaceName::of(asked.iter().copied())
+            } else {
+                face.family
             },
         }
     }
@@ -581,6 +624,9 @@ fn render(
         glyph
     };
     let options = Options::new(key.ppem);
+    // A raster-style face draws its strike alone: a glyph the strike lacks is its missing glyph.
+    let missing = key.raster && !matches!(glyph::strike_glyph(font, glyph, key.ppem), Ok(Some(_)));
+    let glyph = if missing { 0 } else { glyph };
     if !key.bold {
         return glyph::render(font, glyph, &options, workspace, out);
     }
@@ -659,23 +705,23 @@ mod tests {
         let mut table = table();
         assert_eq!(table.add(fixture_font(), FILE, Owner::Private(5)), Ok(1));
         assert!(table.load_again(FILE, Owner::Private(5)));
-        assert!(table.find(&wide("f2k tahoma"), 5).is_some());
+        assert!(table.find(&wide("f2k tahoma"), 5, FW_NORMAL).is_some());
         assert!(
-            table.find(&wide("F2K Tahoma"), 6).is_none(),
+            table.find(&wide("F2K Tahoma"), 6, FW_NORMAL).is_none(),
             "another process's"
         );
         assert!(table.remove(FILE, Owner::Private(5)));
         assert!(
-            table.find(&wide("F2K Tahoma"), 5).is_some(),
+            table.find(&wide("F2K Tahoma"), 5, FW_NORMAL).is_some(),
             "one load left"
         );
         assert!(table.remove(FILE, Owner::Private(5)));
         assert!(!table.remove(FILE, Owner::Private(5)), "gone");
-        assert!(table.find(&wide("F2K Tahoma"), 5).is_none());
+        assert!(table.find(&wide("F2K Tahoma"), 5, FW_NORMAL).is_none());
         assert!(!table.remove(FILE, Owner::Public), "never loaded publicly");
 
         assert_eq!(table.add(fixture_font(), FILE, Owner::Public), Ok(1));
-        let id = table.find(&wide("F2K Tahoma"), 9).unwrap();
+        let id = table.find(&wide("F2K Tahoma"), 9, FW_NORMAL).unwrap();
         let face = table.face(id).unwrap();
         assert_eq!(face.style.units(), wide("Regular"));
         assert_eq!(face.full.units(), wide("F2K Tahoma"));
@@ -710,10 +756,10 @@ mod tests {
                 .all(|realized| realized.cache.is_none()),
             "the caches go with a process's end"
         );
-        assert!(table.find(&wide("F2K Tahoma"), 5).is_some());
+        assert!(table.find(&wide("F2K Tahoma"), 5, FW_NORMAL).is_some());
         table.end_process(5);
-        assert!(table.find(&wide("F2K Tahoma"), 5).is_none());
-        assert!(table.find(&wide("Tahoma"), 5).is_some());
+        assert!(table.find(&wide("F2K Tahoma"), 5, FW_NORMAL).is_none());
+        assert!(table.find(&wide("Tahoma"), 5, FW_NORMAL).is_some());
     }
 
     /// The mapper: the face's own name at its em, a bold request emboldened; the dialog face's
