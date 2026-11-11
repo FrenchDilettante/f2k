@@ -23,7 +23,7 @@ if not "%~1"=="" goto some
 
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +52,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -935,6 +935,17 @@ call :stamp cxxeh.cpp
 cl /nologo /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxeh.cpp
 if errorlevel 1 (echo build.bat: cxxeh failed & exit /b 1)
 del cxxeh.obj
+cd ..\..
+goto :eof
+
+rem wmain's main is wmain: the linker picks wmainCRTStartup.
+:wmain
+echo === wmain
+cd crt\wmain
+call :stamp wmain.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wmain.c
+if errorlevel 1 (echo build.bat: wmain failed & exit /b 1)
+del wmain.obj
 cd ..\..
 goto :eof
 
