@@ -35,10 +35,21 @@ pub const NORMALIZED: u32 = rtl::params::NORMALIZED;
 
 /// The room of a path string: MAX_PATH characters.
 pub const PATH_ROOM: u32 = 2 * 260;
+/// The desktop a boot's program starts on: the interactive window station's Default desktop, as
+/// a program its console's shell launches finds it (GetStartupInfo's lpDesktop).
+pub const DESKTOP: &[u8] = b"WinSta0\\Default";
+/// The desktop string's room: its characters and a terminator, dword-rounded.
+pub const DESKTOP_ROOM: u32 = (2 * (DESKTOP.len() as u32 + 1)).next_multiple_of(4);
+/// The shell information's room: an empty string's terminator, dword-rounded.
+pub const SHELL_INFO_ROOM: u32 = 4;
 /// Where the block's strings sit on the pages, from the block: the current directory, the image's
-/// path, and (on the second page) the command line.
+/// path, the window title, the desktop and the shell information, and (on the second page) the
+/// command line.
 pub const CURRENT_DIRECTORY_BUFFER: u32 = SIZE;
 pub const IMAGE_PATH_BUFFER: u32 = CURRENT_DIRECTORY_BUFFER + PATH_ROOM;
+pub const WINDOW_TITLE_BUFFER: u32 = IMAGE_PATH_BUFFER + PATH_ROOM;
+pub const DESKTOP_BUFFER: u32 = WINDOW_TITLE_BUFFER + PATH_ROOM;
+pub const SHELL_INFO_BUFFER: u32 = DESKTOP_BUFFER + DESKTOP_ROOM;
 pub const COMMAND_LINE_BUFFER: u32 = 0x1000;
 /// The command line's room: twice the narrow command line's.
 pub const COMMAND_LINE_ROOM: u32 = 0x800;
@@ -124,10 +135,12 @@ pub fn widen(text: &[u8], out: &mut [u8]) -> usize {
 pub struct Header {
     /// The block's address (its strings follow it).
     pub base: u32,
-    /// The bytes of the command line, the image's path and the current directory, in UTF-16.
+    /// The bytes of the command line, the image's path, the current directory and the window
+    /// title, in UTF-16.
     pub command_line: u32,
     pub image_path: u32,
     pub current_directory: u32,
+    pub window_title: u32,
     /// The environment block's address.
     pub environment: u32,
     /// The standard input, output and error handles.
@@ -137,9 +150,11 @@ pub struct Header {
 /// The block: normalized, its strings' buffers on its pages, the standard handles and the
 /// environment block's address, and the startup values the capture's STARTUPINFOA shows
 /// (GetStartupInfoA copies them out): the window one line down (StartingY 1), 100 by 100, shown
-/// normally (SW_SHOWNORMAL), no STARTF_* flags; no title, desktop, shell information or runtime
-/// data, and no DLL search path (the loader has none to give). The current directory has no
-/// handle: ntdll's process start opens it.
+/// normally (SW_SHOWNORMAL), no STARTF_* flags. The strings are those a program its console's shell
+/// launches gets from CreateProcess: the window title its image's path (no title asked), the
+/// desktop [`DESKTOP`] (its creator's), the shell information empty but present (none given); no
+/// runtime data, and no DLL search path (the loader has none to give). The current directory has
+/// no handle: ntdll's process start opens it.
 pub fn header(fields: &Header) -> ProcessParameters<u32> {
     let total = COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM;
     ProcessParameters {
@@ -168,6 +183,17 @@ pub fn header(fields: &Header) -> ProcessParameters<u32> {
             fields.base + COMMAND_LINE_BUFFER,
         ),
         environment: fields.environment,
+        window_title: unicode_string(
+            fields.window_title,
+            PATH_ROOM,
+            fields.base + WINDOW_TITLE_BUFFER,
+        ),
+        desktop_info: unicode_string(
+            2 * DESKTOP.len() as u32,
+            DESKTOP_ROOM,
+            fields.base + DESKTOP_BUFFER,
+        ),
+        shell_info: unicode_string(0, SHELL_INFO_ROOM, fields.base + SHELL_INFO_BUFFER),
         starting_y: 1,
         count_x: 100,
         count_y: 100,
@@ -204,8 +230,8 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `process`'s address space (the
 /// current one) and write the block: the command line, the image's Win32 path (from its volume
-/// path `module`), the current directory (the image's own), the standard handles and the
-/// environment block's address. The environment block's region is mapped too, the starting
+/// path `module`, its window title too), the current directory (the image's own), the desktop, the
+/// standard handles and the environment block's address. The environment block's region is mapped too, the starting
 /// variables written at its start. The pages are mapped in one hold of the address space, and
 /// written once it is released.
 #[cfg(target_arch = "x86")]
@@ -241,6 +267,7 @@ pub fn map(process: &crate::process::Process, command_line: &[u8], module: &[u8]
     let _ = write_user(base + COMMAND_LINE_BUFFER, &wide[..command_line_bytes]);
     let image_path_bytes = widen(&name[..name_length], &mut wide[..PATH_ROOM as usize - 2]);
     let _ = write_user(base + IMAGE_PATH_BUFFER, &wide[..image_path_bytes]);
+    let _ = write_user(base + WINDOW_TITLE_BUFFER, &wide[..image_path_bytes]);
     let mut directory = [0u8; MODULE_ROOM];
     let directory_length = starting_directory(&name[..name_length], &mut directory);
     let current_directory_bytes = widen(
@@ -251,11 +278,14 @@ pub fn map(process: &crate::process::Process, command_line: &[u8], module: &[u8]
         base + CURRENT_DIRECTORY_BUFFER,
         &wide[..current_directory_bytes],
     );
+    let desktop_bytes = widen(DESKTOP, &mut wide[..DESKTOP_ROOM as usize - 2]);
+    let _ = write_user(base + DESKTOP_BUFFER, &wide[..desktop_bytes]);
     let block = header(&Header {
         base,
         command_line: command_line_bytes as u32,
         image_path: image_path_bytes as u32,
         current_directory: current_directory_bytes as u32,
+        window_title: image_path_bytes as u32,
         environment: ENVIRONMENT_BLOCK,
         standard: [STD_INPUT, STD_OUTPUT, STD_ERROR],
     });
@@ -286,6 +316,7 @@ mod tests {
             command_line: 8,
             image_path: 22,
             current_directory: 6,
+            window_title: 22,
             environment: ENVIRONMENT_BLOCK,
             standard: [3, 7, 11],
         });
@@ -321,14 +352,22 @@ mod tests {
             .map(|word| u32::from_le_bytes(word.try_into().unwrap()))
             .collect();
         assert_eq!(startup, [0, 1, 100, 100, 0, 0, 0, 0, 1]);
-        for string in [
-            block.window_title,
-            block.desktop_info,
-            block.shell_info,
-            block.runtime_data,
-        ] {
-            assert_eq!(string, UnicodeString::default(), "none");
-        }
+        assert_eq!(
+            (block.window_title.length, block.window_title.buffer),
+            (22, base + WINDOW_TITLE_BUFFER),
+            "the image's path"
+        );
+        assert_eq!(
+            (block.desktop_info.length, block.desktop_info.buffer),
+            (30, base + DESKTOP_BUFFER),
+            "WinSta0\\Default"
+        );
+        assert_eq!(
+            (block.shell_info.length, block.shell_info.buffer),
+            (0, base + SHELL_INFO_BUFFER),
+            "empty, with a buffer"
+        );
+        assert_eq!(block.runtime_data, UnicodeString::default(), "none");
         // Nothing else: the remaining words are zero, the drive table included.
         let blank = ProcessParameters {
             maximum_length: block.maximum_length,
@@ -341,6 +380,9 @@ mod tests {
             image_path_name: block.image_path_name,
             command_line: block.command_line,
             environment: block.environment,
+            window_title: block.window_title,
+            desktop_info: block.desktop_info,
+            shell_info: block.shell_info,
             starting_y: 1,
             count_x: 100,
             count_y: 100,
@@ -368,7 +410,8 @@ mod tests {
     /// 2000's 0x00010000 and 0x00020000).
     #[test]
     fn the_pages_hold_everything_apart() {
-        assert!(IMAGE_PATH_BUFFER + PATH_ROOM <= COMMAND_LINE_BUFFER);
+        assert!(IMAGE_PATH_BUFFER + PATH_ROOM <= WINDOW_TITLE_BUFFER);
+        assert!(SHELL_INFO_BUFFER + SHELL_INFO_ROOM <= COMMAND_LINE_BUFFER);
         assert!(COMMAND_LINE_BUFFER + COMMAND_LINE_ROOM <= PAGES * 0x1000);
         assert!(ENVIRONMENT_BLOCK + ENVIRONMENT_BLOCK_PAGES * 0x1000 <= crate::user::PARAMS_PAGE);
         assert_eq!(

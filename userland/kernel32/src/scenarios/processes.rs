@@ -1226,6 +1226,11 @@ fn create_process_a_converts_and_creates() {
     assert_eq!(made.command_line.as_deref(), Some("spawnkid args \u{20AC}"));
     assert_eq!(made.window_title.as_deref(), Some("t\u{20AC}"));
     assert_eq!(
+        made.shell_info.as_deref(),
+        Some(""),
+        "no lpReserved: an empty string"
+    );
+    assert_eq!(
         made.current_directory.as_deref(),
         Some("C:\\CORPUS\\SCRATCH")
     );

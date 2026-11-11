@@ -649,7 +649,9 @@ fn push_parameters(
         desktop_info: startup
             .desktop
             .or((!own_desktop.is_empty()).then_some(own_desktop)),
-        shell_info: startup.reserved,
+        // The shell information always: empty when lpReserved is NULL, so the child's own
+        // GetStartupInfo finds a string there, as a Windows 2000 child does.
+        shell_info: Some(startup.reserved.unwrap_or_default()),
         runtime_data: startup.runtime_data,
     })
     .map_err(Failure::Status)?;
