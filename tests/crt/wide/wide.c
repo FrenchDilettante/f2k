@@ -55,6 +55,25 @@
  *            IST-5:30 and NST3:30NDT. The time zone is the one the section sets
  *            itself (TZ, through _putenv, then _tzset), never the
  *            machine's, and every time_t is a fixed value
+ *   wcstok   tokens and the buffer wcstok leaves: blanks and runs of
+ *            delimiters, an empty delimiter set, only delimiters, an
+ *            empty string, delimiters changed between calls, delimiters
+ *            outside ASCII; a second string started between calls; another
+ *            thread tokenizing between two calls (each thread's own
+ *            position)
+ *   wcstod   the double's bits, the end pointer as an offset and errno:
+ *            signs, blanks, exponents (e, E, d, D, incomplete), "." and
+ *            "-" alone, the empty string, hex, inf and nan (not parsed),
+ *            a comma (the "C" locale), 30 digits, overflow, underflow,
+ *            the denormal and normal limits, digits outside ASCII and a
+ *            no-break space; a NULL end pointer
+ *   wcsftime every conversion (%a to %Z, %z, %%) and the # flag over
+ *            fixed struct tm values under TZ=PST8PDT (the section sets it)
+ *            in the "C" locale, plain text, an empty format; buffers that
+ *            fit exactly, a unit short, of 1 and of 0
+ *
+ * wcstok, wcstod and wcsftime are reached through GetProcAddress on
+ * msvcrt.dll, so the program still loads where the DLL lacks them.
  *
  * The character class functions are called as (iswalpha)(c): MSVC 6's
  * headers define them as macros over iswctype, and cmd.exe imports them
@@ -901,6 +920,270 @@ static void sec_calendar(void)
     show_localtime(978307199);
 }
 
+/* --- wcstok -------------------------------------------------------- */
+
+/* wcstok, wcstod and wcsftime are reached through GetProcAddress on
+ * msvcrt.dll (cdecl, as its headers declare them): the program loads
+ * where the DLL lacks them, its other sections intact. */
+typedef wchar_t *(__cdecl *wcstok_fn)(wchar_t *string, const wchar_t *delimiters);
+typedef double (__cdecl *wcstod_fn)(const wchar_t *string, wchar_t **end);
+typedef size_t (__cdecl *wcsftime_fn)(wchar_t *buffer, size_t size, const wchar_t *format, const struct tm *t);
+
+static wcstok_fn p_wcstok;
+static wcstod_fn p_wcstod;
+static wcsftime_fn p_wcsftime;
+
+/* An msvcrt.dll export's address, printed as found or not. */
+static FARPROC crt_export(const char *name)
+{
+    FARPROC fp = GetProcAddress(GetModuleHandleA("msvcrt.dll"), name);
+
+    line("msvcrt exports %s: %s", name, yesno(fp != NULL));
+    return fp;
+}
+
+/* wcstok over a copy of `src`: each token as its offset into the copy
+ * and its text, the delimiters `later` (NULL: the same) from the second
+ * call on; then the copy as wcstok left it, every unit up to its old
+ * terminator. */
+static void show_tokens(const WCHAR *src, const WCHAR *delims, const WCHAR *later)
+{
+    WCHAR buf[64];
+    WCHAR *t;
+    int len = (int)wcslen(src);
+    int n = 0;
+
+    copy_w(buf, src);
+    t = p_wcstok(buf, delims);
+    line("wcstok(\"%s\", \"%s\"%s%s%s):", wq(src, -1), wq(delims, -1), later != NULL ? ", then \"" : "",
+         later != NULL ? wq(later, -1) : "", later != NULL ? "\"" : "");
+    while (t != NULL && n < 20) {
+        line("  token %d at %s: \"%s\"", n, offset(buf, t), wq(t, -1));
+        n++;
+        t = p_wcstok(NULL, later != NULL ? later : delims);
+    }
+    line("  then NULL; the buffer after: \"%s\"", wq(buf, len));
+}
+
+static WCHAR thread_buf[32];
+static const char *thread_tokens[4];
+static char thread_text[4][32];
+
+static DWORD WINAPI tokenizing_thread(LPVOID param)
+{
+    WCHAR *t;
+    int n = 0;
+
+    (void)param;
+    copy_w(thread_buf, L"p q r");
+    for (t = p_wcstok(thread_buf, L" "); t != NULL && n < 4; t = p_wcstok(NULL, L" ")) {
+        sprintf(thread_text[n], "%s", wq(t, -1));
+        thread_tokens[n] = thread_text[n];
+        n++;
+    }
+    return (DWORD)n;
+}
+
+static void sec_wcstok(void)
+{
+    static const WCHAR odd_delims[] = { 0x00E9, 0x3000, 0 };
+    static const WCHAR odd_text[] = { 'x', 0x00E9, 'y', 0x3000, 0x3000, 'z', 0x00E9, 0 };
+    WCHAR one[32];
+    WCHAR two[32];
+    WCHAR *t;
+    HANDLE h;
+    DWORD count = 0;
+
+    p_wcstok = (wcstok_fn)crt_export("wcstok");
+    if (p_wcstok == NULL) {
+        return;
+    }
+    show_tokens(L"  a,b;;c d,", L" ,;", NULL);
+    show_tokens(L"abc", L"", NULL);
+    show_tokens(L",,,", L",", NULL);
+    show_tokens(L"", L",", NULL);
+    show_tokens(L"a,b c,d e", L",", L" ");
+    show_tokens(L"no delimiters here", L",;", NULL);
+    show_tokens(odd_text, odd_delims, NULL);
+
+    /* Two strings in turn: the second call starts over, NULL continues it. */
+    copy_w(one, L"1 2 3");
+    copy_w(two, L"x-y-z");
+    t = p_wcstok(one, L" ");
+    line("wcstok(\"1 2 3\", \" \"): \"%s\"", wq(t, -1));
+    t = p_wcstok(two, L"-");
+    line("wcstok(\"x-y-z\", \"-\"): \"%s\"", wq(t, -1));
+    t = p_wcstok(NULL, L"-");
+    line("wcstok(NULL, \"-\"): \"%s\" (the second string's)", t != NULL ? wq(t, -1) : "NULL");
+
+    /* Each thread's own position: a thread tokenizes between two calls. */
+    copy_w(one, L"m n o");
+    t = p_wcstok(one, L" ");
+    line("wcstok(\"m n o\", \" \"): \"%s\"", wq(t, -1));
+    h = CreateThread(NULL, 0, tokenizing_thread, NULL, 0, NULL);
+    if (h != NULL) {
+        WaitForSingleObject(h, WAIT_MS);
+        GetExitCodeThread(h, &count);
+        CloseHandle(h);
+    }
+    line("another thread's wcstok over \"p q r\": %lu tokens, the first \"%s\", the last \"%s\"", count,
+         count > 0 ? thread_tokens[0] : "-", count > 0 ? thread_tokens[count - 1] : "-");
+    t = p_wcstok(NULL, L" ");
+    line("then wcstok(NULL, \" \") in this thread: \"%s\"", t != NULL ? wq(t, -1) : "NULL");
+}
+
+/* --- wcstod -------------------------------------------------------- */
+
+/* wcstod of `s`: the double's bits, the end pointer as an offset, errno;
+ * the end pointer NULL too when `null_end`. */
+static void show_wcstod(const WCHAR *s)
+{
+    WCHAR *end = NULL;
+    double d;
+    DWORD halves[2];
+    int e;
+
+    errno = 0;
+    d = p_wcstod(s, &end);
+    e = errno;
+    memcpy(halves, &d, sizeof halves);
+    line("wcstod(\"%s\"): bits 0x%08lX%08lX end %s errno %d", wq(s, -1), halves[1], halves[0], offset(s, end), e);
+}
+
+static void sec_wcstod(void)
+{
+    static const WCHAR fullwidth[] = { 0xFF11, '.', '5', 0 };
+    static const WCHAR arabic[] = { 0x0661, 0 };
+    static const WCHAR nbsp[] = { 0x00A0, '7', 0 };
+    double d;
+    DWORD halves[2];
+
+    p_wcstod = (wcstod_fn)crt_export("wcstod");
+    if (p_wcstod == NULL) {
+        return;
+    }
+    show_wcstod(L"1.5");
+    show_wcstod(L"  -2.5e3xyz");
+    show_wcstod(L"+.5");
+    show_wcstod(L"5.");
+    show_wcstod(L".");
+    show_wcstod(L"-");
+    show_wcstod(L"");
+    show_wcstod(L"   ");
+    show_wcstod(L"\t\n 7");
+    show_wcstod(L"1e");
+    show_wcstod(L"1e+");
+    show_wcstod(L"1e-2");
+    show_wcstod(L"1E2");
+    show_wcstod(L"1d2");
+    show_wcstod(L"1D-2");
+    show_wcstod(L"0.1");
+    show_wcstod(L"-0");
+    show_wcstod(L"0x1A");
+    show_wcstod(L"inf");
+    show_wcstod(L"nan");
+    show_wcstod(L"1,5");
+    show_wcstod(L"123456789012345678901234567890");
+    show_wcstod(L"1e400");
+    show_wcstod(L"-1e400");
+    show_wcstod(L"1e-400");
+    show_wcstod(L"4.9e-324");
+    show_wcstod(L"2.2250738585072014e-308");
+    show_wcstod(L"1.7976931348623157e308");
+    show_wcstod(L"1.7976931348623159e308");
+    show_wcstod(fullwidth);
+    show_wcstod(arabic);
+    show_wcstod(nbsp);
+    errno = 0;
+    d = p_wcstod(L"6.25", NULL);
+    memcpy(halves, &d, sizeof halves);
+    line("wcstod(\"6.25\", NULL): bits 0x%08lX%08lX errno %d", halves[1], halves[0], errno);
+}
+
+/* --- wcsftime ------------------------------------------------------ */
+
+static struct tm make_tm(int year, int mon, int mday, int hour, int min, int sec, int wday, int yday, int isdst)
+{
+    struct tm t;
+
+    t.tm_year = year - 1900;
+    t.tm_mon = mon - 1;
+    t.tm_mday = mday;
+    t.tm_hour = hour;
+    t.tm_min = min;
+    t.tm_sec = sec;
+    t.tm_wday = wday;
+    t.tm_yday = yday;
+    t.tm_isdst = isdst;
+    return t;
+}
+
+/* wcsftime into a buffer of `size` units (0xBEEF-filled): its count and
+ * the text it says it wrote. */
+static void show_wcsftime(const char *label, const WCHAR *format, const struct tm *t, size_t size)
+{
+    WCHAR buf[256];
+    size_t r;
+
+    fill_w(buf, 256, 0xBEEF);
+    r = p_wcsftime(buf, size, format, t);
+    if (r > 0) {
+        line("wcsftime(\"%s\", %s, %u): %u \"%s\"", wq(format, -1), label, (unsigned)size, (unsigned)r,
+             wq(buf, (int)r));
+    } else {
+        line("wcsftime(\"%s\", %s, %u): 0", wq(format, -1), label, (unsigned)size);
+    }
+}
+
+static void sec_wcsftime(void)
+{
+    static const WCHAR *const formats[] = {
+        L"%a %A %b %B",
+        L"%c",
+        L"%#c",
+        L"%x",
+        L"%#x",
+        L"%X",
+        L"%d %H %I %j %m %M %p %S",
+        L"%U %w %W",
+        L"%y %Y",
+        L"%Z",
+        L"%z",
+        L"%%",
+        L"%#d %#H %#I %#j %#m %#M %#S %#y %#U",
+        L"plain text, no conversions",
+        L"",
+        NULL
+    };
+    struct tm t1 = make_tm(2001, 2, 3, 4, 5, 6, 6, 33, 0);
+    struct tm t2 = make_tm(1999, 12, 31, 23, 59, 59, 5, 364, 0);
+    struct tm t3 = make_tm(2000, 7, 4, 12, 0, 0, 2, 185, 1);
+    struct tm t4 = make_tm(2000, 1, 1, 0, 30, 0, 6, 0, 0);
+    int i;
+
+    p_wcsftime = (wcsftime_fn)crt_export("wcsftime");
+    if (p_wcsftime == NULL) {
+        return;
+    }
+    set_zone("TZ=PST8PDT");
+    line("setlocale(LC_ALL, NULL): %s", str_or_null(setlocale(LC_ALL, NULL)));
+    for (i = 0; formats[i] != NULL; i++) {
+        show_wcsftime("2001-02-03 04:05:06", formats[i], &t1, 256);
+    }
+    show_wcsftime("1999-12-31 23:59:59", L"%c %Z %j %U %W", &t2, 256);
+    show_wcsftime("2000-07-04 12:00:00, isdst 1", L"%c %Z %j %U %W %p", &t3, 256);
+    show_wcsftime("2000-01-01 00:30:00", L"%#c %I %p %U %W", &t4, 256);
+
+    /* The buffer sizes: 8 characters need 9 units. */
+    show_wcsftime("2001-02-03 04:05:06", L"%Y-%m-%d", &t1, 11);
+    show_wcsftime("2001-02-03 04:05:06", L"%Y-%m-%d", &t1, 10);
+    show_wcsftime("2001-02-03 04:05:06", L"%H:%M:%S", &t1, 9);
+    show_wcsftime("2001-02-03 04:05:06", L"%H:%M:%S", &t1, 8);
+    show_wcsftime("2001-02-03 04:05:06", L"%H:%M:%S", &t1, 1);
+    show_wcsftime("2001-02-03 04:05:06", L"", &t1, 1);
+    show_wcsftime("2001-02-03 04:05:06", L"%H", &t1, 0);
+}
+
 static const section_t sections[] = {
     { "wcs", sec_wcs, F2KT_ALWAYS },
     { "case", sec_case, F2KT_ALWAYS },
@@ -915,6 +1198,9 @@ static const section_t sections[] = {
     { "rand", sec_rand, F2KT_ALWAYS },
     { "time", sec_time, F2KT_ALWAYS },
     { "calendar", sec_calendar, F2KT_ALWAYS },
+    { "wcstok", sec_wcstok, F2KT_ALWAYS },
+    { "wcstod", sec_wcstod, F2KT_ALWAYS },
+    { "wcsftime", sec_wcsftime, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

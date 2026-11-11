@@ -327,9 +327,9 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
   Gated.
 - `fd` - the descriptor layer: `_open_osfhandle`/`_get_osfhandle`, `_dup`/`_dup2`, `_setmode` and `_tell`, the standard streams in `_iob`, `fgets`, `fread`, `fwrite`, `fseek`, `ftell` and `clearerr` in text and binary mode (CR LF translation, short reads, partial items, the end of the file, Ctrl-Z, a `w+` stream switching direction), `fgetws` and `fputws`, and `_getch` over console input the program queues itself.
   Gated.
-- `wide` - the wide string, character-class and conversion functions, `iswctype` over each class mask, `swprintf` and `swscanf`, number parsing, the allocator, `qsort`, `rand`, `setlocale` and `time`, and `gmtime`, `localtime` and `mktime` under time zones the program sets itself through `TZ` and `_tzset`.
+- `wide` - the wide string, character-class and conversion functions, `iswctype` over each class mask, `swprintf` and `swscanf`, number parsing, the allocator, `qsort`, `rand`, `setlocale` and `time`, `gmtime`, `localtime` and `mktime` under time zones the program sets itself through `TZ` and `_tzset`, and `wcstok` (`wcstok`, each thread's position its own), `wcstod` (the double's bits, the end pointer and `errno`, `wcstod`) and `wcsftime` over fixed `struct tm` values in the "C" locale (`wcsftime`).
   Those times are fixed values, so they depend on neither the machine's clock nor its zone.
-  Gated.
+  Gated; `wcstok`, `wcstod` and `wcsftime` stay pending while msvcrt exports none of them.
 - `strings` - `_itow`, `_ltow` and `_ultow` in several radixes, `_wtoi` and `atol` with `errno`, `abs` and `labs`, `strstr`, `wcspbrk` and `wcscspn`, `_wcsdup`, `_wcsrev` and `_strcmpi`, `strncat` and `_strdup`, `_splitpath` and `_wsplitpath`, `vswprintf`, and `wprintf` and `fwprintf` to the standard output and into a file in text and binary mode, its bytes read back.
   Radix 2 converts only values below 65536: Windows 2000's `_itow` overruns an internal buffer on longer radix-2 conversions.
   Gated.

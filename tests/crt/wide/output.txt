@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 10:25:58.42
-wide F2KT-SOURCE-CRC=0xDB61A47D
+# date: Wed 11/11/2026 13:05:50.12
+wide F2KT-SOURCE-CRC=0xFB54213A
 >>> wide.exe wcs
 == wcs
 wcslen: "" 0, "abc" 3, U+00E9 1, mixed 16
@@ -361,5 +361,113 @@ mktime(1970-01-01 05:29:59, isdst 0): -1
 _putenv("TZ=NST3:30NDT") 0, _tzset
 localtime(992606400): 2001-06-15 09:30:00 wday 5 yday 165 isdst 1
 localtime(978307199): 2000-12-31 20:29:59 wday 0 yday 365 isdst 0
+wide: done
+<<< exit code=0
+>>> wide.exe wcstok
+== wcstok
+msvcrt exports wcstok: yes
+wcstok("  a,b;;c d,", " ,;"):
+  token 0 at +2: "a"
+  token 1 at +4: "b"
+  token 2 at +7: "c"
+  token 3 at +9: "d"
+  then NULL; the buffer after: "  a\0b\0;c\0d\0"
+wcstok("abc", ""):
+  token 0 at +0: "abc"
+  then NULL; the buffer after: "abc"
+wcstok(",,,", ","):
+  then NULL; the buffer after: ",,,"
+wcstok("", ","):
+  then NULL; the buffer after: ""
+wcstok("a,b c,d e", ",", then " "):
+  token 0 at +0: "a"
+  token 1 at +2: "b"
+  token 2 at +4: "c,d"
+  token 3 at +8: "e"
+  then NULL; the buffer after: "a\0b\0c,d\0e"
+wcstok("no delimiters here", ",;"):
+  token 0 at +0: "no delimiters here"
+  then NULL; the buffer after: "no delimiters here"
+wcstok("x<U+00E9>y<U+3000><U+3000>z<U+00E9>", "<U+00E9><U+3000>"):
+  token 0 at +0: "x"
+  token 1 at +2: "y"
+  token 2 at +5: "z"
+  then NULL; the buffer after: "x\0y\0<U+3000>z\0"
+wcstok("1 2 3", " "): "1"
+wcstok("x-y-z", "-"): "x"
+wcstok(NULL, "-"): "y" (the second string's)
+wcstok("m n o", " "): "m"
+another thread's wcstok over "p q r": 3 tokens, the first "p", the last "r"
+then wcstok(NULL, " ") in this thread: "n"
+wide: done
+<<< exit code=0
+>>> wide.exe wcstod
+== wcstod
+msvcrt exports wcstod: yes
+wcstod("1.5"): bits 0x3FF8000000000000 end +3 errno 0
+wcstod("  -2.5e3xyz"): bits 0xC0A3880000000000 end +8 errno 0
+wcstod("+.5"): bits 0x3FE0000000000000 end +3 errno 0
+wcstod("5."): bits 0x4014000000000000 end +2 errno 0
+wcstod("."): bits 0x0000000000000000 end +0 errno 0
+wcstod("-"): bits 0x0000000000000000 end +0 errno 0
+wcstod(""): bits 0x0000000000000000 end +0 errno 0
+wcstod("   "): bits 0x0000000000000000 end +0 errno 0
+wcstod("\t\n 7"): bits 0x401C000000000000 end +4 errno 0
+wcstod("1e"): bits 0x3FF0000000000000 end +1 errno 0
+wcstod("1e+"): bits 0x3FF0000000000000 end +1 errno 0
+wcstod("1e-2"): bits 0x3F847AE147AE147B end +4 errno 0
+wcstod("1E2"): bits 0x4059000000000000 end +3 errno 0
+wcstod("1d2"): bits 0x4059000000000000 end +3 errno 0
+wcstod("1D-2"): bits 0x3F847AE147AE147B end +4 errno 0
+wcstod("0.1"): bits 0x3FB999999999999A end +3 errno 0
+wcstod("-0"): bits 0x8000000000000000 end +2 errno 0
+wcstod("0x1A"): bits 0x0000000000000000 end +1 errno 0
+wcstod("inf"): bits 0x0000000000000000 end +0 errno 0
+wcstod("nan"): bits 0x0000000000000000 end +0 errno 0
+wcstod("1,5"): bits 0x3FF0000000000000 end +1 errno 0
+wcstod("123456789012345678901234567890"): bits 0x45F8EE90FF6C373E end +30 errno 0
+wcstod("1e400"): bits 0x7FF0000000000000 end +5 errno 34
+wcstod("-1e400"): bits 0xFFF0000000000000 end +6 errno 34
+wcstod("1e-400"): bits 0x0000000000000000 end +6 errno 34
+wcstod("4.9e-324"): bits 0x0000000000000000 end +8 errno 34
+wcstod("2.2250738585072014e-308"): bits 0x0010000000000000 end +23 errno 0
+wcstod("1.7976931348623157e308"): bits 0x7FEFFFFFFFFFFFFF end +22 errno 0
+wcstod("1.7976931348623159e308"): bits 0x7FF0000000000000 end +22 errno 34
+wcstod("<U+FF11>.5"): bits 0x0000000000000000 end +0 errno 42
+wcstod("<U+0661>"): bits 0x0000000000000000 end +0 errno 42
+wcstod("<U+00A0>7"): bits 0x0000000000000000 end +0 errno 0
+wcstod("6.25", NULL): bits 0x4019000000000000 errno 0
+wide: done
+<<< exit code=0
+>>> wide.exe wcsftime
+== wcsftime
+msvcrt exports wcsftime: yes
+_putenv("TZ=PST8PDT") 0, _tzset
+setlocale(LC_ALL, NULL): C
+wcsftime("%a %A %b %B", 2001-02-03 04:05:06, 256): 25 "Sat Saturday Feb February"
+wcsftime("%c", 2001-02-03 04:05:06, 256): 17 "02/03/01 04:05:06"
+wcsftime("%#c", 2001-02-03 04:05:06, 256): 36 "Saturday, February 03, 2001 04:05:06"
+wcsftime("%x", 2001-02-03 04:05:06, 256): 8 "02/03/01"
+wcsftime("%#x", 2001-02-03 04:05:06, 256): 27 "Saturday, February 03, 2001"
+wcsftime("%X", 2001-02-03 04:05:06, 256): 8 "04:05:06"
+wcsftime("%d %H %I %j %m %M %p %S", 2001-02-03 04:05:06, 256): 24 "03 04 04 034 02 05 AM 06"
+wcsftime("%U %w %W", 2001-02-03 04:05:06, 256): 7 "04 6 05"
+wcsftime("%y %Y", 2001-02-03 04:05:06, 256): 7 "01 2001"
+wcsftime("%Z", 2001-02-03 04:05:06, 256): 3 "PST"
+wcsftime("%z", 2001-02-03 04:05:06, 256): 3 "PST"
+wcsftime("%%", 2001-02-03 04:05:06, 256): 1 "%"
+wcsftime("%#d %#H %#I %#j %#m %#M %#S %#y %#U", 2001-02-03 04:05:06, 256): 18 "3 4 4 34 2 5 6 1 4"
+wcsftime("plain text, no conversions", 2001-02-03 04:05:06, 256): 26 "plain text, no conversions"
+wcsftime("", 2001-02-03 04:05:06, 256): 0
+wcsftime("%c %Z %j %U %W", 1999-12-31 23:59:59, 256): 31 "12/31/99 23:59:59 PST 365 52 52"
+wcsftime("%c %Z %j %U %W %p", 2000-07-04 12:00:00, isdst 1, 256): 34 "07/04/00 12:00:00 PDT 186 27 27 PM"
+wcsftime("%#c %I %p %U %W", 2000-01-01 00:30:00, 256): 47 "Saturday, January 01, 2000 00:30:00 12 AM 00 00"
+wcsftime("%Y-%m-%d", 2001-02-03 04:05:06, 11): 10 "2001-02-03"
+wcsftime("%Y-%m-%d", 2001-02-03 04:05:06, 10): 10 "2001-02-03"
+wcsftime("%H:%M:%S", 2001-02-03 04:05:06, 9): 8 "04:05:06"
+wcsftime("%H:%M:%S", 2001-02-03 04:05:06, 8): 8 "04:05:06"
+wcsftime("%H:%M:%S", 2001-02-03 04:05:06, 1): 0
+wcsftime("", 2001-02-03 04:05:06, 1): 0
+wcsftime("%H", 2001-02-03 04:05:06, 0): 0
 wide: done
 <<< exit code=0
