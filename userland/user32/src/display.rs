@@ -35,6 +35,7 @@ use rtl::display::{
 };
 use rtl::edge::{In, InBuf, InStr};
 use rtl::gdi::Rect;
+use rtl::nonclient;
 use rtl::pod::Pod;
 
 use crate::{caller_bytes_mut, imports};
@@ -554,44 +555,61 @@ const SM_CYVIRTUALSCREEN: i32 = 79;
 const SM_CMONITORS: i32 = 80;
 
 /// The caption's height, SM_CYCAPTION (the guidisp capture's).
-const CAPTION: i32 = 19;
+const CAPTION: i32 = nonclient::CAPTION;
 
 /// The metrics that are constants of Windows 2000's standard scheme at 96 dpi, and of a machine
 /// without a mouse, by index: SM_CXVSCROLL to SM_CYMENU, SM_MOUSEPRESENT to SM_SWAPBUTTON, the
-/// frame, SM_CMOUSEBUTTONS, the edge, SM_MOUSEWHEELPRESENT, the virtual screen's origin and
-/// SM_SAMEDISPLAYFORMAT.
-const METRICS: [(i32, i32); 31] = [
-    (2, 16),      // SM_CXVSCROLL
-    (3, 16),      // SM_CYHSCROLL
-    (4, CAPTION), // SM_CYCAPTION
-    (5, 1),       // SM_CXBORDER
-    (6, 1),       // SM_CYBORDER
-    (7, 3),       // SM_CXDLGFRAME
-    (8, 3),       // SM_CYDLGFRAME
-    (9, 16),      // SM_CYVTHUMB
-    (10, 16),     // SM_CXHTHUMB
-    (11, 32),     // SM_CXICON
-    (12, 32),     // SM_CYICON
-    (13, 32),     // SM_CXCURSOR
-    (14, 32),     // SM_CYCURSOR
-    (15, 19),     // SM_CYMENU
-    (18, 0),      // SM_CYKANJIWINDOW
-    (19, 0),      // SM_MOUSEPRESENT
-    (20, 16),     // SM_CYVSCROLL
-    (21, 16),     // SM_CXHSCROLL
-    (22, 0),      // SM_DEBUG
-    (23, 0),      // SM_SWAPBUTTON
-    (32, 4),      // SM_CXFRAME
-    (33, 4),      // SM_CYFRAME
-    (43, 0),      // SM_CMOUSEBUTTONS
-    (45, 2),      // SM_CXEDGE
-    (46, 2),      // SM_CYEDGE
-    (67, 0),      // SM_CLEANBOOT
-    (75, 0),      // SM_MOUSEWHEELPRESENT
-    (76, 0),      // SM_XVIRTUALSCREEN
-    (77, 0),      // SM_YVIRTUALSCREEN
-    (81, 1),      // SM_SAMEDISPLAYFORMAT
-    (42, 0),      // SM_DBCSENABLED
+/// frame and the caption buttons, SM_CMOUSEBUTTONS, the edge, the smallest window, the small
+/// icon and caption, the menu buttons, the check mark, SM_MOUSEWHEELPRESENT, the virtual screen's
+/// origin and SM_SAMEDISPLAYFORMAT. The non-client ones are rtl::nonclient's, the frame win32k and
+/// the default window procedure draw.
+const METRICS: [(i32, i32); 46] = [
+    (2, 16),                     // SM_CXVSCROLL
+    (3, 16),                     // SM_CYHSCROLL
+    (4, CAPTION),                // SM_CYCAPTION
+    (5, nonclient::BORDER),      // SM_CXBORDER
+    (6, nonclient::BORDER),      // SM_CYBORDER
+    (7, nonclient::DLG_FRAME),   // SM_CXDLGFRAME
+    (8, nonclient::DLG_FRAME),   // SM_CYDLGFRAME
+    (28, nonclient::MIN_X),      // SM_CXMIN
+    (29, nonclient::MIN_Y),      // SM_CYMIN
+    (30, nonclient::SIZE),       // SM_CXSIZE
+    (31, nonclient::SIZE),       // SM_CYSIZE
+    (34, nonclient::MIN_X),      // SM_CXMINTRACK
+    (35, nonclient::MIN_Y),      // SM_CYMINTRACK
+    (49, nonclient::SM_ICON),    // SM_CXSMICON
+    (50, nonclient::SM_ICON),    // SM_CYSMICON
+    (51, nonclient::SM_CAPTION), // SM_CYSMCAPTION
+    (52, nonclient::SM_SIZE_X),  // SM_CXSMSIZE
+    (53, nonclient::SM_SIZE_Y),  // SM_CYSMSIZE
+    (54, nonclient::MENU_SIZE),  // SM_CXMENUSIZE
+    (55, nonclient::MENU_SIZE),  // SM_CYMENUSIZE
+    (71, nonclient::MENU_CHECK), // SM_CXMENUCHECK
+    (72, nonclient::MENU_CHECK), // SM_CYMENUCHECK
+    (9, 16),                     // SM_CYVTHUMB
+    (10, 16),                    // SM_CXHTHUMB
+    (11, 32),                    // SM_CXICON
+    (12, 32),                    // SM_CYICON
+    (13, 32),                    // SM_CXCURSOR
+    (14, 32),                    // SM_CYCURSOR
+    (15, nonclient::MENU),       // SM_CYMENU
+    (18, 0),                     // SM_CYKANJIWINDOW
+    (19, 0),                     // SM_MOUSEPRESENT
+    (20, 16),                    // SM_CYVSCROLL
+    (21, 16),                    // SM_CXHSCROLL
+    (22, 0),                     // SM_DEBUG
+    (23, 0),                     // SM_SWAPBUTTON
+    (32, nonclient::FRAME),      // SM_CXFRAME
+    (33, nonclient::FRAME),      // SM_CYFRAME
+    (43, 0),                     // SM_CMOUSEBUTTONS
+    (45, nonclient::EDGE),       // SM_CXEDGE
+    (46, nonclient::EDGE),       // SM_CYEDGE
+    (67, 0),                     // SM_CLEANBOOT
+    (75, 0),                     // SM_MOUSEWHEELPRESENT
+    (76, 0),                     // SM_XVIRTUALSCREEN
+    (77, 0),                     // SM_YVIRTUALSCREEN
+    (81, 1),                     // SM_SAMEDISPLAYFORMAT
+    (42, 0),                     // SM_DBCSENABLED
 ];
 
 /// The metric `index`: the screen's (the primary monitor's rectangle), the work area's, the

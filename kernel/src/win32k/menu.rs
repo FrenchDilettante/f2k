@@ -1,5 +1,6 @@
 //! Menus: the menu records behind HMENUs, their items, and the services user32's menu calls come
-//! through. Data only: the menu bar is not drawn and no menu is tracked yet.
+//! through. Data only: user32 draws the menu bar in the non-client area and runs the keyboard menu
+//! loop from these records, as its queries read them (Windows 2000's win32k does both itself).
 //!
 //! A menu is a record in the menu pool ([`Menus`]), named by a generation-tagged id ([`MenuId`]),
 //! the object manager's pattern, with a handle into the user handle table ([`super::handle`]). A
@@ -620,7 +621,15 @@ mod services {
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::queue::with_manager;
+    use crate::win32k::queue::{with_manager, QueuePump};
+    use crate::win32k::window::{
+        WindowManager,
+        SWP_FRAMECHANGED,
+        SWP_NOACTIVATE,
+        SWP_NOMOVE,
+        SWP_NOSIZE,
+        SWP_NOZORDER,
+    };
     use crate::win32k::winsta::gui_thread;
 
     /// NtUserCallNoParam(Routine, Result): CreateMenu, CreatePopupMenu (the new menu's handle),
@@ -779,14 +788,32 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUserSetMenu(Window, Menu, Repaint): the window's menu set. Nothing is drawn: the menu
-    /// bar comes with the non-client area.
+    /// NtUserSetMenu(Window, Menu, Repaint): the window's menu set, and its frame changed as
+    /// SetWindowPos's SWP_FRAMECHANGED changes it: the client area gives the menu bar its room (or
+    /// takes it back), and a shown window's frame is painted with the bar.
     pub fn set_menu(call: &mut NtCall, window: Handle, menu: Handle, _repaint: bool) -> NtResult {
         gui_thread(call)?;
         with_manager(call.passive(), |m| {
-            m.windows.set_menu_handle(window.raw(), menu.raw())
-        })
-        .map_err(Failure::status)?;
+            m.windows
+                .set_menu_handle(window.raw(), menu.raw())
+                .map_err(Failure::status)?;
+            let WindowManager {
+                windows, classes, ..
+            } = m;
+            windows
+                .set_window_pos_handle(
+                    classes,
+                    window.raw(),
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                    &mut QueuePump,
+                )
+                .map_err(|failure| failure.status())
+        })?;
         Ok(STATUS_SUCCESS)
     }
 }

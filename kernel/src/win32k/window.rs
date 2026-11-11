@@ -65,8 +65,13 @@
 //! Seams recorded: every send and window-manager call the decisions make goes through the [`Pump`]
 //! trait; the services run them with the queue's pump ([`super::queue::QueuePump`]), which queues
 //! each message for the window's thread and answers as the default procedure does, and the boot
-//! with [`DefaultProcedure`]; monitors and frame metrics come from the display slice (the boot sets
-//! the primary monitor's work area). A process's end takes its windows, its classes and its
+//! with [`DefaultProcedure`]; monitors come from the display slice (the boot sets the primary
+//! monitor's work area). The frame is the default procedure's: WM_NCCALCSIZE is sent, and the
+//! client rectangle is the window's less the frame, caption and menu bar its styles and its menu
+//! give ([`Windows::default_client`], rtl::nonclient's rules, which user32's default procedure
+//! draws by); a framed window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT,
+//! and a window hidden uncovers the windows under it: invalid there, their frames painted. A
+//! process's end takes its windows, its classes and its
 //! threads' records, at its teardown ([`WindowManager::end_process`]); a thread's records outlive
 //! the thread until then.
 
@@ -147,6 +152,8 @@ pub const WM_SETHOTKEY: u32 = 0x0032;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
+/// The frame's painting: the position path sends it when a framed window's frame shows anew.
+pub const WM_NCPAINT: u32 = 0x0085;
 pub const WM_PARENTNOTIFY: u32 = 0x0210;
 /// The messages the show and position decisions send.
 pub const WM_SHOWWINDOW: u32 = 0x0018;
@@ -589,6 +596,47 @@ pub trait Pump {
             &mut Message {
                 message: WM_SIZE,
                 wparam: command,
+                lparam: 0,
+                payload: Payload::None,
+            },
+        );
+    }
+
+    /// WM_NCCALCSIZE to `target` for the window rectangle `rect`: the client rectangle. The send
+    /// goes through [`Pump::send`]; the answer is the default procedure's, the frame the window's
+    /// styles give taken off ([`Windows::default_client`]): the window manager cannot wait for a
+    /// client-side procedure's own answer (its sends are queued for the window's thread).
+    fn calc_client(
+        &mut self,
+        windows: &mut Windows,
+        classes: &mut class::Registry,
+        target: WindowId,
+        rect: Rect,
+    ) -> Rect {
+        let mut message = Message {
+            message: WM_NCCALCSIZE,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::Rect(rect),
+        };
+        self.send(windows, classes, target, &mut message);
+        windows.default_client(target, rect)
+    }
+
+    /// The frame of `target` to be painted: WM_NCPAINT sent, wParam 1 (the whole frame).
+    fn paint_frame(
+        &mut self,
+        windows: &mut Windows,
+        classes: &mut class::Registry,
+        target: WindowId,
+    ) {
+        self.send(
+            windows,
+            classes,
+            target,
+            &mut Message {
+                message: WM_NCPAINT,
+                wparam: 1,
                 lparam: 0,
                 payload: Payload::None,
             },
@@ -1582,6 +1630,32 @@ impl Windows {
         }
     }
 
+    /// The client rectangle the default window procedure gives the window `id` at the window
+    /// rectangle `rect`: the frame its styles and its menu give taken off
+    /// ([`rtl::nonclient::Frame`]).
+    pub fn default_client(&self, id: WindowId, rect: Rect) -> Rect {
+        let w = self.at(id);
+        let menu = matches!(w.menu, Menu::Handle(_));
+        let client = rtl::nonclient::Frame::of(w.style, w.ex_style, menu).client(rtl::gdi::Rect {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+        });
+        Rect {
+            left: client.left,
+            top: client.top,
+            right: client.right,
+            bottom: client.bottom,
+        }
+    }
+
+    /// Whether the window `id` has a frame to paint: its window rectangle is not all client area.
+    pub fn has_frame(&self, id: WindowId) -> bool {
+        let w = self.at(id);
+        w.window_rect != w.client_rect
+    }
+
     /// The window's client rectangle, in screen coordinates.
     pub fn client_rect(&self, id: WindowId) -> Rect {
         self.at(id).client_rect
@@ -2368,18 +2442,10 @@ impl Windows {
             self.link_window(id, z_order, p);
         }
 
-        // WM_NCCALCSIZE: the client rect (no frame in the minimal subset: client == window).
+        // WM_NCCALCSIZE: the client rect, the window's less the frame.
         let window_rect = self.at(id).window_rect;
-        let mut message = Message {
-            message: WM_NCCALCSIZE,
-            wparam: 0,
-            lparam: 0,
-            payload: Payload::Rect(window_rect),
-        };
-        pump.send(self, classes, id, &mut message);
-        if let Payload::Rect(r) = message.payload {
-            self.at_mut(id).client_rect = r;
-        }
+        let client = pump.calc_client(self, classes, id, window_rect);
+        self.at_mut(id).client_rect = client;
 
         // WM_CREATE: a -1 answer destroys the window for real and fails the create.
         let mut message = Message {
@@ -3483,20 +3549,11 @@ impl Windows {
         }
         let old_client = self.at(window).client_rect;
         let client = if sized || flags & SWP_FRAMECHANGED != 0 {
-            let mut message = Message {
-                message: WM_NCCALCSIZE,
-                wparam: 0,
-                lparam: 0,
-                payload: Payload::Rect(rect),
-            };
-            pump.send(self, classes, window, &mut message);
+            let client = pump.calc_client(self, classes, window, rect);
             if !self.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
-            match message.payload {
-                Payload::Rect(client) => client,
-                _ => rect,
-            }
+            client
         } else {
             offset_rect(old_client, rect.left - old.left, rect.top - old.top)
         };
@@ -3518,6 +3575,7 @@ impl Windows {
 
         // The visibility.
         let visible = self.at(window).is_visible();
+        let was_shown = super::paint::is_shown(self, window);
         if flags & SWP_SHOWWINDOW != 0 && !visible {
             self.at_mut(window).style |= WS_VISIBLE;
             // A window shown for the first time is invalid over its whole area, to be erased:
@@ -3526,6 +3584,9 @@ impl Windows {
             super::paint::invalidate(self, window, None, true);
         } else if flags & SWP_HIDEWINDOW != 0 && visible {
             self.at_mut(window).style &= !WS_VISIBLE;
+            if was_shown {
+                self.expose(classes, old, window, pump);
+            }
         } else {
             flags &= !(SWP_SHOWWINDOW | SWP_HIDEWINDOW);
         }
@@ -3539,6 +3600,15 @@ impl Windows {
             if !self.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
+        }
+
+        // The frame, painted where it shows anew: the window shown, sized, or its frame changed.
+        if self.pool.is_live(window)
+            && (sized || flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED) != 0)
+            && super::paint::is_shown(self, window)
+            && self.has_frame(window)
+        {
+            pump.paint_frame(self, classes, window);
         }
 
         let done = WindowPos {
@@ -3561,6 +3631,51 @@ impl Windows {
             },
         );
         Ok(())
+    }
+
+    /// The screen area `area` uncovered (the window `gone` was hidden there): every other shown
+    /// window it overlaps is invalid there, to be erased, and its frame is painted. Windows
+    /// 2000 repaints what was under a window hidden or destroyed; F2K's windows do not clip one
+    /// another, so every window under the area is repainted, not just what shows.
+    fn expose(
+        &mut self,
+        classes: &mut class::Registry,
+        area: Rect,
+        gone: WindowId,
+        pump: &mut dyn Pump,
+    ) {
+        for index in 0..WINDOWS {
+            let header = &self.pool.headers[index];
+            if !header.live {
+                continue;
+            }
+            let id = WindowId {
+                index: index as u16,
+                generation: header.generation,
+            };
+            if id == gone || !super::paint::is_shown(self, id) {
+                continue;
+            }
+            let window_rect = self.at(id).window_rect;
+            let over = super::raster::intersect(rtl_rect(window_rect), rtl_rect(area));
+            if over.left >= over.right || over.top >= over.bottom {
+                continue;
+            }
+            let client = self.at(id).client_rect;
+            let part = super::raster::intersect(rtl_rect(client), over);
+            if part.left < part.right && part.top < part.bottom {
+                let local = rtl::gdi::Rect {
+                    left: part.left - client.left,
+                    top: part.top - client.top,
+                    right: part.right - client.left,
+                    bottom: part.bottom - client.top,
+                };
+                super::paint::invalidate(self, id, Some(local), true);
+            }
+            if self.has_frame(id) && part != over {
+                pump.paint_frame(self, classes, id);
+            }
+        }
     }
 
     /// The window `handle` names; ERROR_INVALID_WINDOW_HANDLE for none.
@@ -4090,6 +4205,16 @@ impl Windows {
 }
 
 /// `rect` moved by `dx`, `dy`.
+/// The rectangle as the drawing code's shape.
+fn rtl_rect(rect: Rect) -> rtl::gdi::Rect {
+    rtl::gdi::Rect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
+}
+
 fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
     Rect {
         left: rect.left + dx,
@@ -5436,6 +5561,36 @@ mod tests {
     }
 
     impl Pump for Rec {
+        /// The handler's inset when it has one, the default procedure's frame otherwise.
+        fn calc_client(
+            &mut self,
+            windows: &mut Windows,
+            classes: &mut class::Registry,
+            target: WindowId,
+            rect: Rect,
+        ) -> Rect {
+            let mut message = Message {
+                message: WM_NCCALCSIZE,
+                wparam: 0,
+                lparam: 0,
+                payload: Payload::Rect(rect),
+            };
+            self.send(windows, classes, target, &mut message);
+            match message.payload {
+                Payload::Rect(client) if self.nccalc_inset != 0 => client,
+                _ => windows.default_client(target, rect),
+            }
+        }
+
+        /// The frame paints are not among the decisions' messages these tests follow.
+        fn paint_frame(
+            &mut self,
+            _windows: &mut Windows,
+            _classes: &mut class::Registry,
+            _target: WindowId,
+        ) {
+        }
+
         fn send(
             &mut self,
             windows: &mut Windows,
@@ -6434,11 +6589,41 @@ mod tests {
         assert_eq!(w.at(id).parent, Some(parent));
     }
 
+    /// The client rectangle is the window's less the frame its styles give (an overlapped
+    /// window's sizing border and caption), and a menu bar's room once it holds a menu: SetMenu's
+    /// SWP_FRAMECHANGED takes it again.
+    #[test]
+    fn the_client_area_leaves_the_frame_and_the_menu_bar() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        let r = w.at(id).window_rect;
+        let framed = Rect {
+            left: r.left + 4,
+            top: r.top + 23,
+            right: r.right - 4,
+            bottom: r.bottom - 4,
+        };
+        assert_eq!(w.at(id).client_rect, framed);
+        w.set_window_menu(id, 0x1234);
+        let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED;
+        w.set_window_pos(c, id, InsertAfter::Top, 0, 0, 0, 0, flags, &mut pump)
+            .unwrap();
+        assert_eq!(
+            w.at(id).client_rect,
+            Rect {
+                top: r.top + 42,
+                ..framed
+            }
+        );
+    }
+
     // --- Message ordering and failure rollback
     // -----------------------------------------------------------
 
     /// The create's message order: WM_NCCREATE, the link into the parent's child list, then
-    /// WM_NCCALCSIZE (client == window rect: no frame in the minimal subset), then WM_CREATE.
+    /// WM_NCCALCSIZE (the client the window rect less the frame and caption a tiled window has),
+    /// then WM_CREATE.
     #[test]
     fn the_create_message_order() {
         let (w, c, t, atom, desk, _) = setup();
@@ -6448,7 +6633,16 @@ mod tests {
             pump.sends(),
             vec![(id, WM_NCCREATE), (id, WM_NCCALCSIZE), (id, WM_CREATE)]
         );
-        assert_eq!(w.at(id).client_rect, w.at(id).window_rect);
+        let r = w.at(id).window_rect;
+        assert_eq!(
+            w.at(id).client_rect,
+            Rect {
+                left: r.left + 3,
+                top: r.top + 22,
+                right: r.right - 3,
+                bottom: r.bottom - 3
+            }
+        );
         assert_eq!(
             w.at(desk).child,
             Some(id),
@@ -8543,10 +8737,11 @@ mod tests {
         let messages = pump.messages();
         assert_eq!(&messages[messages.len() - 2..], &[WM_SIZE, WM_MOVE]);
         assert!(!w.at(id).flags.sendsizemove);
-        // The client at 10,20 (the create's position): WM_MOVE carries it.
+        // The window at 10,20 (the create's position), its client inside the fixed frame and the
+        // caption a tiled window is given: WM_MOVE carries the client's place.
         assert!(pump
             .events
-            .contains(&Ev::Send(id, WM_MOVE, 0, makelong(10, 20) as LParam)));
+            .contains(&Ev::Send(id, WM_MOVE, 0, makelong(13, 42) as LParam)));
         pump.events.clear();
         assert_eq!(w.show_window(c, id, SW_RESTORE, &mut pump), Ok(true));
         assert!(pump.events.iter().all(|e| !matches!(e, Ev::MinMax(..))));

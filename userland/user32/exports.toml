@@ -951,17 +951,19 @@ internal = true
 name = "AdjustWindowRect"
 group = "window"
 args = ["ptr lpRect", "u32 dwStyle", "bool bMenu"]
-impl = { stub = "not yet implemented" }
+impl = { native = "AdjustWindowRect" }
 ordinal = 2
 fails = "FALSE"
+note = "the standard scheme's frame, caption and menu bar added (rtl::nonclient)"
 
 [[export]]
 name = "AdjustWindowRectEx"
 group = "window"
 args = ["ptr lpRect", "u32 dwStyle", "bool bMenu", "u32 dwExStyle"]
-impl = { stub = "not yet implemented" }
+impl = { native = "AdjustWindowRectEx" }
 ordinal = 3
 fails = "FALSE"
+note = "the standard scheme's frame, client edge, caption and menu bar added (rtl::nonclient)"
 
 # --- resources ------------------------------------------------------------------------------------
 
@@ -2140,6 +2142,14 @@ args = ["handle Window", "handle Menu", "bool Repaint"]
 impl = { syscall = "crate::win32k::menu::set_menu" }
 internal = true
 
+[[export]]
+name = "DrawMenuBar"
+group = "menu"
+args = ["handle hWnd"]
+impl = { native = "DrawMenuBar" }
+ordinal = 174
+fails = "FALSE"
+
 # --- keyboard accelerators ------------------------------------------------------------------------
 
 [[export]]
@@ -3103,9 +3113,6 @@ ordinal = 172
 name = "DrawIconEx"
 ordinal = 173
 
-[[export]]
-name = "DrawMenuBar"
-ordinal = 174
 
 [[export]]
 name = "DrawMenuBarTemp"

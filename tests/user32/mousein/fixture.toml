@@ -5,11 +5,11 @@
 # and the system metrics, and print only as relations to the points sent, never as coordinates.
 description = "mousein - mouse input injected with SendInput into the program's own foreground window: DefWindowProcW's WM_NCHITTEST codes on the caption, its boxes, the borders, corners, client area and outside; WM_MOUSEMOVE, WM_LBUTTONDOWN and WM_LBUTTONUP with their client points (relations to the points sent) and MK_ flags, and GetCursorPos; SetCapture, GetCapture, ReleaseCapture and WM_CAPTURECHANGED between the window and its button, and a press dragged onto the caption under capture; a click on a Button control and its BN_CLICKED."
 kind = "sectioned"
+gate = true
 
-# Not gated: F2K has no mouse yet (deferred: the mouse driver, the cursor, hit-testing and capture
-# come with it). Every section is on the work list.
+# F2K has no mouse yet (deferred: the mouse driver, the cursor and capture come with it): every
+# section but hittest, which sends WM_NCHITTEST itself, is on the work list.
 [pending]
-hittest = "the non-client area's hit-testing (DefWindowProc's WM_NCHITTEST) not yet implemented"
 move = "no mouse yet: SendInput's mouse events, the cursor and WM_MOUSEMOVE not yet implemented"
 click = "no mouse yet: SendInput's mouse events, the cursor, WindowFromPoint and the button messages not yet implemented"
 capture = "no mouse yet: SetCapture, GetCapture, ReleaseCapture, WM_CAPTURECHANGED and SendInput's mouse events not yet implemented"

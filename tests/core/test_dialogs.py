@@ -44,9 +44,10 @@ EXPECTED = [
 # Where the screen is kept: the screenshots' directory, under this test's name.
 SCREEN = f2kboot.SCREENS / "dialogs" / "dialog.png"
 # COLOR_3DFACE, the dialog's face, between the group box and the buttons: (115, 80) in its dialog
-# units of 6x13 pixels, the dialog (180x104 units, 270x169 pixels) centred on the 640x480 screen.
+# units of 6x13 pixels, in its client area (180x104 units, 270x169 pixels), which its modal frame
+# (3 pixels) and caption (19) surround, the window (276x194) centred on the 640x480 screen.
 FACE = b"\xd4\xd0\xc8"
-FACE_POINT = (357, 285)
+FACE_POINT = (357, 295)
 TIMEOUT = 60.0
 
 

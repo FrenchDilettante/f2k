@@ -8,14 +8,10 @@ description = "coords - window coordinates: GetClientRect and GetWindowRect (a b
 kind = "sectioned"
 gate = true
 
-# The framed and captioned windows' client areas are their whole rectangles: the default window
-# procedure's WM_NCCALCSIZE takes no frame or caption off them yet.
 [pending]
-client = "the non-client area: WM_NCCALCSIZE takes no frame or caption metrics off the client area"
-adjust = "F2K has no AdjustWindowRect or AdjustWindowRectEx and serves few of these metrics yet"
-frames = "F2K takes no frame, caption or edge off the client area yet, and user32 has no EqualRect"
-nccalc = "F2K's default window procedure leaves WM_NCCALCSIZE's rectangle as it is"
-nchittest = "F2K's default window procedure has no WM_NCHITTEST yet"
+adjust = "F2K's sizing frame is SM_CXFRAME wide on a window without WS_BORDER (4 pixels), where Windows 2000 takes the border's pixel off it (3), in AdjustWindowRectEx as in the window"
+frames = "user32 has no EqualRect yet; F2K's sizing frame is 4 pixels on a window without WS_BORDER, where Windows 2000's is 3; and F2K takes no scroll bars off the client area"
+nchittest = "F2K's WM_NCHITTEST answers HTCAPTION in the 2-pixel gaps beside the caption buttons, where Windows 2000 gives each button its whole SM_CXSIZE cell"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
