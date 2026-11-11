@@ -30,7 +30,8 @@
 //! GetAsyncKeyState reads the system's. TranslateMessage ([`translate`]) reads the thread's: the
 //! character a key-down makes through the layout, under the thread's Shift, Ctrl and Caps Lock, is
 //! posted as WM_CHAR (WM_SYSCHAR for a system key-down, whose character is the key's without Alt),
-//! with the key-down's lParam.
+//! with the key-down's lParam. TranslateAccelerator's modifiers are the thread's too
+//! ([`KeyState::modifiers`]).
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
 //! numbers):

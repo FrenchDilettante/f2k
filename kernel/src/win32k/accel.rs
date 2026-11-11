@@ -26,9 +26,9 @@
 //! WM_INITMENUPOPUP handler that enables the item comes too late for this translation (the item's
 //! state is read when the decision runs), which Windows 2000's synchronous send would see.
 //!
-//! Seams recorded: the key state. win32k keeps no key state yet (the keyboard input comes later),
-//! so no modifier is down for a translation ([`modifiers`]). The window menu (the system menu),
-//! whose commands are sent as WM_SYSCOMMAND: there is none yet.
+//! The modifiers are the thread's key state's ([`modifiers`], [`super::input`]). Seam recorded:
+//! the window menu (the system menu), whose commands are sent as WM_SYSCOMMAND: there is none
+//! yet.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
@@ -312,10 +312,10 @@ impl Accelerators {
     }
 }
 
-/// The modifiers down for a translation on the thread `thread`, from its key state. win32k keeps
-/// no key state yet (the keyboard input comes later): none is down.
-pub fn modifiers(_manager: &WindowManager, _thread: ThreadId) -> Modifiers {
-    Modifiers::default()
+/// The modifiers down for a translation on the thread `thread`: its key state's Shift, Ctrl and
+/// Alt, as of its last key message read or as SetKeyboardState set them.
+pub fn modifiers(manager: &WindowManager, thread: ThreadId) -> Modifiers {
+    manager.windows.thread(thread).keys.modifiers()
 }
 
 /// TranslateAccelerator's decision: the message `message` (its wParam `key`) on the thread

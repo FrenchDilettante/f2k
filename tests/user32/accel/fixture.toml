@@ -7,13 +7,6 @@ description = "accel - an ACCELERATORS resource of the program's own (accel.rc):
 kind = "sectioned"
 gate = true
 
-# The translations need the thread's key state: the cases with a modifier down set it with
-# SetKeyboardState and read it back with GetKeyState, and win32k keeps no key state yet.
-[pending]
-translate = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which the modifiers' cases set and read back)"
-ansi = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which the modifiers' cases set and read back)"
-menu = "keyboard input: SetKeyboardState and GetKeyState (the thread's key state, which Ctrl+Z's cases set and read back)"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the window, the
