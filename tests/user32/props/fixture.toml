@@ -1,0 +1,29 @@
+# props: one test per block of the real-machine capture (output.txt); see tests/README.md. Its window
+# is hidden. The values are the program's own constants; atoms and handles never print. Every
+# section deletes the global atoms of its names ("F2KProps...") at its start and end. Not gated:
+# F2K's user32 has no window properties yet, so every section is on the work list.
+description = "props - window properties: SetPropW/A, GetPropW/A and RemovePropW/A by name (other case, replacing, removing twice, a value of 0) and by atom (a GlobalAddAtomW atom read by name and the reverse, \"#291\" against MAKEINTATOM(291)); the property name's global atom before and after SetPropW, a second SetPropW, RemovePropW and the window's destruction; a second thread reading, setting and removing the first thread's window's properties; and NULL, destroyed and another process's windows, names never set, the empty name, a 300-character name and a NULL name."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the class, the
+# window, GlobalAddAtomW and GlobalDeleteAtom).
+string = [
+    "user32.SetPropW",
+    "user32.SetPropA",
+    "user32.GetPropW",
+    "user32.GetPropA",
+    "user32.RemovePropW",
+    "user32.RemovePropA",
+]
+atom = [
+    "user32.SetPropW",
+    "user32.GetPropW",
+    "user32.GetPropA",
+    "user32.RemovePropW",
+    "user32.RemovePropA",
+]
+refs = ["user32.SetPropW", "user32.RemovePropW", "kernel32.GlobalFindAtomW"]
+thread = ["user32.SetPropW", "user32.GetPropW", "user32.RemovePropW"]
+errors = ["user32.SetPropW", "user32.GetPropW", "user32.GetPropA", "user32.RemovePropW"]

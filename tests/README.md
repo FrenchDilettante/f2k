@@ -19,7 +19,7 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf, rects, chars
+│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -256,6 +256,11 @@ The fixtures:
   Each section prints first whether the user and system default locales are 0x0409 and the ANSI code page 1252, which the case mapping and the character types follow.
   Built with `/MD`.
   Not gated: it awaits its capture, and F2K's user32 has none of these calls yet.
+- `props` (user32) - window properties, whose names are global atoms: `SetPropW`/`A`, `GetPropW`/`A` and `RemovePropW`/`A` by name, in other case, replacing a value, removing twice and a value of 0 (`string`); by atom, a `GlobalAddAtomW` atom read by name and the reverse, and `"#291"` against `MAKEINTATOM(291)` (`atom`); whether the name's global atom is there (`GlobalFindAtomW`) before and after `SetPropW`, a second `SetPropW`, `RemovePropW` and the window's destruction (`refs`); a second thread reading, setting and removing the first thread's window's properties (`thread`); and NULL, destroyed and another process's windows, a name never set, the empty name, a 300-character name and a NULL name inside `__try` (`errors`).
+  Its window is hidden; the values are the program's own constants, and atoms and handles never print.
+  Every section deletes the global atoms of its names (`F2KProps...`) at its start and end.
+  Built with `/MD`.
+  Not gated: it awaits its capture, and F2K's user32 has no window properties yet.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.
