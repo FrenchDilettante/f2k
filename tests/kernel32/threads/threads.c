@@ -35,6 +35,28 @@
  *              APC queued to it, then TerminateThread: whether it ends
  *              (the termination resumes it), its exit code, whether the
  *              APC ran, and ResumeThread and SuspendThread on it after
+ *   open       OpenThread (through GetProcAddress: new in Windows 2000,
+ *              which MSVC 6's headers lack) on the thread's own id, with
+ *              all access and none; on a child's, with
+ *              THREAD_QUERY_INFORMATION alone (what it lets through:
+ *              GetExitCodeThread, but not SuspendThread, SetThreadPriority,
+ *              a wait or TerminateThread), THREAD_SUSPEND_RESUME alone,
+ *              SYNCHRONIZE with it and inheritable (the handle's inherit
+ *              flag, a wait for the child's end and its exit code), and
+ *              THREAD_TERMINATE alone; on the ended child's id while its
+ *              handles are open and once all are closed; on 0 and on the
+ *              process's id
+ *   times      GetThreadTimes on the current thread: its creation time
+ *              against GetSystemTimeAsFileTime, its exit time, and its
+ *              user and kernel times across a 300 ms busy loop, as
+ *              relations; on a child that spun for 200 ms and ended (its
+ *              creation and exit times against the main thread's and
+ *              each other, its kernel+user time against its lifetime);
+ *              on a handle with THREAD_TERMINATE alone, NULL, an event and
+ *              the process's pseudo-handle. No time prints, only
+ *              relations. GetThreadTimes is reached through
+ *              GetProcAddress, so the program still loads where kernel32
+ *              lacks it.
  *
  * Named-only sections (they end the process):
  *
@@ -685,6 +707,318 @@ static void sec_crt(void)
     CloseHandle(ran_event);
 }
 
+/* --- open ---------------------------------------------------------- */
+
+/* OpenThread is new in Windows 2000 and MSVC 6's headers lack it. */
+typedef HANDLE (WINAPI *open_thread_fn)(DWORD access, BOOL inherit, DWORD id);
+
+static HANDLE open_gate;
+
+static DWORD WINAPI open_child(LPVOID param)
+{
+    WaitForSingleObject(open_gate, WAIT_MS);
+    return (DWORD)param;
+}
+
+/* GetExitCodeThread through `h`: its return, the code, the last error. */
+static void show_exit_code(const char *label, HANDLE h)
+{
+    DWORD code = 0xDEADDEAD;
+    BOOL r;
+    const char *e;
+
+    arm();
+    r = GetExitCodeThread(h, &code);
+    e = le();
+    line("  GetExitCodeThread through %s: ret=%d code %lu err=%s", label, r, r ? code : 0, e);
+}
+
+static void sec_open(void)
+{
+    open_thread_fn open_thread;
+    HANDLE h, t, q;
+    DWORD tid, n, w, flags;
+    BOOL r;
+    const char *e;
+
+    open_thread = (open_thread_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "OpenThread");
+    line("OpenThread: exported %s", yesno(open_thread != NULL));
+    if (open_thread == NULL) {
+        return;
+    }
+
+    /* The program's own thread. */
+    arm();
+    h = open_thread(THREAD_ALL_ACCESS, FALSE, GetCurrentThreadId());
+    e = le();
+    line("OpenThread(THREAD_ALL_ACCESS, FALSE, its own id): a handle %s, not the pseudo-handle %s err=%s",
+         yesno(h != NULL), yesno(h != GetCurrentThread()), e);
+    if (h != NULL) {
+        show_exit_code("it", h);
+        line("  GetThreadPriority through it is the thread's own: %s",
+             yesno(GetThreadPriority(h) == GetThreadPriority(GetCurrentThread())));
+        arm();
+        r = CloseHandle(h);
+        e = le();
+        line("  CloseHandle: ret=%d err=%s", r, e);
+    }
+    arm();
+    h = open_thread(0, FALSE, GetCurrentThreadId());
+    e = le();
+    line("OpenThread(0, FALSE, its own id): a handle %s err=%s", yesno(h != NULL), e);
+    if (h != NULL) {
+        show_exit_code("it", h);
+        CloseHandle(h);
+    }
+
+    /* A child waiting on an event: each access right alone. */
+    open_gate = CreateEvent(NULL, TRUE, FALSE, NULL);
+    t = start(open_child, (void *)33, 0, &tid);
+    if (t == NULL) {
+        return;
+    }
+    arm();
+    q = open_thread(THREAD_QUERY_INFORMATION, FALSE, tid);
+    e = le();
+    line("OpenThread(THREAD_QUERY_INFORMATION, FALSE, a child's id): a handle %s err=%s", yesno(q != NULL), e);
+    if (q != NULL) {
+        show_exit_code("it", q);
+        arm();
+        n = SuspendThread(q);
+        e = le();
+        line("  SuspendThread through it: ret=%ld err=%s", (long)n, e);
+        arm();
+        r = SetThreadPriority(q, THREAD_PRIORITY_LOWEST);
+        e = le();
+        line("  SetThreadPriority through it: ret=%d err=%s", r, e);
+        arm();
+        w = WaitForSingleObject(q, 0);
+        e = le();
+        line("  WaitForSingleObject(it, 0): %s err=%s", wr(w), e);
+        arm();
+        r = TerminateThread(q, 1);
+        e = le();
+        line("  TerminateThread through it: ret=%d err=%s", r, e);
+        CloseHandle(q);
+    }
+    arm();
+    q = open_thread(THREAD_SUSPEND_RESUME, FALSE, tid);
+    e = le();
+    line("OpenThread(THREAD_SUSPEND_RESUME, FALSE, the child's id): a handle %s err=%s", yesno(q != NULL), e);
+    if (q != NULL) {
+        arm();
+        n = SuspendThread(q);
+        e = le();
+        line("  SuspendThread through it: ret=%ld err=%s", (long)n, e);
+        arm();
+        n = ResumeThread(q);
+        e = le();
+        line("  ResumeThread through it: ret=%ld err=%s", (long)n, e);
+        show_exit_code("it", q);
+        CloseHandle(q);
+    }
+    arm();
+    q = open_thread(SYNCHRONIZE | THREAD_QUERY_INFORMATION, TRUE, tid);
+    e = le();
+    line("OpenThread(SYNCHRONIZE|THREAD_QUERY_INFORMATION, TRUE, the child's id): a handle %s err=%s",
+         yesno(q != NULL), e);
+    if (q != NULL) {
+        flags = 0;
+        r = GetHandleInformation(q, &flags);
+        line("  GetHandleInformation: ret=%d, HANDLE_FLAG_INHERIT %s", r, yesno((flags & HANDLE_FLAG_INHERIT) != 0));
+        SetEvent(open_gate);
+        arm();
+        w = WaitForSingleObject(q, WAIT_MS);
+        e = le();
+        line("  WaitForSingleObject(it), the child released: %s err=%s", wr(w), e);
+        show_exit_code("it", q);
+    }
+    SetEvent(open_gate);
+    join(t);
+
+    /* The child has ended; its handles are still open. */
+    arm();
+    h = open_thread(THREAD_QUERY_INFORMATION, FALSE, tid);
+    e = le();
+    line("OpenThread(THREAD_QUERY_INFORMATION, FALSE, the ended child's id, its handles open): a handle %s err=%s",
+         yesno(h != NULL), e);
+    if (h != NULL) {
+        show_exit_code("it", h);
+        CloseHandle(h);
+    }
+    if (q != NULL) {
+        CloseHandle(q);
+    }
+    CloseHandle(t);
+    /* Every handle closed: the id is no thread's any more (the pause lets
+       the system finish with the thread object). */
+    Sleep(100);
+    arm();
+    h = open_thread(THREAD_QUERY_INFORMATION, FALSE, tid);
+    e = le();
+    line("OpenThread(THREAD_QUERY_INFORMATION, FALSE, the ended child's id, every handle closed): ret null %s err=%s",
+         yesno(h == NULL), e);
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+
+    /* THREAD_TERMINATE alone. */
+    ResetEvent(open_gate);
+    t = start(open_child, (void *)34, 0, &tid);
+    if (t != NULL) {
+        arm();
+        q = open_thread(THREAD_TERMINATE, FALSE, tid);
+        e = le();
+        line("OpenThread(THREAD_TERMINATE, FALSE, a second child's id): a handle %s err=%s", yesno(q != NULL), e);
+        if (q != NULL) {
+            arm();
+            r = TerminateThread(q, 44);
+            e = le();
+            line("  TerminateThread(it, 44): ret=%d err=%s", r, e);
+            show_exit_code("it", q);
+            CloseHandle(q);
+        }
+        SetEvent(open_gate);
+        join(t);
+        line("  the child's exit code through CreateThread's handle: %lu", exit_code(t));
+        CloseHandle(t);
+    }
+    CloseHandle(open_gate);
+
+    /* Ids that are no thread's. */
+    arm();
+    h = open_thread(THREAD_QUERY_INFORMATION, FALSE, 0);
+    e = le();
+    line("OpenThread(THREAD_QUERY_INFORMATION, FALSE, 0): ret null %s err=%s", yesno(h == NULL), e);
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+    arm();
+    h = open_thread(THREAD_QUERY_INFORMATION, FALSE, GetCurrentProcessId());
+    e = le();
+    line("OpenThread(THREAD_QUERY_INFORMATION, FALSE, the process's id): ret null %s err=%s", yesno(h == NULL), e);
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+}
+
+/* --- times --------------------------------------------------------- */
+
+/* GetThreadTimes is reached through GetProcAddress: the program loads
+   where kernel32 lacks it, its other sections intact. */
+typedef BOOL (WINAPI *get_thread_times_fn)(HANDLE thread, FILETIME *created, FILETIME *exited, FILETIME *kernel,
+                                           FILETIME *user);
+
+static unsigned __int64 ft64(const FILETIME *f)
+{
+    return ((unsigned __int64)f->dwHighDateTime << 32) | f->dwLowDateTime;
+}
+
+/* 100-nanosecond units. */
+#define FT_MS 10000
+
+static volatile DWORD busy_sink;
+
+/* Spin for `ms` milliseconds of GetTickCount; the milliseconds that passed. */
+static DWORD busy(DWORD ms)
+{
+    DWORD begin = GetTickCount();
+    DWORD now;
+
+    do {
+        busy_sink++;
+        now = GetTickCount();
+    } while (now - begin < ms);
+    return now - begin;
+}
+
+static DWORD WINAPI busy_child(LPVOID param)
+{
+    busy((DWORD)param);
+    return 7;
+}
+
+static void sec_times(void)
+{
+    FILETIME created, exited, kernel, user, now, k2, u2, cc, cx, ck, cu;
+    unsigned __int64 before, after;
+    HANDLE t, limited, ev;
+    DWORD wall;
+    BOOL r;
+    const char *e;
+    get_thread_times_fn get_thread_times;
+
+    get_thread_times = (get_thread_times_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadTimes");
+    line("kernel32 exports GetThreadTimes: %s", yesno(get_thread_times != NULL));
+    if (get_thread_times == NULL) {
+        return;
+    }
+    GetSystemTimeAsFileTime(&now);
+    arm();
+    r = get_thread_times(GetCurrentThread(), &created, &exited, &kernel, &user);
+    e = le();
+    line("GetThreadTimes(the current thread's pseudo-handle): ret=%d err=%s", r, e);
+    line("  created no later than GetSystemTimeAsFileTime's now %s, less than 60 seconds before it %s",
+         yesno(ft64(&created) <= ft64(&now)), yesno(ft64(&now) - ft64(&created) < (unsigned __int64)60000 * FT_MS));
+    line("  exit time zero %s", yesno(ft64(&exited) == 0));
+
+    before = ft64(&kernel) + ft64(&user);
+    wall = busy(300);
+    get_thread_times(GetCurrentThread(), &cc, &cx, &k2, &u2);
+    after = ft64(&k2) + ft64(&u2);
+    line("  after a %s ms busy loop: user time grew %s, kernel+user grew %s, by no more than the time that passed "
+         "plus 40 ms %s",
+         wall >= 300 ? "300" : "short", yesno(ft64(&u2) > ft64(&user)), yesno(after > before),
+         yesno(after - before <= (unsigned __int64)(wall + 40) * FT_MS));
+    line("  the creation time unchanged %s", yesno(ft64(&cc) == ft64(&created)));
+
+    /* A child that spins for 200 ms and ends. */
+    t = start(busy_child, (void *)200, 0, NULL);
+    if (t != NULL) {
+        join(t);
+        GetSystemTimeAsFileTime(&now);
+        arm();
+        r = get_thread_times(t, &cc, &cx, &ck, &cu);
+        e = le();
+        line("GetThreadTimes(an ended child that spun for 200 ms): ret=%d err=%s", r, e);
+        line("  created after the main thread %s; ended after it was created %s, at least 150 ms after %s, no "
+             "later than now %s",
+             yesno(ft64(&cc) >= ft64(&created)), yesno(ft64(&cx) >= ft64(&cc)),
+             yesno(ft64(&cx) - ft64(&cc) >= (unsigned __int64)150 * FT_MS), yesno(ft64(&cx) <= ft64(&now)));
+        line("  kernel+user nonzero %s, no more than its lifetime plus 40 ms %s",
+             yesno(ft64(&ck) + ft64(&cu) > 0),
+             yesno(ft64(&ck) + ft64(&cu) <= ft64(&cx) - ft64(&cc) + (unsigned __int64)40 * FT_MS));
+
+        /* A handle with THREAD_TERMINATE alone. */
+        limited = NULL;
+        DuplicateHandle(GetCurrentProcess(), t, GetCurrentProcess(), &limited, THREAD_TERMINATE, FALSE, 0);
+        arm();
+        r = get_thread_times(limited, &cc, &cx, &ck, &cu);
+        e = le();
+        line("GetThreadTimes(a handle with THREAD_TERMINATE alone): ret=%d err=%s", r, e);
+        if (limited != NULL) {
+            CloseHandle(limited);
+        }
+        CloseHandle(t);
+    }
+
+    /* Handles that are no thread's. */
+    arm();
+    r = get_thread_times(NULL, &cc, &cx, &ck, &cu);
+    e = le();
+    line("GetThreadTimes(NULL): ret=%d err=%s", r, e);
+    ev = CreateEvent(NULL, TRUE, FALSE, NULL);
+    arm();
+    r = get_thread_times(ev, &cc, &cx, &ck, &cu);
+    e = le();
+    line("GetThreadTimes(an event): ret=%d err=%s", r, e);
+    CloseHandle(ev);
+    arm();
+    r = get_thread_times(GetCurrentProcess(), &cc, &cx, &ck, &cu);
+    e = le();
+    line("GetThreadTimes(the current process's pseudo-handle): ret=%d err=%s", r, e);
+}
+
 /* --- mainexit, procexit (named only) ------------------------------- */
 
 static DWORD WINAPI outlive_main(LPVOID param)
@@ -833,6 +1167,8 @@ static const section_t sections[] = {
     { "crt", sec_crt, 0 },
     { "lateexit", sec_lateexit, 0 },
     { "suspterm", sec_suspterm, 0 },
+    { "open", sec_open, 0 },
+    { "times", sec_times, 0 },
     { "mainexit", sec_mainexit, 1 },
     { "procexit", sec_procexit, 1 },
     { NULL, NULL, 0 }
