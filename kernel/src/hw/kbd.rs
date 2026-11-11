@@ -14,13 +14,17 @@
 //! finds it full lost and counted. The DPC takes them out in order. The keyboard's replies to the
 //! driver's own commands come back through the same interrupt, between key bytes, so the driver's
 //! command state machine ([`Controller::receive`]) claims those first; every other byte is key
-//! data, fed to the console's producer (`csr::key_byte`), which appends the records it completes to
-//! the console's input buffer and asks for the lights a toggle key's make changes. The lights are
-//! the one command the driver sends after bring-up: 0xED, then its argument, each acknowledged; a
-//! request that arrives while an exchange is under way is dropped (the lights converge on the next
-//! toggle). The service routine reaches only the ports and the ring; the rest of the driver's state
-//! (the command state, the losses already reported) is its device extension's, which the DPC owns
-//! at the dispatch level, the console's own level too.
+//! data. While a GUI program is in the foreground (`win32k::input::takes_keyboard`) it goes to
+//! win32k's raw input thread (`win32k::input::raw_byte`), which makes it a window's key message;
+//! otherwise it is fed to the console's producer (`csr::key_byte`), which appends the records it
+//! completes to the console's input buffer and asks for the lights a toggle key's make changes.
+//! The lights are the one command the driver sends after bring-up: 0xED, then its argument, each
+//! acknowledged; a request that arrives while an exchange is under way is dropped (the lights
+//! converge on the next toggle). win32k's toggles are shown the same way ([`show_toggles`]): its
+//! key state and the console's producer keep theirs apart. The service routine reaches only the
+//! ports and the ring; the rest of the driver's state (the command state, the losses already
+//! reported) is its device extension's, which the DPC owns at the dispatch level, the console's own
+//! level too.
 //!
 //! Bring-up ([`Controller::bring_up`], run once at boot, polled, before the interrupt is
 //! connected): the keyboard interface disabled and stale bytes drained, the configuration byte
@@ -503,9 +507,13 @@ mod target {
                 }
             );
             if let Received::Key(byte) = received {
-                let mut lights = LightsRequest::default();
-                crate::csr::key_byte(dispatch, byte, &mut lights);
-                EXTENSION.get(dispatch).controller.show(lights);
+                if crate::win32k::input::takes_keyboard() {
+                    crate::win32k::input::raw_byte(dispatch, byte);
+                } else {
+                    let mut lights = LightsRequest::default();
+                    crate::csr::key_byte(dispatch, byte, &mut lights);
+                    EXTENSION.get(dispatch).controller.show(lights);
+                }
             }
         }
         let lost = RING.lost();
@@ -569,6 +577,14 @@ mod target {
         }
     }
 
+    /// Show `toggles` (the layout's toggle bits) on the lights, for win32k's key state, whose
+    /// toggles change outside the DPC (see [`Controller::set_lights`]).
+    pub fn show_toggles(toggles: u8) {
+        level::raised::<Dispatch, _>(|dispatch| {
+            EXTENSION.get(dispatch).controller.set_lights(toggles);
+        });
+    }
+
     /// Restart the machine through the controller (the shutdown's reset): the driver's own
     /// controller, at its level, as every command it sends. False when the controller never took
     /// the command; the caller then restarts the machine another way.
@@ -578,7 +594,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::{init, reset_machine};
+pub use target::{init, reset_machine, show_toggles};
 
 #[cfg(test)]
 mod tests {

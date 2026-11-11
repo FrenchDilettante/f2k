@@ -11,11 +11,12 @@ Seven of Windows 2000's system DLLs are F2K's own code:
 - **kernel32**: processes (child processes included) and threads, synchronization, memory, files, the console, the environment, code pages and locale, messages.
 - **msvcrt**: the C runtime for programs built against msvcrt.dll: start-up and exit, exception handling and `setjmp`, files and stdio, `printf` and `scanf`, narrow and wide strings, `_putenv`, the allocator, rounding and the compiler's `_ftol`, full paths and the current directory, the time functions (`gmtime`, `localtime`, `mktime` and `TZ`), and starting child processes (`_spawn`, `_cwait`).
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
-- **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility, their coordinates and children; no frame or caption is drawn); the message loop, sent and posted messages and the default window procedure; keyboard input (`SendInput`'s keystrokes to the foreground window's focus, the key states, `TranslateMessage`'s characters for the US layout); painting (`BeginPaint`, the update regions) and the `GetDC` family; the clipboard, its text converted between its ANSI, OEM and Unicode forms; the display's settings, devices, monitor, metrics and system colors; `MessageBeep`; the rectangle and character-walk helpers.
+- **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility, their coordinates and children; no frame or caption is drawn); the message loop, sent and posted messages and the default window procedure; keyboard input (the keyboard's keystrokes and `SendInput`'s to the foreground window's focus, the key states, `TranslateMessage`'s characters for the US layout); painting (`BeginPaint`, the update regions) and the `GetDC` family; the clipboard, its text converted between its ANSI, OEM and Unicode forms; the display's settings, devices, monitor, metrics and system colors; `MessageBeep`; the rectangle and character-walk helpers.
 - **gdi32**: screen device contexts drawn on the VBE framebuffer, and their capabilities: text in one built-in 8x16 font, the stock objects, the text and background colors, single pixels.
 - **shell32**: only `ShellAboutW`, a stub that answers FALSE, so programs that import it (Windows 2000's `calc.exe`) load.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), and `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code.
+A test program, [`keyshow`](userland/keyshow/README.md), is built beside them and kept off the disk.
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
@@ -255,7 +256,7 @@ f2k/
 │                     # ntdll, kernel32, msvcrt, advapi32, user32, gdi32, shell32; each DLL's
 │                     # export spec in userland/<dll>/exports.toml, the DLLs F2K doesn't build
 │                     # their spec alone;
-│                     # F2K's own programs (pwd, ps, shutdown, cmd), each with its README
+│                     # F2K's own programs (pwd, ps, shutdown, cmd, keyshow), each with its README
 ├── vbox-image/       # Files make vbox-image adds to the VirtualBox disk (not committed)
 │
 └── kernel/           # F2K Kernel

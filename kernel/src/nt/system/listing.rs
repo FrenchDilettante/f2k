@@ -19,9 +19,10 @@
 //! faults, working set, pool and paging-file use, the private pages and the I/O counters.
 //!
 //! The idle process holds the idle thread, client id 0. The System process, client id 8 as on
-//! Windows 2000, holds the kernel's system threads: F2K runs one, the console's control thread
-//! (`crate::csr::ctrl`), where Windows 2000's System process holds its executive's worker threads,
-//! its memory manager's and its cache manager's — more than one (a known gap).
+//! Windows 2000, holds the kernel's system threads: F2K runs two, the console's control thread
+//! (`crate::csr::ctrl`) and win32k's raw input thread (`crate::win32k::input`), where Windows
+//! 2000's System process holds its executive's worker threads, its memory manager's and its cache
+//! manager's too (a known gap).
 //!
 //! A buffer too short for the listing is STATUS_INFO_LENGTH_MISMATCH with a length of zero
 //! reported, as the toolhelp fixture's capture shows Windows 2000's: the caller grows its buffer

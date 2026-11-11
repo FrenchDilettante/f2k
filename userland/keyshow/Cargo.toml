@@ -1,0 +1,18 @@
+[package]
+name = "keyshow"
+version = "0.1.0"
+edition = "2021"
+
+# keyshow's lines, host-testable.
+[lib]
+name = "keyshow"
+path = "src/lib.rs"
+
+# The program: keyshow.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "keyshow"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

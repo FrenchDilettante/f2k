@@ -4,11 +4,13 @@
 //! The producer is fed one byte at a time ([`Producer::event`]) — the original PC/XT-compatible
 //! scan codes the keyboard controller delivers with its translation on: a make code per key, the
 //! same code with bit 7 set for its break, 0xE0 before an extended key, 0xE1 before Pause's
-//! three-byte sequence. It owns the decode, the key-down set (per virtual key, the left and right
-//! modifiers apart), the three toggles (caps, num and scroll lock, and the lights that show them),
-//! and the control-key state each record carries. What a key means — its virtual key and its
-//! character — is the layout's ([`super::layout`]), which the producer holds by reference and asks
-//! nothing else of.
+//! three-byte sequence. The decode of those bytes into keys is the [`Decoder`]'s, which win32k's
+//! input path shares (`kernel/src/win32k/input.rs`: the keyboard's bytes go there instead while a
+//! GUI program is in the foreground). The producer owns the key-down set (per virtual key, the
+//! left and right modifiers apart), the three toggles (caps, num and scroll lock, and the lights
+//! that show them), and the control-key state each record carries. What a key means — its virtual
+//! key and its character — is the layout's ([`super::layout`]), which the producer holds by
+//! reference and asks nothing else of.
 //!
 //! Each physical press is one keydown record and one keyup record, each with a repeat count of 1;
 //! a key the keyboard repeats while held gives further keydowns. The input buffer
@@ -157,11 +159,89 @@ enum Prefix {
     E1Then(u8),
 }
 
+/// A key the controller's bytes completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Key {
+    /// Where its make code came from: the base table, or after the E0 prefix.
+    pub origin: Origin,
+    /// The virtual key the layout's scan tables give it: the physical key, before any conversion
+    /// (the left and right modifiers apart).
+    pub vk: u8,
+    /// Its make code, un-prefixed (Pause's: the trailing byte's).
+    pub make: u8,
+    pub down: bool,
+}
+
+/// The decode of the controller's bytes into keys: the prefixes, the breaks, and the codes the
+/// layout's scan tables name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Decoder {
+    prefix: Prefix,
+}
+
+impl Decoder {
+    /// A decoder waiting for a key's first byte.
+    pub const fn new() -> Self {
+        Decoder {
+            prefix: Prefix::None,
+        }
+    }
+
+    /// Take one controller byte: the key it completes, if it completes one. The keyboard's overrun
+    /// report (0x00), the fake shifts it wraps extended keys in (E0 2A, E0 36, and their breaks),
+    /// and codes `layout`'s tables do not name complete none.
+    pub fn byte(&mut self, layout: &Layout, byte: u8) -> Option<Key> {
+        let prefix = core::mem::replace(&mut self.prefix, Prefix::None);
+        let make = byte & 0x7F;
+        let down = byte & 0x80 == 0;
+        let key = |origin, vk| Key {
+            origin,
+            vk,
+            make,
+            down,
+        };
+        match (prefix, byte) {
+            // Pause: E1 1D 45 (its break E1 9D C5) is one key, reported with the trailing byte's
+            // code; that byte is not Num Lock.
+            (Prefix::E1, first) => {
+                self.prefix = Prefix::E1Then(first);
+                None
+            }
+            (Prefix::E1Then(first), _) => layout.e1_key(first & 0x7F).map(|vk| Key {
+                down: first & 0x80 == 0,
+                ..key(Origin::Base, vk)
+            }),
+            (_, 0xE0) => {
+                self.prefix = Prefix::E0;
+                None
+            }
+            (_, 0xE1) => {
+                self.prefix = Prefix::E1;
+                None
+            }
+            (_, 0x00) => None,
+            (Prefix::E0, _) if make == 0x2A || make == 0x36 => None,
+            // An extended code the table does not name would be a flag-only event: dropped.
+            (Prefix::E0, _) => layout.e0_key(make).map(|vk| key(Origin::E0, vk)),
+            (Prefix::None, _) => match layout.scan[make as usize] {
+                0 => None,
+                vk => Some(key(Origin::Base, vk)),
+            },
+        }
+    }
+}
+
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The key-event producer: the controller's bytes in, key event records out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Producer {
     layout: &'static Layout,
-    prefix: Prefix,
+    decoder: Decoder,
     /// The key-down set: one bit per virtual key, as the scan tables give it (before any
     /// conversion: the physical key).
     down: [u32; 8],
@@ -173,7 +253,7 @@ impl Producer {
     pub const fn new(layout: &'static Layout) -> Self {
         Producer {
             layout,
-            prefix: Prefix::None,
+            decoder: Decoder::new(),
             down: [0; 8],
             toggles: BOOT_TOGGLES,
         }
@@ -195,42 +275,16 @@ impl Producer {
     }
 
     /// Take one controller byte: a byte that completes a key's event hands its record to `sink`;
-    /// a toggle key's make shows the new toggles on `lights`. The keyboard's overrun report (0x00),
-    /// the fake shifts it wraps extended keys in (E0 2A, E0 36, and their breaks), and codes no
-    /// table names are dropped.
+    /// a toggle key's make shows the new toggles on `lights`. What the [`Decoder`] drops completes
+    /// nothing.
     pub fn event(
         &mut self,
         byte: u8,
         lights: &mut impl Lights,
         sink: &mut impl FnMut(KeyEventRecord),
     ) {
-        let prefix = core::mem::replace(&mut self.prefix, Prefix::None);
-        let make = byte & 0x7F;
-        let down = byte & 0x80 == 0;
-        match (prefix, byte) {
-            // Pause: E1 1D 45 (its break E1 9D C5) is one key, reported with the trailing byte's
-            // code; that byte is not Num Lock.
-            (Prefix::E1, first) => self.prefix = Prefix::E1Then(first),
-            (Prefix::E1Then(first), _) => {
-                if let Some(vk) = self.layout.e1_key(first & 0x7F) {
-                    let down = first & 0x80 == 0;
-                    self.key(Origin::Base, vk, make, down, lights, sink);
-                }
-            }
-            (_, 0xE0) => self.prefix = Prefix::E0,
-            (_, 0xE1) => self.prefix = Prefix::E1,
-            (_, 0x00) => {}
-            (Prefix::E0, _) if make == 0x2A || make == 0x36 => {}
-            (Prefix::E0, _) => {
-                // An extended code the table does not name would be a flag-only event: dropped.
-                if let Some(vk) = self.layout.e0_key(make) {
-                    self.key(Origin::E0, vk, make, down, lights, sink);
-                }
-            }
-            (Prefix::None, _) => match self.layout.scan[make as usize] {
-                0 => {}
-                vk => self.key(Origin::Base, vk, make, down, lights, sink),
-            },
+        if let Some(key) = self.decoder.byte(self.layout, byte) {
+            self.key(key.origin, key.vk, key.make, key.down, lights, sink);
         }
     }
 

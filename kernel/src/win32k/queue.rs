@@ -1599,6 +1599,7 @@ mod target {
         let (result, wakes, server) = {
             let mut manager = crate::win32k::window::lock(passive);
             let result = f(&mut manager);
+            crate::win32k::input::publish(&manager.windows);
             let queues = &mut manager.windows.queues;
             (result, queues.take_wakes(), queues.take_server_wake())
         };

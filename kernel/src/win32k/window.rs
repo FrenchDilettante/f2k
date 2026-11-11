@@ -4522,7 +4522,9 @@ mod target {
         // token stays on this thread, dropped with this frame.
         let mut passive = unsafe { At::<Passive>::enter() };
         let mut manager = MANAGER.lock(&mut passive);
-        f(&mut manager)
+        let result = f(&mut manager);
+        super::super::input::publish(&manager.windows);
+        result
     }
 }
 

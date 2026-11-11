@@ -1,5 +1,5 @@
 //! The input path's host tests: the keyinput fixture's sections, as its procedure records them
-//! (each case's expected records are the capture's), and the key states.
+//! (each case's expected records are the capture's), the keyboard's bytes, and the key states.
 
 use rtl::user::{INPUT_KEYBOARD, WM_USER};
 
@@ -91,6 +91,14 @@ impl Rig {
             };
             let stroke = Keystroke::of_input(&input, &self.m.windows.input.keys).unwrap();
             key_event(&mut self.m.windows, stroke, 0);
+        }
+        self.pump()
+    }
+
+    /// The keyboard's bytes, then the fixture's loop.
+    fn type_bytes(&mut self, bytes: &[u8]) -> Vec<Record> {
+        for &byte in bytes {
+            key_byte(&mut self.m.windows, byte, 0);
         }
         self.pump()
     }
@@ -298,6 +306,41 @@ fn a_repeated_key_folds_into_one_message() {
     );
 }
 
+/// The keyboard's bytes take the same path: Shift+A as the controller sends it, an extended arrow,
+/// Caps Lock, whose toggle the character and the lights follow, and the right Ctrl.
+#[test]
+fn the_keyboards_bytes_reach_the_window() {
+    let mut rig = Rig::new();
+    assert_eq!(
+        rig.type_bytes(&[0x2A, 0x1E, 0x9E, 0xAA]),
+        [
+            key(WM_KEYDOWN, 0x10, 0x002A_0001, SHIFTED, true),
+            key(WM_KEYDOWN, 0x41, 0x001E_0001, SHIFTED, true),
+            chr(WM_CHAR, 0x41, 0x001E_0001, SHIFTED),
+            key(WM_KEYUP, 0x41, 0xC01E_0001, SHIFTED, false),
+            key(WM_KEYUP, 0x10, 0xC02A_0001, NONE, false),
+        ]
+    );
+    assert_eq!(
+        rig.type_bytes(&[0xE0, 0x4B, 0xE0, 0xCB]),
+        [
+            key(WM_KEYDOWN, 0x25, 0x014B_0001, NONE, true),
+            key(WM_KEYUP, 0x25, 0xC14B_0001, NONE, false),
+        ]
+    );
+    assert_eq!(key_byte(&mut rig.m.windows, 0x3A, 0), Some(CAPS_LOCK));
+    assert_eq!(key_byte(&mut rig.m.windows, 0xBA, 0), None);
+    rig.pump();
+    assert!(rig.m.windows.thread(rig.t).keys.is_toggled(VK_CAPITAL));
+    assert_eq!(
+        rig.type_bytes(&[0x1E, 0x9E])[1],
+        chr(WM_CHAR, 0x41, 0x001E_0001, NONE)
+    );
+    let right = rig.type_bytes(&[0xE0, 0x1D, 0xE0, 0x9D]);
+    assert_eq!(right[0], key(WM_KEYDOWN, 0x11, 0x011D_0001, CTRLED, true));
+    assert!(!rig.m.windows.input.keys.is_down(VK_RCONTROL));
+}
+
 /// The thread's key state is its last read's: the system's moves at once, the thread's as it
 /// reads.
 #[test]
@@ -397,7 +440,7 @@ fn a_unicode_event_carries_its_character() {
 }
 
 /// With no focus window the keystrokes go to the active window as system keys; with no GUI
-/// foreground, nowhere.
+/// foreground, nowhere, and the keyboard's bytes go to the console.
 #[test]
 fn no_focus_makes_system_keys() {
     let mut rig = Rig::new();
@@ -406,6 +449,10 @@ fn no_focus_makes_system_keys() {
     assert_eq!(got[0].0, WM_SYSKEYDOWN);
     assert_eq!(got[0].2, 0x001E_0001, "no context bit: Alt is up");
     assert_eq!(got[2].0, WM_SYSKEYUP);
+    publish(&rig.m.windows);
+    assert!(takes_keyboard());
     rig.m.windows.foreground_thread = None;
+    publish(&rig.m.windows);
+    assert!(!takes_keyboard());
     assert!(rig.send(&[(0x41, 0x1E, DOWN), (0x41, 0x1E, UP)]).is_empty());
 }

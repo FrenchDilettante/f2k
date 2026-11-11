@@ -25,7 +25,7 @@ A header line, then one line per process, sorted by process ID, each line ended 
 | `PRI`  | Its base priority: 8 for the normal priority class and the System process, 0 for the idle process.             |
 | `NAME` | Its image's file name, with its extension, cut at 15 characters; `[System Process]` for the idle process.      |
 
-The idle process holds the idle thread; the System process holds the kernel's system threads (today one, the console's control thread).
+The idle process holds the idle thread; the System process holds the kernel's system threads (today two, the console's control thread and win32k's raw input thread).
 A process that has ended is not listed, even while a handle still holds it open.
 
 The numbers are right-aligned under their headings, and a number wider than its column widens it.
@@ -69,7 +69,7 @@ Compared with what Windows 2000's process listing holds:
 
 - there is no CPU-time column, nor any other column than the five above;
 - `ps` takes no arguments: it always lists every process;
-- the System process holds one thread where Windows 2000's holds many.
+- the System process holds two threads where Windows 2000's holds many.
 
 ## Example
 

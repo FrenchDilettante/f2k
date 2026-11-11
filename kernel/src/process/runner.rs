@@ -91,6 +91,9 @@ pub fn run() -> ! {
     // The console's control thread, the kernel's worker that delivers its control events: its
     // stack is one of the boot's permanent allocations.
     crate::csr::start_control_thread();
+    // win32k's raw input thread, which takes the keyboard's keystrokes to the windows while a GUI
+    // program is in the foreground: a permanent allocation too.
+    crate::win32k::input::start();
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();

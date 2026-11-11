@@ -132,12 +132,13 @@ ADDING_PROGRAMS = [name for name in DECLARED if "system_programs" in f2kboot.dec
 def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
     """A sectioned fixture's `system_programs` names programs the userland workspace builds and
     `make userland` copies to their .exe names (userland/<name>), which the disk the tests boot
-    leaves out of \\WINNT\\system32 (the ones it carries need no declaration): cmd.exe."""
+    leaves out of \\WINNT\\system32 (the ones it carries need no declaration): cmd.exe, and the
+    test programs (keyshow.exe)."""
     assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture adds programs"
     names = [path.stem for path in f2kboot.system_programs(fixture)]
     assert names, "an empty system_programs: leave it out"
     on_disk = makefile_programs("SYSTEM_PROGRAMS")
-    built = on_disk + makefile_programs("CMD_PROGRAM")
+    built = on_disk + makefile_programs("CMD_PROGRAM") + makefile_programs("TEST_PROGRAMS")
     for name in names:
         assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
         assert name in built, f"{name}: not a program `make userland` copies to its .exe name"

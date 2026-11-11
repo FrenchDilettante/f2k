@@ -1,9 +1,14 @@
 //! Keyboard input: the path a keystroke takes to a window, as Windows 2000's raw input thread
 //! takes it, the key states, and TranslateMessage.
 //!
-//! A keystroke comes from SendInput (the PS/2 keyboard's still go to the console), in the
-//! caller's service, synchronously, under the window manager's lock. It takes the layout's tables
-//! (`rtl::console::layout`'s US tables, the console's own). Each keystroke ([`key_event`]):
+//! A keystroke comes from the PS/2 keyboard or from SendInput. The keyboard's bytes reach win32k
+//! only while a GUI thread is in the foreground ([`takes_keyboard`]); otherwise they go to the
+//! console, as before any program had a window. The keyboard driver's DPC hands them to the raw
+//! input thread ([`raw_byte`]), a system thread of win32k's, as Windows 2000's raw input thread
+//! is, which decodes them with the console's own decoder and layout (`rtl::console::input`'s
+//! [`Decoder`], `rtl::console::layout`'s US tables: one set of scan-code tables for both) and runs
+//! each keystroke under the window manager's lock. SendInput's keystrokes run in the caller's
+//! service, synchronously. Each keystroke ([`key_event`]):
 //!
 //! - becomes a virtual key: SendInput names it, or its scan code does through the layout (the
 //!   extended flag picks the E0 table; Num Lock and the modifiers convert the keypad's keys). A
@@ -40,7 +45,10 @@
 //! - NtUserTranslateMessage (0x1224): the MSG at `Msg` translated ([`translate`]); whether a
 //!   character was posted, into `Translated`.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use rtl::accel::Modifiers;
+use rtl::console::input::{Decoder, Key};
 use rtl::console::layout::{
     Origin,
     ALT,
@@ -220,13 +228,14 @@ fn generic(vk: u8) -> u8 {
 }
 
 /// The system's input state: the asynchronous key state, the keys pressed since GetAsyncKeyState
-/// last answered for them, and whether Alt went down with no other key since. The window
-/// registry's, behind the window manager's lock.
+/// last answered for them, whether Alt went down with no other key since, and the decode of the
+/// keyboard's bytes. The window registry's, behind the window manager's lock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RawInput {
     pub keys: KeyState,
     recent: [u32; 8],
     alt_alone: bool,
+    decoder: Decoder,
 }
 
 impl RawInput {
@@ -234,6 +243,7 @@ impl RawInput {
         keys: KeyState::EMPTY,
         recent: [0; 8],
         alt_alone: false,
+        decoder: Decoder::new(),
     };
 
     /// GetAsyncKeyState's answer for the key: 0x8000 while it is down, the low bit when it went
@@ -289,6 +299,19 @@ impl Keystroke {
             scan,
             extended,
             up,
+            character: 0,
+        })
+    }
+
+    /// The keyboard's key, as its bytes decoded, a keystroke under the system's key state `keys`.
+    pub fn of_key(key: &Key, keys: &KeyState) -> Option<Keystroke> {
+        let (mods, toggles) = keys.layout_bits();
+        let vk = US.virtual_key(key.origin, key.vk, mods, toggles);
+        (vk != 0).then_some(Keystroke {
+            vk,
+            scan: key.make,
+            extended: key.origin == Origin::E0,
+            up: !key.down,
             character: 0,
         })
     }
@@ -397,6 +420,14 @@ pub fn key_event(windows: &mut Windows, stroke: Keystroke, time: u32) -> Option<
     changed
 }
 
+/// One of the keyboard's bytes, stamped `time`: the keystroke it completes, if it completes one
+/// ([`key_event`]). The toggles when the keystroke changed them, for the lights.
+pub fn key_byte(windows: &mut Windows, byte: u8, time: u32) -> Option<u8> {
+    let key = windows.input.decoder.byte(&US, byte)?;
+    let stroke = Keystroke::of_key(&key, &windows.input.keys)?;
+    key_event(windows, stroke, time)
+}
+
 /// The thread `thread` read the input message `msg` out of its queue, of the key `key` (the
 /// side's, for a modifier): its key state moves with it.
 pub fn read(windows: &mut Windows, thread: ThreadId, msg: &Msg, key: u8) {
@@ -451,6 +482,117 @@ pub fn translate(
     Ok(true)
 }
 
+// --- Where the keyboard's bytes go ---------------------------------------------------------------
+
+/// Whether a GUI thread is in the foreground (it has an active window), so the keyboard's bytes go
+/// to win32k: the window manager's state, published for the keyboard's DPC, which cannot take the
+/// lock, each time the lock is let go ([`publish`]).
+static TAKES_KEYBOARD: AtomicBool = AtomicBool::new(false);
+
+/// Publish whether the keyboard's bytes go to win32k: the window manager's bridges' last step,
+/// under its lock.
+pub fn publish(windows: &Windows) {
+    TAKES_KEYBOARD.store(
+        super::focus::foreground_window(windows).is_some(),
+        Ordering::SeqCst,
+    );
+}
+
+/// Whether the keyboard's bytes go to win32k (a GUI thread is in the foreground), as the window
+/// manager last published it; to the console otherwise.
+pub fn takes_keyboard() -> bool {
+    TAKES_KEYBOARD.load(Ordering::SeqCst)
+}
+
+#[cfg(target_arch = "x86")]
+mod target {
+    use core::cell::UnsafeCell;
+    use core::ptr::NonNull;
+
+    use crate::hw::kbd::ByteRing;
+    use crate::level::{At, Dispatch};
+    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
+    use crate::sched::wait::{WaitReason, WaitableId};
+
+    /// The raw input thread's priority: Windows 2000's, LOW_REALTIME_PRIORITY + 3, above every
+    /// program's thread, so a keystroke reaches its queue before the program reads on.
+    const PRIORITY: i8 = 19;
+
+    /// The keyboard's bytes for the raw input thread, in arrival order: the DPC puts them, the
+    /// thread takes them.
+    static RAW: ByteRing = ByteRing::new();
+
+    /// The raw input thread's work event: a synchronization event, set by the DPC for each byte,
+    /// waited on by the thread alone. Named by its address in the dispatcher database
+    /// ([`WaitableId::Embedded`]), and reached only through the dispatcher once named.
+    struct WorkEvent(UnsafeCell<Event>);
+
+    // SAFETY: one processor. The event is touched directly once, by `start` at boot, before the
+    // thread exists and before the keyboard's bytes can reach it; from then on only the
+    // dispatcher reaches its header, by its address, serialized at the dispatch level.
+    unsafe impl Sync for WorkEvent {}
+
+    static WORK: WorkEvent = WorkEvent(UnsafeCell::new(Event::new(
+        EventKind::Synchronization,
+        false,
+    )));
+
+    impl WorkEvent {
+        /// The event's name: its header's address. No reference to the event is formed.
+        fn id(&self) -> WaitableId {
+            // SAFETY: a projection inside the static's own cell: it computes the header's address
+            // and reads nothing.
+            let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
+            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
+        }
+    }
+
+    /// Start the raw input thread: once, at boot, before the first process.
+    pub fn start() {
+        {
+            let _masked = crate::pcr::pcr().mask_guard();
+            // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on
+            // it or sets it yet, and interrupts are masked for the reference's life.
+            unsafe { (*WORK.0.get()).init() };
+        }
+        crate::sched::idle::start_system_thread(
+            crate::sched::database::RAW_INPUT_THREAD,
+            raw_input_thread,
+            PRIORITY,
+        );
+    }
+
+    /// The keyboard DPC's hand-over of a byte for win32k: kept for the raw input thread, which is
+    /// woken. A byte that finds the ring full is lost.
+    pub fn raw_byte(dispatch: &mut At<Dispatch>, byte: u8) {
+        if !RAW.push(byte) {
+            crate::serial_println!("F2K: kbd: raw input ring full: a byte dropped");
+        }
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .set_event(WORK.id(), EVENT_WAKE_INCREMENT);
+    }
+
+    /// The raw input thread's routine: wait for bytes, run each one's keystroke under the window
+    /// manager's lock, show the toggles it changed on the lights, again. Never returns.
+    extern "C" fn raw_input_thread(_start: u32, _context: u32) -> ! {
+        loop {
+            crate::sched::wait::wait_current_for(WORK.id(), WaitReason::Executive, None);
+            while let Some(byte) = RAW.pop() {
+                let time = crate::win32k::queue::millis(crate::win32k::queue::now());
+                let lights =
+                    crate::win32k::queue::locked(|m| super::key_byte(&mut m.windows, byte, time));
+                if let Some(toggles) = lights {
+                    crate::hw::kbd::show_toggles(toggles);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "x86")]
+pub use target::{raw_byte, start};
+
 #[cfg(target_arch = "x86")]
 mod services {
     use super::*;
@@ -485,11 +627,13 @@ mod services {
                 break;
             }
             let time = millis(now());
-            // The keyboard's lights stay as they are: the console's producer keeps them.
-            let _ = with_manager(call.passive(), |m| {
+            let lights = with_manager(call.passive(), |m| {
                 let stroke = Keystroke::of_input(&input, &m.windows.input.keys)?;
                 key_event(&mut m.windows, stroke, time)
             });
+            if let Some(toggles) = lights {
+                crate::hw::kbd::show_toggles(toggles);
+            }
             done += 1;
         }
         sent.write(done)?;

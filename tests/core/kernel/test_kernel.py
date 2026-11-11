@@ -115,7 +115,8 @@ PROCESS_CONCURRENT = (
 )
 # F2K's own ps.exe beside a sleeping program: sched's sleep section is still asleep when ps lists
 # the processes (kernel32's ToolHelp over NtQuerySystemInformation's listing), so its lines show
-# the idle process, the System process (PID 8, the console's control thread its one thread), sched
+# the idle process, the System process (PID 8, its two threads the console's control thread and
+# win32k's raw input thread), sched
 # and ps itself, sorted by id, each a boot's program (no creator) at the normal class's base
 # priority; ps ends first, then sched, both torn down clean.
 PROCESS_PS = (
@@ -124,7 +125,7 @@ PROCESS_PS = (
     "F2K: process 2 of 2: WINNT\\system32\\ps.exe",
     "  PID  PPID  THR  PRI  NAME",
     "    0     0    1    0  [System Process]",
-    "    8     0    1    8  System",
+    "    8     0    2    8  System",
     r"re:^ +\d+     0 +\d+    8  sched\.exe$",
     r"re:^ +\d+     0    1    8  ps\.exe$",
     "F2K: process 2 (ps) exited normally (exit code=0)",

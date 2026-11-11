@@ -11,8 +11,8 @@ The tests are grouped by the DLL they exercise, one directory per group:
 tests/
 ├── core/       # the kernel's own boots (kernel/), the Limine, input, screen and shell tests
 │               # (test_limine.py, test_input.py, test_textscreen.py and its screens/,
-│               # test_cmd.py, test_framebuffer.py, test_textout.py, test_shutdown.py), and the
-│               # fixtures exit0, ret0, hello and bare
+│               # test_cmd.py, test_guikeys.py, test_framebuffer.py, test_textout.py,
+│               # test_shutdown.py), and the fixtures exit0, ret0, hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
 │               # shutparm, profile
@@ -56,6 +56,7 @@ Build intermediates (`.obj` etc.) are ignored, not committed.
 A fixture's name is unique across the groups: the disk carries every program in one directory, and the declarations, pins and results name a fixture by its name alone (`f2kboot.fixture_directory` finds its directory, and refuses a name two groups declare).
 
 Shared pieces sit beside the groups: `common/f2kt.h` (the reporting and section helpers the sectioned fixtures include), `build.bat`, `capture.bat` (the real-machine capture of the sectioned fixtures), and the pytest side: `conftest.py` and `f2kboot.py` (building, booting, comparing), `core/kernel/test_kernel.py`, the kernel's own boots (the fault stubs, the Limine disk path, the multi-process suite, the RAM disk, the interrupt and IDE diagnostics, and the single-path program smokes below), which have no sectioned capture to compare against, and `core/test_limine.py`, a few corpus blocks booted through Limine instead of QEMU's Multiboot loader.
+`core/test_guikeys.py` boots F2K's own `keyshow.exe`, added to a copy of the disk, and types into its window through QMP: the keyboard's keystrokes reach the foreground window as key messages, their characters through `TranslateMessage`, compared line for line.
 `core/test_cmd.py` boots into F2K's own `cmd.exe`, added to a copy of the disk (the disk the tests boot leaves it out), types `pwd` and Return at its prompt through QMP, and checks the text screen row by row.
 `core/test_shutdown.py` types a file's creation and then `shutdown` at that prompt, on a copy of the disk with cmd.exe added, kept between two boots (`f2kboot.boot`'s `kept`: attached without QEMU's snapshot): the first boot ends the session and halts on "It is now safe to turn off your computer." or restarts (QEMU's `-no-reboot` turns the restart into its exit, which the harness takes for the boot's end after the kernel's restart line); the host then reads the image (`f2kboot.read_volume`: FAT[1]'s clean-shutdown bit, FSInfo's free count against the FAT's), and the second boot finds the file.
 
@@ -142,7 +143,7 @@ The fixtures:
 - `toolhelp` - the ToolHelp snapshot, with its companion program `thkid.exe` (built beside it from `thkid.c`), which holds on named events the program sets, so each snapshot finds it where the section expects: `PROCESSENTRY32`, `PROCESSENTRY32W` and `THREADENTRY32`, and `SYSTEM_PROCESS_INFORMATION` and `SYSTEM_THREAD_INFORMATION` (declared in the program from public documentation, MSVC 6's headers having neither) with the chain `NtQuerySystemInformation` fills read through them; the program's own entry through `Process32First`/`Process32Next` and `Process32FirstW`/`Process32NextW` (its name, thread count, priority class and parent) and its threads through `Thread32First`/`Thread32Next`, after `CreateThread`, `SetThreadPriority` and `SetPriorityClass`; children listed with the program as their parent, ended with their handles open, gone once they are closed, created suspended, and a grandchild outliving its parent; the idle and System processes; the calls' errors; and the snapshot handle's object type, access and inheritance.
   The real machine runs other processes that vary from boot to boot, so only the program's own processes and threads print, found by their ids, and the idle and System processes' ids and thread counts print as relations.
   Built with `/MD`.
-  Gated; the system block stays pending while F2K's System process holds one system thread.
+  Gated.
   The child block masks its suspended child's exit code after `TerminateProcess(7)`: 7 or 0 on Windows 2000, as its thread had or had not been dispatched up to its suspend before the termination.
 - `batspawn` - `CreateProcessA`/`CreateProcessW` on batch files the program writes, with its companion program `blkid.exe` (built beside it from `blkid.c`), a stand-in command processor that prints its command line and its image's path and runs nothing.
   `ComSpec` names it and a copy of it sits in the current directory as `cmd.exe`, so the output shows whether the command processor is found through `ComSpec` or by searching for `cmd`.

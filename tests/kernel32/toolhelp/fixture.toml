@@ -4,14 +4,10 @@
 # on the real machine. The real machine runs other processes that vary from boot to boot, so the
 # fixture prints only its own processes and threads, found by their ids, and the idle and System
 # processes' ids and thread counts as relations. One line needs a mask: the child block's suspended
-# child's exit code, which rests on timing (see the mask). Gated. The system block is pending until
-# F2K's System process holds more than one system thread.
+# child's exit code, which rests on timing (see the mask). Gated.
 description = "toolhelp - the ToolHelp snapshot (toolhelp.c, with its companion program thkid.c): PROCESSENTRY32, PROCESSENTRY32W and THREADENTRY32, and SYSTEM_PROCESS_INFORMATION and SYSTEM_THREAD_INFORMATION as declared and as NtQuerySystemInformation fills them; the program's own entry (its name, threads, priority class, parent) through Process32First/Next and Process32FirstW/NextW, its threads through Thread32First/Next, after CreateThread, SetThreadPriority and SetPriorityClass; children listed with the program as their parent, ended with their handles open, gone once closed, created suspended, and a grandchild outliving its parent; the idle and System processes; the calls' errors (wrong dwSize, past the end, handles that are no snapshot, module snapshots, NtQuerySystemInformation into a short buffer); the snapshot handle's object type, access and inheritance."
 kind = "sectioned"
 gate = true
-
-[pending]
-system = "F2K's System process holds one system thread, the console's control thread; Windows 2000's holds more than one"
 
 [masks]
 # The suspended child, terminated with 7 after a snapshot, ends with 7 when its thread had been
