@@ -1,0 +1,24 @@
+# locale: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD. Every input is fixed (a SYSTEMTIME, a number string, a picture string), formatted under
+# LOCALE_USER_DEFAULT, LOCALE_SYSTEM_DEFAULT and 0x0409; the machine's default LCIDs print only as
+# whether they are 0x0409. The code page counts are the machine's own NLS registry's; the language
+# groups beyond Western Europe are asked only whether they are supported, not installed.
+description = "locale - kernel32's locale formatting and queries: GetDateFormatW/A and GetTimeFormatW/A with the DATE_ and TIME_ flags, picture strings, the buffer-size queries and their errors; GetNumberFormatW/A with the locales' own formats and NUMBERFMT's fields, negatives, rounding and strings that are not numbers; FoldStringW/A's MAP_ flags; EnumSystemCodePagesW/A under CP_INSTALLED and CP_SUPPORTED; and IsValidLanguageGroup."
+kind = "sectioned"
+
+# Not gated: kernel32's locale formatting is not implemented yet. Every section is on the work list.
+
+[masks]
+# CP_INSTALLED's count follows the language groups installed on the machine: both counts print as
+# "entries: N", so both are masked (CP_SUPPORTED's prints again as flags 0's call count).
+codepages = ["  entries: *"]
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the calls the section observes.
+date = ["kernel32.GetDateFormatW", "kernel32.GetDateFormatA"]
+time = ["kernel32.GetTimeFormatW", "kernel32.GetTimeFormatA"]
+number = ["kernel32.GetNumberFormatW", "kernel32.GetNumberFormatA"]
+fold = ["kernel32.FoldStringW", "kernel32.FoldStringA"]
+codepages = ["kernel32.EnumSystemCodePagesW", "kernel32.EnumSystemCodePagesA", "kernel32.IsValidCodePage"]
+langgroup = ["kernel32.IsValidLanguageGroup"]

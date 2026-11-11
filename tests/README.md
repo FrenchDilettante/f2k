@@ -16,7 +16,7 @@ tests/
 │               # hello and bare
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, screen, lineedit, ctrl, lstr, utility, toolhelp, batspawn,
-│               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
+│               # shutparm, profile, threx, vmedge, startup, lcid, ntquery, locale
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
@@ -176,6 +176,9 @@ The fixtures:
   Gated; its block fails on F2K while an unknown locale still compares.
 - `ntquery` - the introspection surface called ntdll-direct through `GetProcAddress`: `NtQuerySystemInformation` class 5 (`sysinfo`), `NtQueryInformationProcess` class 0 (`procinfo`), `NtQueryInformationThread` class 0 with its fields as relations and the exact length it requires (`threadinfo`), `ReadProcessMemory` of the section's own PEB with its first fields as relations (`pebread`), and `OpenSCManagerA` (`scmfail`).
   Gated; `scmfail` stays pending while F2K runs no service control manager: `OpenSCManagerA` fails with `ERROR_CALL_NOT_IMPLEMENTED`, where Windows 2000 answers a handle.
+- `locale` - kernel32's locale formatting and queries over fixed inputs: `GetDateFormatW`/`A` with the `DATE_` flags, picture strings and three more dates (`date`), `GetTimeFormatW`/`A` with the `TIME_` flags, picture strings, midnight and noon (`time`) and `GetNumberFormatW`/`A` with the locales' own formats and `NUMBERFMT`'s fields, negatives, rounding and strings that are not numbers (`number`), each with the buffer-size query, a short buffer and its errors; `FoldStringW`/`A` and the `MAP_` flags alone and in pairs (`fold`); `EnumSystemCodePagesW`/`A` under `CP_INSTALLED` and `CP_SUPPORTED`, whether 1252, 437, 850 and 65001 are listed, and the counts (`codepages`); and `IsValidLanguageGroup` (`langgroup`).
+  Each formatting call runs under `LOCALE_USER_DEFAULT`, `LOCALE_SYSTEM_DEFAULT` and 0x0409, and the machine's default LCIDs print only as whether they are 0x0409.
+  Built with `/MD`.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
 - `token` (advapi32) - the process token as a program that shuts the machine down prepares it: `OpenProcessToken` (the handle's object type and granted access, `CloseHandle`, and its errors), `LookupPrivilegeValueA`/`W` (the privileges' LUIDs, an unknown or empty name, NULL pointers, an empty or the local computer's system name), `AdjustTokenPrivileges` enabling and disabling `SeShutdownPrivilege` (the return, the error, `PreviousState` and `ReturnLength`), a `PreviousState` too short, `DisableAllPrivileges` and its restore, a privilege the token does not hold, `GetTokenInformation(TokenPrivileges)`, and ntdll's `NtOpenProcessToken` and `NtAdjustPrivilegesToken`.

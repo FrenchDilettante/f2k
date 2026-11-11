@@ -1294,6 +1294,90 @@ ordinal = 518
 fails = "-1"
 note = "a 64-bit product, rounded to the nearest with halves away from zero; -1 for a zero denominator or a result past 32 bits"
 
+[[export]]
+name = "EnumSystemCodePagesA"
+group = "locale"
+args = ["ptr lpCodePageEnumProc", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 133
+fails = "FALSE"
+
+[[export]]
+name = "FoldStringA"
+group = "locale"
+args = ["u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
+impl = { stub = "not yet implemented" }
+ordinal = 193
+fails = "0"
+
+[[export]]
+name = "GetDateFormatA"
+group = "locale"
+args = ["u32 Locale", "u32 dwFlags", "ptr lpDate", "ptr lpFormat", "ptr lpDateStr", "i32 cchDate"]
+impl = { stub = "not yet implemented" }
+ordinal = 274
+fails = "0"
+
+[[export]]
+name = "GetTimeFormatA"
+group = "locale"
+args = ["u32 Locale", "u32 dwFlags", "ptr lpTime", "ptr lpFormat", "ptr lpTimeStr", "i32 cchTime"]
+impl = { stub = "not yet implemented" }
+ordinal = 396
+fails = "0"
+
+[[export]]
+name = "GetNumberFormatA"
+group = "locale"
+args = [
+    "u32 Locale", "u32 dwFlags", "ptr lpValue", "ptr lpFormat", "ptr lpNumberStr", "i32 cchNumber",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 326
+fails = "0"
+
+[[export]]
+name = "EnumSystemCodePagesW"
+group = "locale"
+args = ["ptr lpCodePageEnumProc", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
+ordinal = 134
+fails = "FALSE"
+
+[[export]]
+name = "FoldStringW"
+group = "locale"
+args = ["u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
+impl = { stub = "not yet implemented" }
+ordinal = 194
+fails = "0"
+
+[[export]]
+name = "GetDateFormatW"
+group = "locale"
+args = ["u32 Locale", "u32 dwFlags", "ptr lpDate", "ptr lpFormat", "ptr lpDateStr", "i32 cchDate"]
+impl = { stub = "not yet implemented" }
+ordinal = 275
+fails = "0"
+
+[[export]]
+name = "GetTimeFormatW"
+group = "locale"
+args = ["u32 Locale", "u32 dwFlags", "ptr lpTime", "ptr lpFormat", "ptr lpTimeStr", "i32 cchTime"]
+impl = { stub = "not yet implemented" }
+ordinal = 397
+fails = "0"
+
+[[export]]
+name = "GetNumberFormatW"
+group = "locale"
+args = [
+    "u32 Locale", "u32 dwFlags", "ptr lpValue", "ptr lpFormat", "ptr lpNumberStr", "i32 cchNumber",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 327
+fails = "0"
+
 # --- threads / sync -------------------------------------------------------------------------------
 
 [[export]]
@@ -3284,14 +3368,6 @@ name = "EnumResourceTypesW"
 ordinal = 132
 
 [[export]]
-name = "EnumSystemCodePagesA"
-ordinal = 133
-
-[[export]]
-name = "EnumSystemCodePagesW"
-ordinal = 134
-
-[[export]]
 name = "EnumSystemLanguageGroupsA"
 ordinal = 135
 
@@ -3434,14 +3510,6 @@ ordinal = 188
 [[export]]
 name = "FlushViewOfFile"
 ordinal = 192
-
-[[export]]
-name = "FoldStringA"
-ordinal = 193
-
-[[export]]
-name = "FoldStringW"
-ordinal = 194
 
 
 [[export]]
@@ -3655,14 +3723,6 @@ ordinal = 267
 
 
 [[export]]
-name = "GetDateFormatA"
-ordinal = 274
-
-[[export]]
-name = "GetDateFormatW"
-ordinal = 275
-
-[[export]]
 name = "GetDefaultCommConfigA"
 ordinal = 276
 
@@ -3738,14 +3798,6 @@ ordinal = 324
 [[export]]
 name = "GetNlsSectionName"
 ordinal = 325
-
-[[export]]
-name = "GetNumberFormatA"
-ordinal = 326
-
-[[export]]
-name = "GetNumberFormatW"
-ordinal = 327
 
 [[export]]
 name = "GetNumberOfConsoleFonts"
@@ -3840,14 +3892,6 @@ ordinal = 393
 [[export]]
 name = "GetThreadTimes"
 ordinal = 394
-
-[[export]]
-name = "GetTimeFormatA"
-ordinal = 396
-
-[[export]]
-name = "GetTimeFormatW"
-ordinal = 397
 
 [[export]]
 name = "GetUserDefaultUILanguage"
