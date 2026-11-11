@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:13:41.82
-guiclass F2KT-SOURCE-CRC=0xA4382AF7
+# date: Wed 11/11/2026 13:05:30.60
+guiclass F2KT-SOURCE-CRC=0xD07B341E
 >>> guiclass.exe register
 == register
 RegisterClassA("F2KGuiClass"): nonzero yes err=2
@@ -47,5 +47,66 @@ guiclass: done
 == errors
 RegisterClassA(lpfnWndProc NULL): nonzero yes err=2
 GetClassInfoA(atom 0x7FFF): ret=0 err=1411
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe infoex
+== infoex
+RegisterClassExW(L"F2KGuiClassInfo", 8 class bytes, 4 window bytes, an icon, no small icon, menu L"F2KMenu"): nonzero yes err=2
+GetClassInfoExW(hinst, L"F2KGuiClassInfo"): nonzero yes, the class's atom yes err=-
+  cbSize=48 style=0x3 cbClsExtra=8 cbWndExtra=4
+  lpfnWndProc ours yes, hInstance ours yes, hIcon the registered yes, hIconSm NULL, hCursor the arrow yes, hbrBackground COLOR_WINDOW+1 yes
+  lpszMenuName the registered pointer no, text "F2KMenu"; lpszClassName the name passed yes, text "F2KGuiClassInfo"
+GetClassInfoExW(hinst, its atom): nonzero yes, the class's atom yes err=-
+  cbSize=48 style=0x3 cbClsExtra=8 cbWndExtra=4
+  lpfnWndProc ours yes, hInstance ours yes, hIcon the registered yes, hIconSm NULL, hCursor the arrow yes, hbrBackground COLOR_WINDOW+1 yes
+  lpszMenuName the registered pointer no, text "F2KMenu"; lpszClassName the name passed yes
+GetClassInfoExW(hinst, L"F2KGuiClassInfo"), cbSize 0: nonzero yes err=- cbSize=0 style=0x3
+GetClassInfoExA(hinst, "F2KGuiClassInfo"): nonzero yes, the class's atom yes err=-
+  cbSize=48 style=0x3 cbClsExtra=8 cbWndExtra=4 lpfnWndProc ours no, hIcon the registered yes, hIconSm NULL, lpszMenuName "F2KMenu", lpszClassName "F2KGuiClassInfo"
+GetClassInfoExW(NULL, L"F2KGuiClassInfo"): nonzero no err=1411
+GetClassInfoExW(hinst, L"F2KGuiClassNone"), never registered: nonzero no err=1411
+GetClassInfoExW(NULL, L"Button"): nonzero yes err=-
+  style=0x8B cbClsExtra=0 cbWndExtra=4 lpfnWndProc non-NULL yes, hInstance NULL, hIcon NULL yes, hCursor the arrow yes, hbrBackground NULL, lpszMenuName NULL yes
+GetClassInfoExW(NULL, L"#32770"): nonzero yes, 32770 yes err=-
+  style=0x808 cbClsExtra=0 cbWndExtra=30 lpfnWndProc non-NULL yes, hInstance NULL, hIcon NULL yes, hCursor the arrow yes, hbrBackground NULL, lpszMenuName NULL yes
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe classlong
+== classlong
+RegisterClassExW(L"F2KGuiClassLong", 8 class bytes) and a window of it: yes
+GetClassLongW(GCL_STYLE)=0x3 err=-, GetClassLongA=0x3 err=-
+GetClassLongW(GCL_CBCLSEXTRA)=0x8 err=-, GetClassLongA=0x8 err=-
+GetClassLongW(GCL_CBWNDEXTRA)=0x0 err=-, GetClassLongA=0x0 err=-
+GetClassLongW(GCL_HBRBACKGROUND)=0x6 err=-, GetClassLongA=0x6 err=-
+GetClassLongW(GCL_HCURSOR): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value yes, nonzero yes err=-
+GetClassLongW(GCL_HICON): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value yes, nonzero yes err=-
+GetClassLongW(GCL_HICONSM, against the large icon): the registered value no, nonzero yes err=-; GetClassLongA: the registered value no, nonzero yes err=-
+GetClassLongW(GCL_HMODULE): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value yes, nonzero yes err=-
+GetClassLongW(GCL_WNDPROC): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value no, nonzero yes err=-
+GetClassLongW(GCW_ATOM): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value yes, nonzero yes err=-
+GetClassLongW(GCL_MENUNAME): the registered value no, nonzero yes err=-; GetClassLongA: the registered value no, nonzero yes err=-
+GetClassLongW(0)=0x0 err=-, GetClassLongA=0x0 err=-
+GetClassLongW(4)=0x0 err=-, GetClassLongA=0x0 err=-
+SetClassLongW(0, 0x11223344): ret=0x0 err=-
+GetClassLongW(0)=0x11223344 err=-, GetClassLongA=0x11223344 err=-
+SetClassLongA(4, 0x55667788): ret=0x0 err=-
+GetClassLongW(4)=0x55667788 err=-, GetClassLongA=0x55667788 err=-
+GetClassLongW(2)=0x77881122 err=-, GetClassLongA=0x77881122 err=-
+GetClassLongW(5)=0x0 err=1413, GetClassLongA=0x0 err=1413
+GetClassLongW(8)=0x0 err=1413, GetClassLongA=0x0 err=1413
+SetClassLongW(5, 0x99): ret=0x0 err=1413
+SetClassLongW(8, 0x99): ret=0x0 err=1413
+GetClassLongW(-100)=0x0 err=1413, GetClassLongA=0x0 err=1413
+SetClassLongW(GCL_STYLE, 0x2): ret=0x3 err=-
+GetClassLongW(GCL_STYLE)=0x2 err=-, GetClassLongA=0x2 err=-
+SetClassLongW(GCL_STYLE, 0x3): ret=0x2 err=-
+SetClassLongW(GCL_HBRBACKGROUND, 0x10): ret=0x6 err=-
+GetClassLongW(GCL_HBRBACKGROUND)=0x10 err=-, GetClassLongA=0x10 err=-
+SetClassLongW(GCL_WNDPROC, another procedure): the registered procedure yes err=-
+GetClassLongW(GCL_WNDPROC): the registered value yes, nonzero yes err=-; GetClassLongA: the registered value no, nonzero yes err=-
+the window's own procedure still the registered one: yes
+GetClassLongW(GCL_STYLE, NULL window)=0x0 err=1400, GetClassLongA=0x0 err=1400
+GetClassLongW(GCL_STYLE, a destroyed window)=0x0 err=1400, GetClassLongA=0x0 err=1400
+GetClassLongW(GCL_STYLE, the desktop window)=0x8 err=-, GetClassLongA=0x8 err=-
 guiclass: done
 <<< exit code=0

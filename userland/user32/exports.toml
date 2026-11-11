@@ -583,6 +583,56 @@ args = ["handle Window", "i32 Index", "u32 Value", "ptr<u32> Previous"]
 impl = { syscall = "crate::win32k::class::set_class_word" }
 internal = true
 
+[[export]]
+name = "GetClassInfoExA"
+group = "class"
+args = ["handle hInstance", "ptr lpszClass", "ptr lpwcx"]
+impl = { stub = "not yet implemented" }
+ordinal = 236
+fails = "FALSE"
+note = "the class a name, or an atom in its low word"
+
+[[export]]
+name = "GetClassInfoExW"
+group = "class"
+args = ["handle hInstance", "ptr lpszClass", "ptr lpwcx"]
+impl = { stub = "not yet implemented" }
+ordinal = 237
+fails = "FALSE"
+note = "the class a name, or an atom in its low word"
+
+[[export]]
+name = "GetClassLongA"
+group = "class"
+args = ["handle hWnd", "i32 nIndex"]
+impl = { stub = "not yet implemented" }
+ordinal = 239
+fails = "0"
+
+[[export]]
+name = "SetClassLongA"
+group = "class"
+args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
+impl = { stub = "not yet implemented" }
+ordinal = 549
+fails = "0"
+
+[[export]]
+name = "GetClassLongW"
+group = "class"
+args = ["handle hWnd", "i32 nIndex"]
+impl = { stub = "not yet implemented" }
+ordinal = 240
+fails = "0"
+
+[[export]]
+name = "SetClassLongW"
+group = "class"
+args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
+impl = { stub = "not yet implemented" }
+ordinal = 550
+fails = "0"
+
 # --- windows --------------------------------------------------------------------------------------
 
 [[export]]
@@ -3529,22 +3579,6 @@ name = "GetCaretPos"
 ordinal = 234
 
 [[export]]
-name = "GetClassInfoExA"
-ordinal = 236
-
-[[export]]
-name = "GetClassInfoExW"
-ordinal = 237
-
-[[export]]
-name = "GetClassLongA"
-ordinal = 239
-
-[[export]]
-name = "GetClassLongW"
-ordinal = 240
-
-[[export]]
 name = "GetClassWord"
 ordinal = 243
 
@@ -4279,14 +4313,6 @@ ordinal = 547
 [[export]]
 name = "SetCaretPos"
 ordinal = 548
-
-[[export]]
-name = "SetClassLongA"
-ordinal = 549
-
-[[export]]
-name = "SetClassLongW"
-ordinal = 550
 
 [[export]]
 name = "SetClassWord"
