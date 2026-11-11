@@ -110,6 +110,8 @@ CMD_EXE = $(BUILD_DIR)/userland/i686-f2k-pe/release/$(CMD_PROGRAM).exe
 TEST_PROGRAMS = keyshow fontshow dlgshow
 TEST_EXES = $(foreach program,$(TEST_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 CMD_DISK_IMG ?= $(OUT_DIR)/f2k-cmd-disk.img
+# The system's fonts (fonts/README.md), which the cmd disk carries in \WINNT\Fonts.
+SYSTEM_FONTS = $(sort $(wildcard fonts/*.ttf))
 
 # Limine bootloader settings
 LIMINE_DIR ?= $(BOOT_DIR)/limine
@@ -238,14 +240,17 @@ disk: kernel limine
 	cp $(KERNEL_STAMP) $(DISK_STAMP)
 	@echo "Disk image created: $(DISK_IMG)"
 
-# The cmd disk: the disk with cmd.exe beside the system's programs, and its Limine entry's command
-# line, after the kernel's path, `-- $(CMDLINE)`.
+# The cmd disk: the disk with cmd.exe beside the system's programs, the system's fonts (fonts/*.ttf)
+# in \WINNT\Fonts, where win32k loads them at its start, and its Limine entry's command line, after
+# the kernel's path, `-- $(CMDLINE)`. The disk the tests boot carries no fonts.
 .PHONY: cmd-disk
 cmd-disk: disk
 	@printf 'Creating the disk that boots into %s...\n' '$(CMDLINE)'
 	rm -f $(CMD_DISK_IMG)
 	cp $(DISK_IMG) $(CMD_DISK_IMG)
 	mcopy -i $(CMD_DISK_IMG)@@1M $(CMD_EXE) ::/WINNT/system32/
+	mmd -i $(CMD_DISK_IMG)@@1M ::/WINNT/Fonts
+	mcopy -i $(CMD_DISK_IMG)@@1M $(SYSTEM_FONTS) ::/WINNT/Fonts/
 	grep -q '^    path: boot():/f2k-kernel$$' $(LIMINE_CONF)
 	{ sed '/^    path: boot():\/f2k-kernel$$/q' $(LIMINE_CONF); \
 	  printf '    cmdline: -- %s\n' '$(CMDLINE)'; \

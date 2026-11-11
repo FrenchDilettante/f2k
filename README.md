@@ -13,7 +13,7 @@ Seven of Windows 2000's system DLLs are F2K's own code:
 - **advapi32**: the registry calls, over a registry the kernel keeps in memory, and the process token's calls (`OpenProcessToken`, `LookupPrivilegeValue`, `AdjustTokenPrivileges`, `GetTokenInformation` for the privileges), which keep the privileges' state but check none.
 - **user32**: window stations and desktops; window classes and windows (their creation and destruction, place, size and visibility, their coordinates and children; no frame or caption is drawn); the message loop, sent and posted messages and the default window procedure; keyboard input (the keyboard's keystrokes and `SendInput`'s to the foreground window's focus, the key states, `TranslateMessage`'s characters for the US layout); painting (`BeginPaint`, the update regions) and the `GetDC` family, their DCs drawing at the window's client area; the drawing calls (`FillRect`, `FrameRect`, `InvertRect`, `DrawFocusRect`, `DrawEdge`, `DrawText`); the clipboard, its text converted between its ANSI, OEM and Unicode forms; the display's settings, devices, monitor, metrics and system colors and their brushes; `MessageBeep`; the rectangle and character-walk helpers.
 - **gdi32**: device contexts of the screen and of windows, drawn on the VBE framebuffer, and their capabilities: text in a built-in 8x16 font or in TrueType fonts, the stock objects, solid brushes and `PatBlt`, the text and background colors, single pixels.
-  TrueType fonts (monochrome, unhinted, a font's embedded bitmaps at their sizes) load from a file a program names (`AddFontResourceEx`), or at boot from `\WINNT\Fonts\tahoma.ttf` when the disk carries it ([`fonts/`](fonts/README.md) holds it, with Wine's other fonts; the disk the tests boot carries none).
+  TrueType fonts (monochrome, unhinted, a font's embedded bitmaps at their sizes) load from a file a program names (`AddFontResourceEx`), or at boot from `\WINNT\Fonts` when the disk carries them: the five faces in [`fonts/`](fonts/README.md), which the disk `make run` boots carries and the disk the tests boot does not.
 - **shell32**: only `ShellAboutW`, a stub that answers FALSE, so programs that import it (Windows 2000's `calc.exe`) load.
 
 F2K's own programs, written in Rust, live under `userland/<name>` and run from `\WINNT\system32`: [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), [`cmd.exe`](userland/cmd/README.md), `fish` (FiSH), which sets the graphics mode (the VBE framebuffer) and runs the one program its command line names, ending with that program's exit code, and [`drawdemo`](userland/drawdemo/README.md), a window of user32's drawing calls for a screenshot.
@@ -82,13 +82,15 @@ A child process starts with what its parent hands it: its environment, its curre
 ### QEMU and VirtualBox
 
 `make run` boots into F2K's `cmd.exe` in a QEMU window: the window shows the screen and takes the keyboard, and COM1, the kernel's log, goes to the terminal.
-It boots `target/x86-f2k/debug/f2k-cmd-disk.img` (`make cmd-disk`), the disk with `cmd.exe` added to `\WINNT\system32`, through Limine.
+It boots `target/x86-f2k/debug/f2k-cmd-disk.img` (`make cmd-disk`), the disk with `cmd.exe` added to `\WINNT\system32` and the system's fonts ([`fonts/`](fonts/README.md)) in `\WINNT\Fonts`, through Limine.
 `CMDLINE` overrides what the boot runs, the program's path on the volume and its arguments:
 
 ```bash
 make run
 make run CMDLINE='CORPUS\sync.exe event'
 ```
+
+A GUI program runs under `fish`, which sets the graphics mode first: `fish <program>` at `cmd.exe`'s prompt, or `make run CMDLINE='WINNT\system32\fish.exe \WINNT\system32\drawdemo.exe'`.
 
 `make vbox-image` writes the same disk as a VirtualBox disk, `target/f2k.vdi` (with `qemu-img`), with every file under `vbox-image/` laid over its volume at the same path; nothing there is committed.
 A file there replaces the disk's own: `vbox-image/WINNT/system32/cmd.exe` replaces F2K's `cmd.exe`.
