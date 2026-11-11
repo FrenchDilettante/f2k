@@ -1,6 +1,6 @@
 # runtime: one test per block of the real-machine capture (output.txt, with the hand-captured
 # console block in overrides.txt); see tests/README.md.
-description = "runtime - the process environment a C program starts into (runtime.c): argv, version, modules, the TEB and PEB, last-error semantics, the environment, code pages and string conversion, CRT formatting, structured exception handling, and the CRT's exit path."
+description = "runtime - the process environment a C program starts into (runtime.c): argv, version, modules, the TEB and PEB, last-error semantics, the environment, code pages and string conversion, CRT formatting, structured exception handling, OutputDebugStringA/W with no debugger, VerifyVersionInfoW/A with VerSetConditionMask, and the CRT's exit path."
 kind = "sectioned"
 gate = true
 [masks]
@@ -148,3 +148,5 @@ localtime = [
     "ntdll.NtSetSystemTime",
 ]
 debugbreak = ["kernel32.DebugBreak", "ntdll.DbgBreakPoint", "ntdll.KiUserExceptionDispatcher"]
+debugstr = ["kernel32.OutputDebugStringA", "kernel32.OutputDebugStringW"]
+verify = ["kernel32.VerifyVersionInfoW", "kernel32.VerifyVersionInfoA", "kernel32.VerSetConditionMask"]
