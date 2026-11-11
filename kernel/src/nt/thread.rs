@@ -25,6 +25,8 @@ info_class! {
     pub enum QueryClass {
         /// THREAD_BASIC_INFORMATION.
         Basic = 0,
+        /// The thread's Win32 start address, a PVOID (ThreadQuerySetWin32StartAddress).
+        Win32StartAddress = 9,
         /// Whether the calling thread is its process's only one, a ULONG (the handle is not
         /// consulted, as on Windows 2000: the class asks about the caller).
         AmILastThread = 12,
@@ -38,7 +40,9 @@ impl QueryClass {
     pub fn size(self) -> u32 {
         (match self {
             QueryClass::Basic => size_of::<ThreadBasicInformation>(),
-            QueryClass::AmILastThread | QueryClass::PriorityBoost => size_of::<u32>(),
+            QueryClass::Win32StartAddress
+            | QueryClass::AmILastThread
+            | QueryClass::PriorityBoost => size_of::<u32>(),
         }) as u32
     }
 }
@@ -432,10 +436,11 @@ pub fn resume_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) 
 }
 
 /// NtQueryInformationThread: ThreadBasicInformation (the exit status, the TEB, the client id, the
-/// affinity, the current priority and the base priority's increment), ThreadAmILastThread (whether
-/// the caller is its process's only thread: kernel32's ExitThread asks it) and ThreadPriorityBoost
-/// (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the classes F2K does
-/// not answer.
+/// affinity, the current priority and the base priority's increment),
+/// ThreadQuerySetWin32StartAddress (the start routine its creation recorded), ThreadAmILastThread
+/// (whether the caller is its process's only thread: kernel32's ExitThread asks it) and
+/// ThreadPriorityBoost (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the
+/// classes F2K does not answer.
 pub fn query_information_thread(
     call: &mut NtCall,
     thread: Handle,
@@ -476,6 +481,14 @@ pub fn query_information_thread(
                     }
                 };
                 information.cast().write(basic_information(&info))?;
+            }
+            QueryClass::Win32StartAddress => {
+                let thread = thread_of(thread)?;
+                let start = DISPATCHER
+                    .get(&mut call.passive().raise::<Dispatch>())
+                    .thread(thread.id)
+                    .win32_start_address();
+                information.cast().write(start)?;
             }
             QueryClass::PriorityBoost => {
                 let thread = thread_of(thread)?;
@@ -616,6 +629,18 @@ mod tests {
             (259, 0x7FFD_E000, 8, 12)
         );
         assert_eq!((word(16), word(20), word(24) as i32), (1, 9, -16));
+    }
+
+    /// The classes' lengths, each its information's exactly: ThreadBasicInformation's 28 bytes (a
+    /// 256-byte buffer is STATUS_INFO_LENGTH_MISMATCH, the ntquery capture's), the start address a
+    /// pointer; a class F2K does not answer is STATUS_INVALID_INFO_CLASS.
+    #[test]
+    fn the_query_classes_take_their_lengths() {
+        let size = |class: u32| QueryClass::try_from(class).map(QueryClass::size);
+        assert_eq!(size(0), Ok(28));
+        assert_eq!(exactly(256, 28), Err(STATUS_INFO_LENGTH_MISMATCH));
+        assert_eq!(size(9), Ok(4), "ThreadQuerySetWin32StartAddress");
+        assert_eq!(size(1), Err(STATUS_INVALID_INFO_CLASS));
     }
 
     /// The suspend refusals reach kernel32 as the threads fixture prints them: the count at its
