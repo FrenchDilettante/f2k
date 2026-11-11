@@ -44,6 +44,26 @@
  *   debugbreak DebugBreak caught by __except: the exception code, the
  *              filter's calls, which module the exception address lies
  *              in (kernel32, ntdll, the program), never the address
+ *   debugstr   OutputDebugStringA and OutputDebugStringW with no debugger
+ *              attached, inside the program's own __try: lines with and
+ *              without a newline, Latin-1 and Cyrillic text, the empty
+ *              string, 2000 characters, NULL; whether each returns,
+ *              whether an exception reaches the program's filter, and the
+ *              last error each leaves (armed, and after SetLastError(1234));
+ *              both reached through GetProcAddress, so the program still
+ *              loads where kernel32 lacks them
+ *   verify     VerifyVersionInfoW and VerifyVersionInfoA with
+ *              VerSetConditionMask (all three through GetProcAddress:
+ *              Windows 2000's additions, which MSVC 6's headers lack):
+ *              the version as relations (major is 5, minor 0, build 2195,
+ *              the NT platform, service pack 4.0); the masks
+ *              VerSetConditionMask builds for each type and condition,
+ *              chained, overridden, and for no type, two types, an
+ *              unknown type and conditions 0 and 8; checks of the major
+ *              and minor versions, the build, the platform and the service
+ *              pack under each comparison, alone and together; and the
+ *              refusals (no type, no condition, a condition for another
+ *              type, OSVERSIONINFO's size, a size of 1)
  *
  * Named-only sections:
  *
@@ -1908,6 +1928,280 @@ static void sec_debugbreak(void)
          yesno(inside_module(break_address, GetModuleHandleA(NULL))));
 }
 
+/* --- debugstr ------------------------------------------------------ */
+
+/* OutputDebugStringA and W are reached through GetProcAddress: the
+   program loads where kernel32 lacks them, its other sections intact. */
+typedef VOID (WINAPI *output_debug_string_a_fn)(LPCSTR text);
+typedef VOID (WINAPI *output_debug_string_w_fn)(LPCWSTR text);
+
+static output_debug_string_a_fn debug_string_a;
+static output_debug_string_w_fn debug_string_w;
+static int debugstr_calls;
+static DWORD debugstr_code;
+
+static int debugstr_filter(DWORD code)
+{
+    debugstr_calls++;
+    debugstr_code = code;
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+/* OutputDebugStringA of `text`, or (wide) OutputDebugStringW of `wtext`,
+   inside the program's own __try: whether it returned, whether an
+   exception reached the program's filter, and the last error after. */
+static void debug_string(int wide, const char *label, const char *text, const WCHAR *wtext)
+{
+    int returned = 0;
+    const char *e;
+
+    debugstr_calls = 0;
+    debugstr_code = 0;
+    arm();
+    __try {
+        if (wide) {
+            debug_string_w(wtext);
+        } else {
+            debug_string_a(text);
+        }
+        returned = 1;
+    } __except (debugstr_filter(GetExceptionCode())) {
+        returned = 0;
+    }
+    e = le();
+    if (debugstr_calls != 0) {
+        line("%s(%s): returned %s, the program's filter called %d time(s), code 0x%08lX err=%s",
+             wide ? "OutputDebugStringW" : "OutputDebugStringA", label, yesno(returned), debugstr_calls,
+             debugstr_code, e);
+    } else {
+        line("%s(%s): returned %s, the program's filter not called err=%s",
+             wide ? "OutputDebugStringW" : "OutputDebugStringA", label, yesno(returned), e);
+    }
+}
+
+static void sec_debugstr(void)
+{
+    static char long_a[2001];
+    static WCHAR long_w[2001];
+    int i;
+
+    SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    debug_string_a = (output_debug_string_a_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "OutputDebugStringA");
+    debug_string_w = (output_debug_string_w_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "OutputDebugStringW");
+    line("kernel32 exports OutputDebugStringA %s, OutputDebugStringW %s", yesno(debug_string_a != NULL),
+         yesno(debug_string_w != NULL));
+    if (debug_string_a == NULL || debug_string_w == NULL) {
+        return;
+    }
+    for (i = 0; i < 2000; i++) {
+        long_a[i] = (char)('a' + i % 26);
+        long_w[i] = (WCHAR)('a' + i % 26);
+    }
+    long_a[2000] = 0;
+    long_w[2000] = 0;
+    debug_string(0, "a line", "f2k runtime: a line\n", NULL);
+    debug_string(1, "a line", NULL, L"f2k runtime: a line\n");
+    debug_string(0, "no newline", "f2k runtime: no newline", NULL);
+    debug_string(1, "no newline", NULL, L"f2k runtime: no newline");
+    debug_string(0, "Latin-1", "f2k runtime: \xE9t\xE9\n", NULL);
+    debug_string(1, "Latin-1", NULL, L"f2k runtime: \x00E9t\x00E9\n");
+    debug_string(1, "U+0436", NULL, L"f2k runtime: \x0436\n");
+    debug_string(0, "empty", "", NULL);
+    debug_string(1, "empty", NULL, L"");
+    debug_string(0, "2000 characters", long_a, NULL);
+    debug_string(1, "2000 characters", NULL, long_w);
+    debug_string(0, "NULL", NULL, NULL);
+    debug_string(1, "NULL", NULL, NULL);
+    SetLastError(1234);
+    debug_string_a("f2k runtime: after SetLastError(1234)\n");
+    line("OutputDebugStringA after SetLastError(1234): err=%s", le());
+    SetLastError(1234);
+    debug_string_w(L"f2k runtime: after SetLastError(1234)\n");
+    line("OutputDebugStringW after SetLastError(1234): err=%s", le());
+}
+
+/* --- verify -------------------------------------------------------- */
+
+/* VerifyVersionInfo's type bits and conditions (winnt.h's VER_ values,
+   which MSVC 6's headers may lack). */
+#define VT_MINOR 0x00000001
+#define VT_MAJOR 0x00000002
+#define VT_BUILD 0x00000004
+#define VT_PLATFORM 0x00000008
+#define VT_SPMINOR 0x00000010
+#define VT_SPMAJOR 0x00000020
+#define VT_SUITE 0x00000040
+#define VT_PRODUCT 0x00000080
+#define VC_EQUAL 1
+#define VC_GREATER 2
+#define VC_GREATER_EQUAL 3
+#define VC_LESS 4
+#define VC_LESS_EQUAL 5
+#define VC_AND 6
+#define VC_OR 7
+
+typedef unsigned __int64 (WINAPI *ver_set_condition_mask_fn)(unsigned __int64 mask, DWORD type, BYTE condition);
+typedef BOOL (WINAPI *verify_version_info_w_fn)(f2k_osviexw *info, DWORD types, unsigned __int64 mask);
+typedef BOOL (WINAPI *verify_version_info_a_fn)(f2k_osviexa *info, DWORD types, unsigned __int64 mask);
+
+static ver_set_condition_mask_fn ver_mask;
+static verify_version_info_w_fn verify_w;
+static verify_version_info_a_fn verify_a;
+
+static const char *mask_hex(unsigned __int64 m)
+{
+    static char bufs[4][24];
+    static int next;
+    char *b = bufs[next++ & 3];
+
+    sprintf(b, "0x%08lX%08lX", (DWORD)(m >> 32), (DWORD)m);
+    return b;
+}
+
+static void show_mask(const char *label, unsigned __int64 start, DWORD type, BYTE condition)
+{
+    unsigned __int64 m;
+    const char *e;
+
+    arm();
+    m = ver_mask(start, type, condition);
+    e = le();
+    line("VerSetConditionMask(%s): %s err=%s", label, mask_hex(m), e);
+}
+
+/* VerifyVersionInfoW, then VerifyVersionInfoA, of the fields given (the
+   others zero) against `types` under `mask`; a nonzero `size_w` and
+   `size_a` replace the EX structures' own sizes in
+   dwOSVersionInfoSize. */
+static void verify(const char *label, DWORD types, unsigned __int64 mask, DWORD major, DWORD minor, DWORD build,
+                   DWORD platform, WORD sp_major, WORD sp_minor, DWORD size_w, DWORD size_a)
+{
+    f2k_osviexw xw;
+    f2k_osviexa xa;
+    BOOL r;
+    const char *e;
+
+    memset(&xw, 0, sizeof xw);
+    xw.base.dwOSVersionInfoSize = size_w != 0 ? size_w : sizeof xw;
+    xw.base.dwMajorVersion = major;
+    xw.base.dwMinorVersion = minor;
+    xw.base.dwBuildNumber = build;
+    xw.base.dwPlatformId = platform;
+    xw.wServicePackMajor = sp_major;
+    xw.wServicePackMinor = sp_minor;
+    arm();
+    r = verify_w(&xw, types, mask);
+    e = le();
+    line("VerifyVersionInfoW(%s): ret=%d err=%s", label, r, e);
+    if (verify_a == NULL) {
+        return;
+    }
+    memset(&xa, 0, sizeof xa);
+    xa.base.dwOSVersionInfoSize = size_a != 0 ? size_a : sizeof xa;
+    xa.base.dwMajorVersion = major;
+    xa.base.dwMinorVersion = minor;
+    xa.base.dwBuildNumber = build;
+    xa.base.dwPlatformId = platform;
+    xa.wServicePackMajor = sp_major;
+    xa.wServicePackMinor = sp_minor;
+    arm();
+    r = verify_a(&xa, types, mask);
+    e = le();
+    line("  (A) VerifyVersionInfoA: ret=%d err=%s", r, e);
+}
+
+static void sec_verify(void)
+{
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    f2k_osviexw xw;
+    unsigned __int64 m;
+    unsigned __int64 eq;
+    BOOL r;
+
+    ver_mask = (ver_set_condition_mask_fn)GetProcAddress(k32, "VerSetConditionMask");
+    verify_w = (verify_version_info_w_fn)GetProcAddress(k32, "VerifyVersionInfoW");
+    verify_a = (verify_version_info_a_fn)GetProcAddress(k32, "VerifyVersionInfoA");
+    line("kernel32 exports VerSetConditionMask %s, VerifyVersionInfoW %s, VerifyVersionInfoA %s",
+         yesno(ver_mask != NULL), yesno(verify_w != NULL), yesno(verify_a != NULL));
+    if (ver_mask == NULL || verify_w == NULL) {
+        return;
+    }
+
+    /* The version itself, as relations. */
+    memset(&xw, 0, sizeof xw);
+    xw.base.dwOSVersionInfoSize = sizeof xw;
+    r = GetVersionExW(&xw.base);
+    line("GetVersionExW, the EX size: ret=%d; major is 5 %s, minor is 0 %s, build is 2195 %s, platform is "
+         "VER_PLATFORM_WIN32_NT %s, service pack major is 4 %s, minor is 0 %s",
+         r, yesno(xw.base.dwMajorVersion == 5), yesno(xw.base.dwMinorVersion == 0),
+         yesno(xw.base.dwBuildNumber == 2195), yesno(xw.base.dwPlatformId == VER_PLATFORM_WIN32_NT),
+         yesno(xw.wServicePackMajor == 4), yesno(xw.wServicePackMinor == 0));
+
+    /* The masks: three bits per type, the type's bit number choosing the field. */
+    show_mask("0, VER_MAJORVERSION, VER_GREATER_EQUAL", 0, VT_MAJOR, VC_GREATER_EQUAL);
+    show_mask("0, VER_MINORVERSION, VER_EQUAL", 0, VT_MINOR, VC_EQUAL);
+    show_mask("0, VER_BUILDNUMBER, VER_LESS_EQUAL", 0, VT_BUILD, VC_LESS_EQUAL);
+    show_mask("0, VER_PLATFORMID, VER_EQUAL", 0, VT_PLATFORM, VC_EQUAL);
+    show_mask("0, VER_SERVICEPACKMINOR, VER_GREATER", 0, VT_SPMINOR, VC_GREATER);
+    show_mask("0, VER_SERVICEPACKMAJOR, VER_LESS", 0, VT_SPMAJOR, VC_LESS);
+    show_mask("0, VER_SUITENAME, VER_AND", 0, VT_SUITE, VC_AND);
+    show_mask("0, VER_PRODUCT_TYPE, VER_OR", 0, VT_PRODUCT, VC_OR);
+    m = ver_mask(0, VT_MAJOR, VC_GREATER_EQUAL);
+    m = ver_mask(m, VT_MINOR, VC_GREATER_EQUAL);
+    m = ver_mask(m, VT_SPMAJOR, VC_GREATER_EQUAL);
+    line("VerSetConditionMask, major, minor and service pack major, each VER_GREATER_EQUAL: %s", mask_hex(m));
+    show_mask("major GREATER_EQUAL, VER_MAJORVERSION, VER_LESS", ver_mask(0, VT_MAJOR, VC_GREATER_EQUAL), VT_MAJOR,
+              VC_LESS);
+    show_mask("0, VER_MAJORVERSION|VER_MINORVERSION, VER_EQUAL", 0, VT_MAJOR | VT_MINOR, VC_EQUAL);
+    show_mask("0, 0, VER_EQUAL", 0, 0, VC_EQUAL);
+    show_mask("0, VER_MAJORVERSION, 0", 0, VT_MAJOR, 0);
+    show_mask("0, VER_MAJORVERSION, 8", 0, VT_MAJOR, 8);
+    show_mask("0, 0x100, VER_EQUAL", 0, 0x100, VC_EQUAL);
+
+    /* The checks: the fields named, the rest zero. */
+    verify("major == 5", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_EQUAL), 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major >= 5", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_GREATER_EQUAL), 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major == 4", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_EQUAL), 4, 0, 0, 0, 0, 0, 0, 0);
+    verify("major < 5", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_LESS), 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major > 4", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_GREATER), 4, 0, 0, 0, 0, 0, 0, 0);
+    verify("major <= 6", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_LESS_EQUAL), 6, 0, 0, 0, 0, 0, 0, 0);
+    eq = ver_mask(ver_mask(0, VT_MAJOR, VC_EQUAL), VT_MINOR, VC_EQUAL);
+    verify("major == 5 and minor == 0", VT_MAJOR | VT_MINOR, eq, 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major == 5 and minor == 1", VT_MAJOR | VT_MINOR, eq, 5, 1, 0, 0, 0, 0, 0, 0);
+    m = ver_mask(ver_mask(0, VT_MAJOR, VC_GREATER_EQUAL), VT_MINOR, VC_GREATER_EQUAL);
+    verify("major.minor >= 5.1", VT_MAJOR | VT_MINOR, m, 5, 1, 0, 0, 0, 0, 0, 0);
+    verify("major.minor >= 4.90", VT_MAJOR | VT_MINOR, m, 4, 90, 0, 0, 0, 0, 0, 0);
+    verify("major.minor >= 5.0", VT_MAJOR | VT_MINOR, m, 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("minor == 0 alone", VT_MINOR, ver_mask(0, VT_MINOR, VC_EQUAL), 0, 0, 0, 0, 0, 0, 0, 0);
+    verify("build == 2195", VT_BUILD, ver_mask(0, VT_BUILD, VC_EQUAL), 0, 0, 2195, 0, 0, 0, 0, 0);
+    verify("build >= 2195", VT_BUILD, ver_mask(0, VT_BUILD, VC_GREATER_EQUAL), 0, 0, 2195, 0, 0, 0, 0, 0);
+    verify("build > 2195", VT_BUILD, ver_mask(0, VT_BUILD, VC_GREATER), 0, 0, 2195, 0, 0, 0, 0, 0);
+    verify("platform == VER_PLATFORM_WIN32_NT", VT_PLATFORM, ver_mask(0, VT_PLATFORM, VC_EQUAL), 0, 0, 0,
+           VER_PLATFORM_WIN32_NT, 0, 0, 0, 0);
+    verify("platform == VER_PLATFORM_WIN32_WINDOWS", VT_PLATFORM, ver_mask(0, VT_PLATFORM, VC_EQUAL), 0, 0, 0,
+           VER_PLATFORM_WIN32_WINDOWS, 0, 0, 0, 0);
+    verify("service pack major >= 4", VT_SPMAJOR, ver_mask(0, VT_SPMAJOR, VC_GREATER_EQUAL), 0, 0, 0, 0, 4, 0, 0,
+           0);
+    verify("service pack major == 4", VT_SPMAJOR, ver_mask(0, VT_SPMAJOR, VC_EQUAL), 0, 0, 0, 0, 4, 0, 0, 0);
+    verify("service pack major >= 5", VT_SPMAJOR, ver_mask(0, VT_SPMAJOR, VC_GREATER_EQUAL), 0, 0, 0, 0, 5, 0, 0,
+           0);
+    verify("service pack minor == 0", VT_SPMINOR, ver_mask(0, VT_SPMINOR, VC_EQUAL), 0, 0, 0, 0, 0, 0, 0, 0);
+    m = ver_mask(ver_mask(ver_mask(0, VT_MAJOR, VC_GREATER_EQUAL), VT_MINOR, VC_GREATER_EQUAL), VT_SPMAJOR,
+                 VC_GREATER_EQUAL);
+    verify("5.0 service pack 4, each >=", VT_MAJOR | VT_MINOR | VT_SPMAJOR, m, 5, 0, 0, 0, 4, 0, 0, 0);
+    verify("5.0 service pack 5, each >=", VT_MAJOR | VT_MINOR | VT_SPMAJOR, m, 5, 0, 0, 0, 5, 0, 0, 0);
+    verify("4.0 service pack 6, each >=", VT_MAJOR | VT_MINOR | VT_SPMAJOR, m, 4, 0, 0, 0, 6, 0, 0, 0);
+
+    /* The refusals. */
+    verify("no type", 0, ver_mask(0, VT_MAJOR, VC_EQUAL), 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major, no condition", VT_MAJOR, 0, 5, 0, 0, 0, 0, 0, 0, 0);
+    verify("major == 5, the condition for minor alone", VT_MAJOR, ver_mask(0, VT_MINOR, VC_EQUAL), 5, 0, 0, 0, 0, 0,
+           0, 0);
+    verify("major == 5, OSVERSIONINFO's size", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_EQUAL), 5, 0, 0, 0, 0, 0,
+           sizeof(OSVERSIONINFOW), sizeof(OSVERSIONINFOA));
+    verify("major == 5, size 1", VT_MAJOR, ver_mask(0, VT_MAJOR, VC_EQUAL), 5, 0, 0, 0, 0, 0, 1, 1);
+}
+
 /* --- console (named only) ------------------------------------------ */
 
 static void sec_console(void)
@@ -2018,6 +2312,8 @@ static const section_t sections[] = {
     { "threadlocale", sec_threadlocale, 0 },
     { "localtime", sec_localtime, 0 },
     { "debugbreak", sec_debugbreak, 0 },
+    { "debugstr", sec_debugstr, 0 },
+    { "verify", sec_verify, 0 },
     { "console", sec_console, F2KT_INTERACTIVE },
     { "unhandled", sec_unhandled, 1 },
     { "exit", sec_exit, 1 },
