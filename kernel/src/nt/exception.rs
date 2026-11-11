@@ -2,8 +2,9 @@
 //! [`crate::user::seh`]): NtContinue resumes a CONTEXT — a handled exception's, an unwind's caller,
 //! a delivered user APC's interrupted one — and NtRaiseException raises an exception user code
 //! built: its first chance dispatched exactly as a fault is (the records copied below the context's
-//! stack pointer, KiUserExceptionDispatcher entered), its second chance the process's end with the
-//! code (no debugger, no exception port), as Windows 2000 does then.
+//! stack pointer, the context completed with the debug and floating-point state,
+//! KiUserExceptionDispatcher entered), its second chance the process's end with the code (no
+//! debugger, no exception port), as Windows 2000 does then.
 
 use rtl::pod::Pod;
 
@@ -64,14 +65,14 @@ mod target {
         first_chance: bool,
     ) -> NtResult {
         let record = read_record(record)?;
-        let context = read_context(context)?;
+        let mut context = read_context(context)?;
         let (code, address) = (record.code, record.address);
         if !first_chance {
             seh::second_chance(code, address);
         }
         let frame = call.frame();
         seh::restore_context(frame, &context);
-        if !seh::deliver(frame, &record, &context) {
+        if !seh::deliver(frame, &record, &mut context) {
             seh::second_chance(code, address);
         }
         // EAX as the delivery left it: the convention writes it back unchanged.
