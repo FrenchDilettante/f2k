@@ -87,6 +87,10 @@ title = "drawing: fills, frames, edges and text"
 key = "scroll"
 title = "scroll bars"
 
+[[group]]
+key = "caret"
+title = "the caret"
+
 # --- window stations / desktops -------------------------------------------------------------------
 
 [[export]]
@@ -3362,6 +3366,56 @@ impl = { stub = "not yet implemented" }
 ordinal = 622
 fails = "FALSE"
 
+# --- the caret ------------------------------------------------------------------------------------
+
+[[export]]
+name = "CreateCaret"
+group = "caret"
+args = ["handle hWnd", "handle hBitmap", "i32 nWidth", "i32 nHeight"]
+impl = { stub = "not yet implemented" }
+ordinal = 74
+fails = "FALSE"
+
+[[export]]
+name = "DestroyCaret"
+group = "caret"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 141
+fails = "FALSE"
+
+[[export]]
+name = "GetCaretPos"
+group = "caret"
+args = ["ptr lpPoint"]
+impl = { stub = "not yet implemented" }
+ordinal = 234
+fails = "FALSE"
+
+[[export]]
+name = "HideCaret"
+group = "caret"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 363
+fails = "FALSE"
+
+[[export]]
+name = "SetCaretPos"
+group = "caret"
+args = ["i32 X", "i32 Y"]
+impl = { stub = "not yet implemented" }
+ordinal = 548
+fails = "FALSE"
+
+[[export]]
+name = "ShowCaret"
+group = "caret"
+args = ["handle hWnd"]
+impl = { stub = "not yet implemented" }
+ordinal = 619
+fails = "FALSE"
+
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
 [[export]]
@@ -3501,10 +3555,6 @@ ordinal = 65
 [[export]]
 name = "CopyImage"
 ordinal = 69
-
-[[export]]
-name = "CreateCaret"
-ordinal = 74
 
 [[export]]
 name = "CreateCursor"
@@ -3713,10 +3763,6 @@ ordinal = 134
 [[export]]
 name = "DeregisterShellHookWindow"
 ordinal = 139
-
-[[export]]
-name = "DestroyCaret"
-ordinal = 141
 
 [[export]]
 name = "DestroyCursor"
@@ -3941,10 +3987,6 @@ name = "GetCaretBlinkTime"
 ordinal = 233
 
 [[export]]
-name = "GetCaretPos"
-ordinal = 234
-
-[[export]]
 name = "GetClassWord"
 ordinal = 243
 
@@ -4151,10 +4193,6 @@ ordinal = 361
 [[export]]
 name = "GrayStringW"
 ordinal = 362
-
-[[export]]
-name = "HideCaret"
-ordinal = 363
 
 [[export]]
 name = "HiliteMenuItem"
@@ -4557,10 +4595,6 @@ name = "SetCaretBlinkTime"
 ordinal = 547
 
 [[export]]
-name = "SetCaretPos"
-ordinal = 548
-
-[[export]]
 name = "SetClassWord"
 ordinal = 551
 
@@ -4711,10 +4745,6 @@ ordinal = 617
 [[export]]
 name = "SetWindowsHookW"
 ordinal = 618
-
-[[export]]
-name = "ShowCaret"
-ordinal = 619
 
 [[export]]
 name = "ShowCursor"
