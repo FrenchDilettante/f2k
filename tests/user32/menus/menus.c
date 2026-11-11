@@ -106,6 +106,48 @@
  *   keychar  Alt held over V, then Up (from the popup's first item)
  *            and Enter; Alt, F, Down (onto the grayed Open), Enter,
  *            Esc, Esc
+ *   edit     menus made by CreateMenu and CreatePopupMenu, edited:
+ *            AppendMenuW/A (a separator, a NULL text, a NULL menu),
+ *            InsertMenuW/A by position (0, -1, past the end) and by
+ *            command (in the popup, through the bar, missing),
+ *            ModifyMenuW/A (text, id, check, into a separator, into a
+ *            popup), DeleteMenu and RemoveMenu by position and by
+ *            command, and a popup removed (IsMenu after: still there)
+ *            against one deleted (destroyed); every item after each
+ *            step, and the popups after DestroyMenu of their bar
+ *   info     GetMenuItemInfoW of each MIIM_* mask alone and all of them,
+ *            the members it leaves (the struct filled with 0xA5 bytes
+ *            before); the string's length through a NULL buffer, short
+ *            and exact cch; a popup item, a separator, by command,
+ *            nested, missing; cbSize 44 (NT 4's), 0 and 52;
+ *            GetMenuItemInfoA on the same inputs; SetMenuItemInfoW and
+ *            SetMenuItemInfoA of each mask, read back; a popup
+ *            attached and detached (IsMenu after); calls that fail
+ *   insitem  InsertMenuItemW (and InsertMenuItemA) by position (0, -1,
+ *            past the end) and by command, each mask, cbSize 44 and 0;
+ *            the items after, and some read back
+ *   default  SetMenuDefaultItem by command and by position (a grayed
+ *            item, a popup, a separator, -1, missing ids, an item of
+ *            a popup) and GetMenuDefaultItem after each, with and
+ *            without GMDI_USEDISABLED and GMDI_GOINTOPOPUPS; MFS_DEFAULT
+ *            through SetMenuItemInfoW on two items
+ *   sysmenu  GetSystemMenu of a hidden WS_OVERLAPPEDWINDOW window: its
+ *            items' ids, states and texts; the same copy again; edited,
+ *            then bRevert TRUE (the copy destroyed or not) and a fresh
+ *            copy; the windows without minimize and maximize boxes,
+ *            a tool window, a popup without WS_SYSMENU, a child; the
+ *            copy after DestroyWindow
+ *   itemrect GetMenuCheckMarkDimensions against SM_CXMENUCHECK and
+ *            SM_CYMENUCHECK; GetMenuItemRect of a shown window's bar
+ *            items, as relations (one row, side by side, the height
+ *            against SM_CYMENU, against the client area), of a hidden
+ *            window's, past the end, of a popup not shown, NULL ones
+ *   track    TrackPopupMenu and TrackPopupMenuEx of a popup owned by a
+ *            visible window, ended without input (below): the return,
+ *            how it ended, and the menu messages the owner received
+ *            in order (WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP,
+ *            WM_MENUSELECT, WM_UNINITMENUPOPUP, WM_CANCELMODE,
+ *            WM_EXITMENULOOP, WM_COMMAND); a NULL menu, a NULL owner
  *
  * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
  * at (60,70), 320x200, of a class each registers, with a fresh copy of
@@ -134,6 +176,17 @@
  * and 300 ms pass with nothing queued, or 4 seconds pass, and prints
  * whether the loop ended, then the records. Nobody types on the real
  * machine while it runs.
+ *
+ * The menu-editing sections (edit through track) print a menu's items
+ * by position: id (hex for the system menu's SC_* ids), GetMenuState,
+ * text (a tab as \t). Item positions on the screen print only as
+ * relations. track ends each menu without input: a watcher thread
+ * sends the owner WM_CANCELMODE (SendNotifyMessageW) half a second in,
+ * which DefWindowProc answers by ending the menu; failing that, it
+ * posts an Escape key-down 2 s later; failing that too, it ends the
+ * process 2 s after, so the capture cannot hang. The popup opens away
+ * from the mouse pointer, so no item is selected under it. itemrect
+ * and track show their windows on the screen.
  *
  * kinds' calls on another kind's handle each validate the handle as
  * their own kind's and fail on any other, so none of them destroys
@@ -1857,6 +1910,1154 @@ static void sec_keychar(void)
     close_key_window(L"F2KMenusKeychar");
 }
 
+/* --- Menu editing: edit, info, insitem, default, sysmenu, itemrect,
+ * track ------------------------------------------------------------- */
+
+/* The MSVC 6 headers predate Windows 2000's additions to menus: the
+ * MENUITEMINFO masks that come with its hbmpItem member, the
+ * GetMenuDefaultItem flags (WM_UNINITMENUPOPUP is defined above). */
+#ifndef MIIM_STRING
+#define MIIM_STRING 0x00000040
+#endif
+#ifndef MIIM_BITMAP
+#define MIIM_BITMAP 0x00000080
+#endif
+#ifndef MIIM_FTYPE
+#define MIIM_FTYPE 0x00000100
+#endif
+#ifndef GMDI_USEDISABLED
+#define GMDI_USEDISABLED 0x0001
+#endif
+#ifndef GMDI_GOINTOPOPUPS
+#define GMDI_GOINTOPOPUPS 0x0002
+#endif
+
+/* Windows 2000's MENUITEMINFO, hbmpItem included (48 bytes); the MSVC 6
+ * headers' struct stops before it (44 bytes, NT 4's size). The calls
+ * take it through a cast, their A and W forms alike (dwTypeData points
+ * at a WCHAR or a char buffer). */
+typedef struct {
+    UINT cbSize;
+    UINT fMask;
+    UINT fType;
+    UINT fState;
+    UINT wID;
+    HMENU hSubMenu;
+    HBITMAP hbmpChecked;
+    HBITMAP hbmpUnchecked;
+    DWORD dwItemData;
+    void *dwTypeData;
+    UINT cch;
+    HBITMAP hbmpItem;
+} mii_t;
+
+#define MII_SIZE ((UINT)sizeof(mii_t))
+#define MII_NT4_SIZE ((UINT)(sizeof(mii_t) - sizeof(HBITMAP)))
+
+/* What a GetMenuItemInfo call finds in a member it left alone: the
+ * struct is filled with 0xA5 bytes before the call. */
+#define MII_PATTERN 0xA5A5A5A5u
+
+/* The predefined menu bitmaps' values (HBMMENU_*, Windows 2000). */
+#define F2K_HBMMENU_CALLBACK ((HBITMAP)-1)
+#define F2K_HBMMENU_POPUP_CLOSE ((HBITMAP)8)
+
+/* The ids the editing sections give their items. */
+#define ID_EDIT_BASE 300
+#define ID_EDIT_NONE 399
+
+/* The section's known handles, which the printers name. */
+static HMENU known_menu_a;
+static HMENU known_menu_b;
+static HBITMAP known_bitmap;
+
+/* A handle a call returned or left, as printed. */
+static const char *handle_label(const void *h)
+{
+    if ((DWORD)h == MII_PATTERN) {
+        return "untouched";
+    }
+    if (h == NULL) {
+        return "NULL";
+    }
+    if (known_menu_a != NULL && h == (const void *)known_menu_a) {
+        return "menu A";
+    }
+    if (known_menu_b != NULL && h == (const void *)known_menu_b) {
+        return "menu B";
+    }
+    if (known_bitmap != NULL && h == (const void *)known_bitmap) {
+        return "the bitmap";
+    }
+    if ((DWORD)h <= 11 || h == (const void *)F2K_HBMMENU_CALLBACK) {
+        return "a predefined HBMMENU value";
+    }
+    return "other";
+}
+
+/* A UINT member, as printed: "untouched", or its value. */
+static const char *uint_label(UINT v)
+{
+    static char bufs[4][16];
+    static int next;
+    char *b = bufs[next++ & 3];
+
+    if (v == MII_PATTERN) {
+        return "untouched";
+    }
+    sprintf(b, "%ld", (long)v);
+    return b;
+}
+
+/* A menu's text as printed: ws(), with a tab shown as \t. */
+static const char *menu_text(const WCHAR *s)
+{
+    static char bufs[4][1100];
+    static int next;
+    char *b = bufs[next++ & 3];
+    const char *t = ws(s);
+    int n = 0;
+
+    for (; *t != '\0' && n < (int)sizeof bufs[0] - 3; t++) {
+        if (*t == '\t') {
+            b[n++] = '\\';
+            b[n++] = 't';
+        } else {
+            b[n++] = *t;
+        }
+    }
+    b[n] = '\0';
+    return b;
+}
+
+/* Every item of a menu by position: its id (in hex for the system
+ * menu's SC_* ids), its state and its text. */
+static void dump_menu(HMENU m, const char *name, int hex)
+{
+    int n, i;
+    UINT id, s;
+    WCHAR buf[64];
+
+    arm();
+    n = GetMenuItemCount(m);
+    line("  %s: GetMenuItemCount ret=%d err=%s", name, n, le());
+    for (i = 0; i < n && i < 32; i++) {
+        id = GetMenuItemID(m, i);
+        s = GetMenuState(m, i, MF_BYPOSITION);
+        buf[0] = 0;
+        GetMenuStringW(m, i, buf, 64, MF_BYPOSITION);
+        if (id == (UINT)-1) {
+            line("  %s %d: id=-1 state=0x%X text \"%s\"", name, i, s, menu_text(buf));
+        } else if (hex) {
+            line("  %s %d: id=0x%X state=0x%X text \"%s\"", name, i, id, s, menu_text(buf));
+        } else {
+            line("  %s %d: id=%u state=0x%X text \"%s\"", name, i, id, s, menu_text(buf));
+        }
+    }
+}
+
+static void append_w(HMENU m, UINT flags, UINT id, const WCHAR *text, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = AppendMenuW(m, flags, id, text);
+    line("AppendMenuW(%s): ret=%d err=%s", what, r, le());
+}
+
+static void insert_w(HMENU m, UINT pos, UINT flags, UINT id, const WCHAR *text, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = InsertMenuW(m, pos, flags, id, text);
+    line("InsertMenuW(%s): ret=%d err=%s", what, r, le());
+}
+
+static void modify_w(HMENU m, UINT pos, UINT flags, UINT id, const WCHAR *text, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = ModifyMenuW(m, pos, flags, id, text);
+    line("ModifyMenuW(%s): ret=%d err=%s", what, r, le());
+}
+
+static void delete_item(HMENU m, UINT pos, UINT flags, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = DeleteMenu(m, pos, flags);
+    line("DeleteMenu(%s): ret=%d err=%s", what, r, le());
+}
+
+static void remove_item(HMENU m, UINT pos, UINT flags, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = RemoveMenu(m, pos, flags);
+    line("RemoveMenu(%s): ret=%d err=%s", what, r, le());
+}
+
+/* --- edit ---------------------------------------------------------- */
+
+static void sec_edit(void)
+{
+    HMENU p, bar, more, bar2, kept, gone, got;
+    BOOL r;
+
+    arm();
+    p = CreatePopupMenu();
+    line("CreatePopupMenu: non-NULL %s err=%s", yesno(p != NULL), le());
+    append_w(p, MF_STRING, 301, L"&One", "popup, MF_STRING, 301 &One");
+    append_w(p, MF_STRING, 302, L"&Two", "popup, MF_STRING, 302 &Two");
+    append_w(p, MF_SEPARATOR, 0, NULL, "popup, MF_SEPARATOR, 0, NULL");
+    arm();
+    r = AppendMenuA(p, MF_STRING | MF_CHECKED, 303, "T&hree");
+    line("AppendMenuA(popup, MF_STRING | MF_CHECKED, 303 T&hree): ret=%d err=%s", r, le());
+    append_w(p, MF_STRING | MF_GRAYED, 304, L"Four", "popup, MF_STRING | MF_GRAYED, 304 Four");
+    append_w(p, MF_STRING, 308, NULL, "popup, MF_STRING, 308, NULL text");
+    append_w(NULL, MF_STRING, 309, L"Nowhere", "NULL, MF_STRING, 309 Nowhere");
+    dump_menu(p, "popup", 0);
+
+    insert_w(p, 0, MF_BYPOSITION | MF_STRING, 305, L"Zero", "popup, 0, MF_BYPOSITION | MF_STRING, 305 Zero");
+    insert_w(p, 302, MF_BYCOMMAND | MF_STRING, 306, L"Before two",
+             "popup, 302, MF_BYCOMMAND | MF_STRING, 306 Before two");
+    insert_w(p, (UINT)-1, MF_BYPOSITION | MF_STRING, 307, L"Last",
+             "popup, -1, MF_BYPOSITION | MF_STRING, 307 Last");
+    insert_w(p, 99, MF_BYPOSITION | MF_STRING, 310, L"Far",
+             "popup, 99 (past the end), MF_BYPOSITION | MF_STRING, 310 Far");
+    insert_w(p, ID_EDIT_NONE, MF_BYCOMMAND | MF_STRING, 311, L"Lost",
+             "popup, 399 (no such item), MF_BYCOMMAND | MF_STRING, 311 Lost");
+    arm();
+    r = InsertMenuA(p, 1, MF_BYPOSITION | MF_STRING, 312, "Zero (A)");
+    line("InsertMenuA(popup, 1, MF_BYPOSITION | MF_STRING, 312 Zero (A)): ret=%d err=%s", r, le());
+    dump_menu(p, "popup", 0);
+
+    arm();
+    bar = CreateMenu();
+    line("CreateMenu: non-NULL %s err=%s", yesno(bar != NULL), le());
+    append_w(bar, MF_POPUP | MF_STRING, (UINT)p, L"&Edit", "bar, MF_POPUP | MF_STRING, the popup, &Edit");
+    append_w(bar, MF_STRING, 320, L"&Go", "bar, MF_STRING, 320 &Go");
+    dump_menu(bar, "bar", 0);
+    insert_w(bar, 304, MF_BYCOMMAND | MF_STRING, 313, L"Nested",
+             "bar, 304 (in the popup), MF_BYCOMMAND | MF_STRING, 313 Nested");
+    dump_menu(bar, "bar", 0);
+    dump_menu(p, "popup", 0);
+
+    modify_w(bar, 301, MF_BYCOMMAND | MF_STRING, 321, L"Uno",
+             "bar, 301 (in the popup), MF_BYCOMMAND | MF_STRING, 321 Uno");
+    modify_w(p, 1, MF_BYPOSITION | MF_STRING | MF_CHECKED, 322, L"Checked",
+             "popup, 1, MF_BYPOSITION | MF_STRING | MF_CHECKED, 322 Checked");
+    arm();
+    r = ModifyMenuA(p, 2, MF_BYPOSITION | MF_STRING, 323, "Changed (A)");
+    line("ModifyMenuA(popup, 2, MF_BYPOSITION | MF_STRING, 323 Changed (A)): ret=%d err=%s", r, le());
+    modify_w(p, 304, MF_BYCOMMAND | MF_SEPARATOR, 0, NULL, "popup, 304 Four, MF_BYCOMMAND | MF_SEPARATOR");
+    modify_w(p, 303, MF_BYCOMMAND | MF_STRING, 303, L"Three again",
+             "popup, 303 (checked), MF_BYCOMMAND | MF_STRING, 303 Three again");
+    modify_w(p, ID_EDIT_NONE, MF_BYCOMMAND | MF_STRING, 324, L"Lost",
+             "popup, 399 (no such item), MF_BYCOMMAND | MF_STRING");
+    modify_w(p, 50, MF_BYPOSITION | MF_STRING, 325, L"Lost", "popup, 50 (past the end), MF_BYPOSITION");
+    dump_menu(p, "popup", 0);
+    more = CreatePopupMenu();
+    AppendMenuW(more, MF_STRING, 341, L"Inside");
+    modify_w(bar, 1, MF_BYPOSITION | MF_POPUP | MF_STRING, (UINT)more, L"&More",
+             "bar, 1 &Go, MF_BYPOSITION | MF_POPUP | MF_STRING, a second popup, &More");
+    dump_menu(bar, "bar", 0);
+    arm();
+    got = GetSubMenu(bar, 1);
+    line("  GetSubMenu(bar, 1): the second popup %s err=%s", yesno(got == more), le());
+
+    delete_item(p, 0, MF_BYPOSITION, "popup, 0, MF_BYPOSITION");
+    delete_item(bar, 321, MF_BYCOMMAND, "bar, 321 (in the popup), MF_BYCOMMAND");
+    delete_item(p, 321, MF_BYCOMMAND, "popup, 321 again, MF_BYCOMMAND");
+    delete_item(p, ID_EDIT_NONE, MF_BYCOMMAND, "popup, 399 (no such item), MF_BYCOMMAND");
+    delete_item(p, 40, MF_BYPOSITION, "popup, 40 (past the end), MF_BYPOSITION");
+    remove_item(p, 0, MF_BYPOSITION, "popup, 0, MF_BYPOSITION");
+    remove_item(p, 307, MF_BYCOMMAND, "popup, 307 Last, MF_BYCOMMAND");
+    remove_item(p, ID_EDIT_NONE, MF_BYCOMMAND, "popup, 399 (no such item), MF_BYCOMMAND");
+    remove_item(p, 40, MF_BYPOSITION, "popup, 40 (past the end), MF_BYPOSITION");
+    delete_item(NULL, 0, MF_BYPOSITION, "NULL, 0, MF_BYPOSITION");
+    remove_item(NULL, 0, MF_BYPOSITION, "NULL, 0, MF_BYPOSITION");
+    dump_menu(p, "popup", 0);
+
+    /* A popup taken off a bar by RemoveMenu, another by DeleteMenu. */
+    bar2 = CreateMenu();
+    kept = CreatePopupMenu();
+    AppendMenuW(kept, MF_STRING, 331, L"Kept");
+    gone = CreatePopupMenu();
+    AppendMenuW(gone, MF_STRING, 332, L"Gone");
+    append_w(bar2, MF_POPUP | MF_STRING, (UINT)kept, L"&Removed", "a second bar, MF_POPUP, popup K, &Removed");
+    append_w(bar2, MF_POPUP | MF_STRING, (UINT)gone, L"&Deleted", "a second bar, MF_POPUP, popup D, &Deleted");
+    remove_item(bar2, 0, MF_BYPOSITION, "the second bar, 0 &Removed (popup K), MF_BYPOSITION");
+    arm();
+    r = IsMenu(kept);
+    line("  IsMenu(popup K) after: ret=%d err=%s", r, le());
+    dump_menu(kept, "popup K", 0);
+    delete_item(bar2, 0, MF_BYPOSITION, "the second bar, 0 &Deleted (popup D), MF_BYPOSITION");
+    arm();
+    r = IsMenu(gone);
+    line("  IsMenu(popup D) after: ret=%d err=%s", r, le());
+    dump_menu(bar2, "the second bar", 0);
+
+    /* DestroyMenu of the bar takes its popups with it. */
+    arm();
+    r = DestroyMenu(bar);
+    line("DestroyMenu(bar): ret=%d err=%s", r, le());
+    arm();
+    r = IsMenu(p);
+    line("  IsMenu(the popup) after: ret=%d err=%s", r, le());
+    arm();
+    r = IsMenu(more);
+    line("  IsMenu(the second popup) after: ret=%d err=%s", r, le());
+    DestroyMenu(bar2);
+    DestroyMenu(kept);
+}
+
+/* --- info ---------------------------------------------------------- */
+
+/* The members a GetMenuItemInfo call left, and its buffer. */
+static void print_mii(const mii_t *mi)
+{
+    line("  fType=0x%X fState=0x%X wID=%s hSubMenu=%s hbmpChecked=%s hbmpUnchecked=%s", mi->fType, mi->fState,
+         uint_label(mi->wID), handle_label(mi->hSubMenu), handle_label(mi->hbmpChecked),
+         handle_label(mi->hbmpUnchecked));
+    line("  dwItemData=0x%lX dwTypeData=%s cch=%s hbmpItem=%s", mi->dwItemData,
+         mi->dwTypeData == NULL ? "NULL" : ((DWORD)mi->dwTypeData == MII_PATTERN ? "untouched" : "set"),
+         uint_label(mi->cch), handle_label(mi->hbmpItem));
+}
+
+/* GetMenuItemInfoW: the struct filled with the pattern, then cbSize,
+ * fMask, dwTypeData (a 32-unit buffer holding "########", or NULL) and
+ * cch set. */
+static void get_info_w(HMENU m, UINT item, BOOL by_position, UINT size, UINT mask, int with_buffer, UINT cch,
+                       const char *what)
+{
+    mii_t mi;
+    WCHAR buf[32];
+    BOOL r;
+
+    lstrcpyW(buf, UNFILLED_W);
+    memset(&mi, 0xA5, sizeof mi);
+    mi.cbSize = size;
+    mi.fMask = mask;
+    mi.dwTypeData = with_buffer ? (void *)buf : NULL;
+    mi.cch = cch;
+    arm();
+    r = GetMenuItemInfoW(m, item, by_position, (LPMENUITEMINFOW)&mi);
+    line("GetMenuItemInfoW(%s): ret=%d err=%s", what, r, le());
+    print_mii(&mi);
+    if (with_buffer) {
+        line("  buffer \"%s\" dwTypeData the buffer %s", ws(buf), yesno(mi.dwTypeData == (void *)buf));
+    }
+}
+
+/* GetMenuItemInfoA, the same way. */
+static void get_info_a(HMENU m, UINT item, BOOL by_position, UINT size, UINT mask, int with_buffer, UINT cch,
+                       const char *what)
+{
+    mii_t mi;
+    char buf[32];
+    BOOL r;
+
+    lstrcpyA(buf, UNFILLED_A);
+    memset(&mi, 0xA5, sizeof mi);
+    mi.cbSize = size;
+    mi.fMask = mask;
+    mi.dwTypeData = with_buffer ? (void *)buf : NULL;
+    mi.cch = cch;
+    arm();
+    r = GetMenuItemInfoA(m, item, by_position, (LPMENUITEMINFOA)&mi);
+    line("GetMenuItemInfoA(%s): ret=%d err=%s", what, r, le());
+    print_mii(&mi);
+    if (with_buffer) {
+        line("  buffer \"%s\" dwTypeData the buffer %s", buf, yesno(mi.dwTypeData == (void *)buf));
+    }
+}
+
+/* A zeroed struct of Windows 2000's size with fMask set. */
+static void mii_init(mii_t *mi, UINT mask)
+{
+    ZeroMemory(mi, sizeof *mi);
+    mi->cbSize = MII_SIZE;
+    mi->fMask = mask;
+}
+
+static void set_info_w(HMENU m, UINT item, BOOL by_position, mii_t *mi, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = SetMenuItemInfoW(m, item, by_position, (LPMENUITEMINFOW)mi);
+    line("SetMenuItemInfoW(%s): ret=%d err=%s", what, r, le());
+}
+
+static void sec_info(void)
+{
+    HMENU p, sub, attached;
+    mii_t mi;
+    BOOL r;
+    UINT id;
+
+    /* The popup: 0 &Alpha (401, checked), 1 &Sub (menu B, holding
+     * Inner, 411), 2 a separator, 3 Gamma (403, grayed). */
+    p = CreatePopupMenu();
+    sub = CreatePopupMenu();
+    known_menu_a = p;
+    known_menu_b = sub;
+    known_bitmap = LoadBitmapW(NULL, MAKEINTRESOURCEW(32760));
+    line("CreatePopupMenu twice (menu A, menu B): non-NULL %s; LoadBitmapW(NULL, OBM_CHECK): non-NULL %s",
+         yesno(p != NULL && sub != NULL), yesno(known_bitmap != NULL));
+    AppendMenuW(p, MF_STRING | MF_CHECKED, 401, L"&Alpha");
+    AppendMenuW(sub, MF_STRING, 411, L"Inner");
+    AppendMenuW(p, MF_POPUP | MF_STRING, (UINT)sub, L"&Sub");
+    AppendMenuW(p, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(p, MF_STRING | MF_GRAYED, 403, L"Gamma");
+    dump_menu(p, "menu A", 0);
+
+    /* Each mask alone, then all of them, on 0 &Alpha. */
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STATE, 1, 20, "A, 0, by position, MIIM_STATE");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_ID, 1, 20, "A, 0, by position, MIIM_ID");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_SUBMENU, 1, 20, "A, 0, by position, MIIM_SUBMENU");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_CHECKMARKS, 1, 20, "A, 0, by position, MIIM_CHECKMARKS");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_TYPE, 1, 20, "A, 0, by position, MIIM_TYPE, cch 20");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_DATA, 1, 20, "A, 0, by position, MIIM_DATA");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 20, "A, 0, by position, MIIM_STRING, cch 20");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_BITMAP, 1, 20, "A, 0, by position, MIIM_BITMAP");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_FTYPE, 1, 20, "A, 0, by position, MIIM_FTYPE");
+    get_info_w(p, 0, TRUE, MII_SIZE, 0x1FF, 1, 20, "A, 0, by position, every mask, cch 20");
+    get_info_w(p, 0, TRUE, MII_SIZE, 0, 1, 20, "A, 0, by position, no mask");
+
+    /* The string's length and cch: no buffer, a short one, one unit
+     * short of the terminator, exactly enough, none at all. */
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 0, 20, "A, 0, MIIM_STRING, dwTypeData NULL, cch 20");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 0, 0, "A, 0, MIIM_STRING, dwTypeData NULL, cch 0");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_TYPE, 0, 20, "A, 0, MIIM_TYPE, dwTypeData NULL, cch 20");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 3, "A, 0, MIIM_STRING, cch 3");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 6, "A, 0, MIIM_STRING, cch 6 (the length)");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 7, "A, 0, MIIM_STRING, cch 7");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 0, "A, 0, MIIM_STRING, cch 0");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_TYPE, 1, 3, "A, 0, MIIM_TYPE, cch 3");
+    get_info_a(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 20, "A, 0, MIIM_STRING, cch 20");
+    get_info_a(p, 0, TRUE, MII_SIZE, MIIM_STRING, 0, 20, "A, 0, MIIM_STRING, dwTypeData NULL, cch 20");
+    get_info_a(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 3, "A, 0, MIIM_STRING, cch 3");
+    get_info_a(p, 0, TRUE, MII_SIZE, MIIM_TYPE, 1, 20, "A, 0, MIIM_TYPE, cch 20");
+
+    /* The popup item, the separator, by command, nested, missing. */
+    get_info_w(p, 1, TRUE, MII_SIZE, MIIM_SUBMENU | MIIM_ID | MIIM_STATE | MIIM_FTYPE | MIIM_STRING, 1, 20,
+               "A, 1 &Sub, by position, MIIM_SUBMENU | MIIM_ID | MIIM_STATE | MIIM_FTYPE | MIIM_STRING");
+    get_info_w(p, 1, TRUE, MII_SIZE, MIIM_TYPE, 1, 20, "A, 1 &Sub, by position, MIIM_TYPE");
+    get_info_w(p, 2, TRUE, MII_SIZE, MIIM_TYPE | MIIM_ID | MIIM_STATE, 1, 20,
+               "A, 2 the separator, MIIM_TYPE | MIIM_ID | MIIM_STATE");
+    get_info_w(p, 2, TRUE, MII_SIZE, MIIM_FTYPE | MIIM_STRING, 1, 20,
+               "A, 2 the separator, MIIM_FTYPE | MIIM_STRING");
+    get_info_w(p, 403, FALSE, MII_SIZE, MIIM_ID | MIIM_STATE | MIIM_STRING, 1, 20,
+               "A, 403 Gamma, by command, MIIM_ID | MIIM_STATE | MIIM_STRING");
+    get_info_w(p, 411, FALSE, MII_SIZE, MIIM_ID | MIIM_STRING, 1, 20,
+               "A, 411 Inner (in menu B), by command, MIIM_ID | MIIM_STRING");
+    get_info_w(p, 499, FALSE, MII_SIZE, MIIM_ID, 1, 20, "A, 499 (no such item), by command, MIIM_ID");
+    get_info_w(p, 9, TRUE, MII_SIZE, MIIM_ID, 1, 20, "A, 9 (past the end), by position, MIIM_ID");
+    get_info_w(NULL, 0, TRUE, MII_SIZE, MIIM_ID, 1, 20, "NULL, 0, by position, MIIM_ID");
+
+    /* cbSize: NT 4's, with the old masks and the new; none; too large. */
+    get_info_w(p, 0, TRUE, MII_NT4_SIZE, MIIM_TYPE | MIIM_ID, 1, 20, "A, 0, cbSize 44, MIIM_TYPE | MIIM_ID");
+    get_info_w(p, 0, TRUE, MII_NT4_SIZE, MIIM_STRING, 1, 20, "A, 0, cbSize 44, MIIM_STRING");
+    get_info_w(p, 0, TRUE, 0, MIIM_ID, 1, 20, "A, 0, cbSize 0, MIIM_ID");
+    get_info_w(p, 0, TRUE, MII_SIZE + 4, MIIM_ID, 1, 20, "A, 0, cbSize 52, MIIM_ID");
+
+    /* SetMenuItemInfoW, each mask, then the item read back. */
+    mii_init(&mi, MIIM_STRING);
+    mi.dwTypeData = L"&Beta";
+    mi.cch = 2;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_STRING &Beta, cch 2");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING | MIIM_FTYPE, 1, 20, "A, 0 after, MIIM_STRING | MIIM_FTYPE");
+    mii_init(&mi, MIIM_STRING);
+    mi.dwTypeData = "&Beta (A)";
+    arm();
+    r = SetMenuItemInfoA(p, 0, TRUE, (LPMENUITEMINFOA)&mi);
+    line("SetMenuItemInfoA(A, 0, MIIM_STRING &Beta (A)): ret=%d err=%s", r, le());
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STRING, 1, 20, "A, 0 after, MIIM_STRING");
+    mii_init(&mi, MIIM_FTYPE);
+    mi.fType = MFT_RADIOCHECK | MFT_RIGHTJUSTIFY;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_FTYPE MFT_RADIOCHECK | MFT_RIGHTJUSTIFY");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_FTYPE | MIIM_STRING, 1, 20, "A, 0 after, MIIM_FTYPE | MIIM_STRING");
+    mii_init(&mi, MIIM_STATE);
+    mi.fState = MFS_CHECKED | MFS_DEFAULT | MFS_HILITE;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_STATE MFS_CHECKED | MFS_DEFAULT | MFS_HILITE");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STATE, 1, 20, "A, 0 after, MIIM_STATE");
+    print_state(p, 0, MF_BYPOSITION, "A, 0 after");
+    mii_init(&mi, MIIM_STATE);
+    mi.fState = MFS_DISABLED;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_STATE MFS_DISABLED");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_STATE, 1, 20, "A, 0 after, MIIM_STATE");
+    mii_init(&mi, MIIM_ID);
+    mi.wID = 421;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_ID 421");
+    arm();
+    id = GetMenuItemID(p, 0);
+    line("  GetMenuItemID(A, 0) after: ret=%ld err=%s", as_long(id), le());
+    mii_init(&mi, MIIM_DATA);
+    mi.dwItemData = 0x1234;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_DATA 0x1234");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_DATA, 1, 20, "A, 0 after, MIIM_DATA");
+    mii_init(&mi, MIIM_CHECKMARKS);
+    mi.hbmpChecked = known_bitmap;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_CHECKMARKS the bitmap, NULL");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_CHECKMARKS, 1, 20, "A, 0 after, MIIM_CHECKMARKS");
+    mii_init(&mi, MIIM_BITMAP);
+    mi.hbmpItem = F2K_HBMMENU_POPUP_CLOSE;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, MIIM_BITMAP HBMMENU_POPUP_CLOSE");
+    get_info_w(p, 0, TRUE, MII_SIZE, MIIM_BITMAP | MIIM_FTYPE | MIIM_STRING, 1, 20,
+               "A, 0 after, MIIM_BITMAP | MIIM_FTYPE | MIIM_STRING");
+    mii_init(&mi, MIIM_TYPE);
+    mi.fType = MFT_STRING;
+    mi.dwTypeData = L"Typed";
+    set_info_w(p, 3, TRUE, &mi, "A, 3 Gamma, MIIM_TYPE MFT_STRING Typed");
+    get_info_w(p, 3, TRUE, MII_SIZE, MIIM_TYPE, 1, 20, "A, 3 after, MIIM_TYPE");
+    mii_init(&mi, MIIM_TYPE | MIIM_STRING);
+    mi.fType = MFT_STRING;
+    mi.dwTypeData = L"Both";
+    set_info_w(p, 3, TRUE, &mi, "A, 3, MIIM_TYPE | MIIM_STRING Both");
+    get_info_w(p, 3, TRUE, MII_SIZE, MIIM_STRING, 1, 20, "A, 3 after, MIIM_STRING");
+
+    /* A popup attached to an item and taken off again. */
+    attached = CreatePopupMenu();
+    AppendMenuW(attached, MF_STRING, 431, L"Attached");
+    known_menu_b = attached;
+    mii_init(&mi, MIIM_SUBMENU);
+    mi.hSubMenu = attached;
+    set_info_w(p, 403, FALSE, &mi, "A, 403, by command, MIIM_SUBMENU a new popup (now menu B)");
+    get_info_w(p, 3, TRUE, MII_SIZE, MIIM_SUBMENU | MIIM_ID, 1, 20, "A, 3 after, MIIM_SUBMENU | MIIM_ID");
+    print_state(p, 3, MF_BYPOSITION, "A, 3 after");
+    mii_init(&mi, MIIM_SUBMENU);
+    mi.hSubMenu = NULL;
+    set_info_w(p, 3, TRUE, &mi, "A, 3, MIIM_SUBMENU NULL");
+    get_info_w(p, 3, TRUE, MII_SIZE, MIIM_SUBMENU | MIIM_ID, 1, 20, "A, 3 after, MIIM_SUBMENU | MIIM_ID");
+    arm();
+    r = IsMenu(attached);
+    line("  IsMenu(menu B) after: ret=%d err=%s", r, le());
+    known_menu_b = sub;
+
+    /* Calls that fail. */
+    mii_init(&mi, MIIM_ID);
+    mi.wID = 450;
+    set_info_w(p, 499, FALSE, &mi, "A, 499 (no such item), by command, MIIM_ID");
+    set_info_w(p, 9, TRUE, &mi, "A, 9 (past the end), by position, MIIM_ID");
+    set_info_w(NULL, 0, TRUE, &mi, "NULL, 0, MIIM_ID");
+    mi.cbSize = 0;
+    set_info_w(p, 0, TRUE, &mi, "A, 0, cbSize 0, MIIM_ID");
+    dump_menu(p, "menu A", 0);
+
+    DestroyMenu(p);
+    if (IsMenu(attached)) {
+        DestroyMenu(attached);
+    }
+    known_menu_a = NULL;
+    known_menu_b = NULL;
+    known_bitmap = NULL;
+}
+
+/* --- insitem ------------------------------------------------------- */
+
+static void insert_item_w(HMENU m, UINT item, BOOL by_position, mii_t *mi, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = InsertMenuItemW(m, item, by_position, (LPMENUITEMINFOW)mi);
+    line("InsertMenuItemW(%s): ret=%d err=%s", what, r, le());
+}
+
+static void sec_insitem(void)
+{
+    HMENU p, sub;
+    mii_t mi;
+    BOOL r;
+
+    p = CreatePopupMenu();
+    sub = CreatePopupMenu();
+    known_menu_a = p;
+    known_menu_b = sub;
+    line("CreatePopupMenu twice (menu A, menu B): non-NULL %s", yesno(p != NULL && sub != NULL));
+    AppendMenuW(sub, MF_STRING, 511, L"Inner");
+
+    mii_init(&mi, MIIM_ID | MIIM_STRING);
+    mi.wID = 501;
+    mi.dwTypeData = L"First";
+    insert_item_w(p, 0, TRUE, &mi, "A (empty), 0, by position, MIIM_ID | MIIM_STRING 501 First");
+    mi.wID = 502;
+    mi.dwTypeData = L"Second";
+    insert_item_w(p, 5, TRUE, &mi, "A, 5 (past the end), by position, 502 Second");
+    mi.wID = 503;
+    mi.dwTypeData = L"Before first";
+    insert_item_w(p, 501, FALSE, &mi, "A, 501, by command, 503 Before first");
+    mi.wID = 504;
+    mi.dwTypeData = L"Lost";
+    insert_item_w(p, 599, FALSE, &mi, "A, 599 (no such item), by command, 504 Lost");
+    mi.wID = 505;
+    mi.dwTypeData = L"Appended";
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, by position, 505 Appended");
+    mii_init(&mi, MIIM_FTYPE);
+    mi.fType = MFT_SEPARATOR;
+    insert_item_w(p, 1, TRUE, &mi, "A, 1, MIIM_FTYPE MFT_SEPARATOR");
+    mii_init(&mi, MIIM_TYPE | MIIM_ID);
+    mi.fType = MFT_STRING;
+    mi.wID = 506;
+    mi.dwTypeData = L"Typed";
+    insert_item_w(p, 0, TRUE, &mi, "A, 0, MIIM_TYPE | MIIM_ID MFT_STRING 506 Typed");
+    mii_init(&mi, MIIM_ID | MIIM_STRING | MIIM_STATE);
+    mi.wID = 507;
+    mi.dwTypeData = L"Checked default";
+    mi.fState = MFS_CHECKED | MFS_DEFAULT;
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, MIIM_ID | MIIM_STRING | MIIM_STATE MFS_CHECKED | MFS_DEFAULT 507");
+    mii_init(&mi, MIIM_ID | MIIM_STRING | MIIM_STATE);
+    mi.wID = 508;
+    mi.dwTypeData = L"Grayed";
+    mi.fState = MFS_GRAYED;
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, MIIM_STATE MFS_GRAYED 508 Grayed");
+    mii_init(&mi, MIIM_SUBMENU | MIIM_STRING | MIIM_ID);
+    mi.hSubMenu = sub;
+    mi.wID = 509;
+    mi.dwTypeData = L"&Sub";
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, MIIM_SUBMENU menu B | MIIM_STRING | MIIM_ID 509 &Sub");
+    mii_init(&mi, MIIM_ID | MIIM_DATA);
+    mi.wID = 510;
+    mi.dwItemData = 0x5678;
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, MIIM_ID | MIIM_DATA 510 0x5678 (no string)");
+    mii_init(&mi, MIIM_ID | MIIM_STRING);
+    mi.wID = 512;
+    mi.dwTypeData = "Wide? no (A)";
+    arm();
+    r = InsertMenuItemA(p, (UINT)-1, TRUE, (LPMENUITEMINFOA)&mi);
+    line("InsertMenuItemA(A, -1, by position, MIIM_ID | MIIM_STRING 512 Wide? no (A)): ret=%d err=%s", r, le());
+    mii_init(&mi, MIIM_TYPE | MIIM_ID);
+    mi.cbSize = MII_NT4_SIZE;
+    mi.fType = MFT_STRING;
+    mi.wID = 513;
+    mi.dwTypeData = L"Old size";
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, cbSize 44, MIIM_TYPE | MIIM_ID 513 Old size");
+    mii_init(&mi, MIIM_ID | MIIM_STRING);
+    mi.cbSize = 0;
+    mi.wID = 514;
+    mi.dwTypeData = L"No size";
+    insert_item_w(p, (UINT)-1, TRUE, &mi, "A, -1, cbSize 0, 514 No size");
+    mii_init(&mi, MIIM_ID | MIIM_STRING);
+    mi.wID = 515;
+    mi.dwTypeData = L"Nowhere";
+    insert_item_w(NULL, 0, TRUE, &mi, "NULL, 0, 515 Nowhere");
+    dump_menu(p, "menu A", 0);
+
+    get_info_w(p, 4, TRUE, MII_SIZE, 0x1FF, 1, 20, "A, 4, by position, every mask");
+    get_info_w(p, 507, FALSE, MII_SIZE, MIIM_STATE | MIIM_FTYPE, 1, 20, "A, 507, by command, MIIM_STATE | MIIM_FTYPE");
+    get_info_w(p, 509, FALSE, MII_SIZE, MIIM_SUBMENU | MIIM_ID, 1, 20, "A, 509, by command, MIIM_SUBMENU | MIIM_ID");
+    get_info_w(p, 510, FALSE, MII_SIZE, MIIM_DATA | MIIM_FTYPE | MIIM_STRING, 1, 20,
+               "A, 510, by command, MIIM_DATA | MIIM_FTYPE | MIIM_STRING");
+
+    DestroyMenu(p);
+    known_menu_a = NULL;
+    known_menu_b = NULL;
+}
+
+/* --- default ------------------------------------------------------- */
+
+static void get_default(HMENU m, UINT by_position, UINT flags, const char *what)
+{
+    UINT r;
+
+    arm();
+    r = GetMenuDefaultItem(m, by_position, flags);
+    line("GetMenuDefaultItem(%s): ret=%ld err=%s", what, as_long(r), le());
+}
+
+static void set_default(HMENU m, UINT item, UINT by_position, const char *what)
+{
+    BOOL r;
+
+    arm();
+    r = SetMenuDefaultItem(m, item, by_position);
+    line("SetMenuDefaultItem(%s): ret=%d err=%s", what, r, le());
+}
+
+/* The default item, each way of asking. */
+static void get_defaults(HMENU m)
+{
+    get_default(m, FALSE, 0, "A, by command, 0");
+    get_default(m, TRUE, 0, "A, by position, 0");
+    get_default(m, FALSE, GMDI_USEDISABLED, "A, by command, GMDI_USEDISABLED");
+    get_default(m, FALSE, GMDI_GOINTOPOPUPS, "A, by command, GMDI_GOINTOPOPUPS");
+    get_default(m, TRUE, GMDI_GOINTOPOPUPS, "A, by position, GMDI_GOINTOPOPUPS");
+    get_default(m, FALSE, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS,
+                "A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS");
+}
+
+static void sec_default(void)
+{
+    HMENU p, sub;
+    mii_t mi;
+
+    /* Menu A: 0 A (601), 1 B (602, grayed), 2 a separator, 3 C (603),
+     * 4 &D, a popup holding 0 X (611), 1 Y (612). */
+    p = CreatePopupMenu();
+    sub = CreatePopupMenu();
+    line("CreatePopupMenu twice (menu A, menu B): non-NULL %s", yesno(p != NULL && sub != NULL));
+    AppendMenuW(p, MF_STRING, 601, L"A");
+    AppendMenuW(p, MF_STRING | MF_GRAYED, 602, L"B");
+    AppendMenuW(p, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(p, MF_STRING, 603, L"C");
+    AppendMenuW(sub, MF_STRING, 611, L"X");
+    AppendMenuW(sub, MF_STRING, 612, L"Y");
+    AppendMenuW(p, MF_POPUP | MF_STRING, (UINT)sub, L"&D");
+
+    line("-- none set");
+    get_defaults(p);
+    set_default(p, 603, FALSE, "A, 603 C, by command");
+    print_state(p, 603, MF_BYCOMMAND, "A, 603 C");
+    get_defaults(p);
+    set_default(p, 1, TRUE, "A, 1 B (grayed), by position");
+    print_state(p, 603, MF_BYCOMMAND, "A, 603 C");
+    print_state(p, 602, MF_BYCOMMAND, "A, 602 B");
+    get_defaults(p);
+    set_default(p, 4, TRUE, "A, 4 &D (the popup), by position");
+    line("-- menu B's default none");
+    get_defaults(p);
+    set_default(sub, 612, FALSE, "B, 612 Y, by command");
+    line("-- menu B's default 612 Y");
+    get_defaults(p);
+    set_default(p, 2, TRUE, "A, 2 the separator, by position");
+    get_defaults(p);
+    set_default(p, (UINT)-1, FALSE, "A, -1 (none), by command");
+    print_state(p, 4, MF_BYPOSITION, "A, 4 &D");
+    get_defaults(p);
+    set_default(p, 699, FALSE, "A, 699 (no such item), by command");
+    set_default(p, 9, TRUE, "A, 9 (past the end), by position");
+    set_default(p, 611, FALSE, "A, 611 X (in menu B), by command");
+    get_default(sub, FALSE, 0, "B, by command, 0");
+    get_defaults(p);
+    set_default(NULL, 0, TRUE, "NULL, 0, by position");
+    get_default(NULL, FALSE, 0, "NULL, by command, 0");
+
+    /* MFS_DEFAULT given through SetMenuItemInfoW, to two items. */
+    set_default(p, (UINT)-1, FALSE, "A, -1 (none), by command");
+    mii_init(&mi, MIIM_STATE);
+    mi.fState = MFS_DEFAULT;
+    set_info_w(p, 3, TRUE, &mi, "A, 3 C, MIIM_STATE MFS_DEFAULT");
+    get_default(p, FALSE, 0, "A, by command, 0");
+    set_info_w(p, 0, TRUE, &mi, "A, 0 A, MIIM_STATE MFS_DEFAULT");
+    get_default(p, FALSE, 0, "A, by command, 0");
+    print_state(p, 0, MF_BYPOSITION, "A, 0 A");
+    print_state(p, 3, MF_BYPOSITION, "A, 3 C");
+
+    DestroyMenu(p);
+}
+
+/* --- The windows of sysmenu, itemrect and track -------------------- */
+
+#define OWNER_CLASS L"F2KMenusOwner"
+
+/* The menu messages the owner window's procedure records (track). */
+#define MAX_TRACK_RECORDS 32
+
+typedef struct {
+    UINT msg;
+    WPARAM wparam;
+    LPARAM lparam;
+} track_record_t;
+
+static track_record_t track_records[MAX_TRACK_RECORDS];
+static int track_record_count;
+
+static LRESULT CALLBACK owner_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+    case WM_INITMENU:
+    case WM_INITMENUPOPUP:
+    case WM_UNINITMENUPOPUP:
+    case WM_MENUSELECT:
+    case WM_ENTERMENULOOP:
+    case WM_EXITMENULOOP:
+    case WM_CANCELMODE:
+    case WM_COMMAND:
+        if (track_record_count < MAX_TRACK_RECORDS) {
+            track_records[track_record_count].msg = msg;
+            track_records[track_record_count].wparam = wparam;
+            track_records[track_record_count].lparam = lparam;
+            track_record_count++;
+        }
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static void register_owner(void)
+{
+    WNDCLASSW wc;
+    ATOM atom;
+
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = owner_proc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hCursor = LoadCursorW(NULL, MAKEINTRESOURCEW(32512));
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = OWNER_CLASS;
+    arm();
+    atom = RegisterClassW(&wc);
+    line("RegisterClassW(F2KMenusOwner): atom nonzero %s err=%s", yesno(atom != 0), le());
+}
+
+static void unregister_owner(void)
+{
+    UnregisterClassW(OWNER_CLASS, GetModuleHandleW(NULL));
+}
+
+/* Dispatch what is queued, a bounded number of messages. */
+static void drain_menus(void)
+{
+    MSG m;
+    int n = 0;
+
+    while (n++ < 500 && PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+        if (m.message == WM_QUIT) {
+            continue;
+        }
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+
+/* --- sysmenu ------------------------------------------------------- */
+
+static HWND owner_window(DWORD ex_style, DWORD style, HWND parent, const char *what)
+{
+    HWND h;
+
+    arm();
+    h = CreateWindowExW(ex_style, OWNER_CLASS, L"menus", style, 40, 40, 320, 200, parent, NULL,
+                        GetModuleHandleW(NULL), NULL);
+    line("CreateWindowExW(F2KMenusOwner, %s): non-NULL %s err=%s", what, yesno(h != NULL), le());
+    return h;
+}
+
+static HMENU system_menu(HWND h, BOOL revert, const char *what)
+{
+    HMENU m;
+
+    arm();
+    m = GetSystemMenu(h, revert);
+    line("GetSystemMenu(%s): non-NULL %s err=%s", what, yesno(m != NULL), le());
+    return m;
+}
+
+static void sec_sysmenu(void)
+{
+    HWND h, other, child;
+    HMENU sys, again;
+    BOOL r;
+
+    register_owner();
+    h = owner_window(0, WS_OVERLAPPEDWINDOW, NULL, "WS_OVERLAPPEDWINDOW, hidden");
+
+    sys = system_menu(h, FALSE, "the window, FALSE");
+    arm();
+    r = IsMenu(sys);
+    line("  IsMenu(it): ret=%d err=%s", r, le());
+    dump_menu(sys, "system menu", 1);
+    again = system_menu(h, FALSE, "the window, FALSE, again");
+    line("  the same menu %s", yesno(again == sys));
+    append_w(sys, MF_STRING, 0x0010, L"Custom", "the system menu, MF_STRING, 0x10 Custom");
+    delete_item(sys, SC_SIZE, MF_BYCOMMAND, "the system menu, SC_SIZE, MF_BYCOMMAND");
+    dump_menu(sys, "system menu", 1);
+
+    system_menu(h, TRUE, "the window, TRUE");
+    arm();
+    r = IsMenu(sys);
+    line("  IsMenu(the copy) after: ret=%d err=%s", r, le());
+    again = system_menu(h, FALSE, "the window, FALSE, after the revert");
+    line("  the copy reverted from %s", yesno(again == sys));
+    dump_menu(again, "system menu", 1);
+    system_menu(h, TRUE, "the window, TRUE, again");
+
+    other = owner_window(0, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, NULL,
+                         "WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU, hidden");
+    sys = system_menu(other, FALSE, "that window, FALSE");
+    dump_menu(sys, "system menu", 1);
+    DestroyWindow(other);
+
+    other = owner_window(WS_EX_TOOLWINDOW, WS_POPUP | WS_CAPTION | WS_SYSMENU, NULL,
+                         "WS_EX_TOOLWINDOW, WS_POPUP | WS_CAPTION | WS_SYSMENU, hidden");
+    sys = system_menu(other, FALSE, "that window, FALSE");
+    dump_menu(sys, "system menu", 1);
+    DestroyWindow(other);
+
+    other = owner_window(0, WS_POPUP, NULL, "WS_POPUP, hidden");
+    sys = system_menu(other, FALSE, "that window (no WS_SYSMENU), FALSE");
+    if (sys != NULL) {
+        dump_menu(sys, "system menu", 1);
+    }
+    DestroyWindow(other);
+
+    child = owner_window(0, WS_CHILD | WS_CAPTION | WS_SYSMENU, h, "WS_CHILD | WS_CAPTION | WS_SYSMENU");
+    sys = system_menu(child, FALSE, "the child window, FALSE");
+    if (sys != NULL) {
+        dump_menu(sys, "system menu", 1);
+    }
+    DestroyWindow(child);
+
+    sys = system_menu(h, FALSE, "the first window, FALSE");
+    arm();
+    r = DestroyWindow(h);
+    line("DestroyWindow(the first window): ret=%d err=%s", r, le());
+    arm();
+    r = IsMenu(sys);
+    line("  IsMenu(its system menu) after: ret=%d err=%s", r, le());
+    system_menu(h, FALSE, "the destroyed window, FALSE");
+    system_menu(NULL, FALSE, "NULL, FALSE");
+    unregister_owner();
+}
+
+/* --- itemrect ------------------------------------------------------ */
+
+static void item_rect(HWND h, HMENU m, UINT pos, RECT *rc, const char *what)
+{
+    BOOL r;
+
+    SetRect(rc, -1, -1, -1, -1);
+    arm();
+    r = GetMenuItemRect(h, m, pos, rc);
+    line("GetMenuItemRect(%s): ret=%d err=%s", what, r, le());
+}
+
+static void sec_itemrect(void)
+{
+    HWND h;
+    HMENU bar, file, edit;
+    RECT r[4], wr;
+    POINT client;
+    LONG dims;
+    int i;
+    int cx, cy;
+    DWORD err;
+
+    register_owner();
+
+    arm();
+    dims = GetMenuCheckMarkDimensions();
+    err = GetLastError();
+    cx = GetSystemMetrics(SM_CXMENUCHECK);
+    cy = GetSystemMetrics(SM_CYMENUCHECK);
+    line("GetMenuCheckMarkDimensions: nonzero %s err=%s width (low word) is SM_CXMENUCHECK %s height (high word) "
+         "is SM_CYMENUCHECK %s",
+         yesno(dims != 0), le_of(err), yesno(LOWORD(dims) == cx), yesno(HIWORD(dims) == cy));
+
+    /* The bar: 0 &File (a popup), 1 &Edit (a popup), 2 &Help (220). */
+    bar = CreateMenu();
+    file = CreatePopupMenu();
+    edit = CreatePopupMenu();
+    AppendMenuW(file, MF_STRING, 701, L"&New");
+    AppendMenuW(edit, MF_STRING, 702, L"&Copy");
+    AppendMenuW(bar, MF_POPUP | MF_STRING, (UINT)file, L"&File");
+    AppendMenuW(bar, MF_POPUP | MF_STRING, (UINT)edit, L"&Edit");
+    AppendMenuW(bar, MF_STRING, ID_HELP, L"&Help");
+    arm();
+    h = CreateWindowExW(0, OWNER_CLASS, L"menus", WS_OVERLAPPEDWINDOW, 40, 40, 320, 200, NULL, bar,
+                        GetModuleHandleW(NULL), NULL);
+    line("CreateWindowExW(F2KMenusOwner, WS_OVERLAPPEDWINDOW, hidden, the bar): non-NULL %s err=%s",
+         yesno(h != NULL), le());
+    item_rect(h, bar, 0, &r[0], "the hidden window, the bar, 0");
+
+    ShowWindow(h, SW_SHOWNORMAL);
+    UpdateWindow(h);
+    drain_menus();
+    line("shown: visible %s", yesno(IsWindowVisible(h)));
+    for (i = 0; i < 4; i++) {
+        char what[48];
+
+        sprintf(what, "the window, the bar, %d", i);
+        item_rect(h, bar, i, &r[i], what);
+    }
+    GetWindowRect(h, &wr);
+    client.x = 0;
+    client.y = 0;
+    ClientToScreen(h, &client);
+    for (i = 0; i < 3; i++) {
+        line("  item %d: width positive %s height - SM_CYMENU %d top the same as item 0's %s inside the window "
+             "rectangle %s",
+             i, yesno(r[i].right > r[i].left), (int)(r[i].bottom - r[i].top) - GetSystemMetrics(SM_CYMENU),
+             yesno(r[i].top == r[0].top),
+             yesno(r[i].left >= wr.left && r[i].right <= wr.right && r[i].top >= wr.top && r[i].bottom <= wr.bottom));
+    }
+    line("  item 1's left - item 0's right %d, item 2's left - item 1's right %d", (int)(r[1].left - r[0].right),
+         (int)(r[2].left - r[1].right));
+    line("  item 0's left - the client area's left %d, the client area's top - item 0's bottom %d",
+         (int)(r[0].left - client.x), (int)(client.y - r[0].bottom));
+    item_rect(NULL, bar, 0, &r[3], "NULL, the bar, 0");
+    item_rect(h, file, 0, &r[3], "the window, &File's popup (not shown), 0");
+    item_rect(NULL, file, 0, &r[3], "NULL, &File's popup (not shown), 0");
+    item_rect(h, NULL, 0, &r[3], "the window, NULL, 0");
+
+    DestroyWindow(h);
+    drain_menus();
+    unregister_owner();
+}
+
+/* --- track --------------------------------------------------------- */
+
+/* TrackPopupMenu runs a modal loop until the menu ends, and nothing here
+ * presses a key or clicks. A watcher thread ends it: half a second in,
+ * it sends the owner WM_CANCELMODE (SendNotifyMessageW: the menu loop
+ * takes sent messages as it waits for input, and DefWindowProc's
+ * WM_CANCELMODE ends the menu); should the menu still run 2 s later, it
+ * posts the owner an Escape key-down, which the loop reads as a key;
+ * and should it run 2 s more, it prints a line and ends the process,
+ * so the capture never hangs. The block prints which one the menu
+ * ended after. */
+static HWND track_owner;
+static HANDLE track_done;
+static volatile LONG track_stage;
+
+static DWORD WINAPI track_watch(LPVOID unused)
+{
+    (void)unused;
+    if (WaitForSingleObject(track_done, 500) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    track_stage = 1;
+    SendNotifyMessageW(track_owner, WM_CANCELMODE, 0, 0);
+    if (WaitForSingleObject(track_done, 2000) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    track_stage = 2;
+    PostMessageW(track_owner, WM_KEYDOWN, VK_ESCAPE, 0x00010001);
+    if (WaitForSingleObject(track_done, 2000) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    line("the menu did not end: the process ends");
+    ExitProcess(3);
+    return 0;
+}
+
+static const char *menu_label(HMENU m, HMENU popup)
+{
+    if (m == NULL) {
+        return "NULL";
+    }
+    return m == popup ? "the popup" : "other";
+}
+
+static void print_track_records(HMENU popup)
+{
+    int i;
+    const track_record_t *r;
+
+    if (track_record_count == 0) {
+        line("  the owner received no menu message");
+    }
+    for (i = 0; i < track_record_count; i++) {
+        r = &track_records[i];
+        switch (r->msg) {
+        case WM_INITMENU:
+            line("  WM_INITMENU menu %s", menu_label((HMENU)r->wparam, popup));
+            break;
+        case WM_INITMENUPOPUP:
+            line("  WM_INITMENUPOPUP menu %s index=%d system menu=%d", menu_label((HMENU)r->wparam, popup),
+                 (int)LOWORD(r->lparam), (int)HIWORD(r->lparam));
+            break;
+        case WM_UNINITMENUPOPUP:
+            line("  WM_UNINITMENUPOPUP menu %s", menu_label((HMENU)r->wparam, popup));
+            break;
+        case WM_MENUSELECT:
+            line("  WM_MENUSELECT item=%u flags=0x%X menu %s", (unsigned)LOWORD(r->wparam),
+                 (unsigned)HIWORD(r->wparam), menu_label((HMENU)r->lparam, popup));
+            break;
+        case WM_ENTERMENULOOP:
+            line("  WM_ENTERMENULOOP wParam=%ld", (long)r->wparam);
+            break;
+        case WM_EXITMENULOOP:
+            line("  WM_EXITMENULOOP wParam=%ld", (long)r->wparam);
+            break;
+        case WM_CANCELMODE:
+            line("  WM_CANCELMODE");
+            break;
+        case WM_COMMAND:
+            line("  WM_COMMAND id=%u code=%u", (unsigned)LOWORD(r->wparam), (unsigned)HIWORD(r->wparam));
+            break;
+        }
+    }
+}
+
+/* One tracking call: ex 0 is TrackPopupMenu, 1 TrackPopupMenuEx. */
+static void track(HMENU popup, HWND owner, int ex, UINT flags, int x, int y, const char *what)
+{
+    static const char *const ended[] = { "by itself", "after WM_CANCELMODE", "after the Escape key-down" };
+    HANDLE thread;
+    DWORD tid;
+    BOOL r;
+    DWORD err;
+
+    drain_menus();
+    track_record_count = 0;
+    track_stage = 0;
+    ResetEvent(track_done);
+    thread = CreateThread(NULL, 0, track_watch, NULL, 0, &tid);
+    arm();
+    if (ex) {
+        r = TrackPopupMenuEx(popup, flags, x, y, owner, NULL);
+    } else {
+        r = TrackPopupMenu(popup, flags, x, y, 0, owner, NULL);
+    }
+    err = GetLastError();
+    SetEvent(track_done);
+    WaitForSingleObject(thread, WAIT_MS);
+    CloseHandle(thread);
+    line("%s(%s): ret=%d err=%s, ended %s", ex ? "TrackPopupMenuEx" : "TrackPopupMenu", what, r, le_of(err),
+         ended[track_stage]);
+    print_track_records(popup);
+    drain_menus();
+}
+
+static void sec_track(void)
+{
+    HMENU popup;
+    POINT cursor;
+    int x, y;
+
+    register_owner();
+    track_done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    arm();
+    track_owner = CreateWindowExW(0, OWNER_CLASS, L"menus", WS_POPUP | WS_CAPTION | WS_VISIBLE, 40, 40, 200, 120,
+                                  NULL, NULL, GetModuleHandleW(NULL), NULL);
+    line("CreateWindowExW(F2KMenusOwner, WS_POPUP | WS_CAPTION | WS_VISIBLE): non-NULL %s err=%s",
+         yesno(track_owner != NULL), le());
+    SetForegroundWindow(track_owner);
+    drain_menus();
+    line("SetForegroundWindow(it): the foreground %s", yesno(GetForegroundWindow() == track_owner));
+
+    /* The popup: 0 &Open (801), 1 a separator, 2 &Close (802). It opens
+     * away from the mouse pointer, so no item lies under it. */
+    popup = CreatePopupMenu();
+    AppendMenuW(popup, MF_STRING, 801, L"&Open");
+    AppendMenuW(popup, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(popup, MF_STRING, 802, L"&Close");
+    GetCursorPos(&cursor);
+    x = cursor.x < 300 ? cursor.x + 150 : cursor.x - 300;
+    y = 40;
+
+    track(popup, track_owner, 0, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, x, y,
+          "the popup, TPM_RETURNCMD, the window");
+    track(popup, track_owner, 0, TPM_LEFTALIGN | TPM_TOPALIGN, x, y, "the popup, no TPM_RETURNCMD, the window");
+    track(popup, track_owner, 1, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, x, y,
+          "the popup, TPM_RETURNCMD, the window, no TPMPARAMS");
+    track(NULL, track_owner, 0, TPM_RETURNCMD, x, y, "NULL, TPM_RETURNCMD, the window");
+    track(popup, NULL, 0, TPM_RETURNCMD, x, y, "the popup, TPM_RETURNCMD, NULL");
+
+    DestroyMenu(popup);
+    DestroyWindow(track_owner);
+    drain_menus();
+    CloseHandle(track_done);
+    unregister_owner();
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
@@ -1870,6 +3071,13 @@ static const section_t sections[] = {
     { "keyloop", sec_keyloop, F2KT_ALWAYS },
     { "keyesc", sec_keyesc, F2KT_ALWAYS },
     { "keychar", sec_keychar, F2KT_ALWAYS },
+    { "edit", sec_edit, F2KT_ALWAYS },
+    { "info", sec_info, F2KT_ALWAYS },
+    { "insitem", sec_insitem, F2KT_ALWAYS },
+    { "default", sec_default, F2KT_ALWAYS },
+    { "sysmenu", sec_sysmenu, F2KT_ALWAYS },
+    { "itemrect", sec_itemrect, F2KT_ALWAYS },
+    { "track", sec_track, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

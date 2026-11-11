@@ -8,7 +8,10 @@
 # meanwhile: a "no" in one capture can be another process's allocation. bar, keyloop, keyesc and
 # keychar are the menu bar in the non-client area and the keyboard menu loop: their keystrokes are
 # injected with SendInput into the program's own window, and only while it is the foreground window.
-description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc."
+# The menu-editing sections (edit through track) print each menu's items after each step; itemrect
+# prints the items' places on the screen only as relations; track ends its menus without input (a
+# WM_CANCELMODE a watcher thread sends the owner), and prints how each ended.
+description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc. Then menu editing: AppendMenuW/A, InsertMenuW/A, ModifyMenuW/A, DeleteMenu and RemoveMenu by position and by command, a popup removed against one deleted; GetMenuItemInfoW/A and SetMenuItemInfoW/A of each MIIM_* mask, the string's length and cch, cbSize 44 and 48; InsertMenuItemW/A; SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags; GetSystemMenu's items and bRevert; GetMenuItemRect and GetMenuCheckMarkDimensions as relations; TrackPopupMenu and TrackPopupMenuEx ended by WM_CANCELMODE, and the menu messages the owner receives."
 kind = "sectioned"
 gate = true
 
@@ -92,4 +95,53 @@ slots = [
     "user32.DestroyIcon",
     "user32.IsWindow",
     "user32.IsMenu",
+]
+# The menu-editing sections pin the editing calls they observe; the menus' printing (GetMenuItemCount,
+# GetMenuItemID, GetMenuState, GetMenuStringW, pinned by items) and the windows around them are
+# helpers.
+edit = [
+    "user32.CreateMenu",
+    "user32.CreatePopupMenu",
+    "user32.AppendMenuW",
+    "user32.AppendMenuA",
+    "user32.InsertMenuW",
+    "user32.InsertMenuA",
+    "user32.ModifyMenuW",
+    "user32.ModifyMenuA",
+    "user32.DeleteMenu",
+    "user32.RemoveMenu",
+    "user32.IsMenu",
+    "user32.DestroyMenu",
+]
+info = [
+    "user32.GetMenuItemInfoW",
+    "user32.GetMenuItemInfoA",
+    "user32.SetMenuItemInfoW",
+    "user32.SetMenuItemInfoA",
+    "user32.IsMenu",
+]
+insitem = [
+    "user32.InsertMenuItemW",
+    "user32.InsertMenuItemA",
+    "user32.GetMenuItemInfoW",
+]
+default = [
+    "user32.SetMenuDefaultItem",
+    "user32.GetMenuDefaultItem",
+    "user32.SetMenuItemInfoW",
+]
+sysmenu = [
+    "user32.GetSystemMenu",
+    "user32.AppendMenuW",
+    "user32.DeleteMenu",
+    "user32.IsMenu",
+    "user32.DestroyWindow",
+]
+itemrect = [
+    "user32.GetMenuCheckMarkDimensions",
+    "user32.GetMenuItemRect",
+]
+track = [
+    "user32.TrackPopupMenu",
+    "user32.TrackPopupMenuEx",
 ]
