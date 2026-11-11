@@ -1,8 +1,10 @@
 # coords: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
 # windows are hidden but for childpt's parent, at fixed screen positions, so their coordinates print
 # as they are; a framed or captioned window's client area prints only less its metrics. No handle
-# or address prints: a window prints by its label, a character pointer as its offset.
-description = "coords - window coordinates: GetClientRect and GetWindowRect (a borderless popup and its children, a bordered and a captioned window less their metrics), MapWindowPoints between children, parents, the screen and a window itself (the points and the return's halves), ScreenToClient and ClientToScreen, ChildWindowFromPoint and ChildWindowFromPointEx (CWP_ALL, CWP_SKIPINVISIBLE, CWP_SKIPDISABLED) over visible, hidden and disabled children and a grandchild, IsChild, OffsetRect, and CharNextA/W and CharPrevA/W walks over plain text, the empty string, combining marks and a surrogate pair."
+# or address prints: a window prints by its label, a character pointer as its offset. adjust,
+# frames, nccalc and nchittest are the non-client area: they print the frame metrics and sizes in
+# pixels, as the capture machine's standard scheme at 96 DPI gives them.
+description = "coords - window coordinates: GetClientRect and GetWindowRect (a borderless popup and its children, a bordered and a captioned window less their metrics), MapWindowPoints between children, parents, the screen and a window itself (the points and the return's halves), ScreenToClient and ClientToScreen, ChildWindowFromPoint and ChildWindowFromPointEx (CWP_ALL, CWP_SKIPINVISIBLE, CWP_SKIPDISABLED) over visible, hidden and disabled children and a grandchild, IsChild, OffsetRect, and CharNextA/W and CharPrevA/W walks over plain text, the empty string, combining marks and a surrogate pair. Then the non-client area: the frame, edge, caption, menu and caption-button metrics (GetSystemMetrics), AdjustWindowRect and AdjustWindowRectEx for fifteen frame styles with and without a menu, each style's window and client sizes and client origin against AdjustWindowRectEx, the default window procedure's WM_NCCALCSIZE (a rectangle, and NCCALCSIZE_PARAMS), and its WM_NCHITTEST codes along rows and columns across shown windows of five styles."
 kind = "sectioned"
 gate = true
 
@@ -10,6 +12,13 @@ gate = true
 # procedure's WM_NCCALCSIZE takes no frame or caption off them yet.
 [pending]
 client = "the non-client area: WM_NCCALCSIZE takes no frame or caption metrics off the client area"
+# The non-client sections are new: they have no captured block yet, so they are not pending (the
+# harness refuses a pending section with no block) and carry no pins. Each is to be pending, with
+# the reason below, until F2K passes its capture:
+# adjust = "a new section: its capture from the real machine is awaited; F2K has no AdjustWindowRect or AdjustWindowRectEx and serves few of these metrics yet"
+# frames = "a new section: its capture from the real machine is awaited; F2K takes no frame, caption or edge off the client area yet"
+# nccalc = "a new section: its capture from the real machine is awaited; F2K's default window procedure leaves WM_NCCALCSIZE's rectangle as it is"
+# nchittest = "a new section: its capture from the real machine is awaited; F2K's default window procedure has no WM_NCHITTEST yet"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

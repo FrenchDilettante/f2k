@@ -5,10 +5,21 @@
 # menus, accelerator tables, cursors and icons): each kind's calls on the others' handles, before
 # and after many reuses of a slot, and the handles' low words (the slot) and high words, printed
 # only as relations. reuse's and slots' relations hold while no other process makes a user object
-# meanwhile: a "no" in one capture can be another process's allocation.
-description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word."
+# meanwhile: a "no" in one capture can be another process's allocation. bar, keyloop, keyesc and
+# keychar are the menu bar in the non-client area and the keyboard menu loop: their keystrokes are
+# injected with SendInput into the program's own window, and only while it is the foreground window.
+description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc."
 kind = "sectioned"
 gate = true
+
+# The menu bar and keyboard sections are new: they have no captured block yet, so they are not
+# pending (the harness refuses a pending section with no block) and carry no pins. Each is to be
+# pending, with the reason below, until F2K passes its capture:
+[pending]
+# bar = "a new section: its capture from the real machine is awaited; F2K has no menu bar in the non-client area and no DrawMenuBar yet"
+# keyloop = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
+# keyesc = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
+# keychar = "a new section: its capture from the real machine is awaited; F2K has no keyboard menu loop yet"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
