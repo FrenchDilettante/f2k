@@ -1,8 +1,16 @@
 # guimsg: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages."
+description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages; RegisterWindowMessageW/A (the range, one value per name in either form and case); GetMessageTime and GetMessagePos against the retrieved MSG; WaitMessage with a message already posted, after a peek, and woken by another thread; SendMessageTimeoutW/A to the same thread, another thread, a busy one (SMTO_NORMAL, SMTO_ABORTIFHUNG) and a hung one, with IsHungAppWindow; SendNotifyMessageW/A to the same thread and another, and a pointer message refused across threads."
 kind = "sectioned"
 gate = true
 screenshots = true
+# hung waits 6.5 s for Windows to deem a thread hung, and the thread sleeps 9 s.
+timeout = 40
+# regmsg, msgpos, wait, smto, hung and notify await their capture: they are in guimsg.c, not yet
+# in guimsg.exe or output.txt. Until their blocks are captured they have no [pending] entry (the
+# reader refuses one for a section with no block) and no pins; then regmsg pins
+# RegisterWindowMessageW and RegisterWindowMessageA, msgpos GetMessageTime and GetMessagePos,
+# wait WaitMessage, smto SendMessageTimeoutW and SendMessageTimeoutA, hung SendMessageTimeoutW
+# and IsHungAppWindow, notify SendNotifyMessageW and SendNotifyMessageA.
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
