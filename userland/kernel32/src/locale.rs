@@ -588,14 +588,20 @@ fn compare_source<'a, U: Copy + Default + PartialEq>(
 }
 
 /// The comparison CompareStringA and CompareStringW share, over strings of units read in place
-/// through `decode` (see [`crate::collate`]). The locale is not consulted: every locale compares
-/// the same. ERROR_INVALID_FLAGS for an unknown flag.
+/// through `decode` (see [`crate::collate`]). The locale is checked first, as Windows 2000 checks
+/// it before the flags and the strings: ERROR_INVALID_PARAMETER for one it does not support
+/// ([`crate::localeinfo::supported_locale`]); a supported one is not consulted further, every
+/// locale comparing the same. ERROR_INVALID_FLAGS for an unknown flag.
 fn compare_strings<U: Copy + Default + PartialEq>(
+    locale: u32,
     flags: u32,
     a: Counted<'_, U>,
     b: Counted<'_, U>,
     decode: fn(U) -> u32,
 ) -> Result<i32, Failure> {
+    if !crate::localeinfo::supported_locale(locale) {
+        return refused(ERROR_INVALID_PARAMETER);
+    }
     if flags & !crate::collate::VALID_FLAGS != 0 {
         return refused(ERROR_INVALID_FLAGS);
     }
@@ -618,7 +624,7 @@ fn decode_ansi(byte: u8) -> u32 {
 /// Each string holds its count of bytes (NUL-terminated for -1).
 #[unsafe(export_name = "f2k_export_CompareStringA")]
 pub unsafe extern "system" fn compare_string_a(
-    _locale: u32,
+    locale: u32,
     flags: u32,
     a: *const u8,
     a_count: i32,
@@ -627,7 +633,7 @@ pub unsafe extern "system" fn compare_string_a(
 ) -> i32 {
     // SAFETY: the caller's strings (the contract).
     let (a, b) = unsafe { (Counted::new(a, a_count), Counted::new(b, b_count)) };
-    answer(compare_strings(flags, a, b, decode_ansi), 0)
+    answer(compare_strings(locale, flags, a, b, decode_ansi), 0)
 }
 
 /// CompareStringW: the comparison over UTF-16 code units.
@@ -637,7 +643,7 @@ pub unsafe extern "system" fn compare_string_a(
 /// Each string holds its count of units (NUL-terminated for -1).
 #[unsafe(export_name = "f2k_export_CompareStringW")]
 pub unsafe extern "system" fn compare_string_w(
-    _locale: u32,
+    locale: u32,
     flags: u32,
     a: *const u16,
     a_count: i32,
@@ -646,7 +652,7 @@ pub unsafe extern "system" fn compare_string_w(
 ) -> i32 {
     // SAFETY: the caller's strings (the contract).
     let (a, b) = unsafe { (Counted::new(a, a_count), Counted::new(b, b_count)) };
-    answer(compare_strings(flags, a, b, u32::from), 0)
+    answer(compare_strings(locale, flags, a, b, u32::from), 0)
 }
 
 /// NORM_IGNORECASE: lstrcmpi's comparison.
@@ -664,7 +670,8 @@ fn lstrcmp_answer(compared: i32, first_null: bool, second_null: bool) -> i32 {
 }
 
 /// The lstrcmp calls' work: CompareString's comparison in the thread's locale (which it does not
-/// consult), its answer as [`lstrcmp_answer`] makes it.
+/// consult: SetThreadLocale checked it, and the comparison is every locale's), its answer as
+/// [`lstrcmp_answer`] makes it.
 fn lstrcmp<U: Copy + Default + PartialEq>(
     first: Counted<'_, U>,
     second: Counted<'_, U>,
@@ -672,7 +679,8 @@ fn lstrcmp<U: Copy + Default + PartialEq>(
     decode: fn(U) -> u32,
 ) -> i32 {
     let nulls = (first.is_null(), second.is_null());
-    let compared = answer(compare_strings(flags, first, second, decode), 0);
+    let locale = crate::localeinfo::LOCALE_USER_DEFAULT;
+    let compared = answer(compare_strings(locale, flags, first, second, decode), 0);
     lstrcmp_answer(compared, nulls.0, nulls.1)
 }
 
