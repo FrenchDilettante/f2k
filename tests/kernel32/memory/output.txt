@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 10/29/2026 14:05:09.27
-memory F2KT-SOURCE-CRC=0xE6B8C44A
+# date: Wed 11/11/2026 13:05:04.13
+memory F2KT-SOURCE-CRC=0x70C53B52
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -140,7 +140,7 @@ GetModuleHandleW(NULL): the same base yes
 section .text: protect 0x20 type 0x1000000 same allocation yes
 section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
-past the image end: state 0x10000 protect 0x1 type 0x0 region 0xA000 allocprotect 0x0
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0x9000 allocprotect 0x0
 memory: done
 <<< exit code=0
 >>> memory.exe mapping
@@ -185,7 +185,7 @@ sizes: basic 16, image 48
 the paging file, 1 MiB, committed: basic 0x00000000, length 16, base 0, attributes 0x08000000, size 0x000100000
 the paging file, 1 MiB, SEC_RESERVE: basic 0x00000000, length 16, base 0, attributes 0x04000000, size 0x000100000
 the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x00000E000
-the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000016000
+the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000017000
   its base the image's ImageBase: no, its size the image's SizeOfImage: yes
 the program's file, SEC_IMAGE: image 0x00000000, length 48
   TransferAddress the image's entry: yes
@@ -211,5 +211,39 @@ GetConsoleTitleA into the stack's guard page: the thread's end WAIT_OBJECT_0, a 
   ret>0 yes err=-; the page committed yes, a guard page below it yes
 GetConsoleTitleW into the stack's guard page: the thread's end WAIT_OBJECT_0, a guard page found yes
   ret>0 yes err=-; the page committed yes, a guard page below it yes
+memory: done
+<<< exit code=0
+>>> memory.exe globalflags
+== globalflags
+kernel32 exports GlobalFlags: yes
+GlobalFlags(GMEM_FIXED): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_FIXED, locked once): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE, locked once): 0x0001 (lock count 1, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE, locked twice): 0x0002 (lock count 2, the rest 0x0000) err=-
+GlobalUnlock, of two locks: ret=1 err=-
+GlobalFlags(GMEM_MOVEABLE, unlocked once): 0x0001 (lock count 1, the rest 0x0000) err=-
+GlobalUnlock, the last lock: ret=0 err=0
+GlobalFlags(GMEM_MOVEABLE, unlocked): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalUnlock, not locked: ret=0 err=158
+GlobalFlags(GMEM_MOVEABLE, unlocked once too often): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE, locked 300 times): 0x00FF (lock count 255, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE, then unlocked 299 times): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalUnlock, the 300th: ret=0 err=158
+GlobalFlags(GMEM_MOVEABLE, then unlocked 300 times): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE|GMEM_DISCARDABLE): 0x0100 (lock count 0, the rest 0x0100) err=-
+GlobalDiscard: the same handle yes err=-
+GlobalFlags(GMEM_MOVEABLE|GMEM_DISCARDABLE, discarded): 0x4100 (lock count 0, the rest 0x4100) err=-
+GlobalLock of the discarded block: ret null yes err=157
+GlobalFlags(the discarded block, reallocated to 32 bytes): 0x0100 (lock count 0, the rest 0x0100) err=-
+GlobalFlags(GMEM_MOVEABLE of 0 bytes): 0x4000 (lock count 0, the rest 0x4000) err=-
+GlobalFlags(GMEM_MOVEABLE|GMEM_DDESHARE): 0x2000 (lock count 0, the rest 0x2000) err=-
+GlobalFlags(GMEM_MOVEABLE|GMEM_NOCOMPACT|GMEM_NODISCARD): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_MOVEABLE|GMEM_ZEROINIT): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GMEM_FIXED|GMEM_DISCARDABLE): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalFlags(GlobalHandle of a locked block's pointer): 0x0001 (lock count 1, the rest 0x0000) err=-
+GlobalFree(moveable): returned null yes err=-
+GlobalFlags(a freed moveable block): 0x8000 (lock count 0, the rest 0x8000) err=6
+GlobalFlags(NULL): 0x8000 (lock count 0, the rest 0x8000) err=6
 memory: done
 <<< exit code=0
