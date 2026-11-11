@@ -965,6 +965,60 @@ ordinal = 3
 fails = "FALSE"
 note = "the standard scheme's frame, client edge, caption and menu bar added (rtl::nonclient)"
 
+[[export]]
+name = "GetPropA"
+group = "window"
+args = ["handle hWnd", "ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 318
+fails = "NULL"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "RemovePropA"
+group = "window"
+args = ["handle hWnd", "ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 522
+fails = "NULL"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "SetPropA"
+group = "window"
+args = ["handle hWnd", "ptr lpString", "handle hData"]
+impl = { stub = "not yet implemented" }
+ordinal = 584
+fails = "FALSE"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "GetPropW"
+group = "window"
+args = ["handle hWnd", "ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 319
+fails = "NULL"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "RemovePropW"
+group = "window"
+args = ["handle hWnd", "ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 523
+fails = "NULL"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "SetPropW"
+group = "window"
+args = ["handle hWnd", "ptr lpString", "handle hData"]
+impl = { stub = "not yet implemented" }
+ordinal = 585
+fails = "FALSE"
+note = "the name a string, or an integer atom in its low word"
+
 # --- resources ------------------------------------------------------------------------------------
 
 [[export]]
@@ -3619,14 +3673,6 @@ name = "GetProgmanWindow"
 ordinal = 317
 
 [[export]]
-name = "GetPropA"
-ordinal = 318
-
-[[export]]
-name = "GetPropW"
-ordinal = 319
-
-[[export]]
 name = "GetQueueStatus"
 ordinal = 320
 
@@ -4135,14 +4181,6 @@ name = "RemoveMenu"
 ordinal = 521
 
 [[export]]
-name = "RemovePropA"
-ordinal = 522
-
-[[export]]
-name = "RemovePropW"
-ordinal = 523
-
-[[export]]
 name = "ReplyMessage"
 ordinal = 524
 
@@ -4309,14 +4347,6 @@ ordinal = 582
 [[export]]
 name = "SetProgmanWindow"
 ordinal = 583
-
-[[export]]
-name = "SetPropA"
-ordinal = 584
-
-[[export]]
-name = "SetPropW"
-ordinal = 585
 
 [[export]]
 name = "SetScrollInfo"

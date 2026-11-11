@@ -146,6 +146,10 @@ title = "resources"
 key = "profile"
 title = "profile files"
 
+[[group]]
+key = "atoms"
+title = "atoms"
+
 # --- termination ----------------------------------------------------------------------------------
 
 [[export]]
@@ -2852,6 +2856,35 @@ ordinal = 791
 fails = "FALSE"
 note = "WritePrivateProfileSectionA's, the strings UTF-16"
 
+# --- atoms ----------------------------------------------------------------------------------------
+
+[[export]]
+name = "GlobalAddAtomW"
+group = "atoms"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 416
+fails = "0"
+note = "the name a string, or an integer atom in its low word"
+
+[[export]]
+name = "GlobalDeleteAtom"
+group = "atoms"
+args = ["u32 nAtom"]
+impl = { stub = "not yet implemented" }
+ordinal = 419
+fails = "0"
+note = "it answers 0 when the atom is deleted and nAtom when it is not"
+
+[[export]]
+name = "GlobalFindAtomW"
+group = "atoms"
+args = ["ptr lpString"]
+impl = { stub = "not yet implemented" }
+ordinal = 421
+fails = "0"
+note = "the name a string, or an integer atom in its low word"
+
 # --- not implemented yet: the rest of KERNEL32.dll 5.0.2195.6688's export table, by ordinal ------
 
 [[export]]
@@ -3847,20 +3880,8 @@ name = "GlobalAddAtomA"
 ordinal = 415
 
 [[export]]
-name = "GlobalAddAtomW"
-ordinal = 416
-
-[[export]]
-name = "GlobalDeleteAtom"
-ordinal = 419
-
-[[export]]
 name = "GlobalFindAtomA"
 ordinal = 420
-
-[[export]]
-name = "GlobalFindAtomW"
-ordinal = 421
 
 [[export]]
 name = "GlobalFix"
