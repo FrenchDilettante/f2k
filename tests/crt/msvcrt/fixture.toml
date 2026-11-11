@@ -1,9 +1,12 @@
 # msvcrt: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
 # with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does; the program's own name is
 # the DLL's, which the loader tells apart by the full name (MSVCRT.dll against msvcrt.exe).
-description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under /MD (msvcrt.c): ceil, floor, fabs and modf over halves, signed zeros, infinities and NaNs; _ftol to __int64 and long, within and beyond their limits; _wfullpath and _getdcwd against kernel32's answers."
+description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under /MD (msvcrt.c): ceil, floor, fabs and modf over halves, signed zeros, infinities and NaNs; _ftol to __int64 and long, within and beyond their limits; _wfullpath and _getdcwd against kernel32's answers; _ismbblead over every byte under _setmbcp's single-byte code pages."
 kind = "sectioned"
 gate = true
+
+[pending]
+mbblead = "msvcrt exports no _ismbblead, _setmbcp or _getmbcp yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -44,3 +47,4 @@ paths = [
     "kernel32.GetFullPathNameW",
     "kernel32.GetCurrentDirectoryA",
 ]
+mbblead = ["msvcrt._ismbblead", "msvcrt._setmbcp", "msvcrt._getmbcp"]
