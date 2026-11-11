@@ -1,0 +1,19 @@
+/*
+ * bitmaps' resources: rc compiles them into bitmaps.res, which links
+ * into bitmaps.exe. The language is given as numbers (no header is
+ * included): 9, 1 is LANG_ENGLISH, SUBLANG_ENGLISH_US (0x0409).
+ *
+ * bitmaps.bmp is an 8x8 bitmap of 4 bits per pixel, stored bottom-up,
+ * with the 16 VGA colors as its color table (in order: black, maroon,
+ * green, olive, navy, purple, teal, silver, gray, red, lime, yellow,
+ * blue, fuchsia, aqua, white). The pixel x, y (y counted from the top)
+ * holds the index (x + 2 * y) mod 16. It is checked in beside this
+ * file; bitmaps.c holds the same table and formula.
+ *
+ * The bitmap is here twice: by number (300) and by name (F2KBMP).
+ */
+
+LANGUAGE 9, 1
+
+300 BITMAP "bitmaps.bmp"
+F2KBMP BITMAP "bitmaps.bmp"

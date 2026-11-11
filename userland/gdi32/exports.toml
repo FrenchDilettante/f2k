@@ -51,6 +51,10 @@ title = "brushes and fills"
 key = "regions"
 title = "regions and clipping"
 
+[[group]]
+key = "drawing"
+title = "pens, lines and shapes"
+
 # --- device contexts ------------------------------------------------------------------------------
 
 [[export]]
@@ -111,6 +115,14 @@ group = "dc"
 args = ["handle Object"]
 impl = { syscall = "crate::win32k::dc::delete_object" }
 internal = true
+
+[[export]]
+name = "GdiFlush"
+group = "dc"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 224
+fails = "FALSE"
 
 # --- stock objects --------------------------------------------------------------------------------
 
@@ -186,6 +198,22 @@ args = ["handle Dc", "handle Object", "ptr<u32> Previous"]
 impl = { syscall = "crate::win32k::dc::select_pen" }
 internal = true
 
+[[export]]
+name = "GetCurrentObject"
+group = "objects"
+args = ["handle hdc", "u32 uObjectType"]
+impl = { stub = "not yet implemented" }
+ordinal = 295
+fails = "NULL"
+
+[[export]]
+name = "GetObjectType"
+group = "objects"
+args = ["handle h"]
+impl = { stub = "not yet implemented" }
+ordinal = 345
+fails = "0"
+
 # --- colors and modes -----------------------------------------------------------------------------
 
 [[export]]
@@ -241,6 +269,22 @@ group = "attributes"
 args = ["handle Dc", "u32 Index", "ptr<u32> Value"]
 impl = { syscall = "crate::win32k::dc::get_dc_dword" }
 internal = true
+
+[[export]]
+name = "GetStretchBltMode"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
+ordinal = 361
+fails = "0"
+
+[[export]]
+name = "SetStretchBltMode"
+group = "attributes"
+args = ["handle hdc", "i32 iStretchMode"]
+impl = { stub = "not yet implemented" }
+ordinal = 503
+fails = "0"
 
 # --- text -----------------------------------------------------------------------------------------
 
@@ -720,6 +764,98 @@ impl = { stub = "not yet implemented" }
 ordinal = 49
 fails = "NULL"
 
+[[export]]
+name = "BitBlt"
+group = "bitmaps"
+args = [
+    "handle hdcDest", "i32 nXDest", "i32 nYDest", "i32 nWidth", "i32 nHeight", "handle hdcSrc",
+    "i32 nXSrc", "i32 nYSrc", "u32 dwRop",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 19
+fails = "FALSE"
+
+[[export]]
+name = "CreateBitmap"
+group = "bitmaps"
+args = ["i32 nWidth", "i32 nHeight", "u32 cPlanes", "u32 cBitsPerPel", "ptr lpvBits"]
+impl = { stub = "not yet implemented" }
+ordinal = 38
+fails = "NULL"
+
+[[export]]
+name = "CreateCompatibleBitmap"
+group = "bitmaps"
+args = ["handle hdc", "i32 nWidth", "i32 nHeight"]
+impl = { stub = "not yet implemented" }
+ordinal = 43
+fails = "NULL"
+
+[[export]]
+name = "CreateDIBitmap"
+group = "bitmaps"
+args = ["handle hdc", "ptr lpbmih", "u32 fdwInit", "ptr lpbInit", "ptr lpbmi", "u32 fuUsage"]
+impl = { stub = "not yet implemented" }
+ordinal = 50
+fails = "NULL"
+
+[[export]]
+name = "GetDIBits"
+group = "bitmaps"
+args = [
+    "handle hdc", "handle hbmp", "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbi",
+    "u32 uUsage",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 301
+fails = "0"
+
+[[export]]
+name = "SetDIBits"
+group = "bitmaps"
+args = [
+    "handle hdc", "handle hbmp", "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbmi",
+    "u32 fuColorUse",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 478
+fails = "0"
+
+[[export]]
+name = "SetDIBitsToDevice"
+group = "bitmaps"
+args = [
+    "handle hdc", "i32 XDest", "i32 YDest", "u32 dwWidth", "u32 dwHeight", "i32 XSrc", "i32 YSrc",
+    "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbmi", "u32 fuColorUse",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 479
+fails = "0"
+
+[[export]]
+name = "StretchBlt"
+group = "bitmaps"
+args = [
+    "handle hdcDest", "i32 nXOriginDest", "i32 nYOriginDest", "i32 nWidthDest", "i32 nHeightDest",
+    "handle hdcSrc", "i32 nXOriginSrc", "i32 nYOriginSrc", "i32 nWidthSrc", "i32 nHeightSrc",
+    "u32 dwRop",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 520
+fails = "FALSE"
+
+[[export]]
+name = "StretchDIBits"
+group = "bitmaps"
+args = [
+    "handle hdc", "i32 XDest", "i32 YDest", "i32 nDestWidth", "i32 nDestHeight", "i32 XSrc",
+    "i32 YSrc", "i32 nSrcWidth", "i32 nSrcHeight", "ptr lpBits", "ptr lpBitsInfo", "u32 iUsage",
+    "u32 dwRop",
+]
+impl = { stub = "not yet implemented" }
+ordinal = 521
+fails = "0"
+
 # --- brushes and fills ----------------------------------------------------------------------------
 
 [[export]]
@@ -754,6 +890,38 @@ args = ["handle Dc", "i32 X", "i32 Y", "i32 Width", "i32 Height", "u32 Rop"]
 impl = { syscall = "crate::win32k::brush::pat_blt" }
 internal = true
 
+[[export]]
+name = "CreateHatchBrush"
+group = "brushes"
+args = ["i32 fnStyle", "u32 clrref"]
+impl = { stub = "not yet implemented" }
+ordinal = 63
+fails = "NULL"
+
+[[export]]
+name = "CreatePatternBrush"
+group = "brushes"
+args = ["handle hbmp"]
+impl = { stub = "not yet implemented" }
+ordinal = 69
+fails = "NULL"
+
+[[export]]
+name = "GetBrushOrgEx"
+group = "brushes"
+args = ["handle hdc", "ptr lppt"]
+impl = { stub = "not yet implemented" }
+ordinal = 275
+fails = "FALSE"
+
+[[export]]
+name = "SetBrushOrgEx"
+group = "brushes"
+args = ["handle hdc", "i32 nXOrg", "i32 nYOrg", "ptr lppt"]
+impl = { stub = "not yet implemented" }
+ordinal = 472
+fails = "FALSE"
+
 # --- regions and clipping -------------------------------------------------------------------------
 
 [[export]]
@@ -772,6 +940,24 @@ impl = { stub = "not yet implemented" }
 ordinal = 359
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
+
+# --- pens, lines and shapes -----------------------------------------------------------------------
+
+[[export]]
+name = "CreatePen"
+group = "drawing"
+args = ["i32 fnPenStyle", "i32 nWidth", "u32 crColor"]
+impl = { stub = "not yet implemented" }
+ordinal = 70
+fails = "NULL"
+
+[[export]]
+name = "ExtCreatePen"
+group = "drawing"
+args = ["u32 dwPenStyle", "u32 dwWidth", "ptr lplb", "u32 dwStyleCount", "ptr lpStyle"]
+impl = { stub = "not yet implemented" }
+ordinal = 158
+fails = "NULL"
 
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 
@@ -830,10 +1016,6 @@ ordinal = 17
 [[export]]
 name = "BeginPath"
 ordinal = 18
-
-[[export]]
-name = "BitBlt"
-ordinal = 19
 
 [[export]]
 name = "CLIPOBJ_bEnum"
@@ -908,10 +1090,6 @@ name = "CopyMetaFileW"
 ordinal = 37
 
 [[export]]
-name = "CreateBitmap"
-ordinal = 38
-
-[[export]]
 name = "CreateBitmapIndirect"
 ordinal = 39
 
@@ -928,20 +1106,12 @@ name = "CreateColorSpaceW"
 ordinal = 42
 
 [[export]]
-name = "CreateCompatibleBitmap"
-ordinal = 43
-
-[[export]]
 name = "CreateDIBPatternBrush"
 ordinal = 47
 
 [[export]]
 name = "CreateDIBPatternBrushPt"
 ordinal = 48
-
-[[export]]
-name = "CreateDIBitmap"
-ordinal = 50
 
 [[export]]
 name = "CreateDiscardableBitmap"
@@ -976,10 +1146,6 @@ name = "CreateHalftonePalette"
 ordinal = 62
 
 [[export]]
-name = "CreateHatchBrush"
-ordinal = 63
-
-[[export]]
 name = "CreateICA"
 ordinal = 64
 
@@ -998,14 +1164,6 @@ ordinal = 67
 [[export]]
 name = "CreatePalette"
 ordinal = 68
-
-[[export]]
-name = "CreatePatternBrush"
-ordinal = 69
-
-[[export]]
-name = "CreatePen"
-ordinal = 70
 
 [[export]]
 name = "CreatePenIndirect"
@@ -1324,10 +1482,6 @@ name = "ExcludeClipRect"
 ordinal = 157
 
 [[export]]
-name = "ExtCreatePen"
-ordinal = 158
-
-[[export]]
 name = "ExtCreateRegion"
 ordinal = 159
 
@@ -1580,10 +1734,6 @@ name = "GdiFixUpHandle"
 ordinal = 223
 
 [[export]]
-name = "GdiFlush"
-ordinal = 224
-
-[[export]]
 name = "GdiFullscreenControl"
 ordinal = 225
 
@@ -1780,10 +1930,6 @@ name = "GetBoundsRect"
 ordinal = 274
 
 [[export]]
-name = "GetBrushOrgEx"
-ordinal = 275
-
-[[export]]
 name = "GetCharABCWidthsFloatA"
 ordinal = 277
 
@@ -1844,10 +1990,6 @@ name = "GetColorSpace"
 ordinal = 294
 
 [[export]]
-name = "GetCurrentObject"
-ordinal = 295
-
-[[export]]
 name = "GetCurrentPositionEx"
 ordinal = 296
 
@@ -1866,10 +2008,6 @@ ordinal = 299
 [[export]]
 name = "GetDIBColorTable"
 ordinal = 300
-
-[[export]]
-name = "GetDIBits"
-ordinal = 301
 
 [[export]]
 name = "GetDeviceGammaRamp"
@@ -2024,10 +2162,6 @@ name = "GetNearestPaletteIndex"
 ordinal = 343
 
 [[export]]
-name = "GetObjectType"
-ordinal = 345
-
-[[export]]
 name = "GetPaletteEntries"
 ordinal = 349
 
@@ -2062,10 +2196,6 @@ ordinal = 357
 [[export]]
 name = "GetRelAbs"
 ordinal = 358
-
-[[export]]
-name = "GetStretchBltMode"
-ordinal = 361
 
 [[export]]
 name = "GetStringBitmapA"
@@ -2444,10 +2574,6 @@ name = "SetBoundsRect"
 ordinal = 471
 
 [[export]]
-name = "SetBrushOrgEx"
-ordinal = 472
-
-[[export]]
 name = "SetColorAdjustment"
 ordinal = 473
 
@@ -2466,14 +2592,6 @@ ordinal = 476
 [[export]]
 name = "SetDIBColorTable"
 ordinal = 477
-
-[[export]]
-name = "SetDIBits"
-ordinal = 478
-
-[[export]]
-name = "SetDIBitsToDevice"
-ordinal = 479
 
 [[export]]
 name = "SetDeviceGammaRamp"
@@ -2564,10 +2682,6 @@ name = "SetRelAbs"
 ordinal = 502
 
 [[export]]
-name = "SetStretchBltMode"
-ordinal = 503
-
-[[export]]
 name = "SetSystemPaletteUse"
 ordinal = 504
 
@@ -2626,14 +2740,6 @@ ordinal = 518
 [[export]]
 name = "StartPage"
 ordinal = 519
-
-[[export]]
-name = "StretchBlt"
-ordinal = 520
-
-[[export]]
-name = "StretchDIBits"
-ordinal = 521
 
 [[export]]
 name = "StrokeAndFillPath"

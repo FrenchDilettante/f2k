@@ -1384,6 +1384,33 @@ ordinal = 414
 fails = "NULL"
 note = "the name a string, or a resource or system bitmap's ordinal in its low word"
 
+[[export]]
+name = "LoadImageA"
+group = "resources"
+args = ["handle hinst", "ptr lpszName", "u32 uType", "i32 cxDesired", "i32 cyDesired", "u32 fuLoad"]
+impl = { stub = "not yet implemented" }
+ordinal = 421
+fails = "NULL"
+note = "the name a string, or a resource or system image's ordinal in its low word"
+
+[[export]]
+name = "LoadImageW"
+group = "resources"
+args = ["handle hinst", "ptr lpszName", "u32 uType", "i32 cxDesired", "i32 cyDesired", "u32 fuLoad"]
+impl = { stub = "not yet implemented" }
+ordinal = 422
+fails = "NULL"
+note = "the name a string, or a resource or system image's ordinal in its low word"
+
+[[export]]
+name = "LoadBitmapA"
+group = "resources"
+args = ["handle hInstance", "ptr lpBitmapName"]
+impl = { stub = "not yet implemented" }
+ordinal = 413
+fails = "NULL"
+note = "the name a string, or a resource or system bitmap's ordinal in its low word"
+
 # --- messages, timers and painting ---------------------------------------------------------------
 
 [[export]]
@@ -4283,24 +4310,12 @@ name = "KillSystemTimer"
 ordinal = 409
 
 [[export]]
-name = "LoadBitmapA"
-ordinal = 413
-
-[[export]]
 name = "LoadCursorFromFileA"
 ordinal = 416
 
 [[export]]
 name = "LoadCursorFromFileW"
 ordinal = 417
-
-[[export]]
-name = "LoadImageA"
-ordinal = 421
-
-[[export]]
-name = "LoadImageW"
-ordinal = 422
 
 [[export]]
 name = "LoadKeyboardLayoutA"

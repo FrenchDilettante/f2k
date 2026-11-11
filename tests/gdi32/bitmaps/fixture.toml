@@ -1,0 +1,44 @@
+# bitmaps: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# pixel it prints is read from a DIB section or a bitmap of an explicit format; a bitmap of the
+# screen's format prints its depth and pixels only as relations. Its own bitmap, bitmaps.bmp, is
+# compiled into the program from bitmaps.rc. No handle or address prints.
+description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the canvases'
+# memory DCs and DIB sections, GdiFlush, GetDIBits reading a bitmap back, the screen DC's depth).
+compat = [
+    "gdi32.CreateCompatibleDC",
+    "gdi32.GetObjectType",
+    "gdi32.GetCurrentObject",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectA",
+    "gdi32.CreateCompatibleBitmap",
+    "gdi32.SelectObject",
+    "gdi32.DeleteDC",
+]
+create = ["gdi32.CreateBitmap", "gdi32.GetObjectW", "gdi32.GetObjectA"]
+dibsect = [
+    "gdi32.CreateDIBSection",
+    "gdi32.GetObjectW",
+    "gdi32.GetPixel",
+    "gdi32.PatBlt",
+    "gdi32.DeleteObject",
+]
+blit = ["gdi32.BitBlt"]
+mono = ["gdi32.BitBlt", "gdi32.SetTextColor", "gdi32.SetBkColor"]
+stretch = ["gdi32.SetStretchBltMode", "gdi32.GetStretchBltMode", "gdi32.StretchBlt"]
+dibits = ["gdi32.GetDIBits", "gdi32.SetDIBits"]
+todevice = ["gdi32.SetDIBitsToDevice", "gdi32.StretchDIBits"]
+createdib = ["gdi32.CreateDIBitmap"]
+pattern = [
+    "gdi32.CreatePatternBrush",
+    "gdi32.SetBrushOrgEx",
+    "gdi32.GetBrushOrgEx",
+    "gdi32.PatBlt",
+    "gdi32.GetObjectW",
+]
+objtype = ["gdi32.GetObjectType"]
+load = ["user32.LoadBitmapW", "user32.LoadBitmapA", "user32.LoadImageW", "user32.LoadImageA"]
