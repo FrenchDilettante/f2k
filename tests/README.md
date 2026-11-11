@@ -165,15 +165,15 @@ The fixtures:
   Every file is named by a full path, the program's own directory, which never prints.
   F2K's boot adds `profile.ini` to `\CORPUS` beside the program (`data_files`).
   Gated; `winini` stays pending while F2K's disk carries no `\WINNT\win.ini`: win.ini's section list is empty before `[F2KProfile]` is written and after it is deleted.
-- `threx` - thread-level exception behavior: the second chance ending only the faulting thread (`unhandled`, named-only), the dispatched CONTEXT's floating-point and debug-register flags (`context`), the entry's return value ending the thread rather than the process (`mainret`, named-only), and `NtQueryInformationThread`'s `ThreadQuerySetWin32StartAddress` class answering the recorded start address (`threadstart`).
-  Gated; its blocks fail on F2K until the kernel is fixed.
-- `vmedge` - the virtual-memory and sections corners: the guard-page count before `STATUS_STACK_OVERFLOW` (`guardwalk`), `MEM_COMMIT` over a paging-file-backed view and over a file-backed one (`commitview`), and `NtUnmapViewOfSection` of the own image (`unmapimage`, named-only: the platform unmaps and the process faults).
-  Gated; its blocks fail on F2K until the kernel is fixed.
+- `threx` - thread-level exception behavior: the second chance in a worker thread ending the whole process with the exception's code (`unhandled`, named-only), the dispatched CONTEXT's floating-point and debug-register flags (`context`), main's return ending the process through the C runtime's exit before a sleeping worker prints (`mainret`, named-only), `NtQueryInformationThread`'s `ThreadQuerySetWin32StartAddress` class answering the recorded start address (`threadstart`), and whether a thread resumes with the x87 and SSE state of the CONTEXT it resumes from, after an exception's continuation and after `SetThreadContext` (`fpresume`).
+  Gated; `fpresume` has no captured block yet.
+- `vmedge` - the virtual-memory and sections corners: a thread of its own walking its stack down to `STATUS_STACK_OVERFLOW`, counting the guard-page exceptions it sees and surveying its reservation before and after (`guardwalk`), `MEM_COMMIT` over a paging-file-backed view and over a file-backed one (`commitview`), and `NtUnmapViewOfSection` of a private region and of a suspended copy's image, which a program can watch where unmapping its own would leave it no code to return to (`unmapimage`).
+  Gated.
 - `startup` - `GetStartupInfoA`'s `lpDesktop`/`lpTitle`/`lpReserved` converted from the process parameters, never NULL (`startup`).
   Gated; its block fails on F2K while the three fields stay NULL.
 - `lcid` - `CompareStringA`/`W` refusing an uninstalled LCID with `ERROR_INVALID_PARAMETER` (0x9999), with the US English LCID as the sanity line (`badlcid`).
   Gated; its block fails on F2K while an unknown locale still compares.
-- `ntquery` - the introspection surface called ntdll-direct through `GetProcAddress`: `NtQuerySystemInformation` class 5 (`sysinfo`), `NtQueryInformationProcess` class 0 (`procinfo`), `NtQueryInformationThread` class 0 (`threadinfo`), `ReadProcessMemory` of the own PEB (`pebread`), and `OpenSCManagerA` (`scmfail`).
+- `ntquery` - the introspection surface called ntdll-direct through `GetProcAddress`: `NtQuerySystemInformation` class 5 (`sysinfo`), `NtQueryInformationProcess` class 0 (`procinfo`), `NtQueryInformationThread` class 0 with its fields as relations and the exact length it requires (`threadinfo`), `ReadProcessMemory` of the section's own PEB with its first fields as relations (`pebread`), and `OpenSCManagerA` (`scmfail`).
   Gated; `scmfail` stays pending while F2K runs no service control manager: `OpenSCManagerA` fails with `ERROR_CALL_NOT_IMPLEMENTED`, where Windows 2000 answers a handle.
 - `winsta` (user32) - the window station and desktop: their handles, names, types and flags (`GetUserObjectInformation`), and `MessageBeep`.
 - `registry` (advapi32) - keys and values under `HKEY_CURRENT_USER\Software\F2K` only, deleted before and after each section: creating, opening and closing keys, setting and querying values of each type, default values, enumeration and deletion.
