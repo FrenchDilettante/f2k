@@ -23,8 +23,8 @@ tests/
 │               # caret, editctl
 ├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes, regions
 ├── advapi32/   # registry, token
-├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt, cxxeh (built
-│               # with /MD)
+├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt, cxxeh, wmain
+│               # (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
 │               # batstd, batops, batline, bathelp, batdir; HAND-CAPTURES.md, the interactive
@@ -342,6 +342,8 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
   Gated.
 - `cxxeh` - C++ exception handling, the corpus's one C++ fixture (`cxxeh.cpp`, built with `/GX` and `/GR`): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too) and `catch (...)` (`catch`, `derived`), rethrow (`rethrow`), nested try blocks (`nested`), the destructors unwinding runs for locals, temporaries and partly built objects and arrays (`unwind`), a C++ exception through `__try`/`__except` and `__finally` and what the filter sees (`seh`), `typeid` and `type_info`'s `name`, `raw_name`, `==`, `!=` and `before`, and `bad_typeid` (`typeid`).
   Its `purecall`, `terminate` and `abort` sections run the program itself as a child (`cxxeh kid <mode>`, not a section), its standard output and error one pipe the section reads once the child has ended: `_purecall`, `terminate` with and without `set_terminate`'s handler and with one that returns, an exception nothing catches, and `abort`, each with the child's exit code.
+- `wmain` - the wide startup, as a program whose main is `wmain` meets it (cmd.exe's): `argv` as `__wgetmainargs` splits a child's own command line (`args`), `envp` from a child's own environment block, against `__p___winitenv`, `__p__wenviron`, `_wgetenv` and the narrow environment `getenv` builds (`env`), the `__p___` accessors against `wmain`'s arguments and `envp` against `GetEnvironmentStringsW` (`accessors`), and `__wgetmainargs` and `__getmainargs` called directly (`getmainargs`).
+  Its children are the program itself (`wmain kid <what>`, not a section), so neither the machine's paths nor its environment print.
 
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot volume is FAT32, and file-system details differ elsewhere — NTFS has its own names and timestamps, and a VirtualBox shared folder has no short names, no attribute bits and reports a remote drive.
 

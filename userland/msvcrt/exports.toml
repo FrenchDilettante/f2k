@@ -254,6 +254,46 @@ ordinal = 586
 fails = "never"
 note = "it never returns, so the stub raises"
 
+[[export]]
+name = "__wgetmainargs"
+group = "startup"
+args = ["ptr pargc", "ptr pwargv", "ptr pwenv", "i32 dowildcard", "ptr startinfo"]
+impl = { stub = "not yet implemented" }
+ordinal = 142
+fails = "-1"
+
+[[export]]
+name = "__p___wargv"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 105
+fails = "NULL"
+
+[[export]]
+name = "__p__wenviron"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 125
+fails = "NULL"
+
+[[export]]
+name = "__p___winitenv"
+group = "startup"
+args = []
+impl = { stub = "not yet implemented" }
+ordinal = 106
+fails = "NULL"
+
+[[export]]
+name = "_wgetenv"
+group = "startup"
+args = ["ptr varname"]
+impl = { stub = "not yet implemented" }
+ordinal = 541
+fails = "NULL"
+
 # --- exception handling / setjmp ------------------------------------------------------------------
 
 [[export]]
@@ -1880,14 +1920,6 @@ name = "__p___mb_cur_max"
 ordinal = 104
 
 [[export]]
-name = "__p___wargv"
-ordinal = 105
-
-[[export]]
-name = "__p___winitenv"
-ordinal = 106
-
-[[export]]
 name = "__p__acmdln"
 ordinal = 107
 
@@ -1948,10 +1980,6 @@ name = "__p__wcmdln"
 ordinal = 124
 
 [[export]]
-name = "__p__wenviron"
-ordinal = 125
-
-[[export]]
 name = "__p__winmajor"
 ordinal = 126
 
@@ -2010,10 +2038,6 @@ data = true
 name = "__wargv"
 ordinal = 141
 data = true
-
-[[export]]
-name = "__wgetmainargs"
-ordinal = 142
 
 [[export]]
 name = "__winitenv"
@@ -3370,10 +3394,6 @@ ordinal = 539
 [[export]]
 name = "_wgetdcwd"
 ordinal = 540
-
-[[export]]
-name = "_wgetenv"
-ordinal = 541
 
 [[export]]
 name = "_winmajor"

@@ -1,0 +1,43 @@
+# wmain: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD, its main wmain (the linker picks wmainCRTStartup). Its args and env sections run the program
+# again as a child ("wmain kid <what>", not a section) with a command line and an environment block
+# of their own, so neither the machine's paths nor its environment print; pointers print only as
+# relations.
+description = "wmain - msvcrt.dll's wide startup under /MD (wmain.c, whose main is wmain): argv as __wgetmainargs splits a child's command line, envp from a child's own environment block, __p___wargv, __p___winitenv, __p__wenviron and __p___argc against wmain's arguments, the narrow accessors in a wide program, envp against GetEnvironmentStringsW, and __wgetmainargs and __getmainargs called directly."
+kind = "sectioned"
+
+# Not gated: msvcrt's wide startup (__wgetmainargs, __p___wargv, __p___winitenv) is not implemented
+# yet. Every section is on the work list.
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The startup linked into the program calls __wgetmainargs before wmain.
+args = ["msvcrt.__wgetmainargs", "msvcrt.__p___wargv", "msvcrt.__p___argc"]
+env = [
+    "msvcrt.__wgetmainargs",
+    "msvcrt.__p___winitenv",
+    "msvcrt.__p__wenviron",
+    "msvcrt.__p__environ",
+    "msvcrt.__p___initenv",
+    "msvcrt._wgetenv",
+    "msvcrt.getenv",
+]
+accessors = [
+    "msvcrt.__p___wargv",
+    "msvcrt.__p___argc",
+    "msvcrt.__p___winitenv",
+    "msvcrt.__p__wenviron",
+    "msvcrt.__p___argv",
+    "msvcrt.__p__environ",
+    "msvcrt.__p___initenv",
+]
+getmainargs = [
+    "msvcrt.__wgetmainargs",
+    "msvcrt.__getmainargs",
+    "msvcrt.__p___wargv",
+    "msvcrt.__p___winitenv",
+    "msvcrt.__p__wenviron",
+    "msvcrt.__p___argv",
+    "msvcrt.__p___initenv",
+    "msvcrt.__p__environ",
+]
