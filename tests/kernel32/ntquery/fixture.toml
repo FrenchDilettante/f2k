@@ -3,6 +3,8 @@ description = "ntquery - the introspection surface called ntdll-direct through G
 kind = "sectioned"
 gate = true
 
+[pending]
+scmfail = "F2K runs no service control manager (services.exe and its RPC interface): advapi32's OpenSCManagerA is a stub failing with ERROR_CALL_NOT_IMPLEMENTED, where Windows 2000 answers a handle, its last error the RPC transport's leftover ERROR_IO_PENDING"
 
 [pins]
 sysinfo = [
