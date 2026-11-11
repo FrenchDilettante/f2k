@@ -1,8 +1,12 @@
 # guiclass: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom)."
+description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom); GetClassInfoExW/A of a class with extra bytes, an icon and a menu name (every field, by name and by atom, cbSize 0, NULL hInstance, an unknown name) and of the system classes Button and #32770; GetClassLongW/A of each GCL_ index, and SetClassLongW/A of the extra bytes (in range, straddling and past the end), GCL_STYLE, GCL_HBRBACKGROUND and GCL_WNDPROC."
 kind = "sectioned"
 gate = true
 screenshots = true
+# infoex and classlong await their capture: they are in guiclass.c, not yet in guiclass.exe or
+# output.txt. Until their blocks are captured they have no [pending] entry (the reader refuses one
+# for a section with no block) and no pins; then infoex pins GetClassInfoExW and GetClassInfoExA,
+# classlong GetClassLongW, GetClassLongA, SetClassLongW and SetClassLongA.
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
