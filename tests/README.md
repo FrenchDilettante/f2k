@@ -110,7 +110,7 @@ The fixtures:
   Gated.
 - `dllmain` - the counterpart of `dll`: companion DLLs with a DllMain each (no C runtime, `DllMain` their entry point), every call recorded in `f2kbase.dll`'s log, which the program prints: the static DLLs' DLL_PROCESS_ATTACH before `main` (lpReserved non-NULL) and in dependency order, a created thread's DLL_THREAD_ATTACH and DETACH and DisableThreadLibraryCalls turning them off, LoadLibraryA and FreeLibrary's attach and detach (a new dependency first), a DllMain answering FALSE, and the search through the program's directory and the current directory (`f2ksub.dll` sits in its `dllsub` subdirectory alone).
   Gated.
-- `fswrite` - the write side (create dispositions, writes, truncation, share modes, rename/copy/delete, directories, file times, CRT writes) in a scratch directory, captured on a local FAT32 volume.
+- `fswrite` - the write side (create dispositions, writes, truncation, share modes, rename/copy/delete, directories, file times, CRT writes, and `LockFile`/`UnlockFile` between two handles with the reads and writes a lock refuses (`lock`)) in a scratch directory, captured on a local FAT32 volume.
   Gated (the test boots read a copy of the disk in memory or a QEMU snapshot of it, so its writes never reach the image).
 - `msgtable` - `FormatMessageW` and `FormatMessageA` over the program's own message table (`msgtable.mc`, compiled by the message compiler into a resource) and over strings: lookup by id and language, inserts through a `va_list` and an argument array, the escapes, line widths, the caller's buffer and an allocated one.
   Gated.

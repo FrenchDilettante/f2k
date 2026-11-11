@@ -32,6 +32,20 @@
  *            MOVEFILE_DELAY_UNTIL_REBOOT (never that flag: it writes the
  *            registry); REPLACE_EXISTING onto a directory and onto a
  *            read-only file; then what is left on disk
+ *   lock     LockFile and UnlockFile on LOCK.DAT through two handles
+ *            (and a duplicate of the first, a read-only handle and one
+ *            with no access): overlapping, repeated, adjacent, empty and
+ *            past-the-end ranges through one handle; the second refused
+ *            inside the first's ranges and granted outside; the reads and
+ *            writes each handle's locks refuse the other (straddling a
+ *            range too) and let their own through, with the file pointer
+ *            after; the duplicate as the same open file; unlocks of the
+ *            exact range, of a range never locked, of part of a range and
+ *            of the other handle's range; a lock released by its handle's
+ *            close; the refusals for a handle with no access,
+ *            INVALID_HANDLE_VALUE and NULL. LockFile and UnlockFile are
+ *            reached through GetProcAddress, so the program still loads
+ *            where kernel32 lacks them.
  *
  * The create, share, names, dirs and movex observations run twice:
  * through the A calls, then through their W twins on the same names (the
@@ -844,6 +858,181 @@ static void sec_movex(void)
     movex_block(1);
 }
 
+/* --- lock ---------------------------------------------------------- */
+
+/* LockFile and UnlockFile are reached through GetProcAddress: the program
+   loads where kernel32 lacks them, its other sections intact. */
+typedef BOOL (WINAPI *lock_file_fn)(HANDLE file, DWORD offset_low, DWORD offset_high, DWORD length_low,
+                                    DWORD length_high);
+
+static lock_file_fn lock_file;
+static lock_file_fn unlock_file;
+
+static void try_lock(const char *who, HANDLE h, DWORD offset, DWORD length)
+{
+    BOOL r;
+    const char *e;
+
+    arm();
+    r = lock_file(h, offset, 0, length, 0);
+    e = le();
+    line("LockFile(%s, %lu, %lu): ret=%d err=%s", who, offset, length, r, e);
+}
+
+static void try_unlock(const char *who, HANDLE h, DWORD offset, DWORD length)
+{
+    BOOL r;
+    const char *e;
+
+    arm();
+    r = unlock_file(h, offset, 0, length, 0);
+    e = le();
+    line("UnlockFile(%s, %lu, %lu): ret=%d err=%s", who, offset, length, r, e);
+}
+
+/* ReadFile of `length` bytes at `offset` through `h`: its answer, the
+   count, the last error, and where the file pointer is after. */
+static void try_read(const char *who, HANDLE h, DWORD offset, DWORD length)
+{
+    BYTE buf[64];
+    DWORD got = 0xDEAD;
+    BOOL r;
+    const char *e;
+
+    SetFilePointer(h, offset, NULL, FILE_BEGIN);
+    arm();
+    r = ReadFile(h, buf, length, &got, NULL);
+    e = le();
+    line("  ReadFile(%s, %lu bytes at %lu): ret=%d got %lu err=%s, the pointer at %lu", who, length, offset, r,
+         got, e, SetFilePointer(h, 0, NULL, FILE_CURRENT));
+}
+
+static void try_write(const char *who, HANDLE h, DWORD offset, DWORD length)
+{
+    BYTE buf[64];
+    DWORD put = 0xDEAD;
+    BOOL r;
+    const char *e;
+
+    memset(buf, 'w', sizeof buf);
+    SetFilePointer(h, offset, NULL, FILE_BEGIN);
+    arm();
+    r = WriteFile(h, buf, length, &put, NULL);
+    e = le();
+    line("  WriteFile(%s, %lu bytes at %lu): ret=%d put %lu err=%s, the pointer at %lu", who, length, offset, r,
+         put, e, SetFilePointer(h, 0, NULL, FILE_CURRENT));
+}
+
+static void sec_lock(void)
+{
+    HANDLE h1, h2, dup, ro, none;
+    BYTE data[100];
+    DWORD i, put;
+
+    lock_file = (lock_file_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LockFile");
+    unlock_file = (lock_file_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "UnlockFile");
+    line("kernel32 exports LockFile %s, UnlockFile %s", yesno(lock_file != NULL), yesno(unlock_file != NULL));
+    if (lock_file == NULL || unlock_file == NULL) {
+        return;
+    }
+    for (i = 0; i < sizeof data; i++) {
+        data[i] = (BYTE)('a' + i % 26);
+    }
+    h1 = open_file("LOCK.DAT", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, CREATE_ALWAYS);
+    WriteFile(h1, data, sizeof data, &put, NULL);
+    h2 = open_file("LOCK.DAT", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING);
+    line("LOCK.DAT: 100 bytes written %s, two handles open %s", yesno(put == sizeof data),
+         yesno(h1 != INVALID_HANDLE_VALUE && h2 != INVALID_HANDLE_VALUE));
+    if (h1 == INVALID_HANDLE_VALUE || h2 == INVALID_HANDLE_VALUE) {
+        return;
+    }
+
+    /* Ranges through one handle: overlapping, the same again, adjacent. */
+    try_lock("the first handle", h1, 10, 20);
+    try_lock("the first handle", h1, 10, 20);
+    try_lock("the first handle", h1, 25, 10);
+    try_lock("the first handle", h1, 5, 10);
+    try_lock("the first handle", h1, 30, 10);
+    try_lock("the first handle", h1, 0, 0);
+    try_lock("the first handle", h1, 1000, 10);
+
+    /* The second handle: refused inside the first's ranges, granted outside. */
+    try_lock("the second", h2, 15, 1);
+    try_lock("the second", h2, 29, 2);
+    try_lock("the second", h2, 50, 10);
+
+    /* Reads and writes a lock refuses, and those it lets through. */
+    line("I/O through the second handle into the first's range 10-29:");
+    try_read("the second", h2, 12, 4);
+    try_write("the second", h2, 12, 4);
+    try_read("the second", h2, 5, 10);
+    try_read("the second", h2, 0, 10);
+    try_write("the second", h2, 0, 5);
+    line("I/O through the first handle into its own range and the second's 50-59:");
+    try_read("the first handle", h1, 12, 4);
+    try_write("the first handle", h1, 12, 4);
+    try_read("the first handle", h1, 52, 4);
+    try_write("the first handle", h1, 52, 4);
+
+    /* A duplicate of the first handle: the same open file. */
+    dup = NULL;
+    DuplicateHandle(GetCurrentProcess(), h1, GetCurrentProcess(), &dup, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    line("a duplicate of the first handle:");
+    try_read("the duplicate", dup, 12, 4);
+    try_lock("the duplicate", dup, 12, 1);
+    try_lock("the first handle", h1, 60, 5);
+    try_unlock("the duplicate", dup, 60, 5);
+    try_read("the second", h2, 61, 2);
+
+    /* Unlocks: the exact range, a range never locked, part of a range,
+       the other handle's range. */
+    try_unlock("the first handle", h1, 10, 20);
+    try_unlock("the first handle", h1, 10, 20);
+    try_unlock("the first handle", h1, 30, 5);
+    try_unlock("the second", h2, 30, 10);
+    try_unlock("the first handle", h1, 70, 5);
+    line("I/O through the second handle into 10-29 once unlocked:");
+    try_read("the second", h2, 12, 4);
+    try_unlock("the first handle", h1, 30, 10);
+    try_unlock("the first handle", h1, 0, 0);
+    try_unlock("the first handle", h1, 1000, 10);
+    try_unlock("the second", h2, 50, 10);
+
+    /* A lock goes with its handle's close. */
+    try_lock("the second", h2, 70, 10);
+    CloseHandle(h2);
+    line("the second handle closed, holding 70-79:");
+    try_read("the first handle", h1, 72, 4);
+    try_lock("the first handle", h1, 70, 10);
+    try_unlock("the first handle", h1, 70, 10);
+
+    /* Handles with less access. */
+    ro = open_file("LOCK.DAT", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING);
+    line("a read-only handle: open %s", yesno(ro != INVALID_HANDLE_VALUE));
+    if (ro != INVALID_HANDLE_VALUE) {
+        try_lock("the read-only handle", ro, 0, 10);
+        try_write("the first handle", h1, 2, 2);
+        try_unlock("the read-only handle", ro, 0, 10);
+        CloseHandle(ro);
+    }
+    none = open_file("LOCK.DAT", 0, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING);
+    line("a handle with no access: open %s", yesno(none != INVALID_HANDLE_VALUE));
+    if (none != INVALID_HANDLE_VALUE) {
+        try_lock("the handle with no access", none, 0, 10);
+        try_unlock("the handle with no access", none, 0, 10);
+        CloseHandle(none);
+    }
+    try_lock("INVALID_HANDLE_VALUE", INVALID_HANDLE_VALUE, 0, 10);
+    try_unlock("INVALID_HANDLE_VALUE", INVALID_HANDLE_VALUE, 0, 10);
+    try_lock("NULL", NULL, 0, 10);
+
+    if (dup != NULL) {
+        CloseHandle(dup);
+    }
+    CloseHandle(h1);
+    DeleteFileA(at("LOCK.DAT"));
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "write", sec_write, 0 },
@@ -853,6 +1042,7 @@ static const section_t sections[] = {
     { "times", sec_times, 0 },
     { "crt", sec_crt, 0 },
     { "movex", sec_movex, 0 },
+    { "lock", sec_lock, 0 },
     { NULL, NULL, 0 }
 };
 
