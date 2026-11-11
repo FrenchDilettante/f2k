@@ -54,14 +54,14 @@ use crate::{
 
 /// The private extended-style bit a narrow caller's creation carries (the window remembers it was
 /// made through the ANSI entry point; the kernel takes it out of the stored style).
-const ANSI_CREATOR: u32 = 0x8000_0000;
+pub const ANSI_CREATOR: u32 = 0x8000_0000;
 
 /// WS_CHILD: a child window, which needs a parent.
 const WS_CHILD: u32 = 0x4000_0000;
 
 /// The Windows version a window's creator expects: 4.0, the subsystem version MSVC 6 links its
 /// programs for.
-const EXPECTED_VERSION: u32 = 0x0004_0000;
+pub const EXPECTED_VERSION: u32 = 0x0004_0000;
 
 /// The desktop window's class: the documented #32769.
 const DESKTOP_CLASS_ATOM: u16 = 0x8001;
@@ -76,9 +76,11 @@ const ERROR_OUTOFMEMORY: u32 = 14;
 const ERROR_TLW_WITH_WSCHILD: u32 = 1406;
 const ERROR_CANNOT_FIND_WND_CLASS: u32 = 1407;
 
-/// CreateWindowEx's core: the window made, the messages its creation sent received; its handle, or
-/// NULL with the creation's error.
-fn create(creation: &Creation) -> usize {
+/// CreateWindowEx's core: the window made (user32's own classes registered in the process first),
+/// the messages its creation sent received; its handle, or NULL with the creation's error. The
+/// dialog manager creates its dialogs and their controls through it.
+pub fn create(creation: &Creation) -> usize {
+    crate::class::register_system_classes();
     let answer = imports::create_window(creation);
     message::receive_sent();
     let error = |status: NtStatus| match status.0 {
@@ -218,6 +220,49 @@ fn window_info(window: usize) -> Result<WindowInfo, NtStatus> {
     };
     imports::query_window(window, QUERY_WINDOW_INFO, &mut info)?;
     Ok(info)
+}
+
+/// The window's client area in its own coordinates (its origin (0, 0)); none for a handle naming
+/// no window (the last error untouched).
+pub fn client_rect(window: usize) -> Option<Rect> {
+    let info = window_info(window).ok()?;
+    Some(Rect {
+        left: 0,
+        top: 0,
+        right: info.client.right - info.client.left,
+        bottom: info.client.bottom - info.client.top,
+    })
+}
+
+/// The window's style; none for a handle naming no window (the last error untouched).
+pub fn style_of(window: usize) -> Option<u32> {
+    window_info(window).ok().map(|info| info.style)
+}
+
+/// The fields of the window's class GetClassLong reads; none for a handle naming no window (the
+/// last error untouched).
+pub fn class_data(window: usize) -> Option<WindowClass> {
+    let mut class = WindowClass::default();
+    imports::query_window(window, QUERY_WINDOW_CLASS, &mut class).ok()?;
+    Some(class)
+}
+
+/// The window's relatives (its parent, owner, first child, next and previous siblings).
+pub fn links(window: usize) -> Result<WindowLinks, NtStatus> {
+    let mut links = WindowLinks::default();
+    imports::query_window(window, QUERY_WINDOW_LINKS, &mut links)?;
+    Ok(links)
+}
+
+/// The window's children, from the top of their z-order, as GetWindow(GW_CHILD) and
+/// GetWindow(GW_HWNDNEXT) walk them; none past a handle naming no window.
+pub fn children(window: usize) -> impl Iterator<Item = usize> {
+    let first = links(window).map_or(0, |links| links.child);
+    core::iter::successors((first != 0).then_some(first as usize), |&child| {
+        links(child)
+            .ok()
+            .and_then(|links| (links.next != 0).then_some(links.next as usize))
+    })
 }
 
 /// The window's visibility: whether it and every window above it have WS_VISIBLE.
@@ -439,6 +484,84 @@ pub extern "system" fn is_child(parent: usize, window: usize) -> u32 {
     0
 }
 
+/// GetWindow's commands (winuser.h's GW_*).
+pub const GW_HWNDFIRST: u32 = 0;
+pub const GW_HWNDLAST: u32 = 1;
+pub const GW_HWNDNEXT: u32 = 2;
+pub const GW_HWNDPREV: u32 = 3;
+pub const GW_OWNER: u32 = 4;
+pub const GW_CHILD: u32 = 5;
+
+/// GetWindow: the window related to `window` as `command` asks: the first or the last of its
+/// siblings in the z-order (GW_HWNDFIRST, GW_HWNDLAST), the sibling after or before it
+/// (GW_HWNDNEXT, GW_HWNDPREV), its owner (GW_OWNER), its first child (GW_CHILD); NULL for none (the
+/// last error untouched), or with 1400 for a handle naming no window, ERROR_INVALID_PARAMETER for a
+/// command there is none of. Windows 2000's reads the window manager's records mapped into the
+/// process; F2K's asks the kernel (NtUserQueryWindow).
+#[unsafe(export_name = "f2k_export_GetWindow")]
+pub extern "system" fn get_window(window: usize, command: u32) -> usize {
+    let Some(own) = answered(links(window)) else {
+        return 0;
+    };
+    let found = match command {
+        GW_HWNDNEXT => own.next,
+        GW_HWNDPREV => own.previous,
+        GW_OWNER => own.owner,
+        GW_CHILD => own.child,
+        GW_HWNDFIRST => links(own.parent as usize).map_or(0, |parent| parent.child),
+        GW_HWNDLAST => {
+            let mut last = window as u32;
+            while let Ok(next) = links(last as usize) {
+                if next.next == 0 {
+                    break;
+                }
+                last = next.next;
+            }
+            last
+        }
+        _ => return failed(ERROR_INVALID_PARAMETER).unwrap_or(0),
+    };
+    found as usize
+}
+
+/// FindWindowW: the first top-level window, in the z-order, of the class `class` (a string or an
+/// atom; NULL: any class) titled `title` (NULL: any title; compared without regard to case); NULL
+/// when there is none.
+#[unsafe(export_name = "f2k_export_FindWindowW")]
+pub extern "system" fn find_window_w(class: *const u16, title: *const u16) -> usize {
+    answered(imports::find_window_ex(
+        0,
+        0,
+        class as usize,
+        title as usize,
+    ))
+    .unwrap_or(0) as usize
+}
+
+/// FindWindowA: FindWindowW's, the class name and the title converted first.
+///
+/// # Safety
+///
+/// `class` is an atom, a NUL-terminated string or null, `title` a NUL-terminated string or null,
+/// as for the platform's.
+#[unsafe(export_name = "f2k_export_FindWindowA")]
+pub unsafe extern "system" fn find_window_a(class: *const u8, title: *const u8) -> usize {
+    // SAFETY: the caller's contract.
+    let (class, title) = unsafe { (NameA::new(class), rtl::edge::InStr::optional(title)) };
+    let find = |class: usize, title: usize| {
+        answered(imports::find_window_ex(0, 0, class, title)).unwrap_or(0) as usize
+    };
+    class
+        .with_wide(|class| match title {
+            None => Some(find(class, 0)),
+            Some(title) => {
+                crate::with_wide(title.bytes(), |units| find(class, units.as_ptr() as usize))
+            }
+        })
+        .flatten()
+        .unwrap_or(0)
+}
+
 /// ShowWindow: the show command carried out, the messages it sent received; nonzero when the
 /// window was visible before (the kernel's answer), 0 with the last error for a failure.
 #[unsafe(export_name = "f2k_export_ShowWindow")]
@@ -577,6 +700,11 @@ fn procedure_value(data: &WindowData, ansi: bool) -> u32 {
 /// handle naming no window, 1413 for an index naming no field or bytes past the extra bytes').
 /// The last error is untouched otherwise, whatever the value.
 fn get_long(window: usize, index: i32, ansi: bool) -> i32 {
+    if index == crate::dialog::DWL_DLGPROC {
+        if let Some(proc) = crate::dialog::dialog_procedure(window) {
+            return procedure::value_for(proc, ansi) as i32;
+        }
+    }
     if index >= 0 {
         let mut value = 0u32;
         let index = QUERY_WINDOW_EXTRA | index as u32;
@@ -604,6 +732,12 @@ fn get_long(window: usize, index: i32, ansi: bool) -> i32 {
 /// other form as a handle naming it), or 0 with the last error for a failure. A GWL_WNDPROC value
 /// that is a handle sets the procedure it names, in that procedure's own form.
 fn set_long(window: usize, index: i32, value: i32, ansi: bool) -> i32 {
+    if index == crate::dialog::DWL_DLGPROC {
+        let proc = procedure::resolve(value as u32, ansi);
+        if let Some(previous) = crate::dialog::set_dialog_procedure(window, proc) {
+            return procedure::value_for(previous, ansi) as i32;
+        }
+    }
     let target = if index == GWL_WNDPROC {
         procedure::resolve(value as u32, ansi)
     } else {

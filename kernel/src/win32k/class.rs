@@ -246,10 +246,29 @@ impl Name<'_> {
     /// none), or the integer atom itself.
     fn atom(&self, atoms: &Atoms) -> Atom {
         match self {
-            Name::Text(units) => atoms.find(units),
+            Name::Text(units) => integer_atom(units).unwrap_or_else(|| atoms.find(units)),
             Name::Atom(atom) => *atom,
         }
     }
+}
+
+/// The integer atom a string names in the atom functions' "#ddddd" form (a '#' and decimal digits,
+/// below the first string atom: "#32770" is the dialog class's atom 0x8002); none for another
+/// string.
+fn integer_atom(units: &[u16]) -> Option<Atom> {
+    let (&first, digits) = units.split_first()?;
+    if first != u16::from(b'#') || digits.is_empty() || digits.len() > 5 {
+        return None;
+    }
+    let mut value = 0u32;
+    for &unit in digits {
+        let digit = (unit as u32).wrapping_sub(u32::from(b'0'));
+        if digit > 9 {
+            return None;
+        }
+        value = value * 10 + digit;
+    }
+    (value != 0 && value < u32::from(FIRST_STRING_ATOM)).then_some(value as Atom)
 }
 
 /// A menu name as the caller passes it in WNDCLASSEXW: a string pointer, an integer id, or null.
@@ -357,12 +376,11 @@ impl Atoms {
         atom
     }
 
-    /// The atom `name` has; 0 when the table has none.
+    /// The atom `name` has; 0 when the table has none. The table's names are matched without
+    /// regard to case, as Windows 2000's atom tables match them (a class registered as "Button"
+    /// is created as "BUTTON").
     fn find(&self, name: &[u16]) -> Atom {
-        self.entries
-            .iter()
-            .find(|e| e.live && &e.units[..e.len as usize] == name)
-            .map_or(0, |e| e.atom)
+        self.find_folded(name)
     }
 
     /// The atom `name` has, its letters matched without regard to case (each unit folded to its
@@ -519,6 +537,9 @@ pub struct Class {
     atom_added: bool,
     style: u32,
     wnd_proc: u32,
+    /// The narrow form of a user32 control's procedure, which the windows a narrow caller creates
+    /// take (0 for none): see [`Registry::set_narrow_procedure`].
+    wnd_proc_ansi: u32,
     cb_cls_extra: i32,
     cb_wnd_extra: i32,
     /// The module (hInstance) the class was registered under, as a value.
@@ -557,6 +578,7 @@ impl Class {
             atom_added: false,
             style: 0,
             wnd_proc: 0,
+            wnd_proc_ansi: 0,
             cb_cls_extra: 0,
             cb_wnd_extra: 0,
             module: 0,
@@ -857,6 +879,8 @@ pub struct ClassInfo {
     pub wnd_proc: u32,
     /// The procedure takes the narrow forms of the messages.
     pub ansi_proc: bool,
+    /// The narrow form of the procedure a narrow caller's windows take, 0 for none.
+    pub wnd_proc_ansi: u32,
 }
 
 /// The window-class registry: the atom table, the cursor/icon handle table, the class pool with
@@ -1463,6 +1487,29 @@ impl Registry {
     // --- Class info
     // -------------------------------------------------------------------------------------------
 
+    /// Give the class `atom` that the process `owner` registered under `module` the narrow form
+    /// `proc` of its procedure: a window a narrow caller (CreateWindowExA) creates of it takes that
+    /// form, and is no Unicode window, as Windows 2000's system classes' windows take the form of
+    /// the call that created them. Only user32 asks, for the controls and the dialog class it
+    /// registers in every process; a class there is none of is left as it is.
+    pub fn set_narrow_procedure(&mut self, atom: Atom, owner: Owner, module: u32, proc: u32) {
+        if let Some(id) = self.inner(atom, List::Private(owner), Some(module)) {
+            self.classes.at_mut(id).wnd_proc_ansi = proc;
+        }
+    }
+
+    /// The fields of the class `id` that GetClassLong reads ([`rtl::window::WindowClass`]): its
+    /// atom, its public style, its background and its windows' extra bytes.
+    pub fn class_data(&self, id: ClassId) -> rtl::window::WindowClass {
+        let class = self.classes.at(id);
+        rtl::window::WindowClass {
+            atom: u32::from(class.atom),
+            style: class.style & CS_PUBLIC,
+            background: class.background,
+            cb_wnd_extra: class.cb_wnd_extra.max(0) as u32,
+        }
+    }
+
     /// GetClassInfo: the class `name` resolves to for the process `owner` looking it up as
     /// `module` (the user32 module when none given). The style is masked to the public bits (and
     /// CS_GLOBALCLASS is masked out of a server-registered class for a 4.0-compatible caller);
@@ -1513,6 +1560,7 @@ impl Registry {
             menu_name: class.menu_name,
             wnd_proc: class.wnd_proc,
             ansi_proc: class.flags.ansi_proc,
+            wnd_proc_ansi: class.wnd_proc_ansi,
         })
     }
 
@@ -2103,15 +2151,18 @@ fn window_of(windows: &super::window::Windows, window: Handle) -> Option<Window>
     windows.class_window(window.raw())
 }
 
-/// NtUserRegisterClassExWOW(WndClass, ClassName, Flags, Atom, Wow): register the class the
-/// caller's WNDCLASSEXW describes; its class-name atom into `atom` (the caller answers 0 on
-/// failure). The `wow` out word is zero: F2K has no 16-bit classes.
+/// NtUserRegisterClassExWOW(WndClass, ClassName, Flags, NarrowProc, Atom, Wow): register the
+/// class the caller's WNDCLASSEXW describes; its class-name atom into `atom` (the caller answers 0
+/// on failure). `NarrowProc`, when not 0, is the narrow form of the class's procedure, which a
+/// narrow caller's windows take ([`Registry::set_narrow_procedure`]: user32's own classes). The
+/// `wow` out word is zero: F2K has no 16-bit classes.
 #[cfg(target_arch = "x86")]
 pub fn register_class_ex_wow(
     call: &mut NtCall,
     wc: UserAddr,
     class_name: u32,
     flags: u32,
+    narrow_proc: u32,
     atom: UserPtr<u32>,
     wow: UserPtr<u32>,
 ) -> NtResult {
@@ -2125,7 +2176,7 @@ pub fn register_class_ex_wow(
     let registered = {
         let mut manager = super::window::lock(call.passive());
         let manager = &mut *manager;
-        manager.classes.register_class(
+        let registered = manager.classes.register_class(
             &manager.windows.handles,
             &wc,
             name,
@@ -2133,7 +2184,13 @@ pub fn register_class_ex_wow(
             caller.owner,
             flags,
             caller.desktop,
-        )
+        );
+        if let (Ok(atom), true) = (registered, narrow_proc != 0) {
+            manager
+                .classes
+                .set_narrow_procedure(atom, caller.owner, wc.instance, narrow_proc);
+        }
+        registered
     };
     let value = registered.map_err(Failure::status)?;
     atom.write(value as u32)?;
@@ -2306,6 +2363,7 @@ pub fn set_class_word(
 pub fn register_class_ex_wow(
     _: &mut NtCall,
     _: UserAddr,
+    _: u32,
     _: u32,
     _: u32,
     _: UserPtr<u32>,

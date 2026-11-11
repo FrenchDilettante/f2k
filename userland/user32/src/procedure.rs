@@ -13,6 +13,13 @@
 //! space ends below it). A handle lives as long as its process; the table holds
 //! [`HANDLES`] procedures of each form, and a procedure past them is answered as its address.
 //!
+//! user32's own procedures have both forms, an entry point each (DefWindowProcA and DefWindowProcW,
+//! DefDlgProcA and DefDlgProcW, the controls' procedures): a window whose procedure is one of them
+//! answers the entry point of the caller's form, never a handle, and either entry point handed back
+//! names the procedure in its own form ([`own_pair`]). As the wndlong capture shows Windows 2000's
+//! dialog: GWL_WNDPROC is DefDlgProcW through GetWindowLongW and DefDlgProcA through
+//! GetWindowLongA.
+//!
 //! The messages translated are the ones that carry text: WM_SETTEXT, WM_GETTEXT,
 //! WM_GETTEXTLENGTH, and WM_NCCREATE's and WM_CREATE's CREATESTRUCT. As the wintext capture shows
 //! Windows 2000's:
@@ -83,19 +90,65 @@ fn handle_of(proc: Procedure) -> Option<u32> {
     None
 }
 
+/// One of user32's own procedures, by the entry points of its two forms.
+#[derive(Clone, Copy)]
+struct OwnPair {
+    wide: u32,
+    narrow: u32,
+}
+
+/// The pair `address` is an entry point of, when it is one of user32's own procedures.
+fn own_pair(address: u32) -> Option<OwnPair> {
+    let pair = |wide: usize, narrow: usize| OwnPair {
+        wide: wide as u32,
+        narrow: narrow as u32,
+    };
+    [
+        pair(
+            crate::message::def_window_proc_w as *const () as usize,
+            crate::message::def_window_proc_a as *const () as usize,
+        ),
+        pair(
+            crate::dialog::def_dlg_proc_w as *const () as usize,
+            crate::dialog::def_dlg_proc_a as *const () as usize,
+        ),
+        pair(
+            crate::button::button_proc_w as *const () as usize,
+            crate::button::button_proc_a as *const () as usize,
+        ),
+        pair(
+            crate::static_control::static_proc_w as *const () as usize,
+            crate::static_control::static_proc_a as *const () as usize,
+        ),
+    ]
+    .into_iter()
+    .find(|pair| pair.wide == address || pair.narrow == address)
+}
+
 /// The value GetWindowLong and SetWindowLong answer a caller of the narrow (`caller_ansi`) or wide
-/// form for the procedure `proc`: its address when it takes the caller's form (or is none), a
-/// handle naming it otherwise.
+/// form for the procedure `proc`: its address when it takes the caller's form (or is none), the
+/// entry point of the caller's form for one of user32's own procedures, a handle naming it
+/// otherwise.
 pub fn value_for(proc: Procedure, caller_ansi: bool) -> u32 {
     if proc.address == 0 || proc.ansi == caller_ansi {
         return proc.address;
+    }
+    if let Some(pair) = own_pair(proc.address) {
+        return if caller_ansi { pair.narrow } else { pair.wide };
     }
     handle_of(proc).unwrap_or(proc.address)
 }
 
 /// The procedure a value a caller of the narrow (`caller_ansi`) or wide form hands over names: a
-/// handle's procedure, in its own form; an address, in the caller's.
+/// handle's procedure, in its own form; an entry point of user32's own procedures, in its own
+/// form; another address, in the caller's.
 pub fn resolve(value: u32, caller_ansi: bool) -> Procedure {
+    if let Some(pair) = own_pair(value) {
+        return Procedure {
+            address: value,
+            ansi: value == pair.narrow,
+        };
+    }
     if value & 0xFFFF_0000 == HANDLE_TAG {
         let ansi = value & NARROW_HANDLE != 0;
         let index = (value & (NARROW_HANDLE - 1)) as usize;

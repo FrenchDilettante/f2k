@@ -837,6 +837,9 @@ struct Window {
     extra: Option<ExtraBlock>,
     /// GWL_USERDATA.
     user_data: u32,
+    /// The kind of window user32's code made of it (NtUserSetWindowFNID: rtl::window's FNID_*),
+    /// 0 for none.
+    fnid: u16,
     title: TextBuf,
     /// The object's lock count: 1 at creation, dropped by the free; more than that means
     /// someone else still holds a reference and the free makes a zombie instead.
@@ -921,6 +924,7 @@ impl Window {
         cb_wnd_extra: 0,
         extra: None,
         user_data: 0,
+        fnid: 0,
         title: TextBuf::EMPTY,
         locks: 0,
         walk: Walk::NONE,
@@ -2056,11 +2060,18 @@ impl Windows {
         self.at_mut(id).parent = message_window;
 
         // The module and the window procedure are stored before any callback.
+        // A class with a narrow form of its procedure (user32's own) gives a narrow caller's
+        // window that form: its creator's form decides whether it is a Unicode window.
         {
             let w = self.at_mut(id);
             w.module = args.instance;
-            w.proc = Proc::Client(info.wnd_proc);
-            w.flags.ansi_proc = info.ansi_proc;
+            if ansi_creator && info.wnd_proc_ansi != 0 {
+                w.proc = Proc::Client(info.wnd_proc_ansi);
+                w.flags.ansi_proc = true;
+            } else {
+                w.proc = Proc::Client(info.wnd_proc);
+                w.flags.ansi_proc = info.ansi_proc;
+            }
         }
         {
             let w = self.at_mut(id);
@@ -3806,6 +3817,9 @@ impl Windows {
         if w.process != caller {
             flags |= rtl::window::WINDOW_OTHER_PROCESS;
         }
+        if u32::from(w.fnid) == rtl::window::FNID_DIALOG {
+            flags |= rtl::window::WINDOW_DIALOG;
+        }
         WindowData {
             style: w.style,
             ex_style: w.ex_style,
@@ -3817,6 +3831,50 @@ impl Windows {
             flags,
             extra: w.cb_wnd_extra.max(0) as u32,
         }
+    }
+
+    /// `window`'s relatives ([`rtl::window::WindowLinks`]): its parent (the desktop window for a
+    /// top-level window), its owner, its first child, and its siblings after and before it in the
+    /// z-order.
+    pub fn window_links(&self, window: WindowId) -> rtl::window::WindowLinks {
+        let w = self.at(window);
+        let handle = |id: Option<WindowId>| id.map_or(0, |id| self.at(id).handle);
+        let mut previous = None;
+        let mut sibling = w.parent.and_then(|parent| self.at(parent).child);
+        while let Some(s) = sibling {
+            if s == window {
+                break;
+            }
+            previous = Some(s);
+            sibling = self.at(s).next;
+        }
+        rtl::window::WindowLinks {
+            parent: handle(w.parent),
+            owner: handle(w.owner),
+            child: handle(w.child),
+            next: handle(w.next),
+            previous: handle(previous),
+        }
+    }
+
+    /// NtUserSetWindowFNID's decision: `window` marked as the kind of window `fnid` names, for a
+    /// caller of the process `caller`. Windows 2000's rules: another process's window is refused,
+    /// and so is a window marked already (a mark is set once, for the window's life).
+    pub fn set_window_fnid(
+        &mut self,
+        window: WindowId,
+        fnid: u32,
+        caller: class::Owner,
+    ) -> Result<(), Failure> {
+        let w = self.at_mut(window);
+        if w.process != caller {
+            return Err(Failure::AccessDenied);
+        }
+        if w.fnid != 0 || fnid == 0 || fnid > u32::from(u16::MAX) {
+            return Err(Failure::InvalidParameter);
+        }
+        w.fnid = fnid as u16;
+        Ok(())
     }
 
     /// `window`'s text, its title.
@@ -4366,6 +4424,13 @@ impl WindowManager {
                     .map_or(0, |parent| self.windows.handle_of(parent)),
             ),
             QUERY_WINDOW_MENU => Query::Menu(self.windows.window_menu(window)),
+            QUERY_WINDOW_LINKS => Query::Links(self.windows.window_links(window)),
+            QUERY_WINDOW_CLASS => Query::Class(
+                self.windows
+                    .at(window)
+                    .class
+                    .map_or_else(WindowClass::default, |class| self.classes.class_data(class)),
+            ),
             _ => {
                 let offset = (index & !QUERY_WINDOW_EXTRA) as i32;
                 let value = self.windows.extra_value(window, offset, length)?;
@@ -4411,6 +4476,63 @@ impl WindowManager {
     }
 }
 
+impl WindowManager {
+    /// NtUserFindWindowEx's decision, FindWindow's and FindWindowEx's search: the first child of
+    /// `parent` (none: the desktop window of the caller's desktop, whose children are the
+    /// top-level windows) after `after` (none: from the top of the z-order) whose class is
+    /// `class` (none: any class) and whose title is `title` (none: any title), the titles
+    /// compared without regard to case. A class name that names no class finds no window.
+    pub fn find_window(
+        &self,
+        caller: ThreadId,
+        parent: Option<Hwnd>,
+        after: Option<Hwnd>,
+        class: Option<class::Name>,
+        title: Option<&[u16]>,
+    ) -> Result<Option<Hwnd>, Failure> {
+        let w = &self.windows;
+        let parent = match parent {
+            Some(handle) => w.window_of(handle)?,
+            None => match w.thread_desktop_window(caller) {
+                Some(desktop) => desktop,
+                None => return Ok(None),
+            },
+        };
+        let mut child = match after {
+            Some(handle) => {
+                let after = w.window_of(handle)?;
+                if w.parent_of(after) != Some(parent) {
+                    return Ok(None);
+                }
+                w.next_sibling(after)
+            }
+            None => w.first_child(parent),
+        };
+        let atom = match class {
+            Some(name) => match self.classes.atom_of(name) {
+                0 => return Ok(None),
+                atom => Some(atom),
+            },
+            None => None,
+        };
+        let fold = |unit: u16| rtl::cp1252::map_case(unit, true);
+        while let Some(c) = child {
+            let record = w.at(c);
+            let class_matches =
+                atom.is_none_or(|atom| record.class.map(|id| self.classes.atom(id)) == Some(atom));
+            let title_matches = title.is_none_or(|title| {
+                let own = record.title.as_slice();
+                own.len() == title.len() && own.iter().zip(title).all(|(&a, &b)| fold(a) == fold(b))
+            });
+            if class_matches && title_matches {
+                return Ok(Some(record.handle));
+            }
+            child = w.next_sibling(c);
+        }
+        Ok(None)
+    }
+}
+
 /// NtUserQueryWindow's answer, by its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Query {
@@ -4429,6 +4551,10 @@ pub enum Query {
     Parent(u32),
     /// QUERY_WINDOW_MENU: GetMenu's answer.
     Menu(u32),
+    /// QUERY_WINDOW_LINKS: the window's relatives.
+    Links(rtl::window::WindowLinks),
+    /// QUERY_WINDOW_CLASS: the fields of the window's class GetClassLong reads.
+    Class(rtl::window::WindowClass),
 }
 
 impl Query {
@@ -4442,6 +4568,8 @@ impl Query {
             }
             Query::Data(data) => data.as_bytes(),
             Query::Text(text) => text.as_bytes(),
+            Query::Links(links) => links.as_bytes(),
+            Query::Class(class) => class.as_bytes(),
             Query::Extra(bytes, length) => &bytes[..*length as usize],
         }
     }
@@ -4461,6 +4589,8 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
         }
         QUERY_WINDOW_DATA => length == size_of::<WindowData>(),
         QUERY_WINDOW_TEXT => length == size_of::<WindowText>(),
+        QUERY_WINDOW_LINKS => length == size_of::<WindowLinks>(),
+        QUERY_WINDOW_CLASS => length == size_of::<WindowClass>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
         _ => return Err(STATUS_INVALID_INFO_CLASS),
     };
@@ -4822,6 +4952,57 @@ pub fn child_window_from_point_ex(
     Ok(STATUS_SUCCESS)
 }
 
+/// NtUserSetWindowFNID(Window, Fnid): the window marked as the kind of window `fnid` names
+/// (rtl::window's FNID_*: user32's dialog manager marks its dialogs) for the window's life
+/// ([`Windows::set_window_fnid`]): STATUS_ACCESS_DENIED for another process's window,
+/// STATUS_INVALID_PARAMETER for a window marked already.
+#[cfg(target_arch = "x86")]
+pub fn set_window_fnid(call: &mut NtCall, window: Handle, fnid: u32) -> NtResult {
+    let caller = super::winsta::gui_thread(call)?.owner;
+    let mut manager = lock(call.passive());
+    let id = manager
+        .windows
+        .window_of(window.raw())
+        .map_err(Failure::status)?;
+    manager
+        .windows
+        .set_window_fnid(id, fnid, caller)
+        .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserFindWindowEx(Parent, ChildAfter, ClassName, WindowName, Found): the window
+/// [`WindowManager::find_window`] finds into `found` (0 for none): `ClassName` a string's address
+/// or an atom (0: any class), `WindowName` a string's address (0: any title). The names are read
+/// before the window manager's lock is taken.
+#[cfg(target_arch = "x86")]
+pub fn find_window_ex(
+    call: &mut NtCall,
+    parent: Handle,
+    after: Handle,
+    class_name: u32,
+    window_name: UserAddr,
+    found: UserPtr<u32>,
+) -> NtResult {
+    let mut class_units = [0u16; class::MAX_ATOM_NAME];
+    let class = match class_name {
+        0 => None,
+        raw => Some(class::read_name(raw, &mut class_units)?),
+    };
+    let mut title_units = [0u16; MAX_WINDOW_TEXT];
+    let title = match window_name.is_null() {
+        true => None,
+        false => Some(read_text(window_name, &mut title_units)?),
+    };
+    let caller = super::winsta::gui_thread(call)?.thread;
+    let optional = |handle: Handle| (handle.raw() != 0).then(|| handle.raw());
+    let answer = lock(call.passive())
+        .find_window(caller, optional(parent), optional(after), class, title)
+        .map_err(Failure::status)?;
+    found.write(answer.unwrap_or(0))?;
+    Ok(STATUS_SUCCESS)
+}
+
 // The host builds have no processes and no user memory: the services answer nothing (the host
 // tests drive the window manager itself).
 
@@ -4919,6 +5100,23 @@ pub fn set_window_word(_: &mut NtCall, _: Handle, _: i32, _: u32, _: UserPtr<u32
 
 #[cfg(not(target_arch = "x86"))]
 pub fn def_set_text(_: &mut NtCall, _: Handle, _: UserAddr) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn set_window_fnid(_: &mut NtCall, _: Handle, _: u32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn find_window_ex(
+    _: &mut NtCall,
+    _: Handle,
+    _: Handle,
+    _: u32,
+    _: UserAddr,
+    _: UserPtr<u32>,
+) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 
@@ -7169,6 +7367,112 @@ mod tests {
             .classes
             .class_ptr(DESKTOP_CLASS_ATOM, OWNER, MODULE)
             .is_some());
+    }
+
+    /// user32's own classes and its dialogs: a narrow caller's window takes the narrow form of
+    /// the class's procedure (and is no Unicode window), a wide caller's the wide form; a class
+    /// name matches without regard to case, and "#32770" names the integer atom 0x8002; FindWindow
+    /// finds a top-level window by class and title (the title without regard to case); the
+    /// dialog mark is set once, by the window's own process; a child's links name its parent and
+    /// its siblings.
+    #[test]
+    fn user32s_classes_and_dialogs() {
+        use rtl::window::{FNID_DIALOG, WINDOW_ANSI_PROC, WINDOW_DIALOG};
+        let m = manager();
+        m.boot_desktop(DESKTOP, SCREEN).unwrap();
+        let mut wc = wnd_class();
+        wc.wnd_proc = 0x1000;
+        let button = register(
+            &mut m.classes,
+            &m.windows.handles,
+            class::Name::Text(&units("Button")),
+            &wc,
+        );
+        m.classes
+            .set_narrow_procedure(button, OWNER, wc.instance, 0x2000);
+        register(
+            &mut m.classes,
+            &m.windows.handles,
+            class::Name::Atom(0x8002),
+            &wc,
+        );
+        let t = m
+            .windows
+            .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
+            .unwrap();
+        let upper = units("BUTTON");
+        let mut a = args(0, WS_OVERLAPPED);
+        a.class_name = class::Name::Text(&upper);
+        a.ex_style = ANSI_CREATOR_BIT;
+        let narrow = m
+            .create_window(t, 0, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        let id = m.windows.window_from_handle(narrow).unwrap();
+        let data = m.windows.window_data(id, OWNER);
+        assert_eq!(
+            (data.proc, data.flags & WINDOW_ANSI_PROC),
+            (0x2000, WINDOW_ANSI_PROC)
+        );
+        let mut a = args(0, WS_CHILD);
+        a.class_name = class::Name::Text(&upper);
+        let first = m
+            .create_window(t, narrow, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        let mut a = args(0, WS_CHILD);
+        a.class_name = class::Name::Text(&upper);
+        let second = m
+            .create_window(t, narrow, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        let first_id = m.windows.window_from_handle(first).unwrap();
+        let data = m.windows.window_data(first_id, OWNER);
+        assert_eq!((data.proc, data.flags & WINDOW_ANSI_PROC), (0x1000, 0));
+        let links = m.windows.window_links(first_id);
+        assert_eq!(
+            (links.parent, links.next, links.previous),
+            (narrow, second, 0)
+        );
+        let second_links = m
+            .windows
+            .window_links(m.windows.window_from_handle(second).unwrap());
+        assert_eq!(second_links.previous, first);
+
+        let dialog_name = units("#32770");
+        let title = units("Box");
+        let mut a = args(0, WS_POPUP);
+        a.class_name = class::Name::Text(&dialog_name);
+        a.name = &title;
+        let boxed = m
+            .create_window(t, 0, &mut a, &mut DefaultProcedure)
+            .unwrap();
+        m.windows.set_window_text(boxed, &title).unwrap();
+        let lower = units("box");
+        let found = m.find_window(
+            t,
+            None,
+            None,
+            Some(class::Name::Text(&dialog_name)),
+            Some(&lower),
+        );
+        assert_eq!(found, Ok(Some(boxed)));
+        let other = units("Other");
+        let found = m.find_window(t, None, None, Some(class::Name::Atom(0x8002)), Some(&other));
+        assert_eq!(found, Ok(None));
+        let missing = units("Missing");
+        let found = m.find_window(t, None, None, Some(class::Name::Text(&missing)), None);
+        assert_eq!(found, Ok(None));
+
+        let id = m.windows.window_from_handle(boxed).unwrap();
+        assert_eq!(
+            m.windows.set_window_fnid(id, FNID_DIALOG, OTHER_OWNER),
+            Err(Failure::AccessDenied)
+        );
+        assert_eq!(m.windows.set_window_fnid(id, FNID_DIALOG, OWNER), Ok(()));
+        assert_eq!(
+            m.windows.set_window_fnid(id, FNID_DIALOG, OWNER),
+            Err(Failure::InvalidParameter)
+        );
+        let flags = m.windows.window_data(id, OWNER).flags;
+        assert_eq!(flags & WINDOW_DIALOG, WINDOW_DIALOG);
     }
 
     /// The service's creation: the string class name resolved through the class registry, the

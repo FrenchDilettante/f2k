@@ -541,7 +541,10 @@ fails = "NULL"
 [[export]]
 name = "NtUserRegisterClassExWOW"
 group = "class"
-args = ["ptr WndClass", "u32 ClassName", "u32 Flags", "ptr<u32> Atom", "ptr<u32> Wow"]
+args = [
+    "ptr WndClass", "u32 ClassName", "u32 Flags", "u32 NarrowProc", "ptr<u32> Atom",
+    "ptr<u32> Wow",
+]
 impl = { syscall = "crate::win32k::class::register_class_ex_wow" }
 internal = true
 
@@ -757,7 +760,7 @@ fails = "FALSE"
 name = "GetWindow"
 group = "window"
 args = ["handle hWnd", "u32 uCmd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindow" }
 ordinal = 343
 fails = "NULL"
 
@@ -765,8 +768,16 @@ fails = "NULL"
 name = "FindWindowW"
 group = "window"
 args = ["ptr lpClassName", "strW? lpWindowName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FindWindowW" }
 ordinal = 219
+fails = "NULL"
+
+[[export]]
+name = "FindWindowA"
+group = "window"
+args = ["ptr lpClassName", "strA? lpWindowName"]
+impl = { native = "FindWindowA" }
+ordinal = 216
 fails = "NULL"
 
 [[export]]
@@ -1103,6 +1114,22 @@ args = ["handle Window", "ptr Text"]
 impl = { syscall = "crate::win32k::window::def_set_text" }
 internal = true
 
+[[export]]
+name = "NtUserSetWindowFNID"
+group = "window"
+args = ["handle Window", "u32 Fnid"]
+impl = { syscall = "crate::win32k::window::set_window_fnid" }
+internal = true
+
+[[export]]
+name = "NtUserFindWindowEx"
+group = "window"
+args = [
+    "handle Parent", "handle ChildAfter", "u32 ClassName", "ptr WindowName", "ptr<u32> Found",
+]
+impl = { syscall = "crate::win32k::window::find_window_ex" }
+internal = true
+
 # --- messages, timers and painting ---------------------------------------------------------------
 
 [[export]]
@@ -1200,7 +1227,7 @@ group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "i32 lParam"]
 impl = { native = "DefWindowProcW" }
 ordinal = 136
-note = "WM_NCCREATE sets the title, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH over the text win32k holds (128 units at most), WM_ERASEBKGND TRUE, WM_CLOSE destroys the window, WM_PAINT validates it, the rest 0"
+note = "WM_NCCREATE sets the title, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH over the text win32k holds (128 units at most), WM_ERASEBKGND fills with the class background, WM_CTLCOLOR* the 3D face colors, WM_CLOSE destroys the window, WM_PAINT validates it, the rest 0"
 
 [[export]]
 name = "InvalidateRect"
@@ -1305,7 +1332,7 @@ fails = "WAIT_FAILED"
 name = "SetTimer"
 group = "message"
 args = ["handle hWnd", "u32 nIDEvent", "u32 uElapse", "ptr lpTimerFunc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetTimer" }
 ordinal = 600
 fails = "0"
 
@@ -1313,7 +1340,7 @@ fails = "0"
 name = "KillTimer"
 group = "message"
 args = ["handle hWnd", "u32 uIDEvent"]
-impl = { stub = "not yet implemented" }
+impl = { native = "KillTimer" }
 ordinal = 410
 fails = "FALSE"
 
@@ -1690,7 +1717,7 @@ args = [
     "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
     "i32 dwInitParam",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateDialogParamA" }
 ordinal = 81
 fails = "NULL"
 
@@ -1701,7 +1728,7 @@ args = [
     "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
     "i32 dwInitParam",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateDialogParamW" }
 ordinal = 82
 fails = "NULL"
 
@@ -1712,7 +1739,7 @@ args = [
     "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
     "i32 dwInitParam",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateDialogIndirectParamW" }
 ordinal = 80
 fails = "NULL"
 
@@ -1723,7 +1750,7 @@ args = [
     "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
     "i32 dwInitParam",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "DialogBoxParamA" }
 ordinal = 150
 fails = "-1"
 
@@ -1734,7 +1761,7 @@ args = [
     "handle hInstance", "ptr lpTemplateName", "handle hWndParent", "ptr lpDialogFunc",
     "i32 dwInitParam",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "DialogBoxParamW" }
 ordinal = 151
 fails = "-1"
 
@@ -1742,7 +1769,7 @@ fails = "-1"
 name = "EndDialog"
 group = "dialog"
 args = ["handle hDlg", "i32 nResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EndDialog" }
 ordinal = 188
 fails = "FALSE"
 
@@ -1750,7 +1777,7 @@ fails = "FALSE"
 name = "IsDialogMessageA"
 group = "dialog"
 args = ["handle hDlg", "ptr lpMsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsDialogMessageA" }
 ordinal = 397
 fails = "FALSE"
 
@@ -1758,7 +1785,7 @@ fails = "FALSE"
 name = "IsDialogMessageW"
 group = "dialog"
 args = ["handle hDlg", "ptr lpMsg"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsDialogMessageW" }
 ordinal = 398
 fails = "FALSE"
 
@@ -1766,7 +1793,7 @@ fails = "FALSE"
 name = "GetDlgItem"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDlgItem" }
 ordinal = 262
 fails = "NULL"
 
@@ -1774,7 +1801,7 @@ fails = "NULL"
 name = "GetDlgCtrlID"
 group = "dialog"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDlgCtrlID" }
 ordinal = 261
 fails = "0"
 
@@ -1782,7 +1809,7 @@ fails = "0"
 name = "GetDlgItemInt"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "ptr<u32> lpTranslated", "bool bSigned"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDlgItemInt" }
 ordinal = 263
 fails = "0"
 
@@ -1790,7 +1817,7 @@ fails = "0"
 name = "SetDlgItemInt"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "u32 uValue", "bool bSigned"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetDlgItemInt" }
 ordinal = 560
 fails = "FALSE"
 
@@ -1798,7 +1825,7 @@ fails = "FALSE"
 name = "GetDlgItemTextA"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "ptr lpString", "i32 cchMax"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDlgItemTextA" }
 ordinal = 264
 fails = "0"
 
@@ -1806,7 +1833,7 @@ fails = "0"
 name = "GetDlgItemTextW"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "ptr lpString", "i32 cchMax"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDlgItemTextW" }
 ordinal = 265
 fails = "0"
 
@@ -1814,7 +1841,7 @@ fails = "0"
 name = "SetDlgItemTextA"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "strA? lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetDlgItemTextA" }
 ordinal = 561
 fails = "FALSE"
 
@@ -1822,7 +1849,7 @@ fails = "FALSE"
 name = "SetDlgItemTextW"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "strW? lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetDlgItemTextW" }
 ordinal = 562
 fails = "FALSE"
 
@@ -1830,7 +1857,7 @@ fails = "FALSE"
 name = "SendDlgItemMessageW"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDDlgItem", "u32 Msg", "u32 wParam", "i32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendDlgItemMessageW" }
 ordinal = 533
 fails = "0"
 
@@ -1838,7 +1865,7 @@ fails = "0"
 name = "CheckDlgButton"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDButton", "u32 uCheck"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CheckDlgButton" }
 ordinal = 52
 fails = "FALSE"
 
@@ -1846,7 +1873,7 @@ fails = "FALSE"
 name = "CheckRadioButton"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDFirstButton", "i32 nIDLastButton", "i32 nIDCheckButton"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CheckRadioButton" }
 ordinal = 55
 fails = "FALSE"
 
@@ -1854,7 +1881,7 @@ fails = "FALSE"
 name = "IsDlgButtonChecked"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDButton"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsDlgButtonChecked" }
 ordinal = 399
 fails = "0"
 
@@ -1862,7 +1889,7 @@ fails = "0"
 name = "GetDialogBaseUnits"
 group = "dialog"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDialogBaseUnits" }
 ordinal = 260
 fails = "0"
 
@@ -1870,7 +1897,7 @@ fails = "0"
 name = "MapDialogRect"
 group = "dialog"
 args = ["handle hDlg", "ptr lpRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MapDialogRect" }
 ordinal = 442
 fails = "FALSE"
 
@@ -1878,7 +1905,7 @@ fails = "FALSE"
 name = "MessageBoxA"
 group = "dialog"
 args = ["handle hWnd", "strA? lpText", "strA? lpCaption", "u32 uType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MessageBoxA" }
 ordinal = 452
 fails = "0"
 
@@ -1886,9 +1913,23 @@ fails = "0"
 name = "MessageBoxW"
 group = "dialog"
 args = ["handle hWnd", "strW? lpText", "strW? lpCaption", "u32 uType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MessageBoxW" }
 ordinal = 457
 fails = "0"
+
+[[export]]
+name = "DefDlgProcA"
+group = "dialog"
+args = ["handle hDlg", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "DefDlgProcA" }
+ordinal = 129
+
+[[export]]
+name = "DefDlgProcW"
+group = "dialog"
+args = ["handle hDlg", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "DefDlgProcW" }
+ordinal = 130
 
 # --- menus ----------------------------------------------------------------------------------------
 
@@ -2923,14 +2964,6 @@ name = "DdeUninitialize"
 ordinal = 128
 
 [[export]]
-name = "DefDlgProcA"
-ordinal = 129
-
-[[export]]
-name = "DefDlgProcW"
-ordinal = 130
-
-[[export]]
 name = "DefFrameProcA"
 ordinal = 131
 
@@ -3161,10 +3194,6 @@ ordinal = 212
 [[export]]
 name = "ExcludeUpdateRgn"
 ordinal = 213
-
-[[export]]
-name = "FindWindowA"
-ordinal = 216
 
 [[export]]
 name = "FindWindowExA"

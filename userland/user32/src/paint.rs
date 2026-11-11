@@ -83,6 +83,33 @@ pub extern "system" fn end_paint(window: usize, paint: *const PaintStruct) -> u3
     answered(imports::end_paint(window, paint as usize)).is_some() as u32
 }
 
+/// A painting user32's own code makes of a window (the controls' WM_PAINT): BeginPaint over a
+/// PAINTSTRUCT of its own, EndPaint when it drops.
+pub struct Painting {
+    window: usize,
+    paint: PaintStruct,
+}
+
+impl Painting {
+    /// The painting of `window` begun (its update region validated, a pending erase sent); none
+    /// when BeginPaint answers no DC.
+    pub fn begin(window: usize) -> Option<Painting> {
+        let mut paint = PaintStruct::default();
+        (begin(window, Some(Out::from(&mut paint))) != 0).then_some(Painting { window, paint })
+    }
+
+    /// The painting's DC, clipped to the update region.
+    pub fn dc(&self) -> usize {
+        self.paint.hdc as usize
+    }
+}
+
+impl Drop for Painting {
+    fn drop(&mut self) {
+        let _ = imports::end_paint(self.window, &self.paint as *const PaintStruct as usize);
+    }
+}
+
 /// The default window procedure's WM_PAINT: the window validated by painting nothing, BeginPaint
 /// and EndPaint over a PAINTSTRUCT of its own.
 pub fn validate_by_painting(window: usize) {

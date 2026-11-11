@@ -199,6 +199,39 @@ fn peek_message(msg: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, flags
     }
 }
 
+/// The next message of the calling thread's queue into `msg`, waiting for one (the sent messages
+/// found first delivered), as GetMessage takes it with no filter: whether it is not WM_QUIT; none,
+/// with the last error, for a failure. The dialog manager's modal loop reads with it.
+pub fn next_message(msg: &mut Msg) -> Option<bool> {
+    let mut receipt = Receipt::zeroed();
+    loop {
+        answered(imports::get_message(&mut receipt, 0, 0, 0))?;
+        match receipt.kind {
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            kind => {
+                *msg = receipt.msg;
+                return Some(kind != RECEIVED_QUIT);
+            }
+        }
+    }
+}
+
+/// Whether the calling thread's queue holds a message PeekMessage would find with no filter (the
+/// sent messages found first delivered), leaving it there: the modal loop's test for idleness.
+pub fn queue_holds_message() -> bool {
+    let mut receipt = Receipt::zeroed();
+    loop {
+        if imports::peek_message(&mut receipt, 0, 0, 0, PM_NOREMOVE).is_err() {
+            return false;
+        }
+        match receipt.kind {
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            RECEIVED_NONE => return false,
+            _ => return true,
+        }
+    }
+}
+
 /// PostMessageA: the message posted to the window's thread (a null window: the calling thread;
 /// HWND_BROADCAST: every top-level window); TRUE, or FALSE with 1400 for a handle naming no window.
 #[unsafe(export_name = "f2k_export_PostMessageA")]
@@ -342,7 +375,7 @@ pub unsafe extern "system" fn dispatch_message_w(msg: *const Msg) -> i32 {
 }
 
 /// DispatchMessage's core, for a message of the narrow (`ansi`) or wide form.
-fn dispatch(msg: &Msg, ansi: bool) -> i32 {
+pub fn dispatch(msg: &Msg, ansi: bool) -> i32 {
     match answered(imports::dispatch_target(msg)) {
         None | Some(0) => 0,
         Some(proc) if msg.message == WM_TIMER && msg.lparam != 0 => {
@@ -367,7 +400,7 @@ pub unsafe extern "system" fn translate_message(msg: *const Msg) -> u32 {
 }
 
 /// TranslateMessage's core: a key-up has no character (the US layout has no dead keys).
-fn translate(msg: &Msg) -> u32 {
+pub fn translate(msg: &Msg) -> u32 {
     match msg.message {
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let _ = imports::translate_message(msg);
@@ -385,11 +418,15 @@ fn translate(msg: &Msg) -> u32 {
 /// length; WM_CLOSE the window destroyed; WM_PAINT the window validated through BeginPaint and
 /// EndPaint; WM_ACTIVATE the focus to a window being activated that is not minimized, as the
 /// documentation gives it; WM_NCACTIVATE TRUE (the change goes on: there is no caption to redraw
-/// yet); WM_ERASEBKGND TRUE (the background counts as erased: there is no fill to draw it with
-/// yet); WM_QUERYENDSESSION TRUE (the session may end, as the message's documentation gives
-/// DefWindowProc's answer), whatever its lParam; WM_NCCALCSIZE the rectangle left as it is (the
-/// client area is the window's: windows have no decoration yet); 0 to everything else,
-/// WM_ENDSESSION included, and to a text message for a handle naming no window.
+/// yet); WM_ERASEBKGND the client area filled with the class's background brush (GCL_HBRBACKGROUND:
+/// a brush, or a system color's index plus one), TRUE, or FALSE for a class with none;
+/// WM_CTLCOLOR* a control's colors set in its DC and the brush it paints its background with
+/// answered (the window colors for an edit control and a list box, the scroll bar's color for a
+/// scroll bar, the 3D face for the others, the text in COLOR_WINDOWTEXT); WM_QUERYENDSESSION TRUE
+/// (the session may end, as the message's documentation gives DefWindowProc's answer), whatever its
+/// lParam; WM_NCCALCSIZE the rectangle left as it is (the client area is the window's: windows have
+/// no decoration yet); 0 to everything else, WM_ENDSESSION included, and to a text message for a
+/// handle naming no window.
 pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
         WM_NCCREATE => {
@@ -410,7 +447,9 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         WM_SETTEXT => set_text(window, lparam, ansi) as i32,
         WM_GETTEXT => get_text(window, wparam, lparam, ansi) as i32,
         WM_GETTEXTLENGTH => text_length(window, ansi) as i32,
-        WM_ERASEBKGND | WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
+        WM_ERASEBKGND => erase_background(window, wparam as usize) as i32,
+        WM_CTLCOLORMSGBOX..=WM_CTLCOLORSTATIC => control_colors(wparam as usize, message) as i32,
+        WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
         WM_ACTIVATE => {
             if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
                 focus::activate_focus(window);
@@ -427,6 +466,66 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         }
         _ => 0,
     }
+}
+
+/// DefWindowProc's WM_ERASEBKGND: the client area of `window` filled through `dc` with its class's
+/// background brush; whether there was one to fill with.
+fn erase_background(window: usize, dc: usize) -> bool {
+    let Some(class) = window::class_data(window) else {
+        return false;
+    };
+    if class.background == 0 {
+        return false;
+    }
+    let Some(client) = window::client_rect(window) else {
+        return false;
+    };
+    crate::draw::fill(dc, client, class.background as usize);
+    true
+}
+
+/// The WM_CTLCOLOR* messages (winuser.h): a control asks its parent the colors and the brush it
+/// draws with.
+pub const WM_CTLCOLORMSGBOX: u32 = 0x0132;
+pub const WM_CTLCOLOREDIT: u32 = 0x0133;
+pub const WM_CTLCOLORLISTBOX: u32 = 0x0134;
+pub const WM_CTLCOLORBTN: u32 = 0x0135;
+pub const WM_CTLCOLORDLG: u32 = 0x0136;
+pub const WM_CTLCOLORSCROLLBAR: u32 = 0x0137;
+pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
+
+/// The system colors the default colors are (winuser.h's COLOR_*).
+const COLOR_SCROLLBAR: u32 = 0;
+const COLOR_WINDOW: u32 = 5;
+const COLOR_WINDOWTEXT: u32 = 8;
+const COLOR_3DFACE: u32 = 15;
+
+/// DefWindowProc's WM_CTLCOLOR*: the text color COLOR_WINDOWTEXT and the background color of the
+/// control's kind set in its DC `dc`, the brush of that color answered.
+fn control_colors(dc: usize, message: u32) -> usize {
+    let background = match message {
+        WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => COLOR_WINDOW,
+        WM_CTLCOLORSCROLLBAR => COLOR_SCROLLBAR,
+        _ => COLOR_3DFACE,
+    };
+    imports::set_text_color(dc, crate::display::get_sys_color(COLOR_WINDOWTEXT as i32));
+    imports::set_bk_color(dc, crate::display::get_sys_color(background as i32));
+    crate::display::get_sys_color_brush(background as i32)
+}
+
+/// SetTimer: a timer of the window (NULL: a thread timer, its id made) set to come due every
+/// `elapse` milliseconds, its WM_TIMER handed to `func` when there is one; the timer's id, or 0
+/// with the last error (1400 for a handle naming no window).
+#[unsafe(export_name = "f2k_export_SetTimer")]
+pub extern "system" fn set_timer(window: usize, id: u32, elapse: u32, func: usize) -> u32 {
+    answered(imports::set_timer(window, id, elapse, func)).unwrap_or(0)
+}
+
+/// KillTimer: the window's timer `id` (NULL: the thread timer of that id) gone; TRUE, or FALSE
+/// with the last error.
+#[unsafe(export_name = "f2k_export_KillTimer")]
+pub extern "system" fn kill_timer(window: usize, id: u32) -> u32 {
+    answered(imports::kill_timer(window, id)).is_some() as u32
 }
 
 /// DefWindowProc's WM_SETTEXT: the window's text set to the string at `text` (the narrow form's
@@ -742,8 +841,8 @@ mod tests {
     }
 
     /// DefWindowProc: WM_CLOSE destroys the window (its procedure sees the destruction), WM_NULL
-    /// and the rest answer 0, WM_ENDSESSION among them; WM_NCCREATE, WM_ERASEBKGND and
-    /// WM_QUERYENDSESSION TRUE, a logoff's WM_QUERYENDSESSION too.
+    /// and the rest answer 0, WM_ENDSESSION among them, WM_ERASEBKGND for a window there is none
+    /// of; WM_NCCREATE and WM_QUERYENDSESSION TRUE, a logoff's WM_QUERYENDSESSION too.
     ///
     /// Pins: user32.DefWindowProcA, user32.DefWindowProcW
     #[test]
@@ -755,13 +854,52 @@ mod tests {
         assert_eq!(is_window(window), 0);
         assert_eq!(def_window_proc_w(window, WM_NULL, 0, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_NCCREATE, 0, 0), 1);
-        assert_eq!(def_window_proc_w(window, WM_ERASEBKGND, 0, 0), 1);
+        assert_eq!(def_window_proc_w(window, WM_ERASEBKGND, 0, 0), 0);
         assert_eq!(def_window_proc_a(window, WM_QUERYENDSESSION, 0, 0), 1);
         let logoff = ENDSESSION_LOGOFF as i32;
         assert_eq!(def_window_proc_w(window, WM_QUERYENDSESSION, 0, logoff), 1);
         assert_eq!(def_window_proc_a(window, WM_ENDSESSION, 1, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_ENDSESSION, 0, logoff), 0);
         assert!(seen().is_empty());
+    }
+
+    /// DefWindowProc's WM_ERASEBKGND fills the client area with the class's background (a system
+    /// color's index plus one), TRUE; a class with none is left, FALSE. WM_CTLCOLORBTN answers the
+    /// 3D face's brush.
+    ///
+    /// Pins: user32.DefWindowProcW
+    #[test]
+    fn the_background_is_the_classs() {
+        use crate::imports::host::canvas::{canvas, CANVAS_DC, PAPER};
+        let window = window();
+        assert_eq!(
+            def_window_proc_w(window, WM_ERASEBKGND, CANVAS_DC as u32, 0),
+            0
+        );
+        assert_eq!(canvas(|canvas| canvas.pixels[0]), PAPER);
+        wm(|wm| {
+            let atom = wm
+                .windows
+                .iter()
+                .find(|w| w.handle as usize == window)
+                .unwrap()
+                .atom;
+            wm.classes
+                .iter_mut()
+                .find(|c| c.atom == atom)
+                .unwrap()
+                .class
+                .background = 6;
+        });
+        assert_eq!(
+            def_window_proc_w(window, WM_ERASEBKGND, CANVAS_DC as u32, 0),
+            1
+        );
+        assert_eq!(canvas(|canvas| canvas.pixels[0]), 0x00FF_FFFF);
+        assert_eq!(
+            def_window_proc_w(window, WM_CTLCOLORBTN, CANVAS_DC as u32, 0) as u32,
+            rtl::gdi::sys_color_brush(15).unwrap()
+        );
     }
 
     /// PostThreadMessage to the calling thread is a thread message; another id is 1444.

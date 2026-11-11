@@ -5,19 +5,10 @@
 # message box ends itself: a posted command and a timer, never a person.
 description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
 kind = "sectioned"
-
-# Not gated: user32 has no dialog manager yet; dialog.exe loads against user32's stubs. Every
-# section is on the work list.
-[pending]
-create = "CreateDialogParamW/A not yet implemented: no dialog manager (templates, #32770, DefDlgProc) and no Button or Static controls"
-ex = "CreateDialogParamW of a DIALOGEX template not yet implemented: no dialog manager"
-items = "GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW not yet implemented"
-ints = "SetDlgItemInt and GetDlgItemInt not yet implemented"
-buttons = "CheckDlgButton, IsDlgButtonChecked and CheckRadioButton not yet implemented, nor the Button control"
-modal = "DialogBoxParamW/A and EndDialog not yet implemented: no modal dialog loop"
-units = "GetDialogBaseUnits and MapDialogRect not yet implemented, and the dialog font is the built-in 8x16 one"
-keys = "IsDialogMessageW/A not yet implemented: no dialog keyboard navigation"
-msgbox = "MessageBoxW/A not yet implemented: no dialog manager"
+gate = true
+# The dialog font decides the create block's positions and the units block's units: the batch
+# boots with the system's fonts, "MS Shell Dlg" realised as MS Sans Serif.
+system_fonts = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

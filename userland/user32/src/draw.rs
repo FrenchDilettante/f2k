@@ -150,12 +150,18 @@ impl Drop for Brushed {
 pub unsafe extern "system" fn fill_rect(dc: usize, rect: *const Rect, brush: usize) -> i32 {
     // SAFETY: the caller's RECT.
     let rect = unsafe { In::new(rect) }.read();
+    fill(dc, rect, brush) as i32
+}
+
+/// FillRect's work, for user32's own drawing (the controls, the dialogs, the default window
+/// procedure's erase): `rect` painted with `brush` (a handle, or COLOR_* + 1); whether it was.
+pub fn fill(dc: usize, rect: Rect, brush: usize) -> bool {
     let Some(brush) = brush_of(brush) else {
-        return 0;
+        return false;
     };
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
-    Brushed::new(dc).paint(brush, rect.left, rect.top, width, height, PATCOPY) as i32
+    Brushed::new(dc).paint(brush, rect.left, rect.top, width, height, PATCOPY)
 }
 
 /// FrameRect: a frame one pixel wide just inside the rectangle, painted with the brush; nonzero
@@ -169,11 +175,20 @@ pub unsafe extern "system" fn fill_rect(dc: usize, rect: *const Rect, brush: usi
 pub unsafe extern "system" fn frame_rect(dc: usize, rect: *const Rect, brush: usize) -> i32 {
     // SAFETY: the caller's RECT.
     let rect = unsafe { In::new(rect) }.read();
+    frame_in(dc, rect, brush) as i32
+}
+
+/// FrameRect's work, for user32's own drawing: a frame one pixel wide just inside `rect`, painted
+/// with `brush` (a handle, or COLOR_* + 1); whether it was.
+pub fn frame_in(dc: usize, rect: Rect, brush: usize) -> bool {
     if rect.right < rect.left || rect.bottom < rect.top {
-        return 1;
+        return true;
     }
+    let Some(brush) = brush_of(brush) else {
+        return false;
+    };
     let mut brushed = Brushed::new(dc);
-    frame(&mut brushed, brush, rect, PATCOPY) as i32
+    frame(&mut brushed, brush, rect, PATCOPY)
 }
 
 /// The frame just inside `rect`, painted with `brush` by `rop`, each pixel once (an XOR frame
@@ -238,12 +253,18 @@ pub unsafe extern "system" fn invert_rect(dc: usize, rect: *const Rect) -> u32 {
 pub unsafe extern "system" fn draw_focus_rect(dc: usize, rect: *const Rect) -> u32 {
     // SAFETY: the caller's RECT.
     let rect = unsafe { In::new(rect) }.read();
+    focus_rect_in(dc, rect) as u32
+}
+
+/// DrawFocusRect's work, for user32's own drawing: the dotted frame just inside `rect`; whether it
+/// was drawn.
+pub fn focus_rect_in(dc: usize, rect: Rect) -> bool {
     if rect.right <= rect.left || rect.bottom <= rect.top {
-        return 1;
+        return true;
     }
     let text = imports::set_text_color(dc, 0x0000_0000);
     if text == CLR_INVALID {
-        return 0;
+        return false;
     }
     let background = imports::set_bk_color(dc, 0x00FF_FFFF);
     let done = frame(
@@ -254,7 +275,7 @@ pub unsafe extern "system" fn draw_focus_rect(dc: usize, rect: *const Rect) -> u
     );
     imports::set_bk_color(dc, background);
     imports::set_text_color(dc, text);
-    done as u32
+    done
 }
 
 // --- DrawEdge ------------------------------------------------------------------------------------

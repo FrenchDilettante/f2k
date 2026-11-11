@@ -257,6 +257,28 @@ pub unsafe extern "system" fn GetTextExtentPointW(
     })
 }
 
+/// The first font object's handle: the font kind's bits over a handle-table handle.
+pub const FIRST_FONT: usize = 0x0006_0008;
+
+pub unsafe extern "system" fn CreateFontIndirectW(_font: *const LogFontW) -> usize {
+    canvas(|canvas| {
+        let font = FIRST_FONT + 4 * canvas.made;
+        canvas.made += 1;
+        font
+    })
+}
+
+pub unsafe extern "system" fn GetStockObject(index: i32) -> usize {
+    stock_handle(index as u32).map_or(0, |handle| handle as usize)
+}
+
+pub unsafe extern "system" fn SetBkMode(dc: usize, mode: i32) -> i32 {
+    on_canvas(dc, 0, |_| {
+        let _ = mode;
+        OPAQUE as i32
+    })
+}
+
 pub unsafe extern "system" fn GetTextMetricsW(dc: usize, metric: *mut TextMetricW) -> u32 {
     on_canvas(dc, 0, |_| {
         // SAFETY: the code under test's own structure.

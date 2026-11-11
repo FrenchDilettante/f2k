@@ -29,6 +29,11 @@ pub const QUERY_WINDOW_PARENT: u32 = 4;
 /// The window's menu (GetMenu's answer): a top-level window's menu handle, a child's id, 0 for
 /// none, a 32-bit value.
 pub const QUERY_WINDOW_MENU: u32 = 5;
+/// The window's place among its relatives, a [`WindowLinks`]: what GetWindow and the dialog
+/// manager's walks over a dialog's controls read.
+pub const QUERY_WINDOW_LINKS: u32 = 6;
+/// The fields of the window's class GetClassLong reads, a [`WindowClass`].
+pub const QUERY_WINDOW_CLASS: u32 = 7;
 /// The window's extra bytes (its class's cbWndExtra) at the offset this index carries in its low
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.
@@ -53,6 +58,13 @@ pub const GWL_USERDATA: i32 = -21;
 /// (IsWindowUnicode's FALSE); the window belongs to a process other than the caller's.
 pub const WINDOW_ANSI_PROC: u32 = 0x1;
 pub const WINDOW_OTHER_PROCESS: u32 = 0x2;
+/// [`WindowData`]'s flags: the window is a dialog, marked so by the dialog manager
+/// (NtUserSetWindowFNID with [`FNID_DIALOG`]): its extra bytes are the dialog's (DWL_*).
+pub const WINDOW_DIALOG: u32 = 0x4;
+
+/// NtUserSetWindowFNID's ids: the kind of window user32's own code makes of a window. Windows
+/// 2000's values are not public; F2K's are its own. A dialog's ([`WINDOW_DIALOG`]).
+pub const FNID_DIALOG: u32 = 0x02A4;
 
 /// The longest window text the window manager holds, in UTF-16 units (no terminator).
 pub const WINDOW_TEXT_UNITS: usize = 128;
@@ -146,7 +158,34 @@ impl WindowText {
     }
 }
 
+/// A window's relatives ([`QUERY_WINDOW_LINKS`]), each a handle (0 for none): its parent (the
+/// desktop window for a top-level window), its owner, its first child (the top of its children's
+/// z-order), and the siblings after it and before it in the z-order.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowLinks {
+    pub parent: u32,
+    pub owner: u32,
+    pub child: u32,
+    pub next: u32,
+    pub previous: u32,
+}
+
+/// The fields of a window's class ([`QUERY_WINDOW_CLASS`]) GetClassLong answers: its atom
+/// (GCW_ATOM), its style (GCL_STYLE), its background brush (GCL_HBRBACKGROUND: a brush handle, or
+/// a system color's index plus one) and its windows' extra bytes (GCL_CBWNDEXTRA).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowClass {
+    pub atom: u32,
+    pub style: u32,
+    pub background: u32,
+    pub cb_wnd_extra: u32,
+}
+
 const _: () = {
+    assert!(size_of::<WindowLinks>() == 20);
+    assert!(size_of::<WindowClass>() == 16);
     assert!(size_of::<WindowData>() == 36);
     assert!(size_of::<WindowText>() == 4 + 2 * WINDOW_TEXT_UNITS);
     assert!(size_of::<WindowInfo>() == 60);
@@ -166,3 +205,7 @@ unsafe impl Pod for WindowPos {}
 unsafe impl Pod for WindowData {}
 // SAFETY: an integer and an array of units, without padding (the assert above pins the size).
 unsafe impl Pod for WindowText {}
+// SAFETY: five 32-bit integers.
+unsafe impl Pod for WindowLinks {}
+// SAFETY: four 32-bit integers.
+unsafe impl Pod for WindowClass {}

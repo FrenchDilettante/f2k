@@ -27,15 +27,18 @@ pub use clipboard::*;
 /// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
 pub mod canvas;
 pub use canvas::{
+    CreateFontIndirectW,
     CreateSolidBrush,
     DeleteObject,
     ExtTextOutW,
+    GetStockObject,
     GetTextColor,
     GetTextExtentPointW,
     GetTextMetricsW,
     PatBlt,
     SelectObject,
     SetBkColor,
+    SetBkMode,
     SetTextColor,
 };
 
@@ -464,6 +467,8 @@ pub struct HostClass {
     pub windows: u32,
     /// Registered through a narrow call: its procedure takes the narrow forms of the messages.
     pub ansi: bool,
+    /// The narrow form of its procedure, which a narrow caller's windows take (0 for none).
+    pub narrow: u32,
 }
 
 /// A window the window manager holds.
@@ -491,6 +496,8 @@ pub struct HostWindow {
     pub extra: Vec<u8>,
     /// The text, as DefWindowProc set it.
     pub text: Vec<u16>,
+    /// The kind NtUserSetWindowFNID marked it as, 0 for none.
+    pub fnid: u32,
 }
 
 /// A creation, as NtUserCreateWindowEx was given it: the class (its units, or its atom), the name.
@@ -685,6 +692,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
     class: *const WndClassExW,
     name: usize,
     flags: u32,
+    narrow: u32,
     atom: *mut u32,
     wow: *mut u32,
 ) -> u32 {
@@ -719,6 +727,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
             menu,
             windows: 0,
             ansi: flags & crate::class::REGISTER_ANSI_PROC != 0,
+            narrow,
         });
         // SAFETY: the caller's out-pointers.
         unsafe {
@@ -828,7 +837,10 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             return STATUS_OBJECT_NAME_NOT_FOUND;
         };
         class.windows += 1;
-        let (atom, proc, ansi) = (class.atom, class.class.wnd_proc as u32, class.ansi);
+        let (atom, proc, ansi) = match (class.narrow, ex_style & 0x8000_0000 != 0) {
+            (narrow, true) if narrow != 0 => (class.atom, narrow, true),
+            _ => (class.atom, class.class.wnd_proc as u32, class.ansi),
+        };
         let extra = std::vec![0u8; class.class.cb_wnd_extra.max(0) as usize];
         let handle = 0x20 + 4 * wm.windows.len() as u32;
         let (x, y) = if x == i32::MIN { (0, 0) } else { (x, y) };
@@ -930,6 +942,8 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT | QUERY_WINDOW_MENU => length == 4,
         QUERY_WINDOW_DATA => length as usize == size_of::<WindowData>(),
         QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
+        QUERY_WINDOW_LINKS => length as usize == size_of::<WindowLinks>(),
+        QUERY_WINDOW_CLASS => length as usize == size_of::<WindowClass>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
         _ => return STATUS_INVALID_INFO_CLASS,
     };
@@ -964,7 +978,12 @@ pub unsafe extern "system" fn NtUserQueryWindow(
                 user_data: w.user_data,
                 instance: w.instance,
                 proc: w.proc,
-                flags: if w.ansi { WINDOW_ANSI_PROC } else { 0 },
+                flags: if w.ansi { WINDOW_ANSI_PROC } else { 0 }
+                    | if w.fnid == FNID_DIALOG {
+                        WINDOW_DIALOG
+                    } else {
+                        0
+                    },
                 extra: w.extra.len() as u32,
                 ..WindowData::default()
             }
@@ -991,6 +1010,39 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             .to_vec()
         } else if index == QUERY_WINDOW_PARENT {
             w.parent.to_le_bytes().to_vec()
+        } else if index == QUERY_WINDOW_LINKS {
+            // The children of a parent in the order they were made: the first the top.
+            let siblings: Vec<u32> = wm
+                .windows
+                .iter()
+                .filter(|s| s.alive && s.parent == w.parent)
+                .map(|s| s.handle)
+                .collect();
+            let at = siblings.iter().position(|&h| h == w.handle).unwrap_or(0);
+            let child = wm
+                .windows
+                .iter()
+                .find(|c| c.alive && c.parent == w.handle)
+                .map_or(0, |c| c.handle);
+            WindowLinks {
+                parent: w.parent,
+                owner: 0,
+                child,
+                next: siblings.get(at + 1).copied().unwrap_or(0),
+                previous: at.checked_sub(1).map_or(0, |p| siblings[p]),
+            }
+            .as_bytes()
+            .to_vec()
+        } else if index == QUERY_WINDOW_CLASS {
+            let class = wm.classes.iter().find(|c| c.atom == w.atom);
+            WindowClass {
+                atom: u32::from(w.atom),
+                style: class.map_or(0, |c| c.class.style),
+                background: class.map_or(0, |c| c.class.background as u32),
+                cb_wnd_extra: w.extra.len() as u32,
+            }
+            .as_bytes()
+            .to_vec()
         } else {
             (w.visible as u32).to_le_bytes().to_vec()
         };
@@ -998,6 +1050,72 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), answer, bytes.len()) };
         STATUS_SUCCESS
     })
+}
+
+pub unsafe extern "system" fn NtUserSetWindowFNID(window: usize, fnid: u32) -> u32 {
+    wm(|wm| match wm.window(window) {
+        Ok(w) if w.fnid == 0 && fnid != 0 => {
+            w.fnid = fnid;
+            STATUS_SUCCESS
+        }
+        Ok(_) => STATUS_INVALID_PARAMETER,
+        Err(status) => status,
+    })
+}
+
+pub unsafe extern "system" fn NtUserFindWindowEx(
+    parent: usize,
+    after: usize,
+    class: usize,
+    name: usize,
+    found: *mut u32,
+) -> u32 {
+    let class = (class != 0).then(|| name_at(class));
+    let title = (name != 0).then(|| {
+        // SAFETY: the caller's NUL-terminated name.
+        unsafe { rtl::cstr::units_until_nul(name as *const u16) }.to_vec()
+    });
+    let parent = if parent == 0 {
+        DESKTOP_WINDOW
+    } else {
+        parent as u32
+    };
+    let answer = wm(|wm| {
+        let atom = match &class {
+            Some(name) => Some(wm.class(name).map_or(0, |c| c.atom)),
+            None => None,
+        };
+        let mut started = after == 0;
+        for w in wm.windows.iter().filter(|w| w.alive && w.parent == parent) {
+            if !started {
+                started = w.handle as usize == after;
+                continue;
+            }
+            if atom.is_none_or(|a| a == w.atom) && title.as_ref().is_none_or(|t| *t == w.text) {
+                return w.handle;
+            }
+        }
+        0
+    });
+    // SAFETY: the caller's out-pointer.
+    unsafe { found.write(answer) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserSetTimer(
+    _window: usize,
+    id: u32,
+    _elapse: u32,
+    _func: usize,
+    made: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's out-pointer.
+    unsafe { made.write(id.max(1)) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserKillTimer(_window: usize, _id: u32) -> u32 {
+    STATUS_SUCCESS
 }
 
 pub unsafe extern "system" fn NtUserSetWindowLong(

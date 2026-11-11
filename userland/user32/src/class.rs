@@ -11,6 +11,9 @@
 //! (NtUserFindExistingCursorIcon on the module 0), and a class names it to the kernel as any other
 //! cursor. A module's cursors are a seam: LoadCursor loads none yet.
 
+#[cfg(not(test))]
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use rtl::edge::In;
 use rtl::icon::{ICON_SIZE, RT_CURSOR};
 use rtl::status::{
@@ -194,6 +197,7 @@ fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
             &class,
             name,
             REGISTER_WIN40_COMPAT | if ansi { REGISTER_ANSI_PROC } else { 0 },
+            0,
         ),
         class_error,
     ) {
@@ -282,6 +286,176 @@ pub unsafe extern "system" fn register_class_ex_a(class: *const WndClassEx) -> u
     }
     // SAFETY: the caller's contract, for the class's names.
     unsafe { register_a(class) }
+}
+
+// --- user32's own classes ------------------------------------------------------------------------
+
+/// user32's module handle, under which the classes it registers sit: its base, the module the
+/// window manager looks every process's classes up under after the process's own.
+pub const USER32_MODULE: usize = 0x77E1_0000;
+
+/// The class styles user32's own classes have (winuser.h's CS_*).
+const CS_VREDRAW: u32 = 0x0001;
+const CS_HREDRAW: u32 = 0x0002;
+const CS_DBLCLKS: u32 = 0x0008;
+const CS_PARENTDC: u32 = 0x0080;
+const CS_SAVEBITS: u32 = 0x0800;
+
+/// The dialog class's atom: the documented #32770.
+pub const DIALOG_CLASS_ATOM: u16 = 0x8002;
+
+/// Whether this process has registered user32's own classes.
+#[cfg(not(test))]
+static SYSTEM_CLASSES: AtomicBool = AtomicBool::new(false);
+
+/// Whether user32's own classes are still to be registered: once per process.
+#[cfg(not(test))]
+fn system_classes_due() -> bool {
+    !SYSTEM_CLASSES.swap(true, Ordering::AcqRel)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// A host test that wants user32's own classes asks for them here; the others' window
+    /// managers hold only their own.
+    pub static SYSTEM_CLASSES_WANTED: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn system_classes_due() -> bool {
+    SYSTEM_CLASSES_WANTED.with(|wanted| wanted.replace(false))
+}
+
+/// user32's own classes registered in the calling process, once: the Button and Static controls
+/// and the dialog class (#32770), as Windows 2000's user32 registers them in every process it
+/// connects. Each names its procedure's two forms, so a window takes the form of the call that
+/// created it (CreateWindowExA's is no Unicode window). They are registered when the process first
+/// creates a window, not when user32 loads, so a console program that loads user32 makes no
+/// connection to the window manager; the last error is left as it was.
+pub fn register_system_classes() {
+    if !system_classes_due() {
+        return;
+    }
+    let arrow = stock(32512, RT_CURSOR);
+    let classes: [(usize, u32, usize, usize, i32); 3] = [
+        (
+            BUTTON_NAME.as_ptr() as usize,
+            CS_DBLCLKS | CS_PARENTDC | CS_VREDRAW | CS_HREDRAW,
+            procedures::button().0,
+            procedures::button().1,
+            crate::button::BUTTON_EXTRA,
+        ),
+        (
+            STATIC_NAME.as_ptr() as usize,
+            CS_DBLCLKS | CS_PARENTDC,
+            procedures::static_control().0,
+            procedures::static_control().1,
+            crate::static_control::STATIC_EXTRA,
+        ),
+        (
+            usize::from(DIALOG_CLASS_ATOM),
+            CS_DBLCLKS | CS_SAVEBITS,
+            procedures::dialog().0,
+            procedures::dialog().1,
+            crate::dialog::DLGWINDOWEXTRA,
+        ),
+    ];
+    for (name, style, wide, narrow, extra) in classes {
+        let class = WndClassEx {
+            cb_size: core::mem::size_of::<WndClassEx>() as u32,
+            style,
+            wnd_proc: wide,
+            cb_wnd_extra: extra,
+            instance: USER32_MODULE,
+            cursor: arrow,
+            class_name: name,
+            ..WndClassEx::default()
+        };
+        let _ = imports::register_class(&class, name, REGISTER_WIN40_COMPAT, narrow as u32);
+    }
+}
+
+/// The names of the controls' classes, NUL-terminated.
+const BUTTON_NAME: [u16; 7] = units::<7>("Button");
+const STATIC_NAME: [u16; 7] = units::<7>("Static");
+
+/// `text`'s units, NUL-terminated, in an array of `N` (its length plus one).
+const fn units<const N: usize>(text: &str) -> [u16; N] {
+    let bytes = text.as_bytes();
+    let mut out = [0u16; N];
+    let mut at = 0;
+    while at < bytes.len() {
+        out[at] = bytes[at] as u16;
+        at += 1;
+    }
+    out
+}
+
+/// The entry points user32's classes are registered with: the procedures' addresses on the target,
+/// the stand-ins' numbers for them in the host tests (whose procedure calls go through a table).
+#[cfg(not(test))]
+mod procedures {
+    pub fn button() -> (usize, usize) {
+        (
+            crate::button::button_proc_w as *const () as usize,
+            crate::button::button_proc_a as *const () as usize,
+        )
+    }
+
+    pub fn static_control() -> (usize, usize) {
+        (
+            crate::static_control::static_proc_w as *const () as usize,
+            crate::static_control::static_proc_a as *const () as usize,
+        )
+    }
+
+    pub fn dialog() -> (usize, usize) {
+        (
+            crate::dialog::def_dlg_proc_w as *const () as usize,
+            crate::dialog::def_dlg_proc_a as *const () as usize,
+        )
+    }
+}
+
+#[cfg(test)]
+mod procedures {
+    use crate::imports::host::procedure;
+
+    fn button_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::button::button_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn button_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::button::button_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    fn static_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::static_control::static_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn static_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::static_control::static_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    fn dialog_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::dialog::def_dlg_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn dialog_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::dialog::def_dlg_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    pub fn button() -> (usize, usize) {
+        (procedure(button_w) as usize, procedure(button_a) as usize)
+    }
+
+    pub fn static_control() -> (usize, usize) {
+        (procedure(static_w) as usize, procedure(static_a) as usize)
+    }
+
+    pub fn dialog() -> (usize, usize) {
+        (procedure(dialog_w) as usize, procedure(dialog_a) as usize)
+    }
 }
 
 // --- Unregistration ------------------------------------------------------------------------------

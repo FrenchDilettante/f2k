@@ -36,7 +36,7 @@ use crate::Out;
 mod raw {
     use rtl::accel::Accel;
     use rtl::display::DevModeW;
-    use rtl::gdi::{Rect, Size, TextMetricW};
+    use rtl::gdi::{LogFontW, Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
     use rtl::user::{Msg, Receipt};
 
@@ -77,6 +77,12 @@ mod raw {
         ) -> u32;
         /// GetTextMetricsW: the DC's font's metrics.
         pub fn GetTextMetricsW(dc: usize, metric: *mut TextMetricW) -> u32;
+        /// CreateFontIndirectW: a font of a LOGFONTW's description; NULL when none could be made.
+        pub fn CreateFontIndirectW(font: *const LogFontW) -> usize;
+        /// GetStockObject: a stock object's handle; NULL for an index there is none of.
+        pub fn GetStockObject(index: i32) -> usize;
+        /// SetBkMode: the DC's background mode set, the previous one answered.
+        pub fn SetBkMode(dc: usize, mode: i32) -> i32;
     }
 
     #[link(
@@ -204,6 +210,7 @@ mod raw {
             class: *const WndClassExW,
             name: usize,
             flags: u32,
+            narrow: u32,
             atom: *mut u32,
             wow: *mut u32,
         ) -> u32;
@@ -234,6 +241,26 @@ mod raw {
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserDestroyWindow"]
         pub fn NtUserDestroyWindow(window: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetWindowFNID"]
+        pub fn NtUserSetWindowFNID(window: usize, fnid: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserFindWindowEx"]
+        pub fn NtUserFindWindowEx(
+            parent: usize,
+            after: usize,
+            class: usize,
+            name: usize,
+            found: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetTimer"]
+        pub fn NtUserSetTimer(
+            window: usize,
+            id: u32,
+            elapse: u32,
+            func: usize,
+            made: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserKillTimer"]
+        pub fn NtUserKillTimer(window: usize, id: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserQueryWindow"]
         pub fn NtUserQueryWindow(window: usize, index: u32, answer: *mut u8, length: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetWindowPos"]
@@ -969,14 +996,21 @@ pub fn close(handle: usize) -> Result<(), NtStatus> {
 // --- win32k: window classes ----------------------------------------------------------------------
 
 /// NtUserRegisterClassExWOW: the class `class` describes, named `name` (a NUL-terminated UTF-16
-/// string's address, or an integer atom), registered with the flags word `flags`: its atom. The
-/// service answers a duplicate with STATUS_OBJECT_NAME_EXISTS, an informational status, so any
-/// status but STATUS_SUCCESS is the registration's failure.
-pub fn register_class(class: &WndClassExW, name: usize, flags: u32) -> Result<u16, NtStatus> {
+/// string's address, or an integer atom), registered with the flags word `flags`, `narrow` the
+/// narrow form of its procedure a narrow caller's windows take (0 for none: user32's own classes
+/// name one): its atom. The service answers a duplicate with STATUS_OBJECT_NAME_EXISTS, an
+/// informational status, so any status but STATUS_SUCCESS is the registration's failure.
+pub fn register_class(
+    class: &WndClassExW,
+    name: usize,
+    flags: u32,
+    narrow: u32,
+) -> Result<u16, NtStatus> {
     let (mut atom, mut wow) = (0u32, 0u32);
     // SAFETY: the kernel reads the structure, the name and the menu name it points at (this DLL's
     // own, or the caller's, alive for the call), and writes the two locals.
-    let status = unsafe { raw::NtUserRegisterClassExWOW(class, name, flags, &mut atom, &mut wow) };
+    let status =
+        unsafe { raw::NtUserRegisterClassExWOW(class, name, flags, narrow, &mut atom, &mut wow) };
     if status != rtl::status::STATUS_SUCCESS {
         return Err(NtStatus(status));
     }
@@ -1063,6 +1097,45 @@ pub fn create_window(creation: &Creation) -> Result<u32, NtStatus> {
 pub fn destroy_window(window: usize) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtUserDestroyWindow(window) })
+}
+
+/// NtUserSetWindowFNID: `window` marked as the kind of window `fnid` names (rtl::window's
+/// FNID_*), for its life.
+pub fn set_window_fnid(window: usize, fnid: u32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetWindowFNID(window, fnid) })
+}
+
+/// NtUserFindWindowEx: the first child of `parent` (0: the top-level windows) after `after` (0:
+/// from the top) of the class `class` (a NUL-terminated UTF-16 string's address or an atom, 0 for
+/// any) titled `name` (a NUL-terminated UTF-16 string's address, 0 for any): its handle, 0 for
+/// none.
+pub fn find_window_ex(
+    parent: usize,
+    after: usize,
+    class: usize,
+    name: usize,
+) -> Result<u32, NtStatus> {
+    let mut found = 0u32;
+    // SAFETY: the kernel reads the names through its fault-tolerant copies (the caller's, alive
+    // for the call) and writes the local.
+    checked(unsafe { raw::NtUserFindWindowEx(parent, after, class, name, &mut found) })?;
+    Ok(found)
+}
+
+/// NtUserSetTimer: the timer `id` of `window` (0: a thread timer) set to come due every `elapse`
+/// milliseconds, its WM_TIMER's lParam `func` (a TimerProc, 0 for none): the timer's id.
+pub fn set_timer(window: usize, id: u32, elapse: u32, func: usize) -> Result<u32, NtStatus> {
+    let mut made = 0u32;
+    // SAFETY: the kernel keeps the TimerProc's address as a value and writes the local.
+    checked(unsafe { raw::NtUserSetTimer(window, id, elapse, func, &mut made) })?;
+    Ok(made)
+}
+
+/// NtUserKillTimer: the timer `id` of `window` gone.
+pub fn kill_timer(window: usize, id: u32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserKillTimer(window, id) })
 }
 
 /// NtUserQueryWindow: what `index` (rtl::window's QUERY_ indexes) asks about `window`, into
@@ -1877,6 +1950,25 @@ pub fn text_metrics(dc: usize) -> Option<rtl::gdi::TextMetricW> {
     // SAFETY: gdi32 writes the structure into the local.
     let done = unsafe { raw::GetTextMetricsW(dc, &mut metric) };
     (done != 0).then_some(metric)
+}
+
+/// CreateFontIndirectW: a font as `font` describes it; none when gdi32 could make none.
+pub fn create_font(font: &rtl::gdi::LogFontW) -> Option<usize> {
+    // SAFETY: gdi32 reads the local structure.
+    let made = unsafe { raw::CreateFontIndirectW(font) };
+    (made != 0).then_some(made)
+}
+
+/// GetStockObject: stock object `index`'s handle (0 for none).
+pub fn stock_object(index: u32) -> usize {
+    // SAFETY: no pointers.
+    unsafe { raw::GetStockObject(index as i32) }
+}
+
+/// SetBkMode: `dc`'s background mode (TRANSPARENT or OPAQUE) set, the previous one answered.
+pub fn set_bk_mode(dc: usize, mode: u32) -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::SetBkMode(dc, mode as i32) as u32 }
 }
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,

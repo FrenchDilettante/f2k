@@ -5,7 +5,8 @@
 //! their focus, enabling and activation, [`focus`]; the message loop and the default window
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
-//! the string tables, [`resource`]; the menus, [`menu`]; the keyboard accelerators, [`accel`]; the
+//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button and Static
+//! controls, [`button`] and [`static_control`]; MessageBox, [`msgbox`]; the menus, [`menu`]; the keyboard accelerators, [`accel`]; the
 //! icons, [`icon`]; the clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the
 //! rectangles, [`rect`]; the character walks, [`string`]; WinHelp, [`help`]), as Windows 2000's
 //! user32 runs them, over ntdll's, kernel32's and gdi32's exports and win32k's services
@@ -33,9 +34,11 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod accel;
+pub mod button;
 pub mod class;
 pub mod clipboard;
 pub mod dc;
+pub mod dialog;
 pub mod display;
 pub mod draw;
 pub mod focus;
@@ -45,12 +48,14 @@ pub mod imports;
 pub mod keyboard;
 pub mod menu;
 pub mod message;
+pub mod msgbox;
 pub mod paint;
 pub mod procedure;
 pub mod rect;
 pub mod resource;
 pub mod shutdown;
 pub mod sound;
+pub mod static_control;
 pub mod string;
 pub mod stub;
 pub mod window;

@@ -5,9 +5,6 @@ description = "wndlong - a window's data through GetWindowLongW/A and SetWindowL
 kind = "sectioned"
 gate = true
 
-[pending]
-dialog = "CreateDialogIndirectParamW and the DWL_ values: the dialog manager"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the classes and

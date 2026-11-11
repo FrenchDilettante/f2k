@@ -3,16 +3,7 @@
 # styles, the controls' answers and the notifications their parent receives do.
 description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE."
 kind = "sectioned"
-
-# Not gated: user32 registers no Button or Static class yet; controls.exe loads against user32's
-# stubs. Every section is on the work list.
-[pending]
-create = "the Button control not yet implemented: user32 registers no Button class"
-check = "the Button control's BM_SETCHECK, BM_GETCHECK and BM_GETSTATE not yet implemented"
-click = "the Button control's BM_CLICK and BN_CLICKED not yet implemented"
-default = "the Button control's BM_SETSTYLE, BM_SETSTATE and WM_GETDLGCODE not yet implemented"
-static = "the Static control not yet implemented: user32 registers no Static class"
-icon = "the Static control's SS_ICON, STM_SETICON and STM_SETIMAGE not yet implemented, nor LoadIconW"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
