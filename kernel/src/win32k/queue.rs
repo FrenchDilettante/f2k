@@ -9,10 +9,11 @@
 //! share, linked oldest first, in two lanes: the messages posted to the thread, and the input
 //! messages the keyboard's keystrokes became ([`super::input`], [`post_input`]). A read ([`take`])
 //! answers, in the documented order: the messages sent to the thread's windows; the posted
-//! messages its filter takes; the input messages it takes (a key message read updates the
-//! thread's key state); the WM_QUIT PostQuitMessage left; a WM_PAINT for a window of the thread's
-//! with an update region ([`super::paint`]); a WM_TIMER for one of its timers that came due
-//! ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
+//! messages its filter takes; the input messages it takes, each bound to its window as it is read
+//! ([`super::input::bind`]: the focus window then, not when the key was pressed), a key message
+//! read updating the thread's key state; the WM_QUIT PostQuitMessage left; a WM_PAINT for a window
+//! of the thread's with an update region ([`super::paint`]); a WM_TIMER for one of its timers that
+//! came due ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
 //! are never posted: they are made when a read finds nothing posted before them, as Windows 2000
 //! makes them. A read that finds nothing for its filter blocks GetMessage's caller on its queue's
 //! event, set by whatever gives the queue something: a post, a send, an answer, a timer set, an
@@ -782,12 +783,13 @@ fn post_to(windows: &mut Windows, thread: ThreadId, msg: Msg) -> Result<(), NtSt
     }
 }
 
-/// An input message for the thread record `thread`'s queue: `msg`, a key message whose key the key
-/// state names `key` ([`super::input`]). A key-down that repeats its key (`repeat`) while the
-/// queue's last input message, not read yet, is the same message of the same key for the same
-/// window raises that message's repeat count (lParam's low word) instead, as Windows 2000's queue
-/// folds a held key's repeats. Nothing when the thread has no queue; the message is lost when the
-/// pool is full.
+/// An input message for the thread record `thread`'s queue: `msg`, a key message with no window
+/// yet (the read binds it, [`super::input::bind`]), whose key the key state names `key`
+/// ([`super::input`]). A key-down that repeats its key (`repeat`) while the queue's last input
+/// message, not read yet, is the same message of the same key raises that message's repeat count
+/// (lParam's low word) instead, as Windows 2000's queue folds a held key's repeats (the folded
+/// message's window is bound when it is read, as any other's). Nothing when the thread has no
+/// queue; the message is lost when the pool is full.
 pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, repeat: bool) {
     let queues = &mut windows.queues;
     let Some(id) = queues.queue_of(thread) else {
@@ -797,11 +799,7 @@ pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, re
         if let Some(tail) = queues.queues[id.index as usize].input.tail {
             let last = &mut queues.posted[tail as usize].msg;
             let count = last.lparam as u32 & 0xFFFF;
-            if last.hwnd == msg.hwnd
-                && last.message == msg.message
-                && last.wparam == msg.wparam
-                && count < 0xFFFF
-            {
+            if last.message == msg.message && last.wparam == msg.wparam && count < 0xFFFF {
                 last.lparam = ((last.lparam as u32 & !0xFFFF) | (count + 1)) as LParam;
                 queues.wake(id);
                 return;
@@ -980,23 +978,35 @@ pub fn take(
         }
     }
 
-    // The input messages: the keyboard's (there is no mouse yet). A key message taken out is the
-    // next step of the thread's key state.
+    // The input messages: the keyboard's (there is no mouse yet), each bound to its window as it
+    // is read (the thread's focus window now, or its active window), so the filter judges the
+    // bound window and message. A key message taken out is the next step of the thread's key
+    // state; one with no window to go to is discarded, still a step of the key state, so that no
+    // key stays down for the thread.
     if filter.looks_at(QS_KEY) {
-        let queues = &mut windows.queues;
         let mut previous = None;
-        let mut at = queues.queues[id.index as usize].input.head;
+        let mut at = windows.queues.queues[id.index as usize].input.head;
         while let Some(entry) = at {
-            let Posted { msg, key, .. } = queues.posted[entry as usize];
-            if filter.takes(msg.hwnd, msg.message) {
-                if remove {
-                    queues.unlink_posted(id.index, Lane::Input, previous, entry);
+            let Posted { msg, key, next } = windows.queues.posted[entry as usize];
+            match super::input::bind(windows, caller, msg) {
+                None => {
+                    windows
+                        .queues
+                        .unlink_posted(id.index, Lane::Input, previous, entry);
                     super::input::read(windows, caller, &msg, key);
                 }
-                return Ok(Taken::Message(msg));
+                Some(msg) if filter.takes(msg.hwnd, msg.message) => {
+                    if remove {
+                        windows
+                            .queues
+                            .unlink_posted(id.index, Lane::Input, previous, entry);
+                        super::input::read(windows, caller, &msg, key);
+                    }
+                    return Ok(Taken::Message(msg));
+                }
+                Some(_) => previous = Some(entry),
             }
-            previous = Some(entry);
-            at = queues.posted[entry as usize].next;
+            at = next;
         }
     }
 

@@ -16,13 +16,20 @@
 //!   right Ctrl and Alt by the extended flag;
 //! - moves the system's key state, the asynchronous one ([`RawInput`]): the key down or up, its
 //!   toggle flipped on a key going down from up, the generic key following its two sides;
-//! - is posted to the foreground thread's focus window, or, with no focus window, to its active
-//!   window as a system key, as an input message ([`super::queue::post_input`]): WM_SYSKEYDOWN and
-//!   WM_SYSKEYUP while Alt is down without Ctrl, for F10, and for Alt's release when no other key
-//!   went down since Alt did (the capture: Alt alone is WM_SYSKEYDOWN then WM_SYSKEYUP, Alt+F's Alt
-//!   released is a WM_KEYUP); WM_KEYDOWN and WM_KEYUP otherwise. wParam is the generic key, lParam
-//!   the repeat count (1), the scan code, the extended bit, the context bit (Alt down), the
-//!   previous state (the key was down; always 1 for a release) and the transition (a release).
+//! - is queued for the foreground thread as an input message ([`super::queue::post_input`]), with
+//!   no window yet: WM_SYSKEYDOWN and WM_SYSKEYUP while Alt is down without Ctrl, for F10, and for
+//!   Alt's release when no other key went down since Alt did (the capture: Alt alone is
+//!   WM_SYSKEYDOWN then WM_SYSKEYUP, Alt+F's Alt released is a WM_KEYUP); WM_KEYDOWN and WM_KEYUP
+//!   otherwise. wParam is the generic key, lParam the repeat count (1), the scan code, the extended
+//!   bit, the context bit (Alt down), the previous state (the key was down; always 1 for a release)
+//!   and the transition (a release).
+//!
+//! The message's window is bound when the thread reads it ([`bind`]), as Windows 2000's queue binds
+//! it: the thread's focus window as the read happens, or, with no focus window, its active window,
+//! the message then a system key. So keys typed faster than a program moves its focus (Tab Tab
+//! Space into a dialog) each reach the window the focus has moved to by the time the program reads
+//! them, as type-ahead does on Windows; the read's window and message filters see the bound
+//! window and message. A message the thread reads with neither window is discarded.
 //!
 //! Each thread has a key state of its own ([`KeyState`], in its record beside its focus and active
 //! window), which GetKeyState reads: a key message the thread reads out of its queue moves it
@@ -89,7 +96,7 @@ use rtl::user::{
     WM_SYSKEYUP,
 };
 
-use super::window::{WindowId, Windows};
+use super::window::Windows;
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -344,21 +351,42 @@ fn side(vk: u8, scan: u8, extended: bool) -> u8 {
     }
 }
 
-/// The window the keystrokes go to: the foreground thread's focus window, or its active window
-/// when it has no focus window (the keystrokes then system keys).
-fn target(windows: &Windows) -> Option<(WindowId, bool)> {
-    let thread = windows.foreground_thread?;
-    if !windows.thread(thread).live {
-        return None;
-    }
-    super::focus::focus_window(windows, thread)
-        .map(|window| (window, false))
-        .or_else(|| super::focus::active_window(windows, thread).map(|window| (window, true)))
+/// The thread whose queue the keystrokes go to: the foreground thread, while it lives.
+fn target(windows: &Windows) -> Option<ThreadId> {
+    windows
+        .foreground_thread
+        .filter(|&thread| windows.thread(thread).live)
 }
 
-/// A keystroke, stamped `time`: the system's key state moved, and its key message posted to the
-/// window the keystrokes go to (see the module's description); nothing is posted when there is
-/// none. The toggles, when the keystroke changed them (a toggle key going down), for the lights.
+/// The window a key message the thread `thread` reads goes to, bound as the read happens: the
+/// thread's focus window at that moment, or, with none, its active window, the message then a
+/// system key (WM_KEYDOWN and WM_KEYUP become WM_SYSKEYDOWN and WM_SYSKEYUP). `msg` is the message
+/// as its keystroke queued it, with no window. None when the thread has neither window: the read
+/// discards the message.
+pub fn bind(windows: &Windows, thread: ThreadId, msg: Msg) -> Option<Msg> {
+    if let Some(window) = super::focus::focus_window(windows, thread) {
+        return Some(Msg {
+            hwnd: windows.handle_of(window),
+            ..msg
+        });
+    }
+    let window = super::focus::active_window(windows, thread)?;
+    let message = match msg.message {
+        WM_KEYDOWN => WM_SYSKEYDOWN,
+        WM_KEYUP => WM_SYSKEYUP,
+        other => other,
+    };
+    Some(Msg {
+        hwnd: windows.handle_of(window),
+        message,
+        ..msg
+    })
+}
+
+/// A keystroke, stamped `time`: the system's key state moved, and its key message queued for the
+/// foreground thread, its window left to the read ([`bind`]; see the module's description);
+/// nothing is queued when there is no foreground thread. The toggles, when the keystroke changed
+/// them (a toggle key going down), for the lights.
 pub fn key_event(windows: &mut Windows, stroke: Keystroke, time: u32) -> Option<u8> {
     let input = &mut windows.input;
     let vk = stroke.vk;
@@ -386,15 +414,14 @@ pub fn key_event(windows: &mut Windows, stroke: Keystroke, time: u32) -> Option<
     let ctrl = input.keys.is_down(VK_CONTROL);
     let changed = (input.keys.toggles() != toggles).then(|| input.keys.toggles());
 
-    let Some((window, inactive)) = target(windows) else {
+    let Some(thread) = target(windows) else {
         return changed;
     };
-    let system = inactive
-        || if is_alt && stroke.up {
-            alt_alone && !ctrl
-        } else {
-            (alt && !ctrl) || vk == VK_F10
-        };
+    let system = if is_alt && stroke.up {
+        alt_alone && !ctrl
+    } else {
+        (alt && !ctrl) || vk == VK_F10
+    };
     let message = match (system, stroke.up) {
         (false, false) => WM_KEYDOWN,
         (false, true) => WM_KEYUP,
@@ -409,14 +436,13 @@ pub fn key_event(windows: &mut Windows, stroke: Keystroke, time: u32) -> Option<
         | u32::from(previous) << 30
         | u32::from(stroke.up) << 31;
     let msg = Msg {
-        hwnd: windows.handle_of(window),
+        hwnd: 0,
         message,
         wparam: u32::from(generic(vk)) | u32::from(stroke.character) << 16,
         lparam: lparam as i32,
         time,
         pt: Point::default(),
     };
-    let thread = windows.window_thread(window);
     super::queue::post_input(windows, thread, msg, vk, !stroke.up && was_down);
     changed
 }
