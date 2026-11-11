@@ -19,7 +19,7 @@ tests/
 │               # shutparm, profile, threx, vmedge, startup, lcid, ntquery
 ├── user32/     # hellogui, winsta, guiclass, guiwin, guigeo, guimsg, guipaint, guidisp, exitwin,
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
-│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props
+│               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree
 ├── gdi32/      # guidc, gditext, ttfont
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
@@ -261,6 +261,12 @@ The fixtures:
   Every section deletes the global atoms of its names (`F2KProps...`) at its start and end.
   Built with `/MD`.
   Not gated: it awaits its capture, and F2K's user32 has no window properties yet.
+- `wintree` (user32) - the window tree: `GetParent` against `GetWindow(GW_OWNER)` for an unowned window, an owned pop-up, an owned overlapped window, a child and a grandchild, and an owned pop-up losing `WS_POPUP` (`parent`); `GetWindowThreadProcessId` of the program's own window, a second thread's, the desktop's, NULL and a destroyed window (`ids`); `EnumWindows` and `EnumChildWindows`: the program's windows in the order given, the lParam, a callback stopping early, NULL and destroyed parents (`enum`); `GetTopWindow` and `BringWindowToTop` over a parent's children and over top-level pop-ups (`zorder`); and `GetLastActivePopup` as owned pop-ups are shown, activated, hidden and destroyed (`popup`).
+  A window prints by its label, never by its handle, and thread and process ids only as relations to the program's own.
+  Enumeration goes over every window on the desktop, so its callbacks keep the program's own windows only; `GetTopWindow(NULL)`, another program's window, is not called.
+  Its windows are hidden but for `popup`'s, which asks for the foreground first and prints whether it got it.
+  Built with `/MD`.
+  Not gated: it awaits its capture, and F2K's user32 has none of these calls yet but `GetWindow`.
 - `ttfont` (gdi32) - a TrueType font file the program loads itself, `f2ktahom.ttf` beside it: Wine's Tahoma (`fonts/tahoma.ttf`) with its family, full, unique and PostScript names changed to "F2K Tahoma" (`F2KTahoma`) by `scripts/font_rename.py`, and nothing else (`harness/test_fonts.py` checks the committed copy is the script's output).
   The real machine has Microsoft's own Tahoma installed, so the program asks for the copy by its own name, and the capture is Windows 2000's font engine on the bytes F2K reads.
   Every section but `load` adds the copy with `AddFontResourceExW(FR_PRIVATE)` at its start and removes it at its end.
