@@ -1,0 +1,14 @@
+# wsprintf: one test per block of the real-machine capture (output.txt); see tests/README.md. Every
+# buffer is filled with '#' before a call and prints as its first ret+1 units, so the terminator
+# shows. Not gated: F2K's user32 has no wsprintf yet, so every section is on the work list.
+description = "wsprintf - user32's own formatting, wsprintfA/W and wvsprintfA/W: %d, %i, %u, %x, %X with the '#', '-' and '0' flags, widths, precisions and the l and h prefixes; %s, %S, %hs, %ls, %c, %C, %hc, %lc in both forms, NULL strings, text crossing the forms through the ANSI code page, a NUL character; %% and what wsprintf does not document (%f, %o, %p, I64, '*', '+', ' '); the 1024-character limit (the return, where the terminator lands); and the va_list forms."
+kind = "sectioned"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them.
+ints = ["user32.wsprintfA", "user32.wsprintfW"]
+strings = ["user32.wsprintfA", "user32.wsprintfW"]
+others = ["user32.wsprintfA", "user32.wsprintfW"]
+limit = ["user32.wsprintfA", "user32.wsprintfW"]
+vprintf = ["user32.wvsprintfA", "user32.wvsprintfW"]
