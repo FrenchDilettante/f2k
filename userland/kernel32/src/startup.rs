@@ -61,9 +61,10 @@ pub const STARTUP_INFO_SIZE: usize = 68;
 const STARTF_STANDARD_FIELDS: u32 = 0x0100 | 0x0200 | 0x0400;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
-/// A UNICODE_STRING of the parameters, narrowed onto the process heap: null for one with no buffer
-/// (F2K's parameters carry no title, desktop or shell information: the capture's null pointers);
-/// none when the heap has no room.
+/// A UNICODE_STRING of the parameters, narrowed onto the process heap (an empty one too: the
+/// startup capture's lpReserved is set); null for one with no buffer (the kernel's blocks and
+/// CreateProcess's carry the title, desktop and shell information, so a process meets none); none
+/// when the heap has no room.
 fn narrow_string(string: OwnString) -> Option<u32> {
     if string.counted().buffer == 0 {
         return Some(0);
