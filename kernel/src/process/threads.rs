@@ -173,6 +173,7 @@ pub fn create(
         record.initial_stack = paging::gate_slot_top(slot as u32);
         record.teb_va = teb_va;
         record.thread_id = thread_id;
+        record.win32_start_address = user.eax;
         // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
         unsafe { crate::sched::startup::plant(record, &params) };
     });
@@ -609,6 +610,7 @@ pub fn start_main_thread(process: &Process, user: crate::sched::startup::UserSta
     };
     raised::<Dispatch, _>(|dispatch| {
         let record = DISPATCHER.get(dispatch).thread_mut(thread);
+        record.win32_start_address = user.eax;
         // SAFETY: the thread's `initial_stack` names its mapped, empty kernel-stack slot (nothing
         // has entered a gate on it yet), mapped in every directory.
         unsafe { crate::sched::startup::plant(record, &params) };
