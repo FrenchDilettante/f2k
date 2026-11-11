@@ -1,12 +1,11 @@
 # threads: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, and the main thread's own exits."
+description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, OpenThread with each access right and on ended threads, GetThreadTimes as relations, and the main thread's own exits."
 kind = "sectioned"
 gate = true
-[masks]
-# The binary captured reads the parameter before waiting for the routine (argument evaluation
-# order): 9 or 0 by timing. The source waits first now; drop the mask once threads.exe is
-# rebuilt and recaptured.
-crt = ["its routine ran: WAIT_OBJECT_0, parameter *"]
+
+[pending]
+open = "kernel32 exports no OpenThread yet"
+times = "kernel32 exports no GetThreadTimes yet"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -145,3 +144,12 @@ suspterm = [
     "ntdll.NtQueueApcThread",
     "ntdll.NtTerminateThread",
 ]
+open = [
+    "kernel32.OpenThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.SuspendThread",
+    "kernel32.ResumeThread",
+    "kernel32.SetThreadPriority",
+    "kernel32.TerminateThread",
+]
+times = ["kernel32.GetThreadTimes", "kernel32.GetSystemTimeAsFileTime"]
