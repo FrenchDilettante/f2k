@@ -21,7 +21,7 @@ tests/
 │               # endsess, dialog, wndlong, wintext, focus, controls, menus, accel, coords,
 │               # keyinput, mousein, clipbrd, wsprintf, rects, chars, props, wintree, scroll,
 │               # caret, editctl
-├── gdi32/      # guidc, gditext, ttfont
+├── gdi32/      # guidc, gditext, ttfont, bitmaps
 ├── advapi32/   # registry, token
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -291,6 +291,11 @@ The fixtures:
   The sections: `AddFontResourceExA`/`W` and `RemoveFontResourceExA`/`W` with `FR_PRIVATE`, and `AddFontResourceA`/`W` and `RemoveFontResourceA`/`W` without it (`load`); `CreateFontIndirectA`/`W` and `CreateFontA`/`W` at lfHeight -11, -13, -16, -24 and +16, weights 400 and 700, `GetObjectA`/`W` and `GetTextFaceA`/`W`, and an unknown face's fallback as a relation (`create`); every `TEXTMETRIC` field and `GetOutlineTextMetricsA`/`W` (`metrics`); `GetCharWidth32A`/`W`, `GetCharABCWidthsA`/`W` and `GetTextExtentPoint32A`/`W` (`widths`); `EnumFontFamiliesExA`/`W` and `EnumFontFamiliesA`/`W` for the copy's face alone (`enum`); `GetFontData`'s tables, the whole file and partial reads, as sizes, bytes and CRC-32s (`data`); `GetGlyphOutlineA`/`W` with `GGO_METRICS` and `GGO_BITMAP`, the rows in hex (`glyphs`); the faces "MS Shell Dlg 2" and "MS Shell Dlg" resolve to (`mapper`); and `TextOutW` into a memory DC's DIB section, read back with `GetPixel` as rows of `#` and `.` (`pixels`).
   F2K's boot adds the font to `\CORPUS` beside the program (`data_files`).
   Gated; `glyphs` stays pending while F2K scan-converts outlines unhinted (two pixels at lfHeight -24 differ), `pixels` until memory DCs and bitmaps exist.
+- `bitmaps` (gdi32) - bitmaps and blits, read back pixel by pixel, with the program's own bitmap (`bitmaps.rc`, compiled by the resource compiler and linked in, with `bitmaps.bmp`, an 8x8 bitmap of 4 bits in the VGA colors, checked in beside it).
+  The sections: `CreateCompatibleDC` and the 1x1 monochrome bitmap a new memory DC holds, `CreateCompatibleBitmap` of the screen DC, of a memory DC and of one holding a DIB section, and one bitmap selected into two DCs (`compat`); `CreateBitmap` at 1 to 32 bits per pixel and its refusals, with `GetObjectA`/`W` (`create`); `CreateDIBSection` top-down, bottom-up, palettized and `BI_BITFIELDS`, its `DIBSECTION`, its bits written through the pointer and read back after `GetPixel` and `PatBlt` (`dibsect`); `BitBlt` with twelve raster operations over fixed values, offsets, overlaps, the surface's edge and no source DC (`blit`); monochrome to color through the destination's text and background colors, color to monochrome through the source's background color, and a 1-bit DIB section's color table (`mono`); `SetStretchBltMode`/`GetStretchBltMode` and `StretchBlt` shrinking under each mode, enlarging and mirroring (`stretch`); `GetDIBits` and `SetDIBits` across formats, scan lines and color tables (`dibits`); `SetDIBitsToDevice` and `StretchDIBits` from bottom-up, top-down and 1-bit DIBs (`todevice`); `CreateDIBitmap` (`createdib`); `CreatePatternBrush` with `SetBrushOrgEx`/`GetBrushOrgEx` (`pattern`); `GetObjectType` of each kind of object (`objtype`); and user32's `LoadBitmapA`/`W` and `LoadImageA`/`W` of `OBM_CLOSE`, `OBM_CHECK` and the program's bitmap, as a DIB section, stretched, as a device bitmap and monochrome (`load`).
+  Every pixel it prints is read from a DIB section or a bitmap of an explicit format, as hex values or rows of letters; a bitmap of the screen's format (`CreateCompatibleBitmap` and `CreateDIBitmap` of the screen DC, `LoadBitmap`'s) prints its size, and its depth and pixels only as relations (the screen's depth, read back as written).
+  Built with `/MD`.
+  Declared ahead of its real-machine build and capture.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
