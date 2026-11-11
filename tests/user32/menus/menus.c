@@ -9,7 +9,12 @@
  * accelerator tables (CreateAcceleratorTableW), the stock cursor and
  * icon and a copied icon (CopyIcon); each kind's calls on the others'
  * handles, before and after many reuses of a window's slot; and the
- * handles' low words (the slot) and high words as relations.
+ * handles' low words (the slot) and high words as relations. Then a
+ * window's menu bar (its height in the non-client area, DrawMenuBar,
+ * WM_NCHITTEST over it) and the keyboard menu loop, driven by
+ * SendInput into the program's own foreground window: the messages
+ * the window's procedure receives, Alt and F10 to the menu, the
+ * mnemonics, the arrows, Enter and Esc.
  *
  * Menu 200 (menus.rc), by position: 0 "&File", a popup holding &New
  * (201), &Open (202, grayed), a separator, &Recent (a popup holding
@@ -85,6 +90,50 @@
  *            same low word, the high word's change); IsWindow and
  *            IsMenu of a live handle with its high word 0, 0xFFFF or
  *            one more
+ *   bar      a hidden WS_OVERLAPPEDWINDOW window, 320x200, created
+ *            with menu 200: the client origin's offset less the frame
+ *            and caption metrics (the menu bar's height, and whether
+ *            it is SM_CYMENU) and the window and client sizes, with
+ *            the menu, after SetMenu(NULL) and after SetMenu again;
+ *            DrawMenuBar of the window and of NULL; the window shown
+ *            (SW_SHOWNOACTIVATE) and WM_NCHITTEST down its middle
+ *            column, from 2 pixels above to 2 below, as runs of equal
+ *            answers; IsMenu after the window's destruction
+ *   keyloop  the keyboard menu loop: Alt, V, Down, Enter; then
+ *            GetMenuState of 211, 212 and 213
+ *   keyesc   F10, Right, Down, Esc, Esc; Alt, Z (no item's mnemonic),
+ *            Esc; Alt, Esc
+ *   keychar  Alt held over V, then Up (from the popup's first item)
+ *            and Enter; Alt, F, Down (onto the grayed Open), Enter,
+ *            Esc, Esc
+ *
+ * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
+ * at (60,70), 320x200, of a class each registers, with a fresh copy of
+ * menu 200, made the foreground and focus window (SetForegroundWindow,
+ * SetFocus); each prints whether it is the foreground window, and
+ * sends nothing when it is not, so no keystroke ever reaches another
+ * window. Each batch is one SendInput call (found with GetProcAddress,
+ * its structures declared here, as keyinput does), every key pressed
+ * released in it, each event with its set-1 scan code and the arrows
+ * extended. The procedure records the menu messages (WM_SYSCOMMAND,
+ * WM_ENTERMENULOOP, WM_EXITMENULOOP, WM_INITMENU, WM_INITMENUPOPUP,
+ * WM_UNINITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_COMMAND,
+ * WM_CAPTURECHANGED, WM_CANCELMODE), never printing inside the
+ * procedure, and passes every message to DefWindowProcW but
+ * WM_COMMAND, answered 0. WM_ENTERIDLE is not recorded (how many come
+ * depends on how fast the input arrives), nor are the key and
+ * character messages (those after the loop ends race the WM_COMMAND
+ * it posts). A menu prints by its place in menu 200 ("the bar",
+ * "File's popup", "View's popup", "Recent's popup"), a window as "the
+ * window" or "another window". Each batch sets a 3-second timer on the
+ * window: a loop still running then is ended from the window's
+ * WM_TIMER, which the loop dispatches, with EndMenu (found with
+ * GetProcAddress), recorded as "EndMenu at the deadline". The program
+ * pumps (PeekMessageW, TranslateMessage, DispatchMessageW,
+ * MsgWaitForMultipleObjects between) until WM_EXITMENULOOP has come
+ * and 300 ms pass with nothing queued, or 4 seconds pass, and prints
+ * whether the loop ended, then the records. Nobody types on the real
+ * machine while it runs.
  *
  * kinds' calls on another kind's handle each validate the handle as
  * their own kind's and fail on any other, so none of them destroys
@@ -114,6 +163,35 @@
 #define ID_PROGRAMMER 213
 #define ID_HELP 220
 #define ID_NONE 299
+
+/* The MSVC 6 headers may predate these. */
+#ifndef INPUT_KEYBOARD
+#define INPUT_KEYBOARD 1
+#endif
+#ifndef KEYEVENTF_EXTENDEDKEY
+#define KEYEVENTF_EXTENDEDKEY 0x0001
+#endif
+#ifndef KEYEVENTF_KEYUP
+#define KEYEVENTF_KEYUP 0x0002
+#endif
+#ifndef WM_UNINITMENUPOPUP
+#define WM_UNINITMENUPOPUP 0x0125
+#endif
+#ifndef WM_ENTERMENULOOP
+#define WM_ENTERMENULOOP 0x0211
+#endif
+#ifndef WM_EXITMENULOOP
+#define WM_EXITMENULOOP 0x0212
+#endif
+#ifndef WM_CAPTURECHANGED
+#define WM_CAPTURECHANGED 0x0215
+#endif
+#ifndef HTCLOSE
+#define HTCLOSE 20
+#endif
+#ifndef HTHELP
+#define HTHELP 21
+#endif
 
 /* The buffer contents before a call fills it. */
 #define UNFILLED_W L"########"
@@ -1159,6 +1237,626 @@ static void sec_slots(void)
     UnregisterClassW(L"F2KSlotsWindow", GetModuleHandleW(NULL));
 }
 
+/* --- the menu bar and the keyboard menu loop: shared ---------------- */
+
+/* Dispatch what is queued: a shown window's WM_PAINT stays queued
+ * until its procedure paints, so it is dispatched, never dropped. */
+static void pump_queued(void)
+{
+    MSG m;
+
+    while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+
+static const char *ht_name(LRESULT r)
+{
+    switch (r) {
+    case HTERROR: return "HTERROR";
+    case HTTRANSPARENT: return "HTTRANSPARENT";
+    case HTNOWHERE: return "HTNOWHERE";
+    case HTCLIENT: return "HTCLIENT";
+    case HTCAPTION: return "HTCAPTION";
+    case HTSYSMENU: return "HTSYSMENU";
+    case HTGROWBOX: return "HTGROWBOX";
+    case HTMENU: return "HTMENU";
+    case HTHSCROLL: return "HTHSCROLL";
+    case HTVSCROLL: return "HTVSCROLL";
+    case HTMINBUTTON: return "HTMINBUTTON";
+    case HTMAXBUTTON: return "HTMAXBUTTON";
+    case HTLEFT: return "HTLEFT";
+    case HTRIGHT: return "HTRIGHT";
+    case HTTOP: return "HTTOP";
+    case HTTOPLEFT: return "HTTOPLEFT";
+    case HTTOPRIGHT: return "HTTOPRIGHT";
+    case HTBOTTOM: return "HTBOTTOM";
+    case HTBOTTOMLEFT: return "HTBOTTOMLEFT";
+    case HTBOTTOMRIGHT: return "HTBOTTOMRIGHT";
+    case HTBORDER: return "HTBORDER";
+    case HTCLOSE: return "HTCLOSE";
+    case HTHELP: return "HTHELP";
+    }
+    return "?";
+}
+
+/* WM_NCHITTEST at `count` points down a column from (x, y), printed as
+ * runs of equal answers: each run's offsets from the scan's start,
+ * [first, past its last), and its code. */
+static void scan_column(HWND h, const char *what, int x, int y, int count)
+{
+    char buf[900];
+    int n;
+    int i;
+    int start;
+    LRESULT run;
+    LRESULT r;
+
+    n = sprintf(buf, "%s:", what);
+    start = 0;
+    run = SendMessageW(h, WM_NCHITTEST, 0, MAKELPARAM(x, y));
+    r = run;
+    for (i = 1; i <= count; i++) {
+        if (i < count) {
+            r = SendMessageW(h, WM_NCHITTEST, 0, MAKELPARAM(x, y + i));
+        }
+        if (i == count || r != run) {
+            if (n < (int)sizeof buf - 48) {
+                n += sprintf(buf + n, "%s [%d,%d) %ld %s", start == 0 ? "" : ",", start, i,
+                             (long)run, ht_name(run));
+            }
+            start = i;
+            run = r;
+        }
+    }
+    line("%s", buf);
+}
+
+/* --- bar ----------------------------------------------------------- */
+
+/* The window's frame, menu bar and client area, as the window and the
+ * metrics give them. */
+static void print_bar(HWND h, const char *when)
+{
+    RECT wr, cr;
+    POINT origin;
+    long band;
+
+    GetWindowRect(h, &wr);
+    GetClientRect(h, &cr);
+    origin.x = 0;
+    origin.y = 0;
+    ClientToScreen(h, &origin);
+    band = origin.y - wr.top - GetSystemMetrics(SM_CYFRAME) - GetSystemMetrics(SM_CYCAPTION);
+    line("%s: the client origin's offset less the frame: %ld; less the frame and caption, the menu "
+         "bar's height: %ld (SM_CYMENU: %s)",
+         when, origin.x - wr.left - GetSystemMetrics(SM_CXFRAME), band,
+         yesno(band == GetSystemMetrics(SM_CYMENU)));
+    line("  window %ldx%ld, client %ldx%ld", wr.right - wr.left, wr.bottom - wr.top, cr.right,
+         cr.bottom);
+}
+
+static void sec_bar(void)
+{
+    WNDCLASSW wc;
+    HINSTANCE inst;
+    ATOM atom;
+    HWND h;
+    HMENU m;
+    BOOL r;
+    RECT wr;
+
+    inst = GetModuleHandleW(NULL);
+    pump_queued();
+    UnregisterClassW(L"F2KMenusBar", inst);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = plain;
+    wc.hInstance = inst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"F2KMenusBar";
+    atom = RegisterClassW(&wc);
+    m = load_menu();
+    h = CreateWindowExW(0, L"F2KMenusBar", L"menus", WS_OVERLAPPEDWINDOW, 60, 70, 320, 200, NULL, m,
+                        inst, NULL);
+    line("setup: the class, menu 200 and a hidden WS_OVERLAPPEDWINDOW window with it, 320x200: %s",
+         yesno(atom != 0 && m != NULL && h != NULL));
+    if (h == NULL) {
+        if (m != NULL) {
+            DestroyMenu(m);
+        }
+        UnregisterClassW(L"F2KMenusBar", inst);
+        return;
+    }
+    print_bar(h, "created with the menu");
+    arm();
+    r = SetMenu(h, NULL);
+    line("SetMenu(h, NULL): ret=%d err=%s", r, le());
+    print_bar(h, "without the menu");
+    arm();
+    r = SetMenu(h, m);
+    line("SetMenu(h, menu): ret=%d err=%s", r, le());
+    print_bar(h, "with the menu again");
+    arm();
+    r = DrawMenuBar(h);
+    line("DrawMenuBar(h): ret=%d err=%s", r, le());
+    arm();
+    r = DrawMenuBar(NULL);
+    line("DrawMenuBar(NULL): ret=%d err=%s", r, le());
+
+    ShowWindow(h, SW_SHOWNOACTIVATE);
+    pump_queued();
+    GetWindowRect(h, &wr);
+    scan_column(h, "WM_NCHITTEST down the middle column, from 2 above", (wr.left + wr.right) / 2,
+                wr.top - 2, wr.bottom - wr.top + 4);
+    DestroyWindow(h);
+    pump_queued();
+    arm();
+    r = IsMenu(m);
+    line("IsMenu(the menu) after its window's destruction: ret=%d err=%s", r, le());
+    UnregisterClassW(L"F2KMenusBar", inst);
+}
+
+/* --- the keyboard menu loop ---------------------------------------- */
+
+/* SendInput's structures in their public layout (MOUSEINPUT is the
+ * union's largest member, so the record is 28 bytes, as INPUT is). */
+typedef struct {
+    LONG dx;
+    LONG dy;
+    DWORD mouseData;
+    DWORD dwFlags;
+    DWORD time;
+    DWORD dwExtraInfo;
+} f2k_mouse_input;
+
+typedef struct {
+    WORD wVk;
+    WORD wScan;
+    DWORD dwFlags;
+    DWORD time;
+    DWORD dwExtraInfo;
+} f2k_keybd_input;
+
+typedef struct {
+    DWORD type;
+    union {
+        f2k_mouse_input mi;
+        f2k_keybd_input ki;
+    } u;
+} f2k_input;
+
+typedef UINT (WINAPI *send_input_fn)(UINT count, f2k_input *inputs, int size);
+typedef BOOL (WINAPI *end_menu_fn)(void);
+
+static send_input_fn send_input;
+static end_menu_fn end_menu;
+
+/* One input event: a key going down or up, with its set-1 scan code. */
+typedef struct {
+    WORD vk;
+    WORD scan;
+    DWORD flags;
+} stroke_t;
+
+#define DOWN 0
+#define UP KEYEVENTF_KEYUP
+#define EXT KEYEVENTF_EXTENDEDKEY
+
+#define MAX_STROKES 16
+
+/* The scan codes of the keys the batches press. */
+#define SCAN_ALT 0x38
+#define SCAN_V 0x2F
+#define SCAN_F 0x21
+#define SCAN_Z 0x2C
+#define SCAN_UP 0x48
+#define SCAN_DOWN 0x50
+#define SCAN_RIGHT 0x4D
+#define SCAN_ENTER 0x1C
+#define SCAN_ESC 0x01
+#define SCAN_F10 0x44
+
+/* The guard timer: a menu loop still running at its deadline is ended
+ * from the window's WM_TIMER, which the loop dispatches. */
+#define GUARD_TIMER 1
+#define GUARD_MS 3000
+
+/* What the procedure received, printed after the batch. The guard's
+ * EndMenu is recorded as a WM_TIMER. */
+typedef struct {
+    UINT msg;
+    WPARAM wparam;
+    LPARAM lparam;
+} menu_record;
+
+#define MAX_MENU_RECORDS 64
+
+static menu_record menu_records[MAX_MENU_RECORDS];
+static int menu_record_count;
+static int menu_records_lost;
+static int exit_seen;
+static HWND key_window;
+
+/* The messages recorded. WM_ENTERIDLE is not: how many come depends on
+ * how fast the input arrives. Nor are the key and character messages:
+ * those after the loop ends race the WM_COMMAND it posts. */
+static int is_menu_message(UINT msg)
+{
+    switch (msg) {
+    case WM_SYSCOMMAND:
+    case WM_ENTERMENULOOP:
+    case WM_EXITMENULOOP:
+    case WM_INITMENU:
+    case WM_INITMENUPOPUP:
+    case WM_UNINITMENUPOPUP:
+    case WM_MENUSELECT:
+    case WM_MENUCHAR:
+    case WM_COMMAND:
+    case WM_CAPTURECHANGED:
+    case WM_CANCELMODE:
+        return 1;
+    }
+    return 0;
+}
+
+static void record_menu(UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    menu_record *r;
+
+    if (menu_record_count == MAX_MENU_RECORDS) {
+        menu_records_lost++;
+        return;
+    }
+    r = &menu_records[menu_record_count++];
+    r->msg = msg;
+    r->wparam = wparam;
+    r->lparam = lparam;
+}
+
+/* The procedure: the menu messages recorded, then every message to
+ * DefWindowProcW but WM_COMMAND, answered 0. */
+static LRESULT CALLBACK menu_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_TIMER && wparam == GUARD_TIMER) {
+        KillTimer(hwnd, GUARD_TIMER);
+        record_menu(WM_TIMER, wparam, 0);
+        if (end_menu != NULL) {
+            end_menu();
+        }
+        return 0;
+    }
+    if (is_menu_message(msg)) {
+        record_menu(msg, wparam, lparam);
+    }
+    if (msg == WM_EXITMENULOOP) {
+        exit_seen = 1;
+    }
+    if (msg == WM_COMMAND) {
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static const char *menu_name(HMENU m)
+{
+    HMENU bar;
+    HMENU file;
+
+    if (m == NULL) {
+        return "NULL";
+    }
+    bar = GetMenu(key_window);
+    if (bar == NULL) {
+        return "another menu";
+    }
+    file = GetSubMenu(bar, 0);
+    if (m == bar) {
+        return "the bar";
+    }
+    if (m == file) {
+        return "File's popup";
+    }
+    if (m == GetSubMenu(bar, 1)) {
+        return "View's popup";
+    }
+    if (file != NULL && m == GetSubMenu(file, 3)) {
+        return "Recent's popup";
+    }
+    return "another menu";
+}
+
+static const char *window_name(HWND h)
+{
+    if (h == NULL) {
+        return "NULL";
+    }
+    if (h == key_window) {
+        return "the window";
+    }
+    return "another window";
+}
+
+static const char *sc_name(WPARAM command)
+{
+    switch (command & 0xFFF0) {
+    case SC_KEYMENU: return "SC_KEYMENU";
+    case SC_MOUSEMENU: return "SC_MOUSEMENU";
+    case SC_CLOSE: return "SC_CLOSE";
+    case SC_MINIMIZE: return "SC_MINIMIZE";
+    case SC_MAXIMIZE: return "SC_MAXIMIZE";
+    case SC_RESTORE: return "SC_RESTORE";
+    case SC_MOVE: return "SC_MOVE";
+    case SC_SIZE: return "SC_SIZE";
+    case SC_TASKLIST: return "SC_TASKLIST";
+    }
+    return "?";
+}
+
+static void print_menu_records(void)
+{
+    int i;
+    menu_record *r;
+
+    line("received: %d message(s)%s", menu_record_count, menu_records_lost ? ", more lost" : "");
+    for (i = 0; i < menu_record_count; i++) {
+        r = &menu_records[i];
+        switch (r->msg) {
+        case WM_TIMER:
+            line("  EndMenu at the deadline");
+            break;
+        case WM_SYSCOMMAND:
+            line("  WM_SYSCOMMAND wParam=0x%04lX (%s) lParam=0x%08lX", (unsigned long)r->wparam,
+                 sc_name(r->wparam), (unsigned long)r->lparam);
+            break;
+        case WM_ENTERMENULOOP:
+            line("  WM_ENTERMENULOOP wParam=%lu", (unsigned long)r->wparam);
+            break;
+        case WM_EXITMENULOOP:
+            line("  WM_EXITMENULOOP wParam=%lu", (unsigned long)r->wparam);
+            break;
+        case WM_INITMENU:
+            line("  WM_INITMENU %s", menu_name((HMENU)r->wparam));
+            break;
+        case WM_INITMENUPOPUP:
+            line("  WM_INITMENUPOPUP %s position %u system menu %u", menu_name((HMENU)r->wparam),
+                 (unsigned)LOWORD(r->lparam), (unsigned)HIWORD(r->lparam));
+            break;
+        case WM_UNINITMENUPOPUP:
+            line("  WM_UNINITMENUPOPUP %s lParam=0x%08lX", menu_name((HMENU)r->wparam),
+                 (unsigned long)r->lparam);
+            break;
+        case WM_MENUSELECT:
+            line("  WM_MENUSELECT item %u flags 0x%04X %s", (unsigned)LOWORD(r->wparam),
+                 (unsigned)HIWORD(r->wparam), menu_name((HMENU)r->lparam));
+            break;
+        case WM_MENUCHAR:
+            line("  WM_MENUCHAR char 0x%04X flags 0x%04X %s", (unsigned)LOWORD(r->wparam),
+                 (unsigned)HIWORD(r->wparam), menu_name((HMENU)r->lparam));
+            break;
+        case WM_COMMAND:
+            line("  WM_COMMAND wParam=0x%08lX lParam %s", (unsigned long)r->wparam,
+                 window_name((HWND)r->lparam));
+            break;
+        case WM_CAPTURECHANGED:
+            line("  WM_CAPTURECHANGED lParam %s", window_name((HWND)r->lparam));
+            break;
+        case WM_CANCELMODE:
+            line("  WM_CANCELMODE");
+            break;
+        }
+    }
+}
+
+/* Pump until the menu loop has ended (WM_EXITMENULOOP) and 300 ms
+ * pass with nothing queued, or 4 seconds pass; whether it ended. */
+static int pump_menu_batch(void)
+{
+    MSG m;
+    DWORD start;
+    DWORD last;
+    DWORD now;
+    int got;
+
+    start = GetTickCount();
+    last = start;
+    for (;;) {
+        got = 0;
+        while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+            got = 1;
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        now = GetTickCount();
+        if (got) {
+            last = now;
+        }
+        if (exit_seen && now - last >= 300) {
+            break;
+        }
+        if (now - start >= 4000) {
+            break;
+        }
+        MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT);
+    }
+    pump_queued();
+    return exit_seen;
+}
+
+/* Inject one batch into the window, if it is the foreground window,
+ * pump it through the menu loop and print what the procedure
+ * received. */
+static void type_menu_keys(const char *what, const stroke_t *strokes, int n)
+{
+    f2k_input in[MAX_STROKES];
+    UINT sent;
+    int i;
+    int ended;
+
+    line("-- %s", what);
+    if (send_input == NULL) {
+        line("SendInput: not exported by user32, no input sent");
+        return;
+    }
+    if (key_window == NULL || GetForegroundWindow() != key_window) {
+        line("the window is not the foreground window: no input sent");
+        return;
+    }
+    ZeroMemory(in, sizeof in);
+    for (i = 0; i < n && i < MAX_STROKES; i++) {
+        in[i].type = INPUT_KEYBOARD;
+        in[i].u.ki.wVk = strokes[i].vk;
+        in[i].u.ki.wScan = strokes[i].scan;
+        in[i].u.ki.dwFlags = strokes[i].flags;
+    }
+    pump_queued();
+    menu_record_count = 0;
+    menu_records_lost = 0;
+    exit_seen = 0;
+    SetTimer(key_window, GUARD_TIMER, GUARD_MS, NULL);
+    arm();
+    sent = send_input((UINT)n, in, (int)sizeof(f2k_input));
+    line("SendInput(%d events): ret=%u err=%s", n, sent, le());
+    ended = pump_menu_batch();
+    KillTimer(key_window, GUARD_TIMER);
+    line("the menu loop ended: %s", yesno(ended));
+    print_menu_records();
+}
+
+/* The section's window: a visible WS_OVERLAPPEDWINDOW of a class it
+ * registers, with a fresh copy of menu 200, made the foreground and
+ * focus window. */
+static void open_key_window(const WCHAR *class_name, const char *class_text)
+{
+    WNDCLASSW wc;
+    HINSTANCE inst;
+    HMODULE user;
+    HMENU m;
+    ATOM atom;
+    BOOL r;
+
+    inst = GetModuleHandleW(NULL);
+    user = GetModuleHandleA("user32.dll");
+    send_input = NULL;
+    end_menu = NULL;
+    if (user != NULL) {
+        send_input = (send_input_fn)GetProcAddress(user, "SendInput");
+        end_menu = (end_menu_fn)GetProcAddress(user, "EndMenu");
+    }
+    pump_queued();
+    UnregisterClassW(class_name, inst);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = menu_proc;
+    wc.hInstance = inst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = class_name;
+    atom = RegisterClassW(&wc);
+    m = load_menu();
+    key_window = CreateWindowExW(0, class_name, L"menus", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 60, 70,
+                                 320, 200, NULL, m, inst, NULL);
+    line("setup: the class %s, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: %s",
+         class_text, yesno(atom != 0 && m != NULL && key_window != NULL));
+    line("EndMenu exported: %s", yesno(end_menu != NULL));
+    if (key_window == NULL) {
+        if (m != NULL) {
+            DestroyMenu(m);
+        }
+        return;
+    }
+    arm();
+    r = SetForegroundWindow(key_window);
+    line("SetForegroundWindow(h): ret=%d err=%s", r, le());
+    SetFocus(key_window);
+    pump_queued();
+    line("the foreground window: %s; the focus: %s", yesno(GetForegroundWindow() == key_window),
+         yesno(GetFocus() == key_window));
+}
+
+static void close_key_window(const WCHAR *class_name)
+{
+    if (key_window != NULL) {
+        DestroyWindow(key_window);
+        key_window = NULL;
+    }
+    pump_queued();
+    UnregisterClassW(class_name, GetModuleHandleW(NULL));
+}
+
+/* --- keyloop ------------------------------------------------------- */
+
+static void sec_keyloop(void)
+{
+    static const stroke_t keys[] = {
+        { VK_MENU, SCAN_ALT, DOWN }, { VK_MENU, SCAN_ALT, UP },
+        { 'V', SCAN_V, DOWN }, { 'V', SCAN_V, UP },
+        { VK_DOWN, SCAN_DOWN, DOWN | EXT }, { VK_DOWN, SCAN_DOWN, UP | EXT },
+        { VK_RETURN, SCAN_ENTER, DOWN }, { VK_RETURN, SCAN_ENTER, UP }
+    };
+    HMENU bar;
+
+    open_key_window(L"F2KMenusKeyloop", "F2KMenusKeyloop");
+    type_menu_keys("Alt, V, Down, Enter", keys, 8);
+    bar = key_window != NULL ? GetMenu(key_window) : NULL;
+    if (bar != NULL) {
+        print_state(bar, ID_STANDARD, MF_BYCOMMAND, "211 after");
+        print_state(bar, ID_SCIENTIFIC, MF_BYCOMMAND, "212 after");
+        print_state(bar, ID_PROGRAMMER, MF_BYCOMMAND, "213 after");
+    }
+    close_key_window(L"F2KMenusKeyloop");
+}
+
+/* --- keyesc -------------------------------------------------------- */
+
+static void sec_keyesc(void)
+{
+    static const stroke_t f10[] = {
+        { VK_F10, SCAN_F10, DOWN }, { VK_F10, SCAN_F10, UP },
+        { VK_RIGHT, SCAN_RIGHT, DOWN | EXT }, { VK_RIGHT, SCAN_RIGHT, UP | EXT },
+        { VK_DOWN, SCAN_DOWN, DOWN | EXT }, { VK_DOWN, SCAN_DOWN, UP | EXT },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP }
+    };
+    static const stroke_t unknown[] = {
+        { VK_MENU, SCAN_ALT, DOWN }, { VK_MENU, SCAN_ALT, UP },
+        { 'Z', SCAN_Z, DOWN }, { 'Z', SCAN_Z, UP },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP }
+    };
+    static const stroke_t alone[] = {
+        { VK_MENU, SCAN_ALT, DOWN }, { VK_MENU, SCAN_ALT, UP },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP }
+    };
+
+    open_key_window(L"F2KMenusKeyesc", "F2KMenusKeyesc");
+    type_menu_keys("F10, Right, Down, Esc, Esc", f10, 10);
+    type_menu_keys("Alt, Z (no item's mnemonic), Esc", unknown, 6);
+    type_menu_keys("Alt, Esc", alone, 4);
+    close_key_window(L"F2KMenusKeyesc");
+}
+
+/* --- keychar ------------------------------------------------------- */
+
+static void sec_keychar(void)
+{
+    static const stroke_t held[] = {
+        { VK_MENU, SCAN_ALT, DOWN }, { 'V', SCAN_V, DOWN }, { 'V', SCAN_V, UP }, { VK_MENU, SCAN_ALT, UP },
+        { VK_UP, SCAN_UP, DOWN | EXT }, { VK_UP, SCAN_UP, UP | EXT },
+        { VK_RETURN, SCAN_ENTER, DOWN }, { VK_RETURN, SCAN_ENTER, UP }
+    };
+    static const stroke_t grayed[] = {
+        { VK_MENU, SCAN_ALT, DOWN }, { VK_MENU, SCAN_ALT, UP },
+        { 'F', SCAN_F, DOWN }, { 'F', SCAN_F, UP },
+        { VK_DOWN, SCAN_DOWN, DOWN | EXT }, { VK_DOWN, SCAN_DOWN, UP | EXT },
+        { VK_RETURN, SCAN_ENTER, DOWN }, { VK_RETURN, SCAN_ENTER, UP },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP },
+        { VK_ESCAPE, SCAN_ESC, DOWN }, { VK_ESCAPE, SCAN_ESC, UP }
+    };
+
+    open_key_window(L"F2KMenusKeychar", "F2KMenusKeychar");
+    type_menu_keys("Alt+V held, Up, Enter", held, 8);
+    type_menu_keys("Alt, F, Down (onto the grayed Open), Enter, Esc, Esc", grayed, 12);
+    close_key_window(L"F2KMenusKeychar");
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
@@ -1168,6 +1866,10 @@ static const section_t sections[] = {
     { "kinds", sec_kinds, F2KT_ALWAYS },
     { "reuse", sec_reuse, F2KT_ALWAYS },
     { "slots", sec_slots, F2KT_ALWAYS },
+    { "bar", sec_bar, F2KT_ALWAYS },
+    { "keyloop", sec_keyloop, F2KT_ALWAYS },
+    { "keyesc", sec_keyesc, F2KT_ALWAYS },
+    { "keychar", sec_keychar, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

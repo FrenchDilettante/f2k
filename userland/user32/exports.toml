@@ -947,6 +947,22 @@ args = ["handle Window"]
 impl = { syscall = "crate::win32k::window::destroy_window" }
 internal = true
 
+[[export]]
+name = "AdjustWindowRect"
+group = "window"
+args = ["ptr lpRect", "u32 dwStyle", "bool bMenu"]
+impl = { stub = "not yet implemented" }
+ordinal = 2
+fails = "FALSE"
+
+[[export]]
+name = "AdjustWindowRectEx"
+group = "window"
+args = ["ptr lpRect", "u32 dwStyle", "bool bMenu", "u32 dwExStyle"]
+impl = { stub = "not yet implemented" }
+ordinal = 3
+fails = "FALSE"
+
 # --- resources ------------------------------------------------------------------------------------
 
 [[export]]
@@ -2454,6 +2470,14 @@ impl = { native = "OffsetRect" }
 ordinal = 472
 fails = "FALSE"
 
+[[export]]
+name = "EqualRect"
+group = "rect"
+args = ["ptr lprc1", "ptr lprc2"]
+impl = { stub = "not yet implemented" }
+ordinal = 212
+fails = "FALSE"
+
 # --- strings and characters -----------------------------------------------------------------------
 
 [[export]]
@@ -2578,14 +2602,6 @@ fails = "FALSE"
 [[export]]
 name = "ActivateKeyboardLayout"
 ordinal = 1
-
-[[export]]
-name = "AdjustWindowRect"
-ordinal = 2
-
-[[export]]
-name = "AdjustWindowRectEx"
-ordinal = 3
 
 [[export]]
 name = "AlignRects"
@@ -3186,10 +3202,6 @@ ordinal = 210
 [[export]]
 name = "EnumWindows"
 ordinal = 211
-
-[[export]]
-name = "EqualRect"
-ordinal = 212
 
 [[export]]
 name = "ExcludeUpdateRgn"
