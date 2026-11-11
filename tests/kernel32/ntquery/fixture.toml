@@ -1,5 +1,5 @@
 # ntquery: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "ntquery - the introspection surface called ntdll-direct through GetProcAddress: NtQuerySystemInformation class 5 (sysinfo), NtQueryInformationProcess class 0 with the PEB address (procinfo), NtQueryInformationThread class 0 (threadinfo), ReadProcessMemory of the own PEB (pebread), and OpenSCManagerA (scmfail)."
+description = "ntquery - the introspection surface called ntdll-direct through GetProcAddress: NtQuerySystemInformation class 5 (sysinfo), NtQueryInformationProcess class 0 with the PEB address (procinfo), NtQueryInformationThread class 0 with its fields as relations and the exact length it requires (threadinfo), ReadProcessMemory of the section's own PEB with its first fields as relations (pebread), and OpenSCManagerA (scmfail)."
 kind = "sectioned"
 gate = true
 
@@ -9,19 +9,20 @@ scmfail = "F2K runs no service control manager (services.exe and its RPC interfa
 [pins]
 sysinfo = [
     "ntdll.NtQuerySystemInformation",
-    "kernel32.GetProcAddress",
-    "kernel32.GetModuleHandleA",
 ]
 procinfo = [
     "ntdll.NtQueryInformationProcess",
-    "kernel32.GetCurrentProcess",
 ]
 threadinfo = [
     "ntdll.NtQueryInformationThread",
-    "kernel32.GetCurrentThread",
+    "kernel32.GetCurrentProcessId",
+    "kernel32.GetCurrentThreadId",
 ]
 pebread = [
+    "ntdll.NtQueryInformationProcess",
     "kernel32.ReadProcessMemory",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcessHeap",
 ]
 scmfail = [
     "advapi32.OpenSCManagerA",
