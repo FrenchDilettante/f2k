@@ -1145,6 +1145,8 @@ pub struct Thread {
     pub active_prev: Option<WindowId>,
     pub focus: Option<WindowId>,
     pub capture: Option<WindowId>,
+    /// The thread's key state, as of the last key message it read ([`super::input`]).
+    pub keys: super::input::KeyState,
     pub startup: StartupInfo,
     /// The process's pending hotkey.
     pub hotkey: u32,
@@ -1168,6 +1170,7 @@ impl Thread {
         active_prev: None,
         focus: None,
         capture: None,
+        keys: super::input::KeyState::EMPTY,
         startup: StartupInfo {
             flags: 0,
             x: 0,
@@ -1250,6 +1253,9 @@ pub struct Windows {
     pub clipboard_owner: Option<WindowId>,
     /// The foreground thread's queue.
     pub foreground_thread: Option<ThreadId>,
+    /// The system's input state: the asynchronous key state and the keyboard's decode
+    /// ([`super::input`]).
+    pub input: super::input::RawInput,
     /// The threads' message queues, the timers and the windows' update regions
     /// ([`super::queue`]).
     pub queues: super::queue::Queues,
@@ -1292,6 +1298,7 @@ impl Windows {
             }
             addr_of_mut!((*windows).clipboard_owner).write(None);
             addr_of_mut!((*windows).foreground_thread).write(None);
+            addr_of_mut!((*windows).input).write(super::input::RawInput::EMPTY);
             super::queue::Queues::write_empty(addr_of_mut!((*windows).queues));
             // Zero bytes are an empty arena: no granule taken, every byte zero.
             addr_of_mut!((*windows).extra).write_bytes(0, 1);

@@ -1174,7 +1174,14 @@ args = ["ptr lpMsg"]
 impl = { native = "TranslateMessage" }
 ordinal = 648
 fails = "FALSE"
-note = "WM_CHAR for the keys whose character needs no shift state (there is no keyboard state yet)"
+note = "the US layout's characters under the thread's key state, posted as WM_CHAR or WM_SYSCHAR"
+
+[[export]]
+name = "NtUserTranslateMessage"
+group = "message"
+args = ["ptr Msg", "u32 Flags", "ptr<u32> Translated"]
+impl = { syscall = "crate::win32k::input::translate_message" }
+internal = true
 
 [[export]]
 name = "DefWindowProcA"
@@ -1554,15 +1561,25 @@ internal = true
 name = "GetKeyState"
 group = "input"
 args = ["i32 nVirtKey"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetKeyState" }
 ordinal = 278
 fails = "0"
+note = "the thread's key state as of its last key message read: 0xFF80 while down, the low bit the toggle"
+
+[[export]]
+name = "GetAsyncKeyState"
+group = "input"
+args = ["i32 vKey"]
+impl = { native = "GetAsyncKeyState" }
+ordinal = 231
+fails = "0"
+note = "the system's key state: 0x8000 while down, the low bit when pressed since the last call"
 
 [[export]]
 name = "GetKeyboardState"
 group = "input"
 args = ["ptr lpKeyState"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetKeyboardState" }
 ordinal = 283
 fails = "FALSE"
 
@@ -1570,9 +1587,54 @@ fails = "FALSE"
 name = "SetKeyboardState"
 group = "input"
 args = ["ptr lpKeyState"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetKeyboardState" }
 ordinal = 567
 fails = "FALSE"
+note = "the thread's key state only: the system's, and the keyboard's lights, are left as they are"
+
+[[export]]
+name = "SendInput"
+group = "input"
+args = ["u32 cInputs", "ptr pInputs", "i32 cbSize"]
+impl = { native = "SendInput" }
+ordinal = 536
+fails = "0"
+note = "keyboard events (virtual keys, scan codes, KEYEVENTF_UNICODE); the first mouse or hardware event stops the run: there is no mouse yet"
+
+[[export]]
+name = "NtUserSendInput"
+group = "input"
+args = ["u32 Count", "ptr Inputs", "i32 Size", "ptr<u32> Sent"]
+impl = { syscall = "crate::win32k::input::send_input" }
+internal = true
+
+[[export]]
+name = "NtUserGetKeyState"
+group = "input"
+args = ["i32 VirtKey", "ptr<u32> State"]
+impl = { syscall = "crate::win32k::input::get_key_state" }
+internal = true
+
+[[export]]
+name = "NtUserGetAsyncKeyState"
+group = "input"
+args = ["i32 VirtKey", "ptr<u32> State"]
+impl = { syscall = "crate::win32k::input::get_async_key_state" }
+internal = true
+
+[[export]]
+name = "NtUserGetKeyboardState"
+group = "input"
+args = ["ptr KeyState"]
+impl = { syscall = "crate::win32k::input::get_keyboard_state" }
+internal = true
+
+[[export]]
+name = "NtUserSetKeyboardState"
+group = "input"
+args = ["ptr KeyState"]
+impl = { syscall = "crate::win32k::input::set_keyboard_state" }
+internal = true
 
 [[export]]
 name = "GetKeyboardLayout"
@@ -3114,10 +3176,6 @@ name = "GetAppCompatFlags"
 ordinal = 230
 
 [[export]]
-name = "GetAsyncKeyState"
-ordinal = 231
-
-[[export]]
 name = "GetCaretBlinkTime"
 ordinal = 233
 
@@ -3904,10 +3962,6 @@ ordinal = 534
 [[export]]
 name = "SendIMEMessageExW"
 ordinal = 535
-
-[[export]]
-name = "SendInput"
-ordinal = 536
 
 [[export]]
 name = "SendMessageCallbackA"

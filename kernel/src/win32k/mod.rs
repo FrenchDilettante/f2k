@@ -3,7 +3,8 @@
 //! threads' message queues ([`queue`]), their timers ([`timer`]) and the windows' painting
 //! ([`paint`]), menus ([`menu`]), keyboard accelerators ([`accel`]), cursors and icons ([`icon`]),
 //! the one handle table every one of those user objects' handles names a slot of ([`handle`]),
-//! window stations and desktops ([`winsta`]), the display settings ([`display`]), device contexts
+//! window stations and desktops ([`winsta`]), keyboard input ([`input`]), the display settings
+//! ([`display`]), device contexts
 //! ([`dc`]) and what is drawn through them ([`raster`], in the built-in font, [`font`]), the
 //! clipboard ([`clipboard`]), and the second service table their services come through.
 //!
@@ -34,6 +35,7 @@ pub mod focus;
 pub mod font;
 pub mod handle;
 pub mod icon;
+pub mod input;
 pub mod menu;
 pub mod paint;
 pub mod queue;
@@ -103,6 +105,9 @@ mod tests {
         assert_eq!(entry("NtUserEnumDisplayMonitors"), Some((0x116A, 24)));
         assert_eq!(entry("NtUserSetSysColors"), Some((0x1204, 16)));
         assert_eq!(entry("NtUserSystemParametersInfo"), Some((0x121C, 16)));
+        assert_eq!(entry("NtUserSendInput"), Some((0x11E1, 16)));
+        assert_eq!(entry("NtUserGetKeyState"), Some((0x1195, 8)));
+        assert_eq!(entry("NtUserTranslateMessage"), Some((0x1224, 12)));
         assert_eq!(lookup(0x19C).map(|(bytes, _)| bytes), Some(20));
         assert!(lookup(0).is_none(), "NtGdiAbortDoc: not served");
     }

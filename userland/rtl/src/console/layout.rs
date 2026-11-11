@@ -8,7 +8,10 @@
 //! columns, and a UTF-16 unit per column. The producer ([`super::input`]) owns everything that is
 //! not layout-shaped (the byte decode, the key-down set, the toggles and the lights, the
 //! control-key state) and asks the layout only through [`Layout::modifier_bits`] and
-//! [`Layout::translate`], so a second layout is another constant and nothing else.
+//! [`Layout::translate`], so a second layout is another constant and nothing else. win32k's input
+//! path asks it the same two questions apart: the virtual key a scan code reports
+//! ([`Layout::virtual_key`]), as its keystroke reaches a window, and the character a virtual key
+//! makes ([`Layout::character`]), as TranslateMessage reads it.
 //!
 //! Columns 0 to 3 mean the same in every layout — no modifier, Shift, Ctrl, Shift+Ctrl — so rows
 //! can be shared between layouts and layered: a layout's rows are an ordered list of tables, the
@@ -237,16 +240,28 @@ impl Layout {
     /// The reported virtual key and character of a key from `origin` whose scan table gives `vk`,
     /// under the live modifier and toggle bits (character 0: none).
     pub fn translate(&self, origin: Origin, vk: u8, mods: u8, toggles: u8) -> (u8, u16) {
-        let vk = self.convert(origin, vk, mods, toggles);
+        let vk = self.virtual_key(origin, vk, mods, toggles);
+        (vk, self.character(vk, mods, toggles))
+    }
+
+    /// The virtual key a key from `origin` whose scan table gives `vk` reports under the live
+    /// modifier and toggle bits: the first conversion that holds applied.
+    pub fn virtual_key(&self, origin: Origin, vk: u8, mods: u8, toggles: u8) -> u8 {
+        self.convert(origin, vk, mods, toggles)
+    }
+
+    /// The character the virtual key `vk` (as reported, its conversions applied) makes under the
+    /// modifier and toggle bits; 0 for none.
+    pub fn character(&self, vk: u8, mods: u8, toggles: u8) -> u16 {
         let Some(row) = self.row(vk) else {
-            return (vk, 0);
+            return 0;
         };
         let mut column = self.column(mods);
         if toggles & CAPS_LOCK != 0 && column != NO_COLUMN && row.caps & col(column) != 0 {
             column = self.column(mods ^ SHIFT);
         }
         if column == NO_COLUMN {
-            return (vk, 0);
+            return 0;
         }
         if row.dead & col(column) != 0 {
             // A dead key: the compose step goes here — hold the character, and combine it with the
@@ -254,8 +269,8 @@ impl Layout {
             // character reports as itself.
         }
         match row.chars[column as usize] {
-            unit if unit == NO as u16 => (vk, 0),
-            unit => (vk, unit),
+            unit if unit == NO as u16 => 0,
+            unit => unit,
         }
     }
 

@@ -32,12 +32,6 @@ use rtl::window::{WindowText, QUERY_WINDOW_TEXT};
 use crate::procedure::{self, Procedure};
 use crate::{answered, failed_with, focus, imports, paint, window, Out};
 
-/// The messages TranslateMessage looks at (winuser.h): the keys' and the system keys'.
-const WM_KEYUP: u32 = 0x0101;
-const WM_SYSKEYDOWN: u32 = 0x0104;
-const WM_SYSKEYUP: u32 = 0x0105;
-const WM_SYSCHAR: u32 = 0x0106;
-
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
 
@@ -358,19 +352,9 @@ fn dispatch(msg: &Msg, ansi: bool) -> i32 {
     }
 }
 
-/// The character a key's virtual-key code makes whatever the shift state: the digits, the letters
-/// (lower case: there is no shift state to read), space, Return, Backspace, Tab and Escape.
-fn key_character(key: u32) -> Option<u32> {
-    match key {
-        0x30..=0x39 | 0x20 | 0x0D | 0x08 | 0x09 | 0x1B => Some(key),
-        0x41..=0x5A => Some(key + 0x20),
-        _ => None,
-    }
-}
-
-/// TranslateMessage: a key-down message's character posted to the calling thread (WM_CHAR,
-/// WM_SYSCHAR for a system key) where the key makes one; nonzero for every key message, 0 for
-/// another.
+/// TranslateMessage: a key-down message's character posted for its window (WM_CHAR, WM_SYSCHAR
+/// for a system key) where the key makes one, through win32k, which reads the calling thread's
+/// key state and the keyboard layout; nonzero for every key message, 0 for another.
 ///
 /// # Safety
 ///
@@ -382,18 +366,16 @@ pub unsafe extern "system" fn translate_message(msg: *const Msg) -> u32 {
     translate(&msg)
 }
 
-/// TranslateMessage's core.
+/// TranslateMessage's core: a key-up has no character (the US layout has no dead keys).
 fn translate(msg: &Msg) -> u32 {
-    let character = match msg.message {
-        WM_KEYDOWN => WM_CHAR,
-        WM_SYSKEYDOWN => WM_SYSCHAR,
-        WM_KEYUP | WM_SYSKEYUP => return 1,
-        _ => return 0,
-    };
-    if let Some(value) = key_character(msg.wparam) {
-        let _ = imports::post_message(msg.hwnd as usize, character, value, msg.lparam);
+    match msg.message {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let _ = imports::translate_message(msg);
+            1
+        }
+        WM_KEYUP | WM_SYSKEYUP => 1,
+        _ => 0,
     }
-    1
 }
 
 /// The default window procedure's answer to a message of the narrow (`ansi`) or wide form:
@@ -720,8 +702,23 @@ mod tests {
         };
         // SAFETY: as above.
         assert_eq!(unsafe { translate_message(&key) }, 1);
-        let (_, char_msg) = peek(PM_REMOVE);
-        assert_eq!((char_msg.message, char_msg.wparam), (WM_CHAR, 0x61));
+        let handed = crate::imports::host::CHARACTERS.with(|seen| seen.borrow().clone());
+        assert_eq!(
+            handed,
+            [key],
+            "the key-down goes to win32k, which posts its character"
+        );
+        let up = Msg {
+            message: WM_KEYUP,
+            ..key
+        };
+        // SAFETY: as above.
+        assert_eq!(unsafe { translate_message(&up) }, 1);
+        assert_eq!(
+            crate::imports::host::CHARACTERS.with(|seen| seen.borrow().len()),
+            1,
+            "a key-up makes no character"
+        );
     }
 
     /// SendMessage calls the procedure of a window of the calling thread; a dead window is 1400.

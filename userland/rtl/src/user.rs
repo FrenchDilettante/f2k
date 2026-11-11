@@ -1,6 +1,7 @@
 //! USER's shared shapes: the message constants user32's message calls and win32k's queue agree on
 //! (the messages the queue makes or reads, PeekMessage's flags, the queue-status bits), the
-//! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW), and F2K's
+//! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW,
+//! SendInput's INPUT), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services
 //! hand user32 ([`Receipt`]), and the routines of the NtUserCall* services ([`ONE_PARAM_*`],
 //! [`NO_PARAM_*`], [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of NtUserGetThreadState
@@ -50,7 +51,11 @@ pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_KEYDOWN: u32 = 0x0100;
+pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
+pub const WM_SYSKEYDOWN: u32 = 0x0104;
+pub const WM_SYSKEYUP: u32 = 0x0105;
+pub const WM_SYSCHAR: u32 = 0x0106;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_USER: u32 = 0x0400;
 
@@ -250,6 +255,40 @@ pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
 /// is its language.
 pub const KEYBOARD_LAYOUT: u32 = 0x0409_0409;
 
+// --- SendInput's records (winuser.h) -------------------------------------------------------------
+
+/// INPUT's types: a mouse event, a keyboard event, another device's.
+pub const INPUT_MOUSE: u32 = 0;
+pub const INPUT_KEYBOARD: u32 = 1;
+pub const INPUT_HARDWARE: u32 = 2;
+
+/// KEYBDINPUT's flags: the key is an extended one (its scan code came after 0xE0), it goes up
+/// (else down), the event carries a character in wScan instead of a key, the key is named by its
+/// scan code alone (wVk ignored).
+pub const KEYEVENTF_EXTENDEDKEY: u32 = 0x0001;
+pub const KEYEVENTF_KEYUP: u32 = 0x0002;
+pub const KEYEVENTF_UNICODE: u32 = 0x0004;
+pub const KEYEVENTF_SCANCODE: u32 = 0x0008;
+
+/// INPUT as SendInput reads it, its union seen as a KEYBDINPUT (28 bytes: the union is
+/// MOUSEINPUT's size, the largest member, so a keyboard event leaves two words over).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Input {
+    pub kind: u32,
+    /// KEYBDINPUT: wVk, wScan, dwFlags, time, dwExtraInfo.
+    pub vk: u16,
+    pub scan: u16,
+    pub flags: u32,
+    pub time: u32,
+    pub extra_info: u32,
+    /// MOUSEINPUT's last two words.
+    pub rest: [u32; 2],
+}
+
+// SAFETY: integers only, with no padding (two u16 then u32s, at their alignment).
+unsafe impl Pod for Input {}
+
 /// NtUserCallNoParam's routines: CreateMenu and CreatePopupMenu (the result is the new menu's
 /// handle), and the empty cursor or icon object LoadIcon fills in with NtUserSetCursorIconData
 /// (the result is its handle).
@@ -309,6 +348,9 @@ mod tests {
         assert_eq!(offset_of!(Receipt, style), 388);
         assert_eq!(size_of::<StyleStruct>(), 8);
         assert_eq!(size_of::<Receipt>() % 4, 0);
+        assert_eq!(size_of::<Input>(), 28);
+        assert_eq!(offset_of!(Input, flags), 8);
+        assert_eq!(offset_of!(Input, extra_info), 16);
     }
 
     /// PeekMessage's kinds are the status bits in the high word.

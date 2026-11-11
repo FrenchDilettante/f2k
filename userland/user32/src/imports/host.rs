@@ -1874,6 +1874,11 @@ std::thread_local! {
     /// was given, and what it answers.
     pub static TABLES: RefCell<Vec<Option<HostTable>>> = const { RefCell::new(Vec::new()) };
     pub static TRANSLATED: RefCell<Vec<Msg>> = const { RefCell::new(Vec::new()) };
+    /// The keyboard: the thread's key state (a byte a key, GetKeyboardState's), the INPUT records
+    /// NtUserSendInput was given, the MSGs NtUserTranslateMessage was given.
+    pub static KEYS: RefCell<[u8; 256]> = const { RefCell::new([0; 256]) };
+    pub static INPUTS: RefCell<Vec<Input>> = const { RefCell::new(Vec::new()) };
+    pub static CHARACTERS: RefCell<Vec<Msg>> = const { RefCell::new(Vec::new()) };
     /// The cursor records, by handle (index + 1, tagged): what NtUserSetCursorIconData filled in.
     pub static CURSORS: RefCell<Vec<rtl::icon::CursorData>> = const { RefCell::new(Vec::new()) };
 }
@@ -2340,4 +2345,78 @@ pub unsafe extern "system" fn NtUserSetCursorIconData(
             _ => STATUS_INVALID_HANDLE,
         }
     })
+}
+
+pub unsafe extern "system" fn NtUserSendInput(
+    count: u32,
+    inputs: usize,
+    size: i32,
+    sent: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    if size as usize != size_of::<Input>() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    for index in 0..count as usize {
+        // SAFETY: the caller's array of `count` records.
+        let input = unsafe { (inputs as *const Input).add(index).read_unaligned() };
+        INPUTS.with(|seen| seen.borrow_mut().push(input));
+    }
+    // SAFETY: the caller's out-pointer.
+    unsafe { sent.write(count) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserGetKeyState(vk: i32, state: *mut u32) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let byte = KEYS.with(|keys| keys.borrow().get(vk as usize).copied().unwrap_or(0));
+    let answer = (if byte & 0x80 != 0 { 0xFF80 } else { 0 }) | u32::from(byte & 1);
+    // SAFETY: the caller's out-pointer.
+    unsafe { state.write(answer) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserGetAsyncKeyState(vk: i32, state: *mut u32) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    let byte = KEYS.with(|keys| keys.borrow().get(vk as usize).copied().unwrap_or(0));
+    // SAFETY: the caller's out-pointer.
+    unsafe { state.write(if byte & 0x80 != 0 { 0x8000 } else { 0 }) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserGetKeyboardState(keys: usize) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    if keys == 0 {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    let state = KEYS.with(|state| *state.borrow());
+    // SAFETY: the caller's 256 bytes.
+    unsafe { core::ptr::copy_nonoverlapping(state.as_ptr(), keys as *mut u8, 256) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserSetKeyboardState(keys: usize) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    if keys == 0 {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    let mut state = [0u8; 256];
+    // SAFETY: the caller's 256 bytes.
+    unsafe { core::ptr::copy_nonoverlapping(keys as *const u8, state.as_mut_ptr(), 256) };
+    KEYS.with(|keys| *keys.borrow_mut() = state);
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserTranslateMessage(
+    msg: *const Msg,
+    _flags: u32,
+    translated: *mut u32,
+) -> u32 {
+    SERVICES.with(|services| services.set(services.get() + 1));
+    // SAFETY: the caller's MSG.
+    let msg = unsafe { msg.read() };
+    CHARACTERS.with(|seen| seen.borrow_mut().push(msg));
+    // SAFETY: the caller's out-pointer.
+    unsafe { translated.write(1) };
+    STATUS_SUCCESS
 }

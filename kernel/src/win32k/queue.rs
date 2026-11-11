@@ -6,10 +6,13 @@
 //! one lock), one per thread record ([`window::Thread`]), made when a thread connects (its first
 //! win32k service makes it a GUI thread, as on Windows 2000) and named by a generation-tagged id
 //! ([`QueueId`]), the object manager's pattern. Posted messages are entries of one pool the queues
-//! share, linked oldest first. A read ([`take`]) answers, in the documented order: the messages
-//! sent to the thread's windows; the posted messages its filter takes; the WM_QUIT PostQuitMessage
-//! left; a WM_PAINT for a window of the thread's with an update region ([`super::paint`]); a
-//! WM_TIMER for one of its timers that came due ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
+//! share, linked oldest first, in two lanes: the messages posted to the thread, and the input
+//! messages the keyboard's keystrokes became ([`super::input`], [`post_input`]). A read ([`take`])
+//! answers, in the documented order: the messages sent to the thread's windows; the posted
+//! messages its filter takes; the input messages it takes (a key message read updates the
+//! thread's key state); the WM_QUIT PostQuitMessage left; a WM_PAINT for a window of the thread's
+//! with an update region ([`super::paint`]); a WM_TIMER for one of its timers that came due
+//! ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
 //! are never posted: they are made when a read finds nothing posted before them, as Windows 2000
 //! makes them. A read that finds nothing for its filter blocks GetMessage's caller on its queue's
 //! event, set by whatever gives the queue something: a post, a send, an answer, a timer set, an
@@ -66,6 +69,7 @@ use rtl::user::{
     HWND_BROADCAST,
     QS_HOTKEY,
     QS_INPUT,
+    QS_KEY,
     QS_PAINT,
     QS_POSTMESSAGE,
     QS_SENDMESSAGE,
@@ -165,6 +169,8 @@ struct Queue {
     client_id: u32,
     /// The posted messages, oldest first.
     posted: List,
+    /// The input messages, oldest first.
+    input: List,
     /// The sent messages not handed out yet, oldest first.
     sent: List,
     /// The sent messages handed out and not answered yet, innermost first.
@@ -182,6 +188,7 @@ impl Queue {
         key: None,
         client_id: 0,
         posted: List::EMPTY,
+        input: List::EMPTY,
         sent: List::EMPTY,
         receiving: None,
         awaiting: None,
@@ -193,7 +200,19 @@ impl Queue {
 #[derive(Clone, Copy)]
 struct Posted {
     msg: Msg,
+    /// An input message's key, as the key state names it (the side's key for Shift, Ctrl and Alt,
+    /// where the message names the generic one); 0 for a message posted to the thread.
+    key: u8,
     next: Option<u16>,
+}
+
+/// The two lanes of a queue's entries from the posted messages' pool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    /// The messages posted to the thread or its windows.
+    Posted,
+    /// The input messages the keyboard's keystrokes became.
+    Input,
 }
 
 impl Posted {
@@ -206,6 +225,7 @@ impl Posted {
             time: 0,
             pt: Point { x: 0, y: 0 },
         },
+        key: 0,
         next: None,
     };
 }
@@ -404,32 +424,50 @@ impl Queues {
 
     // --- The posted messages' pool ---------------------------------------------------------------
 
+    /// The queue at `index`'s list of the lane `lane`.
+    fn lane(&mut self, index: u16, lane: Lane) -> &mut List {
+        let queue = &mut self.queues[index as usize];
+        match lane {
+            Lane::Posted => &mut queue.posted,
+            Lane::Input => &mut queue.input,
+        }
+    }
+
     /// Append `msg` to the queue's posted messages; false when the pool is exhausted.
     fn push_posted(&mut self, id: QueueId, msg: Msg) -> bool {
+        self.push(id, Lane::Posted, msg, 0)
+    }
+
+    /// Append `msg` (an input message's key `key`) to the queue's lane `lane`; false when the pool
+    /// is exhausted.
+    fn push(&mut self, id: QueueId, lane: Lane, msg: Msg, key: u8) -> bool {
         let Some(entry) = self.free_posted else {
             return false;
         };
         self.free_posted = self.posted[entry as usize].next;
-        self.posted[entry as usize] = Posted { msg, next: None };
-        let queue = &mut self.queues[id.index as usize];
-        match queue.posted.tail {
+        self.posted[entry as usize] = Posted {
+            msg,
+            key,
+            next: None,
+        };
+        match self.lane(id.index, lane).tail {
             Some(tail) => self.posted[tail as usize].next = Some(entry),
-            None => queue.posted.head = Some(entry),
+            None => self.lane(id.index, lane).head = Some(entry),
         }
-        queue.posted.tail = Some(entry);
+        self.lane(id.index, lane).tail = Some(entry);
         self.wake(id);
         true
     }
 
-    /// Take `entry` out of the queue's posted messages (`previous` is the entry before it, none
-    /// for the head) and give it back to the pool.
-    fn unlink_posted(&mut self, index: u16, previous: Option<u16>, entry: u16) {
+    /// Take `entry` out of the queue's lane `lane` (`previous` is the entry before it, none for
+    /// the head) and give it back to the pool.
+    fn unlink_posted(&mut self, index: u16, lane: Lane, previous: Option<u16>, entry: u16) {
         let next = self.posted[entry as usize].next;
-        let list = &mut self.queues[index as usize].posted;
         match previous {
             Some(p) => self.posted[p as usize].next = next,
-            None => list.head = next,
+            None => self.lane(index, lane).head = next,
         }
+        let list = self.lane(index, lane);
         if list.tail == Some(entry) {
             list.tail = previous;
         }
@@ -440,18 +478,20 @@ impl Queues {
         self.free_posted = Some(entry);
     }
 
-    /// Drop every posted message of the queue at `index` that `drop` picks.
+    /// Drop every posted and input message of the queue at `index` that `drop` picks.
     fn purge_posted(&mut self, index: u16, drop: impl Fn(&Msg) -> bool) {
-        let mut previous = None;
-        let mut at = self.queues[index as usize].posted.head;
-        while let Some(entry) = at {
-            let next = self.posted[entry as usize].next;
-            if drop(&self.posted[entry as usize].msg) {
-                self.unlink_posted(index, previous, entry);
-            } else {
-                previous = Some(entry);
+        for lane in [Lane::Posted, Lane::Input] {
+            let mut previous = None;
+            let mut at = self.lane(index, lane).head;
+            while let Some(entry) = at {
+                let next = self.posted[entry as usize].next;
+                if drop(&self.posted[entry as usize].msg) {
+                    self.unlink_posted(index, lane, previous, entry);
+                } else {
+                    previous = Some(entry);
+                }
+                at = next;
             }
-            at = next;
         }
     }
 
@@ -742,6 +782,35 @@ fn post_to(windows: &mut Windows, thread: ThreadId, msg: Msg) -> Result<(), NtSt
     }
 }
 
+/// An input message for the thread record `thread`'s queue: `msg`, a key message whose key the key
+/// state names `key` ([`super::input`]). A key-down that repeats its key (`repeat`) while the
+/// queue's last input message, not read yet, is the same message of the same key for the same
+/// window raises that message's repeat count (lParam's low word) instead, as Windows 2000's queue
+/// folds a held key's repeats. Nothing when the thread has no queue; the message is lost when the
+/// pool is full.
+pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, repeat: bool) {
+    let queues = &mut windows.queues;
+    let Some(id) = queues.queue_of(thread) else {
+        return;
+    };
+    if repeat {
+        if let Some(tail) = queues.queues[id.index as usize].input.tail {
+            let last = &mut queues.posted[tail as usize].msg;
+            let count = last.lparam as u32 & 0xFFFF;
+            if last.hwnd == msg.hwnd
+                && last.message == msg.message
+                && last.wparam == msg.wparam
+                && count < 0xFFFF
+            {
+                last.lparam = ((last.lparam as u32 & !0xFFFF) | (count + 1)) as LParam;
+                queues.wake(id);
+                return;
+            }
+        }
+    }
+    queues.push(id, Lane::Input, msg, key);
+}
+
 /// PostQuitMessage: the caller's next read that finds nothing posted before it makes a WM_QUIT
 /// with the exit code `code`.
 pub fn post_quit(windows: &mut Windows, caller: ThreadId, code: u32) {
@@ -902,19 +971,38 @@ pub fn take(
             let msg = queues.posted[entry as usize].msg;
             if filter.takes(msg.hwnd, msg.message) {
                 if remove {
-                    queues.unlink_posted(id.index, previous, entry);
+                    queues.unlink_posted(id.index, Lane::Posted, previous, entry);
                 }
                 return Ok(Taken::Message(msg));
             }
             previous = Some(entry);
             at = queues.posted[entry as usize].next;
         }
+    }
 
-        // The input messages (QS_INPUT) come here, after the posted ones: the seam where the
-        // keyboard's and the mouse's events land as WM_KEYDOWN and the like. There are none: the
-        // keyboard's events go to the console.
+    // The input messages: the keyboard's (there is no mouse yet). A key message taken out is the
+    // next step of the thread's key state.
+    if filter.looks_at(QS_KEY) {
+        let queues = &mut windows.queues;
+        let mut previous = None;
+        let mut at = queues.queues[id.index as usize].input.head;
+        while let Some(entry) = at {
+            let Posted { msg, key, .. } = queues.posted[entry as usize];
+            if filter.takes(msg.hwnd, msg.message) {
+                if remove {
+                    queues.unlink_posted(id.index, Lane::Input, previous, entry);
+                    super::input::read(windows, caller, &msg, key);
+                }
+                return Ok(Taken::Message(msg));
+            }
+            previous = Some(entry);
+            at = queues.posted[entry as usize].next;
+        }
+    }
 
-        // WM_QUIT, whatever the range: a thread message.
+    // WM_QUIT, whatever the range: a thread message.
+    if filter.looks_at(QS_POSTMESSAGE) {
+        let queues = &mut windows.queues;
         if let Some(code) = queues.queues[id.index as usize].quit {
             if filter.takes_window(0) {
                 if remove {

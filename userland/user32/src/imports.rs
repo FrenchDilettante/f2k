@@ -326,6 +326,19 @@ mod raw {
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserDestroyAcceleratorTable"]
         pub fn NtUserDestroyAcceleratorTable(table: usize, destroyed: *mut u32) -> u32;
+        // The keyboard input (kernel/src/win32k/input.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserSendInput"]
+        pub fn NtUserSendInput(count: u32, inputs: usize, size: i32, sent: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetKeyState"]
+        pub fn NtUserGetKeyState(vk: i32, state: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetAsyncKeyState"]
+        pub fn NtUserGetAsyncKeyState(vk: i32, state: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetKeyboardState"]
+        pub fn NtUserGetKeyboardState(keys: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetKeyboardState"]
+        pub fn NtUserSetKeyboardState(keys: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserTranslateMessage"]
+        pub fn NtUserTranslateMessage(msg: *const Msg, flags: u32, translated: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserTranslateAccelerator"]
         pub fn NtUserTranslateAccelerator(
             window: usize,
@@ -1687,6 +1700,55 @@ pub fn get_icon_info(cursor: usize) -> Result<CursorData, NtStatus> {
 pub fn destroy_cursor(cursor: usize) -> Result<(), NtStatus> {
     // SAFETY: a handle, no memory.
     checked(unsafe { raw::NtUserDestroyCursor(cursor) })
+}
+
+// --- win32k: the keyboard input ------------------------------------------------------------------
+
+/// NtUserSendInput: the `count` INPUT records of `size` bytes each at `inputs` (the caller's,
+/// read by the kernel) run; how many ran.
+pub fn send_input(count: u32, inputs: usize, size: i32) -> Result<u32, NtStatus> {
+    let mut sent = 0;
+    // SAFETY: the kernel reads the records through its fault-tolerant copies, and writes the
+    // local.
+    checked(unsafe { raw::NtUserSendInput(count, inputs, size, &mut sent) })?;
+    Ok(sent)
+}
+
+/// NtUserGetKeyState: the calling thread's state of the key `vk`, as GetKeyState answers it.
+pub fn get_key_state(vk: i32) -> Result<u16, NtStatus> {
+    let mut state = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetKeyState(vk, &mut state) })?;
+    Ok(state as u16)
+}
+
+/// NtUserGetAsyncKeyState: the system's state of the key `vk`, as GetAsyncKeyState answers it.
+pub fn get_async_key_state(vk: i32) -> Result<u16, NtStatus> {
+    let mut state = 0;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetAsyncKeyState(vk, &mut state) })?;
+    Ok(state as u16)
+}
+
+/// NtUserGetKeyboardState: the calling thread's key state into the caller's 256 bytes.
+pub fn get_keyboard_state(keys: UserBuffer<'_>) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the caller's buffer through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserGetKeyboardState(keys.address()) })
+}
+
+/// NtUserSetKeyboardState: the calling thread's key state from the caller's 256 bytes at `keys`.
+pub fn set_keyboard_state(keys: usize) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the caller's array through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserSetKeyboardState(keys) })
+}
+
+/// NtUserTranslateMessage: the character `msg`'s key makes posted for its window; whether one
+/// was.
+pub fn translate_message(msg: &Msg) -> Result<bool, NtStatus> {
+    let mut translated = 0;
+    // SAFETY: the kernel reads the local MSG and writes the local answer.
+    checked(unsafe { raw::NtUserTranslateMessage(msg, 0, &mut translated) })?;
+    Ok(translated != 0)
 }
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given,
