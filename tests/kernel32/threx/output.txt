@@ -1,0 +1,24 @@
+# F2K capture of threx (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Wed 11/11/2026  0:28:18.65
+threx F2KT-SOURCE-CRC=0xEB7883B0
+>>> threx.exe unhandled
+== unhandled
+<<< exit code=-1073741819
+>>> threx.exe context
+== context
+ctxflags=0x0001003F fp=yes dbg=yes
+threx: done
+<<< exit code=0
+>>> threx.exe mainret
+== mainret
+main returning: thread=ok
+threx: done
+<<< exit code=0
+>>> threx.exe threadstart
+== threadstart
+NtQueryInformationThread(9): status=0x00000000 err=- recorded=yes
+threx: done
+<<< exit code=0
