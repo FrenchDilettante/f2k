@@ -76,17 +76,9 @@ fn page_span(address: u32, size: u32) -> (u32, u64) {
     )
 }
 
-/// NtAllocateVirtualMemory's rules: a reservation (committed whole when MEM_COMMIT rides along),
-/// or a commit inside a private one (a commit without an address reserves too). The base and the
-/// size the call settled on: the reservation's, or the committed pages'.
-pub fn allocate(
-    space: &mut AddressSpace,
-    pages: &mut impl Pages,
-    address: u32,
-    size: u32,
-    kind: u32,
-    protect: u32,
-) -> Result<(u32, u32), NtStatus> {
+/// NtAllocateVirtualMemory's argument checks, before anything is looked at: the allocation type,
+/// the protection, the address, the size.
+fn check_allocation(address: u32, size: u32, kind: u32, protect: u32) -> Result<(), NtStatus> {
     let known = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_RESET;
     if kind & !known != 0 || kind & (MEM_COMMIT | MEM_RESERVE) == 0 {
         return Err(STATUS_INVALID_PARAMETER_5);
@@ -100,6 +92,77 @@ pub fn allocate(
     if size == 0 {
         return Err(STATUS_INVALID_PARAMETER_4);
     }
+    Ok(())
+}
+
+/// A commit inside a mapped view: its pages (the first, and the bytes they span) and what the view
+/// maps, for the section to settle ([`settle_view_commit`]); none for a view the space records no
+/// mapping for (an image the kernel's loader mapped).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewCommit {
+    pub base: u32,
+    pub size: u32,
+    pub mapping: Option<crate::ob::Mapping>,
+}
+
+/// Whether an NtAllocateVirtualMemory call is a commit inside a mapped view (MEM_COMMIT at an
+/// address a view or an image holds, no reservation asked), which Windows 2000 takes rather than
+/// refuses as conflicting: the view's pages it names, which must stay inside the view
+/// (STATUS_CONFLICTING_ADDRESSES otherwise). None for every other call ([`allocate`]'s). The
+/// argument checks come first, as for any call.
+pub fn view_commit(
+    space: &AddressSpace,
+    address: u32,
+    size: u32,
+    kind: u32,
+    protect: u32,
+) -> Result<Option<ViewCommit>, NtStatus> {
+    check_allocation(address, size, kind, protect)?;
+    if kind & MEM_RESERVE != 0 || address == 0 {
+        return Ok(None);
+    }
+    let Some(region) = space
+        .region_at(address)
+        .filter(|region| region.kind != Kind::Private)
+    else {
+        return Ok(None);
+    };
+    let (start, end) = page_span(address, size);
+    if end > region.base as u64 + region.size as u64 {
+        return Err(STATUS_CONFLICTING_ADDRESSES);
+    }
+    Ok(Some(ViewCommit {
+        base: start,
+        size: (end - start as u64) as u32,
+        mapping: space.view_at(region.base),
+    }))
+}
+
+/// A commit inside a view, settled by what the view maps (`paging_file`: whether it is a section of
+/// the paging file): a paging-file section's pages are committed with the section, so the commit
+/// succeeds over them as they are — its base and size; a file's pages (a data view's, an image's)
+/// are the file's, STATUS_ALREADY_COMMITTED. The view keeps its own protection either way.
+pub fn settle_view_commit(commit: ViewCommit, paging_file: bool) -> Result<(u32, u32), NtStatus> {
+    if paging_file {
+        Ok((commit.base, commit.size))
+    } else {
+        Err(STATUS_ALREADY_COMMITTED)
+    }
+}
+
+/// NtAllocateVirtualMemory's rules: a reservation (committed whole when MEM_COMMIT rides along),
+/// or a commit inside a private one (a commit without an address reserves too). The base and the
+/// size the call settled on: the reservation's, or the committed pages'. A commit inside a view is
+/// [`view_commit`]'s.
+pub fn allocate(
+    space: &mut AddressSpace,
+    pages: &mut impl Pages,
+    address: u32,
+    size: u32,
+    kind: u32,
+    protect: u32,
+) -> Result<(u32, u32), NtStatus> {
+    check_allocation(address, size, kind, protect)?;
     let refused = |error| match error {
         VmError::InvalidAddress => STATUS_CONFLICTING_ADDRESSES,
         VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
@@ -547,7 +610,9 @@ fn check_process(_call: &mut NtCall, process: Handle, _access: u32) -> Result<()
     Err(STATUS_INVALID_HANDLE)
 }
 
-/// NtAllocateVirtualMemory (see [`allocate`]); the zero-bits constraint is not applied.
+/// NtAllocateVirtualMemory (see [`allocate`], and [`view_commit`] for a commit inside a view,
+/// whose section is consulted once the address space is released: its lock is never held across
+/// the object directory's); the zero-bits constraint is not applied.
 pub fn allocate_virtual_memory(
     call: &mut NtCall,
     process: Handle,
@@ -558,12 +623,35 @@ pub fn allocate_virtual_memory(
     protect: u32,
 ) -> NtResult {
     let (address, length) = (capture(base)?, capture(size)?);
-    let (start, extent) = with_space(call, process, |space, pages| {
-        allocate(space, pages, address, length, kind, protect)
+    let allocated = with_space(call, process, |space, pages| {
+        match view_commit(space, address, length, kind, protect)? {
+            Some(commit) => Ok(Err(commit)),
+            None => allocate(space, pages, address, length, kind, protect).map(Ok),
+        }
     })?;
+    let (start, extent) = match allocated {
+        Ok(range) => range,
+        Err(commit) => settle_view_commit(commit, paging_file(commit.mapping))?,
+    };
     base.write(start)?;
     size.write(extent)?;
     Ok(STATUS_SUCCESS)
+}
+
+/// Whether a view maps a section of the paging file: a data section's own record says; an image's
+/// segment (or an image without a recorded view) is its file's. A section gone meanwhile (the view
+/// unmapped by another thread) answers as a file's.
+fn paging_file(mapping: Option<crate::ob::Mapping>) -> bool {
+    #[cfg(target_arch = "x86")]
+    if let Some(crate::ob::Mapping::Section(section)) = mapping {
+        return crate::ob::locked(|directory| {
+            directory
+                .section(section)
+                .is_some_and(|record| record.paging_file)
+        });
+    }
+    let _ = mapping;
+    false
 }
 
 /// NtFreeVirtualMemory (see [`free`]).
@@ -1008,6 +1096,72 @@ mod tests {
             error(free(&mut space, &mut pages, 0x6000_0000, 0, MEM_RELEASE)),
             487,
             "nothing there"
+        );
+    }
+
+    /// A commit inside a mapped view (the vmedge fixture's commitview): its pages, for the section
+    /// to settle — a paging-file section's commit succeeds over them, a file's is
+    /// STATUS_ALREADY_COMMITTED (ERROR_ACCESS_DENIED, the capture's 5); a range running past the
+    /// view conflicts; a reservation, a private region or free memory is not a view commit, and
+    /// the argument checks come first.
+    #[test]
+    fn a_commit_inside_a_view_is_the_sections() {
+        use crate::ob::{Mapping, ObjectId, ObjectType};
+        let mut space = AddressSpace::new();
+        let rw = vm::PAGE_READWRITE;
+        let view = space.reserve(None, 0x1_0000, rw, Kind::Mapped).unwrap();
+        let section = Mapping::Section(ObjectId {
+            kind: ObjectType::Section,
+            index: 3,
+            generation: 0,
+        });
+        assert!(space.add_view(view, section));
+        let commit = view_commit(&space, view + 0x1800, 0x1000, MEM_COMMIT, rw).unwrap();
+        assert_eq!(
+            commit,
+            Some(ViewCommit {
+                base: view + 0x1000,
+                size: 0x2000,
+                mapping: Some(section)
+            })
+        );
+        let commit = commit.unwrap();
+        assert_eq!(
+            settle_view_commit(commit, true),
+            Ok((view + 0x1000, 0x2000))
+        );
+        assert_eq!(
+            settle_view_commit(commit, false),
+            Err(STATUS_ALREADY_COMMITTED)
+        );
+        assert_eq!(rtl::status::dos_error(STATUS_ALREADY_COMMITTED.0), 5);
+        assert_eq!(
+            view_commit(&space, view + 0xF000, 0x2000, MEM_COMMIT, rw),
+            Err(STATUS_CONFLICTING_ADDRESSES)
+        );
+        assert_eq!(
+            view_commit(&space, view, 0x1000, MEM_COMMIT, 7),
+            Err(STATUS_INVALID_PAGE_PROTECTION)
+        );
+        assert_eq!(
+            view_commit(&space, view, 0x1000, MEM_COMMIT | MEM_RESERVE, rw),
+            Ok(None)
+        );
+        let private = space.reserve(None, 0x1_0000, rw, Kind::Private).unwrap();
+        assert_eq!(
+            view_commit(&space, private, 0x1000, MEM_COMMIT, rw),
+            Ok(None)
+        );
+        assert_eq!(
+            view_commit(&space, 0x6000_0000, 0x1000, MEM_COMMIT, rw),
+            Ok(None)
+        );
+        let image = space.reserve(None, 0x1_0000, rw, Kind::Image).unwrap();
+        assert_eq!(
+            view_commit(&space, image, 0x1000, MEM_COMMIT, rw)
+                .map(|commit| commit.unwrap().mapping),
+            Ok(None),
+            "an image the space records no view of"
         );
     }
 

@@ -352,6 +352,15 @@ impl AddressSpace {
         }
     }
 
+    /// What the view at `base` maps; none when no view starts there.
+    pub fn view_at(&self, base: u32) -> Option<crate::ob::Mapping> {
+        self.views
+            .iter()
+            .flatten()
+            .find(|view| view.base == base)
+            .map(|view| view.mapping)
+    }
+
     /// Forget the view at `base`, returning what it mapped; none when no view starts there.
     pub fn take_view(&mut self, base: u32) -> Option<crate::ob::Mapping> {
         let slot = self
