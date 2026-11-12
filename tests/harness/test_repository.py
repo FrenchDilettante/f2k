@@ -36,6 +36,16 @@ def fixture_source(fixture: str) -> Path:
     return cpp if cpp.is_file() else directory / f"{fixture}.c"
 
 
+def fixture_sources(fixture: str) -> list[Path]:
+    """Every source a fixture's binary is built from, in the order build.bat stamps them: its own,
+    then a C++ fixture's other translation units by name (crt/cxxeh's cxxehopt.cpp). A C fixture's
+    other sources are its companion programs', stamped by none."""
+    source = fixture_source(fixture)
+    if source.suffix != ".cpp":
+        return [source]
+    return [source, *sorted(path for path in source.parent.glob("*.cpp") if path != source)]
+
+
 # The sectioned fixtures declared ahead of their real-machine files (f2kboot.awaited) are left out
 # of the checks on those files.
 SECTIONED = [name for name in DECLARED
@@ -261,19 +271,19 @@ def test_the_capture_script_lists_bares_modes():
 
 
 def source_stamp(fixture: str) -> str:
-    """The stamp build.bat computes (common/srcsum.c): the CRC-32 of the source and f2kt.h, LF."""
+    """The stamp build.bat computes (common/srcsum.c): the CRC-32 of the sources and f2kt.h, LF."""
     data = b"".join(
         path.read_bytes().replace(b"\r\n", b"\n")
-        for path in (fixture_source(fixture), TESTS / "common" / "f2kt.h")
+        for path in (*fixture_sources(fixture), TESTS / "common" / "f2kt.h")
     )
     return f"0x{zlib.crc32(data):08X}"
 
 
 @pytest.mark.parametrize("fixture", LISTED)
 def test_binaries_are_built_from_the_checked_in_source(fixture: str):
-    """A binary carries the stamp of the source it was built from (F2KT-SOURCE-CRC, common/f2kt.h):
-    it must be the checked-in source's, so its section table (--list), and its behavior, are the
-    source's. The capture records the stamp of the binary it ran."""
+    """A binary carries the stamp of the sources it was built from (F2KT-SOURCE-CRC, common/f2kt.h):
+    it must be the checked-in sources', so its section table (--list), and its behavior, are the
+    sources'. The capture records the stamp of the binary it ran."""
     binary = (f2kboot.fixture_directory(fixture) / f"{fixture}.exe").read_bytes()
     found = re.search(rb"F2KT-SOURCE-CRC=(0x[0-9A-F]{8}|unknown)", binary)
     if found is None or found.group(1) == b"unknown":

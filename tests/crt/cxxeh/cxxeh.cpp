@@ -53,6 +53,11 @@
  *             classes, before both ways; typeid of the static types
  *             (int, a pointer, the base pointer itself); typeid of
  *             *(Base *)0: the bad_typeid exception and its what()
+ *   prolog    (cxxehopt.cpp, compiled with /O1, so its frames are
+ *             _EH_prolog's) whether the program imports msvcrt's
+ *             _EH_prolog; throwing past a local, a function's own try, a
+ *             __thiscall member function's this across _EH_prolog,
+ *             nesting, throw;, and frames returning with no exception
  *   purecall  a child (this program, run with "kid purecall") whose base
  *             class's constructor calls a pure virtual function, reaching
  *             _purecall (MSVC 6 has no _set_purecall_handler): what the
@@ -72,8 +77,11 @@
  * terminated). They set SEM_NOGPFAULTERRORBOX first, so nothing waits
  * for a person.
  *
- * Build (real Windows 2000 machine, MSVC 6; tests\build.bat cxxeh):
- *   cl /nologo /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxeh.cpp
+ * Build (real Windows 2000 machine, MSVC 6; tests\build.bat cxxeh), the
+ * prolog section's cxxehopt.cpp first, with /O1, then this file without
+ * optimisation, linking it:
+ *   cl /nologo /c /O1 /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxehopt.cpp
+ *   cl /nologo /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxeh.cpp cxxehopt.obj
  */
 
 #include "../common/f2kt.h"
@@ -1050,6 +1058,11 @@ static void sec_abort(void)
     kid("abort");
 }
 
+/* --- prolog -------------------------------------------------------- */
+
+/* In cxxehopt.cpp, compiled with /O1. */
+void sec_prolog(void);
+
 static const section_t sections[] = {
     { "catch", sec_catch, F2KT_ALWAYS },
     { "derived", sec_derived, F2KT_ALWAYS },
@@ -1058,6 +1071,7 @@ static const section_t sections[] = {
     { "unwind", sec_unwind, F2KT_ALWAYS },
     { "seh", sec_seh, F2KT_ALWAYS },
     { "typeid", sec_typeid, F2KT_ALWAYS },
+    { "prolog", sec_prolog, F2KT_ALWAYS },
     { "purecall", sec_purecall, F2KT_ALWAYS },
     { "terminate", sec_terminate, F2KT_ALWAYS },
     { "abort", sec_abort, F2KT_ALWAYS },

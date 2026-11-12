@@ -1,8 +1,10 @@
 # cxxeh: one test per block of the real-machine capture (output.txt); see tests/README.md. The
 # corpus's one C++ fixture (cxxeh.cpp), built with /GX /GR /MD. Its purecall, terminate and abort
 # sections run the program itself as a child ("cxxeh kid <mode>", not a section), its standard output
-# and error one pipe the section reads once the child has ended; nothing it prints is an address.
-description = "cxxeh - C++ exception handling through msvcrt.dll under /MD (cxxeh.cpp, /GX /GR): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too), catch (...), rethrow, nested try blocks, the destructors unwinding runs (locals, temporaries, partly built objects and arrays), a C++ exception through __try/__except and __finally (0xE06D7363 in the filter), typeid and type_info's name, raw_name, ==, != and before, bad_typeid; and in children, _purecall, terminate with and without set_terminate's handler, an exception nothing catches, and abort."
+# and error one pipe the section reads once the child has ended; nothing it prints is an address. Its
+# prolog section is cxxehopt.cpp, compiled with /O1 so that its functions call msvcrt's _EH_prolog
+# for their frames; it prints whether the program imports _EH_prolog, which shows they do.
+description = "cxxeh - C++ exception handling through msvcrt.dll under /MD (cxxeh.cpp, /GX /GR): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too), catch (...), rethrow, nested try blocks, the destructors unwinding runs (locals, temporaries, partly built objects and arrays), a C++ exception through __try/__except and __finally (0xE06D7363 in the filter), typeid and type_info's name, raw_name, ==, != and before, bad_typeid; the frames msvcrt's _EH_prolog builds for functions compiled with /O1 (cxxehopt.cpp): an exception thrown past a local, a function's own try and catch, a __thiscall member function's this across the call, three frames, throw; from a catch block, and frames returning with no exception; and in children, _purecall, terminate with and without set_terminate's handler, an exception nothing catches, and abort."
 kind = "sectioned"
 gate = true
 
@@ -36,3 +38,11 @@ terminate = [
     "msvcrt._CxxThrowException",
 ]
 abort = ["msvcrt.abort"]
+# prolog's frames call _EH_prolog and __CxxFrameHandler (through their handlers), its throws
+# _CxxThrowException, and it reads its own image's import table from GetModuleHandleA.
+prolog = [
+    "msvcrt._EH_prolog",
+    "msvcrt.__CxxFrameHandler",
+    "msvcrt._CxxThrowException",
+    "kernel32.GetModuleHandleA",
+]
