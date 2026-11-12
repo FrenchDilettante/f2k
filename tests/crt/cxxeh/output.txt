@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:59:45.13
-cxxeh F2KT-SOURCE-CRC=0x274223DB
+# date: Thu 11/12/2026 10:40:33.39
+cxxeh F2KT-SOURCE-CRC=0xB5A3BE96
 >>> cxxeh.exe catch
 == catch
 throw 42, catch (int v): caught, v=42
@@ -101,6 +101,21 @@ typeid(More).name() [class More], typeid(Other).name() [class Other]
 typeid(int).name() [int], typeid(i).name() [int], typeid(p).name() [class Base *], typeid(Derived *).name() [class Derived *]
 typeid(int) == typeid(i) 1, typeid(int) == typeid(long) 0
 typeid(*(Base *)0): bad_typeid caught, what() [Attempted a typeid of NULL pointer!]
+cxxeh: done
+<<< exit code=0
+>>> cxxeh.exe prolog
+== prolog
+imports _EH_prolog: yes
+a local, then a call that throws 1: +local throw 1 -local caught 1
+a try and catch of the function's own, throw 2: +before the try +in the try throw 2 -in the try own_try caught 2 -before the try returned 20
+Tally::add(5) on a Tally of 10: +in add this right -in add returned 15
+Tally::add(-3), which throws it: +in add this right throw -3 -in add caught -3
+  the total: 15
+Tally::add_caught(-4), add throwing it into add_caught's catch block: +in add_caught +in add this right throw -4 -in add add_caught caught -4 this right in the catch block -in add_caught returned 15
+three frames: deep throws 7, middle's catch (double) passes it, outer's catch (int) takes it: +outer +middle +deep throw 7 -deep -middle outer caught 7 -outer returned 8
+throw; from a catch block, an object in its scope: +rethrows throw 8 +in the handler rethrowing -in the handler -rethrows caught 8
+two frames returning with no exception: +quiet +quiet inner +quiet try no throw -quiet try -quiet inner -quiet returned 20
+  the registration list as before: yes
 cxxeh: done
 <<< exit code=0
 >>> cxxeh.exe purecall
