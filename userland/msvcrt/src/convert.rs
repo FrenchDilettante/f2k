@@ -1,5 +1,5 @@
 //! Number conversions: _ultoa, _itow, _ltow and _ultow, _wtol and _wtoi, atoi and atol, wcstol,
-//! wcstoul and strtoul, as wide's capture pins them.
+//! wcstoul and strtoul, and wcstod, as wide's capture pins them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
@@ -11,6 +11,8 @@
 //!   over a narrow string, its blanks the LC_CTYPE locale's spaces (MSDN: atoi stops at the first
 //!   character that cannot be part of the number). _wtoi is _wtol and atol is atoi: an int is a
 //!   long on Win32.
+//! - wcstod reads the decimal form alone (its rules at [`wcstod`]), its value correctly rounded, as
+//!   the capture's bits are (0.1 is 0x3FB999999999999A).
 //! - _ultoa and _ultow write the digits in any radix from 2 to 36, letters in lower case. _itow and
 //!   _ltow write a negative value with a `-` in radix 10 and as unsigned in any other (MSDN: "If
 //!   radix equals 10 and value is negative, the first character of the stored string is the minus
@@ -25,7 +27,7 @@ use rtl::cstr::bytes_until_nul;
 use crate::ctype;
 use crate::edge::{self, WideUnit};
 use crate::scan::digit_value;
-use crate::thread::{set_errno, ERANGE};
+use crate::thread::{set_errno, EILSEQ, ERANGE};
 
 /// A narrow string's byte at `index` as a unit, 0 past its end.
 fn unit_of(string: &[u8], index: usize) -> u16 {
@@ -235,6 +237,196 @@ fn decimal(at: impl Fn(usize) -> u16) -> i32 {
     } else {
         value
     }
+}
+
+/// The significant digits wcstod keeps for the conversion: enough to decide the rounding of any
+/// double (its exact halfway points have at most 767), one more standing for the nonzero digits
+/// beyond them.
+const KEPT_DIGITS: usize = 768;
+
+/// The text wcstod hands core's correctly rounded conversion: the kept digits, `e`, and the
+/// exponent (sign and at most seven digits).
+const REAL_TEXT: usize = KEPT_DIGITS + 1 + 1 + 1 + 7;
+
+/// A real number's digits, gathered as wcstod reads them: its significant digits (leading zeros
+/// dropped) and the power of ten they are scaled by.
+struct Digits {
+    text: [u8; REAL_TEXT],
+    count: usize,
+    exponent: i64,
+    /// Whether a nonzero digit came past the kept ones.
+    sticky: bool,
+}
+
+impl Digits {
+    /// A digit of the integer part (`fraction` false) or of the fraction.
+    fn push(&mut self, digit: u8, fraction: bool) {
+        if self.count == 0 && digit == b'0' {
+            if fraction {
+                self.exponent -= 1;
+            }
+            return;
+        }
+        if self.count < KEPT_DIGITS - 1 {
+            self.text[self.count] = digit;
+            self.count += 1;
+            if fraction {
+                self.exponent -= 1;
+            }
+        } else {
+            self.sticky |= digit != b'0';
+            if !fraction {
+                self.exponent += 1;
+            }
+        }
+    }
+
+    /// The magnitude, correctly rounded (core's conversion); 0 when every digit was 0.
+    fn value(mut self, power: i64) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        if self.sticky {
+            self.text[self.count] = b'1';
+            self.count += 1;
+            self.exponent -= 1;
+        }
+        // Past ±10^6 the answer is an infinity or zero whatever the digits.
+        let exponent = self.exponent.saturating_add(power).clamp(-999_999, 999_999);
+        let mut at = self.count;
+        self.text[at] = b'e';
+        at += 1;
+        if exponent < 0 {
+            self.text[at] = b'-';
+            at += 1;
+        }
+        let mut digits = [0u8; 7];
+        let mut length = 0;
+        let mut rest = exponent.unsigned_abs();
+        loop {
+            digits[length] = b'0' + (rest % 10) as u8;
+            length += 1;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        for &digit in digits[..length].iter().rev() {
+            self.text[at] = digit;
+            at += 1;
+        }
+        core::str::from_utf8(&self.text[..at])
+            .ok()
+            .and_then(|text| text.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    }
+}
+
+/// The smallest normal double: wcstod's results below it underflow.
+const SMALLEST_NORMAL: f64 = f64::MIN_POSITIVE;
+
+/// wcstod's work over the string's characters, each a narrow one (`at`, 0 past the end): the value,
+/// whether it overflowed or underflowed, and the end's index (0 without a digit).
+fn real(at: impl Fn(usize) -> u8) -> (f64, bool, usize) {
+    let is_digit = |byte: u8| byte.is_ascii_digit();
+    let mut i = 0;
+    while at(i) != 0 && ctype::byte_class(at(i)) & ctype::SPACE != 0 {
+        i += 1;
+    }
+    let negative = at(i) == b'-';
+    if negative || at(i) == b'+' {
+        i += 1;
+    }
+    let mut digits = Digits {
+        text: [0; REAL_TEXT],
+        count: 0,
+        exponent: 0,
+        sticky: false,
+    };
+    let mut seen = false;
+    while is_digit(at(i)) {
+        digits.push(at(i), false);
+        seen = true;
+        i += 1;
+    }
+    if at(i) == b'.' {
+        i += 1;
+        while is_digit(at(i)) {
+            digits.push(at(i), true);
+            seen = true;
+            i += 1;
+        }
+    }
+    if !seen {
+        return (0.0, false, 0);
+    }
+    let mut power = 0i64;
+    if matches!(at(i), b'e' | b'E' | b'd' | b'D') {
+        let mut j = i + 1;
+        let minus = at(j) == b'-';
+        if minus || at(j) == b'+' {
+            j += 1;
+        }
+        if is_digit(at(j)) {
+            while is_digit(at(j)) {
+                power = power
+                    .saturating_mul(10)
+                    .saturating_add(i64::from(at(j) - b'0'));
+                j += 1;
+            }
+            if minus {
+                power = -power;
+            }
+            i = j;
+        }
+    }
+    let nonzero = digits.count != 0;
+    let mut value = digits.value(power);
+    let out_of_range = value.is_infinite() || (nonzero && value < SMALLEST_NORMAL);
+    if nonzero && value < SMALLEST_NORMAL {
+        value = 0.0;
+    }
+    (if negative { -value } else { value }, out_of_range, i)
+}
+
+/// wcstod: the string's double, the end of its number stored in `end`, as wide's capture pins it.
+/// The string is read as narrow characters in the LC_CTYPE locale (a character the locale has no
+/// narrow form of, anywhere in it, answers 0 with errno EILSEQ and the end the string itself);
+/// then blanks (the locale's spaces), a sign, digits with a `.`, and an exponent after `e`, `E`,
+/// `d` or `D` when digits follow it. No digit answers 0, the end the string itself (hex, `inf`
+/// and `nan` are not read). A value past the largest double answers ±HUGE_VAL, one below the
+/// smallest normal double 0 (a denormal is not kept), errno ERANGE either way, the number all
+/// consumed.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated; `end` is null or a pointer's storage.
+#[unsafe(export_name = "f2k_export_wcstod")]
+pub unsafe extern "C" fn wcstod(string: *const u16, end: *mut *const u16) -> f64 {
+    // SAFETY: the caller's string.
+    let units = unsafe { edge::wide(string) };
+    if units
+        .iter()
+        .any(|unit| ctype::wide_to_byte(unit.get()).is_none())
+    {
+        set_errno(EILSEQ);
+        // SAFETY: the caller's end pointer.
+        unsafe { set_end(end, string, 0) };
+        return 0.0;
+    }
+    let narrow = |i: usize| {
+        units
+            .get(i)
+            .and_then(|unit| ctype::wide_to_byte(unit.get()))
+            .unwrap_or(0)
+    };
+    let (value, out_of_range, index) = real(narrow);
+    if out_of_range {
+        set_errno(ERANGE);
+    }
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    value
 }
 
 /// The room the text of a number takes: 32 binary digits at most (a `-` comes only with radix 10's
@@ -680,6 +872,85 @@ mod tests {
             // SAFETY: NUL-terminated strings.
             let (w, a) = unsafe { (wtoi(s.as_ptr()), atol(n.as_ptr())) };
             assert_eq!((w, a, errno()), (value, value, 0), "{text:?}");
+        }
+    }
+
+    /// wide's wcstod block: each line's bits, end and errno.
+    #[test]
+    fn wcstod_as_captured() {
+        for (text, bits, end, error) in [
+            ("1.5", 0x3FF8000000000000u64, 3, 0),
+            ("  -2.5e3xyz", 0xC0A3880000000000, 8, 0),
+            ("+.5", 0x3FE0000000000000, 3, 0),
+            ("5.", 0x4014000000000000, 2, 0),
+            (".", 0, 0, 0),
+            ("-", 0, 0, 0),
+            ("", 0, 0, 0),
+            ("   ", 0, 0, 0),
+            ("\t\n 7", 0x401C000000000000, 4, 0),
+            ("1e", 0x3FF0000000000000, 1, 0),
+            ("1e+", 0x3FF0000000000000, 1, 0),
+            ("1e-2", 0x3F847AE147AE147B, 4, 0),
+            ("1E2", 0x4059000000000000, 3, 0),
+            ("1d2", 0x4059000000000000, 3, 0),
+            ("1D-2", 0x3F847AE147AE147B, 4, 0),
+            ("0.1", 0x3FB999999999999A, 3, 0),
+            ("-0", 0x8000000000000000, 2, 0),
+            ("0x1A", 0, 1, 0),
+            ("inf", 0, 0, 0),
+            ("nan", 0, 0, 0),
+            ("1,5", 0x3FF0000000000000, 1, 0),
+            ("123456789012345678901234567890", 0x45F8EE90FF6C373E, 30, 0),
+            ("1e400", 0x7FF0000000000000, 5, 34),
+            ("-1e400", 0xFFF0000000000000, 6, 34),
+            ("1e-400", 0, 6, 34),
+            ("4.9e-324", 0, 8, 34),
+            ("2.2250738585072014e-308", 0x0010000000000000, 23, 0),
+            ("1.7976931348623157e308", 0x7FEFFFFFFFFFFFFF, 22, 0),
+            ("1.7976931348623159e308", 0x7FF0000000000000, 22, 34),
+            ("\u{FF11}.5", 0, 0, 42),
+            ("\u{661}", 0, 0, 42),
+            ("\u{A0}7", 0, 0, 0),
+        ] {
+            let s = wide(text);
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { wcstod(s.as_ptr(), &mut e) };
+            // SAFETY: the end points into the string.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v.to_bits(), offset, errno()),
+                (bits, end, error),
+                "wcstod({text:?})"
+            );
+        }
+        let s = wide("6.25");
+        set_errno(0);
+        // SAFETY: a NUL-terminated string, no end pointer.
+        let v = unsafe { wcstod(s.as_ptr(), core::ptr::null_mut()) };
+        assert_eq!((v.to_bits(), errno()), (0x4019000000000000, 0));
+    }
+
+    /// Digits past the kept ones still decide the rounding, and a long run of zeros scales.
+    #[test]
+    fn wcstod_rounds_past_its_kept_digits() {
+        let halfway = "9007199254740993"; // 2^53 + 1: halfway between two doubles.
+        let mut above = String::from(halfway);
+        above.push_str(&"0".repeat(800));
+        above.push('1');
+        let mut scaled = String::from("0.");
+        scaled.push_str(&"0".repeat(900));
+        scaled.push_str("25e902");
+        for (text, expected) in [
+            (halfway.to_string(), 9007199254740992.0),
+            (format!("{halfway}.{}", &above[16..]), 9007199254740994.0),
+            (scaled, 25.0),
+        ] {
+            let s = wide(&text);
+            // SAFETY: a NUL-terminated string, no end pointer.
+            let v = unsafe { wcstod(s.as_ptr(), core::ptr::null_mut()) };
+            assert_eq!(v, expected);
         }
     }
 }

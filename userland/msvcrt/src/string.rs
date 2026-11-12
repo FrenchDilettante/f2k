@@ -14,7 +14,9 @@
 //! _wcsnicmp the difference of the first units that differ (each lowered first, in the LC_CTYPE
 //! locale, for the case-insensitive ones: `[` against `a` is -6); wcsncpy pads with NULs and leaves
 //! a full destination unterminated; wcschr and wcsrchr find the terminator too; wcsstr finds the
-//! empty string at the start; _wcslwr and _wcsupr map in place, in the LC_CTYPE locale.
+//! empty string at the start; _wcslwr and _wcsupr map in place, in the LC_CTYPE locale; wcstok
+//! makes the delimiter after each token a NUL (the ones before it left as they are) and keeps each
+//! thread's own place.
 //!
 //! As the C runtime reference documents the rest: strstr finds the empty string at the start, as
 //! wcsstr does; wcspbrk never finds the terminator; _wcsrev reverses the units in place; _wcsdup's
@@ -25,6 +27,7 @@
 //! over those.
 
 use core::iter::once;
+use core::sync::atomic::Ordering::Relaxed;
 
 use rtl::cstr::bytes_until_nul;
 
@@ -341,6 +344,60 @@ pub unsafe extern "C" fn wcscspn(string: *const u16, set: *const u16) -> usize {
         .iter()
         .position(|unit| set.contains(unit))
         .unwrap_or(string.len())
+}
+
+/// wcstok's work over the string it goes on in: where the token starts and where the next call
+/// goes on, both indices into `string`; none when only delimiters are left (the next call then
+/// goes on at the string's end). The delimiter after the token becomes a NUL.
+fn next_token(string: &mut [WideUnit], delimiters: &[WideUnit]) -> (Option<usize>, usize) {
+    let Some(start) = string.iter().position(|unit| !delimiters.contains(unit)) else {
+        return (None, string.len());
+    };
+    match string[start..]
+        .iter()
+        .position(|unit| delimiters.contains(unit))
+    {
+        Some(length) => {
+            string[start + length] = WideUnit::new(0);
+            (Some(start), start + length + 1)
+        }
+        None => (Some(start), string.len()),
+    }
+}
+
+/// wcstok: the next token of `string`, or of the string the calling thread's last call started
+/// when `string` is NULL: its first unit not in `delimiters`, the delimiter that ends it made a
+/// NUL; NULL when only delimiters are left. The delimiters may change from call to call; each
+/// thread goes on where its own last call left off (wide's capture: another thread's tokens
+/// between two calls leave this thread's place). A NULL string before any call of the thread's
+/// answers NULL.
+///
+/// # Safety
+///
+/// `string` is null or a writable NUL-terminated string, the thread's place in it valid while it
+/// tokenizes; `delimiters` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_wcstok")]
+pub unsafe extern "C" fn wcstok(string: *mut u16, delimiters: *const u16) -> *mut u16 {
+    let start = if string.is_null() {
+        crate::thread::with_data(|data| data.wcstok.load(Relaxed)) as *mut u16
+    } else {
+        string
+    };
+    if start.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: the caller's delimiters, and the string it started (its own, writable, or the rest
+    // of it the thread's last call left), the call's alone.
+    let (units_of, delimiters) = unsafe {
+        (
+            edge::wide_parts_mut(start, rtl::cstr::len_until_nul(start)),
+            edge::wide(delimiters),
+        )
+    };
+    let (token, next) = next_token(units_of, delimiters);
+    let next = start.wrapping_add(next);
+    crate::thread::with_data(|data| data.wcstok.store(next as usize, Relaxed));
+    token.map_or(core::ptr::null_mut(), |at| start.wrapping_add(at))
 }
 
 /// The string's units mapped in place.
@@ -1318,5 +1375,103 @@ mod tests {
         };
         assert_eq!(narrow(&drive), "C:");
         assert_eq!(narrow(&name).len(), 255);
+    }
+
+    /// A token's text.
+    fn token_text(token: *mut u16) -> String {
+        // SAFETY: a token: NUL-terminated.
+        let units = unsafe { edge::wide(token) };
+        String::from_utf16_lossy(&units.iter().map(|unit| unit.get()).collect::<Vec<_>>())
+    }
+
+    /// wcstok over a copy of `text`: each token's offset and text, the later calls' delimiters
+    /// `later` (or the same), and the buffer as it is left, a NUL shown as `|`.
+    fn tokens(text: &str, delimiters: &str, later: Option<&str>) -> (Vec<(isize, String)>, String) {
+        let mut buffer = w(text);
+        let (first, later) = (w(delimiters), w(later.unwrap_or(delimiters)));
+        let base = buffer.as_mut_ptr();
+        let mut found = Vec::new();
+        // SAFETY: a writable NUL-terminated copy, tokenized by this thread alone.
+        let mut token = unsafe { wcstok(base, first.as_ptr()) };
+        while !token.is_null() {
+            // SAFETY: the token is inside the buffer.
+            found.push((unsafe { token.offset_from(base) }, token_text(token)));
+            // SAFETY: as above, going on.
+            token = unsafe { wcstok(core::ptr::null_mut(), later.as_ptr()) };
+        }
+        let length = buffer.len() - 1;
+        let after = buffer[..length]
+            .iter()
+            .map(|&unit| {
+                if unit == 0 {
+                    '|'
+                } else {
+                    char::from_u32(unit.into()).unwrap()
+                }
+            })
+            .collect();
+        (found, after)
+    }
+
+    /// wide's wcstok block.
+    #[test]
+    fn wcstok_as_captured() {
+        let t = |pairs: &[(isize, &str)]| {
+            pairs
+                .iter()
+                .map(|&(offset, text)| (offset, text.to_string()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            tokens("  a,b;;c d,", " ,;", None),
+            (
+                t(&[(2, "a"), (4, "b"), (7, "c"), (9, "d")]),
+                "  a|b|;c|d|".into()
+            )
+        );
+        assert_eq!(tokens("abc", "", None), (t(&[(0, "abc")]), "abc".into()));
+        assert_eq!(tokens(",,,", ",", None), (t(&[]), ",,,".into()));
+        assert_eq!(tokens("", ",", None), (t(&[]), String::new()));
+        assert_eq!(
+            tokens("a,b c,d e", ",", Some(" ")),
+            (
+                t(&[(0, "a"), (2, "b"), (4, "c,d"), (8, "e")]),
+                "a|b|c,d|e".into()
+            )
+        );
+        assert_eq!(
+            tokens("x\u{E9}y\u{3000}\u{3000}z\u{E9}", "\u{E9}\u{3000}", None),
+            (t(&[(0, "x"), (2, "y"), (5, "z")]), "x|y|\u{3000}z|".into())
+        );
+
+        // Two strings in turn; then another thread's tokens leave this thread's place.
+        let (mut one, mut two, mut three) = (w("1 2 3"), w("x-y-z"), w("m n o"));
+        let (space, dash) = (w(" "), w("-"));
+        // SAFETY: writable NUL-terminated strings, this thread's.
+        unsafe {
+            assert_eq!(token_text(wcstok(one.as_mut_ptr(), space.as_ptr())), "1");
+            assert_eq!(token_text(wcstok(two.as_mut_ptr(), dash.as_ptr())), "x");
+            assert_eq!(
+                token_text(wcstok(core::ptr::null_mut(), dash.as_ptr())),
+                "y"
+            );
+            assert_eq!(token_text(wcstok(three.as_mut_ptr(), space.as_ptr())), "m");
+        }
+        let other = std::thread::spawn(|| {
+            let (mut four, space) = (w("p q r"), w(" "));
+            let mut count = 0;
+            // SAFETY: as above, the other thread's.
+            let mut token = unsafe { wcstok(four.as_mut_ptr(), space.as_ptr()) };
+            while !token.is_null() {
+                count += 1;
+                // SAFETY: as above.
+                token = unsafe { wcstok(core::ptr::null_mut(), space.as_ptr()) };
+            }
+            count
+        });
+        assert_eq!(other.join().unwrap(), 3);
+        // SAFETY: this thread's place, in `three`.
+        let next = unsafe { wcstok(core::ptr::null_mut(), space.as_ptr()) };
+        assert_eq!(token_text(next), "n");
     }
 }

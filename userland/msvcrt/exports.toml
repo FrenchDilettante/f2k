@@ -973,6 +973,14 @@ ordinal = 776
 fails = "never"
 
 [[export]]
+name = "wcstod"
+group = "strings"
+args = ["strW nptr", "ptr endptr"]
+impl = { native = "wcstod" }
+ordinal = 772
+fails = "never"
+
+[[export]]
 name = "_wtol"
 group = "strings"
 args = ["strW str"]
@@ -1131,6 +1139,15 @@ args = ["strW string", "strW strCharSet"]
 impl = { native = "wcspbrk" }
 ordinal = 768
 fails = "never"
+
+[[export]]
+name = "wcstok"
+group = "strings"
+args = ["ptr strToken", "strW strDelimit"]
+impl = { native = "wcstok" }
+ordinal = 773
+fails = "never"
+note = "each thread goes on in the string its own last call started"
 
 [[export]]
 name = "wcscspn"
@@ -1428,6 +1445,14 @@ args = ["ptr timeptr"]
 impl = { native = "mktime" }
 ordinal = 688
 fails = "-1"
+
+[[export]]
+name = "wcsftime"
+group = "utility"
+args = ["ptr strDest", "u32 maxsize", "strW format", "ptr timeptr"]
+impl = { native = "wcsftime" }
+ordinal = 763
+fails = "0"
 
 [[export]]
 name = "setlocale"
@@ -3973,20 +3998,8 @@ name = "wcscoll"
 ordinal = 760
 
 [[export]]
-name = "wcsftime"
-ordinal = 763
-
-[[export]]
 name = "wcsncat"
 ordinal = 765
-
-[[export]]
-name = "wcstod"
-ordinal = 772
-
-[[export]]
-name = "wcstok"
-ordinal = 773
 
 [[export]]
 name = "wcstombs"

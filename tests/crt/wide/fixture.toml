@@ -6,11 +6,6 @@ description = "wide - the breadth of msvcrt.dll cmd.exe calls under /MD (wide.c)
 kind = "sectioned"
 gate = true
 
-[pending]
-wcstok = "msvcrt exports no wcstok yet"
-wcstod = "msvcrt exports no wcstod yet"
-wcsftime = "msvcrt exports no wcsftime yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

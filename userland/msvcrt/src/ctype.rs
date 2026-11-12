@@ -34,6 +34,7 @@ use crate::thread::Lock;
 /// setlocale's categories (locale.h).
 pub const LC_ALL: i32 = 0;
 pub const LC_CTYPE: i32 = 2;
+pub const LC_TIME: i32 = 5;
 const LC_MAX: usize = 5;
 /// The categories' names, as LC_ALL's composite name spells them.
 const CATEGORY_NAMES: [&[u8]; LC_MAX + 1] = [
@@ -550,6 +551,17 @@ pub unsafe extern "C" fn setlocale(category: i32, locale: *const u8) -> *const u
     STATE
         .with(|state| state.set(category, text))
         .unwrap_or(core::ptr::null())
+}
+
+/// Whether `category` (LC_COLLATE to LC_TIME) is the "C" locale's.
+pub fn is_c_category(category: i32) -> bool {
+    let category = usize::try_from(category).unwrap_or(usize::MAX);
+    STATE.with(|state| {
+        state
+            .names
+            .get(category)
+            .is_none_or(|name| *name == Name::C)
+    })
 }
 
 /// iswctype: the classes of `mask` (ctype.h's `_UPPER` to `_ALPHA`, or several) that `c` is in:

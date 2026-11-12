@@ -1,10 +1,10 @@
 //! The C runtime's per-thread data and its locks.
 //!
-//! Each thread has its own `errno`, `_doserrno`, rand seed and `struct tm` (gmtime's and
-//! localtime's), as the multithreaded C runtime keeps them: a block from the C runtime's heap,
-//! found through a TLS slot the DLL allocates when it is loaded, made on the thread's first need
-//! and freed at its DLL_THREAD_DETACH. Finding it keeps the thread's last error as it was
-//! (TlsGetValue clears it), so a C runtime call never disturbs a program's GetLastError.
+//! Each thread has its own `errno`, `_doserrno`, rand seed, `struct tm` (gmtime's and
+//! localtime's) and wcstok position, as the multithreaded C runtime keeps them: a block from the C
+//! runtime's heap, found through a TLS slot the DLL allocates when it is loaded, made on the
+//! thread's first need and freed at its DLL_THREAD_DETACH. Finding it keeps the thread's last error
+//! as it was (TlsGetValue clears it), so a C runtime call never disturbs a program's GetLastError.
 //!
 //! The process-wide state is split by lock, as Windows 2000's msvcrt splits it: each stream has a
 //! lock of its own ([`crate::stdio`]), each descriptor one beside the descriptor table's
@@ -53,6 +53,10 @@ pub struct ThreadData {
     /// The innermost catch block running on the thread: its guard, on the stack of the C++
     /// exception handling that called it (`crate::eh`), 0 for none.
     pub catches: AtomicUsize,
+    /// Where wcstok goes on when it is called with NULL: the unit after the last token's end, in
+    /// the string the thread last started (0 before its first): each thread's own, as wide's
+    /// capture shows.
+    pub wcstok: AtomicUsize,
 }
 
 /// The TLS slot holding each thread's [`ThreadData`] (TLS_OUT_OF_INDEXES before the DLL's
@@ -76,6 +80,7 @@ static FALLBACK: ThreadData = ThreadData {
     tm: [const { AtomicI32::new(0) }; 9],
     terminate: AtomicUsize::new(0),
     catches: AtomicUsize::new(0),
+    wcstok: AtomicUsize::new(0),
 };
 
 /// The lock of the C runtime's locks: held while one of them is initialized on its first use (a

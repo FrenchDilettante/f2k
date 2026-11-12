@@ -1,5 +1,5 @@
-//! qsort, rand and srand, abs and labs, time, and the broken-down times: gmtime, localtime, mktime
-//! and _tzset.
+//! qsort, rand and srand, abs and labs, time, and the broken-down times: gmtime, localtime, mktime,
+//! _tzset and wcsftime.
 //!
 //! rand is the C runtime's linear congruential generator, per thread: the seed becomes
 //! `seed * 214013 + 2531011` and rand answers its bits 16 to 30 (RAND_MAX 32767), the seed 1 until
@@ -11,16 +11,18 @@
 //! (`tzn[+|-]hh[:mm[:ss]][dzn]`, with the United States' daylight saving rules for a daylight
 //! zone), or the system's time zone without it; localtime and mktime read it on their first need
 //! when the program has not called _tzset. mktime normalizes the fields it is given and answers -1
-//! for a time outside 1970-01-01 00:00:00 UTC to 2038-01-19 03:14:07 UTC.
+//! for a time outside 1970-01-01 00:00:00 UTC to 2038-01-19 03:14:07 UTC. _tzset reads the zone's
+//! names too, `%Z`'s in wcsftime: TZ's letters, or the system zone's StandardName and DaylightName.
 
 use core::sync::atomic::Ordering::Relaxed;
 
 use rtl::sync::Locked;
 use rtl::time::{civil_from_days, days_from_civil};
 
+use crate::edge::{self, WideUnit};
 use crate::imports::{SystemTime, TimeZoneInformation};
 use crate::thread::{self, Lock};
-use crate::{kernel32, startup};
+use crate::{ctype, kernel32, startup};
 
 /// The comparison qsort calls (cdecl).
 pub type Compare = unsafe extern "C" fn(*const u8, *const u8) -> i32;
@@ -473,35 +475,122 @@ impl Zone {
     }
 }
 
-/// The time zone localtime and mktime convert in, as _tzset last read it (none before its first
-/// read). Its lock is held only to read or set it.
-static ZONE: Locked<Option<Zone>, Lock> = Locked::new(Lock::new(), None);
+/// A time zone's names (`_tzname`'s): the standard time's and the daylight time's, narrow, as
+/// many bytes as `_tzname`'s 64-byte strings hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZoneNames {
+    names: [[u8; 63]; 2],
+    lengths: [usize; 2],
+}
+
+impl ZoneNames {
+    const NONE: ZoneNames = ZoneNames {
+        names: [[0; 63]; 2],
+        lengths: [0; 2],
+    };
+
+    /// The names given, each cut to its room.
+    fn of(standard: &[u8], daylight: &[u8]) -> ZoneNames {
+        let mut names = ZoneNames::NONE;
+        for (i, name) in [standard, daylight].into_iter().enumerate() {
+            let length = name.len().min(names.names[i].len());
+            names.names[i][..length].copy_from_slice(&name[..length]);
+            names.lengths[i] = length;
+        }
+        names
+    }
+
+    /// TZ's names, as MSDN's _tzset reads `tzn[+|-]hh[:mm[:ss]][dzn]`: its first three letters,
+    /// and the three after the time for a daylight zone (none without one).
+    pub fn from_tz(text: &[u8]) -> ZoneNames {
+        let standard = &text[..text.len().min(3)];
+        let rest = &text[standard.len()..];
+        let time = rest
+            .iter()
+            .take_while(|&&byte| byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b':'))
+            .count();
+        let daylight = &rest[time..];
+        ZoneNames::of(standard, &daylight[..daylight.len().min(3)])
+    }
+
+    /// The system's names (its StandardName and DaylightName), in the ANSI code page.
+    pub fn from_system(information: &TimeZoneInformation) -> ZoneNames {
+        let narrow = |name: &[u16; 32], out: &mut [u8; 63]| {
+            let length = name
+                .iter()
+                .position(|&unit| unit == 0)
+                .unwrap_or(name.len());
+            kernel32::wide_to_multi_byte(CP_ACP, 0, &name[..length], out).0
+        };
+        let mut names = ZoneNames::NONE;
+        names.lengths[0] = narrow(&information.standard_name, &mut names.names[0]);
+        names.lengths[1] = narrow(&information.daylight_name, &mut names.names[1]);
+        names
+    }
+
+    /// The standard time's name, or the daylight time's.
+    pub fn name(&self, daylight: bool) -> &[u8] {
+        let i = usize::from(daylight);
+        &self.names[i][..self.lengths[i]]
+    }
+}
+
+/// WideCharToMultiByte's ANSI code page.
+const CP_ACP: u32 = 0;
+
+/// The time zone as _tzset reads it: the zone localtime and mktime convert in, and its names
+/// (strftime's `%Z`).
+#[derive(Clone, Copy)]
+struct Setting {
+    zone: Zone,
+    names: ZoneNames,
+}
+
+/// The time zone, as _tzset last read it (none before its first read). Its lock is held only to
+/// read or set it.
+static ZONE: Locked<Option<Setting>, Lock> = Locked::new(Lock::new(), None);
 
 /// The zone _tzset reads: TZ's when the C runtime's environment sets it to something, the system's
 /// (GetTimeZoneInformation) otherwise.
-fn read_zone() -> Zone {
+fn read_zone() -> Setting {
     let mut value = [0u8; 64];
     match startup::environment_value(b"TZ", &mut value) {
-        Some(length) if length > 0 => Zone::from_tz(&value[..length]),
-        _ => kernel32::time_zone_information()
-            .map_or(Zone::UTC, |information| Zone::from_system(&information)),
+        Some(length) if length > 0 => Setting {
+            zone: Zone::from_tz(&value[..length]),
+            names: ZoneNames::from_tz(&value[..length]),
+        },
+        _ => kernel32::time_zone_information().map_or(
+            Setting {
+                zone: Zone::UTC,
+                names: ZoneNames::NONE,
+            },
+            |information| Setting {
+                zone: Zone::from_system(&information),
+                names: ZoneNames::from_system(&information),
+            },
+        ),
     }
 }
 
-/// The zone, read on the first need when the program has not called _tzset.
-fn zone() -> Zone {
-    if let Some(zone) = ZONE.with(|zone| *zone) {
-        return zone;
+/// The time zone, read on the first need when the program has not called _tzset.
+fn setting() -> Setting {
+    if let Some(setting) = ZONE.with(|setting| *setting) {
+        return setting;
     }
     let read = read_zone();
-    ZONE.with(|zone| *zone.get_or_insert(read))
+    ZONE.with(|setting| *setting.get_or_insert(read))
 }
 
-/// _tzset: the time zone read again (TZ, else the system's), for localtime and mktime.
+/// The zone localtime and mktime convert in.
+fn zone() -> Zone {
+    setting().zone
+}
+
+/// _tzset: the time zone read again (TZ, else the system's), for localtime, mktime and wcsftime.
 #[unsafe(export_name = "f2k_export__tzset")]
 pub extern "C" fn tzset() {
     let read = read_zone();
-    ZONE.with(|zone| *zone = Some(read));
+    ZONE.with(|setting| *setting = Some(read));
 }
 
 /// `tm` made the calling thread's `struct tm` (the one gmtime, localtime and mktime share): its
@@ -576,6 +665,227 @@ pub unsafe extern "C" fn mktime(tm: *mut Tm) -> i32 {
     unsafe { tm.write_unaligned(local) };
     answer(&local);
     time as i32
+}
+
+/// The "C" locale's day and month names, full and abbreviated (their first three letters).
+const DAYS: [&[u8]; 7] = [
+    b"Sunday",
+    b"Monday",
+    b"Tuesday",
+    b"Wednesday",
+    b"Thursday",
+    b"Friday",
+    b"Saturday",
+];
+const MONTHS: [&[u8]; 12] = [
+    b"January",
+    b"February",
+    b"March",
+    b"April",
+    b"May",
+    b"June",
+    b"July",
+    b"August",
+    b"September",
+    b"October",
+    b"November",
+    b"December",
+];
+
+/// The units a time's text is written into: each one past the room still counted.
+struct TimeText<'a> {
+    out: &'a mut [WideUnit],
+    count: usize,
+}
+
+impl TimeText<'_> {
+    fn unit(&mut self, unit: u16) {
+        if let Some(slot) = self.out.get_mut(self.count) {
+            *slot = WideUnit::new(unit);
+        }
+        self.count += 1;
+    }
+
+    /// Narrow text, each byte widened in the LC_CTYPE locale.
+    fn text(&mut self, text: &[u8]) {
+        text.iter()
+            .for_each(|&byte| self.unit(ctype::byte_to_wide(byte)));
+    }
+
+    /// A number in `width` digits, zeros before it; in as few as it takes when `trim`.
+    fn number(&mut self, value: i32, width: usize, trim: bool) {
+        if value < 0 {
+            self.unit(u16::from(b'-'));
+        }
+        let mut digits = [0u8; 10];
+        let mut length = 0;
+        let mut rest = value.unsigned_abs();
+        loop {
+            digits[length] = b'0' + (rest % 10) as u8;
+            length += 1;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        if !trim {
+            (length..width).for_each(|_| self.unit(u16::from(b'0')));
+        }
+        for &digit in digits[..length].iter().rev() {
+            self.unit(u16::from(digit));
+        }
+    }
+
+    /// One name of `names`, by an index the program's `struct tm` gives (nothing out of range).
+    fn name(&mut self, names: &[&[u8]], index: i32, abbreviated: bool) {
+        if let Some(name) = usize::try_from(index).ok().and_then(|i| names.get(i)) {
+            self.text(if abbreviated { &name[..3] } else { name });
+        }
+    }
+}
+
+/// The week of the year (`%U` from Sunday, `%W` from Monday): 0 before its first such day.
+fn week(tm: &Tm, first_day: i32) -> i32 {
+    (tm.yday + 7 - (tm.wday - first_day).rem_euclid(7)) / 7
+}
+
+/// One conversion of `wcsftime`'s format, `#` (`alternate`) taken as MSDN documents it: the long
+/// date for `%#c` and `%#x`, no leading zeros for the numbers.
+fn convert(out: &mut TimeText, conversion: u16, alternate: bool, tm: &Tm, names: &ZoneNames) {
+    let two = |out: &mut TimeText, value| out.number(value, 2, alternate);
+    let short_date = |out: &mut TimeText| {
+        out.number(tm.mon + 1, 2, false);
+        out.unit(u16::from(b'/'));
+        out.number(tm.mday, 2, false);
+        out.unit(u16::from(b'/'));
+        out.number(tm.year.rem_euclid(100), 2, false);
+    };
+    let long_date = |out: &mut TimeText| {
+        out.name(&DAYS, tm.wday, false);
+        out.text(b", ");
+        out.name(&MONTHS, tm.mon, false);
+        out.unit(u16::from(b' '));
+        out.number(tm.mday, 2, false);
+        out.text(b", ");
+        out.number(tm.year + 1900, 4, false);
+    };
+    let time = |out: &mut TimeText| {
+        for (i, value) in [tm.hour, tm.min, tm.sec].into_iter().enumerate() {
+            if i > 0 {
+                out.unit(u16::from(b':'));
+            }
+            out.number(value, 2, false);
+        }
+    };
+    let Ok(conversion) = u8::try_from(conversion) else {
+        return;
+    };
+    match conversion {
+        b'a' => out.name(&DAYS, tm.wday, true),
+        b'A' => out.name(&DAYS, tm.wday, false),
+        b'b' => out.name(&MONTHS, tm.mon, true),
+        b'B' => out.name(&MONTHS, tm.mon, false),
+        b'c' => {
+            if alternate {
+                long_date(out);
+            } else {
+                short_date(out);
+            }
+            out.unit(u16::from(b' '));
+            time(out);
+        }
+        b'x' if alternate => long_date(out),
+        b'x' => short_date(out),
+        b'X' => time(out),
+        b'd' => two(out, tm.mday),
+        b'H' => two(out, tm.hour),
+        b'I' => two(out, (tm.hour + 11).rem_euclid(12) + 1),
+        b'j' => out.number(tm.yday + 1, 3, alternate),
+        b'm' => two(out, tm.mon + 1),
+        b'M' => two(out, tm.min),
+        b'p' => out.text(if tm.hour < 12 { b"AM" } else { b"PM" }),
+        b'S' => two(out, tm.sec),
+        b'U' => two(out, week(tm, 0)),
+        b'w' => out.number(tm.wday, 1, alternate),
+        b'W' => two(out, week(tm, 1)),
+        b'y' => two(out, tm.year.rem_euclid(100)),
+        b'Y' => out.number(tm.year + 1900, 4, alternate),
+        b'z' | b'Z' => out.text(names.name(tm.isdst > 0)),
+        b'%' => out.unit(u16::from(b'%')),
+        _ => {}
+    }
+}
+
+/// wcsftime's text of `tm` by `format`, into `out`: the units it takes (more than `out` holds when
+/// it does not fit).
+fn format_time(out: &mut [WideUnit], format: &[WideUnit], tm: &Tm, names: &ZoneNames) -> usize {
+    let mut text = TimeText { out, count: 0 };
+    let mut units = format.iter().map(|unit| unit.get());
+    while let Some(unit) = units.next() {
+        if unit != u16::from(b'%') {
+            text.unit(unit);
+            continue;
+        }
+        let mut conversion = units.next();
+        let alternate = conversion == Some(u16::from(b'#'));
+        if alternate {
+            conversion = units.next();
+        }
+        let Some(conversion) = conversion else {
+            break;
+        };
+        convert(&mut text, conversion, alternate, tm, names);
+    }
+    text.count
+}
+
+/// wcsftime: `tm` as `format` writes it, in the "C" locale's names and formats, into `buffer` of
+/// `size` units: the units written, its NUL left out. As wide's capture pins it: `%c` is
+/// `%m/%d/%y %H:%M:%S`, `%#c` and `%#x` the long date (`%A, %B %d, %Y`), `%x` `%m/%d/%y`, `%X`
+/// `%H:%M:%S`, `%I` 12 for hour 0, `%z` the zone's name as `%Z` is (the daylight time's for a
+/// `tm_isdst` above 0, the time zone _tzset read), and `#` before a number drops its leading
+/// zeros. Text that fills the buffer exactly is written without its NUL and answered; text longer
+/// than the buffer answers 0, as the empty text does. An unknown conversion writes nothing.
+///
+/// # Safety
+///
+/// `buffer` holds `size` units; `format` is NUL-terminated; `tm` is a `struct tm`.
+#[unsafe(export_name = "f2k_export_wcsftime")]
+pub unsafe extern "C" fn wcsftime(
+    buffer: *mut u16,
+    size: usize,
+    format: *const u16,
+    tm: *const Tm,
+) -> usize {
+    if !ctype::is_c_category(ctype::LC_TIME) {
+        // SAFETY: the call's arguments, as wcsftime's kinds read them.
+        unsafe {
+            crate::stub::logged(
+                &crate::spec::wcsftime,
+                "a locale's LC_TIME (the \"C\" locale's names and formats written)",
+                &[buffer as u64, size as u64, format as u64, tm as u64],
+            )
+        };
+    }
+    // SAFETY: the caller's format, its struct tm and its buffer of `size` units, the call's alone.
+    let (format, tm, out) = unsafe {
+        (
+            edge::wide(format),
+            tm.read_unaligned(),
+            edge::wide_parts_mut(buffer, size),
+        )
+    };
+    let count = format_time(out, format, &tm, &setting().names);
+    if count == 0 || count > size {
+        if let Some(first) = out.first_mut() {
+            *first = WideUnit::new(0);
+        }
+        return 0;
+    }
+    if let Some(end) = out.get_mut(count) {
+        *end = WideUnit::new(0);
+    }
+    count
 }
 
 #[cfg(test)]
@@ -915,5 +1225,114 @@ mod tests {
         ] {
             assert_eq!((abs(value), labs(value)), (expected, expected), "{value}");
         }
+    }
+
+    /// A `struct tm` of the wcsftime block's.
+    fn tm_of(date: [i32; 6], wday: i32, yday: i32, isdst: i32) -> Tm {
+        let [year, mon, mday, hour, min, sec] = date;
+        Tm {
+            year: year - 1900,
+            mon: mon - 1,
+            mday,
+            hour,
+            min,
+            sec,
+            wday,
+            yday,
+            isdst,
+        }
+    }
+
+    /// The zone names TZ gives: its letters, and a daylight zone's after the time.
+    #[test]
+    fn zone_names_from_tz() {
+        let names = |tz: &[u8]| {
+            let names = ZoneNames::from_tz(tz);
+            (
+                String::from_utf8(names.name(false).to_vec()).unwrap(),
+                String::from_utf8(names.name(true).to_vec()).unwrap(),
+            )
+        };
+        assert_eq!(names(b"PST8PDT"), ("PST".into(), "PDT".into()));
+        assert_eq!(names(b"NST3:30NDT"), ("NST".into(), "NDT".into()));
+        assert_eq!(names(b"IST-5:30"), ("IST".into(), String::new()));
+        assert_eq!(names(b"GMT0"), ("GMT".into(), String::new()));
+    }
+
+    /// wide's wcsftime block: every conversion under TZ=PST8PDT in the "C" locale.
+    #[test]
+    fn wcsftime_conversions_as_captured() {
+        let pacific = ZoneNames::from_tz(b"PST8PDT");
+        let text = |format: &str, tm: &Tm| {
+            let format: Vec<WideUnit> = format.encode_utf16().map(WideUnit::new).collect();
+            let mut out = [WideUnit::new(0); 256];
+            let count = format_time(&mut out, &format, tm, &pacific);
+            String::from_utf16(
+                &out[..count]
+                    .iter()
+                    .map(|unit| unit.get())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let t1 = tm_of([2001, 2, 3, 4, 5, 6], 6, 33, 0);
+        for (format, expected) in [
+            ("%a %A %b %B", "Sat Saturday Feb February"),
+            ("%c", "02/03/01 04:05:06"),
+            ("%#c", "Saturday, February 03, 2001 04:05:06"),
+            ("%x", "02/03/01"),
+            ("%#x", "Saturday, February 03, 2001"),
+            ("%X", "04:05:06"),
+            ("%d %H %I %j %m %M %p %S", "03 04 04 034 02 05 AM 06"),
+            ("%U %w %W", "04 6 05"),
+            ("%y %Y", "01 2001"),
+            ("%Z", "PST"),
+            ("%z", "PST"),
+            ("%%", "%"),
+            ("%#d %#H %#I %#j %#m %#M %#S %#y %#U", "3 4 4 34 2 5 6 1 4"),
+            ("plain text, no conversions", "plain text, no conversions"),
+            ("", ""),
+        ] {
+            assert_eq!(text(format, &t1), expected, "{format:?}");
+        }
+        assert_eq!(
+            text(
+                "%c %Z %j %U %W",
+                &tm_of([1999, 12, 31, 23, 59, 59], 5, 364, 0)
+            ),
+            "12/31/99 23:59:59 PST 365 52 52"
+        );
+        assert_eq!(
+            text(
+                "%c %Z %j %U %W %p",
+                &tm_of([2000, 7, 4, 12, 0, 0], 2, 185, 1)
+            ),
+            "07/04/00 12:00:00 PDT 186 27 27 PM"
+        );
+        assert_eq!(
+            text("%#c %I %p %U %W", &tm_of([2000, 1, 1, 0, 30, 0], 6, 0, 0)),
+            "Saturday, January 01, 2000 00:30:00 12 AM 00 00"
+        );
+    }
+
+    /// wide's wcsftime sizes: text that fills the buffer is answered, longer text and the empty
+    /// text answer 0.
+    #[test]
+    fn wcsftime_buffer_sizes_as_captured() {
+        let t1 = tm_of([2001, 2, 3, 4, 5, 6], 6, 33, 0);
+        let call = |format: &str, size: usize| {
+            let format: Vec<u16> = format.encode_utf16().chain([0]).collect();
+            let mut out = [0xBEEFu16; 16];
+            // SAFETY: a buffer of at least `size` units, a terminated format, a struct tm.
+            let count = unsafe { wcsftime(out.as_mut_ptr(), size, format.as_ptr(), &t1) };
+            (count, String::from_utf16_lossy(&out[..count]), out[count])
+        };
+        assert_eq!(call("%Y-%m-%d", 11), (10, "2001-02-03".into(), 0));
+        assert_eq!(call("%Y-%m-%d", 10), (10, "2001-02-03".into(), 0xBEEF));
+        assert_eq!(call("%H:%M:%S", 9), (8, "04:05:06".into(), 0));
+        assert_eq!(call("%H:%M:%S", 8), (8, "04:05:06".into(), 0xBEEF));
+        assert_eq!(call("%H:%M:%S", 1).0, 0);
+        assert_eq!(call("", 1).0, 0);
+        assert_eq!(call("%H", 0), (0, String::new(), 0xBEEF));
     }
 }
