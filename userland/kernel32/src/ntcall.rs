@@ -2638,3 +2638,95 @@ pub fn is_valid_handle(table: &nt::HandleTable, entry: usize) -> bool {
     // SAFETY: as in `free_handle`.
     unsafe { nt::RtlIsValidHandle(table, entry) != 0 }
 }
+
+/// RtlUnicodeStringToAnsiString into a caller's buffer, its answer kept: `units` narrowed through
+/// the ANSI code page over an ANSI_STRING whose room is the buffer's (a counted string's at most):
+/// the bytes written before the terminator, or STATUS_BUFFER_OVERFLOW when the string and its
+/// terminator do not fit — what fits written then, terminated (nothing for no room).
+///
+/// # Panics
+///
+/// When `units` are past a counted string's reach: the callers hand atom names.
+pub fn unicode_string_to_ansi_checked(
+    out: &mut OutBuf<'_, u8>,
+    units: &[u16],
+) -> Result<usize, NtStatus> {
+    let source = UnicodeString::from_units(units).expect("a name within a counted string's reach");
+    let mut narrow = nt::AnsiString {
+        length: 0,
+        maximum_length: u16::try_from(out.len()).unwrap_or(u16::MAX),
+        buffer: out.as_mut_ptr(),
+    };
+    // SAFETY: ntdll's export, over the string above (kernel32's own units) and into the caller's
+    // buffer (the edge value's contract), no more than the ANSI string's room, its length.
+    checked(unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 0) })?;
+    Ok(usize::from(narrow.length))
+}
+
+/// NtAddAtom: the atom of a name (its string atom's reference counted), the name `units`, which
+/// ntdll's service reads where they are.
+pub fn add_atom(units: &[u16]) -> Result<u16, NtStatus> {
+    let mut atom = 0u16;
+    // SAFETY: ntdll's export, over the units of their length in bytes and into the local atom.
+    checked(unsafe { nt::NtAddAtom(units.as_ptr(), (2 * units.len()) as u32, &mut atom) })?;
+    Ok(atom)
+}
+
+/// NtFindAtom: the atom a name has, its reference count untouched.
+pub fn find_atom(units: &[u16]) -> Result<u16, NtStatus> {
+    let mut atom = 0u16;
+    // SAFETY: as in `add_atom`.
+    checked(unsafe { nt::NtFindAtom(units.as_ptr(), (2 * units.len()) as u32, &mut atom) })?;
+    Ok(atom)
+}
+
+/// NtDeleteAtom: a string atom's reference given back.
+pub fn delete_atom(atom: u16) -> Result<(), NtStatus> {
+    // SAFETY: ntdll's export, a value alone.
+    checked(unsafe { nt::NtDeleteAtom(atom) })
+}
+
+/// The longest atom name, in units.
+pub const MAX_ATOM_NAME: usize = 255;
+
+/// ATOM_BASIC_INFORMATION with room for the longest name and its terminator: the atom's usage
+/// count and flags, its name's length in bytes, and the name.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AtomBasicInformation {
+    pub usage_count: u16,
+    pub flags: u16,
+    pub name_length: u16,
+    pub name: [u16; MAX_ATOM_NAME + 1],
+}
+
+// SAFETY: integers and an array of them, every field 2-aligned: no padding.
+unsafe impl Pod for AtomBasicInformation {}
+
+impl AtomBasicInformation {
+    /// The name's units.
+    pub fn name(&self) -> &[u16] {
+        let units = (usize::from(self.name_length) / 2).min(MAX_ATOM_NAME);
+        &self.name[..units]
+    }
+}
+
+/// AtomBasicInformation, NtQueryInformationAtom's class 0.
+const ATOM_BASIC_INFORMATION: u32 = 0;
+
+/// NtQueryInformationAtom, AtomBasicInformation: an atom's facts and its whole name.
+pub fn query_atom(atom: u16) -> Result<AtomBasicInformation, NtStatus> {
+    let mut information = AtomBasicInformation::zeroed();
+    let bytes = information.as_bytes_mut();
+    // SAFETY: ntdll's export, into the local structure of its length.
+    checked(unsafe {
+        nt::NtQueryInformationAtom(
+            atom,
+            ATOM_BASIC_INFORMATION,
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            core::ptr::null_mut(),
+        )
+    })?;
+    Ok(information)
+}

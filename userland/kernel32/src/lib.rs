@@ -25,7 +25,8 @@
 //! processes ([`create`]: CreateProcess), the processes' calls ([`process`]: their end,
 //! OpenProcess, their exit codes and memory), a file's binary type ([`binary_type`]), exceptions
 //! ([`except`]: RaiseException, the pointer probes' unwind), the locale group ([`locale`] over
-//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the lstr string functions ([`lstr`],
+//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the global atoms ([`atom`], over ntdll's
+//! atom services), the lstr string functions ([`lstr`],
 //! their work under the pointer probes' exception handler), the clocks ([`time`], over the shared
 //! data page, [`shared`]), the system messages ([`message`], over ntdll's message calls and
 //! kernel32's own message table), a module's resources ([`resource`], over ntdll's resource
@@ -41,6 +42,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod atom;
 pub mod base;
 pub mod binary_type;
 pub mod collate;

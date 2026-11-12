@@ -2946,7 +2946,7 @@ note = "WritePrivateProfileSectionA's, the strings UTF-16"
 name = "GlobalAddAtomW"
 group = "atoms"
 args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalAddAtomW" }
 ordinal = 416
 fails = "0"
 note = "the name a string, or an integer atom in its low word"
@@ -2955,16 +2955,16 @@ note = "the name a string, or an integer atom in its low word"
 name = "GlobalDeleteAtom"
 group = "atoms"
 args = ["u32 nAtom"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalDeleteAtom" }
 ordinal = 419
 fails = "0"
-note = "it answers 0 when the atom is deleted and nAtom when it is not"
+note = "it answers 0 whether or not the atom is deleted, the last error set when it is not (the atom fixture's capture)"
 
 [[export]]
 name = "GlobalFindAtomW"
 group = "atoms"
 args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalFindAtomW" }
 ordinal = 421
 fails = "0"
 note = "the name a string, or an integer atom in its low word"
@@ -2973,7 +2973,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "GlobalAddAtomA"
 group = "atoms"
 args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalAddAtomA" }
 ordinal = 415
 fails = "0"
 note = "the name a string, or an integer atom in its low word"
@@ -2982,7 +2982,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "GlobalFindAtomA"
 group = "atoms"
 args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalFindAtomA" }
 ordinal = 420
 fails = "0"
 note = "the name a string, or an integer atom in its low word"
@@ -2991,7 +2991,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "GlobalGetAtomNameA"
 group = "atoms"
 args = ["u32 nAtom", "ptr lpBuffer", "i32 nSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalGetAtomNameA" }
 ordinal = 425
 fails = "0"
 
@@ -2999,7 +2999,7 @@ fails = "0"
 name = "GlobalGetAtomNameW"
 group = "atoms"
 args = ["u32 nAtom", "ptr lpBuffer", "i32 nSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GlobalGetAtomNameW" }
 ordinal = 426
 fails = "0"
 

@@ -5,9 +5,7 @@
 # its number.
 description = "atom - kernel32's global atoms: GlobalAddAtomW/A, GlobalFindAtomW/A, GlobalGetAtomNameW/A and GlobalDeleteAtom: string atoms found in any case, the reference counts GlobalDeleteAtom counts down, integer atoms (\"#123\", MAKEINTATOM and their bounds), the 255-character limit and short buffers, and the errors."
 kind = "sectioned"
-
-# Not gated: kernel32's global atoms (over ntdll's NtAddAtom family) are not implemented yet. Every
-# section is on the work list.
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
