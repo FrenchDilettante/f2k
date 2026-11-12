@@ -153,6 +153,25 @@ pub fn devices() {
     // and report the enumeration on COM1. The scan needs no interrupts, so it comes first.
     crate::hw::pci::init();
 
+    // The device tree: the scan's functions as nodes, each interrupt pin routed through the PIRQ
+    // table to its ISA line and its vector in the HAL's band. Reported on COM1, one line per
+    // routed pin; the firmware routing table's override seam stays with the ACPI slice.
+    let nodes = crate::dev::init_nodes_from_pci();
+    crate::serial_println!("F2K: dev: {} nodes", nodes.len());
+    for node in nodes.iter() {
+        if let Some(interrupt) = node.interrupt {
+            crate::serial_println!(
+                "F2K: dev: {:02x}:{:02x}.{} pin {} irq {} vector {:#04x}",
+                node.address.bus,
+                node.address.dev,
+                node.address.func,
+                interrupt.pin,
+                interrupt.isa_line,
+                interrupt.vector
+            );
+        }
+    }
+
     // The RAM disk: the disk image a boot loader loaded as the `f2k-disk` module, if it loaded one
     // (the test boots' disk), over the frames the boot memory plan withheld for it.
     crate::block::ramdisk::init();

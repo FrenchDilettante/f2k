@@ -473,6 +473,44 @@ pub fn check_kernel(spec: &Spec) -> Result<(), String> {
     Ok(())
 }
 
+/// The HAL's spec (`kernel/hal_exports.toml`, the hal.dll-named entry points compiled into the
+/// kernel) checked on its own terms: what it implements is a native body (the `f2k_export_<body>`
+/// symbol `kernel/src/hal/exports.rs` defines), and what it does not implement yet is a stub
+/// whose reason names the slice that lands it (the L6 DMA/MMIO slice, the APIC/MP slice) — the
+/// HAL's stubs are real bodies that fail the way the export fails, kept in the link like the
+/// natives, so the .sys loader can resolve them by name. No system services, no forwarders, no
+/// variables.
+pub fn check_hal(spec: &Spec) -> Result<(), String> {
+    for export in &spec.exports {
+        match &export.implementation {
+            Implementation::Native(_) => continue,
+            Implementation::Stub { reason, .. } if !reason.is_empty() => continue,
+            Implementation::Stub { .. } => {
+                return Err(format!(
+                    "hal/{}: a stub's reason names the work that lands it",
+                    export.name
+                ))
+            }
+            Implementation::Syscall(_) => {
+                return Err(format!(
+                    "hal/{}: the HAL serves no system services",
+                    export.name
+                ))
+            }
+            Implementation::Forward(_) => {
+                return Err(format!("hal/{}: the HAL forwards nothing", export.name))
+            }
+        }
+    }
+    for catalogued in &spec.catalogued {
+        return Err(format!(
+            "hal/{}: catalogued without an impl: the HAL surface is implemented or stub-with-named-work",
+            catalogued.name
+        ));
+    }
+    Ok(())
+}
+
 impl Spec {
     /// The native exports, in file order.
     pub fn natives(&self) -> Vec<&Export> {
@@ -1440,5 +1478,30 @@ ordinal = 0x10
         assert_eq!(stubbed.arg_bytes(), 4);
         assert_eq!(stubbed.args[1].to_string(), "...");
         assert_eq!(spec.stubs().len(), 1);
+    }
+
+    /// The HAL's spec is implemented or stub-with-named-work: natives and reasoned stubs pass
+    /// `check_hal`; a forwarder and a catalogued record (no impl) are refused.
+    #[test]
+    fn the_hal_spec_allows_natives_and_reasoned_stubs_only() {
+        let hal = "[[group]]\nkey = \"mp\"\ntitle = \"mp\"\n[[group]]\nkey = \"port\"\ntitle = \"port\"\n\n\
+                   [[export]]\nname = \"HalRequestIpi\"\ngroup = \"mp\"\nargs = [\"u32 Mask\"]\n\
+                   fails = \"void\"\nimpl = { stub = \"the APIC slice: the IPI through the local APIC\" }\n\n\
+                   [[export]]\nname = \"READ_PORT_UCHAR\"\ngroup = \"port\"\nargs = [\"ptr Port\"]\n\
+                   impl = { native = \"READ_PORT_UCHAR\" }\n";
+        let spec = parse_spec(hal).unwrap();
+        assert!(check_hal(&spec).is_ok());
+
+        let forward = hal.replacen(
+            "impl = { stub = \"the APIC slice: the IPI through the local APIC\" }",
+            "impl = { forward = \"NTDLL.RtlUnwind\" }",
+            1,
+        );
+        let error = check_hal(&parse_spec(&forward).unwrap()).unwrap_err();
+        assert!(error.contains("forwards nothing"), "{error}");
+
+        let catalogued = format!("{hal}\n[[export]]\nname = \"HalMakeBeep\"\n");
+        let error = check_hal(&parse_spec(&catalogued).unwrap()).unwrap_err();
+        assert!(error.contains("catalogued"), "{error}");
     }
 }

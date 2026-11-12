@@ -24,6 +24,10 @@ const DLLS: [&str; 7] = [
 /// The kernel's own export spec, repository-relative.
 const KERNEL_SPEC: &str = "kernel/exports.toml";
 
+/// The HAL's export spec (the hal.dll-named entry points compiled into the kernel),
+/// repository-relative.
+const HAL_SPEC: &str = "kernel/hal_exports.toml";
+
 fn main() {
     let manifest =
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR"));
@@ -95,6 +99,17 @@ fn main() {
         &out,
         "ntoskrnl_exports.rs",
         exportgen::emit::kernel_exports(&kernel, KERNEL_SPEC),
+    );
+
+    // The HAL's export surface (kernel/hal_exports.toml): every hal.dll-named body — implemented
+    // or stub-with-named-work — kept in the link, where the .sys loader resolves hal.dll imports
+    // by this spec's names.
+    let hal = load(repo, HAL_SPEC);
+    exportgen::check_hal(&hal).unwrap_or_else(|error| panic!("the HAL's export spec: {error}"));
+    write(
+        &out,
+        "hal_exports.rs",
+        exportgen::emit::hal_exports(&hal, HAL_SPEC),
     );
 
     let dlls = manifest.join("../target/userland/i686-f2k-pe/release");

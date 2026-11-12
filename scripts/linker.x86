@@ -31,6 +31,9 @@ SECTIONS
         /* The table of the kernel's exports' bodies (kernel/src/exports.rs): nothing references
          * it, and it is what keeps each body in the link. */
         KEEP(*(.rodata.ntoskrnl_exports))
+        /* The table of the HAL-named entry points' bodies (kernel/src/hal/exports.rs, from
+         * kernel/hal_exports.toml): same, for the .sys loader's hal.dll import resolution. */
+        KEEP(*(.rodata.hal_exports))
         *(.rodata .rodata.*)
     }
 

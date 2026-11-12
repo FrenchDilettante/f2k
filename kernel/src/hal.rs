@@ -27,6 +27,13 @@
 //! part of this layer. The kernel calls them directly; they reach the hardware through this
 //! layer's port space and vector mapping, as a Windows 2000 driver does through hal.dll.
 
+/// The hal.dll-named entry points over this interface ([`Hal`] and the seams around it): the
+/// export surface a driver imports from hal.dll, catalogued in `kernel/hal_exports.toml`, each
+/// record implemented here or a stub whose reason names the slice that lands it.
+pub mod exports;
+
+/// The interval timer's input clock, in Hz: the scale between its counts and 100 ns units.
+pub use crate::hw::pit::INPUT_FREQUENCY_HZ;
 pub use crate::hw::portio::Io;
 #[cfg(target_arch = "x86")]
 pub use crate::hw::portio::Ports;

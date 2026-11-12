@@ -21,7 +21,8 @@
 //!
 //! The keyboard's bytes reach the same console from the keyboard driver's DPC ([`key_byte`]): the
 //! console's producer turns them into key event records, appended to its input buffer for the
-//! input APIs to serve.
+//! input APIs to serve. A producer on another transport submits the records directly instead
+//! ([`key_event`]): the transport-independent seam the USB HID slice joins.
 //!
 //! The console's input-wait event is a notification event the server makes for the process that
 //! first asks for it (kernel32, the first time it must wait on the console) and hands to it as a
@@ -442,6 +443,60 @@ pub fn key_byte(
             #[cfg(not(feature = "kbd-smoke"))]
             let _ = record;
         });
+    // A control key's event goes to every process of the console, group 0.
+    if let Some(event) = raised {
+        if !server.ctrl.raise(event, 0) {
+            crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
+        }
+    }
+    let input = server.input_state();
+    let raised = server.ctrl.has_pending();
+    show_input(dispatch, input);
+    if raised {
+        ctrl::wake(crate::sched::DISPATCHER.get(dispatch));
+    }
+}
+
+/// Append one key event record to the console's input buffer, as a transport-independent
+/// producer submits it, and report what became of it: how the buffer took the record, and the
+/// control event a keydown the input mode holds back raised (Ctrl+C's or Ctrl+Break's), if
+/// any. The line-read abort a control key also ends lives in the rtl console's
+/// `Console::key_event`, the userland half of this seam; this side appends and raises.
+// No producer calls the seam yet (the PS/2 byte path is the one in use), so the target build
+// sees no caller.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn submit_key_event(
+    console: &mut Console,
+    record: rtl::console::input::KeyEventRecord,
+) -> (rtl::console::input::Append, Option<u32>) {
+    use rtl::console::input::{is_break, Append};
+    let outcome = console.input.append(record);
+    let raised = if outcome == Append::Filtered && record.key_down != 0 {
+        Some(if is_break(&record) {
+            rtl::console::CTRL_BREAK_EVENT
+        } else {
+            rtl::console::CTRL_C_EVENT
+        })
+    } else {
+        None
+    };
+    (outcome, raised)
+}
+
+/// The transport-independent key-event seam: a producer that decoded its transport itself
+/// submits the complete key event record here, instead of feeding bytes to the console's
+/// producer ([`key_byte`], the PS/2 byte path, stays the emulated machine's producer). The
+/// record is appended to the input buffer under the buffer's filter; a control key the input
+/// mode holds back raises its control event to every process of the console, group 0; the
+/// input-wait event is updated, as after a byte.
+#[cfg(target_arch = "x86")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn key_event(dispatch: &mut At<Dispatch>, record: rtl::console::input::KeyEventRecord) {
+    let server = SERVER.get(dispatch);
+    let (outcome, raised) = submit_key_event(&mut server.console, record);
+    if outcome == rtl::console::input::Append::Dropped {
+        crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
+    }
     // A control key's event goes to every process of the console, group 0.
     if let Some(event) = raised {
         if !server.ctrl.raise(event, 0) {
@@ -943,6 +998,53 @@ mod tests {
             [STD_INPUT, STD_OUTPUT, STD_ERROR],
             rtl::console::STANDARD_HANDLES
         );
+    }
+
+    /// The transport-independent seam: a submitted key event record is appended to the input
+    /// buffer exactly as the input APIs serve it, and a Ctrl+C keydown the input mode holds
+    /// back takes no slot and raises the control event.
+    #[test]
+    fn a_submitted_key_event_lands_in_the_input_buffer() {
+        use rtl::console::input::{Append, KeyEventRecord};
+
+        let mut console = Console::new();
+        let record = KeyEventRecord {
+            key_down: 1,
+            repeat_count: 1,
+            virtual_key_code: 0x41, // 'A'
+            virtual_scan_code: 0x1E,
+            char: u16::from(b'a'),
+            control_key_state: 0,
+        };
+        let (outcome, raised) = submit_key_event(&mut console, record);
+        assert_eq!(outcome, Append::Stored);
+        assert_eq!(raised, None);
+        assert_eq!(console.input.count(), 1);
+        assert_eq!(console.input.get(0).map(|r| r.key), Some(record));
+
+        // The key's keyup is kept as its own record.
+        let up = KeyEventRecord {
+            key_down: 0,
+            ..record
+        };
+        let (outcome, raised) = submit_key_event(&mut console, up);
+        assert_eq!(outcome, Append::Stored);
+        assert_eq!(raised, None);
+        assert_eq!(console.input.count(), 2);
+
+        // Ctrl+C's keydown: filtered out of the buffer, raises CTRL_C_EVENT.
+        let ctrl_c = KeyEventRecord {
+            key_down: 1,
+            repeat_count: 1,
+            virtual_key_code: 0x43, // 'C'
+            virtual_scan_code: 0x2E,
+            char: 0x03,
+            control_key_state: 0x0008, // LEFT_CTRL_PRESSED
+        };
+        let (outcome, raised) = submit_key_event(&mut console, ctrl_c);
+        assert_eq!(outcome, Append::Filtered);
+        assert_eq!(raised, Some(rtl::console::CTRL_C_EVENT));
+        assert_eq!(console.input.count(), 2, "the control key took no slot");
     }
 
     /// The text screen's cell memory, for the host.

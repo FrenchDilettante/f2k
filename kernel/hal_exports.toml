@@ -1,0 +1,329 @@
+# hal.dll's export surface: the one source every list of the HAL-named entry points derives
+# from.
+#
+# F2K compiles the hardware abstraction layer into the kernel image (there is no separate
+# hal.dll), so these are not a PE export directory of their own: each record names an entry
+# point the drivers import from hal.dll, implemented over the kernel's internal Hal trait in
+# kernel/src/hal/exports.rs, whose body is the `f2k_export_<body>` symbol its Rust defines.
+# The kernel's build script keeps every body in the link (a generated HAL_EXPORTS table in
+# .rodata.hal_exports), where the .sys loader resolves hal.dll imports by name against this
+# file, body symbol and all.
+#
+# Each record is marked one of two ways:
+#
+# - `impl = { native = "<body>" }` — implemented: the body in kernel/src/hal/exports.rs does
+#   the work (over the Hal trait, the port-I/O seam, the PCI config seam, or the routing
+#   table), host-tested there.
+# - `impl = { stub = "<the work that lands it>" }` — a stub: the body exists and fails the way
+#   the export fails, and the reason names the slice that implements it (the L6 DMA/MMIO
+#   slice for the common-buffer and MMIO-mapping entries, the APIC/MP slice for the IPI and
+#   start-processor entries).
+#
+# The format is the system DLLs' (userland/kernel32/exports.toml's header documents every
+# key), read through tools/exportgen. Records carry no ordinals: the HAL's public header is
+# flavor-agnostic, so the real machine's export table (ordinals included) only enters with
+# the .sys loader, which needs them for import resolution.
+#
+# Note: MmMapIoSpace also appears in kernel/exports.toml (catalogued there, where Windows 2000
+# exports it from ntoskrnl); that record generates nothing until implemented, so the body
+# symbol here is free — implementing it in the kernel's spec later needs its own body name.
+
+convention = "stdcall"
+
+[[group]]
+key = "port"
+title = "port access (READ_PORT_* / WRITE_PORT_*)"
+
+[[group]]
+key = "register"
+title = "memory-mapped register access (READ_REGISTER_* / WRITE_REGISTER_*)"
+
+[[group]]
+key = "interrupt"
+title = "interrupts (HalGetInterruptVector, HalEnable/DisableSystemInterrupt)"
+
+[[group]]
+key = "clock"
+title = "interval clock and real-time clock"
+
+[[group]]
+key = "dma"
+title = "DMA (common buffers, alignment)"
+
+[[group]]
+key = "bus"
+title = "bus data (HalGetBusData / HalSetBusData over PCI config space)"
+
+[[group]]
+key = "mmio"
+title = "MMIO mapping (MmMapIoSpace)"
+
+[[group]]
+key = "mp"
+title = "multi-processor (HalRequestIpi, HalStartNextProcessor)"
+
+# --- Port access -----------------------------------------------------------------------------
+
+[[export]]
+name = "READ_PORT_UCHAR"
+group = "port"
+args = ["ptr Port"]
+impl = { native = "READ_PORT_UCHAR" }
+
+[[export]]
+name = "READ_PORT_USHORT"
+group = "port"
+args = ["ptr Port"]
+impl = { native = "READ_PORT_USHORT" }
+
+[[export]]
+name = "READ_PORT_ULONG"
+group = "port"
+args = ["ptr Port"]
+impl = { native = "READ_PORT_ULONG" }
+
+[[export]]
+name = "WRITE_PORT_UCHAR"
+group = "port"
+args = ["ptr Port", "u32 Value"]
+impl = { native = "WRITE_PORT_UCHAR" }
+
+[[export]]
+name = "WRITE_PORT_USHORT"
+group = "port"
+args = ["ptr Port", "u32 Value"]
+impl = { native = "WRITE_PORT_USHORT" }
+
+[[export]]
+name = "WRITE_PORT_ULONG"
+group = "port"
+args = ["ptr Port", "u32 Value"]
+impl = { native = "WRITE_PORT_ULONG" }
+
+[[export]]
+name = "READ_PORT_BUFFER_UCHAR"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_PORT_BUFFER_UCHAR" }
+
+[[export]]
+name = "READ_PORT_BUFFER_USHORT"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_PORT_BUFFER_USHORT" }
+
+[[export]]
+name = "READ_PORT_BUFFER_ULONG"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_PORT_BUFFER_ULONG" }
+
+[[export]]
+name = "WRITE_PORT_BUFFER_UCHAR"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_PORT_BUFFER_UCHAR" }
+
+[[export]]
+name = "WRITE_PORT_BUFFER_USHORT"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_PORT_BUFFER_USHORT" }
+
+[[export]]
+name = "WRITE_PORT_BUFFER_ULONG"
+group = "port"
+args = ["ptr Port", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_PORT_BUFFER_ULONG" }
+
+# --- Memory-mapped register access -----------------------------------------------------------
+
+[[export]]
+name = "READ_REGISTER_UCHAR"
+group = "register"
+args = ["ptr Register"]
+impl = { native = "READ_REGISTER_UCHAR" }
+
+[[export]]
+name = "READ_REGISTER_USHORT"
+group = "register"
+args = ["ptr Register"]
+impl = { native = "READ_REGISTER_USHORT" }
+
+[[export]]
+name = "READ_REGISTER_ULONG"
+group = "register"
+args = ["ptr Register"]
+impl = { native = "READ_REGISTER_ULONG" }
+
+[[export]]
+name = "WRITE_REGISTER_UCHAR"
+group = "register"
+args = ["ptr Register", "u32 Value"]
+impl = { native = "WRITE_REGISTER_UCHAR" }
+
+[[export]]
+name = "WRITE_REGISTER_USHORT"
+group = "register"
+args = ["ptr Register", "u32 Value"]
+impl = { native = "WRITE_REGISTER_USHORT" }
+
+[[export]]
+name = "WRITE_REGISTER_ULONG"
+group = "register"
+args = ["ptr Register", "u32 Value"]
+impl = { native = "WRITE_REGISTER_ULONG" }
+
+[[export]]
+name = "READ_REGISTER_BUFFER_UCHAR"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_REGISTER_BUFFER_UCHAR" }
+
+[[export]]
+name = "READ_REGISTER_BUFFER_USHORT"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_REGISTER_BUFFER_USHORT" }
+
+[[export]]
+name = "READ_REGISTER_BUFFER_ULONG"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "READ_REGISTER_BUFFER_ULONG" }
+
+[[export]]
+name = "WRITE_REGISTER_BUFFER_UCHAR"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_REGISTER_BUFFER_UCHAR" }
+
+[[export]]
+name = "WRITE_REGISTER_BUFFER_USHORT"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_REGISTER_BUFFER_USHORT" }
+
+[[export]]
+name = "WRITE_REGISTER_BUFFER_ULONG"
+group = "register"
+args = ["ptr Register", "ptr Buffer", "u32 Count"]
+impl = { native = "WRITE_REGISTER_BUFFER_ULONG" }
+
+# --- Interrupts ------------------------------------------------------------------------------
+
+[[export]]
+name = "HalGetInterruptVector"
+group = "interrupt"
+args = ["i32 InterfaceType", "u32 BusNumber", "u32 BusInterruptLevel", "u32 BusInterruptVector", "ptr Irql", "ptr Affinity"]
+impl = { native = "HalGetInterruptVector" }
+
+[[export]]
+name = "HalEnableSystemInterrupt"
+group = "interrupt"
+args = ["u32 Vector", "u32 Irql", "i32 Mode"]
+fails = "0"
+impl = { native = "HalEnableSystemInterrupt" }
+
+[[export]]
+name = "HalDisableSystemInterrupt"
+group = "interrupt"
+args = ["u32 Vector", "ptr Irql"]
+impl = { native = "HalDisableSystemInterrupt" }
+
+# --- Interval clock and real-time clock ------------------------------------------------------
+
+[[export]]
+name = "HalQueryRealTimeClock"
+group = "clock"
+args = ["ptr TimeFields"]
+fails = "0"
+impl = { native = "HalQueryRealTimeClock" }
+
+[[export]]
+name = "HalSetRealTimeClock"
+group = "clock"
+args = ["ptr TimeFields"]
+fails = "0"
+impl = { stub = "the CMOS write path in hw::rtc, landed with the clock slice that needs it" }
+
+[[export]]
+name = "HalSetTimeIncrement"
+group = "clock"
+args = ["u32 DesiredIncrement"]
+impl = { native = "HalSetTimeIncrement" }
+
+# --- DMA -------------------------------------------------------------------------------------
+
+[[export]]
+name = "HalAllocateCommonBuffer"
+group = "dma"
+args = ["ptr Adapter", "u32 Length", "ptr LogicalAddress", "boolean CacheEnabled"]
+fails = "0"
+impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): common buffers over the pool, translated to bus addresses" }
+
+[[export]]
+name = "HalFreeCommonBuffer"
+group = "dma"
+args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "boolean CacheEnabled"]
+fails = "void"
+impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): freeing the common buffer the L6 slice allocated" }
+
+[[export]]
+name = "HalGetDmaAlignmentRequirement"
+group = "dma"
+args = []
+impl = { native = "HalGetDmaAlignmentRequirement" }
+note = "1 on x86: no alignment requirement past the natural one"
+
+# --- Bus data (PCI config space) -------------------------------------------------------------
+
+[[export]]
+name = "HalGetBusData"
+group = "bus"
+args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Length"]
+impl = { native = "HalGetBusData" }
+note = "PCIConfiguration (4): 0 = no such bus, 2 with VendorID 0xFFFF = empty slot"
+
+[[export]]
+name = "HalSetBusData"
+group = "bus"
+args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Length"]
+impl = { native = "HalSetBusData" }
+
+[[export]]
+name = "HalGetBusDataByOffset"
+group = "bus"
+args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Offset", "u32 Length"]
+impl = { native = "HalGetBusDataByOffset" }
+
+[[export]]
+name = "HalSetBusDataByOffset"
+group = "bus"
+args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Offset", "u32 Length"]
+impl = { native = "HalSetBusDataByOffset" }
+
+# --- MMIO mapping ----------------------------------------------------------------------------
+
+[[export]]
+name = "MmMapIoSpace"
+group = "mmio"
+args = ["u64 PhysicalAddress", "u32 NumberOfBytes", "boolean CacheEnable"]
+fails = "0"
+impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): mapping a device's MMIO range into the reserved kernel region" }
+
+# --- Multi-processor -------------------------------------------------------------------------
+
+[[export]]
+name = "HalRequestIpi"
+group = "mp"
+args = ["u32 Mask"]
+fails = "void"
+impl = { stub = "the APIC slice: the IPI through the local APIC's interrupt command register" }
+
+[[export]]
+name = "HalStartNextProcessor"
+group = "mp"
+args = ["ptr LoaderBlock", "ptr ProcessorState"]
+fails = "0"
+impl = { stub = "the APIC/MP slice: starting the next processor through its local APIC (INIT-SIPI-SIPI)" }

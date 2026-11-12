@@ -5,8 +5,8 @@
 //! A bus scan (today the PCI scan in [`crate::hw::pci`]) becomes a fixed-capacity registry of
 //! [`DeviceNode`]s ([`Nodes`]): each node carries its bus and bus address, its hardware IDs, its
 //! BARs, and its interrupt — the pin, the routed ISA line, and the vector the HAL's vector mapping
-//! gives the line ([`crate::hal::interrupt_vector`]). [`Nodes::from_pci`] builds the registry from
-//! the scan's device table and PIRQ routes.
+//! gives the line, through the routing table in [`routing`] ([`crate::hal::interrupt_vector`]).
+//! [`Nodes::from_pci`] builds the registry from the scan's device table and PIRQ routes.
 //!
 //! Drivers register as a `&'static` [`DriverObject`] — a name, the `MajorFunction[IRP_MJ_MAX]`
 //! dispatch table, an add-device entry, and the node match (a hardware-ID list, a class, or any)
@@ -19,11 +19,12 @@
 //! sends an `IRP_MJ_PNP`/`IRP_MN_START_DEVICE` packet carrying the node's resources down the
 //! device's dispatch table ([`irp`]). A successful start claims the node.
 
-// Nothing calls this layer yet (the boot wiring is a later slice), so the target build sees no
-// caller for it.
+// The boot fills the node registry from the PCI scan ([`init_nodes_from_pci`]); nothing runs the
+// probe/start flow yet (that wiring is a later slice), so the target build sees no caller for it.
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod irp;
+pub mod routing;
 
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
@@ -32,6 +33,8 @@ use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU8, Ordering};
 
 use irp::{Irp, IRP_MJ_PNP, IRP_MN_START_DEVICE};
 
+// The tests read the HAL's vector mapping through it.
+#[cfg(test)]
 use crate::hal;
 use crate::hw::pci::{self, Bar};
 use crate::status::NtStatus;
@@ -203,26 +206,14 @@ impl Nodes {
 
     /// Build the registry from a bus scan's devices and its interrupt routes: each device becomes
     /// a PCI node whose interrupt is the pin routed to an ISA line and mapped to its vector, when
-    /// the pin routes somewhere in the HAL's vector band.
+    /// the pin routes somewhere in the HAL's vector band (see [`routing`]).
     pub fn from_pci<'a>(
         devices: impl IntoIterator<Item = &'a pci::Device>,
         routes: Option<&pci::PirqRoutes>,
     ) -> Self {
-        let max_line = hal::LAST_VECTOR - hal::FIRST_VECTOR;
         let mut nodes = Nodes::new();
         for d in devices {
-            let interrupt = if d.interrupt_pin != 0 {
-                routes
-                    .and_then(|r| pci::route(d.bus, d.dev, d.func, d.interrupt_pin, r))
-                    .filter(|irq| *irq <= max_line)
-                    .map(|irq| Interrupt {
-                        pin: d.interrupt_pin,
-                        isa_line: irq,
-                        vector: hal::interrupt_vector(irq),
-                    })
-            } else {
-                None
-            };
+            let interrupt = routing::route_interrupt(routes, d.bus, d.dev, d.func, d.interrupt_pin);
             nodes.push(DeviceNode::new(
                 Bus::Pci,
                 BusAddress {

@@ -7,10 +7,11 @@
 //! script keeps, so each one stays in the image, where the image's export directory names it.
 
 /// A table of addresses the image keeps: never read, only held, so that the link keeps what each
-/// one names.
+/// one names. Shared by this module's `NTOSKRNL_EXPORTS` and the HAL surface's `HAL_EXPORTS`
+/// (kernel/src/hal/exports.rs, included there).
 #[cfg(target_arch = "x86")]
 #[repr(transparent)]
-struct Kept<const N: usize>([*const (); N]);
+pub(crate) struct Kept<const N: usize>(pub(crate) [*const (); N]);
 
 // SAFETY: the table is never read through, and its addresses are constants of the link: sharing it
 // shares nothing that can change.

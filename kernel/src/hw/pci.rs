@@ -174,18 +174,33 @@ pub fn init() {
         let irq = if d.interrupt_pin == 0 {
             None
         } else {
-            routes.as_ref().and_then(|r| route(d.bus, d.dev, d.func, d.interrupt_pin, r))
+            routes
+                .as_ref()
+                .and_then(|r| route(d.bus, d.dev, d.func, d.interrupt_pin, r))
         };
         if let Some(irq) = irq {
             crate::serial_println!(
                 "F2K: pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:06x} rev {:02x} pin {} irq {}",
-                d.bus, d.dev, d.func, d.vendor, d.device, d.class_code, d.revision,
-                d.interrupt_pin, irq
+                d.bus,
+                d.dev,
+                d.func,
+                d.vendor,
+                d.device,
+                d.class_code,
+                d.revision,
+                d.interrupt_pin,
+                irq
             );
         } else {
             crate::serial_println!(
                 "F2K: pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:06x} rev {:02x} pin {} irq -",
-                d.bus, d.dev, d.func, d.vendor, d.device, d.class_code, d.revision,
+                d.bus,
+                d.dev,
+                d.func,
+                d.vendor,
+                d.device,
+                d.class_code,
+                d.revision,
                 d.interrupt_pin
             );
         }
@@ -597,6 +612,159 @@ fn routed_override(bus: u8, dev: u8, func: u8, pin: u8) -> Option<u8> {
         }
     }
     None
+}
+
+// --- Byte-granular config access and the bus-data surface ------------------------------------
+
+/// The BUS_DATA_TYPE value that names PCI configuration space (the documented enum's
+/// `PCIConfiguration`).
+pub const PCI_CONFIGURATION: i32 = 4;
+
+/// A slot number's parts, as the documented `PCI_SLOT_NUMBER` lays them out: the device number
+/// in bits 3-7, the function in bits 0-2 (slot = device << 3 | function).
+pub fn slot_parts(slot: u32) -> (u8, u8) {
+    (((slot >> 3) & 0x1F) as u8, (slot & 0x7) as u8)
+}
+
+/// Whether the scan found the bus: bus 0 always exists (the config mechanism is there), any
+/// other bus exists when the scan found a function on it.
+pub fn bus_exists(devices: &Devices, bus: u8) -> bool {
+    bus == 0 || devices.iter().any(|d| d.bus == bus)
+}
+
+/// Read up to `buffer.len()` bytes of a function's configuration space starting at byte
+/// `offset`, through dword config accesses (an unaligned start or tail is assembled from the
+/// covering dwords). Returns the bytes read: the buffer's length capped at the 256-byte space
+/// past `offset`.
+pub fn read_config_bytes<C: ConfigIo>(
+    cfg: &mut C,
+    bus: u8,
+    dev: u8,
+    func: u8,
+    offset: u8,
+    buffer: &mut [u8],
+) -> usize {
+    let start = offset as usize;
+    let count = buffer.len().min(256 - start);
+    let mut done = 0;
+    while done < count {
+        let at = (start + done) & !3;
+        let dword = cfg.read_config(ConfigAddress::new(bus, dev, func, at as u8));
+        let bytes = dword.to_le_bytes();
+        let skip = (start + done) - at;
+        let take = (count - done).min(4 - skip);
+        buffer[done..done + take].copy_from_slice(&bytes[skip..skip + take]);
+        done += take;
+    }
+    count
+}
+
+/// Write `buffer` into a function's configuration space starting at byte `offset`,
+/// read-modify-write per touched dword so the bytes beside the written range keep their values.
+/// Returns the bytes written, capped like [`read_config_bytes`].
+pub fn write_config_bytes<C: ConfigIo>(
+    cfg: &mut C,
+    bus: u8,
+    dev: u8,
+    func: u8,
+    offset: u8,
+    buffer: &[u8],
+) -> usize {
+    let start = offset as usize;
+    let count = buffer.len().min(256 - start);
+    let mut done = 0;
+    while done < count {
+        let at = (start + done) & !3;
+        let addr = ConfigAddress::new(bus, dev, func, at as u8);
+        let mut dword = cfg.read_config(addr);
+        let mut bytes = dword.to_le_bytes();
+        let skip = (start + done) - at;
+        let take = (count - done).min(4 - skip);
+        bytes[skip..skip + take].copy_from_slice(&buffer[done..done + take]);
+        dword = u32::from_le_bytes(bytes);
+        cfg.write_config(addr, dword);
+        done += take;
+    }
+    count
+}
+
+/// HalGetBusData's PCI shape: read the slot's configuration space from offset 0 into `buffer`.
+/// Returns the bytes read; 0 when the bus data type is not PCI configuration or the bus does not
+/// exist; 2 with the vendor ID 0xFFFF in the buffer's first two bytes when the slot is empty.
+pub fn get_bus_data<C: ConfigIo>(
+    cfg: &mut C,
+    devices: &Devices,
+    bus_data_type: i32,
+    bus: u32,
+    slot: u32,
+    buffer: &mut [u8],
+) -> u32 {
+    get_bus_data_by_offset(cfg, devices, bus_data_type, bus, slot, buffer, 0)
+}
+
+/// HalGetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space.
+pub fn get_bus_data_by_offset<C: ConfigIo>(
+    cfg: &mut C,
+    devices: &Devices,
+    bus_data_type: i32,
+    bus: u32,
+    slot: u32,
+    buffer: &mut [u8],
+    offset: u32,
+) -> u32 {
+    if bus_data_type != PCI_CONFIGURATION || offset >= 256 {
+        return 0;
+    }
+    let bus = bus as u8; // bus numbers are 8 bits in the address dword
+    if !bus_exists(devices, bus) {
+        return 0;
+    }
+    let (dev, func) = slot_parts(slot);
+    if cfg.read_config(ConfigAddress::new(bus, dev, func, VENDOR_DEVICE)) as u16 == INVALID_VENDOR {
+        if buffer.len() >= 2 {
+            buffer[..2].copy_from_slice(&INVALID_VENDOR.to_le_bytes());
+        }
+        return 2;
+    }
+    read_config_bytes(cfg, bus, dev, func, offset as u8, buffer) as u32
+}
+
+/// HalSetBusData's PCI shape: write `buffer` to the slot's configuration space from offset 0.
+/// Returns the bytes written; 0 when the bus data type is not PCI configuration, the bus does
+/// not exist, or the slot is empty.
+pub fn set_bus_data<C: ConfigIo>(
+    cfg: &mut C,
+    devices: &Devices,
+    bus_data_type: i32,
+    bus: u32,
+    slot: u32,
+    buffer: &[u8],
+) -> u32 {
+    set_bus_data_by_offset(cfg, devices, bus_data_type, bus, slot, buffer, 0)
+}
+
+/// HalSetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space.
+pub fn set_bus_data_by_offset<C: ConfigIo>(
+    cfg: &mut C,
+    devices: &Devices,
+    bus_data_type: i32,
+    bus: u32,
+    slot: u32,
+    buffer: &[u8],
+    offset: u32,
+) -> u32 {
+    if bus_data_type != PCI_CONFIGURATION || offset >= 256 {
+        return 0;
+    }
+    let bus = bus as u8;
+    if !bus_exists(devices, bus) {
+        return 0;
+    }
+    let (dev, func) = slot_parts(slot);
+    if cfg.read_config(ConfigAddress::new(bus, dev, func, VENDOR_DEVICE)) as u16 == INVALID_VENDOR {
+        return 0;
+    }
+    write_config_bytes(cfg, bus, dev, func, offset as u8, buffer) as u32
 }
 
 #[cfg(test)]
@@ -1142,12 +1310,17 @@ mod tests {
     fn the_development_machine_enumerates_as_its_boot_reported() {
         let mut sim = SimConfig::new();
         program_device(&mut sim, 0, 0, 0, 0x8086, 0x1237, 0x02, 0x060000, 0x00); // host bridge
-        program_device(&mut sim, 0, 1, 0, 0x8086, 0x7000, 0x00, 0x060100, 0x80); // ISA bridge, multifunction
+        program_device(&mut sim, 0, 1, 0, 0x8086, 0x7000, 0x00, 0x060100, 0x80); // ISA bridge,
+                                                                                 // multifunction
         program_device(&mut sim, 0, 1, 1, 0x8086, 0x7010, 0x00, 0x010180, 0x00); // IDE
         program_device(&mut sim, 0, 1, 3, 0x8086, 0x7113, 0x03, 0x068000, 0x00); // PM
         sim.set(0, 1, 3, INTERRUPT_LINE, 0x0100); // pin 1, line unassigned
         program_device(&mut sim, 0, 2, 0, 0x1234, 0x1111, 0x02, 0x030000, 0x00); // VGA
-        // The ISA bridge's PIRQ route controls: B -> IRQ 10, the rest disabled.
+                                                                                 // The ISA bridge's
+                                                                                 // PIRQ route
+                                                                                 // controls: B ->
+                                                                                 // IRQ 10, the rest
+                                                                                 // disabled.
         sim.set(0, 1, 0, PIRQ_ROUTE_CONTROL, 0x8080_0A80);
 
         let devices = scan(&mut sim);
@@ -1161,7 +1334,16 @@ mod tests {
         ];
         for (d, e) in devices.iter().zip(expected) {
             assert_eq!(
-                (d.bus, d.dev, d.func, d.vendor, d.device, d.class_code, d.revision, d.interrupt_pin),
+                (
+                    d.bus,
+                    d.dev,
+                    d.func,
+                    d.vendor,
+                    d.device,
+                    d.class_code,
+                    d.revision,
+                    d.interrupt_pin
+                ),
                 e,
                 "the scan must reproduce the boot report's device"
             );
@@ -1171,5 +1353,181 @@ mod tests {
         assert_eq!(routes.0, [0x80, 0x0A, 0x80, 0x80]);
         assert_eq!(route(0, 1, 3, 1, &routes), Some(10));
         assert_eq!(route(0, 2, 0, 1, &routes), None, "PIRQA is disabled");
+    }
+
+    /// Byte-granular config reads assemble across dword boundaries: an unaligned start and tail
+    /// come from the covering dwords, and the read caps at the 256-byte space.
+    #[test]
+    fn config_bytes_read_across_dword_boundaries() {
+        let mut sim = SimConfig::new();
+        program_device(&mut sim, 0, 4, 0, 0x8086, 0x100E, 0x03, 0x020000, 0x00);
+        sim.set(0, 4, 0, INTERRUPT_LINE, (0x03u32 << 8) | 0x0B); // pin 3, line 11
+        sim.set(0, 4, 0, 0x40, 0xDEAD_BEEF);
+
+        // From 0x3C, eight bytes: the interrupt dword whole, then the low half of 0x40.
+        let mut buffer = [0u8; 8];
+        let read = read_config_bytes(&mut sim, 0, 4, 0, 0x3C, &mut buffer);
+        assert_eq!(read, 8);
+        assert_eq!(
+            buffer,
+            [0x0B, 0x03, 0x00, 0x00, 0xEF, 0xBE, 0xAD, 0xDE],
+            "little-endian bytes from the two covering dwords"
+        );
+
+        // An unaligned start: from 0x3D, four bytes span the 0x3C and 0x40 dwords.
+        let mut four = [0u8; 4];
+        let read = read_config_bytes(&mut sim, 0, 4, 0, 0x3D, &mut four);
+        assert_eq!(read, 4);
+        assert_eq!(four, [0x03, 0x00, 0x00, 0xEF]);
+
+        // Past the space's end the read stops at 256.
+        let mut tail = [0u8; 8];
+        let read = read_config_bytes(&mut sim, 0, 4, 0, 0xFE, &mut tail);
+        assert_eq!(read, 2);
+    }
+
+    /// Byte-granular config writes are read-modify-write per touched dword: the bytes beside the
+    /// written range keep their values.
+    #[test]
+    fn config_bytes_write_preserves_the_neighbouring_bytes() {
+        let mut sim = SimConfig::new();
+        program_device(&mut sim, 0, 4, 0, 0x8086, 0x100E, 0x03, 0x020000, 0x00);
+        sim.set(0, 4, 0, INTERRUPT_LINE, 0x0000_0B03);
+
+        // Write four bytes at 0x3E: the top half of the 0x3C dword and the low half of 0x40.
+        let written = write_config_bytes(&mut sim, 0, 4, 0, 0x3E, &[0xA5, 0x5A, 0x11, 0x22]);
+        assert_eq!(written, 4);
+        assert_eq!(
+            sim.raw(0, 4, 0, INTERRUPT_LINE),
+            0x5AA5_0B03,
+            "the low half of the 0x3C dword is untouched"
+        );
+        assert_eq!(sim.raw(0, 4, 0, 0x40), 0x0000_2211);
+    }
+
+    /// The bus-data surface: a present slot reads its config space (0 offset, and by offset),
+    /// an empty slot reports 2 with vendor 0xFFFF, an absent bus or a non-PCI data type reports
+    /// 0, and writes go through with the same rules.
+    #[test]
+    fn the_bus_data_surface_serves_pci_config_space() {
+        let mut sim = SimConfig::new();
+        program_device(&mut sim, 0, 4, 0, 0x8086, 0x100E, 0x03, 0x020000, 0x00);
+        set_interrupts(&mut sim, 0, 4, 0, 0x0B, 0x03);
+        let devices = scan(&mut sim);
+
+        // Slot 4<<3|0 = 32: read the whole common header.
+        let mut buffer = [0u8; 64];
+        let read = get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &mut buffer);
+        assert_eq!(read, 64);
+        assert_eq!(
+            &buffer[0..4],
+            &0x100E_8086u32.to_le_bytes(),
+            "vendor, device"
+        );
+        assert_eq!(
+            &buffer[8..12],
+            &((0x020000u32 << 8) | 0x03).to_le_bytes(),
+            "rev, class"
+        );
+        assert_eq!(&buffer[0x3C..0x3E], &[0x0B, 0x03], "line, pin");
+
+        // By offset: four bytes at 0x3C.
+        let mut four = [0u8; 4];
+        let read = get_bus_data_by_offset(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            32,
+            &mut four,
+            0x3C,
+        );
+        assert_eq!(read, 4);
+        assert_eq!(four, [0x0B, 0x03, 0x00, 0x00]);
+
+        // An empty slot: 2 bytes, vendor 0xFFFF.
+        let mut empty = [0u8; 64];
+        let read = get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 9 << 3, &mut empty);
+        assert_eq!(read, 2);
+        assert_eq!(&empty[..2], &0xFFFFu16.to_le_bytes());
+
+        // A bus the scan did not find, and a data type that is not PCI config.
+        assert_eq!(
+            get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 7, 0, &mut buffer),
+            0
+        );
+        assert_eq!(
+            get_bus_data(&mut sim, &devices, 0, 0, 32, &mut buffer),
+            0,
+            "Cmos is not served"
+        );
+        // Bus 0 exists even when the scan found nothing on it: an empty slot there reports 2.
+        let none = Devices::new();
+        assert_eq!(
+            get_bus_data(&mut sim, &none, PCI_CONFIGURATION, 0, 5 << 3, &mut buffer),
+            2,
+            "bus 0 exists: the slot is empty"
+        );
+
+        // Writes: by offset into the interrupt dword, and from offset 0 (the vendor/device
+        // dword) round-tripping; an empty slot and a foreign type write nothing.
+        let by_offset = set_bus_data_by_offset(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            32,
+            &[0x05, 0x01],
+            0x3C,
+        );
+        assert_eq!(by_offset, 2);
+        assert_eq!(sim.raw(0, 4, 0, INTERRUPT_LINE) & 0xFFFF, 0x0105);
+        let written = set_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &[0x86, 0x80]);
+        assert_eq!(written, 2);
+        assert_eq!(
+            sim.raw(0, 4, 0, VENDOR_DEVICE),
+            0x100E_8086,
+            "vendor restored"
+        );
+        assert_eq!(
+            set_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 9 << 3, &[1, 2]),
+            0,
+            "an empty slot takes no write"
+        );
+        assert_eq!(
+            set_bus_data(&mut sim, &devices, 1, 0, 32, &[1]),
+            0,
+            "Eisa is not served"
+        );
+        let top = set_bus_data_by_offset(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            32,
+            &[0xAA, 0xBB],
+            0x3E,
+        );
+        assert_eq!(top, 2);
+        assert_eq!(
+            sim.raw(0, 4, 0, 0x3C),
+            0xBBAA_0105,
+            "only the top half of the dword moved"
+        );
+
+        // An offset past the 256-byte configuration space reads and writes nothing.
+        assert_eq!(
+            get_bus_data_by_offset(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &mut buffer, 256),
+            0
+        );
+        assert_eq!(
+            set_bus_data_by_offset(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &[1], 300),
+            0
+        );
+
+        // Slot parts: device in bits 3-7, function in bits 0-2.
+        assert_eq!(slot_parts(32), (4, 0));
+        assert_eq!(slot_parts(0x2B), (5, 3));
+        assert_eq!(slot_parts(0xFF), (31, 7));
     }
 }

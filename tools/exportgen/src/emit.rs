@@ -277,6 +277,34 @@ pub fn kernel_exports(spec: &Spec, source: &str) -> String {
     out
 }
 
+/// The bodies of the HAL's exports kept in the kernel's link (`kernel/hal_exports.toml`): the
+/// same shape as [`kernel_exports`], in the `.rodata.hal_exports` section the linker script
+/// keeps. The hal.dll-named entry points are compiled into the kernel (there is no separate
+/// hal.dll image), so nothing exports them from a PE directory: the table holds every body's
+/// address (`f2k_export_<body>`: a function), where the .sys loader's import resolution finds
+/// them by the spec's names. `Kept` resolves in the including module's scope.
+pub fn hal_exports(spec: &Spec, source: &str) -> String {
+    let bodies = &spec.exports;
+    let mut out = banner(source);
+    if !bodies.is_empty() {
+        out.push_str("#[allow(non_upper_case_globals)]\nunsafe extern \"C\" {\n");
+        for export in bodies {
+            let symbol = format!("{}{}", crate::pe::EXPORT_PREFIX, export.body());
+            writeln!(out, "    fn {symbol}();").unwrap();
+        }
+        out.push_str("}\n\n");
+    }
+    out.push_str("/// The bodies of the HAL's exports, in spec order.\n#[used]\n");
+    out.push_str("#[unsafe(link_section = \".rodata.hal_exports\")]\n");
+    writeln!(out, "static HAL_EXPORTS: Kept<{}> = Kept([", bodies.len()).unwrap();
+    for export in bodies {
+        let symbol = format!("{}{}", crate::pe::EXPORT_PREFIX, export.body());
+        writeln!(out, "    {symbol} as *const (),").unwrap();
+    }
+    out.push_str("]);\n");
+    out
+}
+
 /// The variables the DLL exports (its data exports, its own storage): `DATA_EXPORTS`, their names
 /// in file order, for the tests that check where the built DLL keeps them.
 pub fn data_exports(spec: &Spec, source: &str) -> String {
