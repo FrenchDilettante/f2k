@@ -1,0 +1,38 @@
+F2K: GDT and IDT initialized
+F2K Booted Successfully
+Fenêtre 2000 - Windows 2000 compatible OS in Rust
+Phase 1: Foundation complete
+Multiboot info at 0x00010000
+F2K: command line: WINNT\system32\cmd.exe
+F2K: physical memory: 39642 free frames (154 MiB)
+F2K: frame database audit: ok
+F2K: paging on: kernel at 0x80400000, low identity removed
+F2K: pci: 10 devices
+F2K: pci: 00:00.0 8086:1237 class 060000 rev 02 pin 0 irq -
+F2K: pci: 00:01.0 8086:7000 class 060100 rev 00 pin 0 irq -
+F2K: pci: 00:01.1 8086:7111 class 01018a rev 01 pin 0 irq -
+F2K: pci: 00:02.0 80ee:beef class 030000 rev 00 pin 1 irq 9
+F2K: pci: 00:03.0 1022:2000 class 020000 rev 40 pin 1 irq 11
+F2K: pci: 00:04.0 80ee:cafe class 088000 rev 00 pin 1 irq 11
+F2K: pci: 00:05.0 8086:2415 class 040100 rev 01 pin 1 irq 10
+F2K: pci: 00:06.0 106b:003f class 0c0310 rev 00 pin 1 irq 9
+F2K: pci: 00:07.0 8086:7113 class 068000 rev 08 pin 1 irq 11
+F2K: pci: 00:0b.0 8086:265c class 0c0320 rev 00 pin 1 irq 11
+F2K: ide: primary master: LBA28, 131072 sectors
+F2K: kbd: keyboard ready on IRQ 1 (translation on)
+F2K: win32k: font loaded: \WINNT\Fonts\tahoma.ttf
+F2K: win32k: font loaded: \WINNT\Fonts\tahomabd.ttf
+F2K: win32k: font loaded: \WINNT\Fonts\ms_sans_serif.ttf
+F2K: win32k: font loaded: \WINNT\Fonts\system.ttf
+F2K: win32k: font loaded: \WINNT\Fonts\marlett.ttf
+F2K: process 1 of 1: WINNT\system32\cmd.exe
+F2K: image loaded (base 0x00400000, entry 0x00407e90, 55 pages)
+F2K: entering ring 3 (entry 0x00407e90, stack 0x00130000)
+F2K [Version 5.00.2195]
+
+C:\WINNT\system32>fish calc.exe
+F2K: vbe: 640x480x32, LFB at 0xe0000000, mapped at 0xc0800000
+F2K: debug: stub user32.CreateWindowExW(dwExStyle=0, lpClassName=0x010012D4, lpWindowName="CalcMsgPumpWnd", dwStyle=0x10000000, X=-2147483648, Y=0, nWidth=-2147483648, nHeight=0, hWndParent=0, hMenu=0, hInstance=0x1000000, lpParam=NULL): the Edit control class is not 
+F2K: debug: stub user32.SetCursor(hCursor=0x14): not yet implemented
+F2K: debug: stub user32.StaticWndProc(hWnd=0x20, Msg=0xF, wParam=0, lParam=0): SS_CENTERIMAGE (a text static's line centred vertically) is not yet drawn
+F2K: debug: stub user32.ButtonWndProc(hWnd=0x28, Msg=0xF, wParam=0, lParam=0): BS_OWNERDRAW buttons (WM_DRAWITEM to the parent) are not yet drawn: the button is drawn as a check box
