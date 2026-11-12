@@ -35,8 +35,10 @@ pub const STM_SETIMAGE: u32 = 0x0172;
 pub const STM_GETIMAGE: u32 = 0x0173;
 
 /// STM_SETIMAGE's and STM_GETIMAGE's image kinds.
+const IMAGE_BITMAP: u32 = 0;
 const IMAGE_ICON: u32 = 1;
 const IMAGE_CURSOR: u32 = 2;
+const IMAGE_ENHMETAFILE: u32 = 3;
 
 /// The static kinds (the style's low five bits, winuser.h's SS_*).
 const SS_CENTER: u32 = 0x01;
@@ -48,8 +50,12 @@ const SS_WHITERECT: u32 = 0x06;
 const SS_BLACKFRAME: u32 = 0x07;
 const SS_GRAYFRAME: u32 = 0x08;
 const SS_WHITEFRAME: u32 = 0x09;
+const SS_USERITEM: u32 = 0x0A;
 const SS_SIMPLE: u32 = 0x0B;
 const SS_LEFTNOWORDWRAP: u32 = 0x0C;
+const SS_OWNERDRAW: u32 = 0x0D;
+const SS_BITMAP: u32 = 0x0E;
+const SS_ENHMETAFILE: u32 = 0x0F;
 const SS_ETCHEDHORZ: u32 = 0x10;
 const SS_ETCHEDVERT: u32 = 0x11;
 const SS_ETCHEDFRAME: u32 = 0x12;
@@ -90,6 +96,85 @@ fn write(window: usize, offset: i32, value: u32) -> u32 {
 
 fn kind(window: usize) -> u32 {
     window::style_of(window).unwrap_or(0) & SS_TYPEMASK
+}
+
+/// The static kinds the procedure does not draw yet (drawn as a text static), and what Windows
+/// 2000 draws for each.
+const UNDRAWN_KINDS: [(u32, &str); 4] = [
+    (SS_USERITEM, "SS_USERITEM statics"),
+    (
+        SS_OWNERDRAW,
+        "SS_OWNERDRAW statics (WM_DRAWITEM to the parent)",
+    ),
+    (SS_BITMAP, "SS_BITMAP statics (a bitmap)"),
+    (
+        SS_ENHMETAFILE,
+        "SS_ENHMETAFILE statics (an enhanced metafile)",
+    ),
+];
+
+/// The style bits of a text static the procedure does not draw yet, and what each does.
+const UNDRAWN_STYLES: [(u32, &str); 3] = [
+    (
+        0x0200,
+        "SS_CENTERIMAGE (a text static's line centred vertically)",
+    ),
+    (0x1000, "SS_SUNKEN (a sunken border)"),
+    (0x2000, "SS_EDITCONTROL (an edit control's line breaks)"),
+];
+
+/// The ellipsis styles (one field of two bits), and what each does.
+const SS_ELLIPSISMASK: u32 = 0xC000;
+const ELLIPSES: [(u32, &str); 3] = [
+    (
+        0x4000,
+        "SS_ENDELLIPSIS (the text's end cut with an ellipsis)",
+    ),
+    (
+        0x8000,
+        "SS_PATHELLIPSIS (a path's middle cut with an ellipsis)",
+    ),
+    (
+        0xC000,
+        "SS_WORDELLIPSIS (the text cut at a word with an ellipsis)",
+    ),
+];
+
+/// The cases logged in this process: a kind, a style bit, a message.
+static LOGGED: rtl::stub::Logged<16> = rtl::stub::Logged::new();
+
+/// The cases of the static's paint the procedure does not draw yet, logged for the message it is
+/// handling (each once per process): its kind, its style bits, an SS_ICON static's icon (win32k's
+/// icon records hold no bits yet).
+fn log_undrawn(window: usize, call: (usize, u32, u32, i32)) {
+    let style = window::style_of(window).unwrap_or(0);
+    let kind = style & SS_TYPEMASK;
+    let log = |key: u32, reason: &dyn core::fmt::Display| {
+        crate::stub::message_once(&LOGGED, key, &crate::stub::STATIC_PROC, reason, call);
+    };
+    if let Some(&(_, what)) = UNDRAWN_KINDS.iter().find(|&&(undrawn, _)| undrawn == kind) {
+        log(
+            kind,
+            &format_args!("{what} are not yet drawn: the static is drawn as text"),
+        );
+    }
+    if kind == SS_ICON && read(window, IMAGE) != 0 {
+        log(
+            SS_ICON,
+            &"an SS_ICON static's icon is not yet drawn: icons hold no bits yet",
+        );
+    }
+    if textless(kind) || matches!(kind, SS_ICON | SS_BITMAP | SS_ENHMETAFILE) {
+        return;
+    }
+    let ellipsis = ELLIPSES
+        .iter()
+        .find(|&&(field, _)| style & SS_ELLIPSISMASK == field);
+    for &(bit, what) in UNDRAWN_STYLES.iter().chain(ellipsis) {
+        if style & bit == bit {
+            log(bit, &format_args!("{what} is not yet drawn"));
+        }
+    }
 }
 
 /// Whether the static's kind shows no text: the rectangles, the frames, the etched lines.
@@ -138,6 +223,16 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         },
         STM_SETIMAGE => match (kind(window), wparam) {
             (SS_ICON, IMAGE_ICON | IMAGE_CURSOR) => set_icon(window, lparam as u32),
+            (SS_BITMAP, IMAGE_BITMAP) | (SS_ENHMETAFILE, IMAGE_ENHMETAFILE) => {
+                crate::stub::message_once(
+                    &LOGGED,
+                    message,
+                    &crate::stub::STATIC_PROC,
+                    "a static's bitmap or enhanced metafile (STM_SETIMAGE) is not yet kept",
+                    (window, message, wparam, lparam),
+                );
+                0
+            }
             _ => 0,
         },
         WM_SETTEXT => {
@@ -162,6 +257,7 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
+            log_undrawn(window, (window, message, wparam, lparam));
             if let Some(painting) = paint::Painting::begin(window) {
                 draw_static(window, painting.dc());
             }

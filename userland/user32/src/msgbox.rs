@@ -19,7 +19,7 @@
 use rtl::edge::InStr;
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL};
 
-use crate::dialog::{self, Reader, Request, IDCANCEL, IDOK, WM_COMMAND, WM_INITDIALOG};
+use crate::dialog::{self, Call, Reader, Request, IDCANCEL, IDOK, WM_COMMAND, WM_INITDIALOG};
 use crate::procedure::Procedure;
 use crate::{draw, focus, imports, window};
 
@@ -29,6 +29,45 @@ const MB_ICONMASK: u32 = 0x0000_00F0;
 const MB_DEFMASK: u32 = 0x0000_0F00;
 const MB_TOPMOST: u32 = 0x0004_0000;
 const MB_OK: u32 = 0;
+
+/// The MB_ type the box does not handle yet: Cancel, Try Again and Continue.
+const MB_CANCELTRYCONTINUE: u32 = 0x0000_0006;
+
+/// The MB_ flags the box does not handle yet (their effect missing): each flag, and what it does
+/// on Windows 2000.
+const UNHANDLED_FLAGS: [(u32, &str); 5] = [
+    (0x0000_1000, "MB_SYSTEMMODAL (a topmost box)"),
+    (
+        0x0000_2000,
+        "MB_TASKMODAL (the thread's top-level windows disabled)",
+    ),
+    (0x0000_4000, "MB_HELP (a Help button)"),
+    (0x0008_0000, "MB_RIGHT (the text right-aligned)"),
+    (0x0010_0000, "MB_RTLREADING (right-to-left reading order)"),
+];
+
+/// The MB_ cases logged in this process, and a text cut short ([`LONG_TEXT`]).
+static FLAGS_LOGGED: rtl::stub::Logged<12> = rtl::stub::Logged::new();
+
+/// The most characters of its text the box shows, and the key of the case of a longer text.
+const MOST_TEXT: usize = 1024;
+const LONG_TEXT: u32 = 0x8000_0000;
+
+/// The MB_ type and flags of `kind` the box does not handle yet, logged for `call` (each once per
+/// process).
+fn log_unhandled_flags(kind: u32, call: &Call) {
+    if kind & MB_TYPEMASK == MB_CANCELTRYCONTINUE && FLAGS_LOGGED.first(MB_CANCELTRYCONTINUE) {
+        call.unhandled(
+            "MB_CANCELTRYCONTINUE (Cancel, Try Again, Continue) is not yet implemented: an OK box \
+             is shown",
+        );
+    }
+    for &(flag, what) in &UNHANDLED_FLAGS {
+        if kind & flag != 0 && FLAGS_LOGGED.first(flag) {
+            call.unhandled(format_args!("{what} is not yet implemented"));
+        }
+    }
+}
 
 /// The button ids beyond IDOK and IDCANCEL.
 const IDABORT: u32 = 3;
@@ -365,16 +404,25 @@ fn box_procedure_address() -> u32 {
     }
 }
 
-/// MessageBox's core: the box made and run; the id of the button that ended it, 0 with the last
-/// error when it could not be made.
-fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32) -> i32 {
+/// MessageBox's core, for `call`: the box made and run; the id of the button that ended it, 0
+/// with the last error when it could not be made.
+fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32, call: Call) -> i32 {
+    log_unhandled_flags(kind, &call);
     let mut template = Template {
         words: [0; 2048],
         at: 0,
     };
-    let text = &text[..text.len().min(1024)];
+    if text.len() > MOST_TEXT && FLAGS_LOGGED.first(LONG_TEXT) {
+        call.unhandled(format_args!(
+            "a text longer than {MOST_TEXT} characters is not yet implemented: it is cut there"
+        ));
+    }
+    let text = &text[..text.len().min(MOST_TEXT)];
     build(&mut template, text, caption, kind);
     if template.at > template.words.len() {
+        call.unhandled(
+            "a box whose template outgrows 4096 bytes (a long caption) is not yet implemented",
+        );
         return 0;
     }
     let read = template.bytes();
@@ -388,6 +436,7 @@ fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32) -> i32 {
         },
         param: kind as i32,
         ansi: false,
+        call,
     };
     match dialog::create(&mut reader, request, false) {
         Some(dialog) => dialog::run_modal(dialog, owner),
@@ -419,6 +468,7 @@ pub unsafe extern "system" fn message_box_w(
     caption: *const u16,
     kind: u32,
 ) -> i32 {
+    let (text_arg, caption_arg) = (text as usize, caption as usize);
     // SAFETY: the caller's strings, or null.
     let (text, caption) = unsafe {
         (
@@ -450,11 +500,22 @@ pub unsafe extern "system" fn message_box_w(
             5
         }
     };
+    let call = Call {
+        entry: &crate::spec::MessageBoxW,
+        args: [
+            owner as u64,
+            text_arg as u64,
+            caption_arg as u64,
+            u64::from(kind),
+            0,
+        ],
+    };
     message_box(
         owner,
         &text_units[..text_length],
         &caption_units[..caption_length],
         kind,
+        call,
     )
 }
 
@@ -470,6 +531,7 @@ pub unsafe extern "system" fn message_box_a(
     caption: *const u8,
     kind: u32,
 ) -> i32 {
+    let (text_arg, caption_arg) = (text as usize, caption as usize);
     // SAFETY: the caller's strings, or null.
     let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
     let text = text.map_or(&[][..], |text| text.bytes());
@@ -488,10 +550,21 @@ pub unsafe extern "system" fn message_box_a(
             5
         }
     };
+    let call = Call {
+        entry: &crate::spec::MessageBoxA,
+        args: [
+            owner as u64,
+            text_arg as u64,
+            caption_arg as u64,
+            u64::from(kind),
+            0,
+        ],
+    };
     message_box(
         owner,
         &text_units[..text_length],
         &caption_units[..caption_length],
         kind,
+        call,
     )
 }

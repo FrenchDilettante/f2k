@@ -18,8 +18,12 @@
 //!   printable ASCII as `\xNN`, a wide unit outside it as `\u{NNNN}`), cut after [`STRING_UNITS`]
 //!   units (`"..."...`); a string whose memory cannot be read shows its address and `(unreadable)`;
 //! - the variable arguments of a cdecl export: `...`.
+//!
+//! An implemented path a program may take over and over (a message, a paint) logs its case once per
+//! process: its site keeps a [`Logged`] set of the cases it has logged.
 
 use core::fmt::{self, Write};
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// The longest line: DbgPrint's buffer.
 pub const LINE_BYTES: usize = 512;
@@ -84,7 +88,7 @@ pub fn readable(state: u32, protect: u32) -> bool {
 /// ending with `reason`.
 pub fn describe(
     entry: &Entry,
-    reason: &str,
+    reason: impl fmt::Display,
     args: &[u64],
     memory: &impl Memory,
     out: &mut impl Write,
@@ -181,6 +185,40 @@ fn string(address: usize, wide: bool, memory: &impl Memory, out: &mut impl Write
     }
     // The string runs into memory that cannot be read.
     out.write_str("\"... (unreadable)")
+}
+
+/// The cases a log site has logged: up to `N` keys (a message's number, a flag, a class's ordinal;
+/// any value but `u32::MAX`), each answered "first" once. A process's DLL keeps one in a static
+/// beside the site, so the site logs each case once per process; a full set logs no new case, so
+/// a site hit in a loop never floods the log. Two threads asking for one new key at once may
+/// both be told it is the first: a second line, never a lost one.
+pub struct Logged<const N: usize>([AtomicU32; N]);
+
+impl<const N: usize> Default for Logged<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> Logged<N> {
+    pub const fn new() -> Self {
+        Self([const { AtomicU32::new(0) }; N])
+    }
+
+    /// Whether `key` is logged for the first time: true once, false after (and false for every
+    /// new key once the set is full).
+    pub fn first(&self, key: u32) -> bool {
+        // A slot holds its key plus one: 0 marks it free.
+        let stored = key.wrapping_add(1);
+        for slot in &self.0 {
+            match slot.compare_exchange(0, stored, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(held) if held == stored => return false,
+                Err(_) => {}
+            }
+        }
+        false
+    }
 }
 
 /// A fixed buffer the line is written into: what does not fit is dropped, the cut marked with
@@ -302,7 +340,12 @@ mod tests {
         fails: Fails::Value(0),
     };
 
-    fn line(entry: &Entry, reason: &str, args: &[u64], memory: &impl Memory) -> String {
+    fn line(
+        entry: &Entry,
+        reason: impl fmt::Display,
+        args: &[u64],
+        memory: &impl Memory,
+    ) -> String {
         let mut out = String::new();
         describe(entry, reason, args, memory, &mut out).unwrap();
         out
@@ -418,6 +461,41 @@ mod tests {
             ),
             "stub ntdll.DbgPrint(Format=\"%I64x\", ...): the conversion %I64x"
         );
+    }
+
+    /// A reason may be formatted, as an implemented path's names its case.
+    #[test]
+    fn a_reason_may_be_formatted() {
+        const ONE: Entry = Entry {
+            dll: "user32",
+            name: "F",
+            args: &[(Kind::U32, "u")],
+            fails: Fails::Value(0),
+        };
+        assert_eq!(
+            line(
+                &ONE,
+                format_args!("the {} control class is not yet implemented", "Edit"),
+                &[1],
+                &ALL
+            ),
+            "stub user32.F(u=0x1): the Edit control class is not yet implemented"
+        );
+    }
+
+    /// Each key is first once; a full set answers no new key first.
+    #[test]
+    fn each_case_logs_once() {
+        let logged = Logged::<2>::new();
+        assert!(logged.first(0x0112));
+        assert!(!logged.first(0x0112));
+        assert!(logged.first(0));
+        assert!(!logged.first(0));
+        assert!(!logged.first(7), "the set is full");
+        assert!(!logged.first(0x0112));
+        let one = Logged::<1>::new();
+        assert!(one.first(5));
+        assert!(!one.first(5));
     }
 
     #[test]

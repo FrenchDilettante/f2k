@@ -80,18 +80,81 @@ const ERROR_CANNOT_FIND_WND_CLASS: u32 = 1407;
 /// the messages its creation sent received; its handle, or NULL with the creation's error. The
 /// dialog manager creates its dialogs and their controls through it.
 pub fn create(creation: &Creation) -> usize {
+    create_or_missing(creation).unwrap_or(0)
+}
+
+/// [`create`]'s window; or, for a creation that failed, the system class Windows 2000 has and F2K
+/// does not register yet when the creation named one (its name and what it is, as
+/// [`crate::class::missing_system_class`] gives them), the last error set as [`create`] sets it.
+pub fn create_or_missing(
+    creation: &Creation,
+) -> Result<usize, Option<(&'static str, &'static str)>> {
     crate::class::register_system_classes();
     let answer = imports::create_window(creation);
     message::receive_sent();
+    let mut missing = None;
     let error = |status: NtStatus| match status.0 {
-        STATUS_OBJECT_NAME_NOT_FOUND => ERROR_CANNOT_FIND_WND_CLASS,
+        STATUS_OBJECT_NAME_NOT_FOUND => {
+            // SAFETY: the class's name (or atom), which the service has read.
+            missing = unsafe { crate::class::missing_system_class(creation.class) };
+            ERROR_CANNOT_FIND_WND_CLASS
+        }
         STATUS_INVALID_PARAMETER if creation.style & WS_CHILD != 0 && creation.parent == 0 => {
             ERROR_TLW_WITH_WSCHILD
         }
         STATUS_NO_MEMORY => ERROR_OUTOFMEMORY,
         _ => window_error(status),
     };
-    failed_with(answer, error).map_or(0, |window| window as usize)
+    match failed_with(answer, error) {
+        Some(window) => Ok(window as usize),
+        None => Err(missing),
+    }
+}
+
+/// A CreateWindowEx call's line for a creation that failed for want of the system class
+/// `missing`: `args` the call's own (its class name read as its form's string).
+///
+/// # Safety
+///
+/// `args` are the caller's arguments, as `entry`'s kinds read them.
+unsafe fn log_missing(entry: &rtl::stub::Entry, missing: &str, args: &[u64; 12]) {
+    // SAFETY: the caller's contract.
+    unsafe {
+        crate::stub::unhandled(
+            entry,
+            format_args!("{missing} is not yet implemented"),
+            args,
+        )
+    };
+}
+
+/// CreateWindowEx's arguments as its line shows them.
+#[allow(clippy::too_many_arguments)]
+fn creation_args(
+    ex_style: u32,
+    class: usize,
+    name: usize,
+    style: u32,
+    (x, y, cx, cy): (i32, i32, i32, i32),
+    parent: usize,
+    menu: usize,
+    instance: usize,
+    param: usize,
+) -> [u64; 12] {
+    [
+        u64::from(ex_style),
+        class as u64,
+        name as u64,
+        u64::from(style),
+        x as u32 as u64,
+        y as u32 as u64,
+        cx as u32 as u64,
+        cy as u32 as u64,
+        parent as u64,
+        menu as u64,
+        instance as u64,
+        param as u64,
+    ]
 }
 
 /// CreateWindowExW: the window, its class named by a string or an atom; NULL with the last error
@@ -112,7 +175,7 @@ pub extern "system" fn create_window_ex_w(
     instance: usize,
     param: usize,
 ) -> usize {
-    create(&Creation {
+    let created = create_or_missing(&Creation {
         ex_style: ex_style & !ANSI_CREATOR,
         class: class as usize,
         name: name as usize,
@@ -126,7 +189,28 @@ pub extern "system" fn create_window_ex_w(
         instance,
         param,
         version: EXPECTED_VERSION,
-    })
+    });
+    match created {
+        Ok(window) => window,
+        Err(missing) => {
+            if let Some((_, missing)) = missing {
+                let args = creation_args(
+                    ex_style,
+                    class as usize,
+                    name as usize,
+                    style,
+                    (x, y, cx, cy),
+                    parent,
+                    menu,
+                    instance,
+                    param,
+                );
+                // SAFETY: the caller's arguments, its strings the ones the service read.
+                unsafe { log_missing(&crate::spec::CreateWindowExW, missing, &args) };
+            }
+            0
+        }
+    }
 }
 
 /// CreateWindowExA: CreateWindowExW's window, the class name and the window name converted first,
@@ -152,6 +236,7 @@ pub unsafe extern "system" fn create_window_ex_a(
     instance: usize,
     param: usize,
 ) -> usize {
+    let (class_arg, name_arg) = (class as usize, name as usize);
     // SAFETY: the caller's contract.
     let (class, name) = unsafe { (NameA::new(class), rtl::edge::InStr::optional(name)) };
     let mut creation = Creation {
@@ -168,19 +253,38 @@ pub unsafe extern "system" fn create_window_ex_a(
         version: EXPECTED_VERSION,
         ..Creation::default()
     };
-    class
+    let created = class
         .with_wide(|class| {
             creation.class = class;
             match name {
-                None => Some(create(&creation)),
+                None => Some(create_or_missing(&creation)),
                 Some(name) => crate::with_wide(name.bytes(), |units| {
                     creation.name = units.as_ptr() as usize;
-                    create(&creation)
+                    create_or_missing(&creation)
                 }),
             }
         })
-        .flatten()
-        .unwrap_or(0)
+        .flatten();
+    match created {
+        Some(Ok(window)) => window,
+        Some(Err(Some((_, missing)))) => {
+            let args = creation_args(
+                ex_style & !ANSI_CREATOR,
+                class_arg,
+                name_arg,
+                style,
+                (x, y, cx, cy),
+                parent,
+                menu,
+                instance,
+                param,
+            );
+            // SAFETY: the caller's arguments, its strings the ones the conversion read.
+            unsafe { log_missing(&crate::spec::CreateWindowExA, missing, &args) };
+            0
+        }
+        _ => 0,
+    }
 }
 
 /// DestroyWindow: the window destroyed, the messages its destruction sent received; TRUE, or FALSE
@@ -1068,6 +1172,58 @@ mod tests {
             0
         );
         assert_eq!(last_error(), ERROR_CANNOT_FIND_WND_CLASS);
+    }
+
+    /// A system class Windows 2000 has and F2K does not register yet fails as an unknown class
+    /// does, and logs its line naming the class; a class no system has stays quiet.
+    ///
+    /// Pins: user32.CreateWindowExW, user32.CreateWindowExA
+    #[test]
+    fn a_missing_system_class_logs_its_line() {
+        use crate::imports::host::DEBUG_PRINTS;
+        let printed = || DEBUG_PRINTS.with(|prints| prints.take());
+        let _ = printed();
+        let list_box = units("listbox\0");
+        let create = |class: *const u16| {
+            create_window_ex_w(0, class, core::ptr::null(), 0, 0, 0, 1, 1, 0, 0, 0, 0)
+        };
+        assert_eq!(create(list_box.as_ptr()), 0);
+        assert_eq!(last_error(), ERROR_CANNOT_FIND_WND_CLASS);
+        let line = printed();
+        assert_eq!(line.len(), 1);
+        assert!(
+            line[0].starts_with("stub user32.CreateWindowExW(dwExStyle=0, lpClassName=0x")
+                && line[0].ends_with(": the ListBox control class is not yet implemented\n"),
+            "{line:?}"
+        );
+        let other = units("NoSuchClass\0");
+        assert_eq!(create(other.as_ptr()), 0);
+        assert!(printed().is_empty());
+        // SAFETY: the tests' own NUL-terminated names.
+        let narrow = unsafe {
+            create_window_ex_a(
+                0,
+                c"ScrollBar".as_ptr().cast(),
+                core::ptr::null(),
+                0,
+                0,
+                0,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_eq!(narrow, 0);
+        let line = printed();
+        assert!(
+            line.len() == 1
+                && line[0].starts_with("stub user32.CreateWindowExA(")
+                && line[0].ends_with(": the ScrollBar control class is not yet implemented\n"),
+            "{line:?}"
+        );
     }
 
     /// DestroyWindow: the destruction's messages seen before it returns; a dead handle is 1400,

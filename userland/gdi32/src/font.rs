@@ -444,6 +444,29 @@ fn stock_get_object(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: 
     }
 }
 
+/// GetObject of a process's object of a kind GetObject does not describe yet (a brush's LOGBRUSH,
+/// a pen's LOGPEN): logged for `entry`, once per process for the kind; the call fails as the
+/// service answers.
+fn log_undescribed(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: usize) {
+    static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
+    let what = match object_of(object as u32) {
+        Some((OBJ_BRUSH, _)) => "a brush's LOGBRUSH",
+        Some((OBJ_PEN, _)) => "a pen's LOGPEN",
+        _ => return,
+    };
+    let args = [object as u64, size as u32 as u64, buffer as u64];
+    // SAFETY: the arguments as GetObject's kinds read them (no string).
+    unsafe {
+        stub::unhandled_once(
+            &LOGGED,
+            object_of(object as u32).map_or(0, |(kind, _)| kind),
+            entry,
+            format_args!("{what} is not yet described: only fonts are"),
+            &args,
+        )
+    };
+}
+
 /// GetObjectW: a font object's LOGFONTW, its first `size` bytes into `buffer`, their number (the
 /// whole size for no buffer); 0 with the last error for a handle that names no font. A stock
 /// object goes to the stub routine.
@@ -455,7 +478,11 @@ pub extern "system" fn get_object_w(object: usize, size: i32, buffer: usize) -> 
     if size < 0 {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     }
-    answered(imports::object(object, size as u32, Caller(buffer))).map_or(0, |size| size as i32)
+    let answer = answered(imports::object(object, size as u32, Caller(buffer)));
+    if answer.is_none() {
+        log_undescribed(&crate::spec::GetObjectW, object, size, buffer);
+    }
+    answer.map_or(0, |size| size as i32)
 }
 
 /// GetObjectA: a font object's LOGFONTA (GetObjectW's, its face name converted), its first `size`
@@ -480,6 +507,7 @@ pub unsafe extern "system" fn get_object_a(object: usize, size: i32, buffer: *mu
     ))
     .is_none()
     {
+        log_undescribed(&crate::spec::GetObjectA, object, size, buffer as usize);
         return 0;
     }
     let narrow = narrow_log_font(&wide, imports::unicode_to_multi_byte);

@@ -4855,6 +4855,7 @@ pub fn create_window_ex(
         manager.create_window(caller, parent.raw(), &mut args, &mut QueuePump)
     })
     .map_err(Failure::status)?;
+    log_min_max_styles(call, style);
     window.write(created)?;
     Ok(STATUS_SUCCESS)
 }
@@ -4934,9 +4935,52 @@ pub fn move_window(
     Ok(STATUS_SUCCESS)
 }
 
+/// The show commands that minimize or maximize a window, and what each does on Windows 2000: the
+/// window manager does not carry them out yet (the min/max seam, [`Pump::min_maximize`], does
+/// nothing), so the window is shown or hidden at its own size.
+#[cfg(target_arch = "x86")]
+const MIN_MAX_COMMANDS: [(i32, &str); 5] = [
+    (
+        SW_SHOWMINIMIZED,
+        "SW_SHOWMINIMIZED (the window minimized and activated)",
+    ),
+    (
+        SW_SHOWMAXIMIZED,
+        "SW_SHOWMAXIMIZED (the window maximized and activated)",
+    ),
+    (SW_MINIMIZE, "SW_MINIMIZE (the window minimized)"),
+    (
+        SW_SHOWMINNOACTIVE,
+        "SW_SHOWMINNOACTIVE (the window minimized, not activated)",
+    ),
+    (SW_FORCEMINIMIZE, "SW_FORCEMINIMIZE (the window minimized)"),
+];
+
+/// The styles a window is created minimized or maximized by, its case's key in the window
+/// services' logged set, and what each does on Windows 2000 (not carried out yet either).
+#[cfg(target_arch = "x86")]
+const MIN_MAX_STYLES: [(u32, u32, &str); 2] = [
+    (
+        WS_MINIMIZE,
+        0x100,
+        "WS_MINIMIZE (the window created minimized)",
+    ),
+    (
+        WS_MAXIMIZE,
+        0x101,
+        "WS_MAXIMIZE (the window created maximized)",
+    ),
+];
+
+/// The window services' cases logged: each process's minimizing and maximizing commands and
+/// styles ([`crate::dbgprint::unhandled_once`]).
+#[cfg(target_arch = "x86")]
+static MIN_MAX_LOGGED: rtl::stub::Logged<128> = rtl::stub::Logged::new();
+
 /// NtUserShowWindow(Window, Command, Previous): ShowWindow's arguments, and its answer through
 /// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go;
-/// its messages and its activation through the queue's pump.
+/// its messages and its activation through the queue's pump. A minimizing or maximizing command is
+/// logged, once per process: the window is shown at its own size.
 #[cfg(target_arch = "x86")]
 pub fn show_window(
     call: &mut NtCall,
@@ -4945,6 +4989,7 @@ pub fn show_window(
     previous: UserPtr<u32>,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
+    log_min_max_command(call, "NtUserShowWindow", window, command);
     let answer = super::queue::with_manager(call.passive(), |manager| {
         manager.show_window(window.raw(), command, &mut QueuePump)
     })
@@ -4958,11 +5003,46 @@ pub fn show_window(
 #[cfg(target_arch = "x86")]
 pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtResult {
     super::winsta::gui_thread(call)?;
+    log_min_max_command(call, "NtUserShowWindowAsync", window, command);
     super::queue::with_manager(call.passive(), |manager| {
         manager.show_window_async(window.raw(), command, &mut QueuePump)
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
+}
+
+/// A show command of [`MIN_MAX_COMMANDS`] handed to `service`, logged once per process.
+#[cfg(target_arch = "x86")]
+fn log_min_max_command(call: &mut NtCall, service: &str, window: Handle, command: i32) {
+    if let Some(&(_, what)) = MIN_MAX_COMMANDS.iter().find(|&&(c, _)| c == command) {
+        crate::dbgprint::unhandled_once(
+            &MIN_MAX_LOGGED,
+            call.process().id(),
+            command as u32,
+            "win32k",
+            service,
+            format_args!("Window=0x{:X}, Command={command}", window.raw()),
+            format_args!("{what} is not yet implemented: the window keeps its size"),
+        );
+    }
+}
+/// The styles of [`MIN_MAX_STYLES`] a window was created with (`style`), logged once per process.
+/// The styles of [`MIN_MAX_STYLES`] the window `created` was made with, logged once per process.
+#[cfg(target_arch = "x86")]
+fn log_min_max_styles(call: &mut NtCall, style: u32) {
+    for &(bit, key, what) in &MIN_MAX_STYLES {
+        if style & bit != 0 {
+            crate::dbgprint::unhandled_once(
+                &MIN_MAX_LOGGED,
+                call.process().id(),
+                key,
+                "win32k",
+                "NtUserCreateWindowEx",
+                format_args!("Style=0x{style:X}"),
+                format_args!("{what} is not yet implemented: the window keeps its size"),
+            );
+        }
+    }
 }
 
 /// NtUserQueryWindow(Window, Index, Information, Length): what `index` asks about the window

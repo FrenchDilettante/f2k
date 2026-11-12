@@ -209,10 +209,38 @@ fn is_active(window: usize) -> bool {
         || menubar::loop_owner() == window
 }
 
+/// The scroll bars a window's styles ask for, which the frame has no part for yet (neither drawn
+/// nor taken from the client area), and what each is.
+const SCROLL_BARS: [(u32, &str); 2] = [
+    (0x0020_0000, "WS_VSCROLL (the window's vertical scroll bar)"),
+    (
+        0x0010_0000,
+        "WS_HSCROLL (the window's horizontal scroll bar)",
+    ),
+];
+
+/// The scroll bars logged in this process.
+static SCROLL_BARS_LOGGED: rtl::stub::Logged<2> = rtl::stub::Logged::new();
+
 /// The default procedure's WM_NCPAINT: the window's whole frame painted (whatever region wParam
-/// names), its caption as its activation has it; 0.
-pub fn paint(window: usize) -> i32 {
+/// names), its caption as its activation has it; 0. A scroll bar its styles ask for is logged for
+/// `entry` (DefWindowProc's, with the message's `call`), once per process: it is not drawn yet.
+pub fn paint(window: usize, entry: &rtl::stub::Entry, call: (usize, u32, u32, i32)) -> i32 {
     if let Some(framed) = Framed::of(window) {
+        for &(bit, what) in &SCROLL_BARS {
+            if framed.style & bit != 0 {
+                crate::stub::message_once(
+                    &SCROLL_BARS_LOGGED,
+                    bit,
+                    entry,
+                    format_args!(
+                        "{what} is not yet implemented: neither drawn nor taken from the client \
+                         area"
+                    ),
+                    call,
+                );
+            }
+        }
         if crate::window::is_window_visible(window) != 0 {
             paint_frame(&framed, is_active(window), true);
         }

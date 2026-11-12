@@ -38,6 +38,60 @@ fn draw(
     .map_or(0, |()| 1)
 }
 
+/// The ExtTextOut options not drawn yet (drawn as without them), and what each does.
+const UNDRAWN_OPTIONS: [(u32, &str); 3] = [
+    (
+        0x0010,
+        "ETO_GLYPH_INDEX (the string's units glyph indexes, drawn as characters)",
+    ),
+    (0x0080, "ETO_RTLREADING (right-to-left reading order)"),
+    (0x2000, "ETO_PDY (lpDx's pairs of offsets)"),
+];
+
+/// The options of an ExtTextOut call (`entry`, `args`) not drawn yet, logged (each once per
+/// process).
+fn log_undrawn_options(entry: &rtl::stub::Entry, options: u32, args: &[u64; 8]) {
+    static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
+    for &(option, what) in &UNDRAWN_OPTIONS {
+        if options & option != 0 {
+            // SAFETY: ExtTextOut's arguments: pointers, none read.
+            unsafe {
+                crate::stub::unhandled_once(
+                    &LOGGED,
+                    option,
+                    entry,
+                    format_args!("{what} is not yet implemented"),
+                    args,
+                )
+            };
+        }
+    }
+}
+
+/// ExtTextOut's arguments as its line shows them.
+#[allow(clippy::too_many_arguments)]
+fn text_args(
+    dc: usize,
+    x: i32,
+    y: i32,
+    options: u32,
+    rect: usize,
+    string: usize,
+    count: u32,
+    dx: usize,
+) -> [u64; 8] {
+    [
+        dc as u64,
+        x as u32 as u64,
+        y as u32 as u64,
+        u64::from(options),
+        rect as u64,
+        string as u64,
+        u64::from(count),
+        dx as u64,
+    ]
+}
+
 /// ExtTextOutW: the string drawn at (`x`, `y`) in the DC's colors and background mode, with
 /// ETO_OPAQUE's fill and ETO_CLIPPED's clip over the rectangle, each character's cell `dx[i]`
 /// after the one before when `dx` is given; FALSE with the last error for a DC that is none or
@@ -53,6 +107,15 @@ pub extern "system" fn ext_text_out_w(
     count: u32,
     dx: *const i32,
 ) -> u32 {
+    if options
+        & UNDRAWN_OPTIONS
+            .iter()
+            .fold(0, |all, &(option, _)| all | option)
+        != 0
+    {
+        let args = text_args(dc, x, y, options, rect, string as usize, count, dx as usize);
+        log_undrawn_options(&crate::spec::ExtTextOutW, options, &args);
+    }
     draw(
         dc,
         x,
@@ -82,6 +145,15 @@ pub unsafe extern "system" fn ext_text_out_a(
     count: u32,
     dx: *const i32,
 ) -> u32 {
+    if options
+        & UNDRAWN_OPTIONS
+            .iter()
+            .fold(0, |all, &(option, _)| all | option)
+        != 0
+    {
+        let args = text_args(dc, x, y, options, rect, string as usize, count, dx as usize);
+        log_undrawn_options(&crate::spec::ExtTextOutA, options, &args);
+    }
     // SAFETY: the caller's `count` bytes.
     let bytes = unsafe { InBuf::new(string, count as usize) }.bytes();
     with_wide(bytes, |units| {

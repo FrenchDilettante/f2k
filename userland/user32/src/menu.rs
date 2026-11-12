@@ -230,8 +230,30 @@ pub extern "system" fn create_popup_menu() -> usize {
 /// as a MENU template's popup has), the command id `item` otherwise, its text `text` (none for a
 /// separator); TRUE, or FALSE with the last error. Bitmap and owner-drawn items are not served:
 /// their `item` is taken as text no more.
-fn append(menu: usize, flags: u32, item: usize, text: &[u16]) -> i32 {
+fn append(
+    (entry, new_item): (&rtl::stub::Entry, usize),
+    menu: usize,
+    flags: u32,
+    item: usize,
+    text: &[u16],
+) -> i32 {
     let (item_type, state) = from_flags(flags);
+    for (flag, what) in [
+        (MFT_BITMAP, "MF_BITMAP items (a bitmap for the text)"),
+        (MF_OWNERDRAW, "MF_OWNERDRAW items (drawn by the owner)"),
+    ] {
+        if flags & flag != 0 && APPEND_LOGGED.first(flag) {
+            let args = [menu as u64, u64::from(flags), item as u64, new_item as u64];
+            // SAFETY: AppendMenu's arguments, its item a pointer's kind, not read.
+            unsafe {
+                crate::stub::unhandled(
+                    entry,
+                    format_args!("{what} are not yet implemented: an empty item is appended"),
+                    &args,
+                )
+            };
+        }
+    }
     let popup = flags & MF_POPUP != 0;
     let info = MenuItemInfoW {
         size: core::mem::size_of::<MenuItemInfoW>() as u32,
@@ -249,6 +271,9 @@ fn append(menu: usize, flags: u32, item: usize, text: &[u16]) -> i32 {
     )
     .is_some() as i32
 }
+
+/// AppendMenu's cases logged in this process.
+static APPEND_LOGGED: rtl::stub::Logged<2> = rtl::stub::Logged::new();
 
 /// Whether AppendMenu's `flags` make an item whose `item` pointer is its text: a string item, not
 /// a separator, a bitmap or an owner-drawn one, with a text given.
@@ -270,7 +295,13 @@ pub unsafe extern "system" fn append_menu_w(
     text: *const u16,
 ) -> i32 {
     if !has_text(flags, text as usize) {
-        return append(menu, flags, item, &[]);
+        return append(
+            (&crate::spec::AppendMenuW, text as usize),
+            menu,
+            flags,
+            item,
+            &[],
+        );
     }
     // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
     let text = unsafe { rtl::edge::InWStr::new(text) };
@@ -280,7 +311,13 @@ pub unsafe extern "system" fn append_menu_w(
     for (index, unit) in buffer.iter_mut().take(length).enumerate() {
         *unit = units.get(index);
     }
-    append(menu, flags, item, &buffer[..length])
+    append(
+        (&crate::spec::AppendMenuW, 0),
+        menu,
+        flags,
+        item,
+        &buffer[..length],
+    )
 }
 
 /// AppendMenuA: AppendMenuW's, its text narrow.
@@ -296,13 +333,25 @@ pub unsafe extern "system" fn append_menu_a(
     text: *const u8,
 ) -> i32 {
     if !has_text(flags, text as usize) {
-        return append(menu, flags, item, &[]);
+        return append(
+            (&crate::spec::AppendMenuA, text as usize),
+            menu,
+            flags,
+            item,
+            &[],
+        );
     }
     // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
     let text = unsafe { rtl::edge::InStr::new(text) };
     crate::with_wide(text.bytes(), |units| {
         let length = units.len().saturating_sub(1);
-        append(menu, flags, item, &units[..length])
+        append(
+            (&crate::spec::AppendMenuA, 0),
+            menu,
+            flags,
+            item,
+            &units[..length],
+        )
     })
     .unwrap_or(0)
 }

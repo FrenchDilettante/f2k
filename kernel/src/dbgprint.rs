@@ -58,6 +58,56 @@ fn print(text: UserAddr, length: u32, out: &mut dyn FnMut(Line<'_>)) -> NtResult
     Ok(STATUS_SUCCESS)
 }
 
+/// A case a kernel service does not handle yet (win32k's, most of all), on COM1 as the system
+/// DLLs' stub routine shows theirs: `F2K: debug: stub <module>.<service>(<args>): <reason>`, its
+/// arguments as the service names them. The service carries on as its code does (it fails, or
+/// leaves the case out): the line is all this adds. COM1's writes take no lock and wait for
+/// nothing, so a service may log under the window manager's lock.
+pub fn unhandled(
+    module: &str,
+    service: &str,
+    args: core::fmt::Arguments<'_>,
+    reason: core::fmt::Arguments<'_>,
+) {
+    #[cfg(target_arch = "x86")]
+    {
+        let mut com1 = crate::hw::serial::com1();
+        let _ = write_unhandled(&mut com1, module, service, args, reason);
+        crate::hw::serial::write_byte_blocking(b'\n');
+    }
+    #[cfg(not(target_arch = "x86"))]
+    let _ = (module, service, args, reason);
+}
+
+/// [`unhandled`] once per process for a site's case: `logged` is the site's set, `process` the
+/// calling process's id, `case` the case's own number (its low 16 bits are kept, the process's
+/// low 16 bits above them). A path a program may take in a loop logs each case once per process.
+pub fn unhandled_once<const N: usize>(
+    logged: &rtl::stub::Logged<N>,
+    process: u32,
+    case: u32,
+    module: &str,
+    service: &str,
+    args: core::fmt::Arguments<'_>,
+    reason: core::fmt::Arguments<'_>,
+) {
+    if logged.first((process & 0xFFFF) << 16 | (case & 0xFFFF)) {
+        unhandled(module, service, args, reason);
+    }
+}
+
+/// [`unhandled`]'s line, without its line end.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn write_unhandled(
+    out: &mut impl Write,
+    module: &str,
+    service: &str,
+    args: core::fmt::Arguments<'_>,
+    reason: core::fmt::Arguments<'_>,
+) -> core::fmt::Result {
+    write!(out, "{PREFIX}stub {module}.{service}({args}): {reason}")
+}
+
 /// One line of the text, as COM1 shows it: a byte outside printable ASCII as `\xNN`.
 struct Line<'a>(&'a [u8]);
 
@@ -100,6 +150,25 @@ mod tests {
         assert_eq!(shown(b"crlf\r\nend"), ["crlf", "end"]);
         assert_eq!(shown(b"a\n\nb\n"), ["a", "", "b"]);
         assert!(shown(b"").is_empty());
+    }
+
+    /// A service's unhandled case is a stub line, as the DLLs' are.
+    #[test]
+    fn an_unhandled_case_is_a_stub_line() {
+        let mut line = std::string::String::new();
+        write_unhandled(
+            &mut line,
+            "win32k",
+            "NtUserShowWindow",
+            format_args!("hWnd=0x{:X}, nCmdShow={}", 0x24, 6),
+            format_args!("{} is not yet implemented", "SW_MINIMIZE"),
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            "F2K: debug: stub win32k.NtUserShowWindow(hWnd=0x24, nCmdShow=6): SW_MINIMIZE is not \
+             yet implemented"
+        );
     }
 
     #[test]

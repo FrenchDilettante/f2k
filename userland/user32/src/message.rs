@@ -431,6 +431,8 @@ pub fn translate(msg: &Msg) -> u32 {
 /// F10 alone, and Alt with a character, send the top-level window SC_KEYMENU, Alt+F4 SC_CLOSE)
 /// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE); 0 to
 /// everything else, WM_ENDSESSION included, and to a text message for a handle naming no window.
+/// The messages Windows 2000's acts on and F2K's does not yet ([`UNHANDLED_MESSAGES`]) are logged,
+/// each once per process.
 pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
         WM_NCCREATE => {
@@ -462,14 +464,18 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         WM_QUERYENDSESSION => 1,
         nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
         nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
-        nonclient::WM_NCPAINT => nonclient::paint(window),
+        nonclient::WM_NCPAINT => nonclient::paint(
+            window,
+            default_entry(ansi),
+            (window, message, wparam, lparam),
+        ),
         WM_NCACTIVATE => nonclient::activate(window, wparam),
         WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_SYSCHAR => {
-            system_key(window, message, wparam, lparam);
+            system_key(window, message, wparam, lparam, ansi);
             0
         }
         menubar::WM_SYSCOMMAND => {
-            system_command(window, wparam, lparam);
+            system_command(window, wparam, lparam, ansi);
             0
         }
         WM_ACTIVATE => {
@@ -486,7 +492,56 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
             paint::validate_by_painting(window);
             0
         }
-        _ => 0,
+        _ => {
+            if let Some(&(_, what)) = UNHANDLED_MESSAGES.iter().find(|&&(m, _)| m == message) {
+                crate::stub::message_once(
+                    &DEFAULT_LOGGED,
+                    message,
+                    default_entry(ansi),
+                    format_args!("{what} is not yet implemented"),
+                    (window, message, wparam, lparam),
+                );
+            }
+            0
+        }
+    }
+}
+
+/// The messages DefWindowProc acts on in Windows 2000 that F2K's does not yet (it answers 0), and
+/// what Windows 2000's does with each.
+const UNHANDLED_MESSAGES: [(u32, &str); 9] = [
+    (
+        0x000B,
+        "WM_SETREDRAW (the window's redrawing turned off or on)",
+    ),
+    (
+        0x0013,
+        "WM_QUERYOPEN (TRUE: the minimized window may be restored)",
+    ),
+    (0x0037, "WM_QUERYDRAGICON (the class's icon)"),
+    (0x007B, "WM_CONTEXTMENU (a child's handed to its parent)"),
+    (0x0317, "WM_PRINT (the window drawn into the DC)"),
+    (0x0032, "WM_SETHOTKEY (the window's activation hot key)"),
+    (0x0033, "WM_GETHOTKEY (the window's activation hot key)"),
+    (
+        0x0055,
+        "WM_NOTIFYFORMAT (the window's form answered: NFR_ANSI or NFR_UNICODE)",
+    ),
+    (
+        0x0080,
+        "WM_SETICON (the window's icons kept, WM_GETICON's answer)",
+    ),
+];
+
+/// The default procedure's cases logged in this process: a message, a system command, a key.
+static DEFAULT_LOGGED: rtl::stub::Logged<32> = rtl::stub::Logged::new();
+
+/// DefWindowProc's entry in the caller's form, as its lines name it.
+fn default_entry(ansi: bool) -> &'static rtl::stub::Entry {
+    if ansi {
+        &crate::spec::DefWindowProcA
+    } else {
+        &crate::spec::DefWindowProcW
     }
 }
 
@@ -567,7 +622,7 @@ fn top_level(window: usize) -> usize {
 /// The default procedure's system keys: Alt or F10 pressed and released alone sends the top-level
 /// window WM_SYSCOMMAND SC_KEYMENU (lParam 0), Alt with a character SC_KEYMENU with the character
 /// (Alt+Space, the system menu's, is not served: F2K has no system menu), Alt+F4 SC_CLOSE.
-fn system_key(window: usize, message: u32, wparam: u32, lparam: i32) {
+fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) {
     let send_command = |command: u32, parameter: i32| {
         let _ = send(
             top_level(window),
@@ -597,6 +652,14 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32) {
             MENU_KEY_ALONE.store(0, Ordering::Relaxed);
             if lparam & KEY_CONTEXT != 0 && wparam != VK_SPACE {
                 send_command(menubar::SC_KEYMENU, wparam as i32);
+            } else if lparam & KEY_CONTEXT != 0 {
+                crate::stub::message_once(
+                    &DEFAULT_LOGGED,
+                    VK_SPACE << 16 | WM_SYSCHAR,
+                    default_entry(ansi),
+                    "Alt+Space, the system menu, is not yet implemented",
+                    (window, message, wparam, lparam),
+                );
             }
         }
         WM_KEYDOWN => MENU_KEY_ALONE.store(0, Ordering::Relaxed),
@@ -605,17 +668,51 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32) {
 }
 
 /// The default procedure's WM_SYSCOMMAND: SC_KEYMENU runs the window's keyboard menu loop
-/// ([`menubar::track_keyboard`]), SC_CLOSE sends WM_CLOSE; the other commands (the system menu's
-/// moving, sizing, minimizing and maximizing) are not served yet.
-fn system_command(window: usize, wparam: u32, lparam: i32) {
+/// ([`menubar::track_keyboard`]), SC_CLOSE sends WM_CLOSE; the other system commands (the system
+/// menu's moving, sizing, minimizing and maximizing...) are not served yet, and logged (an
+/// application's own commands, below 0xF000, are not the default procedure's).
+fn system_command(window: usize, wparam: u32, lparam: i32, ansi: bool) {
     match wparam & 0xFFF0 {
         menubar::SC_KEYMENU => menubar::track_keyboard(window, lparam as u32),
         SC_CLOSE => {
             let _ = send(window, WM_CLOSE, 0, 0);
         }
+        command if command >= 0xF000 => {
+            let name = SYSTEM_COMMANDS
+                .iter()
+                .find(|&&(c, _)| c == command)
+                .map_or("this system command", |&(_, name)| name);
+            crate::stub::message_once(
+                &DEFAULT_LOGGED,
+                command,
+                default_entry(ansi),
+                format_args!("{name} is not yet implemented"),
+                (window, menubar::WM_SYSCOMMAND, wparam, lparam),
+            );
+        }
         _ => {}
     }
 }
+
+/// The system commands (winuser.h's SC_*) by name, as a log line names them.
+const SYSTEM_COMMANDS: [(u32, &str); 16] = [
+    (0xF000, "SC_SIZE"),
+    (0xF010, "SC_MOVE"),
+    (0xF020, "SC_MINIMIZE"),
+    (0xF030, "SC_MAXIMIZE"),
+    (0xF040, "SC_NEXTWINDOW"),
+    (0xF050, "SC_PREVWINDOW"),
+    (0xF070, "SC_VSCROLL"),
+    (0xF080, "SC_HSCROLL"),
+    (0xF090, "SC_MOUSEMENU"),
+    (0xF110, "SC_ARRANGE"),
+    (0xF120, "SC_RESTORE"),
+    (0xF130, "SC_TASKLIST"),
+    (0xF140, "SC_SCREENSAVE"),
+    (0xF150, "SC_HOTKEY"),
+    (0xF170, "SC_MONITORPOWER"),
+    (0xF180, "SC_CONTEXTHELP"),
+];
 
 /// SetTimer: a timer of the window (NULL: a thread timer, its id made) set to come due every
 /// `elapse` milliseconds, its WM_TIMER handed to `func` when there is one; the timer's id, or 0

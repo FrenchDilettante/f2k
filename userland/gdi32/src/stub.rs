@@ -9,8 +9,14 @@
 //! it returns. An export that cannot fail (`never`) ends in an invalid opcode instead, as a panic
 //! in the system DLLs' code does: Windows 2000's gdi32 imports neither kernel32's RaiseException
 //! nor ntdll's raises.
+//!
+//! An implemented export that meets a case F2K does not handle yet, but carries on (or fails as its
+//! own code fails), logs the same line and nothing more ([`unhandled`]): its outcome is its own. A
+//! site a program may reach in a loop keeps an [`rtl::stub::Logged`] set beside it, so it logs each
+//! case once per process.
 
 use core::ffi::CStr;
+use core::fmt::Display;
 
 use rtl::stub::{describe, Entry, Fails, Line};
 
@@ -27,11 +33,8 @@ pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 /// `args` are the caller's arguments, read as `entry`'s kinds say (a string's pointer is read
 /// where its pages can be read).
 pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
-    let mut line = Line::new();
-    let _ = describe(entry, reason, args, &Probed, &mut line);
-    if let Ok(text) = CStr::from_bytes_until_nul(line.terminated()) {
-        imports::debug_print(text);
-    }
+    // SAFETY: the caller's contract.
+    unsafe { unhandled(entry, reason, args) };
     match entry.fails {
         Fails::Value(value) => {
             imports::set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
@@ -39,6 +42,40 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
         }
         Fails::Void => 0,
         Fails::Never => panic!("{}.{}: not implemented", entry.dll, entry.name),
+    }
+}
+
+/// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, the case of
+/// it F2K does not handle yet: the line alone, the call's outcome left to its code (no last error
+/// set, nothing answered).
+///
+/// # Safety
+///
+/// As [`stubbed`]'s: `args` are the caller's arguments, read as `entry`'s kinds say.
+pub unsafe fn unhandled(entry: &Entry, reason: impl Display, args: &[u64]) {
+    let mut line = Line::new();
+    let _ = describe(entry, reason, args, &Probed, &mut line);
+    if let Ok(text) = CStr::from_bytes_until_nul(line.terminated()) {
+        imports::debug_print(text);
+    }
+}
+
+/// [`unhandled`] once per process for the case `key` of a site's `logged` set: a path a program
+/// may take in a loop (a paint) logs each of its cases once.
+///
+/// # Safety
+///
+/// As [`unhandled`]'s.
+pub unsafe fn unhandled_once<const N: usize>(
+    logged: &rtl::stub::Logged<N>,
+    key: u32,
+    entry: &Entry,
+    reason: impl Display,
+    args: &[u64],
+) {
+    if logged.first(key) {
+        // SAFETY: the caller's contract.
+        unsafe { unhandled(entry, reason, args) };
     }
 }
 

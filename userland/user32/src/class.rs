@@ -382,6 +382,61 @@ pub fn register_system_classes() {
     }
 }
 
+/// The system classes Windows 2000 has (user32's and win32k's, as the platform documents them)
+/// that F2K does not register yet: each one's name, and what it is, as a log line names it.
+const MISSING_SYSTEM_CLASSES: [(&str, &str); 10] = [
+    ("Edit", "the Edit control class"),
+    ("ListBox", "the ListBox control class"),
+    ("ComboBox", "the ComboBox control class"),
+    (
+        "ComboLBox",
+        "the ComboLBox class (a combo box's drop-down list)",
+    ),
+    ("ScrollBar", "the ScrollBar control class"),
+    ("MDIClient", "the MDIClient class"),
+    ("Message", "the Message class (message-only windows)"),
+    ("DDEMLEvent", "the DDEMLEvent class"),
+    ("#32771", "the task switch window class (#32771)"),
+    ("#32772", "the icon title class (#32772)"),
+];
+
+/// The system class Windows 2000 has and F2K does not register yet that `class` names (an atom,
+/// or the address of its wide name, matched as class names are, ignoring case): its name and what
+/// it is, as a log line names them; none for any other class.
+///
+/// # Safety
+///
+/// A name's address is a NUL-terminated UTF-16 string the call may read (one the creation's
+/// service has read).
+pub unsafe fn missing_system_class(class: usize) -> Option<(&'static str, &'static str)> {
+    let named = |name: &str| {
+        MISSING_SYSTEM_CLASSES
+            .iter()
+            .find(|(missing, _)| *missing == name)
+            .copied()
+    };
+    if class >> 16 == 0 {
+        // The integer atoms of the numbered classes (#32771 is 0x8003).
+        return match class {
+            0x8003 => named("#32771"),
+            0x8004 => named("#32772"),
+            _ => None,
+        };
+    }
+    // SAFETY: the caller's contract.
+    let units = unsafe { rtl::edge::InWStr::new(class as *const u16) }.units();
+    MISSING_SYSTEM_CLASSES
+        .iter()
+        .find(|(name, _)| {
+            name.len() == units.len()
+                && name.bytes().enumerate().all(|(index, byte)| {
+                    let unit = units.get(index);
+                    unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte)
+                })
+        })
+        .copied()
+}
+
 /// The names of the controls' classes, NUL-terminated.
 const BUTTON_NAME: [u16; 7] = units::<7>("Button");
 const STATIC_NAME: [u16; 7] = units::<7>("Static");

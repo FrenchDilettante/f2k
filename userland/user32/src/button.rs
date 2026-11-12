@@ -43,6 +43,8 @@ pub const BM_GETSTATE: u32 = 0x00F2;
 pub const BM_SETSTATE: u32 = 0x00F3;
 pub const BM_SETSTYLE: u32 = 0x00F4;
 pub const BM_CLICK: u32 = 0x00F5;
+const BM_GETIMAGE: u32 = 0x00F6;
+const BM_SETIMAGE: u32 = 0x00F7;
 
 /// The button kinds (the style's low four bits, winuser.h's BS_*).
 pub const BS_PUSHBUTTON: u32 = 0x0;
@@ -55,6 +57,77 @@ pub const BS_AUTO3STATE: u32 = 0x6;
 pub const BS_GROUPBOX: u32 = 0x7;
 pub const BS_AUTORADIOBUTTON: u32 = 0x9;
 const BS_TYPEMASK: u32 = 0xF;
+
+/// The button kinds the procedure does not draw yet (drawn as a check box), and what Windows 2000
+/// draws for each.
+const UNDRAWN_KINDS: [(u32, &str); 3] = [
+    (0x8, "BS_USERBUTTON buttons"),
+    (0xA, "BS_PUSHBOX buttons"),
+    (0xB, "BS_OWNERDRAW buttons (WM_DRAWITEM to the parent)"),
+];
+
+/// The style bits the procedure does not draw yet, and what each does.
+const UNDRAWN_STYLES: [(u32, &str); 6] = [
+    (0x0020, "BS_LEFTTEXT (the text left of the box)"),
+    (0x0040, "BS_ICON (an icon for the text)"),
+    (0x0080, "BS_BITMAP (a bitmap for the text)"),
+    (
+        0x1000,
+        "BS_PUSHLIKE (a check box or radio button drawn as a push button)",
+    ),
+    (0x2000, "BS_MULTILINE (the text wrapped)"),
+    (0x8000, "BS_FLAT (a flat button)"),
+];
+
+/// The text alignment bits: horizontal (BS_LEFT, BS_RIGHT, both BS_CENTER) and vertical (BS_TOP,
+/// BS_BOTTOM, both BS_VCENTER).
+const BS_HORIZONTAL: u32 = 0x0300;
+const BS_CENTER: u32 = 0x0300;
+const BS_LEFT: u32 = 0x0100;
+const BS_VERTICAL: u32 = 0x0C00;
+const BS_VCENTER: u32 = 0x0C00;
+/// BS_NOTIFY: the button sends BN_SETFOCUS, BN_KILLFOCUS and BN_DBLCLK too.
+const BS_NOTIFY: u32 = 0x4000;
+
+/// The cases logged in this process: a kind, a style bit, a message.
+static LOGGED: rtl::stub::Logged<16> = rtl::stub::Logged::new();
+
+/// The cases of the button's paint the procedure does not draw yet, logged for the message it is
+/// handling (each once per process): its kind, its style bits, a text alignment other than the
+/// one it draws (a push button's text centred both ways, a check box's or radio button's left of
+/// centre and centred vertically, a group box's left).
+fn log_undrawn(window: usize, call: (usize, u32, u32, i32)) {
+    let style = style(window);
+    let kind = style & BS_TYPEMASK;
+    let log = |key: u32, reason: &dyn core::fmt::Display| {
+        crate::stub::message_once(&LOGGED, key, &crate::stub::BUTTON_PROC, reason, call);
+    };
+    if let Some(&(_, what)) = UNDRAWN_KINDS.iter().find(|&&(undrawn, _)| undrawn == kind) {
+        log(
+            kind,
+            &format_args!("{what} are not yet drawn: the button is drawn as a check box"),
+        );
+    }
+    for &(bit, what) in &UNDRAWN_STYLES {
+        if style & bit != 0 {
+            log(bit, &format_args!("{what} is not yet drawn"));
+        }
+    }
+    let (horizontal, vertical) = (style & BS_HORIZONTAL, style & BS_VERTICAL);
+    let drawn = match kind {
+        BS_PUSHBUTTON | BS_DEFPUSHBUTTON => {
+            matches!(horizontal, 0 | BS_CENTER) && matches!(vertical, 0 | BS_VCENTER)
+        }
+        BS_GROUPBOX => matches!(horizontal, 0 | BS_LEFT) && vertical == 0,
+        _ => matches!(horizontal, 0 | BS_LEFT) && matches!(vertical, 0 | BS_VCENTER),
+    };
+    if !drawn {
+        log(
+            BS_HORIZONTAL | BS_VERTICAL,
+            &"a button's text alignment (BS_LEFT, BS_RIGHT, BS_TOP, BS_BOTTOM) is not yet drawn",
+        );
+    }
+}
 
 /// BM_GETSTATE's bits: the check state, pushed, the focus.
 pub const BST_CHECKMASK: u32 = 0x0003;
@@ -257,7 +330,26 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             click(window);
             0
         }
+        BM_GETIMAGE | BM_SETIMAGE => {
+            crate::stub::message_once(
+                &LOGGED,
+                message,
+                &crate::stub::BUTTON_PROC,
+                "a button's image (BM_SETIMAGE, BM_GETIMAGE) is not yet kept",
+                (window, message, wparam, lparam),
+            );
+            message::default_procedure(window, message, wparam, lparam, ansi)
+        }
         WM_SETFOCUS => {
+            if style(window) & BS_NOTIFY != 0 {
+                crate::stub::message_once(
+                    &LOGGED,
+                    BS_NOTIFY,
+                    &crate::stub::BUTTON_PROC,
+                    "BS_NOTIFY's BN_SETFOCUS and BN_KILLFOCUS notifications are not yet sent",
+                    (window, message, wparam, lparam),
+                );
+            }
             change(window, BST_FOCUS, 0);
             let state = read(window, STATE);
             if radio(kind(window)) && state & (BST_CHECKMASK | CLICKING) == 0 {
@@ -299,6 +391,7 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
+            log_undrawn(window, (window, message, wparam, lparam));
             if let Some(painting) = paint::Painting::begin(window) {
                 draw_button(window, painting.dc());
             }

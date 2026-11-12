@@ -91,6 +91,52 @@ pub const DT_NOPREFIX: u32 = 0x0800;
 pub const DT_HIDEPREFIX: u32 = 0x0010_0000;
 pub const DT_PREFIXONLY: u32 = 0x0020_0000;
 
+/// The DrawText formats not drawn yet (drawn as without them), and what each does. Bits 8 to 15
+/// are DT_TABSTOP's tab count when it is set: those flags are looked at only without it.
+const UNDRAWN_FORMATS: [(u32, &str); 7] = [
+    (0x0000_1000, "DT_INTERNAL (the system font)"),
+    (0x0000_2000, "DT_EDITCONTROL (an edit control's lines)"),
+    (
+        0x0000_4000,
+        "DT_PATH_ELLIPSIS (a path's middle cut with an ellipsis)",
+    ),
+    (
+        0x0000_8000,
+        "DT_END_ELLIPSIS (the text's end cut with an ellipsis)",
+    ),
+    (
+        0x0001_0000,
+        "DT_MODIFYSTRING (the caller's string given the ellipsis)",
+    ),
+    (0x0002_0000, "DT_RTLREADING (right-to-left reading order)"),
+    (
+        0x0004_0000,
+        "DT_WORD_ELLIPSIS (a word cut with an ellipsis)",
+    ),
+];
+
+/// The DrawText formats logged in this process.
+static FORMATS_LOGGED: rtl::stub::Logged<8> = rtl::stub::Logged::new();
+
+/// The formats of a DrawText call (`entry`, `args`) not drawn yet, logged (each once per process).
+fn log_undrawn_formats(entry: &rtl::stub::Entry, format: u32, args: &[u64; 5]) {
+    for &(flag, what) in &UNDRAWN_FORMATS {
+        let in_tab_count = format & DT_TABSTOP != 0 && flag & 0xFF00 != 0;
+        if format & flag != 0 && !in_tab_count {
+            // SAFETY: DrawText's arguments: its string, the caller's, which the call reads.
+            unsafe {
+                crate::stub::unhandled_once(
+                    &FORMATS_LOGGED,
+                    flag,
+                    entry,
+                    format_args!("{what} is not yet implemented: drawn as without it"),
+                    args,
+                )
+            };
+        }
+    }
+}
+
 // --- The fills -----------------------------------------------------------------------------------
 
 /// The brush a FillRect argument names: a handle, or a system color as COLOR_* + 1; none for
@@ -732,6 +778,14 @@ pub unsafe extern "system" fn draw_text_w(
     rect: *mut Rect,
     format: u32,
 ) -> i32 {
+    let args = [
+        dc as u64,
+        text as u64,
+        count as u32 as u64,
+        rect as u64,
+        u64::from(format),
+    ];
+    log_undrawn_formats(&crate::spec::DrawTextW, format, &args);
     // SAFETY: the caller's string (counted, or NUL-terminated) and RECT.
     let (units, place) = unsafe {
         let units = if count < 0 {
@@ -758,6 +812,14 @@ pub unsafe extern "system" fn draw_text_a(
     rect: *mut Rect,
     format: u32,
 ) -> i32 {
+    let args = [
+        dc as u64,
+        text as u64,
+        count as u32 as u64,
+        rect as u64,
+        u64::from(format),
+    ];
+    log_undrawn_formats(&crate::spec::DrawTextA, format, &args);
     // SAFETY: the caller's string (counted, or NUL-terminated) and RECT.
     let (bytes, place) = unsafe {
         let bytes = if count < 0 {

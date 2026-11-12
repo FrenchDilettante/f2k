@@ -98,11 +98,16 @@ pub const WS_EX_CONTROLPARENT: u32 = 0x0001_0000;
 
 /// The dialog styles (winuser.h's DS_*).
 pub const DS_ABSALIGN: u32 = 0x0001;
+pub const DS_SYSMODAL: u32 = 0x0002;
 pub const DS_3DLOOK: u32 = 0x0004;
+pub const DS_FIXEDSYS: u32 = 0x0008;
+pub const DS_NOFAILCREATE: u32 = 0x0010;
 pub const DS_SETFONT: u32 = 0x0040;
 pub const DS_MODALFRAME: u32 = 0x0080;
 pub const DS_CONTROL: u32 = 0x0400;
 pub const DS_CENTER: u32 = 0x0800;
+pub const DS_CENTERMOUSE: u32 = 0x1000;
+pub const DS_CONTEXTHELP: u32 = 0x2000;
 
 /// The virtual keys the keyboard interface handles.
 const VK_TAB: u32 = 0x09;
@@ -738,10 +743,66 @@ pub struct Request {
     pub proc: Procedure,
     pub param: i32,
     pub ansi: bool,
+    /// The call the dialog is made for, as a line about it names it.
+    pub call: Call,
 }
+
+/// The export a dialog is made through and its arguments (at most five, in order): what a line
+/// about a case of the dialog F2K does not handle yet names.
+#[derive(Clone, Copy)]
+pub struct Call {
+    pub entry: &'static rtl::stub::Entry,
+    pub args: [u64; 5],
+}
+
+impl Call {
+    /// The dialog export `entry`'s call: its five arguments (a name or template, an address).
+    pub fn of(
+        entry: &'static rtl::stub::Entry,
+        instance: usize,
+        name: usize,
+        owner: usize,
+        proc: usize,
+        param: i32,
+    ) -> Self {
+        Call {
+            entry,
+            args: [
+                instance as u64,
+                name as u64,
+                owner as u64,
+                proc as u64,
+                param as u32 as u64,
+            ],
+        }
+    }
+
+    /// The call's line, `reason` the case F2K does not handle yet.
+    pub fn unhandled(&self, reason: impl core::fmt::Display) {
+        // SAFETY: the dialog exports' arguments, no string among their kinds (a template's name
+        // is a pointer's); or MessageBox's, whose strings are the caller's, which the call has
+        // read, and which the line reads only where their pages can be read.
+        unsafe { crate::stub::unhandled(self.entry, reason, &self.args) };
+    }
+}
+
+/// The dialog styles the dialog manager does not handle yet (their effect missing): each one, and
+/// what it does on Windows 2000.
+const UNHANDLED_DIALOG_STYLES: [(u32, &str); 3] = [
+    (DS_SYSMODAL, "DS_SYSMODAL (a system-modal, topmost dialog)"),
+    (
+        DS_CENTERMOUSE,
+        "DS_CENTERMOUSE (the dialog centred on the mouse)",
+    ),
+    (DS_CONTEXTHELP, "DS_CONTEXTHELP (the caption's help button)"),
+];
+
+/// The dialog styles' cases logged in this process.
+static DIALOG_STYLES_LOGGED: rtl::stub::Logged<8> = rtl::stub::Logged::new();
 
 /// SS_ICON (a Static's type), and the message that gives it its icon.
 const SS_ICON: u32 = 0x0003;
+const SS_BITMAP: u32 = 0x000E;
 const SS_TYPEMASK: u32 = 0x001F;
 const STM_SETICON: u32 = 0x0170;
 
@@ -755,6 +816,7 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     let Some(header) = read_header(reader, &mut names) else {
         return failed(ERROR_INVALID_DATA);
     };
+    log_unhandled_styles(&header, &request.call);
 
     // The font, and the units it gives (the system font's when there is none).
     let font = header.font.and_then(|spec| {
@@ -840,7 +902,7 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
         Field::Text(_) => names.title.as_ptr() as usize,
         _ => 0,
     };
-    let created = window::create(&Creation {
+    let created = window::create_or_missing(&Creation {
         ex_style: ex_style
             | if request.ansi {
                 window::ANSI_CREATOR
@@ -860,13 +922,20 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
         param: 0,
         version: window::EXPECTED_VERSION,
     });
-    if created == 0 {
-        if let Some(font) = font {
-            imports::delete_object(font);
+    let dialog = match created {
+        Ok(dialog) => dialog,
+        Err(missing) => {
+            if let Some((_, what)) = missing {
+                request.call.unhandled(format_args!(
+                    "the dialog's own class could not be made: {what} is not yet implemented"
+                ));
+            }
+            if let Some(font) = font {
+                imports::delete_object(font);
+            }
+            return None;
         }
-        return None;
-    }
-    let dialog = created;
+    };
 
     // The dialog's state: the mark, the procedure, the font and its units.
     let _ = imports::set_window_fnid(dialog, FNID_DIALOG);
@@ -897,9 +966,35 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
             window::destroy_window(dialog);
             return failed(ERROR_INVALID_DATA);
         };
-        let Some(control) = create_control(dialog, &item, &item_names, request, (ux, uy)) else {
-            window::destroy_window(dialog);
-            return None;
+        let control = match create_control(dialog, &item, &item_names, request, (ux, uy)) {
+            Ok(control) => control,
+            Err(missing) => {
+                let no_fail = header.style & DS_NOFAILCREATE != 0;
+                match missing {
+                    Some((name, what)) => {
+                        let kept = if no_fail {
+                            " (DS_NOFAILCREATE, which keeps the dialog, is not yet implemented)"
+                        } else {
+                            ""
+                        };
+                        request.call.unhandled(format_args!(
+                            "the dialog's control {} of class {name} could not be made, so the \
+                             dialog fails{kept}: {what} is not yet implemented",
+                            item.id
+                        ));
+                    }
+                    // Windows 2000 keeps a DS_NOFAILCREATE dialog whose control fails; F2K's
+                    // fails with it.
+                    None if no_fail => request.call.unhandled(format_args!(
+                        "the dialog's control {} could not be made, so the dialog fails: \
+                         DS_NOFAILCREATE, which keeps the dialog, is not yet implemented",
+                        item.id
+                    )),
+                    None => {}
+                }
+                window::destroy_window(dialog);
+                return None;
+            }
         };
         if let Some(font) = font {
             let _ = message::send(control, WM_SETFONT, font as u32, 0);
@@ -927,6 +1022,22 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     Some(dialog)
 }
 
+/// The dialog styles of `header` the dialog manager does not handle yet, logged for `call` (each
+/// once per process): the [`UNHANDLED_DIALOG_STYLES`], and DS_FIXEDSYS without a font of the
+/// template's (the fixed system font in the system font's place).
+fn log_unhandled_styles(header: &Header, call: &Call) {
+    for &(style, what) in &UNHANDLED_DIALOG_STYLES {
+        if header.style & style != 0 && DIALOG_STYLES_LOGGED.first(style) {
+            call.unhandled(format_args!("{what} is not yet implemented"));
+        }
+    }
+    if header.style & (DS_FIXEDSYS | DS_SETFONT) == DS_FIXEDSYS
+        && DIALOG_STYLES_LOGGED.first(DS_FIXEDSYS)
+    {
+        call.unhandled("DS_FIXEDSYS (the fixed system font) is not yet implemented");
+    }
+}
+
 /// The screen coordinates of `window`'s client area's origin.
 fn client_origin(window: usize) -> Option<(i32, i32)> {
     let mut point = Point { x: 0, y: 0 };
@@ -934,28 +1045,29 @@ fn client_origin(window: usize) -> Option<(i32, i32)> {
     (unsafe { window::client_to_screen(window, &mut point) } != 0).then_some((point.x, point.y))
 }
 
-/// One of the dialog's controls made from its template's item: its handle, or none with the
-/// creation's error.
+/// One of the dialog's controls made from its template's item: its handle; or, with the creation's
+/// error, the system class F2K does not register yet that the control named, when it did (see
+/// [`window::create_or_missing`]).
 fn create_control(
     dialog: usize,
     item: &Item,
     names: &ItemNames,
     request: Request,
     (ux, uy): (i32, i32),
-) -> Option<usize> {
+) -> Result<usize, Option<(&'static str, &'static str)>> {
     let class = match item.class {
         Field::Ordinal(ordinal) => match predefined_class(ordinal) {
             Some(name) => name.as_ptr() as usize,
             None => usize::from(ordinal),
         },
         Field::Text(_) => names.class.as_ptr() as usize,
-        Field::None => return failed(ERROR_INVALID_DATA),
+        Field::None => return failed(ERROR_INVALID_DATA).ok_or(None),
     };
     let title = match item.title {
         Field::Text(_) => names.title.as_ptr() as usize,
         _ => 0,
     };
-    let control = window::create(&Creation {
+    let control = window::create_or_missing(&Creation {
         ex_style: item.ex_style
             | WS_EX_NOPARENTNOTIFY
             | if request.ansi {
@@ -975,13 +1087,11 @@ fn create_control(
         instance: request.instance,
         param: item.data,
         version: window::EXPECTED_VERSION,
-    });
-    if control == 0 {
-        return None;
-    }
+    })?;
     // A Static icon's title is the number of its icon resource.
-    if let Field::Ordinal(id) = item.title {
-        if item.style & SS_TYPEMASK == SS_ICON {
+    let static_class = matches!(item.class, Field::Ordinal(0x82));
+    match item.title {
+        Field::Ordinal(id) if item.style & SS_TYPEMASK == SS_ICON => {
             // SAFETY: a number in a pointer's place.
             let icon =
                 unsafe { crate::icon::load_icon_w(request.instance, id as usize as *const u16) };
@@ -989,8 +1099,23 @@ fn create_control(
                 let _ = message::send(control, STM_SETICON, icon as u32, 0);
             }
         }
+        Field::Ordinal(id) if static_class && item.style & SS_TYPEMASK == SS_BITMAP => {
+            request.call.unhandled(format_args!(
+                "the dialog's control {} names bitmap resource {id}: SS_BITMAP statics' bitmaps \
+                 are not yet loaded",
+                item.id
+            ));
+        }
+        Field::Text(_) if static_class && item.style & SS_TYPEMASK == SS_ICON => {
+            request.call.unhandled(format_args!(
+                "the dialog's control {} names its icon by name: icons named by a string are not \
+                 yet loaded for an SS_ICON static",
+                item.id
+            ));
+        }
+        _ => {}
     }
-    Some(control)
+    Ok(control)
 }
 
 /// The dialog template resource `name` of the module `instance`: its data; none with kernel32's
@@ -1044,6 +1169,14 @@ pub unsafe extern "system" fn create_dialog_param_w(
         },
         param,
         ansi: false,
+        call: Call::of(
+            &crate::spec::CreateDialogParamW,
+            instance,
+            name as usize,
+            owner,
+            proc,
+            param,
+        ),
     };
     // SAFETY: the caller's contract.
     unsafe { create_from_resource(ResourceName::Wide(name as usize), request) }
@@ -1072,6 +1205,14 @@ pub unsafe extern "system" fn create_dialog_param_a(
         },
         param,
         ansi: true,
+        call: Call::of(
+            &crate::spec::CreateDialogParamA,
+            instance,
+            name as usize,
+            owner,
+            proc,
+            param,
+        ),
     };
     // SAFETY: the caller's contract.
     unsafe { create_from_resource(ResourceName::Narrow(name as usize), request) }
@@ -1103,6 +1244,14 @@ pub unsafe extern "system" fn create_dialog_indirect_param_w(
         },
         param,
         ansi: false,
+        call: Call::of(
+            &crate::spec::CreateDialogIndirectParamW,
+            instance,
+            template as usize,
+            owner,
+            proc,
+            param,
+        ),
     };
     create(&mut reader, request, true).unwrap_or(0)
 }
@@ -1191,6 +1340,14 @@ pub unsafe extern "system" fn dialog_box_param_w(
         },
         param,
         ansi: false,
+        call: Call::of(
+            &crate::spec::DialogBoxParamW,
+            instance,
+            name as usize,
+            owner,
+            proc,
+            param,
+        ),
     };
     // SAFETY: the caller's contract.
     unsafe { modal_from_resource(ResourceName::Wide(name as usize), request) }
@@ -1219,6 +1376,14 @@ pub unsafe extern "system" fn dialog_box_param_a(
         },
         param,
         ansi: true,
+        call: Call::of(
+            &crate::spec::DialogBoxParamA,
+            instance,
+            name as usize,
+            owner,
+            proc,
+            param,
+        ),
     };
     // SAFETY: the caller's contract.
     unsafe { modal_from_resource(ResourceName::Narrow(name as usize), request) }
@@ -2148,5 +2313,64 @@ mod tests {
         assert_eq!(item.class, Field::Ordinal(0x80));
         assert_eq!(item.title, Field::Text(2));
         assert_eq!(item.data, 0);
+    }
+
+    /// A control of a system class F2K does not register yet fails the dialog, and the call's line
+    /// says which control, of which class, and why.
+    #[test]
+    fn a_missing_control_class_fails_the_dialog_with_its_line() {
+        use crate::class::{register_class_w, WndClass};
+        use crate::imports::host::{procedure, DEBUG_PRINTS};
+        fn plain(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+            message::default_procedure(window as usize, message, wparam, lparam, false)
+        }
+        // The dialog's own class, the test's (the system classes are registered once per
+        // process, in another test's thread's host window manager).
+        let class_name: std::vec::Vec<u16> = "F2KDlgTest\0".encode_utf16().collect();
+        let class = WndClass {
+            wnd_proc: procedure(plain) as usize,
+            cb_wnd_extra: DLGWINDOWEXTRA,
+            instance: 0x40_0000,
+            class_name: class_name.as_ptr() as usize,
+            ..WndClass::default()
+        };
+        // SAFETY: a WNDCLASSW of the test's own.
+        assert_ne!(unsafe { register_class_w(&class) }, 0);
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        // DIALOG: WS_POPUP, no font, menu or title, the class above; one ListBox control, id 7.
+        dword(&mut words, WS_POPUP);
+        dword(&mut words, 0);
+        words.extend([1, 0, 0, 100, 50, 0]);
+        words.extend_from_slice(&class_name);
+        words.push(0);
+        if words.len() % 2 != 0 {
+            words.push(0);
+        }
+        dword(&mut words, WS_CHILD | WS_VISIBLE);
+        dword(&mut words, 0);
+        words.extend([0, 0, 50, 14, 7, 0xFFFF, 0x83, 0, 0]);
+        // DWORD-aligned, as a template is.
+        let template: std::vec::Vec<u32> = words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect();
+        DEBUG_PRINTS.with(|prints| prints.borrow_mut().clear());
+        // SAFETY: the template above, whole.
+        let dialog =
+            unsafe { create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, 0, 0) };
+        assert_eq!(dialog, 0);
+        let printed = DEBUG_PRINTS.with(|prints| prints.borrow().clone());
+        let expected = std::format!(
+            "stub user32.CreateDialogIndirectParamW(hInstance=0x400000, lpTemplate=0x{:08X}, \
+             hWndParent=0, lpDialogFunc=NULL, dwInitParam=0): the dialog's control 7 of class \
+             ListBox could not be made, so the dialog fails: the ListBox control class is not yet \
+             implemented\n",
+            template.as_ptr() as usize
+        );
+        assert_eq!(printed, [expected]);
     }
 }

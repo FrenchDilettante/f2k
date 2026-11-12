@@ -2192,6 +2192,15 @@ pub fn register_class_ex_wow(
         }
         registered
     };
+    // Windows 2000 takes any class-extra size its pool has room for; the record holds a fixed one.
+    if registered.is_err() && wc.cb_cls_extra > MAX_CLASS_EXTRA as i32 {
+        crate::dbgprint::unhandled(
+            "win32k",
+            "NtUserRegisterClassExWOW",
+            format_args!("cbClsExtra={}", wc.cb_cls_extra),
+            format_args!("more than {MAX_CLASS_EXTRA} class-extra bytes are not yet implemented"),
+        );
+    }
     let value = registered.map_err(Failure::status)?;
     atom.write(value as u32)?;
     wow.write(0)?;

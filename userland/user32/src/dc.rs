@@ -60,7 +60,11 @@ impl Handed {
 /// The family's core: a DC of `window` (zero: the screen) from `service`, kept with its window;
 /// NULL with 1400 for a handle naming no window, ERROR_NOT_ENOUGH_MEMORY when the process holds
 /// as many as it may (the DC closed again).
-fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usize {
+fn handed(
+    window: usize,
+    service: impl FnOnce() -> Result<u32, NtStatus>,
+    call: (&rtl::stub::Entry, &[u64]),
+) -> usize {
     if window != 0 && !is_window_alive(window) {
         return failed(ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
     }
@@ -68,6 +72,22 @@ fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usi
         return 0;
     };
     if !HANDED_DCS.keep(dc, window as u32) {
+        // A program that leaks its DCs meets this on every call after: one line.
+        static FULL_LOGGED: rtl::stub::Logged<1> = rtl::stub::Logged::new();
+        let (entry, args) = call;
+        // SAFETY: the family's arguments: handles and flags, none read.
+        unsafe {
+            crate::stub::unhandled_once(
+                &FULL_LOGGED,
+                0,
+                entry,
+                format_args!(
+                    "more than {HANDED} DCs of the GetDC family held at once by a process are \
+                     not yet implemented"
+                ),
+                args,
+            )
+        };
         let _ = imports::close(dc as usize);
         return failed(ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
     }
@@ -77,19 +97,70 @@ fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usi
 /// GetDC: a DC of the window's client area (NULL: the screen's).
 #[unsafe(export_name = "f2k_export_GetDC")]
 pub extern "system" fn get_dc(window: usize) -> usize {
-    handed(window, || imports::get_dc(window))
+    handed(
+        window,
+        || imports::get_dc(window),
+        (&crate::spec::GetDC, &[window as u64]),
+    )
 }
 
 /// GetDCEx: a DC of the window with GetDCEx's clipping region and DCX_ flags.
 #[unsafe(export_name = "f2k_export_GetDCEx")]
 pub extern "system" fn get_dc_ex(window: usize, region: usize, flags: u32) -> usize {
-    handed(window, || imports::get_dc_ex(window, region, flags))
+    let args = [window as u64, region as u64, u64::from(flags)];
+    for &(flag, what) in &UNCLIPPED {
+        if flags & flag != 0 {
+            // SAFETY: GetDCEx's arguments: handles and flags, none read.
+            unsafe {
+                crate::stub::unhandled_once(
+                    &CLIPPING_LOGGED,
+                    flag,
+                    &crate::spec::GetDCEx,
+                    format_args!("{what} is not yet implemented: the DC is not clipped by it"),
+                    &args,
+                )
+            };
+        }
+    }
+    handed(
+        window,
+        || imports::get_dc_ex(window, region, flags),
+        (&crate::spec::GetDCEx, &args),
+    )
 }
+
+/// The DCX_ flags whose clipping the DCs do not have yet (they are clipped to the window's
+/// rectangle alone), and what each does.
+const UNCLIPPED: [(u32, &str); 4] = [
+    (
+        0x0000_0040,
+        "DCX_EXCLUDERGN (the region taken out of the DC)",
+    ),
+    (
+        0x0000_0080,
+        "DCX_INTERSECTRGN (the DC clipped to the region)",
+    ),
+    (
+        0x0000_0100,
+        "DCX_EXCLUDEUPDATE (the update region taken out of the DC)",
+    ),
+    (
+        0x0000_0200,
+        "DCX_INTERSECTUPDATE (the DC clipped to the update region)",
+    ),
+];
+
+/// GetDCEx's flags logged in this process.
+static CLIPPING_LOGGED: rtl::stub::Logged<8> = rtl::stub::Logged::new();
 
 /// GetWindowDC: a DC of the window's whole rectangle.
 #[unsafe(export_name = "f2k_export_GetWindowDC")]
 pub extern "system" fn get_window_dc(window: usize) -> usize {
-    handed(window, || imports::get_window_dc(window))
+    handed(
+        window,
+        || imports::get_window_dc(window),
+        (&crate::spec::GetWindowDC, &[window as u64]),
+    )
 }
 
 /// ReleaseDC: a DC the family handed out released (its handle closed); 1, or 0 for a DC it did not

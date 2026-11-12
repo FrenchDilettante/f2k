@@ -651,6 +651,7 @@ mod services {
                 .cast::<Input>()
                 .read()?;
             if input.kind != rtl::user::INPUT_KEYBOARD {
+                log_unhandled_input(call, count, inputs, size, input.kind);
                 break;
             }
             let time = millis(now());
@@ -665,6 +666,31 @@ mod services {
         }
         sent.write(done)?;
         Ok(STATUS_SUCCESS)
+    }
+
+    /// The INPUT records' kinds SendInput does not inject yet, and what each is: the run stops at
+    /// one (INPUT_KEYBOARD is 1).
+    const UNHANDLED_INPUTS: [(u32, &str); 2] = [
+        (0, "INPUT_MOUSE records (there is no mouse yet)"),
+        (2, "INPUT_HARDWARE records"),
+    ];
+
+    /// The record kinds logged: each process's ([`crate::dbgprint::unhandled_once`]).
+    static INPUTS_LOGGED: rtl::stub::Logged<64> = rtl::stub::Logged::new();
+
+    /// A record of `kind` that stopped a SendInput run, logged once per process for its kind.
+    fn log_unhandled_input(call: &mut NtCall, count: u32, inputs: UserAddr, size: i32, kind: u32) {
+        if let Some(&(_, what)) = UNHANDLED_INPUTS.iter().find(|&&(k, _)| k == kind) {
+            crate::dbgprint::unhandled_once(
+                &INPUTS_LOGGED,
+                call.process().id(),
+                kind,
+                "win32k",
+                "NtUserSendInput",
+                format_args!("Count={count}, Inputs=0x{:X}, Size={size}", inputs.0),
+                format_args!("{what} are not yet implemented: the run stops at the first"),
+            );
+        }
     }
 
     /// NtUserGetKeyState(VirtKey, State): the calling thread's state of the key, as GetKeyState

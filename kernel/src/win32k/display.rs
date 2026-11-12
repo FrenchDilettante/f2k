@@ -15,7 +15,9 @@
 //! BIOS lists; the window manager's work area and desktop windows follow it), after which only
 //! requests that mode answers succeed; and the flags 0 (a dynamic change), CDS_FULLSCREEN (the
 //! same, here) and CDS_TEST (the mode checked, nothing set). The registry holds no display
-//! settings, so CDS_UPDATEREGISTRY and the rest are refused as flags the subset does not take.
+//! settings, so CDS_UPDATEREGISTRY and the rest are refused as flags the subset does not take. A
+//! refusal Windows 2000 would not make (the registry's flags, a refresh rate) logs its stub line
+//! on COM1 ([`crate::dbgprint::unhandled`]).
 //!
 //! The other services answer from the same geometry (F2K's argument lists, see [`crate::win32k`];
 //! Windows 2000's numbers), each an NTSTATUS:
@@ -80,6 +82,7 @@ fn change(
     } else {
         Some(read_dev_mode(dev_mode)?)
     };
+    log_unhandled(mode.as_ref(), flags);
     let change = parse(mode.as_ref(), flags)?;
     if change.test {
         return vbe::test_graphics_mode(&change.request)
@@ -104,6 +107,51 @@ fn change(
     #[cfg(not(target_arch = "x86"))]
     let _ = geometry;
     Ok(DISP_CHANGE_SUCCESSFUL)
+}
+
+/// The CDS_ flags of the registry's display settings, which Windows 2000 takes and the subset
+/// refuses (winuser.h's): the mode saved, for every user, the change left for later, the mode set
+/// again, the device made the primary one.
+const CDS_GLOBAL: u32 = 0x0000_0008;
+const CDS_SET_PRIMARY: u32 = 0x0000_0010;
+const CDS_NORESET: u32 = 0x1000_0000;
+const CDS_RESET: u32 = 0x4000_0000;
+const REGISTRY_FLAGS: u32 =
+    CDS_UPDATEREGISTRY | CDS_GLOBAL | CDS_SET_PRIMARY | CDS_NORESET | CDS_RESET;
+
+/// A change `mode` and `flags` ask for that Windows 2000 makes and the subset refuses, logged
+/// (a program changes the display once, not in a loop): the registry's flags (CDS_GLOBAL and
+/// CDS_NORESET only with CDS_UPDATEREGISTRY, as Windows 2000 takes them), and a refresh rate.
+fn log_unhandled(mode: Option<&DevModeW>, flags: u32) {
+    let log = |reason: core::fmt::Arguments<'_>| {
+        crate::dbgprint::unhandled(
+            "win32k",
+            "NtUserChangeDisplaySettings",
+            format_args!("Flags=0x{flags:X}"),
+            reason,
+        )
+    };
+    let taken = CDS_TEST | CDS_FULLSCREEN;
+    if flags & !(taken | REGISTRY_FLAGS) == 0
+        && flags & REGISTRY_FLAGS != 0
+        && (flags & (CDS_GLOBAL | CDS_NORESET) == 0 || flags & CDS_UPDATEREGISTRY != 0)
+    {
+        log(format_args!(
+            "the registry's display settings (CDS_UPDATEREGISTRY, CDS_GLOBAL, CDS_NORESET, \
+             CDS_RESET, CDS_SET_PRIMARY) are not yet implemented"
+        ));
+    }
+    if let Some(mode) = mode {
+        if flags & !taken == 0
+            && mode.fields & DM_DISPLAYFREQUENCY != 0
+            && mode.display_frequency > 1
+        {
+            log(format_args!(
+                "a refresh rate ({} Hz) is not yet implemented: the BIOS's mode set chooses none",
+                mode.display_frequency
+            ));
+        }
+    }
 }
 
 /// What a change asks: the mode, and whether only to test it.
