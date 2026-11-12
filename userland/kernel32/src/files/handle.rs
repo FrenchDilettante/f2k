@@ -1,7 +1,8 @@
 //! The calls on a file handle: CreateFileA (CreateFileW's work over NtCreateFile), ReadFile and
 //! WriteFile (NtReadFile, NtWriteFile; a console handle's bytes go to the console), SetFilePointer,
-//! FlushFileBuffers, GetFileType, the size, times and identity of an open file, SetFileTime and
-//! SetEndOfFile — as Windows 2000's kernel32 makes them of the information classes.
+//! FlushFileBuffers, LockFile and UnlockFile (NtLockFile, NtUnlockFile), GetFileType, the size,
+//! times and identity of an open file, SetFileTime and SetEndOfFile — as Windows 2000's kernel32
+//! makes them of the information classes.
 
 use core::mem::offset_of;
 
@@ -464,6 +465,44 @@ pub extern "system" fn flush_file_buffers(file: u32) -> u32 {
         return console::flush_console_input_buffer(file);
     }
     bool_answer(ntcall::flush_buffers_file(file).map_err(Failure::Status))
+}
+
+/// The 64-bit value of a dword pair, its low half first.
+fn dword_pair(low: u32, high: u32) -> u64 {
+    u64::from(high) << 32 | u64::from(low)
+}
+
+/// LockFile: an exclusive lock of the range for this handle's open in the calling process,
+/// refused at once where a lock overlaps it (NtLockFile, FailImmediately; STATUS_LOCK_NOT_GRANTED
+/// is ERROR_LOCK_VIOLATION): the open's own reads and writes go on in it, another open's are
+/// refused (ERROR_LOCK_VIOLATION), until UnlockFile or the open's last handle closes. A handle
+/// with neither read nor write access is ERROR_ACCESS_DENIED.
+#[unsafe(export_name = "f2k_export_LockFile")]
+pub extern "system" fn lock_file(
+    file: u32,
+    offset_low: u32,
+    offset_high: u32,
+    length_low: u32,
+    length_high: u32,
+) -> u32 {
+    let offset = dword_pair(offset_low, offset_high);
+    let length = dword_pair(length_low, length_high);
+    bool_answer(ntcall::lock_file(file, offset, length).map_err(Failure::Status))
+}
+
+/// UnlockFile: the handle's open's lock of exactly the range, released (NtUnlockFile); a range it
+/// does not hold so — never locked, part of a lock, another open's — is ERROR_NOT_LOCKED.
+#[unsafe(export_name = "f2k_export_UnlockFile")]
+pub extern "system" fn unlock_file(
+    file: u32,
+    offset_low: u32,
+    offset_high: u32,
+    length_low: u32,
+    length_high: u32,
+) -> u32 {
+    let offset = dword_pair(offset_low, offset_high);
+    let length = dword_pair(length_low, length_high);
+    bool_answer(ntcall::unlock_file(file, offset, length).map_err(Failure::Status))
 }
 
 /// GetFileType: a console handle naming a console object is a character device

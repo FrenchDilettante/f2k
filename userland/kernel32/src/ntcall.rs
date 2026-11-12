@@ -1840,6 +1840,21 @@ pub fn flush_buffers_file(file: u32) -> Result<(), NtStatus> {
     checked(unsafe { nt::NtFlushBuffersFile(file, &mut io_status) })
 }
 
+/// NtLockFile, as LockFile asks it: an exclusive lock of `length` bytes at `offset`, refused at
+/// once where a lock overlaps it (no event, no APC, key 0).
+pub fn lock_file(file: u32, offset: u64, length: u64) -> Result<(), NtStatus> {
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export, over the locals.
+    checked(unsafe { nt::NtLockFile(file, 0, 0, 0, &mut io_status, &offset, &length, 0, 1, 1) })
+}
+
+/// NtUnlockFile, as UnlockFile asks it: the lock of exactly `length` bytes at `offset` (key 0).
+pub fn unlock_file(file: u32, offset: u64, length: u64) -> Result<(), NtStatus> {
+    let mut io_status = IoStatus::default();
+    // SAFETY: ntdll's export, over the locals.
+    checked(unsafe { nt::NtUnlockFile(file, &mut io_status, &offset, &length, 0) })
+}
+
 /// NtQueryDirectoryFile, synchronously: the open directory's entries of the class into `out` —
 /// the first matching `name` alone for `single` (the search restarted with the name), else as many
 /// as fit from where the listing stands.

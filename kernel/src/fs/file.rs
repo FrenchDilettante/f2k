@@ -20,6 +20,15 @@
 //!
 //! A directory opens too (backup semantics), for its metadata. Positions are 64-bit, as Win32 file
 //! pointers are; files themselves stay within FAT32's 32-bit sizes.
+//!
+//! An open file's byte-range locks (NT's FILE_LOCK, which FastFat keeps in the file's FCB and
+//! FsRtl serves) belong to the file and to their owner: the file object that took them, in the
+//! process that took them ([`LockOwner`]). An exclusive lock refuses every other owner's reads and
+//! writes in its range, a shared one every write (its owner's too); a new lock is refused where a
+//! lock in place overlaps it (an exclusive one, any lock; a shared one, an exclusive lock), its
+//! own owner's included. An unlock names a lock exactly. A file object's cleanup releases the locks
+//! it holds (FsRtlFastUnlockAll at IRP_MJ_CLEANUP). The locks live in a table of their own beside
+//! the records ([`RANGE_LOCKS`] of them across every file), under the records' protection.
 
 use core::cell::UnsafeCell;
 use core::ptr::NonNull;
@@ -40,6 +49,10 @@ pub const OPEN_FILES: usize = 128;
 
 /// How many files can be open at once.
 pub const FILE_RECORDS: usize = 128;
+
+/// How many byte-range locks can exist at once (across files and processes). Exhaustion is a
+/// program-visible failure (the lock is refused: STATUS_INSUFFICIENT_RESOURCES).
+pub const RANGE_LOCKS: usize = 64;
 
 /// The access an open asks for, as the share check reads it; the share mode uses the same bits
 /// (FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE).
@@ -588,9 +601,61 @@ pub fn same_entry(a: &File, b: &File) -> bool {
     a.parent_cluster == b.parent_cluster && a.index == b.index
 }
 
-/// The open files' records.
+/// Who holds a byte-range lock: the file object that took it, in the process that took it
+/// (FsRtl's FileObject and ProcessId; a duplicate of the handle names the same object).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct LockOwner {
+    pub object: crate::ob::ObjectId,
+    pub process: u32,
+}
+
+/// One byte-range lock of an open file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct RangeLock {
+    record: FileRecordId,
+    owner: LockOwner,
+    /// The lock's key (NtLockFile's Key): an unlock names it too.
+    key: u32,
+    start: u64,
+    length: u64,
+    exclusive: bool,
+}
+
+/// The bytes a range covers, first and last; none for an empty one. A range of no bytes at offset
+/// zero covers the whole file: its last byte is computed as the platform computes it, start plus
+/// length less one, which wraps (the fswrite capture's LockFile(0, 0) collides with the locks in
+/// place, and its UnlockFile(0, 0) finds nothing); at any other offset it covers nothing.
+fn span(start: u64, length: u64) -> Option<(u64, u64)> {
+    match length {
+        0 if start == 0 => Some((0, u64::MAX)),
+        0 => None,
+        _ => Some((start, start.saturating_add(length - 1))),
+    }
+}
+
+/// Whether ranges `a` and `b` share a byte.
+fn overlap(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> bool {
+    match (a, b) {
+        (Some((a_first, a_last)), Some((b_first, b_last))) => {
+            a_first <= b_last && b_first <= a_last
+        }
+        _ => false,
+    }
+}
+
+/// Why a lock was not taken.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LockError {
+    /// A lock in place overlaps it (STATUS_LOCK_NOT_GRANTED).
+    Conflict,
+    /// Every lock is taken (STATUS_INSUFFICIENT_RESOURCES).
+    Full,
+}
+
+/// The open files' records, and their byte-range locks.
 pub struct FileRecords {
     records: [Option<FileRecord>; FILE_RECORDS],
+    locks: [Option<RangeLock>; RANGE_LOCKS],
 }
 
 impl FileRecords {
@@ -598,6 +663,106 @@ impl FileRecords {
     pub const fn empty() -> Self {
         FileRecords {
             records: [None; FILE_RECORDS],
+            locks: [None; RANGE_LOCKS],
+        }
+    }
+
+    /// The locks of the open file `record`.
+    fn locks_of(&self, record: FileRecordId) -> impl Iterator<Item = &RangeLock> {
+        self.locks
+            .iter()
+            .flatten()
+            .filter(move |lock| lock.record == record)
+    }
+
+    /// Take a byte-range lock of `length` bytes at `start` on the open file `record` for `owner`
+    /// (FsRtlPrivateLock): refused where a lock in place overlaps it — any lock for an exclusive
+    /// one, an exclusive lock for a shared one — whoever its owner.
+    pub fn lock(
+        &mut self,
+        record: FileRecordId,
+        owner: LockOwner,
+        key: u32,
+        (start, length): (u64, u64),
+        exclusive: bool,
+    ) -> Result<(), LockError> {
+        let wanted = span(start, length);
+        let conflict = self.locks_of(record).any(|lock| {
+            (exclusive || lock.exclusive) && overlap(span(lock.start, lock.length), wanted)
+        });
+        if conflict {
+            return Err(LockError::Conflict);
+        }
+        let free = self
+            .locks
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(LockError::Full)?;
+        *free = Some(RangeLock {
+            record,
+            owner,
+            key,
+            start,
+            length,
+            exclusive,
+        });
+        Ok(())
+    }
+
+    /// Release `owner`'s lock of exactly `length` bytes at `start` with `key` on the open file
+    /// `record` (FsRtlFastUnlockSingle): whether there was one.
+    pub fn unlock(
+        &mut self,
+        record: FileRecordId,
+        owner: LockOwner,
+        key: u32,
+        (start, length): (u64, u64),
+    ) -> bool {
+        let found = self.locks.iter_mut().find(|slot| {
+            slot.is_some_and(|lock| {
+                lock.record == record
+                    && lock.owner == owner
+                    && lock.key == key
+                    && lock.start == start
+                    && lock.length == length
+            })
+        });
+        found.map(|slot| *slot = None).is_some()
+    }
+
+    /// Whether `owner` may read (`write` false) or write `length` bytes at `start` of the open file
+    /// `record` (FsRtlCheckLockForReadAccess, FsRtlCheckLockForWriteAccess): a read is refused by
+    /// another owner's exclusive lock over its bytes, a write by another owner's lock or by a
+    /// shared lock, its own included.
+    pub fn may_access(
+        &self,
+        record: FileRecordId,
+        owner: LockOwner,
+        (start, length): (u64, u64),
+        write: bool,
+    ) -> bool {
+        let wanted = if length == 0 {
+            None
+        } else {
+            span(start, length)
+        };
+        !self.locks_of(record).any(|lock| {
+            let refuses = if write {
+                lock.owner != owner || !lock.exclusive
+            } else {
+                lock.owner != owner && lock.exclusive
+            };
+            refuses && overlap(span(lock.start, lock.length), wanted)
+        })
+    }
+
+    /// The file object `object`'s cleanup: every lock it holds on the open file `record` goes,
+    /// whichever process took it.
+    pub fn release_locks(&mut self, record: FileRecordId, object: crate::ob::ObjectId) {
+        for slot in self.locks.iter_mut() {
+            if slot.is_some_and(|lock| lock.record == record && lock.owner.object == object) {
+                *slot = None;
+            }
         }
     }
 
@@ -722,6 +887,7 @@ impl FileRecords {
         for record in self.records.iter_mut() {
             *record = None;
         }
+        self.locks = [None; RANGE_LOCKS];
         live
     }
 
@@ -912,6 +1078,101 @@ mod tests {
         let mut file = File::plain(3, 10, false);
         file.index = index;
         file
+    }
+
+    /// A file object of index `index`, in process 8, as a lock's owner.
+    fn owner(index: u16) -> LockOwner {
+        LockOwner {
+            object: crate::ob::ObjectId {
+                kind: crate::ob::ObjectType::File,
+                index,
+                generation: 1,
+            },
+            process: 8,
+        }
+    }
+
+    /// The fswrite capture's lock section, step by step: overlapping locks refused through either
+    /// handle, the zero-length lock at offset zero colliding, the I/O another owner's range
+    /// refuses, the exact unlocks, and a cleanup's release.
+    #[test]
+    fn byte_range_locks_follow_the_capture() {
+        let mut records = FileRecords::empty();
+        let file = records.open(entry(1), SHARE_ALL, SHARE_ALL).unwrap();
+        let (first, second, read_only) = (owner(1), owner(2), owner(3));
+        let lock = |records: &mut FileRecords, who, at| records.lock(file, who, 0, at, true);
+        assert_eq!(lock(&mut records, first, (10, 20)), Ok(()));
+        for at in [(10, 20), (25, 10), (5, 10), (0, 0)] {
+            assert_eq!(
+                lock(&mut records, first, at),
+                Err(LockError::Conflict),
+                "{at:?}"
+            );
+        }
+        assert_eq!(lock(&mut records, first, (30, 10)), Ok(()), "adjacent");
+        assert_eq!(
+            lock(&mut records, first, (1000, 10)),
+            Ok(()),
+            "past the end"
+        );
+        assert_eq!(
+            lock(&mut records, second, (15, 1)),
+            Err(LockError::Conflict)
+        );
+        assert_eq!(
+            lock(&mut records, second, (29, 2)),
+            Err(LockError::Conflict)
+        );
+        assert_eq!(lock(&mut records, second, (50, 10)), Ok(()));
+
+        let may = |records: &FileRecords, who, at, write| records.may_access(file, who, at, write);
+        assert!(!may(&records, second, (12, 4), false));
+        assert!(!may(&records, second, (12, 4), true));
+        assert!(!may(&records, second, (5, 10), false));
+        assert!(may(&records, second, (0, 10), false));
+        assert!(may(&records, second, (0, 5), true));
+        assert!(may(&records, first, (12, 4), true), "its own range");
+        assert!(!may(&records, first, (52, 4), false));
+        assert!(
+            may(&records, second, (12, 0), false),
+            "no bytes, no conflict"
+        );
+
+        assert!(records.unlock(file, first, 0, (10, 20)));
+        assert!(!records.unlock(file, first, 0, (10, 20)), "gone");
+        assert!(!records.unlock(file, first, 0, (30, 5)), "part of a range");
+        assert!(
+            !records.unlock(file, second, 0, (30, 10)),
+            "another owner's"
+        );
+        assert!(may(&records, second, (12, 4), false));
+        assert!(!records.unlock(file, first, 0, (0, 0)));
+
+        assert_eq!(lock(&mut records, second, (70, 10)), Ok(()));
+        records.release_locks(file, second.object);
+        assert!(may(&records, first, (72, 4), false), "released at cleanup");
+        assert_eq!(lock(&mut records, first, (70, 10)), Ok(()));
+        assert!(records.unlock(file, first, 0, (70, 10)));
+
+        assert_eq!(lock(&mut records, read_only, (0, 10)), Ok(()));
+        assert!(!may(&records, first, (2, 2), true));
+    }
+
+    /// A shared lock lets every owner read and none write, its own included; it takes another
+    /// shared lock over it, not an exclusive one.
+    #[test]
+    fn shared_locks_refuse_writes() {
+        let mut records = FileRecords::empty();
+        let file = records.open(entry(1), SHARE_ALL, SHARE_ALL).unwrap();
+        let (first, second) = (owner(1), owner(2));
+        assert_eq!(records.lock(file, first, 0, (0, 10), false), Ok(()));
+        assert!(records.may_access(file, second, (0, 4), false));
+        assert!(!records.may_access(file, first, (0, 4), true));
+        assert_eq!(records.lock(file, second, 0, (5, 10), false), Ok(()));
+        assert_eq!(
+            records.lock(file, second, 0, (5, 10), true),
+            Err(LockError::Conflict)
+        );
     }
 
     /// A read moves what remains before the end, at most the request: all of it, the prefix that

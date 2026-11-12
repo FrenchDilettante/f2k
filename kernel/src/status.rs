@@ -138,10 +138,16 @@ statuses! {
     STATUS_THREAD_IS_TERMINATING,
     /// A view's protection the section's does not allow.
     STATUS_SECTION_PROTECTION,
+    /// A read or write into a byte range another open's lock holds.
+    STATUS_FILE_LOCK_CONFLICT,
+    /// A byte-range lock a lock in place overlaps, refused at once.
+    STATUS_LOCK_NOT_GRANTED,
     /// The file is being deleted: it goes with its last open's cleanup, and no new open is allowed.
     STATUS_DELETE_PENDING,
     /// The bytes are no image the loader accepts.
     STATUS_INVALID_IMAGE_FORMAT,
+    /// An unlock of a byte range no lock of the caller's holds exactly.
+    STATUS_RANGE_NOT_LOCKED,
     /// The volume has no free cluster left.
     STATUS_DISK_FULL,
     /// A table the call needs is full (the handle table, a key's records).

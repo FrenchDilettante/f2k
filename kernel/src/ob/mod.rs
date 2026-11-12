@@ -453,9 +453,11 @@ pub enum Followup {
         file_object: Option<ObjectId>,
     },
     /// A file object's last handle closed (its cleanup), for the device it is open on: a disk
-    /// file's share access leaves the file's record, its delete-on-close marks the file
-    /// delete-pending, and the last cleanup of a delete-pending file deletes it.
+    /// file's share access leaves the file's record, the byte-range locks the object holds go, its
+    /// delete-on-close marks the file delete-pending, and the last cleanup of a delete-pending
+    /// file deletes it.
     FileCleanup {
+        object: ObjectId,
         context: crate::fs::file::Context,
         access: u8,
         share: u8,
@@ -1190,6 +1192,7 @@ impl Directory {
             self.forget_name(id);
             if let Some(file) = self.file(id) {
                 followups.push(Some(Followup::FileCleanup {
+                    object: id,
                     context: file.context,
                     access: file.access,
                     share: file.share,
@@ -1545,11 +1548,12 @@ mod target {
                 }
             }
             Followup::FileCleanup {
+                object,
                 context,
                 access,
                 share,
                 delete_on_close,
-            } => crate::fs::io::cleanup(context, access, share, delete_on_close),
+            } => crate::fs::io::cleanup(object, context, access, share, delete_on_close),
             Followup::FileClose { context } => crate::fs::io::close(context),
         }
     }
@@ -1647,6 +1651,13 @@ mod target {
     pub struct Referenced<T: 'static> {
         _reference: ObRef,
         record: NonNull<T>,
+    }
+
+    impl<T: 'static> Referenced<T> {
+        /// The object's identity.
+        pub fn id(&self) -> ObjectId {
+            self._reference.id()
+        }
     }
 
     impl<T: 'static> core::ops::Deref for Referenced<T> {
@@ -2785,6 +2796,7 @@ mod tests {
         assert_eq!(
             closed(directory, id),
             vec![Followup::FileCleanup {
+                object: id,
                 context: four,
                 access: 1,
                 share: 7,
@@ -2803,6 +2815,7 @@ mod tests {
             closed(directory, id),
             vec![
                 Followup::FileCleanup {
+                    object: id,
                     context: five,
                     access: 0,
                     share: 0,

@@ -201,10 +201,20 @@ mod target {
     }
 
     /// A file object's cleanup (its last handle closed), by the device it is open on (Windows
-    /// 2000's IRP_MJ_CLEANUP): `access`, `share` and `delete_on_close` are the object's own.
-    pub fn cleanup(context: Context, access: u8, share: u8, delete_on_close: bool) {
+    /// 2000's IRP_MJ_CLEANUP): `access`, `share` and `delete_on_close` are the object's own, and
+    /// a disk file's byte-range locks `object` holds go (FsRtlFastUnlockAll).
+    pub fn cleanup(
+        object: crate::ob::ObjectId,
+        context: Context,
+        access: u8,
+        share: u8,
+        delete_on_close: bool,
+    ) {
         match context {
-            Context::Disk(record) => disk_cleanup(record, access, share, delete_on_close),
+            Context::Disk(record) => {
+                with_records(|records| records.release_locks(record, object));
+                disk_cleanup(record, access, share, delete_on_close)
+            }
             Context::Pipe(end) => crate::fs::pipes::cleanup(end),
             Context::Null => {}
         }

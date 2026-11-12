@@ -1,5 +1,6 @@
 //! The file services: NtCreateFile and NtOpenFile, NtReadFile and NtWriteFile,
-//! NtFlushBuffersFile, NtQueryInformationFile and NtSetInformationFile, NtQueryDirectoryFile,
+//! NtFlushBuffersFile, NtLockFile and NtUnlockFile, NtQueryInformationFile and
+//! NtSetInformationFile, NtQueryDirectoryFile,
 //! NtQueryAttributesFile and NtQueryFullAttributesFile, NtQueryVolumeInformationFile,
 //! NtCreateNamedPipeFile and NtFsControlFile — FastFat's answers over the boot volume and the
 //! named-pipe file system's over its pipes (`fs`), in NTSTATUS. kernel32's Win32 file calls are
@@ -27,6 +28,8 @@ mod directory;
 #[cfg(target_arch = "x86")]
 mod io;
 #[cfg(target_arch = "x86")]
+mod lock;
+#[cfg(target_arch = "x86")]
 mod pipe;
 #[cfg(target_arch = "x86")]
 mod query;
@@ -39,6 +42,8 @@ pub use create::{create_file, open_file};
 pub use directory::query_directory_file;
 #[cfg(target_arch = "x86")]
 pub use io::{flush_buffers_file, read_file, write_file};
+#[cfg(target_arch = "x86")]
+pub use lock::{lock_file, unlock_file};
 #[cfg(target_arch = "x86")]
 pub use pipe::{create_named_pipe_file, fs_control_file};
 #[cfg(target_arch = "x86")]
@@ -160,7 +165,7 @@ mod common {
                     return Ok(Named::Pipe {
                         name,
                         inherit: read.inherit(),
-                    })
+                    });
                 }
             },
             Root::File(id) => {
@@ -278,6 +283,8 @@ mod host {
         read_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, UserPtr<u64>, UserPtr<u32>);
         write_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, UserPtr<u64>, UserPtr<u32>);
         flush_buffers_file(Handle, UserAddr);
+        lock_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserPtr<u64>, UserPtr<u64>, u32, bool, bool);
+        unlock_file(Handle, UserAddr, UserPtr<u64>, UserPtr<u64>, u32);
         query_information_file(Handle, UserAddr, UserAddr, u32, u32);
         set_information_file(Handle, UserAddr, UserAddr, u32, u32);
         query_directory_file(Handle, Handle, UserAddr, UserAddr, UserAddr, UserAddr, u32, u32, bool, UserAddr, bool);

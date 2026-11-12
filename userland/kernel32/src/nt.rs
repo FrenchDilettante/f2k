@@ -491,6 +491,27 @@ unsafe extern "system" {
         key: *const u32,
     ) -> u32;
     pub fn NtFlushBuffersFile(handle: u32, io_status: *mut IoStatus) -> u32;
+    /// NtLockFile and NtUnlockFile: a byte-range lock taken (exclusive or shared, refused at once
+    /// or waited for) and released.
+    pub fn NtLockFile(
+        handle: u32,
+        event: u32,
+        routine: usize,
+        context: usize,
+        io_status: *mut IoStatus,
+        offset: *const u64,
+        length: *const u64,
+        key: u32,
+        fail_immediately: u8,
+        exclusive: u8,
+    ) -> u32;
+    pub fn NtUnlockFile(
+        handle: u32,
+        io_status: *mut IoStatus,
+        offset: *const u64,
+        length: *const u64,
+        key: u32,
+    ) -> u32;
     pub fn NtQueryInformationFile(
         handle: u32,
         io_status: *mut IoStatus,
@@ -2501,6 +2522,34 @@ pub mod files {
         _io_status: *mut IoStatus,
     ) -> u32 {
         record(Call::Flush { handle });
+        checked(handle).err().unwrap_or(0)
+    }
+
+    /// NtLockFile: granted for a handle the stand-in knows.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "system" fn NtLockFile(
+        handle: u32,
+        _event: u32,
+        _routine: usize,
+        _context: usize,
+        _io_status: *mut IoStatus,
+        _offset: *const u64,
+        _length: *const u64,
+        _key: u32,
+        _fail_immediately: u8,
+        _exclusive: u8,
+    ) -> u32 {
+        checked(handle).err().unwrap_or(0)
+    }
+
+    /// NtUnlockFile: released for a handle the stand-in knows.
+    pub unsafe extern "system" fn NtUnlockFile(
+        handle: u32,
+        _io_status: *mut IoStatus,
+        _offset: *const u64,
+        _length: *const u64,
+        _key: u32,
+    ) -> u32 {
         checked(handle).err().unwrap_or(0)
     }
 

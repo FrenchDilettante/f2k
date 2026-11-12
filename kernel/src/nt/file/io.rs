@@ -8,6 +8,11 @@
 //! STATUS_ACCESS_VIOLATION, what moved before it counted. The disk's arm is one critical region (it
 //! holds the object across the volume's).
 //!
+//! A disk file's byte-range locks refuse the bytes another owner's lock holds before any moves
+//! (STATUS_FILE_LOCK_CONFLICT, the position left where it was): a read where another owner holds an
+//! exclusive lock, a write where another owner holds any lock or a shared lock is held (see
+//! [`crate::fs::file`]'s notes).
+//!
 //! A pipe's bytes move through the named-pipe file system ([`crate::fs::pipes`]), the object's
 //! lock held for the call as Windows 2000 holds a synchronous file object's while a pipe's read
 //! waits, outside any critical region: the call may wait as long as the other end decides, and a
@@ -16,7 +21,7 @@
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
 use crate::fs::fat32::write;
-use crate::fs::file::{rights, Context, FileObject, FileRecordId};
+use crate::fs::file::{rights, with_records, Context, FileObject, FileRecordId};
 use crate::fs::io;
 use crate::status::*;
 use crate::user::syscall::{read_user, write_user};
@@ -144,10 +149,15 @@ fn read_disk(
 ) -> Result<u32, NtStatus> {
     let at = transfer.offset;
     let object = &transfer.object;
+    let owner = super::lock::owner_of(object);
     io::serialized(object, |held| {
         let start = at.unwrap_or(held.position);
         if length == 0 {
             return Ok(0);
+        }
+        let range = (start, u64::from(length));
+        if !with_records(|records| records.may_access(record, owner, range, false)) {
+            return Err(STATUS_FILE_LOCK_CONFLICT);
         }
         let size = io::file_at(record).size;
         let wanted = crate::fs::file::available(start, size, length);
@@ -249,6 +259,7 @@ fn write_disk(
 ) -> Result<u32, NtStatus> {
     let at = transfer.offset;
     let object = &transfer.object;
+    let owner = super::lock::owner_of(object);
     io::serialized(object, |held| {
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let start = match at {
@@ -259,6 +270,10 @@ fn write_disk(
         };
         if length == 0 {
             return Ok(0);
+        }
+        let range = (start, u64::from(length));
+        if !with_records(|records| records.may_access(record, owner, range, true)) {
+            return Err(STATUS_FILE_LOCK_CONFLICT);
         }
         if start + length as u64 > u32::MAX as u64 {
             return Err(STATUS_DISK_FULL);

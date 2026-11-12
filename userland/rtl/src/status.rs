@@ -116,8 +116,11 @@ pub const STATUS_SECTION_NOT_IMAGE: u32 = 0xC000_0049;
 pub const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
 pub const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
 pub const STATUS_SECTION_PROTECTION: u32 = 0xC000_004E;
+pub const STATUS_FILE_LOCK_CONFLICT: u32 = 0xC000_0054;
+pub const STATUS_LOCK_NOT_GRANTED: u32 = 0xC000_0055;
 pub const STATUS_DELETE_PENDING: u32 = 0xC000_0056;
 pub const STATUS_INVALID_IMAGE_FORMAT: u32 = 0xC000_007B;
+pub const STATUS_RANGE_NOT_LOCKED: u32 = 0xC000_007E;
 pub const STATUS_DISK_FULL: u32 = 0xC000_007F;
 pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
 pub const STATUS_FREE_VM_NOT_AT_BASE: u32 = 0xC000_009F;
@@ -292,6 +295,9 @@ mod tests {
             (STATUS_ACCESS_DENIED, 5),       // write access to a read-only file
             (STATUS_DELETE_PENDING, 5),
             (STATUS_SHARING_VIOLATION, 32),
+            (STATUS_FILE_LOCK_CONFLICT, 33), // a read or write into another handle's lock
+            (STATUS_LOCK_NOT_GRANTED, 33),   // LockFile of a range a lock overlaps
+            (STATUS_RANGE_NOT_LOCKED, 158),  // UnlockFile of a range never locked
             (STATUS_OBJECT_NAME_COLLISION, 183), /* CreateDirectoryA, MoveFileA onto an existing
                                                   * name */
             (STATUS_DIRECTORY_NOT_EMPTY, 145),

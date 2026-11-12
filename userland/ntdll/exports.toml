@@ -371,6 +371,24 @@ ordinal = 126
 zw_ordinal = 771
 
 [[export]]
+name = "NtLockFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "ptr<u64> ByteOffset", "ptr<u64> Length", "u32 Key", "boolean FailImmediately", "boolean ExclusiveLock"]
+impl = { syscall = "crate::nt::file::lock_file" }
+ordinal = 150
+zw_ordinal = 795
+note = "a disk file's byte-range lock, owned by the file object in the calling process; a lock in place overlapping it STATUS_LOCK_NOT_GRANTED (without FailImmediately the wait is not served); a handle with neither read nor write access STATUS_ACCESS_DENIED; a pipe or the null device STATUS_INVALID_DEVICE_REQUEST"
+
+[[export]]
+name = "NtUnlockFile"
+group = "nt"
+args = ["handle FileHandle", "ptr IoStatusBlock", "ptr<u64> ByteOffset", "ptr<u64> Length", "u32 Key"]
+impl = { syscall = "crate::nt::file::unlock_file" }
+ordinal = 295
+zw_ordinal = 940
+note = "the caller's lock of exactly that range released; none such STATUS_RANGE_NOT_LOCKED"
+
+[[export]]
 name = "NtQueryInformationFile"
 group = "nt"
 args = ["handle FileHandle", "ptr IoStatusBlock", "ptr FileInformation", "u32 Length", "u32 FileInformationClass"]
@@ -1957,10 +1975,6 @@ name = "NtLoadKey"
 ordinal = 149
 
 [[export]]
-name = "NtLockFile"
-ordinal = 150
-
-[[export]]
 name = "NtLockVirtualMemory"
 ordinal = 151
 
@@ -2327,10 +2341,6 @@ ordinal = 293
 [[export]]
 name = "NtUnloadKey"
 ordinal = 294
-
-[[export]]
-name = "NtUnlockFile"
-ordinal = 295
 
 [[export]]
 name = "NtUnlockVirtualMemory"
@@ -3933,10 +3943,6 @@ name = "ZwLoadKey"
 ordinal = 794
 
 [[export]]
-name = "ZwLockFile"
-ordinal = 795
-
-[[export]]
 name = "ZwLockVirtualMemory"
 ordinal = 796
 
@@ -4303,10 +4309,6 @@ ordinal = 938
 [[export]]
 name = "ZwUnloadKey"
 ordinal = 939
-
-[[export]]
-name = "ZwUnlockFile"
-ordinal = 940
 
 [[export]]
 name = "ZwUnlockVirtualMemory"

@@ -2482,6 +2482,24 @@ impl = { native = "SetEndOfFile" }
 ordinal = 657
 
 [[export]]
+name = "LockFile"
+group = "files"
+args = ["handle hFile", "u32 dwFileOffsetLow", "u32 dwFileOffsetHigh", "u32 nNumberOfBytesToLockLow", "u32 nNumberOfBytesToLockHigh"]
+impl = { native = "LockFile" }
+ordinal = 501
+fails = "FALSE"
+note = "NtLockFile, exclusive, failing at once: an overlapping lock ERROR_LOCK_VIOLATION; the open's own I/O goes on in the range, another open's is refused; released by UnlockFile or the open's cleanup"
+
+[[export]]
+name = "UnlockFile"
+group = "files"
+args = ["handle hFile", "u32 dwFileOffsetLow", "u32 dwFileOffsetHigh", "u32 nNumberOfBytesToUnlockLow", "u32 nNumberOfBytesToUnlockHigh"]
+impl = { native = "UnlockFile" }
+ordinal = 737
+fails = "FALSE"
+note = "NtUnlockFile: the exact range the open locked; anything else ERROR_NOT_LOCKED"
+
+[[export]]
 name = "UnmapViewOfFile"
 group = "files"
 args = ["ptr lpBaseAddress"]
@@ -4163,10 +4181,6 @@ name = "LocalShrink"
 ordinal = 498
 
 [[export]]
-name = "LockFile"
-ordinal = 501
-
-[[export]]
 name = "LockFileEx"
 ordinal = 502
 
@@ -4709,10 +4723,6 @@ ordinal = 734
 [[export]]
 name = "UTUnRegister"
 ordinal = 735
-
-[[export]]
-name = "UnlockFile"
-ordinal = 737
 
 [[export]]
 name = "UnlockFileEx"
