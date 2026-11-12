@@ -32,6 +32,12 @@ fn local_time() -> u64 {
     system_time().wrapping_sub(shared::time(shared::TIME_ZONE_BIAS))
 }
 
+/// The local time as a SYSTEMTIME, GetLocalTime's answer (the date and time formats' for no date
+/// or time given).
+pub fn local_system_time() -> SystemTime {
+    civil(local_time())
+}
+
 /// GetSystemTimeAsFileTime: the system time.
 ///
 /// # Safety

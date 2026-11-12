@@ -11,8 +11,10 @@
 //! silently rather than replacing it: a lead byte whose continuation is missing is skipped and the
 //! byte that broke it decodes on its own, and a stray continuation byte is skipped. The
 //! wide-to-narrow direction maps a unit the page holds exactly; otherwise it best-fits (a Latin
-//! letter with a diacritic becomes its base letter), unless WC_NO_BEST_FIT_CHARS asks not to;
-//! otherwise it substitutes the default character and reports having done so.
+//! letter with a diacritic becomes its base letter; in the ANSI page, a combining accent becomes
+//! its spacing form, as Windows' best-fit table for 1252 has it: FoldStringA's MAP_COMPOSITE in
+//! the locale fixture's capture), unless WC_NO_BEST_FIT_CHARS asks not to; otherwise it
+//! substitutes the default character and reports having done so.
 
 /// The code pages, as their numbers.
 pub const CP_ACP: u32 = 0;
@@ -123,13 +125,32 @@ fn exact_byte(page: CodePage, unit: u16) -> Option<u8> {
 const LATIN_EXTENDED_A: &[u8; 128] =
     b"AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi  JjKk LlLlLl  LlNnNnNn   OoOoOo  RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
 
-/// The best-fit replacement of `unit`: a Latin letter with a diacritic becomes its base letter.
-fn best_fit(unit: u16) -> Option<u8> {
+/// The combining accents the ANSI page best-fits, and the spacing accents (or ASCII marks) they
+/// become.
+const ANSI_ACCENTS: [(u16, u8); 9] = [
+    (0x0300, b'`'),
+    (0x0301, 0xB4),
+    (0x0302, b'^'),
+    (0x0303, b'~'),
+    (0x0304, 0xAF),
+    (0x0308, 0xA8),
+    (0x030A, 0xB0),
+    (0x0327, 0xB8),
+    (0x0332, b'_'),
+];
+
+/// The best-fit replacement of `unit` in `page`: a Latin letter with a diacritic becomes its base
+/// letter, and in the ANSI page a combining accent its spacing form.
+fn best_fit(page: CodePage, unit: u16) -> Option<u8> {
     match unit {
         0x0100..=0x017F => {
             let base = LATIN_EXTENDED_A[unit as usize - 0x100];
             (base != b' ').then_some(base)
         }
+        0x0300..=0x036F if page == CodePage::Ansi => ANSI_ACCENTS
+            .iter()
+            .find(|&&(accent, _)| accent == unit)
+            .map(|&(_, byte)| byte),
         _ => None,
     }
 }
@@ -137,7 +158,7 @@ fn best_fit(unit: u16) -> Option<u8> {
 /// One unit to a single-byte page: exactly, best-fit (when `fit` allows it), or the default
 /// (`None`).
 pub fn encode_unit(page: CodePage, unit: u16, fit: bool) -> Option<u8> {
-    exact_byte(page, unit).or_else(|| best_fit(unit).filter(|_| fit))
+    exact_byte(page, unit).or_else(|| best_fit(page, unit).filter(|_| fit))
 }
 
 /// UTF-8 to UTF-16, Windows 2000's way (see the module notes), into `out`: the units it decodes.
@@ -346,5 +367,11 @@ mod tests {
             "no best fit"
         );
         assert_eq!(encode_unit(CodePage::Ansi, 0x00E9, false), Some(0xE9));
+        assert_eq!(encode_unit(CodePage::Ansi, 0x0301, true), Some(0xB4));
+        assert_eq!(
+            encode_unit(CodePage::Oem, 0x0301, true),
+            None,
+            "437 has no acute"
+        );
     }
 }

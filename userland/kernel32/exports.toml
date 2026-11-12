@@ -1298,7 +1298,7 @@ note = "a 64-bit product, rounded to the nearest with halves away from zero; -1 
 name = "EnumSystemCodePagesA"
 group = "locale"
 args = ["ptr lpCodePageEnumProc", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumSystemCodePagesA" }
 ordinal = 133
 fails = "FALSE"
 
@@ -1306,7 +1306,7 @@ fails = "FALSE"
 name = "FoldStringA"
 group = "locale"
 args = ["u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FoldStringA" }
 ordinal = 193
 fails = "0"
 
@@ -1314,7 +1314,7 @@ fails = "0"
 name = "GetDateFormatA"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags", "ptr lpDate", "ptr lpFormat", "ptr lpDateStr", "i32 cchDate"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDateFormatA" }
 ordinal = 274
 fails = "0"
 
@@ -1322,7 +1322,7 @@ fails = "0"
 name = "GetTimeFormatA"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags", "ptr lpTime", "ptr lpFormat", "ptr lpTimeStr", "i32 cchTime"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetTimeFormatA" }
 ordinal = 396
 fails = "0"
 
@@ -1332,15 +1332,24 @@ group = "locale"
 args = [
     "u32 Locale", "u32 dwFlags", "ptr lpValue", "ptr lpFormat", "ptr lpNumberStr", "i32 cchNumber",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetNumberFormatA" }
 ordinal = 326
 fails = "0"
+
+[[export]]
+name = "IsValidLanguageGroup"
+group = "locale"
+args = ["u32 LanguageGroup", "u32 dwFlags"]
+impl = { native = "IsValidLanguageGroup" }
+ordinal = 479
+fails = "FALSE"
+note = "Western Europe and United States (1) installed; 1 to 17 supported; no last error set"
 
 [[export]]
 name = "EnumSystemCodePagesW"
 group = "locale"
 args = ["ptr lpCodePageEnumProc", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumSystemCodePagesW" }
 ordinal = 134
 fails = "FALSE"
 
@@ -1348,7 +1357,7 @@ fails = "FALSE"
 name = "FoldStringW"
 group = "locale"
 args = ["u32 dwMapFlags", "ptr lpSrcStr", "i32 cchSrc", "ptr lpDestStr", "i32 cchDest"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FoldStringW" }
 ordinal = 194
 fails = "0"
 
@@ -1356,7 +1365,7 @@ fails = "0"
 name = "GetDateFormatW"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags", "ptr lpDate", "ptr lpFormat", "ptr lpDateStr", "i32 cchDate"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDateFormatW" }
 ordinal = 275
 fails = "0"
 
@@ -1364,7 +1373,7 @@ fails = "0"
 name = "GetTimeFormatW"
 group = "locale"
 args = ["u32 Locale", "u32 dwFlags", "ptr lpTime", "ptr lpFormat", "ptr lpTimeStr", "i32 cchTime"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetTimeFormatW" }
 ordinal = 397
 fails = "0"
 
@@ -1374,7 +1383,7 @@ group = "locale"
 args = [
     "u32 Locale", "u32 dwFlags", "ptr lpValue", "ptr lpFormat", "ptr lpNumberStr", "i32 cchNumber",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetNumberFormatW" }
 ordinal = 327
 fails = "0"
 
@@ -4061,10 +4070,6 @@ ordinal = 476
 [[export]]
 name = "IsSystemResumeAutomatic"
 ordinal = 477
-
-[[export]]
-name = "IsValidLanguageGroup"
-ordinal = 479
 
 [[export]]
 name = "LoadLibraryExA"

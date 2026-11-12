@@ -1,8 +1,10 @@
 //! The locale group, kernel32's own NLS code as on Windows 2000 (no kernel transition): the code
-//! pages and their conversions (MultiByteToWideChar and WideCharToMultiByte over `rtl::codepage`)
-//! and lead bytes (IsDBCSLeadByte), case mapping and character types over code page 1252
-//! (`rtl::cp1252`), comparison ([`crate::collate`]), the one locale's facts
-//! ([`crate::localeinfo`]), and MulDiv, which the group's spec section keeps beside them.
+//! pages and their conversions (MultiByteToWideChar and WideCharToMultiByte over `rtl::codepage`),
+//! lead bytes (IsDBCSLeadByte) and the code page list (EnumSystemCodePages), the language groups
+//! (IsValidLanguageGroup), case mapping and character types over code page 1252 (`rtl::cp1252`),
+//! comparison ([`crate::collate`]), the one locale's facts ([`crate::localeinfo`]), and MulDiv,
+//! which the group's spec section keeps beside them. The date, time and number formats are
+//! [`crate::nlsformat`]'s, FoldString [`crate::fold`]'s.
 //!
 //! The caller's strings are read and written where they are: a pointer the caller cannot read or
 //! write faults in the caller's thread, as kernel32's own code does on Windows 2000.
@@ -137,7 +139,10 @@ fn convert_source<'a, U: Copy + Default + PartialEq>(
 
 /// A conversion's destination: ERROR_INVALID_PARAMETER for a negative size, or a null buffer with
 /// a size.
-fn check_destination<U: Copy>(dst: &OutBuf<'_, U>, capacity: i32) -> Result<(), Failure> {
+pub(crate) fn check_destination<U: Copy>(
+    dst: &OutBuf<'_, U>,
+    capacity: i32,
+) -> Result<(), Failure> {
     if capacity < 0 || (dst.is_null() && capacity != 0) {
         return refused(ERROR_INVALID_PARAMETER);
     }
@@ -146,24 +151,24 @@ fn check_destination<U: Copy>(dst: &OutBuf<'_, U>, capacity: i32) -> Result<(), 
 
 /// The room a caller's size gives a buffer: none for a negative one (which the calls refuse
 /// before they write).
-fn room(size: i32) -> usize {
+pub(crate) fn room(size: i32) -> usize {
     size.max(0) as usize
 }
 
 /// Where a conversion's output goes: the units produced are counted, and written while the
 /// destination (none for a size query) has room.
-struct Produced<'a, U> {
+pub(crate) struct Produced<'a, U> {
     dst: OutBuf<'a, U>,
     produced: usize,
 }
 
 impl<'a, U: Copy> Produced<'a, U> {
-    fn new(dst: OutBuf<'a, U>) -> Self {
+    pub(crate) fn new(dst: OutBuf<'a, U>) -> Self {
         Produced { dst, produced: 0 }
     }
 
     /// One more unit.
-    fn put(&mut self, unit: U) {
+    pub(crate) fn put(&mut self, unit: U) {
         if self.produced < self.dst.len() {
             self.dst.set(self.produced, unit);
         }
@@ -172,7 +177,7 @@ impl<'a, U: Copy> Produced<'a, U> {
 
     /// The conversion's answer: the count, or ERROR_INSUFFICIENT_BUFFER when the destination was
     /// too short (a size query never is).
-    fn finish(&self) -> Result<usize, Failure> {
+    pub(crate) fn finish(&self) -> Result<usize, Failure> {
         if !self.dst.is_empty() && self.produced > self.dst.len() {
             refused(ERROR_INSUFFICIENT_BUFFER)
         } else {
@@ -916,4 +921,213 @@ pub unsafe extern "system" fn enum_system_locales_w(
     // SAFETY: the caller's callback, given the locale's name.
     unsafe { callback(LOCALE_NAME_W.as_ptr()) };
     1
+}
+
+/// EnumSystemCodePages' flags, and IsValidLanguageGroup's.
+const CP_INSTALLED: u32 = 1;
+const CP_SUPPORTED: u32 = 2;
+const LGRPID_INSTALLED: u32 = 1;
+const LGRPID_SUPPORTED: u32 = 2;
+
+/// The code pages Windows 2000 supports: its NLS registry's list (Control\Nls\CodePage), with
+/// UTF-7 and UTF-8, which EnumSystemCodePages adds to it. Reconstructed from the code page
+/// identifiers MSDN documents for Windows 2000; the locale fixture's capture pins its length (133)
+/// and that 437, 850, 1252 and 65001 are among it.
+const SUPPORTED_CODE_PAGES: [u16; 133] = [
+    37, 437, 500, 708, 720, 737, 775, 850, 852, 855, 857, 858, 860, 861, 862, 863, 864, 865, 866,
+    869, 870, 874, 875, 932, 936, 949, 950, 1026, 1047, 1140, 1141, 1142, 1143, 1144, 1145, 1146,
+    1147, 1148, 1149, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 1361, 10000, 10001,
+    10002, 10003, 10004, 10005, 10006, 10007, 10008, 10010, 10017, 10021, 10029, 10079, 10081,
+    10082, 20000, 20001, 20002, 20003, 20004, 20005, 20105, 20106, 20107, 20108, 20127, 20261,
+    20269, 20273, 20277, 20278, 20280, 20284, 20285, 20290, 20297, 20420, 20423, 20424, 20833,
+    20838, 20866, 20871, 20880, 20905, 20924, 20932, 20936, 20949, 21025, 21027, 21866, 28591,
+    28592, 28593, 28594, 28595, 28596, 28597, 28598, 28599, 28605, 50220, 50221, 50222, 50225,
+    50227, 50229, 51932, 51949, 52936, 57002, 57003, 57004, 57005, 57006, 57007, 57008, 57009,
+    57010, 57011, 65000, 65001,
+];
+
+/// The code pages a Windows 2000 machine with the Western Europe and United States language group
+/// alone has installed (the capture machine's: its count is masked, as it follows the groups
+/// installed): the group's OEM, ANSI, Mac, EBCDIC, ISO and IA5 pages, with UTF-7 and UTF-8. Most of
+/// them have no table in F2K, which IsValidCodePage reports as not installed ([`rtl::codepage`]):
+/// the capture's own installed list has a page IsValidCodePage refuses too ("IsValidCodePage of
+/// each no" is the fixture's check that every listed page is valid, not that none is).
+const INSTALLED_CODE_PAGES: [u16; 43] = [
+    37, 437, 500, 850, 858, 860, 861, 863, 865, 1047, 1140, 1141, 1142, 1143, 1144, 1145, 1146,
+    1147, 1148, 1149, 1252, 10000, 10079, 20105, 20106, 20107, 20108, 20127, 20261, 20269, 20273,
+    20277, 20278, 20280, 20284, 20285, 20297, 20871, 20924, 28591, 28605, 65000, 65001,
+];
+
+/// The code pages EnumSystemCodePages lists for its flags: CP_INSTALLED's, or CP_SUPPORTED's (no
+/// flag lists them too, as the capture's flags 0 does); ERROR_INVALID_FLAGS for anything else.
+fn code_pages(flags: u32) -> Result<&'static [u16], Failure> {
+    match flags {
+        CP_INSTALLED => Ok(&INSTALLED_CODE_PAGES),
+        0 | CP_SUPPORTED => Ok(&SUPPORTED_CODE_PAGES),
+        _ => refused(ERROR_INVALID_FLAGS),
+    }
+}
+
+/// A code page's number in decimal, NUL-terminated, into `out`: its digits' count.
+fn code_page_name(page: u16, out: &mut [u8; 6]) -> usize {
+    let mut digits = [0u8; 5];
+    let mut count = 0;
+    let mut value = page;
+    loop {
+        digits[count] = b'0' + (value % 10) as u8;
+        count += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    for (at, &digit) in digits[..count].iter().rev().enumerate() {
+        out[at] = digit;
+    }
+    out[count] = 0;
+    count
+}
+
+/// EnumSystemCodePages' walk: `call` given each listed page's name, until it answers FALSE — the
+/// first call's answer unheeded, as the capture's callback answering FALSE is called twice.
+/// ERROR_INVALID_PARAMETER for no callback, then ERROR_INVALID_FLAGS for flags it does not take.
+fn enum_code_pages(
+    has_callback: bool,
+    flags: u32,
+    mut call: impl FnMut(&[u8; 6]) -> bool,
+) -> Result<(), Failure> {
+    if !has_callback {
+        return refused(ERROR_INVALID_PARAMETER);
+    }
+    for (index, &page) in code_pages(flags)?.iter().enumerate() {
+        let mut name = [0u8; 6];
+        code_page_name(page, &mut name);
+        if !call(&name) && index > 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// EnumSystemCodePagesA: the code pages the flags name, each one's decimal number handed to the
+/// callback (see `enum_code_pages`); TRUE, or FALSE with the last error set.
+///
+/// # Safety
+///
+/// The callback, when given, is a CODEPAGE_ENUMPROCA.
+#[unsafe(export_name = "f2k_export_EnumSystemCodePagesA")]
+pub unsafe extern "system" fn enum_system_code_pages_a(
+    callback: Option<unsafe extern "system" fn(*const u8) -> u32>,
+    flags: u32,
+) -> u32 {
+    bool_answer(enum_code_pages(callback.is_some(), flags, |name| {
+        let callback = callback.expect("checked before the walk");
+        // SAFETY: the caller's callback (the contract), given a NUL-terminated name of its own.
+        unsafe { callback(name.as_ptr()) != 0 }
+    }))
+}
+
+/// EnumSystemCodePagesW: EnumSystemCodePagesA's walk, each name in UTF-16.
+///
+/// # Safety
+///
+/// The callback, when given, is a CODEPAGE_ENUMPROCW.
+#[unsafe(export_name = "f2k_export_EnumSystemCodePagesW")]
+pub unsafe extern "system" fn enum_system_code_pages_w(
+    callback: Option<unsafe extern "system" fn(*const u16) -> u32>,
+    flags: u32,
+) -> u32 {
+    bool_answer(enum_code_pages(callback.is_some(), flags, |name| {
+        let callback = callback.expect("checked before the walk");
+        let wide = name.map(u16::from);
+        // SAFETY: the caller's callback (the contract), given a NUL-terminated name of its own.
+        unsafe { callback(wide.as_ptr()) != 0 }
+    }))
+}
+
+/// IsValidLanguageGroup: whether a language group is installed (LGRPID_INSTALLED: Western Europe
+/// and United States, group 1, alone, as on the capture machine) or supported (LGRPID_SUPPORTED, or
+/// no flag: Windows 2000's seventeen, 1 to 17). Other flags answer FALSE; the last error is never
+/// set (the capture).
+#[unsafe(export_name = "f2k_export_IsValidLanguageGroup")]
+pub extern "system" fn is_valid_language_group(group: u32, flags: u32) -> u32 {
+    let valid = match flags {
+        LGRPID_INSTALLED => group == 1,
+        0 | LGRPID_SUPPORTED => (1..=17).contains(&group),
+        _ => false,
+    };
+    u32::from(valid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The capture's facts: 133 supported pages, the installed among them, four pages in both, and
+    /// a page listed as installed that IsValidCodePage refuses.
+    #[test]
+    fn the_code_page_lists() {
+        assert!(SUPPORTED_CODE_PAGES
+            .windows(2)
+            .all(|pair| pair[0] < pair[1]));
+        assert!(INSTALLED_CODE_PAGES
+            .iter()
+            .all(|page| SUPPORTED_CODE_PAGES.binary_search(page).is_ok()));
+        for page in [437, 850, 1252, 65001] {
+            assert!(INSTALLED_CODE_PAGES.contains(&page) && codepage::is_valid(u32::from(page)));
+        }
+        assert!(INSTALLED_CODE_PAGES
+            .iter()
+            .any(|&page| !codepage::is_valid(u32::from(page))));
+        let mut name = [0u8; 6];
+        assert_eq!(code_page_name(65001, &mut name), 5);
+        assert_eq!(&name, b"65001\0");
+    }
+
+    /// The walk: every page for CP_SUPPORTED and for no flag; a callback answering FALSE called
+    /// twice; the refusals.
+    #[test]
+    fn the_walk() {
+        let mut calls = 0;
+        assert_eq!(
+            enum_code_pages(true, 0, |_| {
+                calls += 1;
+                true
+            }),
+            Ok(())
+        );
+        assert_eq!(calls, 133);
+        calls = 0;
+        assert_eq!(
+            enum_code_pages(true, CP_INSTALLED, |_| {
+                calls += 1;
+                false
+            }),
+            Ok(())
+        );
+        assert_eq!(calls, 2);
+        assert_eq!(
+            enum_code_pages(true, 3, |_| true),
+            Err(Failure::Error(ERROR_INVALID_FLAGS))
+        );
+        assert_eq!(
+            enum_code_pages(false, CP_INSTALLED, |_| true),
+            Err(Failure::Error(ERROR_INVALID_PARAMETER))
+        );
+        assert_eq!(
+            (
+                is_valid_language_group(1, 0),
+                is_valid_language_group(17, 2)
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            (
+                is_valid_language_group(7, 1),
+                is_valid_language_group(1, 3),
+                is_valid_language_group(18, 2)
+            ),
+            (0, 0, 0)
+        );
+    }
 }

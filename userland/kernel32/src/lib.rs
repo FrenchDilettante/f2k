@@ -25,8 +25,9 @@
 //! processes ([`create`]: CreateProcess), the processes' calls ([`process`]: their end,
 //! OpenProcess, their exit codes and memory), a file's binary type ([`binary_type`]), exceptions
 //! ([`except`]: RaiseException, the pointer probes' unwind), the locale group ([`locale`] over
-//! `rtl::codepage`, with [`collate`] and [`localeinfo`]), the global atoms ([`atom`], over ntdll's
-//! atom services), the lstr string functions ([`lstr`],
+//! `rtl::codepage`, with [`collate`], [`localeinfo`], the date, time and number formats
+//! ([`nlsformat`]) and FoldString ([`fold`])), the global atoms ([`atom`], over ntdll's atom
+//! services), the lstr string functions ([`lstr`],
 //! their work under the pointer probes' exception handler), the clocks ([`time`], over the shared
 //! data page, [`shared`]), the system messages ([`message`], over ntdll's message calls and
 //! kernel32's own message table), a module's resources ([`resource`], over ntdll's resource
@@ -56,12 +57,14 @@ pub mod error;
 pub mod except;
 pub mod filemap;
 pub mod files;
+pub mod fold;
 pub mod heap;
 pub mod locale;
 pub mod localeinfo;
 pub mod lstr;
 pub mod message;
 pub mod module;
+pub mod nlsformat;
 pub mod nt;
 pub mod ntcall;
 pub mod pipes;

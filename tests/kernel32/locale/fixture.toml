@@ -5,8 +5,7 @@
 # groups beyond Western Europe are asked only whether they are supported, not installed.
 description = "locale - kernel32's locale formatting and queries: GetDateFormatW/A and GetTimeFormatW/A with the DATE_ and TIME_ flags, picture strings, the buffer-size queries and their errors; GetNumberFormatW/A with the locales' own formats and NUMBERFMT's fields, negatives, rounding and strings that are not numbers; FoldStringW/A's MAP_ flags; EnumSystemCodePagesW/A under CP_INSTALLED and CP_SUPPORTED; and IsValidLanguageGroup."
 kind = "sectioned"
-
-# Not gated: kernel32's locale formatting is not implemented yet. Every section is on the work list.
+gate = true
 
 [masks]
 # CP_INSTALLED's count follows the language groups installed on the machine: both counts print as
