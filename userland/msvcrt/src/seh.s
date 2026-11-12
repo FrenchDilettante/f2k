@@ -278,3 +278,36 @@ _f2k_export__seh_longjmp_unwind:
     call _f2k_export__local_unwind2
     add esp, 8
     ret
+
+# _EH_prolog: the prologue of a function with C++ unwind state (objects to destroy, or a try
+# block), which Visual C++ compiles with /O1 or /Os into `mov eax, <handler>; call _EH_prolog`
+# in place of the frame set-up it otherwise writes inline. igorsk's "Reversing Microsoft Visual
+# C++ Part I: Exception Handling" (OpenRCE, 2006) describes the frame and the call:
+#
+#   [ebp-0x10]  the function's ESP, which a function with a try block stores itself
+#   [ebp-0x0c]  the registration on fs:[0]: the next registration,
+#   [ebp-0x08]    the handler (a thunk: `mov eax, <FuncInfo>; jmp __CxxFrameHandler`), and
+#   [ebp-0x04]    the unwind state (the try level), -1 before the first object is constructed
+#   [ebp]       the function's saved EBP
+#   [ebp+0x04]  the function's return address, its arguments above it
+#
+# It is not a C function. On entry EAX holds the handler and [esp] the return address into the
+# function; ECX (`this`, a __thiscall member's) and EDX are the function's and pass through, as do
+# the flags. It returns with that frame built: EBP its base, ESP at the registration (EBP-0x0c),
+# fs:[0] the registration, as the inline `push ebp; mov ebp, esp; push -1; push <handler>; push
+# fs:[0]; mov fs:[0], esp` leaves them. The function's epilogue unlinks the registration (`mov ecx,
+# [ebp-0x0c]; mov fs:[0], ecx`) and returns through the saved EBP (`mov esp, ebp; pop ebp; ret`,
+# or `leave; ret`). The saved EBP takes the slot of the call's own return address, which comes
+# back as the routine's last push.
+.p2align 4
+.globl _f2k_export__EH_prolog
+_f2k_export__EH_prolog:
+    push -1
+    push eax
+    push dword ptr fs:[0]
+    mov dword ptr fs:[0], esp
+    mov eax, dword ptr [esp+12]
+    mov dword ptr [esp+12], ebp
+    lea ebp, [esp+12]
+    push eax
+    ret
