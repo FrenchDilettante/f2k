@@ -498,6 +498,65 @@ pub fn init_framebuffer_tables() {
     });
 }
 
+/// Make the MMIO region's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
+/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
+/// inherits, so a device range mapped in them ([`map_mmio_page`]) is mapped in every address space.
+/// They are never released.
+#[cfg(target_arch = "x86")]
+pub fn init_mmio_tables() {
+    assert!(
+        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+        "the MMIO region's tables made after the first process directory"
+    );
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        for window in layout::MMIO.first_entry()..layout::MMIO.end_entry() {
+            install_kernel_table(window, new_table_in(frames, scratch));
+        }
+    });
+}
+
+/// Make the modules region's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
+/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
+/// inherits, so a driver image mapped in them ([`crate::dev::loader`]) is mapped in every address
+/// space. They are never released.
+#[cfg(target_arch = "x86")]
+pub fn init_module_tables() {
+    assert!(
+        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
+        "the modules region's tables made after the first process directory"
+    );
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        for window in layout::MODULES.first_entry()..layout::MODULES.end_entry() {
+            install_kernel_table(window, new_table_in(frames, scratch));
+        }
+    });
+}
+
+/// Try to allocate one frame, physical address, through the database; none when the frame database
+/// has none left (a status for the caller, not a panic). The bridge to [`try_allocate_frame`].
+#[cfg(target_arch = "x86")]
+pub fn try_allocate_frame_phys() -> Option<u32> {
+    with_database(|database| try_allocate_frame(database.frames()))
+}
+
+/// Release the frame at `frame_phys` back to the frame database as free (its mapping is the
+/// caller's to remove first). The bridge to [`FrameDb::release`].
+#[cfg(target_arch = "x86")]
+pub fn release_frame_phys(frame_phys: u32) {
+    assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
+    with_database(|database| {
+        database
+            .frames()
+            .release(frame_phys / PAGE_SIZE, super::frame::FrameState::Free)
+    });
+}
+
 /// Point the current directory's entry `window` at the page table `table_phys`: present, writable,
 /// supervisor, not global. Nothing maps through the entry before it is written.
 ///
@@ -1157,6 +1216,77 @@ pub fn unmap_pool_page(vaddr: u32) -> u32 {
         "a pool page outside the nonpaged pool"
     );
     unmap_kernel_page(vaddr)
+}
+
+/// Map the physical page at `phys` (a device register range's page) at the MMIO region's page
+/// `vaddr` in the shared tables, so into every address space at once (supervisor-only); uncached
+/// (PCD) unless `cache_enable`. The frame is device memory already owned by the caller — no frame
+/// is allocated or released here, only the entry. The bridge to [`map_mmio_page_in`].
+///
+/// # Panics
+///
+/// `vaddr` lies outside the MMIO region, is mapped already, or `phys` is not page-aligned.
+#[cfg(target_arch = "x86")]
+pub fn map_mmio_page(vaddr: u32, phys: u32, cache_enable: bool) {
+    with_database(|database| {
+        let Parts {
+            frames, scratch, ..
+        } = database.parts();
+        map_mmio_page_in(frames, scratch, vaddr, phys, cache_enable);
+    });
+}
+
+/// [`map_mmio_page`]'s work, on the parts the caller holds (a new table's frame would come from
+/// them; the region's tables are made at boot, so none is needed in practice).
+#[cfg(target_arch = "x86")]
+pub fn map_mmio_page_in(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    vaddr: u32,
+    phys: u32,
+    cache_enable: bool,
+) {
+    assert!(
+        layout::MMIO.holds(vaddr),
+        "an MMIO page outside the MMIO region"
+    );
+    let entry = if cache_enable {
+        Pte::kernel_rw(phys)
+    } else {
+        Pte::kernel_rw_uncached(phys)
+    };
+    map_kernel_page_pte_in(frames, scratch, vaddr, entry);
+}
+
+/// Unmap the MMIO region's page `vaddr` from the shared tables, so from every address space; the
+/// physical page it named (device memory, the caller's to keep). The MmUnmapIoSpace entry will
+/// call it; nothing does yet.
+///
+/// # Panics
+///
+/// `vaddr` lies outside the MMIO region, or is not mapped.
+#[cfg(target_arch = "x86")]
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn unmap_mmio_page(vaddr: u32) -> u32 {
+    assert!(
+        layout::MMIO.holds(vaddr),
+        "an MMIO page outside the MMIO region"
+    );
+    unmap_kernel_page(vaddr)
+}
+
+/// The physical address a kernel-half virtual address maps to, through the current directory's
+/// page tables (the kernel half's tables are shared, so this is every directory's answer): the
+/// bus address of the byte on this platform, where no IOMMU sits between the devices and memory
+/// (identity). None when the address is not mapped present.
+#[cfg(target_arch = "x86")]
+pub fn translate_kernel_address(vaddr: u32) -> Option<u32> {
+    assert!(vaddr >= KERNEL_BASE, "a user address has no kernel mapping");
+    let pte = self_map::pte(vaddr)?;
+    if !pte.present() {
+        return None;
+    }
+    Some(pte.frame() | (vaddr & (PAGE_SIZE - 1)))
 }
 
 /// Whether the current directory holds every table of the kernel stack region.

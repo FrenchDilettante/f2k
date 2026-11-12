@@ -114,6 +114,10 @@ pub enum Reject {
     NoEntryPoint,
     /// A DLL where a program was asked for.
     NotAProgram,
+    /// A program where a kernel module (a DLL) was asked for.
+    NotADll,
+    /// A kernel module whose preferred base or extent does not lie in the kernel half.
+    ImageOutsideKernelSpace,
     /// The entry point is not inside an executable section.
     EntryNotExecutable,
     /// Sections are not contiguous and ordered.
@@ -290,6 +294,26 @@ pub fn same_module(a: &str, b: &str) -> bool {
     }
 }
 
+/// The export directory of an image that is already mapped in memory — `mapped` begins at the
+/// image's base, so RVAs are offsets into it (the kernel image at its base is the case: the
+/// `.sys` loader resolves ntoskrnl.exe imports through it). None when the bytes are not a PE32
+/// i386 image or the directory or one of its arrays does not lie inside `mapped`.
+pub fn exports_of_mapped(mapped: &[u8]) -> Option<Exports> {
+    let dos: ImageDosHeader = read(mapped, 0)?;
+    if dos.e_magic != DOS_MAGIC {
+        return None;
+    }
+    let nt: ImageNtHeaders32 = read(mapped, dos.e_lfanew as usize)?;
+    if nt.signature != NT_SIGNATURE
+        || nt.file_header.machine != MACHINE_I386
+        || nt.optional_header.magic != PE32_MAGIC
+    {
+        return None;
+    }
+    let directory = data_directory(&nt, DIRECTORY_EXPORT)?;
+    Exports::read(mapped, directory.virtual_address, directory.size)
+}
+
 /// An image's export directory, as read from the mapped image: where its three arrays live and how
 /// they are numbered. Lookups read the arrays from the same mapped bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,9 +471,10 @@ fn round_up(v: u32, align: u32) -> u64 {
 
 /// The identity contracts of the image whose NT headers are `nt`: a program must be a Windows
 /// GUI or console image with an entry point; a DLL may be either subsystem and may have no
-/// entry point (nothing to call at attach). Either has sections, and a preferred base at which
-/// it fits below user space's end.
-fn check_identity(nt: &ImageNtHeaders32) -> Result<(), Reject> {
+/// entry point (nothing to call at attach). A kernel module must be a DLL with an entry point
+/// (DriverEntry). Either has sections, and a preferred base at which it fits in its space:
+/// below user space's end for a user image, in the kernel half for a module.
+fn check_identity(nt: &ImageNtHeaders32, kernel_module: bool) -> Result<(), Reject> {
     let optional = &nt.optional_header;
     let dll = nt.file_header.characteristics & FILE_DLL != 0;
     if nt.file_header.number_of_sections == 0 {
@@ -459,19 +484,30 @@ fn check_identity(nt: &ImageNtHeaders32) -> Result<(), Reject> {
     if base == 0 || !base.is_multiple_of(IMAGE_BASE_ALIGNMENT) {
         return Err(Reject::ImageBaseUnaligned);
     }
-    if !dll && !matches!(optional.subsystem, SUBSYSTEM_GUI | SUBSYSTEM_CUI) {
-        return Err(Reject::WrongSubsystem);
-    }
-    if !dll && optional.address_of_entry_point == 0 {
-        return Err(Reject::NoEntryPoint);
+    if kernel_module {
+        if !dll {
+            return Err(Reject::NotADll);
+        }
+        if optional.address_of_entry_point == 0 {
+            return Err(Reject::NoEntryPoint);
+        }
+    } else {
+        if !dll && !matches!(optional.subsystem, SUBSYSTEM_GUI | SUBSYSTEM_CUI) {
+            return Err(Reject::WrongSubsystem);
+        }
+        if !dll && optional.address_of_entry_point == 0 {
+            return Err(Reject::NoEntryPoint);
+        }
     }
     if optional.size_of_image > MAX_IMAGE_SIZE {
         return Err(Reject::ImageTooLarge);
     }
-    if base
-        .checked_add(optional.size_of_image)
-        .is_none_or(|end| end > USER_SPACE_END)
-    {
+    let end = u64::from(base) + u64::from(optional.size_of_image);
+    if kernel_module {
+        if base < crate::mem::paging::KERNEL_BASE || end > 1 << 32 {
+            return Err(Reject::ImageOutsideKernelSpace);
+        }
+    } else if end > u64::from(USER_SPACE_END) {
         return Err(Reject::ImageOutsideUserSpace);
     }
     Ok(())
@@ -509,10 +545,23 @@ impl<'a> Image<'a> {
         Image::parse_headers(file, file.len())
     }
 
+    /// Parse and validate a PE32 kernel module (a `.sys` image): a DLL-flagged image with an
+    /// entry point (DriverEntry), whose preferred base is a 64 KiB multiple in the kernel half
+    /// and whose extent ends at or below 4 GiB. The user-space rules of [`Image::parse`] do not
+    /// apply — a module maps in the kernel half, at a base the kernel-side loader picks.
+    pub fn parse_kernel_module(file: &'a [u8]) -> Result<Image<'a>, Reject> {
+        Image::parse_inner(file, file.len(), true)
+    }
+
     /// Parse and validate a PE32 image from its first bytes, `headers` (the header region at
     /// least: the DOS and NT headers and the section table), the whole file being `file_len`
     /// bytes long: its sections' raw data must lie inside the file, not inside `headers`.
     pub fn parse_headers(headers: &'a [u8], file_len: usize) -> Result<Image<'a>, Reject> {
+        Image::parse_inner(headers, file_len, false)
+    }
+
+    /// The parse both entry points share; `kernel_module` selects the identity rules (below).
+    fn parse_inner(headers: &'a [u8], file_len: usize, kernel_module: bool) -> Result<Image<'a>, Reject> {
         let dos: ImageDosHeader = read_struct(headers, 0)?;
         if dos.e_magic != DOS_MAGIC {
             return Err(Reject::NotDos);
@@ -544,7 +593,7 @@ impl<'a> Image<'a> {
         let optional_at = at + offset_of!(ImageNtHeaders32, optional_header);
         fits(headers, optional_at, size_optional)?;
 
-        check_identity(&nt)?;
+        check_identity(&nt, kernel_module)?;
         check_alignment(optional)?;
 
         // Section table: it lives inside the header region, which lives inside the image.

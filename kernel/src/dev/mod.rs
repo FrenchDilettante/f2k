@@ -24,6 +24,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 pub mod irp;
+pub mod loader;
 pub mod routing;
 
 use core::cell::UnsafeCell;

@@ -108,6 +108,11 @@ pub fn memory(magic: u32, multiboot_info: u32) {
     // The framebuffer region's tables, shared alike: the display's linear framebuffer is mapped
     // into them when the graphics mode is set.
     crate::mem::paging::init_framebuffer_tables();
+    // The MMIO region's tables, shared alike: device register ranges map into them (MmMapIoSpace).
+    crate::mem::paging::init_mmio_tables();
+    // The modules region's tables, shared alike: loaded driver images map into them (the .sys
+    // loader).
+    crate::mem::paging::init_module_tables();
 }
 
 /// The executive's tables: the console and the registry.

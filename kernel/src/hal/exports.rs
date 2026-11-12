@@ -1,7 +1,7 @@
 //! The hal.dll-named entry points over the internal [`Hal`] interface: the export surface a
 //! Windows 2000 driver imports from hal.dll, catalogued in `kernel/hal_exports.toml`, where
 //! each record is marked implemented (`native`) or a stub whose reason names the slice that
-//! lands it (the L6 DMA/MMIO slice, the APIC/MP slice).
+//! lands it (the APIC/MP slice).
 //!
 //! F2K compiles the layer into the kernel image, so on target each record's body is the
 //! `f2k_export_<name>` symbol defined in [`symbols`], stdcall, kept in the link by the generated
@@ -17,8 +17,11 @@
 //!   [`crate::dev::routing`]) and the enable/disable over the [`Hal`] trait.
 //! - **Clock/RTC:** [`query_real_time_clock`], [`set_time_increment`].
 //! - **Bus data:** HalGetBusData/HalSetBusData over the PCI config seam ([`crate::hw::pci`]).
-//! - The stubs: common buffers, `MmMapIoSpace`, `HalRequestIpi`, `HalStartNextProcessor` — each
-//!   fails the way the export fails and names its slice in a comment.
+//! - **DMA and MMIO:** HalAllocateCommonBuffer/HalFreeCommonBuffer and `MmMapIoSpace` over
+//!   [`crate::mem::dma`] (common buffers over the pool with page-table translation, MMIO mapping
+//!   into the reserved region).
+//! - The stubs: `HalRequestIpi`, `HalStartNextProcessor` — each fails the way the export fails and
+//!   names its slice in a comment.
 
 // The symbol wrappers call these on target; the host tests call them directly.
 #![cfg_attr(not(test), allow(dead_code))]
@@ -29,6 +32,7 @@ use super::{Hal, Io, INPUT_FREQUENCY_HZ};
 use crate::dev::routing;
 use crate::hw::pci::{self, PirqRoutes};
 use crate::interrupt::irql::Irql;
+use crate::mem::dma;
 
 // --- The public contract's types and constants -------------------------------------------------
 
@@ -291,32 +295,47 @@ pub fn set_real_time_clock(_time_fields: &TimeFields) -> bool {
     false
 }
 
-// --- DMA, MMIO mapping, multi-processor: the stubs
-// ---------------------------------------------------
+// --- DMA and MMIO mapping
+// ---------------------------------------------------------------------
 
-/// HalAllocateCommonBuffer's stub: null, with a zero logical address. The L6 DMA/MMIO slice
-/// (mem/dma.rs) lands it: a common buffer over the pool, translated to its bus address.
+/// HalAllocateCommonBuffer's core, over the DMA seams ([`crate::mem::dma`]): a common buffer of
+/// `length` bytes, with its bus address written to `logical_address`. Returns the buffer's
+/// virtual pointer, or null (with a zero logical address) when none could be made.
 pub fn allocate_common_buffer(
-    _adapter: *mut c_void,
-    _length: u32,
+    store: &mut impl dma::CommonBufferStore,
+    bus: &impl dma::DmaBus,
+    registry: &mut dma::CommonBufferRegistry,
+    length: u32,
     logical_address: *mut u64,
-    _cache_enabled: bool,
 ) -> *mut c_void {
-    if !logical_address.is_null() {
-        // SAFETY: the caller names the out-parameter.
-        unsafe { *logical_address = 0 };
+    match dma::allocate_common_buffer(store, bus, registry, length) {
+        Some(record) => {
+            if !logical_address.is_null() {
+                // SAFETY: the caller names the out-parameter.
+                unsafe { *logical_address = record.bus };
+            }
+            record.va as *mut c_void
+        }
+        None => {
+            if !logical_address.is_null() {
+                // SAFETY: as above.
+                unsafe { *logical_address = 0 };
+            }
+            core::ptr::null_mut()
+        }
     }
-    core::ptr::null_mut()
 }
 
-/// HalFreeCommonBuffer's stub: nothing. The L6 DMA/MMIO slice (mem/dma.rs) frees what it
-/// allocated.
+/// HalFreeCommonBuffer's core: free the common buffer named by `length` and `logical_address`
+/// (the bus address the allocation wrote out); an unknown name frees nothing.
 pub fn free_common_buffer(
-    _adapter: *mut c_void,
-    _length: u32,
-    _logical_address: u64,
-    _cache_enabled: bool,
+    store: &mut impl dma::CommonBufferStore,
+    bus: &impl dma::DmaBus,
+    registry: &mut dma::CommonBufferRegistry,
+    length: u32,
+    logical_address: u64,
 ) {
+    dma::free_common_buffer(store, bus, registry, length, logical_address);
 }
 
 /// HalGetDmaAlignmentRequirement: 1 on x86 — no alignment requirement past the natural one.
@@ -324,15 +343,23 @@ pub fn get_dma_alignment_requirement() -> u32 {
     1
 }
 
-/// MmMapIoSpace's stub: null. The L6 DMA/MMIO slice (mem/dma.rs) lands it: mapping a device's
-/// MMIO range into the reserved kernel region.
+/// MmMapIoSpace's core over the MMIO allocator: map `number_of_bytes` of physical memory from
+/// `physical_address` into the reserved MMIO region, page by page through `map_page` (virtual
+/// page, physical page, the cache flag). Returns the virtual address naming the exact first byte,
+/// or null when the range does not fit.
 pub fn mm_map_io_space(
-    _physical_address: u64,
-    _number_of_bytes: u32,
-    _cache_enable: bool,
+    mmio: &mut dma::MmioMappings,
+    physical_address: u64,
+    number_of_bytes: u32,
+    cache_enable: bool,
+    map_page: impl FnMut(u32, u32, bool),
 ) -> *mut c_void {
-    core::ptr::null_mut()
+    mmio.map(physical_address, number_of_bytes, cache_enable, map_page)
+        .map_or(core::ptr::null_mut(), |va| va as *mut c_void)
 }
+
+// --- Multi-processor: the stubs
+// ----------------------------------------------------------------
 
 /// HalRequestIpi's stub: nothing. The APIC slice lands it: the IPI through the local APIC's
 /// interrupt command register, to the processors in `mask`.
@@ -486,12 +513,31 @@ mod symbols {
     entry!(f2k_export_HalSetTimeIncrement(desired_increment: u32) -> u32 =
         set_time_increment(&PLATFORM, desired_increment));
 
+    // One bus (the PCI bus), so the adapter names nothing; on x86 the common buffer stays cached
+    // and the cache flush keeps the DMA coherent, so the cache flag changes nothing here.
     entry!(f2k_export_HalAllocateCommonBuffer(
-        adapter: *mut c_void, length: u32, logical_address: *mut u64, cache_enabled: bool,
-    ) -> *mut c_void = allocate_common_buffer(adapter, length, logical_address, cache_enabled));
+        _adapter: *mut c_void, length: u32, logical_address: *mut u64, _cache_enabled: bool,
+    ) -> *mut c_void = {
+        match dma::allocate(length) {
+            Some(record) => {
+                if !logical_address.is_null() {
+                    // SAFETY: the caller names the out-parameter.
+                    unsafe { *logical_address = record.bus };
+                }
+                record.va as *mut c_void
+            }
+            None => {
+                if !logical_address.is_null() {
+                    // SAFETY: as above.
+                    unsafe { *logical_address = 0 };
+                }
+                core::ptr::null_mut()
+            }
+        }
+    });
     entry!(f2k_export_HalFreeCommonBuffer(
-        adapter: *mut c_void, length: u32, logical_address: u64, cache_enabled: bool,
-    ) -> () = free_common_buffer(adapter, length, logical_address, cache_enabled));
+        _adapter: *mut c_void, length: u32, logical_address: u64, _cache_enabled: bool,
+    ) -> () = dma::free(length, logical_address));
     entry!(f2k_export_HalGetDmaAlignmentRequirement() -> u32 = get_dma_alignment_requirement());
 
     entry!(f2k_export_HalGetBusData(
@@ -521,7 +567,8 @@ mod symbols {
 
     entry!(f2k_export_MmMapIoSpace(
         physical_address: u64, number_of_bytes: u32, cache_enable: bool,
-    ) -> *mut c_void = mm_map_io_space(physical_address, number_of_bytes, cache_enable));
+    ) -> *mut c_void = dma::map_io_space(physical_address, number_of_bytes, cache_enable)
+        .map_or(core::ptr::null_mut(), |va| va as *mut c_void));
 
     entry!(f2k_export_HalRequestIpi(mask: u32) -> () = request_ipi(mask));
     entry!(f2k_export_HalStartNextProcessor(
@@ -529,13 +576,22 @@ mod symbols {
     ) -> bool = start_next_processor(loader_block, processor_state));
 }
 
-// The generated table keeping every spec body in the link (kernel/hal_exports.toml →
-// OUT_DIR/hal_exports.rs), on target. `Kept` comes from the kernel's own exports module.
-#[cfg(target_arch = "x86")]
-use crate::exports::Kept;
-
+// The generated table keeping every spec body in the link and pairing it with its export name
+// (kernel/hal_exports.toml → OUT_DIR/hal_exports.rs), on target.
 #[cfg(target_arch = "x86")]
 include!(concat!(env!("OUT_DIR"), "/hal_exports.rs"));
+
+/// A hal.dll import's resolution: the entry point `name` imports from hal.dll, as the generated
+/// table holds it — the spec's name with the body's address. None when the name is not on the
+/// surface. Export names compare exactly (they are case-sensitive).
+#[cfg(target_arch = "x86")]
+pub fn export_address(name: &str) -> Option<*const ()> {
+    HAL_EXPORTS
+        .0
+        .iter()
+        .find(|(export_name, _)| *export_name == name)
+        .map(|(_, address)| *address)
+}
 
 #[cfg(test)]
 mod tests {
@@ -827,15 +883,96 @@ mod tests {
         assert_eq!(get_dma_alignment_requirement(), 1);
     }
 
-    /// The stubs fail the way their exports fail and name their slices.
+    /// A fake DMA bus: every pool page translates to the frame of the same number, and the cache
+    /// flushes are counted.
+    struct FakeBus {
+        flushes: std::cell::Cell<usize>,
+    }
+
+    impl dma::DmaBus for FakeBus {
+        fn translate(&self, va: u32) -> Option<u64> {
+            let page = va & !(crate::mem::paging::PAGE_SIZE - 1);
+            (page >= 0xFEC0_0000 && page < 0xFF00_0000).then(|| page as u64)
+        }
+
+        fn flush_cache(&self) {
+            self.flushes.set(self.flushes.get() + 1);
+        }
+    }
+
+    /// A fake common-buffer store: one block at a time from the fake pool, recorded on release.
+    struct FakeStore {
+        bus: *mut FakeBus,
+        released: Vec<dma::CommonBuffer>,
+    }
+
+    impl dma::CommonBufferStore for FakeStore {
+        fn allocate(&mut self, bytes: usize) -> Option<u32> {
+            if bytes > 0x4000 {
+                return None;
+            }
+            Some(0xFEC0_0000)
+        }
+
+        fn release(&mut self, buffer: &dma::CommonBuffer) {
+            self.released.push(*buffer);
+            let _ = self.bus;
+        }
+    }
+
+    /// The DMA and MMIO bodies run over the seams: a common buffer comes back with its bus address
+    /// in the out-parameter and frees by it, an MMIO range maps into the reserved region page by
+    /// page, and the failures return the exports' failure values. The remaining stubs fail the
+    /// way their exports fail.
     #[test]
-    fn the_stubs_fail_and_name_their_work() {
+    fn the_dma_and_mmio_bodies_run_over_their_seams() {
+        let mut bus = FakeBus {
+            flushes: std::cell::Cell::new(0),
+        };
+        let mut store = FakeStore {
+            bus: &mut bus,
+            released: Vec::new(),
+        };
+        let mut registry = dma::CommonBufferRegistry::new();
+
         let mut logical = 0xFFFF_FFFF_FFFF_FFFFu64;
-        let buffer = allocate_common_buffer(core::ptr::null_mut(), 4096, &mut logical, true);
-        assert!(buffer.is_null());
+        let buffer = allocate_common_buffer(&mut store, &bus, &mut registry, 0x2000, &mut logical);
+        assert_eq!(buffer as u32, 0xFEC0_0000);
+        assert_eq!(logical, 0xFEC0_0000, "the bus address of the first byte");
+        assert_eq!(bus.flushes.get(), 1);
+
+        // A failed allocation returns null with a zero logical address.
+        let mut logical = 0xFFFFu64;
+        let failed = allocate_common_buffer(&mut store, &bus, &mut registry, 0x8000, &mut logical);
+        assert!(failed.is_null());
         assert_eq!(logical, 0);
-        free_common_buffer(core::ptr::null_mut(), 4096, 0, true);
-        assert!(mm_map_io_space(0xE000_0000, 0x1000, false).is_null());
+
+        free_common_buffer(&mut store, &bus, &mut registry, 0x2000, 0xFEC0_0000);
+        assert_eq!(store.released.len(), 1);
+        assert_eq!(bus.flushes.get(), 2);
+        assert_eq!(registry.len(), 0);
+
+        // MmMapIoSpace maps the range page by page and hands out the exact byte's address.
+        let region = crate::mem::layout::Region {
+            start: 0xC280_0000,
+            entries: 2,
+        };
+        let mut mmio = dma::MmioMappings::new(region);
+        let mut pages = Vec::new();
+        let va = mm_map_io_space(&mut mmio, 0xE000_0800, 0x1000, false, |va, phys, cache| {
+            pages.push((va, phys, cache))
+        });
+        assert_eq!(va as u32, 0xC280_0800);
+        assert_eq!(
+            pages,
+            [
+                (0xC280_0000, 0xE000_0000, false),
+                (0xC280_1000, 0xE000_1000, false)
+            ]
+        );
+        assert!(mm_map_io_space(&mut mmio, 0x1_0000_0000, 0x1000, false, |_, _, _| ()).is_null());
+
+        // The multi-processor stubs fail the way their exports fail.
         request_ipi(0xFFFF_FFFF);
         assert!(!start_next_processor(
             core::ptr::null_mut(),

@@ -123,6 +123,32 @@ mod target {
         fn address(&self) -> *mut u8 {
             page_address(self.first) as *mut u8
         }
+
+        /// The block's virtual address: the start of its pages in the pool's region. The DMA
+        /// layer's registry owns a block by this address rather than by the `Block` itself.
+        pub fn virtual_address(&self) -> u32 {
+            page_address(self.first)
+        }
+    }
+
+    /// Release the block at virtual address `va` that [`allocate`] handed out for `bytes`:
+    /// reconstructs the block and drops it (its pages unmapped, their frames and the pages
+    /// themselves given back), as the DMA layer's free path does with a registry record.
+    ///
+    /// # Panics
+    ///
+    /// `va` lies outside the pool's region, is not page-aligned, or names no live block.
+    pub fn release_block(va: u32, bytes: usize) {
+        assert!(
+            layout::NONPAGED_POOL.holds(va) && va % PAGE_SIZE == 0,
+            "a block address outside the nonpaged pool"
+        );
+        let first = ((va - layout::NONPAGED_POOL.start) / PAGE_SIZE) as usize;
+        drop(Block {
+            first,
+            pages: pages_for(bytes),
+            len: bytes,
+        });
     }
 
     impl AsRef<[u8]> for Block {

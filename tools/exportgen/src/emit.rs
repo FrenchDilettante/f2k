@@ -277,12 +277,11 @@ pub fn kernel_exports(spec: &Spec, source: &str) -> String {
     out
 }
 
-/// The bodies of the HAL's exports kept in the kernel's link (`kernel/hal_exports.toml`): the
-/// same shape as [`kernel_exports`], in the `.rodata.hal_exports` section the linker script
-/// keeps. The hal.dll-named entry points are compiled into the kernel (there is no separate
-/// hal.dll image), so nothing exports them from a PE directory: the table holds every body's
-/// address (`f2k_export_<body>`: a function), where the .sys loader's import resolution finds
-/// them by the spec's names. `Kept` resolves in the including module's scope.
+/// The HAL's exports kept in the kernel's link (`kernel/hal_exports.toml`), in the
+/// `.rodata.hal_exports` section the linker script keeps. The hal.dll-named entry points are
+/// compiled into the kernel (there is no separate hal.dll image), so nothing exports them from
+/// a PE directory: the table pairs each spec name with its body's address (`f2k_export_<body>`:
+/// a function), where the .sys loader's import resolution finds hal.dll imports by name.
 pub fn hal_exports(spec: &Spec, source: &str) -> String {
     let bodies = &spec.exports;
     let mut out = banner(source);
@@ -294,12 +293,18 @@ pub fn hal_exports(spec: &Spec, source: &str) -> String {
         }
         out.push_str("}\n\n");
     }
-    out.push_str("/// The bodies of the HAL's exports, in spec order.\n#[used]\n");
+    // A raw pointer is not Sync, so the table wraps in a type that vouches for it: the entries
+    // are written once at link time and only read afterwards.
+    out.push_str("/// The HAL's exports by name, in spec order: the spec's name with each body's address.\n");
+    writeln!(out, "struct HalExportTable([(&'static str, *const ()); {}]);", bodies.len()).unwrap();
+    out.push_str("// SAFETY: the table is written once, at link time, and only read afterwards.\n");
+    writeln!(out, "unsafe impl Sync for HalExportTable {{}}").unwrap();
+    out.push_str("#[used]\n");
     out.push_str("#[unsafe(link_section = \".rodata.hal_exports\")]\n");
-    writeln!(out, "static HAL_EXPORTS: Kept<{}> = Kept([", bodies.len()).unwrap();
+    writeln!(out, "static HAL_EXPORTS: HalExportTable = HalExportTable([").unwrap();
     for export in bodies {
         let symbol = format!("{}{}", crate::pe::EXPORT_PREFIX, export.body());
-        writeln!(out, "    {symbol} as *const (),").unwrap();
+        writeln!(out, "    ({}, {symbol} as *const ()),", quote(&export.name)).unwrap();
     }
     out.push_str("]);\n");
     out

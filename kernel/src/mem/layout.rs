@@ -12,6 +12,8 @@
 //! | [`PAGE_TABLES`]    | `0xC0000000` | 768       | the process page tables (self-map)        |
 //! | [`HYPERSPACE`]     | `0xC0400000` | 769       | hyperspace                                |
 //! | [`FRAMEBUFFER`]    | `0xC0800000` | 770-777   | the display's linear framebuffer          |
+//! | [`MMIO`]           | `0xC2800000` | 778-793   | device MMIO mappings (MmMapIoSpace)       |
+//! | [`MODULES`]        | `0xC6800000` | 794-825   | loaded driver images (the .sys loader)    |
 //! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
@@ -37,6 +39,18 @@
 //! block is taken and given back with it ([`crate::mem::pool`]). Windows 2000 grows its nonpaged
 //! pool's expansion down from `0xFFBE0000`, just under the HAL's area; F2K's region is the four
 //! entries below the shared data page's, 16 MiB.
+//!
+//! Device MMIO ranges map into their own reserved region, [`MMIO`], right behind the framebuffer's:
+//! Windows 2000 takes MmMapIoSpace mappings from its system PTEs wherever they fit; F2K keeps a
+//! fixed 64 MiB window (16 entries) for them, page tables made at boot and shared by every address
+//! space like the pool's, so a device register range mapped in it ([`crate::mem::dma`]) is reachable
+//! from any thread, with the caches disabled for uncached mappings (PCD) as device memory requires.
+//!
+//! Loaded driver images (the kernel-side `.sys` loader, [`crate::dev::loader`]) map into their own
+//! reserved region, [`MODULES`], behind the MMIO region's: Windows 2000 loads drivers into its
+//! system PTEs wherever they fit; F2K keeps a fixed 128 MiB window (32 entries) for them, page
+//! tables made at boot and shared by every address space, so a loaded module is reachable from any
+//! thread. The loader hands the region's pages out lowest free run first.
 
 /// One page-directory entry's span: the 4 MiB a page table maps.
 pub const ENTRY_SPAN: u32 = 0x0040_0000;
@@ -125,6 +139,23 @@ pub const FRAMEBUFFER: Region = Region {
     entries: 8,
 };
 
+/// Device MMIO mappings (MmMapIoSpace): a reserved kernel region a device's register range maps
+/// into, page tables made at boot and shared by every address space like the pool's. Sixteen
+/// entries: 64 MiB, enough for every BAR the PCI scan reports on the development machine. A range
+/// larger than what remains goes unmapped (the caller fails the mapping).
+pub const MMIO: Region = Region {
+    start: 0xC280_0000,
+    entries: 16,
+};
+
+/// Loaded driver images (`.sys` modules): the region the kernel-side loader maps a module into,
+/// page tables made at boot and shared by every address space like the MMIO region's. Thirty-two
+/// entries: 128 MiB. A module larger than what remains is not loaded.
+pub const MODULES: Region = Region {
+    start: 0xC680_0000,
+    entries: 32,
+};
+
 /// The nonpaged pool: blocks of kernel memory taken and released at runtime, mapped in every
 /// address space ([`crate::mem::pool`]).
 pub const NONPAGED_POOL: Region = Region {
@@ -153,12 +184,14 @@ const _: () = {
 mod tests {
     use super::*;
 
-    const REGIONS: [(&str, Region); 7] = [
+    const REGIONS: [(&str, Region); 9] = [
         ("kernel image", KERNEL_IMAGE),
         ("kernel stacks", KERNEL_STACKS),
         ("page tables", PAGE_TABLES),
         ("hyperspace", HYPERSPACE),
         ("framebuffer", FRAMEBUFFER),
+        ("mmio", MMIO),
+        ("modules", MODULES),
         ("nonpaged pool", NONPAGED_POOL),
         ("shared data", SHARED_DATA),
     ];
@@ -184,6 +217,12 @@ mod tests {
             (770, 778)
         );
         assert_eq!(FRAMEBUFFER.end(), 0xC280_0000);
+        assert_eq!((MMIO.first_entry(), MMIO.end_entry()), (778, 794));
+        assert_eq!(MMIO.start, FRAMEBUFFER.end() as u32);
+        assert_eq!(MMIO.end(), 0xC680_0000);
+        assert_eq!((MODULES.first_entry(), MODULES.end_entry()), (794, 826));
+        assert_eq!(MODULES.start, MMIO.end() as u32);
+        assert_eq!(MODULES.end(), 0xCE80_0000);
         assert_eq!(
             (NONPAGED_POOL.first_entry(), NONPAGED_POOL.end_entry()),
             (1019, 1023)

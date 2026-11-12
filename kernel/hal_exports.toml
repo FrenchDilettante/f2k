@@ -15,9 +15,8 @@
 #   the work (over the Hal trait, the port-I/O seam, the PCI config seam, or the routing
 #   table), host-tested there.
 # - `impl = { stub = "<the work that lands it>" }` — a stub: the body exists and fails the way
-#   the export fails, and the reason names the slice that implements it (the L6 DMA/MMIO
-#   slice for the common-buffer and MMIO-mapping entries, the APIC/MP slice for the IPI and
-#   start-processor entries).
+#   the export fails, and the reason names the slice that implements it (the APIC/MP slice for
+#   the IPI and start-processor entries).
 #
 # The format is the system DLLs' (userland/kernel32/exports.toml's header documents every
 # key), read through tools/exportgen. Records carry no ordinals: the HAL's public header is
@@ -260,14 +259,16 @@ name = "HalAllocateCommonBuffer"
 group = "dma"
 args = ["ptr Adapter", "u32 Length", "ptr LogicalAddress", "boolean CacheEnabled"]
 fails = "0"
-impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): common buffers over the pool, translated to bus addresses" }
+impl = { native = "HalAllocateCommonBuffer" }
+note = "a common buffer over the nonpaged pool, translated to its bus address (mem/dma.rs); one bus, and x86 keeps the buffer cached with the flush keeping DMA coherent, so Adapter and CacheEnabled name nothing here"
 
 [[export]]
 name = "HalFreeCommonBuffer"
 group = "dma"
 args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "boolean CacheEnabled"]
 fails = "void"
-impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): freeing the common buffer the L6 slice allocated" }
+impl = { native = "HalFreeCommonBuffer" }
+note = "frees the common buffer named by Length and LogicalAddress (mem/dma.rs)"
 
 [[export]]
 name = "HalGetDmaAlignmentRequirement"
@@ -310,7 +311,8 @@ name = "MmMapIoSpace"
 group = "mmio"
 args = ["u64 PhysicalAddress", "u32 NumberOfBytes", "boolean CacheEnable"]
 fails = "0"
-impl = { stub = "the L6 DMA/MMIO slice (mem/dma.rs): mapping a device's MMIO range into the reserved kernel region" }
+impl = { native = "MmMapIoSpace" }
+note = "maps the device range into the reserved MMIO region (mem/dma.rs), uncached unless CacheEnable"
 
 # --- Multi-processor -------------------------------------------------------------------------
 
