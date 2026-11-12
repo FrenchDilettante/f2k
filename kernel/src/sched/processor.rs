@@ -13,14 +13,16 @@
 //! The same handover carries what the running thread's own code reads of itself at any level,
 //! without the dispatcher: its user-copy attribution, and its owner and address-space processes
 //! (what the current process and its live pages are, Windows 2000's PsGetCurrentProcess through
-//! the current thread).
+//! the current thread). It carries the thread's run times too: the clock charges each full tick to
+//! the running thread's kernel or user time, as the interrupted code's mode says (KeUpdateRunTime's
+//! KernelTime and UserTime), in the slots while the thread runs, in its record otherwise.
 //!
 //! Every slot is an atomic: one processor, so the atomics are not about other processors but about
 //! the clock interrupt, which may land between any two instructions of the code that reads and
 //! writes them. A read-modify-write of the quantum by the dispatcher can lose a tick the clock
 //! charged in its middle, as Windows 2000's can.
 
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU16, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicU16, AtomicU32, Ordering};
 
 use super::process::NOT_POOLED;
 use super::thread::ThreadId;
@@ -76,6 +78,10 @@ pub struct ThreadSlots {
     /// reads the current thread's ApcState.Process through its processor block.
     process: AtomicU16,
     space: AtomicU16,
+    /// The ticks charged to the running thread in kernel mode and in user mode, while it runs (its
+    /// record holds them otherwise).
+    kernel_ticks: AtomicU32,
+    user_ticks: AtomicU32,
 }
 
 impl ThreadSlots {
@@ -90,7 +96,17 @@ impl ThreadSlots {
             copying_user_memory: AtomicBool::new(false),
             process: AtomicU16::new(NOT_POOLED),
             space: AtomicU16::new(NOT_POOLED),
+            kernel_ticks: AtomicU32::new(0),
+            user_ticks: AtomicU32::new(0),
         }
+    }
+
+    /// The ticks charged to the running thread, (kernel mode, user mode).
+    pub fn run_ticks(&self) -> (u32, u32) {
+        (
+            self.kernel_ticks.load(Ordering::SeqCst),
+            self.user_ticks.load(Ordering::SeqCst),
+        )
     }
 
     /// The Running thread, none before the boot installs the idle thread.
@@ -148,15 +164,25 @@ impl ThreadSlots {
         self.quantum_end_requested() || self.next().is_some()
     }
 
-    /// Charge the running thread's quantum for one full tick, at the clock level (Windows 2000's
-    /// KeUpdateRunTime), and request the dispatch window's decision when the charge runs it out.
-    /// The charge consults neither the interrupted frame nor the processor's mode — whoever is
-    /// current is charged, whatever it was doing. The idle thread is charged like any other but
+    /// Charge the running thread for one full tick, at the clock level (Windows 2000's
+    /// KeUpdateRunTime): its kernel or user time as `user_mode` says the interrupted code ran, and
+    /// its quantum, requesting the dispatch window's decision when the charge runs it out. The
+    /// quantum's charge consults neither the interrupted frame nor the processor's mode — whoever
+    /// is current is charged, whatever it was doing. The idle thread is charged like any other but
     /// never requests (its quantum runs off the bottom, and nothing reads it).
-    pub fn charge_running_tick(&self, _clock: &At<Clock>) {
+    pub fn charge_running_tick(&self, _clock: &At<Clock>, user_mode: bool) {
         let Some(current) = self.current() else {
             return;
         };
+        let time = if user_mode {
+            &self.user_ticks
+        } else {
+            &self.kernel_ticks
+        };
+        time.store(
+            time.load(Ordering::SeqCst).wrapping_add(1),
+            Ordering::SeqCst,
+        );
         let quantum = charged_tick(self.quantum());
         self.quantum.store(quantum, Ordering::SeqCst);
         if quantum <= 0 && Some(current) != self.idle() {
@@ -187,6 +213,11 @@ impl ThreadSlots {
 
     pub(super) fn set_quantum(&self, quantum: i8) {
         self.quantum.store(quantum, Ordering::SeqCst);
+    }
+
+    pub(super) fn set_run_ticks(&self, kernel: u32, user: u32) {
+        self.kernel_ticks.store(kernel, Ordering::SeqCst);
+        self.user_ticks.store(user, Ordering::SeqCst);
     }
 
     /// Consume the quantum-end request: whether one was pending, now cleared.

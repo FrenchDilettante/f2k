@@ -1,8 +1,9 @@
-//! Threads: creation, exit and termination, suspension, the exit code, the priorities and boosts,
-//! and the TLS indexes — kernel32's own code over ntdll's thread services, as on Windows 2000
-//! (ARCH-6 group 6). A failed service's status sets the last error through BaseSetLastNTError; a
-//! bad handle is the kernel's to refuse (STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH:
-//! ERROR_INVALID_HANDLE both).
+//! Threads: creation, opening, exit and termination, suspension, the exit code and the times, the
+//! priorities and boosts, and the TLS indexes — kernel32's own code over ntdll's thread services,
+//! as on Windows 2000 (ARCH-6 group 6). A failed service's status sets the last error through
+//! BaseSetLastNTError; a bad handle is the kernel's to refuse (STATUS_INVALID_HANDLE or
+//! STATUS_OBJECT_TYPE_MISMATCH: ERROR_INVALID_HANDLE both), and so is a handle without the right
+//! the service needs (STATUS_ACCESS_DENIED: ERROR_ACCESS_DENIED).
 //!
 //! CreateThread is Windows 2000's: BaseCreateStack reserves the thread's stack and commits its top
 //! (a guard page below), BaseInitializeContext starts it at BaseThreadStartThunk (src/start.s) with
@@ -30,6 +31,7 @@ use crate::base::{
     CURRENT_THREAD,
 };
 use crate::edge::{In, Out};
+use crate::nt;
 use crate::ntcall::{self, PebLock, TlsBitmap};
 
 /// THREADINFOCLASS: the classes kernel32 asks (ThreadBasicInformation is [`ntcall`]'s).
@@ -444,6 +446,82 @@ pub unsafe extern "system" fn get_exit_code_thread(thread: u32, code: *mut u32) 
     let mut code = unsafe { Out::new(code) };
     let info = ntcall::thread_basic_information(thread);
     win32_bool(info.map(|info| code.set(info.exit_status)))
+}
+
+/// OpenThread: a handle with the access to the thread the id names, of any process
+/// (NtOpenThread by CLIENT_ID, no process), inheritable when asked (OBJ_INHERIT); NULL with the
+/// error otherwise — an id naming no thread that has not ended, zero and a process's id included,
+/// is ERROR_INVALID_PARAMETER (the kernel's STATUS_INVALID_CID), no access at all
+/// ERROR_ACCESS_DENIED.
+#[unsafe(export_name = "f2k_export_OpenThread")]
+pub extern "system" fn open_thread(access: u32, inherit: u32, thread_id: u32) -> u32 {
+    let attributes = ntcall::unnamed_attributes(inherit != 0, core::ptr::null());
+    let client_id = nt::ClientId {
+        unique_process: 0,
+        unique_thread: thread_id as usize,
+    };
+    match ntcall::open_thread(access, &attributes, &client_id) {
+        Ok(thread) => thread,
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// ThreadTimes, NtQueryInformationThread's KERNEL_USER_TIMES class.
+const THREAD_TIMES: u32 = 1;
+
+/// KERNEL_USER_TIMES: the creation and exit times, the kernel and user times, as FILETIMEs.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct KernelUserTimes {
+    create_time: u64,
+    exit_time: u64,
+    kernel_time: u64,
+    user_time: u64,
+}
+
+// SAFETY: four u64s, no padding.
+unsafe impl rtl::pod::Pod for KernelUserTimes {}
+
+/// GetThreadTimes: the thread's creation and exit times (the exit time zero while it lives) and
+/// the time it ran in kernel and in user mode, each a FILETIME (NtQueryInformationThread's
+/// ThreadTimes, which needs THREAD_QUERY_INFORMATION); FALSE with the status's error when the
+/// handle cannot be queried.
+///
+/// # Safety
+///
+/// The four pointers are writable FILETIMEs (a bad pointer faults the caller, as on Windows 2000).
+#[unsafe(export_name = "f2k_export_GetThreadTimes")]
+pub unsafe extern "system" fn get_thread_times(
+    thread: u32,
+    created: *mut u64,
+    exited: *mut u64,
+    kernel: *mut u64,
+    user: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's FILETIMEs (the contract), written unaligned.
+    let mut slots = unsafe {
+        [
+            Out::new(created),
+            Out::new(exited),
+            Out::new(kernel),
+            Out::new(user),
+        ]
+    };
+    let times = ntcall::query_thread::<KernelUserTimes>(thread, THREAD_TIMES);
+    win32_bool(times.map(|times| {
+        let values = [
+            times.create_time,
+            times.exit_time,
+            times.kernel_time,
+            times.user_time,
+        ];
+        for (slot, value) in slots.iter_mut().zip(values) {
+            slot.set(value);
+        }
+    }))
 }
 
 /// SetThreadPriority's value as ThreadBasePriority takes it: TIME_CRITICAL and IDLE become the

@@ -619,6 +619,10 @@ mod target {
             crate::perf::sample(frame);
             pcr().leave_gate(enabled);
         }
+        if vector == super::clock::CLOCK_VECTOR {
+            let (_, cs) = frame.interrupted_pc();
+            super::clock::note_interrupted_mode(cs & 3 != 0);
+        }
         match service_interrupt(&TABLE, &mut chip(), vector) {
             Outcome::Served => {
                 crate::interrupt::dpc::drain();

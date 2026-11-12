@@ -74,6 +74,42 @@ pub fn process_access(access: u32) -> u32 {
     granted
 }
 
+/// The thread access rights (winnt.h's THREAD_*), and the waits' right.
+pub const THREAD_TERMINATE: u32 = 0x0001;
+pub const THREAD_SUSPEND_RESUME: u32 = 0x0002;
+pub const THREAD_ALERT: u32 = 0x0004;
+pub const THREAD_GET_CONTEXT: u32 = 0x0008;
+pub const THREAD_SET_CONTEXT: u32 = 0x0010;
+pub const THREAD_SET_INFORMATION: u32 = 0x0020;
+pub const THREAD_QUERY_INFORMATION: u32 = 0x0040;
+pub const SYNCHRONIZE_ACCESS: u32 = SYNCHRONIZE;
+
+/// The thread access a mask amounts to: its generic rights mapped as the thread type maps them
+/// (read: the context and querying; write: ending, suspending, alerting, setting the context and
+/// the information; execute: waiting on it; all, or the maximum allowed — no security descriptor
+/// restricts it —: THREAD_ALL_ACCESS), its specific and standard rights as they are.
+pub fn thread_access(access: u32) -> u32 {
+    let mut granted = access & 0x00FF_FFFF;
+    if access & (GENERIC_ALL | MAXIMUM_ALLOWED) != 0 {
+        granted |= crate::ob::THREAD_ALL_ACCESS;
+    }
+    if access & GENERIC_READ != 0 {
+        granted |= READ_CONTROL | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION;
+    }
+    if access & GENERIC_WRITE != 0 {
+        granted |= READ_CONTROL
+            | THREAD_TERMINATE
+            | THREAD_SUSPEND_RESUME
+            | THREAD_ALERT
+            | THREAD_SET_CONTEXT
+            | THREAD_SET_INFORMATION;
+    }
+    if access & GENERIC_EXECUTE != 0 {
+        granted |= READ_CONTROL | SYNCHRONIZE;
+    }
+    granted
+}
+
 /// The process object a handle-table entry names, when the entry grants `needed`: a missing entry
 /// is STATUS_INVALID_HANDLE, an entry naming another kind of object STATUS_OBJECT_TYPE_MISMATCH,
 /// one whose access lacks a right `needed` asks STATUS_ACCESS_DENIED — Windows' checks, in that
@@ -489,13 +525,13 @@ pub fn query_object(
 ) -> NtResult {
     match class {
         OBJECT_BASIC_INFORMATION => {
-            return query_basic(call, handle, information, length, return_length)
+            return query_basic(call, handle, information, length, return_length);
         }
         OBJECT_NAME_INFORMATION => {
-            return query_name(call, handle, information, length, return_length)
+            return query_name(call, handle, information, length, return_length);
         }
         OBJECT_TYPE_INFORMATION => {
-            return query_type(call, handle, information, length, return_length)
+            return query_type(call, handle, information, length, return_length);
         }
         _ => {}
     }
@@ -1179,6 +1215,26 @@ mod tests {
             process_access(PROCESS_QUERY_INFORMATION | SYNCHRONIZE),
             PROCESS_QUERY_INFORMATION | SYNCHRONIZE
         );
+    }
+
+    /// The thread type's generic mapping: read queries, write ends and suspends, execute waits,
+    /// all is THREAD_ALL_ACCESS; a specific right stands alone (the threads capture's handles of
+    /// one right each).
+    #[test]
+    fn thread_access_maps_the_generic_rights() {
+        assert_eq!(
+            thread_access(GENERIC_READ) & THREAD_QUERY_INFORMATION,
+            THREAD_QUERY_INFORMATION
+        );
+        let write = thread_access(GENERIC_WRITE);
+        assert_eq!(
+            write & (THREAD_TERMINATE | THREAD_SUSPEND_RESUME),
+            THREAD_TERMINATE | THREAD_SUSPEND_RESUME
+        );
+        assert_eq!(write & THREAD_QUERY_INFORMATION, 0);
+        assert_eq!(thread_access(GENERIC_EXECUTE) & SYNCHRONIZE, SYNCHRONIZE);
+        assert_eq!(thread_access(GENERIC_ALL), crate::ob::THREAD_ALL_ACCESS);
+        assert_eq!(thread_access(THREAD_TERMINATE), THREAD_TERMINATE);
     }
 
     /// A target process the call cannot take refuses with its own reason (a handle without

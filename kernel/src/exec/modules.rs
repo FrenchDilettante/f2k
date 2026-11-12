@@ -504,7 +504,7 @@ mod tests {
         // Local/Global calls
         // its own over ntdll's heap, GlobalCompact over its RtlCompactHeap). The internal start
         // thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 369);
+        assert_eq!(NATIVE_EXPORTS.len(), 371);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -682,23 +682,26 @@ mod tests {
     const AWAITED: [&str; 0] = [];
 
     /// The exports a corpus binary reaches through GetProcAddress rather than its import table: the
-    /// toolhelp fixture's W walk, the locale fixture's IsValidLanguageGroup and the runtime
-    /// fixture's VerSetConditionMask and VerifyVersionInfo (MSVC 6's headers and kernel32.lib
-    /// predate them, which Windows 2000's kernel32 added), and the sections that load where
-    /// kernel32 lacks their exports: the runtime fixture's OutputDebugString, the dll fixture's
-    /// LoadLibraryEx and the memory fixture's GlobalFlags.
-    const BY_NAME: [&str; 11] = [
+    /// toolhelp fixture's W walk, the locale fixture's IsValidLanguageGroup, the runtime fixture's
+    /// VerSetConditionMask and VerifyVersionInfo and the threads fixture's OpenThread (MSVC 6's
+    /// headers and kernel32.lib predate them, which Windows 2000's kernel32 added), and the
+    /// sections that load where kernel32 lacks their exports: the runtime fixture's
+    /// OutputDebugString, the dll fixture's LoadLibraryEx, the memory fixture's GlobalFlags and the
+    /// threads fixture's GetThreadTimes.
+    const BY_NAME: [&str; 13] = [
         "Process32FirstW",
         "Process32NextW",
         "IsValidLanguageGroup",
         "VerSetConditionMask",
         "VerifyVersionInfoW",
         "VerifyVersionInfoA",
+        "OpenThread",
         "OutputDebugStringA",
         "OutputDebugStringW",
         "LoadLibraryExA",
         "LoadLibraryExW",
         "GlobalFlags",
+        "GetThreadTimes",
     ];
 
     /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
@@ -751,7 +754,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 379, "the corpus's import surface");
+        assert_eq!(names.len(), 381, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(

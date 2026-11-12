@@ -1640,6 +1640,24 @@ impl = { native = "GetExitCodeThread" }
 ordinal = 292
 
 [[export]]
+name = "OpenThread"
+group = "threads"
+args = ["u32 dwDesiredAccess", "bool bInheritHandle", "u32 dwThreadId"]
+impl = { native = "OpenThread" }
+ordinal = 538
+fails = "NULL"
+note = "NtOpenThread by client id: an ended thread's id, zero or a process's id ERROR_INVALID_PARAMETER; no access at all ERROR_ACCESS_DENIED"
+
+[[export]]
+name = "GetThreadTimes"
+group = "threads"
+args = ["handle hThread", "ptr<u64> lpCreationTime", "ptr<u64> lpExitTime", "ptr<u64> lpKernelTime", "ptr<u64> lpUserTime"]
+impl = { native = "GetThreadTimes" }
+ordinal = 394
+fails = "FALSE"
+note = "NtQueryInformationThread's ThreadTimes: the clock's ticks charged to the thread in kernel and user mode, and its creation and exit times"
+
+[[export]]
 name = "GetPriorityClass"
 group = "threads"
 args = ["handle hProcess"]
@@ -4001,10 +4019,6 @@ name = "GetThreadSelectorEntry"
 ordinal = 393
 
 [[export]]
-name = "GetThreadTimes"
-ordinal = 394
-
-[[export]]
 name = "GetUserDefaultUILanguage"
 ordinal = 401
 
@@ -4231,10 +4245,6 @@ ordinal = 531
 name = "OpenProfileUserMapping"
 ordinal = 535
 
-
-[[export]]
-name = "OpenThread"
-ordinal = 538
 
 
 [[export]]

@@ -454,3 +454,39 @@ fn terminations_reach_what_their_handles_name() {
         ]
     );
 }
+
+/// OpenThread: a thread's id opens it (NtOpenThread by client id); an id naming no thread is NULL
+/// with ERROR_INVALID_PARAMETER.
+///
+/// Pins: kernel32.OpenThread
+#[test]
+fn open_thread_opens_by_id() {
+    assert_eq!(open_thread(0x40, 0, 12), crate::nt::OPENED_THREAD);
+    assert_eq!((open_thread(0x40, 0, 0), last_error()), (0, 87));
+}
+
+/// GetThreadTimes: the four FILETIMEs of ThreadTimes (the stand-in's: created at 1, not ended, a
+/// tick of kernel time and two of user time); a bad handle is FALSE with ERROR_INVALID_HANDLE.
+///
+/// Pins: kernel32.GetThreadTimes
+#[test]
+fn thread_times_are_the_kernel_user_times() {
+    let (mut created, mut exited, mut kernel, mut user) = (0u64, 9u64, 0u64, 0u64);
+    // SAFETY: four FILETIMEs.
+    let r = unsafe {
+        get_thread_times(
+            CURRENT_THREAD,
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    };
+    assert_eq!(
+        (r, created, exited, kernel, user),
+        (1, 1, 0, 100_144, 200_288)
+    );
+    // SAFETY: as above.
+    let r = unsafe { get_thread_times(BOGUS, &mut created, &mut exited, &mut kernel, &mut user) };
+    assert_eq!((r, last_error()), (0, 6));
+}

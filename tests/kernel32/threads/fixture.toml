@@ -3,10 +3,6 @@ description = "threads - thread lifecycle and per-thread state (threads.c, /MT):
 kind = "sectioned"
 gate = true
 
-[pending]
-open = "kernel32 exports no OpenThread yet"
-times = "kernel32 exports no GetThreadTimes yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

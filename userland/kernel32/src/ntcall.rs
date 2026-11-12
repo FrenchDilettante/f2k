@@ -908,6 +908,18 @@ pub fn open_process(
     Ok(process)
 }
 
+/// NtOpenThread: a handle with `access` to the thread the client id names.
+pub fn open_thread(
+    access: u32,
+    attributes: &ObjectAttributes,
+    client_id: &ClientId,
+) -> Result<u32, NtStatus> {
+    let mut thread = 0;
+    // SAFETY: ntdll's export, over the local and the structures.
+    checked(unsafe { nt::NtOpenThread(&mut thread, access, attributes, client_id) })?;
+    Ok(thread)
+}
+
 /// NtQueryInformationProcess: the class's value into `out`, as long as it is.
 pub fn query_information_process(process: u32, class: u32, out: &mut [u8]) -> Result<(), NtStatus> {
     // SAFETY: ntdll's export, into the buffer of its length.

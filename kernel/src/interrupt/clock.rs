@@ -220,6 +220,19 @@ fn balance_routine(
 /// The vector the timer interrupt arrives on (IRQ 0 after the remap).
 pub const CLOCK_VECTOR: u8 = crate::hal::interrupt_vector(0);
 
+/// Whether the clock's interrupt interrupted user-mode code: what the interrupt's dispatch reads
+/// off its frame for the service (Windows 2000's KeUpdateRunTime reads the trap frame's mode),
+/// written just before the service runs, with interrupts masked, and read by it.
+#[cfg(target_arch = "x86")]
+static INTERRUPTED_USER_MODE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Record the mode the clock's interrupt interrupted (see [`INTERRUPTED_USER_MODE`]).
+#[cfg(target_arch = "x86")]
+pub fn note_interrupted_mode(user_mode: bool) {
+    INTERRUPTED_USER_MODE.store(user_mode, core::sync::atomic::Ordering::SeqCst);
+}
+
 /// The clock's interrupt service body, handed the clock-level token by the interrupt dispatch once
 /// the interrupt has been claimed (interrupts masked). Updates the clock and enqueues the deferred
 /// timer work when a timer is due — the timer table's hand check, with the firing tick's low word
@@ -251,9 +264,11 @@ pub fn service(at_clock: &mut At<level::Clock>) {
         &mut at_clock.raise::<level::High>(),
         dpc::DpcQueue::update_request_rate,
     );
-    // A full tick charges the running thread's quantum, in the processor's slots; a charge that
-    // runs the quantum out requests the dispatch window's decision at this interrupt's exit.
-    pcr().threads.charge_running_tick(at_clock);
+    // A full tick charges the running thread's kernel or user time and its quantum, in the
+    // processor's slots; a charge that runs the quantum out requests the dispatch window's
+    // decision at this interrupt's exit.
+    let user_mode = INTERRUPTED_USER_MODE.load(core::sync::atomic::Ordering::SeqCst);
+    pcr().threads.charge_running_tick(at_clock, user_mode);
     // Once a second, the balance-set scan.
     if tick_low % BALANCE_PERIOD_TICKS == 0 {
         dpc::enqueue_at(at_clock, &BALANCE_DPC, 0, 0);
@@ -532,7 +547,9 @@ mod tests {
         );
         assert_eq!(clock.tick(), Tick::Full);
         crate::level::raised::<crate::level::Clock, _>(|at_clock| {
-            crate::pcr::pcr().threads.charge_running_tick(at_clock)
+            crate::pcr::pcr()
+                .threads
+                .charge_running_tick(at_clock, false)
         });
         assert_eq!(
             t.quantum(),

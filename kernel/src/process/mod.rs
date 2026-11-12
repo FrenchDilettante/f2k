@@ -888,6 +888,7 @@ impl Process {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
         let thread_id = new_client_id();
+        let created = crate::time::system_filetime();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let dispatcher = crate::sched::DISPATCHER.get(dispatch);
             let record = dispatcher.thread_mut(thread);
@@ -897,6 +898,7 @@ impl Process {
             record.ordinal = ordinals::MAIN;
             record.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
             record.thread_id = thread_id;
+            record.create_time = created;
             // SAFETY: the scheduling record is the pool's, at its final address, reached only
             // through this borrow of the dispatcher meanwhile, and it outlives its threads (its
             // teardown follows the last one's end).

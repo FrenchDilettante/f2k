@@ -1,19 +1,32 @@
-//! The thread services: NtCreateThread and NtTerminateThread, NtSuspendThread and
+//! The thread services: NtCreateThread, NtOpenThread and NtTerminateThread, NtSuspendThread and
 //! NtResumeThread, NtGetContextThread and NtSetContextThread, and the thread information classes
 //! kernel32's thread calls ask (NtQueryInformationThread, NtSetInformationThread). kernel32's
-//! CreateThread, ExitThread, TerminateThread, SuspendThread, ResumeThread, GetThreadContext,
-//! SetThreadContext, GetExitCodeThread, the thread priorities and boosts, and TlsFree are Win32
-//! code over these, as on Windows 2000.
+//! CreateThread, OpenThread, ExitThread, TerminateThread, SuspendThread, ResumeThread,
+//! GetThreadContext, SetThreadContext, GetExitCodeThread, GetThreadTimes, the thread priorities
+//! and boosts, and TlsFree are Win32 code over these, as on Windows 2000.
 //!
 //! A handle names a thread — of the calling process or of another (a child's, from CreateProcess)
-//! — or is the current-thread pseudo-handle (NtCurrentThread, -2); STATUS_INVALID_HANDLE for a
-//! handle naming nothing, STATUS_OBJECT_TYPE_MISMATCH for one naming another kind of object (both
-//! ERROR_INVALID_HANDLE to kernel32). The information's length is the class's structure's exactly,
-//! as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
+//! — or is the current-thread pseudo-handle (NtCurrentThread, -2, every access granted);
+//! STATUS_INVALID_HANDLE for a handle naming nothing, STATUS_OBJECT_TYPE_MISMATCH for one naming
+//! another kind of object (both ERROR_INVALID_HANDLE to kernel32), STATUS_ACCESS_DENIED for one not
+//! granted the service's right (THREAD_TERMINATE, THREAD_SUSPEND_RESUME, THREAD_GET_CONTEXT,
+//! THREAD_SET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION), as Windows' ObReferenceObjectByHandle checks
+//! them, in that order. The information's length is the class's structure's exactly, as Windows
+//! 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
 use rtl::nt::info::ThreadBasicInformation;
 
 use super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+#[cfg(target_arch = "x86")]
+use super::object::{
+    thread_access,
+    THREAD_GET_CONTEXT,
+    THREAD_QUERY_INFORMATION,
+    THREAD_SET_CONTEXT,
+    THREAD_SET_INFORMATION,
+    THREAD_SUSPEND_RESUME,
+    THREAD_TERMINATE,
+};
 use super::process::ClientId;
 #[cfg(target_arch = "x86")]
 use crate::level::Dispatch;
@@ -26,6 +39,8 @@ info_class! {
     pub enum QueryClass {
         /// THREAD_BASIC_INFORMATION.
         Basic = 0,
+        /// KERNEL_USER_TIMES: the creation and exit times, the kernel and user times.
+        Times = 1,
         /// The thread's Win32 start address, a PVOID (ThreadQuerySetWin32StartAddress).
         Win32StartAddress = 9,
         /// Whether the calling thread is its process's only one, a ULONG (the handle is not
@@ -41,6 +56,7 @@ impl QueryClass {
     pub fn size(self) -> u32 {
         (match self {
             QueryClass::Basic => size_of::<ThreadBasicInformation>(),
+            QueryClass::Times => size_of::<KernelUserTimes>(),
             QueryClass::Win32StartAddress
             | QueryClass::AmILastThread
             | QueryClass::PriorityBoost => size_of::<u32>(),
@@ -147,6 +163,32 @@ pub fn basic_information(info: &BasicInformation) -> ThreadBasicInformation {
     }
 }
 
+/// KERNEL_USER_TIMES: a thread's creation and exit times (FILETIMEs; the exit time zero while it
+/// lives) and the time it ran in kernel mode and in user mode (100 ns units).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KernelUserTimes {
+    pub create_time: u64,
+    pub exit_time: u64,
+    pub kernel_time: u64,
+    pub user_time: u64,
+}
+
+// SAFETY: four u64s, no padding.
+unsafe impl rtl::pod::Pod for KernelUserTimes {}
+
+/// KERNEL_USER_TIMES of a thread from its record's facts: its ticks each worth the clock's full
+/// tick (Windows 2000 charges KeMaximumIncrement a tick).
+pub fn kernel_user_times(created: u64, exited: u64, (kernel, user): (u32, u32)) -> KernelUserTimes {
+    let tick = u64::from(crate::interrupt::clock::INTERVAL_100NS);
+    KernelUserTimes {
+        create_time: created,
+        exit_time: exited,
+        kernel_time: u64::from(kernel) * tick,
+        user_time: u64::from(user) * tick,
+    }
+}
+
 /// The length a class's information must have: its structure's (STATUS_INFO_LENGTH_MISMATCH
 /// otherwise).
 fn exactly(length: u32, size: u32) -> Result<(), NtStatus> {
@@ -166,16 +208,18 @@ pub(super) struct ThreadRef {
     pub id: ThreadId,
 }
 
-/// The thread a handle names (the current-thread pseudo-handle included), referenced for the
-/// caller's scope.
+/// The thread a handle granting `needed` names (the current-thread pseudo-handle, granting every
+/// right, included), referenced for the caller's scope (see the module notes for the refusals).
 #[cfg(target_arch = "x86")]
-pub(super) fn thread_of(handle: Handle) -> Result<ThreadRef, NtStatus> {
+pub(super) fn thread_of(handle: Handle, needed: u32) -> Result<ThreadRef, NtStatus> {
     let reference = if handle.raw() == CURRENT_THREAD {
         crate::ob::current_thread()
             .and_then(crate::ob::reference)
             .ok_or(STATUS_INVALID_HANDLE)?
     } else {
-        super::sync::object_of(handle.raw(), crate::ob::ObjectType::Thread)?
+        super::sync::object_granting(handle.raw(), crate::ob::ObjectType::Thread, |access| {
+            thread_access(access) & needed == needed
+        })?
     };
     let id = reference.thread();
     Ok(ThreadRef {
@@ -344,6 +388,78 @@ pub fn create_thread(
     }
 }
 
+/// NtOpenThread(ThreadHandle, DesiredAccess, ObjectAttributes, ClientId): a new handle in the
+/// calling process to the thread whose client id is `ClientId.UniqueThread` — of any process, or,
+/// when `UniqueProcess` is not zero, of that one — granted the access asked for (no security
+/// descriptor restricts it; its generic rights are mapped where it is used, see
+/// [`super::object::thread_access`]), inheritable as the attributes say (OBJ_INHERIT). The open's
+/// choice is NtOpenProcess's ([`super::process::open_by`]: the client id alone). A client id naming
+/// no thread that has not ended is STATUS_INVALID_CID (ERROR_INVALID_PARAMETER to kernel32: the
+/// threads capture's id 0, a process's id, and an ended thread's, even while a handle holds its
+/// object); an access of no right at all is STATUS_ACCESS_DENIED, as the object manager's access
+/// check answers it (the capture's OpenThread(0) of the program's own thread). The handle's slot
+/// is probed first (STATUS_ACCESS_VIOLATION); a full table is STATUS_INSUFFICIENT_RESOURCES.
+pub fn open_thread(
+    call: &mut NtCall,
+    slot: UserPtr<u32>,
+    access: u32,
+    attributes: UserAddr,
+    client_id: UserAddr,
+) -> NtResult {
+    if slot.is_null() {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    crate::user::syscall::probe_user_range(slot.addr().raw(), 4)
+        .map_err(|_| STATUS_ACCESS_VIOLATION)?;
+    let (named, inherit) = if attributes.is_null() {
+        (false, false)
+    } else {
+        let mut name = super::attributes::Name::new();
+        let read = super::attributes::read(attributes, &mut name)?;
+        (read.name.is_some(), read.inherit())
+    };
+    let client_id = if client_id.is_null() {
+        None
+    } else {
+        Some(client_id.cast::<ClientId>().read()?)
+    };
+    let client_id = super::process::open_by(named, client_id)?;
+    #[cfg(target_arch = "x86")]
+    {
+        let found = if client_id.unique_thread == 0 {
+            None
+        } else if client_id.unique_process == 0 {
+            crate::ob::lock(call.passive()).thread_by_id(client_id.unique_thread)
+        } else {
+            crate::process::pool::by_client_id(client_id.unique_process).and_then(|process| {
+                let record =
+                    crate::process::pool::of_object(process).expect("a live process's record");
+                let owner = record.sched_ptr().cast_const();
+                crate::ob::lock(call.passive()).thread_by_client_id(owner, client_id.unique_thread)
+            })
+        };
+        let id = found.ok_or(STATUS_INVALID_CID)?;
+        if thread_access(access) == 0 {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        let process = call.process();
+        let handle = crate::ob::open(process, id, access, inherit)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
+        if slot.write(handle).is_err() {
+            process.close_handle(handle);
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        Ok(STATUS_SUCCESS)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        // Host builds have no thread table: no client id names a thread.
+        let _ = (call, access, inherit, client_id);
+        Err(STATUS_INVALID_CID)
+    }
+}
+
 /// NtTerminateThread(ThreadHandle, ExitStatus): end the thread with the status. No handle names the
 /// caller, refused (STATUS_CANT_TERMINATE_SELF) when it is its process's last thread; a handle
 /// naming the caller ends it, and its process with it when it is the last. Another thread takes an
@@ -362,7 +478,7 @@ pub fn terminate_thread(_call: &mut NtCall, thread: Handle, status: u32) -> NtRe
             }
             crate::process::threads::exit_thread(status as i32);
         }
-        let target = thread_of(thread)?;
+        let target = thread_of(thread, THREAD_TERMINATE)?;
         if target.id == crate::sched::current_thread() {
             drop(target);
             crate::process::threads::exit_thread(status as i32);
@@ -388,7 +504,7 @@ pub fn suspend_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>)
     #[cfg(target_arch = "x86")]
     {
         previous.addr().probe(4)?;
-        let thread = thread_of(thread)?;
+        let thread = thread_of(thread, THREAD_SUSPEND_RESUME)?;
         let count = {
             let mut dispatch = call.passive().raise::<Dispatch>();
             let dispatcher = DISPATCHER.get(&mut dispatch);
@@ -415,7 +531,7 @@ pub fn resume_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) 
     #[cfg(target_arch = "x86")]
     {
         previous.addr().probe(4)?;
-        let thread = thread_of(thread)?;
+        let thread = thread_of(thread, THREAD_SUSPEND_RESUME)?;
         let count = {
             let mut dispatch = call.passive().raise::<Dispatch>();
             let dispatcher = DISPATCHER.get(&mut dispatch);
@@ -447,7 +563,7 @@ pub fn get_context_thread(call: &mut NtCall, thread: Handle, context: UserAddr) 
     {
         use rtl::pod::Pod;
         let mut buffer = super::exception::read_context(context)?;
-        let thread = thread_of(thread)?;
+        let thread = thread_of(thread, THREAD_GET_CONTEXT)?;
         crate::user::context::get(thread.id, call.frame(), &mut buffer)?;
         context.write(buffer.as_bytes())?;
         Ok(STATUS_SUCCESS)
@@ -468,7 +584,7 @@ pub fn set_context_thread(call: &mut NtCall, thread: Handle, context: UserAddr) 
     #[cfg(target_arch = "x86")]
     {
         let buffer = super::exception::read_context(context)?;
-        let thread = thread_of(thread)?;
+        let thread = thread_of(thread, THREAD_SET_CONTEXT)?;
         crate::user::context::set(thread.id, call.frame(), &buffer)?;
         Ok(STATUS_SUCCESS)
     }
@@ -480,11 +596,11 @@ pub fn set_context_thread(call: &mut NtCall, thread: Handle, context: UserAddr) 
 }
 
 /// NtQueryInformationThread: ThreadBasicInformation (the exit status, the TEB, the client id, the
-/// affinity, the current priority and the base priority's increment),
-/// ThreadQuerySetWin32StartAddress (the start routine its creation recorded), ThreadAmILastThread
-/// (whether the caller is its process's only thread: kernel32's ExitThread asks it) and
-/// ThreadPriorityBoost (whether the dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the
-/// classes F2K does not answer.
+/// affinity, the current priority and the base priority's increment), ThreadTimes (the creation
+/// and exit times, the kernel and user times the clock charged it), ThreadQuerySetWin32StartAddress
+/// (the start routine its creation recorded), ThreadAmILastThread (whether the caller is its
+/// process's only thread: kernel32's ExitThread asks it) and ThreadPriorityBoost (whether the
+/// dynamic boosts are disabled). STATUS_INVALID_INFO_CLASS for the classes F2K does not answer.
 pub fn query_information_thread(
     call: &mut NtCall,
     thread: Handle,
@@ -504,7 +620,7 @@ pub fn query_information_thread(
                 information.cast().write(u32::from(last))?;
             }
             QueryClass::Basic => {
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_QUERY_INFORMATION)?;
                 let info = {
                     let mut dispatch = call.passive().raise::<Dispatch>();
                     let dispatcher = DISPATCHER.get(&mut dispatch);
@@ -526,8 +642,17 @@ pub fn query_information_thread(
                 };
                 information.cast().write(basic_information(&info))?;
             }
+            QueryClass::Times => {
+                let thread = thread_of(thread, THREAD_QUERY_INFORMATION)?;
+                let times = {
+                    let mut dispatch = call.passive().raise::<Dispatch>();
+                    let record = DISPATCHER.get(&mut dispatch).thread(thread.id);
+                    kernel_user_times(record.create_time, record.exit_time, record.run_ticks())
+                };
+                information.cast().write(times)?;
+            }
             QueryClass::Win32StartAddress => {
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_QUERY_INFORMATION)?;
                 let start = DISPATCHER
                     .get(&mut call.passive().raise::<Dispatch>())
                     .thread(thread.id)
@@ -535,7 +660,7 @@ pub fn query_information_thread(
                 information.cast().write(start)?;
             }
             QueryClass::PriorityBoost => {
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_QUERY_INFORMATION)?;
                 let disabled = DISPATCHER
                     .get(&mut call.passive().raise::<Dispatch>())
                     .thread(thread.id)
@@ -578,21 +703,21 @@ pub fn set_information_thread(
         match class {
             SetClass::Priority => {
                 let priority = priority_value(value as i32)?;
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_SET_INFORMATION)?;
                 DISPATCHER
                     .get(&mut call.passive().raise::<Dispatch>())
                     .set_priority(thread.id, priority);
             }
             SetClass::BasePriority => {
                 let increment = base_priority_increment(value as i32)?;
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_SET_INFORMATION)?;
                 DISPATCHER
                     .get(&mut call.passive().raise::<Dispatch>())
                     .set_base_priority(thread.id, increment);
             }
             SetClass::AffinityMask => {
                 affinity_mask(value)?;
-                thread_of(thread)?;
+                thread_of(thread, THREAD_SET_INFORMATION)?;
             }
             SetClass::ZeroTlsCell => {
                 if thread.raw() != CURRENT_THREAD || value >= crate::user::tls::INDEXES {
@@ -608,7 +733,7 @@ pub fn set_information_thread(
                 }
             }
             SetClass::PriorityBoost => {
-                let thread = thread_of(thread)?;
+                let thread = thread_of(thread, THREAD_SET_INFORMATION)?;
                 DISPATCHER
                     .get(&mut call.passive().raise::<Dispatch>())
                     .thread_mut(thread.id)
@@ -676,15 +801,32 @@ mod tests {
     }
 
     /// The classes' lengths, each its information's exactly: ThreadBasicInformation's 28 bytes (a
-    /// 256-byte buffer is STATUS_INFO_LENGTH_MISMATCH, the ntquery capture's), the start address a
-    /// pointer; a class F2K does not answer is STATUS_INVALID_INFO_CLASS.
+    /// 256-byte buffer is STATUS_INFO_LENGTH_MISMATCH, the ntquery capture's), the times' 32, the
+    /// start address a pointer; a class F2K does not answer is STATUS_INVALID_INFO_CLASS.
     #[test]
     fn the_query_classes_take_their_lengths() {
         let size = |class: u32| QueryClass::try_from(class).map(QueryClass::size);
         assert_eq!(size(0), Ok(28));
         assert_eq!(exactly(256, 28), Err(STATUS_INFO_LENGTH_MISMATCH));
+        assert_eq!(size(1), Ok(32), "ThreadTimes");
         assert_eq!(size(9), Ok(4), "ThreadQuerySetWin32StartAddress");
-        assert_eq!(size(1), Err(STATUS_INVALID_INFO_CLASS));
+        assert_eq!(size(2), Err(STATUS_INVALID_INFO_CLASS));
+    }
+
+    /// KERNEL_USER_TIMES: the times as given, the ticks each the clock's full tick.
+    #[test]
+    fn the_times_are_ticks_of_the_clock() {
+        let times = kernel_user_times(5, 0, (2, 3));
+        let tick = u64::from(crate::interrupt::clock::INTERVAL_100NS);
+        assert_eq!(
+            times,
+            KernelUserTimes {
+                create_time: 5,
+                exit_time: 0,
+                kernel_time: 2 * tick,
+                user_time: 3 * tick,
+            }
+        );
     }
 
     /// The suspend refusals reach kernel32 as the threads fixture prints them: the count at its

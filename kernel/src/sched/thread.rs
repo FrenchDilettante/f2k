@@ -339,6 +339,17 @@ pub struct Thread {
     /// first user instruction. A thread terminated before then ends with
     /// STATUS_THREAD_IS_TERMINATING, as the spawn fixture's capture shows Windows 2000's do.
     pub(crate) user_started: bool,
+
+    // --- Times (Windows 2000's KTHREAD KernelTime and UserTime, ETHREAD CreateTime and ExitTime)
+    // ---
+    /// The clock ticks charged to the thread in kernel mode and in user mode (see
+    /// [`Thread::run_ticks`]): while it runs, the processor's slots hold them instead, as they
+    /// hold the quantum — the clock interrupt charges the slots, never a record.
+    kernel_ticks: u32,
+    user_ticks: u32,
+    /// When the thread was created and when it ended (FILETIMEs, the system time); zero until set.
+    pub(crate) create_time: u64,
+    pub(crate) exit_time: u64,
 }
 
 // The machine-state layout contract with the switch's assembly: on the 32-bit target the offsets it
@@ -468,6 +479,10 @@ impl Thread {
             exiting: false,
             copying_user_memory: false,
             user_started: false,
+            kernel_ticks: 0,
+            user_ticks: 0,
+            create_time: 0,
+            exit_time: 0,
         }
     }
 
@@ -552,6 +567,17 @@ impl Thread {
         }
     }
 
+    /// The clock ticks charged to the thread so far, (kernel mode, user mode), wherever they are
+    /// kept: the processor's slots while it runs, its record otherwise.
+    pub fn run_ticks(&self) -> (u32, u32) {
+        let slots = &crate::pcr::pcr().threads;
+        if slots.current() == Some(self.id) {
+            slots.run_ticks()
+        } else {
+            (self.kernel_ticks, self.user_ticks)
+        }
+    }
+
     /// Set the remaining quantum, wherever it is kept (see [`Thread::quantum`]).
     pub fn set_quantum(&mut self, quantum: i8) {
         let slots = &crate::pcr::pcr().threads;
@@ -569,6 +595,7 @@ impl Thread {
         let slots = &crate::pcr::pcr().threads;
         self.quantum = slots.quantum();
         self.copying_user_memory = slots.copying_user_memory();
+        (self.kernel_ticks, self.user_ticks) = slots.run_ticks();
     }
 
     /// The handover's other half: the record's quantum and attribution into the processor's slots,
@@ -577,6 +604,7 @@ impl Thread {
         let slots = &crate::pcr::pcr().threads;
         slots.set_quantum(self.quantum);
         slots.set_copying_user_memory(self.copying_user_memory);
+        slots.set_run_ticks(self.kernel_ticks, self.user_ticks);
         let (process, space) = self.process_indices();
         slots.set_processes(process, space);
     }

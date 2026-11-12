@@ -394,8 +394,15 @@ unsafe extern "system" {
         information: *const u8,
         length: u32,
     ) -> u32;
-    /// NtQueryInformationThread: the class's value (F2K answers the basic information, 0,
-    /// ThreadAmILastThread, 12, and the boost, 14).
+    /// NtOpenThread: a handle to the thread the client id names.
+    pub fn NtOpenThread(
+        handle: *mut u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        client_id: *const ClientId,
+    ) -> u32;
+    /// NtQueryInformationThread: the class's value (F2K answers the basic information, 0, the
+    /// times, 1, ThreadAmILastThread, 12, and the boost, 14).
     pub fn NtQueryInformationThread(
         thread: u32,
         class: u32,
@@ -3266,6 +3273,7 @@ pub mod threads {
         }
         let size = match class {
             0 => 28,
+            1 => 32,
             14 => 4,
             _ => return STATUS_INVALID_INFO_CLASS,
         };
@@ -3273,8 +3281,8 @@ pub mod threads {
             return STATUS_INFO_LENGTH_MISMATCH;
         }
         answer(with_thread(thread, |thread| {
-            let words: &[u32] = if class == 0 {
-                &[
+            let words: &[u32] = match class {
+                0 => &[
                     thread.exit_status,
                     process().teb as usize as u32,
                     8,
@@ -3282,9 +3290,10 @@ pub mod threads {
                     1,
                     thread.priority as u32,
                     thread.base as u32,
-                ]
-            } else {
-                &[u32::from(thread.disable_boost)]
+                ],
+                // The times: created at 1, not ended, a tick of kernel time and two of user time.
+                1 => &[1, 0, 0, 0, 100_144, 0, 200_288, 0],
+                _ => &[u32::from(thread.disable_boost)],
             };
             for (at, word) in words.iter().enumerate() {
                 // SAFETY: the caller's structure, `length` bytes.
@@ -4268,6 +4277,27 @@ pub mod children {
         }
         0
     }
+
+    /// NtOpenThread: thread id 12, the stand-in process's thread's, opens it (the handle
+    /// [`OPENED_THREAD`]); any other is STATUS_INVALID_CID.
+    pub unsafe extern "system" fn NtOpenThread(
+        handle: *mut u32,
+        _access: u32,
+        _attributes: *const ObjectAttributes,
+        client_id: *const ClientId,
+    ) -> u32 {
+        // SAFETY: the caller's structure.
+        let id = unsafe { (*client_id).unique_thread };
+        if id != 12 {
+            return STATUS_INVALID_CID;
+        }
+        // SAFETY: the caller's handle slot.
+        unsafe { handle.write(OPENED_THREAD) };
+        0
+    }
+
+    /// The handle NtOpenThread hands out.
+    pub const OPENED_THREAD: u32 = 0x88;
 
     /// NtOpenProcess: the call recorded; the child's id opens it, any other is
     /// STATUS_INVALID_CID.

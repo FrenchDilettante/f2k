@@ -1120,6 +1120,22 @@ impl Directory {
         })
     }
 
+    /// The thread object whose client id is `thread_id`, among the threads that have not ended of
+    /// every process (client ids are unique across processes and threads); none when no such
+    /// thread has it — as on Windows 2000, an ended thread's id names nothing any more, even while
+    /// a handle holds its object.
+    pub fn thread_by_id(&mut self, thread_id: u32) -> Option<ObjectId> {
+        with_bodies(|bodies| {
+            (0..THREADS as u16).find_map(|index| {
+                let id = self.id(ObjectType::Thread, index);
+                let thread = bodies.thread(self.thread(id)?);
+                let found = thread.thread_id() == thread_id
+                    && thread.state() != crate::sched::thread::ThreadState::Terminated;
+                found.then_some(id)
+            })
+        })
+    }
+
     // --- Counts --------------------------------------------------------------------------------
 
     /// Take a reference on `id`; false when it names nothing.

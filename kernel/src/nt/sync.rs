@@ -182,15 +182,29 @@ pub(super) fn open(
 /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
 /// STATUS_OBJECT_TYPE_MISMATCH for one naming another kind.
 pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, NtStatus> {
+    object_granting(handle, kind, |_| true)
+}
+
+/// [`object_of`], the handle's access checked by `granted` (which the access its entry holds must
+/// satisfy) after the kind, as Windows' ObReferenceObjectByHandle checks it:
+/// STATUS_ACCESS_DENIED for an access short of the service's.
+pub(super) fn object_granting(
+    handle: u32,
+    kind: ObjectType,
+    granted: impl FnOnce(u32) -> bool,
+) -> Result<ob::ObRef, NtStatus> {
     if is_console_handle(handle) {
         return Err(STATUS_INVALID_HANDLE);
     }
-    let id = calling_process()
+    let entry = calling_process()
         .lookup_handle(handle)
-        .and_then(|entry| entry.object_id())
         .ok_or(STATUS_INVALID_HANDLE)?;
+    let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
     if id.kind != kind {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
+    }
+    if !granted(entry.access) {
+        return Err(STATUS_ACCESS_DENIED);
     }
     ob::reference(id).ok_or(STATUS_INVALID_HANDLE)
 }
@@ -577,15 +591,27 @@ fn interval_of(value: i64) -> i64 {
 /// still lives): a table object's header, or the thread and process pseudo-handles' own objects.
 /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
 /// STATUS_OBJECT_TYPE_MISMATCH for an object no wait can name (a file, a section, the directory).
+/// A thread's handle must grant SYNCHRONIZE (STATUS_ACCESS_DENIED: the threads capture's handle
+/// OpenThread made with THREAD_QUERY_INFORMATION alone); the other kinds' handles are not checked
+/// for it.
 fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
         CURRENT_PROCESS => crate::process::current().object(),
         _ if is_console_handle(handle) => return Err(STATUS_INVALID_HANDLE),
-        _ => calling_process()
-            .lookup_handle(handle)
-            .and_then(|entry| entry.object_id())
-            .ok_or(STATUS_INVALID_HANDLE)?,
+        _ => {
+            let entry = calling_process()
+                .lookup_handle(handle)
+                .ok_or(STATUS_INVALID_HANDLE)?;
+            let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
+            let synchronize = crate::nt::object::SYNCHRONIZE_ACCESS;
+            if id.kind == ObjectType::Thread
+                && crate::nt::object::thread_access(entry.access) & synchronize == 0
+            {
+                return Err(STATUS_ACCESS_DENIED);
+            }
+            id
+        }
     };
     let waitable = id.waitable().ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;
     Ok((id, waitable))
@@ -929,7 +955,10 @@ pub fn queue_apc_thread(
             .and_then(ob::reference)
             .ok_or(STATUS_INVALID_HANDLE)?
     } else {
-        object_of(thread.raw(), ObjectType::Thread)?
+        let needed = crate::nt::object::THREAD_SET_CONTEXT;
+        object_granting(thread.raw(), ObjectType::Thread, |access| {
+            crate::nt::object::thread_access(access) & needed == needed
+        })?
     };
     let target = reference.thread();
     let mut dispatch = call.passive().raise::<Dispatch>();

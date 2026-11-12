@@ -155,6 +155,7 @@ pub fn create(
     // its creator made.
     let teb_va = crate::user::thread_teb_va(ordinal as u32);
     let thread_id = crate::process::new_client_id();
+    let created = crate::time::system_filetime();
     // The startup ladder: the stub calls the system routine (the startup's deliveries), then
     // enters ring 3 in the creator's context.
     let params = crate::sched::startup::StartParams {
@@ -174,6 +175,7 @@ pub fn create(
         record.teb_va = teb_va;
         record.thread_id = thread_id;
         record.win32_start_address = user.eax;
+        record.create_time = created;
         // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
         unsafe { crate::sched::startup::plant(record, &params) };
     });
@@ -306,9 +308,11 @@ fn end_thread(end: ThreadEnd) -> ! {
     // The ending thread's process, resolved once, for the whole exit.
     let process = crate::process::current();
     let status = end.status();
+    let ended = crate::time::system_filetime();
     // From here on the thread runs its own exit: nothing more is queued on it, what is queued goes
     // (a kernel APC that had no window yet: a suspend, or a termination's exit APC this exit
-    // supersedes), and no termination is requested for it again.
+    // supersedes), and no termination is requested for it again. Its exit time is the exit's
+    // start (Windows 2000's PspExitThread records it there).
     raised::<Dispatch, _>(|dispatch| {
         let dispatcher = DISPATCHER.get(dispatch);
         let record = dispatcher.thread_mut(current);
@@ -317,6 +321,7 @@ fn end_thread(end: ThreadEnd) -> ! {
             "a thread ends outside critical regions"
         );
         record.exit_status = status;
+        record.exit_time = ended;
         record.exiting = true;
         record.terminate_pending = true;
         dispatcher.close_apc_queue(current);

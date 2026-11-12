@@ -653,6 +653,15 @@ zw_ordinal = 752
 note = "in the calling process or another (a handle granting PROCESS_CREATE_THREAD; the first thread of a process NtCreateProcess made is its main thread), on the stack the INITIAL_TEB describes and starting in the CONTEXT (its segments and EFLAGS every user thread's)"
 
 [[export]]
+name = "NtOpenThread"
+group = "nt"
+args = ["ptr<u32> ThreadHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "ptr ClientId"]
+impl = { syscall = "crate::nt::thread::open_thread" }
+ordinal = 174
+zw_ordinal = 819
+note = "by client id, of any process (or the one UniqueProcess names); a thread that has ended is STATUS_INVALID_CID, even while a handle holds its object; no access at all is STATUS_ACCESS_DENIED"
+
+[[export]]
 name = "NtTerminateThread"
 group = "nt"
 args = ["handle ThreadHandle", "u32 ExitStatus"]
@@ -702,7 +711,7 @@ args = ["handle ThreadHandle", "u32 ThreadInformationClass", "ptr ThreadInformat
 impl = { syscall = "crate::nt::thread::query_information_thread" }
 ordinal = 197
 zw_ordinal = 842
-note = "answers ThreadBasicInformation (0), ThreadAmILastThread (12) and ThreadPriorityBoost (14), the other classes unserved"
+note = "answers ThreadBasicInformation (0), ThreadTimes (1), ThreadQuerySetWin32StartAddress (9), ThreadAmILastThread (12) and ThreadPriorityBoost (14), the other classes unserved"
 
 # --- the key services (kernel/src/nt/key.rs, over the registry, kernel/src/cm) -----------------
 
@@ -2002,10 +2011,6 @@ ordinal = 168
 [[export]]
 name = "NtOpenSymbolicLinkObject"
 ordinal = 173
-
-[[export]]
-name = "NtOpenThread"
-ordinal = 174
 
 [[export]]
 name = "NtOpenThreadToken"
@@ -3982,10 +3987,6 @@ ordinal = 813
 [[export]]
 name = "ZwOpenSymbolicLinkObject"
 ordinal = 818
-
-[[export]]
-name = "ZwOpenThread"
-ordinal = 819
 
 [[export]]
 name = "ZwOpenThreadToken"

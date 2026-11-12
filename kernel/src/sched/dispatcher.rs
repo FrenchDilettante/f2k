@@ -1150,7 +1150,9 @@ mod tests {
 
     /// One full tick's charge of the running thread's quantum, as the clock interrupt makes it.
     fn charge_tick() {
-        crate::level::raised::<crate::level::Clock, _>(|clock| slots().charge_running_tick(clock));
+        crate::level::raised::<crate::level::Clock, _>(|clock| {
+            slots().charge_running_tick(clock, false)
+        });
     }
 
     /// Whether a tick's charge requested the dispatch window's quantum decision.
@@ -2480,6 +2482,33 @@ mod tests {
         assert!(!quantum_end_requested());
         charge_tick();
         assert!(quantum_end_requested());
+    }
+
+    /// A1a: a tick charges the running thread's kernel or user time as the interrupted mode says,
+    /// in the slots while it runs; the switch hands the times back to its record, and the
+    /// incoming thread's come out of its own.
+    #[test]
+    fn the_run_times_follow_the_switch() {
+        let d = dispatcher();
+        let p = process(8);
+        let (a, b) = (thread(p), thread(p));
+        run(d, a);
+        let charge = |user_mode| {
+            crate::level::raised::<crate::level::Clock, _>(|clock| {
+                slots().charge_running_tick(clock, user_mode)
+            })
+        };
+        charge(true);
+        charge(true);
+        charge(false);
+        assert_eq!(a.run_ticks(), (1, 2), "in the slots while it runs");
+        install_current(d, b.id());
+        charge(false);
+        assert_eq!(a.run_ticks(), (1, 2), "in its record once switched out");
+        assert_eq!(b.run_ticks(), (1, 0));
+        install_current(d, a.id());
+        charge(true);
+        assert_eq!((a.run_ticks(), b.run_ticks()), ((1, 3), (1, 0)));
     }
 
     /// A1b: the running thread's quantum is the processor's while it runs — the clock charges it in
