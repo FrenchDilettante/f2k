@@ -3018,7 +3018,7 @@ fails = "FALSE"
 name = "EqualRect"
 group = "rect"
 args = ["ptr lprc1", "ptr lprc2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EqualRect" }
 ordinal = 212
 fails = "FALSE"
 
@@ -3026,7 +3026,7 @@ fails = "FALSE"
 name = "CopyRect"
 group = "rect"
 args = ["ptr lprcDst", "ptr lprcSrc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CopyRect" }
 ordinal = 70
 fails = "FALSE"
 
@@ -3034,7 +3034,7 @@ fails = "FALSE"
 name = "InflateRect"
 group = "rect"
 args = ["ptr lprc", "i32 dx", "i32 dy"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InflateRect" }
 ordinal = 374
 fails = "FALSE"
 
@@ -3042,7 +3042,7 @@ fails = "FALSE"
 name = "IntersectRect"
 group = "rect"
 args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IntersectRect" }
 ordinal = 382
 fails = "FALSE"
 
@@ -3050,7 +3050,7 @@ fails = "FALSE"
 name = "IsRectEmpty"
 group = "rect"
 args = ["ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsRectEmpty" }
 ordinal = 403
 fails = "FALSE"
 
@@ -3058,7 +3058,7 @@ fails = "FALSE"
 name = "PtInRect"
 group = "rect"
 args = ["ptr lprc", "i32 x", "i32 y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PtInRect" }
 ordinal = 495
 fails = "FALSE"
 note = "the POINT is passed by value: its x and y"
@@ -3067,7 +3067,7 @@ note = "the POINT is passed by value: its x and y"
 name = "SetRectEmpty"
 group = "rect"
 args = ["ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetRectEmpty" }
 ordinal = 587
 fails = "FALSE"
 
@@ -3075,7 +3075,7 @@ fails = "FALSE"
 name = "SubtractRect"
 group = "rect"
 args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SubtractRect" }
 ordinal = 627
 fails = "FALSE"
 
@@ -3083,7 +3083,7 @@ fails = "FALSE"
 name = "UnionRect"
 group = "rect"
 args = ["ptr lprcDst", "ptr lprcSrc1", "ptr lprcSrc2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "UnionRect" }
 ordinal = 653
 fails = "FALSE"
 

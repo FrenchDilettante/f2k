@@ -10,7 +10,7 @@ gate = true
 
 [pending]
 adjust = "F2K's sizing frame is SM_CXFRAME wide on a window without WS_BORDER (4 pixels), where Windows 2000 takes the border's pixel off it (3), in AdjustWindowRectEx as in the window"
-frames = "user32 has no EqualRect yet; F2K's sizing frame is 4 pixels on a window without WS_BORDER, where Windows 2000's is 3; and F2K takes no scroll bars off the client area"
+frames = "F2K's sizing frame is 4 pixels on a window without WS_BORDER, where Windows 2000's is 3; and F2K takes no scroll bars off the client area"
 nchittest = "F2K's WM_NCHITTEST answers HTCAPTION in the 2-pixel gaps beside the caption buttons, where Windows 2000 gives each button its whole SM_CXSIZE cell"
 
 [pins]
