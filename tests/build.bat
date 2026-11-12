@@ -662,7 +662,7 @@ goto :eof
 echo === controls
 cd user32\controls
 call :stamp controls.c
-cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib gdi32.lib
 if errorlevel 1 (echo build.bat: controls failed & exit /b 1)
 del controls.obj
 cd ..\..

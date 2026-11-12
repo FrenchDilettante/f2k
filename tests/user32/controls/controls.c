@@ -59,9 +59,31 @@
  *            DRAWITEMSTRUCT (CtlType, CtlID, itemID, itemAction,
  *            itemState, hwndItem against the button, hDC, rcItem in the
  *            parent's client, itemData)
+ *   drawdc   the DC a BS_OWNERDRAW button's WM_DRAWITEM carries, as the
+ *            parent finds it: background mode and color, text color,
+ *            the font selected (the one WM_SETFONT gave the button, the
+ *            stock SYSTEM_FONT or DEFAULT_GUI_FONT; its face, height
+ *            and weight), the brush, and whether WM_CTLCOLORBTN came
+ *            first; for a button given DEFAULT_GUI_FONT and for one
+ *            given no font, against the parent's own GetDC
+ *   edges    a text Static of each edge (none, SS_SUNKEN,
+ *            WS_EX_STATICEDGE, WS_EX_CLIENTEDGE, WS_BORDER, and
+ *            SS_SUNKEN with WS_EX_CLIENTEDGE): the style and extended
+ *            style read back, the client area's inset on each side,
+ *            and the edge's pixels as the screen shows them
+ *   centred  a single-line text Static of each alignment, with and
+ *            without SS_CENTERIMAGE, its text DEFAULT_GUI_FONT in red
+ *            on blue (WM_CTLCOLORSTATIC): the rows and columns the text
+ *            covers in the client area as the screen shows it
+ *
+ * The edges and centred sections read the screen (GetPixel on the
+ * controls' DCs): the parent is made topmost first, and each control
+ * prints the window WindowFromPoint finds at its centre (the control,
+ * its parent, or another window), so a capture another window hid
+ * shows as such.
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat controls):
- *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib
+ *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib gdi32.lib
  */
 
 #include "../common/f2kt.h"
@@ -96,6 +118,21 @@
 #endif
 #ifndef WM_DRAWITEM
 #define WM_DRAWITEM 0x002B
+#endif
+#ifndef SS_CENTERIMAGE
+#define SS_CENTERIMAGE 0x00000200L
+#endif
+#ifndef SS_SUNKEN
+#define SS_SUNKEN 0x00001000L
+#endif
+#ifndef WS_EX_CLIENTEDGE
+#define WS_EX_CLIENTEDGE 0x00000200L
+#endif
+#ifndef WS_EX_STATICEDGE
+#define WS_EX_STATICEDGE 0x00020000L
+#endif
+#ifndef DEFAULT_GUI_FONT
+#define DEFAULT_GUI_FONT 17
 #endif
 
 #define PARENT_CLASS L"F2KControlsParent"
@@ -176,11 +213,34 @@ typedef struct {
     int hdc_nonnull;
     LONG left, top, right, bottom;
     UINT item_data;
+    /* The DC as the parent found it, before drawing anything. */
+    int bk_mode;
+    COLORREF bk_color;
+    COLORREF text_color;
+    int getfont_null;
+    int font_is_getfont;
+    int font_is_system;
+    int font_is_gui;
+    char face[LF_FACESIZE];
+    LONG tm_height;
+    LONG tm_weight;
+    int brush_is_white;
+    int ctlcolor_before;
 } drawitem_t;
 
 static drawitem_t drawitems[MAX_DRAWITEMS];
 static int drawitem_count;
 static HWND ownerdraw_button;
+
+/* The WM_CTLCOLORBTN messages the parent received; and, while the
+ * centred section runs, the brush its WM_CTLCOLORSTATIC answers with
+ * (red text on blue). */
+static int ctlcolorbtn_count;
+static HBRUSH marked_brush;
+
+/* Whether the parent records the DC each WM_DRAWITEM carries (the
+ * drawdc section alone: its reads are calls of their own). */
+static int record_dc;
 
 static LRESULT CALLBACK parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -196,7 +256,29 @@ static LRESULT CALLBACK parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
     if (msg == WM_DRAWITEM && drawitem_count < MAX_DRAWITEMS) {
         const DRAWITEMSTRUCT *d = (const DRAWITEMSTRUCT *)lparam;
         drawitem_t *o = &drawitems[drawitem_count++];
+        HGDIOBJ font;
+        HGDIOBJ given;
+        TEXTMETRICA tm;
 
+        if (record_dc) {
+            font = GetCurrentObject(d->hDC, OBJ_FONT);
+            given = (HGDIOBJ)SendMessageW(d->hwndItem, WM_GETFONT, 0, 0);
+            ZeroMemory(&tm, sizeof tm);
+            GetTextMetricsA(d->hDC, &tm);
+            o->bk_mode = GetBkMode(d->hDC);
+            o->bk_color = GetBkColor(d->hDC);
+            o->text_color = GetTextColor(d->hDC);
+            o->getfont_null = (given == NULL);
+            o->font_is_getfont = (font != NULL && font == given);
+            o->font_is_system = (font == GetStockObject(SYSTEM_FONT));
+            o->font_is_gui = (font == GetStockObject(DEFAULT_GUI_FONT));
+            o->face[0] = 0;
+            GetTextFaceA(d->hDC, LF_FACESIZE, o->face);
+            o->tm_height = tm.tmHeight;
+            o->tm_weight = tm.tmWeight;
+            o->brush_is_white = (GetCurrentObject(d->hDC, OBJ_BRUSH) == GetStockObject(WHITE_BRUSH));
+            o->ctlcolor_before = ctlcolorbtn_count;
+        }
         o->wparam = (int)wparam;
         o->ctl_type = d->CtlType;
         o->ctl_id = d->CtlID;
@@ -211,6 +293,14 @@ static LRESULT CALLBACK parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         o->bottom = d->rcItem.bottom;
         o->item_data = d->itemData;
         return 0;
+    }
+    if (msg == WM_CTLCOLORBTN) {
+        ctlcolorbtn_count++;
+    }
+    if (msg == WM_CTLCOLORSTATIC && marked_brush != NULL) {
+        SetTextColor((HDC)wparam, RGB(255, 0, 0));
+        SetBkColor((HDC)wparam, RGB(0, 0, 255));
+        return (LRESULT)marked_brush;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -778,6 +868,376 @@ static void sec_ownerdraw(void)
     close_parent(parent);
 }
 
+/* --- drawdc ------------------------------------------------------------ */
+
+/* Whether two channels are within `slack` of each other. */
+static int within(int a, int b, int slack)
+{
+    return a - b <= slack && b - a <= slack;
+}
+
+/* The system colors a color is, by name: those whose GetSysColor is
+ * within `slack` of it on each channel (0: exactly), or "none";
+ * CLR_INVALID as such (a pixel GetPixel cannot read). */
+static const char *colors_of(COLORREF c, int slack)
+{
+    static const struct {
+        int index;
+        const char *name;
+    } named[] = {
+        { COLOR_BTNFACE, "BTNFACE" },
+        { COLOR_BTNSHADOW, "BTNSHADOW" },
+        { COLOR_BTNHIGHLIGHT, "BTNHIGHLIGHT" },
+        { COLOR_3DDKSHADOW, "3DDKSHADOW" },
+        { COLOR_3DLIGHT, "3DLIGHT" },
+        { COLOR_BTNTEXT, "BTNTEXT" },
+        { COLOR_WINDOW, "WINDOW" },
+        { COLOR_WINDOWTEXT, "WINDOWTEXT" },
+        { COLOR_WINDOWFRAME, "WINDOWFRAME" },
+        { -1, NULL }
+    };
+    static char buf[8][160];
+    static int next;
+    char *b = buf[next++ & 7];
+    COLORREF s;
+    int i;
+
+    if (c == CLR_INVALID) {
+        return "CLR_INVALID";
+    }
+    b[0] = 0;
+    for (i = 0; named[i].name != NULL; i++) {
+        s = GetSysColor(named[i].index);
+        if (within(GetRValue(s), GetRValue(c), slack) && within(GetGValue(s), GetGValue(c), slack)
+            && within(GetBValue(s), GetBValue(c), slack)) {
+            if (b[0] != 0) {
+                lstrcatA(b, " ");
+            }
+            lstrcatA(b, named[i].name);
+        }
+    }
+    if (b[0] == 0) {
+        lstrcpyA(b, "none");
+    }
+    return b;
+}
+
+static void print_dc_states(void)
+{
+    int i;
+
+    if (drawitem_count == 0) {
+        line("  the parent received no WM_DRAWITEM");
+    }
+    for (i = 0; i < drawitem_count; i++) {
+        line("  WM_DRAWITEM CtlID=%u: WM_CTLCOLORBTN before it %d", drawitems[i].ctl_id,
+             drawitems[i].ctlcolor_before);
+        line("    bk mode %d bk color 0x%06lX (%s) text color 0x%06lX (%s)", drawitems[i].bk_mode,
+             (unsigned long)drawitems[i].bk_color, colors_of(drawitems[i].bk_color, 0),
+             (unsigned long)drawitems[i].text_color, colors_of(drawitems[i].text_color, 0));
+        line("    font: WM_GETFONT NULL %s, the WM_GETFONT one %s, SYSTEM_FONT %s, DEFAULT_GUI_FONT %s",
+             yesno(drawitems[i].getfont_null), yesno(drawitems[i].font_is_getfont),
+             yesno(drawitems[i].font_is_system), yesno(drawitems[i].font_is_gui));
+        line("    face \"%s\" height %ld weight %ld; brush WHITE_BRUSH %s", drawitems[i].face,
+             drawitems[i].tm_height, drawitems[i].tm_weight, yesno(drawitems[i].brush_is_white));
+    }
+}
+
+/* Two BS_OWNERDRAW buttons, id 8 given DEFAULT_GUI_FONT by WM_SETFONT
+ * and id 9 given none, each painted through InvalidateRect and
+ * UpdateWindow; the parent records the DC each WM_DRAWITEM carries
+ * before drawing anything. The parent's own GetDC prints first, the
+ * state a fresh DC starts in. */
+static void sec_drawdc(void)
+{
+    HWND parent;
+    HWND a;
+    HWND b;
+    HDC dc;
+    HGDIOBJ gui;
+    TEXTMETRICA tm;
+    char face[LF_FACESIZE];
+    LRESULT r;
+
+    drain();
+    parent = open_parent();
+    if (parent == NULL) {
+        return;
+    }
+    gui = GetStockObject(DEFAULT_GUI_FONT);
+    line("GetStockObject(DEFAULT_GUI_FONT) non-NULL %s, the same as SYSTEM_FONT %s", yesno(gui != NULL),
+         yesno(gui == GetStockObject(SYSTEM_FONT)));
+    dc = GetDC(parent);
+    ZeroMemory(&tm, sizeof tm);
+    GetTextMetricsA(dc, &tm);
+    face[0] = 0;
+    GetTextFaceA(dc, LF_FACESIZE, face);
+    line("the parent's GetDC: bk mode %d bk color 0x%06lX (%s) text color 0x%06lX (%s)", GetBkMode(dc),
+         (unsigned long)GetBkColor(dc), colors_of(GetBkColor(dc), 0), (unsigned long)GetTextColor(dc),
+         colors_of(GetTextColor(dc), 0));
+    line("  font SYSTEM_FONT %s face \"%s\" height %ld weight %ld; brush WHITE_BRUSH %s",
+         yesno(GetCurrentObject(dc, OBJ_FONT) == GetStockObject(SYSTEM_FONT)), face, tm.tmHeight, tm.tmWeight,
+         yesno(GetCurrentObject(dc, OBJ_BRUSH) == GetStockObject(WHITE_BRUSH)));
+    ReleaseDC(parent, dc);
+
+    arm();
+    a = CreateWindowExW(0, L"Button", L"Font", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 10, 10, 140, 20, parent,
+                        (HMENU)8, instance(), NULL);
+    line("CreateWindowExW(Button, BS_OWNERDRAW, id 8): non-NULL %s err=%s", yesno(a != NULL), le());
+    arm();
+    b = CreateWindowExW(0, L"Button", L"No font", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 10, 40, 140, 20, parent,
+                        (HMENU)9, instance(), NULL);
+    line("CreateWindowExW(Button, BS_OWNERDRAW, id 9): non-NULL %s err=%s", yesno(b != NULL), le());
+    if (a == NULL || b == NULL) {
+        close_parent(parent);
+        return;
+    }
+    ownerdraw_button = a;
+    arm();
+    r = SendMessageW(a, WM_SETFONT, (WPARAM)gui, FALSE);
+    line("WM_SETFONT(id 8, DEFAULT_GUI_FONT, FALSE): ret=%ld err=%s", (long)r, le());
+    line("WM_GETFONT(id 8): DEFAULT_GUI_FONT %s", yesno((HGDIOBJ)SendMessageW(a, WM_GETFONT, 0, 0) == gui));
+    line("WM_GETFONT(id 9): NULL %s", yesno(SendMessageW(b, WM_GETFONT, 0, 0) == 0));
+    drain();
+
+    drawitem_count = 0;
+    record_dc = 1;
+    ctlcolorbtn_count = 0;
+    InvalidateRect(a, NULL, TRUE);
+    UpdateWindow(a);
+    ctlcolorbtn_count = 0;
+    InvalidateRect(b, NULL, TRUE);
+    UpdateWindow(b);
+    record_dc = 0;
+    line("id 8 painted, then id 9:");
+    print_dc_states();
+    close_parent(parent);
+}
+
+/* --- edges, centred ---------------------------------------------------- */
+
+typedef struct {
+    int id;
+    DWORD style;
+    DWORD ex_style;
+    const char *name;
+} edged_t;
+
+static const edged_t edged[] = {
+    { 401, SS_LEFT, 0, "SS_LEFT" },
+    { 402, SS_LEFT | SS_SUNKEN, 0, "SS_LEFT | SS_SUNKEN" },
+    { 403, SS_LEFT, WS_EX_STATICEDGE, "SS_LEFT, WS_EX_STATICEDGE" },
+    { 404, SS_LEFT, WS_EX_CLIENTEDGE, "SS_LEFT, WS_EX_CLIENTEDGE" },
+    { 405, SS_LEFT | WS_BORDER, 0, "SS_LEFT | WS_BORDER" },
+    { 406, SS_LEFT | SS_SUNKEN, WS_EX_CLIENTEDGE, "SS_LEFT | SS_SUNKEN, WS_EX_CLIENTEDGE" },
+    { 0, 0, 0, NULL }
+};
+
+static const edged_t centred[] = {
+    { 501, SS_LEFT, 0, "SS_LEFT" },
+    { 502, SS_RIGHT, 0, "SS_RIGHT" },
+    { 503, SS_LEFT | SS_CENTERIMAGE, 0, "SS_LEFT | SS_CENTERIMAGE" },
+    { 504, SS_RIGHT | SS_CENTERIMAGE, 0, "SS_RIGHT | SS_CENTERIMAGE" },
+    { 505, SS_CENTER | SS_CENTERIMAGE, 0, "SS_CENTER | SS_CENTERIMAGE" },
+    { 506, SS_RIGHT | SS_CENTERIMAGE, WS_EX_CLIENTEDGE, "SS_RIGHT | SS_CENTERIMAGE, WS_EX_CLIENTEDGE" },
+    { 0, 0, 0, NULL }
+};
+
+/* The parent made topmost (not activated), so the screen shows its
+ * controls whatever window is in the foreground. */
+static void raise_parent(HWND parent)
+{
+    BOOL r;
+
+    arm();
+    r = SetWindowPos(parent, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    line("SetWindowPos(the parent, HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE): ret=%d err=%s", r, le());
+}
+
+/* A control painted (its frame and client) and on the screen: the
+ * window WindowFromPoint finds at its centre. */
+static void paint_and_find(HWND parent, HWND s)
+{
+    RECT wr;
+    POINT p;
+    HWND found;
+
+    UpdateWindow(s);
+    drain();
+    GetWindowRect(s, &wr);
+    p.x = (wr.left + wr.right) / 2;
+    p.y = (wr.top + wr.bottom) / 2;
+    found = WindowFromPoint(p);
+    line("  WindowFromPoint(its centre): %s",
+         found == s ? "the control" : found == parent ? "its parent" : "another window");
+}
+
+/* A Static of `e`, 120x30, its text "0.". */
+static HWND make_edged(HWND parent, const edged_t *e, int row)
+{
+    return CreateWindowExW(e->ex_style, L"Static", L"0.", WS_CHILD | WS_VISIBLE | e->style, 10 + 150 * (row / 7),
+                           10 + 40 * (row % 7), 120, 30, parent, (HMENU)e->id, instance(), NULL);
+}
+
+static void sec_edges(void)
+{
+    HWND parent;
+    HWND s;
+    HDC dc;
+    RECT wr;
+    RECT cr;
+    POINT origin;
+    LONG w;
+    LONG h;
+    int i;
+
+    drain();
+    parent = open_parent();
+    if (parent == NULL) {
+        return;
+    }
+    raise_parent(parent);
+    for (i = 0; edged[i].id != 0; i++) {
+        arm();
+        s = make_edged(parent, &edged[i], i);
+        line("CreateWindowExW(\"Static\", %s, id %d, 120x30): non-NULL %s err=%s", edged[i].name, edged[i].id,
+             yesno(s != NULL), le());
+        if (s == NULL) {
+            continue;
+        }
+        line("  style=0x%08lX ex style=0x%08lX", (unsigned long)GetWindowLongW(s, GWL_STYLE),
+             (unsigned long)GetWindowLongW(s, GWL_EXSTYLE));
+        GetWindowRect(s, &wr);
+        GetClientRect(s, &cr);
+        origin.x = 0;
+        origin.y = 0;
+        ClientToScreen(s, &origin);
+        w = wr.right - wr.left;
+        h = wr.bottom - wr.top;
+        line("  client %ldx%ld, inset left %ld top %ld right %ld bottom %ld", cr.right, cr.bottom,
+             origin.x - wr.left, origin.y - wr.top, wr.right - (origin.x + cr.right),
+             wr.bottom - (origin.y + cr.bottom));
+        paint_and_find(parent, s);
+        dc = GetWindowDC(s);
+        line("  the window's pixels: (0,0) %s; (1,1) %s; (2,2) %s", colors_of(GetPixel(dc, 0, 0), 8),
+             colors_of(GetPixel(dc, 1, 1), 8), colors_of(GetPixel(dc, 2, 2), 8));
+        line("    (w-1,h-1) %s; (w-2,h-2) %s; (w-3,h-3) %s; (w-1,0) %s; (0,h-1) %s",
+             colors_of(GetPixel(dc, w - 1, h - 1), 8), colors_of(GetPixel(dc, w - 2, h - 2), 8),
+             colors_of(GetPixel(dc, w - 3, h - 3), 8), colors_of(GetPixel(dc, w - 1, 0), 8),
+             colors_of(GetPixel(dc, 0, h - 1), 8));
+        ReleaseDC(s, dc);
+    }
+    close_parent(parent);
+}
+
+/* Red: the text WM_CTLCOLORSTATIC asks for (a channel's slack of 16,
+ * for a screen of fewer colors). */
+static int is_red(COLORREF c)
+{
+    return GetRValue(c) >= 0xF0 && GetGValue(c) <= 0x10 && GetBValue(c) <= 0x10;
+}
+
+static int is_blue(COLORREF c)
+{
+    return GetRValue(c) <= 0x10 && GetGValue(c) <= 0x10 && GetBValue(c) >= 0xF0;
+}
+
+static void sec_centred(void)
+{
+    HWND parent;
+    HWND s;
+    HDC dc;
+    HGDIOBJ gui;
+    HGDIOBJ old;
+    RECT cr;
+    SIZE extent;
+    TEXTMETRICA tm;
+    COLORREF c;
+    int x;
+    int y;
+    int top;
+    int bottom;
+    int left;
+    int right;
+    int red;
+    int blue;
+    int other;
+    int i;
+
+    drain();
+    parent = open_parent();
+    if (parent == NULL) {
+        return;
+    }
+    raise_parent(parent);
+    gui = GetStockObject(DEFAULT_GUI_FONT);
+    dc = GetDC(parent);
+    old = SelectObject(dc, gui);
+    ZeroMemory(&tm, sizeof tm);
+    GetTextMetricsA(dc, &tm);
+    extent.cx = 0;
+    extent.cy = 0;
+    GetTextExtentPoint32A(dc, "0.", 2, &extent);
+    SelectObject(dc, old);
+    ReleaseDC(parent, dc);
+    line("DEFAULT_GUI_FONT: height %ld ascent %ld; \"0.\" extent %ldx%ld", tm.tmHeight, tm.tmAscent, extent.cx,
+         extent.cy);
+    marked_brush = CreateSolidBrush(RGB(0, 0, 255));
+    for (i = 0; centred[i].id != 0; i++) {
+        arm();
+        s = make_edged(parent, &centred[i], i);
+        line("CreateWindowExW(\"Static\", %s, id %d, 120x30, \"0.\"): non-NULL %s err=%s", centred[i].name,
+             centred[i].id, yesno(s != NULL), le());
+        if (s == NULL) {
+            continue;
+        }
+        SendMessageW(s, WM_SETFONT, (WPARAM)gui, FALSE);
+        InvalidateRect(s, NULL, TRUE);
+        paint_and_find(parent, s);
+        GetClientRect(s, &cr);
+        dc = GetDC(s);
+        top = -1;
+        bottom = -1;
+        left = -1;
+        right = -1;
+        red = 0;
+        blue = 0;
+        other = 0;
+        for (y = 0; y < cr.bottom; y++) {
+            for (x = 0; x < cr.right; x++) {
+                c = GetPixel(dc, x, y);
+                if (is_red(c)) {
+                    red++;
+                    if (top < 0) {
+                        top = y;
+                    }
+                    bottom = y;
+                    if (left < 0 || x < left) {
+                        left = x;
+                    }
+                    if (x > right) {
+                        right = x;
+                    }
+                } else if (is_blue(c)) {
+                    blue++;
+                } else {
+                    other++;
+                }
+            }
+        }
+        ReleaseDC(s, dc);
+        line("  client %ldx%ld: red %d blue %d other %d", cr.right, cr.bottom, red, blue, other);
+        if (red > 0) {
+            line("  the text's rows %d..%d (above it %d, below it %ld), columns %d..%d (left of it %d, right of "
+                 "it %ld)",
+                 top, bottom, top, cr.bottom - 1 - bottom, left, right, left, cr.right - 1 - right);
+        }
+    }
+    close_parent(parent);
+    DeleteObject(marked_brush);
+    marked_brush = NULL;
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "check", sec_check, F2KT_ALWAYS },
@@ -786,6 +1246,9 @@ static const section_t sections[] = {
     { "static", sec_static, F2KT_ALWAYS },
     { "icon", sec_icon, F2KT_ALWAYS },
     { "ownerdraw", sec_ownerdraw, F2KT_ALWAYS },
+    { "drawdc", sec_drawdc, F2KT_ALWAYS },
+    { "edges", sec_edges, F2KT_ALWAYS },
+    { "centred", sec_centred, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:29.00
-menus F2KT-SOURCE-CRC=0xF2D29A33
+# date: Thu 11/12/2026 16:01:20.13
+menus F2KT-SOURCE-CRC=0x73B47FBE
 >>> menus.exe load
 == load
 LoadMenuW(200): non-NULL yes err=-
@@ -352,10 +352,25 @@ menus: done
 == keyloop
 setup: the class F2KMenusKeyloop, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
 EndMenu exported: yes
-SetForegroundWindow(h): ret=0 err=-
-the foreground window: no; the focus: yes
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
 -- Alt, V, Down, Enter
-the window is not the foreground window: no input sent
+SendInput(8 events): ret=8 err=-
+the menu loop ended: yes
+received: 13 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000000
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 0 flags 0x0090 the bar
+  WM_MENUSELECT item 1 flags 0x0090 the bar
+  WM_INITMENUPOPUP View's popup position 1 system menu 0
+  WM_MENUSELECT item 211 flags 0x0088 View's popup
+  WM_MENUSELECT item 212 flags 0x0080 View's popup
+  WM_UNINITMENUPOPUP View's popup lParam=0x00000000
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
+  WM_COMMAND wParam=0x000000D4 lParam NULL
 GetMenuState(211 after): ret=0x8 err=-
 GetMenuState(212 after): ret=0x0 err=-
 GetMenuState(213 after): ret=0x0 err=-
@@ -365,26 +380,86 @@ menus: done
 == keyesc
 setup: the class F2KMenusKeyesc, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
 EndMenu exported: yes
-SetForegroundWindow(h): ret=0 err=-
-the foreground window: no; the focus: yes
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
 -- F10, Right, Down, Esc, Esc
-the window is not the foreground window: no input sent
+SendInput(10 events): ret=10 err=-
+the menu loop ended: yes
+received: 12 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000000
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 0 flags 0x0090 the bar
+  WM_MENUSELECT item 1 flags 0x0090 the bar
+  WM_INITMENUPOPUP View's popup position 1 system menu 0
+  WM_MENUSELECT item 211 flags 0x0088 View's popup
+  WM_UNINITMENUPOPUP View's popup lParam=0x00000000
+  WM_MENUSELECT item 1 flags 0x0090 the bar
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
 -- Alt, Z (no item's mnemonic), Esc
-the window is not the foreground window: no input sent
+SendInput(6 events): ret=6 err=-
+the menu loop ended: yes
+received: 8 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000000
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 0 flags 0x0090 the bar
+  WM_MENUCHAR char 0x007A flags 0x0000 the bar
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
 -- Alt, Esc
-the window is not the foreground window: no input sent
+SendInput(4 events): ret=4 err=-
+the menu loop ended: yes
+received: 7 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000000
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 0 flags 0x0090 the bar
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
 menus: done
 <<< exit code=0
 >>> menus.exe keychar
 == keychar
 setup: the class F2KMenusKeychar, menu 200 and a visible WS_OVERLAPPEDWINDOW window with it: yes
 EndMenu exported: yes
-SetForegroundWindow(h): ret=0 err=-
-the foreground window: no; the focus: yes
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
 -- Alt+V held, Up, Enter
-the window is not the foreground window: no input sent
+SendInput(8 events): ret=8 err=-
+the menu loop ended: yes
+received: 12 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000076
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 1 flags 0x0090 the bar
+  WM_INITMENUPOPUP View's popup position 1 system menu 0
+  WM_MENUSELECT item 211 flags 0x0088 View's popup
+  WM_MENUSELECT item 213 flags 0x0080 View's popup
+  WM_UNINITMENUPOPUP View's popup lParam=0x00000000
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
+  WM_COMMAND wParam=0x000000D5 lParam NULL
 -- Alt, F, Down (onto the grayed Open), Enter, Esc, Esc
-the window is not the foreground window: no input sent
+SendInput(12 events): ret=12 err=-
+the menu loop ended: yes
+received: 11 message(s)
+  WM_SYSCOMMAND wParam=0xF100 (SC_KEYMENU) lParam=0x00000000
+  WM_ENTERMENULOOP wParam=0
+  WM_INITMENU the bar
+  WM_MENUSELECT item 0 flags 0x0090 the bar
+  WM_INITMENUPOPUP File's popup position 0 system menu 0
+  WM_MENUSELECT item 201 flags 0x0080 File's popup
+  WM_MENUSELECT item 202 flags 0x0081 File's popup
+  WM_UNINITMENUPOPUP File's popup lParam=0x00000000
+  WM_CAPTURECHANGED lParam NULL
+  WM_MENUSELECT item 0 flags 0xFFFF NULL
+  WM_EXITMENULOOP wParam=0
 menus: done
 <<< exit code=0
 >>> menus.exe edit
@@ -606,7 +681,7 @@ GetMenuItemInfoA(A, 0, MIIM_TYPE, cch 20): ret=1 err=-
   dwItemData=0xA5A5A5A5 dwTypeData=set cch=6 hbmpItem=NULL
   buffer "&Alpha" dwTypeData the buffer yes
 GetMenuItemInfoW(A, 1 &Sub, by position, MIIM_SUBMENU | MIIM_ID | MIIM_STATE | MIIM_FTYPE | MIIM_STRING): ret=1 err=-
-  fType=0x0 fState=0x0 wID=7078419 hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched
+  fType=0x0 fState=0x0 wID=6423047 hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched
   dwItemData=0xA5A5A5A5 dwTypeData=set cch=4 hbmpItem=untouched
   buffer "&Sub" dwTypeData the buffer yes
 GetMenuItemInfoW(A, 1 &Sub, by position, MIIM_TYPE): ret=1 err=-
@@ -812,24 +887,24 @@ GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=-1 err=-
 GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=602 err=-
 SetMenuDefaultItem(A, 4 &D (the popup), by position): ret=1 err=-
 -- menu B's default none
-GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, 0): ret=6554119 err=-
 GetMenuDefaultItem(A, by position, 0): ret=4 err=-
-GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
-GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=6554119 err=-
+GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=6554119 err=-
 GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=4 err=-
-GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=6554119 err=-
 SetMenuDefaultItem(B, 612 Y, by command): ret=1 err=-
 -- menu B's default 612 Y
-GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, 0): ret=6554119 err=-
 GetMenuDefaultItem(A, by position, 0): ret=4 err=-
-GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=6554119 err=-
 GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=612 err=-
 GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=1 err=-
 GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=612 err=-
 SetMenuDefaultItem(A, 2 the separator, by position): ret=0 err=-
-GetMenuDefaultItem(A, by command, 0): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, 0): ret=6554119 err=-
 GetMenuDefaultItem(A, by position, 0): ret=4 err=-
-GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=7209491 err=-
+GetMenuDefaultItem(A, by command, GMDI_USEDISABLED): ret=6554119 err=-
 GetMenuDefaultItem(A, by command, GMDI_GOINTOPOPUPS): ret=612 err=-
 GetMenuDefaultItem(A, by position, GMDI_GOINTOPOPUPS): ret=1 err=-
 GetMenuDefaultItem(A, by command, GMDI_USEDISABLED | GMDI_GOINTOPOPUPS): ret=612 err=-
@@ -966,7 +1041,7 @@ menus: done
 == track
 RegisterClassW(F2KMenusOwner): atom nonzero yes err=2
 CreateWindowExW(F2KMenusOwner, WS_POPUP | WS_CAPTION | WS_VISIBLE): non-NULL yes err=-
-SetForegroundWindow(it): the foreground no
+SetForegroundWindow(it): the foreground yes
 TrackPopupMenu(the popup, TPM_RETURNCMD, the window): ret=0 err=-, ended after WM_CANCELMODE
   WM_ENTERMENULOOP wParam=1
   WM_INITMENU menu the popup
@@ -995,5 +1070,18 @@ TrackPopupMenu(NULL, TPM_RETURNCMD, the window): ret=0 err=1401, ended by itself
   the owner received no menu message
 TrackPopupMenu(the popup, TPM_RETURNCMD, NULL): ret=0 err=1400, ended by itself
   the owner received no menu message
+menus: done
+<<< exit code=0
+>>> menus.exe cues
+== cues
+SystemParametersInfoW(SPI_GETKEYBOARDCUES): ret=1 err=- value=0
+setup: the class, menu 200, a hidden WS_OVERLAPPEDWINDOW window with it and a child button: yes
+hidden: WM_QUERYUISTATE the window 0x0, its button 0x0
+shown: WM_QUERYUISTATE the window 0x0, its button 0x0
+WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL): WM_QUERYUISTATE the window 0x0, its button 0x0
+WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL): WM_QUERYUISTATE the window 0x2, its button 0x2
+WM_CHANGEUISTATE(UIS_INITIALIZE, UISF_HIDEACCEL): WM_QUERYUISTATE the window 0x0, its button 0x0
+CreateDialogIndirectParamW(a hidden dialog of no controls): non-NULL yes err=-
+  WM_QUERYUISTATE 0x0
 menus: done
 <<< exit code=0

@@ -11,21 +11,22 @@
 # The menu-editing sections (edit through track) print each menu's items after each step; itemrect
 # prints the items' places on the screen only as relations; track ends its menus without input (a
 # WM_CANCELMODE a watcher thread sends the owner), and prints how each ended.
-description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc. Then menu editing: AppendMenuW/A, InsertMenuW/A, ModifyMenuW/A, DeleteMenu and RemoveMenu by position and by command, a popup removed against one deleted; GetMenuItemInfoW/A and SetMenuItemInfoW/A of each MIIM_* mask, the string's length and cch, cbSize 44 and 48; InsertMenuItemW/A; SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags; GetSystemMenu's items and bRevert; GetMenuItemRect and GetMenuCheckMarkDimensions as relations; TrackPopupMenu and TrackPopupMenuEx ended by WM_CANCELMODE, and the menu messages the owner receives."
+description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc. Then menu editing: AppendMenuW/A, InsertMenuW/A, ModifyMenuW/A, DeleteMenu and RemoveMenu by position and by command, a popup removed against one deleted; GetMenuItemInfoW/A and SetMenuItemInfoW/A of each MIIM_* mask, the string's length and cch, cbSize 44 and 48; InsertMenuItemW/A; SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags; GetSystemMenu's items and bRevert; GetMenuItemRect and GetMenuCheckMarkDimensions as relations; TrackPopupMenu and TrackPopupMenuEx ended by WM_CANCELMODE, and the menu messages the owner receives. Then the keyboard cues: SPI_GETKEYBOARDCUES, and WM_QUERYUISTATE of a window with a menu, its child, and a dialog, after WM_CHANGEUISTATE clears, sets and initializes UISF_HIDEACCEL."
 kind = "sectioned"
 gate = true
 
 [pending]
-keyloop = "F2K has no foreground lock: its SetForegroundWindow always grants the foreground, where Windows 2000 refused it to the capture's program (its SetForegroundWindow answered 0), so the capture sends no keystroke and the window's procedure receives no menu message"
-keyesc = "F2K has no foreground lock: its SetForegroundWindow always grants the foreground, where Windows 2000 refused it to the capture's program (its SetForegroundWindow answered 0), so the capture sends no keystroke and the window's procedure receives no menu message"
-keychar = "F2K has no foreground lock: its SetForegroundWindow always grants the foreground, where Windows 2000 refused it to the capture's program (its SetForegroundWindow answered 0), so the capture sends no keystroke and the window's procedure receives no menu message"
+keyloop = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends"
+keyesc = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; and Esc on the bar, once the popup is closed, goes to the window as WM_MENUCHAR where Windows 2000 ends the loop"
+keychar = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; Alt then F selects File twice (two WM_MENUSELECT); Enter on a grayed item goes to the window as WM_MENUCHAR where Windows 2000 ends the loop, and so does Esc on the bar"
 edit = "user32 has no InsertMenuW/A, ModifyMenuW/A, DeleteMenu or RemoveMenu yet, and F2K's AppendMenu keeps an MF_STRING item with no text as a string item, where Windows 2000 makes it a separator"
 info = "user32 has no GetMenuItemInfoW/A, SetMenuItemInfoW/A or LoadBitmapW yet"
 insitem = "user32 has no InsertMenuItemW/A or GetMenuItemInfoW yet"
 default = "user32 has no SetMenuDefaultItem or GetMenuDefaultItem yet"
 sysmenu = "user32 has no GetSystemMenu yet"
 itemrect = "user32 has no GetMenuItemRect or GetMenuCheckMarkDimensions yet"
-track = "user32 has no TrackPopupMenu or TrackPopupMenuEx yet, and no foreground lock: F2K grants SetForegroundWindow where Windows 2000 refused it to the capture's program"
+track = "user32 has no TrackPopupMenu or TrackPopupMenuEx yet"
+cues = "user32's SystemParametersInfoW serves no SPI_GETKEYBOARDCUES"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -188,4 +189,9 @@ itemrect = [
 track = [
     "user32.TrackPopupMenu",
     "user32.TrackPopupMenuEx",
+]
+cues = [
+    "user32.SystemParametersInfoW",
+    "user32.SendMessageW",
+    "user32.CreateDialogIndirectParamW",
 ]

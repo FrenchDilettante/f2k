@@ -148,6 +148,12 @@
  *            in order (WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP,
  *            WM_MENUSELECT, WM_UNINITMENUPOPUP, WM_CANCELMODE,
  *            WM_EXITMENULOOP, WM_COMMAND); a NULL menu, a NULL owner
+ *   cues     whether menus show their access keys' underlines:
+ *            SystemParametersInfoW(SPI_GETKEYBOARDCUES); WM_QUERYUISTATE
+ *            of a hidden WS_OVERLAPPEDWINDOW window with menu 200 and of
+ *            its child button, once shown, and after WM_CHANGEUISTATE
+ *            clears, sets and initializes UISF_HIDEACCEL; of a dialog
+ *            made from a template in memory (CreateDialogIndirectParamW)
  *
  * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
  * at (60,70), 320x200, of a class each registers, with a fresh copy of
@@ -3058,6 +3064,133 @@ static void sec_track(void)
     unregister_owner();
 }
 
+/* --- cues -------------------------------------------------------------- */
+
+#ifndef SPI_GETKEYBOARDCUES
+#define SPI_GETKEYBOARDCUES 0x100A
+#endif
+#ifndef WM_CHANGEUISTATE
+#define WM_CHANGEUISTATE 0x0127
+#endif
+#ifndef WM_QUERYUISTATE
+#define WM_QUERYUISTATE 0x0129
+#endif
+#ifndef UIS_SET
+#define UIS_SET 1
+#endif
+#ifndef UIS_CLEAR
+#define UIS_CLEAR 2
+#endif
+#ifndef UIS_INITIALIZE
+#define UIS_INITIALIZE 3
+#endif
+#ifndef UISF_HIDEFOCUS
+#define UISF_HIDEFOCUS 0x1
+#endif
+#ifndef UISF_HIDEACCEL
+#define UISF_HIDEACCEL 0x2
+#endif
+
+static void print_uistate(HWND top, HWND child, const char *when)
+{
+    line("%s: WM_QUERYUISTATE the window 0x%lX, its button 0x%lX", when,
+         (unsigned long)SendMessageW(top, WM_QUERYUISTATE, 0, 0),
+         (unsigned long)SendMessageW(child, WM_QUERYUISTATE, 0, 0));
+}
+
+static void change_uistate(HWND top, HWND child, WORD action, const char *what)
+{
+    SendMessageW(top, WM_CHANGEUISTATE, MAKEWPARAM(action, UISF_HIDEACCEL), 0);
+    pump_queued();
+    print_uistate(top, child, what);
+}
+
+static BOOL CALLBACK cues_dialog_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    return FALSE;
+}
+
+static void sec_cues(void)
+{
+    WNDCLASSW wc;
+    HINSTANCE inst;
+    ATOM atom;
+    HWND h;
+    HWND b;
+    HWND d;
+    HMENU m;
+    BOOL r;
+    BOOL cues;
+    DWORD dialog[16];
+    DLGTEMPLATE *t;
+    WORD *p;
+
+    inst = GetModuleHandleW(NULL);
+    pump_queued();
+    cues = 7;
+    arm();
+    r = SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &cues, 0);
+    line("SystemParametersInfoW(SPI_GETKEYBOARDCUES): ret=%d err=%s value=%d", r, le(), cues);
+
+    UnregisterClassW(L"F2KMenusCues", inst);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = plain;
+    wc.hInstance = inst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"F2KMenusCues";
+    atom = RegisterClassW(&wc);
+    m = load_menu();
+    h = CreateWindowExW(0, L"F2KMenusCues", L"menus", WS_OVERLAPPEDWINDOW, 60, 70, 320, 200, NULL, m, inst,
+                        NULL);
+    b = h != NULL ? CreateWindowExW(0, L"Button", L"&Button", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 100,
+                                    24, h, (HMENU)1, inst, NULL)
+                  : NULL;
+    line("setup: the class, menu 200, a hidden WS_OVERLAPPEDWINDOW window with it and a child button: %s",
+         yesno(atom != 0 && m != NULL && h != NULL && b != NULL));
+    if (h != NULL && b != NULL) {
+        print_uistate(h, b, "hidden");
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+        UpdateWindow(h);
+        pump_queued();
+        print_uistate(h, b, "shown");
+        change_uistate(h, b, UIS_CLEAR, "WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL)");
+        change_uistate(h, b, UIS_SET, "WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL)");
+        change_uistate(h, b, UIS_INITIALIZE, "WM_CHANGEUISTATE(UIS_INITIALIZE, UISF_HIDEACCEL)");
+    }
+    if (h != NULL) {
+        DestroyWindow(h);
+    }
+    pump_queued();
+    UnregisterClassW(L"F2KMenusCues", inst);
+
+    /* A dialog of no controls: WS_POPUP | WS_CAPTION | WS_SYSMENU, no
+     * menu, the default class, the title "cues". */
+    ZeroMemory(dialog, sizeof dialog);
+    t = (DLGTEMPLATE *)dialog;
+    t->style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cdit = 0;
+    t->x = 10;
+    t->y = 10;
+    t->cx = 100;
+    t->cy = 50;
+    p = (WORD *)(t + 1);
+    *p++ = 0;
+    *p++ = 0;
+    *p++ = 'c';
+    *p++ = 'u';
+    *p++ = 'e';
+    *p++ = 's';
+    *p++ = 0;
+    arm();
+    d = CreateDialogIndirectParamW(inst, t, NULL, cues_dialog_proc, 0);
+    line("CreateDialogIndirectParamW(a hidden dialog of no controls): non-NULL %s err=%s", yesno(d != NULL), le());
+    if (d != NULL) {
+        line("  WM_QUERYUISTATE 0x%lX", (unsigned long)SendMessageW(d, WM_QUERYUISTATE, 0, 0));
+        DestroyWindow(d);
+    }
+    pump_queued();
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
@@ -3078,6 +3211,7 @@ static const section_t sections[] = {
     { "sysmenu", sec_sysmenu, F2KT_ALWAYS },
     { "itemrect", sec_itemrect, F2KT_ALWAYS },
     { "track", sec_track, F2KT_ALWAYS },
+    { "cues", sec_cues, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

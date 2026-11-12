@@ -1,7 +1,11 @@
 # controls: one test per block of the real-machine capture (output.txt); see tests/README.md. No
 # handle or address prints: a control prints by its id, an icon as the same as another or not; the
 # styles, the controls' answers and the notifications their parent receives do.
-description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE; a BS_OWNERDRAW button's WM_PAINT as the parent's WM_DRAWITEM, with wParam and the DRAWITEMSTRUCT the parent records."
+description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE; a BS_OWNERDRAW button's WM_PAINT as the parent's WM_DRAWITEM, with wParam and the DRAWITEMSTRUCT the parent records. The DC a BS_OWNERDRAW button's WM_DRAWITEM carries (background mode and color, text color, the font selected and the brush, WM_CTLCOLORBTN before it), with and without WM_SETFONT; a text Static of each edge style (SS_SUNKEN, WS_EX_STATICEDGE, WS_EX_CLIENTEDGE, WS_BORDER): its styles read back, its client inset and its edge's pixels; and a single-line Static of each alignment with and without SS_CENTERIMAGE: the rows and columns its text covers on the screen."
+# drawdc, edges and centred await their capture: once captured, each block F2K fails goes under
+# [pending] with its reason, and its pins (gdi32.GetBkMode, GetBkColor, GetTextColor,
+# GetCurrentObject, GetTextFaceA, GetTextMetricsA; user32.WindowFromPoint, GetPixel's gdi32) are
+# added.
 kind = "sectioned"
 gate = true
 
