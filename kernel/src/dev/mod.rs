@@ -204,17 +204,31 @@ impl Nodes {
         }
     }
 
-    /// Build the registry from a bus scan's devices and its interrupt routes: each device becomes
-    /// a PCI node whose interrupt is the pin routed to an ISA line and mapped to its vector, when
-    /// the pin routes somewhere in the HAL's vector band (see [`routing`]).
+    /// Build the registry from a bus scan's devices and its interrupt routes
+    /// ([`Nodes::fill_from_pci`]), by value: for the host tests. The kernel fills its registry
+    /// in place instead, since a `Nodes` is tens of KiB and the kernel builds at opt-level 0,
+    /// where a by-value registry sits on the stack.
+    #[cfg(test)]
     pub fn from_pci<'a>(
         devices: impl IntoIterator<Item = &'a pci::Device>,
         routes: Option<&pci::PirqRoutes>,
     ) -> Self {
         let mut nodes = Nodes::new();
+        nodes.fill_from_pci(devices, routes);
+        nodes
+    }
+
+    /// Add a bus scan's devices to the registry, with their interrupt routes: each device becomes
+    /// a PCI node whose interrupt is the pin routed to an ISA line and mapped to its vector, when
+    /// the pin routes somewhere in the HAL's vector band (see [`routing`]).
+    pub fn fill_from_pci<'a>(
+        &mut self,
+        devices: impl IntoIterator<Item = &'a pci::Device>,
+        routes: Option<&pci::PirqRoutes>,
+    ) {
         for d in devices {
             let interrupt = routing::route_interrupt(routes, d.bus, d.dev, d.func, d.interrupt_pin);
-            nodes.push(DeviceNode::new(
+            self.push(DeviceNode::new(
                 Bus::Pci,
                 BusAddress {
                     bus: d.bus,
@@ -230,7 +244,6 @@ impl Nodes {
                 d.bars,
             ));
         }
-        nodes
     }
 
     pub fn len(&self) -> usize {
@@ -301,18 +314,14 @@ impl Default for Nodes {
     }
 }
 
-/// Build the node registry from the boot's PCI scan and PIRQ routes.
-pub fn nodes_from_pci_scan() -> Nodes {
-    Nodes::from_pci(pci::devices().iter(), pci::routes())
-}
-
 static NODES: StaticBuf<Nodes> = StaticBuf::new(Nodes::new());
 static NODES_REF: InitOnce<&'static Nodes> = InitOnce::new();
 
 /// Fill the global node registry from the boot's PCI scan and keep it for the kernel's lifetime.
 pub fn init_nodes_from_pci() -> &'static Nodes {
+    // Filled where it lies: a by-value registry would sit on the boot stack.
     let nodes = NODES.take();
-    *nodes = nodes_from_pci_scan();
+    nodes.fill_from_pci(pci::devices().iter(), pci::routes());
     NODES_REF.set(&*nodes);
     NODES_REF.get()
 }
