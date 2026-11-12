@@ -27,7 +27,7 @@
 //! runtime's locks inside them.
 
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release};
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize};
 
 use rtl::critsec::CriticalSection;
 use rtl::sync::RawLock;
@@ -47,6 +47,12 @@ pub struct ThreadData {
     /// The `struct tm` gmtime, localtime and mktime answer through (time.h's nine ints): one per
     /// thread, as the multithreaded C runtime keeps it.
     pub tm: [AtomicI32; 9],
+    /// set_terminate's handler, which terminate calls (0 for none): the thread's own, as the
+    /// multithreaded C runtime keeps it.
+    pub terminate: AtomicUsize,
+    /// The innermost catch block running on the thread: its guard, on the stack of the C++
+    /// exception handling that called it (`crate::eh`), 0 for none.
+    pub catches: AtomicUsize,
 }
 
 /// The TLS slot holding each thread's [`ThreadData`] (TLS_OUT_OF_INDEXES before the DLL's
@@ -68,6 +74,8 @@ static FALLBACK: ThreadData = ThreadData {
     doserrno: AtomicU32::new(0),
     seed: AtomicU32::new(1),
     tm: [const { AtomicI32::new(0) }; 9],
+    terminate: AtomicUsize::new(0),
+    catches: AtomicUsize::new(0),
 };
 
 /// The lock of the C runtime's locks: held while one of them is initialized on its first use (a

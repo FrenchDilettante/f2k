@@ -311,3 +311,91 @@ _f2k_export__EH_prolog:
     lea ebp, [esp+12]
     push eax
     ret
+
+# The C++ exception handling's calling-convention seams (src/eh.rs holds the rest). A function's
+# funclets, its catch blocks and its unwind actions, are code of the function itself: called with
+# EBP its frame's base, they keep no register but ESP (a catch block's, on its own stack below the
+# exception's dispatch, may leave by a nested catch's jump back into it), and a catch block
+# answers in EAX the address its function continues at (igorsk's "Reversing Microsoft Visual C++
+# Part I", OpenRCE, 2006).
+
+# __CxxFrameHandler(record, registration, context, dispatcher), cdecl, its function's FuncInfo in
+# EAX (the registration's handler is the thunk `mov eax, <FuncInfo>; jmp __CxxFrameHandler`): the
+# Rust body takes the FuncInfo as a fifth argument.
+.p2align 4
+.globl _f2k_export___CxxFrameHandler
+_f2k_export___CxxFrameHandler:
+    cld
+    push eax
+    push dword ptr [esp+20]
+    push dword ptr [esp+20]
+    push dword ptr [esp+20]
+    push dword ptr [esp+20]
+    call _f2k_msvcrt_cxx_frame_handler
+    add esp, 20
+    ret
+
+# f2k_msvcrt_call_funclet(funclet, ebp), cdecl: an unwind action of the function whose frame base
+# is `ebp` run; the caller's registers kept.
+.p2align 4
+.globl _f2k_msvcrt_call_funclet
+_f2k_msvcrt_call_funclet:
+    push ebp
+    push ebx
+    push esi
+    push edi
+    mov eax, dword ptr [esp+20]
+    mov ebp, dword ptr [esp+24]
+    call eax
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+# f2k_msvcrt_call_catch(funclet, ebp, guard), cdecl: a catch block of the function whose frame base
+# is `ebp` run under `guard`, a registration whose first two words are linked onto fs:[0] for the
+# call and taken off after it; the address the catch block answers. The caller's registers are
+# kept on this routine's stack, which a catch block's `ret` comes back to however it got there.
+.p2align 4
+.globl _f2k_msvcrt_call_catch
+_f2k_msvcrt_call_catch:
+    push ebp
+    push ebx
+    push esi
+    push edi
+    mov ecx, dword ptr [esp+28]
+    mov eax, dword ptr fs:[0]
+    mov dword ptr [ecx], eax
+    mov dword ptr fs:[0], ecx
+    push ecx
+    mov eax, dword ptr [esp+24]
+    mov ebp, dword ptr [esp+28]
+    call eax
+    pop ecx
+    mov edx, dword ptr [ecx]
+    mov dword ptr fs:[0], edx
+    pop edi
+    pop esi
+    pop ebx
+    pop ebp
+    ret
+
+# The handler of a catch block's guard (cdecl: record, guard, context, dispatcher context): the
+# direction flag cleared for the Rust body.
+.p2align 4
+.globl _f2k_msvcrt_catch_guard_handler
+_f2k_msvcrt_catch_guard_handler:
+    cld
+    jmp _f2k_msvcrt_catch_guard
+
+# f2k_msvcrt_jump_to_continuation(target, ebp, esp), cdecl: a catch block's function resumed at
+# `target` with its frame base `ebp` and its stack `esp` (the frame's ESP slot); it does not
+# return.
+.p2align 4
+.globl _f2k_msvcrt_jump_to_continuation
+_f2k_msvcrt_jump_to_continuation:
+    mov eax, dword ptr [esp+4]
+    mov ebp, dword ptr [esp+8]
+    mov esp, dword ptr [esp+12]
+    jmp eax

@@ -4,9 +4,7 @@
 # and error one pipe the section reads once the child has ended; nothing it prints is an address.
 description = "cxxeh - C++ exception handling through msvcrt.dll under /MD (cxxeh.cpp, /GX /GR): throw and catch by value, reference and pointer, derived classes caught by their bases (an ambiguous and a private base too), catch (...), rethrow, nested try blocks, the destructors unwinding runs (locals, temporaries, partly built objects and arrays), a C++ exception through __try/__except and __finally (0xE06D7363 in the filter), typeid and type_info's name, raw_name, ==, != and before, bad_typeid; and in children, _purecall, terminate with and without set_terminate's handler, an exception nothing catches, and abort."
 kind = "sectioned"
-
-# Not gated: msvcrt's C++ exception handling (__CxxFrameHandler, _CxxThrowException, type_info,
-# terminate, _purecall) is not implemented yet. Every section is on the work list.
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

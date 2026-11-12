@@ -30,9 +30,8 @@ const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
 /// `args` are the caller's arguments, read as `entry`'s kinds say (a string's pointer is read
 /// where its pages can be read).
 pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
-    let mut line = Line::new();
-    let _ = describe(entry, reason, args, &Probed, &mut line);
-    kernel32::debug_print(CStr::from_bytes_until_nul(line.terminated()).unwrap_or(c""));
+    // SAFETY: the caller's contract.
+    unsafe { logged(entry, reason, args) };
     match entry.fails {
         Fails::Value(value) => {
             kernel32::set_last_error(ERROR_CALL_NOT_IMPLEMENTED);
@@ -41,6 +40,19 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
         Fails::Void => 0,
         Fails::Never => kernel32::raise_noncontinuable(STATUS_NOT_IMPLEMENTED),
     }
+}
+
+/// Log the call to `entry` with `args` and `reason`, as [`stubbed`] does, without failing: for an
+/// export that goes on past what it does not handle (one that cannot fail, its unhandled case
+/// answered as best it can).
+///
+/// # Safety
+///
+/// As [`stubbed`]'s.
+pub unsafe fn logged(entry: &Entry, reason: &str, args: &[u64]) {
+    let mut line = Line::new();
+    let _ = describe(entry, reason, args, &Probed, &mut line);
+    kernel32::debug_print(CStr::from_bytes_until_nul(line.terminated()).unwrap_or(c""));
 }
 
 #[cfg(test)]

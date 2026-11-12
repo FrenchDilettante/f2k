@@ -17,8 +17,9 @@
 //! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system, _popen and
 //! _pclose), the locale and the character functions ([`ctype`]), strings ([`string`]), number
 //! conversions ([`convert`]), the floating-point functions ([`math`]), the current directory and
-//! full paths ([`directory`]), and qsort, rand, abs, time and the broken-down times
-//! ([`utility`]).
+//! full paths ([`directory`]), qsort, rand, abs, time and the broken-down times ([`utility`]),
+//! and C++ exception handling ([`eh`], its calling-convention seams in src/seh.s) and run-time
+//! type information ([`rtti`]).
 //!
 //! The exports not written yet are stubs: their generated bodies log the call and fail ([`stub`]).
 
@@ -30,6 +31,7 @@ pub mod ctype;
 pub mod data;
 pub mod directory;
 pub mod edge;
+pub mod eh;
 pub mod float;
 pub mod format;
 pub mod heap;
@@ -38,6 +40,7 @@ pub mod kernel32;
 pub mod lowio;
 pub mod math;
 pub mod process;
+pub mod rtti;
 pub mod scan;
 pub mod startup;
 pub mod stdio;
@@ -67,10 +70,11 @@ const PROCESS_ATTACH: u32 = 1;
 const THREAD_DETACH: u32 = 3;
 
 /// The DLL's entry point's work, for each reason: the process attach sets up the heap, the
-/// per-thread slot and the locks, the descriptors over the standard handles, `_iob`'s standard
+/// per-thread slot and the locks, the descriptors over the standard handles, the C++ top-level
+/// exception filter (a C++ exception nothing catches calls terminate), `_iob`'s standard
 /// streams, `_acmdln` and `_wcmdln`, and `_environ` (FALSE when one cannot be had); a thread's
 /// detach frees its data; the process's detach, when the program did not end through exit or
-/// _exit, runs what exit would.
+/// _exit, runs what exit would, and puts back the top-level filter the C++ one replaced.
 pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
     match reason {
         PROCESS_ATTACH => {
@@ -78,6 +82,8 @@ pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
                 return 0;
             }
             lowio::initialize();
+            #[cfg(all(target_arch = "x86", not(test)))]
+            eh::install_unhandled_filter();
             data::open_standard_streams();
             startup::initialize_command_line();
             startup::initialize_environment() as u32
@@ -88,6 +94,8 @@ pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
         }
         PROCESS_DETACH => {
             startup::detach_process();
+            #[cfg(all(target_arch = "x86", not(test)))]
+            eh::remove_unhandled_filter();
             1
         }
         _ => 1,

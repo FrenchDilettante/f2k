@@ -63,6 +63,13 @@ pub fn raise_noncontinuable(code: u32) -> ! {
     unreachable!()
 }
 
+/// An exception raised with `code`, `flags` (EXCEPTION_NONCONTINUABLE or none) and `arguments`
+/// (EXCEPTION_MAXIMUM_PARAMETERS at most); it returns when a handler continues a continuable one.
+pub fn raise(code: u32, flags: u32, arguments: &[usize]) {
+    // SAFETY: the call reads `arguments.len()` dwords of `arguments`.
+    unsafe { imports::RaiseException(code, flags, arguments.len() as u32, arguments.as_ptr()) }
+}
+
 /// RtlUnwind (kernel32 forwards it to ntdll): the calling thread's registrations above `frame`
 /// unwound, their handlers called with `record` (null: one of RtlUnwind's own) marked unwinding.
 /// It returns to its caller.
@@ -84,6 +91,14 @@ pub unsafe fn unwind(frame: usize, record: usize) {
 pub unsafe fn unhandled_exception_filter(pointers: usize) -> i32 {
     // SAFETY: the caller's contract.
     unsafe { imports::UnhandledExceptionFilter(pointers) }
+}
+
+/// SetUnhandledExceptionFilter: `filter` (a stdcall function of the EXCEPTION_POINTERS, or 0)
+/// made the process's top-level exception filter; the one it replaces, 0 for none.
+pub fn set_unhandled_exception_filter(filter: usize) -> usize {
+    // SAFETY: kernel32 keeps the address; UnhandledExceptionFilter calls it with an exception's
+    // pointers, which `filter` takes.
+    unsafe { imports::SetUnhandledExceptionFilter(filter) }
 }
 
 /// The process ended with `code`, its DLLs told first.

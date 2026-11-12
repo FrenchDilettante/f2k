@@ -23,6 +23,9 @@ unsafe extern "system" {
     pub fn RtlUnwind(frame: usize, target_ip: usize, record: usize, value: usize);
     /// UnhandledExceptionFilter: the process's last say on an exception (EXCEPTION_POINTERS).
     pub fn UnhandledExceptionFilter(pointers: usize) -> i32;
+    /// SetUnhandledExceptionFilter: the process's top-level exception filter (a stdcall function
+    /// of the EXCEPTION_POINTERS) replaced; the one it replaces, null for none.
+    pub fn SetUnhandledExceptionFilter(filter: usize) -> usize;
     /// ExitProcess: the process ends with the code, its DLLs told first.
     pub fn ExitProcess(code: u32) -> !;
 
@@ -397,6 +400,10 @@ pub mod host {
 
     pub unsafe extern "system" fn UnhandledExceptionFilter(_: usize) -> i32 {
         unreachable("UnhandledExceptionFilter")
+    }
+
+    pub unsafe extern "system" fn SetUnhandledExceptionFilter(_: usize) -> usize {
+        unreachable("SetUnhandledExceptionFilter")
     }
 
     pub unsafe extern "system" fn ExitProcess(code: u32) -> ! {

@@ -809,6 +809,46 @@ pub extern "C" fn quick_exit(status: i32) -> ! {
     kernel32::exit_process(status as u32)
 }
 
+/// A run-time error's message: R6025, a pure virtual function called.
+pub const R6025_PURE_VIRTUAL: &[u8] = b"R6025\r\n- pure virtual function call\r\n";
+
+/// A run-time error (_amsg_exit's work): its message written after the banner, the process ended
+/// with 255, as crt's capture shows for R6025.
+pub fn runtime_error(message: &[u8]) -> ! {
+    write_message(&[b"\r\n", b"runtime error ", message]);
+    quick_exit(255)
+}
+
+/// abort: "abnormal program termination" written, the process ended with 3 (SIGABRT's default
+/// action; F2K has no signal handlers), nothing flushed.
+#[unsafe(export_name = "f2k_export_abort")]
+pub extern "C" fn abort() -> ! {
+    write_message(&[b"\r\nabnormal program termination\r\n"]);
+    quick_exit(3)
+}
+
+/// The C runtime's message on its way out: a console program's to its standard error handle, in
+/// pieces. A GUI program's would be a message box, which F2K does not show yet: it is logged.
+fn write_message(pieces: &[&[u8]]) {
+    if !crate::lowio::console_program() {
+        // SAFETY: no arguments are read.
+        unsafe {
+            crate::stub::logged(
+                &crate::spec::abort,
+                "a GUI program's run-time error message box",
+                &[],
+            )
+        };
+        return;
+    }
+    /// STD_ERROR_HANDLE.
+    const STD_ERROR: u32 = -12i32 as u32;
+    let handle = kernel32::std_handle(STD_ERROR);
+    for piece in pieces {
+        let _ = kernel32::write_file(handle, piece);
+    }
+}
+
 /// The DLL's detach as the process ends without exit or _exit (ExitProcess straight from the
 /// program): the exit functions run and the streams flushed, as exit would.
 pub fn detach_process() {

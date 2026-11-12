@@ -204,6 +204,11 @@ pub fn set_app_type(kind: i32) {
     APP_TYPE.store(kind, Relaxed);
 }
 
+/// Whether the program said it is a console program (__set_app_type's 1).
+pub fn console_program() -> bool {
+    APP_TYPE.load(Relaxed) == 1
+}
+
 /// `f` run over the descriptor table under its lock. `f` must not reach the table again (through
 /// this function or a helper built on it): the lock refuses that with a panic.
 fn with_table<R>(f: impl FnOnce(&mut Table) -> R) -> R {

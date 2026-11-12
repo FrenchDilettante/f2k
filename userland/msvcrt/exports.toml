@@ -5,7 +5,8 @@
 # exports what the corpus fixtures (tests/crt), cmd.exe and calc.exe import: its own code
 # (src/lib.rs, and src/seh.s and src/math.s for the exception handling and setjmp exports and
 # _ftol) over kernel32, as Windows 2000's msvcrt imports kernel32 alone, and stubs for what is not
-# written yet (C++ exception handling, which calc.exe imports).
+# written yet. The file's convention is the stubs' and the natives' default: a native of another
+# convention (type_info's __thiscall members) keeps its own, said in its note.
 # Its variables (`data = true`) are its own storage (src/data.rs). The rest of the records are
 # catalogued from MSVCRT.dll 6.1.9844.0's export table (scripts/catalogue_exports.py): their name
 # and ordinal. Implementing one gives it its group, prototype and implementation.
@@ -249,10 +250,10 @@ fails = "NULL"
 name = "abort"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "abort" }
 ordinal = 586
 fails = "never"
-note = "it never returns, so the stub raises"
+note = "it never returns: \"abnormal program termination\" written, the process ended with 3"
 
 [[export]]
 name = "__wgetmainargs"
@@ -359,109 +360,109 @@ note = "C++ exception handling: called on entry to a function with a C++ excepti
 name = "__CxxFrameHandler"
 group = "exceptions"
 args = ["ptr ExceptionRecord", "ptr EstablisherFrame", "ptr ContextRecord", "ptr DispatcherContext"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__CxxFrameHandler" }
 ordinal = 76
 fails = "1"
-note = "C++ exception handling: the frame handler _EH_prolog installs (its function's FuncInfo in EAX); failing, it answers ExceptionContinueSearch: no catch block matches, no destructor runs"
+note = "C++ exception handling: the frame handler _EH_prolog installs, its function's FuncInfo in EAX (src/seh.s hands it to src/eh.rs); it answers ExceptionContinueSearch when no catch block of the frame takes the exception, and does not return when one does"
 
 [[export]]
 name = "_CxxThrowException"
 group = "exceptions"
 args = ["ptr pExceptionObject", "ptr pThrowInfo"]
-impl = { stub = "not yet implemented" }
+impl = { native = "_CxxThrowException" }
 ordinal = 68
 fails = "never"
-note = "C++ exception handling: a throw, __stdcall on Windows 2000; it never returns, so the stub raises"
+note = "C++ exception handling: a throw (0xE06D7363), __stdcall on Windows 2000; it never returns, so the body's cdecl serves (its arguments sit where both conventions put them)"
 
 [[export]]
 name = "??1type_info@@UAE@XZ"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented", body = "type_info_destructor" }
+impl = { native = "type_info_destructor" }
 ordinal = 14
 fails = "void"
-note = "type_info::~type_info, __thiscall (the object in ECX): it returns nothing"
+note = "type_info::~type_info, __thiscall: the object in ECX; the spec's convention is the stubs' alone, a native keeps its own (src/rtti.rs's body is extern \"thiscall\")"
 
 [[export]]
 name = "??8type_info@@QBEHABV0@@Z"
 group = "exceptions"
 args = ["ptr rhs"]
-impl = { stub = "not yet implemented", body = "type_info_eq" }
+impl = { native = "type_info_eq" }
 ordinal = 21
 fails = "never"
-note = "type_info::operator==, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+note = "type_info::operator==, __thiscall: the object in ECX, the argument the callee pops (src/rtti.rs's body is extern \"thiscall\")"
 
 [[export]]
 name = "??9type_info@@QBEHABV0@@Z"
 group = "exceptions"
 args = ["ptr rhs"]
-impl = { stub = "not yet implemented", body = "type_info_ne" }
+impl = { native = "type_info_ne" }
 ordinal = 22
 fails = "never"
-note = "type_info::operator!=, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+note = "type_info::operator!=, __thiscall: the object in ECX, the argument the callee pops (src/rtti.rs's body is extern \"thiscall\")"
 
 [[export]]
 name = "?before@type_info@@QBEHABV1@@Z"
 group = "exceptions"
 args = ["ptr rhs"]
-impl = { stub = "not yet implemented", body = "type_info_before" }
+impl = { native = "type_info_before" }
 ordinal = 42
 fails = "never"
-note = "type_info::before, __thiscall (the object in ECX), the argument the callee's to pop, which a cdecl stub cannot; it cannot fail, so the stub raises"
+note = "type_info::before, __thiscall: the object in ECX, the argument the callee pops (src/rtti.rs's body is extern \"thiscall\")"
 
 [[export]]
 name = "?name@type_info@@QBEPBDXZ"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented", body = "type_info_name" }
+impl = { native = "type_info_name" }
 ordinal = 43
 fails = "never"
-note = "type_info::name, __thiscall (the object in ECX): it cannot fail, so the stub raises"
+note = "type_info::name, __thiscall: the object in ECX (src/rtti.rs's body is extern \"thiscall\"); the undecorated name, made on the first call and kept in the type_info"
 
 [[export]]
 name = "?raw_name@type_info@@QBEPBDXZ"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented", body = "type_info_raw_name" }
+impl = { native = "type_info_raw_name" }
 ordinal = 44
 fails = "never"
-note = "type_info::raw_name, __thiscall (the object in ECX): it cannot fail, so the stub raises"
+note = "type_info::raw_name, __thiscall: the object in ECX (src/rtti.rs's body is extern \"thiscall\")"
 
 [[export]]
 name = "?set_terminate@@YAP6AXXZP6AXXZ@Z"
 group = "exceptions"
 args = ["ptr pfnTerminate"]
-impl = { stub = "not yet implemented", body = "set_terminate" }
+impl = { native = "set_terminate" }
 ordinal = 46
 fails = "NULL"
-note = "set_terminate: the handler it replaces, NULL for none"
+note = "set_terminate: the thread's terminate handler replaced; the one it replaces, NULL for none"
 
 [[export]]
 name = "?terminate@@YAXXZ"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented", body = "terminate" }
+impl = { native = "terminate" }
 ordinal = 48
 fails = "never"
-note = "terminate: it never returns, so the stub raises"
+note = "terminate: the thread's terminate handler called, then abort; it never returns"
 
 [[export]]
 name = "__RTtypeid"
 group = "exceptions"
 args = ["ptr inptr"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__RTtypeid" }
 ordinal = 80
 fails = "never"
-note = "typeid's run-time support: an object's type_info, or a bad_typeid thrown; the stub raises"
+note = "typeid's run-time support: a polymorphic object's type_info, through its vftable's complete object locator; a bad_typeid thrown for NULL"
 
 [[export]]
 name = "_purecall"
 group = "exceptions"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "_purecall" }
 ordinal = 416
 fails = "never"
-note = "a pure virtual function's call: it never returns, so the stub raises"
+note = "a pure virtual function's call: run-time error R6025, the process ended with 255; it never returns"
 
 # --- file descriptors / console input -------------------------------------------------------------
 
