@@ -4871,6 +4871,11 @@ pub fn create_window_ex(
     .map_err(Failure::status)?;
     log_min_max_styles(call, style);
     window.write(created)?;
+    // Throwaway trace (wip/calc-screens): every creation's arguments and handle.
+    crate::serial_println!(
+        "F2K: trace: NtUserCreateWindowEx(ex={ex_style:#x}, style={style:#x}, {x}, {y}, {cx}, {cy}, parent={:#x}, menu={menu:#x}) = {created:#x}",
+        parent.raw()
+    );
     Ok(STATUS_SUCCESS)
 }
 
@@ -4909,6 +4914,12 @@ pub fn set_window_pos(
     flags: u32,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
+    // Throwaway trace (wip/calc-screens).
+    crate::serial_println!(
+        "F2K: trace: NtUserSetWindowPos({:#x}, after={:#x}, {x}, {y}, {cx}, {cy}, flags={flags:#x})",
+        window.raw(),
+        insert_after.raw()
+    );
     super::queue::with_manager(call.passive(), |manager| {
         let WindowManager {
             windows, classes, ..
@@ -4942,6 +4953,11 @@ pub fn move_window(
     repaint: u32,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
+    // Throwaway trace (wip/calc-screens).
+    crate::serial_println!(
+        "F2K: trace: NtUserMoveWindow({:#x}, {x}, {y}, {cx}, {cy}, repaint={repaint})",
+        window.raw()
+    );
     super::queue::with_manager(call.passive(), |manager| {
         manager.move_window(window.raw(), x, y, cx, cy, repaint != 0, &mut QueuePump)
     })
@@ -5003,6 +5019,8 @@ pub fn show_window(
     previous: UserPtr<u32>,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
+    // Throwaway trace (wip/calc-screens).
+    crate::serial_println!("F2K: trace: NtUserShowWindow({:#x}, {command})", window.raw());
     log_min_max_command(call, "NtUserShowWindow", window, command);
     let answer = super::queue::with_manager(call.passive(), |manager| {
         manager.show_window(window.raw(), command, &mut QueuePump)
