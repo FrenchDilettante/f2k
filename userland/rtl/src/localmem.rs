@@ -113,7 +113,8 @@ const PREFIX: usize = 2 * WORD;
 /// The data prefix's marker.
 const DATA_MARK: usize = 0x4D4B_3246;
 
-/// The Win32 errors the calls report.
+/// The Win32 errors the calls report (NO_ERROR: LocalUnlock's of the last lock).
+pub const NO_ERROR: u32 = 0;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_NOT_LOCKED: u32 = 158;
@@ -232,13 +233,19 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         }
     }
 
-    /// LocalUnlock / GlobalUnlock: TRUE while the block stays locked.
+    /// LocalUnlock / GlobalUnlock: TRUE while the block stays locked; FALSE with the last error
+    /// NO_ERROR once the last lock goes, as the documentation gives it (the memory capture's
+    /// GlobalUnlock of the last lock: err=0).
     pub fn unlock(&self, handle: usize) -> Outcome {
         match self.entry(handle) {
             Some((0, _)) => failed(0, ERROR_NOT_LOCKED),
+            Some((1, data)) => {
+                self.set_entry(handle, 0, data);
+                failed(0, NO_ERROR)
+            }
             Some((count, data)) => {
                 self.set_entry(handle, count - 1, data);
-                ok(usize::from(count > 1))
+                ok(1)
             }
             None => ok(0),
         }
@@ -401,7 +408,7 @@ mod tests {
             assert_eq!(memory.flags(handle), 1, "lock count 1");
             assert_eq!(memory.handle_of(data), handle);
             assert_eq!(read(handle), data, "*handle is the data pointer");
-            assert_eq!(memory.unlock(handle), ok(0));
+            assert_eq!(memory.unlock(handle), failed(0, NO_ERROR), "the last lock");
             assert_eq!(memory.unlock(handle), failed(0, ERROR_NOT_LOCKED));
             let grown = memory.realloc(handle, 9000, MOVEABLE);
             assert_eq!(grown, ok(handle));

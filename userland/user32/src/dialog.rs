@@ -67,6 +67,7 @@ pub const DC_HASDEFID: u32 = 0x534B;
 pub const DLGC_WANTARROWS: u32 = 0x0001;
 pub const DLGC_WANTTAB: u32 = 0x0002;
 pub const DLGC_WANTALLKEYS: u32 = 0x0004;
+pub const DLGC_HASSETSEL: u32 = 0x0008;
 pub const DLGC_WANTMESSAGE: u32 = 0x0004;
 pub const DLGC_DEFPUSHBUTTON: u32 = 0x0010;
 pub const DLGC_UNDEFPUSHBUTTON: u32 = 0x0020;
@@ -1548,9 +1549,14 @@ pub fn next_group_item_any(parent: usize, from: usize) -> usize {
     children[next]
 }
 
-/// The focus moved to `control` by the dialog manager (DlgSetFocus): the focus set, the control
-/// kept for the dialog's next activation, and the default push button's look moved with it.
+/// The focus moved to `control` by the dialog manager (DlgSetFocus): a control that keeps a
+/// selection (DLGC_HASSETSEL: an edit) has all its text selected first, as Windows 2000's dialog
+/// manager selects it, then the focus set, the control kept for the dialog's next activation, and
+/// the default push button's look moved with it.
 pub fn set_dialog_focus(dialog: usize, control: usize) {
+    if dialog_code(control, 0) & DLGC_HASSETSEL != 0 {
+        let _ = message::send(control, crate::edit::EM_SETSEL, 0, -1);
+    }
     focus::set_focus(control);
     if focus::get_focus() == control {
         write_long(dialog, FOCUS_SAVE, control as u32);

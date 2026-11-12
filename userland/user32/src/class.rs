@@ -326,12 +326,12 @@ fn system_classes_due() -> bool {
     SYSTEM_CLASSES_WANTED.with(|wanted| wanted.replace(false))
 }
 
-/// user32's own classes registered in the calling process, once: the Button and Static controls,
-/// the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32 registers them
-/// in every process it connects. Each names its procedure's two forms, so a window takes the form
-/// of the call that created it (CreateWindowExA's is no Unicode window). They are registered when
-/// the process first creates a window, not when user32 loads, so a console program that loads
-/// user32 makes no connection to the window manager; the last error is left as it was.
+/// user32's own classes registered in the calling process, once: the Button, Static and Edit
+/// controls, the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32
+/// registers them in every process it connects. Each names its procedure's two forms, so a window
+/// takes the form of the call that created it (CreateWindowExA's is no Unicode window). They are
+/// registered when the process first creates a window, not when user32 loads, so a console program
+/// that loads user32 makes no connection to the window manager; the last error is left as it was.
 pub fn register_system_classes() {
     if !system_classes_due() {
         return;
@@ -380,11 +380,31 @@ pub fn register_system_classes() {
         };
         let _ = imports::register_class(&class, name, REGISTER_WIN40_COMPAT, narrow as u32);
     }
+    // The Edit control, with the I-beam cursor.
+    let edit = WndClassEx {
+        cb_size: core::mem::size_of::<WndClassEx>() as u32,
+        style: CS_DBLCLKS | CS_PARENTDC,
+        wnd_proc: procedures::edit().0,
+        instance: USER32_MODULE,
+        cursor: stock(IDC_IBEAM, RT_CURSOR),
+        class_name: EDIT_NAME.as_ptr() as usize,
+        ..WndClassEx::default()
+    };
+    let _ = imports::register_class(
+        &edit,
+        edit.class_name,
+        REGISTER_WIN40_COMPAT,
+        procedures::edit().1 as u32,
+    );
 }
+
+/// The I-beam cursor's IDC_ id, the Edit class's.
+const IDC_IBEAM: u16 = 32513;
 
 /// The names of the controls' classes, NUL-terminated.
 const BUTTON_NAME: [u16; 7] = units::<7>("Button");
 const STATIC_NAME: [u16; 7] = units::<7>("Static");
+const EDIT_NAME: [u16; 5] = units::<5>("Edit");
 
 /// `text`'s units, NUL-terminated, in an array of `N` (its length plus one).
 const fn units<const N: usize>(text: &str) -> [u16; N] {
@@ -420,6 +440,13 @@ mod procedures {
         (
             crate::dialog::def_dlg_proc_w as *const () as usize,
             crate::dialog::def_dlg_proc_a as *const () as usize,
+        )
+    }
+
+    pub fn edit() -> (usize, usize) {
+        (
+            crate::edit::edit_proc_w as *const () as usize,
+            crate::edit::edit_proc_a as *const () as usize,
         )
     }
 
@@ -481,6 +508,18 @@ mod procedures {
 
     pub fn menu() -> (usize, usize) {
         (procedure(menu_w) as usize, procedure(menu_a) as usize)
+    }
+
+    fn edit_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::edit::edit_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn edit_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::edit::edit_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    pub fn edit() -> (usize, usize) {
+        (procedure(edit_w) as usize, procedure(edit_a) as usize)
     }
 }
 

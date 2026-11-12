@@ -91,8 +91,9 @@ mod raw {
         import_name_type = "undecorated"
     )]
     unsafe extern "system" {
-        /// SetLastError: the calling thread's last error.
+        /// SetLastError and GetLastError: the calling thread's last error.
         pub fn SetLastError(code: u32);
+        pub fn GetLastError() -> u32;
         /// FindResourceExW: the HRSRC of a module's resource of a type, a name and a language
         /// (NULL: the program's module); NULL, the last error set, when there is none.
         pub fn FindResourceExW(
@@ -123,6 +124,16 @@ mod raw {
         pub fn GlobalUnlock(memory: usize) -> u32;
         pub fn GlobalSize(memory: usize) -> usize;
         pub fn GlobalFree(memory: usize) -> usize;
+        /// LocalAlloc, LocalReAlloc, LocalLock, LocalUnlock, LocalSize and LocalFree: a local
+        /// memory block (NULL, the last error set, when there is no room), the same grown or cut
+        /// (NULL when it cannot be), its data's address while it is locked, its unlock (the last
+        /// error NO_ERROR when the last lock goes), its size, and its release (NULL on success).
+        pub fn LocalAlloc(flags: u32, bytes: usize) -> usize;
+        pub fn LocalReAlloc(memory: usize, bytes: usize, flags: u32) -> usize;
+        pub fn LocalLock(memory: usize) -> *mut u8;
+        pub fn LocalUnlock(memory: usize) -> u32;
+        pub fn LocalSize(memory: usize) -> usize;
+        pub fn LocalFree(memory: usize) -> usize;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -724,6 +735,12 @@ pub fn set_last_error(code: u32) {
     unsafe { raw::SetLastError(code) }
 }
 
+/// GetLastError: the calling thread's last error.
+pub fn last_error() -> u32 {
+    // SAFETY: no pointers; it reads the thread's own TEB.
+    unsafe { raw::GetLastError() }
+}
+
 /// A resource FindResourceExW found: its HRSRC (kernel32's handle, never zero).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hrsrc(usize);
@@ -879,6 +896,138 @@ impl Drop for GlobalLocked {
     fn drop(&mut self) {
         // SAFETY: the handle locked in `new`, unlocked once.
         unsafe { raw::GlobalUnlock(self.memory) };
+    }
+}
+
+impl GlobalLocked {
+    /// The block's bytes as UTF-16 units (an odd last byte left out).
+    pub fn units(&self) -> &[u16] {
+        // SAFETY: kernel32's blocks are 8-aligned (the heap's granularity); the block holds `size`
+        // initialized bytes (GlobalAlloc's are zeroed or written before they are read), locked for
+        // the value's life.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr().cast(), self.size / 2) }
+    }
+
+    /// The block's bytes as UTF-16 units, to write.
+    pub fn units_mut(&mut self) -> &mut [u16] {
+        // SAFETY: as for `units`, borrowed mutably once.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), self.size / 2) }
+    }
+}
+
+/// The LMEM_ flags (winbase.h): a fixed block (its handle its address), a movable one, zeroed.
+pub const LMEM_FIXED: u32 = 0x0000;
+pub const LMEM_MOVEABLE: u32 = 0x0002;
+pub const LMEM_ZEROINIT: u32 = 0x0040;
+
+/// LocalAlloc: a local memory block of `bytes` bytes, as the LMEM_ `flags` ask: its handle (a fixed
+/// block's address); none, with kernel32's last error, when there is no room.
+pub fn local_alloc(flags: u32, bytes: usize) -> Option<usize> {
+    // SAFETY: no pointers.
+    let memory = unsafe { raw::LocalAlloc(flags, bytes) };
+    (memory != 0).then_some(memory)
+}
+
+/// LocalReAlloc: the block `memory` names grown or cut to `bytes` bytes, as the LMEM_ `flags`
+/// ask (LMEM_MOVEABLE lets a fixed block move; a movable block keeps its handle): its handle;
+/// none, with kernel32's last error, when it cannot be.
+pub fn local_realloc(memory: usize, bytes: usize, flags: u32) -> Option<usize> {
+    // SAFETY: kernel32 checks the handle against its table and the heap before it reads anything.
+    let memory = unsafe { raw::LocalReAlloc(memory, bytes, flags) };
+    (memory != 0).then_some(memory)
+}
+
+/// LocalSize: the size of the block `memory` names; 0 for a handle naming none.
+pub fn local_size(memory: usize) -> usize {
+    // SAFETY: as for `local_realloc`.
+    unsafe { raw::LocalSize(memory) }
+}
+
+/// LocalFree: the block `memory` names freed (a handle naming none refused by kernel32).
+pub fn local_free(memory: usize) {
+    // SAFETY: as for `local_realloc`.
+    unsafe { raw::LocalFree(memory) };
+}
+
+/// A movable local memory block locked while this lives (LocalLock, then LocalUnlock when dropped,
+/// which leaves the last error NO_ERROR as the last lock goes, as kernel32's documentation gives
+/// it): its data, as UTF-16 units.
+pub struct LocalLocked {
+    memory: usize,
+    at: NonNull<u16>,
+    units: usize,
+}
+
+impl LocalLocked {
+    /// The block `memory` names, locked; none for a handle naming no block (or a discarded one).
+    pub fn new(memory: usize) -> Option<LocalLocked> {
+        // SAFETY: kernel32 checks the handle before it reads anything; the lock is undone once,
+        // when the value is dropped.
+        let at = NonNull::new(unsafe { raw::LocalLock(memory) })?;
+        Some(LocalLocked {
+            memory,
+            at: at.cast(),
+            units: local_size(memory) / 2,
+        })
+    }
+
+    /// The block's units.
+    pub fn units(&self) -> &[u16] {
+        // SAFETY: kernel32's blocks are 8-aligned (the heap's granularity); the block holds `units`
+        // units of initialized memory (LocalAlloc's are zeroed or written before they are read),
+        // locked for the value's life.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr(), self.units) }
+    }
+
+    /// The block's units, to write.
+    pub fn units_mut(&mut self) -> &mut [u16] {
+        // SAFETY: as for `units`, borrowed mutably once.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.units) }
+    }
+}
+
+impl Drop for LocalLocked {
+    fn drop(&mut self) {
+        // SAFETY: the handle locked in `new`, unlocked once.
+        unsafe { raw::LocalUnlock(self.memory) };
+    }
+}
+
+/// A fixed local memory block seen as values of `T`: as many as its size holds. A fixed block
+/// needs no lock (its handle is its address), so reading or writing it leaves the last error as it
+/// is.
+pub struct LocalFixed<T: Pod> {
+    at: NonNull<T>,
+    len: usize,
+}
+
+impl<T: Pod> LocalFixed<T> {
+    /// The fixed block at `block`; none for a null one.
+    ///
+    /// # Safety
+    ///
+    /// `block` is null, or the handle LocalAlloc or LocalReAlloc answered for a fixed block (made
+    /// LMEM_ZEROINIT, or written whole before it is read) that is not freed while the value lives,
+    /// and no other value names it meanwhile.
+    pub unsafe fn new(block: usize) -> Option<LocalFixed<T>> {
+        let at = NonNull::new(block as *mut T)?;
+        Some(LocalFixed {
+            at,
+            len: local_size(block) / core::mem::size_of::<T>(),
+        })
+    }
+
+    /// The values.
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: the contract of `new`: a live fixed block of at least `len` values' bytes,
+        // initialized, at kernel32's 8-byte alignment; any bytes make a Pod value.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr(), self.len) }
+    }
+
+    /// The values, to write.
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: as for `as_slice`, borrowed mutably once.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.len) }
     }
 }
 

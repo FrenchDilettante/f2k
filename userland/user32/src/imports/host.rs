@@ -23,6 +23,8 @@ use crate::class::WndClassExW;
 
 mod clipboard;
 pub use clipboard::*;
+mod local;
+pub use local::*;
 
 /// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
 pub mod canvas;
@@ -76,6 +78,10 @@ pub struct DisplayChange {
 
 pub unsafe extern "system" fn SetLastError(code: u32) {
     LAST_ERROR.with(|error| error.set(code));
+}
+
+pub unsafe extern "system" fn GetLastError() -> u32 {
+    LAST_ERROR.with(|error| error.get())
 }
 
 // --- The resources -------------------------------------------------------------------------------

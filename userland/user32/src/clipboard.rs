@@ -205,7 +205,9 @@ pub extern "system" fn set_clipboard_data(format: u32, memory: usize) -> usize {
 /// first when the system synthesises the format from another; the system's (freed at this
 /// process's next close or empty). NULL, the last error untouched, for a format the clipboard
 /// has none of; NULL with ERROR_CLIPBOARD_NOT_OPEN when the calling thread does not have it open,
-/// or with kernel32's error when there is no room for the block.
+/// or with kernel32's error when there is no room for the block. The copy into the block leaves the
+/// last error as it was, as the clipbrd capture shows Windows 2000's: F2K's copy goes through
+/// GlobalLock and GlobalUnlock, whose last unlock leaves NO_ERROR, so the error is kept across it.
 #[unsafe(export_name = "f2k_export_GetClipboardData")]
 pub extern "system" fn get_clipboard_data(format: u32) -> usize {
     let Some((data, length)) = answered(imports::get_clipboard_data(format)) else {
@@ -218,10 +220,14 @@ pub extern "system" fn get_clipboard_data(format: u32) -> usize {
         return 0;
     };
     if length > 0 {
+        let kept = imports::last_error();
         let copied = match GlobalLocked::new(memory) {
             Some(mut locked) => answered(imports::create_local_mem_handle(data, locked.buffer())),
             None => None,
         };
+        if copied.is_some() {
+            imports::set_last_error(kept);
+        }
         if copied.is_none() {
             imports::global_free(memory);
             return 0;
