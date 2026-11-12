@@ -599,6 +599,27 @@ fn load(memory: &mut Mapped, name: &[u16]) -> Result<Module, u32> {
     load_file(memory, open_module(name)?)
 }
 
+/// Load the module `name` (formed) from the volume without resolving it, as LdrLoadDll does for
+/// the IMAGE_FILE_EXECUTABLE_IMAGE characteristic (kernel32's DONT_RESOLVE_DLL_REFERENCES): its
+/// entry joins the lists, its load count 1, but its imports are not snapped, it joins no
+/// initialization order and its entry point is never called (entry processed; not marked a DLL's
+/// image, which its unload reads as no imports to release). Under the loader lock.
+fn load_unresolved(memory: &mut Mapped, name: &[u16]) -> Result<Module, u32> {
+    let found = open_module(name)?;
+    let mapped = map_image(found.file);
+    // The section holds the file.
+    close(found.file);
+    let (base, size) = mapped.inspect_err(|&status| report_unmapped(found.path(), status))?;
+    let added = add_entry(memory, base, Some(size), found.path());
+    drop(found);
+    let Some(module) = added else {
+        unmap(base);
+        return Err(STATUS_NO_MEMORY);
+    };
+    change_flags(memory, module, flags::ENTRY_PROCESSED, flags::IMAGE_DLL);
+    Ok(module)
+}
+
 /// Load the module whose file `found` opened (see the module doc): its entry, its load count 1, its
 /// imports snapped, in the initialization order (its entry point not called yet). The search's
 /// buffers go back to the heap before its imports load. Under the loader lock.
@@ -748,9 +769,15 @@ fn dereference(memory: &mut Mapped, module: Module) {
 
 /// Unload the loaded `module`: its entry point called with DLL_PROCESS_DETACH (lpReserved NULL)
 /// when it had its DLL_PROCESS_ATTACH, out of the lists, the modules its first `referenced` import
-/// descriptors name released, its view unmapped, its entry freed.
+/// descriptors name released (none for a module loaded unresolved, which referenced none), its
+/// view unmapped, its entry freed.
 fn discard(memory: &mut Mapped, module: Module, referenced: usize) {
     let base = base_of(memory, module);
+    let referenced = if module.flags(memory) & flags::IMAGE_DLL == 0 {
+        0
+    } else {
+        referenced
+    };
     module.set_load_count(memory, 0);
     if module.flags(memory) & flags::PROCESS_ATTACH_CALLED != 0 {
         change_flags(memory, module, 0, flags::PROCESS_ATTACH_CALLED);
@@ -996,25 +1023,35 @@ pub unsafe extern "system" fn ldr_get_dll_handle(
     found.map_or(STATUS_DLL_NOT_FOUND, |_| STATUS_SUCCESS)
 }
 
+/// The characteristic LdrLoadDll is handed to load a module unresolved
+/// (IMAGE_FILE_EXECUTABLE_IMAGE: kernel32's DONT_RESOLVE_DLL_REFERENCES).
+const IMAGE_FILE_EXECUTABLE_IMAGE: u32 = 0x0002;
+
 /// LdrLoadDll: the module `name` names — one the lists hold, its load count raised (a static
 /// module's stays), or one loaded from the volume, the DLLs the load brought in attached (see the
 /// module doc; STATUS_DLL_NOT_FOUND where no file is found, STATUS_DLL_INIT_FAILED where an entry
-/// point answers FALSE) — its handle into `handle` (zero on a failure). The search path the caller
-/// passes is not consulted: the default search is ntdll's own (Windows 2000's kernel32 computes
-/// the same one and passes it); the characteristics are not consulted.
+/// point answers FALSE) — its handle into `handle` (zero on a failure). With the
+/// IMAGE_FILE_EXECUTABLE_IMAGE characteristic, a module loaded from the volume is not resolved
+/// (see [`load_unresolved`]). The search path the caller passes is not consulted: the default
+/// search is ntdll's own (Windows 2000's kernel32 computes the same one and passes it).
 ///
 /// # Safety
 ///
-/// As [`ldr_get_dll_handle`].
+/// As [`ldr_get_dll_handle`]; `characteristics` is null or points at a dword.
 #[unsafe(export_name = "f2k_export_LdrLoadDll")]
 pub unsafe extern "system" fn ldr_load_dll(
     _path: *const u16,
-    _characteristics: *const u32,
+    characteristics: *const u32,
     name: *const UnicodeString,
     handle: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's string.
-    let name = unsafe { (*name).units() };
+    // SAFETY: the caller's string, and its characteristics when given.
+    let (name, characteristics) = unsafe {
+        (
+            (*name).units(),
+            characteristics.as_ref().map_or(0, |&value| value),
+        )
+    };
     let found = locked(|memory| {
         if let Some(module) = find(memory, name) {
             change_load_count(memory, module, modules::referenced);
@@ -1023,6 +1060,10 @@ pub unsafe extern "system" fn ldr_load_dll(
         let mut formed = [0u16; NAME_ROOM];
         let length =
             modules::module_name(name, &mut formed[..NAME_ROOM - 1]).ok_or(STATUS_DLL_NOT_FOUND)?;
+        if characteristics & IMAGE_FILE_EXECUTABLE_IMAGE != 0 {
+            let module = load_unresolved(memory, &formed[..length])?;
+            return Ok(base_of(memory, module));
+        }
         let module = load(memory, &formed[..length])?;
         if run_initializers(memory, 0).is_err() {
             // The DLL asked for goes again, with what it brought in.

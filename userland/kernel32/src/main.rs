@@ -34,7 +34,7 @@ use kernel32::edge::OutBuf;
 use kernel32::ntcall;
 use rtl::critsec::CriticalSection;
 use rtl::handles::HandleTable;
-use rtl::localmem::{HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
+use rtl::localmem::{Family, HandleCalls, HeapCalls, Memory, Outcome, ENTRY_SIZE, MAXIMUM_HANDLES};
 use rtl::sync::{Locked, RawLock};
 use rtl::sys;
 
@@ -221,7 +221,7 @@ extern "C" fn f2k_k32_local_free(handle: usize) -> usize {
 /// LocalLock / GlobalLock.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_local_lock(handle: usize) -> usize {
-    with_memory(|memory| memory.lock(handle))
+    finish(with_memory(|memory| memory.lock(handle)))
 }
 
 /// LocalUnlock / GlobalUnlock.
@@ -245,7 +245,13 @@ extern "C" fn f2k_k32_local_size(handle: usize) -> usize {
 /// LocalFlags.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_local_flags(handle: usize) -> usize {
-    with_memory(|memory| memory.flags(handle))
+    finish(with_memory(|memory| memory.flags(handle, Family::Local)))
+}
+
+/// GlobalFlags: LocalFlags' answer in the GMEM_ values (GMEM_DISCARDABLE, GMEM_DDESHARE).
+#[unsafe(no_mangle)]
+extern "C" fn f2k_k32_global_flags(handle: usize) -> usize {
+    finish(with_memory(|memory| memory.flags(handle, Family::Global)))
 }
 
 /// LocalReAlloc / GlobalReAlloc.

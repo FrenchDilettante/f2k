@@ -122,6 +122,33 @@ pub fn image_base() -> usize {
     peb_field!(image_base_address)
 }
 
+/// The system's version, as RtlGetVersion reports it: the PEB's numbers (the service pack's in
+/// OSCSDVersion, its major number in the high byte), and the shared data page's suite mask and
+/// product type.
+pub fn system_version() -> crate::version::VersionInfo {
+    let page =
+        crate::shared_data::USER_ADDRESS as usize as *const crate::shared_data::KUserSharedData;
+    // SAFETY: the shared data page is mapped read-only in every process for its whole life; its
+    // fields are read in place, one at a time.
+    let (suite_mask, product_type) = unsafe {
+        (
+            (&raw const (*page).suite_mask).read_volatile(),
+            (&raw const (*page).nt_product_type).read_volatile(),
+        )
+    };
+    let service_pack: u16 = peb_field!(os_csd_version);
+    crate::version::VersionInfo {
+        major: peb_field!(os_major_version),
+        minor: peb_field!(os_minor_version),
+        build: u32::from(peb_field!(os_build_number)),
+        platform: peb_field!(os_platform_id),
+        service_pack_major: service_pack >> 8,
+        service_pack_minor: service_pack & 0xFF,
+        suite_mask: suite_mask as u16,
+        product_type: product_type as u8,
+    }
+}
+
 /// The process parameters (RTL_USER_PROCESS_PARAMETERS), as the PEB points at them.
 pub fn process_parameters() -> *mut ProcessParameters<usize> {
     peb_field!(process_parameters) as *mut ProcessParameters<usize>

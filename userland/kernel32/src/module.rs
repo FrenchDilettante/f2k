@@ -1,8 +1,13 @@
-//! The modules, as Windows 2000's kernel32 serves them: GetModuleHandle and LoadLibrary (A and W),
-//! FreeLibrary, GetProcAddress and DisableThreadLibraryCalls over ntdll's loader (LdrGetDllHandle,
-//! LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress, LdrDisableThreadCalloutsForDll), and
-//! GetModuleFileName (A and W) over the PEB's module lists, which it walks itself under the loader
-//! lock, as Windows 2000's does.
+//! The modules, as Windows 2000's kernel32 serves them: GetModuleHandle, LoadLibrary and
+//! LoadLibraryEx (A and W), FreeLibrary, GetProcAddress and DisableThreadLibraryCalls over ntdll's
+//! loader (LdrGetDllHandle, LdrLoadDll, LdrUnloadDll, LdrGetProcedureAddress,
+//! LdrDisableThreadCalloutsForDll), and GetModuleFileName (A and W) over the PEB's module lists,
+//! which it walks itself under the loader lock, as Windows 2000's does.
+//!
+//! LoadLibraryEx's LOAD_LIBRARY_AS_DATAFILE maps a DLL the process has not loaded as a plain file
+//! (a read-only view of a data section, NtCreateSection and NtMapViewOfSection): its handle is the
+//! view's base with the low bit set, a mapping the loader's lists do not hold (GetModuleHandle does
+//! not find it, GetProcAddress finds nothing in it), which FreeLibrary unmaps.
 //!
 //! A module name converts as Windows 2000's converts it, into a MAX_PATH-character Unicode string
 //! (Basep8BitStringToStaticUnicodeString): a longer one is ERROR_FILENAME_EXCED_RANGE, never cut
@@ -10,14 +15,18 @@
 
 use rtl::peb::LdrDataTableEntry;
 
-use crate::base::{loader_data, set_last_error, unicode_string};
-use crate::edge::{ansi_into, counted, InStr, InWStr, OutBuf, Text};
+use crate::base::{last_error, loader_data, set_last_error, unicode_string, CURRENT_PROCESS};
+use crate::edge::{ansi_into, counted, wide_units, InStr, InWStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure};
+use crate::files::search::search_default;
+use crate::files::{self, NtPath, Wide};
+use crate::heap::Owned;
 use crate::nt::{AnsiString, UnicodeString};
-use crate::ntcall::{self, LoaderLock, NtStatus};
+use crate::ntcall::{self, LoaderLock, NtStatus, View};
 
 const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
+const ERROR_BAD_EXE_FORMAT: u32 = 193;
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
@@ -33,11 +42,15 @@ fn image_base() -> u32 {
     crate::base::image_base() as u32
 }
 
-/// A loader call: the module's handle (LdrGetDllHandle, LdrLoadDll).
+/// The characteristic LdrLoadDll is handed for DONT_RESOLVE_DLL_REFERENCES.
+const IMAGE_FILE_EXECUTABLE_IMAGE: u32 = 0x0002;
+
+/// A loader call: the module's handle (LdrGetDllHandle, LdrLoadDll; the second also unresolved).
 #[derive(Clone, Copy)]
 enum Loader {
     Handle,
     Load,
+    LoadUnresolved,
 }
 
 impl Loader {
@@ -46,11 +59,15 @@ impl Loader {
         match self {
             Loader::Handle => ntcall::get_dll_handle(name),
             Loader::Load => ntcall::load_dll(name),
+            Loader::LoadUnresolved => {
+                ntcall::load_dll_with(name, Some(IMAGE_FILE_EXECUTABLE_IMAGE))
+            }
         }
     }
 }
 
 /// A module name as GetModuleHandle and LoadLibrary are handed it.
+#[derive(Clone, Copy)]
 enum Name<'a> {
     /// An A call's, converted to Unicode first into a MAX_PATH-character buffer
     /// (ERROR_FILENAME_EXCED_RANGE past it).
@@ -138,11 +155,151 @@ pub unsafe extern "system" fn load_library_w(name: *const u16) -> u32 {
     module(name.map(Name::Wide), Loader::Load)
 }
 
+/// LoadLibraryEx's flags.
+const DONT_RESOLVE_DLL_REFERENCES: u32 = 0x0000_0001;
+const LOAD_LIBRARY_AS_DATAFILE: u32 = 0x0000_0002;
+
+/// The extension a data file's name without one is looked for with.
+const DLL_EXTENSION: [u16; 4] = [b'.' as u16, b'd' as u16, b'l' as u16, b'l' as u16];
+
+/// LoadLibraryEx's work, either form: LOAD_LIBRARY_AS_DATAFILE a loaded module's reference or the
+/// file mapped as data ([`load_as_datafile`]); DONT_RESOLVE_DLL_REFERENCES a module loaded without
+/// its imports snapped or its entry point called (LdrLoadDll's IMAGE_FILE_EXECUTABLE_IMAGE);
+/// otherwise LoadLibrary's load. The file handle is reserved and not read, and the flags Windows
+/// 2000 does not know are passed over (the dll capture's 0x80000000 loads). The search is the
+/// default one whatever LOAD_WITH_ALTERED_SEARCH_PATH says: F2K's loader does not consult a search
+/// path, so a module with a path of its own is loaded from there and its imports looked for where
+/// any module's are.
+fn load_library_ex(name: Option<Name<'_>>, flags: u32) -> u32 {
+    let Some(name) = name else {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    if flags & LOAD_LIBRARY_AS_DATAFILE != 0 {
+        return answer(load_as_datafile(name), 0);
+    }
+    let call = if flags & DONT_RESOLVE_DLL_REFERENCES != 0 {
+        Loader::LoadUnresolved
+    } else {
+        Loader::Load
+    };
+    answer(by_name(name, call), 0)
+}
+
+/// LOAD_LIBRARY_AS_DATAFILE: a module the process has loaded is referenced once more and its handle
+/// handed back (the dll capture: FreeLibrary of it leaves the module loaded); otherwise the file
+/// the default search finds (".dll" added to a name without an extension; ERROR_FILE_NOT_FOUND
+/// for none) is mapped read-only as data, its headers an image's (ERROR_BAD_EXE_FORMAT
+/// otherwise), and the view's base with its low bit set is the handle. The last error is cleared
+/// then, as the capture shows.
+fn load_as_datafile(name: Name<'_>) -> Result<u32, Failure> {
+    if by_name(name, Loader::Handle).is_ok() {
+        return by_name(name, Loader::Load);
+    }
+    let mut converted = [0u16; MAX_PATH + 1];
+    let copied;
+    let units: &[u16] = match name {
+        Name::Ansi(name) => {
+            let length = ansi_into(Some(&name), &mut converted)
+                .ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
+            &converted[..length]
+        }
+        Name::Wide(name) => {
+            copied = wide_units(&name).ok_or(Failure::Error(files::ERROR_NOT_ENOUGH_MEMORY))?;
+            &copied
+        }
+    };
+    let name = Wide::of(units).ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
+    let extension = Wide::of(&DLL_EXTENSION).expect("a short extension");
+    let path = search_default(&name, &extension).ok_or_else(|| Failure::Error(last_error()))?;
+    let base = map_datafile(&path)?;
+    set_last_error(0);
+    Ok(base as u32 | 1)
+}
+
+/// The access, the sharing and the options a data file is opened with, and its section's.
+const DATAFILE_ACCESS: u32 = files::GENERIC_READ | files::SYNCHRONIZE;
+const DATAFILE_SHARE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
+const DATAFILE_OPTIONS: u32 = files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
+const SECTION_QUERY: u32 = 0x0001;
+const SECTION_MAP_READ: u32 = 0x0004;
+const PAGE_READONLY: u32 = 0x02;
+const SEC_COMMIT: u32 = 0x0800_0000;
+const VIEW_SHARE: u32 = 1;
+
+/// The file at `path` mapped whole, read-only, as data: the view's base, once its headers are
+/// found an image's (the view is unmapped again otherwise). The file's and the section's handles
+/// are closed: the view holds the section.
+#[inline(never)]
+fn map_datafile(path: &Wide) -> Result<usize, Failure> {
+    let path = NtPath::of(path.terminated()).ok_or(Failure::Error(files::ERROR_PATH_NOT_FOUND))?;
+    let file = Owned(
+        files::open(&path, DATAFILE_ACCESS, DATAFILE_SHARE, DATAFILE_OPTIONS)
+            .map_err(Failure::Status)?,
+    );
+    let section = ntcall::create_section(
+        SECTION_QUERY | SECTION_MAP_READ,
+        None,
+        None,
+        PAGE_READONLY,
+        SEC_COMMIT,
+        file.0,
+    )
+    .map_err(Failure::Status)?;
+    let section = Owned(section.handle);
+    let view = View {
+        base: 0,
+        size: 0,
+        offset: 0,
+        inherit: VIEW_SHARE,
+        allocation: 0,
+        protect: PAGE_READONLY,
+    };
+    let base =
+        ntcall::map_view_of_section(section.0, CURRENT_PROCESS, view).map_err(Failure::Status)?;
+    if ntcall::image_nt_header(base).is_none() {
+        let _ = ntcall::unmap_view_of_section(CURRENT_PROCESS, base);
+        return Err(Failure::Error(ERROR_BAD_EXE_FORMAT));
+    }
+    Ok(base)
+}
+
+/// LoadLibraryExA (see [`load_library_ex`]): the name converted as LoadLibraryA's.
+///
+/// # Safety
+///
+/// As [`get_module_handle_a`].
+#[unsafe(export_name = "f2k_export_LoadLibraryExA")]
+pub unsafe extern "system" fn load_library_ex_a(name: *const u8, _file: u32, flags: u32) -> u32 {
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InStr::optional(name) };
+    load_library_ex(name.map(Name::Ansi), flags)
+}
+
+/// LoadLibraryExW (see [`load_library_ex`]).
+///
+/// # Safety
+///
+/// As [`get_module_handle_w`].
+#[unsafe(export_name = "f2k_export_LoadLibraryExW")]
+pub unsafe extern "system" fn load_library_ex_w(name: *const u16, _file: u32, flags: u32) -> u32 {
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { InWStr::optional(name) };
+    load_library_ex(name.map(Name::Wide), flags)
+}
+
 /// FreeLibrary: one reference to the module fewer (LdrUnloadDll: a loaded module's last goes with
 /// it; the modules the process starts with stay). ERROR_MOD_NOT_FOUND for a handle naming no
-/// module, as Windows 2000 maps LdrUnloadDll's STATUS_DLL_NOT_FOUND.
+/// module, as Windows 2000 maps LdrUnloadDll's STATUS_DLL_NOT_FOUND. A handle with its low bit set
+/// is LoadLibraryEx's data file: its view is unmapped.
 #[unsafe(export_name = "f2k_export_FreeLibrary")]
 pub extern "system" fn free_library(module: u32) -> u32 {
+    if module & 1 != 0 {
+        let base = (module & !1) as usize;
+        return bool_answer(
+            ntcall::unmap_view_of_section(CURRENT_PROCESS, base).map_err(Failure::Status),
+        );
+    }
     bool_answer(ntcall::unload_dll(module).map_err(Failure::Status))
 }
 

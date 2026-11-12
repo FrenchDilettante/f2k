@@ -35,6 +35,26 @@ pub type ClientId = rtl::nt::ClientId<usize>;
 /// pointers the caller's).
 pub type ProcessParameters = rtl::params::ProcessParameters<usize>;
 
+/// An OSVERSIONINFOEXW, as RtlVerifyVersionInfo reads one (VerifyVersionInfoA builds one from its
+/// caller's OSVERSIONINFOEXA).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OsVersionInfoExW {
+    pub size: u32,
+    pub major: u32,
+    pub minor: u32,
+    pub build: u32,
+    pub platform: u32,
+    pub csd_version: [u16; 128],
+    pub service_pack_major: u16,
+    pub service_pack_minor: u16,
+    pub suite_mask: u16,
+    pub product_type: u8,
+    pub reserved: u8,
+}
+
+const _: () = assert!(core::mem::size_of::<OsVersionInfoExW>() == 284);
+
 /// An IO_STATUS_BLOCK: the status and the information (a count, or what an open did).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -682,6 +702,10 @@ unsafe extern "system" {
         multi_byte: *const u8,
         multi_byte_bytes: u32,
     ) -> u32;
+    /// RtlVerifyVersionInfo: whether the system's version meets the conditions the mask holds for
+    /// the types against the structure (STATUS_INVALID_PARAMETER for no type,
+    /// STATUS_REVISION_MISMATCH for a refusal).
+    pub fn RtlVerifyVersionInfo(info: *const OsVersionInfoExW, types: u32, mask: u64) -> u32;
     /// The time conversions: a time to its TIME_FIELDS, and back (FALSE for a field out of range).
     pub fn RtlTimeToTimeFields(time: *const i64, fields: *mut TimeFields);
     pub fn RtlTimeFieldsToTime(fields: *const TimeFields, time: *mut i64) -> u8;
@@ -1259,6 +1283,43 @@ pub mod host {
             unsafe { bytes_written.write(2 * written as u32) };
         }
         0
+    }
+
+    /// ntdll's version check (rtl::version, as ntdll runs it) against Windows 2000 service pack 4,
+    /// a workstation.
+    pub unsafe extern "system" fn RtlVerifyVersionInfo(
+        info: *const super::OsVersionInfoExW,
+        types: u32,
+        mask: u64,
+    ) -> u32 {
+        use rtl::version::{verify, Refusal, VersionInfo};
+        // SAFETY: the caller's structure.
+        let info = unsafe { info.read() };
+        let system = VersionInfo {
+            major: 5,
+            minor: 0,
+            build: 2195,
+            platform: 2,
+            service_pack_major: 4,
+            service_pack_minor: 0,
+            suite_mask: 0,
+            product_type: 1,
+        };
+        let wanted = VersionInfo {
+            major: info.major,
+            minor: info.minor,
+            build: info.build,
+            platform: info.platform,
+            service_pack_major: info.service_pack_major,
+            service_pack_minor: info.service_pack_minor,
+            suite_mask: info.suite_mask,
+            product_type: info.product_type,
+        };
+        match verify(&system, &wanted, types, mask) {
+            Ok(()) => 0,
+            Err(Refusal::NoType) => 0xC000_000D,
+            Err(Refusal::Mismatch) => 0xC000_0059,
+        }
     }
 
     /// ntdll's time conversions (rtl::time, as ntdll runs them).

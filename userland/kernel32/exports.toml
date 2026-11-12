@@ -212,6 +212,24 @@ impl = { native = "LoadLibraryW" }
 ordinal = 487
 
 [[export]]
+name = "LoadLibraryExA"
+group = "termination"
+args = ["strA?[261] lpFileName", "handle hFile", "u32 dwFlags"]
+impl = { native = "LoadLibraryExA" }
+ordinal = 485
+fails = "NULL"
+note = "LOAD_LIBRARY_AS_DATAFILE: a loaded module referenced again, else the file mapped read-only as data, its handle the base with the low bit set; DONT_RESOLVE_DLL_REFERENCES: no imports snapped, no entry point called; LOAD_WITH_ALTERED_SEARCH_PATH changes nothing (F2K's loader consults no search path); hFile and unknown flags are passed over"
+
+[[export]]
+name = "LoadLibraryExW"
+group = "termination"
+args = ["strW?[261] lpFileName", "handle hFile", "u32 dwFlags"]
+impl = { native = "LoadLibraryExW" }
+ordinal = 486
+fails = "NULL"
+note = "as LoadLibraryExA"
+
+[[export]]
 name = "RtlUnwind"
 group = "termination"
 args = ["ptr TargetFrame", "u32 TargetIp", "ptr ExceptionRecord", "u32 ReturnValue"]
@@ -239,6 +257,24 @@ args = []
 impl = { native = "DebugBreak" }
 ordinal = 90
 fails = "void"
+
+[[export]]
+name = "OutputDebugStringA"
+group = "termination"
+args = ["ptr lpOutputString"]
+impl = { native = "OutputDebugStringA" }
+ordinal = 541
+fails = "void"
+note = "DBG_PRINTEXCEPTION_C raised inside its own __try (the caller's handlers never see it); with no debugger, the text to a monitor's DBWIN_BUFFER (not served) or to DbgPrint, the last error the monitor's open's (ERROR_FILE_NOT_FOUND)"
+
+[[export]]
+name = "OutputDebugStringW"
+group = "termination"
+args = ["ptr lpOutputString"]
+impl = { native = "OutputDebugStringW" }
+ordinal = 542
+fails = "void"
+note = "the text narrowed through the ANSI code page, then OutputDebugStringA's path"
 
 [[export]]
 name = "SetUnhandledExceptionFilter"
@@ -341,6 +377,31 @@ group = "startup"
 args = ["ptr lpVersionInformation"]
 impl = { native = "GetVersionExW" }
 ordinal = 405
+
+[[export]]
+name = "VerSetConditionMask"
+group = "startup"
+args = ["u64 ConditionMask", "u32 TypeMask", "u32 Condition"]
+impl = { forward = "NTDLL.VerSetConditionMask" }
+ordinal = 751
+
+[[export]]
+name = "VerifyVersionInfoW"
+group = "startup"
+args = ["ptr lpVersionInformation", "u32 dwTypeMask", "u64 dwlConditionMask"]
+impl = { native = "VerifyVersionInfoW" }
+ordinal = 754
+fails = "FALSE"
+note = "ntdll's RtlVerifyVersionInfo: no type ERROR_BAD_ARGUMENTS, a version the conditions refuse ERROR_OLD_WIN_VERSION; the structure's size is not checked"
+
+[[export]]
+name = "VerifyVersionInfoA"
+group = "startup"
+args = ["ptr lpVersionInformation", "u32 dwTypeMask", "u64 dwlConditionMask"]
+impl = { native = "VerifyVersionInfoA" }
+ordinal = 753
+fails = "FALSE"
+note = "the OSVERSIONINFOEXA's numbers copied into an OSVERSIONINFOEXW, then VerifyVersionInfoW's check"
 
 [[export]]
 name = "FormatMessageA"
@@ -977,6 +1038,15 @@ group = "heap"
 args = ["u32 hMem", "u32 dwBytes", "u32 uFlags"]
 impl = { native = "GlobalReAlloc" }
 ordinal = 431
+
+[[export]]
+name = "GlobalFlags"
+group = "heap"
+args = ["u32 hMem"]
+impl = { native = "GlobalFlags" }
+ordinal = 423
+fails = "0x8000"
+note = "a movable block's lock count (at most 255), GMEM_DISCARDABLE, GMEM_DDESHARE and GMEM_DISCARDED; zero for a fixed block; GMEM_INVALID_HANDLE with ERROR_INVALID_HANDLE for no block"
 
 [[export]]
 name = "GlobalCompact"
@@ -3965,10 +4035,6 @@ name = "GlobalFix"
 ordinal = 422
 
 [[export]]
-name = "GlobalFlags"
-ordinal = 423
-
-[[export]]
 name = "GlobalMemoryStatusEx"
 ordinal = 430
 
@@ -4068,14 +4134,6 @@ ordinal = 476
 [[export]]
 name = "IsSystemResumeAutomatic"
 ordinal = 477
-
-[[export]]
-name = "LoadLibraryExA"
-ordinal = 485
-
-[[export]]
-name = "LoadLibraryExW"
-ordinal = 486
 
 
 [[export]]
@@ -4178,14 +4236,6 @@ ordinal = 535
 name = "OpenThread"
 ordinal = 538
 
-
-[[export]]
-name = "OutputDebugStringA"
-ordinal = 541
-
-[[export]]
-name = "OutputDebugStringW"
-ordinal = 542
 
 [[export]]
 name = "PostQueuedCompletionStatus"
@@ -4703,21 +4753,8 @@ name = "VerLanguageNameW"
 ordinal = 750
 
 [[export]]
-name = "VerSetConditionMask"
-ordinal = 751
-note = "forwarded to NTDLL.VerSetConditionMask"
-
-[[export]]
 name = "VerifyConsoleIoHandle"
 ordinal = 752
-
-[[export]]
-name = "VerifyVersionInfoA"
-ordinal = 753
-
-[[export]]
-name = "VerifyVersionInfoW"
-ordinal = 754
 
 [[export]]
 name = "VirtualBufferExceptionHandler"

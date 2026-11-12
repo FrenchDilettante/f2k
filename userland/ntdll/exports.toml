@@ -12,7 +12,8 @@
 # PEB lock; the heaps, which kernel32's HeapAlloc, HeapFree, HeapReAlloc, HeapSize and HeapValidate
 # forward to; the environment; the process parameters and the environment a new process starts
 # with; the counted strings, the time conversions and the bitmaps kernel32's
-# narrow calls, resource names, file times and TLS slots go through; the handle tables, the
+# narrow calls, resource names, file times and TLS slots go through; the version checks kernel32's
+# VerSetConditionMask forwards to and its VerifyVersionInfo calls; the handle tables, the
 # resources and the message calls kernel32's Local and Global memory, FindResource and
 # FormatMessage go through; RtlOpenCurrentUser,
 # advapi32's HKEY_CURRENT_USER; an image's NT headers and execution options; LdrInitializeThunk, a
@@ -59,6 +60,10 @@ title = "the registry"
 [[group]]
 key = "time"
 title = "time conversions"
+
+[[group]]
+key = "version"
+title = "the version checks"
 
 [[group]]
 key = "bitmaps"
@@ -1330,6 +1335,26 @@ ordinal = 640
 fails = "FALSE"
 note = "FALSE for a field out of its range (the year 1601 to 30827); the weekday is not consulted"
 
+# --- the version checks (src/version.rs over rtl::version) ----------------------------------------
+
+[[export]]
+name = "VerSetConditionMask"
+group = "version"
+args = ["u64 ConditionMask", "u32 TypeMask", "u32 Condition"]
+impl = { native = "VerSetConditionMask" }
+ordinal = 704
+fails = "never"
+note = "the condition's three bits in the slot of the type mask's highest bit, and the mask's top bit set; no type leaves the mask as it is"
+
+[[export]]
+name = "RtlVerifyVersionInfo"
+group = "version"
+args = ["ptr VersionInfo", "u32 TypeMask", "u64 ConditionMask"]
+impl = { native = "RtlVerifyVersionInfo" }
+ordinal = 685
+fails = "0xC000000D"
+note = "STATUS_INVALID_PARAMETER for no type, STATUS_REVISION_MISMATCH for a version the conditions refuse; the structure's size is not checked"
+
 # --- bitmaps (src/bitmap.rs over rtl::bitmap) -----------------------------------------------------
 
 [[export]]
@@ -1451,7 +1476,7 @@ group = "loader"
 args = ["ptr DllPath", "ptr DllCharacteristics", "ptr DllName", "ptr<u32> DllHandle"]
 impl = { native = "LdrLoadDll" }
 ordinal = 46
-note = "a module the lists hold, its load count raised, or one loaded from the volume (Windows 2000's default search: the program's directory, the current directory, the system directories, PATH; the DllPath argument is not consulted): an image section mapped at its preferred base, never relocated, its imports snapped in user mode, then DLL_PROCESS_ATTACH (lpReserved NULL) for every DLL it brought in, its dependencies first; FALSE fails the load (STATUS_DLL_INIT_FAILED)"
+note = "a module the lists hold, its load count raised, or one loaded from the volume (Windows 2000's default search: the program's directory, the current directory, the system directories, PATH; the DllPath argument is not consulted): an image section mapped at its preferred base, never relocated, its imports snapped in user mode, then DLL_PROCESS_ATTACH (lpReserved NULL) for every DLL it brought in, its dependencies first; FALSE fails the load (STATUS_DLL_INIT_FAILED). With the IMAGE_FILE_EXECUTABLE_IMAGE characteristic (DONT_RESOLVE_DLL_REFERENCES), a module loaded from the volume is mapped alone: no imports snapped, no entry point called"
 
 [[export]]
 name = "LdrUnloadDll"
@@ -3595,10 +3620,6 @@ name = "RtlValidateProcessHeaps"
 ordinal = 684
 
 [[export]]
-name = "RtlVerifyVersionInfo"
-ordinal = 685
-
-[[export]]
 name = "RtlWalkFrameChain"
 ordinal = 686
 
@@ -3669,10 +3690,6 @@ ordinal = 702
 [[export]]
 name = "SaveEm87Context"
 ordinal = 703
-
-[[export]]
-name = "VerSetConditionMask"
-ordinal = 704
 
 [[export]]
 name = "ZwAcceptConnectPort"

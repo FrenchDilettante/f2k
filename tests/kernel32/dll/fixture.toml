@@ -6,9 +6,6 @@ description = "dll - a program and its companion DLL: LoadLibraryA of the DLL fr
 kind = "sectioned"
 gate = true
 
-[pending]
-loadex = "kernel32 exports no LoadLibraryExA or LoadLibraryExW yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

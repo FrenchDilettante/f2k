@@ -141,6 +141,14 @@ _f2k_export_LocalFlags:
     ret 4
 
 .p2align 4
+.globl _f2k_export_GlobalFlags
+_f2k_export_GlobalFlags:
+    push dword ptr [esp+4]
+    call _f2k_k32_global_flags
+    add esp, 4
+    ret 4
+
+.p2align 4
 .globl _f2k_export_LocalReAlloc
 _f2k_export_LocalReAlloc:
     push dword ptr [esp+12]

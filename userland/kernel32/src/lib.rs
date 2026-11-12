@@ -24,7 +24,8 @@
 //! ([`curdir`]), the environment ([`env`], over ntdll's), the TLS indexes ([`thread`]), new
 //! processes ([`create`]: CreateProcess), the processes' calls ([`process`]: their end,
 //! OpenProcess, their exit codes and memory), a file's binary type ([`binary_type`]), exceptions
-//! ([`except`]: RaiseException, the pointer probes' unwind), the locale group ([`locale`] over
+//! ([`except`]: RaiseException, the pointer probes' unwind), the debugger's output ([`debug`]:
+//! OutputDebugString), the locale group ([`locale`] over
 //! `rtl::codepage`, with [`collate`], [`localeinfo`], the date, time and number formats
 //! ([`nlsformat`]) and FoldString ([`fold`])), the global atoms ([`atom`], over ntdll's atom
 //! services), the lstr string functions ([`lstr`],
@@ -51,6 +52,7 @@ pub mod computer;
 pub mod console;
 pub mod create;
 pub mod curdir;
+pub mod debug;
 pub mod edge;
 pub mod env;
 pub mod error;

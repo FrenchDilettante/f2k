@@ -258,3 +258,49 @@ fn get_startup_info_fills_the_replayed_image() {
         assert_eq!(info[68..], [0xCC; 4], "the structure's 68 bytes alone");
     }
 }
+
+/// VerifyVersionInfoW and A against Windows 2000 service pack 4: a check the version meets is
+/// TRUE, the last error untouched; one it does not ERROR_OLD_WIN_VERSION; no type
+/// ERROR_BAD_ARGUMENTS (the runtime fixture's verify block).
+///
+/// Pins: kernel32.VerifyVersionInfoW, kernel32.VerifyVersionInfoA
+#[test]
+fn verify_version_info_checks_the_conditions() {
+    use rtl::version::{set_condition_mask, VER_EQUAL, VER_MAJORVERSION};
+
+    use crate::nt::OsVersionInfoExW;
+    let mut wide: OsVersionInfoExW = unsafe { core::mem::zeroed() };
+    wide.size = 284;
+    wide.major = 5;
+    let equal = set_condition_mask(0, VER_MAJORVERSION, VER_EQUAL);
+    crate::base::set_last_error(0xF2F2_F2F2);
+    // SAFETY: an OSVERSIONINFOEXW.
+    assert_eq!(
+        unsafe { crate::startup::verify_version_info_w(&wide, VER_MAJORVERSION, equal) },
+        1
+    );
+    assert_eq!(last_error(), 0xF2F2_F2F2);
+    wide.major = 4;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { crate::startup::verify_version_info_w(&wide, VER_MAJORVERSION, equal) },
+        0
+    );
+    assert_eq!(last_error(), 1150);
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { crate::startup::verify_version_info_w(&wide, 0, equal) },
+        0
+    );
+    assert_eq!(last_error(), 160);
+    let mut narrow = [0u8; 156];
+    narrow[..4].copy_from_slice(&156u32.to_le_bytes());
+    narrow[4..8].copy_from_slice(&5u32.to_le_bytes());
+    // SAFETY: an OSVERSIONINFOEXA's bytes.
+    assert_eq!(
+        unsafe {
+            crate::startup::verify_version_info_a(narrow.as_ptr().cast(), VER_MAJORVERSION, equal)
+        },
+        1
+    );
+}

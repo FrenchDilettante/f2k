@@ -2229,6 +2229,17 @@ pub fn fields_to_time(fields: &nt::TimeFields) -> Option<i64> {
     (unsafe { nt::RtlTimeFieldsToTime(fields, &mut time) } != 0).then_some(time)
 }
 
+/// RtlVerifyVersionInfo: whether the system's version meets `mask`'s conditions for `types`
+/// against `info`; the status of a refusal.
+pub fn verify_version_info(
+    info: &nt::OsVersionInfoExW,
+    types: u32,
+    mask: u64,
+) -> Result<(), NtStatus> {
+    // SAFETY: ntdll's export, over kernel32's own structure.
+    checked(unsafe { nt::RtlVerifyVersionInfo(info, types, mask) })
+}
+
 /// NtQuerySystemInformation: the class's structure.
 pub fn query_system_information<T: Pod>(class: u32) -> Result<T, NtStatus> {
     let mut value = T::zeroed();
@@ -2505,9 +2516,19 @@ pub fn get_dll_handle(name: &UnicodeString) -> Result<u32, NtStatus> {
 
 /// LdrLoadDll: the module the name names, loaded (or its count raised); its handle.
 pub fn load_dll(name: &UnicodeString) -> Result<u32, NtStatus> {
+    load_dll_with(name, None)
+}
+
+/// LdrLoadDll with the characteristics given (IMAGE_FILE_EXECUTABLE_IMAGE: a module loaded from
+/// the volume is not resolved); its handle.
+pub fn load_dll_with(name: &UnicodeString, characteristics: Option<u32>) -> Result<u32, NtStatus> {
     let mut handle = 0;
-    // SAFETY: as in `get_dll_handle`.
-    checked(unsafe { nt::LdrLoadDll(core::ptr::null(), core::ptr::null(), name, &mut handle) })?;
+    let characteristics = characteristics
+        .as_ref()
+        .map_or(core::ptr::null(), |value| value);
+    // SAFETY: ntdll's export, over the counted name (its buffer holds its length) and the local
+    // characteristics or null, into the local handle; no path.
+    checked(unsafe { nt::LdrLoadDll(core::ptr::null(), characteristics, name, &mut handle) })?;
     Ok(handle)
 }
 

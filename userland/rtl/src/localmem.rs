@@ -5,11 +5,13 @@
 //! own table, through ntdll's RtlAllocateHandle, RtlFreeHandle and RtlIsValidHandle).
 //!
 //! A fixed block is a plain heap block: its handle is its pointer. A movable block is reached
-//! through a handle entry of the table — two words: the flags (RTL_HANDLE_ALLOCATED) with the lock
-//! count in the high half-word, then the data's address — whose handle is the address of that
-//! second word, as NT's are: `*handle` is the data pointer. The data block carries a prefix naming
-//! its handle back, so LocalHandle/GlobalHandle find the handle from the pointer. A movable block
-//! allocated with no bytes is discarded: its handle exists, its data pointer is null.
+//! through a handle entry of the table — two words: the flags (RTL_HANDLE_ALLOCATED, and the
+//! block's attributes: discardable, shared for DDE) with the lock count in the high half-word, then
+//! the data's address — whose handle is the address of that second word, as NT's are: `*handle` is
+//! the data pointer. The data block carries a prefix naming its handle back, so
+//! LocalHandle/GlobalHandle find the handle from the pointer. A movable block allocated with no
+//! bytes, or reallocated to none while unlocked, is discarded: its handle exists, its data pointer
+//! is null.
 //!
 //! Every word read here is first known to lie inside a live block of the heap or an entry of the
 //! table in use (the heap validates the data block, the table the entry), so a wrong handle is
@@ -104,6 +106,16 @@ const LOCKCOUNT: usize = 0x00FF;
 const DISCARDED: usize = 0x4000;
 const INVALID_HANDLE: usize = 0x8000;
 
+/// The attributes a movable block keeps: GMEM_DISCARDABLE (LMEM_DISCARDABLE is 0x0F00, which holds
+/// it) and GMEM_DDESHARE, kept in its entry's flags word at their own values (clear of
+/// RTL_HANDLE_ALLOCATED, below the lock count).
+const DISCARDABLE: usize = 0x0100;
+const DDESHARE: usize = 0x2000;
+const ATTRIBUTES: usize = DISCARDABLE | DDESHARE;
+
+/// LocalFlags' discardable flag (LMEM_DISCARDABLE).
+const LOCAL_DISCARDABLE: usize = 0x0F00;
+
 /// One word of user memory (a pointer's size).
 const WORD: usize = size_of::<usize>();
 /// The handle entry: the flags and lock count, then the data pointer.
@@ -117,6 +129,7 @@ const DATA_MARK: usize = 0x4D4B_3246;
 pub const NO_ERROR: u32 = 0;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+pub const ERROR_DISCARDED: u32 = 157;
 pub const ERROR_NOT_LOCKED: u32 = 158;
 
 /// A call's return value, and the last error it sets (none: the last error stays).
@@ -153,9 +166,22 @@ pub struct Memory<'a, H, T> {
     pub handles: &'a T,
 }
 
+/// The family a flags call answers for: LocalFlags' or GlobalFlags' values.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Family {
+    Local,
+    Global,
+}
+
 impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
     /// A movable handle's entry: (lock count, data pointer), when `handle` is one.
     fn entry(&self, handle: usize) -> Option<(usize, usize)> {
+        self.entry_with_attributes(handle)
+            .map(|(lock, data, _)| (lock, data))
+    }
+
+    /// A movable handle's entry with its attributes: (lock count, data pointer, attributes).
+    fn entry_with_attributes(&self, handle: usize) -> Option<(usize, usize, usize)> {
         if handle < WORD || !self.handles.is_valid(handle - WORD) {
             return None;
         }
@@ -170,12 +196,20 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
                 return None;
             }
         }
-        Some((head >> 16, data))
+        Some((head >> 16, data, head & ATTRIBUTES))
     }
 
+    /// The entry's lock count and data pointer, its attributes kept.
     fn set_entry(&self, handle: usize, lock: usize, data: usize) {
-        write(handle - WORD, ALLOCATED | lock << 16);
+        let attributes = read(handle - WORD) & ATTRIBUTES;
+        write(handle - WORD, ALLOCATED | attributes | lock << 16);
         write(handle, data);
+    }
+
+    /// The entry's attributes, its lock count kept.
+    fn set_attributes(&self, handle: usize, attributes: usize) {
+        let head = read(handle - WORD) & !ATTRIBUTES;
+        write(handle - WORD, head | attributes & ATTRIBUTES);
     }
 
     /// A data block for `handle` of `size` bytes: the prefix written, the data pointer.
@@ -196,6 +230,8 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         } else {
             self.handles.allocate().and_then(|entry| {
                 let handle = entry + WORD;
+                write(entry, ALLOCATED);
+                self.set_attributes(handle, flags as usize);
                 self.set_entry(handle, 0, 0);
                 let data = if size == 0 {
                     Some(0)
@@ -220,16 +256,19 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         }
     }
 
-    /// LocalLock / GlobalLock: the data pointer, a movable block's lock count raised.
-    pub fn lock(&self, handle: usize) -> usize {
+    /// LocalLock / GlobalLock: the data pointer, a movable block's lock count raised (to its
+    /// ceiling, 255, where it stays: the memory capture's 300 locks); null with ERROR_DISCARDED
+    /// for a discarded block.
+    pub fn lock(&self, handle: usize) -> Outcome {
         match self.entry(handle) {
+            Some((_, 0)) => failed(0, ERROR_DISCARDED),
             Some((count, data)) => {
-                if data != 0 && count < LOCKCOUNT {
+                if count < LOCKCOUNT {
                     self.set_entry(handle, count + 1, data);
                 }
-                data
+                ok(data)
             }
-            None => handle,
+            None => ok(handle),
         }
     }
 
@@ -283,13 +322,31 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         }
     }
 
-    /// LocalFlags: the lock count, and whether the block is discarded.
-    pub fn flags(&self, handle: usize) -> usize {
-        match self.entry(handle) {
-            Some((count, 0)) => count | DISCARDED,
-            Some((count, _)) => count,
-            None if self.heap.size(0, handle).is_some() => 0,
-            None => INVALID_HANDLE,
+    /// LocalFlags / GlobalFlags: a movable block's lock count, its attributes (discardable:
+    /// LMEM_DISCARDABLE or GMEM_DISCARDABLE as the `family` names them; shared for DDE, Global's
+    /// alone) and whether it is discarded; zero for a fixed block; the invalid-handle flag with
+    /// ERROR_INVALID_HANDLE for a handle that is no block (the memory capture's freed block and
+    /// NULL).
+    pub fn flags(&self, handle: usize, family: Family) -> Outcome {
+        match self.entry_with_attributes(handle) {
+            Some((count, data, attributes)) => {
+                let mut flags = count;
+                if attributes & DISCARDABLE != 0 {
+                    flags |= match family {
+                        Family::Local => LOCAL_DISCARDABLE,
+                        Family::Global => DISCARDABLE,
+                    };
+                }
+                if family == Family::Global {
+                    flags |= attributes & DDESHARE;
+                }
+                if data == 0 {
+                    flags |= DISCARDED;
+                }
+                ok(flags)
+            }
+            None if handle != 0 && self.heap.size(0, handle).is_some() => ok(0),
+            None => failed(INVALID_HANDLE, ERROR_INVALID_HANDLE),
         }
     }
 
@@ -312,8 +369,11 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         }
     }
 
-    /// LocalReAlloc / GlobalReAlloc: a movable block's data resized (and moved as it must); a
-    /// fixed block resized in place, or moved when the call allows it.
+    /// LocalReAlloc / GlobalReAlloc: a movable block's data resized (and moved as it must), or
+    /// discarded for no bytes while it is unlocked (GlobalDiscard's call: the handle stays, its
+    /// attributes with it); a fixed block resized in place, or moved when the call allows it. Under
+    /// the MODIFY flag, a movable block's discardable attribute is set as the flags say, and
+    /// nothing is resized.
     pub fn realloc(&self, handle: usize, size: usize, flags: u32) -> Outcome {
         let zero = if flags & ZEROINIT != 0 {
             HEAP_ZERO_MEMORY
@@ -321,9 +381,20 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
             0
         };
         let result = if flags & MODIFY != 0 {
+            if let Some((_, _, attributes)) = self.entry_with_attributes(handle) {
+                let discardable = flags as usize & DISCARDABLE;
+                self.set_attributes(handle, attributes & !DISCARDABLE | discardable);
+            }
             Some(handle)
         } else {
             match self.entry(handle) {
+                Some((0, data)) if size == 0 && flags & MOVEABLE != 0 => {
+                    if data != 0 {
+                        self.heap.free(0, data - PREFIX);
+                    }
+                    self.set_entry(handle, 0, 0);
+                    Some(handle)
+                }
                 Some((count, 0)) => self.new_data(handle, size, zero != 0).map(|data| {
                     self.set_entry(handle, count, data);
                     handle
@@ -403,9 +474,9 @@ mod tests {
             assert_eq!(memory.free(moved.value), ok(0));
 
             let handle = memory.alloc(MOVEABLE, 64).value;
-            let data = memory.lock(handle);
+            let data = memory.lock(handle).value;
             assert_ne!(handle, data, "a movable handle is not its pointer");
-            assert_eq!(memory.flags(handle), 1, "lock count 1");
+            assert_eq!(memory.flags(handle, Family::Local), ok(1), "lock count 1");
             assert_eq!(memory.handle_of(data), handle);
             assert_eq!(read(handle), data, "*handle is the data pointer");
             assert_eq!(memory.unlock(handle), failed(0, NO_ERROR), "the last lock");
@@ -447,10 +518,10 @@ mod tests {
         with_memory(|memory, _| {
             let handle = memory.alloc(MOVEABLE, 0).value;
             assert_eq!(memory.size(handle), ok(0));
-            assert_eq!(memory.flags(handle), DISCARDED);
-            assert_eq!(memory.lock(handle), 0);
+            assert_eq!(memory.flags(handle, Family::Global), ok(DISCARDED));
+            assert_eq!(memory.lock(handle), failed(0, ERROR_DISCARDED));
             assert_eq!(memory.realloc(handle, 16, MOVEABLE), ok(handle));
-            assert_ne!(memory.lock(handle), 0);
+            assert_ne!(memory.lock(handle).value, 0);
             assert_eq!(memory.free(handle), ok(0));
         });
     }
@@ -460,11 +531,62 @@ mod tests {
     fn unknown_handles_are_refused() {
         with_memory(|memory, heap| {
             let stray = heap.handle() + 0x800;
-            assert_eq!(memory.flags(stray), INVALID_HANDLE);
+            assert_eq!(
+                memory.flags(stray, Family::Global),
+                failed(INVALID_HANDLE, ERROR_INVALID_HANDLE)
+            );
             assert_eq!(memory.size(stray), failed(0, ERROR_INVALID_HANDLE));
             assert_eq!(memory.free(stray), failed(stray, ERROR_INVALID_HANDLE));
             assert_eq!(memory.free(0), ok(0), "freeing null succeeds");
-            assert_eq!(memory.lock(stray), stray);
+            assert_eq!(memory.lock(stray), ok(stray));
+        });
+    }
+
+    /// The memory fixture's globalflags section: the lock count's ceiling, the attributes, a
+    /// discard and its reallocation, and the handles that are no block.
+    #[test]
+    fn global_flags_follow_the_capture() {
+        with_memory(|memory, _| {
+            let flags = |handle| memory.flags(handle, Family::Global);
+            let fixed = memory.alloc(0, 64).value;
+            memory.lock(fixed);
+            assert_eq!(flags(fixed), ok(0), "a fixed block counts no lock");
+            memory.free(fixed);
+
+            let handle = memory.alloc(MOVEABLE, 64).value;
+            for _ in 0..300 {
+                memory.lock(handle);
+            }
+            assert_eq!(flags(handle), ok(0xFF), "the ceiling");
+            for _ in 0..299 {
+                memory.unlock(handle);
+            }
+            assert_eq!(flags(handle), ok(0));
+            assert_eq!(memory.unlock(handle), failed(0, ERROR_NOT_LOCKED));
+            memory.free(handle);
+
+            let handle = memory.alloc(MOVEABLE | DISCARDABLE as u32, 64).value;
+            assert_eq!(flags(handle), ok(0x0100));
+            assert_eq!(memory.flags(handle, Family::Local), ok(0x0F00));
+            assert_eq!(memory.realloc(handle, 0, MOVEABLE), ok(handle), "discarded");
+            assert_eq!(flags(handle), ok(0x4100));
+            assert_eq!(memory.lock(handle), failed(0, ERROR_DISCARDED));
+            assert_eq!(memory.realloc(handle, 32, MOVEABLE), ok(handle));
+            assert_eq!(flags(handle), ok(0x0100));
+            memory.free(handle);
+
+            let handle = memory.alloc(MOVEABLE | DDESHARE as u32, 64).value;
+            assert_eq!(flags(handle), ok(0x2000));
+            assert_eq!(memory.flags(handle, Family::Local), ok(0));
+            memory.free(handle);
+            let fixed = memory.alloc(DISCARDABLE as u32, 64).value;
+            assert_eq!(flags(fixed), ok(0), "a fixed block keeps no attribute");
+            memory.free(fixed);
+
+            let handle = memory.alloc(MOVEABLE, 64).value;
+            memory.free(handle);
+            assert_eq!(flags(handle), failed(0x8000, ERROR_INVALID_HANDLE));
+            assert_eq!(flags(0), failed(0x8000, ERROR_INVALID_HANDLE));
         });
     }
 }

@@ -15,7 +15,7 @@
 //! plain loops over raw addresses — so no destructor is skipped.
 
 /// A body the guard runs: three dword arguments (the export's, the unused ones zero), its answer.
-type Body = unsafe extern "C" fn(usize, usize, usize) -> usize;
+pub(crate) type Body = unsafe extern "C" fn(usize, usize, usize) -> usize;
 
 /// `body(a, b, c)` under the probes' exception frame: its answer, or 0 when it faults.
 ///
@@ -24,7 +24,7 @@ type Body = unsafe extern "C" fn(usize, usize, usize) -> usize;
 /// The arguments are what the body takes; an address in them may be one the caller cannot reach,
 /// which faults inside the guard (on the host, which has no guard, they are the test's own memory
 /// or null).
-unsafe fn guarded(body: Body, a: usize, b: usize, c: usize) -> usize {
+pub(crate) unsafe fn guarded(body: Body, a: usize, b: usize, c: usize) -> usize {
     #[cfg(all(target_arch = "x86", not(test)))]
     {
         unsafe extern "C" {

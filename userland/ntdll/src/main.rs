@@ -27,8 +27,10 @@
 //! and an image's execution options (RtlOpenCurrentUser, LdrQueryImageFileExecutionOptions:
 //! `src/registry.rs`, the options over `rtl::execution_options`); an image's NT headers
 //! (RtlImageNtHeader: `src/image.rs` over `rtl::image`); the time conversions (RtlTimeToTimeFields,
-//! RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the bitmaps kernel32 keeps the TLS slots
-//! in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over `rtl::bitmap`);
+//! RtlTimeFieldsToTime: `src/time.rs` over `rtl::time`); the version checks (VerSetConditionMask,
+//! RtlVerifyVersionInfo: `src/version.rs` over `rtl::version`); the bitmaps kernel32 keeps the TLS
+//! slots in (RtlFindClearBitsAndSet, RtlClearBits, RtlAreBitsSet: `src/bitmap.rs` over
+//! `rtl::bitmap`);
 //! the resources and the messages kernel32's FormatMessage finds and lays out (LdrFindResource_U,
 //! LdrFindResourceDirectory_U, LdrAccessResource, RtlFindMessage, RtlFormatMessage:
 //! `src/resource.rs` over `rtl::resource` and `rtl::message`); the loader, which loads every DLL of
@@ -68,6 +70,7 @@ mod status;
 mod strings;
 mod stub;
 mod time;
+mod version;
 
 // The exports' descriptions (`spec`) and the stubbed exports' bodies, generated from exports.toml
 // (tools/exportgen; see `stub`).

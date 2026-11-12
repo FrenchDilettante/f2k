@@ -11,8 +11,9 @@
 //! memory ([`localmem`]: kernel32's, over ntdll's heap and handle-table calls), the handle tables
 //! ([`handles`]: ntdll's RtlAllocateHandle family), the resources and the message tables
 //! ([`resource`]: ntdll's LdrFindResource_U family and RtlFindMessage), the message formatter
-//! ([`message`]: ntdll's RtlFormatMessage), the environment blocks ([`env`]:
-//! ntdll's RtlSetEnvironmentVariable family), the process parameters block ([`params`]: the
+//! ([`message`]: ntdll's RtlFormatMessage), the version checks ([`version`]: ntdll's
+//! VerSetConditionMask and RtlVerifyVersionInfo), the environment blocks ([`env`]: ntdll's
+//! RtlSetEnvironmentVariable family), the process parameters block ([`params`]: the
 //! kernel's first block and ntdll's RtlCreateProcessParameters share its layout), an image's
 //! execution options ([`execution_options`]: ntdll's LdrQueryImageFileExecutionOptions), the
 //! loader's share of a thread's start ([`ldr`]) and the image headers it reads ([`image`]: ntdll's
@@ -97,6 +98,7 @@ pub mod sys;
 pub mod time;
 pub mod truetype;
 pub mod user;
+pub mod version;
 pub mod window;
 
 // What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers,

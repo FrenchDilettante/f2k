@@ -1,5 +1,6 @@
 //! What the C runtime's startup asks of kernel32 — the command line, the startup information and
-//! the version — as Windows 2000's kernel32 answers it from the PEB and the process parameters.
+//! the version — as Windows 2000's kernel32 answers it from the PEB and the process parameters, and
+//! the version's checks (VerifyVersionInfo, over ntdll's RtlVerifyVersionInfo).
 //! Windows 2000 makes the narrow command line at its DLL initialization (BaseAnsiCommandLine) and
 //! the narrow startup information at the first GetStartupInfoA (BaseAnsiStartupInfo), both on the
 //! process heap; F2K calls no DllMain, so both are made at their first use, under the PEB lock, on
@@ -12,6 +13,7 @@ use rtl::sync::OnceWord;
 use crate::base::{own_data, parameters, set_last_error, set_last_nt_error, version, OwnString};
 use crate::edge::{In, OutBuf, Text};
 use crate::heap::HeapArray;
+use crate::nt;
 use crate::ntcall::{self, FastPebLock};
 
 own_data! {
@@ -285,4 +287,98 @@ pub unsafe extern "system" fn get_version_ex_w(info: *mut u8) -> u32 {
         (size, OutBuf::new(info, size as usize))
     };
     version_ex(size, info, true)
+}
+
+/// OSVERSIONINFOEXA, as VerifyVersionInfoA reads its caller's: the fields after the size are copied
+/// into the OSVERSIONINFOEXW RtlVerifyVersionInfo checks (the service pack's name is not compared).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OsVersionInfoExA {
+    size: u32,
+    major: u32,
+    minor: u32,
+    build: u32,
+    platform: u32,
+    csd_version: [u8; 128],
+    service_pack_major: u16,
+    service_pack_minor: u16,
+    suite_mask: u16,
+    product_type: u8,
+    reserved: u8,
+}
+
+const _: () = assert!(size_of::<OsVersionInfoExA>() == OSVERSIONINFOEXA_SIZE as usize);
+
+const ERROR_BAD_ARGUMENTS: u32 = 160;
+const ERROR_OLD_WIN_VERSION: u32 = 1150;
+const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+const STATUS_REVISION_MISMATCH: u32 = 0xC000_0059;
+
+/// VerifyVersionInfo's work, either form: ntdll's RtlVerifyVersionInfo, its refusals mapped as
+/// Windows 2000's kernel32 maps them (no type ERROR_BAD_ARGUMENTS, a version the conditions refuse
+/// ERROR_OLD_WIN_VERSION); the last error untouched on success.
+fn verify_version(info: &nt::OsVersionInfoExW, types: u32, mask: u64) -> u32 {
+    match ntcall::verify_version_info(info, types, mask) {
+        Ok(()) => 1,
+        Err(STATUS_INVALID_PARAMETER) => {
+            set_last_error(ERROR_BAD_ARGUMENTS);
+            0
+        }
+        Err(STATUS_REVISION_MISMATCH) => {
+            set_last_error(ERROR_OLD_WIN_VERSION);
+            0
+        }
+        Err(status) => {
+            set_last_nt_error(status);
+            0
+        }
+    }
+}
+
+/// VerifyVersionInfoW: whether the system's version meets the conditions `mask` holds (made by
+/// VerSetConditionMask) for the checks `types` names, against the caller's OSVERSIONINFOEXW (its
+/// size is not checked, as on Windows 2000).
+///
+/// # Safety
+///
+/// `info` addresses an OSVERSIONINFOEXW (a bad pointer faults the caller).
+#[unsafe(export_name = "f2k_export_VerifyVersionInfoW")]
+pub unsafe extern "system" fn verify_version_info_w(
+    info: *const nt::OsVersionInfoExW,
+    types: u32,
+    mask: u64,
+) -> u32 {
+    // SAFETY: the caller's structure (the contract), read unaligned.
+    let info = unsafe { In::new(info).read() };
+    verify_version(&info, types, mask)
+}
+
+/// VerifyVersionInfoA: [`verify_version_info_w`] over an OSVERSIONINFOEXW made of the caller's
+/// OSVERSIONINFOEXA's numbers.
+///
+/// # Safety
+///
+/// `info` addresses an OSVERSIONINFOEXA (a bad pointer faults the caller).
+#[unsafe(export_name = "f2k_export_VerifyVersionInfoA")]
+pub unsafe extern "system" fn verify_version_info_a(
+    info: *const OsVersionInfoExA,
+    types: u32,
+    mask: u64,
+) -> u32 {
+    // SAFETY: the caller's structure (the contract), read unaligned.
+    let narrow = unsafe { In::new(info).read() };
+    let wide = nt::OsVersionInfoExW {
+        size: OSVERSIONINFOEXW_SIZE,
+        major: narrow.major,
+        minor: narrow.minor,
+        build: narrow.build,
+        platform: narrow.platform,
+        csd_version: [0; 128],
+        service_pack_major: narrow.service_pack_major,
+        service_pack_minor: narrow.service_pack_minor,
+        suite_mask: narrow.suite_mask,
+        product_type: narrow.product_type,
+        reserved: 0,
+    };
+    verify_version(&wide, types, mask)
 }
