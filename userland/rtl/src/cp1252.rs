@@ -128,6 +128,9 @@ fn beyond_flags(wide: u16) -> u16 {
     const UPPER: u16 = C1_UPPER | C1_ALPHA;
     const LOWER: u16 = C1_LOWER | C1_ALPHA;
     match wide {
+        // The Turkish İ and ı are a capital and a small letter, though neither has a case pair.
+        0x0130 => UPPER,
+        0x0131 => LOWER,
         0x0100..=0x017F => match beyond_case(wide, false) {
             lower if lower != wide => UPPER,
             _ if beyond_case(wide, true) != wide => LOWER,
@@ -299,8 +302,9 @@ pub fn map_case(wide: u16, upper: bool) -> u16 {
 }
 
 /// The case mapping of a letter beyond the code page's (see [`beyond_flags`]): Latin Extended-A's
-/// pairs (İ lowers to i, ı uppers to I; ĸ, ŉ and ſ stay), Greek's (final sigma uppers to Σ; the
-/// accented capitals pair with their small letters), Cyrillic's, and the fullwidth Latin letters.
+/// pairs (the Turkish İ and ı stay, outside a Turkish locale, as the chars capture's CharLowerW and
+/// CharUpperW show; so do ĸ, ŉ and ſ), Greek's (final sigma uppers to Σ; the accented capitals
+/// pair with their small letters), Cyrillic's, and the fullwidth Latin letters.
 fn beyond_case(wide: u16, upper: bool) -> u16 {
     // Latin Extended-A alternates capital and small letter, the capital on an even code point but
     // for 0x139..=0x148 and 0x179..=0x17E.
@@ -313,8 +317,6 @@ fn beyond_case(wide: u16, upper: bool) -> u16 {
         }
     };
     match wide {
-        0x130 if !upper => 0x69,
-        0x131 if upper => 0x49,
         0x130 | 0x131 | 0x138 | 0x149 | 0x17F => wide,
         0x100..=0x137 | 0x14A..=0x177 => alternating(false),
         0x139..=0x148 | 0x179..=0x17E => alternating(true),
@@ -480,10 +482,12 @@ mod tests {
             (map_case(0x17D, false), map_case(0x17E, true)),
             (0x17E, 0x17D)
         );
+        // The Turkish İ and ı keep their case (user32's chars capture, CharLowerW and CharUpperW).
         assert_eq!(
             (map_case(0x130, false), map_case(0x131, true)),
-            (0x69, 0x49)
+            (0x130, 0x131)
         );
+        assert_eq!((c1_flags(0x130), c1_flags(0x131)), (0x101, 0x102));
         assert_eq!((c1_flags(0x138), map_case(0x138, true)), (0x102, 0x138));
         assert_eq!(
             (map_case(0x3C2, true), map_case(0x386, false)),

@@ -3161,7 +3161,7 @@ fails = "0"
 name = "CharLowerA"
 group = "string"
 args = ["ptr lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharLowerA" }
 ordinal = 34
 fails = "NULL"
 note = "lpsz a string, or a character in its low word"
@@ -3170,7 +3170,7 @@ note = "lpsz a string, or a character in its low word"
 name = "CharLowerBuffA"
 group = "string"
 args = ["ptr lpsz", "u32 cchLength"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharLowerBuffA" }
 ordinal = 35
 fails = "0"
 
@@ -3178,7 +3178,7 @@ fails = "0"
 name = "CharUpperA"
 group = "string"
 args = ["ptr lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharUpperA" }
 ordinal = 48
 fails = "NULL"
 note = "lpsz a string, or a character in its low word"
@@ -3187,7 +3187,7 @@ note = "lpsz a string, or a character in its low word"
 name = "CharUpperBuffA"
 group = "string"
 args = ["ptr lpsz", "u32 cchLength"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharUpperBuffA" }
 ordinal = 49
 fails = "0"
 
@@ -3195,7 +3195,7 @@ fails = "0"
 name = "IsCharAlphaNumericA"
 group = "string"
 args = ["u32 ch"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsCharAlphaNumericA" }
 ordinal = 387
 fails = "FALSE"
 
@@ -3203,7 +3203,7 @@ fails = "FALSE"
 name = "CharLowerW"
 group = "string"
 args = ["ptr lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharLowerW" }
 ordinal = 37
 fails = "NULL"
 note = "lpsz a string, or a character in its low word"
@@ -3212,7 +3212,7 @@ note = "lpsz a string, or a character in its low word"
 name = "CharLowerBuffW"
 group = "string"
 args = ["ptr lpsz", "u32 cchLength"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharLowerBuffW" }
 ordinal = 36
 fails = "0"
 
@@ -3220,7 +3220,7 @@ fails = "0"
 name = "CharUpperW"
 group = "string"
 args = ["ptr lpsz"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharUpperW" }
 ordinal = 51
 fails = "NULL"
 note = "lpsz a string, or a character in its low word"
@@ -3229,7 +3229,7 @@ note = "lpsz a string, or a character in its low word"
 name = "CharUpperBuffW"
 group = "string"
 args = ["ptr lpsz", "u32 cchLength"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CharUpperBuffW" }
 ordinal = 50
 fails = "0"
 
@@ -3237,7 +3237,7 @@ fails = "0"
 name = "IsCharAlphaNumericW"
 group = "string"
 args = ["u32 ch"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsCharAlphaNumericW" }
 ordinal = 388
 fails = "FALSE"
 
