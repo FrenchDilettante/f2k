@@ -774,6 +774,36 @@ pub fn cp_info(page: u32) -> Option<CpInfo> {
     (done != 0).then_some(info)
 }
 
+/// CreateThread: a thread that runs `start(parameter)`, made with the caller's security
+/// attributes (its pointer, or 0), stack size and creation flags: its handle and id.
+///
+/// # Safety
+///
+/// `start` may be called with `parameter` on the new thread; `security` is null or a
+/// SECURITY_ATTRIBUTES of the caller's, which kernel32 reads.
+pub unsafe fn create_thread(
+    security: usize,
+    stack_size: usize,
+    start: unsafe extern "system" fn(usize) -> u32,
+    parameter: usize,
+    flags: u32,
+) -> Result<(usize, u32), Win32Error> {
+    let mut id = 0u32;
+    // SAFETY: the caller's contract; the call writes the id.
+    let thread =
+        unsafe { imports::CreateThread(security, stack_size, start, parameter, flags, &mut id) };
+    if thread == 0 {
+        return Err(failure());
+    }
+    Ok((thread, id))
+}
+
+/// ExitThread: the calling thread ends with `code`, its DLLs told first.
+pub fn exit_thread(code: u32) -> ! {
+    // SAFETY: no pointers; the thread runs no more of its code.
+    unsafe { imports::ExitThread(code) }
+}
+
 /// ntdll's DbgPrint of `line`, as it is (its `%s`): to the debugger.
 pub fn debug_print(line: &CStr) {
     // SAFETY: a terminated format of one `%s`, and the terminated line it takes.

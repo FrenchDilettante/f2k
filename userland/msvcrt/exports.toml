@@ -1568,6 +1568,24 @@ ordinal = 739
 fails = "-1"
 note = "%COMSPEC% /c, else cmd.exe on PATH: F2K has no cmd.exe on its disk"
 
+[[export]]
+name = "_beginthreadex"
+group = "process"
+args = ["ptr security", "u32 stack_size", "ptr start_address", "ptr arglist", "u32 initflag", "ptr<u32> thrdaddr"]
+impl = { native = "_beginthreadex" }
+ordinal = 169
+fails = "0"
+note = "the handle is the caller's to close"
+
+[[export]]
+name = "_endthreadex"
+group = "process"
+args = ["u32 retval"]
+impl = { native = "_endthreadex" }
+ordinal = 201
+fails = "never"
+note = "it never returns: the thread ends with the code"
+
 # --- floating-point math --------------------------------------------------------------------------
 
 [[export]]
@@ -2185,10 +2203,6 @@ name = "_beginthread"
 ordinal = 168
 
 [[export]]
-name = "_beginthreadex"
-ordinal = 169
-
-[[export]]
 name = "_c_exit"
 ordinal = 170
 
@@ -2295,10 +2309,6 @@ ordinal = 199
 [[export]]
 name = "_endthread"
 ordinal = 200
-
-[[export]]
-name = "_endthreadex"
-ordinal = 201
 
 [[export]]
 name = "_environ"

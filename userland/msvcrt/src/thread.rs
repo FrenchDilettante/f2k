@@ -1,10 +1,15 @@
-//! The C runtime's per-thread data and its locks.
+//! The C runtime's per-thread data and its locks, and the threads it starts (_beginthreadex and
+//! _endthreadex).
 //!
 //! Each thread has its own `errno`, `_doserrno`, rand seed, `struct tm` (gmtime's and
 //! localtime's) and wcstok position, as the multithreaded C runtime keeps them: a block from the C
 //! runtime's heap, found through a TLS slot the DLL allocates when it is loaded, made on the
 //! thread's first need and freed at its DLL_THREAD_DETACH. Finding it keeps the thread's last error
 //! as it was (TlsGetValue clears it), so a C runtime call never disturbs a program's GetLastError.
+//!
+//! As process's capture shows them: a thread _beginthreadex starts ends with its routine's answer
+//! or `_endthreadex`'s code (the code after it never run), read through the handle the C runtime
+//! leaves open for its caller to close, and has an errno of its own.
 //!
 //! The process-wide state is split by lock, as Windows 2000's msvcrt splits it: each stream has a
 //! lock of its own ([`crate::stdio`]), each descriptor one beside the descriptor table's
@@ -138,6 +143,105 @@ pub fn detach_thread() {
         // runs no more C runtime code that reaches it.
         unsafe { crate::heap::release(data) };
     }
+}
+
+/// A thread routine of `_beginthreadex`'s: a stdcall function of one argument, answering the
+/// thread's exit code.
+pub type ThreadRoutine = unsafe extern "system" fn(usize) -> u32;
+
+/// What a thread _beginthreadex starts runs: the program's routine and its argument, in a block
+/// of the C runtime's heap that the new thread takes and frees.
+#[repr(C)]
+struct Start {
+    routine: ThreadRoutine,
+    parameter: usize,
+}
+
+/// The start routine of the threads _beginthreadex makes: the program's routine called with its
+/// argument, its answer the thread's exit code, as `_endthreadex` ends it.
+///
+/// # Safety
+///
+/// `block` is a [`Start`] of the C runtime's heap, the thread's alone.
+unsafe extern "system" fn thread_start(block: usize) -> u32 {
+    let block = block as *mut Start;
+    // SAFETY: the caller's contract: a Start _beginthreadex wrote, handed to this thread alone,
+    // read once and given back.
+    let start = unsafe {
+        let start = block.read();
+        crate::heap::release(block.cast());
+        start
+    };
+    // SAFETY: the program's routine, called with the argument it was given for it.
+    let code = unsafe { (start.routine)(start.parameter) };
+    endthreadex(code)
+}
+
+/// _beginthreadex: a thread that runs `routine(parameter)`, made with the caller's security
+/// attributes, stack size and creation flags (CREATE_SUSPENDED: it waits for ResumeThread): its
+/// handle, which the caller closes (the C runtime keeps none), its id stored at `id` when it is
+/// given. The routine's answer is the thread's exit code, as `_endthreadex` gives it. 0 on
+/// failure, errno and _doserrno set from the last error (EINVAL for no routine).
+///
+/// # Safety
+///
+/// `routine` is null or a thread routine that may be called with `parameter` on the new thread;
+/// `security` is null or a SECURITY_ATTRIBUTES; `id` is null or a dword's storage.
+#[unsafe(export_name = "f2k_export__beginthreadex")]
+pub unsafe extern "C" fn beginthreadex(
+    security: usize,
+    stack_size: u32,
+    routine: Option<ThreadRoutine>,
+    parameter: usize,
+    flags: u32,
+    id: *mut u32,
+) -> usize {
+    /// ERROR_NOT_ENOUGH_MEMORY.
+    const NOT_ENOUGH_MEMORY: u32 = 8;
+    let Some(routine) = routine else {
+        set_errno(EINVAL);
+        return 0;
+    };
+    let block = crate::heap::allocate(core::mem::size_of::<Start>(), false).cast::<Start>();
+    if block.is_null() {
+        set_dos_error(NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    // SAFETY: a fresh block of the C runtime's heap, a Start's size (its blocks are 8-aligned).
+    unsafe { block.write(Start { routine, parameter }) };
+    // SAFETY: thread_start takes the block, which holds the program's routine and its argument;
+    // the security attributes are the caller's, which kernel32 reads.
+    let made = unsafe {
+        kernel32::create_thread(
+            security,
+            stack_size as usize,
+            thread_start,
+            block as usize,
+            flags,
+        )
+    };
+    match made {
+        Ok((thread, thread_id)) => {
+            if !id.is_null() {
+                // SAFETY: the caller's dword.
+                unsafe { id.write_unaligned(thread_id) };
+            }
+            thread
+        }
+        Err(error) => {
+            // SAFETY: the block the thread never got, given back.
+            unsafe { crate::heap::release(block.cast()) };
+            set_dos_error(error.0);
+            0
+        }
+    }
+}
+
+/// _endthreadex: the calling thread ends with `code` (ExitThread); its C runtime data is given
+/// back at its DLL_THREAD_DETACH. The thread's handle stays open: its creator closes it.
+#[unsafe(export_name = "f2k_export__endthreadex")]
+pub extern "C" fn endthreadex(code: u32) -> ! {
+    kernel32::exit_thread(code)
 }
 
 /// errno's values (errno.h).

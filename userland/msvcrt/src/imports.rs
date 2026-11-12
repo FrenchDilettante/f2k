@@ -196,6 +196,18 @@ unsafe extern "system" {
     pub fn GetACP() -> u32;
     pub fn GetOEMCP() -> u32;
     pub fn GetCPInfo(page: u32, info: *mut CpInfo) -> u32;
+
+    /// The thread calls _beginthreadex and _endthreadex make: a thread made (its start routine a
+    /// stdcall function of one argument), and the calling thread ended.
+    pub fn CreateThread(
+        security: usize,
+        stack_size: usize,
+        start: unsafe extern "system" fn(usize) -> u32,
+        parameter: usize,
+        flags: u32,
+        id: *mut u32,
+    ) -> usize;
+    pub fn ExitThread(code: u32) -> !;
 }
 
 /// CPINFO: a code page's longest character in bytes, its default character, and its lead bytes'
@@ -864,6 +876,21 @@ pub mod host {
         // SAFETY: the caller's structure.
         unsafe { info.write(answer) };
         1
+    }
+
+    pub unsafe extern "system" fn CreateThread(
+        _: usize,
+        _: usize,
+        _: unsafe extern "system" fn(usize) -> u32,
+        _: usize,
+        _: u32,
+        _: *mut u32,
+    ) -> usize {
+        unreachable("CreateThread")
+    }
+
+    pub unsafe extern "system" fn ExitThread(_: u32) -> ! {
+        unreachable("ExitThread")
     }
 
     std::thread_local! {

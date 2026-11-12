@@ -5,9 +5,6 @@ description = "process - msvcrt.dll's view of its process under /MD (process.c):
 kind = "sectioned"
 gate = true
 
-[pending]
-beginthread = "msvcrt exports no _beginthreadex or _endthreadex yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
