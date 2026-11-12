@@ -79,6 +79,7 @@ use rtl::user::{
     RECEIVED_QUIT,
     RECEIVED_SENT,
     WM_NCCREATE,
+    WM_NCDESTROY,
     WM_PAINT,
     WM_QUERYENDSESSION,
     WM_QUIT,
@@ -1030,7 +1031,11 @@ pub fn take(
         }
     }
 
+    // The caret's blink, which makes no message: the thread's caret turned when its turn came.
+    super::caret::blink(windows, caller, now);
+
     // WM_TIMER, for a timer of the thread's that came due.
+    let caret_due = super::caret::next_due(windows, caller);
     let timers = &mut windows.queues.timers;
     timers.expire(caller, now);
     if filter.looks_at(QS_TIMER) && filter.in_range(WM_TIMER) {
@@ -1044,9 +1049,11 @@ pub fn take(
             )));
         }
     }
-    Ok(Taken::Nothing {
-        due: timers.next_due(caller),
-    })
+    let due = match (timers.next_due(caller), caret_due) {
+        (Some(timer), Some(caret)) => Some(timer.min(caret)),
+        (timer, caret) => timer.or(caret),
+    };
+    Ok(Taken::Nothing { due })
 }
 
 /// A message the queue makes, stamped `time`.
@@ -1175,11 +1182,17 @@ pub fn end_sent(windows: &mut Windows, caller: ThreadId, result: LResult) -> boo
         return false;
     };
     queues.queues[id.index as usize].receiving = queues.sent[index as usize].next;
+    let Sent {
+        message, window, ..
+    } = queues.sent[index as usize];
     if queues.sent[index as usize].state == State::Received {
         queues.answer(index, result);
     } else {
         // ReplyMessage answered it: the sender collects that answer.
         queues.sent[index as usize].next = None;
+    }
+    if let (WM_NCDESTROY, Some(window)) = (message, window) {
+        super::caret::ncdestroy_delivered(windows, caller, window);
     }
     true
 }
@@ -1457,9 +1470,10 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     queues.push_sent(receiver, id.index);
 }
 
-/// The window `window` is being freed: the messages posted to it go, its timers and its update
-/// region with them.
+/// The window `window` is being freed: the messages posted to it go, its timers, its update
+/// region and its caret with them.
 pub fn window_gone(windows: &mut Windows, window: WindowId) {
+    super::caret::window_gone(windows, window);
     let hwnd = windows.handle_of(window);
     let queues = &mut windows.queues;
     for index in 0..THREADS as u16 {

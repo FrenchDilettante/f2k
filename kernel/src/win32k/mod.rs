@@ -1,13 +1,13 @@
 //! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window classes
 //! ([`class`]), windows ([`window`]), their focus, enabling and activation ([`focus`]), the
 //! threads' message queues ([`queue`]), their timers ([`timer`]) and the windows' painting
-//! ([`paint`]), menus ([`menu`]), keyboard accelerators ([`accel`]), cursors and icons ([`icon`]),
-//! the one handle table every one of those user objects' handles names a slot of ([`handle`]),
-//! window stations and desktops ([`winsta`]), keyboard input ([`input`]), the display settings
-//! ([`display`]), device contexts ([`dc`]), the brushes they fill with ([`brush`]) and what is
-//! drawn through them ([`raster`], in the built-in font, [`font`], or a TrueType font, [`fonts`],
-//! which holds the faces loaded and the font objects too), the clipboard ([`clipboard`]), and the
-//! second service table their services come through.
+//! ([`paint`]), their carets ([`caret`]), menus ([`menu`]), keyboard accelerators ([`accel`]),
+//! cursors and icons ([`icon`]), the one handle table every one of those user objects' handles
+//! names a slot of ([`handle`]), window stations and desktops ([`winsta`]), keyboard input
+//! ([`input`]), the display settings ([`display`]), device contexts ([`dc`]), the brushes they fill
+//! with ([`brush`]) and what is drawn through them ([`raster`], in the built-in font, [`font`], or a
+//! TrueType font, [`fonts`], which holds the faces loaded and the font objects too), the clipboard
+//! ([`clipboard`]), and the second service table their services come through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -29,6 +29,7 @@
 
 pub mod accel;
 pub mod brush;
+pub mod caret;
 pub mod class;
 pub mod clipboard;
 pub mod dc;

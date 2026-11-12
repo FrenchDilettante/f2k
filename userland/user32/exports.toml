@@ -3416,49 +3416,109 @@ fails = "FALSE"
 name = "CreateCaret"
 group = "caret"
 args = ["handle hWnd", "handle hBitmap", "i32 nWidth", "i32 nHeight"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateCaret" }
 ordinal = 74
 fails = "FALSE"
+note = "solid, or gray for (HBITMAP)1, hidden, at the thread's caret place; a width or height of 0 is the border's; a window of another thread refused with no error; a bitmap caret is a stub"
 
 [[export]]
 name = "DestroyCaret"
 group = "caret"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "DestroyCaret" }
 ordinal = 141
 fails = "FALSE"
+note = "ERROR_ACCESS_DENIED for a thread with no caret; the caret place is kept"
 
 [[export]]
 name = "GetCaretPos"
 group = "caret"
 args = ["ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCaretPos" }
 ordinal = 234
 fails = "FALSE"
+note = "the thread's caret place, with a caret or without"
+
+[[export]]
+name = "GetGUIThreadInfo"
+group = "caret"
+args = ["u32 idThread", "ptr pgui"]
+impl = { native = "GetGUIThreadInfo" }
+ordinal = 269
+fails = "FALSE"
+note = "the active, focus, capture and caret windows, the caret's rectangle and GUI_CARETBLINKING; no menu or move-size state"
 
 [[export]]
 name = "HideCaret"
 group = "caret"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "HideCaret" }
 ordinal = 363
 fails = "FALSE"
+note = "the hide count raised; a window not the caret's refused with no error, no caret ERROR_ACCESS_DENIED"
 
 [[export]]
 name = "SetCaretPos"
 group = "caret"
 args = ["i32 X", "i32 Y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetCaretPos" }
 ordinal = 548
 fails = "FALSE"
+note = "ERROR_ACCESS_DENIED for a thread with no caret"
 
 [[export]]
 name = "ShowCaret"
 group = "caret"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ShowCaret" }
 ordinal = 619
 fails = "FALSE"
+note = "the hide count lowered to 0, where the caret shows and blinks; a window not the caret's refused with no error, no caret ERROR_ACCESS_DENIED"
+
+# win32k's caret services: user32's internal calls (DestroyCaret through NtUserCallNoParam,
+# SetCaretPos through NtUserCallTwoParam, by rtl::user's routine numbers).
+
+[[export]]
+name = "NtUserCreateCaret"
+group = "caret"
+args = ["handle Window", "u32 Gray", "i32 Width", "i32 Height", "ptr<u32> Made"]
+impl = { syscall = "crate::win32k::caret::create_caret" }
+internal = true
+
+[[export]]
+name = "NtUserShowCaret"
+group = "caret"
+args = ["handle Window", "ptr<u32> Done"]
+impl = { syscall = "crate::win32k::caret::show_caret" }
+internal = true
+
+[[export]]
+name = "NtUserHideCaret"
+group = "caret"
+args = ["handle Window", "ptr<u32> Done"]
+impl = { syscall = "crate::win32k::caret::hide_caret" }
+internal = true
+
+[[export]]
+name = "NtUserGetCaretPos"
+group = "caret"
+args = ["ptr Point"]
+impl = { syscall = "crate::win32k::caret::get_caret_pos" }
+internal = true
+
+[[export]]
+name = "NtUserGetGUIThreadInfo"
+group = "caret"
+args = ["u32 ThreadId", "ptr Info"]
+impl = { syscall = "crate::win32k::caret::get_gui_thread_info" }
+internal = true
+
+[[export]]
+name = "NtUserCallTwoParam"
+group = "caret"
+args = ["u32 Param1", "u32 Param2", "u32 Routine", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::caret::call_two_param" }
+internal = true
 
 # --- not implemented yet: the rest of USER32.dll 5.0.2195.6688's export table, by ordinal --------
 
@@ -4065,10 +4125,6 @@ ordinal = 255
 [[export]]
 name = "GetDoubleClickTime"
 ordinal = 266
-
-[[export]]
-name = "GetGUIThreadInfo"
-ordinal = 269
 
 [[export]]
 name = "GetGuiResources"

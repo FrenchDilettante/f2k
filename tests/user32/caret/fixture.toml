@@ -5,8 +5,7 @@
 # places are the program's own; the default size prints only as a relation to the border metrics.
 description = "caret - the caret: CreateCaret (solid, gray, the default size), DestroyCaret, SetCaretPos and GetCaretPos; ShowCaret and HideCaret's hide count, NULL and a window not owning the caret; the caret as the focus moves between windows, on CreateCaret by another window, its owner's destruction, a window procedure making it on WM_SETFOCUS and destroying it on WM_KILLFOCUS, and another thread's caret calls; each state through GetGUIThreadInfo's hwndCaret, rcCaret and GUI_CARETBLINKING."
 kind = "sectioned"
-
-# Not gated: F2K has no caret yet: its caret calls are stubs, and user32 has no GetGUIThreadInfo.
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

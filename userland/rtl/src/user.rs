@@ -1,11 +1,12 @@
 //! USER's shared shapes: the message constants user32's message calls and win32k's queue agree on
 //! (the messages the queue makes or reads, PeekMessage's flags, the queue-status bits), the
 //! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW,
-//! SendInput's INPUT), and F2K's
+//! SendInput's INPUT, GUITHREADINFO), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services
 //! hand user32 ([`Receipt`]), and the routines of the NtUserCall* services ([`ONE_PARAM_*`],
-//! [`NO_PARAM_*`], [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of NtUserGetThreadState
-//! ([`THREAD_STATE_*`]). Only F2K's user32 calls those services, so their shapes are F2K's.
+//! [`NO_PARAM_*`], [`TWO_PARAM_*`], [`HWND_LOCK_*`], [`HWND_PARAM_LOCK_*`]) and of
+//! NtUserGetThreadState ([`THREAD_STATE_*`]). Only F2K's user32 calls those services, so their
+//! shapes are F2K's.
 //!
 //! A message another thread sent, or one win32k sent on its own behalf (the window's creation and
 //! destruction messages), reaches the window procedure through the receiving thread's own message
@@ -14,6 +15,7 @@
 //!
 //! [`ONE_PARAM_*`]: ONE_PARAM_POST_QUIT_MESSAGE
 //! [`NO_PARAM_*`]: NO_PARAM_CREATE_MENU
+//! [`TWO_PARAM_*`]: TWO_PARAM_SET_CARET_POS
 //! [`HWND_LOCK_*`]: HWND_LOCK_UPDATE_WINDOW
 //! [`HWND_PARAM_LOCK_*`]: HWND_PARAM_LOCK_ENABLE_WINDOW
 //! [`THREAD_STATE_*`]: THREAD_STATE_FOCUS_WINDOW
@@ -289,12 +291,40 @@ pub struct Input {
 // SAFETY: integers only, with no padding (two u16 then u32s, at their alignment).
 unsafe impl Pod for Input {}
 
+/// GUITHREADINFO: what GetGUIThreadInfo answers of a thread's input state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GuiThreadInfo {
+    pub cb_size: u32,
+    /// GUI_* flags.
+    pub flags: u32,
+    pub hwnd_active: u32,
+    pub hwnd_focus: u32,
+    pub hwnd_capture: u32,
+    pub hwnd_menu_owner: u32,
+    pub hwnd_move_size: u32,
+    pub hwnd_caret: u32,
+    /// rcCaret: the caret's rectangle, in its window's client coordinates.
+    pub rc_caret: Rect,
+}
+
+// SAFETY: integers only.
+unsafe impl Pod for GuiThreadInfo {}
+
+/// GUITHREADINFO's flags (winuser.h's GUI_*): the caret is shown (it blinks).
+pub const GUI_CARETBLINKING: u32 = 0x0000_0001;
+
 /// NtUserCallNoParam's routines: CreateMenu and CreatePopupMenu (the result is the new menu's
-/// handle), and the empty cursor or icon object LoadIcon fills in with NtUserSetCursorIconData
-/// (the result is its handle).
+/// handle), the empty cursor or icon object LoadIcon fills in with NtUserSetCursorIconData (the
+/// result is its handle), and DestroyCaret.
 pub const NO_PARAM_CREATE_MENU: u32 = 0;
 pub const NO_PARAM_CREATE_POPUP_MENU: u32 = 1;
 pub const NO_PARAM_CREATE_EMPTY_CURSOR: u32 = 2;
+/// DestroyCaret (the calling thread's caret destroyed; the result 1).
+pub const NO_PARAM_DESTROY_CARET: u32 = 3;
+
+/// NtUserCallTwoParam's routines: SetCaretPos (the two parameters are the place; the result 1).
+pub const TWO_PARAM_SET_CARET_POS: u32 = 0;
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
 /// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the
@@ -351,6 +381,8 @@ mod tests {
         assert_eq!(size_of::<Input>(), 28);
         assert_eq!(offset_of!(Input, flags), 8);
         assert_eq!(offset_of!(Input, extra_info), 16);
+        assert_eq!(size_of::<GuiThreadInfo>(), 48);
+        assert_eq!(offset_of!(GuiThreadInfo, rc_caret), 32);
     }
 
     /// PeekMessage's kinds are the status bits in the high word.

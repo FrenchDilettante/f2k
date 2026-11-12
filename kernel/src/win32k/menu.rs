@@ -23,7 +23,8 @@
 //! The services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
 //! - NtUserCallNoParam (0x1138): CreateMenu and CreatePopupMenu (rtl::user's NO_PARAM_* routines),
-//!   and the empty cursor object LoadIcon fills in ([`super::icon`]);
+//!   the empty cursor object LoadIcon fills in ([`super::icon`]), and DestroyCaret
+//!   ([`super::caret`]);
 //! - NtUserThunkedMenuItemInfo (0x121F): an item inserted (InsertMenuItem) or changed
 //!   (SetMenuItemInfo) from a MENUITEMINFOW; and, by an operation of F2K's own, an item or the menu
 //!   answered as rtl::menu's MenuItemAnswer — what Windows 2000's user32 reads from the menu's
@@ -617,6 +618,7 @@ mod services {
         NO_PARAM_CREATE_EMPTY_CURSOR,
         NO_PARAM_CREATE_MENU,
         NO_PARAM_CREATE_POPUP_MENU,
+        NO_PARAM_DESTROY_CARET,
     };
 
     use super::*;
@@ -633,8 +635,8 @@ mod services {
     use crate::win32k::winsta::gui_thread;
 
     /// NtUserCallNoParam(Routine, Result): CreateMenu, CreatePopupMenu (the new menu's handle),
-    /// the empty cursor object LoadIcon fills in (its handle); STATUS_INVALID_PARAMETER for another
-    /// routine.
+    /// the empty cursor object LoadIcon fills in (its handle), DestroyCaret (1;
+    /// [`crate::win32k::caret::destroy`]'s failure); STATUS_INVALID_PARAMETER for another routine.
     pub fn call_no_param(call: &mut NtCall, routine: u32, result: UserPtr<u32>) -> NtResult {
         let caller = gui_thread(call)?;
         let answer = with_manager(call.passive(), |m| match routine {
@@ -649,6 +651,9 @@ mod services {
                 .classes
                 .cursors
                 .create_empty(&mut m.windows.handles, caller.owner),
+            NO_PARAM_DESTROY_CARET => {
+                crate::win32k::caret::destroy(&mut m.windows, caller.thread).map(|()| 1)
+            }
             _ => Err(STATUS_INVALID_PARAMETER),
         })?;
         result.write(answer)?;
