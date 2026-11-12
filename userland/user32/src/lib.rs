@@ -5,9 +5,9 @@
 //! their focus, enabling and activation, [`focus`]; the message loop and the default window
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
-//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button and Static
-//! controls, [`button`] and [`static_control`]; MessageBox, [`msgbox`]; the menus, [`menu`]; the
-//! menu bar, its popups and the keyboard menu loop, [`menubar`]; the non-client area,
+//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static and Edit
+//! controls, [`button`], [`static_control`] and [`edit`]; MessageBox, [`msgbox`]; the menus,
+//! [`menu`]; the menu bar, its popups and the keyboard menu loop, [`menubar`]; the non-client area,
 //! [`nonclient`]; the caret, [`caret`]; the keyboard accelerators, [`accel`]; the icons, [`icon`];
 //! the clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles, [`rect`]; the
 //! character walks, case and types, [`string`]; wsprintf, [`wsprintf`]; WinHelp, [`help`]), as
@@ -44,6 +44,7 @@ pub mod dc;
 pub mod dialog;
 pub mod display;
 pub mod draw;
+pub mod edit;
 pub mod focus;
 pub mod help;
 pub mod icon;

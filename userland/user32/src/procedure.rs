@@ -21,8 +21,10 @@
 //! GetWindowLongA.
 //!
 //! The messages translated are the ones that carry text: WM_SETTEXT, WM_GETTEXT,
-//! WM_GETTEXTLENGTH, and WM_NCCREATE's and WM_CREATE's CREATESTRUCT. As the wintext capture shows
-//! Windows 2000's:
+//! WM_GETTEXTLENGTH, WM_NCCREATE's and WM_CREATE's CREATESTRUCT, and the edit control's
+//! EM_REPLACESEL (a string, as WM_SETTEXT's) and EM_GETLINE (a buffer whose first unit holds its
+//! size; the line comes back converted, terminated when there is room, as the editctl capture shows
+//! Windows 2000's narrow caller's). As the wintext capture shows Windows 2000's:
 //!
 //! - a wide caller's WM_GETTEXT reaches a narrow procedure with a buffer of twice its units in
 //!   bytes (the most a double-byte code page's text takes), a narrow caller's reaches a wide
@@ -39,6 +41,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rtl::edge::{In, InStr, InWStr, OutBuf};
 use rtl::user::{CreateStructW, WM_CREATE, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NCCREATE, WM_SETTEXT};
 
+use crate::edit::{EM_GETLINE, EM_REPLACESEL};
 use crate::imports;
 
 /// A window procedure, and whether it takes the narrow forms of the messages.
@@ -120,6 +123,10 @@ fn own_pair(address: u32) -> Option<OwnPair> {
             crate::static_control::static_proc_w as *const () as usize,
             crate::static_control::static_proc_a as *const () as usize,
         ),
+        pair(
+            crate::edit::edit_proc_w as *const () as usize,
+            crate::edit::edit_proc_a as *const () as usize,
+        ),
     ]
     .into_iter()
     .find(|pair| pair.wide == address || pair.narrow == address)
@@ -171,7 +178,13 @@ pub fn resolve(value: u32, caller_ansi: bool) -> Procedure {
 pub fn translates(message: u32) -> bool {
     matches!(
         message,
-        WM_SETTEXT | WM_GETTEXT | WM_GETTEXTLENGTH | WM_NCCREATE | WM_CREATE
+        WM_SETTEXT
+            | WM_GETTEXT
+            | WM_GETTEXTLENGTH
+            | WM_NCCREATE
+            | WM_CREATE
+            | EM_REPLACESEL
+            | EM_GETLINE
     )
 }
 
@@ -204,12 +217,23 @@ fn to_narrow(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> 
     let call =
         |message, wparam, lparam| imports::call_procedure(proc, window, message, wparam, lparam);
     match message {
-        WM_SETTEXT if lparam != 0 => {
-            // SAFETY: WM_SETTEXT's lParam as its sender hands it over: a NUL-terminated string,
-            // wide in this form.
+        WM_SETTEXT | EM_REPLACESEL if lparam != 0 => {
+            // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a
+            // NUL-terminated string, wide in this form.
             let text = unsafe { InWStr::new(lparam as usize as *const u16) };
-            with_narrow(text, |bytes| {
-                call(WM_SETTEXT, wparam, bytes.as_ptr() as i32)
+            with_narrow(text, |bytes| call(message, wparam, bytes.as_ptr() as i32)).unwrap_or(0)
+        }
+        EM_GETLINE if lparam != 0 => {
+            // SAFETY: EM_GETLINE's lParam as its sender hands it over: a buffer of as many units as
+            // its first unit says.
+            let room = unsafe { In::new(lparam as usize as *const u16) }.read() as usize;
+            // SAFETY: as above.
+            let mut out = unsafe { OutBuf::new(lparam as usize as *mut u16, room) };
+            with_bytes((2 * room).max(2), |bytes| {
+                let size = (2 * room).min(0xFFFF) as u16;
+                bytes[..2].copy_from_slice(&size.to_le_bytes());
+                let got = call(EM_GETLINE, wparam, bytes.as_mut_ptr() as i32);
+                put_line(&mut out, &bytes[..(got.max(0) as usize).min(bytes.len())])
             })
             .unwrap_or(0)
         }
@@ -263,12 +287,25 @@ fn to_wide(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> i3
     let call =
         |message, wparam, lparam| imports::call_procedure(proc, window, message, wparam, lparam);
     match message {
-        WM_SETTEXT if lparam != 0 => {
-            // SAFETY: WM_SETTEXT's lParam as its sender hands it over: a NUL-terminated string,
-            // narrow in this form.
+        WM_SETTEXT | EM_REPLACESEL if lparam != 0 => {
+            // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a
+            // NUL-terminated string, narrow in this form.
             let text = unsafe { InStr::new(lparam as usize as *const u8) };
             crate::with_wide(text.bytes(), |units| {
-                call(WM_SETTEXT, wparam, units.as_ptr() as i32)
+                call(message, wparam, units.as_ptr() as i32)
+            })
+            .unwrap_or(0)
+        }
+        EM_GETLINE if lparam != 0 => {
+            // SAFETY: EM_GETLINE's lParam as its sender hands it over: a buffer of as many bytes
+            // as its first two say.
+            let room = unsafe { In::new(lparam as usize as *const u16) }.read() as usize;
+            // SAFETY: as above.
+            let mut out = unsafe { OutBuf::new(lparam as usize as *mut u8, room) };
+            with_units(room.max(1), |units| {
+                units[0] = room as u16;
+                let got = call(EM_GETLINE, wparam, units.as_mut_ptr() as i32);
+                put_line_narrow(&mut out, &units[..(got.max(0) as usize).min(units.len())])
             })
             .unwrap_or(0)
         }
@@ -390,6 +427,35 @@ pub fn put_narrow(out: &mut OutBuf<'_, u8>, text: &[u16]) -> usize {
         out.put(&bytes[..length]);
         out.set(length, 0);
         length
+    })
+    .unwrap_or(0)
+}
+
+/// A narrow procedure's EM_GETLINE line `line` converted into the wide caller's buffer `out`, as
+/// much as fits, terminated when there is room: the units written before the terminator.
+fn put_line(out: &mut OutBuf<'_, u16>, line: &[u8]) -> i32 {
+    with_units(line.len(), |units| {
+        let length = imports::multi_byte_to_unicode(units, line).min(out.len());
+        out.put(&units[..length]);
+        if length < out.len() {
+            out.set(length, 0);
+        }
+        length as i32
+    })
+    .unwrap_or(0)
+}
+
+/// A wide procedure's EM_GETLINE line `line` converted into the narrow caller's buffer `out`, as
+/// much as fits, terminated when there is room (the editctl capture's narrow EM_GETLINE): the
+/// bytes written before the terminator.
+fn put_line_narrow(out: &mut OutBuf<'_, u8>, line: &[u16]) -> i32 {
+    with_bytes(2 * line.len(), |bytes| {
+        let length = imports::unicode_to_multi_byte(bytes, line).min(out.len());
+        out.put(&bytes[..length]);
+        if length < out.len() {
+            out.set(length, 0);
+        }
+        length as i32
     })
     .unwrap_or(0)
 }
