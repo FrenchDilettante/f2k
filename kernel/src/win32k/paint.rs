@@ -541,10 +541,12 @@ mod services {
     }
 
     /// NtUserBeginPaint(Window, Paint): the PAINTSTRUCT, its DC clipped to the update region, its
-    /// erase the pending one, its rcPaint the region's box; the window validated. The DC is made
-    /// before the window is validated, and closed again when the PAINTSTRUCT cannot be written.
+    /// erase the pending one, its rcPaint the region's box; the window validated, the caller's
+    /// caret taken off the screen when the paint covers it ([`crate::win32k::caret`]). The DC is
+    /// made before the window is validated, and closed again when the PAINTSTRUCT cannot be
+    /// written.
     pub fn begin_paint(call: &mut NtCall, window: Handle, paint: UserAddr) -> NtResult {
-        gui_thread(call)?;
+        let caller = gui_thread(call)?.thread;
         let paint = paint.cast::<PaintStruct>();
         let area = with_manager(call.passive(), |m| {
             let id = window_of(&m.windows, window)?;
@@ -554,6 +556,7 @@ mod services {
         with_manager(call.passive(), |m| {
             if let Some(id) = m.windows.window_from_handle(window.raw()) {
                 begin_validate(&mut m.windows, id);
+                crate::win32k::caret::paint_begins(&mut m.windows, caller, id);
             }
         });
         let written = paint.write(PaintStruct {
@@ -570,11 +573,14 @@ mod services {
     }
 
     /// NtUserEndPaint(Window, Paint): the PAINTSTRUCT's DC released (a DC already gone is no
-    /// failure: EndPaint always succeeds once its arguments are read).
+    /// failure: EndPaint always succeeds once its arguments are read), the caller's caret put
+    /// back on the screen when BeginPaint took it off.
     pub fn end_paint(call: &mut NtCall, window: Handle, paint: UserAddr) -> NtResult {
-        gui_thread(call)?;
+        let caller = gui_thread(call)?.thread;
         with_manager(call.passive(), |m| {
-            window_of(&m.windows, window).map(|_| ())
+            window_of(&m.windows, window)?;
+            crate::win32k::caret::paint_ends(&mut m.windows, caller);
+            Ok::<_, NtStatus>(())
         })?;
         let paint = paint.cast::<PaintStruct>().read()?;
         let _ = crate::win32k::dc::release_paint_dc(call, paint.hdc);

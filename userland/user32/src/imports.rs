@@ -27,7 +27,7 @@ use rtl::icon::CursorData;
 use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
 use rtl::status::NtStatus;
-use rtl::user::{Msg, Receipt};
+use rtl::user::{GuiThreadInfo, Msg, Point, Receipt};
 
 use crate::class::WndClassExW;
 use crate::Out;
@@ -38,7 +38,7 @@ mod raw {
     use rtl::display::DevModeW;
     use rtl::gdi::{LogFontW, Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
-    use rtl::user::{Msg, Receipt};
+    use rtl::user::{GuiThreadInfo, Msg, Point, Receipt};
 
     use crate::class::WndClassExW;
 
@@ -483,6 +483,26 @@ mod raw {
             routine: u32,
             result: *mut u32,
         ) -> u32;
+
+        // The caret (kernel/src/win32k/caret.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserCreateCaret"]
+        pub fn NtUserCreateCaret(
+            window: usize,
+            gray: u32,
+            width: i32,
+            height: i32,
+            made: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserShowCaret"]
+        pub fn NtUserShowCaret(window: usize, done: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserHideCaret"]
+        pub fn NtUserHideCaret(window: usize, done: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetCaretPos"]
+        pub fn NtUserGetCaretPos(point: *mut Point) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetGUIThreadInfo"]
+        pub fn NtUserGetGUIThreadInfo(thread: u32, info: *mut GuiThreadInfo) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserCallTwoParam"]
+        pub fn NtUserCallTwoParam(param1: u32, param2: u32, routine: u32, result: *mut u32) -> u32;
 
         // The DCs (kernel/src/win32k/dc.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserGetDC"]
@@ -1469,6 +1489,58 @@ pub fn thread_state(routine: u32) -> Result<u32, NtStatus> {
     let mut result = 0u32;
     // SAFETY: the kernel writes the result into the local.
     checked(unsafe { raw::NtUserGetThreadState(routine, &mut result) })?;
+    Ok(result)
+}
+
+// --- win32k: the caret
+// -----------------------------------------------------------------------------
+
+/// NtUserCreateCaret: a caret of `window`, gray or solid, `width` by `height`; whether it was made.
+pub fn create_caret(window: usize, gray: bool, width: i32, height: i32) -> Result<bool, NtStatus> {
+    let mut made = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserCreateCaret(window, gray as u32, width, height, &mut made) })?;
+    Ok(made != 0)
+}
+
+/// NtUserShowCaret (`show`) or NtUserHideCaret: the caret of `window` (0: whatever window it is
+/// in) shown or hidden once more; whether it was.
+pub fn show_caret(window: usize, show: bool) -> Result<bool, NtStatus> {
+    let mut done = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe {
+        if show {
+            raw::NtUserShowCaret(window, &mut done)
+        } else {
+            raw::NtUserHideCaret(window, &mut done)
+        }
+    })?;
+    Ok(done != 0)
+}
+
+/// NtUserGetCaretPos: the calling thread's caret place.
+pub fn caret_pos() -> Result<Point, NtStatus> {
+    let mut point = Point::default();
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetCaretPos(&mut point) })?;
+    Ok(point)
+}
+
+/// NtUserGetGUIThreadInfo: the GUITHREADINFO of the thread `thread` (its id; 0 for the foreground
+/// thread).
+pub fn gui_thread_info(thread: u32) -> Result<GuiThreadInfo, NtStatus> {
+    let mut info = GuiThreadInfo::default();
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetGUIThreadInfo(thread, &mut info) })?;
+    Ok(info)
+}
+
+/// NtUserCallTwoParam: the routine `routine` (rtl::user's TWO_PARAM_*) with its two parameters: its
+/// result.
+pub fn call_two_param(param1: u32, param2: u32, routine: u32) -> Result<u32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the result into the local.
+    checked(unsafe { raw::NtUserCallTwoParam(param1, param2, routine, &mut result) })?;
     Ok(result)
 }
 

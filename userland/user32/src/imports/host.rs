@@ -1669,6 +1669,148 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
     })
 }
 
+// --- The caret -----------------------------------------------------------------------------------
+
+/// The calling thread's caret, as the kernel keeps it: its window (0 for none), its hide count,
+/// its place (kept between carets) and size.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostCaret {
+    pub window: u32,
+    pub hidden: u32,
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+std::thread_local! {
+    pub static CARET: Cell<HostCaret> = const {
+        Cell::new(HostCaret { window: 0, hidden: 0, x: 0, y: 0, width: 0, height: 0 })
+    };
+}
+
+pub unsafe extern "system" fn NtUserCreateCaret(
+    window: usize,
+    _gray: u32,
+    width: i32,
+    height: i32,
+    made: *mut u32,
+) -> u32 {
+    let handle = match wm(|wm| wm.window(window).map(|w| w.handle)) {
+        Ok(handle) => handle,
+        Err(status) => return status,
+    };
+    CARET.with(|caret| {
+        let old = caret.get();
+        caret.set(HostCaret {
+            window: handle,
+            hidden: 1,
+            width: if width == 0 { 1 } else { width },
+            height: if height == 0 { 1 } else { height },
+            ..old
+        })
+    });
+    // SAFETY: the caller's out-pointer.
+    unsafe { made.write(1) };
+    STATUS_SUCCESS
+}
+
+/// ShowCaret's and HideCaret's stand-in: the count moved for the caret's window (or none named).
+fn show_or_hide(window: usize, show: bool, done: *mut u32) -> u32 {
+    if window != 0 {
+        if let Err(status) = wm(|wm| wm.window(window).map(|_| ())) {
+            return status;
+        }
+    }
+    let mut caret = CARET.with(|caret| caret.get());
+    if caret.window == 0 {
+        return STATUS_ACCESS_DENIED;
+    }
+    let answer = window == 0 || window == caret.window as usize;
+    if answer {
+        caret.hidden = if show {
+            caret.hidden.saturating_sub(1)
+        } else {
+            caret.hidden + 1
+        };
+        CARET.with(|cell| cell.set(caret));
+    }
+    // SAFETY: the caller's out-pointer.
+    unsafe { done.write(answer as u32) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserShowCaret(window: usize, done: *mut u32) -> u32 {
+    show_or_hide(window, true, done)
+}
+
+pub unsafe extern "system" fn NtUserHideCaret(window: usize, done: *mut u32) -> u32 {
+    show_or_hide(window, false, done)
+}
+
+pub unsafe extern "system" fn NtUserGetCaretPos(point: *mut Point) -> u32 {
+    let caret = CARET.with(|caret| caret.get());
+    // SAFETY: the caller's out-pointer.
+    unsafe {
+        point.write(Point {
+            x: caret.x,
+            y: caret.y,
+        })
+    };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserGetGUIThreadInfo(thread: u32, info: *mut GuiThreadInfo) -> u32 {
+    if thread != 0 && thread != THREAD_ID.with(|id| id.get()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let caret = CARET.with(|caret| caret.get());
+    let (focus, active) = wm(|wm| (wm.focus, wm.active));
+    let answer = GuiThreadInfo {
+        cb_size: size_of::<GuiThreadInfo>() as u32,
+        flags: (caret.window != 0 && caret.hidden == 0) as u32,
+        hwnd_active: active,
+        hwnd_focus: focus,
+        hwnd_caret: caret.window,
+        rc_caret: if caret.window != 0 {
+            Rect {
+                left: caret.x,
+                top: caret.y,
+                right: caret.x + caret.width,
+                bottom: caret.y + caret.height,
+            }
+        } else {
+            Rect::default()
+        },
+        ..GuiThreadInfo::default()
+    };
+    // SAFETY: the caller's out-pointer.
+    unsafe { info.write(answer) };
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "system" fn NtUserCallTwoParam(
+    param1: u32,
+    param2: u32,
+    routine: u32,
+    result: *mut u32,
+) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    if routine != TWO_PARAM_SET_CARET_POS {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut caret = CARET.with(|caret| caret.get());
+    if caret.window == 0 {
+        return STATUS_ACCESS_DENIED;
+    }
+    caret.x = param1 as i32;
+    caret.y = param2 as i32;
+    CARET.with(|cell| cell.set(caret));
+    // SAFETY: the caller's out-pointer.
+    unsafe { result.write(1) };
+    STATUS_SUCCESS
+}
+
 /// The rectangle at `rect`, or none.
 fn rect_at(rect: usize) -> Option<Rect> {
     // SAFETY: the tests' own rectangle.
@@ -2074,6 +2216,20 @@ pub unsafe extern "system" fn NtUserCallNoParam(routine: u32, result: *mut u32) 
             cursors.push(rtl::icon::CursorData::default());
             cursors.len() as u32 | HOST_CURSOR_TAG
         }),
+        NO_PARAM_DESTROY_CARET => {
+            let caret = CARET.with(|caret| caret.get());
+            if caret.window == 0 {
+                return STATUS_ACCESS_DENIED;
+            }
+            CARET.with(|cell| {
+                cell.set(HostCaret {
+                    x: caret.x,
+                    y: caret.y,
+                    ..HostCaret::default()
+                })
+            });
+            1
+        }
         _ => return STATUS_INVALID_PARAMETER,
     };
     // SAFETY: the caller's out-pointer.

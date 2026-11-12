@@ -1197,6 +1197,8 @@ pub struct Thread {
     pub active_prev: Option<WindowId>,
     pub focus: Option<WindowId>,
     pub capture: Option<WindowId>,
+    /// The thread's caret ([`super::caret`]).
+    pub caret: super::caret::Caret,
     /// The thread's key state, as of the last key message it read ([`super::input`]).
     pub keys: super::input::KeyState,
     pub startup: StartupInfo,
@@ -1222,6 +1224,7 @@ impl Thread {
         active_prev: None,
         focus: None,
         capture: None,
+        caret: super::caret::Caret::EMPTY,
         keys: super::input::KeyState::EMPTY,
         startup: StartupInfo {
             flags: 0,
