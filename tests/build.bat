@@ -927,14 +927,19 @@ cd ..\..
 goto :eof
 
 rem cxxeh is the corpus's one C++ fixture: /GX for C++ exception
-rem handling, /GR for the run-time type information typeid needs.
+rem handling, /GR for the run-time type information typeid needs. Its
+rem prolog section, cxxehopt.cpp, is compiled with /O1, where Visual C++
+rem calls msvcrt's _EH_prolog for a function's C++ frame; the stamp
+rem covers both sources.
 :cxxeh
 echo === cxxeh
 cd crt\cxxeh
-call :stamp cxxeh.cpp
-cl /nologo /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxeh.cpp
+call :stamp cxxeh.cpp cxxehopt.cpp
+cl /nologo /c /O1 /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxehopt.cpp
 if errorlevel 1 (echo build.bat: cxxeh failed & exit /b 1)
-del cxxeh.obj
+cl /nologo /GX /GR /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cxxeh.cpp cxxehopt.obj
+if errorlevel 1 (echo build.bat: cxxeh failed & exit /b 1)
+del cxxeh.obj cxxehopt.obj
 cd ..\..
 goto :eof
 
@@ -949,12 +954,13 @@ del wmain.obj
 cd ..\..
 goto :eof
 
-rem Set F2KT_CRC to the source stamp of the fixture source %1 (with the
-rem shared header), from inside its directory, <dll>\<name>.
+rem Set F2KT_CRC to the source stamp of the fixture's sources, its own
+rem first (with the shared header after them), from inside its directory,
+rem <dll>\<name>.
 :stamp
 set F2KT_CRC=
-for /f %%H in ('..\..\common\srcsum.exe %1 ..\..\common\f2kt.h') do set F2KT_CRC=%%H
-if "%F2KT_CRC%"=="" (echo build.bat: srcsum failed on %1 & exit /b 1)
+for /f %%H in ('..\..\common\srcsum.exe %* ..\..\common\f2kt.h') do set F2KT_CRC=%%H
+if "%F2KT_CRC%"=="" (echo build.bat: srcsum failed on %* & exit /b 1)
 goto :eof
 :threx
 echo === threx
