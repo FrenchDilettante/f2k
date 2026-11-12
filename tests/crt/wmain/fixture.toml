@@ -5,9 +5,10 @@
 # relations.
 description = "wmain - msvcrt.dll's wide startup under /MD (wmain.c, whose main is wmain): argv as __wgetmainargs splits a child's command line, envp from a child's own environment block, __p___wargv, __p___winitenv, __p__wenviron and __p___argc against wmain's arguments, the narrow accessors in a wide program, envp against GetEnvironmentStringsW, and __wgetmainargs and __getmainargs called directly."
 kind = "sectioned"
+gate = true
 
-# Not gated: msvcrt's wide startup (__wgetmainargs, __p___wargv, __p___winitenv) is not implemented
-# yet. Every section is on the work list.
+[pending]
+env = "the child's U+03B1 reaches envp as '?': _wenviron is _environ widened, and the ANSI conversion behind GetEnvironmentStrings has no best-fit mapping (Windows 2000's code page 1252 table gives 'a')"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

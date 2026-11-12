@@ -259,7 +259,7 @@ note = "it never returns: \"abnormal program termination\" written, the process 
 name = "__wgetmainargs"
 group = "startup"
 args = ["ptr pargc", "ptr pwargv", "ptr pwenv", "i32 dowildcard", "ptr startinfo"]
-impl = { stub = "not yet implemented" }
+impl = { native = "__wgetmainargs" }
 ordinal = 142
 fails = "-1"
 
@@ -267,31 +267,31 @@ fails = "-1"
 name = "__p___wargv"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p___wargv" }
 ordinal = 105
-fails = "NULL"
+fails = "never"
 
 [[export]]
 name = "__p__wenviron"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p__wenviron" }
 ordinal = 125
-fails = "NULL"
+fails = "never"
 
 [[export]]
 name = "__p___winitenv"
 group = "startup"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "__p___winitenv" }
 ordinal = 106
-fails = "NULL"
+fails = "never"
 
 [[export]]
 name = "_wgetenv"
 group = "startup"
-args = ["ptr varname"]
-impl = { stub = "not yet implemented" }
+args = ["strW? varname"]
+impl = { native = "_wgetenv" }
 ordinal = 541
 fails = "NULL"
 
