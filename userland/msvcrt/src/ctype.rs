@@ -207,6 +207,11 @@ pub fn is_c_locale() -> bool {
     tables().lcid == 0
 }
 
+/// The LC_CTYPE locale's ANSI code page (0 for the "C" locale).
+pub fn code_page() -> u32 {
+    tables().page
+}
+
 /// The classes of a narrow character in the LC_CTYPE locale.
 pub fn byte_class(byte: u8) -> u16 {
     tables().class[byte as usize]

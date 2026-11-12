@@ -5,9 +5,6 @@ description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under 
 kind = "sectioned"
 gate = true
 
-[pending]
-mbblead = "msvcrt exports no _ismbblead, _setmbcp or _getmbcp yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

@@ -1463,6 +1463,31 @@ ordinal = 707
 fails = "NULL"
 
 [[export]]
+name = "_setmbcp"
+group = "utility"
+args = ["i32 codepage"]
+impl = { native = "_setmbcp" }
+ordinal = 440
+fails = "-1"
+note = "a double-byte code page logs as not yet implemented: F2K carries none"
+
+[[export]]
+name = "_getmbcp"
+group = "utility"
+args = []
+impl = { native = "_getmbcp" }
+ordinal = 266
+fails = "never"
+
+[[export]]
+name = "_ismbblead"
+group = "utility"
+args = ["u32 c"]
+impl = { native = "_ismbblead" }
+ordinal = 296
+fails = "never"
+
+[[export]]
 name = "abs"
 group = "utility"
 args = ["i32 n"]
@@ -2494,10 +2519,6 @@ name = "_getmaxstdio"
 ordinal = 265
 
 [[export]]
-name = "_getmbcp"
-ordinal = 266
-
-[[export]]
 name = "_getpid"
 ordinal = 267
 
@@ -2604,10 +2625,6 @@ ordinal = 294
 [[export]]
 name = "_ismbbkpunct"
 ordinal = 295
-
-[[export]]
-name = "_ismbblead"
-ordinal = 296
 
 [[export]]
 name = "_ismbbprint"
@@ -3123,10 +3140,6 @@ ordinal = 437
 [[export]]
 name = "_setmaxstdio"
 ordinal = 439
-
-[[export]]
-name = "_setmbcp"
-ordinal = 440
 
 [[export]]
 name = "_setsystime"

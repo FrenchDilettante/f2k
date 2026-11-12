@@ -17,6 +17,7 @@ use rtl::critsec::CriticalSection;
 use crate::edge::WideUnit;
 use crate::imports::{
     self,
+    CpInfo,
     ProcessInformation,
     SecurityAttributes,
     StartupInfoA,
@@ -751,6 +752,26 @@ pub fn startup_info() -> StartupInfoA {
     // SAFETY: the call writes the structure.
     unsafe { imports::GetStartupInfoA(&mut info) };
     info
+}
+
+/// GetACP: the system's ANSI code page.
+pub fn ansi_code_page() -> u32 {
+    // SAFETY: no arguments.
+    unsafe { imports::GetACP() }
+}
+
+/// GetOEMCP: the system's OEM code page.
+pub fn oem_code_page() -> u32 {
+    // SAFETY: no arguments.
+    unsafe { imports::GetOEMCP() }
+}
+
+/// GetCPInfo: an installed code page's facts; none for one that is not installed.
+pub fn cp_info(page: u32) -> Option<CpInfo> {
+    let mut info = CpInfo::default();
+    // SAFETY: the call writes the structure.
+    let done = unsafe { imports::GetCPInfo(page, &mut info) };
+    (done != 0).then_some(info)
 }
 
 /// ntdll's DbgPrint of `line`, as it is (its `%s`): to the debugger.

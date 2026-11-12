@@ -15,11 +15,11 @@
 //! ([`thread`]), the allocator ([`heap`]), the descriptors ([`lowio`]), console input ([`conio`]),
 //! the streams ([`stdio`]) and the formatter and scanner they share ([`format`], [`float`],
 //! [`scan`]), the child processes ([`process`]: the _spawn family, _cwait, system, _popen and
-//! _pclose), the locale and the character functions ([`ctype`]), strings ([`string`]), number
-//! conversions ([`convert`]), the floating-point functions ([`math`]), the current directory and
-//! full paths ([`directory`]), qsort, rand, abs, time and the broken-down times ([`utility`]),
-//! and C++ exception handling ([`eh`], its calling-convention seams in src/seh.s) and run-time
-//! type information ([`rtti`]).
+//! _pclose), the locale and the character functions ([`ctype`]), the multibyte code page
+//! ([`mbctype`]), strings ([`string`]), number conversions ([`convert`]), the floating-point
+//! functions ([`math`]), the current directory and full paths ([`directory`]), qsort, rand, abs,
+//! time and the broken-down times ([`utility`]), and C++ exception handling ([`eh`], its
+//! calling-convention seams in src/seh.s) and run-time type information ([`rtti`]).
 //!
 //! The exports not written yet are stubs: their generated bodies log the call and fail ([`stub`]).
 
@@ -39,6 +39,7 @@ pub mod imports;
 pub mod kernel32;
 pub mod lowio;
 pub mod math;
+pub mod mbctype;
 pub mod process;
 pub mod rtti;
 pub mod scan;
@@ -72,9 +73,10 @@ const THREAD_DETACH: u32 = 3;
 /// The DLL's entry point's work, for each reason: the process attach sets up the heap, the
 /// per-thread slot and the locks, the descriptors over the standard handles, the C++ top-level
 /// exception filter (a C++ exception nothing catches calls terminate), `_iob`'s standard
-/// streams, `_acmdln` and `_wcmdln`, and `_environ` (FALSE when one cannot be had); a thread's
-/// detach frees its data; the process's detach, when the program did not end through exit or
-/// _exit, runs what exit would, and puts back the top-level filter the C++ one replaced.
+/// streams, `_acmdln` and `_wcmdln`, the multibyte code page, and `_environ` (FALSE when one
+/// cannot be had); a thread's detach frees its data; the process's detach, when the program did
+/// not end through exit or _exit, runs what exit would, and puts back the top-level filter the C++
+/// one replaced.
 pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
     match reason {
         PROCESS_ATTACH => {
@@ -86,6 +88,7 @@ pub fn dll_main(reason: u32, _reserved: usize) -> u32 {
             eh::install_unhandled_filter();
             data::open_standard_streams();
             startup::initialize_command_line();
+            mbctype::initialize();
             startup::initialize_environment() as u32
         }
         THREAD_DETACH => {

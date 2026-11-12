@@ -191,7 +191,24 @@ unsafe extern "system" {
     pub fn GetExitCodeProcess(process: usize, code: *mut u32) -> u32;
     pub fn GetFileAttributesA(name: *const u8) -> u32;
     pub fn GetStartupInfoA(info: *mut StartupInfoA);
+
+    /// The code pages _setmbcp sets: the system's ANSI and OEM ones, and a code page's facts.
+    pub fn GetACP() -> u32;
+    pub fn GetOEMCP() -> u32;
+    pub fn GetCPInfo(page: u32, info: *mut CpInfo) -> u32;
 }
+
+/// CPINFO: a code page's longest character in bytes, its default character, and its lead bytes'
+/// ranges (pairs, first and last, ended by a pair of zeros).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CpInfo {
+    pub max_char_size: u32,
+    pub default_char: [u8; 2],
+    pub lead_byte: [u8; 12],
+}
+
+const _: () = assert!(core::mem::size_of::<CpInfo>() == 20);
 
 /// STARTUPINFOA: its strings (lpReserved, lpDesktop, lpTitle), the window's and console's values
 /// (dwX to dwFillAttribute), the STARTF_* flags, wShowWindow, the C runtime's block (cbReserved2,
@@ -822,6 +839,31 @@ pub mod host {
 
     pub unsafe extern "system" fn FreeEnvironmentStringsA(_: *mut u8) -> u32 {
         unreachable("FreeEnvironmentStringsA")
+    }
+
+    /// GetACP and GetOEMCP: kernel32's (1252 and 437).
+    pub unsafe extern "system" fn GetACP() -> u32 {
+        1252
+    }
+
+    pub unsafe extern "system" fn GetOEMCP() -> u32 {
+        437
+    }
+
+    /// GetCPInfo: kernel32's facts, from the same `rtl` table.
+    pub unsafe extern "system" fn GetCPInfo(page: u32, info: *mut super::CpInfo) -> u32 {
+        let Some(facts) = rtl::codepage::cp_info(page) else {
+            return 0;
+        };
+        let mut answer = super::CpInfo {
+            max_char_size: u32::from_le_bytes(facts[..4].try_into().unwrap()),
+            default_char: [facts[4], facts[5]],
+            ..super::CpInfo::default()
+        };
+        answer.lead_byte.copy_from_slice(&facts[6..]);
+        // SAFETY: the caller's structure.
+        unsafe { info.write(answer) };
+        1
     }
 
     std::thread_local! {
