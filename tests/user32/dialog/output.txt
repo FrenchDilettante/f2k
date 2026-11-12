@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:11:18.32
-dialog F2KT-SOURCE-CRC=0xCC4B4B1C
+# date: Thu 11/12/2026 15:12:02.26
+dialog F2KT-SOURCE-CRC=0x50FD2C9A
 >>> dialog.exe create
 == create
 CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
@@ -85,6 +85,16 @@ dialog: class #32770 style=0x84C800C4 exstyle=0x00010101 caption "F2K dialogex" 
     template rect mapped minus window rect: 0 0 0 0
   2 controls
 client size minus the mapped template size: 0 0
+dialog: done
+<<< exit code=0
+>>> dialog.exe default
+== default
+CreateDialogParamW(103, template at -32768, -32768): non-NULL yes err=-
+dialog: class #32770 style=0x84C80084 exstyle=0x00010101 caption "F2K default place" visible no
+window rect size 206 x 125; client origin on the screen yes
+  control 0: class Button id=1 style=0x50010001 exstyle=0x00000004 text "OK"
+    template rect mapped minus window rect: 0 0 0 0
+  1 controls
 dialog: done
 <<< exit code=0
 >>> dialog.exe items

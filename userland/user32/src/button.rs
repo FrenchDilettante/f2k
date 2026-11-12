@@ -60,11 +60,36 @@ const BS_TYPEMASK: u32 = 0xF;
 
 /// The button kinds the procedure does not draw yet (drawn as a check box), and what Windows 2000
 /// draws for each.
-const UNDRAWN_KINDS: [(u32, &str); 3] = [
+const UNDRAWN_KINDS: [(u32, &str); 2] = [
     (0x8, "BS_USERBUTTON buttons"),
     (0xA, "BS_PUSHBOX buttons"),
-    (0xB, "BS_OWNERDRAW buttons (WM_DRAWITEM to the parent)"),
 ];
+
+/// BS_OWNERDRAW, the kind whose paint goes to the parent as WM_DRAWITEM.
+const BS_OWNERDRAW: u32 = 0xB;
+
+/// WM_DRAWITEM, and DRAWITEMSTRUCT's fields' values for a button drawn whole (winuser.h's).
+const WM_DRAWITEM: u32 = 0x002B;
+const ODT_BUTTON: u32 = 4;
+const ODA_DRAWENTIRE: u32 = 0x0001;
+const ODS_SELECTED: u32 = 0x0001;
+const ODS_DISABLED: u32 = 0x0004;
+const ODS_FOCUS: u32 = 0x0010;
+
+/// DRAWITEMSTRUCT (winuser.h's), as WM_DRAWITEM's lParam names it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct DrawItemStruct {
+    ctl_type: u32,
+    ctl_id: u32,
+    item_id: u32,
+    item_action: u32,
+    item_state: u32,
+    hwnd_item: u32,
+    hdc: u32,
+    rc_item: Rect,
+    item_data: u32,
+}
 
 /// The style bits the procedure does not draw yet, and what each does.
 const UNDRAWN_STYLES: [(u32, &str); 6] = [
@@ -391,9 +416,16 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            log_undrawn(window, (window, message, wparam, lparam));
-            if let Some(painting) = paint::Painting::begin(window) {
-                draw_button(window, painting.dc());
+            if kind(window) == BS_OWNERDRAW && parent_of(window) != 0 {
+                // An owner-drawn button's paint is the parent's WM_DRAWITEM, as Windows 2000's.
+                if let Some(painting) = paint::Painting::begin(window) {
+                    draw_item(window, painting.dc());
+                }
+            } else {
+                log_undrawn(window, (window, message, wparam, lparam));
+                if let Some(painting) = paint::Painting::begin(window) {
+                    draw_button(window, painting.dc());
+                }
             }
             0
         }
@@ -425,6 +457,56 @@ fn inset(rect: Rect, by: i32) -> Rect {
         top: rect.top + by,
         right: rect.right - by,
         bottom: rect.bottom - by,
+    }
+}
+
+/// A BS_OWNERDRAW button drawn: WM_DRAWITEM to its parent, the DRAWITEMSTRUCT on this frame (the
+/// send is the procedure's own call, so the address lives as long as the parent's handling).
+fn draw_item(window: usize, dc: usize) {
+    let item = item_struct(window, dc);
+    // WM_DRAWITEM's wParam is the control's id (the dialog manager's convention): the parent
+    // indexes its per-control tables with it.
+    let _ = message::send(
+        parent_of(window),
+        WM_DRAWITEM,
+        item.ctl_id,
+        &item as *const DrawItemStruct as i32,
+    );
+}
+
+/// The DRAWITEMSTRUCT a BS_OWNERDRAW button's WM_DRAWITEM carries: a button drawn whole, in its
+/// own client rectangle, with its state.
+fn item_struct(window: usize, dc: usize) -> DrawItemStruct {
+    let client = window::client_rect(window).unwrap_or_default();
+    let state = read(window, STATE);
+    let mut item_state = 0;
+    if state & BST_PUSHED != 0 {
+        item_state |= ODS_SELECTED;
+    }
+    if state & BST_FOCUS != 0 {
+        item_state |= ODS_FOCUS;
+    }
+    if style(window) & WS_DISABLED != 0 {
+        item_state |= ODS_DISABLED;
+    }
+    let id = window::window_data(window).map_or(0, |data| data.id);
+    DrawItemStruct {
+        ctl_type: ODT_BUTTON,
+        ctl_id: id,
+        // Windows 2000 fills itemID with the control's handle for a button (the capture shows
+        // a handle where the id would be); only wParam carries the id.
+        item_id: window as u32,
+        item_action: ODA_DRAWENTIRE,
+        item_state,
+        hwnd_item: window as u32,
+        hdc: dc as u32,
+        rc_item: Rect {
+            left: 0,
+            top: 0,
+            right: client.right - client.left,
+            bottom: client.bottom - client.top,
+        },
+        item_data: 0,
     }
 }
 
@@ -648,5 +730,140 @@ fn draw_radio(dc: usize, mark: Rect, checked: bool, dimmed: bool) {
         for (row, (from, width)) in [(5, 2), (4, 4), (4, 4), (5, 2)].into_iter().enumerate() {
             run(dc, mark.left + from, mark.top + 4 + row as i32, width, ink);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::cell::RefCell;
+
+    use super::*;
+    use crate::class::SYSTEM_CLASSES_WANTED;
+    use crate::dialog::{WS_POPUP, WS_VISIBLE};
+    use crate::imports::host::procedure;
+
+    std::thread_local! {
+        /// The WM_DRAWITEMs the dialog procedure received, as wParam (the lParam is a pointer,
+        /// which a 64-bit host cannot carry in a message, as its CREATESTRUCT comment notes).
+        static DRAWN: RefCell<std::vec::Vec<u32>> =
+            const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// A dialog procedure recording the WM_DRAWITEMs' wParams; every other message to the default.
+    fn recorder(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        if message == WM_DRAWITEM {
+            DRAWN.with(|drawn| drawn.borrow_mut().push(wparam));
+            return 1;
+        }
+        message::default_procedure(window as usize, message, wparam, lparam, false)
+    }
+
+    /// A dialog holding one shown BS_OWNERDRAW button of id 7: the dialog and the button.
+    fn dialog_with_owner_drawn_button() -> (usize, usize) {
+        SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        // DIALOG: WS_POPUP, no menu, the dialog class (#32770), no title; one control.
+        dword(&mut words, WS_POPUP);
+        dword(&mut words, 0);
+        words.extend([1, 10, 20, 200, 100, 0, 0xFFFF, 0x8002, 0]);
+        if words.len() % 2 != 0 {
+            words.push(0);
+        }
+        // The control: a BS_OWNERDRAW button (class ordinal 0x80), id 7.
+        dword(&mut words, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW);
+        dword(&mut words, 0);
+        words.extend([5, 5, 60, 20, 7, 0xFFFF, 0x80, 0, 0]);
+        // DWORD-aligned, as a template is.
+        let template: std::vec::Vec<u32> = words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect();
+        // SAFETY: the template above, whole.
+        let dialog = unsafe {
+            dialog::create_dialog_indirect_param_w(
+                0x40_0000,
+                template.as_ptr().cast(),
+                0,
+                procedure(recorder) as usize,
+                0,
+            )
+        };
+        assert_ne!(dialog, 0);
+        let button = dialog::child_by_id(dialog, 7);
+        assert_ne!(button, 0);
+        (dialog, button)
+    }
+
+    /// A BS_OWNERDRAW button's WM_PAINT goes to the parent as WM_DRAWITEM, wParam the control's id
+    /// (the dialog manager indexes its per-control tables by it); the DRAWITEMSTRUCT it carries
+    /// names a button drawn whole, in the button's client rectangle.
+    #[test]
+    fn an_owner_drawn_buttons_paint_is_the_parents_draw_item() {
+        let (_dialog, button) = dialog_with_owner_drawn_button();
+        DRAWN.with(|drawn| drawn.borrow_mut().clear());
+        assert_eq!(button_proc_w(button, WM_PAINT, 0, 0), 0);
+        assert_eq!(DRAWN.with(|drawn| drawn.borrow().clone()), [7]);
+        let item = item_struct(button, 0x1234);
+        let client = window::client_rect(button).unwrap();
+        assert_eq!(item.ctl_type, ODT_BUTTON);
+        assert_eq!(item.ctl_id, 7);
+        assert_eq!(item.item_id, button as u32);
+        assert_eq!(item.item_action, ODA_DRAWENTIRE);
+        assert_eq!(item.item_state, 0);
+        assert_eq!(item.hwnd_item, button as u32);
+        assert_eq!(item.hdc, 0x1234);
+        assert_eq!(
+            item.rc_item,
+            Rect {
+                left: 0,
+                top: 0,
+                right: client.right - client.left,
+                bottom: client.bottom - client.top,
+            }
+        );
+    }
+
+    /// A button of another kind paints itself and sends no WM_DRAWITEM.
+    #[test]
+    fn a_plain_buttons_paint_sends_no_draw_item() {
+        SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        dword(&mut words, WS_POPUP);
+        dword(&mut words, 0);
+        words.extend([1, 10, 20, 200, 100, 0, 0xFFFF, 0x8002, 0]);
+        if words.len() % 2 != 0 {
+            words.push(0);
+        }
+        dword(&mut words, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON);
+        dword(&mut words, 0);
+        words.extend([5, 5, 60, 20, 7, 0xFFFF, 0x80, 0, 0]);
+        let template: std::vec::Vec<u32> = words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect();
+        // SAFETY: the template above, whole.
+        let dialog = unsafe {
+            dialog::create_dialog_indirect_param_w(
+                0x40_0000,
+                template.as_ptr().cast(),
+                0,
+                procedure(recorder) as usize,
+                0,
+            )
+        };
+        assert_ne!(dialog, 0);
+        let button = dialog::child_by_id(dialog, 7);
+        assert_ne!(button, 0);
+        DRAWN.with(|drawn| drawn.borrow_mut().clear());
+        assert_eq!(button_proc_w(button, WM_PAINT, 0, 0), 0);
+        assert!(DRAWN.with(|drawn| drawn.borrow().is_empty()));
     }
 }

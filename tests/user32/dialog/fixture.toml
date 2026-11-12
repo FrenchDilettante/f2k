@@ -3,7 +3,7 @@
 # control prints by its id, its position as its mapped template rectangle less its window's; only
 # the units block prints base units in pixels (the capture taken at 96 DPI). Every dialog and
 # message box ends itself: a posted command and a timer, never a person.
-description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
+description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; a template placed at -32768, -32768 (0x8000, CW_USEDEFAULT): the dialog's size and whether it lands on the screen; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
 kind = "sectioned"
 gate = true
 # The dialog font decides the create block's positions and the units block's units: the batch
@@ -23,6 +23,12 @@ create = [
 ex = [
     "user32.CreateDialogParamW",
     "user32.MapDialogRect",
+]
+default = [
+    "user32.CreateDialogParamW",
+    "user32.GetWindowRect",
+    "user32.ClientToScreen",
+    "user32.GetSystemMetrics",
 ]
 items = [
     "user32.GetDlgItem",
@@ -60,3 +66,8 @@ msgbox = [
     "user32.MessageBoxW",
     "user32.MessageBoxA",
 ]
+
+[masks]
+# The window's size in pixels depends on the machine's dialog font metrics; the on-screen yes/no
+# is the pinned behavior (a template at -32768, -32768 is CW_USEDEFAULT, placed by the system).
+default = ["window rect size * x *; client origin on the screen yes"]

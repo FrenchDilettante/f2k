@@ -1,7 +1,7 @@
 # controls: one test per block of the real-machine capture (output.txt); see tests/README.md. No
 # handle or address prints: a control prints by its id, an icon as the same as another or not; the
 # styles, the controls' answers and the notifications their parent receives do.
-description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE."
+description = "controls - the built-in Button and Static controls driven by messages: a button of each style (push, default push, check box, auto check box, three-state, radio and auto radio buttons, group box), their WM_GETDLGCODE answers, BM_SETCHECK/BM_GETCHECK, BM_GETSTATE/BM_SETSTATE, BM_CLICK and the BN_CLICKED their parent receives, BM_SETSTYLE and the default button; a Static of each style (text, frames, etched lines, rectangles) and its text through WM_GETTEXT/WM_SETTEXT, SendMessageW and SendMessageA; an SS_ICON static's STM_SETICON/STM_GETICON and STM_SETIMAGE/STM_GETIMAGE; a BS_OWNERDRAW button's WM_PAINT as the parent's WM_DRAWITEM, with wParam and the DRAWITEMSTRUCT the parent records."
 kind = "sectioned"
 gate = true
 
@@ -28,4 +28,16 @@ static = [
 icon = [
     "user32.SendMessageW",
     "user32.LoadIconW",
+]
+ownerdraw = [
+    "user32.CreateWindowExW",
+    "user32.InvalidateRect",
+    "user32.UpdateWindow",
+]
+
+[masks]
+# itemID carries the control's handle on the real machine, so it varies; wParam (the control's
+# id) and the rest of the DRAWITEMSTRUCT are pinned literally.
+ownerdraw = [
+    "  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=* itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0",
 ]

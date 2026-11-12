@@ -44,6 +44,11 @@
  *            does not exist
  *   ex       the DIALOGEX template (101): the dialog's and controls'
  *            extended styles and positions
+ *   default  the template (103) placed at -32768, -32768 (0x8000 in its
+ *            signed words, CW_USEDEFAULT): the dialog's size, whether
+ *            its client origin lands on the screen (the cascade spot
+ *            itself varies with the machine, so only the yes/no prints),
+ *            and the control's place against the template
  *   items    GetDlgItem (every id, one that does not exist, a NULL
  *            dialog), GetDlgCtrlID (a control, the dialog, NULL),
  *            SetDlgItemTextW/A and GetDlgItemTextW/A with buffers that
@@ -95,6 +100,7 @@
 #define DLG_MAIN 100
 #define DLG_EX 101
 #define DLG_SYSFONT 102
+#define DLG_DEFAULT 103
 #define DLG_MISSING 999
 
 /* The command the modal dialogs post themselves, and their timer. */
@@ -126,6 +132,10 @@ static const tmpl_item main_items[] = {
 static const tmpl_item ex_items[] = {
     { 140, 6, 6, 50, 10 },
     { 1, 64, 40, 50, 14 },
+    { 0, 0, 0, 0, 0 }
+};
+static const tmpl_item default_items[] = {
+    { 1, 25, 30, 50, 14 },
     { 0, 0, 0, 0, 0 }
 };
 
@@ -454,6 +464,42 @@ static void sec_create(void)
     line("CreateDialogParamW(999, a template that does not exist): non-NULL %s err=%s",
          yesno(dlg != NULL), le());
     print_events("the procedure");
+    close_dialog(dlg);
+}
+
+/* --- default ----------------------------------------------------------- */
+
+/* A template placed at -32768, -32768 (0x8000, CW_USEDEFAULT): where the
+ * system puts the dialog, printed as machine-independent facts only (the
+ * cascade spot and the screen's size vary): the window's size, and
+ * whether the client origin is on the screen. */
+static void sec_default(void)
+{
+    HWND dlg;
+    RECT wr;
+    POINT origin;
+    int sw;
+    int sh;
+
+    drain();
+    reset_events();
+    arm();
+    dlg = CreateDialogParamW(instance(), MAKEINTRESOURCEW(DLG_DEFAULT), NULL, (DLGPROC)recorder, 0);
+    line("CreateDialogParamW(103, template at -32768, -32768): non-NULL %s err=%s", yesno(dlg != NULL),
+         le());
+    if (dlg == NULL) {
+        return;
+    }
+    print_dialog(dlg);
+    GetWindowRect(dlg, &wr);
+    sw = GetSystemMetrics(SM_CXSCREEN);
+    sh = GetSystemMetrics(SM_CYSCREEN);
+    origin.x = 0;
+    origin.y = 0;
+    ClientToScreen(dlg, &origin);
+    line("window rect size %ld x %ld; client origin on the screen %s", wr.right - wr.left,
+         wr.bottom - wr.top, yesno(origin.x >= 0 && origin.y >= 0 && origin.x < sw && origin.y < sh));
+    print_controls(dlg, default_items);
     close_dialog(dlg);
 }
 
@@ -1173,6 +1219,7 @@ static void sec_msgbox(void)
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "ex", sec_ex, F2KT_ALWAYS },
+    { "default", sec_default, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
     { "ints", sec_ints, F2KT_ALWAYS },
     { "buttons", sec_buttons, F2KT_ALWAYS },

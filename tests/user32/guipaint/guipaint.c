@@ -35,6 +35,11 @@
  *   beginend    InvalidateRect(h, NULL, TRUE), then BeginPaint and
  *               EndPaint called directly: the DC, the error, fErase,
  *               rcPaint, and EndPaint's return
+ *   resize      ShowWindow(SW_SHOW) and UpdateWindow, then SetWindowPos
+ *               to a bigger size: GetUpdateRect and BeginPaint's
+ *               PAINTSTRUCT after the resize (the update region a shown
+ *               window's resize leaves), then the same resize with
+ *               SWP_NOREDRAW
  *   errors      BeginPaint on a bogus handle, EndPaint with a NULL
  *               PAINTSTRUCT, InvalidateRect and GetUpdateRect on a
  *               bogus handle
@@ -274,11 +279,62 @@ static void sec_errors(void)
     line("GetUpdateRect(a bogus handle, &rc, FALSE): ret=%d err=%s", r, le());
 }
 
+/* --- resize -------------------------------------------------------- */
+
+/* A shown window's resize: SetWindowPos to a bigger size, then what
+ * GetUpdateRect and BeginPaint report; and the SWP_NOREDRAW variant. */
+static void sec_resize(void)
+{
+    HWND h;
+    RECT rc;
+    PAINTSTRUCT ps;
+    HDC hdc;
+    BOOL r;
+
+    drain();
+    reset_paint();
+    h = make_window("F2KGuipaintResize");
+    arm();
+    r = ShowWindow(h, SW_SHOW);
+    line("ShowWindow(h, SW_SHOW): ret=%d err=%s", r, le());
+    arm();
+    r = UpdateWindow(h);
+    line("UpdateWindow(h): ret=%d err=%s", r, le());
+    arm();
+    r = GetUpdateRect(h, &rc, FALSE);
+    line("GetUpdateRect(h, &rc, FALSE) after the show's paint: ret=%d err=%s", r, le());
+    arm();
+    r = SetWindowPos(h, HWND_TOP, 0, 0, 400, 300, SWP_NOZORDER | SWP_NOACTIVATE);
+    line("SetWindowPos(h, HWND_TOP, 0, 0, 400, 300, SWP_NOZORDER|SWP_NOACTIVATE): ret=%d err=%s",
+         r, le());
+    arm();
+    r = GetUpdateRect(h, &rc, FALSE);
+    line("GetUpdateRect(h, &rc, FALSE) after the resize: ret=%d err=%s rc=%ld %ld %ld %ld", r, le(),
+         rc.left, rc.top, rc.right, rc.bottom);
+    arm();
+    hdc = BeginPaint(h, &ps);
+    line("BeginPaint(h, &ps) after the resize: non-NULL %s err=%s fErase=%d rcPaint=%ld %ld %ld %ld",
+         yesno(hdc != NULL), le(), ps.fErase, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right,
+         ps.rcPaint.bottom);
+    arm();
+    r = EndPaint(h, &ps);
+    line("EndPaint(h, &ps): ret=%d err=%s", r, le());
+    arm();
+    r = SetWindowPos(h, HWND_TOP, 0, 0, 500, 350, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW);
+    line("SetWindowPos(h, HWND_TOP, 0, 0, 500, 350, SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOREDRAW): "
+         "ret=%d err=%s",
+         r, le());
+    arm();
+    r = GetUpdateRect(h, &rc, FALSE);
+    line("GetUpdateRect(h, &rc, FALSE) after the SWP_NOREDRAW resize: ret=%d err=%s", r, le());
+}
+
 static const section_t sections[] = {
     { "invalidate", sec_invalidate, F2KT_ALWAYS },
     { "subrect", sec_subrect, F2KT_ALWAYS },
     { "paint", sec_paint, F2KT_ALWAYS },
     { "beginend", sec_beginend, F2KT_ALWAYS },
+    { "resize", sec_resize, F2KT_ALWAYS },
     { "errors", sec_errors, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };

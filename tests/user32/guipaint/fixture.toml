@@ -1,5 +1,5 @@
 # guipaint: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guipaint - painting in user32: InvalidateRect (whole and subrect) with GetUpdateRect/ValidateRect, the WM_PAINT path through ShowWindow/UpdateWindow with BeginPaint/EndPaint recording PAINTSTRUCT (hdc, fErase, rcPaint in client coordinates), and the bogus-handle errors (1400)."
+description = "guipaint - painting in user32: InvalidateRect (whole and subrect) with GetUpdateRect/ValidateRect, the WM_PAINT path through ShowWindow/UpdateWindow with BeginPaint/EndPaint recording PAINTSTRUCT (hdc, fErase, rcPaint in client coordinates), a shown window's SetWindowPos resize and what the update region and BeginPaint then report (with SWP_NOREDRAW), and the bogus-handle errors (1400)."
 kind = "sectioned"
 gate = true
 screenshots = true
@@ -29,6 +29,14 @@ paint = [
 ]
 beginend = [
     "user32.InvalidateRect",
+    "user32.BeginPaint",
+    "user32.EndPaint",
+]
+resize = [
+    "user32.ShowWindow",
+    "user32.UpdateWindow",
+    "user32.GetUpdateRect",
+    "user32.SetWindowPos",
     "user32.BeginPaint",
     "user32.EndPaint",
 ]

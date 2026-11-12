@@ -61,3 +61,12 @@ CAPTION "F2K system font"
 BEGIN
     CONTROL "OK", 1, "Button", 0x50010001, 25, 30, 50, 14
 END
+
+/* The template's place is -32768, -32768: 0x8000 in the template's
+ * signed words, CW_USEDEFAULT. */
+103 DIALOG -32768, -32768, 100, 50
+STYLE 0x80C80080
+CAPTION "F2K default place"
+BEGIN
+    CONTROL "OK", 1, "Button", 0x50010001, 25, 30, 50, 14
+END

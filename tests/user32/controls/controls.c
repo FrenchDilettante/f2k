@@ -53,6 +53,12 @@
  *            STM_GETICON, its size against SM_CXICON/SM_CYICON,
  *            STM_SETIMAGE and STM_GETIMAGE with IMAGE_ICON and
  *            IMAGE_BITMAP, WM_GETDLGCODE; STM_SETICON on a text static
+ *   ownerdraw  a BS_OWNERDRAW button (id 7) of the parent: InvalidateRect
+ *            plus UpdateWindow sends it WM_PAINT, and the parent's
+ *            recorded WM_DRAWITEM prints wParam and the whole
+ *            DRAWITEMSTRUCT (CtlType, CtlID, itemID, itemAction,
+ *            itemState, hwndItem against the button, hDC, rcItem in the
+ *            parent's client, itemData)
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat controls):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib
@@ -84,6 +90,12 @@
 #endif
 #ifndef BST_FOCUS
 #define BST_FOCUS 0x0008
+#endif
+#ifndef BS_OWNERDRAW
+#define BS_OWNERDRAW 0x0000000BL
+#endif
+#ifndef WM_DRAWITEM
+#define WM_DRAWITEM 0x002B
 #endif
 
 #define PARENT_CLASS L"F2KControlsParent"
@@ -149,6 +161,27 @@ static void reset_commands(void)
     command_count = 0;
 }
 
+/* A WM_DRAWITEM the parent received: wParam, and the DRAWITEMSTRUCT as
+ * it arrived (rcItem in the parent's client coordinates). */
+#define MAX_DRAWITEMS 8
+
+typedef struct {
+    int wparam;
+    UINT ctl_type;
+    UINT ctl_id;
+    UINT item_id;
+    UINT item_action;
+    UINT item_state;
+    int hwnd_is_button;
+    int hdc_nonnull;
+    LONG left, top, right, bottom;
+    UINT item_data;
+} drawitem_t;
+
+static drawitem_t drawitems[MAX_DRAWITEMS];
+static int drawitem_count;
+static HWND ownerdraw_button;
+
 static LRESULT CALLBACK parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     command_t *c;
@@ -158,6 +191,25 @@ static LRESULT CALLBACK parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
         c->id = LOWORD(wparam);
         c->code = HIWORD(wparam);
         c->from_control = lparam != 0 && GetDlgItem(hwnd, LOWORD(wparam)) == (HWND)lparam;
+        return 0;
+    }
+    if (msg == WM_DRAWITEM && drawitem_count < MAX_DRAWITEMS) {
+        const DRAWITEMSTRUCT *d = (const DRAWITEMSTRUCT *)lparam;
+        drawitem_t *o = &drawitems[drawitem_count++];
+
+        o->wparam = (int)wparam;
+        o->ctl_type = d->CtlType;
+        o->ctl_id = d->CtlID;
+        o->item_id = d->itemID;
+        o->item_action = d->itemAction;
+        o->item_state = d->itemState;
+        o->hwnd_is_button = (d->hwndItem == ownerdraw_button);
+        o->hdc_nonnull = (d->hDC != NULL);
+        o->left = d->rcItem.left;
+        o->top = d->rcItem.top;
+        o->right = d->rcItem.right;
+        o->bottom = d->rcItem.bottom;
+        o->item_data = d->itemData;
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -173,6 +225,24 @@ static void print_commands(void)
     for (i = 0; i < command_count; i++) {
         line("  the parent received WM_COMMAND id=%d code=%d lParam is the control %s", commands[i].id,
              commands[i].code, yesno(commands[i].from_control));
+    }
+}
+
+static void print_drawitems(void)
+{
+    int i;
+
+    if (drawitem_count == 0) {
+        line("  the parent received no WM_DRAWITEM");
+    }
+    for (i = 0; i < drawitem_count; i++) {
+        line("  the parent received WM_DRAWITEM wParam=%d CtlType=%u CtlID=%u itemID=%u "
+             "itemAction=0x%X itemState=0x%X hwndItem is the button %s hDC non-NULL %s "
+             "rcItem=%ld %ld %ld %ld itemData=%u",
+             drawitems[i].wparam, drawitems[i].ctl_type, drawitems[i].ctl_id, drawitems[i].item_id,
+             drawitems[i].item_action, drawitems[i].item_state, yesno(drawitems[i].hwnd_is_button),
+             yesno(drawitems[i].hdc_nonnull), drawitems[i].left, drawitems[i].top, drawitems[i].right,
+             drawitems[i].bottom, drawitems[i].item_data);
     }
 }
 
@@ -675,6 +745,39 @@ static void sec_icon(void)
     close_parent(parent);
 }
 
+/* --- ownerdraw --------------------------------------------------------- */
+
+/* A BS_OWNERDRAW button (id 7) of the parent: InvalidateRect arms it and
+ * UpdateWindow sends the WM_PAINT, which the button answers with
+ * WM_DRAWITEM to the parent; the records print after. */
+static void sec_ownerdraw(void)
+{
+    HWND parent;
+    HWND b;
+    BOOL r;
+
+    drain();
+    parent = open_parent();
+    reset_commands();
+    drawitem_count = 0;
+    ownerdraw_button = NULL;
+    arm();
+    b = CreateWindowExW(0, L"Button", L"Draw me", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 10, 10, 140,
+                        20, parent, (HMENU)7, instance(), NULL);
+    line("CreateWindowExW(Button, WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, id 7): non-NULL %s err=%s id=%d",
+         yesno(b != NULL), le(), b != NULL ? (int)GetWindowLongW(b, GWL_ID) : 0);
+    ownerdraw_button = b;
+    drain();
+    arm();
+    r = InvalidateRect(b, NULL, TRUE);
+    line("InvalidateRect(the button, NULL, TRUE): ret=%d err=%s", r, le());
+    arm();
+    r = UpdateWindow(b);
+    line("UpdateWindow(the button): ret=%d err=%s", r, le());
+    print_drawitems();
+    close_parent(parent);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "check", sec_check, F2KT_ALWAYS },
@@ -682,6 +785,7 @@ static const section_t sections[] = {
     { "default", sec_default, F2KT_ALWAYS },
     { "static", sec_static, F2KT_ALWAYS },
     { "icon", sec_icon, F2KT_ALWAYS },
+    { "ownerdraw", sec_ownerdraw, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

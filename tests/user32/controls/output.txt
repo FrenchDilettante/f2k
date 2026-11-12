@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:20.22
-controls F2KT-SOURCE-CRC=0xF60A1E3E
+# date: Thu 11/12/2026 15:12:02.20
+controls F2KT-SOURCE-CRC=0x6D75574B
 >>> controls.exe create
 == create
 RegisterClassW(F2KControlsParent): atom nonzero yes err=2
@@ -324,5 +324,16 @@ STM_GETICON: non-NULL no err=-
 STM_SETICON(IDI_APPLICATION) on an SS_LEFT static: previous non-NULL no err=-
   STM_GETICON: == IDI_APPLICATION no non-NULL no err=- style=0x50000000
   the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe ownerdraw
+== ownerdraw
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+CreateWindowExW(Button, WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, id 7): non-NULL yes err=- id=7
+InvalidateRect(the button, NULL, TRUE): ret=1 err=-
+UpdateWindow(the button): ret=1 err=-
+  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772640 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
+  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772640 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
 controls: done
 <<< exit code=0

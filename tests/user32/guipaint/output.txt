@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:13:41.96
-guipaint F2KT-SOURCE-CRC=0x2F02E1A4
+# date: Thu 11/12/2026 15:12:07.12
+guipaint F2KT-SOURCE-CRC=0xCE4D2A6F
 >>> guipaint.exe invalidate
 == invalidate
 InvalidateRect(h, NULL, TRUE): ret=1 err=-
@@ -37,6 +37,19 @@ guipaint: done
 InvalidateRect(h, NULL, TRUE): ret=1 err=-
 BeginPaint(h, &ps): non-NULL yes err=- fErase=0 rcPaint=0 0 0 0
 EndPaint(h, &ps): ret=1 err=-
+guipaint: done
+<<< exit code=0
+>>> guipaint.exe resize
+== resize
+ShowWindow(h, SW_SHOW): ret=0 err=-
+UpdateWindow(h): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE) after the show's paint: ret=0 err=-
+SetWindowPos(h, HWND_TOP, 0, 0, 400, 300, SWP_NOZORDER|SWP_NOACTIVATE): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE) after the resize: ret=1 err=- rc=0 0 400 300
+BeginPaint(h, &ps) after the resize: non-NULL yes err=- fErase=0 rcPaint=0 0 400 300
+EndPaint(h, &ps): ret=1 err=-
+SetWindowPos(h, HWND_TOP, 0, 0, 500, 350, SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOREDRAW): ret=1 err=-
+GetUpdateRect(h, &rc, FALSE) after the SWP_NOREDRAW resize: ret=0 err=-
 guipaint: done
 <<< exit code=0
 >>> guipaint.exe errors

@@ -3605,6 +3605,17 @@ impl Windows {
             }
         }
 
+        // A resize of a shown window leaves the whole client in the update region, without the
+        // erase flag, unless SWP_NOREDRAW says not to redraw (Windows 2000 repaints the whole
+        // client on a size change).
+        if sized
+            && flags & SWP_NOREDRAW == 0
+            && self.pool.is_live(window)
+            && super::paint::is_shown(self, window)
+        {
+            super::paint::invalidate(self, window, None, false);
+        }
+
         // The frame, painted where it shows anew: the window shown, sized, or its frame changed.
         if self.pool.is_live(window)
             && (sized || flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED) != 0)
@@ -8991,5 +9002,78 @@ mod tests {
             parent_of(m, parent),
             Query::Parent(m.windows.handle_of(desktop))
         );
+    }
+
+    /// A resize of a shown window leaves its whole client in the update region, without the erase
+    /// flag, so the next BeginPaint's rectangle is the new client; SWP_NOREDRAW keeps the client
+    /// valid, and a hidden window's resize leaves nothing (its first show invalidates then).
+    #[test]
+    fn a_shown_windows_resize_invalidates_its_whole_client() {
+        use crate::win32k::paint::{begin_validate, update_of};
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.nccalc_inset = 4;
+        let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+
+        // Hidden: a resize invalidates nothing.
+        w.set_window_pos(
+            c,
+            top,
+            InsertAfter::Top,
+            10,
+            20,
+            300,
+            200,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            &mut pump,
+        )
+        .unwrap();
+        assert_eq!(update_of(w, top), None);
+
+        // Shown: the first show invalidated the client whole; validate it away, then resize again.
+        assert_eq!(w.show_window(c, top, SW_SHOW, &mut pump), Ok(false));
+        begin_validate(w, top);
+        assert_eq!(update_of(w, top), None);
+        w.set_window_pos(
+            c,
+            top,
+            InsertAfter::Top,
+            10,
+            20,
+            400,
+            260,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+            &mut pump,
+        )
+        .unwrap();
+        // The window at 10,20 of 400x260, the client inset by 4: the whole client, no erase.
+        assert_eq!(
+            update_of(w, top),
+            Some((
+                rtl::gdi::Rect {
+                    left: 0,
+                    top: 0,
+                    right: 392,
+                    bottom: 252
+                },
+                false
+            ))
+        );
+
+        // SWP_NOREDRAW: the client stays valid through a resize.
+        begin_validate(w, top);
+        w.set_window_pos(
+            c,
+            top,
+            InsertAfter::Top,
+            10,
+            20,
+            500,
+            300,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+            &mut pump,
+        )
+        .unwrap();
+        assert_eq!(update_of(w, top), None);
     }
 }

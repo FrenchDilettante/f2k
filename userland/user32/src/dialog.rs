@@ -861,12 +861,18 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     // owner), centered with DS_CENTER. The template's rectangle is the client area: the window
     // rectangle is the frame around it (AdjustWindowRectEx's, a menu bar's room included), so a
     // dialog's window starts its frame's width up and left of the template's place (an
-    // assumption: the documentation places the dialog, not which of its rectangles).
+    // assumption: the documentation places the dialog, not which of its rectangles). A template
+    // coordinate of 0x8000 is CW_USEDEFAULT: the marker goes to the window creation as it is
+    // (the kernel places a tiled window at the cascade, or the startup info's place), not
+    // converted to pixels.
+    const TEMPLATE_USEDEFAULT: i32 = -32768; // 0x8000
+    let default_x = header.x == TEMPLATE_USEDEFAULT;
+    let default_y = header.y == TEMPLATE_USEDEFAULT;
     let client = Rect {
-        left: mul_div(header.x, ux, 4),
-        top: mul_div(header.y, uy, 8),
-        right: mul_div(header.x, ux, 4) + mul_div(header.cx, ux, 4),
-        bottom: mul_div(header.y, uy, 8) + mul_div(header.cy, uy, 8),
+        left: if default_x { 0 } else { mul_div(header.x, ux, 4) },
+        top: if default_y { 0 } else { mul_div(header.y, uy, 8) },
+        right: if default_x { 0 } else { mul_div(header.x, ux, 4) } + mul_div(header.cx, ux, 4),
+        bottom: if default_y { 0 } else { mul_div(header.y, uy, 8) } + mul_div(header.cy, uy, 8),
     };
     let has_menu = !matches!(header.menu, Field::None);
     let outer = rtl::nonclient::Frame::of(style, ex_style, has_menu).window(client);
@@ -880,6 +886,12 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
         if let Some(origin) = client_origin(request.owner) {
             x += origin.0;
             y += origin.1;
+        }
+    }
+    if default_x && style & DS_CENTER == 0 {
+        x = 0x8000_0000u32 as i32; // CW_USEDEFAULT
+        if default_y {
+            y = 0x8000; // the kernel's second marker: both default, shown at the cascade
         }
     }
 
@@ -2378,5 +2390,45 @@ mod tests {
             template.as_ptr() as usize
         );
         assert_eq!(printed, [expected]);
+    }
+
+    /// A template coordinate of 0x8000 is CW_USEDEFAULT: the marker goes to the window creation as
+    /// it is, not converted from dialog units (which would place the dialog tens of thousands of
+    /// pixels out). With both coordinates default, y keeps the second marker word as it is.
+    #[test]
+    fn a_template_default_place_goes_to_the_creation_as_cw_usedefault() {
+        use crate::class::SYSTEM_CLASSES_WANTED;
+        use crate::imports::host::wm;
+        SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        // DIALOG: WS_POPUP, no menu, the dialog class (#32770), no title, no controls; placed at
+        // 0x8000, 0x8000 (both CW_USEDEFAULT), 100x50 dialog units.
+        dword(&mut words, WS_POPUP);
+        dword(&mut words, 0);
+        words.extend([0, 0x8000, 0x8000, 100, 50, 0, 0xFFFF, 0x8002, 0]);
+        // DWORD-aligned, as a template is.
+        let template: std::vec::Vec<u32> = words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect();
+        // SAFETY: the template above, whole.
+        let dialog =
+            unsafe { create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, 0, 0) };
+        assert_ne!(dialog, 0);
+        let rect = wm(|wm| {
+            wm.windows
+                .iter()
+                .find(|w| w.handle as usize == dialog)
+                .unwrap()
+                .rect
+        });
+        // CW_USEDEFAULT's x reaches the creation as i32::MIN, which the host places at the origin
+        // (as the kernel does, at the cascade); converted from dialog units it would be
+        // 0x8000 * 8 / 4 = 65536 pixels out.
+        assert_eq!((rect.left, rect.top), (0, 0));
     }
 }
