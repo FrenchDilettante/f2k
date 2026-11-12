@@ -4,7 +4,7 @@ Fenêtre 2000 - Windows 2000 compatible OS in Rust
 Phase 1: Foundation complete
 Multiboot info at 0x00010000
 F2K: command line: WINNT\system32\cmd.exe
-F2K: physical memory: 39642 free frames (154 MiB)
+F2K: physical memory: 39636 free frames (154 MiB)
 F2K: frame database audit: ok
 F2K: paging on: kernel at 0x80400000, low identity removed
 F2K: pci: 10 devices
@@ -32,7 +32,10 @@ F2K [Version 5.00.2195]
 
 C:\WINNT\system32>fish calc.exe
 F2K: vbe: 640x480x32, LFB at 0xe0000000, mapped at 0xc0800000
-F2K: debug: stub user32.CreateWindowExW(dwExStyle=0, lpClassName=0x010012D4, lpWindowName="CalcMsgPumpWnd", dwStyle=0x10000000, X=-2147483648, Y=0, nWidth=-2147483648, nHeight=0, hWndParent=0, hMenu=0, hInstance=0x1000000, lpParam=NULL): the Edit control class is not 
 F2K: debug: stub user32.SetCursor(hCursor=0x14): not yet implemented
-F2K: debug: stub user32.StaticWndProc(hWnd=0x20, Msg=0xF, wParam=0, lParam=0): SS_CENTERIMAGE (a text static's line centred vertically) is not yet drawn
-F2K: debug: stub user32.ButtonWndProc(hWnd=0x28, Msg=0xF, wParam=0, lParam=0): BS_OWNERDRAW buttons (WM_DRAWITEM to the parent) are not yet drawn: the button is drawn as a check box
+F2K: debug: stub user32.StaticWndProc(hWnd=0x28, Msg=0xF, wParam=0, lParam=0): SS_CENTERIMAGE (a text static's line centred vertically) is not yet drawn
+F2K: debug: stub user32.ButtonWndProc(hWnd=0x30, Msg=0xF, wParam=0, lParam=0): BS_OWNERDRAW buttons (WM_DRAWITEM to the parent) are not yet drawn: the button is drawn as a check box
+F2K: child process 36 (calc) exited normally (exit code=0)
+F2K: child process 28 (fish) exited normally (exit code=0)
+
+C:\WINNT\system32>
