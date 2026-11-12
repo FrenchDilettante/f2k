@@ -10,8 +10,9 @@
 //! menu bar, its popups and the keyboard menu loop, [`menubar`]; the non-client area,
 //! [`nonclient`]; the keyboard accelerators, [`accel`]; the
 //! icons, [`icon`]; the clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the
-//! rectangles, [`rect`]; the character walks, [`string`]; WinHelp, [`help`]), as Windows 2000's
-//! user32 runs them, over ntdll's, kernel32's and gdi32's exports and win32k's services
+//! rectangles, [`rect`]; the character walks, case and types, [`string`]; wsprintf, [`wsprintf`];
+//! WinHelp, [`help`]), as Windows 2000's user32 runs them, over ntdll's, kernel32's and gdi32's
+//! exports and win32k's services
 //! ([`imports`]: as Windows 2000's user32 imports the first and enters the kernel itself for the
 //! others, through its own stubs), and csrss's user server (the kernel's stand-in, through ntdll's
 //! CsrClientCallServer).
@@ -64,6 +65,7 @@ pub mod string;
 pub mod stub;
 pub mod window;
 pub mod winsta;
+pub mod wsprintf;
 
 use rtl::edge::InStr;
 /// A caller's out parameter and buffers, as every system DLL's exports take them.

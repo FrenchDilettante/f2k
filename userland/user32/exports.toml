@@ -3127,7 +3127,7 @@ fails = "NULL"
 name = "wsprintfA"
 group = "string"
 args = ["ptr lpOut", "ptr lpFmt", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "wsprintfA" }
 ordinal = 692
 fails = "0"
 note = "cdecl, for its variable arguments"
@@ -3136,7 +3136,7 @@ note = "cdecl, for its variable arguments"
 name = "wsprintfW"
 group = "string"
 args = ["ptr lpOut", "ptr lpFmt", "..."]
-impl = { stub = "not yet implemented" }
+impl = { native = "wsprintfW" }
 ordinal = 693
 fails = "0"
 note = "cdecl, for its variable arguments"
@@ -3145,7 +3145,7 @@ note = "cdecl, for its variable arguments"
 name = "wvsprintfA"
 group = "string"
 args = ["ptr lpOutput", "ptr lpFmt", "ptr arglist"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wvsprintfA" }
 ordinal = 694
 fails = "0"
 
@@ -3153,7 +3153,7 @@ fails = "0"
 name = "wvsprintfW"
 group = "string"
 args = ["ptr lpOutput", "ptr lpFmt", "ptr arglist"]
-impl = { stub = "not yet implemented" }
+impl = { native = "wvsprintfW" }
 ordinal = 695
 fails = "0"
 
