@@ -108,6 +108,10 @@ mod sched;
 // The object manager: the typed object pools, object ids, pointer and handle counts, names
 mod ob;
 
+// The global atom table: the window station's atoms, which the atom services add, find, delete
+// and query
+mod atom;
+
 // The configuration manager: the registry's keys and values, in kernel memory
 mod cm;
 

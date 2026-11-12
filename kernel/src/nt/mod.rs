@@ -56,6 +56,7 @@ macro_rules! info_class {
     };
 }
 
+pub mod atom;
 pub mod attributes;
 pub mod call;
 pub mod exception;

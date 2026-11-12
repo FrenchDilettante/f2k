@@ -798,6 +798,42 @@ ordinal = 198
 zw_ordinal = 843
 note = "answers TokenPrivileges (3) alone"
 
+# --- the atom services (kernel/src/nt/atom.rs, over the global atom table, kernel/src/atom.rs) --
+
+[[export]]
+name = "NtAddAtom"
+group = "nt"
+args = ["ptr AtomName", "u32 Length", "ptr<u16> Atom"]
+impl = { syscall = "crate::nt::atom::add_atom" }
+ordinal = 67
+zw_ordinal = 713
+note = "Length in bytes; a name of # and decimal digits is an integer atom, never stored; string atoms are counted and matched in either ASCII case"
+
+[[export]]
+name = "NtFindAtom"
+group = "nt"
+args = ["ptr AtomName", "u32 Length", "ptr<u16> Atom"]
+impl = { syscall = "crate::nt::atom::find_atom" }
+ordinal = 125
+zw_ordinal = 770
+
+[[export]]
+name = "NtDeleteAtom"
+group = "nt"
+args = ["u32 Atom"]
+impl = { syscall = "crate::nt::atom::delete_atom" }
+ordinal = 112
+zw_ordinal = 757
+
+[[export]]
+name = "NtQueryInformationAtom"
+group = "nt"
+args = ["u32 Atom", "u32 AtomInformationClass", "ptr AtomInformation", "u32 AtomInformationLength", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::atom::query_information_atom" }
+ordinal = 192
+zw_ordinal = 837
+note = "answers AtomBasicInformation (0) and AtomTableInformation (1)"
+
 # --- the client-server runtime (src/csr.s) --------------------------------------------------------
 
 [[export]]
@@ -1661,10 +1697,6 @@ name = "NtAccessCheckByTypeResultListAndAuditAlarmByHandle"
 ordinal = 66
 
 [[export]]
-name = "NtAddAtom"
-ordinal = 67
-
-[[export]]
 name = "NtAdjustGroupsToken"
 ordinal = 68
 
@@ -1773,10 +1805,6 @@ name = "NtCurrentTeb"
 ordinal = 110
 
 [[export]]
-name = "NtDeleteAtom"
-ordinal = 112
-
-[[export]]
 name = "NtDeleteFile"
 ordinal = 113
 
@@ -1803,10 +1831,6 @@ ordinal = 123
 [[export]]
 name = "NtFilterToken"
 ordinal = 124
-
-[[export]]
-name = "NtFindAtom"
-ordinal = 125
 
 [[export]]
 name = "NtFlushVirtualMemory"
@@ -1987,10 +2011,6 @@ ordinal = 189
 [[export]]
 name = "NtQueryEvent"
 ordinal = 190
-
-[[export]]
-name = "NtQueryInformationAtom"
-ordinal = 192
 
 [[export]]
 name = "NtQueryInformationJobObject"
@@ -3677,10 +3697,6 @@ name = "ZwAccessCheckByTypeResultListAndAuditAlarmByHandle"
 ordinal = 712
 
 [[export]]
-name = "ZwAddAtom"
-ordinal = 713
-
-[[export]]
 name = "ZwAdjustGroupsToken"
 ordinal = 714
 
@@ -3785,10 +3801,6 @@ name = "ZwCreateWaitablePort"
 ordinal = 755
 
 [[export]]
-name = "ZwDeleteAtom"
-ordinal = 757
-
-[[export]]
 name = "ZwDeleteFile"
 ordinal = 758
 
@@ -3815,10 +3827,6 @@ ordinal = 768
 [[export]]
 name = "ZwFilterToken"
 ordinal = 769
-
-[[export]]
-name = "ZwFindAtom"
-ordinal = 770
 
 [[export]]
 name = "ZwFlushVirtualMemory"
@@ -3999,10 +4007,6 @@ ordinal = 834
 [[export]]
 name = "ZwQueryEvent"
 ordinal = 835
-
-[[export]]
-name = "ZwQueryInformationAtom"
-ordinal = 837
 
 [[export]]
 name = "ZwQueryInformationJobObject"
