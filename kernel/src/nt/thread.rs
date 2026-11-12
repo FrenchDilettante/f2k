@@ -1,8 +1,9 @@
 //! The thread services: NtCreateThread and NtTerminateThread, NtSuspendThread and
-//! NtResumeThread, and the thread information classes kernel32's thread calls ask
-//! (NtQueryInformationThread, NtSetInformationThread). kernel32's CreateThread, ExitThread,
-//! TerminateThread, SuspendThread, ResumeThread, GetExitCodeThread, the thread priorities and
-//! boosts, and TlsFree are Win32 code over these, as on Windows 2000.
+//! NtResumeThread, NtGetContextThread and NtSetContextThread, and the thread information classes
+//! kernel32's thread calls ask (NtQueryInformationThread, NtSetInformationThread). kernel32's
+//! CreateThread, ExitThread, TerminateThread, SuspendThread, ResumeThread, GetThreadContext,
+//! SetThreadContext, GetExitCodeThread, the thread priorities and boosts, and TlsFree are Win32
+//! code over these, as on Windows 2000.
 //!
 //! A handle names a thread — of the calling process or of another (a child's, from CreateProcess)
 //! — or is the current-thread pseudo-handle (NtCurrentThread, -2); STATUS_INVALID_HANDLE for a
@@ -431,6 +432,49 @@ pub fn resume_thread(call: &mut NtCall, thread: Handle, previous: UserPtr<u32>) 
     #[cfg(not(target_arch = "x86"))]
     {
         let _ = (call, thread, previous);
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// NtGetContextThread(ThreadHandle, ThreadContext): the register sets the CONTEXT's flags name,
+/// from the thread's state (see [`crate::user::context::get`]: the caller's own live state, or
+/// what another thread — suspended, as Windows 2000's callers do — left going off the processor),
+/// written back over the caller's CONTEXT, every set the flags do not name as the caller gave it.
+/// STATUS_UNSUCCESSFUL for a thread that has ended; memory that cannot be read or written,
+/// STATUS_ACCESS_VIOLATION.
+pub fn get_context_thread(call: &mut NtCall, thread: Handle, context: UserAddr) -> NtResult {
+    #[cfg(target_arch = "x86")]
+    {
+        use rtl::pod::Pod;
+        let mut buffer = super::exception::read_context(context)?;
+        let thread = thread_of(thread)?;
+        crate::user::context::get(thread.id, call.frame(), &mut buffer)?;
+        context.write(buffer.as_bytes())?;
+        Ok(STATUS_SUCCESS)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = (call, thread, context);
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
+/// NtSetContextThread(ThreadHandle, ThreadContext): the register sets the CONTEXT's flags name
+/// put into the thread's state, as a resume puts them (see [`crate::user::context::set`]): the
+/// caller's own at once — its control registers are where the service returns to — another
+/// thread's for when it runs next. STATUS_UNSUCCESSFUL for a thread that has ended; a CONTEXT that
+/// cannot be read, STATUS_ACCESS_VIOLATION.
+pub fn set_context_thread(call: &mut NtCall, thread: Handle, context: UserAddr) -> NtResult {
+    #[cfg(target_arch = "x86")]
+    {
+        let buffer = super::exception::read_context(context)?;
+        let thread = thread_of(thread)?;
+        crate::user::context::set(thread.id, call.frame(), &buffer)?;
+        Ok(STATUS_SUCCESS)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let _ = (call, thread, context);
         Err(STATUS_INVALID_HANDLE)
     }
 }

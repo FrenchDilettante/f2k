@@ -41,10 +41,12 @@ mod target {
 
     /// NtContinue(Context, TestAlert): the context's registers back into the caller's frame (the
     /// sets its flags name; see [`seh::restore_context`]), so the service returns into it — EAX
-    /// included. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC, on
-    /// the way out.
+    /// included — and its floating-point state (FloatSave, the extended registers) into the
+    /// thread's own. TestAlert (a BOOLEAN) arms the delivery of the thread's next queued user APC,
+    /// on the way out.
     pub fn continue_context(call: &mut NtCall, context: UserAddr, test_alert: bool) -> NtResult {
         let context = read_context(context)?;
+        crate::user::context::restore_own_floating_state(&context);
         let frame = call.frame();
         seh::restore_context(frame, &context);
         if test_alert {
@@ -55,9 +57,10 @@ mod target {
     }
 
     /// NtRaiseException(ExceptionRecord, Context, FirstChance): the first chance (a BOOLEAN) puts
-    /// the context into the caller's frame and dispatches the exception from there, as a fault is
-    /// dispatched; records that cannot be written end the process with the code. The second chance
-    /// ends the process with the code.
+    /// the context into the caller's frame (its floating-point state into the thread's, as
+    /// NtContinue does) and dispatches the exception from there, as a fault is dispatched; records
+    /// that cannot be written end the process with the code. The second chance ends the process
+    /// with the code.
     pub fn raise_exception(
         call: &mut NtCall,
         record: UserAddr,
@@ -70,6 +73,7 @@ mod target {
         if !first_chance {
             seh::second_chance(code, address);
         }
+        crate::user::context::restore_own_floating_state(&context);
         let frame = call.frame();
         seh::restore_context(frame, &context);
         if !seh::deliver(frame, &record, &mut context) {

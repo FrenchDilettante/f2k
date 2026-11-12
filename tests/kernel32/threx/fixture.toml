@@ -3,9 +3,6 @@ description = "threx - thread-level exception behavior: the second chance in a w
 kind = "sectioned"
 gate = true
 
-[pending]
-fpresume = "F2K restores no floating-point state from a CONTEXT: its NtContinue takes only the control and integer registers, not FloatSave or the extended registers, and kernel32 has no GetThreadContext or SetThreadContext yet"
-
 [pins]
 unhandled = [
     "kernel32.CreateThread",

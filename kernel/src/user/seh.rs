@@ -9,9 +9,11 @@
 //! returns to user mode at ntdll's KiUserExceptionDispatcher instead, the trap and direction flags
 //! clear. The search of the thread's handlers and the unwinds run there, in user mode (ntdll's
 //! src/except.rs over rtl::seh). They come back to the kernel through two system services:
-//! NtContinue (`nt::exception`) puts a CONTEXT back into the trap frame — the resumed fault, or
-//! RtlUnwind's caller — and NtRaiseException raises an exception user code built (RaiseException)
-//! the same way a fault is raised, or, its second chance, ends the process with its code.
+//! NtContinue (`nt::exception`) puts a CONTEXT back into the trap frame and the thread's
+//! floating-point state (`user::context`) — the resumed fault, or RtlUnwind's caller — and
+//! NtRaiseException raises an exception user code built (RaiseException) the same way a fault is
+//! raised, or, its second chance, ends the process with its code. NtGetContextThread and
+//! NtSetContextThread read and write a thread's context through the same conversions.
 //!
 //! A fault the dispatcher cannot take ends the process here, with its code, as an unhandled
 //! exception does: a process without ntdll (the fault tests' raw code), a thread whose handler
@@ -32,11 +34,14 @@ pub use rtl::seh::{
 use super::TrapFrame;
 use crate::sched::thread::FxSaveArea;
 
-/// The CONTEXT's flag sets NtContinue restores: the control registers (EBP, EIP, EFLAGS, ESP) and
-/// the integer ones (EDI, ESI, EBX, EDX, ECX, EAX). The segment registers are the kernel's, and the
-/// debug and floating-point registers are not restored.
+/// The CONTEXT's flag sets a resume (NtContinue, NtSetContextThread) puts back: the control
+/// registers (EBP, EIP, EFLAGS, ESP) and the integer ones (EDI, ESI, EBX, EDX, ECX, EAX) into the
+/// trap frame, the floating-point state (FloatSave, the extended registers) into the thread's
+/// image ([`restore_floating_state`]). The segment registers are the kernel's, and F2K sets no
+/// debug register for user threads.
 pub const CONTEXT_CONTROL: u32 = 0x0001_0001;
 pub const CONTEXT_INTEGER: u32 = 0x0001_0002;
+pub const CONTEXT_SEGMENTS: u32 = 0x0001_0004;
 
 /// The CONTEXT's other flag sets: the x87 state (FloatSave), the debug registers, and the extended
 /// registers (the `fxsave` image, x87 and SSE alike).
@@ -138,6 +143,112 @@ pub fn floating_save(image: &FxSaveArea) -> FloatingSaveArea {
         register_area,
         cr0_npx_state: 0,
     }
+}
+
+/// The x87 state of a CONTEXT's FloatSave (FSAVE's form) into an `fxsave` image, the inverse of
+/// [`floating_save`]: the control and status words, the abridged tag (a physical register's bit
+/// set unless its full tag is empty, 3), the last instruction's address and opcode, the last
+/// operand's address, and the eight registers' 80-bit values from ST(0) up (their six reserved
+/// bytes cleared). MXCSR and the XMM registers are left as they are; Cr0NpxState is not the
+/// thread's to set.
+pub fn float_into_image(image: &mut FxSaveArea, float: &FloatingSaveArea) {
+    image.fcw = float.control_word as u16;
+    image.fsw = float.status_word as u16;
+    image.ftw = (0..8u32).fold(0, |tags, physical| {
+        let empty = (float.tag_word >> (2 * physical)) & 3 == 3;
+        tags | (u8::from(!empty) << physical)
+    });
+    image.fop = (float.error_selector >> 16) as u16 & 0x7FF;
+    image.fip = float.error_offset;
+    image.fcs = float.error_selector as u16;
+    image.fdp = float.data_offset;
+    image.fds = float.data_selector as u16;
+    for (register, value) in image
+        .st
+        .iter_mut()
+        .zip(float.register_area.chunks_exact(10))
+    {
+        register[..10].copy_from_slice(value);
+        register[10..].fill(0);
+    }
+}
+
+/// The MXCSR bits `fxrstor` accepts when the processor's image reports no mask of its own (a zero
+/// MXCSR_MASK): every bit but DAZ, the architecture's default. A set bit outside the mask faults
+/// the restore (#GP), so a CONTEXT's MXCSR is masked before it reaches a thread's image.
+pub const DEFAULT_MXCSR_MASK: u32 = 0xFFBF;
+
+/// Put a CONTEXT's floating-point state into a thread's `fxsave` image, as a resume does: the
+/// extended registers (the whole image, its MXCSR masked to the bits the processor accepts — the
+/// image's own MXCSR_MASK, kept) when its flags name them, then FloatSave's x87 state over the
+/// image's when they name that (so a handler that changed FloatSave alone, both flags left set,
+/// resumes with its change). Nothing when they name neither.
+pub fn restore_floating_state(image: &mut FxSaveArea, context: &Context) {
+    use rtl::pod::Pod;
+    let flags = context.context_flags;
+    if flags & CONTEXT_EXTENDED_REGISTERS == CONTEXT_EXTENDED_REGISTERS {
+        let mask = match image.mxcsr_mask {
+            0 => DEFAULT_MXCSR_MASK,
+            mask => mask,
+        };
+        image
+            .as_bytes_mut()
+            .copy_from_slice(&context.extended_registers);
+        image.mxcsr &= mask;
+        image.mxcsr_mask = mask;
+    }
+    if flags & CONTEXT_FLOATING_POINT == CONTEXT_FLOATING_POINT {
+        float_into_image(image, &context.float_save);
+    }
+}
+
+/// Whether a CONTEXT's flags name any floating-point state (FloatSave or the extended registers):
+/// a resume touches the thread's image only then.
+pub fn names_floating_state(context: &Context) -> bool {
+    let flags = context.context_flags;
+    flags & CONTEXT_FLOATING_POINT == CONTEXT_FLOATING_POINT
+        || flags & CONTEXT_EXTENDED_REGISTERS == CONTEXT_EXTENDED_REGISTERS
+}
+
+/// Fill the register sets a CONTEXT's flags name from a thread's state, as NtGetContextThread
+/// does: the control registers from its user trap frame `frame`, the integer ones, the segments
+/// (the ones every user thread runs on: [`frame_context`]'s), the debug registers (zero: F2K sets
+/// none for user threads), FloatSave and the extended registers from its `fxsave` image. The
+/// flags, and every set they do not name, stay as the caller gave them.
+pub fn capture_context(context: &mut Context, frame: &TrapFrame, image: &FxSaveArea) {
+    use rtl::pod::Pod;
+    let flags = context.context_flags;
+    let full = frame_context(frame, frame.eip, frame.user_esp);
+    if flags & CONTEXT_CONTROL == CONTEXT_CONTROL {
+        (context.ebp, context.eip, context.seg_cs) = (full.ebp, full.eip, full.seg_cs);
+        (context.eflags, context.esp, context.seg_ss) = (full.eflags, full.esp, full.seg_ss);
+    }
+    if flags & CONTEXT_INTEGER == CONTEXT_INTEGER {
+        (context.edi, context.esi, context.ebx) = (full.edi, full.esi, full.ebx);
+        (context.edx, context.ecx, context.eax) = (full.edx, full.ecx, full.eax);
+    }
+    if flags & CONTEXT_SEGMENTS == CONTEXT_SEGMENTS {
+        (context.seg_gs, context.seg_fs) = (full.seg_gs, full.seg_fs);
+        (context.seg_es, context.seg_ds) = (full.seg_es, full.seg_ds);
+    }
+    if flags & CONTEXT_DEBUG_REGISTERS == CONTEXT_DEBUG_REGISTERS {
+        (context.dr0, context.dr1, context.dr2, context.dr3) = (0, 0, 0, 0);
+        (context.dr6, context.dr7) = (0, 0);
+    }
+    if flags & CONTEXT_FLOATING_POINT == CONTEXT_FLOATING_POINT {
+        context.float_save = floating_save(image);
+    }
+    if flags & CONTEXT_EXTENDED_REGISTERS == CONTEXT_EXTENDED_REGISTERS {
+        context.extended_registers.copy_from_slice(image.as_bytes());
+    }
+}
+
+/// Whether a CONTEXT asks for a debug register F2K cannot set: its flags name the debug registers
+/// and DR7 enables a breakpoint (one of its local or global enable bits). Such a resume logs the
+/// unsupported request, and the rest of the context applies.
+pub fn asks_for_breakpoints(context: &Context) -> bool {
+    context.context_flags & CONTEXT_DEBUG_REGISTERS == CONTEXT_DEBUG_REGISTERS
+        && context.dr7 & 0xFF != 0
 }
 
 /// Complete the CONTEXT an exception's dispatch hands user mode: every flag set
@@ -449,6 +560,140 @@ mod tests {
         assert_eq!(&float.register_area[20..30], &image.st[2][..10]);
         assert_eq!(&context.extended_registers[..], image.as_bytes());
         assert_eq!((context.eip, context.esp), (0x0040_9999, 0x0012_FE00));
+    }
+
+    /// An image as the threx capture's handler sees it: the control word rounding to nearest, 1.5
+    /// pushed in ST(0) (physical register 7), XMM0 set.
+    fn pushed_image() -> FxSaveArea {
+        let mut image = FxSaveArea::initial();
+        image.fsw = 7 << 11;
+        image.ftw = 0b1000_0000;
+        image.mxcsr_mask = 0xFFFF;
+        image.st[0][..10].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0xC0, 0xFF, 0x3F]);
+        image.xmm[0] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        image
+    }
+
+    /// FloatSave converts back into the image it came from: the abridged tag from the full one,
+    /// the opcode out of the selector, the registers' reserved bytes cleared; MXCSR and the XMM
+    /// registers untouched.
+    #[test]
+    fn float_save_round_trips_through_the_image() {
+        let mut image = pushed_image();
+        image.fop = 0x7DC;
+        (image.fip, image.fcs, image.fdp, image.fds) = (0x0040_1000, 0x1B, 0x0012_FF00, 0x23);
+        let float = floating_save(&image);
+        let mut back = FxSaveArea::initial();
+        back.st[3] = [0xEE; 16];
+        back.mxcsr = 0x1F80 | 0x6000;
+        back.xmm[1] = [0x55; 16];
+        float_into_image(&mut back, &float);
+        assert_eq!(back.mxcsr, 0x1F80 | 0x6000, "MXCSR is not FloatSave's");
+        assert_eq!(back.xmm[1], [0x55; 16], "nor the XMM registers");
+        assert_eq!(back.st[3], [0; 16], "the registers' reserved bytes cleared");
+        (back.mxcsr, back.xmm, back.mxcsr_mask) = (image.mxcsr, image.xmm, image.mxcsr_mask);
+        assert_eq!(back, image);
+    }
+
+    /// A resume puts the context's floating-point state into the image as its flags name it: the
+    /// extended registers whole, then FloatSave's x87 state over them; neither, nothing.
+    #[test]
+    fn the_floating_state_follows_the_context_flags() {
+        let image = pushed_image();
+        let mut context = frame_context(&frame(), 0, 0);
+        dispatched_state(&mut context, &image);
+        // The threx handler's changes: the control word toward zero, ST(0) 2.5, XMM0 changed.
+        context.float_save.control_word = 0xFFFF_0E7F;
+        context.float_save.register_area[..10]
+            .copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0xA0, 0x00, 0x40]);
+        let xmm0 = [0xF1; 16];
+        context.extended_registers[160..176].copy_from_slice(&xmm0);
+
+        context.context_flags = CONTEXT_FULL;
+        let mut resumed = image;
+        restore_floating_state(&mut resumed, &context);
+        assert_eq!(resumed, image, "no floating-point flag: nothing");
+
+        // The handler clears a set's own bit, as threx's does (the i386 bit stays).
+        context.context_flags = CONTEXT_DISPATCHED & !0x20;
+        let mut resumed = image;
+        restore_floating_state(&mut resumed, &context);
+        assert_eq!(resumed.fcw, 0x0E7F);
+        assert_eq!(
+            &resumed.st[0][..10],
+            &context.float_save.register_area[..10]
+        );
+        assert_eq!(resumed.xmm[0], image.xmm[0], "FloatSave alone");
+
+        context.context_flags = CONTEXT_DISPATCHED & !0x08;
+        let mut resumed = image;
+        restore_floating_state(&mut resumed, &context);
+        assert_eq!(resumed.xmm[0], xmm0);
+        assert_eq!(resumed.fcw, 0x027F, "the extended registers alone");
+
+        // Both: FloatSave's x87 state wins over the extended registers' copy of it.
+        context.context_flags = CONTEXT_DISPATCHED;
+        let mut resumed = image;
+        restore_floating_state(&mut resumed, &context);
+        assert_eq!((resumed.fcw, resumed.xmm[0]), (0x0E7F, xmm0));
+    }
+
+    /// A context's MXCSR is masked to the bits the processor accepts (the image's own mask, or the
+    /// architecture's default without one), and the image keeps its mask: `fxrstor` faults on a
+    /// reserved bit.
+    #[test]
+    fn the_extended_registers_mxcsr_is_masked() {
+        let mut context = frame_context(&frame(), 0, 0);
+        context.context_flags = CONTEXT_EXTENDED_REGISTERS;
+        let mut wild = FxSaveArea::initial();
+        wild.mxcsr = 0xFFFF_FFFF;
+        wild.mxcsr_mask = 0xFFFF_FFFF;
+        context.extended_registers.copy_from_slice(wild.as_bytes());
+        let mut image = pushed_image();
+        restore_floating_state(&mut image, &context);
+        assert_eq!((image.mxcsr, image.mxcsr_mask), (0xFFFF, 0xFFFF));
+        let mut image = FxSaveArea::initial();
+        restore_floating_state(&mut image, &context);
+        assert_eq!(
+            (image.mxcsr, image.mxcsr_mask),
+            (DEFAULT_MXCSR_MASK, DEFAULT_MXCSR_MASK)
+        );
+    }
+
+    /// A read fills only the sets the flags name, from the frame and the image, the rest of the
+    /// caller's CONTEXT as it was; the debug registers read zero.
+    #[test]
+    fn a_capture_fills_the_named_sets() {
+        let image = pushed_image();
+        let mut context = Context::zeroed();
+        context.eax = 0xAAAA;
+        context.dr7 = 0x55;
+        context.context_flags = CONTEXT_FLOATING_POINT | CONTEXT_DEBUG_REGISTERS;
+        capture_context(&mut context, &frame(), &image);
+        assert_eq!(context.float_save, floating_save(&image));
+        assert_eq!((context.eax, context.eip, context.dr7), (0xAAAA, 0, 0));
+        assert!(context.extended_registers.iter().all(|&byte| byte == 0));
+
+        let mut context = Context::zeroed();
+        context.context_flags = CONTEXT_FULL | CONTEXT_EXTENDED_REGISTERS;
+        capture_context(&mut context, &frame(), &image);
+        let mut full = frame_context(&frame(), 0x0040_1234, 0x0012_FF00);
+        full.context_flags = context.context_flags;
+        full.extended_registers.copy_from_slice(image.as_bytes());
+        assert_eq!(context, full);
+        assert_eq!(context.context_flags, 0x0001_0027, "the flags as given");
+    }
+
+    /// A context asks for breakpoints when it names the debug registers and DR7 enables one.
+    #[test]
+    fn breakpoints_are_named_by_dr7() {
+        let mut context = Context::zeroed();
+        context.dr7 = 0x1;
+        assert!(!asks_for_breakpoints(&context), "no flag");
+        context.context_flags = CONTEXT_DEBUG_REGISTERS;
+        assert!(asks_for_breakpoints(&context));
+        context.dr7 = 0x700;
+        assert!(!asks_for_breakpoints(&context), "no enable bit");
     }
 
     /// The tags of the special values: infinities and NaNs, denormals, unnormals.

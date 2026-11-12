@@ -656,6 +656,20 @@ pub fn suspend_thread(thread: u32) -> Result<u32, NtStatus> {
     Ok(previous)
 }
 
+/// NtGetContextThread: the register sets the CONTEXT's flags name, read from the thread into it.
+pub fn get_context_thread(thread: u32, context: Destination) -> Result<(), NtStatus> {
+    // SAFETY: ntdll's export: the service reads the CONTEXT's flags and writes it back (kernel32's
+    // own bytes, or its caller's under the export's contract), probing it itself.
+    checked(unsafe { nt::NtGetContextThread(thread, context.address as *mut u8) })
+}
+
+/// NtSetContextThread: the register sets the CONTEXT's flags name, put into the thread.
+pub fn set_context_thread(thread: u32, context: Source) -> Result<(), NtStatus> {
+    // SAFETY: ntdll's export: the service reads the CONTEXT (kernel32's own bytes, or its caller's
+    // under the export's contract), probing it itself.
+    checked(unsafe { nt::NtSetContextThread(thread, context.address as *const u8) })
+}
+
 /// NtTerminateThread: the thread the handle names ended with the code. A null handle names the
 /// calling thread, which does not return unless refused (as its process's last thread).
 pub fn terminate_thread(thread: u32, code: u32) -> Result<(), NtStatus> {

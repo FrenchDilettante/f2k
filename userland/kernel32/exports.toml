@@ -1924,17 +1924,15 @@ ordinal = 716
 name = "GetThreadContext"
 group = "threads"
 args = ["handle hThread", "ptr lpContext"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetThreadContext" }
 ordinal = 389
-fails = "FALSE"
 
 [[export]]
 name = "SetThreadContext"
 group = "threads"
 args = ["handle hThread", "ptr lpContext"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetThreadContext" }
 ordinal = 693
-fails = "FALSE"
 
 # --- file handles ---------------------------------------------------------------------------------
 

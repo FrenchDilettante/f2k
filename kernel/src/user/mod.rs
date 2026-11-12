@@ -15,6 +15,8 @@
 
 pub mod apc;
 pub mod args;
+#[cfg(target_arch = "x86")]
+pub mod context;
 pub mod params;
 pub mod seh;
 pub mod shared;

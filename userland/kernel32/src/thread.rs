@@ -404,6 +404,35 @@ pub extern "system" fn resume_thread(thread: u32) -> u32 {
     suspend_count(ntcall::resume_thread(thread))
 }
 
+/// GetThreadContext: NtGetContextThread over the caller's CONTEXT, the register sets its flags
+/// name filled from the thread (the caller's own live state, or another thread's, suspended, as it
+/// stands); FALSE with the status's error otherwise (ERROR_NOACCESS for a CONTEXT that cannot be
+/// read or written).
+///
+/// # Safety
+///
+/// `context` is the caller's CONTEXT, or memory the kernel refuses (it probes it).
+#[unsafe(export_name = "f2k_export_GetThreadContext")]
+pub unsafe extern "system" fn get_thread_context(thread: u32, context: *mut u8) -> u32 {
+    // SAFETY: the caller's CONTEXT (the contract), which only the service touches.
+    let context = unsafe { ntcall::Destination::caller(context as usize, rtl::seh::CONTEXT_SIZE) };
+    win32_bool(ntcall::get_context_thread(thread, context))
+}
+
+/// SetThreadContext: NtSetContextThread from the caller's CONTEXT, the register sets its flags
+/// name put into the thread (the caller's own at once, another's, suspended, for when it resumes);
+/// FALSE with the status's error otherwise.
+///
+/// # Safety
+///
+/// `context` is the caller's CONTEXT, or memory the kernel refuses (it probes it).
+#[unsafe(export_name = "f2k_export_SetThreadContext")]
+pub unsafe extern "system" fn set_thread_context(thread: u32, context: *const u8) -> u32 {
+    // SAFETY: the caller's CONTEXT (the contract), which only the service touches.
+    let context = unsafe { ntcall::Source::caller(context as usize, rtl::seh::CONTEXT_SIZE) };
+    win32_bool(ntcall::set_context_thread(thread, context))
+}
+
 /// GetExitCodeThread: the basic information's exit status (STILL_ACTIVE while the thread lives).
 ///
 /// # Safety

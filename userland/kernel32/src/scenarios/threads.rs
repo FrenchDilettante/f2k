@@ -62,6 +62,41 @@ fn suspend_counts_and_refusals() {
     assert_eq!((resume_thread(BOGUS), last_error()), (u32::MAX, 6));
 }
 
+/// SetThreadContext puts a CONTEXT into the thread and GetThreadContext reads it back, the flags
+/// the caller asked with kept; an ended thread has no context (ERROR_GEN_FAILURE, from
+/// STATUS_UNSUCCESSFUL) and a bad handle is ERROR_INVALID_HANDLE, both FALSE.
+///
+/// Pins: kernel32.GetThreadContext, kernel32.SetThreadContext
+#[test]
+fn thread_contexts_go_through_the_services() {
+    use rtl::pod::Pod;
+    use rtl::seh::Context;
+    let mut context = Context::zeroed();
+    context.context_flags = 0x0001_0008;
+    context.float_save.control_word = 0x0E7F;
+    context.extended_registers[160] = 0xF1;
+    let set = |handle: u32, context: &Context| unsafe {
+        set_thread_context(handle, context.as_bytes().as_ptr())
+    };
+    let get = |handle: u32, context: &mut Context| unsafe {
+        get_thread_context(handle, context.as_bytes_mut().as_mut_ptr())
+    };
+    assert_eq!(set(THREAD, &context), 1);
+    let mut read = Context::zeroed();
+    read.context_flags = 0x0001_0020;
+    assert_eq!(get(THREAD, &mut read), 1);
+    assert_eq!(read.context_flags, 0x0001_0020, "the flags as asked");
+    assert_eq!(
+        (read.float_save.control_word, read.extended_registers[160]),
+        (0x0E7F, 0xF1)
+    );
+    arm();
+    assert_eq!((set(ENDED_THREAD, &context), last_error()), (0, 31));
+    arm();
+    assert_eq!((get(ENDED_THREAD, &mut read), last_error()), (0, 31));
+    assert_eq!((get(BOGUS, &mut read), last_error()), (0, 6));
+}
+
 /// GetExitCodeThread: STILL_ACTIVE for a live thread, the status an ended one ended with; FALSE
 /// with ERROR_INVALID_HANDLE for a bad handle, the code untouched.
 ///

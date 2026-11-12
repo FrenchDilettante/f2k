@@ -387,6 +387,10 @@ unsafe extern "system" {
     /// written back.
     pub fn NtSuspendThread(thread: u32, previous: *mut u32) -> u32;
     pub fn NtResumeThread(thread: u32, previous: *mut u32) -> u32;
+    /// NtGetContextThread and NtSetContextThread: the register sets a CONTEXT's flags name, read
+    /// from the thread into it, or put from it into the thread.
+    pub fn NtGetContextThread(thread: u32, context: *mut u8) -> u32;
+    pub fn NtSetContextThread(thread: u32, context: *const u8) -> u32;
     /// NtCreateThread: a thread of the calling process, on the stack the INITIAL_TEB describes and
     /// starting in the CONTEXT.
     pub fn NtCreateThread(
@@ -2819,6 +2823,7 @@ pub mod threads {
     const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
     const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
     const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
+    const STATUS_UNSUCCESSFUL: u32 = 0xC000_0001;
     /// The process's stand-in blocks, laid out with the host's pointers.
     pub struct HostProcess {
         pub peb: *mut Peb<usize>,
@@ -3093,6 +3098,59 @@ pub mod threads {
 
     pub unsafe extern "system" fn LdrShutdownProcess() -> u32 {
         0
+    }
+
+    std::thread_local! {
+        /// Each thread's CONTEXT as NtSetContextThread last left it (all zero before), by handle.
+        pub static CONTEXTS: RefCell<std::vec::Vec<(u32, rtl::seh::Context)>> =
+            const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// The stand-in's thread context services: a thread that has ended has no context
+    /// (STATUS_UNSUCCESSFUL), a handle naming no thread none either (STATUS_INVALID_HANDLE).
+    fn live_thread(thread: u32) -> Result<(), u32> {
+        with_thread(thread, |thread| thread.ended).and_then(|ended| {
+            if ended {
+                Err(STATUS_UNSUCCESSFUL)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    pub unsafe extern "system" fn NtGetContextThread(thread: u32, context: *mut u8) -> u32 {
+        use rtl::pod::Pod;
+        if let Some(status) = failure() {
+            return status;
+        }
+        answer(live_thread(thread).map(|()| {
+            // SAFETY: the caller's CONTEXT.
+            let context = unsafe { &mut *context.cast::<rtl::seh::Context>() };
+            let flags = context.context_flags;
+            *context = CONTEXTS.with(|contexts| {
+                let contexts = contexts.borrow();
+                contexts
+                    .iter()
+                    .find(|(handle, _)| *handle == thread)
+                    .map_or_else(rtl::seh::Context::zeroed, |&(_, context)| context)
+            });
+            context.context_flags = flags;
+        }))
+    }
+
+    pub unsafe extern "system" fn NtSetContextThread(thread: u32, context: *const u8) -> u32 {
+        if let Some(status) = failure() {
+            return status;
+        }
+        answer(live_thread(thread).map(|()| {
+            // SAFETY: the caller's CONTEXT.
+            let context = unsafe { *context.cast::<rtl::seh::Context>() };
+            CONTEXTS.with(|contexts| {
+                let mut contexts = contexts.borrow_mut();
+                contexts.retain(|(handle, _)| *handle != thread);
+                contexts.push((thread, context));
+            });
+        }))
     }
 
     pub unsafe extern "system" fn NtSuspendThread(thread: u32, previous: *mut u32) -> u32 {

@@ -90,6 +90,20 @@ pub fn save(image: &mut crate::sched::thread::FxSaveArea) {
     }
 }
 
+/// Load `image` as the running thread's floating-point state (`fxrstor`): a resume's context
+/// changing the running thread's own state (NtContinue, NtSetContextThread on the current thread).
+/// The image's MXCSR must hold only bits the processor accepts (the restore faults otherwise:
+/// `user::seh::restore_floating_state` masks it).
+#[cfg(target_arch = "x86")]
+pub fn restore(image: &crate::sched::thread::FxSaveArea) {
+    use core::arch::asm;
+    // SAFETY: ring 0 with OSFXSR set (`init`, before the first thread); the image is 512 readable
+    // bytes, 16-byte aligned by its type, as the instruction needs.
+    unsafe {
+        asm!("fxrstor [{}]", in(reg) core::ptr::from_ref(image), options(nostack, preserves_flags));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
