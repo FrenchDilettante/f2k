@@ -646,13 +646,26 @@ impl AddressSpace {
     /// guarded, so the first touch fires it. Nothing is planted — false — outside every region,
     /// over a page that already holds a frame, or without a frame to spare.
     pub fn plant_guard(&mut self, pages: &mut impl Pages, va: u32) -> bool {
+        self.plant_page(pages, va, true)
+    }
+
+    /// Plant a stack's page at the page holding `va`: a zeroed frame committed read-write, guarded
+    /// when `guarded` asks (a guard page), plain otherwise (the stack's last room, committed when
+    /// it overflows). Nothing is planted — false — outside every region, over a page that already
+    /// holds a frame, or without a frame to spare.
+    pub fn plant_page(&mut self, pages: &mut impl Pages, va: u32, guarded: bool) -> bool {
         let page = page_down(va);
         if self.region_at(page).is_none() || decode(pages.entry(page)).is_some() {
             return false;
         }
+        let protect = if guarded {
+            PAGE_READWRITE | PAGE_GUARD
+        } else {
+            PAGE_READWRITE
+        };
         match pages.zeroed_frame() {
             Some(frame) => {
-                pages.set_entry(page, encode(frame, PAGE_READWRITE | PAGE_GUARD));
+                pages.set_entry(page, encode(frame, protect));
                 true
             }
             None => false,

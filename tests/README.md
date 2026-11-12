@@ -170,7 +170,7 @@ The fixtures:
 - `threx` - thread-level exception behavior: the second chance in a worker thread ending the whole process with the exception's code (`unhandled`, named-only), the dispatched CONTEXT's floating-point and debug-register flags (`context`), main's return ending the process through the C runtime's exit before a sleeping worker prints (`mainret`, named-only), `NtQueryInformationThread`'s `ThreadQuerySetWin32StartAddress` class answering the recorded start address (`threadstart`), and whether a thread resumes with the x87 and SSE state of the CONTEXT it resumes from, after an exception's continuation and after `SetThreadContext` (`fpresume`).
   Gated.
 - `vmedge` - the virtual-memory and sections corners: a thread of its own walking its stack down to `STATUS_STACK_OVERFLOW`, counting the guard-page exceptions it sees and surveying its reservation before and after (`guardwalk`), `MEM_COMMIT` over a paging-file-backed view and over a file-backed one (`commitview`), and `NtUnmapViewOfSection` of a private region and of a suspended copy's image, which a program can watch where unmapping its own would leave it no code to return to (`unmapimage`).
-  Gated; `guardwalk` stays pending while F2K raises `STATUS_STACK_OVERFLOW` a page lower in the stack's reservation than Windows 2000.
+  Gated.
 - `startup` - `GetStartupInfoA`'s `lpDesktop`/`lpTitle`/`lpReserved` converted from the process parameters, never NULL (`startup`).
   Gated; its block fails on F2K while the three fields stay NULL.
 - `lcid` - `CompareStringA`/`W` refusing an uninstalled LCID with `ERROR_INVALID_PARAMETER` (0x9999), with the US English LCID as the sanity line (`badlcid`).
