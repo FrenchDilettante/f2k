@@ -2,10 +2,11 @@ calcprobe: begin
 win.ini [SciCalc] layout=(none)
 win.ini [SciCalc] UseSep=(none)
 metrics: SM_CXSCREEN 1024 SM_CYSCREEN 768 SM_CYCAPTION 19 SM_CYMENU 19 SM_CXFIXEDFRAME 3 SM_CYFIXEDFRAME 3 SM_CXFRAME 4 SM_CYFRAME 4 SM_CXEDGE 2 SM_CXBORDER 1 SM_CXSMICON 16 SM_CXSIZE 18 SM_CYSIZE 18
-found after about 100 ms
+found after about 100 ms; visible 1
 main class "SciCalc" title "Calculator"
 main style 0x14CA0044 ex 0x00050100
-main window at 0,0 size 260x252; client 254x208 inset left 3 top 41 right 3 bottom 3
+main screen 44,44,304,296
+main window at 44,44 size 260x252; client 254x208 inset left 3 top 41 right 3 bottom 3
 class icons: GCL_HICON non-NULL 1 GCL_HICONSM non-NULL 1
 WM_GETICON(ICON_SMALL) non-NULL 0
 WM_GETICON(ICON_BIG) non-NULL 0
@@ -15,93 +16,93 @@ menu: 3 items
   item 2 "&Help" state 0x310
     font: none (WM_GETFONT NULL)
 child id 403 class "Static" style 0x50020302 ex 0x00000204 at 8,0 size 239x26 visible 1
-    text "0. "
+    screen 55,85,294,111 text "0. "
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 113 class "Button" style 0x5000000B ex 0x00000004 at 8,73 size 36x29 visible 1
-    text ""
+    screen 55,158,91,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 114 class "Button" style 0x5000000B ex 0x00000004 at 8,106 size 36x29 visible 1
-    text ""
+    screen 55,191,91,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 115 class "Button" style 0x5000000B ex 0x00000004 at 8,138 size 36x29 visible 1
-    text ""
+    screen 55,223,91,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 116 class "Button" style 0x5000000B ex 0x00000004 at 8,171 size 36x29 visible 1
-    text ""
+    screen 55,256,91,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 131 class "Button" style 0x5000000B ex 0x00000004 at 54,73 size 36x29 visible 1
-    text ""
+    screen 101,158,137,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 128 class "Button" style 0x5000000B ex 0x00000004 at 54,106 size 36x29 visible 1
-    text ""
+    screen 101,191,137,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 125 class "Button" style 0x5000000B ex 0x00000004 at 54,138 size 36x29 visible 1
-    text ""
+    screen 101,223,137,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 124 class "Button" style 0x5000000B ex 0x00000004 at 54,171 size 36x29 visible 1
-    text ""
+    screen 101,256,137,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 132 class "Button" style 0x5000000B ex 0x00000004 at 93,73 size 36x29 visible 1
-    text ""
+    screen 140,158,176,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 129 class "Button" style 0x5000000B ex 0x00000004 at 93,106 size 36x29 visible 1
-    text ""
+    screen 140,191,176,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 126 class "Button" style 0x5000000B ex 0x00000004 at 93,138 size 36x29 visible 1
-    text ""
+    screen 140,223,176,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 80 class "Button" style 0x5000000B ex 0x00000004 at 93,171 size 36x29 visible 1
-    text ""
+    screen 140,256,176,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 133 class "Button" style 0x5000000B ex 0x00000004 at 132,73 size 36x29 visible 1
-    text ""
+    screen 179,158,215,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 130 class "Button" style 0x5000000B ex 0x00000004 at 132,106 size 36x29 visible 1
-    text ""
+    screen 179,191,215,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 127 class "Button" style 0x5000000B ex 0x00000004 at 132,138 size 36x29 visible 1
-    text ""
+    screen 179,223,215,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 85 class "Button" style 0x5000000B ex 0x00000004 at 132,171 size 36x29 visible 1
-    text ""
+    screen 179,256,215,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 90 class "Button" style 0x5000000B ex 0x00000004 at 171,73 size 36x29 visible 1
-    text ""
+    screen 218,158,254,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 91 class "Button" style 0x5000000B ex 0x00000004 at 171,106 size 36x29 visible 1
-    text ""
+    screen 218,191,254,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 93 class "Button" style 0x5000000B ex 0x00000004 at 171,138 size 36x29 visible 1
-    text ""
+    screen 218,223,254,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 92 class "Button" style 0x5000000B ex 0x00000004 at 171,171 size 36x29 visible 1
-    text ""
+    screen 218,256,254,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 112 class "Button" style 0x5000000B ex 0x00000004 at 210,171 size 36x29 visible 1
-    text ""
+    screen 257,256,293,285 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 83 class "Button" style 0x5000000B ex 0x00000004 at 54,37 size 63x29 visible 1
-    text ""
+    screen 101,122,164,151 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 82 class "Button" style 0x5000000B ex 0x00000004 at 120,37 size 62x29 visible 1
-    text ""
+    screen 167,122,229,151 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 81 class "Button" style 0x5000000B ex 0x00000004 at 185,37 size 62x29 visible 1
-    text ""
+    screen 232,122,294,151 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 401 class "Static" style 0x50020301 ex 0x00000204 at 12,39 size 27x26 visible 1
-    text ""
+    screen 59,124,86,150 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 107 class "Button" style 0x5000000B ex 0x00000004 at 210,138 size 36x29 visible 1
-    text ""
+    screen 257,223,293,252 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 103 class "Button" style 0x5000000B ex 0x00000004 at 210,73 size 36x29 visible 1
-    text ""
+    screen 257,158,293,187 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 109 class "Button" style 0x5000000B ex 0x00000004 at 210,106 size 36x29 visible 1
-    text ""
+    screen 257,191,293,220 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 child id 1000 class "Static" style 0x50020000 ex 0x00000004 at 0,206 size 2x2 visible 1
-    text ""
+    screen 47,291,49,293 text ""
     font: "MS Shell Dlg" height -11 width 0 weight 400 italic 0 charset 0 quality 0 pitch 0x0
 calcprobe: end

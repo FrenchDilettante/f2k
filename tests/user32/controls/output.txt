@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 11/12/2026 16:01:20.05
-controls F2KT-SOURCE-CRC=0xFAC3A065
+# date: Thu 11/12/2026 16:31:39.35
+controls F2KT-SOURCE-CRC=0x9B71F898
 >>> controls.exe create
 == create
 RegisterClassW(F2KControlsParent): atom nonzero yes err=2
@@ -333,8 +333,8 @@ CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
 CreateWindowExW(Button, WS_CHILD|WS_VISIBLE|BS_OWNERDRAW, id 7): non-NULL yes err=- id=7
 InvalidateRect(the button, NULL, TRUE): ret=1 err=-
 UpdateWindow(the button): ret=1 err=-
-  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772616 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
-  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772616 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
+  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772432 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
+  the parent received WM_DRAWITEM wParam=7 CtlType=4 CtlID=7 itemID=4772432 itemAction=0x1 itemState=0x0 hwndItem is the button yes hDC non-NULL yes rcItem=0 0 140 20 itemData=0
 controls: done
 <<< exit code=0
 >>> controls.exe drawdc
@@ -368,37 +368,37 @@ SetWindowPos(the parent, HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE): re
 CreateWindowExW("Static", SS_LEFT, id 401, 120x30): non-NULL yes err=-
   style=0x50000000 ex style=0x00000000
   client 120x30, inset left 0 top 0 right 0 bottom 0
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNFACE 3DLIGHT; (1,1) BTNFACE 3DLIGHT; (2,2) BTNFACE 3DLIGHT
     (w-1,h-1) BTNFACE 3DLIGHT; (w-2,h-2) BTNFACE 3DLIGHT; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNFACE 3DLIGHT; (0,h-1) BTNFACE 3DLIGHT
 CreateWindowExW("Static", SS_LEFT | SS_SUNKEN, id 402, 120x30): non-NULL yes err=-
   style=0x50001000 ex style=0x00020000
   client 118x28, inset left 1 top 1 right 1 bottom 1
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNSHADOW; (1,1) BTNFACE 3DLIGHT; (2,2) BTNFACE 3DLIGHT
     (w-1,h-1) BTNHIGHLIGHT WINDOW; (w-2,h-2) BTNFACE 3DLIGHT; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNHIGHLIGHT WINDOW; (0,h-1) BTNHIGHLIGHT WINDOW
 CreateWindowExW("Static", SS_LEFT, WS_EX_STATICEDGE, id 403, 120x30): non-NULL yes err=-
   style=0x50000000 ex style=0x00020000
   client 118x28, inset left 1 top 1 right 1 bottom 1
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNSHADOW; (1,1) BTNFACE 3DLIGHT; (2,2) BTNFACE 3DLIGHT
     (w-1,h-1) BTNHIGHLIGHT WINDOW; (w-2,h-2) BTNFACE 3DLIGHT; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNHIGHLIGHT WINDOW; (0,h-1) BTNHIGHLIGHT WINDOW
 CreateWindowExW("Static", SS_LEFT, WS_EX_CLIENTEDGE, id 404, 120x30): non-NULL yes err=-
   style=0x50000000 ex style=0x00000200
   client 116x26, inset left 2 top 2 right 2 bottom 2
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNSHADOW; (1,1) 3DDKSHADOW; (2,2) BTNFACE 3DLIGHT
     (w-1,h-1) BTNHIGHLIGHT WINDOW; (w-2,h-2) BTNFACE 3DLIGHT; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNHIGHLIGHT WINDOW; (0,h-1) BTNHIGHLIGHT WINDOW
 CreateWindowExW("Static", SS_LEFT | WS_BORDER, id 405, 120x30): non-NULL yes err=-
   style=0x50800000 ex style=0x00000000
   client 118x28, inset left 1 top 1 right 1 bottom 1
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNTEXT WINDOWTEXT WINDOWFRAME; (1,1) BTNFACE 3DLIGHT; (2,2) BTNFACE 3DLIGHT
     (w-1,h-1) BTNTEXT WINDOWTEXT WINDOWFRAME; (w-2,h-2) BTNFACE 3DLIGHT; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNTEXT WINDOWTEXT WINDOWFRAME; (0,h-1) BTNTEXT WINDOWTEXT WINDOWFRAME
 CreateWindowExW("Static", SS_LEFT | SS_SUNKEN, WS_EX_CLIENTEDGE, id 406, 120x30): non-NULL yes err=-
   style=0x50001000 ex style=0x00020200
   client 114x24, inset left 3 top 3 right 3 bottom 3
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   the window's pixels: (0,0) BTNSHADOW; (1,1) BTNSHADOW; (2,2) 3DDKSHADOW
     (w-1,h-1) BTNHIGHLIGHT WINDOW; (w-2,h-2) BTNHIGHLIGHT WINDOW; (w-3,h-3) BTNFACE 3DLIGHT; (w-1,0) BTNHIGHLIGHT WINDOW; (0,h-1) BTNHIGHLIGHT WINDOW
 controls: done
@@ -410,27 +410,27 @@ CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
 SetWindowPos(the parent, HWND_TOPMOST, SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE): ret=1 err=-
 DEFAULT_GUI_FONT: height 13 ascent 11; "0." extent 9x13
 CreateWindowExW("Static", SS_LEFT, id 501, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 120x30: red 21 blue 3579 other 0
   the text's rows 2..10 (above it 2, below it 19), columns 1..7 (left of it 1, right of it 112)
 CreateWindowExW("Static", SS_RIGHT, id 502, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 120x30: red 21 blue 3579 other 0
   the text's rows 2..10 (above it 2, below it 19), columns 112..118 (left of it 112, right of it 1)
 CreateWindowExW("Static", SS_LEFT | SS_CENTERIMAGE, id 503, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 120x30: red 21 blue 3579 other 0
   the text's rows 10..18 (above it 10, below it 11), columns 1..7 (left of it 1, right of it 112)
 CreateWindowExW("Static", SS_RIGHT | SS_CENTERIMAGE, id 504, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 120x30: red 21 blue 3579 other 0
   the text's rows 10..18 (above it 10, below it 11), columns 112..118 (left of it 112, right of it 1)
 CreateWindowExW("Static", SS_CENTER | SS_CENTERIMAGE, id 505, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 120x30: red 21 blue 3579 other 0
   the text's rows 10..18 (above it 10, below it 11), columns 56..62 (left of it 56, right of it 57)
 CreateWindowExW("Static", SS_RIGHT | SS_CENTERIMAGE, WS_EX_CLIENTEDGE, id 506, 120x30, "0."): non-NULL yes err=-
-  WindowFromPoint(its centre) is the control no
+  WindowFromPoint(its centre): its parent
   client 116x26: red 21 blue 2995 other 0
   the text's rows 8..16 (above it 8, below it 9), columns 108..114 (left of it 108, right of it 1)
 controls: done
