@@ -19,6 +19,14 @@ its pinning tests' last results:
 Whatever its status, an export a corpus test pins while pytest does not exercise it (the test is
 pending, an expected failure, or skipped) is in progress: its square has a border.
 
+A native's depth is how many live tests pin it, whatever their last results: a live test is a
+block of a gated fixture, neither pending nor skipped nor awaiting a retake, or a host scenario
+not ignored. The summary counts each DLL's natives with no live test and with one (usually a
+single success case); --depth lists them. A host unit test (#[test]) is no pin: no live test does
+not mean untested on the host. Telling which exports a unit test exercises by name is not reliable
+here: the tests call the Rust helpers under names of their own (rtl's `verify` for
+RtlVerifyVersionInfo), not the exports.
+
 A forwarder (impl.forward) and its target share their pinning tests: the target's code is what
 the forwarder runs, so its target's tests pin the forwarder, and the forwarder's pin the target
 (kernel32.HeapAlloc's blocks pin ntdll.RtlAllocateHeap). A test pinning both counts once.
@@ -46,12 +54,13 @@ Options:
             enabled one fails or an ignored one passes (its gap is fixed: remove the marker)
   --report  write the HTML report (target/compat/report.html): the DLL treemap, then one
             section per tests/compat/*.toml with the executable's imports as squares
+  --depth   list, per DLL and API group, the natives with no live test and those with one
 
 The summary (per DLL and API group) prints in every case. TOML is read with the standard library
 (tomllib).
 
 Usage:
-  compat.py [--check] [--run] [--report]
+  compat.py [--check] [--run] [--report] [--depth]
 """
 import argparse
 import html
@@ -110,6 +119,8 @@ class Evidence(NamedTuple):
     corpus: bool  # whether it is a corpus block (or a host scenario)
     test: str  # the test itself, whichever export it reaches this one through ("memory/heapalloc")
     via: str | None = None  # the export it pins, when it reaches this one through a forward
+    live: bool = False  # whether it gates: a gated fixture's block not pending, skipped or to
+                        # retake, or a scenario not ignored (whatever its last result)
 
 
 @dataclass
@@ -152,6 +163,15 @@ class Export:
     def in_progress(self) -> bool:
         """A corpus test pins it that pytest does not exercise (pending or skipped)."""
         return any(e.corpus and e.outcome in IN_PROGRESS for e in self.evidence)
+
+    @property
+    def native(self) -> bool:
+        return "native" in self.spec.get("impl", {})
+
+    @property
+    def live_tests(self) -> list:
+        """Its live pinning tests (Evidence.live), each once."""
+        return list({e.test: e for e in self.evidence if e.live}.values())
 
     @property
     def forwarded_only(self) -> bool:
@@ -396,16 +416,21 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
     scenario_outcomes = (scenario_run or {}).get("tests", {})
     missing = {"blocks": [], "scenarios": []}
 
-    def attach(pin, label, outcome, corpus, test):
+    def attach(pin, label, outcome, corpus, test, live):
         dll, _, name = pin.partition(".")
         export = specs.get(dll, ({}, {}))[1].get(name)
         if export is not None:
-            export.evidence.append(Evidence(label, outcome, corpus, test))
+            export.evidence.append(Evidence(label, outcome, corpus, test, live=live))
 
     for fixture, (declared, blocks) in fixtures.items():
         if blocks is None:
             continue
         names = list(dict.fromkeys(block.name for block in blocks))
+        # A block gates when its fixture does and it is neither pending nor skipped (f2kboot.blocks:
+        # by its section); a pin names its sections by their first argument, the block's name.
+        gated = declared.get("gate", False) and declared.get("retake") is None
+        idle = {*declared.get("pending", {}), *declared.get("skip", {})}
+        live = {block.name for block in blocks if gated and block.section not in idle}
         for name in names:
             if f"{fixture}/{name}" not in by_block:
                 missing["blocks"].append(f"{fixture} {name}")
@@ -413,13 +438,14 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
             for name in names if section == "*" else [section]:
                 outcome = worst(by_block.get(f"{fixture}/{name}", []))
                 for pin in pins:
-                    attach(pin, f"{fixture} {name}", outcome, True, f"{fixture}/{name}")
+                    attach(pin, f"{fixture} {name}", outcome, True, f"{fixture}/{name}", name in live)
     for scenario in scenarios.values():
         outcome = scenario_outcomes.get(scenario.name)
         if outcome is None:
             missing["scenarios"].append(scenario.name)
         for pin in scenario.pins:
-            attach(pin, f"scenario {scenario.name}", outcome, False, f"scenario {scenario.name}")
+            attach(pin, f"scenario {scenario.name}", outcome, False, f"scenario {scenario.name}",
+                   scenario.ignored is None)
     # A system service's Zw alias runs the service's stub: the service's tests pin it too.
     for _, exports in specs.values():
         for export in exports.values():
@@ -467,7 +493,48 @@ def share_forwards(specs):
                             label=f"{evidence.label} (via {other.pin})", via=other.pin))
 
 
-def summary(specs, missing, pytest_run, scenario_run):
+def shallow(exports):
+    """The natives with no live test and those with exactly one (Export.live_tests)."""
+    natives = [e for e in exports.values() if e.native]
+    return ([e for e in natives if not e.live_tests],
+            [e for e in natives if len(e.live_tests) == 1])
+
+
+def depth_lines(groups, none, single):
+    """--depth's listing of a DLL's shallow natives, by API group: the unpinned by name, the
+    single-test ones with their test."""
+    lines = []
+    order = {g["key"]: index for index, g in enumerate(groups)}
+    for title, members, show in (
+            ("No live test", none, lambda e: e.name),
+            ("One live test", single, lambda e: f"{e.name} [{e.live_tests[0].label}]")):
+        if not members:
+            continue
+        lines.append(f"  {title} ({len(members)}):")
+        by_group = {}
+        for export in sorted(members, key=lambda e: (order.get(e.group, len(order)), e.name.lower())):
+            by_group.setdefault(export.group or "(no group)", []).append(show(export))
+        for group, names in by_group.items():
+            lines += pack(names, f"    {group} ({len(names)}): ", " " * 6)
+    return lines
+
+
+def pack(items, first, rest, width=100):
+    """Items joined by commas into lines of at most `width` (an item too long alone takes a line of
+    its own), the first line led by `first`, the others by `rest`: a line breaks only between
+    items."""
+    lines, line, empty = [], first, True
+    for index, item in enumerate(items):
+        text = item + ("," if index < len(items) - 1 else "")
+        if not empty and len(line) + 1 + len(text) > width:
+            lines.append(line)
+            line, empty = rest, True
+        line += ("" if empty else " ") + text
+        empty = False
+    return lines + [line]
+
+
+def summary(specs, missing, pytest_run, scenario_run, depth=False):
     for dll, (groups, exports) in specs.items():
         print(f"{dll}: {len(exports)} exports")
         if not exports:
@@ -500,6 +567,13 @@ def summary(specs, missing, pytest_run, scenario_run):
                     f"{e.name} (via {', '.join(sorted({ev.via for ev in e.evidence}))})" for e in forwarded))
             else:
                 print()
+        none, single = shallow(exports)
+        natives = sum(e.native for e in exports.values())
+        if natives:
+            print(f"Depth: of {natives} natives, {len(none)} have no live test, {len(single)} have one"
+                  + ("" if depth or not (none or single) else " (--depth lists them)"))
+            if depth:
+                print(*depth_lines(groups, none, single), sep="\n")
         failing = [e for e in exports.values() if e.status == "failing"]
         if failing:
             print(f"\nFailing ({len(failing)}):")
@@ -1116,6 +1190,8 @@ def main():
     parser.add_argument("--check", action="store_true", help="check the pins against the repository")
     parser.add_argument("--run", action="store_true", help="run the host scenarios, ignored ones included")
     parser.add_argument("--report", action="store_true", help=f"write the HTML report ({REPORT.relative_to(REPO_ROOT)})")
+    parser.add_argument("--depth", action="store_true",
+                        help="list the natives with no live test and those with one, per DLL and group")
     args = parser.parse_args()
 
     specs = load_specs()
@@ -1131,7 +1207,7 @@ def main():
     failures = run_scenarios(scenarios) if args.run else []
     pytest_run, scenario_run = read_results(PYTEST_RESULTS), read_results(SCENARIO_RESULTS)
     missing = gather(specs, fixtures, scenarios, pytest_run, scenario_run)
-    summary(specs, missing, pytest_run, scenario_run)
+    summary(specs, missing, pytest_run, scenario_run, depth=args.depth)
     if args.report:
         render(specs, missing, pytest_run, scenario_run)
         print(f"Report: {REPORT}")
