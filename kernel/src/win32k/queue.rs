@@ -36,8 +36,11 @@
 //! the procedure changes in the structure it was handed (WM_NCCALCSIZE's rectangle) comes back.
 //!
 //! SendMessage to another thread's window goes the same way, its sender waiting for the answer
-//! ([`send`], [`collect_reply`]); to a window of its own thread, the service names the
-//! procedure and user32 calls it itself, as Windows 2000's user32 does. So do the console server's
+//! ([`send`], [`await_reply`]) and, as Windows 2000's sender does, handling the messages sent to
+//! its own thread meanwhile: the wait hands them to user32, which delivers them and resumes it
+//! ([`resume_send`]), so two threads that send to each other do not wait on each other; to a
+//! window of its own thread, the service names the procedure and user32 calls it itself, as
+//! Windows 2000's user32 does. So do the console server's
 //! WM_QUERYENDSESSION and WM_ENDSESSION at the session's end ([`server_send`]), the server, which
 //! has no queue, waiting on an event of its own ([`wait_for_server`]). SendMessageTimeout's
 //! sender waits no longer than its timeout, a message its receiver has not read by then taken back
@@ -178,6 +181,24 @@ pub struct SentId {
     generation: u16,
 }
 
+impl SentId {
+    /// The id as user32 holds it while its sender delivers the messages sent to it
+    /// ([`Awaited::Received`]): the generation in the high word, the record in the low one, with
+    /// the low word's top bit set, so that no id is 0 (SendTimeout's `resume` for a fresh send).
+    pub fn token(self) -> u32 {
+        (self.generation as u32) << 16 | 0x8000 | self.index as u32
+    }
+
+    /// The id a [`SentId::token`] names; none for 0 or a token naming no record.
+    pub fn from_token(token: u32) -> Option<SentId> {
+        let index = token as u16 & !0x8000;
+        (token & 0x8000 != 0 && (index as usize) < SENT).then_some(SentId {
+            index,
+            generation: (token >> 16) as u16,
+        })
+    }
+}
+
 /// A singly linked list of pool entries, oldest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct List {
@@ -209,8 +230,6 @@ struct Queue {
     sent: List,
     /// The sent messages handed out and not answered yet, innermost first.
     receiving: Option<u16>,
-    /// The send this thread waits on the answer of.
-    awaiting: Option<SentId>,
     /// PostQuitMessage's exit code, until a read takes the WM_QUIT.
     quit: Option<u32>,
     /// The kinds of message (queue-status bits) given the queue since a read last looked for them:
@@ -237,7 +256,6 @@ impl Queue {
         input: List::EMPTY,
         sent: List::EMPTY,
         receiving: None,
-        awaiting: None,
         quit: None,
         changed: 0,
         last_read: 0,
@@ -347,6 +365,9 @@ struct Sent {
     server: bool,
     /// SendNotifyMessage's: another thread sent it and waits for no answer.
     notify: bool,
+    /// SendMessageTimeout's: when its sender stops waiting (interrupt time), kept for the wait's
+    /// resumption after the sender delivered the messages sent to it meanwhile.
+    deadline: Option<u64>,
     window: Option<WindowId>,
     hwnd: Hwnd,
     proc: u32,
@@ -368,6 +389,7 @@ impl Sent {
         sender: None,
         server: false,
         notify: false,
+        deadline: None,
         window: None,
         hwnd: 0,
         proc: 0,
@@ -726,12 +748,14 @@ impl Queues {
                 self.sent[sent as usize].next = None;
             }
         }
-        if let Some(awaited) = self.queues[index as usize].awaiting {
-            if self.sent_at(awaited).is_some() {
-                let sent = &mut self.sent[awaited.index as usize];
+        // The sends it waits on, the innermost and the ones it delivered messages inside: their
+        // answers go to nobody.
+        for at in 0..SENT as u16 {
+            let sent = &mut self.sent[at as usize];
+            if sent.live && sent.sender == Some(id) {
                 sent.sender = None;
                 if sent.state == State::Answered {
-                    self.free_sent(awaited.index);
+                    self.free_sent(at);
                 }
             }
         }
@@ -1672,7 +1696,6 @@ pub fn send_carrying(
         return Err(STATUS_NO_MEMORY);
     };
     queues.push_sent(receiver, id.index);
-    queues.queues[sender.index as usize].awaiting = Some(id);
     Ok(Sending::Waiting(id))
 }
 
@@ -1727,15 +1750,15 @@ pub fn send_notify(
 
 /// The caller's send `id` timed out (SendMessageTimeout): a message its receiver has not read yet
 /// is taken back, never to reach the procedure, as Windows 2000 takes it; one being handled is
-/// left to it, its answer to nobody. The caller waits on nothing any more.
+/// left to it, its answer to nobody.
 pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
     let queues = &mut windows.queues;
-    if let Some(queue) = queues.queue_of(caller) {
-        queues.queues[queue.index as usize].awaiting = None;
-    }
     let Some(sent) = queues.sent_at(id) else {
         return;
     };
+    if sent.sender != queues.queue_of(caller) {
+        return;
+    }
     match (sent.state, sent.receiver) {
         (State::Queued, Some(receiver)) => {
             queues.unlink_sent(receiver, id.index);
@@ -1751,15 +1774,64 @@ pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
 pub fn collect_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Option<LResult> {
     let queues = &mut windows.queues;
     let sent = queues.sent_at(id)?;
-    if sent.state != State::Answered {
+    if sent.state != State::Answered || sent.sender != queues.queue_of(caller) {
         return None;
     }
     let result = sent.result;
     queues.free_sent(id.index);
-    if let Some(queue) = queues.queue_of(caller) {
-        queues.queues[queue.index as usize].awaiting = None;
-    }
     Some(result)
+}
+
+/// What a sender found as it waits for the answer to its send ([`await_reply`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Awaited {
+    /// The answer: the record went back to the pool.
+    Answer(LResult),
+    /// Messages were sent to the sender meanwhile: it delivers them (user32 reads them, as
+    /// Windows 2000's SendMessage handles the messages sent to its thread while it waits), then
+    /// waits on.
+    Received,
+    /// Nothing yet: the sender waits on its queue.
+    Wait,
+}
+
+/// The caller's wait for the answer to its send `id`, one look: the answer once it came
+/// ([`collect_reply`]); otherwise whether messages sent to the caller wait to be handed out, as
+/// Windows 2000's sender handles them inside its SendMessage, so that two threads sending to each
+/// other do not wait on each other for good.
+pub fn await_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Awaited {
+    if let Some(answer) = collect_reply(windows, caller, id) {
+        return Awaited::Answer(answer);
+    }
+    let queues = &windows.queues;
+    match queues.queue_of(caller) {
+        Some(queue) if queues.queues[queue.index as usize].sent.head.is_some() => Awaited::Received,
+        _ => Awaited::Wait,
+    }
+}
+
+/// The caller's send `id` waits on once its sender delivered the messages sent to it
+/// ([`Awaited::Received`]): its deadline (none for SendMessage's). STATUS_INVALID_PARAMETER for an
+/// id that names no send of the caller's.
+pub fn resume_send(
+    windows: &Windows,
+    caller: ThreadId,
+    id: SentId,
+) -> Result<Option<u64>, NtStatus> {
+    let queues = &windows.queues;
+    match queues.sent_at(id) {
+        Some(sent) if sent.sender.is_some() && sent.sender == queues.queue_of(caller) => {
+            Ok(sent.deadline)
+        }
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
+
+/// Keep the caller's send `id`'s `deadline` with it, for the wait's resumption ([`resume_send`]).
+pub fn keep_deadline(windows: &mut Windows, id: SentId, deadline: Option<u64>) {
+    if windows.queues.sent_at(id).is_some() {
+        windows.queues.sent[id.index as usize].deadline = deadline;
+    }
 }
 
 // --- The server's sends --------------------------------------------------------------------------
@@ -2419,6 +2491,11 @@ mod services {
     /// at its end, the message taken back if its receiver has not read it ([`abandon_send`]), and
     /// at once with SMTO_ABORTIFHUNG when the receiver is hung ([`window_hung`]): STATUS_TIMEOUT
     /// then (user32's ERROR_TIMEOUT), `result` 0.
+    ///
+    /// A message sent to the caller while it waits ends the wait with STATUS_PENDING, the send's
+    /// token ([`SentId::token`]) in `result`: user32 delivers what was sent to its thread, then
+    /// calls again with the same arguments and the token as the timeout's `resume`, which waits on
+    /// for the same answer, until the same deadline ([`await_reply`]).
     #[allow(clippy::too_many_arguments)]
     pub fn message_call(
         call: &mut NtCall,
@@ -2438,29 +2515,117 @@ mod services {
             0 => None,
             _ => Some(timeout.cast::<SendTimeout>().read()?),
         };
+        let mut text = [0u16; CARRIED_TEXT];
+        let resumed = limit.and_then(|l| SentId::from_token(l.resume));
+        let (id, deadline) = match resumed {
+            Some(id) => {
+                let deadline =
+                    with_manager(call.passive(), |m| resume_send(&m.windows, caller, id))?;
+                (id, deadline)
+            }
+            None => match start_send(
+                call, thread, window, message, wparam, lparam, limit, &mut text,
+            )? {
+                Started::Waiting(id, deadline) => (id, deadline),
+                Started::Call(target) => {
+                    proc.write(target)?;
+                    return Ok(STATUS_SUCCESS);
+                }
+                Started::Answered(answer) => {
+                    result.write(answer)?;
+                    return Ok(STATUS_SUCCESS);
+                }
+                Started::Hung => return Ok(STATUS_TIMEOUT),
+            },
+        };
+        loop {
+            let reply = with_manager(call.passive(), |m| {
+                let got = answered_text(&m.windows, id, &mut text);
+                (await_reply(&mut m.windows, caller, id), got)
+            });
+            match reply {
+                (Awaited::Answer(answer), got) => {
+                    if let (Some(got), true) = (got, lparam != 0 && wparam > 0) {
+                        // WM_GETTEXT's text into the sender's buffer, as much as it holds,
+                        // terminated.
+                        let got = got.min(wparam as usize - 1);
+                        let out = UserAddr(lparam as u32);
+                        out.write(&text.as_bytes()[..2 * got])?;
+                        out.offset(2 * got as u32).cast::<u16>().write(0)?;
+                    }
+                    result.write(answer)?;
+                    return Ok(STATUS_SUCCESS);
+                }
+                (Awaited::Received, _) => {
+                    result.write(id.token() as i32)?;
+                    return Ok(STATUS_PENDING);
+                }
+                (Awaited::Wait, _) => match deadline {
+                    None => wait_on_queue(caller, None),
+                    Some(deadline) => {
+                        let now = now();
+                        if now >= deadline {
+                            with_manager(call.passive(), |m| {
+                                abandon_send(&mut m.windows, caller, id)
+                            });
+                            return Ok(STATUS_TIMEOUT);
+                        }
+                        wait_on_queue(caller, Some((deadline - now) as i64));
+                    }
+                },
+            }
+        }
+    }
+
+    /// How [`message_call`]'s fresh send started.
+    enum Started {
+        /// Queued for another thread: the send to wait on, and its deadline.
+        Waiting(SentId, Option<u64>),
+        /// A window of the caller's own thread: the procedure user32 calls.
+        Call(u32),
+        /// Answered already.
+        Answered(LResult),
+        /// SMTO_ABORTIFHUNG, to a hung thread: not sent.
+        Hung,
+    }
+
+    /// [`message_call`]'s fresh send: SMTO_ABORTIFHUNG's look at the receiver, WM_SETTEXT's
+    /// carried text read into `text`, and the send ([`Started`]).
+    #[allow(clippy::too_many_arguments)]
+    fn start_send(
+        call: &mut NtCall,
+        thread: crate::win32k::winsta::GuiThread,
+        window: Handle,
+        message: u32,
+        wparam: u32,
+        lparam: i32,
+        limit: Option<SendTimeout>,
+        text: &mut [u16; CARRIED_TEXT],
+    ) -> Result<Started, NtStatus> {
+        let caller = thread.thread;
         if limit.is_some_and(|l| l.flags & SMTO_ABORTIFHUNG != 0) {
             let time = millis(now());
             let hung = with_manager(call.passive(), |m| {
                 window_hung(&m.windows, caller, window.raw(), time)
             })?;
             if hung {
-                return Ok(STATUS_TIMEOUT);
+                return Ok(Started::Hung);
             }
         }
         let deadline = limit.map(|l| now() + u64::from(l.timeout) * 10_000);
         // A text message to another process's window carries its text (user32 hands such a
-        // message over in the wide form): WM_SETTEXT's read here, WM_GETTEXT's written back below.
+        // message over in the wide form): WM_SETTEXT's read here, WM_GETTEXT's written back once
+        // answered.
         let carried = with_manager(call.passive(), |m| {
             carries_text(&m.windows, thread.owner, window.raw(), message)
         });
-        let mut text = [0u16; CARRIED_TEXT];
         let length = if carried && message == WM_SETTEXT && lparam != 0 {
-            read_units(UserAddr(lparam as u32), &mut text)?
+            read_units(UserAddr(lparam as u32), text)?
         } else {
             0
         };
         let sending = with_manager(call.passive(), |m| {
-            send_carrying(
+            let sending = send_carrying(
                 &mut m.windows,
                 caller,
                 window.raw(),
@@ -2468,49 +2633,17 @@ mod services {
                 wparam,
                 lparam,
                 carried.then_some(&text[..length]),
-            )
-        })?;
-        let answer = match sending {
-            Sending::Call(target) => {
-                proc.write(target)?;
-                return Ok(STATUS_SUCCESS);
+            );
+            if let Ok(Sending::Waiting(id)) = sending {
+                keep_deadline(&mut m.windows, id, deadline);
             }
-            Sending::Answered(answer) => answer,
-            Sending::Waiting(id) => loop {
-                let reply = with_manager(call.passive(), |m| {
-                    let got = answered_text(&m.windows, id, &mut text);
-                    collect_reply(&mut m.windows, caller, id).map(|answer| (answer, got))
-                });
-                match reply {
-                    Some((answer, got)) => {
-                        if let (Some(got), true) = (got, carried && lparam != 0 && wparam > 0) {
-                            // WM_GETTEXT's text into the sender's buffer, as much as it holds,
-                            // terminated.
-                            let got = got.min(wparam as usize - 1);
-                            let out = UserAddr(lparam as u32);
-                            out.write(&text.as_bytes()[..2 * got])?;
-                            out.offset(2 * got as u32).cast::<u16>().write(0)?;
-                        }
-                        break answer;
-                    }
-                    None => match deadline {
-                        None => wait_on_queue(caller, None),
-                        Some(deadline) => {
-                            let now = now();
-                            if now >= deadline {
-                                with_manager(call.passive(), |m| {
-                                    abandon_send(&mut m.windows, caller, id)
-                                });
-                                return Ok(STATUS_TIMEOUT);
-                            }
-                            wait_on_queue(caller, Some((deadline - now) as i64));
-                        }
-                    },
-                }
-            },
-        };
-        result.write(answer)?;
-        Ok(STATUS_SUCCESS)
+            sending
+        })?;
+        Ok(match sending {
+            Sending::Waiting(id) => Started::Waiting(id, deadline),
+            Sending::Call(target) => Started::Call(target),
+            Sending::Answered(answer) => Started::Answered(answer),
+        })
     }
 
     /// NtUserSendNotifyMessage(Window, Msg, wParam, lParam, Proc): SendNotifyMessage's kernel
@@ -3836,6 +3969,91 @@ mod tests {
         assert!(end_sent(&mut m.windows, b, 39));
         assert_eq!(live_sends(m), base);
         assert_eq!(collect_reply(&mut m.windows, a, id), None);
-        assert_eq!(m.windows.queues.queues[a.0 as usize].awaiting, None);
+    }
+
+    /// Two threads that send to each other: A sends to B's window; B's procedure sends to A's
+    /// before it answers. A's wait finds B's message and hands it to user32, which delivers it
+    /// and resumes the same wait, as Windows 2000's SendMessage handles the messages sent to its
+    /// thread while it waits; B gets its answer, then A. A wait with nothing sent to it waits.
+    #[test]
+    fn two_threads_sending_to_each_other_do_not_deadlock() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+
+        let Ok(Sending::Waiting(to_b)) = send(&mut m.windows, a, hb, WM_USER + 1, 1, 0) else {
+            panic!("A's send is queued for B");
+        };
+        keep_deadline(&mut m.windows, to_b, Some(5_000));
+        assert_eq!(await_reply(&mut m.windows, a, to_b), Awaited::Wait);
+        // B reads A's message; its procedure sends to A's window.
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        let Ok(Sending::Waiting(to_a)) = send(&mut m.windows, b, ha, WM_USER + 2, 2, 0) else {
+            panic!("B's send is queued for A");
+        };
+        assert_eq!(await_reply(&mut m.windows, b, to_a), Awaited::Wait);
+
+        // A, waiting, is handed B's message: user32 delivers it, then resumes its own wait.
+        assert_eq!(await_reply(&mut m.windows, a, to_b), Awaited::Received);
+        let token = to_b.token();
+        assert_eq!(SentId::from_token(token), Some(to_b));
+        let Taken::Sent(id) = read(m, a, &all(), 0) else {
+            panic!("A reads B's message");
+        };
+        let head = receipt_head(&m.windows, a, id, 0, 0).unwrap();
+        assert_eq!((head.msg.hwnd, head.msg.message), (ha, WM_USER + 2));
+        assert!(end_sent(&mut m.windows, a, 22));
+        assert_eq!(
+            resume_send(&m.windows, a, SentId::from_token(token).unwrap()),
+            Ok(Some(5_000)),
+            "the same wait, until the same deadline"
+        );
+        assert_eq!(
+            resume_send(&m.windows, b, to_b),
+            Err(STATUS_INVALID_PARAMETER),
+            "another thread's send"
+        );
+        assert_eq!(await_reply(&mut m.windows, a, to_b), Awaited::Wait);
+
+        // B has its answer, and answers A's message.
+        assert_eq!(await_reply(&mut m.windows, b, to_a), Awaited::Answer(22));
+        assert!(end_sent(&mut m.windows, b, 11));
+        assert_eq!(await_reply(&mut m.windows, a, to_b), Awaited::Answer(11));
+        assert_eq!(live_sends(m), base, "both records went back to the pool");
+        assert_eq!(SentId::from_token(0), None);
+    }
+
+    /// A thread whose queue ends while it waits on sends, nested inside one another's delivery,
+    /// leaves every one of them answered to nobody.
+    #[test]
+    fn a_waiting_threads_end_leaves_its_sends_to_nobody() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let base = live_sends(m);
+        let Ok(Sending::Waiting(outer)) = send(&mut m.windows, a, hb, WM_USER, 1, 0) else {
+            panic!("queued");
+        };
+        let Ok(Sending::Waiting(inner)) = send(&mut m.windows, a, hb, WM_USER, 2, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        detach(&mut m.windows, a);
+        assert!(end_sent(&mut m.windows, b, 1));
+        assert_eq!(collect_reply(&mut m.windows, a, outer), None);
+        assert_eq!(collect_reply(&mut m.windows, a, inner), None);
+        assert_eq!(
+            deliver(m, b),
+            vec![(hb, WM_USER)],
+            "the inner one still reaches B"
+        );
+        assert_eq!(live_sends(m), base);
     }
 }

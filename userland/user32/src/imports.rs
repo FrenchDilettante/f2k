@@ -1768,27 +1768,28 @@ pub fn peek_message(
     checked(unsafe { raw::NtUserPeekMessage(receipt, window, min, max, flags) })
 }
 
-/// NtUserMessageCall: SendMessage's kernel side: the window procedure to call for a window of the
-/// calling thread's (nonzero), or 0 and the answer.
-pub fn message_call(
-    window: usize,
-    message: u32,
-    wparam: u32,
-    lparam: i32,
-) -> Result<(u32, i32), NtStatus> {
-    message_call_timeout(window, message, wparam, lparam, None)
+/// What NtUserMessageCall answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Called {
+    /// The window procedure to call for a window of the calling thread's (nonzero), or 0 and the
+    /// answer.
+    Done(u32, i32),
+    /// Messages were sent to the calling thread while it waited for another thread's answer: it
+    /// delivers them, then resumes the wait with this token (SendTimeout's `resume`).
+    Received(u32),
 }
 
-/// NtUserMessageCall with SendMessageTimeout's `timeout`: [`message_call`]'s answer, or
-/// STATUS_TIMEOUT as a failure when another thread's answer did not come in time (or its thread
-/// is hung, with SMTO_ABORTIFHUNG).
+/// NtUserMessageCall: SendMessage's kernel side, with SendMessageTimeout's `timeout` (none for
+/// SendMessage's first call; a resumed wait's names its token): [`Called`], or STATUS_TIMEOUT as
+/// a failure when another thread's answer did not come in time (or its thread is hung, with
+/// SMTO_ABORTIFHUNG).
 pub fn message_call_timeout(
     window: usize,
     message: u32,
     wparam: u32,
     lparam: i32,
     timeout: Option<SendTimeout>,
-) -> Result<(u32, i32), NtStatus> {
+) -> Result<Called, NtStatus> {
     let (mut proc, mut result) = (0u32, 0i32);
     let limit = timeout
         .as_ref()
@@ -1805,11 +1806,14 @@ pub fn message_call_timeout(
             limit,
         )
     };
-    if status == rtl::status::STATUS_TIMEOUT {
-        return Err(NtStatus(status));
+    match status {
+        rtl::status::STATUS_TIMEOUT => Err(NtStatus(status)),
+        rtl::status::STATUS_PENDING => Ok(Called::Received(result as u32)),
+        _ => {
+            checked(status)?;
+            Ok(Called::Done(proc, result))
+        }
     }
-    checked(status)?;
-    Ok((proc, result))
 }
 
 /// NtUserSendNotifyMessage: SendNotifyMessage's kernel side: the window procedure to call for a

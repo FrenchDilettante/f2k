@@ -301,16 +301,20 @@ pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
 /// IsHungAppWindow (the parameter is the window; the result whether its thread is hung).
 pub const ONE_PARAM_IS_HUNG_APP_WINDOW: u32 = 5;
 
-/// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage): its SMTO_*
-/// flags, and how long the sender waits for another thread's answer, in milliseconds.
+/// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage's first call):
+/// its SMTO_* flags, and how long the sender waits for another thread's answer, in milliseconds;
+/// and `resume`, 0 for a fresh send, or the token of the send whose wait the call resumes, as the
+/// kernel answered it with STATUS_PENDING once messages were sent to the waiting thread (which
+/// delivers them first; the flags and the timeout are the first call's then).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SendTimeout {
     pub flags: u32,
     pub timeout: u32,
+    pub resume: u32,
 }
 
-// SAFETY: two integers.
+// SAFETY: three integers.
 unsafe impl Pod for SendTimeout {}
 
 /// The keyboard layout every thread has, as its HKL: US English's (the language 0x0409 in both
@@ -447,7 +451,7 @@ mod tests {
         assert_eq!(offset_of!(Input, extra_info), 16);
         assert_eq!(size_of::<GuiThreadInfo>(), 48);
         assert_eq!(offset_of!(GuiThreadInfo, rc_caret), 32);
-        assert_eq!(size_of::<SendTimeout>(), 8);
+        assert_eq!(size_of::<SendTimeout>(), 12);
     }
 
     /// The messages whose pointer no asynchronous send carries are below WM_USER; a registered

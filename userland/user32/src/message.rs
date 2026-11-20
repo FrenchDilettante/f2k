@@ -14,7 +14,9 @@
 //! as soon as their service returns ([`receive_sent`]).
 //!
 //! SendMessage to a window of the calling thread calls its procedure here, as Windows 2000's
-//! user32 does; to another thread's window the kernel waits for that thread's answer. A message
+//! user32 does; to another thread's window the kernel waits for that thread's answer, the messages
+//! sent to the waiting thread meanwhile delivered here as they come (the kernel hands the wait back
+//! for them, and it resumes), so two threads sending to each other do not deadlock. A message
 //! reaches a procedure of the other form than its sender's translated ([`procedure`]): SendMessageA
 //! and DispatchMessageA hand over narrow messages, SendMessageW and DispatchMessageW wide ones, the
 //! window manager wide ones; another thread's message reaches the procedure as it was sent. The A
@@ -342,9 +344,24 @@ fn send_within(
             });
         return reached.then_some(answer);
     }
-    let (proc, answer) = answered(imports::message_call_timeout(
-        window, message, wparam, lparam, timeout,
-    ))?;
+    // While it waits for another thread's answer, the thread handles the messages sent to it, as
+    // Windows 2000's SendMessage does: the kernel hands the wait back for each batch, and it
+    // resumes once they are delivered.
+    let mut limit = timeout;
+    let (proc, answer) = loop {
+        match answered(imports::message_call_timeout(
+            window, message, wparam, lparam, limit,
+        ))? {
+            imports::Called::Done(proc, answer) => break (proc, answer),
+            imports::Called::Received(token) => {
+                receive_sent();
+                limit = Some(SendTimeout {
+                    resume: token,
+                    ..timeout.unwrap_or_default()
+                });
+            }
+        }
+    };
     Some(if proc == 0 {
         answer
     } else {
@@ -448,7 +465,11 @@ fn send_timeout(
     mut result: Option<Out<'_, u32>>,
     ansi: bool,
 ) -> i32 {
-    let limit = SendTimeout { flags, timeout };
+    let limit = SendTimeout {
+        flags,
+        timeout,
+        resume: 0,
+    };
     let answer = send_within(window, message, wparam, lparam, ansi, Some(limit));
     if let Some(result) = result.as_mut() {
         result.set(answer.unwrap_or(0) as u32);
