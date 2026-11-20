@@ -200,8 +200,10 @@ pub const EVENTS: usize = 256;
 pub const SEMAPHORES: usize = 64;
 /// How many mutexes can exist at once.
 pub const MUTEXES: usize = 64;
-/// How many waitable timers can exist at once.
-pub const TIMERS: usize = 32;
+/// How many waitable timers can exist at once, across every process: a full table refuses a
+/// create (STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when its pool has no room for the
+/// object).
+pub const TIMERS: usize = 256;
 /// How many sections can exist at once.
 pub const SECTIONS: usize = 32;
 /// How many image segments can exist at once: one per image file mapped (see [`ImageSegment`]).
@@ -2269,6 +2271,28 @@ mod tests {
         }
         assert_eq!(directory.create_semaphore(0, 1), None);
         assert_eq!(directory.live_objects(), SEMAPHORES);
+    }
+
+    /// The timer table fills at its capacity — a create is refused, nothing made — and a deleted
+    /// timer's record serves the next create, disarmed and unsignaled.
+    #[test]
+    fn the_timer_table_fills_and_reuses() {
+        let directory = directory();
+        let dispatcher = dispatcher();
+        let timers: Vec<_> = (0..TIMERS)
+            .map(|_| directory.create_timer(true).unwrap())
+            .collect();
+        assert_eq!(directory.create_timer(false), None, "the table is full");
+        assert_eq!(directory.live_objects(), TIMERS, "the refusal made nothing");
+
+        let freed = timers[TIMERS / 2];
+        dispatcher.set_waitable_timer(directory.timer(freed).unwrap(), 1_000_000, 0, 0, false, 0);
+        assert_eq!(directory.dereference(freed), None);
+        let reused = directory.create_timer(false).unwrap();
+        assert_eq!(reused.index, freed.index, "the freed record is reused");
+        assert!(directory.timer(freed).is_none(), "under a new generation");
+        assert!(!dispatcher.waitable_timer_mut(reused.index).armed());
+        assert_eq!(directory.create_timer(true), None, "full again");
     }
 
     /// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
