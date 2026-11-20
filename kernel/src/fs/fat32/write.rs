@@ -114,6 +114,7 @@ fn zero_cluster(volume: &mut Volume, cluster: u32) -> Result<(), NtStatus> {
 }
 
 /// Allocate a free cluster, zeroed, ending its chain — linked after `previous` when there is one.
+/// A link that fails gives the cluster back (best effort), so it is not lost.
 pub fn allocate(volume: &mut Volume, previous: Option<u32>) -> Result<u32, NtStatus> {
     let count = volume.layout().cluster_count;
     let start = volume.next_free().clamp(2, count + 1);
@@ -123,7 +124,10 @@ pub fn allocate(volume: &mut Volume, previous: Option<u32>) -> Result<u32, NtSta
             zero_cluster(volume, cluster)?;
             volume.set_fat_entry(cluster, END_OF_CHAIN)?;
             if let Some(previous) = previous {
-                volume.set_fat_entry(previous, cluster)?;
+                if let Err(status) = volume.set_fat_entry(previous, cluster) {
+                    let _ = volume.set_fat_entry(cluster, 0);
+                    return Err(status);
+                }
             }
             volume.set_next_free(cluster + 1);
             return Ok(cluster);
@@ -150,9 +154,28 @@ pub fn free_chain(volume: &mut Volume, first: u32) -> Result<(), NtStatus> {
     Err(STATUS_FILE_CORRUPT_ERROR)
 }
 
+/// The clusters a growth linked onto a chain: the first of them, and the cluster they follow
+/// (none: they are the whole chain).
+#[derive(Clone, Copy)]
+struct Growth {
+    tail: Option<u32>,
+    added: u32,
+}
+
+impl Growth {
+    /// Give the clusters back: the chain ends where it did before the growth.
+    fn give_back(self, volume: &mut Volume) -> Result<(), NtStatus> {
+        if let Some(tail) = self.tail {
+            volume.set_fat_entry(tail, END_OF_CHAIN)?;
+        }
+        free_chain(volume, self.added)
+    }
+}
+
 /// Grow `file`'s chain to cover `bytes`: all of it or, when the volume runs out (or a device write
-/// fails), none — the clusters taken so far are given back and the chain ends where it did.
-fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<(), NtStatus> {
+/// fails), none — the clusters taken so far are given back and the chain ends where it did. The
+/// clusters added, when it needed any.
+fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<Option<Growth>, NtStatus> {
     let size = cluster_bytes(volume);
     let needed = bytes.div_ceil(size);
     let (tail, mut have) = if file.first_cluster == 0 {
@@ -162,18 +185,16 @@ fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<(), NtSta
         (Some(tail), have)
     };
     if have >= needed {
-        return Ok(());
+        return Ok(None);
     }
     let added = allocate(volume, tail)?;
+    let growth = Growth { tail, added };
     let mut end = added;
     while have + 1 < needed {
         match allocate(volume, Some(end)) {
             Ok(cluster) => end = cluster,
             Err(status) => {
-                if let Some(tail) = tail {
-                    volume.set_fat_entry(tail, END_OF_CHAIN)?;
-                }
-                free_chain(volume, added)?;
+                growth.give_back(volume)?;
                 return Err(status);
             }
         }
@@ -182,7 +203,7 @@ fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<(), NtSta
     if tail.is_none() {
         file.first_cluster = added;
     }
-    Ok(())
+    Ok(Some(growth))
 }
 
 /// Write `data` at byte `offset` of `file`, whose chain covers the span: whole sectors written
@@ -225,21 +246,34 @@ fn zero_span(volume: &mut Volume, file: &File, from: u32, to: u32) -> Result<(),
 }
 
 /// Grow `file` to `size`: its chain extended (fresh clusters are zeros), and the bytes past the old
-/// end in its old last cluster zeroed.
-fn grow(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), NtStatus> {
+/// end in its old last cluster zeroed. All of it or, on a failure, none: the clusters added are
+/// given back. The clusters added, for a caller whose later step fails to give back.
+fn grow(volume: &mut Volume, file: &mut File, size: u32) -> Result<Option<Growth>, NtStatus> {
+    // What the old chain covers, in u64: a size near 4 GiB rounds up past u32.
     let had = if file.first_cluster == 0 {
         0
     } else {
-        file.size.div_ceil(cluster_bytes(volume)) * cluster_bytes(volume)
+        let cluster = u64::from(cluster_bytes(volume));
+        u64::from(file.size).div_ceil(cluster) * cluster
     };
-    reserve(volume, file, size)?;
-    zero_span(volume, file, file.size, size.min(had))?;
+    let before = file.first_cluster;
+    let growth = reserve(volume, file, size)?;
+    let zero_to = u64::from(size).min(had) as u32;
+    if let Err(status) = zero_span(volume, file, file.size, zero_to) {
+        if let Some(growth) = growth {
+            let _ = growth.give_back(volume);
+        }
+        file.first_cluster = before;
+        return Err(status);
+    }
     file.size = size;
-    Ok(())
+    Ok(growth)
 }
 
 /// Write `data` at byte `offset` of `file` (a file), growing it as the write needs (a gap before
-/// the offset reads as zeros), and record its entry.
+/// the offset reads as zeros), and record its entry. A failure gives back the clusters the write
+/// added and leaves `file` as it was: the caller does not keep it, so clusters it alone named
+/// would be lost.
 pub fn write_at(
     volume: &mut Volume,
     file: &mut File,
@@ -252,22 +286,43 @@ pub fn write_at(
     let end = offset
         .checked_add(data.len() as u32)
         .ok_or(STATUS_DISK_FULL)?;
-    if end > file.size {
-        grow(volume, file, end)?;
+    let before = *file;
+    let growth = if end > file.size {
+        grow(volume, file, end)?
+    } else {
+        None
+    };
+    let written = write_span(volume, file, offset, data).and_then(|()| update_entry(volume, file));
+    if let Err(status) = written {
+        if let Some(growth) = growth {
+            let _ = growth.give_back(volume);
+        }
+        *file = before;
+        return Err(status);
     }
-    write_span(volume, file, offset, data)?;
-    update_entry(volume, file)
+    Ok(())
 }
 
 /// Set `file`'s size: a shrink frees the clusters past the new end, a growth adds zeros. Records
 /// its entry — a shrink before it trims the chain, so a crash in between leaves clusters past the
-/// size (lost to chkdsk), never a size past the chain's end.
+/// size (lost to chkdsk), never a size past the chain's end. A growth whose entry cannot be
+/// recorded gives its clusters back and leaves `file` as it was.
 pub fn set_size(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), NtStatus> {
     if size >= file.size {
-        if size > file.size {
-            grow(volume, file, size)?;
+        let before = *file;
+        let growth = if size > file.size {
+            grow(volume, file, size)?
+        } else {
+            None
+        };
+        if let Err(status) = update_entry(volume, file) {
+            if let Some(growth) = growth {
+                let _ = growth.give_back(volume);
+            }
+            *file = before;
+            return Err(status);
         }
-        return update_entry(volume, file);
+        return Ok(());
     }
     let needed = size.div_ceil(cluster_bytes(volume));
     let first = file.first_cluster;
@@ -921,6 +976,72 @@ mod tests {
         write_at(&mut v, &mut file, 1024, &[2; 3 * 512]).unwrap();
         assert_eq!(free_clusters(&mut v), 0);
         assert_eq!(contents(&mut v, b"NEW.BIN").len(), 1024 + 3 * 512);
+    }
+
+    /// A write or a growth with one of its device writes failing — each in turn — fails with the
+    /// clusters it took given back and the file as it was (its caller keeps the old copy, so
+    /// clusters only the new one named were lost): a new file's first write, an existing file's
+    /// growth, and a size set past the end.
+    #[test]
+    fn a_failed_growth_gives_its_clusters_back() {
+        for case in 0..3 {
+            for n in 0.. {
+                let crashing = Crashing::over(Crafted::full(12).writable());
+                let mut v = Volume::mount(crashing).unwrap();
+                let mut file = new_file(&mut v, b"GROW.BIN");
+                if case != 0 {
+                    write_at(&mut v, &mut file, 0, &[1; 700]).unwrap();
+                }
+                let (before, free) = (file, free_clusters(&mut v));
+                crashing.fail_write(n);
+                let grown = match case {
+                    0 => write_at(&mut v, &mut file, 0, &file_bytes(3 * 512)),
+                    1 => write_at(&mut v, &mut file, 1500, &file_bytes(1000)),
+                    _ => set_size(&mut v, &mut file, 3000),
+                };
+                if grown.is_err() {
+                    assert_eq!(file, before, "case {case}, write {n}");
+                    assert_eq!(free_clusters(&mut v), free, "case {case}, write {n}");
+                    let entry = lookup(&mut v, b"GROW.BIN").unwrap();
+                    assert_eq!(
+                        (entry.first_cluster, entry.size),
+                        (before.first_cluster, before.size)
+                    );
+                }
+                if !crashing.failed() {
+                    assert!(grown.is_ok());
+                    break;
+                }
+            }
+        }
+    }
+
+    /// A file whose size rounds up past 4 GiB (its last cluster's end) grows without overflowing:
+    /// the volume has not the room, so STATUS_DISK_FULL, nothing taken.
+    #[test]
+    fn a_growth_near_4_gib_does_not_overflow() {
+        let mut crafted = Crafted::full(4);
+        crafted
+            .directory(
+                2,
+                &[super::super::fixtures::record(
+                    b"HUGE    BIN",
+                    0x20,
+                    3,
+                    0xFFFF_FE01,
+                )],
+            )
+            .chain(&[3]);
+        let mut v = Volume::mount(crafted.writable()).unwrap();
+        let mut file = lookup(&mut v, b"HUGE.BIN").unwrap();
+        let free = free_clusters(&mut v);
+        assert_eq!(set_size(&mut v, &mut file, u32::MAX), Err(STATUS_DISK_FULL));
+        assert_eq!(
+            write_at(&mut v, &mut file, 0xFFFF_FFF0, &[1; 15]),
+            Err(STATUS_DISK_FULL)
+        );
+        assert_eq!(free_clusters(&mut v), free);
+        assert_eq!(file.size, 0xFFFF_FE01);
     }
 
     /// A shrink records the smaller size before it frees the clusters past it: a crash after any

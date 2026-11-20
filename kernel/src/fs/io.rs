@@ -145,18 +145,24 @@ mod target {
     }
 
     /// Open the file or directory `file`: its record counted for the open (the share check), a file
-    /// object made and a handle to it inserted with the rights granted. STATUS_SHARING_VIOLATION
-    /// when an open in place excludes it, STATUS_DELETE_PENDING while its delete is pending,
+    /// object made and a handle to it inserted with the rights granted. The share check also
+    /// counts the rights `implied`, which the open does not ask but its disposition uses (an
+    /// overwrite's FILE_WRITE_DATA, a supersede's DELETE; see
+    /// [`crate::fs::file::FileRecords::open_implying`]). STATUS_SHARING_VIOLATION when an open in
+    /// place excludes it, STATUS_DELETE_PENDING while its delete is pending,
     /// STATUS_INSUFFICIENT_RESOURCES when the handle table is full, STATUS_TOO_MANY_OPENED_FILES
     /// when the records or the objects are.
-    pub fn open(file: File, open: &Open) -> Result<u32, NtStatus> {
+    pub fn open(file: File, open: &Open, implied: u32) -> Result<u32, NtStatus> {
+        use crate::fs::file::rights::share_access;
         let process = crate::user::args::calling_process();
         if process.handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
-        let access = crate::fs::file::rights::share_access(open.granted);
+        let access = share_access(open.granted);
+        let implied = share_access(implied);
         let record =
-            with_records(|records| records.open(file, access, open.share)).map_err(open_status)?;
+            with_records(|records| records.open_implying(file, access, implied, open.share))
+                .map_err(open_status)?;
         insert(process, Context::Disk(record), access, open, || {
             with_records(|records| {
                 let _ = records.cleanup(record, access, open.share, false);

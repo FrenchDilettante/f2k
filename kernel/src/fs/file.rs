@@ -784,17 +784,33 @@ impl FileRecords {
             .map_or(file, |record| self.get(record).file)
     }
 
+    /// [`FileRecords::open_implying`] with nothing implied (the tests' shorthand).
+    #[cfg(test)]
+    pub fn open(&mut self, file: File, access: u8, share: u8) -> Result<FileRecordId, OpenError> {
+        self.open_implying(file, access, 0, share)
+    }
+
     /// Open the entry `file` names for `access`, allowing `share`: its record (made when the file
     /// is not open yet), counted for one more open. Refused while a delete is pending, when an open
-    /// in place excludes it, or when every record is taken.
-    pub fn open(&mut self, file: File, access: u8, share: u8) -> Result<FileRecordId, OpenError> {
+    /// in place excludes it, or when every record is taken. The share check also counts `implied`,
+    /// the access an open's disposition uses beyond what it asks — an overwrite writes and a
+    /// supersede deletes (FastFat adds FILE_WRITE_DATA or DELETE to the access it checks), so
+    /// neither cuts a file another open excludes writers or deleters from — but the open is
+    /// counted for `access` alone.
+    pub fn open_implying(
+        &mut self,
+        file: File,
+        access: u8,
+        implied: u8,
+        share: u8,
+    ) -> Result<FileRecordId, OpenError> {
         let index = match self.find(&file) {
             Some(FileRecordId(index)) => {
                 let record = self.records[index as usize].as_ref().expect("found");
                 if record.delete_pending {
                     return Err(OpenError::DeletePending);
                 }
-                if !record.share.allows(access, share) {
+                if !record.share.allows(access | implied, share) {
                     return Err(OpenError::Sharing);
                 }
                 index
@@ -1241,6 +1257,32 @@ mod tests {
             records.open(spelled, ACCESS_WRITE | ACCESS_DELETE, 0),
             Err(OpenError::Sharing)
         );
+    }
+
+    /// An overwrite or a supersede is share-checked for the write or the delete it implies, not
+    /// only for the access it asks: an open sharing reads alone refuses an overwrite that asks
+    /// reading. The implied access is not counted: a later reader sharing reads alone still opens.
+    #[test]
+    fn an_overwrite_is_checked_for_the_access_it_implies() {
+        let mut records = FileRecords::empty();
+        let reader = records.open(entry(1), ACCESS_READ, ACCESS_READ).unwrap();
+        for implied in [ACCESS_WRITE, ACCESS_DELETE] {
+            assert_eq!(
+                records.open_implying(entry(1), ACCESS_READ, implied, SHARE_ALL),
+                Err(OpenError::Sharing)
+            );
+        }
+        let shares = records.open(entry(2), ACCESS_READ, SHARE_ALL).unwrap();
+        let overwriter = records
+            .open_implying(entry(2), ACCESS_READ, ACCESS_WRITE, SHARE_ALL)
+            .unwrap();
+        assert_eq!(overwriter, shares);
+        assert_eq!(
+            records.open(entry(2), ACCESS_READ, ACCESS_READ),
+            Ok(shares),
+            "the implied write is not counted"
+        );
+        assert_eq!(records.open(entry(1), ACCESS_READ, ACCESS_READ), Ok(reader));
     }
 
     /// An open asking no data access (attributes only) neither checks nor counts, whichever

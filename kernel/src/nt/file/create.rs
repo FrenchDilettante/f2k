@@ -194,6 +194,19 @@ fn overwrite(record: FileRecordId, attributes: u32) -> Result<(), NtStatus> {
     })
 }
 
+/// Take back the file or directory a create made when its open then failed (a full handle,
+/// record or object table), as FastFat unwinds the entry it made when its create cannot complete:
+/// the entry and its clusters gone, so a retry does not find the name taken. Best effort, and not
+/// when another open has found the new entry meanwhile.
+fn unmake(file: File) {
+    let _ = io::with_volume(|volume| {
+        if crate::fs::file::with_records(|records| records.find(&file).is_some()) {
+            return Ok(());
+        }
+        write::delete(volume, &file)
+    });
+}
+
 /// The null device opened, whatever the disposition asks: there is one, always there, and every
 /// open of it shares it. Its handle has the rights asked for; the I/O status says FILE_OPENED.
 fn open_null(
@@ -353,7 +366,21 @@ fn create(
         synchronous: options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0,
         delete_on_close: options & FILE_DELETE_ON_CLOSE != 0,
     };
-    let handle = io::open(file, &open)?;
+    // An overwrite cuts the file, a supersede replaces it: each is share-checked for that too.
+    let implied = match (overwrites, disposition) {
+        (false, _) => 0,
+        (true, FILE_SUPERSEDE) => rights::DELETE,
+        (true, _) => rights::FILE_WRITE_DATA,
+    };
+    let handle = match io::open(file, &open, implied) {
+        Ok(handle) => handle,
+        Err(failure) => {
+            if information == FILE_CREATED {
+                unmake(file);
+            }
+            return Err(failure);
+        }
+    };
     if overwrites {
         let record = io::object_of(handle)
             .and_then(|object| object.disk())
