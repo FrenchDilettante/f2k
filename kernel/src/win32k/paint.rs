@@ -39,7 +39,7 @@
 use rtl::gdi::Rect;
 #[cfg(doc)]
 use rtl::user::HWND_LOCK_UPDATE_WINDOW;
-use rtl::user::{UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT};
+use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT};
 
 use super::queue::{self, Filter};
 use super::raster::intersect;
@@ -313,7 +313,7 @@ fn add(windows: &mut Windows, window: WindowId, rect: Rect, erase: bool) {
     let record = &mut updates.records[at];
     record.rect = union(record.rect, rect);
     record.erase |= erase;
-    windows.queues.wake_thread(thread);
+    windows.queues.wake_thread(thread, QS_PAINT);
 }
 
 /// ValidateRect over a window: `rect` (client coordinates; the whole region for none) taken out

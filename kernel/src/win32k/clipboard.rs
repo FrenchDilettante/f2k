@@ -832,14 +832,19 @@ mod services {
     }
 
     /// NtUserRegisterWindowMessage(Name, Atom): the atom of the NUL-terminated name at `name`,
-    /// registered (RegisterClipboardFormat's format); STATUS_INVALID_PARAMETER for an empty name
-    /// or one longer than an atom's, STATUS_NO_MEMORY when the atom table is full.
+    /// registered (RegisterClipboardFormat's format, RegisterWindowMessage's message);
+    /// STATUS_INVALID_PARAMETER for no name or one longer than an atom's,
+    /// STATUS_OBJECT_NAME_INVALID for an empty one (ERROR_INVALID_NAME, as the guimsg capture
+    /// answers RegisterWindowMessageW(L"")), STATUS_NO_MEMORY when the atom table is full.
     pub fn register_window_message(
         call: &mut NtCall,
         name: UserAddr,
         atom: UserPtr<u32>,
     ) -> NtResult {
         gui_thread(call)?;
+        if name.raw() == 0 {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
         let mut units = [0u16; class::MAX_ATOM_NAME + 1];
         let mut len = 0;
         loop {
@@ -854,7 +859,7 @@ mod services {
             len += 1;
         }
         if len == 0 {
-            return Err(STATUS_INVALID_PARAMETER);
+            return Err(STATUS_OBJECT_NAME_INVALID);
         }
         let answer = lock(call.passive()).classes.register_name(&units[..len]);
         if answer == 0 {

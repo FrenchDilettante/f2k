@@ -53,13 +53,18 @@ pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
 pub const WM_NCACTIVATE: u32 = 0x0086;
+pub const WM_KEYFIRST: u32 = 0x0100;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
 pub const WM_SYSKEYDOWN: u32 = 0x0104;
 pub const WM_SYSKEYUP: u32 = 0x0105;
 pub const WM_SYSCHAR: u32 = 0x0106;
+pub const WM_KEYLAST: u32 = 0x0108;
 pub const WM_TIMER: u32 = 0x0113;
+pub const WM_SYSTIMER: u32 = 0x0118;
+pub const WM_MOUSEFIRST: u32 = 0x0200;
+pub const WM_MOUSELAST: u32 = 0x020D;
 pub const WM_USER: u32 = 0x0400;
 
 /// WM_QUERYENDSESSION's and WM_ENDSESSION's lParam for a logoff (winuser.h's ENDSESSION_LOGOFF): 0
@@ -96,6 +101,9 @@ pub const QS_HOTKEY: u32 = 0x0080;
 pub const QS_ALLPOSTMESSAGE: u32 = 0x0100;
 pub const QS_MOUSE: u32 = QS_MOUSEMOVE | QS_MOUSEBUTTON;
 pub const QS_INPUT: u32 = QS_MOUSE | QS_KEY;
+/// Every kind of message a thread waits for: what WaitMessage wakes on.
+pub const QS_ALLINPUT: u32 =
+    QS_INPUT | QS_POSTMESSAGE | QS_TIMER | QS_PAINT | QS_HOTKEY | QS_SENDMESSAGE;
 
 /// PeekMessage's kinds of message to look at (PM_QS_*): the queue-status bits in the high word.
 /// None of them set looks at every kind.
@@ -103,6 +111,44 @@ pub const PM_QS_INPUT: u32 = QS_INPUT << 16;
 pub const PM_QS_POSTMESSAGE: u32 = (QS_POSTMESSAGE | QS_HOTKEY | QS_TIMER) << 16;
 pub const PM_QS_PAINT: u32 = QS_PAINT << 16;
 pub const PM_QS_SENDMESSAGE: u32 = QS_SENDMESSAGE << 16;
+
+// --- SendMessageTimeout's flags (winuser.h's SMTO_*) ---------------------------------------------
+
+/// The sender waits as SendMessage does (it would also handle what is sent to it meanwhile).
+pub const SMTO_NORMAL: u32 = 0x0000;
+/// The sender does not handle what is sent to it while it waits.
+pub const SMTO_BLOCK: u32 = 0x0001;
+/// The sender gives up at once when the receiving thread is hung.
+pub const SMTO_ABORTIFHUNG: u32 = 0x0002;
+/// A hung receiver does not end the wait before the timeout.
+pub const SMTO_NOTIMEOUTIFNOTHUNG: u32 = 0x0008;
+
+/// Whether `message` carries a pointer the window manager does not carry to another thread
+/// (Windows 2000's sync-only messages, those below WM_USER whose wParam or lParam points at a
+/// structure or a text): SendNotifyMessage refuses one to another thread's window with
+/// ERROR_MESSAGE_SYNC_ONLY.
+pub fn sync_only(message: u32) -> bool {
+    matches!(
+        message,
+        WM_CREATE
+            | WM_SETTEXT
+            | WM_GETTEXT
+            | 0x0024 // WM_GETMINMAXINFO
+            | 0x002B // WM_DRAWITEM
+            | 0x002C // WM_MEASUREITEM
+            | 0x002D // WM_DELETEITEM
+            | 0x0039 // WM_COMPAREITEM
+            | 0x0046 // WM_WINDOWPOSCHANGING
+            | WM_WINDOWPOSCHANGED
+            | 0x004A // WM_COPYDATA
+            | 0x004E // WM_NOTIFY
+            | 0x0053 // WM_HELP
+            | WM_STYLECHANGING
+            | WM_STYLECHANGED
+            | WM_NCCREATE
+            | WM_NCCALCSIZE
+    )
+}
 
 // --- The structures (winuser.h) ------------------------------------------------------------------
 
@@ -252,6 +298,20 @@ pub const ONE_PARAM_REPLY_MESSAGE: u32 = 1;
 pub const ONE_PARAM_END_SENT_MESSAGE: u32 = 2;
 pub const ONE_PARAM_ENUM_CLIPBOARD_FORMATS: u32 = 3;
 pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
+/// IsHungAppWindow (the parameter is the window; the result whether its thread is hung).
+pub const ONE_PARAM_IS_HUNG_APP_WINDOW: u32 = 5;
+
+/// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage): its SMTO_*
+/// flags, and how long the sender waits for another thread's answer, in milliseconds.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SendTimeout {
+    pub flags: u32,
+    pub timeout: u32,
+}
+
+// SAFETY: two integers.
+unsafe impl Pod for SendTimeout {}
 
 /// The keyboard layout every thread has, as its HKL: US English's (the language 0x0409 in both
 /// halves), the one layout F2K has. GetKeyboardLayout answers it, and the clipboard's CF_LOCALE
@@ -340,9 +400,12 @@ pub const HWND_LOCK_ACTIVATE_FOCUS: u32 = 2;
 pub const HWND_PARAM_LOCK_ENABLE_WINDOW: u32 = 0;
 
 /// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
-/// window (GetActiveWindow).
+/// window (GetActiveWindow); the time and the cursor position (x in the low word, y in the high
+/// word) of the last message its reads retrieved (GetMessageTime, GetMessagePos).
 pub const THREAD_STATE_FOCUS_WINDOW: u32 = 0;
 pub const THREAD_STATE_ACTIVE_WINDOW: u32 = 1;
+pub const THREAD_STATE_MESSAGE_TIME: u32 = 2;
+pub const THREAD_STATE_MESSAGE_POS: u32 = 3;
 
 /// NtUserGetUpdateRect's answer bits: the update region is not empty; the caller is to send the
 /// window WM_ERASEBKGND (it asked for the erase, and one was pending).
@@ -384,6 +447,17 @@ mod tests {
         assert_eq!(offset_of!(Input, extra_info), 16);
         assert_eq!(size_of::<GuiThreadInfo>(), 48);
         assert_eq!(offset_of!(GuiThreadInfo, rc_caret), 32);
+        assert_eq!(size_of::<SendTimeout>(), 8);
+    }
+
+    /// The messages whose pointer no asynchronous send carries are below WM_USER; a registered
+    /// message, or one of the program's own, is never one.
+    #[test]
+    fn the_sync_only_messages_carry_pointers() {
+        assert!(sync_only(WM_SETTEXT) && sync_only(WM_NCCREATE) && sync_only(WM_WINDOWPOSCHANGED));
+        assert!(!sync_only(WM_NULL) && !sync_only(WM_CLOSE) && !sync_only(WM_TIMER));
+        assert!(!sync_only(WM_USER) && !sync_only(WM_USER + 30) && !sync_only(0xC000));
+        assert_eq!(QS_ALLINPUT, 0x00FF);
     }
 
     /// PeekMessage's kinds are the status bits in the high word.

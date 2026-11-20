@@ -590,12 +590,14 @@ mod services {
         HWND_PARAM_LOCK_ENABLE_WINDOW,
         THREAD_STATE_ACTIVE_WINDOW,
         THREAD_STATE_FOCUS_WINDOW,
+        THREAD_STATE_MESSAGE_POS,
+        THREAD_STATE_MESSAGE_TIME,
     };
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserPtr};
     use crate::status::*;
-    use crate::win32k::queue::{with_manager, QueuePump};
+    use crate::win32k::queue::{self, with_manager, QueuePump};
     use crate::win32k::window::WindowManager;
     use crate::win32k::winsta::gui_thread;
 
@@ -657,13 +659,17 @@ mod services {
     }
 
     /// NtUserGetThreadState(Routine, Result): the calling thread's focus window or active window
-    /// (0 for none) into `result`; STATUS_INVALID_PARAMETER for another routine.
+    /// (0 for none), or the time or the position of the last message its reads retrieved
+    /// (`crate::win32k::queue::message_time`, `message_pos`), into `result`;
+    /// STATUS_INVALID_PARAMETER for another routine.
     pub fn get_thread_state(call: &mut NtCall, routine: u32, result: UserPtr<u32>) -> NtResult {
         let caller = gui_thread(call)?.thread;
         let answer = with_manager(call.passive(), |m| {
             let window = match routine {
                 THREAD_STATE_FOCUS_WINDOW => focus_window(&m.windows, caller),
                 THREAD_STATE_ACTIVE_WINDOW => active_window(&m.windows, caller),
+                THREAD_STATE_MESSAGE_TIME => return Ok(queue::message_time(&m.windows, caller)),
+                THREAD_STATE_MESSAGE_POS => return Ok(queue::message_pos(&m.windows, caller)),
                 _ => return Err(STATUS_INVALID_PARAMETER),
             };
             Ok(handle(&m.windows, window))

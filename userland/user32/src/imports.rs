@@ -27,7 +27,7 @@ use rtl::icon::CursorData;
 use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
 use rtl::status::NtStatus;
-use rtl::user::{GuiThreadInfo, Msg, Point, Receipt};
+use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
 
 use crate::class::WndClassExW;
 use crate::Out;
@@ -38,7 +38,7 @@ mod raw {
     use rtl::display::DevModeW;
     use rtl::gdi::{LogFontW, Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
-    use rtl::user::{GuiThreadInfo, Msg, Point, Receipt};
+    use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
 
     use crate::class::WndClassExW;
 
@@ -459,7 +459,18 @@ mod raw {
             lparam: i32,
             proc: *mut u32,
             result: *mut i32,
+            timeout: *const SendTimeout,
         ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSendNotifyMessage"]
+        pub fn NtUserSendNotifyMessage(
+            window: usize,
+            message: u32,
+            wparam: u32,
+            lparam: i32,
+            proc: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserWaitMessage"]
+        pub fn NtUserWaitMessage() -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserDispatchMessage"]
         pub fn NtUserDispatchMessage(msg: *const Msg, proc: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserCallOneParam"]
@@ -1566,12 +1577,61 @@ pub fn message_call(
     wparam: u32,
     lparam: i32,
 ) -> Result<(u32, i32), NtStatus> {
+    message_call_timeout(window, message, wparam, lparam, None)
+}
+
+/// NtUserMessageCall with SendMessageTimeout's `timeout`: [`message_call`]'s answer, or
+/// STATUS_TIMEOUT as a failure when another thread's answer did not come in time (or its thread
+/// is hung, with SMTO_ABORTIFHUNG).
+pub fn message_call_timeout(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    timeout: Option<SendTimeout>,
+) -> Result<(u32, i32), NtStatus> {
     let (mut proc, mut result) = (0u32, 0i32);
-    // SAFETY: the kernel writes the two locals.
-    checked(unsafe {
-        raw::NtUserMessageCall(window, message, wparam, lparam, &mut proc, &mut result)
-    })?;
+    let limit = timeout
+        .as_ref()
+        .map_or(core::ptr::null(), |t| t as *const SendTimeout);
+    // SAFETY: the kernel writes the two locals and reads the local timeout, when there is one.
+    let status = unsafe {
+        raw::NtUserMessageCall(
+            window,
+            message,
+            wparam,
+            lparam,
+            &mut proc,
+            &mut result,
+            limit,
+        )
+    };
+    if status == rtl::status::STATUS_TIMEOUT {
+        return Err(NtStatus(status));
+    }
+    checked(status)?;
     Ok((proc, result))
+}
+
+/// NtUserSendNotifyMessage: SendNotifyMessage's kernel side: the window procedure to call for a
+/// window of the calling thread's (nonzero), or 0 (the message queued for another thread's
+/// window, or answered).
+pub fn send_notify_message(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> Result<u32, NtStatus> {
+    let mut proc = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserSendNotifyMessage(window, message, wparam, lparam, &mut proc) })?;
+    Ok(proc)
+}
+
+/// NtUserWaitMessage: the calling thread waits until something new comes to its queue.
+pub fn wait_message() -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserWaitMessage() })
 }
 
 /// NtUserDispatchMessage: the procedure DispatchMessage calls with `msg` (0 for none).

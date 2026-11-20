@@ -1663,8 +1663,25 @@ internal = true
 [[export]]
 name = "NtUserMessageCall"
 group = "message"
-args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "ptr<u32> Proc", "ptr<i32> Result"]
+args = [
+    "handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "ptr<u32> Proc", "ptr<i32> Result",
+    "ptr Timeout",
+]
 impl = { syscall = "crate::win32k::queue::message_call" }
+internal = true
+
+[[export]]
+name = "NtUserSendNotifyMessage"
+group = "message"
+args = ["handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "ptr<u32> Proc"]
+impl = { syscall = "crate::win32k::queue::send_notify_message" }
+internal = true
+
+[[export]]
+name = "NtUserWaitMessage"
+group = "message"
+args = []
+impl = { syscall = "crate::win32k::queue::wait_message" }
 internal = true
 
 [[export]]
@@ -1741,25 +1758,28 @@ internal = true
 name = "GetMessagePos"
 group = "message"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMessagePos" }
 ordinal = 304
 fails = "0"
+note = "the cursor position of the last message GetMessage or PeekMessage retrieved (PM_NOREMOVE too), x in the low word"
 
 [[export]]
 name = "GetMessageTime"
 group = "message"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMessageTime" }
 ordinal = 305
 fails = "0"
+note = "the time of the last message GetMessage or PeekMessage retrieved (PM_NOREMOVE too), 0 before the first; a sent message leaves it"
 
 [[export]]
 name = "RegisterWindowMessageA"
 group = "message"
-args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+args = ["strA? lpString"]
+impl = { native = "RegisterWindowMessageA" }
 ordinal = 517
 fails = "0"
+note = "RegisterWindowMessageW's, the name converted from the ANSI code page"
 
 [[export]]
 name = "SendMessageTimeoutA"
@@ -1768,25 +1788,28 @@ args = [
     "handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 fuFlags", "u32 uTimeout",
     "ptr<u32> lpdwResult",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendMessageTimeoutA" }
 ordinal = 540
 fails = "0"
+note = "SendMessageTimeoutW's, for a narrow message"
 
 [[export]]
 name = "SendNotifyMessageA"
 group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendNotifyMessageA" }
 ordinal = 543
 fails = "FALSE"
+note = "SendNotifyMessageW's, for a narrow message"
 
 [[export]]
 name = "RegisterWindowMessageW"
 group = "message"
-args = ["ptr lpString"]
-impl = { stub = "not yet implemented" }
+args = ["strW? lpString"]
+impl = { native = "RegisterWindowMessageW" }
 ordinal = 518
 fails = "0"
+note = "0xC000-0xFFFF, one value a name in any case, RegisterClipboardFormat's; ERROR_INVALID_NAME for an empty name, ERROR_INVALID_PARAMETER for none"
 
 [[export]]
 name = "SendMessageTimeoutW"
@@ -1795,25 +1818,37 @@ args = [
     "handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 fuFlags", "u32 uTimeout",
     "ptr<u32> lpdwResult",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendMessageTimeoutW" }
 ordinal = 541
 fails = "0"
+note = "the thread's own window called at once, whatever the timeout; another thread's waited for until the timeout, a message not read by then taken back (ERROR_TIMEOUT); SMTO_ABORTIFHUNG gives up at once on a hung thread; the sender handles nothing sent to it while it waits"
 
 [[export]]
 name = "SendNotifyMessageW"
 group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendNotifyMessageW" }
 ordinal = 544
 fails = "FALSE"
+note = "the thread's own window called before the return; another thread's queued as a sent message, its answer to nobody; a pointer message to another thread refused (ERROR_MESSAGE_SYNC_ONLY)"
 
 [[export]]
 name = "WaitMessage"
 group = "message"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "WaitMessage" }
 ordinal = 684
 fails = "FALSE"
+note = "until something comes to the queue that no read has looked at since (a message left by PeekMessage does not count)"
+
+[[export]]
+name = "IsHungAppWindow"
+group = "message"
+args = ["handle hwnd"]
+impl = { native = "IsHungAppWindow" }
+ordinal = 400
+fails = "FALSE"
+note = "the window's thread has not read its queue for 5 s and its last read found something; never the caller's own; 1400 for a handle naming no window"
 
 [[export]]
 name = "GetUpdateRgn"
@@ -4369,10 +4404,6 @@ ordinal = 393
 [[export]]
 name = "IsDialogMessage"
 ordinal = 396
-
-[[export]]
-name = "IsHungAppWindow"
-ordinal = 400
 
 [[export]]
 name = "KillSystemTimer"

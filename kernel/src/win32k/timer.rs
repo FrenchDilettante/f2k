@@ -119,14 +119,17 @@ impl Timers {
     }
 
     /// Mark every timer of `thread` that came due by `now` ready, its due moved an interval on
-    /// from `now`.
-    pub fn expire(&mut self, thread: ThreadId, now: u64) {
+    /// from `now`: whether one came due.
+    pub fn expire(&mut self, thread: ThreadId, now: u64) -> bool {
+        let mut came = false;
         for timer in self.timers.iter_mut() {
             if timer.live && timer.thread == thread && timer.due <= now {
                 timer.ready = true;
                 timer.due = now + timer.interval;
+                came = true;
             }
         }
+        came
     }
 
     /// The first ready timer of `thread` the filter takes a WM_TIMER of: its window, its id and its
@@ -224,7 +227,7 @@ pub fn set(
         func,
         ready: false,
     };
-    windows.queues.wake_thread(thread);
+    windows.queues.wake_thread(thread, 0);
     Ok(answer)
 }
 

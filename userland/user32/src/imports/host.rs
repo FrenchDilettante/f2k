@@ -548,6 +548,9 @@ pub struct Wm {
     pub focus: u32,
     pub active: u32,
     pub foreground: u32,
+    /// The time and the position (x low, y high) of the last message a read retrieved.
+    pub message_time: u32,
+    pub message_pos: u32,
 }
 
 std::thread_local! {
@@ -1421,6 +1424,11 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
                 ..Msg::default()
             };
         }
+        if answer.kind != RECEIVED_NONE {
+            wm.message_time = answer.msg.time;
+            wm.message_pos =
+                (answer.msg.pt.x as u16 as u32) | ((answer.msg.pt.y as u16 as u32) << 16);
+        }
         Ok(())
     })
     .map(|()| {
@@ -1462,6 +1470,7 @@ pub unsafe extern "system" fn NtUserMessageCall(
     _lparam: i32,
     proc: *mut u32,
     result: *mut i32,
+    _timeout: *const SendTimeout,
 ) -> u32 {
     let found = wm(|wm| wm.window(window).map(|w| w.proc));
     match found {
@@ -1475,6 +1484,29 @@ pub unsafe extern "system" fn NtUserMessageCall(
         }
         Err(status) => status,
     }
+}
+
+/// The stand-ins' windows are all the calling thread's: SendNotifyMessage calls their procedure.
+pub unsafe extern "system" fn NtUserSendNotifyMessage(
+    window: usize,
+    _message: u32,
+    _wparam: u32,
+    _lparam: i32,
+    proc: *mut u32,
+) -> u32 {
+    match wm(|wm| wm.window(window).map(|w| w.proc)) {
+        Ok(target) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { proc.write(target) };
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
+/// The stand-ins' queue never waits: something is always new to it.
+pub unsafe extern "system" fn NtUserWaitMessage() -> u32 {
+    STATUS_SUCCESS
 }
 
 pub unsafe extern "system" fn NtUserDispatchMessage(msg: *const Msg, proc: *mut u32) -> u32 {
@@ -1518,6 +1550,8 @@ pub unsafe extern "system" fn NtUserCallOneParam(
             Ok(0)
         }
         ONE_PARAM_REPLY_MESSAGE | ONE_PARAM_IN_SEND_MESSAGE => Ok(0),
+        // The stand-ins' windows are the calling thread's, which is never hung.
+        ONE_PARAM_IS_HUNG_APP_WINDOW => wm.window(param as usize).map(|_| 0),
         ONE_PARAM_END_SENT_MESSAGE => Ok(match wm.receiving.pop() {
             Some(message) => {
                 wm.answers.push((message, param as i32));
@@ -1631,6 +1665,8 @@ pub unsafe extern "system" fn NtUserGetThreadState(routine: u32, result: *mut u3
     let answer = wm(|wm| match routine {
         THREAD_STATE_FOCUS_WINDOW => Ok(wm.focus),
         THREAD_STATE_ACTIVE_WINDOW => Ok(wm.active),
+        THREAD_STATE_MESSAGE_TIME => Ok(wm.message_time),
+        THREAD_STATE_MESSAGE_POS => Ok(wm.message_pos),
         _ => Err(STATUS_INVALID_PARAMETER),
     });
     match answer {

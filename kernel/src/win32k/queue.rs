@@ -39,7 +39,17 @@
 //! ([`send`], [`collect_reply`]); to a window of its own thread, the service names the
 //! procedure and user32 calls it itself, as Windows 2000's user32 does. So do the console server's
 //! WM_QUERYENDSESSION and WM_ENDSESSION at the session's end ([`server_send`]), the server, which
-//! has no queue, waiting on an event of its own ([`wait_for_server`]).
+//! has no queue, waiting on an event of its own ([`wait_for_server`]). SendMessageTimeout's
+//! sender waits no longer than its timeout, a message its receiver has not read by then taken back
+//! ([`abandon_send`]); SendNotifyMessage's waits for nothing, its message answered to nobody
+//! ([`send_notify`]).
+//!
+//! A queue keeps what Windows 2000 keeps of its thread's reads: the kinds of message given it
+//! since a read last looked for them (the change bits WaitMessage wakes on, [`wait_ready`]: a
+//! message a peek saw and left is no longer new), the time and cursor position of the last message
+//! retrieved (GetMessageTime, GetMessagePos), and when the thread last read and whether that read
+//! found nothing — a thread that has not read for [`HUNG_TIMEOUT`] after a read that found
+//! something is hung ([`hung`]: IsHungAppWindow, SendMessageTimeout's SMTO_ABORTIFHUNG).
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -52,15 +62,21 @@
 //! - NtUserPeekMessage(ptr Receipt, handle Window, u32 MsgFilterMin, u32 MsgFilterMax, u32
 //!   RemoveMsg): the same without waiting (RECEIVED_NONE when there is nothing);
 //! - NtUserMessageCall(handle Window, u32 Msg, u32 wParam, i32 lParam, ptr<u32> Proc, ptr<i32>
-//!   Result): SendMessage: the procedure to call for a window of the caller's own thread, or the
-//!   answer;
+//!   Result, ptr Timeout): SendMessage and SendMessageTimeout (rtl::user::SendTimeout; null for
+//!   SendMessage): the procedure to call for a window of the caller's own thread, or the answer,
+//!   STATUS_TIMEOUT for none in time;
+//! - NtUserSendNotifyMessage(handle Window, u32 Msg, u32 wParam, i32 lParam, ptr<u32> Proc):
+//!   SendNotifyMessage: the procedure to call for a window of the caller's own thread, or 0;
+//! - NtUserWaitMessage(): WaitMessage;
 //! - NtUserDispatchMessage(ptr Msg, ptr<u32> Proc): the procedure DispatchMessage calls;
 //! - NtUserCallOneParam(u32 Param, u32 Routine, ptr<u32> Result): PostQuitMessage, ReplyMessage,
-//!   and the end of a sent message's delivery ([`rtl::user`]'s ONE_PARAM_* routines).
+//!   IsHungAppWindow, and the end of a sent message's delivery ([`rtl::user`]'s ONE_PARAM_*
+//!   routines).
 
 use core::mem::offset_of;
 
 use rtl::user::{
+    sync_only,
     CreateStructW,
     Msg,
     Point,
@@ -68,9 +84,11 @@ use rtl::user::{
     ReceiptHead,
     StyleStruct,
     HWND_BROADCAST,
+    QS_ALLINPUT,
     QS_HOTKEY,
     QS_INPUT,
     QS_KEY,
+    QS_MOUSE,
     QS_PAINT,
     QS_POSTMESSAGE,
     QS_SENDMESSAGE,
@@ -80,12 +98,17 @@ use rtl::user::{
     RECEIVED_QUIT,
     RECEIVED_SENT,
     WM_GETTEXT,
+    WM_KEYFIRST,
+    WM_KEYLAST,
+    WM_MOUSEFIRST,
+    WM_MOUSELAST,
     WM_NCCREATE,
     WM_NCDESTROY,
     WM_PAINT,
     WM_QUERYENDSESSION,
     WM_QUIT,
     WM_SETTEXT,
+    WM_SYSTIMER,
     WM_TIMER,
 };
 
@@ -190,6 +213,18 @@ struct Queue {
     awaiting: Option<SentId>,
     /// PostQuitMessage's exit code, until a read takes the WM_QUIT.
     quit: Option<u32>,
+    /// The kinds of message (queue-status bits) given the queue since a read last looked for them:
+    /// Windows 2000's change bits, what WaitMessage wakes on.
+    changed: u32,
+    /// When the thread last read its queue (milliseconds, MSG's clock).
+    last_read: u32,
+    /// The thread's last read found nothing, or it waits: it idles, waiting for input, and is
+    /// never deemed hung.
+    idle: bool,
+    /// The time and the cursor position of the last message a read retrieved (GetMessageTime,
+    /// GetMessagePos).
+    message_time: u32,
+    message_pos: Point,
 }
 
 impl Queue {
@@ -204,6 +239,11 @@ impl Queue {
         receiving: None,
         awaiting: None,
         quit: None,
+        changed: 0,
+        last_read: 0,
+        idle: true,
+        message_time: 0,
+        message_pos: Point { x: 0, y: 0 },
     };
 }
 
@@ -305,6 +345,8 @@ struct Sent {
     /// The console server waits for the answer (the session's end, on its control thread, which
     /// has no queue: see [`server_send`]).
     server: bool,
+    /// SendNotifyMessage's: another thread sent it and waits for no answer.
+    notify: bool,
     window: Option<WindowId>,
     hwnd: Hwnd,
     proc: u32,
@@ -325,6 +367,7 @@ impl Sent {
         receiver: None,
         sender: None,
         server: false,
+        notify: false,
         window: None,
         hwnd: 0,
         proc: 0,
@@ -438,16 +481,23 @@ impl Queues {
         })
     }
 
-    /// Mark the queue of the thread record `thread` as given something: its event is set once the
+    /// Mark the queue of the thread record `thread` as given something, of the kinds `changed`
+    /// (queue-status bits: 0 for a change no read finds, a timer set): its event is set once the
     /// lock is let go.
-    pub fn wake_thread(&mut self, thread: ThreadId) {
-        if self.queue_of(thread).is_some() {
-            self.wakes[thread.0 as usize / 32] |= 1 << (thread.0 % 32);
+    pub fn wake_thread(&mut self, thread: ThreadId, changed: u32) {
+        if let Some(id) = self.queue_of(thread) {
+            self.change(id, changed);
         }
     }
 
     fn wake(&mut self, id: QueueId) {
         self.wakes[id.index as usize / 32] |= 1 << (id.index % 32);
+    }
+
+    /// The queue was given something of the kinds `changed`: marked for WaitMessage, and woken.
+    fn change(&mut self, id: QueueId, changed: u32) {
+        self.queues[id.index as usize].changed |= changed;
+        self.wake(id);
     }
 
     /// The queues to wake, as a bit a thread record, the set emptied.
@@ -494,7 +544,11 @@ impl Queues {
             None => self.lane(id.index, lane).head = Some(entry),
         }
         self.lane(id.index, lane).tail = Some(entry);
-        self.wake(id);
+        let kind = match lane {
+            Lane::Posted => QS_POSTMESSAGE,
+            Lane::Input => QS_KEY,
+        };
+        self.change(id, kind);
         true
     }
 
@@ -579,7 +633,7 @@ impl Queues {
             None => queue.sent.head = Some(index),
         }
         queue.sent.tail = Some(index);
-        self.wake(receiver);
+        self.change(receiver, QS_SENDMESSAGE);
     }
 
     /// Answer the sent message at `index` with `result`: its sender, if it still waits, or the
@@ -841,7 +895,7 @@ pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, re
             let count = last.lparam as u32 & 0xFFFF;
             if last.message == msg.message && last.wparam == msg.wparam && count < 0xFFFF {
                 last.lparam = ((last.lparam as u32 & !0xFFFF) | (count + 1)) as LParam;
-                queues.wake(id);
+                queues.change(id, QS_KEY);
                 return;
             }
         }
@@ -855,7 +909,7 @@ pub fn post_quit(windows: &mut Windows, caller: ThreadId, code: u32) {
     let queues = &mut windows.queues;
     if let Some(id) = queues.queue_of(caller) {
         queues.queues[id.index as usize].quit = Some(code);
-        queues.wake(id);
+        queues.change(id, QS_POSTMESSAGE);
     }
 }
 
@@ -931,6 +985,30 @@ impl Filter {
     fn looks_at_queued(&self) -> bool {
         self.kinds & !QS_SENDMESSAGE != 0
     }
+
+    /// The kinds of message a read with the filter looks for, as Windows 2000's CalcWakeMask
+    /// makes its wake mask: the PM_QS_* kinds, and of those, for a range, the sent and posted
+    /// messages and the kinds whose messages the range holds.
+    pub fn wake_mask(&self) -> u32 {
+        if self.min == 0 && self.max == 0 {
+            return self.kinds;
+        }
+        let holds = |first: u32, last: u32| self.min <= last && first <= self.max;
+        let mut mask = QS_SENDMESSAGE | QS_POSTMESSAGE | QS_HOTKEY;
+        if holds(WM_KEYFIRST, WM_KEYLAST) {
+            mask |= QS_KEY;
+        }
+        if holds(WM_MOUSEFIRST, WM_MOUSELAST) {
+            mask |= QS_MOUSE;
+        }
+        if holds(WM_TIMER, WM_TIMER) || holds(WM_SYSTIMER, WM_SYSTIMER) {
+            mask |= QS_TIMER;
+        }
+        if holds(WM_PAINT, WM_PAINT) {
+            mask |= QS_PAINT;
+        }
+        self.kinds & mask
+    }
 }
 
 /// What a read found.
@@ -976,6 +1054,32 @@ pub fn take(
         return Ok(Taken::Nothing { due: None });
     };
     let time = millis(now);
+    let taken = read_queue(windows, caller, id, filter, remove, now)?;
+    let queue = &mut windows.queues.queues[id.index as usize];
+    queue.last_read = time;
+    queue.idle = matches!(taken, Taken::Nothing { .. });
+    if let Taken::Message(msg) = taken {
+        queue.message_time = msg.time;
+        queue.message_pos = msg.pt;
+    }
+    Ok(taken)
+}
+
+/// [`take`]'s read of the queue `id`: the timers that came due mark it, then the kinds the filter
+/// looks for are no longer new to it ([`wait_ready`]); what the read finds.
+fn read_queue(
+    windows: &mut Windows,
+    caller: ThreadId,
+    id: QueueId,
+    filter: &Filter,
+    remove: bool,
+    now: u64,
+) -> Result<Taken, NtStatus> {
+    let time = millis(now);
+    if windows.queues.timers.expire(caller, now) {
+        windows.queues.queues[id.index as usize].changed |= QS_TIMER;
+    }
+    windows.queues.queues[id.index as usize].changed &= !filter.wake_mask();
 
     // The sent messages: a message another thread or the server sent to a window destroyed since
     // is answered 0 (dropped, for the server) and skipped (the window manager's own sends are
@@ -983,7 +1087,7 @@ pub fn take(
     while let Some(index) = windows.queues.pop_sent(id) {
         let sent = windows.queues.sent[index as usize];
         let window_gone = sent.window.is_none_or(|w| !windows.is_live(w));
-        if (sent.sender.is_some() || sent.server) && window_gone {
+        if (sent.sender.is_some() || sent.server || sent.notify) && window_gone {
             windows.queues.drop_unanswered(index);
             continue;
         }
@@ -1111,6 +1215,97 @@ fn made(hwnd: Hwnd, message: u32, wparam: WParam, lparam: LParam, time: u32) -> 
 /// as GetTickCount does).
 pub fn millis(now: u64) -> u32 {
     (now / 10_000) as u32
+}
+
+// --- Waiting, and the thread's state of its reads ------------------------------------------------
+
+/// How long a thread that is not idle may go without reading its queue before it is deemed hung,
+/// in milliseconds (Windows 2000's HungAppTimeout, 5 s).
+pub const HUNG_TIMEOUT: u32 = 5000;
+
+/// What WaitMessage's wait found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    /// Something came to the queue since its last read looked for it: WaitMessage returns.
+    Ready,
+    /// Nothing new: the thread waits on its queue, until its next timer's due (interrupt time) if
+    /// it has timers.
+    Wait { due: Option<u64> },
+}
+
+/// WaitMessage's look at the caller's queue at `now` (interrupt time): ready when something came
+/// to it since a read last looked for that kind (Windows 2000's change bits: a message already in
+/// the queue that a read saw, and left, does not count; a timer that came due since does).
+/// The thread idles meanwhile: it is never deemed hung while it waits.
+pub fn wait_ready(windows: &mut Windows, caller: ThreadId, now: u64) -> Waited {
+    let Some(id) = windows.queues.queue_of(caller) else {
+        return Waited::Ready;
+    };
+    if windows.queues.timers.expire(caller, now) {
+        windows.queues.queues[id.index as usize].changed |= QS_TIMER;
+    }
+    let queue = &mut windows.queues.queues[id.index as usize];
+    queue.idle = true;
+    if queue.changed & QS_ALLINPUT != 0 {
+        return Waited::Ready;
+    }
+    // The caret blinks while the thread waits, as while it reads.
+    super::caret::blink(windows, caller, now);
+    let due = match (
+        windows.queues.timers.next_due(caller),
+        super::caret::next_due(windows, caller),
+    ) {
+        (Some(timer), Some(caret)) => Some(timer.min(caret)),
+        (timer, caret) => timer.or(caret),
+    };
+    Waited::Wait { due }
+}
+
+/// GetMessageTime: the time of the last message the caller's reads retrieved (PeekMessage's
+/// PM_NOREMOVE included; a sent message is not retrieved), 0 before the first.
+pub fn message_time(windows: &Windows, caller: ThreadId) -> u32 {
+    windows.queues.queue_of(caller).map_or(0, |id| {
+        windows.queues.queues[id.index as usize].message_time
+    })
+}
+
+/// GetMessagePos: the cursor position of the last message the caller's reads retrieved, x in the
+/// low word, y in the high word.
+pub fn message_pos(windows: &Windows, caller: ThreadId) -> u32 {
+    let pos = windows
+        .queues
+        .queue_of(caller)
+        .map_or(Point::default(), |id| {
+            windows.queues.queues[id.index as usize].message_pos
+        });
+    (pos.x as u16 as u32) | ((pos.y as u16 as u32) << 16)
+}
+
+/// Whether the thread record `thread` is hung at `time` (milliseconds): it has gone more than
+/// [`HUNG_TIMEOUT`] without reading its queue, and does not idle — its last read found something,
+/// as Windows 2000 deems a thread that is not waiting for input (one whose last read found its
+/// queue empty, a GetMessage's caller waiting or a PeekMessage loop polling, is not hung).
+pub fn hung(windows: &Windows, thread: ThreadId, time: u32) -> bool {
+    windows.queues.queue_of(thread).is_some_and(|id| {
+        let queue = &windows.queues.queues[id.index as usize];
+        !queue.idle && time.wrapping_sub(queue.last_read) > HUNG_TIMEOUT
+    })
+}
+
+/// IsHungAppWindow: whether the window `hwnd`'s thread is hung at `time` ([`hung`]); a window of
+/// the caller's own thread, or of the window manager's, never is. STATUS_INVALID_HANDLE for a
+/// handle naming no window.
+pub fn window_hung(
+    windows: &Windows,
+    caller: ThreadId,
+    hwnd: Hwnd,
+    time: u32,
+) -> Result<bool, NtStatus> {
+    let window = windows
+        .window_from_handle(hwnd)
+        .ok_or(STATUS_INVALID_HANDLE)?;
+    let thread = windows.window_thread(window);
+    Ok(thread != caller && windows.client_proc(window).is_some() && hung(windows, thread, time))
 }
 
 // --- The receipt of a sent message ---------------------------------------------------------------
@@ -1357,7 +1552,7 @@ pub fn in_send(windows: &Windows, caller: ThreadId) -> bool {
         return false;
     };
     let sent = &queues.sent[index as usize];
-    sent.sender.is_some() || sent.server
+    sent.sender.is_some() || sent.server || sent.notify
 }
 
 // --- Sending -------------------------------------------------------------------------------------
@@ -1472,6 +1667,76 @@ pub fn send_carrying(
     queues.push_sent(receiver, id.index);
     queues.queues[sender.index as usize].awaiting = Some(id);
     Ok(Sending::Waiting(id))
+}
+
+/// SendNotifyMessage's step: a window of the caller's own thread is called as SendMessage calls
+/// it ([`Sending::Call`]); a window whose procedure is the window manager's answered; another
+/// thread's window has the message queued for its thread as a sent one, its answer waited for by
+/// nobody ([`Sending::Answered`] 0 at once). STATUS_INVALID_HANDLE for a handle naming no window,
+/// STATUS_INVALID_PARAMETER for a message whose pointer cannot go to another thread
+/// ([`rtl::user::sync_only`]: user32's ERROR_MESSAGE_SYNC_ONLY), STATUS_NO_MEMORY when the sent
+/// messages' pool is full.
+pub fn send_notify(
+    windows: &mut Windows,
+    caller: ThreadId,
+    hwnd: Hwnd,
+    message: u32,
+    wparam: WParam,
+    lparam: LParam,
+) -> Result<Sending, NtStatus> {
+    let window = windows
+        .window_from_handle(hwnd)
+        .ok_or(STATUS_INVALID_HANDLE)?;
+    let Some(proc) = windows.client_proc(window) else {
+        return Ok(Sending::Answered(default_answer(message)));
+    };
+    let thread = windows.window_thread(window);
+    if thread == caller {
+        return Ok(Sending::Call(proc));
+    }
+    if sync_only(message) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let queues = &mut windows.queues;
+    let Some(receiver) = queues.queue_of(thread) else {
+        return Ok(Sending::Answered(0));
+    };
+    let id = queues
+        .allocate_sent(Sent {
+            receiver: Some(receiver),
+            notify: true,
+            window: Some(window),
+            hwnd,
+            proc,
+            message,
+            wparam,
+            lparam,
+            ..Sent::EMPTY
+        })
+        .ok_or(STATUS_NO_MEMORY)?;
+    queues.push_sent(receiver, id.index);
+    Ok(Sending::Answered(0))
+}
+
+/// The caller's send `id` timed out (SendMessageTimeout): a message its receiver has not read yet
+/// is taken back, never to reach the procedure, as Windows 2000 takes it; one being handled is
+/// left to it, its answer to nobody. The caller waits on nothing any more.
+pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
+    let queues = &mut windows.queues;
+    if let Some(queue) = queues.queue_of(caller) {
+        queues.queues[queue.index as usize].awaiting = None;
+    }
+    let Some(sent) = queues.sent_at(id) else {
+        return;
+    };
+    match (sent.state, sent.receiver) {
+        (State::Queued, Some(receiver)) => {
+            queues.unlink_sent(receiver, id.index);
+            queues.free_sent(id.index);
+        }
+        (State::Answered, _) => queues.free_sent(id.index),
+        _ => queues.sent[id.index as usize].sender = None,
+    }
 }
 
 /// The answer to the caller's send `id`, once its receiver gave it (the record goes back to the
@@ -1902,12 +2167,15 @@ pub use target::{init, locked, now, wait_for_server, wait_on_queue, with_manager
 mod services {
     use rtl::pod::Pod;
     use rtl::user::{
+        SendTimeout,
         ONE_PARAM_END_SENT_MESSAGE,
         ONE_PARAM_ENUM_CLIPBOARD_FORMATS,
         ONE_PARAM_IN_SEND_MESSAGE,
+        ONE_PARAM_IS_HUNG_APP_WINDOW,
         ONE_PARAM_POST_QUIT_MESSAGE,
         ONE_PARAM_REPLY_MESSAGE,
         RECEIVED_NONE,
+        SMTO_ABORTIFHUNG,
     };
 
     use super::*;
@@ -2136,10 +2404,15 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUserMessageCall(Window, Msg, wParam, lParam, Proc, Result): SendMessage's kernel side
-    /// ([`send`]): the procedure to call into `proc` for a window of the caller's own
-    /// thread (`result` 0), otherwise 0 into `proc` and the answer into `result` — the caller
-    /// waiting for it when another thread's procedure gives it.
+    /// NtUserMessageCall(Window, Msg, wParam, lParam, Proc, Result, Timeout): SendMessage's and
+    /// SendMessageTimeout's kernel side ([`send`]): the procedure to call into `proc` for a window
+    /// of the caller's own thread (`result` 0), otherwise 0 into `proc` and the answer into
+    /// `result` — the caller waiting for it when another thread's procedure gives it. With a
+    /// timeout (rtl::user::SendTimeout, SendMessageTimeout's; null for SendMessage), the wait ends
+    /// at its end, the message taken back if its receiver has not read it ([`abandon_send`]), and
+    /// at once with SMTO_ABORTIFHUNG when the receiver is hung ([`window_hung`]): STATUS_TIMEOUT
+    /// then (user32's ERROR_TIMEOUT), `result` 0.
+    #[allow(clippy::too_many_arguments)]
     pub fn message_call(
         call: &mut NtCall,
         window: Handle,
@@ -2148,11 +2421,26 @@ mod services {
         lparam: i32,
         proc: UserPtr<u32>,
         result: UserPtr<i32>,
+        timeout: UserAddr,
     ) -> NtResult {
         let thread = gui_thread(call)?;
         let caller = thread.thread;
         proc.write(0)?;
         result.write(0)?;
+        let limit = match timeout.raw() {
+            0 => None,
+            _ => Some(timeout.cast::<SendTimeout>().read()?),
+        };
+        if limit.is_some_and(|l| l.flags & SMTO_ABORTIFHUNG != 0) {
+            let time = millis(now());
+            let hung = with_manager(call.passive(), |m| {
+                window_hung(&m.windows, caller, window.raw(), time)
+            })?;
+            if hung {
+                return Ok(STATUS_TIMEOUT);
+            }
+        }
+        let deadline = limit.map(|l| now() + u64::from(l.timeout) * 10_000);
         // A text message to another process's window carries its text (user32 hands such a
         // message over in the wide form): WM_SETTEXT's read here, WM_GETTEXT's written back below.
         let carried = with_manager(call.passive(), |m| {
@@ -2198,12 +2486,72 @@ mod services {
                         }
                         break answer;
                     }
-                    None => wait_on_queue(caller, None),
+                    None => match deadline {
+                        None => wait_on_queue(caller, None),
+                        Some(deadline) => {
+                            let now = now();
+                            if now >= deadline {
+                                with_manager(call.passive(), |m| {
+                                    abandon_send(&mut m.windows, caller, id)
+                                });
+                                return Ok(STATUS_TIMEOUT);
+                            }
+                            wait_on_queue(caller, Some((deadline - now) as i64));
+                        }
+                    },
                 }
             },
         };
         result.write(answer)?;
         Ok(STATUS_SUCCESS)
+    }
+
+    /// NtUserSendNotifyMessage(Window, Msg, wParam, lParam, Proc): SendNotifyMessage's kernel
+    /// side ([`send_notify`]): the procedure to call into `proc` for a window of the caller's own
+    /// thread, 0 otherwise (the message queued for another thread's, or answered by the window
+    /// manager's procedure).
+    pub fn send_notify_message(
+        call: &mut NtCall,
+        window: Handle,
+        message: u32,
+        wparam: u32,
+        lparam: i32,
+        proc: UserPtr<u32>,
+    ) -> NtResult {
+        let caller = gui_thread(call)?.thread;
+        let sending = with_manager(call.passive(), |m| {
+            send_notify(
+                &mut m.windows,
+                caller,
+                window.raw(),
+                message,
+                wparam,
+                lparam,
+            )
+        })?;
+        proc.write(match sending {
+            Sending::Call(target) => target,
+            _ => 0,
+        })?;
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtUserWaitMessage(): the caller waits on its queue until something new comes to it
+    /// ([`wait_ready`]), its timers' dues waking it to look.
+    pub fn wait_message(call: &mut NtCall) -> NtResult {
+        let caller = gui_thread(call)?.thread;
+        loop {
+            let now = now();
+            match with_manager(call.passive(), |m| wait_ready(&mut m.windows, caller, now)) {
+                Waited::Ready => return Ok(STATUS_SUCCESS),
+                Waited::Wait { due } => {
+                    let timeout = due.map(|due| due.saturating_sub(now) as i64);
+                    if timeout != Some(0) {
+                        wait_on_queue(caller, timeout);
+                    }
+                }
+            }
+        }
     }
 
     /// NtUserDispatchMessage(Msg, Proc): the procedure DispatchMessage calls with the message
@@ -2228,6 +2576,7 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         let caller = gui_thread(call)?.thread;
+        let time = millis(now());
         // WM_GETTEXT's answer to another process, read back from the receiver's buffer before the
         // end (its procedure's answer is the units it copied).
         let mut text_reply = [0u16; CARRIED_TEXT];
@@ -2256,6 +2605,9 @@ mod services {
                 .next_format(caller, param)
                 .map_err(crate::win32k::clipboard::Refusal::status),
             ONE_PARAM_IN_SEND_MESSAGE => Ok(in_send(&m.windows, caller) as u32),
+            ONE_PARAM_IS_HUNG_APP_WINDOW => {
+                window_hung(&m.windows, caller, param, time).map(|hung| hung as u32)
+            }
             _ => Err(STATUS_INVALID_PARAMETER),
         })?;
         result.write(answer)?;
@@ -2271,6 +2623,8 @@ pub use services::{
     peek_message,
     post_message,
     post_thread_message,
+    send_notify_message,
+    wait_message,
 };
 
 // The host builds have no processes and no user memory: the services answer nothing (the host
@@ -2303,6 +2657,7 @@ mod services {
         Err(STATUS_NOT_IMPLEMENTED)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn message_call(
         _: &mut NtCall,
         _: Handle,
@@ -2311,7 +2666,23 @@ mod services {
         _: i32,
         _: UserPtr<u32>,
         _: UserPtr<i32>,
+        _: UserAddr,
     ) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn send_notify_message(
+        _: &mut NtCall,
+        _: Handle,
+        _: u32,
+        _: u32,
+        _: i32,
+        _: UserPtr<u32>,
+    ) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn wait_message(_: &mut NtCall) -> NtResult {
         Err(STATUS_NOT_IMPLEMENTED)
     }
 
@@ -3235,5 +3606,210 @@ mod tests {
             post_thread(&mut m.windows, system, WM_USER, 0, 0, 0),
             Err(STATUS_INVALID_PARAMETER)
         );
+    }
+
+    /// The sent messages in the pool, live.
+    fn live_sends(m: &WindowManager) -> usize {
+        m.windows.queues.sent.iter().filter(|s| s.live).count()
+    }
+
+    /// WaitMessage wakes on what came to the queue since a read last looked for it, as the wait
+    /// capture has it: a message posted before is new, one a peek saw and left is not, a timer
+    /// coming due is, a post from another thread is. A read that looks only for sent messages
+    /// leaves a post new.
+    #[test]
+    fn wait_message_wakes_on_what_is_new() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        post(&mut m.windows, t, h, WM_USER + 30, 1, 0, 0).unwrap();
+        assert_eq!(wait_ready(&mut m.windows, t, 0), Waited::Ready);
+        deliver(m, t);
+        assert_eq!(
+            wait_ready(&mut m.windows, t, 0),
+            Waited::Ready,
+            "a read of the sent messages alone leaves the post new"
+        );
+        let peeked = take(&mut m.windows, t, &all(), false, 0).unwrap();
+        assert_eq!(msg_of(peeked).message, WM_USER + 30);
+        assert_eq!(wait_ready(&mut m.windows, t, 0), Waited::Wait { due: None });
+
+        // A 300 ms timer: the wait lasts until its due, then finds it new.
+        let ms = 10_000;
+        super::super::timer::set(&mut m.windows, t, h, 1, 300, 0, 0).unwrap();
+        assert_eq!(
+            wait_ready(&mut m.windows, t, 100 * ms),
+            Waited::Wait {
+                due: Some(300 * ms)
+            }
+        );
+        assert_eq!(wait_ready(&mut m.windows, t, 300 * ms), Waited::Ready);
+        take(&mut m.windows, t, &all(), true, 300 * ms).unwrap();
+        take(&mut m.windows, t, &all(), true, 300 * ms).unwrap();
+        assert!(matches!(
+            wait_ready(&mut m.windows, t, 400 * ms),
+            Waited::Wait { .. }
+        ));
+
+        // Another thread's post.
+        post(&mut m.windows, t, h, WM_USER + 30, 9, 0, 0).unwrap();
+        assert_eq!(wait_ready(&mut m.windows, t, 450 * ms), Waited::Ready);
+    }
+
+    /// A range's read looks for the kinds its messages are, and the sent and posted messages.
+    #[test]
+    fn a_range_looks_for_its_kinds() {
+        assert_eq!(all().wake_mask(), ALL_KINDS);
+        let only_sent = Filter::new(0, 0, 0, rtl::user::PM_QS_SENDMESSAGE);
+        assert_eq!(only_sent.wake_mask(), QS_SENDMESSAGE);
+        let user = Filter::new(0, WM_USER, WM_USER, 0);
+        assert_eq!(
+            user.wake_mask(),
+            QS_SENDMESSAGE | QS_POSTMESSAGE | QS_HOTKEY
+        );
+        let timer = Filter::new(0, WM_TIMER, WM_TIMER, 0);
+        assert_eq!(timer.wake_mask() & (QS_TIMER | QS_KEY), QS_TIMER);
+        let keys = Filter::new(0, WM_KEYFIRST, WM_KEYLAST, 0);
+        assert_eq!(keys.wake_mask() & (QS_KEY | QS_PAINT), QS_KEY);
+    }
+
+    /// GetMessageTime and GetMessagePos answer the last message a read retrieved, a peek that
+    /// leaves it included; a sent message leaves them (the msgpos capture).
+    #[test]
+    fn the_message_time_is_the_last_retrieved() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        deliver(m, a);
+        assert_eq!(message_time(&m.windows, a), 0);
+        post(&mut m.windows, a, ha, WM_USER, 1, 0, 100).unwrap();
+        post(&mut m.windows, a, ha, WM_USER, 2, 0, 200).unwrap();
+        take(&mut m.windows, a, &all(), false, 0).unwrap();
+        assert_eq!(message_time(&m.windows, a), 100);
+        take(&mut m.windows, a, &all(), true, 0).unwrap();
+        take(&mut m.windows, a, &all(), true, 0).unwrap();
+        assert_eq!(message_time(&m.windows, a), 200);
+        assert_eq!(message_pos(&m.windows, a), 0);
+        send(&mut m.windows, b, ha, WM_USER, 3, 0).unwrap();
+        assert!(matches!(read(m, a, &all(), 900), Taken::Sent(_)));
+        assert_eq!(message_time(&m.windows, a), 200, "a sent message leaves it");
+        assert_eq!(message_time(&m.windows, b), 0);
+    }
+
+    /// A thread is hung once it has gone 5 s without reading its queue after a read that found
+    /// something; one whose last read found its queue empty idles, however long it sleeps (the
+    /// hung capture); a thread's own window, and a window manager's, never are.
+    #[test]
+    fn a_thread_is_hung_when_busy_past_the_timeout() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let ms = 10_000;
+        assert!(!hung(&m.windows, b, 60_000), "a thread that idled");
+        post(&mut m.windows, a, hb, WM_USER, 0, 0, 0).unwrap();
+        read(m, b, &all(), 1000 * ms);
+        assert!(!hung(&m.windows, b, 6000));
+        assert!(hung(&m.windows, b, 6001));
+        assert_eq!(window_hung(&m.windows, a, hb, 6001), Ok(true));
+        assert_eq!(window_hung(&m.windows, b, hb, 6001), Ok(false));
+        assert_eq!(
+            window_hung(&m.windows, a, 0x7FFF_FFFC, 6001),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        let desktop = m.windows.thread_desktop_window(a).unwrap();
+        let desktop = m.windows.handle_of(desktop);
+        assert_eq!(window_hung(&m.windows, a, desktop, 6001), Ok(false));
+        read(m, b, &all(), 7000 * ms);
+        assert!(!hung(&m.windows, b, 60_000), "its last read found nothing");
+        assert_eq!(wait_ready(&mut m.windows, b, 0), Waited::Wait { due: None });
+        assert!(!hung(&m.windows, b, 120_000), "it waits");
+    }
+
+    /// SendNotifyMessage: a window of the caller's thread is called; another thread's has the
+    /// message queued, handed out as another thread's sent message (InSendMessage TRUE) and
+    /// answered to nobody; a window gone before it is read drops it. A message carrying a pointer
+    /// is refused to another thread.
+    #[test]
+    fn a_notify_is_queued_and_answered_to_nobody() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+        assert_eq!(
+            send_notify(&mut m.windows, a, ha, WM_SETTEXT, 0, 0),
+            Ok(Sending::Call(PROC))
+        );
+        assert_eq!(
+            send_notify(&mut m.windows, a, hb, WM_SETTEXT, 0, 0),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            send_notify(&mut m.windows, a, 0x7FFF_FFFC, WM_USER, 0, 0),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(
+            send_notify(&mut m.windows, a, hb, WM_USER + 30, 5, 6),
+            Ok(Sending::Answered(0))
+        );
+        let Taken::Sent(id) = read(m, b, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        let head = receipt_head(&m.windows, b, id, 0, 0).unwrap();
+        assert_eq!(
+            (head.msg.message, head.msg.wparam, head.msg.lparam),
+            (WM_USER + 30, 5, 6)
+        );
+        assert!(in_send(&m.windows, b));
+        assert!(!reply(&mut m.windows, b, 1), "nobody waits");
+        assert!(end_sent(&mut m.windows, b, 11));
+        assert_eq!(live_sends(m), base, "the record went back to the pool");
+
+        send_notify(&mut m.windows, a, hb, WM_USER + 30, 7, 8).unwrap();
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        windows
+            .destroy_window_handle(classes, b, hb, &mut QueuePump)
+            .unwrap();
+        assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
+        assert_eq!(live_sends(m), base);
+    }
+
+    /// A send that times out is taken back when its receiver has not read it (it never reaches
+    /// the procedure, as the smto capture counts); one being handled is left to it, its answer
+    /// to nobody.
+    #[test]
+    fn a_timed_out_send_is_taken_back() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let base = live_sends(m);
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 17, 18) else {
+            panic!("queued");
+        };
+        abandon_send(&mut m.windows, a, id);
+        assert_eq!(live_sends(m), base);
+        assert_eq!(read(m, b, &all(), 0), Taken::Nothing { due: None });
+        assert_eq!(collect_reply(&mut m.windows, a, id), None);
+
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 19, 20) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        abandon_send(&mut m.windows, a, id);
+        assert!(end_sent(&mut m.windows, b, 39));
+        assert_eq!(live_sends(m), base);
+        assert_eq!(collect_reply(&mut m.windows, a, id), None);
+        assert_eq!(m.windows.queues.queues[a.0 as usize].awaiting, None);
     }
 }

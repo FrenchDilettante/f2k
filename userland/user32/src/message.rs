@@ -1,6 +1,8 @@
 //! The message loop: GetMessage, PeekMessage, PostMessage, PostThreadMessage, PostQuitMessage,
-//! SendMessage, InSendMessage, DispatchMessage, TranslateMessage, and the default window
-//! procedure, DefWindowProc; each over its win32k service ([`imports`]).
+//! SendMessage, SendMessageTimeout, SendNotifyMessage, InSendMessage, DispatchMessage,
+//! TranslateMessage, WaitMessage, GetMessageTime and GetMessagePos, IsHungAppWindow,
+//! RegisterWindowMessage, and the default window procedure, DefWindowProc; each over its win32k
+//! service ([`imports`]).
 //!
 //! The kernel calls no user-mode code: a message sent to one of the calling thread's windows (by
 //! another thread, or by the window manager while it decides) reaches its procedure through the
@@ -17,6 +19,8 @@
 //! and DispatchMessageA hand over narrow messages, SendMessageW and DispatchMessageW wide ones, the
 //! window manager wide ones; another thread's message reaches the procedure as it was sent. The A
 //! and W forms of the reads and the posts are the same calls: no posted message carries text.
+//! SendMessageTimeout and SendNotifyMessage call a window of the calling thread here too; another
+//! thread's answer the first waits no longer than its timeout for, the second not at all.
 //!
 //! DefWindowProc keeps the window's text with the window manager, as Windows 2000's does: its
 //! WM_NCCREATE sets the title the creation names, its WM_SETTEXT sets the text, and its WM_GETTEXT
@@ -27,7 +31,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
-use rtl::status::{NtStatus, STATUS_INVALID_CID};
+use rtl::status::{NtStatus, STATUS_INVALID_CID, STATUS_INVALID_PARAMETER};
 use rtl::user::*;
 use rtl::window::{WindowText, QUERY_WINDOW_TEXT, WINDOW_OTHER_PROCESS};
 
@@ -309,6 +313,19 @@ pub extern "system" fn in_send_message() -> u32 {
 /// answer (called here for a window of the calling thread, translated for a procedure of the
 /// other form; the kernel's answer otherwise); none with 1400 for a handle naming no window.
 pub fn send_as(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> Option<i32> {
+    send_within(window, message, wparam, lparam, ansi, None)
+}
+
+/// [`send_as`], another thread's answer waited for no longer than SendMessageTimeout's `timeout`
+/// when there is one: none with ERROR_TIMEOUT when it does not come in time.
+fn send_within(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    ansi: bool,
+    timeout: Option<SendTimeout>,
+) -> Option<i32> {
     // A text message to another process's window: the window manager carries its text (WM_SETTEXT's
     // there, WM_GETTEXT's back) in the wide form, so a narrow one goes as wide, converted here.
     if ansi
@@ -318,14 +335,16 @@ pub fn send_as(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool
         let mut reached = true;
         let answer =
             procedure::narrow_to_wide(message, wparam, lparam, |message, wparam, lparam| {
-                send_as(window, message, wparam, lparam, false).unwrap_or_else(|| {
+                send_within(window, message, wparam, lparam, false, timeout).unwrap_or_else(|| {
                     reached = false;
                     0
                 })
             });
         return reached.then_some(answer);
     }
-    let (proc, answer) = answered(imports::message_call(window, message, wparam, lparam))?;
+    let (proc, answer) = answered(imports::message_call_timeout(
+        window, message, wparam, lparam, timeout,
+    ))?;
     Some(if proc == 0 {
         answer
     } else {
@@ -366,6 +385,200 @@ pub extern "system" fn send_message_w(
     lparam: i32,
 ) -> i32 {
     send_as(window, message, wparam, lparam, false).unwrap_or(0)
+}
+
+/// SendMessageTimeoutW: the message sent to the window, its procedure's answer into `result` (when
+/// given); TRUE. A window of the calling thread's is called at once, whatever the timeout, as
+/// Windows 2000 calls it; another thread's answer is waited for `timeout` milliseconds, a message
+/// its thread has not read by then taken back, and not at all with SMTO_ABORTIFHUNG when that
+/// thread is hung (IsHungAppWindow's test): 0 with ERROR_TIMEOUT then, 0 with 1400 for a handle
+/// naming no window, `result` 0 for every failure.
+///
+/// # Safety
+///
+/// `result` is the caller's DWORD or null, as for the platform's.
+#[unsafe(export_name = "f2k_export_SendMessageTimeoutW")]
+pub unsafe extern "system" fn send_message_timeout_w(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    flags: u32,
+    timeout: u32,
+    result: *mut u32,
+) -> i32 {
+    // SAFETY: the caller's DWORD, or null.
+    let result = unsafe { Out::optional(result) };
+    send_timeout(
+        window, message, wparam, lparam, flags, timeout, result, false,
+    )
+}
+
+/// SendMessageTimeoutA: SendMessageTimeoutW's, for a narrow message.
+///
+/// # Safety
+///
+/// `result` is the caller's DWORD or null, as for the platform's.
+#[unsafe(export_name = "f2k_export_SendMessageTimeoutA")]
+pub unsafe extern "system" fn send_message_timeout_a(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    flags: u32,
+    timeout: u32,
+    result: *mut u32,
+) -> i32 {
+    // SAFETY: the caller's DWORD, or null.
+    let result = unsafe { Out::optional(result) };
+    send_timeout(
+        window, message, wparam, lparam, flags, timeout, result, true,
+    )
+}
+
+/// SendMessageTimeout's core, for a message of the narrow (`ansi`) or wide form.
+#[allow(clippy::too_many_arguments)]
+fn send_timeout(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    flags: u32,
+    timeout: u32,
+    mut result: Option<Out<'_, u32>>,
+    ansi: bool,
+) -> i32 {
+    let limit = SendTimeout { flags, timeout };
+    let answer = send_within(window, message, wparam, lparam, ansi, Some(limit));
+    if let Some(result) = result.as_mut() {
+        result.set(answer.unwrap_or(0) as u32);
+    }
+    answer.is_some() as i32
+}
+
+/// ERROR_MESSAGE_SYNC_ONLY: SendNotifyMessage of a message whose pointer cannot go to another
+/// thread.
+pub const ERROR_MESSAGE_SYNC_ONLY: u32 = 1159;
+
+/// SendNotifyMessageW: the message sent to the window without waiting for its answer: a window
+/// of the calling thread's has its procedure called before the return, as SendMessage calls it;
+/// another thread's has it queued for its thread, which handles it on its next read. TRUE; FALSE
+/// with 1400 for a handle naming no window, with ERROR_MESSAGE_SYNC_ONLY for a message carrying a
+/// pointer (WM_SETTEXT...) to another thread's window.
+#[unsafe(export_name = "f2k_export_SendNotifyMessageW")]
+pub extern "system" fn send_notify_message_w(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> u32 {
+    send_notify(window, message, wparam, lparam, false)
+}
+
+/// SendNotifyMessageA: SendNotifyMessageW's, for a narrow message.
+#[unsafe(export_name = "f2k_export_SendNotifyMessageA")]
+pub extern "system" fn send_notify_message_a(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> u32 {
+    send_notify(window, message, wparam, lparam, true)
+}
+
+/// SendNotifyMessage's core, for a message of the narrow (`ansi`) or wide form.
+fn send_notify(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> u32 {
+    let error = |status: NtStatus| match status.0 {
+        STATUS_INVALID_PARAMETER => ERROR_MESSAGE_SYNC_ONLY,
+        _ => crate::window_error(status),
+    };
+    let Some(proc) = failed_with(
+        imports::send_notify_message(window, message, wparam, lparam),
+        error,
+    ) else {
+        return 0;
+    };
+    if proc != 0 {
+        let msg = Msg {
+            hwnd: window as u32,
+            message,
+            wparam,
+            lparam,
+            ..Msg::default()
+        };
+        call(proc, Some(ansi), &msg);
+    }
+    1
+}
+
+/// WaitMessage: the calling thread waits until something comes to its queue that no read has
+/// looked for since (a message PeekMessage saw and left does not count; a timer coming due, a
+/// post, a send do); the messages sent to its windows are delivered then. TRUE.
+#[unsafe(export_name = "f2k_export_WaitMessage")]
+pub extern "system" fn wait_message() -> u32 {
+    if answered(imports::wait_message()).is_none() {
+        return 0;
+    }
+    receive_sent();
+    1
+}
+
+/// GetMessageTime: the time of the last message the calling thread's GetMessage or PeekMessage
+/// retrieved (PeekMessage's PM_NOREMOVE too; a message sent to it, or its own SendMessage, leaves
+/// it), in milliseconds since the boot; 0 before the first.
+#[unsafe(export_name = "f2k_export_GetMessageTime")]
+pub extern "system" fn get_message_time() -> i32 {
+    imports::thread_state(THREAD_STATE_MESSAGE_TIME).unwrap_or(0) as i32
+}
+
+/// GetMessagePos: the cursor position of that last message, x in the low word and y in the high
+/// word, as MSG's pt holds it.
+#[unsafe(export_name = "f2k_export_GetMessagePos")]
+pub extern "system" fn get_message_pos() -> u32 {
+    imports::thread_state(THREAD_STATE_MESSAGE_POS).unwrap_or(0)
+}
+
+/// IsHungAppWindow: whether the window's thread is hung: it has not read its queue for 5 s
+/// (HungAppTimeout's default) and its last read found something, where a thread whose last read
+/// found its queue empty waits for input (Windows 2000's test, the hung capture's: a thread asleep
+/// after a read that found nothing is not hung); never the calling thread's own window. FALSE with
+/// 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_IsHungAppWindow")]
+pub extern "system" fn is_hung_app_window(window: usize) -> u32 {
+    answered(imports::call_one_param(
+        window as u32,
+        ONE_PARAM_IS_HUNG_APP_WINDOW,
+    ))
+    .unwrap_or(0)
+}
+
+/// RegisterWindowMessageW: the message registered for the name, in 0xC000..=0xFFFF: the one it has
+/// already when registered before, in any case, and RegisterClipboardFormat's format of the name
+/// (Windows 2000: NtUserRegisterWindowMessage, in the atom table class names share); 0 with
+/// ERROR_INVALID_NAME for an empty name, ERROR_INVALID_PARAMETER for none. The kernel reads the
+/// name.
+#[unsafe(export_name = "f2k_export_RegisterWindowMessageW")]
+pub extern "system" fn register_window_message_w(name: *const u16) -> u32 {
+    answered(imports::register_window_message(name as usize)).unwrap_or(0)
+}
+
+/// RegisterWindowMessageA: RegisterWindowMessageW's message, the name converted from the ANSI
+/// code page first.
+///
+/// # Safety
+///
+/// `name` is a NUL-terminated string or null, as for the platform's.
+#[unsafe(export_name = "f2k_export_RegisterWindowMessageA")]
+pub unsafe extern "system" fn register_window_message_a(name: *const u8) -> u32 {
+    if name.is_null() {
+        return register_window_message_w(core::ptr::null());
+    }
+    // SAFETY: the caller's string.
+    let name = unsafe { InStr::new(name) };
+    crate::with_wide(name.bytes(), |units| {
+        register_window_message_w(units.as_ptr())
+    })
+    .unwrap_or(0)
 }
 
 /// DispatchMessageA: the message handed to its window's procedure (WM_TIMER with a TimerProc to
@@ -992,6 +1205,7 @@ pub extern "system" fn def_window_proc_w(
 #[cfg(test)]
 mod tests {
     use core::cell::RefCell;
+    use core::ptr::null_mut;
 
     use super::*;
     use crate::class::{register_class_a, WndClass};
@@ -1318,5 +1532,114 @@ mod tests {
         );
         assert_eq!(post_thread_message_a(me + 4, WM_USER, 0, 0), 0);
         assert_eq!(last_error(), ERROR_INVALID_THREAD_ID);
+    }
+
+    /// SendMessageTimeout to a window of the calling thread calls its procedure at once, whatever
+    /// the timeout, its answer into the result when one is given; a dead window is 1400, the
+    /// result 0. SendNotifyMessage calls it before the return too.
+    ///
+    /// Pins: user32.SendMessageTimeoutW, user32.SendMessageTimeoutA, user32.SendNotifyMessageW,
+    /// user32.SendNotifyMessageA
+    #[test]
+    fn the_timed_and_notifying_sends_call_the_thread_s_own_window() {
+        let window = window();
+        let mut result = UNSET;
+        arm();
+        // SAFETY: the tests' own DWORD.
+        let answer = unsafe {
+            send_message_timeout_w(window, WM_USER + 30, 3, 4, SMTO_NORMAL, 0, &mut result)
+        };
+        assert_eq!((answer, result, last_error()), (1, 0, UNSET));
+        // SAFETY: no result pointer.
+        let answer = unsafe {
+            send_message_timeout_a(
+                window,
+                WM_USER + 30,
+                5,
+                6,
+                SMTO_ABORTIFHUNG,
+                1000,
+                null_mut(),
+            )
+        };
+        assert_eq!(answer, 1);
+        assert_eq!(send_notify_message_w(window, WM_USER + 30, 1, 2), 1);
+        assert_eq!(send_notify_message_a(window, WM_USER + 30, 7, 8), 1);
+        assert_eq!(
+            seen(),
+            [
+                (window as u32, WM_USER + 30, 3, 4),
+                (window as u32, WM_USER + 30, 5, 6),
+                (window as u32, WM_USER + 30, 1, 2),
+                (window as u32, WM_USER + 30, 7, 8),
+            ]
+        );
+        result = UNSET;
+        // SAFETY: the tests' own DWORD.
+        let answer = unsafe {
+            send_message_timeout_w(0x7FFF_FFFC, WM_USER, 1, 1, SMTO_NORMAL, 1000, &mut result)
+        };
+        assert_eq!((answer, result, last_error()), (0, 0, 1400));
+        arm();
+        assert_eq!(send_notify_message_w(0x7FFF_FFFC, WM_USER, 1, 2), 0);
+        assert_eq!(last_error(), 1400);
+        arm();
+        assert_eq!(is_hung_app_window(window), 0);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(is_hung_app_window(0x7FFF_FFFC), 0);
+        assert_eq!(last_error(), 1400);
+    }
+
+    /// RegisterWindowMessage answers one message a name, in either form and any case, the
+    /// clipboard format of that name; an empty name is ERROR_INVALID_NAME, none
+    /// ERROR_INVALID_PARAMETER (the guimsg capture's).
+    ///
+    /// Pins: user32.RegisterWindowMessageW, user32.RegisterWindowMessageA
+    #[test]
+    fn a_registered_message_is_one_a_name() {
+        let wide: std::vec::Vec<u16> = "F2KGuimsgRegistered\0".encode_utf16().collect();
+        let other: std::vec::Vec<u16> = "f2kguimsgREGISTERED\0".encode_utf16().collect();
+        let first = register_window_message_w(wide.as_ptr());
+        assert!((0xC000..=0xFFFF).contains(&first));
+        assert_eq!(register_window_message_w(other.as_ptr()), first);
+        // SAFETY: NUL-terminated strings of the tests' own, and none.
+        unsafe {
+            assert_eq!(
+                register_window_message_a(c"F2KGuimsgRegistered".as_ptr().cast()),
+                first
+            );
+            assert_ne!(
+                register_window_message_a(c"F2KGuimsgOther".as_ptr().cast()),
+                first
+            );
+            arm();
+            assert_eq!(register_window_message_a(c"".as_ptr().cast()), 0);
+            assert_eq!(last_error(), 123);
+            assert_eq!(register_window_message_a(core::ptr::null()), 0);
+            assert_eq!(last_error(), 87);
+        }
+        assert_eq!(
+            crate::clipboard::register_clipboard_format_w(wide.as_ptr()),
+            first
+        );
+    }
+
+    /// GetMessageTime and GetMessagePos answer the last message a read retrieved; WaitMessage
+    /// returns when something is new to the queue.
+    ///
+    /// Pins: user32.GetMessageTime, user32.GetMessagePos, user32.WaitMessage
+    #[test]
+    fn the_last_message_s_time_and_place() {
+        let window = window();
+        post_message_a(window, WM_USER + 30, 1, 0);
+        assert_eq!(wait_message(), 1);
+        let (answer, msg) = peek(PM_NOREMOVE);
+        assert_eq!(answer, 1);
+        assert_eq!(get_message_time(), msg.time as i32);
+        assert_eq!(
+            get_message_pos(),
+            (msg.pt.x as u16 as u32) | ((msg.pt.y as u16 as u32) << 16)
+        );
+        peek(PM_REMOVE);
     }
 }

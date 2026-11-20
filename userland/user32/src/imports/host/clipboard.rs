@@ -311,10 +311,13 @@ fn register(c: &mut HostClipboard, name: &[u16]) -> u32 {
 }
 
 pub unsafe extern "system" fn NtUserRegisterWindowMessage(name: usize, atom: *mut u32) -> u32 {
+    if name == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
     // SAFETY: the caller's NUL-terminated name.
     let units = unsafe { rtl::cstr::units_until_nul(name as *const u16) }.to_vec();
     if units.is_empty() {
-        return STATUS_INVALID_PARAMETER;
+        return STATUS_OBJECT_NAME_INVALID;
     }
     let answer = clipboard(|c| register(c, &units));
     // SAFETY: the caller's out-pointer.
