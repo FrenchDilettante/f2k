@@ -17,7 +17,10 @@
 //! A view's protection needs the section handle's access, as Windows 2000 checks it when it
 //! references the handle (SECTION_MAP_WRITE for a read-write view, SECTION_MAP_READ for the others:
 //! STATUS_ACCESS_DENIED), and a read-write view needs a section made read-write
-//! (STATUS_SECTION_PROTECTION).
+//! (STATUS_SECTION_PROTECTION). The view keeps the most it may become ([`view_maximum`]): a later
+//! protection change gives its pages nothing more, so a view through a read-only handle, or of a
+//! read-only section, never writes the section's frames, and a copy-on-write view's writes stay its
+//! own. A view's allocation protection is its own, as a query reports it.
 //!
 //! An image section (SEC_IMAGE) is of a PE file, parsed by the loader's own parse (`exec::pe`): it
 //! is the image as mapped, its size the image's. A file the parse refuses is refused as Windows
@@ -339,6 +342,21 @@ pub fn view(
         0 => Ok(rest),
         bytes if bytes > rest => Err(STATUS_INVALID_VIEW_SIZE),
         bytes => Ok(bytes),
+    }
+}
+
+/// The maximum of a view with `protect` of a section `writable` or not, through a handle granted
+/// `access` (see [`crate::mem::vm::Maximum`]): its section's frames are its to write only when the
+/// section is read-write and the handle may map it for writing; a copy-on-write view of such a
+/// section takes a writable protection copy-on-write; any other view takes none.
+pub fn view_maximum(access: u32, protect: u32, writable: bool) -> crate::mem::vm::Maximum {
+    use crate::mem::vm::Maximum;
+    if !writable || section_access(access) & SECTION_MAP_WRITE == 0 {
+        Maximum::Read
+    } else if protect == PAGE_WRITECOPY {
+        Maximum::CopyOnWrite
+    } else {
+        Maximum::Write
     }
 }
 
@@ -884,6 +902,7 @@ mod target {
             at,
             length,
         )?;
+        let maximum = view_maximum(access, protect, record.writable);
         let mapped = with_process(call, process, |record| {
             map_view(
                 record,
@@ -893,6 +912,7 @@ mod target {
                 at as u32,
                 bytes,
                 protect,
+                maximum,
             )
         })?;
         base.write(mapped)?;
@@ -936,9 +956,11 @@ mod target {
 
     /// Map `bytes` of the section `object` names from `offset` as a reservation of its own (at
     /// `requested`, or the lowest free range) in `process`'s address space, the live one, its pages
-    /// the section's frames. The address space is locked a step at a time: the reservation, each
-    /// page's mapping, the view's record; the section's frames are reached in the directory's
-    /// holds and the file read between them, with neither lock held.
+    /// the section's frames with `protect`, its allocation protection `protect` too and its
+    /// maximum `maximum` (see [`view_maximum`]). The address space is locked a step at a time: the
+    /// reservation, each page's mapping, the view's record; the section's frames are reached in the
+    /// directory's holds and the file read between them, with neither lock held.
+    #[allow(clippy::too_many_arguments)]
     fn map_view(
         process: &crate::process::Process,
         table: &mut CurrentPages,
@@ -947,6 +969,7 @@ mod target {
         offset: u32,
         bytes: u32,
         protect: u32,
+        maximum: crate::mem::vm::Maximum,
     ) -> Result<u32, NtStatus> {
         if !process.with_space(|space| space.has_view_room()) {
             return Err(STATUS_NO_MEMORY);
@@ -969,18 +992,13 @@ mod target {
             None => section.file,
         };
         let pages = bytes.div_ceil(PAGE);
-        let section_protect = if section.writable {
-            PAGE_READWRITE
-        } else {
-            PAGE_READONLY
-        };
         let base = process
             .with_space(|space| {
                 space.reserve(
                     (requested != 0).then_some(requested),
                     pages * PAGE,
-                    section_protect,
-                    Kind::Mapped,
+                    protect,
+                    Kind::Mapped(maximum),
                 )
             })
             .map_err(|error| match error {
@@ -1199,7 +1217,7 @@ mod target {
             // kernel itself, are no views).
             let base = space
                 .region_at(address.raw())
-                .filter(|region| matches!(region.kind, Kind::Mapped | Kind::Image))
+                .filter(|region| matches!(region.kind, Kind::Mapped(_) | Kind::Image))
                 .ok_or(STATUS_NOT_MAPPED_VIEW)?
                 .base;
             let mapping = space.take_view(base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
@@ -1856,5 +1874,41 @@ mod tests {
             view_arguments(VIEW_UNMAP, MEM_TOP_DOWN, PAGE_NOACCESS),
             Ok(())
         );
+    }
+
+    /// A view's maximum: a read-write section's frames are its to write only through a handle
+    /// granted SECTION_MAP_WRITE (its generic rights mapped), and only when it is not mapped
+    /// copy-on-write; a read-only or copy-on-write section's views never write them.
+    #[test]
+    fn a_views_maximum_is_its_sections_and_its_handles() {
+        use crate::mem::vm::Maximum;
+        let read = SECTION_QUERY | SECTION_MAP_READ;
+        let write = read | SECTION_MAP_WRITE;
+        assert_eq!(view_maximum(write, PAGE_READWRITE, true), Maximum::Write);
+        assert_eq!(view_maximum(write, PAGE_READONLY, true), Maximum::Write);
+        assert_eq!(
+            view_maximum(GENERIC_WRITE, PAGE_READONLY, true),
+            Maximum::Write
+        );
+        assert_eq!(
+            view_maximum(write, PAGE_WRITECOPY, true),
+            Maximum::CopyOnWrite
+        );
+        assert_eq!(view_maximum(read, PAGE_READONLY, true), Maximum::Read);
+        assert_eq!(view_maximum(read, PAGE_WRITECOPY, true), Maximum::Read);
+        assert_eq!(
+            view_maximum(GENERIC_READ, PAGE_READONLY, true),
+            Maximum::Read
+        );
+        assert_eq!(
+            view_maximum(crate::ob::SECTION_ALL_ACCESS, PAGE_READONLY, false),
+            Maximum::Read
+        );
+        assert_eq!(view_maximum(write, PAGE_WRITECOPY, false), Maximum::Read);
+        assert!(!Maximum::Read.allows(PAGE_READWRITE));
+        assert!(Maximum::Read.allows(PAGE_WRITECOPY) && Maximum::Read.allows(PAGE_NOACCESS));
+        assert!(Maximum::CopyOnWrite.allows(PAGE_READWRITE));
+        assert!(!Maximum::Write.allows(PAGE_EXECUTE_READ));
+        assert!(!Maximum::Write.allows(PAGE_EXECUTE_WRITECOPY));
     }
 }

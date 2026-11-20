@@ -30,6 +30,7 @@ use crate::mem::vm::{
     AddressSpace,
     Kind,
     Pages,
+    Region,
     VmError,
     MEM_COMMIT,
     MEM_RESERVE,
@@ -123,7 +124,7 @@ pub fn view_commit(
     }
     let Some(region) = space
         .region_at(address)
-        .filter(|region| matches!(region.kind, Kind::Mapped | Kind::Image))
+        .filter(|region| matches!(region.kind, Kind::Mapped(_) | Kind::Image))
     else {
         return Ok(None);
     };
@@ -225,7 +226,7 @@ pub fn free(
     match region.kind {
         Kind::Private => {}
         Kind::System => return Err(STATUS_INVALID_PAGE_PROTECTION),
-        Kind::Mapped | Kind::Image => return Err(STATUS_MEMORY_NOT_ALLOCATED),
+        Kind::Mapped(_) | Kind::Image => return Err(STATUS_MEMORY_NOT_ALLOCATED),
     }
     if size == 0 {
         if region.base != address {
@@ -252,7 +253,10 @@ pub fn free(
 /// NtProtectVirtualMemory's rules: a valid protection over committed pages of one region. The
 /// first page, the span's size, and the first page's old protection. Pages outside every region
 /// are STATUS_CONFLICTING_ADDRESSES, reserved ones STATUS_NOT_COMMITTED; the kernel's own regions'
-/// are secured (see [`free`]), STATUS_INVALID_PAGE_PROTECTION.
+/// are secured (see [`free`]), STATUS_INVALID_PAGE_PROTECTION. A data view's pages take no
+/// protection beyond the view's maximum ([`vm::Maximum`]: STATUS_SECTION_PROTECTION, as Windows
+/// 2000 checks a view against its section), and a writable one given to a view or an image that may
+/// not write its section's frames stays copy-on-write: the write is the process's alone.
 pub fn protect(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -269,8 +273,15 @@ pub fn protect(
     let (start, end) = page_span(address, size.max(1));
     match space.region_at(start) {
         Some(region) if region.kind == Kind::System => return Err(STATUS_INVALID_PAGE_PROTECTION),
-        Some(region) if end <= region.base as u64 + region.size as u64 => {}
-        _ => return Err(STATUS_CONFLICTING_ADDRESSES),
+        Some(region) if end > region.base as u64 + region.size as u64 => {
+            return Err(STATUS_CONFLICTING_ADDRESSES);
+        }
+        Some(Region {
+            kind: Kind::Mapped(maximum),
+            ..
+        }) if !maximum.allows(protect) => return Err(STATUS_SECTION_PROTECTION),
+        Some(_) => {}
+        None => return Err(STATUS_CONFLICTING_ADDRESSES),
     }
     let old = space
         .protect(pages, address, size, protect)
@@ -753,10 +764,14 @@ mod tests {
         assert_eq!(&bytes[24..], &[7, 0, 0, 0]);
     }
 
+    /// Page tables as a map, frames numbered from 1 MiB: their extra holders and their first words
+    /// (a frame's contents).
     #[derive(Default)]
     struct Fake {
         entries: HashMap<u32, u32>,
         next: u32,
+        holders: HashMap<u32, u32>,
+        words: HashMap<u32, u32>,
     }
 
     impl Pages for Fake {
@@ -773,21 +788,54 @@ mod tests {
             Some(0x10_0000 + self.next * PAGE)
         }
 
-        fn free_frame(&mut self, _frame: u32) {}
-
-        fn share_frame(&mut self, _frame: u32) {}
-
-        fn frame_shared(&self, _frame: u32) -> bool {
-            false
+        fn free_frame(&mut self, frame: u32) {
+            if let Some(extra) = self.holders.get_mut(&frame).filter(|extra| **extra > 0) {
+                *extra -= 1;
+            }
         }
 
-        fn copy_frame(&mut self, _from: u32, _to: u32) {}
-
-        fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
-            0
+        fn share_frame(&mut self, frame: u32) {
+            *self.holders.entry(frame).or_default() += 1;
         }
 
-        fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+        fn frame_shared(&self, frame: u32) -> bool {
+            self.holders.get(&frame).is_some_and(|&extra| extra > 0)
+        }
+
+        fn copy_frame(&mut self, from: u32, to: u32) {
+            let word = self.frame_word(from, 0);
+            self.set_frame_word(to, 0, word);
+        }
+
+        fn frame_word(&self, frame: u32, index: u32) -> u32 {
+            if index == 0 {
+                self.words.get(&frame).copied().unwrap_or(0)
+            } else {
+                0
+            }
+        }
+
+        fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
+            if index == 0 {
+                self.words.insert(frame, value);
+            }
+        }
+    }
+
+    impl Fake {
+        /// A program's write of `value` at the page holding `va`, as the processor and the
+        /// page-fault handler make it: through a writable page, or a copy-on-write page made the
+        /// process's own first; false when the page refuses it (an access violation).
+        fn write(&mut self, va: u32, value: u32) -> bool {
+            let page = va & !(PAGE - 1);
+            let writable = |entry: u32| entry & 1 != 0 && entry & 2 != 0;
+            if !writable(self.entry(page)) && !vm::copy_on_write(self, page) {
+                return false;
+            }
+            let (frame, _) = vm::decode(self.entry(page)).unwrap();
+            self.set_frame_word(frame, 0, value);
+            true
+        }
     }
 
     /// The Win32 error a failure's status maps to (the error the memory fixture prints).
@@ -1116,7 +1164,9 @@ mod tests {
         use crate::ob::{Mapping, ObjectId, ObjectType};
         let mut space = AddressSpace::new();
         let rw = vm::PAGE_READWRITE;
-        let view = space.reserve(None, 0x1_0000, rw, Kind::Mapped).unwrap();
+        let view = space
+            .reserve(None, 0x1_0000, rw, Kind::Mapped(vm::Maximum::Write))
+            .unwrap();
         let section = Mapping::Section(ObjectId {
             kind: ObjectType::Section,
             index: 3,
@@ -1296,5 +1346,185 @@ mod tests {
             87,
             "a bad protection"
         );
+    }
+
+    /// A section's frame, held by its section, mapped at the page `va` of a view with `protect`
+    /// (as `nt::section` maps a view), its contents 0x5EC7.
+    fn map_section_frame(space: &mut AddressSpace, pages: &mut Fake, va: u32, protect: u32) -> u32 {
+        let frame = pages.zeroed_frame().unwrap();
+        pages.set_frame_word(frame, 0, 0x5EC7);
+        space.map_shared(pages, va, frame, protect).unwrap();
+        frame
+    }
+
+    /// A view through a read-only handle, or of a read-only section (memory/mapping's FILE_MAP_READ
+    /// views), never writes its section: a read-write protection is STATUS_SECTION_PROTECTION
+    /// (ERROR_INVALID_PARAMETER), so is an executable one (a data section never executes); a
+    /// copy-on-write one is taken, and the write lands in a copy. The section's frame, which every
+    /// other view maps, keeps its bytes.
+    #[test]
+    fn a_read_only_view_never_writes_its_section() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let ro = vm::PAGE_READONLY;
+        let view = space
+            .reserve(None, 0x2000, ro, Kind::Mapped(vm::Maximum::Read))
+            .unwrap();
+        let frame = map_section_frame(&mut space, &mut pages, view, ro);
+        map_section_frame(&mut space, &mut pages, view + PAGE, ro);
+        for refused in [
+            vm::PAGE_READWRITE,
+            vm::PAGE_READWRITE | vm::PAGE_GUARD,
+            vm::PAGE_EXECUTE_READWRITE,
+            vm::PAGE_EXECUTE_READ,
+        ] {
+            assert_eq!(
+                protect(&mut space, &mut pages, view, PAGE, refused),
+                Err(STATUS_SECTION_PROTECTION),
+                "{refused:#x}"
+            );
+        }
+        assert_eq!(
+            error(protect(
+                &mut space,
+                &mut pages,
+                view,
+                0x2000,
+                vm::PAGE_READWRITE
+            )),
+            87
+        );
+        assert_eq!(query(&space, &pages, view).map(|info| info.protect), Ok(ro));
+        assert!(!pages.write(view, 1), "still read-only");
+        assert_eq!(
+            protect(&mut space, &mut pages, view, PAGE, vm::PAGE_WRITECOPY),
+            Ok((view, PAGE, ro))
+        );
+        assert!(pages.write(view, 1));
+        assert_eq!(
+            pages.frame_word(frame, 0),
+            0x5EC7,
+            "the section's frame is untouched"
+        );
+        assert_ne!(space.frame_at(&pages, view), Some(frame));
+        assert_eq!(
+            protect(&mut space, &mut pages, view, PAGE, vm::PAGE_NOACCESS),
+            Ok((view, PAGE, vm::PAGE_READWRITE)),
+            "the written page is the process's own"
+        );
+        // The view of a section the handle may write: its writes are the section's.
+        let shared = space
+            .reserve(None, PAGE, ro, Kind::Mapped(vm::Maximum::Write))
+            .unwrap();
+        let frame = map_section_frame(&mut space, &mut pages, shared, ro);
+        protect(&mut space, &mut pages, shared, PAGE, vm::PAGE_READWRITE).unwrap();
+        assert!(pages.write(shared, 2));
+        assert_eq!(pages.frame_word(frame, 0), 2);
+        assert_eq!(
+            protect(&mut space, &mut pages, shared, PAGE, vm::PAGE_EXECUTE_READ),
+            Err(STATUS_SECTION_PROTECTION)
+        );
+    }
+
+    /// A copy-on-write view (FILE_MAP_COPY) made read-write stays copy-on-write: a query reports
+    /// PAGE_WRITECOPY, and the write lands in a private copy, the section's frame left as every
+    /// other view sees it. Once written the page is the process's own, and takes read-write as
+    /// asked.
+    #[test]
+    fn a_copy_on_write_view_made_writable_stays_copy_on_write() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let wc = vm::PAGE_WRITECOPY;
+        let view = space
+            .reserve(None, PAGE, wc, Kind::Mapped(vm::Maximum::CopyOnWrite))
+            .unwrap();
+        let frame = map_section_frame(&mut space, &mut pages, view, vm::PAGE_READONLY);
+        assert_eq!(
+            protect(&mut space, &mut pages, view, PAGE, vm::PAGE_READWRITE),
+            Ok((view, PAGE, vm::PAGE_READONLY))
+        );
+        assert_eq!(query(&space, &pages, view).map(|info| info.protect), Ok(wc));
+        assert!(pages.write(view, 9));
+        assert_eq!(
+            pages.frame_word(frame, 0),
+            0x5EC7,
+            "the section's frame is untouched"
+        );
+        let copy = space.frame_at(&pages, view).unwrap();
+        assert_ne!(copy, frame);
+        assert_eq!(pages.frame_word(copy, 0), 9);
+        assert!(
+            !pages.frame_shared(frame),
+            "the view let go of the section's frame"
+        );
+        protect(&mut space, &mut pages, view, PAGE, vm::PAGE_READWRITE).unwrap();
+        assert_eq!(
+            query(&space, &pages, view).map(|info| info.protect),
+            Ok(vm::PAGE_READWRITE)
+        );
+        assert_eq!(
+            protect(
+                &mut space,
+                &mut pages,
+                view,
+                PAGE,
+                vm::PAGE_EXECUTE_READWRITE
+            ),
+            Err(STATUS_SECTION_PROTECTION)
+        );
+    }
+
+    /// An image's view: each of its sections' pages takes any protection (ntdll's loader makes an
+    /// import table writable, a program its own code), but a writable one is copy-on-write over
+    /// the image segment's frames, which every process mapping the image shares — the header page,
+    /// the code, the read-only data and the writable data alike.
+    #[test]
+    fn an_image_views_sections_write_their_own_copies() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let image = space
+            .reserve(None, 0x4000, vm::PAGE_EXECUTE_WRITECOPY, Kind::Image)
+            .unwrap();
+        let sections = [
+            vm::PAGE_READONLY,
+            vm::PAGE_EXECUTE_READ,
+            vm::PAGE_READONLY,
+            vm::PAGE_WRITECOPY,
+        ];
+        let mut frames = Vec::new();
+        for (index, section) in sections.into_iter().enumerate() {
+            let va = image + index as u32 * PAGE;
+            frames.push(map_section_frame(&mut space, &mut pages, va, section));
+        }
+        for (index, (section, writable, written)) in [
+            (vm::PAGE_READONLY, vm::PAGE_READWRITE, vm::PAGE_WRITECOPY),
+            (
+                vm::PAGE_EXECUTE_READ,
+                vm::PAGE_EXECUTE_READWRITE,
+                vm::PAGE_EXECUTE_WRITECOPY,
+            ),
+            (vm::PAGE_READONLY, vm::PAGE_READWRITE, vm::PAGE_WRITECOPY),
+            (vm::PAGE_WRITECOPY, vm::PAGE_READWRITE, vm::PAGE_WRITECOPY),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let va = image + index as u32 * PAGE;
+            assert_eq!(
+                protect(&mut space, &mut pages, va, PAGE, writable),
+                Ok((va, PAGE, section))
+            );
+            assert_eq!(
+                query(&space, &pages, va).map(|info| info.protect),
+                Ok(written)
+            );
+            assert!(pages.write(va, index as u32));
+            assert_eq!(
+                pages.frame_word(frames[index], 0),
+                0x5EC7,
+                "section {index}"
+            );
+            assert_eq!(
+                query(&space, &pages, va).map(|info| info.protect),
+                Ok(writable)
+            );
+        }
     }
 }

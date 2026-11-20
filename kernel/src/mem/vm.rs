@@ -23,8 +23,10 @@
 //! region and the run of pages after it in the same state and protection, within the region;
 //! outside every region it reports free memory up to the next region.
 //!
-//! Region kinds are metadata (what a query reports as the type); the services (`nt::memory`,
-//! `nt::section`) decide what each kind refuses.
+//! Region kinds are what a query reports as the type; the services (`nt::memory`, `nt::section`)
+//! decide what each kind refuses. A view's kind carries its maximum ([`Maximum`], NT's VAD holds
+//! the same against its section): what its pages may be given, and whether a writable protection
+//! writes its section or stays copy-on-write.
 //!
 //! A frame may have several holders: a data section, or an image file's segment, owns its frames
 //! ([`SectionFrames`]), and each view of it maps them too; a system DLL's pages are the kernel's,
@@ -33,9 +35,10 @@
 //! image's writable sections and FILE_MAP_COPY views) are read-only to the hardware: the first
 //! write makes the page private — a copy of a frame other holders still map, or the frame itself
 //! when it is the page's alone — and the page turns read-write, as the platform reports it
-//! ([`copy_on_write`]). A writable protection given to a page whose frame others hold, outside a
-//! view, is copy-on-write in fact: the system DLLs' pages, and the shared data page, stay the
-//! kernel's.
+//! ([`copy_on_write`]). A writable protection given to a page whose frame others hold is
+//! copy-on-write in fact, unless the page is a view's that may write its section
+//! ([`Maximum::Write`]): the system DLLs' pages, an image's, the shared data page and a
+//! copy-on-write or read-only view's section stay as their holders made them.
 
 /// The page size and the allocation granularity.
 pub const PAGE: u32 = 0x1000;
@@ -225,8 +228,8 @@ pub fn fire_guard(pages: &mut impl Pages, va: u32) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
     Private,
-    /// A mapped view: its pages map its section's frames.
-    Mapped,
+    /// A mapped view: its pages map its section's frames, as far as its maximum lets them.
+    Mapped(Maximum),
     Image,
     /// Private memory the kernel seeded and maps itself (the TEBs, the PEB, the shared data
     /// page): MEM_PRIVATE to a query, but secured, as Windows 2000's PEB and TEB VADs are — no
@@ -239,8 +242,37 @@ impl Kind {
     fn mem_type(self) -> u32 {
         match self {
             Kind::Private | Kind::System => MEM_PRIVATE,
-            Kind::Mapped => MEM_MAPPED,
+            Kind::Mapped(_) => MEM_MAPPED,
             Kind::Image => MEM_IMAGE,
+        }
+    }
+}
+
+/// A data view's maximum protection, settled when it is mapped from its section's protection, the
+/// access its section handle was granted and the view's own protection (`nt::section`): what a
+/// protection change may give its pages, as Windows 2000's MiProtectVirtualMemory checks a view's
+/// against its section (MmCompatibleProtectionMask). A data section never executes, so no view
+/// takes an executable protection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Maximum {
+    /// The section's frames are the view's to write: a read-write section, through a handle
+    /// granted SECTION_MAP_WRITE, in a view not mapped copy-on-write.
+    Write,
+    /// A copy-on-write view of such a section: a writable protection is taken, but stays
+    /// copy-on-write, so a write lands in a page of the process's own.
+    CopyOnWrite,
+    /// A view of a section made read-only or copy-on-write, or through a handle without
+    /// SECTION_MAP_WRITE: no writable protection (STATUS_SECTION_PROTECTION); copy-on-write is.
+    Read,
+}
+
+impl Maximum {
+    /// Whether a view of this maximum may take `protect` (its guard and cache bits aside).
+    pub fn allows(self, protect: u32) -> bool {
+        match protect & 0xFF {
+            PAGE_NOACCESS | PAGE_READONLY | PAGE_WRITECOPY => true,
+            PAGE_READWRITE => self != Maximum::Read,
+            _ => false,
         }
     }
 }
@@ -722,12 +754,13 @@ impl AddressSpace {
 }
 
 /// The protection a committed page of a `kind` region holding `frame` takes when given `protect`:
-/// outside a view, a writable protection over a frame others hold (a system DLL's page, the shared
-/// data page, a section's frame a copy-on-write view mapped) is copy-on-write, so the write stays
-/// the process's; a view's writable pages write its section.
+/// a writable protection over a frame others hold (a system DLL's page, an image's, the shared data
+/// page, a section's frame) is copy-on-write, so the write stays the process's — unless the page is
+/// a view's that may write its section ([`Maximum::Write`]). A page already made the process's own
+/// takes the protection as given.
 fn settle(kind: Kind, pages: &impl Pages, frame: u32, protect: u32) -> u32 {
     match copy_on_write_of(protect) {
-        Some(copy) if kind != Kind::Mapped && pages.frame_shared(frame) => copy,
+        Some(copy) if kind != Kind::Mapped(Maximum::Write) && pages.frame_shared(frame) => copy,
         _ => protect,
     }
 }
@@ -1031,10 +1064,10 @@ mod tests {
         assert_eq!(section.made(&pages, 0), Some(first));
         assert_eq!(section.made(&pages, 1), None);
         let one = vm
-            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         let two = vm
-            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         vm.map_shared(&mut pages, one, first, PAGE_READWRITE)
             .unwrap();
@@ -1089,7 +1122,7 @@ mod tests {
         let frame = section.frame(&mut pages, 0, |_| ()).unwrap();
         pages.set_frame_word(frame, 0, 77);
         let view = vm
-            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         vm.map_shared(&mut pages, view, frame, PAGE_WRITECOPY)
             .unwrap();
@@ -1131,7 +1164,7 @@ mod tests {
         assert_eq!(vm.query(&pages, dll).protect, PAGE_READWRITE);
 
         let view = vm
-            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped)
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         pages.holders.insert(0x0061_0000, 0);
         vm.map_shared(&mut pages, view, 0x0061_0000, PAGE_READONLY)
