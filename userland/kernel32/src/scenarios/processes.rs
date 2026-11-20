@@ -1137,13 +1137,14 @@ fn a_failure_undoes_what_was_made() {
     );
 }
 
-/// DETACHED_PROCESS, CREATE_NEW_CONSOLE and the debugging flags take the stub path: logged, FALSE
-/// with ERROR_CALL_NOT_IMPLEMENTED, nothing looked for or made.
+/// The debugging flags take the stub path: logged, FALSE with ERROR_CALL_NOT_IMPLEMENTED, nothing
+/// looked for or made. DETACHED_PROCESS with CREATE_NEW_CONSOLE is ERROR_INVALID_PARAMETER, nothing
+/// looked for or made either (Windows 2000's newcon capture).
 ///
 /// Pins: kernel32.CreateProcessW, kernel32.CreateProcessA
 #[test]
-fn a_detached_process_or_a_new_console_is_not_implemented() {
-    for flags in [0x8, 0x10, 0x1, 0x2] {
+fn a_debugged_process_is_not_implemented() {
+    for flags in [0x1, 0x2] {
         setup();
         let (created, error, _) = create(
             None,
@@ -1173,7 +1174,7 @@ fn a_detached_process_or_a_new_console_is_not_implemented() {
             core::ptr::null(),
             core::ptr::null(),
             1,
-            0x10,
+            0x1,
             core::ptr::null(),
             core::ptr::null(),
             &startup(),
@@ -1188,6 +1189,72 @@ fn a_detached_process_or_a_new_console_is_not_implemented() {
              lpCommandLine=\"spawnkid exit 13\""
         ),
         "{prints:?}"
+    );
+    setup();
+    let (created, error, _) = create(
+        None,
+        Some("spawnkid exit 13"),
+        0x8 | 0x10,
+        core::ptr::null(),
+        None,
+        &startup(),
+    );
+    assert_eq!((created, error), (0, 87));
+    assert!(calls().is_empty());
+}
+
+/// A console program's ConsoleHandle and standard handles: the caller's own, shared; for
+/// DETACHED_PROCESS and CREATE_NEW_CONSOLE, Windows 2000's CONSOLE_DETACHED (-1) and CONSOLE_NEW
+/// (-2) and no standard handles (the connection fills a new console's), unless STARTUPINFO gives
+/// them (STARTF_USESTDHANDLES); the flags reach the base server's announcement.
+///
+/// Pins: kernel32.CreateProcessW
+#[test]
+fn a_detached_process_or_a_new_console_is_marked_for_its_connection() {
+    for (flags, console, handles) in [
+        (0, 0, [3, 7, 0xB]),
+        (0x8, u32::MAX, [0; 3]),
+        (0x10, u32::MAX - 1, [0; 3]),
+    ] {
+        setup();
+        existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
+        let (created, _, _) = create(
+            None,
+            Some("spawnkid out"),
+            flags,
+            core::ptr::null(),
+            None,
+            &startup(),
+        );
+        assert_eq!(created, 1, "{flags:#x}");
+        assert_eq!(child_dword(PARAMETERS + 0x10), console, "{flags:#x}");
+        assert_eq!(
+            [0x18, 0x1C, 0x20].map(|at| child_dword(PARAMETERS + at)),
+            handles,
+            "{flags:#x}"
+        );
+    }
+    setup();
+    existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
+    let info = StartupInfo {
+        flags: 0x100,
+        standard_input: 0x44,
+        standard_output: 0x48,
+        standard_error: 0x4C,
+        ..startup()
+    };
+    let (created, _, _) = create(
+        None,
+        Some("spawnkid out"),
+        0x10,
+        core::ptr::null(),
+        None,
+        &info,
+    );
+    assert_eq!(created, 1);
+    assert_eq!(
+        [0x18, 0x1C, 0x20].map(|at| child_dword(PARAMETERS + at)),
+        [0x44, 0x48, 0x4C]
     );
 }
 

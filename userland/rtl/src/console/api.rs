@@ -135,6 +135,12 @@ pub enum Api {
     CreateScreenBuffer = number(29),
     /// ConsolepSetActiveScreenBuffer ([`SetActiveScreenBuffer`]).
     SetActiveScreenBuffer = number(30),
+    /// ConsolepAlloc ([`AllocConsole`]).
+    AllocConsole = number(31),
+    /// ConsolepFree ([`FreeConsole`]).
+    FreeConsole = number(32),
+    /// ConsolepGetConsoleWindow ([`GetConsoleWindow`]).
+    GetConsoleWindow = number(33),
 }
 
 /// An API's number: the console server's index in the high word, the API's in the low one.
@@ -143,7 +149,7 @@ const fn number(index: u32) -> u32 {
 }
 
 /// Every API, at its index.
-const APIS: [Api; 31] = [
+const APIS: [Api; 34] = [
     Api::WriteConsole,
     Api::ReadConsole,
     Api::GetMode,
@@ -175,6 +181,9 @@ const APIS: [Api; 31] = [
     Api::GenerateCtrlEvent,
     Api::CreateScreenBuffer,
     Api::SetActiveScreenBuffer,
+    Api::AllocConsole,
+    Api::FreeConsole,
+    Api::GetConsoleWindow,
 ];
 
 const _: () = {
@@ -273,6 +282,9 @@ messages! {
     GenerateCtrlEvent: 2 [event, group];
     CreateScreenBuffer: 5 [access, share, inherit, flags, handle];
     SetActiveScreenBuffer: 1 [handle];
+    AllocConsole: 7 [routine, title, length, size, attribute, flags, show_window];
+    FreeConsole: 1 [reserved];
+    GetConsoleWindow: 1 [window];
 }
 
 /// WriteConsole: `count` bytes of the client's memory at `buffer` to the screen, or, `unicode`,
@@ -633,6 +645,45 @@ pub struct SetActiveScreenBuffer<W> {
     pub handle: W,
 }
 
+/// A console of the process's own, made for it: AllocConsole's, and the connection of a process
+/// CreateProcess gave a new console (CREATE_NEW_CONSOLE, or a console program whose creator has
+/// none), as Windows 2000's kernel32 asks csrss for one with the process's startup values. The
+/// process must have no console (STATUS_ACCESS_DENIED otherwise). `routine` is its CtrlRoutine
+/// (see [`ConnectCtrl`]); `title` and `length` the title's UTF-16 units (its parameters'
+/// WindowTitle); `size` the screen buffer's columns in the low word and rows in the high one (0:
+/// the default size; STARTUPINFO's dwXCountChars and dwYCountChars); `attribute` the attribute its
+/// cells and writes take (0: the default; dwFillAttribute); `flags` and `show_window` STARTUPINFO's
+/// dwFlags and wShowWindow (a console shown SW_HIDE does not come to the screen). The process's
+/// console handles are the new console's standard three (3, 7 and 0xB) once it answers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AllocConsole<W> {
+    pub routine: W,
+    pub title: W,
+    pub length: W,
+    pub size: W,
+    pub attribute: W,
+    pub flags: W,
+    pub show_window: W,
+}
+
+/// FreeConsole: the process leaves its console, its console handles closed; the console goes with
+/// its last process. A process with no console is refused (STATUS_INVALID_PARAMETER). The word is
+/// not looked at.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FreeConsole<W> {
+    pub reserved: W,
+}
+
+/// GetConsoleWindow: the window of the process's console, written by the server; 0 for a process
+/// with no console.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GetConsoleWindow<W> {
+    pub window: W,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,7 +695,8 @@ mod tests {
         assert_eq!(Api::try_from(0x0002_001A), Ok(Api::ReadOutputAttribute));
         assert_eq!(Api::try_from(0x0002_001C), Ok(Api::GenerateCtrlEvent));
         assert_eq!(Api::try_from(0x0002_001E), Ok(Api::SetActiveScreenBuffer));
-        for number in [0x0002_001F, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
+        assert_eq!(Api::try_from(0x0002_0021), Ok(Api::GetConsoleWindow));
+        for number in [0x0002_0022, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
             assert_eq!(Api::try_from(number), Err(number), "{number:#x}");
         }
         assert_eq!(u32::from(Api::GetInputWaitHandle), 0x0002_0016);

@@ -21,7 +21,8 @@ Four test programs are built beside them and kept off the disk: [`keyshow`](user
 
 Windows 2000's own `cmd.exe` starts, runs its built-in commands (`dir`, `copy`, `set`, `type`, `md`...) and starts other programs, redirecting their input and output to files.
 Up to 16 processes run at once.
-F2K's own `cmd.exe` runs pipes (`|`), matched against Windows 2000's; new consoles for child processes are not there yet.
+F2K's own `cmd.exe` runs pipes (`|`), matched against Windows 2000's.
+A child process shares its creator's console, or gets a console of its own (`CREATE_NEW_CONSOLE`, `AllocConsole`; four consoles at once) or none (`DETACHED_PROCESS`, `FreeConsole`); the one screen shows the console made last that is still open and not hidden, and the keyboard types into it.
 Functions F2K does not have yet are either absent or stubs that log their call (see the compatibility report below).
 
 ## Prerequisites

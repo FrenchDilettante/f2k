@@ -1,13 +1,15 @@
 //! The console's control events: Ctrl+C and Ctrl+Break, delivered to the console's processes as
 //! Windows 2000's console delivers them.
 //!
-//! The console keeps its processes ([`Control`]), as Windows 2000's console keeps each process
-//! attached to it: one connects at its start (kernel32's ConnectCtrl, the server's API 27), handing
-//! over its CtrlRoutine — kernel32's routine that runs the process's handlers — and the console
-//! records it with the process's group (see `Process::process_group`); its end disconnects it. An
-//! event names a group: a key's goes to group 0, every process of the console;
-//! GenerateConsoleCtrlEvent names one, refused (STATUS_INVALID_PARAMETER) when no process of the
-//! console is in it.
+//! The server keeps the consoles' processes ([`Control`]), as Windows 2000's console keeps each
+//! process attached to it: one connects at its start (kernel32's ConnectCtrl, the server's API 27,
+//! or the making of a console of its own, AllocConsole's), handing over its CtrlRoutine —
+//! kernel32's routine that runs the process's handlers — and the server records it with the
+//! process's group (see `Process::process_group`) and its console; leaving the console
+//! (FreeConsole) or its end disconnects it. An event names a console and a group: a key's goes to
+//! group 0 of the console the keyboard types into, every process of it; GenerateConsoleCtrlEvent
+//! names one of the caller's console, refused (STATUS_INVALID_PARAMETER) when no process of that
+//! console is in it — a process of another console leads no group of the caller's.
 //!
 //! Events are raised at the server's level — the keyboard's DPC raises a key's, the system service
 //! GenerateConsoleCtrlEvent's — and queued there for the console's control thread, which the raise
@@ -49,13 +51,15 @@ pub const SERVER_PROCESSES: usize = crate::process::MAX_PROCESSES;
 /// How many raised events wait for the control thread at most (one more is dropped).
 const PENDING_EVENTS: usize = 16;
 
-/// A process the server knows: its object; the group it belongs to and its CtrlRoutine once it is
-/// one of the console's (none for a process the console does not hold); its shutdown level and
-/// flags (SetProcessShutdownParameters'); and whether the session's end under way has reached it.
+/// A process the server knows: its object; the group it belongs to, its console (the server's
+/// slot) and its CtrlRoutine once it is one of a console's (none for a process no console holds);
+/// its shutdown level and flags (SetProcessShutdownParameters'); and whether the session's end
+/// under way has reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ServerProcess {
     pub process: ObjectId,
     pub group: u32,
+    pub console: usize,
     pub routine: Option<u32>,
     pub shutdown_level: u32,
     pub shutdown_flags: u32,
@@ -68,6 +72,7 @@ impl ServerProcess {
         ServerProcess {
             process,
             group: 0,
+            console: 0,
             routine: None,
             shutdown_level: rtl::console::base::DEFAULT_SHUTDOWN_LEVEL,
             shutdown_flags: 0,
@@ -109,8 +114,9 @@ pub struct Delivery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Control {
     processes: [Option<ServerProcess>; SERVER_PROCESSES],
-    /// The raised events, each with its group: a ring, `first` the oldest, `count` of them.
-    pending: [(u32, u32); PENDING_EVENTS],
+    /// The raised events, each with its group and its console: a ring, `first` the oldest, `count`
+    /// of them.
+    pending: [(u32, u32, usize); PENDING_EVENTS],
     first: usize,
     count: usize,
     session: Session,
@@ -124,7 +130,7 @@ impl Control {
     pub const fn new() -> Self {
         Control {
             processes: [None; SERVER_PROCESSES],
-            pending: [(0, 0); PENDING_EVENTS],
+            pending: [(0, 0, 0); PENDING_EVENTS],
             first: 0,
             count: 0,
             session: Session::Running,
@@ -132,13 +138,14 @@ impl Control {
         }
     }
 
-    /// Connect `process`, of group `group`, its CtrlRoutine `routine`, to the console, at the
-    /// default shutdown level with no shutdown flag: a connection it made before, or what the
+    /// Connect `process`, of group `group`, its CtrlRoutine `routine`, to console `console`, at
+    /// the default shutdown level with no shutdown flag: a connection it made before, or what the
     /// server knew of it, is replaced, its shutdown level and flags kept. False when the server
     /// has no room for it.
-    pub fn connect(&mut self, process: ObjectId, group: u32, routine: u32) -> bool {
+    pub fn connect(&mut self, process: ObjectId, group: u32, routine: u32, console: usize) -> bool {
         let mut entry = ServerProcess {
             group,
+            console,
             routine: Some(routine),
             ..ServerProcess::known(process)
         };
@@ -199,6 +206,17 @@ impl Control {
             })
     }
 
+    /// `process` leaves its console (FreeConsole): no event reaches it until it connects again;
+    /// the server still knows it.
+    pub fn leave(&mut self, process: ObjectId) {
+        if let Some(held) = self
+            .slot_of(process)
+            .and_then(|slot| self.processes[slot].as_mut())
+        {
+            held.routine = None;
+        }
+    }
+
     /// Forget `process` (its end): no event, nor the session's end, reaches it from now on, and its
     /// shutdown parameters go. Nothing for a process the server does not know.
     pub fn disconnect(&mut self, process: ObjectId) {
@@ -220,33 +238,35 @@ impl Control {
             .or_else(|| self.processes.iter().position(Option::is_none))
     }
 
-    /// The console's processes in `group`, every one for group 0, each with its CtrlRoutine.
-    fn in_group(&self, group: u32) -> impl Iterator<Item = (ObjectId, u32)> + '_ {
+    /// Console `console`'s processes in `group`, every one for group 0, each with its
+    /// CtrlRoutine.
+    fn in_group(&self, group: u32, console: usize) -> impl Iterator<Item = (ObjectId, u32)> + '_ {
         self.processes
             .iter()
             .flatten()
-            .filter(move |held| group == 0 || held.group == group)
+            .filter(move |held| held.console == console && (group == 0 || held.group == group))
             .filter_map(|held| held.routine.map(|routine| (held.process, routine)))
     }
 
-    /// GenerateConsoleCtrlEvent's work: `event` raised for group `group`; STATUS_INVALID_PARAMETER,
-    /// nothing raised, when no process of the console is in the group — a group no process leads
-    /// any more, a process's id that leads none, a process of another console.
-    pub fn generate(&mut self, event: u32, group: u32) -> Result<(), u32> {
-        if self.in_group(group).next().is_none() {
+    /// GenerateConsoleCtrlEvent's work: `event` raised for group `group` of console `console`
+    /// (the caller's); STATUS_INVALID_PARAMETER, nothing raised, when no process of the console is
+    /// in the group — a group no process leads any more, a process's id that leads none, a process
+    /// of another console.
+    pub fn generate(&mut self, event: u32, group: u32, console: usize) -> Result<(), u32> {
+        if self.in_group(group, console).next().is_none() {
             return Err(STATUS_INVALID_PARAMETER.0);
         }
-        self.raise(event, group);
+        self.raise(event, group, console);
         Ok(())
     }
 
-    /// Queue `event` for group `group`, for the control thread; false, nothing queued, when the
-    /// queue is full.
-    pub fn raise(&mut self, event: u32, group: u32) -> bool {
+    /// Queue `event` for group `group` of console `console`, for the control thread; false,
+    /// nothing queued, when the queue is full.
+    pub fn raise(&mut self, event: u32, group: u32, console: usize) -> bool {
         if self.count == PENDING_EVENTS {
             return false;
         }
-        self.pending[(self.first + self.count) % PENDING_EVENTS] = (event, group);
+        self.pending[(self.first + self.count) % PENDING_EVENTS] = (event, group, console);
         self.count += 1;
         true
     }
@@ -261,11 +281,11 @@ impl Control {
         if self.count == 0 {
             return None;
         }
-        let (event, group) = self.pending[self.first];
+        let (event, group, console) = self.pending[self.first];
         self.first = (self.first + 1) % PENDING_EVENTS;
         self.count -= 1;
         let mut targets = [None; SERVER_PROCESSES];
-        for (target, held) in targets.iter_mut().zip(self.in_group(group)) {
+        for (target, held) in targets.iter_mut().zip(self.in_group(group, console)) {
             *target = Some(held);
         }
         Some(Delivery { event, targets })
@@ -591,12 +611,12 @@ mod tests {
     #[test]
     fn events_go_to_their_groups_processes() {
         let mut control = Control::new();
-        assert!(control.connect(process(1), 8, 0x1000));
-        assert!(control.connect(process(2), 12, 0x2000));
-        assert!(control.connect(process(3), 12, 0x3000));
-        assert!(control.connect(process(1), 8, 0x1100));
-        assert!(control.raise(1, 12));
-        assert!(control.raise(0, 0));
+        assert!(control.connect(process(1), 8, 0x1000, 0));
+        assert!(control.connect(process(2), 12, 0x2000, 0));
+        assert!(control.connect(process(3), 12, 0x3000, 0));
+        assert!(control.connect(process(1), 8, 0x1100, 0));
+        assert!(control.raise(1, 12, 0));
+        assert!(control.raise(0, 0, 0));
         let targets = |delivery: Delivery| {
             delivery
                 .targets
@@ -625,7 +645,7 @@ mod tests {
     fn the_session_ends_with_the_caller_last() {
         let mut control = Control::new();
         for index in 1..=4 {
-            assert!(control.connect(process(index), 8, 0x1000 * index as u32));
+            assert!(control.connect(process(index), 8, 0x1000 * index as u32, 0));
         }
         let caller = process(2);
         assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
@@ -643,7 +663,7 @@ mod tests {
             control.next_to_end(caller),
             Some((process(1), Some(0x1000)))
         );
-        assert!(control.connect(process(5), 8, 0x5000));
+        assert!(control.connect(process(5), 8, 0x5000, 0));
         control.disconnect(process(1));
         assert_eq!(
             control.next_to_end(caller),
@@ -692,16 +712,16 @@ mod tests {
     #[test]
     fn the_server_knows_processes_off_the_console() {
         let mut control = Control::new();
-        assert!(control.connect(process(1), 8, 0x1000));
+        assert!(control.connect(process(1), 8, 0x1000, 0));
         assert!(control.know(process(2)));
         assert!(control.set_shutdown_parameters(process(3), 0x300, 0));
         assert!(control.know(process(3)));
         assert_eq!(control.shutdown_parameters(process(3)), (0x300, 0));
         assert_eq!(
-            control.generate(0, process(2).index as u32),
+            control.generate(0, process(2).index as u32, 0),
             Err(STATUS_INVALID_PARAMETER.0)
         );
-        assert!(control.raise(0, 0));
+        assert!(control.raise(0, 0, 0));
         let delivery = control.take().unwrap();
         assert_eq!(
             delivery
@@ -716,7 +736,7 @@ mod tests {
         assert!(control.request_session_end(SessionRequest { flags: 1, caller }));
         control.take_session_end();
         assert_eq!(control.next_to_end(caller), Some((process(3), None)));
-        assert!(control.connect(process(2), 8, 0x2000));
+        assert!(control.connect(process(2), 8, 0x2000, 0));
         assert_eq!(
             control.next_to_end(caller),
             Some((process(2), Some(0x2000)))
@@ -727,7 +747,7 @@ mod tests {
         );
         assert_eq!(control.next_to_end(caller), None);
         control.session_ended();
-        assert!(control.connect(process(3), 12, 0x3000));
+        assert!(control.connect(process(3), 12, 0x3000, 0));
         assert_eq!(control.shutdown_parameters(process(3)), (0x300, 0));
         control.disconnect(process(3));
         assert_eq!(
@@ -746,7 +766,7 @@ mod tests {
         use rtl::console::base::{DEFAULT_SHUTDOWN_LEVEL, SHUTDOWN_NORETRY};
         let mut control = Control::new();
         for index in 1..=5 {
-            assert!(control.connect(process(index), 8, 0x1000 * index as u32));
+            assert!(control.connect(process(index), 8, 0x1000 * index as u32, 0));
         }
         assert_eq!(
             control.shutdown_parameters(process(1)),
@@ -757,7 +777,7 @@ mod tests {
         assert!(control.set_shutdown_parameters(process(5), 0x3FF, 0));
         assert!(control.set_shutdown_parameters(process(1), 0x0, 0));
         assert!(control.set_shutdown_parameters(process(3), 0xFFFF_FFFF, 0));
-        assert!(control.connect(process(4), 8, 0x4100));
+        assert!(control.connect(process(4), 8, 0x4100, 0));
         assert_eq!(
             control.shutdown_parameters(process(4)),
             (0x3FF, SHUTDOWN_NORETRY)
@@ -799,11 +819,37 @@ mod tests {
         control.session_ended();
         // A process that disconnects and connects again starts over at the default level.
         control.disconnect(process(4));
-        assert!(control.connect(process(4), 8, 0x4000));
+        assert!(control.connect(process(4), 8, 0x4000, 0));
         assert_eq!(
             control.shutdown_parameters(process(4)),
             (DEFAULT_SHUTDOWN_LEVEL, 0)
         );
+    }
+
+    /// An event goes to its console's processes alone: a group of another console's is no group
+    /// of the caller's, group 0 is every process of the console it names, and a process that left
+    /// its console takes no event until it connects again.
+    #[test]
+    fn events_stay_in_their_console() {
+        let mut control = Control::new();
+        assert!(control.connect(process(1), 0, 0x1000, 0));
+        assert!(control.connect(process(2), 0, 0x2000, 1));
+        assert!(control.connect(process(3), 30, 0x3000, 1));
+        assert_eq!(control.generate(1, 30, 0), Err(STATUS_INVALID_PARAMETER.0));
+        assert_eq!(control.generate(0, 0, 1), Ok(()));
+        let delivery = control.take().unwrap();
+        assert_eq!(
+            delivery.targets[..3],
+            [Some((process(2), 0x2000)), Some((process(3), 0x3000)), None]
+        );
+        control.leave(process(2));
+        assert_eq!(control.generate(1, 0, 1), Ok(()));
+        let delivery = control.take().unwrap();
+        assert_eq!(delivery.targets[..2], [Some((process(3), 0x3000)), None]);
+        control.leave(process(3));
+        assert_eq!(control.generate(1, 0, 1), Err(STATUS_INVALID_PARAMETER.0));
+        assert!(control.connect(process(3), 30, 0x3000, 2));
+        assert_eq!(control.generate(1, 30, 2), Ok(()));
     }
 
     /// The `end-session` option takes one control event a boot.
@@ -819,15 +865,15 @@ mod tests {
     #[test]
     fn a_generated_event_needs_a_process_in_its_group() {
         let mut control = Control::new();
-        assert_eq!(control.generate(1, 0), Err(STATUS_INVALID_PARAMETER.0));
-        assert!(control.connect(process(1), 8, 0x1000));
-        assert_eq!(control.generate(1, 12), Err(STATUS_INVALID_PARAMETER.0));
+        assert_eq!(control.generate(1, 0, 0), Err(STATUS_INVALID_PARAMETER.0));
+        assert!(control.connect(process(1), 8, 0x1000, 0));
+        assert_eq!(control.generate(1, 12, 0), Err(STATUS_INVALID_PARAMETER.0));
         assert!(!control.has_pending());
-        assert_eq!(control.generate(1, 8), Ok(()));
-        assert_eq!(control.generate(0, 0), Ok(()));
+        assert_eq!(control.generate(1, 8, 0), Ok(()));
+        assert_eq!(control.generate(0, 0, 0), Ok(()));
         control.disconnect(process(1));
-        assert_eq!(control.generate(1, 8), Err(STATUS_INVALID_PARAMETER.0));
-        while control.raise(1, 8) {}
+        assert_eq!(control.generate(1, 8, 0), Err(STATUS_INVALID_PARAMETER.0));
+        while control.raise(1, 8, 0) {}
         assert_eq!(
             core::iter::from_fn(|| control.take()).count(),
             PENDING_EVENTS

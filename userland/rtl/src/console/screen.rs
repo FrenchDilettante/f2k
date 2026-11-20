@@ -8,10 +8,12 @@
 //! it the cursor's column does not move past the row's end: the run of cells starts over from the
 //! column it began at. A line feed past the last row scrolls the grid up one row.
 //!
-//! The grid is Windows 2000's default console buffer, [`WIDTH`] x [`HEIGHT`] (80 x 300), behind a
-//! window of [`WINDOW_HEIGHT`] rows (80 x 25), the part the screen shows. A buffer
-//! CreateConsoleScreenBuffer makes is the window's size, 80 x 25 ([`ScreenBuffer::remake`]): it
-//! uses the grid's first [`WINDOW_HEIGHT`] rows, its window all of them. The window follows the
+//! A fresh grid is Windows 2000's default console buffer, [`WIDTH`] x [`HEIGHT`] (80 x 300), behind
+//! a window of [`WINDOW_HEIGHT`] rows (80 x 25), the part the screen shows. A console made for a
+//! program that asks for another size (STARTUPINFO's dwXCountChars and dwYCountChars) takes it
+//! ([`ScreenBuffer::reset`]), as long as its cells fit the grid's room, [`CELLS`]; its window is
+//! the default window's size, clipped to the grid. A buffer CreateConsoleScreenBuffer makes is the
+//! window's size, 80 x 25 ([`ScreenBuffer::remake`]), its window all of it. The window follows the
 //! cursor: a write or a move that leaves the cursor below the window's last row brings that row
 //! down to the cursor's, one above its first row brings the first row up to it.
 //!
@@ -23,12 +25,14 @@ use core::ops::Range;
 use super::SmallRect;
 use crate::codepage::{self, CodePage};
 
-/// The grid's columns.
+/// A fresh grid's columns, and the window's at most (the screen's).
 pub const WIDTH: usize = 80;
-/// The grid's rows: Windows 2000's default screen buffer's.
+/// A fresh grid's rows: Windows 2000's default screen buffer's.
 pub const HEIGHT: usize = 300;
-/// The window's rows, the ones the screen shows (its columns are the grid's).
+/// The window's rows at most, the ones the screen shows.
 pub const WINDOW_HEIGHT: usize = 25;
+/// The grid's room: the cells of a default buffer, which a buffer of another size must fit.
+pub const CELLS: usize = WIDTH * HEIGHT;
 
 /// A fresh buffer's attribute: light grey on black.
 pub const DEFAULT_ATTRIBUTE: u16 = 0x07;
@@ -61,9 +65,6 @@ impl Cell {
     }
 }
 
-/// The grid: [`HEIGHT`] rows of [`WIDTH`] cells.
-pub type Grid = [[Cell; WIDTH]; HEIGHT];
-
 /// What a fill writes: each cell's character or each cell's attribute, the other kept.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fill {
@@ -74,7 +75,11 @@ pub enum Fill {
 /// The screen buffer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScreenBuffer {
-    cells: Grid,
+    /// The grid's cells, row after row: the first `width * height` of the room.
+    cells: [Cell; CELLS],
+    /// The grid's columns and rows.
+    width: usize,
+    height: usize,
     /// The cursor: its row and column.
     row: usize,
     column: usize,
@@ -91,9 +96,6 @@ pub struct ScreenBuffer {
     anchor: usize,
     /// The rows changed since the last look, and whether anything (the cursor included) changed.
     damaged: Option<Range<usize>>,
-    /// The grid's rows in use: the buffer's height ([`HEIGHT`], or [`WINDOW_HEIGHT`] for a buffer
-    /// CreateConsoleScreenBuffer made).
-    rows: usize,
 }
 
 impl ScreenBuffer {
@@ -101,7 +103,9 @@ impl ScreenBuffer {
     /// console's.
     pub const fn new() -> Self {
         ScreenBuffer {
-            cells: [[Cell::blank(DEFAULT_ATTRIBUTE); WIDTH]; HEIGHT],
+            cells: [Cell::blank(DEFAULT_ATTRIBUTE); CELLS],
+            width: WIDTH,
+            height: HEIGHT,
             row: 0,
             column: 0,
             window_top: 0,
@@ -110,33 +114,51 @@ impl ScreenBuffer {
             limit_backspace: false,
             anchor: 0,
             damaged: None,
-            rows: HEIGHT,
         }
     }
 
-    /// Make the buffer over as one CreateConsoleScreenBuffer makes, as Windows 2000's: the size of
-    /// the console's window (80 x 25), blank in `attribute` (the active buffer's), which written
-    /// cells take, the cursor and the window home, the output mode a fresh console's. In place:
-    /// the grid is too large for a kernel stack's temporary.
-    pub fn remake(&mut self, attribute: u16) {
-        for row in &mut self.cells[..WINDOW_HEIGHT] {
-            *row = [Cell::blank(attribute); WIDTH];
-        }
-        self.rows = WINDOW_HEIGHT;
+    /// Whether a grid of `width` columns and `height` rows fits the room: neither empty, nor more
+    /// cells than [`CELLS`].
+    pub const fn fits(width: usize, height: usize) -> bool {
+        width != 0 && height != 0 && width <= CELLS && height <= CELLS / width
+    }
+
+    /// Make the buffer over again, in place (it is too large to be made anywhere else and moved):
+    /// `width` x `height` cells blank in `attribute`, which written cells take, the cursor and the
+    /// window home, the output mode a fresh console's; every row the window shows changed. A size
+    /// that does not fit (see [`ScreenBuffer::fits`]) is the default one.
+    pub fn reset(&mut self, width: usize, height: usize, attribute: u16) {
+        (self.width, self.height) = if Self::fits(width, height) {
+            (width, height)
+        } else {
+            (WIDTH, HEIGHT)
+        };
+        self.cells.fill(Cell::blank(attribute));
         (self.row, self.column, self.window_top) = (0, 0, 0);
         self.attribute = attribute;
         self.mode = super::OUTPUT_MODE;
         self.limit_backspace = false;
         self.anchor = 0;
+        self.damaged = Some(0..self.height);
+    }
+
+    /// Make the buffer over as one CreateConsoleScreenBuffer makes, as Windows 2000's: the size of
+    /// the console's window (80 x 25), blank in `attribute` (the active buffer's), which written
+    /// cells take, the cursor and the window home, the output mode a fresh console's, no change
+    /// recorded. In place: the grid is too large for a kernel stack's temporary.
+    pub fn remake(&mut self, attribute: u16) {
+        self.reset(WIDTH, WINDOW_HEIGHT, attribute);
         self.damaged = None;
     }
 
-    /// Exchange two buffers' contents, a row at a time: a whole buffer is too large for a kernel
+    /// Exchange two buffers' contents, a cell at a time: a whole buffer is too large for a kernel
     /// stack's temporary, which `core::mem::swap` may make.
     pub fn exchange(&mut self, other: &mut ScreenBuffer) {
         for (mine, theirs) in self.cells.iter_mut().zip(other.cells.iter_mut()) {
             core::mem::swap(mine, theirs);
         }
+        core::mem::swap(&mut self.width, &mut other.width);
+        core::mem::swap(&mut self.height, &mut other.height);
         core::mem::swap(&mut self.row, &mut other.row);
         core::mem::swap(&mut self.column, &mut other.column);
         core::mem::swap(&mut self.window_top, &mut other.window_top);
@@ -145,12 +167,11 @@ impl ScreenBuffer {
         core::mem::swap(&mut self.limit_backspace, &mut other.limit_backspace);
         core::mem::swap(&mut self.anchor, &mut other.anchor);
         core::mem::swap(&mut self.damaged, &mut other.damaged);
-        core::mem::swap(&mut self.rows, &mut other.rows);
     }
 
     /// The buffer's rows: its height.
     pub fn rows(&self) -> usize {
-        self.rows
+        self.height
     }
 
     /// Record every row of the window as changed: the buffer has just become the one the screen
@@ -159,19 +180,30 @@ impl ScreenBuffer {
         self.touch(self.window());
     }
 
-    /// The grid.
-    pub fn cells(&self) -> &Grid {
-        &self.cells
+    /// The grid's columns and rows.
+    pub fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// The grid's cells, row after row.
+    pub fn cells(&self) -> &[Cell] {
+        &self.cells[..self.width * self.height]
+    }
+
+    /// One row's cells.
+    pub fn row(&self, row: usize) -> &[Cell] {
+        &self.cells[row * self.width..(row + 1) * self.width]
     }
 
     /// The cell at `row`, `column`.
     pub fn cell(&self, row: usize, column: usize) -> Cell {
-        self.cells[row][column]
+        self.row(row)[column]
     }
 
     /// One row's characters.
-    pub fn row_text(&self, row: usize) -> [u8; WIDTH] {
-        self.cells[row].map(|cell| cell.character)
+    #[cfg(test)]
+    pub fn row_text(&self, row: usize) -> std::vec::Vec<u8> {
+        self.row(row).iter().map(|cell| cell.character).collect()
     }
 
     /// The cursor: its row and column.
@@ -182,7 +214,7 @@ impl ScreenBuffer {
     /// Move the cursor, the window following it; false (nothing moved) for a position outside the
     /// grid.
     pub fn set_cursor(&mut self, row: usize, column: usize) -> bool {
-        if row >= self.rows || column >= WIDTH {
+        if row >= self.height || column >= self.width {
             return false;
         }
         (self.row, self.column) = (row, column);
@@ -193,12 +225,23 @@ impl ScreenBuffer {
 
     /// The window's rows of the grid.
     pub fn window(&self) -> Range<usize> {
-        self.window_top..self.window_top + WINDOW_HEIGHT
+        self.window_top..self.window_top + self.window_height()
     }
 
-    /// The window's cells, its first row first.
-    pub fn window_cells(&self) -> &[[Cell; WIDTH]] {
-        &self.cells[self.window()]
+    /// The window's columns: the screen's, or the grid's when it is narrower.
+    pub fn window_width(&self) -> usize {
+        self.width.min(WIDTH)
+    }
+
+    /// The window's rows: the screen's, or the grid's when it has fewer.
+    pub fn window_height(&self) -> usize {
+        self.height.min(WINDOW_HEIGHT)
+    }
+
+    /// The window's rows of cells, its first row first, each the window's columns.
+    pub fn window_rows(&self) -> impl Iterator<Item = &[Cell]> + '_ {
+        self.window()
+            .map(move |row| &self.row(row)[..self.window_width()])
     }
 
     /// The cursor's place in the window: its row there and its column; none while it lies outside
@@ -214,8 +257,8 @@ impl ScreenBuffer {
     fn follow_cursor(&mut self) {
         let top = if self.row < self.window_top {
             self.row
-        } else if self.row >= self.window_top + WINDOW_HEIGHT {
-            self.row + 1 - WINDOW_HEIGHT
+        } else if self.row >= self.window_top + self.window_height() {
+            self.row + 1 - self.window_height()
         } else {
             return;
         };
@@ -324,13 +367,13 @@ impl ScreenBuffer {
 
     /// Store `character` at the cursor in the current attribute and step the cursor right.
     fn put(&mut self, character: u8) {
-        self.cells[self.row][self.column] = Cell {
+        self.cells[self.row * self.width + self.column] = Cell {
             character,
             attribute: self.attribute,
         };
         self.touch(self.row..self.row + 1);
         self.column += 1;
-        if self.column < WIDTH {
+        if self.column < self.width {
             return;
         }
         if self.mode & ENABLE_WRAP_AT_EOL_OUTPUT != 0 {
@@ -344,7 +387,7 @@ impl ScreenBuffer {
     /// Column 0 of the next row, the grid scrolled up when the cursor is on the last.
     fn line_feed(&mut self) {
         self.column = 0;
-        if self.row + 1 < self.rows {
+        if self.row + 1 < self.height {
             self.row += 1;
         } else {
             self.scroll_up();
@@ -358,7 +401,7 @@ impl ScreenBuffer {
             self.column -= 1;
         } else if !self.limit_backspace && self.row > 0 {
             self.row -= 1;
-            self.column = WIDTH - 1;
+            self.column = self.width - 1;
         }
     }
 
@@ -366,10 +409,11 @@ impl ScreenBuffer {
     /// fills the row and moves to the next.
     fn tab(&mut self) {
         let stop = (self.column / TAB_STOP + 1) * TAB_STOP;
-        let end = stop.min(WIDTH);
-        self.cells[self.row][self.column..end].fill(Cell::blank(self.attribute));
+        let end = stop.min(self.width);
+        let start = self.row * self.width;
+        self.cells[start + self.column..start + end].fill(Cell::blank(self.attribute));
         self.touch(self.row..self.row + 1);
-        if stop >= WIDTH {
+        if stop >= self.width {
             self.line_feed();
         } else {
             self.column = stop;
@@ -378,16 +422,16 @@ impl ScreenBuffer {
 
     /// The grid up one row: the top row lost, a blank bottom row in the current attribute.
     fn scroll_up(&mut self) {
-        let rows = self.rows;
-        self.cells.copy_within(1..rows, 0);
-        self.cells[rows - 1] = [Cell::blank(self.attribute); WIDTH];
-        self.touch(0..rows);
+        let cells = self.width * self.height;
+        self.cells.copy_within(self.width..cells, 0);
+        self.cells[cells - self.width..cells].fill(Cell::blank(self.attribute));
+        self.touch(0..self.height);
     }
 
     /// The place of (`x`, `y`) among the grid's cells taken row after row; none outside the grid.
     fn index(&self, x: i32, y: i32) -> Option<usize> {
-        ((0..WIDTH as i32).contains(&x) && (0..self.rows as i32).contains(&y))
-            .then(|| y as usize * WIDTH + x as usize)
+        ((0..self.width as i32).contains(&x) && (0..self.height as i32).contains(&y))
+            .then(|| y as usize * self.width + x as usize)
     }
 
     /// Up to `count` cells from (`x`, `y`), on across each row's end onto the next and as far as
@@ -397,7 +441,7 @@ impl ScreenBuffer {
         let Some(start) = self.index(x, y) else {
             return &[];
         };
-        let cells = &self.cells.as_flattened()[start..self.rows * WIDTH];
+        let cells = &self.cells()[start..];
         &cells[..count.min(cells.len())]
     }
 
@@ -407,8 +451,7 @@ impl ScreenBuffer {
         let Some(start) = self.index(x, y) else {
             return 0;
         };
-        let end = self.rows * WIDTH;
-        let cells = &mut self.cells.as_flattened_mut()[start..end];
+        let cells = &mut self.cells[start..self.width * self.height];
         let count = count.min(cells.len());
         for cell in &mut cells[..count] {
             match fill {
@@ -417,7 +460,7 @@ impl ScreenBuffer {
             }
         }
         if count != 0 {
-            self.touch(start / WIDTH..(start + count - 1) / WIDTH + 1);
+            self.touch(start / self.width..(start + count - 1) / self.width + 1);
         }
         count
     }
@@ -434,7 +477,7 @@ impl ScreenBuffer {
         y: i32,
         fill: Cell,
     ) {
-        let grid = Bounds::grid(self.rows);
+        let grid = Bounds::grid(self.width, self.height);
         let Some(from) = Bounds::of(source).clipped(grid) else {
             return;
         };
@@ -455,10 +498,12 @@ impl ScreenBuffer {
         let rows = from.top..=from.bottom;
         let columns = from.left..=from.right;
         let mut touched = false;
-        let mut copy = |cells: &mut Grid, row: i32, column: i32| {
+        let width = self.width;
+        let at = |row: i32, column: i32| row as usize * width + column as usize;
+        let mut copy = |cells: &mut [Cell; CELLS], row: i32, column: i32| {
             let (to_row, to_column) = (row + dy, column + dx);
             if clip.contains(to_column, to_row) {
-                cells[to_row as usize][to_column as usize] = cells[row as usize][column as usize];
+                cells[at(to_row, to_column)] = cells[at(row, column)];
                 touched = true;
             }
         };
@@ -470,13 +515,13 @@ impl ScreenBuffer {
         for row in from.top..=from.bottom {
             for column in from.left..=from.right {
                 if !destination.contains(column, row) && clip.contains(column, row) {
-                    self.cells[row as usize][column as usize] = fill;
+                    self.cells[at(row, column)] = fill;
                     touched = true;
                 }
             }
         }
         if touched {
-            self.touch(0..self.rows);
+            self.touch(0..self.height);
         }
     }
 }
@@ -524,13 +569,13 @@ struct Bounds {
 }
 
 impl Bounds {
-    /// The grid of a buffer of `rows` rows.
-    const fn grid(rows: usize) -> Bounds {
+    /// A grid's of `width` x `height` cells.
+    fn grid(width: usize, height: usize) -> Bounds {
         Bounds {
             left: 0,
             top: 0,
-            right: WIDTH as i32 - 1,
-            bottom: rows as i32 - 1,
+            right: width as i32 - 1,
+            bottom: height as i32 - 1,
         }
     }
 
@@ -585,14 +630,45 @@ mod tests {
         screen
     }
 
+    /// A buffer made over again for another size takes it, blank in its attribute, its window
+    /// the screen's size clipped to it; a size past the room is the default one.
+    #[test]
+    fn a_buffer_made_over_takes_its_size_and_attribute() {
+        let mut screen = numbered();
+        screen.set_cursor(5, 7);
+        screen.reset(100, 200, 0x1E);
+        assert_eq!(screen.size(), (100, 200));
+        assert_eq!(screen.cursor(), (0, 0));
+        assert_eq!(screen.attribute(), 0x1E);
+        assert_eq!(screen.cells().len(), 100 * 200);
+        assert!(screen.cells().iter().all(|&cell| cell == Cell::blank(0x1E)));
+        assert_eq!(
+            (screen.window(), screen.window_width()),
+            (0..WINDOW_HEIGHT, WIDTH)
+        );
+        assert_eq!(screen.take_damage(), Some(0..200));
+        screen.set_cursor(1, 98);
+        screen.write_bytes(b"abc");
+        assert_eq!(&screen.row_text(1)[98..], b"ab");
+        assert_eq!(&screen.row_text(2)[..2], b"c ");
+        assert_eq!(screen.run(98, 1, 3).len(), 3);
+        assert_eq!(
+            screen.run(0, 199, 1000).len(),
+            100,
+            "as far as the grid's end"
+        );
+        screen.reset(40, 10, 0x07);
+        assert_eq!((screen.window(), screen.window_width()), (0..10, 40));
+        screen.reset(WIDTH, HEIGHT + 1, 0x07);
+        assert_eq!(screen.size(), (WIDTH, HEIGHT), "past the room");
+        assert!(!ScreenBuffer::fits(0, 1) && !ScreenBuffer::fits(CELLS + 1, 1));
+    }
+
     #[test]
     fn a_fresh_buffer_is_blank_in_the_default_attribute() {
         let screen = ScreenBuffer::new();
-        assert!(screen
-            .cells()
-            .iter()
-            .flatten()
-            .all(|&cell| cell == Cell::blank(0x07)));
+        assert!(screen.cells().iter().all(|&cell| cell == Cell::blank(0x07)));
+        assert_eq!(screen.size(), (WIDTH, HEIGHT));
         assert_eq!(screen.cursor(), (0, 0));
         assert_eq!(screen.mode(), 0x3);
         assert_eq!(
@@ -879,11 +955,7 @@ mod tests {
                 "({x}, {y})"
             );
         }
-        assert!(!screen
-            .cells()
-            .iter()
-            .flatten()
-            .any(|cell| cell.character == b'!'));
+        assert!(!screen.cells().iter().any(|cell| cell.character == b'!'));
         assert_eq!(screen.fill(0, 0, 0, Fill::Character(b'!')), 0);
     }
 
@@ -916,7 +988,7 @@ mod tests {
             trimmed(&screen, HEIGHT - 2),
             std::format!("r{:02}", HEIGHT - 1)
         );
-        assert!(screen.cells()[HEIGHT - 1].iter().all(|&cell| cell == fill));
+        assert!(screen.row(HEIGHT - 1).iter().all(|&cell| cell == fill));
         assert_eq!(screen.take_damage(), Some(0..HEIGHT));
     }
 
@@ -1092,8 +1164,8 @@ mod tests {
         assert_eq!(screen.window_cursor(), Some((WINDOW_HEIGHT - 1, 4)));
         assert_eq!(screen.take_damage(), Some(1..WINDOW_HEIGHT + 1));
         assert_eq!(
-            &screen.window_cells()[WINDOW_HEIGHT - 1][..4],
-            &screen.cells()[WINDOW_HEIGHT][..4]
+            &screen.window_rows().nth(WINDOW_HEIGHT - 1).unwrap()[..4],
+            &screen.row(WINDOW_HEIGHT)[..4]
         );
         assert!(screen.set_cursor(0, 0));
         assert_eq!(screen.window(), 0..WINDOW_HEIGHT, "up to the cursor");

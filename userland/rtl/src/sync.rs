@@ -18,7 +18,7 @@
 
 use core::cell::{Cell, UnsafeCell};
 use core::sync::atomic::AtomicUsize;
-use core::sync::atomic::Ordering::{Acquire, Release};
+use core::sync::atomic::Ordering::{AcqRel, Acquire, Release};
 
 /// A lock as a critical section is one: one thread holds it at a time, and the holder may take it
 /// again (each `lock` matched by an `unlock`).
@@ -182,6 +182,14 @@ impl<L: RawLock> OnceWord<L> {
     /// The word as it is: zero when it is not made yet.
     pub fn get(&self) -> usize {
         self.value.load(Acquire)
+    }
+
+    /// The word taken, under the lock: zero from now on, until it is made again; zero when it was
+    /// not made.
+    pub fn take(&self) -> usize {
+        self.lock.lock();
+        let _held = Unlock(&self.lock);
+        self.value.swap(0, AcqRel)
     }
 }
 

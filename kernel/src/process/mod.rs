@@ -961,6 +961,10 @@ impl Process {
         // A token opened after the process's end (or on one that never had a thread) goes with
         // the deletion; an ended process let go of its own at its end.
         crate::ob::release_process_token(self.object());
+        // One that never had a thread leaves the console its creator gave it (an ended one
+        // left at its end).
+        #[cfg(target_arch = "x86")]
+        crate::csr::disconnect(self.object());
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         true

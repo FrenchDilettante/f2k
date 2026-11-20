@@ -3,8 +3,8 @@
 //! ntdll's services through their typed layer ([`crate::ntcall`]). CreateProcessA converts its
 //! strings through the ANSI code page and does CreateProcessW's work ([`create_process`]):
 //!
-//! 1. The flags: a detached process, a new console and a debugged process take the stub path
-//!    (logged; ERROR_CALL_NOT_IMPLEMENTED): F2K has one console and no debugger.
+//! 1. The flags: a debugged process takes the stub path (logged; ERROR_CALL_NOT_IMPLEMENTED): F2K
+//!    has no debugger. A process both detached and given a new console is ERROR_INVALID_PARAMETER.
 //! 2. The current directory asked for, made full: a directory, or ERROR_DIRECTORY.
 //! 3. The program ([`find_program`]): the application name as given (no search, no extension
 //!    added), the command line then defaulting to the name quoted; or, without one, the command
@@ -43,19 +43,23 @@
 //!    made in the caller (RtlCreateProcessParameters: the image's path, the DLL search path, the
 //!    current directory, the command line, the window title, desktop, shell information and the C
 //!    runtime's data), the startup values and the standard handles set (STARTUPINFO's with
-//!    STARTF_USESTDHANDLES, else the caller's for a console program, which shares its console),
-//!    written into the new process as RtlCreateProcessParameters left it, denormalized (its
-//!    strings' buffers offsets from the block, at 0x00020000 in a fresh address space), and the
-//!    PEB's ProcessParameters pointed at it: the new process's ntdll normalizes the block during
-//!    its initialization (RtlNormalizeProcessParams), as on Windows 2000.
+//!    STARTF_USESTDHANDLES, else the caller's for a console program that shares its console, none
+//!    for one detached or given a console of its own, which its connection fills), the console it
+//!    connects to (its ConsoleHandle: [`crate::console::CONSOLE_DETACHED`] for DETACHED_PROCESS,
+//!    [`crate::console::CONSOLE_NEW`] for CREATE_NEW_CONSOLE, the caller's own otherwise), written
+//!    into the new process as RtlCreateProcessParameters left it, denormalized (its strings'
+//!    buffers offsets from the block, at 0x00020000 in a fresh address space), and the PEB's
+//!    ProcessParameters pointed at it: the new process's ntdll normalizes the block during its
+//!    initialization (RtlNormalizeProcessParams), as on Windows 2000.
 //! 7. Its first thread: the stack the image asks (BaseCreateStack in the new process: its
 //!    reservation, its commit — two pages at least, what Windows 2000's child is seen to start its
 //!    program with — and a guard page: the stack at 0x00130000 down), the context
 //!    (BaseProcessStartThunk with EAX the image's entry point and EBX the PEB), NtCreateThread
 //!    suspended, then resumed unless CREATE_SUSPENDED. Between the two the new process is announced
 //!    to the base server (CsrClientCallServer, BasepCreateProcess, [`announce`]), as Windows 2000
-//!    announces it: F2K's server takes its process group from it (the kernel tracks the rest of
-//!    what Windows 2000's server records itself).
+//!    announces it: F2K's server takes its process group from it, and takes a process detached or
+//!    given a console of its own off its creator's console (the kernel tracks the rest of what
+//!    Windows 2000's server records itself).
 //!
 //! Every failure undoes what was made — the file and section closed, a process made terminated and
 //! its handle closed, the parameters block freed — and sets the error Windows 2000 sets; success
@@ -108,9 +112,11 @@ const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
 const CREATE_DEFAULT_ERROR_MODE: u32 = 0x0400_0000;
 
-/// The flags that take the stub path: a detached process, a new console, a debugged process.
-const UNSUPPORTED: u32 =
-    DETACHED_PROCESS | CREATE_NEW_CONSOLE | DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS;
+/// The flags that take the stub path: a debugged process.
+const UNSUPPORTED: u32 = DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS;
+
+/// The flags that keep a process off its creator's console: no console, or one of its own.
+const OWN_CONSOLE: u32 = DETACHED_PROCESS | CREATE_NEW_CONSOLE;
 
 /// STARTUPINFO's flags that make its standard-handle fields meaningful: STARTF_USESTDHANDLES
 /// (STARTF_USEHOTKEY and STARTF_HASSHELLDATA ride in them too).
@@ -120,6 +126,7 @@ const STARTF_STANDARD_FIELDS: u32 = 0x0100 | 0x0200 | 0x0400;
 const ERROR_FILE_NOT_FOUND: u32 = 2;
 const ERROR_PATH_NOT_FOUND: u32 = 3;
 const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_BAD_EXE_FORMAT: u32 = 193;
 const ERROR_DIRECTORY: u32 = 267;
 
@@ -655,15 +662,24 @@ fn push_parameters(
         runtime_data: startup.runtime_data,
     })
     .map_err(Failure::Status)?;
+    let shares = console && request.flags & OWN_CONSOLE == 0;
     let handles = if startup.flags & STARTF_STANDARD_FIELDS != 0 {
         startup.standard_handles
-    } else if console {
+    } else if shares {
         [0, 1, 2].map(base::parameters_standard_handle)
     } else {
         [0; 3]
     };
     let header = block.header_mut();
-    header.console_handle = if console { own.console_handle } else { 0 };
+    header.console_handle = if !console {
+        0
+    } else if request.flags & DETACHED_PROCESS != 0 {
+        crate::console::CONSOLE_DETACHED
+    } else if request.flags & CREATE_NEW_CONSOLE != 0 {
+        crate::console::CONSOLE_NEW
+    } else {
+        own.console_handle
+    };
     // The ignoring of Ctrl+C is inherited (SetConsoleCtrlHandler's documentation); a new process
     // group starts with it set (CreateProcess's documentation: CREATE_NEW_PROCESS_GROUP disables
     // Ctrl+C in the new process).
@@ -748,7 +764,9 @@ pub const PROCESS_START_THUNK: u32 = 0x7C4E_1010;
 
 /// The new process and its first thread announced to the base server (BasepCreateProcess), with
 /// the creation flags: the server puts the process in the caller's process group, or in a group of
-/// its own under CREATE_NEW_PROCESS_GROUP. The server's refusal fails the create.
+/// its own under CREATE_NEW_PROCESS_GROUP, and takes it off the caller's console under
+/// DETACHED_PROCESS and CREATE_NEW_CONSOLE (its connection makes the console of its own). The
+/// server's refusal fails the create.
 fn announce(process: u32, thread: u32, client_id: &ClientId, flags: u32) -> Result<(), Failure> {
     let mut message = rtl::console::base::CreateProcess::<usize> {
         process: process as usize,
@@ -815,6 +833,9 @@ fn start(
 
 /// CreateProcessW's work (see the module doc): the new process and its first thread.
 pub fn create_process(request: &Request) -> Result<ProcessInformation, Failure> {
+    if request.flags & OWN_CONSOLE == OWN_CONSOLE {
+        return Err(Failure::Error(ERROR_INVALID_PARAMETER));
+    }
     let current_directory = request.current_directory.map(directory).transpose()?;
     let mut program = find_program(request.application_name, request.command_line)?;
     let section = image_section(&mut program, request.command_line)?;

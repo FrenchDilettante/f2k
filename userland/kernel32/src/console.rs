@@ -1379,19 +1379,133 @@ pub extern "system" fn ctrl_routine(event: u32) -> ! {
     }
 }
 
+/// The process parameters' ConsoleHandle CreateProcess leaves for a process started with
+/// DETACHED_PROCESS (no console) and CREATE_NEW_CONSOLE (a console of its own), Windows 2000's
+/// values; any other value lets the process share its creator's console.
+pub const CONSOLE_DETACHED: usize = usize::MAX;
+pub const CONSOLE_NEW: usize = usize::MAX - 1;
+
+/// STARTUPINFO's flags the console's making reads: the standard handles given, the show command,
+/// the screen buffer's size, its attribute.
+const STARTF_USESHOWWINDOW: u32 = 0x1;
+const STARTF_USESTDHANDLES: u32 = 0x100;
+/// ShowWindow's default command, a console's window shown.
+const SW_SHOWNORMAL: u32 = 1;
+
+/// The process's CtrlRoutine, as the console server takes it.
+fn ctrl_routine_address() -> usize {
+    let routine: extern "system" fn(u32) -> ! = ctrl_routine;
+    routine as usize
+}
+
 /// The process's connection to its console, at its start (BaseProcessStart, src/start.s, before
-/// the program's entry point): a console program hands the console server its CtrlRoutine, as
-/// Windows 2000's kernel32 hands it to csrss when it connects at its initialization. A program of
-/// another subsystem has no console to connect to. The server's refusal leaves the process without
-/// control events.
+/// the program's entry point), as Windows 2000's kernel32 connects to csrss at its initialization
+/// (ConDllInitialize), as its parameters' ConsoleHandle says: none for a process started detached;
+/// a console of its own for one started with CREATE_NEW_CONSOLE ([`allocate`], over its startup
+/// values); otherwise the creator's console, which the server attached it to, the console server
+/// taking its CtrlRoutine — or, when the creator had no console to share (a console program a
+/// process without one starts), a console of its own, as a console program Explorer starts gets
+/// one. The ConsoleHandle's special values are spent then: the process's own children share its
+/// console, or get one of their own if it has none. A program of another subsystem has no
+/// console to connect to. The server's refusal leaves the process without control events (or
+/// without the console it asked for).
 pub fn connect_console() {
     if image_subsystem() != SUBSYSTEM_CONSOLE {
         return;
     }
-    let routine: extern "system" fn(u32) -> ! = ctrl_routine;
-    let _ = call_server(&mut api::ConnectCtrl {
-        routine: routine as usize,
+    let handle = crate::base::parameters().console_handle;
+    crate::base::set_console_handle(0);
+    match handle {
+        CONSOLE_DETACHED => {}
+        CONSOLE_NEW => {
+            let _ = allocate();
+        }
+        _ => {
+            let status = call_server(&mut api::ConnectCtrl {
+                routine: ctrl_routine_address(),
+            });
+            if status == STATUS_INVALID_HANDLE {
+                let _ = allocate();
+            }
+        }
+    }
+}
+
+/// A console of the process's own from the console server (see [`api::AllocConsole`]), made as
+/// its startup values say (its parameters' window title, and STARTUPINFO's flags, character
+/// counts, fill attribute and show command); the process's standard handles then the new
+/// console's three, unless STARTUPINFO gave its own (STARTF_USESTDHANDLES). The input-wait handle
+/// kept for the console the process had, if any, is closed: the new console has its own. The
+/// server's status.
+fn allocate() -> u32 {
+    let parameters = crate::base::parameters();
+    let title = crate::base::OwnString::WindowTitle.units();
+    let flags = parameters.window_flags;
+    let show_window = if flags & STARTF_USESHOWWINDOW != 0 {
+        parameters.show_window_flags
+    } else {
+        SW_SHOWNORMAL
+    };
+    let status = call_server(&mut api::AllocConsole {
+        routine: ctrl_routine_address(),
+        title: title.as_ptr() as usize,
+        length: title.len(),
+        size: ((parameters.count_chars_x & 0xFFFF) | (parameters.count_chars_y << 16)) as usize,
+        attribute: parameters.fill_attribute as usize,
+        flags: flags as usize,
+        show_window: show_window as usize,
     });
+    if nt_success(status) {
+        forget_input_wait_handle();
+        if flags & STARTF_USESTDHANDLES == 0 {
+            for (slot, handle) in rtl::console::STANDARD_HANDLES.into_iter().enumerate() {
+                set_parameters_standard_handle(slot, handle);
+            }
+        }
+    }
+    status
+}
+
+/// The input-wait handle kept for the process's console, closed and forgotten: the process has
+/// left that console.
+fn forget_input_wait_handle() {
+    let handle = input_wait().take();
+    if handle != 0 {
+        let _ = crate::ntcall::close(handle as u32);
+    }
+}
+
+/// AllocConsole: a console of the process's own (see [`allocate`]): FALSE with ERROR_ACCESS_DENIED
+/// while it has one (the server's answer), ERROR_NOT_ENOUGH_MEMORY when the server has no room for
+/// another console — Windows 2000's newcon capture.
+#[unsafe(export_name = "f2k_export_AllocConsole")]
+pub extern "system" fn alloc_console() -> u32 {
+    succeeded(allocate())
+}
+
+/// FreeConsole: the process leaves its console, its console handles closed (its standard handles
+/// keep their values, which name nothing then); the console goes with its last process. FALSE
+/// with ERROR_INVALID_PARAMETER for a process with no console — Windows 2000's newcon capture.
+#[unsafe(export_name = "f2k_export_FreeConsole")]
+pub extern "system" fn free_console() -> u32 {
+    let freed = succeeded(call_server(&mut api::FreeConsole { reserved: 0usize }));
+    if freed != 0 {
+        forget_input_wait_handle();
+    }
+    freed
+}
+
+/// GetConsoleWindow: the window of the process's console; NULL, the last error untouched, for a
+/// process with no console. F2K's consoles have no window of win32k's: the value names the
+/// console, distinct for each (see the console server), and no window (user32's calls take it for
+/// a destroyed window's).
+#[unsafe(export_name = "f2k_export_GetConsoleWindow")]
+pub extern "system" fn get_console_window() -> u32 {
+    let mut message = api::GetConsoleWindow { window: 0usize };
+    if !nt_success(call_server(&mut message)) {
+        return 0;
+    }
+    message.window as u32
 }
 
 /// [`connect_console`] for kernel32's own assembly (src/start.s: BaseProcessStart).

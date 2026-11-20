@@ -503,7 +503,7 @@ mod tests {
         // global-atom and debug-output calls and RaiseException its Rust, the heap and Local/Global
         // calls its own over ntdll's heap, GlobalCompact over its RtlCompactHeap). The internal
         // start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 375);
+        assert_eq!(NATIVE_EXPORTS.len(), 378);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -687,9 +687,9 @@ mod tests {
     /// sections that load where kernel32 lacks their exports: the runtime fixture's
     /// OutputDebugString, the dll fixture's LoadLibraryEx, the memory fixture's GlobalFlags, the
     /// threads fixture's GetThreadTimes and the fswrite fixture's LockFile and UnlockFile; and the
-    /// newcon fixture's CreateConsoleScreenBuffer and SetConsoleActiveScreenBuffer, which its
-    /// program loads without.
-    const BY_NAME: [&str; 17] = [
+    /// newcon fixture's CreateConsoleScreenBuffer, SetConsoleActiveScreenBuffer, AllocConsole,
+    /// FreeConsole and GetConsoleWindow, which its programs load without.
+    const BY_NAME: [&str; 20] = [
         "Process32FirstW",
         "Process32NextW",
         "IsValidLanguageGroup",
@@ -707,6 +707,9 @@ mod tests {
         "UnlockFile",
         "CreateConsoleScreenBuffer",
         "SetConsoleActiveScreenBuffer",
+        "AllocConsole",
+        "FreeConsole",
+        "GetConsoleWindow",
     ];
 
     /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
@@ -759,7 +762,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 385, "the corpus's import surface");
+        assert_eq!(names.len(), 388, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(

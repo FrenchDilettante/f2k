@@ -217,7 +217,8 @@ pub fn create_arguments(slot_ok: bool, parent: Handle, section: Handle) -> Resul
 /// [`crate::process::Process::inherit_handles`]). With it or without it, the parent's inheritable
 /// console handles, at their values, as the console server hands them to every process sharing the
 /// console (the spawn fixture's inheritflags block: an inheritable CONOUT$ handle reaches a child
-/// created without bInheritHandles; a handle not inheritable does not). Named
+/// created without bInheritHandles; a handle not inheritable does not), and attached to the
+/// parent's console (see `crate::csr::inherit`). Named
 /// `<image's file name, without its extension>` in its end report. A handle to it with
 /// DesiredAccess (its generic rights mapped, see [`super::object::process_access`]), inheritable as
 /// the attributes say (OBJ_INHERIT; a name is not looked at: process objects have none), goes into
@@ -268,6 +269,8 @@ pub fn create_process(
             let child = crate::exec::loader::load_section(segment, name, creator.id())?;
             child.set_hard_error_mode(creator.hard_error_mode());
             child.set_console(creator.console().inherited());
+            // The creator's console, until its announcement says otherwise (see `crate::csr`).
+            crate::csr::inherit(creator.object(), child.object());
             // The creator's process group, until its announcement says otherwise (see
             // `crate::csr`'s base server).
             child.set_process_group(creator.process_group());

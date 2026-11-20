@@ -6,39 +6,55 @@
 //! service [`SYS_CSR_CALL`](crate::user::syscall::SYS_CSR_CALL) instead, and this module serves
 //! the message — its header, the console API's data after it — with the
 //! rules `rtl::console` holds (shared with kernel32's host tests), over the calling process's
-//! console handles and the one console every process shares ([`Console`]: its modes, its screen
-//! buffer, its title). Console handles stay outside the kernel's handle table, as on Windows 2000.
+//! console handles and the console it is attached to ([`Console`]: its modes, its screen buffer,
+//! its title). Console handles stay outside the kernel's handle table, as on Windows 2000.
+//!
+//! The server holds several consoles ([`consoles`]): the boot's, which every program the boot
+//! starts shares, and one for each program that asks for a console of its own (AllocConsole, or
+//! CreateProcess's CREATE_NEW_CONSOLE), which its children share in turn. A process is attached to
+//! its creator's console when it is made ([`inherit`]), to none when its creator announces it
+//! DETACHED_PROCESS or CREATE_NEW_CONSOLE, to the console made for it (AllocConsole's API), to none
+//! again after FreeConsole. A process with no console is answered as Windows 2000 answers it: its
+//! handles name nothing (STATUS_INVALID_HANDLE), CONIN$ and CONOUT$ do not open
+//! (STATUS_ACCESS_DENIED), FreeConsole is STATUS_INVALID_PARAMETER and GetConsoleWindow NULL. The
+//! one screen shows one console, the foreground one, and the keyboard types into it (see
+//! [`consoles`] for which).
 //!
 //! What a client writes reaches two places, in order: each byte goes to the serial line (COM1)
 //! unchanged, as the kernel's console always has (the suite reads program output there), then
-//! through the screen buffer's renderer. Only the standard handles' writes reach the serial line
-//! (`rtl::console::Handles`): it stands for the file a capture redirects standard output to, and a
-//! screen buffer opened by name (CONOUT$) writes to the screen alone. Under the kernel option
+//! through the screen buffer's renderer. Only the boot console's standard handles' writes reach the
+//! serial line (`rtl::console::Handles`): it stands for the file a capture redirects standard
+//! output to, and a screen buffer opened by name (CONOUT$) writes to the screen alone, as does a
+//! console made for a program (on the real machine, a window of its own). Under the kernel option
 //! `redirected` (the harness's runs of the corpus) the standard handles' writes reach the serial
 //! line alone, as the capture's redirected output never reaches the real machine's screen. After
 //! each call the window's rows it changed are copied to the VGA text screen and the hardware
-//! cursor follows the buffer's.
+//! cursor follows the buffer's — the foreground console's: a change of the foreground copies its
+//! whole window.
 //!
 //! The keyboard's bytes reach the same console from the keyboard driver's DPC ([`key_byte`]): the
 //! console's producer turns them into key event records, appended to its input buffer for the
 //! input APIs to serve. A producer on another transport submits the records directly instead
 //! ([`key_event`]): the transport-independent seam the USB HID slice joins.
 //!
-//! The console's input-wait event is a notification event the server makes for the process that
+//! A console's input-wait event is a notification event the server makes for the process that
 //! first asks for it (kernel32, the first time it must wait on the console) and hands to it as a
-//! handle; the process's handle keeps it, and it goes with the process. After each call and each
-//! keyboard byte it shows whether the input buffer holds records: a read the server answered
-//! STATUS_PENDING waits on it.
+//! handle; the process's handle keeps it, and it goes with the process (and the console's
+//! reference with the console). After each call and each
+//! keyboard byte it shows whether its console's input buffer holds records: a read the server
+//! answered STATUS_PENDING waits on it.
 //!
 //! The console's control events — Ctrl+C and Ctrl+Break, from the keyboard or
 //! GenerateConsoleCtrlEvent — are [`ctrl`]'s: the console's processes, and the control thread that
 //! delivers each event to them. The base server's APIs F2K serves (`rtl::console::base`) come
 //! through the same service: kernel32's announcement of a process it created, which puts the
-//! process in its process group, and the process's shutdown level and flags, which the server
+//! process in its process group (and off its creator's console, for DETACHED_PROCESS and
+//! CREATE_NEW_CONSOLE), and the process's shutdown level and flags, which the server
 //! keeps with its entry for the session's end. So does the user server's one API
 //! (`rtl::console::user`), user32's ExitWindowsEx: the request for the session's end, which the
 //! control thread carries out ([`crate::session`]).
 
+pub mod consoles;
 pub mod ctrl;
 
 use core::mem::offset_of;
@@ -47,6 +63,8 @@ use rtl::console::screen::{ScreenBuffer, DEFAULT_ATTRIBUTE};
 use rtl::console::{Client, Console, CsrApiMsg, Handles, DATA_WORDS};
 use rtl::pod::Pod;
 
+#[cfg(target_arch = "x86")]
+use self::consoles::{Consoles, BOOT};
 use self::ctrl::Control;
 use crate::hal::Io;
 #[cfg(target_arch = "x86")]
@@ -55,7 +73,6 @@ use crate::hw::vga::{CellMemory, TextScreen};
 #[cfg(target_arch = "x86")]
 use crate::level::{At, Dispatch, LevelCell, Passive};
 use crate::nt::call::{NtResult, UserAddr};
-#[cfg(target_arch = "x86")]
 use crate::ob::ObjectId;
 #[cfg(target_arch = "x86")]
 use crate::sched::wait::WaitableId;
@@ -65,17 +82,17 @@ use crate::user::syscall::ServiceFn;
 /// The service the dispatcher raises SYS_CSR_CALL into: its four dword arguments, and its body.
 pub const SERVICE: (u32, ServiceFn) = (16, service);
 
-/// The console server's state: the one console every process shares, and its input-wait event
-/// (Windows 2000's CONSOLE_INFORMATION.InputEvent).
+/// The console server's state: its consoles and which process is attached to which (see
+/// [`consoles`]), and the one the text screen shows.
 #[cfg(target_arch = "x86")]
 struct ConsoleServer {
-    console: Console,
-    /// The console's processes and the control events raised for them (see [`ctrl`]).
+    consoles: Consoles,
+    /// The console whose window the text screen holds: the foreground one, once a call or a
+    /// process's end has copied it there.
+    shown: usize,
+    /// The consoles' processes and the control events raised for them (see [`ctrl`]).
     ctrl: Control,
-    /// The console's input-wait event, once a process asked for it: the object, which the server
-    /// holds a reference on until no process is left.
-    input_event: Option<ObjectId>,
-    /// Whether the console has its first program's name for its title.
+    /// Whether the boot's console has its first program's name for its title.
     named: bool,
     /// The writes a call made into its caller's stack guard page, kept for the caller to copy out
     /// below the server's level (see [`Staged`]).
@@ -141,9 +158,9 @@ impl Staged {
 /// the service holds it, and no service starts inside a DPC.
 #[cfg(target_arch = "x86")]
 static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer {
-    console: Console::new(),
+    consoles: Consoles::new(),
+    shown: BOOT,
     ctrl: Control::new(),
-    input_event: None,
     named: false,
     staged: Staged::new(),
 });
@@ -153,7 +170,7 @@ static SERVER: LevelCell<Dispatch, ConsoleServer> = LevelCell::new(ConsoleServer
 /// and error to a file on the real machine.
 pub const REDIRECTED: &[u8] = b"redirected";
 
-/// The console's title, from the first program the boot loads into it: its image path (see
+/// The boot console's title, from the first program the boot loads into it: its image path (see
 /// [`Console::name`]); and, under the kernel option [`REDIRECTED`], its standard handles standing
 /// for a file. The programs after it share the console, its title and its standard handles'
 /// redirection.
@@ -164,9 +181,10 @@ pub fn name_console(image_path: &[u8]) {
     crate::level::raised::<Dispatch, _>(|dispatch| {
         let server = SERVER.get(dispatch);
         if !core::mem::replace(&mut server.named, true) {
-            server.console.name(image_path);
+            let console = &mut server.consoles.slot(BOOT).console;
+            console.name(image_path);
             if redirected {
-                server.console.redirect();
+                console.redirect();
             }
         }
     });
@@ -213,12 +231,31 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
         call.finish(result);
         return;
     }
+    // The server's own APIs, over its consoles rather than one console's rules.
+    let own = match rtl::console::Api::try_from(args[2]) {
+        Ok(rtl::console::Api::AllocConsole) => Some(allocate_console as OtherServer),
+        Ok(rtl::console::Api::FreeConsole) => Some(free_console as OtherServer),
+        Ok(rtl::console::Api::GetConsoleWindow) => Some(console_window as OtherServer),
+        _ => None,
+    };
+    if let Some(serve) = own {
+        let result = serve_message(
+            UserAddr(args[0]),
+            UserAddr(args[1]),
+            args[2],
+            args[3],
+            serve,
+        );
+        call.finish(result);
+        return;
+    }
     // Who calls, as the console holds its processes: its object and its process group (read
     // before the call holds the process's state).
     let calling = crate::user::args::calling_process();
-    let caller = Caller {
+    let mut caller = Caller {
         process: calling.object(),
         group: calling.process_group(),
+        console: BOOT,
     };
     // The input-wait handle is an object's: made (or opened) here, below the server's level,
     // where objects are made, and handed to the call that asks for it.
@@ -231,12 +268,24 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
     // lock), and the call is served at the server's level, raised from the lock's.
     let (mut result, staged) = process.with_console(|handles| {
         crate::level::raised::<Dispatch, _>(|dispatch| {
+            let server = SERVER.get(dispatch);
+            let Some(index) = server.consoles.console_of(caller.process) else {
+                // A process with no console: nothing of a console's is its to reach.
+                let result = serve_message(
+                    UserAddr(args[0]),
+                    UserAddr(args[1]),
+                    args[2],
+                    args[3],
+                    without_console,
+                );
+                return (result, false);
+            };
+            caller.console = index;
             // Nothing below waits: a fault in a user-memory copy resolves in place (a
             // copy-on-write page) or fails the copy; a write into the caller's stack guard page,
             // whose fault would grow the stack, is staged instead.
-            let server = SERVER.get(dispatch);
             let result = client_call_server(
-                &mut server.console,
+                &mut server.consoles.slot(index).console,
                 handles,
                 &mut Dual {
                     input_wait_handle: &mut prepared,
@@ -249,19 +298,12 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
                 args[2],
                 args[3],
             );
-            // The text screen shows the console until the graphics mode is set; from then on the
-            // VGA text page is not on the screen (and in a VBE mode the legacy window may reach
-            // video memory), so its cells and cursor are left alone and the changes dropped.
-            if PLATFORM.graphics_mode_set() {
-                server.console.screen.take_damage();
-            } else {
-                present(&mut server.console.screen, &mut crate::hw::vga::screen());
-            }
+            server.present();
             let staged = server.staged.length != 0 && server.staged.owner.is_none();
             if staged {
                 server.staged.owner = Some(crate::sched::current_thread());
             }
-            let input = server.input_state();
+            let input = server.input_state(index);
             let raised = server.ctrl.has_pending();
             show_input(dispatch, input);
             if raised {
@@ -278,6 +320,144 @@ fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Pa
         call.process().close_handle(handle);
     }
     call.finish(result);
+}
+
+/// A console API's answer to a process with no console (detached, or after FreeConsole), as
+/// Windows 2000's kernel32 and csrss answer it: CONIN$ and CONOUT$ do not open
+/// (STATUS_ACCESS_DENIED, ERROR_ACCESS_DENIED to the caller); anything else names no console
+/// object (STATUS_INVALID_HANDLE: GetConsoleTitle's, GenerateConsoleCtrlEvent's, a handle's). The
+/// connection to the control events is refused the same way, which kernel32 takes for a creator
+/// without a console to share (see its connection).
+#[cfg(target_arch = "x86")]
+fn without_console(api: u32, _data: &mut [u8]) -> NtStatus {
+    if api == rtl::console::Api::OpenConsole.into() {
+        STATUS_ACCESS_DENIED
+    } else {
+        STATUS_INVALID_HANDLE
+    }
+}
+
+/// STARTUPINFO's flags a console's making reads, and the show command that hides it.
+#[cfg(target_arch = "x86")]
+const STARTF_USESHOWWINDOW: u32 = 0x1;
+#[cfg(target_arch = "x86")]
+const STARTF_USECOUNTCHARS: u32 = 0x8;
+#[cfg(target_arch = "x86")]
+const STARTF_USEFILLATTRIBUTE: u32 = 0x10;
+#[cfg(target_arch = "x86")]
+const SW_HIDE: u32 = 0;
+
+/// AllocConsole's API (`rtl::console::api::AllocConsole`), for the calling process: a console of
+/// its own made (see [`consoles`]) — its title the one the message names, read here below the
+/// server's level (a longer one keeps its first characters); its screen buffer the size and
+/// attribute STARTUPINFO's flags give (else Windows 2000's defaults); hidden for SW_HIDE — the
+/// process's console handles the new console's standard three (its own, which the serial line
+/// does not carry), and the process connected to its control events with its CtrlRoutine. The
+/// console comes to the screen unless hidden. Refused as [`consoles::Consoles::allocate`] refuses
+/// it; a title the caller cannot name is STATUS_ACCESS_VIOLATION.
+#[cfg(target_arch = "x86")]
+fn allocate_console(_api: u32, data: &mut [u8]) -> NtStatus {
+    use rtl::console::TITLE_UNITS;
+    let Some(request) = rtl::console::api::AllocConsole::<u32>::from_bytes(data) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let mut bytes = [0u8; 2 * TITLE_UNITS];
+    let length = (request.length as usize).min(TITLE_UNITS);
+    if UserAddr(request.title)
+        .read(&mut bytes[..2 * length])
+        .is_err()
+    {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    let mut title = [0u16; TITLE_UNITS];
+    for (unit, pair) in title.iter_mut().zip(bytes.as_chunks::<2>().0) {
+        *unit = u16::from_le_bytes(*pair);
+    }
+    let (width, height) = if request.flags & STARTF_USECOUNTCHARS != 0 {
+        (
+            (request.size & 0xFFFF) as usize,
+            (request.size >> 16) as usize,
+        )
+    } else {
+        (0, 0)
+    };
+    let attribute = if request.flags & STARTF_USEFILLATTRIBUTE != 0 {
+        request.attribute as u16
+    } else {
+        DEFAULT_ATTRIBUTE
+    };
+    let making = consoles::Making {
+        title: &title[..length],
+        width,
+        height,
+        attribute,
+        hidden: request.flags & STARTF_USESHOWWINDOW != 0 && request.show_window == SW_HIDE,
+    };
+    let calling = crate::user::args::calling_process();
+    let (process, group) = (calling.object(), calling.process_group());
+    calling.with_console(|handles| {
+        crate::level::raised::<Dispatch, _>(|dispatch| {
+            let server = SERVER.get(dispatch);
+            let index = match server.consoles.allocate(process, &making) {
+                Ok(index) => index,
+                Err(status) => return status,
+            };
+            *handles = Handles::standard().unlogged();
+            if !server.ctrl.connect(process, group, request.routine, index) {
+                crate::serial_println!(
+                    "F2K: csr: no room for a console's process's control events"
+                );
+            }
+            server.present();
+            STATUS_SUCCESS
+        })
+    })
+}
+
+/// FreeConsole's API, for the calling process: taken off its console (STATUS_INVALID_PARAMETER for
+/// one with none), its console handles closed, no control event reaching it; the console goes
+/// once no process is attached to it, its input-wait event released here, below the server's
+/// level, and the screen goes back to the foreground console left.
+#[cfg(target_arch = "x86")]
+fn free_console(_api: u32, _data: &mut [u8]) -> NtStatus {
+    let calling = crate::user::args::calling_process();
+    let process = calling.object();
+    let (status, event) = calling.with_console(|handles| {
+        crate::level::raised::<Dispatch, _>(|dispatch| {
+            let server = SERVER.get(dispatch);
+            let index = match server.consoles.detach(process) {
+                Ok(index) => index,
+                Err(status) => return (status, None),
+            };
+            *handles = Handles::empty();
+            server.ctrl.leave(process);
+            let event = server.consoles.release_unused(index);
+            server.present();
+            (STATUS_SUCCESS, event)
+        })
+    });
+    if let Some(event) = event {
+        crate::ob::release(event);
+    }
+    status
+}
+
+/// GetConsoleWindow's API, for the calling process: its console's window (see [`consoles`]), 0
+/// for a process with no console.
+#[cfg(target_arch = "x86")]
+fn console_window(_api: u32, data: &mut [u8]) -> NtStatus {
+    let Some(answer) = data.get_mut(..4) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let process = crate::user::args::calling_process().object();
+    let window = crate::level::raised::<Dispatch, _>(|dispatch| {
+        let consoles = &SERVER.get(dispatch).consoles;
+        consoles
+            .console_of(process)
+            .map_or(0, |index| consoles.window(index))
+    });
+    answer.copy_from_slice(&window.to_le_bytes());
+    STATUS_SUCCESS
 }
 
 /// The calling thread's stack guard page: the page below its TEB's StackLimit, the one whose fault
@@ -328,17 +508,26 @@ fn copy_out_staged(passive: &mut At<Passive>) -> Result<(), NtStatus> {
     copied.map_err(NtStatus::from)
 }
 
-/// The calling process's handle to the console's input-wait event, for the call about to ask for
-/// it: a new handle on the event the server's slot holds, or on a fresh one made for the slot;
-/// STATUS_INSUFFICIENT_RESOURCES when neither can be had. The slot is read and written at the
-/// server's level, the object made and the handle inserted below it. The event is the console's,
-/// as Windows 2000's console keeps its own handle to it: its creator's reference is the server's,
-/// kept until no process is left ([`release_input_event`]).
+/// The calling process's handle to its console's input-wait event, for the call about to ask for
+/// it: a new handle on the event the console's slot holds, or on a fresh one made for the slot;
+/// STATUS_INSUFFICIENT_RESOURCES when neither can be had, STATUS_INVALID_HANDLE for a process with
+/// no console. The slot is read and written at the server's level, the object made and the handle
+/// inserted below it. The event is the console's, as Windows 2000's console keeps its own handle to
+/// it: its creator's reference is the server's, kept until the console goes (or, for the boot's,
+/// until no process is left: [`release_input_event`]).
 #[cfg(target_arch = "x86")]
 fn prepare_input_wait_handle(passive: &mut At<Passive>) -> Result<u32, NtStatus> {
     use crate::ob::{self, EVENT_ALL_ACCESS};
     use crate::sched::event::EventKind;
-    let held = SERVER.get(&mut passive.raise::<Dispatch>()).input_event;
+    let process = crate::user::args::calling_process().object();
+    let held = {
+        let mut dispatch = passive.raise::<Dispatch>();
+        let consoles = &mut SERVER.get(&mut dispatch).consoles;
+        consoles
+            .console_of(process)
+            .map(|index| (index, consoles.slot(index).input_event))
+    };
+    let (index, held) = held.ok_or(STATUS_INVALID_HANDLE)?;
     let id = match held {
         Some(id) => id,
         None => {
@@ -346,15 +535,18 @@ fn prepare_input_wait_handle(passive: &mut At<Passive>) -> Result<u32, NtStatus>
                 .create_event(EventKind::Notification, false)
                 .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
             // Another call may have made one meanwhile (holding the directory opens interrupts):
-            // the first one kept is the console's, and a second goes again.
-            let kept = *SERVER
-                .get(&mut passive.raise::<Dispatch>())
-                .input_event
-                .get_or_insert(made);
-            if kept != made {
+            // the first one kept is the console's, and a second goes again. A process that left
+            // its console meanwhile has none to wait on.
+            let kept = {
+                let mut dispatch = passive.raise::<Dispatch>();
+                let consoles = &mut SERVER.get(&mut dispatch).consoles;
+                (consoles.console_of(process) == Some(index))
+                    .then(|| *consoles.slot(index).input_event.get_or_insert(made))
+            };
+            if kept != Some(made) {
                 ob::release(made);
             }
-            kept
+            kept.ok_or(STATUS_INVALID_HANDLE)?
         }
     };
     ob::open(
@@ -369,24 +561,56 @@ fn prepare_input_wait_handle(passive: &mut At<Passive>) -> Result<u32, NtStatus>
 
 #[cfg(target_arch = "x86")]
 impl ConsoleServer {
-    /// What the input-wait event must show, when there is one: its body, and whether the console's
-    /// input buffer holds records. The server holds a reference on the event (see
-    /// [`prepare_input_wait_handle`]), so its body is named without the object directory, which
-    /// neither the service at this level nor the keyboard DPC may take.
-    fn input_state(&self) -> Option<(WaitableId, bool)> {
-        let event = self.input_event?.waitable()?;
-        Some((event, self.console.input_waiting()))
+    /// What the input-wait event of the console at `index` must show, when there is one: its body,
+    /// and whether the console's input buffer holds records. The server holds a reference on the
+    /// event (see [`prepare_input_wait_handle`]), so its body is named without the object
+    /// directory, which neither the service at this level nor the keyboard DPC may take.
+    fn input_state(&mut self, index: usize) -> Option<(WaitableId, bool)> {
+        let slot = self.consoles.slot(index);
+        let event = slot.input_event?.waitable()?;
+        Some((event, slot.console.input_waiting()))
+    }
+
+    /// The text screen shows the foreground console: the rows its screen buffer changed since the
+    /// last look, or its whole window when the foreground changed; the other consoles' changes go
+    /// unseen. Until the graphics mode is set, that is: from then on the VGA text page is not on
+    /// the screen (and in a VBE mode the legacy window may reach video memory), so its cells and
+    /// cursor are left alone and every change dropped.
+    fn present(&mut self) {
+        let foreground = self.consoles.foreground();
+        let graphics = PLATFORM.graphics_mode_set();
+        for (index, slot) in self.consoles.slots().enumerate() {
+            let screen = &mut slot.console.screen;
+            if index != foreground || graphics {
+                screen.take_damage();
+            } else if self.shown != foreground {
+                show_whole(screen, &mut crate::hw::vga::screen());
+            } else {
+                present(screen, &mut crate::hw::vga::screen());
+            }
+        }
+        if !graphics {
+            self.shown = foreground;
+        }
     }
 }
 
-/// The console has no process attached any more (the system is quiescent): the server's
-/// reference on its input-wait event goes, and the event with it (the next process to ask for the
-/// handle gets a fresh one), as Windows 2000's console goes with its last process.
+/// No process is left (the system is quiescent): the server's references on its consoles'
+/// input-wait events go, and the events with them (the next process to ask for the handle gets a
+/// fresh one), as Windows 2000's console goes with its last process.
 #[cfg(target_arch = "x86")]
 pub fn release_input_event() {
-    let event =
-        crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).input_event.take());
-    if let Some(id) = event {
+    loop {
+        let event = crate::level::raised::<Dispatch, _>(|dispatch| {
+            SERVER
+                .get(dispatch)
+                .consoles
+                .slots()
+                .find_map(|slot| slot.input_event.take())
+        });
+        let Some(id) = event else {
+            break;
+        };
         crate::ob::release(id);
     }
 }
@@ -418,14 +642,18 @@ pub fn key_byte(
 ) {
     use rtl::console::input::Append;
     let server = SERVER.get(dispatch);
-    let raised = server
-        .console
-        .key_byte(byte, lights, &mut |outcome, record| {
-            if outcome == Append::Dropped {
-                crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
-            }
-            #[cfg(feature = "kbd-smoke")]
-            crate::serial_println!(
+    let foreground = server.consoles.foreground();
+    let raised =
+        server
+            .consoles
+            .slot(foreground)
+            .console
+            .key_byte(byte, lights, &mut |outcome, record| {
+                if outcome == Append::Dropped {
+                    crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
+                }
+                #[cfg(feature = "kbd-smoke")]
+                crate::serial_println!(
             "F2K: kbd: record {} vk={:#04x} scan={:#04x} char={:#06x} state={:#06x} repeat={}{}",
             if record.key_down != 0 { "down" } else { "up" },
             record.virtual_key_code,
@@ -440,16 +668,16 @@ pub fn key_byte(
                 Append::Dropped => " (dropped)",
             }
         );
-            #[cfg(not(feature = "kbd-smoke"))]
-            let _ = record;
-        });
+                #[cfg(not(feature = "kbd-smoke"))]
+                let _ = record;
+            });
     // A control key's event goes to every process of the console, group 0.
     if let Some(event) = raised {
-        if !server.ctrl.raise(event, 0) {
+        if !server.ctrl.raise(event, 0, foreground) {
             crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
         }
     }
-    let input = server.input_state();
+    let input = server.input_state(foreground);
     let raised = server.ctrl.has_pending();
     show_input(dispatch, input);
     if raised {
@@ -493,17 +721,18 @@ pub fn submit_key_event(
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn key_event(dispatch: &mut At<Dispatch>, record: rtl::console::input::KeyEventRecord) {
     let server = SERVER.get(dispatch);
-    let (outcome, raised) = submit_key_event(&mut server.console, record);
+    let foreground = server.consoles.foreground();
+    let (outcome, raised) = submit_key_event(&mut server.consoles.slot(foreground).console, record);
     if outcome == rtl::console::input::Append::Dropped {
         crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
     }
     // A control key's event goes to every process of the console, group 0.
     if let Some(event) = raised {
-        if !server.ctrl.raise(event, 0) {
+        if !server.ctrl.raise(event, 0, foreground) {
             crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
         }
     }
-    let input = server.input_state();
+    let input = server.input_state(foreground);
     let raised = server.ctrl.has_pending();
     show_input(dispatch, input);
     if raised {
@@ -517,13 +746,40 @@ pub fn start_control_thread() {
     ctrl::start();
 }
 
-/// The server's step at a process's end: it leaves the console, and no control event nor the
-/// session's end reaches it from then on, as Windows 2000's csrss takes a process off its console
-/// and forgets it when it ends. Its group leads nothing any more (GenerateConsoleCtrlEvent refuses
-/// it).
+/// The server's step at a process's end (and at the deletion of one that never ran): it leaves its
+/// console, and no control event nor the session's end reaches it from then on, as Windows 2000's
+/// csrss takes a process off its console and forgets it when it ends. Its group leads nothing any
+/// more (GenerateConsoleCtrlEvent refuses it). A console made for a program goes once no process
+/// is attached to it: its input-wait event is released here, and the screen goes back to the
+/// foreground console left. Twice is once.
 #[cfg(target_arch = "x86")]
 pub fn disconnect(process: ObjectId) {
-    crate::level::raised::<Dispatch, _>(|dispatch| SERVER.get(dispatch).ctrl.disconnect(process));
+    let event = crate::level::raised::<Dispatch, _>(|dispatch| {
+        let server = SERVER.get(dispatch);
+        server.ctrl.disconnect(process);
+        let event = server
+            .consoles
+            .forget(process)
+            .and_then(|index| server.consoles.release_unused(index));
+        server.present();
+        event
+    });
+    if let Some(event) = event {
+        crate::ob::release(event);
+    }
+}
+
+/// The server's step at NtCreateProcess: `child` is attached to `creator`'s console (none when the
+/// creator has none), as Windows 2000's csrss gives a new process its creator's console until the
+/// creator says otherwise (see [`announce_process`]). A server with no room for it leaves it on the
+/// boot's console.
+#[cfg(target_arch = "x86")]
+pub fn inherit(creator: ObjectId, child: ObjectId) {
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        let consoles = &mut SERVER.get(dispatch).consoles;
+        let console = consoles.console_of(creator);
+        consoles.attach(child, console)
+    });
 }
 
 /// The server learns of `process` (see [`ctrl`]), at its first win32k service: from then on the
@@ -544,8 +800,23 @@ fn present<M: CellMemory, P: Io>(screen: &mut ScreenBuffer, vga: &mut TextScreen
         return;
     };
     let window = screen.window();
+    let width = screen.window_width();
     for row in rows.start.max(window.start)..rows.end.min(window.end) {
-        vga.put_row(row - window.start, &screen.cells()[row]);
+        vga.put_row(row - window.start, &screen.row(row)[..width]);
+    }
+    if let Some((row, column)) = screen.window_cursor() {
+        vga.set_cursor(row, column);
+    }
+}
+
+/// Copy a screen buffer's whole window to the text screen, over whatever it showed (the cells
+/// outside a smaller window blank), then the hardware cursor: the screen's change to another
+/// console. Its changes are taken with it.
+fn show_whole<M: CellMemory, P: Io>(screen: &mut ScreenBuffer, vga: &mut TextScreen<M, P>) {
+    screen.take_damage();
+    vga.clear(DEFAULT_ATTRIBUTE);
+    for (row, cells) in screen.window_rows().enumerate() {
+        vga.put_row(row, cells);
     }
     if let Some((row, column)) = screen.window_cursor() {
         vga.set_cursor(row, column);
@@ -712,11 +983,19 @@ fn get_shutdown_parameters(data: &mut [u8]) -> NtStatus {
 
 /// BasepCreateProcess, the creator's announcement of a process it made: the process (the
 /// creator's handle to it names it) put in the creator's process group, or in a group of its own
-/// for CREATE_NEW_PROCESS_GROUP, as Windows 2000's base server decides. A handle that names no
-/// process is refused as the process services refuse it.
+/// for CREATE_NEW_PROCESS_GROUP, as Windows 2000's base server decides; and, for DETACHED_PROCESS
+/// and CREATE_NEW_CONSOLE, taken off the creator's console, which NtCreateProcess attached it to,
+/// with the console handles it inherited: a detached process has no console, and one given a new
+/// console makes it when it connects (kernel32's AllocConsole API, with its startup values). A
+/// handle that names no process is refused as the process services refuse it.
 #[cfg(target_arch = "x86")]
 fn announce_process(data: &mut [u8]) -> NtStatus {
-    use rtl::console::base::{CreateProcess, CREATE_NEW_PROCESS_GROUP};
+    use rtl::console::base::{
+        CreateProcess,
+        CREATE_NEW_CONSOLE,
+        CREATE_NEW_PROCESS_GROUP,
+        DETACHED_PROCESS,
+    };
     let Some(request) = CreateProcess::<u32>::from_bytes(data) else {
         return STATUS_INVALID_PARAMETER;
     };
@@ -727,6 +1006,16 @@ fn announce_process(data: &mut [u8]) -> NtStatus {
             crate::user::args::calling_process().process_group()
         };
         made.record().set_process_group(group);
+        if request.creation_flags & (DETACHED_PROCESS | CREATE_NEW_CONSOLE) != 0 {
+            let process = made.record().object();
+            made.record().with_console(|handles| {
+                crate::level::raised::<Dispatch, _>(|dispatch| {
+                    if SERVER.get(dispatch).consoles.attach(process, None) {
+                        *handles = Handles::empty();
+                    }
+                })
+            });
+        }
     });
     announced.map_or_else(|status| status, |()| STATUS_SUCCESS)
 }
@@ -804,11 +1093,13 @@ struct Dual<'a> {
     program: crate::process::ProcessName,
 }
 
-/// The calling process, as the console holds its processes: its object, and its process group.
+/// The calling process, as the console holds its processes: its object, its process group, and
+/// its console (the server's index).
 #[derive(Clone, Copy)]
 struct Caller {
     process: crate::ob::ObjectId,
     group: u32,
+    console: usize,
 }
 
 impl Client for Dual<'_> {
@@ -894,7 +1185,7 @@ impl Client for Dual<'_> {
     /// The caller joins the console's processes with its CtrlRoutine and its group.
     fn connect_ctrl(&mut self, routine: usize) -> Result<(), u32> {
         let (caller, control) = self.caller.as_mut().ok_or(STATUS_INVALID_PARAMETER.0)?;
-        if control.connect(caller.process, caller.group, routine as u32) {
+        if control.connect(caller.process, caller.group, routine as u32, caller.console) {
             Ok(())
         } else {
             Err(STATUS_NO_MEMORY.0)
@@ -915,7 +1206,7 @@ impl Client for Dual<'_> {
                 return Ok(());
             }
         }
-        control.generate(event, group)
+        control.generate(event, group, caller.console)
     }
 
     fn program(&self) -> &[u8] {
@@ -1089,7 +1380,9 @@ mod tests {
         let screen = &mut console.screen;
         let mut drawn = text_screen(0x4E41);
         drawn.clear(DEFAULT_ATTRIBUTE);
-        drawn.put_grid(screen.window_cells());
+        for (row, cells) in screen.window_rows().enumerate() {
+            drawn.put_row(row, cells);
+        }
         let (row, column) = screen.window_cursor().expect("the cursor is in the window");
         drawn.set_cursor(row, column);
         let mut shown = text_screen(0x4E41);

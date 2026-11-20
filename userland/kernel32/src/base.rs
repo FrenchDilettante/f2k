@@ -294,6 +294,16 @@ pub fn update_console_flags(change: impl FnOnce(u32) -> u32) {
     });
 }
 
+/// The process parameters' ConsoleHandle replaced, in place: what CreateProcess left there for the
+/// process's connection to its console (see `crate::console::connect_console`), and what the
+/// process's children are started with.
+pub fn set_console_handle(handle: usize) {
+    let parameters = process_parameters();
+    // SAFETY: the process parameters, mapped for the process's whole life; the handle is written
+    // in place.
+    unsafe { (&raw mut (*parameters).console_handle).write_volatile(handle) };
+}
+
 /// The PEB's field, read in place.
 macro_rules! peb_field {
     ($field:ident) => {

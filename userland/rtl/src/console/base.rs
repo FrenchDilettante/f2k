@@ -3,9 +3,10 @@
 //! (basesrv, inside csrss):
 //! - BasepCreateProcess, kernel32's CreateProcess announcing the new process before it resumes the
 //!   process's first thread. Windows 2000's server records the process there, its process group
-//!   among the rest: the creator's group, or one the process leads (CREATE_NEW_PROCESS_GROUP).
-//!   F2K's kernel tracks its processes itself; the announcement carries what only the creator
-//!   knows, its creation flags.
+//!   among the rest: the creator's group, or one the process leads (CREATE_NEW_PROCESS_GROUP), and
+//!   its console: the creator's, or none until the process connects (DETACHED_PROCESS,
+//!   CREATE_NEW_CONSOLE). F2K's kernel tracks its processes itself; the announcement carries what
+//!   only the creator knows, its creation flags.
 //! - BasepSetProcessShutdownParam and BasepGetProcessShutdownParam, kernel32's
 //!   SetProcessShutdownParameters and GetProcessShutdownParameters: the calling process's shutdown
 //!   level and flags, which the server keeps for it, and by which the session's end orders its
@@ -43,6 +44,11 @@ pub const SHUTDOWN_NORETRY: u32 = 0x1;
 
 /// CreateProcess's flag that makes the new process the leader of a process group of its own.
 pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+/// CreateProcess's flags that keep the new process off its creator's console: no console at all,
+/// or a console of its own, which the process's connection makes.
+pub const DETACHED_PROCESS: u32 = 0x0000_0008;
+pub const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
 /// BasepCreateProcess: the new process (a handle to it in the creator, and its client id), its
 /// first thread's, and the creation flags CreateProcess was called with.

@@ -9,13 +9,6 @@ kind = "sectioned"
 gate = true
 timeout = 60
 
-[pending]
-inherit = "kernel32 exports no GetConsoleWindow"
-newconsole = "kernel32's CreateProcess takes its stub path for CREATE_NEW_CONSOLE (logged, error 120): F2K's console server holds one console, which every process shares"
-detached = "kernel32's CreateProcess takes its stub path for DETACHED_PROCESS (logged, error 120), and kernel32 exports no AllocConsole or FreeConsole"
-alloc = "kernel32 exports no AllocConsole, FreeConsole or GetConsoleWindow"
-ctrl = "kernel32's CreateProcess takes its stub path for CREATE_NEW_CONSOLE (logged, error 120)"
-
 [masks]
 # Whether the console's own buffer has its window at the origin depends on what the console showed
 # before the program: the real machine's (tests/capture.bat's, after the fixtures before it) had

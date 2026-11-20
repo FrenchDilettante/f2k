@@ -751,6 +751,27 @@ args = ["u32 dwCtrlEvent", "u32 dwProcessGroupId"]
 impl = { native = "GenerateConsoleCtrlEvent" }
 ordinal = 205
 
+[[export]]
+name = "AllocConsole"
+group = "console"
+args = []
+impl = { native = "AllocConsole" }
+ordinal = 5
+
+[[export]]
+name = "FreeConsole"
+group = "console"
+args = []
+impl = { native = "FreeConsole" }
+ordinal = 197
+
+[[export]]
+name = "GetConsoleWindow"
+group = "console"
+args = []
+impl = { native = "GetConsoleWindow" }
+ordinal = 264
+
 # --- environment ------------------------------------------------------------------------------------
 
 [[export]]
@@ -3149,10 +3170,6 @@ name = "AddConsoleAliasW"
 ordinal = 4
 
 [[export]]
-name = "AllocConsole"
-ordinal = 5
-
-[[export]]
 name = "AllocateUserPhysicalPages"
 ordinal = 6
 
@@ -3671,10 +3688,6 @@ ordinal = 192
 
 
 [[export]]
-name = "FreeConsole"
-ordinal = 197
-
-[[export]]
 name = "FreeLibraryAndExitThread"
 ordinal = 201
 
@@ -3862,10 +3875,6 @@ ordinal = 257
 [[export]]
 name = "GetConsoleNlsMode"
 ordinal = 259
-
-[[export]]
-name = "GetConsoleWindow"
-ordinal = 264
 
 [[export]]
 name = "GetCurrencyFormatA"

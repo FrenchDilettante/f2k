@@ -62,7 +62,7 @@ use input::{
     KEY_EVENT,
 };
 pub use line::{Histories, Line, LINE_UNITS};
-use screen::{Cell, Fill, ScreenBuffer, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
+use screen::{Cell, Fill, ScreenBuffer, OUTPUT_MODE_MASK};
 
 use crate::codepage::{self, CodePage};
 use crate::pod::Pod;
@@ -467,6 +467,30 @@ impl Console {
         self.title_length = length;
     }
 
+    /// Make the console over again, in place (it is too large to be made anywhere else and
+    /// moved), for the program a new console is made for, as Windows 2000's console server makes
+    /// one (AllocConsole, CreateProcess's CREATE_NEW_CONSOLE): its screen buffer `width` x
+    /// `height` cells (the default size for one that does not fit: see [`ScreenBuffer::reset`])
+    /// blank in `attribute`, the attribute written cells take; the default modes; empty input,
+    /// line and histories; the title `title`'s first [`TITLE_UNITS`] characters. Its standard
+    /// handles' writes reach the screen (see [`Console::redirect`]).
+    pub fn make_fresh(&mut self, title: &[u16], width: usize, height: usize, attribute: u16) {
+        self.screen.reset(width, height, attribute);
+        self.input.flush();
+        self.input.set_filter(filter_for(INPUT_MODE));
+        self.producer = Producer::new(LAYOUT);
+        self.input_mode = INPUT_MODE;
+        self.line = Line::new();
+        self.line_read_waiting = false;
+        self.line_read_aborted = false;
+        self.histories.forget_all();
+        let length = title.len().min(TITLE_UNITS);
+        self.title[..length].copy_from_slice(&title[..length]);
+        self.title_length = length;
+        self.redirected = false;
+        self.made.forget_all();
+    }
+
     /// What GetConsoleScreenBufferInfo reports of the active screen buffer (see
     /// [`buffer_info`]).
     pub fn screen_buffer_info(&self) -> ConsoleScreenBufferInfo {
@@ -614,6 +638,13 @@ impl MadeBuffers {
             .map(Some)
     }
 
+    /// Every made buffer gone, the console's own active: a console made over. Their grids stay as
+    /// they were, each blanked when its slot is made again.
+    fn forget_all(&mut self) {
+        self.live = [None; MADE_BUFFERS];
+        self.active = None;
+    }
+
     /// A live slot's id.
     fn id(&self, slot: usize) -> u8 {
         self.live[slot].map_or(OWN_BUFFER, |made| made.id)
@@ -633,10 +664,12 @@ impl MadeBuffers {
 pub fn buffer_info(screen: &ScreenBuffer) -> ConsoleScreenBufferInfo {
     let (row, column) = screen.cursor();
     let window = screen.window();
+    let (width, height) = screen.size();
+    let window_width = screen.window_width();
     ConsoleScreenBufferInfo {
         size: Coord {
-            x: WIDTH as i16,
-            y: screen.rows() as i16,
+            x: width as i16,
+            y: height as i16,
         },
         cursor_position: Coord {
             x: column as i16,
@@ -646,12 +679,12 @@ pub fn buffer_info(screen: &ScreenBuffer) -> ConsoleScreenBufferInfo {
         window: SmallRect {
             left: 0,
             top: window.start as i16,
-            right: WIDTH as i16 - 1,
+            right: window_width as i16 - 1,
             bottom: window.end as i16 - 1,
         },
         maximum_window_size: Coord {
-            x: WIDTH as i16,
-            y: WINDOW_HEIGHT.min(screen.rows()) as i16,
+            x: window_width as i16,
+            y: screen.window_height() as i16,
         },
     }
 }
@@ -739,6 +772,12 @@ impl Handles {
         }
         handles.logged = handles.open;
         handles
+    }
+
+    /// The same handles, none of them standard: a console's own besides the boot's, whose writes
+    /// the serial line does not carry (see [`Handles`]).
+    pub const fn unlogged(self) -> Self {
+        Handles { logged: 0, ..self }
     }
 
     /// Open a handle on `kind`'s buffer in the lowest free slot, inheritable as `inherit` says
@@ -976,6 +1015,11 @@ pub fn serve<W: Word>(
         Api::GenerateCtrlEvent => message.serve(&mut call, Call::generate_ctrl_event),
         Api::CreateScreenBuffer => message.serve(&mut call, Call::create_screen_buffer),
         Api::SetActiveScreenBuffer => message.serve(&mut call, Call::set_active_screen_buffer),
+        // The server's own, over its consoles and the processes attached to them, not one
+        // console's rules: the kernel serves them before a console is looked at.
+        Api::AllocConsole | Api::FreeConsole | Api::GetConsoleWindow => {
+            Err(STATUS_ILLEGAL_FUNCTION)
+        }
     };
     match answer {
         Ok(()) => STATUS_SUCCESS,
@@ -1785,8 +1829,9 @@ mod tests {
     use std::boxed::Box;
     use std::vec::Vec;
 
+    use screen::{HEIGHT, WIDTH, WINDOW_HEIGHT};
+
     use super::*;
-    use crate::console::screen::HEIGHT;
 
     /// A fresh console on the heap, copied there from a fresh one in the image: its screen
     /// buffers are too large for a test thread's stack to hold a few of them as values pass.
@@ -2586,9 +2631,7 @@ mod tests {
         let screen = &server.console.screen;
         assert_eq!(&screen.row_text(0)[..4], b"mid ");
         assert_eq!(&screen.row_text(1)[..4], b"end ");
-        assert!(screen.cells()[2]
-            .iter()
-            .all(|&cell| cell == Cell::blank(0x2A)));
+        assert!(screen.row(2).iter().all(|&cell| cell == Cell::blank(0x2A)));
         // A CHAR_INFO fill, and a clip that keeps row 0.
         let (from, to) = words(0, 0, 2, 1);
         let (clip_from, clip_to) = words(0, 1, W - 1, H - 1);
