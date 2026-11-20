@@ -40,7 +40,9 @@
 //! (IRP_CREATE_OPERATION, its security context, the options and the disposition, the requestor's
 //! mode), the device control's (METHOD_BUFFERED's system buffer, IRP_BUFFERED_IO,
 //! IRP_DEALLOCATE_BUFFER and IRP_INPUT_OPERATION), the cleanup's and the close's (the kernel's
-//! own, IRP_CLOSE_OPERATION).
+//! own, IRP_CLOSE_OPERATION), the read's and the write's (IRP_READ_OPERATION, IRP_WRITE_OPERATION,
+//! a DO_BUFFERED_IO device's system buffer, the caller's buffer as UserBuffer for a device that
+//! asks for neither buffering), the flush's.
 //!
 //! # The loads
 //!
@@ -53,6 +55,13 @@
 //! in the System process: F2K runs them in the caller's thread, standing in for that worker while
 //! they run (the System process is the current one, the previous mode the kernel's).
 //!
+//! An unload while a device of the driver is open is deferred, as Windows 2000 defers it: the
+//! unload marks every device of the driver DOE_UNLOAD_PENDING and succeeds ([`check_unload`]);
+//! from then on an open of one is STATUS_NO_SUCH_DEVICE ([`open_refusal`]) while the opens made
+//! before go on being served; the last of the devices' references dropped (the last open's close)
+//! runs DriverUnload ([`unload_due`]), in the closing thread standing in for the System process's
+//! worker, and the driver's name goes with it, as the `drvload` capture's `unloadopen` block shows.
+//!
 //! # What a driver sees of threads and processes
 //!
 //! F2K's threads and processes are not KTHREADs and EPROCESSes: a driver is handed a stand-in for
@@ -62,10 +71,16 @@
 //! the process the caller's); their fields read zero.
 //!
 //! Recorded seams: requests are synchronous (no pending IRP, no cancel, no completion APC); only
-//! METHOD_BUFFERED device controls are served; an unload while a device of the driver is open,
-//! which Windows 2000 defers to the last close, is the stub path; a driver whose DriverEntry fails
-//! or whose unload leaves devices behind keeps its image mapped.
+//! METHOD_BUFFERED device controls are served, and no DO_DIRECT_IO read or write (no MDL); a
+//! driver whose DriverEntry fails or whose unload leaves devices behind keeps its image mapped.
 
+use super::ntddk::{
+    DOE_DELETE_PENDING,
+    DOE_UNLOAD_PENDING,
+    DO_DEVICE_INITIALIZING,
+    DO_EXCLUSIVE,
+    DRVO_UNLOAD_INVOKED,
+};
 use crate::cm::same_name;
 use crate::status::*;
 
@@ -443,6 +458,81 @@ pub fn registry_path_below_root(units: &[u16], out: &mut [u16]) -> Option<usize>
     Some(length)
 }
 
+// --- The unload's states -----------------------------------------------------------------------
+
+/// A device as an unload weighs it: its ReferenceCount (the opens holding it), whether a device is
+/// attached above it, and its DEVOBJ_EXTENSION's ExtensionFlags.
+pub struct UnloadWeight<'a> {
+    pub references: i32,
+    pub attached: bool,
+    pub extension_flags: &'a mut u32,
+}
+
+/// NtUnloadDriver's check (Windows 2000's IopCheckUnloadDriver), over a driver's flags and its
+/// devices: STATUS_INVALID_DEVICE_REQUEST for a driver without an unload routine, or whose unload
+/// already ran; else every device marked DOE_UNLOAD_PENDING (the opens it refuses from now on, see
+/// [`open_refusal`]), and whether the unload runs now: no device referenced or attached to, the
+/// driver marked DRVO_UNLOAD_INVOKED. When it does not, the last of the devices' references runs
+/// it ([`unload_due`]); NtUnloadDriver succeeds either way.
+pub fn check_unload<'a>(
+    driver_flags: &mut u32,
+    has_unload: bool,
+    devices: impl IntoIterator<Item = UnloadWeight<'a>>,
+) -> Result<bool, NtStatus> {
+    if !has_unload || *driver_flags & DRVO_UNLOAD_INVOKED != 0 {
+        return Err(STATUS_INVALID_DEVICE_REQUEST);
+    }
+    let mut now = true;
+    for device in devices {
+        *device.extension_flags |= DOE_UNLOAD_PENDING;
+        if device.references != 0 || device.attached {
+            now = false;
+        }
+    }
+    if now {
+        *driver_flags |= DRVO_UNLOAD_INVOKED;
+    }
+    Ok(now)
+}
+
+/// Whether a device's last reference gone runs its driver's pending unload (Windows 2000's
+/// IopCompleteUnloadOrDelete): every device of the driver unreferenced, attached to by none, and
+/// marked DOE_UNLOAD_PENDING, and the unload not run yet; the driver then marked
+/// DRVO_UNLOAD_INVOKED, so that it runs once.
+pub fn unload_due<'a>(
+    driver_flags: &mut u32,
+    devices: impl IntoIterator<Item = UnloadWeight<'a>>,
+) -> bool {
+    if *driver_flags & DRVO_UNLOAD_INVOKED != 0 {
+        return false;
+    }
+    let due = devices.into_iter().all(|device| {
+        device.references == 0
+            && !device.attached
+            && *device.extension_flags & DOE_UNLOAD_PENDING != 0
+    });
+    if due {
+        *driver_flags |= DRVO_UNLOAD_INVOKED;
+    }
+    due
+}
+
+/// An open's refusal by the device's state (Windows 2000's IopParseDevice): a device still
+/// initializing, or whose driver's unload or whose own delete is pending, is
+/// STATUS_NO_SUCH_DEVICE (ERROR_FILE_NOT_FOUND, as the `drvload` capture's `unloadopen` block
+/// shows); an exclusive device already open STATUS_ACCESS_DENIED.
+pub fn open_refusal(device_flags: u32, references: i32, extension_flags: u32) -> Option<NtStatus> {
+    if device_flags & DO_DEVICE_INITIALIZING != 0
+        || extension_flags & (DOE_UNLOAD_PENDING | DOE_DELETE_PENDING) != 0
+    {
+        return Some(STATUS_NO_SUCH_DEVICE);
+    }
+    if device_flags & DO_EXCLUSIVE != 0 && references > 0 {
+        return Some(STATUS_ACCESS_DENIED);
+    }
+    None
+}
+
 // --- On target: the I/O manager's state, its objects, its requests ------------------------------
 
 #[cfg(target_arch = "x86")]
@@ -799,9 +889,9 @@ mod target {
     /// Run `body` as the system worker (see the module notes).
     fn as_worker<R>(body: impl FnOnce() -> R) -> R {
         let index = crate::sched::current_thread().index();
-        WORKER.store(u32::from(index) + 1, Ordering::Release);
+        let before = WORKER.swap(u32::from(index) + 1, Ordering::AcqRel);
         let result = body();
-        WORKER.store(0, Ordering::Release);
+        WORKER.store(before, Ordering::Release);
         result
     }
 
@@ -1129,8 +1219,9 @@ mod target {
 
     /// An open of `units` resolved to a device and the device referenced for it (its
     /// ReferenceCount, as IopParseDevice counts it before IRP_MJ_CREATE): none when the name is
-    /// no name of the I/O manager's. A device still initializing or being deleted is
-    /// STATUS_NO_SUCH_DEVICE, an exclusive one already open STATUS_ACCESS_DENIED.
+    /// no name of the I/O manager's. A device still initializing, being deleted or whose driver's
+    /// unload is pending is STATUS_NO_SUCH_DEVICE, an exclusive one already open
+    /// STATUS_ACCESS_DENIED ([`open_refusal`]).
     pub fn reference_device(units: &[u16]) -> Option<Result<Referenced, NtStatus>> {
         on_driver_stack(|| reference(units))
     }
@@ -1143,11 +1234,12 @@ mod target {
             };
             // SAFETY: a named device (see `at`): a name goes before its device's block does.
             let device = unsafe { at::<DeviceObject>(resolved.device) };
-            if device.flags & DO_DEVICE_INITIALIZING != 0 {
-                return Some(Err(STATUS_NO_SUCH_DEVICE));
-            }
-            if device.flags & DO_EXCLUSIVE != 0 && device.reference_count > 0 {
-                return Some(Err(STATUS_ACCESS_DENIED));
+            // SAFETY: its DEVOBJ_EXTENSION.
+            let dope = unsafe { at::<DevObjExtension>(device.device_object_extension) };
+            if let Some(status) =
+                open_refusal(device.flags, device.reference_count, dope.extension_flags)
+            {
+                return Some(Err(status));
             }
             device.reference_count += 1;
             Some(Ok(Referenced(resolved)))
@@ -1170,19 +1262,62 @@ mod target {
         })
     }
 
-    /// An open's reference on `device` dropped: a device deleted meanwhile goes with the last.
+    /// An open's reference on `device` dropped (IopDecrementDeviceObjectRef): with the last, a
+    /// device deleted meanwhile goes, and a pending unload of its driver runs once none of the
+    /// driver's devices is referenced any more ([`unload_due`]; on the drivers' stack, as the
+    /// System process's worker, as Windows 2000 runs it from the last close).
     pub fn dereference_device(device: u32) {
-        let gone = with_io(|_| {
+        let (driver, last, flags) = with_io(|_| {
             // SAFETY: a referenced device (see `at`).
             let object = unsafe { at::<DeviceObject>(device) };
             object.reference_count -= 1;
             // SAFETY: its DEVOBJ_EXTENSION.
             let dope = unsafe { at::<DevObjExtension>(object.device_object_extension) };
-            object.reference_count == 0 && dope.extension_flags & DOE_DELETE_PENDING != 0
+            (
+                object.driver_object,
+                object.reference_count == 0,
+                dope.extension_flags,
+            )
         });
-        if gone {
+        if !last {
+            return;
+        }
+        if flags & DOE_DELETE_PENDING != 0 {
             free_device(device);
         }
+        if flags & DOE_UNLOAD_PENDING != 0 {
+            on_driver_stack(|| {
+                let due = with_io(|_| {
+                    // SAFETY: the driver's object: its unload has not run, so it is loaded.
+                    let object = unsafe { at::<DriverObject>(driver) };
+                    unload_due(&mut object.flags, weights(object.device_object))
+                });
+                if due {
+                    run_unload(driver);
+                }
+            });
+        }
+    }
+
+    /// The devices on a driver's list from `first` (NextDevice), as an unload weighs each.
+    fn weights(first: u32) -> impl Iterator<Item = UnloadWeight<'static>> {
+        let mut device = first;
+        let mut hops = 0;
+        core::iter::from_fn(move || {
+            if device == 0 || hops >= 1024 {
+                return None;
+            }
+            hops += 1;
+            // SAFETY: a device on its driver's list (see `at`), and its DEVOBJ_EXTENSION.
+            let object = unsafe { at::<DeviceObject>(device) };
+            let dope = unsafe { at::<DevObjExtension>(object.device_object_extension) };
+            device = object.next_device;
+            Some(UnloadWeight {
+                references: object.reference_count,
+                attached: object.attached_device != 0,
+                extension_flags: &mut dope.extension_flags,
+            })
+        })
     }
 
     /// What an open asks of the device (IRP_MJ_CREATE's parameters).
@@ -1416,6 +1551,95 @@ mod target {
                 parameters: [output_length, input_length, code, 0],
             },
         )
+    }
+
+    /// The DO_* flags of the device an open is of (its buffering: DO_BUFFERED_IO, DO_DIRECT_IO,
+    /// or neither).
+    pub fn device_flags(file: DeviceFile) -> u32 {
+        open_of(file).map_or(0, |(_, device)| {
+            // SAFETY: an open's device (see `at`): the open references it.
+            unsafe { at::<DeviceObject>(device) }.flags
+        })
+    }
+
+    /// What a read or a write moves: the system buffer (0 but for a DO_BUFFERED_IO device's
+    /// transfer, the caller's block, holding a write's bytes), the caller's buffer, the length,
+    /// and the offset (none for the file object's CurrentByteOffset).
+    pub struct Transfer {
+        pub system: u32,
+        pub user_buffer: u32,
+        pub length: u32,
+        pub offset: Option<u64>,
+    }
+
+    /// IRP_MJ_READ or IRP_MJ_WRITE (`major`) for `file`: Parameters.Read (the length, the key,
+    /// the offset), IRP_READ_OPERATION or IRP_WRITE_OPERATION with IRP_DEFER_IO_COMPLETION, and
+    /// for a system buffer IRP_BUFFERED_IO and IRP_DEALLOCATE_BUFFER (a read's
+    /// IRP_INPUT_OPERATION too). A synchronous file object's CurrentByteOffset moves past what the
+    /// driver moved.
+    pub fn read_write(
+        file: DeviceFile,
+        major: u8,
+        transfer: &Transfer,
+    ) -> Result<Outcome, NtStatus> {
+        on_driver_stack(|| transfer_on_stack(file, major, transfer))
+    }
+
+    fn transfer_on_stack(
+        file: DeviceFile,
+        major: u8,
+        transfer: &Transfer,
+    ) -> Result<Outcome, NtStatus> {
+        let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
+        // SAFETY: the open's FILE_OBJECT (see `at`).
+        let file_object = unsafe { at::<FileObject>(object) };
+        let offset = transfer.offset.unwrap_or(file_object.current_byte_offset);
+        let read = major == crate::dev::irp::IRP_MJ_READ;
+        let buffered = if transfer.system == 0 {
+            0
+        } else {
+            IRP_BUFFERED_IO | IRP_DEALLOCATE_BUFFER | if read { IRP_INPUT_OPERATION } else { 0 }
+        };
+        let operation = if read {
+            IRP_READ_OPERATION
+        } else {
+            IRP_WRITE_OPERATION
+        };
+        let outcome = call_driver(
+            device,
+            &Request {
+                major,
+                flags: operation | IRP_DEFER_IO_COMPLETION | buffered,
+                requestor_mode: USER_MODE,
+                system_buffer: transfer.system,
+                user_buffer: transfer.user_buffer,
+                file_object: object,
+                parameters: [transfer.length, 0, offset as u32, (offset >> 32) as u32],
+            },
+        )?;
+        if file_object.flags & FO_SYNCHRONOUS_IO != 0 && !nt_error(outcome.status) {
+            file_object.current_byte_offset = offset + u64::from(outcome.information);
+        }
+        Ok(outcome)
+    }
+
+    /// IRP_MJ_FLUSH_BUFFERS for `file`.
+    pub fn flush(file: DeviceFile) -> Result<Outcome, NtStatus> {
+        on_driver_stack(|| {
+            let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
+            call_driver(
+                device,
+                &Request {
+                    major: crate::dev::irp::IRP_MJ_FLUSH_BUFFERS,
+                    flags: IRP_SYNCHRONOUS_API,
+                    requestor_mode: USER_MODE,
+                    system_buffer: 0,
+                    user_buffer: 0,
+                    file_object: object,
+                    parameters: [0; 4],
+                },
+            )
+        })
     }
 
     // --- Loads and unloads -------------------------------------------------------------------
@@ -1722,37 +1946,37 @@ mod target {
         let slot = driver_named(&name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
         let object = with_io(|io| io.drivers[usize::from(slot)].map(|driver| driver.object))
             .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
-        // SAFETY: the driver's object (see `at`).
-        let driver = unsafe { at::<DriverObject>(object) };
-        if driver.driver_unload == 0 {
-            return Err(STATUS_INVALID_DEVICE_REQUEST);
+        let now = with_io(|_| {
+            // SAFETY: the driver's object (see `at`).
+            let driver = unsafe { at::<DriverObject>(object) };
+            check_unload(
+                &mut driver.flags,
+                driver.driver_unload != 0,
+                weights(driver.device_object),
+            )
+        })?;
+        if now {
+            run_unload(object);
         }
-        let mut device = driver.device_object;
-        let mut hops = 0;
-        while device != 0 && hops < 1024 {
-            // SAFETY: a device on the driver's list.
-            let object = unsafe { at::<DeviceObject>(device) };
-            if object.reference_count > 0 {
-                crate::dbgprint::unhandled(
-                    "ntdll",
-                    "NtUnloadDriver",
-                    format_args!("DriverServiceName={}", Units(units)),
-                    format_args!(
-                        "an unload while a device of the driver is open (deferred to its last \
-                         close) is not yet implemented"
-                    ),
-                );
-                return Err(STATUS_NOT_IMPLEMENTED);
-            }
-            device = object.next_device;
-            hops += 1;
-        }
-        // SAFETY: the driver's DriverUnload(DriverObject).
-        let unload = unsafe { routine::<UnloadRoutine>(driver.driver_unload) };
-        as_worker(|| unload(object));
-        driver.flags |= DRVO_UNLOAD_INVOKED;
-        forget_driver(slot);
         Ok(())
+    }
+
+    /// The unload itself, DRVO_UNLOAD_INVOKED set (by [`check_unload`] or [`unload_due`]):
+    /// DriverUnload run as the System process's worker, then the driver's name gone (a second
+    /// NtUnloadDriver's STATUS_OBJECT_NAME_NOT_FOUND) and its block and image with it.
+    fn run_unload(object: u32) {
+        // SAFETY: the driver's object (see `at`) and its DriverUnload(DriverObject), which
+        // `check_unload` found set.
+        let unload = unsafe { routine::<UnloadRoutine>(at::<DriverObject>(object).driver_unload) };
+        as_worker(|| unload(object));
+        let slot = with_io(|io| {
+            io.drivers
+                .iter()
+                .position(|slot| slot.is_some_and(|driver| driver.object == object))
+        });
+        if let Some(slot) = slot {
+            forget_driver(slot as u16);
+        }
     }
 
     /// RtlWriteRegistryValue's work, RTL_REGISTRY_ABSOLUTE: `value` of `key` (an absolute path,
@@ -1906,6 +2130,134 @@ mod tests {
             open("\\Driver\\F2Kdrvload"),
             Some(Err(STATUS_OBJECT_TYPE_MISMATCH))
         );
+    }
+
+    /// A device as the unload tests weigh it: its references, and its extension flags.
+    struct Device {
+        references: i32,
+        attached: bool,
+        flags: u32,
+    }
+
+    impl Device {
+        fn open(references: i32) -> Device {
+            Device {
+                references,
+                attached: false,
+                flags: 0,
+            }
+        }
+    }
+
+    fn weights(devices: &mut [Device]) -> impl Iterator<Item = UnloadWeight<'_>> {
+        devices.iter_mut().map(|device| UnloadWeight {
+            references: device.references,
+            attached: device.attached,
+            extension_flags: &mut device.flags,
+        })
+    }
+
+    /// The `unload` capture: with no device open, NtUnloadDriver unloads at once, the driver
+    /// marked DRVO_UNLOAD_INVOKED; a driver without DriverUnload, or whose unload ran, refuses.
+    #[test]
+    fn an_unload_with_nothing_open_runs_at_once() {
+        let mut driver = super::super::ntddk::DRVO_LEGACY_DRIVER;
+        let mut devices = [Device::open(0), Device::open(0)];
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Ok(true)
+        );
+        assert_ne!(driver & DRVO_UNLOAD_INVOKED, 0);
+        assert!(devices.iter().all(|d| d.flags & DOE_UNLOAD_PENDING != 0));
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Err(STATUS_INVALID_DEVICE_REQUEST)
+        );
+        assert!(!unload_due(&mut driver, weights(&mut devices)));
+        let mut driver = 0;
+        assert_eq!(
+            check_unload(&mut driver, false, weights(&mut [Device::open(0)])),
+            Err(STATUS_INVALID_DEVICE_REQUEST)
+        );
+        // A driver with no device left unloads at once too.
+        assert_eq!(check_unload(&mut driver, true, weights(&mut [])), Ok(true));
+    }
+
+    /// The `unloadopen` capture: with a handle open the unload is left pending (NtUnloadDriver
+    /// succeeds all the same), a new open of the device is refused, a second unload request
+    /// leaves it pending, and the last close runs it, once.
+    #[test]
+    fn an_unload_with_a_handle_open_waits_for_its_last_close() {
+        let mut driver = 0;
+        // Two handles open on the first device.
+        let mut devices = [Device::open(2), Device::open(0)];
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Ok(false)
+        );
+        assert_eq!(driver & DRVO_UNLOAD_INVOKED, 0);
+        assert_eq!(
+            open_refusal(0, devices[0].references, devices[0].flags),
+            Some(STATUS_NO_SUCH_DEVICE)
+        );
+        assert_eq!(
+            open_refusal(0, devices[1].references, devices[1].flags),
+            Some(STATUS_NO_SUCH_DEVICE)
+        );
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Ok(false)
+        );
+        // The first close: the second handle still holds the device.
+        devices[0].references -= 1;
+        assert!(!unload_due(&mut driver, weights(&mut devices)));
+        devices[0].references -= 1;
+        assert!(unload_due(&mut driver, weights(&mut devices)));
+        assert_ne!(driver & DRVO_UNLOAD_INVOKED, 0);
+        assert!(!unload_due(&mut driver, weights(&mut devices)));
+    }
+
+    /// A device attached to holds the unload as an open does; a device the unload never marked
+    /// (made after it) keeps the driver loaded.
+    #[test]
+    fn an_attached_or_unmarked_device_holds_the_unload() {
+        let mut driver = 0;
+        let mut devices = [Device {
+            references: 0,
+            attached: true,
+            flags: 0,
+        }];
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Ok(false)
+        );
+        devices[0].attached = false;
+        assert!(unload_due(&mut driver, weights(&mut devices)));
+        let mut driver = 0;
+        assert!(!unload_due(&mut driver, weights(&mut [Device::open(0)])));
+    }
+
+    /// The opens a device refuses: initializing, its driver's unload or its own delete pending
+    /// (STATUS_NO_SUCH_DEVICE), exclusive and open (STATUS_ACCESS_DENIED).
+    #[test]
+    fn opens_are_refused_by_the_device_s_state() {
+        use super::super::ntddk::DO_DEVICE_HAS_NAME;
+        assert_eq!(open_refusal(DO_DEVICE_HAS_NAME, 0, 0), None);
+        assert_eq!(open_refusal(DO_DEVICE_HAS_NAME, 3, 0), None);
+        assert_eq!(
+            open_refusal(DO_DEVICE_INITIALIZING, 0, 0),
+            Some(STATUS_NO_SUCH_DEVICE)
+        );
+        assert_eq!(
+            open_refusal(0, 0, DOE_DELETE_PENDING),
+            Some(STATUS_NO_SUCH_DEVICE)
+        );
+        assert_eq!(
+            open_refusal(DO_EXCLUSIVE, 1, DOE_UNLOAD_PENDING),
+            Some(STATUS_NO_SUCH_DEVICE)
+        );
+        assert_eq!(open_refusal(DO_EXCLUSIVE, 1, 0), Some(STATUS_ACCESS_DENIED));
+        assert_eq!(open_refusal(DO_EXCLUSIVE, 0, 0), None);
     }
 
     /// _vsnprintf's placement: the NUL when it fits, none when the text fills the buffer, -1

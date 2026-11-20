@@ -51,10 +51,6 @@
  *               contents, the DriverObject's list, and IoDeleteDevice's),
  *               exclusive with FILE_DEVICE_SECURE_OPEN, and of
  *               FILE_DEVICE_DISK (its VPB and sector size)
- *   names       IoCreateDevice on a name taken and in a directory that
- *               does not exist; IoCreateSymbolicLink on a name taken, a
- *               new one, to a device that does not exist; and
- *               IoDeleteSymbolicLink, twice
  *   unknown     what the I/O manager answers for the driver: an I/O
  *               control code it does not handle, a request too short
  *               for it, and ReadFile, WriteFile and FlushFileBuffers,
@@ -65,9 +61,16 @@
  *               writes under the service key
  *   unloadopen  NtUnloadDriver with a handle open: its status, whether
  *               the unload ran, CreateFileA and DeviceIoControl
- *               meanwhile, then the handle closed and what the unload saw;
- *               last, as a driver whose unload never comes would keep
- *               every later section from loading it
+ *               meanwhile, then the handle closed and what the unload saw
+ *   names       IoCreateDevice on a name taken and in a directory that
+ *               does not exist; IoCreateSymbolicLink on a name taken, a
+ *               new one, to a device that does not exist; and
+ *               IoDeleteSymbolicLink, twice. Last: on Windows 2000 the
+ *               two refused IoCreateDevice calls leave a reference on the
+ *               driver that is never dropped, so once it is unloaded its
+ *               \Driver name is gone but its image stays loaded, and every
+ *               later NtLoadDriver of the service fails with
+ *               STATUS_OBJECT_NAME_NOT_FOUND until the machine restarts
  *
  * The program needs an administrator's token: SeLoadDriverPrivilege.
  *
@@ -291,10 +294,10 @@ static const section_t sections[] = {
     { "ioctl", sec_ioctl, F2KT_ALWAYS },
     { "irps", sec_irps, F2KT_ALWAYS },
     { "device", sec_device, F2KT_ALWAYS },
-    { "names", sec_names, F2KT_ALWAYS },
     { "unknown", sec_unknown, F2KT_ALWAYS },
     { "unload", sec_unload, F2KT_ALWAYS },
     { "unloadopen", sec_unloadopen, F2KT_ALWAYS },
+    { "names", sec_names, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

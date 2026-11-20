@@ -15,11 +15,10 @@
 //! the image in a pool block, then maps the staged pages frame by frame into the region's shared
 //! tables, so the module is reachable from every address space ([`map_driver_image`]), and takes
 //! them back at the unload ([`unmap_driver_image`]). Its resolver is [`resolve_import`]: hal.dll
-//! by name through the generated HAL table (and, for the few HAL routines the HAL's spec does not
-//! carry yet, the I/O layer's own: [`super::ntoskrnl::interim_hal_export`]), ntoskrnl.exe by name
-//! or ordinal through the kernel image's own export directory (forwarders followed,
-//! depth-limited). What the image becomes, its DRIVER_OBJECT and the call of its DriverEntry, is
-//! the I/O manager's ([`super::io`], NtLoadDriver's).
+//! by name through the generated HAL table (`kernel/hal_exports.toml`), ntoskrnl.exe by name or
+//! ordinal through the kernel image's own export directory (forwarders followed, depth-limited).
+//! What the image becomes, its DRIVER_OBJECT and the call of its DriverEntry, is the I/O manager's
+//! ([`super::io`], NtLoadDriver's).
 //!
 //! Recorded seams: an image linked /FIXED (no relocation directory) can only load at its preferred
 //! base, which the modules region never is; the INIT section is not discarded after DriverEntry
@@ -312,9 +311,8 @@ mod target {
     }
 
     /// Resolve one import of a loaded module: hal.dll by name through the generated HAL table
-    /// (`kernel/hal_exports.toml`), then the routines the I/O layer serves for it until that spec
-    /// carries them; ntoskrnl.exe by name or ordinal through the kernel image's export directory,
-    /// forwarders followed (depth-limited). Anything else is no module.
+    /// (`kernel/hal_exports.toml`); ntoskrnl.exe by name or ordinal through the kernel image's
+    /// export directory, forwarders followed (depth-limited). Anything else is no module.
     pub fn resolve_import(module: &str, name: ImportName) -> Result<u32, Unresolved> {
         resolve_import_depth(module, name, 0)
     }
@@ -329,7 +327,6 @@ mod target {
             };
             return hal_exports::export_address(name)
                 .map(|address| address as u32)
-                .or_else(|| crate::dev::ntoskrnl::interim_hal_export(name))
                 .ok_or(Unresolved::NoEntry);
         }
         if pe::same_module(module, "ntoskrnl.exe") {

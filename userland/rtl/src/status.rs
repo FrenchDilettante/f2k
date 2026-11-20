@@ -4,7 +4,9 @@
 //! The mapping, as ntdll's: a success status (zero) and a customer status (bit 29 set) are their
 //! own answer; a 0xD... status is the 0xC... one; the Win32-facility statuses (0xC001xxxx,
 //! 0x8007xxxx, 0xC007xxxx) carry the Win32 error in their low word; anything else is looked up in
-//! the [`table`](crate::status_table), ERROR_MR_MID_NOT_FOUND (317) when it has no entry.
+//! the [`table`](crate::status_table), ERROR_MR_MID_NOT_FOUND (317) when it has no entry. The
+//! table is Wine's, which follows later Windows releases: where a capture shows Windows 2000
+//! answering otherwise, `WINDOWS_2000` holds its answer.
 
 use crate::status_table::{ERRORS, RANGES};
 
@@ -196,6 +198,14 @@ pub const fn nt_success(status: u32) -> bool {
     (status as i32) >= 0
 }
 
+/// Where Windows 2000's mapping differs from the generated table's (Wine's, after later releases),
+/// as the captures show it: (the status, Windows 2000's error).
+const WINDOWS_2000: [(u32, u32); 1] = [
+    // STATUS_NO_SUCH_DEVICE: ERROR_FILE_NOT_FOUND, where the table answers ERROR_NO_SUCH_DEVICE
+    // (433): the drvload capture's open of a device whose driver's unload is pending.
+    (0xC000_000E, 2),
+];
+
 /// The Win32 error a status maps to (RtlNtStatusToDosErrorNoTeb).
 // The table's element type is the generator's choice (u16 or u32, by its widest error).
 #[allow(clippy::useless_conversion)]
@@ -210,6 +220,9 @@ pub fn dos_error(status: u32) -> u32 {
     };
     if matches!(status >> 16, 0xC001 | 0x8007 | 0xC007) {
         return status & 0xFFFF;
+    }
+    if let Some(&(_, error)) = WINDOWS_2000.iter().find(|&&(held, _)| held == status) {
+        return error;
     }
     // The runs are in status order: the last one starting at or below the status holds it, if any.
     let run = RANGES.partition_point(|&(start, _, _)| start <= status);
@@ -292,6 +305,7 @@ mod tests {
         for (status, error) in [
             (STATUS_OBJECT_NAME_NOT_FOUND, 2), // a missing file
             (STATUS_NO_SUCH_FILE, 2),          // a search matching nothing
+            (0xC000_000E, 2),                  // STATUS_NO_SUCH_DEVICE: an unload-pending device
             (STATUS_OBJECT_PATH_NOT_FOUND, 3), // a missing directory, a file used as one
             (STATUS_OBJECT_NAME_INVALID, 123), // a wildcard, a trailing backslash on a file
             (STATUS_NAME_TOO_LONG, 206),

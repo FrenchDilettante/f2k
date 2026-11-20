@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:40:41.21
-drvload F2KT-SOURCE-CRC=0x4F5F0E19
+# date: Fri 11/20/2026 11:49:36.28
+drvload F2KT-SOURCE-CRC=0xB6D60809
 >>> drvload.exe load
 == load
 the service key written: yes
@@ -146,6 +146,44 @@ IoCreateDevice(FILE_DEVICE_DISK, no name): 0x00000000
   Flags=0x00000080 Vpb: non-NULL SectorSize=512 AlignmentRequirement=0x00000000
 drvload: done
 <<< exit code=0
+>>> drvload.exe unknown
+== unknown
+DeviceIoControl(a code the driver does not handle): ret=0 err=1 returned=62194
+DeviceIoControl(the run code, 4 bytes in; the driver answers STATUS_INVALID_PARAMETER): ret=0 err=87 returned=62194
+ReadFile: ret=0 err=1 read=0
+WriteFile: ret=0 err=1 written=0
+FlushFileBuffers: ret=0 err=1
+drvload: done
+<<< exit code=0
+>>> drvload.exe unload
+== unload
+NtUnloadDriver(F2Kdrvload), no handle open: 0x00000000
+when it returned: the unload routine's record:
+DriverUnload: IRQL=0 ExGetPreviousMode=0
+DriverUnload: in the System process: yes, in DriverEntry's: yes, in the last opener's: no
+DriverUnload: DriverObject->DriverUnload is the routine running: yes
+DriverUnload: DriverObject->DeviceObject is the device: yes
+DriverUnload: the device's ReferenceCount=0, NextDevice: NULL
+DriverUnload: after IoDeleteSymbolicLink and IoDeleteDevice: DriverObject->DeviceObject: NULL
+drvload: done
+<<< exit code=0
+>>> drvload.exe unloadopen
+== unloadopen
+NtUnloadDriver(F2Kdrvload), a handle open: 0x00000000
+the unload routine ran: no
+unload pending: CreateFileA(\\.\F2Kdrvload): handle no err=2
+DeviceIoControl on the open handle: ret=1 err=-
+the unload routine ran: no
+the handle closed: the unload routine's record:
+DriverUnload: IRQL=0 ExGetPreviousMode=0
+DriverUnload: in the System process: yes, in DriverEntry's: yes, in the last opener's: no
+DriverUnload: DriverObject->DriverUnload is the routine running: yes
+DriverUnload: DriverObject->DeviceObject is the device: yes
+DriverUnload: the device's ReferenceCount=0, NextDevice: NULL
+DriverUnload: after IoDeleteSymbolicLink and IoDeleteDevice: DriverObject->DeviceObject: NULL
+NtUnloadDriver(F2Kdrvload), then: 0xC0000034
+drvload: done
+<<< exit code=0
 >>> drvload.exe names
 == names
 IoCreateDevice(\Device\F2Kdrvload, taken): 0xC0000035, *DeviceObject: NULL
@@ -156,20 +194,5 @@ IoDeleteSymbolicLink(\DosDevices\F2KdrvloadX): 0x00000000
 IoDeleteSymbolicLink(\DosDevices\F2KdrvloadX), again: 0xC0000034
 IoCreateSymbolicLink(\DosDevices\F2KdrvloadY to a device that does not exist): 0x00000000
 IoDeleteSymbolicLink(\DosDevices\F2KdrvloadY): 0x00000000
-drvload: done
-<<< exit code=0
->>> drvload.exe unknown
-== unknown
-f2kd: NtLoadDriver: 0xC0000034
-drvload: done
-<<< exit code=0
->>> drvload.exe unload
-== unload
-f2kd: NtLoadDriver: 0xC0000034
-drvload: done
-<<< exit code=0
->>> drvload.exe unloadopen
-== unloadopen
-f2kd: NtLoadDriver: 0xC0000034
 drvload: done
 <<< exit code=0

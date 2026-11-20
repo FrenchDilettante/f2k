@@ -100,7 +100,9 @@ pub const FILE_DEVICE_DISK: u32 = 0x07;
 pub const FILE_DEVICE_TAPE: u32 = 0x1F;
 pub const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x24;
 
-/// DEVOBJ_EXTENSION's ExtensionFlags: the device's delete waits for its last reference.
+/// DEVOBJ_EXTENSION's ExtensionFlags: its driver's unload waits for the device's last reference
+/// (NtUnloadDriver while it is open), and the device's delete does.
+pub const DOE_UNLOAD_PENDING: u32 = 0x1;
 pub const DOE_DELETE_PENDING: u32 = 0x2;
 
 /// DEVICE_OBJECT (0xB8 bytes).
@@ -216,6 +218,8 @@ pub const IRP_BUFFERED_IO: u32 = 0x0000_0010;
 pub const IRP_DEALLOCATE_BUFFER: u32 = 0x0000_0020;
 pub const IRP_INPUT_OPERATION: u32 = 0x0000_0040;
 pub const IRP_CREATE_OPERATION: u32 = 0x0000_0080;
+pub const IRP_READ_OPERATION: u32 = 0x0000_0100;
+pub const IRP_WRITE_OPERATION: u32 = 0x0000_0200;
 pub const IRP_CLOSE_OPERATION: u32 = 0x0000_0400;
 pub const IRP_DEFER_IO_COMPLETION: u32 = 0x0000_0800;
 

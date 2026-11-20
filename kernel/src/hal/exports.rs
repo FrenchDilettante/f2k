@@ -17,6 +17,7 @@
 //!   [`crate::dev::routing`]) and the enable/disable over the [`Hal`] trait.
 //! - **Clock/RTC:** [`query_real_time_clock`], [`set_time_increment`].
 //! - **Bus data:** HalGetBusData/HalSetBusData over the PCI config seam ([`crate::hw::pci`]).
+//! - **IRQL:** `KeGetCurrentIrql`, the processor's level as its PCR keeps it.
 //! - **DMA and MMIO:** HalAllocateCommonBuffer/HalFreeCommonBuffer and `MmMapIoSpace` over
 //!   [`crate::mem::dma`] (physically contiguous common buffers over the pool with page-table
 //!   translation, MMIO mapping into the reserved region).
@@ -570,6 +571,8 @@ mod symbols {
         physical_address: u64, number_of_bytes: u32, cache_enable: bool,
     ) -> *mut c_void = dma::map_io_space(physical_address, number_of_bytes, cache_enable)
         .map_or(core::ptr::null_mut(), |va| va as *mut c_void));
+
+    entry!(f2k_export_KeGetCurrentIrql() -> u8 = crate::pcr::pcr().current().0);
 
     entry!(f2k_export_HalRequestIpi(mask: u32) -> () = request_ipi(mask));
     entry!(f2k_export_HalStartNextProcessor(

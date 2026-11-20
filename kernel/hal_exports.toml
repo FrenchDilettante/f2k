@@ -61,6 +61,10 @@ title = "MMIO mapping (MmMapIoSpace)"
 key = "mp"
 title = "multi-processor (HalRequestIpi, HalStartNextProcessor)"
 
+[[group]]
+key = "irql"
+title = "IRQL (KeGetCurrentIrql)"
+
 # --- Port access -----------------------------------------------------------------------------
 
 [[export]]
@@ -317,6 +321,15 @@ args = ["u64 PhysicalAddress", "u32 NumberOfBytes", "boolean CacheEnable"]
 fails = "0"
 impl = { native = "MmMapIoSpace" }
 note = "maps the device range into the reserved MMIO region (mem/dma.rs), uncached unless CacheEnable"
+
+# --- IRQL ------------------------------------------------------------------------------------
+
+[[export]]
+name = "KeGetCurrentIrql"
+group = "irql"
+args = []
+impl = { native = "KeGetCurrentIrql" }
+note = "the processor's IRQL, as its PCR keeps it (a KIRQL, in AL): what the drvload capture's DriverEntry, dispatch routines and unload read, PASSIVE_LEVEL"
 
 # --- Multi-processor -------------------------------------------------------------------------
 

@@ -3,10 +3,6 @@
 //! otherwise: IofCompleteRequest is fastcall, _vsnprintf cdecl), over the I/O manager
 //! ([`super::io`]). The kernel's image exports them by name at Windows 2000's ordinals; the
 //! `.sys` loader snaps a driver's imports to them ([`super::loader`]).
-//!
-//! The one hal.dll routine the I/O layer serves itself, KeGetCurrentIrql, which a driver imports
-//! from hal.dll, is here too until the HAL's spec (`kernel/hal_exports.toml`) carries it: the
-//! loader asks [`interim_hal_export`] for a hal.dll name the HAL's table does not have.
 
 #[cfg(target_arch = "x86")]
 pub use target::*;
@@ -266,20 +262,5 @@ mod target {
             return -1;
         }
         io::place(out, &text.bytes[..text.length])
-    }
-
-    // --- hal.dll's, until the HAL's spec carries it -------------------------------------------
-
-    /// KeGetCurrentIrql: the processor's IRQL.
-    extern "stdcall" fn current_irql() -> u8 {
-        crate::pcr::pcr().current().0
-    }
-
-    /// A hal.dll routine the I/O layer serves until `kernel/hal_exports.toml` has it: its address.
-    pub fn interim_hal_export(name: &str) -> Option<u32> {
-        match name {
-            "KeGetCurrentIrql" => Some(current_irql as *const () as u32),
-            _ => None,
-        }
     }
 }

@@ -3,21 +3,16 @@
 # beside it from drvloadsys.c), for each section, runs the section in it and prints what it returns.
 # Its RegistryPath line prints the path the I/O manager hands DriverEntry, the capture machine's
 # \ControlSet001\ (F2K names its one control set so too).
-# The capture's last three blocks hold only "f2kd: NtLoadDriver: 0xC0000034": the names section,
-# captured before them, leaves the driver's image loaded on Windows 2000 once it is unloaded (its
-# two refused IoCreateDevice calls keep a reference on the driver that is never dropped), so every
-# later load of the service fails until the machine restarts. They are skipped until the fixture,
-# rebuilt with names last, is captured again.
-# Not pinned: hal.dll's KeGetCurrentIrql (entry, create, ioctl, irps, unload), which
-# kernel/hal_exports.toml does not carry yet (the I/O layer serves it meanwhile).
+# The names section runs last: on Windows 2000 its two refused IoCreateDevice calls keep a
+# reference on the driver that is never dropped, so once it is unloaded its image stays loaded and
+# every later NtLoadDriver of the service fails (0xC0000034) until the machine restarts.
+# unknown's "returned=62194" is the program's own 0xF2F2, set before each call: DeviceIoControl
+# leaves lpBytesReturned untouched when it fails.
+# Not pinned: hal.dll's KeGetCurrentIrql (entry, create, ioctl, irps, unload, unloadopen):
+# kernel/hal_exports.toml carries it, but scripts/compat.py reads no pins against the HAL's spec.
 description = "drvload - the plumbing a legacy driver lives on and the NT layouts it reads: NtLoadDriver and NtUnloadDriver over a service key the program writes (privilege, missing key, twice, reload), the DRIVER_OBJECT and DRIVER_EXTENSION DriverEntry is handed, the DEVICE_OBJECT IoCreateDevice makes, the IRPs the dispatch sees (create, cleanup, close, device control) and their process, IoCreateDevice and IoCreateSymbolicLink refusals, the I/O manager's answers for unset major functions, and the unload, with and without a handle open."
 kind = "sectioned"
 gate = true
-
-[skip]
-unknown = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
-unload = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
-unloadopen = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, the driver's load, its device and

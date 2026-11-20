@@ -68,9 +68,11 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUnloadDriver(DriverServiceName): the driver's DriverUnload run and the driver gone:
-    /// STATUS_OBJECT_NAME_NOT_FOUND when it is not loaded (or its key does not exist),
-    /// STATUS_INVALID_DEVICE_REQUEST when it has no DriverUnload.
+    /// NtUnloadDriver(DriverServiceName): the driver's DriverUnload run and the driver gone, or,
+    /// while a device of the driver is open, the unload left pending until its last close (the
+    /// device refusing new opens meanwhile), success either way: STATUS_OBJECT_NAME_NOT_FOUND
+    /// when it is not loaded (or its key does not exist), STATUS_INVALID_DEVICE_REQUEST when it
+    /// has no DriverUnload.
     pub fn unload_driver(call: &mut NtCall, name: UserAddr) -> NtResult {
         privileged(call)?;
         let mut units = ArrayVec::new();

@@ -9,10 +9,19 @@
 //! length) unless the request failed. The service's status is the dispatch routine's; the I/O
 //! status block takes the IRP's, unless it is an error. The other methods, and the file systems'
 //! own devices (the disk's, the pipes', the null device's), are the stub path.
+//!
+//! NtReadFile, NtWriteFile and NtFlushBuffersFile on a driver's device ([`read_write`],
+//! [`flush`]) go down as IRP_MJ_READ, IRP_MJ_WRITE and IRP_MJ_FLUSH_BUFFERS, the caller's buffer
+//! reached as the device asks: through a system buffer for DO_BUFFERED_IO, as the IRP's UserBuffer
+//! for neither (DO_DIRECT_IO's MDL is the stub path). A driver that never set the major function
+//! answers through the I/O manager's STATUS_INVALID_DEVICE_REQUEST (ERROR_INVALID_FUNCTION, as
+//! the `drvload` capture's `unknown` block shows).
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, completion_event, file_object, signal};
 use super::pipe::{check_all, control_rights};
+use crate::dev::io::{DeviceFile, Transfer};
+use crate::dev::ntddk::{DO_BUFFERED_IO, DO_DIRECT_IO};
 use crate::fs::file::Context;
 use crate::status::*;
 
@@ -94,4 +103,74 @@ pub fn device_io_control_file(
     } else {
         Err(outcome.returned)
     }
+}
+
+/// A read (`write` false) or a write of `length` bytes at `buffer` on a driver's device, at
+/// `offset` (none for the file object's position): the count the driver moved, or the IRP's
+/// error.
+pub fn read_write(
+    file: DeviceFile,
+    write: bool,
+    buffer: UserAddr,
+    length: u32,
+    offset: Option<u64>,
+) -> Result<u32, NtStatus> {
+    let flags = crate::dev::io::device_flags(file);
+    let service = if write { "NtWriteFile" } else { "NtReadFile" };
+    if flags & DO_DIRECT_IO != 0 {
+        crate::dbgprint::unhandled(
+            "ntdll",
+            service,
+            format_args!("FileHandle=<a DO_DIRECT_IO device>"),
+            format_args!("a direct I/O transfer's MDL is not yet implemented"),
+        );
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    buffer.probe(length)?;
+    let mut system = if flags & DO_BUFFERED_IO != 0 && length > 0 {
+        Some(crate::mem::pool::allocate(length as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?)
+    } else {
+        None
+    };
+    let address = match system.as_mut() {
+        Some(block) => {
+            if write {
+                buffer.read(&mut block.as_mut()[..length as usize])?;
+            }
+            block.as_mut().as_mut_ptr() as u32
+        }
+        None => 0,
+    };
+    let major = if write {
+        crate::dev::irp::IRP_MJ_WRITE
+    } else {
+        crate::dev::irp::IRP_MJ_READ
+    };
+    let outcome = crate::dev::io::read_write(
+        file,
+        major,
+        &Transfer {
+            system: address,
+            user_buffer: buffer.raw(),
+            length,
+            offset,
+        },
+    )?;
+    if crate::dev::io::nt_error(outcome.status) {
+        return Err(outcome.status);
+    }
+    let count = outcome.information.min(length);
+    if let (false, Some(block)) = (write, &system) {
+        buffer.write(&block.as_ref()[..count as usize])?;
+    }
+    Ok(count)
+}
+
+/// A flush of a driver's device: the IRP's error, if any.
+pub fn flush(file: DeviceFile) -> Result<(), NtStatus> {
+    let outcome = crate::dev::io::flush(file)?;
+    if crate::dev::io::nt_error(outcome.status) {
+        return Err(outcome.status);
+    }
+    Ok(())
 }
