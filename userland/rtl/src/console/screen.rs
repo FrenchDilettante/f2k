@@ -9,7 +9,9 @@
 //! column it began at. A line feed past the last row scrolls the grid up one row.
 //!
 //! The grid is Windows 2000's default console buffer, [`WIDTH`] x [`HEIGHT`] (80 x 300), behind a
-//! window of [`WINDOW_HEIGHT`] rows (80 x 25), the part the screen shows. The window follows the
+//! window of [`WINDOW_HEIGHT`] rows (80 x 25), the part the screen shows. A buffer
+//! CreateConsoleScreenBuffer makes is the window's size, 80 x 25 ([`ScreenBuffer::remake`]): it
+//! uses the grid's first [`WINDOW_HEIGHT`] rows, its window all of them. The window follows the
 //! cursor: a write or a move that leaves the cursor below the window's last row brings that row
 //! down to the cursor's, one above its first row brings the first row up to it.
 //!
@@ -89,6 +91,9 @@ pub struct ScreenBuffer {
     anchor: usize,
     /// The rows changed since the last look, and whether anything (the cursor included) changed.
     damaged: Option<Range<usize>>,
+    /// The grid's rows in use: the buffer's height ([`HEIGHT`], or [`WINDOW_HEIGHT`] for a buffer
+    /// CreateConsoleScreenBuffer made).
+    rows: usize,
 }
 
 impl ScreenBuffer {
@@ -105,7 +110,53 @@ impl ScreenBuffer {
             limit_backspace: false,
             anchor: 0,
             damaged: None,
+            rows: HEIGHT,
         }
+    }
+
+    /// Make the buffer over as one CreateConsoleScreenBuffer makes, as Windows 2000's: the size of
+    /// the console's window (80 x 25), blank in `attribute` (the active buffer's), which written
+    /// cells take, the cursor and the window home, the output mode a fresh console's. In place:
+    /// the grid is too large for a kernel stack's temporary.
+    pub fn remake(&mut self, attribute: u16) {
+        for row in &mut self.cells[..WINDOW_HEIGHT] {
+            *row = [Cell::blank(attribute); WIDTH];
+        }
+        self.rows = WINDOW_HEIGHT;
+        (self.row, self.column, self.window_top) = (0, 0, 0);
+        self.attribute = attribute;
+        self.mode = super::OUTPUT_MODE;
+        self.limit_backspace = false;
+        self.anchor = 0;
+        self.damaged = None;
+    }
+
+    /// Exchange two buffers' contents, a row at a time: a whole buffer is too large for a kernel
+    /// stack's temporary, which `core::mem::swap` may make.
+    pub fn exchange(&mut self, other: &mut ScreenBuffer) {
+        for (mine, theirs) in self.cells.iter_mut().zip(other.cells.iter_mut()) {
+            core::mem::swap(mine, theirs);
+        }
+        core::mem::swap(&mut self.row, &mut other.row);
+        core::mem::swap(&mut self.column, &mut other.column);
+        core::mem::swap(&mut self.window_top, &mut other.window_top);
+        core::mem::swap(&mut self.attribute, &mut other.attribute);
+        core::mem::swap(&mut self.mode, &mut other.mode);
+        core::mem::swap(&mut self.limit_backspace, &mut other.limit_backspace);
+        core::mem::swap(&mut self.anchor, &mut other.anchor);
+        core::mem::swap(&mut self.damaged, &mut other.damaged);
+        core::mem::swap(&mut self.rows, &mut other.rows);
+    }
+
+    /// The buffer's rows: its height.
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// Record every row of the window as changed: the buffer has just become the one the screen
+    /// shows, which the device behind it repaints whole.
+    pub fn touch_window(&mut self) {
+        self.touch(self.window());
     }
 
     /// The grid.
@@ -131,7 +182,7 @@ impl ScreenBuffer {
     /// Move the cursor, the window following it; false (nothing moved) for a position outside the
     /// grid.
     pub fn set_cursor(&mut self, row: usize, column: usize) -> bool {
-        if row >= HEIGHT || column >= WIDTH {
+        if row >= self.rows || column >= WIDTH {
             return false;
         }
         (self.row, self.column) = (row, column);
@@ -293,7 +344,7 @@ impl ScreenBuffer {
     /// Column 0 of the next row, the grid scrolled up when the cursor is on the last.
     fn line_feed(&mut self) {
         self.column = 0;
-        if self.row + 1 < HEIGHT {
+        if self.row + 1 < self.rows {
             self.row += 1;
         } else {
             self.scroll_up();
@@ -327,14 +378,15 @@ impl ScreenBuffer {
 
     /// The grid up one row: the top row lost, a blank bottom row in the current attribute.
     fn scroll_up(&mut self) {
-        self.cells.copy_within(1.., 0);
-        self.cells[HEIGHT - 1] = [Cell::blank(self.attribute); WIDTH];
-        self.touch(0..HEIGHT);
+        let rows = self.rows;
+        self.cells.copy_within(1..rows, 0);
+        self.cells[rows - 1] = [Cell::blank(self.attribute); WIDTH];
+        self.touch(0..rows);
     }
 
     /// The place of (`x`, `y`) among the grid's cells taken row after row; none outside the grid.
-    fn index(x: i32, y: i32) -> Option<usize> {
-        ((0..WIDTH as i32).contains(&x) && (0..HEIGHT as i32).contains(&y))
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        ((0..WIDTH as i32).contains(&x) && (0..self.rows as i32).contains(&y))
             .then(|| y as usize * WIDTH + x as usize)
     }
 
@@ -342,20 +394,21 @@ impl ScreenBuffer {
     /// the grid's end: what ReadConsoleOutputCharacter and ReadConsoleOutputAttribute read (none
     /// from a start outside the grid).
     pub fn run(&self, x: i32, y: i32, count: usize) -> &[Cell] {
-        let Some(start) = Self::index(x, y) else {
+        let Some(start) = self.index(x, y) else {
             return &[];
         };
-        let cells = &self.cells.as_flattened()[start..];
+        let cells = &self.cells.as_flattened()[start..self.rows * WIDTH];
         &cells[..count.min(cells.len())]
     }
 
     /// Fill `count` cells from (`x`, `y`), on across each row's end onto the next and clipped at
     /// the grid's end: the cells written (none from a start outside the grid).
     pub fn fill(&mut self, x: i32, y: i32, count: usize, fill: Fill) -> usize {
-        let Some(start) = Self::index(x, y) else {
+        let Some(start) = self.index(x, y) else {
             return 0;
         };
-        let cells = &mut self.cells.as_flattened_mut()[start..];
+        let end = self.rows * WIDTH;
+        let cells = &mut self.cells.as_flattened_mut()[start..end];
         let count = count.min(cells.len());
         for cell in &mut cells[..count] {
             match fill {
@@ -381,12 +434,13 @@ impl ScreenBuffer {
         y: i32,
         fill: Cell,
     ) {
-        let Some(from) = Bounds::of(source).clipped() else {
+        let grid = Bounds::grid(self.rows);
+        let Some(from) = Bounds::of(source).clipped(grid) else {
             return;
         };
         let to_x = x + (from.left - source.left as i32);
         let to_y = y + (from.top - source.top as i32);
-        let Some(clip) = clip.map_or(Some(Bounds::GRID), |clip| Bounds::of(clip).clipped()) else {
+        let Some(clip) = clip.map_or(Some(grid), |clip| Bounds::of(clip).clipped(grid)) else {
             return;
         };
         let (dx, dy) = (to_x - from.left, to_y - from.top);
@@ -422,7 +476,7 @@ impl ScreenBuffer {
             }
         }
         if touched {
-            self.touch(0..HEIGHT);
+            self.touch(0..self.rows);
         }
     }
 }
@@ -470,12 +524,15 @@ struct Bounds {
 }
 
 impl Bounds {
-    const GRID: Bounds = Bounds {
-        left: 0,
-        top: 0,
-        right: WIDTH as i32 - 1,
-        bottom: HEIGHT as i32 - 1,
-    };
+    /// The grid of a buffer of `rows` rows.
+    const fn grid(rows: usize) -> Bounds {
+        Bounds {
+            left: 0,
+            top: 0,
+            right: WIDTH as i32 - 1,
+            bottom: rows as i32 - 1,
+        }
+    }
 
     fn of(rect: SmallRect) -> Self {
         Bounds {
@@ -486,13 +543,13 @@ impl Bounds {
         }
     }
 
-    /// The part inside the grid; none when nothing is.
-    fn clipped(self) -> Option<Bounds> {
+    /// The part inside `grid`; none when nothing is.
+    fn clipped(self, grid: Bounds) -> Option<Bounds> {
         let clipped = Bounds {
             left: self.left.max(0),
             top: self.top.max(0),
-            right: self.right.min(Self::GRID.right),
-            bottom: self.bottom.min(Self::GRID.bottom),
+            right: self.right.min(grid.right),
+            bottom: self.bottom.min(grid.bottom),
         };
         (clipped.left <= clipped.right && clipped.top <= clipped.bottom).then_some(clipped)
     }

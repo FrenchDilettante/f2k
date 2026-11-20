@@ -543,6 +543,20 @@ impl = { native = "GetConsoleScreenBufferInfo" }
 ordinal = 261
 
 [[export]]
+name = "CreateConsoleScreenBuffer"
+group = "console"
+args = ["u32 dwDesiredAccess", "u32 dwShareMode", "ptr lpSecurityAttributes", "u32 dwFlags", "ptr lpScreenBufferData"]
+impl = { native = "CreateConsoleScreenBuffer" }
+ordinal = 48
+
+[[export]]
+name = "SetConsoleActiveScreenBuffer"
+group = "console"
+args = ["handle hConsoleOutput"]
+impl = { native = "SetConsoleActiveScreenBuffer" }
+ordinal = 622
+
+[[export]]
 name = "GetConsoleTitleA"
 group = "console"
 args = ["ptr lpConsoleTitle", "u32 nSize"]
@@ -3275,9 +3289,6 @@ name = "CopyFileExW"
 ordinal = 46
 
 
-[[export]]
-name = "CreateConsoleScreenBuffer"
-ordinal = 48
 
 [[export]]
 name = "CreateDirectoryExA"
@@ -4453,9 +4464,6 @@ ordinal = 620
 name = "SetComputerNameW"
 ordinal = 621
 
-[[export]]
-name = "SetConsoleActiveScreenBuffer"
-ordinal = 622
 
 [[export]]
 name = "SetConsoleCP"

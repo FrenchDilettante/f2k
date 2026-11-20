@@ -6,7 +6,8 @@
 //! ntdll's CsrClientCallServer raises one internal system service, and the kernel's stand-in serves
 //! the message with these rules over the console's state ([`Console`]: its input buffer — the
 //! records the keyboard's producer appends and the ones clients write, [`input`] — and its mode,
-//! the line a line-mode read is building, its screen buffer, [`screen`], and its title). Console
+//! the line a line-mode read is building, its screen buffers, [`screen`] — its own and those
+//! CreateConsoleScreenBuffer makes, one of them active — and its title). Console
 //! handles stay outside the kernel's handle table, as on Windows 2000: they are the console
 //! server's own, per process — (index << 2) | 3, the low two bits kernel32's CONSOLE_HANDLE test,
 //! the standard handles a fresh process starts with indexes 0 to 2 (stdin 3, stdout 7, stderr 0xB).
@@ -61,7 +62,7 @@ use input::{
     KEY_EVENT,
 };
 pub use line::{Histories, Line, LINE_UNITS};
-use screen::{Cell, Fill, ScreenBuffer, HEIGHT, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
+use screen::{Cell, Fill, ScreenBuffer, OUTPUT_MODE_MASK, WIDTH, WINDOW_HEIGHT};
 
 use crate::codepage::{self, CodePage};
 use crate::pod::Pod;
@@ -312,11 +313,19 @@ impl ConsoleScreenBufferInfo {
 }
 
 /// The console: its input buffer, the producer that fills it, the input buffer's mode, the line a
-/// line-mode read builds ([`line`]) and the command histories it recalls from, its screen buffer
+/// line-mode read builds ([`line`]) and the command histories it recalls from, its screen buffers
 /// and its title. Each mode is its buffer's, shared by every handle on that buffer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The console has its own screen buffer, and those CreateConsoleScreenBuffer makes beside it
+/// ([`MadeBuffers`]); one of them is active: the one the screen shows, CONOUT$ opens and a line
+/// read echoes to. The active one is always in [`Console::screen`]: SetConsoleActiveScreenBuffer
+/// exchanges buffers' places, so whoever shows the screen looks at that field alone.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Console {
+    /// The active screen buffer.
     pub screen: ScreenBuffer,
+    /// The screen buffers made beside the console's own.
+    made: MadeBuffers,
     pub input: InputBuffer,
     /// The keyboard's key-event producer, over [`LAYOUT`].
     pub producer: Producer,
@@ -338,10 +347,14 @@ pub struct Console {
 
 impl Console {
     /// A fresh console: the default modes, a blank screen buffer, an empty input buffer and an
-    /// empty title, until its first program names it ([`Console::name`]).
+    /// empty title, until its first program names it ([`Console::name`]). Its screen buffers make
+    /// it large: it is evaluated where it is kept, at compile time (the kernel's server is a
+    /// static), never on a kernel stack.
+    #[allow(clippy::large_unopt_stack_frames)]
     pub const fn new() -> Self {
         Console {
             screen: ScreenBuffer::new(),
+            made: MadeBuffers::new(),
             input: InputBuffer::with_filter(filter_for(INPUT_MODE)),
             producer: Producer::new(LAYOUT),
             input_mode: INPUT_MODE,
@@ -454,33 +467,192 @@ impl Console {
         self.title_length = length;
     }
 
-    /// What GetConsoleScreenBufferInfo reports: the buffer's size, the cursor, the attribute
-    /// written cells take, the window onto the buffer, and the largest window: the buffer's width
-    /// by the rows the screen shows.
+    /// What GetConsoleScreenBufferInfo reports of the active screen buffer (see
+    /// [`buffer_info`]).
     pub fn screen_buffer_info(&self) -> ConsoleScreenBufferInfo {
-        let (row, column) = self.screen.cursor();
-        let window = self.screen.window();
-        ConsoleScreenBufferInfo {
-            size: Coord {
-                x: WIDTH as i16,
-                y: HEIGHT as i16,
-            },
-            cursor_position: Coord {
-                x: column as i16,
-                y: row as i16,
-            },
-            attributes: self.screen.attribute().into(),
-            window: SmallRect {
-                left: 0,
-                top: window.start as i16,
-                right: WIDTH as i16 - 1,
-                bottom: window.end as i16 - 1,
-            },
-            maximum_window_size: Coord {
-                x: WIDTH as i16,
-                y: WINDOW_HEIGHT as i16,
-            },
+        buffer_info(&self.screen)
+    }
+
+    /// The screen buffer `id` names (see [`Handles::buffer`]): the console's own, or a made one
+    /// still there; none for a made one gone.
+    pub fn buffer(&mut self, id: u8) -> Option<&mut ScreenBuffer> {
+        let slot = self.made.slot(id)?;
+        Some(if slot == self.made.active {
+            &mut self.screen
+        } else {
+            // A made buffer in its place; the console's own in the active made buffer's.
+            let place = slot.or(self.made.active)?;
+            &mut self.made.parked[place]
+        })
+    }
+
+    /// The id of the active screen buffer, the one CONOUT$ opens.
+    pub fn active_buffer(&self) -> u8 {
+        self.made
+            .active
+            .map_or(OWN_BUFFER, |slot| self.made.id(slot))
+    }
+
+    /// Make a screen buffer beside the console's own, as CreateConsoleScreenBuffer makes one
+    /// (see [`ScreenBuffer::remake`]: the window's size, the active buffer's attribute): its id,
+    /// no handle counted on it yet ([`Console::reference`] counts the first);
+    /// STATUS_NO_MEMORY when [`MADE_BUFFERS`] are made already.
+    pub fn make_buffer(&mut self) -> Result<u8, u32> {
+        let slot = self
+            .made
+            .live
+            .iter()
+            .position(Option::is_none)
+            .ok_or(STATUS_NO_MEMORY)?;
+        let id = self.made.next_id;
+        self.made.next_id = match id.wrapping_add(1) {
+            OWN_BUFFER => OWN_BUFFER + 1,
+            next => next,
+        };
+        let attribute = self.screen.attribute();
+        // A free slot is never the active one: its place holds no other buffer.
+        self.made.parked[slot].remake(attribute);
+        self.made.live[slot] = Some(Made { id, handles: 0 });
+        Ok(id)
+    }
+
+    /// One more handle on screen buffer `id`, counted when it is a made one.
+    pub fn reference(&mut self, id: u8) {
+        if let Some(Some(slot)) = self.made.slot(id) {
+            if let Some(made) = &mut self.made.live[slot] {
+                made.handles += 1;
+            }
         }
+    }
+
+    /// One handle fewer on screen buffer `id`: a made one goes with its last counted handle,
+    /// unless it is active (it goes when another is made active then).
+    pub fn release(&mut self, id: u8) {
+        if let Some(Some(slot)) = self.made.slot(id) {
+            if let Some(made) = &mut self.made.live[slot] {
+                made.handles = made.handles.saturating_sub(1);
+            }
+            self.made.free_unused(slot);
+        }
+    }
+
+    /// Make screen buffer `id` the active one: the screen shows it whole from then on, CONOUT$
+    /// opens it. False, nothing changed, for a made one gone. The made buffer it replaces goes
+    /// when no counted handle is left on it.
+    pub fn set_active_buffer(&mut self, id: u8) -> bool {
+        let Some(target) = self.made.slot(id) else {
+            return false;
+        };
+        if target == self.made.active {
+            return true;
+        }
+        // The console's own buffer back in its place, then the target's swapped in.
+        if let Some(slot) = self.made.active.take() {
+            self.screen.exchange(&mut self.made.parked[slot]);
+            self.made.free_unused(slot);
+        }
+        if let Some(slot) = target {
+            self.screen.exchange(&mut self.made.parked[slot]);
+            self.made.active = Some(slot);
+        }
+        self.screen.touch_window();
+        true
+    }
+}
+
+/// The id of the console's own screen buffer (see [`Handles::buffer`]).
+pub const OWN_BUFFER: u8 = 0;
+
+/// The most screen buffers CreateConsoleScreenBuffer keeps at once beside the console's own.
+/// Each is a whole grid in the console's state, so F2K keeps few, where Windows 2000's console
+/// makes them while memory lasts.
+pub const MADE_BUFFERS: usize = 2;
+
+/// A made screen buffer's record: its id, and the handles on it the server counted (those it
+/// opened, duplicated and closed; not a child's inherited copies, nor a process's handles left
+/// open at its end).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Made {
+    id: u8,
+    handles: u32,
+}
+
+/// The screen buffers made beside the console's own, a slot each. A slot's place holds its buffer
+/// while it is inactive; while it is active (in [`Console::screen`]), its place holds the console's
+/// own.
+#[derive(Debug, PartialEq, Eq)]
+struct MadeBuffers {
+    parked: [ScreenBuffer; MADE_BUFFERS],
+    /// Each slot's buffer; none for a free slot.
+    live: [Option<Made>; MADE_BUFFERS],
+    /// The active made buffer's slot; none while the console's own is active.
+    active: Option<usize>,
+    /// The id the next made buffer takes: a made buffer gone leaves its id unused for a while,
+    /// so a handle left on it names nothing rather than its slot's next buffer.
+    next_id: u8,
+}
+
+impl MadeBuffers {
+    const fn new() -> Self {
+        MadeBuffers {
+            parked: [const { ScreenBuffer::new() }; MADE_BUFFERS],
+            live: [None; MADE_BUFFERS],
+            active: None,
+            next_id: OWN_BUFFER + 1,
+        }
+    }
+
+    /// Where buffer `id` is kept: none inside for the console's own, its slot for a made one;
+    /// none at all for a made one gone.
+    fn slot(&self, id: u8) -> Option<Option<usize>> {
+        if id == OWN_BUFFER {
+            return Some(None);
+        }
+        self.live
+            .iter()
+            .position(|made| made.is_some_and(|made| made.id == id))
+            .map(Some)
+    }
+
+    /// A live slot's id.
+    fn id(&self, slot: usize) -> u8 {
+        self.live[slot].map_or(OWN_BUFFER, |made| made.id)
+    }
+
+    /// Free `slot` when no counted handle is left on its buffer and it is not active.
+    fn free_unused(&mut self, slot: usize) {
+        if self.active != Some(slot) && self.live[slot].is_some_and(|made| made.handles == 0) {
+            self.live[slot] = None;
+        }
+    }
+}
+
+/// What GetConsoleScreenBufferInfo reports of `screen`: its size, the cursor, the attribute
+/// written cells take, the window onto the buffer, and the largest window: the buffer's width by
+/// the rows the screen shows, or its own rows when fewer.
+pub fn buffer_info(screen: &ScreenBuffer) -> ConsoleScreenBufferInfo {
+    let (row, column) = screen.cursor();
+    let window = screen.window();
+    ConsoleScreenBufferInfo {
+        size: Coord {
+            x: WIDTH as i16,
+            y: screen.rows() as i16,
+        },
+        cursor_position: Coord {
+            x: column as i16,
+            y: row as i16,
+        },
+        attributes: screen.attribute(),
+        window: SmallRect {
+            left: 0,
+            top: window.start as i16,
+            right: WIDTH as i16 - 1,
+            bottom: window.end as i16 - 1,
+        },
+        maximum_window_size: Coord {
+            x: WIDTH as i16,
+            y: WINDOW_HEIGHT.min(screen.rows()) as i16,
+        },
     }
 }
 
@@ -499,6 +671,10 @@ const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 const DUPLICATE_SAME_ACCESS: u32 = 2;
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
+
+/// CreateConsoleScreenBuffer's one kind of buffer F2K makes (CONSOLE_GRAPHICS_BUFFER's bitmaps
+/// it does not).
+pub const CONSOLE_TEXTMODE_BUFFER: u32 = 1;
 
 /// What a console handle names: the console's input buffer or its screen buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -519,7 +695,8 @@ pub const STANDARD_HANDLES: [u32; 3] = [3, 7, 0xB];
 /// console.
 ///
 /// Each handle carries its inheritance, as a kernel handle does: a child process created with
-/// inheritance takes the inheritable ones, at their values ([`Handles::inherited`]).
+/// inheritance takes the inheritable ones, at their values ([`Handles::inherited`]). An output
+/// handle names one screen buffer of the console's ([`Handles::buffer`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Handles {
     /// The open slots.
@@ -530,6 +707,8 @@ pub struct Handles {
     logged: u32,
     /// Of those, the inheritable ones.
     inheritable: u32,
+    /// Each output handle's screen buffer, by slot: [`OWN_BUFFER`] or a made one's id.
+    buffers: [u8; 32],
 }
 
 impl Handles {
@@ -540,6 +719,7 @@ impl Handles {
             output: 0,
             logged: 0,
             inheritable: 0,
+            buffers: [OWN_BUFFER; 32],
         }
     }
 
@@ -561,9 +741,15 @@ impl Handles {
         handles
     }
 
-    /// Open a handle on `kind`'s buffer in the lowest free slot, inheritable as `inherit` says;
-    /// STATUS_NO_MEMORY when every slot is taken.
+    /// Open a handle on `kind`'s buffer in the lowest free slot, inheritable as `inherit` says
+    /// (an output handle on the console's own screen buffer); STATUS_NO_MEMORY when every slot is
+    /// taken.
     pub const fn open(&mut self, kind: Kind, inherit: bool) -> Result<u32, u32> {
+        self.open_on(kind, OWN_BUFFER, inherit)
+    }
+
+    /// Open a handle as [`Handles::open`] does, an output one on screen buffer `buffer`.
+    pub const fn open_on(&mut self, kind: Kind, buffer: u8, inherit: bool) -> Result<u32, u32> {
         let free = (!self.open).trailing_zeros();
         if free == 32 {
             return Err(STATUS_NO_MEMORY);
@@ -571,6 +757,7 @@ impl Handles {
         self.open |= 1 << free;
         if matches!(kind, Kind::Output) {
             self.output |= 1 << free;
+            self.buffers[free as usize] = buffer;
         }
         if inherit {
             self.inheritable |= 1 << free;
@@ -596,6 +783,15 @@ impl Handles {
         }
     }
 
+    /// The screen buffer an open output handle names: [`OWN_BUFFER`], or the id of one
+    /// CreateConsoleScreenBuffer made; none for any other value.
+    pub fn buffer(&self, handle: u32) -> Option<u8> {
+        match self.kind(handle)? {
+            Kind::Output => Some(self.buffers[(handle >> 2) as usize]),
+            Kind::Input => None,
+        }
+    }
+
     /// Whether an open handle is one of the standard ones, whose writes the serial line carries.
     pub fn logged(&self, handle: u32) -> bool {
         self.kind(handle).is_some() && self.logged & (1 << (handle >> 2)) != 0
@@ -609,6 +805,7 @@ impl Handles {
         self.output &= !bit;
         self.logged &= !bit;
         self.inheritable &= !bit;
+        self.buffers[(handle >> 2) as usize] = OWN_BUFFER;
         Ok(())
     }
 
@@ -634,11 +831,18 @@ impl Handles {
     /// own value, naming what it names, a standard one still standard; the others are not there.
     pub fn inherited(&self) -> Handles {
         let taken = self.inheritable & self.open;
+        let mut buffers = [OWN_BUFFER; 32];
+        for (slot, buffer) in buffers.iter_mut().enumerate() {
+            if taken & (1 << slot) != 0 {
+                *buffer = self.buffers[slot];
+            }
+        }
         Handles {
             open: taken,
             output: self.output & taken,
             logged: self.logged & taken,
             inheritable: taken,
+            buffers,
         }
     }
 
@@ -657,7 +861,8 @@ impl Handles {
         if options & DUPLICATE_SAME_ACCESS == 0 && access & !(GENERIC_READ | GENERIC_WRITE) != 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let duplicate = self.open(kind, inherit)?;
+        let buffer = self.buffer(handle).unwrap_or(OWN_BUFFER);
+        let duplicate = self.open_on(kind, buffer, inherit)?;
         if self.logged(handle) {
             self.logged |= 1 << (duplicate >> 2);
         }
@@ -769,6 +974,8 @@ pub fn serve<W: Word>(
         Api::SetTitle => message.serve(&mut call, Call::set_title),
         Api::ConnectCtrl => message.serve(&mut call, Call::connect_ctrl),
         Api::GenerateCtrlEvent => message.serve(&mut call, Call::generate_ctrl_event),
+        Api::CreateScreenBuffer => message.serve(&mut call, Call::create_screen_buffer),
+        Api::SetActiveScreenBuffer => message.serve(&mut call, Call::set_active_screen_buffer),
     };
     match answer {
         Ok(()) => STATUS_SUCCESS,
@@ -1034,12 +1241,14 @@ impl<C: Client> Call<'_, C> {
             .ok_or(STATUS_INVALID_HANDLE)
     }
 
-    /// STATUS_INVALID_HANDLE unless the handle names the screen buffer.
-    fn output(&self, handle: impl Word) -> Result<(), u32> {
-        match self.kind(handle) {
-            Ok(Kind::Output) => Ok(()),
-            _ => Err(STATUS_INVALID_HANDLE),
-        }
+    /// The screen buffer the handle names; STATUS_INVALID_HANDLE when it names none (an input
+    /// handle, a made buffer gone).
+    fn screen(&mut self, handle: impl Word) -> Result<&mut ScreenBuffer, u32> {
+        let id = self
+            .handles
+            .buffer(handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        self.console.buffer(id).ok_or(STATUS_INVALID_HANDLE)
     }
 
     /// STATUS_INVALID_HANDLE unless the handle names the input buffer.
@@ -1051,13 +1260,21 @@ impl<C: Client> Call<'_, C> {
     }
 
     fn write_console<W: Word>(&mut self, message: &mut api::WriteConsole<W>) -> Result<(), u32> {
-        self.output(message.handle)?;
+        self.screen(message.handle)?;
         let (buffer, count) = (message.buffer.get(), message.count.get());
         if count != 0 {
             let logged = self.handles.logged(message.handle.dword());
-            let console = &mut *self.console;
+            let redirected = logged && self.console.redirected;
             // A redirected standard handle's write is the file's alone.
-            let mut screen = (!(logged && console.redirected)).then_some(&mut console.screen);
+            let id = self.handles.buffer(message.handle.dword());
+            let mut screen = if redirected {
+                None
+            } else {
+                Some(
+                    id.and_then(|id| self.console.buffer(id))
+                        .ok_or(STATUS_INVALID_HANDLE)?,
+                )
+            };
             if let Some(screen) = screen.as_deref_mut() {
                 screen.begin_write();
             }
@@ -1102,7 +1319,7 @@ impl<C: Client> Call<'_, C> {
     fn get_mode<W: Word>(&mut self, message: &mut api::GetMode<W>) -> Result<(), u32> {
         message.mode = W::from_dword(match self.kind(message.handle)? {
             Kind::Input => self.console.input_mode(),
-            Kind::Output => self.console.screen.mode(),
+            Kind::Output => self.screen(message.handle)?.mode(),
         });
         Ok(())
     }
@@ -1123,7 +1340,7 @@ impl<C: Client> Call<'_, C> {
                 if mode & !OUTPUT_MODE_MASK != 0 {
                     return Err(STATUS_INVALID_PARAMETER);
                 }
-                self.console.screen.set_mode(mode);
+                self.screen(message.handle)?.set_mode(mode);
             }
         }
         Ok(())
@@ -1138,7 +1355,12 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::VerifyIoHandle<W>,
     ) -> Result<(), u32> {
-        message.valid = W::from_usize(usize::from(self.kind(message.handle).is_ok()));
+        let valid = match self.kind(message.handle) {
+            Ok(Kind::Input) => true,
+            Ok(Kind::Output) => self.screen(message.handle).is_ok(),
+            Err(_) => false,
+        };
+        message.valid = W::from_usize(usize::from(valid));
         Ok(())
     }
 
@@ -1230,13 +1452,18 @@ impl<C: Client> Call<'_, C> {
         Ok(())
     }
 
+    /// CONOUT$ opens the active screen buffer.
     fn open_console<W: Word>(&mut self, message: &mut api::OpenConsole<W>) -> Result<(), u32> {
-        let kind = if message.output.is_set() {
-            Kind::Output
+        let inherit = message.inherit.is_set();
+        let handle = if message.output.is_set() {
+            let id = self.console.active_buffer();
+            let handle = self.handles.open_on(Kind::Output, id, inherit)?;
+            self.console.reference(id);
+            handle
         } else {
-            Kind::Input
+            self.handles.open(Kind::Input, inherit)?
         };
-        message.handle = W::from_dword(self.handles.open(kind, message.inherit.is_set())?);
+        message.handle = W::from_dword(handle);
         Ok(())
     }
 
@@ -1248,17 +1475,30 @@ impl<C: Client> Call<'_, C> {
         Ok(())
     }
 
+    /// A made screen buffer goes with its last handle (see [`Console::release`]).
     fn close_handle<W: Word>(&mut self, message: &mut api::CloseHandle<W>) -> Result<(), u32> {
-        self.handles.close(message.handle.dword())
+        let handle = message.handle.dword();
+        let buffer = self.handles.buffer(handle);
+        self.handles.close(handle)?;
+        if let Some(id) = buffer {
+            self.console.release(id);
+        }
+        Ok(())
     }
 
     fn dup_handle<W: Word>(&mut self, message: &mut api::DupHandle<W>) -> Result<(), u32> {
+        let buffer = self.handles.buffer(message.handle.dword());
+        let options = message.options.dword();
         let duplicate = self.handles.duplicate(
             message.handle.dword(),
             message.access.dword(),
             message.inherit.is_set(),
-            message.options.dword(),
+            options,
         )?;
+        // The source closed for DUPLICATE_CLOSE_SOURCE: as many handles on the buffer as before.
+        if let Some(id) = buffer.filter(|_| options & DUPLICATE_CLOSE_SOURCE == 0) {
+            self.console.reference(id);
+        }
         message.duplicate = W::from_dword(duplicate);
         Ok(())
     }
@@ -1292,8 +1532,7 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::GetCursorPosition<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
-        let at = self.console.screen_buffer_info().cursor_position;
+        let at = buffer_info(self.screen(message.handle)?).cursor_position;
         message.position = W::from_dword(at.word());
         Ok(())
     }
@@ -1302,9 +1541,9 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::SetCursorPosition<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
+        let screen = self.screen(message.handle)?;
         let at = Coord::from_word(message.position.dword());
-        if at.x < 0 || at.y < 0 || !self.console.screen.set_cursor(at.y as usize, at.x as usize) {
+        if at.x < 0 || at.y < 0 || !screen.set_cursor(at.y as usize, at.x as usize) {
             return Err(STATUS_INVALID_PARAMETER);
         }
         Ok(())
@@ -1314,8 +1553,9 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::GetScreenBufferInfo<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
-        message.info = self.console.screen_buffer_info().words().map(W::from_dword);
+        message.info = buffer_info(self.screen(message.handle)?)
+            .words()
+            .map(W::from_dword);
         Ok(())
     }
 
@@ -1323,19 +1563,19 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::SetTextAttribute<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
+        let screen = self.screen(message.handle)?;
         let attribute = message.attributes.dword();
         if attribute & !VALID_ATTRIBUTES != 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        self.console.screen.set_attribute(attribute as u16);
+        screen.set_attribute(attribute as u16);
         Ok(())
     }
 
     /// A start outside the buffer writes nothing and succeeds, as does a count of 0 (Windows
     /// 2000's capture).
     fn fill_output<W: Word>(&mut self, message: &mut api::FillOutput<W>) -> Result<(), u32> {
-        self.output(message.handle)?;
+        self.screen(message.handle)?;
         let value = message.value.dword();
         let fill = match message.element.get() {
             // The cell keeps a character's OEM byte, a byte of the console's code page already.
@@ -1347,15 +1587,14 @@ impl<C: Client> Call<'_, C> {
         let at = Coord::from_word(message.origin.dword());
         let count = message.count.get();
         let written = self
-            .console
-            .screen
+            .screen(message.handle)?
             .fill(at.x.into(), at.y.into(), count, fill);
         message.written = W::from_usize(written);
         Ok(())
     }
 
     fn scroll_region<W: Word>(&mut self, message: &mut api::ScrollRegion<W>) -> Result<(), u32> {
-        self.output(message.handle)?;
+        self.screen(message.handle)?;
         let source = SmallRect::from_words(
             message.source_top_left.dword(),
             message.source_bottom_right.dword(),
@@ -1381,8 +1620,7 @@ impl<C: Client> Call<'_, C> {
                 message.clip_bottom_right.dword(),
             )
         });
-        self.console
-            .screen
+        self.screen(message.handle)?
             .scroll(source, clip, to.x.into(), to.y.into(), fill);
         Ok(())
     }
@@ -1394,12 +1632,13 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::ReadOutputCharacter<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
+        let id = self
+            .handles
+            .buffer(message.handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        let screen = self.console.buffer(id).ok_or(STATUS_INVALID_HANDLE)?;
         let at = Coord::from_word(message.origin.dword());
-        let cells = self
-            .console
-            .screen
-            .run(at.x.into(), at.y.into(), message.count.get());
+        let cells = screen.run(at.x.into(), at.y.into(), message.count.get());
         let width = if message.unicode.is_set() { 2 } else { 1 };
         let mut bytes = [0u8; 2 * CELL_PIECE];
         for (index, piece) in cells.chunks(CELL_PIECE).enumerate() {
@@ -1427,12 +1666,13 @@ impl<C: Client> Call<'_, C> {
         &mut self,
         message: &mut api::ReadOutputAttribute<W>,
     ) -> Result<(), u32> {
-        self.output(message.handle)?;
+        let id = self
+            .handles
+            .buffer(message.handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        let screen = self.console.buffer(id).ok_or(STATUS_INVALID_HANDLE)?;
         let at = Coord::from_word(message.origin.dword());
-        let cells = self
-            .console
-            .screen
-            .run(at.x.into(), at.y.into(), message.count.get());
+        let cells = screen.run(at.x.into(), at.y.into(), message.count.get());
         let mut bytes = [0u8; 2 * CELL_PIECE];
         for (index, piece) in cells.chunks(CELL_PIECE).enumerate() {
             for (at, cell) in piece.iter().enumerate() {
@@ -1484,6 +1724,47 @@ impl<C: Client> Call<'_, C> {
             .generate_ctrl_event(message.event.dword(), message.group.dword())
     }
 
+    /// CreateConsoleScreenBuffer: CONSOLE_TEXTMODE_BUFFER alone is taken (anything else
+    /// STATUS_INVALID_PARAMETER); the new buffer goes again when no handle can be had on it.
+    fn create_screen_buffer<W: Word>(
+        &mut self,
+        message: &mut api::CreateScreenBuffer<W>,
+    ) -> Result<(), u32> {
+        if message.flags.dword() != CONSOLE_TEXTMODE_BUFFER {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let id = self.console.make_buffer()?;
+        match self
+            .handles
+            .open_on(Kind::Output, id, message.inherit.is_set())
+        {
+            Ok(handle) => {
+                self.console.reference(id);
+                message.handle = W::from_dword(handle);
+                Ok(())
+            }
+            Err(status) => {
+                self.console.release(id);
+                Err(status)
+            }
+        }
+    }
+
+    /// SetConsoleActiveScreenBuffer: a handle naming no screen buffer is STATUS_INVALID_HANDLE.
+    fn set_active_screen_buffer<W: Word>(
+        &mut self,
+        message: &mut api::SetActiveScreenBuffer<W>,
+    ) -> Result<(), u32> {
+        let id = self
+            .handles
+            .buffer(message.handle.dword())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        if !self.console.set_active_buffer(id) {
+            return Err(STATUS_INVALID_HANDLE);
+        }
+        Ok(())
+    }
+
     fn set_title<W: Word>(&mut self, message: &mut api::SetTitle<W>) -> Result<(), u32> {
         let mut title = [0u16; TITLE_UNITS];
         let length = get_text(
@@ -1501,9 +1782,29 @@ impl<C: Client> Call<'_, C> {
 
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
     use std::vec::Vec;
 
     use super::*;
+    use crate::console::screen::HEIGHT;
+
+    /// A fresh console on the heap, copied there from a fresh one in the image: its screen
+    /// buffers are too large for a test thread's stack to hold a few of them as values pass.
+    fn fresh() -> Box<Console> {
+        static FRESH: Console = Console::new();
+        copied(&FRESH)
+    }
+
+    /// A copy of `console` on the heap, as [`fresh`] makes one.
+    fn copied(console: &Console) -> Box<Console> {
+        let mut copy = Box::<Console>::new_uninit();
+        // SAFETY: a bitwise copy of a console (plain data, owning nothing, so the copy is a clone
+        // of it), into the box's room for one.
+        unsafe {
+            core::ptr::copy_nonoverlapping(console, copy.as_mut_ptr(), 1);
+            copy.assume_init()
+        }
+    }
 
     /// The client's memory: `MEMORY` bytes from 0x40_0000. An address at or above 0x8000_0000 is
     /// refused as the kernel's probe refuses it, 0x1000 as an unmapped page.
@@ -1580,7 +1881,7 @@ mod tests {
 
     /// The server's state and a client.
     struct Server {
-        console: Console,
+        console: Box<Console>,
         handles: Handles,
         client: Kept,
     }
@@ -1588,7 +1889,7 @@ mod tests {
     impl Server {
         fn new() -> Self {
             Server {
-                console: Console::new(),
+                console: fresh(),
                 handles: Handles::standard(),
                 client: Kept::default(),
             }
@@ -2305,7 +2606,7 @@ mod tests {
         assert_eq!(&screen.row_text(1)[..4], b"mid ");
         assert_eq!(&screen.row_text(2)[..4], b"end ");
         // A source wholly outside, an inverted clip: nothing, and success.
-        let before = server.console.clone();
+        let before = copied(&server.console);
         let (from, to) = words(100, 0, 120, 5);
         assert_eq!(
             server.status(Api::ScrollRegion, &[7, from, to, 0, fill, 0, 0, 0, 1]),
@@ -3005,6 +3306,126 @@ mod tests {
         assert!(server.console.input_waiting());
     }
 
+    /// The info words of the buffer `handle` names.
+    fn info_of(server: &mut Server, handle: usize) -> ConsoleScreenBufferInfo {
+        let (status, data) = server.call(Api::GetScreenBufferInfo, &[handle]);
+        assert_eq!(status, 0, "{handle:#x}");
+        ConsoleScreenBufferInfo::from_words([1, 2, 3, 4, 5, 6].map(|index| data[index] as u32))
+    }
+
+    /// The characters at the start of row 0 of the buffer `handle` names.
+    fn row_start(server: &mut Server, handle: usize, count: usize) -> Vec<u8> {
+        let origin = Coord { x: 0, y: 0 }.word() as usize;
+        let (status, data) = server.call(
+            Api::ReadOutputCharacter,
+            &[handle, BASE + 256, count, origin, 0, 0],
+        );
+        assert_eq!(status, 0);
+        server.client.memory[256..256 + data[4]].to_vec()
+    }
+
+    /// CreateConsoleScreenBuffer and SetConsoleActiveScreenBuffer, as the newcon capture shows
+    /// them: a made buffer is the window's size, home, in the active buffer's attribute; writes
+    /// to it while inactive stay in it; made active, the screen shows it and CONOUT$ opens it; the
+    /// console's own comes back as it was; a made buffer goes with its last handle.
+    #[test]
+    fn made_screen_buffers_and_the_active_one() {
+        let mut server = Server::new();
+        server.call(Api::SetTextAttribute, &[7, 0x1E]);
+        server.poke(0, b"own");
+        server.call(Api::WriteConsole, &[7, BASE, 3, 0, 0]);
+        assert_eq!(
+            server.status(Api::CreateScreenBuffer, &[0xC000_0000, 3, 0, 2, 0]),
+            STATUS_INVALID_PARAMETER,
+            "CONSOLE_GRAPHICS_BUFFER"
+        );
+        let (status, data) = server.call(Api::CreateScreenBuffer, &[0xC000_0000, 3, 0, 1, 0]);
+        assert_eq!((status, data[4]), (0, 0xF));
+        let made = data[4];
+        assert_eq!(
+            info_of(&mut server, made),
+            ConsoleScreenBufferInfo {
+                size: Coord { x: W, y: 25 },
+                cursor_position: Coord { x: 0, y: 0 },
+                attributes: 0x1E,
+                window: SmallRect {
+                    left: 0,
+                    top: 0,
+                    right: W - 1,
+                    bottom: 24
+                },
+                maximum_window_size: Coord { x: W, y: 25 },
+            }
+        );
+        assert_eq!(server.call(Api::GetMode, &[made, 0]).1[1], 3);
+        server.poke(0, b"inactive text");
+        assert_eq!(server.status(Api::WriteConsole, &[made, BASE, 13, 0, 0]), 0);
+        assert_eq!(row_start(&mut server, made, 14), b"inactive text ");
+        assert_eq!(
+            &server.console.screen.row_text(0)[..4],
+            b"own ",
+            "the active one"
+        );
+        server.console.screen.take_damage();
+        // Made active: the screen shows it whole, CONOUT$ opens it.
+        assert_eq!(server.status(Api::SetActiveScreenBuffer, &[made]), 0);
+        assert_eq!(&server.console.screen.row_text(0)[..8], b"inactive");
+        assert_eq!(server.console.screen.take_damage(), Some(0..25));
+        let conout = server.call(Api::OpenConsole, &[1, 0xC000_0000, 0, 3, 0]).1[4];
+        assert_eq!(row_start(&mut server, conout, 8), b"inactive");
+        assert_eq!(
+            row_start(&mut server, 7, 4),
+            b"own ",
+            "the standard handle's"
+        );
+        assert_eq!(info_of(&mut server, 7).size, Coord { x: W, y: H });
+        // A handle naming no screen buffer is refused.
+        for handle in [0, 3, 0xFFFF_FFFF, 0x7F] {
+            assert_eq!(
+                server.status(Api::SetActiveScreenBuffer, &[handle]),
+                STATUS_INVALID_HANDLE,
+                "{handle:#x}"
+            );
+        }
+        assert_eq!(server.status(Api::SetActiveScreenBuffer, &[7]), 0);
+        assert_eq!(&server.console.screen.row_text(0)[..4], b"own ");
+        assert_eq!(server.console.screen.rows(), HEIGHT);
+        let reopened = server.call(Api::OpenConsole, &[1, 0xC000_0000, 0, 3, 0]).1[4];
+        assert_eq!(row_start(&mut server, reopened, 4), b"own ");
+        // The made buffer outlives one of its two handles, and goes with the other.
+        let duplicate = server.call(Api::DupHandle, &[made, 0, 0, 2, 0]).1[4];
+        assert_eq!(server.status(Api::CloseHandle, &[made]), 0);
+        assert_eq!(server.status(Api::CloseHandle, &[conout]), 0);
+        assert_eq!(row_start(&mut server, duplicate, 8), b"inactive");
+        let id = server.handles.buffer(duplicate as u32).unwrap();
+        assert_ne!(id, OWN_BUFFER);
+        assert_eq!(server.status(Api::CloseHandle, &[duplicate]), 0);
+        assert!(server.console.buffer(id).is_none());
+        // The slots fill, then free again.
+        let made: Vec<usize> = (0..MADE_BUFFERS)
+            .map(|_| {
+                server
+                    .call(Api::CreateScreenBuffer, &[0xC000_0000, 3, 0, 1, 0])
+                    .1[4]
+            })
+            .collect();
+        assert_eq!(
+            server.status(Api::CreateScreenBuffer, &[0xC000_0000, 3, 0, 1, 0]),
+            STATUS_NO_MEMORY
+        );
+        // Active with no handle left, a made buffer stays until another is made active.
+        assert_eq!(server.status(Api::SetActiveScreenBuffer, &[made[0]]), 0);
+        assert_eq!(server.status(Api::CloseHandle, &[made[0]]), 0);
+        assert_eq!(server.console.screen.rows(), 25);
+        assert_eq!(server.status(Api::SetActiveScreenBuffer, &[7]), 0);
+        let (status, data) = server.call(Api::CreateScreenBuffer, &[0xC000_0000, 3, 0, 1, 0]);
+        assert_eq!(
+            (status, data[4]),
+            (0, made[0]),
+            "the slot and the handle free again"
+        );
+    }
+
     /// A client that is a named program, and keeps what reaches the serial line.
     struct Program {
         kept: Kept,
@@ -3051,7 +3472,7 @@ mod tests {
 
     /// The server's state and a named program as its client.
     struct Programs {
-        console: Console,
+        console: Box<Console>,
         handles: Handles,
         client: Program,
     }
@@ -3112,7 +3533,7 @@ mod tests {
         let up = || press(0x26, 0x48, 0);
         let home = || press(0x24, 0x47, 0);
         let mut programs = Programs {
-            console: Console::new(),
+            console: fresh(),
             handles: Handles::standard(),
             client: Program {
                 kept: Kept::default(),

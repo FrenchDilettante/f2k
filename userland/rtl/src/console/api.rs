@@ -131,6 +131,10 @@ pub enum Api {
     ConnectCtrl = number(27),
     /// ConsolepGenerateCtrlEvent ([`GenerateCtrlEvent`]).
     GenerateCtrlEvent = number(28),
+    /// ConsolepCreateScreenBuffer ([`CreateScreenBuffer`]).
+    CreateScreenBuffer = number(29),
+    /// ConsolepSetActiveScreenBuffer ([`SetActiveScreenBuffer`]).
+    SetActiveScreenBuffer = number(30),
 }
 
 /// An API's number: the console server's index in the high word, the API's in the low one.
@@ -139,7 +143,7 @@ const fn number(index: u32) -> u32 {
 }
 
 /// Every API, at its index.
-const APIS: [Api; 29] = [
+const APIS: [Api; 31] = [
     Api::WriteConsole,
     Api::ReadConsole,
     Api::GetMode,
@@ -169,6 +173,8 @@ const APIS: [Api; 29] = [
     Api::ReadOutputAttribute,
     Api::ConnectCtrl,
     Api::GenerateCtrlEvent,
+    Api::CreateScreenBuffer,
+    Api::SetActiveScreenBuffer,
 ];
 
 const _: () = {
@@ -265,6 +271,8 @@ messages! {
     ReadOutputAttribute: 5 [handle, buffer, count, origin, read];
     ConnectCtrl: 1 [routine];
     GenerateCtrlEvent: 2 [event, group];
+    CreateScreenBuffer: 5 [access, share, inherit, flags, handle];
+    SetActiveScreenBuffer: 1 [handle];
 }
 
 /// WriteConsole: `count` bytes of the client's memory at `buffer` to the screen, or, `unicode`,
@@ -604,6 +612,27 @@ pub struct GenerateCtrlEvent<W> {
     pub group: W,
 }
 
+/// CreateConsoleScreenBuffer: a new screen buffer of the console, inactive, and a handle on it in
+/// the lowest free slot, inheritable as `inherit` says. `flags` is CONSOLE_TEXTMODE_BUFFER.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CreateScreenBuffer<W> {
+    pub access: W,
+    pub share: W,
+    pub inherit: W,
+    pub flags: W,
+    /// Written by the server: the new handle.
+    pub handle: W,
+}
+
+/// SetConsoleActiveScreenBuffer: the screen buffer `handle` names becomes the one the console
+/// shows, and the one CONOUT$ opens.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SetActiveScreenBuffer<W> {
+    pub handle: W,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,7 +643,8 @@ mod tests {
         assert_eq!(Api::try_from(0x0002_0018), Ok(Api::GetHandleInformation));
         assert_eq!(Api::try_from(0x0002_001A), Ok(Api::ReadOutputAttribute));
         assert_eq!(Api::try_from(0x0002_001C), Ok(Api::GenerateCtrlEvent));
-        for number in [0x0002_001D, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
+        assert_eq!(Api::try_from(0x0002_001E), Ok(Api::SetActiveScreenBuffer));
+        for number in [0x0002_001F, 0x0002_0063, 0x0001_0000, 0x0003_0001, 0] {
             assert_eq!(Api::try_from(number), Err(number), "{number:#x}");
         }
         assert_eq!(u32::from(Api::GetInputWaitHandle), 0x0002_0016);

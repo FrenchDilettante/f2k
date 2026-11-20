@@ -50,13 +50,7 @@ use super::layout::{
     VK_RIGHT,
     VK_UP,
 };
-use super::screen::{
-    ScreenBuffer,
-    ENABLE_PROCESSED_OUTPUT,
-    ENABLE_WRAP_AT_EOL_OUTPUT,
-    HEIGHT,
-    WIDTH,
-};
+use super::screen::{ScreenBuffer, ENABLE_PROCESSED_OUTPUT, ENABLE_WRAP_AT_EOL_OUTPUT, WIDTH};
 use crate::codepage::{self, CodePage};
 
 /// The most characters a line-mode read's line holds, its CR LF included: the keys typed past
@@ -403,10 +397,10 @@ impl Line {
             .fold(0, |at, &unit| at + self.glyph(unit, at, &mut cells))
     }
 
-    /// The buffer's row and column of the echo's cell `at`, kept inside the buffer.
-    fn cell(&self, at: usize) -> (usize, usize) {
+    /// The buffer's row and column of the echo's cell `at`, kept inside the buffer of `rows` rows.
+    fn cell(&self, at: usize, rows: usize) -> (usize, usize) {
         let linear = self.row * WIDTH + self.column + at;
-        ((linear / WIDTH).min(HEIGHT - 1), linear % WIDTH)
+        ((linear / WIDTH).min(rows - 1), linear % WIDTH)
     }
 
     /// The echo's cells of the characters from `index` up to `end`, a piece at a time to
@@ -437,7 +431,7 @@ impl Line {
         let mode = screen.mode();
         // Each byte a cell, wrapping at the row's end, whatever the output mode.
         screen.set_mode(ENABLE_WRAP_AT_EOL_OUTPUT);
-        let (row, column) = self.cell(self.offset(index));
+        let (row, column) = self.cell(self.offset(index), screen.rows());
         screen.set_cursor(row, column);
         screen.begin_write();
         let end = self.each_piece(index, self.length, |cells| screen.render(cells));
@@ -462,7 +456,7 @@ impl Line {
 
     /// The screen's cursor on the line's.
     fn place_cursor(&self, screen: &mut ScreenBuffer) {
-        let (row, column) = self.cell(self.offset(self.cursor));
+        let (row, column) = self.cell(self.offset(self.cursor), screen.rows());
         screen.set_cursor(row, column);
     }
 
@@ -476,7 +470,7 @@ impl Line {
     ) {
         let mode = screen.mode();
         screen.set_mode(ENABLE_WRAP_AT_EOL_OUTPUT);
-        let (row, column) = self.cell(0);
+        let (row, column) = self.cell(0, screen.rows());
         screen.set_cursor(row, column);
         screen.begin_write();
         // The CR LF is not the line's to show.
@@ -748,7 +742,7 @@ mod tests {
 
     use super::*;
     use crate::console::input::ENHANCED_KEY;
-    use crate::console::screen::Fill;
+    use crate::console::screen::{Fill, HEIGHT};
 
     /// Set 1 scan codes of the letters, as the lineedit fixture queues them.
     const SCAN_LETTERS: [u16; 26] = [

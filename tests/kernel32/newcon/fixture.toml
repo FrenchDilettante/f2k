@@ -1,0 +1,91 @@
+# newcon: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
+# /MD. Its companion program, conkid.exe (built beside newcon.exe from conkid.c, with /MD), is the
+# child every section but buffers starts, reporting through an inherited pipe; it goes into \CORPUS
+# beside the program, as it sits beside it on the real machine. The children with a console of their
+# own open a window on the real machine for their short life. No control event goes to group 0 of
+# the program's console. Declared ahead of its build and capture.
+description = "newcon - consoles for child processes (newcon.c, with its companion program conkid.c): what a child sees of its console (standard handles, GetConsoleWindow, the title, CONOUT$'s buffer, whether it is the program's console) with no flags, CREATE_NEW_CONSOLE (with lpTitle, STARTF_USECOUNTCHARS, STARTF_USEFILLATTRIBUTE, SW_HIDE) and DETACHED_PROCESS, given console handles or pipes; DETACHED_PROCESS with CREATE_NEW_CONSOLE; AllocConsole and FreeConsole; control events sent into another console and into a console of one's own; CreateConsoleScreenBuffer and SetConsoleActiveScreenBuffer."
+kind = "sectioned"
+gate = true
+timeout = 60
+
+[pending]
+inherit = "kernel32 exports no GetConsoleWindow"
+newconsole = "kernel32's CreateProcess takes its stub path for CREATE_NEW_CONSOLE (logged, error 120): F2K's console server holds one console, which every process shares"
+detached = "kernel32's CreateProcess takes its stub path for DETACHED_PROCESS (logged, error 120), and kernel32 exports no AllocConsole or FreeConsole"
+alloc = "kernel32 exports no AllocConsole, FreeConsole or GetConsoleWindow"
+ctrl = "kernel32's CreateProcess takes its stub path for CREATE_NEW_CONSOLE (logged, error 120)"
+
+[masks]
+# Whether the console's own buffer has its window at the origin depends on what the console showed
+# before the program: the real machine's (tests/capture.bat's, after the fixtures before it) had
+# scrolled down its buffer, a fresh boot's has not.
+buffers = ["**the active window's size: no; the window at the origin: *; the cursor at the origin: no;**"]
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, and conkid's own calls in that section's runs.
+inherit = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreatePipe",
+    "kernel32.SetStdHandle",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.GetConsoleMode",
+    "kernel32.GetConsoleWindow",
+    "kernel32.GetConsoleTitleA",
+    "kernel32.SetConsoleTitleA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.WriteConsoleA",
+    "kernel32.ReadConsoleOutputCharacterA",
+]
+newconsole = [
+    "kernel32.CreateProcessA",
+    "kernel32.GetStdHandle",
+    "kernel32.GetFileType",
+    "kernel32.GetConsoleMode",
+    "kernel32.GetConsoleWindow",
+    "kernel32.GetConsoleTitleA",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.WriteConsoleA",
+    "kernel32.ReadConsoleOutputCharacterA",
+]
+detached = [
+    "kernel32.CreateProcessA",
+    "kernel32.GetStdHandle",
+    "kernel32.GetConsoleMode",
+    "kernel32.GetConsoleWindow",
+    "kernel32.GetConsoleTitleA",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.AllocConsole",
+    "kernel32.FreeConsole",
+]
+alloc = [
+    "kernel32.CreateProcessA",
+    "kernel32.AllocConsole",
+    "kernel32.FreeConsole",
+    "kernel32.GetStdHandle",
+    "kernel32.GetConsoleMode",
+    "kernel32.GetConsoleWindow",
+    "kernel32.GetConsoleTitleA",
+    "kernel32.WriteConsoleA",
+    "kernel32.ReadConsoleOutputCharacterA",
+]
+ctrl = [
+    "kernel32.CreateProcessA",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.GenerateConsoleCtrlEvent",
+    "kernel32.SetConsoleCtrlHandler",
+]
+buffers = [
+    "kernel32.CreateConsoleScreenBuffer",
+    "kernel32.SetConsoleActiveScreenBuffer",
+    "kernel32.GetConsoleScreenBufferInfo",
+    "kernel32.GetConsoleMode",
+    "kernel32.GetFileType",
+    "kernel32.WriteConsoleA",
+    "kernel32.WriteFile",
+    "kernel32.ReadConsoleOutputCharacterA",
+]

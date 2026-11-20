@@ -1,0 +1,169 @@
+# F2K capture of newcon (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/20/2026 10:44:04.96
+newcon F2KT-SOURCE-CRC=0x940D16F8
+>>> newcon.exe inherit
+== inherit
+no flags, console handles:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 2 err=-, console mode ok, out type 2 err=-, console mode ok, err type 2 err=-, console mode ok
+  > kid: window: the program's
+  > kid: title: the program's
+  > kid: CONOUT$: the program's mark in this console: yes
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: yes
+no flags, pipes:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: the program's
+  > kid: title: the program's
+  > kid: CONOUT$: the program's mark in this console: yes
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: yes
+newcon: done
+<<< exit code=0
+>>> newcon.exe newconsole
+== newconsole
+CREATE_NEW_CONSOLE, console handles:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 2 err=-, console mode ok, out type 2 err=-, console mode ok, err type 2 err=-, console mode ok
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: no
+CREATE_NEW_CONSOLE, pipes:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: no
+CREATE_NEW_CONSOLE, lpTitle, 100x200 characters, attributes 0x1E, pipes:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: another
+  > kid: title: [F2K a title of its own]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 100x200, window 80x25, cursor at the origin: yes, attributes 0x1E
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: no
+CREATE_NEW_CONSOLE, SW_HIDE, pipes:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  the child's end: exit code 21; its mark on the program's console: no
+newcon: done
+<<< exit code=0
+>>> newcon.exe detached
+== detached
+DETACHED_PROCESS, console handles:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in NULL, out NULL, err NULL
+  > kid: window: none
+  > kid: title: ret=0 err=6
+  > kid: CONOUT$: err=5
+  > kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0), no console: ret=0 err=6
+  > kid: AllocConsole: ret=1 err=-
+  > kid: std: in type 2 err=-, console mode ok, out type 2 err=-, console mode ok, err type 2 err=-, console mode ok
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  > kid: FreeConsole: ret=1 err=-
+  the child's end: exit code 22; its mark on the program's console: no
+DETACHED_PROCESS, pipes:
+  CreateProcessA: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: none
+  > kid: title: ret=0 err=6
+  > kid: CONOUT$: err=5
+  > kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0), no console: ret=0 err=6
+  > kid: AllocConsole: ret=1 err=-
+  > kid: std: in type 3 err=-, console mode err=6, out type 3 err=-, console mode err=6, err type 3 err=-, console mode err=6
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  > kid: FreeConsole: ret=1 err=-
+  the child's end: exit code 22; its mark on the program's console: no
+DETACHED_PROCESS | CREATE_NEW_CONSOLE, pipes:
+  CreateProcessA: ret=0 err=87
+newcon: done
+<<< exit code=0
+>>> newcon.exe alloc
+== alloc
+no flags, console handles: AllocConsole and FreeConsole in the child:
+  CreateProcessA: ret=1 err=-
+  > kid: AllocConsole, attached: ret=0 err=5
+  > kid: FreeConsole: ret=1 err=-
+  > kid: std: in type 0 err=6, console mode err=6, out type 0 err=6, console mode err=6, err type 0 err=6, console mode err=6
+  > kid: window: none
+  > kid: title: ret=0 err=6
+  > kid: CONOUT$: err=5
+  > kid: WriteConsoleA(the old standard output): ret=0 err=6
+  > kid: FreeConsole, no console: ret=0 err=87
+  > kid: AllocConsole: ret=1 err=-
+  > kid: std: in type 2 err=-, console mode ok, out type 2 err=-, console mode ok, err type 2 err=-, console mode ok
+  > kid: window: another
+  > kid: title: [<home>\conkid.exe]
+  > kid: CONOUT$: the program's mark in this console: no; buffer 80x300, window 80x25, cursor at the origin: yes, attributes 0x07
+  > kid: its mark written and read back: yes
+  > kid: AllocConsole, again: ret=0 err=5
+  > kid: FreeConsole: ret=1 err=-
+  the child's end: exit code 23; its mark on the program's console: no
+the program's console after the child's FreeConsole: GetConsoleMode(CONOUT$) ret=1 err=-
+the program's mark still on it: yes
+newcon: done
+<<< exit code=0
+>>> newcon.exe ctrl
+== ctrl
+CREATE_NEW_CONSOLE, pipes:
+  CreateProcessA: ret=1 err=-
+  GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's id): ret=0 err=87
+  > kid: before its own events: Ctrl+C 0, Ctrl+Break 0
+  > kid: GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0): ret=1 err=-
+  > kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0): ret=1 err=-
+  > kid: after them: Ctrl+C 1, Ctrl+Break 1
+  the child's end: exit code 24; its mark on the program's console: no
+CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP, pipes:
+  CreateProcessA: ret=1 err=-
+  GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, the child's id): ret=0 err=87
+  > kid: before its own events: Ctrl+C 0, Ctrl+Break 0
+  > kid: GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0): ret=1 err=-
+  > kid: GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0): ret=1 err=-
+  > kid: after them: Ctrl+C 0, Ctrl+Break 1
+  the child's end: exit code 24; its mark on the program's console: no
+the program's handler saw: Ctrl+C 0, Ctrl+Break 0
+newcon: done
+<<< exit code=0
+>>> newcon.exe buffers
+== buffers
+CreateConsoleScreenBuffer(read and write, shared, CONSOLE_TEXTMODE_BUFFER): a handle err=-
+GetFileType(the new buffer): 2 err=-
+GetConsoleMode(the new buffer): ret=1 err=- mode 0x3
+GetConsoleScreenBufferInfo(the new buffer): ret=1 err=-; the active buffer's size: no; the active window's size: yes; the window at the origin: yes; the cursor at the origin: yes; the active buffer's attributes: yes
+WriteConsoleA(the new buffer, inactive, [inactive text]): ret=1 err=-, 13 written
+ReadConsoleOutputCharacterA(the new buffer, at 0,0, 13): ret=1 err=- [inactive text]
+WriteFile(the new buffer, [!]): ret=1 err=-
+ReadConsoleOutputCharacterA(the new buffer, at 0,0, 14): ret=1 err=- [inactive text!]
+the active buffer holds the text: no
+CreateConsoleScreenBuffer(flags 2): INVALID_HANDLE_VALUE err=87
+SetConsoleActiveScreenBuffer(the new buffer): ret=1 err=-
+ReadConsoleOutputCharacterA(CONOUT$ opened then, at 0,0, 14): ret=1 err=- [inactive text!]
+the section's mark in it: no
+GetConsoleScreenBufferInfo(the original buffer, inactive): ret=1 err=-; the active buffer's size: yes; the active window's size: no; the window at the origin: no; the cursor at the origin: no; the active buffer's attributes: yes
+SetConsoleActiveScreenBuffer(the original buffer): ret=1 err=-
+CONOUT$ opened after it: the section's mark in it: yes
+SetConsoleActiveScreenBuffer(NULL): ret=0 err=6
+SetConsoleActiveScreenBuffer(INVALID_HANDLE_VALUE): ret=0 err=6
+SetConsoleActiveScreenBuffer(a pipe's write end): ret=0 err=6
+SetConsoleActiveScreenBuffer(CONIN$): ret=0 err=6
+CloseHandle(the new buffer, inactive): ret=1 err=-
+newcon: done
+<<< exit code=0

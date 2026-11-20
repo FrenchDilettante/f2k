@@ -556,6 +556,41 @@ fn the_screen_buffer_info_describes_the_default_console() {
     }
 }
 
+/// CreateConsoleScreenBuffer and SetConsoleActiveScreenBuffer, as the newcon fixture's buffers
+/// block sees them: a new buffer the window's size; a kind of buffer but CONSOLE_TEXTMODE_BUFFER
+/// refused with ERROR_INVALID_PARAMETER; made active and back; a handle naming no screen buffer
+/// refused with ERROR_INVALID_HANDLE; the new buffer closed.
+///
+/// Pins: kernel32.CreateConsoleScreenBuffer, kernel32.SetConsoleActiveScreenBuffer
+#[test]
+fn screen_buffers_are_made_and_made_active() {
+    const UNTOUCHED: u32 = 0x0F2F_2F2F;
+    crate::base::set_last_error(UNTOUCHED);
+    // SAFETY: no security attributes.
+    let buffer = unsafe { create_console_screen_buffer(0xC000_0000, 3, core::ptr::null(), 1, 0) };
+    assert_ne!(buffer, INVALID_HANDLE_VALUE);
+    assert_eq!(last_error(), UNTOUCHED, "left alone");
+    let mut bytes = [0u8; 22];
+    // SAFETY: a CONSOLE_SCREEN_BUFFER_INFO's bytes.
+    assert_eq!(
+        unsafe { get_console_screen_buffer_info(buffer, bytes.as_mut_ptr()) },
+        1
+    );
+    assert_eq!((bytes[0], bytes[2]), (80, 25), "the window's size");
+    // SAFETY: no security attributes.
+    let refused = unsafe { create_console_screen_buffer(0xC000_0000, 0, core::ptr::null(), 2, 0) };
+    assert_eq!((refused, last_error()), (INVALID_HANDLE_VALUE, 87));
+    assert_eq!(set_console_active_screen_buffer(buffer), 1);
+    assert_eq!(last_error(), 87, "left alone");
+    assert_eq!(set_console_active_screen_buffer(STDOUT), 1);
+    for handle in [0, INVALID_HANDLE_VALUE, STDIN, 0x1234] {
+        crate::base::set_last_error(0);
+        assert_eq!(set_console_active_screen_buffer(handle), 0, "{handle:#x}");
+        assert_eq!(last_error(), 6, "{handle:#x}");
+    }
+    assert_eq!(close_handle(buffer), 1);
+}
+
 /// SetConsoleMode: values the input buffer takes, read back (0x20 with the extended-flags bit);
 /// echo without line input and undefined bits are ERROR_INVALID_PARAMETER, the mode kept; a handle
 /// naming no console object ERROR_INVALID_HANDLE.

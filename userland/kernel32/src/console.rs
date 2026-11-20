@@ -459,6 +459,62 @@ fn screen_buffer_info(console: u32, mut info: OutBuf<'_, u8>) -> u32 {
     1
 }
 
+/// The access and share bits a console handle takes, and CreateConsoleScreenBuffer's one kind of
+/// buffer F2K makes.
+const FILE_SHARE_READ: u32 = 0x1;
+const FILE_SHARE_WRITE: u32 = 0x2;
+const CONSOLE_TEXTMODE_BUFFER: u32 = rtl::console::CONSOLE_TEXTMODE_BUFFER;
+
+/// CreateConsoleScreenBuffer: a new screen buffer of the console, inactive (the console window's
+/// size, blank, in the active buffer's attribute), and a handle on it, inheritable as `security`
+/// says; INVALID_HANDLE_VALUE with ERROR_INVALID_PARAMETER for an access or share bit a console
+/// handle does not take, or a kind of buffer but CONSOLE_TEXTMODE_BUFFER (F2K makes no
+/// CONSOLE_GRAPHICS_BUFFER), and with the server's error when it can make no more buffers. The
+/// last error is left alone on success, as Windows 2000's leaves it.
+///
+/// # Safety
+///
+/// `security` is null or points at a SECURITY_ATTRIBUTES.
+#[unsafe(export_name = "f2k_export_CreateConsoleScreenBuffer")]
+pub unsafe extern "system" fn create_console_screen_buffer(
+    access: u32,
+    share: u32,
+    security: *const crate::base::SecurityAttributes,
+    flags: u32,
+    _data: usize,
+) -> u32 {
+    // SAFETY: the caller's structure, when given (the contract).
+    let security = unsafe { In::optional(security) };
+    if access & !(GENERIC_READ | GENERIC_WRITE) != 0
+        || share & !(FILE_SHARE_READ | FILE_SHARE_WRITE) != 0
+        || flags != CONSOLE_TEXTMODE_BUFFER
+    {
+        set_last_error(ERROR_INVALID_PARAMETER);
+        return INVALID_HANDLE_VALUE;
+    }
+    let mut message = api::CreateScreenBuffer {
+        access: access as usize,
+        share: share as usize,
+        inherit: usize::from(crate::files::inherits(security)),
+        flags: flags as usize,
+        handle: 0,
+    };
+    if succeeded(call_server(&mut message)) == 0 {
+        return INVALID_HANDLE_VALUE;
+    }
+    message.handle as u32
+}
+
+/// SetConsoleActiveScreenBuffer: the screen buffer `console` names becomes the one the console
+/// shows and CONOUT$ opens; FALSE with ERROR_INVALID_HANDLE for a handle naming no screen buffer
+/// (NULL, INVALID_HANDLE_VALUE, a file, an input handle: the server's answer).
+#[unsafe(export_name = "f2k_export_SetConsoleActiveScreenBuffer")]
+pub extern "system" fn set_console_active_screen_buffer(console: u32) -> u32 {
+    succeeded(call_server(&mut api::SetActiveScreenBuffer {
+        handle: console as usize,
+    }))
+}
+
 /// SetConsoleCursorPosition: the screen buffer's cursor moved to `position` (a COORD, X the low
 /// word), the window following it; a position outside the buffer is ERROR_INVALID_PARAMETER, the
 /// cursor where it was; a handle naming no screen buffer ERROR_INVALID_HANDLE.
