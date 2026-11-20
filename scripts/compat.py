@@ -19,9 +19,10 @@ its pinning tests' last results:
 Whatever its status, an export a corpus test pins while pytest does not exercise it (the test is
 pending, an expected failure, or skipped) is in progress: its square has a border.
 
-A forwarder (impl.forward) counts its target's pinning tests as its own: its target's code is what
-runs. F2K-internal entry points (`internal = true`) are not Windows exports: the report leaves them
-out.
+A forwarder (impl.forward) and its target share their pinning tests: the target's code is what
+the forwarder runs, so its target's tests pin the forwarder, and the forwarder's pin the target
+(kernel32.HeapAlloc's blocks pin ntdll.RtlAllocateHeap). A test pinning both counts once.
+F2K-internal entry points (`internal = true`) are not Windows exports: the report leaves them out.
 
 A compatibility target is a DLL F2K runs as the real thing, copied off the real machine, instead of
 building its own: a tests/compat/*.toml whose image is a DLL (MFC42u.DLL). Its spec, if one is
@@ -63,6 +64,7 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS = REPO_ROOT / "tests"
@@ -101,6 +103,15 @@ STATUSES = ("passing", "failing", "uncovered", "stubbed", "unimplemented")
 IN_PROGRESS = ("xfailed", "skipped")
 
 
+class Evidence(NamedTuple):
+    """A test pinning an export."""
+    label: str  # what the report names it by ("memory heapalloc", "scenario name (via dll.Export)")
+    outcome: str | None  # its last result's outcome, None when it has no result
+    corpus: bool  # whether it is a corpus block (or a host scenario)
+    test: str  # the test itself, whichever export it reaches this one through ("memory/heapalloc")
+    via: str | None = None  # the export it pins, when it reaches this one through a forward
+
+
 @dataclass
 class Export:
     dll: str
@@ -108,9 +119,11 @@ class Export:
     group: str | None
     implemented: bool
     spec: dict
-    # The tests pinning it: (label, outcome, whether it is a corpus block), outcome None when the
-    # test has no result.
+    # The tests pinning it (Evidence), its own pins' and, through a forward, its forwarders' or its
+    # target's: each test once.
     evidence: list = field(default_factory=list)
+    # The exports forwarded to it ("kernel32.HeapAlloc"), whose pins pin it too.
+    forwarded_by: list = field(default_factory=list)
     # Its entry in the report's data (the treemap's square, the tooltip every square of it shows).
     index: int | None = None
 
@@ -128,7 +141,7 @@ class Export:
             return "stubbed"
         if not self.implemented:
             return "unimplemented"
-        outcomes = [outcome for _, outcome, _ in self.evidence]
+        outcomes = [evidence.outcome for evidence in self.evidence]
         if "failed" in outcomes:
             return "failing"
         if "passed" in outcomes:
@@ -138,7 +151,12 @@ class Export:
     @property
     def in_progress(self) -> bool:
         """A corpus test pins it that pytest does not exercise (pending or skipped)."""
-        return any(corpus and outcome in IN_PROGRESS for _, outcome, corpus in self.evidence)
+        return any(e.corpus and e.outcome in IN_PROGRESS for e in self.evidence)
+
+    @property
+    def forwarded_only(self) -> bool:
+        """Pinned, but only through a forward: by its forwarders' or its target's pins."""
+        return bool(self.evidence) and all(e.via for e in self.evidence)
 
 
 @dataclass
@@ -378,11 +396,11 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
     scenario_outcomes = (scenario_run or {}).get("tests", {})
     missing = {"blocks": [], "scenarios": []}
 
-    def attach(pin, label, outcome, corpus):
+    def attach(pin, label, outcome, corpus, test):
         dll, _, name = pin.partition(".")
         export = specs.get(dll, ({}, {}))[1].get(name)
         if export is not None:
-            export.evidence.append((label, outcome, corpus))
+            export.evidence.append(Evidence(label, outcome, corpus, test))
 
     for fixture, (declared, blocks) in fixtures.items():
         if blocks is None:
@@ -395,30 +413,58 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
             for name in names if section == "*" else [section]:
                 outcome = worst(by_block.get(f"{fixture}/{name}", []))
                 for pin in pins:
-                    attach(pin, f"{fixture} {name}", outcome, True)
+                    attach(pin, f"{fixture} {name}", outcome, True, f"{fixture}/{name}")
     for scenario in scenarios.values():
         outcome = scenario_outcomes.get(scenario.name)
         if outcome is None:
             missing["scenarios"].append(scenario.name)
         for pin in scenario.pins:
-            attach(pin, f"scenario {scenario.name}", outcome, False)
+            attach(pin, f"scenario {scenario.name}", outcome, False, f"scenario {scenario.name}")
     # A system service's Zw alias runs the service's stub: the service's tests pin it too.
     for _, exports in specs.values():
         for export in exports.values():
             if "zw_ordinal" in export.spec and export.name.startswith("Nt"):
                 exports["Zw" + export.name[2:]].evidence = list(export.evidence)
-    # A forwarder runs its target's code: its target's tests pin it too.
+    share_forwards(specs)
+    return missing
+
+
+def forward_target(specs, export):
+    """The export a forwarder's chain of forwards ends at (the code that runs); None for an export
+    that forwards nowhere, or to no export of a spec."""
+    seen = {export.pin}
+    while (target := export.spec.get("impl", {}).get("forward")) is not None:
+        module, _, name = target.partition(".")
+        export = specs.get(module.lower(), ({}, {}))[1].get(name)
+        if export is None or export.pin in seen:
+            return None
+        seen.add(export.pin)
+    return None if len(seen) == 1 else export
+
+
+def share_forwards(specs):
+    """A forwarder runs its target's code: the target and every export forwarded to it share their
+    pins. Each takes the others' own tests (labelled "via" the export they pin), but a test it
+    already has (one pinning both) only once."""
+    families = {}
     for _, exports in specs.values():
         for export in exports.values():
-            target = export.spec.get("impl", {}).get("forward")
-            if target is None:
-                continue
-            module, _, name = target.partition(".")
-            forwarded = specs.get(module.lower(), ({}, {}))[1].get(name)
-            if forwarded is not None:
-                export.evidence += [(f"{label} (via {forwarded.pin})", outcome, corpus)
-                                    for label, outcome, corpus in forwarded.evidence]
-    return missing
+            target = forward_target(specs, export)
+            if target is not None:
+                families.setdefault(target.pin, [target]).append(export)
+                target.forwarded_by.append(export.pin)
+    for family in families.values():
+        own = {member.pin: list(member.evidence) for member in family}
+        for member in family:
+            tests = {evidence.test for evidence in member.evidence}
+            for other in family:
+                if other is member:
+                    continue
+                for evidence in own[other.pin]:
+                    if evidence.test not in tests:
+                        tests.add(evidence.test)
+                        member.evidence.append(evidence._replace(
+                            label=f"{evidence.label} (via {other.pin})", via=other.pin))
 
 
 def summary(specs, missing, pytest_run, scenario_run):
@@ -444,11 +490,21 @@ def summary(specs, missing, pytest_run, scenario_run):
             if index == len(table) - 1:
                 print("  ".join("-" * w for w in widths))
             print("  ".join(c.ljust(w) if i == 0 else c.rjust(w) for i, (c, w) in enumerate(zip(row, widths))))
+        implemented = [e for e in exports.values() if e.implemented]
+        if implemented:
+            pinned = [e for e in implemented if e.evidence]
+            print(f"\nPinned: {len(pinned)} of {len(implemented)} implemented", end="")
+            forwarded = [e for e in pinned if e.forwarded_only]
+            if forwarded:
+                print(f", {len(forwarded)} only through a forward:", ", ".join(
+                    f"{e.name} (via {', '.join(sorted({ev.via for ev in e.evidence}))})" for e in forwarded))
+            else:
+                print()
         failing = [e for e in exports.values() if e.status == "failing"]
         if failing:
             print(f"\nFailing ({len(failing)}):")
             for export in failing:
-                tests = [label for label, outcome, _ in export.evidence if outcome == "failed"]
+                tests = [e.label for e in export.evidence if e.outcome == "failed"]
                 print(f"  {export.name}: {', '.join(tests)}")
         print()
     for what, run, gaps in (("on-target suite", pytest_run, missing["blocks"]),
@@ -734,7 +790,8 @@ function show(x, cx, cy) {
   let h = '<b>' + esc(d.pin) + '</b><span class="st">' + esc(LABELS[x.s])
     + (x.w ? ' · in progress' : '') + '</span>';
   const facts = [d.ordinal && 'ordinal ' + d.ordinal, d.data && 'data', d.group && 'group: ' + d.group,
-                 d.impl && 'impl: ' + d.impl, d.version && 'since NT ' + d.version].filter(Boolean);
+                 d.impl && 'impl: ' + d.impl, d.via && 'forwarded to by ' + d.via,
+                 d.version && 'since NT ' + d.version].filter(Boolean);
   if (facts.length) h += '<div class="st">' + esc(facts.join(' · ')) + '</div>';
   if (d.note) h += '<div class="st">' + esc(d.note) + '</div>';
   if (d.tests) {
@@ -854,6 +911,7 @@ def tooltip_entry(export, index):
         "ordinal": export.spec.get("ordinal"), "data": export.spec.get("data"),
         "version": export.spec.get("version"), "note": export.spec.get("note"),
         "implemented": export.implemented, "tests": tally(export.evidence),
+        "via": ", ".join(export.forwarded_by),
     }
     entry = {"n": export.name, "s": export.status, "index": index,
              "i": {k: v for k, v in info.items() if v}}
@@ -1041,8 +1099,8 @@ def tally(evidence):
     if not evidence:
         return None
     counts = {}
-    for _, outcome, _ in evidence:
-        counts[OUTCOME_WORDS[outcome]] = counts.get(OUTCOME_WORDS[outcome], 0) + 1
+    for e in evidence:
+        counts[OUTCOME_WORDS[e.outcome]] = counts.get(OUTCOME_WORDS[e.outcome], 0) + 1
     order = ["FAILED", "passed", "pending", "skipped", "not run"]
     words = ", ".join(f"{counts[word]} {word}" for word in order if word in counts)
     return f"{len(evidence)} test{'s' if len(evidence) != 1 else ''}: {words}"

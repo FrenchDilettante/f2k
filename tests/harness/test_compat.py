@@ -1,0 +1,123 @@
+"""scripts/compat.py's coverage logic, on specs and fixtures made up here: how pins reach exports
+(through forwards too) and what the summary makes of them."""
+
+import functools
+import importlib.util
+import sys
+from types import SimpleNamespace
+
+import f2kboot
+
+SCRIPTS = f2kboot.REPO_ROOT / "scripts"
+
+
+@functools.cache
+def compat():
+    sys.path.insert(0, str(SCRIPTS))  # compat.py's own imports (dump_exports) live beside it
+    spec = importlib.util.spec_from_file_location("compat", SCRIPTS / "compat.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def export(dll, name, impl=None):
+    """An export as load_specs makes it: `impl` its spec's inline table (None: not implemented)."""
+    spec = {"name": name} if impl is None else {"name": name, "impl": impl}
+    return compat().Export(dll, name, None, impl is not None and "stub" not in impl, spec)
+
+
+def specs_of(*exports):
+    """load_specs's shape: dll -> (groups, exports by name)."""
+    specs = {}
+    for each in exports:
+        specs.setdefault(each.dll, ([], {}))[1][each.name] = each
+    return specs
+
+
+def fixture(pins, *names, **declared):
+    """corpus_fixtures's entry for a fixture: its declaration (its pins, and `declared`'s fields),
+    and its captured blocks, by name."""
+    blocks = [SimpleNamespace(name=name, section=name) for name in names]
+    return dict(declared, pins=pins), blocks
+
+
+def heap_specs():
+    """kernel32.HeapAlloc forwarded to ntdll.RtlAllocateHeap, ntdll's native."""
+    return specs_of(
+        export("kernel32", "HeapAlloc", {"forward": "NTDLL.RtlAllocateHeap"}),
+        export("ntdll", "RtlAllocateHeap", {"native": "RtlAllocateHeap"}),
+    )
+
+
+def test_a_forwarders_pins_reach_its_target():
+    """kernel32.HeapAlloc's blocks pin ntdll.RtlAllocateHeap, the code they run."""
+    specs = heap_specs()
+    fixtures = {"memory": fixture({"heap": ["kernel32.HeapAlloc"]}, "heap")}
+    compat().gather(specs, fixtures, {}, None, None)
+    target = specs["ntdll"][1]["RtlAllocateHeap"]
+    assert [(e.label, e.via) for e in target.evidence] == [("memory heap (via kernel32.HeapAlloc)",
+                                                           "kernel32.HeapAlloc")]
+    assert target.forwarded_only
+    assert target.forwarded_by == ["kernel32.HeapAlloc"]
+    assert not specs["kernel32"][1]["HeapAlloc"].forwarded_only
+
+
+def test_a_targets_pins_reach_its_forwarder():
+    specs = heap_specs()
+    fixtures = {"memory": fixture({"rtl": ["ntdll.RtlAllocateHeap"]}, "rtl")}
+    compat().gather(specs, fixtures, {}, None, None)
+    forwarder = specs["kernel32"][1]["HeapAlloc"]
+    assert [e.label for e in forwarder.evidence] == ["memory rtl (via ntdll.RtlAllocateHeap)"]
+    assert forwarder.forwarded_only
+
+
+def test_a_block_pinning_both_counts_once_each():
+    """A block pinning the forwarder and its target is one test of each, not two."""
+    specs = heap_specs()
+    fixtures = {"memory": fixture({"heap": ["kernel32.HeapAlloc", "ntdll.RtlAllocateHeap"],
+                                   "more": ["kernel32.HeapAlloc"]}, "heap", "more")}
+    run = {"tests": {"a": {"block": "memory/heap", "outcome": "passed"},
+                     "b": {"block": "memory/more", "outcome": "passed"}}}
+    compat().gather(specs, fixtures, {}, run, None)
+    forwarder, target = specs["kernel32"][1]["HeapAlloc"], specs["ntdll"][1]["RtlAllocateHeap"]
+    assert [e.test for e in forwarder.evidence] == ["memory/heap", "memory/more"]
+    assert [e.test for e in target.evidence] == ["memory/heap", "memory/more"]
+    assert compat().tally(target.evidence) == "2 tests: 2 passed"
+    assert target.status == "passing" and not target.forwarded_only
+
+
+def test_forwarders_of_one_target_share_its_tests():
+    """Two exports forwarded to one target (one through a chain) each take the other's tests."""
+    specs = specs_of(
+        export("kernel32", "EnterCriticalSection", {"forward": "NTDLL.RtlEnterCriticalSection"}),
+        export("other", "Enter", {"forward": "kernel32.EnterCriticalSection"}),
+        export("ntdll", "RtlEnterCriticalSection", {"native": "RtlEnterCriticalSection"}),
+    )
+    fixtures = {"sync": fixture({"cs": ["kernel32.EnterCriticalSection"], "o": ["other.Enter"]}, "cs", "o")}
+    compat().gather(specs, fixtures, {}, None, None)
+    target = specs["ntdll"][1]["RtlEnterCriticalSection"]
+    assert sorted(target.forwarded_by) == ["kernel32.EnterCriticalSection", "other.Enter"]
+    assert sorted(e.test for e in target.evidence) == ["sync/cs", "sync/o"]
+    assert sorted(e.test for e in specs["other"][1]["Enter"].evidence) == ["sync/cs", "sync/o"]
+
+
+def test_a_forward_loop_or_a_missing_target_shares_nothing():
+    specs = specs_of(
+        export("a", "X", {"forward": "b.Y"}),
+        export("b", "Y", {"forward": "a.X"}),
+        export("a", "Z", {"forward": "nowhere.Z"}),
+    )
+    fixtures = {"f": fixture({"x": ["a.X"], "z": ["a.Z"]}, "x", "z")}
+    compat().gather(specs, fixtures, {}, None, None)
+    assert [e.test for e in specs["a"][1]["X"].evidence] == ["f/x"]
+    assert specs["b"][1]["Y"].evidence == []
+    assert [e.test for e in specs["a"][1]["Z"].evidence] == ["f/z"]
+
+
+def test_the_summary_names_the_exports_pinned_only_through_a_forward(capsys):
+    specs = heap_specs()
+    fixtures = {"memory": fixture({"heap": ["kernel32.HeapAlloc"]}, "heap")}
+    missing = compat().gather(specs, fixtures, {}, None, None)
+    compat().summary(specs, missing, None, None)
+    out = capsys.readouterr().out
+    assert "Pinned: 1 of 1 implemented, 1 only through a forward: RtlAllocateHeap (via kernel32.HeapAlloc)" in out
