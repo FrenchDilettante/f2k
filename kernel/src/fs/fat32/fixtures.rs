@@ -1,7 +1,7 @@
 //! Shared fixtures of the FAT32 host tests: the built volume's real boot sector and root
 //! directory, its layout, in-memory volumes shaped like it, crafted small volumes for the directory
 //! and chain tests, a directory-record builder, a device wrapper that counts reads, and one that
-//! crashes after a number of writes.
+//! crashes after a number of writes or fails one of them.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -109,13 +109,20 @@ impl BlockDevice for Counting {
 
 /// A writable device that loses power after a chosen number of writes: the later ones are
 /// dropped (and reported done, as a drive's cache would), so the image shows what a crash at that
-/// point leaves. It counts the writes that reached the image and the ones dropped.
+/// point leaves. It counts the writes that reached the image and the ones dropped. It can instead
+/// fail one chosen write with a device error, the writes around it reaching the image.
 pub struct Crashing {
     inner: &'static crate::block::memory::WritableDisk,
     budget: AtomicU32,
     written: AtomicU32,
     dropped: AtomicU32,
+    /// The writes to let through before the failing one, or [`NO_FAILURE`] or [`FAILED`].
+    failing: AtomicU32,
 }
+
+/// [`Crashing`]'s failing count when no write is to fail, and once the chosen one has.
+const NO_FAILURE: u32 = u32::MAX;
+const FAILED: u32 = u32::MAX - 1;
 
 impl Crashing {
     pub fn over(inner: &'static crate::block::memory::WritableDisk) -> &'static Crashing {
@@ -124,7 +131,19 @@ impl Crashing {
             budget: AtomicU32::new(u32::MAX),
             written: AtomicU32::new(0),
             dropped: AtomicU32::new(0),
+            failing: AtomicU32::new(NO_FAILURE),
         }))
+    }
+
+    /// Let `writes` more writes reach the image, fail the next one with STATUS_IO_DEVICE_ERROR
+    /// (it does not reach the image), and let every later one through.
+    pub fn fail_write(&self, writes: u32) {
+        self.failing.store(writes, Ordering::SeqCst);
+    }
+
+    /// Whether the write chosen by [`Crashing::fail_write`] has failed.
+    pub fn failed(&self) -> bool {
+        self.failing.load(Ordering::SeqCst) == FAILED
     }
 
     /// Let `writes` more writes reach the image, and drop every one after them.
@@ -158,6 +177,14 @@ impl BlockDevice for Crashing {
     }
 
     fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
+        match self.failing.load(Ordering::SeqCst) {
+            0 => {
+                self.failing.store(FAILED, Ordering::SeqCst);
+                return Err(STATUS_IO_DEVICE_ERROR);
+            }
+            NO_FAILURE | FAILED => {}
+            ahead => self.failing.store(ahead - 1, Ordering::SeqCst),
+        }
         let left = self.budget.load(Ordering::SeqCst);
         if left == 0 {
             self.dropped.fetch_add(1, Ordering::SeqCst);

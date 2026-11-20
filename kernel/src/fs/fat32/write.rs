@@ -45,6 +45,7 @@ use super::path::{oem_upper_fit, short_form};
 use super::volume::Volume;
 use crate::status::{
     NtStatus,
+    STATUS_ACCESS_DENIED,
     STATUS_DISK_FULL,
     STATUS_FILE_CORRUPT_ERROR,
     STATUS_OBJECT_NAME_INVALID,
@@ -518,7 +519,9 @@ fn short_record(name: &[u8; 11], case: u8, file: &File) -> RecordBytes {
 
 /// Make a new entry named `name` in the directory starting at `parent` for `file` (its first
 /// cluster, size, attributes and times); the entry's identity is filled in. The caller has checked
-/// that no entry answers to the name.
+/// that no entry answers to the name. The long-name parts go first and the 8.3 record last, which
+/// makes the entry; when a write fails, the records written before it are marked deleted again
+/// (best effort), so no orphaned part keeps their places.
 pub fn create_entry(
     volume: &mut Volume,
     parent: u32,
@@ -541,63 +544,124 @@ pub fn create_entry(
         0
     };
     let start = free_run(volume, parent, parts as u32 + 1)?;
-    if long {
-        let mut units = [0xFFFFu16; 20 * PART_UNITS];
-        for (unit, &byte) in units.iter_mut().zip(name) {
-            *unit = decode_byte(byte);
+    let mut entry = *file;
+    entry.parent_cluster = parent;
+    entry.index = start + parts as u32;
+    let mut written = 0;
+    let mut write = |volume: &mut Volume, record: &RecordBytes| {
+        write_record(volume, parent, start + written, record)?;
+        written += 1;
+        Ok(())
+    };
+    let made = (|| {
+        if long {
+            let mut units = [0xFFFFu16; 20 * PART_UNITS];
+            for (unit, &byte) in units.iter_mut().zip(name) {
+                *unit = decode_byte(byte);
+            }
+            if name.len() % PART_UNITS != 0 {
+                units[name.len()] = 0;
+            }
+            let sum = checksum(&stored);
+            let chunks = units.as_chunks::<PART_UNITS>().0;
+            for order in (1..=parts).rev() {
+                let part = LongPart {
+                    order: order as u8,
+                    last: order == parts,
+                    checksum: sum,
+                    units: chunks[order - 1],
+                };
+                write(volume, &part.record().bytes())?;
+            }
         }
-        if name.len() % PART_UNITS != 0 {
-            units[name.len()] = 0;
+        write(volume, &short_record(&stored, case, &entry))
+    })();
+    if let Err(status) = made {
+        for index in start..start + written {
+            let mut record = [0; ENTRY_SIZE];
+            record[0] = DELETED;
+            let _ = write_record(volume, parent, index, &record);
         }
-        let sum = checksum(&stored);
-        let chunks = units.as_chunks::<PART_UNITS>().0;
-        for order in (1..=parts).rev() {
-            let part = LongPart {
-                order: order as u8,
-                last: order == parts,
-                checksum: sum,
-                units: chunks[order - 1],
-            };
-            write_record(
+        return Err(status);
+    }
+    *file = entry;
+    Ok(())
+}
+
+/// The most records an entry has: twenty long-name parts and its 8.3 record.
+const MAX_RECORDS: usize = 21;
+
+/// An entry's records as they were: the long name's parts then the 8.3 record, `count` of them
+/// ending at record `last` of the directory starting at `parent`, kept whole (the 8.3 record
+/// first, then the parts backwards) so a removal, or records written over them since, can be
+/// undone.
+struct Entry {
+    parent: u32,
+    last: u32,
+    count: u32,
+    records: [RecordBytes; MAX_RECORDS],
+}
+
+impl Entry {
+    /// `file`'s entry's records, read (nothing is written): its 8.3 record and the long-name parts
+    /// before it that carry its checksum.
+    fn of(volume: &mut Volume, file: &File) -> Result<Entry, NtStatus> {
+        let mut entry = Entry {
+            parent: file.parent_cluster,
+            last: file.index,
+            count: 1,
+            records: [[0; ENTRY_SIZE]; MAX_RECORDS],
+        };
+        entry.records[0] = read_record(volume, file.parent_cluster, file.index)?;
+        let sum = checksum(&RawDirEntry::read(&entry.records[0]).short_name());
+        while entry.count <= file.index && (entry.count as usize) < MAX_RECORDS {
+            let bytes = read_record(volume, file.parent_cluster, file.index - entry.count)?;
+            let part = RawLongEntry::read(&bytes);
+            if part.attr != ATTR_LONG_NAME || part.ord == DELETED || part.checksum != sum {
+                break;
+            }
+            entry.records[entry.count as usize] = bytes;
+            entry.count += 1;
+            if part.ord & LAST_LONG_PART != 0 {
+                break;
+            }
+        }
+        Ok(entry)
+    }
+
+    /// Mark the records deleted, the 8.3 record first: its write is the removal (a failure there
+    /// changes nothing). A long-name part that fails after it stays as an orphaned part, which a
+    /// walk ignores, so the removal stands.
+    fn remove(&self, volume: &mut Volume) -> Result<(), NtStatus> {
+        for k in 0..self.count {
+            let mut bytes = self.records[k as usize];
+            bytes[0] = DELETED;
+            let written = write_record(volume, self.parent, self.last - k, &bytes);
+            if k == 0 {
+                written?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Put the records back as they were, the 8.3 record last (best effort: this undoes a step
+    /// that already failed, so a further failure has no one to report to).
+    fn restore(&self, volume: &mut Volume) {
+        for k in (0..self.count).rev() {
+            let _ = write_record(
                 volume,
-                parent,
-                start + (parts - order) as u32,
-                &part.record().bytes(),
-            )?;
+                self.parent,
+                self.last - k,
+                &self.records[k as usize],
+            );
         }
     }
-    file.parent_cluster = parent;
-    file.index = start + parts as u32;
-    write_record(
-        volume,
-        parent,
-        file.index,
-        &short_record(&stored, case, file),
-    )
 }
 
 /// Remove `file`'s entry: its 8.3 record and the long-name records before it marked deleted. Its
 /// clusters stay.
 pub fn remove_entry(volume: &mut Volume, file: &File) -> Result<(), NtStatus> {
-    let mut record = RawDirEntry::read(&read_record(volume, file.parent_cluster, file.index)?);
-    let sum = checksum(&record.short_name());
-    record.name[0] = DELETED;
-    write_record(volume, file.parent_cluster, file.index, &record.bytes())?;
-    let mut index = file.index;
-    while index > 0 {
-        index -= 1;
-        let mut part = RawLongEntry::read(&read_record(volume, file.parent_cluster, index)?);
-        if part.attr != ATTR_LONG_NAME || part.ord == DELETED || part.checksum != sum {
-            break;
-        }
-        let last = part.ord & LAST_LONG_PART != 0;
-        part.ord = DELETED;
-        write_record(volume, file.parent_cluster, index, &part.bytes())?;
-        if last {
-            break;
-        }
-    }
-    Ok(())
+    Entry::of(volume, file)?.remove(volume)
 }
 
 /// Delete `file`: its entry removed and its clusters freed.
@@ -609,27 +673,105 @@ pub fn delete(volume: &mut Volume, file: &File) -> Result<(), NtStatus> {
     Ok(())
 }
 
-/// Give `file` the name `name` in the directory starting at `parent` (its own or another): a new
-/// entry for the same clusters, the old one removed — a directory moved elsewhere has its `..`
-/// record follow. Returns the entry's new identity.
+/// Whether the directory starting at `directory` is the one starting at `ancestor` or lies
+/// beneath it: its `..` records followed up to the root. A `..` record that is none, or a chain of
+/// them that loops, is corruption.
+fn within(volume: &mut Volume, ancestor: u32, mut directory: u32) -> Result<bool, NtStatus> {
+    let root = volume.layout().root_cluster;
+    for _ in 0..volume.layout().cluster_count {
+        if directory == ancestor {
+            return Ok(true);
+        }
+        if directory == root || directory == 0 {
+            return Ok(false);
+        }
+        let up = RawDirEntry::read(&read_record(volume, directory, 1)?);
+        if up.short_name() != DOT_DOT {
+            return Err(STATUS_FILE_CORRUPT_ERROR);
+        }
+        directory = up.first_cluster();
+    }
+    Err(STATUS_FILE_CORRUPT_ERROR)
+}
+
+/// Give `file` the name `name` in the directory starting at `parent` (its own or another),
+/// replacing `replacing` — an entry of that directory answering to the name, which the caller has
+/// found may go — when there is one: a new entry for the same clusters, the old one removed, a
+/// directory moved elsewhere having its `..` record follow, and the replaced entry's clusters
+/// freed. Returns the entry's new identity.
+///
+/// A directory never moves into itself or beneath itself (STATUS_ACCESS_DENIED: FastFat refuses to
+/// rename a directory with an open file beneath it, and the I/O manager's open of the target's
+/// directory is one). Everything is checked and read before anything is written, and every step
+/// that fails undoes the ones before it: the call fails with the old names in place, or succeeds
+/// with the new — never a name lost, nor two entries sharing clusters. The replaced entry's
+/// clusters are freed last, once the rename stands; a failure there leaves them lost (to chkdsk),
+/// not shared.
 pub fn rename(
     volume: &mut Volume,
     file: &File,
     parent: u32,
     name: &[u8],
+    replacing: Option<&File>,
 ) -> Result<File, NtStatus> {
+    if name.is_empty() || name.len() > MAX_LONG {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    let moves_directory =
+        file.directory && parent != file.parent_cluster && file.first_cluster != 0;
+    if moves_directory && within(volume, file.first_cluster, parent)? {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    let source = Entry::of(volume, file)?;
+    let replaced = match replacing {
+        Some(replacing) => Some(Entry::of(volume, replacing)?),
+        None => None,
+    };
+    let dotdot = if moves_directory {
+        Some(read_record(volume, file.first_cluster, 1)?)
+    } else {
+        None
+    };
+    // The replaced entry goes first, its records and its 8.3 name free for the new entry, as when
+    // the name was free (restored if a later step fails).
+    if let Some(replaced) = &replaced {
+        replaced.remove(volume)?;
+    }
+    let undo_replace = |volume: &mut Volume| {
+        if let Some(replaced) = &replaced {
+            replaced.restore(volume);
+        }
+    };
     let mut moved = *file;
-    create_entry(volume, parent, name, &mut moved)?;
-    remove_entry(volume, file)?;
-    if file.directory && parent != file.parent_cluster && file.first_cluster != 0 {
-        let mut dotdot = RawDirEntry::read(&read_record(volume, file.first_cluster, 1)?);
-        let target = if parent == volume.layout().root_cluster {
+    if let Err(status) = create_entry(volume, parent, name, &mut moved) {
+        undo_replace(volume);
+        return Err(status);
+    }
+    let undo_create = |volume: &mut Volume| {
+        let _ = remove_entry(volume, &moved);
+        undo_replace(volume);
+    };
+    if let Some(old) = dotdot {
+        let mut up = RawDirEntry::read(&old);
+        up.set_first_cluster(if parent == volume.layout().root_cluster {
             0
         } else {
             parent
-        };
-        dotdot.set_first_cluster(target);
-        write_record(volume, file.first_cluster, 1, &dotdot.bytes())?;
+        });
+        if let Err(status) = write_record(volume, file.first_cluster, 1, &up.bytes()) {
+            undo_create(volume);
+            return Err(status);
+        }
+    }
+    if let Err(status) = source.remove(volume) {
+        if let Some(old) = dotdot {
+            let _ = write_record(volume, file.first_cluster, 1, &old);
+        }
+        undo_create(volume);
+        return Err(status);
+    }
+    if let Some(replacing) = replacing {
+        let _ = free_chain(volume, replacing.first_cluster);
     }
     Ok(moved)
 }
@@ -979,7 +1121,7 @@ mod tests {
         write_at(&mut v, &mut file, 0, b"long").unwrap();
         let dir = make_directory(&mut v, root_cluster, b"SUB", Times::default()).unwrap();
         assert!(is_empty(&mut v, dir.first_cluster).unwrap());
-        let moved = rename(&mut v, &file, dir.first_cluster, b"MOVED.TXT").unwrap();
+        let moved = rename(&mut v, &file, dir.first_cluster, b"MOVED.TXT", None).unwrap();
         assert_eq!(
             lookup(&mut v, b"A Long Created Name.txt"),
             Err(LookupError::NotFound)
@@ -989,13 +1131,216 @@ mod tests {
         delete(&mut v, &moved).unwrap();
         assert!(is_empty(&mut v, dir.first_cluster).unwrap());
         let inner = make_directory(&mut v, dir.first_cluster, b"INNER", Times::default()).unwrap();
-        let inner = rename(&mut v, &inner, root_cluster, b"OUTER").unwrap();
+        let inner = rename(&mut v, &inner, root_cluster, b"OUTER", None).unwrap();
         assert!(lookup(&mut v, b"OUTER\\..\\SUB").is_ok());
         assert_eq!(
             read_record(&mut v, inner.first_cluster, 1).unwrap()[26],
             0,
             "`..` names the root"
         );
+    }
+
+    /// The entries of the directory starting at `cluster`, but its dot records: each one's name
+    /// and first cluster.
+    fn entries(volume: &mut Volume, cluster: u32) -> Vec<(String, u32)> {
+        let mut seen = Vec::new();
+        walk(volume, cluster, |listed| {
+            if !listed.dot {
+                let mut name = [0u8; 255];
+                let n = listed.name(&mut name);
+                seen.push((
+                    String::from_utf8_lossy(&name[..n]).into_owned(),
+                    listed.entry.first_cluster,
+                ));
+            }
+            true
+        })
+        .unwrap();
+        seen
+    }
+
+    /// Every entry of the tree beneath the directory starting at `cluster`, each with its path and
+    /// first cluster; panics on two entries sharing a first cluster (a cross-link).
+    fn tree(volume: &mut Volume, cluster: u32) -> Vec<(String, u32)> {
+        let mut all = Vec::new();
+        let mut pending = vec![(String::new(), cluster)];
+        while let Some((path, cluster)) = pending.pop() {
+            for (name, first) in entries(volume, cluster) {
+                let path = format!("{path}\\{name}");
+                if lookup(volume, path[1..].as_bytes()).unwrap().directory {
+                    pending.push((path.clone(), first));
+                }
+                all.push((path, first));
+            }
+        }
+        let mut clusters: Vec<u32> = all.iter().map(|&(_, c)| c).filter(|&c| c != 0).collect();
+        clusters.sort();
+        let count = clusters.len();
+        clusters.dedup();
+        assert_eq!(clusters.len(), count, "two entries share clusters: {all:?}");
+        all.sort();
+        all
+    }
+
+    /// A directory never moves into itself or beneath itself (a cycle that would cut the subtree
+    /// off the root): STATUS_ACCESS_DENIED, nothing changed. Moving one up out of it is a rename
+    /// like any other.
+    #[test]
+    fn a_directory_never_moves_beneath_itself() {
+        let mut v = volume(30);
+        let root_cluster = root(&v).first_cluster;
+        let a = make_directory(&mut v, root_cluster, b"A", Times::default()).unwrap();
+        let b = make_directory(&mut v, a.first_cluster, b"B", Times::default()).unwrap();
+        let c = make_directory(&mut v, b.first_cluster, b"C", Times::default()).unwrap();
+        let before = tree(&mut v, root_cluster);
+        for (parent, name) in [
+            (a.first_cluster, &b"A"[..]),
+            (a.first_cluster, b"Moved"),
+            (b.first_cluster, b"A"),
+            (c.first_cluster, b"Moved Deep"),
+        ] {
+            assert_eq!(
+                rename(&mut v, &a, parent, name, None),
+                Err(STATUS_ACCESS_DENIED)
+            );
+            assert_eq!(
+                rename(&mut v, &b, c.first_cluster, name, None),
+                Err(STATUS_ACCESS_DENIED)
+            );
+        }
+        assert_eq!(tree(&mut v, root_cluster), before);
+        assert!(lookup(&mut v, b"A\\B\\C\\..\\..\\..\\A").is_ok());
+
+        rename(&mut v, &c, a.first_cluster, b"C2", None).unwrap();
+        rename(&mut v, &b, root_cluster, b"B2", None).unwrap();
+        assert!(lookup(&mut v, b"A\\C2\\..\\..\\B2").is_ok());
+    }
+
+    /// A file of `bytes` named `name` in the directory starting at `parent`.
+    fn file_in(volume: &mut Volume, parent: u32, name: &[u8], bytes: &[u8]) -> File {
+        let mut file = File::plain(0, 0, false);
+        file.attributes = 0x20;
+        create_entry(volume, parent, name, &mut file).unwrap();
+        write_at(volume, &mut file, 0, bytes).unwrap();
+        file
+    }
+
+    /// A replacing rename that cannot make its new entry (the directory full, the volume too)
+    /// fails with the replaced file still there, whole: the old order deleted it first.
+    #[test]
+    fn a_replacing_rename_that_fails_keeps_the_replaced_file() {
+        let mut v = Volume::mount(Crafted::full(3).writable()).unwrap();
+        let root_cluster = root(&v).first_cluster;
+        let source = file_in(&mut v, root_cluster, b"SOURCE.TXT", b"source");
+        let target = file_in(&mut v, root_cluster, b"TARGET.TXT", b"target");
+        for i in 0..14 {
+            file_in(&mut v, root_cluster, format!("F{i}").as_bytes(), b"");
+        }
+        let before = tree(&mut v, root_cluster);
+        assert_eq!(
+            rename(
+                &mut v,
+                &source,
+                root_cluster,
+                b"A long replacing name.txt",
+                Some(&target)
+            ),
+            Err(STATUS_DISK_FULL)
+        );
+        assert_eq!(tree(&mut v, root_cluster), before);
+        assert_eq!(contents(&mut v, b"TARGET.TXT"), b"target");
+        assert_eq!(contents(&mut v, b"SOURCE.TXT"), b"source");
+    }
+
+    /// A rename with one of its writes failing — each in turn — fails with the old names in place
+    /// (`..` too), or succeeds with the new (when the failing write only tidied up), never with an
+    /// entry lost or two sharing clusters: a file renamed to a long name in another directory, a
+    /// directory moved, and a file replacing another.
+    #[test]
+    fn a_rename_with_a_failing_write_keeps_the_old_names_or_the_new() {
+        enum Case {
+            File,
+            Directory,
+            Replace,
+        }
+        for case in [Case::File, Case::Directory, Case::Replace] {
+            for n in 0.. {
+                let crashing = Crashing::over(Crafted::new(1, 30).writable());
+                let mut v = Volume::mount(crashing).unwrap();
+                let root_cluster = root(&v).first_cluster;
+                let dir = make_directory(&mut v, root_cluster, b"DIR", Times::default()).unwrap();
+                let file = file_in(&mut v, root_cluster, b"A Long Source Name.txt", b"source");
+                let moving =
+                    make_directory(&mut v, root_cluster, b"MOVING", Times::default()).unwrap();
+                file_in(&mut v, moving.first_cluster, b"IN.TXT", b"inside");
+                let target = file_in(&mut v, dir.first_cluster, b"Target Name.txt", b"target");
+                let old = tree(&mut v, root_cluster);
+                crashing.fail_write(n);
+                let (renamed, path, new_path) = match case {
+                    Case::File => (
+                        rename(
+                            &mut v,
+                            &file,
+                            dir.first_cluster,
+                            b"Moved Long Name.txt",
+                            None,
+                        ),
+                        "A Long Source Name.txt",
+                        "DIR\\Moved Long Name.txt",
+                    ),
+                    Case::Directory => (
+                        rename(&mut v, &moving, dir.first_cluster, b"Moved Directory", None),
+                        "MOVING\\IN.TXT",
+                        "DIR\\Moved Directory\\IN.TXT",
+                    ),
+                    Case::Replace => (
+                        rename(
+                            &mut v,
+                            &file,
+                            dir.first_cluster,
+                            b"target name.TXT",
+                            Some(&target),
+                        ),
+                        "A Long Source Name.txt",
+                        "DIR\\target name.TXT",
+                    ),
+                };
+                let failed = crashing.failed();
+                let mut after = Volume::mount(crashing.image()).unwrap();
+                let now = tree(&mut after, root_cluster);
+                let expected = if matches!(case, Case::Directory) {
+                    b"inside"
+                } else {
+                    b"source"
+                };
+                match renamed {
+                    Err(_) => {
+                        assert!(failed);
+                        assert_eq!(now, old, "write {n} failed: the old names");
+                        assert_eq!(contents(&mut after, path.as_bytes()), expected);
+                        if matches!(case, Case::Replace) {
+                            assert_eq!(contents(&mut after, b"DIR\\TARGET~1.TXT"), b"target");
+                        }
+                    }
+                    Ok(_) => {
+                        assert_eq!(
+                            lookup(&mut after, path.as_bytes()),
+                            Err(LookupError::NotFound),
+                            "write {n}: the old name is gone"
+                        );
+                        assert_eq!(contents(&mut after, new_path.as_bytes()), expected);
+                        if matches!(case, Case::Directory) {
+                            assert!(
+                                lookup(&mut after, b"DIR\\Moved Directory\\..\\..\\DIR").is_ok()
+                            );
+                        }
+                    }
+                }
+                if !failed {
+                    break;
+                }
+            }
+        }
     }
 
     /// A directory grows by a cluster when its records run out.

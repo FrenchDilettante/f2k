@@ -234,7 +234,10 @@ fn rename_target(
 /// FileRenameInformation's work: the file's entry moved to the target's name (an existing one
 /// replaced only when asked, and only a file that is not read-only, nor a directory:
 /// STATUS_OBJECT_NAME_COLLISION otherwise, as when not asked; and only one no one holds open:
-/// STATUS_ACCESS_DENIED), its record following it.
+/// STATUS_ACCESS_DENIED), its record following it. A directory moved into itself or beneath itself
+/// is STATUS_ACCESS_DENIED. The checks all come first, and the file system's rename replaces the
+/// existing entry as one change with the move ([`write::rename`]): a rename that fails leaves both
+/// names as they were.
 fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Result<(), NtStatus> {
     let (name, start) = target;
     io::with_volume(|volume| {
@@ -249,7 +252,7 @@ fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Res
             Start::At(start) => start,
             Start::Own => Some(File::plain(file.parent_cluster, 0, true)),
         };
-        let parent = match walk(volume, start, &name)? {
+        let (parent, replacing) = match walk(volume, start, &name)? {
             // A case-only rename names the file itself (refused as a collision).
             Found::Existing(existing) if !replace || same_entry(&existing, &file) => {
                 return Err(STATUS_OBJECT_NAME_COLLISION)
@@ -263,12 +266,20 @@ fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Res
                 if with_records(|records| records.find(&existing).is_some()) {
                     return Err(STATUS_ACCESS_DENIED);
                 }
-                write::delete(volume, &existing)?;
-                File::plain(existing.parent_cluster, 0, true)
+                (
+                    File::plain(existing.parent_cluster, 0, true),
+                    Some(existing),
+                )
             }
-            Found::Missing { parent } => parent,
+            Found::Missing { parent } => (parent, None),
         };
-        let moved = write::rename(volume, &file, parent.first_cluster, name.last())?;
+        let moved = write::rename(
+            volume,
+            &file,
+            parent.first_cluster,
+            name.last(),
+            replacing.as_ref(),
+        )?;
         with_records(|records| records.refresh(&file, &moved));
         Ok(())
     })
