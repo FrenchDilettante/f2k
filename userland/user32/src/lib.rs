@@ -1,7 +1,8 @@
 //! user32's user-mode code: the bodies of its exports (the window station and desktop calls,
 //! [`winsta`]; the display settings, devices, monitors, metrics and system colors, [`display`];
 //! MessageBeep, [`sound`]; ExitWindowsEx, [`shutdown`]; the window classes and the stock cursors,
-//! [`class`]; the windows, their geometry, coordinates, visibility, data and text, [`window`];
+//! [`class`]; the windows, their geometry, coordinates, visibility, data, text and tree,
+//! [`window`], and their properties, [`prop`];
 //! their focus, enabling and activation, [`focus`]; the message loop and the default window
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
@@ -59,6 +60,7 @@ pub mod msgbox;
 pub mod nonclient;
 pub mod paint;
 pub mod procedure;
+pub mod prop;
 pub mod rect;
 pub mod resource;
 pub mod shutdown;

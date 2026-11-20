@@ -291,13 +291,13 @@ The fixtures:
   Its window is hidden; the values are the program's own constants, and atoms and handles never print.
   Every section deletes the global atoms of its names (`F2KProps...`) at its start and end.
   Built with `/MD`.
-  Not gated: F2K's user32 has no window properties yet, nor its kernel32 global atoms.
+  Gated.
 - `wintree` (user32) - the window tree: `GetParent` against `GetWindow(GW_OWNER)` for an unowned window, an owned pop-up, an owned overlapped window, a child and a grandchild, and an owned pop-up losing `WS_POPUP` (`parent`); `GetWindowThreadProcessId` of the program's own window, a second thread's, the desktop's, NULL and a destroyed window (`ids`); `EnumWindows` and `EnumChildWindows`: the program's windows in the order given, the lParam, a callback stopping early, NULL and destroyed parents (`enum`); `GetTopWindow` and `BringWindowToTop` over a parent's children and over top-level pop-ups (`zorder`); and `GetLastActivePopup` as owned pop-ups are shown, activated, hidden and destroyed (`popup`).
   A window prints by its label, never by its handle, and thread and process ids only as relations to the program's own.
   Enumeration goes over every window on the desktop, so its callbacks keep the program's own windows only; `GetTopWindow(NULL)`, another program's window, is not called.
   Its windows are hidden but for `popup`'s, which asks for the foreground first and prints whether it got it.
   Built with `/MD`.
-  Not gated: F2K's user32 has none of these calls yet but `GetWindow`.
+  Gated.
 - `scroll` (user32) - scroll bars: `SetScrollInfo` and `GetScrollInfo` on a window's `WS_VSCROLL` and `WS_HSCROLL` bars, their returns, the range, the page, the position clamped to `nMax - nPage + 1`, a range the page covers with and without `SIF_DISABLENOSCROLL`, and bad arguments (`info`); a window given bars by `SetScrollInfo` (`added`); `ScrollBar` controls and their `SBM_*` messages (`control`); `SetScrollPos`, `SetScrollRange`, `GetScrollPos` and `GetScrollRange` (`posrange`); `ShowScrollBar` (`show`); `EnableScrollBar` with each `ESB_*` flag, the arrows' state probed through its return (`enable`); and `ScrollWindowEx` and `ScrollWindow`, their returns and the regions left to repaint, with `prcScroll`, `prcClip`, `SW_INVALIDATE`, `SW_ERASE` and `SW_SCROLLCHILDREN` (`scrollex`).
   A bar shows as the borderless window's client area narrower or shorter by a bar's width, never as a size; `scrollex` scrolls a topmost, borderless 200x100 window, so its rectangles, in client coordinates, print as relations to the rectangle each scroll uncovers.
   Not gated: F2K has no scroll bars yet.

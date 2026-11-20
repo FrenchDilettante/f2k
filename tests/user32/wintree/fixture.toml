@@ -1,10 +1,10 @@
 # wintree: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
 # windows are hidden but for popup's. A window prints by its label, never by its handle, and thread
 # and process ids only as relations to the program's own; enumeration keeps the program's own
-# windows only. Not gated: F2K's user32 has none of these calls yet but GetWindow, so every section
-# is on the work list.
+# windows only.
 description = "wintree - the window tree: GetParent against GetWindow(GW_OWNER) for unowned, owned pop-up, owned overlapped, child and grandchild windows, and an owned pop-up losing WS_POPUP; GetWindowThreadProcessId of the program's own, a second thread's and the desktop window, NULL and destroyed ones; EnumWindows and EnumChildWindows (the program's windows in order, the lParam, a callback stopping early, NULL and destroyed parents); GetTopWindow and BringWindowToTop over children and top-level pop-ups; and GetLastActivePopup as owned pop-ups are shown, activated, hidden and destroyed."
 kind = "sectioned"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

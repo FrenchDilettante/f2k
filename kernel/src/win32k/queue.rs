@@ -792,6 +792,13 @@ pub fn queue_by_client_id(windows: &Windows, client_id: u32) -> Option<(ThreadId
         .and_then(|(index, q)| Some((ThreadId(index as u16), q.key?)))
 }
 
+/// The client id of the thread the thread record `thread` serves, as its queue keeps it; none for
+/// a record with no queue (the window manager's own).
+pub fn client_id_of(windows: &Windows, thread: ThreadId) -> Option<u32> {
+    let queue = windows.queues.queues.get(thread.0 as usize)?;
+    (queue.live && queue.client_id != 0).then_some(queue.client_id)
+}
+
 // --- Posting -------------------------------------------------------------------------------------
 
 /// PostMessage: `message` posted to the window `hwnd`'s thread, stamped `time`; a null window
@@ -3143,6 +3150,25 @@ mod tests {
         assert_eq!(
             (msg.hwnd, msg.message, msg.wparam, msg.lparam),
             (0, WM_USER + 7, 1, 2)
+        );
+    }
+
+    /// A thread record's client id is its queue's (GetWindowThreadProcessId's thread id): none for
+    /// the window manager's own record, which serves the desktop's windows and has no queue.
+    #[test]
+    fn a_window_s_thread_is_its_queue_s_client_id() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        let id = m.windows.window_from_handle(h).unwrap();
+        assert_eq!(
+            client_id_of(&m.windows, m.windows.window_thread(id)),
+            Some(0x100)
+        );
+        let desktop = m.windows.thread_desktop_window(t).unwrap();
+        assert_eq!(
+            client_id_of(&m.windows, m.windows.window_thread(desktop)),
+            None
         );
     }
 

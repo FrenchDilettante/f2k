@@ -25,6 +25,8 @@ mod clipboard;
 pub use clipboard::*;
 mod local;
 pub use local::*;
+mod prop;
+pub use prop::*;
 
 /// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
 pub mod canvas;
@@ -506,6 +508,8 @@ pub struct HostWindow {
     pub text: Vec<u16>,
     /// The kind NtUserSetWindowFNID marked it as, 0 for none.
     pub fnid: u32,
+    /// Its properties, (atom, data), in the order they were set.
+    pub props: Vec<(u16, u32)>,
 }
 
 /// A creation, as NtUserCreateWindowEx was given it: the class (its units, or its atom), the name.
@@ -1060,6 +1064,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
                 child,
                 next: siblings.get(at + 1).copied().unwrap_or(0),
                 previous: at.checked_sub(1).map_or(0, |p| siblings[p]),
+                last_active: 0,
             }
             .as_bytes()
             .to_vec()

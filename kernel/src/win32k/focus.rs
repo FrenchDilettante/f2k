@@ -381,6 +381,7 @@ pub fn activate_this(
         move_focus(windows, classes, thread, None, pump);
         return true;
     };
+    windows.note_active(new);
     if old.is_none() {
         activate_app(windows, classes, thread, new, true, pump);
     }
@@ -1107,5 +1108,60 @@ mod tests {
             id,
             &mut QueuePump
         ));
+    }
+
+    /// The wintree capture's popup block: the last active window an owner's links answer
+    /// (GetLastActivePopup) is the owner until a window it owns is activated, then each owned
+    /// pop-up activated or the owner again; a pop-up's own is itself; the active pop-up hidden or
+    /// destroyed gives it back to the owner.
+    #[test]
+    fn the_last_active_popup() {
+        use crate::win32k::window::SW_HIDE;
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let style = WS_POPUP | WS_CAPTION;
+        let owner = window_at(m, atom, t, style, 0, 40, 40, 320, 240);
+        let mut r = Rig {
+            m,
+            t,
+            top1: owner,
+            top2: 0,
+            child1: 0,
+            child2: 0,
+            hidden: 0,
+        };
+        let last = |r: &Rig, window: Hwnd| r.m.windows.window_links(r.id(window)).last_active;
+        r.m.show_window(owner, SW_SHOW, &mut QueuePump).unwrap();
+        r.settle();
+        assert_eq!(last(&r, owner), owner);
+        let p1 = window_at(r.m, atom, t, style, owner, 60, 60, 200, 120);
+        assert_eq!(
+            last(&r, owner),
+            owner,
+            "a pop-up made hidden is not activated"
+        );
+        r.m.show_window(p1, SW_SHOW, &mut QueuePump).unwrap();
+        r.settle();
+        assert_eq!(last(&r, owner), p1);
+        let p2 = window_at(r.m, atom, t, style, owner, 80, 80, 200, 120);
+        r.m.show_window(p2, SW_SHOW, &mut QueuePump).unwrap();
+        r.settle();
+        assert_eq!(last(&r, owner), p2);
+        assert_eq!(last(&r, p1), p1, "a top-level window starts as its own");
+        r.set_active(owner);
+        assert_eq!(last(&r, owner), owner);
+        r.set_active(p1);
+        assert_eq!(last(&r, owner), p1);
+        r.m.show_window(p1, SW_HIDE, &mut QueuePump).unwrap();
+        r.settle();
+        assert_eq!(r.state().1, owner, "the owner is activated");
+        assert_eq!(last(&r, owner), owner);
+        r.m.show_window(p1, SW_SHOW, &mut QueuePump).unwrap();
+        r.settle();
+        assert_eq!(last(&r, owner), p1);
+        r.destroy(p1);
+        assert_eq!(last(&r, owner), owner);
+        r.destroy(p2);
+        assert_eq!(last(&r, owner), owner);
     }
 }

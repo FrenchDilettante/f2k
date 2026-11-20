@@ -1036,7 +1036,7 @@ note = "the standard scheme's frame, client edge, caption and menu bar added (rt
 name = "GetPropA"
 group = "window"
 args = ["handle hWnd", "ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetPropA" }
 ordinal = 318
 fails = "NULL"
 note = "the name a string, or an integer atom in its low word"
@@ -1045,7 +1045,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "RemovePropA"
 group = "window"
 args = ["handle hWnd", "ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RemovePropA" }
 ordinal = 522
 fails = "NULL"
 note = "the name a string, or an integer atom in its low word"
@@ -1054,7 +1054,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "SetPropA"
 group = "window"
 args = ["handle hWnd", "ptr lpString", "handle hData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetPropA" }
 ordinal = 584
 fails = "FALSE"
 note = "the name a string, or an integer atom in its low word"
@@ -1063,7 +1063,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "GetPropW"
 group = "window"
 args = ["handle hWnd", "ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetPropW" }
 ordinal = 319
 fails = "NULL"
 note = "the name a string, or an integer atom in its low word"
@@ -1072,7 +1072,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "RemovePropW"
 group = "window"
 args = ["handle hWnd", "ptr lpString"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RemovePropW" }
 ordinal = 523
 fails = "NULL"
 note = "the name a string, or an integer atom in its low word"
@@ -1081,7 +1081,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "SetPropW"
 group = "window"
 args = ["handle hWnd", "ptr lpString", "handle hData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetPropW" }
 ordinal = 585
 fails = "FALSE"
 note = "the name a string, or an integer atom in its low word"
@@ -1090,7 +1090,7 @@ note = "the name a string, or an integer atom in its low word"
 name = "BringWindowToTop"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "BringWindowToTop" }
 ordinal = 15
 fails = "FALSE"
 
@@ -1098,7 +1098,7 @@ fails = "FALSE"
 name = "EnumChildWindows"
 group = "window"
 args = ["handle hWndParent", "ptr lpEnumFunc", "u32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumChildWindows" }
 ordinal = 192
 fails = "FALSE"
 
@@ -1106,7 +1106,7 @@ fails = "FALSE"
 name = "EnumWindows"
 group = "window"
 args = ["ptr lpEnumFunc", "u32 lParam"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnumWindows" }
 ordinal = 211
 fails = "FALSE"
 
@@ -1114,7 +1114,7 @@ fails = "FALSE"
 name = "GetLastActivePopup"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetLastActivePopup" }
 ordinal = 285
 fails = "NULL"
 
@@ -1122,7 +1122,7 @@ fails = "NULL"
 name = "GetParent"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetParent" }
 ordinal = 313
 fails = "NULL"
 
@@ -1130,7 +1130,7 @@ fails = "NULL"
 name = "GetTopWindow"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetTopWindow" }
 ordinal = 336
 fails = "NULL"
 
@@ -1394,6 +1394,27 @@ name = "NtUserSetWindowFNID"
 group = "window"
 args = ["handle Window", "u32 Fnid"]
 impl = { syscall = "crate::win32k::window::set_window_fnid" }
+internal = true
+
+[[export]]
+name = "NtUserSetProp"
+group = "window"
+args = ["handle Window", "u32 Atom", "u32 Data"]
+impl = { syscall = "crate::win32k::prop::set_prop" }
+internal = true
+
+[[export]]
+name = "NtUserRemoveProp"
+group = "window"
+args = ["handle Window", "u32 Atom", "ptr<u32> Data"]
+impl = { syscall = "crate::win32k::prop::remove_prop" }
+internal = true
+
+[[export]]
+name = "NtUserBuildPropList"
+group = "window"
+args = ["handle Window", "ptr List", "u32 Max", "ptr<u32> Count"]
+impl = { syscall = "crate::win32k::prop::build_prop_list" }
 internal = true
 
 [[export]]

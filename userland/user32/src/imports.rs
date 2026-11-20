@@ -96,6 +96,16 @@ mod raw {
         /// SetLastError and GetLastError: the calling thread's last error.
         pub fn SetLastError(code: u32);
         pub fn GetLastError() -> u32;
+        /// GlobalAddAtomW and GlobalAddAtomA: the global atom of a name (a string's reference
+        /// counted), or of "#<number>" or MAKEINTATOM; 0, the last error set, when it is refused.
+        pub fn GlobalAddAtomW(name: usize) -> u16;
+        pub fn GlobalAddAtomA(name: usize) -> u16;
+        /// GlobalFindAtomW and GlobalFindAtomA: the global atom a name has, its reference count
+        /// untouched; 0, the last error set, when there is none.
+        pub fn GlobalFindAtomW(name: usize) -> u16;
+        pub fn GlobalFindAtomA(name: usize) -> u16;
+        /// GlobalDeleteAtom: a reference to a string atom dropped; 0 on success.
+        pub fn GlobalDeleteAtom(atom: u16) -> u16;
         /// FindResourceExW: the HRSRC of a module's resource of a type, a name and a language
         /// (NULL: the program's module); NULL, the last error set, when there is none.
         pub fn FindResourceExW(
@@ -271,6 +281,17 @@ mod raw {
             class: usize,
             name: usize,
             found: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetProp"]
+        pub fn NtUserSetProp(window: usize, atom: u32, data: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserRemoveProp"]
+        pub fn NtUserRemoveProp(window: usize, atom: u32, data: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserBuildPropList"]
+        pub fn NtUserBuildPropList(
+            window: usize,
+            list: *mut rtl::window::PropSet,
+            max: u32,
+            count: *mut u32,
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetTimer"]
         pub fn NtUserSetTimer(
@@ -612,6 +633,19 @@ mod raw {
         let proc = unsafe { core::mem::transmute::<usize, WndProc>(proc as usize) };
         // SAFETY: as above; the program's own code, called as Windows calls it.
         unsafe { proc(window, message, wparam, lparam) }
+    }
+
+    /// Call EnumWindows' or EnumChildWindows' callback at `proc` with a window.
+    ///
+    /// # Safety
+    ///
+    /// `proc` is the address of a WNDENUMPROC the program handed over.
+    pub unsafe fn call_window_enum_procedure(proc: u32, window: u32, lparam: u32) -> u32 {
+        type WndEnumProc = unsafe extern "system" fn(u32, u32) -> u32;
+        // SAFETY: the caller's contract: a nonzero address of a WNDENUMPROC.
+        let proc = unsafe { core::mem::transmute::<usize, WndEnumProc>(proc as usize) };
+        // SAFETY: as above; the program's own code, called as Windows calls it.
+        unsafe { proc(window, lparam) }
     }
 
     /// Call EnumDisplayMonitors' callback at `proc` with a monitor.
@@ -1339,6 +1373,80 @@ pub fn find_window_ex(
     // for the call) and writes the local.
     checked(unsafe { raw::NtUserFindWindowEx(parent, after, class, name, &mut found) })?;
     Ok(found)
+}
+
+// --- kernel32: the global atoms, a window property's name -------------------------------------
+
+/// GlobalAddAtomW (`wide`) or GlobalAddAtomA: the global atom of the name at `name` (a string's
+/// address, kernel32 reads it), a string atom's reference counted; 0, kernel32's last error set,
+/// when it is refused.
+pub fn global_add_atom(name: usize, wide: bool) -> u16 {
+    // SAFETY: kernel32 reads the caller's string as its own export does.
+    unsafe {
+        if wide {
+            raw::GlobalAddAtomW(name)
+        } else {
+            raw::GlobalAddAtomA(name)
+        }
+    }
+}
+
+/// GlobalFindAtomW (`wide`) or GlobalFindAtomA: the global atom the name at `name` has; 0,
+/// kernel32's last error set, when there is none.
+pub fn global_find_atom(name: usize, wide: bool) -> u16 {
+    // SAFETY: as for `global_add_atom`.
+    unsafe {
+        if wide {
+            raw::GlobalFindAtomW(name)
+        } else {
+            raw::GlobalFindAtomA(name)
+        }
+    }
+}
+
+/// GlobalDeleteAtom: a reference to the atom dropped.
+pub fn global_delete_atom(atom: u16) {
+    // SAFETY: no pointers.
+    unsafe { raw::GlobalDeleteAtom(atom) };
+}
+
+/// NtUserSetProp: the window's property `atom` set to `data`.
+pub fn set_prop(window: usize, atom: u16, data: u32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetProp(window, u32::from(atom), data) })
+}
+
+/// NtUserRemoveProp: the window's property `atom` taken off: its data, 0 for none.
+pub fn remove_prop(window: usize, atom: u16) -> Result<u32, NtStatus> {
+    let mut data = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserRemoveProp(window, u32::from(atom), &mut data) })?;
+    Ok(data)
+}
+
+/// NtUserBuildPropList: the window's properties, as many as `list` holds, and how many it has
+/// (more than were written when they do not all fit).
+pub fn build_prop_list(
+    window: usize,
+    list: &mut [rtl::window::PropSet],
+) -> Result<usize, NtStatus> {
+    let mut count = 0u32;
+    // SAFETY: the kernel writes the caller's slice, as long as its length, and the local.
+    let status = unsafe {
+        raw::NtUserBuildPropList(window, list.as_mut_ptr(), list.len() as u32, &mut count)
+    };
+    if status == rtl::status::STATUS_BUFFER_TOO_SMALL {
+        return Ok(count as usize);
+    }
+    checked(status)?;
+    Ok(count as usize)
+}
+
+/// The WNDENUMPROC `proc` the program handed EnumWindows or EnumChildWindows, called with a
+/// window: its answer (zero stops the enumeration).
+pub fn call_window_enum_procedure(proc: u32, window: u32, lparam: u32) -> u32 {
+    // SAFETY: `proc` is the program's own callback, handed over for this.
+    unsafe { raw::call_window_enum_procedure(proc, window, lparam) }
 }
 
 /// NtUserSetTimer: the timer `id` of `window` (0: a thread timer) set to come due every `elapse`

@@ -4377,7 +4377,19 @@ impl Windows {
             child: handle(w.child),
             next: handle(w.next),
             previous: handle(previous),
+            last_active: handle(w.last_active.filter(|&id| self.is_live(id))),
         }
+    }
+
+    /// `window` became its thread's active window: it is the last active window of its root
+    /// owner (the end of its owner chain, itself for an unowned window), as GetLastActivePopup
+    /// answers it.
+    pub fn note_active(&mut self, window: WindowId) {
+        let mut root = window;
+        while let Some(owner) = self.at(root).owner {
+            root = owner;
+        }
+        self.at_mut(root).last_active = Some(window);
     }
 
     /// NtUserSetWindowFNID's decision: `window` marked as the kind of window `fnid` names, for a
@@ -4674,6 +4686,8 @@ pub struct WindowManager {
     pub clipboard: super::clipboard::Clipboard,
     /// The accelerator tables ([`super::accel`]).
     pub accels: super::accel::Accelerators,
+    /// The windows' properties ([`super::prop`]).
+    pub props: super::prop::Props,
     /// The icon-change notification's windows (see [`Windows::class_views`]).
     pub views: [class::WindowView; WINDOWS],
 }
@@ -4695,6 +4709,7 @@ impl WindowManager {
             class::Registry::write_empty(addr_of_mut!((*manager).classes));
             super::clipboard::Clipboard::write_empty(addr_of_mut!((*manager).clipboard));
             super::accel::Accelerators::write_empty(addr_of_mut!((*manager).accels));
+            super::prop::Props::write_empty(addr_of_mut!((*manager).props));
             let views = addr_of_mut!((*manager).views) as *mut class::WindowView;
             core::ptr::write_bytes(views, 0, WINDOWS);
         }
@@ -5577,29 +5592,40 @@ pub fn query_window(
 }
 
 /// QUERY_WINDOW_THREAD: the client ids of the window's thread and of its process
-/// (GetWindowThreadProcessId), read from the scheduler's record once the window manager's lock is
-/// let go.
+/// (GetWindowThreadProcessId): a process thread's as its queue keeps it, and its process's. The
+/// window manager's own windows (the desktop's) answer the raw input thread, win32k's own thread
+/// in the System process: Windows 2000 answers its desktop thread, in CSRSS, another process's
+/// thread either way (the wintree capture's ids block).
 #[cfg(target_arch = "x86")]
 fn query_window_thread(call: &mut NtCall, window: Handle, information: UserAddr) -> NtResult {
     use crate::level::Dispatch;
     use crate::sched::DISPATCHER;
-    let thread = {
+    let (client_id, owner) = {
         let manager = lock(call.passive());
         let id = manager
             .windows
             .window_of(window.raw())
             .map_err(Failure::status)?;
-        manager.windows.window_thread(id)
+        let thread = manager.windows.window_thread(id);
+        (
+            super::queue::client_id_of(&manager.windows, thread),
+            manager.windows.window_process(id),
+        )
     };
-    let answer = {
-        let mut dispatch = call.passive().raise::<Dispatch>();
-        let record = DISPATCHER.get(&mut dispatch).thread(thread);
-        rtl::window::WindowThread {
-            process: record
-                .process()
-                .pool_index()
-                .map_or(0, |index| crate::process::pool::record(index).id()),
-            thread: record.thread_id(),
+    let answer = match client_id {
+        Some(thread) if owner != class::SYSTEM_OWNER => rtl::window::WindowThread {
+            process: crate::process::pool::record(owner).id(),
+            thread,
+        },
+        _ => {
+            let mut dispatch = call.passive().raise::<Dispatch>();
+            rtl::window::WindowThread {
+                process: crate::process::SYSTEM_PROCESS_ID,
+                thread: DISPATCHER
+                    .get(&mut dispatch)
+                    .thread(crate::sched::database::RAW_INPUT_THREAD)
+                    .thread_id(),
+            }
         }
     };
     information.cast().write(answer)?;

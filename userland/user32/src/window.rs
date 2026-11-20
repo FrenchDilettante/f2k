@@ -12,6 +12,9 @@
 //!
 //! The coordinate calls (GetClientRect, ClientToScreen, ScreenToClient, MapWindowPoints, IsChild,
 //! ChildWindowFromPoint and ChildWindowFromPointEx) work from the windows' rectangles and parents.
+//! The tree calls (GetParent, GetTopWindow, EnumWindows, EnumChildWindows, GetLastActivePopup)
+//! read the windows' links (QUERY_WINDOW_LINKS), as GetWindow does; BringWindowToTop is
+//! SetWindowPos's.
 //!
 //! NtUserQueryWindow answers what Windows 2000's user32 reads from the window manager's records
 //! mapped into its process: a window's WINDOWINFO, its visibility, its parent, its own fields, its
@@ -718,6 +721,150 @@ pub unsafe extern "system" fn find_window_a(class: *const u8, title: *const u8) 
         })
         .flatten()
         .unwrap_or(0)
+}
+
+// --- The window tree ----------------------------------------------------------------------------
+
+/// WS_POPUP: a pop-up window, whose GetParent is its owner.
+const WS_POPUP: u32 = 0x8000_0000;
+
+/// GetParent: a child window's parent, a pop-up window's owner, NULL for any other window (an
+/// overlapped window, owned or not: the wintree capture's parent block) with the last error
+/// untouched; NULL with 1400 for a handle naming no window. The style is read as it is now: a
+/// pop-up whose WS_POPUP was taken off answers NULL.
+#[unsafe(export_name = "f2k_export_GetParent")]
+pub extern "system" fn get_parent(window: usize) -> usize {
+    let Some(info) = answered(window_info(window)) else {
+        return 0;
+    };
+    let Some(own) = answered(links(window)) else {
+        return 0;
+    };
+    if info.style & WS_CHILD != 0 {
+        own.parent as usize
+    } else if info.style & WS_POPUP != 0 {
+        own.owner as usize
+    } else {
+        0
+    }
+}
+
+/// GetTopWindow: the child at the top of the window's children's z-order (the desktop's, the
+/// top-level windows', for NULL); NULL when it has none (the last error untouched), or with 1400
+/// for a handle naming no window.
+#[unsafe(export_name = "f2k_export_GetTopWindow")]
+pub extern "system" fn get_top_window(window: usize) -> usize {
+    let window = if window == 0 {
+        get_desktop_window()
+    } else {
+        window
+    };
+    answered(links(window)).map_or(0, |own| own.child as usize)
+}
+
+/// BringWindowToTop: the window to the top of its siblings' z-order, as Windows 2000's
+/// SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE); FALSE with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_BringWindowToTop")]
+pub extern "system" fn bring_window_to_top(window: usize) -> u32 {
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    set_window_pos(window, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+}
+
+/// The most windows one enumeration lists: as many as the window manager holds (its WINDOWS).
+const ENUM_LIMIT: usize = 256;
+/// The deepest nesting of windows an enumeration walks below its parent (the window manager's
+/// nesting limit is 100).
+const ENUM_DEPTH: usize = 128;
+
+/// The windows below `parent`, from the top of each z-order: its children only, or with
+/// `descendants` every window under them too, each child followed by its own (depth first, as
+/// Windows 2000's NtUserBuildHwndList lists them), into `list`: how many. The list is taken before
+/// any callback runs.
+fn window_list(parent: usize, descendants: bool, list: &mut [u32; ENUM_LIMIT]) -> usize {
+    let mut count = 0;
+    // The siblings still to visit after each subtree being walked.
+    let mut after = [0u32; ENUM_DEPTH];
+    let mut depth = 0;
+    let mut current = links(parent).map_or(0, |own| own.child);
+    while count < ENUM_LIMIT {
+        if current == 0 {
+            if depth == 0 {
+                break;
+            }
+            depth -= 1;
+            current = after[depth];
+            continue;
+        }
+        list[count] = current;
+        count += 1;
+        let own = links(current as usize).unwrap_or_default();
+        if descendants && own.child != 0 && depth < ENUM_DEPTH {
+            after[depth] = own.next;
+            depth += 1;
+            current = own.child;
+        } else {
+            current = own.next;
+        }
+    }
+    count
+}
+
+/// The enumerations' walk: `proc` called with each window below `parent` ([`window_list`]) still
+/// alive and `lparam`, until it answers 0. FALSE when it stopped one early or there is none (the
+/// callback never called: the wintree capture's enum block), TRUE once every window was given.
+fn enumerate(parent: usize, descendants: bool, proc: usize, lparam: u32) -> u32 {
+    let mut list = [0u32; ENUM_LIMIT];
+    let count = window_list(parent, descendants, &mut list);
+    if count == 0 {
+        return 0;
+    }
+    for &window in &list[..count] {
+        if !is_window_alive(window as usize) {
+            continue;
+        }
+        if imports::call_window_enum_procedure(proc as u32, window, lparam) == 0 {
+            return 0;
+        }
+    }
+    1
+}
+
+/// EnumWindows: `proc` called with each top-level window, from the top of the z-order, and
+/// `lparam`, until it answers FALSE; FALSE when it did (the last error untouched), TRUE once
+/// every window was given.
+#[unsafe(export_name = "f2k_export_EnumWindows")]
+pub extern "system" fn enum_windows(proc: usize, lparam: u32) -> u32 {
+    enumerate(get_desktop_window(), false, proc, lparam)
+}
+
+/// EnumChildWindows: `proc` called with each window under `parent`, its children from the top of
+/// their z-order each followed by the windows under it, and `lparam`, until it answers FALSE;
+/// FALSE when it did or there is none to call it with (the last error untouched), TRUE once
+/// every window was given; FALSE with 1400 for a handle naming no window. A NULL parent
+/// enumerates the top-level windows alone, as EnumWindows does (the wintree capture's enum
+/// block: no child of them is given).
+#[unsafe(export_name = "f2k_export_EnumChildWindows")]
+pub extern "system" fn enum_child_windows(parent: usize, proc: usize, lparam: u32) -> u32 {
+    if parent == 0 {
+        return enum_windows(proc, lparam);
+    }
+    if answered(links(parent)).is_none() {
+        return 0;
+    }
+    enumerate(parent, true, proc, lparam)
+}
+
+/// GetLastActivePopup: the window last active among `window` and the windows it owns (the
+/// window manager notes it at each activation, and gives it back to the owner when that window
+/// is destroyed); the window itself when none was; NULL with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_GetLastActivePopup")]
+pub extern "system" fn get_last_active_popup(window: usize) -> usize {
+    match answered(links(window)) {
+        None => 0,
+        Some(own) if own.last_active != 0 => own.last_active as usize,
+        Some(_) => window,
+    }
 }
 
 /// ShowWindow: the show command carried out, the messages it sent received; nonzero when the
@@ -2124,5 +2271,100 @@ mod tests {
         // SAFETY: the tests' own RECT.
         unsafe { get_window_rect(two, &mut rect) };
         assert_eq!((rect.left, rect.top), (30, 40));
+    }
+
+    std::thread_local! {
+        static ENUMERATED: core::cell::RefCell<std::vec::Vec<(u32, u32)>> =
+            const { core::cell::RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// A WNDENUMPROC recording each window and lParam, stopping after as many windows as the
+    /// lParam's low byte says (0: never).
+    fn enumerated(window: u32, lparam: u32) -> u32 {
+        ENUMERATED.with(|seen| {
+            let mut seen = seen.borrow_mut();
+            seen.push((window, lparam));
+            (lparam & 0xFF == 0 || seen.len() < (lparam & 0xFF) as usize) as u32
+        })
+    }
+
+    /// The windows the last enumeration gave, its lParam checked.
+    fn given(lparam: u32) -> std::vec::Vec<usize> {
+        ENUMERATED
+            .with(|seen| seen.take())
+            .into_iter()
+            .map(|(window, l)| {
+                assert_eq!(l, lparam);
+                window as usize
+            })
+            .collect()
+    }
+
+    /// The wintree capture's parent, enum and zorder blocks over the stand-ins' tree: GetParent of
+    /// a child is its parent, of an overlapped window NULL; GetTopWindow answers the first child
+    /// (NULL with no error for none); EnumChildWindows walks the children depth first and stops
+    /// when the callback does, answers FALSE with no callback for no children and 1400 for a
+    /// destroyed parent, and a NULL parent enumerates the top-level windows alone, as EnumWindows;
+    /// GetLastActivePopup of a window none was activated in answers the window.
+    ///
+    /// Pins: user32.GetParent, user32.GetTopWindow, user32.EnumWindows, user32.EnumChildWindows,
+    /// user32.GetLastActivePopup
+    #[test]
+    fn the_window_tree() {
+        use crate::imports::host::enum_procedure;
+        register();
+        let top = make_at(0x00CF_0000, 0, 0, 0, 300, 200);
+        let a1 = make_at(WS_CHILD, top, 0, 0, 100, 100);
+        let a1a = make_at(WS_CHILD, a1, 0, 0, 50, 50);
+        let a2 = make_at(WS_CHILD, top, 100, 0, 100, 100);
+        let dead = make_at(WS_POPUP, 0, 0, 0, 10, 10);
+        destroy_window(dead);
+        seen();
+
+        arm();
+        assert_eq!(
+            (get_parent(a1a), get_parent(a1), get_parent(top)),
+            (a1, top, 0)
+        );
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(get_parent(dead), 0);
+        assert_eq!(last_error(), 1400);
+
+        arm();
+        assert_eq!(get_top_window(top), a1);
+        assert_eq!(get_top_window(a1a), 0);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(get_top_window(0), get_window(top, GW_HWNDFIRST));
+        assert_eq!(get_top_window(dead), 0);
+        assert_eq!(last_error(), 1400);
+
+        let proc = enum_procedure(enumerated) as usize;
+        arm();
+        assert_eq!(enum_child_windows(top, proc, 0x100), 1);
+        assert_eq!(given(0x100), [a1, a1a, a2]);
+        assert_eq!(
+            enum_child_windows(top, proc, 0x101),
+            0,
+            "stopped at the first"
+        );
+        assert_eq!(given(0x101), [a1]);
+        assert_eq!(enum_child_windows(a1a, proc, 0x100), 0, "no children");
+        assert_eq!(given(0x100), []);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(enum_child_windows(dead, proc, 0x100), 0);
+        assert_eq!(last_error(), 1400);
+        assert_eq!(given(0x100), []);
+
+        assert_eq!(enum_windows(proc, 0x200), 1);
+        let tops = given(0x200);
+        assert!(tops.contains(&top) && !tops.contains(&a1), "{tops:?}");
+        assert_eq!(enum_child_windows(0, proc, 0x200), 1);
+        assert_eq!(given(0x200), tops);
+
+        arm();
+        assert_eq!(get_last_active_popup(top), top);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(get_last_active_popup(0), 0);
+        assert_eq!(last_error(), 1400);
     }
 }

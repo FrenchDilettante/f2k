@@ -206,7 +206,9 @@ impl WindowText {
 
 /// A window's relatives ([`QUERY_WINDOW_LINKS`]), each a handle (0 for none): its parent (the
 /// desktop window for a top-level window), its owner, its first child (the top of its children's
-/// z-order), and the siblings after it and before it in the z-order.
+/// z-order), the siblings after it and before it in the z-order, and the window last active
+/// among it and the windows it owns, directly or not (GetLastActivePopup's answer: 0 for a window
+/// that is none's owner and was never active).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowLinks {
@@ -215,6 +217,16 @@ pub struct WindowLinks {
     pub child: u32,
     pub next: u32,
     pub previous: u32,
+    pub last_active: u32,
+}
+
+/// A window property as NtUserBuildPropList lists it (Windows 2000's PROPSET: the data, then the
+/// atom, a WORD padded to a DWORD here).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PropSet {
+    pub data: u32,
+    pub atom: u32,
 }
 
 /// The fields of a window's class ([`QUERY_WINDOW_CLASS`]) GetClassLong answers by their GCL_
@@ -250,7 +262,8 @@ pub const CLASS_ANSI_PROC: u32 = 0x1;
 pub const CLASS_INFO_ANSI_PROC: u32 = 0x1_0000;
 
 const _: () = {
-    assert!(size_of::<WindowLinks>() == 20);
+    assert!(size_of::<WindowLinks>() == 24);
+    assert!(size_of::<PropSet>() == 8);
     assert!(size_of::<WindowClass>() == 48);
     assert!(size_of::<WindowData>() == 36);
     assert!(size_of::<WindowText>() == 4 + 2 * WINDOW_TEXT_UNITS);
@@ -273,8 +286,10 @@ unsafe impl Pod for WindowPos {}
 unsafe impl Pod for WindowData {}
 // SAFETY: an integer and an array of units, without padding (the assert above pins the size).
 unsafe impl Pod for WindowText {}
-// SAFETY: five 32-bit integers.
+// SAFETY: six 32-bit integers.
 unsafe impl Pod for WindowLinks {}
+// SAFETY: two 32-bit integers.
+unsafe impl Pod for PropSet {}
 // SAFETY: twelve 32-bit integers.
 unsafe impl Pod for WindowClass {}
 // SAFETY: 32-bit integers and a RECT, without padding (the asserts above pin the size and the
