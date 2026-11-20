@@ -2484,7 +2484,7 @@ fails = "0"
 name = "TrackPopupMenuEx"
 group = "menu"
 args = ["handle hmenu", "u32 fuFlags", "i32 x", "i32 y", "handle hwnd", "ptr lptpm"]
-impl = { stub = "not yet implemented" }
+impl = { native = "TrackPopupMenuEx" }
 ordinal = 643
 fails = "FALSE"
 
@@ -2536,6 +2536,35 @@ impl = { syscall = "crate::win32k::menu::set_menu" }
 internal = true
 
 [[export]]
+name = "NtUserRemoveMenu"
+group = "menu"
+args = ["handle Menu", "u32 Position", "u32 Flags"]
+impl = { syscall = "crate::win32k::menu::remove_menu" }
+internal = true
+
+[[export]]
+name = "NtUserDeleteMenu"
+group = "menu"
+args = ["handle Menu", "u32 Position", "u32 Flags"]
+impl = { syscall = "crate::win32k::menu::delete_menu" }
+internal = true
+
+[[export]]
+name = "NtUserSetMenuDefaultItem"
+group = "menu"
+args = ["handle Menu", "u32 Item", "bool ByPosition"]
+impl = { syscall = "crate::win32k::menu::set_menu_default_item" }
+internal = true
+
+# GetSystemMenu's: F2K's user32 builds the window's copy, which the service attaches (Made).
+[[export]]
+name = "NtUserGetSystemMenu"
+group = "menu"
+args = ["handle Window", "bool Revert", "handle Made", "ptr<u32> Menu"]
+impl = { syscall = "crate::win32k::menu::get_system_menu" }
+internal = true
+
+[[export]]
 name = "AppendMenuA"
 group = "menu"
 args = ["handle hMenu", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
@@ -2573,7 +2602,7 @@ fails = "FALSE"
 name = "DeleteMenu"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DeleteMenu" }
 ordinal = 138
 fails = "FALSE"
 
@@ -2581,7 +2610,7 @@ fails = "FALSE"
 name = "GetMenuCheckMarkDimensions"
 group = "menu"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuCheckMarkDimensions" }
 ordinal = 290
 fails = "0"
 
@@ -2589,7 +2618,7 @@ fails = "0"
 name = "GetMenuDefaultItem"
 group = "menu"
 args = ["handle hMenu", "u32 fByPos", "u32 gmdiFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuDefaultItem" }
 ordinal = 292
 fails = "-1"
 
@@ -2597,7 +2626,7 @@ fails = "-1"
 name = "GetMenuItemInfoA"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuItemInfoA" }
 ordinal = 296
 fails = "FALSE"
 
@@ -2605,7 +2634,7 @@ fails = "FALSE"
 name = "GetMenuItemInfoW"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuItemInfoW" }
 ordinal = 297
 fails = "FALSE"
 
@@ -2613,7 +2642,7 @@ fails = "FALSE"
 name = "GetMenuItemRect"
 group = "menu"
 args = ["handle hWnd", "handle hMenu", "u32 uItem", "ptr lprcItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMenuItemRect" }
 ordinal = 298
 fails = "FALSE"
 
@@ -2621,7 +2650,7 @@ fails = "FALSE"
 name = "GetSystemMenu"
 group = "menu"
 args = ["handle hWnd", "bool bRevert"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetSystemMenu" }
 ordinal = 329
 fails = "NULL"
 
@@ -2629,7 +2658,7 @@ fails = "NULL"
 name = "InsertMenuA"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InsertMenuA" }
 ordinal = 377
 fails = "FALSE"
 note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
@@ -2638,7 +2667,7 @@ note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
 name = "InsertMenuItemA"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InsertMenuItemA" }
 ordinal = 378
 fails = "FALSE"
 
@@ -2646,7 +2675,7 @@ fails = "FALSE"
 name = "ModifyMenuA"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ModifyMenuA" }
 ordinal = 458
 fails = "FALSE"
 note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
@@ -2655,7 +2684,7 @@ note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
 name = "SetMenuItemInfoA"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetMenuItemInfoA" }
 ordinal = 576
 fails = "FALSE"
 
@@ -2663,7 +2692,7 @@ fails = "FALSE"
 name = "InsertMenuW"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InsertMenuW" }
 ordinal = 380
 fails = "FALSE"
 note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
@@ -2672,7 +2701,7 @@ note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
 name = "InsertMenuItemW"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InsertMenuItemW" }
 ordinal = 379
 fails = "FALSE"
 
@@ -2680,7 +2709,7 @@ fails = "FALSE"
 name = "ModifyMenuW"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags", "u32 uIDNewItem", "ptr lpNewItem"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ModifyMenuW" }
 ordinal = 459
 fails = "FALSE"
 note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
@@ -2689,7 +2718,7 @@ note = "lpNewItem a string, a bitmap or owner-drawn data, as uFlags says"
 name = "SetMenuItemInfoW"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "bool fByPosition", "ptr lpmii"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetMenuItemInfoW" }
 ordinal = 577
 fails = "FALSE"
 
@@ -2697,7 +2726,7 @@ fails = "FALSE"
 name = "RemoveMenu"
 group = "menu"
 args = ["handle hMenu", "u32 uPosition", "u32 uFlags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RemoveMenu" }
 ordinal = 521
 fails = "FALSE"
 
@@ -2705,7 +2734,7 @@ fails = "FALSE"
 name = "SetMenuDefaultItem"
 group = "menu"
 args = ["handle hMenu", "u32 uItem", "u32 fByPos"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetMenuDefaultItem" }
 ordinal = 573
 fails = "FALSE"
 
@@ -2715,7 +2744,7 @@ group = "menu"
 args = [
     "handle hMenu", "u32 uFlags", "i32 x", "i32 y", "i32 nReserved", "handle hWnd", "ptr prcRect",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "TrackPopupMenu" }
 ordinal = 642
 fails = "FALSE"
 

@@ -19,13 +19,7 @@ gate = true
 keyloop = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends"
 keyesc = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; and Esc on the bar, once the popup is closed, goes to the window as WM_MENUCHAR where Windows 2000 ends the loop"
 keychar = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; Alt then F selects File twice (two WM_MENUSELECT); Enter on a grayed item goes to the window as WM_MENUCHAR where Windows 2000 ends the loop, and so does Esc on the bar"
-edit = "user32 has no InsertMenuW/A, ModifyMenuW/A, DeleteMenu or RemoveMenu yet, and F2K's AppendMenu keeps an MF_STRING item with no text as a string item, where Windows 2000 makes it a separator"
-info = "user32 has no GetMenuItemInfoW/A, SetMenuItemInfoW/A or LoadBitmapW yet"
-insitem = "user32 has no InsertMenuItemW/A or GetMenuItemInfoW yet"
-default = "user32 has no SetMenuDefaultItem or GetMenuDefaultItem yet"
-sysmenu = "user32 has no GetSystemMenu yet"
-itemrect = "user32 has no GetMenuItemRect or GetMenuCheckMarkDimensions yet"
-track = "user32 has no TrackPopupMenu or TrackPopupMenuEx yet"
+info = "LoadBitmapW(NULL, OBM_CHECK) answers NULL: gdi32 has no bitmaps (CreateBitmap is a stub), so user32 has no OBM_CHECK to load, and the check mark set through MIIM_CHECKMARKS prints NULL where Windows 2000's prints the bitmap; every other line matches"
 capicon = "F2K's icons hold no image: gdi32 has no CreateBitmap and user32 no CreateIconIndirect (a stub), and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
 [skip]
@@ -35,6 +29,14 @@ underline = "a broken measurement: it finds no menu text ink even on Windows 200
 # A fixture bug: "the title" scans the caption's bottom separator row, not the title's text, so its
 # column says nothing of the title's place.
 capicon = ["  the title: first column *"]
+# A fixture bug: an item that opens a popup (AppendMenu's MF_POPUP) has the popup's handle for its
+# id, which GetMenuItemInfoW's MIIM_ID answers and the capture prints: the real machine's handle
+# value (13173255), where the section prints no other handle.
+info = ["  fType=0x0 fState=0x0 wID=* hSubMenu=menu B hbmpChecked=untouched hbmpUnchecked=untouched"]
+# The same fixture bug: GetMenuDefaultItem by command answers the popup item's id, its handle
+# (13304327 on the real machine). The mask takes a value of four characters or more alone, a
+# handle: the -1 and the three-digit ids the same calls answer elsewhere stay compared.
+default = ["GetMenuDefaultItem(A, by command, **): ret=******* err=-"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

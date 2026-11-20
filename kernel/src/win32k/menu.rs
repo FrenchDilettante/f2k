@@ -31,10 +31,24 @@
 //!   record, mapped into its process (GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState,
 //!   GetMenuString, IsMenu);
 //! - NtUserDestroyMenu (0x1158): the menu and its popups destroyed;
+//! - NtUserRemoveMenu (0x11D9) and NtUserDeleteMenu (0x1154): an item taken out of its menu, the
+//!   popup it opens kept (RemoveMenu) or destroyed (DeleteMenu);
+//! - NtUserSetMenuDefaultItem (0x11FB): the menu's default item (MFS_DEFAULT) moved to one item, or
+//!   taken off them all;
+//! - NtUserGetSystemMenu (0x11A1): a window's own copy of the system menu, which user32 builds
+//!   (Windows 2000's win32k loads it from user32's resources by calling back into user mode), the
+//!   copy attached to the window, answered, or destroyed (bRevert); it goes with its window;
 //! - NtUserCheckMenuItem (0x113E) and NtUserEnableMenuItem (0x1164): the item's check or enabling
 //!   changed, its previous one answered;
 //! - NtUserSetMenu (0x11F9): a top-level window's menu set (GetMenu reads it through
 //!   NtUserQueryWindow's QUERY_WINDOW_MENU).
+//!
+//! An item's state keeps MFS_DEFAULT and MFS_HILITE through a change of its state
+//! (SetMenuItemInfo's MIIM_STATE ORs them in, as the menus fixture's `info` capture shows:
+//! MFS_DISABLED set over MFS_CHECKED | MFS_DEFAULT | MFS_HILITE leaves 0x1083); only
+//! SetMenuDefaultItem takes the default off. An item that opens a popup and is given another one
+//! (or none) destroys the popup it opened, as ModifyMenu documents and the `info` capture shows of
+//! SetMenuItemInfo.
 //!
 //! A failure names the Win32 error code of the decision ([`Failure`]'s variants); the service
 //! answers a status user32 maps back: a window naming nothing is STATUS_INVALID_HANDLE, as for
@@ -45,12 +59,16 @@ use rtl::menu::{
     MenuItemAnswer,
     MenuItemInfoW,
     MENU_ITEM_TEXT,
+    MFS_DEFAULT,
     MFS_GRAYED,
+    MFS_HILITE,
     MFT_SEPARATOR,
     MF_BYPOSITION,
     MF_CHECKED,
     MF_DISABLED,
     MF_GRAYED,
+    MIIM_BITMAP,
+    MIIM_CHECKMARKS,
     MIIM_DATA,
     MIIM_FTYPE,
     MIIM_ID,
@@ -152,6 +170,10 @@ pub struct ItemInfo<'a> {
     /// The popup's handle (0 for none).
     pub submenu: u32,
     pub item_data: u32,
+    /// The check marks' bitmaps (MIIM_CHECKMARKS) and the item's bitmap (MIIM_BITMAP).
+    pub checked: u32,
+    pub unchecked: u32,
+    pub bitmap: u32,
     pub text: &'a [u16],
 }
 
@@ -165,6 +187,9 @@ impl<'a> ItemInfo<'a> {
             id: info.id,
             submenu: info.submenu,
             item_data: info.item_data,
+            checked: info.checked,
+            unchecked: info.unchecked,
+            bitmap: info.bitmap,
             text,
         }
     }
@@ -177,6 +202,8 @@ struct MenuRecord {
     generation: u16,
     handle: u32,
     owner: Owner,
+    /// The window whose system menu this menu is (its handle; 0 for none).
+    system_of: u32,
     count: u16,
     /// The items, by position: indexes into the item pool.
     items: [u16; MAX_MENU_ITEMS],
@@ -188,6 +215,7 @@ impl MenuRecord {
         generation: 0,
         handle: 0,
         owner: 0,
+        system_of: 0,
         count: 0,
         items: [0; MAX_MENU_ITEMS],
     };
@@ -202,6 +230,9 @@ struct Item {
     id: u32,
     submenu: Option<MenuId>,
     item_data: u32,
+    checked: u32,
+    unchecked: u32,
+    bitmap: u32,
     text_length: u8,
     text: [u16; MENU_ITEM_TEXT],
 }
@@ -214,6 +245,9 @@ impl Item {
         id: 0,
         submenu: None,
         item_data: 0,
+        checked: 0,
+        unchecked: 0,
+        bitmap: 0,
         text_length: 0,
         text: [0; MENU_ITEM_TEXT],
     };
@@ -295,6 +329,7 @@ impl Menus {
             generation: id.generation,
             handle,
             owner,
+            system_of: 0,
             count: 0,
             items: [0; MAX_MENU_ITEMS],
         };
@@ -380,8 +415,9 @@ impl Menus {
     }
 
     /// Insert an item into `menu` before the one `before` names (by position, at the end when the
-    /// position is past it; by command, in the menu holding that item): InsertMenuItem. A
-    /// separator is grayed, as Windows 2000's are; a popup must be a live menu.
+    /// position is past it; by command, in the menu holding that item, and at `menu`'s end when no
+    /// item has the command, as the menus fixture's `edit` and `insitem` captures show):
+    /// InsertMenuItem. A separator is grayed, as Windows 2000's are; a popup must be a live menu.
     pub fn insert(
         &mut self,
         handles: &UserHandles,
@@ -391,7 +427,7 @@ impl Menus {
     ) -> Result<(), Failure> {
         let (holder, position) = match before {
             ItemRef::Position(position) => (menu, (position as usize).min(self.count(menu))),
-            ItemRef::Command(_) => self.find(menu, before).ok_or(Failure::ItemNotFound)?,
+            ItemRef::Command(_) => self.find(menu, before).unwrap_or((menu, self.count(menu))),
         };
         let submenu = self.submenu_of(handles, info)?;
         if self.count(holder) >= MAX_MENU_ITEMS {
@@ -419,18 +455,83 @@ impl Menus {
         Ok(())
     }
 
-    /// Change the fields the mask names of the item `item` names: SetMenuItemInfo.
+    /// Change the fields the mask names of the item `item` names: SetMenuItemInfo. The popup the
+    /// item opened, when a new one (or none) takes its place: the caller destroys it.
     pub fn set(
         &mut self,
         handles: &UserHandles,
         menu: MenuId,
         item: ItemRef,
         info: &ItemInfo<'_>,
-    ) -> Result<(), Failure> {
+    ) -> Result<Option<MenuId>, Failure> {
         let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
         let submenu = self.submenu_of(handles, info)?;
+        let previous = self.submenu(holder, position);
         apply(self.item_mut(holder, position), info, submenu);
+        Ok(previous.filter(|&old| info.mask & MIIM_SUBMENU != 0 && Some(old) != submenu))
+    }
+
+    /// Take the item `item` names out of the menu holding it (RemoveMenu, DeleteMenu): the popup
+    /// it opened, which the caller keeps or destroys.
+    pub fn remove(&mut self, menu: MenuId, item: ItemRef) -> Result<Option<MenuId>, Failure> {
+        let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
+        let popup = self.submenu(holder, position);
+        let record = self.at_mut(holder);
+        let count = record.count as usize;
+        let slot = record.items[position] as usize;
+        record.items.copy_within(position + 1..count, position);
+        record.count -= 1;
+        self.items[slot] = Item::EMPTY;
+        Ok(popup)
+    }
+
+    /// SetMenuDefaultItem: MFS_DEFAULT taken off every item of `menu` and given to the one `item`
+    /// names in `menu` itself (by command too: a popup's items are not searched); u32::MAX takes it
+    /// off them all. No such item, or a separator, is ERROR_MENU_ITEM_NOT_FOUND, nothing changed
+    /// (Windows 2000 fails it without a last error, as the menus fixture's `default` capture
+    /// shows).
+    pub fn set_default(
+        &mut self,
+        menu: MenuId,
+        item: u32,
+        by_position: bool,
+    ) -> Result<(), Failure> {
+        let count = self.count(menu);
+        let target = if item == u32::MAX {
+            None
+        } else {
+            let position = if by_position {
+                ((item as usize) < count).then_some(item as usize)
+            } else {
+                (0..count).find(|&position| self.item(menu, position).id == item)
+            };
+            let position = position.ok_or(Failure::ItemNotFound)?;
+            if self.item(menu, position).item_type & MFT_SEPARATOR != 0 {
+                return Err(Failure::ItemNotFound);
+            }
+            Some(position)
+        };
+        for position in 0..count {
+            let item = self.item_mut(menu, position);
+            if Some(position) == target {
+                item.state |= MFS_DEFAULT;
+            } else {
+                item.state &= !MFS_DEFAULT;
+            }
+        }
         Ok(())
+    }
+
+    /// The system menu of the window `window` (its handle), when it has one.
+    pub fn system_menu_of(&self, window: u32) -> Option<MenuId> {
+        let index = self
+            .menus
+            .iter()
+            .position(|m| m.live && m.system_of == window && window != 0)?;
+        Some(MenuId {
+            index: index as u16,
+            generation: self.menus[index].generation,
+        })
     }
 
     /// The popup an insertion or a change names, when its mask names one: a live menu, or none.
@@ -469,6 +570,9 @@ impl Menus {
             submenu: submenu.map_or(0, |sub| self.handle_of(sub)),
             submenu_count: submenu.map_or(0, |sub| self.count(sub) as u32),
             item_data: record.item_data,
+            checked: record.checked,
+            unchecked: record.unchecked,
+            bitmap: record.bitmap,
             text_length: u32::from(record.text_length),
             text: [0; MENU_ITEM_TEXT],
         };
@@ -545,13 +649,21 @@ impl Menus {
 }
 
 /// Set `item`'s fields as `info`'s mask names them (MIIM_TYPE the type and the text, MIIM_FTYPE
-/// the type alone, MIIM_STRING the text alone).
+/// the type alone, MIIM_STRING the text alone; MIIM_STATE the state, MFS_DEFAULT and MFS_HILITE
+/// kept).
 fn apply(item: &mut Item, info: &ItemInfo<'_>, submenu: Option<MenuId>) {
     if info.mask & (MIIM_TYPE | MIIM_FTYPE) != 0 {
         item.item_type = info.item_type & TYPE_BITS;
     }
     if info.mask & MIIM_STATE != 0 {
-        item.state = info.state & STATE_BITS;
+        item.state = info.state & STATE_BITS | item.state & (MFS_DEFAULT | MFS_HILITE);
+    }
+    if info.mask & MIIM_CHECKMARKS != 0 {
+        item.checked = info.checked;
+        item.unchecked = info.unchecked;
+    }
+    if info.mask & MIIM_BITMAP != 0 {
+        item.bitmap = info.bitmap;
     }
     if info.mask & MIIM_ID != 0 {
         item.id = info.id;
@@ -587,6 +699,82 @@ impl Windows {
         self.menus.destroy(&mut self.handles, menu);
         self.forget_menu(canonical);
         Ok(())
+    }
+
+    /// SetMenuItemInfo over a handle: the item changed, the popup it no longer opens destroyed.
+    pub fn set_menu_item(
+        &mut self,
+        handle: u32,
+        item: ItemRef,
+        info: &ItemInfo<'_>,
+    ) -> Result<(), Failure> {
+        let menu = self.menu_of(handle)?;
+        if let Some(old) = self.menus.set(&self.handles, menu, item, info)? {
+            self.destroy_menu_id(old);
+        }
+        Ok(())
+    }
+
+    /// RemoveMenu (`delete` false) or DeleteMenu over a handle: the item taken out, the popup it
+    /// opened kept or destroyed.
+    pub fn remove_menu_item(
+        &mut self,
+        handle: u32,
+        item: ItemRef,
+        delete: bool,
+    ) -> Result<(), Failure> {
+        let menu = self.menu_of(handle)?;
+        if let Some(popup) = self.menus.remove(menu, item)? {
+            if delete {
+                self.destroy_menu_id(popup);
+            }
+        }
+        Ok(())
+    }
+
+    /// The menu `menu` and its popups destroyed, a window holding it left without one.
+    fn destroy_menu_id(&mut self, menu: MenuId) {
+        let canonical = self.menus.handle_of(menu);
+        self.menus.destroy(&mut self.handles, menu);
+        self.forget_menu(canonical);
+    }
+
+    /// GetSystemMenu over handles: the window's copy of the system menu, its handle (0 for none
+    /// yet); `made`, a menu user32 built, attached as the copy when the window has none; with
+    /// `revert`, the copy destroyed and 0 answered.
+    pub fn system_menu_handle(
+        &mut self,
+        window: u32,
+        revert: bool,
+        made: u32,
+    ) -> Result<u32, Failure> {
+        let id = self
+            .window_from_handle(window)
+            .ok_or(Failure::InvalidWindowHandle)?;
+        let window = self.handle_of(id);
+        let copy = self.menus.system_menu_of(window);
+        if revert {
+            if let Some(copy) = copy {
+                self.destroy_menu_id(copy);
+            }
+            return Ok(0);
+        }
+        if let Some(copy) = copy {
+            return Ok(self.menus.handle_of(copy));
+        }
+        if made == 0 {
+            return Ok(0);
+        }
+        let menu = self.menu_of(made)?;
+        self.menus.at_mut(menu).system_of = window;
+        Ok(self.menus.handle_of(menu))
+    }
+
+    /// The window `window`'s copy of the system menu destroyed, at the window's end.
+    pub fn destroy_system_menu(&mut self, window: u32) {
+        if let Some(copy) = self.menus.system_menu_of(window) {
+            self.destroy_menu_id(copy);
+        }
     }
 
     /// SetMenu over handles: the window's menu set (none for a null menu); a child window has no
@@ -720,7 +908,7 @@ mod services {
                     if operation == MENU_ITEM_INSERT {
                         windows.menus.insert(&windows.handles, id, item, &fields)
                     } else {
-                        windows.menus.set(&windows.handles, id, item, &fields)
+                        windows.set_menu_item(menu.raw(), item, &fields)
                     }
                 })
                 .map_err(Failure::status)?;
@@ -750,6 +938,71 @@ mod services {
             m.windows.destroy_menu_handle(menu.raw())
         })
         .map_err(Failure::status)?;
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtUserRemoveMenu(Menu, Position, Flags): the item taken out of its menu, the popup it opens
+    /// kept; STATUS_OBJECT_NAME_NOT_FOUND for no such item.
+    pub fn remove_menu(call: &mut NtCall, menu: Handle, position: u32, flags: u32) -> NtResult {
+        remove(call, menu, position, flags, false)
+    }
+
+    /// NtUserDeleteMenu(Menu, Position, Flags): the item taken out of its menu, the popup it opens
+    /// destroyed; STATUS_OBJECT_NAME_NOT_FOUND for no such item.
+    pub fn delete_menu(call: &mut NtCall, menu: Handle, position: u32, flags: u32) -> NtResult {
+        remove(call, menu, position, flags, true)
+    }
+
+    fn remove(
+        call: &mut NtCall,
+        menu: Handle,
+        position: u32,
+        flags: u32,
+        delete: bool,
+    ) -> NtResult {
+        gui_thread(call)?;
+        with_manager(call.passive(), |m| {
+            m.windows
+                .remove_menu_item(menu.raw(), ItemRef::of(position, flags), delete)
+        })
+        .map_err(Failure::status)?;
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtUserSetMenuDefaultItem(Menu, Item, ByPosition): the menu's default item set (u32::MAX:
+    /// none); STATUS_OBJECT_NAME_NOT_FOUND for no such item or a separator.
+    pub fn set_menu_default_item(
+        call: &mut NtCall,
+        menu: Handle,
+        item: u32,
+        by_position: bool,
+    ) -> NtResult {
+        gui_thread(call)?;
+        with_manager(call.passive(), |m| {
+            let id = m.windows.menu_of(menu.raw())?;
+            m.windows.menus.set_default(id, item, by_position)
+        })
+        .map_err(Failure::status)?;
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtUserGetSystemMenu(Window, Revert, Made, Menu): the window's copy of the system menu into
+    /// `answer` (0 for none yet), `made` attached as the copy when it has none; with `revert`, the
+    /// copy destroyed and 0 answered ([`Windows::system_menu_handle`]).
+    pub fn get_system_menu(
+        call: &mut NtCall,
+        window: Handle,
+        revert: bool,
+        made: Handle,
+        answer: UserPtr<u32>,
+    ) -> NtResult {
+        gui_thread(call)?;
+        let menu = with_manager(call.passive(), |m| {
+            m.windows
+                .system_menu_handle(window.raw(), revert, made.raw())
+        })
+        .map_err(Failure::status)?;
+        answer.write(menu)?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -850,6 +1103,28 @@ mod services {
         Err(STATUS_NOT_IMPLEMENTED)
     }
 
+    pub fn remove_menu(_: &mut NtCall, _: Handle, _: u32, _: u32) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn delete_menu(_: &mut NtCall, _: Handle, _: u32, _: u32) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn set_menu_default_item(_: &mut NtCall, _: Handle, _: u32, _: bool) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn get_system_menu(
+        _: &mut NtCall,
+        _: Handle,
+        _: bool,
+        _: Handle,
+        _: UserPtr<u32>,
+    ) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
     pub fn check_menu_item(_: &mut NtCall, _: Handle, _: u32, _: u32, _: UserPtr<u32>) -> NtResult {
         Err(STATUS_NOT_IMPLEMENTED)
     }
@@ -872,9 +1147,13 @@ mod services {
 pub use services::{
     call_no_param,
     check_menu_item,
+    delete_menu,
     destroy_menu,
     enable_menu_item,
+    get_system_menu,
+    remove_menu,
     set_menu,
+    set_menu_default_item,
     thunked_menu_item_info,
 };
 
@@ -909,8 +1188,12 @@ mod tests {
                 .unwrap();
         }
 
-        fn set(&mut self, menu: MenuId, item: ItemRef, info: &ItemInfo<'_>) {
-            self.menus.set(&self.handles, menu, item, info).unwrap();
+        fn set(&mut self, menu: MenuId, item: ItemRef, info: &ItemInfo<'_>) -> Option<MenuId> {
+            self.menus.set(&self.handles, menu, item, info).unwrap()
+        }
+
+        fn remove(&mut self, menu: MenuId, item: ItemRef) -> Result<Option<MenuId>, Failure> {
+            self.menus.remove(menu, item)
         }
 
         fn destroy(&mut self, menu: MenuId) {
@@ -972,6 +1255,9 @@ mod tests {
             id,
             submenu,
             item_data: 0,
+            checked: 0,
+            unchecked: 0,
+            bitmap: 0,
             text: &text,
         };
         let id = m.menu_of(menu).unwrap();
@@ -1087,6 +1373,9 @@ mod tests {
             id: 0,
             submenu: 0,
             item_data: 0,
+            checked: 0,
+            unchecked: 0,
+            bitmap: 0,
             text: &[],
         };
         m.set(view, ItemRef::Command(212), &info);
@@ -1096,6 +1385,126 @@ mod tests {
             (MFT_RADIOCHECK, MFS_CHECKED, 212)
         );
         assert_eq!(item.text(), &units("S&cientific")[..]);
+    }
+
+    /// A state change keeps the default and the highlight (the `info` capture's 0x1083); new check
+    /// marks and a bitmap are kept and answered.
+    #[test]
+    fn state_changes_keep_the_default_and_the_highlight() {
+        let mut m = menus();
+        let (_, file, _, _) = menu_200(&mut m);
+        let file = m.menu_of(file).unwrap();
+        let mut info = ItemInfo {
+            mask: MIIM_STATE,
+            item_type: 0,
+            state: MFS_CHECKED | MFS_DEFAULT | MFS_HILITE,
+            id: 0,
+            submenu: 0,
+            item_data: 0,
+            checked: 0,
+            unchecked: 0,
+            bitmap: 0,
+            text: &[],
+        };
+        m.set(file, ItemRef::Position(0), &info);
+        info.state = MFS_GRAYED;
+        m.set(file, ItemRef::Position(0), &info);
+        let item = m.query_item(file, ItemRef::Position(0)).unwrap();
+        assert_eq!(item.state, 0x1083);
+        info.mask = MIIM_CHECKMARKS | MIIM_BITMAP;
+        info.checked = 0x40;
+        info.bitmap = 8;
+        m.set(file, ItemRef::Position(0), &info);
+        let item = m.query_item(file, ItemRef::Position(0)).unwrap();
+        assert_eq!((item.checked, item.unchecked, item.bitmap), (0x40, 0, 8));
+    }
+
+    /// An insertion by a command no item has appends to the menu; a popup given another (or none)
+    /// is handed back to be destroyed; removal hands back the popup an item opened.
+    #[test]
+    fn insertions_changes_and_removals() {
+        let mut m = menus();
+        let (bar, file, recent, _) = menu_200(&mut m);
+        let bar_id = m.menu_of(bar).unwrap();
+        let text = units("Lost");
+        let info = ItemInfo {
+            mask: MIIM_ID | MIIM_STRING,
+            item_type: 0,
+            state: 0,
+            id: 311,
+            submenu: 0,
+            item_data: 0,
+            checked: 0,
+            unchecked: 0,
+            bitmap: 0,
+            text: &text,
+        };
+        m.insert(bar_id, ItemRef::Command(399), &info);
+        assert_eq!(m.count(bar_id), 4);
+        assert_eq!(m.query_item(bar_id, ItemRef::Position(3)).unwrap().id, 311);
+        m.insert(bar_id, ItemRef::Command(202), &ItemInfo { id: 312, ..info });
+        let file_id = m.menu_of(file).unwrap();
+        assert_eq!(m.query_item(file_id, ItemRef::Position(1)).unwrap().id, 312);
+
+        let recent_id = m.menu_of(recent).unwrap();
+        let none = ItemInfo {
+            mask: MIIM_SUBMENU,
+            ..info
+        };
+        assert_eq!(m.set(file_id, ItemRef::Position(4), &none), Some(recent_id));
+        assert_eq!(m.set(file_id, ItemRef::Position(4), &none), None);
+
+        assert_eq!(m.remove(bar_id, ItemRef::Position(0)), Ok(Some(file_id)));
+        assert_eq!(m.count(bar_id), 3);
+        assert_eq!(
+            m.remove(bar_id, ItemRef::Command(312)),
+            Err(Failure::ItemNotFound)
+        );
+        assert_eq!(m.remove(file_id, ItemRef::Command(312)), Ok(None));
+        assert_eq!(
+            m.remove(bar_id, ItemRef::Position(9)),
+            Err(Failure::ItemNotFound)
+        );
+    }
+
+    /// SetMenuDefaultItem moves MFS_DEFAULT to one item of the menu itself, refuses a separator
+    /// and a popup's item, and -1 takes it off them all (the `default` capture).
+    #[test]
+    fn the_default_item_is_the_menus_own() {
+        let mut m = menus();
+        let (bar, file, _, _) = menu_200(&mut m);
+        let file = m.menu_of(file).unwrap();
+        let state = |m: &Fixture, position| {
+            m.query_item(file, ItemRef::Position(position))
+                .unwrap()
+                .state
+                & MFS_DEFAULT
+        };
+        assert_eq!(m.set_default(file, 203, false), Ok(()));
+        assert_eq!(state(&m, 4), MFS_DEFAULT);
+        assert_eq!(m.set_default(file, 1, true), Ok(()));
+        assert_eq!((state(&m, 1), state(&m, 4)), (MFS_DEFAULT, 0));
+        assert_eq!(m.set_default(file, 2, true), Err(Failure::ItemNotFound));
+        assert_eq!(state(&m, 1), MFS_DEFAULT, "a separator changes nothing");
+        assert_eq!(m.set_default(file, 205, false), Err(Failure::ItemNotFound));
+        let bar = m.menu_of(bar).unwrap();
+        assert_eq!(m.set_default(bar, 201, false), Err(Failure::ItemNotFound));
+        assert_eq!(m.set_default(file, u32::MAX, false), Ok(()));
+        assert_eq!(state(&m, 1), 0);
+    }
+
+    /// A window's system menu is the menu marked as its, until the menu goes.
+    #[test]
+    fn system_menus_belong_to_their_window() {
+        let mut m = menus();
+        let menu = m.create(OWNER).unwrap();
+        let id = m.menu_of(menu).unwrap();
+        assert_eq!(m.system_menu_of(0x1234), None);
+        m.at_mut(id).system_of = 0x1234;
+        assert_eq!(m.system_menu_of(0x1234), Some(id));
+        assert_eq!(m.system_menu_of(0), None);
+        m.destroy(id);
+        assert_eq!(m.system_menu_of(0x1234), None);
     }
 
     /// DestroyMenu takes the popups with the menu; a destroyed handle names nothing, and the

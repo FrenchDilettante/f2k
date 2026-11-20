@@ -2165,6 +2165,10 @@ pub struct HostItem {
     pub state: u32,
     pub id: u32,
     pub submenu: u32,
+    pub item_data: u32,
+    pub checked: u32,
+    pub unchecked: u32,
+    pub bitmap: u32,
     pub text: Vec<u16>,
 }
 
@@ -2187,6 +2191,8 @@ std::thread_local! {
     /// The menus, by handle (index + 1, tagged); the windows' menus.
     pub static MENUS: RefCell<Vec<HostMenu>> = const { RefCell::new(Vec::new()) };
     pub static WINDOW_MENUS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// The windows' copies of the system menu (NtUserGetSystemMenu's).
+    pub static SYSTEM_MENUS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
     /// The accelerator tables, by handle (index + 1, tagged); the MSGs NtUserTranslateAccelerator
     /// was given, and what it answers.
     pub static TABLES: RefCell<Vec<Option<HostTable>>> = const { RefCell::new(Vec::new()) };
@@ -2305,36 +2311,53 @@ pub unsafe extern "system" fn NtUserThunkedMenuItemInfo(
                     // SAFETY: as above.
                     unsafe { core::slice::from_raw_parts(text, given.cch as usize) }.to_vec()
                 };
+                let found = find_item(&menus, index, item, flags);
                 let (holder, position) = if operation == MENU_ITEM_INSERT {
                     let count = menus[index].items.as_ref().unwrap().len();
-                    (index, (item as usize).min(count))
+                    match (flags & MF_BYPOSITION != 0, found) {
+                        (true, _) => (index, (item as usize).min(count)),
+                        (false, Some(found)) => found,
+                        (false, None) => (index, count),
+                    }
                 } else {
-                    match find_item(&menus, index, item, flags) {
+                    match found {
                         Some(found) => found,
                         None => return STATUS_OBJECT_NAME_NOT_FOUND,
                     }
                 };
                 let items = menus[holder].items.as_mut().unwrap();
                 if operation == MENU_ITEM_INSERT {
-                    let mut entry = HostItem {
-                        item_type: given.item_type,
-                        state: given.state,
-                        id: given.id,
-                        submenu: given.submenu,
-                        text,
-                    };
-                    if entry.item_type & MFT_SEPARATOR != 0 {
-                        entry.state |= MFS_GRAYED;
-                    }
-                    items.insert(position, entry);
-                } else {
-                    let entry = &mut items[position];
-                    if given.mask & (MIIM_FTYPE | MIIM_TYPE) != 0 {
-                        entry.item_type = given.item_type;
-                    }
-                    if given.mask & MIIM_STATE != 0 {
-                        entry.state = given.state;
-                    }
+                    items.insert(position, HostItem::default());
+                }
+                let entry = &mut items[position];
+                let mask = given.mask;
+                if mask & (MIIM_FTYPE | MIIM_TYPE) != 0 {
+                    entry.item_type = given.item_type;
+                }
+                if mask & MIIM_STATE != 0 {
+                    entry.state = given.state | entry.state & (MFS_DEFAULT | MFS_HILITE);
+                }
+                if mask & MIIM_ID != 0 {
+                    entry.id = given.id;
+                }
+                if mask & MIIM_SUBMENU != 0 {
+                    entry.submenu = given.submenu;
+                }
+                if mask & MIIM_DATA != 0 {
+                    entry.item_data = given.item_data;
+                }
+                if mask & MIIM_CHECKMARKS != 0 {
+                    entry.checked = given.checked;
+                    entry.unchecked = given.unchecked;
+                }
+                if mask & MIIM_BITMAP != 0 {
+                    entry.bitmap = given.bitmap;
+                }
+                if mask & (MIIM_STRING | MIIM_TYPE) != 0 {
+                    entry.text = text;
+                }
+                if operation == MENU_ITEM_INSERT && entry.item_type & MFT_SEPARATOR != 0 {
+                    entry.state |= MFS_GRAYED;
                 }
                 STATUS_SUCCESS
             }
@@ -2354,6 +2377,10 @@ pub unsafe extern "system" fn NtUserThunkedMenuItemInfo(
                     answer.item_type = entry.item_type;
                     answer.state = entry.state;
                     answer.id = entry.id;
+                    answer.item_data = entry.item_data;
+                    answer.checked = entry.checked;
+                    answer.unchecked = entry.unchecked;
+                    answer.bitmap = entry.bitmap;
                     answer.submenu = entry.submenu;
                     if entry.submenu != 0 {
                         let sub = (entry.submenu & 0xFFFF) as usize - 1;
@@ -2381,6 +2408,104 @@ pub unsafe extern "system" fn NtUserDestroyMenu(menu: usize) -> u32 {
         }
         Err(status) => status,
     }
+}
+
+/// RemoveMenu's and DeleteMenu's removal: the item taken out, the popup it opened destroyed for
+/// `delete`.
+fn remove_item(menu: usize, item: u32, flags: u32, delete: bool) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    let index = match menu_index(menu) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    MENUS.with(|menus| {
+        let mut menus = menus.borrow_mut();
+        let Some((holder, position)) = find_item(&menus, index, item, flags) else {
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        };
+        let entry = menus[holder].items.as_mut().unwrap().remove(position);
+        if delete && entry.submenu != 0 {
+            menus[(entry.submenu & 0xFFFF) as usize - 1].items = None;
+        }
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserRemoveMenu(menu: usize, item: u32, flags: u32) -> u32 {
+    remove_item(menu, item, flags, false)
+}
+
+pub unsafe extern "system" fn NtUserDeleteMenu(menu: usize, item: u32, flags: u32) -> u32 {
+    remove_item(menu, item, flags, true)
+}
+
+pub unsafe extern "system" fn NtUserSetMenuDefaultItem(menu: usize, item: u32, by_position: u32) -> u32 {
+    use rtl::menu::{MFS_DEFAULT, MFT_SEPARATOR};
+    SERVICES.with(|count| count.set(count.get() + 1));
+    let index = match menu_index(menu) {
+        Ok(index) => index,
+        Err(status) => return status,
+    };
+    MENUS.with(|menus| {
+        let mut menus = menus.borrow_mut();
+        let items = menus[index].items.as_mut().unwrap();
+        let target = if item == u32::MAX {
+            None
+        } else {
+            let position = if by_position != 0 {
+                ((item as usize) < items.len()).then_some(item as usize)
+            } else {
+                items.iter().position(|entry| entry.id == item)
+            };
+            match position {
+                Some(p) if items[p].item_type & MFT_SEPARATOR == 0 => Some(p),
+                _ => return STATUS_OBJECT_NAME_NOT_FOUND,
+            }
+        };
+        for (position, entry) in items.iter_mut().enumerate() {
+            entry.state &= !MFS_DEFAULT;
+            if Some(position) == target {
+                entry.state |= MFS_DEFAULT;
+            }
+        }
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserGetSystemMenu(
+    window: usize,
+    revert: u32,
+    made: usize,
+    answer: *mut u32,
+) -> u32 {
+    if let Err(status) = wm(|wm| wm.window(window).map(|_| ())) {
+        return status;
+    }
+    let copy = SYSTEM_MENUS.with(|menus| {
+        menus
+            .borrow()
+            .iter()
+            .find(|&&(w, m)| w == window && menu_index(m).is_ok())
+            .map(|&(_, m)| m)
+    });
+    let menu = match (revert != 0, copy) {
+        (true, copy) => {
+            if let Some(copy) = copy {
+                let index = menu_index(copy).unwrap();
+                MENUS.with(|menus| menus.borrow_mut()[index].items = None);
+            }
+            0
+        }
+        (false, Some(copy)) => copy,
+        (false, None) if made != 0 => {
+            SYSTEM_MENUS.with(|menus| menus.borrow_mut().push((window, made)));
+            made
+        }
+        (false, None) => 0,
+    };
+    // SAFETY: the caller's out-pointer.
+    unsafe { answer.write(menu as u32) };
+    STATUS_SUCCESS
 }
 
 /// CheckMenuItem's and EnableMenuItem's change: `bits` of the item's state set to `value`'s.

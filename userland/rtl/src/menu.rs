@@ -73,6 +73,25 @@ pub const MIIM_STRING: u32 = 0x0040;
 pub const MIIM_BITMAP: u32 = 0x0080;
 pub const MIIM_FTYPE: u32 = 0x0100;
 
+/// GetMenuState's bit for an item whose bitmap is a predefined HBMMENU_* value (Windows 2000's
+/// internal MFS_CACHEDBMP): the system menu's Restore, Minimize, Maximize and Close show it
+/// (0x20000000 in the menus fixture's `sysmenu` capture), and so does an item given
+/// HBMMENU_POPUP_CLOSE (`info`).
+pub const MFS_CACHEDBMP: u32 = 0x2000_0000;
+
+/// The predefined item bitmaps (winuser.h's HBMMENU_*): HBMMENU_CALLBACK (-1) and HBMMENU_SYSTEM
+/// (1) to HBMMENU_POPUP_MINIMIZE (11).
+pub const HBMMENU_CALLBACK: u32 = u32::MAX;
+pub const HBMMENU_POPUP_CLOSE: u32 = 8;
+pub const HBMMENU_POPUP_RESTORE: u32 = 9;
+pub const HBMMENU_POPUP_MAXIMIZE: u32 = 10;
+pub const HBMMENU_POPUP_MINIMIZE: u32 = 11;
+
+/// Whether an item's bitmap `bitmap` is one of the predefined HBMMENU_* values.
+pub fn is_predefined_bitmap(bitmap: u32) -> bool {
+    bitmap == HBMMENU_CALLBACK || (1..=HBMMENU_POPUP_MINIMIZE).contains(&bitmap)
+}
+
 /// The longest item text an item keeps, in UTF-16 units (a longer one is cut there): menu items
 /// are short (a command's name, a tab and its accelerator's), and the window manager's records
 /// are of a fixed size.
@@ -128,6 +147,11 @@ pub struct MenuItemAnswer {
     pub submenu: u32,
     pub submenu_count: u32,
     pub item_data: u32,
+    /// The check marks' bitmaps and the item's bitmap (MENUITEMINFOW's hbmpChecked,
+    /// hbmpUnchecked and hbmpItem).
+    pub checked: u32,
+    pub unchecked: u32,
+    pub bitmap: u32,
     /// The item's text: its length in units and its units (no NUL).
     pub text_length: u32,
     pub text: [u16; MENU_ITEM_TEXT],
@@ -145,6 +169,9 @@ impl MenuItemAnswer {
         submenu: 0,
         submenu_count: 0,
         item_data: 0,
+        checked: 0,
+        unchecked: 0,
+        bitmap: 0,
         text_length: 0,
         text: [0; MENU_ITEM_TEXT],
     };
@@ -158,12 +185,12 @@ impl MenuItemAnswer {
 const _: () = {
     assert!(size_of::<MenuItemInfoW>() == 48);
     assert!(offset_of!(MenuItemInfoW, type_data) == 36);
-    assert!(size_of::<MenuItemAnswer>() == 40 + 2 * MENU_ITEM_TEXT);
+    assert!(size_of::<MenuItemAnswer>() == 52 + 2 * MENU_ITEM_TEXT);
 };
 
 // SAFETY: twelve 32-bit integers.
 unsafe impl Pod for MenuItemInfoW {}
-// SAFETY: ten 32-bit integers and an array of units of an even length: no padding (the assert
+// SAFETY: thirteen 32-bit integers and an array of units of an even length: no padding (the assert
 // above pins the size); any bit pattern is a value.
 unsafe impl Pod for MenuItemAnswer {}
 

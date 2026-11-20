@@ -384,6 +384,15 @@ mod raw {
             -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetMenu"]
         pub fn NtUserSetMenu(window: usize, menu: usize, repaint: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserRemoveMenu"]
+        pub fn NtUserRemoveMenu(menu: usize, position: u32, flags: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserDeleteMenu"]
+        pub fn NtUserDeleteMenu(menu: usize, position: u32, flags: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetMenuDefaultItem"]
+        pub fn NtUserSetMenuDefaultItem(menu: usize, item: u32, by_position: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetSystemMenu"]
+        pub fn NtUserGetSystemMenu(window: usize, revert: u32, made: usize, menu: *mut u32)
+            -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserCreateAcceleratorTable"]
         pub fn NtUserCreateAcceleratorTable(
             entries: *const Accel,
@@ -1998,6 +2007,34 @@ pub fn enable_menu_item(menu: usize, item: u32, enable: u32) -> Result<u32, NtSt
 pub fn set_menu(window: usize, menu: usize) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtUserSetMenu(window, menu, 1) })
+}
+
+/// NtUserRemoveMenu (`delete` false) or NtUserDeleteMenu: the item taken out of its menu, the
+/// popup it opens kept or destroyed.
+pub fn remove_menu(menu: usize, position: u32, flags: u32, delete: bool) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe {
+        if delete {
+            raw::NtUserDeleteMenu(menu, position, flags)
+        } else {
+            raw::NtUserRemoveMenu(menu, position, flags)
+        }
+    })
+}
+
+/// NtUserSetMenuDefaultItem: the menu's default item set (u32::MAX: none).
+pub fn set_menu_default_item(menu: usize, item: u32, by_position: bool) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserSetMenuDefaultItem(menu, item, by_position as u32) })
+}
+
+/// NtUserGetSystemMenu: the window's copy of the system menu (0 for none yet), `made` attached as
+/// the copy when it has none; with `revert`, the copy destroyed (0).
+pub fn get_system_menu(window: usize, revert: bool, made: usize) -> Result<usize, NtStatus> {
+    let mut menu = 0u32;
+    // SAFETY: the kernel writes the local.
+    checked(unsafe { raw::NtUserGetSystemMenu(window, revert as u32, made, &mut menu) })?;
+    Ok(menu as usize)
 }
 
 /// NtUserCreateAcceleratorTable: a table of `entries`, or with `resource` (its data's address in

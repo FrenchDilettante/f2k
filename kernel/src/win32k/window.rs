@@ -3092,6 +3092,8 @@ impl Windows {
                 }
             }
         }
+        // And its copy of the system menu (GetSystemMenu's).
+        self.destroy_system_menu(handle);
 
         // The properties, the title string and the extra bytes go with the record.
         pump.delete_properties(self, window);

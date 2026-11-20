@@ -667,8 +667,9 @@ pub fn translate(msg: &Msg) -> u32 {
 /// WM_NCCALCSIZE the frame taken off the rectangle, WM_NCHITTEST the part under the point,
 /// WM_NCPAINT the frame drawn, WM_NCACTIVATE the caption redrawn, TRUE; the system keys (Alt or
 /// F10 alone, and Alt with a character, send the top-level window SC_KEYMENU, Alt+F4 SC_CLOSE)
-/// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE); 0 to
-/// everything else, WM_ENDSESSION included, and to a text message for a handle naming no window.
+/// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE);
+/// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]); 0 to everything else,
+/// WM_ENDSESSION included, and to a text message for a handle naming no window.
 /// The messages Windows 2000's acts on and F2K's does not yet ([`UNHANDLED_MESSAGES`]) are logged,
 /// each once per process.
 pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
@@ -731,6 +732,10 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         }
         menubar::WM_SYSCOMMAND => {
             system_command(window, wparam, lparam, ansi);
+            0
+        }
+        WM_CANCELMODE => {
+            menubar::cancel_mode(window);
             0
         }
         WM_ACTIVATE => {

@@ -1,7 +1,10 @@
 //! Menus: CreateMenu and CreatePopupMenu, LoadMenuW and LoadMenuA, the item calls
 //! (GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState, GetMenuStringA/W, CheckMenuItem,
-//! CheckMenuRadioItem, EnableMenuItem), IsMenu, DestroyMenu, and a window's menu (GetMenu,
-//! SetMenu), over win32k's menu services ([`imports`]).
+//! CheckMenuRadioItem, EnableMenuItem), the old-flags edits (AppendMenuA/W, InsertMenuA/W,
+//! ModifyMenuA/W, RemoveMenu, DeleteMenu), the default item (SetMenuDefaultItem,
+//! GetMenuDefaultItem), IsMenu, DestroyMenu, a window's menu (GetMenu, SetMenu) and its system menu
+//! (GetSystemMenu), over win32k's menu services ([`imports`]). The MENUITEMINFO calls are
+//! [`crate::menuinfo`]'s.
 //!
 //! A menu is a win32k object. LoadMenu reads a MENU or MENUEX resource here, as Windows 2000's
 //! user32 does (rtl::menu's [`Template`]), and builds the menu through the services: the bar
@@ -225,64 +228,134 @@ pub extern "system" fn create_popup_menu() -> usize {
     .map_or(0, |m| m as usize)
 }
 
-/// AppendMenu's core: an item at the end of `menu`, its type and state from the old flags (a
-/// separator grayed, as a template's is), the popup `item` opens for MF_POPUP (its handle its id,
-/// as a MENU template's popup has), the command id `item` otherwise, its text `text` (none for a
-/// separator); TRUE, or FALSE with the last error. Bitmap and owner-drawn items are not served:
-/// their `item` is taken as text no more.
-fn append(
-    (entry, new_item): (&rtl::stub::Entry, usize),
-    menu: usize,
-    flags: u32,
-    item: usize,
-    text: &[u16],
-) -> i32 {
+/// The item the old flags describe (AppendMenu's, InsertMenu's, ModifyMenu's): its type and state
+/// from the flags (a separator grayed, as a template's is), the popup `item` opens for MF_POPUP
+/// (its handle its id, as a MENU template's popup has), the command id `item` otherwise, its text
+/// set when `text` gives one. A string item given no text is a separator, as Windows 2000's
+/// AppendMenu makes it (the menus fixture's `edit` capture: an MF_STRING item of NULL text answers
+/// 0x803), when `textless` says so (an insertion's; a change keeps the item's text).
+fn flags_item(flags: u32, item: usize, text: Option<&[u16]>, textless: bool) -> MenuItemInfoW {
+    let string = flags & (MF_SEPARATOR | MF_OWNERDRAW | MFT_BITMAP) == 0;
+    let flags = if string && text.is_none() && textless {
+        flags | MF_SEPARATOR
+    } else {
+        flags
+    };
     let (item_type, state) = from_flags(flags);
-    for (flag, what) in [
-        (MFT_BITMAP, "MF_BITMAP items (a bitmap for the text)"),
-        (MF_OWNERDRAW, "MF_OWNERDRAW items (drawn by the owner)"),
-    ] {
-        if flags & flag != 0 && APPEND_LOGGED.first(flag) {
-            let args = [menu as u64, u64::from(flags), item as u64, new_item as u64];
-            // SAFETY: AppendMenu's arguments, its item a pointer's kind, not read.
-            unsafe {
-                crate::stub::unhandled(
-                    entry,
-                    format_args!("{what} are not yet implemented: an empty item is appended"),
-                    &args,
-                )
-            };
-        }
-    }
     let popup = flags & MF_POPUP != 0;
-    let info = MenuItemInfoW {
+    let mut mask = MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU;
+    if text.is_some() {
+        mask |= MIIM_STRING;
+    }
+    MenuItemInfoW {
         size: core::mem::size_of::<MenuItemInfoW>() as u32,
-        mask: MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU | MIIM_STRING,
+        mask,
         item_type,
         state,
         id: item as u32,
         submenu: if popup { item as u32 } else { 0 },
         ..MenuItemInfoW::default()
-    };
+    }
+}
+
+/// The old-flags calls' core: the item `flags` and `item` describe (see [`flags_item`]) inserted
+/// before the item `position` names (InsertMenu, AppendMenu's at the end), or set on it
+/// (ModifyMenu, `operation` MENU_ITEM_SET); TRUE, or FALSE with the last error. Bitmap and
+/// owner-drawn items are not served: their `item` is taken as text no more. `args` are the
+/// call's, logged for those.
+fn edit_by_flags(
+    entry: &rtl::stub::Entry,
+    args: &[u64],
+    (menu, position, operation): (usize, u32, u32),
+    flags: u32,
+    item: usize,
+    text: Option<&[u16]>,
+) -> i32 {
+    for (flag, what) in [
+        (MFT_BITMAP, "MF_BITMAP items (a bitmap for the text)"),
+        (MF_OWNERDRAW, "MF_OWNERDRAW items (drawn by the owner)"),
+    ] {
+        if flags & flag != 0 && EDIT_LOGGED.first(flag) {
+            // SAFETY: the call's arguments, its item a pointer's kind, not read.
+            unsafe {
+                crate::stub::unhandled(
+                    entry,
+                    format_args!("{what} are not yet implemented: an item without it is made"),
+                    args,
+                )
+            };
+        }
+    }
+    let info = flags_item(flags, item, text, operation == MENU_ITEM_INSERT);
+    let text = text.unwrap_or(&[]);
     let text = &text[..text.len().min(MENU_ITEM_TEXT)];
     failed_with(
-        imports::set_menu_item(menu, u32::MAX, MF_BYPOSITION, MENU_ITEM_INSERT, &info, text),
+        imports::set_menu_item(
+            menu,
+            position,
+            flags & MF_BYPOSITION,
+            operation,
+            &info,
+            text,
+        ),
         menu_error,
     )
     .is_some() as i32
 }
 
-/// AppendMenu's cases logged in this process.
-static APPEND_LOGGED: rtl::stub::Logged<2> = rtl::stub::Logged::new();
+/// The old-flags calls' cases logged in this process.
+static EDIT_LOGGED: rtl::stub::Logged<2> = rtl::stub::Logged::new();
 
-/// Whether AppendMenu's `flags` make an item whose `item` pointer is its text: a string item, not
+/// Whether the old flags `flags` make an item whose `item` pointer is its text: a string item, not
 /// a separator, a bitmap or an owner-drawn one, with a text given.
 fn has_text(flags: u32, text: usize) -> bool {
     flags & (MF_SEPARATOR | MF_OWNERDRAW | MFT_BITMAP) == 0 && text != 0
 }
 
-/// AppendMenuW: an item at the end of the menu (see [`append`]); TRUE, or FALSE with the last
-/// error (ERROR_INVALID_MENU_HANDLE for a handle naming no menu).
+/// Run `f` on a wide call's text (none for an item whose pointer is no text, [`has_text`]), cut
+/// at an item's longest.
+///
+/// # Safety
+///
+/// For a string item, `text` is the caller's NUL-terminated string.
+unsafe fn with_text_w<R>(flags: u32, text: *const u16, f: impl FnOnce(Option<&[u16]>) -> R) -> R {
+    if !has_text(flags, text as usize) {
+        return f(None);
+    }
+    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
+    let text = unsafe { rtl::edge::InWStr::new(text) };
+    let units = text.units();
+    let mut buffer = [0u16; MENU_ITEM_TEXT];
+    let length = units.len().min(MENU_ITEM_TEXT);
+    for (index, unit) in buffer.iter_mut().take(length).enumerate() {
+        *unit = units.get(index);
+    }
+    f(Some(&buffer[..length]))
+}
+
+/// [`with_text_w`]'s narrow form: the text converted to UTF-16 (none when the conversion's buffer
+/// could not be had, the last error set).
+///
+/// # Safety
+///
+/// For a string item, `text` is the caller's NUL-terminated string.
+unsafe fn with_text_a<R>(
+    flags: u32,
+    text: *const u8,
+    f: impl FnOnce(Option<&[u16]>) -> R,
+) -> Option<R> {
+    if !has_text(flags, text as usize) {
+        return Some(f(None));
+    }
+    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
+    let text = unsafe { rtl::edge::InStr::new(text) };
+    crate::with_wide(text.bytes(), |units| {
+        f(Some(&units[..units.len().saturating_sub(1)]))
+    })
+}
+
+/// AppendMenuW: an item at the end of the menu (see [`edit_by_flags`]); TRUE, or FALSE with the
+/// last error (ERROR_INVALID_MENU_HANDLE for a handle naming no menu).
 ///
 /// # Safety
 ///
@@ -294,30 +367,15 @@ pub unsafe extern "system" fn append_menu_w(
     item: usize,
     text: *const u16,
 ) -> i32 {
-    if !has_text(flags, text as usize) {
-        return append(
-            (&crate::spec::AppendMenuW, text as usize),
-            menu,
-            flags,
-            item,
-            &[],
-        );
+    let args = [menu as u64, u64::from(flags), item as u64, text as u64];
+    let at = (menu, u32::MAX, MENU_ITEM_INSERT);
+    let flags = flags | MF_BYPOSITION;
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_w(flags, text, |text| {
+            edit_by_flags(&crate::spec::AppendMenuW, &args, at, flags, item, text)
+        })
     }
-    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
-    let text = unsafe { rtl::edge::InWStr::new(text) };
-    let units = text.units();
-    let mut buffer = [0u16; MENU_ITEM_TEXT];
-    let length = units.len().min(MENU_ITEM_TEXT);
-    for (index, unit) in buffer.iter_mut().take(length).enumerate() {
-        *unit = units.get(index);
-    }
-    append(
-        (&crate::spec::AppendMenuW, 0),
-        menu,
-        flags,
-        item,
-        &buffer[..length],
-    )
 }
 
 /// AppendMenuA: AppendMenuW's, its text narrow.
@@ -332,28 +390,166 @@ pub unsafe extern "system" fn append_menu_a(
     item: usize,
     text: *const u8,
 ) -> i32 {
-    if !has_text(flags, text as usize) {
-        return append(
-            (&crate::spec::AppendMenuA, text as usize),
-            menu,
-            flags,
-            item,
-            &[],
-        );
+    let args = [menu as u64, u64::from(flags), item as u64, text as u64];
+    let at = (menu, u32::MAX, MENU_ITEM_INSERT);
+    let flags = flags | MF_BYPOSITION;
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_a(flags, text, |text| {
+            edit_by_flags(&crate::spec::AppendMenuA, &args, at, flags, item, text)
+        })
     }
-    // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
-    let text = unsafe { rtl::edge::InStr::new(text) };
-    crate::with_wide(text.bytes(), |units| {
-        let length = units.len().saturating_sub(1);
-        append(
-            (&crate::spec::AppendMenuA, 0),
-            menu,
-            flags,
-            item,
-            &units[..length],
-        )
-    })
     .unwrap_or(0)
+}
+
+/// InsertMenuW: an item before the one `position` names (MF_BYPOSITION in `flags`: at the end when
+/// it is past it; by command, in the menu holding that item, at the end when none has the
+/// command, as the menus fixture's `edit` capture shows); TRUE, or FALSE with the last error.
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_InsertMenuW")]
+pub unsafe extern "system" fn insert_menu_w(
+    menu: usize,
+    position: u32,
+    flags: u32,
+    item: usize,
+    text: *const u16,
+) -> i32 {
+    let args = [
+        menu as u64,
+        u64::from(position),
+        u64::from(flags),
+        item as u64,
+        text as u64,
+    ];
+    let at = (menu, position, MENU_ITEM_INSERT);
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_w(flags, text, |text| {
+            edit_by_flags(&crate::spec::InsertMenuW, &args, at, flags, item, text)
+        })
+    }
+}
+
+/// InsertMenuA: InsertMenuW's, its text narrow.
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_InsertMenuA")]
+pub unsafe extern "system" fn insert_menu_a(
+    menu: usize,
+    position: u32,
+    flags: u32,
+    item: usize,
+    text: *const u8,
+) -> i32 {
+    let args = [
+        menu as u64,
+        u64::from(position),
+        u64::from(flags),
+        item as u64,
+        text as u64,
+    ];
+    let at = (menu, position, MENU_ITEM_INSERT);
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_a(flags, text, |text| {
+            edit_by_flags(&crate::spec::InsertMenuA, &args, at, flags, item, text)
+        })
+    }
+    .unwrap_or(0)
+}
+
+/// ModifyMenuW: the item `position` names (by command, through the popups) made over as the flags
+/// describe: its type, state, id and popup (the popup it opened destroyed, as documented), its text
+/// when the flags give one (a separator keeps its text, as the `edit` capture shows); TRUE, or
+/// FALSE with ERROR_MENU_ITEM_NOT_FOUND for no such item.
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_ModifyMenuW")]
+pub unsafe extern "system" fn modify_menu_w(
+    menu: usize,
+    position: u32,
+    flags: u32,
+    item: usize,
+    text: *const u16,
+) -> i32 {
+    let args = [
+        menu as u64,
+        u64::from(position),
+        u64::from(flags),
+        item as u64,
+        text as u64,
+    ];
+    let at = (menu, position, MENU_ITEM_SET);
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_w(flags, text, |text| {
+            edit_by_flags(&crate::spec::ModifyMenuW, &args, at, flags, item, text)
+        })
+    }
+}
+
+/// ModifyMenuA: ModifyMenuW's, its text narrow.
+///
+/// # Safety
+///
+/// The caller's string, for a string item, as for the platform's.
+#[unsafe(export_name = "f2k_export_ModifyMenuA")]
+pub unsafe extern "system" fn modify_menu_a(
+    menu: usize,
+    position: u32,
+    flags: u32,
+    item: usize,
+    text: *const u8,
+) -> i32 {
+    let args = [
+        menu as u64,
+        u64::from(position),
+        u64::from(flags),
+        item as u64,
+        text as u64,
+    ];
+    let at = (menu, position, MENU_ITEM_SET);
+    // SAFETY: the caller's contract.
+    unsafe {
+        with_text_a(flags, text, |text| {
+            edit_by_flags(&crate::spec::ModifyMenuA, &args, at, flags, item, text)
+        })
+    }
+    .unwrap_or(0)
+}
+
+/// RemoveMenu: the item `position` names (by command, through the popups) taken out of its menu,
+/// the popup it opens kept; TRUE. FALSE for no such item, the last error untouched (the `edit`
+/// capture), or ERROR_INVALID_MENU_HANDLE.
+#[unsafe(export_name = "f2k_export_RemoveMenu")]
+pub extern "system" fn remove_menu(menu: usize, position: u32, flags: u32) -> i32 {
+    quiet_success(imports::remove_menu(menu, position, flags, false))
+}
+
+/// DeleteMenu: RemoveMenu's, the popup the item opens destroyed.
+#[unsafe(export_name = "f2k_export_DeleteMenu")]
+pub extern "system" fn delete_menu(menu: usize, position: u32, flags: u32) -> i32 {
+    quiet_success(imports::remove_menu(menu, position, flags, true))
+}
+
+/// A change's success: TRUE; FALSE for no such item (the last error untouched) or a handle naming
+/// no menu (ERROR_INVALID_MENU_HANDLE).
+fn quiet_success(answer: Result<(), NtStatus>) -> i32 {
+    match answer {
+        Ok(()) => 1,
+        Err(status) if status.0 == STATUS_OBJECT_NAME_NOT_FOUND => 0,
+        Err(status) => {
+            imports::set_last_error(menu_error(status));
+            0
+        }
+    }
 }
 
 /// IsMenu: TRUE for a handle naming a menu; FALSE with ERROR_INVALID_MENU_HANDLE otherwise.
@@ -405,15 +601,23 @@ pub extern "system" fn get_sub_menu(menu: usize, position: i32) -> usize {
     }
 }
 
-/// GetMenuState: the item's GetMenuState word ([`state_word`]); -1 for no item.
+/// GetMenuState: the item's GetMenuState word ([`state_word`]), with MFS_CACHEDBMP for an item
+/// whose bitmap is a predefined one; -1 for no item.
 #[unsafe(export_name = "f2k_export_GetMenuState")]
 pub extern "system" fn get_menu_state(menu: usize, item: u32, flags: u32) -> u32 {
     match query_quiet(menu, item, flags) {
-        Ok(Some(item)) => state_word(
-            item.item_type,
-            item.state,
-            (item.submenu != 0).then_some(item.submenu_count),
-        ),
+        Ok(Some(item)) => {
+            let cached = if is_predefined_bitmap(item.bitmap) {
+                MFS_CACHEDBMP
+            } else {
+                0
+            };
+            state_word(
+                item.item_type,
+                item.state,
+                (item.submenu != 0).then_some(item.submenu_count),
+            ) | cached
+        }
         _ => u32::MAX,
     }
 }
@@ -578,6 +782,161 @@ pub extern "system" fn check_menu_radio_item(
     checked as i32
 }
 
+// --- The default item
+// -----------------------------------------------------------------------------
+
+/// GetMenuDefaultItem's flags: a disabled default answered too; a popup's own default answered
+/// for a default item that opens one.
+pub const GMDI_USEDISABLED: u32 = 0x0001;
+pub const GMDI_GOINTOPOPUPS: u32 = 0x0002;
+
+/// SetMenuDefaultItem: the item `item` names in the menu itself (`by_position`, or by command
+/// among its own items: a popup's are not searched) made its one default item (MFS_DEFAULT), -1
+/// none; TRUE. FALSE for no such item or a separator, the last error untouched (the menus
+/// fixture's `default` capture), or ERROR_INVALID_MENU_HANDLE.
+#[unsafe(export_name = "f2k_export_SetMenuDefaultItem")]
+pub extern "system" fn set_menu_default_item(menu: usize, item: u32, by_position: u32) -> i32 {
+    quiet_success(imports::set_menu_default_item(menu, item, by_position != 0))
+}
+
+/// GetMenuDefaultItem: the menu's first item holding MFS_DEFAULT, its position (`by_position`) or
+/// its id (a popup's item its id, the popup's handle for AppendMenu's); -1 for none, or a
+/// disabled one without GMDI_USEDISABLED. With GMDI_GOINTOPOPUPS, a default item that opens a
+/// popup answers the popup's own default, the item itself when the popup has none (as the
+/// `default` capture shows). -1 with ERROR_INVALID_MENU_HANDLE for a handle naming no menu.
+#[unsafe(export_name = "f2k_export_GetMenuDefaultItem")]
+pub extern "system" fn get_menu_default_item(menu: usize, by_position: u32, flags: u32) -> u32 {
+    let mut answer = MenuItemAnswer::EMPTY;
+    if failed_with(
+        imports::query_menu(menu, 0, 0, MENU_QUERY, &mut answer),
+        menu_error,
+    )
+    .is_none()
+    {
+        return u32::MAX;
+    }
+    default_item(menu, by_position != 0, flags, 0)
+}
+
+/// GetMenuDefaultItem's search of `menu`, `depth` popups down.
+fn default_item(menu: usize, by_position: bool, flags: u32, depth: u32) -> u32 {
+    let found = (0..)
+        .map_while(|position| {
+            query(menu, position, MF_BYPOSITION)
+                .ok()
+                .map(|item| (position, item))
+        })
+        .find(|(_, item)| item.state & MFS_DEFAULT != 0);
+    let Some((position, item)) = found else {
+        return u32::MAX;
+    };
+    if flags & GMDI_USEDISABLED == 0 && item.state & (MF_GRAYED | MF_DISABLED) != 0 {
+        return u32::MAX;
+    }
+    if item.submenu != 0 && flags & GMDI_GOINTOPOPUPS != 0 && depth < MAX_DEPTH {
+        let inner = default_item(item.submenu as usize, by_position, flags, depth + 1);
+        if inner != u32::MAX {
+            return inner;
+        }
+    }
+    if by_position {
+        position
+    } else {
+        item.id
+    }
+}
+
+// --- The system menu
+// ------------------------------------------------------------------------------
+
+/// WS_SYSMENU: the window has a system menu.
+const WS_SYSMENU: u32 = 0x0008_0000;
+
+/// The system commands (winuser.h's SC_*) the system menu's items carry.
+pub const SC_SIZE: u32 = 0xF000;
+pub const SC_MOVE: u32 = 0xF010;
+pub const SC_MINIMIZE: u32 = 0xF020;
+pub const SC_MAXIMIZE: u32 = 0xF030;
+pub const SC_CLOSE: u32 = 0xF060;
+pub const SC_RESTORE: u32 = 0xF120;
+
+/// The system menu's items, as the menus fixture's `sysmenu` capture shows Windows 2000's for every
+/// window that has one (its style changes none of them: Windows enables and grays them as the menu
+/// opens): the command, the text, the predefined bitmap (0 for none); a separator before Close.
+const SYSTEM_ITEMS: [(u32, &str, u32); 7] = [
+    (SC_RESTORE, "&Restore", HBMMENU_POPUP_RESTORE),
+    (SC_MOVE, "&Move", 0),
+    (SC_SIZE, "&Size", 0),
+    (SC_MINIMIZE, "Mi&nimize", HBMMENU_POPUP_MINIMIZE),
+    (SC_MAXIMIZE, "Ma&ximize", HBMMENU_POPUP_MAXIMIZE),
+    (0, "", 0),
+    (SC_CLOSE, "&Close\tAlt+F4", HBMMENU_POPUP_CLOSE),
+];
+
+/// A new popup holding the system menu's items; none with the last error.
+fn build_system_menu() -> Option<usize> {
+    let menu = create_popup_menu();
+    if menu == 0 {
+        return None;
+    }
+    for (id, text, bitmap) in SYSTEM_ITEMS {
+        let mut units = [0u16; MENU_ITEM_TEXT];
+        let mut length = 0;
+        for (unit, slot) in text.encode_utf16().zip(units.iter_mut()) {
+            *slot = unit;
+            length += 1;
+        }
+        let item_type = if id == 0 { MFT_SEPARATOR } else { MFT_STRING };
+        let info = MenuItemInfoW {
+            size: core::mem::size_of::<MenuItemInfoW>() as u32,
+            mask: MIIM_FTYPE | MIIM_ID | MIIM_STRING | MIIM_BITMAP,
+            item_type,
+            id,
+            bitmap,
+            ..MenuItemInfoW::default()
+        };
+        let inserted = imports::set_menu_item(
+            menu,
+            u32::MAX,
+            MF_BYPOSITION,
+            MENU_ITEM_INSERT,
+            &info,
+            &units[..length],
+        );
+        if failed_with(inserted, menu_error).is_none() {
+            let _ = imports::destroy_menu(menu);
+            return None;
+        }
+    }
+    Some(menu)
+}
+
+/// GetSystemMenu: the window's own copy of the system menu, made at the first call (none for a
+/// window without WS_SYSMENU), the same menu after; with `revert`, the copy destroyed and NULL
+/// answered (the next call makes another). NULL with ERROR_INVALID_WINDOW_HANDLE for a handle
+/// naming no window. The copy goes with its window.
+#[unsafe(export_name = "f2k_export_GetSystemMenu")]
+pub extern "system" fn get_system_menu(window: usize, revert: u32) -> usize {
+    let Some(copy) = crate::answered(imports::get_system_menu(window, revert != 0, 0)) else {
+        return 0;
+    };
+    if revert != 0 || copy != 0 {
+        return copy;
+    }
+    let has_one = crate::window::window_info(window).is_ok_and(|info| info.style & WS_SYSMENU != 0);
+    if !has_one {
+        return 0;
+    }
+    let Some(made) = build_system_menu() else {
+        return 0;
+    };
+    let copy = crate::answered(imports::get_system_menu(window, false, made)).unwrap_or(0);
+    if copy != made {
+        let _ = imports::destroy_menu(made);
+    }
+    copy
+}
+
 // --- A window's menu
 // -------------------------------------------------------------------------------
 
@@ -700,6 +1059,204 @@ mod tests {
         assert_eq!(destroy_menu(bar), 1);
         assert_eq!(is_menu(bar), 0);
         assert_eq!(destroy_menu(bar), 0);
+    }
+
+    fn state(menu: usize, position: u32) -> u32 {
+        get_menu_state(menu, position, MF_BYPOSITION)
+    }
+
+    fn ids(menu: usize) -> std::vec::Vec<u32> {
+        (0..get_menu_item_count(menu) as i32)
+            .map(|position| get_menu_item_id(menu, position))
+            .collect()
+    }
+
+    /// InsertMenu, ModifyMenu, DeleteMenu and RemoveMenu, as the edit section's capture answers
+    /// them: a textless string item a separator, an insertion by a missing command appended, a
+    /// separator keeping its text, a popup removed kept and a popup deleted destroyed.
+    ///
+    /// Pins: user32.AppendMenuW, user32.InsertMenuW, user32.ModifyMenuW, user32.DeleteMenu,
+    /// user32.RemoveMenu
+    #[test]
+    fn edits_follow_the_capture() {
+        let popup = create_popup_menu();
+        let text = |s: &str| units(s);
+        let as_units = |bytes: std::vec::Vec<u8>| -> std::vec::Vec<u16> {
+            bytes
+                .chunks(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect()
+        };
+        let one = as_units(text("&One"));
+        let four = as_units(text("Four"));
+        let lost = as_units(text("Lost"));
+        let uno = as_units(text("Uno"));
+        // SAFETY: the test's own strings, NUL-terminated.
+        unsafe {
+            assert_eq!(append_menu_w(popup, 0, 301, one.as_ptr()), 1);
+            assert_eq!(append_menu_w(popup, MF_GRAYED, 304, four.as_ptr()), 1);
+            assert_eq!(append_menu_w(popup, 0, 308, core::ptr::null()), 1);
+            assert_eq!(state(popup, 2), 0x803, "a string item of no text");
+            assert_eq!(
+                insert_menu_w(popup, 399, MF_BYCOMMAND, 311, lost.as_ptr()),
+                1
+            );
+            assert_eq!(
+                insert_menu_w(popup, 304, MF_BYCOMMAND, 313, lost.as_ptr()),
+                1
+            );
+            assert_eq!(ids(popup), [301, 313, 304, 308, 311]);
+            assert_eq!(
+                modify_menu_w(popup, 301, MF_BYCOMMAND | MF_CHECKED, 321, uno.as_ptr()),
+                1
+            );
+            assert_eq!(state(popup, 0), MF_CHECKED);
+            assert_eq!(
+                modify_menu_w(
+                    popup,
+                    304,
+                    MF_BYCOMMAND | MF_SEPARATOR,
+                    0,
+                    core::ptr::null()
+                ),
+                1
+            );
+            assert_eq!(string_w(popup, 2, 32, MF_BYPOSITION), (4, "Four".into()));
+            assert_eq!(state(popup, 2), 0x803);
+            LAST_ERROR.with(|error| error.set(0));
+            assert_eq!(
+                modify_menu_w(popup, 50, MF_BYPOSITION, 325, lost.as_ptr()),
+                0
+            );
+            assert_eq!(last_error(), ERROR_MENU_ITEM_NOT_FOUND);
+        }
+        LAST_ERROR.with(|error| error.set(0));
+        assert_eq!(delete_menu(popup, 399, MF_BYCOMMAND), 0);
+        assert_eq!(remove_menu(popup, 40, MF_BYPOSITION), 0);
+        assert_eq!(last_error(), 0, "no such item leaves the last error");
+        assert_eq!(delete_menu(0, 0, MF_BYPOSITION), 0);
+        assert_eq!(last_error(), ERROR_INVALID_MENU_HANDLE);
+        assert_eq!(remove_menu(popup, 0, MF_BYPOSITION), 1);
+        assert_eq!(ids(popup), [313, 0, 308, 311]);
+
+        let bar = create_menu();
+        let kept = create_popup_menu();
+        let gone = create_popup_menu();
+        let name = as_units(text("&Removed"));
+        // SAFETY: the test's own string.
+        unsafe {
+            append_menu_w(bar, MF_POPUP, kept, name.as_ptr());
+            append_menu_w(bar, MF_POPUP, gone, name.as_ptr());
+        }
+        assert_eq!(remove_menu(bar, 0, MF_BYPOSITION), 1);
+        assert_eq!(is_menu(kept), 1);
+        assert_eq!(delete_menu(bar, 0, MF_BYPOSITION), 1);
+        assert_eq!(is_menu(gone), 0);
+        assert_eq!(get_menu_item_count(bar), 0);
+    }
+
+    /// SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags, as the default section's
+    /// capture answers them.
+    ///
+    /// Pins: user32.SetMenuDefaultItem, user32.GetMenuDefaultItem
+    #[test]
+    fn the_default_item_follows_the_capture() {
+        let menu = create_popup_menu();
+        let sub = create_popup_menu();
+        let name = |s: &str| -> std::vec::Vec<u16> { s.encode_utf16().chain([0]).collect() };
+        // SAFETY: the test's own strings.
+        unsafe {
+            append_menu_w(menu, 0, 601, name("A").as_ptr());
+            append_menu_w(menu, MF_GRAYED, 602, name("B").as_ptr());
+            append_menu_w(menu, MF_SEPARATOR, 0, core::ptr::null());
+            append_menu_w(menu, 0, 603, name("C").as_ptr());
+            append_menu_w(sub, 0, 611, name("X").as_ptr());
+            append_menu_w(sub, 0, 612, name("Y").as_ptr());
+            append_menu_w(menu, MF_POPUP, sub, name("&D").as_ptr());
+        }
+        let both = GMDI_USEDISABLED | GMDI_GOINTOPOPUPS;
+        assert_eq!(get_menu_default_item(menu, 0, 0), u32::MAX);
+        assert_eq!(set_menu_default_item(menu, 603, 0), 1);
+        assert_eq!(get_menu_state(menu, 603, MF_BYCOMMAND), 0x1000);
+        assert_eq!(get_menu_default_item(menu, 1, 0), 3);
+        assert_eq!(set_menu_default_item(menu, 1, 1), 1);
+        assert_eq!(get_menu_state(menu, 603, MF_BYCOMMAND), 0);
+        assert_eq!(get_menu_default_item(menu, 0, 0), u32::MAX, "disabled");
+        assert_eq!(get_menu_default_item(menu, 0, GMDI_USEDISABLED), 602);
+        assert_eq!(set_menu_default_item(menu, 4, 1), 1);
+        assert_eq!(
+            get_menu_default_item(menu, 0, GMDI_GOINTOPOPUPS),
+            sub as u32
+        );
+        assert_eq!(set_menu_default_item(sub, 612, 0), 1);
+        assert_eq!(get_menu_default_item(menu, 0, both), 612);
+        assert_eq!(get_menu_default_item(menu, 1, GMDI_GOINTOPOPUPS), 1);
+        assert_eq!(get_menu_default_item(menu, 1, 0), 4);
+        assert_eq!(set_menu_default_item(menu, 2, 1), 0, "a separator");
+        assert_eq!(set_menu_default_item(menu, 611, 0), 0, "a popup's item");
+        assert_eq!(get_menu_default_item(menu, 1, 0), 4);
+        assert_eq!(set_menu_default_item(menu, u32::MAX, 0), 1);
+        assert_eq!(get_menu_default_item(menu, 0, both), u32::MAX);
+        assert_eq!(set_menu_default_item(0, 0, 1), 0);
+        assert_eq!(get_menu_default_item(0, 0, 0), u32::MAX);
+        assert_eq!(last_error(), ERROR_INVALID_MENU_HANDLE);
+    }
+
+    /// GetSystemMenu: the sysmenu section's items, the same copy twice, NULL for a window without
+    /// WS_SYSMENU, a revert destroying the copy.
+    ///
+    /// Pins: user32.GetSystemMenu
+    #[test]
+    fn system_menus_follow_the_capture() {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let class = crate::class::WndClass {
+            wnd_proc: crate::imports::host::procedure(|w, m, wp, lp| {
+                crate::message::def_window_proc_a(w as usize, m, wp, lp)
+            }) as usize,
+            class_name: c"F2KSysMenu".as_ptr() as usize,
+            ..crate::class::WndClass::default()
+        };
+        let create = |style: u32| {
+            // SAFETY: the class's name, the test's own.
+            unsafe {
+                crate::window::create_window_ex_a(
+                    0,
+                    c"F2KSysMenu".as_ptr().cast(),
+                    core::ptr::null(),
+                    style,
+                    40,
+                    40,
+                    320,
+                    200,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            }
+        };
+        // SAFETY: a WNDCLASSA of the test's own.
+        unsafe { crate::class::register_class_a(&class) };
+        let window = create(0x00CF_0000);
+        let menu = get_system_menu(window, 0);
+        assert_ne!(menu, 0);
+        assert_eq!(get_system_menu(window, 0), menu, "the same copy");
+        assert_eq!(get_menu_item_count(menu), 7);
+        assert_eq!(get_menu_item_id(menu, 0), SC_RESTORE);
+        assert_eq!(state(menu, 0), MFS_CACHEDBMP);
+        assert_eq!(state(menu, 1), 0, "Move has no bitmap");
+        assert_eq!(state(menu, 5), 0x803);
+        assert_eq!(
+            string_w(menu, 6, 32, MF_BYPOSITION),
+            (13, "&Close\tAlt+F4".into())
+        );
+        assert_eq!(get_system_menu(window, 1), 0);
+        assert_eq!(is_menu(menu), 0, "the revert destroys the copy");
+        assert_ne!(get_system_menu(window, 0), 0);
+        let popup = create(0x8000_0000);
+        assert_eq!(get_system_menu(popup, 0), 0, "no WS_SYSMENU");
+        assert_eq!(get_system_menu(0, 0), 0);
+        assert_eq!(last_error(), crate::ERROR_INVALID_WINDOW_HANDLE);
     }
 
     /// CheckMenuRadioItem's range and check, as the check section's capture.

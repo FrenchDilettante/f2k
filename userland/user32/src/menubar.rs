@@ -1,6 +1,8 @@
 //! The menu bar and its popups: the bar drawn in a window's non-client area, the popup menu
 //! windows (the system's menu class, #32768), the keyboard menu loop the default window procedure
-//! runs for WM_SYSCOMMAND's SC_KEYMENU, DrawMenuBar and EndMenu.
+//! runs for WM_SYSCOMMAND's SC_KEYMENU, the same loop over a popup of its own for TrackPopupMenu
+//! and TrackPopupMenuEx, DrawMenuBar, EndMenu (and WM_CANCELMODE, which ends it),
+//! GetMenuItemRect and GetMenuCheckMarkDimensions.
 //!
 //! Windows 2000 runs the menu loop in win32k (xxxMNLoop), which sends the owner its menu messages
 //! by calling back into user mode; F2K's win32k calls no user-mode code, so the loop runs here,
@@ -96,6 +98,14 @@ pub const WM_EXITMENULOOP: u32 = 0x0212;
 
 /// WM_SYSCOMMAND's commands (winuser.h's SC_*).
 pub const SC_KEYMENU: u32 = 0xF100;
+
+/// TrackPopupMenu's flags (winuser.h's TPM_*): the popup's alignment on its point, and the
+/// command answered rather than posted.
+pub const TPM_CENTERALIGN: u32 = 0x0004;
+pub const TPM_RIGHTALIGN: u32 = 0x0008;
+pub const TPM_VCENTERALIGN: u32 = 0x0010;
+pub const TPM_BOTTOMALIGN: u32 = 0x0020;
+pub const TPM_RETURNCMD: u32 = 0x0100;
 
 /// WM_ENTERIDLE's MSGF_MENU.
 const MSGF_MENU: u32 = 2;
@@ -612,7 +622,8 @@ enum End {
     Command(u32),
 }
 
-/// A keyboard menu loop's state.
+/// A menu loop's state: the keyboard loop of a window's bar, or a popup's TrackPopupMenu runs
+/// (`bar` 0, the popup its first level, which closing ends the loop).
 struct Tracker {
     owner: usize,
     bar: usize,
@@ -644,8 +655,16 @@ impl Tracker {
         }
     }
 
-    /// The bar's selection published for its drawing, and the bar redrawn.
+    /// Whether the loop tracks a popup of its own (TrackPopupMenu's), not a bar.
+    fn tracks_popup(&self) -> bool {
+        self.bar == 0
+    }
+
+    /// The bar's selection published for its drawing, and the bar redrawn (no bar: nothing).
     fn show_bar(&self) {
+        if self.tracks_popup() {
+            return;
+        }
         BAR_SELECTED.store(self.bar_selected.unwrap_or(u32::MAX), Ordering::Release);
         BAR_OPEN.store((self.depth > 0) as u32, Ordering::Release);
         redraw_bar(self.owner);
@@ -712,13 +731,12 @@ impl Tracker {
             (position & 0xFFFF) as i32,
         );
 
-        // Its place: under the bar item, or beside the popup item, kept on the screen.
+        // Its place: under the bar item, or beside the popup item.
         let Ok(screen_dc) = imports::get_dc(0) else {
             return;
         };
         let screen_dc = screen_dc as usize;
         let previous = select_menu_font(screen_dc);
-        let (cx, cy) = popup_size(screen_dc, menu);
         let anchor = if self.depth == 0 {
             Framed::of(self.owner).and_then(|framed| {
                 let bar = framed.frame().menu_bar(framed.rect)?;
@@ -742,6 +760,27 @@ impl Tracker {
         }
         let _ = imports::close(screen_dc);
         let (x, y) = anchor.unwrap_or((0, 0));
+        if self.show(menu, x, y, 0) {
+            if let Some(first) = self.next_item(None, true) {
+                self.select_item(first);
+            }
+        }
+    }
+
+    /// The popup window of `menu` made and shown, its corner at (`x`, `y`) as `align` (TPM_*'s
+    /// alignment) places it, kept on the screen: the innermost level. False when it could not be
+    /// made.
+    fn show(&mut self, menu: usize, x: i32, y: i32, align: u32) -> bool {
+        let Ok(screen_dc) = imports::get_dc(0) else {
+            return false;
+        };
+        let screen_dc = screen_dc as usize;
+        let previous = select_menu_font(screen_dc);
+        let (cx, cy) = popup_size(screen_dc, menu);
+        if let Some(previous) = previous {
+            imports::select_object(screen_dc, previous);
+        }
+        let _ = imports::close(screen_dc);
         let frame = rtl::nonclient::Frame::of_styles(POPUP_STYLE, POPUP_EX_STYLE, false);
         let outer = frame.window(Rect {
             left: 0,
@@ -750,6 +789,16 @@ impl Tracker {
             bottom: cy,
         });
         let (width, height) = (outer.right - outer.left, outer.bottom - outer.top);
+        let x = match align & (TPM_CENTERALIGN | TPM_RIGHTALIGN) {
+            TPM_CENTERALIGN => x - width / 2,
+            TPM_RIGHTALIGN => x - width,
+            _ => x,
+        };
+        let y = match align & (TPM_VCENTERALIGN | TPM_BOTTOMALIGN) {
+            TPM_VCENTERALIGN => y - height / 2,
+            TPM_BOTTOMALIGN => y - height,
+            _ => y,
+        };
         let screen_width = crate::display::get_system_metrics(0);
         let screen_height = crate::display::get_system_metrics(1);
         let x = x.min(screen_width - width).max(0);
@@ -770,7 +819,7 @@ impl Tracker {
             version: window::EXPECTED_VERSION,
         });
         if popup == 0 {
-            return;
+            return false;
         }
         window::set_window_long_w(popup, EXTRA_MENU, menu as i32);
         window::set_window_long_w(popup, EXTRA_SELECTED, -1);
@@ -792,9 +841,7 @@ impl Tracker {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
-        if let Some(first) = self.next_item(None, true) {
-            self.select_item(first);
-        }
+        true
     }
 
     /// The innermost popup closed: its window destroyed, WM_UNINITMENUPOPUP.
@@ -807,6 +854,9 @@ impl Tracker {
         window::destroy_window(level.window);
         let _ = message::send(self.owner, WM_UNINITMENUPOPUP, level.menu as u32, 0);
         if self.depth == 0 {
+            if self.tracks_popup() && self.end == End::Running {
+                self.end = End::Cancelled;
+            }
             self.show_bar();
         }
     }
@@ -839,7 +889,7 @@ impl Tracker {
     /// open closed, the new item's opened.
     fn move_bar(&mut self, forward: bool) {
         let total = count(self.bar);
-        if total == 0 {
+        if total == 0 || self.tracks_popup() {
             return;
         }
         let was_open = self.depth > 0;
@@ -883,7 +933,7 @@ impl Tracker {
             VK_ESCAPE => {
                 if self.depth > 0 {
                     self.close();
-                    if self.depth == 0 {
+                    if self.depth == 0 && !self.tracks_popup() {
                         if let Some(index) = self.bar_selected {
                             self.select_bar(index);
                         }
@@ -992,7 +1042,56 @@ impl Tracker {
         BAR_SELECTED.store(u32::MAX, Ordering::Release);
         BAR_OPEN.store(0, Ordering::Release);
         redraw_bar(self.owner);
-        let _ = message::send(self.owner, WM_EXITMENULOOP, 0, 0);
+        let popup = self.tracks_popup() as u32;
+        let _ = message::send(self.owner, WM_EXITMENULOOP, popup, 0);
+    }
+
+    /// The loop run to its end (a command chosen, cancelled, EndMenu, WM_QUIT), the end's
+    /// messages sent ([`Tracker::finish`]); the WM_QUIT's exit code the loop read, if one, for
+    /// the caller to post again.
+    fn run(&mut self) -> Option<u32> {
+        let mut idle_sent = false;
+        let mut quit = None;
+        while self.end == End::Running {
+            if END_MENU.swap(0, Ordering::AcqRel) != 0 {
+                self.end = End::Cancelled;
+                break;
+            }
+            if !message::queue_holds_message() {
+                if !idle_sent {
+                    idle_sent = true;
+                    let popup = match self.depth {
+                        0 => 0,
+                        depth => self.levels[depth - 1].window,
+                    };
+                    let _ = message::send(self.owner, WM_ENTERIDLE, MSGF_MENU, popup as i32);
+                    continue;
+                }
+            } else {
+                idle_sent = false;
+            }
+            let mut msg = Msg::default();
+            match message::next_message(&mut msg) {
+                None => self.end = End::Cancelled,
+                Some(false) => {
+                    quit = Some(msg.wparam);
+                    self.end = End::Cancelled;
+                }
+                Some(true) => match msg.message {
+                    WM_KEYDOWN | WM_SYSKEYDOWN => {
+                        message::translate(&msg);
+                        self.key(msg.wparam);
+                    }
+                    WM_CHAR | WM_SYSCHAR => self.character(msg.wparam as u16),
+                    WM_KEYUP | WM_SYSKEYUP => {}
+                    _ => {
+                        message::dispatch(&msg, false);
+                    }
+                },
+            }
+        }
+        self.finish();
+        quit
     }
 }
 
@@ -1029,53 +1128,164 @@ pub fn track_keyboard(owner: usize, character: u32) {
         tracker.character(character as u16);
     }
 
-    let mut idle_sent = false;
-    let mut quit = None;
-    while tracker.end == End::Running {
-        if END_MENU.swap(0, Ordering::AcqRel) != 0 {
-            tracker.end = End::Cancelled;
-            break;
-        }
-        if !message::queue_holds_message() {
-            if !idle_sent {
-                idle_sent = true;
-                let popup = match tracker.depth {
-                    0 => 0,
-                    depth => tracker.levels[depth - 1].window,
-                };
-                let _ = message::send(owner, WM_ENTERIDLE, MSGF_MENU, popup as i32);
-                continue;
-            }
-        } else {
-            idle_sent = false;
-        }
-        let mut msg = Msg::default();
-        match message::next_message(&mut msg) {
-            None => tracker.end = End::Cancelled,
-            Some(false) => {
-                quit = Some(msg.wparam);
-                tracker.end = End::Cancelled;
-            }
-            Some(true) => match msg.message {
-                WM_KEYDOWN | WM_SYSKEYDOWN => {
-                    message::translate(&msg);
-                    tracker.key(msg.wparam);
-                }
-                WM_CHAR | WM_SYSCHAR => tracker.character(msg.wparam as u16),
-                WM_KEYUP | WM_SYSKEYUP => {}
-                _ => {
-                    message::dispatch(&msg, false);
-                }
-            },
-        }
-    }
-    tracker.finish();
+    let quit = tracker.run();
     if let End::Command(id) = tracker.end {
         let _ = imports::post_message(owner, WM_COMMAND, id & 0xFFFF, 0);
     }
     if let Some(code) = quit {
         message::post_quit_message(code as i32);
     }
+}
+
+/// WM_CANCELMODE's menu side, the default procedure's: the menu loop `window` owns ended, as
+/// EndMenu ends it (the loop of another window, or none, left alone).
+pub fn cancel_mode(window: usize) {
+    if window != 0 && loop_owner() == window {
+        end_menu();
+    }
+}
+
+/// TrackPopupMenu: the popup `menu` shown at (`x`, `y`) for `owner`, and its menu loop run to its
+/// end on the calling thread, as the menus fixture's `track` capture shows Windows 2000's: the
+/// owner gets WM_ENTERMENULOOP (TRUE), WM_INITMENU and WM_INITMENUPOPUP (the popup, index 0),
+/// nothing selected until a key moves; the end closes it (WM_UNINITMENUPOPUP), sends the
+/// menu-closed WM_MENUSELECT and WM_EXITMENULOOP (TRUE). With TPM_RETURNCMD the command chosen is
+/// answered (0 for none); without it, the command is posted to the owner as WM_COMMAND and TRUE
+/// answered. FALSE with ERROR_INVALID_MENU_HANDLE or ERROR_INVALID_WINDOW_HANDLE, no message sent,
+/// or while another menu loop runs in the process. The mouse is not served: the keys and
+/// WM_CANCELMODE (or EndMenu) end it. `reserved` and the rectangle are unread, as Windows 2000's
+/// are.
+#[unsafe(export_name = "f2k_export_TrackPopupMenu")]
+pub extern "system" fn track_popup_menu(
+    menu: usize,
+    flags: u32,
+    x: i32,
+    y: i32,
+    _reserved: i32,
+    owner: usize,
+    _rect: usize,
+) -> i32 {
+    track_popup(menu, flags, x, y, owner)
+}
+
+/// TrackPopupMenuEx: TrackPopupMenu's; the TPMPARAMS' rectangle to keep clear is not read.
+#[unsafe(export_name = "f2k_export_TrackPopupMenuEx")]
+pub extern "system" fn track_popup_menu_ex(
+    menu: usize,
+    flags: u32,
+    x: i32,
+    y: i32,
+    owner: usize,
+    _params: usize,
+) -> i32 {
+    track_popup(menu, flags, x, y, owner)
+}
+
+/// TrackPopupMenu's core.
+fn track_popup(menu: usize, flags: u32, x: i32, y: i32, owner: usize) -> i32 {
+    if crate::menu::is_menu(menu) == 0 {
+        return 0;
+    }
+    if !window::is_window_alive(owner) {
+        return crate::failed(crate::ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
+    }
+    if OWNER
+        .compare_exchange(0, owner as u32, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return 0;
+    }
+    END_MENU.store(0, Ordering::Release);
+    let mut tracker = Tracker {
+        owner,
+        bar: 0,
+        bar_selected: None,
+        levels: [Level::default(); LEVELS],
+        depth: 0,
+        end: End::Running,
+    };
+    let _ = message::send(owner, WM_ENTERMENULOOP, 1, 0);
+    let _ = message::send(owner, WM_INITMENU, menu as u32, 0);
+    let _ = message::send(owner, WM_INITMENUPOPUP, menu as u32, 0);
+    if !tracker.show(menu, x, y, flags) {
+        tracker.end = End::Cancelled;
+    }
+    let quit = tracker.run();
+    if let Some(code) = quit {
+        message::post_quit_message(code as i32);
+    }
+    match tracker.end {
+        End::Command(id) if flags & TPM_RETURNCMD != 0 => id as i32,
+        End::Command(id) => {
+            let _ = imports::post_message(owner, WM_COMMAND, id & 0xFFFF, 0);
+            1
+        }
+        _ => (flags & TPM_RETURNCMD == 0) as i32,
+    }
+}
+
+/// GetMenuCheckMarkDimensions: a menu check mark's cell, SM_CXMENUCHECK in the low word and
+/// SM_CYMENUCHECK in the high.
+#[unsafe(export_name = "f2k_export_GetMenuCheckMarkDimensions")]
+pub extern "system" fn get_menu_check_mark_dimensions() -> u32 {
+    let cx = crate::display::get_system_metrics(71) as u32;
+    let cy = crate::display::get_system_metrics(72) as u32;
+    (cx & 0xFFFF) | (cy & 0xFFFF) << 16
+}
+
+/// GetMenuItemRect: the rectangle, in screen coordinates, of the item at `position` of `menu`:
+/// an item of `window`'s bar where the bar lies in its frame (hidden or not), as wide as its text
+/// and its room, its height the bar's less the line under it (the menus fixture's `itemrect`
+/// capture); an item of another menu (a popup) at its place in a popup window at the screen's
+/// corner (F2K does not yet find the popup window a menu loop shows it in). FALSE, the last error
+/// untouched, for a NULL window or an item past the end; with ERROR_INVALID_MENU_HANDLE for a
+/// handle naming no menu.
+///
+/// # Safety
+///
+/// `rect` is the caller's RECT, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetMenuItemRect")]
+pub unsafe extern "system" fn get_menu_item_rect(
+    window: usize,
+    menu: usize,
+    position: u32,
+    rect: *mut Rect,
+) -> i32 {
+    if crate::menu::is_menu(menu) == 0 || window == 0 {
+        return 0;
+    }
+    let Some(found) = item_rect(window, menu, position) else {
+        return 0;
+    };
+    // SAFETY: the caller's contract.
+    unsafe { crate::Out::new(rect) }.set(found);
+    1
+}
+
+/// The screen rectangle of the item at `position` of `menu`, for [`get_menu_item_rect`].
+fn item_rect(window: usize, menu: usize, position: u32) -> Option<Rect> {
+    item(menu, position)?;
+    let Ok(screen_dc) = imports::get_dc(0) else {
+        return None;
+    };
+    let screen_dc = screen_dc as usize;
+    let previous = select_menu_font(screen_dc);
+    let framed = Framed::of(window).filter(|framed| framed.menu == menu);
+    let found = match framed {
+        Some(framed) => framed
+            .frame()
+            .menu_bar(framed.rect)
+            .and_then(|bar| bar_item(screen_dc, menu, bar, position)),
+        None => {
+            let (width, _) = popup_size(screen_dc, menu);
+            popup_item(screen_dc, menu, position, width)
+        }
+    };
+    if let Some(previous) = previous {
+        imports::select_object(screen_dc, previous);
+    }
+    let _ = imports::close(screen_dc);
+    found
 }
 
 #[cfg(test)]
@@ -1087,6 +1297,10 @@ mod tests {
     use crate::imports::host::procedure;
     use crate::menu::{append_menu_w, create_menu, create_popup_menu};
     use crate::window::create_window_ex_a;
+
+    /// The menu loops' tests, one at a time: a process runs one loop at once ([`OWNER`]), and the
+    /// tests' threads share the process.
+    static LOOPS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     std::thread_local! {
         static SEEN: RefCell<std::vec::Vec<(u32, u32, i32)>> = const { RefCell::new(std::vec::Vec::new()) };
@@ -1191,6 +1405,9 @@ mod tests {
     /// Pins: user32.DefWindowProcA, user32.AppendMenuW, user32.DrawMenuBar
     #[test]
     fn the_keyboard_loop_chooses_an_item() {
+        let _one = LOOPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (window, bar, view) = window_with_menu();
         crate::message::receive_sent();
         for vk in [VK_RIGHT, VK_DOWN, VK_DOWN, VK_RETURN] {
@@ -1220,5 +1437,73 @@ mod tests {
         assert_eq!(crate::message::next_message(&mut msg), Some(true));
         assert_eq!((msg.message, msg.wparam, msg.lparam), (WM_COMMAND, 212, 0));
         assert_eq!(draw_menu_bar(window), 1);
+    }
+
+    /// TrackPopupMenu: the track section's messages for a menu ended by WM_CANCELMODE (posted
+    /// here, the default procedure ending the loop), and Down and Enter choosing the first item,
+    /// TPM_RETURNCMD answering it, its absence posting it.
+    ///
+    /// Pins: user32.TrackPopupMenu, user32.TrackPopupMenuEx
+    #[test]
+    fn tracked_popups_end_as_the_capture() {
+        let _one = LOOPS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (window, _, view) = window_with_menu();
+        crate::message::receive_sent();
+        let _ = imports::post_message(window, rtl::user::WM_CANCELMODE, 0, 0);
+        SEEN.with(|seen| seen.borrow_mut().clear());
+        assert_eq!(
+            track_popup_menu(view, TPM_RETURNCMD, 10, 10, 0, window, 0),
+            0
+        );
+        let seen = SEEN.with(|seen| seen.take());
+        assert_eq!(
+            seen,
+            [
+                (WM_ENTERMENULOOP, 1, 0),
+                (WM_INITMENU, view as u32, 0),
+                (WM_INITMENUPOPUP, view as u32, 0),
+                (WM_UNINITMENUPOPUP, view as u32, 0),
+                (WM_MENUSELECT, 0xFFFF << 16, 0),
+                (WM_EXITMENULOOP, 1, 0),
+            ]
+        );
+        assert_eq!(loop_owner(), 0);
+
+        for vk in [VK_DOWN, VK_RETURN] {
+            let _ = imports::post_message(window, WM_KEYDOWN, vk, 0);
+        }
+        assert_eq!(
+            track_popup_menu_ex(view, TPM_RETURNCMD, 10, 10, window, 0),
+            211
+        );
+        for vk in [VK_DOWN, VK_DOWN, VK_RETURN] {
+            let _ = imports::post_message(window, WM_KEYDOWN, vk, 0);
+        }
+        assert_eq!(track_popup_menu(view, 0, 10, 10, 0, window, 0), 1);
+        let mut msg = Msg::default();
+        assert_eq!(crate::message::next_message(&mut msg), Some(true));
+        assert_eq!((msg.message, msg.wparam), (WM_COMMAND, 212));
+
+        assert_eq!(track_popup_menu(0, TPM_RETURNCMD, 10, 10, 0, window, 0), 0);
+        assert_eq!(
+            crate::imports::host::LAST_ERROR.with(|error| error.get()),
+            crate::menu::ERROR_INVALID_MENU_HANDLE
+        );
+        assert_eq!(track_popup_menu(view, TPM_RETURNCMD, 10, 10, 0, 0, 0), 0);
+        assert_eq!(
+            crate::imports::host::LAST_ERROR.with(|error| error.get()),
+            crate::ERROR_INVALID_WINDOW_HANDLE
+        );
+    }
+
+    /// GetMenuCheckMarkDimensions: the check mark's metrics in its two words.
+    ///
+    /// Pins: user32.GetMenuCheckMarkDimensions
+    #[test]
+    fn check_mark_dimensions_are_the_metrics() {
+        let cell = rtl::nonclient::MENU_CHECK as u32;
+        assert_eq!(get_menu_check_mark_dimensions(), cell | cell << 16);
     }
 }
