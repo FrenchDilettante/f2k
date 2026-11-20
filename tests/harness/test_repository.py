@@ -367,6 +367,11 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
+    "kernel/src/dev/loader.rs": "the kernel image's own export directory, read through the kernel"
+    " image window",
+    "kernel/src/hal/exports.rs": "the hal.dll entry points' device registers and buffers, named by"
+    " kernel-mode drivers through their resolved imports: no system service reaches them, so no"
+    " program's pointer does",
     "kernel/src/hw/vbe/trampoline.rs": "the trampoline's run of conventional memory, taken out of"
     " the free lists at boot (no program's page is ever there), the BIOS's mode list and the"
     " framebuffer, through the kernel window",
