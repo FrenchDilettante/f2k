@@ -317,6 +317,67 @@ fn get_string_type_w_refusals_and_empty_counts() {
     assert_eq!(out, [0xCCCC; 4]);
 }
 
+/// A null source is ERROR_INVALID_PARAMETER for LCMapString and GetStringType, A and W, whatever
+/// the count (a terminated one or a length), the output untouched: the call refuses it before it
+/// reads, where it used to fault.
+///
+/// Pins: kernel32.LCMapStringA, kernel32.LCMapStringW
+/// Pins: kernel32.GetStringTypeA, kernel32.GetStringTypeW
+#[test]
+fn a_null_source_is_refused_before_it_is_read() {
+    for count in [-1, 3] {
+        let mut wide = [0xCCCCu16; 10];
+        assert_eq!(
+            unsafe {
+                lc_map_string_w(
+                    LOCALE_US,
+                    LCMAP_UPPERCASE,
+                    core::ptr::null(),
+                    count,
+                    wide.as_mut_ptr(),
+                    10,
+                )
+            },
+            0
+        );
+        assert_eq!(last_error(), 87, "LCMapStringW, count {count}");
+        let mut narrow = [0xCCu8; 10];
+        assert_eq!(
+            unsafe {
+                lc_map_string_a(
+                    LOCALE_US,
+                    LCMAP_LOWERCASE,
+                    core::ptr::null(),
+                    count,
+                    narrow.as_mut_ptr(),
+                    10,
+                )
+            },
+            0
+        );
+        assert_eq!(last_error(), 87, "LCMapStringA, count {count}");
+        assert_eq!(
+            unsafe { get_string_type_w(CT_CTYPE1, core::ptr::null(), count, wide.as_mut_ptr()) },
+            0
+        );
+        assert_eq!(last_error(), 87, "GetStringTypeW, count {count}");
+        assert_eq!(
+            unsafe {
+                get_string_type_a(
+                    LOCALE_US,
+                    CT_CTYPE1,
+                    core::ptr::null(),
+                    count,
+                    wide.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        assert_eq!(last_error(), 87, "GetStringTypeA, count {count}");
+        assert_eq!((wide, narrow), ([0xCCCC; 10], [0xCC; 10]));
+    }
+}
+
 /// GetCPInfo for UTF-8: TRUE, MaxCharSize 4. A code page the system lacks (12345) is refused with
 /// FALSE and ERROR_INVALID_PARAMETER. The runtime fixture's locale block makes the same calls.
 ///

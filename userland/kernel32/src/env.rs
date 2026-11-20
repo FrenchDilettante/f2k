@@ -6,7 +6,7 @@
 //! process heap (ntdll's RtlUnicodeToMultiByteN).
 
 use crate::base::{set_last_error, unicode_string};
-use crate::edge::{counted, InStr, InWStr, OutBuf, Text};
+use crate::edge::{counted, counted_optional, InStr, InWStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
 use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
@@ -157,11 +157,12 @@ pub unsafe extern "system" fn get_environment_variable_a(
     answer(value, 0)
 }
 
-/// GetEnvironmentVariableW (see [`variable`]).
+/// GetEnvironmentVariableW (see [`variable`]): a null name is the empty one, as Windows 2000's
+/// RtlInitUnicodeString makes it (and as the A call's conversion does), so ERROR_ENVVAR_NOT_FOUND.
 ///
 /// # Safety
 ///
-/// `name` points at a NUL-terminated UTF-16 string, `buffer` holds `size` characters.
+/// `name` is null or points at a NUL-terminated UTF-16 string, `buffer` holds `size` characters.
 #[unsafe(export_name = "f2k_export_GetEnvironmentVariableW")]
 pub unsafe extern "system" fn get_environment_variable_w(
     name: *const u16,
@@ -169,8 +170,11 @@ pub unsafe extern "system" fn get_environment_variable_w(
     size: u32,
 ) -> u32 {
     // SAFETY: the caller's name and buffer (the contract).
-    let (name, buffer) = unsafe { (InWStr::new(name), OutBuf::new(buffer, size as usize)) };
-    answer(variable(&counted(&name), Text::Wide(buffer)), 0)
+    let (name, buffer) = unsafe { (InWStr::optional(name), OutBuf::new(buffer, size as usize)) };
+    answer(
+        variable(&counted_optional(name.as_ref()), Text::Wide(buffer)),
+        0,
+    )
 }
 
 /// SetEnvironmentVariableA: set the variable to the value, or delete it for a null value; FALSE
@@ -202,19 +206,23 @@ fn set_variable_a(name: Option<InStr<'_>>, value: Option<InStr<'_>>) -> Result<(
         .map_err(Failure::Status)
 }
 
-/// SetEnvironmentVariableW: as SetEnvironmentVariableA, the strings wide.
+/// SetEnvironmentVariableW: as SetEnvironmentVariableA, the strings wide (a null name the empty
+/// one, as the A call's is).
 ///
 /// # Safety
 ///
-/// `name` and `value` (when given) point at NUL-terminated strings.
+/// `name` and `value` are null or point at NUL-terminated strings.
 #[unsafe(export_name = "f2k_export_SetEnvironmentVariableW")]
 pub unsafe extern "system" fn set_environment_variable_w(
     name: *const u16,
     value: *const u16,
 ) -> u32 {
     // SAFETY: the caller's strings (the contract).
-    let (name, value) = unsafe { (InWStr::new(name), InWStr::optional(value)) };
-    let (name, value) = (counted(&name), value.map(|value| counted(&value)));
+    let (name, value) = unsafe { (InWStr::optional(name), InWStr::optional(value)) };
+    let (name, value) = (
+        counted_optional(name.as_ref()),
+        value.map(|value| counted(&value)),
+    );
     bool_answer(ntcall::set_environment_variable(&name, value.as_ref()).map_err(Failure::Status))
 }
 
@@ -262,11 +270,13 @@ pub unsafe extern "system" fn expand_environment_strings_a(
     answer(expanded, 0)
 }
 
-/// ExpandEnvironmentStringsW (see [`expand`]).
+/// ExpandEnvironmentStringsW (see [`expand`]): a null source is the empty one, as the A call's is
+/// (its expansion the terminator alone).
 ///
 /// # Safety
 ///
-/// `source` points at a NUL-terminated UTF-16 string, `buffer` holds `size` characters.
+/// `source` is null or points at a NUL-terminated UTF-16 string, `buffer` holds `size`
+/// characters.
 #[unsafe(export_name = "f2k_export_ExpandEnvironmentStringsW")]
 pub unsafe extern "system" fn expand_environment_strings_w(
     source: *const u16,
@@ -274,6 +284,10 @@ pub unsafe extern "system" fn expand_environment_strings_w(
     size: u32,
 ) -> u32 {
     // SAFETY: the caller's source and buffer (the contract).
-    let (source, buffer) = unsafe { (InWStr::new(source), OutBuf::new(buffer, size as usize)) };
-    answer(expand(&counted(&source), Text::Wide(buffer)), 0)
+    let (source, buffer) =
+        unsafe { (InWStr::optional(source), OutBuf::new(buffer, size as usize)) };
+    answer(
+        expand(&counted_optional(source.as_ref()), Text::Wide(buffer)),
+        0,
+    )
 }

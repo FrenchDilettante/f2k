@@ -535,24 +535,35 @@ pub unsafe extern "C" fn sprintf_va(buffer: *mut u8, text: *const u8, args: *con
     }
 }
 
-/// The caller's buffer of `count` units, as the bounded formatters write it.
+/// The caller's buffer of `count` units, as the bounded formatters write it. VC6's _vsnprintf
+/// keeps the count in its string stream's `_cnt`, an int, so a count past INT_MAX (`(size_t)-1`
+/// among them) is a negative room: no room, every unit refused, nothing written and -1 for any
+/// text. A count past what the address space holds in units is the most it holds (no buffer is
+/// larger).
 ///
 /// # Safety
 ///
-/// `buffer` holds `count` units (of any alignment), the call's alone.
+/// `buffer` holds `count` units (of any alignment), the call's alone, when the count is an int's.
 unsafe fn units_out<'a, U>(buffer: *mut U, count: usize) -> &'a mut [U] {
-    if count == 0 {
+    let room = if count > i32::MAX as usize {
+        0
+    } else {
+        count.min(isize::MAX as usize / core::mem::size_of::<U>().max(1))
+    };
+    if room == 0 {
         return &mut [];
     }
     // SAFETY: the caller's contract.
-    unsafe { core::slice::from_raw_parts_mut(buffer, count) }
+    unsafe { core::slice::from_raw_parts_mut(buffer, room) }
 }
 
-/// _vsnprintf: at most `count` bytes into `buffer` (see [`format::bounded`]).
+/// _vsnprintf: at most `count` bytes into `buffer` (see [`format::bounded`]), the count read as
+/// an int ([`units_out`]).
 ///
 /// # Safety
 ///
-/// `buffer` holds `count` bytes; `text` is NUL-terminated; `args` is the caller's `va_list`.
+/// `buffer` holds `count` bytes (none past INT_MAX); `text` is NUL-terminated; `args` is the
+/// caller's `va_list`.
 #[unsafe(export_name = "f2k_export__vsnprintf")]
 pub unsafe extern "C" fn vsnprintf(
     buffer: *mut u8,
@@ -1513,6 +1524,31 @@ mod tests {
             let n =
                 unsafe { snprintf_va(out.as_mut_ptr(), count, b"%d|%s\0".as_ptr(), list.as_ptr()) };
             assert_eq!((n, &out[..]), (answer, expected), "count {count}");
+        }
+    }
+
+    /// VC6 reads the bounded formatters' count as an int: a count past INT_MAX, `(size_t)-1`
+    /// among them, is no room at all — -1 for any text and nothing written, not even the NUL (an
+    /// empty text is 0) — never a licence to write past the buffer.
+    #[test]
+    fn a_count_past_int_max_is_no_room() {
+        let list = 42u32.to_ne_bytes();
+        for count in [usize::MAX, 0x8000_0000, i32::MAX as usize + 1] {
+            let mut out = [b'#'; 8];
+            // SAFETY: a buffer of 8 bytes, of which the count offers none; the list holds what the
+            // format consumes.
+            let n =
+                unsafe { snprintf_va(out.as_mut_ptr(), count, b"%d\0".as_ptr(), list.as_ptr()) };
+            assert_eq!((n, out), (-1, [b'#'; 8]), "count {count:#x}");
+            // SAFETY: as above, the format consuming nothing.
+            let n = unsafe { snprintf_va(out.as_mut_ptr(), count, b"\0".as_ptr(), list.as_ptr()) };
+            assert_eq!((n, out), (0, [b'#'; 8]), "count {count:#x}, an empty text");
+            let mut wide = [b'#' as u16; 8];
+            let format = [u16::from(b'%'), u16::from(b'd'), 0];
+            // SAFETY: as above, in wide units.
+            let n =
+                unsafe { snwprintf_va(wide.as_mut_ptr(), count, format.as_ptr(), list.as_ptr()) };
+            assert_eq!((n, wide), (-1, [b'#' as u16; 8]), "count {count:#x}, wide");
         }
     }
 

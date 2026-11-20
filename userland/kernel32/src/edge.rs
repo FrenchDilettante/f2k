@@ -216,6 +216,12 @@ pub fn counted(string: &InWStr<'_>) -> UnicodeString {
     }
 }
 
+/// [`counted`] over a string the caller may not have passed: NULL is the empty string, as
+/// RtlInitUnicodeString makes it from a null pointer (no length, no room, no buffer).
+pub fn counted_optional(string: Option<&InWStr<'_>>) -> UnicodeString {
+    string.map_or(UnicodeString::empty(), counted)
+}
+
 /// An A call's narrow string converted into `buffer`, terminated, as Windows 2000's kernel32
 /// converts one into a buffer of its own (the thread's static Unicode string, for a name): ntdll's
 /// RtlInitAnsiString, then RtlAnsiStringToUnicodeString through the ANSI code page. Its length in

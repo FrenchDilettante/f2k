@@ -346,9 +346,13 @@ fn check_types(out: &OutBuf<'_, u16>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// A narrow source: -1 is through its terminator, which counts; zero and anything below -1 are
-/// ERROR_INVALID_PARAMETER.
+/// A narrow source: -1 is through its terminator, which counts; zero, anything below -1 and a null
+/// source are ERROR_INVALID_PARAMETER (Windows 2000's NLS calls check the pointer before they read
+/// it).
 fn narrow_source<'a>(src: &Counted<'a, u8>) -> Result<InBuf<'a, u8>, Failure> {
+    if src.is_null() {
+        return refused(ERROR_INVALID_PARAMETER);
+    }
     match src.count() {
         -1 => Ok(src.units(true)),
         count if count <= 0 => refused(ERROR_INVALID_PARAMETER),
@@ -357,8 +361,11 @@ fn narrow_source<'a>(src: &Counted<'a, u8>) -> Result<InBuf<'a, u8>, Failure> {
 }
 
 /// A wide source, as the NLS calls take it: a negative count is NUL-terminated, the terminator
-/// counted (and processed); zero is ERROR_INVALID_PARAMETER.
+/// counted (and processed); zero and a null source are ERROR_INVALID_PARAMETER.
 fn wide_source<'a>(src: &Counted<'a, u16>) -> Result<InBuf<'a, u16>, Failure> {
+    if src.is_null() {
+        return refused(ERROR_INVALID_PARAMETER);
+    }
     match src.count() {
         0 => refused(ERROR_INVALID_PARAMETER),
         _ => Ok(src.units(true)),

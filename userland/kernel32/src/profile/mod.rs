@@ -29,7 +29,8 @@
 //! - **Integers.** GetPrivateProfileInt reads the value as RtlUnicodeStringToInteger reads it in
 //!   base 0 (blanks, a sign, `0x` for hexadecimal, the digits up to the first that is not one:
 //!   `12abc` is 12, a word 0); a missing key or an empty value is the default. A value found clears
-//!   the last error.
+//!   the last error. Only a value's first 255 units are read, as Windows 2000's buffer holds them
+//!   ([`INT_VALUE_UNITS`]): a longer one is read as cut there.
 
 pub mod ini;
 
@@ -455,12 +456,24 @@ fn profile_int(section: Name<'_>, key: Name<'_>, default: u32, file: Name<'_>) -
             return Ok(default);
         };
         set_last_error(0);
-        if value.is_empty() {
-            return Ok(default);
-        }
-        Ok(ntcall::unicode_string_to_integer(value, 0).unwrap_or(default))
+        Ok(integer(value, default))
     };
     looked_up().unwrap_or(default)
+}
+
+/// The units of a value GetPrivateProfileInt reads: Windows 2000's reads the value through
+/// GetPrivateProfileStringW into a buffer of 256 units on its stack, so a longer value is cut to
+/// its first 255.
+const INT_VALUE_UNITS: usize = 255;
+
+/// A value found as GetPrivateProfileInt reads it: its first [`INT_VALUE_UNITS`] read by
+/// RtlUnicodeStringToInteger in base 0; the default for an empty value or one ntdll refuses.
+fn integer(value: &[u16], default: u32) -> u32 {
+    let read = &value[..value.len().min(INT_VALUE_UNITS)];
+    if read.is_empty() {
+        return default;
+    }
+    ntcall::unicode_string_to_integer(read, 0).unwrap_or(default)
 }
 
 /// GetPrivateProfileSection's work (see the module's).
@@ -914,4 +927,44 @@ pub unsafe extern "system" fn write_private_profile_section_w(
         )
     };
     bool_answer(write_profile_section(section, list, file))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    /// A value is read as a number from its start, the default for an empty one or a word.
+    #[test]
+    fn a_value_reads_as_a_number() {
+        assert_eq!(integer(&w("42"), 7), 42);
+        assert_eq!(integer(&w("0x1F"), 7), 31);
+        assert_eq!(integer(&w("12abc"), 7), 12);
+        assert_eq!(integer(&w(""), 7), 7);
+    }
+
+    /// A value past a counted string's reach (32767 units and more) is read, not refused: cut to
+    /// its first 255 units, as Windows 2000's GetPrivateProfileStringW buffer cuts it, so the
+    /// digits past them do not count.
+    #[test]
+    fn a_value_past_a_counted_string_is_cut_to_255_units() {
+        let long = std::iter::once("5")
+            .chain(std::iter::repeat_n("0", 39_999))
+            .collect::<String>();
+        let cut = integer(&w(&long), 7);
+        let first = w(&long[..INT_VALUE_UNITS]);
+        assert_eq!(
+            cut,
+            ntcall::unicode_string_to_integer(&first, 0).unwrap_or(7)
+        );
+        let spaced = format!("{}12", " ".repeat(INT_VALUE_UNITS - 1));
+        assert_eq!(
+            integer(&w(&spaced), 7),
+            1,
+            "only the first digit is within the 255"
+        );
+    }
 }

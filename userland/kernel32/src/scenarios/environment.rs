@@ -222,3 +222,52 @@ fn the_narrow_strings_convert_up_to_32766_characters() {
     );
     assert_eq!(&value[..10], b"long name\0");
 }
+
+/// A null name or source to a W call is the empty string, as Windows 2000's RtlInitUnicodeString
+/// makes it from a null pointer, and as the A calls' conversion already takes theirs: the W calls
+/// answer what the A calls answer (GetEnvironmentVariable: 0 and ERROR_ENVVAR_NOT_FOUND;
+/// ExpandEnvironmentStrings: the terminator alone, 1), where they used to fault.
+///
+/// Pins: kernel32.GetEnvironmentVariableW, kernel32.GetEnvironmentVariableA
+/// Pins: kernel32.ExpandEnvironmentStringsW, kernel32.ExpandEnvironmentStringsA
+/// Pins: kernel32.SetEnvironmentVariableW, kernel32.SetEnvironmentVariableA
+#[test]
+fn a_null_wide_string_is_the_empty_one() {
+    let mut wide = [0xCCCCu16; 8];
+    let mut narrow = [0xCCu8; 8];
+    crate::base::set_last_error(0);
+    assert_eq!(
+        unsafe { get_environment_variable_w(core::ptr::null(), wide.as_mut_ptr(), 8) },
+        0
+    );
+    assert_eq!(
+        last_error(),
+        203,
+        "GetEnvironmentVariableW: ERROR_ENVVAR_NOT_FOUND"
+    );
+    crate::base::set_last_error(0);
+    assert_eq!(
+        unsafe { get_environment_variable_a(core::ptr::null(), narrow.as_mut_ptr(), 8) },
+        0
+    );
+    assert_eq!(last_error(), 203, "GetEnvironmentVariableA agrees");
+    assert_eq!(
+        unsafe { expand_environment_strings_w(core::ptr::null(), wide.as_mut_ptr(), 8) },
+        1
+    );
+    assert_eq!(wide[0], 0, "the terminator alone");
+    assert_eq!(
+        unsafe { expand_environment_strings_a(core::ptr::null(), narrow.as_mut_ptr(), 8) },
+        1
+    );
+    assert_eq!(narrow[0], 0);
+    let value: std::vec::Vec<u16> = "v\0".encode_utf16().collect();
+    let wide_set = unsafe { set_environment_variable_w(core::ptr::null(), value.as_ptr()) };
+    let wide_error = last_error();
+    let narrow_set = unsafe { set_environment_variable_a(core::ptr::null(), b"v\0".as_ptr()) };
+    assert_eq!(
+        (wide_set, wide_error),
+        (narrow_set, last_error()),
+        "SetEnvironmentVariableW answers as SetEnvironmentVariableA"
+    );
+}

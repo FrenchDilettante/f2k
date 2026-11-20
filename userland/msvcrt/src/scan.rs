@@ -4,7 +4,8 @@
 //!
 //! `%[*][width][size]type`: `*` reads without storing; the width bounds the units a field reads;
 //! sizes `h` (a short; a narrow string or character), `l` and `w` (a long or a double; a wide
-//! string or character), `L` (a double), `I64` (a 64-bit integer). Types `d` `i` (`0x` hex, `0`
+//! string or character), `L` (a double; on an integer, a long, as VC6's input.c reads it: it only
+//! bumps `longone`), `I64` (a 64-bit integer). Types `d` `i` (`0x` hex, `0`
 //! octal) `u` `o` `x` `X` `p`, `e` `f` `g` `E` `G`, `c` `C` (the width's units, no blank
 //! skipped), `s` `S`, `[set]` and `[^set]` (with ranges `a-z`), `n` (the units read so far,
 //! not counted), `%%`. A blank in the format skips any blanks of the input; another character must
@@ -82,6 +83,8 @@ enum Size {
     Default,
     Short,
     Long,
+    /// `L`: a double, and on an integer conversion a long (32 bits), never a 64-bit store.
+    LongDouble,
     Quad,
 }
 
@@ -135,7 +138,7 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
             match format.peek() {
                 0x68 /* h */ => size = Size::Short,
                 0x6C /* l */ | 0x77 /* w */ => size = Size::Long,
-                0x4C /* L */ => size = Size::Quad,
+                0x4C /* L */ => size = Size::LongDouble,
                 0x49 /* I */ => {
                     let (a, b) = (format.peek_ahead(1), format.peek_ahead(2));
                     if (a, b) == (b'6' as u16, b'4' as u16) {
@@ -186,7 +189,7 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                         Some(value) => {
                             if !suppress {
                                 let pointer = args.pointer();
-                                if size == Size::Long || size == Size::Quad {
+                                if matches!(size, Size::Long | Size::LongDouble | Size::Quad) {
                                     (pointer as *mut f64).write_unaligned(value);
                                 } else {
                                     (pointer as *mut f32).write_unaligned(value as f32);
@@ -604,5 +607,31 @@ mod tests {
         );
         assert_eq!(run("9", "%hd", &[&mut x as *mut i32 as usize]), 1);
         assert_eq!(x, 9);
+    }
+
+    /// `L` on an integer conversion stores a long, as VC6's input.c does: four bytes, the word
+    /// after the int untouched (an eight-byte store would overrun it); on a float, a double.
+    #[test]
+    fn l_stores_a_long_into_an_integer_and_a_double_into_a_float() {
+        for (input, format, value) in [
+            ("5", "%Ld", 5u32),
+            ("1f", "%Lx", 0x1F),
+            ("-2", "%Li", -2i32 as u32),
+            ("7", "%Lu", 7),
+        ] {
+            let mut slots = [0xCCCC_CCCCu32; 2];
+            assert_eq!(
+                run(input, format, &[slots.as_mut_ptr() as usize]),
+                1,
+                "{format}"
+            );
+            assert_eq!(slots, [value, 0xCCCC_CCCC], "{format}");
+        }
+        let mut slots = [0xCCCC_CCCCu32; 2];
+        assert_eq!(run("ab", "ab%Ln", &[slots.as_mut_ptr() as usize]), 0);
+        assert_eq!(slots, [2, 0xCCCC_CCCC], "%Ln");
+        let mut d = 0f64;
+        assert_eq!(run("2.5", "%Lf", &[&mut d as *mut f64 as usize]), 1);
+        assert_eq!(d, 2.5);
     }
 }
