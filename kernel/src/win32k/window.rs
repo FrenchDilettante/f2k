@@ -50,8 +50,9 @@
 //! - NtUserShowWindowAsync (0x1219): ShowWindowAsync's arguments, the show carried out at once;
 //! - NtUserQueryWindow (0x11D2): what Windows 2000's user32 reads from the window records mapped
 //!   into its process — the window's WINDOWINFO (GetWindowRect's rectangle), IsWindowVisible's
-//!   answer, its own fields as GetWindowLong reads them, its extra bytes, its text — by an index of
-//!   F2K's own ([`rtl::window`]);
+//!   answer, its own fields as GetWindowLong reads them, its extra bytes and its class's, its
+//!   class's fields as GetClassLong reads them, its text — by an index of F2K's own
+//!   ([`rtl::window`]);
 //! - NtUserSetWindowLong (0x120D) and NtUserSetWindowWord (0x1214): SetWindowLong's and
 //!   SetWindowWord's changes ([`Windows::set_window_long`]), the previous value through a pointer;
 //! - NtUserDefSetText (0x1153): DefWindowProc's change of the window's text.
@@ -196,6 +197,15 @@ pub const SWP_NOCLIENTMOVE: u32 = 0x1000;
 /// (guigeo `sizemsg` captured 0x10001847); ShowWindow passes it, WM_WINDOWPOSCHANGING does not
 /// carry it (inferred: the capture logs only WM_WINDOWPOSCHANGED).
 pub const SWP_SHOWWINDOW_CALL: u32 = 0x1000_0000;
+
+/// Where a minimized window without a minimized position of its own goes: off the screen, where
+/// Windows 2000's desktop with its taskbar (ARW_HIDE) hides minimized windows (the guigeo
+/// capture's ptMinPosition).
+pub const MINIMIZED_POSITION: (i32, i32) = (-32000, -32000);
+/// A minimized window's size (SM_CXMINIMIZED by SM_CYMINIMIZED, the standard scheme's at 96 dpi).
+pub const MINIMIZED_SIZE: (i32, i32) = (160, 24);
+/// The most positions an EndDeferWindowPos batch carries to the window manager at once.
+pub const DEFER_POSITIONS: usize = 64;
 
 /// SetWindowPos's special insert-after handles (winuser.h's HWND_*).
 pub const HWND_TOP: Hwnd = 0;
@@ -905,6 +915,19 @@ struct Window {
     /// 0 for none.
     fnid: u16,
     title: TextBuf,
+    /// The window's place when it is neither minimized nor maximized (GetWindowPlacement's
+    /// rcNormalPosition), in its parent's client coordinates (the screen's for a top-level
+    /// window): kept as it leaves that state, and set by SetWindowPlacement; none before either.
+    normal: Option<Rect>,
+    /// Where the window was last minimized, its top-left corner (ptMinPosition): kept as it leaves
+    /// the minimized state, and set by SetWindowPlacement's WPF_SETMINPOSITION; where it goes the
+    /// next time it is minimized.
+    min_position: Option<(i32, i32)>,
+    /// Where the window goes maximized (ptMaxPosition), as SetWindowPlacement set it.
+    max_position: Option<(i32, i32)>,
+    /// The window was maximized when it was last minimized, or SetWindowPlacement said so
+    /// (WPF_RESTORETOMAXIMIZED): a restore from minimized maximizes it.
+    restore_maximized: bool,
     /// The object's lock count: 1 at creation, dropped by the free; more than that means
     /// someone else still holds a reference and the free makes a zombie instead.
     locks: u32,
@@ -990,6 +1013,10 @@ impl Window {
         user_data: 0,
         fnid: 0,
         title: TextBuf::EMPTY,
+        normal: None,
+        min_position: None,
+        max_position: None,
+        restore_maximized: false,
         locks: 0,
         walk: Walk::NONE,
     };
@@ -3348,9 +3375,9 @@ impl Windows {
 // --- Show, position and the geometry queries
 // ------------------------------------------------------------------
 
-/// The show commands that pass through the min/max seam ([`Pump::min_maximize`]) before the show:
-/// the minimizing ones and the maximizing one, always; restoring ones only from a minimized or
-/// maximized window.
+/// The show commands that minimize, maximize or restore the window before the show
+/// ([`Windows::min_maximize`], after the min/max seam, [`Pump::min_maximize`]): the minimizing
+/// ones and the maximizing one, always; restoring ones only from a minimized or maximized window.
 fn min_max_command(command: i32, style: u32) -> bool {
     match command {
         SW_SHOWMINIMIZED | SW_MINIMIZE | SW_SHOWMINNOACTIVE | SW_FORCEMINIMIZE
@@ -3373,9 +3400,9 @@ impl Windows {
     /// the active window, which activation skips past when it is destroyed); a child keeps its
     /// place. A visible window shown again is only activated. Hiding
     /// the thread's active top-level window activates the next one. The minimizing and maximizing
-    /// commands, and the restoring ones of a minimized or maximized window, go through the min/max
-    /// seam first. A tiled window's first show sends the WM_SIZE and WM_MOVE its creation
-    /// deferred.
+    /// commands, and the restoring ones of a minimized or maximized window, minimize, maximize or
+    /// restore it first ([`Windows::min_maximize`]). A tiled window's first show sends the WM_SIZE
+    /// and WM_MOVE its creation deferred, unless a change of its client area sent them since.
     pub fn show_window(
         &mut self,
         classes: &mut class::Registry,
@@ -3402,6 +3429,10 @@ impl Windows {
 
         if min_max_command(command, self.at(window).style) {
             pump.min_maximize(self, window, command as u32);
+            self.min_maximize(classes, window, command, pump)?;
+            if !self.pool.is_live(window) {
+                return Ok(was_visible);
+            }
         }
 
         if show != was_visible {
@@ -3473,6 +3504,278 @@ impl Windows {
             );
         }
         Ok(was_visible)
+    }
+
+    /// The minimizing, maximizing or restoring part of the show command `command` for `window`, as
+    /// the guigeo capture's minmax and placement show Windows 2000's: the window takes its new
+    /// state's style (WS_MINIMIZE, WS_MAXIMIZE, neither) and its new place through
+    /// [`Windows::set_window_pos`] (WM_SIZE follows with SIZE_MINIMIZED, SIZE_MAXIMIZED or
+    /// SIZE_RESTORED), its visibility and activation left to the show.
+    ///
+    /// - Leaving the normal state keeps the window's place as its normal one; leaving the minimized
+    ///   state keeps its corner as its minimized position.
+    /// - Minimized, the window goes to its minimized position, (-32000, -32000) without one (where
+    ///   Windows 2000's desktop with its taskbar hides minimized windows), at [`MINIMIZED_SIZE`];
+    ///   it restores to maximized when it was maximized.
+    /// - Maximized, it fills its monitor's work area (a child its parent's client area), its sizing
+    ///   border outside it ([`Windows::maximized_rect`]).
+    /// - Restored, it goes back to its normal place.
+    ///
+    /// A command that would leave the window as it is does nothing.
+    fn min_maximize(
+        &mut self,
+        classes: &mut class::Registry,
+        window: WindowId,
+        command: i32,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        enum State {
+            Minimized,
+            Maximized,
+            Normal,
+        }
+        let style = self.at(window).style;
+        let minimized = style & WS_MINIMIZE != 0;
+        let maximized = style & WS_MAXIMIZE != 0;
+        let target = match command {
+            SW_SHOWMINIMIZED | SW_MINIMIZE | SW_SHOWMINNOACTIVE | SW_FORCEMINIMIZE => {
+                if minimized {
+                    return Ok(());
+                }
+                State::Minimized
+            }
+            SW_SHOWMAXIMIZED => {
+                if maximized {
+                    return Ok(());
+                }
+                State::Maximized
+            }
+            _ if minimized && self.at(window).restore_maximized => State::Maximized,
+            _ if minimized || maximized => State::Normal,
+            _ => return Ok(()),
+        };
+        let origin = self.parent_origin(window);
+        let here = offset_rect(self.at(window).window_rect, -origin.0, -origin.1);
+        {
+            let w = self.at_mut(window);
+            if minimized {
+                w.min_position = Some((here.left, here.top));
+            } else if !maximized {
+                w.normal = Some(here);
+            }
+        }
+        let place = match target {
+            State::Minimized => {
+                let w = self.at_mut(window);
+                w.restore_maximized = maximized;
+                w.style = (w.style | WS_MINIMIZE) & !WS_MAXIMIZE;
+                let (x, y) = w.min_position.unwrap_or(MINIMIZED_POSITION);
+                Rect {
+                    left: x,
+                    top: y,
+                    right: x + MINIMIZED_SIZE.0,
+                    bottom: y + MINIMIZED_SIZE.1,
+                }
+            }
+            State::Maximized => {
+                let w = self.at_mut(window);
+                w.style = (w.style | WS_MAXIMIZE) & !WS_MINIMIZE;
+                self.maximized_rect(window)
+            }
+            State::Normal => {
+                let w = self.at_mut(window);
+                w.style &= !(WS_MINIMIZE | WS_MAXIMIZE);
+                w.normal.unwrap_or(here)
+            }
+        };
+        self.set_window_pos(
+            classes,
+            window,
+            InsertAfter::Top,
+            place.left,
+            place.top,
+            place.right - place.left,
+            place.bottom - place.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            pump,
+        )
+    }
+
+    /// Where `window` goes maximized, in its parent's client coordinates: its maximized position
+    /// (SetWindowPlacement's) or, without one, its sizing border's width outside the monitor's
+    /// work area (a child's outside its parent's client area); as large as that area and the
+    /// border on both sides, as WM_GETMINMAXINFO's default ptMaxSize and ptMaxPosition give it.
+    fn maximized_rect(&self, window: WindowId) -> Rect {
+        let w = self.at(window);
+        let area = match w.parent {
+            Some(p) if w.is_child() && self.pool.is_live(p) => {
+                let client = self.at(p).client_rect;
+                Rect {
+                    left: 0,
+                    top: 0,
+                    right: client.right - client.left,
+                    bottom: client.bottom - client.top,
+                }
+            }
+            _ => self.work_area(w.monitor),
+        };
+        let border = rtl::nonclient::Frame::of_styles(w.style & !WS_MINIMIZE, w.ex_style, false)
+            .border_width;
+        let (x, y) = w
+            .max_position
+            .unwrap_or((area.left - border, area.top - border));
+        Rect {
+            left: x,
+            top: y,
+            right: x + area.right - area.left + 2 * border,
+            bottom: y + area.bottom - area.top + 2 * border,
+        }
+    }
+
+    /// GetWindowPlacement's answer for `window`: its show state (SW_SHOWMINIMIZED,
+    /// SW_SHOWMAXIMIZED or SW_SHOWNORMAL, hidden or not), WPF_RESTORETOMAXIMIZED while it is
+    /// maximized or restores to maximized, its minimized position (where it is while minimized;
+    /// (-1, -1) for none), its maximized position ((-1, -1) unless SetWindowPlacement gave one),
+    /// and its normal place (where it is while neither minimized nor maximized).
+    pub fn window_placement(&self, window: WindowId) -> rtl::window::WindowPlacement {
+        let w = self.at(window);
+        let origin = self.parent_origin(window);
+        let here = offset_rect(w.window_rect, -origin.0, -origin.1);
+        let minimized = w.style & WS_MINIMIZE != 0;
+        let maximized = w.style & WS_MAXIMIZE != 0;
+        let show_cmd = if minimized {
+            SW_SHOWMINIMIZED
+        } else if maximized {
+            SW_SHOWMAXIMIZED
+        } else {
+            SW_SHOWNORMAL
+        };
+        let (min_x, min_y) = if minimized {
+            (here.left, here.top)
+        } else {
+            w.min_position.unwrap_or((-1, -1))
+        };
+        let (max_x, max_y) = w.max_position.unwrap_or((-1, -1));
+        let normal = if minimized || maximized {
+            w.normal.unwrap_or(here)
+        } else {
+            here
+        };
+        rtl::window::WindowPlacement {
+            length: core::mem::size_of::<rtl::window::WindowPlacement>() as u32,
+            flags: if w.restore_maximized || maximized {
+                rtl::window::WPF_RESTORETOMAXIMIZED
+            } else {
+                0
+            },
+            show_cmd: show_cmd as u32,
+            min_x,
+            min_y,
+            max_x,
+            max_y,
+            normal: rtl_rect(normal),
+        }
+    }
+
+    /// SetWindowPlacement's decision for `window`: its normal place, its minimized position (with
+    /// WPF_SETMINPOSITION; none without it, the next minimize choosing it), its maximized position
+    /// (none for (-1, -1)) and whether it restores to maximized (WPF_RESTORETOMAXIMIZED) set; a
+    /// window neither minimized nor maximized moved to its normal place; then the show command
+    /// carried out ([`Windows::show_window`]). ERROR_INVALID_PARAMETER for a length that is not the
+    /// structure's.
+    pub fn set_window_placement(
+        &mut self,
+        classes: &mut class::Registry,
+        window: WindowId,
+        placement: &rtl::window::WindowPlacement,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        use rtl::window::{WPF_RESTORETOMAXIMIZED, WPF_SETMINPOSITION};
+        if placement.length as usize != core::mem::size_of::<rtl::window::WindowPlacement>() {
+            return Err(Failure::InvalidParameter);
+        }
+        let normal = Rect {
+            left: placement.normal.left,
+            top: placement.normal.top,
+            right: placement.normal.right,
+            bottom: placement.normal.bottom,
+        };
+        {
+            let w = self.at_mut(window);
+            w.normal = Some(normal);
+            w.min_position = (placement.flags & WPF_SETMINPOSITION != 0)
+                .then_some((placement.min_x, placement.min_y));
+            w.max_position = ((placement.max_x, placement.max_y) != (-1, -1))
+                .then_some((placement.max_x, placement.max_y));
+            w.restore_maximized = placement.flags & WPF_RESTORETOMAXIMIZED != 0;
+        }
+        if self.at(window).style & (WS_MINIMIZE | WS_MAXIMIZE) == 0 {
+            self.set_window_pos(
+                classes,
+                window,
+                InsertAfter::Top,
+                normal.left,
+                normal.top,
+                normal.right - normal.left,
+                normal.bottom - normal.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+                pump,
+            )?;
+        }
+        if !self.pool.is_live(window) {
+            return Err(Failure::InvalidWindowHandle);
+        }
+        self.show_window(classes, window, placement.show_cmd as i32, pump)
+            .map(|_| ())
+    }
+
+    /// EndDeferWindowPos's decision over the positions a BeginDeferWindowPos batch gathered, in
+    /// order: each carried out as SetWindowPos ([`Windows::set_window_pos_handle`]), a window
+    /// gone since skipped. As the guigeo capture's defer shows Windows 2000's, a window the batch
+    /// names twice takes each of its positions in turn, the last one winning, and its children
+    /// are moved by each one's change from where the window was when the batch began (Windows
+    /// 2000 works out every change first, then makes them): before a window's second position its
+    /// children are moved again by what its first moved them, quietly.
+    pub fn end_defer_window_pos(
+        &mut self,
+        classes: &mut class::Registry,
+        positions: &[WindowPos],
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        let mut began = [(0 as Hwnd, 0i32, 0i32); DEFER_POSITIONS];
+        for (at, pos) in positions.iter().enumerate() {
+            let origin = self.window_from_handle(pos.hwnd).map_or((0, 0), |w| {
+                let client = self.at(w).client_rect;
+                (client.left, client.top)
+            });
+            let first = positions[..at]
+                .iter()
+                .position(|earlier| earlier.hwnd == pos.hwnd);
+            began[at] = match first {
+                Some(first) => began[first],
+                None => (pos.hwnd, origin.0, origin.1),
+            };
+        }
+        for (at, pos) in positions.iter().enumerate() {
+            let Some(window) = self.window_from_handle(pos.hwnd) else {
+                continue;
+            };
+            let client = self.at(window).client_rect;
+            let (_, left, top) = began[at];
+            self.offset_descendants(window, client.left - left, client.top - top);
+            self.set_window_pos_handle(
+                classes,
+                pos.hwnd,
+                pos.insert_after,
+                pos.x,
+                pos.y,
+                pos.cx,
+                pos.cy,
+                pos.flags,
+                pump,
+            )?;
+        }
+        Ok(())
     }
 
     /// SetWindowPos's decision for `window`: its new position (`x`, `y`, in its parent's client
@@ -3551,6 +3854,18 @@ impl Windows {
             }
         }
         let mut flags = pos.flags;
+
+        // The default procedure's answer to WM_WINDOWPOSCHANGING: a tiled or sizable window that is
+        // not minimized is no smaller than the minimum tracking size (WM_GETMINMAXINFO's default,
+        // SM_CXMINTRACK by SM_CYMINTRACK: the guigeo capture's defer sizes a window 90 wide to
+        // 112).
+        if flags & SWP_NOSIZE == 0 {
+            let w = self.at(window);
+            if (w.is_tiled() || w.style & WS_THICKFRAME != 0) && w.style & WS_MINIMIZE == 0 {
+                pos.cx = pos.cx.max(rtl::nonclient::MIN_X);
+                pos.cy = pos.cy.max(rtl::nonclient::MIN_Y);
+            }
+        }
 
         // The rectangles.
         let mut rect = old;
@@ -3652,12 +3967,16 @@ impl Windows {
             pump.paint_frame(self, classes, window);
         }
 
-        // What the client area did: the default procedure's WM_SIZE and WM_MOVE follow from it.
+        // What the client area did: the default procedure's WM_SIZE and WM_MOVE follow from it. A
+        // minimized window hidden reports its client area sized (the guigeo capture's minmax: its
+        // SW_HIDE brings a WM_SIZE of SIZE_MINIMIZED).
+        let hid_minimized = flags & SWP_HIDEWINDOW != 0 && self.at(window).style & WS_MINIMIZE != 0;
         if (client.right - client.left, client.bottom - client.top)
             == (
                 old_client.right - old_client.left,
                 old_client.bottom - old_client.top,
             )
+            && !hid_minimized
         {
             flags |= SWP_NOCLIENTSIZE;
         }
@@ -3673,6 +3992,13 @@ impl Windows {
             == NO_POSITION_CHANGE
         {
             return Ok(());
+        }
+
+        // The WM_SIZE and WM_MOVE the default procedure sends for a changed client area are the
+        // ones a tiled window's creation deferred to its first show: it sends them no more (the
+        // guigeo capture's minmax: a window moved before its first show gets one WM_SIZE from it).
+        if flags & (SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE) != SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE {
+            self.at_mut(window).flags.sendsizemove = false;
         }
 
         let done = WindowPos {
@@ -4404,14 +4730,16 @@ impl WindowManager {
             class_name: 0,
             icon_sm: 0,
         };
-        for name in [
-            class::Name::Atom(DESKTOP_CLASS_ATOM),
-            class::Name::Text(&MESSAGE_CLASS),
+        // The desktop window's class answers CS_DBLCLKS (the guiclass capture's GetClassLong of
+        // the desktop window); the message window's has no style.
+        for (name, style) in [
+            (class::Name::Atom(DESKTOP_CLASS_ATOM), class::CS_DBLCLKS),
+            (class::Name::Text(&MESSAGE_CLASS), 0),
         ] {
             self.classes
                 .register_class(
                     &self.windows.handles,
-                    &wc,
+                    &class::WndClassExW { style, ..wc },
                     name,
                     class::MenuArg::None,
                     class::SYSTEM_OWNER,
@@ -4608,6 +4936,36 @@ impl WindowManager {
         )
     }
 
+    /// NtUserGetWindowPlacement's answer for the window `handle` names
+    /// ([`Windows::window_placement`]).
+    pub fn window_placement(&self, handle: Hwnd) -> Result<rtl::window::WindowPlacement, Failure> {
+        let window = self.windows.window_of(handle)?;
+        Ok(self.windows.window_placement(window))
+    }
+
+    /// NtUserSetWindowPlacement's decision over a handle ([`Windows::set_window_placement`]).
+    pub fn set_window_placement(
+        &mut self,
+        handle: Hwnd,
+        placement: &rtl::window::WindowPlacement,
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        let window = self.windows.window_of(handle)?;
+        self.windows
+            .set_window_placement(&mut self.classes, window, placement, pump)
+    }
+
+    /// NtUserEndDeferWindowPosEx's decision over a batch's positions
+    /// ([`Windows::end_defer_window_pos`]).
+    pub fn end_defer_window_pos(
+        &mut self,
+        positions: &[WindowPos],
+        pump: &mut dyn Pump,
+    ) -> Result<(), Failure> {
+        self.windows
+            .end_defer_window_pos(&mut self.classes, positions, pump)
+    }
+
     /// NtUserQueryWindow's answer for the window `handle` names, the index `index` and the
     /// answer's length `length` (a pair [`query_accepts`] accepts), for a caller of the process
     /// `caller`.
@@ -4638,6 +4996,15 @@ impl WindowManager {
                     .class
                     .map_or_else(WindowClass::default, |class| self.classes.class_data(class)),
             ),
+            index if index & QUERY_WINDOW_EXTRA == 0 && index & QUERY_CLASS_EXTRA != 0 => {
+                let offset = (index & !QUERY_CLASS_EXTRA) as i32;
+                let class = self.windows.at(window).class.ok_or(Failure::InvalidIndex)?;
+                let value = self
+                    .classes
+                    .extra_value(class, offset, length)
+                    .map_err(|_| Failure::InvalidIndex)?;
+                Query::Extra(value.to_le_bytes(), length as u8)
+            }
             _ => {
                 let offset = (index & !QUERY_WINDOW_EXTRA) as i32;
                 let value = self.windows.extra_value(window, offset, length)?;
@@ -4751,7 +5118,8 @@ pub enum Query {
     Data(WindowData),
     /// QUERY_WINDOW_TEXT: the window's text.
     Text(WindowText),
-    /// QUERY_WINDOW_EXTRA: a value of the window's extra bytes, its first `.1` bytes
+    /// QUERY_WINDOW_EXTRA and QUERY_CLASS_EXTRA: a value of the window's extra bytes or its
+    /// class's, its first `.1` bytes
     /// (little-endian) the answer.
     Extra([u8; 4], u8),
     /// QUERY_WINDOW_PARENT: the parent's handle, 0 for none.
@@ -4799,7 +5167,9 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
         QUERY_WINDOW_LINKS => length == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length == size_of::<WindowClass>(),
         QUERY_WINDOW_THREAD => length == size_of::<WindowThread>(),
-        index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
+        index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
+            length == 2 || length == 4
+        }
         _ => return Err(STATUS_INVALID_INFO_CLASS),
     };
     if fits {
@@ -5094,6 +5464,58 @@ pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtR
     Ok(STATUS_SUCCESS)
 }
 
+/// NtUserGetWindowPlacement(Window, Placement): the window's WINDOWPLACEMENT into the caller's
+/// ([`WindowManager::window_placement`]), its length the structure's whatever the caller's said.
+#[cfg(target_arch = "x86")]
+pub fn get_window_placement(call: &mut NtCall, window: Handle, placement: UserAddr) -> NtResult {
+    let answer = lock(call.passive())
+        .window_placement(window.raw())
+        .map_err(Failure::status)?;
+    placement
+        .cast::<rtl::window::WindowPlacement>()
+        .write(answer)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserSetWindowPlacement(Window, Placement): the caller's WINDOWPLACEMENT made the window's
+/// ([`WindowManager::set_window_placement`]), its messages through the queue's pump.
+#[cfg(target_arch = "x86")]
+pub fn set_window_placement(call: &mut NtCall, window: Handle, placement: UserAddr) -> NtResult {
+    super::winsta::gui_thread(call)?;
+    let placement = placement.cast::<rtl::window::WindowPlacement>().read()?;
+    super::queue::with_manager(call.passive(), |manager| {
+        manager.set_window_placement(window.raw(), &placement, &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtUserEndDeferWindowPosEx(Positions, Count): the `count` WINDOWPOS structures a
+/// BeginDeferWindowPos batch gathered, at `positions`, carried out in order
+/// ([`WindowManager::end_defer_window_pos`]); STATUS_INVALID_PARAMETER for more than
+/// [`DEFER_POSITIONS`] (user32 hands a longer batch over in parts).
+#[cfg(target_arch = "x86")]
+pub fn end_defer_window_pos(call: &mut NtCall, positions: UserAddr, count: u32) -> NtResult {
+    super::winsta::gui_thread(call)?;
+    let count = count as usize;
+    if count > DEFER_POSITIONS {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut batch = [WindowPos::default(); DEFER_POSITIONS];
+    let size = core::mem::size_of::<WindowPos>() as u32;
+    for (at, pos) in batch[..count].iter_mut().enumerate() {
+        *pos = positions
+            .offset(size * at as u32)
+            .cast::<WindowPos>()
+            .read()?;
+    }
+    super::queue::with_manager(call.passive(), |manager| {
+        manager.end_defer_window_pos(&batch[..count], &mut QueuePump)
+    })
+    .map_err(Failure::status)?;
+    Ok(STATUS_SUCCESS)
+}
+
 /// A show command of [`MIN_MAX_COMMANDS`] handed to `service`, logged once per process.
 #[cfg(target_arch = "x86")]
 fn log_min_max_command(call: &mut NtCall, service: &str, window: Handle, command: i32) {
@@ -5381,6 +5803,21 @@ pub fn show_window(_: &mut NtCall, _: Handle, _: i32, _: UserPtr<u32>) -> NtResu
 
 #[cfg(not(target_arch = "x86"))]
 pub fn show_window_async(_: &mut NtCall, _: Handle, _: i32) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn get_window_placement(_: &mut NtCall, _: Handle, _: UserAddr) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn set_window_placement(_: &mut NtCall, _: Handle, _: UserAddr) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
+pub fn end_defer_window_pos(_: &mut NtCall, _: UserAddr, _: u32) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 
@@ -8933,33 +9370,247 @@ mod tests {
     }
 
     /// The minimizing and maximizing commands go through the min/max seam first, and so do the
-    /// restoring ones of a minimized window; a tiled window's first show sends the WM_SIZE and
-    /// WM_MOVE its creation deferred, once.
+    /// restoring ones of a minimized window; then the window is minimized, maximized or restored,
+    /// as the guigeo capture's minmax shows Windows 2000's: its style and its place change through
+    /// SetWindowPos (WM_WINDOWPOSCHANGED, whose client change brings the default procedure's
+    /// WM_SIZE, so the WM_SIZE and WM_MOVE its creation deferred are sent no more). Maximized, it
+    /// fills the work area, its sizing border outside; minimized, it goes to (-32000, -32000), its
+    /// client area empty; minimized from maximized, it restores to maximized, then to its normal
+    /// place.
     #[test]
-    fn min_max_and_the_deferred_size() {
+    fn min_max_and_restore() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
-        let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
         assert!(w.at(id).flags.sendsizemove);
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        w.set_window_pos(c, id, InsertAfter::Top, 50, 60, 200, 150, flags, &mut pump)
+            .unwrap();
+        assert!(!w.at(id).flags.sendsizemove, "the client area changed");
+        let normal = Rect {
+            left: 50,
+            top: 60,
+            right: 250,
+            bottom: 210,
+        };
         pump.events.clear();
         assert_eq!(w.show_window(c, id, SW_SHOWMAXIMIZED, &mut pump), Ok(false));
         assert_eq!(pump.events[0], Ev::MinMax(id, SW_SHOWMAXIMIZED as u32));
-        let messages = pump.messages();
-        assert_eq!(&messages[messages.len() - 2..], &[WM_SIZE, WM_MOVE]);
-        assert!(!w.at(id).flags.sendsizemove);
-        // The window at 10,20 (the create's position), its client inside the fixed frame and the
-        // caption a tiled window is given: WM_MOVE carries the client's place.
-        assert!(pump
-            .events
-            .contains(&Ev::Send(id, WM_MOVE, 0, makelong(13, 42) as LParam)));
-        pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_RESTORE, &mut pump), Ok(true));
-        assert!(pump.events.iter().all(|e| !matches!(e, Ev::MinMax(..))));
-        assert!(!pump.messages().contains(&WM_SIZE), "sent once");
-        w.at_mut(id).style |= WS_MINIMIZE;
-        pump.events.clear();
+        assert_eq!(
+            w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE | WS_VISIBLE),
+            WS_MAXIMIZE | WS_VISIBLE
+        );
+        assert_eq!(
+            w.at(id).window_rect,
+            Rect {
+                left: -4,
+                top: -4,
+                right: 644,
+                bottom: 484
+            }
+        );
+        assert_eq!(
+            pump.messages()
+                .iter()
+                .filter(|&&m| m == WM_WINDOWPOSCHANGED)
+                .count(),
+            2,
+            "the maximize's, then the show's"
+        );
+        assert!(!pump.messages().contains(&WM_SIZE), "no deferred WM_SIZE");
+
+        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        let minimized = w.at(id);
+        assert_eq!(minimized.style & (WS_MINIMIZE | WS_MAXIMIZE), WS_MINIMIZE);
+        assert_eq!(
+            minimized.window_rect,
+            Rect {
+                left: -32000,
+                top: -32000,
+                right: -31840,
+                bottom: -31976
+            }
+        );
+        let client = minimized.client_rect;
+        assert_eq!((client.left, client.right - client.left), (-32000, 0));
+        assert!(minimized.restore_maximized);
+        let placement = w.window_placement(id);
+        assert_eq!(
+            (placement.show_cmd, placement.flags, placement.min_x),
+            (
+                SW_SHOWMINIMIZED as u32,
+                rtl::window::WPF_RESTORETOMAXIMIZED,
+                -32000
+            )
+        );
+        assert_eq!(placement.normal, rtl_rect(normal));
+
         w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
-        assert_eq!(pump.events[0], Ev::MinMax(id, SW_RESTORE as u32));
+        assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), WS_MAXIMIZE);
+        w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+        assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), 0);
+        assert_eq!(w.at(id).window_rect, normal);
+        let placement = w.window_placement(id);
+        assert_eq!(
+            (
+                placement.show_cmd,
+                placement.flags,
+                placement.min_x,
+                placement.max_x
+            ),
+            (
+                SW_SHOWNORMAL as u32,
+                rtl::window::WPF_RESTORETOMAXIMIZED,
+                -32000,
+                -1
+            )
+        );
+
+        // From the normal state a minimized window restores to it.
+        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        assert!(!w.at(id).restore_maximized);
+        w.show_window(c, id, SW_SHOWNORMAL, &mut pump).unwrap();
+        assert_eq!(w.at(id).window_rect, normal);
+    }
+
+    /// A minimized window hidden reports its client area sized, so the default procedure sends it a
+    /// WM_SIZE of SIZE_MINIMIZED (the guigeo capture's minmax); another window hidden does not.
+    #[test]
+    fn a_minimized_window_hidden_reports_its_size() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        pump.positions.clear();
+        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(true));
+        let (_, message, changed) = *pump.positions.last().unwrap();
+        assert_eq!(message, WM_WINDOWPOSCHANGED);
+        assert_eq!(
+            changed.flags & (SWP_HIDEWINDOW | SWP_NOCLIENTSIZE),
+            SWP_HIDEWINDOW
+        );
+        w.show_window(c, id, SW_SHOWNORMAL, &mut pump).unwrap();
+        pump.positions.clear();
+        w.show_window(c, id, SW_HIDE, &mut pump).unwrap();
+        let (_, _, changed) = *pump.positions.last().unwrap();
+        assert_ne!(changed.flags & SWP_NOCLIENTSIZE, 0);
+    }
+
+    /// SetWindowPlacement, as the guigeo capture's placement shows Windows 2000's: the normal place
+    /// set, a normal window moved there, the show command carried out (minimized, the minimized
+    /// position chosen and answered while it lasts); a minimized position without
+    /// WPF_SETMINPOSITION is none, (-1, -1); a length that is not the structure's is refused.
+    #[test]
+    fn the_window_placement() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        let first = rtl::gdi::Rect {
+            left: 150,
+            top: 120,
+            right: 450,
+            bottom: 330,
+        };
+        let mut placement = rtl::window::WindowPlacement {
+            length: 44,
+            flags: 0,
+            show_cmd: SW_SHOWMINIMIZED as u32,
+            min_x: -1,
+            min_y: -1,
+            max_x: -1,
+            max_y: -1,
+            normal: first,
+        };
+        w.set_window_placement(c, id, &placement, &mut pump)
+            .unwrap();
+        assert_eq!(
+            w.at(id).style & (WS_MINIMIZE | WS_VISIBLE),
+            WS_MINIMIZE | WS_VISIBLE
+        );
+        let answer = w.window_placement(id);
+        assert_eq!((answer.length, answer.flags), (44, 0));
+        assert_eq!((answer.min_x, answer.min_y), (-32000, -32000));
+        assert_eq!(answer.normal, first);
+
+        placement.show_cmd = SW_HIDE as u32;
+        placement.length = 0;
+        assert_eq!(
+            w.set_window_placement(c, id, &placement, &mut pump),
+            Err(Failure::InvalidParameter)
+        );
+        placement.length = 44;
+        placement.show_cmd = SW_SHOWNORMAL as u32;
+        w.set_window_placement(c, id, &placement, &mut pump)
+            .unwrap();
+        assert_eq!(rtl_rect(w.at(id).window_rect), first);
+        assert_eq!(
+            w.window_placement(id).min_x,
+            -32000,
+            "kept as it left the state"
+        );
+        placement.show_cmd = SW_HIDE as u32;
+        w.set_window_placement(c, id, &placement, &mut pump)
+            .unwrap();
+        let answer = w.window_placement(id);
+        assert_eq!((answer.min_x, answer.show_cmd), (-1, SW_SHOWNORMAL as u32));
+        assert!(!w.at(id).is_visible());
+    }
+
+    /// EndDeferWindowPos's positions, as the guigeo capture's defer shows Windows 2000's: a window
+    /// named twice ends at its last position, its children moved by each position's change from
+    /// where it began; a sizable window is no smaller than the minimum tracking size.
+    #[test]
+    fn deferred_positions_move_the_children_twice() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let parent = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        w.set_window_pos(
+            c,
+            parent,
+            InsertAfter::Top,
+            10,
+            20,
+            320,
+            200,
+            flags,
+            &mut pump,
+        )
+        .unwrap();
+        let mut a = args(atom, WS_CHILD);
+        a.parent = Some(parent);
+        a.x = 10;
+        a.y = 10;
+        a.cx = 50;
+        a.cy = 40;
+        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let handle = w.at(parent).handle;
+        let pos = |x, y, cx, cy| WindowPos {
+            hwnd: handle,
+            insert_after: 0,
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+        };
+        w.end_defer_window_pos(c, &[pos(1, 2, 100, 50), pos(5, 6, 150, 70)], &mut pump)
+            .unwrap();
+        let rect = w.at(parent).window_rect;
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (5, 6, 155, 76)
+        );
+        let client = w.at(parent).client_rect;
+        let child_rect = w.at(child).window_rect;
+        assert_eq!(
+            (child_rect.left - client.left, child_rect.top - client.top),
+            (1, -8)
+        );
+        w.end_defer_window_pos(c, &[pos(30, 40, 90, 80)], &mut pump)
+            .unwrap();
+        let rect = w.at(parent).window_rect;
+        assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (112, 80));
     }
 
     /// A tiled window's first show, as guigeo `sizemsg` captured it: WM_WINDOWPOSCHANGED reports

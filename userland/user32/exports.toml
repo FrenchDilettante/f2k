@@ -566,7 +566,7 @@ internal = true
 [[export]]
 name = "NtUserGetClassInfo"
 group = "class"
-args = ["handle Instance", "u32 ClassName", "ptr WndClass"]
+args = ["handle Instance", "u32 ClassName", "ptr WndClass", "ptr<u32> Answer"]
 impl = { syscall = "crate::win32k::class::get_class_info" }
 internal = true
 
@@ -595,7 +595,7 @@ internal = true
 name = "GetClassInfoExA"
 group = "class"
 args = ["handle hInstance", "ptr lpszClass", "ptr lpwcx"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClassInfoExA" }
 ordinal = 236
 fails = "FALSE"
 note = "the class a name, or an atom in its low word"
@@ -604,7 +604,7 @@ note = "the class a name, or an atom in its low word"
 name = "GetClassInfoExW"
 group = "class"
 args = ["handle hInstance", "ptr lpszClass", "ptr lpwcx"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClassInfoExW" }
 ordinal = 237
 fails = "FALSE"
 note = "the class a name, or an atom in its low word"
@@ -613,7 +613,7 @@ note = "the class a name, or an atom in its low word"
 name = "GetClassLongA"
 group = "class"
 args = ["handle hWnd", "i32 nIndex"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClassLongA" }
 ordinal = 239
 fails = "0"
 
@@ -621,7 +621,7 @@ fails = "0"
 name = "SetClassLongA"
 group = "class"
 args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetClassLongA" }
 ordinal = 549
 fails = "0"
 
@@ -629,7 +629,7 @@ fails = "0"
 name = "GetClassLongW"
 group = "class"
 args = ["handle hWnd", "i32 nIndex"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClassLongW" }
 ordinal = 240
 fails = "0"
 
@@ -637,7 +637,7 @@ fails = "0"
 name = "SetClassLongW"
 group = "class"
 args = ["handle hWnd", "i32 nIndex", "i32 dwNewLong"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetClassLongW" }
 ordinal = 550
 fails = "0"
 
@@ -934,6 +934,15 @@ fails = "0"
 note = "another process's window's text read as win32k holds it, no message sent"
 
 [[export]]
+name = "InternalGetWindowText"
+group = "window"
+args = ["handle hWnd", "ptr lpString", "i32 nMaxCount"]
+impl = { native = "InternalGetWindowText" }
+ordinal = 381
+fails = "0"
+note = "the window's text as the window manager holds it, any process's window, no message sent"
+
+[[export]]
 name = "GetWindowTextLengthA"
 group = "window"
 args = ["handle hWnd"]
@@ -1137,7 +1146,7 @@ fails = "0"
 name = "BeginDeferWindowPos"
 group = "window"
 args = ["i32 nNumWindows"]
-impl = { stub = "not yet implemented" }
+impl = { native = "BeginDeferWindowPos" }
 ordinal = 12
 fails = "NULL"
 
@@ -1148,7 +1157,7 @@ args = [
     "handle hWinPosInfo", "handle hWnd", "handle hWndInsertAfter", "i32 x", "i32 y", "i32 cx",
     "i32 cy", "u32 uFlags",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "DeferWindowPos" }
 ordinal = 137
 fails = "NULL"
 
@@ -1156,7 +1165,7 @@ fails = "NULL"
 name = "EndDeferWindowPos"
 group = "window"
 args = ["handle hWinPosInfo"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EndDeferWindowPos" }
 ordinal = 187
 fails = "FALSE"
 
@@ -1164,7 +1173,7 @@ fails = "FALSE"
 name = "GetWindowPlacement"
 group = "window"
 args = ["handle hWnd", "ptr lpwndpl"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowPlacement" }
 ordinal = 352
 fails = "FALSE"
 
@@ -1172,7 +1181,7 @@ fails = "FALSE"
 name = "IsIconic"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsIconic" }
 ordinal = 401
 fails = "FALSE"
 
@@ -1180,7 +1189,7 @@ fails = "FALSE"
 name = "IsZoomed"
 group = "window"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IsZoomed" }
 ordinal = 408
 fails = "FALSE"
 
@@ -1188,7 +1197,7 @@ fails = "FALSE"
 name = "SetWindowPlacement"
 group = "window"
 args = ["handle hWnd", "ptr lpwndpl"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowPlacement" }
 ordinal = 608
 fails = "FALSE"
 
@@ -1315,6 +1324,27 @@ name = "NtUserShowWindowAsync"
 group = "window"
 args = ["handle Window", "i32 Command"]
 impl = { syscall = "crate::win32k::window::show_window_async" }
+internal = true
+
+[[export]]
+name = "NtUserGetWindowPlacement"
+group = "window"
+args = ["handle Window", "ptr Placement"]
+impl = { syscall = "crate::win32k::window::get_window_placement" }
+internal = true
+
+[[export]]
+name = "NtUserSetWindowPlacement"
+group = "window"
+args = ["handle Window", "ptr Placement"]
+impl = { syscall = "crate::win32k::window::set_window_placement" }
+internal = true
+
+[[export]]
+name = "NtUserEndDeferWindowPosEx"
+group = "window"
+args = ["ptr Positions", "u32 Count"]
+impl = { syscall = "crate::win32k::window::end_defer_window_pos" }
 internal = true
 
 [[export]]
@@ -4407,10 +4437,6 @@ ordinal = 375
 [[export]]
 name = "InitializeWin32EntryTable"
 ordinal = 376
-
-[[export]]
-name = "InternalGetWindowText"
-ordinal = 381
 
 [[export]]
 name = "IsCharAlphaA"

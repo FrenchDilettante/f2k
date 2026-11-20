@@ -41,6 +41,10 @@ pub const QUERY_WINDOW_THREAD: u32 = 8;
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.
 pub const QUERY_WINDOW_EXTRA: u32 = 0x8000_0000;
+/// The extra bytes of the window's class (its cbClsExtra) at the offset this index carries in its
+/// low bits (`QUERY_CLASS_EXTRA | offset`), as [`QUERY_WINDOW_EXTRA`] reads the window's own: what
+/// GetClassLong and GetClassWord read at an offset of 0 or more.
+pub const QUERY_CLASS_EXTRA: u32 = 0x4000_0000;
 
 /// ChildWindowFromPointEx's flags (winuser.h's CWP_*): which children the search passes over.
 pub const CWP_SKIPINVISIBLE: u32 = 0x0001;
@@ -116,6 +120,34 @@ pub struct WindowPos {
     pub flags: u32,
 }
 
+/// WINDOWPLACEMENT (44 bytes): a window's show state and its places, as GetWindowPlacement answers
+/// them and SetWindowPlacement takes them; NtUserGetWindowPlacement and NtUserSetWindowPlacement
+/// carry it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowPlacement {
+    /// The structure's size: 44.
+    pub length: u32,
+    /// [`WPF_SETMINPOSITION`], [`WPF_RESTORETOMAXIMIZED`].
+    pub flags: u32,
+    /// SW_SHOWMINIMIZED, SW_SHOWMAXIMIZED or SW_SHOWNORMAL (any show command, to set).
+    pub show_cmd: u32,
+    /// Where the window goes minimized (ptMinPosition), and maximized (ptMaxPosition): (-1, -1)
+    /// for none of its own.
+    pub min_x: i32,
+    pub min_y: i32,
+    pub max_x: i32,
+    pub max_y: i32,
+    /// Its place when neither minimized nor maximized, in its parent's client coordinates (the
+    /// screen's, the work area's at its origin, for a top-level window).
+    pub normal: Rect,
+}
+
+/// WINDOWPLACEMENT's flags (winuser.h's WPF_*): ptMinPosition is the window's to keep; a minimized
+/// window restores to maximized.
+pub const WPF_SETMINPOSITION: u32 = 0x1;
+pub const WPF_RESTORETOMAXIMIZED: u32 = 0x2;
+
 /// A window's own fields as GetWindowLong answers them ([`QUERY_WINDOW_DATA`]).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -185,9 +217,13 @@ pub struct WindowLinks {
     pub previous: u32,
 }
 
-/// The fields of a window's class ([`QUERY_WINDOW_CLASS`]) GetClassLong answers: its atom
-/// (GCW_ATOM), its style (GCL_STYLE), its background brush (GCL_HBRBACKGROUND: a brush handle, or
-/// a system color's index plus one) and its windows' extra bytes (GCL_CBWNDEXTRA).
+/// The fields of a window's class ([`QUERY_WINDOW_CLASS`]) GetClassLong answers by their GCL_
+/// indexes: its atom (GCW_ATOM), its style (GCL_STYLE), its background brush (GCL_HBRBACKGROUND: a
+/// brush handle, or a system color's index plus one), its windows' extra bytes (GCL_CBWNDEXTRA)
+/// and its own (GCL_CBCLSEXTRA), its procedure (GCL_WNDPROC, its form in `flags`), its module
+/// (GCL_HMODULE), its icons and cursor (GCL_HICON, GCL_HICONSM: the small icon the window manager
+/// made from the large one too, GCL_HCURSOR) and its menu name (GCL_MENUNAME: a string's as the
+/// copy user32 keeps of it, an integer id as it is).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WindowClass {
@@ -195,11 +231,27 @@ pub struct WindowClass {
     pub style: u32,
     pub background: u32,
     pub cb_wnd_extra: u32,
+    pub cb_cls_extra: u32,
+    pub wnd_proc: u32,
+    /// [`CLASS_ANSI_PROC`].
+    pub flags: u32,
+    pub module: u32,
+    pub icon: u32,
+    pub icon_sm: u32,
+    pub cursor: u32,
+    pub menu_name: u32,
 }
+
+/// [`WindowClass`]'s flags: the class's procedure takes the narrow forms of the messages.
+pub const CLASS_ANSI_PROC: u32 = 0x1;
+
+/// NtUserGetClassInfo's answer: the class's atom in its low word, and this bit when its procedure
+/// takes the narrow forms of the messages.
+pub const CLASS_INFO_ANSI_PROC: u32 = 0x1_0000;
 
 const _: () = {
     assert!(size_of::<WindowLinks>() == 20);
-    assert!(size_of::<WindowClass>() == 16);
+    assert!(size_of::<WindowClass>() == 48);
     assert!(size_of::<WindowData>() == 36);
     assert!(size_of::<WindowText>() == 4 + 2 * WINDOW_TEXT_UNITS);
     assert!(size_of::<WindowInfo>() == 60);
@@ -207,6 +259,8 @@ const _: () = {
     assert!(offset_of!(WindowInfo, style) == 36);
     assert!(offset_of!(WindowInfo, atom_window_type) == 56);
     assert!(size_of::<WindowPos>() == 28);
+    assert!(size_of::<WindowPlacement>() == 44);
+    assert!(offset_of!(WindowPlacement, normal) == 28);
     assert!(offset_of!(WindowPos, flags) == 24);
 };
 
@@ -221,5 +275,8 @@ unsafe impl Pod for WindowData {}
 unsafe impl Pod for WindowText {}
 // SAFETY: five 32-bit integers.
 unsafe impl Pod for WindowLinks {}
-// SAFETY: four 32-bit integers.
+// SAFETY: twelve 32-bit integers.
 unsafe impl Pod for WindowClass {}
+// SAFETY: 32-bit integers and a RECT, without padding (the asserts above pin the size and the
+// RECT's offset).
+unsafe impl Pod for WindowPlacement {}

@@ -3,10 +3,6 @@ description = "guiclass - window class registration in user32: RegisterClassA/W 
 kind = "sectioned"
 gate = true
 
-[pending]
-infoex = "user32 has no GetClassInfoExW or GetClassInfoExA yet"
-classlong = "user32 has no GetClassLongW, GetClassLongA, SetClassLongW or SetClassLongA yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

@@ -475,6 +475,8 @@ pub struct HostClass {
     pub ansi: bool,
     /// The narrow form of its procedure, which a narrow caller's windows take (0 for none).
     pub narrow: u32,
+    /// Its extra bytes (cbClsExtra of them), zeroed at its registration.
+    pub extra: Vec<u8>,
 }
 
 /// A window the window manager holds.
@@ -737,6 +739,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
             windows: 0,
             ansi: flags & crate::class::REGISTER_ANSI_PROC != 0,
             narrow,
+            extra: std::vec![0; class.cb_cls_extra.max(0) as usize],
         });
         // SAFETY: the caller's out-pointers.
         unsafe {
@@ -768,6 +771,7 @@ pub unsafe extern "system" fn NtUserGetClassInfo(
     _instance: usize,
     name: usize,
     out: *mut WndClassExW,
+    atom: *mut u32,
 ) -> u32 {
     let name = name_at(name);
     wm(|wm| {
@@ -777,8 +781,16 @@ pub unsafe extern "system" fn NtUserGetClassInfo(
         let mut answer = class.class;
         answer.cb_size = 48;
         answer.class_name = 0;
-        // SAFETY: the caller's structure.
-        unsafe { out.write(answer) };
+        let form = if class.ansi {
+            rtl::window::CLASS_INFO_ANSI_PROC
+        } else {
+            0
+        };
+        // SAFETY: the caller's structure and answer.
+        unsafe {
+            out.write(answer);
+            atom.write(u32::from(class.atom) | form);
+        }
         STATUS_SUCCESS
     })
 }
@@ -953,7 +965,9 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
         QUERY_WINDOW_LINKS => length as usize == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length as usize == size_of::<WindowClass>(),
-        index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
+        index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
+            length == 2 || length == 4
+        }
         _ => return STATUS_INVALID_INFO_CLASS,
     };
     if !fits {
@@ -973,7 +987,14 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             Ok(w) => w.clone(),
             Err(status) => return status,
         };
-        let bytes: Vec<u8> = if index & QUERY_WINDOW_EXTRA != 0 {
+        let bytes: Vec<u8> = if index & QUERY_WINDOW_EXTRA == 0 && index & QUERY_CLASS_EXTRA != 0 {
+            let offset = (index & !QUERY_CLASS_EXTRA) as usize;
+            let class = wm.classes.iter().find(|c| c.atom == w.atom);
+            match class.and_then(|c| c.extra.get(offset..offset + length as usize)) {
+                Some(bytes) => bytes.to_vec(),
+                None => return STATUS_INVALID_INFO_CLASS,
+            }
+        } else if index & QUERY_WINDOW_EXTRA != 0 {
             let offset = (index & !QUERY_WINDOW_EXTRA) as usize;
             match w.extra.get(offset..offset + length as usize) {
                 Some(bytes) => bytes.to_vec(),
@@ -1049,6 +1070,18 @@ pub unsafe extern "system" fn NtUserQueryWindow(
                 style: class.map_or(0, |c| c.class.style),
                 background: class.map_or(0, |c| c.class.background as u32),
                 cb_wnd_extra: w.extra.len() as u32,
+                cb_cls_extra: class.map_or(0, |c| c.extra.len() as u32),
+                wnd_proc: class.map_or(0, |c| c.class.wnd_proc as u32),
+                flags: if class.is_some_and(|c| c.ansi) {
+                    CLASS_ANSI_PROC
+                } else {
+                    0
+                },
+                module: class.map_or(0, |c| c.class.instance as u32),
+                icon: class.map_or(0, |c| c.class.icon as u32),
+                icon_sm: class.map_or(0, |c| c.class.icon_sm as u32),
+                cursor: class.map_or(0, |c| c.class.cursor as u32),
+                menu_name: class.map_or(0, |c| c.class.menu_name as u32),
             }
             .as_bytes()
             .to_vec()
@@ -1125,6 +1158,48 @@ pub unsafe extern "system" fn NtUserSetTimer(
 
 pub unsafe extern "system" fn NtUserKillTimer(_window: usize, _id: u32) -> u32 {
     STATUS_SUCCESS
+}
+
+/// The window manager's SetClassLong: the extra bytes, GCL_STYLE, GCL_HBRBACKGROUND and
+/// GCL_WNDPROC of the window's class (another index is refused, as an unknown one).
+pub unsafe extern "system" fn NtUserSetClassLong(
+    window: usize,
+    index: i32,
+    value: u32,
+    previous: *mut u32,
+) -> u32 {
+    let answer = wm(|wm| {
+        let atom = wm.window(window)?.atom;
+        let class = wm
+            .classes
+            .iter_mut()
+            .find(|c| c.atom == atom)
+            .ok_or(STATUS_INVALID_INFO_CLASS)?;
+        if index >= 0 {
+            let offset = index as usize;
+            let bytes = class
+                .extra
+                .get_mut(offset..offset + 4)
+                .ok_or(STATUS_INVALID_INFO_CLASS)?;
+            let old = u32::from_le_bytes(bytes.try_into().unwrap());
+            bytes.copy_from_slice(&value.to_le_bytes());
+            return Ok(old);
+        }
+        Ok(match index {
+            -26 => core::mem::replace(&mut class.class.style, value),
+            -10 => core::mem::replace(&mut class.class.background, value as usize) as u32,
+            -24 => core::mem::replace(&mut class.class.wnd_proc, value as usize) as u32,
+            _ => return Err(STATUS_INVALID_INFO_CLASS),
+        })
+    });
+    match answer {
+        Ok(old) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { previous.write(old) };
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
 }
 
 pub unsafe extern "system" fn NtUserSetWindowLong(
@@ -1244,6 +1319,70 @@ pub unsafe extern "system" fn NtUserSetWindowPos(
             }
         }))
     })
+}
+
+/// The window manager's GetWindowPlacement: the window's rectangle as its normal place, shown
+/// normal.
+pub unsafe extern "system" fn NtUserGetWindowPlacement(
+    window: usize,
+    placement: *mut WindowPlacement,
+) -> u32 {
+    wm(|wm| {
+        status(wm.window(window).map(|w| {
+            let answer = WindowPlacement {
+                length: 44,
+                show_cmd: 1,
+                min_x: -1,
+                min_y: -1,
+                max_x: -1,
+                max_y: -1,
+                normal: w.rect,
+                ..WindowPlacement::default()
+            };
+            // SAFETY: the caller's structure.
+            unsafe { placement.write(answer) };
+        }))
+    })
+}
+
+/// The window manager's SetWindowPlacement: the window moved to its normal place.
+pub unsafe extern "system" fn NtUserSetWindowPlacement(
+    window: usize,
+    placement: *const WindowPlacement,
+) -> u32 {
+    // SAFETY: the caller's structure.
+    let placement = unsafe { placement.read() };
+    if placement.length != 44 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    wm(|wm| status(wm.window(window).map(|w| w.rect = placement.normal)))
+}
+
+/// The window manager's EndDeferWindowPos: each position as SetWindowPos's stand-in takes it.
+pub unsafe extern "system" fn NtUserEndDeferWindowPosEx(
+    positions: *const WindowPos,
+    count: u32,
+) -> u32 {
+    for at in 0..count as usize {
+        // SAFETY: the caller's `count` positions.
+        let pos = unsafe { positions.add(at).read() };
+        // SAFETY: no pointers.
+        let answer = unsafe {
+            NtUserSetWindowPos(
+                pos.hwnd as usize,
+                pos.insert_after as usize,
+                pos.x,
+                pos.y,
+                pos.cx,
+                pos.cy,
+                pos.flags,
+            )
+        };
+        if answer != STATUS_SUCCESS {
+            return answer;
+        }
+    }
+    STATUS_SUCCESS
 }
 
 pub unsafe extern "system" fn NtUserMoveWindow(

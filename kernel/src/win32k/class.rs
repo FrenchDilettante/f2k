@@ -199,9 +199,10 @@ impl Failure {
         match self {
             Failure::AccessDenied => STATUS_ACCESS_DENIED,
             Failure::OutOfMemory => STATUS_NO_MEMORY,
-            Failure::InvalidParameter | Failure::ClassHasWindows | Failure::InvalidIndex => {
-                STATUS_INVALID_PARAMETER
-            }
+            Failure::InvalidParameter | Failure::ClassHasWindows => STATUS_INVALID_PARAMETER,
+            // An index the read or the change does not know: the query services' own refusal of
+            // an information class there is none of, as the window's own indexes answer it.
+            Failure::InvalidIndex => STATUS_INVALID_INFO_CLASS,
             Failure::InvalidCursorHandle | Failure::InvalidIconHandle => STATUS_INVALID_HANDLE,
             Failure::CannotFindWindowClass | Failure::ClassDoesNotExist => {
                 STATUS_OBJECT_NAME_NOT_FOUND
@@ -550,6 +551,10 @@ pub struct Class {
     /// The background brush, as a value (a system color or a GDI handle; never validated here).
     background: u32,
     menu_name: MenuName,
+    /// A string menu name's address in the registering process, as its caller handed it over
+    /// (user32's own copy of the name, which GetClassInfo and GetClassLong answer: Windows 2000's
+    /// client-side copies); 0 for none or an integer id.
+    menu_client: u32,
     /// The ANSI copy of the class name, NUL-terminated.
     ansi_name: [u8; MAX_ANSI_NAME],
     ansi_len: u16,
@@ -587,6 +592,7 @@ impl Class {
             icon_sm: None,
             background: 0,
             menu_name: MenuName::None,
+            menu_client: 0,
             ansi_name: [0; MAX_ANSI_NAME],
             ansi_len: 0,
             window_count: 0,
@@ -876,6 +882,8 @@ pub struct ClassInfo {
     pub icon_sm: u32,
     pub background: u32,
     pub menu_name: MenuName,
+    /// The menu name as GetClassInfo answers it ([`Registry::menu_value`]).
+    pub menu_value: u32,
     pub wnd_proc: u32,
     /// The procedure takes the narrow forms of the messages.
     pub ansi_proc: bool,
@@ -1207,7 +1215,13 @@ impl Registry {
                 }
             }
         };
+        let client = if matches!(menu_name, MenuName::Text { .. }) {
+            wc.menu_name
+        } else {
+            0
+        };
         self.classes.at_mut(id).menu_name = menu_name;
+        self.classes.at_mut(id).menu_client = client;
 
         // Link at the head of the right list: the system list for a system class, the process's
         // public list for a server-side or CS_GLOBALCLASS class, its private list otherwise.
@@ -1471,7 +1485,6 @@ impl Registry {
     /// Synthesize the small icon from the icon, when the class has an icon but no small icon:
     /// the copy is locked in, and the cached flag is set only when the lock landed.
     fn create_class_sm_icon(&mut self, handles: &mut UserHandles, id: ClassId) {
-        debug_assert!(self.classes.at(id).window_count > 0);
         let Some(icon) = self.classes.at(id).icon else {
             return;
         };
@@ -1499,7 +1512,10 @@ impl Registry {
     }
 
     /// The fields of the class `id` that GetClassLong reads ([`rtl::window::WindowClass`]): its
-    /// atom, its public style, its background and its windows' extra bytes.
+    /// atom, its public style, its background, its windows' extra bytes and its own, its procedure
+    /// and its form, its module, its icons (the small one the window manager made from the large
+    /// one too: GetClassLong answers it, where GetClassInfoEx hides it) and cursor, and its menu
+    /// name.
     pub fn class_data(&self, id: ClassId) -> rtl::window::WindowClass {
         let class = self.classes.at(id);
         rtl::window::WindowClass {
@@ -1507,6 +1523,68 @@ impl Registry {
             style: class.style & CS_PUBLIC,
             background: class.background,
             cb_wnd_extra: class.cb_wnd_extra.max(0) as u32,
+            cb_cls_extra: class.cb_cls_extra.max(0) as u32,
+            wnd_proc: class.wnd_proc,
+            flags: if class.flags.ansi_proc {
+                rtl::window::CLASS_ANSI_PROC
+            } else {
+                0
+            },
+            module: class.module,
+            icon: self.cursors.handle_of(class.icon),
+            icon_sm: self.cursors.handle_of(class.icon_sm),
+            cursor: self.cursors.handle_of(class.cursor),
+            menu_name: self.menu_value(id),
+        }
+    }
+
+    /// The menu name of the class `id` as GetClassInfo and GetClassLong answer it: 0 for none, an
+    /// integer id as it is, a string as the address its registering caller handed over.
+    pub fn menu_value(&self, id: ClassId) -> u32 {
+        let class = self.classes.at(id);
+        match class.menu_name {
+            MenuName::Text { .. } => class.menu_client,
+            other => other.raw(),
+        }
+    }
+
+    /// GetClassLong's and GetClassWord's read of the extra bytes of the class `id` (its base's,
+    /// which its clones share): the `length` (2 or 4) bytes at `offset`, a little-endian value;
+    /// InvalidIndex when they are not all inside the class's cbClsExtra (a negative offset
+    /// included).
+    pub fn extra_value(&self, id: ClassId, offset: i32, length: usize) -> Result<u32, Failure> {
+        let base = self.classes.at(id).base;
+        let extra = self.classes.at(base).cb_cls_extra.max(0) as usize;
+        let offset = usize::try_from(offset).map_err(|_| Failure::InvalidIndex)?;
+        if offset + length > extra {
+            return Err(Failure::InvalidIndex);
+        }
+        let bytes = &self.classes.at(base).extra[offset..offset + length];
+        Ok(bytes
+            .iter()
+            .rev()
+            .fold(0, |value, &byte| value << 8 | byte as u32))
+    }
+
+    /// The small icon of the class `atom` the process `owner` registered under `module` made from
+    /// its large one, when it was registered with an icon and no small icon, as Windows 2000's
+    /// registration makes it: GetClassLong(GCL_HICONSM) answers it, GetClassInfoEx hides it.
+    pub fn cache_small_icon(
+        &mut self,
+        handles: &mut UserHandles,
+        atom: Atom,
+        owner: Owner,
+        module: u32,
+    ) {
+        let Some(id) = self
+            .inner(atom, List::Private(owner), Some(module))
+            .or_else(|| self.inner(atom, List::Public(owner), Some(module)))
+        else {
+            return;
+        };
+        let class = self.classes.at(id);
+        if class.icon.is_some() && class.icon_sm.is_none() {
+            self.create_class_sm_icon(handles, id);
         }
     }
 
@@ -1558,6 +1636,7 @@ impl Registry {
             icon_sm,
             background: class.background,
             menu_name: class.menu_name,
+            menu_value: self.menu_value(id),
             wnd_proc: class.wnd_proc,
             ansi_proc: class.flags.ansi_proc,
             wnd_proc_ansi: class.wnd_proc_ansi,
@@ -1700,7 +1779,7 @@ impl Registry {
             }
             GCLP_MENUNAME => {
                 let class = window.class;
-                let old = self.classes.at(class).menu_name;
+                let old = self.menu_value(class);
                 let new = match menu {
                     MenuArg::None => MenuName::None,
                     MenuArg::Id(id) => MenuName::Id(id),
@@ -1720,8 +1799,14 @@ impl Registry {
                         }
                     }
                 };
+                let client = if matches!(new, MenuName::Text { .. }) {
+                    value
+                } else {
+                    0
+                };
                 self.classes.at_mut(class).menu_name = new;
-                Ok(old.raw())
+                self.classes.at_mut(class).menu_client = client;
+                Ok(old)
             }
             GCL_CBCLSEXTRA => {
                 // cbClsExtra is changeable only on a 16-bit class; F2K registers none, so the
@@ -2190,6 +2275,14 @@ pub fn register_class_ex_wow(
                 .classes
                 .set_narrow_procedure(atom, caller.owner, wc.instance, narrow_proc);
         }
+        if let Ok(atom) = registered {
+            manager.classes.cache_small_icon(
+                &mut manager.windows.handles,
+                atom,
+                caller.owner,
+                wc.instance,
+            );
+        }
         registered
     };
     // Windows 2000 takes any class-extra size its pool has room for; the record holds a fixed one.
@@ -2225,14 +2318,18 @@ pub fn unregister_class(call: &mut NtCall, class_name: u32, instance: u32) -> Nt
     Ok(STATUS_SUCCESS)
 }
 
-/// NtUserGetClassInfo(Instance, ClassName, WndClass): the class's fields into the caller's
-/// WNDCLASSEXW (its name fields zeroed first, so a failure copies nothing back).
+/// NtUserGetClassInfo(Instance, ClassName, WndClass, Answer): the class's fields into the caller's
+/// WNDCLASSEXW (its name fields zeroed first, so a failure copies nothing back; its menu name the
+/// address its registering caller handed over, [`Registry::menu_value`]), and into `answer` the
+/// class's atom in its low word, with rtl::window's CLASS_INFO_ANSI_PROC when its procedure takes
+/// the narrow forms of the messages (user32 answers a caller of the other form a handle naming it).
 #[cfg(target_arch = "x86")]
 pub fn get_class_info(
     call: &mut NtCall,
     instance: Handle,
     class_name: u32,
     out: UserAddr,
+    answer: UserPtr<u32>,
 ) -> NtResult {
     let out = out.cast::<WndClassExW>();
     let mut units = [0u16; MAX_ATOM_NAME];
@@ -2257,10 +2354,16 @@ pub fn get_class_info(
         icon: info.icon,
         cursor: info.cursor,
         background: info.background,
-        menu_name: info.menu_name.raw(),
+        menu_name: info.menu_value,
         class_name: 0,
         icon_sm: info.icon_sm,
     })?;
+    let form = if info.ansi_proc {
+        rtl::window::CLASS_INFO_ANSI_PROC
+    } else {
+        0
+    };
+    answer.write(u32::from(info.atom) | form)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -2387,7 +2490,7 @@ pub fn unregister_class(_: &mut NtCall, _: u32, _: u32) -> NtResult {
 }
 
 #[cfg(not(target_arch = "x86"))]
-pub fn get_class_info(_: &mut NtCall, _: Handle, _: u32, _: UserAddr) -> NtResult {
+pub fn get_class_info(_: &mut NtCall, _: Handle, _: u32, _: UserAddr, _: UserPtr<u32>) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 
@@ -4106,5 +4209,51 @@ mod tests {
         assert!(registry
             .classes
             .is_live(registry.class_ptr(c, OTHER_OWNER, OTHER_HIGH_WORD).unwrap()));
+    }
+
+    /// What GetClassLong reads, as the guiclass capture shows Windows 2000's: the small icon the
+    /// registration made from the large one (which GetClassInfo hides), the menu name as the
+    /// address its caller handed over, the extra bytes by offset, a dword past them refused.
+    #[test]
+    fn the_class_data_get_class_long_reads() {
+        let registry = registry();
+        let (icon_id, icon) = registry.make_cursor_record(true, false).unwrap();
+        let mut wc = wnd_class();
+        wc.icon = icon;
+        wc.cb_cls_extra = 8;
+        wc.menu_name = 0x0012_3450;
+        let atom = registry
+            .register_class(
+                &wc,
+                Name::Text(&units("Data")),
+                MenuArg::Text(&units("F2KMenu")),
+                OWNER,
+                compat40(),
+                DESKTOP,
+            )
+            .unwrap();
+        let Fixture { registry, handles } = registry;
+        registry.cache_small_icon(handles, atom, OWNER, MODULE);
+        let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
+        let data = registry.class_data(id);
+        assert_eq!(data.icon, icon);
+        assert_ne!(data.icon_sm, 0);
+        assert_ne!(data.icon_sm, icon);
+        assert_eq!(
+            (data.cb_cls_extra, data.menu_name, data.module),
+            (8, 0x0012_3450, MODULE)
+        );
+        assert_eq!(registry.classes.at(id).icon, Some(icon_id));
+        let info = registry
+            .get_class_info(Name::Atom(atom), Some(MODULE), OWNER, true)
+            .unwrap();
+        assert_eq!((info.icon_sm, info.menu_value), (0, 0x0012_3450));
+        registry.write_extra_dword(id, 0, 0x1122_3344);
+        registry.write_extra_dword(id, 4, 0x5566_7788);
+        assert_eq!(registry.extra_value(id, 2, 4), Ok(0x7788_1122));
+        assert_eq!(registry.extra_value(id, 6, 2), Ok(0x5566));
+        assert_eq!(registry.extra_value(id, 5, 4), Err(Failure::InvalidIndex));
+        assert_eq!(registry.extra_value(id, -4, 4), Err(Failure::InvalidIndex));
+        assert_eq!(Failure::InvalidIndex.status(), STATUS_INVALID_INFO_CLASS);
     }
 }

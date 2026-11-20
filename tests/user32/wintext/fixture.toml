@@ -5,9 +5,6 @@ description = "wintext - a window's text: CreateWindowExA/W's title, SetWindowTe
 kind = "sectioned"
 gate = true
 
-[pending]
-internal = "user32 exports no InternalGetWindowText yet"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the classes'

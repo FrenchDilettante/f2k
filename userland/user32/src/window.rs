@@ -736,6 +736,234 @@ pub extern "system" fn show_window_async(window: usize, command: i32) -> u32 {
     answered(imports::show_window_async(window, command)).is_some() as u32
 }
 
+/// IsIconic: whether the window is minimized (WS_MINIMIZE); FALSE with 1400 for a handle naming no
+/// window.
+#[unsafe(export_name = "f2k_export_IsIconic")]
+pub extern "system" fn is_iconic(window: usize) -> u32 {
+    answered(window_info(window)).is_some_and(|info| info.style & rtl::nonclient::WS_MINIMIZE != 0)
+        as u32
+}
+
+/// IsZoomed: whether the window is maximized (WS_MAXIMIZE); FALSE with 1400 for a handle naming no
+/// window.
+#[unsafe(export_name = "f2k_export_IsZoomed")]
+pub extern "system" fn is_zoomed(window: usize) -> u32 {
+    answered(window_info(window)).is_some_and(|info| info.style & rtl::nonclient::WS_MAXIMIZE != 0)
+        as u32
+}
+
+/// GetWindowPlacement: the window's show state and places into the caller's WINDOWPLACEMENT, its
+/// length set to the structure's whatever the caller's said (the guigeo capture's length of 0 is
+/// answered); TRUE, or FALSE with 1400 for a handle naming no window.
+///
+/// # Safety
+///
+/// The caller's WINDOWPLACEMENT, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetWindowPlacement")]
+pub unsafe extern "system" fn get_window_placement(
+    window: usize,
+    placement: *mut WindowPlacement,
+) -> u32 {
+    // SAFETY: the caller's structure.
+    let mut placement = unsafe { Out::new(placement) };
+    match answered(imports::window_placement(window)) {
+        Some(answer) => {
+            placement.set(answer);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// SetWindowPlacement: the caller's WINDOWPLACEMENT made the window's (its normal place, its
+/// minimized and maximized positions, WPF_RESTORETOMAXIMIZED) and its show command carried out, the
+/// messages they sent received; TRUE, or FALSE with 87 for a length that is not the structure's,
+/// 1400 for a handle naming no window.
+///
+/// # Safety
+///
+/// The caller's WINDOWPLACEMENT, as for the platform's.
+#[unsafe(export_name = "f2k_export_SetWindowPlacement")]
+pub unsafe extern "system" fn set_window_placement(
+    window: usize,
+    placement: *const WindowPlacement,
+) -> u32 {
+    // SAFETY: the caller's structure.
+    let placement = unsafe { rtl::edge::In::new(placement) }.read();
+    let answer = imports::set_window_placement(window, &placement);
+    message::receive_sent();
+    answered(answer).is_some() as u32
+}
+
+// --- Deferred window positions -------------------------------------------------------------------
+
+/// ERROR_INVALID_DWP_HANDLE: an HDWP that names no batch.
+const ERROR_INVALID_DWP_HANDLE: u32 = 1405;
+/// ERROR_HWNDS_HAVE_DIFF_PARENT: a batch's windows are not all one parent's.
+const ERROR_HWNDS_HAVE_DIFF_PARENT: u32 = 1441;
+
+/// A batch's header (an HDWP names it): a fixed local block of user32's own, as Windows 2000's
+/// window manager keeps its batches as objects of its own, in four words: [`BATCH_TAG`], how many
+/// positions the batch holds, how many its positions' block has room for, and that block's
+/// address. The header stays where it is while the positions' block grows, so a batch keeps its
+/// handle (the guigeo capture's DeferWindowPos answers its first handle past the count it began
+/// with).
+const BATCH_TAG: usize = u32::from_le_bytes(*b"DWP ") as usize;
+const BATCH_BYTES: usize = 4 * core::mem::size_of::<usize>();
+
+/// The batch an HDWP names: its header, when it is one.
+fn batch(handle: usize) -> Option<imports::LocalFixed<usize>> {
+    if handle == 0 || imports::local_size(handle) != BATCH_BYTES {
+        return None;
+    }
+    // SAFETY: a live fixed block of a batch header's size, which only the batch calls name, one
+    // at a time.
+    let header = unsafe { imports::LocalFixed::<usize>::new(handle) }?;
+    (header.as_slice()[0] == BATCH_TAG).then_some(header)
+}
+
+/// A batch's header and its positions' block freed.
+fn free_batch(handle: usize, header: &imports::LocalFixed<usize>) {
+    let positions = header.as_slice()[3];
+    if positions != 0 {
+        imports::local_free(positions);
+    }
+    imports::local_free(handle);
+}
+
+/// BeginDeferWindowPos: a batch with room for `count` positions to begin with; its handle, or NULL
+/// with 87 for a negative count (a count of 0 is a batch too, as the guigeo capture shows).
+#[unsafe(export_name = "f2k_export_BeginDeferWindowPos")]
+pub extern "system" fn begin_defer_window_pos(count: i32) -> usize {
+    if count < 0 {
+        return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
+    }
+    let room = (count as usize).max(1);
+    let size = room * core::mem::size_of::<WindowPos>();
+    let Some(positions) = imports::local_alloc(imports::LMEM_FIXED | imports::LMEM_ZEROINIT, size)
+    else {
+        return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+    };
+    let Some(handle) = imports::local_alloc(imports::LMEM_FIXED, BATCH_BYTES) else {
+        imports::local_free(positions);
+        return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+    };
+    // SAFETY: the header block just made, written whole here.
+    if let Some(mut header) = unsafe { imports::LocalFixed::<usize>::new(handle) } {
+        header
+            .as_mut_slice()
+            .copy_from_slice(&[BATCH_TAG, 0, room, positions]);
+    }
+    handle
+}
+
+/// DeferWindowPos: SetWindowPos's arguments added to the batch, carried out at EndDeferWindowPos;
+/// the batch's handle, the same as it began with. NULL with 1405 for a handle naming no batch, and
+/// with 1400 for a window handle (or an insert-after handle, unless SWP_NOZORDER) naming no window,
+/// the batch then freed, as Windows 2000's.
+#[unsafe(export_name = "f2k_export_DeferWindowPos")]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn defer_window_pos(
+    handle: usize,
+    window: usize,
+    insert_after: usize,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    flags: u32,
+) -> usize {
+    const SWP_NOZORDER: u32 = 0x0004;
+    let Some(mut header) = batch(handle) else {
+        return failed(ERROR_INVALID_DWP_HANDLE).unwrap_or(0);
+    };
+    // HWND_TOP, HWND_BOTTOM, HWND_TOPMOST and HWND_NOTOPMOST.
+    let special = matches!(insert_after as isize, -2..=1);
+    if !is_window_alive(window)
+        || (flags & SWP_NOZORDER == 0 && !special && !is_window_alive(insert_after))
+    {
+        free_batch(handle, &header);
+        return failed(crate::ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
+    }
+    let [_, count, room, mut positions] = {
+        let words = header.as_slice();
+        [words[0], words[1], words[2], words[3]]
+    };
+    let size = core::mem::size_of::<WindowPos>();
+    let mut room = room;
+    if count == room {
+        let Some(grown) =
+            imports::local_realloc(positions, 2 * room * size, imports::LMEM_MOVEABLE)
+        else {
+            return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+        };
+        positions = grown;
+        room *= 2;
+    }
+    // SAFETY: the batch's positions' block, `room` positions' bytes, written up to `count` and
+    // zeroed or written past it; named by its header alone.
+    if let Some(mut block) = unsafe { imports::LocalFixed::<WindowPos>::new(positions) } {
+        block.as_mut_slice()[count] = WindowPos {
+            hwnd: window as u32,
+            insert_after: insert_after as u32,
+            x,
+            y,
+            cx,
+            cy,
+            flags,
+        };
+    }
+    header
+        .as_mut_slice()
+        .copy_from_slice(&[BATCH_TAG, count + 1, room, positions]);
+    handle
+}
+
+/// EndDeferWindowPos: the batch's positions carried out in order, as SetWindowPos's (a window the
+/// batch names twice takes each in turn: see the kernel's EndDeferWindowPos), the messages they
+/// sent received, and the batch freed; TRUE. FALSE with 1405 for a handle naming no batch. A batch
+/// whose windows are not all one parent's changes nothing and answers TRUE with 1441, as the
+/// guigeo capture shows Windows 2000's.
+#[unsafe(export_name = "f2k_export_EndDeferWindowPos")]
+pub extern "system" fn end_defer_window_pos(handle: usize) -> u32 {
+    let Some(header) = batch(handle) else {
+        return failed(ERROR_INVALID_DWP_HANDLE).unwrap_or(0);
+    };
+    let count = header.as_slice()[1];
+    let positions = header.as_slice()[3];
+    // SAFETY: the batch's positions' block, its first `count` positions written.
+    let answer = match unsafe { imports::LocalFixed::<WindowPos>::new(positions) } {
+        Some(block) => {
+            let batch = &block.as_slice()[..count];
+            let parent = |pos: &WindowPos| links(pos.hwnd as usize).map_or(0, |l| l.parent);
+            match batch.first().map(parent) {
+                Some(first) if batch.iter().any(|pos| parent(pos) != first) => {
+                    imports::set_last_error(ERROR_HWNDS_HAVE_DIFF_PARENT);
+                    1
+                }
+                _ => {
+                    let mut answer = 1;
+                    for part in batch.chunks(DEFER_PART) {
+                        let done = imports::end_defer_window_pos(part);
+                        message::receive_sent();
+                        if answered(done).is_none() {
+                            answer = 0;
+                            break;
+                        }
+                    }
+                    answer
+                }
+            }
+        }
+        None => 1,
+    };
+    free_batch(handle, &header);
+    answer
+}
+
+/// The most positions handed to the window manager at once (its DEFER_POSITIONS).
+const DEFER_PART: usize = 64;
+
 /// SetWindowPos: the window's place, size and z-order changed as the SWP_ flags say; TRUE, or
 /// FALSE with 1400 for a handle naming no window.
 #[unsafe(export_name = "f2k_export_SetWindowPos")]
@@ -814,7 +1042,7 @@ pub const ERROR_INVALID_INDEX: u32 = 1413;
 /// The Win32 error of a failed window-data call: STATUS_INVALID_INFO_CLASS, the window manager's
 /// answer for an index it does not know (its InvalidIndex), is ERROR_INVALID_INDEX; the rest as
 /// [`window_error`] maps them.
-fn data_error(status: NtStatus) -> u32 {
+pub fn data_error(status: NtStatus) -> u32 {
     match status.0 {
         STATUS_INVALID_INFO_CLASS => ERROR_INVALID_INDEX,
         _ => window_error(status),
@@ -1040,6 +1268,38 @@ pub unsafe extern "system" fn get_window_text_w(window: usize, buffer: *mut u16,
     }
     let buffer = out.as_mut_ptr() as i32;
     message::send_as(window, WM_GETTEXT, max as u32, buffer, false).unwrap_or(0)
+}
+
+/// InternalGetWindowText: the window's text as the window manager holds it (any process's window,
+/// no WM_GETTEXT sent) into the caller's buffer of `max` units, cut to leave room for the
+/// terminator, terminated: the units copied before it. The buffer's first unit is a terminator
+/// whatever `max` says, a count of 0 or 1 included, as the wintext capture shows Windows 2000's; 0
+/// with 1400 for a handle naming no window.
+///
+/// # Safety
+///
+/// `buffer` holds `max` units the call may write, and at least one, as for the platform's.
+#[unsafe(export_name = "f2k_export_InternalGetWindowText")]
+pub unsafe extern "system" fn internal_get_window_text(
+    window: usize,
+    buffer: *mut u16,
+    max: i32,
+) -> i32 {
+    if buffer.is_null() {
+        return 0;
+    }
+    let max = max.max(0) as usize;
+    // SAFETY: the caller's buffer of `max` units, its first unit always written.
+    let mut out = unsafe { OutBuf::new(buffer, max.max(1)) };
+    out.set(0, 0);
+    let Some(text) = message::window_text(window) else {
+        return failed(crate::ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
+    };
+    let text = text.as_slice();
+    let length = text.len().min(max.saturating_sub(1));
+    out.put(&text[..length]);
+    out.set(length, 0);
+    length as i32
 }
 
 /// GetWindowTextA: GetWindowTextW's, into a buffer of `max` bytes, the text in the narrow form.
@@ -1737,5 +1997,132 @@ mod tests {
         arm();
         assert_eq!(is_child(parent, 0), 0);
         assert_eq!(last_error(), 1400);
+    }
+
+    /// InternalGetWindowText: the text as held, no message sent, cut to the buffer; the first unit
+    /// a terminator whatever the count, and for no window too (1400).
+    ///
+    /// Pins: user32.InternalGetWindowText
+    #[test]
+    fn internal_window_text_reads_the_text_as_held() {
+        let window = data_window("F2KInternal", narrow_default, 0, true);
+        wm(|wm| wm.windows.last_mut().unwrap().text = "abcdefgh".encode_utf16().collect());
+        let mut buffer = [0x23u16; 16];
+        // SAFETY: the tests' own buffer, of at least the counts given.
+        unsafe {
+            assert_eq!(internal_get_window_text(window, buffer.as_mut_ptr(), 0), 0);
+            assert_eq!(buffer[..2], [0, 0x23]);
+            assert_eq!(internal_get_window_text(window, buffer.as_mut_ptr(), 4), 3);
+            assert_eq!(buffer[..5], [0x61, 0x62, 0x63, 0, 0x23]);
+            assert_eq!(internal_get_window_text(window, buffer.as_mut_ptr(), 16), 8);
+            assert_eq!(buffer[8], 0);
+        }
+        assert!(seen().is_empty(), "no message sent");
+        buffer[0] = 0x23;
+        arm();
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { internal_get_window_text(0, buffer.as_mut_ptr(), 16) },
+            0
+        );
+        assert_eq!((buffer[0], last_error()), (0, 1400));
+    }
+
+    /// IsIconic and IsZoomed read the style's WS_MINIMIZE and WS_MAXIMIZE; 1400 for no window.
+    ///
+    /// Pins: user32.IsIconic, user32.IsZoomed
+    #[test]
+    fn iconic_and_zoomed_are_the_styles() {
+        register();
+        let window = make();
+        assert_eq!((is_iconic(window), is_zoomed(window)), (0, 0));
+        wm(|wm| wm.windows.last_mut().unwrap().style |= rtl::nonclient::WS_MINIMIZE);
+        assert_eq!((is_iconic(window), is_zoomed(window)), (1, 0));
+        arm();
+        assert_eq!(is_zoomed(0x7FFF_FFFC), 0);
+        assert_eq!(last_error(), 1400);
+        arm();
+        assert_eq!(is_iconic(0x7FFF_FFFC), 0);
+        assert_eq!(last_error(), 1400);
+    }
+
+    /// The placement calls: a length that is not the structure's refused (87), no window 1400.
+    ///
+    /// Pins: user32.GetWindowPlacement, user32.SetWindowPlacement
+    #[test]
+    fn placement_errors() {
+        register();
+        let window = make();
+        let mut placement = WindowPlacement::default();
+        // SAFETY: the tests' own structure.
+        unsafe {
+            assert_eq!(get_window_placement(window, &mut placement), 1);
+            assert_eq!(placement.length, 44);
+            placement.length = 0;
+            arm();
+            assert_eq!(set_window_placement(window, &placement), 0);
+            assert_eq!(last_error(), 87);
+            placement.length = 44;
+            arm();
+            assert_eq!(get_window_placement(0x7FFF_FFFC, &mut placement), 0);
+            assert_eq!(last_error(), 1400);
+        }
+    }
+
+    /// A deferred batch: its handle kept past the count it began with, its positions carried out
+    /// at its end; a negative count 87, a handle naming no batch 1405, a window naming none 1400
+    /// (the batch freed), windows of two parents 1441 with TRUE and nothing moved.
+    ///
+    /// Pins: user32.BeginDeferWindowPos, user32.DeferWindowPos, user32.EndDeferWindowPos
+    #[test]
+    fn deferred_batches() {
+        register();
+        let one = make();
+        let two = make();
+        let flags = 0x14;
+        arm();
+        assert_eq!(begin_defer_window_pos(-1), 0);
+        assert_eq!(last_error(), 87);
+        let batch = begin_defer_window_pos(1);
+        assert_ne!(batch, 0);
+        arm();
+        assert_eq!(
+            defer_window_pos(batch, one, 0, 10, 20, 200, 100, flags),
+            batch
+        );
+        assert_eq!(
+            defer_window_pos(batch, two, 0, 30, 40, 210, 110, flags),
+            batch
+        );
+        assert_eq!(defer_window_pos(batch, one, 0, 5, 6, 150, 70, flags), batch);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(end_defer_window_pos(batch), 1);
+        let mut rect = Rect::default();
+        // SAFETY: the tests' own RECT.
+        unsafe { get_window_rect(one, &mut rect) };
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (5, 6, 155, 76)
+        );
+        arm();
+        assert_eq!(end_defer_window_pos(0), 0);
+        assert_eq!(last_error(), 1405);
+        let batch = begin_defer_window_pos(0);
+        arm();
+        assert_eq!(
+            defer_window_pos(batch, 0x7FFF_FFFC, 0, 1, 2, 3, 4, flags),
+            0
+        );
+        assert_eq!(last_error(), 1400);
+        let child = make_at(0x4000_0000, one, 0, 0, 10, 10);
+        let batch = begin_defer_window_pos(2);
+        defer_window_pos(batch, two, 0, 70, 80, 230, 130, flags);
+        defer_window_pos(batch, child, 0, 20, 30, 60, 50, flags);
+        arm();
+        assert_eq!(end_defer_window_pos(batch), 1);
+        assert_eq!(last_error(), 1441);
+        // SAFETY: the tests' own RECT.
+        unsafe { get_window_rect(two, &mut rect) };
+        assert_eq!((rect.left, rect.top), (30, 40));
     }
 }

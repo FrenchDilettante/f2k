@@ -564,8 +564,8 @@ const CAPTION: i32 = nonclient::CAPTION;
 /// origin and SM_SAMEDISPLAYFORMAT. The non-client ones are rtl::nonclient's, the frame win32k and
 /// the default window procedure draw.
 const METRICS: [(i32, i32); 46] = [
-    (2, 16),                     // SM_CXVSCROLL
-    (3, 16),                     // SM_CYHSCROLL
+    (2, nonclient::SCROLL),      // SM_CXVSCROLL
+    (3, nonclient::SCROLL),      // SM_CYHSCROLL
     (4, CAPTION),                // SM_CYCAPTION
     (5, nonclient::BORDER),      // SM_CXBORDER
     (6, nonclient::BORDER),      // SM_CYBORDER

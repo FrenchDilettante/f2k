@@ -2,9 +2,11 @@
 //! ([`crate::class::register_system_classes`]), its procedure here in its two forms
 //! ([`button_proc_w`], [`button_proc_a`]), as Windows 2000's user32 runs it.
 //!
-//! A button's state lives in its extra bytes ([`BUTTON_EXTRA`]: F2K's layout, Windows 2000's
-//! being its own): its check state, pushed and focus bits (BM_GETSTATE's answer), and the font
-//! WM_SETFONT gave it. Its behaviour, as the controls capture shows Windows 2000's:
+//! A button's state lives in a block of its own, whose address its extra bytes hold
+//! ([`BUTTON_EXTRA`], Windows 2000's 4: its button record's address, the guiclass capture's
+//! cbWndExtra): its check state, pushed and focus bits (BM_GETSTATE's answer), and the font
+//! WM_SETFONT gave it. The block is made at the first change and freed at WM_NCDESTROY. Its
+//! behaviour, as the controls capture shows Windows 2000's:
 //!
 //! - BM_SETCHECK checks a check box or a radio button (any nonzero state is checked, but a
 //!   three-state box keeps BST_INDETERMINATE), never another kind, and notifies nothing; an auto
@@ -60,10 +62,8 @@ const BS_TYPEMASK: u32 = 0xF;
 
 /// The button kinds the procedure does not draw yet (drawn as a check box), and what Windows 2000
 /// draws for each.
-const UNDRAWN_KINDS: [(u32, &str); 2] = [
-    (0x8, "BS_USERBUTTON buttons"),
-    (0xA, "BS_PUSHBOX buttons"),
-];
+const UNDRAWN_KINDS: [(u32, &str); 2] =
+    [(0x8, "BS_USERBUTTON buttons"), (0xA, "BS_PUSHBOX buttons")];
 
 /// BS_OWNERDRAW, the kind whose paint goes to the parent as WM_DRAWITEM.
 const BS_OWNERDRAW: u32 = 0xB;
@@ -161,10 +161,12 @@ pub const BST_FOCUS: u32 = 0x0008;
 /// The button is being clicked (BM_CLICK, Space): its WM_SETFOCUS clicks nothing.
 const CLICKING: u32 = 0x0100;
 
-/// A button's extra bytes: its state, then its font.
-pub const BUTTON_EXTRA: i32 = 8;
-const STATE: i32 = 0;
-const FONT: i32 = 4;
+/// A button's extra bytes: its state block's address (0 before the first change).
+pub const BUTTON_EXTRA: i32 = 4;
+/// The state block's fields, dwords: the state, then the font.
+const STATE: usize = 0;
+const FONT: usize = 1;
+const FIELDS: usize = 2;
 
 /// The keys a button takes.
 const VK_SPACE: u32 = 0x20;
@@ -181,18 +183,36 @@ const COLOR_3DHILIGHT: u32 = 20;
 const COLOR_3DDKSHADOW: u32 = 21;
 const COLOR_3DLIGHT: u32 = 22;
 
-fn read(window: usize, offset: i32) -> u32 {
+/// The address of the button's state block, its extra bytes' dword (0 for none yet).
+fn block(window: usize) -> usize {
     let mut value = 0u32;
-    let _ = imports::query_window(
-        window,
-        rtl::window::QUERY_WINDOW_EXTRA | offset as u32,
-        &mut value,
-    );
-    value
+    let _ = imports::query_window(window, rtl::window::QUERY_WINDOW_EXTRA, &mut value);
+    value as usize
 }
 
-fn write(window: usize, offset: i32, value: u32) {
-    let _ = imports::set_window_long(window, offset, value, false);
+/// The button's state block's `field`: 0 before the block is made.
+fn read(window: usize, field: usize) -> u32 {
+    match block(window) {
+        0 => 0,
+        // SAFETY: a block `write` made, FIELDS dwords, alive until the window's WM_NCDESTROY.
+        at => unsafe { (at as *const u32).add(field).read() },
+    }
+}
+
+/// The button's state block's `field` set to `value`, the block made first when it is not yet.
+fn write(window: usize, field: usize, value: u32) {
+    let mut at = block(window);
+    if at == 0 {
+        let Some(made) =
+            imports::local_alloc(imports::LMEM_FIXED | imports::LMEM_ZEROINIT, 4 * FIELDS)
+        else {
+            return;
+        };
+        let _ = imports::set_window_long(window, 0, made as u32, false);
+        at = made;
+    }
+    // SAFETY: the block made above or before, FIELDS dwords.
+    unsafe { (at as *mut u32).add(field).write(value) };
 }
 
 fn style(window: usize) -> u32 {
@@ -405,6 +425,14 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             0
         }
         WM_GETFONT => read(window, FONT) as i32,
+        WM_NCDESTROY => {
+            let at = block(window);
+            if at != 0 {
+                let _ = imports::set_window_long(window, 0, 0, false);
+                imports::local_free(at);
+            }
+            message::default_procedure(window, message, wparam, lparam, ansi)
+        }
         WM_SETTEXT => {
             let answer = message::default_procedure(window, message, wparam, lparam, ansi);
             let _ = imports::invalidate_rect(window, 0, false);

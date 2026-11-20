@@ -1,10 +1,20 @@
-//! The window classes: the RegisterClass family, UnregisterClass, GetClassInfo and GetClassName,
-//! each over its win32k service ([`imports`]); and the stock cursors LoadCursor answers.
+//! The window classes: the RegisterClass family, UnregisterClass, GetClassInfo, GetClassInfoEx
+//! and GetClassName, GetClassLong and SetClassLong, each over its win32k service ([`imports`]);
+//! and the stock cursors LoadCursor answers.
 //!
 //! The wide forms hand the caller's names to the kernel as they are; the narrow ones convert the
 //! class name and the menu name to UTF-16 first (an integer atom or menu id goes as it is). A
 //! registration is 4.0-compatible (MSVC 6 links its programs for subsystem 4.0). The kernel answers
 //! the class decisions' errors as the closest documented NTSTATUS ([`class_error`] maps them back).
+//!
+//! A class's string menu name is kept in the process twice, wide and narrow, in one block of
+//! user32's own ([`menu_copies`]), as Windows 2000's class keeps its client-side copies: the window
+//! manager holds the name and the block's address, and GetClassInfo, GetClassInfoEx and
+//! GetClassLong answer the copy of the caller's form, never the string the registration was handed
+//! (the guiclass capture). A class's procedure answers a caller of the other form as a handle
+//! naming it, as GetWindowLong answers a window's ([`procedure::value_for`]); GetClassLong reads
+//! the class's fields and extra bytes through NtUserQueryWindow, as GetWindowLong reads the
+//! window's.
 //!
 //! The stock cursors are the system's records in win32k (made at its boot, as Windows 2000 loads
 //! them from user32's resources): LoadCursor with no module finds the one of its IDC_ id there
@@ -25,6 +35,7 @@ use rtl::status::{
 };
 
 use crate::imports::{self, UserBuffer};
+use crate::procedure::{self, Procedure};
 use crate::{caller_bytes_mut, failed, failed_with, spec, NameA, Out, ERROR_INVALID_PARAMETER};
 
 /// WNDCLASSA and WNDCLASSW (40 bytes): a class as RegisterClass takes it, its two names narrow or
@@ -188,10 +199,27 @@ fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option
 /// The registration of `class`, its two names already as the service takes them (`name` the class
 /// name's), through the narrow entry point when `ansi` (its procedure takes the narrow forms of the
 /// messages): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures
-/// show leaves it); 0 with the class decision's error.
-fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
+/// show leaves it); 0 with the class decision's error. A string menu name goes to the window
+/// manager as the copies the class keeps ([`menu_copies`]), freed when the registration fails.
+///
+/// # Safety
+///
+/// The class's menu name is an integer or a NUL-terminated UTF-16 string the call may read.
+unsafe fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
     class.cb_size = core::mem::size_of::<WndClassEx>() as u32;
     class.class_name = name;
+    let mut copies = None;
+    if class.menu_name >> 16 != 0 {
+        // SAFETY: the caller's contract: a NUL-terminated string.
+        let units = unsafe { rtl::cstr::units_until_nul(class.menu_name as *const u16) };
+        if !units.is_empty() {
+            let Some(block) = menu_copies(units) else {
+                return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+            };
+            class.menu_name = block;
+            copies = Some(block);
+        }
+    }
     match failed_with(
         imports::register_class(
             &class,
@@ -205,8 +233,45 @@ fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
             imports::set_last_error(ERROR_FILE_NOT_FOUND);
             atom
         }
-        None => 0,
+        None => {
+            if let Some(block) = copies {
+                imports::local_free(block);
+            }
+            0
+        }
     }
+}
+
+/// A string menu name's two copies, as a class keeps them in the process: one fixed block holding
+/// the name's UTF-16 units and their terminator, then its narrow form (the ANSI code page's) and
+/// its terminator. The block's address is the wide copy's, which the window manager keeps as the
+/// class's menu name; the narrow copy follows it ([`narrow_menu`]). None when there is no room.
+fn menu_copies(units: &[u16]) -> Option<usize> {
+    let wide = 2 * (units.len() + 1);
+    // A double-byte code page's narrow form takes at most two bytes a unit.
+    let narrow = 2 * units.len() + 1;
+    let block = imports::local_alloc(imports::LMEM_FIXED | imports::LMEM_ZEROINIT, wide + narrow)?;
+    // SAFETY: the fixed block just allocated: `wide + narrow` bytes, its address 8-aligned, ours.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(block as *mut u8, wide + narrow) };
+    for (at, unit) in units.iter().enumerate() {
+        bytes[2 * at..2 * at + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    let written = imports::unicode_to_multi_byte(&mut bytes[wide..wide + narrow - 1], units);
+    bytes[wide + written] = 0;
+    Some(block)
+}
+
+/// The menu name a caller of the narrow (`ansi`) or wide form is answered for the window manager's
+/// `value`: none or an integer id as it is, a string as the copy of the caller's form
+/// ([`menu_copies`]: the wide one is the block's start, the narrow one follows its terminator).
+fn menu_for(value: usize, ansi: bool) -> usize {
+    if value >> 16 == 0 || !ansi {
+        return value;
+    }
+    // SAFETY: a string menu name the window manager holds is a block menu_copies made: its wide
+    // copy, NUL-terminated, first.
+    let units = unsafe { rtl::cstr::units_until_nul(value as *const u16) };
+    value + 2 * (units.len() + 1)
 }
 
 /// A narrow class's registration: its class name and menu name converted, then [`register`].
@@ -225,7 +290,8 @@ unsafe fn register_a(mut class: WndClassEx) -> u16 {
     name.with_wide(|name| {
         menu.with_wide(|menu| {
             class.menu_name = menu;
-            register(class, name, true)
+            // SAFETY: the menu name converted: an integer or a NUL-terminated string.
+            unsafe { register(class, name, true) }
         })
     })
     .flatten()
@@ -242,7 +308,8 @@ unsafe fn register_a(mut class: WndClassEx) -> u16 {
 pub unsafe extern "system" fn register_class_w(class: *const WndClass) -> u16 {
     // SAFETY: the caller's structure.
     let class = unsafe { In::new(class) }.read();
-    register(WndClassEx::of(&class), class.class_name, false)
+    // SAFETY: the caller's contract, for the class's menu name.
+    unsafe { register(WndClassEx::of(&class), class.class_name, false) }
 }
 
 /// RegisterClassA: RegisterClassW's, the class's names converted first.
@@ -269,7 +336,8 @@ pub unsafe extern "system" fn register_class_ex_w(class: *const WndClassEx) -> u
     if class.cb_size as usize != core::mem::size_of::<WndClassEx>() {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     }
-    register(class, class.class_name, false)
+    // SAFETY: the caller's contract, for the class's menu name.
+    unsafe { register(class, class.class_name, false) }
 }
 
 /// RegisterClassExA: RegisterClassExW's, the class's names converted first.
@@ -610,17 +678,45 @@ pub unsafe extern "system" fn unregister_class_a(name: *const u8, instance: usiz
 
 // --- Class information ---------------------------------------------------------------------------
 
-/// GetClassInfo's core over the name as the service takes it (`raw` the caller's, which the
-/// answer names): the class's fields into `out`; the atom for a name that is one, TRUE for a string
-/// (the service answers no atom); 0 with 1411 for a class the module does not see.
-fn class_info(instance: usize, name: usize, raw: usize, out: &mut Out<'_, WndClass>) -> u32 {
+/// GetClassInfoEx's core over the name as the service takes it (`raw` the caller's, which the
+/// answer names), for a caller of the narrow (`ansi`) or wide form: the class's fields, its
+/// procedure and menu name in the caller's form, its small icon none when the window manager made
+/// it, and its atom; none with 1411 for a class the module does not see (a NULL module looks
+/// among user32's and the system's). user32's own classes are registered first, when the process
+/// has not created a window yet: Windows 2000's are there from the process's connection on.
+fn class_info_ex(
+    instance: usize,
+    name: usize,
+    raw: usize,
+    ansi: bool,
+) -> Option<(WndClassEx, u16)> {
+    register_system_classes();
     let mut class = WndClassEx {
         cb_size: core::mem::size_of::<WndClassEx>() as u32,
         ..WndClassEx::default()
     };
-    if failed_with(imports::class_info(instance, name, &mut class), class_error).is_none() {
+    let answer = failed_with(imports::class_info(instance, name, &mut class), class_error)?;
+    let proc = Procedure {
+        address: class.wnd_proc as u32,
+        ansi: answer & rtl::window::CLASS_INFO_ANSI_PROC != 0,
+    };
+    class.wnd_proc = procedure::value_for(proc, ansi) as usize;
+    class.menu_name = menu_for(class.menu_name, ansi);
+    class.class_name = raw;
+    Some((class, answer as u16))
+}
+
+/// GetClassInfo's core: GetClassInfoEx's fields into the caller's WNDCLASS; the class's atom.
+fn class_info(
+    instance: usize,
+    name: usize,
+    raw: usize,
+    ansi: bool,
+    out: &mut Out<'_, WndClass>,
+) -> u32 {
+    let Some((class, atom)) = class_info_ex(instance, name, raw, ansi) else {
         return 0;
-    }
+    };
     out.set(WndClass {
         style: class.style,
         wnd_proc: class.wnd_proc,
@@ -633,11 +729,26 @@ fn class_info(instance: usize, name: usize, raw: usize, out: &mut Out<'_, WndCla
         menu_name: class.menu_name,
         class_name: raw,
     });
-    if raw >> 16 == 0 {
-        raw as u32
-    } else {
-        1
-    }
+    u32::from(atom)
+}
+
+/// GetClassInfoEx's answer into the caller's WNDCLASSEX: every field but cbSize, which is left as
+/// the caller set it (the capture's cbSize of 0 is answered and kept); the class's atom.
+fn put_class_info_ex(
+    instance: usize,
+    name: usize,
+    raw: usize,
+    ansi: bool,
+    out: &mut Out<'_, WndClassEx>,
+) -> u32 {
+    let Some((class, atom)) = class_info_ex(instance, name, raw, ansi) else {
+        return 0;
+    };
+    out.set(WndClassEx {
+        cb_size: out.get().cb_size,
+        ..class
+    });
+    u32::from(atom)
 }
 
 /// GetClassInfoW: the class's WNDCLASSW, as the module sees it.
@@ -653,7 +764,7 @@ pub unsafe extern "system" fn get_class_info_w(
 ) -> u32 {
     // SAFETY: the caller's structure.
     let mut out = unsafe { Out::new(out) };
-    class_info(instance, name as usize, name as usize, &mut out)
+    class_info(instance, name as usize, name as usize, false, &mut out)
 }
 
 /// GetClassInfoA: GetClassInfoW's, the name converted first.
@@ -670,8 +781,210 @@ pub unsafe extern "system" fn get_class_info_a(
 ) -> u32 {
     // SAFETY: the caller's contract.
     let (wide, mut out) = unsafe { (NameA::new(name), Out::new(out)) };
-    wide.with_wide(|wide| class_info(instance, wide, name as usize, &mut out))
+    wide.with_wide(|wide| class_info(instance, wide, name as usize, true, &mut out))
         .unwrap_or(0)
+}
+
+/// GetClassInfoExW: the class's WNDCLASSEXW, as the module sees it (GetClassInfoW's, with the
+/// small icon: none when the window manager made it from the large one); the class's atom, by name
+/// or by atom.
+///
+/// # Safety
+///
+/// The caller's WNDCLASSEXW to fill, as for the platform's.
+#[unsafe(export_name = "f2k_export_GetClassInfoExW")]
+pub unsafe extern "system" fn get_class_info_ex_w(
+    instance: usize,
+    name: *const u16,
+    out: *mut WndClassEx,
+) -> u32 {
+    // SAFETY: the caller's structure.
+    let mut out = unsafe { Out::new(out) };
+    put_class_info_ex(instance, name as usize, name as usize, false, &mut out)
+}
+
+/// GetClassInfoExA: GetClassInfoExW's, the name converted first, the procedure and the menu name
+/// in the narrow form.
+///
+/// # Safety
+///
+/// `name` is an atom or a NUL-terminated string, and the caller's WNDCLASSEXA to fill, as for the
+/// platform's.
+#[unsafe(export_name = "f2k_export_GetClassInfoExA")]
+pub unsafe extern "system" fn get_class_info_ex_a(
+    instance: usize,
+    name: *const u8,
+    out: *mut WndClassEx,
+) -> u32 {
+    // SAFETY: the caller's contract.
+    let (wide, mut out) = unsafe { (NameA::new(name), Out::new(out)) };
+    wide.with_wide(|wide| put_class_info_ex(instance, wide, name as usize, true, &mut out))
+        .unwrap_or(0)
+}
+
+// --- Class data ----------------------------------------------------------------------------------
+
+/// The GetClassLong and SetClassLong indexes of a class's own fields (winuser.h's GCL_* and
+/// GCW_ATOM); an index of 0 or more is an offset into the class's extra bytes.
+pub const GCL_MENUNAME: i32 = -8;
+pub const GCL_HBRBACKGROUND: i32 = -10;
+pub const GCL_HCURSOR: i32 = -12;
+pub const GCL_HICON: i32 = -14;
+pub const GCL_HMODULE: i32 = -16;
+pub const GCL_CBWNDEXTRA: i32 = -18;
+pub const GCL_CBCLSEXTRA: i32 = -20;
+pub const GCL_WNDPROC: i32 = -24;
+pub const GCL_STYLE: i32 = -26;
+pub const GCW_ATOM: i32 = -32;
+pub const GCL_HICONSM: i32 = -34;
+
+/// GetClassLong's core, for a caller of the narrow (`ansi`) or wide form: the field of the window's
+/// class at `index` (its procedure and menu name in the caller's form), or the dword of its extra
+/// bytes at that offset; 0 with the last error for a failure (1400 for a handle naming no window,
+/// 1413 for an index naming no field or extra bytes past the class's own).
+fn get_class_long(window: usize, index: i32, ansi: bool) -> u32 {
+    if index >= 0 {
+        let mut value = 0u32;
+        let index = rtl::window::QUERY_CLASS_EXTRA | index as u32;
+        return failed_with(
+            imports::query_window(window, index, &mut value),
+            crate::window::data_error,
+        )
+        .map_or(0, |()| value);
+    }
+    let mut class = rtl::window::WindowClass::default();
+    if crate::answered(imports::query_window(
+        window,
+        rtl::window::QUERY_WINDOW_CLASS,
+        &mut class,
+    ))
+    .is_none()
+    {
+        return 0;
+    }
+    match index {
+        GCL_MENUNAME => menu_for(class.menu_name as usize, ansi) as u32,
+        GCL_HBRBACKGROUND => class.background,
+        GCL_HCURSOR => class.cursor,
+        GCL_HICON => class.icon,
+        GCL_HMODULE => class.module,
+        GCL_CBWNDEXTRA => class.cb_wnd_extra,
+        GCL_CBCLSEXTRA => class.cb_cls_extra,
+        GCL_WNDPROC => procedure::value_for(
+            Procedure {
+                address: class.wnd_proc,
+                ansi: class.flags & rtl::window::CLASS_ANSI_PROC != 0,
+            },
+            ansi,
+        ),
+        GCL_STYLE => class.style,
+        GCW_ATOM => class.atom,
+        GCL_HICONSM => class.icon_sm,
+        _ => failed(crate::window::ERROR_INVALID_INDEX).unwrap_or(0),
+    }
+}
+
+/// SetClassLong's core, for a caller of the narrow (`ansi`) or wide form: the field of the window's
+/// class at `index` set to `value` (a procedure handle sets the procedure it names; a string menu
+/// name the copies the class keeps), or the dword of its extra bytes at that offset; the value it
+/// held (in the caller's form, as GetClassLong answers it), or 0 with the last error for a
+/// failure. A class's procedure keeps its form: the window manager's class records the form it was
+/// registered with.
+///
+/// # Safety
+///
+/// For GCL_MENUNAME, `value` is an integer or a NUL-terminated string of the caller's form.
+unsafe fn set_class_long(window: usize, index: i32, value: u32, ansi: bool) -> u32 {
+    let mut copies = None;
+    let value = match index {
+        GCL_WNDPROC => procedure::resolve(value, ansi).address,
+        GCL_MENUNAME if value >> 16 != 0 => {
+            let block = if ansi {
+                // SAFETY: the caller's contract: a NUL-terminated narrow string.
+                let name = unsafe { NameA::new(value as usize as *const u8) };
+                match name {
+                    NameA::Text(text) => crate::with_wide(text.bytes(), |units| {
+                        menu_copies(&units[..units.len() - 1])
+                    })
+                    .flatten(),
+                    NameA::Id(id) => Some(usize::from(id)),
+                }
+            } else {
+                // SAFETY: the caller's contract: a NUL-terminated wide string.
+                menu_copies(unsafe { rtl::cstr::units_until_nul(value as usize as *const u16) })
+            };
+            let Some(block) = block else {
+                return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+            };
+            copies = Some(block);
+            block as u32
+        }
+        _ => value,
+    };
+    let Some(previous) = failed_with(
+        imports::set_class_long(window, index, value),
+        crate::window::data_error,
+    ) else {
+        if let Some(block) = copies {
+            imports::local_free(block);
+        }
+        return 0;
+    };
+    match index {
+        GCL_WNDPROC => {
+            let mut class = rtl::window::WindowClass::default();
+            let _ = imports::query_window(window, rtl::window::QUERY_WINDOW_CLASS, &mut class);
+            let form = class.flags & rtl::window::CLASS_ANSI_PROC != 0;
+            procedure::value_for(
+                Procedure {
+                    address: previous,
+                    ansi: form,
+                },
+                ansi,
+            )
+        }
+        GCL_MENUNAME => menu_for(previous as usize, ansi) as u32,
+        _ => previous,
+    }
+}
+
+/// GetClassLongW: the field of the window's class at `index` (GCL_*, GCW_ATOM, or an offset into
+/// its extra bytes), a narrow procedure as a handle naming it; 0 with the last error for a
+/// failure.
+#[unsafe(export_name = "f2k_export_GetClassLongW")]
+pub extern "system" fn get_class_long_w(window: usize, index: i32) -> u32 {
+    get_class_long(window, index, false)
+}
+
+/// GetClassLongA: GetClassLongW's, a wide procedure as a handle naming it, the menu name narrow.
+#[unsafe(export_name = "f2k_export_GetClassLongA")]
+pub extern "system" fn get_class_long_a(window: usize, index: i32) -> u32 {
+    get_class_long(window, index, true)
+}
+
+/// SetClassLongW: the field of the window's class at `index` set; the value it held, or 0 with the
+/// last error.
+///
+/// # Safety
+///
+/// For GCL_MENUNAME, `value` is an integer or a NUL-terminated wide string, as for the platform's.
+#[unsafe(export_name = "f2k_export_SetClassLongW")]
+pub unsafe extern "system" fn set_class_long_w(window: usize, index: i32, value: i32) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { set_class_long(window, index, value as u32, false) }
+}
+
+/// SetClassLongA: SetClassLongW's, a procedure given as an address taking the narrow forms, a menu
+/// name narrow.
+///
+/// # Safety
+///
+/// For GCL_MENUNAME, `value` is an integer or a NUL-terminated narrow string, as for the
+/// platform's.
+#[unsafe(export_name = "f2k_export_SetClassLongA")]
+pub unsafe extern "system" fn set_class_long_a(window: usize, index: i32, value: i32) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { set_class_long(window, index, value as u32, true) }
 }
 
 /// GetClassNameW: the name of the window's class, at most `max - 1` characters and a NUL into the
@@ -805,8 +1118,8 @@ mod tests {
         assert_ne!(unsafe { register_class_ex_w(&class) }, 0);
     }
 
-    /// GetClassInfo by atom answers the atom and the class's fields, the name the caller's;
-    /// a class there is none of is 1411.
+    /// GetClassInfo by atom or by name answers the atom and the class's fields, the name the
+    /// caller's; a class there is none of is 1411.
     ///
     /// Pins: user32.GetClassInfoA, user32.GetClassInfoW
     #[test]
@@ -825,7 +1138,7 @@ mod tests {
         // SAFETY: the tests' own structure, a name string.
         let answer =
             unsafe { get_class_info_a(0x40_0000, c"F2KGuiClass".as_ptr().cast(), &mut out) };
-        assert_eq!(answer, 1);
+        assert_eq!(answer, u32::from(atom), "the atom, by name too");
         arm();
         // SAFETY: an atom no class has.
         let answer = unsafe { get_class_info_w(0x40_0000, 0x7FFF as *const u16, &mut out) };
@@ -859,6 +1172,114 @@ mod tests {
             0
         );
         assert_eq!(last_error(), ERROR_CLASS_DOES_NOT_EXIST);
+    }
+
+    /// GetClassInfoEx: the class's atom by name too, its menu name the class's own copy in the
+    /// caller's form (never the string registered), cbSize left as the caller set it; 1411 for a
+    /// class there is none of.
+    ///
+    /// Pins: user32.GetClassInfoExW, user32.GetClassInfoExA
+    #[test]
+    fn class_info_ex_answers_the_copies() {
+        let name: std::vec::Vec<u16> = "F2KGuiClassInfo\0".encode_utf16().collect();
+        let menu: std::vec::Vec<u16> = "F2KMenu\0".encode_utf16().collect();
+        let class = WndClassEx {
+            cb_size: core::mem::size_of::<WndClassEx>() as u32,
+            style: 3,
+            wnd_proc: procedure(proc) as usize,
+            cb_cls_extra: 8,
+            instance: 0x40_0000,
+            menu_name: menu.as_ptr() as usize,
+            class_name: name.as_ptr() as usize,
+            ..WndClassEx::default()
+        };
+        // SAFETY: a WNDCLASSEXW of the tests' own.
+        let atom = unsafe { register_class_ex_w(&class) };
+        assert_ne!(atom, 0);
+        let mut out = WndClassEx::default();
+        // SAFETY: the tests' own name and structure.
+        let answer = unsafe { get_class_info_ex_w(0x40_0000, name.as_ptr(), &mut out) };
+        assert_eq!(answer, u32::from(atom));
+        assert_eq!((out.cb_size, out.style, out.cb_cls_extra), (0, 3, 8));
+        assert_eq!(out.wnd_proc, class.wnd_proc);
+        assert_eq!(out.class_name, name.as_ptr() as usize);
+        assert_ne!(out.menu_name, class.menu_name, "a copy");
+        // SAFETY: the copy the class keeps, NUL-terminated.
+        let copy = unsafe { rtl::cstr::units_until_nul(out.menu_name as *const u16) };
+        assert_eq!(copy, &menu[..7]);
+        let mut narrow = WndClassEx::default();
+        // SAFETY: the tests' own name and structure.
+        let answer = unsafe {
+            get_class_info_ex_a(0x40_0000, c"F2KGuiClassInfo".as_ptr().cast(), &mut narrow)
+        };
+        assert_eq!(answer, u32::from(atom));
+        // SAFETY: the narrow copy the class keeps, NUL-terminated.
+        let text = unsafe { core::ffi::CStr::from_ptr(narrow.menu_name as *const _) };
+        assert_eq!(text, c"F2KMenu");
+        arm();
+        let none: std::vec::Vec<u16> = "F2KGuiClassNone\0".encode_utf16().collect();
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { get_class_info_ex_w(0x40_0000, none.as_ptr(), &mut out) },
+            0
+        );
+        assert_eq!(last_error(), ERROR_CLASS_DOES_NOT_EXIST);
+    }
+
+    /// GetClassLong and SetClassLong: the extra bytes by offset (a dword straddling their end
+    /// 1413), the fields by GCL_ index (the previous value answered), a wide procedure as a handle
+    /// naming it to the narrow form; 1400 for no window.
+    ///
+    /// Pins: user32.GetClassLongW, user32.GetClassLongA, user32.SetClassLongW,
+    /// user32.SetClassLongA
+    #[test]
+    fn class_longs_and_extra_bytes() {
+        let name: std::vec::Vec<u16> = "F2KGuiClassLong\0".encode_utf16().collect();
+        let class = WndClassEx {
+            cb_size: core::mem::size_of::<WndClassEx>() as u32,
+            style: 3,
+            wnd_proc: procedure(proc) as usize,
+            cb_cls_extra: 8,
+            instance: 0x40_0000,
+            background: 6,
+            class_name: name.as_ptr() as usize,
+            ..WndClassEx::default()
+        };
+        // SAFETY: a WNDCLASSEXW of the tests' own.
+        let atom = unsafe { register_class_ex_w(&class) };
+        let window = wm(|wm| {
+            wm.windows.push(crate::imports::host::HostWindow {
+                handle: 0x44,
+                atom,
+                parent: crate::imports::host::DESKTOP_WINDOW,
+                alive: true,
+                ..Default::default()
+            });
+            0x44
+        });
+        arm();
+        assert_eq!(get_class_long_w(window, GCL_STYLE), 3);
+        assert_eq!(get_class_long_a(window, GCL_CBCLSEXTRA), 8);
+        assert_eq!(get_class_long_w(window, GCL_HBRBACKGROUND), 6);
+        assert_eq!(get_class_long_w(window, GCW_ATOM), u32::from(atom));
+        assert_eq!(get_class_long_w(window, GCL_WNDPROC), class.wnd_proc as u32);
+        assert_ne!(get_class_long_a(window, GCL_WNDPROC), class.wnd_proc as u32);
+        // SAFETY: no pointers among the values.
+        unsafe {
+            assert_eq!(set_class_long_w(window, 0, 0x1122_3344), 0);
+            assert_eq!(set_class_long_a(window, 4, 0x5566_7788), 0);
+            assert_eq!(set_class_long_w(window, GCL_STYLE, 2), 3);
+        }
+        assert_eq!(get_class_long_w(window, 2), 0x7788_1122);
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(get_class_long_a(window, 5), 0);
+        assert_eq!(last_error(), crate::window::ERROR_INVALID_INDEX);
+        arm();
+        assert_eq!(get_class_long_w(window, -100), 0);
+        assert_eq!(last_error(), crate::window::ERROR_INVALID_INDEX);
+        arm();
+        assert_eq!(get_class_long_w(0, GCL_STYLE), 0);
+        assert_eq!(last_error(), 1400);
     }
 
     /// GetClassName: the name, narrow or wide, cut to the buffer; 1400 for a dead window.

@@ -67,6 +67,7 @@ pub const WM_NCPAINT: u32 = 0x0085;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 
 /// The system colors the frame is drawn in (winuser.h's COLOR_*).
+const COLOR_SCROLLBAR: u32 = 0;
 const COLOR_ACTIVECAPTION: u32 = 2;
 const COLOR_INACTIVECAPTION: u32 = 3;
 const COLOR_WINDOWFRAME: u32 = 6;
@@ -217,8 +218,8 @@ fn is_active(window: usize) -> bool {
         || menubar::loop_owner() == window
 }
 
-/// The scroll bars a window's styles ask for, which the frame has no part for yet (neither drawn
-/// nor taken from the client area), and what each is.
+/// The scroll bars a window's styles ask for, which the frame takes from the client area but draws
+/// only as their bare tracks yet (no arrows, no thumb), and what each is.
 const SCROLL_BARS: [(u32, &str); 2] = [
     (0x0020_0000, "WS_VSCROLL (the window's vertical scroll bar)"),
     (
@@ -242,8 +243,8 @@ pub fn paint(window: usize, entry: &rtl::stub::Entry, call: (usize, u32, u32, i3
                     bit,
                     entry,
                     format_args!(
-                        "{what} is not yet implemented: neither drawn nor taken from the client \
-                         area"
+                        "{what} is not yet implemented: its area is drawn as a bare track, with no \
+                         arrows and no thumb"
                     ),
                     call,
                 );
@@ -358,6 +359,20 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
         if frame.edge >= 2 {
             draw::draw_edge_in(dc, edge, EDGE_SUNKEN, BF_RECT);
         }
+    }
+    // The scroll bars' tracks, and the square between them in the face color.
+    let (vertical, horizontal) = frame.scroll_bars(local);
+    for bar in [vertical, horizontal].into_iter().flatten() {
+        draw::fill(dc, bar, color(COLOR_SCROLLBAR));
+    }
+    if let (Some(vertical), Some(horizontal)) = (vertical, horizontal) {
+        let corner = Rect {
+            left: vertical.left,
+            top: horizontal.top,
+            right: vertical.right,
+            bottom: horizontal.bottom,
+        };
+        draw::fill(dc, corner, color(COLOR_3DFACE));
     }
 }
 

@@ -10,27 +10,37 @@
 //!   a dialog frame (WS_DLGFRAME, which WS_CAPTION holds, or WS_EX_DLGMODALFRAME), else a thin
 //!   border (WS_BORDER); a client edge inside it (WS_EX_CLIENTEDGE, and WS_EX_STATICEDGE's thin
 //!   one); a caption for WS_CAPTION (a tool window's small one); a menu bar for a window that is
-//!   not a child and has a menu. The menu bar is one row: F2K does not wrap a bar too narrow for
-//!   its items onto more rows, as Windows does.
-//! - The client rectangle is the window's less the frame ([`Frame::client`]: the default
-//!   procedure's WM_NCCALCSIZE answer); AdjustWindowRectEx is its inverse ([`Frame::window`]).
+//!   not a child and has a menu; the scroll bars WS_VSCROLL and WS_HSCROLL ask for, inside the
+//!   client edge. The menu bar is one row: F2K does not wrap a bar too narrow for its items onto
+//!   more rows, as Windows does.
+//! - A sizing border is [`FRAME`] wide when the window also has a border's line to draw (WS_BORDER,
+//!   WS_DLGFRAME or WS_EX_DLGMODALFRAME), a pixel less without one: the coords capture's WS_POPUP |
+//!   WS_THICKFRAME is 3 pixels on every side, its WS_OVERLAPPEDWINDOW 4.
+//! - The client rectangle is the window's less the frame and the scroll bars ([`Frame::client`]:
+//!   the default procedure's WM_NCCALCSIZE answer), a minimized window's empty; AdjustWindowRectEx
+//!   is its inverse, the scroll bars left out, as its documentation says ([`Frame::window`]).
 //! - The caption's parts ([`Caption`]): the system menu's box at its left (a window with WS_SYSMENU
 //!   that is neither a tool window nor a dialog frame), the buttons from its right — the close
 //!   button, then the maximize and minimize buttons side by side when either box is asked for, or
-//!   the help button with WS_EX_CONTEXTHELP — and the text between.
+//!   the help button with WS_EX_CONTEXTHELP — and the text between. Each button is drawn inside a
+//!   cell of the caption button's size ([`SIZE`], a tool window's [`SM_SIZE_X`]), the cells side by
+//!   side from the bar's right; WM_NCHITTEST answers the button over its whole cell.
 //! - WM_NCHITTEST's default answer ([`hit_test`]), in screen coordinates as the message carries
 //!   them: nowhere outside the window; the sizing codes on a sizing border (a corner's within
 //!   [`CORNER`] of it along either side), HTBORDER on another border; the caption's parts; the menu
-//!   bar; HTBORDER on the client edge; the client area.
+//!   bar; HTBORDER on the client edge; the scroll bars; the client area.
 
 use crate::gdi::Rect;
 
 /// The window styles the frame reads (winuser.h's WS_*).
 pub const WS_CHILD: u32 = 0x4000_0000;
 pub const WS_MINIMIZE: u32 = 0x2000_0000;
+pub const WS_MAXIMIZE: u32 = 0x0100_0000;
 pub const WS_BORDER: u32 = 0x0080_0000;
 pub const WS_DLGFRAME: u32 = 0x0040_0000;
 pub const WS_CAPTION: u32 = 0x00C0_0000;
+pub const WS_VSCROLL: u32 = 0x0020_0000;
+pub const WS_HSCROLL: u32 = 0x0010_0000;
 pub const WS_SYSMENU: u32 = 0x0008_0000;
 pub const WS_THICKFRAME: u32 = 0x0004_0000;
 pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
@@ -56,6 +66,9 @@ pub const EDGE: i32 = 2;
 pub const CAPTION: i32 = 19;
 /// SM_CYSMCAPTION: a tool window's caption.
 pub const SM_CAPTION: i32 = 16;
+/// SM_CXVSCROLL and SM_CYHSCROLL: a window's vertical scroll bar's width, its horizontal one's
+/// height.
+pub const SCROLL: i32 = 16;
 /// SM_CYMENU: the menu bar's height, a row of items and the line under it.
 pub const MENU: i32 = 19;
 /// SM_CXSIZE and SM_CYSIZE: a caption button's cell.
@@ -84,6 +97,8 @@ pub const HTCLIENT: u32 = 1;
 pub const HTCAPTION: u32 = 2;
 pub const HTSYSMENU: u32 = 3;
 pub const HTMENU: u32 = 5;
+pub const HTHSCROLL: u32 = 6;
+pub const HTVSCROLL: u32 = 7;
 pub const HTMINBUTTON: u32 = 8;
 pub const HTMAXBUTTON: u32 = 9;
 pub const HTLEFT: u32 = 10;
@@ -123,6 +138,13 @@ pub struct Frame {
     pub caption: i32,
     /// The menu bar's height (0 for none), the line under it included.
     pub menu: i32,
+    /// Whether the window has a vertical scroll bar, and a horizontal one (WS_VSCROLL,
+    /// WS_HSCROLL): inside the client edge, off the client area when it has room for them.
+    pub vscroll: bool,
+    pub hscroll: bool,
+    /// Whether the window is minimized (WS_MINIMIZE): its client area is empty, at its top-left
+    /// corner (WM_SIZE's SIZE_MINIMIZED carries a size of 0).
+    pub minimized: bool,
 }
 
 impl Frame {
@@ -130,13 +152,20 @@ impl Frame {
     /// menu bar whatever `menu` says; AdjustWindowRectEx, which takes the caller's word, reads
     /// [`Frame::of_styles`] instead.
     pub fn of(style: u32, ex_style: u32, menu: bool) -> Frame {
-        Frame::of_styles(style, ex_style, menu && style & WS_CHILD == 0)
+        Frame {
+            vscroll: style & WS_VSCROLL != 0,
+            hscroll: style & WS_HSCROLL != 0,
+            minimized: style & WS_MINIMIZE != 0,
+            ..Frame::of_styles(style, ex_style, menu && style & WS_CHILD == 0)
+        }
     }
 
-    /// The frame `style` and `ex_style` give, with a menu bar when `menu`, a child's too.
+    /// The frame `style` and `ex_style` give, with a menu bar when `menu`, a child's too, without
+    /// scroll bars: AdjustWindowRectEx's.
     pub fn of_styles(style: u32, ex_style: u32, menu: bool) -> Frame {
+        let lined = style & (WS_BORDER | WS_DLGFRAME) != 0 || ex_style & WS_EX_DLGMODALFRAME != 0;
         let (border, border_width) = if style & WS_THICKFRAME != 0 {
-            (Border::Sizing, FRAME)
+            (Border::Sizing, if lined { FRAME } else { FRAME - BORDER })
         } else if style & WS_DLGFRAME != 0 || ex_style & WS_EX_DLGMODALFRAME != 0 {
             (Border::Dialog, DLG_FRAME)
         } else if style & WS_BORDER != 0 {
@@ -164,12 +193,15 @@ impl Frame {
             edge,
             caption,
             menu: if menu { MENU } else { 0 },
+            vscroll: false,
+            hscroll: false,
+            minimized: false,
         }
     }
 
-    /// The client rectangle of a window at `window`: the window's less the frame, never inside
-    /// out (an edge that would cross the opposite one stops at it).
-    pub fn client(&self, window: Rect) -> Rect {
+    /// The area inside the client edge of a window at `window`: the client area and the scroll
+    /// bars, never inside out (an edge that would cross the opposite one stops at it).
+    pub fn inside(&self, window: Rect) -> Rect {
         let side = self.border_width + self.edge;
         let left = window.left + side;
         let top = window.top + self.border_width + self.caption + self.menu + self.edge;
@@ -183,7 +215,62 @@ impl Frame {
         }
     }
 
-    /// The window rectangle of a window whose client rectangle is `client`: AdjustWindowRectEx.
+    /// The scroll bars of a window at `window`: the vertical one along the right of the area inside
+    /// the client edge, the horizontal one along its bottom, each only where that area has room
+    /// for it (as wide as the bar for the vertical one, taller than it for the horizontal one, as
+    /// Windows' WM_NCCALCSIZE has it). With both, the square where they would cross belongs to
+    /// neither.
+    pub fn scroll_bars(&self, window: Rect) -> (Option<Rect>, Option<Rect>) {
+        let inside = self.inside(window);
+        let vertical = self.vscroll && inside.right - inside.left >= SCROLL;
+        let horizontal = self.hscroll && inside.bottom - inside.top > SCROLL;
+        let right = if vertical {
+            inside.right - SCROLL
+        } else {
+            inside.right
+        };
+        let bottom = if horizontal {
+            inside.bottom - SCROLL
+        } else {
+            inside.bottom
+        };
+        (
+            vertical.then_some(Rect {
+                left: right,
+                bottom,
+                ..inside
+            }),
+            horizontal.then_some(Rect {
+                top: bottom,
+                right,
+                ..inside
+            }),
+        )
+    }
+
+    /// The client rectangle of a window at `window`: the window's less the frame and the scroll
+    /// bars, never inside out; a minimized window's empty at its top-left corner.
+    pub fn client(&self, window: Rect) -> Rect {
+        if self.minimized {
+            return Rect {
+                right: window.left,
+                bottom: window.top,
+                ..window
+            };
+        }
+        let mut client = self.inside(window);
+        let (vertical, horizontal) = self.scroll_bars(window);
+        if let Some(bar) = vertical {
+            client.right = bar.left;
+        }
+        if let Some(bar) = horizontal {
+            client.bottom = bar.top;
+        }
+        client
+    }
+
+    /// The window rectangle of a window whose client rectangle is `client`: AdjustWindowRectEx,
+    /// which leaves the scroll bars out.
     pub fn window(&self, client: Rect) -> Rect {
         let side = self.border_width + self.edge;
         Rect {
@@ -249,6 +336,9 @@ pub struct Caption {
     /// The buttons, right to left, and whether each is enabled (a maximize or minimize button
     /// whose box the style lacks is drawn disabled beside the other).
     pub buttons: [Option<(Button, Rect, bool)>; 3],
+    /// The width of a button's cell (SM_CXSIZE, a tool window's SM_CXSMSIZE): the buttons' cells
+    /// lie side by side from the bar's right, each button drawn inside its own.
+    pub cell: i32,
     /// Where the text goes.
     pub text: Rect,
 }
@@ -305,6 +395,7 @@ impl Caption {
             bar,
             system_menu,
             buttons,
+            cell: if tool { SM_SIZE_X } else { SIZE },
             text: Rect {
                 left: text_left,
                 top: bar.top,
@@ -377,9 +468,12 @@ pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: 
         let Some(caption) = Caption::of(style, ex_style, window) else {
             return HTCAPTION;
         };
-        for (button, rect, _) in caption.buttons.iter().flatten() {
-            if contains(*rect, x, y) {
-                return button.hit();
+        for (cell, button) in caption.buttons.iter().enumerate() {
+            if let Some((button, _, _)) = button {
+                let right = caption.bar.right - cell as i32 * caption.cell;
+                if x >= right - caption.cell && x < right {
+                    return button.hit();
+                }
             }
         }
         return match caption.system_menu {
@@ -390,8 +484,13 @@ pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: 
     if frame.menu > 0 && y < inner.top + frame.caption + frame.menu {
         return HTMENU;
     }
+    let (vertical, horizontal) = frame.scroll_bars(window);
     if contains(frame.client(window), x, y) {
         HTCLIENT
+    } else if vertical.is_some_and(|bar| contains(bar, x, y)) {
+        HTVSCROLL
+    } else if horizontal.is_some_and(|bar| contains(bar, x, y)) {
+        HTHSCROLL
     } else {
         HTBORDER
     }
@@ -403,6 +502,8 @@ mod tests {
 
     const OVERLAPPED_WINDOW: u32 =
         WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    /// WS_POPUP, which the frame does not read.
+    const WS_POPUP_TEST: u32 = 0x8000_0000;
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
         Rect {
@@ -433,6 +534,19 @@ mod tests {
             rect(-2, -2, 102, 102)
         );
         assert_eq!(adjust(0, 0, false), client);
+        assert_eq!(adjust(WS_THICKFRAME, 0, false), rect(-3, -3, 103, 103));
+        assert_eq!(
+            adjust(WS_THICKFRAME, WS_EX_DLGMODALFRAME, false),
+            rect(-4, -4, 104, 104)
+        );
+        assert_eq!(
+            adjust(OVERLAPPED_WINDOW, WS_EX_CLIENTEDGE, false),
+            rect(-6, -25, 106, 106)
+        );
+        assert_eq!(
+            adjust(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, false),
+            rect(-3, -19, 103, 103)
+        );
         let frame = Frame::of(OVERLAPPED_WINDOW, 0, true);
         assert_eq!(frame.client(frame.window(client)), client);
         assert_eq!(Frame::of(WS_CHILD | WS_BORDER, 0, true).menu, 0);
@@ -456,6 +570,92 @@ mod tests {
         assert_eq!(hit(320, 240), HTCLIENT);
         assert_eq!(hit(w.left - 10, 240), HTNOWHERE);
         assert_eq!(hit(w.right + 10, 240), HTNOWHERE);
+    }
+
+    /// The coords capture's frames: the scroll bars come off the client area (AdjustWindowRectEx
+    /// leaves them out), inside the client edge.
+    #[test]
+    fn the_scroll_bars_come_off_the_client_area() {
+        let w = rect(0, 0, 240, 160);
+        let style = WS_CAPTION | WS_VSCROLL | WS_HSCROLL;
+        let frame = Frame::of(style, 0, false);
+        assert_eq!(frame.client(w), rect(3, 22, 221, 141));
+        assert_eq!(
+            Frame::of_styles(style, 0, false).window(frame.client(w)),
+            rect(0, 0, 224, 144)
+        );
+        let (vertical, horizontal) = frame.scroll_bars(w);
+        assert_eq!(vertical, Some(rect(221, 22, 237, 141)));
+        assert_eq!(horizontal, Some(rect(3, 141, 221, 157)));
+        assert_eq!(hit_test(style, 0, false, w, 230, 50), HTVSCROLL);
+        assert_eq!(hit_test(style, 0, false, w, 50, 150), HTHSCROLL);
+        assert_eq!(hit_test(style, 0, false, w, 230, 150), HTBORDER);
+        let edged = Frame::of(WS_VSCROLL, WS_EX_CLIENTEDGE, false);
+        assert_eq!(edged.client(w), rect(2, 2, 222, 158));
+        // No room for a bar: none is taken.
+        let narrow = Frame::of(WS_VSCROLL | WS_HSCROLL, 0, false);
+        assert_eq!(narrow.client(rect(0, 0, 10, 16)), rect(0, 0, 10, 16));
+        assert_eq!(
+            Frame::of(WS_POPUP_TEST | WS_THICKFRAME, 0, false).border_width,
+            3
+        );
+    }
+
+    /// The runs of the coords capture's WM_NCHITTEST rows across the caption: each button over its
+    /// whole SM_CXSIZE cell, from the bar's right, with no caption between them.
+    #[test]
+    fn the_buttons_answer_over_their_cells() {
+        let runs = |style: u32, ex: u32, y: i32| {
+            let w = rect(2, 2, 302, 202);
+            let mut runs = std::vec::Vec::new();
+            for x in 0..304 {
+                let hit = hit_test(style, ex, false, w, x, y);
+                match runs.last_mut() {
+                    Some((_, end, last)) if *last == hit => *end = x + 1,
+                    _ => runs.push((x, x + 1, hit)),
+                }
+            }
+            runs
+        };
+        assert_eq!(
+            runs(OVERLAPPED_WINDOW, 0, 15),
+            [
+                (0, 2, HTNOWHERE),
+                (2, 6, HTTOPLEFT),
+                (6, 24, HTSYSMENU),
+                (24, 244, HTCAPTION),
+                (244, 262, HTMINBUTTON),
+                (262, 280, HTMAXBUTTON),
+                (280, 298, HTCLOSE),
+                (298, 302, HTTOPRIGHT),
+                (302, 304, HTNOWHERE),
+            ]
+        );
+        assert_eq!(
+            runs(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 0, 15),
+            [
+                (0, 2, HTNOWHERE),
+                (2, 5, HTBORDER),
+                (5, 23, HTSYSMENU),
+                (23, 245, HTCAPTION),
+                (245, 263, HTMINBUTTON),
+                (263, 281, HTMAXBUTTON),
+                (281, 299, HTCLOSE),
+                (299, 302, HTBORDER),
+                (302, 304, HTNOWHERE),
+            ]
+        );
+        assert_eq!(
+            runs(WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, 15),
+            [
+                (0, 2, HTNOWHERE),
+                (2, 5, HTBORDER),
+                (5, 281, HTCAPTION),
+                (281, 299, HTCLOSE),
+                (299, 302, HTBORDER),
+                (302, 304, HTNOWHERE),
+            ]
+        );
     }
 
     /// The caption's buttons from the right, the menu bar under the caption, a dialog frame's

@@ -3,11 +3,6 @@ description = "guigeo - window geometry and visibility in user32: ShowWindow/Sho
 kind = "sectioned"
 gate = true
 
-[pending]
-minmax = "user32 has no IsIconic or IsZoomed yet, and F2K's ShowWindow neither minimizes nor maximizes a window (no WM_SIZE with SIZE_MINIMIZED or SIZE_MAXIMIZED)"
-placement = "user32 has no GetWindowPlacement or SetWindowPlacement yet"
-defer = "user32 has no BeginDeferWindowPos, DeferWindowPos or EndDeferWindowPos yet"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

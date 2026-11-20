@@ -28,6 +28,7 @@ use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
 use rtl::status::NtStatus;
 use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
+use rtl::window::{WindowPlacement, WindowPos};
 
 use crate::class::WndClassExW;
 use crate::Out;
@@ -39,6 +40,7 @@ mod raw {
     use rtl::gdi::{LogFontW, Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
     use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
+    use rtl::window::{WindowPlacement, WindowPos};
 
     use crate::class::WndClassExW;
 
@@ -228,7 +230,15 @@ mod raw {
         #[link_name = "\u{1}_f2k_nt_NtUserUnregisterClass"]
         pub fn NtUserUnregisterClass(name: usize, instance: usize) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetClassInfo"]
-        pub fn NtUserGetClassInfo(instance: usize, name: usize, class: *mut WndClassExW) -> u32;
+        pub fn NtUserGetClassInfo(
+            instance: usize,
+            name: usize,
+            class: *mut WndClassExW,
+            answer: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetClassLong"]
+        pub fn NtUserSetClassLong(window: usize, index: i32, value: u32, previous: *mut u32)
+            -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetClassName"]
         pub fn NtUserGetClassName(window: usize, name: *mut u8, max: u32, copied: *mut u32) -> u32;
 
@@ -297,6 +307,12 @@ mod raw {
         pub fn NtUserShowWindow(window: usize, command: i32, previous: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserShowWindowAsync"]
         pub fn NtUserShowWindowAsync(window: usize, command: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetWindowPlacement"]
+        pub fn NtUserGetWindowPlacement(window: usize, placement: *mut WindowPlacement) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetWindowPlacement"]
+        pub fn NtUserSetWindowPlacement(window: usize, placement: *const WindowPlacement) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEndDeferWindowPosEx"]
+        pub fn NtUserEndDeferWindowPosEx(positions: *const WindowPos, count: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetWindowLong"]
         pub fn NtUserSetWindowLong(
             window: usize,
@@ -1214,11 +1230,24 @@ pub fn unregister_class(name: usize, instance: usize) -> Result<(), NtStatus> {
 }
 
 /// NtUserGetClassInfo: the fields of the class `name` (as [`register_class`] takes it) the module
-/// `instance` sees, into `class`.
-pub fn class_info(instance: usize, name: usize, class: &mut WndClassExW) -> Result<(), NtStatus> {
+/// `instance` sees, into `class`; the class's atom, with rtl::window's CLASS_INFO_ANSI_PROC when
+/// its procedure takes the narrow forms of the messages.
+pub fn class_info(instance: usize, name: usize, class: &mut WndClassExW) -> Result<u32, NtStatus> {
+    let mut answer = 0u32;
     // SAFETY: the kernel reads the name through its fault-tolerant copies, and reads and writes the
-    // local structure.
-    checked(unsafe { raw::NtUserGetClassInfo(instance, name, class) })
+    // local structure and the local answer.
+    checked(unsafe { raw::NtUserGetClassInfo(instance, name, class, &mut answer) })?;
+    Ok(answer)
+}
+
+/// NtUserSetClassLong: the field of `window`'s class at `index` (GCL_*, or an offset into its extra
+/// bytes) set to `value` (GCL_MENUNAME's a string's address or an integer id); the value it held.
+pub fn set_class_long(window: usize, index: i32, value: u32) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel reads a menu name through its fault-tolerant copies, and writes the
+    // local.
+    checked(unsafe { raw::NtUserSetClassLong(window, index, value, &mut previous) })?;
+    Ok(previous)
 }
 
 /// NtUserGetClassName: the name of `window`'s class, at most `max` units into `name` (its
@@ -1377,6 +1406,27 @@ pub fn show_window(window: usize, command: i32) -> Result<u32, NtStatus> {
 pub fn show_window_async(window: usize, command: i32) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtUserShowWindowAsync(window, command) })
+}
+
+/// NtUserGetWindowPlacement: `window`'s WINDOWPLACEMENT.
+pub fn window_placement(window: usize) -> Result<WindowPlacement, NtStatus> {
+    let mut placement = WindowPlacement::default();
+    // SAFETY: the kernel writes the local structure.
+    checked(unsafe { raw::NtUserGetWindowPlacement(window, &mut placement) })?;
+    Ok(placement)
+}
+
+/// NtUserSetWindowPlacement: `placement` made `window`'s, its show command carried out.
+pub fn set_window_placement(window: usize, placement: &WindowPlacement) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the local structure.
+    checked(unsafe { raw::NtUserSetWindowPlacement(window, placement) })
+}
+
+/// NtUserEndDeferWindowPosEx: a deferred batch's `positions` carried out, in order (at most the
+/// window manager's DEFER_POSITIONS of them at once).
+pub fn end_defer_window_pos(positions: &[WindowPos]) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the local positions.
+    checked(unsafe { raw::NtUserEndDeferWindowPosEx(positions.as_ptr(), positions.len() as u32) })
 }
 
 /// NtUserSetWindowLong: SetWindowLong's change of `window`'s field at `index` (rtl::window's GWL_*,
