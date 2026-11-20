@@ -163,7 +163,8 @@ pub fn open_process(
             .filter(|_| client_id.unique_process != 0)
             .ok_or(STATUS_INVALID_PARAMETER)?;
         if client_id.unique_thread != 0 {
-            let record = crate::process::pool::of_object(id).expect("a live process's record");
+            // A process deleted since the lookup is one the id no longer names.
+            let record = crate::process::pool::of_object(id).ok_or(STATUS_INVALID_PARAMETER)?;
             let owner = record.sched_ptr().cast_const();
             crate::ob::lock(call.passive())
                 .thread_by_client_id(owner, client_id.unique_thread)

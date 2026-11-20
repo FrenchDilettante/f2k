@@ -20,6 +20,7 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
+use super::{transfer_offset, FILE_WRITE_TO_END_OF_FILE};
 use crate::fs::fat32::write;
 use crate::fs::file::{rights, with_records, Context, FileObject, FileRecordId};
 use crate::fs::io;
@@ -28,10 +29,6 @@ use crate::user::syscall::{read_user, write_user};
 
 /// The chunk bytes move through.
 const CHUNK: usize = 4096;
-
-/// ByteOffset's special values: the object's position, and (a write's) the end of the file.
-const FILE_USE_FILE_POINTER_POSITION: u64 = 0xFFFF_FFFF_FFFF_FFFE;
-const FILE_WRITE_TO_END_OF_FILE: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
 /// What a read or write was asked: its object, its completion event, where it starts.
 struct Transfer {
@@ -43,15 +40,21 @@ struct Transfer {
 
 /// The checks a read and a write share, the I/O manager's before it hands the request to the
 /// object's device, in its order: the handle and its rights, the I/O status block, an APC routine
-/// (not supported), the offset (an object without a position needs one), and the event, reset.
+/// (not supported), the offset (an object without a position needs one, and none is negative but a
+/// write's end of file: [`transfer_offset`]), and the event, reset.
 fn transfer(
     handle: Handle,
     event: Handle,
     routine: UserAddr,
     io_status: UserAddr,
     offset: UserPtr<u64>,
-    needs: u32,
+    write: bool,
 ) -> Result<Transfer, NtStatus> {
+    let needs = if write {
+        rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA
+    } else {
+        rights::FILE_READ_DATA
+    };
     let object = file_object(handle.raw())?;
     check_access(&object, needs)?;
     io_status.probe(8)?;
@@ -63,10 +66,7 @@ fn transfer(
     } else {
         Some(offset.read()?)
     };
-    let offset = offset.filter(|&at| at != FILE_USE_FILE_POINTER_POSITION);
-    if offset.is_none() && !object.synchronous {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    let offset = transfer_offset(offset, object.synchronous, write)?;
     let event = completion_event(event.raw())?;
     Ok(Transfer {
         object,
@@ -111,14 +111,7 @@ fn read_file_held(
     offset: UserPtr<u64>,
     _key: UserPtr<u32>,
 ) -> NtResult {
-    let transfer = transfer(
-        handle,
-        event,
-        routine,
-        io_status,
-        offset,
-        rights::FILE_READ_DATA,
-    )?;
+    let transfer = transfer(handle, event, routine, io_status, offset, false)?;
     let result = match transfer.object.context {
         Context::Disk(record) => crate::process::threads::critical_region(|| {
             disk_data(record)?;
@@ -228,8 +221,7 @@ fn write_file_held(
     offset: UserPtr<u64>,
     _key: UserPtr<u32>,
 ) -> NtResult {
-    let needs = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA;
-    let transfer = transfer(handle, event, routine, io_status, offset, needs)?;
+    let transfer = transfer(handle, event, routine, io_status, offset, true)?;
     let result = match transfer.object.context {
         Context::Disk(record) => crate::process::threads::critical_region(|| {
             disk_data(record)?;
@@ -283,7 +275,10 @@ fn write_disk(
         if !with_records(|records| records.may_access(record, owner, range, true)) {
             return Err(STATUS_FILE_LOCK_CONFLICT);
         }
-        if start + length as u64 > u32::MAX as u64 {
+        if start
+            .checked_add(u64::from(length))
+            .is_none_or(|end| end > u64::from(u32::MAX))
+        {
             return Err(STATUS_DISK_FULL);
         }
         let mut chunk = [0u8; CHUNK];

@@ -568,9 +568,10 @@ pub fn cancel_timer(call: &mut NtCall, timer: Handle, current: UserAddr) -> NtRe
 // --- Waits ----------------------------------------------------------------------------------------
 
 /// A timeout argument as the waits take it: none (a null pointer) waits forever; otherwise the
-/// interval from now, in 100 ns units — negative values are relative already, positive ones an
-/// absolute system time (a time already past is a past due, which the waits complete at once).
-/// The longest relative interval stays the far future the wrap-safe due arithmetic makes it.
+/// interval from now, in 100 ns units ([`wait::wait_interval`]: negative values are relative
+/// already, positive ones an absolute system time, one already past no interval, which the waits
+/// complete at once). The longest relative interval stays the far future the wrap-safe due
+/// arithmetic makes it.
 fn timeout_of(at: UserPtr<u64>) -> Result<Option<i64>, NtStatus> {
     if at.is_null() {
         return Ok(None);
@@ -580,11 +581,7 @@ fn timeout_of(at: UserPtr<u64>) -> Result<Option<i64>, NtStatus> {
 
 /// A LARGE_INTEGER interval (see [`timeout_of`]) as a relative one.
 fn interval_of(value: i64) -> i64 {
-    if value <= 0 {
-        value.wrapping_neg()
-    } else {
-        (value as u64).wrapping_sub(crate::time::system_filetime()) as i64
-    }
+    wait::wait_interval(value, crate::time::system_filetime())
 }
 
 /// The waitable a handle names, with the object it belongs to (the wait holds it, which checks it

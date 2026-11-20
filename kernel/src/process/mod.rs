@@ -675,9 +675,11 @@ impl Process {
     }
 
     /// Insert a handle to object `id` with `access` and `inheritance`, the object counting it; none
-    /// when the table is full or the object is gone (the object is left as it was). The object is
-    /// counted in one hold of the directory and the entry inserted in a hold of the table after
-    /// it: the caller writes the handle to user memory once both are released (Windows 2000's
+    /// when the table is full or the object is gone (the object is left as it was). The slot is
+    /// reserved in one hold of the table, the object counted in a hold of the directory after it,
+    /// and the entry fills the slot in a last hold of the table (see
+    /// [`Process::fill_reserved`]): another thread's insert in between cannot take the slot. The
+    /// caller writes the handle to user memory once all are released (Windows 2000's
     /// ObInsertObject shape), and closes it again if that write faults.
     #[cfg(target_arch = "x86")]
     pub fn insert_object(
@@ -686,12 +688,49 @@ impl Process {
         access: u32,
         inherit: bool,
     ) -> Option<core::num::NonZeroU32> {
-        if self.handles_full() || !crate::ob::locked(|directory| directory.handle_opened(id)) {
-            return None;
+        let handle = self.reserve_handle()?;
+        if self.fill_reserved(handle, id, access, inherit) {
+            Some(handle)
+        } else {
+            self.unreserve_handle(handle);
+            None
         }
-        let handle =
-            self.with_handles(|table| table.insert(crate::ob::Entry::object(id, access, inherit)));
-        Some(core::num::NonZeroU32::new(handle).expect("a table with room hands out a handle"))
+    }
+
+    /// Reserve a slot of the handle table for a handle to come (see
+    /// [`crate::sched::object::HandleTable::reserve`]); none when the table is full. The reserving
+    /// call fills it ([`Process::fill_reserved`]) or drops it ([`Process::unreserve_handle`]).
+    pub fn reserve_handle(&self) -> Option<core::num::NonZeroU32> {
+        core::num::NonZeroU32::new(self.with_handles(|table| table.reserve()))
+    }
+
+    /// Drop a reservation [`Process::reserve_handle`] made: the slot is free again.
+    pub fn unreserve_handle(&self, handle: core::num::NonZeroU32) {
+        self.with_handles(|table| table.unreserve(handle.get()));
+    }
+
+    /// Fill the slot `handle` reserved with a handle to object `id` with `access` and
+    /// `inheritance`, the object counting it: false when the object is gone or the table was
+    /// emptied since (the process's exit closed every handle; the object's count is taken back).
+    /// The caller drops the reservation on a false (a drop of one the table no longer holds is
+    /// nothing).
+    #[cfg(target_arch = "x86")]
+    pub fn fill_reserved(
+        &self,
+        handle: core::num::NonZeroU32,
+        id: crate::ob::ObjectId,
+        access: u32,
+        inherit: bool,
+    ) -> bool {
+        if !crate::ob::locked(|directory| directory.handle_opened(id)) {
+            return false;
+        }
+        let entry = crate::ob::Entry::object(id, access, inherit);
+        if self.with_handles(|table| table.fill(handle.get(), entry)) {
+            return true;
+        }
+        crate::ob::locked(|directory| directory.handle_closed(id)).finish();
+        false
     }
 
     /// Take into this process's table, a fresh one, every inheritable handle of `parent`'s, each at
@@ -1473,6 +1512,30 @@ mod tests {
             crate::ob::EVENT_ALL_ACCESS,
             false,
         )
+    }
+
+    /// A create's slot is its own from its reservation on: with the table one slot from full, an
+    /// insert between the reservation and the fill finds the table full (and fails, as a table
+    /// full does) rather than taking the slot the create counted on, whose caller then panicked on
+    /// a null handle. A dropped reservation frees its slot.
+    #[test]
+    fn a_reserved_handle_survives_a_racing_insert() {
+        let process = fresh_process();
+        process.with_handles(|table| {
+            for _ in 1..HANDLE_SLOTS - 1 {
+                table.insert(event_entry());
+            }
+        });
+        let reserved = process.reserve_handle().expect("the last slot");
+        assert!(process.handles_full());
+        assert_eq!(process.with_handles(|table| table.insert(event_entry())), 0);
+        assert_eq!(process.reserve_handle(), None);
+        assert!(process.with_handles(|table| table.fill(reserved.get(), event_entry())));
+        assert_eq!(process.lookup_handle(reserved.get()), Some(event_entry()));
+        assert!(process.close_handle(reserved.get()));
+        let again = process.reserve_handle().expect("the slot closed");
+        process.unreserve_handle(again);
+        assert!(!process.handles_full());
     }
 
     /// The process-exit step closes every handle at once (an open file's among them: a file object

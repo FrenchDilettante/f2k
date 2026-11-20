@@ -1036,6 +1036,21 @@ pub fn due_time(value: i64, now: u64, wall: u64) -> u64 {
     }
 }
 
+/// A wait's or a delay's LARGE_INTEGER timeout as the interval from now the entries arm with:
+/// negative values are relative already; positive ones an absolute system time, as its distance
+/// from `wall`, the wall clock's reading (a FILETIME). An absolute time already past is no interval
+/// at all, the wait completing at once however far past it lies (a difference taken modulo 2^64
+/// would read a time older than the uptime as the far future). The longest relative interval,
+/// i64::MIN, stays the far future the entries' wrap-safe due arithmetic makes it.
+pub fn wait_interval(value: i64, wall: u64) -> i64 {
+    if value <= 0 {
+        value.wrapping_neg()
+    } else {
+        // At most value itself, so within i64.
+        (value as u64).saturating_sub(wall) as i64
+    }
+}
+
 /// What a replaying wait re-plants with: the remaining interval to the due its first attempt
 /// recorded (the thread's timer holds it; the wake's cancellation leaves it in place), the original
 /// timeout on a first attempt, or none for an untimed wait. A timed wait's deadline never slips
@@ -1256,6 +1271,24 @@ mod tests {
         assert_eq!(due_time(wall as i64 + 2_000_000, now, wall), 7_000_000);
         assert_eq!(due_time(wall as i64 - 1, now, wall), now);
         assert_eq!(due_time(1, now, wall), now);
+    }
+
+    /// A wait's timeout as an interval: relative values as they are; an absolute time ahead as its
+    /// distance; an absolute time past, by a second or by more than the uptime, as no interval,
+    /// which the arm refuses as due (it used to wrap to about 2^64, a wait for good).
+    #[test]
+    fn a_past_absolute_timeout_is_no_interval() {
+        let wall = 126_256_467_067_890_000;
+        assert_eq!(wait_interval(-1_000_000, wall), 1_000_000);
+        assert_eq!(wait_interval(0, wall), 0);
+        assert_eq!(wait_interval(i64::MIN, wall), i64::MIN);
+        assert_eq!(wait_interval(wall as i64 + 2_000_000, wall), 2_000_000);
+        assert_eq!(wait_interval(wall as i64, wall), 0);
+        assert_eq!(wait_interval(wall as i64 - 10_000_000, wall), 0);
+        assert_eq!(wait_interval(1, wall), 0);
+        assert_eq!(wait_interval(i64::MAX, 0), i64::MAX);
+        let now = 5_000_000u64;
+        assert!(now.wrapping_add(wait_interval(1, wall) as u64) <= now);
     }
 
     fn event(kind: EventKind, signaled: bool) -> &'static mut Event {

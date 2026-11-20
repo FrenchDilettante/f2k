@@ -450,7 +450,10 @@ pub fn seed_process_regions(space: &mut crate::mem::vm::AddressSpace) {
 }
 
 /// Record `regions` in `space`, each its own allocation: ntdll's a MEM_IMAGE one, the shared data
-/// page read-only, the rest read-write.
+/// page read-only, the rest read-write. The process's own regions (see [`PROCESS_REGIONS`]) but
+/// ntdll's are [`Kind::System`](crate::mem::vm::Kind::System): the kernel maps their pages (a new
+/// thread's TEB among them), and no program changes them; a boot's program's other regions are
+/// its own private memory.
 fn seed_system_regions<'a>(
     space: &mut crate::mem::vm::AddressSpace,
     regions: impl Iterator<Item = &'a SystemRegion>,
@@ -468,7 +471,11 @@ fn seed_system_regions<'a>(
                 base: start,
                 size: end - start,
                 alloc_protect,
-                kind: if image { Kind::Image } else { Kind::Private },
+                kind: match name {
+                    _ if image => Kind::Image,
+                    _ if PROCESS_REGIONS.iter().any(|&(own, ..)| own == name) => Kind::System,
+                    _ => Kind::Private,
+                },
             })
             .expect("the system regions are disjoint from each other and the image");
     }

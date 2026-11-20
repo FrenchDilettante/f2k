@@ -8,6 +8,11 @@
 //! lookup — and slot zero is never handed out, so the first handle is 4 and no valid handle is
 //! zero or the all-ones pseudo-handle. Freed slots are reused most-recently-freed-first.
 //!
+//! A slot can be reserved before what it will name exists (a create that must not fail once its
+//! object is made takes its slot first): a reserved slot names nothing — a lookup or a close of its
+//! handle misses — and no insert hands it out, until its entry fills it or the reservation is
+//! dropped.
+//!
 //! The table keeps only the slot discipline: the objects' counts are the object manager's (see
 //! [`crate::ob`]), which the process keeps in step with every insert and close. The table's owner
 //! is the process record; the process's exit closes every handle through the object manager.
@@ -29,6 +34,8 @@ pub struct HandleTable<E: Copy = crate::ob::Entry> {
     freed_top: usize,
     /// The next never-used index.
     next_fresh: u32,
+    /// The reserved slots, a bit each (see the module notes).
+    reserved: [u32; HANDLE_SLOTS / 32],
 }
 
 impl<E: Copy> HandleTable<E> {
@@ -39,6 +46,7 @@ impl<E: Copy> HandleTable<E> {
             freed: [0; HANDLE_SLOTS],
             freed_top: 0,
             next_fresh: 1,
+            reserved: [0; HANDLE_SLOTS / 32],
         }
     }
 
@@ -61,6 +69,7 @@ impl<E: Copy> HandleTable<E> {
             }
             addr_of_mut!((*table).freed_top).write(0);
             addr_of_mut!((*table).next_fresh).write(1);
+            addr_of_mut!((*table).reserved).write([0; HANDLE_SLOTS / 32]);
         }
     }
 
@@ -71,22 +80,69 @@ impl<E: Copy> HandleTable<E> {
         self.freed.fill(0);
         self.freed_top = 0;
         self.next_fresh = 1;
+        self.reserved.fill(0);
     }
 
     /// Insert `entry`, returning its handle. Null when every slot is taken.
     pub fn insert(&mut self, entry: E) -> u32 {
-        let index = if self.freed_top > 0 {
-            self.freed_top -= 1;
-            self.freed[self.freed_top]
-        } else if (self.next_fresh as usize) < HANDLE_SLOTS {
-            let index = self.next_fresh;
-            self.next_fresh += 1;
-            index
-        } else {
+        let Some(index) = self.take_slot() else {
             return 0;
         };
         self.slots[index as usize] = Some(entry);
         index << HANDLE_SHIFT
+    }
+
+    /// The next free slot's index, taken off the free ones; none when every slot is taken.
+    fn take_slot(&mut self) -> Option<u32> {
+        if self.freed_top > 0 {
+            self.freed_top -= 1;
+            Some(self.freed[self.freed_top])
+        } else if (self.next_fresh as usize) < HANDLE_SLOTS {
+            let index = self.next_fresh;
+            self.next_fresh += 1;
+            Some(index)
+        } else {
+            None
+        }
+    }
+
+    /// Reserve a slot for an entry to come (see the module notes), returning its handle. Null when
+    /// every slot is taken.
+    pub fn reserve(&mut self) -> u32 {
+        let Some(index) = self.take_slot() else {
+            return 0;
+        };
+        self.reserved[index as usize / 32] |= 1 << (index % 32);
+        index << HANDLE_SHIFT
+    }
+
+    /// Whether `handle` names a reserved slot; its index.
+    fn reservation(&self, handle: u32) -> Option<usize> {
+        let index = (handle >> HANDLE_SHIFT) as usize;
+        (index != 0 && index < HANDLE_SLOTS && self.reserved[index / 32] & (1 << (index % 32)) != 0)
+            .then_some(index)
+    }
+
+    /// Fill the slot `handle` reserved with `entry`. False, nothing filled, when the handle names
+    /// no reservation (the table was emptied since: a drain or a reset drops the reservations).
+    pub fn fill(&mut self, handle: u32, entry: E) -> bool {
+        let Some(index) = self.reservation(handle) else {
+            return false;
+        };
+        self.reserved[index / 32] &= !(1 << (index % 32));
+        self.slots[index] = Some(entry);
+        true
+    }
+
+    /// Drop the reservation `handle` names: its slot is free again. False when it names none.
+    pub fn unreserve(&mut self, handle: u32) -> bool {
+        let Some(index) = self.reservation(handle) else {
+            return false;
+        };
+        self.reserved[index / 32] &= !(1 << (index % 32));
+        self.freed[self.freed_top] = index as u32;
+        self.freed_top += 1;
+        true
     }
 
     /// Whether every slot is taken: the next insert would return no handle.
@@ -386,6 +442,50 @@ mod tests {
         assert!(!table.is_full());
         assert_eq!(table.insert(event_entry()), 4);
         assert!(table.is_full());
+    }
+
+    /// A reserved slot names nothing and no insert takes it; filled, it names its entry; dropped,
+    /// it is the next insert's. A reservation in a full table is refused as an insert is, and the
+    /// last slot reserved fills the table (an insert between the check and the fill used to find it
+    /// taken, and its caller panicked on the null handle).
+    #[test]
+    fn a_reserved_slot_waits_for_its_entry() {
+        let mut table: HandleTable = HandleTable::empty();
+        let reserved = table.reserve();
+        assert_eq!(reserved, 4);
+        assert_eq!(table.lookup(reserved), None);
+        assert_eq!(table.close(reserved), None);
+        assert_eq!(table.live(), 0);
+        let other = table.insert(event_entry());
+        assert_eq!(other, 8);
+        assert!(table.fill(reserved, file_entry(1, 2, true)));
+        assert_eq!(table.lookup(reserved), Some(file_entry(1, 2, true)));
+        assert!(
+            !table.fill(reserved, event_entry()),
+            "a reservation fills once"
+        );
+        assert!(!table.unreserve(reserved));
+        let again = table.reserve();
+        assert!(table.unreserve(again));
+        assert!(!table.unreserve(again));
+        assert_eq!(table.insert(event_entry()), again);
+
+        let mut full: Box<HandleTable> = Box::new(HandleTable::empty());
+        for _ in 1..HANDLE_SLOTS - 1 {
+            assert_ne!(full.insert(event_entry()), 0);
+        }
+        let last = full.reserve();
+        assert_ne!(last, 0);
+        assert!(full.is_full());
+        assert_eq!(full.insert(event_entry()), 0);
+        assert_eq!(full.reserve(), 0);
+        assert!(full.fill(last, event_entry()));
+
+        let mut drained: HandleTable = HandleTable::empty();
+        let lost = drained.reserve();
+        drained.drain(|_| {});
+        assert!(!drained.fill(lost, event_entry()));
+        assert!(!drained.unreserve(lost));
     }
 
     /// The process-exit step: the table hands every entry back and empties in one step.

@@ -314,22 +314,32 @@ pub fn create_thread(
         use super::object::{reference_process, PROCESS_CREATE_THREAD};
         let target = reference_process(process.raw(), PROCESS_CREATE_THREAD)?;
         // Once a thread record is attached to the process there is no unwinding it: the create
-        // must not fail after.
-        if call.process().handles_full() {
-            return Err(STATUS_INSUFFICIENT_RESOURCES);
-        }
+        // must not fail after, so its handle's slot is reserved before (another thread of the
+        // caller's may fill the table meanwhile).
+        let reserved = call
+            .process()
+            .reserve_handle()
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         // Made attached to the target (its TEB page is mapped there), inside a critical region
         // for another process.
-        let (object, thread, id) = target.attached(|record| {
+        let made = target.attached(|record| {
             if record.terminating() {
                 return Err(STATUS_PROCESS_IS_TERMINATING);
             }
             crate::process::threads::create(record, user, stack)
-        })?;
-        // The handle joins the thread's own reference (which its end releases).
-        let opened = crate::ob::open(call.process(), object, access, inherit)
-            .expect("the table had a free slot before the create")
-            .get();
+        });
+        let (object, thread, id) =
+            made.inspect_err(|_| call.process().unreserve_handle(reserved))?;
+        // The handle joins the thread's own reference (which its end releases). The thread's
+        // object lives (the create holds it); only the caller's own exit, which emptied its table
+        // meanwhile, leaves the slot unfilled (the value written back then names nothing).
+        if !call
+            .process()
+            .fill_reserved(reserved, object, access, inherit)
+        {
+            call.process().unreserve_handle(reserved);
+        }
+        let opened = reserved.get();
         // Written back as the platform writes them, the thread created whatever happens to the
         // caller's memory (kernel32's own locals, probed above).
         let _ = handle.write(opened);
@@ -432,8 +442,8 @@ pub fn open_thread(
             crate::ob::lock(call.passive()).thread_by_id(client_id.unique_thread)
         } else {
             crate::process::pool::by_client_id(client_id.unique_process).and_then(|process| {
-                let record =
-                    crate::process::pool::of_object(process).expect("a live process's record");
+                // A process deleted since the lookup has no thread to find.
+                let record = crate::process::pool::of_object(process)?;
                 let owner = record.sched_ptr().cast_const();
                 crate::ob::lock(call.passive()).thread_by_client_id(owner, client_id.unique_thread)
             })

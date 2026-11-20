@@ -1618,7 +1618,9 @@ mod target {
             },
         )?;
         if file_object.flags & FO_SYNCHRONOUS_IO != 0 && !nt_error(outcome.status) {
-            file_object.current_byte_offset = offset + u64::from(outcome.information);
+            // A LARGE_INTEGER sum, as the platform's: the offset may be a write's
+            // FILE_WRITE_TO_END_OF_FILE, or what the driver left in the object.
+            file_object.current_byte_offset = offset.wrapping_add(u64::from(outcome.information));
         }
         Ok(outcome)
     }

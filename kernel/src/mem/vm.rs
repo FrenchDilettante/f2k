@@ -228,12 +228,17 @@ pub enum Kind {
     /// A mapped view: its pages map its section's frames.
     Mapped,
     Image,
+    /// Private memory the kernel seeded and maps itself (the TEBs, the PEB, the shared data
+    /// page): MEM_PRIVATE to a query, but secured, as Windows 2000's PEB and TEB VADs are — no
+    /// program commits, frees or reprotects its pages, so the kernel's own maps there always find
+    /// their pages as it left them.
+    System,
 }
 
 impl Kind {
     fn mem_type(self) -> u32 {
         match self {
-            Kind::Private => MEM_PRIVATE,
+            Kind::Private | Kind::System => MEM_PRIVATE,
             Kind::Mapped => MEM_MAPPED,
             Kind::Image => MEM_IMAGE,
         }

@@ -123,7 +123,7 @@ pub fn view_commit(
     }
     let Some(region) = space
         .region_at(address)
-        .filter(|region| region.kind != Kind::Private)
+        .filter(|region| matches!(region.kind, Kind::Mapped | Kind::Image))
     else {
         return Ok(None);
     };
@@ -153,7 +153,8 @@ pub fn settle_view_commit(commit: ViewCommit, paging_file: bool) -> Result<(u32,
 /// NtAllocateVirtualMemory's rules: a reservation (committed whole when MEM_COMMIT rides along),
 /// or a commit inside a private one (a commit without an address reserves too). The base and the
 /// size the call settled on: the reservation's, or the committed pages'. A commit inside a view is
-/// [`view_commit`]'s.
+/// [`view_commit`]'s. A commit anywhere else — the kernel's own regions included, where a TEB the
+/// kernel has yet to map for a thread lies — is STATUS_CONFLICTING_ADDRESSES.
 pub fn allocate(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -200,7 +201,9 @@ pub fn allocate(
 /// NtFreeVirtualMemory's rules: a release names a private region's base with no size; a decommit
 /// any pages of one (no size: the whole region, from its base). The base and the size released or
 /// decommitted. A view or an image is not private memory: as an address no allocation holds, it is
-/// STATUS_MEMORY_NOT_ALLOCATED.
+/// STATUS_MEMORY_NOT_ALLOCATED. The kernel's own regions (the TEBs, the PEB, the shared data page)
+/// are secured, as Windows 2000's PEB and TEB are (MiCheckSecuredVad):
+/// STATUS_INVALID_PAGE_PROTECTION for any of their pages.
 pub fn free(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -219,8 +222,10 @@ pub fn free(
     let region = space
         .region_at(address)
         .ok_or(STATUS_MEMORY_NOT_ALLOCATED)?;
-    if region.kind != Kind::Private {
-        return Err(STATUS_MEMORY_NOT_ALLOCATED);
+    match region.kind {
+        Kind::Private => {}
+        Kind::System => return Err(STATUS_INVALID_PAGE_PROTECTION),
+        Kind::Mapped | Kind::Image => return Err(STATUS_MEMORY_NOT_ALLOCATED),
     }
     if size == 0 {
         if region.base != address {
@@ -246,7 +251,8 @@ pub fn free(
 
 /// NtProtectVirtualMemory's rules: a valid protection over committed pages of one region. The
 /// first page, the span's size, and the first page's old protection. Pages outside every region
-/// are STATUS_CONFLICTING_ADDRESSES, reserved ones STATUS_NOT_COMMITTED.
+/// are STATUS_CONFLICTING_ADDRESSES, reserved ones STATUS_NOT_COMMITTED; the kernel's own regions'
+/// are secured (see [`free`]), STATUS_INVALID_PAGE_PROTECTION.
 pub fn protect(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -262,6 +268,7 @@ pub fn protect(
     }
     let (start, end) = page_span(address, size.max(1));
     match space.region_at(start) {
+        Some(region) if region.kind == Kind::System => return Err(STATUS_INVALID_PAGE_PROTECTION),
         Some(region) if end <= region.base as u64 + region.size as u64 => {}
         _ => return Err(STATUS_CONFLICTING_ADDRESSES),
     }
@@ -1163,6 +1170,66 @@ mod tests {
             Ok(None),
             "an image the space records no view of"
         );
+    }
+
+    /// The kernel's own regions, as every process's space is seeded with them, are secured: a
+    /// program commits nothing in the child TEBs' region (STATUS_CONFLICTING_ADDRESSES, as where
+    /// Windows 2000 has no TEB yet), and frees or reprotects none of their pages
+    /// (STATUS_INVALID_PAGE_PROTECTION). A query still reports them private. The page a new
+    /// thread's TEB takes stays empty and in its region, so the kernel's map of it succeeds (the
+    /// commit or the release before a CreateThread used to make that map panic).
+    #[test]
+    fn the_kernels_regions_are_secured() {
+        use crate::user::{thread_teb_va, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION};
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        crate::exec::loader::seed_process_regions(&mut space);
+        let rw = vm::PAGE_READWRITE;
+        let teb = thread_teb_va(1);
+        for (address, protected) in [
+            (THREAD_TEB_REGION, false),
+            (teb, false),
+            (TEB_PAGE, true),
+            (PEB_PAGE, true),
+            (crate::user::shared::USER_ADDRESS, true),
+        ] {
+            let region = space.region_at(address).expect("seeded");
+            assert_eq!(region.kind, Kind::System);
+            if protected {
+                space.commit(&mut pages, address, PAGE, rw).unwrap();
+            }
+            assert_eq!(
+                allocate(&mut space, &mut pages, address, PAGE, MEM_COMMIT, rw),
+                Err(STATUS_CONFLICTING_ADDRESSES)
+            );
+            assert_eq!(
+                allocate(
+                    &mut space,
+                    &mut pages,
+                    address,
+                    PAGE,
+                    MEM_COMMIT | MEM_RESERVE,
+                    rw
+                ),
+                Err(STATUS_CONFLICTING_ADDRESSES)
+            );
+            assert_eq!(view_commit(&space, address, PAGE, MEM_COMMIT, rw), Ok(None));
+            assert_eq!(
+                free(&mut space, &mut pages, region.base, 0, MEM_RELEASE),
+                Err(STATUS_INVALID_PAGE_PROTECTION)
+            );
+            assert_eq!(
+                free(&mut space, &mut pages, address, PAGE, MEM_DECOMMIT),
+                Err(STATUS_INVALID_PAGE_PROTECTION)
+            );
+            assert_eq!(
+                protect(&mut space, &mut pages, address, PAGE, vm::PAGE_NOACCESS),
+                Err(STATUS_INVALID_PAGE_PROTECTION)
+            );
+            assert_eq!(space.region_at(address), Some(region));
+            assert_eq!(space.query(&pages, address).mem_type, vm::MEM_PRIVATE);
+        }
+        assert_eq!(space.frame_at(&pages, teb), None);
+        assert_eq!(space.map_frame(&mut pages, teb, 0x0050_0000, rw), Ok(()));
     }
 
     /// Protections (memory/protect): each change reports the old one; past the commit fails with

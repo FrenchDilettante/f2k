@@ -84,6 +84,8 @@ const RELOC_HIGHLOW: u16 = 3;
 /// Apply the image's base relocations in `staged` (the in-memory image [`Image::map_into` built,
 /// so RVAs are offsets into it) for its move from the preferred base to `base`. A zero delta
 /// changes nothing; a nonzero delta with no relocation directory is [`LoadError::NoRelocations`].
+/// Every offset the directory gives is checked: a block or an entry reaching past the directory or
+/// the image is [`LoadError::Malformed`].
 pub fn apply_relocations(image: &Image, staged: &mut [u8], base: u32) -> Result<(), LoadError> {
     let delta = base.wrapping_sub(image.image_base());
     if delta == 0 {
@@ -95,36 +97,40 @@ pub fn apply_relocations(image: &Image, staged: &mut [u8], base: u32) -> Result<
     if size == 0 {
         return Err(LoadError::NoRelocations);
     }
+    // The directory lies inside the image (see `directory`), so these sums fit.
     let end = rva as usize + size as usize;
     if end > staged.len() {
         return Err(LoadError::Malformed);
     }
     let mut off = rva as usize;
-    while off + 8 <= end {
+    while end - off >= 8 {
         let page_rva = read_u32(staged, off).ok_or(LoadError::Malformed)?;
         let block_size = read_u32(staged, off + 4).ok_or(LoadError::Malformed)? as usize;
         // A zero block ends the directory (the linker pads the directory's tail with them).
         if block_size == 0 {
             break;
         }
-        if block_size < 8 || off + block_size > end {
+        if block_size < 8 || block_size > end - off {
             return Err(LoadError::Malformed);
         }
+        let block_end = off + block_size;
         let mut entry_off = off + 8;
-        while entry_off + 2 <= off + block_size {
+        while block_end - entry_off >= 2 {
             let entry = read_u16(staged, entry_off).ok_or(LoadError::Malformed)?;
             match entry >> 12 {
                 RELOC_ABSOLUTE => {}
                 RELOC_HIGHLOW => {
-                    let at = (page_rva + u32::from(entry & 0xFFF)) as usize;
+                    let at = page_rva
+                        .checked_add(u32::from(entry & 0xFFF))
+                        .ok_or(LoadError::Malformed)? as usize;
                     let slot = read_u32(staged, at).ok_or(LoadError::Malformed)?;
-                    write_u32(staged, at, slot.wrapping_add(delta));
+                    write_u32(staged, at, slot.wrapping_add(delta))?;
                 }
                 other => return Err(LoadError::UnsupportedRelocation(other)),
             }
             entry_off += 2;
         }
-        off += block_size;
+        off = block_end;
     }
     Ok(())
 }
@@ -142,7 +148,8 @@ pub struct Snap {
 /// (module, entry) through `resolve` — the module as the descriptor spells it, the entry as
 /// [`ImportName`] — and write the address into the IAT slot. The names come from `staged` (the
 /// module is fully staged by then). An unresolved (module, entry) fails the load with
-/// [`LoadError::Unresolved`]. An image with no import directory snaps nothing.
+/// [`LoadError::Unresolved`]; a descriptor, a thunk, a name or an IAT slot outside the image with
+/// [`LoadError::Malformed`]. An image with no import directory snaps nothing.
 pub fn snap_imports(
     image: &Image,
     staged: &mut [u8],
@@ -154,7 +161,7 @@ pub fn snap_imports(
     let mut result = Snap::default();
     let mut off = import_rva as usize;
     loop {
-        if off + 20 > staged.len() {
+        if staged.len().checked_sub(off).is_none_or(|left| left < 20) {
             return Err(LoadError::Malformed);
         }
         let original_first_thunk = read_u32(staged, off).ok_or(LoadError::Malformed)?;
@@ -185,13 +192,17 @@ pub fn snap_imports(
                 ImportName::Ordinal(thunk & 0xFFFF)
             } else {
                 // The hint word precedes the name and is never authoritative.
-                ImportName::Name(cstr(staged, thunk as usize + 2).ok_or(LoadError::Malformed)?)
+                let name = (thunk as usize)
+                    .checked_add(2)
+                    .ok_or(LoadError::Malformed)?;
+                ImportName::Name(cstr(staged, name).ok_or(LoadError::Malformed)?)
             };
             // Read fresh per thunk so the borrow ends at the resolve, before the IAT write.
             let module = cstr(staged, module_off).ok_or(LoadError::Malformed)?;
             let address = resolve(module, name).map_err(|_| LoadError::Unresolved)?;
-            write_u32(staged, slot_off, address);
+            write_u32(staged, slot_off, address)?;
             result.thunks += 1;
+            // Both read or written just now, so inside the image: the next ones fit an offset.
             lookup_off += 4;
             slot_off += 4;
         }
@@ -242,7 +253,7 @@ pub fn load_staged(
 /// The `u32` at `off` in `bytes`, if it lies inside them.
 fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
     bytes
-        .get(off..off + 4)?
+        .get(off..off.checked_add(4)?)?
         .try_into()
         .ok()
         .map(u32::from_le_bytes)
@@ -251,15 +262,19 @@ fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
 /// The `u16` at `off`.
 fn read_u16(bytes: &[u8], off: usize) -> Option<u16> {
     bytes
-        .get(off..off + 2)?
+        .get(off..off.checked_add(2)?)?
         .try_into()
         .ok()
         .map(u16::from_le_bytes)
 }
 
-/// Write `value` as the `u32` at `off`.
-fn write_u32(bytes: &mut [u8], off: usize, value: u32) {
-    bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
+/// Write `value` as the `u32` at `off`; [`LoadError::Malformed`] when it lies outside `bytes`.
+fn write_u32(bytes: &mut [u8], off: usize, value: u32) -> Result<(), LoadError> {
+    off.checked_add(4)
+        .and_then(|end| bytes.get_mut(off..end))
+        .ok_or(LoadError::Malformed)?
+        .copy_from_slice(&value.to_le_bytes());
+    Ok(())
 }
 
 /// The NUL-terminated string at `off`, if there is one.
@@ -764,6 +779,76 @@ mod tests {
             load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err(),
             LoadError::Malformed
         );
+    }
+
+    /// Malformed tables fail the load as malformed (NtLoadDriver's STATUS_INVALID_IMAGE_FORMAT)
+    /// where they used to panic: an IAT slot past the image, a relocation whose page and offset
+    /// overflow 32 bits or land past the image, a block size near 2^32, a lookup thunk or a name
+    /// past the image, an import table cut by the image's end.
+    #[test]
+    fn malformed_tables_fail_the_load() {
+        let load = |file: &[u8]| {
+            let mut staged = vec![0u8; 0x4000];
+            let mut log = Vec::new();
+            load_staged(file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err()
+        };
+        // The first descriptor's IAT past the image (the write used to slice out of bounds).
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x400 + 16, 0x3FFE);
+        assert_eq!(load(&file), LoadError::Malformed);
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x400 + 16, 0x7FFF_FFFF);
+        assert_eq!(load(&file), LoadError::Malformed);
+        // A relocation page whose offset overflows 32 bits (the add used to panic).
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x700, 0xFFFF_F800);
+        w16(&mut file, 0x708, 0x3FFF);
+        assert_eq!(load(&file), LoadError::Malformed);
+        // A relocation block pointing past the image.
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x700, 0x4000);
+        assert_eq!(load(&file), LoadError::Malformed);
+        let mut file = synthetic_sys(true, true, false);
+        w16(&mut file, 0x708, 0x3FFE);
+        w32(&mut file, 0x700, 0x3000);
+        assert_eq!(load(&file), LoadError::Malformed);
+        // A block size near 2^32.
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x704, 0xFFFF_FFFC);
+        assert_eq!(load(&file), LoadError::Malformed);
+        // A lookup thunk array, a hint/name and a module name past the image.
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x400, 0x7FFF_FFFF);
+        assert_eq!(load(&file), LoadError::Malformed);
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x500, 0x7FFF_FFFE);
+        assert_eq!(load(&file), LoadError::Malformed);
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, 0x400 + 12, 0x7FFF_FFF0);
+        assert_eq!(load(&file), LoadError::Malformed);
+        // An import table truncated by the image's end: its directory at the image's last bytes,
+        // its descriptors running past them (the .reloc section's tail, all nonzero).
+        let mut file = synthetic_sys(true, true, false);
+        let dirs = 0x98 + 0x60;
+        w32(&mut file, dirs + 8, 0x3FF0);
+        w32(&mut file, dirs + 8 + 4, 0x10);
+        let mut staged = vec![0u8; 0x4000];
+        let mut log = Vec::new();
+        let image = Image::parse_kernel_module(&file).unwrap();
+        image.map_into(&file, &mut staged).unwrap();
+        staged[0x3FF0..].fill(0x11);
+        assert_eq!(
+            snap_imports(&image, &mut staged, fake_resolve(&mut log)),
+            Err(LoadError::Malformed)
+        );
+        // A relocation directory at the image's very end.
+        let mut staged = vec![0u8; 0x4000];
+        image.map_into(&file, &mut staged).unwrap();
+        let mut file = synthetic_sys(true, true, false);
+        w32(&mut file, dirs + 5 * 8, 0x3FFC);
+        w32(&mut file, dirs + 5 * 8 + 4, 4);
+        let image = Image::parse_kernel_module(&file).unwrap();
+        assert_eq!(apply_relocations(&image, &mut staged, 0xC680_0000), Ok(()));
     }
 
     /// drvload.sys, as the Windows 2000 DDK built it (linked /DRIVER at 0x10000, sections aligned

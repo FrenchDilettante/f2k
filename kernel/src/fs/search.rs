@@ -27,30 +27,79 @@ const DOT: u16 = b'.' as u16;
 /// Whether `name` (folded units) matches `expression` (folded units): `*` any run; `?` one unit;
 /// DOS_STAR any run not past the name's last dot; DOS_QM one unit, or none at a dot or the end;
 /// DOS_DOT a dot, or nothing at the end.
+///
+/// The match runs the expression as a set of positions over the name, one unit at a time, as
+/// FsRtlIsNameInExpression does: time in name length × expression length, whatever the pattern (a
+/// backtracking match is exponential in its stars, and a search runs with interrupts masked). An
+/// expression past [`MAX_EXPRESSION`] units (which a [`Search`] never keeps) matches nothing.
 pub fn matches(expression: &[u16], name: &[u16]) -> bool {
-    let Some((&first, rest)) = expression.split_first() else {
-        return name.is_empty();
-    };
-    match first {
-        STAR => (0..=name.len()).any(|skip| matches(rest, &name[skip..])),
-        DOS_STAR => {
-            let last_dot = name.iter().rposition(|&unit| unit == DOT);
-            (0..=name.len())
-                .filter(|&skip| last_dot.is_none_or(|dot| skip <= dot))
-                .any(|skip| matches(rest, &name[skip..]))
+    if expression.len() > MAX_EXPRESSION {
+        return false;
+    }
+    let last_dot = name.iter().rposition(|&unit| unit == DOT);
+    let mut states = States::default();
+    states.insert(0);
+    for (at, &unit) in name.iter().enumerate() {
+        states.close(expression, Some(unit));
+        let mut next = States::default();
+        for (position, &wild) in expression.iter().enumerate() {
+            if !states.contains(position) {
+                continue;
+            }
+            match wild {
+                STAR => next.insert(position),
+                DOS_STAR if last_dot != Some(at) => next.insert(position),
+                DOS_STAR => {}
+                QUESTION => next.insert(position + 1),
+                DOS_QM if unit != DOT => next.insert(position + 1),
+                DOS_QM => {}
+                DOS_DOT if unit == DOT => next.insert(position + 1),
+                DOS_DOT => {}
+                literal if literal == unit => next.insert(position + 1),
+                _ => {}
+            }
         }
-        QUESTION => !name.is_empty() && matches(rest, &name[1..]),
-        DOS_QM => match name.first() {
-            None => matches(rest, name),
-            Some(&unit) if unit == DOT => matches(rest, name),
-            Some(_) => matches(rest, &name[1..]),
-        },
-        DOS_DOT => match name.first() {
-            None => matches(rest, name),
-            Some(&unit) if unit == DOT => matches(rest, &name[1..]),
-            Some(_) => false,
-        },
-        unit => name.first() == Some(&unit) && matches(rest, &name[1..]),
+        if next.is_empty() {
+            return false;
+        }
+        states = next;
+    }
+    states.close(expression, None);
+    states.contains(expression.len())
+}
+
+/// A set of expression positions (0 to [`MAX_EXPRESSION`], the last the expression's end).
+#[derive(Default)]
+struct States([u64; (MAX_EXPRESSION + 1).div_ceil(64)]);
+
+impl States {
+    fn insert(&mut self, position: usize) {
+        self.0[position / 64] |= 1 << (position % 64);
+    }
+
+    fn contains(&self, position: usize) -> bool {
+        self.0[position / 64] & (1 << (position % 64)) != 0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.iter().all(|&word| word == 0)
+    }
+
+    /// Adds the positions reached without taking a unit, before `next` (none: the name's end):
+    /// past a star or a DOS star (an empty run), and past a DOS_QM or a DOS_DOT at a dot (DOS_QM)
+    /// or the end (both). These only step forward, so one pass in order closes the set.
+    fn close(&mut self, expression: &[u16], next: Option<u16>) {
+        for (position, &wild) in expression.iter().enumerate() {
+            let empty = match wild {
+                STAR | DOS_STAR => true,
+                DOS_QM => next.is_none_or(|unit| unit == DOT),
+                DOS_DOT => next.is_none(),
+                _ => false,
+            };
+            if empty && self.contains(position) {
+                self.insert(position + 1);
+            }
+        }
     }
 }
 
@@ -186,6 +235,103 @@ mod tests {
         assert!(!found("a?c", "ac"));
         assert!(matches(&units("A?C"), &units("ABC")));
         assert!(!matches(&units("A?C"), &units("AC")));
+    }
+
+    /// The backtracking matcher this replaced, kept to check the state-set one against.
+    fn backtracking(expression: &[u16], name: &[u16]) -> bool {
+        let Some((&first, rest)) = expression.split_first() else {
+            return name.is_empty();
+        };
+        match first {
+            STAR => (0..=name.len()).any(|skip| backtracking(rest, &name[skip..])),
+            DOS_STAR => {
+                let last_dot = name.iter().rposition(|&unit| unit == DOT);
+                (0..=name.len())
+                    .filter(|&skip| last_dot.is_none_or(|dot| skip <= dot))
+                    .any(|skip| backtracking(rest, &name[skip..]))
+            }
+            QUESTION => !name.is_empty() && backtracking(rest, &name[1..]),
+            DOS_QM => match name.first() {
+                None => backtracking(rest, name),
+                Some(&unit) if unit == DOT => backtracking(rest, name),
+                Some(_) => backtracking(rest, &name[1..]),
+            },
+            DOS_DOT => match name.first() {
+                None => backtracking(rest, name),
+                Some(&unit) if unit == DOT => backtracking(rest, &name[1..]),
+                Some(_) => false,
+            },
+            unit => name.first() == Some(&unit) && backtracking(rest, &name[1..]),
+        }
+    }
+
+    /// Every short expression over `*?<>".AB` against every short name over `.AB`: the state set
+    /// answers as the backtracking match did.
+    #[test]
+    fn the_state_set_answers_as_backtracking_did() {
+        let wild = [
+            STAR,
+            QUESTION,
+            DOS_STAR,
+            DOS_QM,
+            DOS_DOT,
+            DOT,
+            b'A' as u16,
+            b'B' as u16,
+        ];
+        let plain = [DOT, b'A' as u16, b'B' as u16];
+        let every = |alphabet: &[u16], longest: usize| -> Vec<Vec<u16>> {
+            let mut all = vec![Vec::new()];
+            let mut last = vec![Vec::new()];
+            for _ in 0..longest {
+                last = last
+                    .iter()
+                    .flat_map(|word: &Vec<u16>| {
+                        alphabet.iter().map(move |&unit| {
+                            let mut longer = word.clone();
+                            longer.push(unit);
+                            longer
+                        })
+                    })
+                    .collect();
+                all.extend(last.iter().cloned());
+            }
+            all
+        };
+        let names = every(&plain, 5);
+        for expression in every(&wild, 4) {
+            for name in &names {
+                assert_eq!(
+                    matches(&expression, name),
+                    backtracking(&expression, name),
+                    "{expression:?} against {name:?}"
+                );
+            }
+        }
+    }
+
+    /// Patterns that made the backtracking match exponential answer at once: stars that each
+    /// could take any run, against a long name that fails only at its end.
+    #[test]
+    fn a_pathological_pattern_answers_at_once() {
+        let name = units(&"a".repeat(255));
+        assert!(!matches(&units("*a*a*a*a*a*a*a*a*a*a*a*a*a*b"), &name));
+        assert!(matches(&units("*a*a*a*a*a*a*a*a*a*a*a*a*a*a"), &name));
+        let dos: Vec<u16> = [DOS_STAR, b'A' as u16]
+            .repeat(60)
+            .into_iter()
+            .chain([b'B' as u16])
+            .collect();
+        assert!(!matches(&dos, &name));
+        let mixed: Vec<u16> = [STAR, DOS_QM, b'A' as u16]
+            .repeat(80)
+            .into_iter()
+            .chain([DOS_DOT, b'B' as u16])
+            .collect();
+        assert!(!matches(&mixed, &name));
+        let long = vec![STAR; MAX_EXPRESSION];
+        assert!(matches(&long, &name));
+        assert!(!matches(&vec![STAR; MAX_EXPRESSION + 1], &name));
     }
 
     /// A search keeps its folded expression (every name without one, the first units of one too

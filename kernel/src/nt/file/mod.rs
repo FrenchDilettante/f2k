@@ -64,6 +64,32 @@ pub use query::{
 #[cfg(target_arch = "x86")]
 pub use volume::query_volume_information_file;
 
+/// ByteOffset's special values: the object's position, and (a write's) the end of the file.
+pub(crate) const FILE_USE_FILE_POINTER_POSITION: u64 = 0xFFFF_FFFF_FFFF_FFFE;
+pub(crate) const FILE_WRITE_TO_END_OF_FILE: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
+/// The offset a read or a write starts at, as the I/O manager takes ByteOffset (`offset`, none for
+/// a null pointer) before it hands the request to the device: none (the object's position) for no
+/// offset or FILE_USE_FILE_POINTER_POSITION, which only a synchronous object has (an asynchronous
+/// one's is STATUS_INVALID_PARAMETER). Negative offsets are illegal (STATUS_INVALID_PARAMETER) but
+/// a write's FILE_WRITE_TO_END_OF_FILE, so every offset a device sees is below 2^63 and an offset
+/// plus a 32-bit length cannot overflow.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+pub(crate) fn transfer_offset(
+    offset: Option<u64>,
+    synchronous: bool,
+    write: bool,
+) -> Result<Option<u64>, crate::status::NtStatus> {
+    use crate::status::STATUS_INVALID_PARAMETER;
+    match offset.filter(|&at| at != FILE_USE_FILE_POINTER_POSITION) {
+        None if synchronous => Ok(None),
+        None => Err(STATUS_INVALID_PARAMETER),
+        Some(FILE_WRITE_TO_END_OF_FILE) if write => Ok(Some(FILE_WRITE_TO_END_OF_FILE)),
+        Some(at) if (at as i64) < 0 => Err(STATUS_INVALID_PARAMETER),
+        Some(at) => Ok(Some(at)),
+    }
+}
+
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
@@ -367,3 +393,48 @@ mod host {
 
 #[cfg(not(target_arch = "x86"))]
 pub use host::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::status::STATUS_INVALID_PARAMETER;
+
+    /// ByteOffset as the I/O manager takes it: the position for none or -2 on a synchronous
+    /// object only; -1 a write's end of file, refused for a read; any other negative offset
+    /// refused (one near 2^64 used to overflow the write's end and panic); the largest positive
+    /// one kept.
+    #[test]
+    fn a_transfer_offset_is_never_negative() {
+        assert_eq!(transfer_offset(None, true, false), Ok(None));
+        assert_eq!(
+            transfer_offset(None, false, false),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        let position = Some(FILE_USE_FILE_POINTER_POSITION);
+        assert_eq!(transfer_offset(position, true, true), Ok(None));
+        assert_eq!(
+            transfer_offset(position, false, true),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        let end = Some(FILE_WRITE_TO_END_OF_FILE);
+        assert_eq!(transfer_offset(end, false, true), Ok(end));
+        assert_eq!(
+            transfer_offset(end, true, false),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        for wild in [0xFFFF_FFFF_FFFF_FFF0, 1 << 63, 0x8000_0000_0000_1000] {
+            assert_eq!(
+                transfer_offset(Some(wild), true, true),
+                Err(STATUS_INVALID_PARAMETER)
+            );
+            assert_eq!(
+                transfer_offset(Some(wild), true, false),
+                Err(STATUS_INVALID_PARAMETER)
+            );
+        }
+        let last = Some(i64::MAX as u64);
+        assert_eq!(transfer_offset(last, false, true), Ok(last));
+        assert!(i64::MAX as u64 + u64::from(u32::MAX) > i64::MAX as u64);
+        assert_eq!(transfer_offset(Some(0), false, false), Ok(Some(0)));
+    }
+}

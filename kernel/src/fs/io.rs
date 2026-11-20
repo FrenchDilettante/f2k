@@ -188,7 +188,8 @@ mod target {
             abandon();
             return Err(STATUS_TOO_MANY_OPENED_FILES);
         };
-        // The table had room: the publication cannot fail.
+        // The table had room, but another thread of the process may have filled it since: the
+        // publication then fails as a full table does, the object taken back with it.
         crate::ob::publish(process, id, open.granted, open.inherit)
             .map(core::num::NonZeroU32::get)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)
