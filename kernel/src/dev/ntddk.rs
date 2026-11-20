@@ -94,10 +94,18 @@ pub const DO_DIRECT_IO: u32 = 0x0000_0010;
 pub const DO_DEVICE_HAS_NAME: u32 = 0x0000_0040;
 pub const DO_DEVICE_INITIALIZING: u32 = 0x0000_0080;
 
-/// The FILE_DEVICE_* types that carry a volume (a VPB made with the device), and the disk's.
+/// The documented FILE_DEVICE_* device types (winioctl.h), the kernel's one list. CD_ROM, DISK,
+/// TAPE and VIRTUAL_DISK are the types that carry a volume (a VPB made with the device); 0x8 is
+/// the *disk* file system's type, and the plain FILE_SYSTEM's is 0x9 (the value kernel32 routes
+/// FSCTLs by).
 pub const FILE_DEVICE_CD_ROM: u32 = 0x02;
 pub const FILE_DEVICE_DISK: u32 = 0x07;
+pub const FILE_DEVICE_DISK_FILE_SYSTEM: u32 = 0x08;
+pub const FILE_DEVICE_FILE_SYSTEM: u32 = 0x09;
+pub const FILE_DEVICE_KEYBOARD: u32 = 0x0B;
+pub const FILE_DEVICE_NETWORK: u32 = 0x12;
 pub const FILE_DEVICE_TAPE: u32 = 0x1F;
+pub const FILE_DEVICE_UNKNOWN: u32 = 0x22;
 pub const FILE_DEVICE_VIRTUAL_DISK: u32 = 0x24;
 
 /// DEVOBJ_EXTENSION's ExtensionFlags: its driver's unload waits for the device's last reference
@@ -382,5 +390,30 @@ mod tests {
         assert_eq!(size_of::<DeviceObject>(), 184);
         assert_eq!(size_of::<FileObject>(), 112);
         assert_eq!(irp_size(1), 148);
+    }
+
+    /// The device types are winioctl.h's: the file system's is 0x9, and 0x8 the disk file
+    /// system's.
+    #[test]
+    fn the_device_types_are_winioctl_values() {
+        assert_eq!(FILE_DEVICE_DISK_FILE_SYSTEM, 0x8);
+        assert_eq!(FILE_DEVICE_FILE_SYSTEM, 0x9);
+        assert_eq!(
+            [
+                FILE_DEVICE_CD_ROM,
+                FILE_DEVICE_DISK,
+                FILE_DEVICE_KEYBOARD,
+                FILE_DEVICE_NETWORK
+            ],
+            [0x2, 0x7, 0xB, 0x12]
+        );
+        assert_eq!(
+            [
+                FILE_DEVICE_TAPE,
+                FILE_DEVICE_UNKNOWN,
+                FILE_DEVICE_VIRTUAL_DISK
+            ],
+            [0x1F, 0x22, 0x24]
+        );
     }
 }

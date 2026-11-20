@@ -48,19 +48,8 @@ pub const INTERFACE_PCI_BUS: i32 = 5;
 pub const LEVEL_SENSITIVE: i32 = 0;
 pub const LATCHED: i32 = 1;
 
-/// The documented `TIME_FIELDS`: eight 16-bit fields.
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-#[repr(C)]
-pub struct TimeFields {
-    pub year: u16,
-    pub month: u16,
-    pub day: u16,
-    pub hour: u16,
-    pub minute: u16,
-    pub second: u16,
-    pub milliseconds: u16,
-    pub weekday: u16,
-}
+/// The documented `TIME_FIELDS`: eight CSHORTs (signed), rtl's one definition.
+pub use rtl::time::TimeFields;
 
 // --- Port access --------------------------------------------------------------------------------
 
@@ -267,12 +256,12 @@ pub fn disable_system_interrupt<H: Hal>(hal: &H, vector: u8, _irql: Irql) {
 /// clock reads no valid date.
 pub fn query_real_time_clock<H: Hal>(hal: &H) -> Option<TimeFields> {
     hal.query_real_time_clock().map(|time| TimeFields {
-        year: time.year,
-        month: time.month as u16,
-        day: time.day as u16,
-        hour: time.hour as u16,
-        minute: time.minute as u16,
-        second: time.second as u16,
+        year: time.year as i16,
+        month: time.month as i16,
+        day: time.day as i16,
+        hour: time.hour as i16,
+        minute: time.minute as i16,
+        second: time.second as i16,
         milliseconds: 0,
         weekday: 0,
     })
@@ -909,6 +898,17 @@ mod tests {
             *platform.log.borrow(),
             [("enable", 0x3A), ("disable", 0x3A)]
         );
+    }
+
+    /// TIME_FIELDS is eight CSHORTs: 16 bytes of signed fields, as ntdll's conversions read it.
+    #[test]
+    fn time_fields_are_eight_signed_shorts() {
+        assert_eq!(core::mem::size_of::<TimeFields>(), 16);
+        let fields = TimeFields {
+            weekday: -1,
+            ..TimeFields::default()
+        };
+        assert!(fields.weekday < 0, "CSHORT is signed");
     }
 
     /// The clock: the RTC reading maps to TIME_FIELDS, and the time increment is declined — the
