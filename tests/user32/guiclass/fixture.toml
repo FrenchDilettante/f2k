@@ -2,7 +2,6 @@
 description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom); GetClassInfoExW/A of a class with extra bytes, an icon and a menu name (every field, by name and by atom, cbSize 0, NULL hInstance, an unknown name) and of the system classes Button and #32770; GetClassLongW/A of each GCL_ index, and SetClassLongW/A of the extra bytes (in range, straddling and past the end), GCL_STYLE, GCL_HBRBACKGROUND and GCL_WNDPROC."
 kind = "sectioned"
 gate = true
-screenshots = true
 
 [pending]
 infoex = "user32 has no GetClassInfoExW or GetClassInfoExA yet"

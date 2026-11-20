@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import time
+import zlib
 from types import SimpleNamespace
 from typing import Callable
 
@@ -136,7 +137,7 @@ def test_a_childs_end_line_has_its_own_form():
     for line, pid, verdict in ((CHILD_EXITED, "136", "exited normally"), (CHILD_FAULTED, "140", "ended by fault")):
         match = f2kboot.CHILD_END.match(line)
         assert match and match.groups() == (pid, "child", verdict)
-        for pattern in (f2kboot.END, f2kboot.TEARDOWN, f2kboot.OBJECT_LEAK, f2kboot.START, f2kboot.SCREEN_PAUSE):
+        for pattern in (f2kboot.END, f2kboot.TEARDOWN, f2kboot.OBJECT_LEAK, f2kboot.START):
             assert not pattern.match(line), (pattern.pattern, line)
 
 
@@ -268,13 +269,6 @@ def test_a_batch_leg_ends_when_its_process_tree_has_ended():
     assert batch.verdict(0, [], f2kboot.Block("t.exe a", expected, 0)) is None
     assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) is None
     assert batch.verdict(2, [], f2kboot.Block("t.exe c", ["C"], 0)) is None
-
-
-def test_a_childs_end_takes_no_screenshot(tmp_path):
-    # No pause announced: the taker reaches for no monitor (there is none at this socket's path).
-    taker = f2kboot.ScreenTaker([f2kboot.Block("t.exe a")], tmp_path)
-    taker(tmp_path / "no.sock", "\n".join(WITH_CHILDREN))
-    assert taker.taken == 0
 
 
 # --- --no-build: the build on disk must be the one the test needs------------------------------
@@ -999,3 +993,145 @@ def test_differing_cells_name_the_text_cells_a_change_touches(tmp_path):
     assert f2kboot.differing_cells(a, a) == set()
     assert f2kboot.differing_cells(a, b) == {(1, 0), (0, 1)}
     assert f2kboot.lit_pixels(b, (1, 0)) == 1 and f2kboot.lit_pixels(a, (1, 0)) == 0
+
+
+# --- The screen baselines ------------------------------------------------------------------------
+
+
+def image_of(width: int, height: int, seed: int = 0) -> f2kboot.Image:
+    """A synthetic image, every pixel its own colour."""
+    return f2kboot.Image(width, height, [bytes((x * 37 + y * 11 + seed + c * 5) & 0xFF
+                                               for x in range(width) for c in range(3))
+                                         for y in range(height)])
+
+
+def with_pixel(image: f2kboot.Image, x: int, y: int, pixel: bytes) -> f2kboot.Image:
+    rows = list(image.rows)
+    row = bytearray(rows[y])
+    row[3 * x:3 * x + 3] = pixel
+    rows[y] = bytes(row)
+    return f2kboot.Image(image.width, image.height, rows)
+
+
+def test_the_canonical_encoding_round_trips_through_read_png(tmp_path):
+    image = image_of(23, 7)
+    path = tmp_path / "a.png"
+    f2kboot.write_png(path, image)
+    assert f2kboot.read_png(path) == image
+    assert f2kboot.is_canonical(path)
+
+
+def test_the_canonical_encoding_is_deterministic_and_only_ihdr_idat_iend(tmp_path):
+    image = image_of(16, 9)
+    data = f2kboot.encode_png(image)
+    assert data == f2kboot.encode_png(f2kboot.Image(16, 9, [bytes(row) for row in image.rows]))
+    at, kinds = 8, []
+    while at < len(data):
+        length, kind = struct.unpack(">I4s", data[at:at + 8])
+        kinds.append(kind)
+        at += 12 + length
+    assert kinds == [b"IHDR", b"IDAT", b"IEND"]
+
+
+def test_a_png_in_another_encoding_is_not_canonical(tmp_path):
+    rows = image_of(20, 5).rows
+    path = tmp_path / "filters.png"
+    png_of(rows, [0, 1, 2, 3, 4], path)
+    assert not f2kboot.is_canonical(path)
+    f2kboot.write_png(path, f2kboot.read_png(path))
+    assert f2kboot.is_canonical(path) and f2kboot.read_png(path).rows == rows
+
+
+def test_compare_images_counts_and_boxes_the_differing_pixels():
+    a = image_of(30, 20)
+    b = with_pixel(with_pixel(a, 4, 3, b"\x01\x02\x03"), 17, 11, b"\x09\x09\x09")
+    assert f2kboot.compare_images(a, a) == f2kboot.PixelDiff(0, None)
+    assert f2kboot.compare_images(a, b) == f2kboot.PixelDiff(2, (4, 3, 18, 12))
+    # A mask over one of them leaves the other.
+    assert f2kboot.compare_images(a, b, ((15, 10, 20, 15),)) == f2kboot.PixelDiff(1, (4, 3, 5, 4))
+    with pytest.raises(ValueError):
+        f2kboot.compare_images(a, image_of(30, 21))
+
+
+def test_the_diff_image_marks_the_differing_and_masked_pixels():
+    a = image_of(10, 6)
+    b = with_pixel(a, 2, 1, b"\x00\x00\x00")
+    diff = f2kboot.diff_image(a, b, ((8, 0, 10, 1),))
+    assert diff.pixel(2, 1) == f2kboot.DIFF_PIXEL
+    assert diff.pixel(9, 0) == f2kboot.MASKED_PIXEL
+    grey = diff.pixel(5, 5)
+    assert grey[0] == grey[1] == grey[2] and grey != f2kboot.DIFF_PIXEL
+
+
+def screen_and_baseline(tmp_path, screen: f2kboot.Image, baseline: f2kboot.Image | None):
+    dump, kept = tmp_path / "scratch" / "s.png", tmp_path / "baselines" / "s.png"
+    dump.parent.mkdir()
+    png_of(screen.rows, [4] * screen.height, dump)  # a dump in QEMU's kind of encoding, not canonical
+    if baseline is not None:
+        f2kboot.write_png(kept, baseline)
+    return dump, kept
+
+
+def test_identical_pixels_leave_the_baseline_untouched(tmp_path):
+    image = image_of(12, 8)
+    dump, kept = screen_and_baseline(tmp_path, image, image)
+    before = kept.stat().st_mtime_ns, kept.read_bytes()
+    assert dump.read_bytes() != kept.read_bytes()  # other bytes, the same pixels
+    assert f2kboot.check_screen(dump, kept) is None
+    assert (kept.stat().st_mtime_ns, kept.read_bytes()) == before
+    assert not dump.with_name("s.diff.png").exists()
+
+
+def test_changed_pixels_rewrite_the_baseline_and_write_a_diff(tmp_path):
+    old = image_of(12, 8)
+    new = with_pixel(old, 3, 5, b"\xff\xff\xff")
+    dump, kept = screen_and_baseline(tmp_path, new, old)
+    problem = f2kboot.check_screen(dump, kept)
+    assert problem is not None and "1 pixels differ, within (3, 5, 4, 6)" in problem and "commit it" in problem
+    assert f2kboot.read_png(kept) == new and f2kboot.is_canonical(kept)
+    diff = f2kboot.read_png(dump.with_name("s.diff.png"))
+    assert diff.pixel(3, 5) == f2kboot.DIFF_PIXEL
+    # Accepted (the rewritten file committed): the rerun passes, its stale diff gone.
+    assert f2kboot.check_screen(dump, kept) is None
+    assert not dump.with_name("s.diff.png").exists()
+
+
+def test_masked_pixels_do_not_count(tmp_path):
+    old = image_of(12, 8)
+    dump, kept = screen_and_baseline(tmp_path, with_pixel(old, 3, 5, b"\xff\xff\xff"), old)
+    before = kept.read_bytes()
+    assert f2kboot.check_screen(dump, kept, ((0, 4, 12, 6),)) is None
+    assert kept.read_bytes() == before
+
+
+def test_a_missing_baseline_is_written_and_fails(tmp_path):
+    image = image_of(12, 8)
+    dump, kept = screen_and_baseline(tmp_path, image, None)
+    problem = f2kboot.check_screen(dump, kept)
+    assert problem is not None and "new baseline written, commit it to accept" in problem
+    assert f2kboot.read_png(kept) == image and f2kboot.is_canonical(kept)
+
+
+def test_a_resized_screen_rewrites_the_baseline(tmp_path):
+    dump, kept = screen_and_baseline(tmp_path, image_of(12, 8), image_of(10, 8))
+    problem = f2kboot.check_screen(dump, kept)
+    assert problem is not None and "12x8" in problem and "10x8" in problem
+    assert (f2kboot.read_png(kept).width, f2kboot.read_png(kept).height) == (12, 8)
+
+
+BASELINE_FILES = sorted(f2kboot.BASELINES.glob("*/*.png"))
+
+
+def test_the_baselines_exist():
+    names = {path.relative_to(f2kboot.BASELINES).as_posix() for path in BASELINE_FILES}
+    assert {"dialogs/dialog.png", "nonclient/window.png", "nonclient/menu.png", "nonclient/after.png",
+            "tahoma/fontshow.png"} <= names
+
+
+@pytest.mark.parametrize("path", BASELINE_FILES, ids=lambda path: path.relative_to(f2kboot.BASELINES).as_posix())
+def test_a_committed_baseline_is_canonical(path):
+    """Decoded then re-encoded, a baseline gives back its own bytes: written by the canonical
+    encoder (`f2kboot.check_screen`), not copied from a dump or another tool."""
+    assert f2kboot.is_canonical(path), (f"{path.relative_to(f2kboot.REPO_ROOT)} is not in the canonical"
+                                        f" encoding (zlib {zlib.ZLIB_RUNTIME_VERSION}): rewrite it with"
+                                        " f2kboot.write_png(path, f2kboot.read_png(path))")

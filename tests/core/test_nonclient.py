@@ -5,8 +5,10 @@ Tahoma, the caption buttons' glyphs in Marlett) and menushow in \\WINNT\\system3
 
 menushow makes a top-level window of calc's styles (a caption with its system menu and minimize
 box, a fixed frame) with calc's menu bar (Edit, View, Help), its size from AdjustWindowRectEx. The
-screen is saved three times, for the owner to compare by eye with Windows 2000 drawing the same (no
-capture reads screen pixels machine-independently; a few pixels are checked):
+screen is dumped three times, to target/qemu/screens/nonclient/, a few pixels checked, and last
+each compared with its committed baseline in tests/core/screens/nonclient/
+(`f2kboot.check_screens`: a changed screen rewrites the baseline and fails, committing it accepts
+it):
 - once the window shows, painted (`window.png`);
 - once Alt, V and Down have opened View's popup with Scientific selected and the loop is idle
   (`menu.png`);
@@ -55,8 +57,9 @@ EXPECTED = [
     "menushow: settled",
     "WM_SYSCOMMAND 0xF060 lParam=0",
 ]
-# Where the screens are kept: the screenshots' directory, under this test's name.
-SCREENS = f2kboot.SCREENS / "nonclient"
+# Where the screens are dumped (the scratch screens, under this test's name) and their baselines'.
+NAME = "nonclient"
+SCREENS = f2kboot.SCREENS / NAME
 TIMEOUT = 60.0
 # The window: a 260x200 client area, a 3-pixel fixed frame, a 19-pixel caption and a 19-pixel menu
 # bar (266x244), centred on the 640x480 screen: its rectangle (187, 118)-(453, 362).
@@ -153,3 +156,4 @@ def test_the_menu_bar_by_keyboard(builder, log_path, boot_timeout):
         assert pixel(image, *SELECTED_ITEM) != HIGHLIGHT, f"{name}: no popup"
     menu = f2kboot.read_png(SCREENS / "menu.png")
     assert pixel(menu, *SELECTED_ITEM) == HIGHLIGHT, "Scientific selected in View's popup"
+    f2kboot.check_screens(NAME, [screen for _, screen, _ in STEPS if screen is not None])

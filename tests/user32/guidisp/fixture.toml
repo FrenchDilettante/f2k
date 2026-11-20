@@ -10,7 +10,6 @@
 description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA)."
 kind = "sectioned"
 gate = true
-screenshots = true
 
 [pending]
 enum = "mode 0 is the capture machine's display driver's own first mode (VirtualBox's 800x600x8): F2K's VBE driver lists 320x200x32 first"

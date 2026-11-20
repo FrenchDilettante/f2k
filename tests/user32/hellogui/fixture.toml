@@ -1,12 +1,10 @@
 # hellogui: one test per block of its capture (output.txt); see tests/README.md. The one block
 # was taken by hand on the real machine (its exit code alone: the program paints once and closes
 # itself, so its screen cannot be captured), and it boots under FiSH (boot_under), which sets the
-# graphics mode before the program runs. The block's screen is saved as its process ends
-# (screenshots), under target/qemu/screens/ like any screenshots fixture's.
+# graphics mode before the program runs.
 description = "hellogui - the GUI rung end to end: RegisterClassA, CreateWindowExA, ShowWindow and UpdateWindow, TextOutA once in WM_PAINT through BeginPaint/EndPaint, PostMessageA(WM_CLOSE) from the paint, PostQuitMessage in WM_DESTROY, GetMessageA returning 0, exit code 0."
 kind = "sectioned"
 gate = true
-screenshots = true
 boot_under = "WINNT\\system32\\fish.exe"
 
 [pins]

@@ -11,9 +11,11 @@ and a line of Marlett's caption-button and scroll-arrow glyphs, reporting each f
 kind; it ends with 0 when every face asked for by name was that face. The disk the tests boot
 carries neither the fonts nor the program: this boot's copy is its own, removed after it.
 
-The pixels are not compared: the screen is kept for the eye, at target/qemu/screens/tahoma/
-fontshow.png (the Tahoma -11 and -24 rows match Windows 2000's for the fixtures' copy of the font in
-the host tests of kernel/src/win32k/fonts, but for two pixels at -24).
+The screen is dumped to target/qemu/screens/tahoma/fontshow.png and last compared with its
+committed baseline, tests/core/screens/tahoma/fontshow.png (`f2kboot.check_screens`: a changed
+screen rewrites the baseline and fails, committing it accepts it). The baseline is F2K's own, for
+the eye; the Tahoma -11 and -24 rows match Windows 2000's for the fixtures' copy of the font in the
+host tests of kernel/src/win32k/fonts, but for two pixels at -24.
 
     uv run pytest tests/core/test_tahoma.py
 """
@@ -29,8 +31,9 @@ import f2kboot
 DESKTOP = b"\x3a\x6e\xa5"
 PROGRAM = f2kboot.BUILT_PROGRAMS / "fontshow.exe"
 CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\fontshow.exe"
-# Where the screen is kept: the screenshots' directory, under this test's name.
-SCREEN = f2kboot.SCREENS / "tahoma" / "fontshow.png"
+# Where the screen is dumped (the scratch screens, under this test's name) and its baseline's name.
+NAME = "tahoma"
+SCREEN = f2kboot.SCREENS / NAME / "fontshow.png"
 DISK = f2kboot.WORK / "disks" / "tahoma.img"
 
 
@@ -82,3 +85,4 @@ def test_tahoma_reaches_the_framebuffer(request, builder, log_path, boot_timeout
     assert (image.width, image.height) == (640, 480), f"the screen is {image.width}x{image.height}"
     drawn = sum(1 for row in image.rows for x in range(image.width) if row[3 * x:3 * x + 3] != DESKTOP)
     assert drawn, f"the screen is all desktop: nothing was drawn (kept at {SCREEN})"
+    f2kboot.check_screens(NAME, [SCREEN.name])

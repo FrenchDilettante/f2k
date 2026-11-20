@@ -2,7 +2,6 @@
 description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors."
 kind = "sectioned"
 gate = true
-screenshots = true
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

@@ -17,8 +17,10 @@ Three pieces the test modules share:
   the log (`boot_batch`, `Batch`);
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
-  it (`screendump`, a PNG; `read_png`, `differing_cells`); a fixture declaring `screenshots` has
-  each block's screen saved as its process ends (`ScreenTaker`);
+  it (`screendump`, a PNG; `read_png`, `differing_cells`);
+- the screen baselines: a core test's dumps compared, pixel for pixel, with the PNGs committed under
+  tests/core/screens/<test>/ (`check_screens`); a changed or missing one rewritten there by the
+  canonical encoder (`encode_png`) and the test failed, so committing the file accepts it;
 - the keyboard: a fixture declaring `keys` has its interactive blocks' keys pressed through QMP as
   each block asks for them (`KeyPresser`).
 """
@@ -674,50 +676,14 @@ def screendump(path: Path, png: Path) -> None:
                         "arguments": {"filename": str(png), "format": "png"}}])
 
 
-# Where the screenshots of the fixtures declaring `screenshots` go: <fixture>/<block>.png.
+# The scratch directory for the screens the tests dump: <test>/<name>.png, each run's own, and the
+# screen checks' diff images beside them (<name>.diff.png). The committed baselines are elsewhere
+# (BASELINES).
 SCREENS = WORK / "screens"
-# The kernel option that pauses a boot at each process's end for its screenshot, the line the
-# pause announces, and the CMOS byte (index port 0x70, data port 0x71) whose write lets it go on
-# (kernel/src/process/runner.rs, kernel/src/hw/rtc.rs SCREEN_MAILBOX).
-SCREENS_OPTION = "screens"
 # The kernel option every batch boots with: the programs' standard handles stand for a file, their
 # writes reaching the serial line alone, never the screen, as capture.bat's `>> output.txt 2>&1`
 # keeps them off the real machine's screen (kernel/src/csr.rs REDIRECTED).
 REDIRECTED_OPTION = "redirected"
-SCREEN_PAUSE = re.compile(r"^F2K: screen: process (\d+) ended$")
-SCREEN_MAILBOX = 0x7F
-
-
-def screen_file_name(block: Block) -> str:
-    """A block's screenshot's file name: its section, made a file name."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", block.section).strip("_") + ".png"
-
-
-class ScreenTaker:
-    """A screenshot boot's `during` step: at each pause the kernel announces (a process ended,
-    the boot held before its next step), the screen as QEMU shows it saved to `directory` as the
-    ended block's PNG (`screen_file_name`), then the boot let go on (the CMOS mailbox written
-    through the monitor). Recording only: nothing compares them."""
-
-    def __init__(self, blocks: list[Block], directory: Path):
-        self.blocks = blocks
-        self.directory = directory
-        self.taken = 0
-        directory.mkdir(parents=True, exist_ok=True)
-        for block in blocks:
-            (directory / screen_file_name(block)).unlink(missing_ok=True)
-
-    def __call__(self, socket: Path, log: str) -> None:
-        pauses = [int(match.group(1)) for match in map(SCREEN_PAUSE.match, lines_of(log)) if match]
-        for index in pauses[self.taken:]:
-            if 1 <= index <= len(self.blocks):
-                screendump(socket, self.directory / screen_file_name(self.blocks[index - 1]))
-            qmp_command(socket, [
-                {"execute": "human-monitor-command",
-                 "arguments": {"command-line": f"o /b 0x70 {SCREEN_MAILBOX:#x}"}},
-                {"execute": "human-monitor-command", "arguments": {"command-line": "o /b 0x71 1"}},
-            ])
-            self.taken += 1
 
 
 # --- The keyboard --------------------------------------------------------------------------------
@@ -872,7 +838,10 @@ def read_png(path: Path) -> Image:
     for y in range(height):
         start = y * (stride + 1)
         kind, row = raw[start], bytearray(raw[start + 1:start + 1 + stride])
-        for x in range(stride):
+        if kind == 2:  # Up, the canonical encoder's filter: undone a row at a time
+            row = bytearray((value + up) & 0xFF for value, up in zip(row, previous))
+            kind = 0
+        for x in (range(stride) if kind else ()):
             left = row[x - 3] if x >= 3 else 0
             up = previous[x]
             corner = previous[x - 3] if x >= 3 else 0
@@ -915,6 +884,151 @@ def lit_pixels(image: Image, cell: tuple[int, int]) -> int:
     return sum(image.pixel(x, y) != b"\0\0\0"
                for y in range(row * CELL_HEIGHT, (row + 1) * CELL_HEIGHT)
                for x in range(column * CELL_WIDTH, (column + 1) * CELL_WIDTH))
+
+
+# --- The screen baselines -----------------------------------------------------------------------
+#
+# A core test that draws on the graphics screen keeps its dumps (`screendump`) as baselines committed
+# beside the tests, tests/core/screens/<test>/<name>.png, for the owner to look at; F2K under QEMU
+# only, never compared with Windows 2000. The check compares decoded pixels, never file bytes (the
+# same pixels encode to different bytes under another zlib, level or filter choice): a dump whose
+# size and pixels equal its baseline's leaves the file untouched. A changed or missing baseline is
+# written over with the dump, through the canonical encoder, and the test fails naming it, a diff
+# image beside the dump in the scratch screens (SCREENS); committing the file accepts it, and the
+# rerun passes. tests/core/screens/hello.png, beside the directories, is test_textscreen's own
+# reference, which it keeps as QEMU writes it (`--update-screens`).
+
+BASELINES = TESTS / "core" / "screens"
+# The canonical encoding: 8-bit RGB, not interlaced, every row under the Up filter, the image data
+# in one IDAT compressed at zlib's level 9, and no chunk but IHDR, IDAT and IEND (no time, text,
+# gamma or colour profile). The same pixels always give the same bytes, under the same zlib.
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+CANONICAL_FILTER = 2
+CANONICAL_LEVEL = 9
+# The diff image: a differing pixel in red, a masked one in blue, every other the dump's own at a
+# third of its brightness, greyed.
+DIFF_PIXEL = b"\xff\x00\x00"
+MASKED_PIXEL = b"\x00\x00\xa0"
+
+# A rectangle a screen check ignores: (left, top, right, bottom), right and bottom exclusive.
+Rect = tuple[int, int, int, int]
+
+
+def png_chunk(kind: bytes, body: bytes) -> bytes:
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def encode_png(image: Image) -> bytes:
+    """`image` in the canonical encoding (CANONICAL_FILTER, CANONICAL_LEVEL, IHDR, IDAT, IEND)."""
+    stride = 3 * image.width
+    if len(image.rows) != image.height or any(len(row) != stride for row in image.rows):
+        raise ValueError(f"an image of {image.width}x{image.height} with rows of other lengths")
+    raw, previous = bytearray(), bytes(stride)
+    for row in image.rows:
+        raw.append(CANONICAL_FILTER)
+        raw += bytes((value - up) & 0xFF for value, up in zip(row, previous))
+        previous = row
+    header = struct.pack(">IIBBBBB", image.width, image.height, 8, 2, 0, 0, 0)
+    return (PNG_SIGNATURE + png_chunk(b"IHDR", header)
+            + png_chunk(b"IDAT", zlib.compress(bytes(raw), CANONICAL_LEVEL)) + png_chunk(b"IEND", b""))
+
+
+def write_png(path: Path, image: Image) -> None:
+    """`image` written to `path` in the canonical encoding."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(encode_png(image))
+
+
+def is_canonical(path: Path) -> bool:
+    """Whether the PNG at `path` is its own pixels' canonical encoding, byte for byte."""
+    return encode_png(read_png(path)) == path.read_bytes()
+
+
+def masked(x: int, y: int, masks: tuple[Rect, ...]) -> bool:
+    return any(left <= x < right and top <= y < bottom for left, top, right, bottom in masks)
+
+
+@dataclass(frozen=True)
+class PixelDiff:
+    """Where two images of one size differ, masks left out: how many pixels, and the box around
+    them, (left, top, right, bottom), right and bottom exclusive (None: no pixel differs)."""
+
+    pixels: int
+    box: Rect | None
+
+
+def compare_images(baseline: Image, screen: Image, masks: tuple[Rect, ...] = ()) -> PixelDiff:
+    """The pixels that differ between two images of one size, those inside `masks` left out."""
+    if (baseline.width, baseline.height) != (screen.width, screen.height):
+        raise ValueError(f"images of different sizes: {baseline.width}x{baseline.height},"
+                         f" {screen.width}x{screen.height}")
+    count, left, top, right, bottom = 0, baseline.width, baseline.height, 0, 0
+    for y, (first, second) in enumerate(zip(baseline.rows, screen.rows)):
+        if first == second:
+            continue
+        for x in range(baseline.width):
+            if first[3 * x:3 * x + 3] != second[3 * x:3 * x + 3] and not masked(x, y, masks):
+                count += 1
+                left, top, right, bottom = min(left, x), min(top, y), max(right, x + 1), max(bottom, y + 1)
+    return PixelDiff(count, (left, top, right, bottom) if count else None)
+
+
+def diff_image(baseline: Image, screen: Image, masks: tuple[Rect, ...] = ()) -> Image:
+    """`screen` dimmed and greyed, its pixels that differ from `baseline`'s in red (DIFF_PIXEL), its
+    masks in blue (MASKED_PIXEL)."""
+    rows = []
+    for y, (first, second) in enumerate(zip(baseline.rows, screen.rows)):
+        row = bytearray()
+        for x in range(screen.width):
+            pixel = second[3 * x:3 * x + 3]
+            if masked(x, y, masks):
+                row += MASKED_PIXEL
+            elif pixel != first[3 * x:3 * x + 3]:
+                row += DIFF_PIXEL
+            else:
+                grey = (pixel[0] + pixel[1] + pixel[2]) // 9
+                row += bytes((grey, grey, grey))
+        rows.append(bytes(row))
+    return Image(screen.width, screen.height, rows)
+
+
+def check_screen(screen: Path, baseline: Path, masks: tuple[Rect, ...] = ()) -> str | None:
+    """The dump at `screen` against its committed `baseline`: None when their sizes and pixels
+    (outside `masks`) are equal, the baseline then untouched; otherwise the dump written over the
+    baseline in the canonical encoding, a diff image (`diff_image`) beside the dump as
+    <name>.diff.png when the sizes agree, and why, in one line."""
+    name = baseline.relative_to(REPO_ROOT) if baseline.is_relative_to(REPO_ROOT) else baseline
+    image = read_png(screen)
+    diff_path = screen.with_name(screen.stem + ".diff.png")
+    diff_path.unlink(missing_ok=True)
+    if not baseline.exists():
+        write_png(baseline, image)
+        return f"{name}: no baseline: new baseline written, commit it to accept"
+    old = read_png(baseline)
+    if (old.width, old.height) != (image.width, image.height):
+        write_png(baseline, image)
+        return (f"{name}: the screen is {image.width}x{image.height}, the baseline"
+                f" {old.width}x{old.height}: rewritten, commit it to accept")
+    diff = compare_images(old, image, masks)
+    if not diff.pixels:
+        return None
+    write_png(baseline, image)
+    write_png(diff_path, diff_image(old, image, masks))
+    return (f"{name}: {diff.pixels} pixels differ, within {diff.box}: rewritten, commit it to accept"
+            f" (diff: {diff_path})")
+
+
+def check_screens(test: str, names: list[str], masks: dict[str, tuple[Rect, ...]] | None = None) -> None:
+    """A test's screen check, its last: each of its dumps, SCREENS/<test>/<name>, against its
+    baseline, BASELINES/<test>/<name> (`check_screen`); the test failed naming every one that
+    differs or is missing."""
+    problems = [problem for name in names
+                if (problem := check_screen(SCREENS / test / name, BASELINES / test / name,
+                                            (masks or {}).get(name, ()))) is not None]
+    if problems:
+        import pytest  # the module is also the scripts' and the host checks', which need no pytest
+
+        pytest.fail("the screens differ from their baselines:\n" + "\n".join(problems), pytrace=False)
 
 
 # The disk's FAT32 partition: its offset in the image (the Makefile's disk target puts it at
@@ -1868,22 +1982,14 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
     """Run `captured`'s blocks in one boot of `build` (`image` as `boot` takes it), each its own
     process, in order; `timeouts` are each block's seconds on the boot's clock (`BootClock`; the
     boot's start counts against the first). Each block runs as its `block_command`: under its
-    fixture's `boot_under` program where it declares one. A fixture declaring `screenshots` has
-    each of its blocks' screens as its process ends saved there (`ScreenTaker`, one per such
-    fixture: a batch may mix fixtures, test_limine's does); with `keys`, each block's section's
-    keys are pressed as the block asks for them (`KeyPresser`). `storage` is where the boot reads
+    fixture's `boot_under` program where it declares one. With `keys`, each block's section's keys
+    are pressed as the block asks for them (`KeyPresser`). `storage` is where the boot reads
     its disk, as `boot` takes it."""
     blocks = [each.block for each in captured]
     under = [boot_under(each.fixture) for each in captured]
     clock = BootClock()
     watch = BatchWatch(timeouts, clock)
     steps: list[Callable[[Path, str], None]] = []
-    by_directory: dict[Path, list[Block]] = {}
-    for each in captured:
-        if declaration(each.fixture).get("screenshots", False):
-            by_directory.setdefault(SCREENS / each.fixture, []).append(each.block)
-    for directory, fixture_blocks in by_directory.items():
-        steps.append(ScreenTaker(fixture_blocks, directory))
     if keys and any(block.section in keys for block in blocks):
         steps.append(KeyPresser(blocks, keys, under))
 
@@ -1906,7 +2012,7 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,
-        kernel_options=" ".join([REDIRECTED_OPTION] + ([SCREENS_OPTION] if by_directory else [])),
+        kernel_options=REDIRECTED_OPTION,
         during=during if steps else None,
         clock=clock,
         storage=storage,

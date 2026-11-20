@@ -6,7 +6,6 @@
 description = "guidc - device contexts and text output (gdi32 over user32): GetDC/GetDCEx/GetWindowDC/ReleaseDC/WindowFromDC, TextOutA/W and ExtTextOutA/W, SetTextColor/SetBkColor/SetBkMode previous values, GetTextExtentPoint32A/W and GetTextMetricsA/W against the default font, GetStockObject/SelectObject/DeleteObject, SetPixel/GetPixel on the screen DC."
 kind = "sectioned"
 gate = true
-screenshots = true
 boot_under = "WINNT\\system32\\fish.exe"
 system_fonts = true
 

@@ -6,10 +6,10 @@ strike) and dlgshow in \\WINNT\\system32.
 dlgshow makes a modeless dialog from a template in memory: static text, the default push button
 OK, the push button Cancel, an auto check box, a group box around two auto radio buttons, and an
 etched line. Its loop hands every message to IsDialogMessageW. Once the dialog shows, painted, with
-the focus on OK, it prints `dlgshow: ready, focus 1`; the screen is saved then, at
-target/qemu/screens/dialogs/dialog.png, for the owner to compare by eye with Windows 2000 drawing
-the same (no capture reads screen pixels machine-independently; one pixel of the dialog's face is
-checked). The keys typed next, all at once, back to back: Tab and Tab move the focus from OK to
+the focus on OK, it prints `dlgshow: ready, focus 1`; the screen is dumped then, to
+target/qemu/screens/dialogs/dialog.png, one pixel of the dialog's face checked, and last compared
+with its committed baseline, tests/core/screens/dialogs/dialog.png (`f2kboot.check_screens`: a
+changed screen rewrites the baseline and fails, committing it accepts it). The keys typed next, all at once, back to back: Tab and Tab move the focus from OK to
 Cancel to the check box, Space checks it (its release clicks it: BN_CLICKED), and Enter, with the
 focus on a control that is no push button, presses the default button OK, which ends dlgshow with
 0. Each key reaches the control the focus is on when dlgshow reads it, not when it was typed, as
@@ -41,8 +41,9 @@ EXPECTED = [
     "dlgshow: OK, keep 1, mode standard",
     "key 0x0D: focus 101",
 ]
-# Where the screen is kept: the screenshots' directory, under this test's name.
-SCREEN = f2kboot.SCREENS / "dialogs" / "dialog.png"
+# Where the screen is dumped (the scratch screens, under this test's name) and its baseline's name.
+NAME = "dialogs"
+SCREEN = f2kboot.SCREENS / NAME / "dialog.png"
 # COLOR_3DFACE, the dialog's face, between the group box and the buttons: (115, 80) in its dialog
 # units of 6x13 pixels, in its client area (180x104 units, 270x169 pixels), which its modal frame
 # (3 pixels) and caption (19) surround, the window (276x194) centred on the 640x480 screen.
@@ -104,3 +105,4 @@ def test_the_dialog_takes_typed_keys(builder, log_path, boot_timeout):
     x, y = FACE_POINT
     pixel = image.rows[y][3 * x:3 * x + 3]
     assert pixel == FACE, f"the dialog's face at {FACE_POINT} is {pixel.hex()}, not the dialog's face (kept at {SCREEN})"
+    f2kboot.check_screens(NAME, [SCREEN.name])
