@@ -217,9 +217,27 @@ fn transferred(
     Err(Failure::Status(status))
 }
 
+/// A synchronous request's status, as Windows 2000's ReadFile, WriteFile and DeviceIoControl take
+/// it: one the service left pending (a handle opened for overlapped I/O, a driver that pends its
+/// IRP) is waited for on the handle before the call returns, since the request completes into the
+/// call's own I/O status block, on its stack; then the status is the one it completed with (a
+/// failed wait's own). Any other status is the service's.
+fn completed(handle: u32, status: u32, io_status: *const IoStatus) -> u32 {
+    if status != STATUS_PENDING {
+        return status;
+    }
+    match ntcall::wait_for_single_object(handle, false, None) {
+        // SAFETY: the caller's live I/O status block, which the request completed into before the
+        // wait ended (read afresh: the kernel wrote it, not this code).
+        Ok(_) => unsafe { core::ptr::read_volatile(&raw const (*io_status).status) },
+        Err(failure) => failure,
+    }
+}
+
 /// An overlapped read or write's answer, Windows 2000's: started at the OVERLAPPED's offset with
-/// its event, its I/O status there; TRUE with the count once complete (every F2K file completes at
-/// once), FALSE with the status's error otherwise (end of file: a count of zero).
+/// its event, its I/O status there; TRUE with the count once complete, FALSE with the status's
+/// error otherwise: ERROR_IO_PENDING for a request still pending (not waited for: it completes
+/// into the caller's OVERLAPPED), a count of zero at the end of the file.
 fn overlapped_transfer(
     mut overlapped: Out<'_, Overlapped>,
     mut count: Option<&mut Out<'_, u32>>,
@@ -252,9 +270,11 @@ fn overlapped_transfer(
 
 /// ReadFile: `count` bytes at most from the file's position (or an OVERLAPPED's offset) into the
 /// caller's buffer, the count read stored (zeroed first); a read at or past the end reads nothing
-/// and succeeds. A console handle's read is the console's (ReadConsoleA, as Windows 2000's ReadFile
-/// hands it: F2K's console has no keyboard, so its input handle reads nothing and succeeds, and any
-/// other console handle is ERROR_INVALID_HANDLE).
+/// and succeeds. Without an OVERLAPPED a read the service leaves pending is waited for on the
+/// handle ([`completed`]); with one, it is FALSE with ERROR_IO_PENDING, the OVERLAPPED's I/O
+/// status the caller's to wait on. A console handle's read is the console's (ReadConsoleA, as
+/// Windows 2000's ReadFile hands it: the input handle reads the console's input, any other
+/// console handle is ERROR_INVALID_HANDLE).
 ///
 /// # Safety
 ///
@@ -306,6 +326,7 @@ fn read_from(
         &mut Out::from(&mut io_status),
         Destination::from(buffer),
     );
+    let status = completed(file, status, &raw const io_status);
     if status == STATUS_END_OF_FILE {
         put(read.as_mut(), 0);
         return 1;
@@ -314,9 +335,10 @@ fn read_from(
 }
 
 /// WriteFile: `count` bytes of the caller's at the file's position (or an OVERLAPPED's offset), the
-/// count written stored (zeroed first, so a failure reports none, unverified). A console handle's
-/// bytes go to the console (WriteConsoleA, the OVERLAPPED its reserved argument), as Windows 2000's
-/// WriteFile hands them.
+/// count written stored (zeroed first, so a failure reports none, unverified). A pending write is
+/// ReadFile's pending read: waited for without an OVERLAPPED, ERROR_IO_PENDING with one. A console
+/// handle's bytes go to the console (WriteConsoleA, the OVERLAPPED its reserved argument), as
+/// Windows 2000's WriteFile hands them.
 ///
 /// # Safety
 ///
@@ -375,6 +397,7 @@ fn write_to(
         &mut Out::from(&mut io_status),
         Source::from(buffer),
     );
+    let status = completed(file, status, &raw const io_status);
     bool_answer(transferred(status, &io_status, written.as_mut()))
 }
 
@@ -449,7 +472,7 @@ fn device_control(
         });
     }
     let mut io_status = IoStatus::default();
-    let mut status = ntcall::device_control(
+    let status = ntcall::device_control(
         device,
         code,
         Transfer::AtPosition,
@@ -457,12 +480,7 @@ fn device_control(
         input,
         output,
     );
-    if status == STATUS_PENDING {
-        status = match ntcall::wait_for_single_object(device, false, None) {
-            Ok(_) => io_status.status,
-            Err(failure) => failure,
-        };
-    }
+    let status = completed(device, status, &raw const io_status);
     transferred(status, &io_status, returned.as_mut())
 }
 

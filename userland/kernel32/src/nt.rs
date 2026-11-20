@@ -1014,6 +1014,9 @@ pub mod host {
     ) -> u32 {
         LAST_WAITED.with(|cell| *cell.borrow_mut() = std::vec![handle]);
         record_timeout(timeout);
+        if handle == HANDLE {
+            super::files::complete();
+        }
         answer()
     }
 
@@ -2244,6 +2247,7 @@ pub mod files {
     pub const CURRENT_DIRECTORY_HANDLE: u32 = 0x48;
     const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
     const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+    const STATUS_PENDING: u32 = 0x0000_0103;
 
     /// A file service call, as the stand-in took it.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2309,6 +2313,42 @@ pub mod files {
         /// A status the stand-in fails with once, after this many of its calls succeed first (a
         /// failure past a call's first service; FAIL_NEXT fails the first).
         pub static FAIL_AFTER: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
+        /// The I/O status the next read or write completes with later: the service answers
+        /// STATUS_PENDING, its I/O status block unwritten and the file untouched, as a driver
+        /// that pends its IRP does; a wait on the file's handle completes it ([`complete`]).
+        pub static PEND_NEXT: std::cell::Cell<Option<IoStatus>> = const { std::cell::Cell::new(None) };
+        /// The request left pending: the caller's I/O status block and what completes into it.
+        static PENDING: std::cell::Cell<Option<(*mut IoStatus, IoStatus)>> =
+            const { std::cell::Cell::new(None) };
+    }
+
+    /// The request PEND_NEXT arranged, left pending into `io_status`: STATUS_PENDING; none when
+    /// none is arranged.
+    fn pended(io_status: *mut IoStatus) -> Option<u32> {
+        let completion = PEND_NEXT.with(std::cell::Cell::take)?;
+        PENDING.with(|pending| pending.set(Some((io_status, completion))));
+        Some(STATUS_PENDING)
+    }
+
+    /// The pending request completed, as the I/O manager completes an IRP: its I/O status written
+    /// into the caller's block. Whether one was pending.
+    pub fn complete() -> bool {
+        let Some((io_status, completion)) = PENDING.with(std::cell::Cell::take) else {
+            return false;
+        };
+        // SAFETY: the block the request was handed, which its caller keeps until it completes
+        // (the contract the waits under test keep).
+        unsafe { io_status.write(completion) };
+        true
+    }
+
+    /// Whether a request is still pending.
+    pub fn pending() -> bool {
+        PENDING.with(|pending| {
+            let request = pending.take();
+            pending.set(request);
+            request.is_some()
+        })
     }
 
     /// The calls taken since the last look, and none kept.
@@ -2471,6 +2511,9 @@ pub mod files {
         if let Err(status) = checked(handle) {
             return status;
         }
+        if let Some(status) = pended(io_status) {
+            return status;
+        }
         FILE.with(|file| {
             let mut file = file.borrow_mut();
             let start = at.unwrap_or(file.position);
@@ -2512,6 +2555,9 @@ pub mod files {
             offset: at,
         });
         if let Err(status) = checked(handle) {
+            return status;
+        }
+        if let Some(status) = pended(io_status) {
             return status;
         }
         FILE.with(|file| {

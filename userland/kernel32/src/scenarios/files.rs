@@ -7,8 +7,18 @@
 use super::last_error;
 use crate::files::handle::*;
 use crate::files::names::*;
-use crate::nt::files::{calls, Call, CURRENT_DIRECTORY, CURRENT_DIRECTORY_HANDLE, FILE};
-use crate::nt::host::{console_writes, FAIL_NEXT, HANDLE};
+use crate::nt::files::{
+    calls,
+    complete,
+    pending,
+    Call,
+    CURRENT_DIRECTORY,
+    CURRENT_DIRECTORY_HANDLE,
+    FILE,
+    PEND_NEXT,
+};
+use crate::nt::host::{console_writes, FAIL_NEXT, HANDLE, LAST_WAITED};
+use crate::nt::IoStatus;
 
 const STDIN: u32 = 0x3;
 const STDOUT: u32 = 0x7;
@@ -315,6 +325,135 @@ fn read_file_counts_what_moved() {
         0
     );
     assert_eq!((read, last_error()), (0, 6), "a handle naming no file");
+}
+
+/// The next read or write is left pending by the service, to complete with `status` and
+/// `information` once the file's handle is waited on; the last wait forgotten.
+fn pend_next(status: u32, information: u32) {
+    PEND_NEXT.with(|next| {
+        next.set(Some(IoStatus {
+            status,
+            information,
+        }))
+    });
+    LAST_WAITED.with(|waited| waited.borrow_mut().clear());
+}
+
+/// The handles waited on since [`pend_next`].
+fn waited() -> Vec<u32> {
+    LAST_WAITED.with(|waited| waited.borrow().clone())
+}
+
+/// A synchronous ReadFile or WriteFile the service leaves pending (a handle opened for overlapped
+/// I/O, a driver's pended IRP) waits on the file's handle before it returns, as Windows 2000's
+/// does, then answers from the I/O status the request completed into: the count; end of file a
+/// read's TRUE and nothing; a failure its error; a warning its error and its count. Without the
+/// wait the call returned TRUE and 0, and the kernel later wrote into its dead stack block.
+///
+/// Pins: kernel32.ReadFile, kernel32.WriteFile
+#[test]
+fn a_pending_synchronous_transfer_is_waited_for() {
+    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+    const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
+    const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
+    file_at(10, 0);
+    let mut buffer = [0u8; 16];
+    for (status, information, answer, count, error) in [
+        (0, 6, 1, 6, 0xDEAD),
+        (STATUS_END_OF_FILE, 0, 1, 0, 0xDEAD),
+        (STATUS_ACCESS_DENIED, 0, 0, 0, 5),
+        (STATUS_BUFFER_OVERFLOW, 3, 0, 3, 234),
+    ] {
+        pend_next(status, information);
+        crate::base::set_last_error(0xDEAD);
+        let mut read = 0xCCu32;
+        assert_eq!(
+            unsafe {
+                read_file(
+                    HANDLE,
+                    buffer.as_mut_ptr(),
+                    16,
+                    &mut read,
+                    core::ptr::null_mut(),
+                )
+            },
+            answer,
+            "read completing {status:#x}"
+        );
+        assert_eq!(
+            (read, last_error()),
+            (count, error),
+            "read completing {status:#x}"
+        );
+        assert_eq!(waited(), [HANDLE], "the read waited on its handle");
+        assert!(!pending(), "the read completed before the call returned");
+    }
+    for (status, information, answer, count, error) in
+        [(0, 15, 1, 15, 0xDEAD), (STATUS_ACCESS_DENIED, 0, 0, 0, 5)]
+    {
+        pend_next(status, information);
+        crate::base::set_last_error(0xDEAD);
+        let mut written = 0xCCu32;
+        assert_eq!(
+            unsafe {
+                write_file(
+                    HANDLE,
+                    HELLO.as_ptr(),
+                    HELLO.len() as u32,
+                    &mut written,
+                    core::ptr::null_mut(),
+                )
+            },
+            answer,
+            "write completing {status:#x}"
+        );
+        assert_eq!(
+            (written, last_error()),
+            (count, error),
+            "write completing {status:#x}"
+        );
+        assert_eq!(waited(), [HANDLE], "the write waited on its handle");
+        assert!(!pending());
+    }
+}
+
+/// With an OVERLAPPED, a request the service leaves pending is not waited for: FALSE with
+/// ERROR_IO_PENDING, the count 0, the OVERLAPPED's Internal STATUS_PENDING; the request completes
+/// later into the caller's OVERLAPPED (its Internal and InternalHigh), not into kernel32's stack.
+///
+/// Pins: kernel32.ReadFile, kernel32.WriteFile
+#[test]
+fn a_pending_overlapped_transfer_is_error_io_pending() {
+    file_at(10, 0);
+    let mut buffer = [0u8; 16];
+    for write in [false, true] {
+        let mut overlapped = Overlapped {
+            internal: 0,
+            internal_high: 0,
+            offset: 2,
+            offset_high: 0,
+            event: 0,
+        };
+        pend_next(0, 4);
+        crate::base::set_last_error(0xDEAD);
+        let mut count = 0xCCu32;
+        let answer = unsafe {
+            if write {
+                write_file(HANDLE, HELLO.as_ptr(), 4, &mut count, &mut overlapped)
+            } else {
+                read_file(HANDLE, buffer.as_mut_ptr(), 4, &mut count, &mut overlapped)
+            }
+        };
+        assert_eq!((answer, count, last_error()), (0, 0, 997), "write {write}");
+        assert_eq!(overlapped.internal, 0x103, "STATUS_PENDING in Internal");
+        assert!(waited().is_empty(), "no wait: the caller's to make");
+        assert!(complete(), "still pending when the call returned");
+        assert_eq!(
+            (overlapped.internal, overlapped.internal_high),
+            (0, 4),
+            "completed into the caller's OVERLAPPED"
+        );
+    }
 }
 
 /// WriteFile on stdout or stderr (or their pseudo-handles) hands the bytes to the console and
