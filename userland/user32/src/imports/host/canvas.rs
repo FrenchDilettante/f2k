@@ -295,3 +295,43 @@ pub unsafe extern "system" fn GetTextMetricsW(dc: usize, metric: *mut TextMetric
         1
     })
 }
+
+// The bitmap calls: no bitmaps on the host (gdi32's and the kernel's tests drive them).
+
+pub unsafe extern "system" fn CreateBitmap(_: i32, _: i32, _: u32, _: u32, _: *const u8) -> usize {
+    0
+}
+
+pub unsafe extern "system" fn CreateCompatibleBitmap(_: usize, _: i32, _: i32) -> usize {
+    0
+}
+
+pub unsafe extern "system" fn CreateCompatibleDC(_: usize) -> usize {
+    0
+}
+
+pub unsafe extern "system" fn DeleteDC(_: usize) -> u32 {
+    0
+}
+
+pub unsafe extern "system" fn CreateDIBitmap(
+    _: usize,
+    _: *const u8,
+    _: u32,
+    _: *const u8,
+    _: *const u8,
+    _: u32,
+) -> usize {
+    0
+}
+
+pub unsafe extern "system" fn CreateDIBSection(
+    _: usize,
+    _: *const u8,
+    _: u32,
+    _: *mut usize,
+    _: usize,
+    _: u32,
+) -> usize {
+    0
+}

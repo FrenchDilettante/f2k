@@ -9,7 +9,7 @@ gate = true
 
 [pending]
 glyphs = "the outlines are scan-converted unhinted: at lfHeight -24, '0''s row 5 and '@''s row 15 each hold a pixel Windows 2000's hinted scan leaves off (the rest of the section matches)"
-pixels = "memory DCs and bitmaps (CreateCompatibleDC, CreateDIBSection, PatBlt on them) not yet implemented"
+pixels = "the outlines are scan-converted unhinted: the lfHeight -24 text's '0' (row 13) and '@' (row 23) each hold a pixel Windows 2000's hinted scan leaves off, as in glyphs (the lfHeight -11 text matches)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

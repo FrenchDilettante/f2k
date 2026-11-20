@@ -402,6 +402,7 @@ pub fn type_name(kind: ObjectType) -> &'static str {
         ObjectType::Key => "Key",
         ObjectType::Dc => "Dc",
         ObjectType::Brush => "Brush",
+        ObjectType::Bitmap => "Bitmap",
         ObjectType::Font => "Font",
         ObjectType::Token => "Token",
     }
@@ -692,6 +693,7 @@ fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
         | ObjectType::Key
         | ObjectType::Dc
         | ObjectType::Brush
+        | ObjectType::Bitmap
         | ObjectType::Font => Err(STATUS_NOT_IMPLEMENTED),
         #[cfg(target_arch = "x86")]
         ObjectType::File => {

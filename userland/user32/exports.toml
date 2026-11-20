@@ -1430,37 +1430,37 @@ internal = true
 name = "LoadBitmapW"
 group = "resources"
 args = ["handle hInstance", "ptr lpBitmapName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadBitmapW" }
 ordinal = 414
 fails = "NULL"
-note = "the name a string, or a resource or system bitmap's ordinal in its low word"
+note = "the module's RT_BITMAP as a device bitmap of the screen's format, or OBM_CLOSE and OBM_CHECK with no module"
 
 [[export]]
 name = "LoadImageA"
 group = "resources"
 args = ["handle hinst", "ptr lpszName", "u32 uType", "i32 cxDesired", "i32 cyDesired", "u32 fuLoad"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadImageA" }
 ordinal = 421
 fails = "NULL"
-note = "the name a string, or a resource or system image's ordinal in its low word"
+note = "IMAGE_BITMAP from the module's resources (a device bitmap, a DIB section, monochrome, stretched) or OBM_CLOSE and OBM_CHECK; icons, cursors and files are stubs"
 
 [[export]]
 name = "LoadImageW"
 group = "resources"
 args = ["handle hinst", "ptr lpszName", "u32 uType", "i32 cxDesired", "i32 cyDesired", "u32 fuLoad"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadImageW" }
 ordinal = 422
 fails = "NULL"
-note = "the name a string, or a resource or system image's ordinal in its low word"
+note = "IMAGE_BITMAP from the module's resources (a device bitmap, a DIB section, monochrome, stretched) or OBM_CLOSE and OBM_CHECK; icons, cursors and files are stubs"
 
 [[export]]
 name = "LoadBitmapA"
 group = "resources"
 args = ["handle hInstance", "ptr lpBitmapName"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LoadBitmapA" }
 ordinal = 413
 fails = "NULL"
-note = "the name a string, or a resource or system bitmap's ordinal in its low word"
+note = "the module's RT_BITMAP as a device bitmap of the screen's format, or OBM_CLOSE and OBM_CHECK with no module"
 
 # --- messages, timers and painting ---------------------------------------------------------------
 

@@ -83,8 +83,7 @@ use rtl::truetype::{Font, Tag};
 use self::mapper::{FaceName, Name};
 use self::table::{FileIdentity, FontTable, Key, Owner, Realization, Storage};
 use super::dc::Dc;
-use super::raster::TextOut;
-use crate::hw::vbe::{Framebuffer, PixelMemory};
+use super::raster::{Surface, TextOut};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
 
@@ -199,9 +198,9 @@ impl<B: Storage> FontTable<B> {
 /// high) filled with the background first. Each character's advance is `advances[i]`, or its
 /// glyph's. The pen's column after the run.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_run<B: Storage, M: PixelMemory>(
+pub fn draw_run<B: Storage, S: Surface + ?Sized>(
     table: &mut FontTable<B>,
-    mut screen: Option<&mut Framebuffer<M>>,
+    mut screen: Option<&mut S>,
     text: &TextOut,
     key: Key,
     cell: Cell,
@@ -1259,8 +1258,8 @@ mod selection {
 
     /// The table's realised font `key`'s cell, and a run of text drawn in it on `screen` (see
     /// [`draw_run`]); the pen's column after it. The run's pen alone moves when the face is gone.
-    pub fn draw_text<M: PixelMemory>(
-        screen: Option<&mut Framebuffer<M>>,
+    pub fn draw_text<S: Surface + ?Sized>(
+        screen: Option<&mut S>,
         text: &TextOut,
         key: Key,
         pen: i32,

@@ -19,8 +19,7 @@ gate = true
 keyloop = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends"
 keyesc = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; and Esc on the bar, once the popup is closed, goes to the window as WM_MENUCHAR where Windows 2000 ends the loop"
 keychar = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; Alt then F selects File twice (two WM_MENUSELECT); Enter on a grayed item goes to the window as WM_MENUCHAR where Windows 2000 ends the loop, and so does Esc on the bar"
-info = "LoadBitmapW(NULL, OBM_CHECK) answers NULL: gdi32 has no bitmaps (CreateBitmap is a stub), so user32 has no OBM_CHECK to load, and the check mark set through MIIM_CHECKMARKS prints NULL where Windows 2000's prints the bitmap; every other line matches"
-capicon = "F2K's icons hold no image: gdi32 has no CreateBitmap and user32 no CreateIconIndirect (a stub), and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
+capicon = "F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
 [skip]
 underline = "a broken measurement: it finds no menu text ink even on Windows 2000, so it shows nothing of the access keys' underlines"

@@ -5,13 +5,14 @@
 # capabilities, the stock objects and their selection, solid brushes and PatBlt's fills, the text
 # and background colors and the background mode, text drawn with the built-in font or a TrueType
 # font and its metrics, the TrueType fonts themselves (loading, font objects, their metrics, data,
-# glyphs and enumeration), and single pixels; and stubs for what the corpus fixtures import beyond
-# it (bitmaps). Its own code runs over ntdll, kernel32 and user32 as Windows 2000's gdi32 imports
+# glyphs and enumeration), single pixels, memory DCs, bitmaps and DIB sections, the blits and
+# pattern brushes; and stubs for what the corpus fixtures import beyond it (pens, regions, mapping
+# modes). Its own code runs over ntdll, kernel32 and user32 as Windows 2000's gdi32 imports
 # them, and enters the kernel itself, as Windows 2000's does: through win32k's services (`impl = {
 # syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls, never exported;
 # see userland/user32/exports.toml for the stubs' shape). Their argument lists are F2K's own (only
-# gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs and fonts describe
-# them). The rest of the records are catalogued from GDI32.dll 5.0.2195.6660's export table
+# gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs, bitmap.rs and
+# fonts describe them). The rest of the records are catalogued from GDI32.dll 5.0.2195.6660's export table
 # (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
 # prototype and implementation.
 
@@ -100,7 +101,7 @@ note = "the screen DC's: its size, the screen's (user32's GetSystemMetrics: no s
 name = "CreateCompatibleDC"
 group = "dc"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateCompatibleDC" }
 ordinal = 44
 fails = "NULL"
 
@@ -124,7 +125,7 @@ internal = true
 name = "GdiFlush"
 group = "dc"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GdiFlush" }
 ordinal = 224
 fails = "FALSE"
 
@@ -153,7 +154,7 @@ args = ["handle hObject"]
 impl = { native = "DeleteObject" }
 ordinal = 85
 fails = "FALSE"
-note = "a DC or a brush; a global object (a stock object, a system color's brush) is never deleted: the call succeeds"
+note = "a DC, a brush, a font or a bitmap (its memory freed; not one a DC holds); a global object (a stock object, a system color's brush, the default bitmap) is never deleted: the call succeeds"
 
 [[export]]
 name = "GetStockObject"
@@ -171,7 +172,7 @@ args = ["handle hdc", "handle hgdiobj"]
 impl = { native = "SelectObject" }
 ordinal = 463
 fails = "NULL"
-note = "a brush, pen or font, by the kind its handle carries (a global object's, or a brush or font object's kind bits); no pens but the stock ones yet"
+note = "a brush, pen, font or bitmap, by the kind its handle carries (a global object's, or an object's kind bits); no pens but the stock ones yet"
 
 [[export]]
 name = "GetObjectA"
@@ -188,7 +189,7 @@ args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
 impl = { native = "GetObjectW" }
 ordinal = 346
 fails = "0"
-note = "a font object's LOGFONTW; another object is a stub"
+note = "a font object's LOGFONTW, a brush's LOGBRUSH, a bitmap's BITMAP or DIBSECTION; a stock object is a stub"
 
 [[export]]
 name = "NtGdiGetStockObject"
@@ -237,7 +238,7 @@ fails = "NULL"
 name = "GetObjectType"
 group = "objects"
 args = ["handle h"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetObjectType" }
 ordinal = 345
 fails = "0"
 
@@ -301,7 +302,7 @@ internal = true
 name = "GetStretchBltMode"
 group = "attributes"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetStretchBltMode" }
 ordinal = 361
 fails = "0"
 
@@ -309,7 +310,7 @@ fails = "0"
 name = "SetStretchBltMode"
 group = "attributes"
 args = ["handle hdc", "i32 iStretchMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetStretchBltMode" }
 ordinal = 503
 fails = "0"
 
@@ -766,7 +767,7 @@ internal = true
 name = "NtGdiExtGetObjectW"
 group = "fonts"
 args = ["handle Object", "u32 Count", "ptr Buffer", "ptr<u32> Size"]
-impl = { syscall = "crate::win32k::fonts::ext_get_object_w" }
+impl = { syscall = "crate::win32k::bitmap::ext_get_object_w" }
 internal = true
 
 [[export]]
@@ -827,7 +828,7 @@ internal = true
 name = "CreateDIBSection"
 group = "bitmaps"
 args = ["handle hdc", "ptr pbmi", "u32 iUsage", "ptr ppvBits", "handle hSection", "u32 dwOffset"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateDIBSection" }
 ordinal = 49
 fails = "NULL"
 
@@ -838,7 +839,7 @@ args = [
     "handle hdcDest", "i32 nXDest", "i32 nYDest", "i32 nWidth", "i32 nHeight", "handle hdcSrc",
     "i32 nXSrc", "i32 nYSrc", "u32 dwRop",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "BitBlt" }
 ordinal = 19
 fails = "FALSE"
 
@@ -846,7 +847,7 @@ fails = "FALSE"
 name = "CreateBitmap"
 group = "bitmaps"
 args = ["i32 nWidth", "i32 nHeight", "u32 cPlanes", "u32 cBitsPerPel", "ptr lpvBits"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateBitmap" }
 ordinal = 38
 fails = "NULL"
 
@@ -854,7 +855,7 @@ fails = "NULL"
 name = "CreateCompatibleBitmap"
 group = "bitmaps"
 args = ["handle hdc", "i32 nWidth", "i32 nHeight"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateCompatibleBitmap" }
 ordinal = 43
 fails = "NULL"
 
@@ -862,7 +863,7 @@ fails = "NULL"
 name = "CreateDIBitmap"
 group = "bitmaps"
 args = ["handle hdc", "ptr lpbmih", "u32 fdwInit", "ptr lpbInit", "ptr lpbmi", "u32 fuUsage"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateDIBitmap" }
 ordinal = 50
 fails = "NULL"
 
@@ -873,7 +874,7 @@ args = [
     "handle hdc", "handle hbmp", "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbi",
     "u32 uUsage",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetDIBits" }
 ordinal = 301
 fails = "0"
 
@@ -884,7 +885,7 @@ args = [
     "handle hdc", "handle hbmp", "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbmi",
     "u32 fuColorUse",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetDIBits" }
 ordinal = 478
 fails = "0"
 
@@ -895,7 +896,7 @@ args = [
     "handle hdc", "i32 XDest", "i32 YDest", "u32 dwWidth", "u32 dwHeight", "i32 XSrc", "i32 YSrc",
     "u32 uStartScan", "u32 cScanLines", "ptr lpvBits", "ptr lpbmi", "u32 fuColorUse",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetDIBitsToDevice" }
 ordinal = 479
 fails = "0"
 
@@ -907,7 +908,7 @@ args = [
     "handle hdcSrc", "i32 nXOriginSrc", "i32 nYOriginSrc", "i32 nWidthSrc", "i32 nHeightSrc",
     "u32 dwRop",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "StretchBlt" }
 ordinal = 520
 fails = "FALSE"
 
@@ -919,9 +920,59 @@ args = [
     "i32 YSrc", "i32 nSrcWidth", "i32 nSrcHeight", "ptr lpBits", "ptr lpBitsInfo", "u32 iUsage",
     "u32 dwRop",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "StretchDIBits" }
 ordinal = 521
 fails = "0"
+
+# win32k's services behind them: gdi32's internal calls.
+
+[[export]]
+name = "NtGdiCreateCompatibleDC"
+group = "bitmaps"
+args = ["handle Dc", "ptr<u32> MemoryDc"]
+impl = { syscall = "crate::win32k::dc::create_compatible_dc" }
+internal = true
+
+[[export]]
+name = "NtGdiCreateBitmap"
+group = "bitmaps"
+args = ["ptr Desc", "ptr<u32> Bitmap"]
+impl = { syscall = "crate::win32k::bitmap::create_bitmap" }
+internal = true
+
+[[export]]
+name = "NtGdiSelectBitmap"
+group = "bitmaps"
+args = ["handle Dc", "handle Bitmap", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::bitmap::select_bitmap" }
+internal = true
+
+[[export]]
+name = "NtGdiBitBlt"
+group = "bitmaps"
+args = [
+    "handle Dc", "i32 X", "i32 Y", "i32 Width", "i32 Height", "handle Source", "i32 XSrc",
+    "i32 YSrc", "u32 Rop",
+]
+impl = { syscall = "crate::win32k::bitmap::bit_blt" }
+internal = true
+
+[[export]]
+name = "NtGdiStretchBlt"
+group = "bitmaps"
+args = [
+    "handle Dc", "i32 X", "i32 Y", "i32 Width", "i32 Height", "handle Source", "i32 XSrc",
+    "i32 YSrc", "i32 WidthSrc", "i32 HeightSrc", "u32 Rop",
+]
+impl = { syscall = "crate::win32k::bitmap::stretch_blt" }
+internal = true
+
+[[export]]
+name = "NtGdiCreatePatternBrushInternal"
+group = "brushes"
+args = ["handle Bitmap", "ptr<u32> Brush"]
+impl = { syscall = "crate::win32k::bitmap::create_pattern_brush" }
+internal = true
 
 # --- brushes and fills ----------------------------------------------------------------------------
 
@@ -969,7 +1020,7 @@ fails = "NULL"
 name = "CreatePatternBrush"
 group = "brushes"
 args = ["handle hbmp"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreatePatternBrush" }
 ordinal = 69
 fails = "NULL"
 
@@ -977,7 +1028,7 @@ fails = "NULL"
 name = "GetBrushOrgEx"
 group = "brushes"
 args = ["handle hdc", "ptr lppt"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetBrushOrgEx" }
 ordinal = 275
 fails = "FALSE"
 
@@ -985,7 +1036,7 @@ fails = "FALSE"
 name = "SetBrushOrgEx"
 group = "brushes"
 args = ["handle hdc", "i32 nXOrg", "i32 nYOrg", "ptr lppt"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetBrushOrgEx" }
 ordinal = 472
 fails = "FALSE"
 

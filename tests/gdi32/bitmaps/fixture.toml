@@ -4,6 +4,10 @@
 # compiled into the program from bitmaps.rc. No handle or address prints.
 description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap."
 kind = "sectioned"
+gate = true
+
+[pending]
+objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen), hatch brushes (CreateHatchBrush) or regions (CreateRectRgn) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

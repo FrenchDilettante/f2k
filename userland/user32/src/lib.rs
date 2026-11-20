@@ -8,13 +8,14 @@
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
 //! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static and Edit
 //! controls, [`button`], [`static_control`] and [`edit`]; MessageBox, [`msgbox`]; the menus,
-//! [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and the keyboard menu loop, [`menubar`]; the non-client area,
-//! [`nonclient`]; the caret, [`caret`]; the keyboard accelerators, [`accel`]; the icons, [`icon`];
-//! the clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles, [`rect`]; the
-//! character walks, case and types, [`string`]; wsprintf, [`wsprintf`]; WinHelp, [`help`]), as
-//! Windows 2000's user32 runs them, over ntdll's, kernel32's and gdi32's exports and win32k's
-//! services ([`imports`]: as Windows 2000's user32 imports the first and enters the kernel itself
-//! for the others, through its own stubs), and csrss's user server (the kernel's stand-in, through
+//! [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and the keyboard
+//! menu loop, [`menubar`]; the non-client area, [`nonclient`]; the caret, [`caret`]; the keyboard
+//! accelerators, [`accel`]; the icons, [`icon`]; the bitmaps, [`bitmap`]; the clipboard,
+//! [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles, [`rect`]; the character walks,
+//! case and types, [`string`]; wsprintf, [`wsprintf`]; WinHelp, [`help`]), as Windows 2000's user32
+//! runs them, over ntdll's, kernel32's and gdi32's exports and win32k's services ([`imports`]: as
+//! Windows 2000's user32 imports the first and enters the kernel itself for the others, through its
+//! own stubs), and csrss's user server (the kernel's stand-in, through
 //! ntdll's CsrClientCallServer).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
@@ -37,6 +38,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod accel;
+pub mod bitmap;
 pub mod button;
 pub mod caret;
 pub mod class;

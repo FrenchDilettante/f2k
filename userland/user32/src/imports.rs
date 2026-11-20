@@ -85,6 +85,38 @@ mod raw {
         pub fn GetStockObject(index: i32) -> usize;
         /// SetBkMode: the DC's background mode set, the previous one answered.
         pub fn SetBkMode(dc: usize, mode: i32) -> i32;
+        /// CreateBitmap: a device-dependent bitmap of a size and depth, its rows given or zero.
+        pub fn CreateBitmap(
+            width: i32,
+            height: i32,
+            planes: u32,
+            bits_per_pixel: u32,
+            bits: *const u8,
+        ) -> usize;
+        /// CreateCompatibleBitmap: a bitmap of the DC's format.
+        pub fn CreateCompatibleBitmap(dc: usize, width: i32, height: i32) -> usize;
+        /// CreateCompatibleDC: a memory DC.
+        pub fn CreateCompatibleDC(dc: usize) -> usize;
+        /// DeleteDC: a DC deleted.
+        pub fn DeleteDC(dc: usize) -> u32;
+        /// CreateDIBitmap: a device-dependent bitmap of the DC's format, from a DIB.
+        pub fn CreateDIBitmap(
+            dc: usize,
+            header: *const u8,
+            init: u32,
+            bits: *const u8,
+            info: *const u8,
+            usage: u32,
+        ) -> usize;
+        /// CreateDIBSection: a DIB section of a BITMAPINFO's description, its bits' address.
+        pub fn CreateDIBSection(
+            dc: usize,
+            info: *const u8,
+            usage: u32,
+            bits: *mut usize,
+            section: usize,
+            offset: u32,
+        ) -> usize;
     }
 
     #[link(
@@ -2433,6 +2465,56 @@ pub fn create_font(font: &rtl::gdi::LogFontW) -> Option<usize> {
     // SAFETY: gdi32 reads the local structure.
     let made = unsafe { raw::CreateFontIndirectW(font) };
     (made != 0).then_some(made)
+}
+
+/// CreateBitmap: a device-dependent bitmap of `width` by `height` at `bpp` bits, its word-aligned
+/// rows `bits` (none: zeroed); none when gdi32 could make none.
+pub fn create_bitmap(width: i32, height: i32, bpp: u32, bits: Option<&[u8]>) -> Option<usize> {
+    let bits = bits.map_or(core::ptr::null(), <[u8]>::as_ptr);
+    // SAFETY: gdi32 reads the rows, which hold the bitmap's (the caller's sizes), for the call.
+    let made = unsafe { raw::CreateBitmap(width, height, 1, bpp, bits) };
+    (made != 0).then_some(made)
+}
+
+/// CreateCompatibleBitmap: a bitmap of `dc`'s format; none when gdi32 could make none.
+pub fn create_compatible_bitmap(dc: usize, width: i32, height: i32) -> Option<usize> {
+    // SAFETY: no pointers.
+    let made = unsafe { raw::CreateCompatibleBitmap(dc, width, height) };
+    (made != 0).then_some(made)
+}
+
+/// CreateCompatibleDC: a memory DC; none when gdi32 could make none.
+pub fn create_compatible_dc(dc: usize) -> Option<usize> {
+    // SAFETY: no pointers.
+    let made = unsafe { raw::CreateCompatibleDC(dc) };
+    (made != 0).then_some(made)
+}
+
+/// DeleteDC: `dc` deleted.
+pub fn delete_dc(dc: usize) {
+    // SAFETY: no pointers.
+    unsafe { raw::DeleteDC(dc) };
+}
+
+/// CreateDIBitmap with CBM_INIT: a device-dependent bitmap of `dc`'s format, its pixels the DIB's
+/// (`info` its BITMAPINFO, `bits` its rows); none when gdi32 could make none.
+pub fn create_di_bitmap(dc: usize, info: &[u8], bits: &[u8]) -> Option<usize> {
+    const CBM_INIT: u32 = 4;
+    // SAFETY: gdi32 reads the header, the table and the rows, ours for the call.
+    let made = unsafe {
+        raw::CreateDIBitmap(dc, info.as_ptr(), CBM_INIT, bits.as_ptr(), info.as_ptr(), 0)
+    };
+    (made != 0).then_some(made)
+}
+
+/// CreateDIBSection of the BITMAPINFO `info` (DIB_RGB_COLORS): the section and its bits' address;
+/// none when gdi32 could make none.
+pub fn create_dib_section(info: &[u8]) -> Option<(usize, usize)> {
+    let mut bits = 0usize;
+    // SAFETY: gdi32 reads the header and the table, ours for the call, and writes the address
+    // into the local.
+    let made = unsafe { raw::CreateDIBSection(0, info.as_ptr(), 0, &mut bits, 0, 0) };
+    (made != 0 && bits != 0).then_some((made, bits))
 }
 
 /// GetStockObject: stock object `index`'s handle (0 for none).

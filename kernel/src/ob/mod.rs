@@ -93,6 +93,9 @@ pub enum ObjectType {
     Dc,
     /// A brush: win32k's, a logical brush a DC selects (see [`crate::win32k::brush`]).
     Brush,
+    /// A bitmap: win32k's, a device-dependent bitmap or a DIB section a memory DC selects (see
+    /// [`crate::win32k::bitmap`]).
+    Bitmap,
     /// A font object: win32k's, a LOGFONT (see [`crate::win32k::fonts`]).
     Font,
     /// A token: a process's, made at its first open (see [`crate::se`]).
@@ -130,6 +133,7 @@ impl ObjectId {
             | ObjectType::Key
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Token => None,
         }
@@ -223,6 +227,8 @@ pub const KEY_OBJECTS: usize = 256;
 pub const DCS: usize = 64;
 /// How many brushes can exist at once (the global brushes are none of them).
 pub const BRUSHES: usize = 128;
+/// How many bitmaps can exist at once (the default bitmap is none of them).
+pub const BITMAPS: usize = 256;
 /// How many font objects can exist at once.
 pub const FONTS: usize = 128;
 /// How many tokens can exist at once: one per process that opened its own, and those whose
@@ -640,6 +646,7 @@ pools! {
     Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
     Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
     Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none, BRUSHES;
+    Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none, BITMAPS;
     Font => fonts: crate::win32k::fonts::FontObject = crate::win32k::fonts::FontObject::none, FONTS;
     Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none, TOKENS;
 }
@@ -692,6 +699,7 @@ bodies! {
     crate::cm::KeyBody => Key, keys, key;
     crate::win32k::dc::Dc => Dc, dcs, dc;
     crate::win32k::brush::Brush => Brush, brushes, brush;
+    crate::win32k::bitmap::Bitmap => Bitmap, bitmaps, bitmap;
     crate::win32k::fonts::FontObject => Font, fonts, font;
     crate::se::TokenBody => Token, tokens, token;
 }
@@ -976,6 +984,20 @@ impl Directory {
         self.insert(body)
     }
 
+    /// A bitmap described by `body`; none when the pool is exhausted.
+    pub fn create_bitmap(&mut self, body: crate::win32k::bitmap::Bitmap) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
+    /// Whether a live DC other than `except` holds the bitmap `bitmap` selected.
+    pub fn bitmap_selected(&mut self, bitmap: ObjectId, except: Option<ObjectId>) -> bool {
+        (0..DCS).any(|index| {
+            self.dcs.headers[index].live
+                && except.is_none_or(|dc| dc.index as usize != index)
+                && self.dcs.records[index].bitmap_object == Some(bitmap)
+        })
+    }
+
     /// A font object holding `body`'s LOGFONT; none when the pool is exhausted.
     pub fn create_font(&mut self, body: crate::win32k::fonts::FontObject) -> Option<ObjectId> {
         self.insert(body)
@@ -1250,6 +1272,7 @@ impl Directory {
             | ObjectType::Key
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Token => None,
         };
@@ -1415,6 +1438,7 @@ impl Directory {
             ObjectType::Key,
             ObjectType::Dc,
             ObjectType::Brush,
+            ObjectType::Bitmap,
             ObjectType::Font,
             ObjectType::Token,
         ] {

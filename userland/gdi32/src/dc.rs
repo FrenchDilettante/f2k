@@ -125,11 +125,20 @@ pub extern "system" fn delete_dc(dc: usize) -> u32 {
     answered(imports::delete_object(dc)).map_or(0, |()| 1)
 }
 
-/// DeleteObject: the object deleted, a DC or a brush (a global object, a stock one or a global
-/// brush, is never deleted: TRUE all the same).
+/// DeleteObject: the object deleted, a DC, a brush, a font or a bitmap (a global object, a stock
+/// one, a global brush or the default bitmap, is never deleted: TRUE all the same). A bitmap's
+/// memory goes with it ([`crate::bitmap`]); a bitmap a DC holds is not deleted (FALSE).
 #[unsafe(export_name = "f2k_export_DeleteObject")]
 pub extern "system" fn delete_object(object: usize) -> u32 {
-    answered(imports::delete_object(object)).map_or(0, |()| 1)
+    let block = match object_of(object as u32) {
+        Some((rtl::dib::OBJ_BITMAP, _)) => crate::bitmap::describe(object).map(|desc| desc.block),
+        _ => None,
+    };
+    let deleted = answered(imports::delete_object(object)).is_some();
+    if let Some(block) = block.filter(|&block| deleted && block != 0) {
+        imports::heap_free(block as usize);
+    }
+    deleted as u32
 }
 
 /// GetStockObject: the stock object's handle; NULL with the last error for an index that names
@@ -139,8 +148,9 @@ pub extern "system" fn get_stock_object(index: i32) -> usize {
     answered(imports::stock_object(index as u32)).map_or(0, |object| object as usize)
 }
 
-/// SelectObject: the brush, pen or font `object` is selected into the DC, the object of its kind
-/// it replaces answered; the kind is the handle's own (a stock object's, a global brush's, or a
+/// SelectObject: the brush, pen, font or bitmap (into a memory DC: NULL without an error when
+/// another DC holds it) `object` is selected into the DC, the object of its kind it replaces
+/// answered; the kind is the handle's own (a stock object's, a global brush's, or a
 /// process's object's kind bits: rtl::gdi's `object_kind`), as Windows 2000's gdi32 reads it from
 /// the handle. NULL with ERROR_INVALID_HANDLE for a handle of no kind a DC selects (a palette's is
 /// SelectPalette's, a DC's none), with the service's error for a DC or an object that is none.
@@ -150,6 +160,10 @@ pub extern "system" fn select_object(dc: usize, object: usize) -> usize {
         Some(OBJ_BRUSH) => Selected::Brush,
         Some(OBJ_PEN) => Selected::Pen,
         Some(OBJ_FONT) => Selected::Font,
+        Some(rtl::dib::OBJ_BITMAP) => {
+            return answered(imports::select_bitmap(dc, object))
+                .map_or(0, |previous| previous as usize)
+        }
         _ => return failed(ERROR_INVALID_HANDLE).unwrap_or(0),
     };
     answered(imports::select(kind, dc, object)).map_or(0, |previous| previous as usize)

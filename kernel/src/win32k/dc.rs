@@ -3,7 +3,8 @@
 //! ([`super::raster`]).
 //!
 //! A DC is an object of the object manager ([`crate::ob`]'s Dc type), its body a [`Dc`]: its
-//! target, the screen; its origin, where its logical (0, 0) lands on the screen; its clipping
+//! target, the screen or (a memory DC) its selected bitmap; its origin, where its logical (0, 0)
+//! lands on the screen; its clipping
 //! region, in screen coordinates, within the screen's extent when it was made (the framebuffer the
 //! graphics mode set, empty before it is); its text and background colors and background mode; the
 //! objects it has selected. Its creator's process holds it through a handle in its handle
@@ -39,18 +40,26 @@
 //!   font when no face answers it: the text, its metrics and its extent are then the face's, at its
 //!   size, each glyph from the realised font's cache, (x, y) the cell's top left and the baseline
 //!   its ascent below, clipped as the built-in font's;
-//! - SetPixel and GetPixel through the framebuffer, clipped alike.
+//! - SetPixel and GetPixel through the framebuffer, clipped alike;
+//! - memory DCs (CreateCompatibleDC's, [`create_compatible_dc`]): a DC that draws on the bitmap it
+//!   holds, the default 1 by 1 monochrome one at first ([`super::bitmap`]), its origin (0, 0) and
+//!   its clipping region the bitmap's extent; text, pixels and fills go to the bitmap's pixels as
+//!   to the screen's, through the surface the DC draws on ([`super::bitmap::with_surface`]);
+//! - the stretch mode and the brush origin, as attributes (SetStretchBltMode takes any value, as
+//!   Windows 2000's does).
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; a DC handle that names no DC is
 //! STATUS_INVALID_HANDLE):
 //!
 //! - NtGdiOpenDCW(ptr Device, ptr<u32> Dc): a screen DC, for the primary display (a null device, or
 //!   `\\.\DISPLAY1`);
+//! - NtGdiCreateCompatibleDC(handle Dc, ptr<u32> MemoryDc): a memory DC;
 //! - NtUserGetDC(handle Window, ptr<u32> Dc), NtUserGetDCEx(handle Window, handle Region, u32
 //!   Flags, ptr<u32> Dc), NtUserGetWindowDC(handle Window, ptr<u32> Dc): the window's DC (the
 //!   screen's for no window); STATUS_INVALID_HANDLE for a handle that names no window;
-//! - NtGdiDeleteObjectApp(handle Object): a DC's, a brush's or a font's handle closed; a global
-//!   object (a stock object, a global brush) is never deleted (the call succeeds);
+//! - NtGdiDeleteObjectApp(handle Object): a DC's, a brush's, a font's or a bitmap's handle closed
+//!   (a bitmap a DC holds is not: STATUS_CANNOT_DELETE); a global object (a stock object, a global
+//!   brush, the default bitmap) is never deleted (the call succeeds);
 //! - NtGdiGetStockObject(u32 Index, ptr<u32> Object): the stock object's handle;
 //! - NtGdiSelectBrush, NtGdiSelectPen, NtGdiSelectFont(handle Dc, handle Object, ptr<u32>
 //!   Previous): the object selected, the one it replaces answered (NtGdiSelectFont takes a font
@@ -58,7 +67,8 @@
 //!   STATUS_INVALID_HANDLE for a handle that names none;
 //! - NtGdiGetDCDword(handle Dc, u32 Index, ptr<u32> Value) and NtGdiGetAndSetDCDword(handle Dc, u32
 //!   Index, u32 Value, ptr<u32> Previous): the text color, the background color, the background
-//!   mode ([`rtl::gdi`]'s DC_ indexes);
+//!   mode, the stretch mode, the brush origin's coordinates, and (read alone) the DC's kind, OBJ_DC
+//!   or OBJ_MEMDC ([`rtl::gdi`]'s DC_ indexes);
 //! - NtGdiExtTextOutW(handle Dc, i32 X, i32 Y, u32 Options, ptr Rect, ptr String, u32 Count, ptr
 //!   Dx): the text drawn (`Dx`, when given, the advance of each character), and NtGdiEngTextOut,
 //!   the engine's entry, the same;
@@ -71,10 +81,11 @@
 use rtl::gdi::*;
 use rtl::pod::Pod;
 
+use super::bitmap::with_surface;
 use super::brush::Fill;
 use super::font;
 use super::fonts::table::Realization;
-use super::raster::{advanced, get_pixel_on, set_pixel_on, TextOut};
+use super::raster::{advanced, get_pixel_on, set_pixel_on, Surface, TextOut};
 use crate::hw::vbe::Framebuffer;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
@@ -107,6 +118,17 @@ pub struct Dc {
     pub brush_fill: Fill,
     /// The font object selected, beside its handle: none for a stock font.
     pub font_object: Option<crate::ob::ObjectId>,
+    /// Whether it is a memory DC (CreateCompatibleDC's): it draws on its selected bitmap, whose
+    /// extent its clipping region is, rather than on the screen.
+    pub memory: bool,
+    /// The bitmap selected (a memory DC's: the default bitmap's handle, or a bitmap object's), and
+    /// beside it the bitmap object (none for the default bitmap).
+    pub bitmap: u32,
+    pub bitmap_object: Option<crate::ob::ObjectId>,
+    /// The stretch mode (SetStretchBltMode's value, as set: any value is taken).
+    pub stretch_mode: u32,
+    /// The brush origin, in the DC's logical coordinates (SetBrushOrgEx's).
+    pub brush_org: (i32, i32),
 }
 
 impl Dc {
@@ -128,6 +150,11 @@ impl Dc {
             font: 0,
             brush_fill: Fill::Null,
             font_object: None,
+            memory: false,
+            bitmap: 0,
+            bitmap_object: None,
+            stretch_mode: 0,
+            brush_org: (0, 0),
         }
     }
 
@@ -152,7 +179,46 @@ impl Dc {
             font: stock(SYSTEM_FONT),
             brush_fill: Fill::of_global(GlobalBrush::Stock(WHITE_BRUSH)),
             font_object: None,
+            memory: false,
+            bitmap: DEFAULT_BITMAP,
+            bitmap_object: None,
+            stretch_mode: DEFAULT_STRETCH_MODE,
+            brush_org: (0, 0),
         }
+    }
+
+    /// A memory DC, as CreateCompatibleDC makes one: a screen DC's defaults, holding the default
+    /// bitmap (1 by 1), its clipping region that bitmap's extent.
+    pub fn memory() -> Self {
+        Dc {
+            memory: true,
+            ..Dc::screen(1, 1)
+        }
+    }
+
+    /// Select the bitmap `handle` (its object `object`, none for the default bitmap) of `width`
+    /// by `height` into a memory DC, its clipping region its extent; the bitmap it replaces
+    /// answered.
+    pub fn select_bitmap(
+        &mut self,
+        handle: u32,
+        object: Option<crate::ob::ObjectId>,
+        width: i32,
+        height: i32,
+    ) -> u32 {
+        self.bitmap_object = object;
+        self.clip = Rect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        core::mem::replace(&mut self.bitmap, handle)
+    }
+
+    /// The brush origin on the surface: the DC's origin and its brush origin.
+    pub fn pattern_origin(&self) -> (i32, i32) {
+        self.screen_point(self.brush_org.0, self.brush_org.1)
     }
 
     /// A DC of the area `area` (screen coordinates: a window's client area or rectangle) of a
@@ -191,6 +257,14 @@ impl Dc {
             DC_TEXT_COLOR => Some(self.text_color),
             DC_BK_COLOR => Some(self.bk_color),
             DC_BK_MODE => Some(self.bk_mode),
+            DC_STRETCH_MODE => Some(self.stretch_mode),
+            DC_BRUSH_ORG_X => Some(self.brush_org.0 as u32),
+            DC_BRUSH_ORG_Y => Some(self.brush_org.1 as u32),
+            DC_OBJECT_TYPE => Some(if self.memory {
+                rtl::dib::OBJ_MEMDC
+            } else {
+                OBJ_DC
+            }),
             _ => None,
         }
     }
@@ -201,6 +275,7 @@ impl Dc {
             OBJ_BRUSH => Some(self.brush),
             OBJ_PEN => Some(self.pen),
             OBJ_FONT => Some(self.font),
+            rtl::dib::OBJ_BITMAP => Some(self.bitmap),
             _ => None,
         }
     }
@@ -212,6 +287,13 @@ impl Dc {
             DC_TEXT_COLOR => &mut self.text_color,
             DC_BK_COLOR => &mut self.bk_color,
             DC_BK_MODE if matches!(value, TRANSPARENT | OPAQUE) => &mut self.bk_mode,
+            DC_STRETCH_MODE => &mut self.stretch_mode,
+            DC_BRUSH_ORG_X => {
+                return Some(core::mem::replace(&mut self.brush_org.0, value as i32) as u32)
+            }
+            DC_BRUSH_ORG_Y => {
+                return Some(core::mem::replace(&mut self.brush_org.1, value as i32) as u32)
+            }
             _ => return None,
         };
         Some(core::mem::replace(field, value))
@@ -262,6 +344,16 @@ pub fn open_dc(call: &mut NtCall, device: UserAddr, out: UserPtr<u32>) -> NtResu
         return Err(STATUS_INVALID_PARAMETER);
     }
     screen_dc(call, out)
+}
+
+/// NtGdiCreateCompatibleDC(Dc, MemoryDc): a memory DC (see [`Dc::memory`]), its handle into `out`;
+/// the DC it is made compatible with (none: the screen) must be one (the screen is the one
+/// device: every memory DC is the screen's).
+pub fn create_compatible_dc(call: &mut NtCall, dc: Handle, out: UserPtr<u32>) -> NtResult {
+    if dc.raw() != 0 {
+        dc_of(call, dc)?;
+    }
+    hand_out(call, Dc::memory(), out)
 }
 
 /// GetDCEx's flag for a DC of the window rectangle rather than the client area.
@@ -351,8 +443,8 @@ fn select(call: &mut NtCall, dc: Handle, kind: u32, object: Handle, out: UserPtr
     Ok(STATUS_SUCCESS)
 }
 
-/// NtGdiGetDCObject(Dc, ObjectType, Object): the brush, pen or font selected (GetCurrentObject);
-/// STATUS_INVALID_PARAMETER for another kind.
+/// NtGdiGetDCObject(Dc, ObjectType, Object): the brush, pen, font or bitmap selected
+/// (GetCurrentObject); STATUS_INVALID_PARAMETER for another kind.
 pub fn get_dc_object(call: &mut NtCall, dc: Handle, kind: u32, out: UserPtr<u32>) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
     let object = dc.object(kind).ok_or(STATUS_INVALID_PARAMETER)?;
@@ -417,7 +509,7 @@ pub fn ext_text_out_w(
         options,
         rect,
     );
-    with_screen(|screen| text.fill_background(screen));
+    with_surface(&dc, |surface| text.fill_background(surface));
     let mut units = [0u16; CHUNK];
     let mut advances = [0i32; CHUNK];
     let mut pen = x;
@@ -437,14 +529,14 @@ pub fn ext_text_out_w(
         let units = &units[..length];
         pen = match realization {
             Realization::BuiltIn { .. } => {
-                with_screen(|screen| text.draw(screen, pen, units, advances))
+                with_surface(&dc, |surface| text.draw(surface, pen, units, advances))
                     .unwrap_or_else(|| advanced(pen, length, advances))
             }
-            Realization::TrueType { key, .. } => with_screen(|screen| {
-                super::fonts::draw_text(Some(screen), &text, key, pen, units, advances)
+            Realization::TrueType { key, .. } => with_surface(&dc, |surface| {
+                super::fonts::draw_text(Some(surface), &text, key, pen, units, advances)
             })
             .unwrap_or_else(|| {
-                super::fonts::draw_text::<ScreenMemory>(None, &text, key, pen, units, advances)
+                super::fonts::draw_text::<dyn Surface>(None, &text, key, pen, units, advances)
             }),
         };
         done += length;
@@ -531,8 +623,10 @@ pub fn set_pixel(
 ) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
     let (x, y) = dc.screen_point(x, y);
-    let set = with_screen(|screen| set_pixel_on(Some(screen), &dc.clip, x, y, color))
-        .unwrap_or(CLR_INVALID);
+    let set = with_surface(&dc, |surface| {
+        set_pixel_on(Some(surface), &dc.clip, x, y, color)
+    })
+    .unwrap_or(CLR_INVALID);
     out.write(set)?;
     Ok(STATUS_SUCCESS)
 }
@@ -541,8 +635,8 @@ pub fn set_pixel(
 pub fn get_pixel(call: &mut NtCall, dc: Handle, x: i32, y: i32, out: UserPtr<u32>) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
     let (x, y) = dc.screen_point(x, y);
-    let color =
-        with_screen(|screen| get_pixel_on(Some(screen), &dc.clip, x, y)).unwrap_or(CLR_INVALID);
+    let color = with_surface(&dc, |surface| get_pixel_on(Some(surface), &dc.clip, x, y))
+        .unwrap_or(CLR_INVALID);
     out.write(color)?;
     Ok(STATUS_SUCCESS)
 }
@@ -691,6 +785,7 @@ fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
     match object_of(handle.raw()) {
         Some((OBJ_BRUSH, table)) => close_kind(call, Handle(table), crate::ob::ObjectType::Brush),
         Some((OBJ_FONT, _)) => super::fonts::delete_font(call, handle),
+        Some((rtl::dib::OBJ_BITMAP, table)) => super::bitmap::delete_bitmap(call, table),
         Some(_) => Err(STATUS_INVALID_HANDLE),
         None => close_dc(call, handle),
     }
@@ -725,7 +820,7 @@ pub(super) fn dc_of(
 
 /// Run `f` on the state of the DC `handle` names, in one hold of the directory.
 #[cfg(target_arch = "x86")]
-fn update_dc<R>(
+pub(super) fn update_dc<R>(
     call: &mut NtCall,
     handle: Handle,
     f: impl FnOnce(&mut Dc) -> R,
@@ -772,6 +867,11 @@ fn window_dc(_: &mut NtCall, _: Handle, _: bool, _: UserPtr<u32>) -> NtResult {
 }
 
 #[cfg(not(target_arch = "x86"))]
+fn hand_out(_: &mut NtCall, _: Dc, _: UserPtr<u32>) -> NtResult {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
 fn close_object(_: &mut NtCall, _: Handle) -> Result<(), NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
@@ -787,7 +887,11 @@ pub(super) fn dc_of(_: &mut NtCall, _: Handle) -> Result<((), Dc), NtStatus> {
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn update_dc<R>(_: &mut NtCall, _: Handle, _: impl FnOnce(&mut Dc) -> R) -> Result<R, NtStatus> {
+pub(super) fn update_dc<R>(
+    _: &mut NtCall,
+    _: Handle,
+    _: impl FnOnce(&mut Dc) -> R,
+) -> Result<R, NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
 
@@ -846,7 +950,38 @@ mod tests {
         assert_eq!(dc.attribute(DC_TEXT_COLOR), Some(0x00_00FF));
         assert_eq!(dc.attribute(DC_BK_COLOR), Some(0xFF_0000));
         assert_eq!(dc.attribute(DC_BK_MODE), Some(OPAQUE));
-        assert_eq!(dc.attribute(3), None);
+        assert_eq!(dc.attribute(9), None);
+    }
+
+    /// The bitmaps capture's attributes: the stretch mode starts BLACKONWHITE and takes any value
+    /// (0 and 5 too); the brush origin starts at 0,0 and goes negative; the kind is a memory DC's
+    /// or a screen DC's.
+    #[test]
+    fn the_stretch_mode_and_the_brush_origin() {
+        let mut dc = Dc::memory();
+        assert_eq!(dc.attribute(DC_STRETCH_MODE), Some(1));
+        assert_eq!(dc.set_attribute(DC_STRETCH_MODE, 0), Some(1));
+        assert_eq!(dc.set_attribute(DC_STRETCH_MODE, 5), Some(0));
+        assert_eq!(dc.set_attribute(DC_BRUSH_ORG_X, 9), Some(0));
+        assert_eq!(dc.set_attribute(DC_BRUSH_ORG_Y, -1i32 as u32), Some(0));
+        assert_eq!(dc.attribute(DC_BRUSH_ORG_Y), Some(-1i32 as u32));
+        assert_eq!(dc.pattern_origin(), (9, -1));
+        assert_eq!(dc.attribute(DC_OBJECT_TYPE), Some(rtl::dib::OBJ_MEMDC));
+        assert_eq!(Dc::screen(640, 480).attribute(DC_OBJECT_TYPE), Some(OBJ_DC));
+        assert_eq!(dc.set_attribute(DC_OBJECT_TYPE, 3), None, "read alone");
+    }
+
+    /// A memory DC holds the default bitmap, its clipping region that bitmap's 1 by 1; a bitmap
+    /// selected answers the one it replaces and makes its extent the clipping region.
+    #[test]
+    fn a_memory_dc_holds_its_bitmap() {
+        let mut dc = Dc::memory();
+        assert!(dc.memory);
+        assert_eq!(dc.object(rtl::dib::OBJ_BITMAP), Some(DEFAULT_BITMAP));
+        assert_eq!(dc.clip, rect(0, 0, 1, 1));
+        assert_eq!(dc.select_bitmap(0x7_0010, None, 16, 8), DEFAULT_BITMAP);
+        assert_eq!(dc.clip, rect(0, 0, 16, 8));
+        assert_eq!(dc.select_bitmap(DEFAULT_BITMAP, None, 1, 1), 0x7_0010);
     }
 
     /// A window's DC: its origin the area's top left, its clipping region the area cut to the

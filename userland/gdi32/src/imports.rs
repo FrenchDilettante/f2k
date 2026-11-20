@@ -23,6 +23,7 @@ use rtl::status::NtStatus;
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
+    use rtl::dib::BitmapDesc;
     use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Rect, Size, TextMetricW};
 
     #[link(
@@ -158,6 +159,40 @@ mod raw {
         pub fn NtGdiCreateSolidBrush(color: u32, brush: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiPatBlt"]
         pub fn NtGdiPatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreateCompatibleDC"]
+        pub fn NtGdiCreateCompatibleDC(dc: usize, memory_dc: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreateBitmap"]
+        pub fn NtGdiCreateBitmap(desc: *const BitmapDesc, bitmap: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiSelectBitmap"]
+        pub fn NtGdiSelectBitmap(dc: usize, bitmap: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiBitBlt"]
+        pub fn NtGdiBitBlt(
+            dc: usize,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            source: usize,
+            source_x: i32,
+            source_y: i32,
+            rop: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiStretchBlt"]
+        pub fn NtGdiStretchBlt(
+            dc: usize,
+            x: i32,
+            y: i32,
+            width: i32,
+            height: i32,
+            source: usize,
+            source_x: i32,
+            source_y: i32,
+            source_width: i32,
+            source_height: i32,
+            rop: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreatePatternBrushInternal"]
+        pub fn NtGdiCreatePatternBrushInternal(bitmap: usize, brush: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiAddFontResourceW"]
         pub fn NtGdiAddFontResourceW(file: usize, flags: u32, faces: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiRemoveFontResourceW"]
@@ -516,6 +551,100 @@ pub fn pat_blt(
 ) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtGdiPatBlt(dc, x, y, width, height, rop) })
+}
+
+// --- win32k's bitmaps ----------------------------------------------------------------------------
+
+/// NtGdiCreateCompatibleDC: a memory DC compatible with `dc` (0: the screen), its handle.
+pub fn create_compatible_dc(dc: usize) -> Result<u32, NtStatus> {
+    let mut memory_dc = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiCreateCompatibleDC(dc, &mut memory_dc) })?;
+    Ok(memory_dc)
+}
+
+/// NtGdiCreateBitmap: a bitmap object `desc` describes (its pixels in this process's memory), its
+/// handle.
+pub fn create_bitmap(desc: &rtl::dib::BitmapDesc) -> Result<u32, NtStatus> {
+    let mut bitmap = 0u32;
+    // SAFETY: the kernel reads the local description through its fault-tolerant copies, and writes
+    // the handle into the local.
+    checked(unsafe { raw::NtGdiCreateBitmap(desc, &mut bitmap) })?;
+    Ok(bitmap)
+}
+
+/// NtGdiSelectBitmap: `bitmap` selected into the memory DC `dc`, the bitmap it replaces answered
+/// (0: another DC holds it).
+pub fn select_bitmap(dc: usize, bitmap: usize) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the service writes the previous bitmap into the local.
+    checked(unsafe { raw::NtGdiSelectBitmap(dc, bitmap, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtGdiBitBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` combined with the one
+/// of its size at (`source_x`, `source_y`) of `source` and the DC's brush by the raster operation
+/// `rop`.
+pub fn bit_blt(
+    dc: usize,
+    (x, y, width, height): (i32, i32, i32, i32),
+    source: usize,
+    (source_x, source_y): (i32, i32),
+    rop: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtGdiBitBlt(dc, x, y, width, height, source, source_x, source_y, rop) })
+}
+
+/// NtGdiStretchBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` combined with the
+/// one at (`source_x`, `source_y`), `source_width` by `source_height`, of `source` (stretched)
+/// and the DC's brush by the raster operation `rop`.
+#[allow(clippy::too_many_arguments)]
+pub fn stretch_blt(
+    dc: usize,
+    (x, y, width, height): (i32, i32, i32, i32),
+    source: usize,
+    (source_x, source_y, source_width, source_height): (i32, i32, i32, i32),
+    rop: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe {
+        raw::NtGdiStretchBlt(
+            dc,
+            x,
+            y,
+            width,
+            height,
+            source,
+            source_x,
+            source_y,
+            source_width,
+            source_height,
+            rop,
+        )
+    })
+}
+
+/// NtGdiCreatePatternBrushInternal: a pattern brush of `bitmap`'s pixels, its handle.
+pub fn create_pattern_brush(bitmap: usize) -> Result<u32, NtStatus> {
+    let mut brush = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiCreatePatternBrushInternal(bitmap, &mut brush) })?;
+    Ok(brush)
+}
+
+/// A zeroed block of `size` bytes of the process heap, kept until [`heap_free`]: its address; none
+/// when the heap has no room.
+pub fn heap_alloc(size: usize) -> Option<usize> {
+    // SAFETY: a plain allocation of at least a byte.
+    let at = unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size.max(1)) };
+    (!at.is_null()).then_some(at as usize)
+}
+
+/// Free a block [`heap_alloc`] answered.
+pub fn heap_free(block: usize) {
+    // SAFETY: a block of the process heap this DLL took, freed once (its owner's contract).
+    unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, block as *mut u8) };
 }
 
 // --- The font files: found through kernel32, opened through ntdll ------------------------------
@@ -1117,6 +1246,66 @@ pub mod host {
             handle
         });
         answer(brush, handle)
+    }
+
+    /// The bitmap services: none on the host (the kernel's tests drive the surfaces and blits).
+    const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
+
+    pub unsafe extern "system" fn NtGdiCreateCompatibleDC(_: usize, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiCreateBitmap(
+        _: *const rtl::dib::BitmapDesc,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiSelectBitmap(_: usize, _: usize, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "system" fn NtGdiBitBlt(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: usize,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "system" fn NtGdiStretchBlt(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiCreatePatternBrushInternal(_: usize, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
     }
 
     pub unsafe extern "system" fn NtGdiPatBlt(

@@ -1,8 +1,14 @@
 //! The rasterizer: text in the built-in font ([`super::font`]) or in a TrueType font's glyph
-//! bitmaps ([`TextOut::draw_bits`], placed by [`super::fonts`]), and single pixels, drawn into the
-//! framebuffer through its [`PixelMemory`] seam, every pixel clipped to a clipping region. The DC
-//! services ([`super::dc`]) hand it a DC's state; the host tests drive it against a fake pixel
-//! memory and assert exact pixels.
+//! bitmaps ([`TextOut::draw_bits`], placed by [`super::fonts`]), and single pixels, drawn into a
+//! [`Surface`] (the framebuffer, through its [`PixelMemory`] seam, or a memory DC's bitmap:
+//! [`super::bitmap`]), every pixel clipped to a clipping region. The DC services ([`super::dc`])
+//! hand it a DC's state; the host tests drive it against a fake pixel memory and assert exact
+//! pixels.
+//!
+//! A surface's pixels are its own format's (the framebuffer's `0xRRGGBB`, a bitmap's packed
+//! value: an index into its color table, or its masks' components): the raster operations combine
+//! them bit for bit ([`super::blit`]), and drawing in a color goes through the format's nearest
+//! pixel ([`Surface::put_pixel`]).
 //!
 //! Text is ExtTextOutW's: each character's glyph drawn with its cell's top left at the pen, the
 //! pen moving a cell's width on (or the caller's advance for the character); the glyph's pixels in
@@ -17,19 +23,109 @@
 //! The colors come as COLORREFs (`0x00BBGGRR`, the high byte's palette flags ignored: the
 //! framebuffer is 32 bpp) and go to the framebuffer as its `0xRRGGBB` ([`screen_rgb`]).
 
-use rtl::gdi::{
-    apply_rop,
-    rop_uses_destination,
-    Rect,
-    CLR_INVALID,
-    ETO_CLIPPED,
-    ETO_OPAQUE,
-    RGB_MASK,
-};
+use rtl::gdi::{rop3, rop_uses_destination, Rect, CLR_INVALID, ETO_CLIPPED, ETO_OPAQUE, RGB_MASK};
 use rtl::truetype::glyph::{stride, GlyphMetrics};
 
 use super::font;
 use crate::hw::vbe::{Framebuffer, PixelMemory};
+
+/// What says whether two surfaces' pixels are alike: their bits per pixel, their masks (16 and 32
+/// bits), and their color table (an address in the owner's memory, 0 for a default table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FormatKey {
+    pub bpp: u32,
+    pub masks: [u32; 3],
+    pub table: u32,
+}
+
+/// The framebuffer's format: 32 bits, `0xRRGGBB`.
+pub const SCREEN_FORMAT: FormatKey = FormatKey {
+    bpp: 32,
+    masks: [0x00FF_0000, 0x0000_FF00, 0x0000_00FF],
+    table: 0,
+};
+
+/// A surface a DC draws on: a rectangle of pixels of one format, from (0, 0).
+pub trait Surface {
+    /// Its width and height.
+    fn extent(&self) -> (i32, i32);
+    /// Its pixels' format.
+    fn format(&self) -> FormatKey;
+    /// Whether it is a monochrome device-dependent bitmap, whose pixels a blit maps through a DC's
+    /// text and background colors.
+    fn is_mono(&self) -> bool {
+        false
+    }
+    /// The pixel at (`x`, `y`), inside the surface.
+    fn load(&mut self, x: i32, y: i32) -> u32;
+    /// Set the pixel at (`x`, `y`), inside the surface, to `pixel` (its format's bits of it).
+    fn store(&mut self, x: i32, y: i32, pixel: u32);
+    /// The `0xRRGGBB` color of `pixel`.
+    fn rgb(&self, pixel: u32) -> u32;
+    /// The pixel nearest the `0xRRGGBB` color `rgb`.
+    fn pixel(&self, rgb: u32) -> u32;
+
+    /// Draw the pixel at (`x`, `y`), inside the surface, in the color `rgb`.
+    fn put_pixel(&mut self, x: usize, y: usize, rgb: u32) {
+        let pixel = self.pixel(rgb);
+        self.store(x as i32, y as i32, pixel);
+    }
+
+    /// The color of the pixel at (`x`, `y`); none outside the surface.
+    fn get_pixel(&mut self, x: usize, y: usize) -> Option<u32> {
+        let (width, height) = self.extent();
+        if x >= width as usize || y >= height as usize {
+            return None;
+        }
+        let pixel = self.load(x as i32, y as i32);
+        Some(self.rgb(pixel))
+    }
+
+    /// Its extent as a rectangle.
+    fn bounds(&self) -> Rect {
+        let (width, height) = self.extent();
+        Rect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        }
+    }
+}
+
+impl<M: PixelMemory> Surface for Framebuffer<M> {
+    fn extent(&self) -> (i32, i32) {
+        (self.geometry.width as i32, self.geometry.height as i32)
+    }
+
+    fn format(&self) -> FormatKey {
+        SCREEN_FORMAT
+    }
+
+    fn load(&mut self, x: i32, y: i32) -> u32 {
+        Framebuffer::get_pixel(self, x as usize, y as usize).unwrap_or(0)
+    }
+
+    fn store(&mut self, x: i32, y: i32, pixel: u32) {
+        Framebuffer::put_pixel(self, x as usize, y as usize, pixel & RGB_MASK);
+    }
+
+    fn rgb(&self, pixel: u32) -> u32 {
+        pixel & RGB_MASK
+    }
+
+    fn pixel(&self, rgb: u32) -> u32 {
+        rgb & RGB_MASK
+    }
+
+    fn put_pixel(&mut self, x: usize, y: usize, rgb: u32) {
+        Framebuffer::put_pixel(self, x, y, rgb);
+    }
+
+    fn get_pixel(&mut self, x: usize, y: usize) -> Option<u32> {
+        Framebuffer::get_pixel(self, x, y)
+    }
+}
 
 /// The rectangle both `a` and `b` cover (empty when they do not meet).
 pub fn intersect(a: Rect, b: Rect) -> Rect {
@@ -103,7 +199,7 @@ impl TextOut {
 
     /// The ETO_OPAQUE fill, before any glyph: the background color, whatever the background
     /// mode.
-    pub fn fill_background<M: PixelMemory>(&self, screen: &mut Framebuffer<M>) {
+    pub fn fill_background<S: Surface + ?Sized>(&self, screen: &mut S) {
         if let Some(rect) = self.fill {
             for y in rect.top..rect.bottom {
                 for x in rect.left..rect.right {
@@ -115,9 +211,9 @@ impl TextOut {
 
     /// Draw `units` from the pen's column `pen`, each character's cell `advances[i]` after the
     /// one before (its own cell's width without them); the pen's column after them.
-    pub fn draw<M: PixelMemory>(
+    pub fn draw<S: Surface + ?Sized>(
         &self,
-        screen: &mut Framebuffer<M>,
+        screen: &mut S,
         pen: i32,
         units: &[u16],
         advances: Option<&[i32]>,
@@ -138,9 +234,9 @@ impl TextOut {
     /// Under OPAQUE, the cells of a run from column `left` to `right`, `height` rows from the
     /// text's row, filled with the background color (a TrueType font's text, whose glyphs are
     /// drawn over them); TRANSPARENT leaves them.
-    pub fn fill_run<M: PixelMemory>(
+    pub fn fill_run<S: Surface + ?Sized>(
         &self,
-        screen: &mut Framebuffer<M>,
+        screen: &mut S,
         left: i32,
         right: i32,
         height: i32,
@@ -161,9 +257,9 @@ impl TextOut {
     /// from the top, each whole 32-bit words, bit 7 of a byte its leftmost pixel), its black box
     /// (`metrics`' size) with its top left at (`x`, `y`): its set pixels in the text color, the
     /// others left.
-    pub fn draw_bits<M: PixelMemory>(
+    pub fn draw_bits<S: Surface + ?Sized>(
         &self,
-        screen: &mut Framebuffer<M>,
+        screen: &mut S,
         x: i32,
         y: i32,
         metrics: &GlyphMetrics,
@@ -188,7 +284,7 @@ impl TextOut {
     }
 
     /// Draw one glyph with its cell's top left at (`x`, the text's row).
-    fn draw_glyph<M: PixelMemory>(&self, screen: &mut Framebuffer<M>, x: i32, glyph: &[u8; 16]) {
+    fn draw_glyph<S: Surface + ?Sized>(&self, screen: &mut S, x: i32, glyph: &[u8; 16]) {
         for (row, &bits) in glyph.iter().enumerate() {
             let y = self.y.saturating_add(row as i32);
             for column in 0..font::WIDTH {
@@ -221,8 +317,31 @@ fn advance(advances: Option<&[i32]>, index: usize) -> i32 {
     advances.map_or(font::WIDTH, |advances| advances[index])
 }
 
-/// What a fill paints with: a brush as it draws (its colors the framebuffer's `0xRRGGBB`).
+/// A pattern brush's pixels: up to 8 by 8 of them, `pixels[y * 8 + x]` the pixel at (x, y) — a
+/// color (`0xRRGGBB`), or for a monochrome bitmap's pattern its bit (0 or 1), which the DC's colors
+/// paint as a monochrome bitmap's in a blit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PatternBits {
+    pub width: u8,
+    pub height: u8,
+    pub mono: bool,
+    pub pixels: [u32; 64],
+}
+
+impl PatternBits {
+    /// The pixel at (`x`, `y`) of the pattern repeated.
+    pub fn at(&self, x: i32, y: i32) -> u32 {
+        let width = self.width.max(1) as i32;
+        let height = self.height.max(1) as i32;
+        self.pixels[(y.rem_euclid(height) * 8 + x.rem_euclid(width)) as usize]
+    }
+}
+
+/// What a fill paints with: a brush as it draws (its colors the framebuffer's `0xRRGGBB`). A
+/// pattern brush's pixels are held by value, as a DC holds its brush's fill (no heap: the kernel
+/// has none), so the enum is as large as they are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Pattern {
     /// One color.
     Solid(u32),
@@ -231,6 +350,14 @@ pub enum Pattern {
     /// clear, repeated across the screen.
     Mono {
         rows: [u8; 8],
+        origin: (i32, i32),
+        one: u32,
+        zero: u32,
+    },
+    /// A pattern brush's pixels from `origin` (the brush origin), repeated: a monochrome one's set
+    /// pixels `one`, its clear ones `zero` (the DC's background and text colors).
+    Bits {
+        bits: PatternBits,
         origin: (i32, i32),
         one: u32,
         zero: u32,
@@ -255,51 +382,72 @@ impl Pattern {
                     zero
                 }
             }
+            Pattern::Bits {
+                ref bits,
+                origin,
+                one,
+                zero,
+            } => {
+                let pixel = bits.at(x.wrapping_sub(origin.0), y.wrapping_sub(origin.1));
+                match (bits.mono, pixel) {
+                    (false, color) => color,
+                    (true, 0) => zero,
+                    (true, _) => one,
+                }
+            }
         }
     }
 }
 
-/// PatBlt on `screen`: every pixel of `rect` inside `clip` (both screen coordinates, `clip` within
-/// the screen) combined with `pattern` by the sourceless raster operation `rop` (its result for a
-/// source of zero), the pattern taken as black when there is none (a raster operation that reads
-/// none). The destination is read only when the operation reads it.
-pub fn pat_blt<M: PixelMemory>(
-    screen: &mut Framebuffer<M>,
+/// PatBlt on `screen`: every pixel of `rect` inside `clip` (both the surface's coordinates) and the
+/// surface combined with `pattern` by the sourceless raster operation `rop` (its result for a
+/// source of zero), pixel by pixel in the surface's format (the pattern's colors its nearest
+/// pixels), the pattern taken as zero when there is none (a raster operation that reads none). The
+/// destination is read only when the operation reads it.
+pub fn pat_blt<S: Surface + ?Sized>(
+    screen: &mut S,
     clip: Rect,
     rect: Rect,
     rop: u32,
     pattern: Option<&Pattern>,
 ) {
-    let area = intersect(clip, rect);
+    let area = intersect(intersect(clip, rect), screen.bounds());
     let reads = rop_uses_destination(rop);
+    let code = rop3(rop);
+    let solid = match pattern {
+        Some(&Pattern::Solid(color)) => Some(screen.pixel(color)),
+        None => Some(0),
+        _ => None,
+    };
     for y in area.top..area.bottom {
         for x in area.left..area.right {
-            let paint = pattern.map_or(0, |pattern| pattern.at(x, y));
-            let destination = if reads {
-                screen.get_pixel(x as usize, y as usize).unwrap_or(0)
-            } else {
-                0
+            let paint = match (solid, pattern) {
+                (Some(pixel), _) => pixel,
+                (None, Some(pattern)) => screen.pixel(pattern.at(x, y)),
+                (None, None) => 0,
             };
-            let color = apply_rop(rop, paint, destination) & RGB_MASK;
-            screen.put_pixel(x as usize, y as usize, color);
+            let destination = if reads { screen.load(x, y) } else { 0 };
+            let pixel = rtl::dib::rop3(code, paint, 0, destination);
+            screen.store(x, y, pixel);
         }
     }
 }
 
 /// SetPixel on `screen` (none: the graphics mode is not set) inside `clip`: the COLORREF set (the
-/// one asked for, its RGB part), or CLR_INVALID outside the clipping region (the screen
-/// untouched).
-pub fn set_pixel_on<M: PixelMemory>(
-    screen: Option<&mut Framebuffer<M>>,
+/// surface's nearest color to the one asked for: the framebuffer's is its RGB part), or CLR_INVALID
+/// outside the clipping region (the screen untouched).
+pub fn set_pixel_on<S: Surface + ?Sized>(
+    screen: Option<&mut S>,
     clip: &Rect,
     x: i32,
     y: i32,
     color: u32,
 ) -> u32 {
     match screen {
-        Some(screen) if contains(clip, x, y) => {
-            screen.put_pixel(x as usize, y as usize, screen_rgb(color));
-            color & RGB_MASK
+        Some(screen) if contains(clip, x, y) && contains(&screen.bounds(), x, y) => {
+            let pixel = screen.pixel(screen_rgb(color));
+            screen.store(x, y, pixel);
+            colorref(screen.rgb(pixel))
         }
         _ => CLR_INVALID,
     }
@@ -307,8 +455,8 @@ pub fn set_pixel_on<M: PixelMemory>(
 
 /// GetPixel on `screen` inside `clip`: the pixel's COLORREF, or CLR_INVALID outside the clipping
 /// region.
-pub fn get_pixel_on<M: PixelMemory>(
-    screen: Option<&mut Framebuffer<M>>,
+pub fn get_pixel_on<S: Surface + ?Sized>(
+    screen: Option<&mut S>,
     clip: &Rect,
     x: i32,
     y: i32,
@@ -637,8 +785,14 @@ mod tests {
             set_pixel_on(Some(&mut screen), &rect(0, 0, 0, 0), 5, 5, 0),
             CLR_INVALID
         );
-        assert_eq!(set_pixel_on::<Memory>(None, &clip, 5, 5, 0), CLR_INVALID);
-        assert_eq!(get_pixel_on::<Memory>(None, &clip, 5, 5), CLR_INVALID);
+        assert_eq!(
+            set_pixel_on::<Framebuffer<Memory>>(None, &clip, 5, 5, 0),
+            CLR_INVALID
+        );
+        assert_eq!(
+            get_pixel_on::<Framebuffer<Memory>>(None, &clip, 5, 5),
+            CLR_INVALID
+        );
     }
 
     /// The screen's pixels in `area` as rows of characters, each pixel's character the one

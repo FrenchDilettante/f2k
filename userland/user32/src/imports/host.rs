@@ -31,8 +31,14 @@ pub use prop::*;
 /// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
 pub mod canvas;
 pub use canvas::{
+    CreateBitmap,
+    CreateCompatibleBitmap,
+    CreateCompatibleDC,
+    CreateDIBSection,
+    CreateDIBitmap,
     CreateFontIndirectW,
     CreateSolidBrush,
+    DeleteDC,
     DeleteObject,
     ExtTextOutW,
     GetStockObject,

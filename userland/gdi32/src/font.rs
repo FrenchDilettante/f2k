@@ -444,13 +444,12 @@ fn stock_get_object(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: 
     }
 }
 
-/// GetObject of a process's object of a kind GetObject does not describe yet (a brush's LOGBRUSH,
-/// a pen's LOGPEN): logged for `entry`, once per process for the kind; the call fails as the
+/// GetObject of a process's object of a kind GetObject does not describe yet (a pen's LOGPEN):
+/// logged for `entry`, once per process for the kind; the call fails as the
 /// service answers.
 fn log_undescribed(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: usize) {
     static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
     let what = match object_of(object as u32) {
-        Some((OBJ_BRUSH, _)) => "a brush's LOGBRUSH",
         Some((OBJ_PEN, _)) => "a pen's LOGPEN",
         _ => return,
     };
@@ -467,11 +466,15 @@ fn log_undescribed(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: u
     };
 }
 
-/// GetObjectW: a font object's LOGFONTW, its first `size` bytes into `buffer`, their number (the
-/// whole size for no buffer); 0 with the last error for a handle that names no font. A stock
-/// object goes to the stub routine.
+/// GetObjectW: a font object's LOGFONTW (or a brush's LOGBRUSH), its first `size` bytes into
+/// `buffer`, their number (the whole size for no buffer); 0 with the last error for a handle that
+/// names no object. A bitmap's is [`crate::bitmap::get_object`]'s; a stock object goes to the stub
+/// routine.
 #[unsafe(export_name = "f2k_export_GetObjectW")]
 pub extern "system" fn get_object_w(object: usize, size: i32, buffer: usize) -> i32 {
+    if object_kind(object as u32) == Some(rtl::dib::OBJ_BITMAP) {
+        return crate::bitmap::get_object(object, size, buffer);
+    }
     if stock_object(object as u32).is_some() {
         return stock_get_object(&crate::spec::GetObjectW, object, size, buffer);
     }
@@ -486,13 +489,21 @@ pub extern "system" fn get_object_w(object: usize, size: i32, buffer: usize) -> 
 }
 
 /// GetObjectA: a font object's LOGFONTA (GetObjectW's, its face name converted), its first `size`
-/// bytes into `buffer`, their number (the whole size for no buffer).
+/// bytes into `buffer`, their number (the whole size for no buffer); a brush's and a bitmap's as
+/// GetObjectW answers them (they hold no string).
 ///
 /// # Safety
 ///
 /// The caller's buffer of `size` bytes (or null), as for the platform's.
 #[unsafe(export_name = "f2k_export_GetObjectA")]
 pub unsafe extern "system" fn get_object_a(object: usize, size: i32, buffer: *mut u8) -> i32 {
+    if object_kind(object as u32) == Some(rtl::dib::OBJ_BITMAP) {
+        return crate::bitmap::get_object(object, size, buffer as usize);
+    }
+    if matches!(object_of(object as u32), Some((OBJ_BRUSH, _))) {
+        // A brush's LOGBRUSH has no string: the wide form's.
+        return get_object_w(object, size, buffer as usize);
+    }
     if stock_object(object as u32).is_some() {
         return stock_get_object(&crate::spec::GetObjectA, object, size, buffer as usize);
     }

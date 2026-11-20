@@ -148,12 +148,20 @@ pub const fn global_brush(handle: u32) -> Option<GlobalBrush> {
     }
 }
 
-/// The kind of object (OBJ_BRUSH, OBJ_PEN, OBJ_FONT, OBJ_PAL) a global object's handle names — a
-/// stock object, or a global brush — read from the handle alone; none for another handle.
+/// The default bitmap's handle: the 1 by 1 monochrome bitmap every new memory DC holds, which
+/// CreateBitmap and CreateCompatibleBitmap answer for an empty size (Windows 2000's own stock
+/// bitmap, which GetStockObject does not name). A global object in the stock objects' shape, of the
+/// bitmap kind (OBJ_BITMAP, 7), never deleted.
+pub const DEFAULT_BITMAP: u32 = STOCK_BIT | (crate::dib::OBJ_BITMAP << KIND_SHIFT) | 0x70;
+
+/// The kind of object (OBJ_BRUSH, OBJ_PEN, OBJ_FONT, OBJ_PAL, OBJ_BITMAP) a global object's handle
+/// names — a stock object, a global brush, or the default bitmap — read from the handle alone;
+/// none for another handle.
 pub const fn global_object_kind(handle: u32) -> Option<u32> {
     match stock_object(handle) {
         Some((_, kind)) => Some(kind),
         None if global_brush(handle).is_some() => Some(OBJ_BRUSH),
+        None if handle == DEFAULT_BITMAP => Some(crate::dib::OBJ_BITMAP),
         None => None,
     }
 }
@@ -247,10 +255,19 @@ pub const fn apply_rop(rop: u32, pattern: u32, destination: u32) -> u32 {
 }
 
 /// The DC attributes win32k's NtGdiGetDCDword reads and NtGdiGetAndSetDCDword sets (F2K's own
-/// indexes): the text color, the background color, the background mode.
+/// indexes): the text color, the background color, the background mode, the stretch mode, the
+/// brush origin's two coordinates; and one NtGdiGetDCDword alone reads, the DC's kind
+/// (GetObjectType's OBJ_DC or OBJ_MEMDC).
 pub const DC_TEXT_COLOR: u32 = 0;
 pub const DC_BK_COLOR: u32 = 1;
 pub const DC_BK_MODE: u32 = 2;
+pub const DC_STRETCH_MODE: u32 = 3;
+pub const DC_BRUSH_ORG_X: u32 = 4;
+pub const DC_BRUSH_ORG_Y: u32 = 5;
+pub const DC_OBJECT_TYPE: u32 = 6;
+
+/// A DC's stretch mode as it starts: BLACKONWHITE.
+pub const DEFAULT_STRETCH_MODE: u32 = crate::dib::BLACKONWHITE;
 
 /// A DC's attributes as it starts (the platform's defaults): black text on a white background,
 /// OPAQUE.

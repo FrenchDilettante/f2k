@@ -22,25 +22,29 @@
 //! The services (F2K's argument lists, see [`crate::win32k`]):
 //!
 //! - NtGdiCreateSolidBrush(u32 Color, ptr<u32> Brush): a solid brush of the COLORREF's color, its
-//!   handle in the calling process (not inheritable);
+//!   handle in the calling process (not inheritable); a pattern brush is a bitmap's
+//!   ([`super::bitmap`]'s NtGdiCreatePatternBrushInternal);
 //! - NtGdiPatBlt(handle Dc, i32 X, i32 Y, i32 Width, i32 Height, u32 Rop): the rectangle at (`X`,
 //!   `Y`) (logical coordinates: the DC's origin added), `Width` by `Height` (a negative extent
 //!   reaching back from the point), painted with the DC's brush by the raster operation, clipped to
-//!   the DC's clipping region ([`super::raster::pat_blt`]). A raster operation that reads a source
+//!   the DC's clipping region, on the surface the DC draws on ([`super::raster::pat_blt`]; a
+//!   pattern from the DC's brush origin, SetBrushOrgEx's). A raster operation that reads a source
 //!   is STATUS_INVALID_PARAMETER (PatBlt has none); the null brush paints nothing where the
 //!   operation reads the pattern.
 
 use rtl::gdi::*;
 
-use super::raster::{screen_rgb, Pattern};
+use super::raster::{screen_rgb, Pattern, PatternBits};
 use crate::nt::call::{Handle, NtCall, NtResult, UserPtr};
 use crate::status::*;
 
 /// The access a brush's handle carries: STANDARD_RIGHTS_REQUIRED (a brush has no specific rights).
 pub const BRUSH_ACCESS: u32 = 0x000F_0000;
 
-/// What a brush paints.
+/// What a brush paints. A pattern brush's pixels are held by value (a DC keeps a copy of its
+/// brush's fill: see the module notes), so the enum is as large as they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Fill {
     /// Nothing: the null (hollow) brush.
     Null,
@@ -51,6 +55,8 @@ pub enum Fill {
     /// The gray checkerboard ([`rtl::gdi::HALFTONE_ROWS`]), in the DC's background and text
     /// colors.
     Halftone,
+    /// A pattern brush's pixels (a monochrome bitmap's in the DC's background and text colors).
+    Pattern(PatternBits),
 }
 
 impl Fill {
@@ -90,20 +96,47 @@ impl Fill {
                 one: screen_rgb(bk_color),
                 zero: screen_rgb(text_color),
             }),
+            Fill::Pattern(bits) => Some(Pattern::Bits {
+                bits,
+                origin,
+                one: screen_rgb(bk_color),
+                zero: screen_rgb(text_color),
+            }),
         }
     }
 }
 
-/// A brush object's body.
+/// A brush object's body: what it paints, and for a pattern brush the bitmap's handle it was made
+/// of (GetObject's lbHatch: the brush keeps the pixels, not the bitmap).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Brush {
     pub fill: Fill,
+    pub bitmap: u32,
 }
 
 impl Brush {
     /// A record holding no brush (a pool's fresh record).
     pub const fn none() -> Self {
-        Brush { fill: Fill::Null }
+        Brush {
+            fill: Fill::Null,
+            bitmap: 0,
+        }
+    }
+
+    /// Its LOGBRUSH, as GetObject answers it: a solid brush's style and COLORREF, a pattern
+    /// brush's style and bitmap.
+    pub fn log_brush(&self) -> rtl::dib::LogBrush {
+        let (style, color, hatch) = match self.fill {
+            Fill::Solid(color) => (rtl::dib::BS_SOLID, color, 0),
+            Fill::Pattern(_) => (rtl::dib::BS_PATTERN, 0, self.bitmap),
+            Fill::Null => (rtl::dib::BS_NULL, 0, 0),
+            Fill::SysColor(_) | Fill::Halftone => (rtl::dib::BS_SOLID, 0, 0),
+        };
+        rtl::dib::LogBrush {
+            style,
+            color,
+            hatch,
+        }
     }
 }
 
@@ -130,12 +163,19 @@ pub fn pat_blt_rect(x: i32, y: i32, width: i32, height: i32, origin: (i32, i32))
 /// see the module notes) into `out`; STATUS_INSUFFICIENT_RESOURCES when the brushes' pool or the
 /// handle table is full.
 pub fn create_solid_brush(call: &mut NtCall, color: u32, out: UserPtr<u32>) -> NtResult {
-    let handle = publish_brush(
+    create_brush(
         call,
         Brush {
             fill: Fill::Solid(color & RGB_MASK),
+            bitmap: 0,
         },
-    )?;
+        out,
+    )
+}
+
+/// A brush of state `brush` made, its handle (the brush kind's) into `out`.
+pub fn create_brush(call: &mut NtCall, brush: Brush, out: UserPtr<u32>) -> NtResult {
+    let handle = publish_brush(call, brush)?;
     if out.write(object_handle(OBJ_BRUSH, handle)).is_err() {
         close_brush(call, handle);
         return Err(STATUS_ACCESS_VIOLATION);
@@ -157,21 +197,29 @@ pub fn pat_blt(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let (_reference, dc) = super::dc::dc_of(call, dc)?;
-    let origin = dc.origin;
-    let rect = pat_blt_rect(x, y, width, height, origin);
+    let rect = pat_blt_rect(x, y, width, height, dc.origin);
     let pattern = dc.brush_fill.pattern(
         dc.text_color,
         dc.bk_color,
-        origin,
+        dc.pattern_origin(),
         super::display::sys_color,
     );
     if pattern.is_none() && rop_uses_pattern(rop) {
         return Ok(STATUS_SUCCESS);
     }
-    super::dc::with_screen(|screen| {
-        super::raster::pat_blt(screen, dc.clip, rect, rop, pattern.as_ref())
+    super::bitmap::with_surface(&dc, |surface| {
+        super::raster::pat_blt(surface, dc.clip, rect, rop, pattern.as_ref())
     });
     Ok(STATUS_SUCCESS)
+}
+
+/// The brush object the calling process's `handle` names (a handle of the brush kind);
+/// STATUS_INVALID_HANDLE for one that names none.
+pub fn brush_of(call: &mut NtCall, handle: Handle) -> Result<Brush, NtStatus> {
+    match object_of(handle.raw()) {
+        Some((OBJ_BRUSH, table)) => brush_object(call, Handle(table)),
+        _ => Err(STATUS_INVALID_HANDLE),
+    }
 }
 
 /// What the brush `handle` names paints: a global brush's fill, or the calling process's brush
@@ -182,7 +230,7 @@ pub fn fill_of(call: &mut NtCall, handle: Handle) -> Result<Fill, NtStatus> {
         return Ok(Fill::of_global(brush));
     }
     match object_of(handle.raw()) {
-        Some((OBJ_BRUSH, table)) => brush_object(call, Handle(table)),
+        Some((OBJ_BRUSH, table)) => brush_object(call, Handle(table)).map(|brush| brush.fill),
         Some(_) => Err(STATUS_OBJECT_TYPE_MISMATCH),
         None if global_object_kind(handle.raw()).is_some() => Err(STATUS_OBJECT_TYPE_MISMATCH),
         // A bare handle-table handle: a DC's, or nothing a brush may be.
@@ -209,16 +257,16 @@ fn close_brush(call: &mut NtCall, handle: u32) {
     call.process().close_handle(handle);
 }
 
-/// The fill of the brush object the calling process's handle-table handle `handle` names (see
+/// The brush object the calling process's handle-table handle `handle` names (see
 /// [`fill_of`]).
 #[cfg(target_arch = "x86")]
-fn brush_object(_call: &mut NtCall, handle: Handle) -> Result<Fill, NtStatus> {
+fn brush_object(_call: &mut NtCall, handle: Handle) -> Result<Brush, NtStatus> {
     let reference =
         crate::ob::reference_by_handle(handle.raw(), None).ok_or(STATUS_INVALID_HANDLE)?;
     if reference.id().kind != crate::ob::ObjectType::Brush {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
-    crate::ob::locked(|directory| directory.brush(reference.id()).map(|brush| brush.fill))
+    crate::ob::locked(|directory| directory.brush(reference.id()).copied())
         .ok_or(STATUS_INVALID_HANDLE)
 }
 
@@ -234,7 +282,7 @@ fn publish_brush(_: &mut NtCall, _: Brush) -> Result<u32, NtStatus> {
 fn close_brush(_: &mut NtCall, _: u32) {}
 
 #[cfg(not(target_arch = "x86"))]
-fn brush_object(_: &mut NtCall, _: Handle) -> Result<Fill, NtStatus> {
+fn brush_object(_: &mut NtCall, _: Handle) -> Result<Brush, NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
 

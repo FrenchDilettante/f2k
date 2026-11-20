@@ -6,7 +6,8 @@
 //! cursors and icons ([`icon`]), the one handle table every one of those user objects' handles
 //! names a slot of ([`handle`]), window stations and desktops ([`winsta`]), keyboard input
 //! ([`input`]), the display settings ([`display`]), device contexts ([`dc`]), the brushes they fill
-//! with ([`brush`]) and what is drawn through them ([`raster`], in the built-in font, [`font`], or a
+//! with ([`brush`]), the bitmaps memory DCs draw on and the blits between DCs ([`bitmap`],
+//! [`blit`]) and what is drawn through them ([`raster`], in the built-in font, [`font`], or a
 //! TrueType font, [`fonts`], which holds the faces loaded and the font objects too), the clipboard
 //! ([`clipboard`]), and the second service table their services come through.
 //!
@@ -29,6 +30,8 @@
 //! ([`display`]).
 
 pub mod accel;
+pub mod bitmap;
+pub mod blit;
 pub mod brush;
 pub mod caret;
 pub mod class;
