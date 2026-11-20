@@ -959,7 +959,7 @@ fn start_element(
 
 /// A `cmd /c` of the shell's own running `text`, as Windows' cmd runs a pipeline's built-in:
 /// `COMSPEC`'s program (the shell's own file without one), its command line
-/// `"program" /S /D /c" text"`.
+/// `"program" /S /D /c" text"`, `text` rebuilt as Windows rebuilds it (see [`syntax::rebuild`]).
 #[inline(never)]
 fn child_shell(text: &[u16]) -> Result<exe::Process, Start> {
     let mut path = [0; exe::MAX_PATH];
@@ -989,10 +989,12 @@ fn child_shell(text: &[u16]) -> Result<exe::Process, Start> {
     put(&[u16::from(b'"')]);
     put(path);
     put(wide("\" /S /D /c\" ", &mut switches));
-    // The blanks after the command stay its own (`echo x | y` echoes `x `).
-    put(cmd::skip_blanks(cmd::without_break(text)));
+    // The command as Windows rebuilds it, the blanks after it its own (`echo x | y` echoes `x `).
+    let mut rebuilt = [0; cmd::LINE];
+    let rebuilt = syntax::rebuild(cmd::without_break(text), &mut rebuilt);
+    put(rebuilt.unwrap_or_default());
     put(&[u16::from(b'"'), 0]);
-    if length > line.len() {
+    if rebuilt.is_none() || length > line.len() {
         let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
         return Err(Start::CannotRun);
     }

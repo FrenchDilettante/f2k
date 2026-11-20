@@ -28,6 +28,20 @@
  *   exit <n>      exit with code n (decimal, or hex as 0x...); prints
  *                 nothing
  *   types         each standard handle's file type and handle flags
+ *   blob <n>      n bytes (byte i is i mod 251) to the standard output in
+ *                 one WriteFile; a write that fails ends it, the error
+ *                 its exit code (one line to the standard error says so)
+ *   crtin         the C runtime's view of a piped standard input: _isatty
+ *                 and GetConsoleMode of each standard handle, then every
+ *                 line fgets reads from stdin (text mode), escaped, then
+ *                 feof and ferror
+ *   fread         fread of 7 bytes at a time from stdin (text mode) until
+ *                 it returns 0, each count and the bytes, then feof
+ *   peekin        PeekNamedPipe on the standard input (the parent wrote
+ *                 into it and closed it before the start), one ReadFile,
+ *                 PeekNamedPipe again (the pipe drained and its writer
+ *                 gone), and PeekNamedPipe on the standard output (a
+ *                 pipe's write end)
  *   /c <command>  a stand-in command processor: prints its own command
  *                 line (the parent's directory as <home>), then runs the
  *                 rest of it after the switch, as it stands, with
@@ -49,6 +63,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <io.h>
 
 /* The last-error sentinel, as common/f2kt.h's. */
 #define UNTOUCHED 0x0F2F2F2Fu
@@ -217,6 +232,128 @@ static void types(void)
     report_handle("standard error", GetStdHandle(STD_ERROR_HANDLE));
 }
 
+static int blob(DWORD size)
+{
+    BYTE *buf = (BYTE *)malloc(size + 1);
+    DWORD i, written = 0, e;
+
+    if (buf == NULL) {
+        say(GetStdHandle(STD_ERROR_HANDLE), "blob: no memory");
+        return 8;
+    }
+    for (i = 0; i < size; i++) {
+        buf[i] = (BYTE)(i % 251);
+    }
+    SetLastError(UNTOUCHED);
+    if (!WriteFile(out(), buf, size, &written, NULL)) {
+        e = GetLastError();
+        say(GetStdHandle(STD_ERROR_HANDLE), "blob: not written, err=%s", le_of(e));
+        free(buf);
+        return (int)e;
+    }
+    free(buf);
+    return 0;
+}
+
+/* Bytes as printed: printable ASCII as it is, CR and LF as \r and \n,
+ * any other byte as \xNN. */
+static const char *esc(const char *p, int n)
+{
+    static char b[600];
+    int i, k = 0;
+
+    for (i = 0; i < n && k < (int)sizeof b - 8; i++) {
+        unsigned char c = (unsigned char)p[i];
+        if (c == '\r') {
+            b[k++] = '\\';
+            b[k++] = 'r';
+        } else if (c == '\n') {
+            b[k++] = '\\';
+            b[k++] = 'n';
+        } else if (c < 0x20 || c >= 0x7F) {
+            k += sprintf(b + k, "\\x%02X", c);
+        } else {
+            b[k++] = (char)c;
+        }
+    }
+    b[k] = 0;
+    return b;
+}
+
+static const char *const std_names[3] = { "stdin", "stdout", "stderr" };
+static const DWORD std_ids[3] = { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+
+static void crtin(void)
+{
+    char buf[256];
+    DWORD mode, e;
+    BOOL r;
+    int i, lines = 0;
+
+    for (i = 0; i < 3; i++) {
+        mode = UNTOUCHED;
+        SetLastError(UNTOUCHED);
+        r = GetConsoleMode(GetStdHandle(std_ids[i]), &mode);
+        e = GetLastError();
+        say(out(), "crtin: %s: _isatty %s; GetConsoleMode ret=%d err=%s", std_names[i],
+            _isatty(i) ? "yes" : "no", r, le_of(e));
+    }
+    while (fgets(buf, sizeof buf, stdin) != NULL) {
+        lines++;
+        say(out(), "crtin: fgets [%s]", esc(buf, (int)strlen(buf)));
+    }
+    say(out(), "crtin: %d lines; feof %s, ferror %s", lines, feof(stdin) ? "yes" : "no",
+        ferror(stdin) ? "yes" : "no");
+}
+
+static void fread_in(void)
+{
+    char buf[8];
+    size_t n;
+
+    for (;;) {
+        n = fread(buf, 1, 7, stdin);
+        if (n == 0) {
+            break;
+        }
+        say(out(), "fread: %u [%s]", (unsigned)n, esc(buf, (int)n));
+    }
+    say(out(), "fread: 0; feof %s, ferror %s", feof(stdin) ? "yes" : "no", ferror(stdin) ? "yes" : "no");
+}
+
+static void peek_line(const char *label, HANDLE h)
+{
+    char buf[64];
+    DWORD rd = UNTOUCHED, total = UNTOUCHED, left = UNTOUCHED, e;
+    BOOL r;
+
+    SetLastError(UNTOUCHED);
+    r = PeekNamedPipe(h, buf, sizeof buf, &rd, &total, &left);
+    e = GetLastError();
+    if (r && rd <= sizeof buf) {
+        say(out(), "peekin: PeekNamedPipe(%s): ret=%d err=%s; read %lu, total %lu [%s]", label, r, le_of(e),
+            rd, total, esc(buf, (int)rd));
+    } else {
+        say(out(), "peekin: PeekNamedPipe(%s): ret=%d err=%s", label, r, le_of(e));
+    }
+}
+
+static void peekin(void)
+{
+    char buf[64];
+    DWORD n = UNTOUCHED, e;
+    BOOL r;
+
+    peek_line("stdin", GetStdHandle(STD_INPUT_HANDLE));
+    SetLastError(UNTOUCHED);
+    r = ReadFile(GetStdHandle(STD_INPUT_HANDLE), buf, sizeof buf, &n, NULL);
+    e = GetLastError();
+    say(out(), "peekin: ReadFile 64: ret=%d n=%s err=%s [%s]", r, le_of(n), le_of(e),
+        esc(buf, r && n <= sizeof buf ? (int)n : 0));
+    peek_line("stdin, drained", GetStdHandle(STD_INPUT_HANDLE));
+    peek_line("stdout", GetStdHandle(STD_OUTPUT_HANDLE));
+}
+
 /* The command line past the program's name and the /c switch; NULL when
  * the switch is not there. */
 static const char *after_switch(const char *p)
@@ -309,6 +446,14 @@ int main(int argc, char **argv)
         return (int)strtoul(argv[2], NULL, 0);
     } else if (strcmp(mode, "types") == 0) {
         types();
+    } else if (strcmp(mode, "blob") == 0 && argc >= 3) {
+        return blob((DWORD)strtoul(argv[2], NULL, 0));
+    } else if (strcmp(mode, "crtin") == 0) {
+        crtin();
+    } else if (strcmp(mode, "fread") == 0) {
+        fread_in();
+    } else if (strcmp(mode, "peekin") == 0) {
+        peekin();
     } else if (_stricmp(mode, "/c") == 0) {
         return command();
     } else {

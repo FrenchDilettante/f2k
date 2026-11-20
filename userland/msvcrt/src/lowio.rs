@@ -776,6 +776,17 @@ pub extern "C" fn get_osfhandle(fd: i32) -> isize {
     }
 }
 
+/// _isatty: the descriptor's character-device flag (0x40) when it is a character device (the
+/// console, `NUL`), 0 otherwise (a file, a pipe, a descriptor not open), errno untouched.
+#[unsafe(export_name = "f2k_export__isatty")]
+pub extern "C" fn isatty(fd: i32) -> i32 {
+    if is_device(fd) {
+        i32::from(FDEV)
+    } else {
+        0
+    }
+}
+
 /// _close: the descriptor and its handle closed; -1 with EBADF when it is not open. Descriptors 1
 /// and 2 on one handle, the other keeps it open. The descriptor's lock is held throughout, the
 /// table's only to look at it and to free it: the descriptor stays reserved across CloseHandle.

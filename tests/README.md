@@ -27,8 +27,8 @@ tests/
 │               # (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
-│               # batstd, batops, batline, bathelp, batdir; HAND-CAPTURES.md, the interactive
-│               # checks
+│               # batstd, batops, batline, bathelp, batdir, batpipe; HAND-CAPTURES.md, the
+│               # interactive checks
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
 ```
@@ -124,6 +124,7 @@ The fixtures:
   Its `system` block runs the command processor `COMSPEC` names, which the disk the tests boot does not carry, so the fixture's boot adds F2K's `cmd.exe` to `\WINNT\system32` (`system_programs`).
   Its `detach` block stays pending while F2K's console server holds one console, which every process shares: kernel32's `CreateProcess` takes its stub path for `DETACHED_PROCESS` and `CREATE_NEW_CONSOLE`.
 - `pipe` - anonymous pipes, with its companion program `pipekid.exe` (built beside it from `pipekid.c`), which the sections start with pipes for their standard handles: `CreatePipe`'s sizes and how many bytes each takes before a write waits, its ends' file type, inheritance, granted access and name (ntdll's `NtQueryObject`), I/O the wrong way and the file queries on a pipe, reads, writes, zero-byte I/O and `PeekNamedPipe`, ntdll's `NtFsControlFile` with the pipe-peek code (checked only through the bytes it returns, so only a real peek gives the capture), a closed end seen from the other, waits for data and for room (woken, ended by a close or by `TerminateThread`), children joined by pipes as cmd.exe joins them, msvcrt's `_pipe`, `_read` and `_write` in text and binary mode, and `_popen`, `_pclose` and `system()` with COMSPEC naming `pipekid.exe`, whose `/c` mode stands in for the command processor (F2K's disk has no cmd.exe) and prints the command line msvcrt gives it.
+  Then the plumbing cmd.exe's `|` depends on: when a reader child sees its input's end (never while it holds an inherited copy of the write end itself, at once when only the program held it) and a read past a child's end while the program keeps its own copy of the write end (`eof`); transfers past the pipe's buffer between processes (`bulk`); a writer child started once its reader child has ended, its error and exit code (`broken`); `GetConsoleMode`, `SetConsoleMode` and `_isatty` on a pipe's ends, and a child's C runtime over a piped input (`_isatty`, `fgets`, `fread`) and `PeekNamedPipe` on it (`crtkid`).
   Built with `/MD`.
 - `screen` - the screen buffer through `CONOUT$`, each section starting from a buffer cleared the way cls clears it: `SetConsoleCursorPosition` (inside and outside the buffer, the window following the cursor), `SetConsoleTextAttribute` and the cells a write leaves, `FillConsoleOutputCharacterW`/`A` and `FillConsoleOutputAttribute` (past the row's end and the buffer's end, the count written), `ReadConsoleOutputCharacterW`/`A` and `ReadConsoleOutputAttribute`, `ScrollConsoleScreenBufferW`/`A` (overlapping, clipped, the fill, the buffer's edges), and their errors on `CONIN$`, a file and a bogus handle.
   Positions print from the cleared buffer's corner, or relative to its size near its far edges.
@@ -431,7 +432,7 @@ It holds the script, `fixture.toml` (`kind = "script"`), `test_<name>.py` bindin
 Its capture is one block, `>>> cmd /c <name>.cmd`: `capture.bat` runs the script by a cmd.exe of its own from the fixture's directory, its standard output and error into `output.txt` in order, and refuses to capture unless a cmd.exe started afresh has command extensions on, Windows 2000's default.
 On F2K the block's boot attaches a copy of the disk with F2K's cmd.exe in `\WINNT\system32` and in `\CORPUS`, and the script in `\CORPUS` (`f2kboot.script_disk`), and runs `CORPUS\cmd /c <name>.cmd`: the kernel starts a program in its image's directory, so the script runs from `\CORPUS`, as on the real machine it runs from its own directory.
 The disk the tests boot carries neither.
-A script may run `spawnkid.exe`, the spawn fixture's companion: it sits in `\CORPUS` on F2K, and `capture.bat` copies it beside the script for the capture.
+A script may run `spawnkid.exe` and `pipekid.exe`, the spawn and pipe fixtures' companions: they sit in `\CORPUS` on F2K, and `capture.bat` copies them beside the script for the capture.
 A script that needs other batch files (one to `call`, a `.bat` twin, a name `PATHEXT` searches for) writes them itself with `echo` and redirections, named after it: the disk carries the script alone.
 A script prints nothing machine-specific where it can (`@echo off` first, no absolute paths), creates its files under its own name, and deletes them at its start and its end.
 Its `masks` are a list, its one block's (`masks = ["**>echo two"]`), and its `pending` a string, its one block's reason, beside `gate = true` (`pending = "redirection not implemented"`); its declaration takes `gate`, `timeout` and `retake` too, and no per-section field.

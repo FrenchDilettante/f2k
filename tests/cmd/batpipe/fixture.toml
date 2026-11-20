@@ -1,0 +1,11 @@
+# batpipe: one test, the script's one block (`cmd /c batpipe.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". It runs pipekid.exe, the pipe fixture's companion, and spawnkid.exe, the spawn
+# fixture's: beside the script in \CORPUS on F2K, copied beside it by capture.bat on the real
+# machine.
+description = "batpipe - cmd.exe's |: built-ins and programs into pipekid.exe, chains of two to four stages, transfers past the pipe's buffer, an empty input, > and >> after a pipe and < before one, 2>&1 and 2> nul into a pipe, ERRORLEVEL and && and || after a pipe, the left side's writes failing once the right side has exited, & and parentheses around a pipe, if and for with a pipe, built-ins on the left (echo, type, dir, set, cd: set and cd leaving the script's cmd.exe as it was), and type's error with a pipe."
+kind = "script"
+gate = true
+# dir /b lists a directory's entries in the order its file system keeps them: the capture's volume
+# gave two.txt before one.txt (neither FAT's order of creation nor NTFS's of names), F2K's FAT32
+# gives one.txt first. The names stay compared through the count line after them.
+masks = ["*.TXT"]

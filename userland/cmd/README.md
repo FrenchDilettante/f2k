@@ -114,6 +114,8 @@ if exist x.txt (
 The commands a pipe joins run at once, each its own process, joined by anonymous pipes; the shell waits for them all.
 A program is started itself, its standard input the pipe from the command before, its standard output the pipe to the command after, its own redirections applied over them (`x 2>&1 | y` sends `x`'s errors down the pipe too).
 Anything else, a built-in command, a batch file, a group or a word naming no program, runs in a shell of its own, as Windows' cmd runs it: `COMSPEC`'s program (the shell's own file without one), started as `"program" /S /D /c" command"`, the command as the line holds it once expanded, the blanks before it dropped and those after it kept (`echo x | y` hands `y` the text `x `), which that shell expands again.
+A group is rebuilt as Windows rebuilds it: `(` and a blank, its commands joined by their operators with a blank on each side (a block's line break as `&`), then a blank, `)` and its redirections, so `(echo a& echo b) | y` runs `( echo a & echo b )` and hands `y` the lines `a` and `b`, a blank after each.
+A command run there sets nothing in the shell the pipe is in: `set x=1 | y` and `cd dir | y` leave its variables and its current directory as they were.
 A pipe joins 16 commands at most.
 
 ### Escapes and quotes
@@ -549,6 +551,8 @@ rem [comment]
 ```
 
 Does nothing.
+Where a command starts, `rem` takes the rest of the line as its comment, operators, parentheses and redirections too: `rem a | b` and `rem a & b` run nothing, and `rem > f` opens no file.
+In a block, its comment ends with its line.
 In a batch file with echo on, a `rem` line is echoed; a label line (`::comment`) is not.
 
 ### ren, rename
@@ -950,7 +954,7 @@ What Windows 2000's cmd.exe has and this one does not:
 - The banner, `ver` and `$V` show `F2K [Version 5.00.2195]`; Windows 2000 shows `Microsoft Windows 2000 [Version 5.00.2195]`, and its banner has a copyright line too.
 - A block holds 4,096 characters at most once expanded, and a batch file's block echoes as it was read, its lines as they are; labels in a block are skipped.
 - `>>` appends after the file's last byte, whatever it is: Windows' cmd writes over a Ctrl+Z ending the file.
-- A command a pipe runs in a shell of its own is handed as the line holds it, its escapes kept: Windows rebuilds it from what it read, so `echo a^&b | x` runs `echo a&b` there.
+- A command a pipe runs in a shell of its own is handed as the line holds it, its escapes kept, only a group rebuilt: Windows rebuilds every command from what it read, so `echo a^&b | x` runs `echo a&b` there.
 - Handles 3 to 9 reach no program: Windows hands them to a C runtime's program through its startup information.
 - These built-in commands of Windows 2000's are not there: `assoc`, `break`, `endlocal`, `ftype`, `setlocal`, `verify` and `vol`.
   Their names are looked for as programs, and are not recognized (ERRORLEVEL 9009).

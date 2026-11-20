@@ -499,6 +499,13 @@ ordinal = 255
 fails = "-1"
 
 [[export]]
+name = "_isatty"
+group = "lowio"
+args = ["i32 fd"]
+impl = { native = "_isatty" }
+ordinal = 287
+
+[[export]]
 name = "_open_osfhandle"
 group = "lowio"
 args = ["handle osfhandle", "i32 flags"]
@@ -2599,10 +2606,6 @@ ordinal = 284
 [[export]]
 name = "_inpw"
 ordinal = 285
-
-[[export]]
-name = "_isatty"
-ordinal = 287
 
 [[export]]
 name = "_isctype"

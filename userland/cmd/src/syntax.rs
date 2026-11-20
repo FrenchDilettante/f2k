@@ -239,6 +239,21 @@ impl Iterator for Tokens<'_> {
                     self.start = true;
                     (Token::Text, 4)
                 }
+                // `rem` where a command starts takes the rest of the line (of a block's line) as
+                // its text, operators, parentheses and redirections too: `rem a | b` runs nothing.
+                _ if self.start
+                    && unit != AT
+                    && is_named(command_word(&self.line[at..]).0, "rem") =>
+                {
+                    self.start = false;
+                    let rest = &self.line[at..];
+                    (
+                        Token::Text,
+                        rest.iter()
+                            .position(|&unit| unit == LF)
+                            .unwrap_or(rest.len()),
+                    )
+                }
                 _ => match (self.start && unit != AT)
                     .then(|| flow::header(&self.line[at..]))
                     .flatten()
@@ -747,6 +762,60 @@ pub fn single(line: &[u16]) -> bool {
         .any(|(token, _)| matches!(token, Token::Join(_) | Token::Open | Token::Flow(_)))
 }
 
+/// `text`, a command a pipe joins, as Windows' cmd hands it to the shell of its own it runs in
+/// (`cmd /c`): rebuilt from what it read, a group as `( ` and its line and ` )` (its redirections
+/// after), its commands joined by their operators with a blank on each side (a block's line feed
+/// as `&`), each command as written, its leading blanks aside and its trailing blanks kept
+/// (`(echo a& echo b) | x` runs `( echo a & echo b )`: echo prints `a ` and `b `). Into `out`;
+/// None when it does not fit.
+pub fn rebuild<'a>(text: &[u16], out: &'a mut [u16]) -> Option<&'a [u16]> {
+    let mut length = 0;
+    let mut fits = true;
+    let mut put = |units: &[u16]| match out.get_mut(length..length + units.len()) {
+        Some(slot) => {
+            slot.copy_from_slice(units);
+            length += units.len();
+        }
+        None => fits = false,
+    };
+    rebuild_at(text, Join::Then, &mut put);
+    fits.then_some(&out[..length])
+}
+
+fn rebuild_at(text: &[u16], join: Join, put: &mut dyn FnMut(&[u16])) {
+    let blank = [u16::from(b' ')];
+    let mut first = true;
+    for (part, _) in parts(text, join).filter(|(part, _)| !self::blank(part)) {
+        if !first {
+            put(&blank);
+            for byte in join.text().bytes() {
+                put(&[u16::from(byte)]);
+            }
+            put(&blank);
+        }
+        first = false;
+        match join.tighter() {
+            Some(tighter) => rebuild_at(part, tighter, put),
+            None => match element(part) {
+                Ok(Element::Group {
+                    inner,
+                    redirections,
+                }) => {
+                    put(&[OPEN, blank[0]]);
+                    rebuild_at(inner, Join::Then, put);
+                    put(&[blank[0], CLOSE]);
+                    let redirections = crate::trim_blanks(redirections);
+                    if !redirections.is_empty() {
+                        put(&blank);
+                        put(redirections);
+                    }
+                }
+                _ => put(skip_blanks(part)),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,6 +916,41 @@ mod tests {
         assert_eq!(split("echo (a & b)", Join::Then).len(), 2);
         assert_eq!(split("x & (y & z) & w", Join::Then).len(), 3);
         assert_eq!(split("x|(y & z)", Join::Pipe).len(), 2);
+    }
+
+    fn rebuilt(text: &str) -> String {
+        let text = wide(text);
+        let mut out = [0; 128];
+        narrow(rebuild(&text, &mut out).unwrap())
+    }
+
+    #[test]
+    fn a_pipe_s_command_rebuilt_as_windows_hands_it_on() {
+        // A simple command as written, its trailing blanks kept.
+        assert_eq!(rebuilt(" echo hello "), "echo hello ");
+        assert_eq!(rebuilt("echo a^&b > f"), "echo a^&b > f");
+        // A group spaced inside its parentheses, its commands joined by spaced operators.
+        assert_eq!(rebuilt("(echo a& echo b) "), "( echo a & echo b )");
+        assert_eq!(rebuilt("(a&&b||c) >f"), "( a && b || c ) >f");
+        assert_eq!(rebuilt("(a & (b|c))"), "( a  & ( b | c ) )");
+        // A block's line feeds join as `&`, its empty lines left out.
+        assert_eq!(rebuilt("(\n a\n b\n)"), "( a & b )");
+        // An if's or a for's command is its own text.
+        assert_eq!(rebuilt("if 1==1 (a) else b"), "if 1==1 (a) else b");
+        let text = wide(&"x".repeat(200));
+        assert_eq!(rebuild(&text, &mut [0; 128]), None);
+    }
+
+    #[test]
+    fn rem_takes_the_rest_of_its_line() {
+        assert_eq!(split("rem cmd.exe's |: a | b", Join::Pipe).len(), 1);
+        assert_eq!(split("@rem a & b && c || d", Join::Then).len(), 1);
+        assert_eq!(command("rem a > f").1, Vec::<String>::new());
+        // Only where a command starts, and only to a block's line feed.
+        assert_eq!(split("echo rem | x", Join::Pipe).len(), 2);
+        assert_eq!(split("x & rem a | b", Join::Then).len(), 2);
+        assert_eq!(split("rem a | b\ny | z", Join::Then).len(), 2);
+        assert_eq!(split("remark | x", Join::Pipe).len(), 2);
     }
 
     #[test]

@@ -59,7 +59,7 @@ for %%F in (registry token) do call :listed advapi32 %%F
 call :cap_hellomd
 call :cap_crt
 for %%F in (seh fd wide process strings msvcrt cxxeh wmain) do call :listed crt %%F
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir) do call :script %%F
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do call :script %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe keys"
@@ -86,7 +86,7 @@ for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endses
 for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_DLL=crt
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1
@@ -204,16 +204,19 @@ goto :eof
 rem Capture a script fixture, cmd\%1\%1.cmd: one block, the script run by
 rem a cmd.exe of its own (cmd /c, as F2K's harness runs it) from its
 rem directory, its standard output and error into output.txt in order.
-rem spawnkid.exe, the spawn fixture's companion, is copied beside it for
-rem the run and deleted after: on F2K the scripts run from \CORPUS, where
-rem it sits. Nothing is captured unless command extensions are on.
+rem spawnkid.exe and pipekid.exe, the spawn and pipe fixtures' companions,
+rem are copied beside it for the run and deleted after: on F2K the
+rem scripts run from \CORPUS, where they sit. Nothing is captured unless
+rem command extensions are on.
 :script
 call :extensions
 if errorlevel 1 goto :eof
 call :fixture cmd %1 nostamp
 copy ..\..\kernel32\spawn\spawnkid.exe . > nul
+copy ..\..\kernel32\pipe\pipekid.exe . > nul
 call :cap cmd /c %1.cmd
 del spawnkid.exe
+del pipekid.exe
 cd ..\..
 goto :eof
 

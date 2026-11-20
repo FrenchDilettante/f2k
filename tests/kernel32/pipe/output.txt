@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  8:47:53.07
-pipe F2KT-SOURCE-CRC=0xE7CDF4A9
+# date: Fri 11/20/2026 10:44:00.04
+pipe F2KT-SOURCE-CRC=0x02880D6E
 >>> pipe.exe create
 == create
 CreatePipe(nSize 0): ret=1 err=-; 1-byte writes done before one waits: 163; PeekNamedPipe's total then: 164
@@ -365,5 +365,108 @@ pipekid: /c: command line [<home>\pipekid.exe /c pipekid emit 2]
 pipekid: line 1
 pipekid: line 2
   ret=0 errno=0
+pipe: done
+<<< exit code=0
+>>> pipe.exe eof
+== eof
+pipekid count, both ends of its input inheritable, so it holds the write end too:
+WriteFile [abc\r\n], 5 bytes: ret=1 n=5 err=-
+CloseHandle(the write end): ret=1 err=-
+  still reading 500 ms after the program closed its write end: yes
+  TerminateProcess(7): ret=1 err=-
+  the end of the output: ReadFile ret=0 err=109, 0 bytes in all
+  pipekid count: WAIT_OBJECT_0, exit code 7
+pipekid count, the write end of its input not inheritable:
+WriteFile [abc\r\n], 5 bytes: ret=1 n=5 err=-
+CloseHandle(the write end): ret=1 err=-
+  ended within 5 s of the close: yes
+  > pipekid: count: 1 lines, 5 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 64 bytes in all
+  pipekid count: WAIT_OBJECT_0, exit code 0
+pipekid emit 2, the program keeping its own copy of the output's write end:
+  pipekid emit 2: WAIT_OBJECT_0, exit code 0
+  PeekNamedPipe's total after the child's end: 34
+ReadFile 34: ret=1 n=34 err=- [pipekid: line 1\r\npipekid: line 2\r\n]
+  a read then, in a thread: waiting after 300 ms: yes
+CloseHandle(the program's copy of the write end): ret=1 err=-
+  the thread after the close: ret=0 n=0 err=109
+pipe: done
+<<< exit code=0
+>>> pipe.exe bulk
+== bulk
+pipekid emit 2000 | pipekid cat | pipekid count, some 33 KB through 4096-byte pipes:
+  > pipekid: count: 2000 lines, 38893 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 71 bytes in all
+  pipekid emit 2000: WAIT_OBJECT_0, exit code 0
+  pipekid cat: WAIT_OBJECT_0, exit code 0
+  pipekid count: WAIT_OBJECT_0, exit code 0
+200000 bytes, a LF every 100, in one WriteFile into pipekid count's standard input:
+  the write: ret=1 n=200000 err=-
+CloseHandle(the write end): ret=1 err=-
+  > pipekid: count: 2000 lines, 200000 bytes; the last read: ret=0 err=109
+  the end of the output: ReadFile ret=0 err=109, 72 bytes in all
+  pipekid count: WAIT_OBJECT_0, exit code 0
+pipekid blob 100000, one 100000-byte WriteFile, read back 4096 bytes at a time:
+  read in all 100000 bytes, as written: yes; the last read ret=0 err=109
+  pipekid blob 100000: WAIT_OBJECT_0, exit code 0
+pipe: done
+<<< exit code=0
+>>> pipe.exe broken
+== broken
+pipekid exit 0 | pipekid emit 3, the reader ended before the writer starts:
+  pipekid exit 0: WAIT_OBJECT_0, exit code 0
+  > pipekid: emit: line 1 not written, err=232
+  the end of the output: ReadFile ret=0 err=109, 44 bytes in all
+  pipekid emit 3: WAIT_OBJECT_0, exit code 232
+pipekid exit 0 | pipekid blob 100000, the same:
+  pipekid exit 0: WAIT_OBJECT_0, exit code 0
+  > pipekid: blob: not written, err=232
+  the end of the output: ReadFile ret=0 err=109, 37 bytes in all
+  pipekid blob 100000: WAIT_OBJECT_0, exit code 232
+pipe: done
+<<< exit code=0
+>>> pipe.exe crtkid
+== crtkid
+GetConsoleMode(the read end): ret=0 err=6, mode -
+SetConsoleMode(the read end): ret=0 err=6
+GetConsoleMode(the write end): ret=0 err=6, mode -
+SetConsoleMode(the write end): ret=0 err=6
+_isatty(the read end's descriptor): no
+pipekid crtin, its standard input the pipe:
+WriteFile [first\r\n], 7 bytes: ret=1 n=7 err=-
+WriteFile [second\n], 7 bytes: ret=1 n=7 err=-
+WriteFile [third\r\r\n], 8 bytes: ret=1 n=8 err=-
+WriteFile [last\x1Aunseen\r\n], 13 bytes: ret=1 n=13 err=-
+CloseHandle(the write end): ret=1 err=-
+  > pipekid: crtin: stdin: _isatty no; GetConsoleMode ret=0 err=6
+  > pipekid: crtin: stdout: _isatty no; GetConsoleMode ret=0 err=6
+  > pipekid: crtin: stderr: _isatty no; GetConsoleMode ret=0 err=6
+  > pipekid: crtin: fgets [first\n]
+  > pipekid: crtin: fgets [second\n]
+  > pipekid: crtin: fgets [third\r\n]
+  > pipekid: crtin: fgets [last]
+  > pipekid: crtin: 4 lines; feof yes, ferror no
+  the end of the output: ReadFile ret=0 err=109, 369 bytes in all
+  pipekid crtin: WAIT_OBJECT_0, exit code 0
+pipekid fread, its standard input the pipe:
+WriteFile [abc\r\ndef\r\n], 10 bytes: ret=1 n=10 err=-
+WriteFile [ghijklmnop\r\n], 12 bytes: ret=1 n=12 err=-
+WriteFile [q], 1 bytes: ret=1 n=1 err=-
+CloseHandle(the write end): ret=1 err=-
+  > pipekid: fread: 7 [abc\ndef]
+  > pipekid: fread: 7 [\nghijkl]
+  > pipekid: fread: 6 [mnop\nq]
+  > pipekid: fread: 0; feof yes, ferror no
+  the end of the output: ReadFile ret=0 err=109, 129 bytes in all
+  pipekid fread: WAIT_OBJECT_0, exit code 0
+pipekid peekin, 5 bytes written and the write end closed before its start:
+WriteFile [12345], 5 bytes: ret=1 n=5 err=-
+CloseHandle(the write end): ret=1 err=-
+  > pipekid: peekin: PeekNamedPipe(stdin): ret=1 err=-; read 5, total 5 [12345]
+  > pipekid: peekin: ReadFile 64: ret=1 n=5 err=- [12345]
+  > pipekid: peekin: PeekNamedPipe(stdin, drained): ret=0 err=109
+  > pipekid: peekin: PeekNamedPipe(stdout): ret=0 err=5
+  the end of the output: ReadFile ret=0 err=109, 248 bytes in all
+  pipekid peekin: WAIT_OBJECT_0, exit code 0
 pipe: done
 <<< exit code=0

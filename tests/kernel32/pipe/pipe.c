@@ -99,6 +99,28 @@
  *            of the handle it started with, which msvcrt never sees, and
  *            each _popen prints whether the standard output handle it
  *            leaves is still the one the program started with
+ *   eof      when a reader child sees its input's end: never while it
+ *            holds an inherited copy of the write end itself (its
+ *            count still reading 500 ms after the program's close, then
+ *            terminated), at once when only the program held it; a
+ *            child's output read past its end while the program keeps
+ *            its own copy of the write end (the read waits until that
+ *            copy is closed): the plumbing mistakes cmd.exe's | avoids
+ *   bulk     transfers past the pipe's buffer between processes: emit
+ *            2000 | cat | count, 200000 bytes in one WriteFile into a
+ *            child's input, and a child's one 100000-byte WriteFile read
+ *            back (every byte as written)
+ *   broken   a writer child started once its reader child has ended (a
+ *            | b with b gone first): the writer's error (on its standard
+ *            error, which the program reads) and its exit code, for
+ *            short writes and one 100000-byte write
+ *   crtkid   GetConsoleMode, SetConsoleMode and _isatty on a pipe's ends;
+ *            a child's C runtime over a piped standard input: _isatty
+ *            and GetConsoleMode of its standard handles, fgets lines (LF,
+ *            CR LF, CR CR LF, a Ctrl+Z), fread of 7 bytes at a time;
+ *            PeekNamedPipe in a child on its input, written and closed
+ *            before its start, before and after its one read, and on its
+ *            output
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat pipe):
  *   cl /nologo /MD pipekid.c
@@ -1782,6 +1804,279 @@ static void sec_popen(void)
     line("  ret=%d errno=%d", r, errno);
 }
 
+/* --- eof ----------------------------------------------------------- */
+
+/* A child's end awaited for at most `ms`: whether it was still running. */
+static int kid_running(kid_t *k, DWORD ms)
+{
+    return k->started && WaitForSingleObject(k->pi.hProcess, ms) == WAIT_TIMEOUT;
+}
+
+static void sec_eof(void)
+{
+    static BYTE buf[64];
+    HANDLE ar, aw, br, bw, in, t;
+    job_t j;
+    kid_t k;
+    DWORD n;
+
+    reset();
+    line("pipekid count, both ends of its input inheritable, so it holds the write end too:");
+    if (child_pipe(&ar, &aw, KEEP_NONE)) {
+        if (child_pipe(&br, &bw, KEEP_READ)) {
+            start_kid(&k, "count", 1, ar, bw, bw);
+            CloseHandle(ar);
+            CloseHandle(bw);
+            put(aw, "abc\r\n", 5);
+            closed("the write end", aw);
+            aw = NULL;
+            line("  still reading 500 ms after the program closed its write end: %s", yesno(kid_running(&k, 500)));
+            if (k.started) {
+                arm();
+                line("  TerminateProcess(7): ret=%d err=%s", TerminateProcess(k.pi.hProcess, 7), le());
+            }
+            drain(br);
+            CloseHandle(br);
+            end_kid(&k, "count");
+        } else {
+            CloseHandle(ar);
+        }
+        if (aw != NULL) {
+            CloseHandle(aw);
+        }
+    }
+
+    line("pipekid count, the write end of its input not inheritable:");
+    if (child_pipe(&ar, &aw, KEEP_WRITE)) {
+        if (child_pipe(&br, &bw, KEEP_READ)) {
+            start_kid(&k, "count", 1, ar, bw, bw);
+            CloseHandle(ar);
+            CloseHandle(bw);
+            put(aw, "abc\r\n", 5);
+            closed("the write end", aw);
+            aw = NULL;
+            line("  ended within 5 s of the close: %s", yesno(!kid_running(&k, WAIT_MS)));
+            drain(br);
+            CloseHandle(br);
+            end_kid(&k, "count");
+        } else {
+            CloseHandle(ar);
+        }
+        if (aw != NULL) {
+            CloseHandle(aw);
+        }
+    }
+
+    line("pipekid emit 2, the program keeping its own copy of the output's write end:");
+    in = no_input();
+    if (child_pipe(&br, &bw, KEEP_READ)) {
+        start_kid(&k, "emit 2", 1, in, bw, bw);
+        end_kid(&k, "emit 2");
+        n = available(br);
+        line("  PeekNamedPipe's total after the child's end: %lu", n);
+        get(br, n < 64 ? n : 64);
+        t = job_start(&j, br, JOB_READ, buf, sizeof buf);
+        line("  a read then, in a thread: waiting after 300 ms: %s", yesno(still_waiting(t, 300)));
+        closed("the program's copy of the write end", bw);
+        if (still_waiting(t, WAIT_MS)) {
+            line("  the thread: still waiting 5 s after the close");
+        } else {
+            line("  the thread after the close: %s", job_text(&j));
+        }
+        job_end(t);
+        CloseHandle(br);
+    }
+    CloseHandle(in);
+}
+
+/* --- bulk ---------------------------------------------------------- */
+
+static BYTE bulk[200000];
+
+static void sec_bulk(void)
+{
+    static const char *const three[] = { "emit 2000", "cat", "count" };
+    HANDLE ar, aw, br, bw, in, t;
+    BYTE chunk[4096];
+    DWORD i, n, total, wrong;
+    BOOL ok;
+    job_t j;
+    kid_t k;
+    char err[16];
+
+    reset();
+    line("pipekid emit 2000 | pipekid cat | pipekid count, some 33 KB through 4096-byte pipes:");
+    pipeline(three, 3);
+
+    line("200000 bytes, a LF every 100, in one WriteFile into pipekid count's standard input:");
+    for (i = 0; i < sizeof bulk; i++) {
+        bulk[i] = (BYTE)(i % 100 == 99 ? '\n' : 'a' + i % 26);
+    }
+    if (child_pipe(&ar, &aw, KEEP_WRITE)) {
+        if (child_pipe(&br, &bw, KEEP_READ)) {
+            start_kid(&k, "count", 1, ar, bw, bw);
+            CloseHandle(ar);
+            CloseHandle(bw);
+            t = job_start(&j, aw, JOB_WRITE, bulk, sizeof bulk);
+            if (still_waiting(t, WAIT_MS)) {
+                line("  the write: still waiting after 5 s");
+            } else {
+                line("  the write: %s", job_text(&j));
+            }
+            job_end(t);
+            closed("the write end", aw);
+            drain(br);
+            CloseHandle(br);
+            end_kid(&k, "count");
+        } else {
+            CloseHandle(ar);
+            CloseHandle(aw);
+        }
+    }
+
+    line("pipekid blob 100000, one 100000-byte WriteFile, read back 4096 bytes at a time:");
+    in = no_input();
+    if (child_pipe(&br, &bw, KEEP_READ)) {
+        start_kid(&k, "blob 100000", 1, in, bw, bw);
+        CloseHandle(bw);
+        total = 0;
+        wrong = 0;
+        for (;;) {
+            n = 0;
+            arm();
+            ok = ReadFile(br, chunk, sizeof chunk, &n, NULL);
+            strcpy(err, le());
+            if (!ok || n == 0) {
+                break;
+            }
+            for (i = 0; i < n; i++) {
+                if (chunk[i] != (BYTE)((total + i) % 251)) {
+                    wrong++;
+                }
+            }
+            total += n;
+        }
+        line("  read in all %lu bytes, as written: %s; the last read ret=%d err=%s", total, yesno(wrong == 0),
+             ok, err);
+        CloseHandle(br);
+        end_kid(&k, "blob 100000");
+    }
+    CloseHandle(in);
+}
+
+/* --- broken -------------------------------------------------------- */
+
+/* A writer started once its reader has ended: its standard output the
+ * pipe whose read end only the ended reader held, its standard error a
+ * pipe the program reads. */
+static void late_writer(const char *args)
+{
+    HANDLE ar, aw, er, ew, in;
+    kid_t reader, writer;
+
+    in = no_input();
+    if (!child_pipe(&ar, &aw, KEEP_NONE)) {
+        CloseHandle(in);
+        return;
+    }
+    if (!child_pipe(&er, &ew, KEEP_READ)) {
+        CloseHandle(ar);
+        CloseHandle(aw);
+        CloseHandle(in);
+        return;
+    }
+    start_kid(&reader, "exit 0", 1, ar, ew, ew);
+    CloseHandle(ar);
+    end_kid(&reader, "exit 0");
+    start_kid(&writer, args, 1, in, aw, ew);
+    CloseHandle(aw);
+    CloseHandle(ew);
+    drain(er);
+    CloseHandle(er);
+    end_kid(&writer, args);
+    CloseHandle(in);
+}
+
+static void sec_broken(void)
+{
+    reset();
+    line("pipekid exit 0 | pipekid emit 3, the reader ended before the writer starts:");
+    late_writer("emit 3");
+    line("pipekid exit 0 | pipekid blob 100000, the same:");
+    late_writer("blob 100000");
+}
+
+/* --- crtkid -------------------------------------------------------- */
+
+/* A child reading what the program wrote into its standard input and
+ * closed before the start. */
+static void prefed(const char *args, const char *text)
+{
+    HANDLE ar, aw, br, bw;
+    kid_t k;
+
+    if (!child_pipe(&ar, &aw, KEEP_WRITE)) {
+        return;
+    }
+    if (!child_pipe(&br, &bw, KEEP_READ)) {
+        CloseHandle(ar);
+        CloseHandle(aw);
+        return;
+    }
+    put(aw, text, (DWORD)strlen(text));
+    closed("the write end", aw);
+    start_kid(&k, args, 1, ar, bw, bw);
+    CloseHandle(ar);
+    CloseHandle(bw);
+    drain(br);
+    CloseHandle(br);
+    end_kid(&k, args);
+}
+
+static void console_mode_of(const char *label, HANDLE h)
+{
+    DWORD mode = F2KT_UNTOUCHED;
+    BOOL r;
+    char err[16];
+
+    arm();
+    r = GetConsoleMode(h, &mode);
+    strcpy(err, le());
+    line("GetConsoleMode(%s): ret=%d err=%s, mode %s", label, r, err, r ? "set" : num(mode));
+    arm();
+    r = SetConsoleMode(h, ENABLE_PROCESSED_OUTPUT);
+    strcpy(err, le());
+    line("SetConsoleMode(%s): ret=%d err=%s", label, r, err);
+}
+
+static void sec_crtkid(void)
+{
+    static const char *const lines[] = { "first\r\n", "second\n", "third\r\r\n", "last\x1A" "unseen\r\n" };
+    static const char *const flat[] = { "abc\r\ndef\r\n", "ghijklmnop\r\n", "q" };
+    HANDLE r, w;
+    int fd;
+
+    reset();
+    if (CreatePipe(&r, &w, NULL, 0)) {
+        console_mode_of("the read end", r);
+        console_mode_of("the write end", w);
+        fd = _open_osfhandle((long)r, _O_RDONLY);
+        line("_isatty(the read end's descriptor): %s", yesno(fd >= 0 && _isatty(fd)));
+        if (fd >= 0) {
+            _close(fd);
+        } else {
+            CloseHandle(r);
+        }
+        CloseHandle(w);
+    }
+    line("pipekid crtin, its standard input the pipe:");
+    feed("crtin", lines, 4);
+    line("pipekid fread, its standard input the pipe:");
+    feed("fread", flat, 3);
+    line("pipekid peekin, 5 bytes written and the write end closed before its start:");
+    prefed("peekin", "12345");
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "io", sec_io, F2KT_ALWAYS },
@@ -1791,6 +2086,10 @@ static const section_t sections[] = {
     { "child", sec_child, F2KT_ALWAYS },
     { "crt", sec_crt, F2KT_ALWAYS },
     { "popen", sec_popen, F2KT_ALWAYS },
+    { "eof", sec_eof, F2KT_ALWAYS },
+    { "bulk", sec_bulk, F2KT_ALWAYS },
+    { "broken", sec_broken, F2KT_ALWAYS },
+    { "crtkid", sec_crtkid, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

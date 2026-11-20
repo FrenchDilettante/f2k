@@ -1,0 +1,60 @@
+# F2K capture of batpipe (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/20/2026 10:44:07.94
+>>> cmd /c batpipe.cmd
+== two stages
+HELLO 
+pipekid: count: 1 lines, 7 bytes; the last read: ret=0 err=109
+pipekid: count: 1 lines, 13 bytes; the last read: ret=0 err=109
+PIPEKID: LINE 1
+PIPEKID: LINE 2
+PIPEKID: LINE 3
+== three and four stages
+pipekid: count: 4 lines, 68 bytes; the last read: ret=0 err=109
+pipekid: count: 2 lines, 34 bytes; the last read: ret=0 err=109
+== past the buffer, and nothing
+pipekid: count: 3000 lines, 58893 bytes; the last read: ret=0 err=109
+pipekid: count: 3000 lines, 58893 bytes; the last read: ret=0 err=109
+pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
+== redirections
+PIPEKID: LINE 1
+PIPEKID: LINE 2
+PIPEKID: LINE 1
+PIPEKID: LINE 2
+PIPEKID: LINE 1
+pipekid: count: 3 lines, 51 bytes; the last read: ret=0 err=109
+PIPEKID: COUNT: 3 LINES, 51 BYTES; THE LAST READ: RET=1, 0 BYTES, ERR=-
+KID: TO THE STANDARD OUTPUT
+KID: TO THE STANDARD ERROR
+KID: TO THE STANDARD OUTPUT
+KID: TO THE STANDARD ERROR
+== ERRORLEVEL
+ERRORLEVEL 5
+pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
+ERRORLEVEL 0
+ERRORLEVEL 0
+and: ran
+or: ran
+== grouping
+A 
+B 
+c
+D 
+PIPEKID: LINE 1
+after the pipe
+PIPEKID: LINE 1
+X
+Y
+== built-ins
+TWO.TXT
+ONE.TXT
+pipekid: count: 2 lines, 18 bytes; the last read: ret=0 err=109
+pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
+BATPIPEV: not set
+pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
+cd: no effect
+The system cannot find the file specified.
+pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
+<<< exit code=0
