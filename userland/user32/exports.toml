@@ -3317,6 +3317,15 @@ fails = "FALSE"
 note = "the dotted frame, every other pixel inverted with the gray brush"
 
 [[export]]
+name = "DrawFrameControl"
+group = "draw"
+args = ["handle hdc", "ptr lprc", "u32 uType", "u32 uState"]
+impl = { native = "DrawFrameControl" }
+ordinal = 171
+fails = "FALSE"
+note = "DFC_CAPTION's buttons, normal, pushed and inactive, as Windows 2000's Marlett draws them at the standard size; DFC_BUTTON, DFC_MENU, DFC_SCROLL and DFC_POPUPMENU are stubs"
+
+[[export]]
 name = "DrawTextA"
 group = "draw"
 args = ["handle hDC", "ptr lpString", "i32 nCount", "ptr lpRect", "u32 uFormat"]
@@ -3987,9 +3996,6 @@ ordinal = 167
 name = "DrawFrame"
 ordinal = 170
 
-[[export]]
-name = "DrawFrameControl"
-ordinal = 171
 
 [[export]]
 name = "DrawIcon"

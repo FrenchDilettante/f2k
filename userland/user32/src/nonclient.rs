@@ -22,8 +22,9 @@
 //! under it is COLOR_3DFACE. Its text is the window's, in the caption font (Tahoma bold, 8 points)
 //! and COLOR_CAPTIONTEXT (COLOR_INACTIVECAPTIONTEXT), left-aligned after the system menu's box,
 //! clipped before the buttons. The box shows no icon: F2K's icons hold no bits yet. The buttons are
-//! raised faces with Marlett's glyphs (close `r`, minimize `0`, maximize `1`, help `s`), a disabled
-//! one's glyph embossed; on a disk without Marlett the glyphs are drawn as pixel shapes of their
+//! DrawFrameControl's DFC_CAPTION ones ([`frame_control`]), a disabled one DFCS_INACTIVE, a
+//! maximized window's maximize button (a minimized one's minimize button) the restore glyph. The
+//! menus' glyphs are Marlett's; on a disk without Marlett they are drawn as pixel shapes of their
 //! own. Without the system's fonts the caption font is whatever the font mapper stands in (the
 //! built-in 8x16 font), which fits the bar.
 //!
@@ -39,9 +40,7 @@ use rtl::nonclient::{Border, Button, Caption, Frame};
 use crate::draw::{
     self,
     BDR_SUNKENOUTER,
-    BF_MIDDLE,
     BF_RECT,
-    BF_SOFT,
     DT_CENTER,
     DT_LEFT,
     DT_NOPREFIX,
@@ -49,6 +48,15 @@ use crate::draw::{
     DT_VCENTER,
     EDGE_RAISED,
     EDGE_SUNKEN,
+};
+use crate::frame_control::{
+    self,
+    DFCS_CAPTIONCLOSE,
+    DFCS_CAPTIONHELP,
+    DFCS_CAPTIONMAX,
+    DFCS_CAPTIONMIN,
+    DFCS_CAPTIONRESTORE,
+    DFCS_INACTIVE,
 };
 use crate::{imports, menubar, message, window};
 
@@ -67,7 +75,6 @@ const COLOR_ACTIVEBORDER: u32 = 10;
 const COLOR_INACTIVEBORDER: u32 = 11;
 const COLOR_3DFACE: u32 = 15;
 const COLOR_3DSHADOW: u32 = 16;
-const COLOR_BTNTEXT: u32 = 18;
 const COLOR_INACTIVECAPTIONTEXT: u32 = 19;
 const COLOR_3DHILIGHT: u32 = 20;
 const COLOR_GRADIENTACTIVECAPTION: u32 = 27;
@@ -283,7 +290,7 @@ fn paint_frame(framed: &Framed, active: bool, whole: bool) {
         draw_borders(dc, local, &frame, active);
     }
     if let Some(caption) = Caption::of(framed.style, framed.ex_style, local) {
-        draw_caption(dc, framed.handle, &caption, active);
+        draw_caption(dc, framed, &caption, active);
         let line = Rect {
             top: caption.bar.bottom,
             bottom: caption.bar.bottom + 1,
@@ -354,8 +361,9 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
     }
 }
 
-/// The caption's bar of `window`: its gradient, its text and its buttons.
-fn draw_caption(dc: usize, window: usize, caption: &Caption, active: bool) {
+/// The caption's bar of `framed`: its gradient, its text and its buttons.
+fn draw_caption(dc: usize, framed: &Framed, caption: &Caption, active: bool) {
+    let window = framed.handle;
     let (from, to, text) = if active {
         (
             COLOR_ACTIVECAPTION,
@@ -392,7 +400,7 @@ fn draw_caption(dc: usize, window: usize, caption: &Caption, active: bool) {
         imports::select_object(dc, previous);
     }
     for (button, rect, enabled) in caption.buttons.iter().flatten() {
-        draw_caption_button(dc, *button, *rect, *enabled);
+        draw_caption_button(dc, *button, *rect, *enabled, framed.style);
     }
 }
 
@@ -426,28 +434,32 @@ fn gradient(dc: usize, rect: Rect, from: u32, to: u32) {
     }
 }
 
-/// A caption button's face and glyph in `rect`; a disabled one's glyph embossed.
-fn draw_caption_button(dc: usize, button: Button, rect: Rect, enabled: bool) {
-    let (face, _) = draw::draw_edge_in(dc, rect, EDGE_RAISED, BF_RECT | BF_SOFT | BF_MIDDLE);
-    let glyph = match button {
-        Button::Close => Glyph::Close,
-        Button::Minimize => Glyph::Minimize,
-        Button::Maximize => Glyph::Maximize,
-        Button::Help => Glyph::Help,
+/// WS_MAXIMIZE, the window style a maximized window has (WS_MINIMIZE is rtl's).
+const WS_MAXIMIZE: u32 = 0x0100_0000;
+
+/// A caption button in `rect`, as DrawFrameControl's DFC_CAPTION draws it: a disabled one
+/// DFCS_INACTIVE, the maximize button of a window of `style` WS_MAXIMIZE (the minimize button of a
+/// WS_MINIMIZE one) the restore glyph.
+fn draw_caption_button(dc: usize, button: Button, rect: Rect, enabled: bool, style: u32) {
+    let restores = |bit: u32| style & bit != 0;
+    let part = match button {
+        Button::Close => DFCS_CAPTIONCLOSE,
+        Button::Minimize if restores(rtl::nonclient::WS_MINIMIZE) => DFCS_CAPTIONRESTORE,
+        Button::Minimize => DFCS_CAPTIONMIN,
+        Button::Maximize if restores(WS_MAXIMIZE) => DFCS_CAPTIONRESTORE,
+        Button::Maximize => DFCS_CAPTIONMAX,
+        Button::Help => DFCS_CAPTIONHELP,
     };
-    draw_glyph(dc, glyph, face, enabled, COLOR_BTNTEXT);
+    let state = if enabled { part } else { part | DFCS_INACTIVE };
+    frame_control::draw_caption_in(dc, rect, state);
 }
 
 // --- The glyphs ----------------------------------------------------------------------------------
 
-/// The glyphs the frame and the menus draw: Marlett's characters, or pixel shapes of their own
-/// on a disk without Marlett.
+/// The glyphs the menus draw: Marlett's characters, or pixel shapes of their own on a disk without
+/// Marlett.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
-    Close,
-    Minimize,
-    Maximize,
-    Help,
     /// A menu item's check mark.
     Check,
     /// A radio item's bullet.
@@ -460,10 +472,6 @@ impl Glyph {
     /// Its Marlett character.
     fn marlett(self) -> u16 {
         u16::from(match self {
-            Glyph::Close => b'r',
-            Glyph::Minimize => b'0',
-            Glyph::Maximize => b'1',
-            Glyph::Help => b's',
             Glyph::Check => b'a',
             Glyph::Bullet => b'h',
             Glyph::Arrow => b'8',
@@ -473,32 +481,6 @@ impl Glyph {
     /// Its own pixel shape, `#` for ink: rows of equal width.
     fn shape(self) -> &'static [&'static [u8]] {
         match self {
-            Glyph::Close => &[
-                b"##....##",
-                b".##..##.",
-                b"..####..",
-                b"...##...",
-                b"..####..",
-                b".##..##.",
-                b"##....##",
-            ],
-            Glyph::Minimize => &[
-                b"......", b"......", b"......", b"......", b"######", b"######",
-            ],
-            Glyph::Maximize => &[
-                b"#########",
-                b"#########",
-                b"#.......#",
-                b"#.......#",
-                b"#.......#",
-                b"#.......#",
-                b"#.......#",
-                b"#########",
-            ],
-            Glyph::Help => &[
-                b".####.", b"##..##", b"....##", b"...##.", b"..##..", b"..##..", b"......",
-                b"..##..",
-            ],
             Glyph::Check => &[
                 b"......#", b".....##", b"#...###", b"##.###.", b"#####..", b".###...", b"..#....",
             ],

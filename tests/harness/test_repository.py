@@ -618,32 +618,38 @@ def test_kernel32_imports_nothing_but_ntdll(builder):
 # on win32k's numbers (table 1: 0x1000 to 0x1FFF).
 WIN32K_CLIENTS = {"user32", "gdi32"}
 
-# A disassembled instruction (llvm-objdump's and GNU objdump's lines alike): its address, its bytes
-# in hex, then a tab and its mnemonic. A GNU line carrying only the rest of a long instruction's
-# bytes has no mnemonic, and is no instruction of its own.
-INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s*((?:[0-9a-f]{2} ?)+)\s*\t\s*\S")
+# A disassembled line (llvm-objdump's and GNU objdump's alike): its address and its bytes in hex,
+# then, for an instruction, a tab and its mnemonic. A GNU line carrying only the rest of a long
+# instruction's bytes has no mnemonic, and is no instruction of its own.
+DISASSEMBLED = re.compile(r"^\s*[0-9a-f]+:\s*((?:[0-9a-f]{2} ?)+)(\s*\t\s*\S)?")
+
+# A win32k service stub, as exportgen lays it out: `mov eax, <0x1000-0x1FFF>`, `lea edx, [esp+4]`,
+# `int 2Eh`.
+STUB = re.compile(rb"\xB8[\x00-\xFF][\x10-\x1F]\x00\x00\x8D\x54\x24\x04\xCD\x2E", re.DOTALL)
 
 
 def int2eh_gates(path: Path) -> tuple[int, int]:
     """A DLL's `int 2Eh` instructions, decoded (objdump's disassembly of its executable sections:
     only an instruction counts, not a CD 2E byte pair inside another one, a call's displacement
-    say): how many are win32k service stubs (`mov eax, <0x1000-0x1FFF>`, `lea edx, [esp+4]`,
-    `int 2Eh`, as exportgen lays them out) and how many are not."""
+    say): how many are win32k service stubs and how many are not.
+
+    The stubs are found in the disassembled bytes rather than in the instructions: the disassembly
+    is a linear sweep, and a jump table the compiler left in the code just before a stub can take
+    the stub's first bytes into its last bogus instruction."""
     tool = shutil.which("llvm-objdump") or shutil.which("objdump")
     assert tool, "no objdump to disassemble the DLLs with (llvm-objdump or binutils' objdump)"
     listing = subprocess.run([tool, "-d", str(path)], capture_output=True, text=True, check=True)
-    code = [found.group(1).split() for line in listing.stdout.splitlines()
-            if (found := INSTRUCTION.match(line))]
-    stubs = others = 0
-    for at, instruction in enumerate(code):
-        if instruction != ["cd", "2e"]:
+    code = bytearray()
+    gates = []
+    for line in listing.stdout.splitlines():
+        if not (found := DISASSEMBLED.match(line)):
             continue
-        mov, lea = code[at - 2] if at >= 2 else [], code[at - 1] if at >= 1 else []
-        number = int("".join(reversed(mov[1:])), 16) if len(mov) == 5 and mov[0] == "b8" else 0
-        stub = 0x1000 <= number <= 0x1FFF and lea == ["8d", "54", "24", "04"]
-        stubs += stub
-        others += not stub
-    return stubs, others
+        instruction = bytes.fromhex(found.group(1))
+        if found.group(2) and instruction == b"\xCD\x2E":
+            gates.append(len(code))
+        code += instruction
+    stubs = {found.end() - 2 for found in STUB.finditer(code)}
+    return len(stubs), sum(gate not in stubs for gate in gates)
 
 
 @pytest.mark.parametrize("dll", [dll for dll in BUILT_DLLS if dll != "ntdll"])

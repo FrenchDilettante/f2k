@@ -46,6 +46,7 @@ pub mod display;
 pub mod draw;
 pub mod edit;
 pub mod focus;
+pub mod frame_control;
 pub mod help;
 pub mod icon;
 pub mod imports;
