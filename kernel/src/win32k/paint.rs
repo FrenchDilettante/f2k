@@ -85,13 +85,24 @@ fn union(a: Rect, b: Rect) -> Rect {
     }
 }
 
-/// `r` moved by (`dx`, `dy`).
+/// `r` moved by (`dx`, `dy`), saturated at i32's ends.
 fn offset(r: Rect, dx: i32, dy: i32) -> Rect {
     Rect {
-        left: r.left + dx,
-        top: r.top + dy,
-        right: r.right + dx,
-        bottom: r.bottom + dy,
+        left: r.left.saturating_add(dx),
+        top: r.top.saturating_add(dy),
+        right: r.right.saturating_add(dx),
+        bottom: r.bottom.saturating_add(dy),
+    }
+}
+
+/// `r` moved back by (`dx`, `dy`), into the coordinates of an origin there, saturated at i32's
+/// ends.
+fn offset_back(r: Rect, dx: i32, dy: i32) -> Rect {
+    Rect {
+        left: r.left.saturating_sub(dx),
+        top: r.top.saturating_sub(dy),
+        right: r.right.saturating_sub(dx),
+        bottom: r.bottom.saturating_sub(dy),
     }
 }
 
@@ -285,7 +296,12 @@ pub fn invalidate(windows: &mut Windows, window: WindowId, rect: Option<Rect>, e
         let client = rect_of(windows.client_rect(w));
         let part = intersect(area, client);
         if !is_empty(&part) {
-            add(windows, w, offset(part, -client.left, -client.top), erase);
+            add(
+                windows,
+                w,
+                offset_back(part, client.left, client.top),
+                erase,
+            );
         }
         reaches_children(windows, w)
     });
@@ -325,7 +341,11 @@ pub fn validate(windows: &mut Windows, window: WindowId, rect: Option<Rect>) {
         let client = rect_of(windows.client_rect(w));
         let cut = match rect {
             None if w == window => None,
-            _ => Some(offset(intersect(area, client), -client.left, -client.top)),
+            _ => Some(offset_back(
+                intersect(area, client),
+                client.left,
+                client.top,
+            )),
         };
         take_out(windows, w, cut);
         reaches_children(windows, w)
@@ -946,5 +966,43 @@ mod tests {
         assert_eq!(subtract(r, rect(-1, 0, 3, 10)), rect(3, 0, 10, 10));
         assert_eq!(subtract(r, rect(2, 2, 4, 4)), r);
         assert_eq!(subtract(r, rect(20, 20, 30, 30)), r);
+    }
+
+    /// InvalidateRect of a rectangle at i32's end, of a window away from the screen's origin:
+    /// the rectangle, moved onto the screen saturated, is outside the client area; nothing is
+    /// invalid.
+    #[test]
+    fn a_rectangle_at_i32s_end_invalidates_nothing() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (w, _) = shown(m, atom, t, 30, 40);
+        let far = rect(i32::MAX - 10, i32::MAX - 10, i32::MAX, i32::MAX);
+        invalidate(&mut m.windows, w, Some(far), true);
+        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
+        validate(&mut m.windows, w, Some(far));
+    }
+
+    /// A window moved to i32's start invalidated whole: its update region is its client area, in
+    /// its own coordinates, exact.
+    #[test]
+    fn a_window_at_i32s_start_is_invalidated_whole() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (w, h) = shown(m, atom, t, 0, 0);
+        let min = i32::MIN;
+        assert_eq!(
+            m.move_window(h, min, min, 320, 200, false, &mut QueuePump),
+            Ok(())
+        );
+        invalidate(&mut m.windows, w, None, true);
+        assert_eq!(
+            update_rect(&mut m.windows, w, false),
+            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY)
+        );
+        validate(&mut m.windows, w, Some(rect(0, 0, 320, 100)));
+        assert_eq!(
+            update_rect(&mut m.windows, w, false),
+            (rect(0, 100, 320, 200), UPDATE_NOT_EMPTY)
+        );
     }
 }

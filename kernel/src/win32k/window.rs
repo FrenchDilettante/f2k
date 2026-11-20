@@ -1678,21 +1678,23 @@ impl Windows {
 
     /// The client rectangle the default window procedure gives the window `id` at the window
     /// rectangle `rect`: the frame its styles and its menu give taken off
-    /// ([`rtl::nonclient::Frame`]).
+    /// ([`rtl::nonclient::Frame`]). The frame is taken off the rectangle moved to the origin, then
+    /// moved back, saturated: a rectangle at i32's ends (SetWindowPos stores one) cannot overflow
+    /// the frame's sums.
     pub fn default_client(&self, id: WindowId, rect: Rect) -> Rect {
         let w = self.at(id);
         let menu = matches!(w.menu, Menu::Handle(_));
         let client = rtl::nonclient::Frame::of(w.style, w.ex_style, menu).client(rtl::gdi::Rect {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
+            left: 0,
+            top: 0,
+            right: rect.right.saturating_sub(rect.left),
+            bottom: rect.bottom.saturating_sub(rect.top),
         });
         Rect {
-            left: client.left,
-            top: client.top,
-            right: client.right,
-            bottom: client.bottom,
+            left: client.left.saturating_add(rect.left),
+            top: client.top.saturating_add(rect.top),
+            right: client.right.saturating_add(rect.left),
+            bottom: client.bottom.saturating_add(rect.top),
         }
     }
 
@@ -2229,8 +2231,8 @@ impl Windows {
             if let Some(parent) = args.parent {
                 if Some(parent) != desktop_window {
                     let p = self.at(parent);
-                    src.x += p.client_rect.left;
-                    src.y += p.client_rect.top;
+                    src.x = src.x.saturating_add(p.client_rect.left);
+                    src.y = src.y.saturating_add(p.client_rect.top);
                 }
             }
             z_order = ZOrder::Bottom;
@@ -2289,16 +2291,16 @@ impl Windows {
                     src.cx = usi.cx as i32;
                     src.cy = usi.cy as i32;
                 } else {
-                    src.cx = rc.right - x;
-                    src.cy = rc.bottom - y;
+                    src.cx = rc.right.saturating_sub(x);
+                    src.cy = rc.bottom.saturating_sub(y);
                 }
             } else if def_pos {
                 // A default position with an app size: keep the window inside the monitor.
                 let m = self.monitors[monitor as usize].rect;
-                let dx = (src.x + src.cx) - m.right;
-                let dy = (src.y + src.cy) - m.bottom;
+                let dx = src.x.saturating_add(src.cx).saturating_sub(m.right);
+                let dy = src.y.saturating_add(src.cy).saturating_sub(m.bottom);
                 if dx > 0 {
-                    x -= dx;
+                    x = x.saturating_sub(dx);
                     src.x = x;
                     if src.x < m.left {
                         src.x = m.left;
@@ -2306,7 +2308,7 @@ impl Windows {
                     }
                 }
                 if dy > 0 {
-                    y -= dy;
+                    y = y.saturating_sub(dy);
                     src.y = y;
                     if src.y < m.top {
                         src.y = m.top;
@@ -2425,8 +2427,8 @@ impl Windows {
             w.window_rect = Rect {
                 left: src.x,
                 top: src.y,
-                right: src.x + src.cx,
-                bottom: src.y + src.cy,
+                right: src.x.saturating_add(src.cx),
+                bottom: src.y.saturating_add(src.cy),
             };
         }
 
@@ -2516,8 +2518,8 @@ impl Windows {
                 if Some(p) != desktop_window {
                     // WM_MOVE's position is client-relative for children.
                     let pc = self.at(p).client_rect;
-                    rc.left -= pc.left;
-                    rc.top -= pc.top;
+                    rc.left = rc.left.saturating_sub(pc.left);
+                    rc.top = rc.top.saturating_sub(pc.top);
                 }
             }
             pump.send(
@@ -3555,7 +3557,7 @@ impl Windows {
             _ => return Ok(()),
         };
         let origin = self.parent_origin(window);
-        let here = offset_rect(self.at(window).window_rect, -origin.0, -origin.1);
+        let here = offset_rect_back(self.at(window).window_rect, origin.0, origin.1);
         {
             let w = self.at_mut(window);
             if minimized {
@@ -3573,8 +3575,8 @@ impl Windows {
                 Rect {
                     left: x,
                     top: y,
-                    right: x + MINIMIZED_SIZE.0,
-                    bottom: y + MINIMIZED_SIZE.1,
+                    right: x.saturating_add(MINIMIZED_SIZE.0),
+                    bottom: y.saturating_add(MINIMIZED_SIZE.1),
                 }
             }
             State::Maximized => {
@@ -3594,8 +3596,8 @@ impl Windows {
             InsertAfter::Top,
             place.left,
             place.top,
-            place.right - place.left,
-            place.bottom - place.top,
+            place.right.saturating_sub(place.left),
+            place.bottom.saturating_sub(place.top),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             pump,
         )
@@ -3627,8 +3629,8 @@ impl Windows {
         Rect {
             left: x,
             top: y,
-            right: x + area.right - area.left + 2 * border,
-            bottom: y + area.bottom - area.top + 2 * border,
+            right: x.saturating_add((area.right - area.left).saturating_add(2 * border)),
+            bottom: y.saturating_add((area.bottom - area.top).saturating_add(2 * border)),
         }
     }
 
@@ -3640,7 +3642,7 @@ impl Windows {
     pub fn window_placement(&self, window: WindowId) -> rtl::window::WindowPlacement {
         let w = self.at(window);
         let origin = self.parent_origin(window);
-        let here = offset_rect(w.window_rect, -origin.0, -origin.1);
+        let here = offset_rect_back(w.window_rect, origin.0, origin.1);
         let minimized = w.style & WS_MINIMIZE != 0;
         let maximized = w.style & WS_MAXIMIZE != 0;
         let show_cmd = if minimized {
@@ -3716,8 +3718,8 @@ impl Windows {
                 InsertAfter::Top,
                 normal.left,
                 normal.top,
-                normal.right - normal.left,
-                normal.bottom - normal.top,
+                normal.right.saturating_sub(normal.left),
+                normal.bottom.saturating_sub(normal.top),
                 SWP_NOZORDER | SWP_NOACTIVATE,
                 pump,
             )?;
@@ -3762,7 +3764,11 @@ impl Windows {
             };
             let client = self.at(window).client_rect;
             let (_, left, top) = began[at];
-            self.offset_descendants(window, client.left - left, client.top - top);
+            self.offset_descendants(
+                window,
+                client.left.saturating_sub(left),
+                client.top.saturating_sub(top),
+            );
             self.set_window_pos_handle(
                 classes,
                 pos.hwnd,
@@ -3825,8 +3831,8 @@ impl Windows {
             flags,
         };
         if flags & SWP_NOMOVE != 0 {
-            pos.x = old.left - origin.0;
-            pos.y = old.top - origin.1;
+            pos.x = old.left.saturating_sub(origin.0);
+            pos.y = old.top.saturating_sub(origin.1);
         }
         if flags & SWP_NOSIZE != 0 {
             pos.cx = old.right - old.left;
@@ -3870,16 +3876,16 @@ impl Windows {
         // The rectangles.
         let mut rect = old;
         if flags & SWP_NOMOVE == 0 {
-            rect.left = pos.x + origin.0;
-            rect.top = pos.y + origin.1;
+            rect.left = pos.x.saturating_add(origin.0);
+            rect.top = pos.y.saturating_add(origin.1);
         }
         let (width, height) = if flags & SWP_NOSIZE == 0 {
             (pos.cx.max(0), pos.cy.max(0))
         } else {
             (old.right - old.left, old.bottom - old.top)
         };
-        rect.right = rect.left + width;
-        rect.bottom = rect.top + height;
+        rect.right = rect.left.saturating_add(width);
+        rect.bottom = rect.top.saturating_add(height);
         let moved = (rect.left, rect.top) != (old.left, old.top);
         let sized = (width, height) != (old.right - old.left, old.bottom - old.top);
         if !moved {
@@ -3896,7 +3902,11 @@ impl Windows {
             }
             client
         } else {
-            offset_rect(old_client, rect.left - old.left, rect.top - old.top)
+            offset_rect(
+                old_client,
+                rect.left.saturating_sub(old.left),
+                rect.top.saturating_sub(old.top),
+            )
         };
         {
             let w = self.at_mut(window);
@@ -3905,8 +3915,8 @@ impl Windows {
         }
         self.offset_descendants(
             window,
-            client.left - old_client.left,
-            client.top - old_client.top,
+            client.left.saturating_sub(old_client.left),
+            client.top.saturating_sub(old_client.top),
         );
 
         // The z-order; a window that keeps its place among its siblings reports SWP_NOZORDER.
@@ -4002,8 +4012,8 @@ impl Windows {
         }
 
         let done = WindowPos {
-            x: rect.left - origin.0,
-            y: rect.top - origin.1,
+            x: rect.left.saturating_sub(origin.0),
+            y: rect.top.saturating_sub(origin.1),
             cx: width,
             cy: height,
             flags: flags | show_call,
@@ -4140,7 +4150,10 @@ impl Windows {
     fn client_position(&self, window: WindowId) -> (i32, i32) {
         let client = self.at(window).client_rect;
         let origin = self.parent_origin(window);
-        (client.left - origin.0, client.top - origin.1)
+        (
+            client.left.saturating_sub(origin.0),
+            client.top.saturating_sub(origin.1),
+        )
     }
 
     /// Move every window below `window` (its children, theirs, and so on) by `dx`, `dy`: their
@@ -4624,7 +4637,6 @@ impl Windows {
     }
 }
 
-/// `rect` moved by `dx`, `dy`.
 /// The rectangle as the drawing code's shape.
 fn rtl_rect(rect: Rect) -> rtl::gdi::Rect {
     rtl::gdi::Rect {
@@ -4635,12 +4647,24 @@ fn rtl_rect(rect: Rect) -> rtl::gdi::Rect {
     }
 }
 
+/// `rect` moved by `dx`, `dy`, saturated at i32's ends.
 fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
     Rect {
-        left: rect.left + dx,
-        top: rect.top + dy,
-        right: rect.right + dx,
-        bottom: rect.bottom + dy,
+        left: rect.left.saturating_add(dx),
+        top: rect.top.saturating_add(dy),
+        right: rect.right.saturating_add(dx),
+        bottom: rect.bottom.saturating_add(dy),
+    }
+}
+
+/// `rect` moved back by `dx`, `dy` (into the coordinates of an origin at (`dx`, `dy`)), saturated
+/// at i32's ends.
+fn offset_rect_back(rect: Rect, dx: i32, dy: i32) -> Rect {
+    Rect {
+        left: rect.left.saturating_sub(dx),
+        top: rect.top.saturating_sub(dy),
+        right: rect.right.saturating_sub(dx),
+        bottom: rect.bottom.saturating_sub(dy),
     }
 }
 
@@ -5044,7 +5068,7 @@ impl WindowManager {
         let w = &self.windows;
         let parent = w.window_of(handle)?;
         let client = w.client_rect(parent);
-        let (x, y) = (x + client.left, y + client.top);
+        let (x, y) = (x.saturating_add(client.left), y.saturating_add(client.top));
         let holds = |r: Rect| r.left <= x && x < r.right && r.top <= y && y < r.bottom;
         if !holds(w.window_rect(parent)) {
             return Ok(None);
@@ -9897,5 +9921,290 @@ mod tests {
         )
         .unwrap();
         assert_eq!(update_of(w, top), None);
+    }
+
+    // --- Coordinates at i32's ends: saturated, never an overflow (the kernel's overflow checks
+    // halt the machine) ---------------------------------------------------------------------------
+
+    /// SetWindowPos(h, 0, 0x7FFFFFF0, 0, 100, 100, SWP_NOZORDER): the window goes where it was
+    /// asked, its right edge saturated at i32::MAX, as Windows stores an extreme rectangle without
+    /// faulting.
+    #[test]
+    fn set_window_pos_saturates_an_extreme_rectangle() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let h = rig::popup(m, atom, t);
+        let WindowManager {
+            windows, classes, ..
+        } = m;
+        let flags = SWP_NOZORDER;
+        assert_eq!(
+            windows.set_window_pos_handle(
+                classes,
+                h,
+                0,
+                0x7FFF_FFF0,
+                0,
+                100,
+                100,
+                flags,
+                &mut QueuePump
+            ),
+            Ok(())
+        );
+        let w = windows.window_of(h).unwrap();
+        assert_eq!(
+            windows.window_rect(w),
+            Rect {
+                left: 0x7FFF_FFF0,
+                top: 0,
+                right: i32::MAX,
+                bottom: 100
+            }
+        );
+    }
+
+    /// A framed window moved and sized at i32's end (its rectangle saturated, 15 by 15): its frame
+    /// is taken off the rectangle as anywhere else, the client area's edges past i32's end
+    /// saturated.
+    #[test]
+    fn a_framed_window_at_i32s_end_has_its_frame() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let h = rig::window_at(m, atom, t, WS_OVERLAPPEDWINDOW, 0, 0, 0, 200, 100);
+        let w = m.windows.window_of(h).unwrap();
+        let near = m.windows.client_rect(w);
+        let at = 0x7FFF_FFF0;
+        assert_eq!(
+            m.move_window(h, at, at, 300, 200, true, &mut QueuePump),
+            Ok(())
+        );
+        assert_eq!(
+            m.windows.client_rect(w),
+            Rect {
+                left: at + near.left,
+                top: i32::MAX,
+                right: i32::MAX - near.left,
+                bottom: i32::MAX
+            }
+        );
+    }
+
+    /// CreateWindowEx at (0x7FFFFFF0, 0x7FFFFFF0), 100 by 100: the window's far edges saturated; a
+    /// child placed past i32's end of its parent's client area, saturated there.
+    #[test]
+    fn create_window_saturates_an_extreme_rectangle() {
+        use crate::win32k::queue::rig;
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let at = 0x7FFF_FFF0;
+        let h = rig::window_at(m, atom, t, WS_POPUP, 0, at, at, 100, 100);
+        let w = m.windows.window_of(h).unwrap();
+        let extreme = Rect {
+            left: at,
+            top: at,
+            right: i32::MAX,
+            bottom: i32::MAX,
+        };
+        assert_eq!(m.windows.window_rect(w), extreme);
+        let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 200, 150, 300, 200);
+        let child = rig::window_at(m, atom, t, WS_CHILD, parent, at, 0, 10, 10);
+        let child = m.windows.window_of(child).unwrap();
+        assert_eq!(
+            m.windows.window_rect(child),
+            Rect {
+                left: i32::MAX,
+                top: 150,
+                right: i32::MAX,
+                bottom: 160
+            }
+        );
+    }
+
+    /// ChildWindowFromPointEx of a point at i32's end, of a window whose client area is away from
+    /// the screen's origin: the point is outside the window.
+    #[test]
+    fn a_point_at_i32s_end_is_outside_every_window() {
+        use crate::win32k::queue::rig;
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 200, 150, 300, 200);
+        rig::window_at(m, atom, t, WS_CHILD | WS_VISIBLE, parent, 10, 20, 50, 30);
+        assert_eq!(
+            m.child_window_from_point(parent, i32::MAX, i32::MAX, 0),
+            Ok(None)
+        );
+        assert_eq!(m.child_window_from_point(parent, 15, i32::MAX, 0), Ok(None));
+    }
+
+    /// A window moved near i32's end carries its children along: one lying past the window's
+    /// right edge is moved with it, its rectangle saturated at i32::MAX.
+    #[test]
+    fn children_moved_past_i32s_end_saturate() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
+        let child = rig::window_at(m, atom, t, WS_CHILD, parent, 300, 0, 50, 10);
+        assert_eq!(
+            m.move_window(parent, 0x7FFF_FF00, 0, 100, 100, true, &mut QueuePump),
+            Ok(())
+        );
+        let child = m.windows.window_of(child).unwrap();
+        assert_eq!(
+            m.windows.window_rect(child),
+            Rect {
+                left: i32::MAX,
+                top: 0,
+                right: i32::MAX,
+                bottom: 10
+            }
+        );
+    }
+
+    /// GetWindowPlacement of a child of a window moved to i32's start (where CreateWindowEx's x
+    /// would be CW_USEDEFAULT): its place in the parent's client coordinates, exact.
+    #[test]
+    fn a_child_at_i32s_start_has_its_placement() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
+        let child = rig::window_at(m, atom, t, WS_CHILD, parent, 10, 20, 30, 40);
+        let (min, size) = (i32::MIN, 100);
+        assert_eq!(
+            m.move_window(parent, min, min, size, size, true, &mut QueuePump),
+            Ok(())
+        );
+        assert_eq!(
+            m.window_placement(child).unwrap().normal,
+            rtl::gdi::Rect {
+                left: 10,
+                top: 20,
+                right: 40,
+                bottom: 60
+            }
+        );
+    }
+
+    /// SetWindowPlacement of a normal rectangle from i32's start to its end: the size saturated,
+    /// the window at the start.
+    #[test]
+    fn set_window_placement_saturates_an_extreme_rectangle() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let h = rig::popup(m, atom, t);
+        let placement = rtl::window::WindowPlacement {
+            length: core::mem::size_of::<rtl::window::WindowPlacement>() as u32,
+            flags: 0,
+            show_cmd: SW_HIDE as u32,
+            min_x: -1,
+            min_y: -1,
+            max_x: -1,
+            max_y: -1,
+            normal: rtl::gdi::Rect {
+                left: i32::MIN,
+                top: i32::MIN,
+                right: i32::MAX,
+                bottom: i32::MAX,
+            },
+        };
+        assert_eq!(
+            m.set_window_placement(h, &placement, &mut QueuePump),
+            Ok(())
+        );
+        let w = m.windows.window_of(h).unwrap();
+        assert_eq!(
+            m.windows.window_rect(w),
+            Rect {
+                left: i32::MIN,
+                top: i32::MIN,
+                right: -1,
+                bottom: -1
+            }
+        );
+    }
+
+    /// A minimized position and a maximized position at i32's end (SetWindowPlacement's): the
+    /// window minimized and maximized there, its far edges saturated.
+    #[test]
+    fn minimized_and_maximized_positions_at_i32s_end_saturate() {
+        use rtl::window::WPF_SETMINPOSITION;
+
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let h = rig::window_at(m, atom, t, WS_OVERLAPPEDWINDOW, 0, 0, 0, 200, 100);
+        let at = i32::MAX - 10;
+        let placement = rtl::window::WindowPlacement {
+            length: core::mem::size_of::<rtl::window::WindowPlacement>() as u32,
+            flags: WPF_SETMINPOSITION,
+            show_cmd: SW_HIDE as u32,
+            min_x: at,
+            min_y: at,
+            max_x: at,
+            max_y: at,
+            normal: rtl::gdi::Rect {
+                left: 0,
+                top: 0,
+                right: 200,
+                bottom: 100,
+            },
+        };
+        assert_eq!(
+            m.set_window_placement(h, &placement, &mut QueuePump),
+            Ok(())
+        );
+        let w = m.windows.window_of(h).unwrap();
+        let far = Rect {
+            left: at,
+            top: at,
+            right: i32::MAX,
+            bottom: i32::MAX,
+        };
+        assert!(m.show_window(h, SW_MINIMIZE, &mut QueuePump).is_ok());
+        assert_eq!(m.windows.window_rect(w), far);
+        assert!(m.show_window(h, SW_SHOWMAXIMIZED, &mut QueuePump).is_ok());
+        assert_eq!(m.windows.window_rect(w), far);
+    }
+
+    /// An EndDeferWindowPos batch moving a window from i32's start to its end, twice: its moves
+    /// saturate.
+    #[test]
+    fn a_deferred_batch_across_i32_saturates() {
+        use crate::win32k::queue::{rig, QueuePump};
+        let (m, atom) = rig::manager();
+        let t = rig::thread(m, 1, 0x10);
+        let h = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
+        rig::window_at(m, atom, t, WS_CHILD, h, 10, 10, 20, 20);
+        let (min, size) = (i32::MIN, 100);
+        assert_eq!(
+            m.move_window(h, min, min, size, size, true, &mut QueuePump),
+            Ok(())
+        );
+        let at = i32::MAX - 200;
+        let pos = WindowPos {
+            hwnd: h,
+            insert_after: 0,
+            x: at,
+            y: at,
+            cx: 100,
+            cy: 100,
+            flags: SWP_NOZORDER,
+        };
+        assert_eq!(m.end_defer_window_pos(&[pos, pos], &mut QueuePump), Ok(()));
+        let w = m.windows.window_of(h).unwrap();
+        assert_eq!(
+            m.windows.window_rect(w),
+            Rect {
+                left: at,
+                top: at,
+                right: at + 100,
+                bottom: at + 100
+            }
+        );
     }
 }

@@ -236,8 +236,17 @@ pub fn draw_run<B: Storage, S: Surface + ?Sized>(
             let mut at = run_start;
             for (&glyph, &width) in glyphs.iter().zip(widths) {
                 table.with_glyph(key, glyph, |metrics, bits| {
-                    let top = text.row() + cell.ascent - metrics.origin_y;
-                    text.draw_bits(screen, at + metrics.origin_x, top, metrics, bits);
+                    let top = text
+                        .row()
+                        .saturating_add(cell.ascent)
+                        .saturating_sub(metrics.origin_y);
+                    text.draw_bits(
+                        screen,
+                        at.saturating_add(metrics.origin_x),
+                        top,
+                        metrics,
+                        bits,
+                    );
                 });
                 at = at.saturating_add(width);
             }
@@ -945,7 +954,7 @@ fn characters_at(
 ) -> Result<&[u16], NtStatus> {
     if characters.is_null() {
         for (index, unit) in units.iter_mut().enumerate() {
-            *unit = (first as usize + done + index).min(0xFFFF) as u16;
+            *unit = (first as usize).saturating_add(done + index).min(0xFFFF) as u16;
         }
     } else {
         characters.offset(2 * done as u32).read_units(units)?;

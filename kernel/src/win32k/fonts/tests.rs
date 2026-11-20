@@ -581,3 +581,37 @@ fn raster_faces_enumerate_as_raster_fonts() {
         .collect();
     assert_eq!(families, ["Tahoma", "MS Sans Serif", "System", "Marlett"]);
 }
+
+/// A run at i32's end (ExtTextOut's row and pen there): the glyphs' places saturate, nothing is
+/// drawn, the pen's column saturated.
+#[test]
+fn a_run_at_i32s_end_saturates() {
+    let mut table = table();
+    let key = key_for(&table, -11, 400);
+    let cell = table.cell(key).unwrap();
+    let mut screen = Framebuffer::new(Memory(vec![0; 40 * 20]), Geometry::packed(40, 20));
+    screen.clear(WHITE);
+    let clip = rtl::gdi::Rect {
+        left: 0,
+        top: 0,
+        right: 40,
+        bottom: 20,
+    };
+    let text = TextOut::new(clip, 0, WHITE, false, i32::MAX - 1, 0, None);
+    let end = draw_run(
+        &mut table,
+        Some(&mut screen),
+        &text,
+        key,
+        cell,
+        i32::MAX - 1,
+        &wide("Wg"),
+        None,
+    );
+    assert_eq!(end, i32::MAX);
+    for y in 0..20 {
+        for x in 0..40 {
+            assert_eq!(screen.get_pixel(x, y), Some(WHITE), "({x}, {y})");
+        }
+    }
+}

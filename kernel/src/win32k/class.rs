@@ -1660,7 +1660,7 @@ impl Registry {
         }
         let base = self.classes.at(window.class).base;
         let extra = self.classes.at(base).cb_cls_extra;
-        if index < 0 || index + 2 > extra {
+        if index < 0 || index.checked_add(2).is_none_or(|end| end > extra) {
             return Err(Failure::InvalidIndex);
         }
         let old = self.read_extra_word(base, index as usize);
@@ -1702,7 +1702,7 @@ impl Registry {
         }
         let base = self.classes.at(window.class).base;
         let extra = self.classes.at(base).cb_cls_extra;
-        if index + 4 > extra {
+        if index.checked_add(4).is_none_or(|end| end > extra) {
             return Err(Failure::InvalidIndex);
         }
         let old = self.read_extra_dword(base, index as usize);
@@ -1733,7 +1733,7 @@ impl Registry {
         }
         let base = self.classes.at(window.class).base;
         let extra = self.classes.at(base).cb_cls_extra;
-        if index + 4 > extra {
+        if index.checked_add(4).is_none_or(|end| end > extra) {
             return Err(Failure::InvalidIndex);
         }
         let old = self.read_extra_dword(base, index as usize);
@@ -3510,6 +3510,51 @@ mod tests {
             .set_class_long(&wnd, OWNER, 6, 0, MenuArg::None, None, &[], &mut |_, _| {})
             .unwrap_err();
         assert_eq!(err, Failure::InvalidIndex, "6 + 4 > 8");
+    }
+
+    /// SetClassLong, SetClassLongPtr and SetClassWord at an index near i32::MAX (0x7FFFFFFE):
+    /// past the extra area, ERROR_INVALID_INDEX (1413), not an overflow.
+    #[test]
+    fn an_index_at_i32s_end_is_past_the_extra_area() {
+        let registry = registry();
+        let mut wc = wnd_class();
+        wc.cb_cls_extra = 8;
+        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
+        let wnd = window(id);
+        for index in [0x7FFF_FFFE, i32::MAX] {
+            let err = registry
+                .set_class_long(
+                    &wnd,
+                    OWNER,
+                    index,
+                    0,
+                    MenuArg::None,
+                    None,
+                    &[],
+                    &mut |_, _| {},
+                )
+                .unwrap_err();
+            assert_eq!(err, Failure::InvalidIndex);
+            assert_eq!(err.code(), 1413);
+            let Fixture { registry, handles } = &mut *registry;
+            let err = registry
+                .set_class_long_ptr(
+                    handles,
+                    &wnd,
+                    OWNER,
+                    index,
+                    0,
+                    MenuArg::None,
+                    None,
+                    &[],
+                    &mut |_, _| {},
+                )
+                .unwrap_err();
+            assert_eq!(err, Failure::InvalidIndex);
+            let err = registry.set_class_word(&wnd, OWNER, index, 0).unwrap_err();
+            assert_eq!(err, Failure::InvalidIndex);
+        }
     }
 
     /// The menu-name change copies the new name into the record (a string is copied, an empty
