@@ -277,6 +277,40 @@ impl Maximum {
     }
 }
 
+/// Where a reservation without an address goes: the lowest free range below `end`, or with
+/// `top_down` the highest (NtAllocateVirtualMemory's ZeroBits and MEM_TOP_DOWN).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Placement {
+    pub end: u32,
+    pub top_down: bool,
+}
+
+/// The most zero bits a placement takes (Windows 2000's MM_MAXIMUM_ZERO_BITS).
+pub const MAXIMUM_ZERO_BITS: u32 = 21;
+
+impl Placement {
+    /// Anywhere in the application range, lowest first.
+    pub const ANYWHERE: Placement = Placement {
+        end: USER_HIGH,
+        top_down: false,
+    };
+
+    /// The placement of a reservation whose base must have its `zero_bits` high bits clear (none:
+    /// anywhere), top-down or not; none past [`MAXIMUM_ZERO_BITS`]. The highest address is
+    /// 0xFFFFFFFF shifted right by the zero bits, as Windows 2000 takes it, within the application
+    /// range.
+    pub fn of(zero_bits: u32, top_down: bool) -> Option<Placement> {
+        if zero_bits > MAXIMUM_ZERO_BITS {
+            return None;
+        }
+        let end = match zero_bits {
+            0 => USER_HIGH,
+            bits => ((u32::MAX >> bits) as u64 + 1).min(USER_HIGH as u64) as u32,
+        };
+        Some(Placement { end, top_down })
+    }
+}
+
 /// One reservation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Region {
@@ -378,6 +412,23 @@ impl AddressSpace {
         self.views.iter().any(Option::is_none)
     }
 
+    /// Record the view just mapped at `base` of `mapping`, in the same hold of the space as the
+    /// check for room: false when the table is full — another thread of the process took its last
+    /// record since the mapper looked — and the view's region is released then, its pages' holds
+    /// with it, so the mapper is left nothing to undo but the reference it took for the view.
+    pub fn record_view(
+        &mut self,
+        pages: &mut impl Pages,
+        base: u32,
+        mapping: crate::ob::Mapping,
+    ) -> bool {
+        if self.add_view(base, mapping) {
+            return true;
+        }
+        let _ = self.release(pages, base);
+        false
+    }
+
     /// Record a view mapped at `base` of `mapping`; false when the view table is full.
     pub fn add_view(&mut self, base: u32, mapping: crate::ob::Mapping) -> bool {
         match self.views.iter_mut().find(|view| view.is_none()) {
@@ -450,19 +501,36 @@ impl AddressSpace {
             .any(|r| (base as u64) < r.base as u64 + r.size as u64 && (r.base as u64) < end)
     }
 
-    /// The lowest granularity-aligned base where `size` bytes fit between the regions.
-    fn free_range(&self, size: u32) -> Option<u32> {
+    /// A granularity-aligned base where `size` bytes fit between the regions, below `placement`'s
+    /// end: the lowest, or the highest for a top-down placement.
+    fn free_range(&self, size: u32, placement: Placement) -> Option<u32> {
+        let end = placement.end as u64;
+        let meets = |candidate: u64| {
+            self.regions.iter().flatten().filter(move |r| {
+                candidate < r.base as u64 + r.size as u64
+                    && (r.base as u64) < candidate + size as u64
+            })
+        };
+        if placement.top_down {
+            let mut candidate = end.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+            loop {
+                if candidate < USER_LOW as u64 {
+                    return None;
+                }
+                match meets(candidate).map(|r| r.base as u64).min() {
+                    None => return Some(candidate as u32),
+                    Some(below) => {
+                        candidate = below.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+                    }
+                }
+            }
+        }
         let mut candidate = USER_LOW as u64;
         loop {
-            let end = candidate + size as u64;
-            if end > USER_HIGH as u64 {
+            if candidate + size as u64 > end {
                 return None;
             }
-            match self
-                .regions
-                .iter()
-                .flatten()
-                .filter(|r| candidate < r.base as u64 + r.size as u64 && (r.base as u64) < end)
+            match meets(candidate)
                 .map(|r| r.base as u64 + r.size as u64)
                 .max()
             {
@@ -497,6 +565,19 @@ impl AddressSpace {
         protect: u32,
         kind: Kind,
     ) -> Result<u32, VmError> {
+        self.reserve_placed(address, Placement::ANYWHERE, size, protect, kind)
+    }
+
+    /// [`reserve`](Self::reserve), a reservation without an address taking a free range as
+    /// `placement` places it.
+    pub fn reserve_placed(
+        &mut self,
+        address: Option<u32>,
+        placement: Placement,
+        size: u32,
+        protect: u32,
+        kind: Kind,
+    ) -> Result<u32, VmError> {
         if size == 0 {
             return Err(VmError::InvalidParameter);
         }
@@ -510,7 +591,9 @@ impl AddressSpace {
                 if rounded > (USER_HIGH - USER_LOW) as u64 {
                     return Err(VmError::NoMemory);
                 }
-                let base = self.free_range(rounded as u32).ok_or(VmError::NoMemory)?;
+                let base = self
+                    .free_range(rounded as u32, placement)
+                    .ok_or(VmError::NoMemory)?;
                 (base, base as u64 + rounded)
             }
         };
@@ -543,6 +626,9 @@ impl AddressSpace {
 
     /// Commit the pages `[address, address + size)` covers with `protect`: fresh pages zeroed,
     /// committed ones keeping their contents. They must lie in one region. Returns the first page.
+    /// All or nothing, as Windows 2000's commit charges the whole range before it touches a page:
+    /// the fresh pages' frames are all taken first, so running out of them
+    /// (ERROR_NOT_ENOUGH_MEMORY) gives back those taken and leaves every page as it was.
     pub fn commit(
         &mut self,
         pages: &mut impl Pages,
@@ -551,14 +637,31 @@ impl AddressSpace {
         protect: u32,
     ) -> Result<u32, VmError> {
         let (region, start, end) = self.span(address, size)?;
+        // The frames, chained through their first words until they are mapped.
+        let mut chain = 0;
+        let mut taken = 0;
+        let mut va = start;
+        while va < end {
+            if decode(pages.entry(va)).is_none() {
+                let Some(frame) = pages.zeroed_frame() else {
+                    release_chain(pages, chain, taken);
+                    return Err(VmError::NoMemory);
+                };
+                pages.set_frame_word(frame, 0, chain);
+                (chain, taken) = (frame, taken + 1);
+            }
+            va += PAGE;
+        }
         let mut va = start;
         while va < end {
             let (frame, protect) = match decode(pages.entry(va)) {
                 Some((frame, _)) => (frame, settle(region.kind, pages, frame, protect)),
-                None => match pages.zeroed_frame() {
-                    Some(frame) => (frame, protect),
-                    None => return Err(VmError::NoMemory),
-                },
+                None => {
+                    let frame = chain;
+                    chain = pages.frame_word(frame, 0);
+                    pages.set_frame_word(frame, 0, 0);
+                    (frame, protect)
+                }
             };
             pages.set_entry(va, encode(frame, protect));
             va += PAGE;
@@ -753,6 +856,16 @@ impl AddressSpace {
     }
 }
 
+/// Give back the `count` frames chained from `chain` through their first words (a commit that ran
+/// out of frames).
+fn release_chain(pages: &mut impl Pages, mut chain: u32, count: u32) {
+    for _ in 0..count {
+        let next = pages.frame_word(chain, 0);
+        pages.free_frame(chain);
+        chain = next;
+    }
+}
+
 /// The protection a committed page of a `kind` region holding `frame` takes when given `protect`:
 /// a writable protection over a frame others hold (a system DLL's page, an image's, the shared data
 /// page, a section's frame) is copy-on-write, so the write stays the process's — unless the page is
@@ -922,7 +1035,8 @@ mod tests {
     use super::*;
 
     /// Page tables as a map, frames numbered from 1 MiB: their extra holders, their words and their
-    /// contents (a frame's first word stands for its contents), and the frames given back.
+    /// contents (a frame's first word stands for its contents), the frames given back, and how many
+    /// more frames there are to give (none: no end).
     #[derive(Default)]
     struct Fake {
         entries: HashMap<u32, u32>,
@@ -930,6 +1044,7 @@ mod tests {
         freed: Vec<u32>,
         holders: HashMap<u32, u32>,
         words: HashMap<(u32, u32), u32>,
+        budget: Option<u32>,
     }
 
     impl Pages for Fake {
@@ -942,6 +1057,9 @@ mod tests {
         }
 
         fn zeroed_frame(&mut self) -> Option<u32> {
+            if let Some(budget) = &mut self.budget {
+                *budget = budget.checked_sub(1)?;
+            }
             self.next += 1;
             Some(0x0010_0000 + self.next * PAGE)
         }
@@ -1468,5 +1586,173 @@ mod tests {
             USER_HIGH - USER_LOW
         );
         assert!(vm.has_view_room());
+    }
+
+    /// A commit is all or nothing: one that runs out of frames midway gives back every frame it
+    /// took, commits no page, and leaves the committed pages it covered as they were (their
+    /// protection too); with the frames to spare it commits the range, its fresh pages zeroed.
+    #[test]
+    fn a_commit_that_runs_out_of_frames_commits_nothing() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x8000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit(&mut pages, base + 0x2000, PAGE, PAGE_READONLY)
+            .unwrap();
+        let kept = vm.frame_at(&pages, base + 0x2000).unwrap();
+        pages.set_frame_word(kept, 0, 42);
+        pages.budget = Some(3);
+        assert_eq!(
+            vm.commit(&mut pages, base, 0x8000, PAGE_READWRITE),
+            Err(VmError::NoMemory)
+        );
+        assert_eq!(pages.freed.len(), 3, "the frames it took went back");
+        assert_eq!(pages.budget, Some(0));
+        for page in (0..8).filter(|&page| page != 2) {
+            assert_eq!(vm.frame_at(&pages, base + page * PAGE), None, "page {page}");
+        }
+        let info = vm.query(&pages, base + 0x2000);
+        assert_eq!(
+            (info.state, info.protect, info.size),
+            (MEM_COMMIT, PAGE_READONLY, PAGE)
+        );
+        assert_eq!(pages.frame_word(kept, 0), 42);
+        assert_eq!(vm.query(&pages, base).size, 0x2000);
+
+        // Seven fresh pages, seven frames: the commit is whole.
+        pages.budget = Some(7);
+        assert_eq!(
+            vm.commit(&mut pages, base, 0x8000, PAGE_READWRITE),
+            Ok(base)
+        );
+        let info = vm.query(&pages, base);
+        assert_eq!(
+            (info.state, info.protect, info.size),
+            (MEM_COMMIT, PAGE_READWRITE, 0x8000)
+        );
+        assert_eq!(
+            pages.frame_word(kept, 0),
+            42,
+            "a committed page keeps its contents"
+        );
+        for page in (0..8).filter(|&page| page != 2) {
+            let frame = vm.frame_at(&pages, base + page * PAGE).unwrap();
+            assert_eq!(pages.frame_word(frame, 0), 0, "page {page} is zeroed");
+        }
+        assert_eq!(pages.budget, Some(0));
+    }
+
+    /// Placements: a reservation without an address takes the lowest free range below the zero
+    /// bits' limit, or the highest with top-down; the zero bits go up to 21.
+    #[test]
+    fn placements_bound_and_order_the_free_ranges() {
+        let mut vm = space();
+        let pages = Fake::default();
+        assert_eq!(Placement::of(0, false), Some(Placement::ANYWHERE));
+        assert_eq!(Placement::of(1, false), Some(Placement::ANYWHERE));
+        assert_eq!(
+            Placement::of(2, true),
+            Some(Placement {
+                end: 0x4000_0000,
+                top_down: true
+            })
+        );
+        assert_eq!(Placement::of(21, false).map(|p| p.end), Some(0x800));
+        assert_eq!(Placement::of(22, false), None);
+
+        let top = Placement {
+            top_down: true,
+            ..Placement::ANYWHERE
+        };
+        let high = vm
+            .reserve_placed(None, top, 0x3000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        assert_eq!(high, USER_HIGH - GRANULARITY);
+        let next = vm
+            .reserve_placed(None, top, 0x1_8000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        assert_eq!(next, high - 0x2_0000, "the highest granule it fits below");
+        let below = Placement::of(2, true).unwrap();
+        assert_eq!(
+            vm.reserve_placed(None, below, PAGE, PAGE_READWRITE, Kind::Private),
+            Ok(0x3FFF_0000)
+        );
+        assert_eq!(
+            vm.reserve_placed(
+                None,
+                Placement::of(3, false).unwrap(),
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private
+            ),
+            Ok(USER_LOW)
+        );
+        assert_eq!(
+            vm.reserve_placed(
+                Some(0x7000_0000),
+                below,
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private
+            ),
+            Ok(0x7000_0000),
+            "an address given is taken as given"
+        );
+        assert_eq!(
+            vm.reserve_placed(
+                None,
+                Placement::of(21, false).unwrap(),
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private
+            ),
+            Err(VmError::NoMemory),
+            "no room below 2 KiB"
+        );
+        assert_eq!(
+            vm.reserve_placed(
+                None,
+                Placement::of(21, true).unwrap(),
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private
+            ),
+            Err(VmError::NoMemory)
+        );
+        assert_eq!(vm.query(&pages, high).state, MEM_RESERVE);
+    }
+
+    /// A view recorded once its pages are mapped: when another thread took the table's last
+    /// record meanwhile, the view's region goes, its pages' holds on the section's frames with it.
+    #[test]
+    fn a_view_the_table_has_no_room_for_goes() {
+        use crate::ob::{Mapping, ObjectId, ObjectType};
+        let section = Mapping::Section(ObjectId {
+            kind: ObjectType::Section,
+            index: 1,
+            generation: 0,
+        });
+        let mut vm = space();
+        let mut pages = Fake::default();
+        for index in 0..VIEWS as u32 {
+            assert!(vm.add_view(0x4000_0000 + index * GRANULARITY, section));
+        }
+        let view = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
+            .unwrap();
+        pages.holders.insert(0x0070_0000, 0);
+        vm.map_shared(&mut pages, view, 0x0070_0000, PAGE_READWRITE)
+            .unwrap();
+        assert!(!vm.record_view(&mut pages, view, section));
+        assert_eq!(vm.query(&pages, view).state, MEM_FREE);
+        assert!(!pages.frame_shared(0x0070_0000), "the view's hold went");
+        assert!(!pages.freed.contains(&0x0070_0000), "the section keeps it");
+        vm.take_view(0x4000_0000);
+        let view = vm
+            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
+            .unwrap();
+        assert!(vm.record_view(&mut pages, view, section));
+        assert_eq!(vm.view_at(view), Some(section));
     }
 }

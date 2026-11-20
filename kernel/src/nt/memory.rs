@@ -39,8 +39,9 @@ use crate::mem::vm::{
 };
 use crate::status::*;
 
-/// NtAllocateVirtualMemory's other allocation types: allocate top-down (taken as a hint, never
-/// honored), and reset (the pages' contents no longer matter; nothing to do without a paging file).
+/// NtAllocateVirtualMemory's other allocation types: allocate top-down (a reservation without an
+/// address takes the highest free range), and reset (the pages' contents no longer matter; nothing
+/// to do without a paging file).
 const MEM_TOP_DOWN: u32 = 0x10_0000;
 const MEM_RESET: u32 = 0x8_0000;
 /// NtFreeVirtualMemory's operations.
@@ -77,11 +78,24 @@ fn page_span(address: u32, size: u32) -> (u32, u64) {
     )
 }
 
-/// NtAllocateVirtualMemory's argument checks, before anything is looked at: the allocation type,
-/// the protection, the address, the size.
-fn check_allocation(address: u32, size: u32, kind: u32, protect: u32) -> Result<(), NtStatus> {
+/// NtAllocateVirtualMemory's argument checks, before anything is looked at: the zero bits (at
+/// most 21: STATUS_INVALID_PARAMETER_3), the allocation type (a commit, a reservation or a reset,
+/// MEM_RESET only alone: STATUS_INVALID_PARAMETER_5), the protection (checked for a reset too,
+/// which ignores it), the address, the size. Where a reservation without an address goes.
+fn check_allocation(
+    address: u32,
+    zero_bits: u32,
+    size: u32,
+    kind: u32,
+    protect: u32,
+) -> Result<vm::Placement, NtStatus> {
+    let placement =
+        vm::Placement::of(zero_bits, kind & MEM_TOP_DOWN != 0).ok_or(STATUS_INVALID_PARAMETER_3)?;
     let known = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_RESET;
-    if kind & !known != 0 || kind & (MEM_COMMIT | MEM_RESERVE) == 0 {
+    if kind & !known != 0
+        || kind & (MEM_COMMIT | MEM_RESERVE | MEM_RESET) == 0
+        || kind & MEM_RESET != 0 && kind != MEM_RESET
+    {
         return Err(STATUS_INVALID_PARAMETER_5);
     }
     if !vm::valid_protect(protect) {
@@ -93,7 +107,7 @@ fn check_allocation(address: u32, size: u32, kind: u32, protect: u32) -> Result<
     if size == 0 {
         return Err(STATUS_INVALID_PARAMETER_4);
     }
-    Ok(())
+    Ok(placement)
 }
 
 /// A commit inside a mapped view: its pages (the first, and the bytes they span) and what the view
@@ -114,12 +128,13 @@ pub struct ViewCommit {
 pub fn view_commit(
     space: &AddressSpace,
     address: u32,
+    zero_bits: u32,
     size: u32,
     kind: u32,
     protect: u32,
 ) -> Result<Option<ViewCommit>, NtStatus> {
-    check_allocation(address, size, kind, protect)?;
-    if kind & MEM_RESERVE != 0 || address == 0 {
+    check_allocation(address, zero_bits, size, kind, protect)?;
+    if kind & MEM_RESERVE != 0 || kind == MEM_RESET || address == 0 {
         return Ok(None);
     }
     let Some(region) = space
@@ -152,19 +167,27 @@ pub fn settle_view_commit(commit: ViewCommit, paging_file: bool) -> Result<(u32,
 }
 
 /// NtAllocateVirtualMemory's rules: a reservation (committed whole when MEM_COMMIT rides along),
-/// or a commit inside a private one (a commit without an address reserves too). The base and the
-/// size the call settled on: the reservation's, or the committed pages'. A commit inside a view is
-/// [`view_commit`]'s. A commit anywhere else — the kernel's own regions included, where a TEB the
-/// kernel has yet to map for a thread lies — is STATUS_CONFLICTING_ADDRESSES.
+/// or a commit inside a private one (a commit without an address reserves too), or a reset. The
+/// base and the size the call settled on: the reservation's, or the committed or reset pages'. A
+/// reservation without an address takes the lowest free range below the zero bits' limit, the
+/// highest with MEM_TOP_DOWN. A commit is all or nothing: one that runs out of memory
+/// (STATUS_NO_MEMORY) leaves every page as it was, and a reservation it came with goes. A commit
+/// inside a view is [`view_commit`]'s. A commit anywhere else — the kernel's own regions included,
+/// where a TEB the kernel has yet to map for a thread lies — is STATUS_CONFLICTING_ADDRESSES, and
+/// so is a reset ([`reset`]).
 pub fn allocate(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
     address: u32,
+    zero_bits: u32,
     size: u32,
     kind: u32,
     protect: u32,
 ) -> Result<(u32, u32), NtStatus> {
-    check_allocation(address, size, kind, protect)?;
+    let placement = check_allocation(address, zero_bits, size, kind, protect)?;
+    if kind == MEM_RESET {
+        return reset(space, address, size);
+    }
     let refused = |error| match error {
         VmError::InvalidAddress => STATUS_CONFLICTING_ADDRESSES,
         VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
@@ -172,8 +195,9 @@ pub fn allocate(
     };
     if kind & MEM_RESERVE != 0 || address == 0 {
         let base = space
-            .reserve(
+            .reserve_placed(
                 (address != 0).then_some(address),
+                placement,
                 size,
                 protect,
                 Kind::Private,
@@ -197,6 +221,23 @@ pub fn allocate(
         .map_err(refused)?;
     let (_, end) = page_span(address, size);
     Ok((start, (end - start as u64) as u32))
+}
+
+/// A reset (MEM_RESET alone): the pages `[address, address + size)` covers, inside one private
+/// region, their contents no longer the program's concern. Without a paging file there is nothing
+/// to discard: the pages stay as they are, committed or reserved. Their first page and the span's
+/// size. Pages outside a private region — free memory, a view, an image, the kernel's own regions —
+/// are STATUS_CONFLICTING_ADDRESSES, as a commit there is.
+pub fn reset(space: &AddressSpace, address: u32, size: u32) -> Result<(u32, u32), NtStatus> {
+    let (start, end) = page_span(address, size);
+    match space.region_at(start) {
+        Some(region)
+            if region.kind == Kind::Private && end <= region.base as u64 + region.size as u64 =>
+        {
+            Ok((start, (end - start as u64) as u32))
+        }
+        _ => Err(STATUS_CONFLICTING_ADDRESSES),
+    }
 }
 
 /// NtFreeVirtualMemory's rules: a release names a private region's base with no size; a decommit
@@ -630,21 +671,21 @@ fn check_process(_call: &mut NtCall, process: Handle, _access: u32) -> Result<()
 
 /// NtAllocateVirtualMemory (see [`allocate`], and [`view_commit`] for a commit inside a view,
 /// whose section is consulted once the address space is released: its lock is never held across
-/// the object directory's); the zero-bits constraint is not applied.
+/// the object directory's).
 pub fn allocate_virtual_memory(
     call: &mut NtCall,
     process: Handle,
     base: UserPtr<u32>,
-    _zero_bits: u32,
+    zero_bits: u32,
     size: UserPtr<u32>,
     kind: u32,
     protect: u32,
 ) -> NtResult {
     let (address, length) = (capture(base)?, capture(size)?);
     let allocated = with_space(call, process, |space, pages| {
-        match view_commit(space, address, length, kind, protect)? {
+        match view_commit(space, address, zero_bits, length, kind, protect)? {
             Some(commit) => Ok(Err(commit)),
-            None => allocate(space, pages, address, length, kind, protect).map(Ok),
+            None => allocate(space, pages, address, zero_bits, length, kind, protect).map(Ok),
         }
     })?;
     let (start, extent) = match allocated {
@@ -764,14 +805,15 @@ mod tests {
         assert_eq!(&bytes[24..], &[7, 0, 0, 0]);
     }
 
-    /// Page tables as a map, frames numbered from 1 MiB: their extra holders and their first words
-    /// (a frame's contents).
+    /// Page tables as a map, frames numbered from 1 MiB: their extra holders, their first words (a
+    /// frame's contents), and how many more frames there are to give (none: no end).
     #[derive(Default)]
     struct Fake {
         entries: HashMap<u32, u32>,
         next: u32,
         holders: HashMap<u32, u32>,
         words: HashMap<u32, u32>,
+        budget: Option<u32>,
     }
 
     impl Pages for Fake {
@@ -784,11 +826,21 @@ mod tests {
         }
 
         fn zeroed_frame(&mut self) -> Option<u32> {
+            if let Some(budget) = &mut self.budget {
+                *budget = budget.checked_sub(1)?;
+            }
             self.next += 1;
             Some(0x10_0000 + self.next * PAGE)
         }
 
         fn free_frame(&mut self, frame: u32) {
+            if let Some(budget) = self
+                .budget
+                .as_mut()
+                .filter(|_| !self.holders.contains_key(&frame))
+            {
+                *budget += 1;
+            }
             if let Some(extra) = self.holders.get_mut(&frame).filter(|extra| **extra > 0) {
                 *extra -= 1;
             }
@@ -1020,19 +1072,19 @@ mod tests {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         let rw = vm::PAGE_READWRITE;
         assert_eq!(
-            allocate(&mut space, &mut pages, 0, 0, MEM_RESERVE, rw),
+            allocate(&mut space, &mut pages, 0, 0, 0, MEM_RESERVE, rw),
             Err(STATUS_INVALID_PARAMETER_4)
         );
         assert_eq!(
-            error(allocate(&mut space, &mut pages, 0, 0, MEM_RESERVE, rw)),
+            error(allocate(&mut space, &mut pages, 0, 0, 0, MEM_RESERVE, rw)),
             87
         );
         assert_eq!(
-            allocate(&mut space, &mut pages, 0, 4096, MEM_RESERVE, 7),
+            allocate(&mut space, &mut pages, 0, 0, 4096, MEM_RESERVE, 7),
             Err(STATUS_INVALID_PAGE_PROTECTION)
         );
         assert_eq!(
-            error(allocate(&mut space, &mut pages, 0, 4096, MEM_RESERVE, 7)),
+            error(allocate(&mut space, &mut pages, 0, 0, 4096, MEM_RESERVE, 7)),
             87
         );
         assert_eq!(
@@ -1040,6 +1092,7 @@ mod tests {
                 &mut space,
                 &mut pages,
                 0x8000_0000,
+                0,
                 4096,
                 MEM_RESERVE,
                 rw
@@ -1051,6 +1104,7 @@ mod tests {
                 &mut space,
                 &mut pages,
                 0x4000_0000,
+                0,
                 4096,
                 MEM_COMMIT,
                 rw
@@ -1058,7 +1112,8 @@ mod tests {
             487
         );
         assert_eq!(error(query(&space, &pages, 0x8000_0000)), 87);
-        let (big, size) = allocate(&mut space, &mut pages, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
+        let (big, size) =
+            allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
         assert_eq!(size, 0x10_0000);
         assert_eq!(
             error(free(&mut space, &mut pages, big + 0x1_0000, 0, MEM_RELEASE)),
@@ -1074,6 +1129,7 @@ mod tests {
                 &mut space,
                 &mut pages,
                 0x2000_0000,
+                0,
                 0x1_0000,
                 MEM_RESERVE,
                 rw
@@ -1085,6 +1141,7 @@ mod tests {
                 &mut space,
                 &mut pages,
                 0x2000_0000,
+                0,
                 0x1_0000,
                 MEM_RESERVE,
                 rw
@@ -1098,6 +1155,7 @@ mod tests {
                 &mut space,
                 &mut pages,
                 0x3000_1234,
+                0,
                 0x1000,
                 MEM_RESERVE | MEM_COMMIT,
                 rw
@@ -1111,12 +1169,13 @@ mod tests {
     fn commits_and_decommits_report_their_pages() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         let rw = vm::PAGE_READWRITE;
-        let (base, _) = allocate(&mut space, &mut pages, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
+        let (base, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
         assert_eq!(
             allocate(
                 &mut space,
                 &mut pages,
                 base + 0x1_0010,
+                0,
                 0x1000,
                 MEM_COMMIT,
                 rw
@@ -1173,7 +1232,7 @@ mod tests {
             generation: 0,
         });
         assert!(space.add_view(view, section));
-        let commit = view_commit(&space, view + 0x1800, 0x1000, MEM_COMMIT, rw).unwrap();
+        let commit = view_commit(&space, view + 0x1800, 0, 0x1000, MEM_COMMIT, rw).unwrap();
         assert_eq!(
             commit,
             Some(ViewCommit {
@@ -1193,29 +1252,29 @@ mod tests {
         );
         assert_eq!(rtl::status::dos_error(STATUS_ALREADY_COMMITTED.0), 5);
         assert_eq!(
-            view_commit(&space, view + 0xF000, 0x2000, MEM_COMMIT, rw),
+            view_commit(&space, view + 0xF000, 0, 0x2000, MEM_COMMIT, rw),
             Err(STATUS_CONFLICTING_ADDRESSES)
         );
         assert_eq!(
-            view_commit(&space, view, 0x1000, MEM_COMMIT, 7),
+            view_commit(&space, view, 0, 0x1000, MEM_COMMIT, 7),
             Err(STATUS_INVALID_PAGE_PROTECTION)
         );
         assert_eq!(
-            view_commit(&space, view, 0x1000, MEM_COMMIT | MEM_RESERVE, rw),
+            view_commit(&space, view, 0, 0x1000, MEM_COMMIT | MEM_RESERVE, rw),
             Ok(None)
         );
         let private = space.reserve(None, 0x1_0000, rw, Kind::Private).unwrap();
         assert_eq!(
-            view_commit(&space, private, 0x1000, MEM_COMMIT, rw),
+            view_commit(&space, private, 0, 0x1000, MEM_COMMIT, rw),
             Ok(None)
         );
         assert_eq!(
-            view_commit(&space, 0x6000_0000, 0x1000, MEM_COMMIT, rw),
+            view_commit(&space, 0x6000_0000, 0, 0x1000, MEM_COMMIT, rw),
             Ok(None)
         );
         let image = space.reserve(None, 0x1_0000, rw, Kind::Image).unwrap();
         assert_eq!(
-            view_commit(&space, image, 0x1000, MEM_COMMIT, rw)
+            view_commit(&space, image, 0, 0x1000, MEM_COMMIT, rw)
                 .map(|commit| commit.unwrap().mapping),
             Ok(None),
             "an image the space records no view of"
@@ -1248,7 +1307,7 @@ mod tests {
                 space.commit(&mut pages, address, PAGE, rw).unwrap();
             }
             assert_eq!(
-                allocate(&mut space, &mut pages, address, PAGE, MEM_COMMIT, rw),
+                allocate(&mut space, &mut pages, address, 0, PAGE, MEM_COMMIT, rw),
                 Err(STATUS_CONFLICTING_ADDRESSES)
             );
             assert_eq!(
@@ -1256,13 +1315,17 @@ mod tests {
                     &mut space,
                     &mut pages,
                     address,
+                    0,
                     PAGE,
                     MEM_COMMIT | MEM_RESERVE,
                     rw
                 ),
                 Err(STATUS_CONFLICTING_ADDRESSES)
             );
-            assert_eq!(view_commit(&space, address, PAGE, MEM_COMMIT, rw), Ok(None));
+            assert_eq!(
+                view_commit(&space, address, 0, PAGE, MEM_COMMIT, rw),
+                Ok(None)
+            );
             assert_eq!(
                 free(&mut space, &mut pages, region.base, 0, MEM_RELEASE),
                 Err(STATUS_INVALID_PAGE_PROTECTION)
@@ -1290,6 +1353,7 @@ mod tests {
         let (p, _) = allocate(
             &mut space,
             &mut pages,
+            0,
             0,
             0x3000,
             MEM_RESERVE | MEM_COMMIT,
@@ -1321,6 +1385,7 @@ mod tests {
         let (q, _) = allocate(
             &mut space,
             &mut pages,
+            0,
             0,
             0x2000,
             MEM_RESERVE,
@@ -1526,5 +1591,230 @@ mod tests {
                 Ok(writable)
             );
         }
+    }
+
+    /// MEM_RESET alone, over pages of one private region, committed or reserved: the call succeeds
+    /// over the pages it covers and changes nothing (no paging file to discard them to). With any
+    /// other type it is STATUS_INVALID_PARAMETER_5 (ERROR_INVALID_PARAMETER), its protection still
+    /// checked; outside a private region STATUS_CONFLICTING_ADDRESSES.
+    #[test]
+    fn a_reset_is_alone_and_keeps_the_pages() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let rw = vm::PAGE_READWRITE;
+        let (p, _) = allocate(
+            &mut space,
+            &mut pages,
+            0,
+            0,
+            0x4000,
+            MEM_RESERVE | MEM_COMMIT,
+            rw,
+        )
+        .unwrap();
+        let frame = space.frame_at(&pages, p + 0x1000).unwrap();
+        pages.set_frame_word(frame, 0, 7);
+        assert_eq!(
+            allocate(&mut space, &mut pages, p + 0x1010, 0, 0x1000, MEM_RESET, rw),
+            Ok((p + 0x1000, 0x2000))
+        );
+        assert_eq!(
+            allocate(
+                &mut space,
+                &mut pages,
+                p,
+                0,
+                0x4000,
+                MEM_RESET,
+                vm::PAGE_NOACCESS
+            ),
+            Ok((p, 0x4000))
+        );
+        assert_eq!(space.frame_at(&pages, p + 0x1000), Some(frame));
+        assert_eq!(pages.frame_word(frame, 0), 7);
+        assert_eq!(
+            query(&space, &pages, p).map(|info| (info.state, info.protect, info.size)),
+            Ok((MEM_COMMIT, rw, 0x4000))
+        );
+        for kind in [
+            MEM_RESET | MEM_COMMIT,
+            MEM_RESET | MEM_RESERVE,
+            MEM_RESET | MEM_TOP_DOWN,
+            MEM_TOP_DOWN,
+            0,
+        ] {
+            assert_eq!(
+                allocate(&mut space, &mut pages, p, 0, 0x1000, kind, rw),
+                Err(STATUS_INVALID_PARAMETER_5),
+                "{kind:#x}"
+            );
+        }
+        assert_eq!(
+            error(allocate(
+                &mut space,
+                &mut pages,
+                p,
+                0,
+                0x1000,
+                MEM_RESET | MEM_COMMIT,
+                rw
+            )),
+            87
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, p, 0, 0x1000, MEM_RESET, 7),
+            Err(STATUS_INVALID_PAGE_PROTECTION)
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, p, 0, 0x5000, MEM_RESET, rw),
+            Err(STATUS_CONFLICTING_ADDRESSES),
+            "past the region"
+        );
+        assert_eq!(
+            allocate(
+                &mut space,
+                &mut pages,
+                0x6000_0000,
+                0,
+                0x1000,
+                MEM_RESET,
+                rw
+            ),
+            Err(STATUS_CONFLICTING_ADDRESSES)
+        );
+        let (reserved, _) =
+            allocate(&mut space, &mut pages, 0, 0, 0x2000, MEM_RESERVE, rw).unwrap();
+        assert_eq!(
+            allocate(&mut space, &mut pages, reserved, 0, 0x2000, MEM_RESET, rw),
+            Ok((reserved, 0x2000))
+        );
+        assert_eq!(
+            query(&space, &pages, reserved).map(|info| info.state),
+            Ok(MEM_RESERVE)
+        );
+        let view = space
+            .reserve(None, 0x1_0000, rw, Kind::Mapped(vm::Maximum::Write))
+            .unwrap();
+        assert_eq!(
+            view_commit(&space, view, 0, 0x1000, MEM_RESET, rw),
+            Ok(None)
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, view, 0, 0x1000, MEM_RESET, rw),
+            Err(STATUS_CONFLICTING_ADDRESSES)
+        );
+    }
+
+    /// ZeroBits and MEM_TOP_DOWN place a reservation made without an address: below 2^(32 -
+    /// ZeroBits), the highest free range top-down. More than 21 zero bits is
+    /// STATUS_INVALID_PARAMETER_3, before anything else; an address given is taken as given.
+    #[test]
+    fn zero_bits_and_top_down_place_a_reservation() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let rw = vm::PAGE_READWRITE;
+        let (high, size) = allocate(
+            &mut space,
+            &mut pages,
+            0,
+            0,
+            0x1000,
+            MEM_RESERVE | MEM_TOP_DOWN,
+            rw,
+        )
+        .unwrap();
+        assert_eq!((high, size), (USER_HIGH - vm::GRANULARITY, 0x1000));
+        let (low, _) = allocate(&mut space, &mut pages, 0, 0, 0x1000, MEM_RESERVE, rw).unwrap();
+        assert_eq!(low, vm::USER_LOW);
+        let (bounded, _) = allocate(
+            &mut space,
+            &mut pages,
+            0,
+            4,
+            0x1000,
+            MEM_COMMIT | MEM_TOP_DOWN,
+            rw,
+        )
+        .unwrap();
+        assert_eq!(bounded, 0x0FFF_0000, "below 256 MiB, committed");
+        assert_eq!(
+            query(&space, &pages, bounded).map(|info| info.state),
+            Ok(MEM_COMMIT)
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, 0, 22, 0x1000, MEM_RESERVE, rw),
+            Err(STATUS_INVALID_PARAMETER_3)
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, 0, 22, 0, 0, 7),
+            Err(STATUS_INVALID_PARAMETER_3),
+            "the zero bits come first"
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, 0, 21, 0x1000, MEM_RESERVE, rw),
+            Err(STATUS_NO_MEMORY),
+            "nothing fits below 2 KiB"
+        );
+        assert_eq!(
+            allocate(
+                &mut space,
+                &mut pages,
+                0x5000_0000,
+                4,
+                0x1000,
+                MEM_RESERVE | MEM_TOP_DOWN,
+                rw
+            ),
+            Ok((0x5000_0000, 0x1000))
+        );
+        assert_eq!(
+            view_commit(&space, 0x5000_0000, 22, 0x1000, MEM_COMMIT, rw),
+            Err(STATUS_INVALID_PARAMETER_3)
+        );
+    }
+
+    /// A commit that runs out of memory (the frames a commit draws on spent midway) is
+    /// STATUS_NO_MEMORY (ERROR_NOT_ENOUGH_MEMORY) and commits nothing: inside a reservation the
+    /// pages stay reserved, and a reservation made with it goes. With the frames it commits whole.
+    #[test]
+    fn a_commit_out_of_memory_leaves_nothing_behind() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        let rw = vm::PAGE_READWRITE;
+        let (p, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
+        pages.budget = Some(5);
+        assert_eq!(
+            allocate(&mut space, &mut pages, p, 0, 0x8000, MEM_COMMIT, rw),
+            Err(STATUS_NO_MEMORY)
+        );
+        assert_eq!(
+            error(allocate(
+                &mut space, &mut pages, p, 0, 0x8000, MEM_COMMIT, rw
+            )),
+            8
+        );
+        assert_eq!(
+            query(&space, &pages, p).map(|info| (info.state, info.size)),
+            Ok((MEM_RESERVE, 0x10_0000))
+        );
+        assert_eq!(pages.budget, Some(5), "every frame taken went back");
+        assert_eq!(
+            allocate(
+                &mut space,
+                &mut pages,
+                0,
+                0,
+                0x8000,
+                MEM_RESERVE | MEM_COMMIT,
+                rw
+            ),
+            Err(STATUS_NO_MEMORY)
+        );
+        assert_eq!(
+            query(&space, &pages, p + 0x10_0000).map(|info| info.state),
+            Ok(vm::MEM_FREE)
+        );
+        assert_eq!(
+            allocate(&mut space, &mut pages, p, 0, 0x5000, MEM_COMMIT, rw),
+            Ok((p, 0x5000))
+        );
+        assert_eq!(pages.budget, Some(0));
     }
 }

@@ -60,8 +60,9 @@ const SEC_RESERVE: u32 = 0x0400_0000;
 const SEC_COMMIT: u32 = 0x0800_0000;
 const SEC_NOCACHE: u32 = 0x1000_0000;
 
-/// NtMapViewOfSection's inherit dispositions, and the allocation types it takes: top-down (a hint,
-/// never honored) and SEC_NO_CHANGE (the view's protection fixed; not enforced).
+/// NtMapViewOfSection's inherit dispositions, and the allocation types it takes: top-down (a data
+/// view without a base takes the highest free range) and SEC_NO_CHANGE (the view's protection
+/// fixed; not enforced).
 const VIEW_SHARE: u32 = 1;
 const VIEW_UNMAP: u32 = 2;
 const MEM_TOP_DOWN: u32 = 0x10_0000;
@@ -360,9 +361,17 @@ pub fn view_maximum(access: u32, protect: u32, writable: bool) -> crate::mem::vm
     }
 }
 
-/// NtMapViewOfSection's own argument checks, before the handle is looked at: the inherit
-/// disposition, the allocation type and the view's protection.
-pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(), NtStatus> {
+/// NtMapViewOfSection's own argument checks, before the handle is looked at: the zero bits (at
+/// most 21: STATUS_INVALID_PARAMETER_4), the inherit disposition, the allocation type and the
+/// view's protection. Where a data view without a base goes (see [`crate::mem::vm::Placement`]).
+pub fn view_arguments(
+    zero_bits: u32,
+    inherit: u32,
+    allocation: u32,
+    protect: u32,
+) -> Result<crate::mem::vm::Placement, NtStatus> {
+    let placement = crate::mem::vm::Placement::of(zero_bits, allocation & MEM_TOP_DOWN != 0)
+        .ok_or(STATUS_INVALID_PARAMETER_4)?;
     if inherit != VIEW_SHARE && inherit != VIEW_UNMAP {
         return Err(STATUS_INVALID_PARAMETER_8);
     }
@@ -375,7 +384,7 @@ pub fn view_arguments(inherit: u32, allocation: u32, protect: u32) -> Result<(),
     ) {
         return Err(STATUS_INVALID_PAGE_PROTECTION);
     }
-    Ok(())
+    Ok(placement)
 }
 
 // --- NtQuerySection
@@ -852,7 +861,7 @@ mod target {
         section: Handle,
         process: Handle,
         base: UserPtr<u32>,
-        _zero_bits: u32,
+        zero_bits: u32,
         _commit_size: u32,
         offset: UserPtr<u64>,
         size: UserPtr<u32>,
@@ -860,7 +869,7 @@ mod target {
         allocation: u32,
         protect: u32,
     ) -> NtResult {
-        view_arguments(inherit, allocation, protect)?;
+        let placement = view_arguments(zero_bits, inherit, allocation, protect)?;
         let requested = capture(base)?;
         let at = if offset.is_null() {
             0
@@ -909,6 +918,7 @@ mod target {
                 &mut CurrentPages,
                 object.id(),
                 requested,
+                placement,
                 at as u32,
                 bytes,
                 protect,
@@ -955,8 +965,8 @@ mod target {
     }
 
     /// Map `bytes` of the section `object` names from `offset` as a reservation of its own (at
-    /// `requested`, or the lowest free range) in `process`'s address space, the live one, its pages
-    /// the section's frames with `protect`, its allocation protection `protect` too and its
+    /// `requested`, or where `placement` puts it) in `process`'s address space, the live one, its
+    /// pages the section's frames with `protect`, its allocation protection `protect` too and its
     /// maximum `maximum` (see [`view_maximum`]). The address space is locked a step at a time: the
     /// reservation, each page's mapping, the view's record; the section's frames are reached in the
     /// directory's holds and the file read between them, with neither lock held.
@@ -966,6 +976,7 @@ mod target {
         table: &mut CurrentPages,
         object: ObjectId,
         requested: u32,
+        placement: crate::mem::vm::Placement,
         offset: u32,
         bytes: u32,
         protect: u32,
@@ -994,8 +1005,9 @@ mod target {
         let pages = bytes.div_ceil(PAGE);
         let base = process
             .with_space(|space| {
-                space.reserve(
+                space.reserve_placed(
                     (requested != 0).then_some(requested),
+                    placement,
                     pages * PAGE,
                     protect,
                     Kind::Mapped(maximum),
@@ -1041,13 +1053,29 @@ mod target {
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded =
-            process.with_space(|space| space.add_view(base, ob::Mapping::Section(object)));
-        debug_assert!(recorded, "the view table had room");
-        // The view holds its section for as long as it is mapped.
+        // The view holds its section for as long as it is mapped: the reference is taken before
+        // the view is recorded, as from then on another thread may unmap it and drop it.
         let held = ob::locked(|directory| directory.reference(object));
         debug_assert!(held, "a section being mapped lives");
+        keep_view(process, table, base, ob::Mapping::Section(object))?;
         Ok(base)
+    }
+
+    /// Record the view just mapped at `base` of `mapping`, whose reference the caller took for it
+    /// (see [`crate::mem::vm::AddressSpace::record_view`]). The room checked before the mapping
+    /// may have gone since, to another thread of the process: the view is released then, its
+    /// reference dropped, STATUS_NO_MEMORY.
+    fn keep_view(
+        process: &crate::process::Process,
+        table: &mut CurrentPages,
+        base: u32,
+        mapping: ob::Mapping,
+    ) -> Result<(), NtStatus> {
+        if process.with_space(|space| space.record_view(table, base, mapping)) {
+            return Ok(());
+        }
+        ob::release_mapping(mapping);
+        Err(STATUS_NO_MEMORY)
     }
 
     /// The frames of the section `object` names, which the caller holds.
@@ -1177,12 +1205,11 @@ mod target {
                 return Err(STATUS_NO_MEMORY);
             }
         }
-        let recorded =
-            process.with_space(|space| space.add_view(base, ob::Mapping::Image(segment)));
-        debug_assert!(recorded, "the view table had room");
-        // The view holds the segment for as long as it is mapped.
+        // The view holds the segment for as long as it is mapped (taken before the view is
+        // recorded: see `map_view`).
         let held = ob::locked(|directory| directory.reference_segment(segment));
         debug_assert!(held, "a segment being mapped lives");
+        keep_view(process, table, base, ob::Mapping::Image(segment))?;
         Ok(ImageView {
             base,
             at_base: base == image.image_base(),
@@ -1867,12 +1894,30 @@ mod tests {
             Ok(0x1000),
             "a copy-on-write view reads the section"
         );
-        assert_eq!(error(view_arguments(0, 0, PAGE_READONLY)), 87);
-        assert_eq!(error(view_arguments(VIEW_SHARE, 0x1000, PAGE_READONLY)), 87);
-        assert_eq!(error(view_arguments(VIEW_SHARE, 0, 0x40)), 87);
+        assert_eq!(error(view_arguments(0, 0, 0, PAGE_READONLY)), 87);
         assert_eq!(
-            view_arguments(VIEW_UNMAP, MEM_TOP_DOWN, PAGE_NOACCESS),
-            Ok(())
+            error(view_arguments(0, VIEW_SHARE, 0x1000, PAGE_READONLY)),
+            87
+        );
+        assert_eq!(error(view_arguments(0, VIEW_SHARE, 0, 0x40)), 87);
+        assert_eq!(
+            view_arguments(0, VIEW_UNMAP, MEM_TOP_DOWN, PAGE_NOACCESS),
+            Ok(crate::mem::vm::Placement {
+                end: crate::mem::vm::USER_HIGH,
+                top_down: true
+            })
+        );
+        assert_eq!(
+            view_arguments(3, VIEW_SHARE, 0, PAGE_READONLY),
+            Ok(crate::mem::vm::Placement {
+                end: 0x2000_0000,
+                top_down: false
+            }),
+            "the zero bits' limit"
+        );
+        assert_eq!(
+            view_arguments(22, VIEW_SHARE, 0, PAGE_READONLY),
+            Err(STATUS_INVALID_PARAMETER_4)
         );
     }
 

@@ -130,8 +130,9 @@ fn release_thread_pages(process: &Process, leftover: crate::process::ordinals::L
 /// thread's object (holding the thread's own reference), its record, and its identifier (its
 /// client id, never reused within the boot). The program-visible failures: a process that takes
 /// no new thread (STATUS_PROCESS_IS_TERMINATING), no free ordinal in the process, no free record in
-/// the pool, or no free slot in the kernel stack region (STATUS_NO_MEMORY). `process`'s address
-/// space is the live one: the caller's own, or one it attached to.
+/// the pool, no free slot in the kernel stack region, or no frame left for the TEB page
+/// (STATUS_NO_MEMORY). `process`'s address space is the live one: the caller's own, or one it
+/// attached to.
 pub fn create(
     process: &Process,
     user: crate::sched::startup::UserStart,
@@ -140,13 +141,19 @@ pub fn create(
     // An exited thread's stack is released before a slot is taken, so its slot is free to reuse
     // (unmapped, not merely marked free).
     crate::mem::kstacks::release_parked();
-    // The gate stack: this thread's kernel stack, mapped in every address space, taken first — a
-    // release undoes it when the record or the ordinal is not to be had.
-    let (slot, frames) = crate::mem::kstacks::create().ok_or(crate::status::STATUS_NO_MEMORY)?;
+    // The TEB page's frame, and the gate stack: this thread's kernel stack, mapped in every address
+    // space. Both are taken first — a release undoes them when the other, the record or the ordinal
+    // is not to be had — so memory running out fails the create rather than the kernel.
+    let teb_frame = paging::try_allocate_frame_phys().ok_or(crate::status::STATUS_NO_MEMORY)?;
+    let Some((slot, frames)) = crate::mem::kstacks::create() else {
+        paging::release_frame_phys(teb_frame);
+        return Err(crate::status::STATUS_NO_MEMORY);
+    };
     let (object, thread, ordinal) = match free_thread(process, stack.allocation_base) {
         Ok(made) => made,
         Err(status) => {
             crate::mem::kstacks::release((slot, frames));
+            paging::release_frame_phys(teb_frame);
             return Err(status);
         }
     };
@@ -191,7 +198,15 @@ pub fn create(
         thread_id,
         peb: crate::user::PEB_PAGE,
     };
-    process.with_space(|space| crate::user::teb::map_teb(space, &init));
+    // The TEB page is empty: its region is the kernel's (see `crate::mem::vm::Kind::System`), and
+    // a reused ordinal's page was released above. Its window's page table is the PEB's.
+    paging::init_frame(teb_frame, 0, &[]);
+    process.with_space(|space| {
+        crate::mem::vm::map_prepared(space, teb_va, teb_frame, crate::mem::vm::PAGE_READWRITE)
+    });
+    crate::user::teb::write_fresh_teb(&init, |offset, bytes| {
+        paging::write_frame(teb_frame, offset as usize, bytes)
+    });
 
     Ok((object, thread, thread_id))
 }

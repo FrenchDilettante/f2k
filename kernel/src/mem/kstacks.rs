@@ -132,7 +132,9 @@ const _: () = {
 // a taken slot is mapped, a free one is not.
 
 /// A fresh gate stack: the system's lowest free slot, mapped in the shared tables (in every address
-/// space at once); none when the region is full.
+/// space at once); none when the region is full, or when the frame database has not the stack's
+/// frames left (the tables the slots map through are all made at boot): a thread's creation fails
+/// then, rather than the kernel.
 #[cfg(target_arch = "x86")]
 pub fn create() -> Option<GateStack> {
     with_database(|database| {
@@ -142,6 +144,9 @@ pub fn create() -> Option<GateStack> {
             scratch,
             ..
         } = database.parts();
+        if frames.available() < paging::GATE_STACK_PAGES as u32 {
+            return None;
+        }
         let slot = stacks.slots.allocate()?;
         Some((slot, paging::map_gate_slot(frames, scratch, slot as u32)))
     })
