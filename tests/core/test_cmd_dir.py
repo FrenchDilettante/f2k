@@ -16,8 +16,10 @@ joining another into the others) and a subdirectory holding a fourth, then lists
   creation time;
 - a file that does not exist: `File Not Found`, and ERRORLEVEL 1.
 
-Then `start /wait /b spawnkid exit 4` waits for the program and takes its exit code;
-`start /b /low spawnkid exit 7` does not wait, and leaves ERRORLEVEL 0.
+Then `start /wait /b spawnkid exit 4` and `start /b /low spawnkid exit 7`: neither waits (/B
+outweighs /WAIT), and each leaves the ERRORLEVEL as it was, 1 from the `dir` before them, as
+tests/cmd/batdir's capture from Windows 2000 shows (`start /WAIT /B spawnkid exit 4` and
+`start /B spawnkid exit 7` each leave the 9 of the `spawnkid exit 9` before them).
 
 The dates, times, serial number and free bytes vary from boot to boot: their lines are matched by
 patterns.
@@ -156,8 +158,10 @@ EXPECTED = [
     "",
     "File Not Found",
     "dir none 1",
-    "start wait 4",
-    "start 0",
+    # Neither start waits nor takes an exit code: batdir's capture ("start /WAIT /B: 9",
+    # "start /B: 9").
+    "start wait 1",
+    "start 1",
 ]
 
 
