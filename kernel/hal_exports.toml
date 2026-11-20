@@ -223,12 +223,15 @@ group = "interrupt"
 args = ["u32 Vector", "u32 Irql", "i32 Mode"]
 fails = "0"
 impl = { native = "HalEnableSystemInterrupt" }
+note = "unmasks the line of a connected interrupt object; FALSE for a line with none, which stays masked"
 
 [[export]]
 name = "HalDisableSystemInterrupt"
 group = "interrupt"
-args = ["u32 Vector", "ptr Irql"]
+args = ["u32 Vector", "u32 Irql"]
+fails = "void"
 impl = { native = "HalDisableSystemInterrupt" }
+note = "the KIRQL by value (one stack slot); masks the line"
 
 # --- Interval clock and real-time clock ------------------------------------------------------
 
@@ -251,6 +254,7 @@ name = "HalSetTimeIncrement"
 group = "clock"
 args = ["u32 DesiredIncrement"]
 impl = { native = "HalSetTimeIncrement" }
+note = "declined: the interval clock owns the timer's rate; returns the increment in effect (100144, the captured one)"
 
 # --- DMA -------------------------------------------------------------------------------------
 
@@ -260,15 +264,15 @@ group = "dma"
 args = ["ptr Adapter", "u32 Length", "ptr LogicalAddress", "boolean CacheEnabled"]
 fails = "0"
 impl = { native = "HalAllocateCommonBuffer" }
-note = "a common buffer over the nonpaged pool, translated to its bus address (mem/dma.rs); one bus, and x86 keeps the buffer cached with the flush keeping DMA coherent, so Adapter and CacheEnabled name nothing here"
+note = "a physically contiguous common buffer below 4 GiB over the nonpaged pool, its logical address the physical one (mem/dma.rs); one bus, and x86 DMA is cache-coherent, so Adapter and CacheEnabled name nothing here"
 
 [[export]]
 name = "HalFreeCommonBuffer"
 group = "dma"
-args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "boolean CacheEnabled"]
+args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "ptr VirtualAddress", "boolean CacheEnabled"]
 fails = "void"
 impl = { native = "HalFreeCommonBuffer" }
-note = "frees the common buffer named by Length and LogicalAddress (mem/dma.rs)"
+note = "frees the common buffer named by Length, LogicalAddress and VirtualAddress (mem/dma.rs); 24 bytes of arguments"
 
 [[export]]
 name = "HalGetDmaAlignmentRequirement"

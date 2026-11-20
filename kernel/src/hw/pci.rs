@@ -620,10 +620,22 @@ fn routed_override(bus: u8, dev: u8, func: u8, pin: u8) -> Option<u8> {
 /// `PCIConfiguration`).
 pub const PCI_CONFIGURATION: i32 = 4;
 
+/// The bytes the bus-data routines serve of a function's configuration space: a request longer
+/// than this is cut to it (`sizeof(PCI_COMMON_CONFIG)`).
+pub const CONFIG_SPACE: usize = 256;
+
+/// The documented `PCI_SLOT_NUMBER` of a device and function: the device number in bits 0-4,
+/// the function in bits 5-7, the rest reserved (zero).
+pub const fn slot_number(dev: u8, func: u8) -> u32 {
+    (dev as u32 & 0x1F) | (func as u32 & 0x7) << 5
+}
+
 /// A slot number's parts, as the documented `PCI_SLOT_NUMBER` lays them out: the device number
-/// in bits 3-7, the function in bits 0-2 (slot = device << 3 | function).
-pub fn slot_parts(slot: u32) -> (u8, u8) {
-    (((slot >> 3) & 0x1F) as u8, (slot & 0x7) as u8)
+/// in bits 0-4, the function in bits 5-7 (halbus's capture, `slot`: device 3 function 5 is
+/// 0xA3, device 31 function 7 is 0xFF). None when a reserved bit (8-31) is set: such a slot
+/// names no function (the capture's `AsULONG | 0x100` read does not reach it).
+pub fn slot_parts(slot: u32) -> Option<(u8, u8)> {
+    (slot >> 8 == 0).then_some(((slot & 0x1F) as u8, ((slot >> 5) & 0x7) as u8))
 }
 
 /// Whether the scan found the bus: bus 0 always exists (the config mechanism is there), any
@@ -688,9 +700,30 @@ pub fn write_config_bytes<C: ConfigIo>(
     count
 }
 
-/// HalGetBusData's PCI shape: read the slot's configuration space from offset 0 into `buffer`.
-/// Returns the bytes read; 0 when the bus data type is not PCI configuration or the bus does not
-/// exist; 2 with the vendor ID 0xFFFF in the buffer's first two bytes when the slot is empty.
+/// The present function a bus-data request names: its bus, device and function, when the data
+/// type is PCI configuration, the bus exists, the slot number is well formed and a function
+/// answers there. `Err(true)` when the bus exists but the slot is empty (or malformed);
+/// `Err(false)` when the request names nothing (another data type, a bus the scan did not find).
+fn bus_data_function<C: ConfigIo>(
+    cfg: &mut C,
+    devices: &Devices,
+    bus_data_type: i32,
+    bus: u32,
+    slot: u32,
+) -> Result<(u8, u8, u8), bool> {
+    if bus_data_type != PCI_CONFIGURATION || bus > 0xFF || !bus_exists(devices, bus as u8) {
+        return Err(false);
+    }
+    let bus = bus as u8;
+    let (dev, func) = slot_parts(slot).ok_or(true)?;
+    if cfg.read_config(ConfigAddress::new(bus, dev, func, VENDOR_DEVICE)) as u16 == INVALID_VENDOR {
+        return Err(true);
+    }
+    Ok((bus, dev, func))
+}
+
+/// HalGetBusData's PCI shape: read the slot's configuration space from offset 0 into `buffer`
+/// (see [`get_bus_data_by_offset`]).
 pub fn get_bus_data<C: ConfigIo>(
     cfg: &mut C,
     devices: &Devices,
@@ -702,7 +735,16 @@ pub fn get_bus_data<C: ConfigIo>(
     get_bus_data_by_offset(cfg, devices, bus_data_type, bus, slot, buffer, 0)
 }
 
-/// HalGetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space.
+/// HalGetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space, as
+/// halbus's capture (`present`, `absent`) pins it:
+///
+/// - a present function: the length asked, cut to the 256-byte space (512 asked reads 256), and not
+///   cut at the space's end — an offset at or past it (252 for 8, 256, 300) still reads the length
+///   asked, the register number wrapping as the configuration address's 8-bit register field does;
+/// - an empty slot (or one with a reserved bit set): a two-byte header holding the vendor ID 0xFFFF
+///   — a request from offset 0 or 1 reads what it overlaps of those two bytes, any other offset
+///   reads nothing;
+/// - another data type, or a bus that does not exist: 0, the buffer untouched.
 pub fn get_bus_data_by_offset<C: ConfigIo>(
     cfg: &mut C,
     devices: &Devices,
@@ -712,26 +754,40 @@ pub fn get_bus_data_by_offset<C: ConfigIo>(
     buffer: &mut [u8],
     offset: u32,
 ) -> u32 {
-    if bus_data_type != PCI_CONFIGURATION || offset >= 256 {
-        return 0;
-    }
-    let bus = bus as u8; // bus numbers are 8 bits in the address dword
-    if !bus_exists(devices, bus) {
-        return 0;
-    }
-    let (dev, func) = slot_parts(slot);
-    if cfg.read_config(ConfigAddress::new(bus, dev, func, VENDOR_DEVICE)) as u16 == INVALID_VENDOR {
-        if buffer.len() >= 2 {
-            buffer[..2].copy_from_slice(&INVALID_VENDOR.to_le_bytes());
+    let length = buffer.len().min(CONFIG_SPACE);
+    match bus_data_function(cfg, devices, bus_data_type, bus, slot) {
+        Ok((bus, dev, func)) => {
+            let mut done = 0;
+            while done < length {
+                let at = (offset as usize + done) % CONFIG_SPACE;
+                let take = (length - done).min(CONFIG_SPACE - at);
+                read_config_bytes(
+                    cfg,
+                    bus,
+                    dev,
+                    func,
+                    at as u8,
+                    &mut buffer[done..done + take],
+                );
+                done += take;
+            }
+            length as u32
         }
-        return 2;
+        Err(true) => {
+            let header = INVALID_VENDOR.to_le_bytes();
+            if offset >= header.len() as u32 {
+                return 0;
+            }
+            let count = (header.len() - offset as usize).min(length);
+            buffer[..count].copy_from_slice(&header[offset as usize..offset as usize + count]);
+            count as u32
+        }
+        Err(false) => 0,
     }
-    read_config_bytes(cfg, bus, dev, func, offset as u8, buffer) as u32
 }
 
-/// HalSetBusData's PCI shape: write `buffer` to the slot's configuration space from offset 0.
-/// Returns the bytes written; 0 when the bus data type is not PCI configuration, the bus does
-/// not exist, or the slot is empty.
+/// HalSetBusData's PCI shape: write `buffer` to the slot's configuration space from offset 0
+/// (see [`set_bus_data_by_offset`]).
 pub fn set_bus_data<C: ConfigIo>(
     cfg: &mut C,
     devices: &Devices,
@@ -743,7 +799,11 @@ pub fn set_bus_data<C: ConfigIo>(
     set_bus_data_by_offset(cfg, devices, bus_data_type, bus, slot, buffer, 0)
 }
 
-/// HalSetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space.
+/// HalSetBusDataByOffset's PCI shape, at byte `offset` in the slot's configuration space, as
+/// halbus's capture (`write`) pins it: a present function takes the length given, cut to the
+/// 256-byte space and wrapping past its end like the read (offset 256, one byte: 1; a read-only
+/// register's two bytes: 2, the register unchanged by the hardware); an empty slot, another data
+/// type or a bus that does not exist takes nothing (0).
 pub fn set_bus_data_by_offset<C: ConfigIo>(
     cfg: &mut C,
     devices: &Devices,
@@ -753,18 +813,18 @@ pub fn set_bus_data_by_offset<C: ConfigIo>(
     buffer: &[u8],
     offset: u32,
 ) -> u32 {
-    if bus_data_type != PCI_CONFIGURATION || offset >= 256 {
+    let Ok((bus, dev, func)) = bus_data_function(cfg, devices, bus_data_type, bus, slot) else {
         return 0;
+    };
+    let length = buffer.len().min(CONFIG_SPACE);
+    let mut done = 0;
+    while done < length {
+        let at = (offset as usize + done) % CONFIG_SPACE;
+        let take = (length - done).min(CONFIG_SPACE - at);
+        write_config_bytes(cfg, bus, dev, func, at as u8, &buffer[done..done + take]);
+        done += take;
     }
-    let bus = bus as u8;
-    if !bus_exists(devices, bus) {
-        return 0;
-    }
-    let (dev, func) = slot_parts(slot);
-    if cfg.read_config(ConfigAddress::new(bus, dev, func, VENDOR_DEVICE)) as u16 == INVALID_VENDOR {
-        return 0;
-    }
-    write_config_bytes(cfg, bus, dev, func, offset as u8, buffer) as u32
+    length as u32
 }
 
 #[cfg(test)]
@@ -1415,9 +1475,10 @@ mod tests {
         set_interrupts(&mut sim, 0, 4, 0, 0x0B, 0x03);
         let devices = scan(&mut sim);
 
-        // Slot 4<<3|0 = 32: read the whole common header.
+        // Device 4, function 0: read the whole common header.
+        let slot = slot_number(4, 0);
         let mut buffer = [0u8; 64];
-        let read = get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &mut buffer);
+        let read = get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, slot, &mut buffer);
         assert_eq!(read, 64);
         assert_eq!(
             &buffer[0..4],
@@ -1438,7 +1499,7 @@ mod tests {
             &devices,
             PCI_CONFIGURATION,
             0,
-            32,
+            slot,
             &mut four,
             0x3C,
         );
@@ -1447,7 +1508,14 @@ mod tests {
 
         // An empty slot: 2 bytes, vendor 0xFFFF.
         let mut empty = [0u8; 64];
-        let read = get_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 9 << 3, &mut empty);
+        let read = get_bus_data(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            slot_number(9, 0),
+            &mut empty,
+        );
         assert_eq!(read, 2);
         assert_eq!(&empty[..2], &0xFFFFu16.to_le_bytes());
 
@@ -1457,14 +1525,21 @@ mod tests {
             0
         );
         assert_eq!(
-            get_bus_data(&mut sim, &devices, 0, 0, 32, &mut buffer),
+            get_bus_data(&mut sim, &devices, 0, 0, slot, &mut buffer),
             0,
             "Cmos is not served"
         );
         // Bus 0 exists even when the scan found nothing on it: an empty slot there reports 2.
         let none = Devices::new();
         assert_eq!(
-            get_bus_data(&mut sim, &none, PCI_CONFIGURATION, 0, 5 << 3, &mut buffer),
+            get_bus_data(
+                &mut sim,
+                &none,
+                PCI_CONFIGURATION,
+                0,
+                slot_number(5, 0),
+                &mut buffer
+            ),
             2,
             "bus 0 exists: the slot is empty"
         );
@@ -1476,13 +1551,20 @@ mod tests {
             &devices,
             PCI_CONFIGURATION,
             0,
-            32,
+            slot,
             &[0x05, 0x01],
             0x3C,
         );
         assert_eq!(by_offset, 2);
         assert_eq!(sim.raw(0, 4, 0, INTERRUPT_LINE) & 0xFFFF, 0x0105);
-        let written = set_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &[0x86, 0x80]);
+        let written = set_bus_data(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            slot,
+            &[0x86, 0x80],
+        );
         assert_eq!(written, 2);
         assert_eq!(
             sim.raw(0, 4, 0, VENDOR_DEVICE),
@@ -1490,12 +1572,19 @@ mod tests {
             "vendor restored"
         );
         assert_eq!(
-            set_bus_data(&mut sim, &devices, PCI_CONFIGURATION, 0, 9 << 3, &[1, 2]),
+            set_bus_data(
+                &mut sim,
+                &devices,
+                PCI_CONFIGURATION,
+                0,
+                slot_number(9, 0),
+                &[1, 2]
+            ),
             0,
             "an empty slot takes no write"
         );
         assert_eq!(
-            set_bus_data(&mut sim, &devices, 1, 0, 32, &[1]),
+            set_bus_data(&mut sim, &devices, 1, 0, slot, &[1]),
             0,
             "Eisa is not served"
         );
@@ -1504,7 +1593,7 @@ mod tests {
             &devices,
             PCI_CONFIGURATION,
             0,
-            32,
+            slot,
             &[0xAA, 0xBB],
             0x3E,
         );
@@ -1515,19 +1604,212 @@ mod tests {
             "only the top half of the dword moved"
         );
 
-        // An offset past the 256-byte configuration space reads and writes nothing.
-        assert_eq!(
-            get_bus_data_by_offset(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &mut buffer, 256),
-            0
-        );
-        assert_eq!(
-            set_bus_data_by_offset(&mut sim, &devices, PCI_CONFIGURATION, 0, 32, &[1], 300),
-            0
-        );
+        // Slot parts: device in bits 0-4, function in bits 5-7 (halbus `slot`).
+        assert_eq!(slot_parts(slot_number(4, 0)), Some((4, 0)));
+        assert_eq!(slot_parts(0xA3), Some((3, 5)));
+        assert_eq!(slot_parts(0xFF), Some((31, 7)));
+        assert_eq!(slot_parts(0x100), None, "a reserved bit");
+    }
 
-        // Slot parts: device in bits 3-7, function in bits 0-2.
-        assert_eq!(slot_parts(32), (4, 0));
-        assert_eq!(slot_parts(0x2B), (5, 3));
-        assert_eq!(slot_parts(0xFF), (31, 7));
+    /// The bus-data surface's return values and the slot layout, as Windows 2000 answers them:
+    /// halbus's capture (tests/hal/halbus/output.txt), its `slot`, `present`, `absent` and
+    /// `write` sections, replayed over a simulated bus — a single-function device 4, a
+    /// multi-function device 6 (functions 0 and 2), every other slot empty. Each buffer is armed
+    /// with 0xA5 first, as the fixture's are, so "the bytes past those untouched" is checked
+    /// too.
+    #[test]
+    fn the_bus_data_return_values_match_the_halbus_capture() {
+        const ARMED: u8 = 0xA5;
+        let mut sim = SimConfig::new();
+        program_device(&mut sim, 0, 4, 0, 0x8086, 0x100E, 0x03, 0x020000, 0x00);
+        set_interrupts(&mut sim, 0, 4, 0, 0x0B, 0x01);
+        sim.set(0, 4, 0, 0x40, 0x0403_0201);
+        sim.set(0, 4, 0, 0xFC, 0xFFEE_DDCC);
+        program_device(&mut sim, 0, 6, 0, 0x8086, 0x7000, 0x00, 0x060100, 0x80);
+        program_device(&mut sim, 0, 6, 2, 0x8086, 0x7010, 0x00, 0x010180, 0x00);
+        let devices = scan(&mut sim);
+        let untouched = |bytes: &[u8], from: usize| bytes[from..].iter().all(|&b| b == ARMED);
+
+        // `slot`: "DeviceNumber 3, FunctionNumber 5: AsULONG=0x000000A3", "DeviceNumber 31,
+        // FunctionNumber 7: AsULONG=0x000000FF".
+        assert_eq!(slot_number(3, 5), 0xA3);
+        assert_eq!(slot_number(31, 7), 0xFF);
+        let identity = |sim: &mut SimConfig, slot: u32| {
+            let mut header = [ARMED; 64];
+            get_bus_data(sim, &devices, PCI_CONFIGURATION, 0, slot, &mut header);
+            u32::from_le_bytes(header[..4].try_into().unwrap())
+        };
+        let function_2 = identity(&mut sim, slot_number(6, 2));
+        assert_eq!(function_2, 0x7010_8086, "the function past 0 is reached");
+        assert_ne!(function_2, identity(&mut sim, slot_number(6, 0)));
+        // "read at AsULONG = DeviceNumber << 3 | FunctionNumber: the function's identity: no".
+        assert_ne!(identity(&mut sim, 6 << 3 | 2), function_2);
+        // "read with a Reserved bit set (AsULONG | 0x100): the function's identity: no".
+        assert_ne!(identity(&mut sim, slot_number(6, 2) | 0x100), function_2);
+
+        // `present`: HalGetBusData of 0, 2, 4, 64, 255, 256 and 512 bytes returns 0, 2, 4, 64,
+        // 255, 256 and 256, the bytes past those untouched.
+        let present = slot_number(4, 0);
+        for (asked, got) in [
+            (0, 0),
+            (2, 2),
+            (4, 4),
+            (64, 64),
+            (255, 255),
+            (256, 256),
+            (512, 256),
+        ] {
+            let mut part = [ARMED; 512];
+            let read = get_bus_data(
+                &mut sim,
+                &devices,
+                PCI_CONFIGURATION,
+                0,
+                present,
+                &mut part[..asked],
+            );
+            assert_eq!(read, got, "HalGetBusData({asked} bytes)");
+            assert!(untouched(&part, got as usize), "past {got} untouched");
+        }
+        let mut whole = [ARMED; 256];
+        get_bus_data(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            present,
+            &mut whole,
+        );
+        // HalGetBusDataByOffset: every range returns the length asked, even at and past the
+        // space's end (252+8, 255+2, 256, 300); offsets 0 and 60 read HalGetBusData's bytes.
+        let ranges = [
+            (0, 4),
+            (2, 2),
+            (60, 4),
+            (64, 4),
+            (128, 16),
+            (252, 4),
+            (252, 8),
+            (255, 1),
+            (255, 2),
+            (256, 4),
+            (300, 4),
+            (0, 0),
+        ];
+        for (offset, length) in ranges {
+            let mut part = [ARMED; 512];
+            let read = get_bus_data_by_offset(
+                &mut sim,
+                &devices,
+                PCI_CONFIGURATION,
+                0,
+                present,
+                &mut part[..length],
+                offset,
+            );
+            assert_eq!(
+                read, length as u32,
+                "HalGetBusDataByOffset({offset}, {length})"
+            );
+            assert!(untouched(&part, length), "past {length} untouched");
+            if offset == 0 || offset == 60 {
+                let offset = offset as usize;
+                assert_eq!(part[..length], whole[offset..offset + length]);
+            }
+        }
+
+        // `absent`: an empty slot reads 2 (VendorID 0xFFFF) for HalGetBusData; by offset, 2
+        // from offset 0 (the bytes touched) and 0 from offset 8 (untouched).
+        let empty = slot_number(9, 0);
+        let mut buf = [ARMED; 256];
+        let read = get_bus_data(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            empty,
+            &mut buf[..64],
+        );
+        assert_eq!(read, 2);
+        assert_eq!(buf[..2], [0xFF, 0xFF]);
+        assert!(untouched(&buf, 2));
+        let mut buf = [ARMED; 256];
+        let read = get_bus_data_by_offset(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            empty,
+            &mut buf[..4],
+            0,
+        );
+        assert_eq!(read, 2);
+        assert!(!untouched(&buf, 0), "the bytes untouched: no");
+        let mut buf = [ARMED; 256];
+        let read = get_bus_data_by_offset(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            empty,
+            &mut buf[..4],
+            8,
+        );
+        assert_eq!(read, 0);
+        assert!(untouched(&buf, 0));
+        // A single-function device's function 1: 2, VendorID 0xFFFF.
+        let mut other = [ARMED; 64];
+        let read = get_bus_data(
+            &mut sim,
+            &devices,
+            PCI_CONFIGURATION,
+            0,
+            slot_number(4, 1),
+            &mut other,
+        );
+        assert_eq!((read, &other[..2]), (2, &[0xFF, 0xFF][..]));
+        // Bus 255: 0, the bytes untouched, by either call.
+        let mut buf = [ARMED; 256];
+        assert_eq!(
+            get_bus_data(
+                &mut sim,
+                &devices,
+                PCI_CONFIGURATION,
+                255,
+                0,
+                &mut buf[..64]
+            ),
+            0
+        );
+        assert_eq!(
+            get_bus_data_by_offset(
+                &mut sim,
+                &devices,
+                PCI_CONFIGURATION,
+                255,
+                0,
+                &mut buf[..4],
+                0
+            ),
+            0
+        );
+        assert!(untouched(&buf, 0));
+
+        // `write`: the Interrupt Line takes another value and reads it back (1), is restored
+        // (1); the VendorID's own value written back returns 2; offset 256 one byte returns 1, no
+        // bytes 0; an empty slot and bus 255 take nothing (0).
+        let set = |sim: &mut SimConfig, bus: u32, slot: u32, bytes: &[u8], offset: u32| {
+            set_bus_data_by_offset(sim, &devices, PCI_CONFIGURATION, bus, slot, bytes, offset)
+        };
+        assert_eq!(set(&mut sim, 0, present, &[0x0A], 0x3C), 1);
+        assert_eq!(sim.raw(0, 4, 0, INTERRUPT_LINE) & 0xFF, 0x0A);
+        assert_eq!(set(&mut sim, 0, present, &[0x0B], 0x3C), 1);
+        assert_eq!(sim.raw(0, 4, 0, INTERRUPT_LINE) & 0xFF, 0x0B);
+        assert_eq!(set(&mut sim, 0, present, &[0x86, 0x80], 0), 2);
+        assert_eq!(sim.raw(0, 4, 0, VENDOR_DEVICE), 0x100E_8086);
+        assert_eq!(set(&mut sim, 0, present, &[0x86], 256), 1);
+        assert_eq!(set(&mut sim, 0, present, &[], 0x3C), 0);
+        assert_eq!(set(&mut sim, 0, empty, &[0], 0x3C), 0);
+        assert_eq!(set(&mut sim, 255, slot_number(0, 0), &[0], 0x3C), 0);
     }
 }

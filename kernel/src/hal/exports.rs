@@ -18,8 +18,8 @@
 //! - **Clock/RTC:** [`query_real_time_clock`], [`set_time_increment`].
 //! - **Bus data:** HalGetBusData/HalSetBusData over the PCI config seam ([`crate::hw::pci`]).
 //! - **DMA and MMIO:** HalAllocateCommonBuffer/HalFreeCommonBuffer and `MmMapIoSpace` over
-//!   [`crate::mem::dma`] (common buffers over the pool with page-table translation, MMIO mapping
-//!   into the reserved region).
+//!   [`crate::mem::dma`] (physically contiguous common buffers over the pool with page-table
+//!   translation, MMIO mapping into the reserved region).
 //! - The stubs: `HalRequestIpi`, `HalStartNextProcessor` — each fails the way the export fails and
 //!   names its slice in a comment.
 
@@ -30,8 +30,10 @@ use core::ffi::c_void;
 
 use super::{Hal, Io, INPUT_FREQUENCY_HZ};
 use crate::dev::routing;
-use crate::hw::pci::{self, PirqRoutes};
+#[cfg(target_arch = "x86")]
+use crate::hw::pci;
 use crate::interrupt::irql::Irql;
+use crate::interrupt::VectorTable;
 use crate::mem::dma;
 
 // --- The public contract's types and constants -------------------------------------------------
@@ -222,43 +224,38 @@ pub fn write_register_buffer_ulong(register: *mut u32, buffer: &[u32]) {
 // --- Interrupts
 // -----------------------------------------------------------------------------------
 
-/// HalGetInterruptVector's core, over the routing table: for the ISA and the other legacy
-/// interface types the bus interrupt level is the ISA line itself; for PCIBus the level is the
-/// interrupt pin and the vector the slot (device << 3 | function), routed through the PIRQ
-/// table. Returns the system vector with the line's IRQL and affinity; a translation that fails
-/// (a line outside the band, an unrouted pin) returns vector 0 with affinity 0.
+/// HalGetInterruptVector's core, over the routing table: the system vector, the IRQL and the
+/// affinity of bus interrupt level `level` ([`routing::line_vector`]). Every interface type
+/// translates the same way, on any bus number: the level is the ISA line, and the vector argument
+/// is not consulted — a PCI driver passes its function's InterruptLine as both (halvec's capture,
+/// tests/hal/halvec/output.txt: `isa`, `internal` and `pci` map levels 0-15 alike, "the same
+/// vector and IRQL as Isa's for the line"; `absent`: PCIBus bus 255, Isa bus 1, Eisa and
+/// MicroChannel level 5 all answer vector 0x35 at IRQL 22). A level past the band fails: vector
+/// 0, IRQL 0, affinity 0.
 pub fn get_interrupt_vector(
-    routes: Option<&PirqRoutes>,
-    interface_type: i32,
-    bus: u32,
+    _interface_type: i32,
+    _bus: u32,
     level: u32,
-    vector: u32,
+    _vector: u32,
 ) -> (u8, Irql, u32) {
-    let answer = if interface_type == INTERFACE_PCI_BUS {
-        let (dev, func) = pci::slot_parts(vector);
-        routing::route_interrupt(routes, bus as u8, dev, func, level as u8).map(|interrupt| {
-            (
-                interrupt.vector,
-                routing::line_irql(interrupt.isa_line),
-                routing::ALL_PROCESSORS,
-            )
-        })
-    } else {
-        routing::line_vector(level as u8).map(|line| (line.vector, line.irql, line.affinity))
-    };
-    match answer {
-        Some((vector, irql, affinity)) => (vector, irql, affinity),
+    match u8::try_from(level).ok().and_then(routing::line_vector) {
+        Some(line) => (line.vector, line.irql, line.affinity),
         None => (0, Irql(0), 0),
     }
 }
 
-/// HalEnableSystemInterrupt's core: unmask the vector's line; false when the platform cannot.
-pub fn enable_system_interrupt<H: Hal>(hal: &H, vector: u8) -> bool {
-    hal.enable_system_interrupt(vector)
+/// HalEnableSystemInterrupt's core: unmask the vector's line, when an interrupt object is
+/// connected to it in `table` — an unconnected line stays masked (the interrupt core's
+/// invariant: its stub must never be reached), so the enable is refused (false). False too when
+/// the platform cannot unmask it. Windows 2000's own caller is the interrupt connect, after the
+/// object is in place.
+pub fn enable_system_interrupt<H: Hal>(hal: &H, table: &VectorTable, vector: u8) -> bool {
+    table.has_object(vector) && hal.enable_system_interrupt(vector)
 }
 
-/// HalDisableSystemInterrupt's core: mask the vector's line.
-pub fn disable_system_interrupt<H: Hal>(hal: &H, vector: u8) {
+/// HalDisableSystemInterrupt's core: mask the vector's line. The IRQL the caller names is the
+/// level the line was connected at; masking the line needs nothing of it.
+pub fn disable_system_interrupt<H: Hal>(hal: &H, vector: u8, _irql: Irql) {
     hal.disable_system_interrupt(vector)
 }
 
@@ -280,11 +277,13 @@ pub fn query_real_time_clock<H: Hal>(hal: &H) -> Option<TimeFields> {
     })
 }
 
-/// HalSetTimeIncrement's core: program the interval timer at the period nearest `desired`
-/// (100 ns units) and return the increment actually set — the programmed period in 100 ns
-/// units.
-pub fn set_time_increment<H: Hal>(hal: &H, desired: u32) -> u32 {
-    hal.set_time_increment(desired);
+/// HalSetTimeIncrement's core: the contract returns the increment actually set, which the caller
+/// (KeSetTimeIncrement's) takes as the clock's new rate. F2K's interval clock
+/// ([`crate::interrupt::clock`]) owns the rate — its tick math and the performance counter's
+/// within-tick scale are set from the timer period it programmed at boot — so the request is
+/// declined: the timer is left as programmed, and the increment returned is that period in 100
+/// ns units (the captured 100 144 on this platform), the one actually in effect.
+pub fn set_time_increment<H: Hal>(hal: &H, _desired: u32) -> u32 {
     let clocks = hal.interval_timer_period() as u64;
     ((clocks * 10_000_000 + INPUT_FREQUENCY_HZ as u64 / 2) / INPUT_FREQUENCY_HZ as u64) as u32
 }
@@ -298,17 +297,30 @@ pub fn set_real_time_clock(_time_fields: &TimeFields) -> bool {
 // --- DMA and MMIO mapping
 // ---------------------------------------------------------------------
 
-/// HalAllocateCommonBuffer's core, over the DMA seams ([`crate::mem::dma`]): a common buffer of
-/// `length` bytes, with its bus address written to `logical_address`. Returns the buffer's
-/// virtual pointer, or null (with a zero logical address) when none could be made.
+/// HalAllocateCommonBuffer's core, over the DMA seams ([`crate::mem::dma`]): a physically
+/// contiguous common buffer of `length` bytes, with its bus address written to
+/// `logical_address`. Returns the buffer's virtual pointer, or null (with a zero logical
+/// address) when none could be made.
 pub fn allocate_common_buffer(
     store: &mut impl dma::CommonBufferStore,
     bus: &impl dma::DmaBus,
-    registry: &mut dma::CommonBufferRegistry,
+    registry: &mut impl dma::CommonBufferTable,
     length: u32,
     logical_address: *mut u64,
 ) -> *mut c_void {
-    match dma::allocate_common_buffer(store, bus, registry, length) {
+    write_common_buffer(
+        dma::allocate_common_buffer(store, bus, registry, length),
+        logical_address,
+    )
+}
+
+/// The allocation's answer as the export hands it out: the virtual pointer returned, the bus
+/// address written to `logical_address` (null and zero for none).
+fn write_common_buffer(
+    record: Option<dma::CommonBuffer>,
+    logical_address: *mut u64,
+) -> *mut c_void {
+    match record {
         Some(record) => {
             if !logical_address.is_null() {
                 // SAFETY: the caller names the out-parameter.
@@ -326,16 +338,23 @@ pub fn allocate_common_buffer(
     }
 }
 
-/// HalFreeCommonBuffer's core: free the common buffer named by `length` and `logical_address`
-/// (the bus address the allocation wrote out); an unknown name frees nothing.
+/// HalFreeCommonBuffer's core: free the common buffer named by `length`, `logical_address` (the
+/// bus address the allocation wrote out) and `virtual_address` (the pointer it returned); an
+/// unknown name frees nothing.
 pub fn free_common_buffer(
     store: &mut impl dma::CommonBufferStore,
-    bus: &impl dma::DmaBus,
-    registry: &mut dma::CommonBufferRegistry,
+    registry: &mut impl dma::CommonBufferTable,
     length: u32,
     logical_address: u64,
+    virtual_address: *mut c_void,
 ) {
-    dma::free_common_buffer(store, bus, registry, length, logical_address);
+    dma::free_common_buffer(
+        store,
+        registry,
+        length,
+        logical_address,
+        virtual_address as usize as u32,
+    );
 }
 
 /// HalGetDmaAlignmentRequirement: 1 on x86 — no alignment requirement past the natural one.
@@ -467,7 +486,7 @@ mod symbols {
         irql: *mut u8, affinity: *mut u32,
     ) -> u32 = {
         let (vector, line_irql, affinity_out) =
-            get_interrupt_vector(pci::routes(), interface_type, bus, level, vector);
+            get_interrupt_vector(interface_type, bus, level, vector);
         if !irql.is_null() {
             // SAFETY: the caller names the out-parameter.
             unsafe { *irql = line_irql.0 };
@@ -479,17 +498,12 @@ mod symbols {
         vector as u32
     });
     // The level and the trigger mode are the kernel's to honor at connect; the export enables
-    // the line.
+    // the line of a connected object.
     entry!(f2k_export_HalEnableSystemInterrupt(vector: u32, _irql: u8, _mode: i32) -> bool =
-        enable_system_interrupt(&PLATFORM, vector as u8));
-    entry!(f2k_export_HalDisableSystemInterrupt(vector: u32, irql: *mut u8) -> () = {
-        if !irql.is_null() {
-            // SAFETY: the caller names the out-parameter; it takes the level the processor
-            // stood at, as the contract's old-IRQL out does.
-            unsafe { *irql = crate::pcr::pcr().current().0 };
-        }
-        disable_system_interrupt(&PLATFORM, vector as u8);
-    });
+        enable_system_interrupt(&PLATFORM, crate::interrupt::table(), vector as u8));
+    // VOID HalDisableSystemInterrupt(ULONG Vector, KIRQL Irql): the level by value.
+    entry!(f2k_export_HalDisableSystemInterrupt(vector: u32, irql: u8) -> () =
+        disable_system_interrupt(&PLATFORM, vector as u8, Irql(irql)));
 
     entry!(f2k_export_HalQueryRealTimeClock(time_fields: *mut TimeFields) -> bool = {
         match query_real_time_clock(&PLATFORM) {
@@ -513,31 +527,18 @@ mod symbols {
     entry!(f2k_export_HalSetTimeIncrement(desired_increment: u32) -> u32 =
         set_time_increment(&PLATFORM, desired_increment));
 
-    // One bus (the PCI bus), so the adapter names nothing; on x86 the common buffer stays cached
-    // and the cache flush keeps the DMA coherent, so the cache flag changes nothing here.
+    // One bus (the PCI bus), so the adapter names nothing; x86 bus-master DMA is coherent with
+    // the caches, so the buffer stays cached and the cache flag changes nothing here.
     entry!(f2k_export_HalAllocateCommonBuffer(
         _adapter: *mut c_void, length: u32, logical_address: *mut u64, _cache_enabled: bool,
-    ) -> *mut c_void = {
-        match dma::allocate(length) {
-            Some(record) => {
-                if !logical_address.is_null() {
-                    // SAFETY: the caller names the out-parameter.
-                    unsafe { *logical_address = record.bus };
-                }
-                record.va as *mut c_void
-            }
-            None => {
-                if !logical_address.is_null() {
-                    // SAFETY: as above.
-                    unsafe { *logical_address = 0 };
-                }
-                core::ptr::null_mut()
-            }
-        }
-    });
+    ) -> *mut c_void = write_common_buffer(dma::allocate(length), logical_address));
+    // VOID HalFreeCommonBuffer(PADAPTER_OBJECT, ULONG Length, PHYSICAL_ADDRESS LogicalAddress,
+    // PVOID VirtualAddress, BOOLEAN CacheEnabled): the logical address by value (8 bytes), so
+    // the callee pops 24 bytes.
     entry!(f2k_export_HalFreeCommonBuffer(
-        _adapter: *mut c_void, length: u32, logical_address: u64, _cache_enabled: bool,
-    ) -> () = dma::free(length, logical_address));
+        _adapter: *mut c_void, length: u32, logical_address: u64, virtual_address: *mut c_void,
+        _cache_enabled: bool,
+    ) -> () = dma::free(length, logical_address, virtual_address as u32));
     entry!(f2k_export_HalGetDmaAlignmentRequirement() -> u32 = get_dma_alignment_requirement());
 
     entry!(f2k_export_HalGetBusData(
@@ -806,52 +807,110 @@ mod tests {
         assert_eq!(words_back, words);
     }
 
-    /// The vector query: an ISA line maps to its band vector, IRQL and affinity; a line past the
-    /// band fails with a zero affinity; a PCI slot/pin routes through the PIRQ table.
+    /// The vector query, as halvec's capture (tests/hal/halvec/output.txt) answers it: on
+    /// `isa`, `internal` and `pci`, level n (passed as both level and vector, as the fixture and
+    /// PCI drivers pass the InterruptLine) is vector 0x30 + n at IRQL 27 - n with the active
+    /// processors' affinity, the cascade level 2 vector 0x00 at IRQL 25; on `absent`, PCIBus bus
+    /// 255, Isa bus 1, Eisa and MicroChannel level 5 are vector 0x35 at IRQL 22. A level past
+    /// the band fails with a zero affinity.
     #[test]
-    fn the_vector_query_maps_lines_and_routes_pci_pins() {
-        // PIRQB -> IRQ 10.
-        let routes = PirqRoutes([0x80, 0x0A, 0x80, 0x80]);
+    fn the_vector_query_matches_the_halvec_capture() {
+        const EISA: i32 = 2;
+        const MICRO_CHANNEL: i32 = 3;
+        for interface in [INTERFACE_ISA, INTERFACE_INTERNAL, INTERFACE_PCI_BUS] {
+            for level in 0..16u32 {
+                let expected_vector = if level == 2 { 0x00 } else { 0x30 + level as u8 };
+                assert_eq!(
+                    get_interrupt_vector(interface, 0, level, level),
+                    (
+                        expected_vector,
+                        Irql(27 - level as u8),
+                        routing::ACTIVE_PROCESSORS
+                    ),
+                    "interface {interface} level {level}"
+                );
+            }
+        }
+        for (interface, bus) in [
+            (INTERFACE_PCI_BUS, 255),
+            (INTERFACE_ISA, 1),
+            (EISA, 0),
+            (MICRO_CHANNEL, 0),
+        ] {
+            assert_eq!(
+                get_interrupt_vector(interface, bus, 5, 5),
+                (0x35, Irql(22), routing::ACTIVE_PROCESSORS),
+                "interface {interface} bus {bus}"
+            );
+        }
+        // The vector argument is not a slot: a PCI query by line answers for the line alone.
+        assert_eq!(
+            get_interrupt_vector(INTERFACE_PCI_BUS, 0, 11, 0x0B),
+            get_interrupt_vector(INTERFACE_ISA, 0, 11, 11)
+        );
+        // Active processors: the one processor's bit, as KeQueryActiveProcessors reports it.
+        assert_eq!(routing::ACTIVE_PROCESSORS, 1);
 
-        let (vector, irql, affinity) =
-            get_interrupt_vector(Some(&routes), INTERFACE_ISA, 0, 10, 10);
-        assert_eq!(vector, 0x3A);
-        assert_eq!(irql, routing::line_irql(10));
-        assert_eq!(affinity, routing::ALL_PROCESSORS);
-
-        let (vector, irql, affinity) =
-            get_interrupt_vector(Some(&routes), INTERFACE_ISA, 0, 16, 16);
+        let (vector, irql, affinity) = get_interrupt_vector(INTERFACE_ISA, 0, 16, 16);
         assert_eq!((vector, affinity), (0, 0), "a line past the band fails");
         assert_eq!(irql, Irql(0));
-
-        // PCIBus: level = pin 1, vector = slot (dev 1, func 3) = 0x0B; the rotation routes it to
-        // PIRQB, IRQ 10.
-        let (vector, irql, affinity) =
-            get_interrupt_vector(Some(&routes), INTERFACE_PCI_BUS, 0, 1, 0x0B);
-        assert_eq!(vector, 0x3A);
-        assert_eq!(irql, routing::line_irql(10));
-        assert_eq!(affinity, routing::ALL_PROCESSORS);
-
-        // An unrouted pin fails: dev 2 pin 1 selects PIRQC, which is disabled here.
-        let (vector, _, affinity) =
-            get_interrupt_vector(Some(&routes), INTERFACE_PCI_BUS, 0, 1, 0x10);
-        assert_eq!((vector, affinity), (0, 0), "PIRQC is disabled");
+        assert_eq!(
+            get_interrupt_vector(INTERFACE_ISA, 0, 0x100 + 5, 5).2,
+            0,
+            "a level past a byte is past the band, not wrapped"
+        );
     }
 
-    /// The enable and disable reach the platform.
+    /// An object that serves nothing, for the enable's connected vector.
+    fn idle_service(_object: &crate::interrupt::InterruptObject, _context: usize) -> bool {
+        false
+    }
+
+    /// The enable unmasks only a line an interrupt object is connected to (an unconnected line
+    /// stays masked: the enable is refused, the platform never asked); the disable takes the
+    /// IRQL by value and masks the line.
     #[test]
-    fn enable_and_disable_reach_the_platform() {
+    fn enable_refuses_an_unconnected_line_and_disable_reaches_the_platform() {
+        use crate::interrupt::{self as core_interrupts, InterruptObject};
         let platform = FakePlatform::new();
-        assert!(enable_system_interrupt(&platform, 0x3A));
-        disable_system_interrupt(&platform, 0x3A);
+        let table = VectorTable::zeroed();
+        assert!(
+            !enable_system_interrupt(&platform, &table, 0x3A),
+            "no object on the line"
+        );
+        assert!(platform.log.borrow().is_empty(), "the line stays masked");
+
+        let mut object = InterruptObject::zeroed();
+        core_interrupts::initialize(
+            &mut object,
+            idle_service,
+            0,
+            0x3A,
+            Irql(17),
+            Irql(17),
+            true,
+            false,
+        );
+        let object: &'static InterruptObject = Box::leak(Box::new(object));
+        let mut controller = crate::hal::SystemInterrupts(&platform);
+        assert!(table.connect(object, &mut controller));
+        platform.log.borrow_mut().clear();
+
+        assert!(enable_system_interrupt(&platform, &table, 0x3A));
+        assert!(
+            !enable_system_interrupt(&platform, &table, 0x3B),
+            "the neighbour has none"
+        );
+        disable_system_interrupt(&platform, 0x3A, Irql(17));
         assert_eq!(
             *platform.log.borrow(),
             [("enable", 0x3A), ("disable", 0x3A)]
         );
     }
 
-    /// The clock: the RTC reading maps to TIME_FIELDS, and the time increment reports the
-    /// programmed period in 100 ns units.
+    /// The clock: the RTC reading maps to TIME_FIELDS, and the time increment is declined — the
+    /// timer left as the clock programmed it — and reports the period in effect in 100 ns units
+    /// (irql's capture, tests/hal/irql/output.txt `ticks`: "the time increment: 100144").
     #[test]
     fn the_clock_and_rtc_queries_run_over_the_platform() {
         let platform = FakePlatform::new();
@@ -870,11 +929,16 @@ mod tests {
             }
         );
 
-        let set = set_time_increment(&platform, 100_000);
-        assert_eq!(*platform.set_increment.borrow(), Some(100_000));
         // The fake's period is the captured divisor 11_949: its period is the captured 100_144
-        // in 100 ns units.
-        assert_eq!(set, 100_144);
+        // in 100 ns units, whatever was asked, and the timer is not reprogrammed.
+        for desired in [10_000, 100_000, 100_144, 200_000] {
+            assert_eq!(set_time_increment(&platform, desired), 100_144);
+        }
+        assert_eq!(
+            *platform.set_increment.borrow(),
+            None,
+            "the timer left alone"
+        );
 
         let mut no_clock = FakePlatform::new();
         no_clock.time = None;
@@ -883,26 +947,18 @@ mod tests {
         assert_eq!(get_dma_alignment_requirement(), 1);
     }
 
-    /// A fake DMA bus: every pool page translates to the frame of the same number, and the cache
-    /// flushes are counted.
-    struct FakeBus {
-        flushes: std::cell::Cell<usize>,
-    }
+    /// A fake DMA bus: every page of the fake pool translates to the frame of the same number.
+    struct FakeBus;
 
     impl dma::DmaBus for FakeBus {
         fn translate(&self, va: u32) -> Option<u64> {
             let page = va & !(crate::mem::paging::PAGE_SIZE - 1);
-            (page >= 0xFEC0_0000 && page < 0xFF00_0000).then(|| page as u64)
-        }
-
-        fn flush_cache(&self) {
-            self.flushes.set(self.flushes.get() + 1);
+            (page >= 0xFEC0_0000 && page < 0xFF00_0000).then(|| va as u64)
         }
     }
 
     /// A fake common-buffer store: one block at a time from the fake pool, recorded on release.
     struct FakeStore {
-        bus: *mut FakeBus,
         released: Vec<dma::CommonBuffer>,
     }
 
@@ -916,21 +972,18 @@ mod tests {
 
         fn release(&mut self, buffer: &dma::CommonBuffer) {
             self.released.push(*buffer);
-            let _ = self.bus;
         }
     }
 
     /// The DMA and MMIO bodies run over the seams: a common buffer comes back with its bus address
-    /// in the out-parameter and frees by it, an MMIO range maps into the reserved region page by
+    /// in the out-parameter and frees by its length, logical address and virtual address (all
+    /// three of HalFreeCommonBuffer's names), an MMIO range maps into the reserved region page by
     /// page, and the failures return the exports' failure values. The remaining stubs fail the
     /// way their exports fail.
     #[test]
     fn the_dma_and_mmio_bodies_run_over_their_seams() {
-        let mut bus = FakeBus {
-            flushes: std::cell::Cell::new(0),
-        };
+        let bus = FakeBus;
         let mut store = FakeStore {
-            bus: &mut bus,
             released: Vec::new(),
         };
         let mut registry = dma::CommonBufferRegistry::new();
@@ -939,7 +992,6 @@ mod tests {
         let buffer = allocate_common_buffer(&mut store, &bus, &mut registry, 0x2000, &mut logical);
         assert_eq!(buffer as u32, 0xFEC0_0000);
         assert_eq!(logical, 0xFEC0_0000, "the bus address of the first byte");
-        assert_eq!(bus.flushes.get(), 1);
 
         // A failed allocation returns null with a zero logical address.
         let mut logical = 0xFFFFu64;
@@ -947,9 +999,17 @@ mod tests {
         assert!(failed.is_null());
         assert_eq!(logical, 0);
 
-        free_common_buffer(&mut store, &bus, &mut registry, 0x2000, 0xFEC0_0000);
+        // The wrong virtual address names no buffer; the right one frees it.
+        free_common_buffer(
+            &mut store,
+            &mut registry,
+            0x2000,
+            0xFEC0_0000,
+            0xFEC0_1000 as *mut c_void,
+        );
+        assert!(store.released.is_empty());
+        free_common_buffer(&mut store, &mut registry, 0x2000, 0xFEC0_0000, buffer);
         assert_eq!(store.released.len(), 1);
-        assert_eq!(bus.flushes.get(), 2);
         assert_eq!(registry.len(), 0);
 
         // MmMapIoSpace maps the range page by page and hands out the exact byte's address.
@@ -977,6 +1037,30 @@ mod tests {
         assert!(!start_next_processor(
             core::ptr::null_mut(),
             core::ptr::null_mut()
+        ));
+    }
+
+    /// The target bodies' signatures are the documented prototypes', argument for argument (the
+    /// stdcall callee pops what the caller pushed): HalDisableSystemInterrupt takes the IRQL by
+    /// value (8 bytes popped), and HalFreeCommonBuffer the logical address by value and the
+    /// virtual address (4 + 4 + 8 + 4 + 4 = 24 bytes popped). The spec's records agree.
+    #[test]
+    fn the_interrupt_and_dma_prototypes_are_the_documented_ones() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let source = std::fs::read_to_string(manifest.join("src/hal/exports.rs")).unwrap();
+        let spec = std::fs::read_to_string(manifest.join("hal_exports.toml")).unwrap();
+        let squeezed = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let source = squeezed(&source);
+        assert!(
+            source.contains("f2k_export_HalDisableSystemInterrupt(vector: u32, irql: u8) -> ()")
+        );
+        assert!(source.contains(
+            "f2k_export_HalFreeCommonBuffer( _adapter: *mut c_void, length: u32, \
+             logical_address: u64, virtual_address: *mut c_void, _cache_enabled: bool, ) -> ()"
+        ));
+        assert!(spec.contains(r#"args = ["u32 Vector", "u32 Irql"]"#));
+        assert!(spec.contains(
+            r#"args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "ptr VirtualAddress", "boolean CacheEnabled"]"#
         ));
     }
 

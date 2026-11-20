@@ -2,17 +2,19 @@
 //! device and the CPU share, and the device register ranges mapped into kernel space.
 //!
 //! **Common buffers** ([`allocate_common_buffer`], HalAllocateCommonBuffer's core): memory the
-//! device DMAs to and from by *bus address*. F2K takes it from the nonpaged pool
-//! ([`super::pool`]), whose pages are mapped in every address space, and translates each page to
-//! its bus address through the page tables ([`DmaBus::translate`]). On this platform no IOMMU sits
-//! between the devices and memory, so the bus address is the physical address — identity — and the
-//! translation is a page-table walk. A buffer's pages need not be physically contiguous: the
-//! scatter/gather split ([`scatter_gather`]) turns the virtual range into the element list a
-//! scatter/gather device walks, merging the runs whose bus addresses are contiguous. The caches are
-//! flushed ([`DmaBus::flush_cache`]) when a buffer is made and when it goes, so device DMA reads
-//! memory's contents and the CPU reads the device's writes. The live buffers sit in a fixed
-//! [`CommonBufferRegistry`]: HalFreeCommonBuffer names one by its length and bus address, so the
-//! record is the handle.
+//! device DMAs to and from by *bus address*, one logical address for the whole buffer. F2K takes
+//! it from the nonpaged pool ([`super::pool`]), whose pages are mapped in every address space,
+//! over a physically contiguous run of frames below 4 GiB (dmabuf's capture: buffers of 1, 3 and
+//! 16 pages are physically contiguous, below 4 GiB, their logical address
+//! MmGetPhysicalAddress(the virtual one)), and translates it to its bus address through the page
+//! tables ([`DmaBus::translate`]). On this platform no IOMMU sits between the devices and memory,
+//! so the bus address is the physical address — identity — and the translation is a page-table
+//! walk; the record is checked contiguous page by page. Other DMA buffers' pages need not be
+//! contiguous: the scatter/gather split ([`scatter_gather`]) turns a virtual range into the
+//! element list a scatter/gather device walks, merging the runs whose bus addresses are
+//! contiguous. No cache flush is needed: x86 bus-master DMA is cache-coherent (the caches snoop
+//! the bus). The live buffers sit in a fixed [`CommonBufferRegistry`]: HalFreeCommonBuffer names
+//! one by its length, logical address and virtual address, so the record is the handle.
 //!
 //! **MMIO mapping** ([`MmioMappings`], MmMapIoSpace's core): a device's register range, a physical
 //! address range, maps into the reserved [`layout::MMIO`] region — its page tables made at boot and
@@ -21,9 +23,10 @@
 //! lowest free run first, and a mapping records itself so it can be released.
 //!
 //! The pure cores run in the host tests over fake page tables and a fake store; on target the
-//! seams are the page tables themselves ([`paging::translate_kernel_address`]), the x86 cache
-//! flush (`wbinvd`), and the pool — see the `target` module, whose thin entry points
-//! (`allocate`, `free`, `map_io_space`) the HAL's export bodies call.
+//! seams are the page tables themselves ([`paging::translate_kernel_address`]), the pool's
+//! contiguous blocks, and the registry under its lock — see the `target` module, whose thin
+//! entry points (`allocate`, `free`, `map_io_space`) the HAL's export bodies call, the first two
+//! through the same cores.
 
 // The scatter/gather split and the unmap paths serve the slices that consume them (the
 // scatter/gather HAL entries, MmUnmapIoSpace); the target build sees only the HAL bodies' calls.
@@ -96,9 +99,10 @@ pub fn scatter_gather(
 
 // --- Common buffers --------------------------------------------------------------------------
 
-/// A live common buffer's record: `length` bytes at kernel virtual `va`, whose first byte's bus
-/// address is `bus`. The record is the handle HalFreeCommonBuffer names (by length and bus
-/// address), and the pool block behind `va` lives exactly as long as the record does.
+/// A live common buffer's record: `length` bytes at kernel virtual `va`, physically contiguous
+/// from bus address `bus`. The record is the handle HalFreeCommonBuffer names (by length, bus
+/// address and virtual address), and the pool block behind `va` lives exactly as long as the
+/// record does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommonBuffer {
     pub va: u32,
@@ -110,7 +114,7 @@ pub struct CommonBuffer {
 pub const COMMON_BUFFER_CAPACITY: usize = 16;
 
 /// The live common buffers, a fixed table. Insert fails (handing the record back) when full;
-/// removal names a buffer by its length and bus address.
+/// removal names a buffer by its length, bus address and virtual address.
 pub struct CommonBufferRegistry {
     slots: [Option<CommonBuffer>; COMMON_BUFFER_CAPACITY],
 }
@@ -134,11 +138,13 @@ impl CommonBufferRegistry {
         Err(buffer)
     }
 
-    /// Remove and return the buffer named by `length` and `bus_address`; none when no such buffer
-    /// is live.
-    pub fn remove(&mut self, length: u32, bus_address: u64) -> Option<CommonBuffer> {
+    /// Remove and return the buffer named by `length`, `bus_address` and `va`; none when no such
+    /// buffer is live.
+    pub fn remove(&mut self, length: u32, bus_address: u64, va: u32) -> Option<CommonBuffer> {
         for slot in &mut self.slots {
-            if matches!(slot, Some(buffer) if buffer.length == length && buffer.bus == bus_address)
+            if matches!(slot, Some(buffer) if buffer.length == length
+                && buffer.bus == bus_address
+                && buffer.va == va)
             {
                 return slot.take();
             }
@@ -152,51 +158,76 @@ impl CommonBufferRegistry {
     }
 }
 
-/// The bus's side of DMA: the page-table translation to bus addresses, and the cache flush that
-/// makes a common buffer's contents visible to the device (and the device's writes to the CPU).
-/// On target this is the platform itself; the host tests supply a fake page table.
+/// Where the live common buffers are recorded: a [`CommonBufferRegistry`] itself in the host
+/// tests, the kernel's under its lock on target (each step takes the lock alone, so the store's
+/// pool steps never run inside it).
+pub trait CommonBufferTable {
+    /// Record a live buffer; the record back when the table is full.
+    fn insert(&mut self, buffer: CommonBuffer) -> Result<(), CommonBuffer>;
+
+    /// Remove and return the buffer named by `length`, `bus_address` and `va`.
+    fn remove(&mut self, length: u32, bus_address: u64, va: u32) -> Option<CommonBuffer>;
+}
+
+impl CommonBufferTable for CommonBufferRegistry {
+    fn insert(&mut self, buffer: CommonBuffer) -> Result<(), CommonBuffer> {
+        CommonBufferRegistry::insert(self, buffer)
+    }
+
+    fn remove(&mut self, length: u32, bus_address: u64, va: u32) -> Option<CommonBuffer> {
+        CommonBufferRegistry::remove(self, length, bus_address, va)
+    }
+}
+
+/// The bus's side of DMA: the page-table translation to bus addresses. On target this is the
+/// platform itself; the host tests supply a fake page table. (No cache maintenance: x86
+/// bus-master DMA is coherent with the caches.)
 pub trait DmaBus {
     /// The bus address of the byte at kernel virtual `va`; none when its page is not mapped.
     fn translate(&self, va: u32) -> Option<u64>;
-
-    /// Write back and invalidate every cached line, so device DMA reads memory's contents and
-    /// CPU reads see the device's writes.
-    fn flush_cache(&self);
 }
 
-/// Where a common buffer's memory comes from: the nonpaged pool on target, a fake in the host
-/// tests. The store owns the memory between `allocate` and `release`.
+/// Where a common buffer's memory comes from: the nonpaged pool's physically contiguous blocks
+/// on target, a fake in the host tests. The store owns the memory between `allocate` and
+/// `release`.
 pub trait CommonBufferStore {
-    /// Allocate `bytes` of kernel memory and return its virtual base; none when none is free.
+    /// Allocate `bytes` of kernel memory over physically contiguous frames and return its
+    /// virtual base; none when none is free.
     fn allocate(&mut self, bytes: usize) -> Option<u32>;
 
     /// Give back what `allocate` returned for `buffer`.
     fn release(&mut self, buffer: &CommonBuffer);
 }
 
+/// The first bus address past the 32-bit bus a common buffer must lie below.
+const BUS_LIMIT: u64 = 1 << 32;
+
 /// Build a buffer's record from its virtual base, through `bus`: every page of the range must
-/// translate. None when a page is unmapped.
+/// translate, each to the frame right after the previous one's (physically contiguous, so the one
+/// logical address covers the buffer), and the range must end below 4 GiB. None otherwise.
 pub fn common_buffer_record(bus: &impl DmaBus, va: u32, length: u32) -> Option<CommonBuffer> {
-    let pages = pages_for(length as usize);
-    for page in 0..pages as u32 {
-        bus.translate(va + page * PAGE_SIZE)?;
+    let first = bus.translate(va)?;
+    let pages = pages_for(length as usize) as u32;
+    for page in 1..pages {
+        if bus.translate(va + page * PAGE_SIZE)? != first + (page * PAGE_SIZE) as u64 {
+            return None;
+        }
     }
-    Some(CommonBuffer {
+    (first + (pages * PAGE_SIZE) as u64 <= BUS_LIMIT).then_some(CommonBuffer {
         va,
-        bus: bus.translate(va)?,
+        bus: first,
         length,
     })
 }
 
 /// HalAllocateCommonBuffer's core: a common buffer of `length` bytes over `store`, translated
-/// through `bus` and recorded in `registry`, with the caches flushed so the device sees the fresh
-/// (zeroed) buffer. Returns the record — the virtual pointer is `record.va`, the bus address
-/// `record.bus`. None when the store has no room, a page fails to translate, or the registry is
-/// full; what was allocated is given back.
+/// through `bus` and recorded in `registry`. Returns the record — the virtual pointer is
+/// `record.va`, the bus address `record.bus`. None when the store has no room, the block is not
+/// physically contiguous below 4 GiB, or the registry is full; what was allocated is given back.
 pub fn allocate_common_buffer(
     store: &mut impl CommonBufferStore,
     bus: &impl DmaBus,
-    registry: &mut CommonBufferRegistry,
+    registry: &mut impl CommonBufferTable,
     length: u32,
 ) -> Option<CommonBuffer> {
     if length == 0 {
@@ -206,15 +237,10 @@ pub fn allocate_common_buffer(
     let record = match common_buffer_record(bus, va, length) {
         Some(record) => record,
         None => {
-            store.release(&CommonBuffer {
-                va,
-                bus: 0,
-                length,
-            });
+            store.release(&CommonBuffer { va, bus: 0, length });
             return None;
         }
     };
-    bus.flush_cache();
     match registry.insert(record) {
         Ok(()) => Some(record),
         Err(record) => {
@@ -224,18 +250,17 @@ pub fn allocate_common_buffer(
     }
 }
 
-/// HalFreeCommonBuffer's core: remove the buffer named by `length` and `bus_address` from
-/// `registry`, flush the caches so the CPU sees the device's writes, and give the memory back
-/// through `store`. An unknown name frees nothing.
+/// HalFreeCommonBuffer's core: remove the buffer named by `length`, `bus_address` and `va` (what
+/// the allocation handed out) from `registry` and give the memory back through `store`. An
+/// unknown name frees nothing.
 pub fn free_common_buffer(
     store: &mut impl CommonBufferStore,
-    bus: &impl DmaBus,
-    registry: &mut CommonBufferRegistry,
+    registry: &mut impl CommonBufferTable,
     length: u32,
     bus_address: u64,
+    va: u32,
 ) {
-    if let Some(record) = registry.remove(length, bus_address) {
-        bus.flush_cache();
+    if let Some(record) = registry.remove(length, bus_address, va) {
         store.release(&record);
     }
 }
@@ -282,7 +307,10 @@ impl MmioMappings {
     ///
     /// The region spans more than [`MAX_ENTRIES`] directory entries.
     pub const fn new(region: Region) -> Self {
-        assert!(region.entries <= MAX_ENTRIES, "a reserved region too wide for its bitmap");
+        assert!(
+            region.entries <= MAX_ENTRIES,
+            "a reserved region too wide for its bitmap"
+        );
         MmioMappings {
             region,
             taken: [0; WORDS],
@@ -350,17 +378,24 @@ impl MmioMappings {
 
     /// Reserve the run of pages covering the physical range from `physical` (`bytes` long,
     /// page-aligned out both ends): `pages` pages from the lowest free run, recorded in the
-    /// mapping table. None when no free run fits, the range is empty, or the address is past the
-    /// 32-bit bus.
-    pub fn reserve(&mut self, physical: u64, bytes: u32, cache_enable: bool) -> Option<MmioReservation> {
+    /// mapping table. None when the mapping table is full, no free run fits, the range is empty,
+    /// or the address is past the 32-bit bus — and then no page is taken.
+    pub fn reserve(
+        &mut self,
+        physical: u64,
+        bytes: u32,
+        cache_enable: bool,
+    ) -> Option<MmioReservation> {
         if bytes == 0 || physical >= 1 << 32 {
             return None;
         }
+        // The record's slot first: a full table must not leave the run marked taken.
+        let slot = self.slots.iter().position(|slot| slot.is_none())?;
         let phys = physical as u32;
         let offset = phys % PAGE_SIZE;
         let pages = ((offset as u64 + bytes as u64).div_ceil(PAGE_SIZE as u64)) as usize;
+        // `reserve_pages` marks the run taken.
         let first = self.reserve_pages(pages)?;
-        let slot = self.slots.iter().position(|slot| slot.is_none())?;
         let reservation = MmioReservation {
             va: self.region.start + first as u32 * PAGE_SIZE + offset,
             first_page: first,
@@ -369,11 +404,16 @@ impl MmioMappings {
             bytes,
             cache_enable,
         };
-        for page in first..first + pages {
-            self.mark(page, true);
-        }
         self.slots[slot] = Some(reservation);
         Some(reservation)
+    }
+
+    /// How many of the region's pages are taken.
+    pub fn taken_pages(&self) -> usize {
+        self.taken
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
     }
 
     /// Map the reserved range: call `map_page(va, phys_page, cache_enable)` for each page of the
@@ -403,7 +443,9 @@ impl MmioMappings {
             .slots
             .iter()
             .position(|slot| slot.is_some_and(|r| r.va == va))?;
-        let reservation = self.slots[index].take().expect("the slot was found present");
+        let reservation = self.slots[index]
+            .take()
+            .expect("the slot was found present");
         for i in 0..reservation.pages {
             self.mark(reservation.first_page + i, false);
             unmap_page(self.region.start + (reservation.first_page as u32 + i as u32) * PAGE_SIZE);
@@ -429,31 +471,23 @@ mod target {
     use crate::mem::{layout, paging, pool};
 
     /// The platform's bus: identity translation through the current directory's page tables (the
-    /// kernel half's tables are shared, so this is every address space's answer), and the x86
-    /// cache flush.
+    /// kernel half's tables are shared, so this is every address space's answer).
     pub struct PlatformBus;
 
     impl DmaBus for PlatformBus {
         fn translate(&self, va: u32) -> Option<u64> {
             paging::translate_kernel_address(va).map(|phys| phys as u64)
         }
-
-        fn flush_cache(&self) {
-            // SAFETY: wbinvd writes back every dirty line and invalidates the caches; it changes
-            // no register and no memory the kernel owns (the lines are memory's).
-            unsafe {
-                core::arch::asm!("wbinvd", options(nomem, nostack, preserves_flags));
-            }
-        }
     }
 
-    /// The nonpaged pool as the common buffers' store: a block's pages are the buffer, and the
-    /// registry's record owns the block — `release` hands it back by its address.
+    /// The nonpaged pool as the common buffers' store: a physically contiguous block's pages are
+    /// the buffer, and the registry's record owns the block — `release` hands it back by its
+    /// address.
     pub struct PoolStore;
 
     impl CommonBufferStore for PoolStore {
         fn allocate(&mut self, bytes: usize) -> Option<u32> {
-            let block = pool::allocate(bytes)?;
+            let block = pool::allocate_contiguous(bytes)?;
             let va = block.virtual_address();
             // The record takes the block over; `release` gives it back through `release_block`.
             core::mem::forget(block);
@@ -478,46 +512,31 @@ mod target {
         mmio: MmioMappings::new(layout::MMIO),
     });
 
-    /// HalAllocateCommonBuffer: a common buffer of `length` bytes over the pool, translated to
-    /// its bus address. The record, or none when the pool or the registry is full.
-    pub fn allocate(length: u32) -> Option<CommonBuffer> {
-        let mut store = PoolStore;
-        let bus = PlatformBus;
-        let va = store.allocate(length as usize)?;
-        let record = match common_buffer_record(&bus, va, length) {
-            Some(record) => record,
-            None => {
-                store.release(&CommonBuffer {
-                    va,
-                    bus: 0,
-                    length,
-                });
-                return None;
-            }
-        };
-        bus.flush_cache();
-        let mut registered = None;
-        level::raised::<High, _>(|high| {
-            if DMA.get(high).registry.insert(record).is_ok() {
-                registered = Some(record);
-            }
-        });
-        if registered.is_none() {
-            store.release(&record);
+    /// The kernel's registry as the cores' table: each step raised to the lock's level alone, so
+    /// the store's pool steps between them run outside it.
+    struct LockedRegistry;
+
+    impl CommonBufferTable for LockedRegistry {
+        fn insert(&mut self, buffer: CommonBuffer) -> Result<(), CommonBuffer> {
+            level::raised::<High, _>(|high| DMA.get(high).registry.insert(buffer))
         }
-        registered
+
+        fn remove(&mut self, length: u32, bus_address: u64, va: u32) -> Option<CommonBuffer> {
+            level::raised::<High, _>(|high| DMA.get(high).registry.remove(length, bus_address, va))
+        }
     }
 
-    /// HalFreeCommonBuffer: free the buffer named by `length` and `bus_address`; an unknown name
-    /// frees nothing.
-    pub fn free(length: u32, bus_address: u64) {
-        let record = level::raised::<High, _>(|high| {
-            DMA.get(high).registry.remove(length, bus_address)
-        });
-        if let Some(record) = record {
-            PlatformBus.flush_cache();
-            PoolStore.release(&record);
-        }
+    /// HalAllocateCommonBuffer: a physically contiguous common buffer of `length` bytes over the
+    /// pool, translated to its bus address ([`allocate_common_buffer`] over the kernel's seams).
+    /// The record, or none when the pool or the registry is full.
+    pub fn allocate(length: u32) -> Option<CommonBuffer> {
+        allocate_common_buffer(&mut PoolStore, &PlatformBus, &mut LockedRegistry, length)
+    }
+
+    /// HalFreeCommonBuffer: free the buffer named by `length`, `bus_address` and `va`
+    /// ([`free_common_buffer`] over the kernel's seams); an unknown name frees nothing.
+    pub fn free(length: u32, bus_address: u64, va: u32) {
+        free_common_buffer(&mut PoolStore, &mut LockedRegistry, length, bus_address, va)
     }
 
     /// MmMapIoSpace: map `bytes` of physical memory from `physical` into the MMIO region, cached
@@ -542,29 +561,25 @@ mod target {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::vec::Vec;
 
     use super::*;
 
-    /// A fake page table: virtual page -> physical frame, with a bus that translates through it
-    /// and counts its cache flushes.
+    /// A fake page table: virtual page -> physical frame, with a bus that translates through it.
     struct FakeBus {
-        pages: BTreeMap<u32, u32>,
-        flushes: Cell<usize>,
+        pages: BTreeMap<u32, u64>,
     }
 
     impl FakeBus {
         fn new() -> Self {
             FakeBus {
                 pages: BTreeMap::new(),
-                flushes: Cell::new(0),
             }
         }
 
         /// Map virtual page `va_page` to physical frame `frame`.
-        fn map_page(&mut self, va_page: u32, frame: u32) {
+        fn map_page(&mut self, va_page: u32, frame: u64) {
             self.pages.insert(va_page, frame);
         }
     }
@@ -574,11 +589,7 @@ mod tests {
             let page = va & !(PAGE_SIZE - 1);
             self.pages
                 .get(&page)
-                .map(|frame| (*frame as u64) + (va - page) as u64)
-        }
-
-        fn flush_cache(&self) {
-            self.flushes.set(self.flushes.get() + 1);
+                .map(|frame| *frame + (va - page) as u64)
         }
     }
 
@@ -588,7 +599,7 @@ mod tests {
     struct FakeStore {
         bus: *mut FakeBus,
         next_va: *mut u32,
-        frames: Vec<u32>,
+        frames: Vec<u64>,
         hole: bool,
         released: Vec<CommonBuffer>,
     }
@@ -605,7 +616,7 @@ mod tests {
         }
 
         /// Script the frame the next allocated page maps to.
-        fn with_frame(mut self, frame: u32) -> Self {
+        fn with_frame(mut self, frame: u64) -> Self {
             self.frames.push(frame);
             self
         }
@@ -704,12 +715,25 @@ mod tests {
         assert_eq!(registry.insert(buffer), Ok(()));
         assert_eq!(registry.len(), 1);
         assert_eq!(
-            registry.remove(0x1000, 0x1234_0000),
-            Some(buffer),
-            "named by length and bus address"
+            registry.remove(0x1000, 0x1234_0000, 0xFEC0_1000),
+            None,
+            "the wrong virtual address"
         );
-        assert_eq!(registry.remove(0x1000, 0x1234_0000), None, "gone now");
-        assert_eq!(registry.remove(0x2000, 0x1234_0000), None, "wrong length");
+        assert_eq!(
+            registry.remove(0x2000, 0x1234_0000, 0xFEC0_0000),
+            None,
+            "wrong length"
+        );
+        assert_eq!(
+            registry.remove(0x1000, 0x1234_0000, 0xFEC0_0000),
+            Some(buffer),
+            "named by length, bus address and virtual address"
+        );
+        assert_eq!(
+            registry.remove(0x1000, 0x1234_0000, 0xFEC0_0000),
+            None,
+            "gone now"
+        );
         for i in 0..COMMON_BUFFER_CAPACITY {
             let record = CommonBuffer {
                 va: 0xFEC0_0000 + i as u32 * PAGE_SIZE,
@@ -726,44 +750,68 @@ mod tests {
         assert_eq!(registry.insert(overflow), Err(overflow), "a full table");
     }
 
-    /// A common buffer allocates over the store, translates to its bus address, flushes the
-    /// cache once, and frees back through the store; a full store, an unmapped page, and a full
-    /// registry each fail with the allocation given back.
+    /// A common buffer allocates over the store, translates to its bus address, and frees back
+    /// through the store by length, bus address and virtual address; a full store, an unmapped
+    /// page, a full registry, a block that is not physically contiguous and one reaching past
+    /// 4 GiB each fail with the allocation given back. dmabuf's capture
+    /// (tests/hal/dmabuf/output.txt, `common`) pins the shape: buffers of 1, 3 and 16 pages,
+    /// "physically contiguous: yes, below 4 GiB: yes", the logical address the physical one of
+    /// the virtual address.
     #[test]
     fn common_buffers_allocate_translate_and_free_over_the_seams() {
         let mut bus = FakeBus::new();
         let mut registry = CommonBufferRegistry::new();
         let mut next_va = 0xFEC0_0000u32;
 
-        // Two contiguous pages: the buffer's bus address is the first byte's.
+        // dmabuf's three sizes over contiguous frames: one logical address, the first byte's.
+        for pages in [1u32, 3, 16] {
+            let base = 0x0050_0000 + pages as u64 * 0x10_0000;
+            let mut store = FakeStore::new(&mut bus, &mut next_va);
+            for page in 0..pages {
+                store = store.with_frame(base + (page * PAGE_SIZE) as u64);
+            }
+            let length = pages * PAGE_SIZE;
+            let record = allocate_common_buffer(&mut store, &bus, &mut registry, length).unwrap();
+            assert_eq!(record.bus, base, "{pages} pages: the first frame's address");
+            assert_eq!(record.va % PAGE_SIZE, 0, "page-aligned");
+            for page in 0..pages {
+                assert_eq!(
+                    bus.translate(record.va + page * PAGE_SIZE),
+                    Some(record.bus + (page * PAGE_SIZE) as u64),
+                    "{pages} pages: physically contiguous"
+                );
+            }
+            free_common_buffer(&mut store, &mut registry, length, record.bus, record.va);
+            assert_eq!(store.released, [record]);
+            assert_eq!(registry.len(), 0);
+        }
+
+        // Two contiguous pages, kept: a second buffer lands past the first.
         let mut store = FakeStore::new(&mut bus, &mut next_va)
             .with_frame(0x500_0000)
-            .with_frame(0x501_0000);
+            .with_frame(0x500_1000);
         let record = allocate_common_buffer(&mut store, &bus, &mut registry, 0x2000).unwrap();
-        assert_eq!(record.va, 0xFEC0_0000);
         assert_eq!(record.bus, 0x500_0000);
         assert_eq!(record.length, 0x2000);
-        assert_eq!(registry.len(), 1);
-        assert_eq!(bus.flushes.get(), 1, "the cache flushed on allocation");
-
-        // A second buffer lands past the first.
         let mut store = FakeStore::new(&mut bus, &mut next_va).with_frame(0x600_0000);
         let record2 = allocate_common_buffer(&mut store, &bus, &mut registry, 0x1000).unwrap();
-        assert_eq!(record2.va, 0xFEC0_2000, "the fake store's next free page");
+        assert_eq!(
+            record2.va,
+            record.va + 0x2000,
+            "the fake store's next free page"
+        );
         assert_eq!(record2.bus, 0x600_0000);
         assert_eq!(registry.len(), 2);
-        assert_eq!(bus.flushes.get(), 2, "flushed once per allocation");
 
-        // Free names it by length and bus address: flushed again, given back to the store.
-        free_common_buffer(&mut store, &bus, &mut registry, 0x2000, 0x500_0000);
+        // Free names it by length, bus address and virtual address; a wrong virtual address
+        // frees nothing.
+        free_common_buffer(&mut store, &mut registry, 0x2000, 0x500_0000, record2.va);
+        assert!(store.released.is_empty());
+        free_common_buffer(&mut store, &mut registry, 0x2000, 0x500_0000, record.va);
         assert_eq!(registry.len(), 1);
-        assert_eq!(bus.flushes.get(), 3, "flushed on free");
         assert_eq!(store.released, [record]);
-
-        // An unknown name frees nothing.
-        free_common_buffer(&mut store, &bus, &mut registry, 0x2000, 0x500_0000);
-        assert_eq!(bus.flushes.get(), 3);
-        assert_eq!(store.released.len(), 1);
+        free_common_buffer(&mut store, &mut registry, 0x2000, 0x500_0000, record.va);
+        assert_eq!(store.released.len(), 1, "gone now");
 
         // A store with no frames left fails cleanly.
         let mut empty = FakeStore::new(&mut bus, &mut next_va);
@@ -776,13 +824,37 @@ mod tests {
         // A page that does not translate fails and gives the block back.
         let mut holed = FakeStore::new(&mut bus, &mut next_va)
             .with_frame(0x700_0000)
-            .with_frame(0x701_0000)
+            .with_frame(0x700_1000)
             .with_hole();
         assert_eq!(
             allocate_common_buffer(&mut holed, &bus, &mut registry, 0x2000),
             None
         );
-        assert_eq!(holed.released.len(), 1, "the half-translated block went back");
+        assert_eq!(
+            holed.released.len(),
+            1,
+            "the half-translated block went back"
+        );
+
+        // Frames that are not contiguous fail: one logical address could not cover them.
+        let mut scattered = FakeStore::new(&mut bus, &mut next_va)
+            .with_frame(0x710_0000)
+            .with_frame(0x720_0000);
+        assert_eq!(
+            allocate_common_buffer(&mut scattered, &bus, &mut registry, 0x2000),
+            None
+        );
+        assert_eq!(scattered.released.len(), 1, "the scattered block went back");
+
+        // A run reaching past 4 GiB fails.
+        let mut high = FakeStore::new(&mut bus, &mut next_va)
+            .with_frame(0xFFFF_F000)
+            .with_frame(0x1_0000_0000);
+        assert_eq!(
+            allocate_common_buffer(&mut high, &bus, &mut registry, 0x2000),
+            None
+        );
+        assert_eq!(high.released.len(), 1);
         assert_eq!(registry.len(), 1, "nothing was recorded");
 
         // A full registry fails and gives the block back.
@@ -804,7 +876,10 @@ mod tests {
         assert_eq!(store.released.len(), 1);
 
         // A zero length allocates nothing.
-        assert_eq!(allocate_common_buffer(&mut store, &bus, &mut registry, 0), None);
+        assert_eq!(
+            allocate_common_buffer(&mut store, &bus, &mut registry, 0),
+            None
+        );
     }
 
     /// MMIO mappings reserve the lowest free run covering the physical range (page-aligned out
@@ -872,6 +947,40 @@ mod tests {
         );
         // A range wider than the region fails.
         assert_eq!(full.map(0xE000_0000, 0x500_0000, false, |_, _, _| ()), None);
+    }
+
+    /// A full mapping table refuses a reservation without taking its pages, and a reservation
+    /// marks its run once: unmapping it frees exactly that run.
+    #[test]
+    fn a_full_mapping_table_leaks_no_pages() {
+        let region = Region {
+            start: 0xC280_0000,
+            entries: 1,
+        };
+        let mut mmio = MmioMappings::new(region);
+        let mut vas = Vec::new();
+        for i in 0..MMIO_CAPACITY as u64 {
+            vas.push(
+                mmio.map(0xE000_0000 + i * 0x1000, 0x1000, false, |_, _, _| ())
+                    .unwrap(),
+            );
+        }
+        assert_eq!(mmio.taken_pages(), MMIO_CAPACITY);
+        assert_eq!(
+            mmio.reserve(0xF000_0000, 0x3000, false),
+            None,
+            "the table is full"
+        );
+        assert_eq!(
+            mmio.taken_pages(),
+            MMIO_CAPACITY,
+            "the refused run was not taken"
+        );
+        for va in vas {
+            mmio.unmap(va, |_| ()).unwrap();
+        }
+        assert_eq!(mmio.taken_pages(), 0, "every run given back");
+        assert_eq!(mmio.len(), 0);
     }
 
     /// The MMIO region in the layout holds what the target's mappings assume: page-aligned, wide

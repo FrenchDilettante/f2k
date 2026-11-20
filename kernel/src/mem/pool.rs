@@ -101,13 +101,37 @@ pub fn pages_for(bytes: usize) -> usize {
     bytes.div_ceil(PAGE_SIZE as usize).max(1)
 }
 
+/// The lowest run of `count` consecutive frames, each `usable`, among frames 1 to `frames` - 1
+/// (frame 0 is never handed out) and below 4 GiB: its first frame number. None when no such run
+/// exists. The search a physically contiguous block ([`allocate_contiguous`]) takes its frames
+/// by.
+pub fn contiguous_run(frames: u32, count: u32, usable: impl Fn(u32) -> bool) -> Option<u32> {
+    // Frames past 4 GiB are out of a 32-bit bus master's reach.
+    let end = frames.min(1 << 20);
+    if count == 0 {
+        return None;
+    }
+    let mut run = 0;
+    for frame in 1..end {
+        if usable(frame) {
+            run += 1;
+            if run == count {
+                return Some(frame + 1 - count);
+            }
+        } else {
+            run = 0;
+        }
+    }
+    None
+}
+
 #[cfg(target_arch = "x86")]
 pub use target::*;
 
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
-    use crate::mem::frame::FrameState;
+    use crate::mem::frame::{FrameFlags, FrameState};
     use crate::mem::{paging, with_database, Parts};
 
     /// A block of the pool: `len` bytes at the start of its pages, which are mapped (in every
@@ -200,6 +224,46 @@ mod target {
         })
     }
 
+    /// A block of at least `bytes` bytes, zeroed, over physically contiguous frames (the lowest
+    /// run of free or zeroed frames, flagless, below 4 GiB, [`contiguous_run`]): what a common
+    /// buffer's one logical address needs. None when no free run of the region's pages fits, or
+    /// no run of frames is long enough (what was taken is given back).
+    pub fn allocate_contiguous(bytes: usize) -> Option<Block> {
+        let pages = pages_for(bytes);
+        with_database(|database| {
+            let Parts {
+                frames,
+                pool,
+                scratch,
+                ..
+            } = database.parts();
+            let first = pool.allocate(pages)?;
+            let run = contiguous_run(frames.frame_count(), pages as u32, |frame| {
+                let entry = frames.entry(frame);
+                entry.state.has_color_chain() && entry.flags == FrameFlags::empty()
+            });
+            let Some(base) = run else {
+                pool.release(first, pages);
+                return None;
+            };
+            for page in 0..pages {
+                let frame = base + page as u32;
+                frames.take(frame);
+                paging::map_pool_page(
+                    frames,
+                    scratch,
+                    page_address(first + page),
+                    frame * PAGE_SIZE,
+                );
+            }
+            Some(Block {
+                first,
+                pages,
+                len: bytes,
+            })
+        })
+    }
+
     impl Drop for Block {
         /// The block goes: its pages unmapped from the shared tables, their frames given back to
         /// the frame database, and the pages to the ledger.
@@ -237,6 +301,35 @@ mod tests {
         assert_eq!(pages_for(4100), 2);
         assert_eq!(pages_for(65540), 17);
         assert_eq!(pages_for(0), 1);
+    }
+
+    /// A contiguous run of frames is the lowest of the length asked, skipping frame 0 and
+    /// stopping below 4 GiB; none when no run is long enough.
+    #[test]
+    fn a_contiguous_run_of_frames_is_the_lowest_that_fits() {
+        // Frames 1-3 usable, 4 not, 5-20 usable.
+        let usable = |frame: u32| frame != 4;
+        assert_eq!(contiguous_run(32, 1, usable), Some(1), "never frame 0");
+        assert_eq!(contiguous_run(32, 3, usable), Some(1));
+        assert_eq!(
+            contiguous_run(32, 4, usable),
+            Some(5),
+            "past the unusable frame"
+        );
+        assert_eq!(contiguous_run(32, 16, usable), Some(5));
+        assert_eq!(
+            contiguous_run(21, 16, usable),
+            Some(5),
+            "ending at the last frame"
+        );
+        assert_eq!(contiguous_run(20, 16, usable), None, "one frame short");
+        assert_eq!(contiguous_run(32, 0, usable), None);
+        // Nothing at or past 4 GiB (frame 0x10_0000).
+        assert_eq!(contiguous_run(u32::MAX, 2, |frame| frame >= 0xF_FFFF), None);
+        assert_eq!(
+            contiguous_run(u32::MAX, 1, |frame| frame >= 0xF_FFFF),
+            Some(0xF_FFFF)
+        );
     }
 
     /// Runs are taken lowest first, a freed run is reused, and a run too long for any gap goes

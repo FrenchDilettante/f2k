@@ -11,8 +11,9 @@
 //!
 //! The interrupt controller's band stays sixteen device lines: a line outside it routes
 //! nowhere. The vector is the HAL's mapping ([`hal::interrupt_vector`]); the line's IRQL is
-//! [`line_irql`], and the affinity is every processor (there is one today). Together they are
-//! what the HAL contract's vector query reports ([`line_vector`]).
+//! [`line_irql`], and the affinity is the active processors (the one there is today). Together
+//! they are what the HAL contract's vector query reports ([`line_vector`]), save for the cascade
+//! line, which Windows 2000's query answers with vector 0.
 //!
 //! The controller side stays behind the interrupt core's
 //! [`Controller`](crate::interrupt::Controller) seam, which the IO APIC slice joins later: routing
@@ -21,13 +22,18 @@
 use super::Interrupt;
 use crate::hal;
 use crate::hw::pci;
-use crate::interrupt::irql::{Irql, CLOCK, IDE, KEYBOARD};
+use crate::interrupt::irql::{Irql, PROFILE};
 
 /// The largest device line the HAL's vector band holds (line 15).
 pub const MAX_LINE: u8 = hal::LAST_VECTOR - hal::FIRST_VECTOR;
 
-/// The affinity every routed line carries: all processors (the one there is today).
-pub const ALL_PROCESSORS: u32 = 0xFFFF_FFFF;
+/// The affinity every routed line carries: the active processors, as KeQueryActiveProcessors
+/// reports them — the one processor there is today, bit 0 (halvec's capture: every level's
+/// affinity is "the active processors").
+pub const ACTIVE_PROCESSORS: u32 = 1;
+
+/// The line the slave controller cascades into the master on: no device's line.
+pub const CASCADE_LINE: u8 = 2;
 
 /// Route one PCI function's interrupt pin against the given PIRQ routes: the pin, the ISA line
 /// and the line's vector, when the pin routes somewhere inside the band. A device with no pin
@@ -56,17 +62,16 @@ pub fn routed_interrupt(bus: u8, dev: u8, func: u8, pin: u8) -> Option<Interrupt
     route_interrupt(pci::routes(), bus, dev, func, pin)
 }
 
-/// The IRQL a device line runs at: the level the kernel's own driver for the line connects at
-/// (the interval timer on line 0, the keyboard on line 1, the IDE disk on line 14), and the
-/// band's descending assignment (CLOCK − line) for the rest. A driver connecting an interrupt
-/// object names its level itself; this is the level the vector query reports for the line.
+/// The IRQL a device line runs at: the band's descending assignment, PROFILE_LEVEL (27) less the
+/// line, for every line 0-15 (halvec's capture, `isa`/`internal`/`pci`: "IRQL = 27 - level: yes,
+/// IRQL = 28 - level: no"). The kernel's own drivers connect at those levels too: the keyboard
+/// (line 1) at [`KEYBOARD`](crate::interrupt::irql::KEYBOARD), 26, the IDE disk (line 14) at
+/// [`IDE`](crate::interrupt::irql::IDE), 13. The interval clock alone connects above its line's
+/// level, at CLOCK2_LEVEL (28), as Windows 2000's HAL connects it outside the query. A driver
+/// connecting an interrupt object names its level itself; this is the level the vector query
+/// reports for the line.
 pub fn line_irql(line: u8) -> Irql {
-    match line {
-        0 => CLOCK,
-        1 => KEYBOARD,
-        14 => IDE,
-        n => Irql(CLOCK.0.saturating_sub(n)),
-    }
+    Irql(PROFILE.0.saturating_sub(line))
 }
 
 /// The vector query's answer for one ISA device line: its system vector, its IRQL and its
@@ -79,12 +84,19 @@ pub struct LineVector {
     pub affinity: u32,
 }
 
-/// The system vector, IRQL and affinity one ISA device line maps to in the HAL's band.
+/// The system vector, IRQL and affinity one ISA device line maps to in the HAL's band: vector
+/// 0x30 + line. The cascade line (2) carries no device, and Windows 2000's query answers it with
+/// vector 0 — its IRQL and affinity still the line's (halvec's capture: "level 2: vector=0x00
+/// IRQL=25 affinity=the active processors").
 pub fn line_vector(line: u8) -> Option<LineVector> {
     (line <= MAX_LINE).then(|| LineVector {
-        vector: hal::interrupt_vector(line),
+        vector: if line == CASCADE_LINE {
+            0
+        } else {
+            hal::interrupt_vector(line)
+        },
         irql: line_irql(line),
-        affinity: ALL_PROCESSORS,
+        affinity: ACTIVE_PROCESSORS,
     })
 }
 
@@ -164,35 +176,27 @@ mod tests {
         );
     }
 
-    /// The vector query's answer: each line in the band maps to its vector, IRQL and the
-    /// all-processors affinity; a line past the band fails (the caller reports zero affinity).
+    /// The vector query's answer, as halvec's capture (tests/hal/halvec/output.txt, `isa`)
+    /// pins it: line n maps to vector 0x30 + n at IRQL 27 - n with the active processors'
+    /// affinity, except the cascade line 2 (vector 0x00, IRQL 25); the keyboard's and the disk's
+    /// lines land on the levels their drivers connect at; a line past the band fails.
     #[test]
     fn a_line_maps_to_its_vector_irql_and_affinity() {
-        let first = line_vector(0).unwrap();
-        assert_eq!(first.vector, hal::FIRST_VECTOR);
-        assert_eq!(first.irql, CLOCK);
-        assert_eq!(first.affinity, ALL_PROCESSORS);
-
-        let keyboard = line_vector(1).unwrap();
-        assert_eq!(keyboard.vector, 0x31);
-        assert_eq!(keyboard.irql, KEYBOARD);
-
-        let ide = line_vector(14).unwrap();
-        assert_eq!(ide.vector, 0x3E);
-        assert_eq!(ide.irql, IDE);
-
-        let last = line_vector(15).unwrap();
-        assert_eq!(last.vector, hal::LAST_VECTOR);
-        assert_eq!(last.irql, Irql(CLOCK.0 - 15));
+        use crate::interrupt::irql::{IDE, KEYBOARD};
+        for line in 0..=MAX_LINE {
+            let mapped = line_vector(line).unwrap();
+            let vector = if line == 2 { 0x00 } else { 0x30 + line };
+            assert_eq!(mapped.vector, vector, "line {line}");
+            assert_eq!(mapped.irql, Irql(27 - line), "line {line}");
+            assert_eq!(mapped.affinity, ACTIVE_PROCESSORS);
+            assert!(mapped.irql > PASSIVE && mapped.irql <= HIGH);
+        }
+        assert_eq!(line_vector(0).unwrap().vector, hal::FIRST_VECTOR);
+        assert_eq!(line_vector(15).unwrap().vector, hal::LAST_VECTOR);
+        assert_eq!(line_irql(1), KEYBOARD);
+        assert_eq!(line_irql(14), IDE);
 
         assert_eq!(line_vector(16), None, "past the band");
         assert_eq!(line_vector(255), None);
-
-        // The band's IRQLs stay within the hardware floor and HIGH.
-        for line in 0..=MAX_LINE {
-            let irql = line_irql(line);
-            assert!(irql >= Irql(13) && irql <= HIGH, "line {line} at {irql:?}");
-            assert!(irql > PASSIVE);
-        }
     }
 }

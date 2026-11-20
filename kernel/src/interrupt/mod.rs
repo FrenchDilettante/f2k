@@ -389,6 +389,15 @@ impl VectorTable {
         }
     }
 
+    /// Whether an object is connected to the vector: the condition under which its line may be
+    /// enabled (an unconnected line stays masked).
+    pub fn has_object(&self, vector: u8) -> bool {
+        matches!(
+            self.classify(vector),
+            VectorState::Connected | VectorState::Chained
+        )
+    }
+
     /// The objects connected to a vector, in service order.
     pub fn connected(&self, vector: u8) -> [Option<&'static InterruptObject>; 2] {
         let Some(index) = Self::index_of(vector) else {
@@ -689,6 +698,12 @@ mod target {
         TABLE.connect(object, &mut chip())
     }
 
+    /// The kernel's vector table, read-only to its callers outside connect and disconnect: what
+    /// HalEnableSystemInterrupt consults before it unmasks a line.
+    pub fn table() -> &'static VectorTable {
+        &TABLE
+    }
+
     /// The interrupt subsystem's audit: the level transitions are balanced, no line is enabled
     /// without an object, and the chip carries no stuck in-service state.
     pub fn audit() -> Result<(), &'static str> {
@@ -712,7 +727,7 @@ mod target {
 #[cfg(target_arch = "x86")]
 // `audit` has no caller outside the irq-smoke diagnostic; the subsystem API stays complete.
 #[allow(unused_imports)]
-pub use target::{audit, clock_requested, connect, init, spurious_count};
+pub use target::{audit, clock_requested, connect, init, spurious_count, table};
 
 /// The dispatch entry the IDT stubs call with the shared frame shape (target only): read the
 /// vector, service the interrupt, drain the deferred work.
