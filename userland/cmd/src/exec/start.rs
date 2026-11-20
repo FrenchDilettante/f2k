@@ -1,7 +1,7 @@
 //! `start` run: a program started on its own, its priority class and directory as the switches
 //! say, waited for with `/WAIT`; a built-in command or a batch file is run by a shell of its own,
-//! `cmd /K`, as Windows' `start` runs one. There is one console, so the command always shares the
-//! shell's, as `/B` asks (see the README).
+//! `cmd /K`, as Windows' `start` runs one. No new console is asked for: the command always shares
+//! the shell's, as `/B` asks (see the README).
 
 use cmd::builtins::start::{self as rules, Start};
 use cmd::{search, Command};
@@ -10,8 +10,9 @@ use exe::MAX_PATH;
 use super::{report, wide};
 
 /// `start`: its argument read (a switch it does not take fails it), its command started, and with
-/// `/WAIT` waited for, its exit code the return code and the ERRORLEVEL. A command that cannot be
-/// found or started fails it.
+/// `/WAIT` (but not `/B`: see [`Start::waits`]) waited for, its exit code the return code and the
+/// ERRORLEVEL; started without waiting, it leaves the ERRORLEVEL as it was. A command that cannot
+/// be found or started fails it.
 pub fn start(argument: &[u16], state: &mut cmd::State) {
     let start = match rules::parse(argument) {
         Ok(start) => start,
@@ -27,7 +28,7 @@ pub fn start(argument: &[u16], state: &mut cmd::State) {
     let Some(process) = process else {
         return state.failed();
     };
-    if start.wait {
+    if start.waits() {
         match process.wait() {
             Ok(code) => state.ended(code),
             Err(error) => {

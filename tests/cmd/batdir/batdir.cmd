@@ -39,6 +39,8 @@ start /WAIT /B spawnkid exit 4
 echo start /WAIT /B: %ERRORLEVEL%
 start /WAIT /B spawnkid out
 echo start /WAIT /B spawnkid out: %ERRORLEVEL%
+rem start /WAIT /B does not wait on Windows 2000: give the kid time to write its lines
+spawnkid sleep 100
 set F2KHOME=%CD%
 start "batdir" /WAIT /B /Dbatdird "%CD%\spawnkid.exe" where
 echo start /D: %ERRORLEVEL%

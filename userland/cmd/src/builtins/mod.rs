@@ -89,9 +89,10 @@ pub fn parse<'a>(word: &[u16], argument: &'a [u16]) -> Option<Builtin<'a>> {
 
 impl Builtin<'_> {
     /// Whether the built-in sets the ERRORLEVEL to 0 when it succeeds, wherever it runs: `copy`,
-    /// `date`, `del`, `md`, `move`, `pushd`, `ren`, `time`, `color`, `dir` and `start` do (`start
-    /// /wait` sets it to the program's exit code); `rd`, `popd`, `title` and `pause` leave it as it
-    /// is (each sets it to 1 when it fails, `del` excepted: see src/exec).
+    /// `date`, `del`, `md`, `move`, `pushd`, `ren`, `time`, `color` and `dir` do; `rd`, `popd`,
+    /// `title`, `pause` and `start` leave it as it is (each sets it to 1 when it fails, `del`
+    /// excepted: see src/exec), `start` as batdir's capture shows (`start /WAIT` sets it to the
+    /// program's exit code).
     pub fn clears_errorlevel(&self) -> bool {
         !matches!(
             self,
@@ -99,6 +100,7 @@ impl Builtin<'_> {
                 | Builtin::PopDirectory
                 | Builtin::Title(_)
                 | Builtin::Pause
+                | Builtin::Start(_)
         )
     }
 }
@@ -184,7 +186,6 @@ mod tests {
             Builtin::Date(none),
             Builtin::Time(none),
             Builtin::Directory(none),
-            Builtin::Start(none),
         ] {
             assert!(builtin.clears_errorlevel(), "{builtin:?}");
         }
@@ -193,6 +194,7 @@ mod tests {
             Builtin::PopDirectory,
             Builtin::Title(none),
             Builtin::Pause,
+            Builtin::Start(none),
         ] {
             assert!(!builtin.clears_errorlevel(), "{builtin:?}");
         }

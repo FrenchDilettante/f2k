@@ -4,9 +4,19 @@
 # console window of its own on Windows: the script starts spawnkid with /B only.
 description = "batdir - dir over a directory the script makes: the long format sorted by name, one file in the directory's order, /B, /A:D, /A:-D, /O:-S, /-C, /S, the DIRCMD variable's switches and /-B overriding one, and a file that does not exist; then start /WAIT /B of spawnkid (its exit code and output, a title, /D) and start /B, which does not wait, with the ERRORLEVEL after each."
 kind = "script"
+gate = true
+# `start /WAIT /B spawnkid out` does not wait (Windows 2000's start waits for nothing with /B, its
+# ERRORLEVEL 9 shows), so the script runs `spawnkid sleep 100` after the `out` line's echo: the
+# kid's two lines land before `start /D` on both machines (the retake's output was unchanged).
 # dir's lines carry what varies by machine and by run: the volume's label and serial number, the
 # directory's full path (the script's directory, \CORPUS on F2K), each entry's date and time, and
-# the bytes free. The rest of each line, its columns, stays compared.
+# the bytes free. The rest of each line, its columns, stays compared. A listing's bytes add up its
+# directories' sizes with its files' (as cmd.exe adds them), which the file system gives: 4,096 each
+# on the real machine's VirtualBox shared folder, 0 on F2K's FAT volume, as on FAT or NTFS under
+# Windows 2000. So the lines of files that count directories are masked, in the bytes alone: `.`,
+# `..` and sub's (3 and 0 files), sub's own `.` and `..` (1 file), and /S's total (4 files). The
+# masks also cover the lines of the same counts that list no directory, whose text is the same as
+# F2K's.
 masks = [
     "**Volume in drive **",
     " Volume Serial Number is *",
@@ -20,6 +30,10 @@ masks = [
     "*  *               1,200 c.dat",
     "*  *                1200 c.dat",
     "*  *                   6 d.txt",
+    "               0 File(s) ** bytes",
+    "               1 File(s) ** bytes",
+    "               3 File(s) ** bytes",
+    "               4 File(s) ** bytes",
     "               0 Dir(s) ** bytes free",
     "               3 Dir(s) ** bytes free",
     "               5 Dir(s) ** bytes free",

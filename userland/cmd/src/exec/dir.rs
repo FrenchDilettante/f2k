@@ -16,6 +16,7 @@ use cmd::builtins::dir::{
     SerialNumber,
     Switches,
     TimeField,
+    Totals,
     VolumeLabel,
     Wide,
     WideName,
@@ -64,14 +65,6 @@ pub fn list(argument: &[u16], state: &mut cmd::State) {
     if !found {
         state.failed();
     }
-}
-
-/// What one directory held: its files and their bytes, its directories (`.` and `..` among them).
-#[derive(Default)]
-struct Totals {
-    files: u64,
-    bytes: u64,
-    directories: u64,
 }
 
 /// A `dir` under way: its switches, the page it is on, and whether the volume's heading is out.
@@ -241,9 +234,7 @@ impl<'a> Listing<'a> {
     fn tree(&mut self, full: &[u16], pattern: &[u16], totals: &mut Totals) -> bool {
         let mut own = Totals::default();
         let found = matches!(self.directory(full, pattern, &mut own), Ok(true));
-        totals.files += own.files;
-        totals.bytes += own.bytes;
-        totals.directories += own.directories;
+        totals.add(&own);
         let mut found_below = false;
         let mut buffer = [0; MAX_PATH];
         let Ok(Ok(entries)) = joined(full, STAR, &mut buffer).map(exe::find) else {
@@ -325,12 +316,7 @@ impl<'a> Listing<'a> {
             rules::sort(items, &names, order);
         }
         for item in items.iter() {
-            if item.is_directory() {
-                totals.directories += 1;
-            } else {
-                totals.files += 1;
-                totals.bytes += item.size;
-            }
+            totals.count(item);
         }
         if self.switches.bare {
             for item in items.iter() {

@@ -404,6 +404,36 @@ impl Item {
     }
 }
 
+/// What a listing's entries add up to: its files, its directories (`.` and `..` among them) and the
+/// bytes of them all. Windows 2000's `dir` adds a directory's size to the bytes as it does a
+/// file's: the size the file system gives it, 0 on FAT and NTFS, a block's on a VirtualBox shared
+/// folder (`/A:D`'s `0 File(s)  12,288 bytes`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Totals {
+    pub files: u64,
+    pub bytes: u64,
+    pub directories: u64,
+}
+
+impl Totals {
+    /// `item` counted, and its size added.
+    pub fn count(&mut self, item: &Item) {
+        if item.is_directory() {
+            self.directories += 1;
+        } else {
+            self.files += 1;
+        }
+        self.bytes += item.size;
+    }
+
+    /// `other`'s counts added (`/S`'s, a directory's into the listing's).
+    pub fn add(&mut self, other: &Totals) {
+        self.files += other.files;
+        self.bytes += other.bytes;
+        self.directories += other.directories;
+    }
+}
+
 /// `items` sorted by `order` (their names in `names`), those it does not tell apart in the
 /// directory's order.
 pub fn sort(items: &mut [Item], names: &[u16], order: &Order) {
@@ -1025,6 +1055,50 @@ mod tests {
             .to_string(),
             "               0 Dir(s)      1234567890 bytes free\r\n"
         );
+    }
+
+    #[test]
+    fn directories_add_their_size_to_the_bytes() {
+        // batdir's directory on a VirtualBox shared folder: `.`, `..` and `sub` of 4,096 bytes
+        // each beside three files of 7, 120 and 1,200.
+        let item = |attributes, size| Item {
+            attributes,
+            size,
+            ..Item::default()
+        };
+        let mut totals = Totals::default();
+        for (attributes, size) in [
+            (DIRECTORY, 4096),
+            (DIRECTORY, 4096),
+            (0, 7),
+            (0, 120),
+            (0, 1200),
+            (DIRECTORY, 4096),
+        ] {
+            totals.count(&item(attributes, size));
+        }
+        let listed = Totals {
+            files: 3,
+            bytes: 13_615,
+            directories: 3,
+        };
+        assert_eq!(totals, listed);
+        // Its subdirectory's, added for `/S`'s total.
+        totals.add(&Totals {
+            files: 1,
+            bytes: 8_198,
+            directories: 2,
+        });
+        assert_eq!(
+            FileTotals {
+                files: totals.files,
+                bytes: totals.bytes,
+                separators: true
+            }
+            .to_string(),
+            "               4 File(s)         21,813 bytes\r\n"
+        );
+        assert_eq!(totals.directories, 5);
     }
 
     #[test]

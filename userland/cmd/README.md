@@ -316,7 +316,7 @@ The long format starts with the volume's heading, then the directory's, then a l
 
 - The heading's first line is `Volume in drive C has no label.` for a volume without one.
 - An entry's line holds its date and time (local, the hour on a 12-hour clock with `a` or `p`), `<DIR>` or its size right-aligned in 20 columns after the time, then its name; the names start in the 40th column.
-- `N File(s)` counts the files listed and adds up their sizes; `N Dir(s)` counts the directories listed, `.` and `..` among them, and shows the bytes free on the drive.
+- `N File(s)` counts the files listed and adds up the sizes of every entry listed, the directories' too, as Windows 2000's does: FAT and NTFS give a directory no size, but a VirtualBox shared folder gives each one a block's (`0 File(s)  12,288 bytes` for `/A:D` there); `N Dir(s)` counts the directories listed, `.` and `..` among them, and shows the bytes free on the drive.
 
 The switches:
 
@@ -665,10 +665,11 @@ Starts a program and goes on without waiting for it: `start /b spawnkid exit 7` 
 The program shares the shell's console, as `/B` asks on Windows (see [Differences from Windows 2000](#differences-from-windows-2000)).
 
 - The first quoted word before the command is the title, which there is no new window to show: `start "" "C:\a b\x.exe"` starts a program whose name is quoted, where `start "C:\a b\x.exe"` takes the name for a title and starts a shell.
-- `/WAIT` waits for the program to end: its exit code becomes the return code and the ERRORLEVEL (`start /wait /b spawnkid exit 4` leaves 4).
+- `/WAIT` waits for the program to end: its exit code becomes the return code and the ERRORLEVEL (`start /wait spawnkid exit 4` leaves 4).
+  Not with `/B`, whichever comes first: Windows 2000's `start /wait /b spawnkid exit 4` returns at once, and leaves the ERRORLEVEL as it was.
 - `/D` names the directory the program starts in, after the `D` or as the next word (`/D C:\temp`).
 - `/LOW`, `/NORMAL`, `/HIGH`, `/REALTIME`, `/ABOVENORMAL` and `/BELOWNORMAL` start it in that priority class (`/LOW` is the idle class).
-- `/B`, `/I`, `/MIN`, `/MAX`, `/SEPARATE` and `/SHARED` are taken, and change nothing.
+- `/I`, `/MIN`, `/MAX`, `/SEPARATE` and `/SHARED` are taken, and change nothing; so is `/B` (but for `/WAIT`).
 
 Switches may run together (`/wait/b`); the first word that is neither a switch nor the title starts the command, which runs to the end of the line: a switch after it is the program's.
 The program is looked for as the shell looks for one (see [How programs are found](#how-programs-are-found)), and gets the command, from its word on, as its command line.
@@ -677,7 +678,7 @@ A built-in command (`start echo hi`) or a batch file runs in a shell of its own,
 
 A program that cannot be found prints `The system cannot find the file x.` on the standard error; one that cannot be started, the error's text.
 Either, and a switch it does not take (`The system cannot accept the START command parameter /x.`), sets ERRORLEVEL to 1.
-Otherwise `start` sets ERRORLEVEL to 0, or with `/WAIT` to the program's exit code.
+Otherwise `start` leaves the ERRORLEVEL as it was, as Windows 2000's `start /b` does, or with `/WAIT` (and no `/B`) sets it to the program's exit code.
 
 ### time
 
@@ -914,12 +915,12 @@ The ERRORLEVEL is 0 when the shell starts, and changes only as these say:
 | 9009            | A command not recognized.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `code`          | `exit /b code` in a batch file.                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | 1               | A failed `cd`, `color`, `copy`, `dir`, `md`, `move`, `popd`, `pushd`, `rd`, `ren`, `start` or `type`; `del` without a name or with a wrong switch; `set` with no match, nothing to delete or no name; a switch refused (`cd/`, `cls /x`); `call` alone; `goto` to a label that is not there, or without one; `call :label` outside a batch file; a batch file not opened; a `/C` or `/K` string too long; a line that cannot run; a redirection that fails. |
-| 0               | A `cd`, `color`, `copy`, `date`, `dir`, `md`, `move`, `pushd`, `ren`, `start` (without `/WAIT`), `time`, `type` or `ver` that succeeds; any `del` with a name; under a `.cmd` batch file, a `set`, `path` or `prompt` that succeeds.                                                                                                                                                                                                                        |
+| 0               | A `cd`, `color`, `copy`, `date`, `dir`, `md`, `move`, `pushd`, `ren`, `time`, `type` or `ver` that succeeds; any `del` with a name; under a `.cmd` batch file, a `set`, `path` or `prompt` that succeeds.                                                                                                                                                                                                                                                   |
 | Its return code | `call` (see [call](#call)).                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 `set /a` and `set /p` are `set`'s, with these too: a `set /a` whose expression cannot be evaluated sets the ERRORLEVEL and its return code to its message's number (see [set](#set)), and a `set /p` given an empty line or none sets both to 1, as `set /a` or `set /p` alone does.
 
-Anything else leaves the ERRORLEVEL as it is: `echo`, `rem`, `cls`, `title`, `pause`, `shift` and any help printed never change it, and `rd` and `popd` only when they fail.
+Anything else leaves the ERRORLEVEL as it is: `echo`, `rem`, `cls`, `title`, `pause`, `shift` and any help printed never change it, `rd` and `popd` only when they fail, and `start` only when it fails or waits.
 
 ## Environment variables
 
@@ -976,7 +977,7 @@ What Windows 2000's cmd.exe has and this one does not:
   `/-N`, Windows' old format with the short name first, is the long format here too.
 - `dir` sorts names by their UTF-16 units, the ASCII letters' case ignored, where Windows compares them by the locale's rules; Ctrl+C does not stop a listing; and several names are each listed under their own heading and totals, where Windows lists the names of one directory together.
 - `dir /S` goes into the subdirectories in the directory's order, whatever `/O` says.
-- There is one console: `start` never opens a window (CreateProcess's CREATE_NEW_CONSOLE is not there), so the program always shares the shell's console, as with `/B`, and the title, `/MIN` and `/MAX` change nothing.
+- `start` never opens a window: it does not ask CreateProcess for a new console (CREATE_NEW_CONSOLE), which F2K has, so the program always shares the shell's console, as with `/B`, and the title, `/MIN` and `/MAX` change nothing.
   `/I` gives the program the shell's environment as it is now, not the one it started with.
 - `start` of a document (a file that is no program, `readme.txt`) starts it as a program, which cannot run: Windows opens it with the program its extension is associated with.
   `start` of a directory's name does not open it, where Windows opens a window on it.

@@ -27,7 +27,8 @@ pub struct Start<'a> {
     pub window: bool,
     /// `/B`: no new window, the command sharing the shell's console.
     pub background: bool,
-    /// `/WAIT`: the shell waits for the command to end, and takes its exit code.
+    /// `/WAIT`: the shell waits for the command to end, and takes its exit code; not with `/B`
+    /// (see [`Start::waits`]).
     pub wait: bool,
     /// `/LOW`, `/NORMAL`, `/HIGH`, `/REALTIME`, `/ABOVENORMAL` or `/BELOWNORMAL`: the priority
     /// class's creation flag, the last given.
@@ -125,6 +126,14 @@ pub fn parse(argument: &[u16]) -> Result<Start<'_>, Refused<'_>> {
 }
 
 impl Start<'_> {
+    /// Whether the shell waits for the command: with `/WAIT`, unless `/B` is given too, which
+    /// Windows 2000's cmd.exe starts without waiting, whichever comes first. batdir's capture shows
+    /// it: `start /WAIT /B spawnkid out` prints after the line that follows it, and leaves the
+    /// ERRORLEVEL as it was, as `start /B` does.
+    pub fn waits(&self) -> bool {
+        self.wait && !self.background
+    }
+
     /// One switch but `/D`, what follows its `/`.
     fn switch<'a>(&mut self, switch: &'a [u16]) -> Result<(), Refused<'a>> {
         let named = |name| is_named(switch, name);
@@ -206,6 +215,17 @@ mod tests {
         let taken = parse(&argument).unwrap();
         assert!(taken.original_environment && taken.window && taken.priority.is_none());
         assert_eq!(narrow(taken.command), "x");
+    }
+
+    #[test]
+    fn wait_but_not_with_b() {
+        let waits = |argument: &str| parse(&wide(argument)).unwrap().waits();
+        assert!(waits("/WAIT spawnkid exit 4"));
+        assert!(!waits("/WAIT /B spawnkid exit 4"));
+        assert!(!waits("/b/wait spawnkid exit 4"));
+        assert!(!waits("\"batdir\" /WAIT /B /Dbatdird spawnkid where"));
+        assert!(!waits("/B spawnkid exit 7"));
+        assert!(!waits("spawnkid exit 7"));
     }
 
     #[test]
