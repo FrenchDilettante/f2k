@@ -219,10 +219,17 @@ impl = { syscall = "crate::win32k::dc::select_pen" }
 internal = true
 
 [[export]]
+name = "NtGdiGetDCObject"
+group = "objects"
+args = ["handle Dc", "u32 ObjectType", "ptr<u32> Object"]
+impl = { syscall = "crate::win32k::dc::get_dc_object" }
+internal = true
+
+[[export]]
 name = "GetCurrentObject"
 group = "objects"
 args = ["handle hdc", "u32 uObjectType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCurrentObject" }
 ordinal = 295
 fails = "NULL"
 
@@ -310,7 +317,7 @@ fails = "0"
 name = "GetBkMode"
 group = "attributes"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetBkMode" }
 ordinal = 273
 fails = "0"
 

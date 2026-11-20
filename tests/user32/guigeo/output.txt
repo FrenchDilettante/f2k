@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:30.65
-guigeo F2KT-SOURCE-CRC=0xC5BED17B
+# date: Fri 11/20/2026 10:15:46.35
+guigeo F2KT-SOURCE-CRC=0x19E203A8
 >>> guigeo.exe show
 == show
 ShowWindow(SW_SHOW): ret=0 err=-
@@ -148,5 +148,38 @@ EndDeferWindowPos: ret=1 err=-
   w1: rect=11 12 141 72
 BeginDeferWindowPos(-1): non-NULL no err=87
 EndDeferWindowPos: ret=0 err=1405
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe sizemsg
+== sizemsg
+CreateWindowEx(calc's shape, hidden, 260x254):
+  non-NULL yes
+after the creation: window 260x254, client 254x210
+the 2x2 child at (0,206): non-NULL yes
+ShowWindow(SW_SHOW):
+  WM_WINDOWPOSCHANGED flags=0x10001847
+  WM_SIZE wParam=0, lParam the client's size yes, lParam 0 no
+  WM_MOVE, lParam the client's origin yes
+after the show: window 260x254, client 254x210
+SetWindowPos(SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE) to the height the last WM_SIZE implies:
+  WM_WINDOWPOSCHANGED flags=0x1016
+  WM_SIZE wParam=0, lParam the client's size yes, lParam 0 no
+  ret=1
+after it: window 260x252, client 254x208
+the client's bottom is the child's yes
+MoveWindow(30,40 300x200, TRUE):
+  WM_WINDOWPOSCHANGED flags=0x0014
+  WM_MOVE, lParam the client's origin yes
+  WM_SIZE wParam=0, lParam the client's size yes, lParam 0 no
+SetWindowPos(50,60, SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE):
+  WM_WINDOWPOSCHANGED flags=0x0815
+  WM_MOVE, lParam the client's origin yes
+SetWindowPos(50,60 300x200, SWP_NOZORDER|SWP_NOACTIVATE), unchanged:
+a window keeping WM_WINDOWPOSCHANGED from DefWindowProc, ShowWindow(SW_SHOW):
+  WM_WINDOWPOSCHANGED flags=0x10001847
+  WM_SIZE wParam=0, lParam the client's size yes, lParam 0 no
+  WM_MOVE, lParam the client's origin yes
+SetWindowPos(SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE) to 300x200:
+  WM_WINDOWPOSCHANGED flags=0x1016
 guigeo: done
 <<< exit code=0

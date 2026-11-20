@@ -284,8 +284,20 @@ fn to_narrow(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> 
 
 /// A narrow message handed to the wide procedure at `proc`.
 fn to_wide(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
-    let call =
-        |message, wparam, lparam| imports::call_procedure(proc, window, message, wparam, lparam);
+    narrow_to_wide(message, wparam, lparam, |message, wparam, lparam| {
+        imports::call_procedure(proc, window, message, wparam, lparam)
+    })
+}
+
+/// A narrow message handed on in the wide form through `call` (a wide procedure, or the window
+/// manager carrying a text to another process): its text converted on the way in, and on the way
+/// back into the narrow caller's buffer.
+pub fn narrow_to_wide(
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    mut call: impl FnMut(u32, u32, i32) -> i32,
+) -> i32 {
     match message {
         WM_SETTEXT | EM_REPLACESEL if lparam != 0 => {
             // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a

@@ -462,7 +462,25 @@ fn inset(rect: Rect, by: i32) -> Rect {
 
 /// A BS_OWNERDRAW button drawn: WM_DRAWITEM to its parent, the DRAWITEMSTRUCT on this frame (the
 /// send is the procedure's own call, so the address lives as long as the parent's handling).
+///
+/// The DC is prepared first, as controls `drawdc` captured Windows 2000's: the font WM_SETFONT gave
+/// the button selected (the DC's own, SYSTEM_FONT, for none), and two WM_CTLCOLORBTN sent to the
+/// parent, which set the DC's colors (the default procedure's: BTNFACE behind black text), the
+/// brush the second answers selected.
 fn draw_item(window: usize, dc: usize) {
+    let parent = parent_of(window);
+    let font = read(window, FONT);
+    if font != 0 {
+        let _ = imports::select_object(dc, font as usize);
+    }
+    let mut brush = 0;
+    for _ in 0..2 {
+        brush = message::send(parent, message::WM_CTLCOLORBTN, dc as u32, window as i32)
+            .unwrap_or(0) as usize;
+    }
+    if brush != 0 {
+        let _ = imports::select_object(dc, brush);
+    }
     let item = item_struct(window, dc);
     // WM_DRAWITEM's wParam is the control's id (the dialog manager's convention): the parent
     // indexes its per-control tables with it.
@@ -747,10 +765,16 @@ mod tests {
         /// which a 64-bit host cannot carry in a message, as its CREATESTRUCT comment notes).
         static DRAWN: RefCell<std::vec::Vec<u32>> =
             const { RefCell::new(std::vec::Vec::new()) };
+        /// The WM_CTLCOLORBTNs and WM_DRAWITEMs the dialog procedure received, in order.
+        static SEQUENCE: RefCell<std::vec::Vec<u32>> =
+            const { RefCell::new(std::vec::Vec::new()) };
     }
 
     /// A dialog procedure recording the WM_DRAWITEMs' wParams; every other message to the default.
     fn recorder(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        if matches!(message, WM_DRAWITEM | message::WM_CTLCOLORBTN) {
+            SEQUENCE.with(|sequence| sequence.borrow_mut().push(message));
+        }
         if message == WM_DRAWITEM {
             DRAWN.with(|drawn| drawn.borrow_mut().push(wparam));
             return 1;
@@ -800,13 +824,23 @@ mod tests {
 
     /// A BS_OWNERDRAW button's WM_PAINT goes to the parent as WM_DRAWITEM, wParam the control's id
     /// (the dialog manager indexes its per-control tables by it); the DRAWITEMSTRUCT it carries
-    /// names a button drawn whole, in the button's client rectangle.
+    /// names a button drawn whole, in the button's client rectangle. Two WM_CTLCOLORBTN to the
+    /// parent prepare the DC before it (controls `drawdc`).
     #[test]
     fn an_owner_drawn_buttons_paint_is_the_parents_draw_item() {
         let (_dialog, button) = dialog_with_owner_drawn_button();
         DRAWN.with(|drawn| drawn.borrow_mut().clear());
+        SEQUENCE.with(|sequence| sequence.borrow_mut().clear());
         assert_eq!(button_proc_w(button, WM_PAINT, 0, 0), 0);
         assert_eq!(DRAWN.with(|drawn| drawn.borrow().clone()), [7]);
+        assert_eq!(
+            SEQUENCE.with(|sequence| sequence.borrow().clone()),
+            [
+                message::WM_CTLCOLORBTN,
+                message::WM_CTLCOLORBTN,
+                WM_DRAWITEM
+            ]
+        );
         let item = item_struct(button, 0x1234);
         let client = window::client_rect(button).unwrap();
         assert_eq!(item.ctl_type, ODT_BUTTON);

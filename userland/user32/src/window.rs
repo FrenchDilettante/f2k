@@ -550,6 +550,60 @@ pub extern "system" fn child_window_from_point(parent: usize, x: i32, y: i32) ->
     child_window_from_point_ex(parent, x, y, 0)
 }
 
+/// WM_NCHITTEST's answer for a window that lets the point through to the windows under it.
+const HTTRANSPARENT: i32 = -1;
+
+/// WindowFromPoint: the window at the screen point (`x`, `y`): among the desktop's top-level
+/// windows, in z-order, the first visible and enabled one whose rectangle holds it, then down its
+/// children the same way while the point is in the client area, the deepest found. A window of
+/// the calling process whose WM_NCHITTEST answers HTTRANSPARENT (a Static without SS_NOTIFY) is
+/// passed over for the windows under it: controls `edges` and `centred` find a plain static's
+/// parent and an SS_NOTIFY static itself. NULL for a point no window holds.
+///
+/// Windows 2000 asks only the calling thread's windows; F2K's query tells processes, not threads,
+/// apart, so a window of another thread of the process is asked too (and the call waits for it).
+#[unsafe(export_name = "f2k_export_WindowFromPoint")]
+pub extern "system" fn window_from_point(x: i32, y: i32) -> usize {
+    let desktop = get_desktop_window();
+    if desktop == 0 {
+        return 0;
+    }
+    window_under(desktop, x, y).unwrap_or(0)
+}
+
+/// The deepest window under `parent` holding the screen point, [`window_from_point`]'s search.
+fn window_under(parent: usize, x: i32, y: i32) -> Option<usize> {
+    let holds = |r: Rect| r.left <= x && x < r.right && r.top <= y && y < r.bottom;
+    let mut child = links(parent).ok()?.child as usize;
+    while child != 0 {
+        if let Ok(info) = window_info(child) {
+            let shown = info.style & crate::dialog::WS_VISIBLE != 0
+                && info.style & crate::dialog::WS_DISABLED == 0;
+            if shown && holds(info.window) && !lets_through(child, x, y) {
+                if holds(info.client) {
+                    if let Some(inner) = window_under(child, x, y) {
+                        return Some(inner);
+                    }
+                }
+                return Some(child);
+            }
+        }
+        child = links(child).map_or(0, |l| l.next as usize);
+    }
+    None
+}
+
+/// Whether `window`, one of the calling process's, answers HTTRANSPARENT to WM_NCHITTEST at the
+/// screen point.
+fn lets_through(window: usize, x: i32, y: i32) -> bool {
+    let ours = window_data(window).is_ok_and(|data| data.flags & WINDOW_OTHER_PROCESS == 0);
+    if !ours {
+        return false;
+    }
+    let at = ((y as u16 as u32) << 16) | x as u16 as u32;
+    message::send(window, crate::nonclient::WM_NCHITTEST, 0, at as i32) == Some(HTTRANSPARENT)
+}
+
 /// The window's parent (QUERY_WINDOW_PARENT): the desktop window for a top-level window, 0 for
 /// none.
 fn parent_of(window: usize) -> Result<usize, NtStatus> {
@@ -922,6 +976,28 @@ pub extern "system" fn set_window_word(window: usize, index: i32, value: u32) ->
 #[unsafe(export_name = "f2k_export_IsWindowUnicode")]
 pub extern "system" fn is_window_unicode(window: usize) -> u32 {
     answered(window_data(window)).is_some_and(|data| data.flags & WINDOW_ANSI_PROC == 0) as u32
+}
+
+/// GetWindowThreadProcessId: the client id of the window's thread, and of its process into
+/// `process` when it is not NULL; 0 for a handle naming no window (1400).
+///
+/// # Safety
+///
+/// `process` is NULL or the caller's DWORD.
+#[unsafe(export_name = "f2k_export_GetWindowThreadProcessId")]
+pub unsafe extern "system" fn get_window_thread_process_id(
+    window: usize,
+    process: *mut u32,
+) -> u32 {
+    let mut ids = WindowThread::default();
+    if answered(imports::query_window(window, QUERY_WINDOW_THREAD, &mut ids)).is_none() {
+        return 0;
+    }
+    if !process.is_null() {
+        // SAFETY: the caller's DWORD.
+        unsafe { Out::new(process) }.set(ids.process);
+    }
+    ids.thread
 }
 
 // --- The window's text ---------------------------------------------------------------------------

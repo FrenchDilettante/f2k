@@ -124,6 +124,8 @@ mod raw {
         pub fn NtGdiSelectPen(dc: usize, object: usize, previous: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiSelectFont"]
         pub fn NtGdiSelectFont(dc: usize, object: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetDCObject"]
+        pub fn NtGdiGetDCObject(dc: usize, kind: u32, object: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiGetDCDword"]
         pub fn NtGdiGetDCDword(dc: usize, index: u32, value: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiGetAndSetDCDword"]
@@ -405,6 +407,14 @@ pub fn select(kind: Selected, dc: usize, object: usize) -> Result<u32, NtStatus>
     // SAFETY: the service writes the previous object into the local.
     checked(unsafe { service(dc, object, &mut previous) })?;
     Ok(previous)
+}
+
+/// NtGdiGetDCObject: the object of `kind` (OBJ_BRUSH, OBJ_PEN, OBJ_FONT) selected into `dc`.
+pub fn dc_object(dc: usize, kind: u32) -> Result<u32, NtStatus> {
+    let mut object = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiGetDCObject(dc, kind, &mut object) })?;
+    Ok(object)
 }
 
 /// NtGdiGetDCDword: `dc`'s attribute `index` (rtl::gdi's DC_ indexes).
@@ -1144,6 +1154,15 @@ pub mod host {
 
     pub unsafe extern "system" fn NtGdiSelectFont(dc: usize, object: usize, out: *mut u32) -> u32 {
         select(dc, OBJ_FONT, object, out)
+    }
+
+    pub unsafe extern "system" fn NtGdiGetDCObject(dc: usize, kind: u32, object: *mut u32) -> u32 {
+        with_dc(dc, |state| match kind {
+            OBJ_BRUSH => answer(object, state.brush),
+            OBJ_PEN => answer(object, state.pen),
+            OBJ_FONT => answer(object, state.font),
+            _ => STATUS_INVALID_PARAMETER,
+        })
     }
 
     pub unsafe extern "system" fn NtGdiGetDCDword(dc: usize, index: u32, value: *mut u32) -> u32 {

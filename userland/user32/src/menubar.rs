@@ -36,8 +36,10 @@
 //! [`item_height`] pixels high (a separator [`SEPARATOR`]): the check mark (Marlett's, or a radio
 //! item's bullet) in its first column, the text, the accelerator text after its tab
 //! right-aligned, the arrow of a nested popup in its last column; the selected item in
-//! COLOR_HIGHLIGHT. Windows 2000 hides the mnemonics' underlines until the keyboard is used; F2K
-//! always draws them.
+//! COLOR_HIGHLIGHT. The mnemonics' underlines show while the keyboard menu loop runs, hidden
+//! otherwise, as SPI_GETKEYBOARDCUES (FALSE, Windows 2000's default: menus `cues`) asks; calc.exe's
+//! bar on Windows 2000 shows none. That the loop shows them is inferred, the capture's `underline`
+//! measurement finding no menu ink at all.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -254,9 +256,25 @@ fn select_menu_font(dc: usize) -> Option<usize> {
         .flatten()
 }
 
+/// DT_HIDEPREFIX while the mnemonics' underlines are hidden: the keyboard cues off
+/// (SPI_GETKEYBOARDCUES) and no keyboard menu loop running in the process; 0 otherwise.
+fn hidden_prefixes() -> u32 {
+    prefixes_for(crate::display::keyboard_cues(), loop_owner())
+}
+
+/// [`hidden_prefixes`]'s rule, for the keyboard cues `cues` and the loop's owner `owner`.
+fn prefixes_for(cues: bool, owner: usize) -> u32 {
+    if !cues && owner == 0 {
+        draw::DT_HIDEPREFIX
+    } else {
+        0
+    }
+}
+
 /// The text of an item drawn into `rect`: COLOR_MENUTEXT, the selection's text color, or a dimmed
-/// item's (embossed unless selected).
+/// item's (embossed unless selected); its mnemonic's underline hidden as [`hidden_prefixes`] says.
 fn draw_label(dc: usize, label: &[u16], rect: Rect, format: u32, dimmed: bool, selected: bool) {
+    let format = format | hidden_prefixes();
     imports::set_bk_mode(dc, TRANSPARENT);
     let ink = |index: u32| imports::set_text_color(dc, crate::display::get_sys_color(index as i32));
     if dimmed && !selected {
@@ -1135,6 +1153,19 @@ mod tests {
         };
         crate::menu::set_menu(window, bar);
         (window, bar, view)
+    }
+
+    /// With the keyboard cues off, the mnemonics' underlines are hidden outside a keyboard menu
+    /// loop.
+    #[test]
+    fn the_underlines_hide_without_the_keyboard_cues() {
+        assert_eq!(prefixes_for(false, 0), draw::DT_HIDEPREFIX);
+        assert_eq!(
+            prefixes_for(false, 0x1234),
+            0,
+            "the keyboard loop shows them"
+        );
+        assert_eq!(prefixes_for(true, 0), 0, "the cues on");
     }
 
     /// The mnemonics, and the selection's word: a popup by its position with MF_POPUP, a command

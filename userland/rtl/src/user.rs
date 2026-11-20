@@ -46,6 +46,7 @@ pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_ENDSESSION: u32 = 0x0016;
 pub const WM_ACTIVATEAPP: u32 = 0x001C;
 pub const WM_CANCELMODE: u32 = 0x001F;
+pub const WM_WINDOWPOSCHANGED: u32 = 0x0047;
 pub const WM_STYLECHANGING: u32 = 0x007C;
 pub const WM_STYLECHANGED: u32 = 0x007D;
 pub const WM_NCCREATE: u32 = 0x0081;

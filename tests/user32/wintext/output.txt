@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:50.07
-wintext F2KT-SOURCE-CRC=0x8A19FDF7
+# date: Fri 11/20/2026 10:15:52.49
+wintext F2KT-SOURCE-CRC=0x2CE2B9F2
 >>> wintext.exe create
 == create
 setup: the classes registered: yes
@@ -311,5 +311,24 @@ InternalGetWindowText(NULL, buf, 64): ret=0 err=1400 buffer=|#########
   procedures saw: nothing
 InternalGetWindowText(a destroyed window, buf, 64): ret=0 err=1400 buffer=|#########
   procedures saw: nothing
+wintext: done
+<<< exit code=0
+>>> wintext.exe xproc
+== xproc
+CreateProcessA(wintext.exe --xchild): ret=1 err=-
+the child's window made: WAIT_OBJECT_0
+FindWindowW(F2KWintextXproc): non-NULL yes err=-
+the window's thread is the child's: yes
+GetWindowTextW(64): ret=11 xproc titl err=-
+SendMessageW(WM_GETTEXTLENGTH): ret=11 err=-
+SendMessageW(WM_GETTEXT, 64): ret=11 xproc titl err=-
+SendMessageW(WM_GETTEXT, 5): ret=4 xpro|##### err=-
+SendMessageA(WM_GETTEXT, 64): ret=11 xproc titl err=-
+SendMessageW(WM_SETTEXT, "set across"): ret=1 err=-
+  GetWindowTextW(64) after: ret=10 set across err=-
+SendMessageA(WM_SETTEXT, "set by A"): ret=1 err=-
+  SendMessageA(WM_GETTEXT, 64) after: ret=8 set by A|# err=-
+the child ended: WAIT_OBJECT_0
+the child's exit code: 0x00000000
 wintext: done
 <<< exit code=0

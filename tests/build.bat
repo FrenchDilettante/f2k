@@ -662,7 +662,7 @@ goto :eof
 echo === controls
 cd user32\controls
 call :stamp controls.c
-cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% controls.c user32.lib gdi32.lib
 if errorlevel 1 (echo build.bat: controls failed & exit /b 1)
 del controls.obj
 cd ..\..
@@ -680,7 +680,7 @@ for %%I in (rc.exe) do if "%%~$PATH:I"=="" (
 call :stamp menus.c
 rc menus.rc
 if errorlevel 1 (echo build.bat: menus's rc failed & exit /b 1)
-cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% menus.c menus.res user32.lib
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% menus.c menus.res user32.lib gdi32.lib
 if errorlevel 1 (echo build.bat: menus failed & exit /b 1)
 del menus.obj menus.res
 cd ..\..

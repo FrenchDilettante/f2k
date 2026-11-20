@@ -52,6 +52,20 @@
  *            and its child in one batch; a bogus window, counts 0 and
  *            -1, and EndDeferWindowPos(NULL)
  *
+ *   sizemsg  WM_SIZE, WM_MOVE and WM_WINDOWPOSCHANGED as the window
+ *            procedure receives them, in order: each WM_SIZE's wParam and
+ *            whether its lParam is the client area's size then (and
+ *            whether it is 0), each WM_MOVE's lParam against the client
+ *            area's origin on the screen, each WM_WINDOWPOSCHANGED's
+ *            flags; around the creation of a hidden window shaped as
+ *            calc.exe's (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX with
+ *            a menu, 260x254) and of a 2x2 child at (0,206), ShowWindow
+ *            SW_SHOW, calc's own sizing (SetWindowPos to the height the
+ *            first WM_SIZE implies puts the child's bottom at the
+ *            client's), MoveWindow, a move-only and an unchanged
+ *            SetWindowPos; then a window whose procedure keeps
+ *            WM_WINDOWPOSCHANGED from DefWindowProc, shown and resized
+ *
  * The minimized and maximized rectangles depend on the screen, so
  * minmax and placement print them only as relations to the normal
  * one; a child's rectangle prints in its parent's client coordinates.
@@ -589,6 +603,159 @@ static void sec_defer(void)
     drain();
 }
 
+/* --- sizemsg ------------------------------------------------------- */
+
+/* Whether the size procedure prints what it receives; whether it keeps
+ * WM_WINDOWPOSCHANGED from DefWindowProc; the last WM_SIZE's lParam. */
+static int sizelog_on;
+static int sizelog_nodef;
+static LPARAM sizelog_last;
+
+static LRESULT CALLBACK size_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    RECT cr;
+    POINT origin;
+
+    switch (msg) {
+    case WM_SIZE:
+        sizelog_last = lParam;
+        if (sizelog_on) {
+            GetClientRect(hwnd, &cr);
+            line("  WM_SIZE wParam=%lu, lParam the client's size %s, lParam 0 %s", (unsigned long)wParam,
+                 yesno(LOWORD(lParam) == cr.right && HIWORD(lParam) == cr.bottom), yesno(lParam == 0));
+        }
+        break;
+    case WM_MOVE:
+        if (sizelog_on) {
+            origin.x = 0;
+            origin.y = 0;
+            ClientToScreen(hwnd, &origin);
+            line("  WM_MOVE, lParam the client's origin %s",
+                 yesno((short)LOWORD(lParam) == origin.x && (short)HIWORD(lParam) == origin.y));
+        }
+        break;
+    case WM_WINDOWPOSCHANGED:
+        if (sizelog_on) {
+            line("  WM_WINDOWPOSCHANGED flags=0x%04X", ((WINDOWPOS *)lParam)->flags);
+        }
+        if (sizelog_nodef) {
+            return 0;
+        }
+        break;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/* A hidden window of the size class, shaped as calc.exe's main window:
+ * a caption, the system menu, a minimize box and a menu bar. */
+static HWND make_sized(int x, int y)
+{
+    HMENU menu;
+
+    menu = CreateMenu();
+    AppendMenuA(menu, MF_STRING, 1, "&Edit");
+    return CreateWindowEx(0, "F2KGuigeoSize", "F2K sizemsg", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, x, y, 260,
+                          254, NULL, menu, (HINSTANCE)GetModuleHandle(NULL), NULL);
+}
+
+static void print_client_rect(const char *when, HWND h)
+{
+    RECT wr;
+    RECT cr;
+
+    GetWindowRect(h, &wr);
+    GetClientRect(h, &cr);
+    line("%s: window %ldx%ld, client %ldx%ld", when, wr.right - wr.left, wr.bottom - wr.top, cr.right, cr.bottom);
+}
+
+static void sec_sizemsg(void)
+{
+    WNDCLASS wc;
+    HWND h;
+    HWND marker;
+    RECT wr;
+    RECT mr;
+    POINT p;
+    LONG height;
+    BOOL r;
+
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = size_proc;
+    wc.hInstance = (HINSTANCE)GetModuleHandle(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "F2KGuigeoSize";
+    RegisterClass(&wc);
+
+    line("CreateWindowEx(calc's shape, hidden, 260x254):");
+    sizelog_on = 1;
+    h = make_sized(20, 20);
+    sizelog_on = 0;
+    line("  non-NULL %s", yesno(h != NULL));
+    if (h == NULL) {
+        return;
+    }
+    print_client_rect("after the creation", h);
+    marker = CreateWindowEx(0, "Static", "", WS_CHILD | WS_VISIBLE, 0, 206, 2, 2, h, (HMENU)1000,
+                            (HINSTANCE)GetModuleHandle(NULL), NULL);
+    line("the 2x2 child at (0,206): non-NULL %s", yesno(marker != NULL));
+
+    line("ShowWindow(SW_SHOW):");
+    sizelog_last = 0;
+    sizelog_on = 1;
+    ShowWindow(h, SW_SHOW);
+    sizelog_on = 0;
+    drain();
+    print_client_rect("after the show", h);
+
+    /* calc's sizing: the window grows or shrinks by what separates the
+     * child's bottom from the client's bottom as WM_SIZE told it. */
+    GetWindowRect(h, &wr);
+    GetWindowRect(marker, &mr);
+    p.x = mr.right;
+    p.y = mr.bottom;
+    ScreenToClient(h, &p);
+    height = (wr.bottom - wr.top) + p.y - HIWORD(sizelog_last);
+    line("SetWindowPos(SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE) to the height the last WM_SIZE implies:");
+    sizelog_on = 1;
+    r = SetWindowPos(h, NULL, 0, 0, wr.right - wr.left, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    sizelog_on = 0;
+    line("  ret=%d", r);
+    print_client_rect("after it", h);
+    GetClientRect(h, &wr);
+    line("the client's bottom is the child's %s", yesno(wr.bottom == p.y));
+
+    line("MoveWindow(30,40 300x200, TRUE):");
+    sizelog_on = 1;
+    MoveWindow(h, 30, 40, 300, 200, TRUE);
+    sizelog_on = 0;
+    line("SetWindowPos(50,60, SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE):");
+    sizelog_on = 1;
+    SetWindowPos(h, NULL, 50, 60, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    sizelog_on = 0;
+    line("SetWindowPos(50,60 300x200, SWP_NOZORDER|SWP_NOACTIVATE), unchanged:");
+    sizelog_on = 1;
+    SetWindowPos(h, NULL, 50, 60, 300, 200, SWP_NOZORDER | SWP_NOACTIVATE);
+    sizelog_on = 0;
+    DestroyWindow(h);
+    drain();
+
+    line("a window keeping WM_WINDOWPOSCHANGED from DefWindowProc, ShowWindow(SW_SHOW):");
+    h = make_sized(20, 20);
+    if (h == NULL) {
+        return;
+    }
+    sizelog_nodef = 1;
+    sizelog_on = 1;
+    ShowWindow(h, SW_SHOW);
+    line("SetWindowPos(SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE) to 300x200:");
+    SetWindowPos(h, NULL, 0, 0, 300, 200, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    sizelog_on = 0;
+    sizelog_nodef = 0;
+    DestroyWindow(h);
+    drain();
+}
+
 static const section_t sections[] = {
     { "show", sec_show, 0 },
     { "move", sec_move, 0 },
@@ -598,6 +765,7 @@ static const section_t sections[] = {
     { "minmax", sec_minmax, 0 },
     { "placement", sec_placement, 0 },
     { "defer", sec_defer, 0 },
+    { "sizemsg", sec_sizemsg, 0 },
     { NULL, NULL, 0 }
 };
 

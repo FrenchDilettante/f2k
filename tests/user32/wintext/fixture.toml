@@ -1,7 +1,7 @@
 # wintext: one test per block of the real-machine capture (output.txt); see tests/README.md. Its
 # windows are hidden. No handle or address prints; the texts, lengths, buffers and what each window
 # procedure received do.
-description = "wintext - a window's text: CreateWindowExA/W's title, SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W (a text, the empty text, NULL, NULL and destroyed windows), buffers of 0, 1, 4, 8, 9 and 64 units, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH through SendMessageA/W and DefWindowProcA/W, text crossing the A and W forms with U+00E9 and U+4E00, and a procedure answering WM_GETTEXT itself or refusing WM_SETTEXT; what each procedure receives; and InternalGetWindowText (found with GetProcAddress) into buffers of 0 to 64 units, on the custom window, an untitled one, NULL and destroyed windows."
+description = "wintext - a window's text: CreateWindowExA/W's title, SetWindowTextA/W, GetWindowTextA/W and GetWindowTextLengthA/W (a text, the empty text, NULL, NULL and destroyed windows), buffers of 0, 1, 4, 8, 9 and 64 units, WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH through SendMessageA/W and DefWindowProcA/W, text crossing the A and W forms with U+00E9 and U+4E00, and a procedure answering WM_GETTEXT itself or refusing WM_SETTEXT; what each procedure receives; and InternalGetWindowText (found with GetProcAddress) into buffers of 0 to 64 units, on the custom window, an untitled one, NULL and destroyed windows; and another process's window: GetWindowThreadProcessId, WM_GETTEXTLENGTH, WM_GETTEXT and WM_SETTEXT through SendMessageW and SendMessageA."
 kind = "sectioned"
 gate = true
 
@@ -57,3 +57,9 @@ custom = [
     "user32.GetWindowTextLengthW",
 ]
 internal = ["user32.InternalGetWindowText"]
+xproc = [
+    "user32.GetWindowThreadProcessId",
+    "user32.GetWindowTextW",
+    "user32.SendMessageW",
+    "user32.SendMessageA",
+]

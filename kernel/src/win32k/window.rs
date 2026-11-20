@@ -186,6 +186,16 @@ pub const SWP_FRAMECHANGED: u32 = 0x0020;
 pub const SWP_SHOWWINDOW: u32 = 0x0040;
 pub const SWP_HIDEWINDOW: u32 = 0x0080;
 pub const SWP_NOSENDCHANGING: u32 = 0x0400;
+/// WM_WINDOWPOSCHANGED's report that the client area kept its size (Windows 2000's private bit):
+/// the default window procedure sends no WM_SIZE.
+pub const SWP_NOCLIENTSIZE: u32 = 0x0800;
+/// WM_WINDOWPOSCHANGED's report that the client area kept its place (Windows 2000's private bit):
+/// the default window procedure sends no WM_MOVE.
+pub const SWP_NOCLIENTMOVE: u32 = 0x1000;
+/// The undocumented bit Windows 2000's WM_WINDOWPOSCHANGED carries after ShowWindow's show
+/// (guigeo `sizemsg` captured 0x10001847); ShowWindow passes it, WM_WINDOWPOSCHANGING does not
+/// carry it (inferred: the capture logs only WM_WINDOWPOSCHANGED).
+pub const SWP_SHOWWINDOW_CALL: u32 = 0x1000_0000;
 
 /// SetWindowPos's special insert-after handles (winuser.h's HWND_*).
 pub const HWND_TOP: Hwnd = 0;
@@ -581,7 +591,8 @@ pub trait Pump {
         }
     }
 
-    /// The WM_SIZE send (wparam is the SIZE_* command).
+    /// The WM_SIZE send (wparam is the SIZE_* command, lparam the client area's width and height,
+    /// as guigeo `sizemsg` captured).
     fn send_size(
         &mut self,
         windows: &mut Windows,
@@ -589,6 +600,11 @@ pub trait Pump {
         target: WindowId,
         command: u32,
     ) {
+        let client = windows.at(target).client_rect;
+        let size = makelong(
+            (client.right - client.left) as u16,
+            (client.bottom - client.top) as u16,
+        );
         self.send(
             windows,
             classes,
@@ -596,7 +612,7 @@ pub trait Pump {
             &mut Message {
                 message: WM_SIZE,
                 wparam: command,
-                lparam: 0,
+                lparam: size as LParam,
                 payload: Payload::None,
             },
         );
@@ -3406,7 +3422,11 @@ impl Windows {
             let flags = SWP_NOMOVE
                 | SWP_NOSIZE
                 | if show && !child { 0 } else { SWP_NOZORDER }
-                | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW }
+                | if show {
+                    SWP_SHOWWINDOW | SWP_SHOWWINDOW_CALL
+                } else {
+                    SWP_HIDEWINDOW
+                }
                 | if activate { 0 } else { SWP_NOACTIVATE };
             self.set_window_pos(classes, window, InsertAfter::Top, 0, 0, 0, 0, flags, pump)?;
         } else if show && activate {
@@ -3480,7 +3500,8 @@ impl Windows {
         flags: u32,
         pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
-        let mut flags = flags;
+        let show_call = flags & SWP_SHOWWINDOW_CALL;
+        let mut flags = flags & !SWP_SHOWWINDOW_CALL;
         if flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW) != 0 {
             flags |= SWP_NOMOVE | SWP_NOSIZE;
         }
@@ -3571,9 +3592,13 @@ impl Windows {
             client.top - old_client.top,
         );
 
-        // The z-order.
+        // The z-order; a window that keeps its place among its siblings reports SWP_NOZORDER.
         if flags & SWP_NOZORDER == 0 {
+            let before = self.z_place(window);
             self.reorder(window, after);
+            if self.z_place(window) == before {
+                flags |= SWP_NOZORDER;
+            }
         }
 
         // The visibility.
@@ -3625,12 +3650,35 @@ impl Windows {
             pump.paint_frame(self, classes, window);
         }
 
+        // What the client area did: the default procedure's WM_SIZE and WM_MOVE follow from it.
+        if (client.right - client.left, client.bottom - client.top)
+            == (
+                old_client.right - old_client.left,
+                old_client.bottom - old_client.top,
+            )
+        {
+            flags |= SWP_NOCLIENTSIZE;
+        }
+        if (client.left, client.top) == (old_client.left, old_client.top) {
+            flags |= SWP_NOCLIENTMOVE;
+        }
+
+        // Nothing changed: no WM_WINDOWPOSCHANGED (an unchanged SetWindowPos sends none, guigeo
+        // `sizemsg`).
+        const NO_POSITION_CHANGE: u32 =
+            SWP_NOSIZE | SWP_NOMOVE | SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE | SWP_NOZORDER;
+        if flags & (NO_POSITION_CHANGE | SWP_FRAMECHANGED | SWP_SHOWWINDOW | SWP_HIDEWINDOW)
+            == NO_POSITION_CHANGE
+        {
+            return Ok(());
+        }
+
         let done = WindowPos {
             x: rect.left - origin.0,
             y: rect.top - origin.1,
             cx: width,
             cy: height,
-            flags,
+            flags: flags | show_call,
             ..pos
         };
         pump.send(
@@ -3808,6 +3856,24 @@ impl Windows {
     /// go after must be a sibling, and a window that would land in the other pile goes to the
     /// boundary between the piles instead. Child windows have no topmost status: HWND_TOPMOST is
     /// HWND_TOP for them, and HWND_NOTOPMOST nothing.
+    /// Where `window` is among its siblings: its index from the top and whether it is topmost.
+    fn z_place(&self, window: WindowId) -> (usize, bool) {
+        let topmost = self.at(window).ex_style & WS_EX_TOPMOST != 0;
+        let Some(parent) = self.at(window).parent else {
+            return (0, topmost);
+        };
+        let mut index = 0;
+        let mut current = self.at(parent).child;
+        while let Some(c) = current {
+            if c == window {
+                break;
+            }
+            index += 1;
+            current = self.at(c).next;
+        }
+        (index, topmost)
+    }
+
     fn reorder(&mut self, window: WindowId, after: InsertAfter) {
         /// Where the window goes.
         enum Place {
@@ -4730,6 +4796,7 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
         QUERY_WINDOW_TEXT => length == size_of::<WindowText>(),
         QUERY_WINDOW_LINKS => length == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length == size_of::<WindowClass>(),
+        QUERY_WINDOW_THREAD => length == size_of::<WindowThread>(),
         index if index & QUERY_WINDOW_EXTRA != 0 => length == 2 || length == 4,
         _ => return Err(STATUS_INVALID_INFO_CLASS),
     };
@@ -5074,11 +5141,44 @@ pub fn query_window(
     length: u32,
 ) -> NtResult {
     query_accepts(index, length as usize)?;
+    if index == rtl::window::QUERY_WINDOW_THREAD {
+        return query_window_thread(call, window, information);
+    }
     let caller = call.process().object().index;
     let answer = lock(call.passive())
         .query_window(window.raw(), index, length as usize, caller)
         .map_err(Failure::status)?;
     information.write(answer.bytes())?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// QUERY_WINDOW_THREAD: the client ids of the window's thread and of its process
+/// (GetWindowThreadProcessId), read from the scheduler's record once the window manager's lock is
+/// let go.
+#[cfg(target_arch = "x86")]
+fn query_window_thread(call: &mut NtCall, window: Handle, information: UserAddr) -> NtResult {
+    use crate::level::Dispatch;
+    use crate::sched::DISPATCHER;
+    let thread = {
+        let manager = lock(call.passive());
+        let id = manager
+            .windows
+            .window_of(window.raw())
+            .map_err(Failure::status)?;
+        manager.windows.window_thread(id)
+    };
+    let answer = {
+        let mut dispatch = call.passive().raise::<Dispatch>();
+        let record = DISPATCHER.get(&mut dispatch).thread(thread);
+        rtl::window::WindowThread {
+            process: record
+                .process()
+                .pool_index()
+                .map_or(0, |index| crate::process::pool::record(index).id()),
+            thread: record.thread_id(),
+        }
+    };
+    information.cast().write(answer)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -5750,12 +5850,15 @@ mod tests {
 
         fn send_size(
             &mut self,
-            _windows: &mut Windows,
+            windows: &mut Windows,
             _classes: &mut class::Registry,
             target: WindowId,
             command: u32,
         ) {
-            self.events.push(Ev::Send(target, WM_SIZE, command, 0));
+            let c = windows.at(target).client_rect;
+            let size = makelong((c.right - c.left) as u16, (c.bottom - c.top) as u16);
+            self.events
+                .push(Ev::Send(target, WM_SIZE, command, size as LParam));
         }
 
         fn show(&mut self, windows: &mut Windows, target: WindowId, command: u32) -> bool {
@@ -8559,7 +8662,18 @@ mod tests {
                 bottom: 20
             }
         );
-        assert_eq!(pump.positions[1].2.flags, flags | SWP_NOSIZE);
+        assert_eq!(
+            pump.positions[1].2.flags,
+            flags | SWP_NOSIZE | SWP_NOCLIENTSIZE
+        );
+
+        // The same place again: nothing changed, no WM_WINDOWPOSCHANGED (guigeo `sizemsg`).
+        pump.events.clear();
+        assert_eq!(
+            w.set_window_pos(c, top, InsertAfter::Top, 0, 0, 200, 150, flags, &mut pump),
+            Ok(())
+        );
+        assert_eq!(pump.messages(), vec![WM_WINDOWPOSCHANGING]);
 
         // A child's position is in its parent's client coordinates, and is reported so.
         pump.positions.clear();
@@ -8844,6 +8958,35 @@ mod tests {
         pump.events.clear();
         w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
         assert_eq!(pump.events[0], Ev::MinMax(id, SW_RESTORE as u32));
+    }
+
+    /// A tiled window's first show, as guigeo `sizemsg` captured it: WM_WINDOWPOSCHANGED reports
+    /// the client area unchanged (SWP_NOCLIENTSIZE, SWP_NOCLIENTMOVE), the window's place among its
+    /// siblings kept (SWP_NOZORDER) and ShowWindow's own bit, then the deferred WM_SIZE carries the
+    /// client area's size and WM_MOVE its place.
+    #[test]
+    fn the_first_show_reports_as_the_capture() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        pump.events.clear();
+        pump.positions.clear();
+        w.show_window(c, id, SW_SHOW, &mut pump).unwrap();
+        let (_, _, changed) = *pump.positions.last().unwrap();
+        assert_eq!(changed.flags, 0x1000_1847);
+        let messages = pump.messages();
+        assert_eq!(
+            &messages[messages.len() - 3..],
+            &[WM_WINDOWPOSCHANGED, WM_SIZE, WM_MOVE]
+        );
+        let client = w.at(id).client_rect;
+        let size = makelong(
+            (client.right - client.left) as u16,
+            (client.bottom - client.top) as u16,
+        );
+        assert!(pump
+            .events
+            .contains(&Ev::Send(id, WM_SIZE, 0, size as LParam)));
     }
 
     /// IsWindowVisible: the window and every window above it; the desktop window is visible, the

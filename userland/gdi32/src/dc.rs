@@ -197,6 +197,20 @@ pub extern "system" fn set_bk_mode(dc: usize, mode: i32) -> i32 {
     set_attribute(dc, DC_BK_MODE, mode as u32, 0) as i32
 }
 
+/// GetBkMode: the DC's background mode (TRANSPARENT or OPAQUE); 0 with the last error for a DC
+/// that is none.
+#[unsafe(export_name = "f2k_export_GetBkMode")]
+pub extern "system" fn get_bk_mode(dc: usize) -> i32 {
+    attribute(dc, DC_BK_MODE, 0) as i32
+}
+
+/// GetCurrentObject: the brush, pen or font selected into the DC (OBJ_BRUSH, OBJ_PEN, OBJ_FONT);
+/// NULL with the last error for another kind or a DC that is none.
+#[unsafe(export_name = "f2k_export_GetCurrentObject")]
+pub extern "system" fn get_current_object(dc: usize, kind: u32) -> usize {
+    answered(imports::dc_object(dc, kind)).map_or(0, |object| object as usize)
+}
+
 /// SetPixel: the pixel set, the color set answered (the one asked for: the framebuffer is 32 bpp);
 /// -1 outside the DC's clipping region, and with the last error for a DC that is none.
 #[unsafe(export_name = "f2k_export_SetPixel")]

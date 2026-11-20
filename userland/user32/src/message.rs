@@ -29,7 +29,7 @@ use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_INVALID_CID};
 use rtl::user::*;
-use rtl::window::{WindowText, QUERY_WINDOW_TEXT};
+use rtl::window::{WindowText, QUERY_WINDOW_TEXT, WINDOW_OTHER_PROCESS};
 
 use crate::procedure::{self, Procedure};
 use crate::{answered, failed_with, focus, imports, menubar, nonclient, paint, window, Out};
@@ -42,7 +42,7 @@ pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
 /// back to its sender. Both are copies: no reference to the receipt is held while the procedure
 /// runs, which may write the structure its lParam points at in the receipt (WM_NCCREATE's
 /// CREATESTRUCT).
-fn deliver(proc: u32, msg: Msg) {
+fn deliver(proc: u32, msg: Msg, carried_text: bool) {
     let answer = if proc == 0 {
         default_procedure(
             msg.hwnd as usize,
@@ -52,7 +52,9 @@ fn deliver(proc: u32, msg: Msg) {
             false,
         )
     } else {
-        let wide = matches!(msg.message, WM_NCCREATE | WM_CREATE);
+        // The window manager's own messages, and a text another process's message carries, are
+        // wide.
+        let wide = matches!(msg.message, WM_NCCREATE | WM_CREATE) || carried_text;
         call(proc, wide.then_some(false), &msg)
     };
     let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
@@ -88,7 +90,7 @@ pub fn receive_sent() {
     while imports::peek_message(&mut receipt, 0, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE).is_ok()
         && receipt.kind == RECEIVED_SENT
     {
-        deliver(receipt.proc, receipt.msg);
+        deliver(receipt.proc, receipt.msg, carries_text(&receipt));
     }
 }
 
@@ -136,7 +138,7 @@ fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32) -> i32
             return -1;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             kind => {
                 out.set(receipt.msg);
                 return (kind != RECEIVED_QUIT) as i32;
@@ -191,7 +193,7 @@ fn peek_message(msg: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, flags
             return 0;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             RECEIVED_NONE => return 0,
             _ => {
                 msg.set(receipt.msg);
@@ -209,7 +211,7 @@ pub fn next_message(msg: &mut Msg) -> Option<bool> {
     loop {
         answered(imports::get_message(&mut receipt, 0, 0, 0))?;
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             kind => {
                 *msg = receipt.msg;
                 return Some(kind != RECEIVED_QUIT);
@@ -227,7 +229,7 @@ pub fn queue_holds_message() -> bool {
             return false;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg),
+            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             RECEIVED_NONE => return false,
             _ => return true,
         }
@@ -307,6 +309,22 @@ pub extern "system" fn in_send_message() -> u32 {
 /// answer (called here for a window of the calling thread, translated for a procedure of the
 /// other form; the kernel's answer otherwise); none with 1400 for a handle naming no window.
 pub fn send_as(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> Option<i32> {
+    // A text message to another process's window: the window manager carries its text (WM_SETTEXT's
+    // there, WM_GETTEXT's back) in the wide form, so a narrow one goes as wide, converted here.
+    if ansi
+        && matches!(message, WM_SETTEXT | WM_GETTEXT | WM_GETTEXTLENGTH)
+        && window::window_data(window).is_ok_and(|data| data.flags & WINDOW_OTHER_PROCESS != 0)
+    {
+        let mut reached = true;
+        let answer =
+            procedure::narrow_to_wide(message, wparam, lparam, |message, wparam, lparam| {
+                send_as(window, message, wparam, lparam, false).unwrap_or_else(|| {
+                    reached = false;
+                    0
+                })
+            });
+        return reached.then_some(answer);
+    }
     let (proc, answer) = answered(imports::message_call(window, message, wparam, lparam))?;
     Some(if proc == 0 {
         answer
@@ -377,6 +395,13 @@ pub unsafe extern "system" fn dispatch_message_w(msg: *const Msg) -> i32 {
 }
 
 /// DispatchMessage's core, for a message of the narrow (`ansi`) or wide form.
+/// Whether the sent message `receipt` holds is a text message from another process, whose text
+/// (WM_SETTEXT's) or buffer (WM_GETTEXT's) the window manager put in the receipt's name.
+fn carries_text(receipt: &Receipt) -> bool {
+    matches!(receipt.msg.message, WM_SETTEXT | WM_GETTEXT)
+        && receipt.msg.lparam as usize == receipt.name.as_ptr() as usize
+}
+
 pub fn dispatch(msg: &Msg, ansi: bool) -> i32 {
     match answered(imports::dispatch_target(msg)) {
         None | Some(0) => 0,
@@ -462,6 +487,23 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         WM_ERASEBKGND => erase_background(window, wparam as usize) as i32,
         WM_CTLCOLORMSGBOX..=WM_CTLCOLORSTATIC => control_colors(wparam as usize, message) as i32,
         WM_QUERYENDSESSION => 1,
+        WM_CHANGEUISTATE => {
+            change_ui_state(window, wparam);
+            0
+        }
+        WM_UPDATEUISTATE => {
+            update_ui_state(window, wparam);
+            0
+        }
+        WM_QUERYUISTATE => ui_state(window) as i32,
+        WM_NCDESTROY => {
+            forget_ui_state(window);
+            0
+        }
+        WM_WINDOWPOSCHANGED => {
+            window_pos_changed(window, lparam);
+            0
+        }
         nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
         nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
         nonclient::WM_NCPAINT => nonclient::paint(
@@ -504,6 +546,145 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
             }
             0
         }
+    }
+}
+
+// --- The UI state (the keyboard cues) ------------------------------------------------------------
+
+/// The UI state messages (winuser.h's).
+const WM_CHANGEUISTATE: u32 = 0x0127;
+const WM_UPDATEUISTATE: u32 = 0x0128;
+const WM_QUERYUISTATE: u32 = 0x0129;
+/// Their actions (wParam's low word) and flags (its high word).
+const UIS_SET: u32 = 1;
+const UIS_CLEAR: u32 = 2;
+const UIS_INITIALIZE: u32 = 3;
+const UISF_ALL: u32 = 0x7;
+
+/// The windows of this process whose UI state is not the default 0: (window, state), 0 for a free
+/// entry. DefWindowProc runs in the window's own process, which answers WM_QUERYUISTATE for it.
+static UI_STATES: [(AtomicU32, AtomicU32); 64] =
+    [const { (AtomicU32::new(0), AtomicU32::new(0)) }; 64];
+
+/// The window's UI state (WM_QUERYUISTATE's answer): 0 unless WM_UPDATEUISTATE set a flag.
+fn ui_state(window: usize) -> u32 {
+    UI_STATES
+        .iter()
+        .find(|(w, _)| w.load(Ordering::Acquire) == window as u32)
+        .map_or(0, |(_, state)| state.load(Ordering::Acquire))
+}
+
+/// The window's UI state set to `state`.
+fn set_ui_state(window: usize, state: u32) {
+    if let Some((_, slot)) = UI_STATES
+        .iter()
+        .find(|(w, _)| w.load(Ordering::Acquire) == window as u32)
+    {
+        slot.store(state, Ordering::Release);
+        return;
+    }
+    if state == 0 {
+        return;
+    }
+    for (w, slot) in UI_STATES.iter() {
+        if w.compare_exchange(0, window as u32, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            slot.store(state, Ordering::Release);
+            return;
+        }
+    }
+}
+
+/// The window's UI state forgotten as it goes (its handle may name another window later).
+fn forget_ui_state(window: usize) {
+    for (w, slot) in UI_STATES.iter() {
+        if w.load(Ordering::Acquire) == window as u32 {
+            slot.store(0, Ordering::Release);
+            w.store(0, Ordering::Release);
+        }
+    }
+}
+
+/// `state` after WM_UPDATEUISTATE's `wparam`: UIS_SET sets the flags, UIS_CLEAR clears them, and so
+/// does UIS_INITIALIZE (menus `cues`: after UIS_INITIALIZE of UISF_HIDEACCEL the window answers 0,
+/// no keyboard input having come, the keyboard cues off; inferred from that one capture).
+fn ui_state_after(state: u32, wparam: u32) -> u32 {
+    let flags = (wparam >> 16) & UISF_ALL;
+    match wparam & 0xFFFF {
+        UIS_SET => state | flags,
+        UIS_CLEAR | UIS_INITIALIZE => state & !flags,
+        _ => state,
+    }
+}
+
+/// DefWindowProc's WM_CHANGEUISTATE: a child hands it to its parent; a top-level window whose state
+/// it changes sends itself WM_UPDATEUISTATE.
+fn change_ui_state(window: usize, wparam: u32) {
+    let style = window::style_of(window).unwrap_or(0);
+    if style & rtl::nonclient::WS_CHILD != 0 {
+        if let Ok(links) = window::links(window) {
+            if links.parent != 0 {
+                let _ = send(links.parent as usize, WM_CHANGEUISTATE, wparam, 0);
+                return;
+            }
+        }
+    }
+    if ui_state_after(ui_state(window), wparam) != ui_state(window) {
+        let _ = send(window, WM_UPDATEUISTATE, wparam, 0);
+    }
+}
+
+/// DefWindowProc's WM_UPDATEUISTATE: the window's state changed, then the message sent on to each
+/// of its children.
+fn update_ui_state(window: usize, wparam: u32) {
+    set_ui_state(window, ui_state_after(ui_state(window), wparam));
+    let mut child = window::links(window).map_or(0, |l| l.child as usize);
+    while child != 0 {
+        let _ = send(child, WM_UPDATEUISTATE, wparam, 0);
+        child = window::links(child).map_or(0, |l| l.next as usize);
+    }
+}
+
+/// WM_WINDOWPOSCHANGED's report that the client area kept its size, and its place (Windows 2000's
+/// private SWP_NOCLIENTSIZE and SWP_NOCLIENTMOVE).
+const SWP_NOCLIENTSIZE: u32 = 0x0800;
+const SWP_NOCLIENTMOVE: u32 = 0x1000;
+
+/// DefWindowProc's WM_WINDOWPOSCHANGED: WM_MOVE (the client area's origin in the parent's client
+/// coordinates, the screen's for a top-level window) unless the client area kept its place, then
+/// WM_SIZE (SIZE_MINIMIZED, SIZE_MAXIMIZED or SIZE_RESTORED, and the client area's size) unless it
+/// kept its size, both sent to `window`, as guigeo `sizemsg` captured (a procedure keeping the
+/// message from DefWindowProc gets neither).
+fn window_pos_changed(window: usize, lparam: i32) {
+    if lparam == 0 {
+        return;
+    }
+    // SAFETY: WM_WINDOWPOSCHANGED's lParam: a WINDOWPOS.
+    let pos = unsafe { In::new(lparam as usize as *const rtl::window::WindowPos) }.read();
+    let Ok(info) = window::window_info(window) else {
+        return;
+    };
+    let client = info.client;
+    if pos.flags & SWP_NOCLIENTMOVE == 0 {
+        let parent = window::links(window).map_or(0, |l| l.parent as usize);
+        let (dx, dy) =
+            window::window_info(parent).map_or((0, 0), |p| (p.client.left, p.client.top));
+        let (x, y) = (client.left - dx, client.top - dy);
+        let at = ((y as u16 as u32) << 16) | x as u16 as u32;
+        send(window, WM_MOVE, 0, at as i32);
+    }
+    if pos.flags & SWP_NOCLIENTSIZE == 0 {
+        let command = if info.style & rtl::nonclient::WS_MINIMIZE != 0 {
+            1
+        } else if info.style & 0x0100_0000 != 0 {
+            2
+        } else {
+            0
+        };
+        let (cx, cy) = (client.right - client.left, client.bottom - client.top);
+        let size = ((cy as u16 as u32) << 16) | cx as u16 as u32;
+        send(window, WM_SIZE, command, size as i32);
     }
 }
 
@@ -818,6 +999,24 @@ mod tests {
     use crate::window::{create_window_ex_a, is_window};
 
     const UNSET: u32 = 0xF2F2_F2F2;
+
+    /// The UI state as menus `cues` captured it: UIS_CLEAR of a clear flag changes nothing,
+    /// UIS_SET sets it, UIS_INITIALIZE clears it; a window's state is kept until it goes.
+    #[test]
+    fn the_ui_state_follows_the_capture() {
+        let hide_accel = |action: u32| action | (2 << 16);
+        assert_eq!(ui_state_after(0, hide_accel(UIS_CLEAR)), 0);
+        assert_eq!(ui_state_after(0, hide_accel(UIS_SET)), 2);
+        assert_eq!(ui_state_after(2, hide_accel(UIS_INITIALIZE)), 0);
+        assert_eq!(ui_state_after(3, hide_accel(UIS_CLEAR)), 1);
+        let window = 0xDEAD_0;
+        assert_eq!(ui_state(window), 0);
+        set_ui_state(window, 2);
+        assert_eq!(ui_state(window), 2);
+        assert_eq!(default_procedure(window, WM_QUERYUISTATE, 0, 0, false), 2);
+        forget_ui_state(window);
+        assert_eq!(ui_state(window), 0);
+    }
 
     std::thread_local! {
         static SEEN: RefCell<std::vec::Vec<(u32, u32, u32, i32)>> = const { RefCell::new(std::vec::Vec::new()) };

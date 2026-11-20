@@ -75,14 +75,17 @@ use rtl::user::{
     QS_POSTMESSAGE,
     QS_SENDMESSAGE,
     QS_TIMER,
+    RECEIPT_TEXT,
     RECEIVED_MESSAGE,
     RECEIVED_QUIT,
     RECEIVED_SENT,
+    WM_GETTEXT,
     WM_NCCREATE,
     WM_NCDESTROY,
     WM_PAINT,
     WM_QUERYENDSESSION,
     WM_QUIT,
+    WM_SETTEXT,
     WM_TIMER,
 };
 
@@ -113,6 +116,12 @@ pub const POSTED: usize = 512;
 pub const SENT: usize = 128;
 /// How many sent creation messages, each with its create parameters, can be on their way at once.
 pub const CREATES: usize = 16;
+
+/// How many text messages (WM_SETTEXT, WM_GETTEXT) can be on their way to another process's window
+/// at once, each with its text.
+pub const TEXTS: usize = 8;
+/// The longest text such a message carries, its terminator excluded: what a receipt's name holds.
+pub const CARRIED_TEXT: usize = RECEIPT_TEXT - 1;
 
 /// The words of the wake set: a bit a queue.
 const WAKE_WORDS: usize = THREADS.div_ceil(32);
@@ -259,6 +268,29 @@ enum Carried {
     WindowPos(window::WindowPos),
     /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT.
     Style(StyleStruct),
+    /// WM_SETTEXT's text, or WM_GETTEXT's answer, sent to another process's window: a slot of the
+    /// texts' pool.
+    Text(u16),
+}
+
+/// A text a message to another process's window carries: WM_SETTEXT's, read from the sender, or
+/// WM_GETTEXT's, read back from the receiver's receipt once its procedure answers.
+#[derive(Clone, Copy)]
+struct TextSlot {
+    live: bool,
+    units: [u16; CARRIED_TEXT],
+    length: u16,
+    /// Where WM_GETTEXT's receiver was handed its buffer (its receipt's name), 0 before.
+    receipt: u32,
+}
+
+impl TextSlot {
+    const EMPTY: Self = TextSlot {
+        live: false,
+        units: [0; CARRIED_TEXT],
+        length: 0,
+        receipt: 0,
+    };
 }
 
 /// A sent message.
@@ -325,6 +357,7 @@ pub struct Queues {
     free_posted: Option<u16>,
     sent: [Sent; SENT],
     creates: [CreateSlot; CREATES],
+    texts: [TextSlot; TEXTS],
     pub timers: super::timer::Timers,
     pub updates: super::paint::Updates,
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
@@ -384,6 +417,10 @@ impl Queues {
                         params: 0,
                     },
                 });
+            }
+            let texts = addr_of_mut!((*queues).texts) as *mut TextSlot;
+            for index in 0..TEXTS {
+                texts.add(index).write(TextSlot::EMPTY);
             }
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
@@ -522,8 +559,10 @@ impl Queues {
 
     /// Give the sent message at `index` back to the pool, its create parameters with it.
     fn free_sent(&mut self, index: u16) {
-        if let Carried::Create(slot) = self.sent[index as usize].carried {
-            self.creates[slot as usize].live = false;
+        match self.sent[index as usize].carried {
+            Carried::Create(slot) => self.creates[slot as usize].live = false,
+            Carried::Text(slot) => self.texts[slot as usize].live = false,
+            _ => {}
         }
         let generation = self.sent[index as usize].generation.wrapping_add(1);
         self.sent[index as usize] = Sent {
@@ -1098,6 +1137,7 @@ pub fn receipt_head(
             receipt.wrapping_add(offset_of!(Receipt, window_pos) as u32) as LParam
         }
         Carried::Style(_) => receipt.wrapping_add(offset_of!(Receipt, style) as u32) as LParam,
+        Carried::Text(_) => receipt.wrapping_add(offset_of!(Receipt, name) as u32) as LParam,
     };
     Some(ReceiptHead {
         kind: RECEIVED_SENT,
@@ -1147,10 +1187,94 @@ pub fn receipt_name(windows: &Windows, id: SentId, from: usize, out: &mut [u16])
     written
 }
 
+/// The text the sent message `id` carries to another process (WM_SETTEXT's; WM_GETTEXT's none),
+/// into `out`: the units written, none for a message that carries no text.
+pub fn receipt_text(windows: &Windows, id: SentId, out: &mut [u16]) -> Option<usize> {
+    let sent = windows.queues.sent_at(id)?;
+    let Carried::Text(slot) = sent.carried else {
+        return None;
+    };
+    if sent.message == WM_GETTEXT {
+        return Some(0);
+    }
+    let slot = &windows.queues.texts[slot as usize];
+    let length = (slot.length as usize).min(out.len());
+    out[..length].copy_from_slice(&slot.units[..length]);
+    Some(length)
+}
+
+/// WM_GETTEXT's buffer handed to the receiver of the sent message `id`, to another process: the
+/// receipt's name at `at`, read back when its procedure answers ([`text_reply_buffer`]).
+pub fn hand_out_text_buffer(windows: &mut Windows, id: SentId, at: u32) {
+    let Some(sent) = windows.queues.sent_at(id) else {
+        return;
+    };
+    if let (Carried::Text(slot), WM_GETTEXT) = (sent.carried, sent.message) {
+        windows.queues.texts[slot as usize].receipt = at;
+    }
+}
+
+/// The caller's innermost sent message, when it is WM_GETTEXT from another process: where its
+/// procedure wrote the text, and how many units it may hold (the receipt's name, wParam's units).
+pub fn text_reply_buffer(windows: &Windows, caller: ThreadId) -> Option<(u32, usize)> {
+    let queues = &windows.queues;
+    let index = queues.queues[queues.queue_of(caller)?.index as usize].receiving?;
+    let sent = &queues.sent[index as usize];
+    match (sent.carried, sent.message) {
+        (Carried::Text(slot), WM_GETTEXT) if queues.texts[slot as usize].receipt != 0 => Some((
+            queues.texts[slot as usize].receipt,
+            (sent.wparam as usize).min(CARRIED_TEXT),
+        )),
+        _ => None,
+    }
+}
+
+/// WM_GETTEXT's answer `units`, read back from the receiver's buffer, kept with the caller's
+/// innermost sent message for its sender ([`answered_text`]).
+pub fn keep_text_reply(windows: &mut Windows, caller: ThreadId, units: &[u16]) {
+    let queues = &mut windows.queues;
+    let Some(queue) = queues.queue_of(caller) else {
+        return;
+    };
+    let Some(index) = queues.queues[queue.index as usize].receiving else {
+        return;
+    };
+    if let Carried::Text(slot) = queues.sent[index as usize].carried {
+        let slot = &mut queues.texts[slot as usize];
+        let length = units.len().min(CARRIED_TEXT);
+        slot.units[..length].copy_from_slice(&units[..length]);
+        slot.length = length as u16;
+    }
+}
+
+/// WM_GETTEXT's text, once the caller's send `id` to another process is answered, into `out`: the
+/// units written; none for another send, or one not answered yet.
+pub fn answered_text(windows: &Windows, id: SentId, out: &mut [u16]) -> Option<usize> {
+    let sent = windows.queues.sent_at(id)?;
+    match (sent.carried, sent.message, sent.state) {
+        (Carried::Text(slot), WM_GETTEXT, State::Answered) => {
+            let slot = &windows.queues.texts[slot as usize];
+            let length = (slot.length as usize).min(out.len());
+            out[..length].copy_from_slice(&slot.units[..length]);
+            Some(length)
+        }
+        _ => None,
+    }
+}
+
 /// The STYLESTRUCT the sent message `id` carries, when it carries one.
 pub fn receipt_style(windows: &Windows, id: SentId) -> Option<StyleStruct> {
     match windows.queues.sent_at(id)?.carried {
         Carried::Style(style) => Some(style),
+        _ => None,
+    }
+}
+
+/// The WINDOWPOS the sent message `id` carries, when it carries one (WM_WINDOWPOSCHANGING,
+/// WM_WINDOWPOSCHANGED).
+pub fn receipt_window_pos(windows: &Windows, id: SentId) -> Option<window::WindowPos> {
+    match windows.queues.sent_at(id)?.carried {
+        Carried::WindowPos(pos) => Some(pos),
         _ => None,
     }
 }
@@ -1251,7 +1375,9 @@ pub enum Sending {
 }
 
 /// SendMessage's step: see [`Sending`]. STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_NO_MEMORY when the sent messages' pool is full.
+/// STATUS_NO_MEMORY when the sent messages' pool is full. (The service sends through
+/// [`send_carrying`].)
+#[cfg(test)]
 pub fn send(
     windows: &mut Windows,
     caller: ThreadId,
@@ -1259,6 +1385,34 @@ pub fn send(
     message: u32,
     wparam: WParam,
     lparam: LParam,
+) -> Result<Sending, NtStatus> {
+    send_carrying(windows, caller, hwnd, message, wparam, lparam, None)
+}
+
+/// Whether `message` to the window `hwnd` from a thread of the process `caller` is a text message
+/// whose text goes through the window manager (WM_SETTEXT, WM_GETTEXT to another process's window,
+/// whose address space the sender's pointer does not reach).
+pub fn carries_text(windows: &Windows, caller: class::Owner, hwnd: Hwnd, message: u32) -> bool {
+    if !matches!(message, WM_SETTEXT | WM_GETTEXT) {
+        return false;
+    }
+    windows
+        .window_from_handle(hwnd)
+        .is_some_and(|w| windows.client_proc(w).is_some() && windows.window_process(w) != caller)
+}
+
+/// [`send`], WM_SETTEXT's `text` (wide, read from the sender) or WM_GETTEXT's answer carried
+/// through the window manager when `text` is some ([`carries_text`]): the receiver's lParam is its
+/// receipt's copy, WM_GETTEXT's wParam at most the receipt's name.
+#[allow(clippy::too_many_arguments)]
+pub fn send_carrying(
+    windows: &mut Windows,
+    caller: ThreadId,
+    hwnd: Hwnd,
+    message: u32,
+    wparam: WParam,
+    lparam: LParam,
+    text: Option<&[u16]>,
 ) -> Result<Sending, NtStatus> {
     let window = windows
         .window_from_handle(hwnd)
@@ -1274,19 +1428,47 @@ pub fn send(
     let (Some(receiver), Some(sender)) = (queues.queue_of(thread), queues.queue_of(caller)) else {
         return Ok(Sending::Answered(0));
     };
-    let id = queues
-        .allocate_sent(Sent {
-            receiver: Some(receiver),
-            sender: Some(sender),
-            window: Some(window),
-            hwnd,
-            proc,
-            message,
-            wparam,
-            lparam,
-            ..Sent::EMPTY
-        })
-        .ok_or(STATUS_NO_MEMORY)?;
+    let (carried, wparam) = match text {
+        Some(text) => {
+            let slot = queues
+                .texts
+                .iter()
+                .position(|t| !t.live)
+                .ok_or(STATUS_NO_MEMORY)?;
+            let length = text.len().min(CARRIED_TEXT);
+            let record = &mut queues.texts[slot];
+            *record = TextSlot {
+                live: true,
+                length: length as u16,
+                ..TextSlot::EMPTY
+            };
+            record.units[..length].copy_from_slice(&text[..length]);
+            let wparam = if message == WM_GETTEXT {
+                wparam.min(RECEIPT_TEXT as WParam)
+            } else {
+                wparam
+            };
+            (Carried::Text(slot as u16), wparam)
+        }
+        None => (Carried::None, wparam),
+    };
+    let Some(id) = queues.allocate_sent(Sent {
+        receiver: Some(receiver),
+        sender: Some(sender),
+        window: Some(window),
+        hwnd,
+        proc,
+        message,
+        wparam,
+        lparam,
+        carried,
+        ..Sent::EMPTY
+    }) else {
+        if let Carried::Text(slot) = carried {
+            queues.texts[slot as usize].live = false;
+        }
+        return Err(STATUS_NO_MEMORY);
+    };
     queues.push_sent(receiver, id.index);
     queues.queues[sender.index as usize].awaiting = Some(id);
     Ok(Sending::Waiting(id))
@@ -1725,13 +1907,26 @@ mod services {
         ONE_PARAM_IN_SEND_MESSAGE,
         ONE_PARAM_POST_QUIT_MESSAGE,
         ONE_PARAM_REPLY_MESSAGE,
-        RECEIPT_TEXT,
         RECEIVED_NONE,
     };
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
     use crate::win32k::winsta::gui_thread;
+
+    /// A NUL-terminated wide string at `at` into `units`, as much as they hold: the units read.
+    fn read_units(at: UserAddr, units: &mut [u16]) -> Result<usize, NtStatus> {
+        let mut length = 0;
+        while length < units.len() {
+            let unit = at.offset(2 * length as u32).cast::<u16>().read()?;
+            if unit == 0 {
+                break;
+            }
+            units[length] = unit;
+            length += 1;
+        }
+        Ok(length)
+    }
 
     /// The window-name units a receipt's copy goes out in at a time, through a buffer on the
     /// stack.
@@ -1876,17 +2071,34 @@ mod services {
             Taken::Sent(id) => id,
         };
         let base = receipt.raw();
-        let (first, create, rect, style) = with_manager(call.passive(), |m| {
+        let mut text = [0u16; CARRIED_TEXT];
+        let (first, create, rect, style, pos, text_length) = with_manager(call.passive(), |m| {
+            let name = base.wrapping_add(offset_of!(Receipt, name) as u32);
+            hand_out_text_buffer(&mut m.windows, id, name);
             let w = &m.windows;
             (
                 receipt_head(w, caller, id, base, time),
                 receipt_create(w, id, base),
                 receipt_rect(w, id),
                 receipt_style(w, id),
+                receipt_window_pos(w, id),
+                receipt_text(w, id, &mut text),
             )
         });
         let first = first.ok_or(STATUS_INVALID_PARAMETER)?;
         head.write(first)?;
+        if let Some(length) = text_length {
+            // WM_SETTEXT's text, or an empty buffer for WM_GETTEXT's answer, terminated.
+            let name = receipt.offset(offset_of!(Receipt, name) as u32);
+            name.write(&text.as_bytes()[..2 * length])?;
+            name.offset(2 * length as u32).cast::<u16>().write(0)?;
+        }
+        if let Some(pos) = pos {
+            receipt
+                .offset(offset_of!(Receipt, window_pos) as u32)
+                .cast::<window::WindowPos>()
+                .write(pos)?;
+        }
         if let Some(rect) = rect {
             receipt
                 .offset(offset_of!(Receipt, rect) as u32)
@@ -1937,17 +2149,30 @@ mod services {
         proc: UserPtr<u32>,
         result: UserPtr<i32>,
     ) -> NtResult {
-        let caller = gui_thread(call)?.thread;
+        let thread = gui_thread(call)?;
+        let caller = thread.thread;
         proc.write(0)?;
         result.write(0)?;
+        // A text message to another process's window carries its text (user32 hands such a
+        // message over in the wide form): WM_SETTEXT's read here, WM_GETTEXT's written back below.
+        let carried = with_manager(call.passive(), |m| {
+            carries_text(&m.windows, thread.owner, window.raw(), message)
+        });
+        let mut text = [0u16; CARRIED_TEXT];
+        let length = if carried && message == WM_SETTEXT && lparam != 0 {
+            read_units(UserAddr(lparam as u32), &mut text)?
+        } else {
+            0
+        };
         let sending = with_manager(call.passive(), |m| {
-            send(
+            send_carrying(
                 &mut m.windows,
                 caller,
                 window.raw(),
                 message,
                 wparam,
                 lparam,
+                carried.then_some(&text[..length]),
             )
         })?;
         let answer = match sending {
@@ -1958,10 +2183,21 @@ mod services {
             Sending::Answered(answer) => answer,
             Sending::Waiting(id) => loop {
                 let reply = with_manager(call.passive(), |m| {
-                    collect_reply(&mut m.windows, caller, id)
+                    let got = answered_text(&m.windows, id, &mut text);
+                    collect_reply(&mut m.windows, caller, id).map(|answer| (answer, got))
                 });
                 match reply {
-                    Some(answer) => break answer,
+                    Some((answer, got)) => {
+                        if let (Some(got), true) = (got, carried && lparam != 0 && wparam > 0) {
+                            // WM_GETTEXT's text into the sender's buffer, as much as it holds,
+                            // terminated.
+                            let got = got.min(wparam as usize - 1);
+                            let out = UserAddr(lparam as u32);
+                            out.write(&text.as_bytes()[..2 * got])?;
+                            out.offset(2 * got as u32).cast::<u16>().write(0)?;
+                        }
+                        break answer;
+                    }
                     None => wait_on_queue(caller, None),
                 }
             },
@@ -1992,6 +2228,19 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         let caller = gui_thread(call)?.thread;
+        // WM_GETTEXT's answer to another process, read back from the receiver's buffer before the
+        // end (its procedure's answer is the units it copied).
+        let mut text_reply = [0u16; CARRIED_TEXT];
+        let mut replied = 0;
+        if routine == ONE_PARAM_END_SENT_MESSAGE {
+            if let Some((at, room)) =
+                with_manager(call.passive(), |m| text_reply_buffer(&m.windows, caller))
+            {
+                let count = (param as usize).min(room);
+                UserAddr(at).read_units(&mut text_reply[..count])?;
+                replied = count;
+            }
+        }
         let answer = with_manager(call.passive(), |m| match routine {
             ONE_PARAM_POST_QUIT_MESSAGE => {
                 post_quit(&mut m.windows, caller, param);
@@ -1999,6 +2248,7 @@ mod services {
             }
             ONE_PARAM_REPLY_MESSAGE => Ok(reply(&mut m.windows, caller, param as LResult) as u32),
             ONE_PARAM_END_SENT_MESSAGE => {
+                keep_text_reply(&mut m.windows, caller, &text_reply[..replied]);
                 Ok(end_sent(&mut m.windows, caller, param as LResult) as u32)
             }
             ONE_PARAM_ENUM_CLIPBOARD_FORMATS => m
@@ -2365,6 +2615,43 @@ mod tests {
         );
     }
 
+    /// WM_WINDOWPOSCHANGING and WM_WINDOWPOSCHANGED carry their WINDOWPOS into the receipt (guigeo
+    /// `sizemsg` reads WM_WINDOWPOSCHANGED's flags): the move's place, and the flags reporting what
+    /// did not change.
+    #[test]
+    fn a_window_pos_reaches_the_receipt() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        let flags = window::SWP_NOSIZE | window::SWP_NOZORDER | window::SWP_NOACTIVATE;
+        windows
+            .set_window_pos_handle(classes, h, 0, 7, 8, 0, 0, flags, &mut QueuePump)
+            .unwrap();
+        let only_sent = Filter::new(0, 0, 0, rtl::user::PM_QS_SENDMESSAGE);
+        let mut changed = None;
+        while let Taken::Sent(id) = read(m, t, &only_sent, 0) {
+            let head = receipt_head(&m.windows, t, id, 0x1000, 0).unwrap();
+            if head.msg.message == window::WM_WINDOWPOSCHANGED {
+                assert_eq!(head.msg.lparam as u32, 0x1000 + 100);
+                changed = receipt_window_pos(&m.windows, id);
+            } else if head.msg.message != window::WM_WINDOWPOSCHANGING {
+                assert_eq!(receipt_window_pos(&m.windows, id), None);
+            }
+            assert!(end_sent(&mut m.windows, t, 0));
+        }
+        let changed = changed.expect("WM_WINDOWPOSCHANGED");
+        assert_eq!((changed.x, changed.y, changed.hwnd), (7, 8, h));
+        assert_eq!(
+            changed.flags,
+            flags | window::SWP_NOCLIENTSIZE,
+            "the client area moved, its size kept"
+        );
+    }
+
     /// The post capture: GetMessage takes the posted message with its window and parameters.
     #[test]
     fn a_posted_message_is_read_back() {
@@ -2506,6 +2793,75 @@ mod tests {
         assert!(
             !end_sent(&mut m.windows, t, 0),
             "nothing is being delivered"
+        );
+    }
+
+    /// WM_SETTEXT and WM_GETTEXT to another process's window carry their text through the window
+    /// manager (wintext `xproc`): WM_SETTEXT's into the receiver's receipt, WM_GETTEXT's buffer
+    /// the receipt's (wParam at most its units), its answer read back for the sender. Another
+    /// message, or the same process's window, carries none.
+    #[test]
+    fn a_text_to_another_process_is_carried() {
+        let (m, atom) = manager();
+        let b = thread(m, 2, 0x200);
+        let a = thread_of(m, 1, 0x100, OWNER + 1);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        assert!(carries_text(&m.windows, OWNER + 1, hb, WM_SETTEXT));
+        assert!(carries_text(&m.windows, OWNER + 1, hb, WM_GETTEXT));
+        assert!(!carries_text(&m.windows, OWNER + 1, hb, WM_USER));
+        assert!(
+            !carries_text(&m.windows, OWNER, hb, WM_SETTEXT),
+            "the same process"
+        );
+
+        let text: Vec<u16> = "hi".encode_utf16().collect();
+        let base = 0x1000;
+        let Ok(Sending::Waiting(id)) =
+            send_carrying(&mut m.windows, a, hb, WM_SETTEXT, 0, 0x5000, Some(&text))
+        else {
+            panic!("queued for the other process's thread");
+        };
+        let Taken::Sent(got) = read(m, b, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        let head = receipt_head(&m.windows, b, got, base, 0).unwrap();
+        assert_eq!(
+            head.msg.lparam as u32,
+            base + offset_of!(Receipt, name) as u32,
+            "the receipt's copy"
+        );
+        let mut units = [0u16; CARRIED_TEXT];
+        assert_eq!(receipt_text(&m.windows, got, &mut units), Some(2));
+        assert_eq!(&units[..2], &text[..]);
+        assert!(end_sent(&mut m.windows, b, 1));
+        assert_eq!(collect_reply(&mut m.windows, a, id), Some(1));
+
+        let Ok(Sending::Waiting(id)) =
+            send_carrying(&mut m.windows, a, hb, WM_GETTEXT, 300, 0x5000, Some(&[]))
+        else {
+            panic!("queued");
+        };
+        let Taken::Sent(got) = read(m, b, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        let head = receipt_head(&m.windows, b, got, base, 0).unwrap();
+        assert_eq!(
+            head.msg.wparam, RECEIPT_TEXT as WParam,
+            "the receipt's room"
+        );
+        let name = base + offset_of!(Receipt, name) as u32;
+        hand_out_text_buffer(&mut m.windows, got, name);
+        assert_eq!(text_reply_buffer(&m.windows, b), Some((name, CARRIED_TEXT)));
+        let reply: Vec<u16> = "abc".encode_utf16().collect();
+        keep_text_reply(&mut m.windows, b, &reply);
+        assert!(end_sent(&mut m.windows, b, 3));
+        assert_eq!(answered_text(&m.windows, id, &mut units), Some(3));
+        assert_eq!(&units[..3], &reply[..]);
+        assert_eq!(collect_reply(&mut m.windows, a, id), Some(3));
+        assert!(
+            m.windows.queues.texts.iter().all(|t| !t.live),
+            "the texts went back to the pool"
         );
     }
 

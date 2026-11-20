@@ -56,6 +56,13 @@
  *             units, the custom window (whether its procedure is
  *             asked), an untitled window, text with U+00E9 and U+4E00,
  *             NULL and destroyed windows
+ *   xproc     another process's window (this program run as
+ *             "wintext.exe --xchild", a hidden window titled "xproc
+ *             title" handing its text to DefWindowProcW): GetWindowTextW,
+ *             then WM_GETTEXTLENGTH, WM_GETTEXT (64 and 5 units, W and A)
+ *             and WM_SETTEXT (W and A) sent across the processes, each
+ *             read back; the child's end and exit code (a fault in the
+ *             child shows as 0xC0000005)
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat wintext):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wintext.c user32.lib
@@ -792,6 +799,148 @@ static void sec_internal(void)
     destroy(hn);
 }
 
+/* --- xproc --------------------------------------------------------- */
+
+#define XPROC_CLASS L"F2KWintextXproc"
+#define XPROC_READY "F2KWintextXprocReady"
+
+/* The child's procedure: its text is DefWindowProcW's; WM_CLOSE (or
+ * the 10-second timer, should the parent never send it) ends it. */
+static LRESULT CALLBACK xproc_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+    case WM_TIMER:
+        DestroyWindow(hwnd);
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/* wintext.exe --xchild: the other process of xproc. It prints nothing
+ * (its output would land in the parent's block): it makes a hidden
+ * window of its own class titled "xproc title", sets the parent's
+ * event, and serves its messages until the window goes. */
+static int xchild(void)
+{
+    WNDCLASSW wc;
+    HWND h;
+    HANDLE ready;
+    MSG m;
+
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = xproc_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = XPROC_CLASS;
+    RegisterClassW(&wc);
+    h = CreateWindowExW(0, XPROC_CLASS, L"xproc title", WS_POPUP, 0, 0, 100, 50, NULL, NULL,
+                        GetModuleHandleA(NULL), NULL);
+    if (h == NULL) {
+        return 3;
+    }
+    SetTimer(h, 1, 10000, NULL);
+    ready = OpenEventA(EVENT_MODIFY_STATE, FALSE, XPROC_READY);
+    if (ready != NULL) {
+        SetEvent(ready);
+        CloseHandle(ready);
+    }
+    while (GetMessageW(&m, NULL, 0, 0) > 0) {
+        DispatchMessageW(&m);
+    }
+    return 0;
+}
+
+static void sec_xproc(void)
+{
+    char path[MAX_PATH];
+    char cmdline[MAX_PATH + 16];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    HANDLE ready;
+    HWND h;
+    WCHAR bufw[64];
+    char bufa[64];
+    LRESULT r;
+    DWORD code;
+    DWORD w;
+    BOOL ok;
+
+    ready = CreateEventA(NULL, TRUE, FALSE, XPROC_READY);
+    GetModuleFileNameA(NULL, path, sizeof path);
+    sprintf(cmdline, "\"%s\" --xchild", path);
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+    arm();
+    ok = CreateProcessA(path, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    line("CreateProcessA(wintext.exe --xchild): ret=%d err=%s", ok, le());
+    if (!ok) {
+        CloseHandle(ready);
+        return;
+    }
+    w = WaitForSingleObject(ready, WAIT_MS);
+    line("the child's window made: %s", wr(w));
+    CloseHandle(ready);
+
+    arm();
+    h = FindWindowW(XPROC_CLASS, NULL);
+    line("FindWindowW(F2KWintextXproc): non-NULL %s err=%s", yesno(h != NULL), le());
+    if (h != NULL) {
+        line("the window's thread is the child's: %s",
+             yesno(GetWindowThreadProcessId(h, NULL) == pi.dwThreadId));
+
+        fill_w(bufw, 64);
+        arm();
+        r = GetWindowTextW(h, bufw, 64);
+        line("GetWindowTextW(64): ret=%ld %s err=%s", (long)r, units_w(bufw), le());
+
+        arm();
+        r = SendMessageW(h, WM_GETTEXTLENGTH, 0, 0);
+        line("SendMessageW(WM_GETTEXTLENGTH): ret=%ld err=%s", (long)r, le());
+        fill_w(bufw, 64);
+        arm();
+        r = SendMessageW(h, WM_GETTEXT, 64, (LPARAM)bufw);
+        line("SendMessageW(WM_GETTEXT, 64): ret=%ld %s err=%s", (long)r, units_w(bufw), le());
+        fill_w(bufw, 64);
+        arm();
+        r = SendMessageW(h, WM_GETTEXT, 5, (LPARAM)bufw);
+        line("SendMessageW(WM_GETTEXT, 5): ret=%ld %s err=%s", (long)r, units_w(bufw), le());
+        fill_a(bufa, 64);
+        arm();
+        r = SendMessageA(h, WM_GETTEXT, 64, (LPARAM)bufa);
+        line("SendMessageA(WM_GETTEXT, 64): ret=%ld %s err=%s", (long)r, units_a(bufa), le());
+
+        arm();
+        r = SendMessageW(h, WM_SETTEXT, 0, (LPARAM)L"set across");
+        line("SendMessageW(WM_SETTEXT, \"set across\"): ret=%ld err=%s", (long)r, le());
+        fill_w(bufw, 64);
+        arm();
+        r = GetWindowTextW(h, bufw, 64);
+        line("  GetWindowTextW(64) after: ret=%ld %s err=%s", (long)r, units_w(bufw), le());
+        arm();
+        r = SendMessageA(h, WM_SETTEXT, 0, (LPARAM)"set by A");
+        line("SendMessageA(WM_SETTEXT, \"set by A\"): ret=%ld err=%s", (long)r, le());
+        fill_a(bufa, 64);
+        arm();
+        r = SendMessageA(h, WM_GETTEXT, 64, (LPARAM)bufa);
+        line("  SendMessageA(WM_GETTEXT, 64) after: ret=%ld %s err=%s", (long)r, units_a(bufa), le());
+
+        PostMessageW(h, WM_CLOSE, 0, 0);
+    }
+    w = WaitForSingleObject(pi.hProcess, WAIT_MS);
+    line("the child ended: %s", wr(w));
+    if (w != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, WAIT_MS);
+    }
+    code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    line("the child's exit code: 0x%08lX", (unsigned long)code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "setget", sec_setget, F2KT_ALWAYS },
@@ -800,6 +949,7 @@ static const section_t sections[] = {
     { "cross", sec_cross, F2KT_ALWAYS },
     { "custom", sec_custom, F2KT_ALWAYS },
     { "internal", sec_internal, F2KT_ALWAYS },
+    { "xproc", sec_xproc, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
@@ -807,5 +957,8 @@ int main(int argc, char **argv)
 {
     /* A bad handle or window would fault: no dialog stops the capture. */
     SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    if (argc >= 2 && strcmp(argv[1], "--xchild") == 0) {
+        return xchild();
+    }
     return run_sections("wintext", sections, argc, argv);
 }

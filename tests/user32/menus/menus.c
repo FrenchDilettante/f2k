@@ -148,6 +148,29 @@
  *            in order (WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP,
  *            WM_MENUSELECT, WM_UNINITMENUPOPUP, WM_CANCELMODE,
  *            WM_EXITMENULOOP, WM_COMMAND); a NULL menu, a NULL owner
+ *   cues     whether menus show their access keys' underlines:
+ *            SystemParametersInfoW(SPI_GETKEYBOARDCUES); WM_QUERYUISTATE
+ *            of a hidden WS_OVERLAPPEDWINDOW window with menu 200 and of
+ *            its child button, once shown, and after WM_CHANGEUISTATE
+ *            clears, sets and initializes UISF_HIDEACCEL; of a dialog
+ *            made from a template in memory (CreateDialogIndirectParamW)
+ *   underline  whether a menu bar draws its access keys' underlines: a
+ *            shown WS_OVERLAPPEDWINDOW window, topmost and not
+ *            activated, whose bar holds "&Hit" and "Hit"; the
+ *            COLOR_MENUTEXT pixels in each item's rectangle
+ *            (GetMenuItemRect), and whether "&Hit"'s reach lower than
+ *            "Hit"'s (its underline); as shown, then after
+ *            WM_CHANGEUISTATE clears and sets UISF_HIDEACCEL (with
+ *            DrawMenuBar)
+ *   capicon  the caption's icon of a window shaped as calc.exe's
+ *            (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, topmost, not
+ *            activated): icons of one color each made with
+ *            CreateIconIndirect (a magenta 32x32, a green and a blue
+ *            16x16), for a class with both icons, with only hIcon, and
+ *            with none (and then WM_SETICON(ICON_SMALL) of the blue
+ *            one); GCL_HICON, GCL_HICONSM and WM_GETICON's answers, the
+ *            rows and columns each color covers in the caption (inside
+ *            the frame), and the title's first column
  *
  * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
  * at (60,70), 320x200, of a class each registers, with a fresh copy of
@@ -200,7 +223,7 @@
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat menus):
  *   rc menus.rc
- *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% menus.c menus.res user32.lib
+ *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% menus.c menus.res user32.lib gdi32.lib
  */
 
 #include "../common/f2kt.h"
@@ -3058,6 +3081,411 @@ static void sec_track(void)
     unregister_owner();
 }
 
+/* --- cues -------------------------------------------------------------- */
+
+#ifndef SPI_GETKEYBOARDCUES
+#define SPI_GETKEYBOARDCUES 0x100A
+#endif
+#ifndef WM_CHANGEUISTATE
+#define WM_CHANGEUISTATE 0x0127
+#endif
+#ifndef WM_QUERYUISTATE
+#define WM_QUERYUISTATE 0x0129
+#endif
+#ifndef UIS_SET
+#define UIS_SET 1
+#endif
+#ifndef UIS_CLEAR
+#define UIS_CLEAR 2
+#endif
+#ifndef UIS_INITIALIZE
+#define UIS_INITIALIZE 3
+#endif
+#ifndef UISF_HIDEFOCUS
+#define UISF_HIDEFOCUS 0x1
+#endif
+#ifndef UISF_HIDEACCEL
+#define UISF_HIDEACCEL 0x2
+#endif
+
+static void print_uistate(HWND top, HWND child, const char *when)
+{
+    line("%s: WM_QUERYUISTATE the window 0x%lX, its button 0x%lX", when,
+         (unsigned long)SendMessageW(top, WM_QUERYUISTATE, 0, 0),
+         (unsigned long)SendMessageW(child, WM_QUERYUISTATE, 0, 0));
+}
+
+static void change_uistate(HWND top, HWND child, WORD action, const char *what)
+{
+    SendMessageW(top, WM_CHANGEUISTATE, MAKEWPARAM(action, UISF_HIDEACCEL), 0);
+    pump_queued();
+    print_uistate(top, child, what);
+}
+
+static BOOL CALLBACK cues_dialog_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    return FALSE;
+}
+
+static void sec_cues(void)
+{
+    WNDCLASSW wc;
+    HINSTANCE inst;
+    ATOM atom;
+    HWND h;
+    HWND b;
+    HWND d;
+    HMENU m;
+    BOOL r;
+    BOOL cues;
+    DWORD dialog[16];
+    DLGTEMPLATE *t;
+    WORD *p;
+
+    inst = GetModuleHandleW(NULL);
+    pump_queued();
+    cues = 7;
+    arm();
+    r = SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &cues, 0);
+    line("SystemParametersInfoW(SPI_GETKEYBOARDCUES): ret=%d err=%s value=%d", r, le(), cues);
+
+    UnregisterClassW(L"F2KMenusCues", inst);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = plain;
+    wc.hInstance = inst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"F2KMenusCues";
+    atom = RegisterClassW(&wc);
+    m = load_menu();
+    h = CreateWindowExW(0, L"F2KMenusCues", L"menus", WS_OVERLAPPEDWINDOW, 60, 70, 320, 200, NULL, m, inst,
+                        NULL);
+    b = h != NULL ? CreateWindowExW(0, L"Button", L"&Button", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 100,
+                                    24, h, (HMENU)1, inst, NULL)
+                  : NULL;
+    line("setup: the class, menu 200, a hidden WS_OVERLAPPEDWINDOW window with it and a child button: %s",
+         yesno(atom != 0 && m != NULL && h != NULL && b != NULL));
+    if (h != NULL && b != NULL) {
+        print_uistate(h, b, "hidden");
+        ShowWindow(h, SW_SHOWNOACTIVATE);
+        UpdateWindow(h);
+        pump_queued();
+        print_uistate(h, b, "shown");
+        change_uistate(h, b, UIS_CLEAR, "WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL)");
+        change_uistate(h, b, UIS_SET, "WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL)");
+        change_uistate(h, b, UIS_INITIALIZE, "WM_CHANGEUISTATE(UIS_INITIALIZE, UISF_HIDEACCEL)");
+    }
+    if (h != NULL) {
+        DestroyWindow(h);
+    }
+    pump_queued();
+    UnregisterClassW(L"F2KMenusCues", inst);
+
+    /* A dialog of no controls: WS_POPUP | WS_CAPTION | WS_SYSMENU, no
+     * menu, the default class, the title "cues". */
+    ZeroMemory(dialog, sizeof dialog);
+    t = (DLGTEMPLATE *)dialog;
+    t->style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    t->cdit = 0;
+    t->x = 10;
+    t->y = 10;
+    t->cx = 100;
+    t->cy = 50;
+    p = (WORD *)(t + 1);
+    *p++ = 0;
+    *p++ = 0;
+    *p++ = 'c';
+    *p++ = 'u';
+    *p++ = 'e';
+    *p++ = 's';
+    *p++ = 0;
+    arm();
+    d = CreateDialogIndirectParamW(inst, t, NULL, cues_dialog_proc, 0);
+    line("CreateDialogIndirectParamW(a hidden dialog of no controls): non-NULL %s err=%s", yesno(d != NULL), le());
+    if (d != NULL) {
+        line("  WM_QUERYUISTATE 0x%lX", (unsigned long)SendMessageW(d, WM_QUERYUISTATE, 0, 0));
+        DestroyWindow(d);
+    }
+    pump_queued();
+}
+
+/* --- underline, capicon ------------------------------------------------ */
+
+/* c within a channel's slack of 16 of `want` (a screen of fewer colors
+ * rounds them). */
+static int near_channel(int a, int b)
+{
+    return a - b <= 16 && b - a <= 16;
+}
+
+static int near_color(COLORREF c, COLORREF want)
+{
+    return near_channel(GetRValue(c), GetRValue(want)) && near_channel(GetGValue(c), GetGValue(want)) &&
+           near_channel(GetBValue(c), GetBValue(want));
+}
+
+/* The pixels of `want` in the window-DC rectangle [x0,x1) x [y0,y1) of
+ * h: their count, and the rows and columns they cover, relative to
+ * (x0,y0) (-1 when there is none). */
+typedef struct {
+    int count;
+    int top;
+    int bottom;
+    int left;
+    int right;
+} ink_t;
+
+static ink_t find_ink(HWND h, int x0, int y0, int x1, int y1, COLORREF want)
+{
+    HDC dc;
+    ink_t ink;
+    int x;
+    int y;
+
+    ink.count = 0;
+    ink.top = -1;
+    ink.bottom = -1;
+    ink.left = -1;
+    ink.right = -1;
+    dc = GetWindowDC(h);
+    for (y = y0; y < y1; y++) {
+        for (x = x0; x < x1; x++) {
+            if (near_color(GetPixel(dc, x, y), want)) {
+                ink.count++;
+                if (ink.top < 0) {
+                    ink.top = y - y0;
+                }
+                ink.bottom = y - y0;
+                if (ink.left < 0 || x - x0 < ink.left) {
+                    ink.left = x - x0;
+                }
+                if (x - x0 > ink.right) {
+                    ink.right = x - x0;
+                }
+            }
+        }
+    }
+    ReleaseDC(h, dc);
+    return ink;
+}
+
+/* A shown window, topmost and not activated, painted. */
+static void show_on_top(HWND h)
+{
+    SetWindowPos(h, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    UpdateWindow(h);
+    pump_queued();
+}
+
+/* The menu-text ink of the bar's item `index`, in its own rectangle. */
+static ink_t item_ink(HWND h, HMENU bar, int index)
+{
+    RECT wr;
+    RECT ir;
+    ink_t none;
+
+    GetWindowRect(h, &wr);
+    if (!GetMenuItemRect(h, bar, index, &ir)) {
+        none.count = 0;
+        none.top = -1;
+        none.bottom = -1;
+        none.left = -1;
+        none.right = -1;
+        return none;
+    }
+    return find_ink(h, ir.left - wr.left, ir.top - wr.top, ir.right - wr.left, ir.bottom - wr.top,
+                    GetSysColor(COLOR_MENUTEXT));
+}
+
+/* The bar's two items, "&Hit" and "Hit": whether each shows ink, and
+ * whether the access key's item reaches lower (its underline). */
+static void print_underline(HWND h, HMENU bar, const char *when)
+{
+    ink_t amp;
+    ink_t text;
+
+    amp = item_ink(h, bar, 0);
+    text = item_ink(h, bar, 1);
+    line("%s: \"&Hit\" ink %s, \"Hit\" ink %s; \"&Hit\" reaches lower (underlined) %s", when, yesno(amp.count > 0),
+         yesno(text.count > 0), yesno(amp.count > 0 && amp.bottom > text.bottom));
+}
+
+static void sec_underline(void)
+{
+    WNDCLASSW wc;
+    HINSTANCE inst;
+    HWND h;
+    HMENU bar;
+
+    inst = GetModuleHandleW(NULL);
+    pump_queued();
+    UnregisterClassW(L"F2KMenusUnderline", inst);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = plain;
+    wc.hInstance = inst;
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"F2KMenusUnderline";
+    RegisterClassW(&wc);
+    bar = CreateMenu();
+    AppendMenuW(bar, MF_STRING, 11, L"&Hit");
+    AppendMenuW(bar, MF_STRING, 12, L"Hit");
+    h = CreateWindowExW(0, L"F2KMenusUnderline", L"menus", WS_OVERLAPPEDWINDOW, 60, 70, 320, 200, NULL, bar, inst,
+                        NULL);
+    line("setup: a WS_OVERLAPPEDWINDOW window with the bar \"&Hit\", \"Hit\": %s", yesno(h != NULL));
+    if (h == NULL) {
+        return;
+    }
+    show_on_top(h);
+    print_underline(h, bar, "shown");
+    SendMessageW(h, WM_CHANGEUISTATE, MAKEWPARAM(UIS_CLEAR, UISF_HIDEACCEL), 0);
+    DrawMenuBar(h);
+    UpdateWindow(h);
+    pump_queued();
+    print_underline(h, bar, "WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL), DrawMenuBar");
+    SendMessageW(h, WM_CHANGEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEACCEL), 0);
+    DrawMenuBar(h);
+    UpdateWindow(h);
+    pump_queued();
+    print_underline(h, bar, "WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL), DrawMenuBar");
+    DestroyWindow(h);
+    pump_queued();
+    UnregisterClassW(L"F2KMenusUnderline", inst);
+}
+
+/* An opaque icon of one color (its mask all 0), size x size, size at
+ * most 32. */
+static HICON solid_icon(int size, COLORREF rgb)
+{
+    static BYTE mask_bits[32 * 4];
+    static DWORD color_bits[32 * 32];
+    ICONINFO ii;
+    HICON icon;
+    int i;
+
+    for (i = 0; i < size * size; i++) {
+        color_bits[i] = ((DWORD)GetRValue(rgb) << 16) | ((DWORD)GetGValue(rgb) << 8) | GetBValue(rgb);
+    }
+    ZeroMemory(&ii, sizeof ii);
+    ii.fIcon = TRUE;
+    ii.hbmMask = CreateBitmap(size, size, 1, 1, mask_bits);
+    ii.hbmColor = CreateBitmap(size, size, 1, 32, color_bits);
+    icon = CreateIconIndirect(&ii);
+    DeleteObject(ii.hbmMask);
+    DeleteObject(ii.hbmColor);
+    return icon;
+}
+
+#define MAGENTA RGB(255, 0, 255)
+#define GREEN RGB(0, 255, 0)
+#define BLUE RGB(0, 0, 255)
+
+static void print_ink(const char *name, ink_t ink)
+{
+    if (ink.count == 0) {
+        line("  %s: none", name);
+    } else {
+        line("  %s: %d pixels, rows %d..%d, columns %d..%d", name, ink.count, ink.top, ink.bottom, ink.left,
+             ink.right);
+    }
+}
+
+/* A caption shaped as calc.exe's (WS_CAPTION | WS_SYSMENU |
+ * WS_MINIMIZEBOX, not activated): its icons' answers, and the colored
+ * icons' pixels and the title's first column in the caption, relative
+ * to the caption's top left (inside the frame). */
+static void caption_probe(const WCHAR *cls, const char *name, HICON set_small)
+{
+    HWND h;
+    RECT wr;
+    int frame_x;
+    int frame_y;
+    int caption;
+    int width;
+    int active;
+    ink_t title;
+
+    h = CreateWindowExW(0, cls, L"MMMM", WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, 60, 70, 260, 120, NULL, NULL,
+                        GetModuleHandleW(NULL), NULL);
+    line("%s: non-NULL %s", name, yesno(h != NULL));
+    if (h == NULL) {
+        return;
+    }
+    if (set_small != NULL) {
+        SendMessageW(h, WM_SETICON, ICON_SMALL, (LPARAM)set_small);
+        line("  WM_SETICON(ICON_SMALL, a blue icon)");
+    }
+    show_on_top(h);
+    line("  GCL_HICON non-NULL %s, GCL_HICONSM non-NULL %s; WM_GETICON ICON_SMALL non-NULL %s, ICON_BIG "
+         "non-NULL %s",
+         yesno(GetClassLongW(h, GCL_HICON) != 0), yesno(GetClassLongW(h, GCL_HICONSM) != 0),
+         yesno(SendMessageW(h, WM_GETICON, ICON_SMALL, 0) != 0), yesno(SendMessageW(h, WM_GETICON, ICON_BIG, 0) != 0));
+    GetWindowRect(h, &wr);
+    frame_x = GetSystemMetrics(SM_CXFIXEDFRAME);
+    frame_y = GetSystemMetrics(SM_CYFIXEDFRAME);
+    caption = GetSystemMetrics(SM_CYCAPTION);
+    width = wr.right - wr.left;
+    active = GetForegroundWindow() == h;
+    line("  the caption: active %s", yesno(active));
+    print_ink("magenta (the big icon)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, MAGENTA));
+    print_ink("green (the small icon)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, GREEN));
+    print_ink("blue (WM_SETICON's)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, BLUE));
+    title = find_ink(h, frame_x, frame_y, frame_x + width / 2, frame_y + caption,
+                     GetSysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT));
+    if (title.count == 0) {
+        line("  the title: no ink");
+    } else {
+        line("  the title: first column %d", title.left);
+    }
+    DestroyWindow(h);
+    pump_queued();
+}
+
+static void register_icons(const WCHAR *cls, HICON big, HICON small_icon)
+{
+    WNDCLASSEXW wc;
+
+    UnregisterClassW(cls, GetModuleHandleW(NULL));
+    ZeroMemory(&wc, sizeof wc);
+    wc.cbSize = sizeof wc;
+    wc.lpfnWndProc = plain;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hIcon = big;
+    wc.hIconSm = small_icon;
+    wc.lpszClassName = cls;
+    RegisterClassExW(&wc);
+}
+
+static void sec_capicon(void)
+{
+    HICON magenta;
+    HICON green;
+    HICON blue;
+
+    pump_queued();
+    magenta = solid_icon(32, MAGENTA);
+    green = solid_icon(16, GREEN);
+    blue = solid_icon(16, BLUE);
+    line("CreateIconIndirect: magenta 32x32 %s, green 16x16 %s, blue 16x16 %s", yesno(magenta != NULL),
+         yesno(green != NULL), yesno(blue != NULL));
+    line("SM_CXSMICON %d SM_CYSMICON %d SM_CYCAPTION %d SM_CXSIZE %d", GetSystemMetrics(SM_CXSMICON),
+         GetSystemMetrics(SM_CYSMICON), GetSystemMetrics(SM_CYCAPTION), GetSystemMetrics(SM_CXSIZE));
+
+    register_icons(L"F2KMenusIconBoth", magenta, green);
+    caption_probe(L"F2KMenusIconBoth", "class hIcon magenta, hIconSm green", NULL);
+    register_icons(L"F2KMenusIconBig", magenta, NULL);
+    caption_probe(L"F2KMenusIconBig", "class hIcon magenta, no hIconSm", NULL);
+    register_icons(L"F2KMenusIconNone", NULL, NULL);
+    caption_probe(L"F2KMenusIconNone", "no class icon", NULL);
+    caption_probe(L"F2KMenusIconNone", "no class icon, WM_SETICON", blue);
+
+    UnregisterClassW(L"F2KMenusIconBoth", GetModuleHandleW(NULL));
+    UnregisterClassW(L"F2KMenusIconBig", GetModuleHandleW(NULL));
+    UnregisterClassW(L"F2KMenusIconNone", GetModuleHandleW(NULL));
+    DestroyIcon(magenta);
+    DestroyIcon(green);
+    DestroyIcon(blue);
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
@@ -3078,6 +3506,9 @@ static const section_t sections[] = {
     { "sysmenu", sec_sysmenu, F2KT_ALWAYS },
     { "itemrect", sec_itemrect, F2KT_ALWAYS },
     { "track", sec_track, F2KT_ALWAYS },
+    { "cues", sec_cues, F2KT_ALWAYS },
+    { "underline", sec_underline, F2KT_ALWAYS },
+    { "capicon", sec_capicon, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

@@ -648,8 +648,19 @@ pub extern "system" fn get_system_metrics(index: i32) -> i32 {
     })
 }
 
+/// SPI_GETKEYBOARDCUES (SPI_GETMENUUNDERLINES): whether the menus' access keys are underlined
+/// before the keyboard is used, a BOOL into pvParam.
+pub const SPI_GETKEYBOARDCUES: u32 = 0x100A;
+
+/// SPI_GETKEYBOARDCUES's answer: FALSE, Windows 2000's default (menus `cues`); F2K keeps no setting
+/// of it.
+pub fn keyboard_cues() -> bool {
+    false
+}
+
 /// SystemParametersInfo's core: SPI_GETWORKAREA from the kernel (TRUE, or FALSE with the last
-/// error); another action to the stub routine.
+/// error); SPI_GETKEYBOARDCUES [`keyboard_cues`] into pvParam's BOOL (TRUE); another action to the
+/// stub routine.
 fn parameters(
     entry: &rtl::stub::Entry,
     action: u32,
@@ -657,6 +668,11 @@ fn parameters(
     param: usize,
     win_ini: u32,
 ) -> u32 {
+    if action == SPI_GETKEYBOARDCUES && param != 0 {
+        // SAFETY: SPI_GETKEYBOARDCUES's pvParam: the caller's BOOL.
+        unsafe { crate::Out::new(param as *mut u32) }.set(keyboard_cues() as u32);
+        return 1;
+    }
     if action != SPI_GETWORKAREA {
         let args = [
             u64::from(action),
@@ -1084,6 +1100,14 @@ mod tests {
         assert_eq!(work, crate::imports::host::SCREEN);
         assert_eq!(system_parameters_info_w(SPI_GETWORKAREA, 0, address, 0), 1);
         assert_eq!(system_parameters_info_w(0x1234, 0, address, 0), 0);
+        // SPI_GETKEYBOARDCUES: FALSE, the call TRUE (menus `cues`).
+        let mut cues = 7u32;
+        let address = &mut cues as *mut u32 as usize;
+        assert_eq!(
+            system_parameters_info_w(SPI_GETKEYBOARDCUES, 0, address, 0),
+            1
+        );
+        assert_eq!(cues, 0);
     }
 
     /// The colors: the default scheme, a set color read back, the kernel given the change; an

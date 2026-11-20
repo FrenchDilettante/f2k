@@ -15,14 +15,17 @@
 //!
 //! It paints in the colors its parent's WM_CTLCOLORSTATIC gives: its text through DrawText
 //! (SS_LEFT, SS_CENTER and SS_RIGHT wrapped at words, SS_LEFTNOWORDWRAP not, SS_SIMPLE on one line,
-//! SS_NOPREFIX with no mnemonic underline, gray when disabled); its rectangles and frames in the
-//! 3D colors (black: COLOR_3DDKSHADOW, gray: COLOR_3DSHADOW, white: COLOR_3DHILIGHT); its etched
-//! lines and frame with DrawEdge. An icon is not drawn: win32k's icon records hold no bits yet
-//! (the seam the icons left), so an SS_ICON static paints its background alone.
+//! SS_NOPREFIX with no mnemonic underline, SS_CENTERIMAGE on one line centred vertically, gray when
+//! disabled); SS_SUNKEN is WS_EX_STATICEDGE's sunken edge, given at the creation; its rectangles
+//! and frames in the 3D colors (black: COLOR_3DDKSHADOW, gray: COLOR_3DSHADOW, white:
+//! COLOR_3DHILIGHT); its etched lines and frame with DrawEdge. An icon is not drawn: win32k's icon
+//! records hold no bits yet (the seam the icons left), so an SS_ICON static paints its background
+//! alone. Its WM_NCHITTEST is HTTRANSPARENT unless SS_NOTIFY.
 
 use rtl::gdi::TRANSPARENT;
+use rtl::nonclient::WS_EX_STATICEDGE;
 use rtl::user::*;
-use rtl::window::{WindowLinks, QUERY_WINDOW_EXTRA};
+use rtl::window::{WindowLinks, GWL_EXSTYLE, QUERY_WINDOW_EXTRA};
 
 use crate::dialog::{DLGC_STATIC, WM_GETDLGCODE, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_DISABLED};
 use crate::draw::{self, BF_LEFT, BF_RECT, BF_TOP};
@@ -61,6 +64,12 @@ const SS_ETCHEDVERT: u32 = 0x11;
 const SS_ETCHEDFRAME: u32 = 0x12;
 const SS_TYPEMASK: u32 = 0x1F;
 const SS_NOPREFIX: u32 = 0x80;
+/// The static notifies its parent of clicks (and is found under the mouse).
+const SS_NOTIFY: u32 = 0x0100;
+/// A text static's line centred vertically (one line: DrawText's DT_SINGLELINE | DT_VCENTER).
+const SS_CENTERIMAGE: u32 = 0x0200;
+/// A sunken border: WS_EX_STATICEDGE, given at creation.
+const SS_SUNKEN: u32 = 0x1000;
 
 /// A static's extra bytes: its image, then its font.
 pub const STATIC_EXTRA: i32 = 8;
@@ -83,6 +92,8 @@ const SM_CYICON: i32 = 12;
 const SWP_NOMOVE: u32 = 0x0002;
 const SWP_NOZORDER: u32 = 0x0004;
 const SWP_NOACTIVATE: u32 = 0x0010;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const SWP_NOSIZE: u32 = 0x0001;
 
 fn read(window: usize, offset: i32) -> u32 {
     let mut value = 0u32;
@@ -92,6 +103,10 @@ fn read(window: usize, offset: i32) -> u32 {
 
 fn write(window: usize, offset: i32, value: u32) -> u32 {
     imports::set_window_long(window, offset, value, false).map_or(0, |(previous, _)| previous)
+}
+
+fn style_of(window: usize) -> u32 {
+    window::style_of(window).unwrap_or(0)
 }
 
 fn kind(window: usize) -> u32 {
@@ -114,14 +129,8 @@ const UNDRAWN_KINDS: [(u32, &str); 4] = [
 ];
 
 /// The style bits of a text static the procedure does not draw yet, and what each does.
-const UNDRAWN_STYLES: [(u32, &str); 3] = [
-    (
-        0x0200,
-        "SS_CENTERIMAGE (a text static's line centred vertically)",
-    ),
-    (0x1000, "SS_SUNKEN (a sunken border)"),
-    (0x2000, "SS_EDITCONTROL (an edit control's line breaks)"),
-];
+const UNDRAWN_STYLES: [(u32, &str); 1] =
+    [(0x2000, "SS_EDITCONTROL (an edit control's line breaks)")];
 
 /// The ellipsis styles (one field of two bits), and what each does.
 const SS_ELLIPSISMASK: u32 = 0xC000;
@@ -208,7 +217,15 @@ fn set_icon(window: usize, icon: u32) -> i32 {
 /// The static's procedure, for a message of the narrow (`ansi`) or wide form.
 fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
+        WM_NCCREATE => {
+            let answer = message::default_procedure(window, message, wparam, lparam, ansi);
+            sunken_edge(window);
+            answer
+        }
         WM_GETDLGCODE => DLGC_STATIC as i32,
+        // A static lets the mouse through to the window under it unless SS_NOTIFY asks for its
+        // clicks (controls `edges`: WindowFromPoint finds a plain static's parent).
+        crate::nonclient::WM_NCHITTEST if style_of(window) & SS_NOTIFY == 0 => -1,
         STM_GETICON => match kind(window) {
             SS_ICON => read(window, IMAGE) as i32,
             _ => 0,
@@ -265,6 +282,29 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         }
         _ => message::default_procedure(window, message, wparam, lparam, ansi),
     }
+}
+
+/// SS_SUNKEN made WS_EX_STATICEDGE, as Windows 2000's static does at its creation (controls
+/// `edges`: the ex style reads 0x20000, a 1-pixel sunken edge). F2K's window manager has computed
+/// the client area by the time WM_NCCREATE reaches the procedure, so the frame is taken again
+/// (SWP_FRAMECHANGED).
+fn sunken_edge(window: usize) {
+    let Ok(info) = window::window_info(window) else {
+        return;
+    };
+    if info.style & SS_SUNKEN == 0 || info.ex_style & WS_EX_STATICEDGE != 0 {
+        return;
+    }
+    let _ = imports::set_window_long(window, GWL_EXSTYLE, info.ex_style | WS_EX_STATICEDGE, false);
+    let _ = imports::set_window_pos(
+        window,
+        0,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
 }
 
 /// StaticWndProcW: the Static class's procedure for a wide message.
@@ -346,6 +386,13 @@ fn draw_static(window: usize, dc: usize) {
                 draw::DT_NOPREFIX
             } else {
                 0
+            };
+            // SS_CENTERIMAGE centres one line (controls `centred`: DEFAULT_GUI_FONT's 13-pixel line
+            // starts 8 rows down a 30-pixel client).
+            let format = if style & SS_CENTERIMAGE != 0 {
+                (format & !draw::DT_WORDBREAK) | draw::DT_SINGLELINE | draw::DT_VCENTER
+            } else {
+                format
             };
             let font = read(window, FONT);
             let previous = (font != 0)

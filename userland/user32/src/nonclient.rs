@@ -13,7 +13,8 @@
 //! - a dialog frame as a raised 3D edge and a pixel of COLOR_3DFACE;
 //! - a sizing border as a raised 3D edge and two pixels of COLOR_ACTIVEBORDER (COLOR_INACTIVEBORDER
 //!   for an inactive window);
-//! - a client edge (WS_EX_CLIENTEDGE) sunken, a static edge (WS_EX_STATICEDGE) as its outer half.
+//! - a client edge (WS_EX_CLIENTEDGE) sunken, a static edge (WS_EX_STATICEDGE) as its outer half,
+//!   outside the client edge when the window has both.
 //!
 //! The caption's bar is a gradient from COLOR_ACTIVECAPTION on the left to
 //! COLOR_GRADIENTACTIVECAPTION on the right (the inactive pair for an inactive window: Windows
@@ -341,14 +342,14 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
     if frame.edge > 0 {
         let mut edge = inside;
         edge.top += frame.caption + frame.menu;
-        let mut width = frame.edge;
-        if width >= 2 {
-            let (rest, _) = draw::draw_edge_in(dc, edge, EDGE_SUNKEN, BF_RECT);
+        // The static edge's line outside the client edge, when both (controls `edges`: SS_SUNKEN
+        // with WS_EX_CLIENTEDGE reads BTNSHADOW, BTNSHADOW, 3DDKSHADOW from the corner).
+        if frame.edge % 2 == 1 {
+            let (rest, _) = draw::draw_edge_in(dc, edge, BDR_SUNKENOUTER, BF_RECT);
             edge = rest;
-            width -= 2;
         }
-        if width > 0 {
-            draw::draw_edge_in(dc, edge, BDR_SUNKENOUTER, BF_RECT);
+        if frame.edge >= 2 {
+            draw::draw_edge_in(dc, edge, EDGE_SUNKEN, BF_RECT);
         }
     }
 }

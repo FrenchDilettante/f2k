@@ -802,7 +802,7 @@ fails = "NULL"
 name = "WindowFromPoint"
 group = "window"
 args = ["i32 x", "i32 y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "WindowFromPoint" }
 ordinal = 689
 fails = "NULL"
 
@@ -1129,7 +1129,7 @@ fails = "NULL"
 name = "GetWindowThreadProcessId"
 group = "window"
 args = ["handle hWnd", "ptr<u32> lpdwProcessId"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowThreadProcessId" }
 ordinal = 359
 fails = "0"
 
@@ -3694,7 +3694,11 @@ ordinal = 85
 
 [[export]]
 name = "CreateIconIndirect"
+group = "resources"
+args = ["ptr piconinfo"]
+impl = { stub = "not yet implemented: F2K's icons hold no image, and gdi32 has no bitmaps yet" }
 ordinal = 86
+fails = "NULL"
 
 [[export]]
 name = "CreateMDIWindowA"

@@ -34,6 +34,9 @@ pub const QUERY_WINDOW_MENU: u32 = 5;
 pub const QUERY_WINDOW_LINKS: u32 = 6;
 /// The fields of the window's class GetClassLong reads, a [`WindowClass`].
 pub const QUERY_WINDOW_CLASS: u32 = 7;
+/// The window's thread and process, as their client ids, a [`WindowThread`]
+/// (GetWindowThreadProcessId's answers).
+pub const QUERY_WINDOW_THREAD: u32 = 8;
 /// The window's extra bytes (its class's cbWndExtra) at the offset this index carries in its low
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.
@@ -133,6 +136,17 @@ pub struct WindowData {
     /// How many extra bytes the window has (its class's cbWndExtra).
     pub extra: u32,
 }
+
+/// A window's thread and process ([`QUERY_WINDOW_THREAD`]): their client ids.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowThread {
+    pub process: u32,
+    pub thread: u32,
+}
+
+// SAFETY: two u32s, no padding; every bit pattern is valid.
+unsafe impl Pod for WindowThread {}
 
 /// A window's text ([`QUERY_WINDOW_TEXT`]): its first `length` units, no terminator.
 #[repr(C)]

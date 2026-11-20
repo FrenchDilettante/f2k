@@ -195,6 +195,16 @@ impl Dc {
         }
     }
 
+    /// The object of `kind` (OBJ_BRUSH, OBJ_PEN or OBJ_FONT) selected; none for another kind.
+    pub fn object(&self, kind: u32) -> Option<u32> {
+        match kind {
+            OBJ_BRUSH => Some(self.brush),
+            OBJ_PEN => Some(self.pen),
+            OBJ_FONT => Some(self.font),
+            _ => None,
+        }
+    }
+
     /// Set the attribute at `index` to `value`, answering the value it had; none, the DC
     /// untouched, for another index or a background mode that is neither TRANSPARENT nor OPAQUE.
     pub fn set_attribute(&mut self, index: u32, value: u32) -> Option<u32> {
@@ -338,6 +348,15 @@ fn select(call: &mut NtCall, dc: Handle, kind: u32, object: Handle, out: UserPtr
         });
     };
     out.write(previous)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiGetDCObject(Dc, ObjectType, Object): the brush, pen or font selected (GetCurrentObject);
+/// STATUS_INVALID_PARAMETER for another kind.
+pub fn get_dc_object(call: &mut NtCall, dc: Handle, kind: u32, out: UserPtr<u32>) -> NtResult {
+    let (_reference, dc) = dc_of(call, dc)?;
+    let object = dc.object(kind).ok_or(STATUS_INVALID_PARAMETER)?;
+    out.write(object)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -798,6 +817,11 @@ mod tests {
         assert_eq!(dc.brush, stock_handle(WHITE_BRUSH).unwrap());
         assert_eq!(dc.pen, stock_handle(BLACK_PEN).unwrap());
         assert_eq!(dc.font, stock_handle(SYSTEM_FONT).unwrap());
+        // GetCurrentObject's answers (controls `drawdc`); no object of another kind.
+        assert_eq!(dc.object(OBJ_BRUSH), Some(dc.brush));
+        assert_eq!(dc.object(OBJ_PEN), Some(dc.pen));
+        assert_eq!(dc.object(OBJ_FONT), Some(dc.font));
+        assert_eq!(dc.object(OBJ_DC), None);
         assert_eq!(
             Dc::screen(0, 0).clip,
             rect(0, 0, 0, 0),
