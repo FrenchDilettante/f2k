@@ -15,6 +15,9 @@ scripts/__pycache__
 *.swp
 *.swo
 
+# Worktrees
+.worktrees
+
 # macOS
 .DS_Store
 
