@@ -354,6 +354,21 @@ fn end_thread(end: ThreadEnd) -> ! {
     // teardown.
     run_down_timers(current);
 
+    // A GUI thread's windows and message queue end with it, as Windows 2000's thread cleanup has
+    // them (the threads sending to it are answered with a failure). The exit runs at the passive
+    // level, holding nothing; were it not, its process's teardown would end them.
+    #[cfg(target_arch = "x86")]
+    if process.win32k().is_some() && crate::pcr::pcr().current() == crate::interrupt::irql::PASSIVE
+    {
+        if let Some(thread) = crate::ob::current_thread() {
+            let key = crate::win32k::window::ThreadKey {
+                index: thread.index,
+                generation: thread.generation,
+            };
+            crate::win32k::queue::locked(|manager| manager.end_thread(key));
+        }
+    }
+
     // The last-thread check (PspExitThread's count of the process's active threads), in one hold
     // with the retire of a thread that is not the last: a thread that finds others is gone from the
     // process's list before another can look, so exactly one finds none. The last closes its

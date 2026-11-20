@@ -308,9 +308,10 @@ enum State {
     Received,
     /// Answered: the sender collects the answer.
     Answered,
-    /// Never answered: its window or its receiver's queue went first. Only a send the server waits
-    /// on stays in this state, for the server to collect ([`server_reply`]); any other is answered
-    /// 0 then.
+    /// Never answered: its window or its receiver's queue went first (for a thread's send, its
+    /// receiver's queue alone: a window gone is answered 0). Only a send the server or a thread
+    /// waits on stays in this state, for its sender to collect ([`server_reply`],
+    /// [`await_reply`]).
     Dropped,
 }
 
@@ -693,6 +694,26 @@ impl Queues {
         }
     }
 
+    /// The sent message at `index` will never be answered: its receiver's queue ended, its thread
+    /// gone. A send the server or a thread waits on is dropped, for the sender to see — the
+    /// thread's SendMessage then fails, as Windows 2000's fails when its receiver dies; one nobody
+    /// waits on goes back to the pool.
+    fn receiver_gone(&mut self, index: u16) {
+        let sent = &mut self.sent[index as usize];
+        sent.next = None;
+        match sent.sender {
+            Some(sender) if self.queues[sender.index as usize].generation == sender.generation => {
+                sent.state = State::Dropped;
+                self.wake(sender);
+            }
+            _ if sent.server => {
+                sent.state = State::Dropped;
+                self.server_wake = true;
+            }
+            _ => self.free_sent(index),
+        }
+    }
+
     /// Take the sent message at `index` off its receiver's list, where it waits to be handed out.
     fn unlink_sent(&mut self, receiver: QueueId, index: u16) {
         let mut previous = None;
@@ -728,9 +749,9 @@ impl Queues {
         Some(index)
     }
 
-    /// End the queue at `index`: what was posted to it goes, what was sent to it is answered 0 (or
-    /// dropped, for the server), a send it waits on is left to be dropped when answered, its
-    /// timers go.
+    /// End the queue at `index`: what was posted to it goes, what was sent to it and not answered
+    /// is dropped, failing its sender ([`Queues::receiver_gone`]), the sends it waits on are left
+    /// to be dropped when answered, its timers go.
     fn end_queue(&mut self, index: u16) {
         self.purge_posted(index, |_| true);
         let id = QueueId {
@@ -738,12 +759,12 @@ impl Queues {
             generation: self.queues[index as usize].generation,
         };
         while let Some(sent) = self.pop_sent(id) {
-            self.drop_unanswered(sent);
+            self.receiver_gone(sent);
         }
         while let Some(sent) = self.queues[index as usize].receiving {
             self.queues[index as usize].receiving = self.sent[sent as usize].next;
             if self.sent[sent as usize].state == State::Received {
-                self.drop_unanswered(sent);
+                self.receiver_gone(sent);
             } else {
                 self.sent[sent as usize].next = None;
             }
@@ -794,10 +815,9 @@ pub fn attach(windows: &mut Windows, thread: ThreadId, key: ThreadKey, client_id
     };
 }
 
-/// The thread record `thread`'s thread ended: its queue ends with it. What was posted to it goes;
-/// what was sent to it is answered 0; its timers go. (Nothing ends a thread's record yet: a record
-/// another thread takes over ends its queue through [`attach`].)
-#[cfg_attr(not(test), allow(dead_code))]
+/// The thread record `thread`'s thread ended (or its process did): its queue ends with it. What
+/// was posted to it goes; what was sent to it and not answered fails its sender; its timers go.
+/// A record another thread takes over ends its queue through [`attach`] too.
 pub fn detach(windows: &mut Windows, thread: ThreadId) {
     if windows.queues.queue_of(thread).is_some() {
         windows.queues.end_queue(thread.0);
@@ -1764,7 +1784,7 @@ pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
             queues.unlink_sent(receiver, id.index);
             queues.free_sent(id.index);
         }
-        (State::Answered, _) => queues.free_sent(id.index),
+        (State::Answered | State::Dropped, _) => queues.free_sent(id.index),
         _ => queues.sent[id.index as usize].sender = None,
     }
 }
@@ -1793,6 +1813,10 @@ pub enum Awaited {
     Received,
     /// Nothing yet: the sender waits on its queue.
     Wait,
+    /// Never to be answered: the receiving thread ended first, its windows gone with it. The
+    /// record went back to the pool; SendMessage fails (Windows 2000's fails when its receiver
+    /// dies).
+    Failed,
 }
 
 /// The caller's wait for the answer to its send `id`, one look: the answer once it came
@@ -1803,7 +1827,13 @@ pub fn await_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Await
     if let Some(answer) = collect_reply(windows, caller, id) {
         return Awaited::Answer(answer);
     }
-    let queues = &windows.queues;
+    let queues = &mut windows.queues;
+    if queues.sent_at(id).is_some_and(|s| {
+        s.state == State::Dropped && s.sender.is_some() && s.sender == queues.queue_of(caller)
+    }) {
+        queues.free_sent(id.index);
+        return Awaited::Failed;
+    }
     match queues.queue_of(caller) {
         Some(queue) if queues.queues[queue.index as usize].sent.head.is_some() => Awaited::Received,
         _ => Awaited::Wait,
@@ -2490,7 +2520,8 @@ mod services {
     /// timeout (rtl::user::SendTimeout, SendMessageTimeout's; null for SendMessage), the wait ends
     /// at its end, the message taken back if its receiver has not read it ([`abandon_send`]), and
     /// at once with SMTO_ABORTIFHUNG when the receiver is hung ([`window_hung`]): STATUS_TIMEOUT
-    /// then (user32's ERROR_TIMEOUT), `result` 0.
+    /// then (user32's ERROR_TIMEOUT), `result` 0. STATUS_INVALID_HANDLE when the receiving thread
+    /// ends before it answers, its window gone with it ([`Awaited::Failed`]).
     ///
     /// A message sent to the caller while it waits ends the wait with STATUS_PENDING, the send's
     /// token ([`SentId::token`]) in `result`: user32 delivers what was sent to its thread, then
@@ -2560,6 +2591,8 @@ mod services {
                     result.write(id.token() as i32)?;
                     return Ok(STATUS_PENDING);
                 }
+                // The receiving thread ended, its window with it (user32's 1400).
+                (Awaited::Failed, _) => return Err(STATUS_INVALID_HANDLE),
                 (Awaited::Wait, _) => match deadline {
                     None => wait_on_queue(caller, None),
                     Some(deadline) => {
@@ -3467,10 +3500,10 @@ mod tests {
     }
 
     /// A message another thread sent to a window destroyed before it was read is answered 0 and
-    /// never handed out; a queue that ends answers 0 to what was sent to it, and what was posted
-    /// to it goes.
+    /// never handed out; a queue that ends fails what was sent to it, and what was posted to it
+    /// goes.
     #[test]
-    fn a_send_to_a_window_or_queue_gone_answers_zero() {
+    fn a_send_to_a_window_gone_answers_zero_and_to_a_queue_gone_fails() {
         let (m, atom) = manager();
         let a = thread(m, 1, 0x100);
         let b = thread(m, 2, 0x200);
@@ -3500,7 +3533,8 @@ mod tests {
             generation: 1,
         };
         attach(&mut m.windows, b, next, 0x300);
-        assert_eq!(collect_reply(&mut m.windows, a, id), Some(0));
+        assert_eq!(collect_reply(&mut m.windows, a, id), None);
+        assert_eq!(await_reply(&mut m.windows, a, id), Awaited::Failed);
         assert_eq!(read(m, b, &all(), 0), Taken::Nothing { due: None });
         assert_eq!(queue_by_client_id(&m.windows, 0x200), None);
         assert!(queue_by_client_id(&m.windows, 0x300).is_some());
@@ -4026,6 +4060,87 @@ mod tests {
         assert_eq!(await_reply(&mut m.windows, a, to_b), Awaited::Answer(11));
         assert_eq!(live_sends(m), base, "both records went back to the pool");
         assert_eq!(SentId::from_token(0), None);
+    }
+
+    /// A thread's end, as Windows 2000's thread cleanup: its windows are destroyed (a child of its
+    /// window with them, another thread's own window left), its queue ends, and a send waiting on
+    /// it — queued, or handed out and not answered — fails its sender (SendMessage 0, 1400) and
+    /// goes back to the pool. Later sends to its window find no window. Its record stays, empty,
+    /// for its process's end.
+    #[test]
+    fn a_threads_end_takes_its_windows_and_fails_the_sends_to_it() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        let child = window_at(m, atom, b, WS_CHILD, hb, 0, 0, 10, 10);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+        let Ok(Sending::Waiting(handed)) = send(&mut m.windows, a, hb, WM_USER, 1, 0) else {
+            panic!("queued");
+        };
+        let Ok(Sending::Waiting(queued)) = send(&mut m.windows, a, hb, WM_USER, 2, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        m.windows.queues.take_wakes();
+
+        let key = ThreadKey {
+            index: 2,
+            generation: 0,
+        };
+        m.end_thread(key);
+        assert!(m.windows.window_from_handle(hb).is_none());
+        assert!(m.windows.window_from_handle(child).is_none());
+        assert!(m.windows.window_from_handle(ha).is_some());
+        assert_eq!(m.windows.queues.queue_of(b), None);
+        assert_ne!(
+            m.windows.queues.take_wakes()[0] & (1 << a.0),
+            0,
+            "the sender is woken"
+        );
+        assert_eq!(await_reply(&mut m.windows, a, handed), Awaited::Failed);
+        assert_eq!(await_reply(&mut m.windows, a, queued), Awaited::Failed);
+        assert_eq!(live_sends(m), base);
+        assert_eq!(
+            send(&mut m.windows, a, hb, WM_USER, 3, 0),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert!(m.windows.thread(b).live && m.windows.thread(b).window_count == 0);
+        m.end_thread(key);
+
+        // A timed-out send abandoned once its receiver ended goes back to the pool too.
+        let c = thread(m, 3, 0x300);
+        let hc = popup(m, atom, c);
+        deliver(m, c);
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hc, WM_USER, 4, 0) else {
+            panic!("queued");
+        };
+        detach(&mut m.windows, c);
+        abandon_send(&mut m.windows, a, id);
+        assert_eq!(live_sends(m), base);
+    }
+
+    /// A process's end ends its threads' queues with their records: a send waiting on one of them
+    /// fails.
+    #[test]
+    fn a_processs_end_ends_its_queues() {
+        let (m, atom) = manager();
+        register(m, OTHER_OWNER);
+        let a = thread(m, 1, 0x100);
+        let b = thread_of(m, 2, 0x200, OTHER_OWNER);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 1, 0) else {
+            panic!("queued");
+        };
+        m.end_process(OTHER_OWNER);
+        assert_eq!(m.windows.queues.queue_of(b), None);
+        assert!(m.windows.window_from_handle(hb).is_none());
+        assert_eq!(await_reply(&mut m.windows, a, id), Awaited::Failed);
+        assert!(m.windows.queues.queue_of(a).is_some());
     }
 
     /// A thread whose queue ends while it waits on sends, nested inside one another's delivery,

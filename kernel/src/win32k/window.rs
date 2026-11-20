@@ -72,9 +72,9 @@
 //! give ([`Windows::default_client`], rtl::nonclient's rules, which user32's default procedure
 //! draws by); a framed window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT,
 //! and a window hidden uncovers the windows under it: invalid there, their frames painted. A
-//! process's end takes its windows, its classes and its
-//! threads' records, at its teardown ([`WindowManager::end_process`]); a thread's records outlive
-//! the thread until then.
+//! thread's end takes its windows and its queue, on its way out ([`WindowManager::end_thread`]);
+//! its record, empty, outlives it until its process's end, which takes the process's classes and
+//! its threads' records at its teardown ([`WindowManager::end_process`]).
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -3223,11 +3223,46 @@ impl Windows {
     // --- A process's end
     // ---------------------------------------------------------------------------
 
+    /// The thread record `thread`'s thread ended, as Windows 2000's thread cleanup has it: the
+    /// record goes into cleanup (no hook vetoes its destroys), each of its windows is destroyed,
+    /// top of each tree first, and its queue ends ([`super::queue::detach`]: what was sent to it
+    /// and not answered fails its sender). The record itself stays, empty of windows, until its
+    /// process's end or until another thread takes it over ([`Windows::connect_thread`]).
+    pub fn end_thread(
+        &mut self,
+        classes: &mut class::Registry,
+        thread: ThreadId,
+        pump: &mut dyn Pump,
+    ) {
+        let Some(t) = self.threads.get_mut(thread.0 as usize).filter(|t| t.live) else {
+            return;
+        };
+        t.in_cleanup = true;
+        while let Some(window) = self.doomed_window(|w| w.thread == thread) {
+            if self
+                .at(window)
+                .parent
+                .is_some_and(|p| !self.pool.is_live(p))
+            {
+                self.at_mut(window).parent = None;
+            }
+            if self.destroy_window(classes, thread, window, pump) != Ok(true) {
+                // Not reachable (the window's own thread, in cleanup, destroys it); never loop.
+                break;
+            }
+        }
+        super::queue::detach(self, thread);
+        if self.foreground_thread == Some(thread) {
+            self.foreground_thread = None;
+        }
+    }
+
     /// The process `owner`'s end: its threads' records go into cleanup (no hook vetoes their
     /// destroys), each of its windows is destroyed as its own thread, top of each tree first,
-    /// and its threads' records go. A window whose destroy left a zombie (another reference holds
-    /// it) is left to that reference; a window left without its parent — a child of another
-    /// thread's window, whose destroy event found no queue — is destroyed as a top-level one.
+    /// and its threads' records go, their queues ended. A window whose destroy left a zombie
+    /// (another reference holds it) is left to that reference; a window left without its parent —
+    /// a child of another thread's window, whose destroy event found no queue — is destroyed as a
+    /// top-level one.
     pub fn end_process(
         &mut self,
         classes: &mut class::Registry,
@@ -3253,10 +3288,13 @@ impl Windows {
                 break;
             }
         }
-        for (index, t) in self.threads.iter_mut().enumerate() {
+        for index in 0..THREADS {
+            let t = &self.threads[index];
             if t.live && t.process == owner {
-                *t = Thread::EMPTY;
-                if self.foreground_thread == Some(ThreadId(index as u16)) {
+                let thread = ThreadId(index as u16);
+                super::queue::detach(self, thread);
+                self.threads[index] = Thread::EMPTY;
+                if self.foreground_thread == Some(thread) {
                     self.foreground_thread = None;
                 }
             }
@@ -3266,9 +3304,14 @@ impl Windows {
     /// A live window of the process `owner` that is not a zombie: the top of its tree among the
     /// process's windows.
     fn process_window(&self, owner: class::Owner) -> Option<WindowId> {
+        self.doomed_window(|w| w.process == owner)
+    }
+
+    /// A live window `picks` that is not a zombie: the top of its tree among the windows it picks.
+    fn doomed_window(&self, picks: impl Fn(&Window) -> bool) -> Option<WindowId> {
         let doomed = |id: WindowId| {
             let w = self.at(id);
-            w.process == owner
+            picks(w)
                 && !self
                     .handles
                     .window(w.handle)
@@ -4884,10 +4927,9 @@ impl WindowManager {
     }
 
     /// The process `owner`'s end, at its teardown: the clipboard closed if one of its threads had
-    /// it open, its windows go ([`Windows::end_process`]), then its classes. Windows 2000 destroys
-    /// a thread's windows at the thread's end and a process's classes at the process's; F2K
-    /// does both at the process's teardown, where the window manager learns of an end (its
-    /// thread records outlive their threads until then).
+    /// it open, the windows its threads' ends left go ([`Windows::end_process`]) with its threads'
+    /// records and queues, then its classes. Windows 2000 destroys a thread's windows at the
+    /// thread's end ([`WindowManager::end_thread`]) and a process's classes at the process's.
     pub fn end_process(&mut self, owner: class::Owner) {
         let WindowManager {
             windows,
@@ -4905,6 +4947,24 @@ impl WindowManager {
         windows.menus.destroy_owner(&mut windows.handles, owner);
         accels.destroy_owner(&mut windows.handles, owner);
         classes.cursors.destroy_owner(&mut windows.handles, owner);
+    }
+
+    /// The thread `key`'s end, on its way out: its windows go and its queue ends
+    /// ([`Windows::end_thread`]), as Windows 2000 destroys a thread's windows at its exit; nothing
+    /// for a thread that never connected. Its process's classes and objects wait for the process's
+    /// end.
+    pub fn end_thread(&mut self, key: ThreadKey) {
+        let WindowManager {
+            windows, classes, ..
+        } = self;
+        let Some(index) = windows
+            .threads
+            .iter()
+            .position(|t| t.live && t.key == Some(key))
+        else {
+            return;
+        };
+        windows.end_thread(classes, ThreadId(index as u16), &mut DefaultProcedure);
     }
 
     /// What the processes' ends left behind: the processes' live windows and their classes, menus,

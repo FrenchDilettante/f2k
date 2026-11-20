@@ -1232,7 +1232,7 @@ fn teardown(process: &'static Process, quiescent: bool) {
     crate::mem::kstacks::release_parked();
     if process.win32k().is_some() {
         let owner = process.object().index;
-        crate::win32k::window::locked(|manager| manager.end_process(owner));
+        crate::win32k::queue::locked(|manager| manager.end_process(owner));
         crate::win32k::fonts::end_process(owner);
     }
     audit_objects(process, quiescent);
