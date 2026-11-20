@@ -42,8 +42,11 @@ pipekid exit 7 | pipekid count
 echo ERRORLEVEL %ERRORLEVEL%
 pipekid emit 3000 2> nul | pipekid exit 0
 echo ERRORLEVEL %ERRORLEVEL%
-pipekid emit 1 | pipekid exit 0 && echo and: ran
-pipekid emit 1 | pipekid exit 4 || echo or: ran
+rem The right sides of the next two read nothing: whether the left side's
+rem one line goes into the pipe before they exit, or fails with 232 once
+rem they have, is a race (Windows' too), so its error is not shown.
+pipekid emit 1 2> nul | pipekid exit 0 && echo and: ran
+pipekid emit 1 2> nul | pipekid exit 4 || echo or: ran
 pipekid exit 4 | pipekid exit 0 || echo or after a failing left side: ran
 echo == grouping
 (echo a& echo b) | pipekid upper
