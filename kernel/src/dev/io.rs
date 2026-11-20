@@ -35,14 +35,25 @@
 //! with one stack location per the device's StackSize, sent down (IoCallDriver's move to the next
 //! location, the location's DeviceObject set, the driver's MajorFunction entry called), and
 //! completed by the driver (IofCompleteRequest, which walks the locations back up, running their
-//! completion routines). A driver that leaves its IRP pending is the stub path: F2K has no
-//! asynchronous completion yet. The IRP's fields are Windows 2000's for each request: the create's
-//! (IRP_CREATE_OPERATION, its security context, the options and the disposition, the requestor's
-//! mode), the device control's (METHOD_BUFFERED's system buffer, IRP_BUFFERED_IO,
-//! IRP_DEALLOCATE_BUFFER and IRP_INPUT_OPERATION), the cleanup's and the close's (the kernel's
-//! own, IRP_CLOSE_OPERATION), the read's and the write's (IRP_READ_OPERATION, IRP_WRITE_OPERATION,
-//! a DO_BUFFERED_IO device's system buffer, the caller's buffer as UserBuffer for a device that
-//! asks for neither buffering), the flush's.
+//! completion routines: [`complete_request`]). The IRP's fields are Windows 2000's for each
+//! request: the create's (IRP_CREATE_OPERATION, its security context, the options and the
+//! disposition, the requestor's mode), the device control's (METHOD_BUFFERED's system buffer,
+//! IRP_BUFFERED_IO, IRP_DEALLOCATE_BUFFER and IRP_INPUT_OPERATION), the cleanup's and the close's
+//! (the kernel's own, IRP_CLOSE_OPERATION), the read's and the write's (IRP_READ_OPERATION,
+//! IRP_WRITE_OPERATION, a DO_BUFFERED_IO device's system buffer, the caller's buffer as UserBuffer
+//! for a device that asks for neither buffering), the flush's.
+//!
+//! A driver may leave a request pending (IoMarkIrpPending, STATUS_PENDING) and complete it later,
+//! from another request's dispatch routine (the inverted call) or its cleanup; a completion
+//! routine may keep an IRP (STATUS_MORE_PROCESSING_REQUIRED) and complete it again later. The IRP
+//! is completed only once its walk passes the top ([`Progress`]); until then it and everything it
+//! points to stay alive. Its sender waits for it, as Windows 2000's I/O manager waits for a
+//! synchronous request, off the drivers' stack: a create, a cleanup and a close in kernel mode (as
+//! IopParseDevice and IopCloseFile wait), a read, a write, a device control and a flush in user
+//! mode, which a termination interrupts. The IRP owns its system buffer until its sender takes it
+//! back; a sender terminated while it waits leaves the IRP to its driver, and its completion
+//! retires it, its buffer with it, while the open's close waits for it (the IRP holds its file
+//! object). A request's status is then the IRP's, as a synchronous request's final status is.
 //!
 //! # The loads
 //!
@@ -70,16 +81,28 @@
 //! process. They compare as the real ones do (the thread an IRP came in is the current thread,
 //! the process the caller's); their fields read zero.
 //!
-//! Recorded seams: requests are synchronous (no pending IRP, no cancel, no completion APC); only
-//! METHOD_BUFFERED device controls are served, and no DO_DIRECT_IO read or write (no MDL); a
-//! driver whose DriverEntry fails or whose unload leaves devices behind keeps its image mapped.
+//! Recorded seams: every request is waited for, an overlapped file object's too (Windows 2000
+//! returns STATUS_PENDING to an asynchronous one, and completes it through an APC to its thread);
+//! no IRP is cancelled (IoCancelIrp, a terminated thread's IoCancelThreadIo); a request a driver
+//! sends from inside another driver call (a nested close, say) and leaves pending is waited for on
+//! the drivers' stack, its lock held; only METHOD_BUFFERED device controls are served, and no
+//! DO_DIRECT_IO read or write (no MDL); a driver whose DriverEntry fails or whose unload leaves
+//! devices behind keeps its image mapped.
+
+use core::mem::size_of;
 
 use super::ntddk::{
+    IoStackLocation,
+    Irp,
     DOE_DELETE_PENDING,
     DOE_UNLOAD_PENDING,
     DO_DEVICE_INITIALIZING,
     DO_EXCLUSIVE,
     DRVO_UNLOAD_INVOKED,
+    SL_INVOKE_ON_CANCEL,
+    SL_INVOKE_ON_ERROR,
+    SL_INVOKE_ON_SUCCESS,
+    SL_PENDING_RETURNED,
 };
 use crate::cm::same_name;
 use crate::status::*;
@@ -533,6 +556,180 @@ pub fn open_refusal(device_flags: u32, references: i32, extension_flags: u32) ->
     None
 }
 
+// --- The requests' lives -----------------------------------------------------------------------
+
+/// Where a request's IRP is in its life, as the I/O manager keeps it beside the IRP (Windows 2000
+/// reads the same from the IRP's PendingReturned, its Tail.Overlay.Thread and the file object's
+/// event).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Progress {
+    /// Sent down, not completed yet: in its dispatch routine, or held pending by its driver.
+    Sent,
+    /// Its sender waits for its completion: the dispatch routine left it pending.
+    Awaited,
+    /// Its sender is gone (a termination ended the wait): its completion retires it, its buffers
+    /// with it, as Windows 2000's completion of an IRP its thread left behind does.
+    Orphaned,
+    /// Completed: its locations walked back up, no completion routine keeping it. Its sender takes
+    /// the outcome and gives it back.
+    Completed,
+}
+
+/// What a request came back with: the status its sender reports (the dispatch routine's, or the
+/// IRP's once its sender waited for it), and the IRP's I/O status.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Outcome {
+    pub returned: NtStatus,
+    pub status: NtStatus,
+    pub information: u32,
+}
+
+/// What a dispatch routine left: its status, and whether the IRP came back completed (else its
+/// driver holds it, pending, or a completion routine kept it).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Dispatched {
+    pub returned: NtStatus,
+    pub completed: bool,
+}
+
+/// What the requests' lives reach through: the IRPs' memory, the drivers' routines, and their
+/// senders' waits (the kernel's own on target; a test's fakes on the host).
+pub trait Packets {
+    /// The IRP at `irp`.
+    fn irp(&mut self, irp: u32) -> &mut Irp;
+    /// Its stack location `number` (1 to its StackCount; the IRP's CurrentLocation names one).
+    fn location(&mut self, irp: u32, number: i8) -> &mut IoStackLocation;
+    /// Its progress changed by `change` at once, no completion between the read and the write:
+    /// the progress it had.
+    fn transition(&mut self, irp: u32, change: fn(Progress) -> Progress) -> Progress;
+    /// The dispatch routine at `entry` called: DriverDispatch(DeviceObject, Irp).
+    fn dispatch(&mut self, entry: u32, device: u32, irp: u32) -> NtStatus;
+    /// The completion routine at `routine` called: IoCompletion(DeviceObject, Irp, Context).
+    fn completion(&mut self, routine: u32, device: u32, irp: u32, context: u32) -> NtStatus;
+    /// Its waiting sender woken: the IRP completed.
+    fn wake(&mut self, irp: u32);
+    /// An orphaned IRP's end: its block and what it holds given back.
+    fn retire(&mut self, irp: u32);
+}
+
+/// IoCallDriver: the IRP moved down to its next stack location, which names `device`, and handed
+/// to the dispatch routine at `entry`. The IRP came back completed when its progress says so,
+/// whatever the routine returned: a driver that left it pending, or a completion routine that kept
+/// it (STATUS_MORE_PROCESSING_REQUIRED), holds it until it completes it.
+pub fn call<P: Packets>(packets: &mut P, irp: u32, device: u32, entry: u32) -> Dispatched {
+    let packet = packets.irp(irp);
+    packet.current_location -= 1;
+    packet.current_stack_location = packet
+        .current_stack_location
+        .wrapping_sub(size_of::<IoStackLocation>() as u32);
+    let number = packet.current_location;
+    packets.location(irp, number).device_object = device;
+    let returned = packets.dispatch(entry, device, irp);
+    let completed = packets.transition(irp, |progress| progress) == Progress::Completed;
+    Dispatched {
+        returned,
+        completed,
+    }
+}
+
+/// IofCompleteRequest's work (Windows 2000's IopfCompleteRequest): the IRP's locations walked back
+/// up from the current one, each one's PendingReturned carried up, its completion routine run when
+/// its Control asks for it (on success, on an error or a warning, on a cancel); a routine's
+/// STATUS_MORE_PROCESSING_REQUIRED stops the walk, the IRP the routine's to complete again. Past
+/// the top, the IRP is completed: its waiting sender woken, an orphan retired.
+pub fn complete_request<P: Packets>(packets: &mut P, irp: u32) {
+    loop {
+        let packet = packets.irp(irp);
+        let (number, stack_count) = (packet.current_location, packet.stack_count);
+        if number > stack_count {
+            break;
+        }
+        let location = *packets.location(irp, number);
+        let packet = packets.irp(irp);
+        packet.current_location += 1;
+        packet.current_stack_location = packet
+            .current_stack_location
+            .wrapping_add(size_of::<IoStackLocation>() as u32);
+        let pending = location.control & SL_PENDING_RETURNED != 0;
+        packet.pending_returned = u8::from(pending);
+        let success = NtStatus(packet.io_status_status as u32).is_success();
+        let wanted = if success {
+            SL_INVOKE_ON_SUCCESS
+        } else {
+            SL_INVOKE_ON_ERROR
+        } | if packet.cancel != 0 {
+            SL_INVOKE_ON_CANCEL
+        } else {
+            0
+        };
+        let above = number + 1;
+        if location.completion_routine != 0 && location.control & wanted != 0 {
+            let upper = if above <= stack_count {
+                packets.location(irp, above).device_object
+            } else {
+                0
+            };
+            let status =
+                packets.completion(location.completion_routine, upper, irp, location.context);
+            if status == STATUS_MORE_PROCESSING_REQUIRED {
+                return;
+            }
+        } else if pending && above <= stack_count {
+            // IoMarkIrpPending for the location above, which has no routine to do it.
+            packets.location(irp, above).control |= SL_PENDING_RETURNED;
+        }
+    }
+    let before = packets.transition(irp, |progress| match progress {
+        Progress::Sent | Progress::Awaited => Progress::Completed,
+        other => other,
+    });
+    match before {
+        Progress::Awaited => packets.wake(irp),
+        Progress::Orphaned => packets.retire(irp),
+        // Completed inside its dispatch (its sender reads it on the dispatch's return), or by a
+        // routine that kept it and completes it again past the top.
+        Progress::Sent | Progress::Completed => {}
+    }
+}
+
+/// The sender's wait begins: true when the IRP completed already (no wait), else it is marked
+/// awaited, and its completion wakes the sender.
+pub fn await_completion<P: Packets>(packets: &mut P, irp: u32) -> bool {
+    let before = packets.transition(irp, |progress| match progress {
+        Progress::Sent => Progress::Awaited,
+        other => other,
+    });
+    before == Progress::Completed
+}
+
+/// The sender's wait ended without the completion (a termination): true when the IRP is left to
+/// its completion, orphaned; false when it completed meanwhile, the sender's to take back.
+pub fn abandon<P: Packets>(packets: &mut P, irp: u32) -> bool {
+    let before = packets.transition(irp, |progress| match progress {
+        Progress::Awaited => Progress::Orphaned,
+        other => other,
+    });
+    before != Progress::Completed
+}
+
+/// A completed IRP's outcome, as its sender reports it: the dispatch routine's status when the
+/// routine returned the IRP completed; the IRP's own when it was left pending and its sender
+/// waited (a synchronous request's status is then its final one, as Windows 2000's
+/// IopSynchronousServiceTail reads it from the file object).
+pub fn outcome<P: Packets>(packets: &mut P, irp: u32, dispatched: Dispatched) -> Outcome {
+    let packet = packets.irp(irp);
+    let status = NtStatus(packet.io_status_status as u32);
+    Outcome {
+        returned: if dispatched.completed && dispatched.returned != STATUS_PENDING {
+            dispatched.returned
+        } else {
+            status
+        },
+        status,
+        information: packet.io_status_information,
+    }
+}
+
 // --- On target: the I/O manager's state, its objects, its requests ------------------------------
 
 #[cfg(target_arch = "x86")]
@@ -552,6 +749,9 @@ mod target {
     use crate::cm::{with_registry, Key};
     use crate::level::{self, High, LevelCell};
     use crate::mem::heap::KernelHeap;
+    use crate::mem::pool::Block;
+    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
+    use crate::sched::wait::{WaitMode, WaitReason, WaitableId};
     use crate::sync::StaticBuf;
 
     /// The arena's size: every driver's, device's, file object's and IRP's block.
@@ -569,13 +769,16 @@ mod target {
         name: ObName,
     }
 
-    /// An open of a device: its FILE_OBJECT and the device.
+    /// An open of a device: its FILE_OBJECT and the device, how many of its requests are in
+    /// their driver's hands, and whether its close waits for them.
     #[derive(Clone, Copy)]
     struct FileSlot {
         live: bool,
         generation: u16,
         file_object: u32,
         device: u32,
+        in_flight: u16,
+        closing: bool,
     }
 
     struct IoManager {
@@ -596,6 +799,8 @@ mod target {
             generation: 0,
             file_object: 0,
             device: 0,
+            in_flight: 0,
+            closing: false,
         }; FILES],
     });
 
@@ -920,47 +1125,91 @@ mod target {
         let packet = unsafe { at::<Irp>(irp) };
         packet.io_status_status = STATUS_INVALID_DEVICE_REQUEST.0 as i32;
         packet.io_status_information = 0;
-        complete_request(irp);
+        complete_irp(irp);
         STATUS_INVALID_DEVICE_REQUEST.0 as i32
     }
 
-    /// IofCompleteRequest's work: the IRP's locations walked back up from the current one, each
-    /// one's completion routine run when its Control asks for it (STATUS_MORE_PROCESSING_REQUIRED
-    /// stops the walk: the routine keeps the IRP).
-    pub fn complete_request(irp: u32) {
-        // SAFETY: the IRP a driver completes (see `at`).
-        let packet = unsafe { at::<Irp>(irp) };
-        while packet.current_location <= packet.stack_count {
-            // SAFETY: the current location lies inside the IRP's block while the location is.
-            let location = unsafe { *at::<IoStackLocation>(packet.current_stack_location) };
-            packet.current_location += 1;
-            packet.current_stack_location += size_of::<IoStackLocation>() as u32;
-            if location.control & SL_PENDING_RETURNED != 0 {
-                packet.pending_returned = 1;
-            }
-            let status = NtStatus(packet.io_status_status as u32);
-            let wanted = if packet.cancel != 0 {
-                SL_INVOKE_ON_CANCEL
-            } else if nt_error(status) {
-                SL_INVOKE_ON_ERROR
-            } else {
-                SL_INVOKE_ON_SUCCESS
-            };
-            if location.completion_routine != 0 && location.control & wanted != 0 {
-                let upper = if packet.current_location <= packet.stack_count {
-                    // SAFETY: as above: the upper location is the IRP's.
-                    unsafe { at::<IoStackLocation>(packet.current_stack_location).device_object }
-                } else {
-                    0
-                };
-                // SAFETY: a completion routine the driver set on its location.
-                let routine = unsafe { routine::<CompletionRoutine>(location.completion_routine) };
-                if routine(upper, irp, location.context) == STATUS_MORE_PROCESSING_REQUIRED.0 as i32
-                {
-                    return;
-                }
-            }
+    /// The I/O manager's record of a request, in the IRP's block before the IRP: its progress, the
+    /// event its sender waits on, the open it counts on (whose close waits for it), and the system
+    /// buffer the IRP owns until its sender takes it back, or its retirement gives it back.
+    struct Tail {
+        progress: Progress,
+        event: Event,
+        file: Option<DeviceFile>,
+        system: Option<Block>,
+    }
+
+    /// The record's room before the IRP.
+    const TAIL: u32 = size_of::<Tail>().next_multiple_of(8) as u32;
+
+    /// The record of the request whose IRP is at `irp`.
+    fn tail(irp: u32) -> *mut Tail {
+        (irp - TAIL) as usize as *mut Tail
+    }
+
+    /// The event the sender of the IRP at `irp` waits on.
+    fn completion_event(irp: u32) -> WaitableId {
+        // SAFETY: the record's event, named at its block's making and alive with the IRP.
+        unsafe { (*tail(irp)).event.id() }
+    }
+
+    /// The requests' lives over the kernel's memory and the drivers' routines.
+    struct Kernel;
+
+    impl Packets for Kernel {
+        fn irp(&mut self, irp: u32) -> &mut Irp {
+            // SAFETY: an IRP of the I/O manager's, alive while its request is (see `at`).
+            unsafe { at::<Irp>(irp) }
         }
+
+        fn location(&mut self, irp: u32, number: i8) -> &mut IoStackLocation {
+            // Wrapping: a driver's own CurrentLocation names the location, valid or not.
+            let index = (i32::from(number) - 1) as u32;
+            let address = (irp + size_of::<Irp>() as u32)
+                .wrapping_add(index.wrapping_mul(size_of::<IoStackLocation>() as u32));
+            // SAFETY: a location of the IRP's, inside its block (see `at`).
+            unsafe { at::<IoStackLocation>(address) }
+        }
+
+        fn transition(&mut self, irp: u32, change: fn(Progress) -> Progress) -> Progress {
+            with_io(|_| {
+                // SAFETY: the IRP's record (see `tail`); the I/O manager's level holds every other
+                // transition off.
+                let progress = unsafe { &mut (*tail(irp)).progress };
+                let before = *progress;
+                *progress = change(before);
+                before
+            })
+        }
+
+        fn dispatch(&mut self, entry: u32, device: u32, irp: u32) -> NtStatus {
+            // SAFETY: the driver's MajorFunction entry: the driver's routine, or the I/O manager's.
+            let dispatch = unsafe { routine::<DispatchRoutine>(entry) };
+            NtStatus(dispatch(device, irp) as u32)
+        }
+
+        fn completion(&mut self, address: u32, device: u32, irp: u32, context: u32) -> NtStatus {
+            // SAFETY: a completion routine the driver set on its location.
+            let completion = unsafe { routine::<CompletionRoutine>(address) };
+            NtStatus(completion(device, irp, context) as u32)
+        }
+
+        fn wake(&mut self, irp: u32) {
+            level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER
+                    .get(dispatch)
+                    .set_event(completion_event(irp), EVENT_WAKE_INCREMENT)
+            });
+        }
+
+        fn retire(&mut self, irp: u32) {
+            drop(give_back(irp));
+        }
+    }
+
+    /// IofCompleteRequest (see [`complete_request`]).
+    pub fn complete_irp(irp: u32) {
+        complete_request(&mut Kernel, irp);
     }
 
     /// A request for a device: the IRP's fields its builder sets.
@@ -968,57 +1217,77 @@ mod target {
         pub major: u8,
         pub flags: u32,
         pub requestor_mode: u8,
-        pub system_buffer: u32,
         pub user_buffer: u32,
         pub file_object: u32,
         pub parameters: [u32; 4],
     }
 
-    /// What a request came back with: the dispatch routine's status, and the IRP's I/O status.
-    #[derive(Clone, Copy)]
-    pub struct Outcome {
-        pub returned: NtStatus,
-        pub status: NtStatus,
-        pub information: u32,
+    /// A request sent: its IRP, and what its dispatch routine left.
+    struct Sent {
+        irp: u32,
+        dispatched: Dispatched,
     }
 
-    /// Build the IRP for `request`, send it down to `device` (IoCallDriver) and take it back
-    /// completed. A driver that leaves it pending is the stub path (STATUS_NOT_IMPLEMENTED; the
-    /// IRP stays the driver's).
-    pub fn call_driver(device: u32, request: &Request) -> Result<Outcome, NtStatus> {
+    /// The IRP for `request` built and sent down to `device` (IoCallDriver), on the drivers'
+    /// stack: what its dispatch routine left. `file` is the open the request counts on (a read's,
+    /// a write's, a device control's, a flush's: the open's close waits for the IRP), `system`
+    /// the system buffer the IRP takes (its SystemBuffer), owned by the IRP until its sender takes
+    /// it back ([`finish`]).
+    fn send(
+        device: u32,
+        request: &Request,
+        file: Option<DeviceFile>,
+        system: Option<Block>,
+    ) -> Result<Sent, NtStatus> {
         // SAFETY: a device of a loaded driver, referenced by the caller (see `at`).
         let (stack_count, driver) = unsafe {
             let device = at::<DeviceObject>(device);
-            (device.stack_size.max(1), device.driver_object)
+            // StackSize is a CCHAR: a driver's larger one cannot be counted in the IRP.
+            (device.stack_size.clamp(1, i8::MAX as u8 - 1), device.driver_object)
         };
         let size = irp_size(stack_count);
-        let irp = allocate(size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let block = allocate(TAIL as usize + size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let irp = block + TAIL;
+        let system_buffer = system.as_ref().map_or(0, Block::virtual_address);
+        // SAFETY: the record's room in the block just made; its event is named at its place.
+        unsafe {
+            tail(irp).write(Tail {
+                progress: Progress::Sent,
+                event: Event::new(EventKind::Notification, false),
+                file,
+                system,
+            });
+            (*tail(irp)).event.init();
+        }
+        if let Some(file) = file {
+            with_io(|io| {
+                if let Some(slot) = io.files.get_mut(usize::from(file.index)) {
+                    slot.in_flight += 1;
+                }
+            });
+        }
         let first_location = irp + size_of::<Irp>() as u32;
-        let next =
-            first_location + u32::from(stack_count - 1) * size_of::<IoStackLocation>() as u32;
         {
             // SAFETY: the IRP's block, just made (see `at`).
             let packet = unsafe { at::<Irp>(irp) };
             packet.kind = IO_TYPE_IRP;
             packet.size = size as u16;
             packet.flags = request.flags;
-            packet.system_buffer = request.system_buffer;
+            packet.system_buffer = system_buffer;
             packet.requestor_mode = request.requestor_mode;
             packet.stack_count = stack_count as i8;
             packet.current_location = stack_count as i8 + 1;
-            packet.current_stack_location = next + size_of::<IoStackLocation>() as u32;
+            packet.current_stack_location =
+                first_location + u32::from(stack_count) * size_of::<IoStackLocation>() as u32;
             packet.user_buffer = request.user_buffer;
             packet.thread = current_thread();
             packet.original_file_object = request.file_object;
-            // SAFETY: the next location lies inside the block.
-            let location = unsafe { at::<IoStackLocation>(next) };
+            // The location the driver is sent: the last.
+            let mut kernel = Kernel;
+            let location = kernel.location(irp, stack_count as i8);
             location.major_function = request.major;
             location.parameters = request.parameters;
             location.file_object = request.file_object;
-            // IoCallDriver: down to the next location, which names the device.
-            packet.current_location -= 1;
-            packet.current_stack_location = next;
-            location.device_object = device;
         }
         // SAFETY: the driver's object (see `at`).
         let entry =
@@ -1028,30 +1297,59 @@ mod target {
         } else {
             entry
         };
-        // SAFETY: the driver's MajorFunction entry: the driver's routine, or the I/O manager's.
-        let dispatch = unsafe { routine::<DispatchRoutine>(entry) };
-        let returned = NtStatus(dispatch(device, irp) as u32);
-        // SAFETY: the IRP's block, back from the driver.
-        let packet = unsafe { *at::<Irp>(irp) };
-        if packet.current_location <= packet.stack_count {
-            crate::dbgprint::unhandled(
-                "ntoskrnl",
-                "IoCallDriver",
-                format_args!("MajorFunction={}", request.major),
-                format_args!(
-                    "the driver did not complete the IRP (returned {:#010x}): pending IRPs are \
-                     not yet implemented",
-                    returned.0
-                ),
-            );
-            return Err(STATUS_NOT_IMPLEMENTED);
+        let dispatched = call(&mut Kernel, irp, device, entry);
+        Ok(Sent { irp, dispatched })
+    }
+
+    /// A sent request's end, where its sender is (off the drivers' stack for a request sent from
+    /// outside it): a request its dispatch routine left pending waited for in `mode`, as Windows
+    /// 2000 waits for a synchronous request; its outcome taken, and its IRP given back with its
+    /// system buffer, which the sender takes back. A user-mode wait a termination interrupts
+    /// leaves the IRP to its completion, which retires it and what it holds, and the request ends
+    /// with the wait's status (STATUS_USER_APC).
+    fn finish(sent: Sent, mode: WaitMode) -> Result<(Outcome, Option<Block>), NtStatus> {
+        let irp = sent.irp;
+        if !sent.dispatched.completed && !await_completion(&mut Kernel, irp) {
+            let event = completion_event(irp);
+            let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _| {
+                dispatcher.wait_for(
+                    thread,
+                    event,
+                    WaitReason::Executive,
+                    mode,
+                    false,
+                    None,
+                    stamp,
+                )
+            });
+            if status != STATUS_SUCCESS && abandon(&mut Kernel, irp) {
+                return Err(status);
+            }
         }
-        release(irp);
-        Ok(Outcome {
-            returned,
-            status: NtStatus(packet.io_status_status as u32),
-            information: packet.io_status_information,
-        })
+        let outcome = outcome(&mut Kernel, irp, sent.dispatched);
+        Ok((outcome, give_back(irp)))
+    }
+
+    /// A request's IRP given back with its record: its system buffer, and its count on its open,
+    /// whose close, put off for the request, runs once the open's last request goes.
+    fn give_back(irp: u32) -> Option<Block> {
+        // SAFETY: the IRP's record (see `tail`), read out once: nothing reaches it any more.
+        let (file, system) = unsafe {
+            let record = &mut *tail(irp);
+            (record.file.take(), record.system.take())
+        };
+        release(irp - TAIL);
+        if let Some(file) = file {
+            let close = with_io(|io| {
+                let slot = io.files.get_mut(usize::from(file.index))?;
+                slot.in_flight -= 1;
+                Some(slot.in_flight == 0 && slot.closing)
+            });
+            if close == Some(true) {
+                close_now(file);
+            }
+        }
+        system
     }
 
     // --- Devices and links -------------------------------------------------------------------
@@ -1333,67 +1631,54 @@ mod target {
 
     /// The create: a FILE_OBJECT made for the device `referenced` holds ([`reference_device`]),
     /// IRP_MJ_CREATE sent down, and the open recorded: its handle's context and the I/O status's
-    /// Information. A refusal drops the reference and the object.
+    /// Information. A refusal drops the reference and the object. A create its driver leaves
+    /// pending is waited for in kernel mode, as Windows 2000's IopParseDevice waits for it: its
+    /// file object and its security context live until it completes.
     pub fn create(
-        referenced: Referenced,
-        request: &OpenRequest,
-    ) -> Result<(DeviceFile, u32), NtStatus> {
-        on_driver_stack(|| create_on_stack(referenced, request))
-    }
-
-    fn create_on_stack(
         referenced: Referenced,
         request: &OpenRequest,
     ) -> Result<(DeviceFile, u32), NtStatus> {
         let resolved = core::mem::ManuallyDrop::new(referenced).0;
         let device = resolved.device;
-        let made = open_file_object(&resolved, request);
-        let (file, context) = match made {
-            Some(made) => made,
-            None => {
-                dereference_device(device);
-                return Err(STATUS_INSUFFICIENT_RESOURCES);
-            }
-        };
-        let outcome = call_driver(
-            device,
-            &Request {
-                major: crate::dev::irp::IRP_MJ_CREATE,
-                flags: IRP_CREATE_OPERATION | IRP_SYNCHRONOUS_API | IRP_DEFER_IO_COMPLETION,
-                requestor_mode: USER_MODE,
-                system_buffer: 0,
-                user_buffer: 0,
-                file_object: file,
-                parameters: [
-                    context,
-                    request.disposition << 24 | request.options & 0x00FF_FFFF,
-                    u32::from(request.file_attributes) | u32::from(request.share_access) << 16,
-                    0,
-                ],
-            },
-        );
-        release(context);
-        let refused = match outcome {
-            Ok(outcome) if !nt_error(outcome.status) => None,
-            Ok(outcome) => Some(outcome.status),
-            Err(status) => Some(status),
-        };
-        if let Some(status) = refused {
-            free_file_object(file);
+        let Some((file, context)) = open_file_object(&resolved, request) else {
             dereference_device(device);
-            return Err(status);
-        }
-        let information = outcome.map_or(0, |outcome| outcome.information);
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
+        let create = Request {
+            major: crate::dev::irp::IRP_MJ_CREATE,
+            flags: IRP_CREATE_OPERATION | IRP_SYNCHRONOUS_API | IRP_DEFER_IO_COMPLETION,
+            requestor_mode: USER_MODE,
+            user_buffer: 0,
+            file_object: file,
+            parameters: [
+                context,
+                request.disposition << 24 | request.options & 0x00FF_FFFF,
+                u32::from(request.file_attributes) | u32::from(request.share_access) << 16,
+                0,
+            ],
+        };
+        let outcome = on_driver_stack(|| send(device, &create, None, None))
+            .and_then(|sent| finish(sent, WaitMode::Kernel));
+        release(context);
+        let information = match outcome {
+            Ok((outcome, _)) if !nt_error(outcome.status) => outcome.information,
+            Ok((outcome, _)) => return Err(refuse_open(file, device, outcome.status)),
+            Err(status) => return Err(refuse_open(file, device, status)),
+        };
         let recorded = with_io(|io| {
             let (index, slot) = io
                 .files
                 .iter_mut()
                 .enumerate()
                 .find(|(_, slot)| !slot.live)?;
-            slot.live = true;
-            slot.generation = slot.generation.wrapping_add(1);
-            slot.file_object = file;
-            slot.device = device;
+            *slot = FileSlot {
+                live: true,
+                generation: slot.generation.wrapping_add(1),
+                file_object: file,
+                device,
+                in_flight: 0,
+                closing: false,
+            };
             Some(DeviceFile {
                 index: index as u16,
                 generation: slot.generation,
@@ -1404,11 +1689,16 @@ mod target {
             None => {
                 send_close(device, file, crate::dev::irp::IRP_MJ_CLEANUP);
                 send_close(device, file, crate::dev::irp::IRP_MJ_CLOSE);
-                free_file_object(file);
-                dereference_device(device);
-                Err(STATUS_TOO_MANY_OPENED_FILES)
+                Err(refuse_open(file, device, STATUS_TOO_MANY_OPENED_FILES))
             }
         }
+    }
+
+    /// An open refused with `status`: its file object and its reference on the device gone.
+    fn refuse_open(file: u32, device: u32, status: NtStatus) -> NtStatus {
+        free_file_object(file);
+        dereference_device(device);
+        status
     }
 
     /// A FILE_OBJECT for an open of `resolved` (its FileName the rest of the name after the
@@ -1460,40 +1750,52 @@ mod target {
     }
 
     /// IRP_MJ_CLEANUP or IRP_MJ_CLOSE for `file`, the kernel's own request (whatever the driver
-    /// answers: a cleanup or a close cannot fail).
+    /// answers: a cleanup or a close cannot fail), waited for in kernel mode when the driver
+    /// leaves it pending, as Windows 2000's IopCloseFile and IopDeleteFile wait.
     fn send_close(device: u32, file: u32, major: u8) {
-        let _ = call_driver(
-            device,
-            &Request {
-                major,
-                flags: IRP_CLOSE_OPERATION | IRP_SYNCHRONOUS_API,
-                requestor_mode: KERNEL_MODE,
-                system_buffer: 0,
-                user_buffer: 0,
-                file_object: file,
-                parameters: [0; 4],
-            },
-        );
+        let close = Request {
+            major,
+            flags: IRP_CLOSE_OPERATION | IRP_SYNCHRONOUS_API,
+            requestor_mode: KERNEL_MODE,
+            user_buffer: 0,
+            file_object: file,
+            parameters: [0; 4],
+        };
+        if let Ok(sent) = on_driver_stack(|| send(device, &close, None, None)) {
+            let _ = finish(sent, WaitMode::Kernel);
+        }
     }
 
-    /// An open's cleanup, its last handle closed: IRP_MJ_CLEANUP.
+    /// An open's cleanup, its last handle closed: IRP_MJ_CLEANUP (where a driver completes, or
+    /// cancels, the requests it holds pending for the open).
     pub fn cleanup(file: DeviceFile) {
-        on_driver_stack(|| cleanup_on_stack(file));
-    }
-
-    fn cleanup_on_stack(file: DeviceFile) {
         if let Some((object, device)) = open_of(file) {
             send_close(device, object, crate::dev::irp::IRP_MJ_CLEANUP);
         }
     }
 
     /// An open's close, its last reference gone: IRP_MJ_CLOSE, then its FILE_OBJECT and its
-    /// reference on the device go.
+    /// reference on the device go. While a request on the open is still in its driver's hands
+    /// (its sender was terminated while it waited), the close waits for that request's
+    /// completion, as Windows 2000's IRP holds its file object.
     pub fn close(file: DeviceFile) {
-        on_driver_stack(|| close_on_stack(file));
+        let now = with_io(|io| {
+            let Some(slot) = io.files.get_mut(usize::from(file.index)) else {
+                return false;
+            };
+            if !slot.live || slot.generation != file.generation {
+                return false;
+            }
+            slot.closing = slot.in_flight > 0;
+            !slot.closing
+        });
+        if now {
+            close_now(file);
+        }
     }
 
-    fn close_on_stack(file: DeviceFile) {
+    /// The close itself (see [`close`]).
+    fn close_now(file: DeviceFile) {
         let Some((object, device)) = open_of(file) else {
             return;
         };
@@ -1503,30 +1805,18 @@ mod target {
         dereference_device(device);
     }
 
-    /// IRP_MJ_DEVICE_CONTROL for `file`, METHOD_BUFFERED: the system buffer (the caller's block,
-    /// `system`, holding the input; 0 with no buffers) and the lengths, the caller's output
-    /// buffer the IRP's UserBuffer.
+    /// IRP_MJ_DEVICE_CONTROL for `file`, METHOD_BUFFERED: the system buffer (`system`, holding the
+    /// input; none with no buffers), which the IRP owns until it is handed back with the outcome,
+    /// and the lengths, the caller's output buffer the IRP's UserBuffer. A request the driver
+    /// leaves pending is waited for (see [`finish`]).
     pub fn device_control(
         file: DeviceFile,
         code: u32,
-        system: u32,
+        system: Option<Block>,
         input_length: u32,
         output_length: u32,
         user_output: u32,
-    ) -> Result<Outcome, NtStatus> {
-        on_driver_stack(|| {
-            control_on_stack(file, code, system, input_length, output_length, user_output)
-        })
-    }
-
-    fn control_on_stack(
-        file: DeviceFile,
-        code: u32,
-        system: u32,
-        input_length: u32,
-        output_length: u32,
-        user_output: u32,
-    ) -> Result<Outcome, NtStatus> {
+    ) -> Result<(Outcome, Option<Block>), NtStatus> {
         let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
         let flags = if input_length != 0 || output_length != 0 {
             IRP_BUFFERED_IO
@@ -1539,18 +1829,16 @@ mod target {
         } else {
             0
         };
-        call_driver(
-            device,
-            &Request {
-                major: crate::dev::irp::IRP_MJ_DEVICE_CONTROL,
-                flags,
-                requestor_mode: USER_MODE,
-                system_buffer: system,
-                user_buffer: if flags == 0 { 0 } else { user_output },
-                file_object: object,
-                parameters: [output_length, input_length, code, 0],
-            },
-        )
+        let control = Request {
+            major: crate::dev::irp::IRP_MJ_DEVICE_CONTROL,
+            flags,
+            requestor_mode: USER_MODE,
+            user_buffer: if flags == 0 { 0 } else { user_output },
+            file_object: object,
+            parameters: [output_length, input_length, code, 0],
+        };
+        let sent = on_driver_stack(|| send(device, &control, Some(file), system))?;
+        finish(sent, WaitMode::User)
     }
 
     /// The DO_* flags of the device an open is of (its buffering: DO_BUFFERED_IO, DO_DIRECT_IO,
@@ -1562,11 +1850,12 @@ mod target {
         })
     }
 
-    /// What a read or a write moves: the system buffer (0 but for a DO_BUFFERED_IO device's
-    /// transfer, the caller's block, holding a write's bytes), the caller's buffer, the length,
-    /// and the offset (none for the file object's CurrentByteOffset).
+    /// What a read or a write moves: the system buffer (none but for a DO_BUFFERED_IO device's
+    /// transfer, a block holding a write's bytes, the IRP's until it is handed back), the
+    /// caller's buffer, the length, and the offset (none for the file object's
+    /// CurrentByteOffset).
     pub struct Transfer {
-        pub system: u32,
+        pub system: Option<Block>,
         pub user_buffer: u32,
         pub length: u32,
         pub offset: Option<u64>,
@@ -1576,26 +1865,18 @@ mod target {
     /// the offset), IRP_READ_OPERATION or IRP_WRITE_OPERATION with IRP_DEFER_IO_COMPLETION, and
     /// for a system buffer IRP_BUFFERED_IO and IRP_DEALLOCATE_BUFFER (a read's
     /// IRP_INPUT_OPERATION too). A synchronous file object's CurrentByteOffset moves past what the
-    /// driver moved.
+    /// driver moved. A request the driver leaves pending is waited for (see [`finish`]).
     pub fn read_write(
         file: DeviceFile,
         major: u8,
-        transfer: &Transfer,
-    ) -> Result<Outcome, NtStatus> {
-        on_driver_stack(|| transfer_on_stack(file, major, transfer))
-    }
-
-    fn transfer_on_stack(
-        file: DeviceFile,
-        major: u8,
-        transfer: &Transfer,
-    ) -> Result<Outcome, NtStatus> {
+        transfer: Transfer,
+    ) -> Result<(Outcome, Option<Block>), NtStatus> {
         let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
         // SAFETY: the open's FILE_OBJECT (see `at`).
         let file_object = unsafe { at::<FileObject>(object) };
         let offset = transfer.offset.unwrap_or(file_object.current_byte_offset);
         let read = major == crate::dev::irp::IRP_MJ_READ;
-        let buffered = if transfer.system == 0 {
+        let buffered = if transfer.system.is_none() {
             0
         } else {
             IRP_BUFFERED_IO | IRP_DEALLOCATE_BUFFER | if read { IRP_INPUT_OPERATION } else { 0 }
@@ -1605,43 +1886,37 @@ mod target {
         } else {
             IRP_WRITE_OPERATION
         };
-        let outcome = call_driver(
-            device,
-            &Request {
-                major,
-                flags: operation | IRP_DEFER_IO_COMPLETION | buffered,
-                requestor_mode: USER_MODE,
-                system_buffer: transfer.system,
-                user_buffer: transfer.user_buffer,
-                file_object: object,
-                parameters: [transfer.length, 0, offset as u32, (offset >> 32) as u32],
-            },
-        )?;
+        let request = Request {
+            major,
+            flags: operation | IRP_DEFER_IO_COMPLETION | buffered,
+            requestor_mode: USER_MODE,
+            user_buffer: transfer.user_buffer,
+            file_object: object,
+            parameters: [transfer.length, 0, offset as u32, (offset >> 32) as u32],
+        };
+        let sent = on_driver_stack(|| send(device, &request, Some(file), transfer.system))?;
+        let (outcome, system) = finish(sent, WaitMode::User)?;
         if file_object.flags & FO_SYNCHRONOUS_IO != 0 && !nt_error(outcome.status) {
             // A LARGE_INTEGER sum, as the platform's: the offset may be a write's
             // FILE_WRITE_TO_END_OF_FILE, or what the driver left in the object.
             file_object.current_byte_offset = offset.wrapping_add(u64::from(outcome.information));
         }
-        Ok(outcome)
+        Ok((outcome, system))
     }
 
-    /// IRP_MJ_FLUSH_BUFFERS for `file`.
+    /// IRP_MJ_FLUSH_BUFFERS for `file`, waited for when the driver leaves it pending.
     pub fn flush(file: DeviceFile) -> Result<Outcome, NtStatus> {
-        on_driver_stack(|| {
-            let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
-            call_driver(
-                device,
-                &Request {
-                    major: crate::dev::irp::IRP_MJ_FLUSH_BUFFERS,
-                    flags: IRP_SYNCHRONOUS_API,
-                    requestor_mode: USER_MODE,
-                    system_buffer: 0,
-                    user_buffer: 0,
-                    file_object: object,
-                    parameters: [0; 4],
-                },
-            )
-        })
+        let (object, device) = open_of(file).ok_or(STATUS_INVALID_HANDLE)?;
+        let request = Request {
+            major: crate::dev::irp::IRP_MJ_FLUSH_BUFFERS,
+            flags: IRP_SYNCHRONOUS_API,
+            requestor_mode: USER_MODE,
+            user_buffer: 0,
+            file_object: object,
+            parameters: [0; 4],
+        };
+        let sent = on_driver_stack(|| send(device, &request, Some(file), None))?;
+        finish(sent, WaitMode::User).map(|(outcome, _)| outcome)
     }
 
     // --- Loads and unloads -------------------------------------------------------------------
@@ -2311,5 +2586,320 @@ mod tests {
             std::string::String::from_utf16(&back[..n]).unwrap(),
             "Machine\\System\\CurrentControlSet\\X"
         );
+    }
+
+    // --- The requests' lives, over fake drivers ---------------------------------------------
+
+    use super::super::ntddk::{IoStackLocation, Irp};
+
+    /// A fake driver's routine: a dispatch routine (device, IRP) or a completion routine
+    /// (device, IRP, context), by its index plus one as its address.
+    type Routine = fn(&mut Fake, u32, u32, u32) -> NtStatus;
+
+    /// IRPs in a table (an IRP's address its index), the fake drivers' routines, and what the
+    /// I/O manager did: the senders it woke, the orphans it retired, the IRPs the drivers hold.
+    struct Fake {
+        irps: std::vec::Vec<(Irp, [IoStackLocation; 4], Progress)>,
+        routines: std::vec::Vec<Routine>,
+        held: std::vec::Vec<u32>,
+        woken: std::vec::Vec<u32>,
+        retired: std::vec::Vec<u32>,
+        completions: std::vec::Vec<(u32, u32)>,
+    }
+
+    impl Fake {
+        fn new(routines: &[Routine]) -> Fake {
+            Fake {
+                irps: std::vec::Vec::new(),
+                routines: routines.to_vec(),
+                held: std::vec::Vec::new(),
+                woken: std::vec::Vec::new(),
+                retired: std::vec::Vec::new(),
+                completions: std::vec::Vec::new(),
+            }
+        }
+
+        /// A fresh IRP of `stack_count` locations, before IoCallDriver.
+        fn make(&mut self, stack_count: i8) -> u32 {
+            // SAFETY: the IRP is plain integers, all zero a valid one.
+            let mut packet: Irp = unsafe { core::mem::zeroed() };
+            packet.stack_count = stack_count;
+            packet.current_location = stack_count + 1;
+            self.irps
+                .push((packet, [IoStackLocation::default(); 4], Progress::Sent));
+            (self.irps.len() - 1) as u32
+        }
+
+        /// The progress of the IRP at `irp`.
+        fn progress(&self, irp: u32) -> Progress {
+            self.irps[irp as usize].2
+        }
+
+        /// The IRP's I/O status set, and the IRP completed (IoCompleteRequest).
+        fn finish(&mut self, irp: u32, status: NtStatus, information: u32) {
+            let packet = self.irp(irp);
+            packet.io_status_status = status.0 as i32;
+            packet.io_status_information = information;
+            complete_request(self, irp);
+        }
+
+        /// The IRP's current location marked pending (IoMarkIrpPending).
+        fn mark_pending(&mut self, irp: u32) {
+            let number = self.irp(irp).current_location;
+            self.location(irp, number).control |= SL_PENDING_RETURNED;
+        }
+    }
+
+    impl Packets for Fake {
+        fn irp(&mut self, irp: u32) -> &mut Irp {
+            &mut self.irps[irp as usize].0
+        }
+
+        fn location(&mut self, irp: u32, number: i8) -> &mut IoStackLocation {
+            &mut self.irps[irp as usize].1[number as usize - 1]
+        }
+
+        fn transition(&mut self, irp: u32, change: fn(Progress) -> Progress) -> Progress {
+            let progress = &mut self.irps[irp as usize].2;
+            let before = *progress;
+            *progress = change(before);
+            before
+        }
+
+        fn dispatch(&mut self, entry: u32, device: u32, irp: u32) -> NtStatus {
+            (self.routines[entry as usize - 1])(self, device, irp, 0)
+        }
+
+        fn completion(&mut self, routine: u32, device: u32, irp: u32, context: u32) -> NtStatus {
+            self.completions.push((routine, device));
+            (self.routines[routine as usize - 1])(self, device, irp, context)
+        }
+
+        fn wake(&mut self, irp: u32) {
+            self.woken.push(irp);
+        }
+
+        fn retire(&mut self, irp: u32) {
+            self.retired.push(irp);
+        }
+    }
+
+    /// Completes its IRP at once, 4 bytes moved.
+    fn completes(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
+        fake.finish(irp, STATUS_SUCCESS, 4);
+        STATUS_SUCCESS
+    }
+
+    /// Marks its IRP pending and holds it.
+    fn pends(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
+        fake.mark_pending(irp);
+        fake.held.push(irp);
+        STATUS_PENDING
+    }
+
+    /// The inverted call's second request: completes the IRP the driver held (its answer, 8
+    /// bytes), then its own.
+    fn answers_the_held(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
+        let held = fake.held.pop().expect("a request held");
+        fake.finish(held, STATUS_SUCCESS, 8);
+        fake.finish(irp, STATUS_SUCCESS, 0);
+        STATUS_SUCCESS
+    }
+
+    /// A completion routine that keeps its IRP (to complete it again later).
+    fn keeps(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
+        fake.held.push(irp);
+        STATUS_MORE_PROCESSING_REQUIRED
+    }
+
+    /// A completion routine that lets its IRP go on up.
+    fn lets_go(_: &mut Fake, _: u32, _: u32, _: u32) -> NtStatus {
+        STATUS_SUCCESS
+    }
+
+    /// STATUS_CANCELLED, a cancelled request's status (an error).
+    const CANCELLED: NtStatus = NtStatus(0xC000_0120);
+
+    const COMPLETES: u32 = 1;
+    const PENDS: u32 = 2;
+    const ANSWERS: u32 = 3;
+    const KEEPS: u32 = 4;
+    const LETS_GO: u32 = 5;
+    const DEVICE: u32 = 0xD0;
+
+    fn fake() -> Fake {
+        Fake::new(&[completes, pends, answers_the_held, keeps, lets_go])
+    }
+
+    /// A request its driver completes in its dispatch routine comes back completed, with the
+    /// routine's status: its sender neither waits nor is woken.
+    #[test]
+    fn a_request_completed_in_its_dispatch_comes_back_completed() {
+        let mut fake = fake();
+        let irp = fake.make(1);
+        let dispatched = call(&mut fake, irp, DEVICE, COMPLETES);
+        assert_eq!(
+            dispatched,
+            Dispatched {
+                returned: STATUS_SUCCESS,
+                completed: true
+            }
+        );
+        assert_eq!(fake.location(irp, 1).device_object, DEVICE);
+        assert_eq!(
+            outcome(&mut fake, irp, dispatched),
+            Outcome {
+                returned: STATUS_SUCCESS,
+                status: STATUS_SUCCESS,
+                information: 4
+            }
+        );
+        assert!(fake.woken.is_empty() && fake.retired.is_empty());
+    }
+
+    /// A request its driver leaves pending stays its driver's: not completed, so its sender
+    /// waits, keeping what the IRP points to; the completion, from another request, wakes it, and
+    /// its status is the IRP's, not STATUS_PENDING.
+    #[test]
+    fn a_pending_request_is_waited_for_until_another_completes_it() {
+        let mut fake = fake();
+        let first = fake.make(1);
+        let dispatched = call(&mut fake, first, DEVICE, PENDS);
+        assert_eq!(
+            dispatched,
+            Dispatched {
+                returned: STATUS_PENDING,
+                completed: false
+            }
+        );
+        assert!(!await_completion(&mut fake, first));
+        assert_eq!(fake.progress(first), Progress::Awaited);
+        // The inverted call: the second request's dispatch completes the first.
+        let second = fake.make(1);
+        assert!(call(&mut fake, second, DEVICE, ANSWERS).completed);
+        assert_eq!(fake.woken, [first]);
+        assert!(fake.retired.is_empty());
+        assert_eq!(fake.progress(first), Progress::Completed);
+        assert_eq!(fake.irp(first).pending_returned, 1);
+        assert_eq!(
+            outcome(&mut fake, first, dispatched),
+            Outcome {
+                returned: STATUS_SUCCESS,
+                status: STATUS_SUCCESS,
+                information: 8
+            }
+        );
+    }
+
+    /// A pending request completed before its sender begins waiting is not waited for, and
+    /// wakes no one.
+    #[test]
+    fn a_request_completed_before_the_wait_is_not_waited_for() {
+        let mut fake = fake();
+        let irp = fake.make(1);
+        assert!(!call(&mut fake, irp, DEVICE, PENDS).completed);
+        fake.finish(irp, STATUS_SUCCESS, 0);
+        assert!(await_completion(&mut fake, irp));
+        assert!(fake.woken.is_empty());
+    }
+
+    /// A sender whose wait a termination ends leaves its IRP to the driver: the completion
+    /// retires it (and what it owns) instead of waking anyone. Once completed, it is the
+    /// sender's again.
+    #[test]
+    fn an_abandoned_request_is_retired_by_its_completion() {
+        let mut fake = fake();
+        let irp = fake.make(1);
+        assert!(!call(&mut fake, irp, DEVICE, PENDS).completed);
+        assert!(!await_completion(&mut fake, irp));
+        assert!(abandon(&mut fake, irp));
+        assert_eq!(fake.progress(irp), Progress::Orphaned);
+        assert!(fake.retired.is_empty());
+        fake.finish(irp, CANCELLED, 0);
+        assert_eq!(fake.retired, [irp]);
+        assert!(fake.woken.is_empty());
+
+        let late = fake.make(1);
+        assert!(!call(&mut fake, late, DEVICE, PENDS).completed);
+        assert!(!await_completion(&mut fake, late));
+        fake.finish(late, STATUS_SUCCESS, 0);
+        assert!(!abandon(&mut fake, late));
+        assert_eq!(fake.progress(late), Progress::Completed);
+    }
+
+    /// A completion routine at the top location that keeps its IRP
+    /// (STATUS_MORE_PROCESSING_REQUIRED): every location is walked, but the IRP is not
+    /// completed, so its sender waits; the routine's own completion later ends it.
+    #[test]
+    fn a_routine_keeping_the_irp_at_the_top_leaves_it_uncompleted() {
+        let mut fake = fake();
+        let irp = fake.make(1);
+        {
+            let top = fake.location(irp, 1);
+            top.completion_routine = KEEPS;
+            top.control = SL_INVOKE_ON_SUCCESS;
+        }
+        let dispatched = call(&mut fake, irp, DEVICE, COMPLETES);
+        assert_eq!(fake.held, [irp]);
+        assert!(fake.irp(irp).current_location > fake.irp(irp).stack_count);
+        assert!(!dispatched.completed);
+        assert!(!await_completion(&mut fake, irp));
+        // The routine's owner completes it again: past the top already, so it is completed.
+        complete_request(&mut fake, irp);
+        assert_eq!(fake.woken, [irp]);
+        assert_eq!(
+            outcome(&mut fake, irp, dispatched),
+            Outcome {
+                returned: STATUS_SUCCESS,
+                status: STATUS_SUCCESS,
+                information: 4
+            }
+        );
+    }
+
+    /// The walk runs a routine as its Control asks: on success, on an error or a warning (not
+    /// NT_SUCCESS), on a cancel whatever the status; it hands the routine the device above (none
+    /// past the top), and carries a pending mark up past a location without a routine.
+    #[test]
+    fn completion_routines_run_as_their_control_asks() {
+        let run = |status: NtStatus, cancel: bool, control: u8| {
+            let mut fake = fake();
+            let irp = fake.make(2);
+            fake.location(irp, 2).device_object = 0xA2;
+            fake.irp(irp).current_location = 1;
+            fake.irp(irp).cancel = u8::from(cancel);
+            {
+                let lower = fake.location(irp, 1);
+                lower.completion_routine = LETS_GO;
+                lower.control = control;
+            }
+            fake.finish(irp, status, 0);
+            fake.completions
+        };
+        assert_eq!(
+            run(STATUS_SUCCESS, false, SL_INVOKE_ON_SUCCESS),
+            [(LETS_GO, 0xA2)]
+        );
+        assert!(run(STATUS_SUCCESS, false, SL_INVOKE_ON_ERROR).is_empty());
+        assert_eq!(
+            run(STATUS_BUFFER_OVERFLOW, false, SL_INVOKE_ON_ERROR),
+            [(LETS_GO, 0xA2)]
+        );
+        assert_eq!(
+            run(STATUS_SUCCESS, true, SL_INVOKE_ON_CANCEL),
+            [(LETS_GO, 0xA2)]
+        );
+        assert_eq!(run(CANCELLED, true, SL_INVOKE_ON_ERROR), [(LETS_GO, 0xA2)]);
+        assert!(run(CANCELLED, false, SL_INVOKE_ON_CANCEL).is_empty());
+
+        // The lower location marked pending, no routine: the mark goes up to the upper one.
+        let mut fake = fake();
+        let irp = fake.make(2);
+        fake.irp(irp).current_location = 1;
+        fake.location(irp, 1).control = SL_PENDING_RETURNED;
+        fake.finish(irp, STATUS_SUCCESS, 0);
+        assert_ne!(fake.location(irp, 2).control & SL_PENDING_RETURNED, 0);
+        assert_eq!(fake.irp(irp).pending_returned, 1);
+        assert_eq!(fake.progress(irp), Progress::Completed);
     }
 }

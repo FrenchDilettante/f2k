@@ -34,8 +34,8 @@ statuses! {
     STATUS_KERNEL_APC,
     /// A wait's timeout elapsed first. The Win32 wait returns this value raw (`WAIT_TIMEOUT`).
     STATUS_TIMEOUT,
-    /// The operation has not completed: a live process's exit status (kernel32's STILL_ACTIVE).
-    #[cfg(test)]
+    /// The operation has not completed: a live process's exit status (kernel32's STILL_ACTIVE),
+    /// and a dispatch routine's answer for a request it holds pending.
     STATUS_PENDING,
     /// A privilege adjustment that named a privilege the token does not hold: the others were
     /// changed (AdjustTokenPrivileges succeeds, its last error ERROR_NOT_ALL_ASSIGNED).

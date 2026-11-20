@@ -69,22 +69,18 @@ pub fn device_io_control_file(
     output.probe(output_length)?;
     let event = completion_event(event.raw())?;
     let size = input_length.max(output_length) as usize;
-    let mut system = if size > 0 {
-        Some(crate::mem::pool::allocate(size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?)
+    let system = if size > 0 {
+        let mut block = crate::mem::pool::allocate(size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        input.read(&mut block.as_mut()[..input_length as usize])?;
+        Some(block)
     } else {
         None
     };
-    let address = match system.as_mut() {
-        Some(block) => {
-            input.read(&mut block.as_mut()[..input_length as usize])?;
-            block.as_mut().as_mut_ptr() as u32
-        }
-        None => 0,
-    };
-    let outcome = crate::dev::io::device_control(
+    // The system buffer is the IRP's while the driver holds it, handed back with the outcome.
+    let (outcome, system) = crate::dev::io::device_control(
         file,
         code,
-        address,
+        system,
         input_length,
         output_length,
         output.raw(),
@@ -127,30 +123,27 @@ pub fn read_write(
         return Err(STATUS_NOT_IMPLEMENTED);
     }
     buffer.probe(length)?;
-    let mut system = if flags & DO_BUFFERED_IO != 0 && length > 0 {
-        Some(crate::mem::pool::allocate(length as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?)
+    let system = if flags & DO_BUFFERED_IO != 0 && length > 0 {
+        let mut block =
+            crate::mem::pool::allocate(length as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        if write {
+            buffer.read(&mut block.as_mut()[..length as usize])?;
+        }
+        Some(block)
     } else {
         None
-    };
-    let address = match system.as_mut() {
-        Some(block) => {
-            if write {
-                buffer.read(&mut block.as_mut()[..length as usize])?;
-            }
-            block.as_mut().as_mut_ptr() as u32
-        }
-        None => 0,
     };
     let major = if write {
         crate::dev::irp::IRP_MJ_WRITE
     } else {
         crate::dev::irp::IRP_MJ_READ
     };
-    let outcome = crate::dev::io::read_write(
+    // The system buffer is the IRP's while the driver holds it, handed back with the outcome.
+    let (outcome, system) = crate::dev::io::read_write(
         file,
         major,
-        &Transfer {
-            system: address,
+        Transfer {
+            system,
             user_buffer: buffer.raw(),
             length,
             offset,

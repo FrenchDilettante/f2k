@@ -68,11 +68,11 @@ mod target {
         status(io::delete_link(io::counted(link)))
     }
 
-    /// IofCompleteRequest(Irp, PriorityBoost), fastcall: the IRP completed up its stack. The
-    /// boost is a waiting thread's, and no thread waits on an F2K request.
+    /// IofCompleteRequest(Irp, PriorityBoost), fastcall: the IRP completed up its stack, its
+    /// waiting sender woken. The boost is not granted: the sender's wake takes the event's.
     #[no_mangle]
     pub extern "fastcall" fn f2k_export_IofCompleteRequest(irp: u32, _boost: i8) {
-        io::complete_request(irp);
+        io::complete_irp(irp);
     }
 
     /// IoGetCurrentProcess: the current process's stand-in (PsGetCurrentProcess is the DDK's
