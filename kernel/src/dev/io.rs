@@ -438,35 +438,42 @@ pub fn place(out: &mut [u8], text: &[u8]) -> i32 {
 /// The name Windows 2000's object manager gives a service key the caller named, its components
 /// as `stored` spells each (the registry keeps its keys' spellings), the hive roots upper-case
 /// (`\REGISTRY\MACHINE\SYSTEM`), and the current control set as the set it links to
-/// (`ControlSet001`): F2K's registry has the one, CurrentControlSet, with no link.
+/// (`ControlSet001`): F2K's registry has the one, CurrentControlSet, with no link. None when `out`
+/// has no room: no component is cut short.
 pub fn registry_object_name(stored: &[&[u16]], out: &mut [u16]) -> Option<usize> {
     let mut length = 0;
-    let mut push = |units: &[u16], length: &mut usize| -> Option<()> {
-        out.get_mut(*length..*length + units.len())?
-            .copy_from_slice(units);
-        *length += units.len();
-        Some(())
-    };
     for (index, component) in stored.iter().enumerate() {
-        push(&[SEPARATOR], &mut length)?;
-        let mut buffer = [0u16; 32];
-        let shown: &[u16] = if index < 3 {
-            let mut upper = [0u16; 32];
-            let n = component.len().min(32);
-            for (slot, &unit) in upper.iter_mut().zip(&component[..n]) {
-                *slot = rtl::path::upcase(unit);
-            }
-            buffer[..n].copy_from_slice(&upper[..n]);
-            &buffer[..n]
-        } else if index == 3 && same_name(component, &CURRENT_CONTROL_SET.map(u16::from)) {
-            let n = ascii("ControlSet001", &mut buffer);
-            &buffer[..n]
-        } else {
-            component
-        };
-        push(shown, &mut length)?;
+        push_object_component(index, component, out, &mut length)?;
     }
     Some(length)
+}
+
+/// The component at `index` of a service key's object name (see [`registry_object_name`]),
+/// after a separator, onto `out` at `*length`, which moves past it. None when `out` has no room.
+pub fn push_object_component(
+    index: usize,
+    component: &[u16],
+    out: &mut [u16],
+    length: &mut usize,
+) -> Option<()> {
+    let mut push = |units: &[u16]| -> Option<core::ops::Range<usize>> {
+        let at = *length;
+        out.get_mut(at..at + units.len())?.copy_from_slice(units);
+        *length += units.len();
+        Some(at..*length)
+    };
+    push(&[SEPARATOR])?;
+    if index == 3 && same_name(component, &CURRENT_CONTROL_SET.map(u16::from)) {
+        push(&CONTROL_SET_001.map(u16::from))?;
+        return Some(());
+    }
+    let pushed = push(component)?;
+    if index < 3 {
+        for unit in &mut out[pushed] {
+            *unit = rtl::path::upcase(*unit);
+        }
+    }
+    Some(())
 }
 
 /// The current control set's key name.
@@ -496,6 +503,14 @@ pub fn registry_path_below_root(units: &[u16], out: &mut [u16]) -> Option<usize>
         length += shown.len();
     }
     Some(length)
+}
+
+/// A synchronous device file's CurrentByteOffset after a transfer at `offset` that moved
+/// `information` bytes: a LARGE_INTEGER sum, as the platform's, which wraps (the offset may be a
+/// write's FILE_WRITE_TO_END_OF_FILE, or whatever the driver left in the object) and never
+/// overflows.
+pub fn position_after(offset: u64, information: u32) -> u64 {
+    offset.wrapping_add(u64::from(information))
 }
 
 // --- The unload's states -----------------------------------------------------------------------
@@ -2075,9 +2090,7 @@ mod target {
         let sent = on_driver_stack(|| send(device, &request, Some(file), transfer.system))?;
         let (outcome, system) = finish(sent, WaitMode::User)?;
         if file_object.flags & FO_SYNCHRONOUS_IO != 0 && !nt_error(outcome.status) {
-            // A LARGE_INTEGER sum, as the platform's: the offset may be a write's
-            // FILE_WRITE_TO_END_OF_FILE, or what the driver left in the object.
-            file_object.current_byte_offset = offset.wrapping_add(u64::from(outcome.information));
+            file_object.current_byte_offset = position_after(offset, outcome.information);
         }
         Ok((outcome, system))
     }
@@ -2125,37 +2138,31 @@ mod target {
     /// The registry's own spelling of each component of `below` (a path below `\Registry`), into
     /// `out` as the object manager names the key: its length.
     fn registry_path(below: &[u16], out: &mut [u16]) -> Option<usize> {
-        const DEPTH: usize = 12;
-        const UNITS: usize = 64;
+        /// The longest key name the registry's spelling is read for, in units (a key name's
+        /// limit on Windows 2000 is 255).
+        const UNITS: usize = 256;
         let mut path = [0u16; MAX_PATH];
         let length = registry_path_below_root(below, &mut path)?;
         let path = &path[..length];
-        let mut stored = [[0u16; UNITS]; DEPTH];
-        let mut lengths = [0usize; DEPTH];
-        lengths[0] = ascii("REGISTRY", &mut stored[0]);
-        let mut count = 1;
+        let mut written = 0;
+        let mut root = [0u16; 8];
+        let n = ascii("REGISTRY", &mut root);
+        push_object_component(0, &root[..n], out, &mut written)?;
         let mut so_far = 0;
-        for component in path.split(|&unit| unit == SEPARATOR) {
-            so_far += component.len() + usize::from(count > 1);
-            let spelled = stored.get_mut(count)?;
+        for (index, component) in path.split(|&unit| unit == SEPARATOR).enumerate() {
+            so_far += component.len() + usize::from(index > 0);
+            let mut spelled = [0u16; UNITS];
             let n = with_registry(|registry| {
                 let key = registry.open(registry.root(), &path[..so_far]).ok()?;
-                let info = registry.info(key).ok()?;
-                let mut n = 0;
-                for (slot, pair) in spelled.iter_mut().zip(info.name.as_chunks::<2>().0) {
-                    *slot = u16::from_le_bytes([pair[0], pair[1]]);
-                    n += 1;
+                let name = registry.info(key).ok()?.name.as_chunks::<2>().0;
+                for (slot, pair) in spelled.get_mut(..name.len())?.iter_mut().zip(name) {
+                    *slot = u16::from_le_bytes(*pair);
                 }
-                Some(n)
+                Some(name.len())
             })?;
-            lengths[count] = n;
-            count += 1;
+            push_object_component(index + 1, &spelled[..n], out, &mut written)?;
         }
-        let mut parts: [&[u16]; DEPTH] = [&[]; DEPTH];
-        for (index, part) in parts.iter_mut().enumerate().take(count) {
-            *part = &stored[index][..lengths[index]];
-        }
-        registry_object_name(&parts[..count], out)
+        Some(written)
     }
 
     /// A value of `key` as units (REG_SZ or REG_EXPAND_SZ, its NUL dropped), into `out`: its
@@ -2230,12 +2237,13 @@ mod target {
             return Err(STATUS_OBJECT_NAME_NOT_FOUND);
         };
         let image_path = &image_path[..length];
-        let file = crate::nt::file::read_whole_file(image_path)?;
-        let image = loader::map_driver_image(file.as_ref()).map_err(load_status)?;
-        drop(file);
+        // The RegistryPath before the image is mapped: its refusal leaves nothing mapped.
         let mut registry = [0u16; MAX_PATH];
         let registry_length = registry_path(&units[REGISTRY.len()..], &mut registry)
             .ok_or(STATUS_OBJECT_NAME_INVALID)?;
+        let file = crate::nt::file::read_whole_file(image_path)?;
+        let image = loader::map_driver_image(file.as_ref()).map_err(load_status)?;
+        drop(file);
         let driver = match make_driver_object(
             &image,
             &name,
@@ -3174,5 +3182,47 @@ mod tests {
         );
         // The last close frees the deleted device: off the list, the rest weighed.
         assert!(unload_due(&mut driver, weights(&mut devices[1..])));
+    }
+
+    /// The RegistryPath's components are never cut short: a long service name is kept whole
+    /// (the registry's spelling read component by component), and a name past the room is
+    /// refused rather than truncated.
+    #[test]
+    fn the_registry_path_keeps_long_components_whole() {
+        let long = "S".repeat(100);
+        let parts = [
+            wide("REGISTRY"),
+            wide("Machine"),
+            wide("System"),
+            wide("CurrentControlSet"),
+            wide("Services"),
+            wide(&long),
+        ];
+        let parts: std::vec::Vec<&[u16]> = parts.iter().map(|part| part.as_slice()).collect();
+        let mut out = [0u16; 260];
+        let length = registry_object_name(&parts, &mut out).unwrap();
+        assert_eq!(
+            std::string::String::from_utf16(&out[..length]).unwrap(),
+            format!("\\REGISTRY\\MACHINE\\SYSTEM\\ControlSet001\\Services\\{long}")
+        );
+        let mut small = [0u16; 100];
+        assert_eq!(registry_object_name(&parts, &mut small), None);
+        // A hive root longer than the old 32-unit buffer is upper-cased whole.
+        let root = "x".repeat(40);
+        let mut length = 0;
+        push_object_component(1, &wide(&root), &mut out, &mut length).unwrap();
+        assert_eq!(
+            std::string::String::from_utf16(&out[..length]).unwrap(),
+            format!("\\{}", "X".repeat(40))
+        );
+    }
+
+    /// A synchronous device file's position after a transfer wraps as a LARGE_INTEGER sum: a
+    /// write at FILE_WRITE_TO_END_OF_FILE, or a driver's position near 2^64, does not overflow.
+    #[test]
+    fn the_position_after_a_transfer_wraps() {
+        assert_eq!(position_after(0x1000, 0x200), 0x1200);
+        assert_eq!(position_after(u64::MAX, 2), 1);
+        assert_eq!(position_after(u64::MAX - 1, 0), u64::MAX - 1);
     }
 }

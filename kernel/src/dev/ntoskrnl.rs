@@ -7,6 +7,17 @@
 #[cfg(target_arch = "x86")]
 pub use target::*;
 
+/// The largest MaximumLength RtlInitUnicodeString gives a string: the even bytes a USHORT holds.
+const MAX_USTRING: usize = 0xFFFE;
+
+/// RtlInitUnicodeString's counts for a string of `units` units before its NUL: its Length and its
+/// MaximumLength (the NUL's room too), in bytes. A string too long for a UNICODE_STRING is clamped
+/// as Windows clamps it (Length 0xFFFC, MaximumLength 0xFFFE), where a 16-bit sum overflowed.
+pub fn unicode_lengths(units: usize) -> (u16, u16) {
+    let length = units.saturating_mul(2).min(MAX_USTRING - 2);
+    (length as u16, (length + 2) as u16)
+}
+
 #[cfg(target_arch = "x86")]
 mod target {
     use super::super::io;
@@ -135,12 +146,12 @@ mod target {
         destination: *mut UnicodeString,
         source: u32,
     ) {
-        let length = io::terminated(source).len() as u16 * 2;
+        let (length, maximum_length) = super::unicode_lengths(io::terminated(source).len());
         // SAFETY: the driver's string to fill.
         unsafe {
             *destination = UnicodeString {
                 length,
-                maximum_length: if source == 0 { 0 } else { length + 2 },
+                maximum_length: if source == 0 { 0 } else { maximum_length },
                 buffer: source,
             };
         }
@@ -262,5 +273,23 @@ mod target {
             return -1;
         }
         io::place(out, &text.bytes[..text.length])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A string's counts: its bytes and its NUL's; past a UNICODE_STRING's room, the clamp
+    /// (where 0x7FFF units overflowed `length + 2`, and 0x8000 `units * 2`).
+    #[test]
+    fn rtl_init_unicode_string_clamps_a_long_string() {
+        assert_eq!(unicode_lengths(0), (0, 2));
+        assert_eq!(unicode_lengths(5), (10, 12));
+        assert_eq!(unicode_lengths(0x7FFD), (0xFFFA, 0xFFFC));
+        assert_eq!(unicode_lengths(0x7FFE), (0xFFFC, 0xFFFE));
+        assert_eq!(unicode_lengths(0x7FFF), (0xFFFC, 0xFFFE));
+        assert_eq!(unicode_lengths(0x8000), (0xFFFC, 0xFFFE));
+        assert_eq!(unicode_lengths(usize::MAX), (0xFFFC, 0xFFFE));
     }
 }
