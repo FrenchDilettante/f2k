@@ -27,6 +27,12 @@ rem grouped by the DLL they exercise). Fixtures' names (capture.bat dll,
 rem or capture.bat threads files) recapture only those, in the order
 rem given.
 rem
+rem The kernel-mode fixtures (ntoskrnl\drvload) are listed fixtures too: each
+rem section's program loads its driver (<name>.sys, beside it), runs the
+rem section in it and unloads it, so they need an administrator's account
+rem (SeLoadDriverPrivilege); a driver's mistake stops the machine. They are
+rem captured last.
+rem
 rem The script fixtures, cmd\<name>\<name>.cmd, are captured the same way:
 rem each is one block, "cmd /c <name>.cmd" run from its own directory,
 rem with command extensions on (see :script).
@@ -61,6 +67,7 @@ call :cap_hellomd
 call :cap_crt
 for %%F in (seh fd wide process strings msvcrt cxxeh wmain) do call :listed crt %%F
 for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do call :script %%F
+for %%F in (drvload) do call :listed ntoskrnl %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
 echo by hand, into kernel32\runtime\overrides.txt, and "kernel32\ctrl\ctrl.exe keys"
@@ -88,6 +95,7 @@ for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do if /I "%%F"=
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_DLL=crt
 for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
+for %%F in (drvload) do if /I "%%F"=="%~1" set F2KT_DLL=ntoskrnl
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1
     exit /b 1

@@ -49,7 +49,7 @@ fn locked_file(object: &FileObject) -> Result<crate::fs::file::FileRecordId, NtS
     match object.context {
         Context::Disk(record) if io::file_at(record).directory => Err(STATUS_INVALID_PARAMETER),
         Context::Disk(record) => Ok(record),
-        Context::Pipe(_) | Context::Null => Err(STATUS_INVALID_DEVICE_REQUEST),
+        Context::Pipe(_) | Context::Null | Context::Device(_) => Err(STATUS_INVALID_DEVICE_REQUEST),
     }
 }
 

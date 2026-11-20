@@ -124,6 +124,11 @@ pub fn executive() {
 
     // The registry: its arena, and the keys Windows 2000 has from its boot on.
     crate::cm::init();
+
+    // The I/O manager for the drivers NtLoadDriver loads: its arena, its load lock, and the
+    // System process's stand-in PsInitialSystemProcess names.
+    crate::dev::io::init();
+    crate::dev::ntoskrnl::init();
 }
 
 /// Interrupts and the scheduler: the interrupt subsystem, the idle thread, then the interactive

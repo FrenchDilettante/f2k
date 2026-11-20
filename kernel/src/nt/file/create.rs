@@ -222,6 +222,62 @@ fn open_null(
     Ok(STATUS_SUCCESS)
 }
 
+/// What a device's open asks.
+struct DeviceOpen {
+    access: u32,
+    file_attributes: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    inherit: bool,
+}
+
+/// A loaded driver's device opened: IRP_MJ_CREATE sent down to its driver (the I/O manager's,
+/// [`crate::dev::io::create`]), and a file object made for the open with its handle. The driver's
+/// refusal is the open's; its I/O status's Information is the open's. No share check: a device's
+/// driver makes its own (IoCheckShareAccess), as on Windows 2000.
+#[inline(never)]
+fn open_device(
+    device: crate::dev::io::Referenced,
+    request: &DeviceOpen,
+    slot: UserPtr<u32>,
+    io_status: UserAddr,
+) -> NtResult {
+    let process = crate::user::args::calling_process();
+    if process.handles_full() {
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    let granted = rights::mapped(request.access);
+    let synchronous =
+        request.options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT) != 0;
+    let (file, information) = crate::dev::io::create(
+        device,
+        &crate::dev::io::OpenRequest {
+            desired_access: granted,
+            disposition: request.disposition,
+            options: request.options,
+            file_attributes: request.file_attributes as u16,
+            share_access: request.share as u16,
+            synchronous,
+        },
+    )?;
+    let open = io::Open {
+        granted,
+        share: request.share as u8,
+        inherit: request.inherit,
+        synchronous,
+        delete_on_close: false,
+    };
+    let access = rights::share_access(open.granted);
+    let handle = io::insert(process, Context::Device(file), access, &open, || {
+        crate::dev::io::cleanup(file);
+        crate::dev::io::close(file);
+    })?;
+    deliver(slot, handle)?;
+    complete(io_status, STATUS_SUCCESS, information);
+    Ok(STATUS_SUCCESS)
+}
+
 /// The create both services share.
 #[allow(clippy::too_many_arguments)]
 fn create(
@@ -253,6 +309,19 @@ fn create(
             slot.addr().probe(4)?;
             io_status.probe(8)?;
             return open_null(access, share, options, inherit, slot, io_status);
+        }
+        Named::Device { device, inherit } => {
+            slot.addr().probe(4)?;
+            io_status.probe(8)?;
+            let request = DeviceOpen {
+                access,
+                file_attributes,
+                share,
+                disposition,
+                options,
+                inherit,
+            };
+            return open_device(device, &request, slot, io_status);
         }
     };
     slot.addr().probe(4)?;

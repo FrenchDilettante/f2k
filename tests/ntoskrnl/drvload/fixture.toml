@@ -1,0 +1,47 @@
+# drvload: one test per block of the real-machine capture (output.txt); see tests/README.md. A
+# kernel-mode fixture (common/f2kd.h): drvload.exe, the program, loads its driver, drvload.sys (built
+# beside it from drvloadsys.c), for each section, runs the section in it and prints what it returns.
+# Its RegistryPath line prints the path the I/O manager hands DriverEntry, the capture machine's
+# \ControlSet001\ (F2K names its one control set so too).
+# The capture's last three blocks hold only "f2kd: NtLoadDriver: 0xC0000034": the names section,
+# captured before them, leaves the driver's image loaded on Windows 2000 once it is unloaded (its
+# two refused IoCreateDevice calls keep a reference on the driver that is never dropped), so every
+# later load of the service fails until the machine restarts. They are skipped until the fixture,
+# rebuilt with names last, is captured again.
+# Not pinned: hal.dll's KeGetCurrentIrql (entry, create, ioctl, irps, unload), which
+# kernel/hal_exports.toml does not carry yet (the I/O layer serves it meanwhile).
+description = "drvload - the plumbing a legacy driver lives on and the NT layouts it reads: NtLoadDriver and NtUnloadDriver over a service key the program writes (privilege, missing key, twice, reload), the DRIVER_OBJECT and DRIVER_EXTENSION DriverEntry is handed, the DEVICE_OBJECT IoCreateDevice makes, the IRPs the dispatch sees (create, cleanup, close, device control) and their process, IoCreateDevice and IoCreateSymbolicLink refusals, the I/O manager's answers for unset major functions, and the unload, with and without a handle open."
+kind = "sectioned"
+gate = true
+
+[skip]
+unknown = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
+unload = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
+unloadopen = "the capture holds only \"f2kd: NtLoadDriver: 0xC0000034\": after the names section every later NtLoadDriver of the service failed on Windows 2000 (names' refused IoCreateDevice calls left the driver's image loaded, its driver object gone); retake once drvload is rebuilt with names last"
+
+[pins]
+# The exports each block pins, as dll.Export ("*": every block, the driver's load, its device and
+# link, its requests and its unload); scripts/compat.py derives each export's coverage from them.
+"*" = [
+    "ntdll.NtLoadDriver",
+    "ntdll.NtUnloadDriver",
+    "kernel32.DeviceIoControl",
+    "ntoskrnl.IoCreateDevice",
+    "ntoskrnl.IoCreateSymbolicLink",
+    "ntoskrnl.IofCompleteRequest",
+    "ntoskrnl.IoDeleteSymbolicLink",
+    "ntoskrnl.IoDeleteDevice",
+    "ntoskrnl.RtlInitUnicodeString",
+    "ntoskrnl._vsnprintf",
+]
+load = ["advapi32.AdjustTokenPrivileges", "advapi32.LookupPrivilegeValueA", "kernel32.CreateFileA"]
+entry = ["ntoskrnl.PsInitialSystemProcess", "ntoskrnl.IoGetCurrentProcess", "ntoskrnl.ExGetPreviousMode"]
+create = ["ntoskrnl.PsGetCurrentProcessId", "ntoskrnl.PsGetCurrentThreadId", "ntoskrnl.KeGetCurrentThread",
+          "ntoskrnl.ExGetPreviousMode"]
+ioctl = ["ntoskrnl.PsGetCurrentProcessId", "ntoskrnl.PsGetCurrentThreadId", "ntoskrnl.KeGetCurrentThread",
+         "ntoskrnl.ExGetPreviousMode"]
+irps = ["ntoskrnl.PsGetCurrentProcessId", "ntoskrnl.PsGetCurrentThreadId", "ntoskrnl.KeGetCurrentThread",
+        "ntoskrnl.ExGetPreviousMode", "kernel32.CloseHandle"]
+unknown = ["kernel32.ReadFile", "kernel32.WriteFile", "kernel32.FlushFileBuffers"]
+unload = ["ntoskrnl.RtlWriteRegistryValue", "ntoskrnl.PsInitialSystemProcess", "ntoskrnl.IoGetCurrentProcess"]
+unloadopen = ["ntoskrnl.RtlWriteRegistryValue", "ntoskrnl.PsInitialSystemProcess", "kernel32.CloseHandle"]

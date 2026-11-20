@@ -581,6 +581,19 @@ unsafe extern "system" {
         output: *mut u8,
         output_length: u32,
     ) -> u32;
+    /// A device's control request (DeviceIoControl's, for every code but the file systems').
+    pub fn NtDeviceIoControlFile(
+        handle: u32,
+        event: u32,
+        routine: usize,
+        context: usize,
+        io_status: *mut IoStatus,
+        code: u32,
+        input: *const u8,
+        input_length: u32,
+        output: *mut u8,
+        output_length: u32,
+    ) -> u32;
     /// The DOS paths (ntdll's, against the current directory): a path's NT form (relative to the
     /// current directory's handle when it is under it), and its full form.
     pub fn RtlDosPathNameToNtPathName_U(
@@ -4707,6 +4720,22 @@ pub mod pipes {
         }
         FAIL_NEXT.with(|next| next.set(FAIL_AFTER_CREATE.with(|after| after.replace(0))));
         0
+    }
+
+    /// A device's control request: the stand-ins' handles name no driver's device.
+    pub unsafe extern "system" fn NtDeviceIoControlFile(
+        _handle: u32,
+        _event: u32,
+        _routine: usize,
+        _context: usize,
+        _io_status: *mut IoStatus,
+        _code: u32,
+        _input: *const u8,
+        _input_length: u32,
+        _output: *mut u8,
+        _output_length: u32,
+    ) -> u32 {
+        STATUS_INVALID_HANDLE
     }
 
     /// The peek, as the named-pipe file system answers it: FILE_PIPE_PEEK_BUFFER's header, then

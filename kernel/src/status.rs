@@ -88,6 +88,8 @@ statuses! {
     STATUS_INVALID_DEVICE_REQUEST,
     /// A read at or past the end of the file.
     STATUS_END_OF_FILE,
+    /// A completion routine keeps its IRP: the completion's walk up the stack stops there.
+    STATUS_MORE_PROCESSING_REQUIRED,
     /// No virtual memory left to reserve or commit.
     STATUS_NO_MEMORY,
     /// A range that overlaps memory already reserved.
@@ -144,8 +146,15 @@ statuses! {
     STATUS_LOCK_NOT_GRANTED,
     /// The file is being deleted: it goes with its last open's cleanup, and no new open is allowed.
     STATUS_DELETE_PENDING,
+    /// A privilege the call requires is not enabled in the caller's token (NtLoadDriver's
+    /// SeLoadDriverPrivilege).
+    STATUS_PRIVILEGE_NOT_HELD,
     /// The bytes are no image the loader accepts.
     STATUS_INVALID_IMAGE_FORMAT,
+    /// A driver already loaded under the service key's name (NtLoadDriver).
+    STATUS_IMAGE_ALREADY_LOADED,
+    /// A driver's import its kernel modules do not export.
+    STATUS_DRIVER_ENTRYPOINT_NOT_FOUND,
     /// An unlock of a byte range no lock of the caller's holds exactly.
     STATUS_RANGE_NOT_LOCKED,
     /// The volume has no free cluster left.

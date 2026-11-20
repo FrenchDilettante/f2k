@@ -99,6 +99,15 @@ fn query_information_file_held(
                 _ => return Err(STATUS_NOT_IMPLEMENTED),
             }
         }
+        // A driver's device answers IRP_MJ_QUERY_INFORMATION: not yet; the position is the I/O
+        // manager's own.
+        Context::Device(_) => {
+            let position = io::serialized_interruptible(&object, |held| held.position)?;
+            match class {
+                QueryClass::Position => info::position(position, &mut answer),
+                _ => return Err(super::device_request("NtQueryInformationFile")),
+            }
+        }
     };
     information.write(&answer[..written])?;
     complete(io_status, STATUS_SUCCESS, written as u32);
@@ -336,7 +345,7 @@ fn set_information_file_held(
         Context::Disk(record) => crate::process::threads::critical_region(|| {
             set_disk(&object, record, setting, length, information)
         })?,
-        Context::Pipe(_) | Context::Null => set_pipe(&object, setting)?,
+        Context::Pipe(_) | Context::Null | Context::Device(_) => set_pipe(&object, setting)?,
     }
     complete(io_status, STATUS_SUCCESS, 0);
     Ok(STATUS_SUCCESS)
@@ -367,7 +376,7 @@ fn set_position(
     }
     match object.context {
         Context::Disk(_) => io::serialized(object, |held| held.position = position),
-        Context::Pipe(_) | Context::Null => {
+        Context::Pipe(_) | Context::Null | Context::Device(_) => {
             io::serialized_interruptible(object, |held| held.position = position)?
         }
     }

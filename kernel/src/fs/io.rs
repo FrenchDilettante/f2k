@@ -217,6 +217,7 @@ mod target {
             }
             Context::Pipe(end) => crate::fs::pipes::cleanup(end),
             Context::Null => {}
+            Context::Device(file) => crate::dev::io::cleanup(file),
         }
     }
 
@@ -227,6 +228,7 @@ mod target {
             Context::Disk(record) => with_records(|records| records.close(record)),
             Context::Pipe(end) => crate::fs::pipes::close(end),
             Context::Null => {}
+            Context::Device(file) => crate::dev::io::close(file),
         }
     }
 

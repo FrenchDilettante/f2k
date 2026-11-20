@@ -133,6 +133,8 @@ fn read_file_held(
         }
         // The null device holds nothing: every read is at its end.
         Context::Null => Err(STATUS_END_OF_FILE),
+        // A driver's device reads through IRP_MJ_READ: not yet.
+        Context::Device(_) => Err(super::device_request("NtReadFile")),
     };
     finish(transfer, io_status, result)
 }
@@ -243,6 +245,8 @@ fn write_file_held(
             buffer.probe(length)?;
             Ok(length)
         }
+        // A driver's device writes through IRP_MJ_WRITE: not yet.
+        Context::Device(_) => Err(super::device_request("NtWriteFile")),
     };
     finish(transfer, io_status, result)
 }
@@ -340,6 +344,8 @@ pub fn flush_buffers_file(_call: &mut NtCall, handle: Handle, io_status: UserAdd
     io_status.probe(8)?;
     match object.context {
         Context::Disk(_) | Context::Null => {}
+        // A driver's device flushes through IRP_MJ_FLUSH_BUFFERS: not yet.
+        Context::Device(_) => return Err(super::device_request("NtFlushBuffersFile")),
         Context::Pipe(end) => {
             io::serialized_interruptible(&object, |_| crate::fs::pipes::flush(end))
                 .and_then(|flushed| flushed)?;

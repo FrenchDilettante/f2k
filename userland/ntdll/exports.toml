@@ -459,6 +459,33 @@ zw_ordinal = 778
 note = "FSCTL_PIPE_PEEK on a pipe's end alone; any other code is STATUS_NOT_IMPLEMENTED"
 
 [[export]]
+name = "NtDeviceIoControlFile"
+group = "nt"
+args = ["handle FileHandle", "handle Event", "ptr ApcRoutine", "ptr ApcContext", "ptr IoStatusBlock", "u32 IoControlCode", "ptr InputBuffer", "u32 InputBufferLength", "ptr OutputBuffer", "u32 OutputBufferLength"]
+impl = { syscall = "crate::nt::file::device_io_control_file" }
+ordinal = 117
+zw_ordinal = 762
+note = "METHOD_BUFFERED on a device a loaded driver made; the other methods and the file systems' devices are STATUS_NOT_IMPLEMENTED"
+
+[[export]]
+name = "NtLoadDriver"
+group = "nt"
+args = ["ptr DriverServiceName"]
+impl = { syscall = "crate::nt::driver::load_driver" }
+ordinal = 147
+zw_ordinal = 792
+note = "a legacy driver's service key with an ImagePath on the boot volume; SeLoadDriverPrivilege required"
+
+[[export]]
+name = "NtUnloadDriver"
+group = "nt"
+args = ["ptr DriverServiceName"]
+impl = { syscall = "crate::nt::driver::unload_driver" }
+ordinal = 293
+zw_ordinal = 938
+note = "SeLoadDriverPrivilege required; an unload while a device of the driver is open is STATUS_NOT_IMPLEMENTED"
+
+[[export]]
 name = "NtOpenDirectoryObject"
 group = "nt"
 args = ["ptr<u32> DirectoryHandle", "u32 DesiredAccess", "ptr ObjectAttributes"]
@@ -1883,10 +1910,6 @@ name = "NtDeleteObjectAuditAlarm"
 ordinal = 115
 
 [[export]]
-name = "NtDeviceIoControlFile"
-ordinal = 117
-
-[[export]]
 name = "NtDisplayString"
 ordinal = 118
 
@@ -1961,10 +1984,6 @@ ordinal = 145
 [[export]]
 name = "NtListenPort"
 ordinal = 146
-
-[[export]]
-name = "NtLoadDriver"
-ordinal = 147
 
 [[export]]
 name = "NtLoadKey2"
@@ -2333,10 +2352,6 @@ ordinal = 289
 [[export]]
 name = "NtTestAlert"
 ordinal = 292
-
-[[export]]
-name = "NtUnloadDriver"
-ordinal = 293
 
 [[export]]
 name = "NtUnloadKey"
@@ -3851,10 +3866,6 @@ name = "ZwDeleteObjectAuditAlarm"
 ordinal = 760
 
 [[export]]
-name = "ZwDeviceIoControlFile"
-ordinal = 762
-
-[[export]]
 name = "ZwDisplayString"
 ordinal = 763
 
@@ -3929,10 +3940,6 @@ ordinal = 790
 [[export]]
 name = "ZwListenPort"
 ordinal = 791
-
-[[export]]
-name = "ZwLoadDriver"
-ordinal = 792
 
 [[export]]
 name = "ZwLoadKey2"
@@ -4301,10 +4308,6 @@ ordinal = 934
 [[export]]
 name = "ZwTestAlert"
 ordinal = 937
-
-[[export]]
-name = "ZwUnloadDriver"
-ordinal = 938
 
 [[export]]
 name = "ZwUnloadKey"

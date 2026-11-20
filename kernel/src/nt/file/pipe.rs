@@ -45,7 +45,7 @@ const FSCTL_PIPE_PEEK: u32 = 0x0011_400C;
 
 /// A file system control code's required access (its bits 14 and 15): FILE_READ_ACCESS asks
 /// FILE_READ_DATA of the handle, FILE_WRITE_ACCESS FILE_WRITE_DATA.
-fn control_rights(code: u32) -> u32 {
+pub(super) fn control_rights(code: u32) -> u32 {
     let mut needs = 0;
     if code & 0x4000 != 0 {
         needs |= rights::FILE_READ_DATA;
@@ -57,7 +57,7 @@ fn control_rights(code: u32) -> u32 {
 }
 
 /// Whether `granted` holds every right of `needs`; STATUS_ACCESS_DENIED otherwise.
-fn check_all(granted: u32, needs: u32) -> Result<(), NtStatus> {
+pub(super) fn check_all(granted: u32, needs: u32) -> Result<(), NtStatus> {
     if granted & needs != needs {
         return Err(STATUS_ACCESS_DENIED);
     }
@@ -187,7 +187,9 @@ pub fn create_named_pipe_file(
     }
     let (name, inherit) = match named(attributes)? {
         Named::Pipe { name, inherit } => (name, inherit),
-        Named::Disk(_) | Named::Null { .. } => return Err(STATUS_INVALID_DEVICE_REQUEST),
+        Named::Disk(_) | Named::Null { .. } | Named::Device { .. } => {
+            return Err(STATUS_INVALID_DEVICE_REQUEST)
+        }
     };
     slot.addr().probe(4)?;
     io_status.probe(8)?;

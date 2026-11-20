@@ -378,6 +378,94 @@ fn write_to(
     bool_answer(transferred(status, &io_status, written.as_mut()))
 }
 
+/// DeviceIoControl: a control request to the device the handle is open on, Windows 2000's:
+/// NtFsControlFile for a file system's code, NtDeviceIoControlFile for any other (see
+/// [`ntcall::device_control`]). Without an OVERLAPPED the request completes before the call
+/// returns (a pending one is waited for on the handle), the count the I/O status's Information:
+/// TRUE with it for a success, FALSE with the status's error otherwise (a warning's count stored
+/// too, as Windows 2000 stores it for STATUS_BUFFER_OVERFLOW). With one, as an overlapped read's
+/// answer: its event and its I/O status, TRUE once complete, FALSE with ERROR_IO_PENDING while
+/// not.
+///
+/// # Safety
+///
+/// `input` holds `input_size` bytes or is null, `output` `output_size` bytes or is null;
+/// `returned` is null or points at a dword; `overlapped` is null or points at an OVERLAPPED.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_DeviceIoControl")]
+pub unsafe extern "system" fn device_io_control(
+    device: u32,
+    code: u32,
+    input: *const u8,
+    input_size: u32,
+    output: *mut u8,
+    output_size: u32,
+    returned: *mut u32,
+    overlapped: *mut Overlapped,
+) -> u32 {
+    // SAFETY: the caller's buffers, dword and OVERLAPPED, when given (the contract).
+    let (input, output, returned, overlapped) = unsafe {
+        (
+            InBuf::new(
+                input,
+                if input.is_null() {
+                    0
+                } else {
+                    input_size as usize
+                },
+            ),
+            OutBuf::new(
+                output,
+                if output.is_null() {
+                    0
+                } else {
+                    output_size as usize
+                },
+            ),
+            Out::optional(returned),
+            Out::optional(overlapped),
+        )
+    };
+    bool_answer(device_control(
+        device, code, input, output, returned, overlapped,
+    ))
+}
+
+/// DeviceIoControl's work.
+fn device_control(
+    device: u32,
+    code: u32,
+    input: InBuf<'_, u8>,
+    output: OutBuf<'_, u8>,
+    mut returned: Option<Out<'_, u32>>,
+    overlapped: Option<Out<'_, Overlapped>>,
+) -> Result<(), Failure> {
+    let device = standard_handle(device);
+    let input = Source::from(input);
+    let output = Destination::from(output);
+    if let Some(overlapped) = overlapped {
+        return overlapped_transfer(overlapped, returned.as_mut(), |transfer, io_status| {
+            ntcall::device_control(device, code, transfer, io_status, input, output)
+        });
+    }
+    let mut io_status = IoStatus::default();
+    let mut status = ntcall::device_control(
+        device,
+        code,
+        Transfer::AtPosition,
+        &mut Out::from(&mut io_status),
+        input,
+        output,
+    );
+    if status == STATUS_PENDING {
+        status = match ntcall::wait_for_single_object(device, false, None) {
+            Ok(_) => io_status.status,
+            Err(failure) => failure,
+        };
+    }
+    transferred(status, &io_status, returned.as_mut())
+}
+
 /// SetFilePointer, Windows 2000's: the distance (the 64-bit pair with a high dword, the
 /// sign-extended low dword without) from the start, the position (FilePositionInformation) or the
 /// end (FileStandardInformation's), then set (FilePositionInformation): the new position's low

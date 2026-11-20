@@ -503,7 +503,7 @@ mod tests {
         // global-atom and debug-output calls and RaiseException its Rust, the heap and Local/Global
         // calls its own over ntdll's heap, GlobalCompact over its RtlCompactHeap). The internal
         // start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 378);
+        assert_eq!(NATIVE_EXPORTS.len(), 379);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 388, "the corpus's import surface");
+        assert_eq!(names.len(), 389, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(
@@ -1173,7 +1173,7 @@ mod tests {
 
     /// Corpus binaries that import msvcrt, advapi32, user32 or gdi32: among them the GUI fixtures
     /// whose blocks are all still pending, which load against user32's and gdi32's stubs.
-    const LOADED_CORPUS: [(&str, &[u8]); 57] = [
+    const LOADED_CORPUS: [(&str, &[u8]); 58] = [
         (
             "hellomd",
             include_bytes!("../../../tests/crt/hellomd/hellomd.exe"),
@@ -1310,26 +1310,90 @@ mod tests {
             "ttfont",
             include_bytes!("../../../tests/gdi32/ttfont/ttfont.exe"),
         ),
-        ("threx", include_bytes!("../../../tests/kernel32/threx/threx.exe")),
-        ("wsprintf", include_bytes!("../../../tests/user32/wsprintf/wsprintf.exe")),
-        ("rects", include_bytes!("../../../tests/user32/rects/rects.exe")),
-        ("chars", include_bytes!("../../../tests/user32/chars/chars.exe")),
-        ("props", include_bytes!("../../../tests/user32/props/props.exe")),
-        ("wintree", include_bytes!("../../../tests/user32/wintree/wintree.exe")),
-        ("guiclass", include_bytes!("../../../tests/user32/guiclass/guiclass.exe")),
-        ("guigeo", include_bytes!("../../../tests/user32/guigeo/guigeo.exe")),
-        ("guimsg", include_bytes!("../../../tests/user32/guimsg/guimsg.exe")),
-        ("scroll", include_bytes!("../../../tests/user32/scroll/scroll.exe")),
-        ("caret", include_bytes!("../../../tests/user32/caret/caret.exe")),
-        ("editctl", include_bytes!("../../../tests/user32/editctl/editctl.exe")),
-        ("bitmaps", include_bytes!("../../../tests/gdi32/bitmaps/bitmaps.exe")),
-        ("mapmode", include_bytes!("../../../tests/gdi32/mapmode/mapmode.exe")),
-        ("shapes", include_bytes!("../../../tests/gdi32/shapes/shapes.exe")),
-        ("regions", include_bytes!("../../../tests/gdi32/regions/regions.exe")),
-        ("locale", include_bytes!("../../../tests/kernel32/locale/locale.exe")),
-        ("atom", include_bytes!("../../../tests/kernel32/atom/atom.exe")),
-        ("cxxeh", include_bytes!("../../../tests/crt/cxxeh/cxxeh.exe")),
-        ("wmain", include_bytes!("../../../tests/crt/wmain/wmain.exe")),
+        (
+            "threx",
+            include_bytes!("../../../tests/kernel32/threx/threx.exe"),
+        ),
+        (
+            "wsprintf",
+            include_bytes!("../../../tests/user32/wsprintf/wsprintf.exe"),
+        ),
+        (
+            "rects",
+            include_bytes!("../../../tests/user32/rects/rects.exe"),
+        ),
+        (
+            "chars",
+            include_bytes!("../../../tests/user32/chars/chars.exe"),
+        ),
+        (
+            "props",
+            include_bytes!("../../../tests/user32/props/props.exe"),
+        ),
+        (
+            "wintree",
+            include_bytes!("../../../tests/user32/wintree/wintree.exe"),
+        ),
+        (
+            "guiclass",
+            include_bytes!("../../../tests/user32/guiclass/guiclass.exe"),
+        ),
+        (
+            "guigeo",
+            include_bytes!("../../../tests/user32/guigeo/guigeo.exe"),
+        ),
+        (
+            "guimsg",
+            include_bytes!("../../../tests/user32/guimsg/guimsg.exe"),
+        ),
+        (
+            "scroll",
+            include_bytes!("../../../tests/user32/scroll/scroll.exe"),
+        ),
+        (
+            "caret",
+            include_bytes!("../../../tests/user32/caret/caret.exe"),
+        ),
+        (
+            "editctl",
+            include_bytes!("../../../tests/user32/editctl/editctl.exe"),
+        ),
+        (
+            "bitmaps",
+            include_bytes!("../../../tests/gdi32/bitmaps/bitmaps.exe"),
+        ),
+        (
+            "mapmode",
+            include_bytes!("../../../tests/gdi32/mapmode/mapmode.exe"),
+        ),
+        (
+            "shapes",
+            include_bytes!("../../../tests/gdi32/shapes/shapes.exe"),
+        ),
+        (
+            "regions",
+            include_bytes!("../../../tests/gdi32/regions/regions.exe"),
+        ),
+        (
+            "locale",
+            include_bytes!("../../../tests/kernel32/locale/locale.exe"),
+        ),
+        (
+            "atom",
+            include_bytes!("../../../tests/kernel32/atom/atom.exe"),
+        ),
+        (
+            "cxxeh",
+            include_bytes!("../../../tests/crt/cxxeh/cxxeh.exe"),
+        ),
+        (
+            "wmain",
+            include_bytes!("../../../tests/crt/wmain/wmain.exe"),
+        ),
+        (
+            "drvload",
+            include_bytes!("../../../tests/ntoskrnl/drvload/drvload.exe"),
+        ),
     ];
 
     /// Every import of those binaries resolves in the system DLL it names: each loads, and runs

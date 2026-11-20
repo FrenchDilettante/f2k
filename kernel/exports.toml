@@ -66,6 +66,119 @@ title = "local procedure calls (Lpc)"
 key = "rtl"
 title = "runtime library (Rtl)"
 
+# --- Implemented: the exports a legacy driver calls (kernel/src/dev/ntoskrnl.rs) ---------------
+#
+# Their ordinals are Windows 2000's as the DDK's import library gives them: each name's hint (its
+# index in ntoskrnl.exe's name table, the names sorted, every export named) plus one, the base.
+# The real export table, once dumped, confirms them.
+
+[[export]]
+name = "KeGetCurrentThread"
+group = "ke"
+args = []
+impl = { native = "KeGetCurrentThread" }
+ordinal = 435
+note = "the running thread's stand-in (dev::io: F2K's threads are no KTHREADs); PsGetCurrentThread is the DDK's macro over it"
+
+[[export]]
+name = "IoCreateDevice"
+group = "io"
+args = ["ptr DriverObject", "u32 DeviceExtensionSize", "ptr DeviceName", "u32 DeviceType", "u32 DeviceCharacteristics", "boolean Exclusive", "ptr DeviceObject"]
+impl = { native = "IoCreateDevice" }
+ordinal = 284
+
+[[export]]
+name = "IoDeleteDevice"
+group = "io"
+args = ["ptr DeviceObject"]
+impl = { native = "IoDeleteDevice" }
+fails = "void"
+ordinal = 294
+
+[[export]]
+name = "IoCreateSymbolicLink"
+group = "io"
+args = ["ptr SymbolicLinkName", "ptr DeviceName"]
+impl = { native = "IoCreateSymbolicLink" }
+ordinal = 290
+
+[[export]]
+name = "IoDeleteSymbolicLink"
+group = "io"
+args = ["ptr SymbolicLinkName"]
+impl = { native = "IoDeleteSymbolicLink" }
+ordinal = 296
+
+[[export]]
+name = "IofCompleteRequest"
+group = "io"
+args = ["ptr Irp", "u32 PriorityBoost"]
+impl = { native = "IofCompleteRequest" }
+fails = "void"
+ordinal = 406
+note = "fastcall: IoCompleteRequest is the DDK's macro over it"
+
+[[export]]
+name = "IoGetCurrentProcess"
+group = "io"
+args = []
+impl = { native = "IoGetCurrentProcess" }
+ordinal = 315
+note = "the current process's stand-in (the System process's while a load or an unload runs); PsGetCurrentProcess is the DDK's macro over it"
+
+[[export]]
+name = "PsGetCurrentProcessId"
+group = "ps"
+args = []
+impl = { native = "PsGetCurrentProcessId" }
+ordinal = 725
+
+[[export]]
+name = "PsGetCurrentThreadId"
+group = "ps"
+args = []
+impl = { native = "PsGetCurrentThreadId" }
+ordinal = 726
+
+[[export]]
+name = "PsInitialSystemProcess"
+group = "ps"
+impl = { native = "PsInitialSystemProcess" }
+data = true
+ordinal = 730
+note = "the System process's stand-in"
+
+[[export]]
+name = "ExGetPreviousMode"
+group = "ex"
+args = []
+impl = { native = "ExGetPreviousMode" }
+ordinal = 76
+
+[[export]]
+name = "RtlInitUnicodeString"
+group = "rtl"
+args = ["ptr DestinationString", "ptr SourceString"]
+impl = { native = "RtlInitUnicodeString" }
+fails = "void"
+ordinal = 869
+
+[[export]]
+name = "RtlWriteRegistryValue"
+group = "rtl"
+args = ["u32 RelativeTo", "ptr Path", "ptr ValueName", "u32 ValueType", "ptr ValueData", "u32 ValueLength"]
+impl = { native = "RtlWriteRegistryValue" }
+ordinal = 984
+note = "RTL_REGISTRY_ABSOLUTE alone; the other roots are the stub path"
+
+[[export]]
+name = "_vsnprintf"
+group = "rtl"
+args = ["ptr buffer", "u32 count", "ptr format", "ptr argptr"]
+impl = { native = "_vsnprintf" }
+ordinal = 1162
+note = "cdecl: the C runtime's conversions (rtl::printf)"
+
 # --- Catalogued: the Windows 2000 DDK's names, F2K's seed until the real table is folded in -----
 
 [[export]]
@@ -89,9 +202,6 @@ data = true
 
 [[export]]
 name = "ExFreePool"
-
-[[export]]
-name = "ExGetPreviousMode"
 
 [[export]]
 name = "ExInitializeResourceLite"
@@ -118,18 +228,6 @@ name = "IoAttachDeviceToDeviceStack"
 name = "IoBuildDeviceIoControlRequest"
 
 [[export]]
-name = "IoCreateDevice"
-
-[[export]]
-name = "IoCreateSymbolicLink"
-
-[[export]]
-name = "IoDeleteDevice"
-
-[[export]]
-name = "IoDeleteSymbolicLink"
-
-[[export]]
 name = "IoDetachDevice"
 
 [[export]]
@@ -143,18 +241,11 @@ name = "IoFreeIrp"
 name = "IoFreeMdl"
 
 [[export]]
-name = "IoGetCurrentProcess"
-
-[[export]]
 name = "IoGetDeviceObjectPointer"
 
 [[export]]
 name = "IofCallDriver"
 note = "fastcall: IoCallDriver is the DDK's macro over it"
-
-[[export]]
-name = "IofCompleteRequest"
-note = "fastcall: IoCompleteRequest is the DDK's macro over it"
 
 [[export]]
 name = "KeBugCheckEx"
@@ -164,9 +255,6 @@ name = "KeCancelTimer"
 
 [[export]]
 name = "KeDelayExecutionThread"
-
-[[export]]
-name = "KeGetCurrentThread"
 
 [[export]]
 name = "KeInitializeDpc"
@@ -274,17 +362,7 @@ note = "fastcall: ObReferenceObject is the DDK's macro over it"
 name = "PsCreateSystemThread"
 
 [[export]]
-name = "PsGetCurrentProcessId"
-
-[[export]]
-name = "PsGetCurrentThreadId"
-
-[[export]]
 name = "PsGetVersion"
-
-[[export]]
-name = "PsInitialSystemProcess"
-data = true
 
 [[export]]
 name = "PsLookupProcessByProcessId"
@@ -337,9 +415,6 @@ name = "RtlInitAnsiString"
 name = "RtlInitString"
 
 [[export]]
-name = "RtlInitUnicodeString"
-
-[[export]]
 name = "RtlIntegerToUnicodeString"
 
 [[export]]
@@ -359,9 +434,6 @@ name = "RtlUnicodeStringToInteger"
 
 [[export]]
 name = "RtlUpcaseUnicodeChar"
-
-[[export]]
-name = "RtlWriteRegistryValue"
 
 [[export]]
 name = "SeAccessCheck"

@@ -189,6 +189,9 @@ pub enum Context {
     /// The null device (`\Device\Null`, the DOS device NUL): its reads find the end at once, its
     /// writes take every byte and keep none. It keeps no state of its own.
     Null,
+    /// A device a loaded driver made, served by its driver through IRPs: the I/O manager's record
+    /// of the open's FILE_OBJECT (see [`crate::dev::io`]).
+    Device(crate::dev::io::DeviceFile),
 }
 
 /// A file object's body: one open of one file.
@@ -261,7 +264,7 @@ impl FileObject {
     pub fn disk(&self) -> Option<FileRecordId> {
         match self.context {
             Context::Disk(record) => Some(record),
-            Context::Pipe(_) | Context::Null => None,
+            Context::Pipe(_) | Context::Null | Context::Device(_) => None,
         }
     }
 

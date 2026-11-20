@@ -2007,6 +2007,42 @@ pub fn fs_control_file(
     Ok(io_status)
 }
 
+/// DeviceIoControl's service: NtFsControlFile for a file system's code (FILE_DEVICE_FILE_SYSTEM
+/// in its device type), NtDeviceIoControlFile for any other, as `transfer` says (its event and
+/// APC context; no offset), the I/O status in `io_status`; the service's status as it answers it.
+pub fn device_control(
+    file: u32,
+    code: u32,
+    transfer: Transfer<'_>,
+    io_status: &mut Out<'_, IoStatus>,
+    input: Source<'_>,
+    output: Destination<'_>,
+) -> NtStatus {
+    const FILE_DEVICE_FILE_SYSTEM: u32 = 9;
+    let (event, context, _) = transfer.arguments();
+    let service = if code >> 16 == FILE_DEVICE_FILE_SYSTEM {
+        nt::NtFsControlFile
+    } else {
+        nt::NtDeviceIoControlFile
+    };
+    // SAFETY: ntdll's export: the service probes the input and the output (their lengths passed
+    // with them) and the I/O status place, as the kernel reads and writes a caller's memory.
+    unsafe {
+        service(
+            file,
+            event,
+            0,
+            context,
+            io_status.as_ptr(),
+            code,
+            input.address as *const u8,
+            input.length as u32,
+            output.address as *mut u8,
+            output.length as u32,
+        )
+    }
+}
+
 // --- The DOS paths -------------------------------------------------------------------------------
 
 /// A DOS path's NT form as RtlDosPathNameToNtPathName_U makes it: the whole NT path (its buffer

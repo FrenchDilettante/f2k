@@ -2082,6 +2082,14 @@ ordinal = 578
 note = "a console handle's read is the console server's (ReadConsoleA): a line in line mode, as the console's input mode reads it"
 
 [[export]]
+name = "DeviceIoControl"
+group = "files"
+args = ["handle hDevice", "u32 dwIoControlCode", "ptr lpInBuffer", "u32 nInBufferSize", "ptr lpOutBuffer", "u32 nOutBufferSize", "ptr<u32> lpBytesReturned", "ptr lpOverlapped"]
+impl = { native = "DeviceIoControl" }
+ordinal = 104
+note = "NtFsControlFile for a file system's code, NtDeviceIoControlFile for any other"
+
+[[export]]
 name = "CreateFileMappingA"
 group = "files"
 args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
@@ -3437,10 +3445,6 @@ ordinal = 102
 [[export]]
 name = "DeleteVolumeMountPointW"
 ordinal = 103
-
-[[export]]
-name = "DeviceIoControl"
-ordinal = 104
 
 [[export]]
 name = "DisconnectNamedPipe"

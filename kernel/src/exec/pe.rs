@@ -51,6 +51,8 @@ const MACHINE_I386: u16 = 0x014C;
 /// subsystem field is not consulted (the system DLLs carry either value).
 const SUBSYSTEM_GUI: u16 = 2;
 const SUBSYSTEM_CUI: u16 = 3;
+/// The native subsystem: a driver's (the DDK links a `.sys` image /SUBSYSTEM:NATIVE).
+const SUBSYSTEM_NATIVE: u16 = 1;
 
 /// The file-header characteristic that makes an image a DLL.
 const FILE_DLL: u16 = 0x2000;
@@ -114,9 +116,9 @@ pub enum Reject {
     NoEntryPoint,
     /// A DLL where a program was asked for.
     NotAProgram,
-    /// A program where a kernel module (a DLL) was asked for.
+    /// A program where a kernel module (a native image or a DLL) was asked for.
     NotADll,
-    /// A kernel module whose preferred base or extent does not lie in the kernel half.
+    /// A kernel module whose extent at its preferred base runs past the address space.
     ImageOutsideKernelSpace,
     /// The entry point is not inside an executable section.
     EntryNotExecutable,
@@ -471,9 +473,10 @@ fn round_up(v: u32, align: u32) -> u64 {
 
 /// The identity contracts of the image whose NT headers are `nt`: a program must be a Windows
 /// GUI or console image with an entry point; a DLL may be either subsystem and may have no
-/// entry point (nothing to call at attach). A kernel module must be a DLL with an entry point
-/// (DriverEntry). Either has sections, and a preferred base at which it fits in its space:
-/// below user space's end for a user image, in the kernel half for a module.
+/// entry point (nothing to call at attach). A kernel module must be a native image or a DLL with
+/// an entry point (DriverEntry). Either has sections, and a preferred base at which it fits in its
+/// space: below user space's end for a user image, below 4 GiB for a module (which the loader
+/// moves to the modules region).
 fn check_identity(nt: &ImageNtHeaders32, kernel_module: bool) -> Result<(), Reject> {
     let optional = &nt.optional_header;
     let dll = nt.file_header.characteristics & FILE_DLL != 0;
@@ -485,7 +488,9 @@ fn check_identity(nt: &ImageNtHeaders32, kernel_module: bool) -> Result<(), Reje
         return Err(Reject::ImageBaseUnaligned);
     }
     if kernel_module {
-        if !dll {
+        // A driver is a native image (the DDK's /DRIVER link sets no DLL flag); an export driver
+        // or a kernel DLL is flagged a DLL.
+        if !dll && optional.subsystem != SUBSYSTEM_NATIVE {
             return Err(Reject::NotADll);
         }
         if optional.address_of_entry_point == 0 {
@@ -504,7 +509,9 @@ fn check_identity(nt: &ImageNtHeaders32, kernel_module: bool) -> Result<(), Reje
     }
     let end = u64::from(base) + u64::from(optional.size_of_image);
     if kernel_module {
-        if base < crate::mem::paging::KERNEL_BASE || end > 1 << 32 {
+        // Any preferred base: the DDK links drivers at 0x10000, and the loader moves every module
+        // to its run of the modules region (a module that must move needs its relocations).
+        if end > 1 << 32 {
             return Err(Reject::ImageOutsideKernelSpace);
         }
     } else if end > u64::from(USER_SPACE_END) {
@@ -545,10 +552,11 @@ impl<'a> Image<'a> {
         Image::parse_headers(file, file.len())
     }
 
-    /// Parse and validate a PE32 kernel module (a `.sys` image): a DLL-flagged image with an
-    /// entry point (DriverEntry), whose preferred base is a 64 KiB multiple in the kernel half
-    /// and whose extent ends at or below 4 GiB. The user-space rules of [`Image::parse`] do not
-    /// apply — a module maps in the kernel half, at a base the kernel-side loader picks.
+    /// Parse and validate a PE32 kernel module (a `.sys` image): a native-subsystem or DLL-flagged
+    /// image with an entry point (DriverEntry), whose preferred base is a 64 KiB multiple anywhere
+    /// (the DDK links drivers at 0x10000) and whose extent ends at or below 4 GiB. The user-space
+    /// rules of [`Image::parse`] do not apply — a module maps in the kernel half, at a base the
+    /// kernel-side loader picks.
     pub fn parse_kernel_module(file: &'a [u8]) -> Result<Image<'a>, Reject> {
         Image::parse_inner(file, file.len(), true)
     }
@@ -561,7 +569,11 @@ impl<'a> Image<'a> {
     }
 
     /// The parse both entry points share; `kernel_module` selects the identity rules (below).
-    fn parse_inner(headers: &'a [u8], file_len: usize, kernel_module: bool) -> Result<Image<'a>, Reject> {
+    fn parse_inner(
+        headers: &'a [u8],
+        file_len: usize,
+        kernel_module: bool,
+    ) -> Result<Image<'a>, Reject> {
         let dos: ImageDosHeader = read_struct(headers, 0)?;
         if dos.e_magic != DOS_MAGIC {
             return Err(Reject::NotDos);
@@ -1349,7 +1361,11 @@ mod tests {
         // bad-exe-format error the platform reports for them.
         for subsystem in [1, 5] {
             let bad = patched(EXIT0, |b| w16(b, off_opt(b) + 68, subsystem));
-            assert_eq!(Image::parse(&bad), Err(Reject::WrongSubsystem), "subsystem {subsystem}");
+            assert_eq!(
+                Image::parse(&bad),
+                Err(Reject::WrongSubsystem),
+                "subsystem {subsystem}"
+            );
         }
     }
 

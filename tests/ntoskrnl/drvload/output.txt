@@ -1,0 +1,175 @@
+# F2K capture of drvload (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/20/2026 10:40:41.21
+drvload F2KT-SOURCE-CRC=0x4F5F0E19
+>>> drvload.exe load
+== load
+the service key written: yes
+SeLoadDriverPrivilege disabled: yes
+NtLoadDriver(F2Kdrvload), the privilege disabled: 0xC0000061
+SeLoadDriverPrivilege enabled: yes
+NtLoadDriver(a key that does not exist): 0xC0000034
+NtLoadDriver(F2Kdrvload): 0x00000000
+NtLoadDriver(F2Kdrvload), loaded: 0xC000010E
+loaded: CreateFileA(\\.\F2Kdrvload): handle yes err=0
+NtUnloadDriver(F2Kdrvload): 0x00000000
+NtUnloadDriver(F2Kdrvload), unloaded: 0xC0000034
+unloaded: CreateFileA(\\.\F2Kdrvload): handle no err=2
+NtLoadDriver(F2Kdrvload), again: 0x00000000
+loaded again: CreateFileA(\\.\F2Kdrvload): handle yes err=0
+SeLoadDriverPrivilege disabled: yes
+NtUnloadDriver(F2Kdrvload), the privilege disabled: 0xC0000061
+SeLoadDriverPrivilege enabled: yes
+NtUnloadDriver(F2Kdrvload): 0x00000000
+the service key deleted: yes
+NtLoadDriver(F2Kdrvload), its key deleted: 0xC0000034
+drvload: done
+<<< exit code=0
+>>> drvload.exe entry
+== entry
+DriverEntry: IRQL=0
+DriverEntry: in the System process (PsInitialSystemProcess): yes
+DriverEntry: ExGetPreviousMode=0
+DriverObject: +0x00 Type=4 +0x02 Size=168
+DriverObject: +0x04 DeviceObject: NULL
+DriverObject: +0x08 Flags=0x00000002
+DriverObject: +0x0C DriverStart is the image's header (MZ): yes
+DriverObject: +0x10 DriverSize is the image's SizeOfImage: yes
+DriverObject: +0x14 DriverSection: non-NULL
+DriverObject: +0x18 DriverExtension: non-NULL
+DriverExtension: +0x00 DriverObject is the driver's: yes
+DriverExtension: +0x04 AddDevice: NULL
+DriverExtension: +0x08 Count=0
+DriverExtension: +0x0C ServiceKeyName="F2Kdrvload" Length=20 MaximumLength=22
+DriverObject: +0x1C DriverName="\Driver\F2Kdrvload" Length=36 MaximumLength=36
+DriverObject: +0x24 HardwareDatabase="\REGISTRY\MACHINE\HARDWARE\DESCRIPTION\SYSTEM"
+DriverObject: +0x28 FastIoDispatch: NULL
+DriverObject: +0x2C DriverInit is DriverEntry: yes, the image's entry point: yes
+DriverObject: +0x30 DriverStartIo: NULL
+DriverObject: +0x34 DriverUnload: NULL
+DriverObject: +0x38 MajorFunction[0..27]: one routine: yes, NULL: no, in the driver's image: no
+DriverEntry: in the driver's image: yes
+RegistryPath="\REGISTRY\MACHINE\SYSTEM\ControlSet001\Services\F2Kdrvload" Length=116 MaximumLength=116
+RegistryPath ends with \Services\F2Kdrvload (any case): yes
+IoCreateDevice: +0x00 Type=3 +0x02 Size=184
+IoCreateDevice: +0x04 ReferenceCount=0
+IoCreateDevice: +0x08 DriverObject is the driver's: yes
+IoCreateDevice: +0x0C NextDevice: NULL
+IoCreateDevice: +0x10 AttachedDevice: NULL
+IoCreateDevice: +0x14 CurrentIrp: NULL
+IoCreateDevice: +0x1C Flags=0x000000C0
+IoCreateDevice: +0x20 Characteristics=0x00000000
+IoCreateDevice: +0x24 Vpb: NULL
+IoCreateDevice: +0x28 DeviceExtension: NULL
+IoCreateDevice: +0x2C DeviceType=0x00000022
+IoCreateDevice: +0x30 StackSize=1
+IoCreateDevice: +0x5C AlignmentRequirement=0x00000000
+IoCreateDevice: +0xAC SectorSize=0
+IoCreateDevice: +0xB0 DeviceObjectExtension: non-NULL, its Type=13, its DeviceObject is the device: yes
+IoCreateDevice: DriverObject->DeviceObject is the device: yes
+dispatch set: IRP_MJ_READ still the default routine: yes
+drvload: done
+<<< exit code=0
+>>> drvload.exe create
+== create
+IRP_MJ_CREATE: IRQL=0 ExGetPreviousMode=1
+Irp: +0x00 Type=6 +0x02 Size=148 (IoSizeOfIrp(StackCount)=148)
+Irp: +0x08 Flags=0x00000884
+Irp: +0x0C AssociatedIrp.SystemBuffer: NULL
+Irp: +0x20 RequestorMode=1
+Irp: +0x22 StackCount=1 +0x23 CurrentLocation=1
+Irp: Tail.Overlay.Thread is the current thread: yes, OriginalFileObject is the stack's: yes
+stack: MajorFunction=0 MinorFunction=0 Flags=0x00 Control=0x00
+stack: DeviceObject is the device: yes, FileObject: non-NULL
+stack: Create.Options: disposition=1 options=0x000060
+stack: Create.FileAttributes=0x0000 ShareAccess=0x0000 EaLength=0
+stack: Create.SecurityContext->DesiredAccess=0x0012019F
+FileObject: +0x00 Type=5 +0x02 Size=112
+FileObject: +0x04 DeviceObject is the device: yes
+FileObject: +0x0C FsContext: NULL
+FileObject: +0x2C Flags=0x00000002
+FileObject: +0x30 FileName="(null)" Length=0
+FileObject: +0x20 RelatedFileObject: NULL
+the device: Flags=0x00000040 ReferenceCount=1
+IRP_MJ_CREATE: in the caller's process: yes, thread: yes
+drvload: done
+<<< exit code=0
+>>> drvload.exe ioctl
+== ioctl
+IRP_MJ_DEVICE_CONTROL: IRQL=0 ExGetPreviousMode=1
+IRP_MJ_DEVICE_CONTROL: in the caller's process: yes, thread: yes
+Irp: +0x00 Type=6 +0x02 Size=148 (IoSizeOfIrp(StackCount)=148)
+Irp: +0x08 Flags=0x00000070
+Irp: +0x0C AssociatedIrp.SystemBuffer: non-NULL
+Irp: +0x20 RequestorMode=1
+Irp: +0x21 PendingReturned=0 +0x24 Cancel=0
+Irp: +0x22 StackCount=1 +0x23 CurrentLocation=1
+Irp: +0x3C UserBuffer: below 0x80000000: yes
+Irp: Tail.Overlay.Thread is the current thread: yes, OriginalFileObject is the stack's: yes
+stack: +0x00 MajorFunction=14 MinorFunction=0 Flags=0x00 Control=0x00
+stack: +0x04 DeviceIoControl: OutputBufferLength=65536 InputBufferLength=72 IoControlCode=0x00222000
+stack: DeviceObject is the device: yes, FileObject: non-NULL, its DeviceObject is the device: yes
+the device: Flags=0x00000040 ReferenceCount=1 CurrentIrp: NULL
+drvload: done
+<<< exit code=0
+>>> drvload.exe irps
+== irps
+IRPs since the load: 6
+IRP_MJ_CREATE file#1: MinorFunction=0 IRQL=0 RequestorMode=1 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+IRP_MJ_DEVICE_CONTROL (stamp) file#1: MinorFunction=0 IRQL=0 RequestorMode=1 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+IRP_MJ_CREATE file#2: MinorFunction=0 IRQL=0 RequestorMode=1 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+IRP_MJ_CLEANUP file#2: MinorFunction=0 IRQL=0 RequestorMode=0 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+IRP_MJ_CLOSE file#2: MinorFunction=0 IRQL=0 RequestorMode=0 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+IRP_MJ_DEVICE_CONTROL (run) file#1: MinorFunction=0 IRQL=0 RequestorMode=1 ExGetPreviousMode=1
+  in the caller's process: yes, thread: yes, Tail.Overlay.Thread is the current thread: yes
+drvload: done
+<<< exit code=0
+>>> drvload.exe device
+== device
+IoCreateDevice(extension 16, no name): 0x00000000
+  Size=200, sizeof(DEVICE_OBJECT) + 16: yes
+  DeviceExtension follows the device object: yes
+  DeviceExtension zeroed: yes
+  Flags=0x00000080 StackSize=1 AlignmentRequirement=0x00000000
+  DriverObject->DeviceObject is the new device: yes, its NextDevice the first: yes
+IoDeleteDevice: DriverObject->DeviceObject is the first again: yes, its NextDevice: NULL
+IoCreateDevice(\Device\F2Kdrvload2, FILE_DEVICE_SECURE_OPEN, exclusive): 0x00000000
+  Flags=0x000000C8 Characteristics=0x00000100
+IoCreateDevice(FILE_DEVICE_DISK, no name): 0x00000000
+  Flags=0x00000080 Vpb: non-NULL SectorSize=512 AlignmentRequirement=0x00000000
+drvload: done
+<<< exit code=0
+>>> drvload.exe names
+== names
+IoCreateDevice(\Device\F2Kdrvload, taken): 0xC0000035, *DeviceObject: NULL
+IoCreateDevice(\F2KNoSuchDirectory\F2Kdrvload): 0xC000003A, *DeviceObject: NULL
+IoCreateSymbolicLink(\DosDevices\F2Kdrvload, taken): 0xC0000035
+IoCreateSymbolicLink(\DosDevices\F2KdrvloadX): 0x00000000
+IoDeleteSymbolicLink(\DosDevices\F2KdrvloadX): 0x00000000
+IoDeleteSymbolicLink(\DosDevices\F2KdrvloadX), again: 0xC0000034
+IoCreateSymbolicLink(\DosDevices\F2KdrvloadY to a device that does not exist): 0x00000000
+IoDeleteSymbolicLink(\DosDevices\F2KdrvloadY): 0x00000000
+drvload: done
+<<< exit code=0
+>>> drvload.exe unknown
+== unknown
+f2kd: NtLoadDriver: 0xC0000034
+drvload: done
+<<< exit code=0
+>>> drvload.exe unload
+== unload
+f2kd: NtLoadDriver: 0xC0000034
+drvload: done
+<<< exit code=0
+>>> drvload.exe unloadopen
+== unloadopen
+f2kd: NtLoadDriver: 0xC0000034
+drvload: done
+<<< exit code=0

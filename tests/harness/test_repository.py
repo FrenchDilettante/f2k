@@ -36,11 +36,25 @@ def fixture_source(fixture: str) -> Path:
     return cpp if cpp.is_file() else directory / f"{fixture}.c"
 
 
+# The shared headers a kernel-mode fixture's binaries are stamped with besides f2kt.h, in build.bat's
+# order (its :kernelmode label): the companion's, the driver's, the protocol both include.
+KERNEL_MODE_HEADERS = ("f2kdhost.h", "f2kd.h", "f2kdproto.h")
+
+
+def driver_source(fixture: str) -> Path:
+    """A kernel-mode fixture's driver source, <name>sys.c beside its companion program's <name>.c
+    (common/f2kd.h): the driver, <name>.sys, its program loads."""
+    return f2kboot.fixture_directory(fixture) / f"{fixture}sys.c"
+
+
 def fixture_sources(fixture: str) -> list[Path]:
     """Every source a fixture's binary is built from, in the order build.bat stamps them: its own,
-    then a C++ fixture's other translation units by name (crt/cxxeh's cxxehopt.cpp). A C fixture's
+    then a C++ fixture's other translation units by name (crt/cxxeh's cxxehopt.cpp), or a
+    kernel-mode fixture's driver source and the headers it shares with its driver. A C fixture's
     other sources are its companion programs', stamped by none."""
     source = fixture_source(fixture)
+    if driver_source(fixture).is_file():
+        return [source, driver_source(fixture), *(TESTS / "common" / name for name in KERNEL_MODE_HEADERS)]
     if source.suffix != ".cpp":
         return [source]
     return [source, *sorted(path for path in source.parent.glob("*.cpp") if path != source)]
@@ -262,6 +276,37 @@ def test_skipped_blocks_give_their_reason_and_are_not_pending(fixture: str):
         assert not unknown, f"skipped sections the source does not declare: {sorted(unknown)}"
 
 
+# The kernel-mode fixtures: a driver source beside the companion program's (common/f2kd.h).
+KERNEL_MODE = [name for name in DECLARED if driver_source(name).is_file()]
+
+
+def driver_section_table(source: str) -> set[str]:
+    """The sections a kernel-mode fixture's driver source lists (common/f2kd.h's f2kd_section_t)."""
+    table = re.search(r"f2kd_section_t sections\[\] = \{(.*?)\n\};", source, re.S).group(1)
+    return set(re.findall(r'\{\s*"([\w-]+)",', table))
+
+
+@pytest.mark.parametrize("fixture", KERNEL_MODE)
+def test_kernel_mode_fixtures_agree_with_their_drivers(fixture: str):
+    """A kernel-mode fixture is a sectioned fixture on f2kt.h whose program hands its driver's
+    sections to the driver (F2KD_SECTION, or a section of its own calling f2kd_call): every section
+    the driver lists is one of the program's and handed over by it, every section the program hands
+    over is the driver's, and both name the fixture (F2KD_NAME). Its group is hal/ or ntoskrnl/,
+    the module whose exports it observes."""
+    program = fixture_source(fixture).read_text(encoding="latin-1")
+    driver = driver_source(fixture).read_text(encoding="latin-1")
+    assert '"../common/f2kt.h"' in program and '"../common/f2kdhost.h"' in program
+    assert '"../common/f2kd.h"' in driver
+    for source in (program, driver):
+        assert f'#define F2KD_NAME "{fixture}"' in source, "F2KD_NAME is not the fixture's name"
+    handed = (set(re.findall(r"^F2KD_SECTION\((\w+)\)$", program, re.M))
+              | set(re.findall(r'f2kd_call\(\w+, "([\w-]+)"\)', program)))
+    drivers = driver_section_table(driver)
+    assert drivers <= section_table(program), "driver sections the program does not list"
+    assert handed == drivers, "the program hands over other sections than the driver lists"
+    assert f2kboot.fixture_directory(fixture).parent.name in ("hal", "ntoskrnl")
+
+
 def test_the_capture_script_lists_bares_modes():
     """bare has no section table: capture.bat lists its modes, which must be bare.c's."""
     script = (TESTS / "capture.bat").read_text(encoding="latin-1")
@@ -299,8 +344,8 @@ def test_binaries_are_built_from_the_checked_in_source(fixture: str):
 
 
 def test_the_corpus_names_are_8_3_and_distinct():
-    """The disk build puts every sectioned fixture's program and its companions (the other programs
-    and the DLLs beside it, and the DLLs in its subdirectories) in \\CORPUS, by their upper-cased
+    """The disk build puts every sectioned fixture's program and its companions (the other programs,
+    the DLLs and the drivers beside it, and the DLLs in its subdirectories) in \\CORPUS, by their upper-cased
     names (the Makefile's corpus loop): each must be an 8.3 name, and no two may meet, or one would
     replace another. An awaited fixture's program counts by its name already. A script fixture's
     boot puts its script there, and cmd.exe beside it (`f2kboot.script_disk`), and a sectioned
@@ -318,7 +363,7 @@ def test_the_corpus_names_are_8_3_and_distinct():
             directory = f2kboot.fixture_directory(fixture)
             names = {f"{fixture}.exe"} | {
                 path.relative_to(directory).as_posix()
-                for pattern in ("*.exe", "*.dll", "*/*.dll") for path in directory.glob(pattern)
+                for pattern in ("*.exe", "*.dll", "*.sys", "*/*.dll") for path in directory.glob(pattern)
             } | {path.name for path in f2kboot.data_files(fixture)}
         else:
             continue
@@ -366,8 +411,13 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
     " data",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
+    "kernel/src/dev/io.rs": "the I/O manager's arena (its DRIVER_OBJECTs, DEVICE_OBJECTs, FILE_OBJECTs"
+    " and IRPs) and the loaded drivers' own strings and buffers, kernel memory: a program's buffers"
+    " reach a driver only as a system buffer the copy fills and empties",
     "kernel/src/dev/loader.rs": "the kernel image's own export directory, read through the kernel"
     " image window",
+    "kernel/src/dev/ntoskrnl.rs": "the ntoskrnl.exe entry points' arguments, a kernel-mode driver's"
+    " own memory (its strings, its va_list, its buffers): no system service reaches them",
     "kernel/src/hal/exports.rs": "the hal.dll entry points' device registers and buffers, named by"
     " kernel-mode drivers through their resolved imports: no system service reaches them, so no"
     " program's pointer does",

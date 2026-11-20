@@ -702,9 +702,9 @@ fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
                     let count = name_units(NAMED_PIPE_PREFIX, &[], out);
                     Ok(count + crate::fs::pipes::name_of(end, &mut out[count..]))
                 }
-                crate::fs::file::Context::Disk(_) | crate::fs::file::Context::Null => {
-                    Err(STATUS_NOT_IMPLEMENTED)
-                }
+                crate::fs::file::Context::Disk(_)
+                | crate::fs::file::Context::Null
+                | crate::fs::file::Context::Device(_) => Err(STATUS_NOT_IMPLEMENTED),
             }
         }
         #[cfg(target_arch = "x86")]

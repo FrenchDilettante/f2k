@@ -1,19 +1,21 @@
 //! The security reference monitor's one piece F2K keeps: the token, the object OpenProcessToken
 //! opens, and the privileges it lists.
 //!
-//! F2K has no security model: no SIDs, no groups, no access control lists, and no privilege check
-//! anywhere. A token's privileges are bookkeeping only. They are kept so that the calls a program
-//! makes before it shuts the machine down (OpenProcessToken, AdjustTokenPrivileges enabling
-//! SeShutdownPrivilege, GetTokenInformation) answer as Windows 2000's do: the change succeeds, and
-//! what it changed is reported back. Nothing in F2K ever reads them to allow or refuse anything:
-//! where Windows 2000 checks a privilege (ExitWindowsEx, NtShutdownSystem), F2K does not.
+//! F2K has no security model: no SIDs, no groups, no access control lists. A token's privileges
+//! are kept so that the calls a program makes before it shuts the machine down (OpenProcessToken,
+//! AdjustTokenPrivileges enabling SeShutdownPrivilege, GetTokenInformation) answer as Windows
+//! 2000's do: the change succeeds, and what it changed is reported back. One privilege is checked:
+//! SeLoadDriverPrivilege, which NtLoadDriver and NtUnloadDriver require enabled
+//! (STATUS_PRIVILEGE_NOT_HELD otherwise, as the `drvload` capture shows), so that a driver's load
+//! answers as Windows 2000's does. Where else Windows 2000 checks a privilege (ExitWindowsEx,
+//! NtShutdownSystem), F2K does not.
 //!
-//! Every token holds the same two privileges, in the state Windows 2000 gives an interactive
-//! user's token: SeChangeNotifyPrivilege, enabled by default, and SeShutdownPrivilege, held and
-//! disabled. That is the least that answers the calls' documented behaviour: the adjustments
-//! report the old state of what they changed, so the token remembers each privilege's state; and
-//! a privilege it does not hold is refused (STATUS_NOT_ALL_ASSIGNED), so some are held and the
-//! rest are not.
+//! Every token holds the same three privileges, in the state Windows 2000 gives an
+//! administrator's token (the account the corpus is captured on): SeChangeNotifyPrivilege, enabled
+//! by default, and SeShutdownPrivilege and SeLoadDriverPrivilege, held and disabled. That is the
+//! least that answers the calls' documented behaviour: the adjustments report the old state of
+//! what they changed, so the token remembers each privilege's state; and a privilege it does not
+//! hold is refused (STATUS_NOT_ALL_ASSIGNED), so some are held and the rest are not.
 //!
 //! A process has one token, made at its first open (Windows 2000 makes a process's primary token
 //! with the process; F2K makes it on demand, since nothing reads it before it is opened). The
@@ -31,11 +33,12 @@ pub const SE_PRIVILEGE_ENABLED_BY_DEFAULT: u32 = 0x1;
 pub const SE_PRIVILEGE_ENABLED: u32 = 0x2;
 
 /// The privileges' public LUIDs (winnt.h's SE_*_PRIVILEGE values) that a token holds.
+pub const SE_LOAD_DRIVER_PRIVILEGE: u32 = 10;
 pub const SE_SHUTDOWN_PRIVILEGE: u32 = 19;
 pub const SE_CHANGE_NOTIFY_PRIVILEGE: u32 = 23;
 
 /// How many privileges a token holds.
-pub const HELD: usize = 2;
+pub const HELD: usize = 3;
 
 /// TOKEN_PRIVILEGES' size for `count` entries: the count, then the entries.
 pub const fn privileges_size(count: usize) -> u32 {
@@ -61,6 +64,7 @@ const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
         SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
     ),
     privilege(SE_SHUTDOWN_PRIVILEGE, 0),
+    privilege(SE_LOAD_DRIVER_PRIVILEGE, 0),
 ];
 
 /// A token object's body.
@@ -94,6 +98,16 @@ impl TokenBody {
     /// The privileges and their state, in the token's order: TokenPrivileges' answer.
     pub fn privileges(&self) -> [LuidAndAttributes; HELD] {
         self.privileges
+    }
+
+    /// Whether the token holds the privilege of public LUID `luid` and has it enabled: what a
+    /// privilege check (SeSinglePrivilegeCheck) asks.
+    pub fn enabled(&self, luid: u32) -> bool {
+        self.privileges.iter().any(|privilege| {
+            privilege.luid.low_part == luid
+                && privilege.luid.high_part == 0
+                && privilege.attributes & SE_PRIVILEGE_ENABLED != 0
+        })
     }
 
     /// Apply `change` to the privileges, as NtAdjustPrivilegesToken does: each privilege whose
@@ -218,15 +232,32 @@ mod tests {
             .map(|privilege| privilege.attributes)
     }
 
-    /// A new token holds SeShutdownPrivilege disabled and SeChangeNotifyPrivilege enabled by
-    /// default; TOKEN_PRIVILEGES for them takes 28 bytes.
+    /// A new token holds SeShutdownPrivilege and SeLoadDriverPrivilege disabled and
+    /// SeChangeNotifyPrivilege enabled by default; TOKEN_PRIVILEGES for them takes 40 bytes.
     #[test]
     fn a_new_token_holds_the_defaults() {
         let token = token();
         assert_eq!(attributes_of(&token, SE_SHUTDOWN_PRIVILEGE), Some(0));
+        assert_eq!(attributes_of(&token, SE_LOAD_DRIVER_PRIVILEGE), Some(0));
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(3));
         assert_eq!(attributes_of(&token, TCB), None);
-        assert_eq!(privileges_size(HELD), 28);
+        assert_eq!(privileges_size(HELD), 40);
+    }
+
+    /// The privilege check reads the enabled bit of a privilege the token holds.
+    #[test]
+    fn the_check_reads_the_enabled_bit() {
+        let mut token = token();
+        assert!(token.enabled(SE_CHANGE_NOTIFY_PRIVILEGE));
+        assert!(!token.enabled(SE_LOAD_DRIVER_PRIVILEGE));
+        assert!(!token.enabled(TCB));
+        token
+            .adjust(
+                &set(&[(SE_LOAD_DRIVER_PRIVILEGE, SE_PRIVILEGE_ENABLED)]),
+                None,
+            )
+            .unwrap();
+        assert!(token.enabled(SE_LOAD_DRIVER_PRIVILEGE));
     }
 
     /// Enabling reports the old state, 16 bytes; enabling again changes nothing and reports an

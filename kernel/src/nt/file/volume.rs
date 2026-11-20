@@ -59,6 +59,7 @@ pub fn query_volume_information_file(
             Context::Disk(_) => info::FILE_DEVICE_DISK,
             Context::Pipe(_) => info::FILE_DEVICE_NAMED_PIPE,
             Context::Null => info::FILE_DEVICE_NULL,
+            Context::Device(file) => crate::dev::io::device_type(file),
         };
         Ok(info::device(device_type, room))
     } else {
@@ -69,6 +70,10 @@ pub fn query_volume_information_file(
             Context::Pipe(_) => return Err(STATUS_NOT_SUPPORTED),
             // Nor does the null device.
             Context::Null => return Err(STATUS_NOT_SUPPORTED),
+            // A driver's device is asked through IRP_MJ_QUERY_VOLUME_INFORMATION: not yet.
+            Context::Device(_) => {
+                return Err(super::device_request("NtQueryVolumeInformationFile"))
+            }
         }
     };
     let (code, written) = match answer {

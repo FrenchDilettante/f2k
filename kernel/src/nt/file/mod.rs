@@ -24,6 +24,8 @@ pub mod name;
 #[cfg(target_arch = "x86")]
 mod create;
 #[cfg(target_arch = "x86")]
+mod device;
+#[cfg(target_arch = "x86")]
 mod directory;
 #[cfg(target_arch = "x86")]
 mod io;
@@ -37,7 +39,13 @@ mod query;
 mod volume;
 
 #[cfg(target_arch = "x86")]
+use common::device_request;
+#[cfg(target_arch = "x86")]
+pub use common::read_whole_file;
+#[cfg(target_arch = "x86")]
 pub use create::{create_file, open_file};
+#[cfg(target_arch = "x86")]
+pub use device::device_io_control_file;
 #[cfg(target_arch = "x86")]
 pub use directory::query_directory_file;
 #[cfg(target_arch = "x86")]
@@ -131,6 +139,12 @@ mod common {
         Null {
             inherit: bool,
         },
+        /// A device a loaded driver made, referenced for the open, and the rest of the name after
+        /// its own (see [`crate::dev::io`]).
+        Device {
+            device: crate::dev::io::Referenced,
+            inherit: bool,
+        },
     }
 
     /// Read the OBJECT_ATTRIBUTES at `attributes` for a file service (see [`named`]), for a
@@ -139,7 +153,9 @@ mod common {
     pub fn target(attributes: UserAddr) -> Result<Target, NtStatus> {
         match named(attributes)? {
             Named::Disk(target) => Ok(target),
-            Named::Pipe { .. } | Named::Null { .. } => Err(STATUS_NOT_IMPLEMENTED),
+            Named::Pipe { .. } | Named::Null { .. } | Named::Device { .. } => {
+                Err(STATUS_NOT_IMPLEMENTED)
+            }
         }
     }
 
@@ -159,6 +175,7 @@ mod common {
         let (name, start) = match attributes::root_of(read.root)? {
             Root::None if units.is_empty() => return Err(STATUS_OBJECT_NAME_INVALID),
             Root::None if name::null_device(units) => return null(read.inherit()),
+            Root::None if is_device(units) => return device(units, read.inherit()),
             Root::None => match name::absolute(units)? {
                 Absolute::Disk(name) => (name, None),
                 Absolute::Pipe(name) => {
@@ -187,6 +204,22 @@ mod common {
             start,
             inherit: read.inherit(),
         }))
+    }
+
+    /// Whether a name is one of the I/O manager's (a loaded driver's device, or a link to one), not
+    /// the file systems'.
+    fn is_device(units: &[u16]) -> bool {
+        crate::dev::io::is_device_name(units)
+    }
+
+    /// A device's answer: the device referenced for the open (see [`Named::Device`]).
+    #[inline(never)]
+    fn device(units: &[u16], inherit: bool) -> Result<Named, NtStatus> {
+        match crate::dev::io::reference_device(units) {
+            Some(Ok(device)) => Ok(Named::Device { device, inherit }),
+            Some(Err(status)) => Err(status),
+            None => Err(STATUS_OBJECT_NAME_NOT_FOUND),
+        }
     }
 
     /// The null device's answer, made here so that [`named`]'s frame keeps no slot for it.
@@ -260,6 +293,41 @@ mod common {
         Ok(Some(event))
     }
 
+    /// A request a driver's device would answer through an IRP F2K does not send yet: the stub
+    /// path (logged; STATUS_NOT_IMPLEMENTED).
+    pub fn device_request(service: &str) -> NtStatus {
+        crate::dbgprint::unhandled(
+            "ntdll",
+            service,
+            format_args!("FileHandle=<a driver's device>"),
+            format_args!("the request's IRP to a loaded driver is not yet implemented"),
+        );
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    /// The whole of the boot volume's file `units` names (an absolute NT path), read into a pool
+    /// block: a driver's image, for NtLoadDriver. The open's statuses (a missing file is
+    /// STATUS_OBJECT_NAME_NOT_FOUND), STATUS_FILE_IS_A_DIRECTORY for a directory,
+    /// STATUS_INSUFFICIENT_RESOURCES when the pool has no room for it.
+    pub fn read_whole_file(units: &[u16]) -> Result<crate::mem::pool::Block, NtStatus> {
+        let name = match name::absolute(units)? {
+            Absolute::Disk(name) => name,
+            Absolute::Pipe(_) => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
+        };
+        let file = crate::fs::io::with_volume(|volume| match walk(volume, None, &name)? {
+            Found::Existing(file) => Ok(file),
+            Found::Missing { .. } => Err(STATUS_OBJECT_NAME_NOT_FOUND),
+        })?;
+        if file.directory {
+            return Err(STATUS_FILE_IS_A_DIRECTORY);
+        }
+        let mut block =
+            crate::mem::pool::allocate(file.size as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let bytes = &mut block.as_mut()[..file.size as usize];
+        crate::fs::io::read_file_at(&file, 0, bytes).ok_or(STATUS_IO_DEVICE_ERROR)?;
+        Ok(block)
+    }
+
     /// Signal a completion's event.
     pub fn signal(event: Option<crate::ob::ObRef>) {
         if let Some(event) = event {
@@ -293,6 +361,7 @@ mod host {
         query_volume_information_file(Handle, UserAddr, UserAddr, u32, u32);
         create_named_pipe_file(UserPtr<u32>, u32, UserAddr, UserAddr, u32, u32, u32, u32, u32, u32, u32, u32, u32, UserPtr<u64>);
         fs_control_file(Handle, Handle, UserAddr, UserAddr, UserAddr, u32, UserAddr, u32, UserAddr, u32);
+        device_io_control_file(Handle, Handle, UserAddr, UserAddr, UserAddr, u32, UserAddr, u32, UserAddr, u32);
     }
 }
 

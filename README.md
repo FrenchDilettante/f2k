@@ -249,10 +249,12 @@ f2k/
 │   ├── user32/           # The user32 fixtures (hellogui, winsta, the gui* fixtures)
 │   ├── gdi32/            # The gdi32 fixtures (guidc, gditext)
 │   ├── advapi32/         # The advapi32 fixtures (registry, token)
+│   ├── ntoskrnl/         # The kernel-mode fixtures over ntoskrnl's exports (drvload)
 │   ├── crt/              # The msvcrt fixtures, built against msvcrt.dll (/MD)
 │   ├── cmd/              # The script fixtures, batch files run by cmd /c
 │   ├── harness/          # Checks of the tests and the repository (no QEMU)
-│   └── common/           # The fixtures' shared header (f2kt.h) and stamp tool
+│   └── common/           # The fixtures' shared headers (f2kt.h; f2kd.h, f2kdhost.h and
+│                         # f2kdproto.h, the kernel-mode fixtures') and stamp tool
 │
 ├── tools/exportgen/  # The export specs' reader and generator, and the kernel's PE32 image's
 │                     # emitter (a host crate, outside the workspace)

@@ -23,8 +23,11 @@
 // probe/start flow yet (that wiring is a later slice), so the target build sees no caller for it.
 #![cfg_attr(not(test), allow(dead_code))]
 
+pub mod io;
 pub mod irp;
 pub mod loader;
+pub mod ntddk;
+pub mod ntoskrnl;
 pub mod routing;
 
 use core::cell::UnsafeCell;

@@ -80,8 +80,9 @@ DISK_FIXTURES ?= exit0 ret0
 # its own directory on the real machine: the root keeps its one cluster (the disk-smoke pins it).
 # They are the fixtures whose declaration, tests/<dll>/<name>/fixture.toml, says kind "sectioned",
 # less those declared ahead of their real-machine build (no <name>.exe yet). Each one's companion
-# DLLs and programs (tests/<dll>/<name>/*.dll, and *.exe but its own) go beside it, as they sit
-# beside the program on the real machine, and the DLLs in a subdirectory of its
+# DLLs, programs and drivers (tests/<dll>/<name>/*.dll, *.exe but its own, and a kernel-mode
+# fixture's *.sys) go beside it, as they sit beside the program on the real machine, and the DLLs
+# in a subdirectory of its
 # (tests/<dll>/<name>/<sub>/*.dll) in that subdirectory.
 CORPUS_FIXTURES ?= $(sort $(foreach fixture,$(notdir $(patsubst %/fixture.toml,%,$(shell grep -l '^kind = "sectioned"' tests/*/*/fixture.toml))),$(if $(wildcard $(call fixture_dir,$(fixture))/$(fixture).exe),$(fixture))))
 # The system DLLs the userland workspace builds, which the disk carries in its system directory
@@ -225,7 +226,7 @@ disk: kernel limine
 		fixture=$$(basename $$directory); \
 		mcopy -i $(DISK_IMG)@@1M $$directory/$$fixture.exe \
 			::/CORPUS/$$(echo $$fixture | tr a-z A-Z).EXE || exit 1; \
-		for companion in $$directory/*.dll $$directory/*.exe $$directory/*/*.dll; do \
+		for companion in $$directory/*.dll $$directory/*.exe $$directory/*.sys $$directory/*/*.dll; do \
 			[ -f "$$companion" ] || continue; \
 			[ "$$companion" = "$$directory/$$fixture.exe" ] && continue; \
 			place=$$(dirname "$${companion#$$directory}" | tr a-z A-Z); \

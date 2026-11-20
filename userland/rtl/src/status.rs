@@ -91,6 +91,7 @@ pub const STATUS_NO_SUCH_DEVICE: u32 = 0xC000_000E;
 pub const STATUS_NO_SUCH_FILE: u32 = 0xC000_000F;
 pub const STATUS_INVALID_DEVICE_REQUEST: u32 = 0xC000_0010;
 pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+pub const STATUS_MORE_PROCESSING_REQUIRED: u32 = 0xC000_0016;
 pub const STATUS_NO_MEMORY: u32 = 0xC000_0017;
 pub const STATUS_CONFLICTING_ADDRESSES: u32 = 0xC000_0018;
 pub const STATUS_NOT_MAPPED_VIEW: u32 = 0xC000_0019;
@@ -119,6 +120,7 @@ pub const STATUS_SECTION_PROTECTION: u32 = 0xC000_004E;
 pub const STATUS_FILE_LOCK_CONFLICT: u32 = 0xC000_0054;
 pub const STATUS_LOCK_NOT_GRANTED: u32 = 0xC000_0055;
 pub const STATUS_DELETE_PENDING: u32 = 0xC000_0056;
+pub const STATUS_PRIVILEGE_NOT_HELD: u32 = 0xC000_0061;
 pub const STATUS_INVALID_IMAGE_FORMAT: u32 = 0xC000_007B;
 pub const STATUS_RANGE_NOT_LOCKED: u32 = 0xC000_007E;
 pub const STATUS_DISK_FULL: u32 = 0xC000_007F;
@@ -155,6 +157,7 @@ pub const STATUS_FILE_CORRUPT_ERROR: u32 = 0xC000_0102;
 pub const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
 pub const STATUS_NAME_TOO_LONG: u32 = 0xC000_0106;
 pub const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000_010A;
+pub const STATUS_IMAGE_ALREADY_LOADED: u32 = 0xC000_010E;
 pub const STATUS_INVALID_IMAGE_NE_FORMAT: u32 = 0xC000_011B;
 pub const STATUS_MAPPED_FILE_SIZE_ZERO: u32 = 0xC000_011E;
 pub const STATUS_TOO_MANY_OPENED_FILES: u32 = 0xC000_011F;
@@ -172,6 +175,8 @@ pub const STATUS_TOO_LATE: u32 = 0xC000_0189;
 pub const STATUS_MAPPED_ALIGNMENT: u32 = 0xC000_0220;
 pub const STATUS_HANDLE_NOT_CLOSABLE: u32 = 0xC000_0235;
 pub const STATUS_USER_MAPPED_FILE: u32 = 0xC000_0243;
+/// A driver's import its kernel modules do not export (MmLoadSystemImage's answer).
+pub const STATUS_DRIVER_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0263;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
 /// The loader's: an export name a module does not have, or a module without exports; a module the
 /// process has not loaded; an ordinal a module does not export; an entry point not found; a DLL's
@@ -299,7 +304,7 @@ mod tests {
             (STATUS_LOCK_NOT_GRANTED, 33),   // LockFile of a range a lock overlaps
             (STATUS_RANGE_NOT_LOCKED, 158),  // UnlockFile of a range never locked
             (STATUS_OBJECT_NAME_COLLISION, 183), /* CreateDirectoryA, MoveFileA onto an existing
-                                                  * name */
+                                              * name */
             (STATUS_DIRECTORY_NOT_EMPTY, 145),
             (STATUS_NOT_A_DIRECTORY, 267), // RemoveDirectoryA of a file
             (STATUS_NO_MORE_FILES, 18),

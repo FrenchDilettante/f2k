@@ -1,7 +1,8 @@
 //! The kernel-side `.sys` loader, in minimal form: map a PE32 kernel module into the reserved
 //! [`layout::MODULES`] region, apply its base relocations, resolve its imports against the
 //! kernel's own export surface (ntoskrnl.exe's export directory, built from `kernel/exports.toml`,
-//! and the HAL's kept table, from `kernel/hal_exports.toml`), and call its `DriverEntry`.
+//! and the HAL's kept table, from `kernel/hal_exports.toml`), for the I/O manager to call its
+//! `DriverEntry`.
 //!
 //! The pure core runs over bytes and seams, host-tested against a synthetic PE image:
 //! [`load_staged`] parses the image as a kernel module ([`Image::parse_kernel_module`]), stages
@@ -12,23 +13,21 @@
 //!
 //! On target the `target` module does the mapping: it reserves a run of the modules region, stages
 //! the image in a pool block, then maps the staged pages frame by frame into the region's shared
-//! tables, so the module is reachable from every address space. Its resolver is
-//! [`resolve_import`]: hal.dll by name through the generated HAL table, ntoskrnl.exe by name or
-//! ordinal through the kernel image's own export directory (forwarders followed, depth-limited).
-//! It then creates the module's [`DriverObject`], calls the entry point, and registers the driver
-//! in the global table on success.
+//! tables, so the module is reachable from every address space ([`map_driver_image`]), and takes
+//! them back at the unload ([`unmap_driver_image`]). Its resolver is [`resolve_import`]: hal.dll
+//! by name through the generated HAL table (and, for the few HAL routines the HAL's spec does not
+//! carry yet, the I/O layer's own: [`super::ntoskrnl::interim_hal_export`]), ntoskrnl.exe by name
+//! or ordinal through the kernel image's own export directory (forwarders followed,
+//! depth-limited). What the image becomes, its DRIVER_OBJECT and the call of its DriverEntry, is
+//! the I/O manager's ([`super::io`], NtLoadDriver's).
 //!
-//! Recorded seams: nothing calls the loader at boot yet (the first image is the FAT32 driver's,
-//! loaded as a boot module); the registry path passed to `DriverEntry` is null; modules are never
-//! unloaded; an image linked /FIXED (no relocation directory) can only load at its preferred
-//! base.
+//! Recorded seams: an image linked /FIXED (no relocation directory) can only load at its preferred
+//! base, which the modules region never is; the INIT section is not discarded after DriverEntry
+//! (the image keeps its pages until the unload).
 
-// The target half is not wired into the boot yet (the first .sys image comes with the FAT32
-// driver slice), so the target build sees no caller for it.
-#![cfg_attr(not(test), allow(dead_code))]
+use rtl::image::{data_directory, DIRECTORY_BASERELOC, DIRECTORY_IMPORT};
 
 use crate::exec::pe::{Image, Reject, Unresolved};
-use rtl::image::{data_directory, DIRECTORY_BASERELOC, DIRECTORY_IMPORT};
 
 /// The image's data directory `index`, when the image has one and it lies inside the image: a
 /// directory pointing outside is malformed bytes, treated as absent (the callers' walks are
@@ -64,10 +63,6 @@ pub enum LoadError {
     OutOfRegion,
     /// The frame database ran out mid-mapping (target).
     OutOfFrames,
-    /// The global driver table is full (target).
-    DriverTableFull,
-    /// DriverEntry returned a failure status (target).
-    DriverEntry(crate::status::NtStatus),
 }
 
 // --- One import's name -----------------------------------------------------------------------
@@ -230,7 +225,9 @@ pub fn load_staged(
     if staged.len() < image.size_of_image() as usize {
         return Err(LoadError::NotAnImage(Reject::Truncated));
     }
-    image.map_into(file, staged).map_err(LoadError::NotAnImage)?;
+    image
+        .map_into(file, staged)
+        .map_err(LoadError::NotAnImage)?;
     apply_relocations(&image, staged, base)?;
     let snap = snap_imports(&image, staged, resolve)?;
     Ok(StagedModule {
@@ -275,28 +272,26 @@ fn cstr(bytes: &[u8], off: usize) -> Option<&str> {
 
 // --- On target: map into the modules region, resolve against the kernel's surfaces -----------
 
-// Nothing calls the target half at boot yet, so its re-exports read as unused there.
 #[cfg(target_arch = "x86")]
-#[cfg_attr(not(test), allow(unused_imports))]
 pub use target::*;
 
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
-    use crate::dev::{self, DriverObject, MatchSpec};
     use crate::exec::pe;
     use crate::hal::exports as hal_exports;
     use crate::level::{self, High, LevelCell};
     use crate::mem::{dma, layout, paging, pool};
-    use crate::status::NtStatus;
 
-    /// A loaded driver: its image's record and the driver object its DriverEntry filled in.
-    pub struct LoadedDriver {
+    /// A driver image mapped into the modules region: where, how large, its entry point, and the
+    /// run of the region it holds (for its unmap).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct MappedImage {
         pub base: u32,
         pub size: u32,
         pub entry_va: u32,
-        pub driver: &'static DriverObject,
-        pub driver_id: dev::DriverId,
+        first: usize,
+        pages: usize,
     }
 
     /// The modules region's page allocator, at the high level like the DMA state's. Mapping the
@@ -317,17 +312,14 @@ mod target {
     }
 
     /// Resolve one import of a loaded module: hal.dll by name through the generated HAL table
-    /// (`kernel/hal_exports.toml`), ntoskrnl.exe by name or ordinal through the kernel image's
-    /// export directory, forwarders followed (depth-limited). Anything else is no module.
+    /// (`kernel/hal_exports.toml`), then the routines the I/O layer serves for it until that spec
+    /// carries them; ntoskrnl.exe by name or ordinal through the kernel image's export directory,
+    /// forwarders followed (depth-limited). Anything else is no module.
     pub fn resolve_import(module: &str, name: ImportName) -> Result<u32, Unresolved> {
         resolve_import_depth(module, name, 0)
     }
 
-    fn resolve_import_depth(
-        module: &str,
-        name: ImportName,
-        depth: u32,
-    ) -> Result<u32, Unresolved> {
+    fn resolve_import_depth(module: &str, name: ImportName, depth: u32) -> Result<u32, Unresolved> {
         if depth > 4 {
             return Err(Unresolved::NoEntry);
         }
@@ -337,6 +329,7 @@ mod target {
             };
             return hal_exports::export_address(name)
                 .map(|address| address as u32)
+                .or_else(|| crate::dev::ntoskrnl::interim_hal_export(name))
                 .ok_or(Unresolved::NoEntry);
         }
         if pe::same_module(module, "ntoskrnl.exe") {
@@ -362,12 +355,12 @@ mod target {
         Err(Unresolved::NoModule)
     }
 
-    /// Load a `.sys` image into the modules region and call its DriverEntry: reserve a run of the
-    /// region, stage the image in a pool block (parse, map, relocate, snap against
-    /// [`resolve_import`]), map the staged pages frame by frame into the region's shared tables,
-    /// then enter at the image's entry point with a fresh driver object and register it on
-    /// success. The registry path is null (a recorded seam).
-    pub fn load_driver_image(file: &[u8], name: &'static str) -> Result<LoadedDriver, LoadError> {
+    /// Map a `.sys` image into the modules region: reserve a run of the region, stage the image
+    /// in a pool block (parse, map, relocate, snap against [`resolve_import`]), then map the
+    /// staged pages frame by frame into the region's shared tables. An import that does not
+    /// resolve is named on COM1 (`F2K: dev: <module>!<entry> unresolved`), as Windows 2000 names
+    /// it in its event log.
+    pub fn map_driver_image(file: &[u8]) -> Result<MappedImage, LoadError> {
         let image = Image::parse_kernel_module(file).map_err(LoadError::NotAnImage)?;
         let size = image.size_of_image() as usize;
         let pages = size.div_ceil(paging::PAGE_SIZE as usize);
@@ -376,79 +369,62 @@ mod target {
         let first = level::raised::<High, _>(|high| REGION.get(high).reserve_pages(pages))
             .ok_or(LoadError::OutOfRegion)?;
         let base = layout::MODULES.start + first as u32 * paging::PAGE_SIZE;
+        let unreserve =
+            || level::raised::<High, _>(|high| REGION.get(high).unreserve_pages(first, pages));
 
         // Stage the image in a pool block, relocated to the base and with its imports snapped.
-        let mut staging = pool::allocate(size).ok_or(LoadError::OutOfFrames)?;
-        let module = match load_staged(file, base, staging.as_mut(), resolve_import) {
+        let Some(mut staging) = pool::allocate(pages * paging::PAGE_SIZE as usize) else {
+            unreserve();
+            return Err(LoadError::OutOfFrames);
+        };
+        let resolve = |module: &str, name: ImportName| {
+            resolve_import(module, name).inspect_err(|_| match name {
+                ImportName::Name(name) => {
+                    crate::serial_println!("F2K: dev: {}!{} unresolved", module, name);
+                }
+                ImportName::Ordinal(ordinal) => {
+                    crate::serial_println!("F2K: dev: {}!#{} unresolved", module, ordinal);
+                }
+            })
+        };
+        let module = match load_staged(file, base, staging.as_mut(), resolve) {
             Ok(module) => module,
             Err(error) => {
-                level::raised::<High, _>(|high| REGION.get(high).unreserve_pages(first, pages));
+                unreserve();
                 return Err(error);
             }
         };
 
         // Map the staged pages frame by frame into the region's shared tables.
-        let mut mapped = 0usize;
-        let mut map_error = None;
         for page in 0..pages {
-            match map_staged_page(staging.as_ref(), base, page) {
-                Ok(()) => mapped += 1,
-                Err(error) => {
-                    map_error = Some(error);
-                    break;
-                }
+            if let Err(error) = map_staged_page(staging.as_ref(), base, page) {
+                unmap_pages(base, page);
+                unreserve();
+                return Err(error);
             }
         }
-        if let Some(error) = map_error {
-            for page in 0..mapped {
-                let frame = paging::unmap_kernel_page(base + page as u32 * paging::PAGE_SIZE);
-                paging::release_frame_phys(frame);
-            }
-            level::raised::<High, _>(|high| REGION.get(high).unreserve_pages(first, pages));
-            return Err(error);
-        }
-        drop(staging);
-
-        // The module's driver object: a pool block the driver keeps for the system's lifetime.
-        let mut object_block = pool::allocate(core::mem::size_of::<DriverObject>())
-            .ok_or(LoadError::OutOfFrames)?;
-        let driver: &'static mut DriverObject = {
-            let bytes = object_block.as_mut();
-            assert!(bytes.len() >= core::mem::size_of::<DriverObject>());
-            let slot = bytes.as_mut_ptr().cast::<DriverObject>();
-            // SAFETY: the block is page-aligned (so aligned for a DriverObject) and holds at
-            // least its size, checked above; the block is forgotten below, so the reference is
-            // the object's only owner for the rest of the run.
-            unsafe {
-                slot.write(DriverObject::new(
-                    name,
-                    [None; dev::irp::IRP_MJ_MAX],
-                    None,
-                    MatchSpec::any(),
-                ));
-                &mut *slot
-            }
-        };
-        core::mem::forget(object_block);
-
-        // DriverEntry(DriverObject, RegistryPath): enter at the image's entry point. The
-        // registry path is null (a recorded seam).
-        let entry: extern "stdcall" fn(*mut DriverObject, *const core::ffi::c_void) -> i32 =
-            // SAFETY: the entry point is the image's AddressOfEntryPoint, mapped at
-            // module.entry_va; its signature is the documented DriverEntry's.
-            unsafe { core::mem::transmute(module.entry_va) };
-        let status = NtStatus(entry(driver, core::ptr::null()) as u32);
-        if !status.is_success() {
-            return Err(LoadError::DriverEntry(status));
-        }
-        let driver_id = dev::register_driver(&*driver).ok_or(LoadError::DriverTableFull)?;
-        Ok(LoadedDriver {
-            base: module.base,
+        Ok(MappedImage {
+            base,
             size: module.size,
             entry_va: module.entry_va,
-            driver: &*driver,
-            driver_id,
+            first,
+            pages,
         })
+    }
+
+    /// Take a mapped image's pages back: unmapped, their frames freed, the run of the region
+    /// free again. Nothing may run in the image any more.
+    pub fn unmap_driver_image(image: &MappedImage) {
+        unmap_pages(image.base, image.pages);
+        level::raised::<High, _>(|high| REGION.get(high).unreserve_pages(image.first, image.pages));
+    }
+
+    /// The first `count` pages from `base` unmapped and their frames freed.
+    fn unmap_pages(base: u32, count: usize) {
+        for page in 0..count {
+            let frame = paging::unmap_kernel_page(base + page as u32 * paging::PAGE_SIZE);
+            paging::release_frame_phys(frame);
+        }
     }
 
     /// Copy staged page `page` into a fresh frame and map it at the module's page: the frame is
@@ -525,7 +501,14 @@ mod tests {
         }
         // Section table at 0x178: .text, .idata, .reloc.
         let table = 0x178;
-        let section = |file: &mut [u8], row: usize, name: &str, vsize: u32, va: u32, raw: u32, raw_at: u32, chars: u32| {
+        let section = |file: &mut [u8],
+                       row: usize,
+                       name: &str,
+                       vsize: u32,
+                       va: u32,
+                       raw: u32,
+                       raw_at: u32,
+                       chars: u32| {
             let at = table + row * 40;
             file[at..at + name.len()].copy_from_slice(name.as_bytes());
             w32(file, at + 8, vsize);
@@ -534,9 +517,36 @@ mod tests {
             w32(file, at + 20, raw_at);
             w32(file, at + 36, chars);
         };
-        section(&mut file, 0, ".text", 0x200, 0x1000, 0x200, 0x200, 0x6000_0020);
-        section(&mut file, 1, ".idata", 0x300, 0x2000, 0x300, 0x400, 0xC000_0040);
-        section(&mut file, 2, ".reloc", 0x100, 0x3000, 0x100, 0x700, 0x4200_0040);
+        section(
+            &mut file,
+            0,
+            ".text",
+            0x200,
+            0x1000,
+            0x200,
+            0x200,
+            0x6000_0020,
+        );
+        section(
+            &mut file,
+            1,
+            ".idata",
+            0x300,
+            0x2000,
+            0x300,
+            0x400,
+            0xC000_0040,
+        );
+        section(
+            &mut file,
+            2,
+            ".reloc",
+            0x100,
+            0x3000,
+            0x100,
+            0x700,
+            0x4200_0040,
+        );
 
         // .text: entry code, and the dword the relocation patches (RVA 0x1010 = file 0x210).
         file[0x200] = 0xC3; // ret
@@ -549,7 +559,7 @@ mod tests {
         w32(&mut file, 0x414, 0x2108); // descriptor 1: original first thunk
         w32(&mut file, 0x414 + 12, 0x2190); // ... name RVA ("ntoskrnl.exe")
         w32(&mut file, 0x414 + 16, 0x2208); // ... first thunk (IAT)
-        // descriptor 2 at 0x428 stays zero: the array's end.
+                                            // descriptor 2 at 0x428 stays zero: the array's end.
         w32(&mut file, 0x500, 0x21A0); // thunk array 0: hint/name RVA
         w32(&mut file, 0x504, 0); // ... end
         if ordinal {
@@ -562,7 +572,8 @@ mod tests {
         cstr_at(&mut file, 0x590, "ntoskrnl.exe"); // RVA 0x2190
         cstr_at(&mut file, 0x5A2, "HalGetDmaAlignmentRequirement"); // RVA 0x21A0 (hint at 0x5A0)
         cstr_at(&mut file, 0x5C2, "IoCreateDevice"); // RVA 0x21C0 (hint at 0x5C0)
-        // IAT at RVA 0x2200 (file 0x600) stays zero: the snap writes it.
+                                                     // IAT at RVA 0x2200 (file 0x600) stays zero:
+                                                     // the snap writes it.
 
         // .reloc (RVA 0x3000 = file 0x700): one block patching RVA 0x1010.
         if reloc {
@@ -629,7 +640,10 @@ mod tests {
         assert_eq!(
             log,
             [
-                ("hal.dll".to_string(), "HalGetDmaAlignmentRequirement".to_string()),
+                (
+                    "hal.dll".to_string(),
+                    "HalGetDmaAlignmentRequirement".to_string()
+                ),
                 ("ntoskrnl.exe".to_string(), "IoCreateDevice".to_string()),
             ]
         );
@@ -663,7 +677,8 @@ mod tests {
         cstr_at(&mut file, 0x5A2, "NoSuchEntry");
         let mut staged = vec![0u8; 0x4000];
         let mut log = Vec::new();
-        let error = load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err();
+        let error =
+            load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err();
         assert_eq!(error, LoadError::Unresolved);
         assert_eq!(log[0].1, "NoSuchEntry");
 
@@ -679,31 +694,44 @@ mod tests {
         let mut log = Vec::new();
         assert!(load_staged(&file, PREFERRED, &mut staged, fake_resolve(&mut log)).is_ok());
 
-        // A program (no DLL flag) is not a kernel module.
-        let file = synthetic_sys(false, true, false);
+        // A console program (no DLL flag, not native) is not a kernel module; a native image
+        // without the flag is (a driver, as the DDK links one).
+        let mut file = synthetic_sys(false, true, false);
+        w16(&mut file, 0x98 + 0x44, 3);
         let mut staged = vec![0u8; 0x4000];
         let mut log = Vec::new();
         assert_eq!(
             load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err(),
             LoadError::NotAnImage(Reject::NotADll)
         );
+        let file = synthetic_sys(false, true, false);
+        let mut log = Vec::new();
+        assert!(load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).is_ok());
 
-        // A preferred base in user space is not a module's base.
+        // A preferred base in user space is a module's (the DDK's 0x10000): it moves.
         let mut file = synthetic_sys(true, true, false);
-        w32(&mut file, 0x98 + 0x1C, 0x0040_0000);
+        w32(&mut file, 0x98 + 0x1C, 0x0001_0000);
+        w32(&mut file, 0x210, 0x0001_0000 + 0x1234);
         let mut staged = vec![0u8; 0x4000];
         let mut log = Vec::new();
+        load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap();
         assert_eq!(
-            load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err(),
-            LoadError::NotAnImage(Reject::ImageOutsideKernelSpace)
+            u32_at(&staged, 0x1010),
+            0xC680_1234,
+            "relocated from 0x10000"
         );
 
         // A truncated file.
         let file = synthetic_sys(true, true, false);
         let mut log = Vec::new();
         assert_eq!(
-            load_staged(&file[..0x100], 0xC680_0000, &mut staged, fake_resolve(&mut log))
-                .unwrap_err(),
+            load_staged(
+                &file[..0x100],
+                0xC680_0000,
+                &mut staged,
+                fake_resolve(&mut log)
+            )
+            .unwrap_err(),
             LoadError::NotAnImage(Reject::Truncated)
         );
 
@@ -738,6 +766,48 @@ mod tests {
         assert_eq!(
             load_staged(&file, 0xC680_0000, &mut staged, fake_resolve(&mut log)).unwrap_err(),
             LoadError::Malformed
+        );
+    }
+
+    /// drvload.sys, as the Windows 2000 DDK built it (linked /DRIVER at 0x10000, sections aligned
+    /// to 0x20): it parses as a kernel module, moves to the modules region, and asks the resolver
+    /// for exactly its import table's entries, ntoskrnl's then hal.dll's, by name.
+    #[test]
+    fn the_ddk_s_drvload_stages_and_names_its_imports() {
+        let file = include_bytes!("../../../tests/ntoskrnl/drvload/drvload.sys");
+        let image = Image::parse_kernel_module(file).unwrap();
+        assert_eq!(image.image_base(), 0x0001_0000);
+        let mut staged = vec![0u8; image.size_of_image() as usize];
+        let mut asked = Vec::new();
+        let module = load_staged(file, 0xC680_0000, &mut staged, |module, name| {
+            let ImportName::Name(name) = name else {
+                panic!("drvload.sys imports by name");
+            };
+            asked.push(format!("{module}!{name}"));
+            Ok(0xC000_0000 + asked.len() as u32)
+        })
+        .unwrap();
+        assert_eq!(module.entry_va, 0xC680_0000 + 0x280);
+        assert_eq!(&staged[..2], b"MZ");
+        assert_eq!(
+            asked,
+            [
+                "ntoskrnl.exe!RtlInitUnicodeString",
+                "ntoskrnl.exe!IofCompleteRequest",
+                "ntoskrnl.exe!_vsnprintf",
+                "ntoskrnl.exe!IoDeleteSymbolicLink",
+                "ntoskrnl.exe!IoCreateDevice",
+                "ntoskrnl.exe!IoCreateSymbolicLink",
+                "ntoskrnl.exe!RtlWriteRegistryValue",
+                "ntoskrnl.exe!PsInitialSystemProcess",
+                "ntoskrnl.exe!IoGetCurrentProcess",
+                "ntoskrnl.exe!KeGetCurrentThread",
+                "ntoskrnl.exe!PsGetCurrentThreadId",
+                "ntoskrnl.exe!PsGetCurrentProcessId",
+                "ntoskrnl.exe!IoDeleteDevice",
+                "ntoskrnl.exe!ExGetPreviousMode",
+                "HAL.dll!KeGetCurrentIrql",
+            ]
         );
     }
 }

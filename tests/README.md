@@ -23,6 +23,7 @@ tests/
 │               # caret, editctl
 ├── gdi32/      # guidc, gditext, ttfont, bitmaps, mapmode, shapes, regions
 ├── advapi32/   # registry, token
+├── ntoskrnl/   # kernel-mode fixtures over ntoskrnl.exe's exports: drvload
 ├── crt/        # msvcrt.dll's: hellomd, crt, seh, fd, wide, process, strings, msvcrt, cxxeh, wmain
 │               # (built with /MD)
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
@@ -30,7 +31,8 @@ tests/
 │               # batstd, batops, batline, bathelp, batdir, batpipe; HAND-CAPTURES.md, the
 │               # interactive checks
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
-└── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources
+└── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources; f2kd.h, f2kdhost.h and
+                #  f2kdproto.h: the kernel-mode fixtures' driver and companion sides
 ```
 
 There is no `ntdll/` group: the fixtures that call ntdll directly (`memory`, `files`, `spawn`, `pipe`) reach its exports through `GetProcAddress`, declaring the structures they need themselves, and sit in the group of the DLL whose behaviour they observe.
@@ -43,6 +45,8 @@ tests/<dll>/<name>/
 ├── <name>.exe      # the compiled fixture (committed; it is the point)
 ├── *.dll           # companion DLLs the program loads, if any (committed, built beside it
 │                   # from their checked-in source and .def)
+├── <name>sys.c     # a kernel-mode fixture's driver source (ntoskrnl/)
+├── <name>.sys      # its driver, built from it with the Windows 2000 DDK (committed)
 ├── <other>.exe     # companion programs the program starts, if any (committed, built beside
 │                   # it from their checked-in source)
 ├── fixture.toml    # the declaration: its kind, and how its capture compares (served fixtures)
@@ -357,6 +361,21 @@ The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcr
 - `wmain` - the wide startup, as a program whose main is `wmain` meets it (cmd.exe's): `argv` as `__wgetmainargs` splits a child's own command line (`args`), `envp` from a child's own environment block, against `__p___winitenv`, `__p__wenviron`, `_wgetenv` and the narrow environment `getenv` builds (`env`), the `__p___` accessors against `wmain`'s arguments and `envp` against `GetEnvironmentStringsW` (`accessors`), and `__wgetmainargs` and `__getmainargs` called directly (`getmainargs`).
   Its children are the program itself (`wmain kid <what>`, not a section), so neither the machine's paths nor its environment print.
 
+The kernel-mode fixtures ground the kernel's driver layer as the others ground the DLLs: each is a driver, `<name>.sys` (built from `<name>sys.c` on `common/f2kd.h`), and its companion program, `<name>.exe` (built from `<name>.c` on `common/f2kt.h` and `common/f2kdhost.h`), a sectioned fixture like any other, whose section table lists the sections (so `--list` and `capture.bat` need no driver).
+For each section the program loads the driver without the service control manager (F2K has no services.exe): it writes the service key `HKLM\SYSTEM\CurrentControlSet\Services\F2K<name>` (Type 1, Start 3, ErrorControl 1, ImagePath `\??\<the .sys beside it>`), enables SeLoadDriverPrivilege, and calls ntdll's `NtLoadDriver` (through `GetProcAddress`, as the fixtures reach ntdll); then it opens `\\.\F2K<name>`, sends `DeviceIoControl` a buffered request naming the section, prints the lines the driver returns, closes the handle, calls `NtUnloadDriver` and deletes the key, clearing first whatever a crashed run left.
+The driver's DriverEntry creates `\Device\F2K<name>` and `\DosDevices\F2K<name>` and sets IRP_MJ_CREATE, IRP_MJ_CLOSE, IRP_MJ_DEVICE_CONTROL and DriverUnload; its `line()` formats with ntoskrnl's `_vsnprintf` into the request's output buffer.
+A step of the plumbing that fails prints one line, `f2kd: <step>: ...`, so the block differs; nothing prints when it all works, and the block holds the driver's lines alone.
+Both binaries carry the stamp of the program's source, the driver's and the three shared headers (`build.bat`'s `:kernelmode`), and the program holds the driver's against its own when it loads it, so a stale `.sys` shows too; `harness/test_repository.py` checks that the program hands the driver exactly the sections the driver lists.
+They follow the corpus's conventions in kernel mode: every call within its documented preconditions (values taken at a raised IRQL printed once it is lowered), everything changed restored, every loop and wait bounded, no interrupt ever connected.
+And they are written for two machines: the captures come from Windows 2000 in VirtualBox, F2K runs under QEMU, and their virtual hardware differs (PCI ids and slots, devices, BARs, IRQ lines, timing).
+So a hardware-independent fact prints plainly (a structure's field, an IRQL, a status, a vector the HAL computes from a level), and a machine's own becomes a relation or a verdict (`vector = 0x30 + line: yes`, a device picked by what it is, a timing in a band), or prints on a line of its own that `fixture.toml` masks (the counter's frequency, the clock's increment).
+The capture needs an administrator's account (the privilege) and the uniprocessor 8259 HAL ("Standard PC" or "ACPI Uniprocessor PC", VirtualBox's default with the I/O APIC off), the HAL F2K's stands for; a driver's mistake stops the machine, so `capture.bat` takes them last.
+On F2K the disk build puts the `.sys` beside the program in `\CORPUS`.
+
+- `drvload` (ntoskrnl) - the plumbing and the NT layouts: `NtLoadDriver`/`NtUnloadDriver` step by step (the privilege disabled, a key that does not exist, loaded twice, unloaded twice, reloaded, the key deleted) with `CreateFileA` between (`load`); what DriverEntry saw: its IRQL, the System process, the DRIVER_OBJECT's and DRIVER_EXTENSION's fields at their offsets (DriverStart and DriverSize against the image's headers, the names, the MajorFunction defaults), the RegistryPath, and the DEVICE_OBJECT `IoCreateDevice` made (`entry`); the IRP_MJ_CREATE and IRP_MJ_DEVICE_CONTROL IRPs, their stack locations and file object, and their process and thread against the caller's (`create`, `ioctl`); every IRP since the load, a second handle's cleanup and close among them (`irps`); `IoCreateDevice` with an extension, exclusive and of a disk's type (`device`); the I/O manager's refusals (`names`); what it answers for major functions the driver never set (`unknown`); and the unload, with no handle open and with one (`unload`, `unloadopen`), what the unload routine saw read back from a value it writes under the service key.
+  Its last three blocks (`unknown`, `unload`, `unloadopen`) are skipped: the capture shows only `f2kd: NtLoadDriver: 0xC0000034` for them, since the `names` section, captured before them, leaves the driver's image loaded on Windows 2000 once it is unloaded (its two refused `IoCreateDevice` calls keep a reference on the driver that is never dropped), and every later load of the service fails until the machine restarts; they wait for a capture with `names` last.
+  On F2K, `kernel/src/dev/io.rs` is the I/O manager these blocks exercise: NtLoadDriver and NtUnloadDriver, the DRIVER_OBJECT, DEVICE_OBJECT, FILE_OBJECT and IRP in Windows 2000's layouts, the `\Driver`, `\Device` and `\??` names, and the requests a program's `CreateFileA`, `DeviceIoControl` and `CloseHandle` send down.
+
 Capture `files` and `fswrite` from a local FAT32 volume: F2K's boot volume is FAT32, and file-system details differ elsewhere — NTFS has its own names and timestamps, and a VirtualBox shared folder has no short names, no attribute bits and reports a remote drive.
 
 ### Capturing
@@ -462,6 +481,8 @@ Their checks are the kernel cases in `core/kernel/test_kernel.py`; `exit0`, `ret
 Run `build.bat` from a command prompt that has the MSVC 6 compiler on PATH (the VS command prompt sets this up, e.g. via `vcvars32.bat`).
 The exact per-test command lines live in `build.bat`; expected exit code 0 means pass.
 Each fixture builds inside its own directory, `<dll>\<name>`; the fixtures built on `common/f2kt.h` include it as `"../common/f2kt.h"`, which `build.bat`'s `/I ..` (the group's directory) resolves.
+The kernel-mode fixtures' drivers need the Windows 2000 DDK as well: run `build.bat` from the DDK's free build environment (its command prompt sets `BASEDIR` and puts MSVC 6's compiler on PATH); `build.bat`'s `:kernelmode` label holds the compiler and linker lines (the DDK's headers from `%BASEDIR%\inc` and `%BASEDIR%\inc\ddk`, `ntoskrnl.lib` and `hal.lib` from `%BASEDIR%\libfre\i386`).
+A full build outside that environment skips them, saying so.
 
 ## How F2K consumes these
 

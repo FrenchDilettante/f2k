@@ -2,8 +2,9 @@
 //! over the process's token (`se`). advapi32's OpenProcessToken, AdjustTokenPrivileges and
 //! GetTokenInformation are Win32 code over these, as on Windows 2000.
 //!
-//! F2K checks no privilege anywhere: what these services keep is bookkeeping, so that the calls a
-//! program makes before it shuts the machine down answer as Windows 2000's do (see `se`). Where
+//! What these services keep is bookkeeping, so that the calls a program makes before it shuts the
+//! machine down answer as Windows 2000's do (see `se`); the one privilege F2K checks is
+//! SeLoadDriverPrivilege, which a driver's load and unload require (`nt::driver`). Where
 //! Windows 2000 would grant or refuse a token's access by its security descriptor, F2K grants
 //! every right asked for. The handle checks are the object manager's, as for any object: a handle
 //! naming nothing is STATUS_INVALID_HANDLE, one naming another kind of object (a pseudo-handle
@@ -181,7 +182,7 @@ mod services {
     /// nothing: STATUS_BUFFER_TOO_SMALL, the size it takes in ReturnLength. A privilege the token
     /// does not hold is not assigned (STATUS_NOT_ALL_ASSIGNED, a success: the others change).
     /// No NewState without DisableAllPrivileges is STATUS_INVALID_PARAMETER, before the handle is
-    /// looked at. The privileges are bookkeeping only (see `se`): nothing checks them.
+    /// looked at. Only SeLoadDriverPrivilege is ever checked (see `se`).
     pub fn adjust_privileges_token(
         _: &mut NtCall,
         handle: Handle,

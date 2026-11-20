@@ -21,9 +21,10 @@ for %%I in (cl.exe) do if "%%~$PATH:I"=="" (
 
 if not "%~1"=="" goto some
 
+set F2KT_ALL=yes
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -52,7 +53,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -967,6 +968,56 @@ if errorlevel 1 (echo build.bat: wmain failed & exit /b 1)
 del wmain.obj
 cd ..\..
 goto :eof
+
+rem The kernel-mode fixtures: each a driver, <name>.sys from <name>sys.c,
+rem and its companion program, <name>.exe from <name>.c (common\f2kd.h
+rem and common\f2kdhost.h describe them). hal.dll's are in hal\, ntoskrnl's
+rem in ntoskrnl\. The driver needs the Windows 2000 DDK: run build.bat from
+rem its build environment (the free build's command prompt, which sets
+rem BASEDIR and puts MSVC 6's compiler on PATH). A full build outside it
+rem skips them, saying so; naming one there fails.
+:drvload
+echo === drvload
+cd ntoskrnl\drvload
+call :kernelmode drvload
+if errorlevel 1 (echo build.bat: drvload failed & exit /b 1)
+cd ..\..
+goto :eof
+
+rem Build kernel-mode fixture %1 from inside its directory: the driver
+rem %1.sys and the program %1.exe, both stamped with the CRC of the
+rem program's source, the driver's and the shared headers (the program
+rem holds the driver's stamp against its own when it loads it).
+rem
+rem The driver's lines follow the Windows 2000 DDK's makefile.def for a
+rem free x86 DRIVER (TARGETTYPE=DRIVER): stdcall (/Gz), 8-byte packing
+rem (/Zp8), no default library (/Zl, /NODEFAULTLIB), the DDK's x86
+rem defines, ntoskrnl.lib and hal.lib from %BASEDIR%\libfre\i386, linked
+rem /DRIVER for the native subsystem at base 0x10000, its entry
+rem DriverEntry@8, sections aligned to 0x20 as the DDK's drivers are,
+rem and a checksum (/RELEASE). The code needs no 64-bit helper
+rem (UInt32x32To64 compiles to one multiply under /Oxs); if the linker
+rem misses __allmul or the like, add %BASEDIR%\libfre\i386\int64.lib.
+:kernelmode
+if "%BASEDIR%"=="" goto nobasedir
+call :stamp %1.c %1sys.c ..\..\common\f2kdhost.h ..\..\common\f2kd.h ..\..\common\f2kdproto.h
+if "%F2KT_CRC%"=="" exit /b 1
+cl /nologo /c /W3 /Gz /Zp8 /Gy /Zl /Oxs /GF /I .. /I %BASEDIR%\inc\ddk /I %BASEDIR%\inc /D_X86_=1 /Di386=1 /DSTD_CALL /DCONDITION_HANDLING=1 /DNT_UP=1 /DNT_INST=0 /DWIN32=100 /D_NT1X_=100 /DWINNT=1 /D_WIN32_WINNT=0x0500 /DWIN32_LEAN_AND_MEAN=1 /DDEVL=1 /DDBG=0 /DFPO=1 /DNDEBUG /DF2KT_SOURCE_CRC=0x%F2KT_CRC% %1sys.c
+if errorlevel 1 exit /b 1
+link /nologo /DRIVER /SUBSYSTEM:NATIVE /ENTRY:DriverEntry@8 /BASE:0x10000 /ALIGN:0x20 /RELEASE /NODEFAULTLIB /OUT:%1.sys %1sys.obj %BASEDIR%\libfre\i386\ntoskrnl.lib %BASEDIR%\libfre\i386\hal.lib
+if errorlevel 1 exit /b 1
+del %1sys.obj
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% %1.c advapi32.lib
+if errorlevel 1 exit /b 1
+del %1.obj
+exit /b 0
+:nobasedir
+if "%F2KT_ALL%"=="yes" (
+    echo build.bat: %1 skipped: BASEDIR is not set ^(run from the Windows 2000 DDK's build environment^)
+    exit /b 0
+)
+echo build.bat: %1 needs the Windows 2000 DDK: BASEDIR is not set
+exit /b 1
 
 rem Set F2KT_CRC to the source stamp of the fixture's sources, its own
 rem first (with the shared header after them), from inside its directory,
