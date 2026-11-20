@@ -48,12 +48,25 @@
 //! routine may keep an IRP (STATUS_MORE_PROCESSING_REQUIRED) and complete it again later. The IRP
 //! is completed only once its walk passes the top ([`Progress`]); until then it and everything it
 //! points to stay alive. Its sender waits for it, as Windows 2000's I/O manager waits for a
-//! synchronous request, off the drivers' stack: a create, a cleanup and a close in kernel mode (as
+//! synchronous request, off the drivers' stacks: a create, a cleanup and a close in kernel mode (as
 //! IopParseDevice and IopCloseFile wait), a read, a write, a device control and a flush in user
 //! mode, which a termination interrupts. The IRP owns its system buffer until its sender takes it
 //! back; a sender terminated while it waits leaves the IRP to its driver, and its completion
 //! retires it, its buffer with it, while the open's close waits for it (the IRP holds its file
 //! object). A request's status is then the IRP's, as a synchronous request's final status is.
+//!
+//! # The stacks and the locks
+//!
+//! The drivers' code runs on stacks of its own ([`on_driver_stack`]): a kernel stack leaves a
+//! driver too little room once a system service's frames are on it. There are [`DRIVER_STACKS`]
+//! of them, each one thread's from its entry to its return ([`Stacks`]); a driver's call back
+//! into the I/O manager (an open of a device name, a close a completion leads to) runs on the
+//! stack it is on, and a thread finding every stack taken waits for one. No lock is held across
+//! a driver's call: the I/O manager's tables (the names, the drivers, the opens, a device's
+//! references and its driver's device list) change in short steps at the high level, so a
+//! dispatch routine that opens a device or waits for another thread's request does not stop the
+//! machine's file opens, and other threads' requests run meanwhile. The load lock serializes the
+//! loads and unloads alone, as Windows 2000's worker runs them one at a time.
 //!
 //! # The loads
 //!
@@ -72,6 +85,10 @@
 //! before go on being served; the last of the devices' references dropped (the last open's close)
 //! runs DriverUnload ([`unload_due`]), in the closing thread standing in for the System process's
 //! worker, and the driver's name goes with it, as the `drvload` capture's `unloadopen` block shows.
+//! A device deleted while open stays on its driver's list until its last close
+//! ([`delete_device`]): its reference holds the unload, and its driver object and image stay
+//! while it does. A deferred unload runs under the load lock, once, and only for a driver still
+//! loaded.
 //!
 //! # What a driver sees of threads and processes
 //!
@@ -85,9 +102,9 @@
 //! returns STATUS_PENDING to an asynchronous one, and completes it through an APC to its thread);
 //! no IRP is cancelled (IoCancelIrp, a terminated thread's IoCancelThreadIo); a request a driver
 //! sends from inside another driver call (a nested close, say) and leaves pending is waited for on
-//! the drivers' stack, its lock held; only METHOD_BUFFERED device controls are served, and no
-//! DO_DIRECT_IO read or write (no MDL); a driver whose DriverEntry fails or whose unload leaves
-//! devices behind keeps its image mapped.
+//! the stack it is on (the thread's other calls wait for it); only METHOD_BUFFERED device controls
+//! are served, and no DO_DIRECT_IO read or write (no MDL); a driver whose DriverEntry fails or
+//! whose unload leaves devices behind keeps its image mapped.
 
 use core::mem::size_of;
 
@@ -556,6 +573,69 @@ pub fn open_refusal(device_flags: u32, references: i32, extension_flags: u32) ->
     None
 }
 
+// --- The drivers' stacks -----------------------------------------------------------------------
+
+/// How many stacks the drivers' code runs on: as many threads at once in the I/O manager's
+/// requests, a load or an unload among them.
+pub const DRIVER_STACKS: usize = 4;
+
+/// What a thread's claim on the drivers' stacks got.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Claim {
+    /// The thread runs on this stack already: a driver's call back into the I/O manager (an
+    /// open of a device name, a close) goes on where it is.
+    Running(usize),
+    /// This stack, free, is the thread's now.
+    Took(usize),
+    /// Every stack is another thread's: the thread waits for one to be given up.
+    Busy,
+}
+
+/// Which thread runs on each of the drivers' stacks: its record's index plus one, 0 for a free
+/// stack. A thread holds one stack at most, from its first entry into the I/O manager's calls to
+/// its return from it; its nested calls run on it.
+pub struct Stacks {
+    owners: [u32; DRIVER_STACKS],
+}
+
+impl Stacks {
+    pub const fn new() -> Self {
+        Stacks {
+            owners: [0; DRIVER_STACKS],
+        }
+    }
+
+    /// `thread`'s claim (see [`Claim`]).
+    pub fn claim(&mut self, thread: u32) -> Claim {
+        if let Some(index) = self.owners.iter().position(|&owner| owner == thread) {
+            return Claim::Running(index);
+        }
+        match self.owners.iter().position(|&owner| owner == 0) {
+            Some(index) => {
+                self.owners[index] = thread;
+                Claim::Took(index)
+            }
+            None => Claim::Busy,
+        }
+    }
+
+    /// Whether `thread` runs on one of the stacks.
+    pub fn runs(&self, thread: u32) -> bool {
+        self.owners.contains(&thread)
+    }
+
+    /// The stack at `index` given up by the thread that took it.
+    pub fn give_up(&mut self, index: usize) {
+        self.owners[index] = 0;
+    }
+}
+
+impl Default for Stacks {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // --- The requests' lives -----------------------------------------------------------------------
 
 /// Where a request's IRP is in its life, as the I/O manager keeps it beside the IRP (Windows 2000
@@ -738,6 +818,7 @@ pub use target::*;
 #[cfg(target_arch = "x86")]
 mod target {
     use core::alloc::Layout;
+    use core::cell::UnsafeCell;
     use core::mem::size_of;
     use core::ptr::NonNull;
     use core::sync::atomic::{AtomicU32, Ordering};
@@ -786,6 +867,7 @@ mod target {
         names: Namespace,
         drivers: [Option<DriverSlot>; DRIVERS],
         files: [FileSlot; FILES],
+        stacks: Stacks,
     }
 
     /// The I/O manager's state, at the high level as the registry's is: each use is a short
@@ -802,6 +884,7 @@ mod target {
             in_flight: 0,
             closing: false,
         }; FILES],
+        stacks: Stacks::new(),
     });
 
     fn with_io<R>(step: impl FnOnce(&mut IoManager) -> R) -> R {
@@ -821,12 +904,32 @@ mod target {
     struct ArenaPool([u8; ARENA]);
     static ARENA_POOL: StaticBuf<ArenaPool> = StaticBuf::new(ArenaPool([0; ARENA]));
 
-    /// The drivers' lock: one thread at a time runs in the I/O manager's requests, on the drivers'
-    /// stack ([`on_driver_stack`]); a load or an unload among them, as Windows 2000 serializes
-    /// those in its worker.
-    static DRIVER_LOCK: DeviceLock<()> = DeviceLock::new(());
+    /// The load lock: one load or unload at a time (its DriverEntry or its DriverUnload run as the
+    /// System process's worker), as Windows 2000 runs them in its worker. Neither a request nor an
+    /// open takes it; a driver's code holds no other lock of the I/O manager's.
+    static LOAD_LOCK: DeviceLock<()> = DeviceLock::new(());
 
-    /// The stack the I/O manager runs its requests and the drivers' code on: a kernel stack is
+    /// The thread holding the load lock: its thread record's index plus one, 0 for none.
+    static LOADER: AtomicU32 = AtomicU32::new(0);
+
+    /// Run `body` holding the load lock (inside a critical region); at once when the running
+    /// thread holds it already (an unload a load's own call would lead to).
+    fn serialized<R>(body: impl FnOnce() -> R) -> R {
+        let me = u32::from(crate::sched::current_thread().index()) + 1;
+        if LOADER.load(Ordering::Acquire) == me {
+            return body();
+        }
+        crate::process::threads::critical_region(|| {
+            LOAD_LOCK.with(|_| {
+                LOADER.store(me, Ordering::Release);
+                let result = body();
+                LOADER.store(0, Ordering::Release);
+                result
+            })
+        })
+    }
+
+    /// A stack the I/O manager runs its requests and the drivers' code on: a kernel stack is
     /// 32 KiB, and a system service's own frames (the kernel is built unoptimized) leave a driver
     /// too little of it, where Windows 2000 gives one 12 KiB of its own. 64 KiB, kernel memory.
     const DRIVER_STACK: usize = 64 * 1024;
@@ -834,32 +937,72 @@ mod target {
     #[repr(C, align(16))]
     struct DriverStack([u8; DRIVER_STACK]);
 
-    // The drivers' stack: reached only by the thread holding DRIVER_LOCK.
-    static mut STACK: DriverStack = DriverStack([0; DRIVER_STACK]);
+    // The drivers' stacks: each reached only by the thread [`Stacks`] gives it to.
+    static mut STACKS: [DriverStack; DRIVER_STACKS] =
+        [const { DriverStack([0; DRIVER_STACK]) }; DRIVER_STACKS];
 
-    /// The thread running on the drivers' stack: its thread record's index plus one, 0 for none.
-    static ON_STACK: AtomicU32 = AtomicU32::new(0);
+    /// The event a thread waiting for a free stack waits on, set as each is given up.
+    // An event embedded in a static: named by its header's address (`WaitableId::Embedded`), and
+    // reached only through the dispatcher once named.
+    struct StackFreed(UnsafeCell<Event>);
 
-    /// Run `body` on the drivers' stack, holding the drivers' lock (inside a critical region: a
-    /// termination waits for the request to finish); at once when the running thread is on it
-    /// already (a driver's call back into the I/O manager).
+    // SAFETY: one processor. The event is touched directly once, by `init` at boot, before any
+    // driver's call; from then on only the dispatcher reaches its header, by its address,
+    // serialized at the dispatch level.
+    unsafe impl Sync for StackFreed {}
+
+    static FREED: StackFreed = StackFreed(UnsafeCell::new(Event::new(
+        EventKind::Synchronization,
+        false,
+    )));
+
+    impl StackFreed {
+        /// The event's name: its header's address. No reference to the event is formed.
+        fn id(&self) -> WaitableId {
+            // SAFETY: a projection inside the static's own cell: it computes the header's address
+            // and reads nothing.
+            let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
+            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
+        }
+    }
+
+    /// Run `body` on a drivers' stack of the running thread's own (inside a critical region: a
+    /// termination waits for the call to finish), waiting while every stack is another thread's;
+    /// at once when the running thread is on one already (a driver's call back into the I/O
+    /// manager). No lock is held across the call: other threads' requests and opens run on the
+    /// other stacks meanwhile, and a request a driver holds pending is waited for off the stack.
     pub fn on_driver_stack<R>(body: impl FnOnce() -> R) -> R {
         let me = u32::from(crate::sched::current_thread().index()) + 1;
-        if ON_STACK.load(Ordering::Acquire) == me {
+        if with_io(|io| io.stacks.runs(me)) {
             return body();
         }
         crate::process::threads::critical_region(|| {
-            DRIVER_LOCK.with(|_| {
-                ON_STACK.store(me, Ordering::Release);
-                let mut result = None;
-                let mut call = Some(|| result = Some(body()));
-                let top = (&raw const STACK) as u32 + DRIVER_STACK as u32;
-                // SAFETY: the stack is this thread's alone while it holds the lock; the trampoline
-                // runs `call` there and returns to this one.
-                unsafe { switch_and_call(top, trampoline_of(&call), (&raw mut call).cast()) };
-                ON_STACK.store(0, Ordering::Release);
-                result.expect("the body ran")
-            })
+            let index = loop {
+                match with_io(|io| io.stacks.claim(me)) {
+                    Claim::Took(index) | Claim::Running(index) => break index,
+                    Claim::Busy => {
+                        crate::sched::wait::wait_current_for(
+                            FREED.id(),
+                            WaitReason::Executive,
+                            None,
+                        );
+                    }
+                }
+            };
+            let mut result = None;
+            let mut call = Some(|| result = Some(body()));
+            // SAFETY: the stacks' addresses, computed without a reference.
+            let top = unsafe { (&raw const STACKS[index]) as u32 } + DRIVER_STACK as u32;
+            // SAFETY: the stack is this thread's alone until it gives it up; the trampoline runs
+            // `call` there and returns to this one.
+            unsafe { switch_and_call(top, trampoline_of(&call), (&raw mut call).cast()) };
+            with_io(|io| io.stacks.give_up(index));
+            level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER
+                    .get(dispatch)
+                    .set_event(FREED.id(), 0)
+            });
+            result.expect("the body ran")
         })
     }
 
@@ -904,11 +1047,17 @@ mod target {
     /// driver's code: its thread record's index plus one, 0 for none.
     static WORKER: AtomicU32 = AtomicU32::new(0);
 
-    /// Start the I/O manager: its arena and its load lock. Once, at boot.
+    /// Start the I/O manager: its arena, its load lock and its stacks' event. Once, at boot.
     pub fn init() {
         let pool = &mut ARENA_POOL.take().0;
         with_io(|io| io.heap = Some(KernelHeap::new(pool)));
-        DRIVER_LOCK.init();
+        LOAD_LOCK.init();
+        {
+            let _masked = crate::pcr::pcr().mask_guard();
+            // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on
+            // it or sets it yet, and interrupts are masked for the reference's life.
+            unsafe { (*FREED.0.get()).init() };
+        }
     }
 
     // --- Memory ---------------------------------------------------------------------------------
@@ -1243,7 +1392,10 @@ mod target {
         let (stack_count, driver) = unsafe {
             let device = at::<DeviceObject>(device);
             // StackSize is a CCHAR: a driver's larger one cannot be counted in the IRP.
-            (device.stack_size.clamp(1, i8::MAX as u8 - 1), device.driver_object)
+            (
+                device.stack_size.clamp(1, i8::MAX as u8 - 1),
+                device.driver_object,
+            )
         };
         let size = irp_size(stack_count);
         let block = allocate(TAIL as usize + size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -1443,44 +1595,58 @@ mod target {
                 return Err(status);
             }
         }
-        // SAFETY: the driver's object (see `at`).
-        let driver = unsafe { at::<DriverObject>(request.driver) };
-        device.next_device = driver.device_object;
-        driver.device_object = block;
+        with_io(|_| {
+            // SAFETY: the driver's object (see `at`).
+            let driver = unsafe { at::<DriverObject>(request.driver) };
+            device.next_device = driver.device_object;
+            driver.device_object = block;
+        });
         Ok(block)
     }
 
-    /// The device's block given back, its VPB with it.
+    /// The device off its driver's list, and its block given back, its VPB with it.
     fn free_device(device: u32) {
+        with_io(|_| {
+            // SAFETY: a device of the driver's (see `at`), and its driver's object, which its
+            // devices keep (see `forget_driver`).
+            let object = unsafe { at::<DeviceObject>(device) };
+            let driver = unsafe { at::<DriverObject>(object.driver_object) };
+            let mut link = &mut driver.device_object;
+            let mut hops = 0;
+            while *link != 0 && hops < 1024 {
+                if *link == device {
+                    *link = object.next_device;
+                    break;
+                }
+                // SAFETY: a device on the driver's list.
+                link = unsafe { &mut at::<DeviceObject>(*link).next_device };
+                hops += 1;
+            }
+        });
         release(device);
     }
 
-    /// IoDeleteDevice: the device's name gone, the device off its driver's list, and its block
-    /// given back, or, while an open holds it, once its last close comes (DOE_DELETE_PENDING).
+    /// IoDeleteDevice: the device's name gone, and the device off its driver's list and its block
+    /// given back, or, while an open holds it, once its last close comes (DOE_DELETE_PENDING): it
+    /// stays on its driver's list meanwhile, so its references hold an unload of the driver, and
+    /// the driver object and image it runs on stay, as Windows 2000's IopCompleteUnloadOrDelete
+    /// keeps a referenced device on its driver's list. The check and the mark are one step with a
+    /// close's dropping of the reference ([`dereference_device`]).
     pub fn delete_device(device: u32) {
-        with_io(|io| io.names.remove_device(device));
-        // SAFETY: a device of the driver's (see `at`).
-        let object = unsafe { at::<DeviceObject>(device) };
-        // SAFETY: its driver's object.
-        let driver = unsafe { at::<DriverObject>(object.driver_object) };
-        let mut link = &mut driver.device_object;
-        let mut hops = 0;
-        while *link != 0 && hops < 1024 {
-            if *link == device {
-                *link = object.next_device;
-                break;
+        let now = with_io(|io| {
+            io.names.remove_device(device);
+            // SAFETY: a device of the driver's (see `at`), and its DEVOBJ_EXTENSION.
+            let object = unsafe { at::<DeviceObject>(device) };
+            if object.reference_count > 0 {
+                unsafe { at::<DevObjExtension>(object.device_object_extension) }.extension_flags |=
+                    DOE_DELETE_PENDING;
+                return false;
             }
-            // SAFETY: a device on the driver's list.
-            link = unsafe { &mut at::<DeviceObject>(*link).next_device };
-            hops += 1;
+            true
+        });
+        if now {
+            free_device(device);
         }
-        if object.reference_count > 0 {
-            // SAFETY: its DEVOBJ_EXTENSION.
-            unsafe { at::<DevObjExtension>(object.device_object_extension) }.extension_flags |=
-                DOE_DELETE_PENDING;
-            return;
-        }
-        free_device(device);
     }
 
     /// IoCreateSymbolicLink: `link` names `target` (not looked at until an open follows it).
@@ -1584,15 +1750,27 @@ mod target {
             free_device(device);
         }
         if flags & DOE_UNLOAD_PENDING != 0 {
-            on_driver_stack(|| {
-                let due = with_io(|_| {
-                    // SAFETY: the driver's object: its unload has not run, so it is loaded.
-                    let object = unsafe { at::<DriverObject>(driver) };
-                    unload_due(&mut object.flags, weights(object.device_object))
-                });
-                if due {
-                    run_unload(driver);
-                }
+            serialized(|| {
+                on_driver_stack(|| {
+                    let due = with_io(|io| {
+                        // Another thread's unload may have run since the reference went: the
+                        // driver is weighed only while it is still loaded.
+                        let loaded = io
+                            .drivers
+                            .iter()
+                            .flatten()
+                            .any(|slot| slot.object == driver);
+                        // SAFETY: the driver's object, loaded (see `at`).
+                        loaded
+                            && unload_due(
+                                &mut unsafe { at::<DriverObject>(driver) }.flags,
+                                weights(unsafe { at::<DriverObject>(driver) }.device_object),
+                            )
+                    });
+                    if due {
+                        run_unload(driver);
+                    }
+                })
             });
         }
     }
@@ -2025,7 +2203,7 @@ mod target {
 
     /// NtLoadDriver's work, for the service key `units` names (see the module notes).
     pub fn load_driver(units: &[u16]) -> Result<(), NtStatus> {
-        on_driver_stack(|| load(units))
+        serialized(|| on_driver_stack(|| load(units)))
     }
 
     /// The `\Driver\<name>` name.
@@ -2095,16 +2273,18 @@ mod target {
             return Err(status);
         }
         // IopReadyDeviceObjects: the driver's devices are ready once DriverEntry returns.
-        // SAFETY: the driver's object and its devices (see `at`).
-        let mut device = unsafe { at::<DriverObject>(driver) }.device_object;
-        let mut hops = 0;
-        while device != 0 && hops < 1024 {
-            // SAFETY: a device on the driver's list.
-            let object = unsafe { at::<DeviceObject>(device) };
-            object.flags &= !DO_DEVICE_INITIALIZING;
-            device = object.next_device;
-            hops += 1;
-        }
+        with_io(|_| {
+            // SAFETY: the driver's object and its devices (see `at`).
+            let mut device = unsafe { at::<DriverObject>(driver) }.device_object;
+            let mut hops = 0;
+            while device != 0 && hops < 1024 {
+                // SAFETY: a device on the driver's list.
+                let object = unsafe { at::<DeviceObject>(device) };
+                object.flags &= !DO_DEVICE_INITIALIZING;
+                device = object.next_device;
+                hops += 1;
+            }
+        });
         Ok(())
     }
 
@@ -2195,8 +2375,9 @@ mod target {
         }) else {
             return;
         };
-        // SAFETY: the driver's object (see `at`).
-        if unsafe { at::<DriverObject>(driver.object) }.device_object != 0 {
+        // SAFETY: the driver's object (see `at`): a device deleted while open stays on its list
+        // until its last close, so the block and image stay for it.
+        if with_io(|_| unsafe { at::<DriverObject>(driver.object) }.device_object) != 0 {
             crate::dbgprint::unhandled(
                 "ntoskrnl",
                 "IopDeleteDriver",
@@ -2214,7 +2395,7 @@ mod target {
 
     /// NtUnloadDriver's work, for the service key `units` names (see the module notes).
     pub fn unload_driver(units: &[u16]) -> Result<(), NtStatus> {
-        on_driver_stack(|| unload(units))
+        serialized(|| on_driver_stack(|| unload(units)))
     }
 
     fn unload(units: &[u16]) -> Result<(), NtStatus> {
@@ -2605,6 +2786,11 @@ mod tests {
         woken: std::vec::Vec<u32>,
         retired: std::vec::Vec<u32>,
         completions: std::vec::Vec<(u32, u32)>,
+        /// The drivers' stacks, the thread running, the names, and what its opens reached.
+        stacks: Stacks,
+        thread: u32,
+        names: Namespace,
+        opened: std::vec::Vec<(Claim, u32)>,
     }
 
     impl Fake {
@@ -2616,6 +2802,10 @@ mod tests {
                 woken: std::vec::Vec::new(),
                 retired: std::vec::Vec::new(),
                 completions: std::vec::Vec::new(),
+                stacks: Stacks::new(),
+                thread: 1,
+                names: Namespace::new(),
+                opened: std::vec::Vec::new(),
             }
         }
 
@@ -2720,15 +2910,37 @@ mod tests {
     /// STATUS_CANCELLED, a cancelled request's status (an error).
     const CANCELLED: NtStatus = NtStatus(0xC000_0120);
 
+    /// A dispatch routine that opens a device by its name (as a driver's ZwCreateFile does): the
+    /// open's claim on the stacks and the device it reaches; then completes its own request.
+    fn opens_a_device(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
+        let claim = fake.stacks.claim(fake.thread);
+        let units: std::vec::Vec<u16> = "\\??\\Other".encode_utf16().collect();
+        let device = match fake.names.resolve(&units) {
+            Some(Ok(resolved)) => resolved.device,
+            _ => 0,
+        };
+        fake.opened.push((claim, device));
+        fake.finish(irp, STATUS_SUCCESS, 0);
+        STATUS_SUCCESS
+    }
+
     const COMPLETES: u32 = 1;
     const PENDS: u32 = 2;
     const ANSWERS: u32 = 3;
     const KEEPS: u32 = 4;
     const LETS_GO: u32 = 5;
+    const OPENS: u32 = 6;
     const DEVICE: u32 = 0xD0;
 
     fn fake() -> Fake {
-        Fake::new(&[completes, pends, answers_the_held, keeps, lets_go])
+        Fake::new(&[
+            completes,
+            pends,
+            answers_the_held,
+            keeps,
+            lets_go,
+            opens_a_device,
+        ])
     }
 
     /// A request its driver completes in its dispatch routine comes back completed, with the
@@ -2901,5 +3113,66 @@ mod tests {
         assert_ne!(fake.location(irp, 2).control & SL_PENDING_RETURNED, 0);
         assert_eq!(fake.irp(irp).pending_returned, 1);
         assert_eq!(fake.progress(irp), Progress::Completed);
+    }
+
+    /// A thread runs on one of the drivers' stacks from its first entry to its return: a call
+    /// back into the I/O manager runs where it is (no second claim, no wait on itself), while
+    /// other threads take the other stacks; with every stack taken a thread waits, until one is
+    /// given up.
+    #[test]
+    fn each_thread_runs_on_a_stack_of_its_own() {
+        let mut stacks = Stacks::new();
+        assert_eq!(stacks.claim(1), Claim::Took(0));
+        assert_eq!(stacks.claim(1), Claim::Running(0));
+        assert!(stacks.runs(1) && !stacks.runs(2));
+        assert_eq!(stacks.claim(2), Claim::Took(1));
+        for thread in 3..=DRIVER_STACKS as u32 {
+            assert!(matches!(stacks.claim(thread), Claim::Took(_)));
+        }
+        assert_eq!(stacks.claim(99), Claim::Busy);
+        stacks.give_up(1);
+        assert_eq!(stacks.claim(99), Claim::Took(1));
+        assert_eq!(stacks.claim(1), Claim::Running(0));
+    }
+
+    /// A dispatch routine that re-enters the I/O manager, opening a device by its name, runs the
+    /// open on its own stack (where the one shared lock across the dispatch waited for itself);
+    /// another thread's open meanwhile takes another stack.
+    #[test]
+    fn a_dispatch_reentering_the_io_manager_runs_on_its_own_stack() {
+        let mut fake = fake();
+        let other = named("\\Device\\Other");
+        fake.names.insert(&other, Entry::Device(0x2000)).unwrap();
+        fake.names
+            .insert(&named("\\??\\Other"), Entry::Link(other))
+            .unwrap();
+        assert_eq!(fake.stacks.claim(fake.thread), Claim::Took(0));
+        let irp = fake.make(1);
+        assert!(call(&mut fake, irp, DEVICE, OPENS).completed);
+        assert_eq!(fake.opened, [(Claim::Running(0), 0x2000)]);
+        assert_eq!(fake.stacks.claim(2), Claim::Took(1));
+        fake.stacks.give_up(0);
+        assert!(!fake.stacks.runs(1));
+    }
+
+    /// A device deleted while open stays on its driver's list, so its reference holds the
+    /// driver's unload as an open device's does; its last close frees it, and the unload is due.
+    #[test]
+    fn a_device_deleted_while_open_holds_the_unload() {
+        let mut driver = 0;
+        let mut devices = [
+            Device {
+                references: 1,
+                attached: false,
+                flags: DOE_DELETE_PENDING,
+            },
+            Device::open(0),
+        ];
+        assert_eq!(
+            check_unload(&mut driver, true, weights(&mut devices)),
+            Ok(false)
+        );
+        // The last close frees the deleted device: off the list, the rest weighed.
+        assert!(unload_due(&mut driver, weights(&mut devices[1..])));
     }
 }
