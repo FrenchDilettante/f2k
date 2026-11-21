@@ -10,10 +10,13 @@
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, completion_event, deliver, file_object, named, signal, Named};
 use super::{
+    check_all,
+    check_client,
+    check_pipe_arguments,
+    control_rights,
     FILE_CREATE,
-    FILE_DIRECTORY_FILE,
     FILE_OPEN,
-    FILE_OPEN_IF,
+    FILE_SHARE_DELETE,
     FILE_SYNCHRONOUS_IO_ALERT,
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
@@ -23,45 +26,8 @@ use crate::fs::io;
 use crate::fs::pipes::{self, PipeEnd, PipeName};
 use crate::status::*;
 
-/// The create options a server's create takes (FILE_VALID_PIPE_OPTION_FLAGS, wdm.h): the
-/// synchronous modes and write-through.
-const FILE_VALID_PIPE_OPTION_FLAGS: u32 = 0x32;
-
-/// The share bits: FILE_SHARE_READ and FILE_SHARE_WRITE make a pipe's configuration;
-/// FILE_SHARE_DELETE no pipe takes.
-const FILE_SHARE_READ_WRITE: u32 = 3;
-const FILE_SHARE_DELETE: u32 = 4;
-
-/// The pipe types, read modes and completion modes (ntifs.h's FILE_PIPE_*): byte streams that wait
-/// are served, messages and non-blocking calls are the stub path.
-const FILE_PIPE_BYTE_STREAM: u32 = 0;
-const FILE_PIPE_MESSAGE: u32 = 1;
-const FILE_PIPE_QUEUE_OPERATION: u32 = 0;
-const FILE_PIPE_COMPLETE_OPERATION: u32 = 1;
-
 /// FSCTL_PIPE_PEEK: CTL_CODE(FILE_DEVICE_NAMED_PIPE, 3, METHOD_BUFFERED, FILE_READ_DATA).
 const FSCTL_PIPE_PEEK: u32 = 0x0011_400C;
-
-/// A file system control code's required access (its bits 14 and 15): FILE_READ_ACCESS asks
-/// FILE_READ_DATA of the handle, FILE_WRITE_ACCESS FILE_WRITE_DATA.
-pub(super) fn control_rights(code: u32) -> u32 {
-    let mut needs = 0;
-    if code & 0x4000 != 0 {
-        needs |= rights::FILE_READ_DATA;
-    }
-    if code & 0x8000 != 0 {
-        needs |= rights::FILE_WRITE_DATA;
-    }
-    needs
-}
-
-/// Whether `granted` holds every right of `needs`; STATUS_ACCESS_DENIED otherwise.
-pub(super) fn check_all(granted: u32, needs: u32) -> Result<(), NtStatus> {
-    if granted & needs != needs {
-        return Err(STATUS_ACCESS_DENIED);
-    }
-    Ok(())
-}
 
 /// Whether a create's options ask synchronous I/O (the object then keeps a position).
 fn synchronous(options: u32) -> bool {
@@ -108,12 +74,7 @@ pub fn open_client(
     slot: UserPtr<u32>,
     io_status: UserAddr,
 ) -> NtResult {
-    if !matches!(open.disposition, FILE_OPEN | FILE_OPEN_IF) {
-        return Err(STATUS_NOT_IMPLEMENTED);
-    }
-    if open.options & FILE_DIRECTORY_FILE != 0 {
-        return Err(STATUS_NOT_A_DIRECTORY);
-    }
+    check_client(open.disposition, open.options)?;
     if crate::user::args::calling_process().handles_full() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
@@ -162,25 +123,15 @@ pub fn create_named_pipe_file(
     outbound_quota: u32,
     timeout: UserPtr<u64>,
 ) -> NtResult {
-    let both = FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT;
-    let invalid = pipe_type > FILE_PIPE_MESSAGE
-        || read_mode > FILE_PIPE_MESSAGE
-        || completion_mode > FILE_PIPE_COMPLETE_OPERATION
-        || share & !FILE_SHARE_READ_WRITE != 0
-        || share == 0
-        || !matches!(disposition, FILE_CREATE | FILE_OPEN | FILE_OPEN_IF)
-        || options & !FILE_VALID_PIPE_OPTION_FLAGS != 0
-        || options & both == both
-        || (synchronous(options) && access & rights::SYNCHRONIZE == 0)
-        || max_instances == 0
-        || (pipe_type == FILE_PIPE_BYTE_STREAM && read_mode == FILE_PIPE_MESSAGE);
-    if invalid {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    check_pipe_arguments(
+        access,
+        share,
+        disposition,
+        options,
+        (pipe_type, read_mode, completion_mode),
+        max_instances,
+    )?;
     debug_assert_eq!(share & FILE_SHARE_DELETE, 0);
-    if pipe_type != FILE_PIPE_BYTE_STREAM || completion_mode != FILE_PIPE_QUEUE_OPERATION {
-        return Err(STATUS_NOT_IMPLEMENTED);
-    }
     if !timeout.is_null() {
         timeout.read()?;
     }

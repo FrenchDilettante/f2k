@@ -19,14 +19,11 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{complete, completion_event, file_object, signal};
-use super::pipe::{check_all, control_rights};
+use super::{buffered_lengths, check_all, control_rights, copied_back, METHOD_BUFFERED};
 use crate::dev::io::{DeviceFile, Transfer};
 use crate::dev::ntddk::{DO_BUFFERED_IO, DO_DIRECT_IO};
 use crate::fs::file::Context;
 use crate::status::*;
-
-/// The transfer method in an I/O control code's low two bits.
-const METHOD_BUFFERED: u32 = 0;
 
 /// NtDeviceIoControlFile(FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock,
 /// IoControlCode, InputBuffer, InputBufferLength, OutputBuffer, OutputBufferLength).
@@ -64,11 +61,12 @@ pub fn device_io_control_file(
         );
         return Err(STATUS_NOT_IMPLEMENTED);
     }
-    let input_length = if input.is_null() { 0 } else { input_length };
-    let output_length = if output.is_null() { 0 } else { output_length };
+    let (input_length, output_length, size) = buffered_lengths(
+        (!input.is_null()).then_some(input_length),
+        (!output.is_null()).then_some(output_length),
+    );
     output.probe(output_length)?;
     let event = completion_event(event.raw())?;
-    let size = input_length.max(output_length) as usize;
     let system = if size > 0 {
         let mut block = crate::mem::pool::allocate(size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         input.read(&mut block.as_mut()[..input_length as usize])?;
@@ -85,10 +83,9 @@ pub fn device_io_control_file(
         output_length,
         output.raw(),
     )?;
-    if !crate::dev::io::nt_error(outcome.status) {
+    if let Some(count) = copied_back(outcome.status, outcome.information, output_length) {
         if let Some(block) = &system {
-            let count = (outcome.information as usize).min(output_length as usize);
-            output.write(&block.as_ref()[..count])?;
+            output.write(&block.as_ref()[..count as usize])?;
         }
         complete(io_status, outcome.status, outcome.information);
         signal(event);
@@ -149,10 +146,7 @@ pub fn read_write(
             offset,
         },
     )?;
-    if crate::dev::io::nt_error(outcome.status) {
-        return Err(outcome.status);
-    }
-    let count = outcome.information.min(length);
+    let count = copied_back(outcome.status, outcome.information, length).ok_or(outcome.status)?;
     if let (false, Some(block)) = (write, &system) {
         buffer.write(&block.as_ref()[..count as usize])?;
     }

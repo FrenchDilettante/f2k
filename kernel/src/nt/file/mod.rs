@@ -660,6 +660,124 @@ fn expression_length(length: u16) -> Result<usize, crate::status::NtStatus> {
     Ok(count)
 }
 
+/// The create options a server's create takes (FILE_VALID_PIPE_OPTION_FLAGS, wdm.h): the
+/// synchronous modes and write-through.
+const FILE_VALID_PIPE_OPTION_FLAGS: u32 = 0x32;
+
+/// The share bits: FILE_SHARE_READ and FILE_SHARE_WRITE make a pipe's configuration;
+/// FILE_SHARE_DELETE no pipe takes.
+const FILE_SHARE_READ_WRITE: u32 = 3;
+const FILE_SHARE_DELETE: u32 = 4;
+
+/// The pipe types, read modes and completion modes (ntifs.h's FILE_PIPE_*): byte streams that wait
+/// are served, messages and non-blocking calls are the stub path.
+const FILE_PIPE_BYTE_STREAM: u32 = 0;
+const FILE_PIPE_MESSAGE: u32 = 1;
+const FILE_PIPE_QUEUE_OPERATION: u32 = 0;
+const FILE_PIPE_COMPLETE_OPERATION: u32 = 1;
+
+/// NtCreateNamedPipeFile's checks, before its name: each STATUS_INVALID_PARAMETER — a pipe type,
+/// read mode or completion mode (`modes`) past the defined ones, FILE_SHARE_DELETE or no share at
+/// all, a disposition other than FILE_CREATE, FILE_OPEN or FILE_OPEN_IF, an option past
+/// FILE_VALID_PIPE_OPTION_FLAGS, both synchronous modes or one without SYNCHRONIZE, no instance
+/// allowed, a byte stream read as messages; then a message pipe or a non-blocking one, not served
+/// (STATUS_NOT_IMPLEMENTED).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_pipe_arguments(
+    access: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+    (pipe_type, read_mode, completion_mode): (u32, u32, u32),
+    max_instances: u32,
+) -> Result<(), crate::status::NtStatus> {
+    use crate::fs::file::rights;
+    use crate::status::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED};
+    let both = FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT;
+    let invalid = pipe_type > FILE_PIPE_MESSAGE
+        || read_mode > FILE_PIPE_MESSAGE
+        || completion_mode > FILE_PIPE_COMPLETE_OPERATION
+        || share & !FILE_SHARE_READ_WRITE != 0
+        || share == 0
+        || !matches!(disposition, FILE_CREATE | FILE_OPEN | FILE_OPEN_IF)
+        || options & !FILE_VALID_PIPE_OPTION_FLAGS != 0
+        || options & both == both
+        || (options & both != 0 && access & rights::SYNCHRONIZE == 0)
+        || max_instances == 0
+        || (pipe_type == FILE_PIPE_BYTE_STREAM && read_mode == FILE_PIPE_MESSAGE);
+    if invalid {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    if pipe_type != FILE_PIPE_BYTE_STREAM || completion_mode != FILE_PIPE_QUEUE_OPERATION {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    Ok(())
+}
+
+/// A create or open of a pipe's name (its client end): only an open's dispositions (FILE_OPEN,
+/// FILE_OPEN_IF) are served (STATUS_NOT_IMPLEMENTED); a directory asked for is
+/// STATUS_NOT_A_DIRECTORY.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_client(disposition: u32, options: u32) -> Result<(), crate::status::NtStatus> {
+    use crate::status::{STATUS_NOT_A_DIRECTORY, STATUS_NOT_IMPLEMENTED};
+    if !matches!(disposition, FILE_OPEN | FILE_OPEN_IF) {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    if options & FILE_DIRECTORY_FILE != 0 {
+        return Err(STATUS_NOT_A_DIRECTORY);
+    }
+    Ok(())
+}
+
+/// A control code's required access (its bits 14 and 15, NtFsControlFile's and
+/// NtDeviceIoControlFile's): FILE_READ_ACCESS asks FILE_READ_DATA of the handle, FILE_WRITE_ACCESS
+/// FILE_WRITE_DATA.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn control_rights(code: u32) -> u32 {
+    use crate::fs::file::rights;
+    let mut needs = 0;
+    if code & 0x4000 != 0 {
+        needs |= rights::FILE_READ_DATA;
+    }
+    if code & 0x8000 != 0 {
+        needs |= rights::FILE_WRITE_DATA;
+    }
+    needs
+}
+
+/// Whether `granted` holds every right of `needs`; STATUS_ACCESS_DENIED otherwise.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_all(granted: u32, needs: u32) -> Result<(), crate::status::NtStatus> {
+    if granted & needs != needs {
+        return Err(crate::status::STATUS_ACCESS_DENIED);
+    }
+    Ok(())
+}
+
+/// METHOD_BUFFERED, a control code's transfer type (its low two bits): the one F2K serves.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+const METHOD_BUFFERED: u32 = 0;
+
+/// A METHOD_BUFFERED device control's lengths, a null buffer's none whatever its length says: the
+/// input's and the output's, and the system buffer's (the larger, none for no buffer at all).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn buffered_lengths(input: Option<u32>, output: Option<u32>) -> (u32, u32, usize) {
+    let input = input.unwrap_or(0);
+    let output = output.unwrap_or(0);
+    (input, output, input.max(output) as usize)
+}
+
+/// The bytes a device's answer copies back into a caller's buffer of `length` bytes: none for an
+/// error status (a warning's or a success's are copied), else as many as its Information says, at
+/// most the buffer's length.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn copied_back(status: crate::status::NtStatus, information: u32, length: u32) -> Option<u32> {
+    if crate::dev::io::nt_error(status) {
+        return None;
+    }
+    Some(information.min(length))
+}
+
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
@@ -1566,6 +1684,155 @@ mod tests {
 
         assert_eq!(unlock_answer(true), Ok(STATUS_SUCCESS));
         assert_eq!(unlock_answer(false), Err(STATUS_RANGE_NOT_LOCKED));
+    }
+
+    /// NtCreateNamedPipeFile's checks: a byte-stream server that waits passes; each undefined or
+    /// inconsistent argument is STATUS_INVALID_PARAMETER, checked before a message or non-blocking
+    /// pipe's STATUS_NOT_IMPLEMENTED.
+    #[test]
+    fn a_pipe_server_s_arguments() {
+        use crate::fs::file::rights::{FILE_READ_DATA, SYNCHRONIZE};
+        use crate::status::*;
+        let access = FILE_READ_DATA | SYNCHRONIZE;
+        let byte = (
+            FILE_PIPE_BYTE_STREAM,
+            FILE_PIPE_BYTE_STREAM,
+            FILE_PIPE_QUEUE_OPERATION,
+        );
+        let check = |access, share, disposition, options, modes, instances| {
+            check_pipe_arguments(access, share, disposition, options, modes, instances)
+        };
+        let ok = Ok(());
+        let invalid = Err(STATUS_INVALID_PARAMETER);
+        let unserved = Err(STATUS_NOT_IMPLEMENTED);
+        for share in [1, 2, 3] {
+            for disposition in [FILE_CREATE, FILE_OPEN, FILE_OPEN_IF] {
+                assert_eq!(check(access, share, disposition, 0, byte, 1), ok);
+            }
+        }
+        assert_eq!(
+            check(access, 3, FILE_CREATE, 0x32 & !0x10, byte, u32::MAX),
+            ok
+        );
+        assert_eq!(
+            check(access, 0, FILE_CREATE, 0, byte, 1),
+            invalid,
+            "no share"
+        );
+        assert_eq!(
+            check(access, 7, FILE_CREATE, 0, byte, 1),
+            invalid,
+            "FILE_SHARE_DELETE"
+        );
+        for disposition in [FILE_SUPERSEDE, FILE_OVERWRITE, FILE_OVERWRITE_IF, 6] {
+            assert_eq!(check(access, 3, disposition, 0, byte, 1), invalid);
+        }
+        assert_eq!(
+            check(access, 3, FILE_CREATE, FILE_DIRECTORY_FILE, byte, 1),
+            invalid
+        );
+        let both = FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT;
+        assert_eq!(check(access, 3, FILE_CREATE, both, byte, 1), invalid);
+        for mode in [FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT] {
+            assert_eq!(check(access, 3, FILE_CREATE, mode, byte, 1), ok);
+            assert_eq!(
+                check(FILE_READ_DATA, 3, FILE_CREATE, mode, byte, 1),
+                invalid
+            );
+        }
+        assert_eq!(
+            check(access, 3, FILE_CREATE, 0, byte, 0),
+            invalid,
+            "no instance"
+        );
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (2, 0, 0), 1), invalid);
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (0, 2, 0), 1), invalid);
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (0, 0, 2), 1), invalid);
+        assert_eq!(
+            check(access, 3, FILE_CREATE, 0, (0, 1, 0), 1),
+            invalid,
+            "a byte stream read as messages"
+        );
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (1, 1, 0), 1), unserved);
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (1, 0, 0), 1), unserved);
+        assert_eq!(check(access, 3, FILE_CREATE, 0, (0, 0, 1), 1), unserved);
+        assert_eq!(
+            check(access, 0, FILE_CREATE, 0, (1, 1, 1), 1),
+            invalid,
+            "first"
+        );
+
+        assert_eq!(check_client(FILE_OPEN, 0), ok);
+        assert_eq!(check_client(FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE), ok);
+        for disposition in [
+            FILE_SUPERSEDE,
+            FILE_CREATE,
+            FILE_OVERWRITE,
+            FILE_OVERWRITE_IF,
+        ] {
+            assert_eq!(check_client(disposition, 0), unserved);
+        }
+        assert_eq!(
+            check_client(FILE_OPEN, FILE_DIRECTORY_FILE),
+            Err(STATUS_NOT_A_DIRECTORY)
+        );
+    }
+
+    /// A control code's required access, from its bits 14 and 15 (CTL_CODE's Access), held whole
+    /// by the handle; a buffered control's lengths and the bytes its answer copies back.
+    #[test]
+    fn a_control_s_access_and_buffers() {
+        use crate::fs::file::rights::{FILE_READ_DATA, FILE_WRITE_DATA};
+        use crate::status::*;
+        const FSCTL_PIPE_PEEK: u32 = 0x0011_400C;
+        let any = 0x0022_0000;
+        assert_eq!(control_rights(FSCTL_PIPE_PEEK), FILE_READ_DATA);
+        assert_eq!(control_rights(any), 0, "FILE_ANY_ACCESS");
+        assert_eq!(control_rights(any | 0x8000), FILE_WRITE_DATA);
+        assert_eq!(
+            control_rights(any | 0xC000),
+            FILE_READ_DATA | FILE_WRITE_DATA
+        );
+        assert_eq!(control_rights(u32::MAX & !0xC000), 0);
+        let both = FILE_READ_DATA | FILE_WRITE_DATA;
+        assert_eq!(check_all(both, both), Ok(()));
+        assert_eq!(check_all(0, 0), Ok(()));
+        assert_eq!(
+            check_all(FILE_READ_DATA, both),
+            Err(STATUS_ACCESS_DENIED),
+            "every one"
+        );
+        assert_eq!(
+            check_all(FILE_WRITE_DATA, FILE_READ_DATA),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        assert_eq!(any & 3, METHOD_BUFFERED);
+
+        assert_eq!(buffered_lengths(Some(8), Some(32)), (8, 32, 32));
+        assert_eq!(buffered_lengths(Some(64), Some(4)), (64, 4, 64));
+        assert_eq!(buffered_lengths(None, Some(4)), (0, 4, 4), "a null input");
+        assert_eq!(
+            buffered_lengths(Some(64), None),
+            (64, 0, 64),
+            "a null output"
+        );
+        assert_eq!(buffered_lengths(None, None), (0, 0, 0));
+        assert_eq!(buffered_lengths(Some(0), Some(0)), (0, 0, 0));
+
+        assert_eq!(copied_back(STATUS_SUCCESS, 10, 32), Some(10));
+        assert_eq!(
+            copied_back(STATUS_SUCCESS, 100, 32),
+            Some(32),
+            "at most the buffer"
+        );
+        assert_eq!(
+            copied_back(STATUS_BUFFER_OVERFLOW, 32, 32),
+            Some(32),
+            "a warning"
+        );
+        assert_eq!(copied_back(STATUS_PENDING, 4, 32), Some(4));
+        assert_eq!(copied_back(STATUS_INVALID_DEVICE_REQUEST, 10, 32), None);
+        assert_eq!(copied_back(STATUS_ACCESS_DENIED, 0, 0), None);
     }
 
     /// A listing's search: the first query makes it of its name, RestartScan then changing nothing;
