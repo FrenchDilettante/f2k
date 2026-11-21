@@ -102,6 +102,10 @@ impl File {
 /// The streams `_iob` holds: stdin, stdout, stderr, then the ones _fdopen hands out.
 pub const IOB_ENTRIES: usize = 20;
 
+/// The streams a program can have open at once (VC6's `_NSTREAM_`): `_iob`'s, then streams of
+/// the C runtime's heap, made as the streams before them are all taken.
+pub const STREAMS: usize = 512;
+
 /// The size of the buffers the C runtime gives streams itself (fd's capture: 4096 bytes).
 pub const STREAM_BUFFER: usize = 4096;
 
@@ -159,6 +163,10 @@ pub static FMODE: Exported<i32> = Exported::new(0);
 #[cfg_attr(target_arch = "x86", unsafe(link_section = ".data"))]
 pub static ADJUST_FDIV: Exported<i32> = Exported::new(0);
 
+/// Held by the host tests that use `_iob`'s streams, which are the process's: one at a time.
+#[cfg(test)]
+pub static IOB_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 // The interface's sizes, on the DLL's own target (the host's pointers are wider).
 #[cfg(target_arch = "x86")]
 const _: () = {
@@ -176,6 +184,9 @@ mod tests {
     /// streams unused, and the ints zero.
     #[test]
     fn the_variables_start_as_captured() {
+        let _iob = IOB_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         open_standard_streams();
         // SAFETY: the test's process's own copy, read on one thread.
         unsafe {

@@ -765,6 +765,22 @@ ordinal = 610
 fails = "-1"
 
 [[export]]
+name = "_flushall"
+group = "stdio"
+args = []
+impl = { native = "_flushall" }
+ordinal = 236
+fails = "never"
+
+[[export]]
+name = "_fcloseall"
+group = "stdio"
+args = []
+impl = { native = "_fcloseall" }
+ordinal = 217
+fails = "never"
+
+[[export]]
 name = "setvbuf"
 group = "stdio"
 args = ["ptr stream", "ptr buffer", "i32 mode", "u32 size"]
@@ -2483,10 +2499,6 @@ name = "_execvpe"
 ordinal = 214
 
 [[export]]
-name = "_fcloseall"
-ordinal = 217
-
-[[export]]
 name = "_fcvt"
 ordinal = 218
 
@@ -2554,10 +2566,6 @@ ordinal = 234
 [[export]]
 name = "_flsbuf"
 ordinal = 235
-
-[[export]]
-name = "_flushall"
-ordinal = 236
 
 [[export]]
 name = "_fpclass"

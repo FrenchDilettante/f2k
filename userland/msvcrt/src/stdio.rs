@@ -27,6 +27,10 @@
 //!   what is buffered, clears the end of the file (the descriptor's Ctrl-Z too), and leaves a `+`
 //!   stream free to read or write next (a stream reading alone refills with 512 bytes first);
 //!   clearerr clears the end-of-file and error indicators alone.
+//! - A program has up to 512 streams open at once, as VC6's `_NSTREAM_`: `_iob`'s 20, then streams
+//!   of the C runtime's heap made as the ones before them are all taken ([`claim`]). fflush(NULL)
+//!   flushes those writing; `_flushall` flushes every one in use and counts them; `_fcloseall`
+//!   closes all but stdin, stdout and stderr and frees the heap's.
 //! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
 //! - fscanf and scanf scan a stream's bytes, fwscanf and wscanf its wide characters as fgetws reads
 //!   them ([`crate::scan`]): the character the scan reads ahead and does not take is pushed back,
@@ -47,11 +51,13 @@
 //! caller's string or buffer, taken by the program's `__except`) lets the stream's lock go, and a
 //! buffer lent for the call is given back first, its bytes written, as the call's end would have.
 
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 use rtl::cstr::bytes_until_nul;
 use rtl::sync::Locked;
 
 use crate::ctype;
-use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
+use crate::data::{File, IOB, IOB_ENTRIES, STREAMS, STREAM_BUFFER};
 use crate::edge::{self, WideUnit};
 use crate::format::{self, Args, Output, Unbounded, Unit, VaList};
 use crate::lowio;
@@ -88,29 +94,52 @@ const EOF: i32 = -1;
 /// that a seek's next read costs less; the fill after it takes the whole buffer again.
 const SMALL_BUFFER: i32 = 512;
 
-/// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock, a critical section): the C
+/// Each stream's lock (Windows 2000's per-stream lock, a critical section), by its index: the C
 /// runtime changes the stream's `FILE` only under it ([`with_stream`]). A bare [`Lock`], taken
 /// through [`Lock::holding`] (let go when an exception unwinds out of the call), not a `Locked`
 /// value: its holder may take it again, as Windows 2000's critical section lets it.
-static LOCKS: [Lock; IOB_ENTRIES] = [const { Lock::new() }; IOB_ENTRIES];
+static LOCKS: [Lock; STREAMS] = [const { Lock::new() }; STREAMS];
 
-/// The lock of a stream that is not one of `_iob`'s (a program's own `FILE`).
+/// The lock of a stream that is not one of the C runtime's (a program's own `FILE`).
 static OTHER: Lock = Lock::new();
+
+/// The lock held while the streams are looked through for a free one, or flushed or closed all
+/// at once (VC6's `_IOB_SCAN_LOCK`): the streams past `_iob`'s are made and freed only under it.
+/// Taken before any stream's own lock.
+static SCAN: Lock = Lock::new();
+
+/// The streams past `_iob`'s, by index (VC6's `__piob` past its first 20): each a `FILE` of the C
+/// runtime's heap, made when every stream before it is taken (null until then), freed by
+/// `_fcloseall`.
+static EXTRA: [AtomicPtr<File>; STREAMS - IOB_ENTRIES] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; STREAMS - IOB_ENTRIES];
 
 /// The buffers lent to stdout and stderr for a call, each taken under its stream's lock.
 static LENT: [Locked<[u8; STREAM_BUFFER], UnwindLock>; 2] =
     [const { Locked::new(UnwindLock::new(), [0; STREAM_BUFFER]) }; 2];
 
-/// `_iob`'s stream `index`.
+/// The stream at `index`: `_iob`'s, or one of the heap's (null when it is not made).
 fn stream_at(index: usize) -> *mut File {
-    IOB.get().cast::<File>().wrapping_add(index)
+    match index.checked_sub(IOB_ENTRIES) {
+        None => IOB.get().cast::<File>().wrapping_add(index),
+        Some(extra) => EXTRA[extra].load(Ordering::Acquire),
+    }
 }
 
-/// A stream's index in `_iob`, when it is one of them.
+/// A stream's index among the C runtime's, when it is one of them.
 fn index_of(stream: *mut File) -> Option<usize> {
     let offset = (stream as usize).wrapping_sub(stream_at(0) as usize);
     let size = core::mem::size_of::<File>();
-    (offset.is_multiple_of(size) && offset / size < IOB_ENTRIES).then_some(offset / size)
+    if offset.is_multiple_of(size) && offset / size < IOB_ENTRIES {
+        return Some(offset / size);
+    }
+    if stream.is_null() {
+        return None;
+    }
+    EXTRA
+        .iter()
+        .position(|extra| extra.load(Ordering::Acquire) == stream)
+        .map(|extra| IOB_ENTRIES + extra)
 }
 
 /// `body` run over `stream` with the stream's lock held, given its index in `_iob` (none for a
@@ -147,10 +176,33 @@ unsafe fn with_stream<R>(stream: *mut File, body: impl FnOnce(&mut File, Option<
     })
 }
 
-/// [`with_stream`] over `_iob`'s stream `index`.
+/// [`with_stream`] over the C runtime's stream `index`, which is made.
 fn with_iob<R>(index: usize, body: impl FnOnce(&mut File, Option<usize>) -> R) -> R {
-    // SAFETY: one of `_iob`'s streams, the DLL's own for the process's life.
+    // SAFETY: one of `_iob`'s streams, the DLL's own for the process's life, or one of the heap's,
+    // made (the callers': under the scan lock, or one they claimed), freed only by `_fcloseall`.
     unsafe { with_stream(stream_at(index), body) }
+}
+
+/// Whether a stream is in use: open for reading, writing or both.
+fn in_use(s: &File) -> bool {
+    s.flag & (IOREAD | IOWRT | IORW) != 0
+}
+
+/// `body` run over each of the C runtime's streams that is made and in use, in index order,
+/// under the scan lock and each stream's own lock in turn.
+fn each_in_use(mut body: impl FnMut(&mut File)) {
+    SCAN.holding(|| {
+        for index in 0..STREAMS {
+            if stream_at(index).is_null() {
+                continue;
+            }
+            with_iob(index, |s, _| {
+                if in_use(s) {
+                    body(s);
+                }
+            });
+        }
+    })
 }
 
 /// The stream's buffer given its own `STREAM_BUFFER` bytes, or (out of memory) none at all: its
@@ -335,19 +387,53 @@ fn get(s: &mut File) -> i32 {
 /// Every stream writing flushed, each under its own lock in turn; EOF when one failed.
 pub fn flush_all() -> i32 {
     let mut result = 0;
-    for i in 0..IOB_ENTRIES {
-        let writing = |s: &mut File, _| {
-            if s.flag & (IOWRT | IORW) != 0 && s.flag & IOREAD == 0 {
-                flush(s)
-            } else {
-                0
-            }
-        };
-        if with_iob(i, writing) == EOF {
+    each_in_use(|s| {
+        if s.flag & (IOWRT | IORW) != 0 && s.flag & IOREAD == 0 && flush(s) == EOF {
             result = EOF;
         }
-    }
+    });
     result
+}
+
+/// _flushall: every stream in use flushed (a reading one's buffered input dropped, as fflush
+/// drops it): the count of those flushed without an error. fd's nfiles capture: 43 for 40 files
+/// and the three standard streams.
+#[unsafe(export_name = "f2k_export__flushall")]
+pub extern "C" fn flushall() -> i32 {
+    let mut count = 0;
+    each_in_use(|s| {
+        if flush(s) != EOF {
+            count += 1;
+        }
+    });
+    count
+}
+
+/// _fcloseall: every stream in use but stdin, stdout and stderr closed, as fclose closes it, and
+/// the streams of the heap freed: the count closed without an error (fd's nfiles capture: 40,
+/// then 0).
+#[unsafe(export_name = "f2k_export__fcloseall")]
+pub extern "C" fn fcloseall() -> i32 {
+    let mut count = 0;
+    SCAN.holding(|| {
+        for index in 3..STREAMS {
+            let stream = stream_at(index);
+            if stream.is_null() {
+                continue;
+            }
+            let closed = with_iob(index, |s, _| in_use(s) && close_file(s) != EOF);
+            if closed {
+                count += 1;
+            }
+            if let Some(extra) = index.checked_sub(IOB_ENTRIES) {
+                EXTRA[extra].store(core::ptr::null_mut(), Ordering::Release);
+                // SAFETY: a stream of the C runtime's heap, made by `claim`, no longer reachable
+                // through the table; a program still holding it holds a stream that is closed.
+                unsafe { crate::heap::release(stream.cast()) };
+            }
+        }
+    });
+    count
 }
 
 /// A stream the formatter writes to, under its lock: its `FILE` and its index in `_iob`.
@@ -1311,22 +1397,41 @@ pub unsafe extern "C" fn fdopen(fd: i32, mode: *const u8) -> *mut File {
     }
 }
 
-/// The first free stream of `_iob`'s claimed for descriptor `fd` with the `_flag` bits `flag`: its
-/// index, or none with EMFILE. Each stream is looked at, and claimed when free, under its own lock.
+/// The first free stream claimed for descriptor `fd` with the `_flag` bits `flag`, as VC6's
+/// `_getstream` finds it: the first of the streams made that is not in use, or else the first not
+/// made yet, made of the C runtime's heap (fd's nfiles capture: 40 files open at once). Its index,
+/// or none with EMFILE when all 512 are in use (or the heap has no room for the next). Under the
+/// scan lock; each stream is looked at, and claimed when free, under its own lock.
 fn claim(flag: i32, fd: i32) -> Option<usize> {
-    let found = (0..IOB_ENTRIES).find(|&i| {
-        with_iob(i, |s, _| {
-            let free = s.flag & (IOREAD | IOWRT | IORW) == 0;
-            if free {
-                *s = File {
-                    flag,
-                    file: fd,
-                    ..File::UNUSED
-                };
+    let claimed = File {
+        flag,
+        file: fd,
+        ..File::UNUSED
+    };
+    let found = SCAN.holding(|| {
+        (0..STREAMS).find_map(|index| {
+            if stream_at(index).is_null() {
+                let made =
+                    crate::heap::allocate(core::mem::size_of::<File>(), false).cast::<File>();
+                if made.is_null() {
+                    return Some(None);
+                }
+                // SAFETY: a new block of the C runtime's heap, a `FILE`'s size, aligned for one;
+                // no other thread reaches it until the table holds it.
+                unsafe { made.write(claimed) };
+                EXTRA[index - IOB_ENTRIES].store(made, Ordering::Release);
+                return Some(Some(index));
             }
-            free
+            with_iob(index, |s, _| {
+                let free = !in_use(s);
+                if free {
+                    *s = claimed;
+                }
+                free.then_some(Some(index))
+            })
         })
     });
+    let found = found.flatten();
     if found.is_none() {
         set_errno(EMFILE);
     }
@@ -2225,6 +2330,38 @@ mod tests {
                 4
             );
         }
+    }
+
+    /// Streams past `_iob`'s 20 are made of the heap as the ones before them are taken (fd's
+    /// nfiles capture: 40 files open at once), each found again by its address; _flushall
+    /// flushes every stream in use (the three standard ones too: the capture's 43 for 40 files),
+    /// and _fcloseall closes all but those three and frees the heap's. (Their descriptors are not
+    /// open on the host, so no close succeeds: 0 counted.)
+    #[test]
+    fn streams_grow_past_iob() {
+        let _iob = crate::data::IOB_TESTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::data::open_standard_streams();
+        let claimed: Vec<usize> = (0..40)
+            .map(|fd| claim(IOWRT, 100 + fd).expect("a free stream"))
+            .collect();
+        assert_eq!(claimed, (3..43).collect::<Vec<_>>());
+        for &index in &claimed {
+            let stream = stream_at(index);
+            assert!(!stream.is_null());
+            assert_eq!(index_of(stream), Some(index));
+        }
+        assert_eq!(index_of(core::ptr::null_mut()), None);
+        assert_eq!(flushall(), 43);
+        assert_eq!(fcloseall(), 0);
+        assert!(EXTRA
+            .iter()
+            .all(|extra| extra.load(Ordering::Relaxed).is_null()));
+        assert!((3..IOB_ENTRIES).all(|index| with_iob(index, |s, _| !in_use(s))));
+        assert_eq!(fcloseall(), 0);
+        assert_eq!(claim(IOREAD, 7), Some(3));
+        with_iob(3, |s, _| *s = File::UNUSED);
     }
 
     /// fopen's mode as VC6 reads it: a first letter `r`, `w` or `a`, then one of each kind at

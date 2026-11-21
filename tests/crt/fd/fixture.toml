@@ -6,7 +6,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-nfiles = "F2K's msvcrt keeps its streams in _iob's 20 entries (its 18th fopen fails with EMFILE, where msvcrt 6 grows __piob to 512) and exports no _flushall or _fcloseall"
 conctrlz = "F2K's _read keeps a Ctrl-Z read from a device as data, and its console ReadFile does not answer a line starting with Ctrl-Z with 0 bytes"
 
 

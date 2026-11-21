@@ -52,7 +52,7 @@ use core::ptr::NonNull;
 use rtl::cstr::bytes_until_nul;
 use rtl::sync::Locked;
 
-use crate::data::{File, IOB_ENTRIES};
+use crate::data::{File, STREAMS};
 use crate::kernel32;
 use crate::lowio::{self, O_BINARY, O_NOINHERIT, O_TEXT};
 use crate::stdio;
@@ -640,7 +640,7 @@ pub unsafe extern "C" fn system(command: *const u8) -> i32 {
 
 /// The command processor `_popen` started for each of `_iob`'s streams (0: none), for `_pclose`;
 /// behind its lock.
-static CHILDREN: Locked<[usize; IOB_ENTRIES], Lock> = Locked::new(Lock::new(), [0; IOB_ENTRIES]);
+static CHILDREN: Locked<[usize; STREAMS], Lock> = Locked::new(Lock::new(), [0; STREAMS]);
 
 /// `_popen`'s mode: whether the caller reads the command's output (`r`) or writes its input (`w`),
 /// and the translation `_pipe` is asked for: `_O_TEXT` for `t`, `_O_BINARY` for `b`, none for
