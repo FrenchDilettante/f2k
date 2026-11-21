@@ -13,7 +13,8 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, completion_event, file_object, signal};
-use crate::fs::file::{rights, with_records, Context, FileObject, LockError, LockOwner};
+use super::{check_lock_access, lock_answer, lockable, unlock_answer};
+use crate::fs::file::{with_records, Context, FileObject, LockOwner};
 use crate::fs::io;
 use crate::ob::Referenced;
 use crate::status::*;
@@ -35,9 +36,7 @@ fn lock_request(
     length: UserPtr<u64>,
 ) -> Result<(super::common::FileHandle, (u64, u64)), NtStatus> {
     let object = file_object(handle.raw())?;
-    if object.granted & (rights::FILE_READ_DATA | rights::FILE_WRITE_DATA) == 0 {
-        return Err(STATUS_ACCESS_DENIED);
-    }
+    check_lock_access(object.granted)?;
     io_status.probe(8)?;
     let range = (offset.read()?, length.read()?);
     Ok((object, range))
@@ -46,11 +45,10 @@ fn lock_request(
 /// The open file a lock call's object names on the disk: a file's open's record (a directory's is
 /// STATUS_INVALID_PARAMETER, another device's STATUS_INVALID_DEVICE_REQUEST).
 fn locked_file(object: &FileObject) -> Result<crate::fs::file::FileRecordId, NtStatus> {
-    match object.context {
-        Context::Disk(record) if io::file_at(record).directory => Err(STATUS_INVALID_PARAMETER),
-        Context::Disk(record) => Ok(record),
-        Context::Pipe(_) | Context::Null | Context::Device(_) => Err(STATUS_INVALID_DEVICE_REQUEST),
-    }
+    lockable(match object.context {
+        Context::Disk(record) => Some((record, io::file_at(record).directory)),
+        Context::Pipe(_) | Context::Null | Context::Device(_) => None,
+    })
 }
 
 /// NtLockFile(FileHandle, Event, ApcRoutine, ApcContext, IoStatusBlock, ByteOffset, Length, Key,
@@ -82,25 +80,21 @@ pub fn lock_file(
     let owner = owner_of(&object);
     let result = locked_file(&object).and_then(|record| {
         let taken = with_records(|records| records.lock(record, owner, key, range, exclusive));
-        match taken {
-            Ok(()) => Ok(STATUS_SUCCESS),
-            Err(LockError::Conflict) if fail_immediately => Err(STATUS_LOCK_NOT_GRANTED),
-            Err(LockError::Conflict) => {
-                crate::dbgprint::unhandled(
-                    "ntoskrnl",
-                    "NtLockFile",
-                    format_args!(
-                        "FileHandle={:#x}, ByteOffset={:#x}, Length={:#x}, FailImmediately=FALSE",
-                        handle.raw(),
-                        range.0,
-                        range.1
-                    ),
-                    format_args!("waiting for a lock in place to go is not yet implemented"),
-                );
-                Err(STATUS_NOT_IMPLEMENTED)
-            }
-            Err(LockError::Full) => Err(STATUS_INSUFFICIENT_RESOURCES),
-        }
+        // A conflict without FailImmediately would wait for the range to be free.
+        lock_answer(taken, fail_immediately).unwrap_or_else(|| {
+            crate::dbgprint::unhandled(
+                "ntoskrnl",
+                "NtLockFile",
+                format_args!(
+                    "FileHandle={:#x}, ByteOffset={:#x}, Length={:#x}, FailImmediately=FALSE",
+                    handle.raw(),
+                    range.0,
+                    range.1
+                ),
+                format_args!("waiting for a lock in place to go is not yet implemented"),
+            );
+            Err(STATUS_NOT_IMPLEMENTED)
+        })
     });
     let status = result.unwrap_or_else(|status| status);
     complete(io_status, status, 0);
@@ -123,11 +117,9 @@ pub fn unlock_file(
     let (object, range) = lock_request(handle, io_status, offset, length)?;
     let owner = owner_of(&object);
     let result = locked_file(&object).and_then(|record| {
-        if with_records(|records| records.unlock(record, owner, key, range)) {
-            Ok(STATUS_SUCCESS)
-        } else {
-            Err(STATUS_RANGE_NOT_LOCKED)
-        }
+        unlock_answer(with_records(|records| {
+            records.unlock(record, owner, key, range)
+        }))
     });
     complete(io_status, result.unwrap_or_else(|status| status), 0);
     result

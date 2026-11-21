@@ -1197,6 +1197,54 @@ mod tests {
         );
     }
 
+    /// A lock's range at its bounds: a zero-length lock past offset zero covers no byte (taken
+    /// over any lock, it refuses nothing); a range running past 2^64 ends at the last byte; a key
+    /// tells two locks of one range apart for their unlocks; and each file's locks are its own.
+    #[test]
+    fn a_lock_s_range_at_its_bounds() {
+        let mut records = FileRecords::empty();
+        let file = records.open(entry(1), SHARE_ALL, SHARE_ALL).unwrap();
+        let other = records.open(entry(2), SHARE_ALL, SHARE_ALL).unwrap();
+        let (first, second) = (owner(1), owner(2));
+        assert_eq!(records.lock(file, first, 0, (10, 20), true), Ok(()));
+        assert_eq!(
+            records.lock(file, second, 0, (15, 0), true),
+            Ok(()),
+            "no bytes"
+        );
+        assert!(
+            records.may_access(file, first, (15, 1), true),
+            "refuses nothing"
+        );
+        assert!(records.unlock(file, second, 0, (15, 0)));
+
+        assert_eq!(
+            records.lock(file, first, 0, (u64::MAX - 10, 100), true),
+            Ok(())
+        );
+        assert_eq!(
+            records.lock(file, second, 0, (u64::MAX, 1), false),
+            Err(LockError::Conflict),
+            "the last byte"
+        );
+        assert!(!records.may_access(file, second, (u64::MAX - 1, 1), false));
+        assert!(records.may_access(file, second, (u64::MAX - 20, 10), false));
+
+        assert_eq!(records.lock(file, first, 7, (100, 10), false), Ok(()));
+        assert_eq!(records.lock(file, first, 8, (100, 10), false), Ok(()));
+        assert!(
+            !records.unlock(file, first, 9, (100, 10)),
+            "no lock of key 9"
+        );
+        assert!(records.unlock(file, first, 8, (100, 10)));
+        assert!(records.unlock(file, first, 7, (100, 10)));
+        assert!(!records.unlock(file, first, 7, (100, 10)));
+
+        assert_eq!(records.lock(other, second, 0, (10, 20), true), Ok(()));
+        assert!(!records.unlock(other, first, 0, (10, 20)));
+        assert!(records.unlock(file, first, 0, (10, 20)));
+    }
+
     /// A read moves what remains before the end, at most the request: all of it, the prefix that
     /// fits, or nothing at the end.
     #[test]

@@ -493,6 +493,60 @@ fn rename_over(
     Ok(())
 }
 
+/// The right a byte-range lock or unlock needs of its handle: read or write data
+/// (STATUS_ACCESS_DENIED for neither).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_lock_access(granted: u32) -> Result<(), crate::status::NtStatus> {
+    use crate::fs::file::rights::{FILE_READ_DATA, FILE_WRITE_DATA};
+    if granted & (FILE_READ_DATA | FILE_WRITE_DATA) == 0 {
+        return Err(crate::status::STATUS_ACCESS_DENIED);
+    }
+    Ok(())
+}
+
+/// The disk file a lock call's object opens, by what it is open on (`disk`: none for another
+/// device than the disk, else its file and whether that is a directory): only a disk file's open
+/// takes locks (FastFat's STATUS_INVALID_PARAMETER for a directory's; STATUS_INVALID_DEVICE_REQUEST
+/// for a device without lock control).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn lockable<F>(disk: Option<(F, bool)>) -> Result<F, crate::status::NtStatus> {
+    use crate::status::{STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_PARAMETER};
+    match disk {
+        None => Err(STATUS_INVALID_DEVICE_REQUEST),
+        Some((_, true)) => Err(STATUS_INVALID_PARAMETER),
+        Some((file, false)) => Ok(file),
+    }
+}
+
+/// NtLockFile's answer to the lock table's: STATUS_SUCCESS for a lock taken,
+/// STATUS_LOCK_NOT_GRANTED for a conflict under FailImmediately, STATUS_INSUFFICIENT_RESOURCES for
+/// a full table; none for a conflict the caller would wait out (not supported).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn lock_answer(
+    taken: Result<(), crate::fs::file::LockError>,
+    fail_immediately: bool,
+) -> Option<Result<crate::status::NtStatus, crate::status::NtStatus>> {
+    use crate::fs::file::LockError;
+    use crate::status::*;
+    match taken {
+        Ok(()) => Some(Ok(STATUS_SUCCESS)),
+        Err(LockError::Conflict) if fail_immediately => Some(Err(STATUS_LOCK_NOT_GRANTED)),
+        Err(LockError::Conflict) => None,
+        Err(LockError::Full) => Some(Err(STATUS_INSUFFICIENT_RESOURCES)),
+    }
+}
+
+/// NtUnlockFile's answer: STATUS_SUCCESS when the owner held the lock named (`found`),
+/// STATUS_RANGE_NOT_LOCKED otherwise.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn unlock_answer(found: bool) -> Result<crate::status::NtStatus, crate::status::NtStatus> {
+    if found {
+        Ok(crate::status::STATUS_SUCCESS)
+    } else {
+        Err(crate::status::STATUS_RANGE_NOT_LOCKED)
+    }
+}
+
 /// A listing query's search, `held` the object's: the one the first query made, back to the
 /// directory's start under RestartScan (`restart`; its expression kept, the query's name not
 /// consulted), or, for the first query, the one `make` makes of its name (RestartScan then changes
@@ -1383,6 +1437,54 @@ mod tests {
             rename_over(true, false, file, true),
             Err(STATUS_ACCESS_DENIED)
         );
+    }
+
+    /// A lock call: the handle's data rights, the object's device and kind, and the answers to
+    /// the lock table's verdicts.
+    #[test]
+    fn a_lock_call_s_checks_and_answers() {
+        use crate::fs::file::rights::*;
+        use crate::fs::file::LockError;
+        use crate::status::*;
+        assert_eq!(check_lock_access(FILE_READ_DATA), Ok(()));
+        assert_eq!(check_lock_access(FILE_WRITE_DATA), Ok(()));
+        assert_eq!(check_lock_access(FILE_GENERIC_READ), Ok(()));
+        for refused in [
+            0,
+            FILE_APPEND_DATA,
+            FILE_READ_ATTRIBUTES,
+            SYNCHRONIZE,
+            DELETE,
+        ] {
+            assert_eq!(
+                check_lock_access(refused),
+                Err(STATUS_ACCESS_DENIED),
+                "{refused:#x}"
+            );
+        }
+
+        assert_eq!(lockable(Some((7, false))), Ok(7));
+        assert_eq!(lockable(Some((7, true))), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(lockable::<u32>(None), Err(STATUS_INVALID_DEVICE_REQUEST));
+
+        for fail_immediately in [false, true] {
+            assert_eq!(
+                lock_answer(Ok(()), fail_immediately),
+                Some(Ok(STATUS_SUCCESS))
+            );
+            assert_eq!(
+                lock_answer(Err(LockError::Full), fail_immediately),
+                Some(Err(STATUS_INSUFFICIENT_RESOURCES))
+            );
+        }
+        assert_eq!(
+            lock_answer(Err(LockError::Conflict), true),
+            Some(Err(STATUS_LOCK_NOT_GRANTED))
+        );
+        assert_eq!(lock_answer(Err(LockError::Conflict), false), None, "a wait");
+
+        assert_eq!(unlock_answer(true), Ok(STATUS_SUCCESS));
+        assert_eq!(unlock_answer(false), Err(STATUS_RANGE_NOT_LOCKED));
     }
 
     /// A listing's search: the first query makes it of its name, RestartScan then changing nothing;
