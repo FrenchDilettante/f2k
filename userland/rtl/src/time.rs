@@ -8,7 +8,30 @@ pub const UNITS_PER_SECOND: u64 = 10_000_000;
 pub const UNITS_PER_DAY: u64 = 86_400 * UNITS_PER_SECOND;
 
 /// Days from 1601-01-01 to 1970-01-01.
-const DAYS_1601_TO_1970: i64 = 134_774;
+pub const DAYS_1601_TO_1970: i64 = 134_774;
+/// The Unix epoch (1970-01-01) as a FILETIME.
+pub const UNIX_EPOCH_FILETIME: u64 = DAYS_1601_TO_1970 as u64 * UNITS_PER_DAY;
+
+/// Whether `year` is a leap year of the proleptic Gregorian calendar.
+pub fn is_leap(year: u16) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+/// The days of month `month` (1 to 12) of `year`; none for a month past the twelve.
+pub fn days_in_month(year: u16, month: u16) -> Option<u16> {
+    match month {
+        2 if is_leap(year) => Some(29),
+        2 => Some(28),
+        4 | 6 | 9 | 11 => Some(30),
+        1..=12 => Some(31),
+        _ => None,
+    }
+}
+
+/// The day of the week (0 Sunday to 6 Saturday) of a day count since 1970-01-01, a Thursday.
+pub fn weekday_from_unix_days(days: i64) -> u16 {
+    (days + 4).rem_euclid(7) as u16
+}
 
 /// A SYSTEMTIME: the civil fields, in the structure's order.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -108,14 +131,7 @@ pub fn system_time_from_filetime(filetime: u64) -> SystemTime {
 /// The FILETIME of a SYSTEMTIME (SystemTimeToFileTime): none for a field out of its range (the
 /// day of the week is not consulted).
 pub fn filetime_from_system_time(time: SystemTime) -> Option<u64> {
-    let leap = |y: u16| y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let days_in_month = match time.month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap(time.year) => 29,
-        2 => 28,
-        _ => return None,
-    };
+    let days_in_month = days_in_month(time.year, time.month)?;
     if !(1601..=30827).contains(&time.year)
         || !(1..=days_in_month).contains(&time.day)
         || time.hour > 23
@@ -171,36 +187,48 @@ pub struct TimeFields {
 // SAFETY: eight i16s, 16 bytes without padding; any bits make a value.
 unsafe impl crate::pod::Pod for TimeFields {}
 
+/// A SYSTEMTIME's fields as a TIME_FIELDS (the day of the week last), each word as a CSHORT.
+impl From<SystemTime> for TimeFields {
+    fn from(time: SystemTime) -> TimeFields {
+        TimeFields {
+            year: time.year as i16,
+            month: time.month as i16,
+            day: time.day as i16,
+            hour: time.hour as i16,
+            minute: time.minute as i16,
+            second: time.second as i16,
+            milliseconds: time.milliseconds as i16,
+            weekday: time.day_of_week as i16,
+        }
+    }
+}
+
+/// A TIME_FIELDS as a SYSTEMTIME (the day of the week third), each CSHORT as a word.
+impl From<TimeFields> for SystemTime {
+    fn from(fields: TimeFields) -> SystemTime {
+        SystemTime {
+            year: fields.year as u16,
+            month: fields.month as u16,
+            day_of_week: fields.weekday as u16,
+            day: fields.day as u16,
+            hour: fields.hour as u16,
+            minute: fields.minute as u16,
+            second: fields.second as u16,
+            milliseconds: fields.milliseconds as u16,
+        }
+    }
+}
+
 /// RtlTimeToTimeFields: the civil fields of a time (100 ns units since 1601), its day of the week
 /// with them.
 pub fn time_to_time_fields(time: i64) -> TimeFields {
-    let civil = system_time_from_filetime(time as u64);
-    TimeFields {
-        year: civil.year as i16,
-        month: civil.month as i16,
-        day: civil.day as i16,
-        hour: civil.hour as i16,
-        minute: civil.minute as i16,
-        second: civil.second as i16,
-        milliseconds: civil.milliseconds as i16,
-        weekday: civil.day_of_week as i16,
-    }
+    system_time_from_filetime(time as u64).into()
 }
 
 /// RtlTimeFieldsToTime: the time of the civil fields; none (the call's FALSE) for a field out of
 /// its range, the weekday not consulted ([`filetime_from_system_time`]'s ranges).
 pub fn time_fields_to_time(fields: &TimeFields) -> Option<i64> {
-    filetime_from_system_time(SystemTime {
-        year: fields.year as u16,
-        month: fields.month as u16,
-        day_of_week: fields.weekday as u16,
-        day: fields.day as u16,
-        hour: fields.hour as u16,
-        minute: fields.minute as u16,
-        second: fields.second as u16,
-        milliseconds: fields.milliseconds as u16,
-    })
-    .map(|time| time as i64)
+    filetime_from_system_time((*fields).into()).map(|time| time as i64)
 }
 
 #[cfg(test)]
@@ -215,10 +243,50 @@ mod tests {
             filetime_from_fields(1970, 1, 1, 0, 0, 0),
             116_444_736_000_000_000
         );
+        assert_eq!(UNIX_EPOCH_FILETIME, 116_444_736_000_000_000);
         assert_eq!(
             filetime_from_fields(2000, 1, 1, 0, 0, 0),
             125_911_584_000_000_000
         );
+    }
+
+    /// The calendar's rules: the leap years (every fourth, not the centuries but every fourth of
+    /// them), each month's days, and the day of the week from the Unix epoch (a Thursday).
+    #[test]
+    fn the_calendar_counts_its_days() {
+        assert!(is_leap(2000) && is_leap(2024) && is_leap(1604));
+        assert!(!is_leap(1900) && !is_leap(2023) && !is_leap(1601));
+        assert_eq!(days_in_month(2000, 2), Some(29));
+        assert_eq!(days_in_month(1900, 2), Some(28));
+        assert_eq!(days_in_month(2023, 4), Some(30));
+        assert_eq!(days_in_month(2023, 12), Some(31));
+        assert_eq!(days_in_month(2023, 0), None);
+        assert_eq!(days_in_month(2023, 13), None);
+        assert_eq!(weekday_from_unix_days(0), 4);
+        assert_eq!(weekday_from_unix_days(-1), 3);
+        assert_eq!(weekday_from_unix_days(days_from_civil(2000, 1, 1)), 6);
+    }
+
+    /// A SYSTEMTIME and a TIME_FIELDS hold the same fields, the day of the week where each keeps
+    /// it.
+    #[test]
+    fn a_system_time_and_its_time_fields_convert() {
+        let time = system_time_from_filetime(125_911_584_000_000_000 + 1234 * 10_000);
+        let fields = TimeFields::from(time);
+        assert_eq!(
+            fields,
+            TimeFields {
+                year: 2000,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                second: 1,
+                milliseconds: 234,
+                weekday: 6,
+            }
+        );
+        assert_eq!(SystemTime::from(fields), time);
     }
 
     /// A FILETIME round-trips through the civil fields, with the day of the week and milliseconds.

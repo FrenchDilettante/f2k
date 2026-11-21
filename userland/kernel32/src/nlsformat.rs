@@ -246,7 +246,7 @@ impl Civil {
             year,
             month,
             day,
-            day_of_week: (days + 4).rem_euclid(7) as u16,
+            day_of_week: rtl::time::weekday_from_unix_days(days),
             hour,
             minute,
             second,
@@ -254,22 +254,11 @@ impl Civil {
     }
 }
 
-/// Whether `year` is a leap year of the Gregorian calendar.
-fn is_leap(year: u16) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
 /// A SYSTEMTIME's date judged: a year SYSTEMTIME holds (1601 to 30827), a month and a day of it;
 /// ERROR_INVALID_PARAMETER otherwise.
 fn check_date(words: &SystemTimeWords) -> Result<(), Failure> {
     let [year, month, _, day, ..] = *words;
-    let days = match month {
-        2 if is_leap(year) => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        1..=12 => 31,
-        _ => 0,
-    };
+    let days = rtl::time::days_in_month(year, month).unwrap_or(0);
     if !(1601..=30827).contains(&year) || day == 0 || day > days {
         return Err(Failure::Error(ERROR_INVALID_PARAMETER));
     }

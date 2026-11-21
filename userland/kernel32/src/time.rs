@@ -4,7 +4,7 @@
 //! through ntdll's (RtlTimeToTimeFields, RtlTimeFieldsToTime), the FILETIME comparison, and the
 //! local time's setting (NtSetSystemTime).
 
-use rtl::time::{SystemTime, TimeFields};
+use rtl::time::SystemTime;
 
 use crate::edge::{In, Out, OutBuf};
 use crate::error::{answer, bool_answer, Failure, ERROR_INVALID_PARAMETER};
@@ -77,33 +77,13 @@ pub unsafe extern "system" fn get_local_time(out: *mut u8) {
 /// A time's SYSTEMTIME: ntdll's RtlTimeToTimeFields, its TIME_FIELDS in the SYSTEMTIME's order
 /// (the day of the week third, where TIME_FIELDS has it last).
 fn civil(time: u64) -> SystemTime {
-    let fields = ntcall::time_to_fields(time as i64);
-    SystemTime {
-        year: fields.year as u16,
-        month: fields.month as u16,
-        day_of_week: fields.weekday as u16,
-        day: fields.day as u16,
-        hour: fields.hour as u16,
-        minute: fields.minute as u16,
-        second: fields.second as u16,
-        milliseconds: fields.milliseconds as u16,
-    }
+    ntcall::time_to_fields(time as i64).into()
 }
 
 /// A SYSTEMTIME's time: its fields as a TIME_FIELDS to ntdll's RtlTimeFieldsToTime, which judges
 /// them; none for a field out of its range (the day of the week is not consulted).
 fn time_of(civil: SystemTime) -> Option<u64> {
-    let fields = TimeFields {
-        year: civil.year as i16,
-        month: civil.month as i16,
-        day: civil.day as i16,
-        hour: civil.hour as i16,
-        minute: civil.minute as i16,
-        second: civil.second as i16,
-        milliseconds: civil.milliseconds as i16,
-        weekday: civil.day_of_week as i16,
-    };
-    ntcall::fields_to_time(&fields).map(|time| time as u64)
+    ntcall::fields_to_time(&civil.into()).map(|time| time as u64)
 }
 
 /// SystemCurrentTimeZoneInformation, and the structure's size.
