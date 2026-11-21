@@ -28,6 +28,33 @@ pub unsafe extern "system" fn rtl_init_ansi_string(
     unsafe { destination.write(string::init_ansi_string(source)) };
 }
 
+/// RtlInitString: RtlInitAnsiString's work (a STRING is an ANSI_STRING).
+///
+/// # Safety
+///
+/// As RtlInitAnsiString's.
+#[unsafe(export_name = "f2k_export_RtlInitString")]
+pub unsafe extern "system" fn rtl_init_string(destination: *mut AnsiString, source: *const u8) {
+    // SAFETY: the caller's contract.
+    unsafe { destination.write(string::init_ansi_string(source)) };
+}
+
+/// RtlInitUnicodeString: the counted form of a NUL-terminated wide string (an empty one for null),
+/// its counts truncated to their words as Windows 2000's are (see
+/// `rtl::string::init_unicode_string`).
+///
+/// # Safety
+///
+/// `destination` is writable; `source` is null or a NUL-terminated UTF-16 string.
+#[unsafe(export_name = "f2k_export_RtlInitUnicodeString")]
+pub unsafe extern "system" fn rtl_init_unicode_string(
+    destination: *mut UnicodeString,
+    source: *const u16,
+) {
+    // SAFETY: the caller's contract.
+    unsafe { destination.write(string::init_unicode_string(source)) };
+}
+
 /// RtlAnsiStringToUnicodeString: the ANSI string converted into the Unicode one, its buffer from
 /// the process heap when asked (see `rtl::string::ansi_string_to_unicode_string`).
 ///

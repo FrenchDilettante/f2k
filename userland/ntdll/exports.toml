@@ -1289,6 +1289,24 @@ fails = "void"
 note = "a string past the counts' reach is counted as its first 65534 bytes"
 
 [[export]]
+name = "RtlInitString"
+group = "strings"
+args = ["ptr DestinationString", "strA? SourceString"]
+impl = { native = "RtlInitString" }
+ordinal = 513
+fails = "void"
+note = "RtlInitAnsiString's: a STRING is an ANSI_STRING"
+
+[[export]]
+name = "RtlInitUnicodeString"
+group = "strings"
+args = ["ptr DestinationString", "strW? SourceString"]
+impl = { native = "RtlInitUnicodeString" }
+ordinal = 514
+fails = "void"
+note = "Windows 2000's counts: each truncated to its word, not clamped (a string of 0x7FFF units or more wraps)"
+
+[[export]]
 name = "RtlAnsiStringToUnicodeString"
 group = "strings"
 args = ["ptr DestinationString", "ptr SourceString", "u32 AllocateDestinationString"]
@@ -3080,14 +3098,6 @@ ordinal = 511
 [[export]]
 name = "RtlInitNlsTables"
 ordinal = 512
-
-[[export]]
-name = "RtlInitString"
-ordinal = 513
-
-[[export]]
-name = "RtlInitUnicodeString"
-ordinal = 514
 
 [[export]]
 name = "RtlInitializeAtomPackage"

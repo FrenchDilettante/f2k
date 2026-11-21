@@ -21,7 +21,8 @@
 //! RtlGetFullPathName_U, RtlDosPathNameToNtPathName_U, RtlDoesFileExists_U,
 //! RtlDetermineDosPathNameType_U: `src/curdir.rs` over `rtl::path`); the counted strings and the
 //! ANSI code page, which kernel32's narrow calls convert through
-//! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
+//! (RtlInitAnsiString, RtlInitString, RtlInitUnicodeString, RtlAnsiStringToUnicodeString,
+//! RtlUnicodeStringToAnsiString,
 //! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlMultiByteToUnicodeN, RtlUnicodeToMultiByteSize:
 //! `src/strings.rs` over `rtl::string`); the current user's registry hive, as advapi32 opens it,
 //! and an image's execution options (RtlOpenCurrentUser, LdrQueryImageFileExecutionOptions:

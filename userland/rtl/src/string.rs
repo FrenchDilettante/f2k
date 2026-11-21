@@ -1,10 +1,10 @@
 //! Counted strings and the ANSI code page, as ntdll's string functions convert them
-//! (RtlInitAnsiString, RtlAnsiStringToUnicodeString, RtlUnicodeStringToAnsiString,
-//! RtlFreeUnicodeString, RtlUnicodeToMultiByteN, RtlUnicodeToMultiByteSize), upper-case them
-//! (RtlUpcaseUnicodeString) and read their numbers (RtlUnicodeStringToInteger): kernel32's narrow
-//! calls and its resource names hand their strings to these, as Windows 2000's kernel32 does. The
-//! ANSI code page is 1252 ([`crate::cp1252`]), a single-byte one: a character is one byte one way
-//! and one unit the other.
+//! (RtlInitAnsiString, RtlInitUnicodeString, RtlAnsiStringToUnicodeString,
+//! RtlUnicodeStringToAnsiString, RtlFreeUnicodeString, RtlUnicodeToMultiByteN,
+//! RtlUnicodeToMultiByteSize), upper-case them (RtlUpcaseUnicodeString) and read their numbers
+//! (RtlUnicodeStringToInteger): kernel32's narrow calls and its resource names hand their strings
+//! to these, as Windows 2000's kernel32 does. The ANSI code page is 1252 ([`crate::cp1252`]), a
+//! single-byte one: a character is one byte one way and one unit the other.
 //!
 //! The structures are the documented ANSI_STRING and UNICODE_STRING: the length and the room in
 //! bytes, then the buffer. A string a conversion allocates comes from the process heap, through the
@@ -155,6 +155,32 @@ pub unsafe fn init_ansi_string(source: *const u8) -> AnsiString {
         length: length as u16,
         maximum_length: length as u16 + 1,
         buffer: source as *mut u8,
+    }
+}
+
+/// RtlInitUnicodeString: the counted form of the NUL-terminated string at `source` (an empty string
+/// with no buffer for null), its room the length and the terminator, in bytes. Each count is
+/// truncated to the word it is kept in, as Windows 2000's ntdll keeps it (its string.c, which only
+/// later versions clamp to MAX_USTRING): a string of 0x7FFF units has a room of 0, one of 0x8000 a
+/// length of 0.
+///
+/// # Safety
+///
+/// `source` is null or a NUL-terminated UTF-16 string (at any address).
+pub unsafe fn init_unicode_string(source: *const u16) -> UnicodeString {
+    if source.is_null() {
+        return UnicodeString {
+            length: 0,
+            maximum_length: 0,
+            buffer: core::ptr::null_mut(),
+        };
+    }
+    // SAFETY: the caller's string, read to its terminator.
+    let bytes = unsafe { crate::cstr::len_until_nul(source) }.wrapping_mul(2);
+    UnicodeString {
+        length: bytes as u16,
+        maximum_length: bytes.wrapping_add(2) as u16,
+        buffer: source as *mut u16,
     }
 }
 
@@ -434,6 +460,50 @@ mod tests {
         // SAFETY: as above.
         let long = unsafe { init_ansi_string(long.as_ptr()) };
         assert_eq!((long.length, long.maximum_length), (0xFFFE, 0xFFFF));
+    }
+
+    /// RtlInitUnicodeString counts to the terminator in bytes, its room two more; null is the
+    /// empty string; past the word's reach the counts wrap, as Windows 2000's do.
+    #[test]
+    fn a_unicode_string_counts_to_its_terminator() {
+        let name = [b'n' as u16, b'a' as u16, b'm' as u16, b'e' as u16, 0];
+        // SAFETY: a terminated string, and null.
+        let (string, empty) = unsafe {
+            (
+                init_unicode_string(name.as_ptr()),
+                init_unicode_string(core::ptr::null()),
+            )
+        };
+        assert_eq!((string.length, string.maximum_length), (8, 10));
+        assert_eq!(string.buffer.cast_const(), name.as_ptr());
+        assert_eq!((empty.length, empty.maximum_length), (0, 0));
+        assert!(empty.buffer.is_null());
+        // SAFETY: a terminated empty string.
+        let blank = unsafe { init_unicode_string([0u16].as_ptr()) };
+        assert_eq!((blank.length, blank.maximum_length), (0, 2));
+        for (units, length, maximum_length) in [
+            (0x7FFE, 0xFFFC, 0xFFFE),
+            (0x7FFF, 0xFFFE, 0),
+            (0x8000, 0, 2),
+            (0x8001, 2, 4),
+        ] {
+            let long = std::vec![b'x' as u16; units]
+                .into_iter()
+                .chain([0])
+                .collect::<std::vec::Vec<u16>>();
+            // SAFETY: as above.
+            let long = unsafe { init_unicode_string(long.as_ptr()) };
+            assert_eq!(
+                (long.length, long.maximum_length),
+                (length, maximum_length),
+                "{units:#x} units"
+            );
+        }
+        // At an odd address.
+        let bytes = [0u8, b'a', 0, b'b', 0, 0, 0];
+        // SAFETY: "ab" as UTF-16 from an odd address, terminated.
+        let odd = unsafe { init_unicode_string(bytes[1..].as_ptr().cast()) };
+        assert_eq!((odd.length, odd.maximum_length), (4, 6));
     }
 
     /// Into the caller's buffer: the string and its terminator when they fit the room, the overflow
