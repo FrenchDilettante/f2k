@@ -6,7 +6,7 @@
 //! (NtCurrentProcess). A failed service's status sets the last error through BaseSetLastNTError.
 
 use crate::base::{set_last_nt_error, win32_bool, SecurityAttributes, CURRENT_PROCESS};
-use crate::edge::{In, InStr, InWStr};
+use crate::edge::{CallerChar, In};
 use crate::error::answer;
 use crate::ntcall::{self, View};
 use crate::sync::{self, Name};
@@ -60,10 +60,10 @@ pub unsafe extern "system" fn create_file_mapping_w(
     size_low: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InWStr::optional(name)) };
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { sync::security_and_name(security, name) };
     let size = (size_high, size_low);
-    create_file_mapping(file, security, protect, size, name.into())
+    create_file_mapping(file, security, protect, size, name)
 }
 
 /// CreateFileMapping's work, either form (see [`create_file_mapping_w`]).
@@ -119,10 +119,10 @@ pub unsafe extern "system" fn create_file_mapping_a(
     size_low: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InStr::optional(name)) };
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { sync::security_and_name(security, name) };
     let size = (size_high, size_low);
-    create_file_mapping(file, security, protect, size, name.into())
+    create_file_mapping(file, security, protect, size, name)
 }
 
 /// OpenFileMappingW: the named mapping in `\BaseNamedObjects`, with the access asked for
@@ -137,22 +137,23 @@ pub unsafe extern "system" fn open_file_mapping_w(
     inherit: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    open_file_mapping(access, inherit, name.into())
+    // SAFETY: the caller's contract.
+    unsafe { open_file_mapping(access, inherit, name) }
 }
 
-/// OpenFileMapping's work, either form (see [`open_file_mapping_w`]).
-fn open_file_mapping(access: u32, inherit: u32, name: Name<'_>) -> u32 {
+/// OpenFileMapping's body, either form (see [`open_file_mapping_w`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string of the form's characters.
+unsafe fn open_file_mapping<C: CallerChar>(access: u32, inherit: u32, name: *const C) -> u32 {
     let access = if access == FILE_MAP_COPY {
         FILE_MAP_READ
     } else {
         access
     };
-    answer(
-        sync::open_named(access, inherit, name, ntcall::open_section),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { sync::open_export(access, inherit, name, ntcall::open_section) }
 }
 
 /// OpenFileMappingA: [`open_file_mapping_w`], the name converted (see [`sync::open_named`]).
@@ -166,9 +167,8 @@ pub unsafe extern "system" fn open_file_mapping_a(
     inherit: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    open_file_mapping(access, inherit, name.into())
+    // SAFETY: the caller's contract.
+    unsafe { open_file_mapping(access, inherit, name) }
 }
 
 /// MapViewOfFile: a view of `bytes` of the mapping (zero: to its end) from the offset, anywhere in

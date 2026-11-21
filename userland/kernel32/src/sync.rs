@@ -25,7 +25,7 @@ use crate::base::{
     OBJ_INHERIT,
 };
 use crate::console;
-use crate::edge::{ansi_into, counted, In, InBuf, InStr, InWStr, Out};
+use crate::edge::{ansi_into, counted, CallerChar, CallerStr, In, InBuf, Out};
 use crate::error::{answer, Failure};
 use crate::nt::{ObjectAttributes, UnicodeString};
 use crate::ntcall::{self, Created, NtStatus, Source};
@@ -61,27 +61,38 @@ const MAXIMUM_WAIT_OBJECTS: usize = 64;
 /// The ANSI path limit: an object name's longest, in characters.
 const MAX_PATH: usize = 260;
 
-/// An object's name, as a named kind's create or open call is handed it.
-#[derive(Clone, Copy)]
-pub(crate) enum Name<'a> {
-    /// No name (null).
-    None,
-    /// A W call's, which the services read in place.
-    Wide(InWStr<'a>),
-    /// An A call's, converted through the ANSI code page first.
-    Ansi(InStr<'a>),
+/// An object's name, as a named kind's create or open call is handed it: none (null), a W call's
+/// (which the services read in place) or an A call's (converted through the ANSI code page first).
+pub(crate) type Name<'a> = Option<CallerStr<'a>>;
+
+/// The security attributes and the name a create export is handed, as it reads them.
+///
+/// # Safety
+///
+/// `security` is null or a SECURITY_ATTRIBUTES; `name` null or a NUL-terminated string of the
+/// form's characters.
+pub(crate) unsafe fn security_and_name<'a, C: CallerChar>(
+    security: *const SecurityAttributes,
+    name: *const C,
+) -> (Option<In<'a, SecurityAttributes>>, Name<'a>) {
+    // SAFETY: the caller's security attributes and name, when given (the contract).
+    unsafe { (In::optional(security), C::optional_string(name)) }
 }
 
-impl<'a> From<Option<InWStr<'a>>> for Name<'a> {
-    fn from(name: Option<InWStr<'a>>) -> Self {
-        name.map_or(Name::None, Name::Wide)
-    }
-}
-
-impl<'a> From<Option<InStr<'a>>> for Name<'a> {
-    fn from(name: Option<InStr<'a>>) -> Self {
-        name.map_or(Name::None, Name::Ansi)
-    }
+/// An open export's body, either form (see [`open_named`]): the named object opened by `service`.
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string of the form's characters.
+pub(crate) unsafe fn open_export<C: CallerChar>(
+    access: u32,
+    inherit: u32,
+    name: *const C,
+    service: impl FnOnce(u32, &ObjectAttributes) -> Result<u32, NtStatus>,
+) -> u32 {
+    // SAFETY: the caller's name, when given (the contract).
+    let name = unsafe { C::optional_string(name) };
+    answer(open_named(access, inherit, name, service), 0)
 }
 
 /// `body` over the name as the services take it (none for no name): a W call's string counted in
@@ -93,9 +104,9 @@ fn with_name<R>(
     body: impl FnOnce(Option<&UnicodeString>) -> R,
 ) -> Result<R, Failure> {
     match name {
-        Name::None => Ok(body(None)),
-        Name::Wide(name) => Ok(body(Some(&counted(&name)))),
-        Name::Ansi(name) => {
+        None => Ok(body(None)),
+        Some(CallerStr::Wide(name)) => Ok(body(Some(&counted(&name)))),
+        Some(CallerStr::Ansi(name)) => {
             let mut units = [0u16; MAX_PATH + 1];
             let length = ansi_into(Some(&name), &mut units)
                 .ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
@@ -141,9 +152,9 @@ pub(crate) fn open_named(
 ) -> Result<u32, Failure> {
     // An empty name names nothing (an assumption: F2K's answer, unverified).
     let empty = match name {
-        Name::None => true,
-        Name::Wide(name) => name.is_empty(),
-        Name::Ansi(_) => false,
+        None => true,
+        Some(CallerStr::Wide(name)) => name.is_empty(),
+        Some(CallerStr::Ansi(_)) => false,
     };
     if empty {
         return Err(Failure::Error(ERROR_INVALID_PARAMETER));
@@ -196,9 +207,9 @@ pub unsafe extern "system" fn create_event_w(
     initial_state: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InWStr::optional(name)) };
-    create_event(security, manual_reset, initial_state, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_event(security, manual_reset, initial_state, name)
 }
 
 /// CreateEventA (see [`create_event`]): the name converted (see [`with_name`]).
@@ -213,9 +224,9 @@ pub unsafe extern "system" fn create_event_a(
     initial_state: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InStr::optional(name)) };
-    create_event(security, manual_reset, initial_state, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_event(security, manual_reset, initial_state, name)
 }
 
 /// OpenEventW (see [`open_named`]).
@@ -225,12 +236,8 @@ pub unsafe extern "system" fn create_event_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenEventW")]
 pub unsafe extern "system" fn open_event_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_event),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_event) }
 }
 
 /// OpenEventA: [`open_event_w`], the name converted (see [`with_name`]).
@@ -240,12 +247,8 @@ pub unsafe extern "system" fn open_event_w(access: u32, inherit: u32, name: *con
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenEventA")]
 pub unsafe extern "system" fn open_event_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_event),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_event) }
 }
 
 /// SetEvent: signal the event.
@@ -292,9 +295,9 @@ pub unsafe extern "system" fn create_mutex_w(
     initial_owner: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InWStr::optional(name)) };
-    create_mutex(security, initial_owner, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_mutex(security, initial_owner, name)
 }
 
 /// CreateMutexA (see [`create_mutex`]): the name converted (see [`with_name`]).
@@ -308,9 +311,9 @@ pub unsafe extern "system" fn create_mutex_a(
     initial_owner: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InStr::optional(name)) };
-    create_mutex(security, initial_owner, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_mutex(security, initial_owner, name)
 }
 
 /// OpenMutexW (see [`open_named`]).
@@ -320,12 +323,8 @@ pub unsafe extern "system" fn create_mutex_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenMutexW")]
 pub unsafe extern "system" fn open_mutex_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_mutant),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_mutant) }
 }
 
 /// OpenMutexA: [`open_mutex_w`], the name converted (see [`with_name`]).
@@ -335,12 +334,8 @@ pub unsafe extern "system" fn open_mutex_w(access: u32, inherit: u32, name: *con
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenMutexA")]
 pub unsafe extern "system" fn open_mutex_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_mutant),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_mutant) }
 }
 
 /// ReleaseMutex: give up one unit of the caller's ownership (ERROR_NOT_OWNER unless it owns it).
@@ -376,9 +371,9 @@ pub unsafe extern "system" fn create_semaphore_w(
     maximum: i32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InWStr::optional(name)) };
-    create_semaphore(security, initial, maximum, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_semaphore(security, initial, maximum, name)
 }
 
 /// CreateSemaphoreA (see [`create_semaphore`]): the name converted (see [`with_name`]).
@@ -393,9 +388,9 @@ pub unsafe extern "system" fn create_semaphore_a(
     maximum: i32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InStr::optional(name)) };
-    create_semaphore(security, initial, maximum, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_semaphore(security, initial, maximum, name)
 }
 
 /// OpenSemaphoreW (see [`open_named`]).
@@ -405,12 +400,8 @@ pub unsafe extern "system" fn create_semaphore_a(
 /// `name` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_OpenSemaphoreW")]
 pub unsafe extern "system" fn open_semaphore_w(access: u32, inherit: u32, name: *const u16) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_semaphore),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_semaphore) }
 }
 
 /// OpenSemaphoreA: [`open_semaphore_w`], the name converted (see [`with_name`]).
@@ -420,12 +411,8 @@ pub unsafe extern "system" fn open_semaphore_w(access: u32, inherit: u32, name: 
 /// `name` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_OpenSemaphoreA")]
 pub unsafe extern "system" fn open_semaphore_a(access: u32, inherit: u32, name: *const u8) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_semaphore),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_semaphore) }
 }
 
 /// ReleaseSemaphore: add the count, the previous count into `previous` when given
@@ -480,9 +467,9 @@ pub unsafe extern "system" fn create_waitable_timer_w(
     manual_reset: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InWStr::optional(name)) };
-    create_waitable_timer(security, manual_reset, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_waitable_timer(security, manual_reset, name)
 }
 
 /// CreateWaitableTimerA (see [`create_waitable_timer`]): the name converted (see [`with_name`]).
@@ -496,9 +483,9 @@ pub unsafe extern "system" fn create_waitable_timer_a(
     manual_reset: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's security attributes and name, when given (the contract).
-    let (security, name) = unsafe { (In::optional(security), InStr::optional(name)) };
-    create_waitable_timer(security, manual_reset, name.into())
+    // SAFETY: the caller's contract.
+    let (security, name) = unsafe { security_and_name(security, name) };
+    create_waitable_timer(security, manual_reset, name)
 }
 
 /// OpenWaitableTimerW (see [`open_named`]).
@@ -512,12 +499,8 @@ pub unsafe extern "system" fn open_waitable_timer_w(
     inherit: u32,
     name: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_timer),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_timer) }
 }
 
 /// OpenWaitableTimerA: [`open_waitable_timer_w`], the name converted (see [`with_name`]).
@@ -531,12 +514,8 @@ pub unsafe extern "system" fn open_waitable_timer_a(
     inherit: u32,
     name: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's name, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    answer(
-        open_named(access, inherit, name.into(), ntcall::open_timer),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { open_export(access, inherit, name, ntcall::open_timer) }
 }
 
 /// SetWaitableTimer: arm the timer — the due time a FILETIME when positive, relative 100 ns units

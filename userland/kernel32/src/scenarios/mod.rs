@@ -26,6 +26,7 @@ mod formats;
 mod locale;
 mod lstr;
 mod modules;
+mod objects;
 mod pipes;
 mod processes;
 mod resources;
