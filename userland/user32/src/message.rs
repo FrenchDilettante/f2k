@@ -57,9 +57,11 @@ fn deliver(proc: u32, msg: Msg, carried_text: bool) {
             false,
         )
     } else {
-        // The window manager's own messages, and a text another process's message carries, are
-        // wide.
-        let wide = matches!(msg.message, WM_NCCREATE | WM_CREATE) || carried_text;
+        // The window manager's own messages, a text another process's message carries, and a
+        // character another thread sent (a narrow sender's converted on the way in) are wide.
+        let wide = matches!(msg.message, WM_NCCREATE | WM_CREATE)
+            || carried_text
+            || procedure::char_message(msg.message);
         call(proc, wide.then_some(false), &msg)
     };
     let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
@@ -115,10 +117,11 @@ pub unsafe extern "system" fn get_message_a(
 ) -> i32 {
     // SAFETY: the caller's MSG.
     let mut msg = unsafe { Out::new(msg) };
-    get_message(&mut msg, window, min, max)
+    get_message(&mut msg, window, min, max, true)
 }
 
-/// GetMessageW: GetMessageA's (no message the queue holds carries text).
+/// GetMessageW: GetMessageA's, the character messages' character as the queue holds it (no
+/// message the queue holds carries text).
 ///
 /// # Safety
 ///
@@ -132,11 +135,23 @@ pub unsafe extern "system" fn get_message_w(
 ) -> i32 {
     // SAFETY: the caller's MSG.
     let mut msg = unsafe { Out::new(msg) };
-    get_message(&mut msg, window, min, max)
+    get_message(&mut msg, window, min, max, false)
 }
 
-/// GetMessage's core.
-fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32) -> i32 {
+/// A message read out of the queue for a caller of the narrow (`ansi`) or wide form: the queue's
+/// character messages are wide, a narrow caller's converted ([`procedure::char_to_narrow`]).
+fn read_as(msg: Msg, ansi: bool) -> Msg {
+    if !ansi {
+        return msg;
+    }
+    Msg {
+        wparam: procedure::char_to_narrow(msg.message, msg.wparam),
+        ..msg
+    }
+}
+
+/// GetMessage's core, for a caller of the narrow (`ansi`) or wide form.
+fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, ansi: bool) -> i32 {
     let mut receipt = Receipt::zeroed();
     loop {
         if answered(imports::get_message(&mut receipt, window, min, max)).is_none() {
@@ -145,7 +160,7 @@ fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32) -> i32
         match receipt.kind {
             RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             kind => {
-                out.set(receipt.msg);
+                out.set(read_as(receipt.msg, ansi));
                 return (kind != RECEIVED_QUIT) as i32;
             }
         }
@@ -169,10 +184,11 @@ pub unsafe extern "system" fn peek_message_a(
 ) -> u32 {
     // SAFETY: the caller's MSG.
     let mut msg = unsafe { Out::new(msg) };
-    peek_message(&mut msg, window, min, max, flags)
+    peek_message(&mut msg, window, min, max, flags, true)
 }
 
-/// PeekMessageW: PeekMessageA's (no message the queue holds carries text).
+/// PeekMessageW: PeekMessageA's, the character messages' character as the queue holds it (no
+/// message the queue holds carries text).
 ///
 /// # Safety
 ///
@@ -187,11 +203,18 @@ pub unsafe extern "system" fn peek_message_w(
 ) -> u32 {
     // SAFETY: the caller's MSG.
     let mut msg = unsafe { Out::new(msg) };
-    peek_message(&mut msg, window, min, max, flags)
+    peek_message(&mut msg, window, min, max, flags, false)
 }
 
-/// PeekMessage's core.
-fn peek_message(msg: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, flags: u32) -> u32 {
+/// PeekMessage's core, for a caller of the narrow (`ansi`) or wide form.
+fn peek_message(
+    msg: &mut Out<'_, Msg>,
+    window: usize,
+    min: u32,
+    max: u32,
+    flags: u32,
+    ansi: bool,
+) -> u32 {
     let mut receipt = Receipt::zeroed();
     loop {
         if answered(imports::peek_message(&mut receipt, window, min, max, flags)).is_none() {
@@ -201,7 +224,7 @@ fn peek_message(msg: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, flags
             RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
             RECEIVED_NONE => return 0,
             _ => {
-                msg.set(receipt.msg);
+                msg.set(read_as(receipt.msg, ansi));
                 return 1;
             }
         }
@@ -241,10 +264,27 @@ pub fn queue_holds_message() -> bool {
     }
 }
 
-/// PostMessageA: the message posted to the window's thread (a null window: the calling thread;
-/// HWND_BROADCAST: every top-level window); TRUE, or FALSE with 1400 for a handle naming no window.
+/// PostMessageA: PostMessageW's, a character message's character converted to the wide form the
+/// queue holds ([`procedure::char_to_wide`]).
 #[unsafe(export_name = "f2k_export_PostMessageA")]
 pub extern "system" fn post_message_a(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> u32 {
+    post_message_w(
+        window,
+        message,
+        procedure::char_to_wide(message, wparam),
+        lparam,
+    )
+}
+
+/// PostMessageW: the message posted to the window's thread (a null window: the calling thread;
+/// HWND_BROADCAST: every top-level window); TRUE, or FALSE with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_PostMessageW")]
+pub extern "system" fn post_message_w(
     window: usize,
     message: u32,
     wparam: u32,
@@ -253,21 +293,27 @@ pub extern "system" fn post_message_a(
     answered(imports::post_message(window, message, wparam, lparam)).is_some() as u32
 }
 
-/// PostMessageW: PostMessageA's.
-#[unsafe(export_name = "f2k_export_PostMessageW")]
-pub extern "system" fn post_message_w(
-    window: usize,
+/// PostThreadMessageA: PostThreadMessageW's, a character message's character converted to the
+/// wide form the queue holds.
+#[unsafe(export_name = "f2k_export_PostThreadMessageA")]
+pub extern "system" fn post_thread_message_a(
+    thread: u32,
     message: u32,
     wparam: u32,
     lparam: i32,
 ) -> u32 {
-    post_message_a(window, message, wparam, lparam)
+    post_thread_message_w(
+        thread,
+        message,
+        procedure::char_to_wide(message, wparam),
+        lparam,
+    )
 }
 
-/// PostThreadMessageA: a thread message posted to the thread whose id is `thread`; TRUE, or FALSE
+/// PostThreadMessageW: a thread message posted to the thread whose id is `thread`; TRUE, or FALSE
 /// with ERROR_INVALID_THREAD_ID for an id no thread with a queue has.
-#[unsafe(export_name = "f2k_export_PostThreadMessageA")]
-pub extern "system" fn post_thread_message_a(
+#[unsafe(export_name = "f2k_export_PostThreadMessageW")]
+pub extern "system" fn post_thread_message_w(
     thread: u32,
     message: u32,
     wparam: u32,
@@ -278,17 +324,6 @@ pub extern "system" fn post_thread_message_a(
         imports::dos_error,
     )
     .is_some() as u32
-}
-
-/// PostThreadMessageW: PostThreadMessageA's.
-#[unsafe(export_name = "f2k_export_PostThreadMessageW")]
-pub extern "system" fn post_thread_message_w(
-    thread: u32,
-    message: u32,
-    wparam: u32,
-    lparam: i32,
-) -> u32 {
-    post_thread_message_a(thread, message, wparam, lparam)
 }
 
 /// PostQuitMessage: WM_QUIT with the exit code left for the calling thread's next read (made when
@@ -323,6 +358,12 @@ fn send_within(
     ansi: bool,
     timeout: Option<SendTimeout>,
 ) -> Option<i32> {
+    // A narrow character message goes as wide, the form another thread's queue carries it in; a
+    // narrow procedure of the calling thread's gets it back converted ([`call`]).
+    if ansi && procedure::char_message(message) {
+        let wparam = procedure::char_to_wide(message, wparam);
+        return send_within(window, message, wparam, lparam, false, timeout);
+    }
     // A text message to another process's window: the window manager carries its text (WM_SETTEXT's
     // there, WM_GETTEXT's back) in the wide form, so a narrow one goes as wide, converted here.
     if ansi
@@ -502,8 +543,13 @@ pub extern "system" fn send_notify_message_a(
     send_notify(window, message, wparam, lparam, true)
 }
 
-/// SendNotifyMessage's core, for a message of the narrow (`ansi`) or wide form.
+/// SendNotifyMessage's core, for a message of the narrow (`ansi`) or wide form (a narrow character
+/// message going as wide, as [`send_within`]'s).
 fn send_notify(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> u32 {
+    if ansi && procedure::char_message(message) {
+        let wparam = procedure::char_to_wide(message, wparam);
+        return send_notify(window, message, wparam, lparam, false);
+    }
     let Some(proc) = answered(imports::send_notify_message(
         window, message, wparam, lparam,
     )) else {
@@ -1356,6 +1402,56 @@ mod tests {
         assert_eq!((msg.hwnd, msg.message), (0, WM_USER + 8));
         // SAFETY: as above.
         assert_eq!(unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_REMOVE) }, 0);
+    }
+
+    /// A character message's character is wide in the queue: PostMessageA's 0x80 (code page
+    /// 1252's euro) reads back as U+20AC through PeekMessageW and as 0x80 through GetMessageA and
+    /// PeekMessageA; DispatchMessageW's U+20AC and DispatchMessageA's 0x80 reach the narrow
+    /// procedure as 0x80, as SendMessageW's and SendMessageA's do; another message's wParam is
+    /// left as it is.
+    ///
+    /// Pins: user32.PostMessageA, user32.PostThreadMessageA, user32.GetMessageA,
+    /// user32.PeekMessageA, user32.PeekMessageW, user32.DispatchMessageA, user32.DispatchMessageW,
+    /// user32.SendMessageA, user32.SendMessageW
+    #[test]
+    fn characters_are_wide_in_the_queue() {
+        let window = window();
+        assert_eq!(post_message_a(window, WM_CHAR, 0x80, 1), 1);
+        let mut msg = Msg::default();
+        // SAFETY: the tests' own MSG.
+        assert_eq!(unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_NOREMOVE) }, 1);
+        assert_eq!((msg.message, msg.wparam), (WM_CHAR, 0x20AC));
+        assert_eq!(peek(PM_NOREMOVE).1.wparam, 0x80);
+        // SAFETY: as above.
+        assert_eq!(unsafe { get_message_a(&mut msg, 0, 0, 0) }, 1);
+        assert_eq!((msg.message, msg.wparam), (WM_CHAR, 0x80));
+        // SAFETY: as above.
+        unsafe { dispatch_message_a(&msg) };
+        let wide = Msg {
+            wparam: 0x20AC,
+            ..msg
+        };
+        // SAFETY: as above.
+        unsafe { dispatch_message_w(&wide) };
+        send_message_w(window, WM_SYSCHAR, 0x20AC, 0);
+        send_message_a(window, WM_SYSCHAR, 0x80, 0);
+        send_message_w(window, WM_USER, 0x20AC, 0);
+        let w = window as u32;
+        assert_eq!(
+            seen(),
+            [
+                (w, WM_CHAR, 0x80, 1),
+                (w, WM_CHAR, 0x80, 1),
+                (w, WM_SYSCHAR, 0x80, 0),
+                (w, WM_SYSCHAR, 0x80, 0),
+                (w, WM_USER, 0x20AC, 0),
+            ]
+        );
+        let me = THREAD_ID.with(|id| id.get());
+        assert_eq!(post_thread_message_a(me, WM_DEADCHAR, 0x80, 0), 1);
+        // SAFETY: as above.
+        assert_eq!(unsafe { get_message_w(&mut msg, 0, 0, 0) }, 1);
+        assert_eq!((msg.message, msg.wparam), (WM_DEADCHAR, 0x20AC));
     }
 
     /// PostQuitMessage: GetMessage answers FALSE with WM_QUIT and the exit code.

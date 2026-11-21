@@ -2085,7 +2085,7 @@ pub fn is_dialog_message(dialog: usize, msg: &Msg, ansi: bool) -> bool {
     }
     let handled = match msg.message {
         WM_KEYDOWN => key_down(dialog, msg),
-        WM_CHAR | WM_SYSCHAR => character(dialog, msg),
+        WM_CHAR | WM_SYSCHAR => character(dialog, msg, ansi),
         _ => false,
     };
     if !handled {
@@ -2174,8 +2174,9 @@ const BM_CLICK: u32 = 0x00F5;
 
 /// IsDialogMessage's WM_CHAR and WM_SYSCHAR: whether the dialog handled the character (a control
 /// that wants characters gets them; Tab, Enter and Esc are the keys' own; a mnemonic presses its
-/// control: a button clicked, a static's next control focused, another control focused).
-fn character(dialog: usize, msg: &Msg) -> bool {
+/// control: a button clicked, a static's next control focused, another control focused). A narrow
+/// (`ansi`) message's character is matched in its wide form.
+fn character(dialog: usize, msg: &Msg, ansi: bool) -> bool {
     let code = dialog_code(msg.hwnd as usize, msg as *const Msg as usize);
     if msg.message == WM_CHAR {
         if code & (DLGC_WANTCHARS | DLGC_WANTALLKEYS) != 0 {
@@ -2185,7 +2186,12 @@ fn character(dialog: usize, msg: &Msg) -> bool {
             return true;
         }
     }
-    let wanted = rtl::cp1252::map_case(msg.wparam as u16, true);
+    let unit = if ansi {
+        crate::procedure::char_to_wide(msg.message, msg.wparam)
+    } else {
+        msg.wparam
+    };
+    let wanted = rtl::cp1252::map_case(unit as u16, true);
     let mut children = [0usize; MOST_CONTROLS];
     let count = child_list(dialog, &mut children);
     for &control in &children[..count] {

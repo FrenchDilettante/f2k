@@ -33,16 +33,50 @@
 //! - a WM_GETTEXTLENGTH of the other form is the procedure's text read whole (its WM_GETTEXTLENGTH,
 //!   then WM_GETTEXT of one more than that) and measured in the caller's form.
 //!
+//! WM_SETTINGCHANGE's and WM_DEVMODECHANGE's string (lParam, when there is one) is converted as
+//! WM_SETTEXT's is.
+//!
+//! The character messages' character is converted too ([`char_message`]), through the ANSI code
+//! page (code page 1252's 0x80 is U+20AC): WM_CHAR, WM_SYSCHAR, WM_DEADCHAR, WM_SYSDEADCHAR and
+//! EM_SETPASSWORDCHAR carry it in wParam, WM_IME_CHAR too (a double-byte character whole, its lead
+//! byte in the high byte), WM_MENUCHAR and WM_CHARTOITEM in wParam's low word, the high word kept.
+//! A narrow character whose high byte is a lead byte of the code page is that double-byte
+//! character; a wide one that takes two bytes reaches a narrow WM_CHAR, WM_SYSCHAR, WM_DEADCHAR or
+//! WM_SYSDEADCHAR procedure a byte at a time, lead byte first (the answer the last call's), and the
+//! other messages' with both bytes in the low word, the lead byte high.
+//!
 //! The other messages reach the procedure as they are. The messages the window manager sends are
-//! wide; a message another thread sent reaches the procedure as it was sent.
+//! wide, the character messages its queues hold too (user32's narrow calls convert theirs on the
+//! way in and out, [`char_to_wide`] and [`char_to_narrow`]); a message another thread sent reaches
+//! the procedure as it was sent.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{In, InStr, InWStr, OutBuf};
-use rtl::user::{CreateStructW, WM_CREATE, WM_GETTEXT, WM_GETTEXTLENGTH, WM_NCCREATE, WM_SETTEXT};
+use rtl::user::{
+    CreateStructW,
+    WM_CHAR,
+    WM_CREATE,
+    WM_DEADCHAR,
+    WM_GETTEXT,
+    WM_GETTEXTLENGTH,
+    WM_NCCREATE,
+    WM_SETTEXT,
+    WM_SYSCHAR,
+    WM_SYSDEADCHAR,
+};
 
-use crate::edit::{EM_GETLINE, EM_REPLACESEL};
+use crate::dialog::WM_CHARTOITEM;
+use crate::edit::{EM_GETLINE, EM_REPLACESEL, EM_SETPASSWORDCHAR};
 use crate::imports;
+use crate::menubar::WM_MENUCHAR;
+
+/// The messages whose lParam is a string (or none) of the caller's form, as WM_SETTEXT's: a
+/// setting's section, a device's name (winuser.h).
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const WM_DEVMODECHANGE: u32 = 0x001B;
+/// An input method's character: a double-byte one whole (winuser.h).
+pub const WM_IME_CHAR: u32 = 0x0286;
 
 /// A window procedure, and whether it takes the narrow forms of the messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,16 +210,77 @@ pub fn resolve(value: u32, caller_ansi: bool) -> Procedure {
 
 /// Whether `message` is one a procedure of the other form receives translated.
 pub fn translates(message: u32) -> bool {
+    char_message(message)
+        || matches!(
+            message,
+            WM_SETTEXT
+                | WM_GETTEXT
+                | WM_GETTEXTLENGTH
+                | WM_NCCREATE
+                | WM_CREATE
+                | EM_REPLACESEL
+                | EM_GETLINE
+                | WM_SETTINGCHANGE
+                | WM_DEVMODECHANGE
+        )
+}
+
+/// Whether `message` carries a character in wParam (see the module notes).
+pub fn char_message(message: u32) -> bool {
     matches!(
         message,
-        WM_SETTEXT
-            | WM_GETTEXT
-            | WM_GETTEXTLENGTH
-            | WM_NCCREATE
-            | WM_CREATE
-            | EM_REPLACESEL
-            | EM_GETLINE
+        WM_CHAR
+            | WM_SYSCHAR
+            | WM_DEADCHAR
+            | WM_SYSDEADCHAR
+            | WM_IME_CHAR
+            | WM_MENUCHAR
+            | WM_CHARTOITEM
+            | EM_SETPASSWORDCHAR
     )
+}
+
+/// The character message `message`'s narrow wParam in the wide form: its character (a double-byte
+/// one when the high byte is a lead byte of the ANSI code page, the low byte alone otherwise)
+/// converted, the rest of wParam kept (WM_MENUCHAR's menu kind, WM_CHARTOITEM's caret position).
+/// Another message's wParam as it is.
+pub fn char_to_wide(message: u32, wparam: u32) -> u32 {
+    if !char_message(message) {
+        return wparam;
+    }
+    let bytes = [(wparam >> 8) as u8, wparam as u8];
+    let mut units = [0u16; 2];
+    // A lead byte and its trail byte make one character; two single-byte ones are not one.
+    let unit = if bytes[0] != 0 && imports::multi_byte_to_unicode(&mut units, &bytes) == 1 {
+        units[0]
+    } else {
+        imports::multi_byte_to_unicode(&mut units[..1], &bytes[1..]);
+        units[0]
+    };
+    (wparam & 0xFFFF_0000) | u32::from(unit)
+}
+
+/// The narrow form of the wide character in wParam's low word: its bytes (one, or a double-byte
+/// character's two, lead byte first) and how many there are.
+fn narrow_bytes(wparam: u32) -> ([u8; 2], usize) {
+    let mut bytes = [0u8; 2];
+    let length = imports::unicode_to_multi_byte(&mut bytes, &[wparam as u16]);
+    (bytes, length.clamp(1, 2))
+}
+
+/// The character message `message`'s wide wParam in the narrow form: its character converted, a
+/// double-byte character's two bytes in the low word, the lead byte high; the rest of wParam kept.
+/// Another message's wParam as it is.
+pub fn char_to_narrow(message: u32, wparam: u32) -> u32 {
+    if !char_message(message) {
+        return wparam;
+    }
+    let (bytes, length) = narrow_bytes(wparam);
+    let low = match length {
+        2 => u32::from(bytes[0]) << 8 | u32::from(bytes[1]),
+        _ => u32::from(bytes[0]),
+    };
+    (wparam & 0xFFFF_0000) | low
 }
 
 /// The procedure `proc` called with a message its caller has in the narrow (`caller_ansi`) or wide
@@ -217,12 +312,23 @@ fn to_narrow(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> 
     let call =
         |message, wparam, lparam| imports::call_procedure(proc, window, message, wparam, lparam);
     match message {
-        WM_SETTEXT | EM_REPLACESEL if lparam != 0 => {
-            // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a
-            // NUL-terminated string, wide in this form.
+        WM_SETTEXT | EM_REPLACESEL | WM_SETTINGCHANGE | WM_DEVMODECHANGE if lparam != 0 => {
+            // SAFETY: WM_SETTEXT's, EM_REPLACESEL's, WM_SETTINGCHANGE's and WM_DEVMODECHANGE's
+            // lParam as its sender hands it over: a NUL-terminated string, wide in this form.
             let text = unsafe { InWStr::new(lparam as usize as *const u16) };
             with_narrow(text, |bytes| call(message, wparam, bytes.as_ptr() as i32)).unwrap_or(0)
         }
+        WM_CHAR | WM_SYSCHAR | WM_DEADCHAR | WM_SYSDEADCHAR => {
+            // A double-byte character a byte at a time, lead byte first.
+            let (bytes, length) = narrow_bytes(wparam);
+            let high = wparam & 0xFFFF_0000;
+            let mut answer = 0;
+            for &byte in &bytes[..length] {
+                answer = call(message, high | u32::from(byte), lparam);
+            }
+            answer
+        }
+        _ if char_message(message) => call(message, char_to_narrow(message, wparam), lparam),
         EM_GETLINE if lparam != 0 => {
             // SAFETY: EM_GETLINE's lParam as its sender hands it over: a buffer of as many units as
             // its first unit says.
@@ -299,9 +405,9 @@ pub fn narrow_to_wide(
     mut call: impl FnMut(u32, u32, i32) -> i32,
 ) -> i32 {
     match message {
-        WM_SETTEXT | EM_REPLACESEL if lparam != 0 => {
-            // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a
-            // NUL-terminated string, narrow in this form.
+        WM_SETTEXT | EM_REPLACESEL | WM_SETTINGCHANGE | WM_DEVMODECHANGE if lparam != 0 => {
+            // SAFETY: WM_SETTEXT's, EM_REPLACESEL's, WM_SETTINGCHANGE's and WM_DEVMODECHANGE's
+            // lParam as its sender hands it over: a NUL-terminated string, narrow in this form.
             let text = unsafe { InStr::new(lparam as usize as *const u8) };
             crate::with_wide_z(text.bytes(), |units| {
                 call(message, wparam, units.as_ptr() as i32)
@@ -341,6 +447,7 @@ pub fn narrow_to_wide(
             })
             .unwrap_or(0)
         }
+        _ if char_message(message) => call(message, char_to_wide(message, wparam), lparam),
         _ => call(message, wparam, lparam),
     }
 }
@@ -576,5 +683,109 @@ mod tests {
         assert_eq!(got_text(&[1u8, 2, 3], -1), &[] as &[u8]);
         assert_eq!(narrow_length(&text), 4);
         assert!(translates(WM_GETTEXTLENGTH) && !translates(rtl::user::WM_USER));
+        assert!(translates(WM_SETTINGCHANGE) && translates(WM_DEVMODECHANGE));
+    }
+
+    std::thread_local! {
+        static GOT: core::cell::RefCell<std::vec::Vec<(u32, u32)>> =
+            const { core::cell::RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// A procedure that records the message and wParam it gets, answering 7.
+    fn recording(_: u32, message: u32, wparam: u32, _: i32) -> i32 {
+        GOT.with(|got| got.borrow_mut().push((message, wparam)));
+        7
+    }
+
+    fn got() -> std::vec::Vec<(u32, u32)> {
+        GOT.with(|got| got.take())
+    }
+
+    /// The character messages.
+    const CHARS: [u32; 8] = [
+        WM_CHAR,
+        WM_SYSCHAR,
+        WM_DEADCHAR,
+        WM_SYSDEADCHAR,
+        WM_IME_CHAR,
+        WM_MENUCHAR,
+        WM_CHARTOITEM,
+        EM_SETPASSWORDCHAR,
+    ];
+
+    /// The character conversions through code page 1252: 0x80 is U+20AC, 0x9F U+0178, ASCII and
+    /// Latin-1 as they are; every byte comes back from its wide form; the high word is kept; a
+    /// character the code page lacks is '?'; another message's wParam is left.
+    #[test]
+    fn the_character_conversions() {
+        for message in CHARS {
+            assert!(char_message(message) && translates(message));
+            assert_eq!(char_to_wide(message, 0x80), 0x20AC);
+            assert_eq!(char_to_wide(message, 0x9F), 0x0178);
+            assert_eq!(char_to_wide(message, 0xE9), 0x00E9);
+            assert_eq!(char_to_wide(message, b'a'.into()), u32::from(b'a'));
+            assert_eq!(char_to_narrow(message, 0x20AC), 0x80);
+            assert_eq!(char_to_narrow(message, 0x0178), 0x9F);
+            assert_eq!(char_to_narrow(message, 0x4E00), u32::from(b'?'));
+            assert_eq!(char_to_wide(message, 0x0003_0080), 0x0003_20AC);
+            assert_eq!(char_to_narrow(message, 0x0003_20AC), 0x0003_0080);
+            for byte in 0..=0xFFu32 {
+                assert_eq!(
+                    char_to_narrow(message, char_to_wide(message, byte)),
+                    byte,
+                    "{message:#x} {byte:#x}"
+                );
+            }
+        }
+        assert!(!char_message(rtl::user::WM_KEYDOWN));
+        assert_eq!(char_to_wide(rtl::user::WM_KEYDOWN, 0x80), 0x80);
+        assert_eq!(char_to_narrow(rtl::user::WM_USER, 0x20AC), 0x20AC);
+    }
+
+    /// A character message crossing between the forms: a narrow caller's 0x80 reaches a wide
+    /// procedure as U+20AC, a wide caller's U+20AC a narrow one as 0x80, WM_MENUCHAR's high word
+    /// kept; the same form's reaches it as it is; the procedure's answer comes back.
+    ///
+    /// Pins: user32.CallWindowProcA, user32.CallWindowProcW
+    #[test]
+    fn characters_cross_between_the_forms() {
+        let address = crate::imports::host::procedure(recording);
+        let wide = Procedure {
+            address,
+            ansi: false,
+        };
+        let narrow = Procedure {
+            address,
+            ansi: true,
+        };
+        for message in CHARS {
+            assert_eq!(call(wide, true, 1, message, 0x80, 0), 7);
+            assert_eq!(call(narrow, false, 1, message, 0x20AC, 0), 7);
+            assert_eq!(call(wide, false, 1, message, 0x20AC, 0), 7);
+            assert_eq!(call(narrow, true, 1, message, 0x80, 0), 7);
+            assert_eq!(
+                got(),
+                [
+                    (message, 0x20AC),
+                    (message, 0x80),
+                    (message, 0x20AC),
+                    (message, 0x80)
+                ]
+            );
+        }
+        let menu_char = 0x0010_0000 | 0x00E9;
+        call(narrow, false, 1, WM_MENUCHAR, menu_char, 0);
+        call(wide, true, 1, WM_MENUCHAR, menu_char, 0);
+        assert_eq!(got(), [(WM_MENUCHAR, menu_char), (WM_MENUCHAR, menu_char)]);
+        // Through the exports: a handle for the other form's procedure.
+        assert_eq!(
+            call_window_proc_a(value_for(wide, true) as usize, 1, WM_CHAR, 0x80, 0),
+            7
+        );
+        assert_eq!(
+            call_window_proc_w(value_for(narrow, false) as usize, 1, WM_SYSCHAR, 0x20AC, 0),
+            7
+        );
+        assert_eq!(got(), [(WM_CHAR, 0x20AC), (WM_SYSCHAR, 0x80)]);
     }
 }
