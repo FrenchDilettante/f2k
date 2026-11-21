@@ -10,7 +10,6 @@ gate = true
 [pending]
 # Written ahead of the VM trip: output.txt holds placeholder blocks until locale.exe is rebuilt
 # (tests/build.bat locale) and the blocks captured (tests/capture.bat locale).
-cpconv = "F2K converts only 1252, 437 and UTF-8, while IsValidCodePage and GetCPInfo take 850, 28591, 65000 and 42: their conversions fail with ERROR_INVALID_PARAMETER"
 bestfit = "F2K's best fit covers only U+0100-017F, and it ignores WC_COMPOSITECHECK and MB_COMPOSITE and accepts their bad combinations"
 lcmap = "F2K's LCMapString maps case alone (LCMAP_SORTKEY, LCMAP_BYTEREV, the width maps and the NORM_ flags give ERROR_INVALID_FLAGS), and its A form ignores the LCID"
 locales = "F2K's GetLocaleInfo answers 0x0409 alone, while SetThreadLocale takes 0x040C and IsValidLocale calls it unsupported"

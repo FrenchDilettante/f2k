@@ -26,7 +26,7 @@
 
 use core::iter::Peekable;
 
-use rtl::codepage::{self, CodePage};
+use rtl::codepage::{self, Page};
 
 use crate::edge::{Counted, OutBuf};
 use crate::error::{answer, Failure, ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER};
@@ -188,6 +188,9 @@ fn fold_wide(
     Ok(out.finish()? as i32)
 }
 
+/// The ANSI code page FoldStringA converts through.
+const ANSI: Page = Page::Single(&codepage::sbcs::CP1252);
+
 /// FoldStringA: FoldStringW over the source converted from the ANSI code page, the result
 /// converted back (see the module notes); the bytes written, or needed for a size of 0.
 ///
@@ -225,12 +228,13 @@ fn fold_narrow(
     let bytes = src.units(true).bytes();
     // A byte is one character of the code page; a character expands to three at most.
     let mut wide = HeapVec::with_capacity(bytes.len())?;
-    codepage::to_wide(CodePage::Ansi, bytes, false, false, |unit| wide.push(unit))
+    codepage::to_wide(ANSI, bytes, false, false, |unit| wide.push(unit))
         .expect("a single-byte page decodes every byte");
     let mut mapped = HeapVec::with_capacity(3 * wide.len())?;
     fold(flags, wide.iter().copied(), |unit| mapped.push(unit));
     let mut out = Produced::new(dst);
-    codepage::to_narrow(CodePage::Ansi, &mapped, b'?', true, |byte| out.put(byte));
+    codepage::to_narrow(ANSI, &mapped, b'?', true, |byte| out.put(byte))
+        .expect("a single-byte page encodes every unit");
     Ok(out.finish()? as i32)
 }
 

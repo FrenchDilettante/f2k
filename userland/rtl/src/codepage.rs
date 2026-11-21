@@ -1,26 +1,34 @@
 //! Code pages: the conversions MultiByteToWideChar and WideCharToMultiByte perform, and the facts
 //! GetCPInfo and IsValidCodePage report.
 //!
-//! Three code pages convert: 1252 (the ANSI code page, [`super::cp1252`]), 437 (the OEM code page)
-//! and UTF-8. 850 is installed — GetCPInfo describes it, IsValidCodePage accepts it — but has no
-//! table here. CP_ACP and CP_THREAD_ACP name 1252, CP_OEMCP 437.
+//! Two surfaces. The kernel's ([`CodePage`]: [`decode_byte`], [`encode_unit`]) converts the ANSI
+//! page, 1252 ([`super::cp1252`]), and the OEM page, 437, with a small best fit of its own: a Latin
+//! letter with a diacritic becomes its base letter, and in the ANSI page a combining accent its
+//! spacing form. kernel32's ([`Page`]: [`to_wide`], [`to_narrow`]) converts 1252, 437, 850 and
+//! 28591 ([`sbcs`], with Windows' full best-fit tables), UTF-7 ([`utf7`]), UTF-8 and CP_SYMBOL;
+//! its tables stay out of the kernel's image, which never names them. CP_ACP and CP_THREAD_ACP name
+//! 1252, CP_OEMCP 437.
 //!
 //! The narrow-to-wide direction is a table look-up for the single-byte pages (the low half is
-//! ASCII; with MB_USEGLYPHCHARS the OEM page's control bytes are its glyphs instead — the ANSI page
-//! has no glyph table) and, for UTF-8, Windows 2000's decoder ([`utf8_decode`]), which refuses an
-//! overlong or out-of-range sequence and otherwise drops an ill-formed one silently rather than
-//! replacing it, unless MB_ERR_INVALID_CHARS asks it to refuse that too. The
-//! wide-to-narrow direction maps a unit the page holds exactly; otherwise it best-fits (a Latin
-//! letter with a diacritic becomes its base letter; in the ANSI page, a combining accent becomes
-//! its spacing form, as Windows' best-fit table for 1252 has it: FoldStringA's MAP_COMPOSITE in
-//! the locale fixture's capture), unless WC_NO_BEST_FIT_CHARS asks not to; otherwise it
-//! substitutes the default character and reports having done so.
+//! ASCII; with MB_USEGLYPHCHARS the OEM pages' control bytes are their glyphs instead — the ANSI
+//! page has no glyph table) and, for UTF-8, Windows 2000's decoder ([`utf8_decode`]), which refuses
+//! an overlong or out-of-range sequence and otherwise drops an ill-formed one silently rather than
+//! replacing it, unless MB_ERR_INVALID_CHARS asks it to refuse that too. The wide-to-narrow
+//! direction maps a unit the page holds exactly; otherwise it best-fits, unless
+//! WC_NO_BEST_FIT_CHARS asks not to; otherwise it substitutes the default character and reports
+//! having done so.
 
 /// The code pages, as their numbers.
 pub const CP_ACP: u32 = 0;
 pub const CP_OEMCP: u32 = 1;
 pub const CP_THREAD_ACP: u32 = 3;
+pub const CP_UTF7: u32 = 65000;
 pub const CP_UTF8: u32 = 65001;
+pub const CP_SYMBOL: u32 = 42;
+
+pub mod sbcs;
+mod tables;
+pub mod utf7;
 
 /// A code page this surface converts.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,16 +48,17 @@ pub fn resolve(cp: u32) -> Option<CodePage> {
     }
 }
 
-/// Whether a code page is installed (IsValidCodePage): the ones that convert, and 850.
+/// Whether a code page is installed (IsValidCodePage): the ones that convert, CP_SYMBOL aside.
 pub fn is_valid(cp: u32) -> bool {
-    matches!(cp, 437 | 850 | 1252 | CP_UTF8)
+    matches!(cp, 437 | 850 | 1252 | 28591 | CP_UTF7 | CP_UTF8)
 }
 
 /// The CPINFO image of an installed code page (CP_ACP and CP_OEMCP included): the maximum
 /// character size, the default character `?`, no lead-byte ranges.
 pub fn cp_info(cp: u32) -> Option<[u8; 18]> {
     let max = match cp {
-        CP_ACP | CP_OEMCP | CP_THREAD_ACP | 437 | 850 | 1252 => 1u32,
+        CP_ACP | CP_OEMCP | CP_THREAD_ACP | 437 | 850 | 1252 | 28591 => 1u32,
+        CP_UTF7 => 5,
         CP_UTF8 => 4,
         _ => return None,
     };
@@ -83,16 +92,6 @@ pub const CP437_GLYPHS: [u16; 32] = [
 /// Code page 437's glyph for 0x7F (MB_USEGLYPHCHARS).
 pub const CP437_GLYPH_7F: u16 = 0x2302;
 
-/// A single-byte page's byte as UTF-16, its glyph (where the page has one) for a control byte when
-/// `glyphs` asks.
-pub fn decode_glyph(page: CodePage, byte: u8, glyphs: bool) -> u16 {
-    match page {
-        CodePage::Oem if glyphs && byte < 0x20 => CP437_GLYPHS[byte as usize],
-        CodePage::Oem if glyphs && byte == 0x7F => CP437_GLYPH_7F,
-        _ => decode_byte(page, byte),
-    }
-}
-
 /// A single-byte page's byte as UTF-16.
 pub fn decode_byte(page: CodePage, byte: u8) -> u16 {
     match page {
@@ -123,7 +122,7 @@ fn exact_byte(page: CodePage, unit: u16) -> Option<u8> {
 
 /// The base letters of U+0100-U+017F (Latin Extended-A), for best fit; a space where none fits.
 const LATIN_EXTENDED_A: &[u8; 128] =
-    b"AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi  JjKk LlLlLl  LlNnNnNn   OoOoOo  RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs";
+    b"AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi  JjKk LlLlLl  LlNnNnNn   OoOoOo  RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZz ";
 
 /// The combining accents the ANSI page best-fits, and the spacing accents (or ASCII marks) they
 /// become.
@@ -140,9 +139,12 @@ const ANSI_ACCENTS: [(u16, u8); 9] = [
 ];
 
 /// The best-fit replacement of `unit` in `page`: a Latin letter with a diacritic becomes its base
-/// letter, and in the ANSI page a combining accent its spacing form.
+/// letter, and in the ANSI page a combining accent its spacing form. A subset of Windows' own
+/// tables ([`sbcs`]: the host tests hold it to them).
 fn best_fit(page: CodePage, unit: u16) -> Option<u8> {
     match unit {
+        // The ANSI page has the Icelandic eth, which the D with stroke looks like.
+        0x0110 if page == CodePage::Ansi => Some(0xD0),
         0x0100..=0x017F => {
             let base = LATIN_EXTENDED_A[unit as usize - 0x100];
             (base != b' ').then_some(base)
@@ -161,9 +163,10 @@ pub fn encode_unit(page: CodePage, unit: u16, fit: bool) -> Option<u8> {
     exact_byte(page, unit).or_else(|| best_fit(page, unit).filter(|_| fit))
 }
 
-/// A UTF-8 string Windows 2000 refuses to decode (ERROR_NO_UNICODE_TRANSLATION).
+/// A string the code page cannot convert (ERROR_NO_UNICODE_TRANSLATION): UTF-8 Windows 2000
+/// refuses to decode, a unit CP_SYMBOL has no byte for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct InvalidUtf8;
+pub struct NoTranslation;
 
 /// UTF-8 to UTF-16, Windows 2000's way (the locale fixture's utf8err block), into `out`: the units
 /// it decodes. A sequence that cannot be well formed refuses the whole string, whatever `strict`
@@ -178,7 +181,7 @@ pub fn utf8_decode(
     bytes: &[u8],
     strict: bool,
     mut out: impl FnMut(u16),
-) -> Result<(), InvalidUtf8> {
+) -> Result<(), NoTranslation> {
     let mut i = 0;
     while i < bytes.len() {
         let lead = bytes[i];
@@ -188,7 +191,7 @@ pub fn utf8_decode(
                 i += 1;
                 continue;
             }
-            0x80..=0xBF if strict => return Err(InvalidUtf8),
+            0x80..=0xBF if strict => return Err(NoTranslation),
             0x80..=0xBF => {
                 i += 1;
                 continue;
@@ -196,14 +199,14 @@ pub fn utf8_decode(
             0xC2..=0xDF => (1, (lead & 0x1F) as u32, 0x80),
             0xE0..=0xEF => (2, (lead & 0x0F) as u32, 0x800),
             0xF0..=0xF4 => (3, (lead & 0x07) as u32, 0x1_0000),
-            _ => return Err(InvalidUtf8),
+            _ => return Err(NoTranslation),
         };
         let present = (1..=trail)
             .take_while(|&k| bytes.get(i + k).is_some_and(|&b| b & 0xC0 == 0x80))
             .count();
         if present < trail {
             if strict && i + 1 + present == bytes.len() {
-                return Err(InvalidUtf8); // cut short by the string's end
+                return Err(NoTranslation); // cut short by the string's end
             }
             // The broken sequence is dropped; the byte that broke it decodes on its own.
             i += 1 + present;
@@ -211,7 +214,7 @@ pub fn utf8_decode(
         }
         let value = (1..=trail).fold(initial, |v, k| (v << 6) | (bytes[i + k] & 0x3F) as u32);
         if value < least || value > 0x10_FFFF {
-            return Err(InvalidUtf8);
+            return Err(NoTranslation);
         }
         i += 1 + trail;
         if value >= 0x1_0000 {
@@ -263,68 +266,117 @@ pub fn utf8_encode(units: &[u16], mut out: impl FnMut(u8)) {
     }
 }
 
+/// A code page MultiByteToWideChar and WideCharToMultiByte convert through (kernel32's; the
+/// kernel's conversions keep to [`CodePage`]).
+#[derive(Clone, Copy)]
+pub enum Page {
+    /// A single-byte page: 1252, 437, 850 or 28591.
+    Single(&'static sbcs::SingleByte),
+    /// UTF-7 (code page 65000).
+    Utf7,
+    /// UTF-8 (code page 65001).
+    Utf8,
+    /// CP_SYMBOL (42): a byte from 0x20 up is U+F000 plus itself, the Symbol fonts' private-use
+    /// range; a byte below is itself. Windows 2000 converts through it, but IsValidCodePage and
+    /// GetCPInfo do not know it.
+    Symbol,
+}
+
+/// The page a code page number names for conversion: CP_ACP and CP_THREAD_ACP the ANSI page,
+/// CP_OEMCP the OEM page; none for a page without a table here.
+pub fn page(cp: u32) -> Option<Page> {
+    Some(match cp {
+        CP_ACP | CP_THREAD_ACP | 1252 => Page::Single(&sbcs::CP1252),
+        CP_OEMCP | 437 => Page::Single(&sbcs::CP437),
+        850 => Page::Single(&sbcs::CP850),
+        28591 => Page::Single(&sbcs::CP28591),
+        CP_UTF7 => Page::Utf7,
+        CP_UTF8 => Page::Utf8,
+        CP_SYMBOL => Page::Symbol,
+        _ => return None,
+    })
+}
+
 /// Narrow to wide: the units `bytes` decode to in `page`, a single-byte page's control bytes as
 /// their glyphs when `glyphs` asks (MB_USEGLYPHCHARS); UTF-8 refuses what [`utf8_decode`] refuses
 /// (`strict` for MB_ERR_INVALID_CHARS).
 pub fn to_wide(
-    page: CodePage,
+    page: Page,
     bytes: &[u8],
     glyphs: bool,
     strict: bool,
     mut out: impl FnMut(u16),
-) -> Result<(), InvalidUtf8> {
+) -> Result<(), NoTranslation> {
     match page {
-        CodePage::Utf8 => utf8_decode(bytes, strict, out),
-        _ => {
-            bytes
-                .iter()
-                .for_each(|&b| out(decode_glyph(page, b, glyphs)));
-            Ok(())
-        }
+        Page::Utf8 => return utf8_decode(bytes, strict, out),
+        Page::Utf7 => utf7::decode(bytes, out),
+        Page::Symbol => bytes.iter().for_each(|&b| match b {
+            0x00..=0x1F => out(b as u16),
+            _ => out(0xF000 | b as u16),
+        }),
+        Page::Single(single) => bytes.iter().for_each(|&b| out(single.decode(b, glyphs))),
     }
+    Ok(())
 }
 
 /// Wide to narrow: the bytes `units` encode to in `page`, a single-byte page substituting
 /// `default` where it holds nothing that fits (nothing but an exact match when `fit` is false:
-/// WC_NO_BEST_FIT_CHARS). Returns whether the default was used.
+/// WC_NO_BEST_FIT_CHARS). Returns whether the default was used; CP_SYMBOL refuses a unit outside
+/// its range.
 pub fn to_narrow(
-    page: CodePage,
+    page: Page,
     units: &[u16],
     default: u8,
     fit: bool,
     mut out: impl FnMut(u8),
-) -> bool {
+) -> Result<bool, NoTranslation> {
+    let mut used = false;
     match page {
-        CodePage::Utf8 => {
-            utf8_encode(units, out);
-            false
-        }
-        _ => {
-            let mut used = false;
+        Page::Utf8 => utf8_encode(units, out),
+        Page::Utf7 => utf7::encode(units, out),
+        Page::Symbol => {
             for &unit in units {
-                out(encode_unit(page, unit, fit).unwrap_or_else(|| {
+                match unit {
+                    0x00..=0x1F => out(unit as u8),
+                    0xF020..=0xF0FF => out(unit as u8),
+                    _ => return Err(NoTranslation),
+                }
+            }
+        }
+        Page::Single(single) => {
+            for &unit in units {
+                out(single.encode(unit, fit).unwrap_or_else(|| {
                     used = true;
                     default
                 }));
             }
-            used
         }
     }
+    Ok(used)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The conversion page of the kernel's page.
+    fn page_of(page: CodePage) -> Page {
+        match page {
+            CodePage::Ansi => Page::Single(&sbcs::CP1252),
+            CodePage::Oem => Page::Single(&sbcs::CP437),
+            CodePage::Utf8 => Page::Utf8,
+        }
+    }
+
     fn wide(page: CodePage, bytes: &[u8]) -> Vec<u16> {
         let mut out = Vec::new();
-        to_wide(page, bytes, false, false, |u| out.push(u)).unwrap();
+        to_wide(page_of(page), bytes, false, false, |u| out.push(u)).unwrap();
         out
     }
 
     fn narrow(page: CodePage, units: &[u16], default: u8) -> (Vec<u8>, bool) {
         let mut out = Vec::new();
-        let used = to_narrow(page, units, default, true, |b| out.push(b));
+        let used = to_narrow(page_of(page), units, default, true, |b| out.push(b)).unwrap();
         (out, used)
     }
 
@@ -365,9 +417,27 @@ mod tests {
         assert_eq!(decode_byte(CodePage::Oem, 0x80), 0x00C7);
         assert_eq!(decode_byte(CodePage::Oem, 0xFF), 0x00A0);
         assert_eq!(resolve(CP_OEMCP), Some(CodePage::Oem));
-        assert!(is_valid(850) && !is_valid(12345));
+        assert!(is_valid(850) && is_valid(28591) && is_valid(CP_UTF7) && !is_valid(12345));
+        assert_eq!(cp_info(CP_UTF7).unwrap()[..5], [5, 0, 0, 0, b'?']);
+        assert_eq!(cp_info(28591).unwrap()[..5], [1, 0, 0, 0, b'?']);
+        assert!(!is_valid(CP_SYMBOL) && cp_info(CP_SYMBOL).is_none());
+        assert!(page(CP_SYMBOL).is_some() && page(12345).is_none());
         assert_eq!(cp_info(CP_UTF8).unwrap()[..5], [4, 0, 0, 0, b'?']);
         assert_eq!(cp_info(12345), None);
+    }
+
+    /// CP_SYMBOL: a byte from 0x20 up is U+F000 plus itself and back, a control byte itself; a
+    /// unit outside that range has no byte (the locale fixture's cpconv block).
+    #[test]
+    fn the_symbol_page() {
+        let mut wide = Vec::new();
+        to_wide(Page::Symbol, b"A \xFF\0", false, false, |u| wide.push(u)).unwrap();
+        assert_eq!(wide, [0xF041, 0xF020, 0xF0FF, 0]);
+        let mut narrow = Vec::new();
+        let used = to_narrow(Page::Symbol, &wide, b'?', true, |b| narrow.push(b));
+        assert_eq!((narrow, used), (b"A \xFF\0".to_vec(), Ok(false)));
+        let refused = to_narrow(Page::Symbol, &[0x41, 0x03B1], b'?', true, |_| ());
+        assert_eq!(refused, Err(NoTranslation));
     }
 
     /// UTF-8: four-byte sequences make surrogate pairs and back; stray continuations vanish.
@@ -385,24 +455,24 @@ mod tests {
     /// them, leniently and under MB_ERR_INVALID_CHARS: the decoded units, or the refusal.
     #[test]
     fn utf8_ill_formed_sequences() {
-        fn decode(bytes: &[u8], strict: bool) -> Result<Vec<u16>, InvalidUtf8> {
+        fn decode(bytes: &[u8], strict: bool) -> Result<Vec<u16>, NoTranslation> {
             let mut out = Vec::new();
             utf8_decode(bytes, strict, |u| out.push(u)).map(|()| out)
         }
-        let both: &[(&[u8], Result<&[u16], InvalidUtf8>)] = &[
+        let both: &[(&[u8], Result<&[u16], NoTranslation>)] = &[
             (b"a\xC3\xA9", Ok(&[0x61, 0xE9])),
             (b"\xF0\x90\x80\x80", Ok(&[0xD800, 0xDC00])),
             (b"\xF4\x8F\xBF\xBF", Ok(&[0xDBFF, 0xDFFF])),
-            (b"\xF4\x90\x80\x80", Err(InvalidUtf8)),
-            (b"\xF5\x80\x80\x80", Err(InvalidUtf8)),
-            (b"\xF7\xBF\xBF\xBF", Err(InvalidUtf8)),
-            (b"\xF8\x88\x80\x80\x80", Err(InvalidUtf8)),
-            (b"\xFC\x84\x80\x80\x80\x80", Err(InvalidUtf8)),
-            (b"\xFE\xFF", Err(InvalidUtf8)),
-            (b"\xC0\xAF", Err(InvalidUtf8)),
-            (b"\xC1\xBF", Err(InvalidUtf8)),
-            (b"\xE0\x80\xAF", Err(InvalidUtf8)),
-            (b"\xF0\x80\x80\xAF", Err(InvalidUtf8)),
+            (b"\xF4\x90\x80\x80", Err(NoTranslation)),
+            (b"\xF5\x80\x80\x80", Err(NoTranslation)),
+            (b"\xF7\xBF\xBF\xBF", Err(NoTranslation)),
+            (b"\xF8\x88\x80\x80\x80", Err(NoTranslation)),
+            (b"\xFC\x84\x80\x80\x80\x80", Err(NoTranslation)),
+            (b"\xFE\xFF", Err(NoTranslation)),
+            (b"\xC0\xAF", Err(NoTranslation)),
+            (b"\xC1\xBF", Err(NoTranslation)),
+            (b"\xE0\x80\xAF", Err(NoTranslation)),
+            (b"\xF0\x80\x80\xAF", Err(NoTranslation)),
             (b"\xED\xA0\x80", Ok(&[0xD800])),
             (b"\xEF\xBF\xBF", Ok(&[0xFFFF])),
             (b"\xE2\x82x", Ok(&[0x78])),
@@ -419,7 +489,7 @@ mod tests {
         // A stray continuation, and a sequence the end cuts short: dropped, or refused when strict.
         for bytes in [&b"\x80x"[..], b"x\xE2\x82"] {
             assert_eq!(decode(bytes, false), Ok(vec![0x78]));
-            assert_eq!(decode(bytes, true), Err(InvalidUtf8));
+            assert_eq!(decode(bytes, true), Err(NoTranslation));
         }
     }
 
@@ -427,11 +497,11 @@ mod tests {
     /// WC_NO_BEST_FIT_CHARS while exact matches stay.
     #[test]
     fn the_oem_glyphs() {
-        assert_eq!(decode_glyph(CodePage::Oem, 0x01, true), 0x263A);
-        assert_eq!(decode_glyph(CodePage::Oem, 0x7F, true), 0x2302);
-        assert_eq!(decode_glyph(CodePage::Oem, 0x41, true), 0x41);
+        assert_eq!(sbcs::CP437.decode(0x01, true), 0x263A);
+        assert_eq!(sbcs::CP437.decode(0x7F, true), 0x2302);
+        assert_eq!(sbcs::CP437.decode(0x41, true), 0x41);
         assert_eq!(
-            decode_glyph(CodePage::Ansi, 0x01, true),
+            sbcs::CP1252.decode(0x01, true),
             0x01,
             "the ANSI page has no glyphs"
         );

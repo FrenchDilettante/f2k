@@ -9,7 +9,7 @@
 //! The caller's strings are read and written where they are: a pointer the caller cannot read or
 //! write faults in the caller's thread, as kernel32's own code does on Windows 2000.
 
-use rtl::codepage::{self, CodePage};
+use rtl::codepage::{self, Page};
 use rtl::cp1252;
 
 use crate::base::set_last_error;
@@ -186,11 +186,11 @@ impl<'a, U: Copy> Produced<'a, U> {
     }
 }
 
-/// MultiByteToWideChar over 1252, 437 and UTF-8 (see [`rtl::codepage`]): a size query (no
-/// destination size) or the conversion, the OEM page's control bytes as glyphs for
+/// MultiByteToWideChar over the code pages [`rtl::codepage::page`] names: a size query (no
+/// destination size) or the conversion, the OEM pages' control bytes as glyphs for
 /// MB_USEGLYPHCHARS. ERROR_INVALID_FLAGS for a flag the page does not take (UTF-8 takes
-/// MB_ERR_INVALID_CHARS alone), ERROR_INVALID_PARAMETER for an unknown page or a bad count,
-/// ERROR_NO_UNICODE_TRANSLATION for UTF-8 Windows 2000 refuses to decode,
+/// MB_ERR_INVALID_CHARS alone, UTF-7 and CP_SYMBOL none), ERROR_INVALID_PARAMETER for an unknown
+/// page or a bad count, ERROR_NO_UNICODE_TRANSLATION for UTF-8 Windows 2000 refuses to decode,
 /// ERROR_INSUFFICIENT_BUFFER for a destination too small.
 ///
 /// # Safety
@@ -212,6 +212,13 @@ pub unsafe extern "system" fn multi_byte_to_wide_char(
     answer(to_wide(cp, flags, src, out, capacity), 0)
 }
 
+/// ERROR_NO_UNICODE_TRANSLATION: a string the code page cannot convert.
+const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
+
+/// MultiByteToWideChar's flags.
+const MB_USEGLYPHCHARS: u32 = 0x4;
+const MB_ERR_INVALID_CHARS: u32 = 0x8;
+
 /// MultiByteToWideChar's work.
 fn to_wide(
     cp: u32,
@@ -221,13 +228,18 @@ fn to_wide(
     capacity: i32,
 ) -> Result<i32, Failure> {
     const VALID_FLAGS: u32 = 0xF; // precomposed, composite, glyph chars, invalid chars
-    const MB_USEGLYPHCHARS: u32 = 0x4;
-    const MB_ERR_INVALID_CHARS: u32 = 0x8;
-    if flags & !VALID_FLAGS != 0 || (cp == codepage::CP_UTF8 && flags & !MB_ERR_INVALID_CHARS != 0)
-    {
+    if flags & !VALID_FLAGS != 0 {
         return refused(ERROR_INVALID_FLAGS);
     }
-    let page = codepage::resolve(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
+    let page = codepage::page(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
+    let taken = match page {
+        Page::Single(_) => VALID_FLAGS,
+        Page::Utf8 => MB_ERR_INVALID_CHARS,
+        Page::Utf7 | Page::Symbol => 0,
+    };
+    if flags & !taken != 0 {
+        return refused(ERROR_INVALID_FLAGS);
+    }
     let bytes = convert_source(&src)?;
     check_destination(&dst, capacity)?;
     let mut out = Produced::new(dst);
@@ -238,13 +250,12 @@ fn to_wide(
     Ok(out.finish()? as i32)
 }
 
-/// ERROR_NO_UNICODE_TRANSLATION: a string the code page cannot convert.
-const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
-
-/// WideCharToMultiByte over 1252, 437 and UTF-8: a single-byte page best-fits what it does not hold
-/// (unless WC_NO_BEST_FIT_CHARS) and substitutes the default character (the caller's, else `?`)
-/// for the rest, reporting it when asked; UTF-8 takes no flags, and neither a default nor the
-/// report (ERROR_INVALID_PARAMETER). Errors as MultiByteToWideChar's.
+/// WideCharToMultiByte over the code pages [`rtl::codepage::page`] names: a single-byte page
+/// best-fits what it does not hold (unless WC_NO_BEST_FIT_CHARS) and substitutes the default
+/// character (the caller's, else `?`) for the rest, reporting it when asked; UTF-7, UTF-8 and
+/// CP_SYMBOL take no flags (ERROR_INVALID_FLAGS), and neither a default nor the report
+/// (ERROR_INVALID_PARAMETER), and CP_SYMBOL refuses a unit it has no byte for
+/// (ERROR_NO_UNICODE_TRANSLATION). Errors otherwise as MultiByteToWideChar's.
 ///
 /// # Safety
 ///
@@ -303,11 +314,12 @@ fn to_narrow(
         used,
         capacity,
     } = narrow;
-    let page = codepage::resolve(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
-    if flags & !VALID_FLAGS != 0 || (page == CodePage::Utf8 && flags != 0) {
+    let page = codepage::page(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
+    let single = matches!(page, Page::Single(_));
+    if flags & !VALID_FLAGS != 0 || (!single && flags != 0) {
         return refused(ERROR_INVALID_FLAGS);
     }
-    if page == CodePage::Utf8 && (default.is_some() || used.is_some()) {
+    if !single && (default.is_some() || used.is_some()) {
         return refused(ERROR_INVALID_PARAMETER);
     }
     let units = convert_source(&src)?;
@@ -316,7 +328,8 @@ fn to_narrow(
     let units = wide_units_of(units).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
     let mut out = Produced::new(dst);
     let fit = flags & WC_NO_BEST_FIT_CHARS == 0;
-    let replaced = codepage::to_narrow(page, &units, default, fit, |byte| out.put(byte));
+    let replaced = codepage::to_narrow(page, &units, default, fit, |byte| out.put(byte))
+        .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?;
     let produced = out.finish()?;
     if let Some(mut used) = used {
         used.set(u32::from(replaced));
