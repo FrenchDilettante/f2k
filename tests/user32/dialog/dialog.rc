@@ -16,6 +16,12 @@
  *   0x50030003  WS_CHILD | WS_VISIBLE | WS_GROUP | WS_TABSTOP |
  *               BS_AUTOCHECKBOX
  *   0x50010002  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_CHECKBOX
+ *   0x50030001  WS_CHILD | WS_VISIBLE | WS_GROUP | WS_TABSTOP |
+ *               BS_DEFPUSHBUTTON
+ *   0x50030000  WS_CHILD | WS_VISIBLE | WS_GROUP | WS_TABSTOP |
+ *               BS_PUSHBUTTON
+ *   0x50000400  WS_CHILD | WS_VISIBLE | DS_CONTROL (a child dialog)
+ *   0x80C80090  the dialogs' style with DS_NOFAILCREATE
  *   0x00000001  WS_EX_DLGMODALFRAME; 0x00000200 WS_EX_CLIENTEDGE
  *
  * The coordinates are dialog units. dialog.c's tables repeat every
@@ -69,4 +75,49 @@ STYLE 0x80C80080
 CAPTION "F2K default place"
 BEGIN
     CONTROL "OK", 1, "Button", 0x50010001, 25, 30, 50, 14
+END
+
+/* nested: the outer dialog, whose own controls are OK (1) and Gamma (3);
+ * the section creates the inner one (105) inside it, between them in Z
+ * order. */
+104 DIALOG 0, 0, 160, 110
+STYLE 0x80C80080
+CAPTION "F2K outer"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "&OK", 1, "Button", 0x50030001, 8, 8, 50, 14
+    CONTROL "&Gamma", 3, "Button", 0x50030000, 8, 88, 50, 14
+END
+
+/* The inner dialog: WS_CHILD | WS_VISIBLE | DS_CONTROL (0x50000400),
+ * which makes it WS_EX_CONTROLPARENT; Alpha (201) starts its group,
+ * Beta (202) is in it. */
+105 DIALOG 8, 28, 120, 50
+STYLE 0x50000400
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "&Alpha", 201, "Button", 0x50030000, 4, 4, 50, 14
+    CONTROL "&Beta", 202, "Button", 0x50010000, 4, 24, 50, 14
+END
+
+/* DS_NOFAILCREATE (0x10) with a control of a class nobody registered
+ * (301) between two buttons; 107 is the same without the flag. */
+106 DIALOG 0, 0, 120, 60
+STYLE 0x80C80090
+CAPTION "F2K nofail"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "OK", 1, "Button", 0x50010001, 8, 8, 50, 14
+    CONTROL "missing", 301, "F2KNoSuchClass", 0x50010000, 8, 26, 50, 10
+    CONTROL "After", 302, "Button", 0x50010000, 8, 40, 50, 14
+END
+
+107 DIALOG 0, 0, 120, 60
+STYLE 0x80C80080
+CAPTION "F2K fail"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CONTROL "OK", 1, "Button", 0x50010001, 8, 8, 50, 14
+    CONTROL "missing", 301, "F2KNoSuchClass", 0x50010000, 8, 26, 50, 10
+    CONTROL "After", 302, "Button", 0x50010000, 8, 40, 50, 14
 END

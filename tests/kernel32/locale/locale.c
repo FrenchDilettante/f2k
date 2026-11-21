@@ -70,6 +70,36 @@
  *              supported, groups 0, 18 and 0xFFFF, flags 0, 3 and 4.
  *              Which groups beyond Western Europe are installed is the
  *              machine's choice, so only their support is asked.
+ *   cpconv     code pages 850, 28591, UTF-7 (65000) and CP_SYMBOL (42):
+ *              IsValidCodePage, GetCPInfo, and MultiByteToWideChar and
+ *              WideCharToMultiByte over a few samples each (UTF-7's
+ *              runs, its "+-", a run cut short; the symbol page's private
+ *              use area), the flags those pages refuse, the units and
+ *              bytes in hex
+ *   bestfit    WideCharToMultiByte into 1252 and 437 of characters they
+ *              hold and lack, with and without WC_NO_BEST_FIT_CHARS, and
+ *              lpUsedDefaultChar; lpDefaultChar; WC_COMPOSITECHECK with
+ *              WC_DISCARDNS, WC_SEPCHARS and WC_DEFAULTCHAR; MB_COMPOSITE
+ *              and MB_PRECOMPOSED, and both together
+ *   utf8err    MultiByteToWideChar(CP_UTF8) with flags 0 and with
+ *              MB_ERR_INVALID_CHARS over 4-byte sequences, F5 to FF lead
+ *              bytes, overlong forms, a surrogate, lone and cut
+ *              sequences; WideCharToMultiByte of surrogate pairs and
+ *              lone surrogates
+ *   lcmap      LCMapStringW/A: LCMAP_SORTKEY's bytes (they are the
+ *              locale's, the same on every machine) with NORM_IGNORECASE,
+ *              NORM_IGNORENONSPACE, NORM_IGNORESYMBOLS and SORT_STRINGSORT,
+ *              a short buffer; LCMAP_BYTEREV, LCMAP_FULLWIDTH and
+ *              LCMAP_HALFWIDTH; the NORM_ flags without a sort key and
+ *              the combinations refused; a source that is the
+ *              destination; an LCID no machine has, in both forms
+ *   locales    IsValidLocale (installed and supported) for a few
+ *              locales, printed rather than assumed; SetThreadLocale
+ *              to 0x040C and back; GetLocaleInfoW/A of 0x040C (French)
+ *              over a set of LCTYPEs, of 0x0407 (German) over a few,
+ *              LOCALE_IDEFAULTEBCDICCODEPAGE and LOCALE_FONTSIGNATURE
+ *   nullsrc    a NULL source to LCMapStringW/A, GetStringTypeW/A and
+ *              GetStringTypeExW/A, each inside __try
  *
  * IsValidLanguageGroup is new in Windows 2000 and MSVC 6's headers lack
  * it: the section reaches it through GetProcAddress on kernel32 (the
@@ -93,6 +123,27 @@
 #endif
 #ifndef LGRPID_SUPPORTED
 #define LGRPID_SUPPORTED 0x00000002
+#endif
+#ifndef CP_SYMBOL
+#define CP_SYMBOL 42
+#endif
+#ifndef WC_NO_BEST_FIT_CHARS
+#define WC_NO_BEST_FIT_CHARS 0x00000400
+#endif
+#ifndef LCID_INSTALLED
+#define LCID_INSTALLED 0x00000001
+#endif
+#ifndef LCID_SUPPORTED
+#define LCID_SUPPORTED 0x00000002
+#endif
+#ifndef LOCALE_SISO639LANGNAME
+#define LOCALE_SISO639LANGNAME 0x00000059
+#endif
+#ifndef LOCALE_FONTSIGNATURE
+#define LOCALE_FONTSIGNATURE 0x00000058
+#endif
+#ifndef LOCALE_IDEFAULTEBCDICCODEPAGE
+#define LOCALE_IDEFAULTEBCDICCODEPAGE 0x00001012
 #endif
 
 typedef BOOL (WINAPI *is_valid_language_group_fn)(DWORD group, DWORD flags);
@@ -953,6 +1004,581 @@ static void sec_langgroup(void)
     }
 }
 
+/* --- hex printing for the conversions ------------------------------ */
+
+/* `n` WCHARs as hex units ("(none)" for none, "-" for a failed call). */
+static const char *hexw(const WCHAR *w, int n)
+{
+    static char bufs[4][512];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int i, k = 0;
+
+    if (n <= 0) {
+        return n == 0 ? "(none)" : "-";
+    }
+    for (i = 0; i < n && k < (int)sizeof bufs[0] - 8; i++) {
+        k += sprintf(b + k, i ? " %04X" : "%04X", (unsigned)w[i]);
+    }
+    return b;
+}
+
+/* `n` bytes as hex. */
+static const char *hexb(const BYTE *p, int n)
+{
+    static char bufs[4][512];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int i, k = 0;
+
+    if (n <= 0) {
+        return n == 0 ? "(none)" : "-";
+    }
+    for (i = 0; i < n && k < (int)sizeof bufs[0] - 5; i++) {
+        k += sprintf(b + k, i ? " %02X" : "%02X", (unsigned)p[i]);
+    }
+    return b;
+}
+
+/* --- cpconv -------------------------------------------------------- */
+
+/* MultiByteToWideChar(cp, flags) of `n` bytes into 32 units: the return,
+ * the error and the units. */
+static void mb_line(UINT cp, const char *cpname, DWORD flags, const char *fname, const char *src, int n,
+                    const char *label)
+{
+    WCHAR w[32];
+    int r;
+
+    fill_w(w, 32);
+    arm();
+    r = MultiByteToWideChar(cp, flags, src, n, w, 32);
+    line("MultiByteToWideChar(%s, %s, %s): ret=%d err=%s %s", cpname, fname, label, r, le(), hexw(w, r));
+}
+
+/* WideCharToMultiByte(cp, flags) of `n` units into 32 bytes, with
+ * lpUsedDefaultChar unless the code page refuses it (`ask_used`). */
+static void wc_line(UINT cp, const char *cpname, DWORD flags, const char *fname, const WCHAR *src, int n,
+                    int ask_used, const char *label)
+{
+    BYTE out[32];
+    BOOL used = 7;
+    int r;
+
+    memset(out, 0xCC, sizeof out);
+    arm();
+    r = WideCharToMultiByte(cp, flags, src, n, (char *)out, sizeof out, NULL, ask_used ? &used : NULL);
+    if (ask_used) {
+        line("WideCharToMultiByte(%s, %s, %s): ret=%d err=%s %s used=%d", cpname, fname, label, r, le(),
+             hexb(out, r), used);
+    } else {
+        line("WideCharToMultiByte(%s, %s, %s): ret=%d err=%s %s", cpname, fname, label, r, le(), hexb(out, r));
+    }
+}
+
+static void cp_facts(UINT cp, const char *cpname)
+{
+    CPINFO ci;
+    BOOL r;
+
+    arm();
+    r = IsValidCodePage(cp);
+    line("IsValidCodePage(%s): ret=%d err=%s", cpname, r, le());
+    memset(&ci, 0xCC, sizeof ci);
+    arm();
+    r = GetCPInfo(cp, &ci);
+    line("GetCPInfo(%s): ret=%d err=%s MaxCharSize %u DefaultChar %02X %02X LeadByte %02X %02X", cpname, r, le(),
+         ci.MaxCharSize, ci.DefaultChar[0], ci.DefaultChar[1], ci.LeadByte[0], ci.LeadByte[1]);
+}
+
+static void sec_cpconv(void)
+{
+    static const char oem[] = "A\x80\x82\x9B\xB0\xE1\xFF";
+    static const char latin1[] = "A\x80\x9F\xA0\xE9\xFF";
+    static const WCHAR to_oem[] = { 0x00E9, 0x00C7, 0x2591, 0x00FF, 0x20AC, 0x0100, 0 };
+    static const WCHAR to_latin1[] = { 0x00E9, 0x0080, 0x009F, 0x00FF, 0x0100, 0x20AC, 0 };
+    static const WCHAR smile[] = { 'H', 'i', ' ', 0x263A, '!', 0 };
+    static const WCHAR direct[] = { 'a', '+', 'b', '~', '\\', '-', 0 };
+    static const WCHAR nihongo[] = { 0x65E5, 0x672C, 0x8A9E, 0 };
+    static const WCHAR symbol_pua[] = { 0xF041, 0xF020, 0xF0FF, 0 };
+    static const WCHAR symbol_plain[] = { 'A', 0x03B1, 0 };
+
+    cp_facts(850, "850");
+    cp_facts(28591, "28591");
+    cp_facts(CP_UTF7, "CP_UTF7");
+    cp_facts(CP_SYMBOL, "CP_SYMBOL");
+
+    mb_line(850, "850", 0, "0", oem, 7, "41 80 82 9B B0 E1 FF");
+    wc_line(850, "850", 0, "0", to_oem, 6, 1, "U+00E9 U+00C7 U+2591 U+00FF U+20AC U+0100");
+    wc_line(850, "850", WC_NO_BEST_FIT_CHARS, "WC_NO_BEST_FIT_CHARS", to_oem, 6, 1,
+            "U+00E9 U+00C7 U+2591 U+00FF U+20AC U+0100");
+    mb_line(28591, "28591", 0, "0", latin1, 6, "41 80 9F A0 E9 FF");
+    wc_line(28591, "28591", 0, "0", to_latin1, 6, 1, "U+00E9 U+0080 U+009F U+00FF U+0100 U+20AC");
+    wc_line(28591, "28591", WC_NO_BEST_FIT_CHARS, "WC_NO_BEST_FIT_CHARS", to_latin1, 6, 1,
+            "U+00E9 U+0080 U+009F U+00FF U+0100 U+20AC");
+
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "+AGE-", -1, "\"+AGE-\"");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "Hi +Jjo-!", -1, "\"Hi +Jjo-!\"");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "+ZeVnLIqe-", -1, "\"+ZeVnLIqe-\"");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "A+ImIDkQ.", -1, "\"A+ImIDkQ.\", the run ended by a non-base64 byte");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "1+-2", -1, "\"1+-2\"");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "+AGE", -1, "\"+AGE\", the run ended by the string's end");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "+!x", -1, "\"+!x\"");
+    mb_line(CP_UTF7, "CP_UTF7", 0, "0", "\xE9", 1, "E9, an 8-bit byte");
+    mb_line(CP_UTF7, "CP_UTF7", MB_ERR_INVALID_CHARS, "MB_ERR_INVALID_CHARS", "+AGE-", -1, "\"+AGE-\"");
+    mb_line(CP_UTF7, "CP_UTF7", MB_PRECOMPOSED, "MB_PRECOMPOSED", "+AGE-", -1, "\"+AGE-\"");
+    wc_line(CP_UTF7, "CP_UTF7", 0, "0", smile, -1, 0, "\"Hi U+263A!\"");
+    wc_line(CP_UTF7, "CP_UTF7", 0, "0", direct, -1, 0, "\"a+b~\\-\"");
+    wc_line(CP_UTF7, "CP_UTF7", 0, "0", nihongo, 3, 0, "U+65E5 U+672C U+8A9E");
+    wc_line(CP_UTF7, "CP_UTF7", 0, "0", smile, -1, 1, "\"Hi U+263A!\", lpUsedDefaultChar given");
+    wc_line(CP_UTF7, "CP_UTF7", WC_NO_BEST_FIT_CHARS, "WC_NO_BEST_FIT_CHARS", smile, -1, 0, "\"Hi U+263A!\"");
+
+    mb_line(CP_SYMBOL, "CP_SYMBOL", 0, "0", "A \xFF", 3, "41 20 FF");
+    mb_line(CP_SYMBOL, "CP_SYMBOL", 0, "0", "A", -1, "\"A\", its terminator counted");
+    mb_line(CP_SYMBOL, "CP_SYMBOL", MB_PRECOMPOSED, "MB_PRECOMPOSED", "A", 1, "41");
+    wc_line(CP_SYMBOL, "CP_SYMBOL", 0, "0", symbol_pua, 3, 0, "U+F041 U+F020 U+F0FF");
+    wc_line(CP_SYMBOL, "CP_SYMBOL", 0, "0", symbol_plain, 2, 0, "U+0041 U+03B1");
+    wc_line(CP_SYMBOL, "CP_SYMBOL", 0, "0", symbol_pua, 3, 1, "U+F041 U+F020 U+F0FF, lpUsedDefaultChar given");
+}
+
+/* --- bestfit ------------------------------------------------------- */
+
+/* One character into a code page, with and without WC_NO_BEST_FIT_CHARS:
+ * the bytes and lpUsedDefaultChar each time. */
+static void fit_line(UINT cp, const char *cpname, WCHAR c, const char *what)
+{
+    BYTE out[8], out2[8];
+    BOOL used = 7, used2 = 7;
+    int r, r2;
+    const char *e, *e2;
+
+    memset(out, 0xCC, sizeof out);
+    memset(out2, 0xCC, sizeof out2);
+    arm();
+    r = WideCharToMultiByte(cp, 0, &c, 1, (char *)out, sizeof out, NULL, &used);
+    e = le();
+    arm();
+    r2 = WideCharToMultiByte(cp, WC_NO_BEST_FIT_CHARS, &c, 1, (char *)out2, sizeof out2, NULL, &used2);
+    e2 = le();
+    line("%s U+%04X (%s): 0: ret=%d err=%s %s used=%d; WC_NO_BEST_FIT_CHARS: ret=%d err=%s %s used=%d", cpname,
+         (unsigned)c, what, r, e, hexb(out, r), used, r2, e2, hexb(out2, r2), used2);
+}
+
+static void sec_bestfit(void)
+{
+    static const struct {
+        WCHAR c;
+        const char *what;
+    } to_1252[] = {
+        { 0x00BD, "one half, in 1252" },
+        { 0x2122, "trade mark, in 1252" },
+        { 0x2013, "en dash, in 1252" },
+        { 0x0100, "A with macron" },
+        { 0x0101, "a with macron" },
+        { 0x0131, "dotless i" },
+        { 0x0141, "L with stroke" },
+        { 0x0391, "Greek capital alpha" },
+        { 0x03B1, "Greek small alpha" },
+        { 0x2002, "en space" },
+        { 0x2215, "division slash" },
+        { 0x221E, "infinity" },
+        { 0x2260, "not equal" },
+        { 0xFF21, "fullwidth A" },
+        { 0x4E2D, "a CJK ideograph" },
+        { 0, NULL }
+    }, to_437[] = {
+        { 0x00C0, "A with grave" },
+        { 0x00E9, "e acute, in 437" },
+        { 0x00A9, "copyright" },
+        { 0x0100, "A with macron" },
+        { 0x2122, "trade mark" },
+        { 0, NULL }
+    };
+    static const WCHAR decomposed[] = { 'e', 0x0301, 'x', 0 };
+    static const WCHAR uncomposable[] = { 'q', 0x0301, 0 };
+    WCHAR w[8];
+    BYTE out[8];
+    BOOL used;
+    int i, r;
+
+    for (i = 0; to_1252[i].what != NULL; i++) {
+        fit_line(1252, "1252", to_1252[i].c, to_1252[i].what);
+    }
+    for (i = 0; to_437[i].what != NULL; i++) {
+        fit_line(437, "437", to_437[i].c, to_437[i].what);
+    }
+    used = 7;
+    memset(out, 0xCC, sizeof out);
+    arm();
+    r = WideCharToMultiByte(1252, 0, &to_1252[3].c, 1, (char *)out, sizeof out, "#", &used);
+    line("1252 U+0100 with lpDefaultChar \"#\": ret=%d err=%s %s used=%d", r, le(), hexb(out, r), used);
+    used = 7;
+    memset(out, 0xCC, sizeof out);
+    arm();
+    r = WideCharToMultiByte(1252, WC_NO_BEST_FIT_CHARS, &to_1252[3].c, 1, (char *)out, sizeof out, "#", &used);
+    line("1252 U+0100 with lpDefaultChar \"#\", WC_NO_BEST_FIT_CHARS: ret=%d err=%s %s used=%d", r, le(), hexb(out, r),
+         used);
+
+    wc_line(1252, "1252", WC_COMPOSITECHECK, "WC_COMPOSITECHECK", decomposed, 3, 1, "e U+0301 x");
+    wc_line(1252, "1252", 0, "0", decomposed, 3, 1, "e U+0301 x");
+    wc_line(1252, "1252", WC_COMPOSITECHECK | WC_DISCARDNS, "WC_COMPOSITECHECK|WC_DISCARDNS", uncomposable, 2, 1,
+            "q U+0301");
+    wc_line(1252, "1252", WC_COMPOSITECHECK | WC_SEPCHARS, "WC_COMPOSITECHECK|WC_SEPCHARS", uncomposable, 2, 1,
+            "q U+0301");
+    wc_line(1252, "1252", WC_COMPOSITECHECK | WC_DEFAULTCHAR, "WC_COMPOSITECHECK|WC_DEFAULTCHAR", uncomposable, 2, 1,
+            "q U+0301");
+    wc_line(1252, "1252", WC_DISCARDNS, "WC_DISCARDNS", uncomposable, 2, 1, "q U+0301, without WC_COMPOSITECHECK");
+    mb_line(1252, "1252", MB_COMPOSITE, "MB_COMPOSITE", "\xE9\xC5x", 3, "E9 C5 78");
+    mb_line(1252, "1252", MB_PRECOMPOSED, "MB_PRECOMPOSED", "\xE9\xC5x", 3, "E9 C5 78");
+    mb_line(1252, "1252", MB_PRECOMPOSED | MB_COMPOSITE, "MB_PRECOMPOSED|MB_COMPOSITE", "\xE9", 1, "E9");
+    fill_w(w, 8);
+    arm();
+    r = MultiByteToWideChar(1252, MB_COMPOSITE, "\xE9", 1, w, 1);
+    line("MultiByteToWideChar(1252, MB_COMPOSITE, E9) into 1 unit: ret=%d err=%s %s", r, le(), hexw(w, 2));
+}
+
+/* --- utf8err ------------------------------------------------------- */
+
+static void sec_utf8err(void)
+{
+    static const struct {
+        const char *bytes;
+        int n;
+        const char *what;
+    } cases[] = {
+        { "a\xC3\xA9", 3, "61 C3 A9, valid" },
+        { "\xF0\x90\x80\x80", 4, "F0 90 80 80, U+10000" },
+        { "\xF4\x8F\xBF\xBF", 4, "F4 8F BF BF, U+10FFFF" },
+        { "\xF4\x90\x80\x80", 4, "F4 90 80 80, past U+10FFFF" },
+        { "\xF5\x80\x80\x80", 4, "F5 80 80 80" },
+        { "\xF7\xBF\xBF\xBF", 4, "F7 BF BF BF" },
+        { "\xF8\x88\x80\x80\x80", 5, "F8 88 80 80 80, five bytes" },
+        { "\xFC\x84\x80\x80\x80\x80", 6, "FC 84 80 80 80 80, six bytes" },
+        { "\xFE\xFF", 2, "FE FF" },
+        { "\xC0\xAF", 2, "C0 AF, an overlong /" },
+        { "\xC1\xBF", 2, "C1 BF, overlong" },
+        { "\xE0\x80\xAF", 3, "E0 80 AF, an overlong /" },
+        { "\xF0\x80\x80\xAF", 4, "F0 80 80 AF, an overlong /" },
+        { "\xED\xA0\x80", 3, "ED A0 80, a surrogate" },
+        { "\xEF\xBF\xBF", 3, "EF BF BF, U+FFFF" },
+        { "\x80x", 2, "80 78, a lone continuation" },
+        { "\xE2\x82x", 3, "E2 82 78, a sequence cut short" },
+        { "x\xE2\x82", 3, "78 E2 82, a sequence cut by the end" },
+        { NULL, 0, NULL }
+    };
+    static const WCHAR lone[] = { 'a', 0xD800, 'b', 0 };
+    static const WCHAR pair[] = { 0xD800, 0xDC00, 0 };
+    static const WCHAR reversed[] = { 0xDC00, 0xD800, 0 };
+    int i;
+
+    for (i = 0; cases[i].bytes != NULL; i++) {
+        mb_line(CP_UTF8, "CP_UTF8", 0, "0", cases[i].bytes, cases[i].n, cases[i].what);
+        mb_line(CP_UTF8, "CP_UTF8", MB_ERR_INVALID_CHARS, "MB_ERR_INVALID_CHARS", cases[i].bytes, cases[i].n,
+                cases[i].what);
+    }
+    wc_line(CP_UTF8, "CP_UTF8", 0, "0", pair, 2, 0, "D800 DC00, a pair");
+    wc_line(CP_UTF8, "CP_UTF8", 0, "0", lone, 3, 0, "61 D800 62, a lone high surrogate");
+    wc_line(CP_UTF8, "CP_UTF8", 0, "0", reversed, 2, 0, "DC00 D800, reversed");
+}
+
+/* --- lcmap --------------------------------------------------------- */
+
+/* LCMapStringW(lcid, flags) of `src`: the size query, then the call into
+ * that many units (bytes for a sort key, printed as hex). */
+static void map_w(LCID lcid, DWORD flags, const char *fname, const WCHAR *src, int n, const char *label)
+{
+    WCHAR out[128];
+    int need, r;
+    const char *e;
+
+    arm();
+    need = LCMapStringW(lcid, flags, src, n, NULL, 0);
+    e = le();
+    if (need <= 0 || need > 128) {
+        line("LCMapStringW(%s, %s) size: ret=%d err=%s", fname, label, need, e);
+        return;
+    }
+    fill_w(out, 128);
+    arm();
+    r = LCMapStringW(lcid, flags, src, n, out, need);
+    if (flags & LCMAP_SORTKEY) {
+        line("LCMapStringW(%s, %s): size %d; ret=%d err=%s %s", fname, label, need, r, le(), hexb((BYTE *)out, r));
+    } else {
+        line("LCMapStringW(%s, %s): size %d; ret=%d err=%s %s", fname, label, need, r, le(), hexw(out, r));
+    }
+}
+
+static void map_a(LCID lcid, DWORD flags, const char *fname, const char *src, int n, const char *label)
+{
+    BYTE out[256];
+    int need, r;
+    const char *e;
+
+    arm();
+    need = LCMapStringA(lcid, flags, src, n, NULL, 0);
+    e = le();
+    if (need <= 0 || need > 256) {
+        line("LCMapStringA(%s, %s) size: ret=%d err=%s", fname, label, need, e);
+        return;
+    }
+    memset(out, 0xCC, sizeof out);
+    arm();
+    r = LCMapStringA(lcid, flags, src, n, (char *)out, need);
+    line("LCMapStringA(%s, %s): size %d; ret=%d err=%s %s", fname, label, need, r, le(), hexb(out, r));
+}
+
+static void sec_lcmap(void)
+{
+    static const WCHAR abc[] = { 'a', 'b', 'c', 0 };
+    static const WCHAR ABC[] = { 'A', 'B', 'C', 0 };
+    static const WCHAR coop[] = { 'c', 'o', '-', 'o', 'p', 0 };
+    static const WCHAR e_acute[] = { 0x00E9, 0 };
+    static const WCHAR e_plain[] = { 'e', 0 };
+    static const WCHAR e_decomposed[] = { 'e', 0x0301, 'a', 0 };
+    static const WCHAR symbols[] = { 'a', '-', 'b', ' ', 'c', '!', 0 };
+    static const WCHAR mixed[] = { 'A', 'b', '1', 0 };
+    static const WCHAR fullwidth[] = { 0xFF21, 0xFF42, 0xFF11, 0 };
+    static const WCHAR empty[] = { 0 };
+    WCHAR out[64], inplace[4];
+    BYTE key[64];
+    int r;
+
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", abc, -1, "\"abc\"");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", ABC, -1, "\"ABC\"");
+    map_w(0x0409, LCMAP_SORTKEY | NORM_IGNORECASE, "LCMAP_SORTKEY|NORM_IGNORECASE", ABC, -1, "\"ABC\"");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", e_acute, -1, "U+00E9");
+    map_w(0x0409, LCMAP_SORTKEY | NORM_IGNORENONSPACE, "LCMAP_SORTKEY|NORM_IGNORENONSPACE", e_acute, -1, "U+00E9");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", e_plain, -1, "\"e\"");
+    map_w(0x0409, LCMAP_SORTKEY | NORM_IGNORECASE | NORM_IGNORENONSPACE,
+          "LCMAP_SORTKEY|NORM_IGNORECASE|NORM_IGNORENONSPACE", e_acute, -1, "U+00E9");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", coop, -1, "\"co-op\"");
+    map_w(0x0409, LCMAP_SORTKEY | SORT_STRINGSORT, "LCMAP_SORTKEY|SORT_STRINGSORT", coop, -1, "\"co-op\"");
+    map_w(0x0409, LCMAP_SORTKEY | NORM_IGNORESYMBOLS, "LCMAP_SORTKEY|NORM_IGNORESYMBOLS", coop, -1, "\"co-op\"");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", empty, -1, "\"\"");
+    map_w(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", abc, 2, "\"ab\" by count");
+    map_w(0x040C, LCMAP_SORTKEY, "LCMAP_SORTKEY", e_acute, -1, "U+00E9 under 0x040C");
+    map_a(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", "abc", -1, "\"abc\"");
+    map_a(0x0409, LCMAP_SORTKEY, "LCMAP_SORTKEY", "\xE9", -1, "E9");
+    memset(key, 0xCC, sizeof key);
+    arm();
+    r = LCMapStringW(0x0409, LCMAP_SORTKEY, abc, -1, (WCHAR *)key, 3);
+    line("LCMapStringW(LCMAP_SORTKEY, \"abc\") into 3 bytes: ret=%d err=%s %s", r, le(), hexb(key, 4));
+
+    map_w(0x0409, LCMAP_BYTEREV, "LCMAP_BYTEREV", abc, -1, "\"abc\"");
+    map_w(0x0409, LCMAP_BYTEREV | LCMAP_UPPERCASE, "LCMAP_BYTEREV|LCMAP_UPPERCASE", abc, -1, "\"abc\"");
+    map_a(0x0409, LCMAP_BYTEREV, "LCMAP_BYTEREV", "abc", -1, "\"abc\"");
+    map_w(0x0409, LCMAP_FULLWIDTH, "LCMAP_FULLWIDTH", mixed, -1, "\"Ab1\"");
+    map_w(0x0409, LCMAP_HALFWIDTH, "LCMAP_HALFWIDTH", fullwidth, -1, "U+FF21 U+FF42 U+FF11");
+    map_w(0x0409, NORM_IGNORENONSPACE, "NORM_IGNORENONSPACE", e_decomposed, -1, "e U+0301 a");
+    map_w(0x0409, NORM_IGNORESYMBOLS, "NORM_IGNORESYMBOLS", symbols, -1, "\"a-b c!\"");
+    map_w(0x0409, NORM_IGNORENONSPACE | NORM_IGNORESYMBOLS, "NORM_IGNORENONSPACE|NORM_IGNORESYMBOLS", symbols, -1,
+          "\"a-b c!\"");
+    map_w(0x0409, NORM_IGNORECASE, "NORM_IGNORECASE", ABC, -1, "\"ABC\"");
+    map_w(0x0409, NORM_IGNORECASE | NORM_IGNORENONSPACE, "NORM_IGNORECASE|NORM_IGNORENONSPACE", ABC, -1, "\"ABC\"");
+    map_w(0x0409, LCMAP_UPPERCASE | NORM_IGNORECASE, "LCMAP_UPPERCASE|NORM_IGNORECASE", abc, -1, "\"abc\"");
+    map_w(0x0409, LCMAP_UPPERCASE | NORM_IGNORENONSPACE, "LCMAP_UPPERCASE|NORM_IGNORENONSPACE", e_decomposed, -1,
+          "e U+0301 a");
+    map_w(0x0409, LCMAP_UPPERCASE | LCMAP_LOWERCASE, "LCMAP_UPPERCASE|LCMAP_LOWERCASE", abc, -1, "\"abc\"");
+    map_w(0x0409, LCMAP_SORTKEY | LCMAP_UPPERCASE, "LCMAP_SORTKEY|LCMAP_UPPERCASE", abc, -1, "\"abc\"");
+    map_w(0x0409, 0, "0", abc, -1, "\"abc\"");
+
+    inplace[0] = 'a';
+    inplace[1] = 'b';
+    inplace[2] = 0;
+    arm();
+    r = LCMapStringW(0x0409, LCMAP_UPPERCASE, inplace, -1, inplace, 4);
+    line("LCMapStringW(LCMAP_UPPERCASE, \"ab\") in place: ret=%d err=%s %s", r, le(), hexw(inplace, 3));
+    inplace[0] = 'a';
+    inplace[1] = 'b';
+    inplace[2] = 0;
+    arm();
+    r = LCMapStringW(0x0409, LCMAP_SORTKEY, inplace, -1, inplace, 4);
+    line("LCMapStringW(LCMAP_SORTKEY, \"ab\") in place: ret=%d err=%s", r, le());
+
+    /* An LCID no Windows 2000 machine has, in both forms. */
+    fill_w(out, 64);
+    arm();
+    r = LCMapStringW(0xDEAD, LCMAP_UPPERCASE, abc, -1, out, 64);
+    line("LCMapStringW(0xDEAD, LCMAP_UPPERCASE, \"abc\"): ret=%d err=%s %s", r, le(), hexw(out, r));
+    memset(key, 0xCC, sizeof key);
+    arm();
+    r = LCMapStringA(0xDEAD, LCMAP_UPPERCASE, "abc", -1, (char *)key, sizeof key);
+    line("LCMapStringA(0xDEAD, LCMAP_UPPERCASE, \"abc\"): ret=%d err=%s %s", r, le(), hexb(key, r));
+    memset(key, 0xCC, sizeof key);
+    arm();
+    r = LCMapStringA(NO_SUCH_LCID, LCMAP_LOWERCASE, "ABC", 3, (char *)key, sizeof key);
+    line("LCMapStringA(0x1234, LCMAP_LOWERCASE, \"ABC\"): ret=%d err=%s %s", r, le(), hexb(key, r));
+    memset(key, 0xCC, sizeof key);
+    arm();
+    r = LCMapStringA(0xDEAD, LCMAP_SORTKEY, "abc", -1, (char *)key, sizeof key);
+    line("LCMapStringA(0xDEAD, LCMAP_SORTKEY, \"abc\"): ret=%d err=%s", r, le());
+}
+
+/* --- locales ------------------------------------------------------- */
+
+static void info_w(LCID lcid, const char *lname, LCTYPE type, const char *tname)
+{
+    WCHAR w[128];
+    char a[256];
+    int r;
+    const char *e;
+
+    fill_w(w, 128);
+    arm();
+    r = GetLocaleInfoW(lcid, type, w, 128);
+    e = le();
+    line("GetLocaleInfoW(%s, %s): ret=%d err=%s [%s]", lname, tname, r, e, wtext(w, r, 128));
+    memset(a, 0, sizeof a);
+    arm();
+    r = GetLocaleInfoA(lcid, type, a, sizeof a);
+    e = le();
+    line("  (A): ret=%d err=%s [%s]", r, e, atext(a, r, (int)sizeof a));
+}
+
+static void sec_locales(void)
+{
+    static const struct {
+        LCID lcid;
+        const char *name;
+    } lcid_list[] = {
+        { 0x0409, "0x0409" },
+        { 0x040C, "0x040C, French" },
+        { 0x0407, "0x0407, German" },
+        { 0x0C0C, "0x0C0C, French (Canada)" },
+        { 0x0411, "0x0411, Japanese" },
+        { 0x0419, "0x0419, Russian" },
+        { NO_SUCH_LCID, "0x1234" },
+        { 0, "0" },
+        { LOCALE_USER_DEFAULT, "LOCALE_USER_DEFAULT" },
+        { 0xFFFFFFFF, NULL }
+    };
+    static const struct {
+        LCTYPE type;
+        const char *name;
+    } fr_types[] = {
+        { LOCALE_ILANGUAGE, "LOCALE_ILANGUAGE" },
+        { LOCALE_SENGLANGUAGE, "LOCALE_SENGLANGUAGE" },
+        { LOCALE_SNATIVELANGNAME, "LOCALE_SNATIVELANGNAME" },
+        { LOCALE_SABBREVLANGNAME, "LOCALE_SABBREVLANGNAME" },
+        { LOCALE_SISO639LANGNAME, "LOCALE_SISO639LANGNAME" },
+        { LOCALE_IDEFAULTANSICODEPAGE, "LOCALE_IDEFAULTANSICODEPAGE" },
+        { LOCALE_IDEFAULTCODEPAGE, "LOCALE_IDEFAULTCODEPAGE" },
+        { LOCALE_SDECIMAL, "LOCALE_SDECIMAL" },
+        { LOCALE_STHOUSAND, "LOCALE_STHOUSAND" },
+        { LOCALE_SCURRENCY, "LOCALE_SCURRENCY" },
+        { LOCALE_SSHORTDATE, "LOCALE_SSHORTDATE" },
+        { LOCALE_SLONGDATE, "LOCALE_SLONGDATE" },
+        { LOCALE_STIMEFORMAT, "LOCALE_STIMEFORMAT" },
+        { LOCALE_SDAYNAME1, "LOCALE_SDAYNAME1" },
+        { LOCALE_SMONTHNAME2, "LOCALE_SMONTHNAME2" },
+        { LOCALE_SLIST, "LOCALE_SLIST" },
+        { 0, NULL }
+    };
+    WCHAR sig[32];
+    LCID before;
+    BOOL r;
+    int i, n;
+    const char *e;
+
+    show_defaults();
+    for (i = 0; lcid_list[i].name != NULL; i++) {
+        arm();
+        r = IsValidLocale(lcid_list[i].lcid, LCID_INSTALLED);
+        e = le();
+        arm();
+        n = IsValidLocale(lcid_list[i].lcid, LCID_SUPPORTED);
+        line("IsValidLocale(%s): LCID_INSTALLED ret=%d err=%s; LCID_SUPPORTED ret=%d err=%s", lcid_list[i].name, r, e,
+             n, le());
+    }
+    before = GetThreadLocale();
+    arm();
+    r = SetThreadLocale(0x040C);
+    line("SetThreadLocale(0x040C): ret=%d err=%s; GetThreadLocale 0x040C now: %s", r, le(),
+         yesno(GetThreadLocale() == 0x040C));
+    info_w(GetThreadLocale(), "GetThreadLocale()", LOCALE_SENGLANGUAGE, "LOCALE_SENGLANGUAGE");
+    SetThreadLocale(before);
+    line("the thread's locale restored: %s", yesno(GetThreadLocale() == before));
+
+    for (i = 0; fr_types[i].name != NULL; i++) {
+        info_w(0x040C, "0x040C", fr_types[i].type, fr_types[i].name);
+    }
+    info_w(0x0407, "0x0407", LOCALE_SENGLANGUAGE, "LOCALE_SENGLANGUAGE");
+    info_w(0x0407, "0x0407", LOCALE_SDECIMAL, "LOCALE_SDECIMAL");
+    info_w(0x0407, "0x0407", LOCALE_SDAYNAME1, "LOCALE_SDAYNAME1");
+    info_w(0x0407, "0x0407", LOCALE_SSHORTDATE, "LOCALE_SSHORTDATE");
+    info_w(0x0409, "0x0409", LOCALE_IDEFAULTEBCDICCODEPAGE, "LOCALE_IDEFAULTEBCDICCODEPAGE");
+    info_w(NO_SUCH_LCID, "0x1234", LOCALE_SENGLANGUAGE, "LOCALE_SENGLANGUAGE");
+
+    fill_w(sig, 32);
+    arm();
+    n = GetLocaleInfoW(0x0409, LOCALE_FONTSIGNATURE, sig, 32);
+    line("GetLocaleInfoW(0x0409, LOCALE_FONTSIGNATURE): ret=%d err=%s %s", n, le(), hexw(sig, n));
+    fill_w(sig, 32);
+    arm();
+    n = GetLocaleInfoW(0x040C, LOCALE_FONTSIGNATURE, sig, 32);
+    line("GetLocaleInfoW(0x040C, LOCALE_FONTSIGNATURE): ret=%d err=%s %s", n, le(), hexw(sig, n));
+}
+
+/* --- nullsrc ------------------------------------------------------- */
+
+/* A NULL source to the locale calls, each inside __try: Windows 2000
+ * answers an error, where a call that reads it would fault. */
+static void null_result(const char *call, int r, DWORD e, DWORD code)
+{
+    if (code != 0) {
+        line("%s: faulted 0x%08lX", call, code);
+    } else {
+        line("%s: ret=%d err=%s", call, r, le_of(e));
+    }
+}
+
+static void sec_nullsrc(void)
+{
+    WCHAR w[16];
+    char a[16];
+    WORD types[16];
+    DWORD e, code;
+    int r;
+
+#define NULL_CALL(text, expr) \
+    do { \
+        r = 0; \
+        e = F2KT_UNTOUCHED; \
+        code = 0; \
+        arm(); \
+        __try { \
+            r = (int)(expr); \
+            e = GetLastError(); \
+        } __except (EXCEPTION_EXECUTE_HANDLER) { \
+            code = GetExceptionCode(); \
+        } \
+        null_result(text, r, e, code); \
+    } while (0)
+
+    NULL_CALL("LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, -1, buf, 16)",
+              LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, -1, w, 16));
+    NULL_CALL("LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 3, buf, 16)",
+              LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 3, w, 16));
+    NULL_CALL("LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 0, buf, 16)",
+              LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 0, w, 16));
+    NULL_CALL("LCMapStringW(0x0409, LCMAP_SORTKEY, NULL, -1, NULL, 0)",
+              LCMapStringW(0x0409, LCMAP_SORTKEY, NULL, -1, NULL, 0));
+    NULL_CALL("LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, -1, buf, 16)",
+              LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, -1, a, 16));
+    NULL_CALL("LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, 3, buf, 16)",
+              LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, 3, a, 16));
+    NULL_CALL("GetStringTypeW(CT_CTYPE1, NULL, 3, types)", GetStringTypeW(CT_CTYPE1, NULL, 3, types));
+    NULL_CALL("GetStringTypeW(CT_CTYPE1, NULL, -1, types)", GetStringTypeW(CT_CTYPE1, NULL, -1, types));
+    NULL_CALL("GetStringTypeA(0x0409, CT_CTYPE1, NULL, 3, types)",
+              GetStringTypeA(0x0409, CT_CTYPE1, NULL, 3, types));
+    NULL_CALL("GetStringTypeExW(0x0409, CT_CTYPE1, NULL, 3, types)",
+              GetStringTypeExW(0x0409, CT_CTYPE1, NULL, 3, types));
+    NULL_CALL("GetStringTypeExA(0x0409, CT_CTYPE1, NULL, 3, types)",
+              GetStringTypeExA(0x0409, CT_CTYPE1, NULL, 3, types));
+    NULL_CALL("GetStringTypeW(CT_CTYPE1, \"abc\", 3, NULL)", GetStringTypeW(CT_CTYPE1, L"abc", 3, NULL));
+#undef NULL_CALL
+}
+
 static const section_t sections[] = {
     { "date", sec_date, F2KT_ALWAYS },
     { "time", sec_time, F2KT_ALWAYS },
@@ -960,6 +1586,12 @@ static const section_t sections[] = {
     { "fold", sec_fold, F2KT_ALWAYS },
     { "codepages", sec_codepages, F2KT_ALWAYS },
     { "langgroup", sec_langgroup, F2KT_ALWAYS },
+    { "cpconv", sec_cpconv, F2KT_ALWAYS },
+    { "bestfit", sec_bestfit, F2KT_ALWAYS },
+    { "utf8err", sec_utf8err, F2KT_ALWAYS },
+    { "lcmap", sec_lcmap, F2KT_ALWAYS },
+    { "locales", sec_locales, F2KT_ALWAYS },
+    { "nullsrc", sec_nullsrc, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

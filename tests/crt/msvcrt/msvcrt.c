@@ -2,7 +2,8 @@
  * msvcrt - msvcrt.dll exports under /MD that no other crt fixture's
  * subject takes in: the floating-point functions ceil, floor, fabs and
  * modf, the compiler's _ftol, the full paths _wfullpath and _getdcwd
- * make, and _ismbblead under single-byte multibyte code pages.
+ * make, _ismbblead under single-byte multibyte code pages, and the
+ * corners of the formatted output and input engine.
  *
  * Deterministic inputs only: doubles given by their bits where a sign
  * or a NaN matters, and paths printed only as relations (equal to
@@ -35,6 +36,16 @@
  *            carries no DBCS tables. The three are reached through
  *            GetProcAddress, so the program still loads where msvcrt.dll
  *            lacks them.
+ *   printf   sprintf's corners as msvcrt 6 has them: "ll" and "L" on
+ *            integers (beside "I64"), the infinities and NaNs through
+ *            precisions, widths and flags, "+" and " " on %u, %#.0o
+ *            of 0, %#p, a width on %c, unknown conversion letters
+ *   scanf    swscanf's "%Ld" and "%lld" into an int with a guard word
+ *            after it (does the store write past 32 bits?), sscanf's
+ *            "%Ld" (through GetProcAddress), "%I64d" into an __int64
+ *   snprintf _snprintf, _vsnprintf and _snwprintf with a count of 0
+ *            (a NULL buffer too), the string's length exactly, and
+ *            (size_t)-1: the return value and the buffer's first units
  *
  * fabs has an intrinsic form: `#pragma function(fabs)` below makes cl
  * call msvcrt's. The program is built without /O, and each conversion
@@ -412,10 +423,224 @@ static void sec_mbblead(void)
     lead_bytes("_MB_CP_ANSI");
 }
 
+/* --- printf, scanf, snprintf ---------------------------------------- */
+
+/* `n` bytes as printed: printable ASCII as itself, NUL as \0, the rest
+   as \xNN. */
+static const char *besc(const char *s, int n)
+{
+    static char bufs[4][512];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int len = 0;
+    int i;
+
+    for (i = 0; i < n && len < (int)sizeof bufs[0] - 5; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == 0) {
+            len += sprintf(b + len, "\\0");
+        } else if (c >= 0x20 && c < 0x7F && c != '\\') {
+            b[len++] = (char)c;
+        } else {
+            len += sprintf(b + len, "\\x%02X", c);
+        }
+    }
+    b[len] = 0;
+    return b;
+}
+
+/* One special double through the formats msvcrt rounds its digit
+   string through. */
+static void show_special(const char *what, double d)
+{
+    char b[512];
+    int n;
+
+    n = sprintf(b, "%f|%.0f|%.1f|%.2f|%.3f|%e|%.1e|%g|%.1g|%10.3f|%-10.1f|%+.1f|%#.0f|%010.2f|%E|%G",
+                d, d, d, d, d, d, d, d, d, d, d, d, d, d, d, d);
+    line("%s: %d [%s]", what, n, besc(b, n));
+}
+
+static void sec_printf(void)
+{
+    char b[256];
+    __int64 v = 5;
+    int n;
+
+    /* msvcrt 6 has no "ll"; "L" sizes only floating point. Each call
+       passes as many words as any reading of it takes. */
+    n = sprintf(b, "%lld|%d", v, 7, 9);
+    line("\"%%lld|%%d\" of (__int64)5, 7, 9: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%Ld|%d", v, 7, 9);
+    line("\"%%Ld|%%d\" of (__int64)5, 7, 9: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%llx|%d", v, 7, 9);
+    line("\"%%llx|%%d\" of (__int64)5, 7, 9: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%I64d|%d", v, 7, 9);
+    line("\"%%I64d|%%d\" of (__int64)5, 7, 9: %d [%s]", n, besc(b, n));
+
+    show_special("+INF", from_bits(0x7FF00000, 0));
+    show_special("-INF", from_bits(0xFFF00000, 0));
+    show_special("QNAN", from_bits(0x7FF80000, 0));
+    show_special("IND", from_bits(0xFFF80000, 0));
+    show_special("SNAN", from_bits(0x7FF00000, 1));
+
+    n = sprintf(b, "%+u|% u|%+d|% d", 5u, 5u, 5, 5);
+    line("\"%%+u|%% u|%%+d|%% d\" of 5: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%#.0o|%.0o|%#o|%#.0x|%#x", 0, 0, 8, 0, 0);
+    line("\"%%#.0o|%%.0o|%%#o|%%#.0x|%%#x\" of 0, 0, 8, 0, 0: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%p|%#p|%10p", (void *)0x1234, (void *)0x1234, (void *)0x1234);
+    line("\"%%p|%%#p|%%10p\" of 0x1234: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "%5c|%-5c|%05c", 'x', 'x', 'x');
+    line("\"%%5c|%%-5c|%%05c\" of 'x': %d [%s]", n, besc(b, n));
+    n = sprintf(b, "a%yb|%d", 7, 8);
+    line("\"a%%yb|%%d\" of 7, 8: %d [%s]", n, besc(b, n));
+    n = sprintf(b, "[%5y][%-3k]", 7, 8);
+    line("\"[%%5y][%%-3k]\" of 7, 8: %d [%s]", n, besc(b, n));
+}
+
+/* An int and the word after it, which a 32-bit store leaves alone. */
+typedef struct {
+    int value;
+    unsigned long guard;
+} guarded_t;
+
+typedef int (__cdecl *sscanf_fn)(const char *s, const char *format, ...);
+
+static void show_guarded(const char *what, int r, const guarded_t *g)
+{
+    line("%s: ret=%d value %d, the word after changed %s", what, r, g->value,
+         yesno(g->guard != 0x5A5A5A5Aul));
+}
+
+static void sec_scanf(void)
+{
+    guarded_t g;
+    __int64 q;
+    sscanf_fn p_sscanf;
+    int r;
+
+    g.value = -1;
+    g.guard = 0x5A5A5A5Aul;
+    r = swscanf(L"5", L"%Ld", &g.value);
+    show_guarded("swscanf(L\"5\", L\"%Ld\")", r, &g);
+    g.value = -1;
+    g.guard = 0x5A5A5A5Aul;
+    r = swscanf(L"6", L"%lld", &g.value);
+    show_guarded("swscanf(L\"6\", L\"%lld\")", r, &g);
+    p_sscanf = (sscanf_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "sscanf");
+    if (p_sscanf == NULL) {
+        line("sscanf: no export");
+    } else {
+        g.value = -1;
+        g.guard = 0x5A5A5A5Aul;
+        r = p_sscanf("7", "%Ld", &g.value);
+        show_guarded("sscanf(\"7\", \"%Ld\")", r, &g);
+    }
+
+    q = 0;
+    r = swscanf(L"123456789012", L"%I64d", &q);
+    line("swscanf(L\"123456789012\", L\"%%I64d\"): ret=%d [%08lX%08lX]", r,
+         (unsigned long)(q >> 32), (unsigned long)(q & 0xFFFFFFFFul));
+    q = 0;
+    r = swscanf(L"-5", L"%I64d", &q);
+    line("swscanf(L\"-5\", L\"%%I64d\"): ret=%d [%08lX%08lX]", r, (unsigned long)(q >> 32),
+         (unsigned long)(q & 0xFFFFFFFFul));
+}
+
+/* _vsnprintf through its va_list. */
+static int vsn(char *b, size_t count, const char *format, ...)
+{
+    va_list ap;
+    int r;
+
+    va_start(ap, format);
+    r = _vsnprintf(b, count, format, ap);
+    va_end(ap);
+    return r;
+}
+
+static void fill(char *b)
+{
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        b[i] = 'Z';
+    }
+}
+
+static void wfill(WCHAR *b)
+{
+    int i;
+
+    for (i = 0; i < 8; i++) {
+        b[i] = L'Z';
+    }
+}
+
+/* A wide buffer's first `n` units as printed: wesc's form, NUL as \0. */
+static const char *wbuf(const WCHAR *s, int n)
+{
+    char b[8];
+    int i;
+
+    for (i = 0; i < n; i++) {
+        b[i] = s[i] < 0x80 ? (char)s[i] : '?';
+    }
+    return besc(b, n);
+}
+
+static void sec_snprintf(void)
+{
+    char b[16];
+    WCHAR w[16];
+    int r;
+
+    fill(b);
+    r = _snprintf(b, 0, "abc");
+    line("_snprintf(count 0, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+    fill(b);
+    r = _snprintf(b, 0, "");
+    line("_snprintf(count 0, \"\"): ret=%d [%s]", r, besc(b, 5));
+    r = _snprintf(NULL, 0, "abc");
+    line("_snprintf(NULL, count 0, \"abc\"): ret=%d", r);
+    fill(b);
+    r = _snprintf(b, 3, "abc");
+    line("_snprintf(count 3, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+
+    fill(b);
+    r = vsn(b, 0, "abc");
+    line("_vsnprintf(count 0, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+    fill(b);
+    r = vsn(b, 3, "abc");
+    line("_vsnprintf(count 3, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+
+    wfill(w);
+    r = _snwprintf(w, 0, L"abc");
+    line("_snwprintf(count 0, L\"abc\"): ret=%d [%s]", r, wbuf(w, 5));
+    wfill(w);
+    r = _snwprintf(w, 3, L"abc");
+    line("_snwprintf(count 3, L\"abc\"): ret=%d [%s]", r, wbuf(w, 5));
+
+    /* A count past INT_MAX: msvcrt 6 takes the count as an int. */
+    fill(b);
+    r = _snprintf(b, (size_t)-1, "abc");
+    line("_snprintf(count (size_t)-1, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+    fill(b);
+    r = vsn(b, (size_t)-1, "abc");
+    line("_vsnprintf(count (size_t)-1, \"abc\"): ret=%d [%s]", r, besc(b, 5));
+    wfill(w);
+    r = _snwprintf(w, (size_t)-1, L"abc");
+    line("_snwprintf(count (size_t)-1, L\"abc\"): ret=%d [%s]", r, wbuf(w, 5));
+}
+
 static const section_t sections[] = {
     { "math", sec_math, F2KT_ALWAYS },
     { "paths", sec_paths, F2KT_ALWAYS },
     { "mbblead", sec_mbblead, F2KT_ALWAYS },
+    { "printf", sec_printf, F2KT_ALWAYS },
+    { "scanf", sec_scanf, F2KT_ALWAYS },
+    { "snprintf", sec_snprintf, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

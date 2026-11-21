@@ -10,6 +10,8 @@ data_files = ["profile.ini"]
 gate = true
 
 [pending]
+# longint: written ahead of the VM trip; output.txt holds a placeholder block until profile.exe is
+# rebuilt (tests/build.bat profile) and the block captured (tests/capture.bat profile).
 winini = "the disk carries no \\WINNT\\win.ini: win.ini's section list is empty before [F2KProfile] is written and after it is deleted"
 
 [pins]
@@ -44,3 +46,4 @@ new = [
     "kernel32.GetPrivateProfileStringA",
     "kernel32.GetPrivateProfileStringW",
 ]
+longint = ["kernel32.GetPrivateProfileIntA", "kernel32.GetPrivateProfileIntW", "kernel32.GetPrivateProfileStringA", "kernel32.GetPrivateProfileStringW"]

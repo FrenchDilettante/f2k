@@ -3,6 +3,8 @@ description = "sync - synchronization objects and waits (sync.c, /MT): events, s
 kind = "sectioned"
 gate = true
 
+[pending]
+
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
@@ -149,4 +151,35 @@ waitleak = [
     "kernel32.SetLastError",
     "ntdll.NtSignalAndWaitForSingleObject",
     "ntdll.NtTerminateThread",
+]
+access = [
+    "kernel32.GetCurrentProcess",
+    "kernel32.SetLastError",
+    "kernel32.CreateEventA",
+    "kernel32.OpenEventA",
+    "kernel32.SetEvent",
+    "kernel32.ResetEvent",
+    "kernel32.DuplicateHandle",
+    "kernel32.CreateMutexA",
+    "kernel32.OpenMutexA",
+    "kernel32.ReleaseMutex",
+    "kernel32.CreateSemaphoreA",
+    "kernel32.OpenSemaphoreA",
+    "kernel32.ReleaseSemaphore",
+    "kernel32.CreateWaitableTimerA",
+    "kernel32.OpenWaitableTimerA",
+    "kernel32.SetWaitableTimer",
+    "kernel32.CancelWaitableTimer",
+    "kernel32.CreateFileMappingA",
+    "kernel32.OpenFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.CreateFileA",
+    "kernel32.WriteFile",
+    "kernel32.DeleteFileA",
+    "ntdll.NtSetEvent",
+    "ntdll.NtReleaseMutant",
+    "ntdll.NtReleaseSemaphore",
+    "ntdll.NtSetTimer",
+    "ntdll.NtCancelTimer",
+    "ntdll.NtDuplicateObject",
 ]

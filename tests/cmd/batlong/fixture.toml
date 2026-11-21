@@ -1,0 +1,11 @@
+# batlong: one test, the script's one block (`cmd /c batlong.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". Declared ahead of its capture: output.txt holds a placeholder block, which
+# tests\capture.bat batlong replaces.
+# It runs spawnkid.exe, the spawn fixture's companion: beside the script in \CORPUS on F2K, copied
+# beside it by capture.bat on the real machine. A refused line may print a "... was unexpected at
+# this time." line after its message, as batline's does: mask it once captured if it names a path.
+description = "batlong - commands past a line's 2,047 characters, built from a thousand zeros: cmd /c strings of about 3,000 and 8,000 characters, and in a batch file (each in a cmd.exe of its own) a set of that length, a for's body that substitution makes that long, and call's second expansion making it so: whether each runs whole, is cut, or is refused with \"The input line is too long.\"."
+kind = "script"
+gate = true
+timeout = 60
+pending = "F2K copies a simple command into a buffer of one line (2,049 units) and, when a cmd /c string, a for's substituted body or call's second expansion is longer, runs nothing and prints nothing, ERRORLEVEL unchanged (shallow-gui-cmd finding 19)"

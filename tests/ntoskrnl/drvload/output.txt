@@ -1,9 +1,9 @@
 # F2K capture of drvload (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 11:49:36.28
-drvload F2KT-SOURCE-CRC=0xB6D60809
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:55.82
+drvload F2KT-SOURCE-CRC=0x7F618A1F
 >>> drvload.exe load
 == load
 the service key written: yes
@@ -183,6 +183,9 @@ DriverUnload: the device's ReferenceCount=0, NextDevice: NULL
 DriverUnload: after IoDeleteSymbolicLink and IoDeleteDevice: DriverObject->DeviceObject: NULL
 NtUnloadDriver(F2Kdrvload), then: 0xC0000034
 drvload: done
+<<< exit code=0
+>>> drvload.exe pendirp
+(not captured yet: tests\capture.bat drvload replaces this placeholder)
 <<< exit code=0
 >>> drvload.exe names
 == names

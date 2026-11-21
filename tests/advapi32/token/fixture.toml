@@ -5,9 +5,18 @@
 # never prints (a lookup on it prints whether its LUID is the NULL case's). SeShutdownPrivilege is
 # enabled only to observe the calls that enable it, and disabled again before the section does
 # anything but adjust or query the token.
-description = "token - the process token as a program that shuts the machine down prepares it: OpenProcessToken with TOKEN_QUERY and TOKEN_ADJUST_PRIVILEGES (the handle's type and granted access, CloseHandle) and its errors; LookupPrivilegeValueA/W for SeShutdownPrivilege, SeChangeNotifyPrivilege and SeDebugPrivilege (their LUIDs), an unknown or empty name, NULL pointers, and an empty or the local computer's system name; AdjustTokenPrivileges enabling and disabling SeShutdownPrivilege (the return, the error, PreviousState and ReturnLength), PreviousState too short, DisableAllPrivileges and its restore, a privilege the token does not hold (ERROR_NOT_ALL_ASSIGNED); GetTokenInformation(TokenPrivileges) and its sizes; ntdll's NtOpenProcessToken and NtAdjustPrivilegesToken."
+description = "token - the process token as a program that shuts the machine down prepares it, then as programs inspect it: OpenProcessToken with TOKEN_QUERY and TOKEN_ADJUST_PRIVILEGES (the handle's type and granted access, CloseHandle) and its errors; LookupPrivilegeValueA/W for SeShutdownPrivilege, SeChangeNotifyPrivilege and SeDebugPrivilege (their LUIDs), an unknown or empty name, NULL pointers, and an empty or the local computer's system name; AdjustTokenPrivileges enabling and disabling SeShutdownPrivilege (the return, the error, PreviousState and ReturnLength), PreviousState too short, DisableAllPrivileges and its restore, a privilege the token does not hold (ERROR_NOT_ALL_ASSIGNED); GetTokenInformation(TokenPrivileges) and its sizes; ntdll's NtOpenProcessToken and NtAdjustPrivilegesToken; GetTokenInformation class by class (sizes, a buffer a byte short), the SIDs by what they are, the default DACL, source, type, statistics; CheckTokenMembership and the groups scan; SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege and SeDebugPrivilege enabled and put back."
 kind = "sectioned"
 gate = true
+
+[pending]
+# Written ahead of the VM trip: output.txt holds placeholder blocks until token.exe is rebuilt
+# (tests/build.bat token) and the blocks captured (tests/capture.bat token).
+tokclass = "F2K's GetTokenInformation answers only TokenPrivileges, every other class ERROR_CALL_NOT_IMPLEMENTED with no size"
+toksids = "F2K's GetTokenInformation has no TokenUser, TokenOwner, TokenPrimaryGroup or TokenGroups"
+tokmisc = "F2K's GetTokenInformation has no TokenDefaultDacl, TokenSource, TokenType, TokenImpersonationLevel, TokenSessionId or TokenStatistics, and advapi32 no DuplicateToken"
+admin = "F2K's advapi32 has no CheckTokenMembership, AllocateAndInitializeSid, EqualSid, FreeSid or DuplicateToken, and no TokenGroups to scan"
+privs = "F2K's tokens hold three privileges (SeChangeNotifyPrivilege, SeShutdownPrivilege and SeLoadDriverPrivilege), so enabling SeSystemtimePrivilege, SeBackupPrivilege or SeDebugPrivilege answers ERROR_NOT_ALL_ASSIGNED"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -57,5 +66,38 @@ native = [
     "ntdll.NtOpenProcessToken",
     "ntdll.NtAdjustPrivilegesToken",
     "ntdll.NtQueryObject",
+    "advapi32.GetTokenInformation",
+]
+tokclass = [
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "ntdll.NtQueryInformationToken",
+]
+toksids = [
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "ntdll.NtQueryInformationToken",
+]
+tokmisc = [
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "advapi32.AdjustTokenPrivileges",
+    "advapi32.DuplicateToken",
+    "ntdll.NtQueryInformationToken",
+    "ntdll.NtDuplicateToken",
+]
+admin = [
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "advapi32.CheckTokenMembership",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.EqualSid",
+    "advapi32.FreeSid",
+    "advapi32.DuplicateToken",
+]
+privs = [
+    "advapi32.LookupPrivilegeValueA",
+    "advapi32.OpenProcessToken",
+    "advapi32.AdjustTokenPrivileges",
     "advapi32.GetTokenInformation",
 ]

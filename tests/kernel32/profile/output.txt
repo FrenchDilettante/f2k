@@ -1,9 +1,9 @@
 # F2K capture of profile (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:05:33.53
-profile F2KT-SOURCE-CRC=0x4B5A5091
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:10.30
+profile F2KT-SOURCE-CRC=0xF9E21F84
 >>> profile.exe winini
 == winini
 GetProfileIntW(L"F2KProfile", L"Mode", 7), no such key: ret=7 err=-
@@ -547,5 +547,25 @@ GetPrivateProfileStringW(L"New", L"Accent"), profneww.ini: ret=4 err=0 [café|#]
 GetPrivateProfileStringW(L"New", L"Ideograph"), profneww.ini: ret=3 err=0 [x?y|#]
 GetPrivateProfileStringA("New", "Accent"), profneww.ini: ret=4 err=0 [caf\xE9|#]
 WritePrivateProfileStringA("New", "Key", "value"), in a directory that does not exist: ret=0 err=3
+profile: done
+<<< exit code=0
+>>> profile.exe longint
+== longint
+profnew.ini: [Long] Digits= 40000 digits 123456789..., Tail=12 and 40000 z, Fifteen=123456789012345xyz, Twenty=12345678901234567890, Over=4294967297, Negative=-2147483649
+GetPrivateProfileIntA("Long", "Digits", 99): ret=2970839683 err=0
+GetPrivateProfileIntA("Long", "Tail", 99): ret=12 err=0
+GetPrivateProfileIntA("Long", "Fifteen", 99): ret=2249056121 err=0
+GetPrivateProfileIntA("Long", "Twenty", 99): ret=3944680146 err=0
+GetPrivateProfileIntA("Long", "Over", 99): ret=1 err=0
+GetPrivateProfileIntA("Long", "Negative", 99): ret=2147483647 err=0
+GetPrivateProfileIntW(L"Long", L"Digits", 99): ret=2970839683 err=0
+GetPrivateProfileIntW(L"Long", L"Tail", 99): ret=12 err=0
+GetPrivateProfileIntW(L"Long", L"Fifteen", 99): ret=2249056121 err=0
+GetPrivateProfileIntW(L"Long", L"Twenty", 99): ret=3944680146 err=0
+GetPrivateProfileIntW(L"Long", L"Over", 99): ret=1 err=0
+GetPrivateProfileIntW(L"Long", L"Negative", 99): ret=2147483647 err=0
+GetPrivateProfileStringA("Long", "Digits") into 16: ret=15 err=- 123456789123456|
+GetPrivateProfileStringA("Long", "Digits") into 32768: ret=32767 err=-
+GetPrivateProfileStringW(L"Long", L"Digits") into 16384: ret=16383 err=-
 profile: done
 <<< exit code=0

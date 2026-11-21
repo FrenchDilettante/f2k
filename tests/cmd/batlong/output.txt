@@ -1,0 +1,33 @@
+# F2K capture of batlong (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:55.43
+>>> cmd /c batlong.cmd
+== cmd /c strings
+The input line is too long.
+3000 characters: exit code 1
+The input line is too long.
+8000 characters: exit code 1
+== set in a batch file
+The input line is too long.
+:set3
+ was unexpected at this time.
+3000 characters: exit code 255
+The input line is too long.
+:set8
+ was unexpected at this time.
+8000 characters: exit code 255
+== a for's body
+ran: the value ends [], past 2995 []
+3000 characters: exit code 0
+ran: the value ends [~-6BATLONGR:~7995]
+8000 characters: exit code 0
+== call's second expansion
+The input line is too long.
+ran: the value ends [~-6BATLONGR:~2995]
+3000 characters: exit code 0
+The input line is too long.
+ran: the value ends [~-6BATLONGR:~7995]
+8000 characters: exit code 0
+<<< exit code=0

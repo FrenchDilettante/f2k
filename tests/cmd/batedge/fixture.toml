@@ -1,0 +1,8 @@
+# batedge: one test, the script's one block (`cmd /c batedge.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". Declared ahead of its capture: output.txt holds a placeholder block, which
+# tests\capture.bat batedge replaces.
+description = "batedge - small corners of the batch language: %~ with a modifier cmd.exe does not know, in a called label (each in a cmd.exe of its own); a caret at a line's end joining the next line and escaping its first character, after rem, inside quotes, doubled, and set's value of a line feed; call's second pass over carets, in quotes and out, and over a variable's; if's string order (LSS, GTR, EQU and /i over case, punctuation, a hyphen and digits), its numbers past 2^31-1, octal and hexadecimal; and labels of 40 and 140 characters, a goto by a label's first 39 characters and one differing from a label past its 128th (each in a cmd.exe of its own)."
+kind = "script"
+gate = true
+timeout = 60
+pending = "F2K takes an unknown %~ modifier for nothing, without the error that ends the batch file; does not continue rem's line, nor set a line feed through a caret; doubles no caret in call; orders if's strings by UTF-16 units after ASCII case folding, not lstrcmp's word order; saturates if's numbers at 64 bits; and keeps 128 units of a label (shallow-gui-cmd finding 26)"

@@ -1,9 +1,14 @@
 # msvcrt: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
 # with /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does; the program's own name is
 # the DLL's, which the loader tells apart by the full name (MSVCRT.dll against msvcrt.exe).
-description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under /MD (msvcrt.c): ceil, floor, fabs and modf over halves, signed zeros, infinities and NaNs; _ftol to __int64 and long, within and beyond their limits; _wfullpath and _getdcwd against kernel32's answers; _ismbblead over every byte under _setmbcp's single-byte code pages."
+description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under /MD (msvcrt.c): ceil, floor, fabs and modf over halves, signed zeros, infinities and NaNs; _ftol to __int64 and long, within and beyond their limits; _wfullpath and _getdcwd against kernel32's answers; _ismbblead over every byte under _setmbcp's single-byte code pages; sprintf's corners (\"ll\", \"L\", the infinities and NaNs, flags msvcrt 6 ignores, unknown letters), swscanf's \"%Ld\" store width and \"%I64d\", and _snprintf, _vsnprintf and _snwprintf with a count of 0 and of (size_t)-1."
 kind = "sectioned"
 gate = true
+
+[pending]
+printf = "F2K's sprintf reads \"ll\" and \"L\" on integers as 64-bit, prints the infinities and NaNs whole whatever the precision, signs %+u, prints nothing for %#.0o of 0 and drops %#p's #"
+scanf = "F2K's swscanf stores \"%Ld\" as 64 bits, past the int, and its msvcrt exports no sscanf"
+
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -45,3 +50,6 @@ paths = [
     "kernel32.GetCurrentDirectoryA",
 ]
 mbblead = ["msvcrt._ismbblead", "msvcrt._setmbcp", "msvcrt._getmbcp"]
+printf = ["msvcrt.sprintf"]
+scanf = ["msvcrt.swscanf", "msvcrt.sscanf", "kernel32.GetModuleHandleA", "kernel32.GetProcAddress"]
+snprintf = ["msvcrt._snprintf", "msvcrt._vsnprintf", "msvcrt._snwprintf"]

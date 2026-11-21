@@ -1,0 +1,8 @@
+# batflow: one test, the script's one block (`cmd /c batflow.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". Declared ahead of its capture: output.txt holds a placeholder block, which
+# tests\capture.bat batflow replaces.
+description = "batflow - the control flow tests/core/test_cmd_flow.py checks by hand, captured: goto ahead and back, call :label with arguments, shift and exit /b, call in a for loop, for /l, for /f over a string and a command, %~nx and %~x, if exist and if not exist with else and blocks over several lines, nested if /i and GTR, if defined, if errorlevel and if cmdextversion, for at cmd /c's rules, and a chain of 40 batch files run without call; for over wildcards (none matching, no wildcard, two patterns), for /d, for /r with and without a wildcard, for /f over a file (skip=, eol=, tokens=, usebackq over a quoted name, a command and a string, a file that does not exist), goto and call to a label that does not exist, call :label outside a batch file, and echo ) in and out of blocks."
+kind = "script"
+gate = true
+timeout = 60
+pending = "tests/core/test_cmd_flow.py's expectations were written by hand, and for over wildcards, /d and /r, for /f over a file with skip=, eol= and usebackq, the missing labels' messages and exit codes, call :label outside a batch file and echo ) have never run against Windows 2000's cmd.exe (shallow-gui-cmd finding 28)"

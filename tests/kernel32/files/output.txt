@@ -1,9 +1,9 @@
 # F2K capture of files (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  2:33:14.87
-files F2KT-SOURCE-CRC=0xF59FE07A
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:40.63
+files F2KT-SOURCE-CRC=0x351C887D
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -502,5 +502,83 @@ CloseHandle(the file) ret=1 err=-
 MapViewOfFile after the file's close: mapped err=-
 its headers are the loaded image's: yes
 thirty sections against a closing handle: each made and mapped or ERROR_INVALID_HANDLE: yes
+files: done
+<<< exit code=0
+>>> files.exe devpath
+== devpath
+GetFullPathNameA(\\srv\share, 260): ret=11 err=- [\\srv\share] file part [(null)]
+GetFullPathNameA(\\srv\share\, 260): ret=12 err=- [\\srv\share\] file part [(null)]
+GetFullPathNameA(\\srv\share\dir\..\..\x, 260): ret=13 err=- [\\srv\share\x] file part [x]
+GetFullPathNameA(\\srv, 260): ret=5 err=- [\\srv] file part [(null)]
+GetFullPathNameA(\\srv\, 260): ret=6 err=- [\\srv\] file part [(null)]
+GetFullPathNameA(//srv/share/a, 260): ret=13 err=- [\\srv\share\a] file part [a]
+GetFullPathNameA(\\.\COM1, 260): ret=8 err=- [\\.\COM1] file part [COM1]
+GetFullPathNameA(\\.\NUL, 260): ret=7 err=- [\\.\NUL] file part [NUL]
+GetFullPathNameA(\\?\C:\a\..\b, 260): ret=8 err=- [\\?\C:\b] file part [b]
+GetFullPathNameA(CON, 260): ret=7 err=- [\\.\CON] file part [(null)]
+GetFullPathNameA(nul, 260): ret=7 err=- [\\.\nul] file part [(null)]
+GetFullPathNameA(nul.txt, 260): ret=7 err=- [\\.\nul] file part [(null)]
+GetFullPathNameA(C:\x\CON, 260): ret=7 err=- [\\.\CON] file part [(null)]
+GetFullPathNameA(C:\x\con.txt, 260): ret=7 err=- [\\.\con] file part [(null)]
+GetFullPathNameA(C:\x\COM1:, 260): ret=8 err=- [\\.\COM1] file part [(null)]
+GetFullPathNameA(C:\x\CONX, 260): ret=9 err=- [C:\x\CONX] file part [CONX]
+GetFullPathNameA(\\srv\share\abc, 0): ret=16 err=-
+GetFullPathNameA(\\srv\share\abc, 4): ret=16 err=-
+GetFullPathNameA(\\srv\share\abc, 15): ret=16 err=-
+GetFullPathNameA(\\srv\share\abc, 16): ret=15 err=- [\\srv\share\abc] file part [abc]
+GetFullPathNameA(a 1112-character UNC path, 260): ret=0 err=-
+GetFullPathNameA(a 1112-character UNC path, 1300): ret=0 err=-
+GetFullPathNameW(\\srv\share, 260): ret=11 err=- [\\srv\share] file part [(null)]
+GetFullPathNameW(\\srv\share\, 260): ret=12 err=- [\\srv\share\] file part [(null)]
+GetFullPathNameW(\\srv\share\dir\..\..\x, 260): ret=13 err=- [\\srv\share\x] file part [x]
+GetFullPathNameW(\\srv, 260): ret=5 err=- [\\srv] file part [(null)]
+GetFullPathNameW(\\srv\, 260): ret=6 err=- [\\srv\] file part [(null)]
+GetFullPathNameW(//srv/share/a, 260): ret=13 err=- [\\srv\share\a] file part [a]
+GetFullPathNameW(\\.\COM1, 260): ret=8 err=- [\\.\COM1] file part [COM1]
+GetFullPathNameW(\\.\NUL, 260): ret=7 err=- [\\.\NUL] file part [NUL]
+GetFullPathNameW(\\?\C:\a\..\b, 260): ret=8 err=- [\\?\C:\b] file part [b]
+GetFullPathNameW(CON, 260): ret=7 err=- [\\.\CON] file part [(null)]
+GetFullPathNameW(nul, 260): ret=7 err=- [\\.\nul] file part [(null)]
+GetFullPathNameW(nul.txt, 260): ret=7 err=- [\\.\nul] file part [(null)]
+GetFullPathNameW(C:\x\CON, 260): ret=7 err=- [\\.\CON] file part [(null)]
+GetFullPathNameW(C:\x\con.txt, 260): ret=7 err=- [\\.\con] file part [(null)]
+GetFullPathNameW(C:\x\COM1:, 260): ret=8 err=- [\\.\COM1] file part [(null)]
+GetFullPathNameW(C:\x\CONX, 260): ret=9 err=- [C:\x\CONX] file part [CONX]
+GetFullPathNameW(\\srv\share\abc, 0): ret=16 err=-
+GetFullPathNameW(\\srv\share\abc, 4): ret=16 err=-
+GetFullPathNameW(\\srv\share\abc, 15): ret=16 err=-
+GetFullPathNameW(\\srv\share\abc, 16): ret=15 err=- [\\srv\share\abc] file part [abc]
+GetFullPathNameW(a 1112-character UNC path, 260): ret=1113 err=-
+GetFullPathNameW(a 1112-character UNC path, 1300): ret=1112 err=-, the input itself yes
+CreateFileA(NUL): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileA(nul.txt): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileA(\\.\NUL): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileA(DATA\NUL under the image directory): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileA(CON, GENERIC_READ): opened err=0, file type 2
+CreateFileA(CON, GENERIC_WRITE): opened err=0, file type 2
+CreateFileA(CON, GENERIC_READ|GENERIC_WRITE): INVALID_HANDLE_VALUE err=2
+CreateFileW(NUL): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileW(nul.txt): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileW(\\.\NUL): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileW(DATA\NUL under the image directory): opened err=0, file type 2
+  WriteFile 5 bytes: ret=1 put 5 err=-
+  ReadFile 4 bytes: ret=1 got 0 err=-
+CreateFileW(CON, GENERIC_READ): opened err=0, file type 2
+CreateFileW(CON, GENERIC_WRITE): opened err=0, file type 2
+CreateFileW(CON, GENERIC_READ|GENERIC_WRITE): INVALID_HANDLE_VALUE err=2
 files: done
 <<< exit code=0

@@ -1,0 +1,8 @@
+# batforq: one test, the script's one block (`cmd /c batforq.cmd`, output.txt); see tests/README.md,
+# "Script fixtures". Declared ahead of its capture: output.txt holds a placeholder block, which
+# tests\capture.bat batforq replaces.
+description = "batforq - for's values are text, never syntax: for over file names holding an ampersand, parentheses, a caret and a percent sign (echoed, as a group's body, with %~n and %~x, and through if exist), for /f over lines and over comma-separated fields holding & | > < ( ) ^ and a variable's name, from a file, a command and a string, a for nested in a for's body, and if in a for's body over an empty value, a value with a blank and one with an ampersand (each in a cmd.exe of its own); nothing a value holds runs."
+kind = "script"
+gate = true
+timeout = 40
+pending = "F2K substitutes a for's values into its body's text and parses the result again, so an ampersand, a bar, a redirection or a parenthesis in a file name or a line runs as syntax (shallow-gui-cmd finding 5), and an if in the body that no longer parses does nothing, silently (finding 20)"

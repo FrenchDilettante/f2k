@@ -2,12 +2,14 @@
 # pixel it prints is read from a DIB section or a bitmap of an explicit format; a bitmap of the
 # screen's format prints its depth and pixels only as relations. Its own bitmap, bitmaps.bmp, is
 # compiled into the program from bitmaps.rc. No handle or address prints.
-description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap."
+description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap; and the OBM_ bitmaps' pixels (OBM_CHECK, OBM_CLOSE, OBM_CHECKBOXES and the four scroll-bar arrows) as rows of shades read back through a 24-bit DIB."
 kind = "sectioned"
 gate = true
 
 [pending]
 objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen), hatch brushes (CreateHatchBrush) or regions (CreateRectRgn) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
+
+obm = "F2K's LoadBitmap knows only OBM_CLOSE and OBM_CHECK, whose shapes were drawn without a capture: OBM_CHECKBOXES and the arrows are refused"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -46,3 +48,4 @@ pattern = [
 ]
 objtype = ["gdi32.GetObjectType"]
 load = ["user32.LoadBitmapW", "user32.LoadBitmapA", "user32.LoadImageW", "user32.LoadImageA"]
+obm = ["user32.LoadBitmapW", "user32.LoadBitmapA", "gdi32.GetDIBits"]

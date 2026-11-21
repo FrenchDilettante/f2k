@@ -76,6 +76,21 @@
  *               queried, written, created under and enumerated, the
  *               name created anew, the old handle queried again and
  *               closed
+ *   enumex      RegEnumKeyEx over subkeys created out of order to its end
+ *               (ERROR_NO_MORE_ITEMS) and past it, the count it writes
+ *               back, a subkey's class, buffers of 0, 3, 5 and 6 units for
+ *               a 5-letter name, a non-NULL lpReserved, a key with no
+ *               subkeys, a bogus handle
+ *   enumvalue   RegEnumValue over values set out of order (the default
+ *               value among them) to its end and past it: names, types,
+ *               sizes and data; name buffers of 0, 3, 5 and 6 units, NULL
+ *               data (the size alone), data buffers of the data's size, 2
+ *               and 0 bytes, the name and the data both short, a non-NULL
+ *               lpReserved, a key with no values, a bogus handle; and
+ *               RegQueryInfoKey's counts and longest name, class and data
+ *
+ * RegEnumKeyEx, RegEnumValue and RegQueryInfoKey are reached through
+ * GetProcAddress, so the program loads where advapi32 lacks them.
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat registry):
  *   cl /nologo /I .. registry.c advapi32.lib
@@ -1093,6 +1108,311 @@ static void sec_delete(void)
     passes(delete_body);
 }
 
+/* --- enumex and enumvalue: the Ex enumerators, through GetProcAddress */
+
+typedef LONG (WINAPI *enum_key_ex_w_fn)(HKEY, DWORD, LPWSTR, LPDWORD, LPDWORD, LPWSTR, LPDWORD, PFILETIME);
+typedef LONG (WINAPI *enum_key_ex_a_fn)(HKEY, DWORD, LPSTR, LPDWORD, LPDWORD, LPSTR, LPDWORD, PFILETIME);
+typedef LONG (WINAPI *enum_value_w_fn)(HKEY, DWORD, LPWSTR, LPDWORD, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+typedef LONG (WINAPI *enum_value_a_fn)(HKEY, DWORD, LPSTR, LPDWORD, LPDWORD, LPDWORD, LPBYTE, LPDWORD);
+typedef LONG (WINAPI *query_info_key_w_fn)(HKEY, LPWSTR, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD,
+                                           LPDWORD, LPDWORD, LPDWORD, PFILETIME);
+typedef LONG (WINAPI *query_info_key_a_fn)(HKEY, LPSTR, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD, LPDWORD,
+                                           LPDWORD, LPDWORD, LPDWORD, PFILETIME);
+
+static enum_key_ex_w_fn enum_key_ex_w;          /* RegEnumKeyExW */
+static enum_key_ex_a_fn enum_key_ex_a;          /* RegEnumKeyExA */
+static enum_value_w_fn enum_value_w;            /* RegEnumValueW */
+static enum_value_a_fn enum_value_a;            /* RegEnumValueA */
+static query_info_key_w_fn query_info_key_w;    /* RegQueryInfoKeyW */
+static query_info_key_a_fn query_info_key_a;    /* RegQueryInfoKeyA */
+
+/* The name (and class) buffers the Ex calls fill, apart from `buf`, which
+ * takes a value's data. */
+static union {
+    BYTE b[256];
+    WCHAR w[128];
+} nbuf, cbuf;
+
+/* `units` units of a name buffer as text, as text() prints `buf`. */
+static const char *name_text(const BYTE *b, DWORD units)
+{
+    static char bufs[2][600];
+    static int next;
+    char *t = bufs[next++ & 1];
+    DWORD i;
+    unsigned u;
+    int k = 0;
+
+    if (units == 0) {
+        return "(none)";
+    }
+    if (units > 64) {
+        units = 64;
+    }
+    for (i = 0; i < units; i++) {
+        u = wide ? ((const WCHAR *)b)[i] : b[i];
+        if (u == 0) {
+            t[k++] = '\\';
+            t[k++] = '0';
+        } else if (u >= 0x20 && u < 0x7F) {
+            t[k++] = (char)u;
+        } else {
+            k += sprintf(t + k, wide ? "<U+%04X>" : "\\x%02X", u);
+        }
+    }
+    t[k] = 0;
+    return t;
+}
+
+/* Whether the pass's Ex function is exported: a line saying so when not. */
+static int have(const void *w, const void *a, const char *name_of)
+{
+    if ((wide ? w : a) != NULL) {
+        return 1;
+    }
+    line("%s not exported", fn(name_of));
+    return 0;
+}
+
+/* RegEnumKeyEx's entry `index`, `cch` units of name room (and class room
+ * when `cls`): the return, the count written back, the name, the class
+ * and whether the last-write time was written. */
+static LONG enum_ex_line(HKEY key, const char *where, DWORD index, DWORD cch, int cls, const char *label)
+{
+    FILETIME ft;
+    DWORD n = cch, ncls = 64;
+    LONG r;
+
+    memset(nbuf.b, 0xCC, sizeof nbuf.b);
+    memset(cbuf.b, 0xCC, sizeof cbuf.b);
+    ft.dwLowDateTime = ft.dwHighDateTime = UNSET;
+    arm();
+    if (wide) {
+        r = enum_key_ex_w(key, index, nbuf.w, &n, NULL, cls ? cbuf.w : NULL, cls ? &ncls : NULL, &ft);
+    } else {
+        r = enum_key_ex_a(key, index, (char *)nbuf.b, &n, NULL, cls ? (char *)cbuf.b : NULL, cls ? &ncls : NULL,
+                          &ft);
+    }
+    if (r == ERROR_SUCCESS) {
+        line("%s(%s, %lu, %lu units)%s: ret=%ld err=%s cch=%s name=%s%s%s%s%s time written: %s",
+             fn("RegEnumKeyEx"), where, index, cch, label, r, le(), number(n), name_text(nbuf.b, n + 1),
+             cls ? " class=" : "", cls ? name_text(cbuf.b, ncls + 1) : "", cls ? " cchClass=" : "",
+             cls ? number(ncls) : "", yesno(ft.dwLowDateTime != UNSET || ft.dwHighDateTime != UNSET));
+    } else {
+        line("%s(%s, %lu, %lu units)%s: ret=%ld err=%s cch=%s buffer=%s", fn("RegEnumKeyEx"), where, index, cch,
+             label, r, le(), number(n), cch == 0 ? "(none)" : name_text(nbuf.b, cch < 8 ? cch : 8));
+    }
+    return r;
+}
+
+static void enumex_body(void)
+{
+    static const char *const order[] = { "delta", "Alpha", "charlie" };
+    HKEY top, solo, k;
+    LONG r;
+    DWORD n;
+    int i;
+
+    if (!have(enum_key_ex_w, enum_key_ex_a, "RegEnumKeyEx")) {
+        return;
+    }
+    top = make("");
+    if (top == NULL) {
+        line("setup: F2K not created");
+        return;
+    }
+    for (i = 0; i < 3; i++) {
+        shut(make(order[i]));
+    }
+    line("subkeys created in the order delta, Alpha, charlie");
+    for (i = 0; i < 6; i++) {
+        if (enum_ex_line(top, "F2K", (DWORD)i, 64, 0, "") != ERROR_SUCCESS) {
+            break;
+        }
+    }
+    enum_ex_line(top, "F2K", 50, 64, 0, ", far past the end");
+
+    solo = make("solo");
+    if (solo == NULL) {
+        shut(top);
+        return;
+    }
+    k = NULL;
+    RegCreateKeyExW(solo, wide_of("Alpha"), 0, wide_of("F2Kclass"), REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL,
+                    &k, NULL);
+    shut(k);
+    line("solo: one subkey, Alpha, of class F2Kclass");
+    enum_ex_line(solo, "solo", 0, 64, 1, ", its class asked for");
+    enum_ex_line(solo, "solo", 0, 0, 0, ", a 0-unit buffer");
+    enum_ex_line(solo, "solo", 0, 3, 0, ", 3 units");
+    enum_ex_line(solo, "solo", 0, 5, 0, ", room for the name, not its terminator");
+    enum_ex_line(solo, "solo", 0, 6, 0, ", room for the name and its terminator");
+    enum_ex_line(solo, "solo", 1, 64, 0, ", the end");
+
+    /* lpReserved must be NULL. */
+    n = 64;
+    arm();
+    if (wide) {
+        r = enum_key_ex_w(solo, 0, nbuf.w, &n, &n, NULL, NULL, NULL);
+    } else {
+        r = enum_key_ex_a(solo, 0, (char *)nbuf.b, &n, &n, NULL, NULL, NULL);
+    }
+    line("%s(solo, 0), a non-NULL lpReserved: ret=%ld err=%s", fn("RegEnumKeyEx"), r, le());
+    k = make("solo\\Alpha");
+    if (k != NULL) {
+        enum_ex_line(k, "Alpha", 0, 64, 0, ", a key with no subkeys");
+        shut(k);
+    }
+    enum_ex_line(BOGUS_KEY, "a bogus handle", 0, 64, 0, "");
+    shut(solo);
+    shut(top);
+}
+
+static void sec_enumex(void)
+{
+    passes(enumex_body);
+}
+
+/* RegEnumValue's entry `index`: `cch` units of name room, `room` bytes of
+ * data (NO_DATA: a NULL data pointer), the type and size asked for or not. */
+static LONG enum_value_line(HKEY key, const char *where, DWORD index, DWORD cch, DWORD room, int want_type,
+                            int want_cb, const char *label)
+{
+    DWORD n = cch, type = UNSET, cb = room == NO_DATA ? 0 : room;
+    LONG r;
+    const char *data;
+
+    memset(nbuf.b, 0xCC, sizeof nbuf.b);
+    fill();
+    arm();
+    if (wide) {
+        r = enum_value_w(key, index, nbuf.w, &n, NULL, want_type ? &type : NULL, room == NO_DATA ? NULL : buf.b,
+                         want_cb ? &cb : NULL);
+    } else {
+        r = enum_value_a(key, index, (char *)nbuf.b, &n, NULL, want_type ? &type : NULL,
+                         room == NO_DATA ? NULL : buf.b, want_cb ? &cb : NULL);
+    }
+    if (room == NO_DATA) {
+        data = "no buffer";
+    } else if (r == ERROR_SUCCESS && want_cb) {
+        data = data_of(type == UNSET ? REG_BINARY : type, cb);
+    } else {
+        data = buffer_after(room);
+    }
+    line("%s(%s, %lu, %lu units, %s)%s: ret=%ld err=%s cch=%s name=%s type=%s cb=%s %s%s", fn("RegEnumValue"), where,
+         index, cch, room == NO_DATA ? "no data" : number(room), label, r, le(), number(n),
+         r == ERROR_SUCCESS ? name_text(nbuf.b, n + 1) : name_text(nbuf.b, cch < 8 ? cch : 8),
+         want_type ? type_name(type) : "not asked", want_cb ? number(cb) : "not asked",
+         room == NO_DATA ? "" : (r == ERROR_SUCCESS && want_cb ? "data=" : "buffer="), data);
+    return r;
+}
+
+/* RegQueryInfoKey of `key`: its counts and longest name, class and data. */
+static void info_line(HKEY key, const char *where)
+{
+    DWORD subkeys = UNSET, max_subkey = UNSET, max_class = UNSET, values = UNSET, max_name = UNSET,
+          max_data = UNSET, cls = 64;
+    LONG r;
+
+    if (!have(query_info_key_w, query_info_key_a, "RegQueryInfoKey")) {
+        return;
+    }
+    memset(cbuf.b, 0xCC, sizeof cbuf.b);
+    arm();
+    if (wide) {
+        r = query_info_key_w(key, cbuf.w, &cls, NULL, &subkeys, &max_subkey, &max_class, &values, &max_name,
+                             &max_data, NULL, NULL);
+    } else {
+        r = query_info_key_a(key, (char *)cbuf.b, &cls, NULL, &subkeys, &max_subkey, &max_class, &values,
+                             &max_name, &max_data, NULL, NULL);
+    }
+    line("%s(%s): ret=%ld err=%s class=%s subkeys=%s longest subkey=%s longest class=%s values=%s "
+         "longest value name=%s longest data=%s", fn("RegQueryInfoKey"), where, r, le(),
+         r == ERROR_SUCCESS ? name_text(cbuf.b, cls + 1) : "-", number(subkeys), number(max_subkey),
+         number(max_class), number(values), number(max_name), number(max_data));
+}
+
+static void enumvalue_body(void)
+{
+    static const WCHAR abc[] = { 'a', 'b', 'c', 0 };
+    static const WCHAR dflt[] = { 'd', 'f', 'l', 't', 0 };
+    static const WCHAR longer[] = { 'a', ' ', 'l', 'o', 'n', 'g', 'e', 'r', ' ', 'o', 'n', 'e', 0 };
+    static const WCHAR data5[] = { 'd', 'a', 't', 'a', '!', 0 };
+    static const BYTE dword[4] = { 0x78, 0x56, 0x34, 0x12 };
+    static const BYTE binary[5] = { 0x00, 0x01, 0xFE, 0xFF, 0x80 };
+    HKEY top, solo, k;
+    LONG r;
+    DWORD n;
+    int i;
+
+    if (!have(enum_value_w, enum_value_a, "RegEnumValue")) {
+        return;
+    }
+    top = make("");
+    if (top == NULL) {
+        line("setup: F2K not created");
+        return;
+    }
+    RegSetValueExW(top, wide_of("sz"), 0, REG_SZ, (const BYTE *)abc, sizeof abc);
+    RegSetValueExW(top, wide_of("Dword"), 0, REG_DWORD, dword, sizeof dword);
+    RegSetValueExW(top, NULL, 0, REG_SZ, (const BYTE *)dflt, sizeof dflt);
+    RegSetValueExW(top, wide_of("bin"), 0, REG_BINARY, binary, sizeof binary);
+    RegSetValueExW(top, wide_of("Longer"), 0, REG_SZ, (const BYTE *)longer, sizeof longer);
+    shut(make("sub"));
+    line("values set in the order sz, Dword, the default value, bin, Longer; one subkey, sub");
+    for (i = 0; i < 8; i++) {
+        if (enum_value_line(top, "F2K", (DWORD)i, 64, sizeof buf.b, 1, 1, "") != ERROR_SUCCESS) {
+            break;
+        }
+    }
+    enum_value_line(top, "F2K", 50, 64, sizeof buf.b, 1, 1, ", far past the end");
+    info_line(top, "F2K");
+
+    solo = make("solo");
+    if (solo == NULL) {
+        shut(top);
+        return;
+    }
+    RegSetValueExW(solo, wide_of("value"), 0, REG_SZ, (const BYTE *)data5, sizeof data5);
+    line("solo: one value, \"value\", REG_SZ \"data!\" (its terminator counted)");
+    enum_value_line(solo, "solo", 0, 0, sizeof buf.b, 1, 1, ", a 0-unit name buffer");
+    enum_value_line(solo, "solo", 0, 3, sizeof buf.b, 1, 1, ", 3 units");
+    enum_value_line(solo, "solo", 0, 5, sizeof buf.b, 1, 1, ", room for the name, not its terminator");
+    enum_value_line(solo, "solo", 0, 6, sizeof buf.b, 1, 1, ", room for the name and its terminator");
+    enum_value_line(solo, "solo", 0, 64, NO_DATA, 1, 1, ", NULL data: the size alone");
+    enum_value_line(solo, "solo", 0, 64, NO_DATA, 0, 0, ", NULL data, type and size");
+    enum_value_line(solo, "solo", 0, 64, wide ? 12 : 6, 1, 1, ", a buffer of the data's size");
+    enum_value_line(solo, "solo", 0, 64, 2, 1, 1, ", 2 bytes of data");
+    enum_value_line(solo, "solo", 0, 64, 0, 1, 1, ", 0 bytes of data");
+    enum_value_line(solo, "solo", 0, 3, 2, 1, 1, ", the name and the data both short");
+    enum_value_line(solo, "solo", 1, 64, sizeof buf.b, 1, 1, ", the end");
+
+    /* lpReserved must be NULL. */
+    n = 64;
+    arm();
+    if (wide) {
+        r = enum_value_w(solo, 0, nbuf.w, &n, &n, NULL, NULL, NULL);
+    } else {
+        r = enum_value_a(solo, 0, (char *)nbuf.b, &n, &n, NULL, NULL, NULL);
+    }
+    line("%s(solo, 0), a non-NULL lpReserved: ret=%ld err=%s", fn("RegEnumValue"), r, le());
+    info_line(solo, "solo");
+    k = make("sub");
+    if (k != NULL) {
+        enum_value_line(k, "sub", 0, 64, sizeof buf.b, 1, 1, ", a key with no values");
+        info_line(k, "sub");
+        shut(k);
+    }
+    enum_value_line(BOGUS_KEY, "a bogus handle", 0, 64, sizeof buf.b, 1, 1, "");
+    shut(solo);
+    shut(top);
+}
+
+static void sec_enumvalue(void)
+{
+    passes(enumvalue_body);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "open", sec_open, 0 },
@@ -1102,13 +1422,26 @@ static const section_t sections[] = {
     { "default", sec_default, 0 },
     { "enum", sec_enum, 0 },
     { "delete", sec_delete, 0 },
+    { "enumex", sec_enumex, 0 },
+    { "enumvalue", sec_enumvalue, 0 },
     { NULL, NULL, 0 }
 };
 
 int main(int argc, char **argv)
 {
+    HMODULE advapi32;
+
     /* Bogus handles and arguments go to the calls: should one fault, no
      * dialog stops the capture. */
     SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    /* Through GetProcAddress, so the program loads where advapi32 lacks
+     * them; the calls are still the sections' own. */
+    advapi32 = GetModuleHandleA("advapi32.dll");
+    enum_key_ex_w = (enum_key_ex_w_fn)GetProcAddress(advapi32, "RegEnumKeyExW");
+    enum_key_ex_a = (enum_key_ex_a_fn)GetProcAddress(advapi32, "RegEnumKeyExA");
+    enum_value_w = (enum_value_w_fn)GetProcAddress(advapi32, "RegEnumValueW");
+    enum_value_a = (enum_value_a_fn)GetProcAddress(advapi32, "RegEnumValueA");
+    query_info_key_w = (query_info_key_w_fn)GetProcAddress(advapi32, "RegQueryInfoKeyW");
+    query_info_key_a = (query_info_key_a_fn)GetProcAddress(advapi32, "RegQueryInfoKeyA");
     return run_sections("registry", sections, argc, argv);
 }

@@ -1,9 +1,9 @@
 # F2K capture of guiclass (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:30.60
-guiclass F2KT-SOURCE-CRC=0xD07B341E
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:10.91
+guiclass F2KT-SOURCE-CRC=0x5FEFC2DB
 >>> guiclass.exe register
 == register
 RegisterClassA("F2KGuiClass"): nonzero yes err=2
@@ -108,5 +108,23 @@ the window's own procedure still the registered one: yes
 GetClassLongW(GCL_STYLE, NULL window)=0x0 err=1400, GetClassLongA=0x0 err=1400
 GetClassLongW(GCL_STYLE, a destroyed window)=0x0 err=1400, GetClassLongA=0x0 err=1400
 GetClassLongW(GCL_STYLE, the desktop window)=0x8 err=-, GetClassLongA=0x8 err=-
+guiclass: done
+<<< exit code=0
+>>> guiclass.exe intname
+== intname
+RegisterClassA("#0"): atom 0 err=87
+GetClassInfoA("#0"): nonzero no err=1411
+RegisterClassW(L"#0"): atom 0 err=87
+RegisterClassA("#123"): atom the number err=-
+GetClassInfoA("#123"): nonzero yes err=-
+GetClassInfoA(MAKEINTATOM(123)): nonzero yes err=-
+GetClassInfoW(L"#123"): nonzero yes err=-
+RegisterClassW(L"#124"): atom the number err=-
+GetClassInfoW(L"#124"): nonzero yes err=-
+GetClassInfoW(MAKEINTATOM(124)): nonzero yes err=-
+CreateWindowExA("#123"): non-NULL yes err=-
+GetClassNameA: ret=4 err=- text "#123"
+UnregisterClassA("#123"): ret=1 err=-
+UnregisterClassW(L"#124"): ret=1 err=-
 guiclass: done
 <<< exit code=0

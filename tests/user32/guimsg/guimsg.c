@@ -57,15 +57,45 @@
  *              (SMTO_NORMAL and SMTO_ABORTIFHUNG); a bogus window; how
  *              many timed-out messages the busy thread handles later
  *   hung       a second thread that read its queue once and then does
- *              not for 9 s: IsHungAppWindow of its window and
+ *              not for 9.5 s: IsHungAppWindow of its window and
  *              SendMessageTimeoutW SMTO_ABORTIFHUNG at once and after
  *              6.5 s (when Windows deems it hung: no input read for 5
- *              s), SMTO_NORMAL then, and both after it reads again
+ *              s), SMTO_NORMAL then with a 2 s timeout (the thread
+ *              wakes about 700 ms into it), and both after it reads
+ *              again
  *   notify     SendNotifyMessageW (and A) to the thread's own window
  *              (handled before the return) and to a second thread's
  *              (returning at once, handled there later); WM_SETTEXT,
  *              whose lParam is a pointer, to the second thread's; a
  *              bogus window
+ *   quota      PostMessageW to the thread's own window, its queue never
+ *              read meanwhile, until a post fails: about 10000 posts,
+ *              the last error; a post once the queue is emptied
+ *   postptr    PostMessageW/A of WM_SETTEXT and PostMessageW of
+ *              WM_COPYDATA (lParam a pointer) to the thread's own
+ *              window, and whether anything was queued
+ *   copydata   WM_COPYDATA sent by another process (this program run as
+ *              "guimsg.exe --copychild <window>") to the section's
+ *              window: what the procedure received (wParam, dwData,
+ *              cbData, the bytes, read inside __try); the child's
+ *              SendMessageA return and its PostMessageA of the same
+ *              message, carried back in its exit code
+ *   icon       WM_SETICON and WM_GETICON through DefWindowProcW, big and
+ *              small: each answer as NULL, one of the two stock icons
+ *              set, or another
+ *   redraw     WM_SETREDRAW FALSE and TRUE through DefWindowProcW on a
+ *              shown window: the visibility and the WM_PAINT count an
+ *              invalidation and UpdateWindow bring after each
+ *   syscmd     WM_SYSCOMMAND SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE
+ *              through DefWindowProcW on a shown window: IsIconic,
+ *              IsZoomed, the WM_SIZE wParam, the rect against the
+ *              normal one
+ *   ctxmenu    WM_CONTEXTMENU sent to a child whose procedure hands it
+ *              to DefWindowProcW: what its parent's procedure receives
+ *   deadthr    a window whose thread has ended: IsWindow, then
+ *              SendMessageW, SendMessageTimeoutW and PostMessageW to it;
+ *              each send runs on a thread of its own, waited for 5 s,
+ *              so a send that never returns shows as such
  *
  * The sections from regmsg on use a window of a class registered with
  * RegisterClassW, F2KGuimsgW, whose procedure records the test
@@ -82,6 +112,7 @@
  */
 
 #include "../common/f2kt.h"
+#include <stdlib.h>
 
 /* What the wndproc saw last, printed after the calls. */
 static UINT last_msg;
@@ -847,7 +878,11 @@ static void sec_hung(void)
     KillTimer(h, 1);
     drain_w();
 
-    if (start_worker(&w, 9000)) {
+    /* The main thread's waits add up to 8.8 s (300 ms, 6.5 s, 2 s) before
+     * the SMTO_NORMAL call: the worker, waking at 9.5 s, answers it about
+     * 700 ms in, well inside both its 2 s timeout and the 250-1500 ms
+     * band. */
+    if (start_worker(&w, 9500)) {
         hung_check(is_hung, w.window, "at once");
         smto_w("the sleeping thread's window, SMTO_ABORTIFHUNG", w.window, 1, 2,
                SMTO_ABORTIFHUNG, 300, w.tid);
@@ -856,7 +891,7 @@ static void sec_hung(void)
         hung_check(is_hung, w.window, "after 6.5 s");
         smto_w("the sleeping thread's window, SMTO_ABORTIFHUNG", w.window, 3, 4,
                SMTO_ABORTIFHUNG, 2000, w.tid);
-        smto_w("the sleeping thread's window, SMTO_NORMAL", w.window, 5, 6, SMTO_NORMAL, 300,
+        smto_w("the sleeping thread's window, SMTO_NORMAL", w.window, 5, 6, SMTO_NORMAL, 2000,
                w.tid);
         r = WaitForSingleObject(w_handled, WAIT_MS);
         line("the second thread handled a message once it read its queue again: %s", wr(r));
@@ -922,6 +957,556 @@ static void sec_notify(void)
     drain_w();
 }
 
+/* --- quota --------------------------------------------------------- */
+
+/* Posts past which the loop gives up: well beyond any quota. */
+#define QUOTA_CAP 100000
+
+static void sec_quota(void)
+{
+    HWND h;
+    MSG m;
+    long posted = 0;
+    long drained = 0;
+    BOOL r = TRUE;
+    DWORD e = 0;
+
+    drain_w();
+    reset_wide();
+    h = make_wide(L"quota");
+    while (posted < QUOTA_CAP) {
+        arm();
+        r = PostMessageW(h, MSG_TEST + 1, (WPARAM)posted, 0);
+        if (!r) {
+            e = GetLastError();
+            break;
+        }
+        posted++;
+    }
+    line("PostMessageW to the thread's own window until it fails: failed %s, after about 10000 "
+         "posts (9000-11000) %s, err=%s",
+         yesno(!r), yesno(posted >= 9000 && posted <= 11000), r ? "-" : le_of(e));
+    while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+        drained++;
+    }
+    line("the queue emptied: every post found there %s", yesno(drained == posted));
+    arm();
+    r = PostMessageW(h, MSG_TEST + 1, 0, 0);
+    line("PostMessageW once the queue is empty: ret=%d err=%s", r, le());
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- postptr ------------------------------------------------------- */
+
+static void sec_postptr(void)
+{
+    static const WCHAR textw[] = { 'x', 0 };
+    COPYDATASTRUCT cds;
+    HWND h;
+    MSG m;
+    BOOL r;
+
+    drain_w();
+    reset_wide();
+    h = make_wide(L"postptr");
+    arm();
+    r = PostMessageW(h, WM_SETTEXT, 0, (LPARAM)textw);
+    line("PostMessageW(h, WM_SETTEXT, 0, L\"x\"): ret=%d err=%s", r, le());
+    arm();
+    r = PostMessageA(h, WM_SETTEXT, 0, (LPARAM)"x");
+    line("PostMessageA(h, WM_SETTEXT, 0, \"x\"): ret=%d err=%s", r, le());
+    cds.dwData = 1;
+    cds.cbData = 2;
+    cds.lpData = (PVOID)"x";
+    arm();
+    r = PostMessageW(h, WM_COPYDATA, 0, (LPARAM)&cds);
+    line("PostMessageW(h, WM_COPYDATA, 0, &cds): ret=%d err=%s", r, le());
+    r = PeekMessageW(&m, NULL, 0, 0, PM_REMOVE);
+    line("a message queued: %s", yesno(r));
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- copydata ------------------------------------------------------ */
+
+#define COPY_CLASS L"F2KGuimsgCopy"
+#define COPY_TEXT "copy across"
+
+/* What the receiving procedure saw of WM_COPYDATA. */
+static int copy_count;
+static WPARAM copy_wparam;
+static DWORD copy_dwdata;
+static DWORD copy_cbdata;
+static int copy_null;
+static int copy_faulted;
+static char copy_bytes[32];
+
+static void copy_read(const COPYDATASTRUCT *cds)
+{
+    int i;
+
+    __try {
+        copy_dwdata = (DWORD)cds->dwData;
+        copy_cbdata = cds->cbData;
+        copy_null = cds->lpData == NULL;
+        if (!copy_null) {
+            memcpy(copy_bytes, cds->lpData, cds->cbData < sizeof copy_bytes - 1 ?
+                   cds->cbData : sizeof copy_bytes - 1);
+            /* Bytes outside 0x20-0x7E print as '.', a NUL ending the text. */
+            for (i = 0; i < (int)sizeof copy_bytes - 1 && copy_bytes[i] != 0; i++) {
+                if (copy_bytes[i] < 0x20 || copy_bytes[i] > 0x7E) {
+                    copy_bytes[i] = '.';
+                }
+            }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        copy_faulted = 1;
+    }
+}
+
+static LRESULT CALLBACK copy_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_COPYDATA) {
+        copy_count++;
+        copy_wparam = wparam;
+        copy_read((const COPYDATASTRUCT *)lparam);
+        return 77;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+/* guimsg.exe --copychild <window>: the other process of copydata. It
+ * prints nothing (its output would land in the parent's block): it sends
+ * WM_COPYDATA to the window, then posts it, and ends with the send's
+ * return in its exit code's low byte, the post's in bit 8 and the
+ * post's last error in the high word. */
+static int copychild(const char *window)
+{
+    COPYDATASTRUCT cds;
+    HWND h;
+    LRESULT r;
+    BOOL p;
+    DWORD e;
+
+    h = (HWND)strtoul(window, NULL, 16);
+    cds.dwData = 0x4B1D;
+    cds.cbData = sizeof COPY_TEXT;
+    cds.lpData = (PVOID)COPY_TEXT;
+    r = SendMessageA(h, WM_COPYDATA, 0, (LPARAM)&cds);
+    SetLastError(0);
+    p = PostMessageA(h, WM_COPYDATA, 0, (LPARAM)&cds);
+    e = GetLastError();
+    return (int)(((DWORD)r & 0xFF) | (p ? 0x100 : 0) | ((e & 0xFFFF) << 16));
+}
+
+static void sec_copydata(void)
+{
+    WNDCLASSW wc;
+    char path[MAX_PATH];
+    char cmdline[MAX_PATH + 32];
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    HWND h;
+    MSG m;
+    DWORD deadline, now, w, code;
+    BOOL ok;
+
+    drain_w();
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = copy_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = COPY_CLASS;
+    RegisterClassW(&wc);
+    h = CreateWindowExW(0, COPY_CLASS, L"copydata", WS_POPUP, 0, 0, 100, 50, NULL, NULL,
+                        GetModuleHandleA(NULL), NULL);
+    line("the receiving window: non-NULL %s", yesno(h != NULL));
+    if (h == NULL) {
+        return;
+    }
+    GetModuleFileNameA(NULL, path, sizeof path);
+    sprintf(cmdline, "\"%s\" --copychild %lx", path, (unsigned long)h);
+    ZeroMemory(&si, sizeof si);
+    si.cb = sizeof si;
+    arm();
+    ok = CreateProcessA(path, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    line("CreateProcessA(guimsg.exe --copychild): ret=%d err=%s", ok, le());
+    if (!ok) {
+        DestroyWindow(h);
+        return;
+    }
+    /* Serve the window until the child ends, at most 5 s. */
+    deadline = GetTickCount() + WAIT_MS;
+    w = WAIT_TIMEOUT;
+    for (;;) {
+        now = GetTickCount();
+        if ((LONG)(deadline - now) <= 0) {
+            break;
+        }
+        w = MsgWaitForMultipleObjects(1, &pi.hProcess, FALSE, deadline - now, QS_ALLINPUT);
+        if (w != WAIT_OBJECT_0 + 1) {
+            break;
+        }
+        while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+            DispatchMessageW(&m);
+        }
+    }
+    line("the child ended: %s", wr(w));
+    if (w != WAIT_OBJECT_0) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, WAIT_MS);
+    }
+    drain_w();
+    line("the procedure received WM_COPYDATA: count=%d wParam=%lu", copy_count,
+         (unsigned long)copy_wparam);
+    if (copy_count != 0) {
+        if (copy_faulted) {
+            line("  reading the COPYDATASTRUCT faulted");
+        } else {
+            line("  dwData=0x%lX cbData=%lu lpData NULL %s, the bytes \"%s\"",
+                 (unsigned long)copy_dwdata, (unsigned long)copy_cbdata, yesno(copy_null),
+                 copy_null ? "" : copy_bytes);
+        }
+    }
+    code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    if (code >= 0x80000000ul || code == 1) {
+        line("the child's exit code: 0x%08lX", (unsigned long)code);
+    } else {
+        line("the child's SendMessageA(WM_COPYDATA): ret=%lu; its PostMessageA(WM_COPYDATA): "
+             "ret=%d err=%lu",
+             (unsigned long)(code & 0xFF), (code & 0x100) != 0, (unsigned long)(code >> 16));
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- the DefWindowProc sections' window ---------------------------- */
+
+/* What the procedure counted: WM_PAINT, WM_SIZE (and the last wParam),
+ * WM_CONTEXTMENU (and the last parameters). */
+static int d_paints;
+static int d_sizes;
+static WPARAM d_size_wparam;
+static int d_ctx;
+static WPARAM d_ctx_wparam;
+static LPARAM d_ctx_lparam;
+
+static LRESULT CALLBACK def_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    PAINTSTRUCT ps;
+
+    switch (msg) {
+    case WM_PAINT:
+        BeginPaint(hwnd, &ps);
+        EndPaint(hwnd, &ps);
+        d_paints++;
+        return 0;
+    case WM_SIZE:
+        d_sizes++;
+        d_size_wparam = wparam;
+        break;
+    case WM_CONTEXTMENU:
+        d_ctx++;
+        d_ctx_wparam = wparam;
+        d_ctx_lparam = lparam;
+        break;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static HWND make_def(DWORD style, HWND parent, int x, int y, int cx, int cy)
+{
+    static BOOL registered;
+    WNDCLASSW wc;
+
+    if (!registered) {
+        ZeroMemory(&wc, sizeof wc);
+        wc.lpfnWndProc = def_proc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.lpszClassName = L"F2KGuimsgDef";
+        registered = RegisterClassW(&wc) != 0;
+    }
+    return CreateWindowExW(0, L"F2KGuimsgDef", L"guimsg", style, x, y, cx, cy, parent, NULL,
+                           GetModuleHandle(NULL), NULL);
+}
+
+/* --- icon ---------------------------------------------------------- */
+
+static HICON g_app_icon;
+static HICON g_hand_icon;
+
+static const char *icon_is(LRESULT r)
+{
+    if (r == 0) {
+        return "NULL";
+    }
+    if ((HICON)r == g_app_icon) {
+        return "the application icon";
+    }
+    if ((HICON)r == g_hand_icon) {
+        return "the hand icon";
+    }
+    return "another";
+}
+
+static void icon_msg(HWND h, const char *label, UINT msg, WPARAM which, HICON icon)
+{
+    LRESULT r;
+
+    arm();
+    r = SendMessageW(h, msg, which, (LPARAM)icon);
+    line("%s: %s err=%s", label, icon_is(r), le());
+}
+
+static void sec_icon(void)
+{
+    HWND h;
+
+    drain_w();
+    g_app_icon = LoadIcon(NULL, IDI_APPLICATION);
+    g_hand_icon = LoadIcon(NULL, IDI_HAND);
+    line("LoadIcon(IDI_APPLICATION) and LoadIcon(IDI_HAND): non-NULL %s, distinct %s",
+         yesno(g_app_icon != NULL && g_hand_icon != NULL), yesno(g_app_icon != g_hand_icon));
+    h = make_def(WS_POPUP, NULL, 0, 0, 200, 100);
+    icon_msg(h, "WM_GETICON(ICON_BIG), none set", WM_GETICON, ICON_BIG, NULL);
+    icon_msg(h, "WM_GETICON(ICON_SMALL), none set", WM_GETICON, ICON_SMALL, NULL);
+    icon_msg(h, "WM_SETICON(ICON_BIG, the application icon)", WM_SETICON, ICON_BIG, g_app_icon);
+    icon_msg(h, "WM_GETICON(ICON_BIG)", WM_GETICON, ICON_BIG, NULL);
+    icon_msg(h, "WM_GETICON(ICON_SMALL)", WM_GETICON, ICON_SMALL, NULL);
+    icon_msg(h, "WM_SETICON(ICON_SMALL, the hand icon)", WM_SETICON, ICON_SMALL, g_hand_icon);
+    icon_msg(h, "WM_GETICON(ICON_SMALL)", WM_GETICON, ICON_SMALL, NULL);
+    icon_msg(h, "WM_SETICON(ICON_BIG, the hand icon)", WM_SETICON, ICON_BIG, g_hand_icon);
+    icon_msg(h, "WM_GETICON(ICON_BIG)", WM_GETICON, ICON_BIG, NULL);
+    icon_msg(h, "WM_SETICON(ICON_BIG, NULL)", WM_SETICON, ICON_BIG, NULL);
+    icon_msg(h, "WM_GETICON(ICON_BIG)", WM_GETICON, ICON_BIG, NULL);
+    icon_msg(h, "WM_GETICON(ICON_SMALL)", WM_GETICON, ICON_SMALL, NULL);
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- redraw -------------------------------------------------------- */
+
+static void redraw_paint(HWND h, const char *what)
+{
+    d_paints = 0;
+    if (what != NULL) {
+        InvalidateRect(h, NULL, TRUE);
+    }
+    UpdateWindow(h);
+    line("  UpdateWindow%s: WM_PAINT count=%d", what != NULL ? what : "", d_paints);
+}
+
+static void redraw_set(HWND h, BOOL on)
+{
+    LRESULT r;
+
+    arm();
+    r = SendMessageW(h, WM_SETREDRAW, on, 0);
+    line("WM_SETREDRAW(%s): ret=%ld err=%s; visible %s, WS_VISIBLE %s", on ? "TRUE" : "FALSE",
+         (long)r, le(), yesno(IsWindowVisible(h)),
+         yesno((GetWindowLong(h, GWL_STYLE) & WS_VISIBLE) != 0));
+}
+
+static void sec_redraw(void)
+{
+    HWND h;
+
+    drain_w();
+    h = make_def(WS_POPUP, NULL, 0, 0, 200, 100);
+    ShowWindow(h, SW_SHOWNA);
+    UpdateWindow(h);
+    drain_w();
+    line("a shown window, painted");
+    redraw_set(h, FALSE);
+    redraw_paint(h, " after an InvalidateRect");
+    redraw_set(h, TRUE);
+    redraw_paint(h, NULL);
+    redraw_paint(h, " after an InvalidateRect");
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- syscmd -------------------------------------------------------- */
+
+static void syscmd(HWND h, const char *name, WPARAM cmd, const RECT *normal)
+{
+    LRESULT r;
+    RECT rc;
+
+    d_sizes = 0;
+    d_size_wparam = 0;
+    arm();
+    r = SendMessageW(h, WM_SYSCOMMAND, cmd, 0);
+    line("WM_SYSCOMMAND(%s): ret=%ld err=%s", name, (long)r, le());
+    drain_w();
+    GetWindowRect(h, &rc);
+    line("  IsIconic=%d IsZoomed=%d; WM_SIZE count=%d last wParam=%lu; the rect the normal one %s",
+         IsIconic(h), IsZoomed(h), d_sizes, (unsigned long)d_size_wparam,
+         yesno(rc.left == normal->left && rc.top == normal->top && rc.right == normal->right &&
+               rc.bottom == normal->bottom));
+}
+
+static void sec_syscmd(void)
+{
+    HWND h;
+    RECT normal;
+
+    drain_w();
+    h = make_def(WS_OVERLAPPEDWINDOW, NULL, 100, 80, 300, 200);
+    ShowWindow(h, SW_SHOWNOACTIVATE);
+    drain_w();
+    GetWindowRect(h, &normal);
+    line("a shown WS_OVERLAPPEDWINDOW window at 100,80 300x200");
+    syscmd(h, "SC_MINIMIZE", SC_MINIMIZE, &normal);
+    syscmd(h, "SC_RESTORE", SC_RESTORE, &normal);
+    syscmd(h, "SC_MAXIMIZE", SC_MAXIMIZE, &normal);
+    syscmd(h, "SC_RESTORE", SC_RESTORE, &normal);
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- ctxmenu ------------------------------------------------------- */
+
+static int p_ctx;
+static WPARAM p_ctx_wparam;
+static LPARAM p_ctx_lparam;
+
+static LRESULT CALLBACK ctx_parent_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_CONTEXTMENU) {
+        p_ctx++;
+        p_ctx_wparam = wparam;
+        p_ctx_lparam = lparam;
+        return 5;
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static void sec_ctxmenu(void)
+{
+    WNDCLASSW wc;
+    HWND parent, child;
+    LRESULT r;
+
+    drain_w();
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = ctx_parent_proc;
+    wc.hInstance = GetModuleHandle(NULL);
+    wc.lpszClassName = L"F2KGuimsgCtxParent";
+    RegisterClassW(&wc);
+    parent = CreateWindowExW(0, L"F2KGuimsgCtxParent", L"parent", WS_POPUP, 0, 0, 200, 100, NULL,
+                             NULL, GetModuleHandle(NULL), NULL);
+    child = make_def(WS_CHILD | WS_VISIBLE, parent, 10, 10, 50, 30);
+    line("a hidden parent and its child: non-NULL %s", yesno(parent != NULL && child != NULL));
+    if (child != NULL) {
+        arm();
+        r = SendMessageW(child, WM_CONTEXTMENU, (WPARAM)child, MAKELPARAM(10, 20));
+        line("SendMessageW(child, WM_CONTEXTMENU, child, (10,20)): ret=%ld err=%s", (long)r, le());
+        line("  the child's procedure saw it: count=%d", d_ctx);
+        line("  the parent's procedure saw it: count=%d, wParam the child %s, lParam (10,20) %s",
+             p_ctx, yesno(p_ctx != 0 && p_ctx_wparam == (WPARAM)child),
+             yesno(p_ctx != 0 && p_ctx_lparam == MAKELPARAM(10, 20)));
+    }
+    if (parent != NULL) {
+        DestroyWindow(parent);
+    }
+    drain_w();
+}
+
+/* --- deadthr ------------------------------------------------------- */
+
+typedef struct {
+    HWND window;
+    int timeout;    /* SendMessageTimeoutW's 1000 ms when nonzero */
+    LRESULT ret;
+    DWORD err;
+} dead_send_t;
+
+static DWORD WINAPI dead_window_thread(LPVOID param)
+{
+    HWND *out = (HWND *)param;
+
+    *out = make_wide(L"deadthr");
+    return 0;
+}
+
+static DWORD WINAPI dead_sender(LPVOID param)
+{
+    dead_send_t *s = (dead_send_t *)param;
+    DWORD res = 0;
+
+    SetLastError(F2KT_UNTOUCHED);
+    if (s->timeout) {
+        s->ret = SendMessageTimeoutW(s->window, MSG_TEST, 1, 2, SMTO_NORMAL, 1000, &res);
+    } else {
+        s->ret = SendMessageW(s->window, MSG_TEST, 1, 2);
+    }
+    s->err = GetLastError();
+    return 0;
+}
+
+static void dead_send(HWND h, int timeout)
+{
+    dead_send_t s;
+    HANDLE th;
+    DWORD tid, w;
+
+    s.window = h;
+    s.timeout = timeout;
+    s.ret = 0;
+    s.err = F2KT_UNTOUCHED;
+    th = CreateThread(NULL, 0, dead_sender, &s, 0, &tid);
+    w = th != NULL ? WaitForSingleObject(th, WAIT_MS) : WAIT_FAILED;
+    if (w == WAIT_OBJECT_0) {
+        line("%s from a thread of its own: returned within 5 s yes, ret=%ld err=%s",
+             timeout ? "SendMessageTimeoutW(SMTO_NORMAL, 1000)" : "SendMessageW", (long)s.ret,
+             le_of(s.err));
+    } else {
+        line("%s from a thread of its own: returned within 5 s no",
+             timeout ? "SendMessageTimeoutW(SMTO_NORMAL, 1000)" : "SendMessageW");
+        if (th != NULL) {
+            TerminateThread(th, 1);
+        }
+    }
+    if (th != NULL) {
+        CloseHandle(th);
+    }
+}
+
+static void sec_deadthr(void)
+{
+    HWND h = NULL;
+    HANDLE th;
+    DWORD tid, w;
+    BOOL r;
+
+    drain_w();
+    reset_wide();
+    th = CreateThread(NULL, 0, dead_window_thread, &h, 0, &tid);
+    w = th != NULL ? WaitForSingleObject(th, WAIT_MS) : WAIT_FAILED;
+    line("a second thread made a window and ended, leaving it: %s, a window %s", wr(w),
+         yesno(h != NULL));
+    if (th != NULL) {
+        CloseHandle(th);
+    }
+    if (h == NULL) {
+        return;
+    }
+    arm();
+    r = IsWindow(h);
+    line("IsWindow(its window): %s err=%s", yesno(r), le());
+    dead_send(h, 0);
+    dead_send(h, 1);
+    arm();
+    r = PostMessageW(h, MSG_TEST, 3, 4);
+    line("PostMessageW(its window): ret=%d err=%s", r, le());
+    line("the procedure saw: count=%ld", (long)w_count);
+}
+
 static const section_t sections[] = {
     { "post", sec_post, F2KT_ALWAYS },
     { "peek", sec_peek, F2KT_ALWAYS },
@@ -936,6 +1521,14 @@ static const section_t sections[] = {
     { "smto", sec_smto, F2KT_ALWAYS },
     { "hung", sec_hung, F2KT_ALWAYS },
     { "notify", sec_notify, F2KT_ALWAYS },
+    { "quota", sec_quota, F2KT_ALWAYS },
+    { "postptr", sec_postptr, F2KT_ALWAYS },
+    { "copydata", sec_copydata, F2KT_ALWAYS },
+    { "icon", sec_icon, F2KT_ALWAYS },
+    { "redraw", sec_redraw, F2KT_ALWAYS },
+    { "syscmd", sec_syscmd, F2KT_ALWAYS },
+    { "ctxmenu", sec_ctxmenu, F2KT_ALWAYS },
+    { "deadthr", sec_deadthr, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
@@ -943,5 +1536,8 @@ int main(int argc, char **argv)
 {
     /* A bad handle or window would fault: no dialog stops the capture. */
     SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+    if (argc >= 3 && strcmp(argv[1], "--copychild") == 0) {
+        return copychild(argv[2]);
+    }
     return run_sections("guimsg", sections, argc, argv);
 }

@@ -76,12 +76,62 @@
  *            typing, a backspace, WM_SETTEXT on each edit, focused and
  *            not, EM_REPLACESEL, EM_SETSEL, WM_CLEAR with and without
  *            a selection, EM_UNDO, EN_MAXTEXT at the limit
+ *   wantret  a dialog made from a template in memory
+ *            (CreateDialogIndirectParamW, the system font) with a
+ *            default OK button and four edits: multiline with and
+ *            without ES_WANTRETURN, single-line with and without it.
+ *            For each: WM_GETDLGCODE for Enter's WM_KEYDOWN, then Enter
+ *            posted to it and pumped through IsDialogMessageW: whether
+ *            the dialog got IDOK, the edit's text, the focus; and
+ *            WM_CHAR '\r' sent straight to the multiline one without it
+ *   autovscroll  multiline edits two lines high (the System font's
+ *            tmHeight), without and with ES_AUTOVSCROLL: four lines
+ *            typed, the text, the notifications (EN_MAXTEXT),
+ *            EM_GETLINECOUNT and EM_GETFIRSTVISIBLELINE; EM_REPLACESEL
+ *            and WM_SETTEXT past the visible lines
+ *   margins  EM_GETMARGINS as created, after EM_SETMARGINS with each
+ *            EC_ flag and none; EC_USEFONTINFO as relations; the
+ *            caret's move when the left margin grows by 10
+ *   linescroll  a two-line-high multiline edit holding six lines:
+ *            EM_LINESCROLL's answers (down, up, past either end,
+ *            sideways) and EM_GETFIRSTVISIBLELINE after each, EM_SCROLL
+ *            with SB_LINEDOWN, SB_PAGEDOWN, SB_LINEUP and SB_PAGEUP; both
+ *            on the single-line edit
+ *   password EM_SETPASSWORDCHAR and EM_GETPASSWORDCHAR through
+ *            SendMessageA and SendMessageW: cp1252's bullet 0x95 set by
+ *            the A form and U+2022 by the W form, each read back by
+ *            both; '*', 0, the ES_PASSWORD style after each, the text;
+ *            an edit created ES_PASSWORD; a multiline edit
+ *   gethandle  EM_GETHANDLE of the multiline edit, the single-line one
+ *            and a multiline edit made by CreateWindowExA (through
+ *            SendMessageA): non-NULL, the same twice, and whether the
+ *            block LocalLock finds holds the text as UTF-16 or as bytes
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat editctl):
- *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% editctl.c user32.lib
+ *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% editctl.c user32.lib gdi32.lib
  */
 
 #include "../common/f2kt.h"
+
+/* The MSVC 6 headers may predate them. */
+#ifndef ES_WANTRETURN
+#define ES_WANTRETURN 0x1000L
+#endif
+#ifndef EM_SETMARGINS
+#define EM_SETMARGINS 0x00D3
+#endif
+#ifndef EM_GETMARGINS
+#define EM_GETMARGINS 0x00D4
+#endif
+#ifndef EC_LEFTMARGIN
+#define EC_LEFTMARGIN 0x0001
+#endif
+#ifndef EC_RIGHTMARGIN
+#define EC_RIGHTMARGIN 0x0002
+#endif
+#ifndef EC_USEFONTINFO
+#define EC_USEFONTINFO 0xFFFF
+#endif
 
 #define PARENT_CLASS L"F2KEditParent"
 
@@ -924,6 +974,483 @@ static void sec_notify(void)
     close_parent();
 }
 
+/* --- wantret ----------------------------------------------------------- */
+
+/* A dialog template built in DWORD-aligned memory: the header, then
+ * each item DWORD-aligned, its class by atom (0x0080 Button, 0x0081
+ * Edit). No menu, the default class, no font (the system font). */
+static DWORD template_dwords[256];
+static WORD *template_at;
+
+static void tw(WORD v)
+{
+    *template_at++ = v;
+}
+
+static void tw_string(const WCHAR *s)
+{
+    do {
+        tw(*s);
+    } while (*s++ != 0);
+}
+
+static void tw_align(void)
+{
+    if (((BYTE *)template_at - (BYTE *)template_dwords) & 3) {
+        tw(0);
+    }
+}
+
+static void template_begin(DWORD style, WORD count, short cx, short cy, const WCHAR *caption)
+{
+    ZeroMemory(template_dwords, sizeof template_dwords);
+    template_at = (WORD *)template_dwords;
+    tw(LOWORD(style));
+    tw(HIWORD(style));
+    tw(0);
+    tw(0);
+    tw(count);
+    tw(10);
+    tw(10);
+    tw((WORD)cx);
+    tw((WORD)cy);
+    tw(0);
+    tw(0);
+    tw_string(caption);
+}
+
+static void template_item(DWORD style, short x, short y, short cx, short cy, WORD id, WORD atom,
+                          const WCHAR *text)
+{
+    tw_align();
+    style |= WS_CHILD | WS_VISIBLE;
+    tw(LOWORD(style));
+    tw(HIWORD(style));
+    tw(0);
+    tw(0);
+    tw((WORD)x);
+    tw((WORD)y);
+    tw((WORD)cx);
+    tw((WORD)cy);
+    tw(id);
+    tw(0xFFFF);
+    tw(atom);
+    tw_string(text);
+    tw(0);
+}
+
+#define MAX_DLG_COMMANDS 8
+
+static int dlg_command_ids[MAX_DLG_COMMANDS];
+static int dlg_command_from[MAX_DLG_COMMANDS];
+static int dlg_command_count;
+
+/* The dialog's procedure: records IDOK and IDCANCEL, handles nothing. */
+static BOOL CALLBACK wantret_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    if (msg == WM_INITDIALOG) {
+        return TRUE;
+    }
+    if (msg == WM_COMMAND && (LOWORD(wparam) == IDOK || LOWORD(wparam) == IDCANCEL)) {
+        if (dlg_command_count < MAX_DLG_COMMANDS) {
+            dlg_command_ids[dlg_command_count] = LOWORD(wparam);
+            dlg_command_from[dlg_command_count] = lparam != 0 && GetDlgItem(hwnd, LOWORD(wparam)) == (HWND)lparam;
+            dlg_command_count++;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Take what is queued through IsDialogMessageW, dispatching what it declines. */
+static void dialog_pump(HWND dlg)
+{
+    MSG m;
+    int n;
+
+    for (n = 0; n < 200 && PeekMessageW(&m, NULL, 0, 0, PM_REMOVE); n++) {
+        if (m.message == WM_QUIT) {
+            continue;
+        }
+        if (!IsDialogMessageW(dlg, &m)) {
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+    }
+}
+
+static void print_dlg_commands(void)
+{
+    int i;
+
+    if (dlg_command_count == 0) {
+        line("  the dialog received no IDOK or IDCANCEL");
+    }
+    for (i = 0; i < dlg_command_count; i++) {
+        line("  the dialog received %s, lParam the button %s", dlg_command_ids[i] == IDOK ? "IDOK" : "IDCANCEL",
+             yesno(dlg_command_from[i]));
+    }
+    dlg_command_count = 0;
+}
+
+static const char *dlg_focus(HWND dlg)
+{
+    static char buf[24];
+    HWND f = GetFocus();
+
+    if (f == NULL) {
+        return "none";
+    }
+    if (f == dlg) {
+        return "the dialog";
+    }
+    sprintf(buf, "id %d", GetDlgCtrlID(f));
+    return buf;
+}
+
+/* Enter in one of the dialog's edits: its dialog code, then Enter
+ * posted to it and pumped. */
+static void enter_in(HWND dlg, int id, const char *name)
+{
+    HWND e = GetDlgItem(dlg, id);
+    MSG m;
+    LRESULT code;
+    LPARAM down = 1 | (0x1C << 16);
+
+    line("-- %d, %s", id, name);
+    if (e == NULL) {
+        line("  no such control");
+        return;
+    }
+    SetFocus(e);
+    SendMessageW(e, WM_SETTEXT, 0, (LPARAM)L"ab");
+    SendMessageW(e, EM_SETSEL, 2, 2);
+    dialog_pump(dlg);
+    dlg_command_count = 0;
+    ZeroMemory(&m, sizeof m);
+    m.hwnd = e;
+    m.message = WM_KEYDOWN;
+    m.wParam = VK_RETURN;
+    m.lParam = down;
+    arm();
+    code = SendMessageW(e, WM_GETDLGCODE, VK_RETURN, (LPARAM)&m);
+    line("WM_GETDLGCODE(%d, Enter's WM_KEYDOWN): ret=0x%04lX err=%s", id, (unsigned long)code, le());
+    PostMessageW(e, WM_KEYDOWN, VK_RETURN, down);
+    PostMessageW(e, WM_KEYUP, VK_RETURN, down | 0xC0000000);
+    dialog_pump(dlg);
+    line("Enter posted to %d, pumped through IsDialogMessageW: the focus %s", id, dlg_focus(dlg));
+    print_dlg_commands();
+    print_text(e);
+}
+
+static void sec_wantret(void)
+{
+    HWND dlg;
+    HWND e;
+    DWORD err;
+    LRESULT r;
+
+    drain();
+    template_begin(WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME, 5, 200, 120, L"F2K wantret");
+    template_item(BS_DEFPUSHBUTTON | WS_TABSTOP, 150, 5, 40, 14, IDOK, 0x0080, L"OK");
+    template_item(ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL | WS_BORDER | WS_TABSTOP, 5, 5, 130, 24, 101,
+                  0x0081, L"");
+    template_item(ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_WANTRETURN | WS_BORDER | WS_TABSTOP, 5, 35,
+                  130, 24, 102, 0x0081, L"");
+    template_item(ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 5, 65, 130, 12, 103, 0x0081, L"");
+    template_item(ES_AUTOHSCROLL | ES_WANTRETURN | WS_BORDER | WS_TABSTOP, 5, 85, 130, 12, 104, 0x0081, L"");
+    dlg_command_count = 0;
+    arm();
+    dlg = CreateDialogIndirectParamW(instance(), (const DLGTEMPLATE *)template_dwords, NULL, (DLGPROC)wantret_proc,
+                                     0);
+    err = GetLastError();
+    line("CreateDialogIndirectParamW(OK, 101 multiline, 102 multiline | ES_WANTRETURN, 103 single, 104 single | "
+         "ES_WANTRETURN): non-NULL %s err=%s", yesno(dlg != NULL), le_of(err));
+    if (dlg == NULL) {
+        return;
+    }
+    ShowWindow(dlg, SW_SHOWNORMAL);
+    SetForegroundWindow(dlg);
+    dialog_pump(dlg);
+    line("the dialog shown: the foreground %s", yesno(GetForegroundWindow() == dlg));
+    line("102's style=0x%08lX, 104's style=0x%08lX", (unsigned long)GetWindowLongW(GetDlgItem(dlg, 102), GWL_STYLE),
+         (unsigned long)GetWindowLongW(GetDlgItem(dlg, 104), GWL_STYLE));
+    enter_in(dlg, 101, "ES_MULTILINE");
+    enter_in(dlg, 102, "ES_MULTILINE | ES_WANTRETURN");
+    enter_in(dlg, 103, "single-line");
+    enter_in(dlg, 104, "single-line, ES_WANTRETURN");
+    line("-- 101, WM_CHAR '\\r' sent to it");
+    e = GetDlgItem(dlg, 101);
+    SendMessageW(e, WM_SETTEXT, 0, (LPARAM)L"ab");
+    SendMessageW(e, EM_SETSEL, 2, 2);
+    arm();
+    r = SendMessageW(e, WM_CHAR, '\r', 1 | (0x1C << 16));
+    line("SendMessageW(101, WM_CHAR, '\\r'): ret=%ld err=%s", (long)r, le());
+    print_dlg_commands();
+    print_text(e);
+    DestroyWindow(dlg);
+    drain();
+}
+
+/* --- autovscroll, linescroll ---------------------------------------- */
+
+/* The System font's line height, which edits given no font use. */
+static int line_height(void)
+{
+    HDC dc = GetDC(NULL);
+    HGDIOBJ old = SelectObject(dc, GetStockObject(SYSTEM_FONT));
+    TEXTMETRICA tm;
+
+    ZeroMemory(&tm, sizeof tm);
+    GetTextMetricsA(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    return tm.tmHeight;
+}
+
+/* A multiline edit two and a half lines high (its border included):
+ * two whole lines show. */
+static HWND short_edit(DWORD style, int id, int y, const WCHAR *text, const char *what)
+{
+    int h = line_height();
+
+    return make_edit(style, id, 10, y, 280, 2 * h + h / 2 + 2, text, what);
+}
+
+static void sec_autovscroll(void)
+{
+    HWND no;
+    HWND yes_;
+
+    open_parent();
+    no = short_edit(ES_MULTILINE | ES_AUTOHSCROLL, 103, 10, L"", "ES_MULTILINE | ES_AUTOHSCROLL, two lines high");
+    yes_ = short_edit(MULTI_STYLE, 104, 80, L"", "ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL, two lines high");
+    line("-- no ES_AUTOVSCROLL");
+    focus(no, "103");
+    type(no, L"a\rb\rc\rd", "103");
+    ask(no, EM_GETLINECOUNT, 0, 0, "EM_GETLINECOUNT(103)");
+    ask(no, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    set_sel(no, 99, 99, "103 (to the end)");
+    replace_sel(no, TRUE, L"\r\nx", "103");
+    set_text(no, L"1\r\n2\r\n3\r\n4", "103, four lines");
+    ask(no, EM_GETLINECOUNT, 0, 0, "EM_GETLINECOUNT(103)");
+    line("-- ES_AUTOVSCROLL");
+    focus(yes_, "104");
+    type(yes_, L"a\rb\rc\rd", "104");
+    ask(yes_, EM_GETLINECOUNT, 0, 0, "EM_GETLINECOUNT(104)");
+    ask(yes_, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(104)");
+    close_parent();
+}
+
+static void sec_linescroll(void)
+{
+    HWND e;
+
+    open_parent();
+    single = make_edit(SINGLE_STYLE, ID_SINGLE, 10, 10, 280, 24, L"Hello", "single");
+    e = short_edit(MULTI_STYLE, 103, 40, L"1\r\n2\r\n3\r\n4\r\n5\r\n6", "multi, two lines high, six lines");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 0, 2, "EM_LINESCROLL(103, 0, 2)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 0, -1, "EM_LINESCROLL(103, 0, -1)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 0, -10, "EM_LINESCROLL(103, 0, -10)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 0, 100, "EM_LINESCROLL(103, 0, 100)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 3, 0, "EM_LINESCROLL(103, 3, 0), sideways");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_LINESCROLL, 0, -100, "EM_LINESCROLL(103, 0, -100)");
+    ask(e, EM_SCROLL, SB_LINEDOWN, 0, "EM_SCROLL(103, SB_LINEDOWN)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_SCROLL, SB_PAGEDOWN, 0, "EM_SCROLL(103, SB_PAGEDOWN)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_SCROLL, SB_LINEUP, 0, "EM_SCROLL(103, SB_LINEUP)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_SCROLL, SB_PAGEUP, 0, "EM_SCROLL(103, SB_PAGEUP)");
+    ask(e, EM_GETFIRSTVISIBLELINE, 0, 0, "EM_GETFIRSTVISIBLELINE(103)");
+    ask(e, EM_SCROLL, 99, 0, "EM_SCROLL(103, 99)");
+    ask(single, EM_LINESCROLL, 0, 1, "EM_LINESCROLL(single, 0, 1)");
+    ask(single, EM_SCROLL, SB_LINEDOWN, 0, "EM_SCROLL(single, SB_LINEDOWN)");
+    close_parent();
+}
+
+/* --- margins ----------------------------------------------------------- */
+
+static LRESULT margins(HWND h, const char *what)
+{
+    LRESULT r;
+
+    arm();
+    r = SendMessageW(h, EM_GETMARGINS, 0, 0);
+    line("EM_GETMARGINS(%s): ret=0x%08lX err=%s left=%u right=%u", what, (unsigned long)r, le(),
+         (unsigned)LOWORD(r), (unsigned)HIWORD(r));
+    return r;
+}
+
+static void margins_of(HWND h, const char *name)
+{
+    char what[96];
+    LRESULT r;
+
+    line("-- %s", name);
+    margins(h, "as created");
+    sprintf(what, "EM_SETMARGINS(%s, EC_LEFTMARGIN | EC_RIGHTMARGIN, 3, 5)", name);
+    ask(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(3, 5), what);
+    margins(h, name);
+    sprintf(what, "EM_SETMARGINS(%s, EC_LEFTMARGIN, 7, 9)", name);
+    ask(h, EM_SETMARGINS, EC_LEFTMARGIN, MAKELONG(7, 9), what);
+    margins(h, name);
+    sprintf(what, "EM_SETMARGINS(%s, EC_RIGHTMARGIN, 11, 13)", name);
+    ask(h, EM_SETMARGINS, EC_RIGHTMARGIN, MAKELONG(11, 13), what);
+    margins(h, name);
+    sprintf(what, "EM_SETMARGINS(%s, 0, 1, 1)", name);
+    ask(h, EM_SETMARGINS, 0, MAKELONG(1, 1), what);
+    margins(h, name);
+    sprintf(what, "EM_SETMARGINS(%s, EC_LEFTMARGIN | EC_RIGHTMARGIN, EC_USEFONTINFO, EC_USEFONTINFO)", name);
+    ask(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(EC_USEFONTINFO, EC_USEFONTINFO), what);
+    arm();
+    r = SendMessageW(h, EM_GETMARGINS, 0, 0);
+    line("EM_GETMARGINS(%s): err=%s left the same as right %s, left 0xFFFF %s, left below 16 %s", name, le(),
+         yesno(LOWORD(r) == HIWORD(r)), yesno(LOWORD(r) == 0xFFFF), yesno(LOWORD(r) < 16));
+}
+
+static void sec_margins(void)
+{
+    POINT p0, p1;
+    LRESULT r;
+    int left;
+
+    open_parent();
+    open_edits(L"Hello", L"Hello");
+    margins_of(single, "single");
+    margins_of(multi, "multi");
+    line("-- the caret in single as its left margin grows by 10");
+    ask(single, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(2, 2), "EM_SETMARGINS(single, both, 2, 2)");
+    focus(single, "single");
+    set_sel(single, 0, 0, "single");
+    p0.x = p0.y = -7;
+    GetCaretPos(&p0);
+    r = margins(single, "single");
+    left = LOWORD(r);
+    ask(single, EM_SETMARGINS, EC_LEFTMARGIN, MAKELONG(left + 10, 0), "EM_SETMARGINS(single, EC_LEFTMARGIN, + 10)");
+    set_sel(single, 1, 1, "single");
+    set_sel(single, 0, 0, "single");
+    p1.x = p1.y = -7;
+    GetCaretPos(&p1);
+    line("  the caret (GetCaretPos) 10 pixels right of where it was %s, on the same row %s", yesno(p1.x - p0.x == 10),
+         yesno(p1.y == p0.y));
+    close_parent();
+}
+
+/* --- password ---------------------------------------------------------- */
+
+static void get_password(HWND h, const char *what)
+{
+    LRESULT a;
+    LRESULT w;
+    DWORD ea;
+    DWORD ew;
+
+    arm();
+    a = SendMessageA(h, EM_GETPASSWORDCHAR, 0, 0);
+    ea = GetLastError();
+    arm();
+    w = SendMessageW(h, EM_GETPASSWORDCHAR, 0, 0);
+    ew = GetLastError();
+    line("EM_GETPASSWORDCHAR(%s): SendMessageA ret=0x%lX err=%s, SendMessageW ret=0x%lX err=%s; ES_PASSWORD %s",
+         what, (unsigned long)a, le_of(ea), (unsigned long)w, le_of(ew),
+         yesno((GetWindowLongW(h, GWL_STYLE) & ES_PASSWORD) != 0));
+}
+
+static void set_password(HWND h, int ansi, WPARAM c, const char *what)
+{
+    LRESULT r;
+
+    arm();
+    r = ansi ? SendMessageA(h, EM_SETPASSWORDCHAR, c, 0) : SendMessageW(h, EM_SETPASSWORDCHAR, c, 0);
+    line("EM_SETPASSWORDCHAR(%s, 0x%lX) through SendMessage%s: ret=%ld err=%s", what, (unsigned long)c,
+         ansi ? "A" : "W", (long)r, le());
+    print_commands();
+}
+
+static void sec_password(void)
+{
+    HWND pw;
+
+    open_parent();
+    open_edits(L"secret", L"secret");
+    pw = make_edit(SINGLE_STYLE | ES_PASSWORD, 103, 10, 200, 280, 24, L"secret", "ES_LEFT | ES_AUTOHSCROLL | ES_PASSWORD");
+    get_password(pw, "the ES_PASSWORD edit, as created");
+    print_text(pw);
+    get_password(single, "single, as created");
+    set_password(single, 1, 0x95, "single");
+    get_password(single, "single");
+    set_password(single, 0, 0x2022, "single");
+    get_password(single, "single");
+    set_password(single, 0, '*', "single");
+    get_password(single, "single");
+    print_text(single);
+    set_password(single, 1, 0, "single");
+    get_password(single, "single");
+    set_password(multi, 1, '*', "multi");
+    get_password(multi, "multi");
+    close_parent();
+}
+
+/* --- gethandle --------------------------------------------------------- */
+
+static void handle_of(HWND h, int ansi, const WCHAR *wide, const char *bytes, const char *what)
+{
+    HLOCAL m;
+    HLOCAL again;
+    DWORD err;
+    const BYTE *p;
+    int n = lstrlenA(bytes);
+
+    arm();
+    m = (HLOCAL)(ansi ? SendMessageA(h, EM_GETHANDLE, 0, 0) : SendMessageW(h, EM_GETHANDLE, 0, 0));
+    err = GetLastError();
+    again = (HLOCAL)(ansi ? SendMessageA(h, EM_GETHANDLE, 0, 0) : SendMessageW(h, EM_GETHANDLE, 0, 0));
+    line("EM_GETHANDLE(%s) through SendMessage%s: non-NULL %s err=%s, the same again %s", what, ansi ? "A" : "W",
+         yesno(m != NULL), le_of(err), yesno(again == m));
+    if (m == NULL) {
+        return;
+    }
+    p = (const BYTE *)LocalLock(m);
+    if (p == NULL) {
+        line("  LocalLock: NULL");
+        return;
+    }
+    line("  the block holds the text as UTF-16 %s, as bytes %s", yesno(memcmp(p, wide, (size_t)(n + 1) * 2) == 0),
+         yesno(memcmp(p, bytes, (size_t)n + 1) == 0));
+    LocalUnlock(m);
+}
+
+static void sec_gethandle(void)
+{
+    HWND a;
+    DWORD err;
+
+    open_parent();
+    open_edits(L"abc", L"abc\r\nde");
+    handle_of(multi, 0, L"abc\r\nde", "abc\r\nde", "multi");
+    handle_of(single, 0, L"abc", "abc", "single");
+    arm();
+    a = CreateWindowExA(0, "EDIT", "abc\r\nde", WS_CHILD | WS_VISIBLE | WS_BORDER | MULTI_STYLE, 10, 200, 280, 60,
+                        parent, (HMENU)103, GetModuleHandleA(NULL), NULL);
+    err = GetLastError();
+    line("CreateWindowExA(\"EDIT\", multiline, id 103, \"abc\\r\\nde\"): non-NULL %s err=%s", yesno(a != NULL),
+         le_of(err));
+    drain();
+    command_count = 0;
+    if (a != NULL) {
+        handle_of(a, 1, L"abc\r\nde", "abc\r\nde", "the A edit");
+        handle_of(a, 0, L"abc\r\nde", "abc\r\nde", "the A edit");
+    }
+    close_parent();
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "text", sec_text, F2KT_ALWAYS },
@@ -935,6 +1462,12 @@ static const section_t sections[] = {
     { "modify", sec_modify, F2KT_ALWAYS },
     { "case", sec_case, F2KT_ALWAYS },
     { "notify", sec_notify, F2KT_ALWAYS },
+    { "wantret", sec_wantret, F2KT_ALWAYS },
+    { "autovscroll", sec_autovscroll, F2KT_ALWAYS },
+    { "margins", sec_margins, F2KT_ALWAYS },
+    { "linescroll", sec_linescroll, F2KT_ALWAYS },
+    { "password", sec_password, F2KT_ALWAYS },
+    { "gethandle", sec_gethandle, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

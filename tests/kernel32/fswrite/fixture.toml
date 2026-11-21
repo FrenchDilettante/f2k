@@ -1,9 +1,16 @@
 # fswrite: one test per block of the real-machine capture (output.txt); see tests/README.md. The dirs
 # block's hundred files take about twenty seconds in the unoptimized kernel, hence the longer timeout.
-description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, CRT writes, and LockFile/UnlockFile between two handles (the I/O a lock refuses, unlocks of ranges never locked), in a scratch directory."
+description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, CRT writes, and LockFile/UnlockFile between two handles (the I/O a lock refuses, unlocks of ranges never locked), MoveFileEx's refusals that leave both names (moveinto), truncating opens against another handle's sharing (overwrite), overlapped file I/O (overlap), negative OVERLAPPED offsets (negoff) and a tree past MAX_PATH through \\\\?\\ (deep), in a scratch directory."
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pending]
+# Not captured yet: tests/build.bat fswrite rebuilds fswrite.exe with these sections, and
+# tests/capture.bat fswrite captures their blocks on the Windows 2000 machine.
+moveinto = "F2K answers ERROR_ACCESS_DENIED for a directory moved into or beneath itself and for a replacing move onto a file held open, statuses chosen from memory, not from a capture"
+overlap = "kernel32 exports no GetOverlappedResult (the section stops after its first line), and F2K's overlapped file I/O has never been compared"
+deep = "F2K's ntdll bounds a path's NT name at MAX_PATH + 8 (curdir.rs NT_ROOM), so a \\\\?\\ path past MAX_PATH never reaches NtCreateFile"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -141,3 +148,55 @@ movex = [
     "ntdll.NtSetInformationFile",
 ]
 lock = ["kernel32.LockFile", "kernel32.UnlockFile", "kernel32.ReadFile", "kernel32.WriteFile"]
+moveinto = [
+    "kernel32.MoveFileExA",
+    "kernel32.MoveFileExW",
+    "kernel32.CreateFileA",
+    "kernel32.CreateDirectoryA",
+    "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesW",
+    "ntdll.NtSetInformationFile",
+]
+overwrite = [
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileW",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.GetFileAttributesExA",
+    "kernel32.GetFileAttributesExW",
+    "ntdll.NtCreateFile",
+]
+overlap = [
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "kernel32.CreateEventA",
+    "kernel32.ResetEvent",
+    "kernel32.WaitForSingleObject",
+    "kernel32.WaitForMultipleObjects",
+    "kernel32.GetFileSize",
+    "kernel32.SetFilePointer",
+    "ntdll.NtReadFile",
+    "ntdll.NtWriteFile",
+]
+negoff = [
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "kernel32.GetFileSize",
+    "kernel32.SetFilePointer",
+    "ntdll.NtReadFile",
+    "ntdll.NtWriteFile",
+]
+deep = [
+    "kernel32.CreateDirectoryW",
+    "kernel32.RemoveDirectoryW",
+    "kernel32.CreateFileW",
+    "kernel32.CreateFileA",
+    "kernel32.GetFileAttributesW",
+    "kernel32.GetFileAttributesA",
+    "kernel32.DeleteFileW",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "ntdll.RtlDosPathNameToNtPathName_U",
+]

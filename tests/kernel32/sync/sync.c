@@ -33,6 +33,13 @@
  *                WaitForSingleObject and WaitForMultipleObjects on named
  *                events: once every handle is closed, whether the names
  *                still open (the waits' hold on them gone with the thread)
+ *   access       handles opened or duplicated with less access than the
+ *                operation needs: SetEvent, ReleaseSemaphore,
+ *                SetWaitableTimer and a wait through them, ReleaseMutex
+ *                through a SYNCHRONIZE-only handle, OpenEventA asking for
+ *                nothing, a write view through FILE_MAP_READ, a write
+ *                through a file handle duplicated for GENERIC_READ (the A
+ *                calls only: access is no matter of the name's form)
  *
  * The named objects run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)").
@@ -913,6 +920,128 @@ static void sec_waitleak(void)
     leak_case("WaitForMultipleObjects", leak_wait_multiple);
 }
 
+/* --- access -------------------------------------------------------- */
+
+/* A handle's access, as each service checks it. */
+static void sec_access(void)
+{
+    HANDLE cur = GetCurrentProcess();
+    HANDLE full, h, dup, file;
+    LARGE_INTEGER due;
+    LONG prev;
+    DWORD w, n;
+    LPVOID view;
+    BOOL r;
+
+    full = CreateEventA(NULL, TRUE, FALSE, "f2kt-access-event");
+    h = OpenEventA(SYNCHRONIZE, FALSE, "f2kt-access-event");
+    arm();
+    r = SetEvent(h);
+    line("event, SYNCHRONIZE: SetEvent ret=%d err=%s", r, le());
+    arm();
+    r = ResetEvent(h);
+    line("event, SYNCHRONIZE: ResetEvent ret=%d err=%s", r, le());
+    arm();
+    w = WaitForSingleObject(h, 0);
+    line("event, SYNCHRONIZE: wait %s err=%s", wr(w), le());
+    CloseHandle(h);
+    h = OpenEventA(EVENT_MODIFY_STATE, FALSE, "f2kt-access-event");
+    arm();
+    r = SetEvent(h);
+    line("event, EVENT_MODIFY_STATE: SetEvent ret=%d err=%s", r, le());
+    arm();
+    w = WaitForSingleObject(h, 0);
+    line("event, EVENT_MODIFY_STATE: wait %s err=%s", wr(w), le());
+    CloseHandle(h);
+    arm();
+    h = OpenEventA(0, FALSE, "f2kt-access-event");
+    line("event: OpenEventA(0) a handle %s err=%s", yesno(h != NULL), le());
+    if (h != NULL) {
+        CloseHandle(h);
+    }
+    dup = NULL;
+    DuplicateHandle(cur, full, cur, &dup, SYNCHRONIZE, FALSE, 0);
+    arm();
+    r = SetEvent(dup);
+    line("event, duplicated SYNCHRONIZE: SetEvent ret=%d err=%s", r, le());
+    CloseHandle(dup);
+    dup = NULL;
+    DuplicateHandle(cur, full, cur, &dup, GENERIC_WRITE, FALSE, 0);
+    arm();
+    r = SetEvent(dup);
+    line("event, duplicated GENERIC_WRITE: SetEvent ret=%d err=%s", r, le());
+    CloseHandle(dup);
+    CloseHandle(full);
+
+    full = CreateMutexA(NULL, FALSE, "f2kt-access-mutex");
+    h = OpenMutexA(SYNCHRONIZE, FALSE, "f2kt-access-mutex");
+    w = WaitForSingleObject(h, 0);
+    arm();
+    r = ReleaseMutex(h);
+    line("mutex, SYNCHRONIZE: wait %s, ReleaseMutex ret=%d err=%s", wr(w), r, le());
+    CloseHandle(h);
+    CloseHandle(full);
+
+    full = CreateSemaphoreA(NULL, 0, 2, "f2kt-access-semaphore");
+    h = OpenSemaphoreA(SYNCHRONIZE, FALSE, "f2kt-access-semaphore");
+    prev = -7;
+    arm();
+    r = ReleaseSemaphore(h, 1, &prev);
+    line("semaphore, SYNCHRONIZE: ReleaseSemaphore ret=%d prev %ld err=%s", r, prev, le());
+    CloseHandle(h);
+    h = OpenSemaphoreA(SEMAPHORE_MODIFY_STATE, FALSE, "f2kt-access-semaphore");
+    prev = -7;
+    arm();
+    r = ReleaseSemaphore(h, 1, &prev);
+    line("semaphore, SEMAPHORE_MODIFY_STATE: ReleaseSemaphore ret=%d prev %ld err=%s", r, prev,
+         le());
+    arm();
+    w = WaitForSingleObject(h, 0);
+    line("semaphore, SEMAPHORE_MODIFY_STATE: wait %s err=%s", wr(w), le());
+    CloseHandle(h);
+    CloseHandle(full);
+
+    full = CreateWaitableTimerA(NULL, TRUE, "f2kt-access-timer");
+    h = OpenWaitableTimerA(SYNCHRONIZE, FALSE, "f2kt-access-timer");
+    due.QuadPart = -10000000;
+    arm();
+    r = SetWaitableTimer(h, &due, 0, NULL, NULL, FALSE);
+    line("timer, SYNCHRONIZE: SetWaitableTimer ret=%d err=%s", r, le());
+    arm();
+    r = CancelWaitableTimer(h);
+    line("timer, SYNCHRONIZE: CancelWaitableTimer ret=%d err=%s", r, le());
+    CloseHandle(h);
+    CloseHandle(full);
+
+    full = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, 4096,
+                              "f2kt-access-mapping");
+    h = OpenFileMappingA(FILE_MAP_READ, FALSE, "f2kt-access-mapping");
+    arm();
+    view = MapViewOfFile(h, FILE_MAP_WRITE, 0, 0, 0);
+    line("mapping, FILE_MAP_READ: a write view %s err=%s", yesno(view != NULL), le());
+    if (view != NULL) {
+        UnmapViewOfFile(view);
+    }
+    CloseHandle(h);
+    CloseHandle(full);
+
+    file = CreateFileA("f2kacc.tmp", GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                       FILE_ATTRIBUTE_NORMAL, NULL);
+    dup = NULL;
+    DuplicateHandle(cur, file, cur, &dup, GENERIC_READ, FALSE, 0);
+    n = 0;
+    arm();
+    r = WriteFile(dup, "x", 1, &n, NULL);
+    line("file, duplicated GENERIC_READ: WriteFile ret=%d wrote %lu err=%s", r, n, le());
+    n = 0;
+    arm();
+    r = WriteFile(file, "x", 1, &n, NULL);
+    line("file, its open: WriteFile ret=%d wrote %lu err=%s", r, n, le());
+    CloseHandle(dup);
+    CloseHandle(file);
+    DeleteFileA("f2kacc.tmp");
+}
+
 static const section_t sections[] = {
     { "event", sec_event, 0 },
     { "semaphore", sec_semaphore, 0 },
@@ -924,6 +1053,7 @@ static const section_t sections[] = {
     { "handles", sec_handles, 0 },
     { "pingpong", sec_pingpong, 0 },
     { "waitleak", sec_waitleak, 0 },
+    { "access", sec_access, 0 },
     { NULL, NULL, 0 }
 };
 

@@ -130,6 +130,129 @@ static void print_device(const char *what, PDRIVER_OBJECT driver, PDEVICE_OBJECT
          yesno(d->DeviceObjectExtension != NULL && d->DeviceObjectExtension->DeviceObject == d));
 }
 
+/* --- A request held pending (pendirp) ------------------------------ */
+
+/* The request F2KD_IOCTL_PEND left pending, until F2KD_IOCTL_RELEASE
+ * completes it: set by the pending request's thread once its record is
+ * written, cleared by the release's (one of each per load). */
+static PIRP volatile held_irp;
+static char pend_text[2048];
+static f2kd_text_t pend_log = { pend_text, sizeof pend_text, 0, FALSE };
+
+static NTSTATUS finish(PIRP irp, NTSTATUS status, ULONG information)
+{
+    irp->IoStatus.Status = status;
+    irp->IoStatus.Information = information;
+    IoCompleteRequest(irp, IO_NO_INCREMENT);
+    return status;
+}
+
+/* F2KD_IOCTL_PEND: marked pending and held, STATUS_PENDING returned;
+ * nothing touches the IRP once it is held (the release may complete it
+ * before this returns). */
+static NTSTATUS pend(PIRP irp, PIO_STACK_LOCATION stack)
+{
+    f2kd_text_t *saved = f2kd_out;
+    UCHAR before = stack->Control;
+    BOOLEAN pending_returned = irp->PendingReturned;
+    ULONG in_length = stack->Parameters.DeviceIoControl.InputBufferLength;
+    const char *in = (const char *)irp->AssociatedIrp.SystemBuffer;
+
+    if (held_irp != NULL) {
+        return finish(irp, STATUS_DEVICE_BUSY, 0);
+    }
+    if (in == NULL || in_length > 16) {
+        in_length = 0;
+    }
+    IoMarkIrpPending(irp);
+    pend_log.used = 0;
+    pend_log.full = FALSE;
+    f2kd_out = &pend_log;
+    line("pend: IRQL=%u, the IRP: PendingReturned=%d Cancel=%d", KeGetCurrentIrql(), pending_returned, irp->Cancel);
+    line("pend: the stack's Control: 0x%02X before IoMarkIrpPending, 0x%02X after", before, stack->Control);
+    line("pend: its input: \"%.*s\", OutputBufferLength=%lu", (int)in_length, in != NULL ? in : "",
+         stack->Parameters.DeviceIoControl.OutputBufferLength);
+    line("pend: held, STATUS_PENDING returned");
+    f2kd_out = saved;
+    held_irp = irp;
+    return STATUS_PENDING;
+}
+
+/* F2KD_IOCTL_HELD: a ULONG, 1 while a request is held. */
+static NTSTATUS held(PIRP irp, PIO_STACK_LOCATION stack)
+{
+    if (irp->AssociatedIrp.SystemBuffer == NULL
+        || stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(ULONG)) {
+        return finish(irp, STATUS_BUFFER_TOO_SMALL, 0);
+    }
+    *(ULONG *)irp->AssociatedIrp.SystemBuffer = held_irp != NULL;
+    return finish(irp, STATUS_SUCCESS, sizeof(ULONG));
+}
+
+/* F2KD_IOCTL_RELEASE: the held request completed, its output written
+ * first; this request's output is the record of both. */
+static NTSTATUS release(PIRP irp, PIO_STACK_LOCATION stack)
+{
+    static const char reply[] = "written by the release";
+    f2kd_text_t *saved = f2kd_out;
+    PIRP p = held_irp;
+    ULONG n;
+
+    held_irp = NULL;
+    f2kd_out = &pend_log;
+    if (p == NULL) {
+        line("release: no request held");
+    } else {
+        PIO_STACK_LOCATION ps = IoGetCurrentIrpStackLocation(p);
+
+        n = sizeof reply;
+        if (n > ps->Parameters.DeviceIoControl.OutputBufferLength) {
+            n = ps->Parameters.DeviceIoControl.OutputBufferLength;
+        }
+        if (p->AssociatedIrp.SystemBuffer == NULL) {
+            n = 0;
+        } else {
+            RtlCopyMemory(p->AssociatedIrp.SystemBuffer, reply, n);
+        }
+        line("release: in the held IRP's thread: %s", yesno(p->Tail.Overlay.Thread == PsGetCurrentThread()));
+        line("release: the held IRP: PendingReturned=%d Cancel=%d, its stack's Control=0x%02X", p->PendingReturned,
+             p->Cancel, ps->Control);
+        line("release: IoCompleteRequest(the held IRP), STATUS_SUCCESS, %lu bytes", n);
+        p->IoStatus.Status = STATUS_SUCCESS;
+        p->IoStatus.Information = n;
+        IoCompleteRequest(p, IO_NO_INCREMENT);
+        line("release: IoCompleteRequest returned");
+    }
+    f2kd_out = saved;
+    n = pend_log.used;
+    if (n > stack->Parameters.DeviceIoControl.OutputBufferLength) {
+        n = stack->Parameters.DeviceIoControl.OutputBufferLength;
+    }
+    if (irp->AssociatedIrp.SystemBuffer == NULL) {
+        n = 0;
+    } else {
+        RtlCopyMemory(irp->AssociatedIrp.SystemBuffer, pend_log.buffer, n);
+    }
+    return finish(irp, STATUS_SUCCESS, n);
+}
+
+/* IRP_MJ_DEVICE_CONTROL: the pending codes here, the rest as f2kd.h
+ * dispatches them. */
+static NTSTATUS NTAPI on_control(PDEVICE_OBJECT device, PIRP irp)
+{
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(irp);
+
+    switch (stack->Parameters.DeviceIoControl.IoControlCode) {
+    case F2KD_IOCTL_PEND:
+        return pend(irp, stack);
+    case F2KD_IOCTL_HELD:
+        return held(irp, stack);
+    case F2KD_IOCTL_RELEASE:
+        return release(irp, stack);
+    }
+    return f2kd_dispatch(device, irp);
+}
+
 /* --- DriverEntry's hooks ------------------------------------------- */
 
 static void on_entry(PDRIVER_OBJECT driver, PUNICODE_STRING registry_path)
@@ -207,8 +330,10 @@ static void on_entry(PDRIVER_OBJECT driver, PUNICODE_STRING registry_path)
 
 static void on_ready(PDRIVER_OBJECT driver, PDEVICE_OBJECT device)
 {
-    /* drvload watches IRP_MJ_CLEANUP too (the irps section). */
+    /* drvload watches IRP_MJ_CLEANUP too (the irps section), and holds a
+     * request pending (the pendirp section). */
     driver->MajorFunction[IRP_MJ_CLEANUP] = f2kd_dispatch;
+    driver->MajorFunction[IRP_MJ_DEVICE_CONTROL] = on_control;
 
     print_device("IoCreateDevice", driver, device);
     line("IoCreateDevice: DriverObject->DeviceObject is the device: %s", yesno(driver->DeviceObject == device));

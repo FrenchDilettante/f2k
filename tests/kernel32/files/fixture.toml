@@ -1,10 +1,13 @@
 # files: one test per block of the real-machine capture (output.txt); see tests/README.md. The read
 # block's five thousand small reads take about twenty seconds in the unoptimized kernel, each through
 # kernel32's ReadFile and NtReadFile, hence the longer timeout.
-description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, concurrent readers, which freed handle slot an open takes, handle flags (GetHandleInformation, SetHandleInformation, NtQueryObject), a duplicated handle's shared position while another thread reads, and image sections outliving their file's handle. Captured on a local FAT32 volume, as F2K's boot volume is."
+description = "files - the read side of the file API over files/DATA (files.c): path forms and errors, chunked and boundary reads, seeks, metadata, FindFirstFile listings, share modes, CRT file I/O, read-only file mappings, concurrent readers, which freed handle slot an open takes, handle flags (GetHandleInformation, SetHandleInformation, NtQueryObject), a duplicated handle's shared position while another thread reads, image sections outliving their file's handle, and GetFullPathName over UNC, device and \\\\?\\ forms with the devices opened by name (devpath). Captured on a local FAT32 volume, as F2K's boot volume is."
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pending]
+devpath = "F2K's GetFullPathName adds a separator after a UNC share and resolves device names against the current directory instead of to \\\\.\\, and its required size past 4 * MAX_PATH is 0"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -198,4 +201,14 @@ imagesec = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
     "ntdll.NtCreateSection",
+]
+devpath = [
+    "kernel32.GetFullPathNameA",
+    "kernel32.GetFullPathNameW",
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileW",
+    "kernel32.GetFileType",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "ntdll.RtlGetFullPathName_U",
 ]

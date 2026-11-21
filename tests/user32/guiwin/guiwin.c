@@ -29,6 +29,20 @@
  *            second DestroyWindow of it
  *   cursor   LoadCursorA/W of the IDC_ARROW stock cursor, and
  *            LoadCursorA of a non-stock id
+ *   refuse   CreateWindowExA/W of a class whose procedure refuses the
+ *            creation: WM_NCCREATE answering 0, WM_CREATE answering -1,
+ *            and WM_CREATE answering -2; the return, the last error,
+ *            and the creation and destruction messages the procedure
+ *            received, in order
+ *   uniq     the section's first window's handle (its high word
+ *            nonzero); the window destroyed and another made at once:
+ *            the new handle against the old (the same, the same low
+ *            word, the high word one more), IsWindow and DestroyWindow
+ *            of the stale handle, and the new window after
+ *
+ * refuse and uniq make WS_POPUP windows at an explicit position. uniq's
+ * low-word relation holds while no other program makes a user object
+ * between the destruction and the creation.
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat guiwin):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guiwin.c user32.lib
@@ -201,6 +215,153 @@ static void sec_cursor(void)
     line("LoadCursorA(32767): NULL %s err=%s", yesno(c_other == NULL), le());
 }
 
+/* --- refuse ------------------------------------------------------- */
+
+/* What the refusing procedure answers: 0 lets every message through,
+ * 1 refuses WM_NCCREATE (0), 2 refuses WM_CREATE (-1), 3 answers
+ * WM_CREATE with -2. */
+static int refuse_mode;
+
+/* The creation and destruction messages it received, in order. */
+static char refuse_log[256];
+
+static void refuse_note(const char *name)
+{
+    if (strlen(refuse_log) + strlen(name) + 2 < sizeof refuse_log) {
+        if (refuse_log[0] != '\0') {
+            strcat(refuse_log, " ");
+        }
+        strcat(refuse_log, name);
+    }
+}
+
+static LRESULT CALLBACK refuse_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_GETMINMAXINFO:
+        refuse_note("WM_GETMINMAXINFO");
+        break;
+    case WM_NCCREATE:
+        refuse_note("WM_NCCREATE");
+        if (refuse_mode == 1) {
+            return 0;
+        }
+        break;
+    case WM_NCCALCSIZE:
+        refuse_note("WM_NCCALCSIZE");
+        break;
+    case WM_CREATE:
+        refuse_note("WM_CREATE");
+        if (refuse_mode == 2) {
+            return -1;
+        }
+        if (refuse_mode == 3) {
+            return -2;
+        }
+        break;
+    case WM_DESTROY:
+        refuse_note("WM_DESTROY");
+        break;
+    case WM_NCDESTROY:
+        refuse_note("WM_NCDESTROY");
+        break;
+    }
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
+}
+
+static void refuse_create(const char *what, int mode, int wide)
+{
+    HWND h;
+    DWORD e;
+
+    refuse_mode = mode;
+    refuse_log[0] = '\0';
+    arm();
+    if (wide) {
+        h = CreateWindowExW(0, L"F2KGuiWinRefuse", L"t", WS_POPUP, 10, 10, 200, 100, NULL, NULL,
+                            hinst, NULL);
+    } else {
+        h = CreateWindowExA(0, "F2KGuiWinRefuse", "t", WS_POPUP, 10, 10, 200, 100, NULL, NULL,
+                            hinst, NULL);
+    }
+    e = GetLastError();
+    line("CreateWindowEx%s, %s: NULL %s err=%s", wide ? "W" : "A", what, yesno(h == NULL), le_of(e));
+    line("  the procedure received: %s", refuse_log);
+    refuse_mode = 0;
+    if (h != NULL) {
+        line("  IsWindow: %s", yesno(IsWindow(h)));
+        DestroyWindow(h);
+    }
+}
+
+static void sec_refuse(void)
+{
+    WNDCLASSA wc;
+
+    hinst = GetModuleHandleA(NULL);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = refuse_proc;
+    wc.hInstance = hinst;
+    wc.lpszClassName = "F2KGuiWinRefuse";
+    RegisterClassA(&wc);
+
+    refuse_create("let through", 0, 0);
+    refuse_create("WM_NCCREATE answering 0", 1, 0);
+    refuse_create("WM_NCCREATE answering 0", 1, 1);
+    refuse_create("WM_CREATE answering -1", 2, 0);
+    refuse_create("WM_CREATE answering -1", 2, 1);
+    refuse_create("WM_CREATE answering -2", 3, 0);
+}
+
+/* --- uniq ---------------------------------------------------------- */
+
+static HWND uniq_create(void)
+{
+    return CreateWindowExA(0, "F2KGuiWin", "t", WS_POPUP, 10, 10, 200, 100, NULL, NULL, hinst,
+                           NULL);
+}
+
+static void sec_uniq(void)
+{
+    WNDCLASSA wc;
+    HWND h1, h2;
+    BOOL r;
+
+    hinst = GetModuleHandleA(NULL);
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = wndproc;
+    wc.hInstance = hinst;
+    wc.lpszClassName = "F2KGuiWin";
+    RegisterClassA(&wc);
+
+    h1 = uniq_create();
+    line("the first window: non-NULL %s, its high word nonzero %s", yesno(h1 != NULL),
+         yesno(HIWORD((DWORD)h1) != 0));
+    arm();
+    r = DestroyWindow(h1);
+    line("DestroyWindow(the first): ret=%d err=%s", r, le());
+    h2 = uniq_create();
+    line("a second window made at once: non-NULL %s, its high word nonzero %s", yesno(h2 != NULL),
+         yesno(HIWORD((DWORD)h2) != 0));
+    line("  the first's handle %s, its low word %s, its high word plus one %s", yesno(h2 == h1),
+         yesno(LOWORD((DWORD)h2) == LOWORD((DWORD)h1)),
+         yesno(HIWORD((DWORD)h2) == (WORD)(HIWORD((DWORD)h1) + 1)));
+    arm();
+    r = IsWindow(h1);
+    line("IsWindow(the first, destroyed): %s err=%s", yesno(r), le());
+    arm();
+    r = DestroyWindow(h1);
+    line("DestroyWindow(the first, destroyed): ret=%d err=%s", r, le());
+    arm();
+    r = IsWindow(h2);
+    line("IsWindow(the second) after: %s err=%s", yesno(r), le());
+    if (IsWindow(h2)) {
+        DestroyWindow(h2);
+    }
+    PostQuitMessage(0);
+    drain();
+}
+
 /* ------------------------------------------------------------------ */
 
 static const section_t sections[] = {
@@ -208,6 +369,8 @@ static const section_t sections[] = {
     { "desktop", sec_desktop, F2KT_ALWAYS },
     { "destroy", sec_destroy, F2KT_ALWAYS },
     { "cursor", sec_cursor, F2KT_ALWAYS },
+    { "refuse", sec_refuse, F2KT_ALWAYS },
+    { "uniq", sec_uniq, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

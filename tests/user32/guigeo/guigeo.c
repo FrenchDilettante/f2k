@@ -66,6 +66,28 @@
  *            SetWindowPos; then a window whose procedure keeps
  *            WM_WINDOWPOSCHANGED from DefWindowProc, shown and resized
  *
+ *   edits    a procedure editing what DefWindowProc answers: WM_NCCALCSIZE
+ *            shrunk by 10 on each side (the client area against the
+ *            window rect, after the creation and after a resize);
+ *            WM_GETMINMAXINFO with a minimum and maximum tracking size, a
+ *            maximized size and position (the window's size against them
+ *            at the creation, after SetWindowPos below, between and
+ *            above them, and maximized); WM_WINDOWPOSCHANGING adding
+ *            SWP_NOMOVE and setting cx (SetWindowPos and MoveWindow: moved
+ *            or not, the width the procedure's or the asked one)
+ *   createmax WS_MAXIMIZE and WS_MINIMIZE given to CreateWindowEx, hidden
+ *            and with WS_VISIBLE: IsZoomed, IsIconic, the visibility, the
+ *            style bit kept, the WM_SIZE count and last wParam during the
+ *            creation, the rect against the one asked; then SW_RESTORE
+ *   swpshow  SetWindowPos with SWP_SHOWWINDOW and a new position and size
+ *            on a hidden window and on a shown one, and with
+ *            SWP_HIDEWINDOW on a shown one: the visibility, and whether
+ *            the window moved and took the size
+ *
+ * The edits, createmax and swpshow windows sit at small explicit
+ * positions; what prints is only how their rects relate to the ones
+ * asked, the procedure's, or each other.
+ *
  * The minimized and maximized rectangles depend on the screen, so
  * minmax and placement print them only as relations to the normal
  * one; a child's rectangle prints in its parent's client coordinates.
@@ -756,6 +778,269 @@ static void sec_sizemsg(void)
     drain();
 }
 
+/* --- edits -------------------------------------------------------- */
+
+#define EDIT_NCCALC 1
+#define EDIT_MINMAX 2
+#define EDIT_POSCHANGING 4
+
+/* The edits the procedure makes now (EDIT_ bits). */
+static int edit_mode;
+
+static LRESULT CALLBACK edits_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT r;
+
+    r = DefWindowProc(hwnd, msg, wParam, lParam);
+    if (msg == WM_NCCALCSIZE && (edit_mode & EDIT_NCCALC)) {
+        /* rgrc[0] (wParam TRUE) and the lone rect (FALSE) both come first. */
+        InflateRect((RECT *)lParam, -10, -10);
+    } else if (msg == WM_GETMINMAXINFO && (edit_mode & EDIT_MINMAX)) {
+        MINMAXINFO *mm = (MINMAXINFO *)lParam;
+
+        mm->ptMinTrackSize.x = 300;
+        mm->ptMinTrackSize.y = 250;
+        mm->ptMaxTrackSize.x = 400;
+        mm->ptMaxTrackSize.y = 300;
+        mm->ptMaxSize.x = 380;
+        mm->ptMaxSize.y = 280;
+        mm->ptMaxPosition.x = 20;
+        mm->ptMaxPosition.y = 30;
+    } else if (msg == WM_WINDOWPOSCHANGING && (edit_mode & EDIT_POSCHANGING)) {
+        WINDOWPOS *wp = (WINDOWPOS *)lParam;
+
+        wp->flags |= SWP_NOMOVE;
+        wp->cx = 250;
+    }
+    return r;
+}
+
+static void register_class_proc(const char *name, WNDPROC proc)
+{
+    WNDCLASS wc;
+
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = proc;
+    wc.hInstance = (HINSTANCE)GetModuleHandle(NULL);
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = name;
+    RegisterClass(&wc);
+}
+
+static HWND create_at(const char *class_name, DWORD style, int x, int y, int cx, int cy)
+{
+    return CreateWindowEx(0, class_name, "F2K guigeo", style, x, y, cx, cy, NULL, NULL,
+                          (HINSTANCE)GetModuleHandle(NULL), NULL);
+}
+
+/* The client area against the window rect less 10 on each side. */
+static void print_nccalc(const char *when, HWND h)
+{
+    RECT wr, cr;
+    POINT o;
+
+    GetWindowRect(h, &wr);
+    GetClientRect(h, &cr);
+    o.x = 0;
+    o.y = 0;
+    ClientToScreen(h, &o);
+    line("  %s: the client the window less 10 on each side %s, the window's own size %s", when,
+         yesno(cr.right == wr.right - wr.left - 20 && cr.bottom == wr.bottom - wr.top - 20 &&
+               o.x == wr.left + 10 && o.y == wr.top + 10),
+         yesno(cr.right == wr.right - wr.left && cr.bottom == wr.bottom - wr.top));
+}
+
+/* The window's size against the one asked and the procedure's bounds. */
+static void print_minmax(const char *when, HWND h, int cx, int cy)
+{
+    RECT wr;
+    long w, ht;
+
+    GetWindowRect(h, &wr);
+    w = wr.right - wr.left;
+    ht = wr.bottom - wr.top;
+    line("  %s: the size asked %s, the minimum tracking size %s, the maximum tracking size %s, "
+         "the maximized size %s at the maximized position %s",
+         when, yesno(w == cx && ht == cy), yesno(w == 300 && ht == 250),
+         yesno(w == 400 && ht == 300), yesno(w == 380 && ht == 280),
+         yesno(wr.left == 20 && wr.top == 30));
+}
+
+/* Where the window went against where it was and what was asked. */
+static void print_poschanging(const char *call, BOOL r, HWND h, const RECT *before, int x, int y,
+                              int cx, int cy)
+{
+    RECT wr;
+
+    GetWindowRect(h, &wr);
+    line("%s: ret=%d; moved %s, to the position asked %s; the width the procedure's 250 %s, the "
+         "asked %s; the height the asked %s",
+         call, r, yesno(wr.left != before->left || wr.top != before->top),
+         yesno(wr.left == x && wr.top == y), yesno(wr.right - wr.left == 250),
+         yesno(wr.right - wr.left == cx), yesno(wr.bottom - wr.top == cy));
+}
+
+static void sec_edits(void)
+{
+    HWND h;
+    RECT before;
+    BOOL r;
+
+    register_class_proc("F2KGuigeoEdits", edits_proc);
+
+    line("WM_NCCALCSIZE shrunk by 10 on each side, a WS_POPUP window 200x100:");
+    edit_mode = EDIT_NCCALC;
+    h = create_at("F2KGuigeoEdits", WS_POPUP, 10, 10, 200, 100);
+    line("  non-NULL %s", yesno(h != NULL));
+    if (h != NULL) {
+        print_nccalc("after the creation", h);
+        SetWindowPos(h, NULL, 0, 0, 240, 120, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_nccalc("after SetWindowPos to 240x120", h);
+        DestroyWindow(h);
+    }
+    edit_mode = 0;
+    drain();
+
+    line("WM_GETMINMAXINFO: tracking 300x250 to 400x300, maximized 380x280 at 20,30; a "
+         "WS_OVERLAPPEDWINDOW window:");
+    edit_mode = EDIT_MINMAX;
+    h = create_at("F2KGuigeoEdits", WS_OVERLAPPEDWINDOW, 10, 10, 100, 100);
+    line("  CreateWindowEx asking 100x100: non-NULL %s", yesno(h != NULL));
+    if (h != NULL) {
+        print_minmax("after the creation", h, 100, 100);
+        SetWindowPos(h, NULL, 0, 0, 350, 280, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_minmax("SetWindowPos to 350x280", h, 350, 280);
+        SetWindowPos(h, NULL, 0, 0, 100, 100, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_minmax("SetWindowPos to 100x100", h, 100, 100);
+        SetWindowPos(h, NULL, 0, 0, 600, 450, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_minmax("SetWindowPos to 600x450", h, 600, 450);
+        ShowWindow(h, SW_MAXIMIZE);
+        drain();
+        print_minmax("ShowWindow(SW_MAXIMIZE)", h, 0, 0);
+        DestroyWindow(h);
+    }
+    edit_mode = 0;
+    drain();
+
+    line("WM_WINDOWPOSCHANGING adding SWP_NOMOVE and setting cx to 250, a WS_POPUP window "
+         "200x100:");
+    h = create_at("F2KGuigeoEdits", WS_POPUP, 10, 10, 200, 100);
+    line("  non-NULL %s", yesno(h != NULL));
+    if (h != NULL) {
+        edit_mode = EDIT_POSCHANGING;
+        GetWindowRect(h, &before);
+        r = SetWindowPos(h, NULL, 60, 70, 220, 130, SWP_NOZORDER | SWP_NOACTIVATE);
+        print_poschanging("  SetWindowPos(60,70 220x130)", r, h, &before, 60, 70, 220, 130);
+        GetWindowRect(h, &before);
+        r = MoveWindow(h, 80, 90, 230, 140, FALSE);
+        print_poschanging("  MoveWindow(80,90 230x140)", r, h, &before, 80, 90, 230, 140);
+        edit_mode = 0;
+        GetWindowRect(h, &before);
+        r = SetWindowPos(h, NULL, 60, 70, 220, 130, SWP_NOZORDER | SWP_NOACTIVATE);
+        print_poschanging("  with no edit, SetWindowPos(60,70 220x130)", r, h, &before, 60, 70,
+                          220, 130);
+        DestroyWindow(h);
+    }
+    drain();
+}
+
+/* --- createmax ----------------------------------------------------- */
+
+static void created_state(const char *what, DWORD style, const RECT *asked)
+{
+    HWND h;
+    RECT rc;
+    DWORD e;
+
+    size_count = 0;
+    last_size = 0;
+    arm();
+    h = create_at("F2KGuigeoCreateMax", style, asked->left, asked->top,
+                  asked->right - asked->left, asked->bottom - asked->top);
+    e = GetLastError();
+    line("CreateWindowEx(WS_OVERLAPPEDWINDOW | %s): non-NULL %s err=%s", what, yesno(h != NULL),
+         le_of(e));
+    if (h == NULL) {
+        return;
+    }
+    GetWindowRect(h, &rc);
+    line("  IsZoomed=%d IsIconic=%d visible %s; WS_MAXIMIZE kept %s, WS_MINIMIZE kept %s; WM_SIZE "
+         "count=%d last wParam=%lu",
+         IsZoomed(h), IsIconic(h), yesno(IsWindowVisible(h)),
+         yesno((GetWindowLong(h, GWL_STYLE) & WS_MAXIMIZE) != 0),
+         yesno((GetWindowLong(h, GWL_STYLE) & WS_MINIMIZE) != 0), size_count,
+         (unsigned long)last_size);
+    line("  the rect: the one asked %s, larger both ways %s, at -32000,-32000 %s",
+         yesno(same_rect(&rc, asked)),
+         yesno(rc.right - rc.left > asked->right - asked->left &&
+               rc.bottom - rc.top > asked->bottom - asked->top),
+         yesno(rc.left == -32000 && rc.top == -32000));
+    size_count = 0;
+    last_size = 0;
+    ShowWindow(h, SW_RESTORE);
+    drain();
+    GetWindowRect(h, &rc);
+    line("  ShowWindow(SW_RESTORE): IsZoomed=%d IsIconic=%d; WM_SIZE count=%d last wParam=%lu; "
+         "the rect the one asked %s",
+         IsZoomed(h), IsIconic(h), size_count, (unsigned long)last_size,
+         yesno(same_rect(&rc, asked)));
+    DestroyWindow(h);
+    drain();
+}
+
+static void sec_createmax(void)
+{
+    RECT asked;
+
+    register_class_proc("F2KGuigeoCreateMax", wndproc);
+    SetRect(&asked, 100, 80, 400, 280);
+    created_state("WS_MAXIMIZE", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE, &asked);
+    created_state("WS_MAXIMIZE | WS_VISIBLE", WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_VISIBLE,
+                  &asked);
+    created_state("WS_MINIMIZE", WS_OVERLAPPEDWINDOW | WS_MINIMIZE, &asked);
+    created_state("WS_MINIMIZE | WS_VISIBLE", WS_OVERLAPPEDWINDOW | WS_MINIMIZE | WS_VISIBLE,
+                  &asked);
+}
+
+/* --- swpshow ------------------------------------------------------- */
+
+static void swp_show(HWND h, const char *what, int x, int y, int cx, int cy, UINT flags)
+{
+    RECT before, rc;
+    BOOL r;
+
+    GetWindowRect(h, &before);
+    arm();
+    r = SetWindowPos(h, HWND_TOP, x, y, cx, cy, flags | SWP_NOACTIVATE);
+    line("SetWindowPos(%s, %d,%d %dx%d): ret=%d err=%s", what, x, y, cx, cy, r, le());
+    drain();
+    GetWindowRect(h, &rc);
+    line("  visible %s; moved %s, to the position asked %s; the size asked %s, the size before %s",
+         yesno(IsWindowVisible(h)), yesno(rc.left != before.left || rc.top != before.top),
+         yesno(rc.left == x && rc.top == y),
+         yesno(rc.right - rc.left == cx && rc.bottom - rc.top == cy),
+         yesno(rc.right - rc.left == before.right - before.left &&
+               rc.bottom - rc.top == before.bottom - before.top));
+}
+
+static void sec_swpshow(void)
+{
+    HWND h;
+
+    register_class_proc("F2KGuigeoSwpShow", wndproc);
+    h = create_at("F2KGuigeoSwpShow", WS_OVERLAPPEDWINDOW, 100, 80, 300, 200);
+    line("a hidden window at 100,80 300x200: non-NULL %s", yesno(h != NULL));
+    if (h == NULL) {
+        return;
+    }
+    swp_show(h, "SWP_SHOWWINDOW on the hidden window", 120, 90, 250, 180, SWP_SHOWWINDOW);
+    swp_show(h, "SWP_SHOWWINDOW on the shown window", 140, 100, 260, 190, SWP_SHOWWINDOW);
+    swp_show(h, "SWP_HIDEWINDOW on the shown window", 160, 110, 270, 170, SWP_HIDEWINDOW);
+    DestroyWindow(h);
+    drain();
+}
+
 static const section_t sections[] = {
     { "show", sec_show, 0 },
     { "move", sec_move, 0 },
@@ -766,6 +1051,9 @@ static const section_t sections[] = {
     { "placement", sec_placement, 0 },
     { "defer", sec_defer, 0 },
     { "sizemsg", sec_sizemsg, 0 },
+    { "edits", sec_edits, 0 },
+    { "createmax", sec_createmax, 0 },
+    { "swpshow", sec_swpshow, 0 },
     { NULL, NULL, 0 }
 };
 

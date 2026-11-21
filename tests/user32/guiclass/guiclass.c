@@ -50,6 +50,11 @@
  *               window's own procedure left as it was), each read back;
  *               NULL and destroyed windows, a bad index, and the
  *               desktop window's class style
+ *   intname     class names written as integer atoms: RegisterClassA of
+ *               "#0" and "#123" and RegisterClassW of L"#0" and L"#124"
+ *               (the atom against the number), GetClassInfoA/W by the
+ *               same names and by MAKEINTATOM, GetClassNameA of a window
+ *               of "#123", and UnregisterClassA/W by the names
  *
  * Handles, procedures and pointers in infoex and classlong print only
  * as the same as the registered ones or not; a menu name prints as its
@@ -668,6 +673,88 @@ static void sec_classlong(void)
     UnregisterClassW(name, g_hinst);
 }
 
+/* --- intname ------------------------------------------------------ */
+
+/* A registration's atom as printed: 0, the number written, or another. */
+static const char *atom_is(ATOM a, unsigned number)
+{
+    if (a == 0) {
+        return "0";
+    }
+    return a == number ? "the number" : "another";
+}
+
+static void sec_intname(void)
+{
+    WNDCLASSA wc, out;
+    WNDCLASSW wcw, outw;
+    char name[64];
+    HWND h;
+    ATOM a;
+    BOOL r;
+    int n;
+
+    UnregisterClassA("#123", g_hinst);
+    UnregisterClassW(L"#124", g_hinst);
+
+    fill_class_a(&wc, "#0");
+    arm();
+    a = RegisterClassA(&wc);
+    line("RegisterClassA(\"#0\"): atom %s err=%s", atom_is(a, 0), le());
+    arm();
+    r = GetClassInfoA(g_hinst, "#0", &out);
+    line("GetClassInfoA(\"#0\"): nonzero %s err=%s", yesno(r != 0), le());
+    fill_class_w(&wcw, L"#0");
+    arm();
+    a = RegisterClassW(&wcw);
+    line("RegisterClassW(L\"#0\"): atom %s err=%s", atom_is(a, 0), le());
+
+    fill_class_a(&wc, "#123");
+    arm();
+    a = RegisterClassA(&wc);
+    line("RegisterClassA(\"#123\"): atom %s err=%s", atom_is(a, 123), le());
+    arm();
+    r = GetClassInfoA(g_hinst, "#123", &out);
+    line("GetClassInfoA(\"#123\"): nonzero %s err=%s", yesno(r != 0), le());
+    arm();
+    r = GetClassInfoA(g_hinst, MAKEINTATOM(123), &out);
+    line("GetClassInfoA(MAKEINTATOM(123)): nonzero %s err=%s", yesno(r != 0), le());
+    arm();
+    r = GetClassInfoW(g_hinst, L"#123", &outw);
+    line("GetClassInfoW(L\"#123\"): nonzero %s err=%s", yesno(r != 0), le());
+
+    fill_class_w(&wcw, L"#124");
+    arm();
+    a = RegisterClassW(&wcw);
+    line("RegisterClassW(L\"#124\"): atom %s err=%s", atom_is(a, 124), le());
+    arm();
+    r = GetClassInfoW(g_hinst, L"#124", &outw);
+    line("GetClassInfoW(L\"#124\"): nonzero %s err=%s", yesno(r != 0), le());
+    arm();
+    r = GetClassInfoW(g_hinst, (LPCWSTR)MAKEINTATOM(124), &outw);
+    line("GetClassInfoW(MAKEINTATOM(124)): nonzero %s err=%s", yesno(r != 0), le());
+
+    arm();
+    h = make_window("#123");
+    line("CreateWindowExA(\"#123\"): non-NULL %s err=%s", yesno(h != NULL), le());
+    if (h != NULL) {
+        memset(name, 0xCC, sizeof name);
+        arm();
+        n = GetClassNameA(h, name, sizeof name);
+        line("GetClassNameA: ret=%d err=%s text \"%s\"", n, le(), n > 0 ? name : "");
+        DestroyWindow(h);
+        PostQuitMessage(0);
+        drain();
+    }
+
+    arm();
+    r = UnregisterClassA("#123", g_hinst);
+    line("UnregisterClassA(\"#123\"): ret=%d err=%s", r, le());
+    arm();
+    r = UnregisterClassW(L"#124", g_hinst);
+    line("UnregisterClassW(L\"#124\"): ret=%d err=%s", r, le());
+}
+
 static const section_t sections[] = {
     { "register", sec_register, F2KT_ALWAYS },
     { "query", sec_query, F2KT_ALWAYS },
@@ -676,6 +763,7 @@ static const section_t sections[] = {
     { "errors", sec_errors, F2KT_ALWAYS },
     { "infoex", sec_infoex, F2KT_ALWAYS },
     { "classlong", sec_classlong, F2KT_ALWAYS },
+    { "intname", sec_intname, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

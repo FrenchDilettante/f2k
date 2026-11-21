@@ -1,9 +1,9 @@
 # F2K capture of registry (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:28:15.41
-registry F2KT-SOURCE-CRC=0xC8411B56
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:51.62
+registry F2KT-SOURCE-CRC=0x13E950EA
 >>> registry.exe create
 == create
 -- the W calls
@@ -180,7 +180,7 @@ RegQueryValueExW("sz"), an empty buffer: ret=234 err=- type=REG_SZ cb=8 buffer=(
 RegQueryValueExW("sz"), data with a NULL size: ret=87 err=- type=unset cb=not asked buffer=untouched
 RegQueryValueExW("sz"), a NULL type: ret=0 err=- type=not asked cb=8 data=abc\0
 RegQueryValueExW("SZ"), the name in other case: ret=0 err=- type=REG_SZ cb=8 data=abc\0
-RegQueryValueExW("missing"), a missing value: ret=2 err=- type=4240464 cb=1024 buffer=untouched
+RegQueryValueExW("missing"), a missing value: ret=2 err=- type=4246600 cb=1024 buffer=untouched
 RegQueryValueExW("missing"), a missing value, NULL data: ret=2 err=- type=REG_NONE cb=0 no buffer
 RegQueryValueExW("dw"), a REG_DWORD into 4 bytes: ret=0 err=- type=REG_DWORD cb=4 data=78 56 34 12
 RegQueryValueExW("dw"), a REG_DWORD into 3 bytes: ret=234 err=- type=REG_DWORD cb=4 buffer=CC CC CC
@@ -314,13 +314,13 @@ RegDeleteKeyW(F2K, "missing\x"), below a missing key: ret=2 err=-
 RegDeleteKeyW(a bogus handle, "gone"): ret=6 err=-
 gone: a handle to it open
 RegDeleteKeyW(F2K, "gone"), a key open through another handle: ret=0 err=-
-RegQueryValueExW("x"), through the deleted key's handle: ret=1018 err=- type=4240464 cb=1024 buffer=untouched
+RegQueryValueExW("x"), through the deleted key's handle: ret=1018 err=- type=4246600 cb=1024 buffer=untouched
 RegSetValueExW("x"), through the deleted key's handle: ret=1018 err=-
 RegCreateKeyExW(gone (deleted), "child"), through the deleted key's handle: ret=1018 err=- result=NULL disposition=unset
 RegEnumKeyW(gone (deleted), 0, 256 units), through the deleted key's handle: ret=1018 err=- buffer=untouched
 RegOpenKeyExW(F2K, "gone"), after its delete: ret=2 err=- result=NULL
 RegCreateKeyExW(F2K, "gone"), the name created anew: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
-RegQueryValueExW("x"), the old handle, the name created anew with a value x: ret=1018 err=- type=4240464 cb=1024 buffer=untouched
+RegQueryValueExW("x"), the old handle, the name created anew with a value x: ret=1018 err=- type=4246600 cb=1024 buffer=untouched
 RegCloseKey, the deleted key's handle: ret=0 err=-
 the F2K tree deleted: yes
 -- the A calls
@@ -345,6 +345,106 @@ RegOpenKeyExA(F2K, "gone"), after its delete: ret=2 err=- result=NULL
 RegCreateKeyExA(F2K, "gone"), the name created anew: ret=0 err=- result=a handle disposition=REG_CREATED_NEW_KEY
 RegQueryValueExA("x"), the old handle, the name created anew with a value x: ret=1018 err=- type=964 cb=1024 buffer=untouched
 RegCloseKey, the deleted key's handle: ret=0 err=-
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe enumex
+== enumex
+-- the W calls
+subkeys created in the order delta, Alpha, charlie
+RegEnumKeyExW(F2K, 0, 64 units): ret=0 err=- cch=5 name=Alpha\0 time written: yes
+RegEnumKeyExW(F2K, 1, 64 units): ret=0 err=- cch=7 name=charlie\0 time written: yes
+RegEnumKeyExW(F2K, 2, 64 units): ret=0 err=- cch=5 name=delta\0 time written: yes
+RegEnumKeyExW(F2K, 3, 64 units): ret=259 err=- cch=64 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyExW(F2K, 50, 64 units), far past the end: ret=259 err=- cch=64 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+solo: one subkey, Alpha, of class F2Kclass
+RegEnumKeyExW(solo, 0, 64 units), its class asked for: ret=0 err=- cch=5 name=Alpha\0 class=F2Kclass\0 cchClass=8 time written: yes
+RegEnumKeyExW(solo, 0, 0 units), a 0-unit buffer: ret=234 err=- cch=0 buffer=(none)
+RegEnumKeyExW(solo, 0, 3 units), 3 units: ret=234 err=- cch=3 buffer=<U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyExW(solo, 0, 5 units), room for the name, not its terminator: ret=234 err=- cch=5 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyExW(solo, 0, 6 units), room for the name and its terminator: ret=0 err=- cch=5 name=Alpha\0 time written: yes
+RegEnumKeyExW(solo, 1, 64 units), the end: ret=259 err=- cch=64 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyExW(solo, 0), a non-NULL lpReserved: ret=87 err=-
+RegEnumKeyExW(Alpha, 0, 64 units), a key with no subkeys: ret=259 err=- cch=64 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+RegEnumKeyExW(a bogus handle, 0, 64 units): ret=6 err=- cch=64 buffer=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC>
+the F2K tree deleted: yes
+-- the A calls
+subkeys created in the order delta, Alpha, charlie
+RegEnumKeyExA(F2K, 0, 64 units): ret=0 err=- cch=5 name=Alpha\0 time written: yes
+RegEnumKeyExA(F2K, 1, 64 units): ret=0 err=- cch=7 name=charlie\0 time written: yes
+RegEnumKeyExA(F2K, 2, 64 units): ret=0 err=- cch=5 name=delta\0 time written: yes
+RegEnumKeyExA(F2K, 3, 64 units): ret=259 err=- cch=64 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+RegEnumKeyExA(F2K, 50, 64 units), far past the end: ret=259 err=- cch=64 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+solo: one subkey, Alpha, of class F2Kclass
+RegEnumKeyExA(solo, 0, 64 units), its class asked for: ret=0 err=- cch=5 name=Alpha\0 class=F2Kclass\0 cchClass=8 time written: yes
+RegEnumKeyExA(solo, 0, 0 units), a 0-unit buffer: ret=234 err=- cch=0 buffer=(none)
+RegEnumKeyExA(solo, 0, 3 units), 3 units: ret=234 err=- cch=3 buffer=Al\0
+RegEnumKeyExA(solo, 0, 5 units), room for the name, not its terminator: ret=234 err=- cch=5 buffer=Alph\0
+RegEnumKeyExA(solo, 0, 6 units), room for the name and its terminator: ret=0 err=- cch=5 name=Alpha\0 time written: yes
+RegEnumKeyExA(solo, 1, 64 units), the end: ret=259 err=- cch=64 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+RegEnumKeyExA(solo, 0), a non-NULL lpReserved: ret=87 err=-
+RegEnumKeyExA(Alpha, 0, 64 units), a key with no subkeys: ret=259 err=- cch=64 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+RegEnumKeyExA(a bogus handle, 0, 64 units): ret=6 err=- cch=64 buffer=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC
+the F2K tree deleted: yes
+registry: done
+<<< exit code=0
+>>> registry.exe enumvalue
+== enumvalue
+-- the W calls
+values set in the order sz, Dword, the default value, bin, Longer; one subkey, sub
+RegEnumValueW(F2K, 0, 64 units, 1024): ret=0 err=- cch=2 name=sz\0 type=REG_SZ cb=8 data=abc\0
+RegEnumValueW(F2K, 1, 64 units, 1024): ret=0 err=- cch=5 name=Dword\0 type=REG_DWORD cb=4 data=78 56 34 12
+RegEnumValueW(F2K, 2, 64 units, 1024): ret=0 err=- cch=0 name=\0 type=REG_SZ cb=10 data=dflt\0
+RegEnumValueW(F2K, 3, 64 units, 1024): ret=0 err=- cch=3 name=bin\0 type=REG_BINARY cb=5 data=00 01 FE FF 80
+RegEnumValueW(F2K, 4, 64 units, 1024): ret=0 err=- cch=6 name=Longer\0 type=REG_SZ cb=26 data=a longer one\0
+RegEnumValueW(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=968 cb=1024 buffer=untouched
+RegEnumValueW(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=968 cb=1024 buffer=untouched
+RegQueryInfoKeyW(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=1 longest data=3
+solo: one value, "value", REG_SZ "data!" (its terminator counted)
+RegEnumValueW(solo, 0, 0 units, 1024), a 0-unit name buffer: ret=234 err=- cch=0 name=(none) type=REG_SZ cb=12 buffer=untouched
+RegEnumValueW(solo, 0, 3 units, 1024), 3 units: ret=234 err=- cch=3 name=<U+CCCC><U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=untouched
+RegEnumValueW(solo, 0, 5 units, 1024), room for the name, not its terminator: ret=234 err=- cch=5 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=untouched
+RegEnumValueW(solo, 0, 6 units, 1024), room for the name and its terminator: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=12 data=data!\0
+RegEnumValueW(solo, 0, 64 units, no data), NULL data: the size alone: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=12 no buffer
+RegEnumValueW(solo, 0, 64 units, no data), NULL data, type and size: ret=0 err=- cch=5 name=value\0 type=not asked cb=not asked no buffer
+RegEnumValueW(solo, 0, 64 units, 12), a buffer of the data's size: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=12 data=data!\0
+RegEnumValueW(solo, 0, 64 units, 2), 2 bytes of data: ret=234 err=- cch=5 name=value\0<U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=CC CC
+RegEnumValueW(solo, 0, 64 units, 0), 0 bytes of data: ret=234 err=- cch=5 name=value\0<U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=(none)
+RegEnumValueW(solo, 0, 3 units, 2), the name and the data both short: ret=234 err=- cch=3 name=<U+CCCC><U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=CC CC
+RegEnumValueW(solo, 1, 64 units, 1024), the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=964 cb=1024 buffer=untouched
+RegEnumValueW(solo, 0), a non-NULL lpReserved: ret=87 err=-
+RegQueryInfoKeyW(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=0 longest data=0
+RegEnumValueW(sub, 0, 64 units, 1024), a key with no values: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=960 cb=1024 buffer=untouched
+RegQueryInfoKeyW(sub): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=0 longest value name=0 longest data=0
+RegEnumValueW(a bogus handle, 0, 64 units, 1024): ret=6 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=2147483644 cb=1024 buffer=untouched
+the F2K tree deleted: yes
+-- the A calls
+values set in the order sz, Dword, the default value, bin, Longer; one subkey, sub
+RegEnumValueA(F2K, 0, 64 units, 1024): ret=0 err=- cch=2 name=sz\0 type=REG_SZ cb=4 data=abc\0
+RegEnumValueA(F2K, 1, 64 units, 1024): ret=0 err=- cch=5 name=Dword\0 type=REG_DWORD cb=4 data=78 56 34 12
+RegEnumValueA(F2K, 2, 64 units, 1024): ret=0 err=- cch=0 name=\0 type=REG_SZ cb=5 data=dflt\0
+RegEnumValueA(F2K, 3, 64 units, 1024): ret=0 err=- cch=3 name=bin\0 type=REG_BINARY cb=5 data=00 01 FE FF 80
+RegEnumValueA(F2K, 4, 64 units, 1024): ret=0 err=- cch=6 name=Longer\0 type=REG_SZ cb=13 data=a longer one\0
+RegEnumValueA(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
+RegEnumValueA(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
+RegQueryInfoKeyA(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=1 longest data=3
+solo: one value, "value", REG_SZ "data!" (its terminator counted)
+RegEnumValueA(solo, 0, 0 units, 1024), a 0-unit name buffer: ret=234 err=- cch=0 name=(none) type=REG_SZ cb=6 buffer=written
+RegEnumValueA(solo, 0, 3 units, 1024), 3 units: ret=234 err=- cch=3 name=va\0 type=REG_SZ cb=6 buffer=written
+RegEnumValueA(solo, 0, 5 units, 1024), room for the name, not its terminator: ret=234 err=- cch=5 name=valu\0 type=REG_SZ cb=6 buffer=written
+RegEnumValueA(solo, 0, 6 units, 1024), room for the name and its terminator: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=6 data=data!\0
+RegEnumValueA(solo, 0, 64 units, no data), NULL data: the size alone: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=6 no buffer
+RegEnumValueA(solo, 0, 64 units, no data), NULL data, type and size: ret=0 err=- cch=5 name=value\0 type=not asked cb=not asked no buffer
+RegEnumValueA(solo, 0, 64 units, 6), a buffer of the data's size: ret=0 err=- cch=5 name=value\0 type=REG_SZ cb=6 data=data!\0
+RegEnumValueA(solo, 0, 64 units, 2), 2 bytes of data: ret=234 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=REG_SZ cb=6 buffer=CC CC
+RegEnumValueA(solo, 0, 64 units, 0), 0 bytes of data: ret=234 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=REG_SZ cb=6 buffer=(none)
+RegEnumValueA(solo, 0, 3 units, 2), the name and the data both short: ret=234 err=- cch=3 name=\xCC\xCC\xCC type=REG_SZ cb=6 buffer=CC CC
+RegEnumValueA(solo, 1, 64 units, 1024), the end: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
+RegEnumValueA(solo, 0), a non-NULL lpReserved: ret=87 err=-
+RegQueryInfoKeyA(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=0 longest data=0
+RegEnumValueA(sub, 0, 64 units, 1024), a key with no values: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
+RegQueryInfoKeyA(sub): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=0 longest value name=0 longest data=0
+RegEnumValueA(a bogus handle, 0, 64 units, 1024): ret=6 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
 the F2K tree deleted: yes
 registry: done
 <<< exit code=0

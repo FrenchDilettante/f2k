@@ -1,9 +1,9 @@
 # F2K capture of fswrite (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:06:22.22
-fswrite F2KT-SOURCE-CRC=0xC9D8593A
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:40.80
+fswrite F2KT-SOURCE-CRC=0x11333631
 >>> fswrite.exe create
 == create
 CREATE_NEW, new: opened err=0, size now 0
@@ -245,5 +245,97 @@ UnlockFile(the handle with no access, 0, 10): ret=0 err=5
 LockFile(INVALID_HANDLE_VALUE, 0, 10): ret=0 err=6
 UnlockFile(INVALID_HANDLE_VALUE, 0, 10): ret=0 err=6
 LockFile(NULL, 0, 10): ret=0 err=6
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe moveinto
+== moveinto
+MoveFileExA(MD1, MD1\MD2, 0): ret=0 err=32, MD1 a directory, MD1\MD2 absent
+MoveFileExA(MD1, MD1\SUB\MD2, 0): ret=0 err=5, MD1 a directory, MD1\SUB\MD2 absent
+MD1\SUB\IN.TXT after the refusals: 6 bytes
+MoveFileExA(MA.TXT, MB.TXT, REPLACE_EXISTING, MB.TXT held open sharing all): ret=0 err=5, MA.TXT 6 bytes, MB.TXT 8 bytes
+MoveFileExA(MA.TXT, MB.TXT, REPLACE_EXISTING, MA.TXT held open sharing read): ret=0 err=32, MA.TXT 6 bytes, MB.TXT 8 bytes
+MoveFileExA(MA.TXT, MB.TXT, REPLACE_EXISTING): ret=1 err=-, MA.TXT absent, MB.TXT 6 bytes
+left in SCRATCH\: MB.TXT 6 bytes, MD1 (directory)
+left in SCRATCH\MD1\: SUB (directory)
+MoveFileExW(MD1, MD1\MD2, 0): ret=0 err=32, MD1 a directory, MD1\MD2 absent
+MoveFileExW(MD1, MD1\SUB\MD2, 0): ret=0 err=5, MD1 a directory, MD1\SUB\MD2 absent
+MD1\SUB\IN.TXT after the refusals (W): 6 bytes
+MoveFileExW(MA.TXT, MB.TXT, REPLACE_EXISTING, MB.TXT held open sharing all): ret=0 err=5, MA.TXT 6 bytes, MB.TXT 8 bytes
+MoveFileExW(MA.TXT, MB.TXT, REPLACE_EXISTING, MA.TXT held open sharing read): ret=0 err=32, MA.TXT 6 bytes, MB.TXT 8 bytes
+MoveFileExW(MA.TXT, MB.TXT, REPLACE_EXISTING): ret=1 err=-, MA.TXT absent, MB.TXT 6 bytes
+left in SCRATCH\ (W): MB.TXT 6 bytes, MD1 (directory)
+left in SCRATCH\MD1\ (W): SUB (directory)
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe overwrite
+== overwrite
+a reader sharing read, then CREATE_ALWAYS for reading: INVALID_HANDLE_VALUE err=32, size now 12
+a reader sharing read and write, then CREATE_ALWAYS for reading: opened err=183, size now 0
+a reader sharing read, then OPEN_ALWAYS for reading: opened err=183, size now 12
+a reader sharing read, then CREATE_ALWAYS for writing: INVALID_HANDLE_VALUE err=32, size now 12
+a reader sharing read, then TRUNCATE_EXISTING for writing: INVALID_HANDLE_VALUE err=32, size now 12
+a mapped view, then CREATE_ALWAYS for writing: INVALID_HANDLE_VALUE err=1224 (mapped yes), size now 12
+a reader sharing read, then CREATE_ALWAYS for reading (W): INVALID_HANDLE_VALUE err=32, size now 12
+a reader sharing read and write, then CREATE_ALWAYS for reading (W): opened err=183, size now 0
+a reader sharing read, then OPEN_ALWAYS for reading (W): opened err=183, size now 12
+a reader sharing read, then CREATE_ALWAYS for writing (W): INVALID_HANDLE_VALUE err=32, size now 12
+a reader sharing read, then TRUNCATE_EXISTING for writing (W): INVALID_HANDLE_VALUE err=32, size now 12
+a mapped view, then CREATE_ALWAYS for writing (W): INVALID_HANDLE_VALUE err=1224 (mapped yes), size now 12
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe overlap
+== overlap
+kernel32 exports GetOverlappedResult: yes
+CreateFileA(FILE_FLAG_OVERLAPPED): opened err=0
+WriteFile 8192 bytes at 0, an event: ret=1 bytes 8192 err=-, signaled yes
+WriteFile 100 bytes at 10000, past the end: ret=1 bytes 100 err=-, signaled yes
+GetFileSize: 10100
+ReadFile 1000 bytes at 4096, an event: ret=1 bytes 1000 err=-, signaled yes
+the bytes read match: yes
+ReadFile 1000 bytes at 4096, no event: ret=1 bytes 1000 err=-, signaled yes
+the bytes read match: yes
+ReadFile 1808 bytes at 8192, the gap: ret=1 bytes 1808 err=-, signaled yes
+the gap reads as zeros: yes
+ReadFile 100 bytes at 10050, across the end: ret=1 bytes 50 err=-, signaled yes
+ReadFile 100 bytes at 10100, at the end: ret=0 bytes 0 err=38
+ReadFile 100 bytes at 20000, past the end: ret=0 bytes 0 err=38
+ReadFile 100 bytes at 4 GiB: ret=0 bytes 0 err=38
+four 2048-byte reads in flight: wait WAIT_OBJECT_0, each done with its bytes yes, the data matches yes
+ReadFile 16 bytes at 0: ret=1 bytes 16 err=-, signaled yes
+GetOverlappedResult(no wait) once done: ret=1 bytes 16 err=-
+GetOverlappedResult(no wait) still pending: ret=0 err=996
+the file pointer after the overlapped I/O: 0
+ReadFile with no OVERLAPPED on the overlapped handle: ret=0 bytes 0 err=87
+WriteFile with no OVERLAPPED on the overlapped handle: ret=0 bytes 0 err=87, size 10100
+ReadFile 1000 bytes at 4096 through an OVERLAPPED, a plain handle: ret=1 bytes 1000 err=-, match yes
+then the event signaled yes, the file pointer 5096
+GetOverlappedResult(no wait) on it: ret=1 bytes 1000 err=-
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe negoff
+== negoff
+ReadFile at -1 (FFFFFFFF:FFFFFFFF): ret=0 bytes 0 err=87, size 1000, pointer 100
+ReadFile at -2 (FFFFFFFF:FFFFFFFE): ret=1 bytes 4 err=-, size 1000, pointer 104
+ReadFile at -16 (FFFFFFFF:FFFFFFF0): ret=0 bytes 0 err=87, size 1000, pointer 100
+ReadFile at the most negative (80000000:00000000): ret=0 bytes 0 err=87, size 1000, pointer 100
+ReadFile at 200 (sanity) (00000000:000000C8): ret=1 bytes 4 err=-, size 1000, pointer 204
+WriteFile at -1 (FFFFFFFF:FFFFFFFF): ret=1 bytes 4 err=-, size 1004, pointer 1004
+WriteFile at -2 (FFFFFFFF:FFFFFFFE): ret=1 bytes 4 err=-, size 1004, pointer 104
+WriteFile at -16 (FFFFFFFF:FFFFFFF0): ret=0 bytes 0 err=87, size 1004, pointer 100
+WriteFile at the most negative (80000000:00000000): ret=0 bytes 0 err=87, size 1004, pointer 100
+WriteFile at 200 (sanity) (00000000:000000C8): ret=1 bytes 4 err=-, size 1004, pointer 204
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe deep
+== deep
+CreateDirectoryW through \\?\, nine levels: made 9, first err=0, the deepest past MAX_PATH yes
+CreateFileW(\\?\ deep file, CREATE_NEW): opened err=0
+GetFileAttributesW(\\?\ deep file): 0x00000020 err=-
+CreateFileW(the same path without \\?\): INVALID_HANDLE_VALUE err=3
+CreateFileA(\\?\ deep file): INVALID_HANDLE_VALUE err=206
+GetFileAttributesA(\\?\ deep file): 0xFFFFFFFF err=206
+CreateFileW(\\?\ deep file, OPEN_EXISTING): opened err=0, read 5 bytes, match yes
+DeleteFileW(\\?\ deep file): ret=1 err=-
+RemoveDirectoryW, deepest first: removed 9
 fswrite: done
 <<< exit code=0

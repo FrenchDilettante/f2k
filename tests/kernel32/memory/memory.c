@@ -59,6 +59,22 @@
  *            pointer, a freed block, NULL; GlobalFlags reached through
  *            GetProcAddress, so the program still loads where kernel32
  *            lacks it
+ *   handles  LocalAlloc/GlobalAlloc handle semantics: a freed moveable
+ *            handle given to GlobalLock, GlobalUnlock, GlobalSize,
+ *            GlobalReAlloc (with and without GMEM_MODIFY) and GlobalFree,
+ *            and to LocalLock and LocalUnlock; GMEM_MODIFY making a fixed
+ *            block moveable (the old pointer, the lock count) and a
+ *            moveable one discardable and back; a locked moveable block
+ *            grown without GMEM_MOVEABLE (it may only grow in place) and
+ *            with it, a fixed block grown in place; flags outside
+ *            GMEM_VALID_FLAGS and LMEM_VALID_FLAGS. Verdicts, never
+ *            addresses; each call on a handle that may be stale runs
+ *            under __try
+ *   heapcap  a heap with a maximum size: blocks around 0x7FFF8 bytes
+ *            (the largest MSDN gives such a heap) and past it, against a
+ *            growable heap's; the error a full capped heap's refusal
+ *            leaves; HEAP_GENERATE_EXCEPTIONS past the limit; HeapReAlloc
+ *            of a NULL block on that heap and the process heap
  *
  * The named mappings run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)");
@@ -1354,6 +1370,280 @@ static void sec_guardcall(void)
     guardcall(1);
 }
 
+/* --- handles ------------------------------------------------------- */
+
+/* GlobalLock, or (local) LocalLock, of `h` under __try: NULL, a pointer
+   or a fault, and the error. */
+static void try_lock(int local, const char *label, HANDLE h)
+{
+    void *p = NULL;
+    int faulted = 0;
+    const char *e;
+
+    arm();
+    __try {
+        p = local ? LocalLock((HLOCAL)h) : GlobalLock((HGLOBAL)h);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = 1;
+    }
+    e = le();
+    line("%s(%s): %s err=%s", local ? "LocalLock" : "GlobalLock", label,
+         faulted ? "faulted" : p == NULL ? "NULL" : "a pointer", e);
+}
+
+/* GlobalUnlock, or (local) LocalUnlock, of `h` under __try. */
+static void try_unlock(int local, const char *label, HANDLE h)
+{
+    BOOL r = FALSE;
+    int faulted = 0;
+    const char *e;
+
+    arm();
+    __try {
+        r = local ? LocalUnlock((HLOCAL)h) : GlobalUnlock((HGLOBAL)h);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = 1;
+    }
+    e = le();
+    if (faulted) {
+        line("%s(%s): faulted err=%s", local ? "LocalUnlock" : "GlobalUnlock", label, e);
+    } else {
+        line("%s(%s): ret=%d err=%s", local ? "LocalUnlock" : "GlobalUnlock", label, r, e);
+    }
+}
+
+/* GlobalReAlloc of `g` under __try: NULL, the same handle or another,
+   and the error; the result (NULL when it failed or faulted). */
+static HGLOBAL try_realloc(const char *label, HGLOBAL g, DWORD size, UINT flags)
+{
+    HGLOBAL r = NULL;
+    int faulted = 0;
+    const char *e;
+
+    arm();
+    __try {
+        r = GlobalReAlloc(g, size, flags);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = 1;
+    }
+    e = le();
+    line("GlobalReAlloc(%s): %s err=%s", label,
+         faulted ? "faulted" : r == NULL ? "NULL" : r == g ? "the same handle" : "another handle", e);
+    return faulted ? NULL : r;
+}
+
+/* GlobalFlags of `g`, as show_global_flags prints it, when kernel32
+   exports it. */
+static void handle_flags(const char *label, HGLOBAL g)
+{
+    if (global_flags != NULL) {
+        show_global_flags(label, g);
+    }
+}
+
+/* An allocation with flags outside GMEM_VALID_FLAGS or LMEM_VALID_FLAGS:
+   NULL or a block, and the error; a block is freed. */
+static void bad_flags(int local, UINT flags)
+{
+    HANDLE h;
+    const char *e;
+
+    arm();
+    h = local ? (HANDLE)LocalAlloc(flags, 64) : (HANDLE)GlobalAlloc(flags, 64);
+    e = le();
+    line("%s(0x%04X, 64): %s err=%s", local ? "LocalAlloc" : "GlobalAlloc", flags, h == NULL ? "NULL" : "a block", e);
+    if (h != NULL) {
+        if (local) {
+            LocalFree((HLOCAL)h);
+        } else {
+            GlobalFree((HGLOBAL)h);
+        }
+    }
+}
+
+static void sec_handles(void)
+{
+    HGLOBAL g, h, spacer;
+    HLOCAL l;
+    BYTE *p, *q;
+    DWORD sz;
+    const char *e;
+
+    global_flags = (global_flags_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GlobalFlags");
+
+    /* A freed moveable handle: the handle table's entry no longer marks a
+       block, so each call is told so rather than handed a pointer. */
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    GlobalFree(g);
+    try_lock(0, "a freed moveable block", g);
+    try_unlock(0, "a freed moveable block", g);
+    arm();
+    sz = GlobalSize(g);
+    e = le();
+    line("GlobalSize(a freed moveable block): %lu err=%s", sz, e);
+    try_realloc("a freed moveable block, 128, GMEM_MOVEABLE", g, 128, GMEM_MOVEABLE);
+    try_realloc("a freed moveable block, GMEM_MODIFY|GMEM_DISCARDABLE", g, 0, GMEM_MODIFY | GMEM_DISCARDABLE);
+    arm();
+    h = GlobalFree(g);
+    e = le();
+    line("GlobalFree(a freed moveable block): %s err=%s", h == NULL ? "NULL" : h == g ? "the handle" : "another", e);
+    l = LocalAlloc(LMEM_MOVEABLE, 64);
+    LocalFree(l);
+    try_lock(1, "a freed moveable block", l);
+    try_unlock(1, "a freed moveable block", l);
+
+    /* GMEM_MODIFY: a fixed block made moveable, a moveable one made
+       discardable and back. */
+    g = GlobalAlloc(GMEM_FIXED, 64);
+    fill((BYTE *)g, 64, 5);
+    h = try_realloc("fixed, GMEM_MODIFY|GMEM_MOVEABLE", g, 0, GMEM_MODIFY | GMEM_MOVEABLE);
+    if (h == NULL) {
+        h = g;
+    }
+    p = (BYTE *)GlobalLock(h);
+    line("GlobalLock of the result: the old pointer %s, contents %s", yesno((void *)p == (void *)g),
+         p != NULL && check(p, 64, 5) ? "intact" : "lost");
+    handle_flags("fixed made moveable, locked", h);
+    GlobalUnlock(h);
+    GlobalFree(h);
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    try_realloc("moveable, GMEM_MODIFY|GMEM_DISCARDABLE", g, 0, GMEM_MODIFY | GMEM_DISCARDABLE);
+    handle_flags("moveable made discardable", g);
+    try_realloc("discardable, GMEM_MODIFY", g, 0, GMEM_MODIFY);
+    handle_flags("then GMEM_MODIFY alone", g);
+    GlobalFree(g);
+
+    /* Growing a locked moveable block: without GMEM_MOVEABLE it may only
+       grow in place (a block after it stands in the way), with it it may
+       move. Verdicts, never addresses. */
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    p = (BYTE *)GlobalLock(g);
+    fill(p, 64, 6);
+    spacer = GlobalAlloc(GMEM_FIXED, 64);
+    h = GlobalReAlloc(g, 256 * KB, 0);
+    q = (BYTE *)GlobalLock(g);
+    line("GlobalReAlloc(locked moveable, 256 KiB, 0): the block stayed where it was %s, contents %s",
+         yesno(h == NULL || q == p), q != NULL && check(q, 64, 6) ? "intact" : "lost");
+    GlobalUnlock(g);
+    handle_flags("the locked block after it", g);
+    h = GlobalReAlloc(g, 256 * KB, GMEM_MOVEABLE);
+    q = (BYTE *)GlobalLock(h != NULL ? h : g);
+    line("GlobalReAlloc(locked moveable, 256 KiB, GMEM_MOVEABLE): %s, contents %s",
+         h == NULL ? "NULL" : h == g ? "the same handle" : "another handle",
+         q != NULL && check(q, 64, 6) ? "intact" : "lost");
+    GlobalUnlock(h != NULL ? h : g);
+    handle_flags("the locked block after it", h != NULL ? h : g);
+    GlobalUnlock(h != NULL ? h : g);
+    GlobalFree(h != NULL ? h : g);
+    g = GlobalAlloc(GMEM_FIXED, 64);
+    fill((BYTE *)g, 64, 7);
+    h = GlobalReAlloc(g, 256 * KB, 0);
+    line("GlobalReAlloc(fixed, 256 KiB, 0): stayed in place or failed %s, contents %s",
+         yesno(h == NULL || h == g), check((BYTE *)(h != NULL ? h : g), 64, 7) ? "intact" : "lost");
+    GlobalFree(h != NULL ? h : g);
+    GlobalFree(spacer);
+
+    /* Flags outside the valid masks. */
+    bad_flags(0, GMEM_MOVEABLE | 0x8000);
+    bad_flags(0, GMEM_FIXED | 0x0001);
+    bad_flags(0, GMEM_MOVEABLE | GMEM_MODIFY);
+    bad_flags(1, LMEM_MOVEABLE | 0x2000);
+    bad_flags(1, LMEM_FIXED | 0x8000);
+    g = GlobalAlloc(GMEM_MOVEABLE, 64);
+    h = try_realloc("moveable, 128, GMEM_MOVEABLE|0x0001", g, 128, GMEM_MOVEABLE | 0x0001);
+    GlobalFree(h != NULL ? h : g);
+}
+
+/* --- heapcap ------------------------------------------------------- */
+
+/* HeapAlloc of `size` from `heap` under __try: a block, NULL or an
+   exception's code, and the error. A block is freed. */
+static void heap_try(const char *label, HANDLE heap, DWORD size)
+{
+    void *p = NULL;
+    DWORD code = 0;
+    const char *e;
+
+    arm();
+    __try {
+        p = HeapAlloc(heap, 0, size);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    e = le();
+    if (code != 0) {
+        line("HeapAlloc(%s, 0x%lX): raised 0x%08lX err=%s", label, size, code, e);
+        return;
+    }
+    line("HeapAlloc(%s, 0x%lX): %s err=%s", label, size, p == NULL ? "NULL" : "a block", e);
+    if (p != NULL) {
+        HeapFree(heap, 0, p);
+    }
+}
+
+/* HeapReAlloc of a NULL block under __try. */
+static void realloc_null(const char *label, HANDLE heap)
+{
+    void *p = NULL;
+    DWORD code = 0;
+    const char *e;
+
+    arm();
+    __try {
+        p = HeapReAlloc(heap, 0, NULL, 10);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        code = GetExceptionCode();
+    }
+    e = le();
+    if (code != 0) {
+        line("HeapReAlloc(%s, NULL, 10): raised 0x%08lX err=%s", label, code, e);
+    } else {
+        line("HeapReAlloc(%s, NULL, 10): %s err=%s", label, p == NULL ? "NULL" : "a block", e);
+    }
+}
+
+static void sec_heapcap(void)
+{
+    HANDLE fixed, grow, small, hx;
+    void *p;
+    int count;
+    const char *e;
+
+    /* A heap with a maximum size takes no block past 0x7FFF8 bytes
+       (MSDN), however much room it has. */
+    fixed = HeapCreate(0, 0, 16 * MB);
+    line("HeapCreate(0, 0, 16 MiB): created %s", yesno(fixed != NULL));
+    heap_try("16 MiB capped", fixed, 0x7F000);
+    heap_try("16 MiB capped", fixed, 0x7FFF8);
+    heap_try("16 MiB capped", fixed, 0x7FFF9);
+    heap_try("16 MiB capped", fixed, 0x80000);
+    heap_try("16 MiB capped", fixed, 0x100000);
+    grow = HeapCreate(0, 0, 0);
+    heap_try("growable", grow, 0x100000);
+
+    /* A small capped heap filled: the refusal's error. */
+    small = HeapCreate(0, 64 * KB, 128 * KB);
+    count = 0;
+    do {
+        arm();
+        p = HeapAlloc(small, 0, 16 * KB);
+        e = le();
+    } while (p != NULL && ++count < 64);
+    line("HeapAlloc(128 KiB capped, 16 KiB) until refused: refused %s, then err=%s", yesno(p == NULL), e);
+
+    /* HEAP_GENERATE_EXCEPTIONS: past the cap, and a NULL block to
+       reallocate (on it and on the process heap). */
+    hx = HeapCreate(HEAP_GENERATE_EXCEPTIONS, 0, 16 * MB);
+    heap_try("16 MiB capped, HEAP_GENERATE_EXCEPTIONS", hx, 0x100000);
+    realloc_null("16 MiB capped, HEAP_GENERATE_EXCEPTIONS", hx);
+    realloc_null("the process heap", GetProcessHeap());
+
+    HeapDestroy(fixed);
+    HeapDestroy(grow);
+    HeapDestroy(small);
+    HeapDestroy(hx);
+}
+
 static const section_t sections[] = {
     { "sysinfo", sec_sysinfo, 0 },
     { "malloc", sec_malloc, 0 },
@@ -1367,6 +1657,8 @@ static const section_t sections[] = {
     { "query", sec_query, 0 },
     { "guardcall", sec_guardcall, 0 },
     { "globalflags", sec_globalflags, 0 },
+    { "handles", sec_handles, 0 },
+    { "heapcap", sec_heapcap, 0 },
     { NULL, NULL, 0 }
 };
 

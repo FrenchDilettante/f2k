@@ -1,9 +1,9 @@
 # F2K capture of guimsg (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:33.26
-guimsg F2KT-SOURCE-CRC=0x35094B91
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:14.44
+guimsg F2KT-SOURCE-CRC=0xA38C8CB5
 >>> guimsg.exe post
 == post
 RegisterClass(F2KGuimsgPost): atom nonzero yes err=2
@@ -142,7 +142,7 @@ guimsg: done
 >>> guimsg.exe hung
 == hung
 GetProcAddress(user32, IsHungAppWindow): non-NULL yes
-the second thread made its window (busy 9000 ms after): WAIT_OBJECT_0, yes
+the second thread made its window (busy 9500 ms after): WAIT_OBJECT_0, yes
 IsHungAppWindow(the second thread's window) at once: ret=0 err=-
 SendMessageTimeoutW(the sleeping thread's window, SMTO_ABORTIFHUNG, 1, 2, timeout 300): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms yes
   procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
@@ -150,7 +150,7 @@ SendMessageTimeoutW(the sleeping thread's window, SMTO_ABORTIFHUNG, 1, 2, timeou
 IsHungAppWindow(the second thread's window) after 6.5 s: ret=0 err=-
 SendMessageTimeoutW(the sleeping thread's window, SMTO_ABORTIFHUNG, 3, 4, timeout 2000): ret=0 err=1460 result=another; under 200 ms no, 250-1500 ms no
   procedure saw: count=0 message is the test one no, the registered one no, wParam=0 lParam=0, on the expected thread no
-SendMessageTimeoutW(the sleeping thread's window, SMTO_NORMAL, 5, 6, timeout 300): ret=1 err=- result=the procedure's; under 200 ms yes, 250-1500 ms no
+SendMessageTimeoutW(the sleeping thread's window, SMTO_NORMAL, 5, 6, timeout 2000): ret=1 err=- result=the procedure's; under 200 ms no, 250-1500 ms yes
   procedure saw: count=1 message is the test one yes, the registered one no, wParam=5 lParam=6, on the expected thread yes
 the second thread handled a message once it read its queue again: WAIT_TIMEOUT
 IsHungAppWindow(the second thread's window) after it read its queue again: ret=0 err=-
@@ -171,5 +171,88 @@ the second thread handled it: WAIT_OBJECT_0
   procedure saw: count=1 message is the test one yes, the registered one no, wParam=5 lParam=6, on the expected thread yes
 SendNotifyMessageW(the second thread's window, WM_SETTEXT, 0, L"x"): ret=0 err=1159
 the second thread ended: WAIT_OBJECT_0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe quota
+== quota
+PostMessageW to the thread's own window until it fails: failed yes, after about 10000 posts (9000-11000) yes, err=-
+the queue emptied: every post found there yes
+PostMessageW once the queue is empty: ret=1 err=-
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe postptr
+== postptr
+PostMessageW(h, WM_SETTEXT, 0, L"x"): ret=0 err=1159
+PostMessageA(h, WM_SETTEXT, 0, "x"): ret=0 err=1159
+PostMessageW(h, WM_COPYDATA, 0, &cds): ret=0 err=1159
+a message queued: no
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe copydata
+== copydata
+the receiving window: non-NULL yes
+CreateProcessA(guimsg.exe --copychild): ret=1 err=-
+the child ended: WAIT_OBJECT_0
+the procedure received WM_COPYDATA: count=1 wParam=0
+  dwData=0x4B1D cbData=12 lpData NULL no, the bytes "copy across"
+the child's SendMessageA(WM_COPYDATA): ret=77; its PostMessageA(WM_COPYDATA): ret=0 err=1159
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe icon
+== icon
+LoadIcon(IDI_APPLICATION) and LoadIcon(IDI_HAND): non-NULL yes, distinct yes
+WM_GETICON(ICON_BIG), none set: NULL err=-
+WM_GETICON(ICON_SMALL), none set: NULL err=-
+WM_SETICON(ICON_BIG, the application icon): NULL err=6
+WM_GETICON(ICON_BIG): the application icon err=-
+WM_GETICON(ICON_SMALL): NULL err=-
+WM_SETICON(ICON_SMALL, the hand icon): NULL err=-
+WM_GETICON(ICON_SMALL): the hand icon err=-
+WM_SETICON(ICON_BIG, the hand icon): the application icon err=-
+WM_GETICON(ICON_BIG): the hand icon err=-
+WM_SETICON(ICON_BIG, NULL): the hand icon err=-
+WM_GETICON(ICON_BIG): NULL err=-
+WM_GETICON(ICON_SMALL): the hand icon err=-
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe redraw
+== redraw
+a shown window, painted
+WM_SETREDRAW(FALSE): ret=0 err=-; visible no, WS_VISIBLE no
+  UpdateWindow after an InvalidateRect: WM_PAINT count=0
+WM_SETREDRAW(TRUE): ret=0 err=-; visible yes, WS_VISIBLE yes
+  UpdateWindow: WM_PAINT count=0
+  UpdateWindow after an InvalidateRect: WM_PAINT count=1
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe syscmd
+== syscmd
+a shown WS_OVERLAPPEDWINDOW window at 100,80 300x200
+WM_SYSCOMMAND(SC_MINIMIZE): ret=0 err=-
+  IsIconic=1 IsZoomed=0; WM_SIZE count=1 last wParam=1; the rect the normal one no
+WM_SYSCOMMAND(SC_RESTORE): ret=0 err=-
+  IsIconic=0 IsZoomed=0; WM_SIZE count=1 last wParam=0; the rect the normal one yes
+WM_SYSCOMMAND(SC_MAXIMIZE): ret=0 err=-
+  IsIconic=0 IsZoomed=1; WM_SIZE count=1 last wParam=2; the rect the normal one no
+WM_SYSCOMMAND(SC_RESTORE): ret=0 err=-
+  IsIconic=0 IsZoomed=0; WM_SIZE count=1 last wParam=0; the rect the normal one yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe ctxmenu
+== ctxmenu
+a hidden parent and its child: non-NULL yes
+SendMessageW(child, WM_CONTEXTMENU, child, (10,20)): ret=0 err=-
+  the child's procedure saw it: count=1
+  the parent's procedure saw it: count=1, wParam the child yes, lParam (10,20) yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe deadthr
+== deadthr
+a second thread made a window and ended, leaving it: WAIT_OBJECT_0, a window yes
+IsWindow(its window): no err=-
+SendMessageW from a thread of its own: returned within 5 s yes, ret=0 err=1400
+SendMessageTimeoutW(SMTO_NORMAL, 1000) from a thread of its own: returned within 5 s yes, ret=0 err=1400
+PostMessageW(its window): ret=0 err=1400
+the procedure saw: count=0
 guimsg: done
 <<< exit code=0

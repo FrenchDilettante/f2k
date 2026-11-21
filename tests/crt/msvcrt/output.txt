@@ -1,9 +1,9 @@
 # F2K capture of msvcrt (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:50.20
-msvcrt F2KT-SOURCE-CRC=0xF390E427
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:52.60
+msvcrt F2KT-SOURCE-CRC=0xF3461E76
 >>> msvcrt.exe math
 == math
 2.5 [4004000000000000]: ceil 3 [4008000000000000] errno 0, floor 2 [4000000000000000] errno 0, fabs 2.5 [4004000000000000]
@@ -113,5 +113,48 @@ _setmbcp(_MB_CP_OEM): 0 errno 0; _getmbcp() is GetOEMCP() no, is 437 no
   _MB_CP_OEM: _ismbblead takes no byte as a lead byte
 _setmbcp(_MB_CP_ANSI): 0 errno 0; _getmbcp() is GetACP() no, is 1252 no
   _MB_CP_ANSI: _ismbblead takes no byte as a lead byte
+msvcrt: done
+<<< exit code=0
+>>> msvcrt.exe printf
+== printf
+"%lld|%d" of (__int64)5, 7, 9: 3 [5|0]
+"%Ld|%d" of (__int64)5, 7, 9: 3 [5|0]
+"%llx|%d" of (__int64)5, 7, 9: 3 [5|0]
+"%I64d|%d" of (__int64)5, 7, 9: 3 [5|7]
++INF: 119 [1.#INF00|1|1.$|1.#J|1.#IO|1.#INF00e+000|1.$e+000|1.#INF|1|     1.#IO|1.$       |+1.$|1.|0000001.#J|1.#INF00E+000|1.#INF]
+-INF: 131 [-1.#INF00|-1|-1.$|-1.#J|-1.#IO|-1.#INF00e+000|-1.$e+000|-1.#INF|-1|    -1.#IO|-1.$      |-1.$|-1.|-000001.#J|-1.#INF00E+000|-1.#INF]
+QNAN: 121 [1.#QNAN0|1|1.$|1.#R|1.#QO|1.#QNAN0e+000|1.$e+000|1.#QNAN|1|     1.#QO|1.$       |+1.$|1.|0000001.#R|1.#QNAN0E+000|1.#QNAN]
+IND: 131 [-1.#IND00|-1|-1.$|-1.#J|-1.#IO|-1.#IND00e+000|-1.$e+000|-1.#IND|-1|    -1.#IO|-1.$      |-1.$|-1.|-000001.#J|-1.#IND00E+000|-1.#IND]
+SNAN: 121 [1.#QNAN0|1|1.$|1.#R|1.#QO|1.#QNAN0e+000|1.$e+000|1.#QNAN|1|     1.#QO|1.$       |+1.$|1.|0000001.#R|1.#QNAN0E+000|1.#QNAN]
+"%+u|% u|%+d|% d" of 5: 9 [5|5|+5| 5]
+"%#.0o|%.0o|%#o|%#.0x|%#x" of 0, 0, 8, 0, 0: 9 [0||010||0]
+"%p|%#p|%10p" of 0x1234: 30 [00001234|0X00001234|  00001234]
+"%5c|%-5c|%05c" of 'x': 17 [    x|x    |0000x]
+"a%yb|%d" of 7, 8: 5 [ayb|7]
+"[%5y][%-3k]" of 7, 8: 6 [[y][k]]
+msvcrt: done
+<<< exit code=0
+>>> msvcrt.exe scanf
+== scanf
+swscanf(L"5", L"%Ld"): ret=1 value 5, the word after changed no
+swscanf(L"6", L"%lld"): ret=1 value 6, the word after changed no
+sscanf("7", "%Ld"): ret=1 value 7, the word after changed no
+swscanf(L"123456789012", L"%I64d"): ret=1 [0000001CBE991A14]
+swscanf(L"-5", L"%I64d"): ret=1 [FFFFFFFFFFFFFFFB]
+msvcrt: done
+<<< exit code=0
+>>> msvcrt.exe snprintf
+== snprintf
+_snprintf(count 0, "abc"): ret=-1 [ZZZZZ]
+_snprintf(count 0, ""): ret=0 [ZZZZZ]
+_snprintf(NULL, count 0, "abc"): ret=-1
+_snprintf(count 3, "abc"): ret=3 [abcZZ]
+_vsnprintf(count 0, "abc"): ret=-1 [ZZZZZ]
+_vsnprintf(count 3, "abc"): ret=3 [abcZZ]
+_snwprintf(count 0, L"abc"): ret=-1 [ZZZZZ]
+_snwprintf(count 3, L"abc"): ret=3 [abcZZ]
+_snprintf(count (size_t)-1, "abc"): ret=-1 [ZZZZZ]
+_vsnprintf(count (size_t)-1, "abc"): ret=-1 [ZZZZZ]
+_snwprintf(count (size_t)-1, L"abc"): ret=-1 [ZZZZZ]
 msvcrt: done
 <<< exit code=0

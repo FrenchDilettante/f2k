@@ -136,13 +136,18 @@ del memory.obj
 cd ..\..
 goto :eof
 
+rem threads' companion program, stackkid.exe (the child its stacksize
+rem section starts), builds beside it with no source stamp, linked
+rem with a 4 MiB stack reservation; both with /MT.
 :threads
 echo === threads
 cd kernel32\threads
+cl /nologo /MT stackkid.c /link /STACK:0x400000
+if errorlevel 1 (echo build.bat: stackkid failed & exit /b 1)
 call :stamp threads.c
 cl /nologo /MT /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% threads.c
 if errorlevel 1 (echo build.bat: threads failed & exit /b 1)
-del threads.obj
+del threads.obj stackkid.obj
 cd ..\..
 goto :eof
 
@@ -833,7 +838,7 @@ goto :eof
 echo === editctl
 cd user32\editctl
 call :stamp editctl.c
-cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% editctl.c user32.lib
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% editctl.c user32.lib gdi32.lib
 if errorlevel 1 (echo build.bat: editctl failed & exit /b 1)
 del editctl.obj
 cd ..\..

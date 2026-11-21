@@ -1,9 +1,9 @@
 # F2K capture of vmedge (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:03.93
-vmedge F2KT-SOURCE-CRC=0x66A9D6CE
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:10.46
+vmedge F2KT-SOURCE-CRC=0x9CFCD30F
 >>> vmedge.exe guardwalk
 == guardwalk
 CreateThread: ret=ok err=-
@@ -37,5 +37,39 @@ VirtualQueryEx(child, our base): ret=ok err=- free=yes
 NtUnmapViewOfSection(child, its image again): status=0xC0000019 err=-
 TerminateProcess(child): ret=1 err=-
 child ended: WAIT_OBJECT_0
+vmedge: done
+<<< exit code=0
+>>> vmedge.exe vmflags
+== vmflags
+VirtualAlloc(committed pages, MEM_RESET): the address err=-
+then: state 0x1000 protect 0x4
+VirtualAlloc(committed pages, MEM_RESET, PAGE_NOACCESS): the address err=-
+then: state 0x1000 protect 0x4
+the reset pages are still read and written: yes
+VirtualAlloc(committed pages, MEM_RESET|MEM_COMMIT): NULL err=87
+VirtualAlloc(NULL, MEM_RESET): another address err=-
+VirtualAlloc(NULL, MEM_RESET|MEM_RESERVE): NULL err=87
+VirtualAlloc(reserved pages, MEM_RESET): the address err=-
+then: state 0x2000 protect 0x0
+MEM_TOP_DOWN: reserved yes, above a plain reservation yes, at or above 0x70000000 yes
+vmedge: done
+<<< exit code=0
+>>> vmedge.exe viewprot
+== viewprot
+a PAGE_READWRITE file section: FILE_MAP_READ view yes, FILE_MAP_COPY view yes
+VirtualProtect(the FILE_MAP_READ view, 0x4): ret=0 err=87
+VirtualProtect(the FILE_MAP_READ view, 0x8): ret=1 old 0x2 err=-
+VirtualProtect(the FILE_MAP_READ view, 0x40): ret=0 err=87
+VirtualProtect(the FILE_MAP_READ view, 0x1): ret=1 old 0x8 err=-
+VirtualProtect(the FILE_MAP_READ view, 0x2): ret=1 old 0x1 err=-
+the FILE_MAP_READ view: state 0x1000 protect 0x2
+the FILE_MAP_COPY view: state 0x1000 protect 0x8
+VirtualProtect(the FILE_MAP_COPY view, 0x4): ret=0 err=87
+then: state 0x1000 protect 0x8
+a write through the FILE_MAP_COPY view: done
+then: state 0x1000 protect 0x4
+the FILE_MAP_READ view sees it: no
+the file changed: no
+the file changed once every view is gone: no
 vmedge: done
 <<< exit code=0

@@ -1,9 +1,9 @@
 # F2K capture of editctl (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:59:44.74
-editctl F2KT-SOURCE-CRC=0x23AC6182
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:50.76
+editctl F2KT-SOURCE-CRC=0xE8AE9656
 >>> editctl.exe create
 == create
 RegisterClassW(F2KEditParent): atom nonzero yes err=2
@@ -889,5 +889,245 @@ EM_SETMODIFY(single, TRUE): ret=1 err=-
   notifications: none
 SetFocus(the parent): the focus yes
   notifications: 101 EN_KILLFOCUS
+editctl: done
+<<< exit code=0
+>>> editctl.exe wantret
+== wantret
+CreateDialogIndirectParamW(OK, 101 multiline, 102 multiline | ES_WANTRETURN, 103 single, 104 single | ES_WANTRETURN): non-NULL yes err=-
+the dialog shown: the foreground yes
+102's style=0x500110C4, 104's style=0x50011080
+-- 101, ES_MULTILINE
+WM_GETDLGCODE(101, Enter's WM_KEYDOWN): ret=0x008D err=-
+Enter posted to 101, pumped through IsDialogMessageW: the focus id 1
+  the dialog received IDOK, lParam the button yes
+  text "ab"
+-- 102, ES_MULTILINE | ES_WANTRETURN
+WM_GETDLGCODE(102, Enter's WM_KEYDOWN): ret=0x008D err=-
+Enter posted to 102, pumped through IsDialogMessageW: the focus id 102
+  the dialog received no IDOK or IDCANCEL
+  text "ab\r\n"
+-- 103, single-line
+WM_GETDLGCODE(103, Enter's WM_KEYDOWN): ret=0x0089 err=-
+Enter posted to 103, pumped through IsDialogMessageW: the focus id 103
+  the dialog received IDOK, lParam the button yes
+  text "ab"
+-- 104, single-line, ES_WANTRETURN
+WM_GETDLGCODE(104, Enter's WM_KEYDOWN): ret=0x0089 err=-
+Enter posted to 104, pumped through IsDialogMessageW: the focus id 104
+  the dialog received IDOK, lParam the button yes
+  text "ab"
+-- 101, WM_CHAR '\r' sent to it
+SendMessageW(101, WM_CHAR, '\r'): ret=1 err=-
+  the dialog received no IDOK or IDCANCEL
+  text "ab"
+editctl: done
+<<< exit code=0
+>>> editctl.exe autovscroll
+== autovscroll
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", ES_MULTILINE | ES_AUTOHSCROLL, two lines high, id 103): non-NULL yes err=-
+  notifications: none
+CreateWindowExW("Edit", ES_MULTILINE | ES_AUTOHSCROLL | ES_AUTOVSCROLL, two lines high, id 104): non-NULL yes err=-
+  notifications: none
+-- no ES_AUTOVSCROLL
+SetFocus(103): the focus yes
+  notifications: 103 EN_SETFOCUS
+typed "a\rb\rc\rd" into 103 (WM_CHAR posted)
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_MAXTEXT, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_MAXTEXT, 103 EN_UPDATE, 103 EN_CHANGE
+  text "a\r\nbcd"
+EM_GETLINECOUNT(103): ret=2 err=-
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=0 err=-
+  notifications: none
+EM_SETSEL(103 (to the end), 99, 99): ret=1 err=0
+  notifications: none
+EM_REPLACESEL(103, TRUE, "\r\nx"): ret=1 err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE, 103 EN_MAXTEXT
+  text "a\r\nbcd"
+WM_SETTEXT(103, four lines): ret=1 err=0
+  notifications: none
+  text "1\r\n2\r\n3\r\n4"
+EM_GETLINECOUNT(103): ret=4 err=-
+  notifications: none
+-- ES_AUTOVSCROLL
+SetFocus(104): the focus yes
+  notifications: 103 EN_KILLFOCUS, 104 EN_SETFOCUS
+typed "a\rb\rc\rd" into 104 (WM_CHAR posted)
+  notifications: 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE, 104 EN_UPDATE, 104 EN_CHANGE
+  text "a\r\nb\r\nc\r\nd"
+EM_GETLINECOUNT(104): ret=4 err=-
+  notifications: none
+EM_GETFIRSTVISIBLELINE(104): ret=2 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe margins
+== margins
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+-- single
+EM_GETMARGINS(as created): ret=0x00000000 err=- left=0 right=0
+EM_SETMARGINS(single, EC_LEFTMARGIN | EC_RIGHTMARGIN, 3, 5): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(single): ret=0x00050003 err=- left=3 right=5
+EM_SETMARGINS(single, EC_LEFTMARGIN, 7, 9): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(single): ret=0x00050007 err=- left=7 right=5
+EM_SETMARGINS(single, EC_RIGHTMARGIN, 11, 13): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(single): ret=0x000D0007 err=- left=7 right=13
+EM_SETMARGINS(single, 0, 1, 1): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(single): ret=0x000D0007 err=- left=7 right=13
+EM_SETMARGINS(single, EC_LEFTMARGIN | EC_RIGHTMARGIN, EC_USEFONTINFO, EC_USEFONTINFO): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(single): err=- left the same as right yes, left 0xFFFF no, left below 16 yes
+-- multi
+EM_GETMARGINS(as created): ret=0x00000000 err=- left=0 right=0
+EM_SETMARGINS(multi, EC_LEFTMARGIN | EC_RIGHTMARGIN, 3, 5): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(multi): ret=0x00050003 err=- left=3 right=5
+EM_SETMARGINS(multi, EC_LEFTMARGIN, 7, 9): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(multi): ret=0x00050007 err=- left=7 right=5
+EM_SETMARGINS(multi, EC_RIGHTMARGIN, 11, 13): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(multi): ret=0x000D0007 err=- left=7 right=13
+EM_SETMARGINS(multi, 0, 1, 1): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(multi): ret=0x000D0007 err=- left=7 right=13
+EM_SETMARGINS(multi, EC_LEFTMARGIN | EC_RIGHTMARGIN, EC_USEFONTINFO, EC_USEFONTINFO): ret=0 err=-
+  notifications: none
+EM_GETMARGINS(multi): err=- left the same as right yes, left 0xFFFF no, left below 16 yes
+-- the caret in single as its left margin grows by 10
+EM_SETMARGINS(single, both, 2, 2): ret=0 err=-
+  notifications: none
+SetFocus(single): the focus yes
+  notifications: 101 EN_SETFOCUS
+EM_SETSEL(single, 0, 0): ret=1 err=0
+  notifications: none
+EM_GETMARGINS(single): ret=0x00020002 err=- left=2 right=2
+EM_SETMARGINS(single, EC_LEFTMARGIN, + 10): ret=0 err=-
+  notifications: none
+EM_SETSEL(single, 1, 1): ret=1 err=0
+  notifications: none
+EM_SETSEL(single, 0, 0): ret=1 err=0
+  notifications: none
+  the caret (GetCaretPos) 10 pixels right of where it was yes, on the same row yes
+editctl: done
+<<< exit code=0
+>>> editctl.exe linescroll
+== linescroll
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, two lines high, six lines, id 103): non-NULL yes err=0
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=0 err=-
+  notifications: none
+EM_LINESCROLL(103, 0, 2): ret=1 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=2 err=-
+  notifications: none
+EM_LINESCROLL(103, 0, -1): ret=1 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=1 err=-
+  notifications: none
+EM_LINESCROLL(103, 0, -10): ret=1 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=0 err=-
+  notifications: none
+EM_LINESCROLL(103, 0, 100): ret=1 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=4 err=-
+  notifications: none
+EM_LINESCROLL(103, 3, 0), sideways: ret=1 err=-
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=4 err=-
+  notifications: none
+EM_LINESCROLL(103, 0, -100): ret=1 err=5
+  notifications: none
+EM_SCROLL(103, SB_LINEDOWN): ret=65537 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=1 err=-
+  notifications: none
+EM_SCROLL(103, SB_PAGEDOWN): ret=65537 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=2 err=-
+  notifications: none
+EM_SCROLL(103, SB_LINEUP): ret=131071 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=1 err=-
+  notifications: none
+EM_SCROLL(103, SB_PAGEUP): ret=131071 err=5
+  notifications: none
+EM_GETFIRSTVISIBLELINE(103): ret=0 err=-
+  notifications: none
+EM_SCROLL(103, 99): ret=0 err=-
+  notifications: none
+EM_LINESCROLL(single, 0, 1): ret=0 err=-
+  notifications: none
+EM_SCROLL(single, SB_LINEDOWN): ret=0 err=-
+  notifications: none
+editctl: done
+<<< exit code=0
+>>> editctl.exe password
+== password
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+CreateWindowExW("Edit", ES_LEFT | ES_AUTOHSCROLL | ES_PASSWORD, id 103): non-NULL yes err=0
+  notifications: 103 EN_UPDATE, 103 EN_CHANGE
+EM_GETPASSWORDCHAR(the ES_PASSWORD edit, as created): SendMessageA ret=0x2A err=-, SendMessageW ret=0x2A err=-; ES_PASSWORD yes
+  text "secret"
+EM_GETPASSWORDCHAR(single, as created): SendMessageA ret=0x0 err=-, SendMessageW ret=0x0 err=-; ES_PASSWORD no
+EM_SETPASSWORDCHAR(single, 0x95) through SendMessageA: ret=1 err=-
+  notifications: none
+EM_GETPASSWORDCHAR(single): SendMessageA ret=0x2022 err=-, SendMessageW ret=0x2022 err=-; ES_PASSWORD yes
+EM_SETPASSWORDCHAR(single, 0x2022) through SendMessageW: ret=1 err=-
+  notifications: none
+EM_GETPASSWORDCHAR(single): SendMessageA ret=0x2022 err=-, SendMessageW ret=0x2022 err=-; ES_PASSWORD yes
+EM_SETPASSWORDCHAR(single, 0x2A) through SendMessageW: ret=1 err=-
+  notifications: none
+EM_GETPASSWORDCHAR(single): SendMessageA ret=0x2A err=-, SendMessageW ret=0x2A err=-; ES_PASSWORD yes
+  text "secret"
+EM_SETPASSWORDCHAR(single, 0x0) through SendMessageA: ret=1 err=-
+  notifications: none
+EM_GETPASSWORDCHAR(single): SendMessageA ret=0x0 err=-, SendMessageW ret=0x0 err=-; ES_PASSWORD no
+EM_SETPASSWORDCHAR(multi, 0x2A) through SendMessageA: ret=1 err=-
+  notifications: none
+EM_GETPASSWORDCHAR(multi): SendMessageA ret=0x2A err=-, SendMessageW ret=0x2A err=-; ES_PASSWORD yes
+editctl: done
+<<< exit code=0
+>>> editctl.exe gethandle
+== gethandle
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+EM_GETHANDLE(multi) through SendMessageW: non-NULL yes err=0, the same again yes
+  the block holds the text as UTF-16 yes, as bytes no
+EM_GETHANDLE(single) through SendMessageW: non-NULL no err=-, the same again yes
+CreateWindowExA("EDIT", multiline, id 103, "abc\r\nde"): non-NULL yes err=0
+EM_GETHANDLE(the A edit) through SendMessageA: non-NULL yes err=0, the same again yes
+  the block holds the text as UTF-16 no, as bytes yes
+EM_GETHANDLE(the A edit) through SendMessageW: non-NULL yes err=0, the same again yes
+  the block holds the text as UTF-16 no, as bytes yes
 editctl: done
 <<< exit code=0

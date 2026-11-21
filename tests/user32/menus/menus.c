@@ -154,14 +154,18 @@
  *            its child button, once shown, and after WM_CHANGEUISTATE
  *            clears, sets and initializes UISF_HIDEACCEL; of a dialog
  *            made from a template in memory (CreateDialogIndirectParamW)
- *   underline  whether a menu bar draws its access keys' underlines: a
- *            shown WS_OVERLAPPEDWINDOW window, topmost and not
- *            activated, whose bar holds "&Hit" and "Hit"; the
- *            COLOR_MENUTEXT pixels in each item's rectangle
- *            (GetMenuItemRect), and whether "&Hit"'s reach lower than
- *            "Hit"'s (its underline); as shown, then after
- *            WM_CHANGEUISTATE clears and sets UISF_HIDEACCEL (with
- *            DrawMenuBar)
+ *   underline  whether a menu bar draws its access keys' underlines,
+ *            hidden while keyboard cues are off until Alt is pressed: a
+ *            visible WS_OVERLAPPEDWINDOW window, the foreground one,
+ *            whose bar holds "&File" and "File"; the COLOR_MENUTEXT
+ *            pixels of the bar's rows (the SM_CYMENU rows above the
+ *            client area), grouped by item, and whether "&File"'s reach
+ *            lower than "File"'s (its underline): as shown, with Alt
+ *            held (SendInput), after Ctrl and Alt are released (Ctrl
+ *            keeps the menu loop from starting), and after
+ *            WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL) and DrawMenuBar;
+ *            SPI_GETKEYBOARDCUES, and GetMenuItemRect's rectangle
+ *            against the bar's rows
  *   capicon  the caption's icon of a window shaped as calc.exe's
  *            (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, topmost, not
  *            activated): icons of one color each made with
@@ -170,7 +174,8 @@
  *            with none (and then WM_SETICON(ICON_SMALL) of the blue
  *            one); GCL_HICON, GCL_HICONSM and WM_GETICON's answers, the
  *            rows and columns each color covers in the caption (inside
- *            the frame), and the title's first column
+ *            the frame), and the title's first column (the caption's
+ *            rows above its bottom separator)
  *
  * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
  * at (60,70), 320x200, of a class each registers, with a fresh copy of
@@ -3276,77 +3281,220 @@ static void show_on_top(HWND h)
     pump_queued();
 }
 
-/* The menu-text ink of the bar's item `index`, in its own rectangle. */
-static ink_t item_ink(HWND h, HMENU bar, int index)
-{
-    RECT wr;
-    RECT ir;
-    ink_t none;
+/* The bar's rows of the window DC: the SM_CYMENU rows above the client
+ * area, between the frame's inner edges. */
+#define BAR_MOST_W 400
+#define BAR_MOST_H 40
 
+/* The bar's COLOR_MENUTEXT ink, split into groups of columns at gaps of
+ * 5 columns or more (an item's letters are closer than that, two items
+ * farther apart): how many groups, and the lowest inked row of the first
+ * two. */
+typedef struct {
+    int groups;
+    int bottom[2];
+} bar_ink_t;
+
+static bar_ink_t bar_ink(HWND h)
+{
+    static BYTE inked[BAR_MOST_H][BAR_MOST_W];
+    bar_ink_t r;
+    RECT wr;
+    POINT c;
+    HDC dc;
+    COLORREF want = GetSysColor(COLOR_MENUTEXT);
+    int left, right, top, rows, x, y, gap, col_ink;
+
+    r.groups = 0;
+    r.bottom[0] = -1;
+    r.bottom[1] = -1;
     GetWindowRect(h, &wr);
-    if (!GetMenuItemRect(h, bar, index, &ir)) {
-        none.count = 0;
-        none.top = -1;
-        none.bottom = -1;
-        none.left = -1;
-        none.right = -1;
-        return none;
+    c.x = 0;
+    c.y = 0;
+    ClientToScreen(h, &c);
+    left = c.x - wr.left;
+    right = (wr.right - wr.left) - left;
+    rows = GetSystemMetrics(SM_CYMENU);
+    top = (c.y - wr.top) - rows;
+    if (right - left > BAR_MOST_W) {
+        right = left + BAR_MOST_W;
     }
-    return find_ink(h, ir.left - wr.left, ir.top - wr.top, ir.right - wr.left, ir.bottom - wr.top,
-                    GetSysColor(COLOR_MENUTEXT));
+    if (rows > BAR_MOST_H) {
+        rows = BAR_MOST_H;
+    }
+    if (top < 0 || right <= left) {
+        return r;
+    }
+    dc = GetWindowDC(h);
+    for (y = 0; y < rows; y++) {
+        for (x = left; x < right; x++) {
+            inked[y][x - left] = (BYTE)near_color(GetPixel(dc, x, top + y), want);
+        }
+    }
+    ReleaseDC(h, dc);
+    gap = 5;
+    for (x = 0; x < right - left; x++) {
+        col_ink = -1;
+        for (y = 0; y < rows; y++) {
+            if (inked[y][x]) {
+                col_ink = y;
+            }
+        }
+        if (col_ink < 0) {
+            gap++;
+            continue;
+        }
+        if (gap >= 5) {
+            r.groups++;
+        }
+        gap = 0;
+        if (r.groups <= 2 && col_ink > r.bottom[r.groups - 1]) {
+            r.bottom[r.groups - 1] = col_ink;
+        }
+    }
+    return r;
 }
 
-/* The bar's two items, "&Hit" and "Hit": whether each shows ink, and
- * whether the access key's item reaches lower (its underline). */
-static void print_underline(HWND h, HMENU bar, const char *when)
+/* The bar holds "&File" and "File": the access key's underline shows as
+ * ink below the plain item's lowest row. */
+static void print_underline(HWND h, const char *when)
 {
-    ink_t amp;
-    ink_t text;
+    bar_ink_t ink = bar_ink(h);
 
-    amp = item_ink(h, bar, 0);
-    text = item_ink(h, bar, 1);
-    line("%s: \"&Hit\" ink %s, \"Hit\" ink %s; \"&Hit\" reaches lower (underlined) %s", when, yesno(amp.count > 0),
-         yesno(text.count > 0), yesno(amp.count > 0 && amp.bottom > text.bottom));
+    line("%s: the bar's ink in %d groups; underline under F of \"&File\": %s", when, ink.groups,
+         yesno(ink.groups == 2 && ink.bottom[0] > ink.bottom[1]));
+}
+
+/* Keys pressed into the foreground window, then the queue pumped for
+ * 400 ms; a menu loop entered is ended by the guard timer's EndMenu.
+ * When the window is not the foreground window (the real machine may
+ * refuse the program the foreground), the same keys are posted to it as
+ * the keyboard delivers them instead: Alt, and every key while Alt is
+ * down (`alt_held`), as WM_SYSKEYDOWN/UP, the others as WM_KEYDOWN/UP. */
+static void underline_keys(const char *what, const stroke_t *strokes, int n, int alt_held)
+{
+    f2k_input in[MAX_STROKES];
+    UINT sent;
+    UINT msg;
+    LPARAM lp;
+    DWORD start;
+    int up;
+    int sys;
+    int i;
+
+    if (key_window == NULL) {
+        return;
+    }
+    menu_record_count = 0;
+    menu_records_lost = 0;
+    if (send_input == NULL || GetForegroundWindow() != key_window) {
+        for (i = 0; i < n; i++) {
+            up = (strokes[i].flags & UP) != 0;
+            sys = strokes[i].vk == VK_MENU || alt_held;
+            lp = 1 | ((LPARAM)strokes[i].scan << 16) | (up ? 0xC0000000 : 0);
+            if (sys && strokes[i].vk != VK_MENU) {
+                lp |= 0x20000000;
+            }
+            msg = sys ? (up ? WM_SYSKEYUP : WM_SYSKEYDOWN) : (up ? WM_KEYUP : WM_KEYDOWN);
+            PostMessageW(key_window, msg, strokes[i].vk, lp);
+        }
+        line("%s: not the foreground window or no SendInput: the key messages posted to the window", what);
+    } else {
+        ZeroMemory(in, sizeof in);
+        for (i = 0; i < n && i < MAX_STROKES; i++) {
+            in[i].type = INPUT_KEYBOARD;
+            in[i].u.ki.wVk = strokes[i].vk;
+            in[i].u.ki.wScan = strokes[i].scan;
+            in[i].u.ki.dwFlags = strokes[i].flags;
+        }
+        arm();
+        sent = send_input((UINT)n, in, (int)sizeof(f2k_input));
+        line("%s: SendInput(%d events) ret=%u err=%s", what, n, sent, le());
+    }
+    SetTimer(key_window, GUARD_TIMER, GUARD_MS, NULL);
+    start = GetTickCount();
+    while (GetTickCount() - start < 400) {
+        pump_queued();
+        MsgWaitForMultipleObjects(0, NULL, FALSE, 50, QS_ALLINPUT);
+    }
+    pump_queued();
+    KillTimer(key_window, GUARD_TIMER);
+    for (i = 0; i < menu_record_count; i++) {
+        if (menu_records[i].msg == WM_ENTERMENULOOP) {
+            line("  a menu loop was entered");
+        }
+    }
 }
 
 static void sec_underline(void)
 {
+    static const stroke_t alt_down[] = { { VK_MENU, SCAN_ALT, DOWN } };
+    static const stroke_t release[] = {
+        { VK_CONTROL, 0x1D, DOWN }, { VK_CONTROL, 0x1D, UP }, { VK_MENU, SCAN_ALT, UP }
+    };
     WNDCLASSW wc;
     HINSTANCE inst;
-    HWND h;
+    HMODULE user;
     HMENU bar;
+    RECT ir;
+    RECT wr;
+    POINT c;
+    BOOL ok;
+    BOOL cues = -1;
 
     inst = GetModuleHandleW(NULL);
+    user = GetModuleHandleA("user32.dll");
+    send_input = NULL;
+    end_menu = NULL;
+    if (user != NULL) {
+        send_input = (send_input_fn)GetProcAddress(user, "SendInput");
+        end_menu = (end_menu_fn)GetProcAddress(user, "EndMenu");
+    }
     pump_queued();
+    SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &cues, 0);
+    line("SPI_GETKEYBOARDCUES: %d", (int)cues);
     UnregisterClassW(L"F2KMenusUnderline", inst);
     ZeroMemory(&wc, sizeof wc);
-    wc.lpfnWndProc = plain;
+    wc.lpfnWndProc = menu_proc;
     wc.hInstance = inst;
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"F2KMenusUnderline";
     RegisterClassW(&wc);
     bar = CreateMenu();
-    AppendMenuW(bar, MF_STRING, 11, L"&Hit");
-    AppendMenuW(bar, MF_STRING, 12, L"Hit");
-    h = CreateWindowExW(0, L"F2KMenusUnderline", L"menus", WS_OVERLAPPEDWINDOW, 60, 70, 320, 200, NULL, bar, inst,
-                        NULL);
-    line("setup: a WS_OVERLAPPEDWINDOW window with the bar \"&Hit\", \"Hit\": %s", yesno(h != NULL));
-    if (h == NULL) {
+    AppendMenuW(bar, MF_STRING, 11, L"&File");
+    AppendMenuW(bar, MF_STRING, 12, L"File");
+    key_window = CreateWindowExW(0, L"F2KMenusUnderline", L"menus", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 60, 70, 320,
+                                 200, NULL, bar, inst, NULL);
+    line("setup: a visible WS_OVERLAPPEDWINDOW window with the bar \"&File\", \"File\": %s",
+         yesno(key_window != NULL));
+    if (key_window == NULL) {
+        DestroyMenu(bar);
         return;
     }
-    show_on_top(h);
-    print_underline(h, bar, "shown");
-    SendMessageW(h, WM_CHANGEUISTATE, MAKEWPARAM(UIS_CLEAR, UISF_HIDEACCEL), 0);
-    DrawMenuBar(h);
-    UpdateWindow(h);
+    SetForegroundWindow(key_window);
+    SetFocus(key_window);
+    UpdateWindow(key_window);
     pump_queued();
-    print_underline(h, bar, "WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL), DrawMenuBar");
-    SendMessageW(h, WM_CHANGEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEACCEL), 0);
-    DrawMenuBar(h);
-    UpdateWindow(h);
+    line("the foreground window: %s", yesno(GetForegroundWindow() == key_window));
+    GetWindowRect(key_window, &wr);
+    c.x = 0;
+    c.y = 0;
+    ClientToScreen(key_window, &c);
+    ok = GetMenuItemRect(key_window, bar, 0, &ir);
+    line("GetMenuItemRect(the bar, 0): ret=%d, within the SM_CYMENU rows above the client area %s", ok,
+         yesno(ok && ir.top >= c.y - GetSystemMetrics(SM_CYMENU) && ir.bottom <= c.y));
+    print_underline(key_window, "shown, no key pressed");
+    underline_keys("Alt pressed and held", alt_down, 1, 0);
+    print_underline(key_window, "Alt held");
+    underline_keys("Ctrl pressed and released, then Alt released (no menu loop)", release, 3, 1);
+    print_underline(key_window, "Alt released");
+    SendMessageW(key_window, WM_CHANGEUISTATE, MAKEWPARAM(UIS_SET, UISF_HIDEACCEL), 0);
+    DrawMenuBar(key_window);
+    UpdateWindow(key_window);
     pump_queued();
-    print_underline(h, bar, "WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL), DrawMenuBar");
-    DestroyWindow(h);
+    print_underline(key_window, "WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL), DrawMenuBar");
+    DestroyWindow(key_window);
+    key_window = NULL;
     pump_queued();
     UnregisterClassW(L"F2KMenusUnderline", inst);
 }
@@ -3428,7 +3576,7 @@ static void caption_probe(const WCHAR *cls, const char *name, HICON set_small)
     print_ink("magenta (the big icon)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, MAGENTA));
     print_ink("green (the small icon)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, GREEN));
     print_ink("blue (WM_SETICON's)", find_ink(h, frame_x, frame_y, width - frame_x, frame_y + caption, BLUE));
-    title = find_ink(h, frame_x, frame_y, frame_x + width / 2, frame_y + caption,
+    title = find_ink(h, frame_x, frame_y, frame_x + width / 2, frame_y + caption - 1,
                      GetSysColor(active ? COLOR_CAPTIONTEXT : COLOR_INACTIVECAPTIONTEXT));
     if (title.count == 0) {
         line("  the title: no ink");

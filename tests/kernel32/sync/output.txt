@@ -1,9 +1,9 @@
 # F2K capture of sync (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 10/29/2026 14:05:22.68
-sync F2KT-SOURCE-CRC=0xCBCB93B1
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:18.02
+sync F2KT-SOURCE-CRC=0xB5DAE4DB
 >>> sync.exe event
 == event
 manual, initially set: WAIT_OBJECT_0, still WAIT_OBJECT_0
@@ -187,5 +187,26 @@ WaitForMultipleObjects: the thread's end WAIT_OBJECT_0
 WaitForMultipleObjects: OpenEventA(f2kt-waitleak-a) after the closes: NULL err=2
 WaitForMultipleObjects: OpenEventA(f2kt-waitleak-b) after the closes: NULL err=2
 WaitForMultipleObjects: OpenEventA(f2kt-waitleak-c) after the closes: NULL err=2
+sync: done
+<<< exit code=0
+>>> sync.exe access
+== access
+event, SYNCHRONIZE: SetEvent ret=0 err=5
+event, SYNCHRONIZE: ResetEvent ret=0 err=5
+event, SYNCHRONIZE: wait WAIT_TIMEOUT err=-
+event, EVENT_MODIFY_STATE: SetEvent ret=1 err=-
+event, EVENT_MODIFY_STATE: wait WAIT_FAILED err=5
+event: OpenEventA(0) a handle no err=5
+event, duplicated SYNCHRONIZE: SetEvent ret=0 err=5
+event, duplicated GENERIC_WRITE: SetEvent ret=1 err=-
+mutex, SYNCHRONIZE: wait WAIT_OBJECT_0, ReleaseMutex ret=1 err=-
+semaphore, SYNCHRONIZE: ReleaseSemaphore ret=0 prev -7 err=5
+semaphore, SEMAPHORE_MODIFY_STATE: ReleaseSemaphore ret=1 prev 0 err=-
+semaphore, SEMAPHORE_MODIFY_STATE: wait WAIT_FAILED err=5
+timer, SYNCHRONIZE: SetWaitableTimer ret=0 err=5
+timer, SYNCHRONIZE: CancelWaitableTimer ret=0 err=5
+mapping, FILE_MAP_READ: a write view no err=5
+file, duplicated GENERIC_READ: WriteFile ret=0 wrote 0 err=5
+file, its open: WriteFile ret=1 wrote 1 err=-
 sync: done
 <<< exit code=0

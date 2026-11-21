@@ -1,9 +1,9 @@
 # F2K capture of locale (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:59:45.03
-locale F2KT-SOURCE-CRC=0x1E33E2C6
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:10.62
+locale F2KT-SOURCE-CRC=0x4459D27A
 >>> locale.exe date
 == date
 GetUserDefaultLCID is 0x0409: yes, GetSystemDefaultLCID is 0x0409: yes
@@ -794,5 +794,244 @@ IsValidLanguageGroup(0xFFFF, LGRPID_SUPPORTED): ret=0 err=-
 IsValidLanguageGroup(Western Europe (1), 0): ret=1 err=-
 IsValidLanguageGroup(Western Europe (1), LGRPID_INSTALLED|LGRPID_SUPPORTED): ret=0 err=-
 IsValidLanguageGroup(Western Europe (1), 4): ret=0 err=-
+locale: done
+<<< exit code=0
+>>> locale.exe cpconv
+== cpconv
+IsValidCodePage(850): ret=1 err=-
+GetCPInfo(850): ret=1 err=- MaxCharSize 1 DefaultChar 3F 00 LeadByte 00 00
+IsValidCodePage(28591): ret=1 err=-
+GetCPInfo(28591): ret=1 err=- MaxCharSize 1 DefaultChar 3F 00 LeadByte 00 00
+IsValidCodePage(CP_UTF7): ret=1 err=-
+GetCPInfo(CP_UTF7): ret=1 err=- MaxCharSize 5 DefaultChar 3F 00 LeadByte 00 00
+IsValidCodePage(CP_SYMBOL): ret=0 err=-
+GetCPInfo(CP_SYMBOL): ret=0 err=87 MaxCharSize 3435973836 DefaultChar CC CC LeadByte CC CC
+MultiByteToWideChar(850, 0, 41 80 82 9B B0 E1 FF): ret=7 err=- 0041 00C7 00E9 00F8 2591 00DF 00A0
+WideCharToMultiByte(850, 0, U+00E9 U+00C7 U+2591 U+00FF U+20AC U+0100): ret=6 err=- 82 80 B0 98 3F 41 used=1
+WideCharToMultiByte(850, WC_NO_BEST_FIT_CHARS, U+00E9 U+00C7 U+2591 U+00FF U+20AC U+0100): ret=6 err=- 82 80 B0 98 3F 3F used=1
+MultiByteToWideChar(28591, 0, 41 80 9F A0 E9 FF): ret=6 err=- 0041 0080 009F 00A0 00E9 00FF
+WideCharToMultiByte(28591, 0, U+00E9 U+0080 U+009F U+00FF U+0100 U+20AC): ret=6 err=- E9 80 9F FF 41 3F used=1
+WideCharToMultiByte(28591, WC_NO_BEST_FIT_CHARS, U+00E9 U+0080 U+009F U+00FF U+0100 U+20AC): ret=6 err=- E9 80 9F FF 3F 3F used=1
+MultiByteToWideChar(CP_UTF7, 0, "+AGE-"): ret=2 err=- 0061 0000
+MultiByteToWideChar(CP_UTF7, 0, "Hi +Jjo-!"): ret=6 err=- 0048 0069 0020 263A 0021 0000
+MultiByteToWideChar(CP_UTF7, 0, "+ZeVnLIqe-"): ret=4 err=- 65E5 672C 8A9E 0000
+MultiByteToWideChar(CP_UTF7, 0, "A+ImIDkQ.", the run ended by a non-base64 byte): ret=5 err=- 0041 2262 0391 002E 0000
+MultiByteToWideChar(CP_UTF7, 0, "1+-2"): ret=4 err=- 0031 002B 0032 0000
+MultiByteToWideChar(CP_UTF7, 0, "+AGE", the run ended by the string's end): ret=2 err=- 0061 0000
+MultiByteToWideChar(CP_UTF7, 0, "+!x"): ret=3 err=- 0021 0078 0000
+MultiByteToWideChar(CP_UTF7, 0, E9, an 8-bit byte): ret=1 err=- 00E9
+MultiByteToWideChar(CP_UTF7, MB_ERR_INVALID_CHARS, "+AGE-"): ret=0 err=1004 (none)
+MultiByteToWideChar(CP_UTF7, MB_PRECOMPOSED, "+AGE-"): ret=0 err=1004 (none)
+WideCharToMultiByte(CP_UTF7, 0, "Hi U+263A!"): ret=12 err=- 48 69 20 2B 4A 6A 6F 41 49 51 2D 00
+WideCharToMultiByte(CP_UTF7, 0, "a+b~\-"): ret=14 err=- 61 2B 2D 62 2B 41 48 34 41 58 41 2D 2D 00
+WideCharToMultiByte(CP_UTF7, 0, U+65E5 U+672C U+8A9E): ret=10 err=- 2B 5A 65 56 6E 4C 49 71 65 2D
+WideCharToMultiByte(CP_UTF7, 0, "Hi U+263A!", lpUsedDefaultChar given): ret=0 err=87 (none) used=7
+WideCharToMultiByte(CP_UTF7, WC_NO_BEST_FIT_CHARS, "Hi U+263A!"): ret=0 err=1004 (none)
+MultiByteToWideChar(CP_SYMBOL, 0, 41 20 FF): ret=3 err=- F041 F020 F0FF
+MultiByteToWideChar(CP_SYMBOL, 0, "A", its terminator counted): ret=2 err=- F041 0000
+MultiByteToWideChar(CP_SYMBOL, MB_PRECOMPOSED, 41): ret=0 err=1004 (none)
+WideCharToMultiByte(CP_SYMBOL, 0, U+F041 U+F020 U+F0FF): ret=3 err=- 41 20 FF
+WideCharToMultiByte(CP_SYMBOL, 0, U+0041 U+03B1): ret=0 err=1113 (none)
+WideCharToMultiByte(CP_SYMBOL, 0, U+F041 U+F020 U+F0FF, lpUsedDefaultChar given): ret=0 err=87 (none) used=7
+locale: done
+<<< exit code=0
+>>> locale.exe bestfit
+== bestfit
+1252 U+00BD (one half, in 1252): 0: ret=1 err=- BD used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- BD used=0
+1252 U+2122 (trade mark, in 1252): 0: ret=1 err=- 99 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 99 used=0
+1252 U+2013 (en dash, in 1252): 0: ret=1 err=- 96 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 96 used=0
+1252 U+0100 (A with macron): 0: ret=1 err=- 41 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+0101 (a with macron): 0: ret=1 err=- 61 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+0131 (dotless i): 0: ret=1 err=- 69 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+0141 (L with stroke): 0: ret=1 err=- 4C used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+0391 (Greek capital alpha): 0: ret=1 err=- 3F used=1; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+03B1 (Greek small alpha): 0: ret=1 err=- 61 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+2002 (en space): 0: ret=1 err=- 20 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+2215 (division slash): 0: ret=1 err=- 2F used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+221E (infinity): 0: ret=1 err=- 38 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+2260 (not equal): 0: ret=1 err=- 3F used=1; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+FF21 (fullwidth A): 0: ret=1 err=- 41 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+4E2D (a CJK ideograph): 0: ret=1 err=- 3F used=1; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+437 U+00C0 (A with grave): 0: ret=1 err=- 41 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+437 U+00E9 (e acute, in 437): 0: ret=1 err=- 82 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 82 used=0
+437 U+00A9 (copyright): 0: ret=1 err=- 63 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+437 U+0100 (A with macron): 0: ret=1 err=- 41 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+437 U+2122 (trade mark): 0: ret=1 err=- 54 used=0; WC_NO_BEST_FIT_CHARS: ret=1 err=- 3F used=1
+1252 U+0100 with lpDefaultChar "#": ret=1 err=- 41 used=0
+1252 U+0100 with lpDefaultChar "#", WC_NO_BEST_FIT_CHARS: ret=1 err=- 23 used=1
+WideCharToMultiByte(1252, WC_COMPOSITECHECK, e U+0301 x): ret=2 err=- E9 78 used=0
+WideCharToMultiByte(1252, 0, e U+0301 x): ret=3 err=- 65 B4 78 used=0
+WideCharToMultiByte(1252, WC_COMPOSITECHECK|WC_DISCARDNS, q U+0301): ret=1 err=- 71 used=0
+WideCharToMultiByte(1252, WC_COMPOSITECHECK|WC_SEPCHARS, q U+0301): ret=2 err=- 71 B4 used=0
+WideCharToMultiByte(1252, WC_COMPOSITECHECK|WC_DEFAULTCHAR, q U+0301): ret=1 err=- 3F used=1
+WideCharToMultiByte(1252, WC_DISCARDNS, q U+0301, without WC_COMPOSITECHECK): ret=0 err=1004 (none) used=7
+MultiByteToWideChar(1252, MB_COMPOSITE, E9 C5 78): ret=5 err=- 0065 0301 0041 030A 0078
+MultiByteToWideChar(1252, MB_PRECOMPOSED, E9 C5 78): ret=3 err=- 00E9 00C5 0078
+MultiByteToWideChar(1252, MB_PRECOMPOSED|MB_COMPOSITE, E9): ret=0 err=1004 (none)
+MultiByteToWideChar(1252, MB_COMPOSITE, E9) into 1 unit: ret=1 err=- 00E9 BEEF
+locale: done
+<<< exit code=0
+>>> locale.exe utf8err
+== utf8err
+MultiByteToWideChar(CP_UTF8, 0, 61 C3 A9, valid): ret=2 err=- 0061 00E9
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, 61 C3 A9, valid): ret=2 err=- 0061 00E9
+MultiByteToWideChar(CP_UTF8, 0, F0 90 80 80, U+10000): ret=2 err=- D800 DC00
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F0 90 80 80, U+10000): ret=2 err=- D800 DC00
+MultiByteToWideChar(CP_UTF8, 0, F4 8F BF BF, U+10FFFF): ret=2 err=- DBFF DFFF
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F4 8F BF BF, U+10FFFF): ret=2 err=- DBFF DFFF
+MultiByteToWideChar(CP_UTF8, 0, F4 90 80 80, past U+10FFFF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F4 90 80 80, past U+10FFFF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, F5 80 80 80): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F5 80 80 80): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, F7 BF BF BF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F7 BF BF BF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, F8 88 80 80 80, five bytes): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F8 88 80 80 80, five bytes): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, FC 84 80 80 80 80, six bytes): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, FC 84 80 80 80 80, six bytes): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, FE FF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, FE FF): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, C0 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, C0 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, C1 BF, overlong): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, C1 BF, overlong): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, E0 80 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, E0 80 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, F0 80 80 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, F0 80 80 AF, an overlong /): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, ED A0 80, a surrogate): ret=1 err=- D800
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, ED A0 80, a surrogate): ret=1 err=- D800
+MultiByteToWideChar(CP_UTF8, 0, EF BF BF, U+FFFF): ret=1 err=- FFFF
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, EF BF BF, U+FFFF): ret=1 err=- FFFF
+MultiByteToWideChar(CP_UTF8, 0, 80 78, a lone continuation): ret=1 err=- 0078
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, 80 78, a lone continuation): ret=0 err=1113 (none)
+MultiByteToWideChar(CP_UTF8, 0, E2 82 78, a sequence cut short): ret=1 err=- 0078
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, E2 82 78, a sequence cut short): ret=1 err=- 0078
+MultiByteToWideChar(CP_UTF8, 0, 78 E2 82, a sequence cut by the end): ret=1 err=- 0078
+MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, 78 E2 82, a sequence cut by the end): ret=0 err=1113 (none)
+WideCharToMultiByte(CP_UTF8, 0, D800 DC00, a pair): ret=4 err=- F0 90 80 80
+WideCharToMultiByte(CP_UTF8, 0, 61 D800 62, a lone high surrogate): ret=5 err=- 61 ED A0 80 62
+WideCharToMultiByte(CP_UTF8, 0, DC00 D800, reversed): ret=6 err=- ED B0 80 ED A0 80
+locale: done
+<<< exit code=0
+>>> locale.exe lcmap
+== lcmap
+LCMapStringW(LCMAP_SORTKEY, "abc"): size 11; ret=11 err=- 0E 02 0E 09 0E 0A 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, "ABC"): size 14; ret=14 err=- 0E 02 0E 09 0E 0A 01 01 12 12 12 01 01 00
+LCMapStringW(LCMAP_SORTKEY|NORM_IGNORECASE, "ABC"): size 11; ret=11 err=- 0E 02 0E 09 0E 0A 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, U+00E9): size 8; ret=8 err=- 0E 21 01 0E 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY|NORM_IGNORENONSPACE, U+00E9): size 7; ret=7 err=- 0E 21 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, "e"): size 7; ret=7 err=- 0E 21 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY|NORM_IGNORECASE|NORM_IGNORENONSPACE, U+00E9): size 7; ret=7 err=- 0E 21 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, "co-op"): size 17; ret=17 err=- 0E 0A 0E 7C 0E 7C 0E 7E 01 01 01 01 80 0F 06 82 00
+LCMapStringW(LCMAP_SORTKEY|SORT_STRINGSORT, "co-op"): size 15; ret=15 err=- 0E 0A 0E 7C 06 82 0E 7C 0E 7E 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY|NORM_IGNORESYMBOLS, "co-op"): size 13; ret=13 err=- 0E 0A 0E 7C 0E 7C 0E 7E 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, ""): size 5; ret=5 err=- 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, "ab" by count): size 9; ret=9 err=- 0E 02 0E 09 01 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, U+00E9 under 0x040C): size 8; ret=8 err=- 0E 21 01 0E 01 01 01 00
+LCMapStringA(LCMAP_SORTKEY, "abc"): size 11; ret=11 err=- 0E 02 0E 09 0E 0A 01 01 01 01 00
+LCMapStringA(LCMAP_SORTKEY, E9): size 8; ret=8 err=- 0E 21 01 0E 01 01 01 00
+LCMapStringW(LCMAP_SORTKEY, "abc") into 3 bytes: ret=0 err=122 CC CC CC CC
+LCMapStringW(LCMAP_BYTEREV, "abc"): size 4; ret=4 err=- 6100 6200 6300 0000
+LCMapStringW(LCMAP_BYTEREV|LCMAP_UPPERCASE, "abc"): size 4; ret=4 err=- 4100 4200 4300 0000
+LCMapStringA(LCMAP_BYTEREV, "abc"): size 4; ret=4 err=- 3F 3F 3F 00
+LCMapStringW(LCMAP_FULLWIDTH, "Ab1"): size 4; ret=4 err=- FF21 FF42 FF11 0000
+LCMapStringW(LCMAP_HALFWIDTH, U+FF21 U+FF42 U+FF11): size 4; ret=4 err=- 0041 0062 0031 0000
+LCMapStringW(NORM_IGNORENONSPACE, e U+0301 a): size 3; ret=3 err=- 0065 0061 0000
+LCMapStringW(NORM_IGNORESYMBOLS, "a-b c!"): size 4; ret=4 err=- 0061 0062 0063 0000
+LCMapStringW(NORM_IGNORENONSPACE|NORM_IGNORESYMBOLS, "a-b c!"): size 4; ret=4 err=- 0061 0062 0063 0000
+LCMapStringW(NORM_IGNORECASE, "ABC") size: ret=0 err=1004
+LCMapStringW(NORM_IGNORECASE|NORM_IGNORENONSPACE, "ABC") size: ret=0 err=1004
+LCMapStringW(LCMAP_UPPERCASE|NORM_IGNORECASE, "abc") size: ret=0 err=1004
+LCMapStringW(LCMAP_UPPERCASE|NORM_IGNORENONSPACE, e U+0301 a) size: ret=0 err=1004
+LCMapStringW(LCMAP_UPPERCASE|LCMAP_LOWERCASE, "abc") size: ret=0 err=1004
+LCMapStringW(LCMAP_SORTKEY|LCMAP_UPPERCASE, "abc") size: ret=0 err=1004
+LCMapStringW(0, "abc") size: ret=0 err=1004
+LCMapStringW(LCMAP_UPPERCASE, "ab") in place: ret=3 err=- 0041 0042 0000
+LCMapStringW(LCMAP_SORTKEY, "ab") in place: ret=0 err=87
+LCMapStringW(0xDEAD, LCMAP_UPPERCASE, "abc"): ret=0 err=87 (none)
+LCMapStringA(0xDEAD, LCMAP_UPPERCASE, "abc"): ret=0 err=87 (none)
+LCMapStringA(0x1234, LCMAP_LOWERCASE, "ABC"): ret=0 err=87 (none)
+LCMapStringA(0xDEAD, LCMAP_SORTKEY, "abc"): ret=0 err=87
+locale: done
+<<< exit code=0
+>>> locale.exe locales
+== locales
+GetUserDefaultLCID is 0x0409: no, GetSystemDefaultLCID is 0x0409: yes
+IsValidLocale(0x0409): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x040C, French): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x0407, German): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x0C0C, French (Canada)): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x0411, Japanese): LCID_INSTALLED ret=0 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x0419, Russian): LCID_INSTALLED ret=0 err=-; LCID_SUPPORTED ret=1 err=-
+IsValidLocale(0x1234): LCID_INSTALLED ret=0 err=-; LCID_SUPPORTED ret=0 err=-
+IsValidLocale(0): LCID_INSTALLED ret=0 err=-; LCID_SUPPORTED ret=0 err=-
+IsValidLocale(LOCALE_USER_DEFAULT): LCID_INSTALLED ret=0 err=-; LCID_SUPPORTED ret=0 err=-
+SetThreadLocale(0x040C): ret=1 err=-; GetThreadLocale 0x040C now: yes
+GetLocaleInfoW(GetThreadLocale(), LOCALE_SENGLANGUAGE): ret=7 err=- [French]
+  (A): ret=7 err=- [French]
+the thread's locale restored: yes
+GetLocaleInfoW(0x040C, LOCALE_ILANGUAGE): ret=5 err=- [040c]
+  (A): ret=5 err=- [040c]
+GetLocaleInfoW(0x040C, LOCALE_SENGLANGUAGE): ret=7 err=- [French]
+  (A): ret=7 err=- [French]
+GetLocaleInfoW(0x040C, LOCALE_SNATIVELANGNAME): ret=9 err=- [français]
+  (A): ret=9 err=- [fran<E7>ais]
+GetLocaleInfoW(0x040C, LOCALE_SABBREVLANGNAME): ret=4 err=- [FRA]
+  (A): ret=4 err=- [FRA]
+GetLocaleInfoW(0x040C, LOCALE_SISO639LANGNAME): ret=3 err=- [fr]
+  (A): ret=3 err=- [fr]
+GetLocaleInfoW(0x040C, LOCALE_IDEFAULTANSICODEPAGE): ret=5 err=- [1252]
+  (A): ret=5 err=- [1252]
+GetLocaleInfoW(0x040C, LOCALE_IDEFAULTCODEPAGE): ret=4 err=- [850]
+  (A): ret=4 err=- [850]
+GetLocaleInfoW(0x040C, LOCALE_SDECIMAL): ret=2 err=- [,]
+  (A): ret=2 err=- [,]
+GetLocaleInfoW(0x040C, LOCALE_STHOUSAND): ret=2 err=- [ ]
+  (A): ret=2 err=- [<A0>]
+GetLocaleInfoW(0x040C, LOCALE_SCURRENCY): ret=2 err=- [F]
+  (A): ret=2 err=- [F]
+GetLocaleInfoW(0x040C, LOCALE_SSHORTDATE): ret=11 err=- [dd/MM/yyyy]
+  (A): ret=11 err=- [dd/MM/yyyy]
+GetLocaleInfoW(0x040C, LOCALE_SLONGDATE): ret=17 err=- [dddd d MMMM yyyy]
+  (A): ret=17 err=- [dddd d MMMM yyyy]
+GetLocaleInfoW(0x040C, LOCALE_STIMEFORMAT): ret=9 err=- [HH:mm:ss]
+  (A): ret=9 err=- [HH:mm:ss]
+GetLocaleInfoW(0x040C, LOCALE_SDAYNAME1): ret=6 err=- [lundi]
+  (A): ret=6 err=- [lundi]
+GetLocaleInfoW(0x040C, LOCALE_SMONTHNAME2): ret=8 err=- [février]
+  (A): ret=8 err=- [f<E9>vrier]
+GetLocaleInfoW(0x040C, LOCALE_SLIST): ret=2 err=- [;]
+  (A): ret=2 err=- [;]
+GetLocaleInfoW(0x0407, LOCALE_SENGLANGUAGE): ret=7 err=- [German]
+  (A): ret=7 err=- [German]
+GetLocaleInfoW(0x0407, LOCALE_SDECIMAL): ret=2 err=- [,]
+  (A): ret=2 err=- [,]
+GetLocaleInfoW(0x0407, LOCALE_SDAYNAME1): ret=7 err=- [Montag]
+  (A): ret=7 err=- [Montag]
+GetLocaleInfoW(0x0407, LOCALE_SSHORTDATE): ret=11 err=- [dd.MM.yyyy]
+  (A): ret=11 err=- [dd.MM.yyyy]
+GetLocaleInfoW(0x0409, LOCALE_IDEFAULTEBCDICCODEPAGE): ret=4 err=- [037]
+  (A): ret=4 err=- [037]
+GetLocaleInfoW(0x1234, LOCALE_SENGLANGUAGE): ret=0 err=87 [-]
+  (A): ret=0 err=87 [-]
+GetLocaleInfoW(0x0409, LOCALE_FONTSIGNATURE): ret=16 err=- 00AF 8000 38CB 0000 0000 0000 0000 0000 0001 0000 0000 8000 01FF 003F 8000 FFFF
+GetLocaleInfoW(0x040C, LOCALE_FONTSIGNATURE): ret=16 err=- 002F 8000 3808 0000 0000 0000 0000 0000 0001 0000 0000 4000 0013 0000 0000 C5D4
+locale: done
+<<< exit code=0
+>>> locale.exe nullsrc
+== nullsrc
+LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, -1, buf, 16): ret=0 err=87
+LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 3, buf, 16): ret=0 err=87
+LCMapStringW(0x0409, LCMAP_UPPERCASE, NULL, 0, buf, 16): ret=0 err=87
+LCMapStringW(0x0409, LCMAP_SORTKEY, NULL, -1, NULL, 0): ret=0 err=87
+LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, -1, buf, 16): ret=0 err=87
+LCMapStringA(0x0409, LCMAP_UPPERCASE, NULL, 3, buf, 16): ret=0 err=87
+GetStringTypeW(CT_CTYPE1, NULL, 3, types): ret=0 err=87
+GetStringTypeW(CT_CTYPE1, NULL, -1, types): ret=0 err=87
+GetStringTypeA(0x0409, CT_CTYPE1, NULL, 3, types): ret=0 err=87
+GetStringTypeExW(0x0409, CT_CTYPE1, NULL, 3, types): ret=0 err=87
+GetStringTypeExA(0x0409, CT_CTYPE1, NULL, 3, types): ret=0 err=87
+GetStringTypeW(CT_CTYPE1, "abc", 3, NULL): ret=0 err=87
 locale: done
 <<< exit code=0

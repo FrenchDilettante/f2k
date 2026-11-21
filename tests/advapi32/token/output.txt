@@ -1,9 +1,9 @@
 # F2K capture of token (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 12:35:19.90
-token F2KT-SOURCE-CRC=0x7F0D1BD0
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:51.73
+token F2KT-SOURCE-CRC=0x13A8E62F
 >>> token.exe open
 == open
 OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
@@ -147,5 +147,158 @@ after: SeShutdownPrivilege listed: yes, attributes 0x0; SeChangeNotifyPrivilege 
 NtAdjustPrivilegesToken(enable SeTcbPrivilege, not held): status=0x00000106; PreviousState: count 0; ReturnLength 4
 NtAdjustPrivilegesToken(no NewState, DisableAllPrivileges FALSE): status=0xC000000D
 NtAdjustPrivilegesToken(NULL, no NewState): status=0xC000000D
+token: done
+<<< exit code=0
+>>> token.exe tokclass
+== tokclass
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_QUERY_SOURCE): ret=1 err=-, a handle
+GetTokenInformation(TokenUser, no buffer): ret=0 err=122 ReturnLength given
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenGroups, no buffer): ret=0 err=122 ReturnLength given
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenOwner, no buffer): ret=0 err=122 ReturnLength given
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenPrimaryGroup, no buffer): ret=0 err=122 ReturnLength given
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenDefaultDacl, no buffer): ret=0 err=122 ReturnLength given
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenSource, no buffer): ret=0 err=122 ReturnLength 16
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenType, no buffer): ret=0 err=122 ReturnLength 4
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenImpersonationLevel, no buffer): ret=0 err=87 ReturnLength untouched
+  no size to ask for
+GetTokenInformation(TokenStatistics, no buffer): ret=0 err=122 ReturnLength 56
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenRestrictedSids (11), no buffer): ret=0 err=122 ReturnLength 4
+  a buffer a byte short: ret=0 err=122 ReturnLength the same: yes; the buffer untouched: yes
+  the size asked for: ret=1 err=- ReturnLength the same: yes
+GetTokenInformation(TokenSessionId (12), no buffer): ret=0 err=24 ReturnLength untouched
+  no size to ask for
+GetTokenInformation(class 0): ret=0 err=87 ReturnLength untouched
+GetTokenInformation(class 99): ret=0 err=87 ReturnLength untouched
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+GetTokenInformation(TokenSource) without TOKEN_QUERY_SOURCE: ret=0 err=5 ReturnLength untouched
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY_SOURCE): ret=1 err=-, a handle
+GetTokenInformation(TokenUser) without TOKEN_QUERY: ret=0 err=5 ReturnLength untouched
+GetTokenInformation(TokenSource) with TOKEN_QUERY_SOURCE alone: ret=1 err=- ReturnLength 16
+token: done
+<<< exit code=0
+>>> token.exe toksids
+== toksids
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+GetTokenInformation(TokenUser): ret=1 err=-
+  the user: the account domain's user RID, 1000 or more (S-1-5-21-*-*-*-*), attributes 0x0
+  ReturnLength the header (8) and the SID: yes
+GetTokenInformation(TokenOwner): ret=1 err=-
+  the default owner: BUILTIN\Administrators (S-1-5-32-544); the user: no
+  ReturnLength the header (4) and the SID: yes
+GetTokenInformation(TokenPrimaryGroup): ret=1 err=-
+  the primary group: the account domain's RID 513 (S-1-5-21-*-*-*-513); in the user's domain: yes
+  ReturnLength the header (4) and the SID: yes
+GetTokenInformation(TokenGroups): ret=1 err=-
+  GroupCount at least 5: yes; ReturnLength the count, the entries and the SIDs: yes
+  Everyone: listed: yes, attributes 0x7
+  LOCAL: listed: yes, attributes 0x7
+  INTERACTIVE: listed: yes, attributes 0x7
+  Authenticated Users: listed: yes, attributes 0x7
+  BUILTIN\Administrators: listed: yes, attributes 0xF
+  BUILTIN\Users: listed: yes, attributes 0x7
+  BUILTIN\Power Users: listed: no
+  BUILTIN\Guests: listed: no
+  SYSTEM: listed: no
+  a logon SID (S-1-5-5-*-*): listed: yes, attributes 0xC0000007
+  the account domain's RID 513: listed: yes, attributes 0x7, in the user's domain: yes
+  every group one of those: yes
+  the user among the groups: no
+token: done
+<<< exit code=0
+>>> token.exe tokmisc
+== tokmisc
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_QUERY_SOURCE | TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+GetTokenInformation(TokenDefaultDacl): ret=1 err=-
+  AclRevision 2, AceCount 2, AclSize 52; ReturnLength the header and AclSize: yes
+  ACE 0: type 0, flags 0x0, mask 0x10000000, BUILTIN\Administrators (S-1-5-32-544)
+  ACE 1: type 0, flags 0x0, mask 0x10000000, SYSTEM (S-1-5-18)
+GetTokenInformation(TokenSource): ret=1 err=-
+  SourceName [User32  ], SourceIdentifier nonzero
+GetTokenInformation(TokenType): ret=1 err=-
+  TokenType 1 (1 TokenPrimary, 2 TokenImpersonation)
+GetTokenInformation(TokenImpersonationLevel): ret=0 err=87
+GetTokenInformation(TokenSessionId (12)): ret=0 err=24
+GetTokenInformation(TokenStatistics): ret=1 err=-
+  TokenType 1, ImpersonationLevel 0, ExpirationTime 0x7FFFFFFFFFFFFFFF
+  DynamicCharged 500, DynamicAvailable at most DynamicCharged: yes
+  TokenId nonzero, AuthenticationId nonzero, ModifiedId nonzero; TokenId and AuthenticationId differ: yes
+  AuthenticationId the system logon's (0:999): no
+  GroupCount TokenGroups' count: yes; PrivilegeCount TokenPrivileges' count: yes
+after enabling and disabling SeShutdownPrivilege: ret=1; ModifiedId changed: yes; TokenId the same: yes
+DuplicateToken(SecurityImpersonation): ret=1 err=-, a handle
+GetTokenInformation(TokenType of the duplicate): ret=1 err=-
+  TokenType 2
+GetTokenInformation(TokenImpersonationLevel of the duplicate): ret=1 err=-
+  ImpersonationLevel 2
+  its statistics: TokenType 2, ImpersonationLevel 2; TokenId the primary's: no; AuthenticationId the primary's: yes
+token: done
+<<< exit code=0
+>>> token.exe admin
+== admin
+CheckTokenMembership exported: yes; AllocateAndInitializeSid, EqualSid, FreeSid: yes
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE): ret=1 err=-, a handle
+GetTokenInformation(TokenGroups): ret=1 err=-
+  the groups scan: BUILTIN\Administrators listed: yes, attributes 0xF; enabled: yes
+AllocateAndInitializeSid(S-1-5-32-544): ret=1 err=-; the bytes of the hand-built SID: yes
+EqualSid(it, the hand-built SID): ret=1 err=0
+EqualSid(it, BUILTIN\Users): ret=0 err=0
+CheckTokenMembership(NULL, BUILTIN\Administrators): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, AllocateAndInitializeSid's): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, BUILTIN\Users): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, Everyone): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, INTERACTIVE): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, BUILTIN\Guests): ret=1 err=- IsMember=0
+CheckTokenMembership(NULL, SYSTEM): ret=1 err=- IsMember=0
+CheckTokenMembership(the primary token, BUILTIN\Administrators): ret=0 err=1309 IsMember=0
+CheckTokenMembership(an identification token, BUILTIN\Administrators): ret=1 err=- IsMember=1
+CheckTokenMembership(an identification token, BUILTIN\Guests): ret=1 err=- IsMember=0
+FreeSid: returned NULL: yes err=-
+token: done
+<<< exit code=0
+>>> token.exe privs
+== privs
+LookupPrivilegeValueA(NULL, "SeSystemtimePrivilege"): ret=1 err=997 luid=0:12
+LookupPrivilegeValueA(NULL, "SeBackupPrivilege"): ret=1 err=997 luid=0:17
+LookupPrivilegeValueA(NULL, "SeShutdownPrivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeValueA(NULL, "SeDebugPrivilege"): ret=1 err=997 luid=0:20
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+SeSystemtimePrivilege before: listed: yes, attributes 0x0
+AdjustTokenPrivileges(enable SeSystemtimePrivilege): ret=1 err=0; PreviousState: count 1, [0:12 0x0]; ReturnLength 16
+AdjustTokenPrivileges(put it back as it was): ret=1 err=0; PreviousState: count 1, [0:12 0x2]; ReturnLength 16
+SeSystemtimePrivilege after: listed: yes, attributes 0x0
+SeBackupPrivilege before: listed: yes, attributes 0x0
+AdjustTokenPrivileges(enable SeBackupPrivilege): ret=1 err=0; PreviousState: count 1, [0:17 0x0]; ReturnLength 16
+AdjustTokenPrivileges(put it back as it was): ret=1 err=0; PreviousState: count 1, [0:17 0x2]; ReturnLength 16
+SeBackupPrivilege after: listed: yes, attributes 0x0
+SeShutdownPrivilege before: listed: yes, attributes 0x0
+AdjustTokenPrivileges(enable SeShutdownPrivilege): ret=1 err=0; PreviousState: count 1, [0:19 0x0]; ReturnLength 16
+AdjustTokenPrivileges(put it back as it was): ret=1 err=0; PreviousState: count 1, [0:19 0x2]; ReturnLength 16
+SeShutdownPrivilege after: listed: yes, attributes 0x0
+SeDebugPrivilege before: listed: yes, attributes 0x0
+AdjustTokenPrivileges(enable SeDebugPrivilege): ret=1 err=0; PreviousState: count 1, [0:20 0x0]; ReturnLength 16
+AdjustTokenPrivileges(put it back as it was): ret=1 err=0; PreviousState: count 1, [0:20 0x2]; ReturnLength 16
+SeDebugPrivilege after: listed: yes, attributes 0x0
+AdjustTokenPrivileges(enable all four): ret=1 err=0; PreviousState count 4; ReturnLength 52
+AdjustTokenPrivileges(NewState = that PreviousState): ret=1 err=0
+SeSystemtimePrivilege after: listed: yes, attributes 0x0; as before: yes
+SeBackupPrivilege after: listed: yes, attributes 0x0; as before: yes
+SeShutdownPrivilege after: listed: yes, attributes 0x0; as before: yes
+SeDebugPrivilege after: listed: yes, attributes 0x0; as before: yes
 token: done
 <<< exit code=0

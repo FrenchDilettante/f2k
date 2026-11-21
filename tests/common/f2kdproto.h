@@ -19,7 +19,8 @@
  * system buffer, so the driver copies the request out before it writes.
  * F2KD_IOCTL_STAMP returns the driver's "F2KT-SOURCE-CRC=..." text, which
  * the companion holds against its own (both are built from the same
- * sources, so a stale .sys shows).
+ * sources, so a stale .sys shows). F2KD_IOCTL_PEND, _HELD and _RELEASE
+ * hold a request pending and complete it from another (drvload's).
  */
 
 #ifndef F2KDPROTO_H
@@ -44,6 +45,15 @@
 #define F2KD_IOCTL_STAMP CTL_CODE(F2KD_DEVICE_TYPE, 0x801, METHOD_BUFFERED, FILE_ANY_ACCESS)
 /* A code the driver does not handle (drvload's unknown section). */
 #define F2KD_IOCTL_UNKNOWN CTL_CODE(F2KD_DEVICE_TYPE, 0x8FF, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+/* A request held pending (drvload's pendirp section; f2kd.h's dispatch
+ * answers them STATUS_INVALID_DEVICE_REQUEST, a fixture's driver handles
+ * them itself): PEND is marked pending and held, its output left for
+ * RELEASE to write; HELD answers a ULONG, 1 while one is held; RELEASE
+ * completes the held one and answers the driver's record of both. */
+#define F2KD_IOCTL_PEND CTL_CODE(F2KD_DEVICE_TYPE, 0x802, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define F2KD_IOCTL_HELD CTL_CODE(F2KD_DEVICE_TYPE, 0x803, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define F2KD_IOCTL_RELEASE CTL_CODE(F2KD_DEVICE_TYPE, 0x804, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 /* The output buffer the companion offers a section. */
 #define F2KD_OUTPUT 65536

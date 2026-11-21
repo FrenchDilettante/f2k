@@ -1,9 +1,9 @@
 # F2K capture of guigeo (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:15:46.35
-guigeo F2KT-SOURCE-CRC=0x19E203A8
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:11.07
+guigeo F2KT-SOURCE-CRC=0xE44A4562
 >>> guigeo.exe show
 == show
 ShowWindow(SW_SHOW): ret=0 err=-
@@ -181,5 +181,56 @@ a window keeping WM_WINDOWPOSCHANGED from DefWindowProc, ShowWindow(SW_SHOW):
   WM_MOVE, lParam the client's origin yes
 SetWindowPos(SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE) to 300x200:
   WM_WINDOWPOSCHANGED flags=0x1016
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe edits
+== edits
+WM_NCCALCSIZE shrunk by 10 on each side, a WS_POPUP window 200x100:
+  non-NULL yes
+  after the creation: the client the window less 10 on each side yes, the window's own size no
+  after SetWindowPos to 240x120: the client the window less 10 on each side yes, the window's own size no
+WM_GETMINMAXINFO: tracking 300x250 to 400x300, maximized 380x280 at 20,30; a WS_OVERLAPPEDWINDOW window:
+  CreateWindowEx asking 100x100: non-NULL yes
+  after the creation: the size asked no, the minimum tracking size yes, the maximum tracking size no, the maximized size no at the maximized position no
+  SetWindowPos to 350x280: the size asked yes, the minimum tracking size no, the maximum tracking size no, the maximized size no at the maximized position no
+  SetWindowPos to 100x100: the size asked no, the minimum tracking size yes, the maximum tracking size no, the maximized size no at the maximized position no
+  SetWindowPos to 600x450: the size asked no, the minimum tracking size no, the maximum tracking size yes, the maximized size no at the maximized position no
+  ShowWindow(SW_MAXIMIZE): the size asked no, the minimum tracking size no, the maximum tracking size no, the maximized size yes at the maximized position yes
+WM_WINDOWPOSCHANGING adding SWP_NOMOVE and setting cx to 250, a WS_POPUP window 200x100:
+  non-NULL yes
+  SetWindowPos(60,70 220x130): ret=1; moved no, to the position asked no; the width the procedure's 250 yes, the asked no; the height the asked yes
+  MoveWindow(80,90 230x140): ret=1; moved no, to the position asked no; the width the procedure's 250 yes, the asked no; the height the asked yes
+  with no edit, SetWindowPos(60,70 220x130): ret=1; moved yes, to the position asked yes; the width the procedure's 250 no, the asked yes; the height the asked yes
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe createmax
+== createmax
+CreateWindowEx(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE): non-NULL yes err=-
+  IsZoomed=1 IsIconic=0 visible no; WS_MAXIMIZE kept yes, WS_MINIMIZE kept no; WM_SIZE count=1 last wParam=2
+  the rect: the one asked no, larger both ways yes, at -32000,-32000 no
+  ShowWindow(SW_RESTORE): IsZoomed=0 IsIconic=0; WM_SIZE count=1 last wParam=0; the rect the one asked yes
+CreateWindowEx(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE | WS_VISIBLE): non-NULL yes err=-
+  IsZoomed=1 IsIconic=0 visible yes; WS_MAXIMIZE kept yes, WS_MINIMIZE kept no; WM_SIZE count=2 last wParam=2
+  the rect: the one asked no, larger both ways yes, at -32000,-32000 no
+  ShowWindow(SW_RESTORE): IsZoomed=0 IsIconic=0; WM_SIZE count=1 last wParam=0; the rect the one asked yes
+CreateWindowEx(WS_OVERLAPPEDWINDOW | WS_MINIMIZE): non-NULL yes err=-
+  IsZoomed=0 IsIconic=1 visible no; WS_MAXIMIZE kept no, WS_MINIMIZE kept yes; WM_SIZE count=1 last wParam=1
+  the rect: the one asked no, larger both ways no, at -32000,-32000 yes
+  ShowWindow(SW_RESTORE): IsZoomed=0 IsIconic=0; WM_SIZE count=1 last wParam=0; the rect the one asked yes
+CreateWindowEx(WS_OVERLAPPEDWINDOW | WS_MINIMIZE | WS_VISIBLE): non-NULL yes err=-
+  IsZoomed=0 IsIconic=1 visible yes; WS_MAXIMIZE kept no, WS_MINIMIZE kept yes; WM_SIZE count=2 last wParam=1
+  the rect: the one asked no, larger both ways no, at -32000,-32000 yes
+  ShowWindow(SW_RESTORE): IsZoomed=0 IsIconic=0; WM_SIZE count=1 last wParam=0; the rect the one asked yes
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe swpshow
+== swpshow
+a hidden window at 100,80 300x200: non-NULL yes
+SetWindowPos(SWP_SHOWWINDOW on the hidden window, 120,90 250x180): ret=1 err=-
+  visible yes; moved yes, to the position asked yes; the size asked yes, the size before no
+SetWindowPos(SWP_SHOWWINDOW on the shown window, 140,100 260x190): ret=1 err=-
+  visible yes; moved yes, to the position asked yes; the size asked yes, the size before no
+SetWindowPos(SWP_HIDEWINDOW on the shown window, 160,110 270x170): ret=1 err=-
+  visible no; moved yes, to the position asked yes; the size asked yes, the size before no
 guigeo: done
 <<< exit code=0

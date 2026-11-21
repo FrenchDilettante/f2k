@@ -1,9 +1,9 @@
 # F2K capture of controls (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:15:48.99
-controls F2KT-SOURCE-CRC=0x5CE5D704
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:43.41
+controls F2KT-SOURCE-CRC=0x2625A40A
 >>> controls.exe create
 == create
 RegisterClassW(F2KControlsParent): atom nonzero yes err=2
@@ -460,5 +460,95 @@ CreateWindowExW("Static", SS_RIGHT | SS_CENTERIMAGE, WS_EX_CLIENTEDGE, id 506, 1
   WindowFromPoint(its centre): its parent
   client 116x26: red 21 blue 2995 other 0
   the text's rows 8..16 (above it 8, below it 9), columns 108..114 (left of it 108, right of it 1)
+controls: done
+<<< exit code=0
+>>> controls.exe bnnotify
+== bnnotify
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+the parent: foreground yes active yes
+CreateWindowExW("Button", BS_PUSHBUTTON | BS_NOTIFY, id 121): non-NULL yes
+CreateWindowExW("Button", BS_PUSHBUTTON, id 122): non-NULL yes
+CreateWindowExW("Button", BS_AUTOCHECKBOX | BS_NOTIFY, id 123): non-NULL yes
+CreateWindowExW("Button", BS_RADIOBUTTON, id 124): non-NULL yes
+SetFocus(121, BS_NOTIFY): focus id 121
+  the parent received WM_COMMAND id=121 code=6 lParam is the control yes
+SetFocus(122): focus id 122
+  the parent received WM_COMMAND id=121 code=7 lParam is the control yes
+SetFocus(123, BS_NOTIFY): focus id 123
+  the parent received WM_COMMAND id=123 code=6 lParam is the control yes
+SetFocus(the parent): focus id 0
+  the parent received WM_COMMAND id=123 code=7 lParam is the control yes
+click on 121, BS_NOTIFY (WM_LBUTTONDOWN, WM_LBUTTONUP at 5,5 posted): focus id 121, BM_GETCHECK 0
+  the parent received WM_COMMAND id=121 code=6 lParam is the control yes
+  the parent received WM_COMMAND id=121 code=0 lParam is the control yes
+click on 122 (WM_LBUTTONDOWN, WM_LBUTTONUP at 5,5 posted): focus id 122, BM_GETCHECK 0
+  the parent received WM_COMMAND id=121 code=7 lParam is the control yes
+  the parent received WM_COMMAND id=122 code=0 lParam is the control yes
+click on 123, BS_NOTIFY (WM_LBUTTONDOWN, WM_LBUTTONUP at 5,5 posted): focus id 123, BM_GETCHECK 1
+  the parent received WM_COMMAND id=123 code=6 lParam is the control yes
+  the parent received WM_COMMAND id=123 code=0 lParam is the control yes
+double click on 121, BS_NOTIFY (down, up, WM_LBUTTONDBLCLK, up posted): focus id 121, BM_GETCHECK 0
+  the parent received WM_COMMAND id=123 code=7 lParam is the control yes
+  the parent received WM_COMMAND id=121 code=6 lParam is the control yes
+  the parent received WM_COMMAND id=121 code=0 lParam is the control yes
+  the parent received WM_COMMAND id=121 code=5 lParam is the control yes
+double click on 122 (down, up, WM_LBUTTONDBLCLK, up posted): focus id 122, BM_GETCHECK 0
+  the parent received WM_COMMAND id=121 code=7 lParam is the control yes
+  the parent received WM_COMMAND id=122 code=0 lParam is the control yes
+  the parent received WM_COMMAND id=122 code=0 lParam is the control yes
+double click on 123, BS_NOTIFY (down, up, WM_LBUTTONDBLCLK, up posted): focus id 123, BM_GETCHECK 0
+  the parent received WM_COMMAND id=123 code=6 lParam is the control yes
+  the parent received WM_COMMAND id=123 code=0 lParam is the control yes
+  the parent received WM_COMMAND id=123 code=5 lParam is the control yes
+double click on 124, BS_RADIOBUTTON (down, up, WM_LBUTTONDBLCLK, up posted): focus id 124, BM_GETCHECK 0
+  the parent received WM_COMMAND id=123 code=7 lParam is the control yes
+  the parent received WM_COMMAND id=124 code=0 lParam is the control yes
+  the parent received WM_COMMAND id=124 code=5 lParam is the control yes
+press on 122 released outside it (up at -5,-5): BM_GETSTATE 0x8
+  the parent received WM_COMMAND id=122 code=0 lParam is the control yes
+SetFocus(the parent): focus id 0
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe stnclick
+== stnclick
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+the parent: foreground yes active yes
+CreateWindowExW("Static", SS_LEFT | SS_NOTIFY, id 221): non-NULL yes
+CreateWindowExW("Static", SS_LEFT, id 222): non-NULL yes
+WM_NCHITTEST(221, SS_NOTIFY, its centre): ret=1 err=-
+click on 221, SS_NOTIFY (WM_LBUTTONDOWN, WM_LBUTTONUP posted):
+  the parent received WM_COMMAND id=221 code=0 lParam is the control yes
+double click on 221, SS_NOTIFY (down, up, WM_LBUTTONDBLCLK, up posted):
+  the parent received WM_COMMAND id=221 code=0 lParam is the control yes
+  the parent received WM_COMMAND id=221 code=1 lParam is the control yes
+WM_NCHITTEST(222, its centre): ret=-1 err=-
+click on 222 (WM_LBUTTONDOWN, WM_LBUTTONUP posted):
+  the parent received no WM_COMMAND
+double click on 222 (down, up, WM_LBUTTONDBLCLK, up posted):
+  the parent received no WM_COMMAND
+controls: done
+<<< exit code=0
+>>> controls.exe odaction
+== odaction
+RegisterClassW(F2KControlsParent): atom nonzero yes err=2
+CreateWindowExW(F2KControlsParent, visible): non-NULL yes err=-
+the parent: foreground yes active yes
+CreateWindowExW(Button, BS_OWNERDRAW, id 7): non-NULL yes
+SetFocus(the button): 1 WM_DRAWITEM
+  wParam=7 itemAction=0x4 itemState=0x10 hwndItem the button yes
+BM_SETSTATE(TRUE): 1 WM_DRAWITEM
+  wParam=7 itemAction=0x2 itemState=0x11 hwndItem the button yes
+BM_SETSTATE(FALSE): 1 WM_DRAWITEM
+  wParam=7 itemAction=0x2 itemState=0x10 hwndItem the button yes
+a click posted (WM_LBUTTONDOWN, WM_LBUTTONUP): 2 WM_DRAWITEM
+  wParam=7 itemAction=0x2 itemState=0x11 hwndItem the button yes
+  wParam=7 itemAction=0x2 itemState=0x10 hwndItem the button yes
+  the parent received WM_COMMAND id=7 code=0 lParam is the control yes
+SetFocus(the parent): 2 WM_DRAWITEM
+  wParam=7 itemAction=0x4 itemState=0x0 hwndItem the button yes
+  wParam=7 itemAction=0x1 itemState=0x0 hwndItem the button yes
 controls: done
 <<< exit code=0

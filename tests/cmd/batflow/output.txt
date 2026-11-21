@@ -1,0 +1,86 @@
+# F2K capture of batflow (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:55.65
+>>> cmd /c batflow.cmd
+started
+looped xxx
+sub [:sub] [one] [two three]
+shifted ["two three"]
+back 4
+sub [:sub] [a] []
+shifted []
+sub [:sub] [b] []
+shifted []
+l1
+l3
+l5
+f [x] [z] [w,v]
+batflow.cmd .cmd
+exists
+not there
+two lines
+nested
+defined
+four or more
+extensions
+command [piped]
+== for at cmd /c's rules
+1 
+end
+2 
+end
+exit code 0
+== a chain of 40 batch files
+chained xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+exit code 0
+== for over names
+wildcard [batflow.d\one.txt]
+no wildcard [batflow.d\nosuch.txt]
+two patterns [batflow.d\one.txt]
+two patterns [batflow.d\three.dat]
+directory [batflow.d\sub]
+recursive [one.txt]
+recursive [two.txt]
+recursive, no wildcard [two.txt]: missing
+recursive, no wildcard [two.txt]: exists
+== for /f over a file
+default [header]
+default [#a]
+default [one]
+default [three]
+skip=1 [#a]
+skip=1 [one]
+skip=1 [three]
+eol=# [header line]
+eol=# [one two]
+eol=# [;semicolon]
+eol=# [three]
+tokens=2 [line]
+tokens=2 [comment]
+tokens=2 [two]
+usebackq file [one]
+usebackq file [three]
+usebackq command [back]
+usebackq string [a]
+The system cannot find the file ??.
+The system cannot find the file batflow-nope.txt.
+ERRORLEVEL 0
+== missing labels
+The system cannot find the batch label specified - batflow_nolabel
+exit code 1
+The system cannot find the batch label specified - batflow_nolabel
+after the call: ERRORLEVEL 1
+exit code 0
+Invalid attempt to call batch label outside of batch script.
+exit code 1
+== echo )
+)
+a ) b
+inside a block
+)
+one line 
+)
+in an if: )
+<<< exit code=0

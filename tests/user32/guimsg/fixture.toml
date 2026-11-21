@@ -1,9 +1,18 @@
 # guimsg: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages; RegisterWindowMessageW/A (the range, one value per name in either form and case); GetMessageTime and GetMessagePos against the retrieved MSG; WaitMessage with a message already posted, after a peek, and woken by another thread; SendMessageTimeoutW/A to the same thread, another thread, a busy one (SMTO_NORMAL, SMTO_ABORTIFHUNG) and a hung one, with IsHungAppWindow; SendNotifyMessageW/A to the same thread and another, and a pointer message refused across threads."
+description = "guimsg - the message loop in user32: PostMessageA + GetMessageA (message, wParam, lParam, hwnd), PeekMessageA PM_NOREMOVE vs PM_REMOVE order, PostQuitMessage (GetMessage returns 0, WM_QUIT, wParam = exit code), TranslateMessage + DispatchMessageA into the wndproc, SendMessageA/W same-thread, DefWindowProcA WM_CLOSE destroying the window, PostThreadMessageA thread messages; RegisterWindowMessageW/A (the range, one value per name in either form and case); GetMessageTime and GetMessagePos against the retrieved MSG; WaitMessage with a message already posted, after a peek, and woken by another thread; SendMessageTimeoutW/A to the same thread, another thread, a busy one (SMTO_NORMAL, SMTO_ABORTIFHUNG) and a hung one, with IsHungAppWindow; SendNotifyMessageW/A to the same thread and another, and a pointer message refused across threads; the posted-message quota (quota); WM_SETTEXT and WM_COPYDATA posted (postptr); WM_COPYDATA sent by another process (copydata); DefWindowProcW's WM_SETICON and WM_GETICON (icon), WM_SETREDRAW (redraw), WM_SYSCOMMAND SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE (syscmd) and WM_CONTEXTMENU handed to the parent (ctxmenu); and sends to a window whose thread has ended (deadthr)."
 kind = "sectioned"
 gate = true
-# hung waits 6.5 s for Windows to deem a thread hung, and the thread sleeps 9 s.
+# hung waits 6.5 s for Windows to deem a thread hung, and the thread sleeps 9.5 s.
 timeout = 40
+
+[pending]
+quota = "F2K is expected to fail far sooner, at its 512 posted messages shared system-wide, with 1450 where Windows 2000 is expected to allow about 10000 per queue and answer 1816"
+postptr = "F2K's PostMessage is expected to queue the pointer messages, where Windows 2000 is expected to refuse them with 1159"
+copydata = "F2K is expected to carry WM_COPYDATA across processes with the sender's raw pointer, so the receiver reads no data (or faults), and to let the child post it"
+icon = "F2K's DefWindowProc answers WM_SETICON and WM_GETICON 0 and keeps no icon"
+redraw = "F2K's DefWindowProc answers WM_SETREDRAW 0 and leaves WS_VISIBLE as it is"
+syscmd = "F2K's DefWindowProc only logs SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE, leaving the window as it is"
+ctxmenu = "F2K's DefWindowProc answers WM_CONTEXTMENU 0 without sending it to the parent"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -60,4 +69,32 @@ hung = [
 notify = [
     "user32.SendNotifyMessageW",
     "user32.SendNotifyMessageA",
+]
+quota = ["user32.PostMessageW", "user32.PeekMessageW"]
+postptr = ["user32.PostMessageW", "user32.PostMessageA"]
+copydata = [
+    "user32.SendMessageA",
+    "user32.PostMessageA",
+    "user32.MsgWaitForMultipleObjects",
+    "kernel32.CreateProcessA",
+]
+icon = ["user32.SendMessageW", "user32.DefWindowProcW", "user32.LoadIconA"]
+redraw = [
+    "user32.SendMessageW",
+    "user32.DefWindowProcW",
+    "user32.IsWindowVisible",
+    "user32.UpdateWindow",
+]
+syscmd = [
+    "user32.SendMessageW",
+    "user32.DefWindowProcW",
+    "user32.IsIconic",
+    "user32.IsZoomed",
+]
+ctxmenu = ["user32.SendMessageW", "user32.DefWindowProcW"]
+deadthr = [
+    "user32.IsWindow",
+    "user32.SendMessageW",
+    "user32.SendMessageTimeoutW",
+    "user32.PostMessageW",
 ]

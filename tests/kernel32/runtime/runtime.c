@@ -20,6 +20,9 @@
  *              caller's buffer, an allocated one, by line width)
  *   env        the environment block, Set/GetEnvironmentVariableA,
  *              ExpandEnvironmentStringsA, the CRT's getenv/_putenv
+ *   envnull    a NULL name to Get/SetEnvironmentVariableA/W, a NULL
+ *              source and a NULL buffer to ExpandEnvironmentStringsA/W,
+ *              each inside __try
  *   locale     code pages, MultiByteToWideChar/WideCharToMultiByte
  *              tables and edge cases, LCMapString, GetStringType,
  *              CompareString, locale info, the CRT's setlocale
@@ -1041,6 +1044,59 @@ static void sec_env(void)
     SetEnvironmentVariableA("F2KORDERB", NULL);
 
     env_lengths();
+}
+
+/* --- envnull ------------------------------------------------------- */
+
+/* A NULL name or source to the environment calls, each inside __try:
+   the A forms first, then their W twins. */
+static void env_result(const char *call, DWORD r, DWORD e, DWORD code)
+{
+    if (code != 0) {
+        line("%s: faulted 0x%08lX", call, code);
+    } else {
+        line("%s: ret=%lu err=%s", call, r, le_of(e));
+    }
+}
+
+static void sec_envnull(void)
+{
+    char buf[64];
+    WCHAR wbuf[64];
+    DWORD r, e, code;
+
+#define ENV_CALL(text, expr) \
+    do { \
+        r = 0; \
+        e = F2KT_UNTOUCHED; \
+        code = 0; \
+        arm(); \
+        __try { \
+            r = (DWORD)(expr); \
+            e = GetLastError(); \
+        } __except (EXCEPTION_EXECUTE_HANDLER) { \
+            code = GetExceptionCode(); \
+        } \
+        env_result(text, r, e, code); \
+    } while (0)
+
+    ENV_CALL("GetEnvironmentVariableA(NULL, buf, 64)", GetEnvironmentVariableA(NULL, buf, 64));
+    ENV_CALL("GetEnvironmentVariableW(NULL, buf, 64)", GetEnvironmentVariableW(NULL, wbuf, 64));
+    ENV_CALL("GetEnvironmentVariableA(NULL, NULL, 0)", GetEnvironmentVariableA(NULL, NULL, 0));
+    ENV_CALL("GetEnvironmentVariableW(NULL, NULL, 0)", GetEnvironmentVariableW(NULL, NULL, 0));
+    ENV_CALL("SetEnvironmentVariableA(NULL, \"x\")", SetEnvironmentVariableA(NULL, "x"));
+    ENV_CALL("SetEnvironmentVariableW(NULL, \"x\")", SetEnvironmentVariableW(NULL, L"x"));
+    ENV_CALL("SetEnvironmentVariableA(NULL, NULL)", SetEnvironmentVariableA(NULL, NULL));
+    ENV_CALL("SetEnvironmentVariableW(NULL, NULL)", SetEnvironmentVariableW(NULL, NULL));
+    ENV_CALL("SetEnvironmentVariableA(\"F2KNULL\", NULL), not set", SetEnvironmentVariableA("F2KNULL", NULL));
+    ENV_CALL("SetEnvironmentVariableW(\"F2KNULL\", NULL), not set", SetEnvironmentVariableW(L"F2KNULL", NULL));
+    ENV_CALL("ExpandEnvironmentStringsA(NULL, buf, 64)", ExpandEnvironmentStringsA(NULL, buf, 64));
+    ENV_CALL("ExpandEnvironmentStringsW(NULL, buf, 64)", ExpandEnvironmentStringsW(NULL, wbuf, 64));
+    ENV_CALL("ExpandEnvironmentStringsA(NULL, NULL, 0)", ExpandEnvironmentStringsA(NULL, NULL, 0));
+    ENV_CALL("ExpandEnvironmentStringsW(NULL, NULL, 0)", ExpandEnvironmentStringsW(NULL, NULL, 0));
+    ENV_CALL("ExpandEnvironmentStringsA(\"%OS%\", NULL, 64)", ExpandEnvironmentStringsA("%OS%", NULL, 64));
+    ENV_CALL("ExpandEnvironmentStringsW(\"%OS%\", NULL, 64)", ExpandEnvironmentStringsW(L"%OS%", NULL, 64));
+#undef ENV_CALL
 }
 
 /* --- locale -------------------------------------------------------- */
@@ -2314,6 +2370,7 @@ static const section_t sections[] = {
     { "debugbreak", sec_debugbreak, 0 },
     { "debugstr", sec_debugstr, 0 },
     { "verify", sec_verify, 0 },
+    { "envnull", sec_envnull, 0 },
     { "console", sec_console, F2KT_INTERACTIVE },
     { "unhandled", sec_unhandled, 1 },
     { "exit", sec_exit, 1 },

@@ -84,13 +84,24 @@
  *               against the loaded image's; then thirty image sections
  *               made while another thread closes the file's handle: each
  *               a section or ERROR_INVALID_HANDLE
+ *   devpath     GetFullPathNameA/W over forms that need no current
+ *               directory: UNC paths (a share with and without its trailing
+ *               separator, .. above the share, a server alone, forward
+ *               slashes), \\.\ and \\?\ forms, device names (CON, nul,
+ *               nul.txt, C:\x\CON, C:\x\con.txt, C:\x\COM1:) and one that
+ *               is not (CONX); the size a short buffer is told (0, 4, the
+ *               length, the length and the terminator), and a 1112-
+ *               character path with a MAX_PATH buffer and a large one. Then
+ *               devices opened by name: NUL, nul.txt, \\.\NUL and DATA\NUL
+ *               (a write and a read each), and CON for reading, writing and
+ *               both (opened, never written)
  *
  * The opens, paths, metadata, listings and mappings run twice: through
  * the A calls, then through their W twins on the same paths (converted
  * through the ANSI code page, as the A calls convert theirs); the W lines
  * carry the W names, or "(W)". The open, find and mapping blocks run whole
  * twice; meta, handles, search and diskfree add each W observation after
- * its A one.
+ * its A one; devpath runs its paths, then its devices, both ways.
  *
  * Build (real Windows 2000 machine, MSVC 6):
  *   cl /nologo files.c
@@ -1751,6 +1762,134 @@ static void sec_imagesec(void)
          yesno(made + refused == 30 && other == 0));
 }
 
+/* --- devpath ------------------------------------------------------- */
+
+/* ASCII `s` widened unit by unit into `out` (no API, any length). */
+static void widen_ascii(const char *s, WCHAR *out)
+{
+    while ((*out++ = (WCHAR)(BYTE)*s++) != 0) {
+    }
+}
+
+/* GetFullPathNameA, or (wide) GetFullPathNameW, of `in` into a buffer of
+   `size` characters: the return and the error; when the path fits, the
+   path and its file part, unless `show` is 0 (a long path prints as
+   whether it is the input itself). Every input is absolute or a device
+   name: nothing depends on the current directory. */
+static void full_path(int wide, const char *label, const char *in, DWORD size, int show)
+{
+    static char buf[1300];
+    static WCHAR wbuf[1300];
+    static WCHAR win[1300];
+    char *part = NULL;
+    WCHAR *wpart = NULL;
+    const char *aw = wide ? "W" : "A";
+    const char *e;
+    DWORD n;
+
+    widen_ascii(in, win);
+    arm();
+    n = wide ? GetFullPathNameW(win, size, wbuf, &wpart) : GetFullPathNameA(in, size, buf, &part);
+    e = le();
+    if (n == 0 || n >= size) {
+        line("GetFullPathName%s(%s, %lu): ret=%lu err=%s", aw, label, size, n, e);
+    } else if (!show) {
+        line("GetFullPathName%s(%s, %lu): ret=%lu err=%s, the input itself %s", aw, label, size, n, e,
+             yesno(wide ? wcscmp(wbuf, win) == 0 : strcmp(buf, in) == 0));
+    } else if (wide) {
+        line("GetFullPathNameW(%s, %lu): ret=%lu err=%s [%s] file part [%s]", label, size, n, e, ws(wbuf),
+             wpart != NULL ? ws(wpart) : "(null)");
+    } else {
+        line("GetFullPathNameA(%s, %lu): ret=%lu err=%s [%s] file part [%s]", label, size, n, e, buf,
+             part != NULL ? part : "(null)");
+    }
+}
+
+static void full_paths(int wide)
+{
+    static char long_unc[1200];
+    static const char *const forms[] = {
+        "\\\\srv\\share", "\\\\srv\\share\\", "\\\\srv\\share\\dir\\..\\..\\x", "\\\\srv", "\\\\srv\\",
+        "//srv/share/a", "\\\\.\\COM1", "\\\\.\\NUL", "\\\\?\\C:\\a\\..\\b", "CON", "nul", "nul.txt",
+        "C:\\x\\CON", "C:\\x\\con.txt", "C:\\x\\COM1:", "C:\\x\\CONX", NULL
+    };
+    int i;
+
+    for (i = 0; forms[i] != NULL; i++) {
+        full_path(wide, forms[i], forms[i], MAX_PATH, 1);
+    }
+    /* The size a short buffer is told: 15 characters and the terminator. */
+    full_path(wide, "\\\\srv\\share\\abc", "\\\\srv\\share\\abc", 0, 1);
+    full_path(wide, "\\\\srv\\share\\abc", "\\\\srv\\share\\abc", 4, 1);
+    full_path(wide, "\\\\srv\\share\\abc", "\\\\srv\\share\\abc", 15, 1);
+    full_path(wide, "\\\\srv\\share\\abc", "\\\\srv\\share\\abc", 16, 1);
+    /* A path of 1112 characters: past MAX_PATH, and past 4 * MAX_PATH. */
+    strcpy(long_unc, "\\\\srv\\share\\");
+    for (i = 0; i < 1100; i++) {
+        long_unc[12 + i] = (char)('a' + i % 26);
+    }
+    long_unc[1112] = 0;
+    full_path(wide, "a 1112-character UNC path", long_unc, MAX_PATH, 0);
+    full_path(wide, "a 1112-character UNC path", long_unc, 1300, 0);
+}
+
+/* A device opened by name through CreateFileA or (wide) CreateFileW,
+   OPEN_EXISTING: opened or not, its file type, and for the null device a
+   5-byte write and a read. The console is opened, never written. */
+static void open_device(int wide, const char *label, const char *name, DWORD access, int null_device)
+{
+    static WCHAR wname[2 * MAX_PATH];
+    HANDLE h;
+    DWORD type, n;
+    BOOL r;
+    const char *e;
+    BYTE b[4];
+
+    widen_ascii(name, wname);
+    arm();
+    h = wide ? CreateFileW(wname, access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL)
+             : CreateFileA(name, access, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    e = le();
+    if (h == INVALID_HANDLE_VALUE) {
+        line("CreateFile%s(%s): INVALID_HANDLE_VALUE err=%s", wide ? "W" : "A", label, e);
+        return;
+    }
+    type = GetFileType(h);
+    line("CreateFile%s(%s): opened err=%s, file type %lu", wide ? "W" : "A", label, e, type);
+    if (null_device) {
+        n = 99;
+        arm();
+        r = WriteFile(h, "hello", 5, &n, NULL);
+        e = le();
+        line("  WriteFile 5 bytes: ret=%d put %lu err=%s", r, n, e);
+        n = 99;
+        arm();
+        r = ReadFile(h, b, sizeof b, &n, NULL);
+        e = le();
+        line("  ReadFile 4 bytes: ret=%d got %lu err=%s", r, n, e);
+    }
+    CloseHandle(h);
+}
+
+static void devices(int wide)
+{
+    open_device(wide, "NUL", "NUL", GENERIC_READ | GENERIC_WRITE, 1);
+    open_device(wide, "nul.txt", "nul.txt", GENERIC_READ | GENERIC_WRITE, 1);
+    open_device(wide, "\\\\.\\NUL", "\\\\.\\NUL", GENERIC_READ | GENERIC_WRITE, 1);
+    open_device(wide, "DATA\\NUL under the image directory", at("DATA\\NUL"), GENERIC_READ | GENERIC_WRITE, 1);
+    open_device(wide, "CON, GENERIC_READ", "CON", GENERIC_READ, 0);
+    open_device(wide, "CON, GENERIC_WRITE", "CON", GENERIC_WRITE, 0);
+    open_device(wide, "CON, GENERIC_READ|GENERIC_WRITE", "CON", GENERIC_READ | GENERIC_WRITE, 0);
+}
+
+static void sec_devpath(void)
+{
+    full_paths(0);
+    full_paths(1);
+    devices(0);
+    devices(1);
+}
+
 static const section_t sections[] = {
     { "open", sec_open, 0 },
     { "read", sec_read, 0 },
@@ -1767,6 +1906,7 @@ static const section_t sections[] = {
     { "flags", sec_flags, 0 },
     { "dupshare", sec_dupshare, 0 },
     { "imagesec", sec_imagesec, 0 },
+    { "devpath", sec_devpath, 0 },
     { NULL, NULL, 0 }
 };
 

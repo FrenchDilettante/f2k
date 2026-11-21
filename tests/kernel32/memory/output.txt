@@ -1,9 +1,9 @@
 # F2K capture of memory (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:04.13
-memory F2KT-SOURCE-CRC=0x70C53B52
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:14.77
+memory F2KT-SOURCE-CRC=0x1AE714E3
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -140,7 +140,7 @@ GetModuleHandleW(NULL): the same base yes
 section .text: protect 0x20 type 0x1000000 same allocation yes
 section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
-past the image end: state 0x10000 protect 0x1 type 0x0 region 0x9000 allocprotect 0x0
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0x8000 allocprotect 0x0
 memory: done
 <<< exit code=0
 >>> memory.exe mapping
@@ -184,8 +184,8 @@ memory: done
 sizes: basic 16, image 48
 the paging file, 1 MiB, committed: basic 0x00000000, length 16, base 0, attributes 0x08000000, size 0x000100000
 the paging file, 1 MiB, SEC_RESERVE: basic 0x00000000, length 16, base 0, attributes 0x04000000, size 0x000100000
-the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x00000E000
-the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000017000
+the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x000010000
+the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000018000
   its base the image's ImageBase: no, its size the image's SizeOfImage: yes
 the program's file, SEC_IMAGE: image 0x00000000, length 48
   TransferAddress the image's entry: yes
@@ -245,5 +245,50 @@ GlobalFlags(GlobalHandle of a locked block's pointer): 0x0001 (lock count 1, the
 GlobalFree(moveable): returned null yes err=-
 GlobalFlags(a freed moveable block): 0x8000 (lock count 0, the rest 0x8000) err=6
 GlobalFlags(NULL): 0x8000 (lock count 0, the rest 0x8000) err=6
+memory: done
+<<< exit code=0
+>>> memory.exe handles
+== handles
+GlobalLock(a freed moveable block): NULL err=6
+GlobalUnlock(a freed moveable block): ret=1 err=6
+GlobalSize(a freed moveable block): 0 err=6
+GlobalReAlloc(a freed moveable block, 128, GMEM_MOVEABLE): NULL err=6
+GlobalReAlloc(a freed moveable block, GMEM_MODIFY|GMEM_DISCARDABLE): NULL err=6
+GlobalFree(a freed moveable block): the handle err=6
+LocalLock(a freed moveable block): NULL err=6
+LocalUnlock(a freed moveable block): ret=0 err=6
+GlobalReAlloc(fixed, GMEM_MODIFY|GMEM_MOVEABLE): another handle err=-
+GlobalLock of the result: the old pointer no, contents intact
+GlobalFlags(fixed made moveable, locked): 0x2001 (lock count 1, the rest 0x2000) err=-
+GlobalReAlloc(moveable, GMEM_MODIFY|GMEM_DISCARDABLE): the same handle err=-
+GlobalFlags(moveable made discardable): 0x0100 (lock count 0, the rest 0x0100) err=-
+GlobalReAlloc(discardable, GMEM_MODIFY): the same handle err=-
+GlobalFlags(then GMEM_MODIFY alone): 0x0000 (lock count 0, the rest 0x0000) err=-
+GlobalReAlloc(locked moveable, 256 KiB, 0): the block stayed where it was yes, contents intact
+GlobalFlags(the locked block after it): 0x0001 (lock count 1, the rest 0x0000) err=-
+GlobalReAlloc(locked moveable, 256 KiB, GMEM_MOVEABLE): the same handle, contents intact
+GlobalFlags(the locked block after it): 0x0001 (lock count 1, the rest 0x0000) err=-
+GlobalReAlloc(fixed, 256 KiB, 0): stayed in place or failed yes, contents intact
+GlobalAlloc(0x8002, 64): NULL err=87
+GlobalAlloc(0x0001, 64): NULL err=87
+GlobalAlloc(0x0082, 64): NULL err=87
+LocalAlloc(0x2002, 64): NULL err=87
+LocalAlloc(0x8000, 64): NULL err=87
+GlobalReAlloc(moveable, 128, GMEM_MOVEABLE|0x0001): NULL err=87
+memory: done
+<<< exit code=0
+>>> memory.exe heapcap
+== heapcap
+HeapCreate(0, 0, 16 MiB): created yes
+HeapAlloc(16 MiB capped, 0x7F000): NULL err=122
+HeapAlloc(16 MiB capped, 0x7FFF8): NULL err=122
+HeapAlloc(16 MiB capped, 0x7FFF9): NULL err=122
+HeapAlloc(16 MiB capped, 0x80000): NULL err=122
+HeapAlloc(16 MiB capped, 0x100000): NULL err=122
+HeapAlloc(growable, 0x100000): a block err=-
+HeapAlloc(128 KiB capped, 16 KiB) until refused: refused yes, then err=8
+HeapAlloc(16 MiB capped, HEAP_GENERATE_EXCEPTIONS, 0x100000): raised 0xC0000017 err=-
+HeapReAlloc(16 MiB capped, HEAP_GENERATE_EXCEPTIONS, NULL, 10): NULL err=0
+HeapReAlloc(the process heap, NULL, 10): NULL err=0
 memory: done
 <<< exit code=0

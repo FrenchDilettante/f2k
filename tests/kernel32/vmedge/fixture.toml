@@ -1,7 +1,13 @@
 # vmedge: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "vmedge - the virtual-memory and sections corners: a thread of its own walking its stack down to STATUS_STACK_OVERFLOW, counting the guard-page exceptions it sees and surveying its reservation before and after (guardwalk), MEM_COMMIT over a mapped view succeeding over a paging-file-backed section and failing with ERROR_ACCESS_DENIED over a file-backed one (commitview), and NtUnmapViewOfSection of a private region and of a suspended copy's image, through an address inside the view, and again (unmapimage)."
+description = "vmedge - the virtual-memory and sections corners: a thread of its own walking its stack down to STATUS_STACK_OVERFLOW, counting the guard-page exceptions it sees and surveying its reservation before and after (guardwalk), MEM_COMMIT over a mapped view succeeding over a paging-file-backed section and failing with ERROR_ACCESS_DENIED over a file-backed one (commitview), and NtUnmapViewOfSection of a private region and of a suspended copy's image, through an address inside the view, and again (unmapimage), VirtualAlloc's MEM_RESET and MEM_TOP_DOWN (vmflags), and VirtualProtect over a file section's read and copy-on-write views (viewprot)."
 kind = "sectioned"
 gate = true
+
+[pending]
+# Not captured yet: their output.txt blocks are placeholders, which tests/capture.bat vmedge replaces
+# once tests/build.bat vmedge has rebuilt vmedge.exe.
+vmflags = "F2K's MEM_RESET rules (alone over committed or reserved pages, refused with MEM_COMMIT or MEM_RESERVE) were chosen from memory"
+viewprot = "F2K refuses a FILE_MAP_READ view raised to PAGE_READWRITE with ERROR_INVALID_PARAMETER and keeps a FILE_MAP_COPY view made writable copy-on-write, both from memory"
 
 [pins]
 guardwalk = [
@@ -21,4 +27,21 @@ unmapimage = [
     "kernel32.VirtualQueryEx",
     "kernel32.TerminateProcess",
     "kernel32.WaitForSingleObject",
+]
+vmflags = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "ntdll.NtAllocateVirtualMemory",
+]
+viewprot = [
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.VirtualProtect",
+    "kernel32.VirtualQuery",
+    "kernel32.ReadFile",
+    "kernel32.DeleteFileA",
+    "ntdll.NtProtectVirtualMemory",
 ]

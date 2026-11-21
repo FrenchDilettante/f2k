@@ -6,13 +6,21 @@
 # The names section runs last: on Windows 2000 its two refused IoCreateDevice calls keep a
 # reference on the driver that is never dropped, so once it is unloaded its image stays loaded and
 # every later NtLoadDriver of the service fails (0xC0000034) until the machine restarts.
+# pendirp holds a request pending and completes it from a second one (the inverted call); it needs
+# no export drvload.sys did not import already (IoMarkIrpPending is a macro): a driver importing one
+# F2K's ntoskrnl lacks would fail to load for every section. Its program releases the request only
+# while the first DeviceIoControl still waits, so F2K, which frees a pending request's buffers when
+# its dispatch returns, is not written into freed pool.
 # unknown's "returned=62194" is the program's own 0xF2F2, set before each call: DeviceIoControl
 # leaves lpBytesReturned untouched when it fails.
 # Not pinned: hal.dll's KeGetCurrentIrql (entry, create, ioctl, irps, unload, unloadopen):
 # kernel/hal_exports.toml carries it, but scripts/compat.py reads no pins against the HAL's spec.
-description = "drvload - the plumbing a legacy driver lives on and the NT layouts it reads: NtLoadDriver and NtUnloadDriver over a service key the program writes (privilege, missing key, twice, reload), the DRIVER_OBJECT and DRIVER_EXTENSION DriverEntry is handed, the DEVICE_OBJECT IoCreateDevice makes, the IRPs the dispatch sees (create, cleanup, close, device control) and their process, IoCreateDevice and IoCreateSymbolicLink refusals, the I/O manager's answers for unset major functions, and the unload, with and without a handle open."
+description = "drvload - the plumbing a legacy driver lives on and the NT layouts it reads: NtLoadDriver and NtUnloadDriver over a service key the program writes (privilege, missing key, twice, reload), the DRIVER_OBJECT and DRIVER_EXTENSION DriverEntry is handed, the DEVICE_OBJECT IoCreateDevice makes, the IRPs the dispatch sees (create, cleanup, close, device control) and their process, IoCreateDevice and IoCreateSymbolicLink refusals, the I/O manager's answers for unset major functions, the unload, with and without a handle open, and a request held pending and completed from another (the inverted call)."
 kind = "sectioned"
 gate = true
+
+[pending]
+pendirp = "not captured yet (tests\\build.bat drvload in the DDK's build environment, then tests\\capture.bat drvload, replace the placeholder block in output.txt); F2K's I/O manager takes a dispatch's STATUS_PENDING for STATUS_NOT_IMPLEMENTED and frees the request's buffers (its DeviceIoControl returns at once, never waiting for the completion)"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, the driver's load, its device and
@@ -40,3 +48,4 @@ irps = ["ntoskrnl.PsGetCurrentProcessId", "ntoskrnl.PsGetCurrentThreadId", "ntos
 unknown = ["kernel32.ReadFile", "kernel32.WriteFile", "kernel32.FlushFileBuffers"]
 unload = ["ntoskrnl.RtlWriteRegistryValue", "ntoskrnl.PsInitialSystemProcess", "ntoskrnl.IoGetCurrentProcess"]
 unloadopen = ["ntoskrnl.RtlWriteRegistryValue", "ntoskrnl.PsInitialSystemProcess", "kernel32.CloseHandle"]
+pendirp = ["kernel32.CreateThread", "kernel32.WaitForSingleObject", "kernel32.CloseHandle"]

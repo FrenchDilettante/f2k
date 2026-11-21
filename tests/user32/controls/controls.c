@@ -78,6 +78,19 @@
  *            without SS_CENTERIMAGE, its text DEFAULT_GUI_FONT in red
  *            on blue (WM_CTLCOLORSTATIC): the rows and columns the text
  *            covers in the client area as the screen shows it
+ *   bnnotify a BS_NOTIFY push button, a plain one, a BS_NOTIFY auto
+ *            check box and a plain BS_RADIOBUTTON: the notifications
+ *            SetFocus brings (BN_SETFOCUS, BN_KILLFOCUS); a click, a
+ *            double click and a press released outside, each posted as
+ *            WM_LBUTTONDOWN, WM_LBUTTONUP and WM_LBUTTONDBLCLK at a
+ *            point of the button (outside it for the release): the
+ *            notifications (BN_CLICKED, BN_DBLCLK), the focus, the check
+ *   stnclick an SS_NOTIFY Static and a plain one: WM_NCHITTEST's answer
+ *            at its centre, and a click and a double click posted to
+ *            it (STN_CLICKED, STN_DBLCLK)
+ *   odaction a BS_OWNERDRAW button: the WM_DRAWITEMs its parent receives
+ *            (wParam, itemAction, itemState) on SetFocus, BM_SETSTATE
+ *            TRUE and FALSE, a posted click, and the focus leaving
  *
  * The edges and centred sections read the screen (GetPixel on the
  * controls' DCs): the parent is made topmost first, and each control
@@ -133,6 +146,18 @@
 #endif
 #ifndef WS_EX_STATICEDGE
 #define WS_EX_STATICEDGE 0x00020000L
+#endif
+#ifndef BS_NOTIFY
+#define BS_NOTIFY 0x00004000L
+#endif
+#ifndef SS_NOTIFY
+#define SS_NOTIFY 0x00000100L
+#endif
+#ifndef BN_SETFOCUS
+#define BN_SETFOCUS 6
+#endif
+#ifndef BN_KILLFOCUS
+#define BN_KILLFOCUS 7
 #endif
 #ifndef DEFAULT_GUI_FONT
 #define DEFAULT_GUI_FONT 17
@@ -1252,6 +1277,239 @@ static void sec_centred(void)
     marked_brush = NULL;
 }
 
+/* --- bnnotify, stnclick, odaction -------------------------------------- */
+
+/* A point of a control's client area as a mouse message's lParam. */
+#define AT(x, y) MAKELPARAM((WORD)(short)(x), (WORD)(short)(y))
+
+/* Mouse messages posted to a control, then the queue dispatched. */
+static void post_mouse(HWND h, const UINT *msgs, const LPARAM *points, int n)
+{
+    int i;
+
+    for (i = 0; i < n; i++) {
+        PostMessageW(h, msgs[i], msgs[i] == WM_LBUTTONUP ? 0 : MK_LBUTTON, points[i]);
+    }
+    drain();
+}
+
+static void mouse_click(HWND h, const char *name)
+{
+    static const UINT msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP };
+    static const LPARAM points[] = { AT(5, 5), AT(5, 5) };
+
+    reset_commands();
+    post_mouse(h, msgs, points, 2);
+    line("click on %s (WM_LBUTTONDOWN, WM_LBUTTONUP at 5,5 posted): focus %s, BM_GETCHECK %ld", name, focus_label(),
+         (long)SendMessageW(h, BM_GETCHECK, 0, 0));
+    print_commands();
+}
+
+static void mouse_double(HWND h, const char *name)
+{
+    static const UINT msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP };
+    static const LPARAM points[] = { AT(5, 5), AT(5, 5), AT(5, 5), AT(5, 5) };
+
+    reset_commands();
+    post_mouse(h, msgs, points, 4);
+    line("double click on %s (down, up, WM_LBUTTONDBLCLK, up posted): focus %s, BM_GETCHECK %ld", name,
+         focus_label(), (long)SendMessageW(h, BM_GETCHECK, 0, 0));
+    print_commands();
+}
+
+static void mouse_outside(HWND h, const char *name)
+{
+    static const UINT msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP };
+    static const LPARAM points[] = { AT(5, 5), AT(-5, -5) };
+
+    reset_commands();
+    post_mouse(h, msgs, points, 2);
+    line("press on %s released outside it (up at -5,-5): BM_GETSTATE 0x%lX", name,
+         (unsigned long)SendMessageW(h, BM_GETSTATE, 0, 0));
+    print_commands();
+}
+
+static void focus_to(HWND h, const char *name)
+{
+    reset_commands();
+    SetFocus(h);
+    drain();
+    line("SetFocus(%s): focus %s", name, focus_label());
+    print_commands();
+}
+
+static HWND open_foreground_parent(void)
+{
+    HWND parent = open_parent();
+
+    if (parent != NULL) {
+        SetForegroundWindow(parent);
+        SetActiveWindow(parent);
+        drain();
+        line("the parent: foreground %s active %s", yesno(GetForegroundWindow() == parent),
+             yesno(GetActiveWindow() == parent));
+        reset_commands();
+    }
+    return parent;
+}
+
+static void sec_bnnotify(void)
+{
+    static const button_t kinds[] = {
+        { 121, BS_PUSHBUTTON | BS_NOTIFY, L"Notify", "BS_PUSHBUTTON | BS_NOTIFY" },
+        { 122, BS_PUSHBUTTON, L"Plain", "BS_PUSHBUTTON" },
+        { 123, BS_AUTOCHECKBOX | BS_NOTIFY, L"Check", "BS_AUTOCHECKBOX | BS_NOTIFY" },
+        { 124, BS_RADIOBUTTON, L"Radio", "BS_RADIOBUTTON" },
+        { 0, 0, NULL, NULL }
+    };
+    HWND parent;
+    HWND h[4];
+    int i;
+
+    drain();
+    parent = open_foreground_parent();
+    if (parent == NULL) {
+        return;
+    }
+    for (i = 0; i < 4; i++) {
+        h[i] = make_control(parent, L"Button", &kinds[i], i);
+        line("CreateWindowExW(\"Button\", %s, id %d): non-NULL %s", kinds[i].name, kinds[i].id, yesno(h[i] != NULL));
+        if (h[i] == NULL) {
+            close_parent(parent);
+            return;
+        }
+    }
+    drain();
+    reset_commands();
+    focus_to(h[0], "121, BS_NOTIFY");
+    focus_to(h[1], "122");
+    focus_to(h[2], "123, BS_NOTIFY");
+    focus_to(parent, "the parent");
+    mouse_click(h[0], "121, BS_NOTIFY");
+    mouse_click(h[1], "122");
+    mouse_click(h[2], "123, BS_NOTIFY");
+    mouse_double(h[0], "121, BS_NOTIFY");
+    mouse_double(h[1], "122");
+    mouse_double(h[2], "123, BS_NOTIFY");
+    mouse_double(h[3], "124, BS_RADIOBUTTON");
+    mouse_outside(h[1], "122");
+    focus_to(parent, "the parent");
+    close_parent(parent);
+}
+
+static void static_mouse(HWND parent, HWND h, const char *name)
+{
+    static const UINT click_msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP };
+    static const UINT double_msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP };
+    static const LPARAM points[] = { AT(5, 5), AT(5, 5), AT(5, 5), AT(5, 5) };
+    RECT r;
+    POINT c;
+    LRESULT hit;
+
+    (void)parent;
+    GetWindowRect(h, &r);
+    c.x = (r.left + r.right) / 2;
+    c.y = (r.top + r.bottom) / 2;
+    arm();
+    hit = SendMessageW(h, WM_NCHITTEST, 0, MAKELPARAM((WORD)c.x, (WORD)c.y));
+    line("WM_NCHITTEST(%s, its centre): ret=%ld err=%s", name, (long)hit, le());
+    reset_commands();
+    post_mouse(h, click_msgs, points, 2);
+    line("click on %s (WM_LBUTTONDOWN, WM_LBUTTONUP posted):", name);
+    print_commands();
+    reset_commands();
+    post_mouse(h, double_msgs, points, 4);
+    line("double click on %s (down, up, WM_LBUTTONDBLCLK, up posted):", name);
+    print_commands();
+}
+
+static void sec_stnclick(void)
+{
+    static const button_t kinds[] = {
+        { 221, SS_LEFT | SS_NOTIFY, L"Notify", "SS_LEFT | SS_NOTIFY" },
+        { 222, SS_LEFT, L"Plain", "SS_LEFT" },
+        { 0, 0, NULL, NULL }
+    };
+    HWND parent;
+    HWND h[2];
+    int i;
+
+    drain();
+    parent = open_foreground_parent();
+    if (parent == NULL) {
+        return;
+    }
+    for (i = 0; i < 2; i++) {
+        h[i] = make_control(parent, L"Static", &kinds[i], i);
+        line("CreateWindowExW(\"Static\", %s, id %d): non-NULL %s", kinds[i].name, kinds[i].id, yesno(h[i] != NULL));
+    }
+    drain();
+    if (h[0] != NULL) {
+        static_mouse(parent, h[0], "221, SS_NOTIFY");
+    }
+    if (h[1] != NULL) {
+        static_mouse(parent, h[1], "222");
+    }
+    close_parent(parent);
+}
+
+/* The WM_DRAWITEMs since the last print: wParam, itemAction, itemState. */
+static void print_actions(const char *when)
+{
+    int i;
+
+    line("%s: %d WM_DRAWITEM", when, drawitem_count);
+    for (i = 0; i < drawitem_count; i++) {
+        line("  wParam=%d itemAction=0x%X itemState=0x%X hwndItem the button %s", drawitems[i].wparam,
+             drawitems[i].item_action, drawitems[i].item_state, yesno(drawitems[i].hwnd_is_button));
+    }
+    drawitem_count = 0;
+}
+
+static void sec_odaction(void)
+{
+    static const UINT msgs[] = { WM_LBUTTONDOWN, WM_LBUTTONUP };
+    static const LPARAM points[] = { AT(5, 5), AT(5, 5) };
+    HWND parent;
+    HWND b;
+
+    drain();
+    parent = open_foreground_parent();
+    if (parent == NULL) {
+        return;
+    }
+    ownerdraw_button = NULL;
+    b = CreateWindowExW(0, L"Button", L"Draw me", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 10, 10, 140, 20, parent,
+                        (HMENU)7, instance(), NULL);
+    line("CreateWindowExW(Button, BS_OWNERDRAW, id 7): non-NULL %s", yesno(b != NULL));
+    if (b == NULL) {
+        close_parent(parent);
+        return;
+    }
+    ownerdraw_button = b;
+    UpdateWindow(parent);
+    drain();
+    drawitem_count = 0;
+    reset_commands();
+    SetFocus(b);
+    drain();
+    print_actions("SetFocus(the button)");
+    SendMessageW(b, BM_SETSTATE, TRUE, 0);
+    drain();
+    print_actions("BM_SETSTATE(TRUE)");
+    SendMessageW(b, BM_SETSTATE, FALSE, 0);
+    drain();
+    print_actions("BM_SETSTATE(FALSE)");
+    post_mouse(b, msgs, points, 2);
+    print_actions("a click posted (WM_LBUTTONDOWN, WM_LBUTTONUP)");
+    print_commands();
+    SetFocus(parent);
+    drain();
+    print_actions("SetFocus(the parent)");
+    ownerdraw_button = NULL;
+    close_parent(parent);
+}
+
 static const section_t sections[] = {
     { "create", sec_create, F2KT_ALWAYS },
     { "check", sec_check, F2KT_ALWAYS },
@@ -1263,6 +1521,9 @@ static const section_t sections[] = {
     { "drawdc", sec_drawdc, F2KT_ALWAYS },
     { "edges", sec_edges, F2KT_ALWAYS },
     { "centred", sec_centred, F2KT_ALWAYS },
+    { "bnnotify", sec_bnnotify, F2KT_ALWAYS },
+    { "stnclick", sec_stnclick, F2KT_ALWAYS },
+    { "odaction", sec_odaction, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

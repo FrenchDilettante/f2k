@@ -97,6 +97,15 @@
  *             lacks; LoadImageW/A of it as a DIB section (its DIBSECTION
  *             and stored rows), stretched to 16x8, as a device bitmap,
  *             monochrome, of OBM_CLOSE, and of one it lacks
+ *   obm       LoadBitmapW(NULL, ...) of OBM_CHECK, OBM_CLOSE,
+ *             OBM_CHECKBOXES, OBM_UPARROW, OBM_DNARROW, OBM_LFARROW and
+ *             OBM_RGARROW: each one's size, then its pixels read back
+ *             through GetDIBits as a 24-bit top-down DIB, one character
+ *             a pixel: # black, + dark gray, - light gray, . white, ?
+ *             any other (a channel more than 0x30 off the others, the
+ *             first such printed in hex); LoadBitmapA's pixels the same
+ *             or not. Fixed resources, the same on any machine with the
+ *             default metrics and colors
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat bitmaps):
  *   rc bitmaps.rc
@@ -2052,6 +2061,117 @@ static void sec_load(void)
     }
 }
 
+/* --- obm ---------------------------------------------------------- */
+
+#define OBM_MOST_W 256
+#define OBM_MOST_H 64
+
+static BYTE obm_bits[OBM_MOST_H * ((OBM_MOST_W * 3 + 3) & ~3)];
+static BYTE obm_bits_a[OBM_MOST_H * ((OBM_MOST_W * 3 + 3) & ~3)];
+
+/* A bitmap's pixels as a 24-bit top-down DIB; GetDIBits' answer. */
+static int read24(HBITMAP hb, int w, int h, BYTE *out)
+{
+    bmi_t b;
+    HDC ref;
+    int n;
+
+    header(&b, w, -h, 24);
+    ZeroMemory(out, sizeof obm_bits);
+    ref = CreateCompatibleDC(NULL);
+    n = GetDIBits(ref, hb, 0, (UINT)h, out, (BITMAPINFO *)&b, DIB_RGB_COLORS);
+    DeleteDC(ref);
+    return n;
+}
+
+/* A pixel's character: by its gray level, '?' when not gray. */
+static char shade(const BYTE *bgr)
+{
+    int b = bgr[0], g = bgr[1], r = bgr[2];
+    int hi = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    int lo = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    int v = (r + g + b) / 3;
+
+    if (hi - lo > 0x30) {
+        return '?';
+    }
+    if (v < 0x40) {
+        return '#';
+    }
+    if (v < 0xA0) {
+        return '+';
+    }
+    if (v < 0xE0) {
+        return '-';
+    }
+    return '.';
+}
+
+static void obm_rows(const char *name, int id)
+{
+    HBITMAP w, a;
+    BITMAP bm;
+    char row[OBM_MOST_W + 1];
+    int stride, n, na, x, y;
+    int odd = 0;
+    DWORD first_odd = 0;
+    const BYTE *p;
+
+    arm();
+    w = LoadBitmapW(NULL, MAKEINTRESOURCEW(id));
+    line("LoadBitmapW(NULL, %s): non-NULL %s err=%s", name, yesno(w != NULL), le());
+    if (w == NULL) {
+        return;
+    }
+    ZeroMemory(&bm, sizeof bm);
+    GetObjectW(w, sizeof bm, &bm);
+    line("  size %ldx%ld", (long)bm.bmWidth, (long)bm.bmHeight);
+    if (bm.bmWidth <= 0 || bm.bmHeight <= 0 || bm.bmWidth > OBM_MOST_W || bm.bmHeight > OBM_MOST_H) {
+        line("  (pixels not printed)");
+        DeleteObject(w);
+        return;
+    }
+    stride = (bm.bmWidth * 3 + 3) & ~3;
+    arm();
+    n = read24(w, bm.bmWidth, bm.bmHeight, obm_bits);
+    line("  GetDIBits(24 bits, top-down): ret=%d err=%s", n, le());
+    for (y = 0; y < bm.bmHeight; y++) {
+        for (x = 0; x < bm.bmWidth; x++) {
+            p = obm_bits + y * stride + x * 3;
+            row[x] = shade(p);
+            if (row[x] == '?' && odd++ == 0) {
+                first_odd = ((DWORD)p[2] << 16) | ((DWORD)p[1] << 8) | p[0];
+            }
+        }
+        row[x] = '\0';
+        line("  %s", row);
+    }
+    if (odd > 0) {
+        line("  %d pixels not gray, the first %06lX", odd, (unsigned long)first_odd);
+    }
+    a = LoadBitmapA(NULL, MAKEINTRESOURCEA(id));
+    if (a != NULL) {
+        na = read24(a, bm.bmWidth, bm.bmHeight, obm_bits_a);
+        line("  LoadBitmapA's pixels the same: %s", yesno(na == n && memcmp(obm_bits, obm_bits_a,
+             (size_t)(stride * bm.bmHeight)) == 0));
+        DeleteObject(a);
+    } else {
+        line("  LoadBitmapA: NULL");
+    }
+    DeleteObject(w);
+}
+
+static void sec_obm(void)
+{
+    obm_rows("OBM_CHECK", OBM_CHECK);
+    obm_rows("OBM_CLOSE", OBM_CLOSE);
+    obm_rows("OBM_CHECKBOXES", OBM_CHECKBOXES);
+    obm_rows("OBM_UPARROW", OBM_UPARROW);
+    obm_rows("OBM_DNARROW", OBM_DNARROW);
+    obm_rows("OBM_LFARROW", OBM_LFARROW);
+    obm_rows("OBM_RGARROW", OBM_RGARROW);
+}
+
 static const section_t sections[] = {
     { "compat", sec_compat, F2KT_ALWAYS },
     { "create", sec_create, F2KT_ALWAYS },
@@ -2065,6 +2185,7 @@ static const section_t sections[] = {
     { "pattern", sec_pattern, F2KT_ALWAYS },
     { "objtype", sec_objtype, F2KT_ALWAYS },
     { "load", sec_load, F2KT_ALWAYS },
+    { "obm", sec_obm, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

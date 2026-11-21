@@ -1,9 +1,9 @@
 # F2K capture of menus (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:15:49.07
-menus F2KT-SOURCE-CRC=0x2C96BD27
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:43.79
+menus F2KT-SOURCE-CRC=0x00BABA15
 >>> menus.exe load
 == load
 LoadMenuW(200): non-NULL yes err=-
@@ -1087,10 +1087,16 @@ menus: done
 <<< exit code=0
 >>> menus.exe underline
 == underline
-setup: a WS_OVERLAPPEDWINDOW window with the bar "&Hit", "Hit": yes
-shown: "&Hit" ink no, "Hit" ink no; "&Hit" reaches lower (underlined) no
-WM_CHANGEUISTATE(UIS_CLEAR, UISF_HIDEACCEL), DrawMenuBar: "&Hit" ink no, "Hit" ink no; "&Hit" reaches lower (underlined) no
-WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL), DrawMenuBar: "&Hit" ink no, "Hit" ink no; "&Hit" reaches lower (underlined) no
+SPI_GETKEYBOARDCUES: 0
+setup: a visible WS_OVERLAPPEDWINDOW window with the bar "&File", "File": yes
+the foreground window: yes
+GetMenuItemRect(the bar, 0): ret=1, within the SM_CYMENU rows above the client area yes
+shown, no key pressed: the bar's ink in 2 groups; underline under F of "&File": no
+Alt pressed and held: SendInput(1 events) ret=1 err=-
+Alt held: the bar's ink in 2 groups; underline under F of "&File": yes
+Ctrl pressed and released, then Alt released (no menu loop): SendInput(3 events) ret=3 err=-
+Alt released: the bar's ink in 2 groups; underline under F of "&File": no
+WM_CHANGEUISTATE(UIS_SET, UISF_HIDEACCEL), DrawMenuBar: the bar's ink in 2 groups; underline under F of "&File": no
 menus: done
 <<< exit code=0
 >>> menus.exe capicon
@@ -1103,21 +1109,21 @@ class hIcon magenta, hIconSm green: non-NULL yes
   magenta (the big icon): none
   green (the small icon): 256 pixels, rows 1..16, columns 2..17
   blue (WM_SETICON's): none
-  the title: first column 0
+  the title: first column 20
 class hIcon magenta, no hIconSm: non-NULL yes
   GCL_HICON non-NULL yes, GCL_HICONSM non-NULL yes; WM_GETICON ICON_SMALL non-NULL no, ICON_BIG non-NULL no
   the caption: active no
   magenta (the big icon): 256 pixels, rows 1..16, columns 2..17
   green (the small icon): none
   blue (WM_SETICON's): none
-  the title: first column 0
+  the title: first column 20
 no class icon: non-NULL yes
   GCL_HICON non-NULL no, GCL_HICONSM non-NULL no; WM_GETICON ICON_SMALL non-NULL no, ICON_BIG non-NULL no
   the caption: active no
   magenta (the big icon): none
   green (the small icon): 5 pixels, rows 5..7, columns 14..15
   blue (WM_SETICON's): 10 pixels, rows 9..12, columns 2..12
-  the title: first column 0
+  the title: first column 20
 no class icon, WM_SETICON: non-NULL yes
   WM_SETICON(ICON_SMALL, a blue icon)
   GCL_HICON non-NULL no, GCL_HICONSM non-NULL no; WM_GETICON ICON_SMALL non-NULL yes, ICON_BIG non-NULL no
@@ -1125,6 +1131,6 @@ no class icon, WM_SETICON: non-NULL yes
   magenta (the big icon): none
   green (the small icon): none
   blue (WM_SETICON's): 256 pixels, rows 1..16, columns 2..17
-  the title: first column 0
+  the title: first column 20
 menus: done
 <<< exit code=0

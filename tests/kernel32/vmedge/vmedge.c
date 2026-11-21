@@ -32,6 +32,19 @@
  *              documentation says any address within a view names it),
  *              its region queried afterwards, and unmapped again. The
  *              child never runs; it is terminated and reaped.
+ *   vmflags    VirtualAlloc's MEM_RESET: over committed pages (with
+ *              PAGE_READWRITE and with PAGE_NOACCESS, which it ignores; the
+ *              state after; the pages still usable), with MEM_COMMIT, with
+ *              no address, with MEM_RESERVE, and over reserved pages; then
+ *              MEM_TOP_DOWN against a plain reservation, as relations
+ *   viewprot   VirtualProtect over views of a PAGE_READWRITE file section
+ *              (VMVIEW.TMP beside the program, deleted at the end): a
+ *              FILE_MAP_READ view raised to PAGE_READWRITE, PAGE_WRITECOPY
+ *              and PAGE_EXECUTE_READWRITE, lowered to PAGE_NOACCESS and
+ *              back; a FILE_MAP_COPY view made PAGE_READWRITE, then written:
+ *              its protection after each step, whether the read view sees
+ *              the write, and whether the file changed, while mapped and
+ *              once every view is gone
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat vmedge):
  *   cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% vmedge.c kernel32.lib
@@ -332,12 +345,167 @@ static void sec_unmapimage(void)
     CloseHandle(pi.hProcess);
 }
 
+/* --- vmflags ---------------------------------------------------------------- */
+
+/* VirtualAlloc of `addr` with `type`, as printed: NULL, the address asked
+   for, or another, with the error. */
+static void try_alloc(const char *label, void *addr, DWORD size, DWORD type, DWORD protect)
+{
+    void *p;
+    const char *e;
+
+    arm();
+    p = VirtualAlloc(addr, size, type, protect);
+    e = le();
+    line("VirtualAlloc(%s): %s err=%s", label, p == NULL ? "NULL" : p == addr ? "the address" : "another address", e);
+}
+
+/* The state and protection VirtualQuery gives `addr`. */
+static void state_of(const char *label, const void *addr)
+{
+    MEMORY_BASIC_INFORMATION mbi;
+
+    if (VirtualQuery(addr, &mbi, sizeof mbi) == 0) {
+        line("%s: VirtualQuery failed", label);
+        return;
+    }
+    line("%s: state 0x%lX protect 0x%lX", label, mbi.State, mbi.Protect);
+}
+
+static void sec_vmflags(void)
+{
+    BYTE *p, *r, *a, *t;
+    int usable;
+
+    p = (BYTE *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    memset(p, 0x5A, 0x10000);
+    try_alloc("committed pages, MEM_RESET", p, 0x10000, MEM_RESET, PAGE_READWRITE);
+    state_of("then", p);
+    try_alloc("committed pages, MEM_RESET, PAGE_NOACCESS", p, 0x10000, MEM_RESET, PAGE_NOACCESS);
+    state_of("then", p);
+    usable = 0;
+    __try {
+        p[0] = 1;
+        p[0xFFFF] = 2;
+        usable = p[0] + p[0xFFFF] == 3;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        usable = 0;
+    }
+    line("the reset pages are still read and written: %s", yesno(usable));
+    try_alloc("committed pages, MEM_RESET|MEM_COMMIT", p, 0x10000, MEM_RESET | MEM_COMMIT, PAGE_READWRITE);
+    try_alloc("NULL, MEM_RESET", NULL, 0x10000, MEM_RESET, PAGE_READWRITE);
+    try_alloc("NULL, MEM_RESET|MEM_RESERVE", NULL, 0x10000, MEM_RESET | MEM_RESERVE, PAGE_READWRITE);
+    r = (BYTE *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE, PAGE_READWRITE);
+    try_alloc("reserved pages, MEM_RESET", r, 0x10000, MEM_RESET, PAGE_READWRITE);
+    state_of("then", r);
+    VirtualFree(r, 0, MEM_RELEASE);
+    VirtualFree(p, 0, MEM_RELEASE);
+
+    a = (BYTE *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE, PAGE_READWRITE);
+    t = (BYTE *)VirtualAlloc(NULL, 0x10000, MEM_RESERVE | MEM_TOP_DOWN, PAGE_READWRITE);
+    line("MEM_TOP_DOWN: reserved %s, above a plain reservation %s, at or above 0x70000000 %s", yesno(t != NULL),
+         yesno(t > a), yesno((DWORD)t >= 0x70000000u));
+    VirtualFree(t, 0, MEM_RELEASE);
+    VirtualFree(a, 0, MEM_RELEASE);
+}
+
+/* --- viewprot --------------------------------------------------------------- */
+
+/* VirtualProtect of the first page of `v`: the return, the old
+   protection when it succeeds, the error. */
+static void try_protect(const char *label, void *v, DWORD protect)
+{
+    DWORD old = 0;
+    BOOL r;
+    const char *e;
+
+    arm();
+    r = VirtualProtect(v, F2KT_PAGE, protect, &old);
+    e = le();
+    if (r) {
+        line("VirtualProtect(%s, 0x%lX): ret=1 old 0x%lX err=%s", label, protect, old, e);
+    } else {
+        line("VirtualProtect(%s, 0x%lX): ret=0 err=%s", label, protect, e);
+    }
+}
+
+static void sec_viewprot(void)
+{
+    char path[MAX_PATH];
+    char *slash;
+    HANDLE f, m;
+    BYTE *v, *c;
+    BYTE head[16];
+    DWORD n, put;
+    int wrote;
+
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    slash = strrchr(path, '\\');
+    strcpy(slash != NULL ? slash + 1 : path, "VMVIEW.TMP");
+    DeleteFileA(path);
+    f = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_ALWAYS,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    memset(head, 'A', sizeof head);
+    for (n = 0; n < 2 * F2KT_PAGE; n += sizeof head) {
+        WriteFile(f, head, sizeof head, &put, NULL);
+    }
+    m = CreateFileMappingA(f, NULL, PAGE_READWRITE, 0, 0, NULL);
+    v = (BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+    c = (BYTE *)MapViewOfFile(m, FILE_MAP_COPY, 0, 0, 0);
+    line("a PAGE_READWRITE file section: FILE_MAP_READ view %s, FILE_MAP_COPY view %s", yesno(v != NULL),
+         yesno(c != NULL));
+    if (v == NULL || c == NULL) {
+        CloseHandle(m);
+        CloseHandle(f);
+        DeleteFileA(path);
+        return;
+    }
+
+    try_protect("the FILE_MAP_READ view", v, PAGE_READWRITE);
+    try_protect("the FILE_MAP_READ view", v, PAGE_WRITECOPY);
+    try_protect("the FILE_MAP_READ view", v, PAGE_EXECUTE_READWRITE);
+    try_protect("the FILE_MAP_READ view", v, PAGE_NOACCESS);
+    try_protect("the FILE_MAP_READ view", v, PAGE_READONLY);
+    state_of("the FILE_MAP_READ view", v);
+
+    state_of("the FILE_MAP_COPY view", c);
+    try_protect("the FILE_MAP_COPY view", c, PAGE_READWRITE);
+    state_of("then", c);
+    wrote = 0;
+    __try {
+        memset(c, 'B', 16);
+        wrote = 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        wrote = 0;
+    }
+    line("a write through the FILE_MAP_COPY view: %s", wrote ? "done" : "faulted");
+    state_of("then", c);
+    line("the FILE_MAP_READ view sees it: %s", yesno(v[0] == 'B'));
+    SetFilePointer(f, 0, NULL, FILE_BEGIN);
+    memset(head, 0, sizeof head);
+    ReadFile(f, head, sizeof head, &n, NULL);
+    line("the file changed: %s", yesno(n != sizeof head || head[0] != 'A'));
+
+    UnmapViewOfFile(c);
+    UnmapViewOfFile(v);
+    CloseHandle(m);
+    CloseHandle(f);
+    f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    memset(head, 0, sizeof head);
+    ReadFile(f, head, sizeof head, &n, NULL);
+    CloseHandle(f);
+    line("the file changed once every view is gone: %s", yesno(n != sizeof head || head[0] != 'A'));
+    DeleteFileA(path);
+}
+
 /* --- main ------------------------------------------------------------------ */
 
 static const section_t sections[] = {
     { "guardwalk", sec_guardwalk, F2KT_ALWAYS },
     { "commitview", sec_commitview, F2KT_ALWAYS },
     { "unmapimage", sec_unmapimage, F2KT_ALWAYS },
+    { "vmflags", sec_vmflags, F2KT_ALWAYS },
+    { "viewprot", sec_viewprot, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

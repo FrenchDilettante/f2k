@@ -1,9 +1,9 @@
 # F2K capture of threads (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:04.26
-threads F2KT-SOURCE-CRC=0x029BB371
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:15.04
+threads F2KT-SOURCE-CRC=0x08B13495
 >>> threads.exe create
 == create
 child returned its parameter doubled: exit code 42
@@ -173,6 +173,13 @@ GetThreadTimes(a handle with THREAD_TERMINATE alone): ret=0 err=5
 GetThreadTimes(NULL): ret=0 err=6
 GetThreadTimes(an event): ret=0 err=6
 GetThreadTimes(the current process's pseudo-handle): ret=0 err=6
+threads: done
+<<< exit code=0
+>>> threads.exe stacksize
+== stacksize
+CreateThread(stack 0x10000, flags 0): created err=-, 512 KiB of recursion ran
+CreateThread(stack 0x10000, STACK_SIZE_PARAM_IS_A_RESERVATION): created err=-, 512 KiB of recursion ran
+stackkid.exe (/STACK:0x400000), 3 MiB of recursion: main thread ran, a thread with stack 0 ran, a thread with stack 0x10000 ran
 threads: done
 <<< exit code=0
 >>> threads.exe mainexit

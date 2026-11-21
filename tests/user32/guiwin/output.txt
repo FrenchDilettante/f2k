@@ -1,9 +1,9 @@
 # F2K capture of guiwin (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:13:41.85
-guiwin F2KT-SOURCE-CRC=0xCE6591FA
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:10.99
+guiwin F2KT-SOURCE-CRC=0xD3F8E7DC
 >>> guiwin.exe create
 == create
 GetModuleHandleA(NULL): non-NULL yes err=-
@@ -41,5 +41,34 @@ LoadCursorA(IDC_ARROW): non-NULL yes err=-
 LoadCursorW(IDC_ARROW): non-NULL yes err=-
 the A and W cursors are the same: yes
 LoadCursorA(32767): NULL yes err=1813
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe refuse
+== refuse
+CreateWindowExA, let through: NULL no err=183
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE
+  IsWindow: yes
+CreateWindowExA, WM_NCCREATE answering 0: NULL yes err=-
+  the procedure received: WM_NCCREATE WM_NCDESTROY
+CreateWindowExW, WM_NCCREATE answering 0: NULL yes err=-
+  the procedure received: WM_NCCREATE WM_NCDESTROY
+CreateWindowExA, WM_CREATE answering -1: NULL yes err=-
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE WM_DESTROY WM_NCDESTROY
+CreateWindowExW, WM_CREATE answering -1: NULL yes err=-
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE WM_DESTROY WM_NCDESTROY
+CreateWindowExA, WM_CREATE answering -2: NULL no err=-
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE
+  IsWindow: yes
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe uniq
+== uniq
+the first window: non-NULL yes, its high word nonzero yes
+DestroyWindow(the first): ret=1 err=-
+a second window made at once: non-NULL yes, its high word nonzero yes
+  the first's handle no, its low word yes, its high word plus one yes
+IsWindow(the first, destroyed): no err=-
+DestroyWindow(the first, destroyed): ret=0 err=1400
+IsWindow(the second) after: yes err=-
 guiwin: done
 <<< exit code=0

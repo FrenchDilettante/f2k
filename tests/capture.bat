@@ -66,7 +66,7 @@ for %%F in (registry token) do call :listed advapi32 %%F
 call :cap_hellomd
 call :cap_crt
 for %%F in (seh fd wide process strings msvcrt cxxeh wmain) do call :listed crt %%F
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do call :script %%F
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe batforq batlong batedge batflow) do call :script %%F
 for %%F in (drvload) do call :listed ntoskrnl %%F
 
 echo Captured. Run "kernel32\runtime\runtime.exe console" in an interactive console
@@ -94,7 +94,7 @@ for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endses
 for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_DLL=crt
-for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
+for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe batforq batlong batedge batflow) do if /I "%%F"=="%~1" set F2KT_DLL=cmd
 for %%F in (drvload) do if /I "%%F"=="%~1" set F2KT_DLL=ntoskrnl
 if not defined F2KT_DLL (
     echo capture.bat: no such fixture %~1

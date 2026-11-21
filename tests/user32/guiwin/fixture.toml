@@ -1,7 +1,11 @@
 # guiwin: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors."
+description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors; a creation refused by WM_NCCREATE answering 0 or WM_CREATE answering -1 (refuse), and a destroyed handle against the next window made (uniq)."
 kind = "sectioned"
 gate = true
+
+[pending]
+refuse = "F2K is expected to create the window anyway, since a client procedure's WM_NCCREATE and WM_CREATE answers never reach win32k (no user-mode callback)"
+uniq = "F2K gives a slot's first handle the high word 0, its wildcard, so the destroyed handle is expected to name the next window (IsWindow TRUE, DestroyWindow destroying it)"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -22,4 +26,14 @@ destroy = [
 cursor = [
     "user32.LoadCursorA",
     "user32.LoadCursorW",
+]
+refuse = [
+    "user32.CreateWindowExA",
+    "user32.CreateWindowExW",
+    "user32.DefWindowProcA",
+]
+uniq = [
+    "user32.CreateWindowExA",
+    "user32.DestroyWindow",
+    "user32.IsWindow",
 ]

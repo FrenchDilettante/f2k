@@ -74,6 +74,11 @@
  *             U+4E00 into each, the bytes, and both read back by
  *             GetPrivateProfileStringW and GetPrivateProfileStringA; a
  *             write into a directory that does not exist
+ *   longint   GetPrivateProfileIntA/W over profnew.ini, written byte for
+ *             byte: a value of 40000 digits, a number followed by 40000
+ *             letters, 15 digits and junk, numbers past 32 bits and below
+ *             -2^31; the 40000-digit value through
+ *             GetPrivateProfileStringA/W into 16 units and a large buffer
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat profile):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% profile.c
@@ -821,6 +826,80 @@ static void sec_new(void)
     tidy();
 }
 
+/* --- longint ------------------------------------------------------- */
+
+/* profnew.ini written byte for byte: [Long] with a value of 40000
+ * digits, one of 40000 characters after a number, and numbers past 32
+ * bits; read back by GetPrivateProfileIntA/W and a short
+ * GetPrivateProfileStringA. */
+static BOOL write_long_file(void)
+{
+    static const char head[] = "[Long]\r\nDigits=";
+    static const char mid[] = "\r\nTail=12";
+    static const char rest[] = "\r\nFifteen=123456789012345xyz\r\nTwenty=12345678901234567890\r\n"
+                               "Over=4294967297\r\nNegative=-2147483649\r\n";
+    HANDLE f;
+    DWORD wrote;
+    BOOL ok;
+    int i;
+
+    f = CreateFileA(new_a, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        return FALSE;
+    }
+    for (i = 0; i < 40000; i++) {
+        big_a[i] = (char)('1' + i % 9);
+    }
+    ok = WriteFile(f, head, sizeof head - 1, &wrote, NULL) && WriteFile(f, big_a, 40000, &wrote, NULL);
+    for (i = 0; i < 40000; i++) {
+        big_a[i] = 'z';
+    }
+    ok = ok && WriteFile(f, mid, sizeof mid - 1, &wrote, NULL) && WriteFile(f, big_a, 40000, &wrote, NULL)
+        && WriteFile(f, rest, sizeof rest - 1, &wrote, NULL);
+    CloseHandle(f);
+    return ok;
+}
+
+static void sec_longint(void)
+{
+    static const char *keys_a[] = { "Digits", "Tail", "Fifteen", "Twenty", "Over", "Negative", NULL };
+    static const WCHAR *keys_w[] = { L"Digits", L"Tail", L"Fifteen", L"Twenty", L"Over", L"Negative", NULL };
+    char buf[32];
+    UINT r;
+    DWORD n;
+    int k;
+
+    tidy();
+    if (!write_long_file()) {
+        line("setup: profnew.ini not written");
+        tidy();
+        return;
+    }
+    line("profnew.ini: [Long] Digits= 40000 digits 123456789..., Tail=12 and 40000 z, Fifteen=123456789012345xyz, "
+         "Twenty=12345678901234567890, Over=4294967297, Negative=-2147483649");
+    for (k = 0; keys_a[k] != NULL; k++) {
+        arm();
+        r = GetPrivateProfileIntA("Long", keys_a[k], 99, new_a);
+        line("GetPrivateProfileIntA(\"Long\", \"%s\", 99): ret=%u err=%s", keys_a[k], r, le());
+    }
+    for (k = 0; keys_w[k] != NULL; k++) {
+        arm();
+        r = GetPrivateProfileIntW(L"Long", keys_w[k], 99, new_w);
+        line("GetPrivateProfileIntW(L\"Long\", L\"%s\", 99): ret=%u err=%s", ws(keys_w[k]), r, le());
+    }
+    memset(buf, '#', sizeof buf);
+    arm();
+    n = GetPrivateProfileStringA("Long", "Digits", "", buf, 16, new_a);
+    line("GetPrivateProfileStringA(\"Long\", \"Digits\") into 16: ret=%lu err=%s %s", n, le(), got_a(buf, n + 2, 16));
+    arm();
+    n = GetPrivateProfileStringA("Long", "Digits", "", big_a, sizeof big_a, new_a);
+    line("GetPrivateProfileStringA(\"Long\", \"Digits\") into 32768: ret=%lu err=%s", n, le());
+    arm();
+    n = GetPrivateProfileStringW(L"Long", L"Digits", L"", big_w, sizeof big_w / sizeof big_w[0], new_w);
+    line("GetPrivateProfileStringW(L\"Long\", L\"Digits\") into 16384: ret=%lu err=%s", n, le());
+    tidy();
+}
+
 static const section_t sections[] = {
     { "winini", sec_winini, F2KT_ALWAYS },
     { "read", sec_read, F2KT_ALWAYS },
@@ -828,6 +907,7 @@ static const section_t sections[] = {
     { "sections", sec_sections, F2KT_ALWAYS },
     { "write", sec_write, F2KT_ALWAYS },
     { "new", sec_new, F2KT_ALWAYS },
+    { "longint", sec_longint, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

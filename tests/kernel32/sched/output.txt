@@ -1,9 +1,9 @@
 # F2K capture of sched (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  2:33:20.88
-sched F2KT-SOURCE-CRC=0xBAECECDA
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:29.48
+sched F2KT-SOURCE-CRC=0xA167EC7D
 >>> sched.exe sleep
 == sleep
 Sleep(200) in [190, 300] ms: yes
@@ -83,5 +83,18 @@ sched: done
 >>> sched.exe starve
 == starve
 idle-priority thread starved by a spinner still ran: yes, within [1, 6] s yes
+sched: done
+<<< exit code=0
+>>> sched.exe pastdue
+== pastdue
+manual timer, absolute due time in 1601: set 1, wait WAIT_OBJECT_0, in [0, 100] ms yes
+manual timer, absolute due time 10 s ago: set 1, wait WAIT_OBJECT_0, in [0, 100] ms yes
+auto-reset timer, absolute due time an hour ago: set 1, wait WAIT_OBJECT_0, in [0, 100] ms yes
+ntdll exports NtWaitForSingleObject yes, NtDelayExecution yes
+NtWaitForSingleObject(an unsignaled event, absolute 1601): 0x00000102, in [0, 100] ms yes
+NtWaitForSingleObject(an unsignaled event, absolute 10 s ago): 0x00000102, in [0, 100] ms yes
+NtWaitForSingleObject(a signaled event, absolute 1601): 0x00000000
+NtDelayExecution(absolute 1601): 0x00000000, in [0, 100] ms yes
+NtDelayExecution(absolute 10 s ago): 0x00000000, in [0, 100] ms yes
 sched: done
 <<< exit code=0

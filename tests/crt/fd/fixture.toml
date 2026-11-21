@@ -1,9 +1,16 @@
 # fd: one test per block of the real-machine capture (output.txt); see tests/README.md. Built with
 # /MD, so it imports the C runtime from msvcrt.dll as cmd.exe does. Works in a SCRATCH directory
 # beside the program, which each section empties first.
-description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, fread, fwrite, fseek, ftell and clearerr in text and binary mode, fgetws and fputws, and _getch over queued console key events."
+description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _open_osfhandle and _get_osfhandle, _dup and _dup2 (fd 1 redirected into a file and restored), _close, _setmode's text and binary modes and _tell, _iob's streams with fprintf, printf and fflush, fgets in text and binary mode, fread, fwrite, fseek, ftell and clearerr in text and binary mode, fgetws and fputws, _getch over queued console key events; Ctrl-Z, \"a+\" and ftell in text mode, fopen's mode strings and _O_TEMPORARY, 40 streams at once with _flushall and _fcloseall, and fgets over console lines holding Ctrl-Z."
 kind = "sectioned"
 gate = true
+
+[pending]
+textmode = "F2K's msvcrt strips no trailing Ctrl-Z when \"a+\" or _open _O_RDWR | _O_TEXT opens a file, and its ftell adds a byte per buffered LF whatever the file holds, where msvcrt 6 recomputes it from the file's bytes"
+modes = "F2K ignores \"D\", \"T\", _O_TEMPORARY and _O_SHORT_LIVED, and skips an unknown mode letter where msvcrt 6 stops at it (\"rzb\" binary on F2K, text on Windows 2000)"
+nfiles = "F2K's msvcrt keeps its streams in _iob's 20 entries (its 18th fopen fails with EMFILE, where msvcrt 6 grows __piob to 512) and exports no _flushall or _fcloseall"
+conctrlz = "F2K's _read keeps a Ctrl-Z read from a device as data, and its console ReadFile does not answer a line starting with Ctrl-Z with 0 bytes"
+
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -121,5 +128,61 @@ getch = [
     "kernel32.CreateFileA",
     "kernel32.FlushConsoleInputBuffer",
     "kernel32.WriteConsoleInputW",
+    "kernel32.CloseHandle",
+]
+textmode = [
+    "msvcrt._open",
+    "msvcrt._read",
+    "msvcrt._close",
+    "msvcrt.fopen",
+    "msvcrt.fputs",
+    "msvcrt.fread",
+    "msvcrt.ftell",
+    "msvcrt.fclose",
+    "kernel32.CreateFileA",
+    "kernel32.WriteFile",
+    "kernel32.ReadFile",
+    "msvcrt.sprintf",
+]
+modes = [
+    "msvcrt.fopen",
+    "msvcrt.fread",
+    "msvcrt.fwrite",
+    "msvcrt.fseek",
+    "msvcrt.fputs",
+    "msvcrt.fclose",
+    "msvcrt._open",
+    "msvcrt._close",
+    "msvcrt._errno",
+    "kernel32.GetFileAttributesA",
+    "kernel32.DeleteFileA",
+    "kernel32.CreateFileA",
+    "kernel32.ReadFile",
+    "msvcrt.sprintf",
+]
+nfiles = [
+    "msvcrt.fopen",
+    "msvcrt.fputs",
+    "msvcrt.fclose",
+    "msvcrt._flushall",
+    "msvcrt._fcloseall",
+    "msvcrt._errno",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.ReadFile",
+    "msvcrt.sprintf",
+]
+conctrlz = [
+    "msvcrt._open_osfhandle",
+    "msvcrt._fdopen",
+    "msvcrt.fgets",
+    "msvcrt.clearerr",
+    "msvcrt.fclose",
+    "kernel32.CreateFileA",
+    "kernel32.GetConsoleMode",
+    "kernel32.SetConsoleMode",
+    "kernel32.FlushConsoleInputBuffer",
+    "kernel32.WriteConsoleInputW",
+    "kernel32.ReadFile",
     "kernel32.CloseHandle",
 ]

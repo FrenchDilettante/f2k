@@ -49,6 +49,24 @@
  *              Escape, a lone Shift, an arrow key and a function key
  *              (two codes each); each _getch only after _kbhit says a
  *              key is waiting, so nothing ever blocks
+ *   textmode   _read stopping at Ctrl-Z in text mode (not in binary);
+ *              a file ending in Ctrl-Z appended to through "a", "a+"
+ *              and "a+b", and opened by _open _O_RDWR and _O_WRONLY in
+ *              text mode (which strip the Ctrl-Z); ftell after each
+ *              one-byte fread over CR LF, bare LF and Ctrl-Z files
+ *   modes      fopen's mode strings: "rt", "rb", "rtb", "rbt", an
+ *              unknown letter ("rzb"), "r+b", "q" and "" (NULL, errno),
+ *              "wb+" written and read back; "D" and _O_TEMPORARY
+ *              deleting the file at its close, "T" and _O_SHORT_LIVED
+ *              keeping it
+ *   nfiles     fopen of 40 files at once (how many succeed), then
+ *              _flushall's and _fcloseall's counts (reached through
+ *              GetProcAddress) and the bytes they flushed
+ *   conctrlz   fgets over a CONIN$ stream in text mode, its lines
+ *              queued first (WriteConsoleInputW) in line-input mode:
+ *              "abc" then Ctrl-Z, a line holding Ctrl-Z alone, then
+ *              "xy", two spare lines after so no read waits for the
+ *              keyboard
  *
  * stdout's buffering depends on what it is (a console: flushed at each
  * call; a file, as on the real machine: when full): the stdio section
@@ -69,6 +87,8 @@
 #include <io.h>
 #include <fcntl.h>
 #include <conio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 static char base[MAX_PATH];         /* SCRATCH\ under the image's directory */
 
@@ -872,6 +892,322 @@ static void sec_getch(void)
     CloseHandle(in);
 }
 
+/* --- textmode ------------------------------------------------------ */
+
+/* Whether a file under SCRATCH exists. */
+static const char *exists(const char *rel)
+{
+    return yesno(GetFileAttributesA(at(rel)) != INVALID_FILE_ATTRIBUTES);
+}
+
+/* ftell after each one-byte fread of a file holding `bytes`, opened in
+   `mode`, to the end of the file and one read past it. */
+static void ftell_trace(const char *what, const char *bytes, int n, const char *mode)
+{
+    char trace[256];
+    char c;
+    int len = 0;
+    int i;
+    FILE *f;
+
+    make_file(STREAM_FILE, bytes, n);
+    f = open_file(mode);
+    if (f == NULL) {
+        return;
+    }
+    for (i = 0; i < 16; i++) {
+        size_t got = fread(&c, 1, 1, f);
+
+        len += sprintf(trace + len, " %ld", ftell(f));
+        if (got == 0) {
+            break;
+        }
+    }
+    fclose(f);
+    line("ftell %s \"%s\":%s", what, mode, trace);
+}
+
+/* `mode`'s stream appending "def" to a file holding "abc" and Ctrl-Z. */
+static void append_ctrlz(const char *mode)
+{
+    FILE *f;
+
+    make_file(STREAM_FILE, "abc\x1A", 4);
+    f = open_file(mode);
+    if (f == NULL) {
+        return;
+    }
+    fputs("def", f);
+    fclose(f);
+    on_disk(mode);
+}
+
+static void sec_textmode(void)
+{
+    char buf[16];
+    int fd;
+    int r1, r2;
+
+    scratch();
+
+    /* _read in text mode stops at Ctrl-Z, and stays there. */
+    make_file(STREAM_FILE, "ab\x1A" "cd", 5);
+    fd = _open(at(STREAM_FILE), _O_RDONLY | _O_TEXT);
+    r1 = _read(fd, buf, sizeof buf);
+    r2 = _read(fd, buf + 8, 8);
+    line("_read _O_TEXT of \"ab^Zcd\": %d [%s], then %d", r1, esc(buf, r1 > 0 ? r1 : 0), r2);
+    _close(fd);
+    fd = _open(at(STREAM_FILE), _O_RDONLY | _O_BINARY);
+    r1 = _read(fd, buf, sizeof buf);
+    line("_read _O_BINARY of \"ab^Zcd\": %d [%s]", r1, esc(buf, r1 > 0 ? r1 : 0));
+    _close(fd);
+
+    /* A trailing Ctrl-Z, and the modes that open for appending. */
+    append_ctrlz("a");
+    append_ctrlz("a+");
+    append_ctrlz("a+b");
+    make_file(STREAM_FILE, "abc\x1A", 4);
+    fd = _open(at(STREAM_FILE), _O_RDWR | _O_TEXT);
+    _close(fd);
+    on_disk("_open _O_RDWR | _O_TEXT, closed");
+    make_file(STREAM_FILE, "abc\x1A", 4);
+    fd = _open(at(STREAM_FILE), _O_WRONLY | _O_TEXT);
+    _close(fd);
+    on_disk("_open _O_WRONLY | _O_TEXT, closed");
+
+    /* ftell in text mode: CR LF, bare LF, Ctrl-Z; and binary. */
+    ftell_trace("CR LF", "ab\r\ncd\r\n", 8, "r");
+    ftell_trace("bare LF", "a\nb\nc\n", 6, "r");
+    ftell_trace("Ctrl-Z", "a\r\nb\x1A" "cd", 7, "r");
+    ftell_trace("CR LF", "ab\r\ncd\r\n", 8, "rb");
+}
+
+/* --- modes --------------------------------------------------------- */
+
+/* "ab\r\ncd" read whole through fopen in `mode`. */
+static void read_mode(const char *mode)
+{
+    char buf[32];
+    size_t n;
+    FILE *f;
+
+    make_file(STREAM_FILE, "ab\r\ncd", 6);
+    errno = 0;
+    f = fopen(at(STREAM_FILE), mode);
+    if (f == NULL) {
+        line("fopen(\"%s\"): NULL errno %d", mode, errno);
+        return;
+    }
+    n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    line("fopen(\"%s\") reads [%s]", mode, esc(buf, (int)n));
+}
+
+static void sec_modes(void)
+{
+    char buf[32];
+    size_t n;
+    FILE *f;
+    int fd;
+
+    scratch();
+    read_mode("r");
+    read_mode("rt");
+    read_mode("rb");
+    read_mode("rtb");
+    read_mode("rbt");
+    read_mode("rzb");
+    read_mode("r+b");
+    read_mode("q");
+    read_mode("");
+
+    DeleteFileA(at(STREAM_FILE));
+    f = fopen(at(STREAM_FILE), "wb+");
+    if (f != NULL) {
+        fwrite("a\nb", 1, 3, f);
+        fseek(f, 0, SEEK_SET);
+        n = fread(buf, 1, sizeof buf, f);
+        line("\"wb+\": written then read back [%s]", esc(buf, (int)n));
+        fclose(f);
+        on_disk("\"wb+\" on disk");
+    }
+
+    /* "D" and _O_TEMPORARY delete the file at its last close; "T" and
+       _O_SHORT_LIVED keep it. */
+    f = fopen(at("d.txt"), "w+D");
+    line("fopen(\"w+D\"): %s, the file while open: %s", yesno(f != NULL), exists("d.txt"));
+    if (f != NULL) {
+        fputs("x", f);
+        fclose(f);
+    }
+    line("\"w+D\" after fclose: the file exists %s", exists("d.txt"));
+    f = fopen(at("t.txt"), "w+T");
+    if (f != NULL) {
+        fputs("x", f);
+        fclose(f);
+    }
+    line("fopen(\"w+T\"): %s, after fclose: the file exists %s", yesno(f != NULL), exists("t.txt"));
+    fd = _open(at("o.txt"), _O_CREAT | _O_RDWR | _O_TEMPORARY, _S_IREAD | _S_IWRITE);
+    line("_open(_O_TEMPORARY): %s, the file while open: %s", yesno(fd != -1), exists("o.txt"));
+    _close(fd);
+    line("_O_TEMPORARY after _close: the file exists %s", exists("o.txt"));
+    fd = _open(at("s.txt"), _O_CREAT | _O_RDWR | _O_SHORT_LIVED, _S_IREAD | _S_IWRITE);
+    _close(fd);
+    line("_open(_O_SHORT_LIVED): %s, after _close: the file exists %s", yesno(fd != -1),
+         exists("s.txt"));
+}
+
+/* --- nfiles -------------------------------------------------------- */
+
+/* _flushall and _fcloseall, through GetProcAddress: the program still
+   loads where msvcrt.dll lacks them. */
+typedef int (__cdecl *count_fn)(void);
+
+#define NFILES 40
+
+static void sec_nfiles(void)
+{
+    FILE *files[NFILES];
+    char name[16];
+    count_fn p_flushall;
+    count_fn p_fcloseall;
+    int opened_ok = 0;
+    int first_failure = -1;
+    int failure_errno = 0;
+    int i;
+
+    scratch();
+    p_flushall = (count_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "_flushall");
+    p_fcloseall = (count_fn)GetProcAddress(GetModuleHandleA("msvcrt.dll"), "_fcloseall");
+    for (i = 0; i < NFILES; i++) {
+        sprintf(name, "n%02d.txt", i);
+        errno = 0;
+        files[i] = fopen(at(name), "w");
+        if (files[i] != NULL) {
+            opened_ok++;
+            fputs("x", files[i]);
+        } else if (first_failure < 0) {
+            first_failure = i + 1;
+            failure_errno = errno;
+        }
+    }
+    line("fopen of %d files: %d opened, first failure %d errno %d", NFILES, opened_ok, first_failure,
+         failure_errno);
+    if (p_flushall == NULL || p_fcloseall == NULL) {
+        line("_flushall: %s, _fcloseall: %s", p_flushall ? "yes" : "no export",
+             p_fcloseall ? "yes" : "no export");
+        for (i = 0; i < NFILES; i++) {
+            if (files[i] != NULL) {
+                fclose(files[i]);
+            }
+        }
+        return;
+    }
+    line("n00.txt before _flushall: [%s]", contents("n00.txt"));
+    line("_flushall: %d", p_flushall());
+    line("n00.txt and n39.txt after: [%s] [%s]", contents("n00.txt"), contents("n39.txt"));
+    line("_fcloseall: %d", p_fcloseall());
+    line("_fcloseall again: %d", p_fcloseall());
+    files[0] = fopen(at("n00.txt"), "r");
+    line("fopen after _fcloseall: %s", yesno(files[0] != NULL));
+    if (files[0] != NULL) {
+        fclose(files[0]);
+    }
+}
+
+/* --- conctrlz ------------------------------------------------------ */
+
+/* Lines typed at the console, queued on its input (WriteConsoleInputW)
+   before anything reads them: "abc^Z", "^Z", "xy", and two spare lines
+   so no read ever waits for the keyboard. */
+static int queue_line(INPUT_RECORD *rec, int n, const char *text)
+{
+    static const WORD scans[26] = {
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32,
+        0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
+    };
+    int i;
+
+    for (i = 0; text[i] != 0; i++) {
+        if (text[i] == '^') {
+            key(&rec[n++], TRUE, VK_CONTROL, 0x1D, 0, LEFT_CTRL_PRESSED);
+            key(&rec[n++], TRUE, 0x5A, 0x2C, 0x1A, LEFT_CTRL_PRESSED);
+            key(&rec[n++], FALSE, 0x5A, 0x2C, 0x1A, LEFT_CTRL_PRESSED);
+            key(&rec[n++], FALSE, VK_CONTROL, 0x1D, 0, 0);
+        } else {
+            WORD vk = (WORD)(text[i] - 'a' + 'A');
+            WORD scan = scans[text[i] - 'a'];
+
+            key(&rec[n++], TRUE, vk, scan, (WCHAR)text[i], 0);
+            key(&rec[n++], FALSE, vk, scan, (WCHAR)text[i], 0);
+        }
+    }
+    key(&rec[n++], TRUE, VK_RETURN, 0x1C, L'\r', 0);
+    key(&rec[n++], FALSE, VK_RETURN, 0x1C, L'\r', 0);
+    return n;
+}
+
+/* fgets over a console stream, as printed. */
+static void console_fgets(const char *what, FILE *f)
+{
+    char buf[32];
+    char *r;
+    int i;
+
+    for (i = 0; i < (int)sizeof buf; i++) {
+        buf[i] = 0;
+    }
+    r = fgets(buf, sizeof buf, f);
+    line("%s: %s [%s], feof %s", what, r != NULL ? "a line" : "NULL", esc(buf, str_len(buf)),
+         yesno(feof(f) != 0));
+}
+
+static void sec_conctrlz(void)
+{
+    INPUT_RECORD rec[96];
+    HANDLE in;
+    HANDLE flush;
+    DWORD mode = 0;
+    DWORD written = 0;
+    FILE *f;
+    int fd;
+    int n = 0;
+
+    in = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                     OPEN_EXISTING, 0, NULL);
+    line("CreateFileA(CONIN$): %s", yesno(in != INVALID_HANDLE_VALUE));
+    if (in == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    flush = CreateFileA("CONIN$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        NULL, OPEN_EXISTING, 0, NULL);
+    GetConsoleMode(in, &mode);
+    SetConsoleMode(in, ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT);
+    FlushConsoleInputBuffer(in);
+    n = queue_line(rec, n, "abc^");
+    n = queue_line(rec, n, "^");
+    n = queue_line(rec, n, "xy");
+    n = queue_line(rec, n, "spare");
+    n = queue_line(rec, n, "spare");
+    WriteConsoleInputW(in, rec, (DWORD)n, &written);
+    line("queued: %s", yesno(written == (DWORD)n));
+
+    fd = _open_osfhandle((long)in, _O_RDONLY | _O_TEXT);
+    f = fd != -1 ? _fdopen(fd, "r") : NULL;
+    if (f == NULL) {
+        line("_fdopen over CONIN$: failed");
+        CloseHandle(in);
+    } else {
+        console_fgets("fgets \"abc^Z\", \"^Z\"", f);
+        clearerr(f);
+        console_fgets("clearerr, fgets \"xy\"", f);
+        fclose(f);
+    }
+    SetConsoleMode(flush, mode);
+    FlushConsoleInputBuffer(flush);
+    CloseHandle(flush);
+}
+
 static const section_t sections[] = {
     { "osfhandle", sec_osfhandle, F2KT_ALWAYS },
     { "dup", sec_dup, F2KT_ALWAYS },
@@ -881,6 +1217,10 @@ static const section_t sections[] = {
     { "streams", sec_streams, F2KT_ALWAYS },
     { "wstreams", sec_wstreams, F2KT_ALWAYS },
     { "getch", sec_getch, F2KT_ALWAYS },
+    { "textmode", sec_textmode, F2KT_ALWAYS },
+    { "modes", sec_modes, F2KT_ALWAYS },
+    { "nfiles", sec_nfiles, F2KT_ALWAYS },
+    { "conctrlz", sec_conctrlz, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

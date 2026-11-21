@@ -3,12 +3,19 @@
 # control prints by its id, its position as its mapped template rectangle less its window's; only
 # the units block prints base units in pixels (the capture taken at 96 DPI). Every dialog and
 # message box ends itself: a posted command and a timer, never a person.
-description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; a template placed at -32768, -32768 (0x8000, CW_USEDEFAULT): the dialog's size and whether it lands on the screen; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer."
+description = "dialog - the dialog manager over the program's own templates (dialog.rc, DIALOG and DIALOGEX): CreateDialogParamW/A and the controls each template becomes (classes, ids, styles, text, positions against MapDialogRect), the messages its procedure receives; a template placed at -32768, -32768 (0x8000, CW_USEDEFAULT): the dialog's size and whether it lands on the screen; GetDlgItem, GetDlgCtrlID, SetDlgItemTextW/A, GetDlgItemTextW/A and SendDlgItemMessageW; SetDlgItemInt and GetDlgItemInt; CheckDlgButton, IsDlgButtonChecked and CheckRadioButton; DialogBoxParamW/A and EndDialog's value, ended by a posted command; GetDialogBaseUnits and MapDialogRect; IsDialogMessageW/A over posted Tab, Shift+Tab, Enter and Esc; MessageBoxW/A ended by a timer. Then a radio group's WS_TABSTOP after BM_SETCHECK and CheckRadioButton, and Tab, Shift+Tab and Down into it; Tab, arrows and mnemonics through a DS_CONTROL child dialog nested in another; and DS_NOFAILCREATE with a control of an unregistered class."
 kind = "sectioned"
 gate = true
 # The dialog font decides the create block's positions and the units block's units: the batch
 # boots with the system's fonts, "MS Shell Dlg" realised as MS Sans Serif.
 system_fonts = true
+
+[pending]
+# Sections added ahead of the next real-machine capture: dialog.exe is to be rebuilt (tests/build.bat
+# dialog) and the blocks captured (tests/capture.bat dialog).
+radiotab = "F2K's BM_SETCHECK on a radio button only stores the check: it never moves WS_TABSTOP to the checked radio, so Tab lands on the group's first radio, checks it and sends BN_CLICKED"
+nested = "F2K's Tab, arrows and mnemonics walk the dialog's direct children only, never into a DS_CONTROL / WS_EX_CONTROLPARENT child dialog"
+nofail = "F2K fails the whole dialog when one control's class is unknown, DS_NOFAILCREATE or not"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -65,6 +72,24 @@ keys = [
 msgbox = [
     "user32.MessageBoxW",
     "user32.MessageBoxA",
+]
+
+radiotab = [
+    "user32.SendDlgItemMessageW",
+    "user32.CheckRadioButton",
+    "user32.IsDlgButtonChecked",
+    "user32.IsDialogMessageW",
+    "user32.GetFocus",
+]
+nested = [
+    "user32.CreateDialogParamW",
+    "user32.IsDialogMessageW",
+    "user32.GetFocus",
+]
+nofail = [
+    "user32.CreateDialogParamW",
+    "user32.DialogBoxParamW",
+    "user32.GetDlgItem",
 ]
 
 [masks]

@@ -3,9 +3,19 @@
 # LOCALE_USER_DEFAULT, LOCALE_SYSTEM_DEFAULT and 0x0409; the machine's default LCIDs print only as
 # whether they are 0x0409. The code page counts are the machine's own NLS registry's; the language
 # groups beyond Western Europe are asked only whether they are supported, not installed.
-description = "locale - kernel32's locale formatting and queries: GetDateFormatW/A and GetTimeFormatW/A with the DATE_ and TIME_ flags, picture strings, the buffer-size queries and their errors; GetNumberFormatW/A with the locales' own formats and NUMBERFMT's fields, negatives, rounding and strings that are not numbers; FoldStringW/A's MAP_ flags; EnumSystemCodePagesW/A under CP_INSTALLED and CP_SUPPORTED; and IsValidLanguageGroup."
+description = "locale - kernel32's locale formatting and queries: GetDateFormatW/A and GetTimeFormatW/A with the DATE_ and TIME_ flags, picture strings, the buffer-size queries and their errors; GetNumberFormatW/A with the locales' own formats and NUMBERFMT's fields, negatives, rounding and strings that are not numbers; FoldStringW/A's MAP_ flags; EnumSystemCodePagesW/A under CP_INSTALLED and CP_SUPPORTED; IsValidLanguageGroup; conversions through 850, 28591, UTF-7 and CP_SYMBOL, best fit into 1252 and 437, UTF-8's invalid sequences; LCMapString's sort keys and other maps; a second locale (0x040C) through IsValidLocale, SetThreadLocale and GetLocaleInfo; and a NULL source to LCMapString and GetStringType."
 kind = "sectioned"
 gate = true
+
+[pending]
+# Written ahead of the VM trip: output.txt holds placeholder blocks until locale.exe is rebuilt
+# (tests/build.bat locale) and the blocks captured (tests/capture.bat locale).
+cpconv = "F2K converts only 1252, 437 and UTF-8, while IsValidCodePage and GetCPInfo take 850, 28591, 65000 and 42: their conversions fail with ERROR_INVALID_PARAMETER"
+bestfit = "F2K's best fit covers only U+0100-017F, and it ignores WC_COMPOSITECHECK and MB_COMPOSITE and accepts their bad combinations"
+utf8err = "F2K's UTF-8 decoder takes F5-F7 lead bytes as bogus surrogates"
+lcmap = "F2K's LCMapString maps case alone (LCMAP_SORTKEY, LCMAP_BYTEREV, the width maps and the NORM_ flags give ERROR_INVALID_FLAGS), and its A form ignores the LCID"
+locales = "F2K's GetLocaleInfo answers 0x0409 alone, while SetThreadLocale takes 0x040C and IsValidLocale calls it unsupported"
+nullsrc = "F2K's LCMapString and GetStringType read a NULL source (a fault), where Windows 2000 answers ERROR_INVALID_PARAMETER"
 
 [masks]
 # CP_INSTALLED's count follows the language groups installed on the machine: both counts print as
@@ -21,3 +31,22 @@ number = ["kernel32.GetNumberFormatW", "kernel32.GetNumberFormatA"]
 fold = ["kernel32.FoldStringW", "kernel32.FoldStringA"]
 codepages = ["kernel32.EnumSystemCodePagesW", "kernel32.EnumSystemCodePagesA", "kernel32.IsValidCodePage"]
 langgroup = ["kernel32.IsValidLanguageGroup"]
+cpconv = ["kernel32.IsValidCodePage", "kernel32.GetCPInfo", "kernel32.MultiByteToWideChar", "kernel32.WideCharToMultiByte"]
+bestfit = ["kernel32.WideCharToMultiByte", "kernel32.MultiByteToWideChar"]
+utf8err = ["kernel32.MultiByteToWideChar", "kernel32.WideCharToMultiByte"]
+lcmap = ["kernel32.LCMapStringW", "kernel32.LCMapStringA"]
+locales = [
+    "kernel32.IsValidLocale",
+    "kernel32.SetThreadLocale",
+    "kernel32.GetThreadLocale",
+    "kernel32.GetLocaleInfoW",
+    "kernel32.GetLocaleInfoA",
+]
+nullsrc = [
+    "kernel32.LCMapStringW",
+    "kernel32.LCMapStringA",
+    "kernel32.GetStringTypeW",
+    "kernel32.GetStringTypeA",
+    "kernel32.GetStringTypeExW",
+    "kernel32.GetStringTypeExA",
+]

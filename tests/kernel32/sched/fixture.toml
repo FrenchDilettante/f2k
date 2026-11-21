@@ -1,10 +1,14 @@
 # sched: one test per block of the real-machine capture (output.txt, with the real-hardware yield
 # block in overrides.txt); see tests/README.md. The starvation section alone takes about six
 # seconds, hence the longer timeout.
-description = "sched - time and scheduling, as verdicts (sched.c, /MT): sleeps and timed waits in bands, the clocks, waitable timers, round-robin, preemption, yielding, the wake boost, suspension, and the starvation boost."
+description = "sched - time and scheduling, as verdicts (sched.c, /MT): sleeps and timed waits in bands, the clocks, waitable timers, round-robin, preemption, yielding, the wake boost, suspension, the starvation boost, and absolute times already past (pastdue)."
 kind = "sectioned"
 gate = true
 timeout = 30
+[pending]
+# Not captured yet: its output.txt block is a placeholder, which tests/capture.bat sched replaces once
+# tests/build.bat sched has rebuilt sched.exe.
+
 [masks]
 # SwitchToThread hands the processor to any ready thread on it, another process's included:
 # whether ours ran first varies between runs on the real machine.
@@ -111,4 +115,16 @@ clock = [
     "kernel32.QueryPerformanceCounter",
     "kernel32.QueryPerformanceFrequency",
     "ntdll.NtQueryPerformanceCounter",
+]
+pastdue = [
+    "kernel32.CreateWaitableTimerA",
+    "kernel32.SetWaitableTimer",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetSystemTimeAsFileTime",
+    "kernel32.GetTickCount",
+    "kernel32.CreateEventA",
+    "kernel32.SetEvent",
+    "ntdll.NtWaitForSingleObject",
+    "ntdll.NtDelayExecution",
+    "ntdll.NtSetTimer",
 ]

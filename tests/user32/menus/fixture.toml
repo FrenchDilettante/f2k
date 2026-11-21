@@ -19,15 +19,10 @@ gate = true
 keyloop = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends"
 keyesc = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; and Esc on the bar, once the popup is closed, goes to the window as WM_MENUCHAR where Windows 2000 ends the loop"
 keychar = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; Alt then F selects File twice (two WM_MENUSELECT); Enter on a grayed item goes to the window as WM_MENUCHAR where Windows 2000 ends the loop, and so does Esc on the bar"
-capicon = "F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
-
-[skip]
-underline = "a broken measurement: it finds no menu text ink even on Windows 2000, so it shows nothing of the access keys' underlines"
+underline = "rewritten to measure the bar's rows with Alt pressed (SendInput) since its first capture found no ink; F2K's menu bar is expected to draw the access keys' underlines whatever the keyboard cues, never hiding them until Alt is pressed"
+capicon = "its title line now scans the caption's rows above the bottom separator; F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
 [masks]
-# A fixture bug: "the title" scans the caption's bottom separator row, not the title's text, so its
-# column says nothing of the title's place.
-capicon = ["  the title: first column *"]
 # A fixture bug: an item that opens a popup (AppendMenu's MF_POPUP) has the popup's handle for its
 # id, which GetMenuItemInfoW's MIIM_ID answers and the capture prints: the real machine's handle
 # value (13173255), where the section prints no other handle.
@@ -210,4 +205,15 @@ capicon = [
     "user32.GetClassLongW",
     "user32.SendMessageW",
     "user32.GetSystemMetrics",
+]
+underline = [
+    "user32.SystemParametersInfoW",
+    "user32.SetForegroundWindow",
+    "user32.SendInput",
+    "user32.DefWindowProcW",
+    "user32.GetMenuItemRect",
+    "user32.SendMessageW",
+    "user32.DrawMenuBar",
+    "user32.GetWindowDC",
+    "gdi32.GetPixel",
 ]

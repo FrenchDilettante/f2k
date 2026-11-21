@@ -1,0 +1,68 @@
+# F2K capture of batforq (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:55.33
+>>> cmd /c batforq.cmd
+== for over file names
+[a&b.txt]
+[c (1).txt]
+[d^e.txt]
+[f%g.txt]
+[c (1).txt]
+[a&b.txt] 
+[a&b] [.txt]
+exists: [c (1).txt]
+exists: [a&b.txt]
+files: 4
+== for /f over lines
+[a & echo INJECTED]
+[b | echo INJECTED]
+[c > batforq.out]
+[d < batforq.txt]
+[e (f) g )]
+[h ^ i ^& echo INJECTED]
+[")" j & echo INJECTED]
+[k %PATH% l]
+[a & echo INJECTED]
+[b | echo INJECTED]
+[c > batforq.out]
+[d < batforq.txt]
+[e (f) g )]
+[h ^ i ^& echo INJECTED]
+[")" j & echo INJECTED]
+[k %PATH% l]
+[a & echo INJECTED]
+[b | echo INJECTED]
+[c > batforq.out]
+[d < batforq.txt]
+[e (f) g )]
+[h ^ i ^& echo INJECTED]
+[")" j & echo INJECTED]
+[k %PATH% l]
+== for /f over fields
+[a & echo INJECTED] [b | echo INJECTED]
+[(c)] [d)]
+[e > batforq.out] [f ^ g]
+["h & i"] [j & echo INJECTED]
+[a & echo INJECTED] [b | echo INJECTED]
+[(c)] [d)]
+[e > batforq.out] [f ^ g]
+["h & i"] [j & echo INJECTED]
+[x ] [ echo INJECTED & y]
+nested: [x]
+nested: [y]
+== if in a for's body
+an empty value: not x
+after the loop
+exit code 0
+a b: not x
+after the loop
+exit code 0
+quoted: equal
+unquoted: not x
+after the loop
+exit code 0
+== what ran
+batforq.out: none
+<<< exit code=0

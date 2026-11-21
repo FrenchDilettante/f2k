@@ -1,8 +1,14 @@
 # registry: one test per block of the real-machine capture (output.txt); see tests/README.md. It
 # works under HKEY_CURRENT_USER\Software\F2K alone, deleting that tree at each pass's start and end.
-description = "registry - the registry calls cmd.exe imports, W and A: RegCreateKeyEx and its dispositions, RegOpenKeyEx and RegOpenKey, RegCloseKey, RegSetValueEx and RegQueryValueEx over the value types and buffer sizes, RegSetValue and RegQueryValue's default values, RegEnumKey's order and buffers, RegDeleteKey and a deleted key's open handle, under HKCU\\Software\\F2K."
+description = "registry - the registry calls cmd.exe imports, W and A: RegCreateKeyEx and its dispositions, RegOpenKeyEx and RegOpenKey, RegCloseKey, RegSetValueEx and RegQueryValueEx over the value types and buffer sizes, RegSetValue and RegQueryValue's default values, RegEnumKey's order and buffers, RegDeleteKey and a deleted key's open handle; RegEnumKeyEx, RegEnumValue and RegQueryInfoKey with their short buffers and ERROR_NO_MORE_ITEMS, under HKCU\\Software\\F2K."
 kind = "sectioned"
 gate = true
+
+[pending]
+# Written ahead of the VM trip: output.txt holds placeholder blocks until registry.exe is rebuilt
+# (tests/build.bat registry) and the blocks captured (tests/capture.bat registry).
+enumex = "F2K's advapi32 does not export RegEnumKeyExW or RegEnumKeyExA"
+enumvalue = "F2K's advapi32 does not export RegEnumValueW, RegEnumValueA, RegQueryInfoKeyW or RegQueryInfoKeyA"
 
 [masks]
 # A missing value's query leaves whatever advapi32 had at hand in the type: stack contents, not an
@@ -123,4 +129,28 @@ delete = [
     "advapi32.RegEnumKeyA",
     "advapi32.RegCloseKey",
     "ntdll.NtDeleteKey",
+]
+enumex = [
+    "advapi32.RegEnumKeyExW",
+    "advapi32.RegEnumKeyExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtEnumerateKey",
+]
+enumvalue = [
+    "advapi32.RegEnumValueW",
+    "advapi32.RegEnumValueA",
+    "advapi32.RegQueryInfoKeyW",
+    "advapi32.RegQueryInfoKeyA",
+    "advapi32.RegSetValueExW",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegOpenKeyExW",
+    "advapi32.RegEnumKeyW",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.RegCloseKey",
+    "ntdll.NtEnumerateValueKey",
+    "ntdll.NtQueryKey",
 ]

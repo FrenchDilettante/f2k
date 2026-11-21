@@ -1,9 +1,9 @@
 # F2K capture of fd (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 10:25:58.48
-fd F2KT-SOURCE-CRC=0x05324A5C
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:52.04
+fd F2KT-SOURCE-CRC=0xFFDE36F0
 >>> fd.exe osfhandle
 == osfhandle
 CreateFileA: yes
@@ -188,5 +188,60 @@ FlushConsoleInputBuffer: ret=1 err=-
 WriteConsoleInputW(16 key events): ret=1 written=16 err=-
 _getch: 0x61 0x5A 0x31 0x0D 0x1B 0xE0 0x48 0x00 0x3B
 _getch calls: 9, then _kbhit: 0
+fd: done
+<<< exit code=0
+>>> fd.exe textmode
+== textmode
+_read _O_TEXT of "ab^Zcd": 2 [ab], then 0
+_read _O_BINARY of "ab^Zcd": 5 [ab\x1Acd]
+a: 7 bytes [abc\x1Adef]
+a+: 6 bytes [abcdef]
+a+b: 7 bytes [abc\x1Adef]
+_open _O_RDWR | _O_TEXT, closed: 3 bytes [abc]
+_open _O_WRONLY | _O_TEXT, closed: 4 bytes [abc\x1A]
+ftell CR LF "r": 1 2 4 5 6 8 8
+ftell bare LF "r": -2 0 1 3 4 6 6
+ftell Ctrl-Z "r": 3 5 7 7
+ftell CR LF "rb": 1 2 3 4 5 6 7 8 8
+fd: done
+<<< exit code=0
+>>> fd.exe modes
+== modes
+fopen("r") reads [ab\ncd]
+fopen("rt") reads [ab\ncd]
+fopen("rb") reads [ab\r\ncd]
+fopen("rtb") reads [ab\ncd]
+fopen("rbt") reads [ab\r\ncd]
+fopen("rzb") reads [ab\ncd]
+fopen("r+b") reads [ab\r\ncd]
+fopen("q"): NULL errno 0
+fopen(""): NULL errno 0
+"wb+": written then read back [a\nb]
+"wb+" on disk: 3 bytes [a\nb]
+fopen("w+D"): yes, the file while open: yes
+"w+D" after fclose: the file exists no
+fopen("w+T"): yes, after fclose: the file exists yes
+_open(_O_TEMPORARY): yes, the file while open: yes
+_O_TEMPORARY after _close: the file exists no
+_open(_O_SHORT_LIVED): yes, after _close: the file exists yes
+fd: done
+<<< exit code=0
+>>> fd.exe nfiles
+== nfiles
+fopen of 40 files: 40 opened, first failure -1 errno 0
+n00.txt before _flushall: []
+_flushall: 43
+n00.txt and n39.txt after: [x] [x]
+_fcloseall: 40
+_fcloseall again: 0
+fopen after _fcloseall: yes
+fd: done
+<<< exit code=0
+>>> fd.exe conctrlz
+== conctrlz
+CreateFileA(CONIN$): yes
+queued: yes
+fgets "abc^Z", "^Z": a line [abc], feof yes
+clearerr, fgets "xy": a line [xy\n], feof no
 fd: done
 <<< exit code=0

@@ -57,6 +57,14 @@
  *              relations. GetThreadTimes is reached through
  *              GetProcAddress, so the program still loads where kernel32
  *              lacks it.
+ *   stacksize  CreateThread with stack size 0x10000, with flags 0 and with
+ *              Windows XP's STACK_SIZE_PARAM_IS_A_RESERVATION (0x10000):
+ *              whether each thread ran 512 KiB of recursion or overflowed
+ *              (Windows 2000 takes the size as the commit, the image's 1 MiB
+ *              as the reservation). Then the companion stackkid.exe, linked
+ *              with /STACK:0x400000: 3 MiB of recursion on its main thread
+ *              and on threads with stack size 0 and 0x10000, from its exit
+ *              code. Verdicts, never sizes.
  *
  * Named-only sections (they end the process):
  *
@@ -64,7 +72,9 @@
  *              process lives on and exits with the last thread's code
  *   procexit   a child calls ExitProcess while the main thread waits
  *
- * Build (real Windows 2000 machine, MSVC 6), the multithreaded CRT:
+ * Build (real Windows 2000 machine, MSVC 6), the multithreaded CRT, its
+ * companion stackkid.exe first (tests\build.bat threads):
+ *   cl /nologo /MT stackkid.c /link /STACK:0x400000
  *   cl /nologo /MT threads.c
  */
 
@@ -1156,6 +1166,106 @@ static void sec_suspterm(void)
     CloseHandle(t);
 }
 
+/* --- stacksize ----------------------------------------------------- */
+
+/* Windows NT's CreateThread flag (Windows XP's), which MSVC 6's headers
+   lack: Windows 2000 does not know it. */
+#define F2KT_STACK_SIZE_PARAM_IS_A_RESERVATION 0x00010000
+
+static DWORD stack_recurse(DWORD depth)
+{
+    volatile BYTE pad[1024];
+
+    pad[1023] = (BYTE)depth;
+    pad[0] = (BYTE)depth;
+    if (depth == 0) {
+        return 0;
+    }
+    return stack_recurse(depth - 1) + pad[0] - pad[1023];
+}
+
+/* 512 KiB of recursion under __try: 1 ran, 2 overflowed, 3 another fault. */
+static DWORD WINAPI half_meg(LPVOID param)
+{
+    DWORD result;
+
+    __try {
+        result = stack_recurse(512) == 0 ? 1 : 3;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result = GetExceptionCode() == STATUS_STACK_OVERFLOW ? 2 : 3;
+    }
+    *(DWORD *)param = result;
+    return 0;
+}
+
+static const char *depth_verdict(DWORD v)
+{
+    switch (v) {
+    case 0: return "never ran";
+    case 1: return "ran";
+    case 2: return "overflowed";
+    }
+    return "faulted";
+}
+
+static void small_stack(const char *label, DWORD flags)
+{
+    DWORD result = 0;
+    HANDLE h;
+    const char *e;
+
+    arm();
+    h = CreateThread(NULL, 0x10000, half_meg, &result, flags, NULL);
+    e = le();
+    if (h == NULL) {
+        line("CreateThread(stack 0x10000, %s): NULL err=%s", label, e);
+        return;
+    }
+    join(h);
+    CloseHandle(h);
+    line("CreateThread(stack 0x10000, %s): created err=%s, 512 KiB of recursion %s", label, e, depth_verdict(result));
+}
+
+static void sec_stacksize(void)
+{
+    char path[MAX_PATH];
+    char *slash;
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    DWORD code = 0xDEADDEAD, w;
+    BOOL r;
+    const char *e;
+
+    small_stack("flags 0", 0);
+    small_stack("STACK_SIZE_PARAM_IS_A_RESERVATION", F2KT_STACK_SIZE_PARAM_IS_A_RESERVATION);
+
+    /* stackkid.exe, linked with /STACK:0x400000: 3 MiB of recursion on
+       its main thread and on two threads of its own, in its exit code. */
+    GetModuleFileNameA(NULL, path, MAX_PATH);
+    slash = strrchr(path, '\\');
+    strcpy(slash != NULL ? slash + 1 : path, "stackkid.exe");
+    memset(&si, 0, sizeof si);
+    si.cb = sizeof si;
+    arm();
+    r = CreateProcessA(path, NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    e = le();
+    if (!r) {
+        line("CreateProcessA(stackkid.exe): ret=0 err=%s", e);
+        return;
+    }
+    w = WaitForSingleObject(pi.hProcess, 20000);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (w != WAIT_OBJECT_0 || code > 0x3F) {
+        line("stackkid.exe (/STACK:0x400000): wait %s, exit code 0x%08lX", wr(w), code);
+        return;
+    }
+    line("stackkid.exe (/STACK:0x400000), 3 MiB of recursion: main thread %s, a thread with stack 0 %s, "
+         "a thread with stack 0x10000 %s", depth_verdict(code & 3), depth_verdict((code >> 2) & 3),
+         depth_verdict((code >> 4) & 3));
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "exit", sec_exit, 0 },
@@ -1169,6 +1279,7 @@ static const section_t sections[] = {
     { "suspterm", sec_suspterm, 0 },
     { "open", sec_open, 0 },
     { "times", sec_times, 0 },
+    { "stacksize", sec_stacksize, 0 },
     { "mainexit", sec_mainexit, 1 },
     { "procexit", sec_procexit, 1 },
     { NULL, NULL, 0 }

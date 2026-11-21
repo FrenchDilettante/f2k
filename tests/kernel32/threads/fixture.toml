@@ -1,7 +1,12 @@
 # threads: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, OpenThread with each access right and on ended threads, GetThreadTimes as relations, and the main thread's own exits."
+description = "threads - thread lifecycle and per-thread state (threads.c, /MT): creation and exit codes, suspension, priorities, scale, TLS and __declspec(thread), per-thread last error, errno, FPU and SEH, the CRT's thread starts, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, OpenThread with each access right and on ended threads, GetThreadTimes as relations, small and image-sized thread stacks with the companion stackkid.exe linked /STACK:0x400000 (stacksize), and the main thread's own exits."
 kind = "sectioned"
 gate = true
+
+[pending]
+# Not captured yet: its output.txt block is a placeholder, which tests/capture.bat threads replaces
+# once tests/build.bat threads has built stackkid.exe and rebuilt threads.exe.
+stacksize = "F2K honours Windows XP's STACK_SIZE_PARAM_IS_A_RESERVATION (a 64 KiB reservation overflows) and gives a created thread a fixed 1 MiB reservation, not the image's SizeOfStackReserve (stackkid.exe's 4 MiB)"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -149,3 +154,11 @@ open = [
     "kernel32.TerminateThread",
 ]
 times = ["kernel32.GetThreadTimes", "kernel32.GetSystemTimeAsFileTime"]
+stacksize = [
+    "kernel32.CreateThread",
+    "kernel32.CreateProcessA",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.GetModuleFileNameA",
+    "ntdll.NtCreateThread",
+    "ntdll.NtAllocateVirtualMemory",
+]

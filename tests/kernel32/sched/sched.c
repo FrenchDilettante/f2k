@@ -29,6 +29,12 @@
  *   starve   an idle-priority thread starved by a normal-priority
  *            spinner still runs within a few seconds (the balance-set
  *            boost); takes about six seconds
+ *   pastdue  absolute times already past: waitable timers (manual and
+ *            auto-reset) due in 1601, 10 s ago and an hour ago, waited
+ *            for; ntdll's NtWaitForSingleObject on an unsignaled event and
+ *            NtDelayExecution with an absolute time in 1601 and 10 s ago
+ *            (through GetProcAddress): each returns at once, its status
+ *            and a band
  *
  * The named timers run twice: through the A calls, then through their W
  * twins on the same name (the W lines carry the W names, or "(W)").
@@ -520,6 +526,94 @@ static void sec_starve(void)
          yesno(starved_ran_at != 0), starved_ran_at != 0 ? band(starved_ran_at - t0, 1000, 6000) : "no");
 }
 
+/* --- pastdue ------------------------------------------------------- */
+
+/* NTSTATUS NtWaitForSingleObject(HANDLE, BOOLEAN Alertable, PLARGE_INTEGER)
+ * and NtDelayExecution(BOOLEAN Alertable, PLARGE_INTEGER): reached through
+ * GetProcAddress, as no import library MSVC 6 has declares them. A
+ * positive time is absolute, which kernel32's waits never pass. */
+typedef LONG (WINAPI *nt_wait_fn)(HANDLE, BOOLEAN, PLARGE_INTEGER);
+typedef LONG (WINAPI *nt_delay_fn)(BOOLEAN, PLARGE_INTEGER);
+
+/* The system time `back_ms` milliseconds ago, as an absolute due time. */
+static void ago(LARGE_INTEGER *due, DWORD back_ms)
+{
+    FILETIME now;
+
+    GetSystemTimeAsFileTime(&now);
+    due->LowPart = now.dwLowDateTime;
+    due->HighPart = now.dwHighDateTime;
+    due->QuadPart -= (LONGLONG)back_ms * 10000;
+}
+
+/* A waitable timer set to an absolute due time already past, then waited
+   for: it is signaled at once. */
+static void past_timer(const char *label, BOOL manual, const LARGE_INTEGER *due)
+{
+    HANDLE t = CreateWaitableTimer(NULL, manual, NULL);
+    DWORD t0, t1, r;
+    BOOL ok;
+
+    t0 = GetTickCount();
+    ok = SetWaitableTimer(t, due, 0, NULL, NULL, FALSE);
+    r = WaitForSingleObject(t, WAIT_MS);
+    t1 = GetTickCount();
+    line("%s: set %d, wait %s, in [0, 100] ms %s", label, ok, wr(r), band(t1 - t0, 0, 100));
+    CloseHandle(t);
+}
+
+static void sec_pastdue(void)
+{
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    nt_wait_fn nt_wait = (nt_wait_fn)GetProcAddress(ntdll, "NtWaitForSingleObject");
+    nt_delay_fn nt_delay = (nt_delay_fn)GetProcAddress(ntdll, "NtDelayExecution");
+    LARGE_INTEGER due;
+    HANDLE ev;
+    DWORD t0, t1;
+    LONG s;
+
+    due.QuadPart = 1;
+    past_timer("manual timer, absolute due time in 1601", TRUE, &due);
+    ago(&due, 10000);
+    past_timer("manual timer, absolute due time 10 s ago", TRUE, &due);
+    ago(&due, 3600000);
+    past_timer("auto-reset timer, absolute due time an hour ago", FALSE, &due);
+
+    line("ntdll exports NtWaitForSingleObject %s, NtDelayExecution %s", yesno(nt_wait != NULL),
+         yesno(nt_delay != NULL));
+    if (nt_wait == NULL || nt_delay == NULL) {
+        return;
+    }
+    ev = CreateEventA(NULL, TRUE, FALSE, NULL);
+    due.QuadPart = 1;
+    t0 = GetTickCount();
+    s = nt_wait(ev, FALSE, &due);
+    t1 = GetTickCount();
+    line("NtWaitForSingleObject(an unsignaled event, absolute 1601): 0x%08lX, in [0, 100] ms %s", (DWORD)s,
+         band(t1 - t0, 0, 100));
+    ago(&due, 10000);
+    t0 = GetTickCount();
+    s = nt_wait(ev, FALSE, &due);
+    t1 = GetTickCount();
+    line("NtWaitForSingleObject(an unsignaled event, absolute 10 s ago): 0x%08lX, in [0, 100] ms %s", (DWORD)s,
+         band(t1 - t0, 0, 100));
+    SetEvent(ev);
+    due.QuadPart = 1;
+    s = nt_wait(ev, FALSE, &due);
+    line("NtWaitForSingleObject(a signaled event, absolute 1601): 0x%08lX", (DWORD)s);
+    CloseHandle(ev);
+    due.QuadPart = 1;
+    t0 = GetTickCount();
+    s = nt_delay(FALSE, &due);
+    t1 = GetTickCount();
+    line("NtDelayExecution(absolute 1601): 0x%08lX, in [0, 100] ms %s", (DWORD)s, band(t1 - t0, 0, 100));
+    ago(&due, 10000);
+    t0 = GetTickCount();
+    s = nt_delay(FALSE, &due);
+    t1 = GetTickCount();
+    line("NtDelayExecution(absolute 10 s ago): 0x%08lX, in [0, 100] ms %s", (DWORD)s, band(t1 - t0, 0, 100));
+}
+
 static const section_t sections[] = {
     { "sleep", sec_sleep, 0 },
     { "clock", sec_clock, 0 },
@@ -530,6 +624,7 @@ static const section_t sections[] = {
     { "boost", sec_boost, 0 },
     { "freeze", sec_freeze, 0 },
     { "starve", sec_starve, 0 },
+    { "pastdue", sec_pastdue, 0 },
     { NULL, NULL, 0 }
 };
 

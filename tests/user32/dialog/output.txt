@@ -1,9 +1,9 @@
 # F2K capture of dialog (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 11/12/2026 15:12:02.26
-dialog F2KT-SOURCE-CRC=0x50FD2C9A
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:33.37
+dialog F2KT-SOURCE-CRC=0x1758936F
 >>> dialog.exe create
 == create
 CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
@@ -337,5 +337,91 @@ MessageBoxA(NULL, MB_OK), IDOK posted: ret=1 err=1421
   box: class #32770 caption "F2K narrow caption", 2 controls
     class Button id=2 text "OK"
     class Static id=65535 text "F2K narrow box"
+dialog: done
+<<< exit code=0
+>>> dialog.exe radiotab
+== radiotab
+CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-
+as created:
+  WS_TABSTOP: 121 yes 122 no 123 no; checked: 121=0 122=0 123=0
+BM_SETCHECK(122, 1): ret=0 err=-
+  WS_TABSTOP: 121 yes 122 yes 123 no; checked: 121=0 122=1 123=0
+BM_SETCHECK(122, 0): ret=0 err=-
+  WS_TABSTOP: 121 yes 122 no 123 no; checked: 121=0 122=0 123=0
+BM_SETCHECK(121, 0): ret=0 err=-
+  WS_TABSTOP: 121 no 122 no 123 no; checked: 121=0 122=0 123=0
+CheckRadioButton(dlg, 121, 123, 123): ret=1 err=-
+  WS_TABSTOP: 121 no 122 no 123 yes; checked: 121=0 122=0 123=1
+the dialog shown: foreground yes
+SetFocus(2): focus id 2
+Tab, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 123
+  the procedure received 0 of the recorded messages
+  WS_TABSTOP: 121 no 122 no 123 yes; checked: 121=0 122=0 123=1
+SetFocus(130): focus id 130
+Shift+Tab (VK_SHIFT down in the thread's key state), through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x09): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x09): ret=1
+  focus after: id 123
+  the procedure received 0 of the recorded messages
+  WS_TABSTOP: 121 no 122 no 123 yes; checked: 121=0 122=0 123=1
+Down, through IsDialogMessageW:
+  IsDialogMessageW(WM_KEYDOWN wParam=0x28): ret=1
+  IsDialogMessageW(WM_KEYUP wParam=0x28): ret=1
+  focus after: id 121
+  the procedure received 2 of the recorded messages
+  WM_COMMAND: id=121 code=0 lParam the control
+  WM_COMMAND: id=121 code=0 lParam the control
+  WS_TABSTOP: 121 yes 122 no 123 no; checked: 121=1 122=0 123=0
+dialog: done
+<<< exit code=0
+>>> dialog.exe nested
+== nested
+CreateDialogParamW(104, the outer dialog): non-NULL yes err=-
+CreateDialogParamW(105, DS_CONTROL, its parent the outer dialog): non-NULL yes err=-
+the inner dialog: DS_CONTROL yes WS_CHILD yes WS_EX_CONTROLPARENT yes, its parent the outer yes; the outer WS_EX_CONTROLPARENT yes
+the outer dialog's children in Z order: a control 1, the inner dialog, a control 3
+the outer dialog shown: foreground yes
+SetFocus(1): focus id 1
+Tab: focus id 201 (inner); commands: none
+Tab: focus id 202 (inner); commands: none
+Tab: focus id 3; commands: none
+Tab: focus id 1; commands: none
+Shift+Tab: focus id 3; commands: none
+Shift+Tab: focus id 202 (inner); commands: none
+SetFocus(201 (inner)): focus id 201 (inner)
+Down: focus id 202 (inner); commands: none
+Down: focus id 201 (inner); commands: none
+Up: focus id 202 (inner); commands: none
+SetFocus(1): focus id 1
+WM_CHAR 'b' (Beta's mnemonic, in the inner dialog): focus id 1; commands: inner 202 code 0
+SetFocus(201 (inner)): focus id 201 (inner)
+WM_CHAR 'g' (Gamma's mnemonic, in the outer dialog): focus id 201 (inner); commands: outer 3 code 0
+SetFocus(3): focus id 3
+WM_CHAR 'a' (Alpha's mnemonic, in the inner dialog): focus id 3; commands: inner 201 code 0
+SetFocus(1): focus id 1
+WM_SYSCHAR 'b' (Alt+B): focus id 1; commands: inner 202 code 0
+dialog: done
+<<< exit code=0
+>>> dialog.exe nofail
+== nofail
+CreateDialogParamW(106, DS_NOFAILCREATE, control 301 of an unregistered class): non-NULL yes err=1407
+the procedure received 2 of the recorded messages
+  WM_SETFONT: font non-NULL yes lParam=0
+  WM_INITDIALOG: lParam=0x0 focus control id=1
+dialog: class #32770 style=0x84C800D4 exstyle=0x00010101 caption "F2K nofail" visible no
+  2 controls, ids in Z order: 1, 302
+GetDlgItem(dlg, 301): non-NULL no err=1421
+GetDlgItem(dlg, 302): non-NULL yes err=-
+CreateDialogParamW(107, no DS_NOFAILCREATE, the same controls): non-NULL no err=1407
+the procedure received 3 of the recorded messages
+  WM_SETFONT: font non-NULL yes lParam=0
+  WM_DESTROY
+  WM_NCDESTROY
+DialogBoxParamW(107): ret=-1 err=1407
+the procedure received 0 of the recorded messages
+WM_INITDIALOG lParam=0x0 IsWindowUnicode=-1 visible at the command=-1 timed out no
 dialog: done
 <<< exit code=0

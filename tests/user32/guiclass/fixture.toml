@@ -1,7 +1,10 @@
 # guiclass: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom); GetClassInfoExW/A of a class with extra bytes, an icon and a menu name (every field, by name and by atom, cbSize 0, NULL hInstance, an unknown name) and of the system classes Button and #32770; GetClassLongW/A of each GCL_ index, and SetClassLongW/A of the extra bytes (in range, straddling and past the end), GCL_STYLE, GCL_HBRBACKGROUND and GCL_WNDPROC."
+description = "guiclass - window class registration in user32: RegisterClassA/W and RegisterClassExA/W (atom return, error), GetClassInfoA/W and GetClassNameA/W read back on a live window, duplicate registration (1410), UnregisterClassA/W (1411), and the error cases (NULL wndproc, bogus atom); GetClassInfoExW/A of a class with extra bytes, an icon and a menu name (every field, by name and by atom, cbSize 0, NULL hInstance, an unknown name) and of the system classes Button and #32770; GetClassLongW/A of each GCL_ index, and SetClassLongW/A of the extra bytes (in range, straddling and past the end), GCL_STYLE, GCL_HBRBACKGROUND and GCL_WNDPROC; class names written as integer atoms, \"#0\", \"#123\" and L\"#124\": RegisterClassA/W, GetClassInfoA/W by the name and by MAKEINTATOM, GetClassNameA and UnregisterClassA/W (intname)."
 kind = "sectioned"
 gate = true
+
+[pending]
+intname = "F2K refuses \"#0\" as an invalid name and registers \"#123\" as the integer atom 123, its lookup by the same name finding it; the last errors and GetClassNameA's text are to be confirmed"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -42,4 +45,13 @@ classlong = [
     "user32.GetClassLongA",
     "user32.SetClassLongW",
     "user32.SetClassLongA",
+]
+intname = [
+    "user32.RegisterClassA",
+    "user32.RegisterClassW",
+    "user32.GetClassInfoA",
+    "user32.GetClassInfoW",
+    "user32.GetClassNameA",
+    "user32.UnregisterClassA",
+    "user32.UnregisterClassW",
 ]

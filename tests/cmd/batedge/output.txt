@@ -1,0 +1,78 @@
+# F2K capture of batedge (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:37:55.54
+>>> cmd /c batedge.cmd
+== %~ with a modifier it does not know
+The following usage of the path operator in batch-parameter
+substitution is invalid: %~q1]
+
+
+For valid formats type CALL /? or FOR /?
+:tildeqs
+ was unexpected at this time.
+exit code 255
+The following usage of the path operator in batch-parameter
+substitution is invalid: %~nq1]
+
+
+For valid formats type CALL /? or FOR /?
+:tildenqs
+ was unexpected at this time.
+exit code 255
+The following usage of the path operator in batch-parameter
+substitution is invalid: %~x]
+
+
+For valid formats type CALL /? or FOR /?
+:tildexs
+ was unexpected at this time.
+exit code 255
+== a caret at a line's end
+joined here
+first&echo second
+after rem: this line ran
+"quoted^
+after the quote: this line ran"
+doubled^
+after doubled: this line ran
+BATEDGEL: defined
+[
+== call and carets
+"a^^b"
+a^b
+a^^b
+["a^^b"] [ab]
+ab
+== if's string order
+a LSS B: yes
+B LSS a: no
+A LSS a: no
+a LSS A: yes
+a EQU A: no
+Z GTR a: yes
+_ LSS a: yes
+[ LSS a: yes
+1 LSS a: yes
+a-b LSS ab: no
+ab LSS a-b: yes
+a-c LSS ab: no
+10a LSS 9a: yes
+10 LSS 9: no
+/i a LSS B: yes
+/i B GTR a: yes
+/i a EQU A: yes
+2147483648 EQU 2147483647: yes
+99999999999 GTR 2147483647: no
+-2147483649 EQU -2147483648: yes
+010 EQU 8: yes
+0x10 EQU 16: yes
+== long labels
+after a goto to a label of 40 characters
+in a label of 40 characters, called: [one]
+The system cannot find the batch label specified - batedge_goto_long_01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789long140
+exit code -1
+exit code -1
+exit code -1
+<<< exit code=0

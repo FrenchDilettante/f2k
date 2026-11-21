@@ -62,7 +62,14 @@
  *   unloadopen  NtUnloadDriver with a handle open: its status, whether
  *               the unload ran, CreateFileA and DeviceIoControl
  *               meanwhile, then the handle closed and what the unload saw
- *   names       IoCreateDevice on a name taken and in a directory that
+ *   pendirp     a request the driver holds pending (IoMarkIrpPending,
+ *               STATUS_PENDING) from a thread's DeviceIoControl on a
+ *               synchronous handle, completed by a second request on a
+ *               second handle (the inverted call): whether the first
+ *               still waits, the driver's record of both (the stack's
+ *               Control, PendingReturned, the completing thread), then
+ *               the first one's return, its bytes and its output
+ *   names      IoCreateDevice on a name taken and in a directory that
  *               does not exist; IoCreateSymbolicLink on a name taken, a
  *               new one, to a device that does not exist; and
  *               IoDeleteSymbolicLink, twice. Last: on Windows 2000 the
@@ -287,6 +294,116 @@ static void sec_unloadopen(void)
     }
 }
 
+/* The pending request, issued by a thread of its own on the first
+ * handle: its result, for the main thread to print. */
+typedef struct {
+    HANDLE h;
+    BOOL ok;
+    DWORD err;
+    DWORD got;
+    char out[64];
+    volatile LONG done;
+} pend_call_t;
+
+static DWORD WINAPI pend_thread(LPVOID param)
+{
+    pend_call_t *c = (pend_call_t *)param;
+    char in[4];
+
+    memcpy(in, "ping", sizeof in);
+    memset(c->out, '#', sizeof c->out);
+    c->got = 0xF2F2;
+    SetLastError(F2KT_UNTOUCHED);
+    c->ok = DeviceIoControl(c->h, F2KD_IOCTL_PEND, in, sizeof in, c->out, sizeof c->out, &c->got, NULL);
+    c->err = GetLastError();
+    InterlockedExchange((LONG *)&c->done, 1);
+    return 0;
+}
+
+/* A request the driver holds pending (the inverted call): a thread's
+ * DeviceIoControl on a synchronous handle, which the driver marks pending
+ * and keeps; the main thread, on a second handle (the first one's I/O
+ * is serialized while the thread waits), asks whether it is held, then
+ * releases it: the driver writes its output and completes it. Released
+ * only while the thread still waits: a request that ended while the
+ * driver holds its IRP has had its buffers freed. */
+static void sec_pendirp(void)
+{
+    static pend_call_t call;
+    static char text[F2KD_OUTPUT];
+    HANDLE h;
+    HANDLE second;
+    HANDLE thread;
+    DWORD tid;
+    DWORD got;
+    ULONG is_held = 0;
+    BOOL waiting;
+    BOOL ok;
+    const char *e;
+    int i;
+    int n;
+
+    if (!f2kd_begin()) {
+        return;
+    }
+    h = f2kd_open();
+    if (h == INVALID_HANDLE_VALUE) {
+        f2kd_end();
+        return;
+    }
+    second = CreateFileA(F2KD_WIN32_NAME, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (second == INVALID_HANDLE_VALUE) {
+        line("a second handle: err=%lu", GetLastError());
+        CloseHandle(h);
+        f2kd_end();
+        return;
+    }
+    call.h = h;
+    thread = CreateThread(NULL, 0, pend_thread, &call, 0, &tid);
+    if (thread == NULL) {
+        line("CreateThread: err=%lu", GetLastError());
+        CloseHandle(second);
+        CloseHandle(h);
+        f2kd_end();
+        return;
+    }
+    /* Up to five seconds for the driver to hold it. */
+    for (i = 0; i < 250 && !call.done; i++) {
+        is_held = 0;
+        got = 0;
+        if (DeviceIoControl(second, F2KD_IOCTL_HELD, NULL, 0, &is_held, sizeof is_held, &got, NULL) && is_held) {
+            break;
+        }
+        Sleep(20);
+    }
+    line("the driver holds the first request: %s", yesno(is_held));
+    waiting = WaitForSingleObject(thread, 200) == WAIT_TIMEOUT;
+    line("the first DeviceIoControl (a synchronous handle) still waiting: %s", yesno(waiting));
+    if (is_held && waiting) {
+        got = 0xF2F2;
+        arm();
+        ok = DeviceIoControl(second, F2KD_IOCTL_RELEASE, NULL, 0, text, sizeof text, &got, NULL);
+        e = le();
+        line("DeviceIoControl(release, on the second handle): ret=%d err=%s, the driver's record:", ok, e);
+        if (ok) {
+            f2kd_print(text, got > sizeof text ? sizeof text : got);
+        }
+    } else if (is_held) {
+        line("not released: the first DeviceIoControl ended while the driver holds its request");
+    }
+    line("the first DeviceIoControl returned: %s", yesno(WaitForSingleObject(thread, WAIT_MS) == WAIT_OBJECT_0));
+    if (call.done) {
+        line("  ret=%d err=%s returned=%lu", call.ok, le_of(call.err), call.got);
+        n = call.got <= sizeof call.out ? (int)call.got : 0;
+        line("  its output: \"%.*s\"", n > 0 && call.out[n - 1] == '\0' ? n - 1 : n, call.out);
+        line("  the byte after it untouched: %s", yesno(n < (int)sizeof call.out && call.out[n] == '#'));
+    }
+    CloseHandle(thread);
+    CloseHandle(second);
+    CloseHandle(h);
+    f2kd_end();
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "entry", sec_entry, F2KT_ALWAYS },
@@ -297,6 +414,7 @@ static const section_t sections[] = {
     { "unknown", sec_unknown, F2KT_ALWAYS },
     { "unload", sec_unload, F2KT_ALWAYS },
     { "unloadopen", sec_unloadopen, F2KT_ALWAYS },
+    { "pendirp", sec_pendirp, F2KT_ALWAYS },
     { "names", sec_names, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };

@@ -1,9 +1,9 @@
 # F2K capture of runtime (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:04.00
-runtime F2KT-SOURCE-CRC=0xF8667978
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
+# date: Sat 21/11/2026  7:36:14.63
+runtime F2KT-SOURCE-CRC=0x4F2E5435
 >>> runtime.exe args one "two words" back\slash "tail\\" x
 == args
 argc: 7
@@ -621,6 +621,26 @@ VerifyVersionInfoW(major == 5, OSVERSIONINFO's size): ret=1 err=-
   (A) VerifyVersionInfoA: ret=1 err=-
 VerifyVersionInfoW(major == 5, size 1): ret=1 err=-
   (A) VerifyVersionInfoA: ret=1 err=-
+runtime: done
+<<< exit code=0
+>>> runtime.exe envnull
+== envnull
+GetEnvironmentVariableA(NULL, buf, 64): ret=0 err=203
+GetEnvironmentVariableW(NULL, buf, 64): ret=0 err=203
+GetEnvironmentVariableA(NULL, NULL, 0): ret=0 err=203
+GetEnvironmentVariableW(NULL, NULL, 0): ret=0 err=203
+SetEnvironmentVariableA(NULL, "x"): ret=0 err=87
+SetEnvironmentVariableW(NULL, "x"): ret=0 err=87
+SetEnvironmentVariableA(NULL, NULL): ret=0 err=87
+SetEnvironmentVariableW(NULL, NULL): ret=0 err=87
+SetEnvironmentVariableA("F2KNULL", NULL), not set: ret=0 err=203
+SetEnvironmentVariableW("F2KNULL", NULL), not set: ret=0 err=203
+ExpandEnvironmentStringsA(NULL, buf, 64): ret=1 err=-
+ExpandEnvironmentStringsW(NULL, buf, 64): ret=1 err=-
+ExpandEnvironmentStringsA(NULL, NULL, 0): ret=2 err=-
+ExpandEnvironmentStringsW(NULL, NULL, 0): ret=1 err=-
+ExpandEnvironmentStringsA("%OS%", NULL, 64): faulted 0xC0000005
+ExpandEnvironmentStringsW("%OS%", NULL, 64): faulted 0xC0000005
 runtime: done
 <<< exit code=0
 >>> runtime.exe unhandled

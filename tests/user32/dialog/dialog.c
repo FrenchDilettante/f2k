@@ -80,6 +80,27 @@
  *   msgbox   MessageBoxW (MB_OK, MB_OKCANCEL, MB_YESNO) and MessageBoxA
  *            (MB_OK), each ended by the timer: the return, the box's
  *            class, caption and controls (class, id, text)
+ *   radiotab the main dialog's radio group (121-123): each radio's
+ *            WS_TABSTOP and check after BM_SETCHECK checking and
+ *            unchecking 122, unchecking 121, and CheckRadioButton(121,
+ *            123, 123); then, shown, Tab from Cancel (2), Shift+Tab from
+ *            130 and Down from the focus, pumped through IsDialogMessageW:
+ *            the focus, the commands and the tab stops after each
+ *   nested   an outer dialog (104: OK, Gamma) with an inner DS_CONTROL
+ *            child dialog (105: Alpha, Beta) placed between its two
+ *            controls in Z order: the inner one's DS_CONTROL and
+ *            WS_EX_CONTROLPARENT, then, shown, Tab four times and
+ *            Shift+Tab twice from OK, Down, Down and Up from Alpha, and
+ *            the mnemonics b, g and a (WM_CHAR) and Alt+B (WM_SYSCHAR)
+ *            posted to the focus, pumped through IsDialogMessageW of the
+ *            outer dialog: the focus after each, and the commands each
+ *            dialog's procedure receives
+ *   nofail   CreateDialogParamW of a DS_NOFAILCREATE template (106) one
+ *            of whose controls has a class nobody registered: the dialog
+ *            or NULL, the last error, the messages its procedure
+ *            receives, its controls, GetDlgItem of the missing control
+ *            and of the one after it; the same template without the flag
+ *            (107), modeless and modal
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat dialog):
  *   rc dialog.rc
@@ -95,12 +116,22 @@
 #ifndef DM_GETDEFID
 #define DM_GETDEFID (WM_USER + 0)
 #endif
+#ifndef DS_CONTROL
+#define DS_CONTROL 0x0400L
+#endif
+#ifndef WS_EX_CONTROLPARENT
+#define WS_EX_CONTROLPARENT 0x00010000L
+#endif
 
 /* The templates (dialog.rc). */
 #define DLG_MAIN 100
 #define DLG_EX 101
 #define DLG_SYSFONT 102
 #define DLG_DEFAULT 103
+#define DLG_OUTER 104
+#define DLG_INNER 105
+#define DLG_NOFAIL 106
+#define DLG_FAIL 107
 #define DLG_MISSING 999
 
 /* The command the modal dialogs post themselves, and their timer. */
@@ -1062,6 +1093,311 @@ static void sec_keys(void)
     close_dialog(dlg);
 }
 
+/* --- radiotab ---------------------------------------------------------- */
+
+static void print_tabstops(HWND dlg)
+{
+    line("  WS_TABSTOP: 121 %s 122 %s 123 %s; checked: 121=%u 122=%u 123=%u",
+         yesno((GetWindowLongW(GetDlgItem(dlg, 121), GWL_STYLE) & WS_TABSTOP) != 0),
+         yesno((GetWindowLongW(GetDlgItem(dlg, 122), GWL_STYLE) & WS_TABSTOP) != 0),
+         yesno((GetWindowLongW(GetDlgItem(dlg, 123), GWL_STYLE) & WS_TABSTOP) != 0), IsDlgButtonChecked(dlg, 121),
+         IsDlgButtonChecked(dlg, 122), IsDlgButtonChecked(dlg, 123));
+}
+
+static void set_check(HWND dlg, int id, WPARAM state)
+{
+    LRESULT r;
+
+    arm();
+    r = SendDlgItemMessageW(dlg, id, BM_SETCHECK, state, 0);
+    line("BM_SETCHECK(%d, %lu): ret=%ld err=%s", id, (unsigned long)state, (long)r, le());
+    print_tabstops(dlg);
+}
+
+static void sec_radiotab(void)
+{
+    HWND dlg;
+    BYTE saved[256];
+    BYTE shifted[256];
+    BOOL b;
+
+    drain();
+    dlg = open_main();
+    if (dlg == NULL) {
+        return;
+    }
+    line("as created:");
+    print_tabstops(dlg);
+    set_check(dlg, 122, BST_CHECKED);
+    set_check(dlg, 122, BST_UNCHECKED);
+    set_check(dlg, 121, BST_UNCHECKED);
+    arm();
+    b = CheckRadioButton(dlg, 121, 123, 123);
+    line("CheckRadioButton(dlg, 121, 123, 123): ret=%d err=%s", b, le());
+    print_tabstops(dlg);
+
+    ShowWindow(dlg, SW_SHOWNORMAL);
+    SetForegroundWindow(dlg);
+    drain();
+    line("the dialog shown: foreground %s", yesno(GetForegroundWindow() == dlg));
+    SetFocus(GetDlgItem(dlg, 2));
+    line("SetFocus(2): focus %s", focus_label());
+    press(dlg, VK_TAB, 0x0F, "Tab", 0);
+    print_tabstops(dlg);
+    SetFocus(GetDlgItem(dlg, 130));
+    line("SetFocus(130): focus %s", focus_label());
+    GetKeyboardState(saved);
+    CopyMemory(shifted, saved, sizeof shifted);
+    shifted[VK_SHIFT] = 0x80;
+    shifted[VK_LSHIFT] = 0x80;
+    SetKeyboardState(shifted);
+    press(dlg, VK_TAB, 0x0F, "Shift+Tab (VK_SHIFT down in the thread's key state)", 0);
+    SetKeyboardState(saved);
+    print_tabstops(dlg);
+    press(dlg, VK_DOWN, 0x50, "Down", 0);
+    print_tabstops(dlg);
+    close_dialog(dlg);
+}
+
+/* --- nested ------------------------------------------------------------ */
+
+#define MAX_NESTED 8
+
+static HWND nested_outer;
+static HWND nested_inner;
+static int nested_id[MAX_NESTED];
+static int nested_code[MAX_NESTED];
+static int nested_in_inner[MAX_NESTED];
+static int nested_count;
+
+/* Both dialogs' procedure: records the commands, handles nothing; the
+ * inner dialog takes no focus from WM_INITDIALOG. */
+static BOOL CALLBACK nested_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+    case WM_INITDIALOG:
+        return (GetWindowLongW(hwnd, GWL_STYLE) & WS_CHILD) == 0;
+    case WM_COMMAND:
+        if (nested_count < MAX_NESTED) {
+            nested_id[nested_count] = LOWORD(wparam);
+            nested_code[nested_count] = HIWORD(wparam);
+            nested_in_inner[nested_count] = hwnd != nested_outer;
+            nested_count++;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static const char *nested_focus(void)
+{
+    static char buf[48];
+    HWND f = GetFocus();
+
+    if (f == NULL) {
+        return "none";
+    }
+    if (f == nested_outer) {
+        return "the outer dialog";
+    }
+    if (f == nested_inner) {
+        return "the inner dialog";
+    }
+    sprintf(buf, "id %d%s", GetDlgCtrlID(f), GetParent(f) == nested_inner ? " (inner)" : "");
+    return buf;
+}
+
+static void print_nested(const char *name)
+{
+    char buf[200];
+    int n = 0;
+    int i;
+
+    buf[0] = 0;
+    for (i = 0; i < nested_count; i++) {
+        n += sprintf(buf + n, "%s%s %d code %d", i == 0 ? "" : ", ", nested_in_inner[i] ? "inner" : "outer",
+                     nested_id[i], nested_code[i]);
+    }
+    line("%s: focus %s; commands: %s", name, nested_focus(), nested_count == 0 ? "none" : buf);
+    nested_count = 0;
+}
+
+/* A key (WM_KEYDOWN and WM_KEYUP) or a character (WM_CHAR, WM_SYSCHAR)
+ * posted to the focus, pumped through the outer dialog. */
+static void nested_post(UINT msg, WPARAM wparam, UINT scan, const char *name)
+{
+    HWND target = GetFocus();
+    LPARAM lp = 1 | ((LPARAM)scan << 16);
+
+    if (target == NULL) {
+        target = nested_outer;
+    }
+    nested_count = 0;
+    if (msg == WM_KEYDOWN) {
+        PostMessageW(target, WM_KEYDOWN, wparam, lp);
+        PostMessageW(target, WM_KEYUP, wparam, lp | 0xC0000000);
+    } else {
+        PostMessageW(target, msg, wparam, msg == WM_SYSCHAR ? lp | 0x20000000 : lp);
+    }
+    pump(nested_outer, 0);
+    print_nested(name);
+}
+
+static void nested_focus_on(HWND h, const char *name)
+{
+    SetFocus(h);
+    drain();
+    nested_count = 0;
+    line("SetFocus(%s): focus %s", name, nested_focus());
+}
+
+static void sec_nested(void)
+{
+    BYTE saved[256];
+    BYTE shifted[256];
+    HWND c;
+    char order[160];
+    int n = 0;
+    DWORD err;
+
+    drain();
+    nested_count = 0;
+    nested_inner = NULL;
+    arm();
+    nested_outer = CreateDialogParamW(instance(), MAKEINTRESOURCEW(DLG_OUTER), NULL, (DLGPROC)nested_proc, 0);
+    err = GetLastError();
+    line("CreateDialogParamW(104, the outer dialog): non-NULL %s err=%s", yesno(nested_outer != NULL), le_of(err));
+    if (nested_outer == NULL) {
+        return;
+    }
+    arm();
+    nested_inner = CreateDialogParamW(instance(), MAKEINTRESOURCEW(DLG_INNER), nested_outer, (DLGPROC)nested_proc, 0);
+    err = GetLastError();
+    line("CreateDialogParamW(105, DS_CONTROL, its parent the outer dialog): non-NULL %s err=%s",
+         yesno(nested_inner != NULL), le_of(err));
+    if (nested_inner == NULL) {
+        close_dialog(nested_outer);
+        return;
+    }
+    line("the inner dialog: DS_CONTROL %s WS_CHILD %s WS_EX_CONTROLPARENT %s, its parent the outer %s; the outer "
+         "WS_EX_CONTROLPARENT %s",
+         yesno((GetWindowLongW(nested_inner, GWL_STYLE) & DS_CONTROL) != 0),
+         yesno((GetWindowLongW(nested_inner, GWL_STYLE) & WS_CHILD) != 0),
+         yesno((GetWindowLongW(nested_inner, GWL_EXSTYLE) & WS_EX_CONTROLPARENT) != 0),
+         yesno(GetParent(nested_inner) == nested_outer),
+         yesno((GetWindowLongW(nested_outer, GWL_EXSTYLE) & WS_EX_CONTROLPARENT) != 0));
+    SetWindowPos(nested_inner, GetDlgItem(nested_outer, 1), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    order[0] = 0;
+    for (c = GetWindow(nested_outer, GW_CHILD); c != NULL && n < 120; c = GetWindow(c, GW_HWNDNEXT)) {
+        n += sprintf(order + n, "%s%s", n == 0 ? "" : ", ", c == nested_inner ? "the inner dialog" : "a control");
+        if (c != nested_inner) {
+            n += sprintf(order + n, " %d", GetDlgCtrlID(c));
+        }
+    }
+    line("the outer dialog's children in Z order: %s", order);
+
+    ShowWindow(nested_outer, SW_SHOWNORMAL);
+    SetForegroundWindow(nested_outer);
+    drain();
+    line("the outer dialog shown: foreground %s", yesno(GetForegroundWindow() == nested_outer));
+
+    nested_focus_on(GetDlgItem(nested_outer, 1), "1");
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Tab");
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Tab");
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Tab");
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Tab");
+    GetKeyboardState(saved);
+    CopyMemory(shifted, saved, sizeof shifted);
+    shifted[VK_SHIFT] = 0x80;
+    shifted[VK_LSHIFT] = 0x80;
+    SetKeyboardState(shifted);
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Shift+Tab");
+    nested_post(WM_KEYDOWN, VK_TAB, 0x0F, "Shift+Tab");
+    SetKeyboardState(saved);
+
+    nested_focus_on(GetDlgItem(nested_inner, 201), "201 (inner)");
+    nested_post(WM_KEYDOWN, VK_DOWN, 0x50, "Down");
+    nested_post(WM_KEYDOWN, VK_DOWN, 0x50, "Down");
+    nested_post(WM_KEYDOWN, VK_UP, 0x48, "Up");
+
+    nested_focus_on(GetDlgItem(nested_outer, 1), "1");
+    nested_post(WM_CHAR, 'b', 0x30, "WM_CHAR 'b' (Beta's mnemonic, in the inner dialog)");
+    nested_focus_on(GetDlgItem(nested_inner, 201), "201 (inner)");
+    nested_post(WM_CHAR, 'g', 0x22, "WM_CHAR 'g' (Gamma's mnemonic, in the outer dialog)");
+    nested_focus_on(GetDlgItem(nested_outer, 3), "3");
+    nested_post(WM_CHAR, 'a', 0x1E, "WM_CHAR 'a' (Alpha's mnemonic, in the inner dialog)");
+    nested_focus_on(GetDlgItem(nested_outer, 1), "1");
+    nested_post(WM_SYSCHAR, 'b', 0x30, "WM_SYSCHAR 'b' (Alt+B)");
+
+    close_dialog(nested_outer);
+    nested_outer = NULL;
+    nested_inner = NULL;
+}
+
+/* --- nofail ------------------------------------------------------------ */
+
+static void print_ids(HWND dlg)
+{
+    char buf[160];
+    HWND c;
+    int n = 0;
+    int count = 0;
+
+    buf[0] = 0;
+    for (c = GetWindow(dlg, GW_CHILD); c != NULL && n < 120; c = GetWindow(c, GW_HWNDNEXT)) {
+        n += sprintf(buf + n, "%s%d", n == 0 ? "" : ", ", GetDlgCtrlID(c));
+        count++;
+    }
+    line("  %d controls, ids in Z order: %s", count, buf);
+}
+
+static void sec_nofail(void)
+{
+    HWND dlg;
+    HWND h;
+    DWORD err;
+    int r;
+
+    drain();
+    reset_events();
+    arm();
+    dlg = CreateDialogParamW(instance(), MAKEINTRESOURCEW(DLG_NOFAIL), NULL, (DLGPROC)recorder, 0);
+    err = GetLastError();
+    line("CreateDialogParamW(106, DS_NOFAILCREATE, control 301 of an unregistered class): non-NULL %s err=%s",
+         yesno(dlg != NULL), le_of(err));
+    print_events("the procedure");
+    if (dlg != NULL) {
+        print_dialog(dlg);
+        print_ids(dlg);
+        arm();
+        h = GetDlgItem(dlg, 301);
+        line("GetDlgItem(dlg, 301): non-NULL %s err=%s", yesno(h != NULL), le());
+        arm();
+        h = GetDlgItem(dlg, 302);
+        line("GetDlgItem(dlg, 302): non-NULL %s err=%s", yesno(h != NULL), le());
+        close_dialog(dlg);
+    }
+
+    reset_events();
+    arm();
+    dlg = CreateDialogParamW(instance(), MAKEINTRESOURCEW(DLG_FAIL), NULL, (DLGPROC)recorder, 0);
+    err = GetLastError();
+    line("CreateDialogParamW(107, no DS_NOFAILCREATE, the same controls): non-NULL %s err=%s", yesno(dlg != NULL),
+         le_of(err));
+    print_events("the procedure");
+    if (dlg != NULL) {
+        print_ids(dlg);
+        close_dialog(dlg);
+    }
+
+    reset_modal(0);
+    arm();
+    r = DialogBoxParamW(instance(), MAKEINTRESOURCEW(DLG_FAIL), NULL, (DLGPROC)modal, 0);
+    line("DialogBoxParamW(107): ret=%d err=%s", r, le());
+    print_modal();
+    drain();
+}
+
 /* --- msgbox ------------------------------------------------------------ */
 
 #define MAX_BOX_CONTROLS 8
@@ -1227,6 +1563,9 @@ static const section_t sections[] = {
     { "units", sec_units, F2KT_ALWAYS },
     { "keys", sec_keys, F2KT_ALWAYS },
     { "msgbox", sec_msgbox, F2KT_ALWAYS },
+    { "radiotab", sec_radiotab, F2KT_ALWAYS },
+    { "nested", sec_nested, F2KT_ALWAYS },
+    { "nofail", sec_nofail, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 
