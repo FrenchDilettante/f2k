@@ -63,9 +63,6 @@ enum Flow {
 /// file, at the prompt and in `/C`'s string.
 const BLOCK: usize = 4096;
 
-/// The units a typed line or `/C`'s string, a block of them included, may hold once expanded.
-const COMMAND: usize = cmd::MAX_COMMAND + 1;
-
 /// The units a label `goto` goes to may hold.
 const LABEL: usize = 128;
 
@@ -213,7 +210,7 @@ fn run_string(string: &[u16], strip: bool, state: &mut cmd::State) -> Flow {
         return Flow::Next;
     };
     let length = line.len();
-    let mut block = [0; COMMAND];
+    let mut block = [0; BLOCK];
     // The string is all there is: a group it leaves open stays open.
     execute(&mut buffer, length, &mut block, state, None, &mut |_| {
         More::End
@@ -228,7 +225,7 @@ fn interactive(state: &mut cmd::State) -> u32 {
         return redirected_input(state);
     }
     let mut line = [0; cmd::LINE];
-    let mut block = [0; COMMAND];
+    let mut block = [0; BLOCK];
     loop {
         if state.echo {
             prompt(state.spaced);
@@ -283,7 +280,7 @@ fn interactive(state: &mut cmd::State) -> u32 {
 fn redirected_input(state: &mut cmd::State) -> u32 {
     let mut reader = LineReader::default();
     let mut units = [0; cmd::LINE];
-    let mut block = [0; COMMAND];
+    let mut block = [0; BLOCK];
     let read = |buffer: &mut [u8]| {
         let byte = buffer.len().min(1);
         exe::read_standard_input(&mut buffer[..byte])
@@ -1555,19 +1552,24 @@ impl Source {
         })
     }
 
-    /// The lines up to the label `label` read, from where the file is: whether it was found.
+    /// The lines up to the label `label` read, from where the file is: whether it was found,
+    /// its line then kept ([`cmd::State::keep_label`]).
     #[inline(never)]
-    fn find(&mut self, label: &[u16]) -> bool {
+    fn find(&mut self, label: &[u16], state: &mut cmd::State) -> bool {
         let mut bytes = [0; cmd::MAX_LINE];
         let mut units = [0; cmd::LINE];
         let file = &self.file;
-        self.reader.seek_label(
+        let found = self.reader.seek_label(
             &mut |buffer| file.read(buffer),
             |line: &[u8], units: &mut [u16]| exe::oem_to_wide(line, units).ok().map(<[u16]>::len),
             label,
             &mut bytes,
             &mut units,
-        )
+        );
+        if let Some(length) = found {
+            state.keep_label(&units[..length]);
+        }
+        found.is_some()
     }
 
     /// The lines before byte `offset` (a line's start) read.
@@ -1589,13 +1591,13 @@ impl Source {
 
 /// The label `label` looked for in the batch file at `path`, `source` reading it: from where it
 /// is to its end, then from its start, as `goto /?` says. Its message when there is none.
-fn find_label(source: &mut Source, path: &[u16], label: &[u16]) -> bool {
-    if source.find(label) {
+fn find_label(source: &mut Source, path: &[u16], label: &[u16], state: &mut cmd::State) -> bool {
+    if source.find(label, state) {
         return true;
     }
     if let Ok(from_start) = Source::open(path) {
         *source = from_start;
-        if source.find(label) {
+        if source.find(label, state) {
             return true;
         }
     }
@@ -1635,7 +1637,7 @@ fn run_batch(
     let batch = Batch::new(line, path, depth, cmd_script);
     if let Entry::Label(label, offset) = start {
         source.skip_to(offset);
-        if !find_label(&mut source, path, label) {
+        if !find_label(&mut source, path, label, state) {
             state.failed();
             return Flow::Next;
         }
@@ -1691,7 +1693,7 @@ fn run_batch(
                     path[..own.len()].copy_from_slice(own);
                     &path[..own.len()]
                 };
-                if !find_label(&mut source, path, &label[..length]) {
+                if !find_label(&mut source, path, &label[..length], state) {
                     state.failed();
                     break Flow::Next;
                 }

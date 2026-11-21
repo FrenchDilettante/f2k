@@ -48,7 +48,7 @@ The shell prompts, reads a line from the console, expands its variables (see [Va
 
 A command line is 2,047 characters at most, its line break aside: the longest Windows 2000 takes, as Microsoft documents it (Windows XP and later take 8,191).
 This holds for a line typed or read, for the string after `/C` or `/K`, and for a batch file's line (cut there), and for a batch file's line once its variables are expanded.
-A line typed or the string after `/C` or `/K` may expand to 8,191 characters (Windows 2000 runs a `/C` string that expands past 2,047).
+A line typed or the string after `/C` or `/K` may expand to 2,048 characters, one more than a batch file's line, whose line break counts (Windows 2000 runs a `/C` string that expands to 2,048, and refuses one of 3,000).
 
 - Blanks and `@` characters before the command word are dropped.
 - A built-in command is recognized whatever its case; its word ends at a blank, at `,`, `;` or `=`, or at one of `+ / [ ] ( . \ :` (`ver;` runs `ver`, `cd..` and `cd\` run `cd`).
@@ -57,7 +57,7 @@ A line typed or the string after `/C` or `/K` may expand to 8,191 characters (Wi
 - With echo off, the shell prints no prompt.
 - Ctrl+C or Ctrl+Break at the prompt abandons the line being typed: the console leaves what was typed, and the next prompt comes on the row below, with no empty line between.
   Neither key ends the shell.
-- A line whose variables expand past 8,191 characters prints `The input line is too long.` and runs nothing.
+- A line whose variables expand past 2,048 characters prints `The input line is too long.` and runs nothing; its return code is 1 (`cmd /c` of it ends with 1).
 - A line ending with `^`, or leaving a group open (see [Blocks](#blocks)), goes on: the shell prints `More?` and reads the next line.
   Ctrl+C there abandons the whole line.
 
@@ -174,6 +174,7 @@ call :label [arguments]
 ```
 
 Runs `command`, its variables expanded a second time: in a batch file, `call echo %%X%%` prints X's value.
+A `command` that second expansion makes longer than a line (2,047 characters) prints `The input line is too long.` and runs nothing; the batch file goes on.
 When it names a batch file, that batch file runs and the batch file the `call` is in goes on at its next line once it ends.
 A program or a built-in command runs as it would without `call`.
 
@@ -386,6 +387,7 @@ for /f ["options"] %v in ('command') do command
 
 Runs `command` once for each item of `set`, each `%v` in it replaced by the item.
 The command is read once, before the loop runs, and the items replace the variables in the words read: an item is text, never syntax, whatever it holds (a file named `a&b.txt` runs no `b.txt`, a line `x > out` creates no file), an `if` compares the item as one word (`if %v==x` with `a b`), and a `for` in the command loops over the items its set's variables give.
+A command the items make longer than a block (4,096 characters) runs nothing, and says nothing.
 The variable is one character, its case counting; in a batch file it is written `%%v` (whose `%%` the line's expansion makes `%`).
 `command` is the rest of the line, its operators included (`for %v in (1 2) do echo %v & echo x` echoes `x` after each number), or a block.
 
@@ -765,6 +767,7 @@ The first file found is the program.
 
 Before a line runs, each `%NAME%` in it is replaced by the variable's value.
 Names are compared whatever the case of their letters.
+A variable whose value is longer than a line (2,047 characters) expands to nothing, as Windows 2000's cmd reads a value into a line's room.
 
 At the prompt, and in the string after `/C` or `/K`:
 
@@ -834,7 +837,7 @@ A file found with the extension `.bat` or `.cmd` runs in the shell, line by line
   Past that, the shell prints `****** B A T C H   R E C U R S I O N  exceeds STACK limits ******` and every batch file ends.
 - `exit /b [code]` ends the batch file; `exit [code]` ends the shell.
 - A line that cannot be read (see [Commands on a line](#commands-on-a-line)), or a line whose variables expand past 2,047 characters, ends every batch file, its return code 255 (`cmd /c` of the batch file ends with 255).
-  After `The input line is too long.`, the shell prints `C:\path\program.exe was unexpected at this time.`, naming the last program it found, as Windows 2000's does.
+  After `The input line is too long.`, the shell prints `C:\path\program.exe was unexpected at this time.`, naming the last program it found, as Windows 2000's does; after a `goto` or `call :label` since, it names the label's line instead, its line break printed with it: `:label` on a line, then a blank and `was unexpected at this time.` on the next.
 - When a batch file ends, the ERRORLEVEL is its last command's, or the code `exit /b` gave, and its return code is its last command's (0 for `exit /b`); run by `call`, its return code is the ERRORLEVEL.
 - When the batch file run from the prompt (or by `/C` or `/K`) is a `.cmd` file, a `set`, `path` or `prompt` that succeeds sets ERRORLEVEL to 0, in it and in every batch file it runs, a `.bat` file included; under a `.bat` file, it leaves it.
 - A batch file that cannot be opened prints its error and sets ERRORLEVEL to 1.
@@ -963,7 +966,8 @@ What Windows 2000's cmd.exe has and this one does not:
 - The help `/?` prints is F2K's own text, and describes F2K's shell.
 - `%~$PATH:` on a batch file's argument (a `for` variable takes it), and delayed expansion (`!VAR!`), are not expanded.
 - A file found by a name with an extension that is no program's (`readme.txt`) is started as a program, and cannot run: Windows opens it with the program its extension is associated with.
-- A typed line or a `/C` string may expand to 8,191 characters: Windows 2000 runs a `/C` string that expands past 2,047, and no capture shows how far.
+- A typed line or a `/C` string may expand to 2,048 characters: Windows 2000 runs a `/C` string of 2,048 and refuses one of 3,000; no capture shows the bound between.
+- A `for`'s command its items make longer than 4,096 characters runs nothing: Windows 2000 runs one of 3,000 characters and not one of 8,000; no capture shows the bound between.
 - `for /f` handles a command's lines as the command writes them: Windows reads its whole output first.
 - `pushd` takes no network path (there is no temporary drive letter), and saves 64 directories at most (4,096 characters together); past that it prints `Not enough storage is available to process this command.`.
 - `copy`'s `/V`, `/N` and `/Z` do nothing, and joining text onto a file that already ends with a Ctrl+Z (`copy /a a+b`) leaves that Ctrl+Z in the middle.

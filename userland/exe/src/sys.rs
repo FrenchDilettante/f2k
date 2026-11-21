@@ -61,10 +61,13 @@ const STARTF_USESTDHANDLES: u32 = 0x100;
 const ERROR_BROKEN_PIPE: u32 = 109;
 /// CreateFileW's failure.
 const INVALID_HANDLE_VALUE: usize = usize::MAX;
-/// The units a name and a value [`set_environment_variable`] takes hold together, their
-/// terminators included, and a name [`environment_variable`] reads at most, its terminator
-/// included: a command line's (2,047 units on Windows 2000) and two.
+/// The units a name [`environment_variable`] reads at most, its terminator included: a command
+/// line's (2,047 units on Windows 2000) and two.
 const VARIABLE: usize = 2049;
+/// The units a name and a value [`set_environment_variable`] takes hold together, their
+/// terminators included: the longest command a shell may build (8,191 units, Windows XP's line:
+/// Windows 2000's cmd sets a value of 3,001 characters a `for`'s variables make) and two.
+const ASSIGNMENT: usize = 8193;
 
 #[link(
     name = "kernel32",
@@ -492,16 +495,16 @@ pub fn environment_variable<'a>(
     Ok(Some(&value[..length as usize]))
 }
 
-/// The variable `name` set to `value`, or deleted (None). The name and the value together are a
-/// console line's units at most.
+/// The variable `name` set to `value`, or deleted (None). The name and the value together are
+/// [`ASSIGNMENT`]'s units at most, their terminators included.
 #[inline(never)]
 pub fn set_environment_variable(name: &[u16], value: Option<&[u16]>) -> Result<(), Error> {
     let value_length = value.map_or(0, <[u16]>::len);
-    if name.len() + value_length + 2 > VARIABLE {
+    if name.len() + value_length + 2 > ASSIGNMENT {
         return Err(Error(ERROR_FILENAME_EXCED_RANGE));
     }
     // The name, its NUL, the value, its NUL.
-    let mut terminated = [0u16; VARIABLE];
+    let mut terminated = [0u16; ASSIGNMENT];
     terminated[..name.len()].copy_from_slice(name);
     let (name_part, value_part) = terminated.split_at_mut(name.len() + 1);
     let value_pointer = match value {

@@ -35,10 +35,11 @@ pub const MAX_LINE: usize = 2047;
 /// The units a line read holds: [`MAX_LINE`], and its line break (CR LF).
 pub const LINE: usize = MAX_LINE + 2;
 
-/// The longest line a typed command line or `/C`'s string may expand to: Windows 2000 runs a `/C`
-/// string that expands past [`MAX_LINE`] (batline's 2,048 characters), where a batch file's line
-/// is too long. No capture shows a bound; this is Windows XP's documented line, 8,191 characters.
-pub const MAX_COMMAND: usize = 8191;
+/// The longest line a typed command line or `/C`'s string may expand to: one more than a batch
+/// file's line ([`MAX_LINE`]), whose line break Windows 2000's cmd reads into the same 2,048
+/// characters. batline's capture runs a `/C` string of 2,048 characters, where a batch file's
+/// line of 2,048 is too long; batlong's refuses one of 3,000 (`The input line is too long.`).
+pub const MAX_COMMAND: usize = 2048;
 
 /// The units a PROMPT variable's value is read into: a longer one prompts as the default does.
 pub const PROMPT_TEXT: usize = 512;
@@ -118,9 +119,9 @@ pub struct State {
     pub spaced: bool,
     /// The directories `pushd` saved, for `popd`.
     pub directories: builtins::console::Directories,
-    /// The path of the last program the shell found, and its length: what Windows 2000's cmd
-    /// names as unexpected when a batch file's line expands past [`MAX_LINE`] (see
-    /// [`syntax::FATAL`]).
+    /// The path of the last program the shell found, or the line of the last label `goto` or
+    /// `call` went to, and its length: what Windows 2000's cmd names as unexpected when a batch
+    /// file's line expands past [`MAX_LINE`] (see [`syntax::FATAL`], [`State::keep_label`]).
     pub found: [u16; FOUND],
     pub found_length: usize,
 }
@@ -145,6 +146,21 @@ impl Default for State {
 }
 
 impl State {
+    /// The line of the label a batch file went to, its line break (CR LF) after it, kept in
+    /// [`State::found`] in the place of the last program's path, as Windows 2000's cmd reads a
+    /// label into the buffer it names as unexpected: batlong's capture, a line too long right
+    /// after `goto set3`, prints `:set3`, a line break, then ` was unexpected at this time.`.
+    pub fn keep_label(&mut self, line: &[u16]) {
+        let mut length = 0;
+        for &unit in line.iter().chain(&[u16::from(b'\r'), LF]) {
+            if let Some(slot) = self.found.get_mut(length) {
+                *slot = unit;
+                length += 1;
+            }
+        }
+        self.found_length = length;
+    }
+
     /// A program ended with `code`: its return code and the ERRORLEVEL.
     pub fn ended(&mut self, code: u32) {
         self.return_code = code;
@@ -767,8 +783,15 @@ fn variable(
     if name.is_empty() {
         return Ok(None);
     }
-    if let Some(length) = variables.get(name, value)? {
-        return Ok(Some(length));
+    // A line's worth, its terminator's room included: a longer value is nothing.
+    let room = value.len().min(VALUE);
+    match variables.get(name, &mut value[..room]) {
+        Ok(Some(length)) => return Ok(Some(length)),
+        Ok(None) => {}
+        Err(TooLong) if room == VALUE || longer_than_a_line(name, variables) => {
+            return Ok(Some(0));
+        }
+        Err(TooLong) => return Err(TooLong),
     }
     let length = if is_named(name, "errorlevel") {
         format(value, format_args!("{}", errorlevel as i32))?
@@ -797,6 +820,19 @@ fn variable(
     };
     Ok(Some(length))
 }
+
+/// Whether the environment's variable `name` holds more than a line ([`MAX_LINE`] units): its
+/// value then expands to nothing, as Windows 2000's cmd, which reads a value into a line's
+/// buffer, expands it (batlong's capture: a value of 3,001 characters, set by a `for`, gives an
+/// empty `%NAME:~-6%`), where a shorter one that does not fit the line makes it too long.
+#[inline(never)]
+fn longer_than_a_line(name: &[u16], variables: &mut dyn Variables) -> bool {
+    let mut probe = [0; VALUE];
+    variables.get(name, &mut probe).is_err()
+}
+
+/// The units a variable's value is read into: a line ([`MAX_LINE`]) and its terminator.
+const VALUE: usize = MAX_LINE + 1;
 
 /// The letters a batch argument's `%~` may carry before its digit (`call /?`): the argument as a
 /// full path, its drive, path, name, extension, short name, attributes, time and size.
@@ -2271,6 +2307,36 @@ mod tests {
         assert_eq!(expanded("12345%A%", 0, &mut fake), Err(TooLong));
         assert_eq!(expanded(&"x".repeat(65), 0, &mut fake), Err(TooLong));
         assert_eq!(expanded("%errorlevel%", 1, &mut fake).unwrap(), "1");
+    }
+
+    #[test]
+    fn a_value_longer_than_a_line_expands_to_nothing() {
+        // batlong: a value of 3,001 characters, its substrings empty, the variable defined.
+        let long = "0".repeat(3000) + "7";
+        let mut fake = Fake::new(&[("R", &long), ("S", &"1".repeat(MAX_LINE))]);
+        let mut buffer = [0; LINE];
+        let arguments = Arguments::new(&[], &[]);
+        let line = wide("[%R:~-6%], [%R:~2995%] [%R%]");
+        assert_eq!(
+            expand(&line, 0, Some(&arguments), &mut fake, &mut buffer).map(narrow),
+            Ok("[], [] []".to_string())
+        );
+        // A line's worth is read, and makes the line too long when the line cannot hold it.
+        let line = wide("x%S%");
+        assert_eq!(expand(&line, 0, None, &mut fake, &mut buffer), Err(TooLong));
+        assert_eq!(
+            expand(&wide("%S%"), 0, None, &mut fake, &mut buffer).map(|text| text.len()),
+            Ok(MAX_LINE)
+        );
+    }
+
+    #[test]
+    fn a_label_s_line_is_kept_as_what_a_line_too_long_names() {
+        let mut state = State::default();
+        state.keep_label(&wide(":set3"));
+        assert_eq!(narrow(&state.found[..state.found_length]), ":set3\r\n");
+        state.keep_label(&wide(&"x".repeat(FOUND + 5)));
+        assert_eq!(state.found_length, FOUND);
     }
 
     /// Tuesday 3 November 2026, 18:31:59.123.

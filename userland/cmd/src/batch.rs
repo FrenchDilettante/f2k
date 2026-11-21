@@ -156,7 +156,8 @@ impl LineReader {
 
     /// The lines `read` gives read, from where the reader is, up to the label `label` (see
     /// [`crate::flow::label::names`]), each decoded into `units` by `decode` (its length, None
-    /// when it cannot be): whether the label was found, the reader then at the line after it.
+    /// when it cannot be): the label's line, its length in `units`, when it was found, the reader
+    /// then at the line after it.
     pub fn seek_label<E>(
         &mut self,
         read: &mut dyn FnMut(&mut [u8]) -> Result<usize, E>,
@@ -164,15 +165,15 @@ impl LineReader {
         label: &[u16],
         bytes: &mut [u8],
         units: &mut [u16],
-    ) -> bool {
+    ) -> Option<usize> {
         while let Ok(Some(line)) = self.next_line(read, bytes) {
             if let Some(length) = decode(line, units) {
                 if crate::flow::label::names(&units[..length], label) {
-                    return true;
+                    return Some(length);
                 }
             }
         }
-        false
+        None
     }
 }
 
@@ -400,12 +401,13 @@ mod tests {
         let mut seek = |reader: &mut LineReader, label: &str| {
             reader.seek_label(&mut read, &mut decode, &wide(label), &mut bytes, &mut units)
         };
-        assert!(seek(&mut reader, "end"));
+        // The label's line, as it is.
+        assert_eq!(seek(&mut reader, "end"), Some(9));
         // The reader is at the line after the label.
         assert_eq!(reader.offset(), 38);
         // The first `:top` is behind: the one ahead is found.
-        assert!(seek(&mut reader, "TOP"));
-        assert!(!seek(&mut reader, "top"));
+        assert_eq!(seek(&mut reader, "TOP"), Some(4));
+        assert_eq!(seek(&mut reader, "top"), None);
     }
 
     #[test]
