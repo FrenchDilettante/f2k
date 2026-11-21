@@ -34,7 +34,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
 use rtl::user::*;
-use rtl::window::{WindowText, QUERY_WINDOW_TEXT, WINDOW_OTHER_PROCESS};
+use rtl::window::WINDOW_OTHER_PROCESS;
 
 use crate::procedure::{self, Procedure};
 use crate::{answered, failed_with, focus, imports, menubar, nonclient, paint, window, Out};
@@ -1200,10 +1200,56 @@ fn set_text(window: usize, text: i32, ansi: bool) -> bool {
     .unwrap_or(false)
 }
 
-/// The window's text, as the window manager holds it: none for a handle naming no window.
+/// The units of a window's text kept in the copy itself; a longer text is copied into a block of
+/// the process heap.
+const TEXT_UNITS: usize = 256;
+
+/// A copy of a window's text, as long as it is ([`window_text`]).
+pub struct WindowText {
+    /// The answer's head (the length, two units), then the text when it fits.
+    short: [u16; 2 + TEXT_UNITS],
+    /// The answer, as `short`, for a longer text.
+    long: Option<imports::HeapBlock>,
+    length: usize,
+}
+
+impl Default for WindowText {
+    fn default() -> Self {
+        WindowText {
+            short: [0; 2 + TEXT_UNITS],
+            long: None,
+            length: 0,
+        }
+    }
+}
+
+impl WindowText {
+    /// The text's units.
+    pub fn as_slice(&self) -> &[u16] {
+        let answer = match &self.long {
+            Some(block) => block.units(),
+            None => &self.short[..],
+        };
+        &answer[2..2 + self.length]
+    }
+}
+
+/// The window's text, as the window manager holds it, whole: none for a handle naming no window.
+/// A text longer than the copy's own room is asked for again into a block of the process heap
+/// (again while it grows meanwhile); with no room on the heap, the copy holds what fits.
 pub fn window_text(window: usize) -> Option<WindowText> {
     let mut text = WindowText::default();
-    imports::query_window(window, QUERY_WINDOW_TEXT, &mut text).ok()?;
+    let mut length = imports::query_window_text(window, &mut text.short).ok()?;
+    text.length = length.min(TEXT_UNITS);
+    while length > text.length {
+        let Some(mut block) = imports::HeapBlock::new(2 * (2 + length)) else {
+            return Some(text);
+        };
+        let room = length;
+        length = imports::query_window_text(window, block.units_mut()).ok()?;
+        text.long = Some(block);
+        text.length = length.min(room);
+    }
     Some(text)
 }
 
@@ -1350,6 +1396,41 @@ mod tests {
         // SAFETY: the tests' own MSG.
         let answer = unsafe { peek_message_a(&mut msg, 0, 0, 0, flags) };
         (answer, msg)
+    }
+
+    /// A window's text is kept whole however long it is: 10,000 units set through the default
+    /// procedure's service come back whole, their length in both forms (code page 1252's narrow
+    /// form a byte each, U+4E00's its default character), and InternalGetWindowText cuts them to
+    /// its buffer only.
+    ///
+    /// Pins: user32.InternalGetWindowText
+    #[test]
+    fn a_long_text_is_kept_whole() {
+        let window = window();
+        let text: std::vec::Vec<u16> = (0..10_000u32)
+            .map(|i| match i % 3 {
+                0 => 0x41 + (i % 26) as u16,
+                1 => 0xE9,
+                _ => 0x4E00,
+            })
+            .chain([0])
+            .collect();
+        assert!(imports::def_set_text(window, text.as_ptr() as usize).is_ok());
+        let held = window_text(window).unwrap();
+        assert_eq!(held.as_slice(), &text[..10_000]);
+        assert_eq!(text_length(window, false), 10_000);
+        assert_eq!(text_length(window, true), 10_000);
+        let mut buffer = std::vec![0x23u16; 10_002];
+        // SAFETY: the test's own buffer, of the counts given.
+        let copied =
+            unsafe { crate::window::internal_get_window_text(window, buffer.as_mut_ptr(), 10_002) };
+        assert_eq!(copied, 10_000);
+        assert_eq!(&buffer[..10_001], &text[..]);
+        // SAFETY: as above.
+        let copied =
+            unsafe { crate::window::internal_get_window_text(window, buffer.as_mut_ptr(), 300) };
+        assert_eq!((copied, buffer[299]), (299, 0));
+        assert_eq!(&buffer[..299], &text[..299]);
     }
 
     /// A posted message comes back through GetMessage with its window and parameters; PeekMessage

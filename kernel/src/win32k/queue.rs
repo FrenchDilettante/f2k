@@ -116,6 +116,7 @@ use rtl::user::{
 };
 
 use super::class;
+use super::text::{Text, Texts};
 use super::window::{
     self,
     ClassArg,
@@ -126,7 +127,6 @@ use super::window::{
     Message,
     Payload,
     Pump,
-    TextBuf,
     ThreadKey,
     WParam,
     WindowId,
@@ -411,6 +411,9 @@ struct CreateSlot {
     live: bool,
     class_atom: class::Atom,
     params: CreateParams,
+    /// The window name the message carries, a block of the queues' store ([`Queues::texts`]):
+    /// copied as it is queued, the creation's own going once the creation ends.
+    name: Text,
 }
 
 /// The queues, the pools their messages come from, the timers ([`super::timer`]) and the windows'
@@ -424,6 +427,8 @@ pub struct Queues {
     sent: [Sent; SENT],
     creates: [CreateSlot; CREATES],
     texts: [TextSlot; TEXTS],
+    /// The texts the sent messages carry: a creation message's window name.
+    store: Texts,
     pub timers: super::timer::Timers,
     pub updates: super::paint::Updates,
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
@@ -471,7 +476,7 @@ impl Queues {
                     params: CreateParams {
                         ex_style: 0,
                         class_name: ClassArg::Atom(0),
-                        name: TextBuf::EMPTY,
+                        name: window::CreateName::Given,
                         style: 0,
                         x: 0,
                         y: 0,
@@ -482,12 +487,14 @@ impl Queues {
                         instance: 0,
                         params: 0,
                     },
+                    name: Text::EMPTY,
                 });
             }
             let texts = addr_of_mut!((*queues).texts) as *mut TextSlot;
             for index in 0..TEXTS {
                 texts.add(index).write(TextSlot::EMPTY);
             }
+            addr_of_mut!((*queues).store).write(Texts::EMPTY);
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
             addr_of_mut!((*queues).wakes).write([0; WAKE_WORDS]);
@@ -637,7 +644,12 @@ impl Queues {
     /// Give the sent message at `index` back to the pool, its create parameters with it.
     fn free_sent(&mut self, index: u16) {
         match self.sent[index as usize].carried {
-            Carried::Create(slot) => self.creates[slot as usize].live = false,
+            Carried::Create(slot) => {
+                let record = &mut self.creates[slot as usize];
+                record.live = false;
+                let name = core::mem::take(&mut record.name);
+                self.store.free(name);
+            }
             Carried::Text(slot) => self.texts[slot as usize].live = false,
             _ => {}
         }
@@ -1426,8 +1438,9 @@ pub fn receipt_name(windows: &Windows, id: SentId, from: usize, out: &mut [u16])
     let Some(Carried::Create(slot)) = windows.queues.sent_at(id).map(|s| s.carried) else {
         return 0;
     };
-    let name = &windows.queues.creates[slot as usize].params.name;
-    let rest = name.as_slice().get(from..).unwrap_or(&[]);
+    let queues = &windows.queues;
+    let name = queues.store.units(queues.creates[slot as usize].name);
+    let rest = name.get(from..).unwrap_or(&[]);
     let written = rest.len().min(out.len());
     out[..written].copy_from_slice(&rest[..written]);
     written
@@ -1987,10 +2000,21 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     };
     let thread = windows.window_thread(target);
     let hwnd = windows.handle_of(target);
-    let queues = &mut windows.queues;
-    let Some(receiver) = queues.queue_of(thread) else {
+    let Some(receiver) = windows.queues.queue_of(thread) else {
         return;
     };
+    // A creation message carries its own copy of the window name.
+    let name = match message.payload {
+        Payload::Create(ref params) => {
+            let name = windows.create_text(target, params.name);
+            match windows.queues.store.store(windows.texts.units(name)) {
+                Some(name) => name,
+                None => return,
+            }
+        }
+        _ => Text::EMPTY,
+    };
+    let queues = &mut windows.queues;
     let carried = match message.payload {
         Payload::None => Carried::None,
         Payload::Rect(r) => Carried::Rect(r),
@@ -2000,12 +2024,14 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
         // creation's own large frame.
         Payload::Create(ref params) => {
             let Some(slot) = queues.creates.iter().position(|s| !s.live) else {
+                queues.store.free(name);
                 return;
             };
             let record = &mut queues.creates[slot];
             record.live = true;
             record.class_atom = class_atom;
             record.params = *params;
+            record.name = name;
             Carried::Create(slot as u16)
         }
     };
@@ -2022,7 +2048,9 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     }) else {
         if let Carried::Create(slot) = carried {
             queues.creates[slot as usize].live = false;
+            queues.creates[slot as usize].name = Text::EMPTY;
         }
+        queues.store.free(name);
         return;
     };
     queues.push_sent(receiver, id.index);

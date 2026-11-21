@@ -895,7 +895,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         QUERY_WINDOW_INFO => length as usize == size_of::<WindowInfo>(),
         QUERY_WINDOW_VISIBLE | QUERY_WINDOW_PARENT | QUERY_WINDOW_MENU => length == 4,
         QUERY_WINDOW_DATA => length as usize == size_of::<WindowData>(),
-        QUERY_WINDOW_TEXT => length as usize == size_of::<WindowText>(),
+        QUERY_WINDOW_TEXT => length >= 4 && length % 2 == 0,
         QUERY_WINDOW_LINKS => length as usize == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length as usize == size_of::<WindowClass>(),
         index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
@@ -953,11 +953,13 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             .as_bytes()
             .to_vec()
         } else if index == QUERY_WINDOW_TEXT {
-            let mut text = WindowText::default();
-            let length = w.text.len().min(WINDOW_TEXT_UNITS);
-            text.units[..length].copy_from_slice(&w.text[..length]);
-            text.length = length as u32;
-            text.as_bytes().to_vec()
+            // The length, then the units that fit.
+            let room = (length as usize - 4) / 2;
+            let mut bytes = (w.text.len() as u32).to_le_bytes().to_vec();
+            for unit in &w.text[..w.text.len().min(room)] {
+                bytes.extend_from_slice(&unit.to_le_bytes());
+            }
+            bytes
         } else if index == QUERY_WINDOW_INFO {
             WindowInfo {
                 size: 60,
@@ -1213,12 +1215,7 @@ pub unsafe extern "system" fn NtUserDefSetText(window: usize, text: usize) -> u3
         // SAFETY: the caller's NUL-terminated text.
         unsafe { rtl::cstr::units_until_nul(text as *const u16) }.to_vec()
     };
-    wm(|wm| {
-        status(wm.window(window).map(|w| {
-            w.text = units;
-            w.text.truncate(WINDOW_TEXT_UNITS);
-        }))
-    })
+    wm(|wm| status(wm.window(window).map(|w| w.text = units)))
 }
 
 pub unsafe extern "system" fn NtUserSetWindowPos(

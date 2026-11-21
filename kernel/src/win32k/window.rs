@@ -58,8 +58,9 @@
 //! - NtUserDefSetText (0x1153): DefWindowProc's change of the window's text.
 //!
 //! A window's data: its styles, id, user data, module and procedure (with the form of the messages
-//! it takes, narrow or wide) are the record's fields; its text is a fixed buffer in the record
-//! ([`TextBuf`], [`MAX_WINDOW_TEXT`] units: Windows 2000's has no bound); its extra bytes
+//! it takes, narrow or wide) are the record's fields; its text, as long as its caller made it, is a
+//! block of the registry's store of texts ([`super::text`]), as Windows 2000 allocates it from its
+//! desktop's heap, the record naming the block; its extra bytes
 //! (cbWndExtra) are a block of an arena of the registry's own ([`ExtraBytes`]), the record naming
 //! the block, as Windows 2000 allocates them with the window from its desktop's heap.
 //!
@@ -82,12 +83,15 @@
 
 use rtl::gdi::Rect;
 pub use rtl::user::StyleStruct;
-pub use rtl::window::{WindowData, WindowInfo, WindowPos, WindowText};
+pub use rtl::window::{WindowData, WindowInfo, WindowPos};
 
 use super::class;
 use super::handle::{UserHandles, UserObject};
 #[cfg(target_arch = "x86")]
 use super::queue::QueuePump;
+#[cfg(target_arch = "x86")]
+use super::text::Staged;
+use super::text::{Text, Texts};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
@@ -286,38 +290,12 @@ pub struct SizeRect {
     pub cy: i32,
 }
 
-/// The longest window text the record holds, in UTF-16 units.
-pub const MAX_WINDOW_TEXT: usize = rtl::window::WINDOW_TEXT_UNITS;
-
-/// A window text (a title), copied into the record's own fixed buffer.
+/// The window name a creation's WM_NCCREATE and WM_CREATE carry: the name the creation was given
+/// (kept with the record until the creation ends), or the window's title, once WM_NCCREATE set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextBuf {
-    units: [u16; MAX_WINDOW_TEXT],
-    len: u16,
-}
-
-impl TextBuf {
-    pub const EMPTY: Self = TextBuf {
-        units: [0; MAX_WINDOW_TEXT],
-        len: 0,
-    };
-
-    /// A copy of `units` (cut at the buffer's capacity).
-    pub fn from_units(units: &[u16]) -> Self {
-        let len = units.len().min(MAX_WINDOW_TEXT);
-        let mut copy = TextBuf::EMPTY;
-        copy.units[..len].copy_from_slice(&units[..len]);
-        copy.len = len as u16;
-        copy
-    }
-
-    pub fn as_slice(&self) -> &[u16] {
-        &self.units[..self.len as usize]
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
+pub enum CreateName {
+    Given,
+    Title,
 }
 
 /// The class a create names, as the create parameters carry it: an integer atom, a string name,
@@ -334,7 +312,7 @@ pub enum ClassArg {
 pub struct CreateParams {
     pub ex_style: u32,
     pub class_name: ClassArg,
-    pub name: TextBuf,
+    pub name: CreateName,
     pub style: u32,
     pub x: i32,
     pub y: i32,
@@ -897,7 +875,11 @@ struct Window {
     /// The kind of window user32's code made of it (NtUserSetWindowFNID: rtl::window's FNID_*),
     /// 0 for none.
     fnid: u16,
-    title: TextBuf,
+    /// The window's text: a block of the registry's store ([`Windows::texts`]).
+    title: Text,
+    /// The name its creation was given, a block of the same store, while the creation runs (its
+    /// WM_NCCREATE and WM_CREATE carry it: [`CreateName::Given`]); empty after it.
+    create_name: Text,
     /// The window's place when it is neither minimized nor maximized (GetWindowPlacement's
     /// rcNormalPosition), in its parent's client coordinates (the screen's for a top-level
     /// window): kept as it leaves that state, and set by SetWindowPlacement; none before either.
@@ -995,7 +977,8 @@ impl Window {
         extra: None,
         user_data: 0,
         fnid: 0,
-        title: TextBuf::EMPTY,
+        title: Text::EMPTY,
+        create_name: Text::EMPTY,
         normal: None,
         min_position: None,
         max_position: None,
@@ -1342,6 +1325,8 @@ pub struct Windows {
     pub queues: super::queue::Queues,
     /// The windows' extra bytes.
     extra: ExtraBytes,
+    /// The windows' texts: their titles, and their creations' names.
+    pub(super) texts: Texts,
     /// The menus ([`super::menu`]): a window's menu is its record's, under the same lock.
     pub menus: super::menu::Menus,
 }
@@ -1383,6 +1368,7 @@ impl Windows {
             super::queue::Queues::write_empty(addr_of_mut!((*windows).queues));
             // Zero bytes are an empty arena: no granule taken, every byte zero.
             addr_of_mut!((*windows).extra).write_bytes(0, 1);
+            addr_of_mut!((*windows).texts).write(Texts::EMPTY);
             super::menu::Menus::write_empty(addr_of_mut!((*windows).menus));
         }
     }
@@ -2124,6 +2110,13 @@ impl Windows {
         // The window count goes up early, so the failure paths keep it correct through the free.
         self.thread_mut(caller).window_count += 1;
 
+        // The name the creation was given, kept for its messages: no room for it fails it.
+        let Some(name) = self.texts.store(args.name) else {
+            self.rollback_create(classes, caller, id, pump);
+            return Err(Failure::OutOfMemory);
+        };
+        self.at_mut(id).create_name = name;
+
         // The create parameters the WM_NCCREATE and WM_CREATE handlers see.
         let mut params = CreateParams {
             ex_style,
@@ -2132,7 +2125,7 @@ impl Windows {
                 class::Name::Text(_) if ansi_creator => ClassArg::AnsiName,
                 class::Name::Text(_) => ClassArg::Name,
             },
-            name: TextBuf::from_units(args.name),
+            name: CreateName::Given,
             style: args.style,
             x: args.x,
             y: args.y,
@@ -2443,8 +2436,8 @@ impl Windows {
         // the record, except when the original name was empty and the text never got set.
         {
             let w = self.at(id);
-            if w.flags.title_set && !(params.name.is_empty() && w.title.is_empty()) {
-                params.name = w.title;
+            if w.flags.title_set && !(w.create_name.is_empty() && w.title.is_empty()) {
+                params.name = CreateName::Title;
             }
         }
 
@@ -2480,6 +2473,9 @@ impl Windows {
             let _ = self.destroy_window(classes, caller, id, pump);
             return Err(Failure::OutOfMemory);
         }
+        // The creation's name is the sends' no longer (the queue's sends keep their own copy).
+        let name = core::mem::take(&mut self.at_mut(id).create_name);
+        self.texts.free(name);
 
         // The window is officially created.
         self.at_mut(id).flags.initialized = true;
@@ -3098,9 +3094,17 @@ impl Windows {
         // And its copy of the system menu (GetSystemMenu's).
         self.destroy_system_menu(handle);
 
-        // The properties, the title string and the extra bytes go with the record.
+        // The properties, the texts and the extra bytes go with the record.
         pump.delete_properties(self, window);
-        self.at_mut(window).title = TextBuf::EMPTY;
+        let (title, name) = {
+            let w = self.at_mut(window);
+            (
+                core::mem::take(&mut w.title),
+                core::mem::take(&mut w.create_name),
+            )
+        };
+        self.texts.free(title);
+        self.texts.free(name);
         if let Some(block) = self.at_mut(window).extra.take() {
             self.extra.free(block);
         }
@@ -4434,12 +4438,22 @@ impl Windows {
     }
 
     /// `window`'s text, its title.
-    pub fn window_text(&self, window: WindowId) -> WindowText {
-        let mut text = WindowText::default();
-        let title = self.at(window).title.as_slice();
-        text.units[..title.len()].copy_from_slice(title);
-        text.length = title.len() as u32;
-        text
+    pub fn window_text(&self, window: WindowId) -> &[u16] {
+        self.texts.units(self.at(window).title)
+    }
+
+    /// The name `window`'s creation messages carry, `name` naming it ([`CreateName`]).
+    pub fn create_name(&self, window: WindowId, name: CreateName) -> &[u16] {
+        self.texts.units(self.create_text(window, name))
+    }
+
+    /// The text of [`Windows::create_name`]'s, as the store ([`Windows::texts`]) names it.
+    pub fn create_text(&self, window: WindowId, name: CreateName) -> Text {
+        let w = self.at(window);
+        match name {
+            CreateName::Given => w.create_name,
+            CreateName::Title => w.title,
+        }
     }
 
     /// The `length` bytes of `window`'s extra bytes at `offset`, where they are; InvalidIndex
@@ -4637,10 +4651,15 @@ impl Windows {
     }
 
     /// The window `handle` names given the text `units` (DefWindowProc's WM_SETTEXT, and its
-    /// WM_NCCREATE's title): cut at the record's capacity.
+    /// WM_NCCREATE's title), whole: OutOfMemory, the text unchanged, when the store has no room
+    /// for it.
     pub fn set_window_text(&mut self, handle: Hwnd, units: &[u16]) -> Result<(), Failure> {
         let window = self.window_of(handle)?;
-        self.at_mut(window).title = TextBuf::from_units(units);
+        let mut title = self.at(window).title;
+        if !self.texts.replace(&mut title, units) {
+            return Err(Failure::OutOfMemory);
+        }
+        self.at_mut(window).title = title;
         Ok(())
     }
 }
@@ -5015,7 +5034,7 @@ impl WindowManager {
             QUERY_WINDOW_INFO => Query::Info(self.windows.window_info(&self.classes, window)),
             QUERY_WINDOW_VISIBLE => Query::Visible(self.windows.is_window_visible(window) as u32),
             QUERY_WINDOW_DATA => Query::Data(self.windows.window_data(window, caller)),
-            QUERY_WINDOW_TEXT => Query::Text(self.windows.window_text(window)),
+            QUERY_WINDOW_TEXT => Query::TextLength(self.windows.window_text(window).len() as u32),
             QUERY_WINDOW_PARENT => Query::Parent(
                 self.windows
                     .parent_of(window)
@@ -5127,7 +5146,7 @@ impl WindowManager {
             let class_matches =
                 atom.is_none_or(|atom| record.class.map(|id| self.classes.atom(id)) == Some(atom));
             let title_matches = title.is_none_or(|title| {
-                let own = record.title.as_slice();
+                let own = w.texts.units(record.title);
                 own.len() == title.len() && own.iter().zip(title).all(|(&a, &b)| fold(a) == fold(b))
             });
             if class_matches && title_matches {
@@ -5148,8 +5167,9 @@ pub enum Query {
     Visible(u32),
     /// QUERY_WINDOW_DATA: the window's own fields.
     Data(WindowData),
-    /// QUERY_WINDOW_TEXT: the window's text.
-    Text(WindowText),
+    /// QUERY_WINDOW_TEXT: the window's text's length, the answer's head (its units follow it,
+    /// as many as the answer holds: the service copies them, [`query_window`]).
+    TextLength(u32),
     /// QUERY_WINDOW_EXTRA and QUERY_CLASS_EXTRA: a value of the window's extra bytes or its
     /// class's, its first `.1` bytes
     /// (little-endian) the answer.
@@ -5170,11 +5190,11 @@ impl Query {
         use rtl::pod::Pod;
         match self {
             Query::Info(info) => info.as_bytes(),
-            Query::Visible(visible) | Query::Parent(visible) | Query::Menu(visible) => {
-                visible.as_bytes()
-            }
+            Query::Visible(visible)
+            | Query::Parent(visible)
+            | Query::Menu(visible)
+            | Query::TextLength(visible) => visible.as_bytes(),
             Query::Data(data) => data.as_bytes(),
-            Query::Text(text) => text.as_bytes(),
             Query::Links(links) => links.as_bytes(),
             Query::Class(class) => class.as_bytes(),
             Query::Extra(bytes, length) => &bytes[..*length as usize],
@@ -5185,7 +5205,7 @@ impl Query {
 /// Whether NtUserQueryWindow answers the index `index` (ERROR_INVALID_INDEX, carried, when it has
 /// no answer for it) with an answer of `length` bytes (STATUS_INFO_LENGTH_MISMATCH when the
 /// answer's length is another): each index's answer has its own length, an extra-bytes value 2 or
-/// 4.
+/// 4, the text any even length from 4 (its own length, then the units that fit).
 pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
     use core::mem::size_of;
 
@@ -5196,7 +5216,7 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
             length == size_of::<u32>()
         }
         QUERY_WINDOW_DATA => length == size_of::<WindowData>(),
-        QUERY_WINDOW_TEXT => length == size_of::<WindowText>(),
+        QUERY_WINDOW_TEXT => length >= size_of::<u32>() && length % 2 == 0,
         QUERY_WINDOW_LINKS => length == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length == size_of::<WindowClass>(),
         QUERY_WINDOW_THREAD => length == size_of::<WindowThread>(),
@@ -5272,30 +5292,6 @@ mod target {
 #[cfg(target_arch = "x86")]
 pub use target::*;
 
-/// Read a window name, NUL-terminated UTF-16, from the caller at `at` into `units`: none for a
-/// null pointer, the name cut at the buffer's length (the record holds no more).
-#[cfg(target_arch = "x86")]
-fn read_text(at: UserAddr, units: &mut [u16]) -> Result<&[u16], NtStatus> {
-    if at.is_null() {
-        return Ok(&[]);
-    }
-    let mut len = 0;
-    while len < units.len() {
-        let unit = at.offset(2 * len as u32).cast::<u16>().read()?;
-        if unit == 0 {
-            break;
-        }
-        units[len] = unit;
-        len += 1;
-    }
-    Ok(&units[..len])
-}
-
-/// NtUserCreateWindowEx(ExStyle, ClassName, WindowName, Style, X, Y, Width, Height, Parent, Menu,
-/// Instance, Param, ExpectedVersion, Window): CreateWindowExW's arguments as they are (ClassName a
-/// string pointer or an integer atom, the private ANSI-creator bit in ExStyle), the caller's
-/// expected-version word, and the new window's handle into `window`. The handle's slot is written
-/// first, so a creation is never left unreported by a fault.
 #[cfg(target_arch = "x86")]
 #[allow(clippy::too_many_arguments)]
 pub fn create_window_ex(
@@ -5318,14 +5314,13 @@ pub fn create_window_ex(
     window.write(0)?;
     let mut class_units = [0u16; class::MAX_ATOM_NAME];
     let class_name = class::read_name(class_name, &mut class_units)?;
-    let mut name_units = [0u16; MAX_WINDOW_TEXT];
-    let name = read_text(window_name, &mut name_units)?;
+    let name = Staged::read(window_name)?;
     let caller = super::winsta::gui_thread(call)?.thread;
     let mut args = CreateArgs {
         ex_style,
         class_name,
         class_atom: 0,
-        name,
+        name: name.units(),
         style,
         x,
         y,
@@ -5601,11 +5596,42 @@ pub fn query_window(
     if index == rtl::window::QUERY_WINDOW_THREAD {
         return query_window_thread(call, window, information);
     }
+    if index == rtl::window::QUERY_WINDOW_TEXT {
+        return query_window_text(call, window, information, length);
+    }
     let caller = call.process().object().index;
     let answer = lock(call.passive())
         .query_window(window.raw(), index, length as usize, caller)
         .map_err(Failure::status)?;
     information.write(answer.bytes())?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// QUERY_WINDOW_TEXT: the window's text's length, then as many of its units as the answer's
+/// `length` bytes hold after it (no terminator), copied under the lock and written once it is let
+/// go.
+#[cfg(target_arch = "x86")]
+fn query_window_text(
+    call: &mut NtCall,
+    window: Handle,
+    information: UserAddr,
+    length: u32,
+) -> NtResult {
+    let room = (length as usize - 4) / 2;
+    let (full, units) = {
+        let manager = lock(call.passive());
+        let id = manager
+            .windows
+            .window_of(window.raw())
+            .map_err(Failure::status)?;
+        let text = manager.windows.window_text(id);
+        let fits = &text[..text.len().min(room)];
+        (text.len(), Staged::copy_of(fits).ok_or(STATUS_NO_MEMORY)?)
+    };
+    information.cast::<u32>().write(full as u32)?;
+    information
+        .offset(4)
+        .write(rtl::pod::slice_bytes(units.units()))?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -5707,15 +5733,14 @@ pub fn set_window_word(
 }
 
 /// NtUserDefSetText(Window, Text): the window's text set to the NUL-terminated UTF-16 string at
-/// `text` (null: the empty text), cut at the record's capacity: DefWindowProc's WM_SETTEXT and
-/// the title its WM_NCCREATE sets. The text is read before the window manager's lock is taken.
+/// `text` (null: the empty text), whole: DefWindowProc's WM_SETTEXT and the title its WM_NCCREATE
+/// sets. The text is read before the window manager's lock is taken.
 #[cfg(target_arch = "x86")]
 pub fn def_set_text(call: &mut NtCall, window: Handle, text: UserAddr) -> NtResult {
-    let mut units = [0u16; MAX_WINDOW_TEXT];
-    let text = read_text(text, &mut units)?;
+    let text = Staged::read(text)?;
     lock(call.passive())
         .windows
-        .set_window_text(window.raw(), text)
+        .set_window_text(window.raw(), text.units())
         .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
 }
@@ -5776,15 +5801,20 @@ pub fn find_window_ex(
         0 => None,
         raw => Some(class::read_name(raw, &mut class_units)?),
     };
-    let mut title_units = [0u16; MAX_WINDOW_TEXT];
     let title = match window_name.is_null() {
         true => None,
-        false => Some(read_text(window_name, &mut title_units)?),
+        false => Some(Staged::read(window_name)?),
     };
     let caller = super::winsta::gui_thread(call)?.thread;
     let optional = |handle: Handle| (handle.raw() != 0).then(|| handle.raw());
     let answer = lock(call.passive())
-        .find_window(caller, optional(parent), optional(after), class, title)
+        .find_window(
+            caller,
+            optional(parent),
+            optional(after),
+            class,
+            title.as_ref().map(Staged::units),
+        )
         .map_err(Failure::status)?;
     found.write(answer.unwrap_or(0))?;
     Ok(STATUS_SUCCESS)
@@ -6153,6 +6183,8 @@ mod tests {
         events: Vec<Ev>,
         /// (target, message, params) for every WM_NCCREATE/WM_CREATE.
         params: Vec<(WindowId, u32, CreateParams)>,
+        /// The window name each of those carries, as its receipt would read it.
+        names: Vec<Vec<u16>>,
         /// The parent pointer seen at each send (the create's pre-callback parent).
         parents: Vec<(WindowId, Option<WindowId>)>,
         /// The target's stored style at each send.
@@ -6186,6 +6218,7 @@ mod tests {
             Rec {
                 events: Vec::new(),
                 params: Vec::new(),
+                names: Vec::new(),
                 parents: Vec::new(),
                 styles: Vec::new(),
                 positions: Vec::new(),
@@ -6273,6 +6306,8 @@ mod tests {
         ) -> LResult {
             if let Payload::Create(ref p) = message.payload {
                 self.params.push((target, message.message, *p));
+                self.names
+                    .push(windows.create_name(target, p.name).to_vec());
             }
             self.parents.push((target, windows.at(target).parent));
             self.styles.push((target, windows.at(target).style));
@@ -6285,9 +6320,9 @@ mod tests {
             if message.message == WM_NCCREATE && !self.title_done {
                 if let Some(units) = self.title_on_nccreate.clone() {
                     self.title_done = true;
-                    let w = windows.at_mut(target);
-                    w.title = TextBuf::from_units(&units);
-                    w.flags.title_set = true;
+                    let handle = windows.at(target).handle;
+                    windows.set_window_text(handle, &units).unwrap();
+                    windows.at_mut(target).flags.title_set = true;
                 }
             }
             if let Payload::WindowPos(ref mut pos) = message.payload {
@@ -6794,7 +6829,7 @@ mod tests {
         let (_, _, p) = &pump.params[0];
         assert_eq!(p.menu, 7, "a child's menu is the raw id");
         assert_eq!(p.parent, w.at(parent).handle);
-        assert_eq!(p.name.as_slice(), &wide("hello")[..]);
+        assert_eq!(pump.names[0], wide("hello"));
         assert_eq!(p.params, 0x1234);
         assert_eq!(p.style, WS_CHILD);
         // A top-level window's menu is a handle.
@@ -7334,12 +7369,42 @@ mod tests {
         pump.title_on_nccreate = Some(wide("new title"));
         let a = args(atom, WS_OVERLAPPED);
         let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
-        let (_, _, p) = pump
+        let create = pump
             .params
             .iter()
-            .find(|(_, m, _)| *m == WM_CREATE)
+            .position(|(_, m, _)| *m == WM_CREATE)
             .unwrap();
-        assert_eq!(p.name.as_slice(), &wide("new title")[..]);
+        assert_eq!(pump.names[create], wide("new title"));
+    }
+
+    /// A creation's name and a window's text are kept whole however long they are (10,000
+    /// units): WM_NCCREATE carries the whole name, the creation's copy goes once it ends, and the
+    /// title goes back to the store with the window.
+    #[test]
+    fn long_texts_are_kept_whole_and_freed() {
+        let (w, c, t, atom, _, _) = setup();
+        let before = w.texts.counts();
+        let mut pump = Rec::new(t);
+        let name: Vec<u16> = (0..10_000u32).map(|i| 0x41 + (i % 26) as u16).collect();
+        let mut a = args(atom, WS_OVERLAPPED);
+        a.name = &name;
+        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        assert_eq!(pump.names[0], name, "WM_NCCREATE carries the whole name");
+        assert!(
+            w.at(id).create_name.is_empty(),
+            "the creation's copy is gone"
+        );
+        let handle = w.at(id).handle;
+        let title: Vec<u16> = (0..10_000u32).map(|i| 0x4E00 + i as u16).collect();
+        assert_eq!(w.set_window_text(handle, &title), Ok(()));
+        assert_eq!(w.window_text(id), &title[..]);
+        assert_eq!(w.texts.counts().0, before.0 + 1, "the title alone is held");
+        assert!(w.destroy_window(c, t, id, &mut pump).is_ok());
+        assert_eq!(
+            w.texts.counts().0,
+            before.0,
+            "the title went with the window"
+        );
     }
 
     /// A WM_NCCREATE answered with 0 rolls the creation back: the only messages are WM_NCCREATE
@@ -8791,8 +8856,8 @@ mod tests {
     }
 
     /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's, the parent's and
-    /// the menu's 4, the data's 36, the text's 260, an extra-bytes value's 2 or 4, nothing
-    /// else.
+    /// the menu's 4, the data's 36, the text's any even length from 4 (its length, then the room
+    /// for its units), an extra-bytes value's 2 or 4, nothing else.
     #[test]
     fn the_query_lengths() {
         use rtl::window::{
@@ -8807,7 +8872,16 @@ mod tests {
         assert_eq!(query_accepts(QUERY_WINDOW_PARENT, 4), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_MENU, 4), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_DATA, 36), Ok(()));
-        assert_eq!(query_accepts(QUERY_WINDOW_TEXT, 260), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_TEXT, 4), Ok(()));
+        assert_eq!(query_accepts(QUERY_WINDOW_TEXT, 4 + 2 * 10_000), Ok(()));
+        assert_eq!(
+            query_accepts(QUERY_WINDOW_TEXT, 7),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            query_accepts(QUERY_WINDOW_TEXT, 2),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
         assert_eq!(query_accepts(QUERY_WINDOW_EXTRA | 8, 2), Ok(()));
         assert_eq!(query_accepts(QUERY_WINDOW_EXTRA, 4), Ok(()));
         assert_eq!(
@@ -9019,7 +9093,7 @@ mod tests {
         );
 
         assert_eq!(w.set_window_text(ht, &wide("a title")), Ok(()));
-        assert_eq!(w.window_text(top).as_slice(), &wide("a title")[..]);
+        assert_eq!(w.window_text(top), &wide("a title")[..]);
         assert_eq!(
             w.set_window_text(0x7FFF_FFFC, &[]),
             Err(Failure::InvalidWindowHandle)

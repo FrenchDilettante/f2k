@@ -9,7 +9,8 @@
 //! with ([`brush`]), the bitmaps memory DCs draw on and the blits between DCs ([`bitmap`],
 //! [`blit`]) and what is drawn through them ([`raster`], in the built-in font, [`font`], or a
 //! TrueType font, [`fonts`], which holds the faces loaded and the font objects too), the clipboard
-//! ([`clipboard`]), and the second service table their services come through.
+//! ([`clipboard`]), the windows' texts ([`text`]), and the second service table their services come
+//! through.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -52,6 +53,7 @@ pub mod paint;
 pub mod prop;
 pub mod queue;
 pub mod raster;
+pub mod text;
 pub mod timer;
 pub mod window;
 pub mod winsta;

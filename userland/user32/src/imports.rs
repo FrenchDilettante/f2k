@@ -1453,6 +1453,22 @@ pub fn query_window<T: Pod>(window: usize, index: u32, answer: &mut T) -> Result
     })
 }
 
+/// NtUserQueryWindow's QUERY_WINDOW_TEXT into `answer` (two units at least): `window`'s text's
+/// length, its first two units of `answer`, and as many of its units as the rest holds after them.
+pub fn query_window_text(window: usize, answer: &mut [u16]) -> Result<usize, NtStatus> {
+    let length = 2 * answer.len() as u32;
+    // SAFETY: the kernel writes the local answer, as long as its length.
+    checked(unsafe {
+        raw::NtUserQueryWindow(
+            window,
+            rtl::window::QUERY_WINDOW_TEXT,
+            answer.as_mut_ptr().cast(),
+            length,
+        )
+    })?;
+    Ok(answer[0] as usize | (answer[1] as usize) << 16)
+}
+
 /// NtUserSetWindowPos: SetWindowPos's change.
 #[allow(clippy::too_many_arguments)]
 pub fn set_window_pos(

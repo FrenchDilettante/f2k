@@ -66,9 +66,25 @@ integers!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
 // element's size is a multiple of its alignment), and each element is plain data.
 unsafe impl<T: Pod, const N: usize> Pod for [T; N] {}
 
+/// The bytes of `values`, back to back: a slice of plain data handed out whole (a run of UTF-16
+/// units written to a caller's buffer).
+pub fn slice_bytes<T: Pod>(values: &[T]) -> &[u8] {
+    // SAFETY: the slice's elements lie back to back without padding (an element's size is a
+    // multiple of its alignment, and an element has none of its own: the trait's contract), all
+    // initialized, borrowed for as long as the slice is.
+    unsafe { core::slice::from_raw_parts(values.as_ptr().cast(), core::mem::size_of_val(values)) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slice's bytes are its elements' own, in order.
+    #[test]
+    fn a_slice_is_its_elements_bytes() {
+        assert_eq!(slice_bytes(&[0x0201u16, 0x0403]), &[1, 2, 3, 4]);
+        assert_eq!(slice_bytes::<u32>(&[]), &[] as &[u8]);
+    }
 
     #[repr(C)]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

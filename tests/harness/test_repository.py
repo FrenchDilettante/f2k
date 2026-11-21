@@ -433,6 +433,9 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/perf.rs": "(perf-trace builds only) the frame-pointer walk of a sampled stack, each"
     " frame checked against the kernel window or the live page tables first",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",
+    "kernel/src/win32k/text.rs": "the window manager's texts, in its segments of the nonpaged pool,"
+    " and the pool blocks a caller's text is staged in: a program's string reaches them only"
+    " through the copy",
 }
 RAW_FORMS = ("read_volatile", "write_volatile", "from_raw_parts")
 

@@ -21,7 +21,10 @@ pub const QUERY_WINDOW_VISIBLE: u32 = 1;
 
 /// The window's data as GetWindowLong reads it, a [`WindowData`].
 pub const QUERY_WINDOW_DATA: u32 = 2;
-/// The window's text (its title) as DefWindowProc reads it, a [`WindowText`].
+/// The window's text (its title) as DefWindowProc reads it, as long as it is: its length in UTF-16
+/// units, a 32-bit integer, then as many of its units as the answer's room holds after it (no
+/// terminator). The answer may be any even length from 4: a caller whose room the length passes
+/// asks again with more.
 pub const QUERY_WINDOW_TEXT: u32 = 3;
 /// The window's parent's handle, a 32-bit handle: the desktop window for a top-level window, 0
 /// for a window with none (the desktop's own windows). IsChild walks it.
@@ -72,9 +75,6 @@ pub const WINDOW_DIALOG: u32 = 0x4;
 /// NtUserSetWindowFNID's ids: the kind of window user32's own code makes of a window. Windows
 /// 2000's values are not public; F2K's are its own. A dialog's ([`WINDOW_DIALOG`]).
 pub const FNID_DIALOG: u32 = 0x02A4;
-
-/// The longest window text the window manager holds, in UTF-16 units (no terminator).
-pub const WINDOW_TEXT_UNITS: usize = 128;
 
 /// WINDOWINFO's dwWindowStatus: the window is its thread's active window.
 pub const WS_ACTIVECAPTION: u32 = 0x0001;
@@ -180,30 +180,6 @@ pub struct WindowThread {
 // SAFETY: two u32s, no padding; every bit pattern is valid.
 unsafe impl Pod for WindowThread {}
 
-/// A window's text ([`QUERY_WINDOW_TEXT`]): its first `length` units, no terminator.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WindowText {
-    pub length: u32,
-    pub units: [u16; WINDOW_TEXT_UNITS],
-}
-
-impl Default for WindowText {
-    fn default() -> Self {
-        WindowText {
-            length: 0,
-            units: [0; WINDOW_TEXT_UNITS],
-        }
-    }
-}
-
-impl WindowText {
-    /// The text's units.
-    pub fn as_slice(&self) -> &[u16] {
-        &self.units[..(self.length as usize).min(WINDOW_TEXT_UNITS)]
-    }
-}
-
 /// A window's relatives ([`QUERY_WINDOW_LINKS`]), each a handle (0 for none): its parent (the
 /// desktop window for a top-level window), its owner, its first child (the top of its children's
 /// z-order), the siblings after it and before it in the z-order, and the window last active
@@ -266,7 +242,6 @@ const _: () = {
     assert!(size_of::<PropSet>() == 8);
     assert!(size_of::<WindowClass>() == 48);
     assert!(size_of::<WindowData>() == 36);
-    assert!(size_of::<WindowText>() == 4 + 2 * WINDOW_TEXT_UNITS);
     assert!(size_of::<WindowInfo>() == 60);
     assert!(offset_of!(WindowInfo, client) == 20);
     assert!(offset_of!(WindowInfo, style) == 36);
@@ -284,8 +259,6 @@ unsafe impl Pod for WindowInfo {}
 unsafe impl Pod for WindowPos {}
 // SAFETY: nine 32-bit integers.
 unsafe impl Pod for WindowData {}
-// SAFETY: an integer and an array of units, without padding (the assert above pins the size).
-unsafe impl Pod for WindowText {}
 // SAFETY: six 32-bit integers.
 unsafe impl Pod for WindowLinks {}
 // SAFETY: two 32-bit integers.
