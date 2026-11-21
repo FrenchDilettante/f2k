@@ -122,34 +122,21 @@ pub fn failed<T>(error: u32) -> Option<T> {
     None
 }
 
-/// The units a narrow string converts into without the heap: its wide form on the stack.
-const STACK_UNITS: usize = 260;
-
 /// Run `f` on the wide form of the narrow `bytes`, NUL-terminated (the ANSI code page's, through
 /// ntdll's RtlMultiByteToUnicodeN, as Windows 2000's user32 converts), on the stack when it is
-/// short and in a block of the process heap otherwise; none, with ERROR_NOT_ENOUGH_MEMORY, when
-/// the heap has no room for it. `f` gets the units, the terminator included: for a service that
-/// takes the string's address.
+/// short and in a block of the process heap otherwise ([`rtl::string::with_wide_z`]); none, with
+/// ERROR_NOT_ENOUGH_MEMORY, when the heap has no room for it. `f` gets the units, the terminator
+/// included: for a service that takes the string's address.
 pub fn with_wide_z<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
-    if bytes.len() < STACK_UNITS {
-        let mut units = [0u16; STACK_UNITS];
-        let length = imports::multi_byte_to_unicode(&mut units[..bytes.len()], bytes);
-        return Some(f(&units[..=length]));
-    }
-    let Some(mut block) = imports::HeapBlock::new(2 * (bytes.len() + 1)) else {
-        return failed(ERROR_NOT_ENOUGH_MEMORY);
-    };
-    let units = block.units_mut();
-    let room = units.len() - 1;
-    let length = imports::multi_byte_to_unicode(&mut units[..room], bytes);
-    units[length] = 0;
-    Some(f(&units[..=length]))
+    rtl::string::with_wide_z::<imports::ProcessHeap, R>(bytes, imports::multi_byte_to_unicode, f)
+        .or_else(|| failed(ERROR_NOT_ENOUGH_MEMORY))
 }
 
 /// Run `f` on the wide form of the narrow `bytes` as [`with_wide_z`] makes it, without the
-/// terminator: the string's units alone, as gdi32's `with_wide` hands them.
+/// terminator: the string's units alone ([`rtl::string::with_wide`]).
 pub fn with_wide<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
-    with_wide_z(bytes, |units| f(&units[..units.len() - 1]))
+    rtl::string::with_wide::<imports::ProcessHeap, R>(bytes, imports::multi_byte_to_unicode, f)
+        .or_else(|| failed(ERROR_NOT_ENOUGH_MEMORY))
 }
 
 /// A name as the narrow calls take one (a class name, a cursor's resource name): a NUL-terminated
@@ -188,6 +175,8 @@ impl<'a> NameA<'a> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::string::STACK_UNITS;
+
     use super::*;
     use crate::imports::host::LAST_ERROR;
 

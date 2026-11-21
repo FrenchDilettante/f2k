@@ -1460,7 +1460,7 @@ pub(crate) mod tests {
     }
 
     /// A DLL's process heap on the host's allocator, counting its live blocks.
-    struct HostHeap;
+    pub(crate) struct HostHeap;
 
     std::thread_local! {
         static LIVE_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };

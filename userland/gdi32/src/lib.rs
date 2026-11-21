@@ -58,25 +58,13 @@ pub fn failed<T>(error: u32) -> Option<T> {
     None
 }
 
-/// The units a narrow string converts into without the heap: its wide form on the stack.
-const STACK_UNITS: usize = 256;
-
-/// Run `f` on the wide form of the narrow `bytes` (the ANSI code page's, through ntdll's
-/// RtlMultiByteToUnicodeN, as Windows 2000's gdi32 converts), on the stack when it is short and
-/// in a block of the process heap otherwise; none, with ERROR_NOT_ENOUGH_MEMORY, when the heap has
-/// no room for it.
+/// Run `f` on the wide form of the narrow `bytes`, without a terminator (the ANSI code page's,
+/// through ntdll's RtlMultiByteToUnicodeN, as Windows 2000's gdi32 converts), on the stack when it
+/// is short and in a block of the process heap otherwise ([`rtl::string::with_wide`]); none, with
+/// ERROR_NOT_ENOUGH_MEMORY, when the heap has no room for it.
 pub fn with_wide<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
-    if bytes.len() <= STACK_UNITS {
-        let mut units = [0u16; STACK_UNITS];
-        let length = imports::multi_byte_to_unicode(&mut units[..bytes.len()], bytes);
-        return Some(f(&units[..length]));
-    }
-    let Some(mut block) = imports::HeapBlock::new(2 * bytes.len()) else {
-        return failed(ERROR_NOT_ENOUGH_MEMORY);
-    };
-    let units = block.units_mut();
-    let length = imports::multi_byte_to_unicode(units, bytes);
-    Some(f(&units[..length]))
+    rtl::string::with_wide::<imports::ProcessHeap, R>(bytes, imports::multi_byte_to_unicode, f)
+        .or_else(|| failed(ERROR_NOT_ENOUGH_MEMORY))
 }
 
 #[cfg(test)]

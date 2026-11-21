@@ -11,6 +11,7 @@
 //! allocator its caller hands over (ntdll's heap, or the host tests' stand-in).
 
 use crate::cp1252;
+use crate::heap::{Block, ProcessHeap};
 use crate::status::{
     STATUS_BUFFER_OVERFLOW,
     STATUS_INVALID_PARAMETER,
@@ -341,6 +342,43 @@ pub fn unicode_string_to_integer(text: &[u16], base: u32) -> Result<u32, u32> {
     })
 }
 
+/// The units a narrow string converts into on the stack (MAX_PATH's, its terminator included): a
+/// longer one converts in a block of the process heap.
+pub const STACK_UNITS: usize = 260;
+
+/// Run `f` on the wide form of the narrow `bytes`, NUL-terminated, as a system DLL's narrow calls
+/// convert their strings: `convert` (the DLL's RtlMultiByteToUnicodeN over slices) makes it on the
+/// stack when it is short and in a block of the process heap (`H`'s) otherwise; none when the heap
+/// has no room for it. `f` gets the units, the terminator included: for a service that takes the
+/// string's address.
+pub fn with_wide_z<H: ProcessHeap, R>(
+    bytes: &[u8],
+    convert: impl FnOnce(&mut [u16], &[u8]) -> usize,
+    f: impl FnOnce(&[u16]) -> R,
+) -> Option<R> {
+    if bytes.len() < STACK_UNITS {
+        let mut units = [0u16; STACK_UNITS];
+        let length = convert(&mut units[..bytes.len()], bytes);
+        return Some(f(&units[..=length]));
+    }
+    let mut block = Block::<H>::new(2 * (bytes.len() + 1))?;
+    let units = block.units_mut();
+    let room = units.len() - 1;
+    let length = convert(&mut units[..room], bytes);
+    units[length] = 0;
+    Some(f(&units[..=length]))
+}
+
+/// Run `f` on the wide form of the narrow `bytes` as [`with_wide_z`] makes it, without the
+/// terminator: the string's units alone.
+pub fn with_wide<H: ProcessHeap, R>(
+    bytes: &[u8],
+    convert: impl FnOnce(&mut [u16], &[u8]) -> usize,
+    f: impl FnOnce(&[u16]) -> R,
+) -> Option<R> {
+    with_wide_z::<H, R>(bytes, convert, |units| f(&units[..units.len() - 1]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -595,5 +633,38 @@ mod tests {
             assert_eq!(read(text, base), Ok(value), "{text} in base {base}");
         }
         assert_eq!(read("10", 7), Err(STATUS_INVALID_PARAMETER));
+    }
+
+    /// A short string converts on the stack, a long one through the heap: with its terminator
+    /// for `with_wide_z`, without it for `with_wide`; the stack's last length and the heap's
+    /// first, and the empty string.
+    #[test]
+    fn narrow_strings_convert_to_wide() {
+        use crate::heap::tests::HostHeap;
+        let wide =
+            with_wide_z::<HostHeap, _>(b"Hi\x80", multi_byte_to_unicode, |units| units.to_vec());
+        assert_eq!(wide, Some(std::vec![0x48, 0x69, 0x20AC, 0]));
+        let wide =
+            with_wide::<HostHeap, _>(b"Hi\x80", multi_byte_to_unicode, |units| units.to_vec());
+        assert_eq!(wide, Some(std::vec![0x48, 0x69, 0x20AC]));
+        for length in [STACK_UNITS - 1, STACK_UNITS, 1000] {
+            let text = std::vec![b'y'; length];
+            let wide =
+                with_wide_z::<HostHeap, _>(&text, multi_byte_to_unicode, |units| units.to_vec())
+                    .unwrap();
+            assert_eq!(wide.len(), length + 1);
+            assert_eq!(wide[length], 0);
+            assert!(wide[..length].iter().all(|&unit| unit == 0x79));
+            let len = with_wide::<HostHeap, _>(&text, multi_byte_to_unicode, |units| units.len());
+            assert_eq!(len, Some(length));
+        }
+        assert_eq!(
+            with_wide::<HostHeap, _>(b"", multi_byte_to_unicode, |units| units.len()),
+            Some(0)
+        );
+        assert_eq!(
+            with_wide_z::<HostHeap, _>(b"", multi_byte_to_unicode, |units| units.to_vec()),
+            Some(std::vec![0])
+        );
     }
 }
