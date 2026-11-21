@@ -58,7 +58,7 @@ fn system_messages_format_into_the_buffer() {
 /// frees a fixed block (RtlFreeHeap on the process heap).
 fn take(block: *mut u8, length: usize) -> std::vec::Vec<u8> {
     let bytes = unsafe { core::slice::from_raw_parts(block, length) }.to_vec();
-    unsafe { crate::nt::RtlFreeHeap(crate::base::process_heap(), 0, block) };
+    unsafe { crate::nt::RtlFreeHeap(rtl::sys::process_heap_handle(), 0, block) };
     bytes
 }
 

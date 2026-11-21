@@ -7,12 +7,11 @@
 //! where aligned, copied where not).
 
 use rtl::params::{CountedString, ProcessParameters};
-use rtl::peb::PebLdrData;
 use rtl::sync::OnceWord;
 
 use crate::edge::In;
 use crate::heap::HeapArray;
-use crate::nt::{ObjectAttributes, RtlBitmap, UnicodeString};
+use crate::nt::{ObjectAttributes, UnicodeString};
 use crate::ntcall::{self, FastPebLock};
 
 /// kernel32's own data, as Windows 2000's kernel32 keeps it in its data section (every process its
@@ -39,16 +38,8 @@ macro_rules! own_data {
     };
 }
 pub(crate) use own_data;
-
-/// The calling thread's last error (TEB+0x34).
-pub fn last_error() -> u32 {
-    teb::last_error()
-}
-
-/// Set the calling thread's last error.
-pub fn set_last_error(code: u32) {
-    teb::set_last_error(code)
-}
+/// The calling thread's last error (its TEB's LastErrorValue), read and set.
+pub use rtl::sys::{last_error, set_last_error};
 
 /// BaseSetLastNTError: a failed system service's status, mapped to its Win32 error
 /// (RtlNtStatusToDosError) and set as the last error; the error.
@@ -304,75 +295,9 @@ pub fn set_console_handle(handle: usize) {
     unsafe { (&raw mut (*parameters).console_handle).write_volatile(handle) };
 }
 
-/// The PEB's field, read in place.
-macro_rules! peb_field {
-    ($field:ident) => {
-        // SAFETY: the PEB is mapped for the process's whole life (the host tests' stand-in for
-        // theirs); its fields are read and written in place, one at a time, never borrowed whole.
-        unsafe { (&raw const (*teb::peb()).$field).read_volatile() }
-    };
-}
-
-/// The process image's base (the PEB's ImageBaseAddress).
-pub fn image_base() -> usize {
-    peb_field!(image_base_address)
-}
-
-/// The process image's subsystem (the PEB's ImageSubsystem): IMAGE_SUBSYSTEM_WINDOWS_CUI for a
-/// console program.
-pub fn image_subsystem() -> u32 {
-    peb_field!(image_subsystem)
-}
-
-/// The PEB's ProcessParameters (RTL_USER_PROCESS_PARAMETERS).
-pub fn process_parameters() -> *mut ProcessParameters<usize> {
-    peb_field!(process_parameters) as *mut ProcessParameters<usize>
-}
-
-/// The process heap (the PEB's ProcessHeap, which ntdll's LdrInitializeThunk makes).
-pub fn process_heap() -> usize {
-    peb_field!(process_heap)
-}
-
-/// The loader's module lists (the PEB's Ldr, a PEB_LDR_DATA).
-pub fn loader_data() -> *const PebLdrData<usize> {
-    peb_field!(ldr) as *const PebLdrData<usize>
-}
-
-/// The loader lock (the PEB's LoaderLock, the critical section ntdll's loader holds).
-pub fn loader_lock() -> *mut u8 {
-    peb_field!(loader_lock) as *mut u8
-}
-
-/// The TLS bitmaps' headers (the PEB's TlsBitmap and TlsExpansionBitmap, ntdll's RTL_BITMAPs).
-pub fn tls_bitmaps() -> (*mut RtlBitmap, *mut RtlBitmap) {
-    (
-        peb_field!(tls_bitmap) as *mut RtlBitmap,
-        peb_field!(tls_expansion_bitmap) as *mut RtlBitmap,
-    )
-}
-
-/// The system's version, as the PEB records it.
-#[derive(Clone, Copy, Debug)]
-pub struct Version {
-    pub major: u32,
-    pub minor: u32,
-    pub build: u16,
-    /// OSCSDVersion: the service pack, its major number in the high byte.
-    pub service_pack: u16,
-    pub platform: u32,
-}
-
-/// The PEB's version fields.
-pub fn version() -> Version {
-    Version {
-        major: peb_field!(os_major_version),
-        minor: peb_field!(os_minor_version),
-        build: peb_field!(os_build_number),
-        service_pack: peb_field!(os_csd_version),
-        platform: peb_field!(os_platform_id),
-    }
-}
+/// The PEB's fields kernel32 reads: the process image's base and subsystem, the process
+/// parameters, and the system's version.
+pub use rtl::sys::{image_base, image_subsystem, peb_version as version, process_parameters};
 
 /// A copy of the process parameters' fixed part (their strings' buffers stay where they are).
 pub fn parameters() -> ProcessParameters<usize> {
@@ -381,8 +306,17 @@ pub fn parameters() -> ProcessParameters<usize> {
 }
 
 /// The environment block (the process parameters' Environment: ntdll's to edit and move).
+#[cfg(not(test))]
 pub fn environment_block() -> *mut u16 {
-    teb::environment_block()
+    // SAFETY: the process parameters, mapped for the process's whole life; the block's address is
+    // read in place (ntdll moves the block under the PEB lock).
+    unsafe { (&raw const (*process_parameters()).environment).read_volatile() as *mut u16 }
+}
+
+/// The host tests' environment block: the stand-in ntdll's (`nt::host::ENVIRONMENT`).
+#[cfg(test)]
+pub fn environment_block() -> *mut u16 {
+    crate::nt::host::environment_block()
 }
 
 /// One of the process's own counted strings that kernel32 reads in place: the process parameters'
@@ -408,7 +342,7 @@ impl OwnString {
             OwnString::WindowTitle => parameters().window_title,
             OwnString::DesktopInfo => parameters().desktop_info,
             OwnString::ShellInfo => parameters().shell_info,
-            OwnString::CsdVersion => peb_field!(csd_version),
+            OwnString::CsdVersion => rtl::sys::csd_version(),
         }
     }
 
@@ -437,142 +371,19 @@ pub fn desktop_info() -> &'static [u16] {
     OwnString::DesktopInfo.units()
 }
 
-/// The TEB's field, read in place: the calling thread's own.
-macro_rules! teb_field {
-    ($($field:tt)+) => {
-        // SAFETY: the calling thread's TEB, mapped for its whole life (the host tests' stand-in for
-        // theirs); its fields are read and written in place, never borrowed whole.
-        unsafe { (&raw const (*teb::teb()).$($field)+).read_volatile() }
-    };
-}
-
-/// Write the calling thread's TEB field in place.
-macro_rules! set_teb_field {
-    ($value:expr, $($field:tt)+) => {{
-        let value = $value;
-        // SAFETY: as `teb_field`'s: one of the calling thread's own fields.
-        unsafe { (&raw mut (*teb::teb()).$($field)+).write_volatile(value) }
-    }};
-}
-
-/// The calling thread's TLS slot `index` of its TEB's 64 (TlsSlots).
-pub fn tls_slot(index: usize) -> usize {
-    teb_field!(tls_slots[index])
-}
-
-/// Write the calling thread's TLS slot `index` of its TEB's 64.
-pub fn set_tls_slot(index: usize, value: usize) {
-    set_teb_field!(value, tls_slots[index])
-}
+/// The calling thread's TEB fields kernel32 reads and writes: its TLS slots, its process's id
+/// and its locale.
+pub use rtl::sys::{
+    current_locale,
+    current_process_id,
+    set_current_locale,
+    set_tls_slot,
+    tls_slot,
+};
 
 /// The calling thread's TLS expansion slots' block (TlsExpansionSlots; null until made).
 pub fn tls_expansion_slots() -> *mut usize {
-    teb_field!(tls_expansion_slots) as *mut usize
-}
-
-/// The calling thread's process's id (its TEB's ClientId.UniqueProcess, GetCurrentProcessId's).
-pub fn current_process_id() -> u32 {
-    teb_field!(unique_process) as u32
-}
-
-/// The calling thread's locale (its TEB's CurrentLocale).
-pub fn current_locale() -> u32 {
-    teb_field!(current_locale)
-}
-
-/// Set the calling thread's locale.
-pub fn set_current_locale(locale: u32) {
-    set_teb_field!(locale, current_locale)
-}
-
-/// The calling thread's TEB and its process's PEB, through FS.
-#[cfg(not(test))]
-mod teb {
-    use core::arch::asm;
-
-    use rtl::peb::{Peb, Teb};
-
-    /// The PEB (TEB+0x30).
-    pub fn peb() -> *mut Peb<usize> {
-        let peb: usize;
-        // SAFETY: FS addresses the calling thread's TEB.
-        unsafe {
-            asm!("mov {peb}, dword ptr fs:[0x30]", peb = out(reg) peb,
-                 options(nostack, readonly, preserves_flags))
-        };
-        peb as *mut Peb<usize>
-    }
-
-    /// The TEB (TEB+0x18, NT_TIB.Self).
-    pub fn teb() -> *mut Teb<usize> {
-        let teb: usize;
-        // SAFETY: FS addresses the calling thread's TEB.
-        unsafe {
-            asm!("mov {teb}, dword ptr fs:[0x18]", teb = out(reg) teb,
-                 options(nostack, readonly, preserves_flags))
-        };
-        teb as *mut Teb<usize>
-    }
-
-    pub fn environment_block() -> *mut u16 {
-        // SAFETY: the process parameters, mapped for the process's whole life; the block's address
-        // is read in place (ntdll moves the block under the PEB lock).
-        unsafe {
-            (&raw const (*super::process_parameters()).environment).read_volatile() as *mut u16
-        }
-    }
-
-    pub fn last_error() -> u32 {
-        let code: u32;
-        // SAFETY: FS addresses the calling thread's TEB; LastErrorValue is at 34h.
-        unsafe {
-            asm!("mov {code}, dword ptr fs:[0x34]", code = out(reg) code,
-                 options(nostack, readonly, preserves_flags))
-        };
-        code
-    }
-
-    pub fn set_last_error(code: u32) {
-        // SAFETY: as above.
-        unsafe {
-            asm!("mov dword ptr fs:[0x34], {code}", code = in(reg) code,
-                 options(nostack, preserves_flags))
-        };
-    }
-}
-
-/// The host tests' TEB: one per test thread, its PEB and process parameters the stand-in blocks
-/// (`nt::threads`), laid out with the host's pointers.
-#[cfg(test)]
-mod teb {
-    use std::cell::Cell;
-
-    use rtl::peb::{Peb, Teb};
-
-    std::thread_local! {
-        static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
-    }
-
-    pub fn last_error() -> u32 {
-        LAST_ERROR.with(Cell::get)
-    }
-
-    pub fn set_last_error(code: u32) {
-        LAST_ERROR.with(|cell| cell.set(code))
-    }
-
-    pub fn peb() -> *mut Peb<usize> {
-        crate::nt::threads::process().peb
-    }
-
-    pub fn teb() -> *mut Teb<usize> {
-        crate::nt::threads::process().teb
-    }
-
-    /// The stand-in ntdll's environment block (`nt::host::ENVIRONMENT`).
-    pub fn environment_block() -> *mut u16 {
-        crate::nt::host::environment_block()
-    }
+    rtl::sys::tls_expansion_slots() as *mut usize
 }
 
 #[cfg(test)]

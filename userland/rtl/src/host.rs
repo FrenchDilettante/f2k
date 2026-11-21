@@ -9,7 +9,9 @@
 //! them: the last error and the debugger's lines kept per thread ([`LAST_ERROR`],
 //! [`DEBUG_PRINTS`]), a raise a panic, the heap the host's allocator, the conversions and the
 //! status mapping rtl's own (as ntdll runs them), and every address the tests hand over readable
-//! ([`Probed`]).
+//! ([`Probed`]). The process's blocks are here too ([`process`]: a PEB, process parameters and TEB
+//! per test thread, as the kernel and ntdll's initialization leave them), which [`crate::sys`]'s
+//! accessors read on the host.
 
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
@@ -19,6 +21,9 @@ use std::cell::{Cell, RefCell};
 use std::string::String;
 use std::vec::Vec;
 
+use crate::bitmap::RtlBitmap;
+use crate::params::{CountedString, ProcessParameters};
+use crate::peb::{LdrDataTableEntry, Peb, PebLdrData, Teb};
 use crate::string::{AnsiString, UnicodeString};
 
 /// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null pointer
@@ -236,4 +241,135 @@ impl crate::stub::Memory for Probed {
     fn readable(&self, _address: usize) -> bool {
         true
     }
+}
+
+// --- The process's blocks ------------------------------------------------------------------------
+
+/// The command line the stand-in parameters carry (its last character the euro sign, byte 0x80
+/// in code page 1252).
+pub const COMMAND_LINE: &str = "C:\\RET0.EXE args \"two words\" \u{20AC}";
+/// The image path the stand-in parameters carry.
+pub const IMAGE_PATH: &str = "C:\\CORPUS\\RET0.EXE";
+/// The image's base, the PEB's ImageBaseAddress.
+pub const IMAGE_BASE: u32 = 0x0040_0000;
+/// The system DLLs' bases.
+pub const NTDLL: u32 = 0x77F8_0000;
+pub const KERNEL32: u32 = 0x7C4E_0000;
+/// The modules' full paths, in load order (the image's the parameters' ImagePathName).
+pub const MODULE_PATHS: [(u32, &str); 3] = [
+    (IMAGE_BASE, IMAGE_PATH),
+    (NTDLL, "C:\\WINNT\\system32\\ntdll.dll"),
+    (KERNEL32, "C:\\WINNT\\system32\\KERNEL32.DLL"),
+];
+
+/// The process's stand-in blocks, laid out with the host's pointers: what [`crate::sys`] reads
+/// on the host.
+pub struct HostProcess {
+    pub peb: *mut Peb<usize>,
+    pub parameters: *mut ProcessParameters<usize>,
+    pub teb: *mut Teb<usize>,
+}
+
+/// A leaked stand-in block, its value `value`.
+fn leaked<T>(value: T) -> &'static mut T {
+    std::boxed::Box::leak(std::boxed::Box::new(value))
+}
+
+/// `text` as a string of the process's own: its units leaked, terminated, `room` bytes of room
+/// (its length and terminator at least).
+pub fn counted(text: &str, room: u16) -> CountedString<usize> {
+    let mut units: Vec<u16> = text.encode_utf16().collect();
+    let length = 2 * units.len() as u16;
+    units.resize(usize::from(room.max(length + 2)) / 2, 0);
+    CountedString {
+        length,
+        maximum_length: room.max(length + 2),
+        buffer: units.leak().as_mut_ptr() as usize,
+    }
+}
+
+/// The PEB's Ldr (its load-order list over [`MODULE_PATHS`]) and LoaderLock, as ntdll sets them.
+fn plant_loader(peb: &mut Peb<usize>) {
+    let data = leaked(PebLdrData::<usize>::default());
+    let entries: &'static mut [LdrDataTableEntry<usize>] =
+        std::vec![LdrDataTableEntry::default(); MODULE_PATHS.len()].leak();
+    let head = core::ptr::from_ref(&data.in_load_order_module_list) as usize;
+    let at = entries.as_ptr() as usize;
+    let address = |index: usize| at + index * core::mem::size_of::<LdrDataTableEntry<usize>>();
+    for (index, (entry, (base, path))) in entries.iter_mut().zip(MODULE_PATHS).enumerate() {
+        entry.in_load_order_links.flink = if index + 1 < MODULE_PATHS.len() {
+            address(index + 1)
+        } else {
+            head
+        };
+        entry.dll_base = base as usize;
+        entry.full_dll_name = counted(path, 0);
+    }
+    data.in_load_order_module_list.flink = address(0);
+    peb.ldr = core::ptr::from_mut(data) as usize;
+    let loader_lock = leaked([0u8; 24]);
+    peb.loader_lock = loader_lock.as_mut_ptr() as usize;
+}
+
+impl HostProcess {
+    /// The kernel's process at its start (`user::teb::fresh_peb`, `user::params::header`): the
+    /// image's base, the version fields and the service pack's name, the TLS bitmaps, the
+    /// loader's lists; the parameters' standard handles, image path, command line and startup
+    /// values; the TEB's self and PEB pointers.
+    fn new() -> HostProcess {
+        let parameters = leaked(ProcessParameters::<usize> {
+            standard_input: 3,
+            standard_output: 7,
+            standard_error: 0xB,
+            image_path_name: counted(IMAGE_PATH, 520),
+            command_line: counted(COMMAND_LINE, 0x800),
+            starting_y: 1,
+            count_x: 100,
+            count_y: 100,
+            show_window_flags: 1,
+            ..ProcessParameters::default()
+        });
+        let peb = leaked(Peb::<usize> {
+            image_base_address: IMAGE_BASE as usize,
+            process_parameters: core::ptr::from_mut(parameters) as usize,
+            os_major_version: 5,
+            os_minor_version: 0,
+            os_build_number: 2195,
+            os_csd_version: 0x0400,
+            os_platform_id: 2,
+            csd_version: counted("Service Pack 4", 0),
+            ..Peb::default()
+        });
+        // The TLS bitmaps' headers, ntdll's (its process initialization's): 64 and 1024 bits
+        // over the PEB's own bit arrays, every index free.
+        let slots = leaked(RtlBitmap {
+            size_of_bit_map: 64,
+            buffer: peb.tls_bitmap_bits.as_mut_ptr(),
+        });
+        let expansion = leaked(RtlBitmap {
+            size_of_bit_map: 1024,
+            buffer: peb.tls_expansion_bitmap_bits.as_mut_ptr(),
+        });
+        peb.tls_bitmap = core::ptr::from_mut(slots) as usize;
+        peb.tls_expansion_bitmap = core::ptr::from_mut(expansion) as usize;
+        plant_loader(peb);
+        let peb = core::ptr::from_mut(peb);
+        let teb = leaked(Teb::<usize>::default());
+        teb.self_ = core::ptr::from_mut(teb) as usize;
+        teb.process_environment_block = peb as usize;
+        HostProcess {
+            peb,
+            parameters,
+            teb,
+        }
+    }
+}
+
+std::thread_local! {
+    static PROCESS: &'static HostProcess = leaked(HostProcess::new());
+}
+
+/// The calling test thread's process: each test thread is a process of its own.
+pub fn process() -> &'static HostProcess {
+    PROCESS.with(|process| *process)
 }

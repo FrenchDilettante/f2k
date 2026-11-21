@@ -96,7 +96,11 @@ mod status_table;
 pub mod string;
 pub mod stub;
 pub mod sync;
-#[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
+#[cfg(any(
+    all(target_arch = "x86", target_os = "windows", not(test)),
+    test,
+    feature = "testing"
+))]
 pub mod sys;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

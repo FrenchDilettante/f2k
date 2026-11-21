@@ -13,9 +13,9 @@
 //! (Basep8BitStringToStaticUnicodeString): a longer one is ERROR_FILENAME_EXCED_RANGE, never cut
 //! down to fit (which would make a name with a tail past MAX_PATH find kernel32).
 
-use rtl::peb::LdrDataTableEntry;
+use rtl::peb::{LdrDataTableEntry, PebLdrData};
 
-use crate::base::{last_error, loader_data, set_last_error, unicode_string, CURRENT_PROCESS};
+use crate::base::{last_error, set_last_error, unicode_string, CURRENT_PROCESS};
 use crate::edge::{ansi_into, counted, wide_units, CallerChar, CallerStr, InStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure};
 use crate::files::search::search_default;
@@ -396,7 +396,7 @@ fn proc_address(module: u32, export: Export<'_>) -> Result<u32, Failure> {
 /// The full path (FullDllName) of the module whose handle is `module`, its entry found walking the
 /// PEB's InLoadOrderModuleList, borrowed for as long as the loader lock is held.
 fn module_path(_loader: &LoaderLock, module: u32) -> Option<&[u16]> {
-    let data = loader_data();
+    let data = rtl::sys::ldr() as *const PebLdrData<usize>;
     // SAFETY: the loader's PEB_LDR_DATA and its entries, on the process heap for the process's
     // life (an entry leaves the lists only under the loader lock, which `_loader` holds); each
     // field is read in place, and an entry's InLoadOrderLinks lead it. An entry's FullDllName

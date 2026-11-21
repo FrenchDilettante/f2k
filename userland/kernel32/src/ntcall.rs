@@ -1411,7 +1411,7 @@ pub fn allocate_heap(bytes: usize) -> Option<NonNull<u8>> {
 pub fn allocate_heap_with(flags: u32, bytes: usize) -> Option<NonNull<u8>> {
     // SAFETY: ntdll's export, on the process heap (the PEB's, live for the process's life): the
     // block it answers is new, held by nothing else.
-    NonNull::new(unsafe { nt::RtlAllocateHeap(crate::base::process_heap(), flags, bytes) })
+    NonNull::new(unsafe { nt::RtlAllocateHeap(rtl::sys::process_heap_handle(), flags, bytes) })
 }
 
 /// RtlFreeHeap on the process heap: the block given back; whether the heap took it (FALSE for an
@@ -1434,7 +1434,7 @@ pub unsafe fn free_heap(block: *mut u8) -> bool {
 pub unsafe fn free_heap_with(flags: u32, block: *mut u8) -> bool {
     // SAFETY: ntdll's export, on the process heap: the block is the caller's to give back (its
     // contract); the heap checks it is one of its blocks before it frees it.
-    unsafe { nt::RtlFreeHeap(crate::base::process_heap(), flags, block) != 0 }
+    unsafe { nt::RtlFreeHeap(rtl::sys::process_heap_handle(), flags, block) != 0 }
 }
 
 // --- The PEB lock, the TLS bitmaps and critical sections -----------------------------------------
@@ -1497,10 +1497,10 @@ pub enum TlsBitmap {
 impl TlsBitmap {
     /// The bitmap's RTL_BITMAP header, by the PEB's pointer to it.
     fn header(self) -> *mut RtlBitmap {
-        let (slots, expansion) = crate::base::tls_bitmaps();
+        let (slots, expansion) = rtl::sys::tls_bitmaps();
         match self {
-            TlsBitmap::Slots => slots,
-            TlsBitmap::Expansion => expansion,
+            TlsBitmap::Slots => slots as *mut RtlBitmap,
+            TlsBitmap::Expansion => expansion as *mut RtlBitmap,
         }
     }
 }
@@ -1537,7 +1537,7 @@ pub struct LoaderLock {
 impl LoaderLock {
     /// The loader lock entered (a critical section: the thread holding it may enter it again).
     pub fn enter() -> LoaderLock {
-        let section = crate::base::loader_lock();
+        let section = rtl::sys::loader_lock() as *mut u8;
         // SAFETY: ntdll's export, over the loader's critical section, initialized before any of
         // the process's code runs and live for its life.
         unsafe { nt::RtlEnterCriticalSection(section) };
