@@ -322,7 +322,105 @@ fn log_font_of(
     }
 }
 
-/// CreateFontW: a font object of the LOGFONTW its arguments make.
+/// The character of a font call's A or W form, and how it reads a face name: the W form's units
+/// as they are, the A form's bytes converted through the ANSI code page.
+trait FaceChar: Copy {
+    /// The caller's face name at `at`, none for null.
+    ///
+    /// # Safety
+    ///
+    /// `at` is null or a NUL-terminated string of the form's characters.
+    unsafe fn face<'a>(at: *const Self) -> Option<Face<'a>>;
+}
+
+impl FaceChar for u8 {
+    unsafe fn face<'a>(at: *const u8) -> Option<Face<'a>> {
+        // SAFETY: the caller's contract.
+        unsafe { InStr::optional(at) }.map(Face::Ansi)
+    }
+}
+
+impl FaceChar for u16 {
+    unsafe fn face<'a>(at: *const u16) -> Option<Face<'a>> {
+        // SAFETY: the caller's contract.
+        unsafe { InWStr::optional(at) }.map(Face::Wide)
+    }
+}
+
+/// A caller's face name, of an A call or a W call.
+enum Face<'a> {
+    Ansi(InStr<'a>),
+    Wide(InWStr<'a>),
+}
+
+/// A caller's face name as CreateFont and EnumFontFamilies take one, cut to LF_FACESIZE - 1
+/// characters: its units, zero-padded, and their number (none for no name). Here the pair
+/// differs: a W name's first units are copied as they are; an A name's first bytes are converted
+/// through the ANSI code page (one byte a character in code page 1252, so the two count alike).
+fn face_from(name: Option<Face<'_>>) -> ([u16; LF_FACESIZE], usize) {
+    let mut units = [0u16; LF_FACESIZE];
+    let length = match name {
+        None => 0,
+        Some(Face::Wide(name)) => {
+            let length = name.len().min(LF_FACESIZE - 1);
+            for (slot, unit) in units.iter_mut().zip(name.units().iter().take(length)) {
+                *slot = unit;
+            }
+            length
+        }
+        Some(Face::Ansi(name)) => {
+            let bytes = name.bytes();
+            let bytes = &bytes[..bytes.len().min(LF_FACESIZE - 1)];
+            imports::multi_byte_to_unicode(&mut units[..LF_FACESIZE - 1], bytes)
+        }
+    };
+    (units, length)
+}
+
+/// CreateFontW's and CreateFontA's body, `C` the form's character: a font object of the LOGFONTW
+/// its arguments make, the face name read by [`face_from`].
+///
+/// # Safety
+///
+/// The caller's NUL-terminated face name (or null), as for the platform's.
+#[allow(clippy::too_many_arguments)]
+unsafe fn create_font_as<C: FaceChar>(
+    height: i32,
+    width: i32,
+    escapement: i32,
+    orientation: i32,
+    weight: i32,
+    italic: u32,
+    underline: u32,
+    strike_out: u32,
+    char_set: u32,
+    out_precision: u32,
+    clip_precision: u32,
+    quality: u32,
+    pitch_and_family: u32,
+    face: *const C,
+) -> usize {
+    // SAFETY: the caller's string, or null.
+    let (units, length) = face_from(unsafe { C::face(face) });
+    create(&log_font_of(
+        height,
+        width,
+        escapement,
+        orientation,
+        weight,
+        italic,
+        underline,
+        strike_out,
+        char_set,
+        out_precision,
+        clip_precision,
+        quality,
+        pitch_and_family,
+        &units[..length],
+    ))
+}
+
+/// CreateFontW (see [`create_font_as`]).
 ///
 /// # Safety
 ///
@@ -345,37 +443,28 @@ pub unsafe extern "system" fn create_font_w(
     pitch_and_family: u32,
     face: *const u16,
 ) -> usize {
-    let mut units = [0u16; LF_FACESIZE];
-    // SAFETY: the caller's string, or null.
-    let face = match unsafe { InWStr::optional(face) } {
-        Some(name) => {
-            let length = name.len().min(LF_FACESIZE - 1);
-            for (slot, unit) in units.iter_mut().zip(name.units().iter().take(length)) {
-                *slot = unit;
-            }
-            &units[..length]
-        }
-        None => &units[..0],
-    };
-    create(&log_font_of(
-        height,
-        width,
-        escapement,
-        orientation,
-        weight,
-        italic,
-        underline,
-        strike_out,
-        char_set,
-        out_precision,
-        clip_precision,
-        quality,
-        pitch_and_family,
-        face,
-    ))
+    // SAFETY: the caller's contract.
+    unsafe {
+        create_font_as(
+            height,
+            width,
+            escapement,
+            orientation,
+            weight,
+            italic,
+            underline,
+            strike_out,
+            char_set,
+            out_precision,
+            clip_precision,
+            quality,
+            pitch_and_family,
+            face,
+        )
+    }
 }
 
-/// CreateFontA: the face name converted, then CreateFontW's font.
+/// CreateFontA (see [`create_font_as`]): the face name converted.
 ///
 /// # Safety
 ///
@@ -398,33 +487,25 @@ pub unsafe extern "system" fn create_font_a(
     pitch_and_family: u32,
     face: *const u8,
 ) -> usize {
-    let mut units = [0u16; LF_FACESIZE];
-    // SAFETY: the caller's string, or null.
-    let face = match unsafe { InStr::optional(face) } {
-        Some(name) => {
-            let bytes = name.bytes();
-            let bytes = &bytes[..bytes.len().min(LF_FACESIZE - 1)];
-            let length = imports::multi_byte_to_unicode(&mut units[..LF_FACESIZE - 1], bytes);
-            &units[..length]
-        }
-        None => &units[..0],
-    };
-    create(&log_font_of(
-        height,
-        width,
-        escapement,
-        orientation,
-        weight,
-        italic,
-        underline,
-        strike_out,
-        char_set,
-        out_precision,
-        clip_precision,
-        quality,
-        pitch_and_family,
-        face,
-    ))
+    // SAFETY: the caller's contract.
+    unsafe {
+        create_font_as(
+            height,
+            width,
+            escapement,
+            orientation,
+            weight,
+            italic,
+            underline,
+            strike_out,
+            char_set,
+            out_precision,
+            clip_precision,
+            quality,
+            pitch_and_family,
+            face,
+        )
+    }
 }
 
 /// GetObjectW and GetObjectA of a stock object: not served yet.
@@ -1033,15 +1114,9 @@ pub unsafe extern "system" fn enum_font_families_w(
     let Some(callback) = callback else {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     };
-    let mut units = [0u16; LF_FACESIZE];
     // SAFETY: the caller's string, or null.
-    if let Some(name) = unsafe { InWStr::optional(family) } {
-        let length = name.len().min(LF_FACESIZE - 1);
-        for (slot, unit) in units.iter_mut().zip(name.units().iter().take(length)) {
-            *slot = unit;
-        }
-    }
-    let face = face_array(&units);
+    let (units, length) = face_from(unsafe { u16::face(family) });
+    let face = face_array(&units[..length]);
     enumerate(
         dc,
         face.as_ref(),
@@ -1075,14 +1150,9 @@ pub unsafe extern "system" fn enum_font_families_a(
     let Some(callback) = callback else {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     };
-    let mut units = [0u16; LF_FACESIZE];
     // SAFETY: the caller's string, or null.
-    if let Some(name) = unsafe { InStr::optional(family) } {
-        let bytes = name.bytes();
-        let bytes = &bytes[..bytes.len().min(LF_FACESIZE - 1)];
-        imports::multi_byte_to_unicode(&mut units[..LF_FACESIZE - 1], bytes);
-    }
-    let face = face_array(&units);
+    let (units, length) = face_from(unsafe { u8::face(family) });
+    let face = face_array(&units[..length]);
     enumerate(
         dc,
         face.as_ref(),

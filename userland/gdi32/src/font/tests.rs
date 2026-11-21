@@ -157,6 +157,41 @@ fn font_objects_keep_their_logfont() {
     assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
 }
 
+/// CreateFontW and CreateFontA make the same LOGFONT of the same face name: the A form's bytes
+/// converted through the ANSI code page (0x80 the euro sign), both cut to LF_FACESIZE - 1
+/// characters; no name is the empty one.
+#[test]
+fn both_create_font_forms_read_the_face_alike() {
+    reset();
+    let create = |face_w: *const u16, face_a: *const u8| {
+        // SAFETY: the tests' own names, or null.
+        let fonts = unsafe {
+            [
+                create_font_w(-11, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, face_w),
+                create_font_a(-11, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0, face_a),
+            ]
+        };
+        fonts.map(|font| {
+            let mut got = LogFontW::zeroed();
+            assert_eq!(
+                get_object_w(font, 92, &mut got as *mut LogFontW as usize),
+                92
+            );
+            got.face_name
+        })
+    };
+    let [wide, narrow] = create(wide_z("F\u{20AC}").as_ptr(), c"F\x80".as_ptr().cast());
+    assert_eq!(wide, narrow);
+    assert_eq!(&wide[..3], &[0x46, 0x20AC, 0]);
+    let long = "F".repeat(40);
+    let long_a = std::format!("{long}\0");
+    let [wide, narrow] = create(wide_z(&long).as_ptr(), long_a.as_ptr());
+    assert_eq!(wide, narrow);
+    assert_eq!(wide[LF_FACESIZE - 2..], [0x46, 0]);
+    let [wide, narrow] = create(core::ptr::null(), core::ptr::null());
+    assert_eq!((wide, narrow), ([0; LF_FACESIZE], [0; LF_FACESIZE]));
+}
+
 /// The face name's counts, as the capture's create section shows them: W counts units with the
 /// terminator, A counts bytes without it, A with no buffer W's count; a short buffer cut.
 #[test]
