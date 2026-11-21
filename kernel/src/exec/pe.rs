@@ -286,11 +286,11 @@ pub fn same_module(a: &str, b: &str) -> bool {
 /// `.sys` loader resolves ntoskrnl.exe imports through it). None when the bytes are not a PE32
 /// i386 image or the directory or one of its arrays does not lie inside `mapped`.
 pub fn exports_of_mapped(mapped: &[u8]) -> Option<Exports> {
-    let dos: ImageDosHeader = read(mapped, 0)?;
+    let dos: ImageDosHeader = Pod::read_from(mapped, 0)?;
     if dos.e_magic != DOS_MAGIC {
         return None;
     }
-    let nt: ImageNtHeaders32 = read(mapped, dos.e_lfanew as usize)?;
+    let nt: ImageNtHeaders32 = Pod::read_from(mapped, dos.e_lfanew as usize)?;
     if nt.signature != NT_SIGNATURE
         || nt.file_header.machine != MACHINE_I386
         || nt.optional_header.magic != PE32_MAGIC
@@ -322,7 +322,7 @@ impl Exports {
     /// checked to lie inside the image. None when the directory or an array does not: the bytes
     /// are malformed.
     fn read(mapped: &[u8], rva: u32, size: u32) -> Option<Exports> {
-        let directory: ImageExportDirectory = read(mapped, rva as usize)?;
+        let directory: ImageExportDirectory = Pod::read_from(mapped, rva as usize)?;
         let exports = Exports {
             directory_rva: rva,
             directory_size: size,
@@ -349,9 +349,10 @@ impl Exports {
     /// table.
     pub fn by_name<'a>(&self, mapped: &'a [u8], name: &str) -> Option<Export<'a>> {
         for index in 0..self.num_names as usize {
-            let name_rva: u32 = read(mapped, self.names_rva as usize + index * 4)?;
+            let name_rva: u32 = Pod::read_from(mapped, self.names_rva as usize + index * 4)?;
             if get_cstr(mapped, name_rva as usize)? == name {
-                let slot: u16 = read(mapped, self.name_ordinals_rva as usize + index * 2)?;
+                let slot: u16 =
+                    Pod::read_from(mapped, self.name_ordinals_rva as usize + index * 2)?;
                 // The name-ordinal table holds address-table indexes, not biased ordinals.
                 if slot as u32 >= self.num_functions {
                     return None;
@@ -374,7 +375,7 @@ impl Exports {
     /// Address-table slot `slot`: an unused slot (zero) exports nothing, nor does one whose RVA
     /// lies outside the image or names an unterminated forwarder.
     fn slot<'a>(&self, mapped: &'a [u8], slot: u32) -> Option<Export<'a>> {
-        let rva: u32 = read(mapped, self.functions_rva as usize + slot as usize * 4)?;
+        let rva: u32 = Pod::read_from(mapped, self.functions_rva as usize + slot as usize * 4)?;
         if rva == 0 {
             return None;
         }
@@ -390,19 +391,14 @@ fn span(bytes: &[u8], off: usize, len: usize) -> Option<&[u8]> {
     bytes.get(off..off.checked_add(len)?)
 }
 
-/// The `T` at `off` in `bytes`, read whole at any alignment, if it lies inside them.
-fn read<T: Pod>(bytes: &[u8], off: usize) -> Option<T> {
-    T::from_bytes(bytes.get(off..)?)
-}
-
 /// The header `T` at `off` in `bytes`: one that does not lie inside them is a truncated image.
 fn read_struct<T: Pod>(bytes: &[u8], off: usize) -> Result<T, Reject> {
-    read(bytes, off).ok_or(Reject::Truncated)
+    T::read_from(bytes, off).ok_or(Reject::Truncated)
 }
 
 /// The NUL-terminated string at `off`, if there is one: None when `off` lies past the end, no NUL
 /// follows before it, or the bytes are not UTF-8.
-fn get_cstr(bytes: &[u8], off: usize) -> Option<&str> {
+pub(crate) fn get_cstr(bytes: &[u8], off: usize) -> Option<&str> {
     let tail = bytes.get(off..)?;
     let end = tail.iter().position(|&b| b == 0)?;
     core::str::from_utf8(&tail[..end]).ok()
@@ -426,7 +422,7 @@ fn need(bytes: &[u8], off: usize, len: usize, what: &str) {
 #[cfg(test)]
 fn read_at<T: Pod>(bytes: &[u8], off: usize, what: &str) -> T {
     need(bytes, off, size_of::<T>(), what);
-    read(bytes, off).expect("the bounds were checked")
+    T::read_from(bytes, off).expect("the bounds were checked")
 }
 
 #[cfg(test)]
@@ -1071,11 +1067,11 @@ mod tests {
     ];
 
     fn r16(b: &[u8], off: usize) -> u16 {
-        u16::from_le_bytes([b[off], b[off + 1]])
+        u16::read_from(b, off).unwrap()
     }
 
     fn r32(b: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        u32::read_from(b, off).unwrap()
     }
 
     fn w16(b: &mut [u8], off: usize, v: u16) {

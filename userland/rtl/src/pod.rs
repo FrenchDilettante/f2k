@@ -37,6 +37,14 @@ pub unsafe trait Pod: Copy {
         Some(unsafe { bytes.as_ptr().cast::<Self>().read_unaligned() })
     }
 
+    /// The value at `offset` in `bytes` ([`Pod::from_bytes`] over the bytes from there), at any
+    /// alignment: the readers of a file's or an image's structures and words at an offset. None
+    /// when `bytes` does not hold one there, an `offset` at or past its end included (no sum that
+    /// could overflow is made).
+    fn read_from(bytes: &[u8], offset: usize) -> Option<Self> {
+        Self::from_bytes(bytes.get(offset..)?)
+    }
+
     /// The value of all-zero bytes.
     fn zeroed() -> Self {
         // SAFETY: all zeros is a bit pattern of the type's size, so a valid value (the trait's
@@ -110,6 +118,16 @@ mod tests {
         assert_eq!(<[u32; 2]>::from_bytes(&bytes[1..]), Some([1, 2]));
         assert_eq!(u32::from_bytes(&bytes[6..]), None);
         assert_eq!(u16::from_bytes(&bytes[7..]), Some(0));
+    }
+
+    #[test]
+    fn a_value_is_read_from_an_offset() {
+        let bytes = [0xFF, 1, 0, 0, 0, 2, 0];
+        assert_eq!(u32::read_from(&bytes, 1), Some(1));
+        assert_eq!(u16::read_from(&bytes, 5), Some(2));
+        assert_eq!(u16::read_from(&bytes, 6), None, "a value cut short");
+        assert_eq!(u8::read_from(&bytes, 7), None, "at the end");
+        assert_eq!(u32::read_from(&bytes, usize::MAX), None, "far past it");
     }
 
     #[test]

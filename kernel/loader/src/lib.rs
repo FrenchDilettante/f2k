@@ -90,26 +90,25 @@ pub const MODULE_RECORD: usize = 16;
 /// list is a few records).
 pub const MODULE_LIMIT: usize = 64;
 
-fn word(bytes: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
-}
-
 /// The module list the Multiboot information `info` (its first [`MULTIBOOT_INFO_LEN`] bytes)
 /// offers: its physical address and its record count, at most [`MODULE_LIMIT`]. None when its flag
 /// is clear.
 pub fn module_list(info: &[u8]) -> Option<(u32, usize)> {
-    if word(info, INFO_FLAGS)? & MULTIBOOT_MODS == 0 {
+    if u32::read_from(info, INFO_FLAGS)? & MULTIBOOT_MODS == 0 {
         return None;
     }
-    let count = word(info, INFO_MODS_COUNT)? as usize;
-    Some((word(info, INFO_MODS_ADDR)?, count.min(MODULE_LIMIT)))
+    let count = u32::read_from(info, INFO_MODS_COUNT)? as usize;
+    Some((
+        u32::read_from(info, INFO_MODS_ADDR)?,
+        count.min(MODULE_LIMIT),
+    ))
 }
 
 /// The first module of the module list `list` (its records' bytes) whose bytes overlap any of
 /// `written`, as its physical range. A module holding no bytes overlaps nothing.
 pub fn module_overlapping(list: &[u8], written: &[Range<u32>]) -> Option<Range<u32>> {
     list.chunks_exact(MODULE_RECORD)
-        .filter_map(|record| Some(word(record, 0)?..word(record, 4)?))
+        .filter_map(|record| Some(u32::read_from(record, 0)?..u32::read_from(record, 4)?))
         .find(|module| {
             !module.is_empty()
                 && written
@@ -293,7 +292,7 @@ impl Image {
             }
             let page = block.virtual_address as usize;
             for entry in (at + size_of::<ImageBaseRelocation>()..at + length).step_by(2) {
-                let entry = u16::from_le_bytes([image[entry], image[entry + 1]]);
+                let entry = u16::read_from(image, entry).ok_or(Refusal::BadRelocation)?;
                 match entry >> 12 {
                     REL_BASED_ABSOLUTE => {}
                     REL_BASED_HIGHLOW => {
@@ -503,9 +502,7 @@ mod tests {
         let mapped = memory.clone();
         let delta = 0x0010_0000u32.wrapping_neg(); // a load 1 MiB below the base
         image.relocate(&mut memory, delta).unwrap();
-        let word = |memory: &[u8], rva: u32| {
-            u32::from_le_bytes(memory[rva as usize..rva as usize + 4].try_into().unwrap())
-        };
+        let word = |memory: &[u8], rva: u32| u32::read_from(memory, rva as usize).unwrap();
         for &fixup in &linked.fixups {
             assert_eq!(
                 word(&memory, fixup),

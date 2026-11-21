@@ -26,14 +26,17 @@
 
 use rtl::image::{
     data_directory,
+    ImageBaseRelocation,
+    ImageImportDescriptor,
     DIRECTORY_BASERELOC,
     DIRECTORY_IMPORT,
     ORDINAL_FLAG,
     REL_BASED_ABSOLUTE,
     REL_BASED_HIGHLOW,
 };
+use rtl::pod::Pod;
 
-use crate::exec::pe::{Image, Reject, Unresolved};
+use crate::exec::pe::{get_cstr, Image, Reject, Unresolved};
 
 /// The image's data directory `index`, when the image has one and it lies inside the image: a
 /// directory pointing outside is malformed bytes, treated as absent (the callers' walks are
@@ -106,8 +109,11 @@ pub fn apply_relocations(image: &Image, staged: &mut [u8], base: u32) -> Result<
     }
     let mut off = rva as usize;
     while end - off >= 8 {
-        let page_rva = read_u32(staged, off).ok_or(LoadError::Malformed)?;
-        let block_size = read_u32(staged, off + 4).ok_or(LoadError::Malformed)? as usize;
+        let ImageBaseRelocation {
+            virtual_address: page_rva,
+            size_of_block,
+        } = Pod::read_from(staged, off).ok_or(LoadError::Malformed)?;
+        let block_size = size_of_block as usize;
         // A zero block ends the directory (the linker pads the directory's tail with them).
         if block_size == 0 {
             break;
@@ -118,14 +124,14 @@ pub fn apply_relocations(image: &Image, staged: &mut [u8], base: u32) -> Result<
         let block_end = off + block_size;
         let mut entry_off = off + 8;
         while block_end - entry_off >= 2 {
-            let entry = read_u16(staged, entry_off).ok_or(LoadError::Malformed)?;
+            let entry = u16::read_from(staged, entry_off).ok_or(LoadError::Malformed)?;
             match entry >> 12 {
                 REL_BASED_ABSOLUTE => {}
                 REL_BASED_HIGHLOW => {
                     let at = page_rva
                         .checked_add(u32::from(entry & 0xFFF))
                         .ok_or(LoadError::Malformed)? as usize;
-                    let slot = read_u32(staged, at).ok_or(LoadError::Malformed)?;
+                    let slot = u32::read_from(staged, at).ok_or(LoadError::Malformed)?;
                     write_u32(staged, at, slot.wrapping_add(delta))?;
                 }
                 other => return Err(LoadError::UnsupportedRelocation(other)),
@@ -166,9 +172,12 @@ pub fn snap_imports(
         if staged.len().checked_sub(off).is_none_or(|left| left < 20) {
             return Err(LoadError::Malformed);
         }
-        let original_first_thunk = read_u32(staged, off).ok_or(LoadError::Malformed)?;
-        let name_rva = read_u32(staged, off + 12).ok_or(LoadError::Malformed)?;
-        let first_thunk = read_u32(staged, off + 16).ok_or(LoadError::Malformed)?;
+        let ImageImportDescriptor {
+            original_first_thunk,
+            name: name_rva,
+            first_thunk,
+            ..
+        } = Pod::read_from(staged, off).ok_or(LoadError::Malformed)?;
         // The all-zero descriptor ends the array.
         if name_rva == 0 || first_thunk == 0 {
             break;
@@ -186,7 +195,7 @@ pub fn snap_imports(
         let mut lookup_off = lookup as usize;
         let mut slot_off = first_thunk as usize;
         loop {
-            let thunk = read_u32(staged, lookup_off).ok_or(LoadError::Malformed)?;
+            let thunk = u32::read_from(staged, lookup_off).ok_or(LoadError::Malformed)?;
             if thunk == 0 {
                 break;
             }
@@ -197,10 +206,10 @@ pub fn snap_imports(
                 let name = (thunk as usize)
                     .checked_add(2)
                     .ok_or(LoadError::Malformed)?;
-                ImportName::Name(cstr(staged, name).ok_or(LoadError::Malformed)?)
+                ImportName::Name(get_cstr(staged, name).ok_or(LoadError::Malformed)?)
             };
             // Read fresh per thunk so the borrow ends at the resolve, before the IAT write.
-            let module = cstr(staged, module_off).ok_or(LoadError::Malformed)?;
+            let module = get_cstr(staged, module_off).ok_or(LoadError::Malformed)?;
             let address = resolve(module, name).map_err(|_| LoadError::Unresolved)?;
             write_u32(staged, slot_off, address)?;
             result.thunks += 1;
@@ -250,25 +259,7 @@ pub fn load_staged(
     })
 }
 
-// --- Small byte readers (the staged image is the whole address space of the walk) -------------
-
-/// The `u32` at `off` in `bytes`, if it lies inside them.
-fn read_u32(bytes: &[u8], off: usize) -> Option<u32> {
-    bytes
-        .get(off..off.checked_add(4)?)?
-        .try_into()
-        .ok()
-        .map(u32::from_le_bytes)
-}
-
-/// The `u16` at `off`.
-fn read_u16(bytes: &[u8], off: usize) -> Option<u16> {
-    bytes
-        .get(off..off.checked_add(2)?)?
-        .try_into()
-        .ok()
-        .map(u16::from_le_bytes)
-}
+// --- A small writer (the staged image is the whole address space of the walk) ----------------
 
 /// Write `value` as the `u32` at `off`; [`LoadError::Malformed`] when it lies outside `bytes`.
 fn write_u32(bytes: &mut [u8], off: usize, value: u32) -> Result<(), LoadError> {
@@ -277,13 +268,6 @@ fn write_u32(bytes: &mut [u8], off: usize, value: u32) -> Result<(), LoadError> 
         .ok_or(LoadError::Malformed)?
         .copy_from_slice(&value.to_le_bytes());
     Ok(())
-}
-
-/// The NUL-terminated string at `off`, if there is one.
-fn cstr(bytes: &[u8], off: usize) -> Option<&str> {
-    let tail = bytes.get(off..)?;
-    let end = tail.iter().position(|&b| b == 0)?;
-    core::str::from_utf8(&tail[..end]).ok()
 }
 
 // --- On target: map into the modules region, resolve against the kernel's surfaces -----------
@@ -600,7 +584,7 @@ mod tests {
     }
 
     fn u32_at(bytes: &[u8], off: usize) -> u32 {
-        u32::from_le_bytes(bytes[off..off + 4].try_into().unwrap())
+        u32::read_from(bytes, off).unwrap()
     }
 
     /// The fake export tables the loader's resolver walks: the (module, entry) pairs it was
