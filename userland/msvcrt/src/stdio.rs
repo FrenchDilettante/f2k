@@ -14,6 +14,10 @@
 //! - fflush(NULL) flushes every stream writing; fflush of a stream reading drops what it holds.
 //! - fgets reads to a newline (kept), to `n - 1` bytes, or to the end; NULL when the end comes
 //!   first; the end sets `_IOEOF` (feof).
+//! - ungetc pushes a character back into the buffer, before `_ptr` ([`unget`], VC6's): one at
+//!   least, even on a stream that has read nothing yet, and as many as it has read from its buffer;
+//!   it clears the end of the file. ungetwc pushes a wide character back as fgetws reads it: a byte
+//!   in text mode, two in binary mode.
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
 //! - fread and fwrite move bytes through the buffer, as getc and putc do, and answer the items
 //!   moved whole. ftell counts the file's bytes: in text mode each LF the buffer still holds, or
@@ -1454,6 +1458,103 @@ fn get_wide(s: &mut File, text: bool) -> Option<u16> {
     Some(u16::from_le_bytes([low as u8, high as u8]))
 }
 
+/// `bytes` pushed back into the stream, the first of them the next byte read (VC6's
+/// `_ungetc_lk`, and `_ungetwc_lk`'s two bytes): only a stream reading, or a `+` stream that is not
+/// writing, takes them, a buffer given first when it has none yet. They go just before `_ptr`,
+/// `_cnt` counting them, and the end of the file is cleared. At the buffer's start, a stream
+/// holding nothing makes room for them: the one character MSDN guarantees ungetc; one holding
+/// something there, a character already pushed back, has no room (false). Characters read from
+/// the buffer leave room for as many pushed back.
+fn unget(bytes: &[u8], s: &mut File) -> bool {
+    if s.flag & IOREAD == 0 && (s.flag & IORW == 0 || s.flag & IOWRT != 0) {
+        return false;
+    }
+    if s.flag & BUFFERED == 0 {
+        give_buffer(s);
+    }
+    let size = bytes.len();
+    if (s.ptr as usize).wrapping_sub(s.base as usize) < size {
+        if s.cnt != 0 {
+            return false;
+        }
+        // Nothing buffered: the buffer's first bytes are free (its size is two at least).
+        s.ptr = s.base.wrapping_add(size);
+    }
+    // SAFETY: a `FILE` the C runtime keeps (see `with_stream`): the `size` bytes before `_ptr` are
+    // inside its buffer, above `_base`, and the stream's lock keeps them the call's.
+    unsafe {
+        s.ptr = s.ptr.sub(size);
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), s.ptr, size);
+    }
+    s.cnt += size as i32;
+    s.flag &= !IOEOF;
+    s.flag |= IOREAD;
+    true
+}
+
+/// A wide character pushed back into the stream (VC6's `_ungetwc_lk`), as [`get_wide`] reads it
+/// back: in text mode its byte in the LC_CTYPE locale's code page, as wctomb converts it (one it
+/// lacks is refused, errno EILSEQ); in binary mode its two bytes, low first.
+fn unget_wide(c: u16, s: &mut File, text: bool) -> bool {
+    if text {
+        match ctype::wide_to_byte(c) {
+            Some(byte) => unget(&[byte], s),
+            None => {
+                set_errno(EILSEQ);
+                false
+            }
+        }
+    } else {
+        unget(&c.to_le_bytes(), s)
+    }
+}
+
+/// ungetc: `c` (as an unsigned char) pushed back into the stream, the next character read
+/// ([`unget`]); answers it, or EOF when `c` is EOF or the stream takes nothing.
+///
+/// # Safety
+///
+/// `stream` is null or a stream.
+#[unsafe(export_name = "f2k_export_ungetc")]
+pub unsafe extern "C" fn ungetc(c: i32, stream: *mut File) -> i32 {
+    if c == EOF || stream.is_null() {
+        return EOF;
+    }
+    let body = |s: &mut File, _| {
+        if unget(&[c as u8], s) {
+            c & 0xFF
+        } else {
+            EOF
+        }
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
+}
+
+/// ungetwc: the wide character `c` pushed back into the stream ([`unget_wide`], as the
+/// descriptor's mode takes it); answers it, or WEOF when `c` is WEOF or the stream takes nothing.
+///
+/// # Safety
+///
+/// `stream` is null or a stream.
+#[unsafe(export_name = "f2k_export_ungetwc")]
+pub unsafe extern "C" fn ungetwc(c: u32, stream: *mut File) -> u32 {
+    let c = c as u16;
+    if c == ctype::WEOF || stream.is_null() {
+        return ctype::WEOF.into();
+    }
+    let body = |s: &mut File, _| {
+        let text = s.flag & IOSTRG == 0 && lowio::is_text(s.file);
+        if unget_wide(c, s, text) {
+            c.into()
+        } else {
+            ctype::WEOF.into()
+        }
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
+}
+
 /// fgetws: a line of wide characters (its newline kept), at most `n - 1` of them, NUL-terminated
 /// into `buffer` ([`get_wide`] reads each); NULL at the end before any character, or on an error.
 ///
@@ -1844,6 +1945,105 @@ mod tests {
             assert_eq!(fseek(stream, 1, SEEK_CUR as i32), -1);
             assert_eq!((*stream).flag & IOEOF, 0);
         }
+    }
+
+    /// ungetc's one character: a stream that has read nothing takes one (a buffer given first),
+    /// read back next, and refuses a second at the buffer's start; one that has read from its
+    /// buffer takes as many as it read, last pushed first read. EOF itself, and a stream writing,
+    /// take nothing. The end of the file is cleared.
+    #[test]
+    fn ungetc_pushes_back_one_character_at_least() {
+        let mut file = File {
+            flag: IOREAD | IOEOF,
+            file: 2000,
+            ..File::UNUSED
+        };
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream.
+        unsafe {
+            assert_eq!(ungetc(EOF, stream), EOF);
+            assert_eq!(ungetc(0x141, stream), 0x41);
+            assert_eq!((*stream).flag & (IOEOF | IOMYBUF), IOMYBUF);
+            assert_eq!(ungetc(b'z' as i32, stream), EOF, "a second at the start");
+            assert_eq!(get(&mut *stream), b'A' as i32);
+            assert_eq!((*stream).cnt, 0);
+            free_buffer(&mut *stream);
+        }
+
+        let mut text = *b"abcd";
+        let mut file = reading(&mut text);
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream and buffer.
+        unsafe {
+            assert_eq!(get(&mut *stream), b'a' as i32);
+            assert_eq!(get(&mut *stream), b'b' as i32);
+            assert_eq!(ungetc(b'x' as i32, stream), b'x' as i32);
+            assert_eq!(ungetc(b'y' as i32, stream), b'y' as i32);
+            assert_eq!(
+                ungetc(b'q' as i32, stream),
+                EOF,
+                "no room before the buffer"
+            );
+            let read: Vec<i32> = (0..4).map(|_| get(&mut *stream)).collect();
+            assert_eq!(read, [b'y', b'x', b'c', b'd'].map(i32::from));
+        }
+
+        let mut buffer = [0u8; 8];
+        let mut file = writing(&mut buffer);
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream.
+        unsafe { assert_eq!(ungetc(b'x' as i32, stream), EOF, "a stream writing") };
+        // SAFETY: a null stream.
+        unsafe { assert_eq!(ungetc(b'x' as i32, core::ptr::null_mut()), EOF) };
+    }
+
+    /// A `+` stream that is neither reading nor writing yet takes a character back, and reads.
+    #[test]
+    fn ungetc_starts_a_plus_stream_reading() {
+        let mut buffer = [0u8; 4];
+        let mut file = File {
+            flag: IORW | IOYOURBUF,
+            cnt: 0,
+            ..reading(&mut buffer)
+        };
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream.
+        unsafe {
+            assert_eq!(ungetc(b'k' as i32, stream), b'k' as i32);
+            assert_eq!((*stream).flag & (IOREAD | IOWRT), IOREAD);
+            assert_eq!(get(&mut *stream), b'k' as i32);
+        }
+    }
+
+    /// ungetwc pushes back what get_wide reads: in text mode a byte, as the "C" locale's code page
+    /// has the character (one it lacks refused, errno EILSEQ); in binary mode two bytes, low
+    /// first. WEOF is refused.
+    #[test]
+    fn ungetwc_pushes_back_as_the_mode_reads() {
+        let _locale = ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
+        let mut text = *b"ab";
+        let mut file = reading(&mut text);
+        assert_eq!(get_wide(&mut file, true), Some(0x61));
+        assert!(unget_wide(0xE9, &mut file, true));
+        assert_eq!(get_wide(&mut file, true), Some(0xE9));
+        set_errno(0);
+        assert!(!unget_wide(0x3B1, &mut file, true));
+        assert_eq!(crate::thread::errno(), EILSEQ);
+        assert_eq!(get_wide(&mut file, true), Some(0x62));
+
+        let mut binary = *b"a\0b\0";
+        let mut file = reading(&mut binary);
+        assert_eq!(get_wide(&mut file, false), Some(0x61));
+        assert!(unget_wide(0x3B1, &mut file, false));
+        assert!(!unget_wide(0x41, &mut file, false), "no room for two more");
+        assert_eq!(get_wide(&mut file, false), Some(0x3B1));
+        assert_eq!(get_wide(&mut file, false), Some(0x62));
+
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream.
+        unsafe { assert_eq!(ungetwc(0xFFFF, stream), 0xFFFF) };
     }
 
     /// fgetws's characters: in text mode one byte each, as mbtowc reads it in the "C" locale; in

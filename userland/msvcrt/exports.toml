@@ -863,6 +863,22 @@ ordinal = 618
 fails = "NULL"
 
 [[export]]
+name = "ungetc"
+group = "stdio"
+args = ["i32 c", "ptr stream"]
+impl = { native = "ungetc" }
+ordinal = 749
+fails = "-1"
+
+[[export]]
+name = "ungetwc"
+group = "stdio"
+args = ["u32 c", "ptr stream"]
+impl = { native = "ungetwc" }
+ordinal = 750
+fails = "0xFFFF"
+
+[[export]]
 name = "fputws"
 group = "stdio"
 args = ["strW str", "ptr stream"]
@@ -4042,14 +4058,6 @@ ordinal = 744
 [[export]]
 name = "tolower"
 ordinal = 745
-
-[[export]]
-name = "ungetc"
-ordinal = 749
-
-[[export]]
-name = "ungetwc"
-ordinal = 750
 
 [[export]]
 name = "wcscoll"
