@@ -379,8 +379,11 @@ fn page_up(va: u64) -> u64 {
     (va + PAGE as u64 - 1) & !(PAGE as u64 - 1)
 }
 
-/// How many mapped views a process can hold at once.
-pub const VIEWS: usize = 32;
+/// How many mapped views a process can hold at once: every DLL a program loads is one (an
+/// explorer-class program maps forty and more), and every MapViewOfFile. A full table refuses the
+/// map (STATUS_NO_MEMORY). The table is the process's own, in its record, so one process filling
+/// it takes nothing from another.
+pub const VIEWS: usize = 128;
 
 /// One mapped view: its region's base, and what it maps — a data section, or an image's segment —
 /// whose frames it maps (the view holds a reference on it for as long as it is mapped).
