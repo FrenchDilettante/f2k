@@ -29,6 +29,7 @@ mod modules;
 mod objects;
 mod pipes;
 mod processes;
+mod profile;
 mod resources;
 mod startup;
 mod threads;

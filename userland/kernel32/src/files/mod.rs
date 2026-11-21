@@ -25,7 +25,7 @@ pub mod temp;
 pub mod volume;
 
 use crate::base::{SecurityAttributes, OBJ_INHERIT};
-use crate::edge::{ansi_into, wide_units, In, InStr, InWStr, Out};
+use crate::edge::{ansi_into, wide_units, CallerStr, In, InStr, InWStr, Out};
 use crate::error::Failure;
 use crate::heap::HeapString;
 use crate::nt::{ObjectAttributes, UnicodeString};
@@ -166,6 +166,16 @@ pub fn widen(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
 pub fn wide(name: &InWStr<'_>) -> Result<Wide, Failure> {
     let units = wide_units(name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
     Wide::of(&units).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))
+}
+
+/// A caller's name of either form, into the buffer a path is read into: an A call's converted
+/// ([`widen`]: ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters), a W call's copied ([`wide`]:
+/// ERROR_PATH_NOT_FOUND past it). The pair's limit is the same; its error is not.
+pub fn name(name: &CallerStr<'_>) -> Result<Wide, Failure> {
+    match name {
+        CallerStr::Ansi(name) => widen(Some(name)),
+        CallerStr::Wide(name) => wide(name),
+    }
 }
 
 /// Two names, each read and converted whatever the other's answer, in the order the call reads

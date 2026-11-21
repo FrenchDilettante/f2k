@@ -34,19 +34,25 @@
 
 pub mod ini;
 
-use core::ops::Deref;
-
 use ini::Fit;
 
-use crate::base::{set_last_error, WideUnits};
-use crate::edge::{wide_units, wide_units_of, EnvironmentBlock, InStr, InWStr, Out, OutBuf, Text};
+use crate::base::set_last_error;
+use crate::edge::{
+    wide_units_of,
+    CallerChar,
+    CallerStr,
+    CallerUnits,
+    EnvironmentBlock,
+    Out,
+    OutBuf,
+    Text,
+};
 use crate::error::{answer, bool_answer, Failure, ERROR_INVALID_PARAMETER};
 use crate::files::{
     self,
     close,
     quad,
     set,
-    widen,
     NtPath,
     Wide,
     ERROR_FILENAME_EXCED_RANGE,
@@ -71,7 +77,7 @@ use crate::files::{
     STATUS_OBJECT_PATH_NOT_FOUND,
     SYNCHRONIZE,
 };
-use crate::heap::{HeapArray, HeapString};
+use crate::heap::HeapArray;
 use crate::nt::IoStatus;
 use crate::ntcall::{self, Destination, Source, Transfer};
 
@@ -86,53 +92,32 @@ const WIN_INI: &[u16] = &[0x77, 0x69, 0x6E, 0x2E, 0x69, 0x6E, 0x69];
 
 /// A caller's string as an export received it: an A call's or a W call's, none for NULL.
 #[derive(Clone, Copy)]
-enum Name<'a> {
-    Ansi(Option<InStr<'a>>),
-    Wide(Option<InWStr<'a>>),
-}
+struct Name<'a>(Option<CallerStr<'a>>);
 
 impl<'a> Name<'a> {
-    /// The A call's string at `at`.
+    /// The call's string at `at`, of its form's characters.
     ///
     /// # Safety
     ///
     /// `at` is null or a NUL-terminated string (the export's contract).
-    unsafe fn ansi(at: *const u8) -> Name<'a> {
+    unsafe fn of<C: CallerChar>(at: *const C) -> Name<'a> {
         // SAFETY: the export's contract.
-        Name::Ansi(unsafe { InStr::optional(at) })
+        Name(unsafe { C::optional_string(at) })
     }
 
-    /// The W call's string at `at`.
-    ///
-    /// # Safety
-    ///
-    /// `at` is null or a NUL-terminated UTF-16 string (the export's contract).
-    unsafe fn wide(at: *const u16) -> Name<'a> {
-        // SAFETY: the export's contract.
-        Name::Wide(unsafe { InWStr::optional(at) })
-    }
-
-    /// The string's units: an A call's widened onto the process heap, a W call's read in place;
-    /// none for NULL.
-    fn units(self) -> Result<Option<Units<'a>>, Failure> {
-        Ok(match self {
-            Name::Ansi(None) | Name::Wide(None) => None,
-            Name::Ansi(Some(text)) => Some(Units::Ansi(
-                HeapString::of_ansi(Some(&text)).map_err(Failure::Status)?,
-            )),
-            Name::Wide(Some(text)) => Some(Units::Wide(
-                wide_units(&text).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?,
-            )),
-        })
+    /// The string's units ([`CallerStr::units`]: an A call's widened onto the process heap, a W
+    /// call's read in place); none for NULL.
+    fn units(self) -> Result<Option<CallerUnits<'a>>, Failure> {
+        self.0.map(|text| text.units()).transpose()
     }
 
     /// The profile file the name names: win.ini for NULL; a name without a directory or a drive
-    /// in the Windows directory; any other the file it names (see the module's).
+    /// in the Windows directory; any other the file it names (see the module's; an A call's name
+    /// read as [`files::name`] reads it).
     fn path(self) -> Result<Wide, Failure> {
-        let name = match self {
-            Name::Ansi(None) | Name::Wide(None) => return in_windows_directory(WIN_INI),
-            Name::Ansi(Some(text)) => widen(Some(&text))?,
-            Name::Wide(Some(text)) => files::wide(&text)?,
+        let name = match self.0 {
+            None => return in_windows_directory(WIN_INI),
+            Some(text) => files::name(&text)?,
         };
         if ini::in_windows_directory(name.text()) {
             in_windows_directory(name.text())
@@ -157,23 +142,6 @@ fn in_windows_directory(name: &[u16]) -> Result<Wide, Failure> {
     Wide::of(&path[..whole]).ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))
 }
 
-/// A caller's string's units, as [`Name::units`] reads them.
-enum Units<'a> {
-    Ansi(HeapString),
-    Wide(WideUnits<'a>),
-}
-
-impl Deref for Units<'_> {
-    type Target = [u16];
-
-    fn deref(&self) -> &[u16] {
-        match self {
-            Units::Ansi(string) => string.units(),
-            Units::Wide(units) => units,
-        }
-    }
-}
-
 /// A caller's list of entries (WritePrivateProfileSection's: each NUL-terminated, an empty one
 /// last), as an export received it.
 enum List<'a> {
@@ -181,7 +149,24 @@ enum List<'a> {
     Wide(Option<EnvironmentBlock<'a, u16>>),
 }
 
-impl List<'_> {
+impl<'a> List<'a> {
+    /// The call's list at `at`, of its form's characters.
+    ///
+    /// # Safety
+    ///
+    /// `at` is null or a list of NUL-terminated entries, an empty one last (the export's
+    /// contract).
+    unsafe fn of<C: CallerChar>(at: *const C) -> List<'a> {
+        // SAFETY: the export's contract, the block of the form's characters.
+        unsafe {
+            if C::WIDE {
+                List::Wide((!at.is_null()).then(|| EnvironmentBlock::new(at.cast())))
+            } else {
+                List::Ansi((!at.is_null()).then(|| EnvironmentBlock::new(at.cast())))
+            }
+        }
+    }
+
     /// Its units through its final empty entry, an A call's widened onto the process heap; none
     /// for NULL.
     fn units(&self) -> Result<Option<HeapArray<u16>>, Failure> {
@@ -566,6 +551,36 @@ fn write_profile_section(section: Name<'_>, list: List<'_>, file: Name<'_>) -> R
     save(&file, &profile, splice)
 }
 
+/// GetPrivateProfileString's export body, either form (see [`profile_string`]).
+///
+/// # Safety
+///
+/// The strings are null or NUL-terminated; `buffer` holds `size` characters; all of the form's
+/// characters.
+unsafe fn get_private_profile_string_as<C: CallerChar>(
+    section: *const C,
+    key: *const C,
+    default: *const C,
+    buffer: *mut C,
+    size: u32,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's strings and buffer (the contract).
+    let (section, key, default, buffer, file) = unsafe {
+        (
+            Name::of(section),
+            Name::of(key),
+            Name::of(default),
+            OutBuf::new(buffer, size as usize),
+            Name::of(file),
+        )
+    };
+    answer(
+        profile_string(section, key, default, C::text(buffer), file),
+        0,
+    )
+}
+
 /// GetPrivateProfileStringA (see [`profile_string`]).
 ///
 /// # Safety
@@ -580,20 +595,8 @@ pub unsafe extern "system" fn get_private_profile_string_a(
     size: u32,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's strings and buffer (the contract).
-    let (section, key, default, buffer, file) = unsafe {
-        (
-            Name::ansi(section),
-            Name::ansi(key),
-            Name::ansi(default),
-            OutBuf::new(buffer, size as usize),
-            Name::ansi(file),
-        )
-    };
-    answer(
-        profile_string(section, key, default, Text::Ansi(buffer), file),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_string_as(section, key, default, buffer, size, file) }
 }
 
 /// GetPrivateProfileStringW (see [`profile_string`]).
@@ -610,20 +613,8 @@ pub unsafe extern "system" fn get_private_profile_string_w(
     size: u32,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's strings and buffer (the contract).
-    let (section, key, default, buffer, file) = unsafe {
-        (
-            Name::wide(section),
-            Name::wide(key),
-            Name::wide(default),
-            OutBuf::new(buffer, size as usize),
-            Name::wide(file),
-        )
-    };
-    answer(
-        profile_string(section, key, default, Text::Wide(buffer), file),
-        0,
-    )
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_string_as(section, key, default, buffer, size, file) }
 }
 
 /// GetProfileStringA: GetPrivateProfileStringA's over win.ini. Windows 2000 would consult win.ini's
@@ -662,6 +653,22 @@ pub unsafe extern "system" fn get_profile_string_w(
     unsafe { get_private_profile_string_w(section, key, default, buffer, size, core::ptr::null()) }
 }
 
+/// GetPrivateProfileInt's export body, either form (see [`profile_int`]).
+///
+/// # Safety
+///
+/// The strings are null or NUL-terminated, of the form's characters.
+unsafe fn get_private_profile_int_as<C: CallerChar>(
+    section: *const C,
+    key: *const C,
+    default: u32,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's strings (the contract).
+    let (section, key, file) = unsafe { (Name::of(section), Name::of(key), Name::of(file)) };
+    profile_int(section, key, default, file)
+}
+
 /// GetPrivateProfileIntA (see [`profile_int`]).
 ///
 /// # Safety
@@ -674,9 +681,8 @@ pub unsafe extern "system" fn get_private_profile_int_a(
     default: u32,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's strings (the contract).
-    let (section, key, file) = unsafe { (Name::ansi(section), Name::ansi(key), Name::ansi(file)) };
-    profile_int(section, key, default, file)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_int_as(section, key, default, file) }
 }
 
 /// GetPrivateProfileIntW (see [`profile_int`]).
@@ -691,9 +697,8 @@ pub unsafe extern "system" fn get_private_profile_int_w(
     default: u32,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's strings (the contract).
-    let (section, key, file) = unsafe { (Name::wide(section), Name::wide(key), Name::wide(file)) };
-    profile_int(section, key, default, file)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_int_as(section, key, default, file) }
 }
 
 /// GetProfileIntA: GetPrivateProfileIntA's over win.ini, its IniFileMapping not consulted (as
@@ -727,6 +732,29 @@ pub unsafe extern "system" fn get_profile_int_w(
     unsafe { get_private_profile_int_w(section, key, default, core::ptr::null()) }
 }
 
+/// GetPrivateProfileSection's export body, either form (see [`profile_section`]).
+///
+/// # Safety
+///
+/// The strings are null or NUL-terminated; `buffer` holds `size` characters; all of the form's
+/// characters.
+unsafe fn get_private_profile_section_as<C: CallerChar>(
+    section: *const C,
+    buffer: *mut C,
+    size: u32,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's strings and buffer (the contract).
+    let (section, buffer, file) = unsafe {
+        (
+            Name::of(section),
+            OutBuf::new(buffer, size as usize),
+            Name::of(file),
+        )
+    };
+    answer(profile_section(section, C::text(buffer), file), 0)
+}
+
 /// GetPrivateProfileSectionA (see [`profile_section`]).
 ///
 /// # Safety
@@ -739,15 +767,8 @@ pub unsafe extern "system" fn get_private_profile_section_a(
     size: u32,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's strings and buffer (the contract).
-    let (section, buffer, file) = unsafe {
-        (
-            Name::ansi(section),
-            OutBuf::new(buffer, size as usize),
-            Name::ansi(file),
-        )
-    };
-    answer(profile_section(section, Text::Ansi(buffer), file), 0)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_section_as(section, buffer, size, file) }
 }
 
 /// GetPrivateProfileSectionW (see [`profile_section`]).
@@ -762,15 +783,23 @@ pub unsafe extern "system" fn get_private_profile_section_w(
     size: u32,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's strings and buffer (the contract).
-    let (section, buffer, file) = unsafe {
-        (
-            Name::wide(section),
-            OutBuf::new(buffer, size as usize),
-            Name::wide(file),
-        )
-    };
-    answer(profile_section(section, Text::Wide(buffer), file), 0)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_section_as(section, buffer, size, file) }
+}
+
+/// GetPrivateProfileSectionNames' export body, either form (see [`profile_section_names`]).
+///
+/// # Safety
+///
+/// `buffer` holds `size` characters; `file` is null or NUL-terminated; of the form's characters.
+unsafe fn get_private_profile_section_names_as<C: CallerChar>(
+    buffer: *mut C,
+    size: u32,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's buffer and string (the contract).
+    let (buffer, file) = unsafe { (OutBuf::new(buffer, size as usize), Name::of(file)) };
+    answer(profile_section_names(C::text(buffer), file), 0)
 }
 
 /// GetPrivateProfileSectionNamesA (see [`profile_section_names`]).
@@ -784,9 +813,8 @@ pub unsafe extern "system" fn get_private_profile_section_names_a(
     size: u32,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's buffer and string (the contract).
-    let (buffer, file) = unsafe { (OutBuf::new(buffer, size as usize), Name::ansi(file)) };
-    answer(profile_section_names(Text::Ansi(buffer), file), 0)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_section_names_as(buffer, size, file) }
 }
 
 /// GetPrivateProfileSectionNamesW (see [`profile_section_names`]).
@@ -800,9 +828,31 @@ pub unsafe extern "system" fn get_private_profile_section_names_w(
     size: u32,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's buffer and string (the contract).
-    let (buffer, file) = unsafe { (OutBuf::new(buffer, size as usize), Name::wide(file)) };
-    answer(profile_section_names(Text::Wide(buffer), file), 0)
+    // SAFETY: the caller's contract.
+    unsafe { get_private_profile_section_names_as(buffer, size, file) }
+}
+
+/// WritePrivateProfileString's export body, either form (see [`write_profile_string`]).
+///
+/// # Safety
+///
+/// The strings are null or NUL-terminated, of the form's characters.
+unsafe fn write_private_profile_string_as<C: CallerChar>(
+    section: *const C,
+    key: *const C,
+    value: *const C,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's strings (the contract).
+    let names = unsafe {
+        (
+            Name::of(section),
+            Name::of(key),
+            Name::of(value),
+            Name::of(file),
+        )
+    };
+    bool_answer(write_profile_string(names.0, names.1, names.2, names.3))
 }
 
 /// WritePrivateProfileStringA (see [`write_profile_string`]).
@@ -817,16 +867,8 @@ pub unsafe extern "system" fn write_private_profile_string_a(
     value: *const u8,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's strings (the contract).
-    let names = unsafe {
-        (
-            Name::ansi(section),
-            Name::ansi(key),
-            Name::ansi(value),
-            Name::ansi(file),
-        )
-    };
-    bool_answer(write_profile_string(names.0, names.1, names.2, names.3))
+    // SAFETY: the caller's contract.
+    unsafe { write_private_profile_string_as(section, key, value, file) }
 }
 
 /// WritePrivateProfileStringW (see [`write_profile_string`]).
@@ -841,16 +883,8 @@ pub unsafe extern "system" fn write_private_profile_string_w(
     value: *const u16,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's strings (the contract).
-    let names = unsafe {
-        (
-            Name::wide(section),
-            Name::wide(key),
-            Name::wide(value),
-            Name::wide(file),
-        )
-    };
-    bool_answer(write_profile_string(names.0, names.1, names.2, names.3))
+    // SAFETY: the caller's contract.
+    unsafe { write_private_profile_string_as(section, key, value, file) }
 }
 
 /// WriteProfileStringA: WritePrivateProfileStringA's on win.ini, its IniFileMapping not consulted
@@ -884,6 +918,22 @@ pub unsafe extern "system" fn write_profile_string_w(
     unsafe { write_private_profile_string_w(section, key, value, core::ptr::null()) }
 }
 
+/// WritePrivateProfileSection's export body, either form (see [`write_profile_section`]).
+///
+/// # Safety
+///
+/// `section` and `file` are null or NUL-terminated; `list` null or a list of NUL-terminated
+/// entries, an empty one last; all of the form's characters.
+unsafe fn write_private_profile_section_as<C: CallerChar>(
+    section: *const C,
+    list: *const C,
+    file: *const C,
+) -> u32 {
+    // SAFETY: the caller's strings and list (the contract).
+    let (section, list, file) = unsafe { (Name::of(section), List::of(list), Name::of(file)) };
+    bool_answer(write_profile_section(section, list, file))
+}
+
 /// WritePrivateProfileSectionA (see [`write_profile_section`]).
 ///
 /// # Safety
@@ -896,15 +946,8 @@ pub unsafe extern "system" fn write_private_profile_section_a(
     list: *const u8,
     file: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's strings and list (the contract).
-    let (section, list, file) = unsafe {
-        (
-            Name::ansi(section),
-            List::Ansi((!list.is_null()).then(|| EnvironmentBlock::new(list))),
-            Name::ansi(file),
-        )
-    };
-    bool_answer(write_profile_section(section, list, file))
+    // SAFETY: the caller's contract.
+    unsafe { write_private_profile_section_as(section, list, file) }
 }
 
 /// WritePrivateProfileSectionW (see [`write_profile_section`]).
@@ -918,15 +961,8 @@ pub unsafe extern "system" fn write_private_profile_section_w(
     list: *const u16,
     file: *const u16,
 ) -> u32 {
-    // SAFETY: the caller's strings and list (the contract).
-    let (section, list, file) = unsafe {
-        (
-            Name::wide(section),
-            List::Wide((!list.is_null()).then(|| EnvironmentBlock::new(list))),
-            Name::wide(file),
-        )
-    };
-    bool_answer(write_profile_section(section, list, file))
+    // SAFETY: the caller's contract.
+    unsafe { write_private_profile_section_as(section, list, file) }
 }
 
 #[cfg(test)]
