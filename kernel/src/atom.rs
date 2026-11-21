@@ -88,13 +88,22 @@ fn named(name: &[u16]) -> Result<Named<'_>, NtStatus> {
     if name.len() > MAX_NAME {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    if let Some(value) = integer_value(name) {
-        return match value {
-            1..0xC000 => Ok(Named::Integer(value as Atom)),
-            _ => Err(STATUS_INVALID_PARAMETER),
-        };
+    match integer_atom(name) {
+        Some(atom) => atom.map(Named::Integer),
+        None => Ok(Named::Text(name)),
     }
-    Ok(Named::Text(name))
+}
+
+/// The integer atom a name gives in the "#ddddd" form, as Windows 2000's atom tables read it (the
+/// global table's and the window classes' alike): none for a name that is not '#' and decimal
+/// digits alone, which names a string atom ("#12a", "#-1", "# 12"); the atom for a value from 1 to
+/// 0xBFFF, leading zeros allowed ("#00123" is 123); STATUS_INVALID_PARAMETER for 0, "#" alone and
+/// a value from 0xC000 on, the string atoms' range (the atom capture's).
+pub fn integer_atom(name: &[u16]) -> Option<Result<Atom, NtStatus>> {
+    Some(match integer_value(name)? {
+        value @ 1..0xC000 => Ok(value as Atom),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    })
 }
 
 /// The value of a name of '#' and decimal digits alone (0 for "#"; past 0xFFFF it stops counting
@@ -351,6 +360,31 @@ mod tests {
     use rtl::testing::wide;
 
     use super::*;
+
+    /// The "#ddddd" names as the atom capture reads them: an integer atom from 1 to 0xBFFF
+    /// (leading zeros allowed), an invalid parameter for 0, "#" alone and 0xC000 on, and a string
+    /// name for anything else after the '#'.
+    #[test]
+    fn integer_names_read_as_captured() {
+        for (name, atom) in [
+            ("#123", 123),
+            ("#00123", 123),
+            ("#49151", 0xBFFF),
+            ("#1", 1),
+        ] {
+            assert_eq!(integer_atom(&wide(name)), Some(Ok(atom)), "{name}");
+        }
+        for name in ["#0", "#", "#49152", "#65535", "#65536", "#99999999999"] {
+            assert_eq!(
+                integer_atom(&wide(name)),
+                Some(Err(STATUS_INVALID_PARAMETER)),
+                "{name}"
+            );
+        }
+        for name in ["#12a", "#-1", "# 12", "123", "x#1"] {
+            assert_eq!(integer_atom(&wide(name)), None, "{name}");
+        }
+    }
 
     /// The atom fixture's add section: one atom whatever the ASCII case, four references; é and É
     /// two names.

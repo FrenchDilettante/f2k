@@ -243,33 +243,18 @@ pub enum Name<'a> {
 }
 
 impl Name<'_> {
-    /// The atom the name resolves to for a lookup: the string's global atom (0 when the table has
-    /// none), or the integer atom itself.
+    /// The atom the name resolves to for a lookup: a "#ddddd" string's integer atom (0 for an
+    /// invalid one, "#0" or "#49152", which names no class), another string's global atom (0 when
+    /// the table has none), or the integer atom itself.
     fn atom(&self, atoms: &Atoms) -> Atom {
         match self {
-            Name::Text(units) => integer_atom(units).unwrap_or_else(|| atoms.find(units)),
+            Name::Text(units) => match crate::atom::integer_atom(units) {
+                Some(atom) => atom.unwrap_or(0),
+                None => atoms.find(units),
+            },
             Name::Atom(atom) => *atom,
         }
     }
-}
-
-/// The integer atom a string names in the atom functions' "#ddddd" form (a '#' and decimal digits,
-/// below the first string atom: "#32770" is the dialog class's atom 0x8002); none for another
-/// string.
-fn integer_atom(units: &[u16]) -> Option<Atom> {
-    let (&first, digits) = units.split_first()?;
-    if first != u16::from(b'#') || digits.is_empty() || digits.len() > 5 {
-        return None;
-    }
-    let mut value = 0u32;
-    for &unit in digits {
-        let digit = (unit as u32).wrapping_sub(u32::from(b'0'));
-        if digit > 9 {
-            return None;
-        }
-        value = value * 10 + digit;
-    }
-    (value != 0 && value < u32::from(FIRST_STRING_ATOM)).then_some(value as Atom)
 }
 
 /// A menu name as the caller passes it in WNDCLASSEXW: a string pointer, an integer id, or null.
@@ -1078,6 +1063,17 @@ impl Registry {
         {
             return Err(Failure::InvalidParameter);
         }
+
+        // A "#ddddd" string names its integer atom, as the atom functions read it: the class is
+        // registered under that atom, with no table entry; an invalid one ("#0", "#49152") fails.
+        let class_name = match class_name {
+            Name::Text(units) => match crate::atom::integer_atom(units) {
+                Some(Ok(atom)) => Name::Atom(atom),
+                Some(Err(_)) => return Err(Failure::InvalidParameter),
+                None => class_name,
+            },
+            Name::Atom(_) => class_name,
+        };
 
         // The duplicate checks run before any allocation: a private class of the same name and
         // module, and a public class of the same name when CS_GLOBALCLASS is asked. A
@@ -2932,6 +2928,28 @@ mod tests {
         assert!(!registry.classes.at(id).atom_added);
         let err = register(registry, Name::Atom(0x8002), &wc, compat40()).unwrap_err();
         assert_eq!(err, Failure::ClassAlreadyExists);
+    }
+
+    /// A "#ddddd" class name is the atom functions' integer atom, the same in a registration and
+    /// a lookup: "#123" registers atom 123 with no table entry and "#00123" finds it; "#0" and
+    /// "#49152" fail the registration and name no class; "#12a" is a string name.
+    #[test]
+    fn integer_names_register_and_find_their_atom() {
+        let registry = registry();
+        let wc = wnd_class();
+        let atom = register(registry, Name::Text(&wide("#123")), &wc, compat40()).unwrap();
+        assert_eq!(atom, 123);
+        assert!(!registry.atoms.contains(123));
+        assert_eq!(registry.atom_of(Name::Text(&wide("#00123"))), 123);
+        let err = register(registry, Name::Atom(123), &wc, compat40()).unwrap_err();
+        assert_eq!(err, Failure::ClassAlreadyExists);
+        for name in ["#0", "#49152"] {
+            let err = register(registry, Name::Text(&wide(name)), &wc, compat40()).unwrap_err();
+            assert_eq!(err, Failure::InvalidParameter, "{name}");
+            assert_eq!(registry.atom_of(Name::Text(&wide(name))), 0, "{name}");
+        }
+        let atom = register(registry, Name::Text(&wide("#12a")), &wc, compat40()).unwrap();
+        assert!(atom >= FIRST_STRING_ATOM, "a string atom");
     }
 
     /// The ANSI class-name copy: the string converted, or '#' plus the atom's decimal digits for
