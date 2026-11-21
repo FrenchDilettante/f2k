@@ -8,138 +8,74 @@ use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, deliver, named, walk, Found, Named, Target};
 use super::{
     check_arguments,
-    FILE_CREATE,
+    implied_access,
+    make_missing,
+    new_attributes,
+    open_existing,
+    Existing,
+    Making,
+    Request,
+    FILE_CREATED,
     FILE_DELETE_ON_CLOSE,
-    FILE_DIRECTORY_FILE,
-    FILE_NON_DIRECTORY_FILE,
     FILE_OPEN,
-    FILE_OPEN_IF,
-    FILE_OVERWRITE,
-    FILE_OVERWRITE_IF,
-    FILE_SUPERSEDE,
+    FILE_OPENED,
     FILE_SYNCHRONOUS_IO_ALERT,
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use crate::fs::fat32::dir::is_empty;
-use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::volume::Volume;
 use crate::fs::fat32::write;
 use crate::fs::file::{rights, Context, FileRecordId};
-use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
+use crate::fs::io;
 use crate::status::*;
 
-/// The IO_STATUS_BLOCK's Information an open answers with.
-const FILE_SUPERSEDED: u32 = 0;
-pub(super) const FILE_OPENED: u32 = 1;
-pub(super) const FILE_CREATED: u32 = 2;
-const FILE_OVERWRITTEN: u32 = 3;
-
-/// The rights that change a file, which a read-only one refuses.
-const CHANGES: u32 = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA | rights::DELETE;
-
-/// What the caller asks of an open.
-struct Request {
-    /// The rights as asked (MAXIMUM_ALLOWED among them), and as mapped.
-    access: u32,
-    granted: u32,
-    disposition: u32,
-    options: u32,
-    attributes: u32,
-}
-
-/// The decision on an existing entry: the file (the open goes ahead), its I/O status information,
-/// whether it is overwritten once open, and the rights granted (MAXIMUM_ALLOWED leaves a read-only
-/// file's write rights out).
+/// The decision on an existing entry ([`open_existing`]): the file (the open goes ahead), its I/O
+/// status information, whether it is overwritten once open, and the rights granted; a directory
+/// opened for delete-on-close with entries left is STATUS_DIRECTORY_NOT_EMPTY.
 fn existing(
     volume: &mut Volume,
     target: &Target,
     file: File,
     request: &Request,
 ) -> Result<(File, u32, bool, u32), NtStatus> {
-    let mut granted = request.granted;
-    if request.disposition == FILE_CREATE {
-        return Err(STATUS_OBJECT_NAME_COLLISION);
-    }
-    if file.directory {
-        if request.options & FILE_NON_DIRECTORY_FILE != 0 {
-            return Err(STATUS_FILE_IS_A_DIRECTORY);
-        }
-        // A directory only opens (an assumption, unverified against FastFat's collision answer).
-        if !matches!(request.disposition, FILE_OPEN | FILE_OPEN_IF) {
-            return Err(STATUS_ACCESS_DENIED);
-        }
+    let entry = Existing {
+        directory: file.directory,
         // The root is never deleted (it has no entry).
-        if (target.name.volume || file.parent_cluster == 0) && granted & rights::DELETE != 0 {
-            return Err(STATUS_ACCESS_DENIED);
-        }
-        if request.options & FILE_DELETE_ON_CLOSE != 0 && !is_empty(volume, file.first_cluster)? {
-            return Err(STATUS_DIRECTORY_NOT_EMPTY);
-        }
-        return Ok((file, FILE_OPENED, false, granted));
-    }
-    if request.options & FILE_DIRECTORY_FILE != 0 {
-        return Err(STATUS_NOT_A_DIRECTORY);
-    }
-    // A file named with a trailing separator is no name.
-    if target.name.trailing {
-        return Err(STATUS_OBJECT_NAME_INVALID);
-    }
-    let overwrite = matches!(
-        request.disposition,
-        FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF
-    );
-    if file.attributes & ATTR_READ_ONLY != 0 {
-        if request.access & rights::MAXIMUM_ALLOWED != 0 {
-            granted &= !CHANGES;
-        }
-        if granted & CHANGES != 0 || overwrite {
-            return Err(STATUS_ACCESS_DENIED);
-        }
-    }
-    if !overwrite {
-        return Ok((file, FILE_OPENED, false, granted));
-    }
-    // An overwrite keeps a hidden or system file's attribute only when asked to (CreateFile's
-    // documented refusal).
-    let keeps = |bit: u8| file.attributes & bit == 0 || request.attributes & bit as u32 != 0;
-    if !keeps(ATTR_HIDDEN) || !keeps(ATTR_SYSTEM) {
-        return Err(STATUS_ACCESS_DENIED);
-    }
-    let information = if request.disposition == FILE_SUPERSEDE {
-        FILE_SUPERSEDED
-    } else {
-        FILE_OVERWRITTEN
+        root: target.name.volume || file.parent_cluster == 0,
+        attributes: file.attributes,
     };
-    Ok((file, information, true, granted))
+    let opening = open_existing(entry, target.name.trailing, request)?;
+    if opening.must_be_empty && !is_empty(volume, file.first_cluster)? {
+        return Err(STATUS_DIRECTORY_NOT_EMPTY);
+    }
+    Ok((
+        file,
+        opening.information,
+        opening.overwrite,
+        opening.granted,
+    ))
 }
 
-/// The decision on a missing name: made (a directory when asked, else a file with the attributes
-/// asked for and the archive bit, stamped now) when the disposition creates.
+/// The decision on a missing name ([`make_missing`]): made (a directory when asked, else a file
+/// with the attributes asked for and the archive bit, stamped now) when the disposition creates.
 fn missing(
     volume: &mut Volume,
     target: &Target,
     parent: File,
     request: &Request,
 ) -> Result<File, NtStatus> {
-    if !matches!(
-        request.disposition,
-        FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
-    ) {
-        return Err(STATUS_OBJECT_NAME_NOT_FOUND);
-    }
     let name = target.name.last();
-    if request.options & FILE_DIRECTORY_FILE != 0 {
-        return write::make_directory(volume, parent.first_cluster, name, io::now());
+    match make_missing(target.name.trailing, request)? {
+        Making::Directory => write::make_directory(volume, parent.first_cluster, name, io::now()),
+        Making::File(attributes) => {
+            let mut file = File::plain(0, 0, false);
+            file.attributes = attributes;
+            file.times = io::now();
+            write::create_entry(volume, parent.first_cluster, name, &mut file)?;
+            Ok(file)
+        }
     }
-    if target.name.trailing {
-        return Err(STATUS_OBJECT_NAME_INVALID);
-    }
-    let mut file = File::plain(0, 0, false);
-    file.attributes = request.attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
-    file.times = io::now();
-    write::create_entry(volume, parent.first_cluster, name, &mut file)?;
-    Ok(file)
 }
 
 /// Overwrite the open file at `record`: cut to nothing, the attributes asked for (and the archive
@@ -151,7 +87,7 @@ fn overwrite(record: FileRecordId, attributes: u32) -> Result<(), NtStatus> {
     }
     io::with_volume(|volume| {
         let mut file = io::file_at(record);
-        file.attributes = attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE;
+        file.attributes = new_attributes(attributes);
         let stamp = io::now();
         file.times.write_date = stamp.write_date;
         file.times.write_time = stamp.write_time;
@@ -334,11 +270,7 @@ fn create(
         delete_on_close: options & FILE_DELETE_ON_CLOSE != 0,
     };
     // An overwrite cuts the file, a supersede replaces it: each is share-checked for that too.
-    let implied = match (overwrites, disposition) {
-        (false, _) => 0,
-        (true, FILE_SUPERSEDE) => rights::DELETE,
-        (true, _) => rights::FILE_WRITE_DATA,
-    };
+    let implied = implied_access(overwrites, disposition);
     let handle = match io::open(file, &open, implied) {
         Ok(handle) => handle,
         Err(failure) => {

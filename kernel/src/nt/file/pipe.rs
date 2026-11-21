@@ -9,7 +9,6 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, completion_event, deliver, file_object, named, signal, Named};
-use super::create::{FILE_CREATED, FILE_OPENED};
 use super::{
     FILE_CREATE,
     FILE_DIRECTORY_FILE,
@@ -18,6 +17,7 @@ use super::{
     FILE_SYNCHRONOUS_IO_ALERT,
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
+use super::{FILE_CREATED, FILE_OPENED};
 use crate::fs::file::{rights, Context};
 use crate::fs::io;
 use crate::fs::pipes::{self, PipeEnd, PipeName};

@@ -141,6 +141,179 @@ fn check_arguments(
     Ok(())
 }
 
+/// The IO_STATUS_BLOCK's Information an open answers with.
+const FILE_SUPERSEDED: u32 = 0;
+const FILE_OPENED: u32 = 1;
+const FILE_CREATED: u32 = 2;
+const FILE_OVERWRITTEN: u32 = 3;
+
+/// What the caller asks of a disk file's open.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+struct Request {
+    /// The rights as asked (MAXIMUM_ALLOWED among them), and as mapped.
+    access: u32,
+    granted: u32,
+    disposition: u32,
+    options: u32,
+    attributes: u32,
+}
+
+/// What a create's name names on the disk, as the disposition's decision reads it: a directory or
+/// a file, whether it is the volume's root, and its FAT attributes.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+struct Existing {
+    directory: bool,
+    root: bool,
+    attributes: u8,
+}
+
+/// The decision on an existing entry: the open goes ahead, with its I/O status's Information,
+/// whether the file is overwritten once open, and the rights granted (MAXIMUM_ALLOWED leaves a
+/// read-only file's write rights out); a directory opened for delete-on-close must be empty
+/// still, which the volume answers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+struct Opening {
+    information: u32,
+    overwrite: bool,
+    granted: u32,
+    must_be_empty: bool,
+}
+
+/// The disposition's decision on an existing entry (`trailing`: named with a trailing separator):
+/// FILE_CREATE is STATUS_OBJECT_NAME_COLLISION. A directory refuses FILE_NON_DIRECTORY_FILE
+/// (STATUS_FILE_IS_A_DIRECTORY), and only opens (FILE_OPEN, FILE_OPEN_IF: STATUS_ACCESS_DENIED
+/// otherwise, an assumption, unverified against FastFat's answer), the root never for DELETE (it
+/// has no entry: STATUS_ACCESS_DENIED). A file refuses FILE_DIRECTORY_FILE
+/// (STATUS_NOT_A_DIRECTORY) and a trailing separator (STATUS_OBJECT_NAME_INVALID); a read-only
+/// one refuses write and delete rights and every overwrite (STATUS_ACCESS_DENIED); an overwrite of
+/// a hidden or system file must keep the attribute (CreateFile's documented refusal,
+/// STATUS_ACCESS_DENIED). An overwrite answers FILE_OVERWRITTEN, a supersede FILE_SUPERSEDED, an
+/// open FILE_OPENED.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn open_existing(
+    entry: Existing,
+    trailing: bool,
+    request: &Request,
+) -> Result<Opening, crate::status::NtStatus> {
+    use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
+    use crate::fs::file::rights;
+    use crate::status::*;
+    /// The rights that change a file, which a read-only one refuses.
+    const CHANGES: u32 = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA | rights::DELETE;
+    let mut granted = request.granted;
+    if request.disposition == FILE_CREATE {
+        return Err(STATUS_OBJECT_NAME_COLLISION);
+    }
+    if entry.directory {
+        if request.options & FILE_NON_DIRECTORY_FILE != 0 {
+            return Err(STATUS_FILE_IS_A_DIRECTORY);
+        }
+        if !matches!(request.disposition, FILE_OPEN | FILE_OPEN_IF) {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        if entry.root && granted & rights::DELETE != 0 {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        return Ok(Opening {
+            information: FILE_OPENED,
+            overwrite: false,
+            granted,
+            must_be_empty: request.options & FILE_DELETE_ON_CLOSE != 0,
+        });
+    }
+    if request.options & FILE_DIRECTORY_FILE != 0 {
+        return Err(STATUS_NOT_A_DIRECTORY);
+    }
+    if trailing {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    let overwrite = matches!(
+        request.disposition,
+        FILE_SUPERSEDE | FILE_OVERWRITE | FILE_OVERWRITE_IF
+    );
+    if entry.attributes & ATTR_READ_ONLY != 0 {
+        if request.access & rights::MAXIMUM_ALLOWED != 0 {
+            granted &= !CHANGES;
+        }
+        if granted & CHANGES != 0 || overwrite {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+    }
+    let opening = |information| Opening {
+        information,
+        overwrite,
+        granted,
+        must_be_empty: false,
+    };
+    if !overwrite {
+        return Ok(opening(FILE_OPENED));
+    }
+    let keeps = |bit: u8| entry.attributes & bit == 0 || request.attributes & u32::from(bit) != 0;
+    if !keeps(ATTR_HIDDEN) || !keeps(ATTR_SYSTEM) {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    Ok(opening(if request.disposition == FILE_SUPERSEDE {
+        FILE_SUPERSEDED
+    } else {
+        FILE_OVERWRITTEN
+    }))
+}
+
+/// What a create makes for a missing name.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+enum Making {
+    /// A directory (FILE_DIRECTORY_FILE).
+    Directory,
+    /// A file, with these FAT attributes.
+    File(u8),
+}
+
+/// The disposition's decision on a missing name (`trailing`: named with a trailing separator):
+/// the opening dispositions (FILE_OPEN, FILE_OVERWRITE) are STATUS_OBJECT_NAME_NOT_FOUND; the
+/// others make a directory when asked, else a file (STATUS_OBJECT_NAME_INVALID for a file's name
+/// with a trailing separator) with the attributes asked for ([`new_attributes`]).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn make_missing(trailing: bool, request: &Request) -> Result<Making, crate::status::NtStatus> {
+    use crate::status::{STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND};
+    if !matches!(
+        request.disposition,
+        FILE_CREATE | FILE_OPEN_IF | FILE_OVERWRITE_IF | FILE_SUPERSEDE
+    ) {
+        return Err(STATUS_OBJECT_NAME_NOT_FOUND);
+    }
+    if request.options & FILE_DIRECTORY_FILE != 0 {
+        return Ok(Making::Directory);
+    }
+    if trailing {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    Ok(Making::File(new_attributes(request.attributes)))
+}
+
+/// The FAT attributes a file made or overwritten takes from a create's FileAttributes: the ones a
+/// program may set (read-only, hidden, system, archive), and the archive bit.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn new_attributes(attributes: u32) -> u8 {
+    use crate::fs::io::{ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
+    attributes as u8 & SETTABLE_ATTRIBUTES | ATTRIBUTE_ARCHIVE
+}
+
+/// The access an open's disposition uses beyond what it asks, which the share check counts too: an
+/// overwrite writes the file (FILE_WRITE_DATA), a supersede replaces it (DELETE), as FastFat adds
+/// them; an open uses nothing more.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn implied_access(overwrite: bool, disposition: u32) -> u32 {
+    use crate::fs::file::rights;
+    match (overwrite, disposition) {
+        (false, _) => 0,
+        (true, FILE_SUPERSEDE) => rights::DELETE,
+        (true, _) => rights::FILE_WRITE_DATA,
+    }
+}
+
 /// Where a disk file's write starts, `offset` as [`transfer_offset`] left it: the end of the file
 /// (`size`) for FILE_WRITE_TO_END_OF_FILE or a handle with append access alone (`append`), else
 /// the offset given, else the object's `position`.
@@ -628,6 +801,286 @@ mod tests {
             check(read, 0, 0, FILE_OVERWRITE, FILE_NON_DIRECTORY_FILE),
             ok
         );
+    }
+
+    /// A create's request of `disposition` with `options`, asking `access` (mapped).
+    fn request(access: u32, disposition: u32, options: u32, attributes: u32) -> Request {
+        Request {
+            access,
+            granted: crate::fs::file::rights::mapped(access),
+            disposition,
+            options,
+            attributes,
+        }
+    }
+
+    /// The dispositions against what the name names: each answers a plain file, a directory and a
+    /// missing name as the platform's table has it, with the Information FILE_SUPERSEDED,
+    /// FILE_OPENED, FILE_OVERWRITTEN or (made) FILE_CREATED.
+    #[test]
+    fn the_dispositions_against_what_the_name_names() {
+        use crate::fs::file::rights::{FILE_READ_DATA, FILE_WRITE_DATA};
+        use crate::status::*;
+        let access = FILE_READ_DATA | FILE_WRITE_DATA;
+        let file = Existing {
+            directory: false,
+            root: false,
+            attributes: 0x20,
+        };
+        let directory = Existing {
+            directory: true,
+            root: false,
+            attributes: 0x10,
+        };
+        let opened = |information, overwrite| {
+            Ok(Opening {
+                information,
+                overwrite,
+                granted: access,
+                must_be_empty: false,
+            })
+        };
+        let made = Ok(Making::File(0x20));
+        let table = [
+            (
+                FILE_SUPERSEDE,
+                opened(FILE_SUPERSEDED, true),
+                Err(STATUS_ACCESS_DENIED),
+                made,
+            ),
+            (
+                FILE_OPEN,
+                opened(FILE_OPENED, false),
+                opened(FILE_OPENED, false),
+                Err(STATUS_OBJECT_NAME_NOT_FOUND),
+            ),
+            (
+                FILE_CREATE,
+                Err(STATUS_OBJECT_NAME_COLLISION),
+                Err(STATUS_OBJECT_NAME_COLLISION),
+                made,
+            ),
+            (
+                FILE_OPEN_IF,
+                opened(FILE_OPENED, false),
+                opened(FILE_OPENED, false),
+                made,
+            ),
+            (
+                FILE_OVERWRITE,
+                opened(FILE_OVERWRITTEN, true),
+                Err(STATUS_ACCESS_DENIED),
+                Err(STATUS_OBJECT_NAME_NOT_FOUND),
+            ),
+            (
+                FILE_OVERWRITE_IF,
+                opened(FILE_OVERWRITTEN, true),
+                Err(STATUS_ACCESS_DENIED),
+                made,
+            ),
+        ];
+        for (disposition, on_file, on_directory, on_missing) in table {
+            let asked = request(access, disposition, 0, 0);
+            assert_eq!(open_existing(file, false, &asked), on_file, "{disposition}");
+            assert_eq!(
+                open_existing(directory, false, &asked),
+                on_directory,
+                "{disposition}"
+            );
+            assert_eq!(make_missing(false, &asked), on_missing, "{disposition}");
+        }
+        assert_eq!(FILE_SUPERSEDED, 0);
+        assert_eq!(
+            (FILE_OPENED, FILE_CREATED, FILE_OVERWRITTEN),
+            (1, 2, 3),
+            "ntifs.h's numbers"
+        );
+    }
+
+    /// FILE_DIRECTORY_FILE and FILE_NON_DIRECTORY_FILE against what the name names, a trailing
+    /// separator (a directory's alone), the root's delete, and a directory's delete-on-close,
+    /// which the volume checks for entries.
+    #[test]
+    fn a_create_asks_a_directory_or_a_file() {
+        use crate::fs::file::rights::{DELETE, FILE_READ_DATA};
+        use crate::status::*;
+        let file = Existing {
+            directory: false,
+            root: false,
+            attributes: 0,
+        };
+        let directory = Existing {
+            directory: true,
+            ..file
+        };
+        let root = Existing {
+            root: true,
+            ..directory
+        };
+        let read = FILE_READ_DATA;
+
+        let asked = request(read, FILE_OPEN, FILE_DIRECTORY_FILE, 0);
+        assert_eq!(
+            open_existing(file, false, &asked),
+            Err(STATUS_NOT_A_DIRECTORY)
+        );
+        assert!(
+            open_existing(directory, true, &asked).is_ok(),
+            "a trailing separator"
+        );
+        assert_eq!(
+            make_missing(false, &asked),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        for disposition in [FILE_CREATE, FILE_OPEN_IF] {
+            let asked = request(read, disposition, FILE_DIRECTORY_FILE, 0);
+            assert_eq!(make_missing(true, &asked), Ok(Making::Directory));
+        }
+
+        let asked = request(read, FILE_OPEN_IF, FILE_NON_DIRECTORY_FILE, 0);
+        assert_eq!(
+            open_existing(directory, false, &asked),
+            Err(STATUS_FILE_IS_A_DIRECTORY)
+        );
+        assert_eq!(
+            open_existing(file, true, &asked),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+        assert_eq!(make_missing(true, &asked), Err(STATUS_OBJECT_NAME_INVALID));
+        assert_eq!(
+            open_existing(file, true, &request(read, FILE_OPEN, 0, 0)),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+
+        let delete = request(DELETE, FILE_OPEN, FILE_DELETE_ON_CLOSE, 0);
+        assert_eq!(
+            open_existing(root, false, &delete),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        assert_eq!(
+            open_existing(root, false, &request(DELETE, FILE_OPEN, 0, 0)),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        assert!(open_existing(root, false, &request(read, FILE_OPEN, 0, 0)).is_ok());
+        assert_eq!(
+            open_existing(directory, false, &delete),
+            Ok(Opening {
+                information: FILE_OPENED,
+                overwrite: false,
+                granted: DELETE,
+                must_be_empty: true,
+            })
+        );
+        assert_eq!(
+            open_existing(file, false, &delete).map(|opening| opening.must_be_empty),
+            Ok(false),
+            "a file's delete-on-close waits for no listing"
+        );
+    }
+
+    /// A read-only file opens for reading alone: write and delete rights are refused, or left out
+    /// under MAXIMUM_ALLOWED, and every overwrite is refused. An overwrite keeps a hidden or system
+    /// file's attribute only when asked to; an open of one is not an overwrite.
+    #[test]
+    fn a_read_only_hidden_or_system_file() {
+        use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
+        use crate::fs::file::rights::*;
+        use crate::status::*;
+        let read_only = Existing {
+            directory: false,
+            root: false,
+            attributes: ATTR_READ_ONLY,
+        };
+        let granted = |access, disposition| {
+            open_existing(read_only, false, &request(access, disposition, 0, 0))
+                .map(|opening| opening.granted)
+        };
+        assert_eq!(granted(FILE_READ_DATA, FILE_OPEN), Ok(FILE_READ_DATA));
+        assert_eq!(granted(GENERIC_READ, FILE_OPEN_IF), Ok(FILE_GENERIC_READ));
+        for refused in [
+            FILE_WRITE_DATA,
+            FILE_APPEND_DATA,
+            DELETE,
+            GENERIC_WRITE,
+            GENERIC_ALL,
+        ] {
+            assert_eq!(
+                granted(refused, FILE_OPEN),
+                Err(STATUS_ACCESS_DENIED),
+                "{refused:#x}"
+            );
+        }
+        assert_eq!(
+            granted(MAXIMUM_ALLOWED, FILE_OPEN),
+            Ok(FILE_ALL_ACCESS & !(FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE))
+        );
+        for overwrite in [FILE_SUPERSEDE, FILE_OVERWRITE, FILE_OVERWRITE_IF] {
+            assert_eq!(
+                granted(FILE_READ_DATA, overwrite),
+                Err(STATUS_ACCESS_DENIED)
+            );
+            assert_eq!(
+                granted(MAXIMUM_ALLOWED, overwrite),
+                Err(STATUS_ACCESS_DENIED)
+            );
+        }
+
+        for bit in [ATTR_HIDDEN, ATTR_SYSTEM] {
+            let kept = Existing {
+                attributes: bit | 0x20,
+                ..read_only
+            };
+            for disposition in [FILE_SUPERSEDE, FILE_OVERWRITE, FILE_OVERWRITE_IF] {
+                let without = request(FILE_WRITE_DATA, disposition, 0, 0x80);
+                assert_eq!(
+                    open_existing(kept, false, &without),
+                    Err(STATUS_ACCESS_DENIED),
+                    "{bit:#x} {disposition}"
+                );
+                let with = request(FILE_WRITE_DATA, disposition, 0, u32::from(bit));
+                assert!(open_existing(kept, false, &with).is_ok_and(|opening| opening.overwrite));
+            }
+            let open = request(FILE_WRITE_DATA, FILE_OPEN, 0, 0);
+            assert!(open_existing(kept, false, &open).is_ok());
+        }
+        let both = Existing {
+            attributes: ATTR_HIDDEN | ATTR_SYSTEM,
+            ..read_only
+        };
+        let hidden_only = request(FILE_WRITE_DATA, FILE_OVERWRITE, 0, u32::from(ATTR_HIDDEN));
+        assert_eq!(
+            open_existing(both, false, &hidden_only),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        let both_kept = request(FILE_WRITE_DATA, FILE_OVERWRITE, 0, 0x6);
+        assert!(open_existing(both, false, &both_kept).is_ok());
+    }
+
+    /// A made or overwritten file's attributes: the settable ones asked for, always the archive
+    /// bit; FILE_ATTRIBUTE_NORMAL, the directory bit and the attributes FAT does not keep add
+    /// nothing. An overwrite share-checks the write it implies, a supersede the delete.
+    #[test]
+    fn a_made_file_s_attributes_and_an_overwrite_s_implied_access() {
+        use crate::fs::file::rights::{DELETE, FILE_WRITE_DATA};
+        assert_eq!(new_attributes(0), 0x20);
+        assert_eq!(new_attributes(0x80), 0x20, "FILE_ATTRIBUTE_NORMAL");
+        assert_eq!(new_attributes(0x1), 0x21);
+        assert_eq!(new_attributes(0x7), 0x27);
+        assert_eq!(new_attributes(0x10), 0x20, "the directory bit");
+        assert_eq!(
+            new_attributes(0x100 | 0x2),
+            0x22,
+            "FILE_ATTRIBUTE_TEMPORARY"
+        );
+        assert_eq!(new_attributes(0x7FB7), 0x27);
+        let missing = request(0, FILE_CREATE, 0, 0x3);
+        assert_eq!(make_missing(false, &missing), Ok(Making::File(0x23)));
+
+        assert_eq!(implied_access(false, FILE_SUPERSEDE), 0);
+        assert_eq!(implied_access(false, FILE_OPEN), 0);
+        assert_eq!(implied_access(true, FILE_SUPERSEDE), DELETE);
+        assert_eq!(implied_access(true, FILE_OVERWRITE), FILE_WRITE_DATA);
+        assert_eq!(implied_access(true, FILE_OVERWRITE_IF), FILE_WRITE_DATA);
     }
 
     /// A disk write starts at the end for FILE_WRITE_TO_END_OF_FILE or an append-only handle
