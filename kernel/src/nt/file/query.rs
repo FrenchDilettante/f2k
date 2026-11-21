@@ -237,8 +237,11 @@ fn rename_target(
 /// FileRenameInformation's work: the file's entry moved to the target's name (an existing one
 /// replaced only when asked, and only a file that is not read-only, nor a directory:
 /// STATUS_OBJECT_NAME_COLLISION otherwise, as when not asked; and only one no one holds open:
-/// STATUS_ACCESS_DENIED), its record following it. A directory moved into itself or beneath itself
-/// is STATUS_ACCESS_DENIED. The checks all come first, and the file system's rename replaces the
+/// STATUS_ACCESS_DENIED), its record following it. The I/O manager opens the target's directory
+/// first, for writing and sharing reads and writes (IopOpenLinkOrRenameTarget): an open of it
+/// that does not share them, or that deletes — a directory's own open, moving it into itself — is
+/// STATUS_SHARING_VIOLATION ([`target_directory_open`]). A directory moved beneath itself is
+/// STATUS_ACCESS_DENIED. The checks all come first, and the file system's rename replaces the
 /// existing entry as one change with the move ([`write::rename`]): a rename that fails leaves both
 /// names as they were.
 fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Result<(), NtStatus> {
@@ -250,7 +253,13 @@ fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Res
             Start::At(start) => start,
             Start::Own => Some(File::plain(file.parent_cluster, 0, true)),
         };
-        let (parent, replacing) = match walk(volume, start, &name)? {
+        let found = walk(volume, start, &name)?;
+        let directory = match &found {
+            Found::Existing(existing) => existing.parent_cluster,
+            Found::Missing { parent } => parent.first_cluster,
+        };
+        target_directory_open(directory)?;
+        let (parent, replacing) = match found {
             Found::Existing(existing) => {
                 // A case-only rename names the file itself (refused as a collision).
                 let same = same_entry(&existing, &file);
@@ -280,6 +289,22 @@ fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Res
         with_records(|records| records.refresh(&file, &moved));
         Ok(())
     })
+}
+
+/// The I/O manager's open of a rename's target directory, the one starting at `cluster`
+/// (IopOpenLinkOrRenameTarget's: FILE_ADD_FILE or FILE_ADD_SUBDIRECTORY, both writes to the share
+/// check, sharing reads and writes), checked against the directory's opens in place and closed at
+/// once: STATUS_SHARING_VIOLATION when one excludes it.
+fn target_directory_open(cluster: u32) -> Result<(), NtStatus> {
+    use crate::fs::file::{ACCESS_READ, ACCESS_WRITE};
+    let allowed = with_records(|records| {
+        records.directory_allows(cluster, ACCESS_WRITE, ACCESS_READ | ACCESS_WRITE)
+    });
+    if allowed {
+        Ok(())
+    } else {
+        Err(STATUS_SHARING_VIOLATION)
+    }
 }
 
 /// A size change (FileEndOfFileInformation, or FileAllocationInformation when it cuts the file):

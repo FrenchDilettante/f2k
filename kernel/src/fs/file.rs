@@ -798,6 +798,17 @@ impl FileRecords {
             .map(|index| FileRecordId(index as u16))
     }
 
+    /// Whether an open of the directory starting at `cluster` asking `access` and allowing `share`
+    /// passes the share check of the opens in place (IoCheckShareAccess, nothing counted); one no
+    /// open holds passes. A directory's first cluster is its identity: it never moves.
+    pub fn directory_allows(&self, cluster: u32, access: u8, share: u8) -> bool {
+        self.records
+            .iter()
+            .flatten()
+            .filter(|record| record.file.directory && record.file.first_cluster == cluster)
+            .all(|record| record.share.allows(access, share))
+    }
+
     /// The entry `file` names as its record holds it, when it is open (the current copy); else
     /// `file` itself.
     pub fn current(&self, file: File) -> File {
@@ -1171,6 +1182,45 @@ mod tests {
             },
             process: 8,
         }
+    }
+
+    /// A rename's target directory open (writing, sharing reads and writes) against the
+    /// directory's opens: refused by MoveFileEx's own open of a directory moved into itself (it
+    /// deletes, sharing reads and writes: the fswrite capture's moveinto block,
+    /// ERROR_SHARING_VIOLATION) and by an open sharing only reads; passed by one sharing reads and
+    /// writes, by an open of another directory and by one asking for none of the three accesses
+    /// (the current directory's).
+    #[test]
+    fn a_rename_s_target_directory_open_is_share_checked() {
+        let directory = |cluster| {
+            let mut file = File::plain(cluster, 0, true);
+            file.parent_cluster = 2;
+            file.index = cluster;
+            file
+        };
+        let allows = |records: &FileRecords, cluster| {
+            records.directory_allows(cluster, ACCESS_WRITE, ACCESS_READ | ACCESS_WRITE)
+        };
+        let mut records = FileRecords::empty();
+        assert!(allows(&records, 7), "a directory no one holds open");
+        records.open(directory(8), 0, 0).unwrap();
+        assert!(allows(&records, 8), "an open asking none of the three");
+        let mover = records
+            .open(directory(7), ACCESS_DELETE, ACCESS_READ | ACCESS_WRITE)
+            .unwrap();
+        assert!(!allows(&records, 7), "the directory's own move's open");
+        assert!(allows(&records, 9), "another directory");
+        records.cleanup(mover, ACCESS_DELETE, ACCESS_READ | ACCESS_WRITE, false);
+        records.close(mover);
+        assert!(allows(&records, 7), "once it is closed");
+        records
+            .open(directory(9), ACCESS_READ, ACCESS_READ)
+            .unwrap();
+        assert!(!allows(&records, 9), "an open sharing only reads");
+        records
+            .open(directory(10), ACCESS_READ, ACCESS_READ | ACCESS_WRITE)
+            .unwrap();
+        assert!(allows(&records, 10), "an open sharing reads and writes");
     }
 
     /// The fswrite capture's lock section, step by step: overlapping locks refused through either
