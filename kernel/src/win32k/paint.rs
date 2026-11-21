@@ -637,6 +637,27 @@ mod tests {
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
     }
 
+    /// guimsg `redraw`: WM_SETREDRAW FALSE clears the window's WS_VISIBLE, and an invalidation then
+    /// adds nothing (UpdateWindow sends no WM_PAINT); TRUE sets it again and invalidates nothing,
+    /// so only a new invalidation makes a WM_PAINT.
+    #[test]
+    fn a_window_whose_redraw_is_off_takes_no_update_region() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (w, h) = shown(m, atom, t, 0, 0);
+        m.windows.set_redraw(w, false);
+        assert!(!m.windows.is_window_visible(w));
+        invalidate(&mut m.windows, w, None, true);
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
+        m.windows.set_redraw(w, true);
+        assert!(m.windows.is_window_visible(w));
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
+        assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
+        invalidate(&mut m.windows, w, None, true);
+        let paint = msg_of(read(m, t, &all(), 0));
+        assert_eq!((paint.hwnd, paint.message), (h, WM_PAINT));
+    }
+
     /// The paint capture's path: a shown window's whole client area invalidated with the erase
     /// makes a WM_PAINT; GetUpdateRect reports the client area (its erase handed to the caller once
     /// when asked); BeginPaint's area is the client area, its erase pending, its clip the client

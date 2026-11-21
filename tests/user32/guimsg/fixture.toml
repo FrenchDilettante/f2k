@@ -9,10 +9,6 @@ timeout = 40
 quota = "F2K is expected to fail far sooner, at its 512 posted messages shared system-wide, with 1450 where Windows 2000 is expected to allow about 10000 per queue and answer 1816"
 postptr = "F2K's PostMessage is expected to queue the pointer messages, where Windows 2000 is expected to refuse them with 1159"
 copydata = "F2K is expected to carry WM_COPYDATA across processes with the sender's raw pointer, so the receiver reads no data (or faults), and to let the child post it"
-icon = "F2K's DefWindowProc answers WM_SETICON and WM_GETICON 0 and keeps no icon"
-redraw = "F2K's DefWindowProc answers WM_SETREDRAW 0 and leaves WS_VISIBLE as it is"
-syscmd = "F2K's DefWindowProc only logs SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE, leaving the window as it is"
-ctxmenu = "F2K's DefWindowProc answers WM_CONTEXTMENU 0 without sending it to the parent"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

@@ -1612,6 +1612,19 @@ impl Windows {
         }
     }
 
+    /// The default window procedure's WM_SETREDRAW: the window's WS_VISIBLE set (`redraw`) or
+    /// cleared, and nothing else, as Windows 2000's does it (guimsg `redraw`): no WM_SHOWWINDOW, no
+    /// position change, nothing painted or uncovered. While it is clear the window is not shown,
+    /// so an invalidation finds nothing to paint; setting it again invalidates nothing.
+    pub fn set_redraw(&mut self, id: WindowId, redraw: bool) {
+        let w = self.at_mut(id);
+        if redraw {
+            w.style |= WS_VISIBLE;
+        } else {
+            w.style &= !WS_VISIBLE;
+        }
+    }
+
     /// Whether the window is a child window (one with no menu of its own).
     pub fn window_is_child(&self, id: WindowId) -> bool {
         self.at(id).is_child()

@@ -764,8 +764,12 @@ pub fn translate(msg: &Msg) -> u32 {
 /// WM_NCCALCSIZE the frame taken off the rectangle, WM_NCHITTEST the part under the point,
 /// WM_NCPAINT the frame drawn, WM_NCACTIVATE the caption redrawn, TRUE; the system keys (Alt or
 /// F10 alone, and Alt with a character, send the top-level window SC_KEYMENU, Alt+F4 SC_CLOSE)
-/// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE);
-/// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]); 0 to everything else,
+/// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE,
+/// SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE minimize, maximize and restore the window);
+/// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]); WM_SETREDRAW the window's
+/// WS_VISIBLE set or cleared, 0; WM_CONTEXTMENU a child's handed to its parent, 0; WM_SETICON the
+/// window's big or small icon kept, the one it replaces answered, and WM_GETICON's answer it
+/// ([`set_icon`]); 0 to everything else,
 /// WM_ENDSESSION included, and to a text message for a handle naming no window.
 /// The messages Windows 2000's acts on and F2K's does not yet ([`UNHANDLED_MESSAGES`]) are logged,
 /// each once per process.
@@ -809,8 +813,19 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         WM_QUERYUISTATE => ui_state(window) as i32,
         WM_NCDESTROY => {
             forget_ui_state(window);
+            forget_icons(window);
             0
         }
+        WM_SETREDRAW => {
+            let _ = imports::call_hwnd_param_lock(window, wparam, HWND_PARAM_LOCK_SET_REDRAW);
+            0
+        }
+        WM_CONTEXTMENU => {
+            context_menu(window, wparam, lparam);
+            0
+        }
+        WM_SETICON => set_icon(window, wparam, lparam as u32) as i32,
+        WM_GETICON => icon_of(window, wparam) as i32,
         WM_WINDOWPOSCHANGED => {
             window_pos_changed(window, lparam);
             0
@@ -1005,17 +1020,12 @@ fn window_pos_changed(window: usize, lparam: i32) {
 
 /// The messages DefWindowProc acts on in Windows 2000 that F2K's does not yet (it answers 0), and
 /// what Windows 2000's does with each.
-const UNHANDLED_MESSAGES: [(u32, &str); 9] = [
-    (
-        0x000B,
-        "WM_SETREDRAW (the window's redrawing turned off or on)",
-    ),
+const UNHANDLED_MESSAGES: [(u32, &str); 6] = [
     (
         0x0013,
         "WM_QUERYOPEN (TRUE: the minimized window may be restored)",
     ),
     (0x0037, "WM_QUERYDRAGICON (the class's icon)"),
-    (0x007B, "WM_CONTEXTMENU (a child's handed to its parent)"),
     (0x0317, "WM_PRINT (the window drawn into the DC)"),
     (0x0032, "WM_SETHOTKEY (the window's activation hot key)"),
     (0x0033, "WM_GETHOTKEY (the window's activation hot key)"),
@@ -1023,11 +1033,100 @@ const UNHANDLED_MESSAGES: [(u32, &str); 9] = [
         0x0055,
         "WM_NOTIFYFORMAT (the window's form answered: NFR_ANSI or NFR_UNICODE)",
     ),
-    (
-        0x0080,
-        "WM_SETICON (the window's icons kept, WM_GETICON's answer)",
-    ),
 ];
+
+// --- WM_SETREDRAW, WM_CONTEXTMENU, and the window's icons ----------------------------------------
+
+/// The messages (winuser.h's).
+const WM_SETREDRAW: u32 = 0x000B;
+const WM_CONTEXTMENU: u32 = 0x007B;
+const WM_GETICON: u32 = 0x007F;
+const WM_SETICON: u32 = 0x0080;
+/// WM_SETICON's and WM_GETICON's wParam: the small icon (the caption's) and the big one
+/// (Alt+Tab's).
+const ICON_SMALL: u32 = 0;
+const ICON_BIG: u32 = 1;
+/// ERROR_INVALID_HANDLE: the small icon a big one's WM_SETICON makes could not be made.
+const ERROR_INVALID_HANDLE: u32 = 6;
+
+/// DefWindowProc's WM_CONTEXTMENU: a child hands it to its parent, as it came, its answer
+/// dropped (guimsg `ctxmenu`: the parent's procedure answers 5, the child's send 0); a top-level
+/// window's would open its window menu, which F2K has none of.
+fn context_menu(window: usize, wparam: u32, lparam: i32) {
+    if window::style_of(window).unwrap_or(0) & rtl::nonclient::WS_CHILD == 0 {
+        return;
+    }
+    if let Ok(links) = window::links(window) {
+        if links.parent != 0 {
+            let _ = send(links.parent as usize, WM_CONTEXTMENU, wparam, lparam);
+        }
+    }
+}
+
+/// The icons WM_SETICON gave a window: (window, big, small), 0 for none, the window 0 for a free
+/// entry. DefWindowProc runs in the window's own process, which answers its WM_GETICON, so the
+/// process keeps them (Windows 2000 keeps them as the window's internal properties); a process
+/// with more windows holding icons than entries keeps no icon for the others.
+static ICONS: [[AtomicU32; 3]; 64] = [const { [const { AtomicU32::new(0) }; 3] }; 64];
+
+/// The window's entry in [`ICONS`]; none when it has none.
+fn icons_entry(window: usize) -> Option<&'static [AtomicU32; 3]> {
+    ICONS
+        .iter()
+        .find(|entry| window != 0 && entry[0].load(Ordering::Acquire) == window as u32)
+}
+
+/// DefWindowProc's WM_GETICON: the window's big or small icon (`which`), 0 for none or for another
+/// `which`.
+fn icon_of(window: usize, which: u32) -> u32 {
+    let slot = match which {
+        ICON_BIG => 1,
+        ICON_SMALL => 2,
+        _ => return 0,
+    };
+    icons_entry(window).map_or(0, |entry| entry[slot].load(Ordering::Acquire))
+}
+
+/// DefWindowProc's WM_SETICON: the window's big or small icon (`which`) set to `icon` (0: none),
+/// the one it replaces answered (0 for another `which`). As guimsg `icon` shows Windows 2000's, a
+/// big icon set while the window has no small one leaves ERROR_INVALID_HANDLE as the last error:
+/// Windows 2000 makes the caption's small icon from the big one then, and the copy of the stock
+/// icon the capture sets failed (inferred: WM_GETICON's small icon stays NULL). F2K's icons hold
+/// no image to copy, so it keeps none, and leaves the same error.
+fn set_icon(window: usize, which: u32, icon: u32) -> u32 {
+    let slot = match which {
+        ICON_BIG => 1,
+        ICON_SMALL => 2,
+        _ => return 0,
+    };
+    if which == ICON_BIG && icon != 0 && icon_of(window, ICON_SMALL) == 0 {
+        imports::set_last_error(ERROR_INVALID_HANDLE);
+    }
+    let entry = match icons_entry(window) {
+        Some(entry) => entry,
+        None if icon == 0 || window == 0 => return 0,
+        None => {
+            let Some(entry) = ICONS.iter().find(|entry| {
+                entry[0]
+                    .compare_exchange(0, window as u32, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            }) else {
+                return 0;
+            };
+            entry
+        }
+    };
+    entry[slot].swap(icon, Ordering::AcqRel)
+}
+
+/// The window's icons forgotten as it goes (its handle may name another window later).
+fn forget_icons(window: usize) {
+    if let Some(entry) = icons_entry(window) {
+        entry[1].store(0, Ordering::Release);
+        entry[2].store(0, Ordering::Release);
+        entry[0].store(0, Ordering::Release);
+    }
+}
 
 /// The default procedure's cases logged in this process: a message, a system command, a key.
 static DEFAULT_LOGGED: rtl::stub::Logged<32> = rtl::stub::Logged::new();
@@ -1100,8 +1199,15 @@ const VK_F10: u32 = 0x79;
 const KEY_CONTEXT: i32 = 1 << 29;
 const KEY_PREVIOUS: i32 = 1 << 30;
 
-/// WM_SYSCOMMAND's SC_CLOSE.
+/// WM_SYSCOMMAND's SC_CLOSE, SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE.
 const SC_CLOSE: u32 = 0xF060;
+const SC_MINIMIZE: u32 = 0xF020;
+const SC_MAXIMIZE: u32 = 0xF030;
+const SC_RESTORE: u32 = 0xF120;
+/// The show commands they show the window with (winuser.h's SW_*).
+const SW_MINIMIZE: i32 = 6;
+const SW_SHOWMAXIMIZED: i32 = 3;
+const SW_RESTORE: i32 = 9;
 
 /// The top-level window `window` is in: itself, or its first ancestor that is not a child.
 fn top_level(window: usize) -> usize {
@@ -1164,14 +1270,25 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool)
 }
 
 /// The default procedure's WM_SYSCOMMAND: SC_KEYMENU runs the window's keyboard menu loop
-/// ([`menubar::track_keyboard`]), SC_CLOSE sends WM_CLOSE; the other system commands (the system
-/// menu's moving, sizing, minimizing and maximizing...) are not served yet, and logged (an
-/// application's own commands, below 0xF000, are not the default procedure's).
+/// ([`menubar::track_keyboard`]), SC_CLOSE sends WM_CLOSE; SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE
+/// show the window SW_MINIMIZE, SW_SHOWMAXIMIZED and SW_RESTORE, as Windows 2000's xxxSysCommand
+/// does (guimsg `syscmd`: one WM_SIZE each, SIZE_MINIMIZED, SIZE_MAXIMIZED, SIZE_RESTORED); the
+/// other system commands (the system menu's moving and sizing...) are not served yet, and logged
+/// (an application's own commands, below 0xF000, are not the default procedure's).
 fn system_command(window: usize, wparam: u32, lparam: i32, ansi: bool) {
     match wparam & 0xFFF0 {
         menubar::SC_KEYMENU => menubar::track_keyboard(window, lparam as u32),
         SC_CLOSE => {
             let _ = send(window, WM_CLOSE, 0, 0);
+        }
+        SC_MINIMIZE => {
+            window::show_window(window, SW_MINIMIZE);
+        }
+        SC_MAXIMIZE => {
+            window::show_window(window, SW_SHOWMAXIMIZED);
+        }
+        SC_RESTORE => {
+            window::show_window(window, SW_RESTORE);
         }
         command if command >= 0xF000 => {
             let name = SYSTEM_COMMANDS
@@ -1707,6 +1824,96 @@ mod tests {
         assert_eq!(def_window_proc_w(window, WM_QUERYENDSESSION, 0, logoff), 1);
         assert_eq!(def_window_proc_a(window, WM_ENDSESSION, 1, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_ENDSESSION, 0, logoff), 0);
+        assert!(seen().is_empty());
+    }
+
+    /// guimsg `icon`: DefWindowProc keeps a window's big and small icons apart, WM_SETICON
+    /// answering the one it replaces and WM_GETICON the one set (NULL before any, and after a NULL
+    /// set); a big icon set while the window has no small one leaves ERROR_INVALID_HANDLE, and no
+    /// other call touches the last error; the window's icons go with it.
+    ///
+    /// Pins: user32.DefWindowProcW
+    #[test]
+    fn the_icons_are_kept_big_and_small() {
+        let (application, hand) = (0x1_0010, 0x1_0020);
+        let window = window();
+        let call = |message: u32, which: u32, icon: u32| {
+            arm();
+            let answer = def_window_proc_w(window, message, which, icon as i32) as u32;
+            let error = last_error();
+            (answer, (error != UNSET).then_some(error))
+        };
+        assert_eq!(call(WM_GETICON, ICON_BIG, 0), (0, None));
+        assert_eq!(call(WM_GETICON, ICON_SMALL, 0), (0, None));
+        assert_eq!(call(WM_SETICON, ICON_BIG, application), (0, Some(6)));
+        assert_eq!(call(WM_GETICON, ICON_BIG, 0), (application, None));
+        assert_eq!(call(WM_GETICON, ICON_SMALL, 0), (0, None));
+        assert_eq!(call(WM_SETICON, ICON_SMALL, hand), (0, None));
+        assert_eq!(call(WM_GETICON, ICON_SMALL, 0), (hand, None));
+        assert_eq!(call(WM_SETICON, ICON_BIG, hand), (application, None));
+        assert_eq!(call(WM_GETICON, ICON_BIG, 0), (hand, None));
+        assert_eq!(call(WM_SETICON, ICON_BIG, 0), (hand, None));
+        assert_eq!(call(WM_GETICON, ICON_BIG, 0), (0, None));
+        assert_eq!(call(WM_GETICON, ICON_SMALL, 0), (hand, None));
+        assert_eq!(call(WM_GETICON, 7, 0), (0, None));
+        assert_eq!(def_window_proc_w(window, WM_CLOSE, 0, 0), 0);
+        assert_eq!(icon_of(window, ICON_SMALL), 0, "its icons went with it");
+    }
+
+    /// guimsg `redraw`: WM_SETREDRAW FALSE clears the window's WS_VISIBLE, TRUE sets it again,
+    /// both answering 0.
+    ///
+    /// Pins: user32.DefWindowProcW
+    #[test]
+    fn set_redraw_turns_the_visibility_off_and_on() {
+        let window = window();
+        crate::window::show_window(window, 5);
+        let visible = || crate::window::style_of(window).unwrap() & 0x1000_0000 != 0;
+        assert!(visible());
+        assert_eq!(def_window_proc_w(window, WM_SETREDRAW, 0, 0), 0);
+        assert!(!visible());
+        assert_eq!(def_window_proc_w(window, WM_SETREDRAW, 1, 0), 0);
+        assert!(visible());
+    }
+
+    /// guimsg `ctxmenu`: a child's WM_CONTEXTMENU reaches its parent's procedure as it came, and
+    /// the child's DefWindowProc answers 0; a top-level window's goes nowhere.
+    ///
+    /// Pins: user32.DefWindowProcW
+    #[test]
+    fn a_childs_context_menu_goes_to_its_parent() {
+        let parent = window();
+        // SAFETY: the tests' own class name, registered by window().
+        let child = unsafe {
+            create_window_ex_a(
+                0,
+                c"F2KGuimsg".as_ptr().cast(),
+                c"child".as_ptr().cast(),
+                0x4000_0000,
+                10,
+                10,
+                50,
+                30,
+                parent,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_ne!(child, 0);
+        seen();
+        assert_eq!(
+            def_window_proc_w(child, WM_CONTEXTMENU, child as u32, 0x0014_000A),
+            0
+        );
+        assert_eq!(
+            seen(),
+            [(parent as u32, WM_CONTEXTMENU, child as u32, 0x0014_000A)]
+        );
+        assert_eq!(
+            def_window_proc_w(parent, WM_CONTEXTMENU, parent as u32, 0),
+            0
+        );
         assert!(seen().is_empty());
     }
 

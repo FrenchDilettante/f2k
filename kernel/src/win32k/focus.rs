@@ -589,6 +589,7 @@ pub fn call_hwnd_lock(
 mod services {
     use rtl::user::{
         HWND_PARAM_LOCK_ENABLE_WINDOW,
+        HWND_PARAM_LOCK_SET_REDRAW,
         THREAD_STATE_ACTIVE_WINDOW,
         THREAD_STATE_FOCUS_WINDOW,
         THREAD_STATE_MESSAGE_POS,
@@ -682,7 +683,9 @@ mod services {
     /// NtUserCallHwndParamLock(Window, Param, Routine, Result): EnableWindow ([`enable_window`],
     /// `param` its bEnable): the window's former WS_DISABLED as the style's state byte holds it
     /// into `result` — 8 for a window that was disabled, 0 for one that was not, as Windows 2000's
-    /// EnableWindow answers (the focus capture); STATUS_INVALID_PARAMETER for another routine.
+    /// EnableWindow answers (the focus capture); the default procedure's WM_SETREDRAW
+    /// ([`Windows::set_redraw`], `param` its wParam), 0; STATUS_INVALID_PARAMETER for another
+    /// routine.
     pub fn call_hwnd_param_lock(
         call: &mut NtCall,
         window: Handle,
@@ -702,6 +705,10 @@ mod services {
                 HWND_PARAM_LOCK_ENABLE_WINDOW => {
                     let was = enable_window(windows, classes, id, param != 0, &mut QueuePump);
                     Ok(if was { WS_DISABLED >> 24 } else { 0 })
+                }
+                HWND_PARAM_LOCK_SET_REDRAW => {
+                    windows.set_redraw(id, param != 0);
+                    Ok(0)
                 }
                 _ => Err(STATUS_INVALID_PARAMETER),
             }

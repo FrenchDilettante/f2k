@@ -1752,6 +1752,17 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
     result: *mut u32,
 ) -> u32 {
     wm(|wm| {
+        if routine == HWND_PARAM_LOCK_SET_REDRAW {
+            return match wm.window(window) {
+                Ok(w) => {
+                    w.visible = param != 0;
+                    // SAFETY: the caller's out-pointer.
+                    unsafe { result.write(0) };
+                    STATUS_SUCCESS
+                }
+                Err(status) => status,
+            };
+        }
         if routine != HWND_PARAM_LOCK_ENABLE_WINDOW {
             return STATUS_INVALID_PARAMETER;
         }

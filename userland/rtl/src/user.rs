@@ -405,8 +405,11 @@ pub const HWND_LOCK_SET_FOREGROUND_WINDOW: u32 = 1;
 pub const HWND_LOCK_ACTIVATE_FOCUS: u32 = 2;
 
 /// NtUserCallHwndParamLock's routines: EnableWindow (the parameter is bEnable; the result the
-/// window's former WS_DISABLED, as the style's state byte holds it).
+/// window's former WS_DISABLED, as the style's state byte holds it); the default window
+/// procedure's WM_SETREDRAW (the parameter is its wParam: the window's WS_VISIBLE set or cleared,
+/// nothing shown, hidden or painted; the result 0).
 pub const HWND_PARAM_LOCK_ENABLE_WINDOW: u32 = 0;
+pub const HWND_PARAM_LOCK_SET_REDRAW: u32 = 1;
 
 /// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
 /// window (GetActiveWindow); the time and the cursor position (x in the low word, y in the high
