@@ -4,7 +4,8 @@
 //! out on x86 ([`TextMetricA`], [`TextMetricW`]). gdi32's narrow GetTextMetricsA converts the wide
 //! answer win32k gives ([`narrow_text_metric`]). The fonts' structures follow: LOGFONT, ABC,
 //! OUTLINETEXTMETRIC, and the enumeration's ENUMLOGFONTEX and NEWTEXTMETRICEX, each in its wide and
-//! narrow forms, and the record win32k's enumeration service answers ([`FontEnumRecord`]).
+//! narrow forms, and the record win32k's enumeration service answers ([`FontEnumRecord`]). RECT
+//! carries the rectangles' arithmetic user32's *Rect functions and win32k share ([`Rect`]).
 
 use crate::pod::Pod;
 
@@ -387,6 +388,157 @@ pub struct Rect {
 
 // SAFETY: four integers.
 unsafe impl Pod for Rect {}
+
+/// The rectangles' arithmetic, as user32's *Rect functions do it: a rectangle holds the points from
+/// its left and top edges up to, not including, its right and bottom ones, so one whose right edge
+/// is not past its left, or whose bottom is not below its top (an inverted one too), is empty and
+/// holds none. Comparing edges cannot overflow; moving them can, and each move says what it does
+/// at i32's ends: OffsetRect's and InflateRect's wrap, as Windows 2000's do, and the saturating
+/// ones are win32k's, for coordinates a caller chose.
+impl Rect {
+    /// The empty rectangle (0, 0, 0, 0): SetRectEmpty's, and what a failed IntersectRect or
+    /// UnionRect leaves.
+    pub const EMPTY: Rect = Rect::new(0, 0, 0, 0);
+
+    /// The rectangle of the four edges, as given (an inverted one as well).
+    pub const fn new(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// Its width, saturated at i32's ends; negative for an inverted rectangle.
+    pub const fn width(&self) -> i32 {
+        self.right.saturating_sub(self.left)
+    }
+
+    /// Its height, saturated at i32's ends; negative for an inverted rectangle.
+    pub const fn height(&self) -> i32 {
+        self.bottom.saturating_sub(self.top)
+    }
+
+    /// IsRectEmpty: whether it holds no point (an inverted rectangle holds none).
+    pub const fn is_empty(&self) -> bool {
+        self.left >= self.right || self.top >= self.bottom
+    }
+
+    /// PtInRect: whether (`x`, `y`) lies in it, on its left or top edge but not on its right or
+    /// bottom one; never in an empty or inverted rectangle.
+    pub const fn contains(&self, x: i32, y: i32) -> bool {
+        self.left <= x && x < self.right && self.top <= y && y < self.bottom
+    }
+
+    /// IntersectRect: the rectangle both hold; the empty rectangle ([`Rect::EMPTY`]) when they
+    /// share no point (an empty or inverted one shares none), never an inverted one.
+    pub fn intersect(&self, other: Rect) -> Rect {
+        let both = Rect {
+            left: self.left.max(other.left),
+            top: self.top.max(other.top),
+            right: self.right.min(other.right),
+            bottom: self.bottom.min(other.bottom),
+        };
+        if both.is_empty() {
+            Rect::EMPTY
+        } else {
+            both
+        }
+    }
+
+    /// UnionRect: the smallest rectangle holding both, an empty or inverted one left out; the
+    /// empty rectangle ([`Rect::EMPTY`]) when both are.
+    pub fn union(&self, other: Rect) -> Rect {
+        match (self.is_empty(), other.is_empty()) {
+            (true, true) => Rect::EMPTY,
+            (true, false) => other,
+            (false, true) => *self,
+            (false, false) => Rect {
+                left: self.left.min(other.left),
+                top: self.top.min(other.top),
+                right: self.right.max(other.right),
+                bottom: self.bottom.max(other.bottom),
+            },
+        }
+    }
+
+    /// SubtractRect: what is left of it once `cut` is taken out, when that is a rectangle. The
+    /// part of `cut` over it must cover a whole side of it (its full height at the left or the
+    /// right, else its full width at the top or the bottom), or it is answered as it is (an empty
+    /// one as well); one the subtraction empties is the empty rectangle ([`Rect::EMPTY`]).
+    pub fn subtract(&self, cut: Rect) -> Rect {
+        let common = self.intersect(cut);
+        if common.is_empty() {
+            return *self;
+        }
+        let mut rest = *self;
+        if common.top == self.top && common.bottom == self.bottom {
+            if common.left == self.left {
+                rest.left = common.right;
+            } else if common.right == self.right {
+                rest.right = common.left;
+            }
+        } else if common.left == self.left && common.right == self.right {
+            if common.top == self.top {
+                rest.top = common.bottom;
+            } else if common.bottom == self.bottom {
+                rest.bottom = common.top;
+            }
+        }
+        if rest.is_empty() {
+            Rect::EMPTY
+        } else {
+            rest
+        }
+    }
+
+    /// OffsetRect: moved by `dx` and `dy` (an empty or inverted rectangle as well, its corners each
+    /// moved), the coordinates wrapping at 32 bits.
+    pub const fn offset(&self, dx: i32, dy: i32) -> Rect {
+        Rect {
+            left: self.left.wrapping_add(dx),
+            top: self.top.wrapping_add(dy),
+            right: self.right.wrapping_add(dx),
+            bottom: self.bottom.wrapping_add(dy),
+        }
+    }
+
+    /// InflateRect: grown by `dx` at the left and the right and by `dy` at the top and the bottom
+    /// (shrunk by negative ones, past its middle into an inverted rectangle), the coordinates
+    /// wrapping at 32 bits.
+    pub const fn inflate(&self, dx: i32, dy: i32) -> Rect {
+        Rect {
+            left: self.left.wrapping_sub(dx),
+            top: self.top.wrapping_sub(dy),
+            right: self.right.wrapping_add(dx),
+            bottom: self.bottom.wrapping_add(dy),
+        }
+    }
+
+    /// Moved by `dx` and `dy`, saturated at i32's ends: win32k's move of a rectangle a caller
+    /// chose (a window's, a DC's origin), which no coordinate may wrap past.
+    pub const fn saturating_offset(&self, dx: i32, dy: i32) -> Rect {
+        Rect {
+            left: self.left.saturating_add(dx),
+            top: self.top.saturating_add(dy),
+            right: self.right.saturating_add(dx),
+            bottom: self.bottom.saturating_add(dy),
+        }
+    }
+
+    /// Moved back by `dx` and `dy` (into the coordinates of an origin at (`dx`, `dy`)), saturated
+    /// at i32's ends: [`Rect::saturating_offset`]'s reverse, which `saturating_offset(-dx, -dy)`
+    /// is not at i32::MIN.
+    pub const fn saturating_offset_back(&self, dx: i32, dy: i32) -> Rect {
+        Rect {
+            left: self.left.saturating_sub(dx),
+            top: self.top.saturating_sub(dy),
+            right: self.right.saturating_sub(dx),
+            bottom: self.bottom.saturating_sub(dy),
+        }
+    }
+}
 
 // --- Fonts ---------------------------------------------------------------------------------------
 
@@ -973,5 +1125,126 @@ mod tests {
             (0x20, 0x80, b'?', 0x20)
         );
         assert_eq!(narrow.char_set, 255);
+    }
+
+    const MIN: i32 = i32::MIN;
+    const MAX: i32 = i32::MAX;
+
+    /// IsRectEmpty, PtInRect, the width and the height: an inverted rectangle is empty and holds
+    /// no point, and the extents of one spanning i32 saturate.
+    #[test]
+    fn a_rectangle_holds_points_from_its_left_and_top_edges() {
+        for (r, empty) in [
+            (Rect::new(0, 0, 10, 10), false),
+            (Rect::new(5, 0, 5, 10), true),
+            (Rect::new(10, 0, 0, 10), true),
+            (Rect::new(0, 10, 10, 0), true),
+            (Rect::new(-10, -10, -5, -5), false),
+            (Rect::new(MIN, MIN, MAX, MAX), false),
+            (Rect::EMPTY, true),
+        ] {
+            assert_eq!(r.is_empty(), empty, "{r:?}");
+        }
+        let r = Rect::new(10, 20, 30, 40);
+        for (x, y, inside) in [
+            (10, 20, true),
+            (30, 20, false),
+            (29, 39, true),
+            (20, 40, false),
+        ] {
+            assert_eq!(r.contains(x, y), inside, "({x},{y})");
+        }
+        assert!(!Rect::new(30, 40, 10, 20).contains(20, 30));
+        assert!(Rect::new(MIN, MIN, MAX, MAX).contains(MIN, MAX - 1));
+        assert!(!Rect::new(MIN, MIN, MAX, MAX).contains(MAX, 0));
+        assert_eq!((r.width(), r.height()), (20, 20));
+        assert_eq!(Rect::new(5, 5, 1, 2).width(), -4);
+        assert_eq!(Rect::new(MIN, MAX, MAX, MIN).width(), MAX);
+        assert_eq!(Rect::new(MIN, MAX, MAX, MIN).height(), MIN);
+    }
+
+    /// IntersectRect, UnionRect and SubtractRect: no overlap is the empty rectangle, an empty
+    /// rectangle is left out of a union, and a subtraction takes a whole band off or nothing.
+    #[test]
+    fn rectangles_combine() {
+        let a = Rect::new(0, 0, 10, 10);
+        assert_eq!(
+            a.intersect(Rect::new(9, 9, 20, 20)),
+            Rect::new(9, 9, 10, 10)
+        );
+        assert_eq!(a.intersect(Rect::new(10, 0, 20, 10)), Rect::EMPTY);
+        assert_eq!(a.intersect(Rect::new(8, 8, 2, 2)), Rect::EMPTY);
+        assert_eq!(a.intersect(Rect::new(50, 50, 60, 60)), Rect::EMPTY);
+        assert_eq!(Rect::new(MIN, MIN, MAX, MAX).intersect(a), a);
+        assert_eq!(Rect::new(50, 50, 60, 50).union(a), a);
+        assert_eq!(a.union(Rect::new(50, 50, 60, 50)), a);
+        assert_eq!(
+            Rect::new(30, 30, 20, 20).union(Rect::new(10, 10, 0, 0)),
+            Rect::EMPTY
+        );
+        assert_eq!(
+            Rect::new(-10, -10, -5, -5).union(Rect::new(5, 5, 10, 10)),
+            Rect::new(-10, -10, 10, 10)
+        );
+        assert_eq!(
+            Rect::new(MIN, 0, 1, 1).union(Rect::new(0, MIN, MAX, 1)),
+            Rect::new(MIN, MIN, MAX, 1)
+        );
+        for (cut, rest) in [
+            (Rect::new(-5, -5, 5, 15), Rect::new(5, 0, 10, 10)),
+            (Rect::new(7, -1, 20, 11), Rect::new(0, 0, 7, 10)),
+            (Rect::new(0, 6, 10, 10), Rect::new(0, 0, 10, 6)),
+            (Rect::new(0, -3, 10, 4), Rect::new(0, 4, 10, 10)),
+            (Rect::new(0, 0, 5, 9), a),
+            (Rect::new(3, 0, 7, 10), a),
+            (Rect::new(-1, -1, 11, 11), Rect::EMPTY),
+            (Rect::new(MIN, MIN, MAX, MAX), Rect::EMPTY),
+            (Rect::new(5, 10, 0, 0), a),
+        ] {
+            assert_eq!(a.subtract(cut), rest, "{cut:?}");
+        }
+        assert_eq!(Rect::new(5, 5, 5, 5).subtract(a), Rect::new(5, 5, 5, 5));
+        assert_eq!(
+            Rect::new(10, 10, 0, 0).subtract(Rect::new(0, 0, 5, 10)),
+            Rect::new(10, 10, 0, 0)
+        );
+    }
+
+    /// OffsetRect and InflateRect wrap at i32's ends, as Windows 2000's do; the saturating moves
+    /// stop there, and moving back is not moving by the negation at i32::MIN.
+    #[test]
+    fn rectangles_move_wrapping_or_saturating() {
+        assert_eq!(Rect::new(1, 2, 3, 4).offset(5, -7), Rect::new(6, -5, 8, -3));
+        assert_eq!(Rect::new(5, 5, 1, 1).offset(2, 2), Rect::new(7, 7, 3, 3));
+        assert_eq!(
+            Rect::new(MAX, 0, MAX, 0).offset(1, -1),
+            Rect::new(MIN, -1, MIN, -1)
+        );
+        assert_eq!(
+            Rect::new(0, 0, 10, 10).inflate(-6, -7),
+            Rect::new(6, 7, 4, 3)
+        );
+        assert_eq!(Rect::new(10, 10, 0, 0).inflate(2, 2), Rect::new(8, 8, 2, 2));
+        assert_eq!(
+            Rect::new(-2147483647, 0, 2147483646, 0).inflate(2, 0),
+            Rect::new(2147483647, 0, -2147483648, 0)
+        );
+        assert_eq!(
+            Rect::new(1, 2, 3, 4).saturating_offset(10, 20),
+            Rect::new(11, 22, 13, 24)
+        );
+        assert_eq!(
+            Rect::new(MAX - 1, MIN + 1, MAX, 0).saturating_offset(5, -5),
+            Rect::new(MAX, MIN, MAX, -5)
+        );
+        assert_eq!(
+            Rect::new(11, 22, 13, 24).saturating_offset_back(10, 20),
+            Rect::new(1, 2, 3, 4)
+        );
+        assert_eq!(
+            Rect::new(0, -1, MAX, MIN).saturating_offset_back(MIN, 1),
+            Rect::new(MAX, -2, MAX, MIN)
+        );
+        assert_eq!(Rect::new(0, 0, 0, 0).saturating_offset(-MAX, 0).left, -MAX);
     }
 }
