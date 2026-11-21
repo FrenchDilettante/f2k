@@ -335,7 +335,7 @@ pub fn system_metric(index: i32) -> i32 {
 /// DbgPrint of `text`, as is (through `"%s"`).
 pub fn debug_print(text: &CStr) {
     // SAFETY: the format and the text are NUL-terminated; the format takes the one string.
-    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr()) };
+    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr().cast::<u8>()) };
 }
 
 /// RtlUnicodeToMultiByteN: as many of `source`'s units as `destination` holds, converted: the bytes
@@ -897,40 +897,28 @@ pub fn enum_font(
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given.
 /// The services keep one screen DC's state ([`HOST_DC`], its handle [`DC`]) with the kernel's
-/// rules, and record the text they are asked to draw.
+/// rules, and record the text they are asked to draw. The ones every system DLL shares (the last
+/// error, DbgPrint, the heap, the code page's conversions, the memory probe) are rtl's
+/// ([`rtl::host`]).
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod host {
     use std::cell::{Cell, RefCell};
 
-    /// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null
-    /// pointer makes no slice, not even an empty one), as a caller may pass NULL with no length.
-    ///
-    /// # Safety
-    ///
-    /// For a length, `at` is readable for that many items for `'a`.
-    pub(crate) unsafe fn items<'a, T>(at: *const T, length: usize) -> &'a [T] {
-        if length == 0 {
-            return &[];
-        }
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts(at, length) }
-    }
-
-    /// [`items`], writable.
-    ///
-    /// # Safety
-    ///
-    /// For a length, `at` is writable for that many items for `'a`, and nothing else uses them.
-    pub(crate) unsafe fn items_mut<'a, T>(at: *mut T, length: usize) -> &'a mut [T] {
-        if length == 0 {
-            return &mut [];
-        }
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts_mut(at, length) }
-    }
-
     use rtl::gdi::*;
+    use rtl::host::items;
+    pub use rtl::host::{
+        process_heap,
+        DbgPrint,
+        Probed,
+        RtlAllocateHeap,
+        RtlFreeHeap,
+        RtlMultiByteToUnicodeN,
+        RtlUnicodeToMultiByteN,
+        SetLastError,
+        DEBUG_PRINTS,
+        LAST_ERROR,
+    };
 
     /// The one DC the stand-ins know.
     pub const DC: usize = 0x7C;
@@ -983,10 +971,6 @@ pub mod host {
     }
 
     std::thread_local! {
-        /// The calling thread's last error, as SetLastError left it.
-        pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
-        /// The text each DbgPrint printed, in order.
-        pub static DEBUG_PRINTS: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
         /// The DC's state.
         pub static HOST_DC: RefCell<HostDc> = RefCell::new(HostDc::new());
         /// The display names NtGdiOpenDCW was given (none for a null name), in order.
@@ -1049,10 +1033,6 @@ pub mod host {
         0
     }
 
-    pub unsafe extern "system" fn SetLastError(code: u32) {
-        LAST_ERROR.with(|error| error.set(code));
-    }
-
     /// GetSystemMetrics: the screen's width (SM_CXSCREEN) and height (SM_CYSCREEN), 0 for another
     /// index.
     pub unsafe extern "system" fn GetSystemMetrics(index: i32) -> i32 {
@@ -1061,95 +1041,6 @@ pub mod host {
             crate::dc::SM_CYSCREEN => SCREEN_HEIGHT,
             _ => 0,
         }
-    }
-
-    /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that
-    /// format alone), kept.
-    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const core::ffi::c_char) -> u32 {
-        // SAFETY: the caller's NUL-terminated format and text.
-        let (format, text) = unsafe {
-            (
-                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
-                core::ffi::CStr::from_ptr(text.cast()),
-            )
-        };
-        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
-        DEBUG_PRINTS.with(|prints| {
-            prints
-                .borrow_mut()
-                .push(text.to_string_lossy().into_owned())
-        });
-        0
-    }
-
-    /// The heap: the host's allocator, a block zeroed, its size kept before it.
-    pub unsafe extern "system" fn RtlAllocateHeap(
-        _heap: usize,
-        _flags: u32,
-        size: usize,
-    ) -> *mut u8 {
-        let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
-        // SAFETY: a non-zero layout; the size goes in the first word.
-        unsafe {
-            let block = std::alloc::alloc_zeroed(layout);
-            (block as *mut usize).write(size);
-            block.add(8)
-        }
-    }
-
-    pub unsafe extern "system" fn RtlFreeHeap(_heap: usize, _flags: u32, block: *mut u8) -> u32 {
-        // SAFETY: a block RtlAllocateHeap made.
-        unsafe {
-            let start = block.sub(8);
-            let size = (start as *const usize).read();
-            std::alloc::dealloc(
-                start,
-                std::alloc::Layout::from_size_align(size + 8, 8).unwrap(),
-            );
-        }
-        1
-    }
-
-    pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
-        unicode: *mut u16,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        multi_byte: *const u8,
-        multi_byte_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::multi_byte_to_unicode(
-                items_mut(unicode, max_bytes as usize / 2),
-                items(multi_byte, multi_byte_bytes as usize),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(2 * written as u32) };
-        }
-        0
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
-        multi_byte: *mut u8,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        unicode: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::unicode_to_multi_byte(
-                items_mut(multi_byte, max_bytes as usize),
-                items(unicode, unicode_bytes as usize / 2),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(written as u32) };
-        }
-        0
     }
 
     /// The primary display, by a null name or `\\.\DISPLAY1`: the DC reopened at its defaults.
@@ -1467,10 +1358,6 @@ pub mod host {
                 },
             )
         })
-    }
-
-    pub fn process_heap() -> usize {
-        0x0014_0000
     }
 
     // --- The font calls' stand-ins: one font file, the font objects made, the faces' names. ---
@@ -1951,15 +1838,6 @@ pub mod host {
             unsafe { record.write(entry) };
             0
         })
-    }
-
-    /// The host process's memory: every address the tests hand over is their own.
-    pub struct Probed;
-
-    impl rtl::stub::Memory for Probed {
-        fn readable(&self, _address: usize) -> bool {
-            true
-        }
     }
 }
 

@@ -21,6 +21,11 @@ rtl = { path = "../rtl" }
 [dev-dependencies]
 rtl = { path = "../rtl", features = ["testing"] }
 
+# Off the DLLs' target (the host's builds, tested or not) the imports are stand-ins, rtl's shared
+# ones among them (its `host` module, behind the same feature).
+[target.'cfg(not(target_arch = "x86"))'.dependencies]
+rtl = { path = "../rtl", features = ["testing"] }
+
 # The build script generates the .def and the stubs' bodies from the export specs.
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }

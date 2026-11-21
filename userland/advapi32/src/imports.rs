@@ -347,7 +347,7 @@ pub fn computer_name(buffer: &mut [u16]) -> Option<usize> {
 /// DbgPrint of `text`, as is (through `"%s"`).
 pub fn debug_print(text: &CStr) {
     // SAFETY: the format and the text are NUL-terminated; the format takes the one string.
-    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr()) };
+    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr().cast::<u8>()) };
 }
 
 /// RtlNtStatusToDosError: the Win32 error `status` maps to.
@@ -582,82 +582,36 @@ pub fn unicode_to_multi_byte_size(source: &[u16]) -> u32 {
 
 /// The host tests' imports: stand-ins with the imports' shapes, recording what they were given.
 /// The key services have no registry behind them on the host: they answer
-/// STATUS_NOT_IMPLEMENTED; the conversions and the heap are real.
+/// STATUS_NOT_IMPLEMENTED; the conversions and the heap are real (rtl's shared stand-ins,
+/// [`rtl::host`]).
 #[cfg(test)]
 #[allow(non_snake_case, clippy::missing_safety_doc)]
 pub mod host {
     use std::cell::{Cell, RefCell};
 
-    /// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null
-    /// pointer makes no slice, not even an empty one), as a caller may pass NULL with no length.
-    ///
-    /// # Safety
-    ///
-    /// For a length, `at` is readable for that many items for `'a`.
-    pub(crate) unsafe fn items<'a, T>(at: *const T, length: usize) -> &'a [T] {
-        if length == 0 {
-            return &[];
-        }
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts(at, length) }
-    }
+    pub use rtl::host::{
+        process_heap,
+        DbgPrint,
+        Probed,
+        RaiseException,
+        RtlAllocateHeap,
+        RtlAnsiStringToUnicodeString,
+        RtlFreeHeap,
+        RtlFreeUnicodeString,
+        RtlMultiByteToUnicodeN,
+        RtlNtStatusToDosError,
+        RtlUnicodeStringToAnsiString,
+        RtlUnicodeToMultiByteN,
+        RtlUnicodeToMultiByteSize,
+        SetLastError,
+        DEBUG_PRINTS,
+        LAST_ERROR,
+    };
 
-    /// [`items`], writable.
-    ///
-    /// # Safety
-    ///
-    /// For a length, `at` is writable for that many items for `'a`, and nothing else uses them.
-    pub(crate) unsafe fn items_mut<'a, T>(at: *mut T, length: usize) -> &'a mut [T] {
-        if length == 0 {
-            return &mut [];
-        }
-        // SAFETY: the caller's contract.
-        unsafe { core::slice::from_raw_parts_mut(at, length) }
-    }
-
-    use super::{AnsiString, ObjectAttributes, UnicodeString};
+    use super::{ObjectAttributes, UnicodeString};
 
     /// What the key services answer on the host.
     const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
-
-    std::thread_local! {
-        /// The calling thread's last error, as SetLastError left it.
-        pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
-        /// The text each DbgPrint printed, in order.
-        pub static DEBUG_PRINTS: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
-    }
-
-    pub unsafe extern "system" fn SetLastError(code: u32) {
-        LAST_ERROR.with(|error| error.set(code));
-    }
-
-    pub unsafe extern "system" fn RaiseException(
-        code: u32,
-        flags: u32,
-        _count: u32,
-        _arguments: *const usize,
-    ) {
-        panic!("RaiseException({code:#010x}, {flags:#x})")
-    }
-
-    /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that
-    /// format alone), kept.
-    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const core::ffi::c_char) -> u32 {
-        // SAFETY: the caller's NUL-terminated format and text.
-        let (format, text) = unsafe {
-            (
-                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
-                core::ffi::CStr::from_ptr(text),
-            )
-        };
-        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
-        DEBUG_PRINTS.with(|prints| {
-            prints
-                .borrow_mut()
-                .push(text.to_string_lossy().into_owned())
-        });
-        0
-    }
 
     pub unsafe extern "system" fn NtCreateKey(
         _: *mut u32,
@@ -722,10 +676,6 @@ pub mod host {
 
     pub unsafe extern "system" fn RtlOpenCurrentUser(_: u32, _: *mut u32) -> u32 {
         STATUS_NOT_IMPLEMENTED
-    }
-
-    pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
-        rtl::status::dos_error(status)
     }
 
     std::thread_local! {
@@ -797,138 +747,6 @@ pub mod host {
             *size = name.len() as u32;
         }
         1
-    }
-
-    /// The host heap's blocks, zeroed, by address, with their layouts.
-    fn heap_alloc(size: usize) -> *mut u8 {
-        let layout = std::alloc::Layout::from_size_align(size.max(1) + 8, 8).unwrap();
-        // SAFETY: a nonzero size; the block's first 8 bytes keep its size for the free.
-        unsafe {
-            let block = std::alloc::alloc_zeroed(layout);
-            (block as *mut usize).write(size.max(1) + 8);
-            block.add(8)
-        }
-    }
-
-    fn heap_free(block: *mut u8) {
-        // SAFETY: a block heap_alloc made, its size 8 bytes before it.
-        unsafe {
-            let base = block.sub(8);
-            let size = (base as *const usize).read();
-            std::alloc::dealloc(base, std::alloc::Layout::from_size_align(size, 8).unwrap());
-        }
-    }
-
-    pub unsafe extern "system" fn RtlAnsiStringToUnicodeString(
-        destination: *mut UnicodeString,
-        source: *const AnsiString,
-        allocate: u32,
-    ) -> u32 {
-        // SAFETY: the caller's strings.
-        unsafe {
-            rtl::string::ansi_string_to_unicode_string(
-                &mut *destination,
-                &*source,
-                allocate != 0,
-                heap_alloc,
-            )
-        }
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeStringToAnsiString(
-        destination: *mut AnsiString,
-        source: *const UnicodeString,
-        allocate: u32,
-    ) -> u32 {
-        // SAFETY: the caller's strings.
-        unsafe {
-            rtl::string::unicode_string_to_ansi_string(
-                &mut *destination,
-                &*source,
-                allocate != 0,
-                heap_alloc,
-            )
-        }
-    }
-
-    pub unsafe extern "system" fn RtlFreeUnicodeString(string: *mut UnicodeString) {
-        // SAFETY: the caller's string.
-        rtl::string::free_unicode_string(unsafe { &mut *string }, heap_free);
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
-        multi_byte: *mut u8,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        unicode: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::unicode_to_multi_byte(
-                items_mut(multi_byte, max_bytes as usize),
-                items(unicode, unicode_bytes as usize / 2),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(written as u32) };
-        }
-        0
-    }
-
-    pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
-        unicode: *mut u16,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        multi_byte: *const u8,
-        multi_byte_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::multi_byte_to_unicode(
-                items_mut(unicode, max_bytes as usize / 2),
-                items(multi_byte, multi_byte_bytes as usize),
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(2 * written as u32) };
-        }
-        0
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteSize(
-        bytes: *mut u32,
-        _: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's count.
-        unsafe { bytes.write(rtl::string::unicode_to_multi_byte_size(unicode_bytes)) };
-        0
-    }
-
-    pub unsafe extern "system" fn RtlAllocateHeap(_: usize, _: u32, size: usize) -> *mut u8 {
-        heap_alloc(size)
-    }
-
-    pub unsafe extern "system" fn RtlFreeHeap(_: usize, _: u32, block: *mut u8) -> u32 {
-        heap_free(block);
-        1
-    }
-
-    /// The host process has no PEB: the stand-in heap is the one heap.
-    pub fn process_heap() -> usize {
-        0
-    }
-
-    /// The host process's memory: every address the tests hand over is their own.
-    pub struct Probed;
-
-    impl rtl::stub::Memory for Probed {
-        fn readable(&self, _address: usize) -> bool {
-            true
-        }
     }
 }
 

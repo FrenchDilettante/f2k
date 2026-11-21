@@ -9,7 +9,8 @@ edition = "2021"
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }
 
-# The host tests' text helpers (`testing`), for the crates whose tests depend on rtl.
+# The host tests' text helpers (`testing`) and the system DLLs' shared import stand-ins (`host`),
+# for the crates whose tests depend on rtl.
 [features]
 testing = []
 

@@ -380,7 +380,8 @@ pub use rtl::probe::Probed;
 
 /// The host's imports: stand-ins with the imports' shapes. The ones the host tests reach behave as
 /// kernel32's do (the locale services answer from the same `rtl` tables, the heap is the host's);
-/// the others are never called on the host.
+/// the others are never called on the host. The ones every system DLL shares (the last error,
+/// DbgPrint, RaiseException, the memory probe) are rtl's ([`rtl::host`]).
 #[cfg(not(all(target_arch = "x86", not(test))))]
 #[allow(non_snake_case, clippy::missing_safety_doc, clippy::too_many_arguments)]
 pub mod host {
@@ -392,35 +393,23 @@ pub mod host {
     use std::vec::Vec;
 
     use rtl::cp1252;
+    pub use rtl::host::{
+        DbgPrint,
+        GetLastError,
+        Probed,
+        RaiseException,
+        SetLastError,
+        DEBUG_PRINTS,
+        LAST_ERROR,
+    };
 
     std::thread_local! {
-        /// The calling thread's last error, as SetLastError left it.
-        pub static LAST_ERROR: Cell<u32> = const { Cell::new(0) };
-        /// The text each DbgPrint printed, in order.
-        pub static DEBUG_PRINTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
         /// The thread's TLS slots.
         static SLOTS: RefCell<HashMap<u32, usize>> = RefCell::new(HashMap::new());
     }
 
     fn unreachable(name: &str) -> ! {
         panic!("{name}: not served on the host")
-    }
-
-    pub unsafe extern "system" fn SetLastError(code: u32) {
-        LAST_ERROR.with(|error| error.set(code));
-    }
-
-    pub unsafe extern "system" fn GetLastError() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    pub unsafe extern "system" fn RaiseException(
-        code: u32,
-        flags: u32,
-        _count: u32,
-        _arguments: *const usize,
-    ) {
-        panic!("RaiseException({code:#010x}, {flags:#x})")
     }
 
     pub unsafe extern "system" fn RtlUnwind(_: usize, _: usize, _: usize, _: usize) {
@@ -1174,34 +1163,6 @@ pub mod host {
         match unsafe { text(root) }.to_ascii_uppercase().as_str() {
             "C:\\" | "D:\\" => 3,
             _ => 1,
-        }
-    }
-
-    /// DbgPrint, as the stub routine calls it: `"%s"` and the text (the stand-in serves that
-    /// format alone), kept.
-    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const u8) -> u32 {
-        // SAFETY: the caller's NUL-terminated format and text.
-        let (format, text) = unsafe {
-            (
-                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
-                core::ffi::CStr::from_ptr(text.cast()),
-            )
-        };
-        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
-        DEBUG_PRINTS.with(|prints| {
-            prints
-                .borrow_mut()
-                .push(text.to_string_lossy().into_owned())
-        });
-        0
-    }
-
-    /// The host process's memory: every address the tests hand over is their own.
-    pub struct Probed;
-
-    impl rtl::stub::Memory for Probed {
-        fn readable(&self, _address: usize) -> bool {
-            true
         }
     }
 }

@@ -1103,7 +1103,7 @@ impl<T: Pod> LocalFixed<T> {
 /// DbgPrint of `text`, as is (through `"%s"`).
 pub fn debug_print(text: &CStr) {
     // SAFETY: the format and the text are NUL-terminated; the format takes the one string.
-    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr()) };
+    unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr().cast::<u8>()) };
 }
 
 /// RtlNtStatusToDosError: the Win32 error `status` maps to.

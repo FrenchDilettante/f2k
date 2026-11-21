@@ -826,11 +826,27 @@ pub use resources::*;
 #[cfg(test)]
 pub use threads::*;
 
-/// The host tests' ntdll: stand-ins with the imports' shapes.
+/// The host tests' ntdll: stand-ins with the imports' shapes. The ones every system DLL shares
+/// (DbgPrint, the heap, the string conversions, the status mapping) are rtl's ([`rtl::host`]).
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod host {
     use std::cell::{Cell, RefCell};
+
+    use rtl::host::string_block;
+    pub use rtl::host::{
+        DbgPrint,
+        RtlAllocateHeap,
+        RtlAnsiStringToUnicodeString,
+        RtlFreeHeap,
+        RtlFreeUnicodeString,
+        RtlMultiByteToUnicodeN,
+        RtlNtStatusToDosError,
+        RtlUnicodeStringToAnsiString,
+        RtlUnicodeToMultiByteN,
+        RtlUnicodeToMultiByteSize,
+        DEBUG_PRINTS,
+    };
 
     std::thread_local! {
         /// The status the next system service a test stands in for fails with (0: it succeeds).
@@ -861,34 +877,6 @@ pub mod host {
     pub unsafe extern "system" fn NtClose(handle: u32) -> u32 {
         CLOSED.with(|closed| closed.borrow_mut().push(handle));
         answer()
-    }
-
-    pub unsafe extern "system" fn RtlNtStatusToDosError(status: u32) -> u32 {
-        rtl::status::dos_error(status)
-    }
-
-    std::thread_local! {
-        /// The text each DbgPrint printed, in order.
-        pub static DEBUG_PRINTS: RefCell<std::vec::Vec<std::string::String>> = const { RefCell::new(std::vec::Vec::new()) };
-    }
-
-    /// DbgPrint, as kernel32 calls it: `"%s"` and the text (the stand-in serves that format
-    /// alone), kept.
-    pub unsafe extern "C" fn DbgPrint(format: *const u8, text: *const u8) -> u32 {
-        // SAFETY: the caller's NUL-terminated format and text.
-        let (format, text) = unsafe {
-            (
-                core::ffi::CStr::from_ptr(format.cast()).to_bytes(),
-                core::ffi::CStr::from_ptr(text.cast()),
-            )
-        };
-        assert_eq!(format, b"%s", "the stand-in serves \"%s\" alone");
-        DEBUG_PRINTS.with(|prints| {
-            prints
-                .borrow_mut()
-                .push(text.to_string_lossy().into_owned())
-        });
-        0
     }
 
     std::thread_local! {
@@ -1140,44 +1128,6 @@ pub mod host {
         panic!("RtlRaiseStatus({status:#010x})")
     }
 
-    /// The heap: the host's allocator, a block's size kept before it.
-    pub unsafe extern "system" fn RtlAllocateHeap(
-        _heap: usize,
-        flags: u32,
-        size: usize,
-    ) -> *mut u8 {
-        let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
-        // SAFETY: a fresh allocation of `size + 8` bytes.
-        unsafe {
-            let block = if flags & rtl::heap::HEAP_ZERO_MEMORY != 0 {
-                std::alloc::alloc_zeroed(layout)
-            } else {
-                std::alloc::alloc(layout)
-            };
-            (block as *mut usize).write(size);
-            block.add(8)
-        }
-    }
-
-    pub unsafe extern "system" fn RtlFreeHeap(_heap: usize, _flags: u32, block: *mut u8) -> u32 {
-        // SAFETY: a block RtlAllocateHeap made.
-        unsafe {
-            let start = block.sub(8);
-            let size = (start as *const usize).read();
-            std::alloc::dealloc(
-                start,
-                std::alloc::Layout::from_size_align(size + 8, 8).unwrap(),
-            );
-        }
-        1
-    }
-
-    /// A block on the stand-in heap, as ntdll's string conversions allocate.
-    fn string_block(size: usize) -> *mut u8 {
-        // SAFETY: the stand-in heap.
-        unsafe { RtlAllocateHeap(0, 0, size) }
-    }
-
     /// ntdll's string calls, over the stand-in heap (rtl::string, as ntdll runs them).
     pub unsafe extern "system" fn RtlInitAnsiString(
         destination: *mut super::AnsiString,
@@ -1185,85 +1135,6 @@ pub mod host {
     ) {
         // SAFETY: the caller's string and structure.
         unsafe { destination.write(rtl::string::init_ansi_string(source)) };
-    }
-
-    pub unsafe extern "system" fn RtlAnsiStringToUnicodeString(
-        destination: *mut super::UnicodeString,
-        source: *const super::AnsiString,
-        allocate: u32,
-    ) -> u32 {
-        // SAFETY: the caller's strings.
-        unsafe {
-            rtl::string::ansi_string_to_unicode_string(
-                &mut *destination,
-                &*source,
-                allocate as u8 != 0,
-                string_block,
-            )
-        }
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeStringToAnsiString(
-        destination: *mut super::AnsiString,
-        source: *const super::UnicodeString,
-        allocate: u32,
-    ) -> u32 {
-        // SAFETY: the caller's strings.
-        unsafe {
-            rtl::string::unicode_string_to_ansi_string(
-                &mut *destination,
-                &*source,
-                allocate as u8 != 0,
-                string_block,
-            )
-        }
-    }
-
-    pub unsafe extern "system" fn RtlFreeUnicodeString(string: *mut super::UnicodeString) {
-        // SAFETY: the caller's string, its buffer the stand-in heap's.
-        rtl::string::free_unicode_string(unsafe { &mut *string }, |buffer| unsafe {
-            RtlFreeHeap(0, 0, buffer);
-        });
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
-        multi_byte: *mut u8,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        unicode: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        let units = unicode_bytes as usize / 2;
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::unicode_to_multi_byte(
-                if max_bytes == 0 {
-                    &mut []
-                } else {
-                    core::slice::from_raw_parts_mut(multi_byte, max_bytes as usize)
-                },
-                if units == 0 {
-                    &[]
-                } else {
-                    core::slice::from_raw_parts(unicode, units)
-                },
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(written as u32) };
-        }
-        0
-    }
-
-    pub unsafe extern "system" fn RtlUnicodeToMultiByteSize(
-        bytes: *mut u32,
-        _unicode: *const u16,
-        unicode_bytes: u32,
-    ) -> u32 {
-        // SAFETY: the caller's count.
-        unsafe { bytes.write(rtl::string::unicode_to_multi_byte_size(unicode_bytes)) };
-        0
     }
 
     pub unsafe extern "system" fn RtlUpcaseUnicodeString(
@@ -1297,36 +1168,6 @@ pub mod host {
             }
             Err(status) => status,
         }
-    }
-
-    pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
-        unicode: *mut u16,
-        max_bytes: u32,
-        bytes_written: *mut u32,
-        multi_byte: *const u8,
-        multi_byte_bytes: u32,
-    ) -> u32 {
-        let (units, bytes) = (max_bytes as usize / 2, multi_byte_bytes as usize);
-        // SAFETY: the caller's buffers, of the sizes given.
-        let written = unsafe {
-            rtl::string::multi_byte_to_unicode(
-                if units == 0 {
-                    &mut []
-                } else {
-                    core::slice::from_raw_parts_mut(unicode, units)
-                },
-                if bytes == 0 {
-                    &[]
-                } else {
-                    core::slice::from_raw_parts(multi_byte, bytes)
-                },
-            )
-        };
-        if !bytes_written.is_null() {
-            // SAFETY: the caller's count.
-            unsafe { bytes_written.write(2 * written as u32) };
-        }
-        0
     }
 
     /// ntdll's version check (rtl::version, as ntdll runs it) against Windows 2000 service pack 4,

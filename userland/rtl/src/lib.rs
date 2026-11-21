@@ -70,6 +70,8 @@ pub mod gdi;
 pub mod handles;
 pub mod heap;
 pub mod heapcore;
+#[cfg(any(test, feature = "testing"))]
+pub mod host;
 pub mod icon;
 pub mod image;
 pub mod ldr;
