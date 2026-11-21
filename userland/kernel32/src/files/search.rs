@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::base::unicode_string;
-use crate::edge::{OutBuf, Text};
+use crate::edge::{Fit, OutBuf, Text};
 use crate::error::answer;
 use crate::heap::{HeapString, HeapVec, OutOfMemory};
 
@@ -170,16 +170,12 @@ fn search_path(
     if bytes == 0 || bytes > 2 * MAX_PATH {
         return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
-    let length = bytes / 2;
-    if buffer.len() <= length {
-        return Ok(length as u32 + 1);
-    }
-    buffer.put_terminated(&full[..length]);
-    if let Some(mut file_part) = file_part {
+    let fit = buffer.put_fitting(&full[..bytes / 2]);
+    if let (Fit::Fits(_), Some(mut file_part)) = (fit, file_part) {
         // The part lies in the caller's buffer.
         file_part.set(part.map_or(0, |at| buffer.address(at)));
     }
-    Ok(length as u32)
+    Ok(fit.length_or_size())
 }
 
 /// SearchPathW's default search for `name`, `extension` added when its last component has none:

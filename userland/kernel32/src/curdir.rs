@@ -24,12 +24,7 @@ fn current_directory(mut buffer: Text<'_>) -> Result<u32, Failure> {
     if bytes >= 2 * wide.len() {
         return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
-    let length = bytes / 2;
-    if buffer.len() <= length {
-        return Ok(length as u32 + 1);
-    }
-    buffer.put_terminated(&wide[..length]);
-    Ok(length as u32)
+    Ok(buffer.put_fitting(&wide[..bytes / 2]).length_or_size())
 }
 
 /// GetCurrentDirectoryA (see [`current_directory`]).
@@ -126,11 +121,7 @@ fn windows_directory(system: bool, mut buffer: Text<'_>) -> u32 {
             length += 1;
         }
     }
-    if buffer.len() <= length {
-        return length as u32 + 1;
-    }
-    buffer.put_terminated(&directory[..length]);
-    length as u32
+    buffer.put_fitting(&directory[..length]).length_or_size()
 }
 
 /// GetWindowsDirectoryA (see [`windows_directory`]).

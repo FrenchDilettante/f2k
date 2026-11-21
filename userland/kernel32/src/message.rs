@@ -224,10 +224,9 @@ fn format_message(
             place.set(block);
         }
         Destination::Buffer(mut buffer) => {
-            if buffer.len() <= length {
-                return Err(Failure::Error(ERROR_INSUFFICIENT_BUFFER));
-            }
-            buffer.put_terminated(units);
+            buffer
+                .put_fitting(units)
+                .or_error(ERROR_INSUFFICIENT_BUFFER)?;
         }
     }
     Ok(length as u32)

@@ -6,7 +6,7 @@
 //! process heap (ntdll's RtlUnicodeToMultiByteN).
 
 use crate::base::{set_last_error, unicode_string};
-use crate::edge::{counted, counted_optional, InStr, InWStr, OutBuf, Text};
+use crate::edge::{counted, counted_optional, Fit, InStr, InWStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
 use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
@@ -125,8 +125,8 @@ fn variable(name: &UnicodeString, mut buffer: Text<'_>) -> Result<u32, Failure> 
         return Err(Failure::Status(status));
     }
     let value_length = probe.length as usize / 2;
-    if buffer.len() <= value_length {
-        return Ok(value_length as u32 + 1);
+    if let Fit::TooSmall(size) = buffer.fit(value_length) {
+        return Ok(size);
     }
     let (value, mut value_string) =
         value_buffer(value_length + 1).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
@@ -135,8 +135,7 @@ fn variable(name: &UnicodeString, mut buffer: Text<'_>) -> Result<u32, Failure> 
         return Err(Failure::Status(status));
     }
     let units = &value[..(value_string.length as usize / 2).min(value.len())];
-    buffer.put_terminated(units);
-    Ok(units.len() as u32)
+    Ok(buffer.put_fitting(units).length_or_size())
 }
 
 /// GetEnvironmentVariableA (see [`variable`]): ERROR_INVALID_PARAMETER for a name that does not

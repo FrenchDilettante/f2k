@@ -2,7 +2,8 @@
 //! [`InBuf`], [`InStr`], [`InWStr`]), each made once, at the export, in one `unsafe` block whose
 //! contract is the API's; and what kernel32 builds over them: the NLS calls' counted strings
 //! ([`Counted`]: a count, or NUL-terminated for a negative one), a buffer a call hands a string
-//! back into ([`Text`]: an A call's narrowed through the ANSI code page, a W call's as it is), a W
+//! back into ([`Text`]: an A call's narrowed through the ANSI code page, a W call's as it is; and
+//! how a string fitted it, [`Fit`], which each call answers as its API does), a W
 //! call's string as a slice ([`wide_units`]: borrowed where aligned, copied where not) or as the
 //! counted string the services read in place ([`counted`]), an A call's string converted into a
 //! buffer of kernel32's ([`ansi_into`]), and CreateProcess's environment block
@@ -81,6 +82,28 @@ impl<'a> Text<'a> {
         self.put_unit(units.len(), 0);
     }
 
+    /// Whether a string of `length` characters fits with its terminator: [`Fit::Fits`] with its
+    /// length when the buffer holds more characters than it, else [`Fit::TooSmall`] with the size
+    /// it needs, terminator included. Nothing is written.
+    pub fn fit(&self, length: usize) -> Fit {
+        if self.len() > length {
+            Fit::Fits(length as u32)
+        } else {
+            Fit::TooSmall(length as u32 + 1)
+        }
+    }
+
+    /// `units` and their terminator written when they fit ([`Text::fit`]), nothing written when
+    /// they do not: the fit, which the call answers as its API does ([`Fit::length_or_size`],
+    /// [`Fit::or_error`]).
+    pub fn put_fitting(&mut self, units: &[u16]) -> Fit {
+        let fit = self.fit(units.len());
+        if let Fit::Fits(_) = fit {
+            self.put_terminated(units);
+        }
+        fit
+    }
+
     /// Write one unit at character `at`.
     ///
     /// # Panics
@@ -95,6 +118,39 @@ impl<'a> Text<'a> {
         match self {
             Text::Ansi(buffer) => buffer.address(at),
             Text::Wide(buffer) => buffer.address(at),
+        }
+    }
+}
+
+/// How a string handed back into a caller's [`Text`] fitted ([`Text::fit`]): its length, terminator
+/// excluded, when it fitted with its terminator (and was written); the size it needs, terminator
+/// included, when it did not (nothing written). Windows 2000's calls answer the two cases
+/// differently, each as its capture pins, so each call names its answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub enum Fit {
+    Fits(u32),
+    TooSmall(u32),
+}
+
+impl Fit {
+    /// The path calls' answer (GetCurrentDirectory, GetWindowsDirectory, GetFullPathName,
+    /// GetShortPathName, SearchPath, GetEnvironmentVariable): the length when it fitted, the size
+    /// it needs when it did not, the last error untouched either way.
+    pub fn length_or_size(self) -> u32 {
+        match self {
+            Fit::Fits(length) | Fit::TooSmall(length) => length,
+        }
+    }
+
+    /// The answer of a call for which a buffer too small is a failure (GetVolumeInformation's
+    /// names, ERROR_BAD_LENGTH; FormatMessage's buffer, GetDateFormat's and GetTimeFormat's,
+    /// ERROR_INSUFFICIENT_BUFFER; GetComputerName, ERROR_BUFFER_OVERFLOW): the length when it
+    /// fitted, else `error`.
+    pub fn or_error(self, error: u32) -> Result<u32, Failure> {
+        match self {
+            Fit::Fits(length) => Ok(length),
+            Fit::TooSmall(_) => Err(Failure::Error(error)),
         }
     }
 }
@@ -347,4 +403,56 @@ pub fn counted_optional(string: Option<&InWStr<'_>>) -> UnicodeString {
 /// units; none when the buffer cannot hold it and its terminator (no string is the empty one).
 pub fn ansi_into(string: Option<&InStr<'_>>, buffer: &mut [u16]) -> Option<usize> {
     ntcall::ansi_to_unicode(string, buffer).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
+    /// A string fits a buffer that holds more characters than it: written with its terminator,
+    /// its length answered; one with no room for the terminator is the size it needs, nothing
+    /// written. Each call's answer of the two is explicit.
+    #[test]
+    fn a_string_fits_with_its_terminator_or_is_the_size_it_needs() {
+        let text = wide("C:\\F2K");
+        let mut room = [0xFFFFu16; 8];
+        let fit = Text::Wide(OutBuf::from(&mut room[..])).put_fitting(&text);
+        assert_eq!(fit, Fit::Fits(6));
+        assert_eq!(&room[..7], &[text.as_slice(), &[0]].concat()[..]);
+        assert_eq!(room[7], 0xFFFF);
+        assert_eq!(fit.length_or_size(), 6);
+        assert_eq!(fit.or_error(24), Ok(6));
+
+        let mut exact = [0xFFFFu16; 6];
+        let fit = Text::Wide(OutBuf::from(&mut exact[..])).put_fitting(&text);
+        assert_eq!(fit, Fit::TooSmall(7));
+        assert_eq!(exact, [0xFFFF; 6]);
+        assert_eq!(fit.length_or_size(), 7);
+        assert_eq!(fit.or_error(24), Err(Failure::Error(24)));
+
+        let mut none: [u16; 0] = [];
+        let empty = Text::Wide(OutBuf::from(&mut none[..]));
+        assert_eq!(empty.fit(0), Fit::TooSmall(1));
+        let mut one = [0xFFFFu16; 1];
+        assert_eq!(
+            Text::Wide(OutBuf::from(&mut one[..])).put_fitting(&[]),
+            Fit::Fits(0)
+        );
+        assert_eq!(one, [0]);
+    }
+
+    /// An A call's buffer counts its bytes alike, the string narrowed into it.
+    #[test]
+    fn an_ansi_buffer_fits_alike() {
+        let mut room = [0xFFu8; 4];
+        let fit = Text::Ansi(OutBuf::from(&mut room[..])).put_fitting(&wide("abc"));
+        assert_eq!((fit, room), (Fit::Fits(3), *b"abc\0"));
+        let mut short = [0xFFu8; 3];
+        let fit = Text::Ansi(OutBuf::from(&mut short[..])).put_fitting(&wide("abc"));
+        assert_eq!((fit, short), (Fit::TooSmall(4), [0xFF; 3]));
+    }
 }

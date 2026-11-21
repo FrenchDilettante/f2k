@@ -118,15 +118,11 @@ fn check_call(lcid: u32, out: &Text<'_>, size: i32) -> Result<(), Failure> {
 /// The formatted text handed back: its length with the terminator for a size query (no room), else
 /// written and terminated; ERROR_INSUFFICIENT_BUFFER for a buffer too short.
 fn deliver(text: &[u16], mut out: Text<'_>) -> Result<i32, Failure> {
-    let needed = text.len() + 1;
     if out.is_empty() {
-        return Ok(needed as i32);
+        return Ok(text.len() as i32 + 1);
     }
-    if out.len() < needed {
-        return Err(Failure::Error(ERROR_INSUFFICIENT_BUFFER));
-    }
-    out.put_terminated(text);
-    Ok(needed as i32)
+    let length = out.put_fitting(text).or_error(ERROR_INSUFFICIENT_BUFFER)?;
+    Ok(length as i32 + 1)
 }
 
 /// A locale string's units, into `buffer`.

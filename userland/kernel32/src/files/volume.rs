@@ -405,11 +405,7 @@ fn volume_information(
     };
     // A name into a caller's buffer, with its terminator; ERROR_BAD_LENGTH when it does not fit.
     let put_name = |out: &mut Text<'_>, name: &[u16]| {
-        if name.len() >= out.len() {
-            return Err(Failure::Error(ERROR_BAD_LENGTH));
-        }
-        out.put_terminated(name);
-        Ok(())
+        out.put_fitting(name).or_error(ERROR_BAD_LENGTH).map(drop)
     };
     if !answers.name.is_null() {
         let length = (word(&volume, 12) as usize / 2).min(MAX_PATH);

@@ -78,13 +78,9 @@ fn read_name(name: &mut [u16; MAX_COMPUTERNAME_LENGTH]) -> Result<usize, NtStatu
 fn computer_name(mut buffer: Text<'_>, size: &mut Out<'_, u32>) -> Result<(), Failure> {
     let mut name = [0u16; MAX_COMPUTERNAME_LENGTH];
     let length = read_name(&mut name).map_err(Failure::Status)?;
-    if buffer.len() <= length {
-        size.set(length as u32 + 1);
-        return Err(Failure::Error(ERROR_BUFFER_OVERFLOW));
-    }
-    buffer.put_terminated(&name[..length]);
-    size.set(length as u32);
-    Ok(())
+    let fit = buffer.put_fitting(&name[..length]);
+    size.set(fit.length_or_size());
+    fit.or_error(ERROR_BUFFER_OVERFLOW).map(drop)
 }
 
 /// GetComputerNameA (see [`computer_name`]).

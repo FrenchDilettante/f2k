@@ -7,7 +7,7 @@
 
 use super::find::{find_first_w, FindDataW};
 use super::*;
-use crate::edge::{OutBuf, Text};
+use crate::edge::{Fit, OutBuf, Text};
 use crate::error::{answer, bool_answer};
 
 /// The attributes SetFileAttributes may set (FILE_ATTRIBUTE_VALID_SET_FLAGS), and the one it adds
@@ -462,16 +462,12 @@ fn full_path(
     if bytes > 2 * MAX_PATH {
         return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
-    let length = bytes / 2;
-    if buffer.len() <= length {
-        return Ok(length as u32 + 1);
-    }
-    buffer.put_terminated(&full[..length]);
-    if let Some(mut file_part) = file_part {
+    let fit = buffer.put_fitting(&full[..bytes / 2]);
+    if let (Fit::Fits(_), Some(mut file_part)) = (fit, file_part) {
         // The part lies in the caller's buffer.
         file_part.set(part.map_or(0, |at| buffer.address(at)));
     }
-    Ok(length as u32)
+    Ok(fit.length_or_size())
 }
 
 /// GetFullPathNameA (see [`full_path`]).
@@ -616,11 +612,7 @@ fn short_path(long: &Wide, mut buffer: Text<'_>) -> Result<u32, Failure> {
             rest = &[];
         }
     }
-    if buffer.len() <= length {
-        return Ok(length as u32 + 1);
-    }
-    buffer.put_terminated(&out[..length]);
-    Ok(length as u32)
+    Ok(buffer.put_fitting(&out[..length]).length_or_size())
 }
 
 /// GetShortPathNameA (see [`short_path`]); a null name is ERROR_INVALID_PARAMETER.
