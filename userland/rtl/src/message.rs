@@ -32,6 +32,7 @@
 //! `S` the other, `h` and `l` (or `w`) forcing ANSI and UTF-16; `c` and `C` likewise; ANSI text
 //! decodes through code page 1252. The numeric conversions are the C runtime's ([`crate::printf`]).
 
+use crate::array_vec::ArrayVec;
 use crate::printf::{self, Args, Sink};
 use crate::status::{STATUS_BUFFER_OVERFLOW, STATUS_INVALID_PARAMETER};
 
@@ -230,9 +231,8 @@ const SPEC_ROOM: usize = 24;
 
 /// An insert's format, parsed: where its conversion is, and what it says about strings.
 struct Spec {
-    /// The format as bytes (`%` first, for printf), and its length.
-    bytes: [u8; SPEC_ROOM + 1],
-    length: usize,
+    /// The format as bytes (`%` first, for printf).
+    bytes: ArrayVec<u8, { SPEC_ROOM + 1 }>,
     left: bool,
     /// The width and the precision: digits, `*` (from an argument), or none.
     width: Option<Count>,
@@ -252,9 +252,21 @@ enum Count {
 /// Parse `units` (between the exclamation marks) as a printf format: flags, width, precision,
 /// length, conversion; STATUS_INVALID_PARAMETER for anything else.
 fn parse(units: &[u16]) -> Result<Spec, u32> {
+    if units.is_empty() || units.len() > SPEC_ROOM {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let mut bytes = ArrayVec::new();
+    bytes.push(b'%');
+    for &unit in units {
+        bytes.push(
+            u8::try_from(unit)
+                .ok()
+                .filter(u8::is_ascii_graphic)
+                .ok_or(STATUS_INVALID_PARAMETER)?,
+        );
+    }
     let mut spec = Spec {
-        bytes: [0; SPEC_ROOM + 1],
-        length: units.len() + 1,
+        bytes,
         left: false,
         width: None,
         precision: None,
@@ -262,17 +274,7 @@ fn parse(units: &[u16]) -> Result<Spec, u32> {
         wide: false,
         conversion: 0,
     };
-    if units.is_empty() || units.len() > SPEC_ROOM {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
-    spec.bytes[0] = b'%';
-    for (byte, &unit) in spec.bytes[1..].iter_mut().zip(units) {
-        *byte = u8::try_from(unit)
-            .ok()
-            .filter(u8::is_ascii_graphic)
-            .ok_or(STATUS_INVALID_PARAMETER)?;
-    }
-    let format = &spec.bytes[1..spec.length];
+    let format = &spec.bytes[1..];
     let mut at = 0;
     while let Some(&flag @ (b'-' | b'+' | b' ' | b'#' | b'0')) = format.get(at) {
         spec.left |= flag == b'-';
@@ -386,7 +388,7 @@ fn insert(
             out,
             status: Ok(()),
         };
-        printf::format(&spec.bytes[..spec.length], &mut slots, &NoMemory, &mut sink)
+        printf::format(&spec.bytes, &mut slots, &NoMemory, &mut sink)
             .map_err(|_| STATUS_INVALID_PARAMETER)?;
         return sink.status;
     }

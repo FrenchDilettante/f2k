@@ -4,6 +4,8 @@
 //! GetTempFileName (a name in a directory, numbered by the caller or by the call, which then makes
 //! the file).
 
+use rtl::array_vec::ArrayVec;
+
 use super::handle::create_file_w;
 use super::names::file_attributes;
 use super::*;
@@ -138,10 +140,9 @@ pub unsafe extern "system" fn get_temp_path_w(size: u32, buffer: *mut u16) -> u3
 /// prefix, the number in uppercase hexadecimal without leading zeros, the extension in lowercase
 /// (the utility fixture's capture: `abcABCD.tmp`).
 struct TempName {
-    units: [u16; MAX_PATH],
+    units: ArrayVec<u16, MAX_PATH>,
     /// Where the number goes: the path, its backslash and the prefix before it.
     stem: usize,
-    length: usize,
 }
 
 impl TempName {
@@ -154,33 +155,27 @@ impl TempName {
         if stem + b"FFFF.tmp".len() >= MAX_PATH {
             return Err(Failure::Error(ERROR_BUFFER_OVERFLOW));
         }
-        let mut name = TempName {
-            units: [0; MAX_PATH],
-            stem,
-            length: stem,
-        };
-        name.units[..path.len()].copy_from_slice(path);
+        // The stem fits: it is shorter than the name, which the check above keeps under MAX_PATH.
+        let mut units = ArrayVec::new();
+        units.try_extend_from_slice(path).expect("the path fits");
         if slash != 0 {
-            name.units[path.len()] = BACKSLASH;
+            units.push(BACKSLASH);
         }
-        name.units[path.len() + slash..stem].copy_from_slice(prefix);
-        Ok(name)
+        units
+            .try_extend_from_slice(prefix)
+            .expect("the prefix fits");
+        Ok(TempName { units, stem })
     }
 
     /// The name with `number` (its low 16 bits) after the stem.
     fn numbered(&mut self, number: u32) -> &[u16] {
         let digits = rtl::fmt::hex(u64::from(number & 0xFFFF), 1, rtl::fmt::Case::Upper);
-        let mut at = self.stem;
-        for digit in digits.units() {
-            self.units[at] = digit;
-            at += 1;
-        }
-        for &byte in b".tmp" {
-            self.units[at] = u16::from(byte);
-            at += 1;
-        }
-        self.length = at;
-        &self.units[..at]
+        self.units.truncate(self.stem);
+        digits.units().for_each(|digit| self.units.push(digit));
+        b".tmp"
+            .iter()
+            .for_each(|&byte| self.units.push(u16::from(byte)));
+        &self.units
     }
 }
 
@@ -239,7 +234,7 @@ fn temp_file_name(
             Ok(handle) => {
                 let _ = ntcall::close(handle);
                 if !wide {
-                    buffer.put_terminated(&name.units[..name.length]);
+                    buffer.put_terminated(&name.units);
                 }
                 return Ok(number);
             }
