@@ -18,7 +18,6 @@ and every pixel Redmond blue: the framebuffer is observably painted, and nothing
 """
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -32,10 +31,11 @@ CMDLINE = "WINNT\\system32\\fish.exe \\CORPUS\\pipe.exe create"
 
 
 @pytest.mark.kernel
-def test_fish_paints_the_framebuffer(request, builder, log_path, boot_timeout):
+def test_fish_paints_the_framebuffer(request, builder, log_path, boot_timeout, tmp_path):
     """The mode line and the clean exit codes on COM1, and the screen a solid desktop."""
-    directory = Path(tempfile.mkdtemp(prefix="f2k-fb-"))
-    png = directory / "screen.png"
+    # The screen goes to pytest's own temporary directory, which pytest clears, not one of its
+    # own that every run left behind.
+    png = tmp_path / "screen.png"
 
     def observe(socket: Path) -> None:
         f2kboot.screendump(socket, png)
