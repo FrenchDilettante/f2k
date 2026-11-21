@@ -16,7 +16,7 @@
 use rtl::peb::LdrDataTableEntry;
 
 use crate::base::{last_error, loader_data, set_last_error, unicode_string, CURRENT_PROCESS};
-use crate::edge::{ansi_into, counted, wide_units, InStr, InWStr, OutBuf, Text};
+use crate::edge::{ansi_into, counted, wide_units, CallerChar, CallerStr, InStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure};
 use crate::files::search::search_default;
 use crate::files::{self, NtPath, Wide};
@@ -66,27 +66,22 @@ impl Loader {
     }
 }
 
-/// A module name as GetModuleHandle and LoadLibrary are handed it.
-#[derive(Clone, Copy)]
-enum Name<'a> {
-    /// An A call's, converted to Unicode first into a MAX_PATH-character buffer
-    /// (ERROR_FILENAME_EXCED_RANGE past it).
-    Ansi(InStr<'a>),
-    /// A W call's, as given.
-    Wide(InWStr<'a>),
-}
+/// A module name as GetModuleHandle and LoadLibrary are handed it: an A call's is converted to
+/// Unicode first into a MAX_PATH-character buffer (ERROR_FILENAME_EXCED_RANGE past it), a W call's
+/// is taken as given.
+type Name<'a> = CallerStr<'a>;
 
 /// A loader call over the module name: its handle, or the failure (ERROR_FILENAME_EXCED_RANGE
 /// past MAX_PATH for an A call's name, the status otherwise).
 fn by_name(name: Name<'_>, call: Loader) -> Result<u32, Failure> {
     let handle = match name {
-        Name::Ansi(name) => {
+        CallerStr::Ansi(name) => {
             let mut units = [0u16; MAX_PATH + 1];
             let length = ansi_into(Some(&name), &mut units)
                 .ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
             call.call(&unicode_string(&mut units, length))
         }
-        Name::Wide(name) => call.call(&counted(&name)),
+        CallerStr::Wide(name) => call.call(&counted(&name)),
     };
     handle.map_err(Failure::Status)
 }
@@ -105,6 +100,18 @@ fn module(name: Option<Name<'_>>, call: Loader) -> u32 {
     }
 }
 
+/// GetModuleHandle's and LoadLibrary's export body, either form (see [`module`]).
+///
+/// # Safety
+///
+/// `name` is null or a NUL-terminated string of the form's characters (a bad pointer faults the
+/// caller).
+unsafe fn module_as<C: CallerChar>(name: *const C, call: Loader) -> u32 {
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { C::optional_string(name) };
+    module(name, call)
+}
+
 /// GetModuleHandleA: the image's handle for a null name (the PEB's ImageBaseAddress), else the
 /// handle of the module the name names (LdrGetDllHandle: ERROR_MOD_NOT_FOUND for none).
 ///
@@ -113,9 +120,8 @@ fn module(name: Option<Name<'_>>, call: Loader) -> u32 {
 /// `name` is null or a NUL-terminated string (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetModuleHandleA")]
 pub unsafe extern "system" fn get_module_handle_a(name: *const u8) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    module(name.map(Name::Ansi), Loader::Handle)
+    // SAFETY: the caller's contract.
+    unsafe { module_as(name, Loader::Handle) }
 }
 
 /// GetModuleHandleW (as [`get_module_handle_a`]).
@@ -125,9 +131,8 @@ pub unsafe extern "system" fn get_module_handle_a(name: *const u8) -> u32 {
 /// `name` is null or a NUL-terminated UTF-16 string (a bad pointer faults the caller).
 #[unsafe(export_name = "f2k_export_GetModuleHandleW")]
 pub unsafe extern "system" fn get_module_handle_w(name: *const u16) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    module(name.map(Name::Wide), Loader::Handle)
+    // SAFETY: the caller's contract.
+    unsafe { module_as(name, Loader::Handle) }
 }
 
 /// LoadLibraryA: the module the name names, loaded (LdrLoadDll: one the process has, or one it
@@ -138,9 +143,8 @@ pub unsafe extern "system" fn get_module_handle_w(name: *const u16) -> u32 {
 /// As [`get_module_handle_a`].
 #[unsafe(export_name = "f2k_export_LoadLibraryA")]
 pub unsafe extern "system" fn load_library_a(name: *const u8) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    module(name.map(Name::Ansi), Loader::Load)
+    // SAFETY: the caller's contract.
+    unsafe { module_as(name, Loader::Load) }
 }
 
 /// LoadLibraryW (as [`load_library_a`]).
@@ -150,9 +154,8 @@ pub unsafe extern "system" fn load_library_a(name: *const u8) -> u32 {
 /// As [`get_module_handle_w`].
 #[unsafe(export_name = "f2k_export_LoadLibraryW")]
 pub unsafe extern "system" fn load_library_w(name: *const u16) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    module(name.map(Name::Wide), Loader::Load)
+    // SAFETY: the caller's contract.
+    unsafe { module_as(name, Loader::Load) }
 }
 
 /// LoadLibraryEx's flags.
@@ -199,12 +202,12 @@ fn load_as_datafile(name: Name<'_>) -> Result<u32, Failure> {
     let mut converted = [0u16; MAX_PATH + 1];
     let copied;
     let units: &[u16] = match name {
-        Name::Ansi(name) => {
+        CallerStr::Ansi(name) => {
             let length = ansi_into(Some(&name), &mut converted)
                 .ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
             &converted[..length]
         }
-        Name::Wide(name) => {
+        CallerStr::Wide(name) => {
             copied = wide_units(&name).ok_or(Failure::Error(files::ERROR_NOT_ENOUGH_MEMORY))?;
             &copied
         }
@@ -264,6 +267,17 @@ fn map_datafile(path: &Wide) -> Result<usize, Failure> {
     Ok(base)
 }
 
+/// LoadLibraryEx's export body, either form (see [`load_library_ex`]).
+///
+/// # Safety
+///
+/// As [`module_as`]'s.
+unsafe fn load_library_ex_as<C: CallerChar>(name: *const C, flags: u32) -> u32 {
+    // SAFETY: the caller's string, when given (the contract).
+    let name = unsafe { C::optional_string(name) };
+    load_library_ex(name, flags)
+}
+
 /// LoadLibraryExA (see [`load_library_ex`]): the name converted as LoadLibraryA's.
 ///
 /// # Safety
@@ -271,9 +285,8 @@ fn map_datafile(path: &Wide) -> Result<usize, Failure> {
 /// As [`get_module_handle_a`].
 #[unsafe(export_name = "f2k_export_LoadLibraryExA")]
 pub unsafe extern "system" fn load_library_ex_a(name: *const u8, _file: u32, flags: u32) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InStr::optional(name) };
-    load_library_ex(name.map(Name::Ansi), flags)
+    // SAFETY: the caller's contract.
+    unsafe { load_library_ex_as(name, flags) }
 }
 
 /// LoadLibraryExW (see [`load_library_ex`]).
@@ -283,9 +296,8 @@ pub unsafe extern "system" fn load_library_ex_a(name: *const u8, _file: u32, fla
 /// As [`get_module_handle_w`].
 #[unsafe(export_name = "f2k_export_LoadLibraryExW")]
 pub unsafe extern "system" fn load_library_ex_w(name: *const u16, _file: u32, flags: u32) -> u32 {
-    // SAFETY: the caller's string, when given (the contract).
-    let name = unsafe { InWStr::optional(name) };
-    load_library_ex(name.map(Name::Wide), flags)
+    // SAFETY: the caller's contract.
+    unsafe { load_library_ex_as(name, flags) }
 }
 
 /// FreeLibrary: one reference to the module fewer (LdrUnloadDll: a loaded module's last goes with
@@ -446,7 +458,7 @@ pub unsafe extern "system" fn get_module_file_name_a(
 ) -> u32 {
     // SAFETY: the caller's buffer (the contract).
     let buffer = unsafe { OutBuf::new(buffer, size as usize) };
-    answer(module_file_name(module, Text::Ansi(buffer)), 0)
+    answer(module_file_name(module, CallerChar::text(buffer)), 0)
 }
 
 /// GetModuleFileNameW (see [`module_file_name`]).
@@ -462,5 +474,5 @@ pub unsafe extern "system" fn get_module_file_name_w(
 ) -> u32 {
     // SAFETY: the caller's buffer (the contract).
     let buffer = unsafe { OutBuf::new(buffer, size as usize) };
-    answer(module_file_name(module, Text::Wide(buffer)), 0)
+    answer(module_file_name(module, CallerChar::text(buffer)), 0)
 }

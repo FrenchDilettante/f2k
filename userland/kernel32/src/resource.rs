@@ -25,17 +25,16 @@
 use rtl::resource::STATUS_RESOURCE_DATA_NOT_FOUND;
 use rtl::status::STATUS_INVALID_PARAMETER;
 
-use crate::edge::{wide_units, InStr, InWStr};
-use crate::error::{answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
-use crate::heap::{HeapArray, HeapString};
+use crate::edge::{CallerChar, CallerStr};
+use crate::error::{answer, Failure};
+use crate::heap::HeapArray;
 use crate::ntcall::{self, ResourceId, TerminatedName};
 
 /// A caller's resource type or name, as the API takes it: a number (MAKEINTRESOURCE), or a
 /// NUL-terminated string of the call's form.
 pub enum Named<'a> {
     Number(u16),
-    Ansi(InStr<'a>),
-    Wide(InWStr<'a>),
+    String(CallerStr<'a>),
 }
 
 /// Whether a type or name argument is a number: its high word is zero (IS_INTRESOURCE).
@@ -44,31 +43,17 @@ fn is_number(argument: usize) -> bool {
 }
 
 impl Named<'_> {
-    /// An A call's argument.
+    /// A call's argument, of its form's characters.
     ///
     /// # Safety
     ///
     /// `at` is a number (its high word zero) or a NUL-terminated string the call may read.
-    pub unsafe fn ansi(at: *const u8) -> Self {
+    pub unsafe fn of<C: CallerChar>(at: *const C) -> Self {
         if is_number(at as usize) {
             Named::Number(at as usize as u16)
         } else {
             // SAFETY: the caller's string (the contract).
-            Named::Ansi(unsafe { InStr::new(at) })
-        }
-    }
-
-    /// A W call's argument.
-    ///
-    /// # Safety
-    ///
-    /// `at` is a number (its high word zero) or a NUL-terminated UTF-16 string the call may read.
-    pub unsafe fn wide(at: *const u16) -> Self {
-        if is_number(at as usize) {
-            Named::Number(at as usize as u16)
-        } else {
-            // SAFETY: the caller's string (the contract).
-            Named::Wide(unsafe { InWStr::new(at) })
+            Named::String(unsafe { C::string(at) })
         }
     }
 }
@@ -126,14 +111,7 @@ const HASH: u16 = b'#' as u16;
 fn key(named: Named<'_>) -> Result<Key, Failure> {
     match named {
         Named::Number(number) => Ok(Key::Number(number)),
-        Named::Wide(text) => {
-            let units = wide_units(&text).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
-            key_of(&units)
-        }
-        Named::Ansi(text) => {
-            let converted = HeapString::of_ansi(Some(&text)).map_err(Failure::Status)?;
-            key_of(converted.units())
-        }
+        Named::String(text) => key_of(&text.units()?),
     }
 }
 
@@ -185,7 +163,7 @@ pub unsafe extern "system" fn find_resource_a(
     kind: *const u8,
 ) -> usize {
     // SAFETY: the caller's arguments (the contract).
-    let (kind, name) = unsafe { (Named::ansi(kind), Named::ansi(name)) };
+    let (kind, name) = unsafe { (Named::of(kind), Named::of(name)) };
     answer(find_resource(module, kind, name, 0), 0)
 }
 
@@ -201,7 +179,7 @@ pub unsafe extern "system" fn find_resource_w(
     kind: *const u16,
 ) -> usize {
     // SAFETY: the caller's arguments (the contract).
-    let (kind, name) = unsafe { (Named::wide(kind), Named::wide(name)) };
+    let (kind, name) = unsafe { (Named::of(kind), Named::of(name)) };
     answer(find_resource(module, kind, name, 0), 0)
 }
 
@@ -219,7 +197,7 @@ pub unsafe extern "system" fn find_resource_ex_a(
     language: u32,
 ) -> usize {
     // SAFETY: the caller's arguments (the contract).
-    let (kind, name) = unsafe { (Named::ansi(kind), Named::ansi(name)) };
+    let (kind, name) = unsafe { (Named::of(kind), Named::of(name)) };
     answer(find_resource(module, kind, name, language as u16), 0)
 }
 
@@ -237,7 +215,7 @@ pub unsafe extern "system" fn find_resource_ex_w(
     language: u32,
 ) -> usize {
     // SAFETY: the caller's arguments (the contract).
-    let (kind, name) = unsafe { (Named::wide(kind), Named::wide(name)) };
+    let (kind, name) = unsafe { (Named::of(kind), Named::of(name)) };
     answer(find_resource(module, kind, name, language as u16), 0)
 }
 

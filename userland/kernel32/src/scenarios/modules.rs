@@ -1,6 +1,8 @@
-//! The modules: GetModuleHandleA, LoadLibraryA, FreeLibrary, GetProcAddress and
-//! DisableThreadLibraryCalls over ntdll's loader, GetModuleFileNameA over the PEB's module lists
+//! The modules: GetModuleHandle, LoadLibrary, LoadLibraryEx, FreeLibrary, GetProcAddress and
+//! DisableThreadLibraryCalls over ntdll's loader, GetModuleFileName over the PEB's module lists
 //! (the stand-in lists: the image, ntdll and kernel32, as ntdll lays them out).
+
+use rtl::testing::wide_z;
 
 use super::{last_error, UNREAD};
 use crate::base::set_last_error;
@@ -8,9 +10,14 @@ use crate::module::{
     disable_thread_library_calls,
     free_library,
     get_module_file_name_a,
+    get_module_file_name_w,
     get_module_handle_a,
+    get_module_handle_w,
     get_proc_address,
     load_library_a,
+    load_library_ex_a,
+    load_library_ex_w,
+    load_library_w,
 };
 use crate::nt::{
     ASKED,
@@ -177,6 +184,60 @@ fn module_handles_come_from_the_loader() {
     assert_eq!(last_error(), ERROR_MOD_NOT_FOUND);
     assert_eq!(unsafe { load_library_a(core::ptr::null()) }, 0);
     assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
+}
+
+/// GetModuleHandleW, LoadLibraryW and LoadLibraryExW do as their A forms of the same name: the
+/// loader asked for it, the image for no name (GetModuleHandle), ERROR_INVALID_PARAMETER for no
+/// name (LoadLibrary, LoadLibraryEx). They differ past MAX_PATH: the A form's conversion refuses
+/// the name (ERROR_FILENAME_EXCED_RANGE), the W form hands it to the loader. GetModuleFileNameW
+/// copies the path in characters where the A form's are bytes, cut alike.
+///
+/// Pins: kernel32.GetModuleHandleW, kernel32.GetModuleHandleA, kernel32.LoadLibraryW,
+/// kernel32.LoadLibraryA, kernel32.LoadLibraryExW, kernel32.LoadLibraryExA,
+/// kernel32.GetModuleFileNameW, kernel32.GetModuleFileNameA
+#[test]
+fn the_w_forms_answer_as_the_a_forms() {
+    let asked = || ASKED.with(|asked| core::mem::take(&mut *asked.borrow_mut()));
+    asked();
+    let (wide, narrow) = (wide_z("KERNEL32"), c(b"KERNEL32"));
+    assert_eq!(unsafe { get_module_handle_w(wide.as_ptr()) }, KERNEL32);
+    assert_eq!(unsafe { load_library_w(wide.as_ptr()) }, KERNEL32);
+    assert_eq!(unsafe { load_library_ex_w(wide.as_ptr(), 0, 0) }, KERNEL32);
+    let asked_w = asked();
+    assert_eq!(unsafe { get_module_handle_a(narrow.as_ptr()) }, KERNEL32);
+    assert_eq!(unsafe { load_library_a(narrow.as_ptr()) }, KERNEL32);
+    assert_eq!(
+        unsafe { load_library_ex_a(narrow.as_ptr(), 0, 0) },
+        KERNEL32
+    );
+    assert_eq!(asked(), asked_w);
+    assert_eq!(unsafe { get_module_handle_w(core::ptr::null()) }, IMAGE);
+    assert_eq!(unsafe { load_library_w(core::ptr::null()) }, 0);
+    assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
+    set_last_error(0);
+    assert_eq!(unsafe { load_library_ex_w(core::ptr::null(), 0, 0) }, 0);
+    assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
+    let mut long = kernel32_path(260);
+    long.insert(260, b'x');
+    let long_w: std::vec::Vec<u16> = long.iter().map(|&byte| u16::from(byte)).collect();
+    assert_eq!(unsafe { get_module_handle_a(long.as_ptr()) }, 0);
+    assert_eq!(last_error(), ERROR_FILENAME_EXCED_RANGE);
+    assert!(asked().is_empty(), "the A name never reaches the loader");
+    unsafe { get_module_handle_w(long_w.as_ptr()) };
+    assert_ne!(last_error(), ERROR_FILENAME_EXCED_RANGE);
+    assert_eq!(asked().last().map(|name| name.len()), Some(261));
+    let mut buffer = [0xCCCCu16; 64];
+    let length = unsafe { get_module_file_name_w(KERNEL32, buffer.as_mut_ptr(), 64) };
+    assert_eq!(
+        &buffer[..length as usize + 1],
+        &wide_z("C:\\WINNT\\system32\\KERNEL32.DLL")[..]
+    );
+    let mut short = [0xCCCCu16; 8];
+    assert_eq!(
+        unsafe { get_module_file_name_w(NTDLL, short.as_mut_ptr(), 4) },
+        4
+    );
+    assert_eq!(&short[..5], &[0x43, 0x3A, 0x5C, 0x57, 0xCCCC]);
 }
 
 /// FreeLibrary: a module's handle succeeds; one naming no module is ERROR_MOD_NOT_FOUND
