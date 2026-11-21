@@ -957,7 +957,7 @@ locale: done
 <<< exit code=0
 >>> locale.exe locales
 == locales
-GetUserDefaultLCID is 0x0409: no, GetSystemDefaultLCID is 0x0409: yes
+GetUserDefaultLCID is 0x0409: yes, GetSystemDefaultLCID is 0x0409: yes
 IsValidLocale(0x0409): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
 IsValidLocale(0x040C, French): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-
 IsValidLocale(0x0407, German): LCID_INSTALLED ret=1 err=-; LCID_SUPPORTED ret=1 err=-

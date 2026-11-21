@@ -100,16 +100,19 @@ fn units(string: Option<CallerStr<'_>>) -> Result<Option<CallerUnits<'_>>, Failu
     string.map(|string| string.units()).transpose()
 }
 
+/// The locale whose formats this surface has: English (United States).
+const ENGLISH: u32 = localeinfo::LCID_EN_US;
+
 /// Whether a locale is one Windows 2000 supports whose formats this surface lacks: the call is
 /// logged as not implemented.
 fn lacks_formats(lcid: u32) -> bool {
-    !localeinfo::names_locale(lcid) && localeinfo::supported_locale(lcid)
+    !localeinfo::formats_locale(lcid) && localeinfo::supported_locale(lcid)
 }
 
 /// The locale and the buffer judged: ERROR_INVALID_PARAMETER for a locale this surface does not
 /// describe, a negative size, or no buffer with a size.
 fn check_call(lcid: u32, out: &Text<'_>, size: i32) -> Result<(), Failure> {
-    if !localeinfo::names_locale(lcid) || size < 0 || (out.is_null() && size != 0) {
+    if !localeinfo::formats_locale(lcid) || size < 0 || (out.is_null() && size != 0) {
         return Err(Failure::Error(ERROR_INVALID_PARAMETER));
     }
     Ok(())
@@ -127,7 +130,7 @@ fn deliver(text: &[u16], mut out: Text<'_>) -> Result<i32, Failure> {
 
 /// A locale string's units, into `buffer`.
 fn locale_units(lctype: u32, buffer: &mut [u16; 32]) -> &[u16] {
-    let text = localeinfo::info(lctype).unwrap_or("");
+    let text = localeinfo::info(ENGLISH, lctype).unwrap_or("");
     for (slot, byte) in buffer.iter_mut().zip(text.bytes()) {
         *slot = u16::from(byte);
     }
@@ -137,7 +140,7 @@ fn locale_units(lctype: u32, buffer: &mut [u16; 32]) -> &[u16] {
 /// A locale string's characters, added to `out`.
 fn push_info(out: &mut HeapVec<u16>, lctype: u32) {
     out.extend(
-        localeinfo::info(lctype)
+        localeinfo::info(ENGLISH, lctype)
             .unwrap_or("")
             .bytes()
             .map(u16::from),
@@ -484,7 +487,7 @@ fn time_element(time: &Civil, flags: u32, letter: u8, run: usize, mut push: impl
             } else {
                 LOCALE_S2359
             };
-            let text = localeinfo::info(marker).unwrap_or("");
+            let text = localeinfo::info(ENGLISH, marker).unwrap_or("");
             let text = if run == 1 {
                 text.get(..1).unwrap_or("")
             } else {
@@ -885,12 +888,14 @@ fn get_number_format(
             }
         }
         None => NumberFormat {
-            digits: localeinfo::number(LOCALE_IDIGITS).unwrap_or(2) as usize,
-            leading_zero: localeinfo::number(LOCALE_ILZERO) == Some(1),
-            grouping: Grouping::of_locale(localeinfo::info(LOCALE_SGROUPING).unwrap_or("")),
+            digits: localeinfo::number(ENGLISH, LOCALE_IDIGITS).unwrap_or(2) as usize,
+            leading_zero: localeinfo::number(ENGLISH, LOCALE_ILZERO) == Some(1),
+            grouping: Grouping::of_locale(
+                localeinfo::info(ENGLISH, LOCALE_SGROUPING).unwrap_or(""),
+            ),
             decimal: locale_units(LOCALE_SDECIMAL, &mut decimal),
             thousand: locale_units(LOCALE_STHOUSAND, &mut thousand),
-            negative: localeinfo::number(LOCALE_INEGNUMBER).unwrap_or(1),
+            negative: localeinfo::number(ENGLISH, LOCALE_INEGNUMBER).unwrap_or(1),
         },
     };
     let value = value.ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;

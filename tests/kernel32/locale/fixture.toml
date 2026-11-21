@@ -7,11 +7,6 @@ description = "locale - kernel32's locale formatting and queries: GetDateFormatW
 kind = "sectioned"
 gate = true
 
-[pending]
-# Written ahead of the VM trip: output.txt holds placeholder blocks until locale.exe is rebuilt
-# (tests/build.bat locale) and the blocks captured (tests/capture.bat locale).
-locales = "F2K's GetLocaleInfo answers 0x0409 alone, while SetThreadLocale takes 0x040C and IsValidLocale calls it unsupported"
-
 [masks]
 # CP_INSTALLED's count follows the language groups installed on the machine: both counts print as
 # "entries: N", so both are masked (CP_SUPPORTED's prints again as flags 0's call count).

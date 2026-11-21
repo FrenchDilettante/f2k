@@ -807,7 +807,8 @@ fn compare_string_checks_the_locale_first() {
     }
 }
 
-/// GetLocaleInfoA and W answer the locale's values through the NLS counting rule, and
+/// GetLocaleInfoA and W answer the locales' values (English, French, German) through the NLS
+/// counting rule, LOCALE_FONTSIGNATURE its sixteen units, and
 /// EnumSystemLocalesA hands its one locale to the callback.
 ///
 /// Pins: kernel32.GetLocaleInfoA, kernel32.GetLocaleInfoW
@@ -836,16 +837,46 @@ fn the_locale_answers_its_values() {
     assert_eq!(wide[..2], [b'.' as u16, 0]);
     assert_eq!(
         unsafe { get_locale_info_w(0x0407, 0x0E, wide.as_mut_ptr(), 8) },
+        2
+    );
+    assert_eq!(wide[..2], [b',' as u16, 0], "German's decimal separator");
+    assert_eq!(
+        unsafe { get_locale_info_w(0x1234, 0x0E, wide.as_mut_ptr(), 8) },
         0
     );
     assert_eq!(last_error(), 87);
+    // French's native name: UTF-16 in the W form, the ANSI code page in the A form.
+    assert_eq!(
+        unsafe { get_locale_info_w(0x040C, 0x04, wide.as_mut_ptr(), 9) },
+        9
+    );
+    assert_eq!(wide[4], 0xE7);
+    assert_eq!(
+        unsafe { get_locale_info_a(0x040C, 0x04, narrow.as_mut_ptr(), 16) },
+        9
+    );
+    assert_eq!(&narrow[..9], b"fran\xE7ais\0");
+    let mut signature = [0u16; 16];
+    assert_eq!(
+        unsafe { get_locale_info_w(0x040C, 0x58, signature.as_mut_ptr(), 16) },
+        16
+    );
+    assert_eq!((signature[0], signature[15]), (0x002F, 0xC5D4));
     assert_eq!(
         (get_user_default_lcid(), get_system_default_lcid()),
         (0x409, 0x409)
     );
     assert_eq!(
-        (is_valid_locale(0x409, 2), is_valid_locale(0x407, 2)),
-        (1, 0)
+        (is_valid_locale(0x409, 2), is_valid_locale(0x407, 1)),
+        (1, 1)
+    );
+    assert_eq!(
+        (
+            is_valid_locale(0x411, 1),
+            is_valid_locale(0x411, 2),
+            is_valid_locale(0x1234, 2)
+        ),
+        (0, 1, 0)
     );
     assert_eq!(
         (is_valid_code_page(1252), is_valid_code_page(12345)),

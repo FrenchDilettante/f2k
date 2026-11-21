@@ -808,31 +808,42 @@ pub extern "system" fn get_system_default_lcid() -> u32 {
     crate::localeinfo::LCID_EN_US
 }
 
-/// IsValidLocale: the one locale is installed and supported.
+/// IsValidLocale: whether Windows 2000 supports the locale (LCID_SUPPORTED) or the capture
+/// machine's language group installs it (LCID_INSTALLED), see
+/// [`crate::localeinfo::valid_locale`]; the last error is left alone.
 #[unsafe(export_name = "f2k_export_IsValidLocale")]
-pub extern "system" fn is_valid_locale(lcid: u32, _flags: u32) -> u32 {
-    u32::from(lcid == crate::localeinfo::LCID_EN_US)
+pub extern "system" fn is_valid_locale(lcid: u32, flags: u32) -> u32 {
+    u32::from(crate::localeinfo::valid_locale(lcid, flags))
 }
 
-/// GetLocaleInfoA/W's common body: the value, in `U`-sized characters (ASCII widened for the W
-/// form), through the NLS counting rule: a zero size asks the room needed (the terminator counted),
-/// a fitting value is copied with its terminator and its room returned. With LOCALE_RETURN_NUMBER a
-/// numeric value is a DWORD instead, its room in `U`s (two units, four bytes); a value that is not
-/// a number is ERROR_INVALID_FLAGS. ERROR_INVALID_PARAMETER for another locale or a bad buffer
-/// argument, ERROR_INVALID_FLAGS for an unknown type, ERROR_INSUFFICIENT_BUFFER for a buffer too
-/// small.
-fn get_locale_info<U: Copy + From<u8>>(
+/// GetLocaleInfoA/W's common body: the value, in `U`-sized characters (`unit` converting each
+/// character: the W form's UTF-16, the A form's ANSI code page), through the NLS counting rule: a
+/// zero size asks the room needed (the terminator counted), a fitting value is copied with its
+/// terminator and its room returned. With LOCALE_RETURN_NUMBER a numeric value is a DWORD instead,
+/// its room in `U`s (two units, four bytes); a value that is not a number is ERROR_INVALID_FLAGS.
+/// LOCALE_FONTSIGNATURE is sixteen units of bits, no terminator: the A form copies their 32 bytes.
+/// ERROR_INVALID_PARAMETER for a locale this surface does not describe or a bad buffer argument,
+/// ERROR_INVALID_FLAGS for an unknown type, ERROR_INSUFFICIENT_BUFFER for a buffer too small.
+fn get_locale_info<U: Copy>(
     lcid: u32,
     lctype: u32,
     mut buffer: OutBuf<'_, U>,
     size: i32,
+    unit: fn(char) -> U,
 ) -> Result<i32, Failure> {
-    use crate::localeinfo::{info, names_locale, number, LOCALE_RETURN_NUMBER};
+    use crate::localeinfo::{
+        font_signature,
+        info,
+        names_locale,
+        number,
+        LOCALE_FONTSIGNATURE,
+        LOCALE_RETURN_NUMBER,
+    };
     if !names_locale(lcid) || size < 0 || (size > 0 && buffer.is_null()) {
         return refused(ERROR_INVALID_PARAMETER);
     }
     if lctype & LOCALE_RETURN_NUMBER != 0 {
-        let value = number(lctype).ok_or(Failure::Error(ERROR_INVALID_FLAGS))?;
+        let value = number(lcid, lctype).ok_or(Failure::Error(ERROR_INVALID_FLAGS))?;
         let needed = core::mem::size_of::<u32>() / core::mem::size_of::<U>();
         if size == 0 {
             return Ok(needed as i32);
@@ -843,18 +854,42 @@ fn get_locale_info<U: Copy + From<u8>>(
         buffer.reinterpret::<u32>().set(0, value);
         return Ok(needed as i32);
     }
-    let value = info(lctype).ok_or(Failure::Error(ERROR_INVALID_FLAGS))?;
-    let needed = value.len() + 1;
+    if lctype & 0xFFFF == LOCALE_FONTSIGNATURE {
+        let signature = font_signature(lcid).ok_or(Failure::Error(ERROR_INVALID_FLAGS))?;
+        let needed = signature.len() * 2 / core::mem::size_of::<U>();
+        if size == 0 {
+            return Ok(needed as i32);
+        }
+        if (size as usize) < needed {
+            return refused(ERROR_INSUFFICIENT_BUFFER);
+        }
+        buffer.reinterpret::<u16>().put(&signature);
+        return Ok(needed as i32);
+    }
+    let value = info(lcid, lctype).ok_or(Failure::Error(ERROR_INVALID_FLAGS))?;
+    let needed = value.chars().count() + 1;
     if size == 0 {
         return Ok(needed as i32);
     }
     if (size as usize) < needed {
         return refused(ERROR_INSUFFICIENT_BUFFER);
     }
-    for (at, byte) in value.bytes().chain([0]).enumerate() {
-        buffer.set(at, U::from(byte));
+    for (at, c) in value.chars().chain(['\0']).enumerate() {
+        buffer.set(at, unit(c));
     }
     Ok(needed as i32)
+}
+
+/// A locale value's character in the W form.
+fn wide_char(c: char) -> u16 {
+    c as u16
+}
+
+/// A locale value's character in the A form: its ANSI code page byte.
+fn ansi_char(c: char) -> u8 {
+    codepage::sbcs::CP1252
+        .encode(c as u16, true)
+        .unwrap_or(cp1252::DEFAULT_CHAR)
 }
 
 /// GetLocaleInfoA.
@@ -872,7 +907,7 @@ pub unsafe extern "system" fn get_locale_info_a(
     // SAFETY: the caller's buffer of `size` characters (the contract; a negative size, which the
     // call refuses, holds none).
     let buffer = unsafe { OutBuf::new(buffer, room(size)) };
-    answer(get_locale_info(lcid, lctype, buffer, size), 0)
+    answer(get_locale_info(lcid, lctype, buffer, size, ansi_char), 0)
 }
 
 /// GetLocaleInfoW.
@@ -890,7 +925,7 @@ pub unsafe extern "system" fn get_locale_info_w(
     // SAFETY: the caller's buffer of `size` characters (the contract; a negative size, which the
     // call refuses, holds none).
     let buffer = unsafe { OutBuf::new(buffer, room(size)) };
-    answer(get_locale_info(lcid, lctype, buffer, size), 0)
+    answer(get_locale_info(lcid, lctype, buffer, size, wide_char), 0)
 }
 
 /// The one locale's name, as EnumSystemLocalesA hands it to the callback, and as
