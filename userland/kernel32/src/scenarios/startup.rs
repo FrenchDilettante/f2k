@@ -1,10 +1,13 @@
 //! The startup group's user-mode exports: the command line, the startup information and the
 //! version, from the PEB and the process parameters as the kernel lays them out (the host's
-//! stand-in pages, `nt::threads`), and FormatMessageA's system messages.
+//! stand-in pages, `nt::threads`), and FormatMessage's system messages and strings.
+
+use rtl::testing::wide_z;
 
 use super::last_error;
-use crate::message::format_message_a;
+use crate::message::{format_message_a, format_message_w};
 
+const FROM_STRING: u32 = 0x0400;
 const FROM_SYSTEM: u32 = 0x1000;
 const ALLOCATE_BUFFER: u32 = 0x0100;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
@@ -128,6 +131,121 @@ fn the_width_drops_the_line_break() {
         b"Acces\r\ns is\r\ndenie\r\nd. \0",
         "a word longer than the width breaks at it (the runtime capture)"
     );
+}
+
+/// FormatMessageW and FormatMessageA lay out the same text: the A form converts its string from the
+/// ANSI code page and narrows the text into it (0x80 is the euro sign), its length and size in
+/// bytes where the W form's are characters. They differ on an empty text: zero, the last error
+/// untouched, the W form's buffer given its terminator, the A form's untouched (the msgtable
+/// capture); and an allocated block holds the form's characters.
+///
+/// Pins: kernel32.FormatMessageW, kernel32.FormatMessageA
+#[test]
+fn both_forms_lay_out_the_same_text() {
+    let none = core::ptr::null();
+    let (text_w, text_a) = (wide_z("\u{20AC}%1!d! x"), *b"\x80%1!d! x\0");
+    let inserts = [42usize];
+    let arguments = inserts.as_ptr().cast::<u8>();
+    let flags = FROM_STRING | 0x2000;
+    let mut buffer_w = [0xCCCCu16; 16];
+    let mut buffer_a = [0xCCu8; 16];
+    let length = unsafe {
+        format_message_w(
+            flags,
+            text_w.as_ptr(),
+            0,
+            0,
+            buffer_w.as_mut_ptr(),
+            16,
+            arguments,
+        )
+    };
+    assert_eq!(length, 5);
+    assert_eq!(&buffer_w[..6], &wide_z("\u{20AC}42 x")[..]);
+    let length = unsafe {
+        format_message_a(
+            flags,
+            text_a.as_ptr(),
+            0,
+            0,
+            buffer_a.as_mut_ptr(),
+            16,
+            arguments,
+        )
+    };
+    assert_eq!(length, 5);
+    assert_eq!(&buffer_a[..6], b"\x8042 x\0");
+    // A buffer that cannot hold the terminator too: both refuse, the buffer untouched.
+    let mut short_w = [0xCCCCu16; 5];
+    let mut short_a = [0xCCu8; 5];
+    let refused = unsafe {
+        format_message_w(
+            flags,
+            text_w.as_ptr(),
+            0,
+            0,
+            short_w.as_mut_ptr(),
+            5,
+            arguments,
+        )
+    };
+    assert_eq!((refused, last_error()), (0, 122));
+    let refused = unsafe {
+        format_message_a(
+            flags,
+            text_a.as_ptr(),
+            0,
+            0,
+            short_a.as_mut_ptr(),
+            5,
+            arguments,
+        )
+    };
+    assert_eq!((refused, last_error()), (0, 122));
+    assert_eq!((short_w, short_a), ([0xCCCC; 5], [0xCC; 5]));
+    // An empty text.
+    crate::base::set_last_error(0x0F2F);
+    let (empty_w, empty_a) = ([0u16], [0u8]);
+    let length = unsafe {
+        format_message_w(
+            FROM_STRING,
+            empty_w.as_ptr(),
+            0,
+            0,
+            buffer_w.as_mut_ptr(),
+            16,
+            none,
+        )
+    };
+    assert_eq!((length, last_error(), buffer_w[0]), (0, 0x0F2F, 0));
+    let length = unsafe {
+        format_message_a(
+            FROM_STRING,
+            empty_a.as_ptr(),
+            0,
+            0,
+            buffer_a.as_mut_ptr(),
+            16,
+            none,
+        )
+    };
+    assert_eq!((length, last_error(), buffer_a[0]), (0, 0x0F2F, 0x80));
+    // An allocated block, of the form's characters.
+    let mut block: *mut u8 = core::ptr::null_mut();
+    let slot = &mut block as *mut *mut u8;
+    let flags = flags | ALLOCATE_BUFFER;
+    let length =
+        unsafe { format_message_w(flags, text_w.as_ptr(), 0, 0, slot.cast(), 0, arguments) };
+    assert_eq!(length, 5);
+    let units: std::vec::Vec<u16> = take(block, 12)
+        .chunks(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    assert_eq!(units, wide_z("\u{20AC}42 x"));
+    let length =
+        unsafe { format_message_a(flags, text_a.as_ptr(), 0, 0, slot.cast(), 0, arguments) };
+    assert_eq!(length, 5);
+    assert_eq!(take(block, 6), b"\x8042 x\0");
 }
 
 /// GetStartupInfoW: the A form's image but for the standard handles, which are the process

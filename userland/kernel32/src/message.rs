@@ -19,7 +19,7 @@
 //! text then goes into the caller's buffer, or into a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), an A call's narrowed through the ANSI code page.
 
-use crate::edge::{InStr, InWStr, Out, OutBuf, Text};
+use crate::edge::{CallerChar, CallerStr, InStr, InWStr, Out, OutBuf, Text};
 use crate::error::{answer, Failure, ERROR_INSUFFICIENT_BUFFER};
 use crate::heap::{HeapArray, HeapString, OutOfMemory};
 use crate::ntcall::{self, MessageArguments, MessageLayout, MessageText, NtStatus};
@@ -70,8 +70,7 @@ fn program_handle() -> usize {
 /// What FormatMessage's source argument is: the caller's string, of the call's form, for
 /// FORMAT_MESSAGE_FROM_STRING; a module's handle otherwise (the program's for NULL).
 pub enum Source<'a> {
-    Wide(InWStr<'a>),
-    Ansi(InStr<'a>),
+    String(CallerStr<'a>),
     Module(usize),
 }
 
@@ -126,8 +125,8 @@ fn message<'a>(
     language: u32,
 ) -> Result<Message<'a>, NtStatus> {
     let module = match source {
-        Source::Wide(text) => return Ok(Message::Borrowed(text)),
-        Source::Ansi(text) => return Message::converted(&text),
+        Source::String(CallerStr::Wide(text)) => return Ok(Message::Borrowed(text)),
+        Source::String(CallerStr::Ansi(text)) => return Message::converted(&text),
         Source::Module(module) => module,
     };
     let mut status = STATUS_INVALID_PARAMETER;
@@ -234,13 +233,52 @@ fn format_message(
     Ok(length as u32)
 }
 
-/// FormatMessageA (see [`format_message`]): the size and the length in bytes.
+/// FormatMessageW's and FormatMessageA's export body (see [`format_message`]), `C` the form's
+/// character: the size and the length in its characters (an A call's bytes).
 ///
 /// # Safety
 ///
-/// The buffer holds `size` bytes; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place. For
-/// FORMAT_MESSAGE_FROM_STRING, `source` is a NUL-terminated string; `arguments` holds every value
-/// the message's inserts name.
+/// The buffer holds `size` of the form's characters; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a
+/// pointer's place. For FORMAT_MESSAGE_FROM_STRING, `source` is a NUL-terminated string of the
+/// form's characters; `arguments` holds every value the message's inserts name.
+unsafe fn format_message_as<C: CallerChar>(
+    flags: u32,
+    source: *const C,
+    id: u32,
+    language: u32,
+    buffer: *mut C,
+    size: u32,
+    arguments: *const u8,
+) -> u32 {
+    // SAFETY: the caller's source, buffer and arguments, of the forms the flags say (the
+    // contract).
+    let (source, destination, arguments) = unsafe {
+        (
+            if flags & FROM_STRING != 0 {
+                Source::String(C::string(source))
+            } else {
+                Source::Module(source as usize)
+            },
+            if flags & ALLOCATE_BUFFER != 0 {
+                Destination::Allocate(Out::new(buffer.cast()))
+            } else {
+                Destination::Buffer(C::text(OutBuf::new(buffer, size as usize)))
+            },
+            MessageArguments::caller(arguments),
+        )
+    };
+    let named = (source, id, language);
+    answer(
+        format_message(flags, named, destination, arguments, C::WIDE),
+        0,
+    )
+}
+
+/// FormatMessageA (see [`format_message_as`]): the size and the length in bytes.
+///
+/// # Safety
+///
+/// As [`format_message_as`]'s, the strings narrow.
 #[allow(clippy::too_many_arguments)]
 #[unsafe(export_name = "f2k_export_FormatMessageA")]
 pub unsafe extern "system" fn format_message_a(
@@ -252,37 +290,15 @@ pub unsafe extern "system" fn format_message_a(
     size: u32,
     arguments: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's source, buffer and arguments, of the forms the flags say (the
-    // contract).
-    let (source, destination, arguments) = unsafe {
-        (
-            if flags & FROM_STRING != 0 {
-                Source::Ansi(InStr::new(source))
-            } else {
-                Source::Module(source as usize)
-            },
-            if flags & ALLOCATE_BUFFER != 0 {
-                Destination::Allocate(Out::new(buffer.cast()))
-            } else {
-                Destination::Buffer(Text::Ansi(OutBuf::new(buffer, size as usize)))
-            },
-            MessageArguments::caller(arguments),
-        )
-    };
-    let named = (source, id, language);
-    answer(
-        format_message(flags, named, destination, arguments, false),
-        0,
-    )
+    // SAFETY: the caller's contract, the A form's.
+    unsafe { format_message_as(flags, source, id, language, buffer, size, arguments) }
 }
 
-/// FormatMessageW (see [`format_message`]): the size and the length in characters.
+/// FormatMessageW (see [`format_message_as`]): the size and the length in characters.
 ///
 /// # Safety
 ///
-/// The buffer holds `size` characters; for FORMAT_MESSAGE_ALLOCATE_BUFFER it is a pointer's place.
-/// For FORMAT_MESSAGE_FROM_STRING, `source` is a NUL-terminated UTF-16 string; `arguments` holds
-/// every value the message's inserts name.
+/// As [`format_message_as`]'s, the strings UTF-16.
 #[allow(clippy::too_many_arguments)]
 #[unsafe(export_name = "f2k_export_FormatMessageW")]
 pub unsafe extern "system" fn format_message_w(
@@ -294,28 +310,8 @@ pub unsafe extern "system" fn format_message_w(
     size: u32,
     arguments: *const u8,
 ) -> u32 {
-    // SAFETY: the caller's source, buffer and arguments, of the forms the flags say (the
-    // contract).
-    let (source, destination, arguments) = unsafe {
-        (
-            if flags & FROM_STRING != 0 {
-                Source::Wide(InWStr::new(source))
-            } else {
-                Source::Module(source as usize)
-            },
-            if flags & ALLOCATE_BUFFER != 0 {
-                Destination::Allocate(Out::new(buffer.cast()))
-            } else {
-                Destination::Buffer(Text::Wide(OutBuf::new(buffer, size as usize)))
-            },
-            MessageArguments::caller(arguments),
-        )
-    };
-    let named = (source, id, language);
-    answer(
-        format_message(flags, named, destination, arguments, true),
-        0,
-    )
+    // SAFETY: the caller's contract, the W form's.
+    unsafe { format_message_as(flags, source, id, language, buffer, size, arguments) }
 }
 
 #[cfg(test)]
