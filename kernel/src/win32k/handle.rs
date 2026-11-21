@@ -21,8 +21,8 @@
 //!   programs rely on a window handle's being even (Raymond Chen, "Why did we lose half of the
 //!   window handles?", The Old New Thing, 2007: the table's index is the handle's low word, and
 //!   half its values are lost to windows).
-//! - **Every other kind takes an odd slot,** while one is free or the table has one never used,
-//!   and an even one only once none is left: the window slots are kept for windows.
+//! - **Every other kind takes an odd slot,** while one is free or the table has one never used, and
+//!   an even one only once none is left: the window slots are kept for windows.
 //! - **Among the slots a kind may take, the one freed last goes first,** then one never used,
 //!   lowest first.
 //!
@@ -103,7 +103,10 @@ impl UserHandles {
     /// freed slots or the fresh ones; none when neither has one.
     fn take(&mut self, parity: usize) -> Option<usize> {
         let freed = &self.freed[..self.freed_count];
-        if let Some(at) = freed.iter().rposition(|&index| index as usize % 2 == parity) {
+        if let Some(at) = freed
+            .iter()
+            .rposition(|&index| index as usize % 2 == parity)
+        {
             let index = self.freed[at] as usize;
             self.freed.copy_within(at + 1..self.freed_count, at);
             self.freed_count -= 1;
@@ -238,7 +241,11 @@ mod tests {
         let mut t = handles();
         let m = t.insert(MENU);
         let c = t.insert(CURSOR);
-        assert_eq!((m, c), (4, 12), "odd slots, a slot's first handle a count of 0");
+        assert_eq!(
+            (m, c),
+            (4, 12),
+            "odd slots, a slot's first handle a count of 0"
+        );
         assert!(t.menu(m).is_some() && t.cursor(m).is_none() && t.window(m).is_none());
         assert!(t.cursor(c).is_some() && t.menu(c).is_none());
         assert!(t.accelerator_table(m).is_none());
@@ -287,7 +294,11 @@ mod tests {
         let m = t.insert(MENU);
         assert_eq!(m, 1 << HANDLE_SHIFT, "a fresh odd slot, the window's left");
         t.close(m);
-        assert_eq!(t.insert(WINDOW), w | 0x1_0000, "the window's, not the menu's");
+        assert_eq!(
+            t.insert(WINDOW),
+            w | 0x1_0000,
+            "the window's, not the menu's"
+        );
         assert_eq!(t.insert(CURSOR), m | 0x1_0000, "the menu's");
         let mut odd = 0;
         while t.fresh[1] < HANDLE_SLOTS {

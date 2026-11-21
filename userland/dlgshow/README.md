@@ -43,9 +43,9 @@ dlgshow: OK, keep 1, mode standard
 
 ## Exit status
 
-| Code | When                         |
-| ---- | ---------------------------- |
-| 0    | OK or Cancel ended it.       |
+| Code | When                          |
+| ---- | ----------------------------- |
+| 0    | OK or Cancel ended it.        |
 | 1    | The dialog could not be made. |
 
 On a failure, `dlgshow` writes one line to the standard error:

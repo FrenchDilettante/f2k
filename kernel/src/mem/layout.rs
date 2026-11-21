@@ -43,8 +43,9 @@
 //! Device MMIO ranges map into their own reserved region, [`MMIO`], right behind the framebuffer's:
 //! Windows 2000 takes MmMapIoSpace mappings from its system PTEs wherever they fit; F2K keeps a
 //! fixed 64 MiB window (16 entries) for them, page tables made at boot and shared by every address
-//! space like the pool's, so a device register range mapped in it ([`crate::mem::dma`]) is reachable
-//! from any thread, with the caches disabled for uncached mappings (PCD) as device memory requires.
+//! space like the pool's, so a device register range mapped in it ([`crate::mem::dma`]) is
+//! reachable from any thread, with the caches disabled for uncached mappings (PCD) as device memory
+//! requires.
 //!
 //! Loaded driver images (the kernel-side `.sys` loader, [`crate::dev::loader`]) map into their own
 //! reserved region, [`MODULES`], behind the MMIO region's: Windows 2000 loads drivers into its

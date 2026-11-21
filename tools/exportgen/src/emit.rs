@@ -295,8 +295,15 @@ pub fn hal_exports(spec: &Spec, source: &str) -> String {
     }
     // A raw pointer is not Sync, so the table wraps in a type that vouches for it: the entries
     // are written once at link time and only read afterwards.
-    out.push_str("/// The HAL's exports by name, in spec order: the spec's name with each body's address.\n");
-    writeln!(out, "struct HalExportTable([(&'static str, *const ()); {}]);", bodies.len()).unwrap();
+    out.push_str(
+        "/// The HAL's exports by name, in spec order: the spec's name with each body's address.\n",
+    );
+    writeln!(
+        out,
+        "struct HalExportTable([(&'static str, *const ()); {}]);",
+        bodies.len()
+    )
+    .unwrap();
     out.push_str("// SAFETY: the table is written once, at link time, and only read afterwards.\n");
     writeln!(out, "unsafe impl Sync for HalExportTable {{}}").unwrap();
     out.push_str("#[used]\n");

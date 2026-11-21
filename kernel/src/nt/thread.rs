@@ -10,9 +10,9 @@
 //! STATUS_INVALID_HANDLE for a handle naming nothing, STATUS_OBJECT_TYPE_MISMATCH for one naming
 //! another kind of object (both ERROR_INVALID_HANDLE to kernel32), STATUS_ACCESS_DENIED for one not
 //! granted the service's right (THREAD_TERMINATE, THREAD_SUSPEND_RESUME, THREAD_GET_CONTEXT,
-//! THREAD_SET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION), as Windows' ObReferenceObjectByHandle checks
-//! them, in that order. The information's length is the class's structure's exactly, as Windows
-//! 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
+//! THREAD_SET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION), as Windows'
+//! ObReferenceObjectByHandle checks them, in that order. The information's length is the class's
+//! structure's exactly, as Windows 2000 checks it (STATUS_INFO_LENGTH_MISMATCH).
 
 use rtl::nt::info::ThreadBasicInformation;
 

@@ -56,11 +56,7 @@ fn open_font_file(name: &[u16]) -> Option<OpenFile> {
     let terminated = &terminated[..=name.len()];
     let mut found = [0u16; MAX_PATH];
     let mut length = 0;
-    let separator = |unit: &u16| {
-        b"\\/:"
-            .iter()
-            .any(|&byte| *unit == u16::from(byte))
-    };
+    let separator = |unit: &u16| b"\\/:".iter().any(|&byte| *unit == u16::from(byte));
     if !name.iter().any(separator) {
         let mut fonts = [0u16; MAX_PATH];
         let root = imports::system_windows_directory(&mut fonts);

@@ -12,8 +12,8 @@
 //! What a call answers, as the real machine's capture shows it:
 //!
 //! - a string is copied as far as the buffer holds it with a NUL after it (nBufferMax - 1
-//!   characters at most; LoadStringA's converted to the ANSI code page), and the characters
-//!   copied are the answer, the last error untouched;
+//!   characters at most; LoadStringA's converted to the ANSI code page), and the characters copied
+//!   are the answer, the last error untouched;
 //! - an id with no string in its block is the empty string: 0, the NUL written;
 //! - an id with no block is the empty string too, with FindResourceExW's last error
 //!   (ERROR_RESOURCE_NAME_NOT_FOUND);

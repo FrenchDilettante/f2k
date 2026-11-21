@@ -231,9 +231,9 @@ pub fn starting_directory(image_path: &[u8], out: &mut [u8; MODULE_ROOM]) -> usi
 /// Map the parameters pages at [`crate::user::PARAMS_PAGE`] into `process`'s address space (the
 /// current one) and write the block: the command line, the image's Win32 path (from its volume
 /// path `module`, its window title too), the current directory (the image's own), the desktop, the
-/// standard handles and the environment block's address. The environment block's region is mapped too, the starting
-/// variables written at its start. The pages are mapped in one hold of the address space, and
-/// written once it is released.
+/// standard handles and the environment block's address. The environment block's region is mapped
+/// too, the starting variables written at its start. The pages are mapped in one hold of the
+/// address space, and written once it is released.
 #[cfg(target_arch = "x86")]
 pub fn map(process: &crate::process::Process, command_line: &[u8], module: &[u8]) {
     use rtl::pod::Pod;

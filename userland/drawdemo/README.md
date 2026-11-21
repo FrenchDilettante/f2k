@@ -31,7 +31,7 @@ The screen keeps the drawing after it ends.
 
 ## Exit status
 
-| Code | When                                                   |
-| ---- | ------------------------------------------------------ |
-| 0    | The sheet was drawn.                                   |
+| Code | When                                                                       |
+| ---- | -------------------------------------------------------------------------- |
+| 0    | The sheet was drawn.                                                       |
 | 1    | The window class could not be registered, or the window could not be made. |
