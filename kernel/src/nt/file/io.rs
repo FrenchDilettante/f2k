@@ -20,7 +20,15 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
-use super::{transfer_offset, write_start};
+use super::{
+    check_data,
+    read_count,
+    transfer_offset,
+    transfer_rights,
+    transfer_status,
+    write_count,
+    write_start,
+};
 use crate::fs::fat32::write;
 use crate::fs::file::{rights, with_records, Context, FileRecordId};
 use crate::fs::io;
@@ -50,13 +58,8 @@ fn transfer(
     offset: UserPtr<u64>,
     write: bool,
 ) -> Result<Transfer, NtStatus> {
-    let needs = if write {
-        rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA
-    } else {
-        rights::FILE_READ_DATA
-    };
     let object = file_object(handle.raw())?;
-    check_access(&object, needs)?;
+    check_access(&object, transfer_rights(write))?;
     io_status.probe(8)?;
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
@@ -77,10 +80,7 @@ fn transfer(
 
 /// Finish a transfer: its I/O status, its event, and its answer.
 fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, NtStatus>) -> NtResult {
-    let (code, moved) = match result {
-        Ok(moved) => (STATUS_SUCCESS, moved),
-        Err(code) => (code, 0),
-    };
+    let (code, moved) = transfer_status(result);
     complete(io_status, code, moved);
     signal(transfer.event);
     result.map(|_| STATUS_SUCCESS)
@@ -89,10 +89,7 @@ fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, NtStatus>
 /// A disk transfer's own refusal: a directory has no data (FastFat's
 /// STATUS_INVALID_DEVICE_REQUEST).
 fn disk_data(record: FileRecordId) -> Result<(), NtStatus> {
-    if io::file_at(record).directory {
-        return Err(STATUS_INVALID_DEVICE_REQUEST);
-    }
-    Ok(())
+    check_data(io::file_at(record).directory)
 }
 
 /// NtReadFile: the I/O manager's checks ([`transfer`]; a handle without read access is
@@ -149,17 +146,12 @@ fn read_disk(
     let owner = super::lock::owner_of(object);
     io::serialized(object, |held| {
         let start = at.unwrap_or(held.position);
-        if length == 0 {
-            return Ok(0);
-        }
-        let range = (start, u64::from(length));
-        if !with_records(|records| records.may_access(record, owner, range, false)) {
-            return Err(STATUS_FILE_LOCK_CONFLICT);
-        }
         let size = io::file_at(record).size;
-        let wanted = crate::fs::file::available(start, size, length);
+        let wanted = read_count(start, size, length, |range| {
+            with_records(|records| records.may_access(record, owner, range, false))
+        })?;
         if wanted == 0 {
-            return Err(STATUS_END_OF_FILE);
+            return Ok(0);
         }
         let mut moved = 0u32;
         let mut failure = None;
@@ -264,18 +256,11 @@ fn write_disk(
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
         let size = io::file_at(record).size as u64;
         let start = write_start(at, append, size, held.position);
+        let length = write_count(start, length, |range| {
+            with_records(|records| records.may_access(record, owner, range, true))
+        })?;
         if length == 0 {
             return Ok(0);
-        }
-        let range = (start, u64::from(length));
-        if !with_records(|records| records.may_access(record, owner, range, true)) {
-            return Err(STATUS_FILE_LOCK_CONFLICT);
-        }
-        if start
-            .checked_add(u64::from(length))
-            .is_none_or(|end| end > u64::from(u32::MAX))
-        {
-            return Err(STATUS_DISK_FULL);
         }
         let mut chunk = [0u8; CHUNK];
         let mut done = 0u32;

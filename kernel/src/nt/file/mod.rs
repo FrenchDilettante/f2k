@@ -327,6 +327,87 @@ fn write_start(offset: Option<u64>, append: bool, size: u64, position: u64) -> u
     }
 }
 
+/// The rights a read (FILE_READ_DATA) or a write (FILE_WRITE_DATA or FILE_APPEND_DATA) needs of its
+/// handle, any of them.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn transfer_rights(write: bool) -> u32 {
+    use crate::fs::file::rights::{FILE_APPEND_DATA, FILE_READ_DATA, FILE_WRITE_DATA};
+    if write {
+        FILE_WRITE_DATA | FILE_APPEND_DATA
+    } else {
+        FILE_READ_DATA
+    }
+}
+
+/// A disk transfer's own refusal: a directory has no data (FastFat's
+/// STATUS_INVALID_DEVICE_REQUEST).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_data(directory: bool) -> Result<(), crate::status::NtStatus> {
+    if directory {
+        return Err(crate::status::STATUS_INVALID_DEVICE_REQUEST);
+    }
+    Ok(())
+}
+
+/// How many bytes a disk read of `length` at `start` moves in a file of `size`: none for a
+/// zero-length read, anywhere, no lock asked; STATUS_FILE_LOCK_CONFLICT when `may_read` refuses
+/// its range (another owner's exclusive lock); STATUS_END_OF_FILE at or past the end; else what
+/// remains before the end, at most `length`.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn read_count(
+    start: u64,
+    size: u32,
+    length: u32,
+    may_read: impl FnOnce((u64, u64)) -> bool,
+) -> Result<u32, crate::status::NtStatus> {
+    use crate::status::{STATUS_END_OF_FILE, STATUS_FILE_LOCK_CONFLICT};
+    if length == 0 {
+        return Ok(0);
+    }
+    if !may_read((start, u64::from(length))) {
+        return Err(STATUS_FILE_LOCK_CONFLICT);
+    }
+    match crate::fs::file::available(start, size, length) {
+        0 => Err(STATUS_END_OF_FILE),
+        wanted => Ok(wanted),
+    }
+}
+
+/// How many bytes a disk write of `length` at `start` (see [`write_start`]) moves: none for a
+/// zero-length write, no lock asked; STATUS_FILE_LOCK_CONFLICT when `may_write` refuses its range;
+/// STATUS_DISK_FULL when it would end past FAT32's largest file (4 GiB less a byte); else all of
+/// it.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn write_count(
+    start: u64,
+    length: u32,
+    may_write: impl FnOnce((u64, u64)) -> bool,
+) -> Result<u32, crate::status::NtStatus> {
+    use crate::status::{STATUS_DISK_FULL, STATUS_FILE_LOCK_CONFLICT};
+    if length == 0 {
+        return Ok(0);
+    }
+    if !may_write((start, u64::from(length))) {
+        return Err(STATUS_FILE_LOCK_CONFLICT);
+    }
+    if start
+        .checked_add(u64::from(length))
+        .is_none_or(|end| end > u64::from(u32::MAX))
+    {
+        return Err(STATUS_DISK_FULL);
+    }
+    Ok(length)
+}
+
+/// A transfer's I/O status: STATUS_SUCCESS and the count moved, or the failure and nothing.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn transfer_status(result: Result<u32, crate::status::NtStatus>) -> (crate::status::NtStatus, u32) {
+    match result {
+        Ok(moved) => (crate::status::STATUS_SUCCESS, moved),
+        Err(code) => (code, 0),
+    }
+}
+
 /// What a rename's target name is relative to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
@@ -1544,6 +1625,89 @@ mod tests {
         assert_eq!(write_start(Some(7), false, size, position), 7);
         assert_eq!(write_start(Some(5000), false, size, position), 5000);
         assert_eq!(write_start(None, false, size, position), position);
+    }
+
+    /// A transfer's rights by direction, a directory's refusal, and its I/O status.
+    #[test]
+    fn a_transfer_s_rights_and_status() {
+        use crate::fs::file::rights::*;
+        use crate::status::*;
+        assert_eq!(transfer_rights(false), FILE_READ_DATA);
+        assert_eq!(transfer_rights(true), FILE_WRITE_DATA | FILE_APPEND_DATA);
+        assert_eq!(check_data(false), Ok(()));
+        assert_eq!(check_data(true), Err(STATUS_INVALID_DEVICE_REQUEST));
+        assert_eq!(transfer_status(Ok(12)), (STATUS_SUCCESS, 12));
+        assert_eq!(transfer_status(Ok(0)), (STATUS_SUCCESS, 0));
+        assert_eq!(
+            transfer_status(Err(STATUS_END_OF_FILE)),
+            (STATUS_END_OF_FILE, 0)
+        );
+    }
+
+    /// A disk read: a zero-length one moves nothing anywhere and asks no lock; a locked range
+    /// refuses it; at or past the end it is STATUS_END_OF_FILE; else it moves what remains, at
+    /// most its length.
+    #[test]
+    fn a_disk_read_s_count() {
+        use crate::status::*;
+        let free = |_| true;
+        let never = |_: (u64, u64)| -> bool { panic!("a zero-length read asks no lock") };
+        assert_eq!(read_count(0, 100, 0, never), Ok(0));
+        assert_eq!(read_count(5000, 100, 0, never), Ok(0));
+        assert_eq!(read_count(0, 100, 40, free), Ok(40));
+        assert_eq!(read_count(60, 100, 40, free), Ok(40));
+        assert_eq!(read_count(90, 100, 40, free), Ok(10));
+        assert_eq!(read_count(99, 100, u32::MAX, free), Ok(1));
+        assert_eq!(read_count(100, 100, 1, free), Err(STATUS_END_OF_FILE));
+        assert_eq!(
+            read_count(u64::MAX >> 1, 100, 1, free),
+            Err(STATUS_END_OF_FILE)
+        );
+        assert_eq!(read_count(0, 0, 1, free), Err(STATUS_END_OF_FILE));
+        let mut asked = None;
+        let locked = read_count(10, 100, 5, |range| {
+            asked = Some(range);
+            false
+        });
+        assert_eq!(locked, Err(STATUS_FILE_LOCK_CONFLICT));
+        assert_eq!(asked, Some((10, 5)), "the range asked of the locks");
+        assert_eq!(
+            read_count(200, 100, 5, |_| false),
+            Err(STATUS_FILE_LOCK_CONFLICT),
+            "the locks are asked before the end"
+        );
+    }
+
+    /// A disk write: a zero-length one moves nothing and asks no lock; a locked range refuses it;
+    /// one ending past 4 GiB less a byte is STATUS_DISK_FULL, one ending there fits.
+    #[test]
+    fn a_disk_write_s_count() {
+        use crate::status::*;
+        let free = |_| true;
+        let never = |_: (u64, u64)| -> bool { panic!("a zero-length write asks no lock") };
+        let largest = u64::from(u32::MAX);
+        assert_eq!(write_count(0, 0, never), Ok(0));
+        assert_eq!(write_count(largest + 5, 0, never), Ok(0));
+        assert_eq!(write_count(0, 10, free), Ok(10));
+        assert_eq!(
+            write_count(5000, 10, free),
+            Ok(10),
+            "past the end: the file grows"
+        );
+        assert_eq!(write_count(largest - 1, 1, free), Ok(1));
+        assert_eq!(write_count(largest, 1, free), Err(STATUS_DISK_FULL));
+        assert_eq!(write_count(0, u32::MAX, free), Ok(u32::MAX));
+        assert_eq!(write_count(1, u32::MAX, free), Err(STATUS_DISK_FULL));
+        assert_eq!(write_count(i64::MAX as u64, 1, free), Err(STATUS_DISK_FULL));
+        assert_eq!(
+            write_count(10, 5, |_| false),
+            Err(STATUS_FILE_LOCK_CONFLICT)
+        );
+        assert_eq!(
+            write_count(largest, 1, |_| false),
+            Err(STATUS_FILE_LOCK_CONFLICT),
+            "the locks are asked before the size"
+        );
     }
 
     /// A rename's name: one unit at least, a name's length at most, and inside the buffer after
