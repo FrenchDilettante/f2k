@@ -1,12 +1,14 @@
 //! Number conversions: _ultoa, _itow, _ltow and _ultow, _wtol and _wtoi, atoi and atol, wcstol,
-//! wcstoul and strtoul, and wcstod, as wide's capture pins them.
+//! wcstoul, strtol and strtoul, and wcstod, as wide's capture pins them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
 //!   they answer 0 and the end pointer is the string itself; a base that is not 0 or 2 to 36 is the
 //!   same. Overflow answers LONG_MAX or LONG_MIN (wcstol), ULONG_MAX (wcstoul, then negated like
 //!   any value with a `-`: `-4294967296` is 1), errno ERANGE, the digits all consumed.
-//! - strtoul is wcstoul over a narrow string, its blanks the LC_CTYPE locale's spaces.
+//! - strtol and strtoul are wcstol and wcstoul over a narrow string, its blanks the LC_CTYPE
+//!   locale's spaces (runtime's capture: `strtol("2147483648")` answers LONG_MAX, errno ERANGE, the
+//!   end past every digit).
 //! - _wtol takes blanks, a sign and decimal digits, and wraps around without errno; atoi is _wtol
 //!   over a narrow string, its blanks the LC_CTYPE locale's spaces (MSDN: atoi stops at the first
 //!   character that cannot be part of the number). _wtoi is _wtol and atol is atoi: an int is a
@@ -120,6 +122,23 @@ unsafe fn set_end<T>(end: *mut *const T, string: *const T, index: usize) {
     }
 }
 
+/// The signed conversion wcstol and strtol share: the long (LONG_MAX or LONG_MIN past it, errno
+/// ERANGE) and the end's index.
+fn signed(at: impl Fn(usize) -> u16, base: i32) -> (i32, usize) {
+    let (magnitude, negative, overflow, index) = parse(at, base);
+    let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
+    if overflow || magnitude > limit {
+        set_errno(ERANGE);
+        return (if negative { i32::MIN } else { i32::MAX }, index);
+    }
+    let value = if negative {
+        (magnitude as i32).wrapping_neg()
+    } else {
+        magnitude as i32
+    };
+    (value, index)
+}
+
 /// wcstol: the string's long, the end of its digits stored in `end`.
 ///
 /// # Safety
@@ -129,19 +148,25 @@ unsafe fn set_end<T>(end: *mut *const T, string: *const T, index: usize) {
 pub unsafe extern "C" fn wcstol(string: *const u16, end: *mut *const u16, base: i32) -> i32 {
     // SAFETY: the caller's string.
     let units = unsafe { edge::wide(string) };
-    let (magnitude, negative, overflow, index) = parse(|i| wide_unit_of(units, i), base);
+    let (value, index) = signed(|i| wide_unit_of(units, i), base);
     // SAFETY: the caller's end pointer; the index is inside the string.
     unsafe { set_end(end, string, index) };
-    let limit = if negative { 0x8000_0000 } else { 0x7FFF_FFFF };
-    if overflow || magnitude > limit {
-        set_errno(ERANGE);
-        return if negative { i32::MIN } else { i32::MAX };
-    }
-    if negative {
-        (magnitude as i32).wrapping_neg()
-    } else {
-        magnitude as i32
-    }
+    value
+}
+
+/// strtol: the narrow string's long, as wcstol reads a wide one.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated; `end` is null or a pointer's storage.
+#[unsafe(export_name = "f2k_export_strtol")]
+pub unsafe extern "C" fn strtol(string: *const u8, end: *mut *const u8, base: i32) -> i32 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    let (value, index) = signed(|i| unit_of(bytes, i), base);
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    value
 }
 
 /// wcstoul: the string's unsigned long (negated, modulo 2^32, after a `-`).
@@ -655,6 +680,57 @@ mod tests {
             unsafe { strtoul(b"42\0".as_ptr(), core::ptr::null_mut(), 0) },
             42
         );
+    }
+
+    /// strtol reads a narrow string as wcstol reads a wide one: runtime's strtol lines (LONG_MAX
+    /// and ERANGE past it, the end past every digit; base 0's prefixes), and wcstol's edges:
+    /// LONG_MIN itself and past it, no digit (the end the string itself, errno untouched), a bad
+    /// base.
+    #[test]
+    fn strtol_reads_as_wcstol() {
+        for (text, base, value, error, end) in [
+            ("2147483648", 10, i32::MAX, 34, 10),
+            ("0x1A", 0, 26, 0, 4),
+            ("  -077", 0, -63, 0, 6),
+            ("12abc", 0, 12, 0, 2),
+            ("99999999999", 10, i32::MAX, 34, 11),
+            ("-2147483648", 10, i32::MIN, 0, 11),
+            ("-2147483649", 10, i32::MIN, 34, 11),
+            ("-99999999999x", 0, i32::MIN, 34, 12),
+            ("2147483647", 10, i32::MAX, 0, 10),
+            ("\t+42", 10, 42, 0, 4),
+            ("-0x10", 16, -16, 0, 5),
+            ("0x", 16, 0, 0, 0),
+            ("08", 0, 0, 0, 1),
+            ("z", 36, 35, 0, 1),
+            ("", 10, 0, 0, 0),
+            ("  ", 0, 0, 0, 0),
+            ("+", 10, 0, 0, 0),
+            ("12", 1, 0, 0, 0),
+            ("12", -2, 0, 0, 0),
+            ("12", 37, 0, 0, 0),
+        ] {
+            let s: Vec<u8> = text.bytes().chain([0]).collect();
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { strtol(s.as_ptr(), &mut e, base) };
+            // SAFETY: the end points into the string.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v, errno(), offset),
+                (value, error, end),
+                "strtol({text:?}, {base})"
+            );
+        }
+        // No end asked for; errno is left as it was when nothing overflows.
+        set_errno(7);
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { strtol(b"-5\0".as_ptr(), core::ptr::null_mut(), 0) },
+            -5
+        );
+        assert_eq!(errno(), 7);
     }
 
     #[test]

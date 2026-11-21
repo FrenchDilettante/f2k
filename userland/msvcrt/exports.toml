@@ -1116,6 +1116,14 @@ ordinal = 735
 fails = "never"
 
 [[export]]
+name = "strtol"
+group = "strings"
+args = ["strA nptr", "ptr endptr", "i32 base"]
+impl = { native = "strtol" }
+ordinal = 734
+fails = "never"
+
+[[export]]
 name = "strncpy"
 group = "strings"
 args = ["ptr strDest", "strA strSource", "u32 count"]
@@ -4002,10 +4010,6 @@ ordinal = 732
 [[export]]
 name = "strtok"
 ordinal = 733
-
-[[export]]
-name = "strtol"
-ordinal = 734
 
 [[export]]
 name = "strxfrm"
