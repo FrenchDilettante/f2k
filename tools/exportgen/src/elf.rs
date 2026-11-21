@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use crate::bytes::{Fields, Out};
+
 /// `e_ident`'s first bytes: the magic, ELFCLASS32, ELFDATA2LSB, EV_CURRENT.
 const IDENT: [u8; 7] = [0x7F, b'E', b'L', b'F', 1, 1, 1];
 /// `e_type`: a relocatable object, an executable.
@@ -48,41 +50,6 @@ const EHDR_SIZE: usize = 52;
 const SHDR_SIZE: usize = 40;
 const SYM_SIZE: usize = 16;
 const REL_SIZE: usize = 8;
-
-/// A read cursor over a structure's bytes: each field in declared order, little-endian.
-struct Fields<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Fields<'a> {
-    /// The `size` bytes at `offset` of `file`, if it holds them.
-    fn at(file: &'a [u8], offset: usize, size: usize, what: &str) -> Result<Self, String> {
-        let bytes = offset
-            .checked_add(size)
-            .and_then(|end| file.get(offset..end))
-            .ok_or_else(|| format!("the file ends inside {what} (at {offset:#x})"))?;
-        Ok(Fields { bytes, at: 0 })
-    }
-
-    fn take<const N: usize>(&mut self) -> [u8; N] {
-        let field = self.bytes[self.at..self.at + N].try_into().unwrap();
-        self.at += N;
-        field
-    }
-
-    fn u8(&mut self) -> u8 {
-        self.take::<1>()[0]
-    }
-
-    fn u16(&mut self) -> u16 {
-        u16::from_le_bytes(self.take())
-    }
-
-    fn u32(&mut self) -> u32 {
-        u32::from_le_bytes(self.take())
-    }
-}
 
 /// One section header (`Elf32_Shdr`), its name resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,28 +288,6 @@ pub struct ObjectSymbol {
     pub size: u32,
     /// Its type, [`STT_FUNC`] or [`STT_OBJECT`].
     pub kind: u8,
-}
-
-/// A write cursor: each field in declared order, little-endian.
-struct Out(Vec<u8>);
-
-impl Out {
-    fn u8(&mut self, value: u8) {
-        self.0.push(value);
-    }
-
-    fn u16(&mut self, value: u16) {
-        self.0.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn u32(&mut self, value: u32) {
-        self.0.extend_from_slice(&value.to_le_bytes());
-    }
-
-    /// Pad with zeros to a multiple of `alignment`.
-    fn align(&mut self, alignment: usize) {
-        self.0.resize(self.0.len().next_multiple_of(alignment), 0);
-    }
 }
 
 /// A string table under construction: its bytes, the empty name first.

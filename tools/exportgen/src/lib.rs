@@ -25,6 +25,7 @@
 //! The specs are TOML read through [`toml`], a strict reader for the subset they are written in.
 
 pub mod abi;
+mod bytes;
 pub mod elf;
 pub mod emit;
 pub mod pe;

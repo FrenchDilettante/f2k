@@ -20,6 +20,7 @@
 
 use std::collections::HashMap;
 
+use crate::bytes::{Fields, Out};
 use crate::elf::{self, Elf};
 use crate::{Implementation, Spec};
 
@@ -66,11 +67,12 @@ pub const NUMBER_OF_DIRECTORIES: usize = 16;
 pub const REL_BASED_ABSOLUTE: u16 = 0;
 pub const REL_BASED_HIGHLOW: u16 = 3;
 /// IMAGE_DOS_HEADER's size, IMAGE_FILE_HEADER's, IMAGE_OPTIONAL_HEADER32's,
-/// IMAGE_EXPORT_DIRECTORY's.
+/// IMAGE_EXPORT_DIRECTORY's, IMAGE_SECTION_HEADER's.
 pub const DOS_HEADER_SIZE: usize = 0x40;
 pub const FILE_HEADER_SIZE: usize = 0x14;
 pub const OPTIONAL_HEADER_SIZE: usize = 0xE0;
 pub const EXPORT_DIRECTORY_SIZE: usize = 0x28;
+pub const SECTION_HEADER_SIZE: usize = 0x28;
 /// The checksum's offset in the optional header.
 pub const CHECKSUM_FIELD: usize = 0x40;
 
@@ -327,31 +329,6 @@ impl Linked {
     pub fn end(&self) -> u32 {
         let last = self.sections.last().expect("a link has its sections");
         align_up(last.rva + last.size, ALIGNMENT)
-    }
-}
-
-/// A write cursor: each field in declared order, little-endian.
-struct Out(Vec<u8>);
-
-impl Out {
-    fn u8(&mut self, value: u8) {
-        self.0.push(value);
-    }
-
-    fn u16(&mut self, value: u16) {
-        self.0.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn u32(&mut self, value: u32) {
-        self.0.extend_from_slice(&value.to_le_bytes());
-    }
-
-    fn bytes(&mut self, value: &[u8]) {
-        self.0.extend_from_slice(value);
-    }
-
-    fn align(&mut self, alignment: usize) {
-        self.0.resize(self.0.len().next_multiple_of(alignment), 0);
     }
 }
 
@@ -721,40 +698,6 @@ pub struct Image {
     pub fixups: Vec<u32>,
 }
 
-/// A read cursor over a structure's bytes: each field in declared order, little-endian.
-struct Fields<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl<'a> Fields<'a> {
-    fn at(file: &'a [u8], offset: usize, what: &str) -> Result<Self, String> {
-        let bytes = file
-            .get(offset..)
-            .ok_or_else(|| format!("{what} lies past the end of the file"))?;
-        Ok(Fields { bytes, at: 0 })
-    }
-
-    fn take<const N: usize>(&mut self) -> Result<[u8; N], String> {
-        let field = self
-            .bytes
-            .get(self.at..self.at + N)
-            .ok_or("the file ends inside a header")?
-            .try_into()
-            .unwrap();
-        self.at += N;
-        Ok(field)
-    }
-
-    fn u16(&mut self) -> Result<u16, String> {
-        Ok(u16::from_le_bytes(self.take()?))
-    }
-
-    fn u32(&mut self) -> Result<u32, String> {
-        Ok(u32::from_le_bytes(self.take()?))
-    }
-}
-
 impl Image {
     /// The file offset of `rva`, through the section holding it in the file.
     pub fn offset_of(&self, rva: u32) -> Option<usize> {
@@ -770,71 +713,79 @@ impl Image {
 
 /// Read `file` as a PE32 image.
 pub fn read(file: &[u8]) -> Result<Image, String> {
-    let mut dos = Fields::at(file, 0, "the DOS header")?;
-    if dos.u16()? != DOS_MAGIC {
+    let mut dos = Fields::at(file, 0, DOS_HEADER_SIZE, "the DOS header")?;
+    if dos.u16() != DOS_MAGIC {
         return Err("no MZ signature".into());
     }
-    let lfanew = u32::from_le_bytes(
-        file.get(0x3C..0x40)
-            .ok_or("the file ends inside the DOS header")?
-            .try_into()
-            .unwrap(),
-    ) as usize;
-    let mut nt = Fields::at(file, lfanew, "the NT headers")?;
-    if nt.u32()? != NT_SIGNATURE {
+    let _stub: [u8; 0x3A] = dos.take();
+    let lfanew = dos.u32() as usize;
+    // The signature, the file header, and the optional header up to its data directories.
+    let fixed = OPTIONAL_HEADER_SIZE - 8 * NUMBER_OF_DIRECTORIES;
+    let mut nt = Fields::at(file, lfanew, 4 + FILE_HEADER_SIZE + fixed, "the NT headers")?;
+    if nt.u32() != NT_SIGNATURE {
         return Err("no PE signature".into());
     }
-    let machine = nt.u16()?;
-    let section_count = nt.u16()? as usize;
-    let _timestamp = nt.u32()?;
-    let _symbols = nt.u32()?;
-    let _symbol_count = nt.u32()?;
-    let optional_size = nt.u16()? as usize;
-    let characteristics = nt.u16()?;
+    let machine = nt.u16();
+    let section_count = nt.u16() as usize;
+    let _timestamp = nt.u32();
+    let _symbols = nt.u32();
+    let _symbol_count = nt.u32();
+    let optional_size = nt.u16() as usize;
+    let characteristics = nt.u16();
     let optional = lfanew + 4 + FILE_HEADER_SIZE;
-    if nt.u16()? != PE32_MAGIC {
+    if nt.u16() != PE32_MAGIC {
         return Err("not a PE32 optional header".into());
     }
-    let _linker: [u8; 2] = nt.take()?;
-    let _code = nt.u32()?;
-    let _initialized = nt.u32()?;
-    let _uninitialized = nt.u32()?;
-    let entry = nt.u32()?;
-    let _base_of_code = nt.u32()?;
-    let _base_of_data = nt.u32()?;
-    let image_base = nt.u32()?;
-    let section_alignment = nt.u32()?;
-    let file_alignment = nt.u32()?;
-    let _os: [u8; 4] = nt.take()?;
-    let _image_version: [u8; 4] = nt.take()?;
-    let subsystem_version = (nt.u16()?, nt.u16()?);
-    let _win32 = nt.u32()?;
-    let size_of_image = nt.u32()?;
-    let size_of_headers = nt.u32()?;
-    let checksum = nt.u32()?;
-    let subsystem = nt.u16()?;
-    let _dll_characteristics = nt.u16()?;
-    let _reservations: [u8; 16] = nt.take()?;
-    let _loader_flags = nt.u32()?;
-    let directory_count = nt.u32()? as usize;
-    let mut directories = Vec::new();
-    for _ in 0..directory_count.min(NUMBER_OF_DIRECTORIES) {
-        directories.push((nt.u32()?, nt.u32()?));
-    }
-    let mut table = Fields::at(file, optional + optional_size, "the section table")?;
+    let _linker: [u8; 2] = nt.take();
+    let _code = nt.u32();
+    let _initialized = nt.u32();
+    let _uninitialized = nt.u32();
+    let entry = nt.u32();
+    let _base_of_code = nt.u32();
+    let _base_of_data = nt.u32();
+    let image_base = nt.u32();
+    let section_alignment = nt.u32();
+    let file_alignment = nt.u32();
+    let _os: [u8; 4] = nt.take();
+    let _image_version: [u8; 4] = nt.take();
+    let subsystem_version = (nt.u16(), nt.u16());
+    let _win32 = nt.u32();
+    let size_of_image = nt.u32();
+    let size_of_headers = nt.u32();
+    let checksum = nt.u32();
+    let subsystem = nt.u16();
+    let _dll_characteristics = nt.u16();
+    let _reservations: [u8; 16] = nt.take();
+    let _loader_flags = nt.u32();
+    let directory_count = (nt.u32() as usize).min(NUMBER_OF_DIRECTORIES);
+    let mut table = Fields::at(
+        file,
+        optional + fixed,
+        8 * directory_count,
+        "the data directories",
+    )?;
+    let directories = (0..directory_count)
+        .map(|_| (table.u32(), table.u32()))
+        .collect();
+    let mut table = Fields::at(
+        file,
+        optional + optional_size,
+        SECTION_HEADER_SIZE * section_count,
+        "the section table",
+    )?;
     let mut sections = Vec::new();
     for _ in 0..section_count {
-        let name: [u8; 8] = table.take()?;
+        let name: [u8; 8] = table.take();
         let end = name.iter().position(|&b| b == 0).unwrap_or(8);
         let section = ImageSection {
             name: String::from_utf8_lossy(&name[..end]).into_owned(),
-            virtual_size: table.u32()?,
-            virtual_address: table.u32()?,
-            raw_size: table.u32()?,
-            raw_offset: table.u32()?,
+            virtual_size: table.u32(),
+            virtual_address: table.u32(),
+            raw_size: table.u32(),
+            raw_offset: table.u32(),
             characteristics: {
-                let _rest: [u8; 12] = table.take()?;
-                table.u32()?
+                let _rest: [u8; 12] = table.take();
+                table.u32()
             },
         };
         sections.push(section);
@@ -880,15 +831,16 @@ pub fn read(file: &[u8]) -> Result<Image, String> {
         let offset = image
             .offset_of(rva)
             .ok_or("the export directory lies outside the file")?;
-        let mut directory = Fields::at(file, offset, "the export directory")?;
-        let _fixed: [u8; 12] = directory.take()?;
-        let name = directory.u32()?;
-        let base = directory.u32()?;
-        let functions = directory.u32()?;
-        let names = directory.u32()?;
-        let address_table = directory.u32()?;
-        let name_pointers = directory.u32()?;
-        let ordinal_table = directory.u32()?;
+        let mut directory =
+            Fields::at(file, offset, EXPORT_DIRECTORY_SIZE, "the export directory")?;
+        let _fixed: [u8; 12] = directory.take();
+        let name = directory.u32();
+        let base = directory.u32();
+        let functions = directory.u32();
+        let names = directory.u32();
+        let address_table = directory.u32();
+        let name_pointers = directory.u32();
+        let ordinal_table = directory.u32();
         image.module = string_at(&image, name)?;
         let mut exports = Vec::new();
         for index in 0..names {

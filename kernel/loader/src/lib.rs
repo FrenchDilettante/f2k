@@ -574,7 +574,12 @@ mod tests {
     fn the_generator_s_constants_are_the_runtime_library_s() {
         use core::mem::offset_of;
 
-        use rtl::image::{self as rtl_image, ImageExportDirectory, ImageOptionalHeader32};
+        use rtl::image::{
+            self as rtl_image,
+            ImageExportDirectory,
+            ImageOptionalHeader32,
+            ImageSectionHeader,
+        };
 
         assert_eq!(pe::DOS_MAGIC, rtl_image::DOS_MAGIC);
         assert_eq!(pe::NT_SIGNATURE, rtl_image::NT_SIGNATURE);
@@ -609,6 +614,7 @@ mod tests {
         );
         assert_eq!(pe::OPTIONAL_HEADER_SIZE, size_of::<ImageOptionalHeader32>());
         assert_eq!(pe::EXPORT_DIRECTORY_SIZE, size_of::<ImageExportDirectory>());
+        assert_eq!(pe::SECTION_HEADER_SIZE, size_of::<ImageSectionHeader>());
         assert_eq!(
             pe::CHECKSUM_FIELD,
             offset_of!(ImageOptionalHeader32, check_sum)
