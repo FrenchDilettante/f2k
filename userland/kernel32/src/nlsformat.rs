@@ -40,19 +40,15 @@
 //! -. A NUMBERFMT with NumDigits past 9, LeadingZero past 1, NegativeOrder past 4, or a separator
 //! missing, empty or longer than 3 characters is ERROR_INVALID_PARAMETER.
 
-use core::ops::Deref;
-
-use crate::base::WideUnits;
-use crate::edge::{wide_units, In, InStr, InWStr, OutBuf, Text};
+use crate::edge::{CallerChar, CallerStr, CallerUnits, In, OutBuf, Text};
 use crate::error::{
     answer,
     Failure,
     ERROR_INSUFFICIENT_BUFFER,
     ERROR_INVALID_FLAGS,
     ERROR_INVALID_PARAMETER,
-    ERROR_NOT_ENOUGH_MEMORY,
 };
-use crate::heap::{HeapString, HeapVec};
+use crate::heap::HeapVec;
 use crate::locale::room;
 use crate::localeinfo;
 
@@ -98,44 +94,10 @@ const QUOTE: u16 = b'\'' as u16;
 
 // --- The caller's side --------------------------------------------------------------------------
 
-/// A caller's string as UTF-16 units: a W call's as it is, an A call's converted from the ANSI
-/// code page onto the process heap.
-enum Units<'a> {
-    Wide(WideUnits<'a>),
-    Narrow(HeapString),
-}
-
-impl Deref for Units<'_> {
-    type Target = [u16];
-
-    fn deref(&self) -> &[u16] {
-        match self {
-            Units::Wide(units) => units,
-            Units::Narrow(string) => string.units(),
-        }
-    }
-}
-
-/// A W call's string, when given.
-fn wide(string: Option<InWStr<'_>>) -> Result<Option<Units<'_>>, Failure> {
-    string
-        .map(|string| {
-            wide_units(&string)
-                .map(Units::Wide)
-                .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))
-        })
-        .transpose()
-}
-
-/// An A call's string, when given, converted.
-fn narrow(string: Option<InStr<'_>>) -> Result<Option<Units<'static>>, Failure> {
-    string
-        .map(|string| {
-            HeapString::of_ansi(Some(&string))
-                .map(Units::Narrow)
-                .map_err(Failure::Status)
-        })
-        .transpose()
+/// A caller's string, when given, as UTF-16 units ([`CallerStr::units`]: a W call's as it is, an A
+/// call's converted from the ANSI code page onto the process heap).
+fn units(string: Option<CallerStr<'_>>) -> Result<Option<CallerUnits<'_>>, Failure> {
+    string.map(|string| string.units()).transpose()
 }
 
 /// Whether a locale is one Windows 2000 supports whose formats this surface lacks: the call is
@@ -403,14 +365,57 @@ fn reading_order(flags: u32) -> bool {
     orders != 0 && orders != DATE_LTRREADING | DATE_RTLREADING
 }
 
-/// GetDateFormatW: the date (the local one for none) in the picture given, or the locale's format
-/// the flags name (see the module notes); the characters written with the terminator, or needed
-/// for a size of 0.
+/// GetDateFormatW's and GetDateFormatA's body, `C` the form's character: the date (the local one
+/// for none) in the picture given, or the locale's format the flags name (see the module notes);
+/// the characters written with the terminator, or needed for a size of 0. An A call's picture and
+/// answer are in the ANSI code page.
 ///
 /// # Safety
 ///
-/// `date`, when given, points at a SYSTEMTIME; `picture`, when given, at a NUL-terminated string;
-/// `buffer` holds `size` characters.
+/// `date`, when given, points at a SYSTEMTIME; `picture`, when given, at a NUL-terminated string
+/// of the form's characters; `buffer` holds `size` of them.
+unsafe fn get_date_format_as<C: CallerChar>(
+    lcid: u32,
+    flags: u32,
+    date: *const SystemTimeWords,
+    picture: *const C,
+    buffer: *mut C,
+    size: i32,
+) -> i32 {
+    if lacks_formats(lcid) || reading_order(flags) {
+        let args = [
+            lcid,
+            flags,
+            date as u32,
+            picture as u32,
+            buffer as u32,
+            size as u32,
+        ];
+        let entry = C::of(&crate::spec::GetDateFormatA, &crate::spec::GetDateFormatW);
+        // SAFETY: the caller's arguments, as the export's kinds read them.
+        return unsafe { stubbed(entry, &args) };
+    }
+    // SAFETY: the caller's SYSTEMTIME and picture when given, and its buffer of `size` characters
+    // (the contract; a negative size, which the call refuses, holds none).
+    let (date, picture, out) = unsafe {
+        (
+            In::optional(date),
+            C::optional_string(picture),
+            OutBuf::new(buffer, room(size)),
+        )
+    };
+    let date = date.map(|date| date.read());
+    let result = units(picture).and_then(|picture| {
+        get_date_format(lcid, flags, date, picture.as_deref(), C::text(out), size)
+    });
+    answer(result, 0)
+}
+
+/// GetDateFormatW (see [`get_date_format_as`]).
+///
+/// # Safety
+///
+/// As [`get_date_format_as`]'s, in UTF-16.
 #[unsafe(export_name = "f2k_export_GetDateFormatW")]
 pub unsafe extern "system" fn get_date_format_w(
     lcid: u32,
@@ -420,39 +425,15 @@ pub unsafe extern "system" fn get_date_format_w(
     buffer: *mut u16,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) || reading_order(flags) {
-        let args = [
-            lcid,
-            flags,
-            date as u32,
-            picture as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetDateFormatW, &args) };
-    }
-    // SAFETY: the caller's SYSTEMTIME and picture when given, and its buffer of `size` characters
-    // (the contract; a negative size, which the call refuses, holds none).
-    let (date, picture, out) = unsafe {
-        (
-            In::optional(date),
-            InWStr::optional(picture),
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let date = date.map(|date| date.read());
-    let result = wide(picture).and_then(|picture| {
-        get_date_format(lcid, flags, date, picture.as_deref(), Text::Wide(out), size)
-    });
-    answer(result, 0)
+    // SAFETY: the caller's contract, the W form's.
+    unsafe { get_date_format_as(lcid, flags, date, picture, buffer, size) }
 }
 
-/// GetDateFormatA: GetDateFormatW's, its picture and its answer in the ANSI code page.
+/// GetDateFormatA (see [`get_date_format_as`]): its picture and its answer in the ANSI code page.
 ///
 /// # Safety
 ///
-/// As GetDateFormatW's, in bytes.
+/// As [`get_date_format_as`]'s, in bytes.
 #[unsafe(export_name = "f2k_export_GetDateFormatA")]
 pub unsafe extern "system" fn get_date_format_a(
     lcid: u32,
@@ -462,31 +443,8 @@ pub unsafe extern "system" fn get_date_format_a(
     buffer: *mut u8,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) || reading_order(flags) {
-        let args = [
-            lcid,
-            flags,
-            date as u32,
-            picture as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetDateFormatA, &args) };
-    }
-    // SAFETY: as GetDateFormatW's.
-    let (date, picture, out) = unsafe {
-        (
-            In::optional(date),
-            InStr::optional(picture),
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let date = date.map(|date| date.read());
-    let result = narrow(picture).and_then(|picture| {
-        get_date_format(lcid, flags, date, picture.as_deref(), Text::Ansi(out), size)
-    });
-    answer(result, 0)
+    // SAFETY: the caller's contract, the A form's.
+    unsafe { get_date_format_as(lcid, flags, date, picture, buffer, size) }
 }
 
 /// The stub path of a call this surface does not handle: logged, then failed as the export fails.
@@ -642,13 +600,55 @@ fn get_time_format(
     deliver(&text, out)
 }
 
-/// GetTimeFormatW: the time (the local one for none) in the picture given, or the locale's
-/// STIMEFORMAT, as the TIME_ flags have it (see the module notes); the characters written with
-/// the terminator, or needed for a size of 0.
+/// GetTimeFormatW's and GetTimeFormatA's body, `C` the form's character: the time (the local one
+/// for none) in the picture given, or the locale's STIMEFORMAT, as the TIME_ flags have it (see the
+/// module notes); the characters written with the terminator, or needed for a size of 0. An A
+/// call's picture and answer are in the ANSI code page.
 ///
 /// # Safety
 ///
-/// As GetDateFormatW's, `time` a SYSTEMTIME too.
+/// As [`get_date_format_as`]'s, `time` a SYSTEMTIME.
+unsafe fn get_time_format_as<C: CallerChar>(
+    lcid: u32,
+    flags: u32,
+    time: *const SystemTimeWords,
+    picture: *const C,
+    buffer: *mut C,
+    size: i32,
+) -> i32 {
+    if lacks_formats(lcid) {
+        let args = [
+            lcid,
+            flags,
+            time as u32,
+            picture as u32,
+            buffer as u32,
+            size as u32,
+        ];
+        let entry = C::of(&crate::spec::GetTimeFormatA, &crate::spec::GetTimeFormatW);
+        // SAFETY: the caller's arguments, as the export's kinds read them.
+        return unsafe { stubbed(entry, &args) };
+    }
+    // SAFETY: as GetDateFormat's.
+    let (time, picture, out) = unsafe {
+        (
+            In::optional(time),
+            C::optional_string(picture),
+            OutBuf::new(buffer, room(size)),
+        )
+    };
+    let time = time.map(|time| time.read());
+    let result = units(picture).and_then(|picture| {
+        get_time_format(lcid, flags, time, picture.as_deref(), C::text(out), size)
+    });
+    answer(result, 0)
+}
+
+/// GetTimeFormatW (see [`get_time_format_as`]).
+///
+/// # Safety
+///
+/// As [`get_time_format_as`]'s, in UTF-16.
 #[unsafe(export_name = "f2k_export_GetTimeFormatW")]
 pub unsafe extern "system" fn get_time_format_w(
     lcid: u32,
@@ -658,38 +658,15 @@ pub unsafe extern "system" fn get_time_format_w(
     buffer: *mut u16,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) {
-        let args = [
-            lcid,
-            flags,
-            time as u32,
-            picture as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetTimeFormatW, &args) };
-    }
-    // SAFETY: as GetDateFormatW's.
-    let (time, picture, out) = unsafe {
-        (
-            In::optional(time),
-            InWStr::optional(picture),
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let time = time.map(|time| time.read());
-    let result = wide(picture).and_then(|picture| {
-        get_time_format(lcid, flags, time, picture.as_deref(), Text::Wide(out), size)
-    });
-    answer(result, 0)
+    // SAFETY: the caller's contract, the W form's.
+    unsafe { get_time_format_as(lcid, flags, time, picture, buffer, size) }
 }
 
-/// GetTimeFormatA: GetTimeFormatW's, its picture and its answer in the ANSI code page.
+/// GetTimeFormatA (see [`get_time_format_as`]): its picture and its answer in the ANSI code page.
 ///
 /// # Safety
 ///
-/// As GetTimeFormatW's, in bytes.
+/// As [`get_time_format_as`]'s, in bytes.
 #[unsafe(export_name = "f2k_export_GetTimeFormatA")]
 pub unsafe extern "system" fn get_time_format_a(
     lcid: u32,
@@ -699,31 +676,8 @@ pub unsafe extern "system" fn get_time_format_a(
     buffer: *mut u8,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) {
-        let args = [
-            lcid,
-            flags,
-            time as u32,
-            picture as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetTimeFormatA, &args) };
-    }
-    // SAFETY: as GetDateFormatW's.
-    let (time, picture, out) = unsafe {
-        (
-            In::optional(time),
-            InStr::optional(picture),
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let time = time.map(|time| time.read());
-    let result = narrow(picture).and_then(|picture| {
-        get_time_format(lcid, flags, time, picture.as_deref(), Text::Ansi(out), size)
-    });
-    answer(result, 0)
+    // SAFETY: the caller's contract, the A form's.
+    unsafe { get_time_format_as(lcid, flags, time, picture, buffer, size) }
 }
 
 // --- Numbers ------------------------------------------------------------------------------------
@@ -746,8 +700,8 @@ struct CallerFormat<'a> {
     digits: u32,
     leading_zero: u32,
     grouping: u32,
-    decimal: Option<Units<'a>>,
-    thousand: Option<Units<'a>>,
+    decimal: Option<CallerUnits<'a>>,
+    thousand: Option<CallerUnits<'a>>,
     negative: u32,
 }
 
@@ -842,7 +796,7 @@ struct NumberFormat<'a> {
 }
 
 /// A separator of the caller's judged: present, 1 to 3 characters.
-fn separator<'a>(separator: &'a Option<Units<'_>>) -> Result<&'a [u16], Failure> {
+fn separator<'a>(separator: &'a Option<CallerUnits<'_>>) -> Result<&'a [u16], Failure> {
     match separator.as_deref() {
         Some(units) if (1..=3).contains(&units.len()) => Ok(units),
         _ => Err(Failure::Error(ERROR_INVALID_PARAMETER)),
@@ -985,13 +939,80 @@ fn get_number_format(
     deliver(&text, out)
 }
 
-/// GetNumberFormatW: the number string in the caller's NUMBERFMT, or the locale's format (see the
-/// module notes); the characters written with the terminator, or needed for a size of 0.
+/// GetNumberFormatW's and GetNumberFormatA's body, `C` the form's character: the number string in
+/// the caller's NUMBERFMT, or the locale's format (see the module notes); the characters written
+/// with the terminator, or needed for a size of 0. An A call's strings (the value and the
+/// separators) and its answer are in the ANSI code page.
 ///
 /// # Safety
 ///
-/// `value` is a NUL-terminated string (or null); `format`, when given, a NUMBERFMTW whose
-/// separators are NUL-terminated strings (or null); `buffer` holds `size` characters.
+/// `value` is a NUL-terminated string (or null); `format`, when given, the form's NUMBERFMT whose
+/// separators are NUL-terminated strings (or null); `buffer` holds `size` characters; all of the
+/// form's characters.
+unsafe fn get_number_format_as<C: CallerChar>(
+    lcid: u32,
+    flags: u32,
+    value: *const C,
+    format: *const NumberFmt<C>,
+    buffer: *mut C,
+    size: i32,
+) -> i32 {
+    if lacks_formats(lcid) {
+        let args = [
+            lcid,
+            flags,
+            value as u32,
+            format as u32,
+            buffer as u32,
+            size as u32,
+        ];
+        let entry = C::of(
+            &crate::spec::GetNumberFormatA,
+            &crate::spec::GetNumberFormatW,
+        );
+        // SAFETY: the caller's arguments, as the export's kinds read them.
+        return unsafe { stubbed(entry, &args) };
+    }
+    // SAFETY: the caller's value, NUMBERFMT and separators, when given, and its buffer of `size`
+    // characters (the contract; a negative size, which the call refuses, holds none).
+    let (value, format, out) = unsafe {
+        let format = In::optional(format).map(|format| {
+            let format = format.read();
+            let separators = (
+                C::optional_string(format.decimal_sep),
+                C::optional_string(format.thousand_sep),
+            );
+            (format, separators)
+        });
+        (
+            C::optional_string(value),
+            format,
+            OutBuf::new(buffer, room(size)),
+        )
+    };
+    let result = (|| {
+        let value = units(value)?;
+        let format = match format {
+            Some((format, (decimal, thousand))) => Some(CallerFormat {
+                digits: format.num_digits,
+                leading_zero: format.leading_zero,
+                grouping: format.grouping,
+                decimal: units(decimal)?,
+                thousand: units(thousand)?,
+                negative: format.negative_order,
+            }),
+            None => None,
+        };
+        get_number_format(lcid, flags, value.as_deref(), format, C::text(out), size)
+    })();
+    answer(result, 0)
+}
+
+/// GetNumberFormatW (see [`get_number_format_as`]).
+///
+/// # Safety
+///
+/// As [`get_number_format_as`]'s, in UTF-16, `format` a NUMBERFMTW.
 #[unsafe(export_name = "f2k_export_GetNumberFormatW")]
 pub unsafe extern "system" fn get_number_format_w(
     lcid: u32,
@@ -1001,58 +1022,16 @@ pub unsafe extern "system" fn get_number_format_w(
     buffer: *mut u16,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) {
-        let args = [
-            lcid,
-            flags,
-            value as u32,
-            format as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetNumberFormatW, &args) };
-    }
-    // SAFETY: the caller's value, NUMBERFMT and separators, when given, and its buffer of `size`
-    // characters (the contract; a negative size, which the call refuses, holds none).
-    let (value, format, out) = unsafe {
-        let format = In::optional(format).map(|format| {
-            let format = format.read();
-            let separators = (
-                InWStr::optional(format.decimal_sep),
-                InWStr::optional(format.thousand_sep),
-            );
-            (format, separators)
-        });
-        (
-            InWStr::optional(value),
-            format,
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let result = (|| {
-        let value = wide(value)?;
-        let format = match format {
-            Some((format, (decimal, thousand))) => Some(CallerFormat {
-                digits: format.num_digits,
-                leading_zero: format.leading_zero,
-                grouping: format.grouping,
-                decimal: wide(decimal)?,
-                thousand: wide(thousand)?,
-                negative: format.negative_order,
-            }),
-            None => None,
-        };
-        get_number_format(lcid, flags, value.as_deref(), format, Text::Wide(out), size)
-    })();
-    answer(result, 0)
+    // SAFETY: the caller's contract, the W form's.
+    unsafe { get_number_format_as(lcid, flags, value, format, buffer, size) }
 }
 
-/// GetNumberFormatA: GetNumberFormatW's, its strings and its answer in the ANSI code page.
+/// GetNumberFormatA (see [`get_number_format_as`]): its strings and its answer in the ANSI code
+/// page.
 ///
 /// # Safety
 ///
-/// As GetNumberFormatW's, in bytes, `format` a NUMBERFMTA.
+/// As [`get_number_format_as`]'s, in bytes, `format` a NUMBERFMTA.
 #[unsafe(export_name = "f2k_export_GetNumberFormatA")]
 pub unsafe extern "system" fn get_number_format_a(
     lcid: u32,
@@ -1062,50 +1041,8 @@ pub unsafe extern "system" fn get_number_format_a(
     buffer: *mut u8,
     size: i32,
 ) -> i32 {
-    if lacks_formats(lcid) {
-        let args = [
-            lcid,
-            flags,
-            value as u32,
-            format as u32,
-            buffer as u32,
-            size as u32,
-        ];
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe { stubbed(&crate::spec::GetNumberFormatA, &args) };
-    }
-    // SAFETY: as GetNumberFormatW's.
-    let (value, format, out) = unsafe {
-        let format = In::optional(format).map(|format| {
-            let format = format.read();
-            let separators = (
-                InStr::optional(format.decimal_sep),
-                InStr::optional(format.thousand_sep),
-            );
-            (format, separators)
-        });
-        (
-            InStr::optional(value),
-            format,
-            OutBuf::new(buffer, room(size)),
-        )
-    };
-    let result = (|| {
-        let value = narrow(value)?;
-        let format = match format {
-            Some((format, (decimal, thousand))) => Some(CallerFormat {
-                digits: format.num_digits,
-                leading_zero: format.leading_zero,
-                grouping: format.grouping,
-                decimal: narrow(decimal)?,
-                thousand: narrow(thousand)?,
-                negative: format.negative_order,
-            }),
-            None => None,
-        };
-        get_number_format(lcid, flags, value.as_deref(), format, Text::Ansi(out), size)
-    })();
-    answer(result, 0)
+    // SAFETY: the caller's contract, the A form's.
+    unsafe { get_number_format_as(lcid, flags, value, format, buffer, size) }
 }
 
 #[cfg(test)]

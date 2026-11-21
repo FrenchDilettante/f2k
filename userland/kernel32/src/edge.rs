@@ -15,7 +15,8 @@
 pub use rtl::edge::{caller_bytes, In, InBuf, InStr, InWStr, Out, OutBuf};
 
 use crate::base::WideUnits;
-use crate::heap::HeapArray;
+use crate::error::{Failure, ERROR_NOT_ENOUGH_MEMORY};
+use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
 use crate::ntcall;
 
@@ -107,12 +108,45 @@ pub enum CallerStr<'a> {
     Wide(InWStr<'a>),
 }
 
-impl CallerStr<'_> {
+impl<'a> CallerStr<'a> {
     /// Whether it holds no character (read to its terminator).
     pub fn is_empty(&self) -> bool {
         match self {
             CallerStr::Ansi(string) => string.is_empty(),
             CallerStr::Wide(string) => string.is_empty(),
+        }
+    }
+
+    /// The string as UTF-16 units, its terminator left out, for a call that keeps it whole: a W
+    /// call's where they are ([`wide_units`]: ERROR_NOT_ENOUGH_MEMORY when an unaligned string's
+    /// copy finds no room); an A call's converted onto the process heap ([`HeapString::of_ansi`]:
+    /// RtlInitAnsiString and RtlAnsiStringToUnicodeString, the status of a failed conversion: a
+    /// string past a counted string's reach, or no room).
+    pub fn units(&self) -> Result<CallerUnits<'a>, Failure> {
+        match self {
+            CallerStr::Wide(string) => wide_units(string)
+                .map(CallerUnits::Wide)
+                .ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY)),
+            CallerStr::Ansi(string) => HeapString::of_ansi(Some(string))
+                .map(CallerUnits::Ansi)
+                .map_err(Failure::Status),
+        }
+    }
+}
+
+/// A caller's string as [`CallerStr::units`] reads it.
+pub enum CallerUnits<'a> {
+    Ansi(HeapString),
+    Wide(WideUnits<'a>),
+}
+
+impl core::ops::Deref for CallerUnits<'_> {
+    type Target = [u16];
+
+    fn deref(&self) -> &[u16] {
+        match self {
+            CallerUnits::Ansi(string) => string.units(),
+            CallerUnits::Wide(units) => units,
         }
     }
 }

@@ -22,6 +22,7 @@ mod console;
 mod curdir;
 mod environment;
 mod files;
+mod formats;
 mod locale;
 mod lstr;
 mod modules;
