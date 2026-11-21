@@ -1333,11 +1333,14 @@ fn claim(flag: i32, fd: i32) -> Option<usize> {
     found
 }
 
-/// fopen's mode as `_open`'s flags and the stream's `_flag` bits, as MSDN's fopen documents it:
+/// fopen's mode as `_open`'s flags and the stream's `_flag` bits, as VC6's `_openfile` reads it:
 /// `r` reads an existing file, `w` writes a file it creates or truncates, `a` writes at the end of
-/// one it creates when missing; `+` both reads and writes; `t` or `b` sets the translation (else
-/// `_fmode` does). The other letters MSDN lists (`c`, `n`, and the hints) change nothing here.
-/// None for a mode starting otherwise (EINVAL).
+/// one it creates when missing; then up to one each of `+` (both reads and writes), `t` or `b`
+/// (the translation, else `_fmode`'s), `c` or `n` (the commit mode, which F2K's streams do not
+/// keep), `S` or `R` (`_O_SEQUENTIAL`, `_O_RANDOM`), `T` (`_O_SHORT_LIVED`) and `D`
+/// (`_O_TEMPORARY`). The reading stops at a letter it does not know or one of a kind it already
+/// took, the rest ignored (fd's modes capture: "rzb" and "rtb" read in text mode, "rbt" in
+/// binary). None for a mode starting otherwise.
 fn open_mode(mode: &[u8]) -> Option<(i32, i32)> {
     let (mut oflag, mut flag) = match mode.first() {
         Some(b'r') => (lowio::O_RDONLY, IOREAD),
@@ -1345,15 +1348,45 @@ fn open_mode(mode: &[u8]) -> Option<(i32, i32)> {
         Some(b'a') => (lowio::O_WRONLY | lowio::O_CREAT | lowio::O_APPEND, IOWRT),
         _ => return None,
     };
+    /// `given` added to `oflag` unless a flag of its `kind` is there already: whether it was.
+    fn once(oflag: &mut i32, given: i32, kind: i32) -> bool {
+        let free = *oflag & kind == 0;
+        if free {
+            *oflag |= given;
+        }
+        free
+    }
+    let (mut commit, mut scan) = (false, false);
     for &letter in &mode[1..] {
-        match letter {
+        let taken = match letter {
             b'+' => {
-                oflag = (oflag & !(lowio::O_WRONLY | lowio::O_RDONLY)) | lowio::O_RDWR;
-                flag = IORW;
+                let free = oflag & lowio::O_RDWR == 0;
+                if free {
+                    oflag = (oflag & !(lowio::O_WRONLY | lowio::O_RDONLY)) | lowio::O_RDWR;
+                    flag = IORW;
+                }
+                free
             }
-            b't' => oflag |= lowio::O_TEXT,
-            b'b' => oflag |= lowio::O_BINARY,
-            _ => {}
+            b't' => once(&mut oflag, lowio::O_TEXT, lowio::O_TEXT | lowio::O_BINARY),
+            b'b' => once(&mut oflag, lowio::O_BINARY, lowio::O_TEXT | lowio::O_BINARY),
+            b'T' => once(&mut oflag, lowio::O_SHORT_LIVED, lowio::O_SHORT_LIVED),
+            b'D' => once(&mut oflag, lowio::O_TEMPORARY, lowio::O_TEMPORARY),
+            b'c' | b'n' => !core::mem::replace(&mut commit, true),
+            b'S' | b'R' => {
+                let free = !core::mem::replace(&mut scan, true);
+                if free {
+                    oflag |= if letter == b'S' {
+                        lowio::O_SEQUENTIAL
+                    } else {
+                        lowio::O_RANDOM
+                    };
+                }
+                free
+            }
+            _ => false,
+        };
+        if !taken {
+            break;
         }
     }
     Some((oflag, flag))
@@ -1361,37 +1394,39 @@ fn open_mode(mode: &[u8]) -> Option<(i32, i32)> {
 
 /// fopen: the file `name` opened as `mode` says ([`open_mode`]) through `_open` (shared for
 /// reading and writing; a created file is read-write), and a stream over its descriptor. NULL for
-/// a bad mode (EINVAL), no free stream (EMFILE: checked first, as MSVC's fopen takes the stream
-/// before it opens the file), or `_open`'s failure (its errno).
+/// no free stream (EMFILE: checked first, as VC6's fopen takes the stream before it reads the
+/// mode), a bad mode (errno untouched: fd's modes capture shows `"q"` and `""` leaving it 0), or
+/// `_open`'s failure (its errno).
 ///
 /// # Safety
 ///
 /// `name` and `mode` are NUL-terminated.
 #[unsafe(export_name = "f2k_export_fopen")]
 pub unsafe extern "C" fn fopen(name: *const u8, mode: *const u8) -> *mut File {
+    // The stream first, held with no descriptor while the file opens.
+    let Some(i) = claim(IOREAD, -1) else {
+        return core::ptr::null_mut();
+    };
     // SAFETY: the caller's mode string.
     let mode = unsafe { bytes_until_nul(mode) };
-    let Some((oflag, flag)) = open_mode(mode) else {
-        set_errno(EINVAL);
-        return core::ptr::null_mut();
-    };
-    // The stream first, held with no descriptor while the file opens.
-    let Some(i) = claim(flag, -1) else {
-        return core::ptr::null_mut();
-    };
-    // SAFETY: the caller's NUL-terminated name.
-    let fd = unsafe { lowio::open_file(name, oflag, lowio::S_IREAD | lowio::S_IWRITE) };
-    with_iob(i, |s, _| {
-        if fd < 0 {
-            *s = File::UNUSED;
-        } else {
-            s.file = fd;
+    let fd = match open_mode(mode) {
+        Some((oflag, flag)) => {
+            // SAFETY: the caller's NUL-terminated name.
+            let fd = unsafe { lowio::open_file(name, oflag, lowio::S_IREAD | lowio::S_IWRITE) };
+            (fd >= 0).then_some((fd, flag))
         }
+        None => None,
+    };
+    with_iob(i, |s, _| match fd {
+        Some((fd, flag)) => {
+            s.file = fd;
+            s.flag = flag;
+        }
+        None => *s = File::UNUSED,
     });
-    if fd < 0 {
-        core::ptr::null_mut()
-    } else {
-        stream_at(i)
+    match fd {
+        Some(_) => stream_at(i),
+        None => core::ptr::null_mut(),
     }
 }
 
@@ -2190,6 +2225,45 @@ mod tests {
                 4
             );
         }
+    }
+
+    /// fopen's mode as VC6 reads it: a first letter `r`, `w` or `a`, then one of each kind at
+    /// most, the reading stopping at an unknown letter or a second of a kind (fd's modes capture:
+    /// "rzb" and "rtb" text, "rbt" binary, "q" and "" none).
+    #[test]
+    fn fopen_reads_its_mode_as_vc6_does() {
+        use lowio::{O_APPEND, O_BINARY, O_CREAT, O_RDONLY, O_RDWR, O_TEXT, O_TRUNC, O_WRONLY};
+        let mode = |text: &[u8]| open_mode(text);
+        assert_eq!(mode(b"r"), Some((O_RDONLY, IOREAD)));
+        assert_eq!(mode(b"rtb"), Some((O_TEXT, IOREAD)));
+        assert_eq!(mode(b"rbt"), Some((O_BINARY, IOREAD)));
+        assert_eq!(mode(b"rzb"), Some((O_RDONLY, IOREAD)));
+        assert_eq!(mode(b"r+b"), Some((O_RDWR | O_BINARY, IORW)));
+        assert_eq!(mode(b"r++b"), Some((O_RDWR, IORW)));
+        assert_eq!(
+            mode(b"wb+"),
+            Some((O_RDWR | O_CREAT | O_TRUNC | O_BINARY, IORW))
+        );
+        assert_eq!(
+            mode(b"a+D"),
+            Some((O_RDWR | O_CREAT | O_APPEND | lowio::O_TEMPORARY, IORW))
+        );
+        assert_eq!(
+            mode(b"wTDcS"),
+            Some((
+                O_WRONLY
+                    | O_CREAT
+                    | O_TRUNC
+                    | lowio::O_SHORT_LIVED
+                    | lowio::O_TEMPORARY
+                    | lowio::O_SEQUENTIAL,
+                IOWRT
+            ))
+        );
+        assert_eq!(mode(b"rcnb"), Some((O_RDONLY, IOREAD)));
+        assert_eq!(mode(b"rSRb"), Some((lowio::O_SEQUENTIAL, IOREAD)));
+        assert_eq!(mode(b"q"), None);
+        assert_eq!(mode(b""), None);
     }
 
     /// ftell after each byte read of a text file wholly buffered, as fd's textmode capture traces

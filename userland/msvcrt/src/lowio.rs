@@ -73,10 +73,14 @@ pub const O_WRONLY: i32 = 0x0001;
 pub const O_RDWR: i32 = 0x0002;
 const O_ACCESS: i32 = 0x0003;
 pub const O_APPEND: i32 = 0x0008;
+pub const O_RANDOM: i32 = 0x0010;
+pub const O_SEQUENTIAL: i32 = 0x0020;
+pub const O_TEMPORARY: i32 = 0x0040;
 pub const O_NOINHERIT: i32 = 0x0080;
 pub const O_CREAT: i32 = 0x0100;
 pub const O_TRUNC: i32 = 0x0200;
 pub const O_EXCL: i32 = 0x0400;
+pub const O_SHORT_LIVED: i32 = 0x1000;
 pub const O_TEXT: i32 = 0x4000;
 pub const O_BINARY: i32 = 0x8000;
 
@@ -89,6 +93,7 @@ pub const S_IWRITE: i32 = 0x0080;
 /// dispositions and the attributes.
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
+const DELETE: u32 = 0x0001_0000;
 const FILE_SHARE_READ_WRITE: u32 = 0x3;
 const CREATE_NEW: u32 = 1;
 const CREATE_ALWAYS: u32 = 2;
@@ -97,6 +102,10 @@ const OPEN_ALWAYS: u32 = 4;
 const TRUNCATE_EXISTING: u32 = 5;
 const FILE_ATTRIBUTE_READONLY: u32 = 0x01;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
+const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
+const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+const FILE_FLAG_RANDOM_ACCESS: u32 = 0x1000_0000;
 
 /// GetFileType's answers.
 const FILE_TYPE_UNKNOWN: u32 = 0;
@@ -604,7 +613,10 @@ struct OpenPlan {
 /// `_S_IWRITE`; `_O_TRUNC` alone truncates an existing file; `_O_APPEND` writes at the end;
 /// `_O_BINARY` or `_O_TEXT` sets the translation (`_O_BINARY` deciding when both are given), else
 /// `_fmode` does (text unless it is `_O_BINARY`); `_O_NOINHERIT` keeps the handle and the
-/// descriptor from a child.
+/// descriptor from a child. The hints are CreateFileA's flags, as VC6's `_open` passes them:
+/// `_O_TEMPORARY` deletes the file at its last handle's close (DELETE access asked too),
+/// `_O_SHORT_LIVED` makes it a temporary file (kept: fd's modes capture), `_O_SEQUENTIAL` or else
+/// `_O_RANDOM` says how it is read.
 fn open_plan(oflag: i32, pmode: i32, fmode: i32) -> Option<OpenPlan> {
     let access = match oflag & O_ACCESS {
         O_RDONLY => GENERIC_READ,
@@ -623,11 +635,24 @@ fn open_plan(oflag: i32, pmode: i32, fmode: i32) -> Option<OpenPlan> {
         (false, _, true) => TRUNCATE_EXISTING,
         (false, _, false) => OPEN_EXISTING,
     };
-    let attributes = if oflag & O_CREAT != 0 && pmode & S_IWRITE == 0 {
+    let mut access = access;
+    let mut attributes = if oflag & O_CREAT != 0 && pmode & S_IWRITE == 0 {
         FILE_ATTRIBUTE_READONLY
     } else {
         FILE_ATTRIBUTE_NORMAL
     };
+    if oflag & O_TEMPORARY != 0 {
+        attributes |= FILE_FLAG_DELETE_ON_CLOSE;
+        access |= DELETE;
+    }
+    if oflag & O_SHORT_LIVED != 0 {
+        attributes |= FILE_ATTRIBUTE_TEMPORARY;
+    }
+    if oflag & O_SEQUENTIAL != 0 {
+        attributes |= FILE_FLAG_SEQUENTIAL_SCAN;
+    } else if oflag & O_RANDOM != 0 {
+        attributes |= FILE_FLAG_RANDOM_ACCESS;
+    }
     let text = if oflag & O_BINARY != 0 {
         false
     } else if oflag & O_TEXT != 0 {
@@ -1366,6 +1391,33 @@ mod tests {
         assert_eq!(attributes(O_CREAT, S_IWRITE), FILE_ATTRIBUTE_NORMAL);
         assert_eq!(attributes(O_CREAT, 0x0100), FILE_ATTRIBUTE_READONLY);
         assert_eq!(attributes(0, 0), FILE_ATTRIBUTE_NORMAL);
+    }
+
+    /// The hints are CreateFileA's flags: `_O_TEMPORARY` deletes on close (with DELETE access),
+    /// `_O_SHORT_LIVED` is a temporary file's attribute, `_O_SEQUENTIAL` wins over `_O_RANDOM`.
+    #[test]
+    fn the_hints_are_createfiles_flags() {
+        let temporary = plan(O_RDWR | O_CREAT | O_TEMPORARY, S_IWRITE, 0);
+        assert_eq!(
+            (temporary.access, temporary.attributes),
+            (
+                GENERIC_READ | GENERIC_WRITE | DELETE,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE
+            )
+        );
+        let short = plan(O_RDWR | O_CREAT | O_SHORT_LIVED, S_IWRITE, 0);
+        assert_eq!(
+            short.attributes,
+            FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_TEMPORARY
+        );
+        assert_eq!(
+            plan(O_RDONLY | O_SEQUENTIAL | O_RANDOM, 0, 0).attributes,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN
+        );
+        assert_eq!(
+            plan(O_RDONLY | O_RANDOM, 0, 0).attributes,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_RANDOM_ACCESS
+        );
     }
 
     /// The descriptor's flags as spawn's crtfds capture shows them handed to a child: a file read

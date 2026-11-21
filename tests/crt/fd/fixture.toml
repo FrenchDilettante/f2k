@@ -6,7 +6,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-modes = "F2K ignores \"D\", \"T\", _O_TEMPORARY and _O_SHORT_LIVED, and skips an unknown mode letter where msvcrt 6 stops at it (\"rzb\" binary on F2K, text on Windows 2000)"
 nfiles = "F2K's msvcrt keeps its streams in _iob's 20 entries (its 18th fopen fails with EMFILE, where msvcrt 6 grows __piob to 512) and exports no _flushall or _fcloseall"
 conctrlz = "F2K's _read keeps a Ctrl-Z read from a device as data, and its console ReadFile does not answer a line starting with Ctrl-Z with 0 bytes"
 
