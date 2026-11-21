@@ -9,7 +9,7 @@
 use rtl::status::NtStatus;
 
 use crate::imports::{self, HeapBlock, UserBuffer};
-use crate::{caller_bytes_mut, spec, Out};
+use crate::{caller_bytes_mut, failed_with, spec, Out};
 
 /// GetUserObjectInformation's indexes (winuser.h).
 pub const UOI_NAME: u32 = 2;
@@ -21,11 +21,10 @@ pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 /// ERROR_NOACCESS: a buffer the call cannot reach (a null address with a length).
 pub const ERROR_NOACCESS: u32 = 998;
 
-/// A service's answer: its value, or none with the failure's status made the last error.
+/// A service's answer: its value, or none with the failure's status made the last error (through
+/// ntdll's RtlNtStatusToDosError, not [`crate::window_error`]).
 fn answered<T>(answer: Result<T, NtStatus>) -> Option<T> {
-    answer
-        .map_err(|status| imports::set_last_error(imports::dos_error(status)))
-        .ok()
+    failed_with(answer, imports::dos_error)
 }
 
 /// GetProcessWindowStation: the handle of the calling process's window station (the same handle
