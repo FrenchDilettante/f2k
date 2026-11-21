@@ -493,6 +493,38 @@ fn rename_over(
     Ok(())
 }
 
+/// A listing query's search, `held` the object's: the one the first query made, back to the
+/// directory's start under RestartScan (`restart`; its expression kept, the query's name not
+/// consulted), or, for the first query, the one `make` makes of its name (RestartScan then changes
+/// nothing). The search as the query starts it.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn resume_search(
+    held: &mut Option<crate::fs::search::Search>,
+    restart: bool,
+    make: impl FnOnce() -> Result<crate::fs::search::Search, crate::status::NtStatus>,
+) -> Result<crate::fs::search::Search, crate::status::NtStatus> {
+    match held {
+        Some(search) => {
+            if restart {
+                search.restart();
+            }
+            Ok(*search)
+        }
+        None => Ok(*held.insert(make()?)),
+    }
+}
+
+/// The units of a listing query's FileName (a UNICODE_STRING of `length` bytes, an odd one rounded
+/// down): STATUS_OBJECT_NAME_INVALID past the longest expression a search keeps.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn expression_length(length: u16) -> Result<usize, crate::status::NtStatus> {
+    let count = usize::from(length) / 2;
+    if count > crate::fs::search::MAX_EXPRESSION {
+        return Err(crate::status::STATUS_OBJECT_NAME_INVALID);
+    }
+    Ok(count)
+}
+
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
@@ -1351,6 +1383,50 @@ mod tests {
             rename_over(true, false, file, true),
             Err(STATUS_ACCESS_DENIED)
         );
+    }
+
+    /// A listing's search: the first query makes it of its name, RestartScan then changing nothing;
+    /// a later query continues it, RestartScan taking it back to the start with its expression
+    /// (the later query's name is never read). A name longer than an expression is refused.
+    #[test]
+    fn a_listing_s_search() {
+        use crate::fs::search::{Search, MAX_EXPRESSION};
+        use crate::status::*;
+        let pattern = rtl::testing::wide("*.TXT");
+        let mut held = None;
+        let made = resume_search(&mut held, true, || Ok(Search::new(Some(&pattern))));
+        assert_eq!(
+            made.map(|search| search.expression().to_vec()),
+            Ok(pattern.clone())
+        );
+        let kept = held.as_mut().unwrap();
+        (kept.next, kept.answered) = (7, true);
+
+        let never = || -> Result<Search, NtStatus> { panic!("a later query's name is not read") };
+        let resumed = resume_search(&mut held, false, never).unwrap();
+        assert_eq!((resumed.next, resumed.answered), (7, true));
+        let restarted = resume_search(&mut held, true, never).unwrap();
+        assert_eq!((restarted.next, restarted.answered), (0, false));
+        assert_eq!(restarted.expression(), &pattern[..]);
+        assert_eq!(held.map(|search| search.next), Some(0), "the object's own");
+
+        let mut fresh = None;
+        assert_eq!(
+            resume_search(&mut fresh, false, || Err(STATUS_ACCESS_VIOLATION)).map(|_| ()),
+            Err(STATUS_ACCESS_VIOLATION)
+        );
+        assert!(fresh.is_none(), "a failed first query makes no search");
+        let every = resume_search(&mut fresh, false, || Ok(Search::new(None))).unwrap();
+        assert_eq!(every.expression(), &[u16::from(b'*')]);
+
+        assert_eq!(expression_length(0), Ok(0));
+        assert_eq!(expression_length(1), Ok(0), "an odd byte rounds down");
+        assert_eq!(expression_length(11), Ok(5));
+        let most = 2 * MAX_EXPRESSION as u16;
+        assert_eq!(expression_length(most), Ok(MAX_EXPRESSION));
+        assert_eq!(expression_length(most + 1), Ok(MAX_EXPRESSION));
+        assert_eq!(expression_length(most + 2), Err(STATUS_OBJECT_NAME_INVALID));
+        assert_eq!(expression_length(u16::MAX), Err(STATUS_OBJECT_NAME_INVALID));
     }
 
     /// A disk write starts at the end for FILE_WRITE_TO_END_OF_FILE or an append-only handle

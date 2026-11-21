@@ -42,6 +42,8 @@ use crate::status::{
     NtStatus,
     STATUS_BUFFER_OVERFLOW,
     STATUS_INFO_LENGTH_MISMATCH,
+    STATUS_NO_MORE_FILES,
+    STATUS_NO_SUCH_FILE,
     STATUS_SUCCESS,
 };
 
@@ -435,6 +437,95 @@ pub fn directory_entry(class: ListingClass, entry: &Entry, out: &mut [u8]) -> Re
     }
 }
 
+/// A listing's records as one query packs them into its buffer (`out`, at least one record's fixed
+/// part): each eight-byte aligned after the one before, whose NextEntryOffset is the distance to
+/// it (the last one's zero). The first record always goes in, cut when its name does not fit; a
+/// later one goes in only whole, else it waits for the next query. A single-entry query takes one.
+pub struct Listing<'a> {
+    class: ListingClass,
+    out: &'a mut [u8],
+    single: bool,
+    /// The bytes used, the last record's start, and whether its name was cut.
+    used: usize,
+    last: Option<usize>,
+    cut: bool,
+}
+
+impl<'a> Listing<'a> {
+    pub fn new(class: ListingClass, out: &'a mut [u8], single: bool) -> Self {
+        Listing {
+            class,
+            out,
+            single,
+            used: 0,
+            last: None,
+            cut: false,
+        }
+    }
+
+    /// Whether another record could start: the first always can; a later one needs room for its
+    /// fixed part after the alignment.
+    pub fn has_room(&self) -> bool {
+        self.last.is_none()
+            || self.used.next_multiple_of(8) + self.class.fixed_size() <= self.out.len()
+    }
+
+    /// Add `entry`'s record: whether it went in (a later record that does not fit whole does not).
+    pub fn add(&mut self, entry: &Entry) -> bool {
+        if !self.has_room() {
+            return false;
+        }
+        let start = self.used.next_multiple_of(8);
+        let written = match directory_entry(self.class, entry, &mut self.out[start..]) {
+            Ok(written) => written,
+            Err(_) if self.last.is_some() => return false,
+            Err(written) => {
+                self.cut = true;
+                written
+            }
+        };
+        if let Some(previous) = self.last {
+            let offset = (start - previous) as u32;
+            self.out[previous..previous + 4].copy_from_slice(&offset.to_le_bytes());
+        }
+        self.last = Some(start);
+        self.used = start + written;
+        true
+    }
+
+    /// Whether the query stops at the records it has: a cut one, or a single-entry query's one.
+    pub fn done(&self) -> bool {
+        self.cut || (self.single && self.last.is_some())
+    }
+
+    /// The bytes the records take, the last one's padding left out.
+    pub fn used(&self) -> usize {
+        self.used
+    }
+
+    /// Whether any record went in.
+    pub fn any(&self) -> bool {
+        self.last.is_some()
+    }
+
+    /// Whether the last record's name was cut.
+    pub fn cut(&self) -> bool {
+        self.cut
+    }
+}
+
+/// A listing query's answer: STATUS_SUCCESS with its records, STATUS_BUFFER_OVERFLOW when the one
+/// record's name was cut; with none, STATUS_NO_MORE_FILES for a search that has answered before
+/// (`answered`, an earlier query's records), STATUS_NO_SUCH_FILE for one that never matched.
+pub fn listing_status(any: bool, cut: bool, answered: bool) -> Result<NtStatus, NtStatus> {
+    match (any, answered) {
+        (false, true) => Err(STATUS_NO_MORE_FILES),
+        (false, false) => Err(STATUS_NO_SUCH_FILE),
+        (true, _) if cut => Ok(STATUS_BUFFER_OVERFLOW),
+        (true, _) => Ok(STATUS_SUCCESS),
+    }
+}
+
 // --- The volume ----------------------------------------------------------------------------------
 
 /// The volume's facts the volume classes report.
@@ -748,6 +839,111 @@ mod tests {
         assert!(
             !STATUS_BUFFER_OVERFLOW.is_success(),
             "a warning fails NT_SUCCESS"
+        );
+    }
+
+    /// An entry named `name` at record `index`, for the listing tests.
+    fn listed<'a>(index: u32, name: &'a [u16]) -> Entry<'a> {
+        Entry {
+            index,
+            file: file(),
+            allocation: 0,
+            name,
+            short: &[],
+        }
+    }
+
+    /// A listing packs its records eight-byte aligned, each one's NextEntryOffset the distance to
+    /// the next and the last's zero; a record that does not fit whole after another is left for
+    /// the next query, and a record's fixed part that cannot start is not tried.
+    #[test]
+    fn a_listing_packs_aligned_records() {
+        let (a, bc) = (wide("a"), wide("bc"));
+        // FileNamesInformation: 12 bytes, then the name: "a" 14, padded to 16; "bc" 16.
+        let mut out = [0xCCu8; 64];
+        let mut listing = Listing::new(ListingClass::Names, &mut out, false);
+        assert!(listing.has_room() && !listing.any());
+        assert!(listing.add(&listed(5, &a)));
+        assert_eq!(listing.used(), 14);
+        assert!(listing.add(&listed(6, &bc)));
+        assert_eq!(listing.used(), 16 + 16);
+        assert!(listing.add(&listed(7, &a)));
+        assert_eq!(listing.used(), 32 + 14);
+        assert!(!listing.done() && listing.any() && !listing.cut());
+        // The next starts at 48, its fixed part 12 bytes, then its name: 16 bytes left.
+        assert!(listing.has_room());
+        let abc = wide("abc");
+        assert!(!listing.add(&listed(8, &abc)), "18 bytes do not fit in 16");
+        assert!(listing.add(&listed(9, &bc)), "16 bytes fit exactly");
+        assert_eq!(listing.used(), 64);
+        assert!(!listing.has_room(), "nothing starts at the end");
+        assert!(!listing.add(&listed(10, &[])));
+        assert_eq!(
+            (
+                u32_at(&out, 0),
+                u32_at(&out, 16),
+                u32_at(&out, 32),
+                u32_at(&out, 48)
+            ),
+            (16, 16, 16, 0),
+            "each NextEntryOffset, the last zero"
+        );
+        assert_eq!(
+            (
+                u32_at(&out, 4),
+                u32_at(&out, 20),
+                u32_at(&out, 36),
+                u32_at(&out, 52)
+            ),
+            (5, 6, 7, 9),
+            "each FileIndex"
+        );
+        assert_eq!(&out[12..14], &[b'a', 0]);
+        assert_eq!(&out[14..16], &[0xCC, 0xCC], "the padding untouched");
+    }
+
+    /// The first record comes back cut when its name does not fit, and ends the query; a
+    /// single-entry query ends after its one record.
+    #[test]
+    fn a_listing_s_first_record_is_cut_and_a_single_query_takes_one() {
+        let name = wide("abcdef");
+        let mut out = [0u8; 16];
+        let mut listing = Listing::new(ListingClass::Names, &mut out, false);
+        assert!(listing.add(&listed(1, &name)));
+        assert!(listing.cut() && listing.done());
+        assert_eq!(
+            listing.used(),
+            16,
+            "the fixed part and the two units that fit"
+        );
+        assert_eq!(u32_at(&out, 8), 12, "FileNameLength is the whole name's");
+
+        let mut out = [0u8; 64];
+        let mut listing = Listing::new(ListingClass::Names, &mut out, true);
+        assert!(!listing.done());
+        assert!(listing.add(&listed(1, &name)));
+        assert!(listing.done() && !listing.cut());
+        assert_eq!(listing.used(), 24);
+    }
+
+    /// A listing query's answer by what it found and what its search answered before.
+    #[test]
+    fn a_listing_s_status() {
+        use crate::status::*;
+        assert_eq!(listing_status(true, false, false), Ok(STATUS_SUCCESS));
+        assert_eq!(listing_status(true, false, true), Ok(STATUS_SUCCESS));
+        assert_eq!(listing_status(true, true, true), Ok(STATUS_BUFFER_OVERFLOW));
+        assert_eq!(
+            listing_status(true, true, false),
+            Ok(STATUS_BUFFER_OVERFLOW)
+        );
+        assert_eq!(
+            listing_status(false, false, true),
+            Err(STATUS_NO_MORE_FILES)
+        );
+        assert_eq!(
+            listing_status(false, false, false),
+            Err(STATUS_NO_SUCH_FILE)
         );
     }
 

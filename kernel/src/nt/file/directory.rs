@@ -12,7 +12,8 @@ use rtl::nt::UnicodeString;
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{check_access, cluster_bytes, complete, completion_event, file_object, signal};
-use super::info::{self, Entry, ListingClass};
+use super::info::{self, Entry, Listing, ListingClass};
+use super::{expression_length, resume_search};
 use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
@@ -150,44 +151,30 @@ fn list(
     restart: bool,
     directory: &File,
 ) -> Result<(NtResult, usize), NtStatus> {
-    let offset = class.fixed_size();
     // The search: made by the first query, of its name (a UNICODE_STRING) or of every name.
-    let search = match &mut held.search {
-        Some(search) => {
-            if restart {
-                search.restart();
-            }
-            *search
+    let search = resume_search(&mut held.search, restart, || {
+        let mut units = [0u16; MAX_EXPRESSION];
+        let mut expression = None;
+        if !file_name.is_null() {
+            let string = file_name.cast::<UnicodeString<u32>>().read()?;
+            let name = &mut units[..expression_length(string.length)?];
+            UserAddr(string.buffer).read_units(name)?;
+            expression = (!name.is_empty()).then_some(&*name);
         }
-        None => {
-            let mut units = [0u16; MAX_EXPRESSION];
-            let mut expression = None;
-            if !file_name.is_null() {
-                let string = file_name.cast::<UnicodeString<u32>>().read()?;
-                let count = usize::from(string.length) / 2;
-                let name = units.get_mut(..count).ok_or(STATUS_OBJECT_NAME_INVALID)?;
-                UserAddr(string.buffer).read_units(name)?;
-                expression = (count > 0).then_some(&units[..count]);
-            }
-            *held.search.insert(Search::new(expression))
-        }
-    };
+        Ok(Search::new(expression))
+    })?;
     let expression = search.expression();
     let mut buffer = [0u8; MAX_BUFFER];
     let cluster = cluster_bytes();
-    // The entries that fit, from the search's next record on: (bytes used, the last record's
-    // start, the next record index, whether a name was cut).
-    let mut used = 0usize;
-    let mut last: Option<usize> = None;
+    // The entries that fit, from the search's next record on, and the next record index.
+    let mut listing = Listing::new(class, &mut buffer[..room], single);
     let mut next = search.next;
-    let mut cut = false;
     let walked = crate::fs::fat32::volume::with_boot_volume(|volume| {
         walk(volume, directory.first_cluster, |listed| {
             if listed.index < search.next || !entry_matches(listed, expression) {
                 return true;
             }
-            let start = used.next_multiple_of(8);
-            if last.is_some() && start + offset > room {
+            if !listing.has_room() {
                 return false;
             }
             let mut name = [0u16; MAX_NAME];
@@ -206,45 +193,28 @@ fn list(
                 name: &name[..name_length],
                 short: &short[..short_length],
             };
-            let written = match info::directory_entry(class, &entry, &mut buffer[start..room]) {
-                Ok(written) => written,
-                // An entry that does not fit after another waits for the next query; the first one
-                // comes back cut.
-                Err(_) if last.is_some() => return false,
-                Err(written) => {
-                    cut = true;
-                    written
-                }
-            };
-            if let Some(previous) = last {
-                let offset = (start - previous) as u32;
-                buffer[previous..previous + 4].copy_from_slice(&offset.to_le_bytes());
+            // An entry that does not fit after another waits for the next query; the first one
+            // comes back cut.
+            if !listing.add(&entry) {
+                return false;
             }
-            last = Some(start);
-            used = start + written;
             next = listed.index + 1;
-            !(cut || single)
+            !listing.done()
         })
     });
+    let used = listing.used();
     let result = match walked {
         Some(Ok(())) => {
-            let answered = search.answered || last.is_some();
+            let answered = search.answered || listing.any();
             if let Some(state) = held.search.as_mut() {
                 state.next = next;
                 state.answered = answered;
             }
-            match last {
-                None if search.answered => Err(STATUS_NO_MORE_FILES),
-                None => Err(STATUS_NO_SUCH_FILE),
-                Some(_) => {
-                    information.write(&buffer[..used])?;
-                    Ok(if cut {
-                        STATUS_BUFFER_OVERFLOW
-                    } else {
-                        STATUS_SUCCESS
-                    })
-                }
+            let status = info::listing_status(listing.any(), listing.cut(), search.answered);
+            if status.is_ok() {
+                information.write(&buffer[..used])?;
             }
+            status
         }
         Some(Err(_)) | None => Err(STATUS_FILE_CORRUPT_ERROR),
     };
