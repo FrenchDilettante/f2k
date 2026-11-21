@@ -151,6 +151,22 @@ struct Identity {
     dir_phys: u32,
 }
 
+impl Identity {
+    /// A record no process holds.
+    const NONE: Identity = Identity {
+        name: ProcessName::EMPTY,
+        id: 0,
+        parent_id: 0,
+        leg: None,
+        object: crate::ob::ObjectId {
+            kind: crate::ob::ObjectType::Process,
+            index: 0,
+            generation: 0,
+        },
+        dir_phys: 0,
+    };
+}
+
 /// A process record's identity, written by the pool as it takes the record for a new process and
 /// copied out by every read. The write needs no lock: the record is the new process's alone then —
 /// its object was free until the pool took it, so nothing names the process yet — and on the one
@@ -368,21 +384,32 @@ impl Process {
     pub const fn empty() -> Self {
         Process {
             sched: PinnedProcess::new(0, crate::sched::NORMAL_BASE),
-            identity: IdentityCell::new(Identity {
-                name: ProcessName::EMPTY,
-                id: 0,
-                parent_id: 0,
-                leg: None,
-                object: crate::ob::ObjectId {
-                    kind: crate::ob::ObjectType::Process,
-                    index: 0,
-                    generation: 0,
-                },
-                dir_phys: 0,
-            }),
+            identity: IdentityCell::new(Identity::NONE),
             handles: ShortLock::new(HandleTable::empty()),
             space: ShortLock::new(AddressSpace::new()),
             state: ShortLock::new(ProcessState::fresh()),
+        }
+    }
+
+    /// Write a record no process holds at `record`, part by part: the in-place form of
+    /// [`Process::empty`], for a record made at its final address (by value it would pass through
+    /// the caller's stack, which is smaller than it). The handle table and the address space are
+    /// built in place at their locks' first acquisitions.
+    ///
+    /// # Safety
+    ///
+    /// `record` is valid for writes and aligned; its previous contents are overwritten, not
+    /// dropped.
+    #[cfg(target_arch = "x86")]
+    pub(super) unsafe fn write_empty(record: *mut Process) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field is written, the two large ones in place.
+        unsafe {
+            addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
+            addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
+            addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
+            ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
+            ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
         }
     }
 
@@ -1346,6 +1373,14 @@ fn release_record(process: &Process) {
 #[cfg(target_arch = "x86")]
 static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
 
+/// The free frames as the teardown audits count them: the frame database's, with the frames the
+/// process records hold — permanent allocations made as the pool grows (see [`pool`]), which no
+/// process's end gives back.
+#[cfg(target_arch = "x86")]
+fn audited_frames() -> u32 {
+    crate::mem::bootmem::with_frame_db(|db| db.available()) + pool::record_frames()
+}
+
 /// Record the allocator baseline (`available()` at the call site).
 ///
 /// # Panics
@@ -1353,7 +1388,7 @@ static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new(
 /// The baseline is recorded already: the boot records it once.
 #[cfg(target_arch = "x86")]
 pub fn record_allocator_baseline() {
-    BASELINE_FRAMES.set(crate::mem::bootmem::with_frame_db(|db| db.available()));
+    BASELINE_FRAMES.set(audited_frames());
 }
 
 /// The frame database's structure audit, valid at any time and run at every reap: whether it holds.
@@ -1362,8 +1397,9 @@ pub fn audit_structures() -> bool {
     crate::mem::bootmem::with_frame_db(|db| db.audit().is_ok())
 }
 
-/// The free frames now and at the post-boot baseline: equal at quiescence, when no process holds a
-/// frame (see [`exit::DeferredAudits`]).
+/// The free frames now and at the post-boot baseline, the process records' counted with them (see
+/// [`audited_frames`]): equal at quiescence, when no process holds a frame (see
+/// [`exit::DeferredAudits`]).
 ///
 /// # Panics
 ///
@@ -1371,8 +1407,7 @@ pub fn audit_structures() -> bool {
 #[cfg(target_arch = "x86")]
 pub fn frames_against_baseline() -> (u32, u32) {
     let baseline = *BASELINE_FRAMES.get();
-    let available = crate::mem::bootmem::with_frame_db(|db| db.available());
-    (available, baseline)
+    (audited_frames(), baseline)
 }
 
 #[cfg(test)]
@@ -1410,6 +1445,45 @@ mod tests {
 
     fn fresh_process() -> Box<Process> {
         Box::new(record_at(0x0090_0000))
+    }
+
+    /// A process's user-APC share fills at [`USER_APCS`](crate::sched::database::USER_APCS)
+    /// records — the next QueueUserAPC finds none (NtQueueApcThread's STATUS_NO_MEMORY) — while
+    /// another process's share stays whole, and a record that leaves its queue serves the next.
+    #[test]
+    fn a_process_user_apc_share_fills_and_reuses() {
+        use crate::sched::apc::{nop_kernel_routine, ApcMode};
+        use crate::sched::database::USER_APCS;
+        fn normal(_: ThreadId, _: usize, _: usize, _: usize) {}
+
+        let dispatcher = crate::sched::testkit::dispatcher();
+        let target = crate::sched::testkit::thread(crate::sched::testkit::process(8));
+        let process = fresh_process();
+        let mut queued = Vec::new();
+        while let Some(apc) = process.free_apc(dispatcher) {
+            dispatcher.apc_mut(apc).init(
+                target,
+                nop_kernel_routine,
+                Some(normal),
+                ApcMode::User,
+                0,
+            );
+            assert!(dispatcher.queue_apc(apc, 0, 0, 0));
+            queued.push(apc);
+        }
+        assert_eq!(queued.len(), USER_APCS, "the share is full");
+
+        let mut other = record_at(0x0091_0000);
+        other.identity.0.get_mut().object.index = 1;
+        assert!(
+            other
+                .free_apc(dispatcher)
+                .is_some_and(|apc| !queued.contains(&apc)),
+            "another process's share is its own"
+        );
+
+        assert!(dispatcher.remove_apc(queued[USER_APCS / 2]));
+        assert_eq!(process.free_apc(dispatcher), Some(queued[USER_APCS / 2]));
     }
 
     /// A process's name: its image's file name without the extension, cut at fifteen bytes (the

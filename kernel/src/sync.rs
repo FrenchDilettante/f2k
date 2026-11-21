@@ -242,6 +242,30 @@ impl<T> ShortLock<T> {
         }
     }
 
+    /// Write a free lock at `lock` whose value `build` writes in place at the first acquisition:
+    /// the in-place form of [`ShortLock::in_place`], for a lock inside a record built at its final
+    /// address (by value the lock, value storage and all, would pass through the caller's stack).
+    ///
+    /// # Safety
+    ///
+    /// `lock` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    /// `build` is as [`ShortLock::in_place`] requires.
+    pub unsafe fn write_in_place(lock: *mut Self, build: unsafe fn(*mut T)) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field but the value is written, and the value is
+        // left to `build`, which the first acquisition runs before any guard reads it.
+        unsafe {
+            addr_of_mut!((*lock).count).write(AtomicI32::new(1));
+            addr_of_mut!((*lock).contention).write(AtomicU32::new(0));
+            addr_of_mut!((*lock).owner).write(AtomicU32::new(0));
+            addr_of_mut!((*lock).event).write(UnsafeCell::new(Event::new(
+                EventKind::Synchronization,
+                false,
+            )));
+            addr_of_mut!((*lock).build).write(UnsafeCell::new(Some(build)));
+        }
+    }
+
     /// Take the lock: raise to the APC level, then take it, waiting while another thread holds it.
     /// The guard keeps the passive token borrowed; dropping it releases the lock and lowers.
     ///

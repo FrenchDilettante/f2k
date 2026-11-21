@@ -407,6 +407,28 @@ impl AddressSpace {
         }
     }
 
+    /// Write the empty space at `space`, element by element: the in-place form of [`Self::new`],
+    /// for a space built inside a process record at its final address (by value it would pass
+    /// through the caller's stack).
+    ///
+    /// # Safety
+    ///
+    /// `space` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    pub unsafe fn write_empty(space: *mut AddressSpace) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; both tables are written element by element.
+        unsafe {
+            let regions = addr_of_mut!((*space).regions) as *mut Option<Region>;
+            for index in 0..REGIONS {
+                regions.add(index).write(None);
+            }
+            let views = addr_of_mut!((*space).views) as *mut Option<View>;
+            for index in 0..VIEWS {
+                views.add(index).write(None);
+            }
+        }
+    }
+
     /// Whether another view can be recorded.
     pub fn has_view_room(&self) -> bool {
         self.views.iter().any(Option::is_none)

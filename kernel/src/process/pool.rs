@@ -4,10 +4,15 @@
 //! A record is in use while its process object lives ([`crate::ob`]'s process pool, same index):
 //! the object is created with the record and holds the process's own reference until its deletion,
 //! so a handle to the process keeps its record and its address space, as Windows 2000's keeps
-//! the process until its object's deletion. The capacity
-//! is fixed: a process created while every record is in use is refused ([`create`]). The records
-//! are shared: what changes in one sits behind its own locks (see [`Process`]), so every accessor
-//! hands out `&'static Process`, which every thread of the process may hold at once.
+//! the process until its object's deletion. The pool grows: a record is made in the nonpaged pool
+//! ([`crate::mem::pool`]) the first time a process takes its index, and kept for the kernel's life,
+//! reused by every later process at that index, so it never moves (Windows 2000 takes its
+//! EPROCESS from the nonpaged pool too). A record costs some 40 KiB: built into the kernel's image,
+//! [`MAX_PROCESSES`] of them would not fit its window. The capacity is [`MAX_PROCESSES`]: a process
+//! created while every index is in use, or whose record the pool has no room for, is refused
+//! ([`create`]). The records are shared: what changes in one sits behind its own locks (see
+//! [`Process`]), so every accessor hands out `&'static Process`, which every thread of the process
+//! may hold at once.
 //!
 //! A running thread has two processes (see [`crate::sched::attach`]), and the pool answers both,
 //! by the indices the processor's slots name them by. The current process, the calling process of
@@ -21,21 +26,71 @@
 //! address space — takes it explicitly.
 
 #[cfg(target_arch = "x86")]
+use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+
+#[cfg(target_arch = "x86")]
 use super::Process;
 
-/// How many processes can exist at once.
-pub const MAX_PROCESSES: usize = 16;
+/// How many processes can exist at once, across the system.
+pub const MAX_PROCESSES: usize = 64;
 
-/// The process records, built with the kernel: a record no process holds is an empty one, and a
-/// new process's record starts over in place ([`Process`]'s parts are too large to pass through a
-/// stack by value).
+/// The process records, by pool index: none until a process first takes the index, then the
+/// record made for it, at its final address (see the module notes).
 #[cfg(target_arch = "x86")]
-static POOL: [Process; MAX_PROCESSES] = [const { Process::empty() }; MAX_PROCESSES];
+static POOL: [AtomicPtr<Process>; MAX_PROCESSES] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_PROCESSES];
+
+/// How many frames the records hold: the pool's permanent allocations, which the teardown audits
+/// count with the free frames (see [`crate::process::frames_against_baseline`]).
+#[cfg(target_arch = "x86")]
+static RECORD_FRAMES: AtomicU32 = AtomicU32::new(0);
+
+/// How many frames the process records hold (see [`RECORD_FRAMES`]).
+#[cfg(target_arch = "x86")]
+pub fn record_frames() -> u32 {
+    RECORD_FRAMES.load(Ordering::Relaxed)
+}
+
+/// The record at pool `index`, if one was made.
+#[cfg(target_arch = "x86")]
+fn made(index: usize) -> Option<&'static Process> {
+    let record = POOL[index].load(Ordering::Acquire);
+    // SAFETY: a published record is a whole `Process`, at its final address, never freed.
+    (!record.is_null()).then(|| unsafe { &*record })
+}
+
+/// The record at pool `index`, made in the nonpaged pool when none was yet: none when the pool
+/// has no room for it. Only the creator of the process object at `index` calls it, so no two makes
+/// of one index meet.
+#[cfg(target_arch = "x86")]
+fn make(index: usize) -> Option<&'static Process> {
+    if let Some(record) = made(index) {
+        return Some(record);
+    }
+    let block = crate::mem::pool::allocate(core::mem::size_of::<Process>())?;
+    let record = block.virtual_address() as *mut Process;
+    // Kept for the kernel's life: the record never goes, so its references are `'static`.
+    core::mem::forget(block);
+    // SAFETY: the block is page-aligned, mapped in every address space, ours alone and large
+    // enough. The record is written in place, part by part: by value it would pass through the
+    // stack, which is smaller than it.
+    unsafe { Process::write_empty(record) };
+    RECORD_FRAMES.fetch_add(
+        crate::mem::pool::pages_for(core::mem::size_of::<Process>()) as u32,
+        Ordering::Relaxed,
+    );
+    POOL[index].store(record, Ordering::Release);
+    made(index)
+}
 
 /// The record at pool `index`, whatever it holds (the caller knows a process holds it).
+///
+/// # Panics
+///
+/// No process ever took `index`.
 #[cfg(target_arch = "x86")]
 pub fn record(index: u16) -> &'static Process {
-    &POOL[index as usize]
+    made(index as usize).expect("a process record taken by a live process")
 }
 
 /// The process objects that live now, by pool index, as one hold of the directory finds them.
@@ -49,10 +104,13 @@ fn live_objects() -> [Option<crate::ob::ObjectId>; MAX_PROCESSES] {
 /// Every record whose process object lives, with its object.
 #[cfg(target_arch = "x86")]
 fn live() -> impl Iterator<Item = (&'static Process, crate::ob::ObjectId)> {
-    POOL.iter().zip(live_objects()).filter_map(|(process, id)| {
-        id.filter(|&id| process.object() == id)
-            .map(|id| (process, id))
-    })
+    live_objects()
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, id)| {
+            let (process, id) = (made(index)?, id?);
+            (process.object() == id).then_some((process, id))
+        })
 }
 
 /// Every process that has not ended, in pool order: the process listing's. As the toolhelp
@@ -69,8 +127,10 @@ pub fn listed() -> impl Iterator<Item = &'static Process> {
 /// Create a process: its object and its record at the same index, the record taken in place over
 /// the address space at `dir_phys`, named `name`, created by the process whose client id is
 /// `parent_id` (zero: none), running as leg `leg` (none for a child).
-/// STATUS_INSUFFICIENT_RESOURCES when every process record is in use (Windows 2000's answer to a
-/// full table); nothing is taken then, and the address space stays the caller's.
+/// STATUS_INSUFFICIENT_RESOURCES when every process record is in use, or a record not yet made
+/// finds no room in the nonpaged pool (Windows 2000's answer to a full table and to an exhausted
+/// pool); nothing is taken then — the object made goes again — and the address space stays the
+/// caller's.
 #[cfg(target_arch = "x86")]
 pub(super) fn create(
     dir_phys: u32,
@@ -80,7 +140,13 @@ pub(super) fn create(
 ) -> Result<&'static Process, crate::status::NtStatus> {
     let object = crate::ob::locked(|directory| directory.create_process())
         .ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
-    let process = record(object.index);
+    let Some(process) = make(object.index as usize) else {
+        // Nothing names the object yet, and nothing ran on it: its creator's reference was its
+        // only one, and a process object's deletion leaves nothing to finish.
+        let left = crate::ob::locked(|directory| directory.dereference(object));
+        debug_assert!(left.is_none(), "a process object's deletion leaves nothing");
+        return Err(crate::status::STATUS_INSUFFICIENT_RESOURCES);
+    };
     process.renew(object, dir_phys, name, leg, parent_id);
     Ok(process)
 }

@@ -180,12 +180,12 @@ PROCESS_CONCURRENT_MD = (
     "F2K: process suite complete: 16 run, 0 faulted, 0 leaks",
 )
 
-# One leg more than the process pool holds: sixteen exit0 legs load, the seventeenth's process is
+# One leg more than the process pool holds: sixty-four exit0 legs load, the sixty-fifth's process is
 # refused (STATUS_INSUFFICIENT_RESOURCES: every process record in use), reported after its start
 # line, and the boot halts there, as on any leg that does not load: no leg runs.
 PROCESS_CONCURRENT_TOO_MANY = (
     *BOOTED,
-    *(f"F2K: process {index} of 17: exit0" for index in range(1, 18)),
+    *(f"F2K: process {index} of 65: exit0" for index in range(1, 66)),
     "F2K: process not created (status 0xc000009a)",
 )
 
@@ -622,9 +622,9 @@ CASES = (
     ),
     Case(
         name="process-concurrent-too-many",
-        description="seventeen legs side by side, one more than the process pool holds: the seventeenth's creation is refused with its status after its start line, and the boot halts with no leg run",
+        description="sixty-five legs side by side, one more than the process pool holds: the sixty-fifth's creation is refused with its status after its start line, and the boot halts with no leg run",
         image="kernel",
-        cmdline=" ;; ".join(("exit0",) * 17),
+        cmdline=" ;; ".join(("exit0",) * 65),
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_CONCURRENT_TOO_MANY,

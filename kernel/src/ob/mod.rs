@@ -2295,6 +2295,31 @@ mod tests {
         assert_eq!(directory.create_timer(true), None, "full again");
     }
 
+    /// The process table fills at its capacity — a create is refused, nothing made — and a process
+    /// object whose creator's reference was its only one goes with it (a create whose record the
+    /// pool could not make undoes so), its record serving the next create.
+    #[test]
+    fn the_process_table_fills_and_reuses() {
+        let directory = directory();
+        let processes: Vec<_> = (0..PROCESSES)
+            .map(|_| directory.create_process().unwrap())
+            .collect();
+        assert_eq!(directory.create_process(), None, "the table is full");
+        assert_eq!(
+            directory.live_objects(),
+            PROCESSES,
+            "the refusal made nothing"
+        );
+
+        let undone = processes[PROCESSES - 1];
+        assert_eq!(directory.dereference(undone), None, "nothing to finish");
+        assert!(!directory.is_live(undone));
+        let reused = directory.create_process().unwrap();
+        assert_eq!(reused.index, undone.index, "the freed record is reused");
+        assert_ne!(reused.generation, undone.generation);
+        assert_eq!(directory.create_process(), None, "full again");
+    }
+
     /// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
     /// nothing of it to abandon.
     #[test]
