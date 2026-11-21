@@ -5,19 +5,22 @@
 //! `%[flags][width][.precision][size]type`, as MSDN's "Format Specification Fields" describes
 //! Visual C++ 6's, and as the corpus captures pin it:
 //!
-//! - flags `-`, `+`, space, `#` (`0x`/`0X` before a nonzero hex number, `0` before octal, the point
-//!   kept and trailing zeros too for `g`), `0` (zeros to the width, after the sign or prefix; not
-//!   for an integer with a precision);
+//! - flags `-`, `+`, space (a sign for `d`, `i` and the reals alone: not `u`), `#` (`0x`/`0X`
+//!   before a nonzero hex number and `%p`'s digits, `0` before octal, even a 0 the precision left
+//!   with no digit, the point kept and trailing zeros too for `g`), `0` (zeros to the width, after
+//!   the sign or prefix; not for an integer with a precision);
 //! - a width and a precision, as digits or `*` (taken from the arguments; a negative width
 //!   left-justifies, a negative precision is none);
 //! - sizes `h` (a short: the value truncated; a narrow character or string), `l` and `w` (a long; a
-//!   wide character or string), `L`, `I64` and `ll` (a 64-bit integer; `L` a double), `I32`;
+//!   wide character or string; `ll` is a long too: msvcrt 6 has no `ll`), `L` (a double, which a
+//!   double is: nothing for an integer), `I64` (a 64-bit integer), `I32`;
 //! - types `d` `i` `u` `o` `x` `X`, `c` and `C`, `s` and `S` (the format's own width and the other,
 //!   `(null)` for NULL; a precision bounds the units written), `e` `E` `f` `g` `G` (a double, its
 //!   exponent of three digits at least, its digits those of [`crate::float`], a zero unsigned; an
-//!   infinity or NaN as `1.#INF`, `1.#QNAN`, `1.#SNAN`, `-1.#IND`, padded with zeros to the
-//!   precision, which `g` trims), `p` (eight upper-case hex digits), `n` (the count so far,
-//!   stored), `Z` (an ANSI_STRING, or with `w`/`l` a UNICODE_STRING); `%%`.
+//!   infinity or NaN as the digits `1#INF`, `1#QNAN`, `1#SNAN`, `1#IND` (negative), padded with
+//!   zeros and rounded to the precision as a number's digits are: `%f` of an infinity is
+//!   `1.#INF00`, `%.2f` `1.#J`), `p` (eight upper-case hex digits), `n` (the count so far, stored),
+//!   `Z` (an ANSI_STRING, or with `w`/`l` a UNICODE_STRING); `%%`.
 //!
 //! An unknown type writes its letter. A narrow string or character written to a wide output, or a
 //! wide one to a narrow output, is converted in the LC_CTYPE locale ([`crate::ctype`]); a wide
@@ -271,14 +274,11 @@ pub fn format<U: Unit, O: Output>(format: &[U], args: &mut impl Args, out: &mut 
         loop {
             match c {
                 0x68 /* h */ => spec.short = true,
-                0x6C /* l */ => {
-                    if spec.long {
-                        spec.quad = true;
-                    }
-                    spec.long = true;
-                }
-                0x77 /* w */ => spec.long = true,
-                0x4C /* L */ => spec.quad = true,
+                // A second `l` is a long again, and `L` sizes a double alone (a double already):
+                // msvcrt 6 has no `ll` (msvcrt's printf capture: "%lld|%d" of (__int64)5 is
+                // "5|0", as are "%Ld" and "%llx").
+                0x6C /* l */ | 0x77 /* w */ => spec.long = true,
+                0x4C /* L */ => {}
                 0x49 /* I */ => {
                     let (a, b) = (at.peek(0), at.peek(1));
                     if (a, b) == (b'6' as u32, b'4' as u32) {
@@ -331,7 +331,7 @@ fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, args: &mut
             } else {
                 args.int() as i32 as i64
             };
-            integer(w, spec, value.unsigned_abs(), value < 0, 10, false);
+            integer(w, spec, value.unsigned_abs(), Some(value < 0), 10, false);
         }
         b'u' | b'o' | b'x' | b'X' => {
             let value = if spec.quad {
@@ -346,15 +346,15 @@ fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, args: &mut
                 b'o' => 8,
                 _ => 16,
             };
-            integer(w, spec, value, false, radix, c == b'X' as u32);
+            integer(w, spec, value, None, radix, c == b'X' as u32);
         }
         b'p' => {
+            // Eight upper-case hex digits; `#` makes them `0X`'s (the capture's `%#p`).
             let spec = Spec {
                 precision: Some(8),
-                alternate: false,
                 ..spec
             };
-            integer(w, spec, args.pointer() as u64, false, 16, true);
+            integer(w, spec, args.pointer() as u64, None, 16, true);
         }
         b'c' | b'C' => {
             let value = args.int();
@@ -444,12 +444,14 @@ fn convert<U: Unit, O: Output>(w: &mut Writer<O>, c: u32, spec: Spec, args: &mut
     }
 }
 
-/// An integer conversion: `magnitude`'s digits in `radix`, signed by `negative`.
+/// An integer conversion: `magnitude`'s digits in `radix`, for a signed conversion (`d`, `i`)
+/// `negative` whether it is below zero: only those take a sign, `+` or space (the capture's `%+u`
+/// of 5 is `5`).
 fn integer<O: Output>(
     w: &mut Writer<O>,
     spec: Spec,
     magnitude: u64,
-    negative: bool,
+    negative: Option<bool>,
     radix: u64,
     upper: bool,
 ) {
@@ -468,14 +470,16 @@ fn integer<O: Output>(
     }
     let precision = spec.precision.unwrap_or(1);
     let mut zeros = precision.saturating_sub(count);
-    if radix == 8 && spec.alternate && magnitude != 0 && zeros == 0 {
+    // `#` starts an octal number with a 0, even one the precision 0 left with no digit (the
+    // capture's `%#.0o` of 0 is `0`, its `%.0o` nothing).
+    if radix == 8 && spec.alternate && zeros == 0 {
         zeros = 1;
     }
-    let prefix: &[u8] = if negative {
+    let prefix: &[u8] = if negative == Some(true) {
         b"-"
-    } else if radix == 10 && spec.plus {
+    } else if negative.is_some() && spec.plus {
         b"+"
-    } else if radix == 10 && spec.space {
+    } else if negative.is_some() && spec.space {
         b" "
     } else if radix == 16 && spec.alternate && magnitude != 0 {
         if upper {
@@ -577,72 +581,54 @@ fn real<O: Output>(w: &mut Writer<O>, spec: Spec, value: f64, conversion: u8) {
     };
     let precision = spec.precision.unwrap_or(6);
     let upper = conversion.is_ascii_uppercase();
-    let negative = match float::decompose(value) {
-        Value::Finite(decimal) => {
-            match conversion.to_ascii_lowercase() {
-                b'f' => fixed(&mut n, &decimal, precision as i32, spec.alternate),
-                b'e' => exponential(
+    let decimal = match float::decompose(value) {
+        Value::Finite(decimal) => decimal,
+        Value::Infinite(negative) => Decimal::special(negative, b"1#INF"),
+        Value::NaN {
+            indefinite: true, ..
+        } => Decimal::special(true, b"1#IND"),
+        Value::NaN {
+            negative,
+            quiet: true,
+            ..
+        } => Decimal::special(negative, b"1#QNAN"),
+        Value::NaN { negative, .. } => Decimal::special(negative, b"1#SNAN"),
+    };
+    match conversion.to_ascii_lowercase() {
+        b'f' => fixed(&mut n, &decimal, precision as i32, spec.alternate),
+        b'e' => exponential(
+            &mut n,
+            &decimal.rounded(precision as i32 + 1),
+            precision,
+            spec.alternate,
+            upper,
+        ),
+        _ => {
+            let significant = precision.max(1) as i32;
+            let rounded = decimal.rounded(significant);
+            let exponent = if rounded.is_zero() {
+                0
+            } else {
+                rounded.exponent - 1
+            };
+            if exponent < -4 || exponent >= significant {
+                exponential(
                     &mut n,
-                    &decimal.rounded(precision as i32 + 1),
-                    precision,
+                    &rounded,
+                    (significant - 1) as usize,
                     spec.alternate,
                     upper,
-                ),
-                _ => {
-                    let significant = precision.max(1) as i32;
-                    let rounded = decimal.rounded(significant);
-                    let exponent = if rounded.is_zero() {
-                        0
-                    } else {
-                        rounded.exponent - 1
-                    };
-                    if exponent < -4 || exponent >= significant {
-                        exponential(
-                            &mut n,
-                            &rounded,
-                            (significant - 1) as usize,
-                            spec.alternate,
-                            upper,
-                        );
-                    } else {
-                        fixed(&mut n, &rounded, significant - 1 - exponent, spec.alternate);
-                    }
-                    if !spec.alternate {
-                        trim(&mut n);
-                    }
-                }
+                );
+            } else {
+                fixed(&mut n, &rounded, significant - 1 - exponent, spec.alternate);
             }
-            // A zero prints unsigned, negative or not (the capture's `%g` of -0.0 is `0`).
-            decimal.negative && !decimal.is_zero()
-        }
-        special => {
-            let (negative, name): (bool, &[u8]) = match special {
-                Value::Infinite(negative) => (negative, b"1.#INF"),
-                Value::NaN {
-                    indefinite: true, ..
-                } => (true, b"1.#IND"),
-                Value::NaN {
-                    negative,
-                    quiet: true,
-                    ..
-                } => (negative, b"1.#QNAN"),
-                Value::NaN { negative, .. } => (negative, b"1.#SNAN"),
-                Value::Finite(_) => unreachable!(),
-            };
-            for &b in name {
-                n.push(b);
-            }
-            // The precision's digits after the point, zeros past the name's; `g` without `#`
-            // trims them again, as it trims a number's (`%g` of an infinity is `1.#INF`).
-            for _ in name.len() - 2..precision {
-                n.push(b'0');
-            }
-            if conversion.eq_ignore_ascii_case(&b'g') && !spec.alternate {
+            if !spec.alternate {
                 trim(&mut n);
             }
-            negative
         }
-    };
+    }
+    // A zero prints unsigned, negative or not (the capture's `%g` of -0.0 is `0`).
+    let negative = decimal.negative && !decimal.is_zero();
     let sign: &[u8] = if negative {
         b"-"
     } else if spec.plus {
@@ -674,7 +660,7 @@ fn fixed(n: &mut Number, decimal: &Decimal, precision: i32, alternate: bool) {
     let rounded = decimal.rounded(decimal.exponent + precision);
     if rounded.exponent > 0 && !rounded.is_zero() {
         for i in 0..rounded.exponent {
-            n.push(b'0' + rounded.digit(i));
+            n.push(rounded.digit(i));
         }
     } else {
         n.push(b'0');
@@ -688,18 +674,18 @@ fn fixed(n: &mut Number, decimal: &Decimal, precision: i32, alternate: bool) {
         } else {
             rounded.exponent + j
         };
-        n.push(b'0' + rounded.digit(index));
+        n.push(rounded.digit(index));
     }
 }
 
 /// `e`: one digit, the point, `precision` digits, the exponent (three digits at least).
 fn exponential(n: &mut Number, rounded: &Decimal, precision: usize, alternate: bool, upper: bool) {
-    n.push(b'0' + rounded.digit(0));
+    n.push(rounded.digit(0));
     if precision > 0 || alternate {
         n.push(b'.');
     }
     for i in 1..=precision as i32 {
-        n.push(b'0' + rounded.digit(i));
+        n.push(rounded.digit(i));
     }
     n.push(if upper { b'E' } else { b'e' });
     let exponent = if rounded.is_zero() {
@@ -1059,7 +1045,7 @@ pub(crate) mod tests {
         assert_eq!(
             narrow(
                 "%I64d %I64x %lld",
-                &[Q(-5i64 as u64), Q(0x1_0000_0000), Q(7)]
+                &[Q(-5i64 as u64), Q(0x1_0000_0000), I(7)]
             ),
             "-5 100000000 7"
         );
@@ -1089,5 +1075,60 @@ pub(crate) mod tests {
             ),
             "7   |-007|0|0||"
         );
+    }
+
+    /// msvcrt's printf capture: `ll` and `L` read an int; the specials' digits rounded to the
+    /// precision as characters; no sign for `u`; `#` octal's 0, `%#p`'s 0X; unknown letters.
+    #[test]
+    fn printf_corners_as_captured() {
+        for format in ["%lld|%d", "%Ld|%d", "%llx|%d"] {
+            assert_eq!(narrow(format, &[I(5), I(0), I(7)]), "5|0", "{format}");
+        }
+        assert_eq!(narrow("%I64d|%d", &[Q(5), I(7)]), "5|7");
+        let formats =
+            "%f|%.0f|%.1f|%.2f|%.3f|%e|%.1e|%g|%.1g|%10.3f|%-10.1f|%+.1f|%#.0f|%010.2f|%E|%G";
+        let special = |bits: u64| narrow(formats, &[D(f64::from_bits(bits)); 16]);
+        assert_eq!(
+            special(0x7FF0_0000_0000_0000),
+            "1.#INF00|1|1.$|1.#J|1.#IO|1.#INF00e+000|1.$e+000|1.#INF|1|     1.#IO|1.$       \
+             |+1.$|1.|0000001.#J|1.#INF00E+000|1.#INF"
+        );
+        assert_eq!(
+            special(0xFFF0_0000_0000_0000),
+            "-1.#INF00|-1|-1.$|-1.#J|-1.#IO|-1.#INF00e+000|-1.$e+000|-1.#INF|-1|    -1.#IO\
+             |-1.$      |-1.$|-1.|-000001.#J|-1.#INF00E+000|-1.#INF"
+        );
+        assert_eq!(
+            special(0x7FF8_0000_0000_0000),
+            "1.#QNAN0|1|1.$|1.#R|1.#QO|1.#QNAN0e+000|1.$e+000|1.#QNAN|1|     1.#QO|1.$       \
+             |+1.$|1.|0000001.#R|1.#QNAN0E+000|1.#QNAN"
+        );
+        assert_eq!(
+            special(0xFFF8_0000_0000_0000),
+            "-1.#IND00|-1|-1.$|-1.#J|-1.#IO|-1.#IND00e+000|-1.$e+000|-1.#IND|-1|    -1.#IO\
+             |-1.$      |-1.$|-1.|-000001.#J|-1.#IND00E+000|-1.#IND"
+        );
+        assert_eq!(
+            narrow("%f", &[D(f64::from_bits(0x7FF0_0000_0000_0001))]),
+            "1.#SNAN0"
+        );
+        assert_eq!(
+            narrow("%+u|% u|%+d|% d", &[I(5), I(5), I(5), I(5)]),
+            "5|5|+5| 5"
+        );
+        assert_eq!(
+            narrow("%#.0o|%.0o|%#o|%#.0x|%#x", &[I(0), I(0), I(8), I(0), I(0)]),
+            "0||010||0"
+        );
+        assert_eq!(
+            narrow("%p|%#p|%10p", &[P(0x1234), P(0x1234), P(0x1234)]),
+            "00001234|0X00001234|  00001234"
+        );
+        assert_eq!(
+            narrow("%5c|%-5c|%05c", &[I(120), I(120), I(120)]),
+            "    x|x    |0000x"
+        );
+        assert_eq!(narrow("a%yb|%d", &[I(7), I(8)]), "ayb|7");
+        assert_eq!(narrow("[%5y][%-3k]", &[I(7), I(8)]), "[y][k]");
     }
 }

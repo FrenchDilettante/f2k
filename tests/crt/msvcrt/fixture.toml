@@ -5,10 +5,6 @@ description = "msvcrt - msvcrt.dll exports no other crt fixture takes in, under 
 kind = "sectioned"
 gate = true
 
-[pending]
-printf = "F2K's sprintf reads \"ll\" and \"L\" on integers as 64-bit, prints the infinities and NaNs whole whatever the precision, signs %+u, prints nothing for %#.0o of 0 and drops %#p's #"
-
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

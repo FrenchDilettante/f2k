@@ -2,12 +2,17 @@
 //! expansion rounded to 17 significant digits (half away from zero), the digits beyond them zeros
 //! (Visual C++'s printf before 2015 prints that way: Rick Regan's "Exploring Binary" documents
 //! it), then rounded again, the same way, to the conversion's precision.
+//!
+//! The digits are characters, as VC6's `_fltout` hands its formatter a string: an infinity or a
+//! NaN is the string `1#INF`, `1#QNAN`, `1#SNAN` or `1#IND` ([`Decimal::special`]), rounded to the
+//! precision as any other, each character against `'5'` (msvcrt's capture: `%.2f` of an infinity
+//! is `1.#J`, its `#I` rounded up by the `N` after them).
 
 /// The significant digits the formatter keeps.
 const SIGNIFICANT: usize = 17;
 
-/// A finite double's digits: `0.d1 d2 … dn × 10^exponent`, without trailing zeros (none at all
-/// for zero).
+/// A double's digits, as characters: `0.d1 d2 … dn × 10^exponent`, without trailing zeros (none
+/// at all for zero).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Decimal {
     pub negative: bool,
@@ -32,12 +37,25 @@ pub enum Value {
 }
 
 impl Decimal {
-    /// The digit at `index` (zero past the significant ones).
+    /// An infinity's or a NaN's digits, as VC6's `_fltout` gives them: `name` (`1#INF`...) after
+    /// the point, one digit before it.
+    pub fn special(negative: bool, name: &[u8]) -> Decimal {
+        let mut digits = [0; SIGNIFICANT + 1];
+        digits[..name.len()].copy_from_slice(name);
+        Decimal {
+            negative,
+            digits,
+            count: name.len(),
+            exponent: 1,
+        }
+    }
+
+    /// The digit at `index`, a character (`'0'` past the significant ones).
     pub fn digit(&self, index: i32) -> u8 {
         if index >= 0 && (index as usize) < self.count {
             self.digits[index as usize]
         } else {
-            0
+            b'0'
         }
     }
 
@@ -52,11 +70,11 @@ impl Decimal {
         if keep >= self.count as i32 {
             return result;
         }
-        let up = keep >= 0 && self.digit(keep) >= 5;
+        let up = keep >= 0 && self.digit(keep) >= b'5';
         if keep <= 0 {
             result.count = 0;
             if up {
-                result.digits[0] = 1;
+                result.digits[0] = b'1';
                 result.count = 1;
                 result.exponent += 1;
             }
@@ -68,21 +86,21 @@ impl Decimal {
             loop {
                 if at == 0 {
                     // Every digit carried: 0.999… became 1.
-                    result.digits[0] = 1;
+                    result.digits[0] = b'1';
                     result.count = 1;
                     result.exponent += 1;
                     break;
                 }
                 at -= 1;
-                if result.digits[at] == 9 {
-                    result.digits[at] = 0;
+                if result.digits[at] == b'9' {
+                    result.digits[at] = b'0';
                 } else {
                     result.digits[at] += 1;
                     break;
                 }
             }
         }
-        while result.count > 0 && result.digits[result.count - 1] == 0 {
+        while result.count > 0 && result.digits[result.count - 1] == b'0' {
             result.count -= 1;
         }
         result
@@ -197,7 +215,7 @@ pub fn decompose(value: f64) -> Value {
         if decimal.count == 0 && digit == 0 {
             decimal.exponent -= 1;
         } else if decimal.count <= SIGNIFICANT {
-            decimal.digits[decimal.count] = digit;
+            decimal.digits[decimal.count] = b'0' + digit;
             decimal.count += 1;
         }
     };
@@ -262,10 +280,7 @@ mod tests {
     fn digits(value: f64) -> (String, i32) {
         match decompose(value) {
             Value::Finite(d) => (
-                d.digits[..d.count]
-                    .iter()
-                    .map(|&d| (b'0' + d) as char)
-                    .collect(),
+                d.digits[..d.count].iter().map(|&d| d as char).collect(),
                 d.exponent,
             ),
             other => panic!("{other:?}"),
@@ -294,16 +309,29 @@ mod tests {
             panic!()
         };
         let r = d.rounded(0);
-        assert_eq!((r.digits[0], r.count, r.exponent), (1, 1, 1));
+        assert_eq!((r.digits[0], r.count, r.exponent), (b'1', 1, 1));
         let Value::Finite(d) = decompose(9.96) else {
             panic!()
         };
         let r = d.rounded(2);
-        assert_eq!((r.digits[0], r.count, r.exponent), (1, 1, 2));
+        assert_eq!((r.digits[0], r.count, r.exponent), (b'1', 1, 2));
         let Value::Finite(d) = decompose(0.0004) else {
             panic!()
         };
         assert!(d.rounded(-1).is_zero());
+    }
+
+    /// A special's characters round against '5' as digits do: `1#INF` to two places is `1#J`,
+    /// to one `1$`, to none `1`.
+    #[test]
+    fn specials_round_as_characters() {
+        let infinity = Decimal::special(false, b"1#INF");
+        let text = |d: Decimal| d.digits[..d.count].to_vec();
+        assert_eq!(text(infinity.rounded(3)), b"1#J");
+        assert_eq!(text(infinity.rounded(2)), b"1$");
+        assert_eq!(text(infinity.rounded(1)), b"1");
+        assert_eq!(text(infinity.rounded(9)), b"1#INF");
+        assert_eq!(text(Decimal::special(false, b"1#QNAN").rounded(4)), b"1#QO");
     }
 
     #[test]
