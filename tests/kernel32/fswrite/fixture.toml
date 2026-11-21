@@ -9,7 +9,6 @@ timeout = 40
 # Not captured yet: tests/build.bat fswrite rebuilds fswrite.exe with these sections, and
 # tests/capture.bat fswrite captures their blocks on the Windows 2000 machine.
 moveinto = "F2K answers ERROR_ACCESS_DENIED for a directory moved into or beneath itself and for a replacing move onto a file held open, statuses chosen from memory, not from a capture"
-overlap = "kernel32 exports no GetOverlappedResult (the section stops after its first line), and F2K's overlapped file I/O has never been compared"
 deep = "F2K's ntdll bounds a path's NT name at MAX_PATH + 8 (curdir.rs NT_ROOM), so a \\\\?\\ path past MAX_PATH never reaches NtCreateFile"
 
 [pins]
@@ -171,6 +170,7 @@ overlap = [
     "kernel32.CreateFileA",
     "kernel32.ReadFile",
     "kernel32.WriteFile",
+    "kernel32.GetOverlappedResult",
     "kernel32.CreateEventA",
     "kernel32.ResetEvent",
     "kernel32.WaitForSingleObject",

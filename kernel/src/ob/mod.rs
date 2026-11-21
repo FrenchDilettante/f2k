@@ -115,9 +115,10 @@ pub struct ObjectId {
 impl ObjectId {
     /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
     /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
-    /// at the object's own index. None for a section, a file object (its I/O completes at once:
-    /// nothing waits on it), the directory, a window station, a desktop, a key, a DC, a font or a
-    /// token. The id's liveness is the caller's to know (a reference it holds).
+    /// at the object's own index. None for a section, a file object (a wait on it waits on the
+    /// event embedded in its record: [`crate::fs::file::FileObject::completion`]), the directory, a
+    /// window station, a desktop, a key, a DC, a font or a token. The id's liveness is the caller's
+    /// to know (a reference it holds).
     pub fn waitable(self) -> Option<WaitableId> {
         let index = self.index;
         match self.kind {
@@ -1342,18 +1343,22 @@ impl Directory {
 
     // --- Waits -------------------------------------------------------------------------------
 
-    /// The wait thread record `thread` is about to enter holds `objects`, dispatcher objects all,
-    /// for its whole life: a reference on each, released by [`Directory::release_wait`] when the
-    /// wait returns — or when the thread ends without returning. False, and nothing held, when one
-    /// of them is gone already (a handle another thread closed meanwhile).
+    /// The wait thread record `thread` is about to enter holds `objects`, dispatcher objects and
+    /// file objects (whose own event it waits on: [`crate::ob::waiting`] keeps another reference
+    /// on each, so this one is never its last), for its whole life: a reference on each, released
+    /// by [`Directory::release_wait`] when the wait returns — or when the thread ends without
+    /// returning. False, and nothing held, when one of them is gone already (a handle another
+    /// thread closed meanwhile).
     pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
         debug_assert!(self.waits[thread as usize]
             .objects
             .iter()
             .all(Option::is_none));
         debug_assert!(
-            objects.iter().all(|id| id.waitable().is_some()),
-            "a wait holds dispatcher objects"
+            objects
+                .iter()
+                .all(|id| id.waitable().is_some() || id.kind == ObjectType::File),
+            "a wait holds dispatcher objects and file objects"
         );
         if !objects.iter().all(|&id| self.is_live(id)) {
             return false;
@@ -1825,20 +1830,38 @@ mod target {
         locked(|directory| directory.thread_object(thread))
     }
 
-    /// Wait on `objects`, dispatcher objects all, for the running thread: each is referenced for
-    /// the wait's whole life — replays after an APC included — and released when `wait` returns.
-    /// A thread that ends inside the wait releases them on its way out
-    /// ([`Directory::end_thread_references`]). None, with nothing waited on, when one of the
-    /// objects is gone already (a handle another thread closed meanwhile).
+    /// Wait on `objects`, dispatcher objects and file objects, for the running thread: each is
+    /// referenced for the wait's whole life — replays after an APC included — and released when
+    /// `wait` returns. A thread that ends inside the wait releases the wait's references on its way
+    /// out ([`Directory::end_thread_references`]); a file object's second one stays (a wait on a
+    /// file is a user-mode one, which a termination ends: the thread leaves it before its exit).
+    /// None, with nothing waited on, when one of the objects is gone already (a handle another
+    /// thread closed meanwhile).
     pub fn waiting<R>(objects: &[ObjectId], wait: impl FnOnce() -> R) -> Option<R> {
         let index = current_thread()
             .expect("a service runs on a pooled thread")
             .index;
-        if !locked(|directory| directory.hold_wait(index, objects)) {
+        // A file object's deletion leaves its close to finish outside the directory: a reference of
+        // the call's own on each, taken with the wait's and dropped after them, is the one that may
+        // be its last.
+        let files = || objects.iter().filter(|id| id.kind == ObjectType::File);
+        let held = locked(|directory| {
+            if !directory.hold_wait(index, objects) {
+                return false;
+            }
+            for &id in files() {
+                directory.reference(id);
+            }
+            true
+        });
+        if !held {
             return None;
         }
         let result = wait();
         locked(|directory| directory.release_wait(index));
+        for &id in files() {
+            release(id);
+        }
         // A process that never had a thread, or one reaped, goes with the last reference beside
         // its own, a wait's included.
         for &id in objects {

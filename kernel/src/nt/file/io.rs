@@ -70,7 +70,7 @@ fn transfer(
         Some(offset.read()?)
     };
     let offset = transfer_offset(offset, object.synchronous, write)?;
-    let event = completion_event(event.raw())?;
+    let event = completion_event(&object, event.raw())?;
     Ok(Transfer {
         object,
         event,
@@ -82,7 +82,7 @@ fn transfer(
 fn finish(transfer: Transfer, io_status: UserAddr, result: Result<u32, NtStatus>) -> NtResult {
     let (code, moved) = transfer_status(result);
     complete(io_status, code, moved);
-    signal(transfer.event);
+    signal(&transfer.object, transfer.event);
     result.map(|_| STATUS_SUCCESS)
 }
 

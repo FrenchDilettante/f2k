@@ -222,6 +222,11 @@ pub struct FileObject {
     /// object holds it, so the position moves one call at a time (FO_SYNCHRONOUS_IO's
     /// serialization).
     pub lock: FileLock,
+    /// The object's own event (FILE_OBJECT's Event): a notification event, clear at the open,
+    /// cleared as each read or write starts and set as it completes when the caller named no event
+    /// of its own or the object is synchronous (IopCompleteRequest's). A wait on the file's handle
+    /// waits on it.
+    completion: UnsafeCell<Event>,
     /// The position and the search, reached by the lock's holder only.
     io: UnsafeCell<IoState>,
 }
@@ -248,6 +253,7 @@ impl FileObject {
             delete_on_close: false,
             synchronous: true,
             lock: FileLock::new(),
+            completion: UnsafeCell::new(Event::new(EventKind::Notification, false)),
             io: UnsafeCell::new(IoState {
                 position: 0,
                 search: None,
@@ -271,9 +277,21 @@ impl FileObject {
         }
     }
 
-    /// Name the lock's event by its address; call once at the final address.
+    /// Name the lock's event and the object's own by their addresses; call once at the final
+    /// address.
     pub fn init(&mut self) {
         self.lock.init();
+        self.completion.get_mut().init();
+    }
+
+    /// The object's own event's name, as the dispatcher takes it: its header's address (no
+    /// reference to the event is formed: the dispatcher may be walking its waiters meanwhile). It
+    /// stays where it is while anything holds the object.
+    pub fn completion(&self) -> WaitableId {
+        // SAFETY: a projection inside the object's own cell, live as long as `self`: it computes
+        // the header's address and reads nothing.
+        let header = unsafe { core::ptr::addr_of_mut!((*self.completion.get()).waitable) };
+        WaitableId::Embedded(NonNull::new(header).expect("an object is not null"))
     }
 
     /// Run `body` on the position and the search, holding the object's lock: taken first (blocking
@@ -1085,6 +1103,47 @@ mod lock_tests {
     #[should_panic(expected = "nobody holds")]
     fn releasing_a_free_lock_is_a_contract_violation() {
         lock().release_with(dispatcher());
+    }
+
+    /// A file object's own event (a wait on its handle waits on it) is a notification event, clear
+    /// at the open: a waiter parks on it; a request's completion sets it, readying the waiter, and
+    /// it stays set for every later wait until the next request clears it.
+    #[test]
+    fn a_file_object_s_own_event_is_a_notification_event() {
+        let d = dispatcher();
+        let object = Box::leak(Box::new(FileObject::none()));
+        object.init();
+        let own = object.completion();
+        assert!(matches!(own, WaitableId::Embedded(_)));
+        let (mut waiter, w) = thread();
+        let wait = |d: &mut Dispatcher, thread| {
+            d.wait_for(
+                thread,
+                own,
+                WaitReason::UserRequest,
+                WaitMode::User,
+                false,
+                None,
+                NOW,
+            )
+        };
+        assert_eq!(wait(d, w), WaitDisposition::Yield, "clear at the open");
+        d.set_event(own, 0);
+        run(d, &mut waiter, w);
+        assert!(
+            matches!(wait(d, w), WaitDisposition::Complete(_)),
+            "set: a wait passes"
+        );
+        assert!(
+            matches!(wait(d, w), WaitDisposition::Complete(_)),
+            "and it stays set"
+        );
+        d.reset_event(own);
+        assert_eq!(
+            wait(d, w),
+            WaitDisposition::Yield,
+            "cleared by the next request"
+        );
     }
 }
 

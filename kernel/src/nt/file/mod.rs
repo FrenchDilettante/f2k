@@ -15,8 +15,10 @@
 //! system's). Every call completes in the caller's thread: a disk file's at once, a pipe's once the
 //! other end lets it (a read waits for data, a write for room), the wait inside the service. A
 //! synchronous object keeps the position a read or write without an offset uses; an event handed
-//! to a read, write or listing is reset first and signaled once it completes. An APC routine
-//! (ReadFileEx's completion) is not supported.
+//! to a read, write or listing is reset first and signaled once it completes, and the file
+//! object's own event (what a wait on the file's handle waits on) with it, set when no event was
+//! handed or the object is synchronous ([`sets_own_event`]). An APC routine (ReadFileEx's
+//! completion) is not supported.
 
 pub mod info;
 pub mod name;
@@ -88,6 +90,14 @@ pub(crate) fn transfer_offset(
         Some(at) if (at as i64) < 0 => Err(STATUS_INVALID_PARAMETER),
         Some(at) => Ok(Some(at)),
     }
+}
+
+/// Whether a request's completion sets the file object's own event, IopCompleteRequest's rule:
+/// when the caller named no event of its own, or the object is synchronous. An overlapped request
+/// with an event leaves the file's clear (its start cleared it).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn sets_own_event(event_named: bool, synchronous: bool) -> bool {
+    !event_named || synchronous
 }
 
 /// The dispositions.
@@ -1022,21 +1032,31 @@ mod common {
     /// The event a read, write or listing signals once it completes, reset now; none for a null
     /// handle. STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH for a handle naming no event,
     /// STATUS_ACCESS_DENIED for one not granted EVENT_MODIFY_STATE (Windows 2000's I/O manager
-    /// references the event for it).
-    pub fn completion_event(handle: u32) -> Result<Option<crate::ob::ObRef>, NtStatus> {
-        if handle == 0 {
-            return Ok(None);
-        }
-        let event = super::super::sync::object_needing(
-            handle,
-            ObjectType::Event,
-            crate::ob::access::EVENT_MODIFY_STATE,
-        )?;
-        let body = event.event();
+    /// references the event for it). The file object's own event is cleared after it, as the
+    /// request starts (see [`signal`]).
+    pub fn completion_event(
+        object: &FileObject,
+        handle: u32,
+    ) -> Result<Option<crate::ob::ObRef>, NtStatus> {
+        let event = if handle == 0 {
+            None
+        } else {
+            let event = super::super::sync::object_needing(
+                handle,
+                ObjectType::Event,
+                crate::ob::access::EVENT_MODIFY_STATE,
+            )?;
+            let body = event.event();
+            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+                crate::sched::DISPATCHER.get(dispatch).reset_event(body)
+            });
+            Some(event)
+        };
+        let own = object.completion();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
-            crate::sched::DISPATCHER.get(dispatch).reset_event(body)
+            crate::sched::DISPATCHER.get(dispatch).reset_event(own)
         });
-        Ok(Some(event))
+        Ok(event)
     }
 
     /// A request a driver's device would answer through an IRP F2K does not send yet: the stub
@@ -1074,14 +1094,22 @@ mod common {
         Ok(block)
     }
 
-    /// Signal a completion's event.
-    pub fn signal(event: Option<crate::ob::ObRef>) {
-        if let Some(event) = event {
-            let body = event.event();
-            crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
-                crate::sched::DISPATCHER.get(dispatch).set_event(body, 0)
-            });
-        }
+    /// Signal a completion's event, and the file object's own when the caller named none or the
+    /// object is synchronous (IopCompleteRequest's: an overlapped request with an event leaves the
+    /// file's clear), so a wait on the file's handle sees the request done.
+    pub fn signal(object: &FileObject, event: Option<crate::ob::ObRef>) {
+        let own =
+            super::sets_own_event(event.is_some(), object.synchronous).then(|| object.completion());
+        let body = event.as_ref().map(|event| event.event());
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+            if let Some(body) = body {
+                dispatcher.set_event(body, 0);
+            }
+            if let Some(own) = own {
+                dispatcher.set_event(own, 0);
+            }
+        });
     }
 }
 
@@ -1118,6 +1146,17 @@ pub use host::*;
 mod tests {
     use super::*;
     use crate::status::STATUS_INVALID_PARAMETER;
+
+    /// A completion sets the file object's own event unless the caller named an event of its own
+    /// on an overlapped object: the fswrite capture's overlap block finds the file's handle
+    /// signaled after a read with no event.
+    #[test]
+    fn a_completion_sets_the_file_s_event_as_iop_complete_request_does() {
+        assert!(sets_own_event(false, false), "overlapped, no event");
+        assert!(!sets_own_event(true, false), "overlapped, an event");
+        assert!(sets_own_event(false, true), "synchronous, no event");
+        assert!(sets_own_event(true, true), "synchronous, an event");
+    }
 
     /// ByteOffset as the I/O manager takes it: the position for none or -2 on a synchronous
     /// object only; -1 a write's end of file, refused for a read; any other negative offset

@@ -582,8 +582,10 @@ fn interval_of(value: i64) -> i64 {
 
 /// The waitable a handle names, with the object it belongs to (the wait holds it, which checks it
 /// still lives): a table object's header, or the thread and process pseudo-handles' own objects.
-/// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
-/// STATUS_OBJECT_TYPE_MISMATCH for an object no wait can name (a file, a section, the directory).
+/// A file object's is its own event, which its reads and writes clear and set (see
+/// [`crate::nt::file`]'s `signal`). STATUS_INVALID_HANDLE for a handle naming nothing (a console
+/// handle included), STATUS_OBJECT_TYPE_MISMATCH for an object no wait can name (a section, the
+/// directory).
 /// The handle must grant SYNCHRONIZE, checked before the kind as Windows 2000's waits reference
 /// their handles for it (STATUS_ACCESS_DENIED: the threads capture's handle OpenThread made with
 /// THREAD_QUERY_INFORMATION alone).
@@ -601,6 +603,12 @@ fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
             id
         }
     };
+    if id.kind == ObjectType::File {
+        // The file object's own event, at its record's address; the wait holds the object (an
+        // object gone meanwhile fails the wait's hold, its address never waited on).
+        let reference = ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
+        return Ok((id, ob::file_object(reference).completion()));
+    }
     let waitable = id.waitable().ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;
     Ok((id, waitable))
 }

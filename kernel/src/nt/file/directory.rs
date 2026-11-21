@@ -96,7 +96,7 @@ fn query_directory_file_held(
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
     }
-    let event = completion_event(event.raw())?;
+    let event = completion_event(&object, event.raw())?;
     // The object's device lists: a disk directory's entries; a disk file has none to list, and a
     // pipe's end none either (only the named-pipe file system's root, which no open reaches yet,
     // lists pipes).
@@ -129,7 +129,7 @@ fn query_directory_file_held(
         Err(code) => (code, 0),
     };
     complete(io_status, code, information);
-    signal(event);
+    signal(&object, event);
     // A cut entry is a warning: the status fails the call, the record still delivered.
     if code == STATUS_BUFFER_OVERFLOW {
         return Err(code);

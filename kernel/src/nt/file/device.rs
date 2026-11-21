@@ -66,7 +66,7 @@ pub fn device_io_control_file(
         (!output.is_null()).then_some(output_length),
     );
     output.probe(output_length)?;
-    let event = completion_event(event.raw())?;
+    let event = completion_event(&object, event.raw())?;
     let system = if size > 0 {
         let mut block = crate::mem::pool::allocate(size).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         input.read(&mut block.as_mut()[..input_length as usize])?;
@@ -88,7 +88,7 @@ pub fn device_io_control_file(
             output.write(&block.as_ref()[..count as usize])?;
         }
         complete(io_status, outcome.status, outcome.information);
-        signal(event);
+        signal(&object, event);
     }
     drop(system);
     if outcome.returned.is_success() {

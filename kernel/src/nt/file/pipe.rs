@@ -204,12 +204,12 @@ pub fn fs_control_file(
         (Context::Pipe(end), FSCTL_PIPE_PEEK) => end,
         _ => return Err(STATUS_NOT_IMPLEMENTED),
     };
-    let event = completion_event(event.raw())?;
+    let event = completion_event(&object, event.raw())?;
     let (status, information) =
         io::serialized_interruptible(&object, |_| pipes::peek(end, output, output_length))
             .and_then(|peeked| peeked)?;
     complete(io_status, status, information);
-    signal(event);
+    signal(&object, event);
     if status == STATUS_SUCCESS {
         Ok(status)
     } else {

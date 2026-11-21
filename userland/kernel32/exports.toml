@@ -2090,6 +2090,15 @@ ordinal = 104
 note = "NtFsControlFile for a file system's code, NtDeviceIoControlFile for any other"
 
 [[export]]
+name = "GetOverlappedResult"
+group = "files"
+args = ["handle hFile", "ptr lpOverlapped", "ptr<u32> lpNumberOfBytesTransferred", "bool bWait"]
+impl = { native = "GetOverlappedResult" }
+ordinal = 332
+fails = "FALSE"
+note = "a request still STATUS_PENDING waited for on its event (the file's handle without one), or ERROR_IO_INCOMPLETE without the wait; then InternalHigh and Internal's answer"
+
+[[export]]
 name = "CreateFileMappingA"
 group = "files"
 args = ["handle hFile", "ptr lpAttributes", "u32 flProtect", "u32 dwMaximumSizeHigh", "u32 dwMaximumSizeLow", "strA?[260] lpName"]
@@ -3977,10 +3986,6 @@ ordinal = 328
 [[export]]
 name = "GetNumberOfConsoleMouseButtons"
 ordinal = 330
-
-[[export]]
-name = "GetOverlappedResult"
-ordinal = 332
 
 [[export]]
 name = "GetPrivateProfileStructA"

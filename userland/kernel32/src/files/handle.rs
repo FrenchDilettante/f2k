@@ -401,6 +401,57 @@ fn write_to(
     bool_answer(transferred(status, &io_status, written.as_mut()))
 }
 
+/// The Win32 error of a request not yet complete.
+const ERROR_IO_INCOMPLETE: u32 = 996;
+
+/// GetOverlappedResult, Windows 2000's: a request whose OVERLAPPED's Internal still reads
+/// STATUS_PENDING is waited for (WaitForSingleObject, without a timeout) on its event, or on the
+/// file's handle when it has none — or, not waiting, is FALSE with ERROR_IO_INCOMPLETE; a failed
+/// wait is FALSE with the wait's error. Then the count is InternalHigh, stored whatever the
+/// outcome, and the answer Internal's: TRUE for a success, FALSE with the status's error
+/// otherwise (a warning's too).
+///
+/// # Safety
+///
+/// `overlapped` points at an OVERLAPPED, `transferred` at a dword.
+#[unsafe(export_name = "f2k_export_GetOverlappedResult")]
+pub unsafe extern "system" fn get_overlapped_result(
+    file: u32,
+    overlapped: *mut Overlapped,
+    transferred: *mut u32,
+    wait: u32,
+) -> u32 {
+    // SAFETY: the caller's OVERLAPPED, which the request completes into meanwhile, and its dword
+    // (the contract).
+    let (overlapped, transferred) = unsafe { (Out::new(overlapped), Out::new(transferred)) };
+    bool_answer(overlapped_result(file, overlapped, transferred, wait != 0))
+}
+
+/// GetOverlappedResult's work.
+fn overlapped_result(
+    file: u32,
+    overlapped: Out<'_, Overlapped>,
+    mut transferred: Out<'_, u32>,
+    wait: bool,
+) -> Result<(), Failure> {
+    if overlapped.get().internal == STATUS_PENDING {
+        if !wait {
+            return Err(Failure::Error(ERROR_IO_INCOMPLETE));
+        }
+        let event = overlapped.get().event;
+        let object = if event != 0 { event } else { file };
+        ntcall::wait_for_single_object(object, false, None).map_err(Failure::Status)?;
+    }
+    // Read afresh after the wait: the request completed into the caller's OVERLAPPED.
+    let done = overlapped.get();
+    transferred.set(done.internal_high);
+    if nt_success(done.internal) {
+        Ok(())
+    } else {
+        Err(Failure::Status(done.internal))
+    }
+}
+
 /// DeviceIoControl: a control request to the device the handle is open on, Windows 2000's:
 /// NtFsControlFile for a file system's code, NtDeviceIoControlFile for any other (see
 /// [`ntcall::device_control`]). Without an OVERLAPPED the request completes before the call

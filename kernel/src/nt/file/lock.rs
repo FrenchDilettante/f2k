@@ -76,7 +76,7 @@ pub fn lock_file(
     if !routine.is_null() {
         return Err(STATUS_NOT_IMPLEMENTED);
     }
-    let event = completion_event(event.raw())?;
+    let event = completion_event(&object, event.raw())?;
     let owner = owner_of(&object);
     let result = locked_file(&object).and_then(|record| {
         let taken = with_records(|records| records.lock(record, owner, key, range, exclusive));
@@ -98,7 +98,7 @@ pub fn lock_file(
     });
     let status = result.unwrap_or_else(|status| status);
     complete(io_status, status, 0);
-    signal(event);
+    signal(&object, event);
     result
 }
 

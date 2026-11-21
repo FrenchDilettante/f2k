@@ -456,6 +456,110 @@ fn a_pending_overlapped_transfer_is_error_io_pending() {
     }
 }
 
+/// GetOverlappedResult on a request still pending: without the wait FALSE with
+/// ERROR_IO_INCOMPLETE and no wait made; with it, a wait on the file's handle (the OVERLAPPED
+/// names no event), then the count and the answer the request completed with (the fswrite
+/// capture's overlap block: its request done, the count and TRUE).
+///
+/// Pins: kernel32.GetOverlappedResult
+#[test]
+fn get_overlapped_result_waits_for_a_pending_request() {
+    file_at(10, 0);
+    let mut buffer = [0u8; 16];
+    let mut overlapped = Overlapped {
+        internal: 0,
+        internal_high: 0,
+        offset: 2,
+        offset_high: 0,
+        event: 0,
+    };
+    pend_next(0, 4);
+    let mut count = 0;
+    let answer = unsafe { read_file(HANDLE, buffer.as_mut_ptr(), 4, &mut count, &mut overlapped) };
+    assert_eq!((answer, last_error()), (0, 997), "ERROR_IO_PENDING");
+
+    let mut transferred = 0xCCu32;
+    let answer = unsafe { get_overlapped_result(HANDLE, &mut overlapped, &mut transferred, 0) };
+    assert_eq!(
+        (answer, last_error(), transferred),
+        (0, 996, 0xCC),
+        "not waiting: ERROR_IO_INCOMPLETE, the count untouched"
+    );
+    assert!(waited().is_empty(), "no wait without bWait");
+    assert!(pending());
+
+    crate::base::set_last_error(0xDEAD);
+    let answer = unsafe { get_overlapped_result(HANDLE, &mut overlapped, &mut transferred, 1) };
+    assert_eq!(
+        (answer, last_error(), transferred),
+        (1, 0xDEAD, 4),
+        "waited for, then TRUE and the count"
+    );
+    assert_eq!(
+        waited(),
+        [HANDLE],
+        "no event: the wait is on the file's handle"
+    );
+}
+
+/// GetOverlappedResult on a request already complete answers from the OVERLAPPED without a wait:
+/// InternalHigh the count, stored whatever the outcome; Internal a success TRUE, an error or a
+/// warning FALSE with its Win32 error (end of file ERROR_HANDLE_EOF). One still pending with an
+/// event is waited for on the event; a failed wait is FALSE with its error.
+///
+/// Pins: kernel32.GetOverlappedResult
+#[test]
+fn get_overlapped_result_answers_from_the_overlapped() {
+    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
+    const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
+    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+    const EVENT: u32 = 0x5C;
+    for (internal, internal_high, answer, error) in [
+        (0, 16, 1, 0xDEAD),
+        (STATUS_END_OF_FILE, 0, 0, 38),
+        (STATUS_BUFFER_OVERFLOW, 3, 0, 234),
+    ] {
+        let mut overlapped = Overlapped {
+            internal,
+            internal_high,
+            offset: 0,
+            offset_high: 0,
+            event: EVENT,
+        };
+        LAST_WAITED.with(|waited| waited.borrow_mut().clear());
+        for wait in [0, 1] {
+            crate::base::set_last_error(0xDEAD);
+            let mut transferred = 0xCCu32;
+            let got =
+                unsafe { get_overlapped_result(HANDLE, &mut overlapped, &mut transferred, wait) };
+            assert_eq!(
+                (got, last_error(), transferred),
+                (answer, error, internal_high),
+                "Internal {internal:#x}, bWait {wait}"
+            );
+        }
+        assert!(waited().is_empty(), "a complete request is not waited for");
+    }
+
+    let mut overlapped = Overlapped {
+        internal: 0x103,
+        internal_high: 0,
+        offset: 0,
+        offset_high: 0,
+        event: EVENT,
+    };
+    LAST_WAITED.with(|waited| waited.borrow_mut().clear());
+    fail_next(STATUS_INVALID_HANDLE);
+    let mut transferred = 0xCCu32;
+    let got = unsafe { get_overlapped_result(HANDLE, &mut overlapped, &mut transferred, 1) };
+    assert_eq!(
+        (got, last_error(), transferred),
+        (0, 6, 0xCC),
+        "the wait's failure"
+    );
+    assert_eq!(waited(), [EVENT], "the wait is on the OVERLAPPED's event");
+}
+
 /// WriteFile on stdout or stderr (or their pseudo-handles) hands the bytes to the console and
 /// stores the count.
 ///
