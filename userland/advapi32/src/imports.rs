@@ -473,9 +473,25 @@ pub fn enumerate_key(
     class: u32,
     information: &mut [u8],
 ) -> Result<u32, NtStatus> {
+    let answer = enumerate_key_answer(key, index, class, information);
+    checked(answer.status.0)?;
+    Ok(answer.length)
+}
+
+/// A key service's answer into a buffer whatever it is: its status, and the bytes the whole
+/// information takes (ResultLength), which an answer too long for the buffer reports too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Answer {
+    pub status: NtStatus,
+    pub length: u32,
+}
+
+/// NtEnumerateKey: subkey `index` of `key`'s information of `class`, into `information` (see
+/// [`Answer`]).
+pub fn enumerate_key_answer(key: u32, index: u32, class: u32, information: &mut [u8]) -> Answer {
     let mut length = 0u32;
     // SAFETY: the call writes at most the buffer's length into it, and the length into the local.
-    checked(unsafe {
+    let status = unsafe {
         raw::NtEnumerateKey(
             key,
             index,
@@ -484,8 +500,11 @@ pub fn enumerate_key(
             information.len() as u32,
             &mut length,
         )
-    })?;
-    Ok(length)
+    };
+    Answer {
+        status: NtStatus(status),
+        length,
+    }
 }
 
 /// NtQueryValueKey: `name`'s value of `key`, its information of `class` into `information`: the
@@ -636,15 +655,46 @@ pub mod host {
         STATUS_NOT_IMPLEMENTED
     }
 
+    std::thread_local! {
+        /// What NtEnumerateKey answers on the host: the
+        /// information's bytes, delivered as the kernel delivers them (what fits, the whole's size
+        /// in ResultLength, STATUS_BUFFER_OVERFLOW when not the whole), or a status
+        /// (STATUS_NOT_IMPLEMENTED unless a test sets one); and the information classes asked for.
+        pub static KEY_REPLY: RefCell<Result<std::vec::Vec<u8>, u32>> = const { RefCell::new(Err(STATUS_NOT_IMPLEMENTED)) };
+        pub static KEY_CLASSES: RefCell<std::vec::Vec<u32>> = const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    /// The reply [`KEY_REPLY`] holds, delivered into `length` bytes at `information`.
+    unsafe fn deliver(class: u32, information: *mut u8, length: u32, result: *mut u32) -> u32 {
+        KEY_CLASSES.with(|classes| classes.borrow_mut().push(class));
+        KEY_REPLY.with(|reply| match &*reply.borrow() {
+            Err(status) => *status,
+            Ok(bytes) => {
+                let fits = bytes.len().min(length as usize);
+                // SAFETY: the caller's buffer of `length` bytes and its result length.
+                unsafe {
+                    information.copy_from_nonoverlapping(bytes.as_ptr(), fits);
+                    result.write(bytes.len() as u32);
+                }
+                if fits < bytes.len() {
+                    0x8000_0005
+                } else {
+                    0
+                }
+            }
+        })
+    }
+
     pub unsafe extern "system" fn NtEnumerateKey(
         _: u32,
         _: u32,
-        _: u32,
-        _: *mut u8,
-        _: u32,
-        _: *mut u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        result: *mut u32,
     ) -> u32 {
-        STATUS_NOT_IMPLEMENTED
+        // SAFETY: the caller's buffer and result length.
+        unsafe { deliver(class, information, length, result) }
     }
 
     pub unsafe extern "system" fn NtQueryValueKey(

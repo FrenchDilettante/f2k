@@ -99,6 +99,20 @@ impl = { native = "RegEnumKeyW" }
 ordinal = 411
 
 [[export]]
+name = "RegEnumKeyExA"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpName", "ptr<u32> lpcName", "ptr<u32> lpReserved", "ptr lpClass", "ptr<u32> lpcClass", "ptr lpftLastWriteTime"]
+impl = { native = "RegEnumKeyExA" }
+ordinal = 409
+
+[[export]]
+name = "RegEnumKeyExW"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpName", "ptr<u32> lpcName", "ptr<u32> lpReserved", "ptr lpClass", "ptr<u32> lpcClass", "ptr lpftLastWriteTime"]
+impl = { native = "RegEnumKeyExW" }
+ordinal = 410
+
+[[export]]
 name = "RegQueryValueA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
@@ -1812,14 +1826,6 @@ ordinal = 406
 [[export]]
 name = "RegDisablePredefinedCache"
 ordinal = 407
-
-[[export]]
-name = "RegEnumKeyExA"
-ordinal = 409
-
-[[export]]
-name = "RegEnumKeyExW"
-ordinal = 410
 
 [[export]]
 name = "RegEnumValueA"

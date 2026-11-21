@@ -16,6 +16,7 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod imports;
+pub mod regenum;
 pub mod registry;
 pub mod stub;
 pub mod token;

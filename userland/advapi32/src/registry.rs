@@ -100,7 +100,7 @@ pub fn predefined(key: u32) -> Option<usize> {
 }
 
 /// The Win32 error a failed service's status maps to.
-fn error(status: NtStatus) -> u32 {
+pub(crate) fn error(status: NtStatus) -> u32 {
     nt::dos_error(status)
 }
 
@@ -110,7 +110,7 @@ fn code(answer: Result<(), NtStatus>) -> u32 {
 }
 
 /// Write `value` to the out parameter, when the caller gave one.
-fn give(out: Option<&mut Out<'_, u32>>, value: u32) {
+pub(crate) fn give(out: Option<&mut Out<'_, u32>>, value: u32) {
     if let Some(out) = out {
         out.set(value);
     }
@@ -187,7 +187,7 @@ fn open_predefined(index: usize) -> Result<u32, NtStatus> {
 
 /// The NT handle `key` stands for: itself, or a predefined key's, opened at its first use. A
 /// predefined key that cannot be opened is the open's error.
-fn map(key: u32) -> Result<u32, u32> {
+pub(crate) fn map(key: u32) -> Result<u32, u32> {
     let Some(index) = predefined(key) else {
         return Ok(key);
     };
@@ -220,7 +220,7 @@ fn wide(text: &[u8]) -> Result<Wide, u32> {
 
 /// A zeroed block of `size` bytes of the process heap: ERROR_NOT_ENOUGH_MEMORY when it has no
 /// room.
-fn block(size: usize) -> Result<HeapBlock, u32> {
+pub(crate) fn block(size: usize) -> Result<HeapBlock, u32> {
     HeapBlock::new(size).ok_or(ERROR_NOT_ENOUGH_MEMORY)
 }
 
@@ -888,7 +888,7 @@ pub unsafe extern "system" fn reg_enum_key_a(
 /// # Safety
 ///
 /// `size` is null or a writable dword; non-null `data` holds the bytes `*size` says.
-unsafe fn query_buffer<'a>(
+pub(crate) unsafe fn query_buffer<'a>(
     data: *mut u8,
     size: *mut u32,
 ) -> (Option<&'a mut [u8]>, Option<Out<'a, u32>>) {
