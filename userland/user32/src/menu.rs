@@ -29,18 +29,12 @@
 
 use rtl::edge::OutBuf;
 use rtl::menu::*;
-use rtl::status::{
-    NtStatus,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_TYPE_MISMATCH,
-};
+use rtl::status::NtStatus;
 use rtl::user::{NO_PARAM_CREATE_MENU, NO_PARAM_CREATE_POPUP_MENU};
 use rtl::window::QUERY_WINDOW_MENU;
 
 use crate::imports::{self, ResourceName};
-use crate::{failed, failed_with};
+use crate::{failed, failed_with, window_error};
 
 /// RT_MENU: a menu template's resource type.
 const RT_MENU: u16 = 4;
@@ -55,16 +49,10 @@ const ERROR_INVALID_DATA: u32 = 13;
 /// The popups a template nests at most (a deeper one is refused as bad data).
 const MAX_DEPTH: u32 = 16;
 
-/// The Win32 error of a failed menu service: a handle naming no menu is
-/// ERROR_INVALID_MENU_HANDLE, no such item ERROR_MENU_ITEM_NOT_FOUND, a window naming nothing
-/// ERROR_INVALID_WINDOW_HANDLE (the kernel's menu module), anything else what ntdll maps it to.
-pub fn menu_error(status: NtStatus) -> u32 {
-    match status.0 {
-        STATUS_OBJECT_TYPE_MISMATCH => ERROR_INVALID_MENU_HANDLE,
-        STATUS_OBJECT_NAME_NOT_FOUND => ERROR_MENU_ITEM_NOT_FOUND,
-        STATUS_INVALID_HANDLE => crate::ERROR_INVALID_WINDOW_HANDLE,
-        _ => imports::dos_error(status),
-    }
+/// Whether a menu service's failure is ERROR_MENU_ITEM_NOT_FOUND, the kernel's own: no such item,
+/// which the item calls answer with the last error untouched.
+fn no_such_item(status: NtStatus) -> bool {
+    status == NtStatus::from_win32(ERROR_MENU_ITEM_NOT_FOUND)
 }
 
 /// The item `item` names in `menu` (MF_BYPOSITION in `flags`), as the kernel answers it.
@@ -85,9 +73,9 @@ pub fn query(menu: usize, item: u32, flags: u32) -> Result<MenuItemAnswer, NtSta
 fn query_quiet(menu: usize, item: u32, flags: u32) -> Result<Option<MenuItemAnswer>, ()> {
     match query(menu, item, flags) {
         Ok(answer) => Ok(Some(answer)),
-        Err(status) if status.0 == STATUS_OBJECT_NAME_NOT_FOUND => Ok(None),
+        Err(status) if no_such_item(status) => Ok(None),
         Err(status) => {
-            imports::set_last_error(menu_error(status));
+            imports::set_last_error(window_error(status));
             Err(())
         }
     }
@@ -143,7 +131,7 @@ pub fn build_menu(data: &[u8]) -> Option<usize> {
     let Some(mut template) = Template::new(data) else {
         return failed(ERROR_INVALID_DATA);
     };
-    let bar = failed_with(imports::call_no_param(NO_PARAM_CREATE_MENU), menu_error)? as usize;
+    let bar = failed_with(imports::call_no_param(NO_PARAM_CREATE_MENU), window_error)? as usize;
     match build_level(&mut template, bar, 0) {
         Ok(()) => Some(bar),
         Err(error) => {
@@ -164,7 +152,7 @@ fn build_level(template: &mut Template<'_>, menu: usize, depth: u32) -> Result<(
         let mut submenu = 0;
         if item.popup {
             submenu =
-                imports::call_no_param(NO_PARAM_CREATE_POPUP_MENU).map_err(menu_error)? as usize;
+                imports::call_no_param(NO_PARAM_CREATE_POPUP_MENU).map_err(window_error)? as usize;
             if let Err(error) = build_level(template, submenu, depth + 1) {
                 let _ = imports::destroy_menu(submenu);
                 return Err(error);
@@ -201,7 +189,7 @@ fn build_level(template: &mut Template<'_>, menu: usize, depth: u32) -> Result<(
             if submenu != 0 {
                 let _ = imports::destroy_menu(submenu);
             }
-            return Err(menu_error(status));
+            return Err(window_error(status));
         }
         if item.last {
             return Ok(());
@@ -215,7 +203,8 @@ fn build_level(template: &mut Template<'_>, menu: usize, depth: u32) -> Result<(
 /// CreateMenu: a new, empty menu bar; NULL with the last error when win32k has no room.
 #[unsafe(export_name = "f2k_export_CreateMenu")]
 pub extern "system" fn create_menu() -> usize {
-    failed_with(imports::call_no_param(NO_PARAM_CREATE_MENU), menu_error).map_or(0, |m| m as usize)
+    failed_with(imports::call_no_param(NO_PARAM_CREATE_MENU), window_error)
+        .map_or(0, |m| m as usize)
 }
 
 /// CreatePopupMenu: a new, empty popup menu; NULL with the last error when win32k has no room.
@@ -223,7 +212,7 @@ pub extern "system" fn create_menu() -> usize {
 pub extern "system" fn create_popup_menu() -> usize {
     failed_with(
         imports::call_no_param(NO_PARAM_CREATE_POPUP_MENU),
-        menu_error,
+        window_error,
     )
     .map_or(0, |m| m as usize)
 }
@@ -298,7 +287,7 @@ fn edit_by_flags(
             &info,
             text,
         ),
-        menu_error,
+        window_error,
     )
     .is_some() as i32
 }
@@ -542,9 +531,9 @@ pub extern "system" fn delete_menu(menu: usize, position: u32, flags: u32) -> i3
 fn quiet_success(answer: Result<(), NtStatus>) -> i32 {
     match answer {
         Ok(()) => 1,
-        Err(status) if status.0 == STATUS_OBJECT_NAME_NOT_FOUND => 0,
+        Err(status) if no_such_item(status) => 0,
         Err(status) => {
-            imports::set_last_error(menu_error(status));
+            imports::set_last_error(window_error(status));
             0
         }
     }
@@ -556,7 +545,7 @@ pub extern "system" fn is_menu(menu: usize) -> i32 {
     let mut answer = MenuItemAnswer::EMPTY;
     failed_with(
         imports::query_menu(menu, 0, 0, MENU_QUERY, &mut answer),
-        menu_error,
+        window_error,
     )
     .is_some() as i32
 }
@@ -565,7 +554,7 @@ pub extern "system" fn is_menu(menu: usize) -> i32 {
 /// handle naming none.
 #[unsafe(export_name = "f2k_export_DestroyMenu")]
 pub extern "system" fn destroy_menu(menu: usize) -> i32 {
-    failed_with(imports::destroy_menu(menu), menu_error).is_some() as i32
+    failed_with(imports::destroy_menu(menu), window_error).is_some() as i32
 }
 
 /// GetMenuItemCount: how many items the menu holds; -1 with ERROR_INVALID_MENU_HANDLE for a
@@ -575,7 +564,7 @@ pub extern "system" fn get_menu_item_count(menu: usize) -> i32 {
     let mut answer = MenuItemAnswer::EMPTY;
     failed_with(
         imports::query_menu(menu, 0, 0, MENU_QUERY, &mut answer),
-        menu_error,
+        window_error,
     )
     .map_or(-1, |()| answer.count as i32)
 }
@@ -676,7 +665,7 @@ fn menu_string<T: Copy + Default + From<u8>>(
     if let Some(buffer) = buffer.as_mut().filter(|b| !b.is_empty()) {
         buffer.set(0, T::from(0));
     }
-    let answer = match failed_with(query(menu, item, flags), menu_error) {
+    let answer = match failed_with(query(menu, item, flags), window_error) {
         Some(answer) => answer,
         None => return 0,
     };
@@ -710,9 +699,9 @@ pub extern "system" fn enable_menu_item(menu: usize, item: u32, enable: u32) -> 
 fn previous_state(answer: Result<u32, NtStatus>) -> u32 {
     match answer {
         Ok(previous) => previous,
-        Err(status) if status.0 == STATUS_OBJECT_NAME_NOT_FOUND => u32::MAX,
+        Err(status) if no_such_item(status) => u32::MAX,
         Err(status) => {
-            imports::set_last_error(menu_error(status));
+            imports::set_last_error(window_error(status));
             u32::MAX
         }
     }
@@ -735,7 +724,7 @@ pub extern "system" fn check_menu_radio_item(
         let mut answer = MenuItemAnswer::EMPTY;
         if failed_with(
             imports::query_menu(menu, 0, 0, MENU_QUERY, &mut answer),
-            menu_error,
+            window_error,
         )
         .is_none()
         {
@@ -743,11 +732,13 @@ pub extern "system" fn check_menu_radio_item(
         }
         (menu, first, last.min(answer.count.saturating_sub(1)))
     } else {
-        let Some(start) = failed_with(query(menu, first, MF_BYCOMMAND), menu_error) else {
+        let Some(start) = failed_with(query(menu, first, MF_BYCOMMAND), window_error) else {
             return 0;
         };
-        let Some(end) = failed_with(query(start.holder as usize, last, MF_BYCOMMAND), menu_error)
-        else {
+        let Some(end) = failed_with(
+            query(start.holder as usize, last, MF_BYCOMMAND),
+            window_error,
+        ) else {
             return 0;
         };
         (start.holder as usize, start.position, end.position)
@@ -807,7 +798,7 @@ pub extern "system" fn get_menu_default_item(menu: usize, by_position: u32, flag
     let mut answer = MenuItemAnswer::EMPTY;
     if failed_with(
         imports::query_menu(menu, 0, 0, MENU_QUERY, &mut answer),
-        menu_error,
+        window_error,
     )
     .is_none()
     {
@@ -901,7 +892,7 @@ fn build_system_menu() -> Option<usize> {
             &info,
             &units[..length],
         );
-        if failed_with(inserted, menu_error).is_none() {
+        if failed_with(inserted, window_error).is_none() {
             let _ = imports::destroy_menu(menu);
             return None;
         }
@@ -952,11 +943,7 @@ pub extern "system" fn get_menu(window: usize) -> usize {
 /// window.
 #[unsafe(export_name = "f2k_export_SetMenu")]
 pub extern "system" fn set_menu(window: usize, menu: usize) -> i32 {
-    failed_with(imports::set_menu(window, menu), |status| match status.0 {
-        STATUS_INVALID_PARAMETER => ERROR_CHILD_WINDOW_MENU,
-        _ => menu_error(status),
-    })
-    .is_some() as i32
+    crate::answered(imports::set_menu(window, menu)).is_some() as i32
 }
 
 #[cfg(test)]

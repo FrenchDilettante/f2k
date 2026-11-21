@@ -43,6 +43,10 @@ use crate::status::*;
 /// How many cursor and icon records the table holds (the stock ones among them).
 pub const CURSORS: usize = 128;
 
+/// A handle naming no cursor or icon: ERROR_INVALID_CURSOR_HANDLE (1402), the Win32 error itself
+/// in a FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
+pub const INVALID_CURSOR_HANDLE: NtStatus = NtStatus::from_win32(1402);
+
 /// A cursor or icon's id: its record in the pool and the record's generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorId {
@@ -306,7 +310,7 @@ impl CursorTable {
     }
 
     /// Fill in the record `handle` names with `data`: the process's own record, made empty for it;
-    /// STATUS_INVALID_HANDLE for a handle naming none.
+    /// [`INVALID_CURSOR_HANDLE`] for a handle naming none.
     pub fn set_data(
         &mut self,
         handles: &UserHandles,
@@ -316,10 +320,10 @@ impl CursorTable {
     ) -> Result<(), NtStatus> {
         let id = self
             .validate(handles, handle)
-            .ok_or(STATUS_INVALID_HANDLE)?;
+            .ok_or(INVALID_CURSOR_HANDLE)?;
         let record = &mut self.records[id.index as usize];
         if record.owner != Some(owner) {
-            return Err(STATUS_INVALID_HANDLE);
+            return Err(INVALID_CURSOR_HANDLE);
         }
         record.is_icon = data.is_icon != 0;
         record.data = *data;
@@ -446,7 +450,7 @@ mod services {
     }
 
     /// NtUserGetIconInfo(Cursor, Data): what the record holds, as a CursorData, into `data`;
-    /// STATUS_INVALID_HANDLE for a handle naming no cursor or icon.
+    /// [`INVALID_CURSOR_HANDLE`] for a handle naming no cursor or icon.
     pub fn get_icon_info(call: &mut NtCall, cursor: Handle, data: UserAddr) -> NtResult {
         gui_thread(call)?;
         let held = with_manager(call.passive(), |m| {
@@ -454,13 +458,13 @@ mod services {
             let id = cursors.validate(&m.windows.handles, cursor.raw());
             id.map(|id| cursors.data(id))
         })
-        .ok_or(STATUS_INVALID_HANDLE)?;
+        .ok_or(INVALID_CURSOR_HANDLE)?;
         data.cast::<CursorData>().write(held)?;
         Ok(STATUS_SUCCESS)
     }
 
     /// NtUserDestroyCursor(Cursor): DestroyIcon's and DestroyCursor's record destroyed (a shared
-    /// one stays, [`CursorTable::destroy_by`]); STATUS_INVALID_HANDLE for a handle naming no
+    /// one stays, [`CursorTable::destroy_by`]); [`INVALID_CURSOR_HANDLE`] for a handle naming no
     /// cursor or icon.
     pub fn destroy_cursor(call: &mut NtCall, cursor: Handle) -> NtResult {
         let owner = gui_thread(call)?.owner;
@@ -469,7 +473,7 @@ mod services {
             let cursors = &mut m.classes.cursors;
             let id = cursors
                 .validate(handles, cursor.raw())
-                .ok_or(STATUS_INVALID_HANDLE)?;
+                .ok_or(INVALID_CURSOR_HANDLE)?;
             cursors.destroy_by(handles, owner, id);
             Ok::<(), NtStatus>(())
         })?;
@@ -562,7 +566,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             t.set_data(&h, OWNER + 1, handle, &icon(1, 2)),
-            Err(STATUS_INVALID_HANDLE)
+            Err(INVALID_CURSOR_HANDLE)
         );
         assert_eq!(
             t.find_existing(OWNER, 0x40_0000, 0x40_A000, 32, 32, ICON),

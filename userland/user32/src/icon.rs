@@ -21,7 +21,6 @@
 use rtl::display::{DevModeW, ENUM_CURRENT_SETTINGS};
 use rtl::icon::{best_entry, CursorData, ICON_SIZE, RT_GROUP_ICON, RT_ICON};
 use rtl::pod::Pod;
-use rtl::status::NtStatus;
 use rtl::user::NO_PARAM_CREATE_EMPTY_CURSOR;
 
 use crate::imports::{self, ResourceName};
@@ -32,15 +31,6 @@ const ERROR_RESOURCE_DATA_NOT_FOUND: u32 = 1812;
 
 /// ERROR_INVALID_CURSOR_HANDLE: a handle naming no cursor or icon.
 pub const ERROR_INVALID_CURSOR_HANDLE: u32 = 1402;
-
-/// The Win32 error of a failed cursor or icon service: a handle naming no cursor or icon is
-/// ERROR_INVALID_CURSOR_HANDLE (the kernel's icon module), anything else what ntdll maps it to.
-fn cursor_error(status: NtStatus) -> u32 {
-    match status.0 {
-        rtl::status::STATUS_INVALID_HANDLE => ERROR_INVALID_CURSOR_HANDLE,
-        _ => imports::dos_error(status),
-    }
-}
 
 /// LoadIconW: a stock icon (no module, an IDI_ id), or the module's group icon `name` at the
 /// standard icon size; see [`load_icon`].
@@ -177,7 +167,7 @@ pub extern "system" fn copy_icon(icon: usize) -> usize {
 }
 
 fn copy(icon: usize) -> Option<usize> {
-    let source = failed_with(imports::get_icon_info(icon), cursor_error)?;
+    let source = failed_with(imports::get_icon_info(icon), crate::window_error)?;
     let data = CursorData {
         shared: 0,
         ..source
@@ -197,7 +187,7 @@ fn copy(icon: usize) -> Option<usize> {
 /// ERROR_INVALID_CURSOR_HANDLE for a handle naming no cursor or icon.
 #[unsafe(export_name = "f2k_export_DestroyIcon")]
 pub extern "system" fn destroy_icon(icon: usize) -> i32 {
-    failed_with(imports::destroy_cursor(icon), cursor_error).is_some() as i32
+    failed_with(imports::destroy_cursor(icon), crate::window_error).is_some() as i32
 }
 
 #[cfg(test)]

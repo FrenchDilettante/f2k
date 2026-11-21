@@ -68,6 +68,14 @@ impl NtStatus {
     pub const fn is_error(self) -> bool {
         self.0 >> 30 == 3
     }
+
+    /// The error status of FACILITY_NTWIN32 (0xC007xxxx) that carries the Win32 error `error` in
+    /// its low word, which [`dos_error`] answers as is: how a service whose decision is a Win32
+    /// error with no NTSTATUS of its own (win32k's, as Windows 2000's sets the thread's last error
+    /// itself) hands that error to its DLL exactly.
+    pub const fn from_win32(error: u32) -> Self {
+        NtStatus(0xC007_0000 | (error & 0xFFFF))
+    }
 }
 
 /// A status prints as its hexadecimal value, the form the documentation lists it in.
@@ -387,6 +395,9 @@ mod tests {
             "the Win32 facility carries the error"
         );
         assert_eq!(dos_error(0x8007_0057), 87);
+        assert_eq!(NtStatus::from_win32(1400), NtStatus(0xC007_0578));
+        assert!(NtStatus::from_win32(1400).is_error());
+        assert_eq!(dos_error(NtStatus::from_win32(1400).0), 1400);
         assert_eq!(dos_error(0xC000_7FFF), ERROR_MR_MID_NOT_FOUND);
         assert_eq!(dos_error(0x0000_0000), 0);
         assert!(nt_success(STATUS_TIMEOUT) && nt_success(STATUS_OBJECT_NAME_EXISTS));

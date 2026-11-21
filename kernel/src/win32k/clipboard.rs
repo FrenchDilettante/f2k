@@ -123,16 +123,20 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// The NTSTATUS the service answers. ERROR_CLIPBOARD_NOT_OPEN has no NTSTATUS counterpart
-    /// (nothing maps to it in RtlNtStatusToDosError's table), so STATUS_UNSUCCESSFUL stands in,
-    /// which user32's clipboard calls map back to it.
-    pub const fn status(self) -> NtStatus {
+    /// The Win32 error code (winerror.h) the refusal reports.
+    pub const fn code(self) -> u32 {
         match self {
-            Refusal::NotOpen => STATUS_UNSUCCESSFUL,
-            Refusal::AccessDenied => STATUS_ACCESS_DENIED,
-            Refusal::InvalidParameter => STATUS_INVALID_PARAMETER,
-            Refusal::NoMemory => STATUS_NO_MEMORY,
+            Refusal::NotOpen => 1418,
+            Refusal::AccessDenied => 5,
+            Refusal::InvalidParameter => 87,
+            Refusal::NoMemory => 8,
         }
+    }
+
+    /// The NTSTATUS the service answers: the Win32 error itself ([`Refusal::code`]) in a
+    /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
+    pub const fn status(self) -> NtStatus {
+        NtStatus::from_win32(self.code())
     }
 }
 

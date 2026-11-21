@@ -369,9 +369,26 @@ pub const SCREEN: Rect = Rect {
     bottom: 480,
 };
 pub const LISTED_MODE: (u32, u32) = (800, 600);
-/// STATUS_INFO_LENGTH_MISMATCH and STATUS_INVALID_INFO_CLASS, the query service's refusals.
+/// STATUS_INFO_LENGTH_MISMATCH, the query service's refusal of an answer of another length.
 pub const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
-pub const STATUS_INVALID_INFO_CLASS: u32 = 0xC000_0003;
+
+/// The window manager's refusals whose Win32 error has no NTSTATUS of its own, as its services
+/// answer them: the error itself in a FACILITY_NTWIN32 status (win32k's `Failure::status`).
+const fn carried(error: u32) -> u32 {
+    NtStatus::from_win32(error).0
+}
+pub const INVALID_CURSOR_HANDLE: u32 = carried(1402);
+pub const INVALID_MENU_HANDLE: u32 = carried(1401);
+pub const INVALID_ACCEL_HANDLE: u32 = carried(1403);
+pub const TLW_WITH_WSCHILD: u32 = carried(1406);
+pub const CANNOT_FIND_WND_CLASS: u32 = carried(1407);
+pub const CLASS_ALREADY_EXISTS: u32 = carried(1410);
+pub const CLASS_DOES_NOT_EXIST: u32 = carried(1411);
+pub const CLASS_HAS_WINDOWS: u32 = carried(1412);
+pub const INVALID_INDEX: u32 = carried(1413);
+pub const CLIPBOARD_NOT_OPEN: u32 = carried(1418);
+pub const INVALID_THREAD_ID: u32 = carried(1444);
+pub const MENU_ITEM_NOT_FOUND: u32 = carried(1456);
 
 /// A class the window manager holds.
 #[derive(Clone, Debug)]
@@ -629,7 +646,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
     });
     wm(|wm| {
         if wm.class(&name).is_some() {
-            return STATUS_OBJECT_NAME_EXISTS;
+            return CLASS_ALREADY_EXISTS;
         }
         // A 4.0-compatible registration naming no cursor the stand-ins hold is refused.
         if class.cursor != 0 && cursor_index(class.cursor).is_none() {
@@ -670,10 +687,10 @@ pub unsafe extern "system" fn NtUserUnregisterClass(name: usize, _instance: usiz
             Ok(units) => same_name(&c.name, units),
             Err(atom) => c.atom == *atom,
         }) else {
-            return STATUS_OBJECT_NAME_NOT_FOUND;
+            return CLASS_DOES_NOT_EXIST;
         };
         if wm.classes[at].windows != 0 {
-            return STATUS_INVALID_PARAMETER;
+            return CLASS_HAS_WINDOWS;
         }
         wm.classes.remove(at);
         STATUS_SUCCESS
@@ -689,7 +706,7 @@ pub unsafe extern "system" fn NtUserGetClassInfo(
     let name = name_at(name);
     wm(|wm| {
         let Some(class) = wm.class(&name) else {
-            return STATUS_OBJECT_NAME_NOT_FOUND;
+            return CLASS_DOES_NOT_EXIST;
         };
         let mut answer = class.class;
         answer.cb_size = 48;
@@ -768,8 +785,11 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             version,
         });
         let Some(class) = wm.class(&class_name) else {
-            return STATUS_OBJECT_NAME_NOT_FOUND;
+            return CANNOT_FIND_WND_CLASS;
         };
+        if style & 0x4000_0000 != 0 && parent == 0 {
+            return TLW_WITH_WSCHILD;
+        }
         class.windows += 1;
         let (atom, proc, ansi) = match (class.narrow, ex_style & 0x8000_0000 != 0) {
             (narrow, true) if narrow != 0 => (class.atom, narrow, true),
@@ -881,7 +901,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
             length == 2 || length == 4
         }
-        _ => return STATUS_INVALID_INFO_CLASS,
+        _ => return INVALID_INDEX,
     };
     if !fits {
         return STATUS_INFO_LENGTH_MISMATCH;
@@ -905,13 +925,13 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             let class = wm.classes.iter().find(|c| c.atom == w.atom);
             match class.and_then(|c| c.extra.get(offset..offset + length as usize)) {
                 Some(bytes) => bytes.to_vec(),
-                None => return STATUS_INVALID_INFO_CLASS,
+                None => return INVALID_INDEX,
             }
         } else if index & QUERY_WINDOW_EXTRA != 0 {
             let offset = (index & !QUERY_WINDOW_EXTRA) as usize;
             match w.extra.get(offset..offset + length as usize) {
                 Some(bytes) => bytes.to_vec(),
-                None => return STATUS_INVALID_INFO_CLASS,
+                None => return INVALID_INDEX,
             }
         } else if index == QUERY_WINDOW_DATA {
             WindowData {
@@ -1088,13 +1108,13 @@ pub unsafe extern "system" fn NtUserSetClassLong(
             .classes
             .iter_mut()
             .find(|c| c.atom == atom)
-            .ok_or(STATUS_INVALID_INFO_CLASS)?;
+            .ok_or(INVALID_INDEX)?;
         if index >= 0 {
             let offset = index as usize;
             let bytes = class
                 .extra
                 .get_mut(offset..offset + 4)
-                .ok_or(STATUS_INVALID_INFO_CLASS)?;
+                .ok_or(INVALID_INDEX)?;
             let old = u32::from_le_bytes(bytes.try_into().unwrap());
             bytes.copy_from_slice(&value.to_le_bytes());
             return Ok(old);
@@ -1103,7 +1123,7 @@ pub unsafe extern "system" fn NtUserSetClassLong(
             -26 => core::mem::replace(&mut class.class.style, value),
             -10 => core::mem::replace(&mut class.class.background, value as usize) as u32,
             -24 => core::mem::replace(&mut class.class.wnd_proc, value as usize) as u32,
-            _ => return Err(STATUS_INVALID_INFO_CLASS),
+            _ => return Err(INVALID_INDEX),
         })
     });
     match answer {
@@ -1128,10 +1148,7 @@ pub unsafe extern "system" fn NtUserSetWindowLong(
         let w = wm.window(window)?;
         if index >= 0 {
             let offset = index as usize;
-            let bytes = w
-                .extra
-                .get_mut(offset..offset + 4)
-                .ok_or(STATUS_INVALID_INFO_CLASS)?;
+            let bytes = w.extra.get_mut(offset..offset + 4).ok_or(INVALID_INDEX)?;
             let old = u32::from_le_bytes(bytes.try_into().unwrap());
             bytes.copy_from_slice(&value.to_le_bytes());
             return Ok((old, false));
@@ -1148,7 +1165,7 @@ pub unsafe extern "system" fn NtUserSetWindowLong(
                 w.ansi = ansi != 0;
                 return Ok(old);
             }
-            _ => return Err(STATUS_INVALID_INFO_CLASS),
+            _ => return Err(INVALID_INDEX),
         };
         Ok((core::mem::replace(field, value), false))
     });
@@ -1173,11 +1190,8 @@ pub unsafe extern "system" fn NtUserSetWindowWord(
 ) -> u32 {
     let answer = wm(|wm| {
         let w = wm.window(window)?;
-        let offset = usize::try_from(index).map_err(|_| STATUS_INVALID_INFO_CLASS)?;
-        let bytes = w
-            .extra
-            .get_mut(offset..offset + 2)
-            .ok_or(STATUS_INVALID_INFO_CLASS)?;
+        let offset = usize::try_from(index).map_err(|_| INVALID_INDEX)?;
+        let bytes = w.extra.get_mut(offset..offset + 2).ok_or(INVALID_INDEX)?;
         let old = u16::from_le_bytes(bytes.try_into().unwrap());
         bytes.copy_from_slice(&(value as u16).to_le_bytes());
         Ok(old)
@@ -1403,7 +1417,7 @@ pub unsafe extern "system" fn NtUserPostThreadMessage(
     lparam: i32,
 ) -> u32 {
     if thread != THREAD_ID.with(Cell::get) {
-        return STATUS_INVALID_CID;
+        return INVALID_THREAD_ID;
     }
     // SAFETY: no pointers.
     unsafe { NtUserPostMessage(0, message, wparam, lparam) }
@@ -2262,12 +2276,12 @@ std::thread_local! {
 fn menu_index(handle: usize) -> Result<usize, u32> {
     let handle = handle as u32;
     if handle & 0xFFFF_0000 != HOST_MENU_TAG {
-        return Err(STATUS_OBJECT_TYPE_MISMATCH);
+        return Err(INVALID_MENU_HANDLE);
     }
     let index = (handle & 0xFFFF) as usize;
     MENUS.with(|menus| match menus.borrow().get(index.wrapping_sub(1)) {
         Some(menu) if menu.items.is_some() => Ok(index - 1),
-        _ => Err(STATUS_OBJECT_TYPE_MISMATCH),
+        _ => Err(INVALID_MENU_HANDLE),
     })
 }
 
@@ -2375,7 +2389,7 @@ pub unsafe extern "system" fn NtUserThunkedMenuItemInfo(
                 } else {
                     match found {
                         Some(found) => found,
-                        None => return STATUS_OBJECT_NAME_NOT_FOUND,
+                        None => return MENU_ITEM_NOT_FOUND,
                     }
                 };
                 let items = menus[holder].items.as_mut().unwrap();
@@ -2420,7 +2434,7 @@ pub unsafe extern "system" fn NtUserThunkedMenuItemInfo(
                     answer.count = menus[index].items.as_ref().unwrap().len() as u32;
                 } else {
                     let Some((holder, position)) = find_item(&menus, index, item, flags) else {
-                        return STATUS_OBJECT_NAME_NOT_FOUND;
+                        return MENU_ITEM_NOT_FOUND;
                     };
                     let items = menus[holder].items.as_ref().unwrap();
                     let entry = &items[position];
@@ -2474,7 +2488,7 @@ fn remove_item(menu: usize, item: u32, flags: u32, delete: bool) -> u32 {
     MENUS.with(|menus| {
         let mut menus = menus.borrow_mut();
         let Some((holder, position)) = find_item(&menus, index, item, flags) else {
-            return STATUS_OBJECT_NAME_NOT_FOUND;
+            return MENU_ITEM_NOT_FOUND;
         };
         let entry = menus[holder].items.as_mut().unwrap().remove(position);
         if delete && entry.submenu != 0 {
@@ -2516,7 +2530,7 @@ pub unsafe extern "system" fn NtUserSetMenuDefaultItem(
             };
             match position {
                 Some(p) if items[p].item_type & MFT_SEPARATOR == 0 => Some(p),
-                _ => return STATUS_OBJECT_NAME_NOT_FOUND,
+                _ => return MENU_ITEM_NOT_FOUND,
             }
         };
         for (position, entry) in items.iter_mut().enumerate() {
@@ -2575,7 +2589,7 @@ fn change_state(menu: usize, item: u32, flags: u32, bits: u32, previous: *mut u3
     MENUS.with(|menus| {
         let mut menus = menus.borrow_mut();
         let Some((holder, position)) = find_item(&menus, index, item, flags) else {
-            return STATUS_OBJECT_NAME_NOT_FOUND;
+            return MENU_ITEM_NOT_FOUND;
         };
         let entry = &mut menus[holder].items.as_mut().unwrap()[position];
         // SAFETY: the caller's out-pointer.
@@ -2634,12 +2648,12 @@ pub fn window_menu(window: usize) -> usize {
 fn table_index(table: usize) -> Result<usize, u32> {
     let table = table as u32;
     if table & 0xFFFF_0000 != HOST_TABLE_TAG {
-        return Err(STATUS_OBJECT_TYPE_MISMATCH);
+        return Err(INVALID_ACCEL_HANDLE);
     }
     let index = (table & 0xFFFF) as usize;
     TABLES.with(|tables| match tables.borrow().get(index.wrapping_sub(1)) {
         Some(Some(_)) => Ok(index - 1),
-        _ => Err(STATUS_OBJECT_TYPE_MISMATCH),
+        _ => Err(INVALID_ACCEL_HANDLE),
     })
 }
 
@@ -2826,7 +2840,7 @@ pub unsafe extern "system" fn NtUserGetIconInfo(
 ) -> u32 {
     SERVICES.with(|services| services.set(services.get() + 1));
     let Some(index) = cursor_index(cursor) else {
-        return STATUS_INVALID_HANDLE;
+        return INVALID_CURSOR_HANDLE;
     };
     // SAFETY: the caller's out-pointer.
     CURSORS.with(|cursors| unsafe { data.write(cursors.borrow()[index]) });
@@ -2837,7 +2851,7 @@ pub unsafe extern "system" fn NtUserDestroyCursor(cursor: usize) -> u32 {
     SERVICES.with(|services| services.set(services.get() + 1));
     match cursor_index(cursor) {
         Some(_) => STATUS_SUCCESS,
-        None => STATUS_INVALID_HANDLE,
+        None => INVALID_CURSOR_HANDLE,
     }
 }
 
@@ -2855,7 +2869,7 @@ pub unsafe extern "system" fn NtUserSetCursorIconData(
                 *slot = data;
                 STATUS_SUCCESS
             }
-            _ => STATUS_INVALID_HANDLE,
+            _ => INVALID_CURSOR_HANDLE,
         }
     })
 }

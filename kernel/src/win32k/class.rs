@@ -29,8 +29,8 @@
 //! - NtUserSetClassLong (0x11E7) and NtUserSetClassWord (0x11E8): the class-data changes.
 //!
 //! A failure carries the Win32 error code of the decision (winerror.h, [`Failure::code`]); the
-//! service answers the closest documented NTSTATUS ([`Failure::status`]), and user32's body maps
-//! the failure back for GetLastError.
+//! service answers it in a FACILITY_NTWIN32 status ([`Failure::status`]), which user32's body
+//! hands to GetLastError as is.
 //!
 //! The registry sits in the window manager, behind one lock with the window registry
 //! ([`super::window::WindowManager`]): the window a class change names is the window registry's
@@ -192,23 +192,10 @@ impl Failure {
         }
     }
 
-    /// The NTSTATUS the service answers. The class-specific codes have no NTSTATUS counterpart
-    /// (nothing maps to them in RtlNtStatusToDosError's table), so the closest documented status
-    /// stands in; user32's body reports [`Failure::code`] for GetLastError.
+    /// The NTSTATUS the service answers: the Win32 error itself ([`Failure::code`]) in a
+    /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
     pub const fn status(self) -> NtStatus {
-        match self {
-            Failure::AccessDenied => STATUS_ACCESS_DENIED,
-            Failure::OutOfMemory => STATUS_NO_MEMORY,
-            Failure::InvalidParameter | Failure::ClassHasWindows => STATUS_INVALID_PARAMETER,
-            // An index the read or the change does not know: the query services' own refusal of
-            // an information class there is none of, as the window's own indexes answer it.
-            Failure::InvalidIndex => STATUS_INVALID_INFO_CLASS,
-            Failure::InvalidCursorHandle | Failure::InvalidIconHandle => STATUS_INVALID_HANDLE,
-            Failure::CannotFindWindowClass | Failure::ClassDoesNotExist => {
-                STATUS_OBJECT_NAME_NOT_FOUND
-            }
-            Failure::ClassAlreadyExists => STATUS_OBJECT_NAME_EXISTS,
-        }
+        NtStatus::from_win32(self.code())
     }
 }
 
@@ -2379,7 +2366,8 @@ pub fn get_class_name(
     let mut units = [0u16; MAX_ATOM_NAME + 1];
     let length = {
         let manager = super::window::lock(call.passive());
-        let window = window_of(&manager.windows, window).ok_or(STATUS_INVALID_HANDLE)?;
+        let window = window_of(&manager.windows, window)
+            .ok_or(super::window::Failure::InvalidWindowHandle.status())?;
         manager.classes.class_name(window.class, &mut units)
     };
     let count = length.min((max_count as usize).saturating_sub(1));
@@ -2417,7 +2405,8 @@ pub fn set_class_long(
             views,
             ..
         } = &mut *manager;
-        let target = window_of(windows, window).ok_or(STATUS_INVALID_HANDLE)?;
+        let target = window_of(windows, window)
+            .ok_or(super::window::Failure::InvalidWindowHandle.status())?;
         let view = windows.class_view(window.raw());
         let count = windows.class_views(views);
         // The notice has nothing to change yet: the window records cache no small icon and draw
@@ -2455,7 +2444,8 @@ pub fn set_class_word(
         let super::window::WindowManager {
             windows, classes, ..
         } = &mut *manager;
-        let target = window_of(windows, window).ok_or(STATUS_INVALID_HANDLE)?;
+        let target = window_of(windows, window)
+            .ok_or(super::window::Failure::InvalidWindowHandle.status())?;
         classes
             .set_class_word(&target, caller, index, value as u16)
             .map_err(Failure::status)?
@@ -2680,7 +2670,7 @@ mod tests {
             let refused = RegisterFlags::from_user_bits(bits).unwrap_err();
             assert_eq!(refused, Failure::InvalidParameter);
             assert_eq!(refused.code(), 87);
-            assert_eq!(refused.status(), STATUS_INVALID_PARAMETER);
+            assert_eq!(refused.status(), NtStatus::from_win32(87));
         }
     }
 
@@ -4302,6 +4292,6 @@ mod tests {
         assert_eq!(registry.extra_value(id, 6, 2), Ok(0x5566));
         assert_eq!(registry.extra_value(id, 5, 4), Err(Failure::InvalidIndex));
         assert_eq!(registry.extra_value(id, -4, 4), Err(Failure::InvalidIndex));
-        assert_eq!(Failure::InvalidIndex.status(), STATUS_INVALID_INFO_CLASS);
+        assert_eq!(Failure::InvalidIndex.status(), NtStatus(0xC007_0585));
     }
 }

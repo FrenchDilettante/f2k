@@ -33,7 +33,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
-use rtl::status::{NtStatus, STATUS_INVALID_CID, STATUS_INVALID_PARAMETER};
 use rtl::user::*;
 use rtl::window::{WindowText, QUERY_WINDOW_TEXT, WINDOW_OTHER_PROCESS};
 
@@ -274,13 +273,9 @@ pub extern "system" fn post_thread_message_a(
     wparam: u32,
     lparam: i32,
 ) -> u32 {
-    let error = |status: NtStatus| match status.0 {
-        STATUS_INVALID_CID => ERROR_INVALID_THREAD_ID,
-        _ => imports::dos_error(status),
-    };
     failed_with(
         imports::post_thread_message(thread, message, wparam, lparam),
-        error,
+        imports::dos_error,
     )
     .is_some() as u32
 }
@@ -509,14 +504,9 @@ pub extern "system" fn send_notify_message_a(
 
 /// SendNotifyMessage's core, for a message of the narrow (`ansi`) or wide form.
 fn send_notify(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> u32 {
-    let error = |status: NtStatus| match status.0 {
-        STATUS_INVALID_PARAMETER => ERROR_MESSAGE_SYNC_ONLY,
-        _ => crate::window_error(status),
-    };
-    let Some(proc) = failed_with(
-        imports::send_notify_message(window, message, wparam, lparam),
-        error,
-    ) else {
+    let Some(proc) = answered(imports::send_notify_message(
+        window, message, wparam, lparam,
+    )) else {
         return 0;
     };
     if proc != 0 {

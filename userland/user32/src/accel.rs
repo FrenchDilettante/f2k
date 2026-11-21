@@ -19,11 +19,10 @@
 
 use rtl::accel::{Accel, AccelTableEntry, FVIRTKEY, WM_CHAR, WM_SYSCHAR};
 use rtl::edge::{InBuf, OutBuf};
-use rtl::status::{NtStatus, STATUS_INVALID_HANDLE, STATUS_OBJECT_TYPE_MISMATCH};
 use rtl::user::Msg;
 
 use crate::imports::{self, ResourceName};
-use crate::{failed, failed_with, message, ERROR_INVALID_PARAMETER};
+use crate::{failed, failed_with, message, window_error, ERROR_INVALID_PARAMETER};
 
 /// RT_ACCELERATOR: an accelerator table's resource type.
 const RT_ACCELERATOR: u16 = 9;
@@ -33,17 +32,6 @@ const MAX_ENTRIES: usize = 128;
 
 /// ERROR_INVALID_ACCEL_HANDLE.
 pub const ERROR_INVALID_ACCEL_HANDLE: u32 = 1403;
-
-/// The Win32 error of a failed accelerator service: a handle naming no table is
-/// ERROR_INVALID_ACCEL_HANDLE, a window naming nothing ERROR_INVALID_WINDOW_HANDLE (the kernel's
-/// accelerator module), anything else what ntdll maps it to.
-pub fn accel_error(status: NtStatus) -> u32 {
-    match status.0 {
-        STATUS_OBJECT_TYPE_MISMATCH => ERROR_INVALID_ACCEL_HANDLE,
-        STATUS_INVALID_HANDLE => crate::ERROR_INVALID_WINDOW_HANDLE,
-        _ => imports::dos_error(status),
-    }
-}
 
 /// The UTF-16 unit of an ANSI character (the ANSI code page's, through ntdll).
 fn wide_of(byte: u8) -> u16 {
@@ -121,7 +109,7 @@ unsafe fn load_accelerators(instance: usize, name: ResourceName) -> usize {
     }
     failed_with(
         imports::create_accelerator_table(&entries[..count], instance, data.as_ptr() as usize),
-        accel_error,
+        window_error,
     )
     .unwrap_or(0)
 }
@@ -187,7 +175,7 @@ unsafe fn create_table(entries: *const Accel, count: i32, key: impl Fn(u16) -> u
     }
     failed_with(
         imports::create_accelerator_table(&local[..count as usize], 0, 0),
-        accel_error,
+        window_error,
     )
     .unwrap_or(0)
 }
@@ -231,14 +219,14 @@ pub unsafe extern "system" fn copy_accelerator_table_a(
 /// entry's key through `key`, then into the caller's.
 fn copy_table(table: usize, buffer: Option<OutBuf<'_, Accel>>, key: impl Fn(u16) -> u16) -> i32 {
     let Some(mut buffer) = buffer else {
-        return failed_with(imports::copy_accelerator_table(table, None), accel_error)
+        return failed_with(imports::copy_accelerator_table(table, None), window_error)
             .map_or(0, |count| count as i32);
     };
     let mut local = [Accel::default(); MAX_ENTRIES];
     let room = buffer.len().min(MAX_ENTRIES);
     let Some(copied) = failed_with(
         imports::copy_accelerator_table(table, Some(&mut local[..room])),
-        accel_error,
+        window_error,
     ) else {
         return 0;
     };
@@ -257,7 +245,7 @@ fn copy_table(table: usize, buffer: Option<OutBuf<'_, Accel>>, key: impl Fn(u16)
 /// table.
 #[unsafe(export_name = "f2k_export_DestroyAcceleratorTable")]
 pub extern "system" fn destroy_accelerator_table(table: usize) -> i32 {
-    failed_with(imports::destroy_accelerator_table(table), accel_error)
+    failed_with(imports::destroy_accelerator_table(table), window_error)
         .is_some_and(|destroyed| destroyed) as i32
 }
 
@@ -306,7 +294,7 @@ pub unsafe extern "system" fn translate_accelerator_a(
 fn translate(window: usize, table: usize, msg: &Msg) -> i32 {
     match failed_with(
         imports::translate_accelerator(window, table, msg),
-        accel_error,
+        window_error,
     ) {
         Some(true) => {
             message::receive_sent();

@@ -1714,13 +1714,20 @@ pub fn send_carrying(
     Ok(Sending::Waiting(id))
 }
 
+/// ERROR_MESSAGE_SYNC_ONLY (1159), the Win32 error itself in a FACILITY_NTWIN32 status: a message
+/// whose pointer cannot go to another thread ([`rtl::user::sync_only`]).
+pub const MESSAGE_SYNC_ONLY: NtStatus = NtStatus::from_win32(1159);
+
+/// ERROR_INVALID_THREAD_ID (1444), carried as [`MESSAGE_SYNC_ONLY`] is: a thread id no thread with
+/// a queue has.
+pub const INVALID_THREAD_ID: NtStatus = NtStatus::from_win32(1444);
+
 /// SendNotifyMessage's step: a window of the caller's own thread is called as SendMessage calls
 /// it ([`Sending::Call`]); a window whose procedure is the window manager's answered; another
 /// thread's window has the message queued for its thread as a sent one, its answer waited for by
 /// nobody ([`Sending::Answered`] 0 at once). STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_INVALID_PARAMETER for a message whose pointer cannot go to another thread
-/// ([`rtl::user::sync_only`]: user32's ERROR_MESSAGE_SYNC_ONLY), STATUS_NO_MEMORY when the sent
-/// messages' pool is full.
+/// [`MESSAGE_SYNC_ONLY`] for a message whose pointer cannot go to another thread, STATUS_NO_MEMORY
+/// when the sent messages' pool is full.
 pub fn send_notify(
     windows: &mut Windows,
     caller: ThreadId,
@@ -1740,7 +1747,7 @@ pub fn send_notify(
         return Ok(Sending::Call(proc));
     }
     if sync_only(message) {
-        return Err(STATUS_INVALID_PARAMETER);
+        return Err(MESSAGE_SYNC_ONLY);
     }
     let queues = &mut windows.queues;
     let Some(receiver) = queues.queue_of(thread) else {
@@ -2329,7 +2336,7 @@ mod services {
     }
 
     /// NtUserPostThreadMessage(ThreadId, Msg, wParam, lParam): a thread message to the thread
-    /// whose client id is `thread_id`; STATUS_INVALID_CID when no thread that has not ended has
+    /// whose client id is `thread_id`; [`INVALID_THREAD_ID`] when no thread that has not ended has
     /// a queue of that id.
     pub fn post_thread_message(
         call: &mut NtCall,
@@ -2343,17 +2350,17 @@ mod services {
         let found = with_manager(call.passive(), |m| {
             queue_by_client_id(&m.windows, thread_id)
         });
-        let (thread, key) = found.ok_or(STATUS_INVALID_CID)?;
+        let (thread, key) = found.ok_or(INVALID_THREAD_ID)?;
         let running = crate::ob::locked(|directory| {
             directory.thread_object(crate::sched::thread::ThreadId(key.index))
         })
         .is_some_and(|object| object.generation == key.generation);
         if !running {
-            return Err(STATUS_INVALID_CID);
+            return Err(INVALID_THREAD_ID);
         }
         with_manager(call.passive(), |m| {
             if m.windows.queues.queue_of(thread).is_none() {
-                return Err(STATUS_INVALID_CID);
+                return Err(INVALID_THREAD_ID);
             }
             post_thread(&mut m.windows, thread, message, wparam, lparam, time)
         })?;
@@ -3938,7 +3945,7 @@ mod tests {
         );
         assert_eq!(
             send_notify(&mut m.windows, a, hb, WM_SETTEXT, 0, 0),
-            Err(STATUS_INVALID_PARAMETER)
+            Err(MESSAGE_SYNC_ONLY)
         );
         assert_eq!(
             send_notify(&mut m.windows, a, 0x7FFF_FFFC, WM_USER, 0, 0),

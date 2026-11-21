@@ -50,10 +50,10 @@
 //! (or none) destroys the popup it opened, as ModifyMenu documents and the `info` capture shows of
 //! SetMenuItemInfo.
 //!
-//! A failure names the Win32 error code of the decision ([`Failure`]'s variants); the service
-//! answers a status user32 maps back: a window naming nothing is STATUS_INVALID_HANDLE, as for
-//! every window service, and a menu naming nothing STATUS_OBJECT_TYPE_MISMATCH (the handle names no
-//! menu).
+//! A failure names the Win32 error code of the decision ([`Failure`]'s variants), which the
+//! service answers in a FACILITY_NTWIN32 status ([`Failure::status`]) for user32 to report as is:
+//! ERROR_INVALID_WINDOW_HANDLE for a window naming nothing, ERROR_INVALID_MENU_HANDLE for a menu
+//! naming nothing, ERROR_MENU_ITEM_NOT_FOUND for no such item.
 
 use rtl::menu::{
     MenuItemAnswer,
@@ -111,16 +111,21 @@ pub enum Failure {
 }
 
 impl Failure {
-    /// The NTSTATUS the service answers: the menu-specific codes have no NTSTATUS of their own, so
-    /// the closest documented one stands in, and user32's body reports the code.
-    pub const fn status(self) -> NtStatus {
+    /// The Win32 error code (winerror.h) the decision reports.
+    pub const fn code(self) -> u32 {
         match self {
-            Failure::NotEnoughMemory => STATUS_NO_MEMORY,
-            Failure::ChildWindowMenu => STATUS_INVALID_PARAMETER,
-            Failure::InvalidWindowHandle => STATUS_INVALID_HANDLE,
-            Failure::InvalidMenuHandle => STATUS_OBJECT_TYPE_MISMATCH,
-            Failure::ItemNotFound => STATUS_OBJECT_NAME_NOT_FOUND,
+            Failure::NotEnoughMemory => 8,
+            Failure::InvalidWindowHandle => 1400,
+            Failure::InvalidMenuHandle => 1401,
+            Failure::ChildWindowMenu => 1436,
+            Failure::ItemNotFound => 1456,
         }
+    }
+
+    /// The NTSTATUS the service answers: the Win32 error itself ([`Failure::code`]) in a
+    /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
+    pub const fn status(self) -> NtStatus {
+        NtStatus::from_win32(self.code())
     }
 }
 

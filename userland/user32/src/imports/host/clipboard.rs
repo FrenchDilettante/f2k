@@ -143,7 +143,7 @@ pub unsafe extern "system" fn NtUserOpenClipboard(window: usize) -> u32 {
 pub unsafe extern "system" fn NtUserCloseClipboard() -> u32 {
     clipboard(|c| {
         if !c.open {
-            return STATUS_UNSUCCESSFUL;
+            return super::CLIPBOARD_NOT_OPEN;
         }
         c.open = false;
         c.open_window = 0;
@@ -154,7 +154,7 @@ pub unsafe extern "system" fn NtUserCloseClipboard() -> u32 {
 pub unsafe extern "system" fn NtUserEmptyClipboard() -> u32 {
     let previous = clipboard(|c| {
         if !c.open {
-            return Err(STATUS_UNSUCCESSFUL);
+            return Err(super::CLIPBOARD_NOT_OPEN);
         }
         let previous = c.owner;
         c.formats.clear();
@@ -206,7 +206,7 @@ pub unsafe extern "system" fn NtUserSetClipboardData(format: u32, data: u32) -> 
             .map(|at| c.converted.remove(at).1);
         status((|| {
             if !c.open {
-                return Err(STATUS_UNSUCCESSFUL);
+                return Err(super::CLIPBOARD_NOT_OPEN);
             }
             let block = block.ok_or(STATUS_INVALID_PARAMETER)?;
             match c.formats.iter_mut().find(|(f, _)| *f == format) {
@@ -225,7 +225,7 @@ pub unsafe extern "system" fn NtUserGetClipboardData(
 ) -> u32 {
     clipboard(|c| {
         if !c.open {
-            return STATUS_UNSUCCESSFUL;
+            return super::CLIPBOARD_NOT_OPEN;
         }
         let (id, len) = c
             .formats
@@ -356,7 +356,7 @@ pub fn enum_formats(routine: u32, format: u32) -> Option<Result<u32, u32>> {
         CLIPBOARD.with(|c| {
             let c = c.borrow();
             if !c.open {
-                return Err(STATUS_UNSUCCESSFUL);
+                return Err(super::CLIPBOARD_NOT_OPEN);
             }
             let next = match format {
                 0 => 0,

@@ -25,11 +25,11 @@
 use rtl::edge::{In, InBuf, InStr, InWStr, OutBuf};
 use rtl::menu::*;
 use rtl::pod::Pod;
-use rtl::status::{NtStatus, STATUS_OBJECT_TYPE_MISMATCH};
+use rtl::status::NtStatus;
 
 use crate::imports;
-use crate::menu::{menu_error, query};
-use crate::{failed, failed_with, ERROR_INVALID_PARAMETER};
+use crate::menu::{query, ERROR_INVALID_MENU_HANDLE};
+use crate::{failed, failed_with, window_error, ERROR_INVALID_PARAMETER};
 
 /// MENUITEMINFO's sizes: Windows 2000's, and NT 4's (no hbmpItem).
 pub const MII_SIZE: u32 = 48;
@@ -181,9 +181,10 @@ unsafe fn get_info(menu: usize, item: u32, by_position: u32, at: *mut u8, ansi: 
     };
     let flags = if by_position != 0 { MF_BYPOSITION } else { 0 };
     let Some(answer) = failed_with(query(menu, item, flags), |status: NtStatus| {
-        match status.0 {
-            STATUS_OBJECT_TYPE_MISMATCH => ERROR_INVALID_PARAMETER,
-            _ => menu_error(status),
+        if status == NtStatus::from_win32(ERROR_INVALID_MENU_HANDLE) {
+            ERROR_INVALID_PARAMETER
+        } else {
+            window_error(status)
         }
     }) else {
         return 0;
@@ -287,7 +288,7 @@ unsafe fn set_info(
         let text = &text[..text.len().min(MENU_ITEM_TEXT)];
         failed_with(
             imports::set_menu_item(menu, item, flags, operation, &info, text),
-            menu_error,
+            window_error,
         )
         .is_some() as i32
     };

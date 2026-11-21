@@ -90,9 +90,11 @@ pub const ERROR_INVALID_PARAMETER: u32 = 87;
 /// ERROR_INVALID_WINDOW_HANDLE: a handle that names no window.
 pub const ERROR_INVALID_WINDOW_HANDLE: u32 = 1400;
 
-/// The Win32 error of a failed service that names a window: STATUS_INVALID_HANDLE is
-/// ERROR_INVALID_WINDOW_HANDLE (the window manager's InvalidWindowHandle), any other status what
-/// ntdll's RtlNtStatusToDosError maps it to.
+/// The Win32 error of a failed window manager service: the Win32 error a decision of its carries
+/// itself (a FACILITY_NTWIN32 status, as win32k's refusals answer: ERROR_CLASS_DOES_NOT_EXIST,
+/// ERROR_INVALID_MENU_HANDLE, ERROR_CLIPBOARD_NOT_OPEN...) as it is, through ntdll's
+/// RtlNtStatusToDosError as any other status; STATUS_INVALID_HANDLE, which the services that look a
+/// window up answer for a handle naming none, ERROR_INVALID_WINDOW_HANDLE.
 pub fn window_error(status: NtStatus) -> u32 {
     match status.0 {
         STATUS_INVALID_HANDLE => ERROR_INVALID_WINDOW_HANDLE,
@@ -222,6 +224,19 @@ mod tests {
             998,
             "a success leaves it"
         );
+    }
+
+    /// Each USER error the window manager carries itself comes out as it went in, whatever family
+    /// of calls answers it: none is guessed back from a shared status.
+    #[test]
+    fn carried_errors_come_out_as_they_are() {
+        for error in [
+            5, 8, 14, 87, 1159, 1400, 1401, 1402, 1403, 1406, 1407, 1410, 1411, 1412, 1413, 1414,
+            1418, 1436, 1444, 1456,
+        ] {
+            assert_eq!(answered::<()>(Err(NtStatus::from_win32(error))), None);
+            assert_eq!(LAST_ERROR.with(|e| e.get()), error, "{error}");
+        }
     }
 
     /// An atom or a resource id is a name of its own; a string's address is a string.

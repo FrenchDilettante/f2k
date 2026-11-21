@@ -5,7 +5,8 @@
 //! The wide forms hand the caller's names to the kernel as they are; the narrow ones convert the
 //! class name and the menu name to UTF-16 first (an integer atom or menu id goes as it is). A
 //! registration is 4.0-compatible (MSVC 6 links its programs for subsystem 4.0). The kernel answers
-//! the class decisions' errors as the closest documented NTSTATUS ([`class_error`] maps them back).
+//! the class decisions' Win32 errors themselves, which [`crate::window_error`] hands on as they
+//! are.
 //!
 //! A class's string menu name is kept in the process twice, wide and narrow, in one block of
 //! user32's own ([`menu_copies`]), as Windows 2000's class keeps its client-side copies: the window
@@ -26,13 +27,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use rtl::edge::In;
 use rtl::icon::{ICON_SIZE, RT_CURSOR};
-use rtl::status::{
-    NtStatus,
-    STATUS_INVALID_HANDLE,
-    STATUS_INVALID_PARAMETER,
-    STATUS_OBJECT_NAME_EXISTS,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-};
 
 use crate::imports::{self, UserBuffer};
 use crate::procedure::{self, Procedure};
@@ -126,17 +120,6 @@ pub const ERROR_CLASS_HAS_WINDOWS: u32 = 1412;
 /// ERROR_RESOURCE_TYPE_NOT_FOUND: LoadCursor's answer for a stock cursor id there is none of.
 pub const ERROR_RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
 
-/// The Win32 error of a failed class service: the class decisions' own errors, from the statuses
-/// that stand in for them (see the kernel's class notes), and 1400 for a window's dead handle.
-pub fn class_error(status: NtStatus) -> u32 {
-    match status.0 {
-        STATUS_OBJECT_NAME_EXISTS => ERROR_CLASS_ALREADY_EXISTS,
-        STATUS_OBJECT_NAME_NOT_FOUND => ERROR_CLASS_DOES_NOT_EXIST,
-        STATUS_INVALID_HANDLE => crate::ERROR_INVALID_WINDOW_HANDLE,
-        _ => imports::dos_error(status),
-    }
-}
-
 // --- The stock cursors ---------------------------------------------------------------------------
 
 /// The system's stock cursor or icon (`kind` RT_CURSOR or RT_ICON) of the IDC_ or IDI_ id `id`:
@@ -227,7 +210,7 @@ unsafe fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
             REGISTER_WIN40_COMPAT | if ansi { REGISTER_ANSI_PROC } else { 0 },
             0,
         ),
-        class_error,
+        crate::window_error,
     ) {
         Some(atom) => {
             imports::set_last_error(ERROR_FILE_NOT_FOUND);
@@ -647,14 +630,10 @@ mod procedures {
 
 // --- Unregistration ------------------------------------------------------------------------------
 
-/// UnregisterClass's core over the name as the service takes it: TRUE, or FALSE with the error
-/// (1411 for no such class, 1412 for a class that still has windows).
+/// UnregisterClass's core over the name as the service takes it: TRUE, or FALSE with the
+/// kernel's error (1411 for no such class, 1412 for a class that still has windows).
 fn unregister(name: usize, instance: usize) -> u32 {
-    let error = |status: NtStatus| match status.0 {
-        STATUS_INVALID_PARAMETER => ERROR_CLASS_HAS_WINDOWS,
-        _ => class_error(status),
-    };
-    failed_with(imports::unregister_class(name, instance), error).is_some() as u32
+    crate::answered(imports::unregister_class(name, instance)).is_some() as u32
 }
 
 /// UnregisterClassW: the class of the module unregistered (by name or atom).
@@ -695,7 +674,10 @@ fn class_info_ex(
         cb_size: core::mem::size_of::<WndClassEx>() as u32,
         ..WndClassEx::default()
     };
-    let answer = failed_with(imports::class_info(instance, name, &mut class), class_error)?;
+    let answer = failed_with(
+        imports::class_info(instance, name, &mut class),
+        crate::window_error,
+    )?;
     let proc = Procedure {
         address: class.wnd_proc as u32,
         ansi: answer & rtl::window::CLASS_INFO_ANSI_PROC != 0,
@@ -848,7 +830,7 @@ fn get_class_long(window: usize, index: i32, ansi: bool) -> u32 {
         let index = rtl::window::QUERY_CLASS_EXTRA | index as u32;
         return failed_with(
             imports::query_window(window, index, &mut value),
-            crate::window::data_error,
+            crate::window_error,
         )
         .map_or(0, |()| value);
     }
@@ -920,7 +902,7 @@ unsafe fn set_class_long(window: usize, index: i32, value: u32, ansi: bool) -> u
     };
     let Some(previous) = failed_with(
         imports::set_class_long(window, index, value),
-        crate::window::data_error,
+        crate::window_error,
     ) else {
         if let Some(block) = copies {
             imports::local_free(block);

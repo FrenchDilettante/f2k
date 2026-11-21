@@ -32,13 +32,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::OutBuf;
 use rtl::gdi::Rect;
-use rtl::status::{
-    NtStatus,
-    STATUS_INVALID_INFO_CLASS,
-    STATUS_INVALID_PARAMETER,
-    STATUS_NO_MEMORY,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-};
+use rtl::status::NtStatus;
 use rtl::user::{Point, HWND_LOCK_UPDATE_WINDOW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT};
 use rtl::window::*;
 
@@ -73,10 +67,8 @@ const DESKTOP_CLASS_ATOM: u16 = 0x8001;
 /// desktop's windows before any other.
 const BOOT_HANDLES: u32 = 16;
 
-/// The Win32 errors of a failed creation (winerror.h): the class decision's 1407, a child without
-/// a parent's 1406, the out-of-memory paths' ERROR_OUTOFMEMORY.
-const ERROR_OUTOFMEMORY: u32 = 14;
-const ERROR_TLW_WITH_WSCHILD: u32 = 1406;
+/// ERROR_CANNOT_FIND_WND_CLASS (winerror.h): the creation's class decision, which the kernel
+/// answers as itself.
 const ERROR_CANNOT_FIND_WND_CLASS: u32 = 1407;
 
 /// CreateWindowEx's core: the window made (user32's own classes registered in the process first),
@@ -96,17 +88,14 @@ pub fn create_or_missing(
     let answer = imports::create_window(creation);
     message::receive_sent();
     let mut missing = None;
-    let error = |status: NtStatus| match status.0 {
-        STATUS_OBJECT_NAME_NOT_FOUND => {
+    // The kernel's own error (a child without a parent's 1406, the out-of-memory paths'
+    // ERROR_OUTOFMEMORY), the class decision's 1407 telling of a system class F2K lacks.
+    let error = |status: NtStatus| {
+        if status == NtStatus::from_win32(ERROR_CANNOT_FIND_WND_CLASS) {
             // SAFETY: the class's name (or atom), which the service has read.
             missing = unsafe { crate::class::missing_system_class(creation.class) };
-            ERROR_CANNOT_FIND_WND_CLASS
         }
-        STATUS_INVALID_PARAMETER if creation.style & WS_CHILD != 0 && creation.parent == 0 => {
-            ERROR_TLW_WITH_WSCHILD
-        }
-        STATUS_NO_MEMORY => ERROR_OUTOFMEMORY,
-        _ => window_error(status),
+        window_error(status)
     };
     match failed_with(answer, error) {
         Some(window) => Ok(window as usize),
@@ -1185,16 +1174,6 @@ pub extern "system" fn set_process_default_layout(layout: u32) -> u32 {
 /// extra bytes past the window's own.
 pub const ERROR_INVALID_INDEX: u32 = 1413;
 
-/// The Win32 error of a failed window-data call: STATUS_INVALID_INFO_CLASS, the window manager's
-/// answer for an index it does not know (its InvalidIndex), is ERROR_INVALID_INDEX; the rest as
-/// [`window_error`] maps them.
-pub fn data_error(status: NtStatus) -> u32 {
-    match status.0 {
-        STATUS_INVALID_INFO_CLASS => ERROR_INVALID_INDEX,
-        _ => window_error(status),
-    }
-}
-
 /// The window's own fields, as the window manager holds them.
 pub fn window_data(window: usize) -> Result<WindowData, NtStatus> {
     let mut data = WindowData::default();
@@ -1240,8 +1219,11 @@ fn get_long(window: usize, index: i32, ansi: bool) -> i32 {
     if index >= 0 {
         let mut value = 0u32;
         let index = QUERY_WINDOW_EXTRA | index as u32;
-        return failed_with(imports::query_window(window, index, &mut value), data_error)
-            .map_or(0, |()| value as i32);
+        return failed_with(
+            imports::query_window(window, index, &mut value),
+            window_error,
+        )
+        .map_or(0, |()| value as i32);
     }
     let Some(data) = answered(window_data(window)) else {
         return 0;
@@ -1280,7 +1262,7 @@ fn set_long(window: usize, index: i32, value: i32, ansi: bool) -> i32 {
     };
     let answer = imports::set_window_long(window, index, target.address, target.ansi);
     message::receive_sent();
-    match failed_with(answer, data_error) {
+    match failed_with(answer, window_error) {
         Some((previous, previous_ansi)) if index == GWL_WNDPROC => {
             let previous = Procedure {
                 address: previous,
@@ -1331,7 +1313,11 @@ pub extern "system" fn get_window_word(window: usize, index: i32) -> u16 {
     }
     let mut value = 0u16;
     let index = QUERY_WINDOW_EXTRA | index as u32;
-    failed_with(imports::query_window(window, index, &mut value), data_error).map_or(0, |()| value)
+    failed_with(
+        imports::query_window(window, index, &mut value),
+        window_error,
+    )
+    .map_or(0, |()| value)
 }
 
 /// SetWindowWord: the word at offset `index` of the window's extra bytes set; the word it held,
@@ -1340,7 +1326,7 @@ pub extern "system" fn get_window_word(window: usize, index: i32) -> u16 {
 pub extern "system" fn set_window_word(window: usize, index: i32, value: u32) -> u16 {
     failed_with(
         imports::set_window_word(window, index, value as u16),
-        data_error,
+        window_error,
     )
     .unwrap_or(0)
 }
@@ -1649,6 +1635,50 @@ mod tests {
             0
         );
         assert_eq!(last_error(), ERROR_CANNOT_FIND_WND_CLASS);
+    }
+
+    /// A child window without a parent is the kernel's ERROR_TLW_WITH_WSCHILD (1406), as it
+    /// answers it; the same style with a parent is made.
+    ///
+    /// Pins: user32.CreateWindowExW
+    #[test]
+    fn a_child_without_a_parent_is_refused() {
+        register();
+        let class = wide("F2KGuiWin ");
+        let create = |parent: usize| {
+            create_window_ex_w(
+                0,
+                class.as_ptr(),
+                core::ptr::null(),
+                WS_CHILD,
+                0,
+                0,
+                1,
+                1,
+                parent,
+                0,
+                0,
+                0,
+            )
+        };
+        arm();
+        assert_eq!(create(0), 0);
+        assert_eq!(last_error(), 1406);
+        let parent = create_window_ex_w(
+            0,
+            class.as_ptr(),
+            core::ptr::null(),
+            0,
+            0,
+            0,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+        );
+        assert_ne!(create(parent), 0);
     }
 
     /// A system class Windows 2000 has and F2K does not register yet fails as an unknown class

@@ -20,7 +20,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{InStr, OutBuf};
-use rtl::status::{NtStatus, STATUS_UNSUCCESSFUL};
+use rtl::status::NtStatus;
 use rtl::user::ONE_PARAM_ENUM_CLIPBOARD_FORMATS;
 
 use crate::imports::{self, GlobalLocked, UserBuffer};
@@ -36,19 +36,10 @@ const GMEM_CLIPBOARD: u32 = 0x0002 | 0x2000;
 /// The longest registered name, in UTF-16 units (an atom's).
 const MAX_NAME: usize = 255;
 
-/// The Win32 error of a failed clipboard service: STATUS_UNSUCCESSFUL is the kernel's stand-in
-/// for ERROR_CLIPBOARD_NOT_OPEN (no NTSTATUS maps to it), the others as for any call naming a
-/// window.
-fn clipboard_error(status: NtStatus) -> u32 {
-    match status.0 {
-        STATUS_UNSUCCESSFUL => ERROR_CLIPBOARD_NOT_OPEN,
-        _ => window_error(status),
-    }
-}
-
-/// A clipboard service's answer: its value, or none with its error made the last error.
+/// A clipboard service's answer: its value, or none with its error made the last error (the
+/// kernel's own, ERROR_CLIPBOARD_NOT_OPEN among them, as for any call naming a window).
 fn answered<T>(answer: Result<T, NtStatus>) -> Option<T> {
-    failed_with(answer, clipboard_error)
+    failed_with(answer, window_error)
 }
 
 // --- The blocks the clipboard owns

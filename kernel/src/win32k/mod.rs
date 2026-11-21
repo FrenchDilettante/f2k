@@ -25,9 +25,12 @@
 //! results through the caller's pointers, never touching the last error: user32 maps a failure
 //! through ntdll's RtlNtStatusToDosError, gdi32 through rtl's table (Windows 2000's gdi32 imports
 //! no RtlNtStatusToDosError). (Windows 2000's win32k answers with the Win32 result and sets the
-//! last error itself.) One answers as Windows 2000's does: NtUserChangeDisplaySettings, whose
-//! answer is ChangeDisplaySettingsEx's own DISP_CHANGE code, which sets no last error
-//! ([`display`]).
+//! last error itself.) A USER decision whose Win32 error has no NTSTATUS of its own (a window
+//! class there is none of, a menu handle naming no menu, the clipboard not open...) answers that
+//! error itself, in a FACILITY_NTWIN32 status (`NtStatus::from_win32`, 0xC007xxxx), which the
+//! mapping hands back as it is: each module's `Failure::status`. One answers as Windows 2000's
+//! does: NtUserChangeDisplaySettings, whose answer is ChangeDisplaySettingsEx's own DISP_CHANGE
+//! code, which sets no last error ([`display`]).
 
 pub mod accel;
 pub mod bitmap;
@@ -74,6 +77,75 @@ pub fn lookup(index: u32) -> Option<(u32, ServiceFn)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each USER refusal answers its Win32 error itself, which ntdll's mapping hands back as it
+    /// is: no two decisions share a status user32 would have to guess the error back from.
+    #[test]
+    fn the_refusals_carry_their_win32_errors() {
+        use rtl::status::dos_error;
+        use window::Failure as W;
+        for failure in [
+            W::AccessDenied,
+            W::OutOfMemory,
+            W::InvalidParameter,
+            W::InvalidWindowHandle,
+            W::InvalidIndex,
+            W::TlwWithWsChild,
+            W::CannotFindWindowClass,
+        ] {
+            assert_eq!(dos_error(failure.status().0), failure.code(), "{failure:?}");
+        }
+        use class::Failure as C;
+        for failure in [
+            C::AccessDenied,
+            C::OutOfMemory,
+            C::InvalidParameter,
+            C::InvalidCursorHandle,
+            C::CannotFindWindowClass,
+            C::ClassAlreadyExists,
+            C::ClassDoesNotExist,
+            C::ClassHasWindows,
+            C::InvalidIndex,
+            C::InvalidIconHandle,
+        ] {
+            assert_eq!(dos_error(failure.status().0), failure.code(), "{failure:?}");
+        }
+        use menu::Failure as M;
+        for (failure, error) in [
+            (M::NotEnoughMemory, 8),
+            (M::InvalidWindowHandle, 1400),
+            (M::InvalidMenuHandle, 1401),
+            (M::ChildWindowMenu, 1436),
+            (M::ItemNotFound, 1456),
+        ] {
+            assert_eq!(dos_error(failure.status().0), error, "{failure:?}");
+        }
+        use accel::Failure as A;
+        for (failure, error) in [
+            (A::NotEnoughMemory, 8),
+            (A::InvalidParameter, 87),
+            (A::InvalidWindowHandle, 1400),
+            (A::InvalidAccelHandle, 1403),
+        ] {
+            assert_eq!(dos_error(failure.status().0), error, "{failure:?}");
+        }
+        use clipboard::Refusal as R;
+        for (refusal, error) in [
+            (R::NotOpen, 1418),
+            (R::AccessDenied, 5),
+            (R::InvalidParameter, 87),
+            (R::NoMemory, 8),
+        ] {
+            assert_eq!(dos_error(refusal.status().0), error, "{refusal:?}");
+        }
+        for (status, error) in [
+            (icon::INVALID_CURSOR_HANDLE, 1402),
+            (queue::MESSAGE_SYNC_ONLY, 1159),
+            (queue::INVALID_THREAD_ID, 1444),
+        ] {
+            assert_eq!(dos_error(status.0), error);
+        }
+    }
 
     /// The table is in number order, within Windows 2000's win32k table, each entry's argument
     /// block within the gate's copy budget.

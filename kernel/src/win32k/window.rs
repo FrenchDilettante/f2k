@@ -266,20 +266,11 @@ impl Failure {
         }
     }
 
-    /// The NTSTATUS the service answers. The window-specific codes have no NTSTATUS counterpart
-    /// (nothing maps to them in RtlNtStatusToDosError's table), so the closest documented status
-    /// stands in; user32's body reports [`Failure::code`] for GetLastError.
+    /// The NTSTATUS the service answers: the Win32 error itself ([`Failure::code`]) in a
+    /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is (ntdll's mapping answers
+    /// the low word), as Windows 2000's win32k sets the thread's last error itself.
     pub const fn status(self) -> NtStatus {
-        match self {
-            Failure::AccessDenied => STATUS_ACCESS_DENIED,
-            Failure::OutOfMemory => STATUS_NO_MEMORY,
-            Failure::InvalidParameter | Failure::TlwWithWsChild => STATUS_INVALID_PARAMETER,
-            Failure::InvalidWindowHandle => STATUS_INVALID_HANDLE,
-            // An index the query or the change does not know: the query services' own refusal of
-            // an information class there is none of.
-            Failure::InvalidIndex => STATUS_INVALID_INFO_CLASS,
-            Failure::CannotFindWindowClass => STATUS_OBJECT_NAME_NOT_FOUND,
-        }
+        NtStatus::from_win32(self.code())
     }
 }
 
@@ -5191,9 +5182,10 @@ impl Query {
     }
 }
 
-/// Whether NtUserQueryWindow answers the index `index` (STATUS_INVALID_INFO_CLASS when it has no
-/// answer for it) with an answer of `length` bytes (STATUS_INFO_LENGTH_MISMATCH when the answer's
-/// length is another): each index's answer has its own length, an extra-bytes value 2 or 4.
+/// Whether NtUserQueryWindow answers the index `index` (ERROR_INVALID_INDEX, carried, when it has
+/// no answer for it) with an answer of `length` bytes (STATUS_INFO_LENGTH_MISMATCH when the
+/// answer's length is another): each index's answer has its own length, an extra-bytes value 2 or
+/// 4.
 pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
     use core::mem::size_of;
 
@@ -5211,7 +5203,7 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
         index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
             length == 2 || length == 4
         }
-        _ => return Err(STATUS_INVALID_INFO_CLASS),
+        _ => return Err(Failure::InvalidIndex.status()),
     };
     if fits {
         Ok(())
@@ -7548,7 +7540,11 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, Failure::InvalidWindowHandle);
         assert_eq!(err.code(), 1400);
-        assert_eq!(err.status(), STATUS_INVALID_HANDLE);
+        assert_eq!(
+            err.status(),
+            NtStatus(0xC007_0578),
+            "the error itself, carried"
+        );
     }
 
     /// Another thread's window cannot be destroyed: ERROR_ACCESS_DENIED (5), nothing happens.
@@ -8822,7 +8818,7 @@ mod tests {
             query_accepts(QUERY_WINDOW_VISIBLE, 60),
             Err(STATUS_INFO_LENGTH_MISMATCH)
         );
-        assert_eq!(query_accepts(9, 4), Err(STATUS_INVALID_INFO_CLASS));
+        assert_eq!(query_accepts(9, 4), Err(Failure::InvalidIndex.status()));
         assert_eq!(Query::Visible(1).bytes(), &[1, 0, 0, 0]);
         assert_eq!(Query::Parent(0x24).bytes(), &[0x24, 0, 0, 0]);
         assert_eq!(Query::Info(WindowInfo::default()).bytes().len(), 60);

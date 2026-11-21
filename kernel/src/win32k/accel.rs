@@ -39,9 +39,10 @@
 //!   its last;
 //! - NtUserTranslateAccelerator (0x1223): a keyboard message translated for a window.
 //!
-//! A failure names the Win32 error code of the decision ([`Failure`]'s variants); a window naming
-//! nothing answers STATUS_INVALID_HANDLE, as for every window service, and a table naming nothing
-//! STATUS_OBJECT_TYPE_MISMATCH (the handle names no table).
+//! A failure names the Win32 error code of the decision ([`Failure`]'s variants), which the
+//! service answers in a FACILITY_NTWIN32 status ([`Failure::status`]) for user32 to report as is:
+//! ERROR_INVALID_WINDOW_HANDLE for a window naming nothing, ERROR_INVALID_ACCEL_HANDLE for a table
+//! naming nothing.
 
 use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
@@ -79,15 +80,20 @@ pub enum Failure {
 }
 
 impl Failure {
-    /// The NTSTATUS the service answers (see the module's description); user32's body reports
-    /// the code.
-    pub const fn status(self) -> NtStatus {
+    /// The Win32 error code (winerror.h) the decision reports.
+    pub const fn code(self) -> u32 {
         match self {
-            Failure::NotEnoughMemory => STATUS_NO_MEMORY,
-            Failure::InvalidParameter => STATUS_INVALID_PARAMETER,
-            Failure::InvalidWindowHandle => STATUS_INVALID_HANDLE,
-            Failure::InvalidAccelHandle => STATUS_OBJECT_TYPE_MISMATCH,
+            Failure::NotEnoughMemory => 8,
+            Failure::InvalidParameter => 87,
+            Failure::InvalidWindowHandle => 1400,
+            Failure::InvalidAccelHandle => 1403,
         }
+    }
+
+    /// The NTSTATUS the service answers: the Win32 error itself ([`Failure::code`]) in a
+    /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
+    pub const fn status(self) -> NtStatus {
+        NtStatus::from_win32(self.code())
     }
 }
 
