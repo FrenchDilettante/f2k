@@ -66,6 +66,7 @@ pub mod display;
 pub mod edge;
 pub mod env;
 pub mod execution_options;
+pub mod fmt;
 pub mod gdi;
 pub mod handles;
 pub mod heap;

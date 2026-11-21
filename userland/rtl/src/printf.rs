@@ -14,6 +14,7 @@
 //! point, `%n`, an unknown conversion) is [`Unsupported`]: DbgPrint takes its stub path, the
 //! format and the offending conversion logged.
 
+use crate::fmt::{Case, Digits};
 use crate::stub::Memory;
 
 /// The variable arguments, consumed in order: a dword, a quadword (two dwords on the stack), a
@@ -157,11 +158,11 @@ pub fn format(
             }
             b'p' => {
                 let value = args.next_u32();
-                let mut digits = [0u8; 8];
-                for (k, digit) in digits.iter_mut().enumerate() {
-                    *digit = b"0123456789ABCDEF"[(value >> (28 - 4 * k)) as usize & 0xF];
-                }
-                pad(&digits, &spec, out);
+                pad(
+                    crate::fmt::hex(u64::from(value), 8, Case::Upper).as_bytes(),
+                    &spec,
+                    out,
+                );
             }
             b'c' | b'C' => {
                 let unit = args.next_u32() as u16;
@@ -237,21 +238,10 @@ fn integer(
     spec: &Spec,
     out: &mut impl Sink,
 ) {
-    let mut digits = [0u8; 64];
-    let mut count = 0;
-    let mut rest = magnitude;
-    let alphabet: &[u8; 16] = if upper {
-        b"0123456789ABCDEF"
-    } else {
-        b"0123456789abcdef"
-    };
-    while rest != 0 {
-        digits[63 - count] = alphabet[(rest % base) as usize];
-        rest /= base;
-        count += 1;
-    }
-    // A zero precision with a zero value writes no digits; otherwise at least one.
-    let minimum = spec.precision.unwrap_or(1);
+    // A zero precision with a zero value writes no digits; otherwise at least one, and the
+    // precision's zeros ahead of them.
+    let case = if upper { Case::Upper } else { Case::Lower };
+    let digits = Digits::new(magnitude, base as u32, spec.precision.unwrap_or(1), case);
     let mut body = [0u8; 96];
     let mut length = 0;
     let mut push = |byte: u8, length: &mut usize| {
@@ -276,10 +266,7 @@ fn integer(
         }
     }
     let prefix = length;
-    for _ in count..minimum.min(64) {
-        push(b'0', &mut length);
-    }
-    for &digit in &digits[64 - count..] {
+    for &digit in digits.as_bytes() {
         push(digit, &mut length);
     }
     // Zeros to the width go between the prefix and the digits.

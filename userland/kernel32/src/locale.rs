@@ -977,20 +977,9 @@ fn code_pages(flags: u32) -> Result<&'static [u16], Failure> {
 
 /// A code page's number in decimal, NUL-terminated, into `out`: its digits' count.
 fn code_page_name(page: u16, out: &mut [u8; 6]) -> usize {
-    let mut digits = [0u8; 5];
-    let mut count = 0;
-    let mut value = page;
-    loop {
-        digits[count] = b'0' + (value % 10) as u8;
-        count += 1;
-        value /= 10;
-        if value == 0 {
-            break;
-        }
-    }
-    for (at, &digit) in digits[..count].iter().rev().enumerate() {
-        out[at] = digit;
-    }
+    let digits = rtl::fmt::decimal(u64::from(page), 1);
+    let count = digits.len();
+    out[..count].copy_from_slice(digits.as_bytes());
     out[count] = 0;
     count
 }

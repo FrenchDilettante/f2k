@@ -169,15 +169,10 @@ impl TempName {
 
     /// The name with `number` (its low 16 bits) after the stem.
     fn numbered(&mut self, number: u32) -> &[u16] {
-        let number = number & 0xFFFF;
-        let digits = (1..4)
-            .take_while(|&shift| number >> (4 * shift) != 0)
-            .count()
-            + 1;
+        let digits = rtl::fmt::hex(u64::from(number & 0xFFFF), 1, rtl::fmt::Case::Upper);
         let mut at = self.stem;
-        for place in (0..digits).rev() {
-            let digit = (number >> (4 * place)) & 0xF;
-            self.units[at] = u16::from(b"0123456789ABCDEF"[digit as usize]);
+        for digit in digits.units() {
+            self.units[at] = digit;
             at += 1;
         }
         for &byte in b".tmp" {

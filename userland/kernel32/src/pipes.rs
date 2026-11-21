@@ -61,9 +61,9 @@ fn pipe_name(process_id: u32, serial: u32) -> [u16; PIPE_NAME] {
         *unit = u16::from(byte);
     }
     let digits = |value: u32, out: &mut [u16]| {
-        for (index, unit) in out.iter_mut().enumerate() {
-            let nibble = (value >> (28 - 4 * index)) & 0xF;
-            *unit = u16::from(b"0123456789abcdef"[nibble as usize]);
+        let digits = rtl::fmt::hex(u64::from(value), 8, rtl::fmt::Case::Lower);
+        for (unit, digit) in out.iter_mut().zip(digits.units()) {
+            *unit = digit;
         }
     };
     let at = PREFIX.len();

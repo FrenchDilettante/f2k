@@ -145,22 +145,10 @@ fn push_info(out: &mut HeapVec<u16>, lctype: u32) {
 }
 
 /// `value` in decimal, at least `width` digits (leading zeros), added through `push`.
-fn push_number(value: u32, width: usize, mut push: impl FnMut(u16)) {
-    let mut digits = [0u16; 10];
-    let mut count = 0;
-    let mut rest = value;
-    loop {
-        digits[count] = u16::from(b'0') + (rest % 10) as u16;
-        count += 1;
-        rest /= 10;
-        if rest == 0 {
-            break;
-        }
-    }
-    for _ in count..width {
-        push(u16::from(b'0'));
-    }
-    digits[..count].iter().rev().for_each(|&digit| push(digit));
+fn push_number(value: u32, width: usize, push: impl FnMut(u16)) {
+    rtl::fmt::decimal(u64::from(value), width)
+        .units()
+        .for_each(push);
 }
 
 /// One piece of a picture string: a run of an element's letter, or a character copied (quoted
@@ -703,24 +691,13 @@ impl Grouping {
     /// NUMBERFMT's Grouping: its decimal digits, most significant first, are the sizes; the last
     /// repeats, unless a 0 ends them.
     fn of_number(grouping: u32) -> Grouping {
-        let mut digits = [0u8; 10];
-        let mut count = 0;
-        let mut rest = grouping;
-        loop {
-            digits[count] = (rest % 10) as u8;
-            count += 1;
-            rest /= 10;
-            if rest == 0 {
-                break;
-            }
-        }
-        digits[..count].reverse();
+        let digits = rtl::fmt::decimal(u64::from(grouping), 1);
         let mut group = Grouping {
             sizes: [0; 10],
             count: 0,
             repeat: true,
         };
-        for &digit in &digits[..count] {
+        for digit in digits.as_bytes().iter().map(|&byte| byte - b'0') {
             if digit == 0 {
                 group.repeat = false;
                 break;
