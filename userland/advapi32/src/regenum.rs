@@ -1,12 +1,25 @@
-//! The registry call that reads a key's listing with everything a subkey has: RegEnumKeyEx, W
-//! and A, as Windows 2000's advapi32 runs it over ntdll's NtEnumerateKey (KEY_NODE_INFORMATION: a
-//! subkey's name, class and last write). Like the other registry calls it returns its error and
-//! leaves the last error alone; a non-NULL lpReserved is ERROR_INVALID_PARAMETER.
+//! The registry calls that read a key's listing with everything an entry has, and the key's own
+//! counts: RegEnumKeyEx, RegEnumValue and RegQueryInfoKey, W and A, as Windows 2000's advapi32
+//! runs them over ntdll's NtEnumerateKey (KEY_NODE_INFORMATION: a subkey's name, class and last
+//! write), NtEnumerateValueKey (KEY_VALUE_FULL_INFORMATION: a value's name, type and data) and
+//! NtQueryKey (KEY_FULL_INFORMATION). Like the other registry calls they return their error and
+//! leave the last error alone; a non-NULL lpReserved is ERROR_INVALID_PARAMETER.
 //!
-//! What a short buffer leaves is what the registry fixture's `enumex` block captures of Windows
-//! 2000: RegEnumKeyExW checks the name first, and a name buffer that does not hold the name and its
-//! terminator is ERROR_MORE_DATA with the name and its count untouched; RegEnumKeyExA converts, and
-//! writes what fits of a name too long, terminated, its count untouched.
+//! What a short buffer leaves is what the registry fixture's `enumex` and `enumvalue` blocks
+//! capture of Windows 2000:
+//!
+//! - RegEnumKeyExW and RegEnumValueW check the name first: a name buffer that does not hold the
+//!   name and its terminator is ERROR_MORE_DATA with the name and its count untouched (RegEnumValue
+//!   tells the value's type and size all the same). RegEnumValueW then writes the name and its
+//!   count before it checks the data: data that does not fit is ERROR_MORE_DATA with the name
+//!   written, the data untouched, its type and size told.
+//! - The A calls convert. RegEnumKeyExA writes what fits of a name too long, terminated, its count
+//!   untouched. RegEnumValueA checks the data first (its ANSI size: data that does not fit is
+//!   ERROR_MORE_DATA, the type and that size told, nothing written), writes it, then the name: what
+//!   fits of one too long, terminated, ERROR_MORE_DATA.
+//!
+//! A string value's data (REG_SZ, REG_EXPAND_SZ, REG_MULTI_SZ) reaches the A calls converted to the
+//! ANSI code page, its sizes the ANSI ones, as RegQueryValueExA's do.
 
 use rtl::pod::Pod;
 use rtl::status::{STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL};
@@ -19,11 +32,13 @@ use rtl::winerror::{
 };
 
 use crate::imports::{self as nt, Answer, HeapBlock};
-use crate::registry::{block, error, give, map};
+use crate::registry::{block, error, give, is_text, map, query_buffer};
 use crate::{caller_bytes_mut, Out};
 
-/// The information class the calls read.
+/// The information classes the calls read.
 const KEY_NODE_INFORMATION: u32 = 1;
+const KEY_FULL_INFORMATION: u32 = 2;
+const KEY_VALUE_FULL_INFORMATION: u32 = 1;
 
 /// Where KEY_NODE_INFORMATION's fields are: the last write, the class's offset and length, the
 /// name's length, the name.
@@ -31,6 +46,25 @@ const NODE_CLASS_OFFSET: usize = 12;
 const NODE_CLASS_LENGTH: usize = 16;
 const NODE_NAME_LENGTH: usize = 20;
 const NODE_NAME: u32 = 24;
+
+/// Where KEY_VALUE_FULL_INFORMATION's fields are: the type, the data's offset and length, the
+/// name's length, the name.
+const FULL_KIND: usize = 4;
+const FULL_DATA_OFFSET: usize = 8;
+const FULL_DATA_LENGTH: usize = 12;
+const FULL_NAME_LENGTH: usize = 16;
+const FULL_NAME: u32 = 20;
+
+/// Where KEY_FULL_INFORMATION's fields are: the class's offset and length, then the counts and
+/// longest sizes (in bytes), one dword each.
+const KEY_CLASS_OFFSET: usize = 12;
+const KEY_CLASS_LENGTH: usize = 16;
+const KEY_SUBKEYS: usize = 20;
+const KEY_MAX_NAME: usize = 24;
+const KEY_MAX_CLASS: usize = 28;
+const KEY_VALUES: usize = 32;
+const KEY_MAX_VALUE_NAME: usize = 36;
+const KEY_MAX_VALUE_DATA: usize = 40;
 
 /// The buffer a reply is read into first; one that does not fit goes to a heap block of its size.
 const LOCAL: usize = 512;
@@ -193,6 +227,50 @@ impl Node {
     }
 }
 
+/// Value `index` of `key`: its KEY_VALUE_FULL_INFORMATION.
+struct Value(Reply);
+
+impl Value {
+    fn of(key: u32, index: u32) -> Result<Value, u32> {
+        let key = nt_key(key)?;
+        Reply::read(|buffer| {
+            nt::enumerate_value_key(key, index, KEY_VALUE_FULL_INFORMATION, buffer)
+        })
+        .map(Value)
+    }
+
+    fn kind(&self) -> u32 {
+        self.0.word(FULL_KIND)
+    }
+
+    fn name(&self) -> &[u16] {
+        self.0.text(FULL_NAME, self.0.word(FULL_NAME_LENGTH))
+    }
+
+    fn data(&self) -> &[u8] {
+        self.0
+            .piece(self.0.word(FULL_DATA_OFFSET), self.0.word(FULL_DATA_LENGTH))
+    }
+
+    /// The data's size as the A calls hand it: a string's in the ANSI code page.
+    fn ansi_size(&self) -> u32 {
+        if is_text(self.kind()) {
+            nt::unicode_to_multi_byte_size(units(self.data()))
+        } else {
+            self.data().len() as u32
+        }
+    }
+
+    /// The data as the A calls hand it, into `buffer`, which holds its ANSI size.
+    fn put_ansi_data(&self, buffer: &mut [u8]) {
+        if is_text(self.kind()) {
+            nt::unicode_to_multi_byte(buffer, units(self.data()));
+        } else {
+            buffer[..self.data().len()].copy_from_slice(self.data());
+        }
+    }
+}
+
 /// The checks RegEnumKeyEx makes before it looks at the key: lpReserved NULL, a name count, and a
 /// class count with a class buffer.
 fn enum_key_ex_arguments(
@@ -332,6 +410,303 @@ pub unsafe extern "system" fn reg_enum_key_ex_a(
     })())
 }
 
+/// The checks RegEnumValue makes before it looks at the key: lpReserved NULL, a name count, and a
+/// size with data.
+fn enum_value_arguments(
+    reserved: *mut u32,
+    count: Option<&Out<'_, u32>>,
+    data: *mut u8,
+    size: *mut u32,
+) -> Result<(), u32> {
+    if !reserved.is_null() || count.is_none() || (!data.is_null() && size.is_null()) {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    Ok(())
+}
+
+/// RegEnumValueW: value `index` of `key` (the values in the order they were first set): its
+/// name with its terminator and its length in units, its type, its data's size and, when it fits,
+/// its data. A name buffer that does not hold the name and its terminator is ERROR_MORE_DATA,
+/// the name untouched (the type and the size told); data that does not fit is ERROR_MORE_DATA,
+/// the name written and the data untouched. ERROR_NO_MORE_ITEMS past the last value.
+///
+/// # Safety
+///
+/// `name` holds `*count` units, `data` (null or) `*size` bytes; the out parameters are writable or
+/// null.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_RegEnumValueW")]
+pub unsafe extern "system" fn reg_enum_value_w(
+    key: u32,
+    index: u32,
+    name: *mut u16,
+    count: *mut u32,
+    reserved: *mut u32,
+    kind: *mut u32,
+    data: *mut u8,
+    size: *mut u32,
+) -> u32 {
+    if let Err(code) = enum_value_arguments(
+        reserved,
+        // SAFETY: the caller's count, only looked at for null.
+        unsafe { Out::optional(count) }.as_ref(),
+        data,
+        size,
+    ) {
+        return code;
+    }
+    // SAFETY: the caller's out parameters and data buffer.
+    let (mut count, mut kind, (data, mut size)) = unsafe {
+        (
+            Out::optional(count),
+            Out::optional(kind),
+            query_buffer(data, size),
+        )
+    };
+    code((|| {
+        let count = count.as_mut().ok_or(ERROR_INVALID_PARAMETER)?;
+        let value = Value::of(key, index)?;
+        let (text, bytes) = (value.name(), value.data());
+        give(kind.as_mut(), value.kind());
+        give(size.as_mut(), bytes.len() as u32);
+        if count.get() as usize <= text.len() {
+            return Err(ERROR_MORE_DATA);
+        }
+        // SAFETY: the name buffer holds more units than the name has.
+        unsafe { give_wide(name, text) }?;
+        count.set(text.len() as u32);
+        match data {
+            Some(data) if data.len() < bytes.len() => Err(ERROR_MORE_DATA),
+            Some(data) => {
+                data[..bytes.len()].copy_from_slice(bytes);
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    })())
+}
+
+/// RegEnumValueA: RegEnumValueW's name and string data converted, the sizes the ANSI ones. Data
+/// that does not fit is ERROR_MORE_DATA, the type and size told and nothing written; then the
+/// data is written, and a name buffer that does not hold the name and its terminator gets what
+/// fits of it, terminated: ERROR_MORE_DATA, the count untouched.
+///
+/// # Safety
+///
+/// As RegEnumValueW's, the name buffer's size in bytes.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_RegEnumValueA")]
+pub unsafe extern "system" fn reg_enum_value_a(
+    key: u32,
+    index: u32,
+    name: *mut u8,
+    count: *mut u32,
+    reserved: *mut u32,
+    kind: *mut u32,
+    data: *mut u8,
+    size: *mut u32,
+) -> u32 {
+    if let Err(code) = enum_value_arguments(
+        reserved,
+        // SAFETY: the caller's count, only looked at for null.
+        unsafe { Out::optional(count) }.as_ref(),
+        data,
+        size,
+    ) {
+        return code;
+    }
+    // SAFETY: the caller's out parameters and data buffer.
+    let (mut count, mut kind, (data, mut size)) = unsafe {
+        (
+            Out::optional(count),
+            Out::optional(kind),
+            query_buffer(data, size),
+        )
+    };
+    code((|| {
+        let count = count.as_mut().ok_or(ERROR_INVALID_PARAMETER)?;
+        let value = Value::of(key, index)?;
+        let ansi = value.ansi_size();
+        give(kind.as_mut(), value.kind());
+        give(size.as_mut(), ansi);
+        if let Some(data) = data {
+            let data = data.get_mut(..ansi as usize).ok_or(ERROR_MORE_DATA)?;
+            value.put_ansi_data(data);
+        }
+        // SAFETY: the name buffer holds the bytes its count says.
+        let buffer = unsafe { ansi_buffer(name, count.get()) }?;
+        let length = put_ansi(buffer, value.name()).ok_or(ERROR_MORE_DATA)?;
+        count.set(length);
+        Ok(())
+    })())
+}
+
+/// The out parameters RegQueryInfoKey fills besides the class: the subkeys' count, the longest
+/// subkey name and class (in characters), the values' count, the longest value name (in
+/// characters) and data (in bytes), the security descriptor's size and the last write.
+struct Counts<'a> {
+    subkeys: Option<Out<'a, u32>>,
+    max_subkey: Option<Out<'a, u32>>,
+    max_class: Option<Out<'a, u32>>,
+    values: Option<Out<'a, u32>>,
+    max_value_name: Option<Out<'a, u32>>,
+    max_value_data: Option<Out<'a, u32>>,
+    security: Option<Out<'a, u32>>,
+    last_write: Option<Out<'a, u64>>,
+}
+
+impl Counts<'_> {
+    /// Fill them from the key's KEY_FULL_INFORMATION. F2K's keys have no security descriptor: its
+    /// size is zero.
+    fn give(&mut self, reply: &Reply) {
+        give(self.subkeys.as_mut(), reply.word(KEY_SUBKEYS));
+        give(self.max_subkey.as_mut(), reply.word(KEY_MAX_NAME) / 2);
+        give(self.max_class.as_mut(), reply.word(KEY_MAX_CLASS) / 2);
+        give(self.values.as_mut(), reply.word(KEY_VALUES));
+        give(
+            self.max_value_name.as_mut(),
+            reply.word(KEY_MAX_VALUE_NAME) / 2,
+        );
+        give(self.max_value_data.as_mut(), reply.word(KEY_MAX_VALUE_DATA));
+        give(self.security.as_mut(), 0);
+        if let Some(last_write) = self.last_write.as_mut() {
+            last_write.set(u64::read_from(reply.bytes(), 0).unwrap_or(0));
+        }
+    }
+}
+
+/// `key`'s KEY_FULL_INFORMATION, the call's arguments checked first: lpReserved NULL, a class
+/// count with a class buffer.
+fn key_full(
+    key: u32,
+    reserved: *mut u32,
+    class: bool,
+    class_count: Option<&Out<'_, u32>>,
+) -> Result<Reply, u32> {
+    if !reserved.is_null() || (class && class_count.is_none()) {
+        return Err(ERROR_INVALID_PARAMETER);
+    }
+    let key = nt_key(key)?;
+    Reply::read(|buffer| nt::query_key(key, KEY_FULL_INFORMATION, buffer))
+}
+
+/// The class's text in a KEY_FULL_INFORMATION.
+fn full_class(reply: &Reply) -> &[u16] {
+    reply.text(reply.word(KEY_CLASS_OFFSET), reply.word(KEY_CLASS_LENGTH))
+}
+
+/// RegQueryInfoKeyW: `key`'s class with its terminator (its length in units written back), its
+/// subkeys' and values' counts and their longest names, classes and data, and its last write. A
+/// class buffer that does not hold the class and its terminator is ERROR_MORE_DATA.
+///
+/// # Safety
+///
+/// `class` holds `*class_count` units or is null; the out parameters are writable or null.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_RegQueryInfoKeyW")]
+pub unsafe extern "system" fn reg_query_info_key_w(
+    key: u32,
+    class: *mut u16,
+    class_count: *mut u32,
+    reserved: *mut u32,
+    subkeys: *mut u32,
+    max_subkey: *mut u32,
+    max_class: *mut u32,
+    values: *mut u32,
+    max_value_name: *mut u32,
+    max_value_data: *mut u32,
+    security: *mut u32,
+    last_write: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's out parameters.
+    let (mut class_count, mut counts) = unsafe {
+        (
+            Out::optional(class_count),
+            Counts {
+                subkeys: Out::optional(subkeys),
+                max_subkey: Out::optional(max_subkey),
+                max_class: Out::optional(max_class),
+                values: Out::optional(values),
+                max_value_name: Out::optional(max_value_name),
+                max_value_data: Out::optional(max_value_data),
+                security: Out::optional(security),
+                last_write: Out::optional(last_write),
+            },
+        )
+    };
+    code((|| {
+        let reply = key_full(key, reserved, !class.is_null(), class_count.as_ref())?;
+        let text = full_class(&reply);
+        if !class.is_null() {
+            let room = class_count.as_ref().map_or(0, Out::get) as usize;
+            if room <= text.len() {
+                give(class_count.as_mut(), text.len() as u32);
+                return Err(ERROR_MORE_DATA);
+            }
+            // SAFETY: the class buffer holds more units than the class has.
+            unsafe { give_wide(class, text) }?;
+        }
+        give(class_count.as_mut(), text.len() as u32);
+        counts.give(&reply);
+        Ok(())
+    })())
+}
+
+/// RegQueryInfoKeyA: RegQueryInfoKeyW's class converted, its length in bytes; the other counts
+/// RegQueryInfoKeyW's.
+///
+/// # Safety
+///
+/// As RegQueryInfoKeyW's, the class buffer's size in bytes.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_RegQueryInfoKeyA")]
+pub unsafe extern "system" fn reg_query_info_key_a(
+    key: u32,
+    class: *mut u8,
+    class_count: *mut u32,
+    reserved: *mut u32,
+    subkeys: *mut u32,
+    max_subkey: *mut u32,
+    max_class: *mut u32,
+    values: *mut u32,
+    max_value_name: *mut u32,
+    max_value_data: *mut u32,
+    security: *mut u32,
+    last_write: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's out parameters.
+    let (mut class_count, mut counts) = unsafe {
+        (
+            Out::optional(class_count),
+            Counts {
+                subkeys: Out::optional(subkeys),
+                max_subkey: Out::optional(max_subkey),
+                max_class: Out::optional(max_class),
+                values: Out::optional(values),
+                max_value_name: Out::optional(max_value_name),
+                max_value_data: Out::optional(max_value_data),
+                security: Out::optional(security),
+                last_write: Out::optional(last_write),
+            },
+        )
+    };
+    code((|| {
+        let reply = key_full(key, reserved, !class.is_null(), class_count.as_ref())?;
+        let text = full_class(&reply);
+        let length = if class.is_null() {
+            nt::unicode_to_multi_byte_size(text)
+        } else {
+            let room = class_count.as_ref().map_or(0, Out::get);
+            // SAFETY: the class buffer holds the bytes its count says.
+            let buffer = unsafe { ansi_buffer(class, room) }?;
+            put_ansi(buffer, text).ok_or(ERROR_MORE_DATA)?
+        };
+        give(class_count.as_mut(), length);
+        counts.give(&reply);
+        Ok(())
+    })())
+}
+
 #[cfg(test)]
 mod tests {
     use rtl::testing::utf16_bytes;
@@ -343,6 +718,8 @@ mod tests {
     /// whatever the test sets).
     const KEY: u32 = 0x3C8;
     use rtl::winerror::ERROR_NO_MORE_ITEMS;
+    const REG_SZ: u32 = 1;
+    const REG_DWORD: u32 = 4;
 
     fn reply(bytes: Vec<u8>) {
         KEY_REPLY.with(|reply| *reply.borrow_mut() = Ok(bytes));
@@ -366,6 +743,20 @@ mod tests {
         word(&mut bytes, name.len() as u32);
         bytes.extend(name);
         bytes.extend(class);
+        bytes
+    }
+
+    /// A value's KEY_VALUE_FULL_INFORMATION: its name, then its data.
+    fn full(name: &str, kind: u32, data: &[u8]) -> Vec<u8> {
+        let name = utf16_bytes(name);
+        let mut bytes = Vec::new();
+        word(&mut bytes, 0);
+        word(&mut bytes, kind);
+        word(&mut bytes, 20 + name.len() as u32);
+        word(&mut bytes, data.len() as u32);
+        word(&mut bytes, name.len() as u32);
+        bytes.extend(name);
+        bytes.extend(data);
         bytes
     }
 
@@ -489,6 +880,136 @@ mod tests {
         assert_eq!((ret, count, &name[..6]), (0, 5, &b"Alpha\0"[..]));
     }
 
+    /// What RegEnumValueW/A left: the answer, the count, the name buffer, the type, the size and
+    /// the data buffer.
+    type Left<T> = (u32, u32, Vec<T>, u32, u32, Vec<u8>);
+
+    const UNSET: u32 = 0xF2F2_F2F2;
+
+    /// RegEnumValueW with `room` units of name and `data` bytes of data (none: NULL data).
+    fn enum_value_w(room: u32, data: Option<u32>) -> Left<u16> {
+        let (mut name, mut buffer) = (vec![CC; 64], vec![0xCCu8; 1024]);
+        let (mut count, mut kind, mut size) = (room, UNSET, data.unwrap_or(0));
+        // SAFETY: the tests' own buffers, of the sizes given.
+        let ret = unsafe {
+            reg_enum_value_w(
+                KEY,
+                0,
+                name.as_mut_ptr(),
+                &mut count,
+                core::ptr::null_mut(),
+                &mut kind,
+                if data.is_some() {
+                    buffer.as_mut_ptr()
+                } else {
+                    core::ptr::null_mut()
+                },
+                &mut size,
+            )
+        };
+        (ret, count, name, kind, size, buffer)
+    }
+
+    /// RegEnumValueA, as [`enum_value_w`].
+    fn enum_value_a(room: u32, data: Option<u32>) -> Left<u8> {
+        let (mut name, mut buffer) = (vec![0xCCu8; 64], vec![0xCCu8; 1024]);
+        let (mut count, mut kind, mut size) = (room, UNSET, data.unwrap_or(0));
+        // SAFETY: the tests' own buffers, of the sizes given.
+        let ret = unsafe {
+            reg_enum_value_a(
+                KEY,
+                0,
+                name.as_mut_ptr(),
+                &mut count,
+                core::ptr::null_mut(),
+                &mut kind,
+                if data.is_some() {
+                    buffer.as_mut_ptr()
+                } else {
+                    core::ptr::null_mut()
+                },
+                &mut size,
+            )
+        };
+        (ret, count, name, kind, size, buffer)
+    }
+
+    fn data5() -> Vec<u8> {
+        utf16_bytes("data!\0")
+    }
+
+    /// RegEnumValueW as the capture's solo key: a name buffer short of the terminator
+    /// ERROR_MORE_DATA, the type and size told, nothing written; data short ERROR_MORE_DATA with
+    /// the name written; NULL data the size alone.
+    #[test]
+    fn enum_value_w_checks_the_name_then_the_data() {
+        reply(full("value", REG_SZ, &data5()));
+        for room in [0, 3, 5] {
+            let (ret, count, name, kind, size, buffer) = enum_value_w(room, Some(1024));
+            assert_eq!(
+                (ret, count, kind, size),
+                (ERROR_MORE_DATA, room, REG_SZ, 12)
+            );
+            assert!(name.iter().all(|&unit| unit == CC) && buffer[0] == 0xCC);
+        }
+        let (ret, count, name, kind, size, buffer) = enum_value_w(6, Some(1024));
+        assert_eq!((ret, count, kind, size), (0, 5, REG_SZ, 12));
+        assert_eq!(&name[..6], &rtl::testing::wide_z("value")[..]);
+        assert_eq!(&buffer[..12], &data5()[..]);
+        let (ret, count, _, _, size, _) = enum_value_w(64, None);
+        assert_eq!((ret, count, size), (0, 5, 12));
+        for room in [0, 2] {
+            let (ret, count, name, kind, size, buffer) = enum_value_w(64, Some(room));
+            assert_eq!((ret, count, kind, size), (ERROR_MORE_DATA, 5, REG_SZ, 12));
+            assert_eq!(name[5], 0);
+            assert_eq!(&buffer[..2], [0xCC, 0xCC]);
+        }
+        let (ret, count, name, ..) = enum_value_w(3, Some(2));
+        assert_eq!((ret, count, name[0]), (ERROR_MORE_DATA, 3, CC));
+        reply(full("Dword", REG_DWORD, &[0x78, 0x56, 0x34, 0x12]));
+        let (ret, _, _, kind, size, buffer) = enum_value_w(64, Some(1024));
+        assert_eq!(
+            (ret, kind, size, &buffer[..4]),
+            (0, 4, 4, &[0x78, 0x56, 0x34, 0x12][..])
+        );
+        status(0x8000_001A);
+        let (ret, count, _, kind, size, _) = enum_value_w(64, Some(1024));
+        assert_eq!(
+            (ret, count, kind, size),
+            (ERROR_NO_MORE_ITEMS, 64, UNSET, 1024)
+        );
+    }
+
+    /// RegEnumValueA as the capture's solo key: the data checked first (its ANSI size, 6), then
+    /// written, then what fits of the name, terminated.
+    #[test]
+    fn enum_value_a_checks_the_data_then_the_name() {
+        reply(full("value", REG_SZ, &data5()));
+        let (ret, count, name, kind, size, buffer) = enum_value_a(0, Some(1024));
+        assert_eq!((ret, count, kind, size), (ERROR_MORE_DATA, 0, REG_SZ, 6));
+        assert_eq!((name[0], &buffer[..6]), (0xCC, &b"data!\0"[..]));
+        let (ret, count, name, ..) = enum_value_a(3, Some(1024));
+        assert_eq!((ret, count, &name[..3]), (ERROR_MORE_DATA, 3, &b"va\0"[..]));
+        let (ret, count, name, ..) = enum_value_a(5, Some(1024));
+        assert_eq!(
+            (ret, count, &name[..5]),
+            (ERROR_MORE_DATA, 5, &b"valu\0"[..])
+        );
+        let (ret, count, name, _, size, buffer) = enum_value_a(6, Some(6));
+        assert_eq!((ret, count, size), (0, 5, 6));
+        assert_eq!(
+            (&name[..6], &buffer[..6]),
+            (&b"value\0"[..], &b"data!\0"[..])
+        );
+        for room in [0, 2] {
+            let (ret, count, name, kind, size, buffer) = enum_value_a(64, Some(room));
+            assert_eq!((ret, count, kind, size), (ERROR_MORE_DATA, 64, REG_SZ, 6));
+            assert_eq!((name[0], buffer[0]), (0xCC, 0xCC));
+        }
+        let (ret, count, _, _, size, _) = enum_value_a(64, None);
+        assert_eq!((ret, count, size), (0, 5, 6));
+    }
+
     /// A reply longer than the local buffer is read again whole, into a block of its size.
     #[test]
     fn a_long_reply_is_read_whole() {
@@ -500,5 +1021,78 @@ mod tests {
             (0, 5, &rtl::testing::wide_z("Alpha")[..])
         );
         assert_eq!(KEY_CLASSES.with(|c| c.borrow().clone()), [1, 1]);
+    }
+
+    /// RegQueryInfoKeyW/A: the class and its count, the counts, the longest sizes in characters
+    /// (the data's in bytes).
+    #[test]
+    fn query_info_key_answers_the_counts() {
+        let mut bytes = 0u64.to_le_bytes().to_vec();
+        for value in [0, 44, 0, 1, 6, 0, 5, 12, 26] {
+            word(&mut bytes, value);
+        }
+        reply(bytes);
+        let mut counts = [UNSET; 8];
+        let mut class = [CC; 8];
+        let mut class_count = 8u32;
+        let [subkeys, max_subkey, max_class, values, max_name, max_data, _, _] = &mut counts;
+        // SAFETY: the tests' own buffers.
+        let ret = unsafe {
+            reg_query_info_key_w(
+                KEY,
+                class.as_mut_ptr(),
+                &mut class_count,
+                core::ptr::null_mut(),
+                subkeys,
+                max_subkey,
+                max_class,
+                values,
+                max_name,
+                max_data,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!((ret, class_count, class[0]), (0, 0, 0));
+        assert_eq!(counts[..6], [1, 3, 0, 5, 6, 26]);
+        let mut ansi = [0xCCu8; 8];
+        let mut values = UNSET;
+        class_count = 8;
+        // SAFETY: the tests' own buffers.
+        let ret = unsafe {
+            reg_query_info_key_a(
+                KEY,
+                ansi.as_mut_ptr(),
+                &mut class_count,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &mut values,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!((ret, class_count, ansi[0], values), (0, 0, 0, 5));
+        // SAFETY: a non-NULL lpReserved.
+        let ret = unsafe {
+            reg_query_info_key_w(
+                KEY,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &mut values,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(ret, ERROR_INVALID_PARAMETER);
     }
 }

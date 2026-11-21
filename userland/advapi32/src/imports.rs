@@ -80,6 +80,24 @@ mod raw {
             length: u32,
             result_length: *mut u32,
         ) -> u32;
+        /// NtEnumerateValueKey: a value's information of a class, by its place in the key's
+        /// listing.
+        pub fn NtEnumerateValueKey(
+            key: u32,
+            index: u32,
+            class: u32,
+            information: *mut u8,
+            length: u32,
+            result_length: *mut u32,
+        ) -> u32;
+        /// NtQueryKey: the key's own information of a class.
+        pub fn NtQueryKey(
+            key: u32,
+            class: u32,
+            information: *mut u8,
+            length: u32,
+            result_length: *mut u32,
+        ) -> u32;
         /// NtQueryValueKey: a value's information of a class, by its name.
         pub fn NtQueryValueKey(
             key: u32,
@@ -507,6 +525,46 @@ pub fn enumerate_key_answer(key: u32, index: u32, class: u32, information: &mut 
     }
 }
 
+/// NtEnumerateValueKey: value `index` of `key`'s information of `class`, into `information` (see
+/// [`Answer`]).
+pub fn enumerate_value_key(key: u32, index: u32, class: u32, information: &mut [u8]) -> Answer {
+    let mut length = 0u32;
+    // SAFETY: the call writes at most the buffer's length into it, and the length into the local.
+    let status = unsafe {
+        raw::NtEnumerateValueKey(
+            key,
+            index,
+            class,
+            information.as_mut_ptr(),
+            information.len() as u32,
+            &mut length,
+        )
+    };
+    Answer {
+        status: NtStatus(status),
+        length,
+    }
+}
+
+/// NtQueryKey: `key`'s own information of `class`, into `information` (see [`Answer`]).
+pub fn query_key(key: u32, class: u32, information: &mut [u8]) -> Answer {
+    let mut length = 0u32;
+    // SAFETY: the call writes at most the buffer's length into it, and the length into the local.
+    let status = unsafe {
+        raw::NtQueryKey(
+            key,
+            class,
+            information.as_mut_ptr(),
+            information.len() as u32,
+            &mut length,
+        )
+    };
+    Answer {
+        status: NtStatus(status),
+        length,
+    }
+}
+
 /// NtQueryValueKey: `name`'s value of `key`, its information of `class` into `information`: the
 /// bytes the information takes. STATUS_BUFFER_OVERFLOW is a failure that wrote the information's
 /// fixed part.
@@ -656,7 +714,7 @@ pub mod host {
     }
 
     std::thread_local! {
-        /// What NtEnumerateKey answers on the host: the
+        /// What NtEnumerateKey, NtEnumerateValueKey and NtQueryKey answer on the host: the
         /// information's bytes, delivered as the kernel delivers them (what fits, the whole's size
         /// in ResultLength, STATUS_BUFFER_OVERFLOW when not the whole), or a status
         /// (STATUS_NOT_IMPLEMENTED unless a test sets one); and the information classes asked for.
@@ -687,6 +745,29 @@ pub mod host {
 
     pub unsafe extern "system" fn NtEnumerateKey(
         _: u32,
+        _: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        result: *mut u32,
+    ) -> u32 {
+        // SAFETY: the caller's buffer and result length.
+        unsafe { deliver(class, information, length, result) }
+    }
+
+    pub unsafe extern "system" fn NtEnumerateValueKey(
+        _: u32,
+        _: u32,
+        class: u32,
+        information: *mut u8,
+        length: u32,
+        result: *mut u32,
+    ) -> u32 {
+        // SAFETY: the caller's buffer and result length.
+        unsafe { deliver(class, information, length, result) }
+    }
+
+    pub unsafe extern "system" fn NtQueryKey(
         _: u32,
         class: u32,
         information: *mut u8,

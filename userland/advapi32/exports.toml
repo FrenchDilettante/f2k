@@ -113,6 +113,36 @@ impl = { native = "RegEnumKeyExW" }
 ordinal = 410
 
 [[export]]
+name = "RegEnumValueA"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpValueName", "ptr<u32> lpcValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
+impl = { native = "RegEnumValueA" }
+ordinal = 412
+
+[[export]]
+name = "RegEnumValueW"
+group = "registry"
+args = ["handle hKey", "u32 dwIndex", "ptr lpValueName", "ptr<u32> lpcValueName", "ptr<u32> lpReserved", "ptr<u32> lpType", "ptr lpData", "ptr<u32> lpcbData"]
+impl = { native = "RegEnumValueW" }
+ordinal = 413
+
+[[export]]
+name = "RegQueryInfoKeyA"
+group = "registry"
+args = ["handle hKey", "ptr lpClass", "ptr<u32> lpcClass", "ptr<u32> lpReserved", "ptr<u32> lpcSubKeys", "ptr<u32> lpcMaxSubKeyLen", "ptr<u32> lpcMaxClassLen", "ptr<u32> lpcValues", "ptr<u32> lpcMaxValueNameLen", "ptr<u32> lpcMaxValueLen", "ptr<u32> lpcbSecurityDescriptor", "ptr lpftLastWriteTime"]
+impl = { native = "RegQueryInfoKeyA" }
+ordinal = 426
+note = "F2K's keys have no security descriptor: its size is 0"
+
+[[export]]
+name = "RegQueryInfoKeyW"
+group = "registry"
+args = ["handle hKey", "ptr lpClass", "ptr<u32> lpcClass", "ptr<u32> lpReserved", "ptr<u32> lpcSubKeys", "ptr<u32> lpcMaxSubKeyLen", "ptr<u32> lpcMaxClassLen", "ptr<u32> lpcValues", "ptr<u32> lpcMaxValueNameLen", "ptr<u32> lpcMaxValueLen", "ptr<u32> lpcbSecurityDescriptor", "ptr lpftLastWriteTime"]
+impl = { native = "RegQueryInfoKeyW" }
+ordinal = 427
+note = "F2K's keys have no security descriptor: its size is 0"
+
+[[export]]
 name = "RegQueryValueA"
 group = "registry"
 args = ["handle hKey", "strA? lpSubKey", "ptr lpValue", "ptr<i32> lpcbValue"]
@@ -1828,14 +1858,6 @@ name = "RegDisablePredefinedCache"
 ordinal = 407
 
 [[export]]
-name = "RegEnumValueA"
-ordinal = 412
-
-[[export]]
-name = "RegEnumValueW"
-ordinal = 413
-
-[[export]]
 name = "RegFlushKey"
 ordinal = 414
 
@@ -1866,14 +1888,6 @@ ordinal = 424
 [[export]]
 name = "RegOverridePredefKey"
 ordinal = 425
-
-[[export]]
-name = "RegQueryInfoKeyA"
-ordinal = 426
-
-[[export]]
-name = "RegQueryInfoKeyW"
-ordinal = 427
 
 [[export]]
 name = "RegQueryMultipleValuesA"

@@ -4,9 +4,6 @@ description = "registry - the registry calls cmd.exe imports, W and A: RegCreate
 kind = "sectioned"
 gate = true
 
-[pending]
-enumvalue = "F2K's advapi32 does not export RegEnumValueW, RegEnumValueA, RegQueryInfoKeyW or RegQueryInfoKeyA"
-
 [masks]
 # A missing value's query leaves whatever advapi32 had at hand in the type: stack contents, not an
 # answer.
@@ -21,6 +18,25 @@ delete = [
     "RegQueryValueExW(\"x\"), the old handle, the name created anew with a value x: ret=1018 err=- type=* cb=1024 buffer=untouched",
     "RegQueryValueExA(\"x\"), through the deleted key's handle: ret=1018 err=- type=* cb=1024 buffer=untouched",
     "RegQueryValueExA(\"x\"), the old handle, the name created anew with a value x: ret=1018 err=- type=* cb=1024 buffer=untouched",
+]
+# RegEnumValueW's failure writes the type all the same, with what advapi32 had at hand: the key's
+# handle value (968, 964, 960 for F2K, solo and sub; 0x7FFFFFFC for the bogus one), not an answer.
+# RegEnumValueA leaves it. And Windows 2000 answers a key's longest value name and data
+# (RegQueryInfoKey's lpcMaxValueNameLen and lpcMaxValueLen) as no reading of the values it holds
+# gives them: 1 and 3 for F2K, whose longest name has 6 characters and longest data 26 bytes, 0 and
+# 0 for solo, whose one value's name has 5 and its data 12 (and sub, with no values, 0 and 0): a
+# cache of the configuration manager's, its state the key's history across the boot, which the
+# capture cannot pin. F2K answers the values' own.
+enumvalue = [
+    "RegEnumValueW(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
+    "RegEnumValueW(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
+    "RegEnumValueW(solo, 1, 64 units, 1024), the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
+    "RegEnumValueW(sub, 0, 64 units, 1024), a key with no values: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
+    "RegEnumValueW(a bogus handle, 0, 64 units, 1024): ret=6 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
+    "RegQueryInfoKeyW(F2K): ret=0 err=- class=\\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=* longest data=*",
+    "RegQueryInfoKeyW(solo): ret=0 err=- class=\\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=* longest data=*",
+    "RegQueryInfoKeyA(F2K): ret=0 err=- class=\\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=* longest data=*",
+    "RegQueryInfoKeyA(solo): ret=0 err=- class=\\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=* longest data=*",
 ]
 
 [pins]
