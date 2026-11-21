@@ -152,16 +152,8 @@ pub fn sync_only(message: u32) -> bool {
 
 // --- The structures (winuser.h) ------------------------------------------------------------------
 
-/// POINT.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Point {
-    pub x: i32,
-    pub y: i32,
-}
-
-// SAFETY: two integers.
-unsafe impl Pod for Point {}
+/// POINT: GDI's, one type for both headers' uses.
+pub use crate::gdi::Point;
 
 /// MSG: a message as GetMessage and PeekMessage retrieve it.
 #[repr(C)]
