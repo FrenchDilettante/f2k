@@ -270,10 +270,40 @@ pub unsafe extern "system" fn write_console_w(
 
 /// ReadConsoleA, as Windows 2000's ReadFile reaches it: up to the buffer's bytes of the console's
 /// input, the count read stored ([`read_console_a`]); any handle but an input one is
-/// ERROR_INVALID_HANDLE.
+/// ERROR_INVALID_HANDLE. Read in processed mode, input starting with a Ctrl-Z is the end of the
+/// input: 0 bytes, as Windows 2000's ReadFile answers it (fd's conctrlz capture: a line "^Z"
+/// ends fgets' input).
 pub fn read_console(console: u32, buffer: OutBuf<'_, u8>, read: Option<Out<'_, u32>>) -> u32 {
-    read_console_as(console, buffer.address(0), buffer.len() as u32, read, false)
+    let first = buffer.address(0) as *const u8;
+    let mut count = 0u32;
+    let done = read_console_as(
+        console,
+        buffer.address(0),
+        buffer.len() as u32,
+        Some(Out::from(&mut count)),
+        false,
+    );
+    if done == 0 {
+        return 0;
+    }
+    let mut mode = 0u32;
+    // SAFETY: the caller's buffer, which the read has just filled from its start (`count` bytes).
+    if count > 0 && unsafe { first.read() } == CTRL_Z {
+        if console_mode(console, Out::from(&mut mode)) != 0 && mode & ENABLE_PROCESSED_INPUT != 0 {
+            count = 0;
+        }
+    }
+    if let Some(mut read) = read {
+        read.set(count);
+    }
+    1
 }
+
+/// Ctrl-Z: a console read's end of input, first in the bytes read.
+const CTRL_Z: u8 = 0x1A;
+
+/// The input mode's ENABLE_PROCESSED_INPUT: Ctrl-Z first read as the end of the input.
+const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
 
 /// FlushConsoleInputBuffer (and Windows 2000's FlushFileBuffers on a console handle): the input
 /// buffer emptied; an output handle, or one naming nothing, is ERROR_INVALID_HANDLE.

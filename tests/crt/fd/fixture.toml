@@ -5,10 +5,6 @@ description = "fd - msvcrt.dll's descriptor layer and stdio under /MD (fd.c): _o
 kind = "sectioned"
 gate = true
 
-[pending]
-conctrlz = "F2K's _read keeps a Ctrl-Z read from a device as data, and its console ReadFile does not answer a line starting with Ctrl-Z with 0 bytes"
-
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

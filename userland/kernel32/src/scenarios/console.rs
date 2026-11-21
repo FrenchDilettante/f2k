@@ -694,6 +694,47 @@ fn line_mode_reads_take_queued_lines() {
     assert_eq!(last_error(), 6);
 }
 
+/// ReadFile on the console's input, as Windows 2000's answers it: a line read in processed mode
+/// that starts with a Ctrl-Z is the end of the input (0 bytes, fd's conctrlz capture), one with a
+/// Ctrl-Z later is read whole, and without processed input the Ctrl-Z is data.
+///
+/// Pins: kernel32.ReadFile, kernel32.WriteConsoleInputA, kernel32.SetConsoleMode
+#[test]
+fn a_console_read_starting_with_ctrl_z_reads_nothing() {
+    let read_line = |mode: u32, text: &str| {
+        assert_eq!(set_console_mode(STDIN, mode), 1);
+        let records = typed(text);
+        let mut written = 0;
+        // SAFETY: the records, a dword.
+        unsafe {
+            write_console_input_a(
+                STDIN,
+                records.as_ptr().cast(),
+                records.len() as u32,
+                &mut written,
+            )
+        };
+        let mut bytes = [0u8; 16];
+        let mut read = 0xFFFF;
+        // SAFETY: sixteen bytes, a dword, no OVERLAPPED.
+        let done = unsafe {
+            crate::files::handle::read_file(
+                STDIN,
+                bytes.as_mut_ptr(),
+                16,
+                &mut read,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(done, 1, "{text:?}");
+        flush_console_input_buffer(STDIN);
+        bytes[..read as usize].to_vec()
+    };
+    assert_eq!(read_line(0x3, "\x1a\r"), b"");
+    assert_eq!(read_line(0x3, "ab\x1a\r"), b"ab\x1a\r\n");
+    assert_eq!(read_line(0x2, "\x1a\r"), b"\x1a\r\n");
+}
+
 /// PeekConsoleInputA copies waiting records and leaves them; ReadConsoleInputA takes them — the
 /// calls msvcrt's _kbhit and _getch make.
 ///

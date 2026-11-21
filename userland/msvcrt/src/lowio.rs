@@ -18,9 +18,9 @@
 //!   program, descriptors 0 to 2 keep the standard handles in step (SetStdHandle). Descriptors 1
 //!   and 2 sharing one handle, closing one leaves it open for the other.
 //! - Text mode writes each LF as CR LF (`_write` answers the caller's bytes, `_tell` sees the
-//!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file: [`translate`]). A
-//!   file opened for reading and writing in text mode loses a trailing Ctrl-Z as it opens, so that
-//!   appending follows the text ([`cut_ctrl_z`]).
+//!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file; a device reads on
+//!   at its next read: [`translate`]). A file opened for reading and writing in text mode loses a
+//!   trailing Ctrl-Z as it opens, so that appending follows the text ([`cut_ctrl_z`]).
 //! - `_setmode` answers the previous mode (`_O_TEXT` or `_O_BINARY`); another mode is EINVAL.
 //! - `_pipe` makes an anonymous pipe's two ends the two lowest free descriptors, the read end first
 //!   ([`pipe_mode`]), as pipe's crt capture pins them: both handles inheritable unless
@@ -1184,7 +1184,10 @@ fn read_held(fd: i32, bytes: &mut [u8]) -> i32 {
     match ending {
         Ending::Text => {}
         Ending::CtrlZ => {
-            update(fd, handle, |entry| entry.flags |= FEOF);
+            // A file's end; a device reads on past it, the rest of its bytes dropped.
+            if flags & FDEV == 0 {
+                update(fd, handle, |entry| entry.flags |= FEOF);
+            }
         }
         Ending::Ahead(next) => {
             if flags & (FPIPE | FDEV) != 0 {
@@ -1217,14 +1220,15 @@ enum Ending {
 /// read's first byte, else the CR is dropped and the LF given back to start the next read (which
 /// FCRLF marks). Any other byte keeps the CR and is the next read's. The bytes handed back, and
 /// how the translation ended. `flags` are the descriptor's: FPIPE or FDEV for a pipe or a device,
-/// neither for a file. A device's Ctrl-Z is data.
+/// neither for a file. A Ctrl-Z ends a device's read too, the bytes after it dropped (fd's
+/// conctrlz capture: the console line "abc^Z" reads "abc"), but not its later reads.
 fn translate(bytes: &mut [u8], flags: u8, peek: impl FnOnce() -> Option<u8>) -> (usize, Ending) {
     let stream_like = flags & (FPIPE | FDEV) != 0;
     let got = bytes.len();
     let (mut from, mut to) = (0, 0);
     while from < got {
         let byte = bytes[from];
-        if byte == CTRL_Z && flags & FDEV == 0 {
+        if byte == CTRL_Z {
             return (to, Ending::CtrlZ);
         }
         if byte != b'\r' {
@@ -1312,8 +1316,8 @@ mod tests {
         (buffer, ending)
     }
 
-    /// CR LF reads as LF and a lone CR as itself; a Ctrl-Z ends a file's read (fd's textmode
-    /// capture: "ab^Zcd" reads "ab") and is a device's data.
+    /// CR LF reads as LF and a lone CR as itself; a Ctrl-Z ends the read (fd's textmode capture:
+    /// "ab^Zcd" reads "ab"; its conctrlz capture: the console's "abc^Z" reads "abc").
     #[test]
     fn a_text_read_translates_its_bytes() {
         assert_eq!(
@@ -1325,8 +1329,8 @@ mod tests {
             (b"ab".to_vec(), Ending::CtrlZ)
         );
         assert_eq!(
-            translated(b"ab\x1Acd", FDEV, None),
-            (b"ab\x1Acd".to_vec(), Ending::Text)
+            translated(b"abc\x1A\r\n", FDEV, None),
+            (b"abc".to_vec(), Ending::CtrlZ)
         );
     }
 
