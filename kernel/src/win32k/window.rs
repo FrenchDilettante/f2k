@@ -2470,6 +2470,12 @@ impl Windows {
             self.link_window(id, z_order, p);
         }
 
+        // A window created minimized is minimized once it is made (the min/max setup below): its
+        // client area is a normal window's until then, so that minimizing it empties it (guigeo
+        // `createmax`: a WM_SIZE of SIZE_MINIMIZED, hidden or not).
+        let created_minimized = self.at(id).style & WS_MINIMIZE != 0;
+        self.at_mut(id).style &= !WS_MINIMIZE;
+
         // WM_NCCALCSIZE: the client rect, the window's less the frame.
         let window_rect = self.at(id).window_rect;
         let client = pump.calc_client(self, classes, id, window_rect);
@@ -2518,12 +2524,28 @@ impl Windows {
             );
         }
 
-        // Min/max setup.
-        if self.at(id).style & WS_MINIMIZE != 0 {
-            pump.min_maximize(self, id, SW_SHOWMINNOACTIVE as u32);
+        // Min/max setup: a window created with WS_MINIMIZE or WS_MAXIMIZE is minimized or
+        // maximized now, hidden or not, its normal place the one it was created at (guigeo
+        // `createmax`). The style bit is off by now (WS_MINIMIZE's since WM_NCCALCSIZE), so the
+        // window leaves the normal state; the WM_SIZE this sends leaves a tiled window's deferred
+        // WM_SIZE and WM_MOVE to its first show still (the capture: a window created with
+        // WS_VISIBLE and either bit gets two WM_SIZEs of its new state, a hidden one one).
+        let min_max = if created_minimized {
+            Some(SW_SHOWMINNOACTIVE)
         } else if self.at(id).style & WS_MAXIMIZE != 0 {
             self.at_mut(id).style &= !WS_MAXIMIZE;
-            pump.min_maximize(self, id, SW_SHOWMAXIMIZED as u32);
+            Some(SW_SHOWMAXIMIZED)
+        } else {
+            None
+        };
+        if let Some(command) = min_max {
+            pump.min_maximize(self, id, command as u32);
+            let deferred = self.at(id).flags.sendsizemove;
+            let _ = self.min_maximize(classes, id, command, pump);
+            if !self.pool.is_live(id) {
+                return Err(Failure::OutOfMemory);
+            }
+            self.at_mut(id).flags.sendsizemove = deferred;
         }
 
         // Children tell their parent about the create.
@@ -3831,8 +3853,9 @@ impl Windows {
     /// the window otherwise, and the children move with the client area — the window takes its
     /// place among its siblings, is shown or hidden, and is activated (a top-level window, unless
     /// SWP_NOACTIVATE); then WM_WINDOWPOSCHANGED reports what happened (SWP_NOMOVE and SWP_NOSIZE
-    /// added for what did not change). A window being shown or hidden is neither moved nor sized,
-    /// as the SetWindowPos documentation has it; a window without a parent (the desktop's own
+    /// added for what did not change). A window being shown or hidden is moved and sized as well,
+    /// unless the flags say not to (guigeo `swpshow`: Windows 2000's does both, where the
+    /// SetWindowPos documentation says neither); a window without a parent (the desktop's own
     /// windows) keeps its place. The WM_SIZE and WM_MOVE that follow are the default window
     /// procedure's answer to WM_WINDOWPOSCHANGED, not this decision's.
     #[allow(clippy::too_many_arguments)]
@@ -3850,9 +3873,6 @@ impl Windows {
     ) -> Result<(), Failure> {
         let show_call = flags & SWP_SHOWWINDOW_CALL;
         let mut flags = flags & !SWP_SHOWWINDOW_CALL;
-        if flags & (SWP_SHOWWINDOW | SWP_HIDEWINDOW) != 0 {
-            flags |= SWP_NOMOVE | SWP_NOSIZE;
-        }
         if self.at(window).parent.is_none() {
             flags |= SWP_NOZORDER;
         }
@@ -5349,7 +5369,6 @@ pub fn create_window_ex(
         manager.create_window(caller, parent.raw(), &mut args, &mut QueuePump)
     })
     .map_err(Failure::status)?;
-    log_min_max_styles(call, style);
     window.write(created)?;
     Ok(STATUS_SUCCESS)
 }
@@ -5429,52 +5448,9 @@ pub fn move_window(
     Ok(STATUS_SUCCESS)
 }
 
-/// The show commands that minimize or maximize a window, and what each does on Windows 2000: the
-/// window manager does not carry them out yet (the min/max seam, [`Pump::min_maximize`], does
-/// nothing), so the window is shown or hidden at its own size.
-#[cfg(target_arch = "x86")]
-const MIN_MAX_COMMANDS: [(i32, &str); 5] = [
-    (
-        SW_SHOWMINIMIZED,
-        "SW_SHOWMINIMIZED (the window minimized and activated)",
-    ),
-    (
-        SW_SHOWMAXIMIZED,
-        "SW_SHOWMAXIMIZED (the window maximized and activated)",
-    ),
-    (SW_MINIMIZE, "SW_MINIMIZE (the window minimized)"),
-    (
-        SW_SHOWMINNOACTIVE,
-        "SW_SHOWMINNOACTIVE (the window minimized, not activated)",
-    ),
-    (SW_FORCEMINIMIZE, "SW_FORCEMINIMIZE (the window minimized)"),
-];
-
-/// The styles a window is created minimized or maximized by, its case's key in the window
-/// services' logged set, and what each does on Windows 2000 (not carried out yet either).
-#[cfg(target_arch = "x86")]
-const MIN_MAX_STYLES: [(u32, u32, &str); 2] = [
-    (
-        WS_MINIMIZE,
-        0x100,
-        "WS_MINIMIZE (the window created minimized)",
-    ),
-    (
-        WS_MAXIMIZE,
-        0x101,
-        "WS_MAXIMIZE (the window created maximized)",
-    ),
-];
-
-/// The window services' cases logged: each process's minimizing and maximizing commands and
-/// styles ([`crate::dbgprint::unhandled_once`]).
-#[cfg(target_arch = "x86")]
-static MIN_MAX_LOGGED: rtl::stub::Logged<128> = rtl::stub::Logged::new();
-
 /// NtUserShowWindow(Window, Command, Previous): ShowWindow's arguments, and its answer through
 /// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go;
-/// its messages and its activation through the queue's pump. A minimizing or maximizing command is
-/// logged, once per process: the window is shown at its own size.
+/// its messages and its activation through the queue's pump.
 #[cfg(target_arch = "x86")]
 pub fn show_window(
     call: &mut NtCall,
@@ -5483,7 +5459,6 @@ pub fn show_window(
     previous: UserPtr<u32>,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
-    log_min_max_command(call, "NtUserShowWindow", window, command);
     let answer = super::queue::with_manager(call.passive(), |manager| {
         manager.show_window(window.raw(), command, &mut QueuePump)
     })
@@ -5497,7 +5472,6 @@ pub fn show_window(
 #[cfg(target_arch = "x86")]
 pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtResult {
     super::winsta::gui_thread(call)?;
-    log_min_max_command(call, "NtUserShowWindowAsync", window, command);
     super::queue::with_manager(call.passive(), |manager| {
         manager.show_window_async(window.raw(), command, &mut QueuePump)
     })
@@ -5555,40 +5529,6 @@ pub fn end_defer_window_pos(call: &mut NtCall, positions: UserAddr, count: u32) 
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
-}
-
-/// A show command of [`MIN_MAX_COMMANDS`] handed to `service`, logged once per process.
-#[cfg(target_arch = "x86")]
-fn log_min_max_command(call: &mut NtCall, service: &str, window: Handle, command: i32) {
-    if let Some(&(_, what)) = MIN_MAX_COMMANDS.iter().find(|&&(c, _)| c == command) {
-        crate::dbgprint::unhandled_once(
-            &MIN_MAX_LOGGED,
-            call.process().id(),
-            command as u32,
-            "win32k",
-            service,
-            format_args!("Window=0x{:X}, Command={command}", window.raw()),
-            format_args!("{what} is not yet implemented: the window keeps its size"),
-        );
-    }
-}
-/// The styles of [`MIN_MAX_STYLES`] a window was created with (`style`), logged once per process.
-/// The styles of [`MIN_MAX_STYLES`] the window `created` was made with, logged once per process.
-#[cfg(target_arch = "x86")]
-fn log_min_max_styles(call: &mut NtCall, style: u32) {
-    for &(bit, key, what) in &MIN_MAX_STYLES {
-        if style & bit != 0 {
-            crate::dbgprint::unhandled_once(
-                &MIN_MAX_LOGGED,
-                call.process().id(),
-                key,
-                "win32k",
-                "NtUserCreateWindowEx",
-                format_args!("Style=0x{style:X}"),
-                format_args!("{what} is not yet implemented: the window keeps its size"),
-            );
-        }
-    }
 }
 
 /// NtUserQueryWindow(Window, Index, Information, Length): what `index` asks about the window
@@ -9300,7 +9240,7 @@ mod tests {
     }
 
     /// The handler of WM_WINDOWPOSCHANGING may change the place; SWP_NOSENDCHANGING skips it; a
-    /// show or a hide neither moves nor sizes the window (the SetWindowPos documentation).
+    /// show moves and sizes the window too (guigeo `swpshow`).
     #[test]
     fn set_window_pos_takes_the_handlers_changes() {
         let (w, c, t, atom, _, _) = setup();
@@ -9373,10 +9313,10 @@ mod tests {
         assert_eq!(
             w.at(id).window_rect,
             Rect {
-                left: 1,
-                top: 1,
-                right: 2,
-                bottom: 2
+                left: 30,
+                top: 30,
+                right: 60,
+                bottom: 60
             }
         );
     }
@@ -9602,6 +9542,100 @@ mod tests {
         assert!(!w.at(id).restore_maximized);
         w.show_window(c, id, SW_SHOWNORMAL, &mut pump).unwrap();
         assert_eq!(w.at(id).window_rect, normal);
+    }
+
+    /// guigeo `createmax`: a window created with WS_MAXIMIZE or WS_MINIMIZE is maximized or
+    /// minimized at its creation, hidden or not, its normal place the one asked (SW_RESTORE brings
+    /// it back there); the WM_WINDOWPOSCHANGED of that change leaves a tiled window's deferred
+    /// WM_SIZE and WM_MOVE to its first show (Windows 2000's WS_VISIBLE window gets two WM_SIZEs).
+    #[test]
+    fn a_window_is_created_maximized_or_minimized() {
+        let (w, c, t, atom, _, _) = setup();
+        let asked = Rect {
+            left: 10,
+            top: 20,
+            right: 310,
+            bottom: 220,
+        };
+        for (bit, visible) in [
+            (WS_MAXIMIZE, 0),
+            (WS_MAXIMIZE, WS_VISIBLE),
+            (WS_MINIMIZE, 0),
+            (WS_MINIMIZE, WS_VISIBLE),
+        ] {
+            let mut pump = Rec::new(t);
+            let mut a = args(atom, WS_OVERLAPPEDWINDOW | bit | visible);
+            (a.cx, a.cy) = (300, 200);
+            let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+            assert_eq!(
+                w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE | WS_VISIBLE),
+                bit | visible
+            );
+            let rect = w.at(id).window_rect;
+            if bit == WS_MAXIMIZE {
+                assert_eq!(rect, Rect::new(-4, -4, 644, 484));
+            } else {
+                assert_eq!((rect.left, rect.top), MINIMIZED_POSITION);
+            }
+            let changed = pump
+                .messages()
+                .iter()
+                .filter(|&&m| m == WM_WINDOWPOSCHANGED)
+                .count();
+            let deferred = pump.messages().contains(&WM_SIZE);
+            let (_, _, first) = *pump
+                .positions
+                .iter()
+                .find(|(_, m, _)| *m == WM_WINDOWPOSCHANGED)
+                .unwrap();
+            assert_eq!(
+                first.flags & SWP_NOCLIENTSIZE,
+                0,
+                "its client area changed: the default procedure's WM_SIZE"
+            );
+            assert_eq!(
+                (changed, deferred, w.at(id).flags.sendsizemove),
+                if visible != 0 {
+                    (2, true, false)
+                } else {
+                    (1, false, true)
+                },
+                "the change's, then the show's and its deferred WM_SIZE"
+            );
+            w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+            assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), 0);
+            assert_eq!(w.at(id).window_rect, asked);
+            assert!(!w.at(id).flags.sendsizemove);
+        }
+    }
+
+    /// guigeo `swpshow`: SetWindowPos with SWP_SHOWWINDOW or SWP_HIDEWINDOW moves and sizes the
+    /// window too, shown or hidden.
+    #[test]
+    fn a_shown_or_hidden_window_is_moved_and_sized_too() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        for (x, y, cx, cy, flags, visible) in [
+            (120, 90, 250, 180, SWP_SHOWWINDOW, true),
+            (140, 100, 260, 190, SWP_SHOWWINDOW, true),
+            (160, 110, 270, 170, SWP_HIDEWINDOW, false),
+        ] {
+            w.set_window_pos(
+                c,
+                id,
+                InsertAfter::Top,
+                x,
+                y,
+                cx,
+                cy,
+                flags | SWP_NOACTIVATE,
+                &mut pump,
+            )
+            .unwrap();
+            assert_eq!(w.at(id).window_rect, Rect::new(x, y, x + cx, y + cy));
+            assert_eq!(w.at(id).is_visible(), visible);
+        }
     }
 
     /// A minimized window hidden reports its client area sized, so the default procedure sends it a
