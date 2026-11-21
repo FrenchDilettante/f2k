@@ -86,10 +86,10 @@ use crate::edge::{
     caller_bytes,
     wide_units,
     wide_units_of,
+    CallerChar,
+    CallerStr,
     EnvironmentBlock,
     In,
-    InStr,
-    InWStr,
     Out,
 };
 use crate::env;
@@ -923,23 +923,41 @@ fn stub_arguments(
     ]
 }
 
-/// A caller's optional NUL-terminated string, its terminator left out (copied onto the process
-/// heap when unaligned: [`crate::edge::wide_units`]); ERROR_NOT_ENOUGH_MEMORY when that copy finds
-/// no room.
-fn optional_wide<'a>(string: Option<InWStr<'a>>) -> Result<Option<WideUnits<'a>>, Failure> {
-    string
-        .map(|string| wide_units(&string).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY)))
-        .transpose()
+/// A caller's string as CreateProcess reads it, its terminator left out. Here the pair differs: a
+/// W call's units are read where they are (copied onto the process heap when unaligned:
+/// [`crate::edge::wide_units`]); an A call's bytes are converted through the ANSI code page onto
+/// the process heap (RtlMultiByteToUnicodeN, of any length). Either is ERROR_NOT_ENOUGH_MEMORY when
+/// the heap finds no room.
+enum Units<'a> {
+    Wide(WideUnits<'a>),
+    Ansi(HeapArray<u16>),
 }
 
-/// A caller's optional ANSI string converted through the ANSI code page onto the process heap.
-fn optional_ansi(string: Option<InStr<'_>>) -> Result<Option<HeapArray<u16>>, Failure> {
-    let Some(string) = string else {
-        return Ok(None);
+impl Deref for Units<'_> {
+    type Target = [u16];
+
+    fn deref(&self) -> &[u16] {
+        match self {
+            Units::Wide(units) => units,
+            Units::Ansi(units) => units,
+        }
+    }
+}
+
+/// A caller's optional NUL-terminated string, read (see [`Units`]).
+fn optional_units(string: Option<CallerStr<'_>>) -> Result<Option<Units<'_>>, Failure> {
+    let units = match string {
+        None => return Ok(None),
+        Some(CallerStr::Wide(string)) => {
+            Units::Wide(wide_units(&string).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?)
+        }
+        Some(CallerStr::Ansi(string)) => {
+            let bytes = string.bytes();
+            let mut units = HeapArray::new(bytes.len())?;
+            ntcall::multi_byte_to_unicode(&mut units, bytes);
+            Units::Ansi(units)
+        }
     };
-    let bytes = string.bytes();
-    let mut units = HeapArray::new(bytes.len())?;
-    ntcall::multi_byte_to_unicode(&mut units, bytes);
     Ok(Some(units))
 }
 
@@ -1045,27 +1063,31 @@ fn create_with<C>(
     Ok(())
 }
 
-/// CreateProcessW (see the module doc): TRUE with PROCESS_INFORMATION filled, or FALSE with the
-/// error. A missing STARTUPINFO or PROCESS_INFORMATION faults the caller (STATUS_ACCESS_VIOLATION
-/// raised before anything is made), as Windows 2000's reads and writes through them.
+/// CreateProcessW's and CreateProcessA's body (see the module doc), `C` the form's character: TRUE
+/// with PROCESS_INFORMATION filled, or FALSE with the error. The strings (the application name,
+/// the command line, the current directory, and STARTUPINFO's lpReserved, lpDesktop and lpTitle)
+/// are read as [`Units`] says, each before the first failure is answered; the environment block is
+/// read as the flags say whatever the form. A missing STARTUPINFO or PROCESS_INFORMATION faults
+/// the caller (STATUS_ACCESS_VIOLATION raised before anything is made), as Windows 2000's reads and
+/// writes through them. The flags this surface lacks take the form's stub path.
 ///
 /// # Safety
 ///
-/// The strings are null or NUL-terminated; the attributes are null or SECURITY_ATTRIBUTES; the
-/// environment is null or a block of the kind the flags say; `startup_info` is a STARTUPINFOW and
-/// `process_information` a writable PROCESS_INFORMATION.
+/// The strings are null or NUL-terminated, of the form's characters; the attributes are null or
+/// SECURITY_ATTRIBUTES; the environment is null or a block of the kind the flags say;
+/// `startup_info` is the form's STARTUPINFO and `process_information` a writable
+/// PROCESS_INFORMATION.
 #[allow(clippy::too_many_arguments)]
-#[unsafe(export_name = "f2k_export_CreateProcessW")]
-pub unsafe extern "system" fn create_process_w(
-    application_name: *const u16,
-    command_line: *mut u16,
+unsafe fn create_process_as<C: CallerChar>(
+    application_name: *const C,
+    command_line: *mut C,
     process_attributes: *const SecurityAttributes,
     thread_attributes: *const SecurityAttributes,
     inherit_handles: u32,
     flags: u32,
     environment_block: *const u8,
-    current_directory: *const u16,
-    startup_info: *const StartupInfo<u16>,
+    current_directory: *const C,
+    startup_info: *const StartupInfo<C>,
     process_information: *mut ProcessInformation,
 ) -> u32 {
     if flags & UNSUPPORTED != 0 {
@@ -1081,10 +1103,9 @@ pub unsafe extern "system" fn create_process_w(
             startup_info as usize,
             process_information as usize,
         );
+        let entry = C::of(&crate::spec::CreateProcessA, &crate::spec::CreateProcessW);
         // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe {
-            crate::stub::stubbed(&crate::spec::CreateProcessW, "not yet implemented", &args)
-        };
+        return unsafe { crate::stub::stubbed(entry, "not yet implemented", &args) };
     }
     // SAFETY: the caller's structures, when given (the contract).
     let (info, information) = unsafe {
@@ -1110,7 +1131,7 @@ pub unsafe extern "system" fn create_process_w(
                 info.desktop,
                 info.title,
             ]
-            .map(|string| InWStr::optional(string)),
+            .map(|string| C::optional_string(string)),
             Arguments {
                 runtime_data: caller_bytes(info.reserved2, usize::from(info.reserved2_length))
                     .filter(|bytes| !bytes.is_empty()),
@@ -1126,8 +1147,8 @@ pub unsafe extern "system" fn create_process_w(
             },
         )
     };
-    // Every string read (and copied where unaligned), then the first failure answered.
-    let read = strings.map(optional_wide);
+    // Every string read (converted, or copied where unaligned), then the first failure answered.
+    let read = strings.map(optional_units);
     let created = (|| {
         let mut strings = [None, None, None, None, None, None];
         for (slot, string) in strings.iter_mut().zip(read) {
@@ -1146,14 +1167,48 @@ pub unsafe extern "system" fn create_process_w(
     bool_answer(created)
 }
 
-/// CreateProcessA: CreateProcessW's work, its strings (the application name, the command line, the
-/// current directory, and STARTUPINFOA's lpReserved, lpDesktop and lpTitle) converted through the
-/// ANSI code page first; the environment block is read as the flags say, as CreateProcessW reads
-/// it.
+/// CreateProcessW (see [`create_process_as`]).
 ///
 /// # Safety
 ///
-/// As CreateProcessW's, the strings narrow and `startup_info` a STARTUPINFOA.
+/// As [`create_process_as`]'s, the strings UTF-16 and `startup_info` a STARTUPINFOW.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(export_name = "f2k_export_CreateProcessW")]
+pub unsafe extern "system" fn create_process_w(
+    application_name: *const u16,
+    command_line: *mut u16,
+    process_attributes: *const SecurityAttributes,
+    thread_attributes: *const SecurityAttributes,
+    inherit_handles: u32,
+    flags: u32,
+    environment_block: *const u8,
+    current_directory: *const u16,
+    startup_info: *const StartupInfo<u16>,
+    process_information: *mut ProcessInformation,
+) -> u32 {
+    // SAFETY: the caller's contract, the W form's.
+    unsafe {
+        create_process_as(
+            application_name,
+            command_line,
+            process_attributes,
+            thread_attributes,
+            inherit_handles,
+            flags,
+            environment_block,
+            current_directory,
+            startup_info,
+            process_information,
+        )
+    }
+}
+
+/// CreateProcessA (see [`create_process_as`]): its strings converted through the ANSI code page
+/// first.
+///
+/// # Safety
+///
+/// As [`create_process_as`]'s, the strings narrow and `startup_info` a STARTUPINFOA.
 #[allow(clippy::too_many_arguments)]
 #[unsafe(export_name = "f2k_export_CreateProcessA")]
 pub unsafe extern "system" fn create_process_a(
@@ -1168,78 +1223,19 @@ pub unsafe extern "system" fn create_process_a(
     startup_info: *const StartupInfo<u8>,
     process_information: *mut ProcessInformation,
 ) -> u32 {
-    if flags & UNSUPPORTED != 0 {
-        let args = stub_arguments(
-            application_name as usize,
-            command_line as usize,
-            process_attributes as usize,
-            thread_attributes as usize,
+    // SAFETY: the caller's contract, the A form's.
+    unsafe {
+        create_process_as(
+            application_name,
+            command_line,
+            process_attributes,
+            thread_attributes,
             inherit_handles,
             flags,
-            environment_block as usize,
-            current_directory as usize,
-            startup_info as usize,
-            process_information as usize,
-        );
-        // SAFETY: the caller's arguments, as the export's kinds read them.
-        return unsafe {
-            crate::stub::stubbed(&crate::spec::CreateProcessA, "not yet implemented", &args)
-        };
+            environment_block,
+            current_directory,
+            startup_info,
+            process_information,
+        )
     }
-    // SAFETY: the caller's structures, when given (the contract).
-    let (info, information) = unsafe {
-        (
-            In::optional(startup_info),
-            Out::optional(process_information),
-        )
-    };
-    let (Some(info), Some(information)) = (info, information) else {
-        ntcall::raise_status(STATUS_ACCESS_VIOLATION);
-    };
-    let info = info.read();
-    // SAFETY: as CreateProcessW's, the strings narrow.
-    let (strings, arguments) = unsafe {
-        (
-            [
-                application_name,
-                command_line.cast_const(),
-                current_directory,
-                info.reserved,
-                info.desktop,
-                info.title,
-            ]
-            .map(|string| InStr::optional(string)),
-            Arguments {
-                runtime_data: caller_bytes(info.reserved2, usize::from(info.reserved2_length))
-                    .filter(|bytes| !bytes.is_empty()),
-                process_attributes: In::optional(process_attributes),
-                thread_attributes: In::optional(thread_attributes),
-                environment: (!environment_block.is_null()).then(|| {
-                    if flags & CREATE_UNICODE_ENVIRONMENT != 0 {
-                        CallerBlock::Wide(EnvironmentBlock::new(environment_block.cast()))
-                    } else {
-                        CallerBlock::Ansi(EnvironmentBlock::new(environment_block))
-                    }
-                }),
-            },
-        )
-    };
-    // Every string read and converted, then the first failure answered.
-    let read = strings.map(optional_ansi);
-    let created = (|| {
-        let mut strings = [None, None, None, None, None, None];
-        for (slot, string) in strings.iter_mut().zip(read) {
-            *slot = string?;
-        }
-        let strings = strings.each_ref().map(|string| string.as_deref());
-        create_with(
-            strings,
-            arguments,
-            &info,
-            inherit_handles,
-            flags,
-            information,
-        )
-    })();
-    bool_answer(created)
 }

@@ -1306,6 +1306,93 @@ fn create_process_a_converts_and_creates() {
     assert_eq!(made.image_path_name, "C:\\CORPUS\\spawnkid.exe");
 }
 
+/// CreateProcessW and CreateProcessA make the same child of the same strings: the W form reads its
+/// strings where they are, at an odd address too (copied); the A form converts its bytes through
+/// the ANSI code page (0x80 is the euro sign, U+20AC), the only place the pair differs.
+///
+/// Pins: kernel32.CreateProcessW, kernel32.CreateProcessA
+#[test]
+fn both_forms_make_the_same_child_of_the_same_strings() {
+    /// A wide string's units at an odd address inside `room`.
+    fn unaligned(text: &str, room: &mut Vec<u8>) -> *mut u16 {
+        room.clear();
+        room.push(0);
+        for unit in wide_z(text) {
+            room.extend_from_slice(&unit.to_le_bytes());
+        }
+        room[1..].as_mut_ptr().cast()
+    }
+    let child = |made: children::MadeParameters| {
+        (
+            made.command_line,
+            made.window_title,
+            made.desktop_info,
+            made.current_directory,
+            made.image_path_name,
+        )
+    };
+    setup();
+    existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
+    FILE.with(|file| file.borrow_mut().attributes = 0x10);
+    let (mut line, mut title, mut desktop, mut directory) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let line = unaligned("spawnkid args \u{20AC}", &mut line);
+    let info = StartupInfo {
+        title: unaligned("t\u{20AC}", &mut title).cast_const(),
+        desktop: unaligned("WinSta0\\Default", &mut desktop).cast_const(),
+        ..startup()
+    };
+    let directory = unaligned("SCRATCH", &mut directory).cast_const();
+    let mut information = ProcessInformation::default();
+    let created = unsafe {
+        create_process_w(
+            core::ptr::null(),
+            line,
+            core::ptr::null(),
+            core::ptr::null(),
+            1,
+            0,
+            core::ptr::null(),
+            directory,
+            &info,
+            &mut information,
+        )
+    };
+    assert_eq!((created, information.process), (1, CHILD_PROCESS));
+    let wide = child(made().pop().unwrap());
+
+    setup();
+    existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
+    FILE.with(|file| file.borrow_mut().attributes = 0x10);
+    let mut line = *b"spawnkid args \x80\0";
+    let (title, desktop) = (*b"t\x80\0", *b"WinSta0\\Default\0");
+    let info = StartupInfo {
+        title: title.as_ptr(),
+        desktop: desktop.as_ptr(),
+        ..startup()
+    };
+    let mut information = ProcessInformation::default();
+    let created = unsafe {
+        create_process_a(
+            core::ptr::null(),
+            line.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            1,
+            0,
+            core::ptr::null(),
+            b"SCRATCH\0".as_ptr(),
+            &info,
+            &mut information,
+        )
+    };
+    assert_eq!((created, information.process), (1, CHILD_PROCESS));
+    let narrow = child(made().pop().unwrap());
+    assert_eq!(wide, narrow);
+    assert_eq!(wide.0.as_deref(), Some("spawnkid args \u{20AC}"));
+    assert_eq!(wide.2.as_deref(), Some("WinSta0\\Default"));
+}
+
 /// A child made, as the other scenarios make it.
 fn a_child() -> ProcessInformation {
     setup();

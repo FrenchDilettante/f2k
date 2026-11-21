@@ -98,6 +98,91 @@ impl<'a> Text<'a> {
     }
 }
 
+/// A caller's NUL-terminated string, of an A call (bytes in the ANSI code page) or a W call (UTF-16
+/// units). The call reads and converts it where its code does, in the way its A form does: what an
+/// A/W pair genuinely does differently is a `match` on this at that place, the rest is one body.
+#[derive(Clone, Copy)]
+pub enum CallerStr<'a> {
+    Ansi(InStr<'a>),
+    Wide(InWStr<'a>),
+}
+
+impl CallerStr<'_> {
+    /// Whether it holds no character (read to its terminator).
+    pub fn is_empty(&self) -> bool {
+        match self {
+            CallerStr::Ansi(string) => string.is_empty(),
+            CallerStr::Wide(string) => string.is_empty(),
+        }
+    }
+}
+
+/// The character of an A/W pair's form: `u8` for the A export (its strings in the ANSI code page),
+/// `u16` for the W export (UTF-16). A pair is one body generic over it and two one-line exports;
+/// what this carries is all the body needs to tell them apart: the caller's strings
+/// ([`CallerStr`]), the buffers it answers into ([`Text`]), and which of the pair's spec entries
+/// (its stub log line) is this form's.
+pub trait CallerChar: Copy + Default + PartialEq + 'static {
+    /// Whether this is the W form's.
+    const WIDE: bool;
+
+    /// The caller's NUL-terminated string at `at`, made where the export makes its values (it
+    /// reads nothing yet).
+    ///
+    /// # Safety
+    ///
+    /// As [`InStr::new`]'s or [`InWStr::new`]'s.
+    unsafe fn string<'a>(at: *const Self) -> CallerStr<'a>;
+
+    /// [`CallerChar::string`], none for a null pointer.
+    ///
+    /// # Safety
+    ///
+    /// As [`InStr::optional`]'s or [`InWStr::optional`]'s.
+    unsafe fn optional_string<'a>(at: *const Self) -> Option<CallerStr<'a>> {
+        // SAFETY: the caller's contract, for a pointer that is not null.
+        (!at.is_null()).then(|| unsafe { Self::string(at) })
+    }
+
+    /// The caller's buffer for a string the call hands back, of this form's characters.
+    fn text(buffer: OutBuf<'_, Self>) -> Text<'_>;
+
+    /// Of the pair's A and W values (its spec entries), this form's.
+    fn of<T>(ansi: T, wide: T) -> T {
+        if Self::WIDE {
+            wide
+        } else {
+            ansi
+        }
+    }
+}
+
+impl CallerChar for u8 {
+    const WIDE: bool = false;
+
+    unsafe fn string<'a>(at: *const u8) -> CallerStr<'a> {
+        // SAFETY: the caller's contract.
+        CallerStr::Ansi(unsafe { InStr::new(at) })
+    }
+
+    fn text(buffer: OutBuf<'_, u8>) -> Text<'_> {
+        Text::Ansi(buffer)
+    }
+}
+
+impl CallerChar for u16 {
+    const WIDE: bool = true;
+
+    unsafe fn string<'a>(at: *const u16) -> CallerStr<'a> {
+        // SAFETY: the caller's contract.
+        CallerStr::Wide(unsafe { InWStr::new(at) })
+    }
+
+    fn text(buffer: OutBuf<'_, u16>) -> Text<'_> {
+        Text::Wide(buffer)
+    }
+}
+
 /// A caller's string as the NLS calls take one: a count of units, or a NUL-terminated string for a
 /// negative count. The call judges the count first (some refuse a negative one but -1, or a null
 /// string), then reads the string where its code reads it.
