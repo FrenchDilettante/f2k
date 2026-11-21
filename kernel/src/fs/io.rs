@@ -69,7 +69,6 @@ mod target {
         STATUS_IO_DEVICE_ERROR,
         STATUS_OBJECT_PATH_NOT_FOUND,
         STATUS_SHARING_VIOLATION,
-        STATUS_TOO_MANY_OPENED_FILES,
     };
 
     /// The current time's stamps.
@@ -89,7 +88,8 @@ mod target {
         match error {
             OpenError::Sharing => STATUS_SHARING_VIOLATION,
             OpenError::DeletePending => STATUS_DELETE_PENDING,
-            OpenError::Full => STATUS_TOO_MANY_OPENED_FILES,
+            // FastFat's answer when its pool has no room for the file's FCB.
+            OpenError::Full => STATUS_INSUFFICIENT_RESOURCES,
         }
     }
 
@@ -150,8 +150,7 @@ mod target {
     /// overwrite's FILE_WRITE_DATA, a supersede's DELETE; see
     /// [`crate::fs::file::FileRecords::open_implying`]). STATUS_SHARING_VIOLATION when an open in
     /// place excludes it, STATUS_DELETE_PENDING while its delete is pending,
-    /// STATUS_INSUFFICIENT_RESOURCES when the handle table is full, STATUS_TOO_MANY_OPENED_FILES
-    /// when the records or the objects are.
+    /// STATUS_INSUFFICIENT_RESOURCES when the handle table, the records or the objects are full.
     pub fn open(file: File, open: &Open, implied: u32) -> Result<u32, NtStatus> {
         use crate::fs::file::rights::share_access;
         let process = crate::user::args::calling_process();
@@ -174,8 +173,9 @@ mod target {
     /// The I/O manager's half of an open, once a device has opened `context`: a file object made
     /// open on it (`access` as the share check reads it; the rights, sharing and options `open`
     /// asks) and a handle to it inserted into `process`'s table, which the caller found had room
-    /// before the device's open. STATUS_TOO_MANY_OPENED_FILES when the objects are exhausted: no
-    /// object holds the device's open then, and `abandon` undoes it.
+    /// before the device's open. STATUS_INSUFFICIENT_RESOURCES when the objects are exhausted (the
+    /// I/O manager's answer when the object manager's pool has no room for the object): no object
+    /// holds the device's open then, and `abandon` undoes it.
     pub fn insert(
         process: &crate::process::Process,
         context: Context,
@@ -192,7 +192,7 @@ mod target {
         });
         let Some(id) = made else {
             abandon();
-            return Err(STATUS_TOO_MANY_OPENED_FILES);
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
         // The table had room, but another thread of the process may have filled it since: the
         // publication then fails as a full table does, the object taken back with it.

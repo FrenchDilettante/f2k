@@ -2422,6 +2422,39 @@ mod tests {
         assert_eq!(directory.create_segment(segment(1)), None, "full again");
     }
 
+    /// The file-object table fills at its capacity — an open is refused, nothing made — and a file
+    /// object's close frees its record for the next open.
+    #[test]
+    fn the_file_object_table_fills_and_reuses() {
+        use crate::fs::file::{Context, FileRecordId, ACCESS_READ, SHARE_ALL};
+        let directory = directory();
+        let open = |directory: &mut Directory, record: u16| {
+            directory.create_file(
+                Context::Disk(FileRecordId::at(record)),
+                ACCESS_READ,
+                0,
+                SHARE_ALL,
+            )
+        };
+        let files: Vec<_> = (0..FILES as u16)
+            .map(|record| open(directory, record).unwrap())
+            .collect();
+        assert_eq!(open(directory, 0), None, "the table is full");
+        assert_eq!(directory.live_objects(), FILES, "the refusal made nothing");
+
+        let freed = files[FILES / 2];
+        published(directory, freed);
+        assert_eq!(
+            closed(directory, freed).len(),
+            2,
+            "its cleanup, then its close"
+        );
+        let reused = open(directory, 0).unwrap();
+        assert_eq!(reused.index, freed.index, "the freed record is reused");
+        assert!(directory.file(freed).is_none(), "under a new generation");
+        assert_eq!(open(directory, 1), None, "full again");
+    }
+
     /// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
     /// nothing of it to abandon.
     #[test]

@@ -44,15 +44,18 @@ use crate::sched::thread::ThreadId;
 use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, WaitableId};
 
 /// How many file objects can exist at once (across processes). Exhaustion is a program-visible
-/// failure (the open returns no handle), not a bug.
-pub const OPEN_FILES: usize = 128;
+/// failure (the open returns no handle: STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when
+/// its pool has no room for the object), not a bug.
+pub const OPEN_FILES: usize = 512;
 
-/// How many files can be open at once.
-pub const FILE_RECORDS: usize = 128;
+/// How many files can be open at once (across processes): one record per file, whatever its opens.
+/// Exhaustion refuses an open of a file not open yet (STATUS_INSUFFICIENT_RESOURCES, FastFat's
+/// answer when its pool has no room for the FCB).
+pub const FILE_RECORDS: usize = 512;
 
 /// How many byte-range locks can exist at once (across files and processes). Exhaustion is a
 /// program-visible failure (the lock is refused: STATUS_INSUFFICIENT_RESOURCES).
-pub const RANGE_LOCKS: usize = 64;
+pub const RANGE_LOCKS: usize = 256;
 
 /// The access an open asks for, as the share check reads it; the share mode uses the same bits
 /// (FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_SHARE_DELETE).
@@ -906,7 +909,7 @@ impl FileRecords {
         for record in self.records.iter_mut() {
             *record = None;
         }
-        self.locks = [None; RANGE_LOCKS];
+        self.locks.fill(None);
         live
     }
 
@@ -1447,19 +1450,78 @@ mod tests {
         );
     }
 
-    /// The records exhaust at their capacity.
+    /// The records exhaust at their capacity: a file not open yet is refused, one open already
+    /// still opens, and a record its last close frees serves the next file.
     #[test]
     fn the_records_exhaust() {
-        let mut records = FileRecords::empty();
-        for index in 0..FILE_RECORDS as u32 {
-            records
-                .open(entry(index + 1), ACCESS_READ, SHARE_ALL)
-                .unwrap();
-        }
+        let mut records = Box::new(FileRecords::empty());
+        let opened: Vec<_> = (0..FILE_RECORDS as u32)
+            .map(|index| {
+                records
+                    .open(entry(index + 1), ACCESS_READ, SHARE_ALL)
+                    .unwrap()
+            })
+            .collect();
+        let another = entry(FILE_RECORDS as u32 + 1);
         assert_eq!(
-            records.open(entry(1000), ACCESS_READ, SHARE_ALL),
+            records.open(another, ACCESS_READ, SHARE_ALL),
+            Err(OpenError::Full)
+        );
+        assert_eq!(records.live(), FILE_RECORDS, "the refusal took nothing");
+        let again = records.open(entry(1), ACCESS_READ, SHARE_ALL).unwrap();
+        assert_eq!(again, opened[0], "an open file shares its record");
+        let _ = records.cleanup(again, ACCESS_READ, SHARE_ALL, false);
+        records.close(again);
+
+        let freed = opened[FILE_RECORDS / 2];
+        let _ = records.cleanup(freed, ACCESS_READ, SHARE_ALL, false);
+        records.close(freed);
+        assert_eq!(records.open(another, ACCESS_READ, SHARE_ALL), Ok(freed));
+        assert_eq!(
+            records.open(entry(FILE_RECORDS as u32 + 2), ACCESS_READ, SHARE_ALL),
             Err(OpenError::Full)
         );
         assert_eq!(records.clear(), FILE_RECORDS);
+    }
+
+    /// The byte-range locks exhaust at their capacity, whichever files and owners hold them (the
+    /// lock is refused: STATUS_INSUFFICIENT_RESOURCES), and a lock its unlock frees serves the
+    /// next.
+    #[test]
+    fn the_range_locks_exhaust() {
+        let mut records = Box::new(FileRecords::empty());
+        let first = records.open(entry(1), SHARE_ALL, SHARE_ALL).unwrap();
+        let second = records.open(entry(2), SHARE_ALL, SHARE_ALL).unwrap();
+        for index in 0..RANGE_LOCKS as u64 {
+            let (file, who) = if index % 2 == 0 {
+                (first, owner(1))
+            } else {
+                (second, owner(2))
+            };
+            assert_eq!(records.lock(file, who, 0, (index * 10, 5), true), Ok(()));
+        }
+        assert_eq!(
+            records.lock(second, owner(3), 0, (1 << 40, 5), false),
+            Err(LockError::Full)
+        );
+        assert!(
+            records.may_access(second, owner(3), (1 << 40, 5), true),
+            "nothing taken"
+        );
+
+        assert!(records.unlock(first, owner(1), 0, (20, 5)));
+        assert_eq!(
+            records.lock(second, owner(3), 0, (1 << 40, 5), false),
+            Ok(())
+        );
+        assert_eq!(
+            records.lock(second, owner(3), 0, (1 << 41, 5), false),
+            Err(LockError::Full)
+        );
+        records.release_locks(first, owner(1).object);
+        assert_eq!(
+            records.lock(second, owner(3), 0, (1 << 41, 5), false),
+            Ok(())
+        );
     }
 }
