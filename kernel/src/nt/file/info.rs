@@ -38,6 +38,12 @@ use rtl::pod::Pod;
 use crate::fs::fat32::lookup::File;
 use crate::fs::file::rights;
 use crate::fs::io::{attributes, file_times};
+use crate::status::{
+    NtStatus,
+    STATUS_BUFFER_OVERFLOW,
+    STATUS_INFO_LENGTH_MISMATCH,
+    STATUS_SUCCESS,
+};
 
 info_class! {
     /// The per-file classes a query answers (FILE_INFORMATION_CLASS).
@@ -165,6 +171,26 @@ impl VolumeClass {
             VolumeClass::Attribute => size_of::<FileFsAttributeInformation>(),
             VolumeClass::FullSize => size_of::<FileFsFullSizeInformation>(),
         }
+    }
+}
+
+/// The I/O manager's length check of a class's buffer, before the buffer is probed: one shorter
+/// than the class's least size (`size`) is STATUS_INFO_LENGTH_MISMATCH. A longer one is fine (the
+/// answer says how much it filled).
+pub fn check_length(size: usize, length: u32) -> Result<(), NtStatus> {
+    if (length as usize) < size {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    Ok(())
+}
+
+/// A variable-size answer's status and the bytes it delivers: all of it (STATUS_SUCCESS), or, for a
+/// name that did not fit, as much as fits (STATUS_BUFFER_OVERFLOW, a warning: the bytes are still
+/// copied out and counted in the I/O status's Information).
+pub fn answered(answer: Result<usize, usize>) -> (NtStatus, usize) {
+    match answer {
+        Ok(written) => (STATUS_SUCCESS, written),
+        Err(written) => (STATUS_BUFFER_OVERFLOW, written),
     }
 }
 
@@ -502,6 +528,8 @@ pub fn volume_query(class: VolumeClass, volume: &Volume, out: &mut [u8]) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide;
+
     use super::*;
     use crate::fs::fat32::dirent::Times;
     use crate::status::STATUS_INVALID_INFO_CLASS;
@@ -591,8 +619,8 @@ mod tests {
     /// that does not fit comes back cut.
     #[test]
     fn the_listing_records() {
-        let name: std::vec::Vec<u16> = "Long File Name.txt".encode_utf16().collect();
-        let short: std::vec::Vec<u16> = "LONGFI~1.TXT".encode_utf16().collect();
+        let name = wide("Long File Name.txt");
+        let short = wide("LONGFI~1.TXT");
         let entry = Entry {
             index: 3,
             file: file(),
@@ -626,6 +654,100 @@ mod tests {
         assert_eq!(
             ListingClass::try_from(1).map(ListingClass::fixed_size),
             Ok(64)
+        );
+    }
+
+    /// Every FILE_INFORMATION_CLASS and FS_INFORMATION_CLASS number to 63: the classes each
+    /// service serves, at their numbers, each with the least buffer the I/O manager's length
+    /// table has for it (ntifs.h's x86 structures) and the rights the query or set needs; every
+    /// other number is STATUS_INVALID_INFO_CLASS.
+    #[test]
+    fn the_classes_their_sizes_and_their_rights() {
+        use rights::{DELETE, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA};
+
+        use crate::status::STATUS_INVALID_INFO_CLASS;
+        let queries = [
+            (4, 40, FILE_READ_ATTRIBUTES),
+            (5, 24, 0),
+            (6, 8, 0),
+            (7, 4, 0),
+            (8, 4, 0),
+            (14, 8, 0),
+            (16, 4, 0),
+            (17, 4, 0),
+            (18, 104, FILE_READ_ATTRIBUTES),
+            (34, 56, FILE_READ_ATTRIBUTES),
+        ];
+        let sets = [
+            (4, 40, FILE_WRITE_ATTRIBUTES),
+            (10, 16, DELETE),
+            (13, 1, DELETE),
+            (14, 8, 0),
+            (19, 8, FILE_WRITE_DATA),
+            (20, 8, FILE_WRITE_DATA),
+        ];
+        let listings = [(1, 64), (2, 68), (3, 94), (12, 12)];
+        let volumes = [(1, 24), (3, 24), (4, 8), (5, 16), (7, 32)];
+        for class in 0..64u32 {
+            let query = queries.iter().find(|entry| entry.0 == class);
+            assert_eq!(
+                QueryClass::try_from(class).map(|class| (class.min_size(), class.rights())),
+                query
+                    .map(|&(_, size, rights)| (size, rights))
+                    .ok_or(STATUS_INVALID_INFO_CLASS),
+                "query {class}"
+            );
+            let set = sets.iter().find(|entry| entry.0 == class);
+            assert_eq!(
+                SetClass::try_from(class).map(|class| (class.min_size(), class.rights())),
+                set.map(|&(_, size, rights)| (size, rights))
+                    .ok_or(STATUS_INVALID_INFO_CLASS),
+                "set {class}"
+            );
+            let listing = listings.iter().find(|entry| entry.0 == class);
+            assert_eq!(
+                ListingClass::try_from(class).map(ListingClass::fixed_size),
+                listing
+                    .map(|&(_, size)| size)
+                    .ok_or(STATUS_INVALID_INFO_CLASS),
+                "listing {class}"
+            );
+            let volume = volumes.iter().find(|entry| entry.0 == class);
+            assert_eq!(
+                VolumeClass::try_from(class).map(VolumeClass::min_size),
+                volume
+                    .map(|&(_, size)| size)
+                    .ok_or(STATUS_INVALID_INFO_CLASS),
+                "volume {class}"
+            );
+        }
+        for wild in [64, 0x100, u32::MAX] {
+            assert_eq!(QueryClass::try_from(wild), Err(STATUS_INVALID_INFO_CLASS));
+            assert_eq!(SetClass::try_from(wild), Err(STATUS_INVALID_INFO_CLASS));
+        }
+    }
+
+    /// The length check refuses a buffer one byte short of the class's size, and takes the size
+    /// and anything longer; a name cut short is STATUS_BUFFER_OVERFLOW with what fitted.
+    #[test]
+    fn a_buffer_s_length_and_a_cut_answer() {
+        use crate::status::{STATUS_BUFFER_OVERFLOW, STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS};
+        for size in [1, 4, 8, 40, 104] {
+            assert_eq!(
+                check_length(size, size as u32 - 1),
+                Err(STATUS_INFO_LENGTH_MISMATCH)
+            );
+            assert_eq!(check_length(size, size as u32), Ok(()));
+            assert_eq!(check_length(size, size as u32 + 1), Ok(()));
+            assert_eq!(check_length(size, u32::MAX), Ok(()));
+            assert_eq!(check_length(size, 0), Err(STATUS_INFO_LENGTH_MISMATCH));
+        }
+        assert_eq!(check_length(0, 0), Ok(()));
+        assert_eq!(answered(Ok(24)), (STATUS_SUCCESS, 24));
+        assert_eq!(answered(Err(16)), (STATUS_BUFFER_OVERFLOW, 16));
+        assert!(
+            !STATUS_BUFFER_OVERFLOW.is_success(),
+            "a warning fails NT_SUCCESS"
         );
     }
 

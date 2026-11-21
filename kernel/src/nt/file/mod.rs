@@ -373,6 +373,126 @@ fn rename_root(root: u32, units: &[u16]) -> RenameRoot {
     }
 }
 
+/// FileBasicInformation's checks of a disk file (`root`: the volume's root, `directory`: a
+/// directory) before anything changes: the root has no entry to stamp (STATUS_ACCESS_DENIED); the
+/// directory bit asked for a file is STATUS_INVALID_PARAMETER.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_basic(
+    root: bool,
+    directory: bool,
+    attributes: u32,
+) -> Result<(), crate::status::NtStatus> {
+    use crate::fs::fat32::dirent::ATTR_DIRECTORY;
+    use crate::status::{STATUS_ACCESS_DENIED, STATUS_INVALID_PARAMETER};
+    if root {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    if attributes & u32::from(ATTR_DIRECTORY) != 0 && !directory {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    Ok(())
+}
+
+/// The FAT attributes a basic set leaves an entry with (`current`): zero asks nothing (they stay);
+/// otherwise the settable ones asked for, in place of the entry's (FILE_ATTRIBUTE_NORMAL alone
+/// clears them), the entry's directory bit kept.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn basic_attributes(current: u8, asked: u32) -> u8 {
+    use crate::fs::fat32::dirent::ATTR_DIRECTORY;
+    use crate::fs::io::SETTABLE_ATTRIBUTES;
+    if asked == 0 {
+        return current;
+    }
+    current & ATTR_DIRECTORY | asked as u8 & SETTABLE_ATTRIBUTES
+}
+
+/// FileDispositionInformation's delete of a disk file: the root, a read-only file and a mapped one
+/// are STATUS_CANNOT_DELETE (a directory's entries, which the volume answers, come after).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_delete(root: bool, read_only: bool, mapped: bool) -> Result<(), crate::status::NtStatus> {
+    if root || read_only || mapped {
+        return Err(crate::status::STATUS_CANNOT_DELETE);
+    }
+    Ok(())
+}
+
+/// FilePositionInformation's offset, any device's: a negative one is STATUS_INVALID_PARAMETER.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn new_position(offset: u64) -> Result<u64, crate::status::NtStatus> {
+    if (offset as i64) < 0 {
+        return Err(crate::status::STATUS_INVALID_PARAMETER);
+    }
+    Ok(offset)
+}
+
+/// A size change of a disk file of `size` bytes (FileEndOfFileInformation, or
+/// FileAllocationInformation: `allocation_only`) to `asked`: the size to set, none when nothing
+/// changes (an allocation at or past the size: F2K allocates as it writes). A directory has none to
+/// change (STATUS_INVALID_HANDLE, an assumption, unverified); past FAT32's 4 GiB is
+/// STATUS_DISK_FULL; a mapped file is not cut (STATUS_USER_MAPPED_FILE), though it grows.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn resize_to(
+    directory: bool,
+    size: u32,
+    mapped: bool,
+    asked: u64,
+    allocation_only: bool,
+) -> Result<Option<u32>, crate::status::NtStatus> {
+    use crate::status::{STATUS_DISK_FULL, STATUS_INVALID_HANDLE, STATUS_USER_MAPPED_FILE};
+    if directory {
+        return Err(STATUS_INVALID_HANDLE);
+    }
+    let asked = u32::try_from(asked).map_err(|_| STATUS_DISK_FULL)?;
+    if allocation_only && asked >= size {
+        return Ok(None);
+    }
+    if mapped && asked < size {
+        return Err(STATUS_USER_MAPPED_FILE);
+    }
+    Ok(Some(asked))
+}
+
+/// A rename's checks of the file it moves (`root`, `directory`) and its target name (`trailing`: a
+/// trailing separator): the root has no entry to move (STATUS_ACCESS_DENIED); a file's new name
+/// takes no trailing separator (STATUS_OBJECT_NAME_INVALID).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_rename(
+    root: bool,
+    directory: bool,
+    trailing: bool,
+) -> Result<(), crate::status::NtStatus> {
+    use crate::status::{STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_INVALID};
+    if root {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    if trailing && !directory {
+        return Err(STATUS_OBJECT_NAME_INVALID);
+    }
+    Ok(())
+}
+
+/// A rename onto a name taken by `existing`: replaced only when asked (`replace`) and only a file
+/// that is not read-only, nor a directory, nor the renamed file itself (`same`: a case-only
+/// rename) — STATUS_OBJECT_NAME_COLLISION otherwise (the fswrite capture's MoveFileEx answers
+/// ERROR_ALREADY_EXISTS for each); and only one no one holds open (`open`: STATUS_ACCESS_DENIED).
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn rename_over(
+    replace: bool,
+    same: bool,
+    existing: Existing,
+    open: bool,
+) -> Result<(), crate::status::NtStatus> {
+    use crate::fs::fat32::dirent::ATTR_READ_ONLY;
+    use crate::status::{STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_COLLISION};
+    if !replace || same || existing.directory || existing.attributes & ATTR_READ_ONLY != 0 {
+        return Err(STATUS_OBJECT_NAME_COLLISION);
+    }
+    if open {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    Ok(())
+}
+
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
@@ -1083,6 +1203,156 @@ mod tests {
         assert_eq!(implied_access(true, FILE_OVERWRITE_IF), FILE_WRITE_DATA);
     }
 
+    /// NtSetInformationFile's checks of a disk file: a basic set's root and directory bit and the
+    /// attributes it leaves; a delete's root, read-only and mapped file; a position's sign.
+    #[test]
+    fn a_set_s_checks() {
+        use crate::status::*;
+        assert_eq!(check_basic(false, false, 0x27), Ok(()));
+        assert_eq!(check_basic(false, true, 0x10), Ok(()));
+        assert_eq!(
+            check_basic(false, false, 0x10),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            check_basic(true, true, 0),
+            Err(STATUS_ACCESS_DENIED),
+            "the root"
+        );
+        assert_eq!(check_basic(true, true, 0x10), Err(STATUS_ACCESS_DENIED));
+
+        assert_eq!(basic_attributes(0x21, 0), 0x21, "zero leaves them");
+        assert_eq!(
+            basic_attributes(0x21, 0x80),
+            0,
+            "FILE_ATTRIBUTE_NORMAL clears them"
+        );
+        assert_eq!(
+            basic_attributes(0x30, 0x80),
+            0x10,
+            "the directory bit stays"
+        );
+        assert_eq!(basic_attributes(0x30, 0x02), 0x12);
+        assert_eq!(basic_attributes(0x20, 0x10 | 0x01), 0x01, "never added");
+        assert_eq!(basic_attributes(0x00, 0x7), 0x7);
+        assert_eq!(
+            basic_attributes(0x00, 0x100),
+            0,
+            "TEMPORARY: nothing FAT keeps"
+        );
+
+        assert_eq!(check_delete(false, false, false), Ok(()));
+        for (root, read_only, mapped) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                check_delete(root, read_only, mapped),
+                Err(STATUS_CANNOT_DELETE)
+            );
+        }
+
+        assert_eq!(new_position(0), Ok(0));
+        assert_eq!(new_position(i64::MAX as u64), Ok(i64::MAX as u64));
+        for negative in [1 << 63, u64::MAX, FILE_USE_FILE_POINTER_POSITION] {
+            assert_eq!(new_position(negative), Err(STATUS_INVALID_PARAMETER));
+        }
+    }
+
+    /// A size change: a directory's none; past 4 GiB the disk is full; an allocation at or past
+    /// the size changes nothing and one below it cuts the file; a mapped file grows but is not
+    /// cut.
+    #[test]
+    fn a_size_change() {
+        use crate::status::*;
+        let (end, allocation) = (false, true);
+        assert_eq!(
+            resize_to(true, 0, false, 10, end),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(
+            resize_to(true, 0, false, 0, allocation),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(resize_to(false, 100, false, 50, end), Ok(Some(50)));
+        assert_eq!(resize_to(false, 100, false, 100, end), Ok(Some(100)));
+        assert_eq!(resize_to(false, 100, false, 500, end), Ok(Some(500)));
+        assert_eq!(resize_to(false, 100, false, 0, end), Ok(Some(0)));
+        let largest = u64::from(u32::MAX);
+        assert_eq!(resize_to(false, 0, false, largest, end), Ok(Some(u32::MAX)));
+        assert_eq!(
+            resize_to(false, 0, false, largest + 1, end),
+            Err(STATUS_DISK_FULL)
+        );
+        assert_eq!(
+            resize_to(false, 0, false, u64::MAX, allocation),
+            Err(STATUS_DISK_FULL)
+        );
+
+        assert_eq!(resize_to(false, 100, false, 100, allocation), Ok(None));
+        assert_eq!(resize_to(false, 100, false, 4096, allocation), Ok(None));
+        assert_eq!(resize_to(false, 100, false, 99, allocation), Ok(Some(99)));
+
+        assert_eq!(
+            resize_to(false, 100, true, 99, end),
+            Err(STATUS_USER_MAPPED_FILE)
+        );
+        assert_eq!(
+            resize_to(false, 100, true, 0, allocation),
+            Err(STATUS_USER_MAPPED_FILE)
+        );
+        assert_eq!(resize_to(false, 100, true, 100, end), Ok(Some(100)));
+        assert_eq!(resize_to(false, 100, true, 200, end), Ok(Some(200)));
+        assert_eq!(resize_to(false, 100, true, 200, allocation), Ok(None));
+    }
+
+    /// A rename: the root never moves, a file's new name takes no trailing separator; a taken
+    /// name is replaced only when asked, never a directory, a read-only file or the file itself,
+    /// and never while open.
+    #[test]
+    fn a_rename_s_checks() {
+        use crate::status::*;
+        assert_eq!(check_rename(false, false, false), Ok(()));
+        assert_eq!(check_rename(false, true, true), Ok(()));
+        assert_eq!(
+            check_rename(false, false, true),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+        assert_eq!(check_rename(true, true, false), Err(STATUS_ACCESS_DENIED));
+
+        let file = Existing {
+            directory: false,
+            root: false,
+            attributes: 0x20,
+        };
+        let directory = Existing {
+            directory: true,
+            ..file
+        };
+        let read_only = Existing {
+            attributes: 0x21,
+            ..file
+        };
+        let collision = Err(STATUS_OBJECT_NAME_COLLISION);
+        assert_eq!(rename_over(true, false, file, false), Ok(()));
+        assert_eq!(rename_over(false, false, file, false), collision);
+        assert_eq!(
+            rename_over(false, false, file, true),
+            collision,
+            "not asked"
+        );
+        assert_eq!(rename_over(true, true, file, false), collision, "itself");
+        assert_eq!(rename_over(true, false, directory, false), collision);
+        assert_eq!(rename_over(true, false, read_only, false), collision);
+        assert_eq!(rename_over(true, false, read_only, true), collision);
+        assert_eq!(
+            rename_over(true, false, file, true),
+            Err(STATUS_ACCESS_DENIED)
+        );
+    }
+
     /// A disk write starts at the end for FILE_WRITE_TO_END_OF_FILE or an append-only handle
     /// (whatever offset it gives), at the offset given, else at the object's position.
     #[test]
@@ -1121,7 +1391,7 @@ mod tests {
         assert_eq!(rename_name_length(most + 2, u32::MAX), invalid);
         assert_eq!(rename_name_length(u32::MAX, u32::MAX), invalid);
 
-        let units = |text: &str| text.encode_utf16().collect::<std::vec::Vec<u16>>();
+        let units = rtl::testing::wide;
         assert_eq!(rename_root(0x10, &units("b.txt")), RenameRoot::Directory);
         assert_eq!(
             rename_root(0x10, &units("\\??\\C:\\b")),

@@ -87,10 +87,7 @@ fn query_directory_file_held(
     restart: bool,
 ) -> NtResult {
     let class = ListingClass::try_from(class)?;
-    let offset = class.fixed_size();
-    if (length as usize) < offset {
-        return Err(STATUS_INFO_LENGTH_MISMATCH);
-    }
+    info::check_length(class.fixed_size(), length)?;
     io_status.probe(8)?;
     information.probe(length)?;
     let object = file_object(handle.raw())?;

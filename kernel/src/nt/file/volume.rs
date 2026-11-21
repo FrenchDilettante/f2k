@@ -45,9 +45,7 @@ pub fn query_volume_information_file(
     class: u32,
 ) -> NtResult {
     let class = VolumeClass::try_from(class)?;
-    if (length as usize) < class.min_size() {
-        return Err(STATUS_INFO_LENGTH_MISMATCH);
-    }
+    info::check_length(class.min_size(), length)?;
     io_status.probe(8)?;
     information.probe(length)?;
     let object = file_object(handle.raw())?;
@@ -76,10 +74,7 @@ pub fn query_volume_information_file(
             }
         }
     };
-    let (code, written) = match answer {
-        Ok(written) => (STATUS_SUCCESS, written),
-        Err(written) => (STATUS_BUFFER_OVERFLOW, written),
-    };
+    let (code, written) = info::answered(answer);
     information.write(&out[..written])?;
     complete(io_status, code, written as u32);
     if code == STATUS_SUCCESS {
