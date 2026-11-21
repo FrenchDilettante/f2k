@@ -8,3 +8,7 @@ license = "MIT OR Apache-2.0"
 # No dependencies: the specs use a TOML subset this crate reads itself (see `toml`), so the kernel
 # build pulls nothing in.
 [dependencies]
+
+# A workspace of its own: the repository's workspace excludes it, and without this Cargo keeps
+# looking upward and, in a worktree under .worktrees/, finds the main checkout's manifest instead.
+[workspace]
