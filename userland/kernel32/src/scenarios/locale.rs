@@ -318,8 +318,8 @@ fn get_string_type_w_refusals_and_empty_counts() {
 }
 
 /// A null source is ERROR_INVALID_PARAMETER for LCMapString and GetStringType, A and W, whatever
-/// the count (a terminated one or a length), the output untouched: the call refuses it before it
-/// reads, where it used to fault.
+/// the count (a terminated one or a length) and the flags, the output untouched: the call refuses
+/// it before it reads, where it used to fault, and before it looks at the flags.
 ///
 /// Pins: kernel32.LCMapStringA, kernel32.LCMapStringW
 /// Pins: kernel32.GetStringTypeA, kernel32.GetStringTypeW
@@ -376,6 +376,22 @@ fn a_null_source_is_refused_before_it_is_read() {
         assert_eq!(last_error(), 87, "GetStringTypeA, count {count}");
         assert_eq!((wide, narrow), ([0xCCCC; 10], [0xCC; 10]));
     }
+    // The source is checked before the flags: a sort key's size query of no source is refused as
+    // a parameter, not as flags (the locale fixture's nullsrc block).
+    assert_eq!(
+        unsafe {
+            lc_map_string_w(
+                LOCALE_US,
+                LCMAP_SORTKEY,
+                core::ptr::null(),
+                -1,
+                core::ptr::null_mut(),
+                0,
+            )
+        },
+        0
+    );
+    assert_eq!(last_error(), 87, "LCMapStringW, a sort key");
 }
 
 /// GetCPInfo for UTF-8: TRUE, MaxCharSize 4. A code page the system lacks (12345) is refused with

@@ -15,7 +15,6 @@ bestfit = "F2K's best fit covers only U+0100-017F, and it ignores WC_COMPOSITECH
 utf8err = "F2K's UTF-8 decoder takes F5-F7 lead bytes as bogus surrogates"
 lcmap = "F2K's LCMapString maps case alone (LCMAP_SORTKEY, LCMAP_BYTEREV, the width maps and the NORM_ flags give ERROR_INVALID_FLAGS), and its A form ignores the LCID"
 locales = "F2K's GetLocaleInfo answers 0x0409 alone, while SetThreadLocale takes 0x040C and IsValidLocale calls it unsupported"
-nullsrc = "F2K's LCMapString and GetStringType read a NULL source (a fault), where Windows 2000 answers ERROR_INVALID_PARAMETER"
 
 [masks]
 # CP_INSTALLED's count follows the language groups installed on the machine: both counts print as

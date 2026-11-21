@@ -404,10 +404,10 @@ pub unsafe extern "system" fn lc_map_string_a(
 /// LCMapStringA's work.
 fn map_narrow(flags: u32, src: Counted<'_, u8>, mut dst: OutBuf<'_, u8>) -> Result<i32, Failure> {
     use cp1252::{map_case, wc_to_mb, MB_TO_WC};
+    let src = narrow_source(&src)?;
     if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
         return refused(ERROR_INVALID_FLAGS);
     }
-    let src = narrow_source(&src)?;
     let count = src.len();
     if dst.is_empty() {
         return Ok(count as i32);
@@ -461,12 +461,12 @@ fn map_wide(
     mut dst: OutBuf<'_, u16>,
     capacity: i32,
 ) -> Result<i32, Failure> {
+    check_destination(&dst, capacity)?;
+    let src = wide_source(&src)?;
     if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
         return refused(ERROR_INVALID_FLAGS);
     }
     let upper = flags == LCMAP_UPPERCASE;
-    check_destination(&dst, capacity)?;
-    let src = wide_source(&src)?;
     let count = src.len();
     if dst.is_empty() {
         return Ok(count as i32); // the size query
