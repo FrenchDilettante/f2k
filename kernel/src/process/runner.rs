@@ -34,10 +34,10 @@
 //! leg's part of the log, where the test harness takes a block's output up to the leg's audit line.
 //!
 //! Each process carries its leg, its index in the list, and everything it reports goes by that leg
-//! — its end line, its audit line, its screenshot pause, its count in the summary — never by which
+//! — its end line, its audit line, its count in the summary — never by which
 //! leg started last. A process with no leg, one another process started, reports its end as a
 //! child (`F2K: child process 136 (spawn) exited normally (exit code=0)`, by its process id and its
-//! image's name), with no audit line, no pause and no count of its own.
+//! image's name), with no audit line and no count of its own.
 //!
 //! With the kernel option `concurrent` (`... concurrent -- CORPUS\sched.exe sleep ;; hello`), the
 //! legs run side by side instead: the runner loads every leg first, announcing each with its
@@ -50,12 +50,6 @@
 //! there can be processes at once stops at the first leg past the pool's capacity: its start line,
 //! then `F2K: process not created (status 0xc000009a)` (STATUS_INSUFFICIENT_RESOURCES), and the
 //! boot halts, as on any leg that does not load (its file unread, its image rejected).
-//!
-//! With the kernel option `screens` (`F2K: ... screens -- CORPUS\console.exe info ;; ...`), each
-//! process's end pauses the boot before its audit line, for the test harness to take a screenshot
-//! of what the process left on the screen: the runner announces `F2K: screen: process N ended`
-//! and waits, interrupts masked, until the harness writes the CMOS mailbox byte through QEMU's
-//! monitor ([`crate::hal::Hal::await_cmos_mailbox`]), or a few seconds' worth of reads pass.
 
 use crate::level::{self, High, LevelCell};
 use crate::process::exit::{self, AtQuiescence, Identity, ProcessEnd, Suite};
@@ -119,16 +113,13 @@ pub fn identity<'a>(process: &Process, name: &'a super::ProcessName) -> Identity
 }
 
 /// The reap step's landing point, on the idle thread after a process's teardown: audit the frame
-/// database's structure and, for a leg (`leg`, none for a child), pause for its screenshot and
-/// defer its audit line. At a `quiescent` reap, compare the free frames with the post-boot
-/// baseline and report every deferred line, counting each leg on a boot of several programs (see
-/// [`Suite`]); then ready the next leg — or print the summary, after which the idle thread rests.
+/// database's structure and, for a leg (`leg`, none for a child), defer its audit line. At a
+/// `quiescent` reap, compare the free frames with the post-boot baseline and report every deferred
+/// line, counting each leg on a boot of several programs (see [`Suite`]); then ready the next leg —
+/// or print the summary, after which the idle thread rests.
 pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
     let frames_audit_ok = crate::process::audit_structures();
     let frames = quiescent.then(crate::process::frames_against_baseline);
-    if let Some(index) = leg {
-        pause_for_screen(index);
-    }
     with_suite(|suite| suite.reaped(leg, end, frames_audit_ok));
     let Some((available, baseline)) = frames else {
         return;
@@ -153,25 +144,6 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
             crate::serial_println!("{}", tally);
         }
         AtQuiescence::Rest => {}
-    }
-}
-
-/// How many reads of the mailbox a pause makes before the boot goes on unanswered: seconds' worth.
-const SCREEN_PAUSE_READS: u32 = 20_000_000;
-
-/// With the `screens` option, hold the boot at leg `index`'s end until the harness has taken its
-/// screenshot (see the module's documentation).
-fn pause_for_screen(index: u32) {
-    use crate::boot::cmdline::{kernel_command_line, kernel_option};
-    use crate::hal::{Hal, PLATFORM, SCREEN_MAILBOX};
-    if !kernel_option(kernel_command_line(), b"screens") {
-        return;
-    }
-    let answered = PLATFORM.await_cmos_mailbox(SCREEN_MAILBOX, SCREEN_PAUSE_READS, || {
-        crate::serial_println!("F2K: screen: process {} ended", index);
-    });
-    if !answered {
-        crate::serial_println!("F2K: screen: no answer, going on");
     }
 }
 

@@ -38,8 +38,6 @@ pub use crate::hw::portio::Io;
 #[cfg(target_arch = "x86")]
 pub use crate::hw::portio::Ports;
 pub use crate::hw::rtc::CivilTime;
-#[cfg(target_arch = "x86")]
-pub use crate::hw::rtc::SCREEN_MAILBOX;
 use crate::interrupt::irql::{Irql, OldIrql};
 use crate::interrupt::{Claim, Controller};
 use crate::pcr::pcr;
@@ -117,11 +115,6 @@ pub trait Hal {
     /// HalQueryRealTimeClock: the real-time clock's date and time; none when it reads no valid
     /// date.
     fn query_real_time_clock(&self) -> Option<CivilTime>;
-
-    /// Clear the real-time clock's nonvolatile byte `index`, `announce` the wait, then read the
-    /// byte until it is nonzero, `reads` times at most: whether it was answered. The test
-    /// harness's mailbox (see [`SCREEN_MAILBOX`]).
-    fn await_cmos_mailbox(&self, index: u8, reads: u32, announce: impl FnOnce()) -> bool;
 
     /// Whether the display has left its text mode for a graphics mode.
     fn graphics_mode_set(&self) -> bool;
@@ -253,10 +246,6 @@ mod target {
             rtc::read(&mut Ports)
         }
 
-        fn await_cmos_mailbox(&self, index: u8, reads: u32, announce: impl FnOnce()) -> bool {
-            rtc::await_mailbox(&mut Ports, index, reads, announce)
-        }
-
         fn graphics_mode_set(&self) -> bool {
             vbe::graphics_mode_set()
         }
@@ -374,10 +363,6 @@ mod tests {
 
         fn query_real_time_clock(&self) -> Option<CivilTime> {
             None
-        }
-
-        fn await_cmos_mailbox(&self, _index: u8, _reads: u32, _announce: impl FnOnce()) -> bool {
-            false
         }
 
         fn graphics_mode_set(&self) -> bool {

@@ -727,10 +727,6 @@ mod tests {
             self.time
         }
 
-        fn await_cmos_mailbox(&self, _index: u8, _reads: u32, _announce: impl FnOnce()) -> bool {
-            false
-        }
-
         fn graphics_mode_set(&self) -> bool {
             false
         }

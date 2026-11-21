@@ -10,8 +10,9 @@ built-in 8x16 font's glyphs into the framebuffer, and DeleteDC closes the DC's h
 
 COM1 carries the mode line, the exit-code lines (gditext's 0, which FiSH ends with) and the
 teardown's audits. The screen as QEMU displays it (`screendump`, PNG) must be 640x480 and no longer
-all desktop: the text is there. The pixels are not compared (the screenshot comparison is a later
-step); the PNG is kept as the run's artifact, target/qemu/screens/textout/paint.png.
+all desktop: the text is there. The pixels are not compared with a baseline (only the dialogs,
+nonclient and tahoma tests keep committed screens); the PNG is kept as the run's artifact,
+target/qemu/screens/textout/paint.png.
 
 gditext is declared ahead of its real-machine build: until tests/build.bat has built gditext.exe
 and tests/capture.bat captured it, the test is skipped, as the fixture's own blocks are.
