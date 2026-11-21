@@ -409,8 +409,8 @@ def test_check_all_runs_the_test_systems():
 # containment. The files below use the raw forms on memory that is not the program's, or before
 # any program runs; a new file needs its reason here (or the copy instead).
 RAW_ACCESS_ALLOWED = {
-    "kernel/src/cm/mod.rs": "the registry's arena, a kernel static: its names, classes and value"
-    " data",
+    "kernel/src/cm/mod.rs": "the registry's storage, pages of the nonpaged pool: its names, classes"
+    " and value data, and a service's staged name",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
     "kernel/src/dev/io.rs": "the I/O manager's arena (its DRIVER_OBJECTs, DEVICE_OBJECTs, FILE_OBJECTs"
     " and IRPs) and the loaded drivers' own strings and buffers, kernel memory: a program's buffers"

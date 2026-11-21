@@ -10,11 +10,33 @@
 //! Keys and values are records in fixed pools, as the object manager's objects are, and a key is
 //! named by its record and the record's generation ([`Key`]): a deleted key's record moves on to a
 //! new generation, so a key object still naming it ([`KeyBody`]) finds it gone
-//! (STATUS_KEY_DELETED) rather than whatever reuses the record. Names, classes and value data live
-//! in the registry's own arena, a [`KernelHeap`] over a static pool, read through the registry so
-//! no slice of them outlives its borrow. What a service copies in from its caller or out to it
-//! passes through a block of the arena lent to it ([`Scratch`]), so no copy of the caller's memory
-//! runs inside the registry.
+//! (STATUS_KEY_DELETED) rather than whatever reuses the record.
+//!
+//! Names, classes and value data live in the registry's storage, taken from the nonpaged pool
+//! ([`crate::mem::pool`]) as it grows, as Windows 2000 keeps its hives in pool memory: chunks of
+//! [`CHUNK`] bytes, each a [`KernelHeap`], for names, classes and data up to [`SMALL_DATA`] bytes,
+//! and pages of its own for larger data (a large value's data is a hive cell of its own on Windows
+//! 2000 too). They are read through the registry, so no slice of them outlives its borrow. The
+//! storage is bounded three ways, so that no one caller takes the registry from every other:
+//!
+//! - a value's data is at most [`MAX_VALUE_DATA`] bytes, 1 MiB, the documented limit for a value in
+//!   Windows 2000's hive format ("1 MB (standard format)"); larger data is
+//!   STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer to a hive cell it cannot allocate;
+//! - the storage holds at most [`QUOTA_PAGES`] pages, 4 MiB, as Windows 2000's registry quota
+//!   (RegistrySizeLimit) bounds its hives; a store past it is STATUS_INSUFFICIENT_RESOURCES;
+//! - large data never takes the quota's last [`RESERVE_PAGES`], which are the chunks' alone: a
+//!   registry filled with large values still takes a key, a name, a small value. Windows 2000 has
+//!   no such reserve; it shows only in a registry some 4 MiB full.
+//!
+//! The registry's steps run at the high level, where the pool, high-level state of its own, is out
+//! of reach: memory comes and goes between the steps. A store that finds no room in the chunks
+//! says so ([`Registry::needs_chunk`]), and its caller ([`storing`]) takes a chunk from the pool
+//! and runs it again. A large value's data comes on the pages the service copied it into from its
+//! caller, which become the value's; pages a value lets go wait ([`Registry::take_released`]) for
+//! the caller to give them back after the step ([`settle`]). Chunks are kept for the kernel's life.
+//! What a service copies in from its caller or out to it (a name, a class, an answer) is staged on
+//! pages of its own, outside the storage, so no copy of the caller's memory runs inside the
+//! registry, an answer however large cannot starve a store, and a full storage still answers.
 //!
 //! The registry is made at boot with the keys Windows 2000 has from its boot on, reduced
 //! to what F2K needs: the root `\Registry`, the machine's and the users' roots under it (`MACHINE`
@@ -27,20 +49,38 @@
 use core::alloc::Layout;
 use core::cmp::Ordering;
 use core::ptr::NonNull;
+#[cfg(target_arch = "x86")]
+use core::sync::atomic::{AtomicU32, Ordering as Atomic};
 
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
 use crate::mem::heap::KernelHeap;
+use crate::mem::paging::PAGE_SIZE;
+use crate::mem::pool::pages_for;
 use crate::status::*;
-#[cfg(target_arch = "x86")]
-use crate::sync::StaticBuf;
 
 /// How many keys can exist at once.
 pub const KEYS: usize = 512;
 /// How many values can exist at once.
 pub const VALUES: usize = 1024;
-/// The arena's size: every name, class and value's data.
-pub const ARENA: usize = 128 * 1024;
+/// A chunk of the storage, in bytes: room for the longest name (32 KiB) with the largest small
+/// data, so a fresh chunk holds what any one store puts in chunks.
+pub const CHUNK: usize = 64 * 1024;
+/// The largest data a chunk holds; larger data takes pages of its own.
+pub const SMALL_DATA: usize = 16 * 1024;
+/// The largest value's data, in bytes: 1 MiB (see the module notes).
+pub const MAX_VALUE_DATA: usize = 1024 * 1024;
+/// The most pages the storage holds: 4 MiB.
+pub const QUOTA_PAGES: usize = 1024;
+/// The quota's last pages, which large data never takes: four chunks.
+pub const RESERVE_PAGES: usize = 4 * CHUNK_PAGES;
+/// A chunk's pages.
+const CHUNK_PAGES: usize = CHUNK / PAGE_SIZE as usize;
+/// How many chunks the storage can hold: the quota's worth.
+const CHUNKS: usize = QUOTA_PAGES / CHUNK_PAGES;
+/// How many large values' data the storage can hold: the quota's worth, the smallest large data
+/// taking five pages. The quota, not this table, is what runs out.
+const LARGE: usize = QUOTA_PAGES / (SMALL_DATA / PAGE_SIZE as usize + 1);
 /// The longest key name, in units: the documented limit, 255 characters.
 pub const MAX_KEY_NAME: usize = 255;
 /// The longest value name, in units: the documented limit, 16383 characters.
@@ -81,20 +121,104 @@ impl KeyBody {
     }
 }
 
-/// A block of the arena (none for an empty one): where a name, a class or a value's data lives.
+/// Pages of the nonpaged pool: a chunk of the storage, a large value's data, or what a service
+/// stages. Dropping them gives them back to the pool, which only code outside the registry's
+/// steps may do.
+#[cfg(target_arch = "x86")]
+pub use crate::mem::pool::Block as Pages;
+
+/// Pages of the nonpaged pool (see the target's): on the host, a buffer of the heap's, 8-aligned
+/// as a heap's pool must be.
+#[cfg(not(target_arch = "x86"))]
+pub struct Pages {
+    words: std::boxed::Box<[u64]>,
+    len: usize,
+}
+
+#[cfg(not(target_arch = "x86"))]
+impl AsRef<[u8]> for Pages {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: the words' bytes, `len` of them at most (the words are rounded up to it).
+        unsafe { core::slice::from_raw_parts(self.words.as_ptr().cast(), self.len) }
+    }
+}
+
+#[cfg(not(target_arch = "x86"))]
+impl AsMut<[u8]> for Pages {
+    fn as_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in `as_ref`; the exclusive borrow makes this the only reference.
+        unsafe { core::slice::from_raw_parts_mut(self.words.as_mut_ptr().cast(), self.len) }
+    }
+}
+
+/// Fresh zeroed pages for `bytes` bytes (at least one): none when the pool has no room.
+pub fn allocate(bytes: usize) -> Option<Pages> {
+    #[cfg(target_arch = "x86")]
+    {
+        crate::mem::pool::allocate(bytes)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let words = std::vec![0u64; bytes.max(1).div_ceil(8)].into_boxed_slice();
+        Some(Pages { words, len: bytes })
+    }
+}
+
+/// `pages`' bytes as UTF-16 units (pages start on a page, so aligned for them): a name a service
+/// staged.
+pub fn units(pages: &Pages) -> &[u16] {
+    let bytes = pages.as_ref();
+    // SAFETY: the pages' bytes, aligned for units (a pool block starts on a page, a host one on 8
+    // bytes), `len / 2` units of them; the borrow of `pages` keeps them.
+    unsafe { core::slice::from_raw_parts(bytes.as_ptr().cast(), bytes.len() / 2) }
+}
+
+/// `pages`, kept for the kernel's life: their bytes, which nothing gives back.
+fn keep(pages: Pages) -> &'static mut [u8] {
+    #[cfg(target_arch = "x86")]
+    {
+        let len = pages.as_ref().len();
+        let at = pages.virtual_address() as *mut u8;
+        core::mem::forget(pages);
+        // SAFETY: the block's pages, mapped in every address space; forgotten, the block never
+        // unmaps them, and nothing else names them.
+        unsafe { core::slice::from_raw_parts_mut(at, len) }
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let len = pages.len;
+        let words = std::boxed::Box::leak(pages.words);
+        // SAFETY: the leaked words' bytes, `len` of them at most.
+        unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), len) }
+    }
+}
+
+/// Where a blob lives: a chunk, or a large value's pages (by their slot).
+#[derive(Clone, Copy)]
+enum Home {
+    Chunk(u8),
+    Large(u16),
+}
+
+/// A block of the storage (none for an empty one): where a name, a class or a value's data lives.
 /// The registry reads a live one's bytes through itself ([`Registry::bytes`]), so they are borrowed
 /// for no longer than the registry is.
 #[derive(Clone, Copy)]
 struct Blob {
     at: Option<NonNull<u8>>,
     bytes: u32,
+    home: Home,
 }
 
 impl Blob {
-    const EMPTY: Blob = Blob { at: None, bytes: 0 };
+    const EMPTY: Blob = Blob {
+        at: None,
+        bytes: 0,
+        home: Home::Chunk(0),
+    };
 
     /// Its first byte; for an empty blob a dangling one, never read (the slices made of it are
-    /// empty), aligned as an arena block is.
+    /// empty), aligned as a storage block is.
     fn start(self) -> *mut u8 {
         self.at
             .unwrap_or(NonNull::<u64>::dangling().cast())
@@ -102,39 +226,18 @@ impl Blob {
     }
 }
 
-/// A block of the arena lent out of the registry ([`Registry::scratch`]): how a service holds what
-/// it copies in from its caller (a name, a class, a value's data) and what it copies out (an
-/// answer), so that the copy runs with no borrow of the registry live (a fault in it may wait). Its
-/// bytes are the holder's alone until the block goes back ([`Registry::release`]) or becomes a
-/// value's data ([`Registry::set_value`]); neither `Copy` nor `Clone`, it has one holder.
-#[must_use = "a scratch block goes back to the registry"]
-pub struct Scratch {
-    block: Blob,
+/// A large value's data: its pages, and whether a value holds them still. Pages no value holds
+/// wait for [`Registry::take_released`].
+struct Large {
+    pages: Option<Pages>,
+    held: bool,
 }
 
-impl Scratch {
-    /// Its bytes.
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: a live arena block of `bytes` bytes (or an empty slice), lent to this scratch
-        // alone: the registry neither reads nor writes a lent block's bytes, and the heap keeps its
-        // own records outside the payloads it hands out. The borrow of `self` keeps it lent.
-        unsafe { core::slice::from_raw_parts(self.block.start(), self.block.bytes as usize) }
-    }
-
-    /// Its bytes, writable.
-    pub fn bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: as in `bytes`; the mutable borrow of `self` makes this the only reference to
-        // them.
-        unsafe { core::slice::from_raw_parts_mut(self.block.start(), self.block.bytes as usize) }
-    }
-
-    /// Its bytes as UTF-16 units (an arena block is 8-aligned): a captured name.
-    pub fn units(&self) -> &[u16] {
-        // SAFETY: as in `bytes`; the block is aligned for units and holds `bytes / 2` of them.
-        unsafe {
-            core::slice::from_raw_parts(self.block.start().cast(), self.block.bytes as usize / 2)
-        }
-    }
+impl Large {
+    const NONE: Large = Large {
+        pages: None,
+        held: false,
+    };
 }
 
 /// One key's record.
@@ -192,7 +295,7 @@ impl Value {
 }
 
 /// What a key's information classes report about it (sizes in bytes). The name and the class are
-/// their UTF-16 units' bytes, little-endian, as the arena holds them and the information
+/// their UTF-16 units' bytes, little-endian, as the storage holds them and the information
 /// structures carry them.
 pub struct KeyInfo<'a> {
     pub last_write: u64,
@@ -263,43 +366,95 @@ impl<'a> Iterator for Components<'a> {
     }
 }
 
-/// The registry: its keys, its values and their arena.
+/// The registry: its keys, its values and their storage.
 pub struct Registry {
     nodes: [Node; KEYS],
     values: [Value; VALUES],
-    /// The arena: none until [`Registry::start`] hands it its pool.
-    arena: Option<KernelHeap>,
+    /// The storage's chunks, as they were added.
+    chunks: [Option<KernelHeap>; CHUNKS],
+    /// The large values' data, by slot.
+    large: [Large; LARGE],
+    /// The pages the storage holds: its chunks', and its large data's, let go or not.
+    pages: usize,
+    /// The last store found no room in the chunks, and the quota has room for another.
+    short: bool,
     /// The next value's place in its key's order.
     next_order: u32,
 }
 
-// SAFETY: the registry owns what its blobs point at: the blocks of its own arena, whose heap was
-// handed the only reference to its pool. Moving the registry to another thread moves that
-// ownership with it; the pointers are just how the blobs name their blocks.
+// SAFETY: the registry owns what its blobs point at: the blocks of its own chunks, whose heaps were
+// handed the only reference to their pages, and its large values' pages. Moving the registry to
+// another thread moves that ownership with it; the pointers are just how the blobs name them.
 unsafe impl Send for Registry {}
 
 impl Registry {
-    /// A registry with no key and no arena yet: a constant, so the kernel's is built at compile
+    /// A registry with no key and no storage yet: a constant, so the kernel's is built at compile
     /// time, never on a stack ([`Registry::start`] makes it usable).
     pub const fn empty() -> Self {
         Registry {
             nodes: [Node::DEAD; KEYS],
             values: [Value::DEAD; VALUES],
-            arena: None,
+            chunks: [const { None }; CHUNKS],
+            large: [const { Large::NONE }; LARGE],
+            pages: 0,
+            short: false,
             next_order: 0,
         }
     }
 
-    /// Give the registry its arena, over `pool`, and the keys and the value it starts with (see the
-    /// module notes).
+    /// Give the registry its first chunk, `chunk` ([`CHUNK`] bytes of fresh pages), and the keys
+    /// and the value it starts with (see the module notes).
     ///
     /// # Panics
     ///
     /// It was started already.
-    pub fn start(&mut self, pool: &'static mut [u8]) {
-        assert!(self.arena.is_none(), "the registry started twice");
-        self.arena = Some(KernelHeap::new(pool));
+    pub fn start(&mut self, chunk: Pages) {
+        assert!(self.pages == 0, "the registry started twice");
+        if self.add_chunk(chunk).is_err() {
+            unreachable!("an empty storage takes a chunk");
+        }
         self.seed();
+    }
+
+    /// Take `chunk`, [`CHUNK`] bytes of fresh pages, into the storage for the kernel's life;
+    /// handed back when the quota has no room for it.
+    ///
+    /// # Panics
+    ///
+    /// `chunk` is not [`CHUNK`] bytes.
+    pub fn add_chunk(&mut self, chunk: Pages) -> Result<(), Pages> {
+        assert_eq!(chunk.as_ref().len(), CHUNK, "a chunk's size");
+        let slot = self.chunks.iter().position(Option::is_none);
+        let Some(slot) = slot.filter(|_| self.pages + CHUNK_PAGES <= QUOTA_PAGES) else {
+            return Err(chunk);
+        };
+        self.chunks[slot] = Some(KernelHeap::new(keep(chunk)));
+        self.pages += CHUNK_PAGES;
+        Ok(())
+    }
+
+    /// Whether the last store found no room in the chunks while the quota has room for another
+    /// ([`Registry::add_chunk`]); asking clears it.
+    pub fn needs_chunk(&mut self) -> bool {
+        core::mem::take(&mut self.short)
+    }
+
+    /// Pages a large value's data held and let go since (the value deleted, or set anew), for the
+    /// caller to give back to the pool outside the step; none when none wait.
+    pub fn take_released(&mut self) -> Option<Pages> {
+        let slot = self
+            .large
+            .iter_mut()
+            .find(|slot| !slot.held && slot.pages.is_some())?;
+        let pages = slot.pages.take()?;
+        self.pages -= pages_for(pages.as_ref().len());
+        Some(pages)
+    }
+
+    /// The pages the storage holds: its chunks', and its large data's (until they are taken back,
+    /// [`Registry::take_released`]).
+    pub fn pages(&self) -> usize {
+        self.pages
     }
 
     /// The keys and the value the registry starts with.
@@ -316,7 +471,7 @@ impl Registry {
             class: Blob::EMPTY,
             last_write: 0,
         };
-        let blob = self.store_units(&name).expect("the arena holds the seed");
+        let blob = self.store_units(&name).expect("the storage holds the seed");
         self.nodes[0].name = blob;
         let root = self.root();
         // Each key of the path, made in turn below the root.
@@ -346,10 +501,9 @@ impl Registry {
             false,
         );
         let name = wide::<12>("ComputerName");
-        let data = self
-            .store_scratch(&wide::<5>("QEMU"))
-            .expect("the registry holds the seed");
-        self.set_value(computer, &name, REG_SZ, data, 0)
+        let mut data = [0; 10];
+        put_units(&mut data, &wide::<5>("QEMU"));
+        self.set_bytes(computer, &name, REG_SZ, &data, 0)
             .expect("the registry holds the seed");
     }
 
@@ -383,67 +537,76 @@ impl Registry {
 
     /// The bytes of `blob`, one of this registry's live blocks.
     fn bytes(&self, blob: Blob) -> &[u8] {
-        // SAFETY: a live block of this registry's arena, `bytes` bytes long (or an empty slice):
-        // the registry owns the arena, and its blocks change only through `&mut self`, so
+        // SAFETY: a live block of this registry's storage, `bytes` bytes long (or an empty slice):
+        // the registry owns the storage, and its blocks change only through `&mut self`, so
         // they hold still for the borrow of `self` the slice keeps.
         unsafe { core::slice::from_raw_parts(blob.start(), blob.bytes as usize) }
     }
 
     /// The units of `blob`, one of this registry's live blocks holding a name or a class.
     fn units(&self, blob: Blob) -> &[u16] {
-        // SAFETY: as in `bytes`; an arena block is 8-aligned, so aligned for units, and holds
+        // SAFETY: as in `bytes`; a chunk's block is 8-aligned, so aligned for units, and holds
         // `bytes / 2` of them.
         unsafe { core::slice::from_raw_parts(blob.start().cast(), blob.bytes as usize / 2) }
     }
 
-    /// A fresh arena block of `bytes` bytes, lent to the caller (see [`Scratch`]; none for none):
-    /// STATUS_INSUFFICIENT_RESOURCES when the arena has no room.
-    pub fn scratch(&mut self, bytes: usize) -> Result<Scratch, NtStatus> {
+    /// A fresh block of `bytes` bytes in a chunk (none for none): STATUS_INSUFFICIENT_RESOURCES
+    /// when no chunk has room, noting whether the quota has room for another
+    /// ([`Registry::needs_chunk`]).
+    fn reserve(&mut self, bytes: usize) -> Result<Blob, NtStatus> {
+        self.short = false;
         if bytes == 0 {
-            return Ok(Scratch { block: Blob::EMPTY });
+            return Ok(Blob::EMPTY);
         }
         let layout =
             Layout::from_size_align(bytes, 8).map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
-        let at = self
-            .arena
-            .as_mut()
-            .expect("the registry is started")
-            .alloc(layout)
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        Ok(Scratch {
-            block: Blob {
-                at: Some(at),
-                bytes: bytes as u32,
-            },
-        })
+        for (index, chunk) in self.chunks.iter_mut().enumerate() {
+            if let Some(at) = chunk.as_mut().and_then(|heap| heap.alloc(layout)) {
+                return Ok(Blob {
+                    at: Some(at),
+                    bytes: bytes as u32,
+                    home: Home::Chunk(index as u8),
+                });
+            }
+        }
+        self.short =
+            self.chunks.iter().any(Option::is_none) && self.pages + CHUNK_PAGES <= QUOTA_PAGES;
+        Err(STATUS_INSUFFICIENT_RESOURCES)
     }
 
-    /// A block this registry lent, given back (one another registry lent lies outside this arena,
-    /// which refuses it).
-    pub fn release(&mut self, scratch: Scratch) {
-        self.free(scratch.block);
+    /// The bytes of `blob`, a fresh block of a chunk's, to fill.
+    fn fill(&mut self, blob: Blob) -> &mut [u8] {
+        // SAFETY: a live block of this registry's, `bytes` bytes long (or an empty slice), that no
+        // record names yet: the exclusive borrow of `self` makes this the only reference to it.
+        unsafe { core::slice::from_raw_parts_mut(blob.start(), blob.bytes as usize) }
     }
 
-    /// `units` copied into a fresh lent block.
-    fn store_scratch(&mut self, units: &[u16]) -> Result<Scratch, NtStatus> {
-        let mut scratch = self.scratch(2 * units.len())?;
-        put_units(scratch.bytes_mut(), units);
-        Ok(scratch)
+    /// `bytes` copied into a fresh block of a chunk's (see [`Registry::reserve`]).
+    fn store(&mut self, bytes: &[u8]) -> Result<Blob, NtStatus> {
+        let blob = self.reserve(bytes.len())?;
+        self.fill(blob).copy_from_slice(bytes);
+        Ok(blob)
     }
 
-    /// `units` copied into a fresh arena block (none for no units); STATUS_INSUFFICIENT_RESOURCES
-    /// when the arena has no room.
+    /// `units` copied into a fresh block of a chunk's (see [`Registry::reserve`]).
     fn store_units(&mut self, units: &[u16]) -> Result<Blob, NtStatus> {
-        self.store_scratch(units).map(|scratch| scratch.block)
+        let blob = self.reserve(2 * units.len())?;
+        put_units(self.fill(blob), units);
+        Ok(blob)
     }
 
-    /// Give a block back to the arena.
+    /// Give a block back: to its chunk, or a large value's pages to the ones waiting to go back to
+    /// the pool ([`Registry::take_released`]).
     fn free(&mut self, blob: Blob) {
-        if let Some(at) = blob.at {
-            self.arena
+        let Some(at) = blob.at else {
+            return;
+        };
+        match blob.home {
+            Home::Chunk(index) => self.chunks[index as usize]
                 .as_mut()
-                .expect("the registry is started")
-                .dealloc(at);
+                .expect("a chunk the registry holds")
+                .dealloc(at),
+            Home::Large(slot) => self.large[slot as usize].held = false,
         }
     }
 
@@ -665,58 +828,114 @@ impl Registry {
         Ok(slot.map(|slot| self.value_info(slot)))
     }
 
-    /// Set `key`'s value `name` to the bytes of `data`, of type `kind` (at `now`): an existing
-    /// value of the name takes the new type and data, keeping its place and spelling. The block
-    /// becomes the value's data, or goes back when the value cannot be set.
+    /// Set `key`'s value `name` to `data`'s bytes (none: no bytes), of type `kind` (at `now`): an
+    /// existing value of the name takes the new type and data, keeping its place and spelling.
+    /// Data up to [`SMALL_DATA`] bytes is copied into a chunk, its pages left to the caller; larger
+    /// data's pages become the value's own, taken out of `data`. STATUS_INSUFFICIENT_RESOURCES for
+    /// data past [`MAX_VALUE_DATA`], and for a store the storage has no room for (large data never
+    /// taking the quota's reserve, [`RESERVE_PAGES`]). A value that cannot be set is left as it
+    /// was, and `data` with the caller.
     pub fn set_value(
         &mut self,
         key: Key,
         name: &[u16],
         kind: u32,
-        data: Scratch,
+        data: &mut Option<Pages>,
         now: u64,
     ) -> Result<(), NtStatus> {
-        let data = data.block;
-        let placed = self.place_value(key, name, kind, data, now);
-        if placed.is_err() {
-            self.free(data);
+        let length = data.as_ref().map_or(0, |pages| pages.as_ref().len());
+        if length <= SMALL_DATA {
+            let bytes = data.as_ref().map_or(&[][..], |pages| pages.as_ref());
+            return self.set_bytes(key, name, kind, bytes, now);
         }
-        placed
+        if length > MAX_VALUE_DATA {
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        let pages = pages_for(length);
+        let slot = self
+            .large
+            .iter()
+            .position(|slot| slot.pages.is_none())
+            .filter(|_| self.pages + pages <= QUOTA_PAGES - RESERVE_PAGES)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        self.place_value(key, name, kind, now, |registry| {
+            let mut taken = data.take().expect("the large data's pages");
+            let at = NonNull::from(taken.as_mut()).cast();
+            registry.large[slot] = Large {
+                pages: Some(taken),
+                held: true,
+            };
+            registry.pages += pages;
+            Ok(Blob {
+                at: Some(at),
+                bytes: length as u32,
+                home: Home::Large(slot as u16),
+            })
+        })
     }
 
-    /// [`Registry::set_value`]'s work, `data` the block it takes.
+    /// [`Registry::set_value`] of `data`, at most [`SMALL_DATA`] bytes, copied into a chunk
+    /// (STATUS_INSUFFICIENT_RESOURCES for more): what the kernel's own writes take.
+    pub fn set_bytes(
+        &mut self,
+        key: Key,
+        name: &[u16],
+        kind: u32,
+        data: &[u8],
+        now: u64,
+    ) -> Result<(), NtStatus> {
+        if data.len() > SMALL_DATA {
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        self.place_value(key, name, kind, now, |registry| registry.store(data))
+    }
+
+    /// [`Registry::set_value`]'s work, `data` making the value's data block once everything else
+    /// the value needs is taken: nothing changes when either fails.
     fn place_value(
         &mut self,
         key: Key,
         name: &[u16],
         kind: u32,
-        data: Blob,
         now: u64,
+        data: impl FnOnce(&mut Self) -> Result<Blob, NtStatus>,
     ) -> Result<(), NtStatus> {
         let index = self.check(key)?;
-        let slot = match self.find_value(index, name) {
-            Some(slot) => {
-                let old = self.values[slot].data;
-                self.free(old);
-                slot
-            }
+        let (slot, fresh) = match self.find_value(index, name) {
+            Some(slot) => (slot, None),
             None => {
                 let slot = (0..VALUES)
                     .find(|&slot| !self.values[slot].live)
                     .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-                let stored = self.store_units(name)?;
+                (slot, Some(self.store_units(name)?))
+            }
+        };
+        let data = match data(self) {
+            Ok(data) => data,
+            Err(status) => {
+                if let Some(name) = fresh {
+                    self.free(name);
+                }
+                return Err(status);
+            }
+        };
+        match fresh {
+            Some(name) => {
                 self.values[slot] = Value {
                     live: true,
                     key: index,
                     order: self.next_order,
                     kind,
-                    name: stored,
+                    name,
                     data: Blob::EMPTY,
                 };
                 self.next_order = self.next_order.wrapping_add(1);
-                slot
             }
-        };
+            None => {
+                let old = self.values[slot].data;
+                self.free(old);
+            }
+        }
         self.values[slot].kind = kind;
         self.values[slot].data = data;
         self.nodes[index as usize].last_write = now;
@@ -760,36 +979,78 @@ fn wide<const N: usize>(text: &str) -> [u16; N] {
 
 // --- The kernel's registry ---------------------------------------------------------------------
 
-/// The arena's pool (8-aligned, as the heap requires).
-#[cfg(target_arch = "x86")]
-#[repr(align(8))]
-struct ArenaPool([u8; ARENA]);
-
-/// The pool of the kernel's registry's arena, handed to it once, at boot.
-#[cfg(target_arch = "x86")]
-static ARENA_POOL: StaticBuf<ArenaPool> = StaticBuf::new(ArenaPool([0; ARENA]));
-
 /// The kernel's registry: started at boot ([`init`]), then reached by the key services one short
 /// step at a time ([`with_registry`]).
 ///
 /// No interrupt and no DPC reaches it: its callers are system services, which run with interrupts
 /// masked. A step never waits, never touches its caller's memory (the services copy in before it
-/// and out after it, through [`Scratch`] blocks) and never reaches other high-level state (the
+/// and out after it, through pages staged outside it) and never reaches other high-level state (the
 /// clock's reading included). So it runs at the high level, through the bridge: each step masks
 /// interrupts for its own length, as its callers have already, which keeps the interrupt exposure
-/// as it was, and a step reaching the registry from inside another's borrow is refused.
+/// as it was, and a step reaching the registry from inside another's borrow is refused. The pool
+/// is such other state: the storage grows and shrinks between steps ([`storing`], [`settle`]).
 // Note: Windows 2000 guards the registry with a passive-level lock of its own (an ERESOURCE, taken
 // for the length of a registry call). That is the faithful protection, to adopt together with the
 // object directory's lock.
 #[cfg(target_arch = "x86")]
 static REGISTRY: LevelCell<High, Registry> = LevelCell::new(Registry::empty());
 
-/// Start the kernel's registry: its arena, and the keys and the value it has from its boot on.
-/// Once, at boot.
+/// The pages the kernel's registry's storage holds, as [`settle`] last counted them.
+#[cfg(target_arch = "x86")]
+static HELD: AtomicU32 = AtomicU32::new(0);
+
+/// Start the kernel's registry: its first chunk, and the keys and the value it has from its boot
+/// on. Once, at boot.
+///
+/// # Panics
+///
+/// The nonpaged pool has no room for a chunk.
 #[cfg(target_arch = "x86")]
 pub fn init() {
-    let pool = &mut ARENA_POOL.take().0;
-    with_registry(|registry| registry.start(pool));
+    let chunk = allocate(CHUNK).expect("the nonpaged pool holds the registry's first chunk");
+    with_registry(|registry| registry.start(chunk));
+    settle();
+}
+
+/// Run `step`, a change to the kernel's registry, as a step: when it finds no room in the
+/// storage's chunks and the quota has room for another, a chunk is taken from the pool between
+/// steps and `step` runs again (a fresh chunk holds what one store puts in chunks). Then
+/// [`settle`].
+#[cfg(target_arch = "x86")]
+pub fn storing<R>(
+    mut step: impl FnMut(&mut Registry) -> Result<R, NtStatus>,
+) -> Result<R, NtStatus> {
+    let mut result = with_registry(&mut step);
+    if result.is_err() && with_registry(Registry::needs_chunk) {
+        if let Some(chunk) = allocate(CHUNK) {
+            // A chunk the quota refuses (another store took the room meanwhile) goes back.
+            if with_registry(|registry| registry.add_chunk(chunk)).is_ok() {
+                result = with_registry(&mut step);
+            }
+        }
+    }
+    settle();
+    result
+}
+
+/// Give the pages the kernel's registry let go back to the pool, and count the pages its storage
+/// holds ([`held_frames`]): after each step that may let pages go, outside the registry.
+#[cfg(target_arch = "x86")]
+pub fn settle() {
+    while let Some(pages) = with_registry(Registry::take_released) {
+        drop(pages);
+    }
+    HELD.store(
+        with_registry(|registry| registry.pages()) as u32,
+        Atomic::Relaxed,
+    );
+}
+
+/// The frames the kernel's registry's storage holds: allocations that outlive the process that
+/// made them, which the teardown audits count with the free frames.
+#[cfg(target_arch = "x86")]
+pub fn held_frames() -> u32 {
+    HELD.load(Atomic::Relaxed)
 }
 
 /// Run `step` on the kernel's registry (see [`REGISTRY`]), through the bridge to the high level.
@@ -818,20 +1079,42 @@ mod tests {
     use super::*;
 
     fn registry() -> &'static mut Registry {
-        let pool = Box::leak(vec![0u64; ARENA / 8].into_boxed_slice());
-        // SAFETY: a u64 slice is 8-aligned; reinterpreted as its bytes.
-        let pool =
-            unsafe { core::slice::from_raw_parts_mut(pool.as_mut_ptr().cast::<u8>(), ARENA) };
         let registry = Box::leak(Box::new(Registry::empty()));
-        registry.start(pool);
+        registry.start(allocate(CHUNK).unwrap());
         registry
     }
 
-    /// `bytes` in a fresh scratch block of `r`'s.
-    fn scratch(r: &mut Registry, bytes: &[u8]) -> Scratch {
-        let mut scratch = r.scratch(bytes.len()).unwrap();
-        scratch.bytes_mut().copy_from_slice(bytes);
-        scratch
+    /// `bytes` on fresh pages, as a service stages a value's data (none for none).
+    fn data(bytes: &[u8]) -> Option<Pages> {
+        (!bytes.is_empty()).then(|| {
+            let mut pages = allocate(bytes.len()).unwrap();
+            pages.as_mut().copy_from_slice(bytes);
+            pages
+        })
+    }
+
+    /// `step` as the kernel's `storing` runs it: once more with a chunk added when the storage
+    /// asks for one; the pages let go taken back after.
+    fn storing<R>(
+        r: &mut Registry,
+        mut step: impl FnMut(&mut Registry) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
+        let mut result = step(r);
+        if result.is_err() && r.needs_chunk() && r.add_chunk(allocate(CHUNK).unwrap()).is_ok() {
+            result = step(r);
+        }
+        while r.take_released().is_some() {}
+        result
+    }
+
+    impl Registry {
+        /// Whether every chunk's heap holds together.
+        fn audit(&self) -> bool {
+            self.chunks
+                .iter()
+                .flatten()
+                .all(|heap| heap.audit().is_ok())
+        }
     }
 
     /// A reported name's text, from its little-endian bytes.
@@ -938,8 +1221,8 @@ mod tests {
             Err(STATUS_CANNOT_DELETE),
             "a key with a subkey"
         );
-        let data = scratch(r, &[0, 0]);
-        r.set_value(b, &wide("x"), REG_SZ, data, 0).unwrap();
+        r.set_value(b, &wide("x"), REG_SZ, &mut data(&[0, 0]), 0)
+            .unwrap();
         r.delete(b, 0).unwrap();
         assert_eq!(r.check(b), Err(STATUS_KEY_DELETED));
         assert_eq!(r.query_value(b, &wide("x")).err(), Some(STATUS_KEY_DELETED));
@@ -962,9 +1245,9 @@ mod tests {
     fn values_set_replace_and_list_in_order() {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
-        let set = |r: &mut Registry, name: &str, kind: u32, data: &[u8]| {
-            let data = scratch(r, data);
-            r.set_value(user, &wide(name), kind, data, 5).unwrap()
+        let set = |r: &mut Registry, name: &str, kind: u32, bytes: &[u8]| {
+            r.set_value(user, &wide(name), kind, &mut data(bytes), 5)
+                .unwrap()
         };
         set(r, "one", 4, &[1, 0, 0, 0]);
         set(r, "", REG_SZ, b"d\0\0\0");
@@ -1000,29 +1283,160 @@ mod tests {
         // A failed set leaves the value as it was, and gives its data back.
         let (gone, _) = r.create(user, &wide("gone"), &[], false, 7).unwrap();
         r.delete(gone, 7).unwrap();
-        let data = scratch(r, &[1, 2, 3, 4]);
+        let mut kept = data(&[1, 2, 3, 4]);
         assert_eq!(
-            r.set_value(gone, &wide("one"), 1, data, 7),
+            r.set_value(gone, &wide("one"), 1, &mut kept, 7),
             Err(STATUS_KEY_DELETED)
         );
+        assert!(kept.is_some(), "the data stays the caller's");
         assert_eq!(r.query_value(user, &wide("one")).unwrap().data, &[9, 9]);
-        assert_eq!(r.arena.as_ref().unwrap().audit(), Ok(()));
+        assert!(r.audit());
     }
 
+    /// A value's data is 1 MiB at most; past it, nothing changes and the pages stay the caller's.
     #[test]
-    fn a_scratch_block_goes_back() {
+    fn a_value_holds_a_megabyte_at_most() {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
-        let name = scratch(r, b"J\0E\0B\0");
-        let found = r
-            .open(r.root(), &wide("USER"))
-            .and_then(|u| r.open(u, name.units()));
-        assert_eq!(found, Ok(user));
-        r.release(name);
-        let empty = r.scratch(0).unwrap();
-        assert!(empty.bytes().is_empty() && empty.units().is_empty());
-        r.release(empty);
-        assert_eq!(r.arena.as_ref().unwrap().audit(), Ok(()));
+        let mut over = data(&vec![7; MAX_VALUE_DATA + 1]);
+        assert_eq!(
+            r.set_value(user, &wide("big"), 3, &mut over, 0),
+            Err(STATUS_INSUFFICIENT_RESOURCES)
+        );
+        assert!(over.is_some(), "the pages stay the caller's");
+        assert_eq!(
+            r.query_value(user, &wide("big")).err(),
+            Some(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        let mut most = data(&vec![7; MAX_VALUE_DATA]);
+        r.set_value(user, &wide("big"), 3, &mut most, 0).unwrap();
+        assert!(most.is_none(), "the value's own pages");
+        let value = r.query_value(user, &wide("BIG")).unwrap();
+        assert!(value.data.len() == MAX_VALUE_DATA && value.data.iter().all(|&b| b == 7));
+        assert_eq!(
+            r.set_bytes(user, &wide("b"), 3, &[0; SMALL_DATA + 1], 0),
+            Err(STATUS_INSUFFICIENT_RESOURCES),
+            "the kernel's own writes are small"
+        );
+    }
+
+    /// Small data lives in a chunk; larger data on pages of its own, which go back once no value
+    /// holds them.
+    #[test]
+    fn large_data_has_pages_of_its_own_until_let_go() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let before = r.pages();
+        r.set_value(user, &wide("small"), 3, &mut data(&[1; SMALL_DATA]), 0)
+            .unwrap();
+        assert_eq!(r.pages(), before, "in the chunk");
+        let large: Vec<u8> = (0..=SMALL_DATA).map(|i| i as u8).collect();
+        r.set_value(user, &wide("large"), 3, &mut data(&large), 0)
+            .unwrap();
+        assert_eq!(r.pages(), before + 5);
+        assert_eq!(
+            r.query_value(user, &wide("LARGE")).unwrap().data,
+            &large[..]
+        );
+        assert!(r.take_released().is_none());
+        // Set anew, small: its pages are let go.
+        r.set_value(user, &wide("large"), 3, &mut data(&[1]), 1)
+            .unwrap();
+        assert_eq!(r.take_released().unwrap().as_ref().len(), large.len());
+        assert!(r.take_released().is_none());
+        assert_eq!(r.pages(), before);
+        // Deleted with its key, and with the value alone.
+        let (k, _) = r.create(user, &wide("k"), &[], false, 0).unwrap();
+        r.set_value(k, &wide("x"), 3, &mut data(&large), 0).unwrap();
+        r.set_value(k, &wide("y"), 3, &mut data(&large), 0).unwrap();
+        r.delete_value(k, &wide("y"), 0).unwrap();
+        assert!(r.take_released().is_some());
+        r.delete(k, 0).unwrap();
+        assert!(r.take_released().is_some());
+        assert_eq!(r.pages(), before);
+        assert!(r.audit());
+    }
+
+    /// A store finding no room in the chunks asks for one, and takes it.
+    #[test]
+    fn a_store_with_no_room_asks_for_a_chunk() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let mut n = 0;
+        let refused = loop {
+            let name = wide(&n.to_string());
+            match r.set_value(user, &name, 3, &mut data(&[0; SMALL_DATA]), 0) {
+                Ok(()) => n += 1,
+                Err(status) => break status,
+            }
+        };
+        assert_eq!(refused, STATUS_INSUFFICIENT_RESOURCES);
+        assert!(r.needs_chunk());
+        assert!(!r.needs_chunk(), "asking clears it");
+        assert!(r.add_chunk(allocate(CHUNK).unwrap()).is_ok());
+        r.set_value(
+            user,
+            &wide(&n.to_string()),
+            3,
+            &mut data(&[0; SMALL_DATA]),
+            0,
+        )
+        .unwrap();
+        assert!(r.audit());
+    }
+
+    /// One caller filling the registry with large values leaves the reserve to every other: a
+    /// key, small values. The chunks themselves stop at the quota.
+    #[test]
+    fn one_caller_filling_the_registry_leaves_room_for_another() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (hog, _) = r.create(user, &wide("hog"), &[], false, 0).unwrap();
+        let fill = |r: &mut Registry, size: usize| {
+            let mut count = 0;
+            loop {
+                let name = wide(&format!("{size}-{count}"));
+                let mut big = data(&vec![0xAB; size]);
+                match storing(r, |r| r.set_value(hog, &name, 3, &mut big, 0)) {
+                    Ok(()) => count += 1,
+                    Err(status) => {
+                        assert_eq!(status, STATUS_INSUFFICIENT_RESOURCES);
+                        return count;
+                    }
+                }
+            }
+        };
+        assert_eq!(fill(r, MAX_VALUE_DATA), 3, "4 MiB less the reserve");
+        fill(r, SMALL_DATA + 1);
+        assert!(r.pages() > QUOTA_PAGES - RESERVE_PAGES - 5);
+        // Another caller: a key and small values, past what the chunk held already.
+        let (other, created) =
+            storing(r, |r| r.create(user, &wide("other"), &[], false, 0)).unwrap();
+        assert!(created);
+        let held = r.pages();
+        for n in 0..8 {
+            let name = wide(&n.to_string());
+            storing(r, |r| {
+                r.set_value(other, &name, 3, &mut data(&[1; SMALL_DATA]), 0)
+            })
+            .unwrap();
+        }
+        assert!(r.pages() > held, "new chunks, from the reserve");
+        // Small values fill the rest; the chunks stop at the quota.
+        let mut n = 8;
+        let refused = loop {
+            let name = wide(&n.to_string());
+            match storing(r, |r| {
+                r.set_value(other, &name, 3, &mut data(&[1; SMALL_DATA]), 0)
+            }) {
+                Ok(()) => n += 1,
+                Err(status) => break status,
+            }
+        };
+        assert_eq!(refused, STATUS_INSUFFICIENT_RESOURCES);
+        assert!(r.pages() <= QUOTA_PAGES);
+        assert!(!r.needs_chunk(), "no room for another chunk");
+        assert!(r.audit());
     }
 
     /// A volatile key's subkeys must be volatile; a non-volatile key's may be either, and an

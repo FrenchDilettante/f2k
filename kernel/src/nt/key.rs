@@ -281,7 +281,18 @@ mod services {
     use super::super::attributes::{self, Name};
     use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
     use super::*;
-    use crate::cm::{with_registry, Key, KeyBody, Registry, Scratch, MAX_VALUE_NAME, SEPARATOR};
+    use crate::cm::{
+        self,
+        storing,
+        with_registry,
+        Key,
+        KeyBody,
+        Pages,
+        Registry,
+        MAX_VALUE_DATA,
+        MAX_VALUE_NAME,
+        SEPARATOR,
+    };
     use crate::nt::object::is_console_handle;
     use crate::ob::{self, ObjectType};
 
@@ -382,43 +393,51 @@ mod services {
         Ok((units, UserAddr(string.buffer)))
     }
 
-    /// `bytes` bytes of the caller's memory at `at`, copied into a scratch block of the registry's
-    /// arena. The copy runs outside the registry: a fault in it may wait, and another thread's
-    /// service reach the registry meanwhile.
-    fn capture(at: UserAddr, bytes: usize) -> Result<Scratch, NtStatus> {
-        let mut scratch = with_registry(|registry| registry.scratch(bytes))?;
-        match at.read(scratch.bytes_mut()) {
-            Ok(()) => Ok(scratch),
-            Err(fault) => {
-                with_registry(|registry| registry.release(scratch));
-                Err(fault.into())
-            }
+    /// What a service stages between its caller and the registry (a name, a class, a value's
+    /// data, an answer): pages of the pool of its own, never the registry's storage, so a large
+    /// answer cannot starve a store nor a full storage an answer (none for no bytes). It goes back
+    /// to the pool when dropped, which the services do outside the registry's steps.
+    type Staging = Option<Pages>;
+
+    /// Fresh staging for `bytes` bytes: STATUS_INSUFFICIENT_RESOURCES when the pool has no room.
+    fn staging(bytes: usize) -> Result<Staging, NtStatus> {
+        if bytes == 0 {
+            return Ok(None);
         }
+        cm::allocate(bytes)
+            .map(Some)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    }
+
+    /// The bytes staged.
+    fn staged_bytes(staging: &Staging) -> &[u8] {
+        staging.as_ref().map_or(&[], |pages| pages.as_ref())
+    }
+
+    /// The bytes staged, as UTF-16 units: a captured name.
+    fn units(staging: &Staging) -> &[u16] {
+        staging.as_ref().map_or(&[], cm::units)
+    }
+
+    /// `bytes` bytes of the caller's memory at `at`, staged. The copy runs outside the registry: a
+    /// fault in it may wait, and another thread's service reach the registry meanwhile.
+    fn capture(at: UserAddr, bytes: usize) -> Result<Staging, NtStatus> {
+        let mut staged = staging(bytes)?;
+        if let Some(pages) = &mut staged {
+            at.read(pages.as_mut())?;
+        }
+        Ok(staged)
     }
 
     /// The counted string at `at` captured (see [`capture`]): a value name, or a class. None (a
     /// null pointer) is the empty name.
-    fn capture_counted(at: UserAddr) -> Result<Scratch, NtStatus> {
+    fn capture_counted(at: UserAddr) -> Result<Staging, NtStatus> {
         let (units, buffer) = if at.is_null() {
             (0, UserAddr(0))
         } else {
             counted(at)?
         };
         capture(buffer, 2 * units)
-    }
-
-    /// Run `step` on the registry with the counted string at `at` captured (see
-    /// [`capture_counted`]), its block given back after.
-    fn with_counted<R>(
-        at: UserAddr,
-        step: impl FnOnce(&mut Registry, &[u16]) -> Result<R, NtStatus>,
-    ) -> Result<R, NtStatus> {
-        let name = capture_counted(at)?;
-        with_registry(|registry| {
-            let result = step(registry, name.units());
-            registry.release(name);
-            result
-        })
     }
 
     /// A new key object for `key`, its handle (with `desired`'s rights) into `slot`; a slot that
@@ -437,65 +456,77 @@ mod services {
         Ok(handle)
     }
 
-    /// An answer staged for the caller's buffer: what the buffer takes of it, copied out of the
-    /// registry; the size the whole takes; the status its delivery answers.
+    /// An answer staged for the caller's buffer: what the buffer takes of it (its first `room`
+    /// bytes), copied out of the registry; the size the whole takes; the status its delivery
+    /// answers.
     struct Staged {
-        bytes: Scratch,
+        bytes: Staging,
+        room: usize,
         size: usize,
         status: NtResult,
     }
 
-    /// The answer `reply` makes of the registry, staged for a buffer of `length` bytes inside the
-    /// registry's step (see [`Reply::deliver`]); [`answer`] writes it to the caller once the step
-    /// is over. `reply` runs twice, once to size the block and once to fill it, on a registry
-    /// that has not changed between.
+    /// The answer `reply` makes of the registry, staged for a buffer of `length` bytes (see
+    /// [`Reply::deliver`]); [`answer`] writes it to the caller once the step is over. The staging
+    /// is taken from the pool between steps: a step sizes the answer, and the next fills it, sizing
+    /// it again should another service have changed the registry between.
     fn stage(
-        registry: &mut Registry,
         length: u32,
         reply: impl Fn(&Registry) -> Result<Reply<'_>, NtStatus>,
     ) -> Result<Staged, NtStatus> {
-        let (size, fixed_size) = reply(registry).map(|made| (made.size(), made.fixed.len()))?;
-        let room = if (length as usize) < fixed_size {
-            0
-        } else {
-            size.min(length as usize)
-        };
-        let mut bytes = registry.scratch(room)?;
-        let made = match reply(registry) {
-            Ok(made) => made,
-            Err(status) => {
-                registry.release(bytes);
-                return Err(status);
+        let mut bytes: Staging = None;
+        loop {
+            // The answer filled (what the buffer takes, the whole's size, the status), or the room
+            // it needs.
+            type Filled = Result<(usize, usize, NtResult), usize>;
+            let staged = with_registry(|registry| -> Result<Filled, NtStatus> {
+                let made = reply(registry)?;
+                let size = made.size();
+                let room = if (length as usize) < made.fixed.len() {
+                    0
+                } else {
+                    size.min(length as usize)
+                };
+                let out: &mut [u8] = match bytes.as_mut() {
+                    Some(pages) => pages.as_mut(),
+                    None => &mut [],
+                };
+                if room > out.len() {
+                    return Ok(Err(room));
+                }
+                let status = made.deliver(length, |at, piece| {
+                    out[at..at + piece.len()].copy_from_slice(piece);
+                    Ok(())
+                });
+                Ok(Ok((room, size, status)))
+            })?;
+            match staged {
+                Ok((room, size, status)) => {
+                    return Ok(Staged {
+                        bytes,
+                        room,
+                        size,
+                        status,
+                    })
+                }
+                Err(room) => bytes = staging(room)?,
             }
-        };
-        let status = made.deliver(length, |at, piece| {
-            bytes.bytes_mut()[at..at + piece.len()].copy_from_slice(piece);
-            Ok(())
-        });
-        Ok(Staged {
-            bytes,
-            size,
-            status,
-        })
+        }
     }
 
     /// The staged answer to the caller: its size into ResultLength, then what the buffer takes of
-    /// it into the buffer; its block goes back either way.
+    /// it into the buffer; its staging goes back either way.
     fn answer(staged: Staged, out: UserAddr, result: UserPtr<u32>) -> NtResult {
         let Staged {
             bytes,
+            room,
             size,
             status,
         } = staged;
-        let written = result.write(size as u32).and_then(|()| {
-            if bytes.bytes().is_empty() {
-                Ok(())
-            } else {
-                out.write(bytes.bytes())
-            }
-        });
-        with_registry(|registry| registry.release(bytes));
-        written?;
+        result.write(size as u32)?;
+        if room > 0 {
+            out.write(&staged_bytes(&bytes)[..room])?;
+        }
         status
     }
 
@@ -525,9 +556,9 @@ mod services {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         let now = now();
-        let (key, created) = with_counted(class, |registry, class| {
-            registry.create(root, path, class, volatile, now)
-        })?;
+        let class = capture_counted(class)?;
+        let (key, created) =
+            storing(|registry| registry.create(root, path, units(&class), volatile, now))?;
         let handle = publish(slot, key, desired, inherit)?;
         let outcome = if created {
             REG_CREATED_NEW_KEY
@@ -560,7 +591,7 @@ mod services {
     pub fn delete_key(_: &mut NtCall, handle: Handle) -> NtResult {
         let key = key_of(handle.raw(), DELETE)?;
         let now = now();
-        with_registry(|registry| registry.delete(key, now))?;
+        storing(|registry| registry.delete(key, now))?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -582,10 +613,8 @@ mod services {
     ) -> NtResult {
         let class = key_class(class)?;
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
-        let staged = with_registry(|registry| {
-            stage(registry, length, |registry| {
-                Ok(key_reply(class, &registry.info(key)?))
-            })
+        let staged = stage(length, |registry| {
+            Ok(key_reply(class, &registry.info(key)?))
         })?;
         answer(staged, out, result)
     }
@@ -603,11 +632,9 @@ mod services {
     ) -> NtResult {
         let class = key_class(class)?;
         let key = key_of(handle.raw(), KEY_ENUMERATE_SUB_KEYS)?;
-        let staged = with_registry(|registry| {
+        let staged = stage(length, |registry| {
             let subkey = registry.subkey(key, index)?.ok_or(STATUS_NO_MORE_ENTRIES)?;
-            stage(registry, length, |registry| {
-                Ok(key_reply(class, &registry.info(subkey)?))
-            })
+            Ok(key_reply(class, &registry.info(subkey)?))
         })?;
         answer(staged, out, result)
     }
@@ -628,10 +655,12 @@ mod services {
         if name.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
-        let staged = with_counted(name, |registry, name| {
-            stage(registry, length, |registry| {
-                Ok(value_reply(class, &registry.query_value(key, name)?))
-            })
+        let name = capture_counted(name)?;
+        let staged = stage(length, |registry| {
+            Ok(value_reply(
+                class,
+                &registry.query_value(key, units(&name))?,
+            ))
         })?;
         answer(staged, out, result)
     }
@@ -649,19 +678,19 @@ mod services {
     ) -> NtResult {
         let class = value_class(class)?;
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
-        let staged = with_registry(|registry| {
-            stage(registry, length, |registry| {
-                let value = registry
-                    .value_at(key, index)?
-                    .ok_or(STATUS_NO_MORE_ENTRIES)?;
-                Ok(value_reply(class, &value))
-            })
+        let staged = stage(length, |registry| {
+            let value = registry
+                .value_at(key, index)?
+                .ok_or(STATUS_NO_MORE_ENTRIES)?;
+            Ok(value_reply(class, &value))
         })?;
         answer(staged, out, result)
     }
 
     /// NtSetValueKey: the named value set to the data, of the type given (the data as given: a
-    /// string's terminator is the caller's to count). The title index is not consulted.
+    /// string's terminator is the caller's to count). Data past [`MAX_VALUE_DATA`] is
+    /// STATUS_INSUFFICIENT_RESOURCES, refused before it is copied. The title index is not
+    /// consulted.
     pub fn set_value_key(
         _: &mut NtCall,
         handle: Handle,
@@ -677,14 +706,13 @@ mod services {
         }
         let now = now();
         let name = capture_counted(name)?;
-        // The key's state answers before the data's copy, as when the copy ran inside the registry.
-        let data = with_registry(|registry| registry.check(key))
-            .and_then(|_| capture(data, size as usize));
-        with_registry(|registry| {
-            let set = data.and_then(|data| registry.set_value(key, name.units(), kind, data, now));
-            registry.release(name);
-            set
-        })?;
+        // The key's state answers before the data's size and copy.
+        with_registry(|registry| registry.check(key))?;
+        if size as usize > MAX_VALUE_DATA {
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        let mut data = capture(data, size as usize)?;
+        storing(|registry| registry.set_value(key, units(&name), kind, &mut data, now))?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -696,7 +724,8 @@ mod services {
             return Err(STATUS_ACCESS_VIOLATION);
         }
         let now = now();
-        with_counted(name, |registry, name| registry.delete_value(key, name, now))?;
+        let name = capture_counted(name)?;
+        storing(|registry| registry.delete_value(key, units(&name), now))?;
         Ok(STATUS_SUCCESS)
     }
 }

@@ -2452,11 +2452,9 @@ mod target {
         let length = registry_path_below_root(&path[REGISTRY.len()..], &mut below)
             .ok_or(STATUS_OBJECT_NAME_INVALID)?;
         let now = crate::time::system_filetime();
-        with_registry(|registry| {
+        crate::cm::storing(|registry| {
             let key = registry.open(registry.root(), &below[..length])?;
-            let mut scratch = registry.scratch(data.len())?;
-            scratch.bytes_mut().copy_from_slice(data);
-            registry.set_value(key, value, kind, scratch, now)
+            registry.set_bytes(key, value, kind, data, now)
         })
     }
 

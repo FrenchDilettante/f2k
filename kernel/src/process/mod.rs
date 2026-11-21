@@ -1375,10 +1375,13 @@ static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new(
 
 /// The free frames as the teardown audits count them: the frame database's, with the frames the
 /// process records hold — permanent allocations made as the pool grows (see [`pool`]), which no
-/// process's end gives back.
+/// process's end gives back — and the registry's storage's, which outlive the process that made
+/// them (see [`crate::cm`]).
 #[cfg(target_arch = "x86")]
 fn audited_frames() -> u32 {
-    crate::mem::bootmem::with_frame_db(|db| db.available()) + pool::record_frames()
+    crate::mem::bootmem::with_frame_db(|db| db.available())
+        + pool::record_frames()
+        + crate::cm::held_frames()
 }
 
 /// Record the allocator baseline (`available()` at the call site).
