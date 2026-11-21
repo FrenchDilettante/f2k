@@ -46,31 +46,31 @@ const UNHANDLED_FLAGS: [(u32, &str); 5] = [
     (0x0010_0000, "MB_RTLREADING (right-to-left reading order)"),
 ];
 
-/// The MB_ cases logged in this process, and a text cut short ([`LONG_TEXT`]).
+/// The MB_ cases logged in this process.
 static FLAGS_LOGGED: rtl::stub::Logged<12> = rtl::stub::Logged::new();
 
-/// The most characters of its text the box shows, and the key of the case of a longer text.
-const MOST_TEXT: usize = 1024;
-const LONG_TEXT: u32 = 0x8000_0000;
+/// The units of a string copied on the stack; a longer one is copied into a block of the process
+/// heap.
+const STACK_UNITS: usize = 260;
 
-/// The most characters of its caption the box shows.
-const MOST_CAPTION: usize = 256;
-
-/// The units of a MessageBoxW string the box takes: as many as `out` holds.
-fn take_wide(text: rtl::edge::InWStr, out: &mut [u16]) -> usize {
+/// Run `f` on a copy of a MessageBoxW string, whole (the caller's, read unaligned): none when the
+/// heap has no room for it.
+fn with_wide<R>(text: rtl::edge::InWStr, f: impl FnOnce(&[u16]) -> R) -> Option<R> {
     let units = text.units();
-    let length = units.len().min(out.len());
-    for (index, unit) in out[..length].iter_mut().enumerate() {
-        *unit = units.get(index);
+    let copy = |out: &mut [u16]| {
+        for (index, unit) in out.iter_mut().enumerate() {
+            *unit = units.get(index);
+        }
+    };
+    if units.len() <= STACK_UNITS {
+        let mut out = [0u16; STACK_UNITS];
+        copy(&mut out[..units.len()]);
+        return Some(f(&out[..units.len()]));
     }
-    length
-}
-
-/// The units of a MessageBoxA string the box takes, converted from the ANSI code page: as many as
-/// `out` holds, as for MessageBoxW's.
-fn take_narrow(bytes: &[u8], out: &mut [u16]) -> usize {
-    let length = bytes.len().min(out.len());
-    imports::multi_byte_to_unicode(&mut out[..length], &bytes[..length])
+    let mut block = imports::HeapBlock::new(2 * units.len())?;
+    let out = &mut block.units_mut()[..units.len()];
+    copy(out);
+    Some(f(out))
 }
 
 /// The MB_ type and flags of `kind` the box does not handle yet, logged for `call` (each once per
@@ -148,13 +148,21 @@ fn buttons(kind: u32) -> &'static [(&'static str, u32)] {
 const FACE: &str = "MS Shell Dlg";
 const POINTS: u16 = 8;
 
-/// A template under construction, in a buffer of DWORDs (a template is DWORD-aligned).
-struct Template {
-    words: [u16; 2048],
+/// A template under construction, in a buffer of the process heap (8-aligned, as a template's
+/// DWORD alignment asks) sized for the box's strings ([`template_words`]).
+struct Template<'a> {
+    words: &'a mut [u16],
     at: usize,
 }
 
-impl Template {
+/// The words a box's template takes, at most, for a text of `text` units and a caption of
+/// `caption`: the header and its strings, and five controls (up to four buttons, the icon) of at
+/// most 32 words besides the text's.
+fn template_words(text: usize, caption: usize) -> usize {
+    32 + caption + 5 * 32 + text
+}
+
+impl Template<'_> {
     fn word(&mut self, value: u16) {
         if self.at < self.words.len() {
             self.words[self.at] = value;
@@ -274,7 +282,7 @@ fn measure(text: &[u16], wrap: i32) -> ((i32, i32), (i32, i32)) {
 }
 
 /// The box's template for `text`, `caption` and the MB_ `kind`, built into `template`.
-fn build(template: &mut Template, text: &[u16], caption: &[u16], kind: u32) {
+fn build(template: &mut Template<'_>, text: &[u16], caption: &[u16], kind: u32) {
     let wrap = crate::display::get_system_metrics(0) * 5 / 8;
     let ((width, height), (ux, uy)) = measure(text, wrap);
     let du_x = |pixels: i32| (pixels * 4 + ux - 1) / ux.max(1);
@@ -424,27 +432,21 @@ fn box_procedure_address() -> u32 {
     }
 }
 
-/// MessageBox's core, for `call`: the box made and run; the id of the button that ended it, 0
-/// with the last error when it could not be made.
+/// MessageBox's core, for `call`: the box made and run, its text and caption whole (Windows 2000's
+/// bounds neither); the id of the button that ended it, 0 with the last error when it could not be
+/// made (ERROR_NOT_ENOUGH_MEMORY when the heap has no room for its template).
 fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32, call: Call) -> i32 {
     log_unhandled_flags(kind, &call);
+    let size = template_words(text.len(), caption.len());
+    let Some(mut block) = imports::HeapBlock::new(2 * size) else {
+        return crate::failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+    };
     let mut template = Template {
-        words: [0; 2048],
+        words: block.units_mut(),
         at: 0,
     };
-    if text.len() > MOST_TEXT && FLAGS_LOGGED.first(LONG_TEXT) {
-        call.unhandled(format_args!(
-            "a text longer than {MOST_TEXT} characters is not yet implemented: it is cut there"
-        ));
-    }
-    let text = &text[..text.len().min(MOST_TEXT)];
     build(&mut template, text, caption, kind);
-    if template.at > template.words.len() {
-        call.unhandled(
-            "a box whose template outgrows 4096 bytes (a long caption) is not yet implemented",
-        );
-        return 0;
-    }
+    debug_assert!(template.at <= template.words.len(), "the template's room");
     let read = template.bytes();
     let mut reader = Reader::new(&read, template.words.as_ptr() as usize);
     let request = Request {
@@ -489,24 +491,6 @@ pub unsafe extern "system" fn message_box_w(
     kind: u32,
 ) -> i32 {
     let (text_arg, caption_arg) = (text as usize, caption as usize);
-    // SAFETY: the caller's strings, or null.
-    let (text, caption) = unsafe {
-        (
-            rtl::edge::InWStr::optional(text),
-            rtl::edge::InWStr::optional(caption),
-        )
-    };
-    // One unit past the most the box shows, so that a longer text is seen (and logged) as one.
-    let mut text_units = [0u16; MOST_TEXT + 1];
-    let text_length = text.map_or(0, |text| take_wide(text, &mut text_units));
-    let mut caption_units = [0u16; MOST_CAPTION];
-    let caption_length = match caption {
-        Some(caption) => take_wide(caption, &mut caption_units),
-        None => {
-            caption_units[..5].copy_from_slice(&ERROR_CAPTION[..5]);
-            5
-        }
-    };
     let call = Call {
         entry: &crate::spec::MessageBoxW,
         args: [
@@ -517,13 +501,24 @@ pub unsafe extern "system" fn message_box_w(
             0,
         ],
     };
-    message_box(
-        owner,
-        &text_units[..text_length],
-        &caption_units[..caption_length],
-        kind,
-        call,
-    )
+    // SAFETY: the caller's strings, or null.
+    let (text, caption) = unsafe {
+        (
+            rtl::edge::InWStr::optional(text),
+            rtl::edge::InWStr::optional(caption),
+        )
+    };
+    let with_caption = |text: &[u16]| match caption {
+        Some(caption) => with_wide(caption, |caption| {
+            message_box(owner, text, caption, kind, call)
+        }),
+        None => Some(message_box(owner, text, &ERROR_CAPTION[..5], kind, call)),
+    };
+    let shown = match text {
+        Some(text) => with_wide(text, with_caption).flatten(),
+        None => with_caption(&[]),
+    };
+    shown.unwrap_or_else(|| crate::failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0))
 }
 
 /// MessageBoxA: MessageBoxW's, the text and the caption converted from the ANSI code page.
@@ -539,20 +534,6 @@ pub unsafe extern "system" fn message_box_a(
     kind: u32,
 ) -> i32 {
     let (text_arg, caption_arg) = (text as usize, caption as usize);
-    // SAFETY: the caller's strings, or null.
-    let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
-    let text = text.map_or(&[][..], |text| text.bytes());
-    // As MessageBoxW's: one unit past the most the box shows.
-    let mut text_units = [0u16; MOST_TEXT + 1];
-    let text_length = take_narrow(text, &mut text_units);
-    let mut caption_units = [0u16; MOST_CAPTION];
-    let caption_length = match caption {
-        Some(caption) => take_narrow(caption.bytes(), &mut caption_units),
-        None => {
-            caption_units[..5].copy_from_slice(&ERROR_CAPTION[..5]);
-            5
-        }
-    };
     let call = Call {
         entry: &crate::spec::MessageBoxA,
         args: [
@@ -563,40 +544,56 @@ pub unsafe extern "system" fn message_box_a(
             0,
         ],
     };
-    message_box(
-        owner,
-        &text_units[..text_length],
-        &caption_units[..caption_length],
-        kind,
-        call,
-    )
+    // SAFETY: the caller's strings, or null.
+    let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
+    let text = text.map_or(&[][..], |text| text.bytes());
+    crate::with_wide(text, |text| match caption {
+        Some(caption) => crate::with_wide(caption.bytes(), |caption| {
+            message_box(owner, text, caption, kind, call)
+        }),
+        None => Some(message_box(owner, text, &ERROR_CAPTION[..5], kind, call)),
+    })
+    .flatten()
+    .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// MessageBoxA takes as many characters of its text and caption as MessageBoxW: its text one
-    /// past the most the box shows (so that a longer one is logged and cut there), its caption
-    /// MOST_CAPTION, with no unit kept back for a terminator.
+    /// A box's template has room for its strings whole, however long: a 10,000-unit text and a
+    /// 1,000-unit caption under the most buttons and an icon, written within the room counted.
     #[test]
-    fn narrow_and_wide_strings_are_cut_alike() {
-        for (length, room, taken) in [
-            (5, MOST_TEXT + 1, 5),
-            (MOST_TEXT, MOST_TEXT + 1, MOST_TEXT),
-            (MOST_TEXT + 50, MOST_TEXT + 1, MOST_TEXT + 1),
-            (MOST_CAPTION, MOST_CAPTION, MOST_CAPTION),
-            (MOST_CAPTION + 1, MOST_CAPTION, MOST_CAPTION),
-        ] {
-            let narrow = std::vec![b'm'; length];
-            let mut wide: std::vec::Vec<u16> = std::vec![u16::from(b'm'); length];
-            wide.push(0);
-            let (mut from_narrow, mut from_wide) = (std::vec![0u16; room], std::vec![0u16; room]);
-            assert_eq!(take_narrow(&narrow, &mut from_narrow), taken, "A, {length}");
-            // SAFETY: the test's own string, NUL-terminated.
-            let text = unsafe { rtl::edge::InWStr::new(wide.as_ptr()) };
-            assert_eq!(take_wide(text, &mut from_wide), taken, "W, {length}");
-            assert_eq!(from_narrow, from_wide);
+    fn a_template_holds_long_strings() {
+        let text = std::vec![u16::from(b'm'); 10_000];
+        let caption = std::vec![u16::from(b'c'); 1000];
+        let size = template_words(text.len(), caption.len());
+        let mut words = std::vec![0u16; size];
+        let mut template = Template {
+            words: &mut words,
+            at: 0,
+        };
+        build(&mut template, &text, &caption, 3 | 0x10);
+        assert!(template.at <= size, "{} words in {size}", template.at);
+        let read = template.bytes();
+        let mut reader = Reader::new(&read, template.words.as_ptr() as usize);
+        let mut face = [0u16; rtl::gdi::LF_FACESIZE];
+        let header = dialog::read_header(&mut reader, &mut face).unwrap();
+        let dialog::Field::Text(at) = header.title else {
+            panic!("a caption");
+        };
+        // SAFETY: the template's own string, terminated in it.
+        let title = unsafe { rtl::cstr::units_until_nul(at as *const u16) };
+        assert_eq!(title, &caption[..]);
+        let mut last = None;
+        for _ in 0..header.count {
+            last = Some(dialog::read_item(&mut reader, false).unwrap());
         }
+        let dialog::Field::Text(at) = last.unwrap().title else {
+            panic!("the text's static last");
+        };
+        // SAFETY: as above.
+        let shown = unsafe { rtl::cstr::units_until_nul(at as *const u16) };
+        assert_eq!(shown, &text[..]);
     }
 }
