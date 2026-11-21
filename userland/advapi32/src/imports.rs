@@ -13,7 +13,6 @@
 
 use core::ffi::CStr;
 use core::marker::PhantomData;
-use core::ptr::NonNull;
 
 use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::status::{checked, NtStatus};
@@ -252,53 +251,24 @@ impl Drop for Wide {
     }
 }
 
+/// The process heap, through this DLL's imports (RtlAllocateHeap and RtlFreeHeap on the PEB's
+/// ProcessHeap).
+pub struct ProcessHeap;
+
+impl rtl::heap::ProcessHeap for ProcessHeap {
+    fn allocate(size: usize) -> *mut u8 {
+        // SAFETY: a plain allocation.
+        unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size) }
+    }
+
+    unsafe fn free(block: *mut u8) {
+        // SAFETY: the caller's contract: a block of the process heap this DLL took, freed once.
+        unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, block) };
+    }
+}
+
 /// A zeroed block of the process heap, freed when dropped.
-pub struct HeapBlock {
-    at: NonNull<u8>,
-    size: usize,
-}
-
-impl HeapBlock {
-    /// `size` bytes, zeroed: none when the heap has no room.
-    pub fn new(size: usize) -> Option<HeapBlock> {
-        // SAFETY: a plain allocation of at least a byte.
-        let at =
-            unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size.max(1)) };
-        NonNull::new(at).map(|at| HeapBlock { at, size })
-    }
-
-    /// The block's bytes.
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the block holds `size` initialized (zeroed) bytes, ours alone while it lives.
-        unsafe { core::slice::from_raw_parts(self.at.as_ptr(), self.size) }
-    }
-
-    /// The block's bytes, to write.
-    pub fn bytes_mut(&mut self) -> &mut [u8] {
-        // SAFETY: as in `bytes`, borrowed mutably through the block.
-        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.size) }
-    }
-
-    /// The block's bytes as UTF-16 units (an odd last byte left out).
-    pub fn units(&self) -> &[u16] {
-        // SAFETY: the heap's blocks are 8-aligned (its granularity); the block holds `size`
-        // initialized bytes, any of which make a unit.
-        unsafe { core::slice::from_raw_parts(self.at.as_ptr().cast(), self.size / 2) }
-    }
-
-    /// The block's bytes as UTF-16 units, to write.
-    pub fn units_mut(&mut self) -> &mut [u16] {
-        // SAFETY: as in `units`, borrowed mutably through the block.
-        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), self.size / 2) }
-    }
-}
-
-impl Drop for HeapBlock {
-    fn drop(&mut self) {
-        // SAFETY: our own block, freed once.
-        unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, self.at.as_ptr()) };
-    }
-}
+pub type HeapBlock = rtl::heap::Block<ProcessHeap>;
 
 /// The OBJECT_ATTRIBUTES the key services are handed: a name below a root key (zero: an absolute
 /// name) and the OBJ_* attributes, with no security descriptor or quality of service. The name

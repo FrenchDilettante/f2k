@@ -15,7 +15,6 @@
 //! tolerates exactly that one, for the stubs' log line).
 
 use core::ffi::CStr;
-use core::ptr::NonNull;
 
 use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Size, TextMetricW};
 use rtl::heap::HEAP_ZERO_MEMORY;
@@ -296,35 +295,24 @@ impl Caller {
     }
 }
 
+/// The process heap, through this DLL's imports (RtlAllocateHeap and RtlFreeHeap on the PEB's
+/// ProcessHeap).
+pub struct ProcessHeap;
+
+impl rtl::heap::ProcessHeap for ProcessHeap {
+    fn allocate(size: usize) -> *mut u8 {
+        // SAFETY: a plain allocation.
+        unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size) }
+    }
+
+    unsafe fn free(block: *mut u8) {
+        // SAFETY: the caller's contract: a block of the process heap this DLL took, freed once.
+        unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, block) };
+    }
+}
+
 /// A zeroed block of the process heap, freed when dropped.
-pub struct HeapBlock {
-    at: NonNull<u8>,
-    size: usize,
-}
-
-impl HeapBlock {
-    /// `size` bytes, zeroed: none when the heap has no room.
-    pub fn new(size: usize) -> Option<HeapBlock> {
-        // SAFETY: a plain allocation of at least a byte.
-        let at =
-            unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size.max(1)) };
-        NonNull::new(at).map(|at| HeapBlock { at, size })
-    }
-
-    /// The block's bytes as UTF-16 units, to write (an odd last byte left out).
-    pub fn units_mut(&mut self) -> &mut [u16] {
-        // SAFETY: the heap's blocks are 8-aligned (its granularity); the block holds `size`
-        // initialized (zeroed) bytes, ours alone while it lives, any of which make a unit.
-        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), self.size / 2) }
-    }
-}
-
-impl Drop for HeapBlock {
-    fn drop(&mut self) {
-        // SAFETY: our own block, freed once.
-        unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, self.at.as_ptr()) };
-    }
-}
+pub type HeapBlock = rtl::heap::Block<ProcessHeap>;
 
 // --- kernel32 ------------------------------------------------------------------------------------
 
@@ -626,15 +614,14 @@ pub fn create_pattern_brush(bitmap: usize) -> Result<u32, NtStatus> {
 /// A zeroed block of `size` bytes of the process heap, kept until [`heap_free`]: its address; none
 /// when the heap has no room.
 pub fn heap_alloc(size: usize) -> Option<usize> {
-    // SAFETY: a plain allocation of at least a byte.
-    let at = unsafe { raw::RtlAllocateHeap(raw::process_heap(), HEAP_ZERO_MEMORY, size.max(1)) };
+    let at = <ProcessHeap as rtl::heap::ProcessHeap>::allocate(size.max(1));
     (!at.is_null()).then_some(at as usize)
 }
 
 /// Free a block [`heap_alloc`] answered.
 pub fn heap_free(block: usize) {
     // SAFETY: a block of the process heap this DLL took, freed once (its owner's contract).
-    unsafe { raw::RtlFreeHeap(raw::process_heap(), 0, block as *mut u8) };
+    unsafe { <ProcessHeap as rtl::heap::ProcessHeap>::free(block as *mut u8) };
 }
 
 // --- The font files: found through kernel32, opened through ntdll ------------------------------

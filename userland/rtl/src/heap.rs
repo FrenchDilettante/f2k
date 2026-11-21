@@ -26,9 +26,14 @@
 //! The process's heaps are listed in its PEB ([`HeapList`]: NumberOfHeaps, MaximumNumberOfHeaps,
 //! ProcessHeaps), under a lock of the process's own; a handle that is not listed is no heap, and
 //! the calls refuse it without touching it.
+//!
+//! The system DLLs above ntdll hold their scratch memory in blocks of the process heap they reach
+//! through their own imports ([`Block`], over a DLL's [`ProcessHeap`] calls).
 
 use core::cell::Cell;
+use core::marker::PhantomData;
 use core::mem::size_of;
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicI32, AtomicU32};
 
 use crate::critsec::{CriticalSection, System};
@@ -871,6 +876,77 @@ impl Process {
     }
 }
 
+// --- A system DLL's blocks of its process heap
+// ---------------------------------------------------------
+
+/// A system DLL's calls on its process's heap, as it imports them (ntdll's RtlAllocateHeap and
+/// RtlFreeHeap on the PEB's ProcessHeap, or its host tests' stand-ins): what a [`Block`] is had and
+/// freed through. Each DLL implements it over its own imports, so its import table stays its own.
+pub trait ProcessHeap {
+    /// `size` bytes (at least one), zeroed (HEAP_ZERO_MEMORY), at the heap's 8-byte granularity:
+    /// null when the heap has no room.
+    fn allocate(size: usize) -> *mut u8;
+
+    /// Free `block`.
+    ///
+    /// # Safety
+    ///
+    /// `block` is one [`ProcessHeap::allocate`] answered, not freed since, and nothing uses it
+    /// past the call.
+    unsafe fn free(block: *mut u8);
+}
+
+/// A zeroed block of the process heap, had through `H` and freed through it when dropped: a system
+/// DLL's scratch memory (a conversion's buffer, a service's answer).
+pub struct Block<H: ProcessHeap> {
+    at: NonNull<u8>,
+    size: usize,
+    heap: PhantomData<H>,
+}
+
+impl<H: ProcessHeap> Block<H> {
+    /// `size` bytes, zeroed: none when the heap has no room.
+    pub fn new(size: usize) -> Option<Self> {
+        NonNull::new(H::allocate(size.max(1))).map(|at| Block {
+            at,
+            size,
+            heap: PhantomData,
+        })
+    }
+
+    /// The block's bytes.
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: the block holds `size` initialized (zeroed) bytes, ours alone while it lives.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr(), self.size) }
+    }
+
+    /// The block's bytes, to write.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as in `bytes`, borrowed mutably through the block.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.size) }
+    }
+
+    /// The block's bytes as UTF-16 units (an odd last byte left out).
+    pub fn units(&self) -> &[u16] {
+        // SAFETY: the heap's blocks are 8-aligned (its granularity); the block holds `size`
+        // initialized bytes, any of which make a unit.
+        unsafe { core::slice::from_raw_parts(self.at.as_ptr().cast(), self.size / 2) }
+    }
+
+    /// The block's bytes as UTF-16 units, to write.
+    pub fn units_mut(&mut self) -> &mut [u16] {
+        // SAFETY: as in `units`, borrowed mutably through the block.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), self.size / 2) }
+    }
+}
+
+impl<H: ProcessHeap> Drop for Block<H> {
+    fn drop(&mut self) {
+        // SAFETY: our own block, freed once.
+        unsafe { H::free(self.at.as_ptr()) };
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     /// The `len` bytes of a block a test just got from a live heap (or past it, within the same
@@ -1381,5 +1457,56 @@ pub(crate) mod tests {
         // SAFETY: `process.list` points at the local `list`, alive for the test, and no other
         // reference to it is live while the count is read.
         assert_eq!(unsafe { &*process.list }.count, HEAPS - 1);
+    }
+
+    /// A DLL's process heap on the host's allocator, counting its live blocks.
+    struct HostHeap;
+
+    std::thread_local! {
+        static LIVE_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    impl ProcessHeap for HostHeap {
+        fn allocate(size: usize) -> *mut u8 {
+            LIVE_BLOCKS.with(|live| live.set(live.get() + 1));
+            let layout = std::alloc::Layout::from_size_align(size + 8, 8).unwrap();
+            // SAFETY: a nonzero size; the block's first word keeps its size for the free.
+            unsafe {
+                let block = std::alloc::alloc_zeroed(layout);
+                (block as *mut usize).write(size);
+                block.add(8)
+            }
+        }
+
+        unsafe fn free(block: *mut u8) {
+            LIVE_BLOCKS.with(|live| live.set(live.get() - 1));
+            // SAFETY: a block `allocate` made, its size the word before it.
+            unsafe {
+                let start = block.sub(8);
+                let size = (start as *const usize).read();
+                std::alloc::dealloc(
+                    start,
+                    std::alloc::Layout::from_size_align(size + 8, 8).unwrap(),
+                );
+            }
+        }
+    }
+
+    /// A block is zeroed, its units half its bytes (an odd byte left out), and given back when
+    /// dropped; one of no bytes is still had (a byte of the heap's) and given back.
+    #[test]
+    fn a_block_is_zeroed_and_freed_when_dropped() {
+        let mut block = Block::<HostHeap>::new(7).unwrap();
+        assert_eq!(block.bytes(), [0; 7]);
+        assert_eq!(block.units().len(), 3);
+        block.units_mut()[1] = 0x20AC;
+        assert_eq!(block.bytes()[2..4], [0xAC, 0x20]);
+        block.bytes_mut()[6] = 1;
+        assert_eq!(block.units(), [0, 0x20AC, 0]);
+        let empty = Block::<HostHeap>::new(0).unwrap();
+        assert!(empty.bytes().is_empty());
+        assert_eq!(LIVE_BLOCKS.with(|live| live.get()), 2);
+        drop((block, empty));
+        assert_eq!(LIVE_BLOCKS.with(|live| live.get()), 0);
     }
 }
