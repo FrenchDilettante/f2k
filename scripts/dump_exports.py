@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-Dump a real DLL's export and import tables: the facts its userland/<dll>/exports.toml is catalogued
-from, and the modules it calls into.
+Dump a real module's export and import tables: the facts its spec (userland/<dll>/exports.toml,
+kernel/exports.toml, kernel/hal_exports.toml) is catalogued from, and the modules it calls into.
 
-Each DLL given (copied off a real machine: the binaries themselves never enter the repository)
-writes userland/<dll>/exports-<file version>.txt, one line per export, in ordinal order:
+Each module given (copied off a real machine: the binaries themselves never enter the
+repository) writes exports-<file version>.txt, one line per export, in ordinal order — under
+userland/<name>/, or, for a kernel-mode image (native subsystem: ntoskrnl.exe, hal.dll, a .sys),
+at the kernel root as <name>-exports-<file version>.txt, beside its spec:
 
   <ordinal> <name>                 a function
   <ordinal> <name> data            an export in a section without code (a variable)
   <ordinal> <name> -> <target>     forwarded to another module's export (MODULE.Export)
   <ordinal> -                      exported by ordinal only
 
-and userland/<dll>/imports-<file version>.txt, its import table: each module it imports from, in
+and imports-<file version>.txt beside it, its import table: each module it imports from, in
 the table's order and spelled as the image spells it, then that module's imports, one per line:
 
   [<module>]                       a module the loader binds at load time
@@ -26,8 +28,9 @@ folded into the spec, they go.
 The PE reader is scripts/pe.py's (the standard library only, no pefile); a PE32+ image is refused.
 
 Usage:
-  dump_exports.py <dll>... [--out DIR]   (DIR/<dll>/{exports,imports}-<version>.txt; DIR defaults to
-                                         userland)
+  dump_exports.py <module>... [--out DIR]   (DIR/<name>/{exports,imports}-<version>.txt; without --out,
+                                            userland/<name>/ for a user-mode image, the kernel root
+                                            as <name>-{exports,imports}-<version>.txt for a native one)
 """
 import argparse
 import hashlib
@@ -75,8 +78,18 @@ def dump(path: Path, out: Path | None) -> list[Path]:
         raise PeError("not PE32")
     name, entries = exports(image)
     version = file_version(image) or "unversioned"
-    dll = name.lower().removesuffix(".dll")
-    directory = (out or REPO_ROOT / "userland") / dll
+    stem = name.lower()
+    for ext in (".dll", ".exe", ".sys"):
+        stem = stem.removesuffix(ext)
+    if out is not None:
+        directory, prefix = out / stem, ""
+    elif image.subsystem == 1:
+        # A kernel-mode image (ntoskrnl.exe, hal.dll, a .sys): its dumps sit at the kernel root,
+        # beside its spec (kernel/exports.toml, kernel/hal_exports.toml), not in a directory of
+        # their own.
+        directory, prefix = REPO_ROOT / "kernel", f"{stem}-"
+    else:
+        directory, prefix = REPO_ROOT / "userland" / stem, ""
     provenance = (
         f"# linked {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(image.timestamp))} UTC, "
         f"sha256 {hashlib.sha256(data).hexdigest()}"
@@ -106,7 +119,7 @@ def dump(path: Path, out: Path | None) -> list[Path]:
     directory.mkdir(parents=True, exist_ok=True)
     written = []
     for kind, text in (("exports", lines), ("imports", import_lines)):
-        target = directory / f"{kind}-{version}.txt"
+        target = directory / f"{prefix}{kind}-{version}.txt"
         target.write_text("\n".join(text) + "\n")
         written.append(target)
     return written
@@ -115,7 +128,8 @@ def dump(path: Path, out: Path | None) -> list[Path]:
 def main():
     parser = argparse.ArgumentParser(description="dump real DLLs' export and import tables")
     parser.add_argument("dlls", nargs="+", type=Path)
-    parser.add_argument("--out", type=Path, help="the directory to write <dll>/ into (default userland/)")
+    parser.add_argument("--out", type=Path,
+                        help="the directory to write <name>/ into (default: userland/<name>/, the kernel root for a native image)")
     args = parser.parse_args()
     for path in args.dlls:
         try:

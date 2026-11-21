@@ -90,6 +90,8 @@ def extract_icons(image: Image) -> list[bytes]:
 def write_toml(path: Path, source: str, image: Image, module_imports, icons: list[tuple[Path, int]]):
     linked = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(image.timestamp))
     sha256 = hashlib.sha256(image.data).hexdigest()
+    lower = source.lower()
+    kind = "dll" if lower.endswith(".dll") else "sys" if lower.endswith(".sys") else "exe"
     lines = [
         f"# {Path(source).name}: its DLL dependencies, written by scripts/pe_deps.py.",
         f"# Copied off the real machine; sha256 {sha256[:16]}..., linked {linked}.",
@@ -97,7 +99,7 @@ def write_toml(path: Path, source: str, image: Image, module_imports, icons: lis
         "",
         "[image]",
         f"file = {toml_string(Path(source).name)}",
-        f"kind = {toml_string('dll' if source.lower().endswith('.dll') else 'exe')}",
+        f"kind = {toml_string(kind)}",
         f"machine = {toml_string(MACHINES.get(image.machine, hex(image.machine)))}",
         f"subsystem = {toml_string(SUBSYSTEMS.get(image.subsystem, str(image.subsystem)))}",
         f"base = {toml_string(f'0x{image.base:08X}')}",

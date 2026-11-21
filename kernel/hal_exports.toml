@@ -19,13 +19,17 @@
 #   the IPI and start-processor entries).
 #
 # The format is the system DLLs' (userland/kernel32/exports.toml's header documents every
-# key), read through tools/exportgen. Records carry no ordinals: the HAL's public header is
-# flavor-agnostic, so the real machine's export table (ordinals included) only enters with
-# the .sys loader, which needs them for import resolution.
+# key), read through tools/exportgen. Records carry the real machine's hal.dll ordinals (the
+# multi-CPU flavor's table, folded in by scripts/catalogue_exports.py), which the .sys loader
+# needs for import-by-ordinal resolution; the exports beyond this surface sit catalogued at the
+# end (name and ordinal, no impl) and generate nothing — the loader's name table carries the
+# implemented bodies only.
 #
 # Note: MmMapIoSpace also appears in kernel/exports.toml (catalogued there, where Windows 2000
 # exports it from ntoskrnl); that record generates nothing until implemented, so the body
 # symbol here is free — implementing it in the kernel's spec later needs its own body name.
+# It is internal here: the platform's hal.dll does not export it, so the compatibility report
+# shows it under ntoskrnl alone.
 
 convention = "stdcall"
 
@@ -72,72 +76,84 @@ name = "READ_PORT_UCHAR"
 group = "port"
 args = ["ptr Port"]
 impl = { native = "READ_PORT_UCHAR" }
+ordinal = 87
 
 [[export]]
 name = "READ_PORT_USHORT"
 group = "port"
 args = ["ptr Port"]
 impl = { native = "READ_PORT_USHORT" }
+ordinal = 89
 
 [[export]]
 name = "READ_PORT_ULONG"
 group = "port"
 args = ["ptr Port"]
 impl = { native = "READ_PORT_ULONG" }
+ordinal = 88
 
 [[export]]
 name = "WRITE_PORT_UCHAR"
 group = "port"
 args = ["ptr Port", "u32 Value"]
 impl = { native = "WRITE_PORT_UCHAR" }
+ordinal = 93
 
 [[export]]
 name = "WRITE_PORT_USHORT"
 group = "port"
 args = ["ptr Port", "u32 Value"]
 impl = { native = "WRITE_PORT_USHORT" }
+ordinal = 95
 
 [[export]]
 name = "WRITE_PORT_ULONG"
 group = "port"
 args = ["ptr Port", "u32 Value"]
 impl = { native = "WRITE_PORT_ULONG" }
+ordinal = 94
 
 [[export]]
 name = "READ_PORT_BUFFER_UCHAR"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_PORT_BUFFER_UCHAR" }
+ordinal = 84
 
 [[export]]
 name = "READ_PORT_BUFFER_USHORT"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_PORT_BUFFER_USHORT" }
+ordinal = 86
 
 [[export]]
 name = "READ_PORT_BUFFER_ULONG"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_PORT_BUFFER_ULONG" }
+ordinal = 85
 
 [[export]]
 name = "WRITE_PORT_BUFFER_UCHAR"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_PORT_BUFFER_UCHAR" }
+ordinal = 90
 
 [[export]]
 name = "WRITE_PORT_BUFFER_USHORT"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_PORT_BUFFER_USHORT" }
+ordinal = 92
 
 [[export]]
 name = "WRITE_PORT_BUFFER_ULONG"
 group = "port"
 args = ["ptr Port", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_PORT_BUFFER_ULONG" }
+ordinal = 91
 
 # --- Memory-mapped register access -----------------------------------------------------------
 
@@ -146,72 +162,84 @@ name = "READ_REGISTER_UCHAR"
 group = "register"
 args = ["ptr Register"]
 impl = { native = "READ_REGISTER_UCHAR" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "READ_REGISTER_USHORT"
 group = "register"
 args = ["ptr Register"]
 impl = { native = "READ_REGISTER_USHORT" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "READ_REGISTER_ULONG"
 group = "register"
 args = ["ptr Register"]
 impl = { native = "READ_REGISTER_ULONG" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_UCHAR"
 group = "register"
 args = ["ptr Register", "u32 Value"]
 impl = { native = "WRITE_REGISTER_UCHAR" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_USHORT"
 group = "register"
 args = ["ptr Register", "u32 Value"]
 impl = { native = "WRITE_REGISTER_USHORT" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_ULONG"
 group = "register"
 args = ["ptr Register", "u32 Value"]
 impl = { native = "WRITE_REGISTER_ULONG" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "READ_REGISTER_BUFFER_UCHAR"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_REGISTER_BUFFER_UCHAR" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "READ_REGISTER_BUFFER_USHORT"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_REGISTER_BUFFER_USHORT" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "READ_REGISTER_BUFFER_ULONG"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "READ_REGISTER_BUFFER_ULONG" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_BUFFER_UCHAR"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_REGISTER_BUFFER_UCHAR" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_BUFFER_USHORT"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_REGISTER_BUFFER_USHORT" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 [[export]]
 name = "WRITE_REGISTER_BUFFER_ULONG"
 group = "register"
 args = ["ptr Register", "ptr Buffer", "u32 Count"]
 impl = { native = "WRITE_REGISTER_BUFFER_ULONG" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 
 # --- Interrupts ------------------------------------------------------------------------------
 
@@ -220,6 +248,7 @@ name = "HalGetInterruptVector"
 group = "interrupt"
 args = ["i32 InterfaceType", "u32 BusNumber", "u32 BusInterruptLevel", "u32 BusInterruptVector", "ptr Irql", "ptr Affinity"]
 impl = { native = "HalGetInterruptVector" }
+ordinal = 36
 
 [[export]]
 name = "HalEnableSystemInterrupt"
@@ -227,6 +256,7 @@ group = "interrupt"
 args = ["u32 Vector", "u32 Irql", "i32 Mode"]
 fails = "0"
 impl = { native = "HalEnableSystemInterrupt" }
+ordinal = 28
 note = "unmasks the line of a connected interrupt object; FALSE for a line with none, which stays masked"
 
 [[export]]
@@ -235,6 +265,7 @@ group = "interrupt"
 args = ["u32 Vector", "u32 Irql"]
 fails = "void"
 impl = { native = "HalDisableSystemInterrupt" }
+ordinal = 26
 note = "the KIRQL by value (one stack slot); masks the line"
 
 # --- Interval clock and real-time clock ------------------------------------------------------
@@ -245,6 +276,7 @@ group = "clock"
 args = ["ptr TimeFields"]
 fails = "0"
 impl = { native = "HalQueryRealTimeClock" }
+ordinal = 43
 
 [[export]]
 name = "HalSetRealTimeClock"
@@ -252,12 +284,14 @@ group = "clock"
 args = ["ptr TimeFields"]
 fails = "0"
 impl = { stub = "the CMOS write path in hw::rtc, landed with the clock slice that needs it" }
+ordinal = 53
 
 [[export]]
 name = "HalSetTimeIncrement"
 group = "clock"
 args = ["u32 DesiredIncrement"]
 impl = { native = "HalSetTimeIncrement" }
+ordinal = 54
 note = "declined: the interval clock owns the timer's rate; returns the increment in effect (100144, the captured one)"
 
 # --- DMA -------------------------------------------------------------------------------------
@@ -268,6 +302,7 @@ group = "dma"
 args = ["ptr Adapter", "u32 Length", "ptr LogicalAddress", "boolean CacheEnabled"]
 fails = "0"
 impl = { native = "HalAllocateCommonBuffer" }
+ordinal = 21
 note = "a physically contiguous common buffer below 4 GiB over the nonpaged pool, its logical address the physical one (mem/dma.rs); one bus, and x86 DMA is cache-coherent, so Adapter and CacheEnabled name nothing here"
 
 [[export]]
@@ -276,6 +311,7 @@ group = "dma"
 args = ["ptr Adapter", "u32 Length", "u64 LogicalAddress", "ptr VirtualAddress", "boolean CacheEnabled"]
 fails = "void"
 impl = { native = "HalFreeCommonBuffer" }
+ordinal = 31
 note = "frees the common buffer named by Length, LogicalAddress and VirtualAddress (mem/dma.rs); 24 bytes of arguments"
 
 [[export]]
@@ -283,6 +319,7 @@ name = "HalGetDmaAlignmentRequirement"
 group = "dma"
 args = []
 impl = { native = "HalGetDmaAlignmentRequirement" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 note = "1 on x86: no alignment requirement past the natural one"
 
 # --- Bus data (PCI config space) -------------------------------------------------------------
@@ -292,6 +329,7 @@ name = "HalGetBusData"
 group = "bus"
 args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Length"]
 impl = { native = "HalGetBusData" }
+ordinal = 33
 note = "PCIConfiguration (4): 0 = no such bus, 2 with VendorID 0xFFFF = empty slot"
 
 [[export]]
@@ -299,18 +337,21 @@ name = "HalSetBusData"
 group = "bus"
 args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Length"]
 impl = { native = "HalSetBusData" }
+ordinal = 48
 
 [[export]]
 name = "HalGetBusDataByOffset"
 group = "bus"
 args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Offset", "u32 Length"]
 impl = { native = "HalGetBusDataByOffset" }
+ordinal = 34
 
 [[export]]
 name = "HalSetBusDataByOffset"
 group = "bus"
 args = ["i32 BusDataType", "u32 BusNumber", "u32 SlotNumber", "ptr Buffer", "u32 Offset", "u32 Length"]
 impl = { native = "HalSetBusDataByOffset" }
+ordinal = 49
 
 # --- MMIO mapping ----------------------------------------------------------------------------
 
@@ -320,6 +361,7 @@ group = "mmio"
 args = ["u64 PhysicalAddress", "u32 NumberOfBytes", "boolean CacheEnable"]
 fails = "0"
 impl = { native = "MmMapIoSpace" }
+internal = true  # not a hal.dll export of the platform's (macro / ntoskrnl's); the body stays for the .sys loader
 note = "maps the device range into the reserved MMIO region (mem/dma.rs), uncached unless CacheEnable"
 
 # --- IRQL ------------------------------------------------------------------------------------
@@ -329,6 +371,7 @@ name = "KeGetCurrentIrql"
 group = "irql"
 args = []
 impl = { native = "KeGetCurrentIrql" }
+ordinal = 76
 note = "the processor's IRQL, as its PCR keeps it (a KIRQL, in AL): what the drvload capture's DriverEntry, dispatch routines and unload read, PASSIVE_LEVEL"
 
 # --- Multi-processor -------------------------------------------------------------------------
@@ -339,6 +382,7 @@ group = "mp"
 args = ["u32 Mask"]
 fails = "void"
 impl = { stub = "the APIC slice: the IPI through the local APIC's interrupt command register" }
+ordinal = 46
 
 [[export]]
 name = "HalStartNextProcessor"
@@ -346,3 +390,279 @@ group = "mp"
 args = ["ptr LoaderBlock", "ptr ProcessorState"]
 fails = "0"
 impl = { stub = "the APIC/MP slice: starting the next processor through its local APIC (INIT-SIPI-SIPI)" }
+ordinal = 55
+
+# --- not implemented yet: the rest of HAL.dll 5.0.2195.6691's export table, by ordinal -----------
+
+[[export]]
+name = "ExAcquireFastMutex"
+ordinal = 1
+
+[[export]]
+name = "ExReleaseFastMutex"
+ordinal = 2
+
+[[export]]
+name = "ExTryToAcquireFastMutex"
+ordinal = 3
+
+[[export]]
+name = "HalClearSoftwareInterrupt"
+ordinal = 4
+
+[[export]]
+name = "HalRequestSoftwareInterrupt"
+ordinal = 5
+
+[[export]]
+name = "HalSystemVectorDispatchEntry"
+ordinal = 6
+
+[[export]]
+name = "KeAcquireQueuedSpinLock"
+ordinal = 7
+
+[[export]]
+name = "KeAcquireQueuedSpinLockRaiseToSynch"
+ordinal = 8
+
+[[export]]
+name = "KeAcquireSpinLockRaiseToSynch"
+ordinal = 9
+
+[[export]]
+name = "KeReleaseQueuedSpinLock"
+ordinal = 10
+
+[[export]]
+name = "KeTryToAcquireQueuedSpinLock"
+ordinal = 11
+
+[[export]]
+name = "KeTryToAcquireQueuedSpinLockRaiseToSynch"
+ordinal = 12
+
+[[export]]
+name = "KfAcquireSpinLock"
+ordinal = 13
+
+[[export]]
+name = "KfLowerIrql"
+ordinal = 14
+
+[[export]]
+name = "KfRaiseIrql"
+ordinal = 15
+
+[[export]]
+name = "KfReleaseSpinLock"
+ordinal = 16
+
+[[export]]
+name = "HalAcquireDisplayOwnership"
+ordinal = 17
+
+[[export]]
+name = "HalAdjustResourceList"
+ordinal = 18
+
+[[export]]
+name = "HalAllProcessorsStarted"
+ordinal = 19
+
+[[export]]
+name = "HalAllocateAdapterChannel"
+ordinal = 20
+
+[[export]]
+name = "HalAllocateCrashDumpRegisters"
+ordinal = 22
+
+[[export]]
+name = "HalAssignSlotResources"
+ordinal = 23
+
+[[export]]
+name = "HalBeginSystemInterrupt"
+ordinal = 24
+
+[[export]]
+name = "HalCalibratePerformanceCounter"
+ordinal = 25
+
+[[export]]
+name = "HalDisplayString"
+ordinal = 27
+
+[[export]]
+name = "HalEndSystemInterrupt"
+ordinal = 29
+
+[[export]]
+name = "HalFlushCommonBuffer"
+ordinal = 30
+
+[[export]]
+name = "HalGetAdapter"
+ordinal = 32
+
+[[export]]
+name = "HalGetEnvironmentVariable"
+ordinal = 35
+
+[[export]]
+name = "HalHandleNMI"
+ordinal = 37
+
+[[export]]
+name = "HalInitSystem"
+ordinal = 38
+
+[[export]]
+name = "HalInitializeProcessor"
+ordinal = 39
+
+[[export]]
+name = "HalMakeBeep"
+ordinal = 40
+
+[[export]]
+name = "HalProcessorIdle"
+ordinal = 41
+
+[[export]]
+name = "HalQueryDisplayParameters"
+ordinal = 42
+
+[[export]]
+name = "HalReadDmaCounter"
+ordinal = 44
+
+[[export]]
+name = "HalReportResourceUsage"
+ordinal = 45
+
+[[export]]
+name = "HalReturnToFirmware"
+ordinal = 47
+
+[[export]]
+name = "HalSetDisplayParameters"
+ordinal = 50
+
+[[export]]
+name = "HalSetEnvironmentVariable"
+ordinal = 51
+
+[[export]]
+name = "HalSetProfileInterval"
+ordinal = 52
+
+[[export]]
+name = "HalStartProfileInterrupt"
+ordinal = 56
+
+[[export]]
+name = "HalStopProfileInterrupt"
+ordinal = 57
+
+[[export]]
+name = "HalTranslateBusAddress"
+ordinal = 58
+
+[[export]]
+name = "IoAssignDriveLetters"
+ordinal = 59
+
+[[export]]
+name = "IoFlushAdapterBuffers"
+ordinal = 60
+
+[[export]]
+name = "IoFreeAdapterChannel"
+ordinal = 61
+
+[[export]]
+name = "IoFreeMapRegisters"
+ordinal = 62
+
+[[export]]
+name = "IoMapTransfer"
+ordinal = 63
+
+[[export]]
+name = "IoReadPartitionTable"
+ordinal = 64
+
+[[export]]
+name = "IoSetPartitionInformation"
+ordinal = 65
+
+[[export]]
+name = "IoWritePartitionTable"
+ordinal = 66
+
+[[export]]
+name = "KdComPortInUse"
+ordinal = 67
+data = true
+
+[[export]]
+name = "KdPortGetByte"
+ordinal = 68
+
+[[export]]
+name = "KdPortInitialize"
+ordinal = 69
+
+[[export]]
+name = "KdPortPollByte"
+ordinal = 70
+
+[[export]]
+name = "KdPortPutByte"
+ordinal = 71
+
+[[export]]
+name = "KdPortRestore"
+ordinal = 72
+
+[[export]]
+name = "KdPortSave"
+ordinal = 73
+
+[[export]]
+name = "KeAcquireSpinLock"
+ordinal = 74
+
+[[export]]
+name = "KeFlushWriteBuffer"
+ordinal = 75
+
+[[export]]
+name = "KeLowerIrql"
+ordinal = 77
+
+[[export]]
+name = "KeQueryPerformanceCounter"
+ordinal = 78
+
+[[export]]
+name = "KeRaiseIrql"
+ordinal = 79
+
+[[export]]
+name = "KeRaiseIrqlToDpcLevel"
+ordinal = 80
+
+[[export]]
+name = "KeRaiseIrqlToSynchLevel"
+ordinal = 81
+
+[[export]]
+name = "KeReleaseSpinLock"
+ordinal = 82
+
+[[export]]
+name = "KeStallExecutionProcessor"
+ordinal = 83

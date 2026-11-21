@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 The system DLLs' and the kernel's compatibility: every export of every spec (userland/<dll>/exports.toml,
-and ntoskrnl's, kernel/exports.toml), and how far the tests cover it.
+ntoskrnl's, kernel/exports.toml, and hal's, kernel/hal_exports.toml), and how far the tests cover it.
 
 The tests declare what they pin, as `dll.Export`: a corpus fixture's `[pins]`
 (tests/<dll>/<fixture>/fixture.toml: per block section, "*" for every block of the fixture) and a host
@@ -32,8 +32,9 @@ the forwarder runs, so its target's tests pin the forwarder, and the forwarder's
 (kernel32.HeapAlloc's blocks pin ntdll.RtlAllocateHeap). A test pinning both counts once.
 F2K-internal entry points (`internal = true`) are not Windows exports: the report leaves them out.
 
-A compatibility target is a DLL F2K runs as the real thing, copied off the real machine, instead of
-building its own: a tests/compat/*.toml whose image is a DLL (MFC42u.DLL). Its spec, if one is
+A compatibility target is a DLL or driver F2K runs as the real thing, copied off the real machine,
+instead of building its own: a tests/compat/*.toml whose image is a DLL or a .sys (MFC42u.DLL,
+fastfat.sys). Its spec, if one is
 catalogued, takes no part: it is left out of the treemap and the summary, and a pin can't name it.
 It shows among the studied binaries instead, its own imports as squares; a program importing from
 it shows that module as a link to its card, outside the program's coverage.
@@ -82,9 +83,11 @@ import f2kboot  # noqa: E402  (the corpus's declarations and captures, read as t
 import pe  # noqa: E402  (the PE reader: the built DLLs' import tables)
 from specs import module_key, zw_alias  # noqa: E402
 
-# Every spec, by its module's name: the system DLLs', and ntoskrnl's (the kernel's own exports).
+# Every spec, by its module's name: the system DLLs', and the kernel modules' — ntoskrnl's (the
+# kernel's own exports) and hal's (the HAL entry points compiled into the kernel).
 SPECS = {path.parent.name: path for path in sorted((REPO_ROOT / "userland").glob("*/exports.toml"))}
 SPECS["ntoskrnl"] = REPO_ROOT / "kernel" / "exports.toml"
+SPECS["hal"] = REPO_ROOT / "kernel" / "hal_exports.toml"
 # The DLLs F2K builds (`make userland`), whose import tables --check holds against the real DLLs'.
 BUILT_DLLS = REPO_ROOT / "target" / "userland" / "i686-f2k-pe" / "release"
 RESULTS = REPO_ROOT / "target" / "test-results"
@@ -256,7 +259,7 @@ def check(specs, fixtures, scenarios):
         if not f2kboot.PIN.fullmatch(pin):
             return "is not dll.Export"
         if dll not in specs:
-            return f"names no spec (userland/{dll}/exports.toml)"
+            return f"names no spec (userland/{dll}/exports.toml, kernel/exports.toml, kernel/hal_exports.toml)"
         if name not in specs[dll][1]:
             return f"is no export of {SPECS[dll].relative_to(REPO_ROOT)}"
         return None
@@ -942,10 +945,10 @@ def load_compat():
 
 
 def compat_targets():
-    """The compatibility targets: the DLLs among the studied binaries, which F2K runs as the real
-    thing rather than building its own. {module key (module_key): the TOML's name}."""
+    """The compatibility targets: the DLLs and drivers among the studied binaries, which F2K runs
+    as the real thing rather than building its own. {module key (module_key): the TOML's name}."""
     return {module_key(program["image"].get("file", program["name"])): program["name"]
-            for program in load_compat() if program["image"].get("kind") == "dll"}
+            for program in load_compat() if program["image"].get("kind") in ("dll", "sys")}
 
 
 def ordinal_index(specs):
@@ -1047,8 +1050,8 @@ def executable_sections(specs, data):
              "<p class=meta>One section per <code>tests/compat/&lt;name&gt;.toml</code> "
              "(<code>pe_deps.py</code> over the studied SP4 binaries), the fewest imports missing first: each "
              "imported name a square in the map's colours and marks, grouped by module. Hover a "
-             "square for the export's facts. A compatibility target is a DLL F2K runs as the real "
-             "one, copied off the machine: its card shows what it needs, and the programs "
+             "square for the export's facts. A compatibility target is a DLL or driver F2K runs as "
+             "the real one, copied off the machine: its card shows what it needs, and the programs "
              "importing from it link there.</p>"]
     parts.append('<div class="exe-list">')
     for program in ordered:
@@ -1060,7 +1063,7 @@ def executable_sections(specs, data):
                 count = len(module["names"])
                 blocks.append(f'<div class=mod>{e(module["dll"])} <span class="mod-count">{count} '
                               f'import{"s" if count != 1 else ""}</span>{tag}</div>'
-                              f'<div class="meta target-link">Compatibility target: the real DLL, '
+                              f'<div class="meta target-link">Compatibility target: the real module, '
                               f'<a href="#compat-{e(target)}">see its card</a></div>')
                 continue
             squares = []

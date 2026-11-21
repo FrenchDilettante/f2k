@@ -480,7 +480,8 @@ pub fn check_kernel(spec: &Spec) -> Result<(), String> {
 /// whose reason names the slice that lands it (the L6 DMA/MMIO slice, the APIC/MP slice) — the
 /// HAL's stubs are real bodies that fail the way the export fails, kept in the link like the
 /// natives, so the .sys loader can resolve them by name. No system services, no forwarders, no
-/// variables.
+/// variables. The rest of the platform's hal.dll table sits catalogued (name and ordinal, no
+/// impl): it generates nothing — the loader's name table carries the implemented bodies only.
 pub fn check_hal(spec: &Spec) -> Result<(), String> {
     for export in &spec.exports {
         match &export.implementation {
@@ -502,12 +503,6 @@ pub fn check_hal(spec: &Spec) -> Result<(), String> {
                 return Err(format!("hal/{}: the HAL forwards nothing", export.name))
             }
         }
-    }
-    for catalogued in &spec.catalogued {
-        return Err(format!(
-            "hal/{}: catalogued without an impl: the HAL surface is implemented or stub-with-named-work",
-            catalogued.name
-        ));
     }
     Ok(())
 }
@@ -1482,14 +1477,16 @@ ordinal = 0x10
     }
 
     /// The HAL's spec is implemented or stub-with-named-work: natives and reasoned stubs pass
-    /// `check_hal`; a forwarder and a catalogued record (no impl) are refused.
+    /// `check_hal`, and so does a catalogued record (no impl — it generates nothing, the loader's
+    /// name table carrying the implemented bodies only); a forwarder is refused.
     #[test]
-    fn the_hal_spec_allows_natives_and_reasoned_stubs_only() {
+    fn the_hal_spec_allows_natives_reasoned_stubs_and_catalogued() {
         let hal = "[[group]]\nkey = \"mp\"\ntitle = \"mp\"\n[[group]]\nkey = \"port\"\ntitle = \"port\"\n\n\
                    [[export]]\nname = \"HalRequestIpi\"\ngroup = \"mp\"\nargs = [\"u32 Mask\"]\n\
                    fails = \"void\"\nimpl = { stub = \"the APIC slice: the IPI through the local APIC\" }\n\n\
                    [[export]]\nname = \"READ_PORT_UCHAR\"\ngroup = \"port\"\nargs = [\"ptr Port\"]\n\
-                   impl = { native = \"READ_PORT_UCHAR\" }\n";
+                   impl = { native = \"READ_PORT_UCHAR\" }\n\n\
+                   [[export]]\nname = \"HalMakeBeep\"\nordinal = 40\n";
         let spec = parse_spec(hal).unwrap();
         assert!(check_hal(&spec).is_ok());
 
@@ -1500,9 +1497,5 @@ ordinal = 0x10
         );
         let error = check_hal(&parse_spec(&forward).unwrap()).unwrap_err();
         assert!(error.contains("forwards nothing"), "{error}");
-
-        let catalogued = format!("{hal}\n[[export]]\nname = \"HalMakeBeep\"\n");
-        let error = check_hal(&parse_spec(&catalogued).unwrap()).unwrap_err();
-        assert!(error.contains("catalogued"), "{error}");
     }
 }

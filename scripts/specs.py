@@ -13,8 +13,11 @@ def zw_alias(name: str) -> str:
 
 
 def module_key(name: str) -> str:
-    """A module's name as the loader compares it: without regard to case, `.dll` implied."""
-    return name.lower().removesuffix(".dll")
+    """A module's name as the loader compares it: without regard to case, the extension
+    (`.dll` implied for the system DLLs, `.exe`/`.sys` for ntoskrnl and the drivers) dropped."""
+    for ext in (".dll", ".exe", ".sys"):
+        name = name.lower().removesuffix(ext)
+    return name
 
 
 # The characters a TOML basic string must escape, and their escapes: the quotation mark, the

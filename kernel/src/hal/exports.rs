@@ -1063,11 +1063,12 @@ mod tests {
         ));
     }
 
-    /// The catalog and the bodies agree: every record in kernel/hal_exports.toml has a name, a
-    /// group, and an impl — a native body or a stub with a nonempty reason naming its work — and
-    /// every record's `f2k_export_<body>` symbol is defined in this file.
+    /// The catalog and the bodies agree: every record in kernel/hal_exports.toml with an impl has
+    /// a name, a group, and exactly one of a native body or a stub with a nonempty reason naming
+    /// its work, and its `f2k_export_<body>` symbol is defined in this file. A record without an
+    /// impl is catalogued from the platform's table: no body, no group, nothing to check.
     #[test]
-    fn every_catalogued_entry_point_has_its_body_here() {
+    fn every_implemented_entry_point_has_its_body_here() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let spec_text =
             std::fs::read_to_string(manifest.join("hal_exports.toml")).expect("the spec reads");
@@ -1121,6 +1122,9 @@ mod tests {
         let mut names = Vec::new();
         for (name, group, native, stub) in &records {
             assert!(!name.is_empty(), "every record names its export");
+            if native.is_none() && stub.is_none() {
+                continue; // catalogued: no impl, so no group and no body
+            }
             assert!(groups.contains(group), "{name}: unknown group {group:?}");
             assert!(
                 native.is_some() ^ stub.is_some(),

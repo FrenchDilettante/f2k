@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Catalogue a DLL's real export table into its spec: fold userland/<dll>/exports-<version>.txt (written
-by scripts/dump_exports.py from the platform's own DLL) into userland/<dll>/exports.toml.
+Catalogue a module's real export table into its spec: fold userland/<dll>/exports-<version>.txt or
+kernel/<module>-exports-<version>.txt (written by scripts/dump_exports.py from the platform's own
+module) into the module's spec: userland/<dll>/exports.toml, or, for the kernel's modules, the spec
+at the kernel root beside the dump (kernel/exports.toml for ntoskrnl, kernel/hal_exports.toml for
+hal).
 
-Each DLL's directory holds one dump (folding several versions of a DLL together is not designed
-yet); its DLL name and file version are recorded as the dump gives them, in the heading of the
-spec's catalogued section. For each DLL:
+Each module's directory holds one dump (folding several versions of a module together is not
+designed yet); its module name and file version are recorded as the dump gives them, in the
+heading of the spec's catalogued section. For each module:
 
 - every export of the spec must be in the dump's table (an F2K-internal one excepted), and a
   forwarder exactly where the DLL forwards, to the same target: otherwise nothing is written;
@@ -18,7 +21,8 @@ spec's catalogued section. For each DLL:
 A rerun adds only what is missing. Once folded, the dumps go.
 
 Usage:
-  catalogue_exports.py [<dll>...]     (default: every userland/<dll>/ holding a dump)
+  catalogue_exports.py [<module>...]     (default: every module holding a dump: userland/<dll>/,
+                                         kernel/<module>-exports-<version>.txt)
 """
 import argparse
 import re
@@ -29,7 +33,9 @@ from pathlib import Path
 from specs import toml_string, zw_alias
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-USERLAND = REPO_ROOT / "userland"
+# The kernel modules' specs sit at the kernel root, beside their dumps (kernel/<module>-*-<ver>.txt).
+KERNEL_SPECS = {"ntoskrnl": REPO_ROOT / "kernel" / "exports.toml",
+                "hal": REPO_ROOT / "kernel" / "hal_exports.toml"}
 # The catalogued section's heading (the dump's DLL name and version follow it).
 CATALOGUED_HEADING = "# --- not implemented yet: the rest of "
 
@@ -53,13 +59,33 @@ def read_dump(path: Path):
     return source, table
 
 
-def the_dump(directory: Path):
-    """The directory's dump: (source, table)."""
-    dumps = sorted(directory.glob("exports-*.txt"))
-    if len(dumps) != 1:
-        sys.exit(f"{directory}: {len(dumps)} dumps; one per DLL (folding several versions of a DLL "
-                 f"together is not designed yet)")
-    return read_dump(dumps[0])
+def pending_dumps():
+    """Every pending export dump: {module name: the dump file}. Userland dumps sit in the DLL's
+    directory (userland/<dll>/exports-<version>.txt); the kernel modules' at the kernel root,
+    beside their specs (kernel/<module>-exports-<version>.txt). One dump per module."""
+    found = {}
+    paths = sorted((REPO_ROOT / "userland").glob("*/exports-*.txt")) + \
+        sorted((REPO_ROOT / "kernel").glob("*-exports-*.txt"))
+    for path in paths:
+        module = path.parent.name if path.parent != REPO_ROOT / "kernel" \
+            else path.name.split("-exports-", 1)[0]
+        if module in found:
+            sys.exit(f"{module}: {found[module].name} and {path.name}: one dump per module (folding "
+                     f"several versions of a module together is not designed yet)")
+        found[module] = path
+    return found
+
+
+def spec_of(module, dump: Path) -> Path:
+    """The module's spec: userland/<dll>/exports.toml, or the kernel root's for the kernel
+    modules."""
+    if dump.parent == REPO_ROOT / "kernel":
+        spec = KERNEL_SPECS.get(module)
+        if spec is None:
+            sys.exit(f"{module}: no spec at the kernel root for it (kernel/exports.toml, "
+                     f"kernel/hal_exports.toml)")
+        return spec
+    return dump.parent / "exports.toml"
 
 
 def check(dll, spec, table):
@@ -134,20 +160,22 @@ def new_spec(source):
 
 def main():
     parser = argparse.ArgumentParser(description="fold real export tables into the specs")
-    parser.add_argument("dlls", nargs="*")
+    parser.add_argument("modules", nargs="*")
     args = parser.parse_args()
-    dlls = args.dlls or sorted(p.parent.name for p in USERLAND.glob("*/exports-*.txt"))
+    dumps = pending_dumps()
+    modules = args.modules or sorted(dumps)
     plans, problems = [], []
-    for dll in dict.fromkeys(dlls):
-        directory = USERLAND / dll
-        source, table = the_dump(directory)
-        path = directory / "exports.toml"
+    for module in dict.fromkeys(modules):
+        if module not in dumps:
+            sys.exit(f"{module}: no export dump for it (scripts/dump_exports.py)")
+        source, table = read_dump(dumps[module])
+        path = spec_of(module, dumps[module])
         if path.is_file():
             text = path.read_text()
             spec = tomllib.loads(text)
         else:
             text, spec = new_spec(source), {}
-        problems += check(dll, spec, table)
+        problems += check(module, spec, table)
         plans.append((path, text, spec, source, table))
     if problems:
         sys.exit("Not catalogued: the specs disagree with their dumps:\n  " + "\n  ".join(problems))
