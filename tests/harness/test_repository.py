@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import f2kboot
+import pe  # scripts/pe.py: the conftest puts scripts/ on the path
 
 BATCH_FILES = sorted([*f2kboot.TESTS.rglob("*.bat"), *f2kboot.TESTS.rglob("*.cmd")])
 
@@ -541,9 +542,9 @@ def test_no_export_is_a_kernel_served_win32_service():
 
 
 def test_the_spec_lists_every_fixture_import():
-    """Every import of every corpus fixture names a DLL F2K builds and an export its spec implements
-    or stubs, so every fixture loads, its blocks failing one by one as they wait: the loader stops
-    at the first missing import. A fixture's own companion DLLs (beside it, as dllmain's) are its
+    """Every import of every corpus fixture, a delay-loaded one too, names a DLL F2K builds and an
+    export its spec implements or stubs, so every fixture loads, its blocks failing one by one as
+    they wait: the loader stops at the first missing import. A fixture's own companion DLLs (beside it, as dllmain's) are its
     own."""
     exported = {dll: {e["name"] for e in dll_exports(dll)} for dll in BUILT_DLLS}
     for exe in sorted(TESTS.glob("*/*/*.exe")):
@@ -557,49 +558,13 @@ def test_the_spec_lists_every_fixture_import():
             assert not missing, f"{exe.name} imports {missing} from {module}"
 
 
-def pe_rva_reader(data: bytes):
-    """A PE file's dword reader, its RVA-to-offset map, and its optional header's offset."""
-    word = lambda at: int.from_bytes(data[at:at + 4], "little")
-    pe = word(0x3C)
-    optional = pe + 24
-    sections = int.from_bytes(data[pe + 6:pe + 8], "little")
-    header = optional + int.from_bytes(data[pe + 20:pe + 22], "little")
-    table = []
-    for index in range(sections):
-        entry = header + 40 * index
-        table.append((word(entry + 12), max(word(entry + 8), word(entry + 16)), word(entry + 20),
-                      word(entry + 36), word(entry + 16)))
-
-    def offset(rva: int) -> int:
-        for va, size, raw, _, _ in table:
-            if va <= rva < va + size:
-                return rva - va + raw
-        raise ValueError(f"RVA {rva:#x} is in no section")
-
-    return word, offset, optional, table
-
-
 def pe_imports(path: Path) -> dict[str, list[str]]:
-    """A PE image's imports: module (lower case) -> imported names (`#n` for an ordinal)."""
-    data = path.read_bytes()
-    word, offset, optional, _ = pe_rva_reader(data)
-    imports_rva = word(optional + 96 + 8)
+    """A PE image's imports (scripts/pe.py's reading): module (lower case) -> imported names (`#n`
+    for an ordinal), the load-time table's and the delay-load table's alike: a delay-loaded import
+    F2K lacks fails on its first call rather than at the load."""
     found: dict[str, list[str]] = {}
-    at = offset(imports_rva) if imports_rva else None
-    while at is not None and word(at + 12):
-        name_at = offset(word(at + 12))
-        module = data[name_at:data.index(b"\0", name_at)].decode().lower()
-        thunk = offset(word(at) or word(at + 16))
-        names = found.setdefault(module, [])
-        while word(thunk):
-            entry = word(thunk)
-            if entry & 0x8000_0000:
-                names.append(f"#{entry & 0xFFFF}")
-            else:
-                hint_at = offset(entry) + 2
-                names.append(data[hint_at:data.index(b"\0", hint_at)].decode())
-            thunk += 4
-        at += 20
+    for module, _, names in pe.imports(pe.Image(path.read_bytes())):
+        found.setdefault(module.lower(), []).extend(names)
     return found
 
 

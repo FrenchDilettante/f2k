@@ -79,7 +79,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 TESTS = REPO_ROOT / "tests"
 sys.path.insert(0, str(TESTS))
 import f2kboot  # noqa: E402  (the corpus's declarations and captures, read as the suite reads them)
-import dump_exports  # noqa: E402  (the PE reader: the built DLLs' import tables)
+import pe  # noqa: E402  (the PE reader: the built DLLs' import tables)
+from specs import module_key, zw_alias  # noqa: E402
 
 # Every spec, by its module's name: the system DLLs', and ntoskrnl's (the kernel's own exports).
 SPECS = {path.parent.name: path for path in sorted((REPO_ROOT / "userland").glob("*/exports.toml"))}
@@ -206,7 +207,7 @@ def load_specs():
             # A system service's Zw alias: the same export under its second name (gather() gives it
             # the service's tests).
             if "zw_ordinal" in spec:
-                alias = "Zw" + spec["name"][2:]
+                alias = zw_alias(spec["name"])
                 exports[alias] = Export(dll, alias, spec.get("group"), True,
                                         dict(spec, name=alias, ordinal=spec["zw_ordinal"]))
         specs[dll] = (doc.get("group", []), exports)
@@ -308,11 +309,6 @@ def real_imports(dll):
     return modules
 
 
-def module_key(name):
-    """A module's name as the loader compares it: without regard to case, `.dll` implied."""
-    return name.lower().removesuffix(".dll")
-
-
 # The layering's one exemption: the stub machinery's log line. Every
 # DLL F2K builds logs its stubs' calls (their generated bodies, and the paths its code does not
 # handle yet) through ntdll's DbgPrint, which Windows 2000's msvcrt and user32 never import (msvcrt
@@ -333,7 +329,7 @@ def layering(specs):
             if built.is_file():
                 problems.append(f"{dll}.dll: no import table to hold it against (scripts/dump_exports.py)")
             continue
-        for module, delayed, names in dump_exports.imports(dump_exports.Image(built.read_bytes())):
+        for module, delayed, names in pe.imports(pe.Image(built.read_bytes())):
             names = [name for name in names if (module_key(module), name) != STUB_LOG_IMPORT]
             theirs = real.get(module_key(module))
             if theirs is None:
@@ -450,7 +446,7 @@ def gather(specs, fixtures, scenarios, pytest_run, scenario_run):
     for _, exports in specs.values():
         for export in exports.values():
             if "zw_ordinal" in export.spec and export.name.startswith("Nt"):
-                exports["Zw" + export.name[2:]].evidence = list(export.evidence)
+                exports[zw_alias(export.name)].evidence = list(export.evidence)
     share_forwards(specs)
     return missing
 
@@ -461,7 +457,7 @@ def forward_target(specs, export):
     seen = {export.pin}
     while (target := export.spec.get("impl", {}).get("forward")) is not None:
         module, _, name = target.partition(".")
-        export = specs.get(module.lower(), ({}, {}))[1].get(name)
+        export = specs.get(module_key(module), ({}, {}))[1].get(name)
         if export is None or export.pin in seen:
             return None
         seen.add(export.pin)

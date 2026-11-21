@@ -23,7 +23,7 @@ Each file starts with a provenance header: the file version (its version resourc
 link timestamp and the file's SHA-256. The export dumps are a step on the way, not a record: once
 folded into the spec, they go.
 
-The parser reads PE32 with the standard library only (no pefile).
+The PE reader is scripts/pe.py's (the standard library only, no pefile); a PE32+ image is refused.
 
 Usage:
   dump_exports.py <dll>... [--out DIR]   (DIR/<dll>/{exports,imports}-<version>.txt; DIR defaults to
@@ -36,142 +36,28 @@ import sys
 import time
 from pathlib import Path
 
+from pe import DIR_RESOURCE, Image, PeError, exports, imports, resource_entries
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# IMAGE_SCN_MEM_EXECUTE and IMAGE_SCN_CNT_CODE: a section holding code.
-CODE = 0x2000_0000 | 0x0000_0020
 # VS_FIXEDFILEINFO's signature, at the head of the version resource's value.
 FIXED_FILE_INFO = struct.pack("<I", 0xFEEF04BD)
-
-
-class Image:
-    """A PE32 image's sections and directories, read off its file."""
-
-    def __init__(self, data: bytes):
-        self.data = data
-        if data[:2] != b"MZ":
-            raise ValueError("not an MZ executable")
-        pe = struct.unpack_from("<I", data, 0x3C)[0]
-        if data[pe:pe + 4] != b"PE\0\0":
-            raise ValueError("no PE header")
-        _, sections, self.timestamp, _, _, optional_size, _ = struct.unpack_from("<HHIIIHH", data, pe + 4)
-        optional = pe + 24
-        if struct.unpack_from("<H", data, optional)[0] != 0x10B:
-            raise ValueError("not PE32")
-        self.base = struct.unpack_from("<I", data, optional + 28)[0]
-        self.directories = [struct.unpack_from("<II", data, optional + 96 + 8 * i) for i in range(16)]
-        self.sections = []
-        for i in range(sections):
-            _, virtual_size, rva, raw_size, raw, _, _, _, _, flags = struct.unpack_from(
-                "<8sIIIIIIHHI", data, optional + optional_size + 40 * i)
-            self.sections.append((rva, max(virtual_size, raw_size), raw, flags))
-
-    def section_of(self, rva: int):
-        return next((s for s in self.sections if s[0] <= rva < s[0] + s[1]), None)
-
-    def offset(self, rva: int) -> int:
-        section = self.section_of(rva)
-        if section is None:
-            raise ValueError(f"RVA {rva:#x} is in no section")
-        return rva - section[0] + section[2]
-
-    def string(self, rva: int) -> str:
-        start = self.offset(rva)
-        return self.data[start:self.data.index(b"\0", start)].decode("ascii")
-
-    def word(self, rva: int) -> int:
-        return struct.unpack_from("<I", self.data, self.offset(rva))[0]
-
-
-def exports(image: Image):
-    """The export table: (dll name, [(ordinal, name or None, forward target or None, data)])."""
-    rva, size = image.directories[0]
-    if not rva:
-        raise ValueError("no export table")
-    at = image.offset(rva)
-    _, _, _, _, name, base, functions, names, function_rva, name_rva, ordinal_rva = struct.unpack_from(
-        "<IIHHIIIIIII", image.data, at)
-    named = {}
-    for i in range(names):
-        pointer = struct.unpack_from("<I", image.data, image.offset(name_rva) + 4 * i)[0]
-        index = struct.unpack_from("<H", image.data, image.offset(ordinal_rva) + 2 * i)[0]
-        named[index] = image.string(pointer)
-    entries = []
-    for index in range(functions):
-        target = struct.unpack_from("<I", image.data, image.offset(function_rva) + 4 * index)[0]
-        if not target:
-            continue  # a hole in the ordinal range
-        forward = image.string(target) if rva <= target < rva + size else None
-        section = None if forward else image.section_of(target)
-        data = forward is None and section is not None and not section[3] & CODE
-        entries.append((base + index, named.get(index), forward, data))
-    return image.string(name), entries
-
-
-def thunks(image: Image, rva: int, shift: int = 0) -> list[str]:
-    """The names a zero-terminated thunk array imports: `name`, or `#ordinal` for an import by
-    ordinal (the top bit set). A name's thunk is its IMAGE_IMPORT_BY_NAME's RVA, `shift` more for
-    an address (an old-form delay-load table's)."""
-    names = []
-    while (thunk := image.word(rva)) != 0:
-        # IMAGE_IMPORT_BY_NAME: a hint (a halfword), then the name.
-        names.append(f"#{thunk & 0xFFFF}" if thunk & 0x8000_0000 else image.string(thunk - shift + 2))
-        rva += 4
-    return names
-
-
-def imports(image: Image):
-    """The import tables: [(module, delay-loaded, [import])], the load-time table's modules first,
-    then the delay-load table's, each in its table's order."""
-    modules = []
-    rva, _ = image.directories[1]
-    while rva:
-        # IMAGE_IMPORT_DESCRIPTOR: the names' thunks (OriginalFirstThunk), the bind timestamp, the
-        # forwarder chain, the module's name, the IAT (FirstThunk); a zero one ends the table.
-        names, bound, _, name, iat = struct.unpack_from("<IIIII", image.data, image.offset(rva))
-        if not name:
-            break
-        if not names and bound:
-            # An image without the names' array has only its IAT, which binding overwrote with
-            # addresses: the names are gone.
-            raise ValueError(f"{image.string(name)}: bound, with no import names to read")
-        modules.append((image.string(name), False, thunks(image, names or iat)))
-        rva += 20
-    rva, _ = image.directories[13]
-    while rva:
-        # ImgDelayDescr: its attributes, the module's name, its HMODULE's place, the IAT, the names'
-        # thunks, the bound IAT, the unload IAT, the timestamp; a zero one ends the table. Without
-        # dlattrRva (bit 0, the old form, as Visual C++ 6 links it) the fields are addresses, not
-        # RVAs.
-        attributes, name, _, _, names = struct.unpack_from("<IIIII", image.data, image.offset(rva))
-        if not name:
-            break
-        shift = 0 if attributes & 1 else image.base
-        modules.append((image.string(name - shift), True, thunks(image, names - shift, shift)))
-        rva += 32
-    return modules
 
 
 def file_version(image: Image) -> str | None:
     """The file version of the version resource (RT_VERSION's VS_FIXEDFILEINFO), None without
     one."""
-    rva, _ = image.directories[2]
+    rva, _ = image.directories[DIR_RESOURCE]
     if not rva:
         return None
     root = image.offset(rva)
-
-    def entries(directory: int):
-        """A resource directory's entries: (id or None for a named one, offset, is a subdirectory)."""
-        named, ids = struct.unpack_from("<HH", image.data, directory + 12)
-        for i in range(named + ids):
-            name, at = struct.unpack_from("<II", image.data, directory + 16 + 8 * i)
-            yield (None if name & 0x8000_0000 else name), root + (at & 0x7FFF_FFFF), bool(at & 0x8000_0000)
-
-    # The type (RT_VERSION, 16), then its first name and first language: the data entry.
-    found = next((at for id, at, sub in entries(root) if id == 16 and sub), None)
+    # The type (RT_VERSION, 16, an id: a named entry's word has its high bit set), then its first
+    # name and first language: the data entry.
+    found = next((at for name, at, sub in resource_entries(image, root, root) if name == 16 and sub),
+                 None)
     for _ in range(2):
         if found is None:
             return None
-        found = next((at for _, at, sub in entries(found)), None)
+        found = next((at for _, at, sub in resource_entries(image, found, root)), None)
     data_rva, size = struct.unpack_from("<II", image.data, found)
     start = image.offset(data_rva)
     # VS_VERSIONINFO: its header and key, then VS_FIXEDFILEINFO (its signature first).
@@ -185,6 +71,8 @@ def file_version(image: Image) -> str | None:
 def dump(path: Path, out: Path | None) -> list[Path]:
     data = path.read_bytes()
     image = Image(data)
+    if image.plus:
+        raise PeError("not PE32")
     name, entries = exports(image)
     version = file_version(image) or "unversioned"
     dll = name.lower().removesuffix(".dll")

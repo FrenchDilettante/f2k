@@ -13,7 +13,7 @@ SCRIPTS = f2kboot.REPO_ROOT / "scripts"
 
 @functools.cache
 def compat():
-    sys.path.insert(0, str(SCRIPTS))  # compat.py's own imports (dump_exports) live beside it
+    sys.path.insert(0, str(SCRIPTS))  # compat.py's own imports (pe, specs) live beside it
     spec = importlib.util.spec_from_file_location("compat", SCRIPTS / "compat.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

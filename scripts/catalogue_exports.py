@@ -26,6 +26,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from specs import toml_string, zw_alias
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 USERLAND = REPO_ROOT / "userland"
 # The catalogued section's heading (the dump's DLL name and version follow it).
@@ -60,10 +62,6 @@ def the_dump(directory: Path):
     return read_dump(dumps[0])
 
 
-def zw_alias(name: str) -> str:
-    return "Zw" + name[2:]
-
-
 def check(dll, spec, table):
     """The spec against the platform's table; the problems found."""
     problems = []
@@ -85,23 +83,6 @@ def check(dll, spec, table):
         if "syscall" in export.get("impl", {}) and zw_alias(name) not in table:
             problems.append(f"{dll}.{name}: the DLL has no {zw_alias(name)}")
     return problems
-
-
-# The characters a TOML basic string must escape, and their escapes: the quotation mark, the
-# backslash, and the control characters (U+0000 to U+001F and U+007F; tab may stand as it is, but
-# is escaped too), the ones with a short escape by it.
-TOML_ESCAPES = {'"': '\\"', "\\": "\\\\", "\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r"}
-
-
-def toml_string(text: str) -> str:
-    """`text` as a TOML basic string: every character as it is but those TOML must escape."""
-    def escaped(char: str) -> str:
-        if char in TOML_ESCAPES:
-            return TOML_ESCAPES[char]
-        if ord(char) < 0x20 or ord(char) == 0x7F:
-            return f"\\u{ord(char):04X}"
-        return char
-    return '"' + "".join(escaped(char) for char in text) + '"'
 
 
 def fold(text, spec, source, table):
