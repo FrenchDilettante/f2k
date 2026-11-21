@@ -5,9 +5,6 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
-[pending]
-deep = "F2K's ntdll bounds a path's NT name at MAX_PATH + 8 (curdir.rs NT_ROOM), so a \\\\?\\ path past MAX_PATH never reaches NtCreateFile"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

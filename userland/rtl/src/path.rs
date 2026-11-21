@@ -309,7 +309,8 @@ pub fn dos_device_name(path: &[u16]) -> Option<[u8; 4]> {
 /// current directory's DOS path, its trailing separator included) and folded, into `out`. A
 /// `\\?\` path passes untouched (its `\\?\` becomes `\??\`); a `\\.\` one keeps its device prefix,
 /// its rest folded; a DOS device's name ([`dos_device_name`]) is the device, `\??\NUL`. The full
-/// path must fit [`MAX_PATH`] units with its terminator, as the platform's buffer is that long.
+/// path must fit [`MAX_PATH`] units with its terminator, as the platform's buffer is that long; a
+/// `\\?\` path only `out`, which its caller sizes by it.
 pub fn dos_path_to_nt(
     path: &[u16],
     current: &[u16],
@@ -630,5 +631,34 @@ mod tests {
         assert_eq!(upcase(u16::from(b'a')), u16::from(b'A'));
         assert_eq!(upcase(0xE9), 0xC9);
         assert_eq!(upcase(0xF7), 0xF7, "the division sign");
+    }
+
+    /// A `\\?\` path is bounded by its caller's room alone, not MAX_PATH (ntdll sizes its buffer
+    /// by it: the fswrite capture's deep block opens a file 380 units deep through it); any other
+    /// path's full form still must fit MAX_PATH, whatever the room.
+    #[test]
+    fn a_verbatim_path_has_no_max_path_limit() {
+        let deep = format!("\\\\?\\C:\\{}\\F.TXT", "D".repeat(370));
+        let mut out = vec![0u16; deep.len() + 1];
+        let name = dos_path_to_nt(&wide(&deep), &wide("C:\\"), true, &mut out).unwrap();
+        assert_eq!(name.length, deep.len());
+        assert_eq!(
+            String::from_utf16(&out[..4]).unwrap(),
+            "\\??\\",
+            "its prefix as long as the DOS one"
+        );
+        assert_eq!(name.file_part, Some(deep.len() - 5));
+        let mut short = vec![0u16; deep.len()];
+        assert_eq!(
+            dos_path_to_nt(&wide(&deep), &wide("C:\\"), true, &mut short),
+            Err(PathError::TooLong),
+            "its terminator needs room too"
+        );
+        let plain = &deep[4..];
+        assert_eq!(
+            dos_path_to_nt(&wide(plain), &wide("C:\\"), true, &mut out),
+            Err(PathError::TooLong),
+            "the same path without \\\\?\\"
+        );
     }
 }

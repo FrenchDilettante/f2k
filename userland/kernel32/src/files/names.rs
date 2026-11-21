@@ -389,16 +389,15 @@ pub unsafe extern "system" fn move_file_ex_w(from: *const u16, to: *const u16, f
 /// CreateDirectoryW's work: a new directory (NtCreateFile, FILE_CREATE): an existing name is
 /// STATUS_OBJECT_NAME_COLLISION (ERROR_ALREADY_EXISTS). A directory whose full path leaves no room
 /// for an 8.3 name inside MAX_PATH is ERROR_FILENAME_EXCED_RANGE (so `del *.*` can always empty
-/// it, as Windows 2000's reason runs); the security attributes are not consulted beyond their
-/// inheritance.
+/// it, as Windows 2000's reason runs), but for a `\\?\` path, which has no MAX_PATH limit
+/// ([`room_for_short_names`]); the security attributes are not consulted beyond their inheritance.
 fn create_directory(
     name: &Wide,
     security: Option<In<'_, SecurityAttributes>>,
 ) -> Result<(), Failure> {
     let path = nt_path(name)?;
-    // The full DOS path is the NT one less its `\??\`; it and an 8.3 name must fit MAX_PATH.
-    let full = path.units().len().saturating_sub(4);
-    if full + 1 + 12 > MAX_PATH {
+    // The full DOS path is the NT one less its `\??\`.
+    if !room_for_short_names(name.text(), path.units().len().saturating_sub(4)) {
         return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
     let created = ntcall::create_file(
@@ -412,6 +411,13 @@ fn create_directory(
     .map_err(Failure::Status)?;
     close(created.handle);
     Ok(())
+}
+
+/// Whether a directory CreateDirectory makes of `name`, whose full DOS path is `full` units long,
+/// leaves room for a separator and an 8.3 name inside MAX_PATH; a name written `\\?\` (exactly,
+/// as Windows 2000's CreateDirectoryW looks for it) always does.
+fn room_for_short_names(name: &[u16], full: usize) -> bool {
+    is_verbatim(name) || full + 1 + 12 <= MAX_PATH
 }
 
 /// CreateDirectoryA (see [`create_directory`]).
@@ -584,10 +590,8 @@ fn short_path(long: &Wide, mut buffer: Text<'_>) -> Result<u32, Failure> {
             if length + component.len() > MAX_PATH {
                 return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
             }
-            let mut wide = Wide {
-                units: [0; MAX_PATH + 1],
-                length: length + component.len(),
-            };
+            let mut wide = Wide::empty();
+            wide.length = length + component.len();
             wide.units[..length].copy_from_slice(&out[..length]);
             wide.units[length..wide.length].copy_from_slice(component);
             replacement = FindDataW::zeroed();
@@ -660,6 +664,36 @@ mod tests {
     use rtl::testing::wide;
 
     use super::*;
+
+    /// CreateDirectory leaves room for an 8.3 name inside MAX_PATH (247 units of full path at
+    /// most), but a `\\?\` path has no such limit: the fswrite capture's deep block makes nine
+    /// levels past MAX_PATH through it. Only `\\?\` itself, not `//?/`.
+    #[test]
+    fn a_new_directory_leaves_room_for_short_names_but_through_verbatim_paths() {
+        assert!(room_for_short_names(&wide("C:\\D"), 247));
+        assert!(!room_for_short_names(&wide("C:\\D"), 248));
+        assert!(room_for_short_names(&wide("\\\\?\\C:\\D"), 400));
+        assert!(!room_for_short_names(&wide("//?/C:/D"), 400));
+    }
+
+    /// A W call's name is copied whole up to MAX_PATH units; past it a `\\?\` path only (on the
+    /// process heap, for ntdll, which takes it whole), any other ERROR_PATH_NOT_FOUND, as ntdll's
+    /// conversion refuses it.
+    #[test]
+    fn a_w_call_s_verbatim_name_past_max_path_is_kept_whole() {
+        for length in [MAX_PATH, MAX_PATH + 1, 400] {
+            let units = wide(&format!("\\\\?\\{}", "x".repeat(length - 4)));
+            let name = Wide::caller(&units).ok().unwrap();
+            assert_eq!(name.text(), &units[..], "{length}");
+            assert_eq!(name.terminated().len(), length + 1);
+            assert_eq!(name.terminated().last(), Some(&0), "terminated");
+        }
+        assert!(Wide::caller(&wide(&"x".repeat(MAX_PATH))).is_ok());
+        assert!(matches!(
+            Wide::caller(&wide(&"x".repeat(MAX_PATH + 1))),
+            Err(Failure::Error(ERROR_PATH_NOT_FOUND))
+        ));
+    }
 
     /// The components GetShortPathName keeps as written.
     #[test]

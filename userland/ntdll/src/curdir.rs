@@ -233,11 +233,22 @@ pub(crate) fn current_directory(out: &mut [u16]) -> (usize, u32) {
 /// The NT path's buffer, in units: a full DOS path's room and the longest prefix (`\??\UNC`).
 const NT_ROOM: usize = MAX_PATH + 8;
 
+/// The NT path's buffer for `path`, in units: [`NT_ROOM`], or a `\\?\` path's own length and its
+/// terminator when longer (it passes untouched, its prefix as long as `\??\`: Windows 2000 sizes
+/// its buffer by the path then, so such a path has no MAX_PATH limit), within UNICODE_STRING's.
+fn nt_room(path: &[u16]) -> usize {
+    match path_type(path) {
+        PathType::RootLocalDevice => (path.len() + 1).clamp(NT_ROOM, MAX_STRING),
+        _ => NT_ROOM,
+    }
+}
+
 /// RtlDosPathNameToNtPathName_U: the NT path of a DOS path (see [`rtl::path::dos_path_to_nt`]), in
 /// a buffer on the process heap the caller frees (RtlFreeHeap), with its file part, and, when asked
 /// and the path is relative and under the current directory, the name relative to the current
 /// directory's handle (RTL_RELATIVE_NAME; zeros otherwise). FALSE for an empty path, one whose full
-/// form does not fit MAX_PATH, or no room on the heap.
+/// form does not fit MAX_PATH (a `\\?\` path's has no such limit: [`nt_room`]), or no room on the
+/// heap.
 ///
 /// # Safety
 ///
@@ -255,11 +266,12 @@ pub unsafe extern "system" fn rtl_dos_path_name_to_nt_path_name_u(
     let mut current = [0u16; MAX_PATH + 1];
     let (current_length, handle) = current_directory(&mut current);
     let heap = sys::process_heap();
-    let Some(buffer) = heap.alloc(&sys::Native, 0, 2 * NT_ROOM) else {
+    let room = nt_room(path);
+    let Some(buffer) = heap.alloc(&sys::Native, 0, 2 * room) else {
         return 0;
     };
-    // SAFETY: a fresh block of NT_ROOM units.
-    let out = unsafe { core::slice::from_raw_parts_mut(buffer as *mut u16, NT_ROOM) };
+    // SAFETY: a fresh block of `room` units.
+    let out = unsafe { core::slice::from_raw_parts_mut(buffer as *mut u16, room) };
     let name = match dos_path_to_nt(path, &current[..current_length], handle != 0, out) {
         Ok(name) => name,
         Err(_) => {
@@ -272,7 +284,7 @@ pub unsafe extern "system" fn rtl_dos_path_name_to_nt_path_name_u(
     unsafe {
         *nt = UnicodeString {
             length: (2 * name.length) as u16,
-            maximum_length: (2 * NT_ROOM) as u16,
+            maximum_length: (2 * room) as u16,
             buffer: base,
         };
         if !file_part.is_null() {

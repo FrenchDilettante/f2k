@@ -136,10 +136,8 @@ fn search_path(
     if length > MAX_PATH {
         return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
     }
-    let mut file = Wide {
-        units: [0; MAX_PATH + 1],
-        length,
-    };
+    let mut file = Wide::empty();
+    file.length = length;
     file.units[..name.len()].copy_from_slice(name);
     file.units[name.len()..length].copy_from_slice(extension);
     let relative = ntcall::dos_path_name_type(file.terminated()) == RTL_PATH_TYPE_RELATIVE;
@@ -182,10 +180,7 @@ fn search_path(
 /// the full path found, or none with the search's error set as it misses, as SearchPath sets it
 /// (see [`search_path`]).
 pub fn search_default(name: &Wide, extension: &Wide) -> Option<Wide> {
-    let mut found = Wide {
-        units: [0; MAX_PATH + 1],
-        length: 0,
-    };
+    let mut found = Wide::empty();
     let room = found.units.len();
     let buffer = Text::Wide(OutBuf::from(&mut found.units[..]));
     let length = answer(search_path(None, name, Some(extension), buffer, None), 0) as usize;

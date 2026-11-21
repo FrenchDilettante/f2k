@@ -292,10 +292,7 @@ struct Program<'a> {
 /// A name made full against the current directory (RtlGetFullPathName_U); none past MAX_PATH or
 /// for a name ntdll cannot make full.
 fn full_path(name: &Wide) -> Option<Wide> {
-    let mut full = Wide {
-        units: [0; MAX_PATH + 1],
-        length: 0,
-    };
+    let mut full = Wide::empty();
     full.length = ntcall::full_path_name(name.terminated(), &mut full.units)?;
     Some(full)
 }

@@ -27,7 +27,7 @@ pub mod volume;
 use crate::base::{SecurityAttributes, OBJ_INHERIT};
 use crate::edge::{ansi_into, wide_units, CallerStr, In, InStr, InWStr, Out};
 use crate::error::Failure;
-use crate::heap::HeapString;
+use crate::heap::{HeapArray, HeapString};
 use crate::nt::{ObjectAttributes, UnicodeString};
 use crate::ntcall;
 
@@ -115,22 +115,44 @@ pub const FILE_FS_FULL_SIZE_INFORMATION: u32 = 7;
 /// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
 pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
+/// Whether a name is written `\\?\` (exactly: not `//?/`), the prefix that passes a path to the
+/// NT namespace untouched, with no MAX_PATH limit.
+pub fn is_verbatim(units: &[u16]) -> bool {
+    units.starts_with(&(*b"\\\\?\\").map(u16::from))
+}
+
 /// A name in UTF-16, NUL-terminated, as the W forms take it: Basep8BitStringToStaticUnicodeString's
-/// buffer.
+/// buffer, or a W call's own name past it.
 pub struct Wide {
     pub units: [u16; MAX_PATH + 1],
     pub length: usize,
+    /// A W call's name past MAX_PATH, terminated, on the process heap (none: `units` holds the
+    /// name).
+    long: Option<HeapArray<u16>>,
 }
 
 impl Wide {
+    /// The empty name, its buffer's room MAX_PATH units and the terminator.
+    pub fn empty() -> Wide {
+        Wide {
+            units: [0; MAX_PATH + 1],
+            length: 0,
+            long: None,
+        }
+    }
+
     /// The name with its terminator.
     pub fn terminated(&self) -> &[u16] {
-        &self.units[..self.length + 1]
+        match &self.long {
+            Some(long) => long,
+            None => &self.units[..self.length + 1],
+        }
     }
 
     /// The name.
     pub fn text(&self) -> &[u16] {
-        &self.units[..self.length]
+        let terminated = self.terminated();
+        &terminated[..terminated.len() - 1]
     }
 
     /// A wide name copied from `units` (a W call's own); none past MAX_PATH.
@@ -138,39 +160,51 @@ impl Wide {
         if units.len() > MAX_PATH {
             return None;
         }
-        let mut wide = Wide {
-            units: [0; MAX_PATH + 1],
-            length: units.len(),
-        };
+        let mut wide = Wide::empty();
+        wide.length = units.len();
         wide.units[..units.len()].copy_from_slice(units);
         Some(wide)
+    }
+
+    /// A W call's name, copied: in the buffer up to MAX_PATH units; past it, a `\\?\` path only,
+    /// on the process heap (ntdll's conversion takes it whole; it refuses any other).
+    fn caller(units: &[u16]) -> Result<Wide, Failure> {
+        if let Some(wide) = Wide::of(units) {
+            return Ok(wide);
+        }
+        if !is_verbatim(units) {
+            return Err(Failure::Error(ERROR_PATH_NOT_FOUND));
+        }
+        let mut wide = Wide::empty();
+        wide.length = units.len();
+        let long = HeapArray::joined(&[units, &[0]]);
+        wide.long = Some(long.map_err(|_| Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?);
+        Ok(wide)
     }
 }
 
 /// An A call's name converted into UTF-16 (ntdll's conversion, [`crate::edge::ansi_into`]; no
 /// name is the empty one): ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters.
 pub fn widen(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
-    let mut wide = Wide {
-        units: [0; MAX_PATH + 1],
-        length: 0,
-    };
+    let mut wide = Wide::empty();
     wide.length =
         ansi_into(name, &mut wide.units).ok_or(Failure::Error(ERROR_FILENAME_EXCED_RANGE))?;
     Ok(wide)
 }
 
-/// A W call's name, copied into the buffer an A call's conversion fills. A W call does not convert:
-/// a name past MAX_PATH reaches ntdll, whose DOS path conversion refuses it — ERROR_PATH_NOT_FOUND
-/// here (the files capture: CreateFileW of a 300-character path), where an A call's conversion
-/// refuses it with ERROR_FILENAME_EXCED_RANGE.
+/// A W call's name, copied ([`Wide::caller`]). A W call does not convert: a name past MAX_PATH is
+/// ntdll's DOS path conversion's to refuse, which it does but for a `\\?\` path —
+/// ERROR_PATH_NOT_FOUND here (the files capture: CreateFileW of a 300-character path), where an A
+/// call's conversion refuses it with ERROR_FILENAME_EXCED_RANGE; a `\\?\` path past MAX_PATH
+/// reaches ntdll whole and opens (the fswrite capture's deep block).
 pub fn wide(name: &InWStr<'_>) -> Result<Wide, Failure> {
     let units = wide_units(name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
-    Wide::of(&units).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))
+    Wide::caller(&units)
 }
 
 /// A caller's name of either form, into the buffer a path is read into: an A call's converted
 /// ([`widen`]: ERROR_FILENAME_EXCED_RANGE past MAX_PATH characters), a W call's copied ([`wide`]:
-/// ERROR_PATH_NOT_FOUND past it). The pair's limit is the same; its error is not.
+/// ERROR_PATH_NOT_FOUND past it, but for a `\\?\` path).
 pub fn name(name: &CallerStr<'_>) -> Result<Wide, Failure> {
     match name {
         CallerStr::Ansi(name) => widen(Some(name)),
