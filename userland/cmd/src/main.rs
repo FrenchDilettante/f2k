@@ -34,7 +34,7 @@ use cmd::flow::label;
 use cmd::flow::repeat::{self, Scope};
 use cmd::switches::{self, Then};
 use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Syntax, Target};
-use cmd::{search, Command, Echo, Set, TooLong};
+use cmd::{search, Command, Echo, Set, TooLong, Unexpanded};
 
 mod control;
 mod exec;
@@ -517,8 +517,9 @@ fn execute(
     } else {
         cmd::MAX_COMMAND
     };
-    let Ok(mut used) = expand_into(&raw[..length], limit, state.errorlevel, batch, block) else {
-        return too_long(state, batch);
+    let mut used = match expand_into(&raw[..length], limit, state.errorlevel, batch, block) {
+        Ok(used) => used,
+        Err(error) => return unexpanded(error, &raw[..length], state, batch),
     };
     loop {
         let caret = batch.is_none() && syntax::continues(&block[..used]);
@@ -548,7 +549,7 @@ fn execute(
         }
         match expand_into(next, limit, state.errorlevel, batch, &mut block[used..]) {
             Ok(added) => used += added,
-            Err(TooLong) => return too_long(state, batch),
+            Err(error) => return unexpanded(error, next, state, batch),
         }
     }
     let line = &block[..used];
@@ -576,18 +577,42 @@ fn malformed(error: Syntax<'_>, state: &mut cmd::State, batch: Option<&Batch>) -
 }
 
 /// `line` expanded into the start of `out` (as `batch`'s line when there is one), `limit` units
-/// at most: the units written, its line break left out.
+/// at most: the units written, its line break left out, and what follows a line feed its
+/// variables brought (see [`syntax::line_end`]).
 fn expand_into(
     line: &[u16],
     limit: usize,
     errorlevel: u32,
     batch: Option<&Batch>,
     out: &mut [u16],
-) -> Result<usize, TooLong> {
+) -> Result<usize, Unexpanded> {
     let arguments = batch.map(|batch| batch.arguments.borrow());
     let view = arguments.as_ref().map(|arguments| arguments.view());
-    cmd::expand_within(line, limit, errorlevel, view.as_ref(), &mut Shell, out)
-        .map(|text| cmd::without_break(text).len())
+    cmd::expand_within(line, limit, errorlevel, view.as_ref(), &mut Shell, out).map(|text| {
+        // A line feed a `^` escapes is the line's (`set LF=^`), not its break.
+        let text = &text[..syntax::line_end(text)];
+        text.strip_suffix(&[u16::from(b'\r')]).unwrap_or(text).len()
+    })
+}
+
+/// A line whose variables could not be expanded: past its bound ([`too_long`]), or, in a batch
+/// file, with a `%~` that cannot be read ([`cmd::PathOperator`], the line `line` from its `%`
+/// on), which ends every batch file as a line too long does.
+#[inline(never)]
+fn unexpanded(
+    error: Unexpanded,
+    line: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+) -> Flow {
+    match error {
+        Unexpanded::TooLong => too_long(state, batch),
+        Unexpanded::PathOperator(at) => {
+            let rest = line.get(at..).unwrap_or_default();
+            let _ = exe::stderr().print(format_args!("{}", cmd::PathOperator(rest)));
+            fatal(state, batch)
+        }
+    }
 }
 
 /// A line expanded past its bound: `The input line is too long.`; typed, the line fails. In a
@@ -597,6 +622,13 @@ fn expand_into(
 #[inline(never)]
 fn too_long(state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
+    fatal(state, batch)
+}
+
+/// After a line's expansion failed and its message: typed, the line fails; in a batch file, the
+/// last program found (or label gone to: [`cmd::State::found`]) named as unexpected, and every
+/// batch file ends, its return code [`syntax::FATAL`].
+fn fatal(state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     state.spaced = true;
     if batch.is_none() {
         state.return_code = 1;
@@ -1206,7 +1238,10 @@ fn call(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow
         state.failed();
         return Flow::Next;
     }
-    let flow = if argument.contains(&u16::from(b'%')) {
+    let flow = if argument
+        .iter()
+        .any(|&unit| unit == u16::from(b'%') || unit == u16::from(b'^'))
+    {
         call_expanded(argument, state, batch)
     } else {
         // Nothing to expand: the line as it is, with no buffer held while what it runs runs (a
@@ -1217,27 +1252,54 @@ fn call(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow
     flow
 }
 
-/// `call`'s argument expanded a second time, then run ([`call_line`]).
+/// `call`'s argument read again, as Windows' cmd reads it: its carets doubled
+/// ([`syntax::double_carets`]), its variables expanded a second time, then its escapes resolved
+/// outside quotes ([`syntax::unescape`]), so that a quoted caret comes out doubled (`call echo
+/// "a^b"` prints `"a^^b"`) and a caret a variable brings escapes (batedge's capture); then run
+/// ([`call_line`]). Longer than a line once expanded, it prints `The input line is too long.` and
+/// fails (batlong).
 #[inline(never)]
 fn call_expanded(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     let mut buffer = [0; cmd::LINE];
-    let expanded = {
-        let arguments = batch.map(|batch| batch.arguments.borrow());
-        let view = arguments.as_ref().map(|arguments| arguments.view());
-        cmd::expand(
-            argument,
-            state.errorlevel,
-            view.as_ref(),
-            &mut Shell,
-            &mut buffer,
-        )
+    let expanded = call_text(argument, state.errorlevel, batch, &mut buffer);
+    let length = match expanded {
+        Ok(length) => length,
+        Err(Unexpanded::PathOperator(at)) => {
+            // Where the `%` is in the argument, before its carets were doubled.
+            let mut doubled = 0;
+            let from = argument
+                .iter()
+                .position(|&unit| {
+                    doubled += if unit == u16::from(b'^') { 2 } else { 1 };
+                    doubled > at
+                })
+                .unwrap_or(argument.len());
+            let _ = exe::stderr().print(format_args!("{}", cmd::PathOperator(&argument[from..])));
+            return fatal(state, batch);
+        }
+        Err(Unexpanded::TooLong) => {
+            let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
+            state.failed();
+            return Flow::Next;
+        }
     };
-    let Ok(line) = expanded else {
-        let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
-        state.failed();
-        return Flow::Next;
-    };
-    call_line(line, state, batch)
+    let length = syntax::unescape(&mut buffer, length);
+    call_line(&buffer[..length], state, batch)
+}
+
+/// `call`'s argument, its carets doubled, then expanded into `out`: its length.
+#[inline(never)]
+fn call_text(
+    argument: &[u16],
+    errorlevel: u32,
+    batch: Option<&Batch>,
+    out: &mut [u16],
+) -> Result<usize, Unexpanded> {
+    let mut doubled = [0; 2 * cmd::LINE];
+    let doubled = syntax::double_carets(argument, &mut doubled).ok_or(Unexpanded::TooLong)?;
+    let arguments = batch.map(|batch| batch.arguments.borrow());
+    let view = arguments.as_ref().map(|arguments| arguments.view());
+    cmd::expand(doubled, errorlevel, view.as_ref(), &mut Shell, out).map(<[u16]>::len)
 }
 
 /// What `call` runs: a label of the batch file, or a command.
@@ -1719,8 +1781,11 @@ fn run_batch(
 }
 
 /// A batch file's next line (see [`next_line`]), the lines after it joined to it while it ends
-/// with a `^` that escapes nothing else ([`syntax::continues`]), that `^` dropped: Windows' cmd
-/// reads on past it.
+/// with a `^` that escapes nothing else ([`syntax::continues`]): Windows' cmd reads on past it,
+/// the `^` escaping the next line's first character (batedge: `echo first^` before `&echo
+/// second` prints `first&echo second`), or, when the next line is empty, its line break, the
+/// line then going on with the line after it (`set LF=^` before two empty lines sets a line
+/// feed).
 fn next_batch_line<'a>(
     file: &exe::File,
     reader: &mut LineReader,
@@ -1731,7 +1796,19 @@ fn next_batch_line<'a>(
     };
     let mut length = first.len();
     while syntax::continues(&units[..length]) {
-        length -= 1;
+        let Some(more) = next_line(|buffer| file.read(buffer), reader, &mut units[length..])?
+        else {
+            break;
+        };
+        if !more.is_empty() {
+            length += more.len();
+            continue;
+        }
+        let Some(slot) = units.get_mut(length) else {
+            break;
+        };
+        *slot = u16::from(b'\n');
+        length += 1;
         match next_line(|buffer| file.read(buffer), reader, &mut units[length..])? {
             Some(more) => length += more.len(),
             None => break,

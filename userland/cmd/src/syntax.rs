@@ -755,6 +755,54 @@ pub fn continues(line: &[u16]) -> bool {
         .is_some_and(|(token, range)| token == Token::Escape && range.len() == 1)
 }
 
+/// Where `line`, once expanded, ends: at its first line feed that no `^` escapes, as Windows'
+/// cmd stops reading a line there (batedge: `echo [%LF%]`, LF holding a line feed, prints `[`).
+/// A batch file's line holds an escaped one when a `^` ends it before an empty line (`set
+/// LF=^`); a block's lines are each cut before they are joined.
+pub fn line_end(line: &[u16]) -> usize {
+    Tokens::new(line)
+        .find(|(_, range)| line[range.clone()] == [LF])
+        .map_or(line.len(), |(_, range)| range.start)
+}
+
+/// `text`'s carets doubled, into `out`, as `call` doubles them before it reads its command again
+/// (quoted ones too: `call echo "a^b"` prints `"a^^b"`). None when it does not fit.
+pub fn double_carets<'a>(text: &[u16], out: &'a mut [u16]) -> Option<&'a [u16]> {
+    let mut length = 0;
+    for &unit in text {
+        let count = if unit == CARET { 2 } else { 1 };
+        out.get_mut(length..length + count)?.fill(unit);
+        length += count;
+    }
+    Some(&out[..length])
+}
+
+/// The escapes of `text`'s first `length` units resolved in place, outside double quotes (a `^`
+/// goes and the unit after it stays; inside quotes every unit stays), as `call` reads its command
+/// again once expanded: the units left.
+pub fn unescape(text: &mut [u16], length: usize) -> usize {
+    let mut quoted = false;
+    let mut written = 0;
+    let mut at = 0;
+    while at < length {
+        let unit = text[at];
+        at += 1;
+        if unit == QUOTE {
+            quoted = !quoted;
+        } else if unit == CARET && !quoted {
+            if let Some(&escaped) = text[..length].get(at) {
+                text[written] = escaped;
+                written += 1;
+                at += 1;
+            }
+            continue;
+        }
+        text[written] = unit;
+        written += 1;
+    }
+    written
+}
+
 /// Whether `line` is one simple command (no operator, no group, no `if` or `for`): its
 /// redirections are echoed as cmd rebuilds them.
 pub fn single(line: &[u16]) -> bool {
@@ -1174,5 +1222,35 @@ mod tests {
         let text = wide("echo abc");
         let mut out = [0; 4];
         assert!(simple(&text, &mut out, &mut Redirections::default()).is_none());
+    }
+
+    #[test]
+    fn a_line_ends_at_a_line_feed_no_caret_escapes() {
+        let end = |text: &str| line_end(&wide(text));
+        assert_eq!(end("echo [\n]"), 6);
+        assert_eq!(end("set LF=^\n"), 9);
+        assert_eq!(end("echo \"a\nb\""), 7);
+        assert_eq!(end("echo x"), 6);
+    }
+
+    #[test]
+    fn call_doubles_carets_then_reads_them_again() {
+        let again = |text: &str| {
+            let mut doubled = [0; 64];
+            let doubled = double_carets(&wide(text), &mut doubled).unwrap().to_vec();
+            let mut buffer = doubled.clone();
+            let length = unescape(&mut buffer, doubled.len());
+            narrow(&buffer[..length])
+        };
+        // batedge's: quoted carets double, the others come through as they were read.
+        assert_eq!(again("echo \"a^b\""), "echo \"a^^b\"");
+        assert_eq!(again("echo a^b"), "echo a^b");
+        assert_eq!(again("echo a^^b"), "echo a^^b");
+        assert_eq!(again(":carets \"a^b\" a^b"), ":carets \"a^^b\" a^b");
+        let mut text = wide("echo a^b ^^ \"^\" x^");
+        let length = text.len();
+        let length = unescape(&mut text, length);
+        assert_eq!(narrow(&text[..length]), "echo ab ^ \"^\" x");
+        assert_eq!(double_carets(&wide("^^"), &mut [0; 3]), None);
     }
 }

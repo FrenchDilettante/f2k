@@ -120,7 +120,11 @@ A pipe joins 16 commands at most.
 
 ### Escapes and quotes
 
-Outside quotes, `^` makes the character after it text, and goes: `echo a ^& b` prints `a & b`, `echo ^^` prints `^`; a `^` that ends a batch file's line joins the next line to it, in its place, and one that ends a line typed or read from the standard input goes too, the next line read after `More? `.
+Outside quotes, `^` makes the character after it text, and goes: `echo a ^& b` prints `a & b`, `echo ^^` prints `^`.
+A `^` that ends a batch file's line joins the next line to it and makes that line's first character text (`echo a^` before `&echo b` prints `a&echo b`); when the next line is empty, its line break is the character made text, a line feed, and the line goes on with the line after it (`set LF=^` before two empty lines sets LF to a line feed).
+A `^` ending a line after `rem`, inside quotes, or escaped itself (`^^`), joins nothing.
+A `^` that ends a line typed or read from the standard input goes, the next line read after `More? `.
+A line feed a variable brings ends the line: `echo [%LF%]` prints `[`.
 Inside quotes every character is text, `^` included, and the quotes stay: `echo "a & b"` prints `"a & b"`.
 An operator or a redirection inside quotes, or after `^`, is part of the command, handed to it as text.
 
@@ -174,6 +178,7 @@ call :label [arguments]
 ```
 
 Runs `command`, its variables expanded a second time: in a batch file, `call echo %%X%%` prints X's value.
+Its carets are doubled first, then read again once it is expanded, as escapes outside quotes: a caret inside quotes comes out doubled (`call echo "a^b"` prints `"a^^b"`), one outside comes out as it was read (`call echo a^^b` prints `a^b`), and one a variable brings escapes (`call echo %%X%%` with `a^b` prints `ab`).
 A `command` that second expansion makes longer than a line (2,047 characters) prints `The input line is too long.` and runs nothing; the batch file goes on.
 When it names a batch file, that batch file runs and the batch file the `call` is in goes on at its next line once it ends.
 A program or a built-in command runs as it would without `call`.
@@ -443,7 +448,7 @@ Runs `command` when the condition holds (with `not`, when it does not):
 
 - `string1==string2`: the two words are the same text, their quotes included (`if "%1"=="" ...`); `/i` compares whatever the case of their letters.
 - `compare-op`: `EQU`, `NEQ`, `LSS`, `LEQ`, `GTR` or `GEQ`, in either case.
-  Two words that are numbers, as C's `strtol` reads them with base 0 (`010` is 8, `0x10` 16), compare as numbers; any others as text, as a dictionary orders words (a lowercase letter before its capital, unless `/i`).
+  Two words that are numbers, as C's `strtol` reads them with base 0 (`010` is 8, `0x10` 16) and held to 32 bits (`2147483648` is 2147483647), compare as numbers; any others as text, as Windows' `lstrcmp` orders words: punctuation, then digits, then letters whatever their case (`_ LSS a`, `1 LSS a`), `-` and `'` passed over (`a-c GTR ab`), then a lowercase letter before its capital (unless `/i`), then a word without `-` or `'` before the same word with them (`ab LSS a-b`).
 - `errorlevel number`: the ERRORLEVEL, as a signed number, is `number` or more.
 - `exist filename`: a file or directory goes by the name, its quotes removed (`*` and `?` allowed).
 - `defined variable`: the environment has the variable (the dynamic variables do not count).
@@ -781,7 +786,8 @@ In a batch file:
 - `%~1` to `%~9` are the arguments without the quotes around them;
 - `%~` and modifier letters before the digit are parts of the argument's full path, or of the file it names: `f` the full path, `d` its drive, `p` its directory, `n` its name, `x` its extension, `s` the parts of the short path instead (each long name replaced by its 8.3 name, as GetShortPathNameW gives it; the whole short path when no other letter picks a part), `a` its attributes (`--a------`, the letters `drahscotl` or `-`), `t` the date and time it was last written (`11/04/2026 06:31 PM`), `z` its size; they combine (`%~dp0`, `%~snx1`), in the order `%~ftza1` shows them, attributes, time, size, then the path, separated by blanks.
   The attributes, time and size are left out for a name that names nothing, and its short path is its full path.
-  `%0`, unquoted, is the batch file as it was found, its extension and the case of its name on the disk included (`call x` gives `%~x0` `.cmd`); quoted, its name as typed;
+  `%0`, unquoted, is the batch file as it was found, its extension and the case of its name on the disk included (`call x` gives `%~x0` `.cmd`); quoted, its name as typed.
+  `%~` followed by anything but modifier letters and a digit (`%~q1`, `%~x`) prints `The following usage of the path operator in batch-parameter substitution is invalid:` and the line from there on, then `For valid formats type CALL /? or FOR /?`, and ends every batch file, as a line too long does (see [Batch files](#batch-files));
 - `%%` is `%`;
 - an undefined `%NAME%` is nothing, an undefined `%NAME:...%` loses `%NAME:` and what follows is read on (`%NOPE:~0,2%` gives `~0,2`), and a `%` with no closing one is dropped.
 

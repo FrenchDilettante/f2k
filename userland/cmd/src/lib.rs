@@ -331,12 +331,22 @@ pub(crate) fn trim_blanks(text: &[u16]) -> &[u16] {
     trim_end(skip_blanks(text))
 }
 
-/// A line as read, without its line break (CR LF, or the part of it there is).
+/// A line as read, without its line break (CR LF, or the part of it there is). A line feed a `^`
+/// escapes stays: it is the line's own, read from the empty line after a `^` that ended it (`set
+/// LF=^`, see [`syntax::line_end`]).
 pub fn without_break(line: &[u16]) -> &[u16] {
     let end = line
         .iter()
         .rposition(|&unit| unit != u16::from(b'\r') && unit != u16::from(b'\n'))
         .map_or(0, |last| last + 1);
+    let carets = line[..end]
+        .iter()
+        .rev()
+        .take_while(|&&unit| unit == u16::from(b'^'))
+        .count();
+    if carets % 2 == 1 && line.get(end) == Some(&LF) {
+        return &line[..end + 1];
+    }
     &line[..end]
 }
 
@@ -367,9 +377,15 @@ pub(crate) fn is_named(word: &[u16], name: &str) -> bool {
         })
 }
 
-/// `line` without its leading blanks and `@`s (a batch file's line hides its echo with one).
+/// `line` without its leading blanks and `@`s (a batch file's line hides its echo with one), and
+/// without the CR LF a typed line ends with. A line feed alone is the command's text: one that
+/// escaped it once (`set LF=^` before two empty lines sets a line feed).
 pub(crate) fn command_start(line: &[u16]) -> &[u16] {
-    let mut line = without_break(line);
+    let cr = u16::from(b'\r');
+    let mut line = line
+        .strip_suffix(&[cr, LF])
+        .or_else(|| line.strip_suffix(&[cr]))
+        .unwrap_or(line);
     loop {
         line = skip_blanks(line);
         match line.split_first() {
@@ -668,6 +684,40 @@ impl<'a> Iterator for Names<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct TooLong;
 
+/// Why a line's variables could not be expanded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unexpanded {
+    /// The expanded line does not fit.
+    TooLong,
+    /// In a batch file, a `%~` whose modifier letters no argument's digit follows (`%~q1`,
+    /// `%~x`): where its `%` is in the line. Windows 2000's cmd reports it
+    /// ([`PathOperator`]) and ends every batch file, as a line too long.
+    PathOperator(usize),
+}
+
+impl From<TooLong> for Unexpanded {
+    fn from(_: TooLong) -> Self {
+        Unexpanded::TooLong
+    }
+}
+
+/// What Windows 2000's cmd prints for a `%~` it cannot read ([`Unexpanded::PathOperator`]): the
+/// line from that `%` on, then two empty lines (batedge's capture; the line's own break, then the
+/// message's), then where to read about the forms.
+pub struct PathOperator<'a>(pub &'a [u16]);
+
+impl fmt::Display for PathOperator<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "The following usage of the path operator in batch-parameter\r\n\
+             substitution is invalid: {}\r\n\r\n\r\n\
+             For valid formats type CALL /? or FOR /?\r\n",
+            Text(self.0)
+        )
+    }
+}
+
 /// Where `%NAME%` finds its value: the process's environment, and what the dynamic variables
 /// (`set /?`) show when no variable of their name exists.
 pub trait Variables {
@@ -867,6 +917,9 @@ const ATTRIBUTES: [(u8, u32); 9] = [
 /// nothing, an undefined `%NAME:...` loses `%NAME:` and the scan goes on after the colon, and a
 /// `%` without a closing one goes.
 ///
+/// In a batch file, a `%~` whose modifier letters no digit follows cannot be read
+/// ([`Unexpanded::PathOperator`]); `%~$` is read as a variable's `%`.
+///
 /// TooLong when the expanded line does not fit `expanded`.
 pub fn expand<'a>(
     line: &[u16],
@@ -874,7 +927,7 @@ pub fn expand<'a>(
     batch: Option<&Arguments<'_>>,
     variables: &mut dyn Variables,
     expanded: &'a mut [u16],
-) -> Result<&'a [u16], TooLong> {
+) -> Result<&'a [u16], Unexpanded> {
     expand_within(line, MAX_LINE, errorlevel, batch, variables, expanded)
 }
 
@@ -887,7 +940,7 @@ pub fn expand_within<'a>(
     batch: Option<&Arguments<'_>>,
     variables: &mut dyn Variables,
     expanded: &'a mut [u16],
-) -> Result<&'a [u16], TooLong> {
+) -> Result<&'a [u16], Unexpanded> {
     let mut length = 0;
     let mut at = 0;
     while at < line.len() {
@@ -949,6 +1002,11 @@ pub fn expand_within<'a>(
                     at = end + 1;
                     continue;
                 }
+                // `%~$NAME:1` is no form this shell reads (see the README); `%~` ending the line
+                // stays as it is.
+                if line.get(end).is_some_and(|&unit| unit != u16::from(b'$')) {
+                    return Err(Unexpanded::PathOperator(at));
+                }
             }
         }
         let Some(close) = line[at + 1..].iter().position(|&unit| unit == PERCENT) else {
@@ -992,7 +1050,7 @@ pub fn expand_within<'a>(
         }
     }
     if without_break(&expanded[..length]).len() > limit {
-        return Err(TooLong);
+        return Err(Unexpanded::TooLong);
     }
     Ok(&expanded[..length])
 }
@@ -2016,7 +2074,7 @@ mod tests {
     /// The shell's command line, as the fake environment gives it.
     const COMMAND_LINE: [u16; 3] = [b'c' as u16, b'm' as u16, b'd' as u16];
 
-    fn expanded(line: &str, errorlevel: u32, fake: &mut Fake) -> Result<String, TooLong> {
+    fn expanded(line: &str, errorlevel: u32, fake: &mut Fake) -> Result<String, Unexpanded> {
         let mut buffer = [0; 64];
         expand(&wide(line), errorlevel, None, fake, &mut buffer).map(narrow)
     }
@@ -2227,6 +2285,41 @@ mod tests {
     }
 
     #[test]
+    fn a_line_feed_a_caret_escaped_is_text() {
+        assert_eq!(narrow(without_break(&wide("set LF=^\n"))), "set LF=^\n");
+        assert_eq!(narrow(without_break(&wide("set LF=^^\n"))), "set LF=^^");
+        assert_eq!(narrow(without_break(&wide("echo x\r\n"))), "echo x");
+        assert_eq!(parse(&wide("set LF=\n")), Command::Set(&wide("LF=\n")));
+    }
+
+    #[test]
+    fn a_modifier_no_digit_follows_cannot_be_read() {
+        // batedge: an unknown letter, one after a known one, a known one and no digit.
+        let mut fake = Fake::new(&[]);
+        let arguments = wide("one");
+        let path = wide("C:\\D\\t.cmd");
+        let arguments = Arguments::new(&arguments, &path);
+        let mut buffer = [0; 64];
+        let mut at = |line: &str| {
+            expand(&wide(line), 0, Some(&arguments), &mut fake, &mut buffer).map(narrow)
+        };
+        assert_eq!(at("echo [%~1] [%~q1]"), Err(Unexpanded::PathOperator(12)));
+        assert_eq!(at("echo [%~n1] [%~nq1]"), Err(Unexpanded::PathOperator(13)));
+        assert_eq!(at("echo [%~x]"), Err(Unexpanded::PathOperator(6)));
+        // `%%~` is a for's, after its `%%` is read.
+        assert_eq!(
+            at("for %%f in (x) do %%~nf"),
+            Ok("for %f in (x) do %~nf".into())
+        );
+        let shown = PathOperator(&wide("%~q1]")).to_string();
+        assert_eq!(
+            shown,
+            "The following usage of the path operator in batch-parameter\r\n\
+             substitution is invalid: %~q1]\r\n\r\n\r\nFor valid formats type CALL /? or FOR /?\r\n"
+        );
+    }
+
+    #[test]
     fn the_other_dynamic_variables() {
         let mut fake = Fake::new(&[]);
         assert_eq!(
@@ -2296,7 +2389,7 @@ mod tests {
         let longer = wide(&"x".repeat(MAX_LINE + 1));
         assert_eq!(
             expand(&longer, 0, None, &mut fake, &mut buffer),
-            Err(TooLong)
+            Err(Unexpanded::TooLong)
         );
     }
 
@@ -2304,8 +2397,11 @@ mod tests {
     fn an_expansion_past_the_buffer_is_too_long() {
         let long = "v".repeat(60);
         let mut fake = Fake::new(&[("A", &long)]);
-        assert_eq!(expanded("12345%A%", 0, &mut fake), Err(TooLong));
-        assert_eq!(expanded(&"x".repeat(65), 0, &mut fake), Err(TooLong));
+        assert_eq!(expanded("12345%A%", 0, &mut fake), Err(Unexpanded::TooLong));
+        assert_eq!(
+            expanded(&"x".repeat(65), 0, &mut fake),
+            Err(Unexpanded::TooLong)
+        );
         assert_eq!(expanded("%errorlevel%", 1, &mut fake).unwrap(), "1");
     }
 
@@ -2323,7 +2419,10 @@ mod tests {
         );
         // A line's worth is read, and makes the line too long when the line cannot hold it.
         let line = wide("x%S%");
-        assert_eq!(expand(&line, 0, None, &mut fake, &mut buffer), Err(TooLong));
+        assert_eq!(
+            expand(&line, 0, None, &mut fake, &mut buffer),
+            Err(Unexpanded::TooLong)
+        );
         assert_eq!(
             expand(&wide("%S%"), 0, None, &mut fake, &mut buffer).map(|text| text.len()),
             Ok(MAX_LINE)

@@ -1,8 +1,14 @@
 # batedge: one test, the script's one block (`cmd /c batedge.cmd`, output.txt); see tests/README.md,
-# "Script fixtures". Declared ahead of its capture: output.txt holds a placeholder block, which
-# tests\capture.bat batedge replaces.
+# "Script fixtures".
+# F2K matches the capture up to its long labels. There Windows 2000's cmd.exe ends with -1 each
+# time: after a goto to a label of 140 characters, whose "cannot find" message shows the label's
+# first 128 characters followed by the label the goto before went to ("long140"), and, printing
+# nothing, after a goto by a label's first 39 characters and one to a name that differs from a
+# label past its 128th. That reads as a fault in its own label handling (a buffer of 128
+# characters with no end), not a rule F2K could follow; a capture of labels of 128 to 140
+# characters without a goto before them would tell more.
 description = "batedge - small corners of the batch language: %~ with a modifier cmd.exe does not know, in a called label (each in a cmd.exe of its own); a caret at a line's end joining the next line and escaping its first character, after rem, inside quotes, doubled, and set's value of a line feed; call's second pass over carets, in quotes and out, and over a variable's; if's string order (LSS, GTR, EQU and /i over case, punctuation, a hyphen and digits), its numbers past 2^31-1, octal and hexadecimal; and labels of 40 and 140 characters, a goto by a label's first 39 characters and one differing from a label past its 128th (each in a cmd.exe of its own)."
 kind = "script"
 gate = true
 timeout = 60
-pending = "F2K takes an unknown %~ modifier for nothing, without the error that ends the batch file; does not continue rem's line, nor set a line feed through a caret; doubles no caret in call; orders if's strings by UTF-16 units after ASCII case folding, not lstrcmp's word order; saturates if's numbers at 64 bits; and keeps 128 units of a label (shallow-gui-cmd finding 26)"
+pending = "Windows 2000's cmd.exe ends with -1 after a goto to a label longer than 128 characters (its message running on into the previous goto's label), after a goto by a label's first 39 characters and after one to a name that differs from a label past its 128th, printing nothing for the last two; F2K reports the labels missing and ends with 1 (shallow-gui-cmd finding 26)"

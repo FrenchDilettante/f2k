@@ -227,10 +227,11 @@ pub fn parse(text: &[u16]) -> Result<Header<'_>, Syntax<'_>> {
 }
 
 /// `text` read whole as a number, as C's `strtol` reads one with base 0 (a sign, then decimal
-/// digits, `0x` and hexadecimal ones, or `0` and octal ones): None when anything is left.
+/// digits, `0x` and hexadecimal ones, or `0` and octal ones), held to a 32-bit `long` as `strtol`
+/// holds it (batedge: `2147483648 EQU 2147483647`): None when anything is left.
 fn whole_number(text: &[u16]) -> Option<i64> {
     match number(text)? {
-        (value, []) => Some(value),
+        (value, []) => Some(value.clamp(i64::from(i32::MIN), i64::from(i32::MAX))),
         _ => None,
     }
 }
@@ -317,23 +318,60 @@ pub fn compare(left: &[u16], op: Op, right: &[u16], fold: bool) -> bool {
     }
 }
 
-/// Two texts' order, as a dictionary's (Windows' `lstrcmp` and `lstrcmpi`): letters first
-/// whatever their case, then, unless `fold`, a lowercase letter before its capital.
-fn order(left: &[u16], right: &[u16], fold_case: bool) -> Ordering {
-    let folded = left
-        .iter()
-        .map(|&unit| fold(unit))
-        .cmp(right.iter().map(|&unit| fold(unit)));
-    if folded != Ordering::Equal || fold_case {
-        return folded;
+/// The ASCII punctuation and symbols in the order Windows' word sort (`lstrcmp`'s, the user's
+/// default locale's) puts them, before the digits and the letters; `'` and `-` are not among them
+/// (see [`order`]).
+const SYMBOLS: &[u8] = b" !\"#$%&()*,./:;?@[\\]^_`{|}~+<=>";
+
+/// Whether `unit` is one of the characters word sort passes over at first (`'` and `-`): a
+/// text holding them sorts as without them, and only then after the same text without them.
+fn ignored(unit: u16) -> bool {
+    unit == u16::from(b'-') || unit == u16::from(b'\'')
+}
+
+/// A character's place in word sort, whatever its case: the symbols ([`SYMBOLS`]), then the
+/// digits, then the letters, then any other character by its unit.
+fn weight(unit: u16) -> u32 {
+    let unit = fold(unit);
+    match u8::try_from(unit) {
+        Ok(byte) => match SYMBOLS.iter().position(|&symbol| symbol == byte) {
+            Some(place) => 1 + place as u32,
+            None if byte.is_ascii_digit() => 0x100 + u32::from(byte),
+            None if byte.is_ascii_uppercase() => 0x200 + u32::from(byte),
+            None => 0x300 + u32::from(byte),
+        },
+        Err(_) => 0x400 + u32::from(unit),
     }
-    for (&a, &b) in left.iter().zip(right) {
-        if a != b {
-            // The same letter in two cases: the lowercase one first.
-            return b.cmp(&a);
+}
+
+/// Two texts' order, as Windows' `lstrcmp` and `lstrcmpi` give it (word sort; batedge's
+/// capture): first by their characters' places ([`weight`]: symbols, digits, letters whatever
+/// their case), `'` and `-` passed over; then, unless `fold_case`, by case, a lowercase letter
+/// before its capital (`a LSS A`); then the text without `'` and `-` before the one with them
+/// (`ab LSS a-b`); then by their units.
+fn order(left: &[u16], right: &[u16], fold_case: bool) -> Ordering {
+    fn kept(text: &[u16]) -> impl Iterator<Item = u16> + '_ {
+        text.iter().copied().filter(|&unit| !ignored(unit))
+    }
+    let primary = kept(left).map(weight).cmp(kept(right).map(weight));
+    if primary != Ordering::Equal {
+        return primary;
+    }
+    if !fold_case {
+        for (a, b) in kept(left).zip(kept(right)) {
+            if a != b {
+                // The same letter in two cases: the lowercase one, the greater unit, first.
+                return b.cmp(&a);
+            }
         }
     }
-    Ordering::Equal
+    let marked = |text: &[u16]| text.iter().any(|&unit| ignored(unit));
+    match (marked(left), marked(right)) {
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        _ if fold_case => Ordering::Equal,
+        _ => left.cmp(right),
+    }
 }
 
 #[cfg(test)]
@@ -428,6 +466,38 @@ mod tests {
         assert!(run("if a LSS A x", 0).0);
         assert!(run("if /i a EQU A x", 0).0);
         assert!(run("if a NEQ b x", 0).0);
+    }
+
+    #[test]
+    fn texts_compare_in_word_sort_numbers_as_32_bit_longs() {
+        // batedge's capture, each line's answer.
+        let holds = |line: &str| run(&format!("if {line} x"), 0).0;
+        for (line, answer) in [
+            ("a LSS B", true),
+            ("B LSS a", false),
+            ("A LSS a", false),
+            ("a LSS A", true),
+            ("a EQU A", false),
+            ("Z GTR a", true),
+            ("_ LSS a", true),
+            ("[ LSS a", true),
+            ("1 LSS a", true),
+            ("a-b LSS ab", false),
+            ("ab LSS a-b", true),
+            ("a-c LSS ab", false),
+            ("10a LSS 9a", true),
+            ("10 LSS 9", false),
+            ("/i a LSS B", true),
+            ("/i B GTR a", true),
+            ("/i a EQU A", true),
+            ("2147483648 EQU 2147483647", true),
+            ("99999999999 GTR 2147483647", false),
+            ("-2147483649 EQU -2147483648", true),
+            ("010 EQU 8", true),
+            ("0x10 EQU 16", true),
+        ] {
+            assert_eq!(holds(line), answer, "{line}");
+        }
     }
 
     #[test]
