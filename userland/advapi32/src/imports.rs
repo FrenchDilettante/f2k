@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use rtl::heap::HEAP_ZERO_MEMORY;
-use rtl::status::{NtStatus, STATUS_SUCCESS};
+use rtl::status::NtStatus;
 use rtl::string::{AnsiString, UnicodeString};
 
 /// An OBJECT_ATTRIBUTES (`rtl::nt`'s) as the key services read it: its name and security pointers
@@ -180,12 +180,15 @@ pub use host::Probed;
 #[cfg(all(target_arch = "x86", not(test)))]
 pub use rtl::probe::Probed;
 
-/// A service's answer: success for STATUS_SUCCESS alone, any other status its failure.
+/// A service's answer, by NT_SUCCESS as Windows 2000's advapi32 takes it: success for a status of
+/// success or information severity, a warning's or an error's status its failure. The warnings
+/// these services give are partial answers the callers handle as failures (STATUS_BUFFER_OVERFLOW
+/// from a value or key query, or a string conversion cut short).
 fn checked(status: u32) -> Result<(), NtStatus> {
-    if status == STATUS_SUCCESS {
-        Ok(())
-    } else {
+    if (status as i32) < 0 {
         Err(NtStatus(status))
+    } else {
+        Ok(())
     }
 }
 
@@ -645,6 +648,33 @@ pub fn unicode_to_multi_byte_size(source: &[u16]) -> u32 {
 pub mod host {
     use std::cell::{Cell, RefCell};
 
+    /// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null
+    /// pointer makes no slice, not even an empty one), as a caller may pass NULL with no length.
+    ///
+    /// # Safety
+    ///
+    /// For a length, `at` is readable for that many items for `'a`.
+    pub(crate) unsafe fn items<'a, T>(at: *const T, length: usize) -> &'a [T] {
+        if length == 0 {
+            return &[];
+        }
+        // SAFETY: the caller's contract.
+        unsafe { core::slice::from_raw_parts(at, length) }
+    }
+
+    /// [`items`], writable.
+    ///
+    /// # Safety
+    ///
+    /// For a length, `at` is writable for that many items for `'a`, and nothing else uses them.
+    pub(crate) unsafe fn items_mut<'a, T>(at: *mut T, length: usize) -> &'a mut [T] {
+        if length == 0 {
+            return &mut [];
+        }
+        // SAFETY: the caller's contract.
+        unsafe { core::slice::from_raw_parts_mut(at, length) }
+    }
+
     use super::{AnsiString, ObjectAttributes, UnicodeString};
 
     /// What the key services answer on the host.
@@ -896,8 +926,8 @@ pub mod host {
         // SAFETY: the caller's buffers, of the sizes given.
         let written = unsafe {
             rtl::string::unicode_to_multi_byte(
-                std::slice::from_raw_parts_mut(multi_byte, max_bytes as usize),
-                std::slice::from_raw_parts(unicode, unicode_bytes as usize / 2),
+                items_mut(multi_byte, max_bytes as usize),
+                items(unicode, unicode_bytes as usize / 2),
             )
         };
         if !bytes_written.is_null() {
@@ -917,8 +947,8 @@ pub mod host {
         // SAFETY: the caller's buffers, of the sizes given.
         let written = unsafe {
             rtl::string::multi_byte_to_unicode(
-                std::slice::from_raw_parts_mut(unicode, max_bytes as usize / 2),
-                std::slice::from_raw_parts(multi_byte, multi_byte_bytes as usize),
+                items_mut(unicode, max_bytes as usize / 2),
+                items(multi_byte, multi_byte_bytes as usize),
             )
         };
         if !bytes_written.is_null() {
@@ -959,5 +989,50 @@ pub mod host {
         fn readable(&self, _address: usize) -> bool {
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service's answer is NT_SUCCESS's: success and information succeed, a warning
+    /// (STATUS_BUFFER_OVERFLOW) and an error fail with their statuses.
+    #[test]
+    fn answers_succeed_by_nt_success() {
+        assert_eq!(checked(0), Ok(()));
+        assert_eq!(checked(0x4000_0000), Ok(()), "STATUS_OBJECT_NAME_EXISTS");
+        assert_eq!(checked(0x8000_0005), Err(NtStatus(0x8000_0005)));
+        assert_eq!(checked(0xC000_000D), Err(NtStatus(0xC000_000D)));
+    }
+
+    /// The conversion fakes take NULL with no length, as a caller may pass it, and convert
+    /// nothing.
+    #[test]
+    fn conversions_take_null_with_no_length() {
+        let mut written = 7u32;
+        // SAFETY: no buffers, of no length; the count goes into the local.
+        unsafe {
+            host::RtlMultiByteToUnicodeN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
+        written = 7;
+        // SAFETY: as above.
+        unsafe {
+            host::RtlUnicodeToMultiByteN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
     }
 }

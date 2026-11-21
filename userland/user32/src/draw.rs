@@ -829,10 +829,7 @@ pub unsafe extern "system" fn draw_text_a(
         };
         (bytes, Out::new(rect))
     };
-    crate::with_wide(bytes, |units| {
-        draw_text(dc, &units[..units.len() - 1], place, format)
-    })
-    .unwrap_or(0)
+    crate::with_wide(bytes, |units| draw_text(dc, units, place, format)).unwrap_or(0)
 }
 
 #[cfg(test)]

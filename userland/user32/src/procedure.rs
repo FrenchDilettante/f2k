@@ -303,7 +303,7 @@ pub fn narrow_to_wide(
             // SAFETY: WM_SETTEXT's and EM_REPLACESEL's lParam as its sender hands it over: a
             // NUL-terminated string, narrow in this form.
             let text = unsafe { InStr::new(lparam as usize as *const u8) };
-            crate::with_wide(text.bytes(), |units| {
+            crate::with_wide_z(text.bytes(), |units| {
                 call(message, wparam, units.as_ptr() as i32)
             })
             .unwrap_or(0)

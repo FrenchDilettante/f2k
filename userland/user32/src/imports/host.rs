@@ -28,6 +28,33 @@ pub use local::*;
 mod prop;
 pub use prop::*;
 
+/// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null
+/// pointer makes no slice, not even an empty one), as a caller may pass NULL with no length.
+///
+/// # Safety
+///
+/// For a length, `at` is readable for that many items for `'a`.
+pub(crate) unsafe fn items<'a, T>(at: *const T, length: usize) -> &'a [T] {
+    if length == 0 {
+        return &[];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { core::slice::from_raw_parts(at, length) }
+}
+
+/// [`items`], writable.
+///
+/// # Safety
+///
+/// For a length, `at` is writable for that many items for `'a`, and nothing else uses them.
+pub(crate) unsafe fn items_mut<'a, T>(at: *mut T, length: usize) -> &'a mut [T] {
+    if length == 0 {
+        return &mut [];
+    }
+    // SAFETY: the caller's contract.
+    unsafe { core::slice::from_raw_parts_mut(at, length) }
+}
+
 /// gdi32's stand-ins: a DC drawing into a canvas the tests read pixel by pixel.
 pub mod canvas;
 pub use canvas::{
@@ -251,8 +278,8 @@ pub unsafe extern "system" fn RtlMultiByteToUnicodeN(
     // SAFETY: the caller's buffers, of the sizes given.
     let written = unsafe {
         rtl::string::multi_byte_to_unicode(
-            core::slice::from_raw_parts_mut(unicode, max_bytes as usize / 2),
-            core::slice::from_raw_parts(multi_byte, multi_byte_bytes as usize),
+            items_mut(unicode, max_bytes as usize / 2),
+            items(multi_byte, multi_byte_bytes as usize),
         )
     };
     if !bytes_written.is_null() {
@@ -308,8 +335,8 @@ pub unsafe extern "system" fn RtlUnicodeToMultiByteN(
     // SAFETY: the caller's buffers, of the sizes given.
     let written = unsafe {
         rtl::string::unicode_to_multi_byte(
-            core::slice::from_raw_parts_mut(multi_byte, max_bytes as usize),
-            core::slice::from_raw_parts(unicode, unicode_bytes as usize / 2),
+            items_mut(multi_byte, max_bytes as usize),
+            items(unicode, unicode_bytes as usize / 2),
         )
     };
     if !bytes_written.is_null() {
@@ -2272,8 +2299,8 @@ pub unsafe extern "system" fn NtUserSetSysColors(
     // SAFETY: the caller's arrays of `count` entries.
     let (indexes, colors) = unsafe {
         (
-            core::slice::from_raw_parts(indexes as *const u32, count as usize),
-            core::slice::from_raw_parts(colors as *const u32, count as usize),
+            items(indexes as *const u32, count as usize),
+            items(colors as *const u32, count as usize),
         )
     };
     if indexes.iter().any(|&index| index as usize >= SYSTEM_COLORS) {
@@ -2589,7 +2616,11 @@ pub unsafe extern "system" fn NtUserDeleteMenu(menu: usize, item: u32, flags: u3
     remove_item(menu, item, flags, true)
 }
 
-pub unsafe extern "system" fn NtUserSetMenuDefaultItem(menu: usize, item: u32, by_position: u32) -> u32 {
+pub unsafe extern "system" fn NtUserSetMenuDefaultItem(
+    menu: usize,
+    item: u32,
+    by_position: u32,
+) -> u32 {
     use rtl::menu::{MFS_DEFAULT, MFT_SEPARATOR};
     SERVICES.with(|count| count.set(count.get() + 1));
     let index = match menu_index(menu) {

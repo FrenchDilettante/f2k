@@ -187,7 +187,7 @@ pub unsafe extern "system" fn NtUserConvertMemHandle(
     handle: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's locked block, `length` bytes.
-    let bytes = unsafe { core::slice::from_raw_parts(data as *const u8, length as usize) }.to_vec();
+    let bytes = unsafe { super::items(data as *const u8, length as usize) }.to_vec();
     clipboard(|c| {
         c.next += 1;
         c.converted.push((c.next, bytes));

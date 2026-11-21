@@ -261,7 +261,7 @@ pub unsafe extern "system" fn create_window_ex_a(
             creation.class = class;
             match name {
                 None => Some(create_or_missing(&creation)),
-                Some(name) => crate::with_wide(name.bytes(), |units| {
+                Some(name) => crate::with_wide_z(name.bytes(), |units| {
                     creation.name = units.as_ptr() as usize;
                     create_or_missing(&creation)
                 }),
@@ -716,7 +716,7 @@ pub unsafe extern "system" fn find_window_a(class: *const u8, title: *const u8) 
         .with_wide(|class| match title {
             None => Some(find(class, 0)),
             Some(title) => {
-                crate::with_wide(title.bytes(), |units| find(class, units.as_ptr() as usize))
+                crate::with_wide_z(title.bytes(), |units| find(class, units.as_ptr() as usize))
             }
         })
         .flatten()

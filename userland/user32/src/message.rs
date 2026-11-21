@@ -596,7 +596,7 @@ pub unsafe extern "system" fn register_window_message_a(name: *const u8) -> u32 
     }
     // SAFETY: the caller's string.
     let name = unsafe { InStr::new(name) };
-    crate::with_wide(name.bytes(), |units| {
+    crate::with_wide_z(name.bytes(), |units| {
         register_window_message_w(units.as_ptr())
     })
     .unwrap_or(0)
@@ -1158,7 +1158,7 @@ fn set_text(window: usize, text: i32, ansi: bool) -> bool {
     // SAFETY: WM_SETTEXT's lParam (or a narrow CREATESTRUCT's name) as its sender hands it over: a
     // NUL-terminated string, narrow in this form.
     let text = unsafe { InStr::new(text as usize as *const u8) };
-    crate::with_wide(text.bytes(), |units| {
+    crate::with_wide_z(text.bytes(), |units| {
         imports::def_set_text(window, units.as_ptr() as usize).is_ok()
     })
     .unwrap_or(false)

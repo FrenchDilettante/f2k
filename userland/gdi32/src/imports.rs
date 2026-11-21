@@ -275,8 +275,8 @@ pub use host::Probed;
 #[cfg(all(target_arch = "x86", not(test)))]
 pub use rtl::probe::Probed;
 
-/// A service's answer: success for a status of success, information or warning severity, an
-/// error's status its failure.
+/// A service's answer, by NT_SUCCESS: success for a status of success or information severity, a
+/// warning's or an error's status its failure.
 fn checked(status: u32) -> Result<(), NtStatus> {
     if (status as i32) < 0 {
         Err(NtStatus(status))
@@ -944,6 +944,33 @@ pub fn enum_font(
 pub mod host {
     use std::cell::{Cell, RefCell};
 
+    /// The caller's `length` items at `at`: none when `length` is 0, whatever `at` is (a null
+    /// pointer makes no slice, not even an empty one), as a caller may pass NULL with no length.
+    ///
+    /// # Safety
+    ///
+    /// For a length, `at` is readable for that many items for `'a`.
+    pub(crate) unsafe fn items<'a, T>(at: *const T, length: usize) -> &'a [T] {
+        if length == 0 {
+            return &[];
+        }
+        // SAFETY: the caller's contract.
+        unsafe { core::slice::from_raw_parts(at, length) }
+    }
+
+    /// [`items`], writable.
+    ///
+    /// # Safety
+    ///
+    /// For a length, `at` is writable for that many items for `'a`, and nothing else uses them.
+    pub(crate) unsafe fn items_mut<'a, T>(at: *mut T, length: usize) -> &'a mut [T] {
+        if length == 0 {
+            return &mut [];
+        }
+        // SAFETY: the caller's contract.
+        unsafe { core::slice::from_raw_parts_mut(at, length) }
+    }
+
     use rtl::gdi::*;
 
     /// The one DC the stand-ins know.
@@ -1134,8 +1161,8 @@ pub mod host {
         // SAFETY: the caller's buffers, of the sizes given.
         let written = unsafe {
             rtl::string::multi_byte_to_unicode(
-                core::slice::from_raw_parts_mut(unicode, max_bytes as usize / 2),
-                core::slice::from_raw_parts(multi_byte, multi_byte_bytes as usize),
+                items_mut(unicode, max_bytes as usize / 2),
+                items(multi_byte, multi_byte_bytes as usize),
             )
         };
         if !bytes_written.is_null() {
@@ -1155,8 +1182,8 @@ pub mod host {
         // SAFETY: the caller's buffers, of the sizes given.
         let written = unsafe {
             rtl::string::unicode_to_multi_byte(
-                core::slice::from_raw_parts_mut(multi_byte, max_bytes as usize),
-                core::slice::from_raw_parts(unicode, unicode_bytes as usize / 2),
+                items_mut(multi_byte, max_bytes as usize),
+                items(unicode, unicode_bytes as usize / 2),
             )
         };
         if !bytes_written.is_null() {
@@ -1399,9 +1426,8 @@ pub mod host {
                     y,
                     options,
                     rect: (!rect.is_null()).then(|| rect.read()),
-                    units: std::slice::from_raw_parts(string, count as usize).to_vec(),
-                    dx: (!dx.is_null())
-                        .then(|| std::slice::from_raw_parts(dx, count as usize).to_vec()),
+                    units: items(string, count as usize).to_vec(),
+                    dx: (!dx.is_null()).then(|| items(dx, count as usize).to_vec()),
                 }
             };
             TEXT.with(|text| text.borrow_mut().push(call));
@@ -1434,7 +1460,7 @@ pub mod host {
         with_dc(dc, |_| {
             // SAFETY: the tests' own string and SIZE.
             unsafe {
-                let units = std::slice::from_raw_parts(string, count as usize).to_vec();
+                let units = items(string, count as usize).to_vec();
                 TEXT.with(|text| {
                     text.borrow_mut().push(TextCall {
                         dc,
@@ -1804,7 +1830,7 @@ pub mod host {
             (first..first + count).map(|unit| unit as u16).collect()
         } else {
             // SAFETY: the caller's `count` units.
-            unsafe { std::slice::from_raw_parts(characters, count as usize) }.to_vec()
+            unsafe { items(characters, count as usize) }.to_vec()
         };
         fonts(|fonts| fonts.characters.extend(&units));
         units
@@ -1975,5 +2001,50 @@ pub mod host {
         fn readable(&self, _address: usize) -> bool {
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service's answer is NT_SUCCESS's: success and information succeed, a warning
+    /// (STATUS_BUFFER_OVERFLOW) and an error fail with their statuses.
+    #[test]
+    fn answers_succeed_by_nt_success() {
+        assert_eq!(checked(0), Ok(()));
+        assert_eq!(checked(0x4000_0000), Ok(()), "STATUS_OBJECT_NAME_EXISTS");
+        assert_eq!(checked(0x8000_0005), Err(NtStatus(0x8000_0005)));
+        assert_eq!(checked(0xC000_000D), Err(NtStatus(0xC000_000D)));
+    }
+
+    /// The conversion fakes take NULL with no length, as a caller may pass it, and convert
+    /// nothing.
+    #[test]
+    fn conversions_take_null_with_no_length() {
+        let mut written = 7u32;
+        // SAFETY: no buffers, of no length; the count goes into the local.
+        unsafe {
+            host::RtlMultiByteToUnicodeN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
+        written = 7;
+        // SAFETY: as above.
+        unsafe {
+            host::RtlUnicodeToMultiByteN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
     }
 }

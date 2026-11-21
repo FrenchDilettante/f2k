@@ -460,8 +460,7 @@ mod raw {
         #[link_name = "\u{1}_f2k_nt_NtUserSetMenuDefaultItem"]
         pub fn NtUserSetMenuDefaultItem(menu: usize, item: u32, by_position: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetSystemMenu"]
-        pub fn NtUserGetSystemMenu(window: usize, revert: u32, made: usize, menu: *mut u32)
-            -> u32;
+        pub fn NtUserGetSystemMenu(window: usize, revert: u32, made: usize, menu: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserCreateAcceleratorTable"]
         pub fn NtUserCreateAcceleratorTable(
             entries: *const Accel,
@@ -709,8 +708,8 @@ pub use host::Probed;
 #[cfg(all(target_arch = "x86", not(test)))]
 pub use rtl::probe::Probed;
 
-/// A service's answer: success for a status of success, information or warning severity, an
-/// error's status its failure.
+/// A service's answer, by NT_SUCCESS: success for a status of success or information severity, a
+/// warning's or an error's status its failure.
 fn checked(status: u32) -> Result<(), NtStatus> {
     if (status as i32) < 0 {
         Err(NtStatus(status))
@@ -2538,3 +2537,48 @@ pub fn set_bk_mode(dc: usize, mode: u32) -> u32 {
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod host;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A service's answer is NT_SUCCESS's: success and information succeed, a warning
+    /// (STATUS_BUFFER_OVERFLOW) and an error fail with their statuses.
+    #[test]
+    fn answers_succeed_by_nt_success() {
+        assert_eq!(checked(0), Ok(()));
+        assert_eq!(checked(0x4000_0000), Ok(()), "STATUS_OBJECT_NAME_EXISTS");
+        assert_eq!(checked(0x8000_0005), Err(NtStatus(0x8000_0005)));
+        assert_eq!(checked(0xC000_000D), Err(NtStatus(0xC000_000D)));
+    }
+
+    /// The conversion fakes take NULL with no length, as a caller may pass it, and convert
+    /// nothing.
+    #[test]
+    fn conversions_take_null_with_no_length() {
+        let mut written = 7u32;
+        // SAFETY: no buffers, of no length; the count goes into the local.
+        unsafe {
+            host::RtlMultiByteToUnicodeN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
+        written = 7;
+        // SAFETY: as above.
+        unsafe {
+            host::RtlUnicodeToMultiByteN(
+                core::ptr::null_mut(),
+                0,
+                &mut written,
+                core::ptr::null(),
+                0,
+            )
+        };
+        assert_eq!(written, 0);
+    }
+}

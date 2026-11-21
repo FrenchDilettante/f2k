@@ -903,10 +903,7 @@ unsafe fn set_class_long(window: usize, index: i32, value: u32, ansi: bool) -> u
                 // SAFETY: the caller's contract: a NUL-terminated narrow string.
                 let name = unsafe { NameA::new(value as usize as *const u8) };
                 match name {
-                    NameA::Text(text) => crate::with_wide(text.bytes(), |units| {
-                        menu_copies(&units[..units.len() - 1])
-                    })
-                    .flatten(),
+                    NameA::Text(text) => crate::with_wide(text.bytes(), menu_copies).flatten(),
                     NameA::Id(id) => Some(usize::from(id)),
                 }
             } else {

@@ -349,9 +349,7 @@ unsafe fn with_text_a<R>(
     }
     // SAFETY: a string item's text, NUL-terminated, as the caller hands it over.
     let text = unsafe { rtl::edge::InStr::new(text) };
-    crate::with_wide(text.bytes(), |units| {
-        f(Some(&units[..units.len().saturating_sub(1)]))
-    })
+    crate::with_wide(text.bytes(), |units| f(Some(units)))
 }
 
 /// AppendMenuW: an item at the end of the menu (see [`edit_by_flags`]); TRUE, or FALSE with the

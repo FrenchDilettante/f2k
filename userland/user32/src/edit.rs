@@ -528,7 +528,7 @@ fn with_param_text<R>(lparam: usize, ansi: bool, f: impl FnOnce(&[u16]) -> R) ->
         // SAFETY: the message's lParam as its sender hands it over: a NUL-terminated string,
         // narrow in this form.
         let text = unsafe { InStr::new(lparam as *const u8) };
-        return crate::with_wide(text.bytes(), |units| f(&units[..units.len() - 1]));
+        return crate::with_wide(text.bytes(), f);
     }
     // SAFETY: as above, wide in this form.
     let text = unsafe { InWStr::new(lparam as *const u16) }.units();

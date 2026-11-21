@@ -128,8 +128,9 @@ const STACK_UNITS: usize = 260;
 /// Run `f` on the wide form of the narrow `bytes`, NUL-terminated (the ANSI code page's, through
 /// ntdll's RtlMultiByteToUnicodeN, as Windows 2000's user32 converts), on the stack when it is
 /// short and in a block of the process heap otherwise; none, with ERROR_NOT_ENOUGH_MEMORY, when
-/// the heap has no room for it. `f` gets the units, the terminator included.
-pub fn with_wide<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
+/// the heap has no room for it. `f` gets the units, the terminator included: for a service that
+/// takes the string's address.
+pub fn with_wide_z<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
     if bytes.len() < STACK_UNITS {
         let mut units = [0u16; STACK_UNITS];
         let length = imports::multi_byte_to_unicode(&mut units[..bytes.len()], bytes);
@@ -143,6 +144,12 @@ pub fn with_wide<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
     let length = imports::multi_byte_to_unicode(&mut units[..room], bytes);
     units[length] = 0;
     Some(f(&units[..=length]))
+}
+
+/// Run `f` on the wide form of the narrow `bytes` as [`with_wide_z`] makes it, without the
+/// terminator: the string's units alone, as gdi32's `with_wide` hands them.
+pub fn with_wide<R>(bytes: &[u8], f: impl FnOnce(&[u16]) -> R) -> Option<R> {
+    with_wide_z(bytes, |units| f(&units[..units.len() - 1]))
 }
 
 /// A name as the narrow calls take one (a class name, a cursor's resource name): a NUL-terminated
@@ -174,7 +181,7 @@ impl<'a> NameA<'a> {
     pub fn with_wide<R>(&self, f: impl FnOnce(usize) -> R) -> Option<R> {
         match self {
             NameA::Id(id) => Some(f(*id as usize)),
-            NameA::Text(text) => with_wide(text.bytes(), |units| f(units.as_ptr() as usize)),
+            NameA::Text(text) => with_wide_z(text.bytes(), |units| f(units.as_ptr() as usize)),
         }
     }
 }
@@ -184,16 +191,33 @@ mod tests {
     use super::*;
     use crate::imports::host::LAST_ERROR;
 
-    /// A short string converts on the stack, a long one through the heap, each NUL-terminated.
+    /// A short string converts on the stack, a long one through the heap: with its terminator
+    /// for `with_wide_z`, without it for `with_wide` (gdi32's contract).
     #[test]
     fn narrow_strings_convert_to_wide() {
-        let wide = with_wide(b"Hi\x80", |units| units.to_vec()).unwrap();
+        let wide = with_wide_z(b"Hi\x80", |units| units.to_vec()).unwrap();
         assert_eq!(wide, [0x48, 0x69, 0x20AC, 0]);
+        let wide = with_wide(b"Hi\x80", |units| units.to_vec()).unwrap();
+        assert_eq!(wide, [0x48, 0x69, 0x20AC]);
         let long = std::vec![b'x'; 1000];
-        let wide = with_wide(&long, |units| units.to_vec()).unwrap();
+        let wide = with_wide_z(&long, |units| units.to_vec()).unwrap();
         assert_eq!(wide.len(), 1001);
         assert_eq!(wide[1000], 0);
         assert!(wide[..1000].iter().all(|&unit| unit == 0x78));
+        let wide = with_wide(&long, |units| units.to_vec()).unwrap();
+        assert_eq!(wide.len(), 1000);
+        assert!(wide.iter().all(|&unit| unit == 0x78));
+        // The stack's last length and the heap's first, and the empty string.
+        for length in [STACK_UNITS - 1, STACK_UNITS] {
+            let text = std::vec![b'y'; length];
+            assert_eq!(with_wide(&text, |units| units.len()), Some(length));
+            assert_eq!(
+                with_wide_z(&text, |units| (units.len(), units[length])),
+                Some((length + 1, 0))
+            );
+        }
+        assert_eq!(with_wide(b"", |units| units.len()), Some(0));
+        assert_eq!(with_wide_z(b"", |units| units.to_vec()), Some(std::vec![0]));
     }
 
     /// A window's dead handle is ERROR_INVALID_WINDOW_HANDLE, other statuses ntdll's mapping.

@@ -223,7 +223,7 @@ pub unsafe extern "system" fn ExtTextOutW(
     let (rect, units) = unsafe {
         (
             (!rect.is_null()).then(|| rect.read()),
-            std::slice::from_raw_parts(string, count as usize),
+            super::items(string, count as usize),
         )
     };
     let text = String::from_utf16_lossy(units);

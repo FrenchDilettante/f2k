@@ -297,10 +297,7 @@ unsafe fn set_info(
     if ansi {
         // SAFETY: the caller's contract: dwTypeData its NUL-terminated string.
         let text = unsafe { InStr::new(text_at as usize as *const u8) };
-        crate::with_wide(text.bytes(), |units| {
-            call(&units[..units.len().saturating_sub(1)])
-        })
-        .unwrap_or(0)
+        crate::with_wide(text.bytes(), call).unwrap_or(0)
     } else {
         // SAFETY: the caller's contract: dwTypeData its NUL-terminated string.
         let text = unsafe { InWStr::new(text_at as usize as *const u16) }.units();

@@ -291,7 +291,7 @@ pub extern "system" fn register_clipboard_format_w(name: *const u16) -> u32 {
 pub unsafe extern "system" fn register_clipboard_format_a(name: *const u8) -> u32 {
     // SAFETY: the caller's string.
     let name = unsafe { InStr::new(name) };
-    crate::with_wide(name.bytes(), |units| {
+    crate::with_wide_z(name.bytes(), |units| {
         answered(imports::register_window_message(units.as_ptr() as usize)).unwrap_or(0)
     })
     .unwrap_or(0)
