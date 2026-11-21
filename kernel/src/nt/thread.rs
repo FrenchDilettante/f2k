@@ -124,6 +124,15 @@ pub fn priority_value(value: i32) -> Result<i8, NtStatus> {
     }
 }
 
+/// ThreadZeroTlsCell's value and handle: a TLS index below the last (`index`), through the calling
+/// thread's pseudo-handle (`current`) alone; STATUS_INVALID_PARAMETER otherwise.
+pub fn zero_tls_cell(current: bool, index: u32) -> Result<u32, NtStatus> {
+    if !current || index >= crate::user::tls::INDEXES {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    Ok(index)
+}
+
 /// An affinity mask a thread or process takes: a non-empty subset of the system's processors;
 /// STATUS_INVALID_PARAMETER otherwise.
 pub fn affinity_mask(mask: u32) -> Result<u32, NtStatus> {
@@ -730,9 +739,7 @@ pub fn set_information_thread(
                 thread_of(thread, THREAD_SET_INFORMATION)?;
             }
             SetClass::ZeroTlsCell => {
-                if thread.raw() != CURRENT_THREAD || value >= crate::user::tls::INDEXES {
-                    return Err(STATUS_INVALID_PARAMETER);
-                }
+                zero_tls_cell(thread.raw() == CURRENT_THREAD, value)?;
                 for &teb in call.process().thread_tebs().iter() {
                     if let Some(slot) = crate::user::tls::thread_slot(teb, value) {
                         // Each thread's slot, where it has one (its expansion slots are its own
@@ -821,6 +828,33 @@ mod tests {
         assert_eq!(size(1), Ok(32), "ThreadTimes");
         assert_eq!(size(9), Ok(4), "ThreadQuerySetWin32StartAddress");
         assert_eq!(size(2), Err(STATUS_INVALID_INFO_CLASS));
+    }
+
+    /// The classes a set takes, each a ULONG exactly; ThreadZeroTlsCell's index below the last,
+    /// through the calling thread's pseudo-handle alone.
+    #[test]
+    fn the_set_classes_and_the_tls_cell() {
+        for class in 0..64u32 {
+            let served = matches!(class, 2 | 3 | 4 | 10 | 14);
+            assert_eq!(SetClass::try_from(class).is_ok(), served, "{class}");
+            if !served {
+                assert_eq!(SetClass::try_from(class), Err(STATUS_INVALID_INFO_CLASS));
+            }
+        }
+        assert_eq!(exactly(4, 4), Ok(()));
+        assert_eq!(exactly(3, 4), Err(STATUS_INFO_LENGTH_MISMATCH));
+        assert_eq!(exactly(8, 4), Err(STATUS_INFO_LENGTH_MISMATCH));
+
+        let last = crate::user::tls::INDEXES - 1;
+        assert_eq!(zero_tls_cell(true, 0), Ok(0));
+        assert_eq!(zero_tls_cell(true, last), Ok(last));
+        assert_eq!(zero_tls_cell(true, last + 1), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(zero_tls_cell(true, u32::MAX), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(
+            zero_tls_cell(false, 0),
+            Err(STATUS_INVALID_PARAMETER),
+            "another handle"
+        );
     }
 
     /// KERNEL_USER_TIMES: the times as given, the ticks each the clock's full tick.
