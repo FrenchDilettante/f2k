@@ -1,7 +1,8 @@
 //! The locale group, kernel32's own NLS code as on Windows 2000 (no kernel transition): the code
 //! pages and their conversions (MultiByteToWideChar and WideCharToMultiByte over `rtl::codepage`),
 //! lead bytes (IsDBCSLeadByte) and the code page list (EnumSystemCodePages), the language groups
-//! (IsValidLanguageGroup), case mapping and character types over code page 1252 (`rtl::cp1252`),
+//! (IsValidLanguageGroup), LCMapString ([`lcmap`], its sort keys [`sortkey`]'s), character types
+//! over code page 1252 (`rtl::cp1252`),
 //! comparison ([`crate::collate`]), the one locale's facts ([`crate::localeinfo`]), and MulDiv,
 //! which the group's spec section keeps beside them. The date, time and number formats are
 //! [`crate::nlsformat`]'s, FoldString [`crate::fold`]'s.
@@ -24,6 +25,11 @@ use crate::error::{
     ERROR_INVALID_PARAMETER,
     ERROR_NOT_ENOUGH_MEMORY,
 };
+
+mod lcmap;
+pub mod sortkey;
+
+pub use lcmap::{lc_map_string_a, lc_map_string_w};
 
 /// The code pages this surface reports: ANSI 1252, OEM 437.
 pub const ACP: u32 = 1252;
@@ -438,10 +444,6 @@ fn encode_composites(
     used
 }
 
-/// LCMapString's case-mapping flags.
-const LCMAP_LOWERCASE: u32 = 0x0000_0100;
-const LCMAP_UPPERCASE: u32 = 0x0000_0200;
-
 /// GetStringType's information types: one at a time, each a classifier of one character.
 const CT_CTYPE1: u32 = 1;
 const CT_CTYPE2: u32 = 2;
@@ -470,7 +472,7 @@ fn check_types(out: &OutBuf<'_, u16>) -> Result<(), Failure> {
 /// A narrow source: -1 is through its terminator, which counts; zero, anything below -1 and a null
 /// source are ERROR_INVALID_PARAMETER (Windows 2000's NLS calls check the pointer before they read
 /// it).
-fn narrow_source<'a>(src: &Counted<'a, u8>) -> Result<InBuf<'a, u8>, Failure> {
+pub(crate) fn narrow_source<'a>(src: &Counted<'a, u8>) -> Result<InBuf<'a, u8>, Failure> {
     if src.is_null() {
         return refused(ERROR_INVALID_PARAMETER);
     }
@@ -483,7 +485,7 @@ fn narrow_source<'a>(src: &Counted<'a, u8>) -> Result<InBuf<'a, u8>, Failure> {
 
 /// A wide source, as the NLS calls take it: a negative count is NUL-terminated, the terminator
 /// counted (and processed); zero and a null source are ERROR_INVALID_PARAMETER.
-fn wide_source<'a>(src: &Counted<'a, u16>) -> Result<InBuf<'a, u16>, Failure> {
+pub(crate) fn wide_source<'a>(src: &Counted<'a, u16>) -> Result<InBuf<'a, u16>, Failure> {
     if src.is_null() {
         return refused(ERROR_INVALID_PARAMETER);
     }
@@ -491,114 +493,6 @@ fn wide_source<'a>(src: &Counted<'a, u16>) -> Result<InBuf<'a, u16>, Failure> {
         0 => refused(ERROR_INVALID_PARAMETER),
         _ => Ok(src.units(true)),
     }
-}
-
-/// LCMapStringA: case mapping of code page 1252 bytes, through Unicode (a byte whose mapped
-/// character the page lacks stays itself). A size query (no destination size) returns the count;
-/// ERROR_INSUFFICIENT_BUFFER for a destination too small; ERROR_INVALID_FLAGS for anything but the
-/// two case mappings. Quirk, as captured: a mapping into the buffer leaves
-/// ERROR_INSUFFICIENT_BUFFER as the last error even though it succeeds.
-///
-/// # Safety
-///
-/// The source holds its count of bytes (a NUL-terminated string for -1); the destination its size.
-#[unsafe(export_name = "f2k_export_LCMapStringA")]
-pub unsafe extern "system" fn lc_map_string_a(
-    _locale: u32,
-    flags: u32,
-    src: *const u8,
-    count: i32,
-    dst: *mut u8,
-    capacity: i32,
-) -> i32 {
-    // SAFETY: the caller's source and destination (the contract; a negative size reads as the
-    // unsigned one, as Windows 2000's does).
-    let (src, dst) = unsafe {
-        (
-            Counted::new(src, count),
-            OutBuf::new(dst, capacity as u32 as usize),
-        )
-    };
-    answer(map_narrow(flags, src, dst), 0)
-}
-
-/// LCMapStringA's work.
-fn map_narrow(flags: u32, src: Counted<'_, u8>, mut dst: OutBuf<'_, u8>) -> Result<i32, Failure> {
-    use cp1252::{map_case, wc_to_mb, MB_TO_WC};
-    let src = narrow_source(&src)?;
-    if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
-        return refused(ERROR_INVALID_FLAGS);
-    }
-    let count = src.len();
-    if dst.is_empty() {
-        return Ok(count as i32);
-    }
-    if dst.len() < count {
-        return refused(ERROR_INSUFFICIENT_BUFFER);
-    }
-    for (at, byte) in src.iter().enumerate() {
-        let mapped = map_case(MB_TO_WC[byte as usize], flags == LCMAP_UPPERCASE);
-        let back = wc_to_mb(mapped);
-        let out = if MB_TO_WC[back as usize] == mapped {
-            back
-        } else {
-            byte
-        };
-        dst.set(at, out);
-    }
-    set_last_error(ERROR_INSUFFICIENT_BUFFER);
-    Ok(count as i32)
-}
-
-/// LCMapStringW: case mapping over the 1252 character set, with the NLS calls' conventions (those
-/// LCMapStringA follows): a NUL-terminated source for a negative count, the terminator mapped and
-/// counted; a zero destination size asks the size needed; ERROR_INVALID_FLAGS for anything but the
-/// two case mappings, ERROR_INVALID_PARAMETER for a zero source count, a negative destination size
-/// or a null destination with a size, ERROR_INSUFFICIENT_BUFFER for a destination too small. The
-/// locale is ignored (this surface has one).
-///
-/// # Safety
-///
-/// As LCMapStringA's, in units.
-#[unsafe(export_name = "f2k_export_LCMapStringW")]
-pub unsafe extern "system" fn lc_map_string_w(
-    _locale: u32,
-    flags: u32,
-    src: *const u16,
-    count: i32,
-    dst: *mut u16,
-    capacity: i32,
-) -> i32 {
-    // SAFETY: the caller's source and destination (the contract; a negative size, which the call
-    // refuses before it writes, holds none).
-    let (src, out) = unsafe { (Counted::new(src, count), OutBuf::new(dst, room(capacity))) };
-    answer(map_wide(flags, src, out, capacity), 0)
-}
-
-/// LCMapStringW's work.
-fn map_wide(
-    flags: u32,
-    src: Counted<'_, u16>,
-    mut dst: OutBuf<'_, u16>,
-    capacity: i32,
-) -> Result<i32, Failure> {
-    check_destination(&dst, capacity)?;
-    let src = wide_source(&src)?;
-    if flags != LCMAP_UPPERCASE && flags != LCMAP_LOWERCASE {
-        return refused(ERROR_INVALID_FLAGS);
-    }
-    let upper = flags == LCMAP_UPPERCASE;
-    let count = src.len();
-    if dst.is_empty() {
-        return Ok(count as i32); // the size query
-    }
-    if dst.len() < count {
-        return refused(ERROR_INSUFFICIENT_BUFFER);
-    }
-    for (at, unit) in src.iter().enumerate() {
-        dst.set(at, cp1252::map_case(unit, upper));
-    }
-    Ok(count as i32)
 }
 
 /// GetStringTypeA: the CT_CTYPE1, CT_CTYPE2 or CT_CTYPE3 classification of code page 1252 bytes,

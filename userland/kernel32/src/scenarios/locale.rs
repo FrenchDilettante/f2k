@@ -173,7 +173,8 @@ fn lc_map_string_w_maps_case() {
     }
 }
 
-/// LCMapStringW refuses every other mapping (both case flags, none, a sort key) and an empty source
+/// LCMapStringW refuses the flags it does not take (both case flags, none, a sort key with a case
+/// mapping) and an empty source
 /// count, with 0 and the source unread; with no destination it is a size query, and a short
 /// destination is refused.
 ///
@@ -184,7 +185,7 @@ fn lc_map_string_w_refusals_and_size_queries() {
     for (flags, count) in [
         (LCMAP_UPPERCASE | LCMAP_LOWERCASE, 4),
         (0, 4),
-        (LCMAP_SORTKEY, 4),
+        (LCMAP_SORTKEY | LCMAP_UPPERCASE, 4),
         (LCMAP_UPPERCASE, 0),
     ] {
         assert_eq!(
@@ -1225,4 +1226,182 @@ fn get_string_type_ex_answers_as_get_string_type() {
 fn the_user_s_language_is_the_locale_s() {
     assert_eq!(get_user_default_lang_id(), get_user_default_lcid() & 0xFFFF);
     assert_eq!(get_user_default_lang_id(), 0x0409);
+}
+
+/// LCMapStringW of `text` (with its terminator) under `flags` into 64 units: the units (bytes for a
+/// sort key), or 0 and the last error.
+fn mapped_w(locale: u32, flags: u32, text: &[u16]) -> Result<Vec<u16>, u32> {
+    let mut out = [0xBEEFu16; 64];
+    let count = unsafe {
+        lc_map_string_w(
+            locale,
+            flags,
+            text.as_ptr(),
+            text.len() as i32,
+            out.as_mut_ptr(),
+            64,
+        )
+    };
+    if count == 0 {
+        return Err(last_error());
+    }
+    Ok(out[..count as usize].to_vec())
+}
+
+/// The bytes of a sort key LCMapStringW wrote as units.
+fn key_bytes(units: &[u16], count: usize) -> Vec<u8> {
+    units
+        .iter()
+        .flat_map(|u| u.to_le_bytes())
+        .take(count)
+        .collect()
+}
+
+/// LCMapStringW's sort keys: Windows NT's format (Unicode, diacritic, case, extra and special
+/// weights), the NORM_ flags and SORT_STRINGSORT, the size in bytes, a destination too small left
+/// unwritten, and the key refused into its own source.
+///
+/// Pins: kernel32.LCMapStringW
+#[test]
+fn lc_map_string_w_makes_sort_keys() {
+    let coop: Vec<u16> = "co-op".encode_utf16().collect();
+    let mut key = [0xCCCCu16; 32];
+    let count = unsafe {
+        lc_map_string_w(
+            LOCALE_US,
+            LCMAP_SORTKEY,
+            coop.as_ptr(),
+            5,
+            key.as_mut_ptr(),
+            64,
+        )
+    };
+    assert_eq!(
+        key_bytes(&key, count as usize),
+        [14, 10, 14, 0x7C, 14, 0x7C, 14, 0x7E, 1, 1, 1, 1, 0x80, 0x0F, 6, 0x82, 0]
+    );
+    let size = unsafe {
+        lc_map_string_w(
+            LOCALE_US,
+            LCMAP_SORTKEY,
+            coop.as_ptr(),
+            5,
+            core::ptr::null_mut(),
+            0,
+        )
+    };
+    assert_eq!(size, 17);
+    let mut short = [0xCCCCu16; 4];
+    let count = unsafe {
+        lc_map_string_w(
+            LOCALE_US,
+            LCMAP_SORTKEY,
+            coop.as_ptr(),
+            5,
+            short.as_mut_ptr(),
+            3,
+        )
+    };
+    assert_eq!((count, last_error(), short), (0, 122, [0xCCCC; 4]));
+    let mut inplace = [0x61u16, 0x62, 0];
+    let count = unsafe {
+        lc_map_string_w(
+            LOCALE_US,
+            LCMAP_SORTKEY,
+            inplace.as_ptr(),
+            -1,
+            inplace.as_mut_ptr(),
+            4,
+        )
+    };
+    assert_eq!((count, last_error()), (0, 87));
+    assert_eq!(mapped_w(0xDEAD, LCMAP_UPPERCASE, &[0x61, 0]), Err(87));
+}
+
+/// LCMapStringW's other maps: the byte reversal, the widths, the NORM_ flags as maps; and the
+/// combinations it refuses.
+///
+/// Pins: kernel32.LCMapStringW
+#[test]
+fn lc_map_string_w_maps_widths_and_norms() {
+    const LCMAP_BYTEREV: u32 = 0x800;
+    const LCMAP_HALFWIDTH: u32 = 0x40_0000;
+    const LCMAP_FULLWIDTH: u32 = 0x80_0000;
+    const NORM_IGNORECASE: u32 = 0x1;
+    const NORM_IGNORENONSPACE: u32 = 0x2;
+    const NORM_IGNORESYMBOLS: u32 = 0x4;
+    let abc = [0x61, 0x62, 0x63, 0];
+    assert_eq!(
+        mapped_w(LOCALE_US, LCMAP_BYTEREV | LCMAP_UPPERCASE, &abc),
+        Ok(vec![0x4100, 0x4200, 0x4300, 0])
+    );
+    assert_eq!(
+        mapped_w(LOCALE_US, LCMAP_FULLWIDTH, &[0x41, 0x62, 0x31, 0]),
+        Ok(vec![0xFF21, 0xFF42, 0xFF11, 0])
+    );
+    assert_eq!(
+        mapped_w(LOCALE_US, LCMAP_HALFWIDTH, &[0xFF21, 0xFF42, 0xFF11, 0]),
+        Ok(vec![0x41, 0x62, 0x31, 0])
+    );
+    assert_eq!(
+        mapped_w(LOCALE_US, NORM_IGNORENONSPACE, &[0x65, 0x301, 0x61, 0]),
+        Ok(vec![0x65, 0x61, 0])
+    );
+    let symbols: Vec<u16> = "a-b c!\0".encode_utf16().collect();
+    assert_eq!(
+        mapped_w(LOCALE_US, NORM_IGNORESYMBOLS, &symbols),
+        Ok(vec![0x61, 0x62, 0x63, 0])
+    );
+    for flags in [
+        NORM_IGNORECASE,
+        LCMAP_UPPERCASE | NORM_IGNORECASE,
+        LCMAP_UPPERCASE | NORM_IGNORENONSPACE,
+        LCMAP_SORTKEY | LCMAP_UPPERCASE,
+        LCMAP_HALFWIDTH | LCMAP_FULLWIDTH,
+    ] {
+        assert_eq!(mapped_w(LOCALE_US, flags, &abc), Err(1004), "{flags:#x}");
+    }
+}
+
+/// LCMapStringA maps through the ANSI code page and back, its sort key that of the characters;
+/// a unit the page lacks comes back as '?'.
+///
+/// Pins: kernel32.LCMapStringA
+#[test]
+fn lc_map_string_a_maps_through_the_code_page() {
+    const LCMAP_BYTEREV: u32 = 0x800;
+    let mut out = [0xCCu8; 16];
+    let count = unsafe {
+        lc_map_string_a(
+            LOCALE_US,
+            LCMAP_SORTKEY,
+            b"\xE9\0".as_ptr(),
+            -1,
+            out.as_mut_ptr(),
+            16,
+        )
+    };
+    assert_eq!(&out[..count as usize], [14, 0x21, 1, 14, 1, 1, 1, 0]);
+    let count = unsafe {
+        lc_map_string_a(
+            LOCALE_US,
+            LCMAP_BYTEREV,
+            b"abc\0".as_ptr(),
+            -1,
+            out.as_mut_ptr(),
+            16,
+        )
+    };
+    assert_eq!(&out[..count as usize], b"???\0");
+    let refused = unsafe {
+        lc_map_string_a(
+            0xDEAD,
+            LCMAP_SORTKEY,
+            b"abc\0".as_ptr(),
+            -1,
+            out.as_mut_ptr(),
+            16,
+        )
+    };
+    assert_eq!((refused, last_error()), (0, 87));
 }

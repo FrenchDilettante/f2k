@@ -10,7 +10,6 @@ gate = true
 [pending]
 # Written ahead of the VM trip: output.txt holds placeholder blocks until locale.exe is rebuilt
 # (tests/build.bat locale) and the blocks captured (tests/capture.bat locale).
-lcmap = "F2K's LCMapString maps case alone (LCMAP_SORTKEY, LCMAP_BYTEREV, the width maps and the NORM_ flags give ERROR_INVALID_FLAGS), and its A form ignores the LCID"
 locales = "F2K's GetLocaleInfo answers 0x0409 alone, while SetThreadLocale takes 0x040C and IsValidLocale calls it unsupported"
 
 [masks]
