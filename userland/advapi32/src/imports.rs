@@ -16,7 +16,7 @@ use core::marker::PhantomData;
 use core::ptr::NonNull;
 
 use rtl::heap::HEAP_ZERO_MEMORY;
-use rtl::status::NtStatus;
+use rtl::status::{checked, NtStatus};
 use rtl::string::{AnsiString, UnicodeString};
 
 /// An OBJECT_ATTRIBUTES (`rtl::nt`'s) as the key services read it: its name and security pointers
@@ -179,18 +179,6 @@ pub use host::Probed;
 /// The caller's memory as the stub routine reads it: probed byte by byte.
 #[cfg(all(target_arch = "x86", not(test)))]
 pub use rtl::probe::Probed;
-
-/// A service's answer, by NT_SUCCESS as Windows 2000's advapi32 takes it: success for a status of
-/// success or information severity, a warning's or an error's status its failure. The warnings
-/// these services give are partial answers the callers handle as failures (STATUS_BUFFER_OVERFLOW
-/// from a value or key query, or a string conversion cut short).
-fn checked(status: u32) -> Result<(), NtStatus> {
-    if (status as i32) < 0 {
-        Err(NtStatus(status))
-    } else {
-        Ok(())
-    }
-}
 
 // --- The strings, the blocks and the attributes the services take
 // ----------------------------------
@@ -995,16 +983,6 @@ pub mod host {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A service's answer is NT_SUCCESS's: success and information succeed, a warning
-    /// (STATUS_BUFFER_OVERFLOW) and an error fail with their statuses.
-    #[test]
-    fn answers_succeed_by_nt_success() {
-        assert_eq!(checked(0), Ok(()));
-        assert_eq!(checked(0x4000_0000), Ok(()), "STATUS_OBJECT_NAME_EXISTS");
-        assert_eq!(checked(0x8000_0005), Err(NtStatus(0x8000_0005)));
-        assert_eq!(checked(0xC000_000D), Err(NtStatus(0xC000_000D)));
-    }
 
     /// The conversion fakes take NULL with no length, as a caller may pass it, and convert
     /// nothing.

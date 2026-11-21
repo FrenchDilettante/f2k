@@ -42,6 +42,18 @@ impl NtStatus {
         (self.0 as i32) >= 0
     }
 
+    /// The status as a service's answer, by NT_SUCCESS: `Ok` for a success or informational
+    /// status, the status itself the `Err` of a warning or an error. The warnings the system DLLs'
+    /// services give are partial answers their callers handle as failures (STATUS_BUFFER_OVERFLOW
+    /// from a query, a string conversion cut short).
+    pub const fn ok(self) -> Result<(), NtStatus> {
+        if self.is_success() {
+            Ok(())
+        } else {
+            Err(self)
+        }
+    }
+
     /// NT_INFORMATION: an informational status.
     pub const fn is_information(self) -> bool {
         self.0 >> 30 == 1
@@ -196,6 +208,12 @@ pub const ERROR_MR_MID_NOT_FOUND: u32 = 317;
 /// Whether a status is a success or an informational one (its severity bits below 2).
 pub const fn nt_success(status: u32) -> bool {
     (status as i32) >= 0
+}
+
+/// A service's raw status as its answer: [`NtStatus::ok`], for the system DLLs' wrappers over the
+/// services they import, which answer a plain `u32`.
+pub const fn checked(status: u32) -> Result<(), NtStatus> {
+    NtStatus(status).ok()
 }
 
 /// Where Windows 2000's mapping differs from the generated table's (Wine's, after later releases),
@@ -396,6 +414,22 @@ mod tests {
             assert_eq!(status.is_warning(), severity == Severity::Warning);
             assert_eq!(status.is_error(), severity == Severity::Error);
         }
+    }
+
+    /// A service's answer is NT_SUCCESS's: success and information succeed, a warning
+    /// (STATUS_BUFFER_OVERFLOW) and an error fail with their statuses.
+    #[test]
+    fn answers_succeed_by_nt_success() {
+        assert_eq!(checked(STATUS_SUCCESS), Ok(()));
+        assert_eq!(checked(STATUS_OBJECT_NAME_EXISTS), Ok(()));
+        assert_eq!(
+            checked(STATUS_BUFFER_OVERFLOW),
+            Err(NtStatus(STATUS_BUFFER_OVERFLOW))
+        );
+        assert_eq!(
+            NtStatus(STATUS_ACCESS_DENIED).ok(),
+            Err(NtStatus(STATUS_ACCESS_DENIED))
+        );
     }
 
     #[test]
