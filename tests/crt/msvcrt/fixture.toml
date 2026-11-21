@@ -7,7 +7,6 @@ gate = true
 
 [pending]
 printf = "F2K's sprintf reads \"ll\" and \"L\" on integers as 64-bit, prints the infinities and NaNs whole whatever the precision, signs %+u, prints nothing for %#.0o of 0 and drops %#p's #"
-scanf = "F2K's swscanf stores \"%Ld\" as 64 bits, past the int, and its msvcrt exports no sscanf"
 
 
 [pins]

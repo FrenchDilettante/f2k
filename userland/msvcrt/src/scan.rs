@@ -1,6 +1,7 @@
-//! The scanf engine swscanf runs: a wide string read against a wide format, as MSDN's "Format
-//! Specification Fields: scanf and wscanf Functions" describes Visual C++ 6's, and as wide's
-//! capture pins it.
+//! The scanf engine the scanning exports share, narrow and wide: sscanf, fscanf and scanf read
+//! bytes against a narrow format, swscanf, fwscanf and wscanf UTF-16 units against a wide one, as
+//! MSDN's "Format Specification Fields: scanf and wscanf Functions" describes Visual C++ 6's, and
+//! as wide's capture pins it.
 //!
 //! `%[*][width][size]type`: `*` reads without storing; the width bounds the units a field reads;
 //! sizes `h` (a short; a narrow string or character), `l` and `w` (a long or a double; a wide
@@ -11,49 +12,132 @@
 //! not counted), `%%`. A blank in the format skips any blanks of the input; another character must
 //! match the input's.
 //!
-//! The answer is the count of fields stored: a field that does not match ends the scan, and so does
-//! the input's end; neither answers EOF (wide's capture: `swscanf(L"", L"%d")` answers 0).
+//! `c`, `s` and `[` store the caller's own width of character and `C` and `S` the other, unless a
+//! size says which: sscanf's `%s` stores bytes and its `%S` wide characters, swscanf's the reverse.
+//! A narrow scan's input is bytes, its blanks the LC_CTYPE locale's spaces, and a byte it stores as
+//! a wide character is converted as mbtowc converts it; a wide scan's input is UTF-16 units, and a
+//! unit it stores as a byte is converted as wctomb converts it (`?` for one the code page lacks).
 //!
-//! The export reads the input and the format once, into slices ([`crate::edge`]).
+//! The answer is the count of fields stored: a field that does not match ends the scan, and so does
+//! the input's end. A narrow scan whose input ends before any conversion matched answers EOF, as
+//! VC6's input.c does (MSDN: "EOF ... if the end of the string is reached before the first
+//! conversion"); a wide one answers 0 there (wide's capture: `swscanf(L"", L"%d")` answers 0, and
+//! so does `L"   "`).
+//!
+//! The input is a [`Source`]: a string's units, read once into a slice ([`crate::edge`]) where the
+//! export takes it ([`Units`]), or a stream's characters (fscanf's, through [`crate::stdio`]).
 
 use crate::ctype;
-use crate::edge::WideUnit;
-use crate::format::Args;
+use crate::format::{Args, Unit};
 
-/// A string's unit at `index`, 0 past its end.
-fn unit_at(string: &[WideUnit], index: usize) -> u16 {
-    string.get(index).map_or(0, |unit| unit.get())
+/// EOF.
+const EOF: i32 = -1;
+
+/// Where a scan reads: the input's units (bytes for a narrow scan, UTF-16 units for a wide one),
+/// one at a time.
+pub trait Source {
+    /// The next unit, not taken; none at the input's end.
+    fn peek(&mut self) -> Option<u16>;
+    /// The unit [`Source::peek`] answered, taken.
+    fn take(&mut self);
 }
 
-/// The input, read unit by unit (0 at its end).
-struct Input<'a> {
-    units: &'a [WideUnit],
-    read: usize,
+/// A string's units as a scan's input (sscanf's bytes, swscanf's wide units), its NUL left out.
+pub struct Units<'a, U> {
+    units: &'a [U],
+    at: usize,
 }
 
-impl Input<'_> {
-    fn peek(&self) -> u16 {
-        unit_at(self.units, self.read)
+impl<'a, U> Units<'a, U> {
+    pub fn new(units: &'a [U]) -> Units<'a, U> {
+        Units { units, at: 0 }
+    }
+}
+
+impl<U: Unit> Source for Units<'_, U> {
+    fn peek(&mut self) -> Option<u16> {
+        self.units.get(self.at).map(|unit| unit.value() as u16)
     }
 
     fn take(&mut self) {
+        self.at += 1;
+    }
+}
+
+/// A unit of a string at `index`, 0 past its end.
+fn unit_at<U: Unit>(string: &[U], index: usize) -> u16 {
+    string.get(index).map_or(0, |unit| unit.value() as u16)
+}
+
+/// Whether a unit of a scan of `U`'s width is a blank: a byte's class in the LC_CTYPE locale, or a
+/// wide character's.
+fn is_space<U: Unit>(unit: u16) -> bool {
+    if U::WIDE {
+        ctype::wide_class(unit, ctype::SPACE) != 0
+    } else {
+        ctype::byte_class(unit as u8) & ctype::SPACE != 0
+    }
+}
+
+/// A unit of a scan of `U`'s width as a byte to store: a byte as it is, a wide character as wctomb
+/// converts it (`?` for one the locale's code page lacks).
+fn narrow_of<U: Unit>(unit: u16) -> u8 {
+    if U::WIDE {
+        ctype::wide_to_byte(unit).unwrap_or(b'?')
+    } else {
+        unit as u8
+    }
+}
+
+/// A unit of a scan of `U`'s width as a wide character to store: a byte as mbtowc converts it, a
+/// wide character as it is.
+fn wide_of<U: Unit>(unit: u16) -> u16 {
+    if U::WIDE {
+        unit
+    } else {
+        ctype::byte_to_wide(unit as u8)
+    }
+}
+
+/// The input, read unit by unit: the units taken so far, and whether its end was reached.
+struct Input<'s, S> {
+    source: &'s mut S,
+    read: usize,
+    ended: bool,
+}
+
+impl<S: Source> Input<'_, S> {
+    /// The next unit, not taken; none at the end.
+    fn next_unit(&mut self) -> Option<u16> {
+        let unit = self.source.peek();
+        self.ended |= unit.is_none();
+        unit
+    }
+
+    /// The next unit, 0 at the end (where no number's character is wanted).
+    fn peek(&mut self) -> u16 {
+        self.next_unit().unwrap_or(0)
+    }
+
+    fn take(&mut self) {
+        self.source.take();
         self.read += 1;
     }
 
-    fn skip_blanks(&mut self) {
-        while self.peek() != 0 && ctype::wide_class(self.peek(), ctype::SPACE) != 0 {
+    fn skip_blanks<U: Unit>(&mut self) {
+        while self.next_unit().is_some_and(is_space::<U>) {
             self.take();
         }
     }
 }
 
 /// The format, read unit by unit (0 at its end).
-struct Format<'a> {
-    units: &'a [WideUnit],
+struct Format<'a, U> {
+    units: &'a [U],
     at: usize,
 }
 
-impl<'a> Format<'a> {
+impl<'a, U: Unit> Format<'a, U> {
     /// The unit `ahead` units on (0 past the end).
     fn peek_ahead(&self, ahead: usize) -> u16 {
         unit_at(self.units, self.at + ahead)
@@ -72,7 +156,7 @@ impl<'a> Format<'a> {
     }
 
     /// The units from `start` to where the format is now.
-    fn since(&self, start: usize) -> &'a [WideUnit] {
+    fn since(&self, start: usize) -> &'a [U] {
         &self.units[start..self.at]
     }
 }
@@ -88,35 +172,39 @@ enum Size {
     Quad,
 }
 
-/// Scan `input` against `format` (their units, each NUL left out), storing through `args`'
-/// pointers; the count of fields stored.
-pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i32 {
+/// Scan `input` against `format` (its units, its NUL left out), storing through `args`' pointers;
+/// the count of fields stored, or EOF for a narrow scan whose input ended before any conversion
+/// matched.
+pub fn scan<U: Unit>(input: &mut impl Source, format: &[U], args: &mut impl Args) -> i32 {
     let mut input = Input {
-        units: input,
+        source: input,
         read: 0,
+        ended: false,
     };
     let mut format = Format {
         units: format,
         at: 0,
     };
     let mut stored = 0;
+    // Conversions that matched, stored or not (VC6's `match`).
+    let mut matched_any = false;
     loop {
         let f = format.next();
         if f == 0 {
             break;
         }
-        if ctype::wide_class(f, ctype::SPACE) != 0 {
-            while ctype::wide_class(format.peek(), ctype::SPACE) != 0 {
+        if is_space::<U>(f) {
+            while is_space::<U>(format.peek()) {
                 format.next();
             }
-            input.skip_blanks();
+            input.skip_blanks::<U>();
             continue;
         }
         if f != b'%' as u16 || format.peek() == b'%' as u16 {
             if f == b'%' as u16 {
                 format.next();
             }
-            if input.peek() != f {
+            if input.next_unit() != Some(f) {
                 break;
             }
             input.take();
@@ -167,7 +255,7 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                     continue;
                 }
                 b'd' | b'i' | b'u' | b'o' | b'x' | b'X' | b'p' => {
-                    input.skip_blanks();
+                    input.skip_blanks::<U>();
                     match integer(&mut input, conversion as u8, limit) {
                         Some(value) => {
                             if !suppress {
@@ -184,7 +272,7 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                     }
                 }
                 b'e' | b'f' | b'g' | b'E' | b'G' => {
-                    input.skip_blanks();
+                    input.skip_blanks::<U>();
                     match real(&mut input, limit) {
                         Some(value) => {
                             if !suppress {
@@ -201,10 +289,12 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                     }
                 }
                 b'c' | b'C' | b's' | b'S' | b'[' => {
+                    // The caller's own width for `c`, `s` and `[`, the other for `C` and `S`.
+                    let other = conversion == b'C' as u16 || conversion == b'S' as u16;
                     let narrow = match size {
                         Size::Short => true,
                         Size::Long => false,
-                        _ => conversion == b'C' as u16 || conversion == b'S' as u16,
+                        _ => other == U::WIDE,
                     };
                     let set = if conversion == b'[' as u16 {
                         match Set::parse(&mut format) {
@@ -216,18 +306,19 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                     };
                     let character = conversion == b'c' as u16 || conversion == b'C' as u16;
                     if !character && set.is_none() {
-                        input.skip_blanks();
+                        input.skip_blanks::<U>();
                     }
                     let limit = if character && width == 0 { 1 } else { limit };
                     let destination = if suppress { 0 } else { args.pointer() };
                     let mut count = 0;
                     while count < limit {
-                        let unit = input.peek();
-                        let accepted = unit != 0
-                            && match &set {
-                                Some(set) => set.contains(unit),
-                                None => character || ctype::wide_class(unit, ctype::SPACE) == 0,
-                            };
+                        let Some(unit) = input.next_unit() else {
+                            break;
+                        };
+                        let accepted = match &set {
+                            Some(set) => set.contains(unit),
+                            None => character || !is_space::<U>(unit),
+                        };
                         if !accepted {
                             break;
                         }
@@ -235,9 +326,11 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
                             if narrow {
                                 (destination as *mut u8)
                                     .add(count)
-                                    .write(ctype::wide_to_byte(unit).unwrap_or(b'?'));
+                                    .write(narrow_of::<U>(unit));
                             } else {
-                                (destination as *mut u16).add(count).write_unaligned(unit);
+                                (destination as *mut u16)
+                                    .add(count)
+                                    .write_unaligned(wide_of::<U>(unit));
                             }
                         }
                         input.take();
@@ -260,15 +353,19 @@ pub fn scan(input: &[WideUnit], format: &[WideUnit], args: &mut impl Args) -> i3
         if !matched {
             break;
         }
+        matched_any = true;
         if !suppress {
             stored += 1;
         }
+    }
+    if !U::WIDE && input.ended && stored == 0 && !matched_any {
+        return EOF;
     }
     stored
 }
 
 /// An integer field: its value, wrapped to 64 bits; none when no digit is there.
-fn integer(input: &mut Input, conversion: u8, limit: usize) -> Option<u64> {
+fn integer(input: &mut Input<impl Source>, conversion: u8, limit: usize) -> Option<u64> {
     let mut taken = 0;
     let mut negative = false;
     let unit = input.peek();
@@ -347,9 +444,9 @@ unsafe fn store_integer(pointer: usize, size: Size, value: u64) {
 
 /// A floating-point field: `[sign]digits[.digits][e[sign]digits]`, its value from its first 19
 /// significant digits scaled by the power of ten; none without a digit.
-fn real(input: &mut Input, limit: usize) -> Option<f64> {
+fn real(input: &mut Input<impl Source>, limit: usize) -> Option<f64> {
     let mut taken = 0;
-    let mut accept = |input: &mut Input, test: &dyn Fn(u16) -> bool| {
+    let mut accept = |input: &mut Input<_>, test: &dyn Fn(u16) -> bool| {
         let unit = input.peek();
         if taken < limit && unit != 0 && test(unit) {
             input.take();
@@ -415,14 +512,14 @@ fn real(input: &mut Input, limit: usize) -> Option<f64> {
 }
 
 /// A `%[` field's set: the format's units between the brackets.
-struct Set<'a> {
+struct Set<'a, U> {
     negated: bool,
-    units: &'a [WideUnit],
+    units: &'a [U],
 }
 
-impl<'a> Set<'a> {
+impl<'a, U: Unit> Set<'a, U> {
     /// The set after `%[`, the format left past its `]`; none when it never closes.
-    fn parse(format: &mut Format<'a>) -> Option<Set<'a>> {
+    fn parse(format: &mut Format<'a, U>) -> Option<Set<'a, U>> {
         let mut negated = false;
         if format.peek() == b'^' as u16 {
             negated = true;
@@ -485,8 +582,17 @@ mod tests {
 
     fn run(input: &str, format: &str, pointers: &[usize]) -> i32 {
         scan(
-            &units_of(&wide_z(input)),
+            &mut Units::new(&units_of(&wide_z(input))),
             &units_of(&wide_z(format)),
+            &mut List(pointers.iter().map(|&p| P(p)).collect()),
+        )
+    }
+
+    /// A narrow scan, as sscanf runs it.
+    fn run_narrow(input: &[u8], format: &[u8], pointers: &[usize]) -> i32 {
+        scan(
+            &mut Units::new(input),
+            format,
             &mut List(pointers.iter().map(|&p| P(p)).collect()),
         )
     }
@@ -582,6 +688,100 @@ mod tests {
         }
         assert_eq!(run("abc", "abd%d", &[addr(&mut a)]), 0);
         assert_eq!(a, -999);
+    }
+
+    /// runtime's sscanf line: a narrow scan reads as the wide one does, its `%s` storing bytes.
+    #[test]
+    fn sscanf_as_captured() {
+        let (mut x, mut u, mut d, mut i) = (0i32, 0u32, 0f64, 0i32);
+        let mut word = [0u8; 32];
+        assert_eq!(
+            run_narrow(
+                b"42 0x1F 3.5 word 077",
+                b"%d %x %lf %31s %o",
+                &[
+                    &mut x as *mut i32 as usize,
+                    &mut u as *mut u32 as usize,
+                    &mut d as *mut f64 as usize,
+                    word.as_mut_ptr() as usize,
+                    &mut i as *mut i32 as usize,
+                ]
+            ),
+            5
+        );
+        assert_eq!((x, u, d, &word[..5], i), (42, 31, 3.5, &b"word\0"[..], 63));
+    }
+
+    /// A narrow scan's `c`, `s` and `[` store bytes as they are, `C` and `S` (and `l`) wide
+    /// characters as mbtowc converts the bytes, `h` bytes; a byte past ASCII is no blank in the
+    /// "C" locale.
+    #[test]
+    fn a_narrow_scan_stores_its_own_width_unless_told() {
+        let _locale = ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
+        let (mut n1, mut n2, mut n3) = ([0u8; 8], [0u8; 8], [0u8; 8]);
+        let (mut w1, mut w2) = ([0u16; 8], [0u16; 8]);
+        assert_eq!(
+            run_narrow(
+                b"\xE9t\xE9 ab xy \xE9z q",
+                b"%s %S %c%C %[^ ]%ls %hs",
+                &[
+                    n1.as_mut_ptr() as usize,
+                    w1.as_mut_ptr() as usize,
+                    n2.as_mut_ptr() as usize,
+                    w2.as_mut_ptr() as usize,
+                    n3.as_mut_ptr() as usize,
+                    w2[2..].as_mut_ptr() as usize,
+                    n2[2..].as_mut_ptr() as usize,
+                ]
+            ),
+            6
+        );
+        assert_eq!(&n1[..4], b"\xE9t\xE9\0");
+        assert_eq!(&w1[..3], [0x61, 0x62, 0]);
+        assert_eq!((n2[0], w2[0]), (b'x', b'y' as u16));
+        assert_eq!(&n3[..3], b"\xE9z\0");
+        // `%ls` skips the blank and reads "q" wide; `%hs` finds the end, not counted.
+        assert_eq!((&w2[2..4], n2[2]), (&[b'q' as u16, 0][..], 0));
+    }
+
+    /// A narrow scan whose input ends before any conversion matched answers EOF, as VC6's input.c
+    /// does: an empty or blank input, or one that ends at a literal; a conversion that matched,
+    /// stored or not, or a character that does not match, answers the count. A wide scan answers 0
+    /// there (wide's capture).
+    #[test]
+    fn a_narrow_scan_answers_eof_at_the_inputs_end() {
+        let mut a = -999i32;
+        let p = &mut a as *mut i32 as usize;
+        for (input, format, answer) in [
+            (&b""[..], &b"%d"[..], -1),
+            (b"   ", b"%d", -1),
+            (b"", b" ", -1),
+            (b"", b"abc", -1),
+            (b"a", b"a%d", -1),
+            (b"", b"", 0),
+            (b"x", b"%d", 0),
+            (b"5", b"%*d", 0),
+            (b"5", b"%*d%d", 0),
+            (b"7", b"%d %d", 1),
+            (b"7", b"%d", 1),
+        ] {
+            assert_eq!(
+                run_narrow(input, format, &[p, p]),
+                answer,
+                "sscanf({:?}, {:?})",
+                String::from_utf8_lossy(input),
+                String::from_utf8_lossy(format)
+            );
+        }
+        for (input, format) in [("", "%d"), ("   ", "%d"), ("", "abc"), ("a", "a%d")] {
+            assert_eq!(
+                run(input, format, &[p]),
+                0,
+                "swscanf({input:?}, {format:?})"
+            );
+        }
     }
 
     /// The rest: characters, suppression, floats, `%%`.

@@ -701,6 +701,46 @@ ordinal = 738
 fails = "-1"
 
 [[export]]
+name = "sscanf"
+group = "stdio"
+args = ["strA buffer", "strA format", "..."]
+impl = { native = "sscanf" }
+ordinal = 715
+fails = "-1"
+
+[[export]]
+name = "fscanf"
+group = "stdio"
+args = ["ptr stream", "strA format", "..."]
+impl = { native = "fscanf" }
+ordinal = 631
+fails = "-1"
+
+[[export]]
+name = "scanf"
+group = "stdio"
+args = ["strA format", "..."]
+impl = { native = "scanf" }
+ordinal = 705
+fails = "-1"
+
+[[export]]
+name = "fwscanf"
+group = "stdio"
+args = ["ptr stream", "strW format", "..."]
+impl = { native = "fwscanf" }
+ordinal = 637
+fails = "-1"
+
+[[export]]
+name = "wscanf"
+group = "stdio"
+args = ["strW format", "..."]
+impl = { native = "wscanf" }
+ordinal = 780
+fails = "-1"
+
+[[export]]
 name = "fflush"
 group = "stdio"
 args = ["ptr stream"]
@@ -3788,16 +3828,8 @@ name = "frexp"
 ordinal = 630
 
 [[export]]
-name = "fscanf"
-ordinal = 631
-
-[[export]]
 name = "fsetpos"
 ordinal = 633
-
-[[export]]
-name = "fwscanf"
-ordinal = 637
 
 [[export]]
 name = "getc"
@@ -3984,10 +4016,6 @@ name = "rewind"
 ordinal = 704
 
 [[export]]
-name = "scanf"
-ordinal = 705
-
-[[export]]
 name = "setbuf"
 ordinal = 706
 
@@ -4006,10 +4034,6 @@ ordinal = 711
 [[export]]
 name = "sqrt"
 ordinal = 713
-
-[[export]]
-name = "sscanf"
-ordinal = 715
 
 [[export]]
 name = "strcoll"
@@ -4079,6 +4103,3 @@ ordinal = 777
 name = "wctomb"
 ordinal = 778
 
-[[export]]
-name = "wscanf"
-ordinal = 780

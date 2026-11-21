@@ -26,6 +26,9 @@
 //!   (the descriptor's Ctrl-Z too), and leaves a `+` stream free to read or write next; clearerr
 //!   clears the end-of-file and error indicators alone.
 //! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
+//! - fscanf and scanf scan a stream's bytes, fwscanf and wscanf its wide characters as fgetws reads
+//!   them ([`crate::scan`]): the character the scan reads ahead and does not take is pushed back,
+//!   as ungetc pushes it, for the next read.
 //!
 //! wprintf and fwprintf write each wide character as MSDN's "Unicode Stream I/O in Text and Binary
 //! Modes" says: on a text-mode descriptor converted as wctomb converts it (the LC_CTYPE locale's
@@ -48,8 +51,9 @@ use rtl::sync::Locked;
 use crate::ctype;
 use crate::data::{File, IOB, IOB_ENTRIES, STREAM_BUFFER};
 use crate::edge::{self, WideUnit};
-use crate::format::{self, Args, Output, Unbounded, VaList};
+use crate::format::{self, Args, Output, Unbounded, Unit, VaList};
 use crate::lowio;
+use crate::scan::{self, Units};
 use crate::thread::{set_errno, Lock, UnwindLock, EBADF, EILSEQ, EINVAL, EMFILE};
 use crate::unwind;
 
@@ -719,14 +723,145 @@ pub unsafe extern "C" fn vsnwprintf(
     }
 }
 
-/// swscanf's body.
+/// swscanf's body: the wide string scanned ([`scan::scan`]).
 ///
 /// # Safety
 ///
 /// `input` and `text` are NUL-terminated; `args` holds the pointers its fields store through.
 pub unsafe extern "C" fn swscanf_va(input: *const u16, text: *const u16, args: *const u8) -> i32 {
     // SAFETY: the caller's contract.
-    unsafe { crate::scan::scan(edge::wide(input), edge::wide(text), &mut VaList::new(args)) }
+    unsafe {
+        scan::scan(
+            &mut Units::new(edge::wide(input)),
+            edge::wide(text),
+            &mut VaList::new(args),
+        )
+    }
+}
+
+/// sscanf's body: the narrow string scanned ([`scan::scan`]).
+///
+/// # Safety
+///
+/// As swscanf_va's, in bytes.
+pub unsafe extern "C" fn sscanf_va(input: *const u8, text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        scan::scan(
+            &mut Units::new(bytes_until_nul(input)),
+            bytes_until_nul(text),
+            &mut VaList::new(args),
+        )
+    }
+}
+
+/// A stream a scan reads (fscanf's and fwscanf's), under its lock: its bytes (`wide` none), or its
+/// wide characters as [`get_wide`] reads them in the descriptor's mode (`wide` whether it is text).
+/// The character read ahead and not taken goes back into the stream when the scan ends
+/// ([`StreamInput::finish`]), as VC6's input.c ungets it: the next read starts there.
+struct StreamInput<'a> {
+    file: &'a mut File,
+    wide: Option<bool>,
+    /// The character read ahead, none at the end; none read yet.
+    ahead: Option<Option<u16>>,
+}
+
+impl scan::Source for StreamInput<'_> {
+    fn peek(&mut self) -> Option<u16> {
+        if self.ahead.is_none() {
+            let unit = match self.wide {
+                None => match get(self.file) {
+                    EOF => None,
+                    c => Some(c as u16),
+                },
+                Some(text) => get_wide(self.file, text),
+            };
+            self.ahead = Some(unit);
+        }
+        self.ahead.flatten()
+    }
+
+    fn take(&mut self) {
+        self.ahead = None;
+    }
+}
+
+impl StreamInput<'_> {
+    /// The scan's end: the character read ahead and not taken pushed back ([`unget`]).
+    fn finish(self) {
+        if let Some(Some(unit)) = self.ahead {
+            match self.wide {
+                None => unget(&[unit as u8], self.file),
+                Some(text) => unget_wide(unit, self.file, text),
+            };
+        }
+    }
+}
+
+/// The stream scanned against the format ([`scan::scan`], a format of `U`'s width reading the
+/// stream's characters of that width), under its lock; EOF for a null stream.
+///
+/// # Safety
+///
+/// `stream` is null or a stream; `args` holds the pointers the format's fields store through.
+unsafe fn scan_stream<U: Unit>(stream: *mut File, format: &[U], args: &mut impl Args) -> i32 {
+    if stream.is_null() {
+        return EOF;
+    }
+    let body = |s: &mut File, _| {
+        let wide = U::WIDE.then(|| s.flag & IOSTRG == 0 && lowio::is_text(s.file));
+        let mut input = StreamInput {
+            file: s,
+            wide,
+            ahead: None,
+        };
+        let count = scan::scan(&mut input, format, args);
+        input.finish();
+        count
+    };
+    // SAFETY: the caller's stream.
+    unsafe { with_stream(stream, body) }
+}
+
+/// fscanf's body: the stream's bytes scanned.
+///
+/// # Safety
+///
+/// `stream` is null or a stream; `text` is NUL-terminated; `args` holds the pointers its fields
+/// store through.
+pub unsafe extern "C" fn fscanf_va(stream: *mut File, text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { scan_stream(stream, bytes_until_nul(text), &mut VaList::new(args)) }
+}
+
+/// scanf's body: stdin's bytes scanned.
+///
+/// # Safety
+///
+/// As fscanf_va's.
+pub unsafe extern "C" fn scanf_va(text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract; stdin is `_iob[0]`.
+    unsafe { fscanf_va(stream_at(0), text, args) }
+}
+
+/// fwscanf's body: the stream's wide characters scanned.
+///
+/// # Safety
+///
+/// As fscanf_va's, the format wide.
+pub unsafe extern "C" fn fwscanf_va(stream: *mut File, text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { scan_stream(stream, edge::wide(text), &mut VaList::new(args)) }
+}
+
+/// wscanf's body: stdin's wide characters scanned.
+///
+/// # Safety
+///
+/// As fwscanf_va's.
+pub unsafe extern "C" fn wscanf_va(text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract; stdin is `_iob[0]`.
+    unsafe { fwscanf_va(stream_at(0), text, args) }
 }
 
 /// The exports taking variable arguments: each hands its fixed arguments and the address of its
@@ -876,6 +1011,84 @@ mod variadic {
             "add esp, 12",
             "ret",
             body = sym swscanf_va,
+        )
+    }
+
+    /// sscanf(input, format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_sscanf")]
+    pub unsafe extern "C" fn sscanf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+12]",
+            "push eax",
+            "push dword ptr [esp+12]",
+            "push dword ptr [esp+12]",
+            "call {body}",
+            "add esp, 12",
+            "ret",
+            body = sym sscanf_va,
+        )
+    }
+
+    /// fscanf(stream, format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_fscanf")]
+    pub unsafe extern "C" fn fscanf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+12]",
+            "push eax",
+            "push dword ptr [esp+12]",
+            "push dword ptr [esp+12]",
+            "call {body}",
+            "add esp, 12",
+            "ret",
+            body = sym fscanf_va,
+        )
+    }
+
+    /// scanf(format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_scanf")]
+    pub unsafe extern "C" fn scanf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+8]",
+            "push eax",
+            "push dword ptr [esp+8]",
+            "call {body}",
+            "add esp, 8",
+            "ret",
+            body = sym scanf_va,
+        )
+    }
+
+    /// fwscanf(stream, format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_fwscanf")]
+    pub unsafe extern "C" fn fwscanf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+12]",
+            "push eax",
+            "push dword ptr [esp+12]",
+            "push dword ptr [esp+12]",
+            "call {body}",
+            "add esp, 12",
+            "ret",
+            body = sym fwscanf_va,
+        )
+    }
+
+    /// wscanf(format, ...).
+    #[unsafe(naked)]
+    #[unsafe(export_name = "f2k_export_wscanf")]
+    pub unsafe extern "C" fn wscanf() {
+        core::arch::naked_asm!(
+            "lea eax, [esp+8]",
+            "push eax",
+            "push dword ptr [esp+8]",
+            "call {body}",
+            "add esp, 8",
+            "ret",
+            body = sym wscanf_va,
         )
     }
 }
@@ -2044,6 +2257,60 @@ mod tests {
         let stream = core::ptr::addr_of_mut!(file);
         // SAFETY: the test's stream.
         unsafe { assert_eq!(ungetwc(0xFFFF, stream), 0xFFFF) };
+    }
+
+    /// The pointers a scan's fields store through, as a `va_list` (laid out as the host's).
+    fn pointers(list: &[usize]) -> Vec<u8> {
+        list.iter().flat_map(|p| p.to_ne_bytes()).collect()
+    }
+
+    /// fscanf reads the stream's bytes through its buffer, and the character it reads ahead and
+    /// does not take goes back for the next read: the newline after a word, the letter after a
+    /// number. At the end, before any conversion, EOF; a null stream is EOF too.
+    #[test]
+    fn fscanf_leaves_the_character_it_did_not_take() {
+        let mut text = *b"12 ab\n7x";
+        let mut file = reading(&mut text);
+        let stream = core::ptr::addr_of_mut!(file);
+        let (mut n, mut word) = (0i32, [0u8; 8]);
+        let args = pointers(&[&mut n as *mut i32 as usize, word.as_mut_ptr() as usize]);
+        // SAFETY: the test's stream; the list holds the pointers the formats store through.
+        unsafe {
+            assert_eq!(fscanf_va(stream, b"%d %s\0".as_ptr(), args.as_ptr()), 2);
+            assert_eq!((n, &word[..3]), (12, &b"ab\0"[..]));
+            assert_eq!((*stream).ptr.read(), b'\n', "the newline is the next byte");
+            assert_eq!(fscanf_va(stream, b"%d\0".as_ptr(), args.as_ptr()), 1);
+            assert_eq!(n, 7);
+            assert_eq!(get(&mut *stream), b'x' as i32);
+            // The buffer is spent and the refill fails: the end, before any conversion.
+            assert_eq!(fscanf_va(stream, b"%d\0".as_ptr(), args.as_ptr()), EOF);
+            assert_eq!(n, 7);
+            assert_eq!(
+                fscanf_va(core::ptr::null_mut(), b"%d\0".as_ptr(), args.as_ptr()),
+                EOF
+            );
+        }
+    }
+
+    /// fwscanf reads the stream's wide characters as fgetws does (a descriptor not open in text
+    /// mode: two bytes each), its `%c` a wide character; a wide scan at the end answers 0.
+    #[test]
+    fn fwscanf_reads_wide_characters() {
+        use rtl::testing::wide_z;
+        let mut binary = *b"1\0 \0z\0";
+        let mut file = reading(&mut binary);
+        let stream = core::ptr::addr_of_mut!(file);
+        let (mut n, mut c) = (0i32, [0u16; 2]);
+        let args = pointers(&[&mut n as *mut i32 as usize, c.as_mut_ptr() as usize]);
+        // SAFETY: the test's stream; the list holds the pointers the formats store through.
+        unsafe {
+            assert_eq!(
+                fwscanf_va(stream, wide_z("%d %c").as_ptr(), args.as_ptr()),
+                2
+            );
+            assert_eq!((n, c[0]), (1, b'z' as u16));
+            assert_eq!(fwscanf_va(stream, wide_z("%d").as_ptr(), args.as_ptr()), 0);
+        }
     }
 
     /// fgetws's characters: in text mode one byte each, as mbtowc reads it in the "C" locale; in
