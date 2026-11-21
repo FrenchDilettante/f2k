@@ -7,9 +7,12 @@
 //! the mapped mask ([`ObjectType::granted`], applied as each handle is made: a create, an open, a
 //! duplicate), so ObjectBasicInformation.GrantedAccess shows the specific rights and a service
 //! checks them as they are. MAXIMUM_ALLOWED is every right the kind has: F2K keeps no security
-//! descriptor that would restrict it.
+//! descriptor that would restrict it. A service asks the handle for its rights in
+//! ObReferenceObjectByHandle's order (the handle, the kind, then the access: [`check`]), and a
+//! handle short of them is STATUS_ACCESS_DENIED.
 
 use super::ObjectType;
+use crate::status::{NtStatus, STATUS_ACCESS_DENIED};
 
 /// The standard rights.
 pub const READ_CONTROL: u32 = 0x0002_0000;
@@ -166,6 +169,28 @@ impl ObjectType {
     }
 }
 
+/// Whether a handle granted `granted` holds every right of `needed`: STATUS_ACCESS_DENIED
+/// otherwise. Nothing needed is always granted.
+pub fn check(granted: u32, needed: u32) -> Result<(), NtStatus> {
+    if granted & needed != needed {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    Ok(())
+}
+
+/// The right signaling an object of `kind` needs (NtSetEvent's, NtReleaseSemaphore's,
+/// NtSignalAndWaitForSingleObject's signal): EVENT_MODIFY_STATE, SEMAPHORE_MODIFY_STATE, and none
+/// for a mutant — only its owner releases it, whatever its handle grants, so Windows 2000's
+/// NtReleaseMutant references its handle for no access. None for a kind no service signals.
+pub fn signal_right(kind: ObjectType) -> Option<u32> {
+    match kind {
+        ObjectType::Event => Some(EVENT_MODIFY_STATE),
+        ObjectType::Semaphore => Some(SEMAPHORE_MODIFY_STATE),
+        ObjectType::Mutex => Some(0),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,5 +322,32 @@ mod tests {
         }
         // win32k's kinds keep the mask they are given.
         assert_eq!(ObjectType::Dc.granted(GENERIC_ALL), GENERIC_ALL);
+    }
+
+    #[test]
+    fn a_check_needs_every_right() {
+        assert_eq!(check(EVENT_MODIFY_STATE, EVENT_MODIFY_STATE), Ok(()));
+        assert_eq!(
+            check(SYNCHRONIZE, EVENT_MODIFY_STATE),
+            Err(STATUS_ACCESS_DENIED)
+        );
+        assert_eq!(check(SYNCHRONIZE, 0), Ok(()));
+        assert_eq!(check(0, 0), Ok(()));
+        assert_eq!(
+            check(SECTION_MAP_READ, SECTION_MAP_READ | SECTION_MAP_EXECUTE),
+            Err(STATUS_ACCESS_DENIED)
+        );
+    }
+
+    #[test]
+    fn signaling_needs_the_modify_right_but_a_mutants_owner_needs_none() {
+        assert_eq!(signal_right(ObjectType::Event), Some(EVENT_MODIFY_STATE));
+        assert_eq!(
+            signal_right(ObjectType::Semaphore),
+            Some(SEMAPHORE_MODIFY_STATE)
+        );
+        assert_eq!(signal_right(ObjectType::Mutex), Some(0));
+        assert_eq!(signal_right(ObjectType::Timer), None);
+        assert_eq!(signal_right(ObjectType::File), None);
     }
 }

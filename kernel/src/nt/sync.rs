@@ -16,6 +16,12 @@ use super::attributes::{self, Name, ObjectName, Resolved, OBJ_OPENIF};
 use super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::level::{At, Dispatch, Passive};
 use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
+use crate::ob::access::{
+    EVENT_MODIFY_STATE,
+    SEMAPHORE_MODIFY_STATE,
+    SYNCHRONIZE,
+    TIMER_MODIFY_STATE,
+};
 use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
@@ -190,6 +196,18 @@ pub(super) fn object_of(handle: u32, kind: ObjectType) -> Result<ob::ObRef, NtSt
     object_granting(handle, kind, |_| true)
 }
 
+/// [`object_of`], the handle granted every right of `needed` (its access mapped as its kind maps
+/// it: [`ob::ObjectType::granted`]); STATUS_ACCESS_DENIED for a handle short of them.
+pub(super) fn object_needing(
+    handle: u32,
+    kind: ObjectType,
+    needed: u32,
+) -> Result<ob::ObRef, NtStatus> {
+    object_granting(handle, kind, |access| {
+        ob::access::check(kind.granted(access), needed).is_ok()
+    })
+}
+
 /// [`object_of`], the handle's access checked by `granted` (which the access its entry holds must
 /// satisfy) after the kind, as Windows' ObReferenceObjectByHandle checks it:
 /// STATUS_ACCESS_DENIED for an access short of the service's.
@@ -282,7 +300,9 @@ pub fn open_event(
 }
 
 /// What the event services share: `change` on the event's body, at the dispatch level, and the
-/// event's previous state into `previous` when given (probed before the event changes).
+/// event's previous state into `previous` when given (probed before the event changes). The
+/// handle must grant EVENT_MODIFY_STATE (STATUS_ACCESS_DENIED: a SYNCHRONIZE-only handle waits on
+/// the event and no more).
 fn with_event(
     passive: &mut At<Passive>,
     event: Handle,
@@ -290,7 +310,7 @@ fn with_event(
     change: impl FnOnce(&mut Dispatcher, WaitableId) -> i32,
 ) -> NtResult {
     previous.addr().probe(4)?;
-    let reference = object_of(event.raw(), ObjectType::Event)?;
+    let reference = object_needing(event.raw(), ObjectType::Event, EVENT_MODIFY_STATE)?;
     let was = change(
         DISPATCHER.get(&mut passive.raise::<Dispatch>()),
         reference.event(),
@@ -375,7 +395,9 @@ pub fn open_mutant(
 
 /// NtReleaseMutant: give up one unit of the caller's ownership (the last frees the mutant for its
 /// oldest waiter); the previous count into `previous` when given. STATUS_MUTANT_NOT_OWNED unless
-/// the caller owns it.
+/// the caller owns it. The handle needs no right: only the owner releases a mutant, so Windows
+/// 2000's NtReleaseMutant references its handle for no access (a SYNCHRONIZE-only handle that
+/// waited on the mutant releases it).
 pub fn release_mutant(call: &mut NtCall, mutant: Handle, previous: UserPtr<i32>) -> NtResult {
     previous.addr().probe(4)?;
     let reference = object_of(mutant.raw(), ObjectType::Mutex)?;
@@ -423,6 +445,7 @@ pub fn open_semaphore(
 /// NtReleaseSemaphore: add the count, waking as many waiters as it covers; the previous count into
 /// `previous` when given. STATUS_INVALID_PARAMETER for a count that is not positive,
 /// STATUS_SEMAPHORE_LIMIT_EXCEEDED past the maximum (the count unchanged, `previous` unwritten).
+/// The handle must grant SEMAPHORE_MODIFY_STATE (STATUS_ACCESS_DENIED).
 pub fn release_semaphore(
     call: &mut NtCall,
     semaphore: Handle,
@@ -433,7 +456,11 @@ pub fn release_semaphore(
     if count <= 0 {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    let reference = object_of(semaphore.raw(), ObjectType::Semaphore)?;
+    let reference = object_needing(
+        semaphore.raw(),
+        ObjectType::Semaphore,
+        SEMAPHORE_MODIFY_STATE,
+    )?;
     let was = DISPATCHER
         .get(&mut call.passive().raise::<Dispatch>())
         .release_semaphore(reference.semaphore(), count, SEMAPHORE_WAKE_INCREMENT)
@@ -493,7 +520,8 @@ fn write_boolean(at: UserAddr, value: bool) -> Result<(), NtStatus> {
 /// signaled (a FILETIME's low and high dwords). Whether the timer was armed before goes into
 /// `previous` when given. The resume flag is not supported: the set succeeds with
 /// STATUS_TIMER_RESUME_IGNORED, as on a machine without power management.
-/// STATUS_INVALID_PARAMETER for a negative period.
+/// STATUS_INVALID_PARAMETER for a negative period. The handle must grant TIMER_MODIFY_STATE
+/// (STATUS_ACCESS_DENIED).
 #[allow(clippy::too_many_arguments)]
 pub fn set_timer(
     call: &mut NtCall,
@@ -506,7 +534,7 @@ pub fn set_timer(
     previous: UserAddr,
 ) -> NtResult {
     previous.probe(1)?;
-    let reference = object_of(timer.raw(), ObjectType::Timer)?;
+    let reference = object_needing(timer.raw(), ObjectType::Timer, TIMER_MODIFY_STATE)?;
     let due = due_time.read()? as i64;
     if period < 0 {
         return Err(STATUS_INVALID_PARAMETER);
@@ -559,10 +587,11 @@ pub fn set_timer(
 }
 
 /// NtCancelTimer: disarm the timer, its period and any queued completion APC dropped; the signal
-/// state is left as it was, and goes into `current` when given.
+/// state is left as it was, and goes into `current` when given. The handle must grant
+/// TIMER_MODIFY_STATE (STATUS_ACCESS_DENIED).
 pub fn cancel_timer(call: &mut NtCall, timer: Handle, current: UserAddr) -> NtResult {
     current.probe(1)?;
-    let reference = object_of(timer.raw(), ObjectType::Timer)?;
+    let reference = object_needing(timer.raw(), ObjectType::Timer, TIMER_MODIFY_STATE)?;
     let signaled = DISPATCHER
         .get(&mut call.passive().raise::<Dispatch>())
         .cancel_waitable_timer(reference.timer());
@@ -593,9 +622,9 @@ fn interval_of(value: i64) -> i64 {
 /// still lives): a table object's header, or the thread and process pseudo-handles' own objects.
 /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
 /// STATUS_OBJECT_TYPE_MISMATCH for an object no wait can name (a file, a section, the directory).
-/// A thread's handle must grant SYNCHRONIZE (STATUS_ACCESS_DENIED: the threads capture's handle
-/// OpenThread made with THREAD_QUERY_INFORMATION alone); the other kinds' handles are not checked
-/// for it.
+/// The handle must grant SYNCHRONIZE, checked before the kind as Windows 2000's waits reference
+/// their handles for it (STATUS_ACCESS_DENIED: the threads capture's handle OpenThread made with
+/// THREAD_QUERY_INFORMATION alone).
 fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
@@ -606,12 +635,7 @@ fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
                 .lookup_handle(handle)
                 .ok_or(STATUS_INVALID_HANDLE)?;
             let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
-            let synchronize = crate::nt::object::SYNCHRONIZE_ACCESS;
-            if id.kind == ObjectType::Thread
-                && crate::nt::object::thread_access(entry.access) & synchronize == 0
-            {
-                return Err(STATUS_ACCESS_DENIED);
-            }
+            ob::access::check(id.kind.granted(entry.access), SYNCHRONIZE)?;
             id
         }
     };
@@ -722,6 +746,9 @@ pub fn wait_for_multiple_objects(
 /// interrupts masked, and the woken thread runs only once the caller parks). The signal's own
 /// refusals fail the call before any wait: STATUS_SEMAPHORE_LIMIT_EXCEEDED,
 /// STATUS_MUTANT_NOT_OWNED, or STATUS_OBJECT_TYPE_MISMATCH for an object that cannot be signaled.
+/// The signal's handle must grant what signaling its kind needs (see [`ob::access::signal_right`]:
+/// an event's EVENT_MODIFY_STATE, a semaphore's SEMAPHORE_MODIFY_STATE, nothing for a mutant's
+/// owner), the wait's SYNCHRONIZE (STATUS_ACCESS_DENIED).
 pub fn signal_and_wait_for_single_object(
     call: &mut NtCall,
     signal: Handle,
@@ -740,11 +767,9 @@ pub fn signal_and_wait_for_single_object(
             .and_then(|entry| entry.object_id())
             .map(|id| id.kind)
     };
-    let reference = match kind {
-        Some(kind @ (ObjectType::Event | ObjectType::Semaphore | ObjectType::Mutex)) => {
-            object_of(signal, kind)?
-        }
-        Some(_) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
+    let reference = match kind.map(|kind| (kind, ob::access::signal_right(kind))) {
+        Some((kind, Some(needed))) => object_needing(signal, kind, needed)?,
+        Some((_, None)) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
         None => return Err(STATUS_INVALID_HANDLE),
     };
     {

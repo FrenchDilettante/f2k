@@ -74,7 +74,7 @@ pub fn process_access(access: u32) -> u32 {
     granted
 }
 
-/// The thread access rights (winnt.h's THREAD_*), and the waits' right.
+/// The thread access rights (winnt.h's THREAD_*).
 pub const THREAD_TERMINATE: u32 = 0x0001;
 pub const THREAD_SUSPEND_RESUME: u32 = 0x0002;
 pub const THREAD_ALERT: u32 = 0x0004;
@@ -82,7 +82,6 @@ pub const THREAD_GET_CONTEXT: u32 = 0x0008;
 pub const THREAD_SET_CONTEXT: u32 = 0x0010;
 pub const THREAD_SET_INFORMATION: u32 = 0x0020;
 pub const THREAD_QUERY_INFORMATION: u32 = 0x0040;
-pub const SYNCHRONIZE_ACCESS: u32 = SYNCHRONIZE;
 
 /// The thread access a mask amounts to: its generic rights mapped as the thread type maps them
 /// (read: the context and querying; write: ending, suspending, alerting, setting the context and
