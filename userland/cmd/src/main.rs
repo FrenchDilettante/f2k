@@ -31,6 +31,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use cmd::batch::{self, LineReader};
 use cmd::builtins::files;
 use cmd::flow::label;
+use cmd::flow::repeat::{self, Scope};
 use cmd::switches::{self, Then};
 use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Syntax, Target};
 use cmd::{search, Command, Echo, Set, TooLong};
@@ -555,19 +556,26 @@ fn execute(
     }
     let line = &block[..used];
     if let Err(error) = syntax::check(line) {
-        let _ = exe::stderr().print(format_args!("{error}"));
-        state.spaced = true;
-        if batch.is_some() {
-            state.return_code = syntax::FATAL;
-            return Flow::Abort;
-        }
-        state.failed();
-        return Flow::Next;
+        return malformed(error, state, batch);
     }
     if batch.is_some() && state.echo {
         echo_line(line, state.spaced);
     }
-    run_line(line, state, batch)
+    run_line(line, state, batch, None)
+}
+
+/// A line that cannot be read: why, reported; in a batch file, every batch file ends, its return
+/// code [`syntax::FATAL`]; typed, the line fails.
+#[inline(never)]
+fn malformed(error: Syntax<'_>, state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+    let _ = exe::stderr().print(format_args!("{error}"));
+    state.spaced = true;
+    if batch.is_some() {
+        state.return_code = syntax::FATAL;
+        return Flow::Abort;
+    }
+    state.failed();
+    Flow::Next
 }
 
 /// `line` expanded into the start of `out` (as `batch`'s line when there is one), `limit` units
@@ -633,13 +641,19 @@ fn echo_line(line: &[u16], spaced: bool) {
 }
 
 /// A line's commands, as its `&`s separate them: each run in turn, until one ends the batch or the
-/// shell.
-fn run_line(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+/// shell. In a `for`'s command, `scope` holds the loops' variables, replaced in each command's
+/// words as it runs (never in the line's syntax: see [`Scope`]).
+pub(crate) fn run_line(
+    text: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     for (part, _) in syntax::parts(text, Join::Then) {
         if cmd::trim(part).is_empty() {
             continue;
         }
-        match run_or_else(part, state, batch) {
+        match run_or_else(part, state, batch, scope) {
             Flow::Next => {}
             flow => return flow,
         }
@@ -648,12 +662,17 @@ fn run_line(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow
 }
 
 /// Commands `||` joins: each runs while those before it failed (their return code not 0).
-fn run_or_else(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+fn run_or_else(
+    text: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     for (index, (part, _)) in syntax::parts(text, Join::OrElse).enumerate() {
         if index > 0 && state.return_code == 0 {
             break;
         }
-        match run_and_then(part, state, batch) {
+        match run_and_then(part, state, batch, scope) {
             Flow::Next => {}
             flow => return flow,
         }
@@ -662,15 +681,20 @@ fn run_or_else(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> F
 }
 
 /// Commands `&&` joins: each runs while those before it succeeded (their return code 0).
-fn run_and_then(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+fn run_and_then(
+    text: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     for (index, (part, _)) in syntax::parts(text, Join::AndThen).enumerate() {
         if index > 0 && state.return_code != 0 {
             break;
         }
         let flow = if syntax::parts(part, Join::Pipe).nth(1).is_some() {
-            pipeline(part, state)
+            pipeline(part, state, scope)
         } else {
-            run_element(part, state, batch)
+            run_element(part, state, batch, scope)
         };
         match flow {
             Flow::Next => {}
@@ -682,7 +706,12 @@ fn run_and_then(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> 
 
 /// One command between the operators, run in the shell: a group's line with the group's
 /// redirections, or a simple command (see [`run_simple`]).
-fn run_element(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+fn run_element(
+    text: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     match syntax::element(text) {
         Ok(Element::Group {
             inner,
@@ -691,15 +720,14 @@ fn run_element(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> F
             let mut list = Redirections::default();
             syntax::group_redirections(redirections, &mut list);
             let mut redirected = Redirected::save();
-            if !redirected.apply(list.list(), state) {
+            if !redirected.apply(list.list(), state, scope) {
                 return Flow::Next;
             }
-            run_line(inner, state, batch)
+            run_line(inner, state, batch, scope)
         }
-        Ok(Element::Flow(keyword, text)) => control::run(keyword, text, state, batch),
-        Ok(Element::Simple(text)) => run_simple(text, state, batch),
-        // The line was checked before it ran.
-        Err(_) => Flow::Next,
+        Ok(Element::Flow(keyword, text)) => control::run(keyword, text, state, batch, scope),
+        Ok(Element::Simple(text)) => run_simple(text, state, batch, scope),
+        Err(error) => malformed(error, state, batch),
     }
 }
 
@@ -707,17 +735,59 @@ fn run_element(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> F
 /// run), then its help printed when it asks for it, or what it says done; the standard handles put
 /// back after.
 #[inline(never)]
-fn run_simple(text: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+fn run_simple(
+    text: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     let mut buffer = [0; cmd::LINE];
     let mut list = Redirections::default();
-    // A command's text is never longer than the line it is part of.
+    // A command's text is never longer than the line it is part of, a line [`cmd::MAX_COMMAND`]
+    // units at most.
     let Some(line) = syntax::simple(text, &mut buffer, &mut list) else {
         return Flow::Next;
     };
+    match scope {
+        Some(scope) if line.contains(&u16::from(b'%')) => {
+            run_bound(line, list.list(), scope, state, batch)
+        }
+        _ => run_command(line, list.list(), state, batch, None),
+    }
+}
+
+/// A simple command of a `for`'s, its loop variables replaced in its text (see [`Scope`]), then
+/// run ([`run_command`]). A text the values make longer than a block runs nothing, and says
+/// nothing: batlong's capture, a `for` whose body grows to 8,000 characters, where one of 3,000
+/// runs.
+#[inline(never)]
+fn run_bound(
+    line: &[u16],
+    redirections: &[Redirection<'_>],
+    scope: &Scope<'_>,
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+) -> Flow {
+    let mut buffer = [0; BLOCK];
+    match repeat::substitute(line, scope, &mut Shell, &mut buffer) {
+        Ok(line) => run_command(line, redirections, state, batch, Some(scope)),
+        Err(TooLong) => Flow::Next,
+    }
+}
+
+/// A simple command's text (its escapes resolved, its loop variables replaced) run with its
+/// redirections (their files' names bound to `scope`).
+fn run_command(
+    line: &[u16],
+    redirections: &[Redirection<'_>],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     let command = cmd::parse(line);
     state.spaced = !matches!(command, Command::Empty | Command::ClearScreen);
     let mut redirected = Redirected::save();
-    if !redirected.apply(list.list(), state) {
+    if !redirected.apply(redirections, state, scope) {
         return Flow::Next;
     }
     if let Some(help) = cmd::help::requested(line, &command) {
@@ -780,7 +850,12 @@ impl Redirected {
     /// (`n<`, `n>`, `n>>`) or a handle duplicated (`n>&m`) becomes handle n, and handles 0 to 2
     /// the standard ones. False, the error reported and the command failed, when a file cannot be
     /// opened or a handle duplicated; the standard handles are then as they were.
-    fn apply(&mut self, redirections: &[Redirection<'_>], state: &mut cmd::State) -> bool {
+    fn apply(
+        &mut self,
+        redirections: &[Redirection<'_>],
+        state: &mut cmd::State,
+        scope: Option<&Scope<'_>>,
+    ) -> bool {
         let mut handles = [None; HANDLES];
         for (slot, which) in handles.iter_mut().zip(STANDARD) {
             *slot = Some(exe::standard_handle(which));
@@ -788,7 +863,7 @@ impl Redirected {
         for redirection in redirections {
             let number = usize::from(redirection.handle);
             let handle = match redirection.target {
-                Target::File(name) => open_target(name, redirection.kind),
+                Target::File(name) => open_target(name, redirection.kind, scope),
                 Target::Handle(source) => match handles[usize::from(source)] {
                     Some(source) => exe::duplicate(source).map_err(|_| Failure::Duplicate),
                     None => Err(Failure::Duplicate),
@@ -839,12 +914,21 @@ enum Failure {
     Duplicate,
 }
 
-/// The file a redirection names (its quotes and escapes resolved), opened as `kind` says.
+/// The file a redirection names (its quotes and escapes resolved, then a loop's variables
+/// replaced), opened as `kind` says.
 #[inline(never)]
-fn open_target(name: &[u16], kind: Kind) -> Result<exe::Handle, Failure> {
+fn open_target(
+    name: &[u16],
+    kind: Kind,
+    scope: Option<&Scope<'_>>,
+) -> Result<exe::Handle, Failure> {
     let mut buffer = [0; exe::MAX_PATH];
+    let mut bound = [0; exe::MAX_PATH];
     // ERROR_FILENAME_EXCED_RANGE: longer than a path can be.
-    let name = syntax::file_name(name, &mut buffer).ok_or(Failure::Open(exe::Error(206)))?;
+    let too_long = Failure::Open(exe::Error(206));
+    let name = syntax::file_name(name, &mut buffer).ok_or(too_long)?;
+    let name = repeat::bind(name, scope, &mut Shell, &mut bound)
+        .map_err(|TooLong| Failure::Open(exe::Error(206)))?;
     let redirect = match kind {
         Kind::Input => exe::Redirect::Read,
         Kind::Output => exe::Redirect::Truncate,
@@ -862,7 +946,7 @@ const PIPELINE: usize = 16;
 /// pipeline's, and its ERRORLEVEL. A built-in, a batch file, a group, or a word naming nothing runs
 /// in a `cmd /c` of its own, as Windows' cmd runs it.
 #[inline(never)]
-fn pipeline(text: &[u16], state: &mut cmd::State) -> Flow {
+fn pipeline(text: &[u16], state: &mut cmd::State, scope: Option<&Scope<'_>>) -> Flow {
     state.spaced = true;
     let count = syntax::parts(text, Join::Pipe).count();
     if count > PIPELINE {
@@ -887,7 +971,7 @@ fn pipeline(text: &[u16], state: &mut cmd::State) -> Flow {
             None
         };
         let output = pipe.as_ref().map(|(_, write)| write);
-        started[index] = Some(start_element(element, input.as_ref(), output, state));
+        started[index] = Some(start_bound(element, input.as_ref(), output, state, scope));
         // The shell keeps no end of a pipe a process holds: the reader sees the input end once the
         // writer has.
         input = pipe.map(|(read, _)| read);
@@ -911,6 +995,26 @@ enum Start {
     NotRecognized,
     /// Another failure: return code 1, the ERRORLEVEL kept.
     CannotRun,
+}
+
+/// One command of a pipeline started (see [`start_element`]), a loop's variables replaced in its
+/// text first: what it runs reads that text again, as Windows' cmd rebuilds it.
+#[inline(never)]
+fn start_bound(
+    text: &[u16],
+    input: Option<&exe::Handle>,
+    output: Option<&exe::Handle>,
+    state: &mut cmd::State,
+    scope: Option<&Scope<'_>>,
+) -> Result<exe::Process, Start> {
+    let mut buffer = [0; cmd::LINE];
+    match repeat::bind(text, scope, &mut Shell, &mut buffer) {
+        Ok(text) => start_element(text, input, output, state),
+        Err(TooLong) => {
+            let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
+            Err(Start::CannotRun)
+        }
+    }
 }
 
 /// One command of a pipeline started, its standard input `input` and its standard output `output`
@@ -946,7 +1050,7 @@ fn start_element(
                 let path = &found[..length];
                 if !search::is_batch(path) {
                     let mut redirected = Redirected::save();
-                    if !redirected.apply(list.list(), state) {
+                    if !redirected.apply(list.list(), state, None) {
                         return Err(Start::CannotRun);
                     }
                     return launch(path, line, word);

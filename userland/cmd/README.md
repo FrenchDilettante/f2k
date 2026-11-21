@@ -385,6 +385,7 @@ for /f ["options"] %v in ('command') do command
 ```
 
 Runs `command` once for each item of `set`, each `%v` in it replaced by the item.
+The command is read once, before the loop runs, and the items replace the variables in the words read: an item is text, never syntax, whatever it holds (a file named `a&b.txt` runs no `b.txt`, a line `x > out` creates no file), an `if` compares the item as one word (`if %v==x` with `a b`), and a `for` in the command loops over the items its set's variables give.
 The variable is one character, its case counting; in a batch file it is written `%%v` (whose `%%` the line's expansion makes `%`).
 `command` is the rest of the line, its operators included (`for %v in (1 2) do echo %v & echo x` echoes `x` after each number), or a block.
 

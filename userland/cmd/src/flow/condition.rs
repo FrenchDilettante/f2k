@@ -17,9 +17,21 @@
 
 use core::cmp::Ordering;
 
+use super::repeat::{self, Scope};
 use super::{asks_help, unexpected, Cursor};
 use crate::syntax::Syntax;
-use crate::{fold, is_blank, is_delimiter, is_named, number, same_name, trim_blanks, EQUALS};
+use crate::{
+    fold,
+    is_blank,
+    is_delimiter,
+    is_named,
+    number,
+    same_name,
+    trim_blanks,
+    TooLong,
+    Variables,
+    EQUALS,
+};
 
 /// How `compare-op` compares (`if /?`'s three-letter operators), or `==`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,6 +235,48 @@ fn whole_number(text: &[u16]) -> Option<i64> {
     }
 }
 
+impl<'a> If<'a> {
+    /// The condition with the loop variables of `scope` replaced in its words (see
+    /// [`repeat::substitute`]), in `out`: read before they are, as Windows' cmd reads an `if` in
+    /// a `for`'s command, so that a value with blanks, an operator or nothing at all is one word
+    /// (`if %a==x` with `a b` compares `a b`). `EXIST`'s name loses the quotes a value brings.
+    pub fn bound<'b>(
+        &self,
+        scope: &Scope<'_>,
+        shell: &mut dyn Variables,
+        out: &'b mut [u16],
+    ) -> Result<If<'b>, TooLong>
+    where
+        'a: 'b,
+    {
+        let test = match self.test {
+            Test::Compare { left, op, right } => {
+                let (first, rest) = out.split_at_mut(out.len() / 2);
+                Test::Compare {
+                    left: repeat::bind(left, Some(scope), shell, first)?,
+                    op,
+                    right: repeat::bind(right, Some(scope), shell, rest)?,
+                }
+            }
+            Test::Exist(name) => Test::Exist(crate::batch::unquote(repeat::bind(
+                name,
+                Some(scope),
+                shell,
+                out,
+            )?)),
+            Test::Defined(name) => Test::Defined(repeat::bind(name, Some(scope), shell, out)?),
+            test => test,
+        };
+        Ok(If {
+            not: self.not,
+            fold: self.fold,
+            test,
+            text: self.text,
+            start: self.start,
+        })
+    }
+}
+
 impl If<'_> {
     /// Whether the condition holds, `NOT` applied.
     pub fn holds(&self, probe: &mut dyn Probe) -> bool {
@@ -388,5 +442,45 @@ mod tests {
         assert_eq!(error("if a b echo"), "b was unexpected at this time.\r\n");
         assert_eq!(error("if a EQU"), incorrect);
         assert_eq!(parse(&wide("if /?")).map(|header| header.start()), Ok(5));
+    }
+
+    /// Whether `line`'s condition holds once the loop variables `variables` are replaced in its
+    /// words.
+    fn bound(line: &str, variables: &[(char, &str)]) -> bool {
+        let line = wide(line);
+        let Ok(Header::If(header)) = parse(&line) else {
+            panic!("not read: {}", String::from_utf16_lossy(&line));
+        };
+        let values: Vec<(u16, Vec<u16>)> = variables
+            .iter()
+            .map(|(name, value)| (*name as u16, wide(value)))
+            .collect();
+        let refs: Vec<(u16, &[u16])> = values
+            .iter()
+            .map(|(name, value)| (*name, value.as_slice()))
+            .collect();
+        let scope = Scope {
+            variables: &refs,
+            outer: None,
+        };
+        let mut shell = crate::flow::tests::Fake::new(&[], &[]);
+        let mut out = [0; 256];
+        let header = header.bound(&scope, &mut shell, &mut out).unwrap();
+        header.holds(&mut State { errorlevel: 0 })
+    }
+
+    #[test]
+    fn a_loop_s_values_replace_words_already_read() {
+        // batforq: an empty value, one with a blank, one with an ampersand.
+        assert!(bound("if not %~a==x echo y", &[('a', "\"\"")]));
+        assert!(!bound("if %a==x (echo x) else echo y", &[('a', "a b")]));
+        assert!(bound("if \"%a\"==\"a & b\" echo y", &[('a', "a & b")]));
+        assert!(!bound("if %a==x echo y", &[('a', "a & b")]));
+        assert!(bound("if %a==%b echo y", &[('a', "1 2"), ('b', "1 2")]));
+        // EXIST's name, quoted or not, names the file.
+        assert!(bound("if exist %f echo y", &[('f', "a b")]));
+        assert!(bound("if exist \"%f\" echo y", &[('f', "a b")]));
+        assert!(bound("if exist %f echo y", &[('f', "\"a b\"")]));
+        assert!(bound("if defined %v echo y", &[('v', "PATH")]));
     }
 }

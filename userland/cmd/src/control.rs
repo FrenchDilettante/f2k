@@ -5,7 +5,7 @@
 use cmd::builtins::files;
 use cmd::flow::condition::{self, Probe};
 use cmd::flow::label::{self, Goto};
-use cmd::flow::repeat::{self, For, Items, Mode, Options, Source};
+use cmd::flow::repeat::{self, For, Items, Mode, Options, Scope, Source};
 use cmd::flow::Keyword;
 use cmd::syntax;
 
@@ -13,6 +13,7 @@ use crate::{
     batch,
     child_shell,
     echo_line,
+    malformed,
     next_line,
     run_batch,
     run_line,
@@ -26,27 +27,38 @@ use crate::{
     BLOCK,
 };
 
-/// `if` or `for`, its text from its keyword on (checked before it runs): its help when its first
-/// word asks for it (`if /?`), otherwise what it says done. It returns 0, unless the command it
-/// runs returns another code.
+/// `if` or `for`, its text from its keyword on: its help when its first word asks for it (`if
+/// /?`), otherwise what it says done, the variables of the loops it is in (`scope`) replaced in
+/// its words once they are read. It returns 0, unless the command it runs returns another code.
+/// A header that cannot be read is reported as a line that cannot be ([`malformed`]): the line
+/// was checked before it ran, so only a text no line held (`call`'s) gets there.
 pub(crate) fn run(
     keyword: Keyword,
     text: &[u16],
     state: &mut cmd::State,
     batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
 ) -> Flow {
     state.spaced = true;
     state.return_code = 0;
     match keyword {
         Keyword::If => match condition::parse(text) {
-            Ok(condition::Header::If(header)) => run_if(&header, state, batch),
+            Ok(condition::Header::If(header)) => match scope {
+                Some(scope) => run_bound_if(&header, scope, state, batch),
+                None => run_if(&header, state, batch, None),
+            },
             Ok(condition::Header::Help(_)) => help("if", state),
-            Err(_) => Flow::Next,
+            Err(error) => malformed(error, state, batch),
         },
         Keyword::For => match repeat::parse(text) {
-            Ok(repeat::Header::For(header)) => run_for(&header, state, batch),
+            Ok(repeat::Header::For(header)) => match scope {
+                Some(scope) if header.set.contains(&u16::from(b'%')) => {
+                    run_bound_for(&header, scope, state, batch)
+                }
+                _ => run_for(&header, header.set, state, batch, scope),
+            },
             Ok(repeat::Header::Help(_)) => help("for", state),
-            Err(_) => Flow::Next,
+            Err(error) => malformed(error, state, batch),
         },
     }
 }
@@ -84,31 +96,76 @@ impl Probe for Conditions {
     }
 }
 
+/// An `if` in a `for`'s command: its words bound to the loops' variables ([`condition::If::bound`])
+/// before it runs. Words the values make longer than a block run nothing, as a command's do (see
+/// [`crate::run_bound`]).
+#[inline(never)]
+fn run_bound_if(
+    header: &condition::If<'_>,
+    scope: &Scope<'_>,
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+) -> Flow {
+    let mut buffer = [0; BLOCK];
+    match header.bound(scope, &mut Shell, &mut buffer) {
+        Ok(bound) => run_if(&bound, state, batch, Some(scope)),
+        Err(_) => Flow::Next,
+    }
+}
+
 /// `if`: its command when the condition holds, its `else` command when it does not and it has
 /// one.
-fn run_if(header: &condition::If<'_>, state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+fn run_if(
+    header: &condition::If<'_>,
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
     let (then, otherwise) = syntax::branches(header.command());
     let mut conditions = Conditions {
         errorlevel: state.errorlevel,
     };
     if header.holds(&mut conditions) {
-        run_line(then, state, batch)
+        run_line(then, state, batch, scope)
     } else if let Some(otherwise) = otherwise {
-        run_line(otherwise, state, batch)
+        run_line(otherwise, state, batch, scope)
     } else {
         Flow::Next
     }
 }
 
-/// `for`: its command run for each item its mode gives, until one ends the batch file or the
-/// shell (or `goto` leaves the loop).
-fn run_for(header: &For<'_>, state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+/// A `for` in another's command, its set bound to the loops' variables (`for %b in (%~a)` loops
+/// over `a`'s words) before it runs.
+#[inline(never)]
+fn run_bound_for(
+    header: &For<'_>,
+    scope: &Scope<'_>,
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+) -> Flow {
+    let mut buffer = [0; BLOCK];
+    match repeat::substitute(header.set, scope, &mut Shell, &mut buffer) {
+        Ok(set) => run_for(header, set, state, batch, Some(scope)),
+        Err(_) => Flow::Next,
+    }
+}
+
+/// `for`: its command run for each item its mode gives from `set` (its header's, bound to the
+/// loops it is in), until one ends the batch file or the shell (or `goto` leaves the loop).
+fn run_for(
+    header: &For<'_>,
+    set: &[u16],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    let pass = Pass { header, scope };
     match header.mode {
         Mode::Range => {
-            for value in repeat::range(header.set) {
+            for value in repeat::range(set) {
                 let mut digits = [0; 24];
                 let value = decimal(value, &mut digits);
-                match iterate(header, &[(header.variable, value)], state, batch) {
+                match pass.iterate(&[(header.variable, value)], state, batch) {
                     Flow::Next => {}
                     flow => return flow,
                 }
@@ -116,13 +173,13 @@ fn run_for(header: &For<'_>, state: &mut cmd::State, batch: Option<&Batch>) -> F
             Flow::Next
         }
         Mode::Items => match header.recursive {
-            Some(root) => recursive(header, root, state, batch),
+            Some(root) => recursive(&pass, set, root, state, batch),
             None => {
-                for item in Items(header.set) {
+                for item in Items(set) {
                     let flow = if files::has_wildcards(item) {
-                        matches(header, batch::unquote(item), state, batch)
+                        matches(&pass, batch::unquote(item), state, batch)
                     } else {
-                        iterate(header, &[(header.variable, item)], state, batch)
+                        pass.iterate(&[(header.variable, item)], state, batch)
                     };
                     if !matches!(flow, Flow::Next) {
                         return flow;
@@ -131,8 +188,14 @@ fn run_for(header: &For<'_>, state: &mut cmd::State, batch: Option<&Batch>) -> F
                 Flow::Next
             }
         },
-        Mode::Lines(options) => lines(header, &options, state, batch),
+        Mode::Lines(options) => lines(&pass, set, &options, state, batch),
     }
+}
+
+/// A `for` running: its header, and the variables of the loops it is in.
+struct Pass<'a, 'b> {
+    header: &'a For<'a>,
+    scope: Option<&'a Scope<'b>>,
 }
 
 /// `value` in decimal, in `digits`.
@@ -154,31 +217,41 @@ fn decimal(value: i64, digits: &mut [u16; 24]) -> &[u16] {
     &digits[at..]
 }
 
-/// The loop's command run once, its variables replaced by `variables` (see
-/// [`repeat::substitute`]), echoed first after the prompt while echo is on (unless `@` hides it),
-/// as Windows' cmd echoes each pass. Ctrl+C or Ctrl+Break since the last pass asks, in a batch
-/// file, whether to end every batch file; at the prompt it ends the loop.
+impl Pass<'_, '_> {
+    /// The loop's command run once, its variables `variables` (and the outer loops') replaced in
+    /// its words as each runs (see [`Scope`]), echoed first after the prompt while echo is on
+    /// (unless `@` hides it), its variables replaced, as Windows' cmd echoes each pass. Ctrl+C or
+    /// Ctrl+Break since the last pass asks, in a batch file, whether to end every batch file; at
+    /// the prompt it ends the loop.
+    #[inline(never)]
+    fn iterate(
+        &self,
+        variables: &[(u16, &[u16])],
+        state: &mut cmd::State,
+        batch: Option<&Batch>,
+    ) -> Flow {
+        if exe::take_interrupt() && (batch.is_none() || terminate()) {
+            return Flow::Abort;
+        }
+        let scope = Scope {
+            variables,
+            outer: self.scope,
+        };
+        if state.echo {
+            echo_pass(self.header.command(), &scope, state.spaced);
+        }
+        run_line(self.header.command(), state, batch, Some(&scope))
+    }
+}
+
+/// A pass's command echoed, its variables replaced (nothing when they make it longer than a
+/// block).
 #[inline(never)]
-fn iterate(
-    header: &For<'_>,
-    variables: &[(u16, &[u16])],
-    state: &mut cmd::State,
-    batch: Option<&Batch>,
-) -> Flow {
-    if exe::take_interrupt() && (batch.is_none() || terminate()) {
-        return Flow::Abort;
-    }
+fn echo_pass(command: &[u16], scope: &Scope<'_>, spaced: bool) {
     let mut buffer = [0; BLOCK];
-    let Ok(command) = repeat::substitute(header.command(), variables, &mut Shell, &mut buffer)
-    else {
-        let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
-        state.failed();
-        return Flow::Next;
-    };
-    if state.echo {
-        echo_line(command, state.spaced);
+    if let Ok(command) = repeat::substitute(command, scope, &mut Shell, &mut buffer) {
+        echo_line(command, spaced);
     }
-    run_line(command, state, batch)
 }
 
 /// The files a wildcard `pattern` matches (directories with `/D`; neither hidden nor system ones,
@@ -186,11 +259,12 @@ fn iterate(
 /// order.
 #[inline(never)]
 fn matches(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
     pattern: &[u16],
     state: &mut cmd::State,
     batch: Option<&Batch>,
 ) -> Flow {
+    let header = pass.header;
     let (directory, _) = files::split(pattern);
     let Ok(found) = exe::find(pattern) else {
         return Flow::Next;
@@ -207,7 +281,7 @@ fn matches(
         let Some(path) = files::join(directory, found.name(), &mut buffer) else {
             continue;
         };
-        match iterate(header, &[(header.variable, path)], state, batch) {
+        match pass.iterate(&[(header.variable, path)], state, batch) {
             Flow::Next => {}
             flow => return flow,
         }
@@ -218,7 +292,8 @@ fn matches(
 /// `/R`: the set looked for in `root` (the current directory when empty) and in each directory
 /// below it, a directory before those below it.
 fn recursive(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
+    set: &[u16],
     root: &[u16],
     state: &mut cmd::State,
     batch: Option<&Batch>,
@@ -231,7 +306,7 @@ fn recursive(
         exe::full_path(root, &mut buffer)
     };
     match directory {
-        Ok(directory) => walk(header, directory, state, batch),
+        Ok(directory) => walk(pass, set, directory, state, batch),
         Err(_) => Flow::Next,
     }
 }
@@ -241,21 +316,23 @@ fn recursive(
 /// directory in it, in turn.
 #[inline(never)]
 fn walk(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
+    set: &[u16],
     directory: &[u16],
     state: &mut cmd::State,
     batch: Option<&Batch>,
 ) -> Flow {
-    for item in Items(header.set) {
+    let header = pass.header;
+    for item in Items(set) {
         let item = batch::unquote(item);
         let mut buffer = [0; exe::MAX_PATH];
         let Some(path) = files::join(directory, item, &mut buffer) else {
             continue;
         };
         let flow = if files::has_wildcards(item) {
-            matches(header, path, state, batch)
+            matches(pass, path, state, batch)
         } else {
-            iterate(header, &[(header.variable, path)], state, batch)
+            pass.iterate(&[(header.variable, path)], state, batch)
         };
         if !matches!(flow, Flow::Next) {
             return flow;
@@ -276,7 +353,7 @@ fn walk(
         let Some(below) = files::join(directory, found.name(), &mut buffer) else {
             continue;
         };
-        match walk(header, below, state, batch) {
+        match walk(pass, set, below, state, batch) {
             Flow::Next => {}
             flow => return flow,
         }
@@ -287,15 +364,16 @@ fn walk(
 /// `/F`: the lines of the files, the string or the command's output its set names, each cut
 /// into its variables' values ([`repeat::fields`]), `skip=`'s first lines of each left out.
 fn lines(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
+    set: &[u16],
     options: &Options<'_>,
     state: &mut cmd::State,
     batch: Option<&Batch>,
 ) -> Flow {
-    match repeat::source(header.set, options.backquote) {
+    match repeat::source(set, options.backquote) {
         Source::Text(text) => {
             let mut skip = options.skip;
-            pass(header, options, text, &mut skip, state, batch)
+            line(pass, options, text, &mut skip, state, batch)
         }
         Source::Files(names) => {
             for name in Items(names) {
@@ -306,27 +384,28 @@ fn lines(
                     state.failed();
                     return Flow::Next;
                 };
-                match file_lines(header, options, &file, state, batch) {
+                match file_lines(pass, options, &file, state, batch) {
                     Flow::Next => {}
                     flow => return flow,
                 }
             }
             Flow::Next
         }
-        Source::Command(command) => command_lines(header, options, command, state, batch),
+        Source::Command(command) => command_lines(pass, options, command, state, batch),
     }
 }
 
 /// One line of `/F`'s: skipped while `skip` counts down, otherwise its fields handed to the
 /// variables, from the loop's variable on (`%%a`, `%%b`, ...), and the command run with them.
-fn pass(
-    header: &For<'_>,
+fn line(
+    pass: &Pass<'_, '_>,
     options: &Options<'_>,
     line: &[u16],
     skip: &mut usize,
     state: &mut cmd::State,
     batch: Option<&Batch>,
 ) -> Flow {
+    let header = pass.header;
     if *skip > 0 {
         *skip -= 1;
         return Flow::Next;
@@ -342,7 +421,7 @@ fn pass(
     {
         *slot = (header.variable.wrapping_add(index as u16), value);
     }
-    iterate(header, &variables[..fields.count], state, batch)
+    pass.iterate(&variables[..fields.count], state, batch)
 }
 
 /// What `/F` prints when a file of its set cannot be opened.
@@ -361,7 +440,7 @@ impl core::fmt::Display for FileNotFound<'_> {
 /// `/F` over the lines of `file`.
 #[inline(never)]
 fn file_lines(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
     options: &Options<'_>,
     file: &exe::File,
     state: &mut cmd::State,
@@ -375,7 +454,7 @@ fn file_lines(
             Ok(Some(line)) => line,
             _ => return Flow::Next,
         };
-        match pass(header, options, line, &mut skip, state, batch) {
+        match self::line(pass, options, line, &mut skip, state, batch) {
             Flow::Next => {}
             flow => return flow,
         }
@@ -387,7 +466,7 @@ fn file_lines(
 /// waited for once its output ends.
 #[inline(never)]
 fn command_lines(
-    header: &For<'_>,
+    pass: &Pass<'_, '_>,
     options: &Options<'_>,
     command: &[u16],
     state: &mut cmd::State,
@@ -421,7 +500,7 @@ fn command_lines(
             Ok(Some(line)) => line,
             _ => break Flow::Next,
         };
-        match pass(header, options, line, &mut skip, state, batch) {
+        match self::line(pass, options, line, &mut skip, state, batch) {
             Flow::Next => {}
             flow => break flow,
         }

@@ -587,24 +587,56 @@ fn reference<'a>(text: &'a [u16], active: &dyn Fn(u16) -> bool) -> Option<Refere
     })
 }
 
+/// The loop variables where a `for`'s command runs: its own, by their character (case counts),
+/// then those of the `for`s it is in. Windows' cmd reads a `for`'s command once, before it runs,
+/// and replaces the variables in the words it read each time: a value is text, never syntax (a
+/// file named `a&b.txt` runs no `b.txt`), and an `if` reads its words before they are replaced
+/// (`if %a==x` compares the value, blanks and all).
+#[derive(Clone, Copy, Debug)]
+pub struct Scope<'a> {
+    pub variables: &'a [(u16, &'a [u16])],
+    pub outer: Option<&'a Scope<'a>>,
+}
+
+impl<'a> Scope<'a> {
+    /// The value of the variable `variable`, the innermost loop's first.
+    pub fn value(&self, variable: u16) -> Option<&'a [u16]> {
+        let own = self
+            .variables
+            .iter()
+            .find(|(name, _)| *name == variable)
+            .map(|(_, value)| *value);
+        own.or_else(|| self.outer.and_then(|outer| outer.value(variable)))
+    }
+}
+
+/// `text` with the loop variables of `scope` replaced (see [`substitute`]), in `out`; `text`
+/// itself when there is no loop or nothing to replace.
+pub fn bind<'t>(
+    text: &'t [u16],
+    scope: Option<&Scope<'_>>,
+    shell: &mut dyn Variables,
+    out: &'t mut [u16],
+) -> Result<&'t [u16], TooLong> {
+    match scope {
+        Some(scope) if text.contains(&PERCENT) => substitute(text, scope, shell, out),
+        _ => Ok(text),
+    }
+}
+
 /// `body` with its loop variables replaced, in `out`: `%v` by `v`'s value as it is, `%~v` without
 /// the quotes around it, and `%~` with modifier letters as a batch file's `%~1` is (the parts of
 /// its full path, its attributes, its size: [`crate::modified`]); `%~$NAME:v` is the full path
 /// of the first file named `v`'s value in the directories the variable NAME lists (`$PATH:`),
 /// nothing when there is none, its letters applied to that path. A `%` before anything else
-/// stays. `variables` are the loop's, by their character (case counts).
+/// stays. A value is copied as it is, never read again.
 pub fn substitute<'b>(
     body: &[u16],
-    variables: &[(u16, &[u16])],
+    scope: &Scope<'_>,
     shell: &mut dyn Variables,
     out: &'b mut [u16],
 ) -> Result<&'b [u16], TooLong> {
-    let value_of = |variable: u16| {
-        variables
-            .iter()
-            .find(|(name, _)| *name == variable)
-            .map(|(_, value)| *value)
-    };
+    let value_of = |variable: u16| scope.value(variable);
     let active = |unit: u16| value_of(unit).is_some();
     let mut length = 0;
     let mut at = 0;
@@ -902,7 +934,11 @@ mod tests {
                 .map(|(name, value)| (*name, value.as_slice()))
                 .collect();
             let mut out = [0; 256];
-            narrow(substitute(&body, &refs, shell, &mut out).unwrap())
+            let scope = Scope {
+                variables: &refs,
+                outer: None,
+            };
+            narrow(substitute(&body, &scope, shell, &mut out).unwrap())
         };
         // batclr's size of its output.
         assert_eq!(
@@ -935,5 +971,67 @@ mod tests {
             run("100% %~q %%a", &[('a', "1")], &mut shell),
             "100% %~q %1"
         );
+    }
+
+    #[test]
+    fn a_nested_loop_sees_its_own_variables_then_the_outer_ones() {
+        let mut shell = Fake::new(&[], &[]);
+        let outer_values = [(u16::from(b'a'), &wide("x y")[..])];
+        let outer = Scope {
+            variables: &outer_values,
+            outer: None,
+        };
+        let inner_values = [
+            (u16::from(b'b'), &wide("1")[..]),
+            (u16::from(b'a'), &wide("2")[..]),
+        ];
+        let inner = Scope {
+            variables: &inner_values,
+            outer: Some(&outer),
+        };
+        let mut out = [0; 64];
+        let body = wide("%a %b %c");
+        assert_eq!(
+            narrow(substitute(&body, &inner, &mut shell, &mut out).unwrap()),
+            "2 1 %c"
+        );
+        let body = wide("[%~a]");
+        let inner_values = [(u16::from(b'b'), &wide("1")[..])];
+        let inner = Scope {
+            variables: &inner_values,
+            outer: Some(&outer),
+        };
+        assert_eq!(
+            narrow(substitute(&body, &inner, &mut shell, &mut out).unwrap()),
+            "[x y]"
+        );
+    }
+
+    #[test]
+    fn a_value_is_text_copied_once() {
+        let mut shell = Fake::new(&[("PATH", "C:\\BIN")], &[]);
+        let values = [(u16::from(b'a'), &wide("a & b %PATH% %a ^ (c)")[..])];
+        let scope = Scope {
+            variables: &values,
+            outer: None,
+        };
+        let mut out = [0; 64];
+        let body = wide("echo [%a]");
+        assert_eq!(
+            narrow(bind(&body, Some(&scope), &mut shell, &mut out).unwrap()),
+            "echo [a & b %PATH% %a ^ (c)]"
+        );
+        // No loop, or nothing to replace: the text itself.
+        let plain = wide("echo x");
+        let mut out = [0; 4];
+        assert_eq!(
+            narrow(bind(&plain, Some(&scope), &mut shell, &mut out).unwrap()),
+            "echo x"
+        );
+        assert_eq!(
+            narrow(bind(&body, None, &mut shell, &mut out).unwrap()),
+            "echo [%a]"
+        );
+        assert!(substitute(&body, &scope, &mut shell, &mut out).is_err());
     }
 }
