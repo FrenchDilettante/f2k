@@ -146,6 +146,8 @@ struct Node {
     parent: u16,
     /// A hive's root: never deleted.
     permanent: bool,
+    /// Made with REG_OPTION_VOLATILE: its subkeys must be too.
+    volatile: bool,
     name: Blob,
     class: Blob,
     /// When the key, its values or its list of subkeys last changed (a FILETIME).
@@ -158,6 +160,7 @@ impl Node {
         generation: 0,
         parent: 0,
         permanent: false,
+        volatile: false,
         name: Blob::EMPTY,
         class: Blob::EMPTY,
         last_write: 0,
@@ -308,6 +311,7 @@ impl Registry {
             generation: 0,
             parent: 0,
             permanent: true,
+            volatile: false,
             name: Blob::EMPTY,
             class: Blob::EMPTY,
             last_write: 0,
@@ -325,7 +329,7 @@ impl Registry {
                     .position(|&unit| unit == 0)
                     .unwrap_or(name.len());
                 key = registry
-                    .create(key, &name[..length], &[], 0)
+                    .create(key, &name[..length], &[], false, 0)
                     .expect("the registry holds the seed")
                     .0;
             }
@@ -474,13 +478,16 @@ impl Registry {
         Ok(self.key(index))
     }
 
-    /// The key `path` names below `from`, made when its last name is missing (with `class`, at
-    /// `now`), and whether it was: the keys on the way must exist (STATUS_OBJECT_NAME_NOT_FOUND).
+    /// The key `path` names below `from`, made when its last name is missing (with `class`,
+    /// `volatile` or not, at `now`), and whether it was: the keys on the way must exist
+    /// (STATUS_OBJECT_NAME_NOT_FOUND), and a key made below a volatile one must be volatile
+    /// (STATUS_CHILD_MUST_BE_VOLATILE). An existing key is opened whatever its volatility.
     pub fn create(
         &mut self,
         from: Key,
         path: &[u16],
         class: &[u16],
+        volatile: bool,
         now: u64,
     ) -> Result<(Key, bool), NtStatus> {
         let mut index = self.check(from)?;
@@ -489,9 +496,12 @@ impl Registry {
             match self.child(index, name) {
                 Some(child) => index = child,
                 None if names.peek().is_none() => {
+                    if self.nodes[index as usize].volatile && !volatile {
+                        return Err(STATUS_CHILD_MUST_BE_VOLATILE);
+                    }
                     return self
-                        .make_key(index, name, class, now)
-                        .map(|key| (key, true))
+                        .make_key(index, name, class, volatile, now)
+                        .map(|key| (key, true));
                 }
                 None => return Err(STATUS_OBJECT_NAME_NOT_FOUND),
             }
@@ -505,6 +515,7 @@ impl Registry {
         parent: u16,
         name: &[u16],
         class: &[u16],
+        volatile: bool,
         now: u64,
     ) -> Result<Key, NtStatus> {
         let index = (1..KEYS)
@@ -524,6 +535,7 @@ impl Registry {
             generation: node.generation,
             parent,
             permanent: false,
+            volatile,
             name,
             class,
             last_write: now,
@@ -864,9 +876,9 @@ mod tests {
     fn names_fold_case_and_keep_their_spelling() {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
-        let (made, created) = r.create(user, &wide("Software"), &[], 1).unwrap();
+        let (made, created) = r.create(user, &wide("Software"), &[], false, 1).unwrap();
         assert!(created);
-        let (again, created) = r.create(user, &wide("SOFTWARE"), &[], 2).unwrap();
+        let (again, created) = r.create(user, &wide("SOFTWARE"), &[], false, 2).unwrap();
         assert_eq!((again, created), (made, false));
         assert_eq!(text(r.info(again).unwrap().name), "Software");
         assert_eq!(
@@ -888,13 +900,13 @@ mod tests {
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_eq!(
-            r.create(user, &wide("Missing\\x"), &[], 0),
+            r.create(user, &wide("Missing\\x"), &[], false, 0),
             Err(STATUS_OBJECT_NAME_NOT_FOUND),
             "the keys on the way exist"
         );
         let long = vec![b'k' as u16; MAX_KEY_NAME + 1];
         assert_eq!(
-            r.create(user, &long, &[], 0),
+            r.create(user, &long, &[], false, 0),
             Err(STATUS_OBJECT_NAME_INVALID)
         );
     }
@@ -904,7 +916,7 @@ mod tests {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         for name in ["delta", "Alpha", "charlie", "bravo", "Echo"] {
-            r.create(user, &wide(name), &[], 0).unwrap();
+            r.create(user, &wide(name), &[], false, 0).unwrap();
         }
         let listed: Vec<String> = (0..)
             .map_while(|position| r.subkey(user, position).unwrap())
@@ -919,8 +931,8 @@ mod tests {
     fn a_deleted_key_is_gone_for_its_holders() {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
-        let (a, _) = r.create(user, &wide("a"), &[], 0).unwrap();
-        let (b, _) = r.create(a, &wide("b"), &[], 0).unwrap();
+        let (a, _) = r.create(user, &wide("a"), &[], false, 0).unwrap();
+        let (b, _) = r.create(a, &wide("b"), &[], false, 0).unwrap();
         assert_eq!(
             r.delete(a, 0),
             Err(STATUS_CANNOT_DELETE),
@@ -932,13 +944,13 @@ mod tests {
         assert_eq!(r.check(b), Err(STATUS_KEY_DELETED));
         assert_eq!(r.query_value(b, &wide("x")).err(), Some(STATUS_KEY_DELETED));
         assert_eq!(
-            r.create(b, &wide("c"), &[], 0).err(),
+            r.create(b, &wide("c"), &[], false, 0).err(),
             Some(STATUS_KEY_DELETED)
         );
         assert_eq!(r.subkey(b, 0).err(), Some(STATUS_KEY_DELETED));
         assert_eq!(r.delete(b, 0), Err(STATUS_KEY_DELETED));
         // The name made anew is another key, even in the same record.
-        let (again, created) = r.create(a, &wide("b"), &[], 0).unwrap();
+        let (again, created) = r.create(a, &wide("b"), &[], false, 0).unwrap();
         assert!(created);
         assert_ne!(again, b);
         assert_eq!(r.check(b), Err(STATUS_KEY_DELETED));
@@ -986,7 +998,7 @@ mod tests {
         );
         assert_eq!(r.info(user).unwrap().last_write, 6);
         // A failed set leaves the value as it was, and gives its data back.
-        let (gone, _) = r.create(user, &wide("gone"), &[], 7).unwrap();
+        let (gone, _) = r.create(user, &wide("gone"), &[], false, 7).unwrap();
         r.delete(gone, 7).unwrap();
         let data = scratch(r, &[1, 2, 3, 4]);
         assert_eq!(
@@ -1013,18 +1025,45 @@ mod tests {
         assert_eq!(r.arena.as_ref().unwrap().audit(), Ok(()));
     }
 
+    /// A volatile key's subkeys must be volatile; a non-volatile key's may be either, and an
+    /// existing key opens whatever the option.
+    #[test]
+    fn a_volatile_keys_subkeys_are_volatile() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (volatile, _) = r.create(user, &wide("v"), &[], true, 0).unwrap();
+        assert_eq!(
+            r.create(volatile, &wide("lasting"), &[], false, 0),
+            Err(STATUS_CHILD_MUST_BE_VOLATILE)
+        );
+        assert_eq!(
+            r.open(volatile, &wide("lasting")),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+        let (inner, created) = r.create(volatile, &wide("passing"), &[], true, 0).unwrap();
+        assert!(created);
+        assert_eq!(
+            r.create(user, &wide("V"), &[], false, 0),
+            Ok((volatile, false)),
+            "an existing key opens"
+        );
+        let (lasting, _) = r.create(user, &wide("lasting"), &[], false, 0).unwrap();
+        assert!(r.create(lasting, &wide("passing"), &[], true, 0).unwrap().1);
+        r.delete(inner, 0).unwrap();
+    }
+
     /// A record deleted more often than a 16-bit generation counts still finds its first key gone.
     #[test]
     fn a_stale_key_outlives_many_reuses_of_its_record() {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
-        let (first, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+        let (first, _) = r.create(user, &wide("k"), &[], false, 0).unwrap();
         r.delete(first, 0).unwrap();
         for _ in 0..=u16::MAX as u32 {
-            let (again, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+            let (again, _) = r.create(user, &wide("k"), &[], false, 0).unwrap();
             r.delete(again, 0).unwrap();
         }
-        let (last, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+        let (last, _) = r.create(user, &wide("k"), &[], false, 0).unwrap();
         assert_eq!(last.index, first.index, "the same record, reused");
         assert_eq!(r.check(first), Err(STATUS_KEY_DELETED));
     }
@@ -1036,11 +1075,11 @@ mod tests {
         let r = registry();
         let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         for name in ["c", "A", "b"] {
-            r.create(user, &wide(name), &[], 0).unwrap();
+            r.create(user, &wide(name), &[], false, 0).unwrap();
         }
         let b = r.open(user, &wide("B")).unwrap();
         r.delete(b, 0).unwrap();
-        r.create(user, &wide("aa"), &[], 0).unwrap();
+        r.create(user, &wide("aa"), &[], false, 0).unwrap();
         let listed: Vec<String> = (0..)
             .map_while(|position| r.subkey(user, position).unwrap())
             .map(|key| text(r.info(key).unwrap().name))

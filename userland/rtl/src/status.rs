@@ -191,6 +191,7 @@ pub const STATUS_INVALID_IMAGE_WIN_16: u32 = 0xC000_0131;
 pub const STATUS_PIPE_BROKEN: u32 = 0xC000_014B;
 pub const STATUS_UNRECOGNIZED_VOLUME: u32 = 0xC000_014F;
 pub const STATUS_KEY_DELETED: u32 = 0xC000_017C;
+pub const STATUS_CHILD_MUST_BE_VOLATILE: u32 = 0xC000_0181;
 pub const STATUS_IO_DEVICE_ERROR: u32 = 0xC000_0185;
 /// A write to a volume once it was shut down (dismounted, in the status's own words).
 pub const STATUS_TOO_LATE: u32 = 0xC000_0189;

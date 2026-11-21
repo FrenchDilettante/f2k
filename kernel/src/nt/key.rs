@@ -15,10 +15,18 @@
 //! to delete the key; a key handle as a root needs none. A key deleted through another handle
 //! answers STATUS_KEY_DELETED to every service through its own.
 //!
+//! NtCreateKey's options are Windows 2000's REG_OPTION_* bits ([`create_options`]): another bit is
+//! STATUS_INVALID_PARAMETER, before anything else is looked at. REG_OPTION_VOLATILE marks the key
+//! made (its subkeys must be volatile too, STATUS_CHILD_MUST_BE_VOLATILE); REG_OPTION_CREATE_LINK,
+//! a symbolic link's key, is not implemented (STATUS_NOT_IMPLEMENTED); REG_OPTION_OPEN_LINK and
+//! REG_OPTION_BACKUP_RESTORE change nothing here (no key is a link, and every right asked for is
+//! granted).
+//!
 //! The information classes are Windows 2000's documented structures: KEY_BASIC_INFORMATION,
 //! KEY_NODE_INFORMATION and KEY_FULL_INFORMATION for a key, KEY_VALUE_BASIC_INFORMATION,
 //! KEY_VALUE_FULL_INFORMATION and KEY_VALUE_PARTIAL_INFORMATION for a value; another class is
-//! STATUS_INVALID_PARAMETER. A buffer too small for the structure's fixed part is
+//! STATUS_INVALID_PARAMETER, checked first, before the handle and the index are (as Windows
+//! 2000's services check it on entry). A buffer too small for the structure's fixed part is
 //! STATUS_BUFFER_TOO_SMALL, nothing written; one holding the fixed part but not the whole is
 //! STATUS_BUFFER_OVERFLOW, what fits written; the size the whole takes goes to ResultLength either
 //! way.
@@ -53,6 +61,15 @@ const GENERIC_ALL: u32 = 0x1000_0000;
 const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 /// The standard and the key-specific rights: what a request names besides the generic ones.
 const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
+
+/// NtCreateKey's options (REG_OPTION_*; REG_OPTION_NON_VOLATILE is none of them).
+pub const REG_OPTION_VOLATILE: u32 = 0x0001;
+pub const REG_OPTION_CREATE_LINK: u32 = 0x0002;
+pub const REG_OPTION_BACKUP_RESTORE: u32 = 0x0004;
+pub const REG_OPTION_OPEN_LINK: u32 = 0x0008;
+/// Every option Windows 2000 knows (REG_LEGAL_OPTION).
+const REG_LEGAL_OPTION: u32 =
+    REG_OPTION_VOLATILE | REG_OPTION_CREATE_LINK | REG_OPTION_BACKUP_RESTORE | REG_OPTION_OPEN_LINK;
 
 /// NtCreateKey's dispositions.
 pub const REG_CREATED_NEW_KEY: u32 = 1;
@@ -91,6 +108,30 @@ pub fn granted(desired: u32) -> u32 {
         }
     }
     access
+}
+
+/// NtCreateKey's `options`, checked: whether the key it makes is volatile.
+/// STATUS_INVALID_PARAMETER for a bit Windows 2000 does not define; STATUS_NOT_IMPLEMENTED for
+/// REG_OPTION_CREATE_LINK (the registry has no symbolic links).
+pub fn create_options(options: u32) -> Result<bool, NtStatus> {
+    if options & !REG_LEGAL_OPTION != 0 {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    if options & REG_OPTION_CREATE_LINK != 0 {
+        return Err(STATUS_NOT_IMPLEMENTED);
+    }
+    Ok(options & REG_OPTION_VOLATILE != 0)
+}
+
+/// A key information class: STATUS_INVALID_PARAMETER for one Windows 2000 does not define.
+pub fn key_class(class: u32) -> Result<KeyClass, NtStatus> {
+    KeyClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)
+}
+
+/// A value information class: STATUS_INVALID_PARAMETER for one Windows 2000 does not define (the
+/// 64-bit-aligned classes came with XP).
+pub fn value_class(class: u32) -> Result<ValueClass, NtStatus> {
+    ValueClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)
 }
 
 /// The largest fixed part a reply has (KEY_FULL_INFORMATION's).
@@ -150,13 +191,11 @@ impl Reply<'_> {
     }
 }
 
-/// Key information class `class` of `info`: STATUS_INVALID_PARAMETER for a class Windows 2000
-/// does not define.
-pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<'a>, NtStatus> {
-    let class = KeyClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
+/// Key information class `class` of `info`.
+pub fn key_reply<'a>(class: KeyClass, info: &crate::cm::KeyInfo<'a>) -> Reply<'a> {
     let name = info.name;
     let class_bytes = info.class;
-    Ok(match class {
+    match class {
         // The name.
         KeyClass::Basic => Reply::new(
             &KeyBasicInformation {
@@ -193,19 +232,14 @@ pub fn key_reply<'a>(class: u32, info: &crate::cm::KeyInfo<'a>) -> Result<Reply<
             },
             [class_bytes, &[][..]],
         ),
-    })
+    }
 }
 
-/// Value information class `class` of `value`: STATUS_INVALID_PARAMETER for a class Windows 2000
-/// does not define.
-pub fn value_reply<'a>(
-    class: u32,
-    value: &crate::cm::ValueInfo<'a>,
-) -> Result<Reply<'a>, NtStatus> {
-    let class = ValueClass::try_from(class).map_err(|_| STATUS_INVALID_PARAMETER)?;
+/// Value information class `class` of `value`.
+pub fn value_reply<'a>(class: ValueClass, value: &crate::cm::ValueInfo<'a>) -> Reply<'a> {
     let name = value.name;
     let data = value.data;
-    Ok(match class {
+    match class {
         // The name.
         ValueClass::Basic => Reply::new(
             &KeyValueBasicInformation {
@@ -235,7 +269,7 @@ pub fn value_reply<'a>(
             },
             [data, &[][..]],
         ),
-    })
+    }
 }
 
 #[cfg(target_arch = "x86")]
@@ -465,10 +499,10 @@ mod services {
         status
     }
 
-    /// NtCreateKey: the key the attributes name, made when missing (with the class), opened
-    /// otherwise; its handle into KeyHandle and what happened into Disposition (when given). The
-    /// title index and the options are not consulted (the registry is never saved, so a key is
-    /// as volatile as any).
+    /// NtCreateKey: the key the attributes name, made when missing (with the class, volatile as
+    /// the options say), opened otherwise; its handle into KeyHandle and what happened into
+    /// Disposition (when given). The options are checked first ([`create_options`]). The title
+    /// index is not consulted.
     #[allow(clippy::too_many_arguments)]
     pub fn create_key(
         _: &mut NtCall,
@@ -477,9 +511,10 @@ mod services {
         attributes: UserAddr,
         _title_index: u32,
         class: UserAddr,
-        _options: u32,
+        options: u32,
         disposition: UserPtr<u32>,
     ) -> NtResult {
+        let volatile = create_options(options)?;
         let mut name = Name::new();
         let KeyPath {
             root,
@@ -491,7 +526,7 @@ mod services {
         }
         let now = now();
         let (key, created) = with_counted(class, |registry, class| {
-            registry.create(root, path, class, now)
+            registry.create(root, path, class, volatile, now)
         })?;
         let handle = publish(slot, key, desired, inherit)?;
         let outcome = if created {
@@ -545,10 +580,11 @@ mod services {
         length: u32,
         result: UserPtr<u32>,
     ) -> NtResult {
+        let class = key_class(class)?;
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
         let staged = with_registry(|registry| {
             stage(registry, length, |registry| {
-                key_reply(class, &registry.info(key)?)
+                Ok(key_reply(class, &registry.info(key)?))
             })
         })?;
         answer(staged, out, result)
@@ -565,11 +601,12 @@ mod services {
         length: u32,
         result: UserPtr<u32>,
     ) -> NtResult {
+        let class = key_class(class)?;
         let key = key_of(handle.raw(), KEY_ENUMERATE_SUB_KEYS)?;
         let staged = with_registry(|registry| {
             let subkey = registry.subkey(key, index)?.ok_or(STATUS_NO_MORE_ENTRIES)?;
             stage(registry, length, |registry| {
-                key_reply(class, &registry.info(subkey)?)
+                Ok(key_reply(class, &registry.info(subkey)?))
             })
         })?;
         answer(staged, out, result)
@@ -586,13 +623,14 @@ mod services {
         length: u32,
         result: UserPtr<u32>,
     ) -> NtResult {
+        let class = value_class(class)?;
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
         if name.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
         let staged = with_counted(name, |registry, name| {
             stage(registry, length, |registry| {
-                value_reply(class, &registry.query_value(key, name)?)
+                Ok(value_reply(class, &registry.query_value(key, name)?))
             })
         })?;
         answer(staged, out, result)
@@ -609,13 +647,14 @@ mod services {
         length: u32,
         result: UserPtr<u32>,
     ) -> NtResult {
+        let class = value_class(class)?;
         let key = key_of(handle.raw(), KEY_QUERY_VALUE)?;
         let staged = with_registry(|registry| {
             stage(registry, length, |registry| {
                 let value = registry
                     .value_at(key, index)?
                     .ok_or(STATUS_NO_MORE_ENTRIES)?;
-                value_reply(class, &value)
+                Ok(value_reply(class, &value))
             })
         })?;
         answer(staged, out, result)
@@ -725,7 +764,7 @@ mod tests {
             max_value_name: 0,
             max_value_data: 0,
         };
-        let reply = key_reply(KeyClass::Basic as u32, &info).unwrap();
+        let reply = key_reply(KeyClass::Basic, &info);
         assert_eq!(reply.size(), 26);
         let (out, status) = delivered(&reply, 26);
         assert_eq!(status, Ok(STATUS_SUCCESS));
@@ -740,7 +779,7 @@ mod tests {
             delivered(&reply, 15).0.iter().all(|&b| b == 0xCC),
             "nothing written"
         );
-        assert_eq!(key_reply(3, &info).err(), Some(STATUS_INVALID_PARAMETER));
+        assert_eq!(key_class(3), Err(STATUS_INVALID_PARAMETER));
     }
 
     #[test]
@@ -751,7 +790,7 @@ mod tests {
             name: &name,
             data: b"a\0\0\0",
         };
-        let partial = value_reply(ValueClass::Partial as u32, &value).unwrap();
+        let partial = value_reply(ValueClass::Partial, &value);
         let (out, status) = delivered(&partial, 16);
         assert_eq!(status, Ok(STATUS_SUCCESS));
         assert_eq!(out, [0, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, b'a', 0, 0, 0]);
@@ -762,7 +801,7 @@ mod tests {
             "the fixed part tells the size"
         );
         assert_eq!(&out[8..12], &4u32.to_le_bytes());
-        let full = value_reply(ValueClass::Full as u32, &value).unwrap();
+        let full = value_reply(ValueClass::Full, &value);
         let (out, _) = delivered(&full, 28);
         assert_eq!(
             &out[8..12],
@@ -771,7 +810,47 @@ mod tests {
         );
         assert_eq!(&out[20..24], &name[..]);
         assert_eq!(&out[24..28], b"a\0\0\0");
-        let basic = value_reply(ValueClass::Basic as u32, &value).unwrap();
+        let basic = value_reply(ValueClass::Basic, &value);
         assert_eq!(basic.size(), 16);
+    }
+
+    /// Windows 2000's classes and no others: the 64-bit-aligned value classes (3, 4) and
+    /// KeyNameInformation (3) came with XP.
+    #[test]
+    fn only_windows_2000s_classes_are_taken() {
+        assert_eq!(key_class(2), Ok(KeyClass::Full));
+        assert_eq!(value_class(2), Ok(ValueClass::Partial));
+        for class in [3, 4, 0x8000_0000] {
+            assert_eq!(key_class(class), Err(STATUS_INVALID_PARAMETER));
+            assert_eq!(value_class(class), Err(STATUS_INVALID_PARAMETER));
+        }
+    }
+
+    /// REG_LEGAL_OPTION's bits and no others; the volatile one says what the key is made.
+    #[test]
+    fn the_create_options_are_checked() {
+        assert_eq!(create_options(0), Ok(false), "REG_OPTION_NON_VOLATILE");
+        assert_eq!(create_options(REG_OPTION_VOLATILE), Ok(true));
+        assert_eq!(
+            create_options(REG_OPTION_OPEN_LINK | REG_OPTION_BACKUP_RESTORE),
+            Ok(false)
+        );
+        assert_eq!(
+            create_options(REG_OPTION_CREATE_LINK | REG_OPTION_VOLATILE),
+            Err(STATUS_NOT_IMPLEMENTED)
+        );
+        for unknown in [0x10, 0x8000_0000, REG_OPTION_VOLATILE | 0x20] {
+            assert_eq!(create_options(unknown), Err(STATUS_INVALID_PARAMETER));
+        }
+        assert_eq!(
+            create_options(REG_OPTION_CREATE_LINK | 0x10),
+            Err(STATUS_INVALID_PARAMETER),
+            "an unknown bit answers first"
+        );
+        assert_eq!(
+            rtl::status::dos_error(STATUS_CHILD_MUST_BE_VOLATILE.0),
+            1021,
+            "ERROR_CHILD_MUST_BE_VOLATILE"
+        );
     }
 }

@@ -243,6 +243,9 @@ statuses! {
     /// A key deleted while a handle still named it: what every service answers through that
     /// handle.
     STATUS_KEY_DELETED,
+    /// A key made non-volatile below a volatile one, which Windows 2000 refuses: a volatile key's
+    /// subkeys go with it at shutdown, so they must be volatile too.
+    STATUS_CHILD_MUST_BE_VOLATILE,
     /// A device reported an error.
     STATUS_IO_DEVICE_ERROR,
     /// A change to a volume after the shutdown has closed it to changes.
