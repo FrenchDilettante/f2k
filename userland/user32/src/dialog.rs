@@ -433,8 +433,8 @@ pub unsafe extern "system" fn map_dialog_rect(dialog: usize, rect: *mut Rect) ->
 
 // --- Templates -----------------------------------------------------------------------------------
 
-/// A name field of a template (sz_Or_Ord): none, an ordinal, or a string of the given length,
-/// copied NUL-terminated into the caller's buffer (cut to it).
+/// A name field of a template (sz_Or_Ord): none, an ordinal, or a string, NUL-terminated in the
+/// template itself, at the address given (read in place, as long as it is).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     None,
@@ -479,8 +479,20 @@ impl<'a> Reader<'a> {
         self.at += (4 - address % 4) % 4;
     }
 
-    /// A NUL-terminated string, starting with the unit `first`, into `out`: its length.
-    fn string(&mut self, first: u16, out: &mut [u16]) -> Option<usize> {
+    /// A NUL-terminated string, starting with the unit `first` (just read), passed over: its
+    /// address in the template; none when the template ends before its terminator.
+    fn string(&mut self, first: u16) -> Option<usize> {
+        let at = self.base.wrapping_add(self.at - 2);
+        let mut unit = first;
+        while unit != 0 {
+            unit = self.word()?;
+        }
+        Some(at)
+    }
+
+    /// A NUL-terminated string, starting with the unit `first` (just read), into `out`, cut to
+    /// it, terminated: a face name for a LOGFONT.
+    fn copy_string(&mut self, first: u16, out: &mut [u16]) -> Option<()> {
         let mut length = 0;
         let mut unit = first;
         while unit != 0 {
@@ -493,18 +505,15 @@ impl<'a> Reader<'a> {
         if let Some(end) = out.get_mut(length) {
             *end = 0;
         }
-        Some(length)
+        Some(())
     }
 
-    /// A name field into `out`.
-    fn field(&mut self, out: &mut [u16]) -> Option<Field> {
+    /// A name field.
+    fn field(&mut self) -> Option<Field> {
         match self.word()? {
-            0 => {
-                out[0] = 0;
-                Some(Field::None)
-            }
+            0 => Some(Field::None),
             0xFFFF => Some(Field::Ordinal(self.word()?)),
-            first => Some(Field::Text(self.string(first, out)?)),
+            first => Some(Field::Text(self.string(first)?)),
         }
     }
 }
@@ -535,30 +544,8 @@ pub struct Header {
     pub font: Option<FontSpec>,
 }
 
-/// The strings of a header, copied.
-pub struct HeaderNames {
-    pub menu: [u16; 64],
-    pub class: [u16; 128],
-    pub title: [u16; 256],
-    pub face: [u16; 32],
-}
-
-impl Default for HeaderNames {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl HeaderNames {
-    pub const fn new() -> Self {
-        HeaderNames {
-            menu: [0; 64],
-            class: [0; 128],
-            title: [0; 256],
-            face: [0; 32],
-        }
-    }
-}
+/// A header's font's face name, copied (a LOGFONT's room: its other strings are read in place).
+pub type Face = [u16; rtl::gdi::LF_FACESIZE];
 
 /// A template's control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -576,32 +563,12 @@ pub struct Item {
     pub data: usize,
 }
 
-/// The strings of a control, copied.
-pub struct ItemNames {
-    pub class: [u16; 128],
-    pub title: [u16; 256],
-}
-
-impl Default for ItemNames {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ItemNames {
-    pub const fn new() -> Self {
-        ItemNames {
-            class: [0; 128],
-            title: [0; 256],
-        }
-    }
-}
-
 /// The header DLGTEMPLATEEX's first DWORD holds: dlgVer 1 and the signature 0xFFFF.
 const EXTENDED_SIGNATURE: u32 = 0xFFFF_0001;
 
-/// The template's header, its strings into `names`; none for a template cut short.
-pub fn read_header(reader: &mut Reader, names: &mut HeaderNames) -> Option<Header> {
+/// The template's header, its strings read in place, its face name into `face`; none for a
+/// template cut short.
+pub fn read_header(reader: &mut Reader, face: &mut Face) -> Option<Header> {
     let first = reader.dword()?;
     let extended = first == EXTENDED_SIGNATURE;
     let (ex_style, style) = if extended {
@@ -618,9 +585,9 @@ pub fn read_header(reader: &mut Reader, names: &mut HeaderNames) -> Option<Heade
         reader.short()?,
         reader.short()?,
     );
-    let menu = reader.field(&mut names.menu)?;
-    let class = reader.field(&mut names.class)?;
-    let title = reader.field(&mut names.title)?;
+    let menu = reader.field()?;
+    let class = reader.field()?;
+    let title = reader.field()?;
     let font = if style & DS_SETFONT != 0 {
         let points = reader.word()?;
         let (weight, italic, charset) = if extended {
@@ -629,7 +596,7 @@ pub fn read_header(reader: &mut Reader, names: &mut HeaderNames) -> Option<Heade
             (FW_NORMAL as u16, 0, DEFAULT_CHARSET)
         };
         let first = reader.word()?;
-        reader.string(first, &mut names.face)?;
+        reader.copy_string(first, face)?;
         Some(FontSpec {
             points,
             weight,
@@ -655,9 +622,9 @@ pub fn read_header(reader: &mut Reader, names: &mut HeaderNames) -> Option<Heade
     })
 }
 
-/// The template's next control, on its DWORD boundary, its strings into `names`; none for a
+/// The template's next control, on its DWORD boundary, its strings read in place; none for a
 /// template cut short.
-pub fn read_item(reader: &mut Reader, extended: bool, names: &mut ItemNames) -> Option<Item> {
+pub fn read_item(reader: &mut Reader, extended: bool) -> Option<Item> {
     reader.align();
     let (ex_style, style) = if extended {
         let _help = reader.dword()?;
@@ -678,8 +645,8 @@ pub fn read_item(reader: &mut Reader, extended: bool, names: &mut ItemNames) -> 
     } else {
         u32::from(reader.word()?)
     };
-    let class = reader.field(&mut names.class)?;
-    let title = reader.field(&mut names.title)?;
+    let class = reader.field()?;
+    let title = reader.field()?;
     let size = reader.word()?;
     let data = if size == 0 {
         0
@@ -813,8 +780,8 @@ const STM_SETICON: u32 = 0x0170;
 /// (ERROR_INVALID_DATA for a template cut short, the creation's error for a window refused, the
 /// part made destroyed).
 pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize> {
-    let mut names = HeaderNames::new();
-    let Some(header) = read_header(reader, &mut names) else {
+    let mut face: Face = [0; rtl::gdi::LF_FACESIZE];
+    let Some(header) = read_header(reader, &mut face) else {
         return failed(ERROR_INVALID_DATA);
     };
     log_unhandled_styles(&header, &request.call);
@@ -837,9 +804,7 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
             pitch_and_family: 0,
             face_name: [0; rtl::gdi::LF_FACESIZE],
         };
-        let face = &names.face[..rtl::cstr::nul_len(&names.face)];
-        let length = face.len().min(rtl::gdi::LF_FACESIZE - 1);
-        font.face_name[..length].copy_from_slice(&face[..length]);
+        font.face_name = face;
         imports::create_font(&font)
     });
     let (ux, uy) = match font {
@@ -914,21 +879,19 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     let class = match header.class {
         Field::None => usize::from(crate::class::DIALOG_CLASS_ATOM),
         Field::Ordinal(atom) => usize::from(atom),
-        Field::Text(_) => names.class.as_ptr() as usize,
+        Field::Text(at) => at,
     };
     let menu = match header.menu {
         Field::None => 0,
-        // SAFETY: a number in a pointer's place, or this function's own NUL-terminated string.
+        // SAFETY: a number in a pointer's place, or the template's NUL-terminated string.
         Field::Ordinal(id) => unsafe {
             crate::menu::load_menu_w(request.instance, id as usize as *const u16)
         },
         // SAFETY: as above.
-        Field::Text(_) => unsafe {
-            crate::menu::load_menu_w(request.instance, names.menu.as_ptr())
-        },
+        Field::Text(at) => unsafe { crate::menu::load_menu_w(request.instance, at as *const u16) },
     };
     let title = match header.title {
-        Field::Text(_) => names.title.as_ptr() as usize,
+        Field::Text(at) => at,
         _ => 0,
     };
     let created = window::create_or_missing(&Creation {
@@ -989,13 +952,12 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     }
 
     // The controls, in the template's order (each made at the bottom of the z-order).
-    let mut item_names = ItemNames::new();
     for _ in 0..header.count {
-        let Some(item) = read_item(reader, header.extended, &mut item_names) else {
+        let Some(item) = read_item(reader, header.extended) else {
             window::destroy_window(dialog);
             return failed(ERROR_INVALID_DATA);
         };
-        let control = match create_control(dialog, &item, &item_names, request, (ux, uy)) {
+        let control = match create_control(dialog, &item, request, (ux, uy)) {
             Ok(control) => control,
             Err(missing) => {
                 let no_fail = header.style & DS_NOFAILCREATE != 0;
@@ -1080,7 +1042,6 @@ fn client_origin(window: usize) -> Option<(i32, i32)> {
 fn create_control(
     dialog: usize,
     item: &Item,
-    names: &ItemNames,
     request: Request,
     (ux, uy): (i32, i32),
 ) -> Result<usize, Option<(&'static str, &'static str)>> {
@@ -1089,11 +1050,11 @@ fn create_control(
             Some(name) => name.as_ptr() as usize,
             None => usize::from(ordinal),
         },
-        Field::Text(_) => names.class.as_ptr() as usize,
+        Field::Text(at) => at,
         Field::None => return failed(ERROR_INVALID_DATA).ok_or(None),
     };
     let title = match item.title {
-        Field::Text(_) => names.title.as_ptr() as usize,
+        Field::Text(at) => at,
         _ => 0,
     };
     let control = window::create_or_missing(&Creation {
@@ -2323,9 +2284,13 @@ mod tests {
         assert_eq!(text(0x8000_0000, true), "-2147483648");
     }
 
-    /// A DIALOG template and a DIALOGEX one read back as written.
+    /// A DIALOG template reads back as written, its strings in place in the template, as long as
+    /// they are: a caption of 1,000 units and a control's title of 600; its face name copied. A
+    /// template that ends inside a string is cut short.
     #[test]
     fn templates_read_their_layouts() {
+        let caption: std::vec::Vec<u16> = (0..1000u32).map(|i| 0x41 + (i % 26) as u16).collect();
+        let label: std::vec::Vec<u16> = (0..600u32).map(|i| 0x61 + (i % 26) as u16).collect();
         let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
         let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
             words.push(value as u16);
@@ -2335,7 +2300,8 @@ mod tests {
         dword(&mut words, 0x80C8_00C0);
         dword(&mut words, 0);
         words.extend([1, 20, 20, 200, 110, 0, 0]);
-        words.extend(wide("Title"));
+        let caption_at = words.len();
+        words.extend(&caption);
         words.push(0);
         words.push(8);
         words.extend(wide("MS Shell Dlg"));
@@ -2346,24 +2312,35 @@ mod tests {
         dword(&mut words, 0x5001_0001);
         dword(&mut words, 0);
         words.extend([140, 8, 50, 14, 1, 0xFFFF, 0x80]);
-        words.extend(wide("OK"));
+        let label_at = words.len();
+        words.extend(&label);
         words.extend([0, 0]);
-        let bytes: std::vec::Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        let read = |at: usize| bytes.get(at).copied();
-        let mut reader = Reader::new(&read, 0);
-        let mut names = HeaderNames::new();
-        let header = read_header(&mut reader, &mut names).unwrap();
+        let base = words.as_ptr() as usize;
+        let read = |at: usize| Some(words.get(at / 2)?.to_le_bytes()[at % 2]);
+        let mut reader = Reader::new(&read, base);
+        let mut face: Face = [0; rtl::gdi::LF_FACESIZE];
+        let header = read_header(&mut reader, &mut face).unwrap();
         assert!(!header.extended);
         assert_eq!((header.count, header.cx, header.cy), (1, 200, 110));
-        assert_eq!(header.title, Field::Text(5));
+        assert_eq!(header.title, Field::Text(base + 2 * caption_at));
+        // SAFETY: the template's own string, terminated in it.
+        let title = unsafe { rtl::cstr::units_until_nul((base + 2 * caption_at) as *const u16) };
+        assert_eq!(title, &caption[..]);
         assert_eq!(header.font.unwrap().points, 8);
-        assert_eq!(&names.face[..12], &wide("MS Shell Dlg")[..]);
-        let mut item_names = ItemNames::new();
-        let item = read_item(&mut reader, false, &mut item_names).unwrap();
+        assert_eq!(&face[..13], &wide("MS Shell Dlg\0")[..]);
+        let item = read_item(&mut reader, false).unwrap();
         assert_eq!((item.id, item.x, item.cx), (1, 140, 50));
         assert_eq!(item.class, Field::Ordinal(0x80));
-        assert_eq!(item.title, Field::Text(2));
+        assert_eq!(item.title, Field::Text(base + 2 * label_at));
         assert_eq!(item.data, 0);
+
+        let short = |at: usize| (at < 2 * (caption_at + 500)).then(|| read(at)).flatten();
+        let mut reader = Reader::new(&short, base);
+        assert_eq!(
+            read_header(&mut reader, &mut face),
+            None,
+            "cut inside the caption"
+        );
     }
 
     /// A control of a system class F2K does not register yet fails the dialog, and the call's line
