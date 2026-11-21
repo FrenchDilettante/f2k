@@ -22,7 +22,7 @@ use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
 use super::{transfer_offset, write_start};
 use crate::fs::fat32::write;
-use crate::fs::file::{rights, with_records, Context, FileObject, FileRecordId};
+use crate::fs::file::{rights, with_records, Context, FileRecordId};
 use crate::fs::io;
 use crate::status::*;
 use crate::user::syscall::{read_user, write_user};
@@ -32,7 +32,7 @@ const CHUNK: usize = 4096;
 
 /// What a read or write was asked: its object, its completion event, where it starts.
 struct Transfer {
-    object: crate::ob::Referenced<FileObject>,
+    object: super::common::FileHandle,
     event: Option<crate::ob::ObRef>,
     /// The offset asked for; none for the object's position.
     offset: Option<u64>,

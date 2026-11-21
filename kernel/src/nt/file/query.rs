@@ -138,7 +138,7 @@ fn query_pipe(end: PipeEnd, class: QueryClass, answer: &mut [u8]) -> Result<usiz
 /// A disk file's answer to a query of `class` (see [`info::query`]) into `answer`: the bytes
 /// written.
 fn query_disk(
-    object: &FileObject,
+    object: &super::common::FileHandle,
     record: FileRecordId,
     position: u64,
     class: QueryClass,

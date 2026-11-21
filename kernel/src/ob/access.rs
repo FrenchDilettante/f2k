@@ -350,4 +350,15 @@ mod tests {
         assert_eq!(signal_right(ObjectType::Timer), None);
         assert_eq!(signal_right(ObjectType::File), None);
     }
+
+    #[test]
+    fn a_file_handle_reduced_to_reading_neither_writes_nor_maps_for_writing() {
+        // The file services and a file's section take the handle's access, not its open's: a
+        // duplicate asking GENERIC_READ of a read-write open grants no write right.
+        use crate::fs::file::rights::{share_access, FILE_APPEND_DATA, FILE_WRITE_DATA};
+        use crate::fs::file::ACCESS_READ;
+        let read = ObjectType::File.granted(GENERIC_READ);
+        assert_eq!(read & (FILE_WRITE_DATA | FILE_APPEND_DATA), 0);
+        assert_eq!(share_access(read), ACCESS_READ);
+    }
 }

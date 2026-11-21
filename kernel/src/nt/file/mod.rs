@@ -216,17 +216,43 @@ mod common {
     use crate::ob::{ObjectType, Referenced};
     use crate::status::*;
 
-    /// The file object `handle` names in the calling process, referenced: STATUS_INVALID_HANDLE for
-    /// a handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for another
-    /// kind of object.
-    pub fn file_object(handle: u32) -> Result<Referenced<FileObject>, NtStatus> {
-        let reference = super::super::sync::object_of(handle, ObjectType::File)?;
-        Ok(crate::ob::file_object(reference))
+    /// A file object as a handle names it: the object, referenced, and the access the handle was
+    /// granted. The handle's access is what the services check, as Windows 2000's do (their
+    /// ObReferenceObjectByHandle hands them the handle's GrantedAccess): a duplicate made with
+    /// less access than its source's open reaches the same object with less. `granted` shadows
+    /// the object's own (the open's), which the value otherwise reads as.
+    pub struct FileHandle {
+        object: Referenced<FileObject>,
+        /// The handle's access, the file rights the generic ones map to.
+        pub granted: u32,
     }
 
-    /// Whether an object was granted any of `rights`; STATUS_ACCESS_DENIED otherwise. None asks
+    impl core::ops::Deref for FileHandle {
+        type Target = Referenced<FileObject>;
+
+        fn deref(&self) -> &Referenced<FileObject> {
+            &self.object
+        }
+    }
+
+    /// The file object `handle` names in the calling process, referenced, with the handle's access:
+    /// STATUS_INVALID_HANDLE for a handle naming nothing (a console handle included),
+    /// STATUS_OBJECT_TYPE_MISMATCH for another kind of object.
+    pub fn file_object(handle: u32) -> Result<FileHandle, NtStatus> {
+        let mut granted = 0;
+        let reference = super::super::sync::object_granting(handle, ObjectType::File, |access| {
+            granted = ObjectType::File.granted(access);
+            true
+        })?;
+        Ok(FileHandle {
+            object: crate::ob::file_object(reference),
+            granted,
+        })
+    }
+
+    /// Whether a handle was granted any of `rights`; STATUS_ACCESS_DENIED otherwise. None asks
     /// for nothing.
-    pub fn check_access(object: &FileObject, rights: u32) -> Result<(), NtStatus> {
+    pub fn check_access(object: &FileHandle, rights: u32) -> Result<(), NtStatus> {
         if rights != 0 && object.granted & rights == 0 {
             return Err(STATUS_ACCESS_DENIED);
         }
@@ -416,12 +442,18 @@ mod common {
     }
 
     /// The event a read, write or listing signals once it completes, reset now; none for a null
-    /// handle. STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH for a handle naming no event.
+    /// handle. STATUS_INVALID_HANDLE or STATUS_OBJECT_TYPE_MISMATCH for a handle naming no event,
+    /// STATUS_ACCESS_DENIED for one not granted EVENT_MODIFY_STATE (Windows 2000's I/O manager
+    /// references the event for it).
     pub fn completion_event(handle: u32) -> Result<Option<crate::ob::ObRef>, NtStatus> {
         if handle == 0 {
             return Ok(None);
         }
-        let event = super::super::sync::object_of(handle, ObjectType::Event)?;
+        let event = super::super::sync::object_needing(
+            handle,
+            ObjectType::Event,
+            crate::ob::access::EVENT_MODIFY_STATE,
+        )?;
         let body = event.event();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             crate::sched::DISPATCHER.get(dispatch).reset_event(body)

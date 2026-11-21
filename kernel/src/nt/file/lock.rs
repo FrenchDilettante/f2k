@@ -33,7 +33,7 @@ fn lock_request(
     io_status: UserAddr,
     offset: UserPtr<u64>,
     length: UserPtr<u64>,
-) -> Result<(Referenced<FileObject>, (u64, u64)), NtStatus> {
+) -> Result<(super::common::FileHandle, (u64, u64)), NtStatus> {
     let object = file_object(handle.raw())?;
     if object.granted & (rights::FILE_READ_DATA | rights::FILE_WRITE_DATA) == 0 {
         return Err(STATUS_ACCESS_DENIED);

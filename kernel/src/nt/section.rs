@@ -600,7 +600,9 @@ mod target {
     /// The file object a handle names, referenced for the caller's use (Windows 2000's
     /// ObReferenceObjectByHandle: another thread closing the handle meanwhile leaves the object,
     /// and its file's record, in place), with its file as its record holds it now and the access
-    /// the handle's open was granted. STATUS_INVALID_HANDLE for a handle naming nothing (a console
+    /// the handle was granted (the handle's, as Windows 2000's NtCreateSection references the file
+    /// for the access the section needs: a duplicate made with less access than its open maps
+    /// less). STATUS_INVALID_HANDLE for a handle naming nothing (a console
     /// handle included, or one closed before the reference), STATUS_OBJECT_TYPE_MISMATCH for one
     /// naming another kind, STATUS_INVALID_FILE_FOR_SECTION for a file object of a device other
     /// than the disk.
@@ -610,20 +612,17 @@ mod target {
         if is_console_handle(handle) {
             return Err(STATUS_INVALID_HANDLE);
         }
-        let id = calling_process()
+        let entry = calling_process()
             .lookup_handle(handle)
-            .and_then(|entry| entry.object_id())
             .ok_or(STATUS_INVALID_HANDLE)?;
+        let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
         if id.kind != ObjectType::File {
             return Err(STATUS_OBJECT_TYPE_MISMATCH);
         }
+        let access = crate::fs::file::rights::share_access(id.kind.granted(entry.access));
         let held = ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
-        let (record, access) = ob::locked(|directory| {
-            directory
-                .file(id)
-                .map(|object| (object.disk(), object.access))
-        })
-        .ok_or(STATUS_INVALID_HANDLE)?;
+        let record = ob::locked(|directory| directory.file(id).map(|object| object.disk()))
+            .ok_or(STATUS_INVALID_HANDLE)?;
         // Only a disk file is mapped: another device's file object has no pages to map (Windows
         // 2000's answer for a file object without section pointers).
         let record = record.ok_or(STATUS_INVALID_FILE_FOR_SECTION)?;
