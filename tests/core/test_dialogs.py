@@ -25,7 +25,7 @@ import pytest
 import f2kboot
 
 DLGSHOW = f2kboot.BUILT_PROGRAMS / "dlgshow.exe"
-CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\dlgshow.exe"
+CMDLINE = f"{f2kboot.FISH} \\WINNT\\system32\\dlgshow.exe"
 READY = "dlgshow: ready, focus 1"
 # The chords typed once dlgshow is ready, each pressed then released (QEMU's key names), all in one
 # command, without waiting for dlgshow to act on any: a key goes to the control the focus is on
@@ -47,7 +47,7 @@ SCREEN = f2kboot.SCREENS / NAME / "dialog.png"
 # COLOR_3DFACE, the dialog's face, between the group box and the buttons: (115, 80) in its dialog
 # units of 6x13 pixels, in its client area (180x104 units, 270x169 pixels), which its modal frame
 # (3 pixels) and caption (19) surround, the window (276x194) centred on the 640x480 screen.
-FACE = b"\xd4\xd0\xc8"
+FACE = f2kboot.FACE
 FACE_POINT = (357, 295)
 TIMEOUT = 60.0
 
@@ -94,6 +94,6 @@ def test_the_dialog_takes_typed_keys(builder, log_path, boot_timeout):
     assert code == 0, f"dlgshow's exit code {code} {context}"
     image = f2kboot.read_png(SCREEN)
     x, y = FACE_POINT
-    pixel = image.rows[y][3 * x:3 * x + 3]
+    pixel = image.pixel(x, y)
     assert pixel == FACE, f"the dialog's face at {FACE_POINT} is {pixel.hex()}, not the dialog's face (kept at {SCREEN})"
     f2kboot.check_screens(NAME, [SCREEN.name])

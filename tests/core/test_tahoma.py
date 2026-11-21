@@ -27,10 +27,8 @@ import pytest
 
 import f2kboot
 
-# Redmond blue, Windows 2000's desktop color: 0x3A6EA5.
-DESKTOP = b"\x3a\x6e\xa5"
 PROGRAM = f2kboot.BUILT_PROGRAMS / "fontshow.exe"
-CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\fontshow.exe"
+CMDLINE = f"{f2kboot.FISH} \\WINNT\\system32\\fontshow.exe"
 # Where the screen is dumped (the scratch screens, under this test's name) and its baseline's name.
 NAME = "tahoma"
 SCREEN = f2kboot.SCREENS / NAME / "fontshow.png"
@@ -53,36 +51,16 @@ def test_tahoma_reaches_the_framebuffer(request, builder, log_path, boot_timeout
     if not PROGRAM.exists():
         pytest.fail(f"{PROGRAM} missing: `make userland` builds it")
     build = builder([])
-    SCREEN.parent.mkdir(parents=True, exist_ok=True)
-    SCREEN.unlink(missing_ok=True)
-
-    def observe(socket) -> None:
-        f2kboot.screendump(socket, SCREEN)
-
     with f2kboot.kept_disk(build, DISK) as disk:
         add_fonts_and_program(disk)
-        log, stopped = f2kboot.boot(
-            build,
-            image="kernel",
-            cmdline=CMDLINE,
-            log_path=log_path,
-            timeout=boot_timeout(90.0),
-            done=f2kboot.teardown_audited,
-            observe=observe,
-            kept=disk,
-        )
-    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
-    assert "KERNEL PANIC" not in log, tail
-    for font in f2kboot.system_font_files():
-        line = f"F2K: win32k: font loaded: \\WINNT\\Fonts\\{font.name}"
-        assert line in log, f"no font line for {font.name}\n{tail}"
-    assert "F2K: vbe: 640x480x32" in log, f"no mode line\n{tail}"
-    assert "(FONTSHOW) exited normally (exit code=0)" in log, f"fontshow did not end with 0\n{tail}"
-    assert "teardown audit: frame database ok" in log, f"teardown not clean\n{tail}"
-    assert "object audit FAILED" not in log, f"an object outlived its process\n{tail}"
+        log, stopped = f2kboot.boot_painting(build, CMDLINE, SCREEN, log_path=log_path,
+                                             timeout=boot_timeout(90.0), kept=disk)
+    f2kboot.check_painted(log, f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}", [
+        *((f"F2K: win32k: font loaded: \\WINNT\\Fonts\\{font.name}", f"no font line for {font.name}")
+          for font in f2kboot.system_font_files()),
+        ("(FONTSHOW) exited normally (exit code=0)", "fontshow did not end with 0"),
+    ])
 
-    image = f2kboot.read_png(SCREEN)
-    assert (image.width, image.height) == (640, 480), f"the screen is {image.width}x{image.height}"
-    drawn = sum(1 for row in image.rows for x in range(image.width) if row[3 * x:3 * x + 3] != DESKTOP)
+    drawn = len(f2kboot.pixels_not(f2kboot.read_screen(SCREEN), f2kboot.DESKTOP))
     assert drawn, f"the screen is all desktop: nothing was drawn (kept at {SCREEN})"
     f2kboot.check_screens(NAME, [SCREEN.name])

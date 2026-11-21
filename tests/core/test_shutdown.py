@@ -93,7 +93,7 @@ def boot_cmd(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float, k
         f2kboot.Build(build.kernel, kept),
         image="kernel",
         cmdline=COMMAND_LINE,
-        memory="256M",
+        memory=f2kboot.RAM_MEMORY,
         kept=kept,
         log_path=log_path,
         timeout=timeout,

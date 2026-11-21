@@ -23,14 +23,13 @@ import pytest
 
 import f2kboot
 
-CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\drawdemo.exe"
+CMDLINE = f"{f2kboot.FISH} \\WINNT\\system32\\drawdemo.exe"
 # Where the screen is kept: the screenshots' directory, under this test's name.
 SCREEN = f2kboot.SCREENS / "drawing" / "sheet.png"
 # The window's client origin on the screen (userland/drawdemo/src/lib.rs WINDOW).
 ORIGIN = (20, 20)
 # Pixels the sheet fixes, in client coordinates, as the framebuffer's RGB bytes.
-DESKTOP = b"\x3a\x6e\xa5"
-FACE = b"\xd4\xd0\xc8"  # COLOR_3DFACE
+FACE = f2kboot.FACE  # COLOR_3DFACE
 HIGHLIGHT = b"\xff\xff\xff"  # COLOR_3DHILIGHT
 RED = b"\xff\x00\x00"
 CYAN = b"\x00\xff\xff"  # red, inverted
@@ -46,36 +45,15 @@ SAMPLES = [
 def test_the_drawing_calls_reach_the_window(request, builder, log_path, boot_timeout):
     """The clean exit codes on COM1, a clean teardown, the desktop around the window and the
     sheet's fixed pixels at the window's client origin."""
-    SCREEN.parent.mkdir(parents=True, exist_ok=True)
-    SCREEN.unlink(missing_ok=True)
+    log, stopped = f2kboot.boot_painting(builder([]), CMDLINE, SCREEN, log_path=log_path,
+                                         timeout=boot_timeout(60.0))
+    f2kboot.check_painted(log, f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}", [
+        ("(drawdemo) exited normally (exit code=0)", "drawdemo did not end with 0"),
+        (f2kboot.FISH_ENDED, "FiSH did not end with the child's 0"),
+    ])
 
-    def observe(socket) -> None:
-        f2kboot.screendump(socket, SCREEN)
-
-    log, stopped = f2kboot.boot(
-        builder([]),
-        image="kernel",
-        cmdline=CMDLINE,
-        log_path=log_path,
-        timeout=boot_timeout(60.0),
-        done=f2kboot.teardown_audited,
-        observe=observe,
-    )
-    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
-    assert "KERNEL PANIC" not in log, tail
-    assert "F2K: vbe: 640x480x32" in log, f"no mode line\n{tail}"
-    assert "(drawdemo) exited normally (exit code=0)" in log, f"drawdemo did not end with 0\n{tail}"
-    assert "F2K: user process exited normally (exit code=0)" in log, f"FiSH did not end with the child's 0\n{tail}"
-    assert "teardown audit: frame database ok" in log, f"teardown not clean\n{tail}"
-    assert "object audit FAILED" not in log, f"an object outlived its process\n{tail}"
-
-    image = f2kboot.read_png(SCREEN)
-    assert (image.width, image.height) == (640, 480), f"the screen is {image.width}x{image.height}"
-
-    def pixel(x: int, y: int) -> bytes:
-        return bytes(image.rows[y][3 * x:3 * x + 3])
-
-    assert pixel(10, 10) == DESKTOP, f"the desktop outside the window (kept at {SCREEN})"
+    image = f2kboot.read_screen(SCREEN)
+    assert image.pixel(10, 10) == f2kboot.DESKTOP, f"the desktop outside the window (kept at {SCREEN})"
     for (x, y), color, what in SAMPLES:
         at = (ORIGIN[0] + x, ORIGIN[1] + y)
-        assert pixel(*at) == color, f"{what} at {at}: {pixel(*at).hex()} (kept at {SCREEN})"
+        assert image.pixel(*at) == color, f"{what} at {at}: {image.pixel(*at).hex()} (kept at {SCREEN})"

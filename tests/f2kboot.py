@@ -22,6 +22,9 @@ Three pieces the test modules share:
 - the screen baselines: a core test's dumps compared, pixel for pixel, with the PNGs committed under
   tests/core/screens/<test>/ (`check_screens`); a changed or missing one rewritten there by the
   canonical encoder (`encode_png`) and the test failed, so committing the file accepts it;
+- the graphics smoke tests: a program's drawing dumped at its boot's end (`boot_painting`), COM1
+  held to the lines every such test needs (`check_painted`), and the dump read (`read_screen`,
+  `pixels_not`; the colours `DESKTOP` and `FACE`);
 - the keyboard: a fixture declaring `keys` has its interactive blocks' keys pressed through QMP as
   each block asks for them (`KeyPresser`); a core test presses its own chords (`press`), or sends
   the monitor's `sendkey` (`sendkey`);
@@ -1046,6 +1049,65 @@ def check_screens(test: str, names: list[str], masks: dict[str, tuple[Rect, ...]
         pytest.fail("the screens differ from their baselines:\n" + "\n".join(problems), pytrace=False)
 
 
+# --- The graphics screen's smoke tests ------------------------------------------------------------
+#
+# A core test that boots a program drawing on the framebuffer (most under FiSH, the shell that
+# starts the program and takes its exit code) dumps the screen once the boot's teardown audit is on
+# COM1 (`boot_painting`), holds COM1 to the same lines as its siblings (`check_painted`), then
+# reads the dump at the mode's size (`read_screen`).
+
+# The framebuffer's mode, and the kernel's line setting it.
+SCREEN_SIZE = (640, 480)
+MODE_LINE = "F2K: vbe: 640x480x32"
+# Colours as the framebuffer's RGB bytes: Redmond blue, Windows 2000's desktop (0x3A6EA5), and
+# COLOR_3DFACE, a dialog's or a button's face.
+DESKTOP = b"\x3a\x6e\xa5"
+FACE = b"\xd4\xd0\xc8"
+# FiSH, as a command line names it, and the boot's program's end when FiSH returns its child's 0.
+FISH = "WINNT\\system32\\fish.exe"
+FISH_ENDED = "F2K: user process exited normally (exit code=0)"
+# The lines the smoke tests forbid, and the one they need, on COM1.
+KERNEL_PANIC = "KERNEL PANIC"
+CLEAN_TEARDOWN = "teardown audit: frame database ok"
+OBJECT_AUDIT_FAILED = "object audit FAILED"
+
+
+def boot_painting(build: Build, cmdline: str, screen: Path, *, log_path: Path, timeout: float,
+                  **options) -> tuple[str, str]:
+    """`boot` of `cmdline` on `build`'s kernel until the teardown audit, the screen dumped to
+    `screen` then (its directory made, an older dump removed first); `options` are `boot`'s."""
+    screen.parent.mkdir(parents=True, exist_ok=True)
+    screen.unlink(missing_ok=True)
+    return boot(build, image="kernel", cmdline=cmdline, log_path=log_path, timeout=timeout,
+                done=teardown_audited, observe=lambda socket: screendump(socket, screen), **options)
+
+
+def check_painted(log: str, context: str, lines: list[tuple[str, str]], *,
+                  objects: bool = True) -> None:
+    """A smoke test's COM1, `context` ending each failure's message: no kernel panic, the mode
+    line, each of `lines` (a text the log holds, and what its absence says), a clean teardown
+    audit, and with `objects`, no object outliving its process."""
+    assert KERNEL_PANIC not in log, context
+    assert MODE_LINE in log, f"no mode line\n{context}"
+    for text, absent in lines:
+        assert text in log, f"{absent}\n{context}"
+    assert CLEAN_TEARDOWN in log, f"teardown not clean\n{context}"
+    if objects:
+        assert OBJECT_AUDIT_FAILED not in log, f"an object outlived its process\n{context}"
+
+
+def read_screen(path: Path) -> Image:
+    """A smoke test's dump, read, at the mode's size."""
+    image = read_png(path)
+    assert (image.width, image.height) == SCREEN_SIZE, f"the screen is {image.width}x{image.height}"
+    return image
+
+
+def pixels_not(image: Image, colour: bytes) -> list[tuple[int, int]]:
+    """The pixels (x, y) of `image` that are not `colour`, row by row."""
+    return [(x, y) for y in range(image.height) for x in range(image.width) if image.pixel(x, y) != colour]
+
+
 # The disk's FAT32 partition: its offset in the image (the Makefile's disk target puts it at
 # 1 MiB), and as mtools addresses it.
 PARTITION_OFFSET = 1 << 20
@@ -1347,6 +1409,12 @@ class Block:
     def name(self) -> str:
         """The section's name: its first argument (a fixture's `[pins]` key)."""
         return self.section.split(" ", 1)[0]
+
+
+# hello's run, as its fixture pins it: the one line, then a clean exit (the core tests' plain
+# program: test_textscreen reads it off the screen, test_input boots it under the keyboard's
+# diagnostic).
+HELLO = Block("hello.exe", ["Hello, world!"], exit_code=0)
 
 
 class CaptureError(Exception):
@@ -2050,7 +2118,7 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         build,
         image=image,
         cmdline=cmdline,
-        memory="256M",
+        memory=RAM_MEMORY,
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,

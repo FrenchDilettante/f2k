@@ -38,7 +38,6 @@ import pytest
 
 import f2kboot
 
-HELLO = f2kboot.Block("hello.exe", ["Hello, world!"], exit_code=0)
 FEATURES = ["kbd-smoke"]
 # How long one step's records may take to arrive.
 STEP_TIMEOUT = 5.0
@@ -141,8 +140,8 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
     log, stopped = f2kboot.boot(
         builder(FEATURES),
         image="kernel",
-        cmdline=HELLO.command,
-        memory="256M",
+        cmdline=f2kboot.HELLO.command,
+        memory=f2kboot.RAM_MEMORY,
         log_path=log_path,
         timeout=boot_timeout(f2kboot.CORPUS_TIMEOUT) + STEP_TIMEOUT * len(steps),
         done=f2kboot.teardown_audited,
@@ -151,7 +150,7 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
     if not ran:
         pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\n"
                     f"{f2kboot.failure_context(log_path, log)}", pytrace=False)
-    mismatch = f2kboot.compare_block(HELLO, log, [])
+    mismatch = f2kboot.compare_block(f2kboot.HELLO, log, [])
     assert mismatch is None, f"the serial log does not carry hello's block: {mismatch}\nlog: {log_path}"
     boot_lines = [line for line in kbd_lines(log_path) if not BYTE.match(line) and not RECORD.match(line)]
     assert READY in boot_lines, f"bring-up: {boot_lines}\nlog: {log_path}"

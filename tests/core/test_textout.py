@@ -25,11 +25,9 @@ import pytest
 
 import f2kboot
 
-# Redmond blue, Windows 2000's desktop color: 0x3A6EA5.
-DESKTOP = b"\x3a\x6e\xa5"
 # The fixture whose program draws, and its section that does.
 FIXTURE = "gditext"
-CMDLINE = f"WINNT\\system32\\fish.exe \\CORPUS\\{FIXTURE}.exe paint"
+CMDLINE = f"{f2kboot.FISH} \\CORPUS\\{FIXTURE}.exe paint"
 # Where the screen is kept: the screenshots' directory, under this test's name.
 SCREEN = f2kboot.SCREENS / "textout" / "paint.png"
 
@@ -40,30 +38,12 @@ def test_text_reaches_the_framebuffer(request, builder, log_path, boot_timeout):
     more than the desktop."""
     if f2kboot.awaited(FIXTURE):
         pytest.skip(f"{FIXTURE} awaits its real-machine build and capture (tests/build.bat {FIXTURE})")
-    SCREEN.parent.mkdir(parents=True, exist_ok=True)
-    SCREEN.unlink(missing_ok=True)
+    log, stopped = f2kboot.boot_painting(builder([]), CMDLINE, SCREEN, log_path=log_path,
+                                         timeout=boot_timeout(60.0))
+    f2kboot.check_painted(log, f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}", [
+        ("(GDITEXT) exited normally (exit code=0)", "gditext did not end with 0"),
+        (f2kboot.FISH_ENDED, "FiSH did not end with the child's 0"),
+    ])
 
-    def observe(socket) -> None:
-        f2kboot.screendump(socket, SCREEN)
-
-    log, stopped = f2kboot.boot(
-        builder([]),
-        image="kernel",
-        cmdline=CMDLINE,
-        log_path=log_path,
-        timeout=boot_timeout(60.0),
-        done=f2kboot.teardown_audited,
-        observe=observe,
-    )
-    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
-    assert "KERNEL PANIC" not in log, tail
-    assert "F2K: vbe: 640x480x32" in log, f"no mode line\n{tail}"
-    assert "(GDITEXT) exited normally (exit code=0)" in log, f"gditext did not end with 0\n{tail}"
-    assert "F2K: user process exited normally (exit code=0)" in log, f"FiSH did not end with the child's 0\n{tail}"
-    assert "teardown audit: frame database ok" in log, f"teardown not clean\n{tail}"
-    assert "object audit FAILED" not in log, f"an object outlived its process\n{tail}"
-
-    image = f2kboot.read_png(SCREEN)
-    assert (image.width, image.height) == (640, 480), f"the screen is {image.width}x{image.height}"
-    drawn = sum(1 for row in image.rows for x in range(image.width) if row[3 * x:3 * x + 3] != DESKTOP)
+    drawn = len(f2kboot.pixels_not(f2kboot.read_screen(SCREEN), f2kboot.DESKTOP))
     assert drawn, f"the screen is all desktop: nothing was drawn (kept at {SCREEN})"

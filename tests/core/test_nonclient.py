@@ -28,7 +28,7 @@ import pytest
 import f2kboot
 
 MENUSHOW = f2kboot.BUILT_PROGRAMS / "menushow.exe"
-CMDLINE = "WINNT\\system32\\fish.exe \\WINNT\\system32\\menushow.exe"
+CMDLINE = f"{f2kboot.FISH} \\WINNT\\system32\\menushow.exe"
 READY = "menushow: ready"
 # Each step: the lines it waits for, in order, after the step before's (a WM_ENTERIDLE among them is
 # the loop gone idle: the popup painted), then the screen it saves (none: no screen) and the chord
@@ -74,10 +74,6 @@ MENU = b"\xd4\xd0\xc8"
 # bar's second item: a point of its row, found on the screen F2K draws.
 HIGHLIGHT = b"\x0a\x24\x6a"
 SELECTED_ITEM = (300, 187)
-
-
-def pixel(image, x: int, y: int) -> bytes:
-    return image.rows[y][3 * x:3 * x + 3]
 
 
 class ShotAndTypist:
@@ -139,11 +135,11 @@ def test_the_menu_bar_by_keyboard(builder, log_path, boot_timeout):
     left, top, right, bottom = WINDOW
     for name in ("window.png", "after.png"):
         image = f2kboot.read_png(SCREENS / name)
-        assert pixel(image, left, top) == LIGHT, f"{name}: the frame's top left"
-        assert pixel(image, right - 1, bottom - 1) == DARK_SHADOW, f"{name}: the frame's bottom right"
-        assert pixel(image, left + 4, top + 5) == ACTIVE_CAPTION, f"{name}: the active caption's left end"
-        assert pixel(image, right - 10, top + 3 + 19 + 9) == MENU, f"{name}: the menu bar"
-        assert pixel(image, *SELECTED_ITEM) != HIGHLIGHT, f"{name}: no popup"
+        assert image.pixel(left, top) == LIGHT, f"{name}: the frame's top left"
+        assert image.pixel(right - 1, bottom - 1) == DARK_SHADOW, f"{name}: the frame's bottom right"
+        assert image.pixel(left + 4, top + 5) == ACTIVE_CAPTION, f"{name}: the active caption's left end"
+        assert image.pixel(right - 10, top + 3 + 19 + 9) == MENU, f"{name}: the menu bar"
+        assert image.pixel(*SELECTED_ITEM) != HIGHLIGHT, f"{name}: no popup"
     menu = f2kboot.read_png(SCREENS / "menu.png")
-    assert pixel(menu, *SELECTED_ITEM) == HIGHLIGHT, "Scientific selected in View's popup"
+    assert menu.pixel(*SELECTED_ITEM) == HIGHLIGHT, "Scientific selected in View's popup"
     f2kboot.check_screens(NAME, [screen for _, screen, _ in STEPS if screen is not None])

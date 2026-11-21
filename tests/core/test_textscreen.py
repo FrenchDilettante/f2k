@@ -33,8 +33,6 @@ import pytest
 
 import f2kboot
 
-# hello's run, as its fixture pins it: the one line, then a clean exit.
-HELLO = f2kboot.Block("hello.exe", ["Hello, world!"], exit_code=0)
 DEFAULT_ATTRIBUTE = 0x07
 REFERENCE = f2kboot.TESTS / "core" / "screens" / "hello.png"
 # How long the dumps may take to catch both of the cursor's blink phases.
@@ -63,7 +61,7 @@ def dumps_across_a_blink(socket: Path, directory: Path) -> list[Path]:
 def test_hello_reaches_the_text_screen(request, builder, log_path, boot_timeout):
     """hello's "Hello, world!" on row 0 of the text page, in the default attribute, the rest of the
     row blank; the hardware cursor on the row after it; the screen as recorded."""
-    block = HELLO
+    block = f2kboot.HELLO
     assert 0 < len(block.lines) < f2kboot.ROWS, "the block fits the screen without scrolling"
     assert all(len(line) < f2kboot.COLUMNS for line in block.lines), "and without wrapping"
     # hello's output ends with a line break: the cursor waits at the next row's start.
@@ -81,7 +79,7 @@ def test_hello_reaches_the_text_screen(request, builder, log_path, boot_timeout)
             builder([]),
             image="kernel",
             cmdline=block.command,
-            memory="256M",
+            memory=f2kboot.RAM_MEMORY,
             log_path=log_path,
             timeout=boot_timeout(f2kboot.CORPUS_TIMEOUT),
             done=f2kboot.teardown_audited,

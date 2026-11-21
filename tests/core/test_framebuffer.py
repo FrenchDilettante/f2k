@@ -18,16 +18,12 @@ and every pixel Redmond blue: the framebuffer is observably painted, and nothing
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 import f2kboot
 
-# Redmond blue, Windows 2000's desktop color: 0x3A6EA5.
-DESKTOP = b"\x3a\x6e\xa5"
 # FiSH running pipe's create section from the corpus directory.
-CMDLINE = "WINNT\\system32\\fish.exe \\CORPUS\\pipe.exe create"
+CMDLINE = f"{f2kboot.FISH} \\CORPUS\\pipe.exe create"
 
 
 @pytest.mark.kernel
@@ -36,29 +32,13 @@ def test_fish_paints_the_framebuffer(request, builder, log_path, boot_timeout, t
     # The screen goes to pytest's own temporary directory, which pytest clears, not one of its
     # own that every run left behind.
     png = tmp_path / "screen.png"
+    log, stopped = f2kboot.boot_painting(builder([]), CMDLINE, png, log_path=log_path,
+                                         timeout=boot_timeout(60.0))
+    f2kboot.check_painted(log, f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}", [
+        ("child process", "pipe did not end with 0"),
+        ("(PIPE) exited normally (exit code=0)", "pipe did not end with 0"),
+        (f2kboot.FISH_ENDED, "FiSH did not end with the child's 0"),
+    ], objects=False)
 
-    def observe(socket: Path) -> None:
-        f2kboot.screendump(socket, png)
-
-    log, stopped = f2kboot.boot(
-        builder([]),
-        image="kernel",
-        cmdline=CMDLINE,
-        log_path=log_path,
-        timeout=boot_timeout(60.0),
-        done=f2kboot.teardown_audited,
-        observe=observe,
-    )
-    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
-    assert "KERNEL PANIC" not in log, tail
-    assert "F2K: vbe: 640x480x32" in log, f"no mode line\n{tail}"
-    assert "child process" in log and "(PIPE) exited normally (exit code=0)" in log, (
-        f"pipe did not end with 0\n{tail}"
-    )
-    assert "F2K: user process exited normally (exit code=0)" in log, f"FiSH did not end with the child's 0\n{tail}"
-    assert "teardown audit: frame database ok" in log, f"teardown not clean\n{tail}"
-
-    image = f2kboot.read_png(png)
-    assert (image.width, image.height) == (640, 480), f"the screen is {image.width}x{image.height}"
-    bad = [(x, y) for y, row in enumerate(image.rows) for x in range(image.width) if row[3 * x:3 * x + 3] != DESKTOP]
+    bad = f2kboot.pixels_not(f2kboot.read_screen(png), f2kboot.DESKTOP)
     assert not bad, f"{len(bad)} pixels are not the desktop color, first {bad[:5]}"
