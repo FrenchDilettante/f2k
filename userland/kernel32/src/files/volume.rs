@@ -8,7 +8,7 @@ use rtl::status::nt_success;
 
 use super::*;
 use crate::base::set_last_nt_error;
-use crate::edge::{OutBuf, Text};
+use crate::edge::{CallerChar, CallerStr, OutBuf, Text};
 use crate::error::bool_answer;
 
 /// GetDriveType's answers.
@@ -29,19 +29,11 @@ fn current_root() -> Wide {
     Wide::of(&[u16::from(b'\\')]).expect("a short name")
 }
 
-/// A root path argument in UTF-16: the one given, converted, or `\` (the current drive's root)
-/// for none.
-fn root_path(root: Option<InStr<'_>>) -> Result<Wide, Failure> {
+/// A root path argument in UTF-16: the one given, read as [`name`] reads either form's (an A
+/// call's converted, a W call's copied), or `\` (the current drive's root) for none.
+fn root_path(root: Option<CallerStr<'_>>) -> Result<Wide, Failure> {
     match root {
-        Some(root) => widen(Some(&root)),
-        None => Ok(current_root()),
-    }
-}
-
-/// The same, for a W call's root path, copied.
-fn root_path_w(root: Option<InWStr<'_>>) -> Result<Wide, Failure> {
-    match root {
-        Some(root) => wide(&root),
+        Some(root) => name(&root),
         None => Ok(current_root()),
     }
 }
@@ -115,6 +107,17 @@ fn drive_type(path: Result<Wide, Failure>) -> u32 {
     }
 }
 
+/// GetDriveType's export body, either form (see [`drive_type`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string of the form's characters.
+unsafe fn get_drive_type_as<C: CallerChar>(root: *const C) -> u32 {
+    // SAFETY: the caller's string, when given.
+    let root = unsafe { C::optional_string(root) };
+    drive_type(root_path(root))
+}
+
 /// GetDriveTypeA (see [`drive_type`]).
 ///
 /// # Safety
@@ -122,9 +125,8 @@ fn drive_type(path: Result<Wide, Failure>) -> u32 {
 /// `root` is null or a NUL-terminated string.
 #[unsafe(export_name = "f2k_export_GetDriveTypeA")]
 pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
-    // SAFETY: the caller's string, when given.
-    let root = unsafe { InStr::optional(root) };
-    drive_type(root_path(root))
+    // SAFETY: the caller's contract.
+    unsafe { get_drive_type_as(root) }
 }
 
 /// GetDriveTypeW (see [`drive_type`]).
@@ -134,9 +136,8 @@ pub unsafe extern "system" fn get_drive_type_a(root: *const u8) -> u32 {
 /// `root` is null or a NUL-terminated UTF-16 string.
 #[unsafe(export_name = "f2k_export_GetDriveTypeW")]
 pub unsafe extern "system" fn get_drive_type_w(root: *const u16) -> u32 {
-    // SAFETY: the caller's string, when given.
-    let root = unsafe { InWStr::optional(root) };
-    drive_type(root_path_w(root))
+    // SAFETY: the caller's contract.
+    unsafe { get_drive_type_as(root) }
 }
 
 /// The directory a free-space call names opened for listing (FILE_OPEN_FOR_FREE_SPACE_QUERY); a
@@ -187,6 +188,34 @@ fn disk_free_space(
     Ok(())
 }
 
+/// GetDiskFreeSpace's export body, either form (see [`disk_free_space`]).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string of the form's characters; each out pointer is null
+/// or points at a dword.
+unsafe fn get_disk_free_space_as<C: CallerChar>(
+    root: *const C,
+    sectors_per_cluster: *mut u32,
+    bytes_per_sector: *mut u32,
+    free_clusters: *mut u32,
+    clusters: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's string and dwords, when given.
+    let (root, counts) = unsafe {
+        (
+            C::optional_string(root),
+            [
+                Out::optional(sectors_per_cluster),
+                Out::optional(bytes_per_sector),
+                Out::optional(free_clusters),
+                Out::optional(clusters),
+            ],
+        )
+    };
+    bool_answer(disk_free_space(root_path(root), counts))
+}
+
 /// GetDiskFreeSpaceA (see [`disk_free_space`]).
 ///
 /// # Safety
@@ -200,19 +229,16 @@ pub unsafe extern "system" fn get_disk_free_space_a(
     free_clusters: *mut u32,
     clusters: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's string and dwords, when given.
-    let (root, counts) = unsafe {
-        (
-            InStr::optional(root),
-            [
-                Out::optional(sectors_per_cluster),
-                Out::optional(bytes_per_sector),
-                Out::optional(free_clusters),
-                Out::optional(clusters),
-            ],
+    // SAFETY: the caller's contract.
+    unsafe {
+        get_disk_free_space_as(
+            root,
+            sectors_per_cluster,
+            bytes_per_sector,
+            free_clusters,
+            clusters,
         )
-    };
-    bool_answer(disk_free_space(root_path(root), counts))
+    }
 }
 
 /// GetDiskFreeSpaceW (see [`disk_free_space`]).
@@ -228,19 +254,16 @@ pub unsafe extern "system" fn get_disk_free_space_w(
     free_clusters: *mut u32,
     clusters: *mut u32,
 ) -> u32 {
-    // SAFETY: the caller's string and dwords, when given.
-    let (root, counts) = unsafe {
-        (
-            InWStr::optional(root),
-            [
-                Out::optional(sectors_per_cluster),
-                Out::optional(bytes_per_sector),
-                Out::optional(free_clusters),
-                Out::optional(clusters),
-            ],
+    // SAFETY: the caller's contract.
+    unsafe {
+        get_disk_free_space_as(
+            root,
+            sectors_per_cluster,
+            bytes_per_sector,
+            free_clusters,
+            clusters,
         )
-    };
-    bool_answer(disk_free_space(root_path_w(root), counts))
+    }
 }
 
 /// GetDiskFreeSpaceExW's work: the directory named (the current drive's root for none: any
@@ -265,6 +288,32 @@ fn disk_free_space_ex(
     Ok(())
 }
 
+/// GetDiskFreeSpaceEx's export body, either form (see [`disk_free_space_ex`]).
+///
+/// # Safety
+///
+/// `directory` is null or a NUL-terminated string of the form's characters; each out pointer is
+/// null or points at a quadword.
+unsafe fn get_disk_free_space_ex_as<C: CallerChar>(
+    directory: *const C,
+    caller_free: *mut u64,
+    total: *mut u64,
+    total_free: *mut u64,
+) -> u32 {
+    // SAFETY: the caller's string and quadwords, when given.
+    let (directory, sizes) = unsafe {
+        (
+            C::optional_string(directory),
+            [
+                Out::optional(caller_free),
+                Out::optional(total),
+                Out::optional(total_free),
+            ],
+        )
+    };
+    bool_answer(disk_free_space_ex(root_path(directory), sizes))
+}
+
 /// GetDiskFreeSpaceExA (see [`disk_free_space_ex`]).
 ///
 /// # Safety
@@ -278,18 +327,8 @@ pub unsafe extern "system" fn get_disk_free_space_ex_a(
     total: *mut u64,
     total_free: *mut u64,
 ) -> u32 {
-    // SAFETY: the caller's string and quadwords, when given.
-    let (directory, sizes) = unsafe {
-        (
-            InStr::optional(directory),
-            [
-                Out::optional(caller_free),
-                Out::optional(total),
-                Out::optional(total_free),
-            ],
-        )
-    };
-    bool_answer(disk_free_space_ex(root_path(directory), sizes))
+    // SAFETY: the caller's contract.
+    unsafe { get_disk_free_space_ex_as(directory, caller_free, total, total_free) }
 }
 
 /// GetDiskFreeSpaceExW (see [`disk_free_space_ex`]).
@@ -305,18 +344,8 @@ pub unsafe extern "system" fn get_disk_free_space_ex_w(
     total: *mut u64,
     total_free: *mut u64,
 ) -> u32 {
-    // SAFETY: the caller's string and quadwords, when given.
-    let (directory, sizes) = unsafe {
-        (
-            InWStr::optional(directory),
-            [
-                Out::optional(caller_free),
-                Out::optional(total),
-                Out::optional(total_free),
-            ],
-        )
-    };
-    bool_answer(disk_free_space_ex(root_path_w(directory), sizes))
+    // SAFETY: the caller's contract.
+    unsafe { get_disk_free_space_ex_as(directory, caller_free, total, total_free) }
 }
 
 /// What GetVolumeInformation hands back where asked: the volume's name, its serial number, the
@@ -399,6 +428,41 @@ fn volume_information(
     Ok(())
 }
 
+/// GetVolumeInformation's export body, either form (see [`volume_information`]): the names
+/// handed back in the form's characters (an A call's narrowed through the ANSI code page).
+///
+/// # Safety
+///
+/// `root` is null or a NUL-terminated string; the buffers hold their sizes; all of the form's
+/// characters; each other out pointer is null or points at a dword.
+#[allow(clippy::too_many_arguments)]
+unsafe fn get_volume_information_as<C: CallerChar>(
+    root: *const C,
+    name: *mut C,
+    name_size: u32,
+    serial: *mut u32,
+    max_component: *mut u32,
+    flags: *mut u32,
+    fs_name: *mut C,
+    fs_size: u32,
+) -> u32 {
+    // SAFETY: the caller's string when given, its buffers (null ones not asked for), and its
+    // dwords when given (the contract).
+    let (root, answers) = unsafe {
+        (
+            C::optional_string(root),
+            VolumeAnswers {
+                name: C::text(OutBuf::new(name, name_size as usize)),
+                serial: Out::optional(serial),
+                max_component: Out::optional(max_component),
+                flags: Out::optional(flags),
+                fs_name: C::text(OutBuf::new(fs_name, fs_size as usize)),
+            },
+        )
+    };
+    bool_answer(volume_information(root_path(root), answers))
+}
+
 /// GetVolumeInformationA (see [`volume_information`]).
 ///
 /// # Safety
@@ -417,21 +481,19 @@ pub unsafe extern "system" fn get_volume_information_a(
     fs_name: *mut u8,
     fs_size: u32,
 ) -> u32 {
-    // SAFETY: the caller's string when given, its buffers (null ones not asked for), and its
-    // dwords when given (the contract).
-    let (root, answers) = unsafe {
-        (
-            InStr::optional(root),
-            VolumeAnswers {
-                name: Text::Ansi(OutBuf::new(name, name_size as usize)),
-                serial: Out::optional(serial),
-                max_component: Out::optional(max_component),
-                flags: Out::optional(flags),
-                fs_name: Text::Ansi(OutBuf::new(fs_name, fs_size as usize)),
-            },
+    // SAFETY: the caller's contract.
+    unsafe {
+        get_volume_information_as(
+            root,
+            name,
+            name_size,
+            serial,
+            max_component,
+            flags,
+            fs_name,
+            fs_size,
         )
-    };
-    bool_answer(volume_information(root_path(root), answers))
+    }
 }
 
 /// GetVolumeInformationW (see [`volume_information`]).
@@ -452,18 +514,17 @@ pub unsafe extern "system" fn get_volume_information_w(
     fs_name: *mut u16,
     fs_size: u32,
 ) -> u32 {
-    // SAFETY: as GetVolumeInformationA's, the string and buffers UTF-16.
-    let (root, answers) = unsafe {
-        (
-            InWStr::optional(root),
-            VolumeAnswers {
-                name: Text::Wide(OutBuf::new(name, name_size as usize)),
-                serial: Out::optional(serial),
-                max_component: Out::optional(max_component),
-                flags: Out::optional(flags),
-                fs_name: Text::Wide(OutBuf::new(fs_name, fs_size as usize)),
-            },
+    // SAFETY: the caller's contract.
+    unsafe {
+        get_volume_information_as(
+            root,
+            name,
+            name_size,
+            serial,
+            max_component,
+            flags,
+            fs_name,
+            fs_size,
         )
-    };
-    bool_answer(volume_information(root_path_w(root), answers))
+    }
 }
