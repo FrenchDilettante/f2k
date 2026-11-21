@@ -6,6 +6,20 @@
 
 use super::super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, deliver, named, walk, Found, Named, Target};
+use super::{
+    check_arguments,
+    FILE_CREATE,
+    FILE_DELETE_ON_CLOSE,
+    FILE_DIRECTORY_FILE,
+    FILE_NON_DIRECTORY_FILE,
+    FILE_OPEN,
+    FILE_OPEN_IF,
+    FILE_OVERWRITE,
+    FILE_OVERWRITE_IF,
+    FILE_SUPERSEDE,
+    FILE_SYNCHRONOUS_IO_ALERT,
+    FILE_SYNCHRONOUS_IO_NONALERT,
+};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_READ_ONLY, ATTR_SYSTEM};
 use crate::fs::fat32::lookup::File;
@@ -15,30 +29,11 @@ use crate::fs::file::{rights, Context, FileRecordId};
 use crate::fs::io::{self, ATTRIBUTE_ARCHIVE, SETTABLE_ATTRIBUTES};
 use crate::status::*;
 
-/// The dispositions.
-const FILE_SUPERSEDE: u32 = 0;
-pub(super) const FILE_OPEN: u32 = 1;
-pub(super) const FILE_CREATE: u32 = 2;
-pub(super) const FILE_OPEN_IF: u32 = 3;
-const FILE_OVERWRITE: u32 = 4;
-const FILE_OVERWRITE_IF: u32 = 5;
-
 /// The IO_STATUS_BLOCK's Information an open answers with.
 const FILE_SUPERSEDED: u32 = 0;
 pub(super) const FILE_OPENED: u32 = 1;
 pub(super) const FILE_CREATED: u32 = 2;
 const FILE_OVERWRITTEN: u32 = 3;
-
-/// The create options F2K reads, and every one the platform defines.
-pub(super) const FILE_DIRECTORY_FILE: u32 = 0x1;
-pub(super) const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
-pub(super) const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
-pub(super) const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
-pub(super) const FILE_VALID_OPTION_FLAGS: u32 = 0x00FF_FFFF;
-/// The attributes a create may carry (FILE_ATTRIBUTE_VALID_FLAGS), and the share modes' bits.
-const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
-pub(super) const FILE_SHARE_VALID_FLAGS: u32 = 0x7;
 
 /// The rights that change a file, which a read-only one refuses.
 const CHANGES: u32 = rights::FILE_WRITE_DATA | rights::FILE_APPEND_DATA | rights::DELETE;
@@ -51,34 +46,6 @@ struct Request {
     disposition: u32,
     options: u32,
     attributes: u32,
-}
-
-/// The I/O manager's checks (IoCreateFile), before any name is read: a disposition or an option,
-/// attribute or share bit the platform does not define, both synchronous modes, a synchronous mode
-/// without SYNCHRONIZE, delete-on-close without DELETE, a directory asked for and refused at once
-/// or with a disposition that cannot make one — each STATUS_INVALID_PARAMETER.
-fn check_arguments(
-    access: u32,
-    attributes: u32,
-    share: u32,
-    disposition: u32,
-    options: u32,
-) -> Result<(), NtStatus> {
-    let synchronous = options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
-    let invalid = disposition > FILE_OVERWRITE_IF
-        || options & !FILE_VALID_OPTION_FLAGS != 0
-        || attributes & !FILE_ATTRIBUTE_VALID_FLAGS != 0
-        || share & !FILE_SHARE_VALID_FLAGS != 0
-        || synchronous == FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT
-        || (synchronous != 0 && access & rights::SYNCHRONIZE == 0)
-        || (options & FILE_DELETE_ON_CLOSE != 0 && access & rights::DELETE == 0)
-        || (options & FILE_DIRECTORY_FILE != 0
-            && (options & FILE_NON_DIRECTORY_FILE != 0
-                || !matches!(disposition, FILE_CREATE | FILE_OPEN | FILE_OPEN_IF)));
-    if invalid {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
-    Ok(())
 }
 
 /// The decision on an existing entry: the file (the open goes ahead), its I/O status information,

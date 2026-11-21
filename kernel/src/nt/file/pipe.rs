@@ -9,12 +9,11 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, completion_event, deliver, file_object, named, signal, Named};
-use super::create::{
+use super::create::{FILE_CREATED, FILE_OPENED};
+use super::{
     FILE_CREATE,
-    FILE_CREATED,
     FILE_DIRECTORY_FILE,
     FILE_OPEN,
-    FILE_OPENED,
     FILE_OPEN_IF,
     FILE_SYNCHRONOUS_IO_ALERT,
     FILE_SYNCHRONOUS_IO_NONALERT,

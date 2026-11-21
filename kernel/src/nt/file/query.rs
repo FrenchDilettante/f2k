@@ -28,6 +28,7 @@ use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{check_access, cluster_bytes, complete, file_object, target, walk, Found};
 use super::info::{self, Open, QueryClass, SetClass};
 use super::name::{self, FileName};
+use super::{rename_name_length, rename_root, RenameRoot};
 use crate::fs::fat32::dir::is_empty;
 use crate::fs::fat32::dirent::{Times, ATTR_DIRECTORY, ATTR_READ_ONLY};
 use crate::fs::fat32::lookup::File;
@@ -197,38 +198,37 @@ enum Start {
 
 /// A rename's target name (FILE_RENAME_INFORMATION's, `length` bytes at `information`, its fixed
 /// part read as `header`): relative to its root directory's file object, an absolute NT path, or a
-/// bare name in the file's own directory. A root that is a file's, or another device's object than
-/// the disk's, is STATUS_INVALID_PARAMETER; a pipe's name STATUS_NOT_SAME_DEVICE.
+/// bare name in the file's own directory ([`rename_name_length`], [`rename_root`]). A root that is
+/// a file's, or another device's object than the disk's, is STATUS_INVALID_PARAMETER; a pipe's
+/// name STATUS_NOT_SAME_DEVICE.
 fn rename_target(
     header: &FileRenameInformation,
     length: u32,
     information: UserAddr,
 ) -> Result<(FileName, Start), NtStatus> {
     const NAME: usize = FileRenameInformation::FIXED_SIZE;
-    let (root, name_length) = (header.root_directory, header.file_name_length as usize / 2);
-    if name_length == 0 || name_length > MAX_NAME || NAME + 2 * name_length > length as usize {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    let root = header.root_directory;
+    let name_length = rename_name_length(header.file_name_length, length)?;
     let mut units = [0u16; MAX_NAME];
     let units = &mut units[..name_length];
     information.offset(NAME as u32).read_units(units)?;
     let units = &*units;
-    if root != 0 {
-        let directory = file_object(root)?;
-        let directory = io::file_at(directory.disk().ok_or(STATUS_INVALID_PARAMETER)?);
-        if !directory.directory {
-            return Err(STATUS_INVALID_PARAMETER);
+    match rename_root(root, units) {
+        RenameRoot::Directory => {
+            let directory = file_object(root)?;
+            let directory = io::file_at(directory.disk().ok_or(STATUS_INVALID_PARAMETER)?);
+            if !directory.directory {
+                return Err(STATUS_INVALID_PARAMETER);
+            }
+            Ok((name::relative(units)?, Start::At(Some(directory))))
         }
-        return Ok((name::relative(units)?, Start::At(Some(directory))));
-    }
-    if units.contains(&u16::from(b'\\')) {
-        return match name::absolute(units)? {
+        RenameRoot::Absolute => match name::absolute(units)? {
             name::Absolute::Disk(name) => Ok((name, Start::At(None))),
             // A disk file's name never moves onto another device.
             name::Absolute::Pipe(_) => Err(STATUS_NOT_SAME_DEVICE),
-        };
+        },
+        RenameRoot::Own => Ok((name::relative(units)?, Start::Own)),
     }
-    Ok((name::relative(units)?, Start::Own))
 }
 
 /// FileRenameInformation's work: the file's entry moved to the target's name (an existing one

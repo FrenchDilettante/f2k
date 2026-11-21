@@ -673,15 +673,7 @@ pub fn wait_for_multiple_objects(
     alertable: bool,
     timeout: UserPtr<u64>,
 ) -> NtResult {
-    let count = count as usize;
-    if count == 0 || count > MAXIMUM_WAIT_OBJECTS {
-        return Err(STATUS_INVALID_PARAMETER_1);
-    }
-    let wait_all = match wait_type {
-        0 => true,
-        1 => false,
-        _ => return Err(STATUS_INVALID_PARAMETER_3),
-    };
+    let (count, wait_all) = super::wait::multiple_wait(count, wait_type)?;
     let timeout = timeout_of(timeout)?;
     let mut raw = [0u32; MAXIMUM_WAIT_OBJECTS];
     handles.read(&mut raw.as_bytes_mut()[..count * size_of::<u32>()])?;
@@ -695,9 +687,7 @@ pub fn wait_for_multiple_objects(
         (*id, *object) = waitable_of(handle)?;
     }
     let objects = &objects[..count];
-    if wait_all && (1..count).any(|index| objects[..index].contains(&objects[index])) {
-        return Err(STATUS_INVALID_PARAMETER_MIX);
-    }
+    super::wait::check_objects(objects, wait_all)?;
     // The wait holds every object it names throughout, replays included.
     let status = ob::waiting(&held[..count], || {
         wait::wait_current_with(|dispatcher, thread, stamp, replay| {

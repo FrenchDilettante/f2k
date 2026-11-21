@@ -90,6 +90,116 @@ pub(crate) fn transfer_offset(
     }
 }
 
+/// The dispositions.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+const FILE_SUPERSEDE: u32 = 0;
+const FILE_OPEN: u32 = 1;
+const FILE_CREATE: u32 = 2;
+const FILE_OPEN_IF: u32 = 3;
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+const FILE_OVERWRITE: u32 = 4;
+const FILE_OVERWRITE_IF: u32 = 5;
+
+/// The create options F2K reads, and every one the platform defines.
+const FILE_DIRECTORY_FILE: u32 = 0x1;
+const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
+const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
+const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
+const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
+const FILE_VALID_OPTION_FLAGS: u32 = 0x00FF_FFFF;
+/// The attributes a create may carry (FILE_ATTRIBUTE_VALID_FLAGS), and the share modes' bits.
+const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
+const FILE_SHARE_VALID_FLAGS: u32 = 0x7;
+
+/// The I/O manager's checks of a create (IoCreateFile), before any name is read: a disposition or
+/// an option, attribute or share bit the platform does not define, both synchronous modes, a
+/// synchronous mode without SYNCHRONIZE, delete-on-close without DELETE, a directory asked for and
+/// refused at once or with a disposition that cannot make one — each STATUS_INVALID_PARAMETER.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn check_arguments(
+    access: u32,
+    attributes: u32,
+    share: u32,
+    disposition: u32,
+    options: u32,
+) -> Result<(), crate::status::NtStatus> {
+    use crate::fs::file::rights;
+    let synchronous = options & (FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT);
+    let invalid = disposition > FILE_OVERWRITE_IF
+        || options & !FILE_VALID_OPTION_FLAGS != 0
+        || attributes & !FILE_ATTRIBUTE_VALID_FLAGS != 0
+        || share & !FILE_SHARE_VALID_FLAGS != 0
+        || synchronous == FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT
+        || (synchronous != 0 && access & rights::SYNCHRONIZE == 0)
+        || (options & FILE_DELETE_ON_CLOSE != 0 && access & rights::DELETE == 0)
+        || (options & FILE_DIRECTORY_FILE != 0
+            && (options & FILE_NON_DIRECTORY_FILE != 0
+                || !matches!(disposition, FILE_CREATE | FILE_OPEN | FILE_OPEN_IF)));
+    if invalid {
+        return Err(crate::status::STATUS_INVALID_PARAMETER);
+    }
+    Ok(())
+}
+
+/// Where a disk file's write starts, `offset` as [`transfer_offset`] left it: the end of the file
+/// (`size`) for FILE_WRITE_TO_END_OF_FILE or a handle with append access alone (`append`), else
+/// the offset given, else the object's `position`.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn write_start(offset: Option<u64>, append: bool, size: u64, position: u64) -> u64 {
+    match offset {
+        Some(FILE_WRITE_TO_END_OF_FILE) => size,
+        _ if append => size,
+        Some(at) => at,
+        None => position,
+    }
+}
+
+/// What a rename's target name is relative to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+enum RenameRoot {
+    /// Its root directory's file object (RootDirectory, a handle).
+    Directory,
+    /// The volume's root: an absolute NT path.
+    Absolute,
+    /// The file's own directory: a bare name.
+    Own,
+}
+
+/// A rename's target name, as FILE_RENAME_INFORMATION carries it (FileNameLength bytes after its
+/// fixed part, in a buffer of `length` bytes): its length in units, none (STATUS_INVALID_PARAMETER)
+/// when it is empty, longer than a name, or past the buffer.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn rename_name_length(
+    file_name_length: u32,
+    length: u32,
+) -> Result<usize, crate::status::NtStatus> {
+    use rtl::nt::info::{FileRenameInformation, VariableSize};
+    const NAME: usize = FileRenameInformation::FIXED_SIZE;
+    let name_length = file_name_length as usize / 2;
+    if name_length == 0
+        || name_length > super::attributes::MAX_NAME
+        || NAME + 2 * name_length > length as usize
+    {
+        return Err(crate::status::STATUS_INVALID_PARAMETER);
+    }
+    Ok(name_length)
+}
+
+/// What a rename's target name (`units`) is relative to: its root directory's when it names one
+/// (`root`, a handle), the volume's root for a name with a separator, else the file's own
+/// directory.
+#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+fn rename_root(root: u32, units: &[u16]) -> RenameRoot {
+    if root != 0 {
+        RenameRoot::Directory
+    } else if units.contains(&u16::from(b'\\')) {
+        RenameRoot::Absolute
+    } else {
+        RenameRoot::Own
+    }
+}
+
 /// The services' shared pieces on the target: a handle's file object, the start of a name, the
 /// walk, and the completion.
 #[cfg(target_arch = "x86")]
@@ -436,5 +546,104 @@ mod tests {
         assert_eq!(transfer_offset(last, false, true), Ok(last));
         assert!(i64::MAX as u64 + u64::from(u32::MAX) > i64::MAX as u64);
         assert_eq!(transfer_offset(Some(0), false, false), Ok(Some(0)));
+    }
+
+    /// IoCreateFile's checks: each undefined disposition, option, attribute or share bit, and each
+    /// inconsistent pair, is STATUS_INVALID_PARAMETER; a plain open, a synchronous open with
+    /// SYNCHRONIZE, a delete-on-close with DELETE and a directory made or opened pass.
+    #[test]
+    fn a_create_s_arguments_are_checked_before_its_name() {
+        use crate::fs::file::rights::{DELETE, FILE_READ_DATA, SYNCHRONIZE};
+        let check = |access, attributes, share, disposition, options| {
+            check_arguments(access, attributes, share, disposition, options)
+        };
+        let read = FILE_READ_DATA;
+        let ok = Ok(());
+        let invalid = Err(STATUS_INVALID_PARAMETER);
+
+        for disposition in FILE_SUPERSEDE..=FILE_OVERWRITE_IF {
+            assert_eq!(check(read, 0, 0, disposition, 0), ok);
+        }
+        assert_eq!(check(read, 0, 0, FILE_OVERWRITE_IF + 1, 0), invalid);
+        assert_eq!(check(read, 0, 0, FILE_OPEN, 0x0100_0000), invalid);
+        assert_eq!(
+            check(read | DELETE, 0x7FB7, 0x7, FILE_OPEN, 0x00FF_FF8F),
+            ok
+        );
+        assert_eq!(check(read, 0x0008, 0, FILE_OPEN, 0), invalid);
+        assert_eq!(check(read, 0, 0x8, FILE_OPEN, 0), invalid);
+
+        let both = FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT;
+        assert_eq!(check(read | SYNCHRONIZE, 0, 0, FILE_OPEN, both), invalid);
+        for mode in [FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT] {
+            assert_eq!(check(read, 0, 0, FILE_OPEN, mode), invalid);
+            assert_eq!(check(read | SYNCHRONIZE, 0, 0, FILE_OPEN, mode), ok);
+        }
+
+        assert_eq!(check(read, 0, 0, FILE_OPEN, FILE_DELETE_ON_CLOSE), invalid);
+        assert_eq!(check(DELETE, 0, 0, FILE_OPEN, FILE_DELETE_ON_CLOSE), ok);
+
+        let directory = FILE_DIRECTORY_FILE;
+        for disposition in [FILE_CREATE, FILE_OPEN, FILE_OPEN_IF] {
+            assert_eq!(check(read, 0, 0, disposition, directory), ok);
+        }
+        for disposition in [FILE_SUPERSEDE, FILE_OVERWRITE, FILE_OVERWRITE_IF] {
+            assert_eq!(check(read, 0, 0, disposition, directory), invalid);
+        }
+        let neither = FILE_DIRECTORY_FILE | FILE_NON_DIRECTORY_FILE;
+        assert_eq!(check(read, 0, 0, FILE_OPEN, neither), invalid);
+        assert_eq!(
+            check(read, 0, 0, FILE_OVERWRITE, FILE_NON_DIRECTORY_FILE),
+            ok
+        );
+    }
+
+    /// A disk write starts at the end for FILE_WRITE_TO_END_OF_FILE or an append-only handle
+    /// (whatever offset it gives), at the offset given, else at the object's position.
+    #[test]
+    fn a_write_starts_where_its_offset_and_its_access_say() {
+        let (size, position) = (1000, 40);
+        let end = Some(FILE_WRITE_TO_END_OF_FILE);
+        assert_eq!(write_start(end, false, size, position), size);
+        assert_eq!(write_start(end, true, size, position), size);
+        assert_eq!(write_start(Some(7), true, size, position), size);
+        assert_eq!(write_start(None, true, size, position), size);
+        assert_eq!(write_start(Some(7), false, size, position), 7);
+        assert_eq!(write_start(Some(5000), false, size, position), 5000);
+        assert_eq!(write_start(None, false, size, position), position);
+    }
+
+    /// A rename's name: one unit at least, a name's length at most, and inside the buffer after
+    /// FILE_RENAME_INFORMATION's fixed part (an odd byte count rounds down); relative to its root
+    /// directory when it names one, else to the volume's root with a separator, else to the
+    /// file's own directory.
+    #[test]
+    fn a_rename_s_name_is_measured_and_placed() {
+        use rtl::nt::info::{FileRenameInformation, VariableSize};
+        let fixed = FileRenameInformation::FIXED_SIZE as u32;
+        let invalid = Err(STATUS_INVALID_PARAMETER);
+        assert_eq!(rename_name_length(2, fixed + 2), Ok(1));
+        assert_eq!(rename_name_length(3, fixed + 2), Ok(1));
+        assert_eq!(rename_name_length(0, fixed + 2), invalid);
+        assert_eq!(rename_name_length(1, fixed + 2), invalid);
+        assert_eq!(rename_name_length(4, fixed + 2), invalid);
+        assert_eq!(rename_name_length(4, fixed + 4), Ok(2));
+        let most = 2 * super::super::attributes::MAX_NAME as u32;
+        assert_eq!(
+            rename_name_length(most, fixed + most),
+            Ok(super::super::attributes::MAX_NAME)
+        );
+        assert_eq!(rename_name_length(most + 2, u32::MAX), invalid);
+        assert_eq!(rename_name_length(u32::MAX, u32::MAX), invalid);
+
+        let units = |text: &str| text.encode_utf16().collect::<std::vec::Vec<u16>>();
+        assert_eq!(rename_root(0x10, &units("b.txt")), RenameRoot::Directory);
+        assert_eq!(
+            rename_root(0x10, &units("\\??\\C:\\b")),
+            RenameRoot::Directory
+        );
+        assert_eq!(rename_root(0, &units("\\??\\C:\\b")), RenameRoot::Absolute);
+        assert_eq!(rename_root(0, &units("sub\\b.txt")), RenameRoot::Absolute);
+        assert_eq!(rename_root(0, &units("b.txt")), RenameRoot::Own);
     }
 }

@@ -20,7 +20,7 @@
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{check_access, complete, completion_event, file_object, signal};
-use super::{transfer_offset, FILE_WRITE_TO_END_OF_FILE};
+use super::{transfer_offset, write_start};
 use crate::fs::fat32::write;
 use crate::fs::file::{rights, with_records, Context, FileObject, FileRecordId};
 use crate::fs::io;
@@ -262,12 +262,8 @@ fn write_disk(
     let owner = super::lock::owner_of(object);
     io::serialized(object, |held| {
         let append = object.granted & rights::FILE_WRITE_DATA == 0;
-        let start = match at {
-            Some(FILE_WRITE_TO_END_OF_FILE) => io::file_at(record).size as u64,
-            _ if append => io::file_at(record).size as u64,
-            Some(at) => at,
-            None => held.position,
-        };
+        let size = io::file_at(record).size as u64;
+        let start = write_start(at, append, size, held.position);
         if length == 0 {
             return Ok(0);
         }
