@@ -1003,8 +1003,8 @@ mod tests {
         assert_eq!(screen.origin, (0, 0));
         assert_eq!(screen.screen_point(3, 4), (3, 4));
         assert_eq!(
-            Dc::window(640, 480, rect(-10, -10, -1, -1)).clip.right,
-            -1,
+            Dc::window(640, 480, rect(-10, -10, -1, -1)).clip,
+            rect(0, 0, 0, 0),
             "off the screen: empty"
         );
     }

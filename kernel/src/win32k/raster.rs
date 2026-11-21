@@ -127,14 +127,24 @@ impl<M: PixelMemory> Surface for Framebuffer<M> {
     }
 }
 
-/// The rectangle both `a` and `b` cover (empty when they do not meet).
+/// The rectangle both `a` and `b` cover; as IntersectRect, the empty rectangle (all zero) when
+/// they do not meet, never an inverted one.
 pub fn intersect(a: Rect, b: Rect) -> Rect {
-    Rect {
+    let common = Rect {
         left: a.left.max(b.left),
         top: a.top.max(b.top),
         right: a.right.min(b.right),
         bottom: a.bottom.min(b.bottom),
+    };
+    if common.left >= common.right || common.top >= common.bottom {
+        return Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
     }
+    common
 }
 
 /// Whether (`x`, `y`) lies in `rect` (its right and bottom edges outside it).
@@ -987,7 +997,9 @@ mod tests {
         assert_eq!(picture(&mut screen, all, &legend), ["RRRRKKKKRR"]);
     }
 
-    /// The rectangles' meeting and membership, the right and bottom edges outside.
+    /// The rectangles' meeting and membership, the right and bottom edges outside. Rectangles that
+    /// do not meet (apart, edge to edge, or one of them empty) meet in IntersectRect's empty
+    /// rectangle, all zero, not an inverted one.
     #[test]
     fn rectangles_meet_and_hold() {
         assert_eq!(
@@ -995,7 +1007,18 @@ mod tests {
             rect(5, 0, 10, 6)
         );
         let apart = intersect(rect(0, 0, 4, 4), rect(6, 6, 8, 8));
+        assert_eq!(apart, rect(0, 0, 0, 0), "apart: empty");
         assert!(!contains(&apart, 6, 6) && !contains(&apart, 3, 3), "empty");
+        assert_eq!(
+            intersect(rect(0, 0, 4, 4), rect(4, 0, 8, 4)),
+            rect(0, 0, 0, 0),
+            "edge to edge: empty"
+        );
+        assert_eq!(
+            intersect(rect(10, 10, 10, 20), rect(0, 0, 50, 50)),
+            rect(0, 0, 0, 0),
+            "an empty one: empty"
+        );
         assert!(contains(&rect(0, 0, 2, 2), 1, 1));
         assert!(!contains(&rect(0, 0, 2, 2), 2, 1));
         assert!(!contains(&rect(0, 0, 2, 2), 1, 2));
