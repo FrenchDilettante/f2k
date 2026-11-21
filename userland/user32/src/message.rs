@@ -1,6 +1,7 @@
 //! The message loop: GetMessage, PeekMessage, PostMessage, PostThreadMessage, PostQuitMessage,
 //! SendMessage, SendMessageTimeout, SendNotifyMessage, InSendMessage, DispatchMessage,
-//! TranslateMessage, WaitMessage, GetMessageTime and GetMessagePos, IsHungAppWindow,
+//! TranslateMessage, WaitMessage, MsgWaitForMultipleObjects, GetMessageTime and GetMessagePos,
+//! IsHungAppWindow,
 //! RegisterWindowMessage, and the default window procedure, DefWindowProc; each over its win32k
 //! service ([`imports`]).
 //!
@@ -20,7 +21,10 @@
 //! reaches a procedure of the other form than its sender's translated ([`procedure`]): SendMessageA
 //! and DispatchMessageA hand over narrow messages, SendMessageW and DispatchMessageW wide ones, the
 //! window manager wide ones; another thread's message reaches the procedure as it was sent. The A
-//! and W forms of the reads and the posts are the same calls: no posted message carries text.
+//! and W forms of the reads and the posts are the same calls: no posted message carries text (a
+//! post of a message whose lParam points at a text or a structure fails, ERROR_MESSAGE_SYNC_ONLY).
+//! WM_COPYDATA sent to another process's window carries its data through the window manager, as
+//! WM_SETTEXT's text does: the receiver's procedure reads its own copy.
 //! SendMessageTimeout and SendNotifyMessage call a window of the calling thread here too; another
 //! thread's answer the first waits no longer than its timeout for, the second not at all.
 //!
@@ -38,7 +42,18 @@ use rtl::user::*;
 use rtl::window::WINDOW_OTHER_PROCESS;
 
 use crate::procedure::{self, Procedure};
-use crate::{answered, focus, imports, menubar, nonclient, paint, window, window_error, Out};
+use crate::{
+    answered,
+    failed_with,
+    focus,
+    imports,
+    menubar,
+    nonclient,
+    paint,
+    window,
+    window_error,
+    Out,
+};
 
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
@@ -47,7 +62,8 @@ pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
 const RECEIVED_UNITS: usize = 260;
 
 /// The sent message `receipt` holds, delivered ([`answer`]): when it carries a text (a creation
-/// message's window name, another process's WM_SETTEXT text or WM_GETTEXT buffer), the text is
+/// message's window name, another process's WM_SETTEXT text or WM_GETTEXT buffer, or its
+/// WM_COPYDATA's structure and data, [`point_copy_data`]), the text is
 /// asked for into a buffer of this thread's own, as long as it is (wParam's units for
 /// WM_GETTEXT), on the stack or the process heap, which the CREATESTRUCT's name or lParam then
 /// points at. A buffer the heap has no room for answers the message 0, its procedure not called.
@@ -65,6 +81,9 @@ fn deliver(receipt: &mut Receipt) {
             return false;
         }
         let at = buffer.as_mut_ptr() as usize as u32;
+        if receipt.msg.message == WM_COPYDATA {
+            point_copy_data(buffer, at);
+        }
         if matches!(receipt.msg.message, WM_NCCREATE | WM_CREATE) {
             receipt.create.name = at;
         } else {
@@ -77,6 +96,24 @@ fn deliver(receipt: &mut Receipt) {
     if delivered != Some(true) {
         let _ = imports::call_one_param(0, ONE_PARAM_END_SENT_MESSAGE);
     }
+}
+
+/// WM_COPYDATA's carried form received into `buffer`, at `at` in this process (rtl::user's
+/// COPY_DATA_HEAD): its COPYDATASTRUCT's lpData pointed at the bytes after it, or left 0 when there
+/// are none, so that the receiving procedure reads the data from its own copy (guimsg
+/// `copydata`).
+fn point_copy_data(buffer: &mut [u16], at: u32) {
+    if buffer.len() < COPY_DATA_HEAD {
+        return;
+    }
+    let count = u32::from(buffer[2]) | u32::from(buffer[3]) << 16;
+    let data = if count == 0 {
+        0
+    } else {
+        at + 2 * COPY_DATA_HEAD as u32
+    };
+    buffer[4] = data as u16;
+    buffer[5] = (data >> 16) as u16;
 }
 
 /// Run `f` on a buffer of `room` units: on the stack when it is short, in a block of the process
@@ -637,6 +674,117 @@ fn send_notify(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool
         call(proc, Some(ansi), &msg);
     }
     1
+}
+
+/// MsgWaitForMultipleObjectsEx's flags (winuser.h's MWMO_*): the wait-all, the alertable wait.
+const MWMO_WAITALL: u32 = 0x0001;
+const MWMO_ALERTABLE: u32 = 0x0002;
+/// The wait's failure (winbase.h's WAIT_FAILED).
+const WAIT_FAILED: u32 = 0xFFFF_FFFF;
+
+/// The MsgWaitForMultipleObjects calls' cases logged in this process.
+static MSG_WAIT_LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
+
+/// MsgWaitForMultipleObjects: [`msg_wait_for_multiple_objects_ex`]'s, `wait_all` its
+/// MWMO_WAITALL.
+///
+/// # Safety
+///
+/// The caller's handles, `count` of them.
+#[unsafe(export_name = "f2k_export_MsgWaitForMultipleObjects")]
+pub unsafe extern "system" fn msg_wait_for_multiple_objects(
+    count: u32,
+    handles: *const u32,
+    wait_all: u32,
+    milliseconds: u32,
+    wake_mask: u32,
+) -> u32 {
+    let flags = if wait_all != 0 { MWMO_WAITALL } else { 0 };
+    msg_wait(count, handles, milliseconds, wake_mask, flags, true)
+}
+
+/// MsgWaitForMultipleObjectsEx: the calling thread waits for one of the objects its handles name
+/// to be signaled (WAIT_OBJECT_0 + its index, WAIT_ABANDONED_0 + it for an abandoned mutex), for
+/// input of the wake mask's kinds to come to its queue since a read last looked for it
+/// (WAIT_OBJECT_0 + `count`: a post, a send, a timer coming due...), or for the timeout
+/// (WAIT_TIMEOUT); WAIT_FAILED with the last error for a handle that names nothing it can wait on,
+/// or for 64 handles or more (ERROR_INVALID_PARAMETER). The messages sent meanwhile are not
+/// delivered: the caller's read does it. The wait for every object and the alertable wait
+/// (MWMO_WAITALL, MWMO_ALERTABLE) are not served yet: logged, WAIT_FAILED.
+///
+/// # Safety
+///
+/// The caller's handles, `count` of them.
+#[unsafe(export_name = "f2k_export_MsgWaitForMultipleObjectsEx")]
+pub unsafe extern "system" fn msg_wait_for_multiple_objects_ex(
+    count: u32,
+    handles: *const u32,
+    milliseconds: u32,
+    wake_mask: u32,
+    flags: u32,
+) -> u32 {
+    msg_wait(count, handles, milliseconds, wake_mask, flags, false)
+}
+
+/// The MsgWaitForMultipleObjects calls' core (`plain`: the call without Ex, as its log line names
+/// it).
+fn msg_wait(
+    count: u32,
+    handles: *const u32,
+    milliseconds: u32,
+    wake_mask: u32,
+    flags: u32,
+    plain: bool,
+) -> u32 {
+    if flags & (MWMO_WAITALL | MWMO_ALERTABLE) != 0 {
+        let (entry, args) = if plain {
+            (
+                &crate::spec::MsgWaitForMultipleObjects,
+                [
+                    u64::from(count),
+                    handles as usize as u64,
+                    u64::from(flags & MWMO_WAITALL),
+                    u64::from(milliseconds),
+                    u64::from(wake_mask),
+                ],
+            )
+        } else {
+            (
+                &crate::spec::MsgWaitForMultipleObjectsEx,
+                [
+                    u64::from(count),
+                    handles as usize as u64,
+                    u64::from(milliseconds),
+                    u64::from(wake_mask),
+                    u64::from(flags),
+                ],
+            )
+        };
+        if MSG_WAIT_LOGGED.first(flags & (MWMO_WAITALL | MWMO_ALERTABLE)) {
+            // SAFETY: the arguments are integers and a pointer the line prints as a number.
+            unsafe {
+                crate::stub::unhandled(
+                    entry,
+                    "the wait for every object, or alertable, is not yet implemented",
+                    &args,
+                )
+            };
+        }
+        imports::set_last_error(crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        return WAIT_FAILED;
+    }
+    let wait = MsgWait {
+        count,
+        handles: handles as usize as u32,
+        timeout: milliseconds,
+        wake_mask,
+    };
+    let answer = imports::call_two_param(
+        &wait as *const MsgWait as usize as u32,
+        0,
+        TWO_PARAM_MSG_WAIT,
+    );
+    failed_with(answer, imports::dos_error).unwrap_or(WAIT_FAILED)
 }
 
 /// WaitMessage: the calling thread waits until something comes to its queue that no read has
@@ -1849,6 +1997,45 @@ mod tests {
         assert_eq!(def_window_proc_a(window, WM_ENDSESSION, 1, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_ENDSESSION, 0, logoff), 0);
         assert!(seen().is_empty());
+    }
+
+    /// MsgWaitForMultipleObjects' wait for every object, and MsgWaitForMultipleObjectsEx's
+    /// alertable wait, are not served: WAIT_FAILED, ERROR_CALL_NOT_IMPLEMENTED, no service called.
+    ///
+    /// Pins: user32.MsgWaitForMultipleObjects, user32.MsgWaitForMultipleObjectsEx
+    #[test]
+    fn a_message_wait_for_every_object_is_refused() {
+        let services = crate::imports::host::SERVICES.with(|count| count.get());
+        // SAFETY: no handles are read.
+        unsafe {
+            assert_eq!(
+                msg_wait_for_multiple_objects(0, core::ptr::null(), 1, 0, 0xFF),
+                WAIT_FAILED
+            );
+            assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+            arm();
+            assert_eq!(
+                msg_wait_for_multiple_objects_ex(0, core::ptr::null(), 0, 0xFF, MWMO_ALERTABLE),
+                WAIT_FAILED
+            );
+            assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        }
+        assert_eq!(
+            crate::imports::host::SERVICES.with(|count| count.get()),
+            services
+        );
+    }
+
+    /// guimsg `copydata`: a received WM_COPYDATA's lpData points at the bytes after its
+    /// structure, in the receiver's own buffer; with no bytes it stays NULL.
+    #[test]
+    fn received_copy_data_points_at_its_bytes() {
+        let mut buffer = [0x4B1D, 0, 3, 0, 0, 0, 0x6261, 0x0063];
+        point_copy_data(&mut buffer, 0x0012_3450);
+        assert_eq!(buffer[4..6], [0x345C, 0x0012]);
+        let mut empty = [7, 0, 0, 0, 0, 0];
+        point_copy_data(&mut empty, 0x0012_3450);
+        assert_eq!(empty[4..6], [0, 0]);
     }
 
     /// guimsg `quota`: a post a full queue refuses fails with the last error as it was; another

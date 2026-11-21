@@ -47,6 +47,7 @@ pub const WM_ENDSESSION: u32 = 0x0016;
 pub const WM_ACTIVATEAPP: u32 = 0x001C;
 pub const WM_CANCELMODE: u32 = 0x001F;
 pub const WM_WINDOWPOSCHANGED: u32 = 0x0047;
+pub const WM_COPYDATA: u32 = 0x004A;
 pub const WM_STYLECHANGING: u32 = 0x007C;
 pub const WM_STYLECHANGED: u32 = 0x007D;
 pub const WM_NCCREATE: u32 = 0x0081;
@@ -240,6 +241,11 @@ pub const RECEIVED_NONE: u32 = 3;
 /// A receipt's `text` for a message that carries none.
 pub const NO_TEXT: u32 = u32::MAX;
 
+/// The units WM_COPYDATA's carried form starts with: its COPYDATASTRUCT (dwData, cbData, then
+/// lpData 0, which the receiver points at the bytes), its bytes after it, two a unit, the last
+/// unit's high byte 0 for an odd count.
+pub const COPY_DATA_HEAD: usize = 6;
+
 /// What win32k's GetMessage and PeekMessage services write into user32's buffer.
 ///
 /// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
@@ -251,9 +257,11 @@ pub const NO_TEXT: u32 = u32::MAX;
 ///
 /// A sent message that carries a text, as long as it is, says how long in `text` ([`NO_TEXT`] for
 /// none): a creation message's window name, WM_SETTEXT's text from another process; WM_GETTEXT
-/// from another process carries an empty one, its buffer wParam's units. The receiver asks for it
-/// into a buffer of its own ([`TWO_PARAM_RECEIVE_TEXT`]) and points the message at it: the
-/// CREATESTRUCT's `name`, or `msg.lparam` (both 0 until then).
+/// from another process carries an empty one, its buffer wParam's units; WM_COPYDATA from another
+/// process its COPYDATASTRUCT and the data, as units ([`COPY_DATA_HEAD`]). The receiver asks for
+/// it into a buffer of its own ([`TWO_PARAM_RECEIVE_TEXT`]) and points the message at it: the
+/// CREATESTRUCT's `name`, or `msg.lparam` (both 0 until then); WM_COPYDATA's lpData at the bytes
+/// (0 when there are none).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Receipt {
@@ -395,6 +403,25 @@ pub const TWO_PARAM_SET_CARET_POS: u32 = 0;
 /// WM_GETTEXT from another process, the buffer its procedure writes its answer into, read back as
 /// the delivery ends. The result 1.
 pub const TWO_PARAM_RECEIVE_TEXT: u32 = 1;
+/// MsgWaitForMultipleObjects' wait ([`MsgWait`] at the first parameter; the second 0): the
+/// result as WaitForMultipleObjects answers, WAIT_OBJECT_0 + the count for input of the wake
+/// mask's kinds come to the queue since a read last looked for them.
+pub const TWO_PARAM_MSG_WAIT: u32 = 2;
+
+/// MsgWaitForMultipleObjects' arguments, as [`TWO_PARAM_MSG_WAIT`] reads them: the handles (fewer
+/// than 64, at `handles`), the timeout in milliseconds (INFINITE, 0xFFFFFFFF, for none), and the
+/// queue-status bits of the input that ends the wait.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MsgWait {
+    pub count: u32,
+    pub handles: u32,
+    pub timeout: u32,
+    pub wake_mask: u32,
+}
+
+// SAFETY: four integers.
+unsafe impl Pod for MsgWait {}
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
 /// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the

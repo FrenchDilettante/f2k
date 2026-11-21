@@ -1656,9 +1656,10 @@ fails = "FALSE"
 name = "MsgWaitForMultipleObjects"
 group = "message"
 args = ["u32 nCount", "ptr pHandles", "bool fWaitAll", "u32 dwMilliseconds", "u32 dwWakeMask"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MsgWaitForMultipleObjects" }
 ordinal = 464
 fails = "WAIT_FAILED"
+note = "fWaitAll TRUE is not served yet (WAIT_FAILED)"
 
 [[export]]
 name = "SetTimer"
@@ -4605,7 +4606,12 @@ ordinal = 456
 
 [[export]]
 name = "MsgWaitForMultipleObjectsEx"
+group = "message"
+args = ["u32 nCount", "ptr pHandles", "u32 dwMilliseconds", "u32 dwWakeMask", "u32 dwFlags"]
+impl = { native = "MsgWaitForMultipleObjectsEx" }
 ordinal = 465
+fails = "WAIT_FAILED"
+note = "MWMO_WAITALL and MWMO_ALERTABLE are not served yet (WAIT_FAILED)"
 
 [[export]]
 name = "NotifyWinEvent"

@@ -513,7 +513,8 @@ mod services {
     /// NtUserCallTwoParam(Param1, Param2, Routine, Result): SetCaretPos ([`set_pos`], the place
     /// the two parameters), and the text of the message being delivered into the caller's buffer
     /// (the queue's [`super::super::queue::receive_text`]), 1 into `result`;
-    /// STATUS_INVALID_PARAMETER for another routine.
+    /// MsgWaitForMultipleObjects' wait (the queue's [`super::super::queue::msg_wait`]), its answer
+    /// into `result`; STATUS_INVALID_PARAMETER for another routine.
     pub fn call_two_param(
         call: &mut NtCall,
         param1: u32,
@@ -524,6 +525,11 @@ mod services {
         if routine == TWO_PARAM_RECEIVE_TEXT {
             super::super::queue::receive_text(call, UserAddr(param1), param2)?;
             result.write(1)?;
+            return Ok(STATUS_SUCCESS);
+        }
+        if routine == rtl::user::TWO_PARAM_MSG_WAIT {
+            let answer = super::super::queue::msg_wait(call, UserAddr(param1))?;
+            result.write(answer)?;
             return Ok(STATUS_SUCCESS);
         }
         let caller = gui_thread(call)?.thread;

@@ -589,7 +589,7 @@ fn interval_of(value: i64) -> i64 {
 /// The handle must grant SYNCHRONIZE, checked before the kind as Windows 2000's waits reference
 /// their handles for it (STATUS_ACCESS_DENIED: the threads capture's handle OpenThread made with
 /// THREAD_QUERY_INFORMATION alone).
-fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
+pub(crate) fn waitable_of(handle: u32) -> Result<(ObjectId, WaitableId), NtStatus> {
     let id = match handle {
         CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
         CURRENT_PROCESS => crate::process::current().object(),

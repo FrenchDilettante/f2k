@@ -102,6 +102,7 @@ use rtl::user::{
     RECEIVED_MESSAGE,
     RECEIVED_QUIT,
     RECEIVED_SENT,
+    WM_COPYDATA,
     WM_GETTEXT,
     WM_KEYFIRST,
     WM_KEYLAST,
@@ -840,7 +841,9 @@ pub fn client_id_of(windows: &Windows, thread: ThreadId) -> Option<u32> {
 
 /// PostMessage: `message` posted to the window `hwnd`'s thread, stamped `time`; a null window
 /// posts a thread message to `caller`, HWND_BROADCAST posts to every top-level window of
-/// `caller`'s desktop. STATUS_INVALID_HANDLE for a handle naming no window, ERROR_NOT_ENOUGH_QUOTA
+/// `caller`'s desktop. STATUS_INVALID_HANDLE for a handle naming no window, [`MESSAGE_SYNC_ONLY`]
+/// for a message whose pointer a post cannot carry (guimsg `postptr`: WM_SETTEXT and WM_COPYDATA
+/// to the caller's own window, [`rtl::user::sync_only`]), ERROR_NOT_ENOUGH_QUOTA
 /// for a queue holding [`POSTED_LIMIT`] posted messages, STATUS_INSUFFICIENT_RESOURCES when the
 /// posted messages' pool cannot grow.
 pub fn post(
@@ -860,6 +863,12 @@ pub fn post(
         time,
         pt: Point::default(),
     };
+    if hwnd != 0 && hwnd != HWND_BROADCAST && windows.window_from_handle(hwnd).is_none() {
+        return Err(STATUS_INVALID_HANDLE);
+    }
+    if sync_only(message) {
+        return Err(MESSAGE_SYNC_ONLY);
+    }
     match hwnd {
         0 => post_to(windows, caller, msg(0)),
         HWND_BROADCAST => {
@@ -886,7 +895,8 @@ pub fn post(
 }
 
 /// PostThreadMessage: `message` posted to the thread record `thread`'s queue (the caller resolved
-/// the client id, [`queue_by_client_id`]), with no window, stamped `time`.
+/// the client id, [`queue_by_client_id`]), with no window, stamped `time`; [`MESSAGE_SYNC_ONLY`]
+/// for a message whose pointer a post cannot carry, as PostMessage's.
 pub fn post_thread(
     windows: &mut Windows,
     thread: ThreadId,
@@ -895,6 +905,9 @@ pub fn post_thread(
     lparam: LParam,
     time: u32,
 ) -> Result<(), NtStatus> {
+    if sync_only(message) {
+        return Err(MESSAGE_SYNC_ONLY);
+    }
     post_to(
         windows,
         thread,
@@ -1280,6 +1293,12 @@ pub enum Waited {
 /// the queue that a read saw, and left, does not count; a timer that came due since does).
 /// The thread idles meanwhile: it is never deemed hung while it waits.
 pub fn wait_ready(windows: &mut Windows, caller: ThreadId, now: u64) -> Waited {
+    wait_ready_for(windows, caller, now, QS_ALLINPUT)
+}
+
+/// [`wait_ready`] for the kinds `mask` (queue-status bits) alone: MsgWaitForMultipleObjects' wake
+/// mask.
+pub fn wait_ready_for(windows: &mut Windows, caller: ThreadId, now: u64, mask: u32) -> Waited {
     let Some(id) = windows.queues.queue_of(caller) else {
         return Waited::Ready;
     };
@@ -1288,7 +1307,7 @@ pub fn wait_ready(windows: &mut Windows, caller: ThreadId, now: u64) -> Waited {
     }
     let queue = &mut windows.queues.queues[id.index as usize];
     queue.idle = true;
-    if queue.changed & QS_ALLINPUT != 0 {
+    if queue.changed & mask & QS_ALLINPUT != 0 {
         return Waited::Ready;
     }
     // The caret blinks while the thread waits, as while it reads.
@@ -1620,11 +1639,12 @@ pub fn send(
     send_carrying(windows, caller, hwnd, message, wparam, lparam, None)
 }
 
-/// Whether `message` to the window `hwnd` from a thread of the process `caller` is a text message
-/// whose text goes through the window manager (WM_SETTEXT, WM_GETTEXT to another process's window,
-/// whose address space the sender's pointer does not reach).
+/// Whether `message` to the window `hwnd` from a thread of the process `caller` is a message whose
+/// text goes through the window manager (WM_SETTEXT, WM_GETTEXT to another process's window, whose
+/// address space the sender's pointer does not reach), or whose data does (WM_COPYDATA's, carried
+/// as units: rtl::user's COPY_DATA_HEAD).
 pub fn carries_text(windows: &Windows, caller: class::Owner, hwnd: Hwnd, message: u32) -> bool {
-    if !matches!(message, WM_SETTEXT | WM_GETTEXT) {
+    if !matches!(message, WM_SETTEXT | WM_GETTEXT | WM_COPYDATA) {
         return false;
     }
     windows
@@ -2255,6 +2275,34 @@ mod target {
         });
     }
 
+    /// MsgWaitForMultipleObjects' wait: the calling thread (its queue `thread`) waits on
+    /// `objects` and on its queue's event at once, a wait-any, until `timeout` (100 ns units,
+    /// relative; none: no end): the wait's status, STATUS_WAIT_0 + the count of `objects` for the
+    /// queue's event (given something: the caller looks again at what).
+    pub fn wait_on_objects_or_queue(
+        thread: ThreadId,
+        objects: &[WaitableId],
+        timeout: Option<i64>,
+    ) -> NtStatus {
+        let mut ids = [EVENTS.id(thread.0 as usize); wait::MAXIMUM_WAIT_OBJECTS];
+        ids[..objects.len()].copy_from_slice(objects);
+        let ids = &ids[..=objects.len()];
+        wait::wait_current_with(|dispatcher, me, stamp, replay| {
+            let timeout =
+                wait::replay_timeout(dispatcher.thread(me), replay, timeout, stamp.interrupt_time);
+            dispatcher.wait_for_multiple(
+                me,
+                ids,
+                false,
+                WaitReason::UserRequest,
+                WaitMode::User,
+                false,
+                timeout,
+                stamp,
+            )
+        })
+    }
+
     /// The interrupt time, the clock the queues' times and the timers' dues read.
     pub fn now() -> u64 {
         crate::interrupt::clock::interrupt_time()
@@ -2262,12 +2310,23 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::{init, locked, now, wait_for_server, wait_on_queue, with_manager};
+pub use target::{
+    init,
+    locked,
+    now,
+    wait_for_server,
+    wait_on_objects_or_queue,
+    wait_on_queue,
+    with_manager,
+};
 
 #[cfg(target_arch = "x86")]
 mod services {
+    use rtl::pod::Pod;
     use rtl::user::{
+        MsgWait,
         SendTimeout,
+        COPY_DATA_HEAD,
         ONE_PARAM_END_SENT_MESSAGE,
         ONE_PARAM_ENUM_CLIPBOARD_FORMATS,
         ONE_PARAM_IN_SEND_MESSAGE,
@@ -2280,6 +2339,7 @@ mod services {
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
     use crate::win32k::text::Staged;
     use crate::win32k::winsta::gui_thread;
 
@@ -2485,6 +2545,58 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
+    /// NtUserCallTwoParam's TWO_PARAM_MSG_WAIT: MsgWaitForMultipleObjects' wait ([`MsgWait`] at
+    /// `args`), a wait-any on the handles and the caller's queue: the count when input of the
+    /// wake mask's kinds came to the queue since a read last looked for it ([`wait_ready_for`]:
+    /// a timer coming due counts), before the wait or while it lasts; otherwise the objects' wait
+    /// status (WAIT_OBJECT_0 + n,
+    /// WAIT_ABANDONED_0 + n, WAIT_TIMEOUT). STATUS_INVALID_PARAMETER for 64 handles or more;
+    /// a handle's refusal as NtWaitForMultipleObjects' (STATUS_INVALID_HANDLE...).
+    pub fn msg_wait(call: &mut NtCall, args: UserAddr) -> Result<u32, NtStatus> {
+        let caller = gui_thread(call)?.thread;
+        let wait = args.cast::<MsgWait>().read()?;
+        let count = wait.count as usize;
+        if count >= MAXIMUM_WAIT_OBJECTS {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let mut raw = [0u32; MAXIMUM_WAIT_OBJECTS];
+        UserAddr(wait.handles).read(&mut raw.as_bytes_mut()[..4 * count])?;
+        let mut objects = [WaitableId::Event(0); MAXIMUM_WAIT_OBJECTS];
+        let mut held = [crate::ob::ObjectId {
+            kind: crate::ob::ObjectType::Event,
+            index: 0,
+            generation: 0,
+        }; MAXIMUM_WAIT_OBJECTS];
+        for ((object, id), &handle) in objects.iter_mut().zip(&mut held).zip(&raw[..count]) {
+            (*id, *object) = crate::nt::sync::waitable_of(handle)?;
+        }
+        let deadline = (wait.timeout != u32::MAX).then(|| now() + u64::from(wait.timeout) * 10_000);
+        let passive = call.passive();
+        crate::ob::waiting(&held[..count], || loop {
+            let at = now();
+            let due = match with_manager(passive, |m| {
+                wait_ready_for(&mut m.windows, caller, at, wait.wake_mask)
+            }) {
+                Waited::Ready => return wait.count,
+                Waited::Wait { due } => due,
+            };
+            let end = match (deadline, due) {
+                (Some(deadline), Some(due)) => Some(deadline.min(due)),
+                (deadline, due) => deadline.or(due),
+            };
+            let timeout = end.map(|end| end.saturating_sub(at) as i64);
+            let status = wait_on_objects_or_queue(caller, &objects[..count], timeout);
+            if status == STATUS_TIMEOUT && deadline.is_none_or(|deadline| now() < deadline) {
+                // A timer's due, not the caller's: look again.
+                continue;
+            }
+            if status.0 != wait.count {
+                return status.0;
+            }
+        })
+        .ok_or(STATUS_INVALID_HANDLE)
+    }
+
     /// NtUserMessageCall(Window, Msg, wParam, lParam, Proc, Result, Timeout): SendMessage's and
     /// SendMessageTimeout's kernel side ([`send`]): the procedure to call into `proc` for a window
     /// of the caller's own thread (`result` 0), otherwise 0 into `proc` and the answer into
@@ -2580,6 +2692,40 @@ mod services {
         }
     }
 
+    /// WM_COPYDATA's COPYDATASTRUCT at `at` and the bytes it names, read from the sender, staged
+    /// in their carried form (rtl::user's COPY_DATA_HEAD): dwData, cbData, a zero lpData, then the
+    /// bytes, two a unit. STATUS_ACCESS_VIOLATION for what the caller's memory does not hold,
+    /// STATUS_NO_MEMORY when the pool has no room.
+    fn read_copy_data(at: UserAddr) -> Result<Staged, NtStatus> {
+        let [data, count, bytes] = at.cast::<[u32; 3]>().read()?;
+        let count = count as usize;
+        let mut staged =
+            Staged::with_length(COPY_DATA_HEAD + count.div_ceil(2)).ok_or(STATUS_NO_MEMORY)?;
+        let units = staged.units_mut();
+        units[..COPY_DATA_HEAD].copy_from_slice(&[
+            data as u16,
+            (data >> 16) as u16,
+            count as u16,
+            (count >> 16) as u16,
+            0,
+            0,
+        ]);
+        let mut buffer = [0u8; 256];
+        let mut done = 0;
+        while done < count {
+            let part = (count - done).min(buffer.len());
+            UserAddr(bytes)
+                .offset(done as u32)
+                .read(&mut buffer[..part])?;
+            for (at, &byte) in buffer[..part].iter().enumerate() {
+                let index = done + at;
+                units[COPY_DATA_HEAD + index / 2] |= u16::from(byte) << (8 * (index % 2));
+            }
+            done += part;
+        }
+        Ok(staged)
+    }
+
     /// How [`message_call`]'s fresh send started.
     enum Started {
         /// Queued for another thread: the send to wait on, and its deadline.
@@ -2621,10 +2767,11 @@ mod services {
         let carried = with_manager(call.passive(), |m| {
             carries_text(&m.windows, thread.owner, window.raw(), message)
         });
-        let text = if carried && message == WM_SETTEXT {
-            Staged::read(UserAddr(lparam as u32))?
-        } else {
-            Staged::read(UserAddr(0))?
+        let carried = carried && !(message == WM_COPYDATA && lparam == 0);
+        let text = match message {
+            WM_SETTEXT if carried => Staged::read(UserAddr(lparam as u32))?,
+            WM_COPYDATA if carried => read_copy_data(UserAddr(lparam as u32))?,
+            _ => Staged::read(UserAddr(0))?,
         };
         let sending = with_manager(call.passive(), |m| {
             let sending = send_carrying(
@@ -2757,10 +2904,6 @@ mod services {
     }
 }
 
-/// The text of the message being delivered, into the caller's buffer: caret's
-/// NtUserCallTwoParam routes its routine here.
-#[cfg(target_arch = "x86")]
-pub use services::receive_text;
 pub use services::{
     call_one_param,
     dispatch_message,
@@ -2772,6 +2915,10 @@ pub use services::{
     send_notify_message,
     wait_message,
 };
+/// The text of the message being delivered, into the caller's buffer, and
+/// MsgWaitForMultipleObjects' wait: caret's NtUserCallTwoParam routes their routines here.
+#[cfg(target_arch = "x86")]
+pub use services::{msg_wait, receive_text};
 
 // The host builds have no processes and no user memory: the services answer nothing (the host
 // tests drive the queues themselves).
@@ -3336,6 +3483,97 @@ mod tests {
             !end_sent(&mut m.windows, t, 0),
             "nothing is being delivered"
         );
+    }
+
+    /// guimsg `copydata`: WM_COPYDATA to another process's window carries its structure and
+    /// data through the window manager, handed whole to the receiver's buffer (its lParam 0 until
+    /// the receiver points it there); to the same process's window it carries nothing.
+    #[test]
+    fn copy_data_to_another_process_is_carried() {
+        let (m, atom) = manager();
+        let b = thread(m, 2, 0x200);
+        let a = thread_of(m, 1, 0x100, OWNER + 1);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        assert!(carries_text(&m.windows, OWNER + 1, hb, WM_COPYDATA));
+        assert!(!carries_text(&m.windows, OWNER, hb, WM_COPYDATA));
+        let carried = [0x4B1D, 0, 3, 0, 0, 0, 0x6261, 0x0063];
+        let Ok(Sending::Waiting(id)) = send_carrying(
+            &mut m.windows,
+            a,
+            hb,
+            WM_COPYDATA,
+            0,
+            0x5000,
+            Some(&carried),
+        ) else {
+            panic!("queued for the other process's thread");
+        };
+        let Taken::Sent(got) = read(m, b, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        let head = receipt_head(&m.windows, b, got, 0x1000, 0).unwrap();
+        assert_eq!((head.msg.message, head.msg.lparam), (WM_COPYDATA, 0));
+        assert_eq!(receipt_text(&m.windows, got), carried.len() as u32);
+        assert_eq!(
+            received_text(&mut m.windows, b, 0x8000, 9),
+            Some(&carried[..])
+        );
+        assert!(end_sent(&mut m.windows, b, 77));
+        assert_eq!(collect_reply(&mut m.windows, a, id), Some(77));
+    }
+
+    /// MsgWaitForMultipleObjects' look at the queue: only the wake mask's kinds end it, a post
+    /// for QS_POSTMESSAGE, not for QS_KEY alone; a read that looks for them makes them old.
+    #[test]
+    fn a_message_wait_looks_at_its_kinds() {
+        let (m, _) = manager();
+        let t = thread(m, 1, 0x100);
+        read(m, t, &all(), 0);
+        assert!(matches!(
+            wait_ready_for(&mut m.windows, t, 0, QS_POSTMESSAGE),
+            Waited::Wait { .. }
+        ));
+        post_thread(&mut m.windows, t, WM_USER, 0, 0, 0).unwrap();
+        assert!(matches!(
+            wait_ready_for(&mut m.windows, t, 0, QS_KEY),
+            Waited::Wait { .. }
+        ));
+        assert_eq!(
+            wait_ready_for(&mut m.windows, t, 0, QS_POSTMESSAGE),
+            Waited::Ready
+        );
+        read(m, t, &all(), 0);
+        assert!(matches!(
+            wait_ready_for(&mut m.windows, t, 0, QS_ALLINPUT),
+            Waited::Wait { .. }
+        ));
+    }
+
+    /// guimsg `postptr`: a message whose pointer a post cannot carry (WM_SETTEXT, WM_COPYDATA) is
+    /// refused with ERROR_MESSAGE_SYNC_ONLY, to the caller's own window and as a thread message,
+    /// nothing queued; a handle naming no window is refused first.
+    #[test]
+    fn a_pointer_message_is_not_posted() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        for message in [WM_SETTEXT, WM_COPYDATA] {
+            assert_eq!(
+                post(&mut m.windows, t, h, message, 0, 0x5000, 0),
+                Err(MESSAGE_SYNC_ONLY)
+            );
+            assert_eq!(
+                post_thread(&mut m.windows, t, message, 0, 0x5000, 0),
+                Err(MESSAGE_SYNC_ONLY)
+            );
+        }
+        assert_eq!(
+            post(&mut m.windows, t, 0x7FFF_FFFC, WM_SETTEXT, 0, 0, 0),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
     }
 
     /// WM_SETTEXT and WM_GETTEXT to another process's window carry their text through the window
