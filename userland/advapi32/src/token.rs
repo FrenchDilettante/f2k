@@ -1,10 +1,10 @@
-//! The process token's calls, as a program that shuts the machine down makes them first:
-//! OpenProcessToken, LookupPrivilegeValueW and LookupPrivilegeValueA, AdjustTokenPrivileges and
-//! GetTokenInformation(TokenPrivileges). The token calls are advapi32's own code over ntdll's token
-//! services (NtOpenProcessToken, NtAdjustPrivilegesToken, NtQueryInformationToken), as on Windows
-//! 2000; the lookup answers from the privileges' public names and LUIDs (winnt.h's SE_*_NAME and
-//! SE_*_PRIVILEGE), where Windows 2000's asks the local security authority, which F2K does not
-//! have.
+//! The process token's calls, as a program that shuts the machine down makes them first, and as
+//! programs inspect their token: OpenProcessToken, LookupPrivilegeValueW and LookupPrivilegeValueA,
+//! AdjustTokenPrivileges, GetTokenInformation and DuplicateToken. The token calls are advapi32's
+//! own code over ntdll's token services (NtOpenProcessToken, NtAdjustPrivilegesToken,
+//! NtQueryInformationToken, NtDuplicateToken), as on Windows 2000; the lookup answers from the
+//! privileges' public names and LUIDs (winnt.h's SE_*_NAME and SE_*_PRIVILEGE), where Windows
+//! 2000's asks the local security authority, which F2K does not have.
 //!
 //! F2K checks no privilege anywhere: the token keeps the privileges' state as bookkeeping, so that
 //! these calls answer as Windows 2000's do (see the kernel's `se`).
@@ -22,8 +22,10 @@ use crate::Out;
 /// RPC_S_SERVER_UNAVAILABLE: a system name other than the local computer's (there is no remote
 /// security authority to ask).
 const RPC_S_SERVER_UNAVAILABLE: u32 = 1722;
-/// TokenPrivileges: the one token information class answered.
-const TOKEN_PRIVILEGES: u32 = 3;
+/// The rights DuplicateToken's copy is opened with (TOKEN_IMPERSONATE | TOKEN_QUERY), and its
+/// type (TokenImpersonation).
+const DUPLICATE_ACCESS: u32 = 0x0004 | 0x0008;
+const TOKEN_IMPERSONATION: u32 = 2;
 
 /// The privileges' public names and LUIDs, Windows 2000's (winnt.h's SE_*_NAME and
 /// SE_*_PRIVILEGE: the same on every machine). LUID 6 is SeMachineAccountPrivilege, the name the
@@ -270,9 +272,9 @@ pub unsafe extern "system" fn adjust_token_privileges(
     u32::from(status.is_success())
 }
 
-/// GetTokenInformation: NtQueryInformationToken, for TokenPrivileges; a failure's status as the
-/// last error, which is untouched on success. The other classes are stubbed: F2K's tokens hold no
-/// user, groups or defaults to answer them with.
+/// GetTokenInformation: NtQueryInformationToken, whatever the class; a failure's status as the
+/// last error (STATUS_BUFFER_TOO_SMALL's ERROR_INSUFFICIENT_BUFFER with the size the answer takes
+/// in ReturnLength), which is untouched on success.
 ///
 /// # Safety
 ///
@@ -285,23 +287,6 @@ pub unsafe extern "system" fn get_token_information(
     length: u32,
     return_length: *mut u32,
 ) -> u32 {
-    if class != TOKEN_PRIVILEGES {
-        let args = [
-            u64::from(token),
-            u64::from(class),
-            information as u64,
-            u64::from(length),
-            return_length as u64,
-        ];
-        // SAFETY: the arguments as the caller passed them, read as the spec's kinds say.
-        return unsafe {
-            crate::stub::stubbed(
-                &crate::spec::GetTokenInformation,
-                "only TokenPrivileges is answered",
-                &args,
-            )
-        };
-    }
     // SAFETY: the caller's memory, handed to the service.
     let (information, return_length) = unsafe {
         (
@@ -310,6 +295,30 @@ pub unsafe extern "system" fn get_token_information(
         )
     };
     match nt::query_information_token(token, class, information, length, return_length) {
+        Ok(()) => 1,
+        Err(status) => failed(status),
+    }
+}
+
+/// DuplicateToken: DuplicateTokenEx's impersonation copy of `token` (opened with
+/// TOKEN_DUPLICATE) at `level`, its handle granted TOKEN_IMPERSONATE and TOKEN_QUERY:
+/// NtDuplicateToken with the level in the attributes' SECURITY_QUALITY_OF_SERVICE (static tracking,
+/// not effective only). A failure's status as the last error, which is untouched on success.
+///
+/// # Safety
+///
+/// `duplicate` is the caller's place for the handle (the service probes it).
+#[unsafe(export_name = "f2k_export_DuplicateToken")]
+pub unsafe extern "system" fn duplicate_token(token: u32, level: u32, duplicate: *mut u32) -> u32 {
+    // SAFETY: the caller's place, handed to the service.
+    let duplicate = unsafe { Passed::new(duplicate as usize) };
+    match nt::duplicate_token(
+        token,
+        DUPLICATE_ACCESS,
+        level,
+        TOKEN_IMPERSONATION,
+        duplicate,
+    ) {
         Ok(()) => 1,
         Err(status) => failed(status),
     }
@@ -429,7 +438,7 @@ mod tests {
     }
 
     /// OpenProcessToken leaves the last error on success and maps a failure's status;
-    /// GetTokenInformation asks the service for TokenPrivileges alone.
+    /// GetTokenInformation asks the service for every class, a failure's status the last error.
     #[test]
     fn open_and_query_go_to_the_services() {
         let mut token = 0;
@@ -453,5 +462,38 @@ mod tests {
             Some(&("NtQueryInformationToken", TOKEN, 3)),
             "{calls:?}"
         );
+        for (class, status, error) in [
+            (1, 0xC000_0023, 122),
+            (12, 0xC000_0004, 24),
+            (99, 0xC000_0003, 87),
+        ] {
+            TOKEN_STATUS.with(|next| next.set(status));
+            arm();
+            let ok = unsafe {
+                get_token_information(TOKEN, class, core::ptr::null_mut(), 0, &mut length)
+            };
+            assert_eq!((ok, last_error()), (0, error), "{class}");
+        }
+        TOKEN_STATUS.with(|next| next.set(0));
+    }
+
+    /// DuplicateToken asks NtDuplicateToken for an impersonation copy at the level given, opened
+    /// for TOKEN_IMPERSONATE and TOKEN_QUERY.
+    #[test]
+    fn duplicate_asks_for_an_impersonation_copy() {
+        let mut copy = 0;
+        arm();
+        assert_eq!(unsafe { duplicate_token(TOKEN, 2, &mut copy) }, 1);
+        assert_eq!((copy, last_error()), (TOKEN + 4, 0xF2F2));
+        let calls = TOKEN_CALLS.with(|calls| calls.borrow().clone());
+        assert_eq!(
+            calls.last(),
+            Some(&("NtDuplicateToken", TOKEN, 0xC)),
+            "{calls:?}"
+        );
+        TOKEN_STATUS.with(|next| next.set(0xC000_0022));
+        assert_eq!(unsafe { duplicate_token(TOKEN, 1, &mut copy) }, 0);
+        assert_eq!(last_error(), 5);
+        TOKEN_STATUS.with(|next| next.set(0));
     }
 }

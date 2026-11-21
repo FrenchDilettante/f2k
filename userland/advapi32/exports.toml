@@ -270,7 +270,15 @@ args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation
 impl = { native = "GetTokenInformation" }
 ordinal = 241
 fails = "FALSE"
-note = "TokenPrivileges (3) alone; the other classes are stubbed"
+note = "every class to TokenSessionId (12): an interactive administrator logon's token"
+
+[[export]]
+name = "DuplicateToken"
+group = "security"
+args = ["handle ExistingTokenHandle", "u32 ImpersonationLevel", "ptr<u32> DuplicateTokenHandle"]
+impl = { native = "DuplicateToken" }
+ordinal = 145
+fails = "FALSE"
 
 [[export]]
 name = "OpenThreadToken"
@@ -851,10 +859,6 @@ ordinal = 143
 [[export]]
 name = "DuplicateEncryptionInfoFile"
 ordinal = 144
-
-[[export]]
-name = "DuplicateToken"
-ordinal = 145
 
 [[export]]
 name = "DuplicateTokenEx"

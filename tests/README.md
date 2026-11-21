@@ -208,7 +208,7 @@ The fixtures:
   Captured on an administrator account; only the privileges named print, by their public LUIDs, never the token's whole list, and the computer's name never prints.
   A SID prints by what it is: a well-known one by its name, a logon SID as `S-1-5-5-*-*`, an account domain's by its RID below 1000 only; the token's LUIDs as zero or nonzero and as relations.
   `CheckTokenMembership`, `DuplicateToken`, `AllocateAndInitializeSid`, `EqualSid` and `FreeSid` are reached through `GetProcAddress`, so the program loads where advapi32 lacks them.
-  `tokclass`, `toksids`, `tokmisc`, `admin` and `privs` stay pending until the real machine captures them (`output.txt` holds placeholder blocks).
+  `admin` stays pending while advapi32 exports no `CheckTokenMembership`, `AllocateAndInitializeSid`, `EqualSid` or `FreeSid`, and `privs` while F2K's tokens hold three privileges.
   `SeShutdownPrivilege` is enabled only to observe the calls that enable it, and disabled again before the section does anything but adjust or query the token.
   Built with `/MD`.
   Gated.

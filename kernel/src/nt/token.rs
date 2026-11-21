@@ -1,6 +1,7 @@
-//! The token services: NtOpenProcessToken, NtAdjustPrivilegesToken and NtQueryInformationToken,
-//! over the process's token (`se`). advapi32's OpenProcessToken, AdjustTokenPrivileges and
-//! GetTokenInformation are Win32 code over these, as on Windows 2000.
+//! The token services: NtOpenProcessToken, NtAdjustPrivilegesToken, NtQueryInformationToken and
+//! NtDuplicateToken, over the process's token and its copies (`se`). advapi32's OpenProcessToken,
+//! AdjustTokenPrivileges, GetTokenInformation and DuplicateToken are Win32 code over these, as on
+//! Windows 2000.
 //!
 //! What these services keep is bookkeeping, so that the calls a program makes before it shuts the
 //! machine down answer as Windows 2000's do (see `se`); the one privilege F2K checks is
@@ -9,13 +10,17 @@
 //! every right asked for. The handle checks are the object manager's, as for any object: a handle
 //! naming nothing is STATUS_INVALID_HANDLE, one naming another kind of object (a pseudo-handle
 //! included) STATUS_OBJECT_TYPE_MISMATCH, one not granted the right a service needs
-//! STATUS_ACCESS_DENIED: TOKEN_QUERY to query, TOKEN_ADJUST_PRIVILEGES to adjust (and TOKEN_QUERY
-//! too when the old state is asked for, as the documentation says).
+//! STATUS_ACCESS_DENIED: TOKEN_QUERY to query (TOKEN_QUERY_SOURCE for TokenSource),
+//! TOKEN_ADJUST_PRIVILEGES to adjust (and TOKEN_QUERY too when the old state is asked for, as the
+//! documentation says), TOKEN_DUPLICATE to duplicate.
 
+use crate::se;
 use crate::status::*;
 
 /// The token rights (winnt.h's TOKEN_*).
+pub const TOKEN_DUPLICATE: u32 = 0x0002;
 pub const TOKEN_QUERY: u32 = 0x0008;
+pub const TOKEN_QUERY_SOURCE: u32 = 0x0010;
 pub const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
 /// The generic rights' mapping for tokens, and what MAXIMUM_ALLOWED grants (every token right).
 pub const TOKEN_READ: u32 = 0x0002_0008;
@@ -49,6 +54,31 @@ info_class! {
         SessionReference = 14,
         SandBoxInert = 15,
     }
+}
+
+/// The information class F2K answers for `class`, and the right its query needs:
+/// STATUS_INVALID_INFO_CLASS for a class Windows 2000 does not have, STATUS_NOT_IMPLEMENTED for
+/// the ones past TokenSessionId it has (TokenGroupsAndPrivileges, TokenSessionReference,
+/// TokenSandBoxInert), which nothing F2K runs asks for.
+pub fn query_class(class: u32) -> Result<(se::Class, u32), NtStatus> {
+    let class = match TokenClass::try_from(class)? {
+        TokenClass::User => se::Class::User,
+        TokenClass::Groups => se::Class::Groups,
+        TokenClass::Privileges => se::Class::Privileges,
+        TokenClass::Owner => se::Class::Owner,
+        TokenClass::PrimaryGroup => se::Class::PrimaryGroup,
+        TokenClass::DefaultDacl => se::Class::DefaultDacl,
+        TokenClass::Source => return Ok((se::Class::Source, TOKEN_QUERY_SOURCE)),
+        TokenClass::Type => se::Class::Type,
+        TokenClass::ImpersonationLevel => se::Class::ImpersonationLevel,
+        TokenClass::Statistics => se::Class::Statistics,
+        TokenClass::RestrictedSids => se::Class::RestrictedSids,
+        TokenClass::SessionId => se::Class::SessionId,
+        TokenClass::GroupsAndPrivileges
+        | TokenClass::SessionReference
+        | TokenClass::SandBoxInert => return Err(STATUS_NOT_IMPLEMENTED),
+    };
+    Ok((class, TOKEN_QUERY))
 }
 
 /// The rights an open asking for `desired` is granted: the rights it names, the generic ones
@@ -87,7 +117,7 @@ mod services {
     };
     use super::*;
     use crate::ob::{self, ObRef, ObjectType};
-    use crate::se::{privileges_size, Change, Requests, HELD};
+    use crate::se::{privileges_size, Change, Requests, TokenBody};
 
     /// NewState's entries copied in at a time, through a buffer on the stack (384 bytes).
     const CHUNK: usize = 32;
@@ -244,10 +274,12 @@ mod services {
 
     /// NtQueryInformationToken: the token's information of the class asked for, into a buffer of
     /// TokenInformationLength bytes, the size the answer takes into ReturnLength (when the buffer
-    /// is too short too: STATUS_BUFFER_TOO_SMALL, nothing written). TokenPrivileges alone is
-    /// answered: a TOKEN_PRIVILEGES, the privileges the token holds and their state; the other
-    /// classes Windows 2000 answers are not served (STATUS_NOT_IMPLEMENTED), and a class it does
-    /// not have is STATUS_INVALID_INFO_CLASS.
+    /// is too short too: STATUS_BUFFER_TOO_SMALL, nothing written). The classes are Windows 2000's
+    /// structures (see `se`'s [`TokenBody::information`]), their pointers into the caller's
+    /// buffer. TokenSessionId takes a buffer of its ULONG's size exactly
+    /// (STATUS_INFO_LENGTH_MISMATCH otherwise, ReturnLength untouched); TokenImpersonationLevel
+    /// of a primary token is STATUS_INVALID_PARAMETER. A class Windows 2000 does not have is
+    /// STATUS_INVALID_INFO_CLASS, before the handle is looked at.
     pub fn query_information_token(
         _: &mut NtCall,
         handle: Handle,
@@ -256,28 +288,89 @@ mod services {
         length: u32,
         return_length: UserPtr<u32>,
     ) -> NtResult {
-        if TokenClass::try_from(class)? != TokenClass::Privileges {
-            return Err(STATUS_NOT_IMPLEMENTED);
-        }
+        let (class, needed) = query_class(class)?;
         information.probe(length)?;
         if return_length.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
         return_length.addr().probe(4)?;
-        let token = token_of(handle.raw(), TOKEN_QUERY)?;
-        let privileges =
-            ob::locked(|directory| directory.token(token.id()).map(|body| body.privileges()))
-                .ok_or(STATUS_INVALID_HANDLE)?;
+        let token = token_of(handle.raw(), needed)?;
+        let body = ob::locked(|directory| directory.token(token.id()).copied())
+            .ok_or(STATUS_INVALID_HANDLE)?;
         drop(token);
-        let size = privileges_size(HELD);
+        let reply = body.information(class, information.raw())?;
+        let size = reply.len() as u32;
+        if class == se::Class::SessionId && length != size {
+            return Err(STATUS_INFO_LENGTH_MISMATCH);
+        }
         if length < size {
             return_length.write(size)?;
             return Err(STATUS_BUFFER_TOO_SMALL);
         }
-        information.cast::<u32>().write(HELD as u32)?;
-        information.offset(4).write(privileges.as_bytes())?;
+        information.write(reply.as_slice())?;
         return_length.write(size)?;
         Ok(STATUS_SUCCESS)
+    }
+
+    /// NtDuplicateToken: a new token, a copy of the one `existing` names (opened with
+    /// TOKEN_DUPLICATE), of type `kind` (TokenPrimary or TokenImpersonation: another is
+    /// STATUS_INVALID_PARAMETER), its handle granted the rights asked for into NewTokenHandle. An
+    /// impersonation token's level is the ObjectAttributes' SECURITY_QUALITY_OF_SERVICE's
+    /// (SecurityAnonymous without one; past SecurityDelegation STATUS_INVALID_PARAMETER); the
+    /// attributes' OBJ_INHERIT makes the handle inheritable. EffectiveOnly is not honoured: F2K's
+    /// tokens hold no disabled group, and a copy keeps the disabled privileges.
+    pub fn duplicate_token(
+        call: &mut NtCall,
+        existing: Handle,
+        desired: u32,
+        attributes: UserAddr,
+        _effective_only: bool,
+        kind: u32,
+        slot: UserPtr<u32>,
+    ) -> NtResult {
+        if slot.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        slot.addr().probe(4)?;
+        if kind != se::TOKEN_PRIMARY && kind != se::TOKEN_IMPERSONATION {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let (level, inherit) = quality_of_service(attributes)?;
+        if level > se::SECURITY_DELEGATION {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let token = token_of(existing.raw(), TOKEN_DUPLICATE)?;
+        let copy = ob::locked(|directory| {
+            let body: TokenBody = directory.token(token.id())?.duplicate(kind, level);
+            directory.create_token(body)
+        })
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        drop(token);
+        let caller = call.process();
+        let handle = ob::publish(caller, copy, granted(desired), inherit)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
+        if slot.write(handle).is_err() {
+            caller.close_handle(handle);
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// An OBJECT_ATTRIBUTES' impersonation level (its SECURITY_QUALITY_OF_SERVICE's; none for no
+    /// attributes or no quality of service: SecurityAnonymous) and whether it asks for an
+    /// inheritable handle.
+    fn quality_of_service(attributes: UserAddr) -> Result<(u32, bool), NtStatus> {
+        if attributes.is_null() {
+            return Ok((se::SECURITY_ANONYMOUS, false));
+        }
+        let header = attributes.cast::<rtl::nt::ObjectAttributes<u32>>().read()?;
+        let inherit = header.attributes & super::super::attributes::OBJ_INHERIT != 0;
+        let quality = UserAddr(header.security_quality_of_service);
+        if quality.is_null() {
+            return Ok((se::SECURITY_ANONYMOUS, inherit));
+        }
+        Ok((quality.offset(4).cast::<u32>().read()?, inherit))
     }
 }
 
@@ -290,6 +383,7 @@ mod host {
         open_process_token(Handle, u32, UserPtr<u32>);
         adjust_privileges_token(Handle, bool, UserAddr, u32, UserAddr, UserPtr<u32>);
         query_information_token(Handle, u32, UserAddr, u32, UserPtr<u32>);
+        duplicate_token(Handle, u32, UserAddr, bool, u32, UserPtr<u32>);
     }
 }
 
@@ -312,6 +406,20 @@ mod tests {
         assert_eq!(granted(GENERIC_WRITE), TOKEN_WRITE);
         assert_eq!(granted(MAXIMUM_ALLOWED), TOKEN_ALL_ACCESS);
         assert_eq!(granted(GENERIC_ALL | TOKEN_QUERY), TOKEN_ALL_ACCESS);
+    }
+
+    /// Every class to TokenSessionId is answered, TokenSource with TOKEN_QUERY_SOURCE, the others
+    /// with TOKEN_QUERY; the three past it are not implemented, and a class Windows 2000 does not
+    /// have (0, 16, 99) is STATUS_INVALID_INFO_CLASS.
+    #[test]
+    fn the_classes_answered_and_their_rights() {
+        assert_eq!(query_class(1), Ok((se::Class::User, TOKEN_QUERY)));
+        assert_eq!(query_class(7), Ok((se::Class::Source, TOKEN_QUERY_SOURCE)));
+        assert_eq!(query_class(12), Ok((se::Class::SessionId, TOKEN_QUERY)));
+        assert_eq!(query_class(13), Err(STATUS_NOT_IMPLEMENTED));
+        for class in [0, 16, 99] {
+            assert_eq!(query_class(class), Err(STATUS_INVALID_INFO_CLASS));
+        }
     }
 
     /// TokenPrivileges is class 3; a class past Windows 2000's is STATUS_INVALID_INFO_CLASS.

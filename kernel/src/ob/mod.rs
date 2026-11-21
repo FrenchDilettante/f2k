@@ -1027,6 +1027,12 @@ impl Directory {
         }
     }
 
+    /// A token of no process holding `body` (a duplicate), with its creator's reference; none when
+    /// the pool is exhausted.
+    pub fn create_token(&mut self, body: crate::se::TokenBody) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     /// The process `process` names lets go of its token, if it holds one: the token no longer
     /// names it, and the process's reference on it is the caller's to drop (the token lives on
     /// while handles to it are open).

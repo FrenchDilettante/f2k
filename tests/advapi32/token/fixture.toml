@@ -10,12 +10,7 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Written ahead of the VM trip: output.txt holds placeholder blocks until token.exe is rebuilt
-# (tests/build.bat token) and the blocks captured (tests/capture.bat token).
-tokclass = "F2K's GetTokenInformation answers only TokenPrivileges, every other class ERROR_CALL_NOT_IMPLEMENTED with no size"
-toksids = "F2K's GetTokenInformation has no TokenUser, TokenOwner, TokenPrimaryGroup or TokenGroups"
-tokmisc = "F2K's GetTokenInformation has no TokenDefaultDacl, TokenSource, TokenType, TokenImpersonationLevel, TokenSessionId or TokenStatistics, and advapi32 no DuplicateToken"
-admin = "F2K's advapi32 has no CheckTokenMembership, AllocateAndInitializeSid, EqualSid, FreeSid or DuplicateToken, and no TokenGroups to scan"
+admin = "F2K's advapi32 has no CheckTokenMembership, AllocateAndInitializeSid, EqualSid or FreeSid"
 privs = "F2K's tokens hold three privileges (SeChangeNotifyPrivilege, SeShutdownPrivilege and SeLoadDriverPrivilege), so enabling SeSystemtimePrivilege, SeBackupPrivilege or SeDebugPrivilege answers ERROR_NOT_ALL_ASSIGNED"
 
 [pins]

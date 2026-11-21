@@ -138,6 +138,16 @@ mod raw {
             length: u32,
             return_length: *mut u32,
         ) -> u32;
+        /// NtDuplicateToken: a copy of the token, of the type given (an impersonation token at
+        /// the attributes' quality of service's level), its handle opened with the access.
+        pub fn NtDuplicateToken(
+            token: u32,
+            access: u32,
+            attributes: *const ObjectAttributes,
+            effective_only: u8,
+            kind: u32,
+            duplicate: *mut u32,
+        ) -> u32;
         /// RtlOpenCurrentUser: the current user's hive, HKEY_CURRENT_USER's key.
         pub fn RtlOpenCurrentUser(desired_access: u32, key: *mut u32) -> u32;
         /// RtlNtStatusToDosError: the Win32 error an NTSTATUS maps to.
@@ -480,6 +490,47 @@ pub fn query_information_token(
             length,
             return_length.0 as *mut u32,
         )
+    })
+}
+
+/// SECURITY_QUALITY_OF_SERVICE: its size, the impersonation level, the context tracking (static,
+/// 0) and whether only the enabled parts are effective.
+#[repr(C)]
+struct QualityOfService {
+    length: u32,
+    level: u32,
+    tracking: u8,
+    effective_only: u8,
+}
+
+/// NtDuplicateToken: a copy of `token` of type `kind` (an impersonation token at `level`, static
+/// tracking, not effective only), opened with `access`, its handle written to the caller's
+/// `duplicate`.
+pub fn duplicate_token(
+    token: u32,
+    access: u32,
+    level: u32,
+    kind: u32,
+    duplicate: Passed,
+) -> Result<(), NtStatus> {
+    let quality = QualityOfService {
+        length: 12,
+        level,
+        tracking: 0,
+        effective_only: 0,
+    };
+    let attributes = ObjectAttributes {
+        length: core::mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: 0,
+        object_name: core::ptr::null(),
+        attributes: 0,
+        security_descriptor: core::ptr::null(),
+        security_quality_of_service: (&quality as *const QualityOfService).cast(),
+    };
+    // SAFETY: the attributes and their quality of service live across the call; the one place
+    // the service writes is the caller's, which it probes.
+    checked(unsafe {
+        raw::NtDuplicateToken(token, access, &attributes, 0, kind, duplicate.0 as *mut u32)
     })
 }
 
@@ -859,6 +910,22 @@ pub mod host {
         _: *mut u32,
     ) -> u32 {
         token_call("NtQueryInformationToken", token, class)
+    }
+
+    pub unsafe extern "system" fn NtDuplicateToken(
+        token: u32,
+        access: u32,
+        _: *const ObjectAttributes,
+        _: u8,
+        _: u32,
+        duplicate: *mut u32,
+    ) -> u32 {
+        let status = token_call("NtDuplicateToken", token, access);
+        if status == 0 {
+            // SAFETY: the caller's handle slot.
+            unsafe { duplicate.write(TOKEN + 4) };
+        }
+        status
     }
 
     /// GetComputerNameW: the computer's name, QEMU (ERROR_BUFFER_OVERFLOW for a buffer without

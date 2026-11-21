@@ -882,7 +882,16 @@ args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation
 impl = { syscall = "crate::nt::token::query_information_token" }
 ordinal = 198
 zw_ordinal = 843
-note = "answers TokenPrivileges (3) alone"
+note = "Windows 2000's classes to TokenSessionId (12): an interactive administrator logon's user, groups, defaults and privileges"
+
+[[export]]
+name = "NtDuplicateToken"
+group = "nt"
+args = ["handle ExistingTokenHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "boolean EffectiveOnly", "u32 TokenType", "ptr<u32> NewTokenHandle"]
+impl = { syscall = "crate::nt::token::duplicate_token" }
+ordinal = 120
+zw_ordinal = 765
+note = "EffectiveOnly is not honoured"
 
 # --- the atom services (kernel/src/nt/atom.rs, over the global atom table, kernel/src/atom.rs) --
 
@@ -1939,10 +1948,6 @@ ordinal = 115
 [[export]]
 name = "NtDisplayString"
 ordinal = 118
-
-[[export]]
-name = "NtDuplicateToken"
-ordinal = 120
 
 [[export]]
 name = "NtExtendSection"
@@ -3883,10 +3888,6 @@ ordinal = 760
 [[export]]
 name = "ZwDisplayString"
 ordinal = 763
-
-[[export]]
-name = "ZwDuplicateToken"
-ordinal = 765
 
 [[export]]
 name = "ZwExtendSection"
