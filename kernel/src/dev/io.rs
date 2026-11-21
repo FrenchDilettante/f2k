@@ -164,11 +164,6 @@ impl ObName {
         &self.units[..usize::from(self.length)]
     }
 
-    /// Whether it has none.
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
-    }
-
     /// `parts` joined, none past [`MAX_NAME`].
     fn joined(parts: &[&[u16]]) -> Option<ObName> {
         let mut name = ObName::EMPTY;
@@ -321,11 +316,6 @@ impl Namespace {
         self.slots.iter().filter(|slot| slot.is_some()).count()
     }
 
-    /// Whether no name is bound.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Unbind `name`: what it bound, none when it bound nothing.
     pub fn remove(&mut self, name: &ObName) -> Option<Entry> {
         let slot = self.find(name.units())?;
@@ -439,7 +429,9 @@ pub fn place(out: &mut [u8], text: &[u8]) -> i32 {
 /// as `stored` spells each (the registry keeps its keys' spellings), the hive roots upper-case
 /// (`\REGISTRY\MACHINE\SYSTEM`), and the current control set as the set it links to
 /// (`ControlSet001`): F2K's registry has the one, CurrentControlSet, with no link. None when `out`
-/// has no room: no component is cut short.
+/// has no room: no component is cut short. (The I/O manager builds the name a component at a time,
+/// [`push_object_component`]; this whole-name form is the tests'.)
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn registry_object_name(stored: &[&[u16]], out: &mut [u16]) -> Option<usize> {
     let mut length = 0;
     for (index, component) in stored.iter().enumerate() {
@@ -3109,6 +3101,20 @@ mod tests {
         );
         assert_eq!(run(CANCELLED, true, SL_INVOKE_ON_ERROR), [(LETS_GO, 0xA2)]);
         assert!(run(CANCELLED, false, SL_INVOKE_ON_CANCEL).is_empty());
+
+        // The top location's routine, run on an error: no device above it, and past it the IRP
+        // is completed.
+        let mut alone = fake();
+        let irp = alone.make(1);
+        alone.irp(irp).current_location = 1;
+        {
+            let top = alone.location(irp, 1);
+            top.completion_routine = LETS_GO;
+            top.control = SL_INVOKE_ON_ERROR;
+        }
+        alone.finish(irp, CANCELLED, 0);
+        assert_eq!(alone.completions, [(LETS_GO, 0)]);
+        assert_eq!(alone.progress(irp), Progress::Completed);
 
         // The lower location marked pending, no routine: the mark goes up to the upper one.
         let mut fake = fake();

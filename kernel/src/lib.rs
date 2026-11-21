@@ -94,8 +94,8 @@ mod status;
 // views, and the device registry
 mod block;
 
-// The device tree and driver model: the nodes the buses report, the registered drivers, the
-// device objects their attachments create, and the IRP spine the dispatch runs on
+// The device tree and the I/O manager: the nodes the buses report, and the legacy drivers, their
+// devices and the requests sent down to them
 mod dev;
 
 // File systems: the FAT32 volume over a block device

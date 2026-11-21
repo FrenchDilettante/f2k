@@ -56,12 +56,6 @@ pub fn route_interrupt(
     })
 }
 
-/// Route one PCI function's interrupt pin against the boot scan's PIRQ routes
-/// ([`pci::routes`]).
-pub fn routed_interrupt(bus: u8, dev: u8, func: u8, pin: u8) -> Option<Interrupt> {
-    route_interrupt(pci::routes(), bus, dev, func, pin)
-}
-
 /// The IRQL a device line runs at: the band's descending assignment, PROFILE_LEVEL (27) less the
 /// line, for every line 0-15 (halvec's capture, `isa`/`internal`/`pci`: "IRQL = 27 - level: yes,
 /// IRQL = 28 - level: no"). The kernel's own drivers connect at those levels too: the keyboard
