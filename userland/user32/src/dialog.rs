@@ -310,25 +310,25 @@ pub fn set_dialog_procedure(window: usize, proc: Procedure) -> Option<Procedure>
 
 // --- Dialog units --------------------------------------------------------------------------------
 
-/// MulDiv: `value` times `numerator` over `denominator`, rounded half away from zero; -1 for a
-/// zero denominator.
+/// MulDiv, as kernel32's export answers it (Windows 2000's user32 imports it from there; this is
+/// the same arithmetic, without the import): `value * numerator / denominator` over a 64-bit
+/// product, the quotient of the magnitudes rounded half away from zero, then signed; -1 for a zero
+/// denominator or a magnitude past 2^31 - 1, never a result cut to 32 bits.
 pub fn mul_div(value: i32, numerator: i32, denominator: i32) -> i32 {
     if denominator == 0 {
         return -1;
     }
     let product = i64::from(value) * i64::from(numerator);
-    let (product, denominator) = if denominator < 0 {
-        (-product, -i64::from(denominator))
-    } else {
-        (product, i64::from(denominator))
+    let divisor = i64::from(denominator).unsigned_abs();
+    let magnitude = (product.unsigned_abs() + divisor / 2) / divisor;
+    let Ok(magnitude) = i32::try_from(magnitude) else {
+        return -1;
     };
-    let half = denominator / 2;
-    let quotient = if product >= 0 {
-        (product + half) / denominator
+    if (product < 0) != (denominator < 0) {
+        -magnitude
     } else {
-        -((-product + half) / denominator)
-    };
-    quotient as i32
+        magnitude
+    }
 }
 
 /// The 52 letters whose average width is the width unit.
@@ -869,10 +869,26 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
     let default_x = header.x == TEMPLATE_USEDEFAULT;
     let default_y = header.y == TEMPLATE_USEDEFAULT;
     let client = Rect {
-        left: if default_x { 0 } else { mul_div(header.x, ux, 4) },
-        top: if default_y { 0 } else { mul_div(header.y, uy, 8) },
-        right: if default_x { 0 } else { mul_div(header.x, ux, 4) } + mul_div(header.cx, ux, 4),
-        bottom: if default_y { 0 } else { mul_div(header.y, uy, 8) } + mul_div(header.cy, uy, 8),
+        left: if default_x {
+            0
+        } else {
+            mul_div(header.x, ux, 4)
+        },
+        top: if default_y {
+            0
+        } else {
+            mul_div(header.y, uy, 8)
+        },
+        right: if default_x {
+            0
+        } else {
+            mul_div(header.x, ux, 4)
+        } + mul_div(header.cx, ux, 4),
+        bottom: if default_y {
+            0
+        } else {
+            mul_div(header.y, uy, 8)
+        } + mul_div(header.cy, uy, 8),
     };
     let has_menu = !matches!(header.menu, Field::None);
     let outer = rtl::nonclient::Frame::of(style, ex_style, has_menu).window(client);
@@ -2247,6 +2263,19 @@ mod tests {
         assert_eq!(mul_div(-3, 1, 2), -2);
         assert_eq!(mul_div(3, 1, -2), -2);
         assert_eq!(mul_div(1, 1, 0), -1);
+    }
+
+    /// MulDiv's overflow is kernel32's -1, not a quotient cut to 32 bits: a magnitude past
+    /// 2^31 - 1, whichever the sign (-2^31 included, as the utility fixture's capture shows).
+    #[test]
+    fn mul_div_overflows_to_minus_one() {
+        assert_eq!(mul_div(i32::MAX, 4, 1), -1);
+        assert_eq!(mul_div(i32::MAX, -4, 1), -1);
+        assert_eq!(mul_div(i32::MIN, 1, 1), -1);
+        assert_eq!(mul_div(i32::MAX, 1, 1), i32::MAX);
+        assert_eq!(mul_div(i32::MIN + 1, 1, 1), i32::MIN + 1);
+        assert_eq!(mul_div(0x4000_0000, 4, 2), -1);
+        assert_eq!(mul_div(0x4000_0000, 4, 8), 0x2000_0000);
     }
 
     /// GetDlgItemInt's readings, as the dialog capture's ints block shows them.

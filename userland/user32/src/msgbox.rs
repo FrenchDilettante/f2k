@@ -53,6 +53,26 @@ static FLAGS_LOGGED: rtl::stub::Logged<12> = rtl::stub::Logged::new();
 const MOST_TEXT: usize = 1024;
 const LONG_TEXT: u32 = 0x8000_0000;
 
+/// The most characters of its caption the box shows.
+const MOST_CAPTION: usize = 256;
+
+/// The units of a MessageBoxW string the box takes: as many as `out` holds.
+fn take_wide(text: rtl::edge::InWStr, out: &mut [u16]) -> usize {
+    let units = text.units();
+    let length = units.len().min(out.len());
+    for (index, unit) in out[..length].iter_mut().enumerate() {
+        *unit = units.get(index);
+    }
+    length
+}
+
+/// The units of a MessageBoxA string the box takes, converted from the ANSI code page: as many as
+/// `out` holds, as for MessageBoxW's.
+fn take_narrow(bytes: &[u8], out: &mut [u16]) -> usize {
+    let length = bytes.len().min(out.len());
+    imports::multi_byte_to_unicode(&mut out[..length], &bytes[..length])
+}
+
 /// The MB_ type and flags of `kind` the box does not handle yet, logged for `call` (each once per
 /// process).
 fn log_unhandled_flags(kind: u32, call: &Call) {
@@ -476,25 +496,12 @@ pub unsafe extern "system" fn message_box_w(
             rtl::edge::InWStr::optional(caption),
         )
     };
-    let mut text_units = [0u16; 1024];
-    let text_length = text.map_or(0, |text| {
-        let units = text.units();
-        let length = units.len().min(text_units.len());
-        for (index, out) in text_units[..length].iter_mut().enumerate() {
-            *out = units.get(index);
-        }
-        length
-    });
-    let mut caption_units = [0u16; 256];
+    // One unit past the most the box shows, so that a longer text is seen (and logged) as one.
+    let mut text_units = [0u16; MOST_TEXT + 1];
+    let text_length = text.map_or(0, |text| take_wide(text, &mut text_units));
+    let mut caption_units = [0u16; MOST_CAPTION];
     let caption_length = match caption {
-        Some(caption) => {
-            let units = caption.units();
-            let length = units.len().min(caption_units.len());
-            for (index, out) in caption_units[..length].iter_mut().enumerate() {
-                *out = units.get(index);
-            }
-            length
-        }
+        Some(caption) => take_wide(caption, &mut caption_units),
         None => {
             caption_units[..5].copy_from_slice(&ERROR_CAPTION[..5]);
             5
@@ -535,16 +542,12 @@ pub unsafe extern "system" fn message_box_a(
     // SAFETY: the caller's strings, or null.
     let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
     let text = text.map_or(&[][..], |text| text.bytes());
-    let mut text_units = [0u16; 1024];
-    let length = text.len().min(text_units.len() - 1);
-    let text_length = imports::multi_byte_to_unicode(&mut text_units[..length], &text[..length]);
-    let mut caption_units = [0u16; 256];
+    // As MessageBoxW's: one unit past the most the box shows.
+    let mut text_units = [0u16; MOST_TEXT + 1];
+    let text_length = take_narrow(text, &mut text_units);
+    let mut caption_units = [0u16; MOST_CAPTION];
     let caption_length = match caption {
-        Some(caption) => {
-            let bytes = caption.bytes();
-            let length = bytes.len().min(caption_units.len() - 1);
-            imports::multi_byte_to_unicode(&mut caption_units[..length], &bytes[..length])
-        }
+        Some(caption) => take_narrow(caption.bytes(), &mut caption_units),
         None => {
             caption_units[..5].copy_from_slice(&ERROR_CAPTION[..5]);
             5
@@ -567,4 +570,33 @@ pub unsafe extern "system" fn message_box_a(
         kind,
         call,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// MessageBoxA takes as many characters of its text and caption as MessageBoxW: its text one
+    /// past the most the box shows (so that a longer one is logged and cut there), its caption
+    /// MOST_CAPTION, with no unit kept back for a terminator.
+    #[test]
+    fn narrow_and_wide_strings_are_cut_alike() {
+        for (length, room, taken) in [
+            (5, MOST_TEXT + 1, 5),
+            (MOST_TEXT, MOST_TEXT + 1, MOST_TEXT),
+            (MOST_TEXT + 50, MOST_TEXT + 1, MOST_TEXT + 1),
+            (MOST_CAPTION, MOST_CAPTION, MOST_CAPTION),
+            (MOST_CAPTION + 1, MOST_CAPTION, MOST_CAPTION),
+        ] {
+            let narrow = std::vec![b'm'; length];
+            let mut wide: std::vec::Vec<u16> = std::vec![u16::from(b'm'); length];
+            wide.push(0);
+            let (mut from_narrow, mut from_wide) = (std::vec![0u16; room], std::vec![0u16; room]);
+            assert_eq!(take_narrow(&narrow, &mut from_narrow), taken, "A, {length}");
+            // SAFETY: the test's own string, NUL-terminated.
+            let text = unsafe { rtl::edge::InWStr::new(wide.as_ptr()) };
+            assert_eq!(take_wide(text, &mut from_wide), taken, "W, {length}");
+            assert_eq!(from_narrow, from_wide);
+        }
+    }
 }
