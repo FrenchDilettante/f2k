@@ -1129,19 +1129,10 @@ pub fn call_server(api: u32, data: &mut [u8]) -> u32 {
 /// RtlUnicodeToMultiByteN: as many of `source`'s units as `destination` holds, converted: the bytes
 /// written.
 pub fn unicode_to_multi_byte(destination: &mut [u8], source: &[u16]) -> usize {
-    let mut written = 0u32;
-    // SAFETY: the call reads the source's units and writes at most the destination's bytes, and
-    // the count into the local.
+    // SAFETY: the import is the conversion itself (ntdll's, or its stand-in).
     unsafe {
-        raw::RtlUnicodeToMultiByteN(
-            destination.as_mut_ptr(),
-            destination.len() as u32,
-            &mut written,
-            source.as_ptr(),
-            2 * source.len() as u32,
-        )
-    };
-    written as usize
+        rtl::string::unicode_to_multi_byte_with(raw::RtlUnicodeToMultiByteN, destination, source)
+    }
 }
 
 // --- win32k
@@ -1208,19 +1199,10 @@ pub fn change_display_settings(
 /// RtlMultiByteToUnicodeN: as much of `source` as `destination` holds, from the ANSI code page to
 /// UTF-16: the units written.
 pub fn multi_byte_to_unicode(destination: &mut [u16], source: &[u8]) -> usize {
-    let mut written = 0u32;
-    // SAFETY: the call reads the source's bytes and writes at most the destination's units, and
-    // the count into the local.
+    // SAFETY: the import is the conversion itself (ntdll's, or its stand-in).
     unsafe {
-        raw::RtlMultiByteToUnicodeN(
-            destination.as_mut_ptr(),
-            2 * destination.len() as u32,
-            &mut written,
-            source.as_ptr(),
-            source.len() as u32,
-        )
-    };
-    written as usize / 2
+        rtl::string::multi_byte_to_unicode_with(raw::RtlMultiByteToUnicodeN, destination, source)
+    }
 }
 
 /// NtClose: `handle` closed.
