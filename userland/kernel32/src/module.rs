@@ -411,15 +411,7 @@ fn module_path(_loader: &LoaderLock, module: u32) -> Option<&[u16]> {
                 return None;
             }
             if (*next).dll_base as u32 == module {
-                let path = (*next).full_dll_name;
-                if path.length < 2 || path.buffer == 0 {
-                    return Some(&[]);
-                }
-                let units = usize::from(path.length) / 2;
-                return Some(core::slice::from_raw_parts(
-                    path.buffer as *const u16,
-                    units,
-                ));
+                return Some((*next).full_dll_name.units());
             }
             next = (*next).in_load_order_links.flink as *const LdrDataTableEntry<usize>;
         }

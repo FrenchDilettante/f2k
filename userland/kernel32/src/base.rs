@@ -348,16 +348,10 @@ impl OwnString {
 
     /// Its UTF-16 units, in place (none for a string without a unit or a buffer).
     pub fn units(self) -> &'static [u16] {
-        let string = self.counted();
-        if string.length < 2 || string.buffer == 0 {
-            return &[];
-        }
         // SAFETY: one of the process's own strings, as the process starts with it: its buffer
         // (in the process parameters' block, or where the PEB's CSDVersion points) holds its
         // length, mapped for the process's whole life, and nothing rewrites it.
-        unsafe {
-            core::slice::from_raw_parts(string.buffer as *const u16, usize::from(string.length) / 2)
-        }
+        unsafe { self.counted().units() }
     }
 }
 

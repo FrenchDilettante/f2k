@@ -217,6 +217,24 @@ impl UnicodeString<*mut u16> {
     }
 }
 
+impl UnicodeString<usize> {
+    /// The units of a string whose buffer is an address (a process parameters block's, the PEB's,
+    /// a loader entry's): none for a length under one unit or no buffer.
+    ///
+    /// # Safety
+    ///
+    /// A buffer holds `length` bytes, aligned for `u16`, unchanged for `'a`.
+    pub unsafe fn units<'a>(&self) -> &'a [u16] {
+        if self.length < 2 || self.buffer == 0 {
+            return &[];
+        }
+        // SAFETY: the caller's contract.
+        unsafe {
+            core::slice::from_raw_parts(self.buffer as *const u16, usize::from(self.length) / 2)
+        }
+    }
+}
+
 impl AnsiString<*mut u8> {
     /// The empty string, with no buffer: what a conversion that allocates fills.
     pub const fn empty() -> Self {
@@ -337,6 +355,37 @@ mod tests {
         assert_eq!(unsafe { string.units() }, &text[..2]);
         // SAFETY: no units are read.
         assert!(unsafe { UnicodeString::empty().units() }.is_empty());
+        let odd = UnicodeString {
+            length: 1,
+            maximum_length: 6,
+            buffer: text.as_mut_ptr(),
+        };
+        // SAFETY: no units are read: the length is under one.
+        assert!(unsafe { odd.units() }.is_empty());
+    }
+
+    #[test]
+    fn a_string_at_an_address_reads_its_units() {
+        let text = [u16::from(b'a'), u16::from(b'b'), 0];
+        let string = UnicodeString::<usize> {
+            length: 4,
+            maximum_length: 6,
+            buffer: text.as_ptr() as usize,
+        };
+        // SAFETY: the buffer holds the length.
+        assert_eq!(unsafe { string.units() }, &text[..2]);
+        let none = UnicodeString::<usize> {
+            length: 4,
+            ..UnicodeString::default()
+        };
+        // SAFETY: no buffer, no units read.
+        assert!(unsafe { none.units() }.is_empty());
+        let odd = UnicodeString::<usize> {
+            length: 1,
+            ..string
+        };
+        // SAFETY: under one unit, none read.
+        assert!(unsafe { odd.units() }.is_empty());
     }
 
     #[test]

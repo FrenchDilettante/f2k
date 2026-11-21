@@ -50,21 +50,6 @@ unsafe fn with_block<R>(block: *mut u16, body: impl FnOnce(&mut [u16], usize) ->
     )
 }
 
-/// A UNICODE_STRING's units.
-///
-/// # Safety
-///
-/// The string's buffer holds its length.
-unsafe fn units<'a>(string: *const UnicodeString) -> &'a [u16] {
-    // SAFETY: the caller's contract.
-    let string = unsafe { &*string };
-    if string.length == 0 {
-        return &[];
-    }
-    // SAFETY: as above.
-    unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
-}
-
 /// Run `body` over the process's environment block, under the PEB lock.
 fn with_process_environment<R>(body: impl FnOnce(&mut [u16]) -> R) -> R {
     with_own_parameters(|own| {
@@ -116,7 +101,7 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
 ) -> u32 {
     let query = |block: &mut [u16]| {
         // SAFETY: the caller's string.
-        let Some(found) = env::query(block, unsafe { units(name) }) else {
+        let Some(found) = env::query(block, unsafe { (*name).units() }) else {
             return STATUS_VARIABLE_NOT_FOUND;
         };
         // SAFETY: the caller's string.
@@ -157,7 +142,12 @@ pub unsafe extern "system" fn rtl_set_environment_variable(
     value: *const UnicodeString,
 ) -> u32 {
     // SAFETY: the caller's strings.
-    let (name, value) = unsafe { (units(name), (!value.is_null()).then(|| units(value))) };
+    let (name, value) = unsafe {
+        (
+            (*name).units(),
+            (!value.is_null()).then(|| (*value).units()),
+        )
+    };
     if environment.is_null() {
         return with_own_parameters(|own| {
             let mut block = *own.environment as *mut u16;
@@ -224,7 +214,7 @@ pub unsafe extern "system" fn rtl_expand_environment_strings_u(
 ) -> u32 {
     let expand = |block: &mut [u16]| {
         // SAFETY: the caller's strings.
-        let (source, destination) = unsafe { (units(source), &mut *destination) };
+        let (source, destination) = unsafe { ((*source).units(), &mut *destination) };
         let room = destination.maximum_length as usize / 2;
         let mut produced = 0usize;
         env::expand(block, source, |unit| {

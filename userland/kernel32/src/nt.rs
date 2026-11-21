@@ -1435,16 +1435,6 @@ pub mod host {
         ENVIRONMENT.with(|block| block.borrow_mut().as_mut_ptr())
     }
 
-    unsafe fn string_units<'a>(string: *const super::UnicodeString) -> &'a [u16] {
-        // SAFETY: the caller's string.
-        let string = unsafe { &*string };
-        if string.length == 0 {
-            return &[];
-        }
-        // SAFETY: as above.
-        unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
-    }
-
     /// ntdll's environment functions over the stand-in's block (rtl::env, as ntdll runs them).
     pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
         _environment: *mut u16,
@@ -1454,7 +1444,7 @@ pub mod host {
         ENVIRONMENT.with(|block| {
             let block = block.borrow();
             // SAFETY: the caller's strings.
-            let Some(found) = rtl::env::query(&block, unsafe { string_units(name) }) else {
+            let Some(found) = rtl::env::query(&block, unsafe { (*name).units() }) else {
                 return rtl::status::STATUS_VARIABLE_NOT_FOUND;
             };
             let value = unsafe { &mut *value };
@@ -1481,8 +1471,8 @@ pub mod host {
             // SAFETY: the caller's strings.
             let (name, value) = unsafe {
                 (
-                    string_units(name),
-                    (!value.is_null()).then(|| string_units(value)),
+                    (*name).units(),
+                    (!value.is_null()).then(|| (*value).units()),
                 )
             };
             match rtl::env::set(&mut block.borrow_mut(), name, value) {
@@ -1503,9 +1493,7 @@ pub mod host {
             let block = block.borrow();
             let mut out = std::vec::Vec::new();
             // SAFETY: the caller's strings.
-            rtl::env::expand(&block, unsafe { string_units(source) }, |unit| {
-                out.push(unit)
-            });
+            rtl::env::expand(&block, unsafe { (*source).units() }, |unit| out.push(unit));
             let destination = unsafe { &mut *destination };
             // SAFETY: the caller's count.
             unsafe { returned.write((2 * (out.len() + 1)) as u32) };
@@ -1733,17 +1721,6 @@ pub mod host {
         0
     }
 
-    /// The units of a UNICODE_STRING.
-    unsafe fn units<'a>(string: *const super::UnicodeString) -> &'a [u16] {
-        // SAFETY: the caller's string.
-        let string = unsafe { &*string };
-        if string.length == 0 {
-            return &[];
-        }
-        // SAFETY: as above.
-        unsafe { core::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
-    }
-
     /// A create or open: the name recorded, the handle handed out, the arranged status (an
     /// informational one, STATUS_OBJECT_NAME_EXISTS, still hands the handle out).
     unsafe fn opened(handle: *mut u32, attributes: *const super::ObjectAttributes) -> u32 {
@@ -1753,7 +1730,7 @@ pub mod host {
                 attributes
                     .object_name
                     .as_ref()
-                    .map(|name| (attributes.root_directory, units(name).to_vec()))
+                    .map(|name| (attributes.root_directory, name.units().to_vec()))
             })
         };
         LAST_NAME.with(|cell| *cell.borrow_mut() = name);
@@ -1797,7 +1774,7 @@ pub mod host {
             "the stand-in answers KeyValuePartialInformation alone"
         );
         // SAFETY: the caller's name.
-        VALUE_NAMES.with(|names| names.borrow_mut().push(unsafe { units(name) }.to_vec()));
+        VALUE_NAMES.with(|names| names.borrow_mut().push(unsafe { (*name).units() }.to_vec()));
         let status = answer();
         if status != 0 {
             return status;
@@ -2222,15 +2199,8 @@ pub mod files {
     }
 
     unsafe fn text(string: *const UnicodeString) -> String {
-        // SAFETY: the caller's string.
-        let string = unsafe { &*string };
-        let units = if string.length == 0 {
-            &[][..]
-        } else {
-            // SAFETY: as above.
-            unsafe { std::slice::from_raw_parts(string.buffer, string.length as usize / 2) }
-        };
-        String::from_utf16_lossy(units)
+        // SAFETY: the caller's string, its buffer holding its length.
+        String::from_utf16_lossy(unsafe { (*string).units() })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2782,8 +2752,7 @@ pub mod files {
             return status;
         }
         // SAFETY: the caller's string.
-        let units =
-            unsafe { std::slice::from_raw_parts((*path).buffer, (*path).length as usize / 2) };
+        let units = unsafe { (*path).units() };
         let mut out = [0u16; 261];
         let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
         match rtl::path::full_path_name(units, &current, &mut out[..260]) {
@@ -3323,11 +3292,8 @@ pub mod modules {
     /// The module a name names: its file part, without regard to case, `.dll` when it has no
     /// extension.
     fn named(name: *const UnicodeString) -> Option<u32> {
-        // SAFETY: the caller's string.
-        let name = unsafe { &*name };
-        // SAFETY: as above.
-        let units = unsafe { core::slice::from_raw_parts(name.buffer, name.length as usize / 2) };
-        let text = std::string::String::from_utf16_lossy(units);
+        // SAFETY: the caller's string, its buffer holding its length.
+        let text = std::string::String::from_utf16_lossy(unsafe { (*name).units() });
         ASKED.with(|asked| asked.borrow_mut().push(text.clone()));
         let file = text.rsplit('\\').next().unwrap_or("").to_ascii_lowercase();
         let file = if file.contains('.') {
@@ -4421,11 +4387,7 @@ pub mod pipes {
 
     unsafe fn text(string: *const UnicodeString) -> String {
         // SAFETY: the caller's string, its buffer holding its length.
-        let units = unsafe {
-            let string = &*string;
-            std::slice::from_raw_parts(string.buffer, string.length as usize / 2)
-        };
-        String::from_utf16_lossy(units)
+        String::from_utf16_lossy(unsafe { (*string).units() })
     }
 
     pub unsafe extern "system" fn NtCreateNamedPipeFile(
