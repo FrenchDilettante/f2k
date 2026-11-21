@@ -20,11 +20,13 @@
 //!   in text mode, two in binary mode.
 //! - fclose flushes, frees the stream's own buffer and closes its descriptor.
 //! - fread and fwrite move bytes through the buffer, as getc and putc do, and answer the items
-//!   moved whole. ftell counts the file's bytes: in text mode each LF the buffer still holds, or
-//!   has pending, counts as the CR LF it is in the file (MSDN's ftell: only fseek need take the
-//!   value back). fseek writes what is pending, drops what is buffered, clears the end of the file
-//!   (the descriptor's Ctrl-Z too), and leaves a `+` stream free to read or write next; clearerr
-//!   clears the end-of-file and error indicators alone.
+//!   moved whole. ftell counts the file's bytes as VC6's reckons them ([`file_position`]): in text
+//!   mode each LF pending counts as the CR LF it goes out as, and a read's position is the fill's
+//!   bytes counted back from the file's end, each LF as CR LF, which a file of bare LFs reads back
+//!   short (MSDN's ftell: only fseek need take the value back). fseek writes what is pending, drops
+//!   what is buffered, clears the end of the file (the descriptor's Ctrl-Z too), and leaves a `+`
+//!   stream free to read or write next (a stream reading alone refills with 512 bytes first);
+//!   clearerr clears the end-of-file and error indicators alone.
 //! - `_popen`'s streams ([`crate::process`]) are streams over a pipe's end like any other.
 //! - fscanf and scanf scan a stream's bytes, fwscanf and wscanf its wide characters as fgetws reads
 //!   them ([`crate::scan`]): the character the scan reads ahead and does not take is pushed back,
@@ -70,6 +72,8 @@ const IORW: i32 = 0x0080;
 const IOYOURBUF: i32 = 0x0100;
 const IOSETVBUF: i32 = 0x0400;
 const TEMPORARY: i32 = 0x1000;
+/// The stream's last fill stopped at a text file's Ctrl-Z (VC6's `_IOCTRLZ`): ftell counts it.
+const IOCTRLZ: i32 = 0x2000;
 /// The buffer bits: a stream with none of them has no buffer yet.
 const BUFFERED: i32 = IOMYBUF | IONBF | IOYOURBUF;
 
@@ -79,6 +83,10 @@ const IOLBF: i32 = 0x0040;
 
 /// EOF.
 const EOF: i32 = -1;
+
+/// The buffer a stream reading alone refills with first after fseek (VC6's `_SMALL_BUFSIZ`), so
+/// that a seek's next read costs less; the fill after it takes the whole buffer again.
+const SMALL_BUFFER: i32 = 512;
 
 /// Each of `_iob`'s streams' lock (Windows 2000's per-stream lock, a critical section): the C
 /// runtime changes the stream's `FILE` only under it ([`with_stream`]). A bare [`Lock`], taken
@@ -297,9 +305,21 @@ fn fill(s: &mut File) -> i32 {
         s.cnt = 0;
         return EOF;
     }
+    if s.flag & (IOWRT | IORW) == 0 && lowio::stopped_at_ctrl_z(s.file) {
+        s.flag |= IOCTRLZ;
+    }
+    if s.bufsiz == SMALL_BUFFER && own_buffer(s) {
+        s.bufsiz = STREAM_BUFFER as i32;
+    }
     s.cnt = count - 1;
     // Inside the bytes read.
     take(s) as i32
+}
+
+/// Whether the stream's buffer is the C runtime's own, of its size: neither a caller's nor one
+/// setvbuf sized.
+fn own_buffer(s: &File) -> bool {
+    s.flag & (IOMYBUF | IOSETVBUF) == IOMYBUF
 }
 
 /// A character read from the stream (`getc`).
@@ -1503,41 +1523,96 @@ pub unsafe extern "C" fn fwrite(
     written / size
 }
 
-/// The stream's position as ftell answers it ([`file_position`] over its descriptor's); -1 (errno)
-/// when the descriptor has no position.
+/// The stream's position as ftell answers it ([`file_position`] over its descriptor's): -1 (errno)
+/// when the descriptor has no position, or the stream is not open.
 fn position(s: &mut File) -> i32 {
     if s.cnt < 0 {
         s.cnt = 0;
     }
-    let at = lowio::position(s.file);
+    let fd = s.file;
+    let at = lowio::seek(fd, 0, SEEK_CUR);
     if at < 0 {
         return -1;
     }
-    file_position(s, at, lowio::is_text(s.file))
+    let text = lowio::is_text(fd);
+    let at_end = || {
+        let end = lowio::seek(fd, 0, SEEK_END);
+        if end != at {
+            lowio::seek(fd, at, SEEK_SET);
+        }
+        end == at
+    };
+    let after_cr = || lowio::read_after_cr(fd);
+    match file_position(s, at, text, at_end, after_cr) {
+        Some(position) => position,
+        None => {
+            set_errno(EINVAL);
+            -1
+        }
+    }
 }
 
-/// The stream's position in its file's bytes, its descriptor's being `at`: less the bytes buffered
-/// for reading, or plus the bytes pending to be written, each LF among them counted as the CR LF
-/// it is in the file when `text`.
-fn file_position(s: &File, at: i32, text: bool) -> i32 {
-    let file_bytes = |bytes: &[u8]| {
-        let lines = if text {
-            bytes.iter().filter(|&&byte| byte == b'\n').count()
+/// The stream's position in its file's bytes, its descriptor's being `at`, as VC6's ftell
+/// reckons it. Writing, the bytes pending are added, each LF counted as the CR LF it goes out as
+/// in `text` mode. Reading, the bytes the last fill took from the file are taken off and those
+/// read from the buffer added: in `text` mode, the fill's bytes are its buffer's size (512 after
+/// fseek's small fill, one more when `after_cr` says its first LF's CR came before it) unless
+/// `at_end` says the descriptor is at the file's end, when they are the bytes it buffered, each
+/// LF as CR LF and a Ctrl-Z it stopped at counted — so a text file of bare LFs reads back short
+/// (fd's textmode capture: `-2` after its first byte). None for a stream that is not open.
+fn file_position(
+    s: &File,
+    at: i32,
+    text: bool,
+    at_end: impl FnOnce() -> bool,
+    after_cr: impl FnOnce() -> bool,
+) -> Option<i32> {
+    if s.flag & (IOMYBUF | IOYOURBUF) == 0 {
+        return Some(at - s.cnt);
+    }
+    let lines = |bytes: &[u8]| bytes.iter().filter(|&&byte| byte == b'\n').count() as i32;
+    let (taken, before) = pending(s);
+    let mut offset = taken.max(0);
+    if s.flag & (IOWRT | IOREAD) != 0 {
+        if text {
+            offset += lines(before);
+        }
+    } else if s.flag & IORW == 0 {
+        return None;
+    }
+    if at == 0 {
+        return Some(offset);
+    }
+    let mut at = at;
+    if s.flag & IOREAD != 0 {
+        if s.cnt == 0 {
+            offset = 0;
         } else {
-            0
-        };
-        (bytes.len() + lines) as i32
-    };
-    if s.flag & IOREAD != 0 && s.cnt > 0 {
-        // SAFETY: a `FILE` the C runtime keeps (see `with_stream`): reading, its `_cnt` bytes at
-        // `_ptr` are the buffer's.
-        let held = unsafe { core::slice::from_raw_parts(s.ptr, s.cnt as usize) };
-        return at - file_bytes(held);
+            let mut filled = s.cnt + taken.max(0);
+            if text {
+                if at_end() {
+                    // SAFETY: a `FILE` the C runtime keeps (see `with_stream`): reading, its
+                    // buffer holds the `_cnt` bytes after `_ptr`, and those before it.
+                    let held = unsafe { core::slice::from_raw_parts(s.base, filled as usize) };
+                    filled += lines(held);
+                    if s.flag & IOCTRLZ != 0 {
+                        filled += 1;
+                    }
+                } else {
+                    filled = if filled <= SMALL_BUFFER && own_buffer(s) {
+                        SMALL_BUFFER
+                    } else {
+                        s.bufsiz
+                    };
+                    if after_cr() {
+                        filled += 1;
+                    }
+                }
+            }
+            at -= filled;
+        }
     }
-    if s.flag & IOWRT != 0 && s.flag & (IOMYBUF | IOYOURBUF) != 0 {
-        return at + file_bytes(pending(s).1);
-    }
-    at
+    Some(at + offset)
 }
 
 /// ftell: the stream's position, as a count of the file's bytes ([`position`]); -1 (errno) on an
@@ -1588,6 +1663,8 @@ pub unsafe extern "C" fn fseek(stream: *mut File, offset: i32, origin: i32) -> i
         }
         if s.flag & IORW != 0 {
             s.flag &= !(IOREAD | IOWRT);
+        } else if s.flag & IOREAD != 0 && own_buffer(s) {
+            s.bufsiz = SMALL_BUFFER;
         }
         if lowio::seek(s.file, offset, origin) < 0 {
             -1
@@ -2078,13 +2155,22 @@ mod tests {
         let mut out = [0u8; 16];
         // SAFETY: the test's stream and buffers.
         unsafe {
-            assert_eq!(file_position(&*stream, 10, true), 0);
+            assert_eq!(
+                file_position(&*stream, 10, true, || true, || false).unwrap(),
+                0
+            );
             assert_eq!(fread(out.as_mut_ptr(), 1, 4, stream), 4);
             assert_eq!(&out[..4], b"ab\nc");
-            assert_eq!(file_position(&*stream, 10, true), 5);
+            assert_eq!(
+                file_position(&*stream, 10, true, || true, || false).unwrap(),
+                5
+            );
             assert_eq!(fread(out.as_mut_ptr(), 3, 1, stream), 1);
             assert_eq!(&out[..3], b"d\ne");
-            assert_eq!(file_position(&*stream, 10, true), 9);
+            assert_eq!(
+                file_position(&*stream, 10, true, || true, || false).unwrap(),
+                9
+            );
             // "f", then the refill fails: no whole item.
             assert_eq!(fread(out.as_mut_ptr(), 3, 1, stream), 0);
             assert_eq!(out[0], b'f');
@@ -2099,8 +2185,72 @@ mod tests {
         unsafe {
             assert_eq!(fread(out.as_mut_ptr(), 2, 2, stream), 2);
             assert_eq!(&out[..4], b"ab\r\n");
-            assert_eq!(file_position(&*stream, 10, false), 4);
+            assert_eq!(
+                file_position(&*stream, 10, false, || true, || false).unwrap(),
+                4
+            );
         }
+    }
+
+    /// ftell after each byte read of a text file wholly buffered, as fd's textmode capture traces
+    /// it: the fill's bytes counted back from the file's end with each LF as CR LF (and the
+    /// Ctrl-Z it stopped at), so "ab\r\ncd\r\n" reads 1 2 4 5 6 8, a file of bare LFs reads short
+    /// (-2 0 1 3 4 6), and "a\r\nb^Zcd" 3 5 7.
+    #[test]
+    fn ftell_reckons_a_text_fill_as_vc6_does() {
+        let trace = |held: &[u8], at: i32, flag: i32| {
+            let mut buffer = held.to_vec();
+            let mut file = File {
+                flag: IOREAD | IOMYBUF | flag,
+                ..reading(&mut buffer)
+            };
+            (0..held.len())
+                .map(|_| {
+                    get(&mut file);
+                    file_position(&file, at, true, || true, || panic!("at the end")).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(trace(b"ab\ncd\n", 8, 0), [1, 2, 4, 5, 6, 8]);
+        assert_eq!(trace(b"a\nb\nc\n", 6, 0), [-2, 0, 1, 3, 4, 6]);
+        assert_eq!(trace(b"a\nb", 7, IOCTRLZ), [3, 5, 7]);
+    }
+
+    /// ftell of a text stream whose fill did not reach the file's end: the fill took its buffer's
+    /// size from the file (512 after fseek's small fill), one more when its first LF's CR came
+    /// before it; nothing buffered is the descriptor's position; one neither reading nor writing,
+    /// nor open for update, is none.
+    #[test]
+    fn ftell_counts_a_full_fill_as_its_buffer() {
+        let mut buffer = [b'x'; 16];
+        let mut file = File {
+            flag: IOREAD | IOYOURBUF,
+            ..reading(&mut buffer)
+        };
+        get(&mut file);
+        assert_eq!(
+            file_position(&file, 100, true, || false, || false),
+            Some(85)
+        );
+        assert_eq!(file_position(&file, 100, true, || false, || true), Some(84));
+        file.flag = IOREAD | IOMYBUF;
+        assert_eq!(
+            file_position(&file, 1000, true, || false, || false),
+            Some(489)
+        );
+        file.cnt = 0;
+        assert_eq!(
+            file_position(&file, 100, true, || false, || false),
+            Some(100)
+        );
+        file.flag = IOMYBUF;
+        assert_eq!(file_position(&file, 100, true, || false, || false), None);
+        file.flag = IONBF;
+        file.cnt = 3;
+        assert_eq!(
+            file_position(&file, 100, true, || false, || false),
+            Some(97)
+        );
     }
 
     /// fd's streams block, its text-mode writes: fwrite buffers the caller's bytes, its complete
@@ -2113,12 +2263,24 @@ mod tests {
         let stream = core::ptr::addr_of_mut!(file);
         // SAFETY: the test's stream and buffers.
         unsafe {
-            assert_eq!(file_position(&*stream, 0, true), 0);
+            assert_eq!(
+                file_position(&*stream, 0, true, || true, || false).unwrap(),
+                0
+            );
             assert_eq!(fwrite(b"ab\ncd\n".as_ptr(), 1, 6, stream), 6);
-            assert_eq!(file_position(&*stream, 0, true), 8);
+            assert_eq!(
+                file_position(&*stream, 0, true, || true, || false).unwrap(),
+                8
+            );
             assert_eq!(fwrite(b"xy\nz".as_ptr(), 2, 2, stream), 2);
-            assert_eq!(file_position(&*stream, 0, true), 13);
-            assert_eq!(file_position(&*stream, 0, false), 10);
+            assert_eq!(
+                file_position(&*stream, 0, true, || true, || false).unwrap(),
+                13
+            );
+            assert_eq!(
+                file_position(&*stream, 0, false, || true, || false).unwrap(),
+                10
+            );
             assert_eq!(fwrite(b"q".as_ptr(), 1, 0, stream), 0);
             assert_eq!(fwrite(b"q".as_ptr(), 0, 1, stream), 0);
             assert_eq!(pending(&*stream).1, b"ab\ncd\nxy\nz");

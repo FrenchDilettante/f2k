@@ -170,6 +170,12 @@ pub fn set_file_pointer(handle: usize, distance: i32, method: u32) -> Result<u32
     }
 }
 
+/// SetEndOfFile: the file cut (or extended) to its position.
+pub fn set_end_of_file(handle: usize) -> Result<(), Win32Error> {
+    // SAFETY: no pointers.
+    succeeded(unsafe { imports::SetEndOfFile(handle) })
+}
+
 /// CloseHandle.
 pub fn close_handle(handle: usize) -> Result<(), Win32Error> {
     // SAFETY: no pointers.

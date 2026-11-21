@@ -18,7 +18,9 @@
 //!   program, descriptors 0 to 2 keep the standard handles in step (SetStdHandle). Descriptors 1
 //!   and 2 sharing one handle, closing one leaves it open for the other.
 //! - Text mode writes each LF as CR LF (`_write` answers the caller's bytes, `_tell` sees the
-//!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file).
+//!   file's); it reads CR LF as LF and stops at Ctrl-Z (a file's end, for a file: [`translate`]). A
+//!   file opened for reading and writing in text mode loses a trailing Ctrl-Z as it opens, so that
+//!   appending follows the text ([`cut_ctrl_z`]).
 //! - `_setmode` answers the previous mode (`_O_TEXT` or `_O_BINARY`); another mode is EINVAL.
 //! - `_pipe` makes an anonymous pipe's two ends the two lowest free descriptors, the read end first
 //!   ([`pipe_mode`]), as pipe's crt capture pins them: both handles inheritable unless
@@ -55,6 +57,9 @@ pub const DESCRIPTORS: usize = 2048;
 /// A descriptor's flags.
 const FOPEN: u8 = 0x01;
 const FEOF: u8 = 0x02;
+/// A text-mode read's raw bytes started with an LF (the CR before it dropped by the read before,
+/// which stopped at it): ftell counts that CR.
+const FCRLF: u8 = 0x04;
 const FPIPE: u8 = 0x08;
 const FNOINHERIT: u8 = 0x10;
 const FAPPEND: u8 = 0x20;
@@ -103,7 +108,13 @@ const STANDARD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
 
 /// Win32 errors the layer tells apart.
 const ERROR_ACCESS_DENIED: u32 = 5;
+const ERROR_NEGATIVE_SEEK: u32 = 131;
 const ERROR_BROKEN_PIPE: u32 = 109;
+
+/// SetFilePointer's origins.
+const FILE_BEGIN: u32 = 0;
+const FILE_CURRENT: u32 = 1;
+const FILE_END: u32 = 2;
 
 /// Ctrl-Z: a text file's end.
 const CTRL_Z: u8 = 0x1A;
@@ -505,6 +516,19 @@ pub fn is_text(fd: i32) -> bool {
     descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FTEXT) == FOPEN | FTEXT)
 }
 
+/// Whether `fd` is open in text mode and its reads stopped at a Ctrl-Z (the file's end, until a
+/// seek clears it).
+pub fn stopped_at_ctrl_z(fd: i32) -> bool {
+    let wanted = FOPEN | FTEXT | FEOF;
+    descriptor(fd).is_some_and(|entry| entry.flags & wanted == wanted)
+}
+
+/// Whether `fd`'s last text-mode read started with an LF whose CR the read before it dropped
+/// (FCRLF): that read took one byte more from the file than it handed back.
+pub fn read_after_cr(fd: i32) -> bool {
+    descriptor(fd).is_some_and(|entry| entry.flags & (FOPEN | FCRLF) == FOPEN | FCRLF)
+}
+
 /// A standard descriptor's new handle (0 once it is closed) made the standard handle too, in a
 /// console program.
 fn follow_standard(fd: usize, handle: usize) {
@@ -680,10 +704,35 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
         not_open();
         return -1;
     }
-    install(
-        reservation,
-        Descriptor::open(handle, plan.mode | type_flags(kind)),
-    )
+    let flags = plan.mode | type_flags(kind);
+    if flags & (FDEV | FPIPE) == 0 && flags & FTEXT != 0 && oflag & O_RDWR != 0 {
+        if let Err(Win32Error(error)) = cut_ctrl_z(handle) {
+            let _ = kernel32::close_handle(handle);
+            set_dos_error(error);
+            return -1;
+        }
+    }
+    install(reservation, Descriptor::open(handle, flags))
+}
+
+/// A file opened for reading and writing in text mode, its last byte cut off when it is a Ctrl-Z,
+/// so that what is appended follows the text, not the Ctrl-Z that ends it (VC6's `_open`; fd's
+/// textmode capture: `"a+"` appends "def" to "abc^Z" as "abcdef", `"a"` and `"a+b"` after the
+/// Ctrl-Z, and `_O_RDWR | _O_TEXT` alone cuts it). The position is the file's start after it; an
+/// empty file (its last byte before the start: ERROR_NEGATIVE_SEEK) is left alone.
+fn cut_ctrl_z(handle: usize) -> Result<(), Win32Error> {
+    let last = match kernel32::set_file_pointer(handle, -1, FILE_END) {
+        Ok(last) => last,
+        Err(Win32Error(ERROR_NEGATIVE_SEEK)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let mut byte = [0u8];
+    if kernel32::read_file(handle, &mut byte) == Ok(1) && byte[0] == CTRL_Z {
+        kernel32::set_file_pointer(handle, last as i32, FILE_BEGIN)?;
+        kernel32::set_end_of_file(handle)?;
+    }
+    kernel32::set_file_pointer(handle, 0, FILE_BEGIN)?;
+    Ok(())
 }
 
 /// `_pipe`'s descriptors' mode flags for `textmode` and `_fmode`'s value `fmode`, and whether the
@@ -922,22 +971,6 @@ pub fn seek(fd: i32, offset: i32, origin: u32) -> i32 {
     position as i32
 }
 
-/// The descriptor's file position, or -1, its end-of-file mark kept (ftell's question, which moves
-/// nothing).
-pub fn position(fd: i32) -> i32 {
-    let _io = hold(fd);
-    let Some(entry) = open(fd) else {
-        return -1;
-    };
-    match kernel32::set_file_pointer(entry.handle, 0, 1) {
-        Ok(position) => position as i32,
-        Err(Win32Error(error)) => {
-            set_dos_error(error);
-            -1
-        }
-    }
-}
-
 /// _tell: the descriptor's file position.
 #[unsafe(export_name = "f2k_export__tell")]
 pub extern "C" fn tell(fd: i32) -> i32 {
@@ -1110,13 +1143,64 @@ fn read_held(fd: i32, bytes: &mut [u8]) -> i32 {
     if flags & FTEXT == 0 {
         return got as i32;
     }
-    // The translation, in place.
+    // FCRLF: the raw bytes start with an LF (the CR before it dropped by the last read).
+    let starts_with_lf = got > 0 && bytes[0] == b'\n';
+    update(fd, handle, |entry| {
+        if starts_with_lf {
+            entry.flags |= FCRLF;
+        } else {
+            entry.flags &= !FCRLF;
+        }
+    });
+    let (to, ending) = translate(&mut bytes[..got], flags, || {
+        let mut next = [0u8];
+        (kernel32::read_file(handle, &mut next) == Ok(1)).then_some(next[0])
+    });
+    match ending {
+        Ending::Text => {}
+        Ending::CtrlZ => {
+            update(fd, handle, |entry| entry.flags |= FEOF);
+        }
+        Ending::Ahead(next) => {
+            if flags & (FPIPE | FDEV) != 0 {
+                update(fd, handle, |entry| entry.ahead = u16::from(next));
+            } else {
+                // The byte given back to the file, for the next read.
+                let _ = kernel32::set_file_pointer(handle, -1, FILE_CURRENT);
+            }
+        }
+    }
+    to as i32
+}
+
+/// How a text-mode read's translation ([`translate`]) ended, beyond its bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// At the bytes' end.
+    Text,
+    /// At a Ctrl-Z, which a file's read takes as its end (a device's reads go on).
+    CtrlZ,
+    /// After a CR last, whose next byte, read ahead, belongs to the next read: kept for it on a
+    /// pipe or a device, given back to a file.
+    Ahead(u8),
+}
+
+/// A text-mode read's bytes translated in place, as VC6's `_read` translates them: CR LF to LF, a
+/// lone CR kept, and a Ctrl-Z the end of what the read hands back. A CR last waits for the next
+/// byte, which `peek` reads ahead (none at the end or on an error: the CR is kept): an LF makes
+/// the pair an LF, which a device or a pipe takes now; a file takes it now only when the CR is the
+/// read's first byte, else the CR is dropped and the LF given back to start the next read (which
+/// FCRLF marks). Any other byte keeps the CR and is the next read's. The bytes handed back, and
+/// how the translation ended. `flags` are the descriptor's: FPIPE or FDEV for a pipe or a device,
+/// neither for a file. A device's Ctrl-Z is data.
+fn translate(bytes: &mut [u8], flags: u8, peek: impl FnOnce() -> Option<u8>) -> (usize, Ending) {
+    let stream_like = flags & (FPIPE | FDEV) != 0;
+    let got = bytes.len();
     let (mut from, mut to) = (0, 0);
     while from < got {
         let byte = bytes[from];
         if byte == CTRL_Z && flags & FDEV == 0 {
-            update(fd, handle, |entry| entry.flags |= FEOF);
-            break;
+            return (to, Ending::CtrlZ);
         }
         if byte != b'\r' {
             bytes[to] = byte;
@@ -1136,26 +1220,29 @@ fn read_held(fd: i32, bytes: &mut [u8]) -> i32 {
             continue;
         }
         // A CR last: the next byte decides.
-        from += 1;
-        let mut next = [0u8];
-        let peeked = kernel32::read_file(handle, &mut next) == Ok(1);
-        let next = next[0];
-        if peeked && next == b'\n' {
-            bytes[to] = b'\n';
-        } else {
+        let Some(next) = peek() else {
             bytes[to] = b'\r';
-            if peeked {
-                if flags & (FPIPE | FDEV) != 0 {
-                    update(fd, handle, |entry| entry.ahead = u16::from(next));
-                } else {
-                    // The byte given back to the file.
-                    let _ = kernel32::set_file_pointer(handle, -1, 1);
-                }
+            return (to + 1, Ending::Text);
+        };
+        if stream_like {
+            if next == b'\n' {
+                bytes[to] = b'\n';
+                return (to + 1, Ending::Text);
             }
+            bytes[to] = b'\r';
+            return (to + 1, Ending::Ahead(next));
         }
-        to += 1;
+        if to == 0 && next == b'\n' {
+            bytes[to] = b'\n';
+            return (to + 1, Ending::Text);
+        }
+        if next == b'\n' {
+            return (to, Ending::Ahead(next));
+        }
+        bytes[to] = b'\r';
+        return (to + 1, Ending::Ahead(next));
     }
-    to as i32
+    (to, Ending::Text)
 }
 
 #[cfg(test)]
@@ -1189,6 +1276,65 @@ mod tests {
         for fd in [first_fd, second_fd + 1] {
             store(fd, CLOSED);
         }
+    }
+
+    /// `bytes` translated as a read of a descriptor with `flags` translates them, the byte after
+    /// them `next` (none: the end): what the read hands back, and how it ended.
+    fn translated(bytes: &[u8], flags: u8, next: Option<u8>) -> (Vec<u8>, Ending) {
+        let mut buffer = bytes.to_vec();
+        let (count, ending) = translate(&mut buffer, flags, || next);
+        buffer.truncate(count);
+        (buffer, ending)
+    }
+
+    /// CR LF reads as LF and a lone CR as itself; a Ctrl-Z ends a file's read (fd's textmode
+    /// capture: "ab^Zcd" reads "ab") and is a device's data.
+    #[test]
+    fn a_text_read_translates_its_bytes() {
+        assert_eq!(
+            translated(b"a\r\nb\rc", 0, None),
+            (b"a\nb\rc".to_vec(), Ending::Text)
+        );
+        assert_eq!(
+            translated(b"ab\x1Acd", 0, None),
+            (b"ab".to_vec(), Ending::CtrlZ)
+        );
+        assert_eq!(
+            translated(b"ab\x1Acd", FDEV, None),
+            (b"ab\x1Acd".to_vec(), Ending::Text)
+        );
+    }
+
+    /// A CR last: the byte after it decides. A file's read drops the CR before an LF and gives
+    /// the LF back for the next read, unless the CR is all it read; any other byte goes back, the
+    /// CR kept. A pipe's or a device's read takes the LF now, and keeps any other byte for the
+    /// next read. At the end, the CR is kept.
+    #[test]
+    fn a_cr_last_waits_for_the_next_byte() {
+        assert_eq!(
+            translated(b"ab\r", 0, Some(b'\n')),
+            (b"ab".to_vec(), Ending::Ahead(b'\n'))
+        );
+        assert_eq!(
+            translated(b"\r", 0, Some(b'\n')),
+            (b"\n".to_vec(), Ending::Text)
+        );
+        assert_eq!(
+            translated(b"ab\r", 0, Some(b'x')),
+            (b"ab\r".to_vec(), Ending::Ahead(b'x'))
+        );
+        assert_eq!(
+            translated(b"ab\r", FPIPE, Some(b'\n')),
+            (b"ab\n".to_vec(), Ending::Text)
+        );
+        assert_eq!(
+            translated(b"ab\r", FDEV, Some(b'x')),
+            (b"ab\r".to_vec(), Ending::Ahead(b'x'))
+        );
+        assert_eq!(
+            translated(b"ab\r", 0, None),
+            (b"ab\r".to_vec(), Ending::Text)
+        );
     }
 
     fn plan(oflag: i32, pmode: i32, fmode: i32) -> OpenPlan {

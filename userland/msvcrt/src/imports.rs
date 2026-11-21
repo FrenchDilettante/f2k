@@ -49,6 +49,8 @@ unsafe extern "system" {
         overlapped: usize,
     ) -> u32;
     pub fn SetFilePointer(handle: usize, distance: i32, high: *mut i32, method: u32) -> u32;
+    /// SetEndOfFile: the file ends at its position (`_open`'s trailing Ctrl-Z cut off).
+    pub fn SetEndOfFile(handle: usize) -> u32;
     pub fn CloseHandle(handle: usize) -> u32;
     /// An anonymous pipe (`_pipe`'s): its read end's and write end's handles, inheritable as the
     /// attributes say, its quota `size` (0: the default).
@@ -462,6 +464,10 @@ pub mod host {
 
     pub unsafe extern "system" fn SetFilePointer(_: usize, _: i32, _: *mut i32, _: u32) -> u32 {
         unreachable("SetFilePointer")
+    }
+
+    pub unsafe extern "system" fn SetEndOfFile(_: usize) -> u32 {
+        unreachable("SetEndOfFile")
     }
 
     std::thread_local! {
