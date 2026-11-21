@@ -24,7 +24,14 @@
 //! base, which the modules region never is; the INIT section is not discarded after DriverEntry
 //! (the image keeps its pages until the unload).
 
-use rtl::image::{data_directory, DIRECTORY_BASERELOC, DIRECTORY_IMPORT};
+use rtl::image::{
+    data_directory,
+    DIRECTORY_BASERELOC,
+    DIRECTORY_IMPORT,
+    ORDINAL_FLAG,
+    REL_BASED_ABSOLUTE,
+    REL_BASED_HIGHLOW,
+};
 
 use crate::exec::pe::{Image, Reject, Unresolved};
 
@@ -76,11 +83,6 @@ pub enum ImportName<'a> {
 
 // --- Base relocations ------------------------------------------------------------------------
 
-/// The relocation entry types: 0 is padding, 3 (HIGHLOW) adds the delta to the dword at the
-/// entry's address.
-const RELOC_ABSOLUTE: u16 = 0;
-const RELOC_HIGHLOW: u16 = 3;
-
 /// Apply the image's base relocations in `staged` (the in-memory image [`Image::map_into` built,
 /// so RVAs are offsets into it) for its move from the preferred base to `base`. A zero delta
 /// changes nothing; a nonzero delta with no relocation directory is [`LoadError::NoRelocations`].
@@ -118,8 +120,8 @@ pub fn apply_relocations(image: &Image, staged: &mut [u8], base: u32) -> Result<
         while block_end - entry_off >= 2 {
             let entry = read_u16(staged, entry_off).ok_or(LoadError::Malformed)?;
             match entry >> 12 {
-                RELOC_ABSOLUTE => {}
-                RELOC_HIGHLOW => {
+                REL_BASED_ABSOLUTE => {}
+                REL_BASED_HIGHLOW => {
                     let at = page_rva
                         .checked_add(u32::from(entry & 0xFFF))
                         .ok_or(LoadError::Malformed)? as usize;
@@ -188,7 +190,7 @@ pub fn snap_imports(
             if thunk == 0 {
                 break;
             }
-            let name = if thunk & 0x8000_0000 != 0 {
+            let name = if thunk & ORDINAL_FLAG != 0 {
                 ImportName::Ordinal(thunk & 0xFFFF)
             } else {
                 // The hint word precedes the name and is never authoritative.

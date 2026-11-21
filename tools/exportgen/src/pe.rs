@@ -25,17 +25,28 @@ use crate::{Implementation, Spec};
 
 /// The headers' size, and both alignments: a page.
 pub const ALIGNMENT: u32 = 0x1000;
+
+// The format's constants and its structures' sizes the image is written with: a copy of the
+// runtime library's (`rtl::image`, the one definition the kernel and its loaders read images by),
+// since rtl's build runs this crate and so this crate cannot depend on rtl. The boot loader's
+// tests, which see both, hold each to rtl's.
+
+/// "MZ", "PE\0\0", and the optional header's magic: PE32.
+pub const DOS_MAGIC: u16 = 0x5A4D;
+pub const NT_SIGNATURE: u32 = 0x0000_4550;
+pub const PE32_MAGIC: u16 = 0x010B;
 /// IMAGE_FILE_MACHINE_I386.
 pub const MACHINE_I386: u16 = 0x014C;
-/// The optional header's magic: PE32.
-pub const PE32_MAGIC: u16 = 0x010B;
 /// IMAGE_SUBSYSTEM_NATIVE: a kernel-mode image, no Win32 subsystem.
 pub const SUBSYSTEM_NATIVE: u16 = 1;
-/// The file header's characteristics: IMAGE_FILE_EXECUTABLE_IMAGE | IMAGE_FILE_32BIT_MACHINE
-/// (relocations kept: the image may be rebased).
-pub const CHARACTERISTICS: u16 = 0x0002 | 0x0100;
-/// IMAGE_FILE_RELOCS_STRIPPED: an image without base relocations, which loads only at its base.
-pub const RELOCS_STRIPPED: u16 = 0x0001;
+/// The file header's characteristics: IMAGE_FILE_RELOCS_STRIPPED (an image without base
+/// relocations, which loads only at its base), IMAGE_FILE_EXECUTABLE_IMAGE,
+/// IMAGE_FILE_32BIT_MACHINE.
+pub const FILE_RELOCS_STRIPPED: u16 = 0x0001;
+pub const FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+pub const FILE_32BIT_MACHINE: u16 = 0x0100;
+/// The characteristics the image always carries (relocations kept: the image may be rebased).
+pub const CHARACTERISTICS: u16 = FILE_EXECUTABLE_IMAGE | FILE_32BIT_MACHINE;
 /// The section characteristics: code, initialized data, uninitialized data; discardable;
 /// executable, readable, writable.
 pub const SCN_CNT_CODE: u32 = 0x0000_0020;
@@ -45,25 +56,26 @@ pub const SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
 pub const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 pub const SCN_MEM_READ: u32 = 0x4000_0000;
 pub const SCN_MEM_WRITE: u32 = 0x8000_0000;
-/// The data directories the image fills: the export table, the base relocation table.
+/// The data directories the image fills: the export table, the base relocation table; and the
+/// format's count of them.
 pub const DIRECTORY_EXPORT: usize = 0;
 pub const DIRECTORY_BASERELOC: usize = 5;
-const DIRECTORIES: usize = 16;
+pub const NUMBER_OF_DIRECTORIES: usize = 16;
 /// A base relocation's type: IMAGE_REL_BASED_ABSOLUTE (padding), IMAGE_REL_BASED_HIGHLOW (the
 /// delta added to the dword at the offset).
 pub const REL_BASED_ABSOLUTE: u16 = 0;
 pub const REL_BASED_HIGHLOW: u16 = 3;
-/// The prefix a spec's native body carries as a symbol of the kernel.
-pub const EXPORT_PREFIX: &str = "f2k_export_";
-
 /// IMAGE_DOS_HEADER's size, IMAGE_FILE_HEADER's, IMAGE_OPTIONAL_HEADER32's,
 /// IMAGE_EXPORT_DIRECTORY's.
-const DOS_HEADER_SIZE: usize = 0x40;
-const FILE_HEADER_SIZE: usize = 0x14;
-const OPTIONAL_HEADER_SIZE: usize = 0xE0;
-const EXPORT_DIRECTORY_SIZE: usize = 0x28;
+pub const DOS_HEADER_SIZE: usize = 0x40;
+pub const FILE_HEADER_SIZE: usize = 0x14;
+pub const OPTIONAL_HEADER_SIZE: usize = 0xE0;
+pub const EXPORT_DIRECTORY_SIZE: usize = 0x28;
 /// The checksum's offset in the optional header.
-const CHECKSUM_FIELD: usize = 0x40;
+pub const CHECKSUM_FIELD: usize = 0x40;
+
+/// The prefix a spec's native body carries as a symbol of the kernel.
+pub const EXPORT_PREFIX: &str = "f2k_export_";
 
 /// The DOS stub's program, run from the paragraph after the 64-byte header: print the message
 /// that follows it (`push cs; pop ds; mov dx, 14; mov ah, 9; int 21h`), then exit with code 1
@@ -576,7 +588,7 @@ pub fn emit(linked: &Linked, spec: &Spec, module: &str) -> Result<Vec<u8>, Strin
     let lfanew = (DOS_HEADER_SIZE + DOS_PROGRAM.len() + DOS_MESSAGE.len()).next_multiple_of(8);
     let mut headers = Out(Vec::new());
     // IMAGE_DOS_HEADER: the stub is the header and its program, `lfanew` bytes.
-    headers.u16(0x5A4D); // e_magic, "MZ"
+    headers.u16(DOS_MAGIC); // e_magic, "MZ"
     headers.u16((lfanew % 512) as u16); // e_cblp: the bytes in the last page
     headers.u16(lfanew.div_ceil(512) as u16); // e_cp: the pages
     headers.u16(0); // e_crlc: no relocations
@@ -599,8 +611,8 @@ pub fn emit(linked: &Linked, spec: &Spec, module: &str) -> Result<Vec<u8>, Strin
     headers.bytes(DOS_MESSAGE);
     headers.align(8);
     debug_assert_eq!(headers.0.len(), lfanew);
-    headers.bytes(b"PE\0\0");
-    // IMAGE_FILE_HEADER.
+    headers.u32(NT_SIGNATURE); // "PE\0\0"
+                               // IMAGE_FILE_HEADER.
     headers.u16(MACHINE_I386);
     headers.u16(rows.len() as u16);
     headers.u32(0); // TimeDateStamp: none, so a build is reproducible
@@ -608,7 +620,7 @@ pub fn emit(linked: &Linked, spec: &Spec, module: &str) -> Result<Vec<u8>, Strin
     headers.u32(0); // NumberOfSymbols
     headers.u16(OPTIONAL_HEADER_SIZE as u16);
     headers.u16(if relocations.is_empty() {
-        CHARACTERISTICS | RELOCS_STRIPPED
+        CHARACTERISTICS | FILE_RELOCS_STRIPPED
     } else {
         CHARACTERISTICS
     });
@@ -645,8 +657,8 @@ pub fn emit(linked: &Linked, spec: &Spec, module: &str) -> Result<Vec<u8>, Strin
     headers.u32(0x0010_0000); // SizeOfHeapReserve
     headers.u32(ALIGNMENT); // SizeOfHeapCommit
     headers.u32(0); // LoaderFlags
-    headers.u32(DIRECTORIES as u32); // NumberOfRvaAndSizes
-    for index in 0..DIRECTORIES {
+    headers.u32(NUMBER_OF_DIRECTORIES as u32); // NumberOfRvaAndSizes
+    for index in 0..NUMBER_OF_DIRECTORIES {
         let (rva, size) = match index {
             DIRECTORY_EXPORT => (edata_rva, edata.len() as u32),
             DIRECTORY_BASERELOC if !relocations.is_empty() => (reloc_rva, relocations.len() as u32),
@@ -759,7 +771,7 @@ impl Image {
 /// Read `file` as a PE32 image.
 pub fn read(file: &[u8]) -> Result<Image, String> {
     let mut dos = Fields::at(file, 0, "the DOS header")?;
-    if dos.u16()? != 0x5A4D {
+    if dos.u16()? != DOS_MAGIC {
         return Err("no MZ signature".into());
     }
     let lfanew = u32::from_le_bytes(
@@ -769,7 +781,7 @@ pub fn read(file: &[u8]) -> Result<Image, String> {
             .unwrap(),
     ) as usize;
     let mut nt = Fields::at(file, lfanew, "the NT headers")?;
-    if nt.take::<4>()? != *b"PE\0\0" {
+    if nt.u32()? != NT_SIGNATURE {
         return Err("no PE signature".into());
     }
     let machine = nt.u16()?;
@@ -806,7 +818,7 @@ pub fn read(file: &[u8]) -> Result<Image, String> {
     let _loader_flags = nt.u32()?;
     let directory_count = nt.u32()? as usize;
     let mut directories = Vec::new();
-    for _ in 0..directory_count.min(DIRECTORIES) {
+    for _ in 0..directory_count.min(NUMBER_OF_DIRECTORIES) {
         directories.push((nt.u32()?, nt.u32()?));
     }
     let mut table = Fields::at(file, optional + optional_size, "the section table")?;
@@ -1260,7 +1272,10 @@ name = "KeBugCheckEx"
         bare.fixups.clear();
         let image = read(&emit(&bare, &spec(), "ntoskrnl.exe").unwrap()).unwrap();
         assert_eq!(image.sections.len(), 5);
-        assert_eq!(image.characteristics & RELOCS_STRIPPED, RELOCS_STRIPPED);
+        assert_eq!(
+            image.characteristics & FILE_RELOCS_STRIPPED,
+            FILE_RELOCS_STRIPPED
+        );
         assert_eq!(image.directories[DIRECTORY_BASERELOC], (0, 0));
     }
 

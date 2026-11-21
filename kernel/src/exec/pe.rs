@@ -35,27 +35,21 @@ use rtl::image::{
     ImageSectionHeader,
     DIRECTORY_EXPORT,
     DOS_MAGIC,
+    FILE_DLL,
+    MACHINE_I386,
     NT_SIGNATURE,
     NUMBER_OF_DIRECTORIES,
     PE32_MAGIC,
+    SCN_MEM_EXECUTE,
+    SCN_MEM_READ,
+    SCN_MEM_WRITE,
+    SUBSYSTEM_NATIVE,
+    SUBSYSTEM_WINDOWS_CUI,
+    SUBSYSTEM_WINDOWS_GUI,
 };
 #[cfg(test)]
-use rtl::image::{ImageImportDescriptor, DIRECTORY_IAT, DIRECTORY_IMPORT};
+use rtl::image::{ImageImportDescriptor, DIRECTORY_IAT, DIRECTORY_IMPORT, ORDINAL_FLAG};
 use rtl::pod::Pod;
-
-/// The only machine type this loader accepts: i386.
-const MACHINE_I386: u16 = 0x014C;
-
-/// The subsystems this loader accepts for a program: Windows GUI and console — the two a user
-/// image may carry; anything else (native included) is rejected as not a program. A DLL's
-/// subsystem field is not consulted (the system DLLs carry either value).
-const SUBSYSTEM_GUI: u16 = 2;
-const SUBSYSTEM_CUI: u16 = 3;
-/// The native subsystem: a driver's (the DDK links a `.sys` image /SUBSYSTEM:NATIVE).
-const SUBSYSTEM_NATIVE: u16 = 1;
-
-/// The file-header characteristic that makes an image a DLL.
-const FILE_DLL: u16 = 0x2000;
 
 /// The granularity a preferred base must be a multiple of (the format's 64 KiB rule).
 const IMAGE_BASE_ALIGNMENT: u32 = 0x1_0000;
@@ -68,15 +62,6 @@ pub const MAX_IMAGE_SIZE: u32 = 0x0100_0000;
 
 /// The section-count cap.
 const MAX_SECTIONS: usize = 96;
-
-/// The high bit of a thunk marks an import by ordinal, not by name.
-#[cfg(test)]
-const ORDINAL_FLAG: u32 = 0x8000_0000;
-
-/// Section-characteristic bits the loader maps to page protection.
-const SCN_EXECUTE: u32 = 0x2000_0000;
-const SCN_READ: u32 = 0x4000_0000;
-const SCN_WRITE: u32 = 0x8000_0000;
 
 /// Why an image is not loadable. Identity questions only: bytes that merely do not describe a
 /// loadable PE32 image.
@@ -215,9 +200,9 @@ impl Section {
     /// The access this section maps with.
     pub fn protection(&self) -> Protection {
         Protection {
-            read: self.characteristics & SCN_READ != 0,
-            write: self.characteristics & SCN_WRITE != 0,
-            execute: self.characteristics & SCN_EXECUTE != 0,
+            read: self.characteristics & SCN_MEM_READ != 0,
+            write: self.characteristics & SCN_MEM_WRITE != 0,
+            execute: self.characteristics & SCN_MEM_EXECUTE != 0,
         }
     }
 }
@@ -497,7 +482,12 @@ fn check_identity(nt: &ImageNtHeaders32, kernel_module: bool) -> Result<(), Reje
             return Err(Reject::NoEntryPoint);
         }
     } else {
-        if !dll && !matches!(optional.subsystem, SUBSYSTEM_GUI | SUBSYSTEM_CUI) {
+        if !dll
+            && !matches!(
+                optional.subsystem,
+                SUBSYSTEM_WINDOWS_GUI | SUBSYSTEM_WINDOWS_CUI
+            )
+        {
             return Err(Reject::WrongSubsystem);
         }
         if !dll && optional.address_of_entry_point == 0 {

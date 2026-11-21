@@ -1,12 +1,17 @@
 //! A PE32 image's structures, as Windows defines them (IMAGE_DOS_HEADER, IMAGE_NT_HEADERS32, the
-//! section table's rows, the export directory, the import descriptors and the TLS directory), all
-//! plain data ([`Pod`]), so that a parse reads each one whole from an image's bytes; a data
-//! directory as RtlImageDirectoryEntryToData finds it ([`data_directory`]); where RtlImageNtHeader
-//! finds the NT headers ([`nt_headers_offset`]). From an image mapped in a process's memory, read
-//! through [`Memory`] as the loader reads it: its NT headers ([`mapped_headers`],
-//! [`mapped_nt_headers`]; [`nt_headers`] within its first page alone), a data directory
-//! ([`mapped_directory`]), and what the process's start takes from the headers: the process heap's
-//! first segment ([`process_heap_sizes`]).
+//! section table's rows, the export directory, the import descriptors, the TLS directory and the
+//! base relocations' blocks), all plain data ([`Pod`]), so that a parse reads each one whole from
+//! an image's bytes, and the format's constants (the machine, the file header's characteristics,
+//! the subsystems, the section flags, the data directories' indices, the relocation types): the
+//! one definition the kernel's image loader, its `.sys` loader, the boot loader and the DLLs read
+//! images by. The export generator (tools/exportgen), which the runtime library's own build runs,
+//! keeps a copy of those it writes, held to these by the boot loader's tests. A data directory as
+//! RtlImageDirectoryEntryToData finds it ([`data_directory`]); where RtlImageNtHeader finds the NT
+//! headers ([`nt_headers_offset`]). From an image mapped in a process's memory, read through
+//! [`Memory`] as the loader reads it: its NT headers ([`mapped_headers`], [`mapped_nt_headers`];
+//! [`nt_headers`] within its first page alone), a data directory ([`mapped_directory`]), and what
+//! the process's start takes from the headers: the process heap's first segment
+//! ([`process_heap_sizes`]).
 
 use core::mem::{offset_of, size_of};
 
@@ -167,6 +172,18 @@ impl ImageTlsDirectory32 {
     }
 }
 
+/// IMAGE_BASE_RELOCATION: a block of base relocations, the fixups of one page. Its 16-bit entries
+/// follow it: each a type in the top four bits ([`REL_BASED_HIGHLOW`]...), an offset into the page
+/// in the rest.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImageBaseRelocation {
+    /// The page's RVA.
+    pub virtual_address: u32,
+    /// The block's size, this header and its entries.
+    pub size_of_block: u32,
+}
+
 const _: () = {
     // The layouts Windows defines.
     assert!(size_of::<ImageDosHeader>() == 0x40);
@@ -204,6 +221,7 @@ const _: () = {
     assert!(size_of::<ImageImportDescriptor>() == 0x14);
     assert!(offset_of!(ImageTlsDirectory32, size_of_zero_fill) == 0x10);
     assert!(size_of::<ImageTlsDirectory32>() == 0x18);
+    assert!(size_of::<ImageBaseRelocation>() == 8);
 };
 
 // SAFETY: each is a `#[repr(C)]` structure of integers, arrays of them and the structures above,
@@ -226,9 +244,43 @@ unsafe impl Pod for ImageExportDirectory {}
 unsafe impl Pod for ImageImportDescriptor {}
 // SAFETY: as above.
 unsafe impl Pod for ImageTlsDirectory32 {}
+// SAFETY: as above.
+unsafe impl Pod for ImageBaseRelocation {}
 
-/// The file header's IMAGE_FILE_DLL characteristic: the image is a DLL.
+/// IMAGE_FILE_MACHINE_I386: the file header's machine of an i386 image.
+pub const MACHINE_I386: u16 = 0x014C;
+
+/// The file header's characteristics (IMAGE_FILE_*): base relocations stripped (the image loads
+/// only at its base), an executable image, a 32-bit machine's, a DLL.
+pub const FILE_RELOCS_STRIPPED: u16 = 0x0001;
+pub const FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+pub const FILE_32BIT_MACHINE: u16 = 0x0100;
 pub const FILE_DLL: u16 = 0x2000;
+
+/// The optional header's subsystems (IMAGE_SUBSYSTEM_*): native (a kernel-mode image: the kernel's,
+/// a driver's), Windows GUI and Windows console.
+pub const SUBSYSTEM_NATIVE: u16 = 1;
+pub const SUBSYSTEM_WINDOWS_GUI: u16 = 2;
+pub const SUBSYSTEM_WINDOWS_CUI: u16 = 3;
+
+/// A section header's characteristics (IMAGE_SCN_*): code, initialized data, uninitialized data;
+/// discardable; executable, readable, writable.
+pub const SCN_CNT_CODE: u32 = 0x0000_0020;
+pub const SCN_CNT_INITIALIZED_DATA: u32 = 0x0000_0040;
+pub const SCN_CNT_UNINITIALIZED_DATA: u32 = 0x0000_0080;
+pub const SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
+pub const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+pub const SCN_MEM_READ: u32 = 0x4000_0000;
+pub const SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+/// The base relocation types (IMAGE_REL_BASED_*) a loader applies, each an entry's top four bits:
+/// ABSOLUTE (padding, skipped) and HIGHLOW (the delta added to the dword at the offset).
+pub const REL_BASED_ABSOLUTE: u16 = 0;
+pub const REL_BASED_HIGHLOW: u16 = 3;
+
+/// IMAGE_ORDINAL_FLAG32: an import thunk's high bit, an import by ordinal (its low 16 bits), not by
+/// name.
+pub const ORDINAL_FLAG: u32 = 0x8000_0000;
 
 /// "MZ", "PE\0\0", and the PE32 optional header's magic.
 pub const DOS_MAGIC: u16 = 0x5A4D;

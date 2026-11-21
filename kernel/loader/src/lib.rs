@@ -22,40 +22,19 @@ use core::ops::Range;
 use rtl::image::{
     data_directory,
     nt_headers_offset,
+    ImageBaseRelocation,
     ImageDataDirectory,
     ImageNtHeaders32,
     ImageSectionHeader,
     DIRECTORY_BASERELOC,
+    MACHINE_I386,
     NT_SIGNATURE,
     PE32_MAGIC,
+    REL_BASED_ABSOLUTE,
+    REL_BASED_HIGHLOW,
+    SUBSYSTEM_NATIVE,
 };
 use rtl::pod::Pod;
-
-/// IMAGE_FILE_MACHINE_I386.
-pub const MACHINE_I386: u16 = 0x014C;
-/// IMAGE_SUBSYSTEM_NATIVE: a kernel-mode image.
-pub const SUBSYSTEM_NATIVE: u16 = 1;
-/// The base relocation types the loader applies: IMAGE_REL_BASED_ABSOLUTE (padding, skipped) and
-/// IMAGE_REL_BASED_HIGHLOW (the delta added to the dword at the offset).
-pub const REL_BASED_ABSOLUTE: u16 = 0;
-pub const REL_BASED_HIGHLOW: u16 = 3;
-
-/// IMAGE_BASE_RELOCATION: a block of base relocations, the fixups of one page. Its 16-bit entries
-/// follow it: each a type in the top four bits, an offset into the page in the rest.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ImageBaseRelocation {
-    /// The page's RVA.
-    pub virtual_address: u32,
-    /// The block's size, this header and its entries.
-    pub size_of_block: u32,
-}
-
-const _: () = assert!(size_of::<ImageBaseRelocation>() == 8);
-
-// SAFETY: two integers, 8 bytes without padding: every byte belongs to a field, and every bit
-// pattern is a value.
-unsafe impl Pod for ImageBaseRelocation {}
 
 /// Why the loader refuses an image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -589,6 +568,53 @@ mod tests {
         assert_eq!(
             image.relocate(&mut memory, 0x1000),
             Err(Refusal::NotRelocatable)
+        );
+    }
+
+    /// The generator writes the kernel's image with a copy of the format's constants (it cannot
+    /// depend on the runtime library, whose build runs it): each is the runtime library's.
+    #[test]
+    fn the_generator_s_constants_are_the_runtime_library_s() {
+        use core::mem::offset_of;
+
+        use rtl::image::{self as rtl_image, ImageExportDirectory, ImageOptionalHeader32};
+
+        assert_eq!(pe::DOS_MAGIC, rtl_image::DOS_MAGIC);
+        assert_eq!(pe::NT_SIGNATURE, rtl_image::NT_SIGNATURE);
+        assert_eq!(pe::PE32_MAGIC, rtl_image::PE32_MAGIC);
+        assert_eq!(pe::MACHINE_I386, rtl_image::MACHINE_I386);
+        assert_eq!(pe::SUBSYSTEM_NATIVE, rtl_image::SUBSYSTEM_NATIVE);
+        assert_eq!(pe::FILE_RELOCS_STRIPPED, rtl_image::FILE_RELOCS_STRIPPED);
+        assert_eq!(pe::FILE_EXECUTABLE_IMAGE, rtl_image::FILE_EXECUTABLE_IMAGE);
+        assert_eq!(pe::FILE_32BIT_MACHINE, rtl_image::FILE_32BIT_MACHINE);
+        assert_eq!(pe::SCN_CNT_CODE, rtl_image::SCN_CNT_CODE);
+        assert_eq!(
+            pe::SCN_CNT_INITIALIZED_DATA,
+            rtl_image::SCN_CNT_INITIALIZED_DATA
+        );
+        assert_eq!(
+            pe::SCN_CNT_UNINITIALIZED_DATA,
+            rtl_image::SCN_CNT_UNINITIALIZED_DATA
+        );
+        assert_eq!(pe::SCN_MEM_DISCARDABLE, rtl_image::SCN_MEM_DISCARDABLE);
+        assert_eq!(pe::SCN_MEM_EXECUTE, rtl_image::SCN_MEM_EXECUTE);
+        assert_eq!(pe::SCN_MEM_READ, rtl_image::SCN_MEM_READ);
+        assert_eq!(pe::SCN_MEM_WRITE, rtl_image::SCN_MEM_WRITE);
+        assert_eq!(pe::DIRECTORY_EXPORT, rtl_image::DIRECTORY_EXPORT);
+        assert_eq!(pe::DIRECTORY_BASERELOC, rtl_image::DIRECTORY_BASERELOC);
+        assert_eq!(pe::NUMBER_OF_DIRECTORIES, rtl_image::NUMBER_OF_DIRECTORIES);
+        assert_eq!(pe::REL_BASED_ABSOLUTE, rtl_image::REL_BASED_ABSOLUTE);
+        assert_eq!(pe::REL_BASED_HIGHLOW, rtl_image::REL_BASED_HIGHLOW);
+        assert_eq!(pe::DOS_HEADER_SIZE, size_of::<rtl_image::ImageDosHeader>());
+        assert_eq!(
+            pe::FILE_HEADER_SIZE,
+            size_of::<rtl_image::ImageFileHeader>()
+        );
+        assert_eq!(pe::OPTIONAL_HEADER_SIZE, size_of::<ImageOptionalHeader32>());
+        assert_eq!(pe::EXPORT_DIRECTORY_SIZE, size_of::<ImageExportDirectory>());
+        assert_eq!(
+            pe::CHECKSUM_FIELD,
+            offset_of!(ImageOptionalHeader32, check_sum)
         );
     }
 }
