@@ -397,10 +397,12 @@ ordinal = 55
 [[export]]
 name = "ExAcquireFastMutex"
 ordinal = 1
+note = "the kernel's fast mutex is sync::ShortLock (sync.rs); the hal-named entry point is not wired yet"
 
 [[export]]
 name = "ExReleaseFastMutex"
 ordinal = 2
+note = "the kernel's fast mutex is sync::ShortLock (sync.rs); the hal-named entry point is not wired yet"
 
 [[export]]
 name = "ExTryToAcquireFastMutex"
@@ -445,6 +447,7 @@ ordinal = 12
 [[export]]
 name = "KfAcquireSpinLock"
 ordinal = 13
+note = "the kernel excludes at raised IRQL by the IRQL itself (level.rs); the hal-named entry point is not wired yet"
 
 [[export]]
 name = "KfLowerIrql"
@@ -457,6 +460,7 @@ ordinal = 15
 [[export]]
 name = "KfReleaseSpinLock"
 ordinal = 16
+note = "the kernel excludes at raised IRQL by the IRQL itself (level.rs); the hal-named entry point is not wired yet"
 
 [[export]]
 name = "HalAcquireDisplayOwnership"
@@ -646,6 +650,7 @@ ordinal = 77
 [[export]]
 name = "KeQueryPerformanceCounter"
 ordinal = 78
+note = "the performance counter reads it (time.rs); the hal-named entry point is not wired yet"
 
 [[export]]
 name = "KeRaiseIrql"

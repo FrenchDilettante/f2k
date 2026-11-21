@@ -179,6 +179,15 @@ impl = { native = "_vsnprintf" }
 ordinal = 1169
 note = "cdecl: the C runtime's conversions (rtl::printf)"
 
+[[export]]
+name = "MmMapIoSpace"
+group = "mm"
+args = ["u64 PhysicalAddress", "u32 NumberOfBytes", "boolean CacheEnable"]
+impl = { native = "MmMapIoSpace" }
+fails = "0"
+ordinal = 598
+note = "maps the device range into the reserved MMIO region (mem/dma.rs), uncached unless CacheEnable; the body hal_exports.toml also carries for the .sys loader"
+
 # --- Catalogued: the Windows 2000 DDK's names, F2K's seed until the real table is folded in -----
 
 [[export]]
@@ -192,6 +201,7 @@ name = "ExAllocatePool"
 
 [[export]]
 name = "ExAllocatePoolWithTag"
+note = "the nonpaged pool allocates it (mem/pool.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "ExDeleteResourceLite"
@@ -202,6 +212,7 @@ data = true
 
 [[export]]
 name = "ExFreePool"
+note = "the nonpaged pool frees it (mem/pool.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "ExInitializeResourceLite"
@@ -252,6 +263,7 @@ name = "KeBugCheckEx"
 
 [[export]]
 name = "KeCancelTimer"
+note = "the timer object implements it (sched/timer.rs, nt/sync.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeDelayExecutionThread"
@@ -277,9 +289,11 @@ data = true
 
 [[export]]
 name = "KeQuerySystemTime"
+note = "the wall clock reads it (time.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeResetEvent"
+note = "the event object implements it (nt/sync.rs, sched/event.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeServiceDescriptorTable"
@@ -288,19 +302,24 @@ note = "the system service tables' descriptors: each table's base, counts, limit
 
 [[export]]
 name = "KeSetEvent"
+note = "the event object implements it (nt/sync.rs, sched/event.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeSetTimer"
+note = "the timer object implements it (sched/timer.rs, nt/sync.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeTickCount"
 data = true
+note = "the interval clock counts the ticks (interrupt/clock.rs); the DDK-named variable is not wired yet"
 
 [[export]]
 name = "KeWaitForMultipleObjects"
+note = "the wait services implement it (nt/sync.rs, sched/wait.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeWaitForSingleObject"
+note = "the wait services implement it (nt/sync.rs, sched/wait.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "LpcRequestPort"
@@ -325,9 +344,6 @@ name = "MmGetSystemRoutineAddress"
 
 [[export]]
 name = "MmIsAddressValid"
-
-[[export]]
-name = "MmMapIoSpace"
 
 [[export]]
 name = "MmMapLockedPages"
@@ -788,6 +804,7 @@ ordinal = 84
 [[export]]
 name = "DbgPrint"
 ordinal = 85
+note = "the debug print does this (dbgprint.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "DbgPrintReturnControlC"
@@ -1584,6 +1601,7 @@ ordinal = 297
 [[export]]
 name = "IoCompleteRequest"
 ordinal = 298
+note = "the DDK's macro over IofCompleteRequest: the same body serves it"
 
 [[export]]
 name = "IoConnectInterrupt"
@@ -2116,6 +2134,7 @@ ordinal = 437
 [[export]]
 name = "KeClearEvent"
 ordinal = 440
+note = "the event object implements it (nt/sync.rs, sched/event.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeConnectInterrupt"
@@ -2141,6 +2160,7 @@ ordinal = 446
 [[export]]
 name = "KeEnterCriticalRegion"
 ordinal = 447
+note = "the thread's critical region does this (sched/thread.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeEnterKernelDebugger"
@@ -2267,6 +2287,7 @@ ordinal = 483
 [[export]]
 name = "KeLeaveCriticalRegion"
 ordinal = 484
+note = "the thread's critical region does this (sched/thread.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeLoaderBlock"
@@ -2284,6 +2305,7 @@ ordinal = 488
 [[export]]
 name = "KePulseEvent"
 ordinal = 489
+note = "the event object implements it (nt/sync.rs, sched/event.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeQueryActiveProcessors"
@@ -2344,10 +2366,12 @@ ordinal = 504
 [[export]]
 name = "KeReleaseMutex"
 ordinal = 505
+note = "the mutex object implements it (sched/mutex.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeReleaseSemaphore"
 ordinal = 506
+note = "the semaphore object implements it (sched/semaphore.rs, nt/signal.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeReleaseSpinLockFromDpcLevel"
@@ -2452,6 +2476,7 @@ ordinal = 535
 [[export]]
 name = "KeSynchronizeExecution"
 ordinal = 536
+note = "the interrupt layer implements it (interrupt/mod.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeTerminateThread"
@@ -2588,6 +2613,7 @@ ordinal = 575
 [[export]]
 name = "MmCreateSection"
 ordinal = 576
+note = "the section object implements it (nt/section.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "MmDisableModifiedWriteOfSection"
@@ -2685,6 +2711,7 @@ ordinal = 605
 [[export]]
 name = "MmMapViewOfSection"
 ordinal = 606
+note = "the section object implements it (nt/section.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "MmPageEntireDriver"
@@ -2759,6 +2786,7 @@ ordinal = 627
 [[export]]
 name = "MmUnmapViewOfSection"
 ordinal = 628
+note = "the section object implements it (nt/section.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "MmUnsecureVirtualMemory"
@@ -3044,6 +3072,7 @@ ordinal = 696
 [[export]]
 name = "ObInsertObject"
 ordinal = 697
+note = "the object manager inserts it (process/mod.rs); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "ObMakeTemporaryObject"
