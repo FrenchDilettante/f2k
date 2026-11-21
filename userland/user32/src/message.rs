@@ -42,12 +42,59 @@ use crate::{answered, failed_with, focus, imports, menubar, nonclient, paint, wi
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
 
+/// The units of a carried text's buffer on the stack; a longer one is a block of the process heap.
+const RECEIVED_UNITS: usize = 260;
+
+/// The sent message `receipt` holds, delivered ([`answer`]): when it carries a text (a creation
+/// message's window name, another process's WM_SETTEXT text or WM_GETTEXT buffer), the text is
+/// asked for into a buffer of this thread's own, as long as it is (wParam's units for
+/// WM_GETTEXT), on the stack or the process heap, which the CREATESTRUCT's name or lParam then
+/// points at. A buffer the heap has no room for answers the message 0, its procedure not called.
+fn deliver(receipt: &mut Receipt) {
+    if receipt.text == NO_TEXT {
+        answer(receipt.proc, receipt.msg, false);
+        return;
+    }
+    let room = match receipt.msg.message {
+        WM_GETTEXT => receipt.msg.wparam as usize,
+        _ => receipt.text as usize + 1,
+    };
+    let delivered = with_buffer(room, |buffer| {
+        if imports::receive_text(buffer).is_err() {
+            return false;
+        }
+        let at = buffer.as_mut_ptr() as usize as u32;
+        if matches!(receipt.msg.message, WM_NCCREATE | WM_CREATE) {
+            receipt.create.name = at;
+        } else {
+            receipt.msg.lparam = at as i32;
+        }
+        let carried = matches!(receipt.msg.message, WM_SETTEXT | WM_GETTEXT);
+        answer(receipt.proc, receipt.msg, carried);
+        true
+    });
+    if delivered != Some(true) {
+        let _ = imports::call_one_param(0, ONE_PARAM_END_SENT_MESSAGE);
+    }
+}
+
+/// Run `f` on a buffer of `room` units: on the stack when it is short, in a block of the process
+/// heap otherwise; none when the heap has no room for it.
+fn with_buffer<R>(room: usize, f: impl FnOnce(&mut [u16]) -> R) -> Option<R> {
+    if room <= RECEIVED_UNITS {
+        let mut units = [0u16; RECEIVED_UNITS];
+        return Some(f(&mut units[..room]));
+    }
+    let mut block = imports::HeapBlock::new(room.checked_mul(2)?)?;
+    Some(f(&mut block.units_mut()[..room]))
+}
+
 /// The procedure `proc` a sent message's receipt names, called with its message (the window
-/// manager's are wide: a narrow procedure's creation messages are translated); the answer handed
-/// back to its sender. Both are copies: no reference to the receipt is held while the procedure
-/// runs, which may write the structure its lParam points at in the receipt (WM_NCCREATE's
-/// CREATESTRUCT).
-fn deliver(proc: u32, msg: Msg, carried_text: bool) {
+/// manager's are wide: a narrow procedure's creation messages are translated, and a text another
+/// process's message carries, `carried_text`); the answer handed back to its sender. Both are
+/// copies: no reference to the receipt is held while the procedure runs, which may write the
+/// structure its lParam points at in the receipt (WM_NCCREATE's CREATESTRUCT).
+fn answer(proc: u32, msg: Msg, carried_text: bool) {
     let answer = if proc == 0 {
         default_procedure(
             msg.hwnd as usize,
@@ -97,7 +144,7 @@ pub fn receive_sent() {
     while imports::peek_message(&mut receipt, 0, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE).is_ok()
         && receipt.kind == RECEIVED_SENT
     {
-        deliver(receipt.proc, receipt.msg, carries_text(&receipt));
+        deliver(&mut receipt);
     }
 }
 
@@ -158,7 +205,7 @@ fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, ansi: 
             return -1;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
+            RECEIVED_SENT => deliver(&mut receipt),
             kind => {
                 out.set(read_as(receipt.msg, ansi));
                 return (kind != RECEIVED_QUIT) as i32;
@@ -221,7 +268,7 @@ fn peek_message(
             return 0;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
+            RECEIVED_SENT => deliver(&mut receipt),
             RECEIVED_NONE => return 0,
             _ => {
                 msg.set(read_as(receipt.msg, ansi));
@@ -239,7 +286,7 @@ pub fn next_message(msg: &mut Msg) -> Option<bool> {
     loop {
         answered(imports::get_message(&mut receipt, 0, 0, 0))?;
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
+            RECEIVED_SENT => deliver(&mut receipt),
             kind => {
                 *msg = receipt.msg;
                 return Some(kind != RECEIVED_QUIT);
@@ -257,7 +304,7 @@ pub fn queue_holds_message() -> bool {
             return false;
         }
         match receipt.kind {
-            RECEIVED_SENT => deliver(receipt.proc, receipt.msg, carries_text(&receipt)),
+            RECEIVED_SENT => deliver(&mut receipt),
             RECEIVED_NONE => return false,
             _ => return true,
         }
@@ -665,13 +712,6 @@ pub unsafe extern "system" fn dispatch_message_w(msg: *const Msg) -> i32 {
 }
 
 /// DispatchMessage's core, for a message of the narrow (`ansi`) or wide form.
-/// Whether the sent message `receipt` holds is a text message from another process, whose text
-/// (WM_SETTEXT's) or buffer (WM_GETTEXT's) the window manager put in the receipt's name.
-fn carries_text(receipt: &Receipt) -> bool {
-    matches!(receipt.msg.message, WM_SETTEXT | WM_GETTEXT)
-        && receipt.msg.lparam as usize == receipt.name.as_ptr() as usize
-}
-
 pub fn dispatch(msg: &Msg, ansi: bool) -> i32 {
     match answered(imports::dispatch_target(msg)) {
         None | Some(0) => 0,

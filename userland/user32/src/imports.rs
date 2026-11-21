@@ -1919,6 +1919,17 @@ pub fn call_two_param(param1: u32, param2: u32, routine: u32) -> Result<u32, NtS
     Ok(result)
 }
 
+/// NtUserCallTwoParam's TWO_PARAM_RECEIVE_TEXT: the text the message being delivered carries
+/// into `buffer`, as much as fits, terminated (WM_GETTEXT's buffer kept for its answer).
+pub fn receive_text(buffer: &mut [u16]) -> Result<(), NtStatus> {
+    call_two_param(
+        buffer.as_mut_ptr() as usize as u32,
+        buffer.len() as u32,
+        rtl::user::TWO_PARAM_RECEIVE_TEXT,
+    )
+    .map(|_| ())
+}
+
 /// NtUserCallHwndParamLock: the routine `routine` (rtl::user's HWND_PARAM_LOCK_*) on `window` with
 /// `param`: its result.
 pub fn call_hwnd_param_lock(window: usize, param: u32, routine: u32) -> Result<u32, NtStatus> {

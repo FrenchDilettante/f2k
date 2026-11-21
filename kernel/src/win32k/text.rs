@@ -254,7 +254,7 @@ pub use target::*;
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use rtl::pod::Pod;
+    use rtl::pod::{slice_bytes, Pod};
 
     use crate::mem::pool::{self, Block};
     use crate::status::*;
@@ -330,6 +330,25 @@ mod target {
             let mut staged = Staged::with_length(length).ok_or(STATUS_NO_MEMORY)?;
             at.read_units(staged.units_mut())?;
             Ok(staged)
+        }
+
+        /// The caller's `length` units at `at`, as [`Staged::read`] reads a string.
+        pub fn read_counted(at: UserAddr, length: usize) -> Result<Staged, NtStatus> {
+            let mut staged = Staged::with_length(length).ok_or(STATUS_NO_MEMORY)?;
+            at.read_units(staged.units_mut())?;
+            Ok(staged)
+        }
+
+        /// The text written to the caller at `at`, `room` units at most, terminated after the
+        /// units that fit (when `room` holds one): the units written before the terminator.
+        pub fn write_terminated(&self, at: UserAddr, room: usize) -> Result<usize, NtStatus> {
+            if room == 0 {
+                return Ok(0);
+            }
+            let length = self.units().len().min(room - 1);
+            at.write(slice_bytes(&self.units()[..length]))?;
+            at.offset(2 * length as u32).cast::<u16>().write(0)?;
+            Ok(length)
         }
     }
 

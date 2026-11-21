@@ -410,7 +410,7 @@ pub fn gui_thread_info(windows: &Windows, thread: ThreadId) -> GuiThreadInfo {
 
 #[cfg(target_arch = "x86")]
 mod services {
-    use rtl::user::{Point, TWO_PARAM_SET_CARET_POS};
+    use rtl::user::{Point, TWO_PARAM_RECEIVE_TEXT, TWO_PARAM_SET_CARET_POS};
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
@@ -511,7 +511,9 @@ mod services {
     }
 
     /// NtUserCallTwoParam(Param1, Param2, Routine, Result): SetCaretPos ([`set_pos`], the place
-    /// the two parameters), 1 into `result`; STATUS_INVALID_PARAMETER for another routine.
+    /// the two parameters), and the text of the message being delivered into the caller's buffer
+    /// (the queue's [`super::super::queue::receive_text`]), 1 into `result`;
+    /// STATUS_INVALID_PARAMETER for another routine.
     pub fn call_two_param(
         call: &mut NtCall,
         param1: u32,
@@ -519,6 +521,11 @@ mod services {
         routine: u32,
         result: UserPtr<u32>,
     ) -> NtResult {
+        if routine == TWO_PARAM_RECEIVE_TEXT {
+            super::super::queue::receive_text(call, UserAddr(param1), param2)?;
+            result.write(1)?;
+            return Ok(STATUS_SUCCESS);
+        }
         let caller = gui_thread(call)?.thread;
         let at = now();
         with_manager(call.passive(), |m| match routine {

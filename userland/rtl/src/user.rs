@@ -237,17 +237,23 @@ pub const RECEIVED_MESSAGE: u32 = 1;
 pub const RECEIVED_SENT: u32 = 2;
 pub const RECEIVED_NONE: u32 = 3;
 
-/// The longest window name a receipt carries, its terminator included.
-pub const RECEIPT_TEXT: usize = 129;
+/// A receipt's `text` for a message that carries none.
+pub const NO_TEXT: u32 = u32::MAX;
 
 /// What win32k's GetMessage and PeekMessage services write into user32's buffer.
 ///
 /// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
 /// parameters; when the message carries a structure, `msg.lparam` points at the receipt's own copy
-/// of it: `create` (WM_NCCREATE, WM_CREATE: its `name` points at `name`, its `class` holds the
-/// class's atom), `rect` (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED)
-/// or `style` (WM_STYLECHANGING, WM_STYLECHANGED). The answer goes back with
-/// [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns.
+/// of it: `create` (WM_NCCREATE, WM_CREATE: its `class` holds the class's atom), `rect`
+/// (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED) or `style`
+/// (WM_STYLECHANGING, WM_STYLECHANGED). The answer goes back with [`ONE_PARAM_END_SENT_MESSAGE`]
+/// once the procedure returns.
+///
+/// A sent message that carries a text, as long as it is, says how long in `text` ([`NO_TEXT`] for
+/// none): a creation message's window name, WM_SETTEXT's text from another process; WM_GETTEXT
+/// from another process carries an empty one, its buffer wParam's units. The receiver asks for it
+/// into a buffer of its own ([`TWO_PARAM_RECEIVE_TEXT`]) and points the message at it: the
+/// CREATESTRUCT's `name`, or `msg.lparam` (both 0 until then).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Receipt {
@@ -257,13 +263,13 @@ pub struct Receipt {
     pub create: CreateStructW,
     pub rect: Rect,
     pub window_pos: WindowPos,
-    pub name: [u16; RECEIPT_TEXT],
-    /// Keeps the size a multiple of four.
-    pub pad: u16,
+    /// The length of the text the message carries, in units, its terminator excluded; [`NO_TEXT`]
+    /// for none.
+    pub text: u32,
     pub style: StyleStruct,
 }
 
-// SAFETY: integers and arrays of them; the trailing unit fills what would be padding.
+// SAFETY: integers and structures of them, without padding.
 unsafe impl Pod for Receipt {}
 
 /// The part of a receipt every message has: what it is, the procedure, the message.
@@ -384,6 +390,11 @@ pub const NO_PARAM_DESTROY_CARET: u32 = 3;
 
 /// NtUserCallTwoParam's routines: SetCaretPos (the two parameters are the place; the result 1).
 pub const TWO_PARAM_SET_CARET_POS: u32 = 0;
+/// The text the message the thread is delivering carries ([`Receipt`]'s `text`) into the buffer
+/// at the first parameter, of as many units as the second: as much as fits, terminated; for
+/// WM_GETTEXT from another process, the buffer its procedure writes its answer into, read back as
+/// the delivery ends. The result 1.
+pub const TWO_PARAM_RECEIVE_TEXT: u32 = 1;
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
 /// region is not empty); SetForegroundWindow (the window's thread made the foreground one, the
@@ -436,8 +447,8 @@ mod tests {
         assert_eq!(offset_of!(Receipt, create), 36);
         assert_eq!(offset_of!(Receipt, rect), 84);
         assert_eq!(offset_of!(Receipt, window_pos), 100);
-        assert_eq!(offset_of!(Receipt, name), 128);
-        assert_eq!(offset_of!(Receipt, style), 388);
+        assert_eq!(offset_of!(Receipt, text), 128);
+        assert_eq!(offset_of!(Receipt, style), 132);
         assert_eq!(size_of::<StyleStruct>(), 8);
         assert_eq!(size_of::<Receipt>() % 4, 0);
         assert_eq!(size_of::<Input>(), 28);

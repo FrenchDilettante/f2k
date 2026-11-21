@@ -1438,6 +1438,8 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
         if let Some(sent) = wm.sent.pop_front() {
             wm.receiving.push(sent.message);
             answer.kind = RECEIVED_SENT;
+            // The stand-ins' messages carry no text (a host's addresses fit no lParam).
+            answer.text = NO_TEXT;
             answer.proc = sent.proc;
             answer.msg = Msg {
                 hwnd: sent.hwnd,
