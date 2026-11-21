@@ -9,9 +9,6 @@ description = "token - the process token as a program that shuts the machine dow
 kind = "sectioned"
 gate = true
 
-[pending]
-privs = "F2K's tokens hold three privileges (SeChangeNotifyPrivilege, SeShutdownPrivilege and SeLoadDriverPrivilege), so enabling SeSystemtimePrivilege, SeBackupPrivilege or SeDebugPrivilege answers ERROR_NOT_ALL_ASSIGNED"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself and observes.

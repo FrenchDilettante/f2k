@@ -20,7 +20,8 @@
 //! (ExitWindowsEx, NtShutdownSystem), F2K does not.
 //!
 //! Every token holds the same privileges, in the state Windows 2000 gives an administrator's token
-//! ([`DEFAULT_PRIVILEGES`]); a privilege it does not hold is refused (STATUS_NOT_ALL_ASSIGNED).
+//! ([`DEFAULT_PRIVILEGES`]: seventeen, SeChangeNotifyPrivilege and SeUndockPrivilege enabled by
+//! default); a privilege it does not hold is refused (STATUS_NOT_ALL_ASSIGNED).
 //!
 //! A process has one token, made at its first open (Windows 2000 makes a process's primary token
 //! with the process; F2K makes it on demand, since nothing reads it before it is opened). The
@@ -42,12 +43,26 @@ pub const SE_PRIVILEGE_ENABLED_BY_DEFAULT: u32 = 0x1;
 pub const SE_PRIVILEGE_ENABLED: u32 = 0x2;
 
 /// The privileges' public LUIDs (winnt.h's SE_*_PRIVILEGE values) that a token holds.
+pub const SE_INCREASE_QUOTA_PRIVILEGE: u32 = 5;
+pub const SE_SECURITY_PRIVILEGE: u32 = 8;
+pub const SE_TAKE_OWNERSHIP_PRIVILEGE: u32 = 9;
 pub const SE_LOAD_DRIVER_PRIVILEGE: u32 = 10;
+pub const SE_SYSTEM_PROFILE_PRIVILEGE: u32 = 11;
+pub const SE_SYSTEMTIME_PRIVILEGE: u32 = 12;
+pub const SE_PROF_SINGLE_PROCESS_PRIVILEGE: u32 = 13;
+pub const SE_INC_BASE_PRIORITY_PRIVILEGE: u32 = 14;
+pub const SE_CREATE_PAGEFILE_PRIVILEGE: u32 = 15;
+pub const SE_BACKUP_PRIVILEGE: u32 = 17;
+pub const SE_RESTORE_PRIVILEGE: u32 = 18;
 pub const SE_SHUTDOWN_PRIVILEGE: u32 = 19;
+pub const SE_DEBUG_PRIVILEGE: u32 = 20;
+pub const SE_SYSTEM_ENVIRONMENT_PRIVILEGE: u32 = 22;
 pub const SE_CHANGE_NOTIFY_PRIVILEGE: u32 = 23;
+pub const SE_REMOTE_SHUTDOWN_PRIVILEGE: u32 = 24;
+pub const SE_UNDOCK_PRIVILEGE: u32 = 25;
 
 /// How many privileges a token holds.
-pub const HELD: usize = 3;
+pub const HELD: usize = 17;
 
 /// TOKEN_PRIVILEGES' size for `count` entries: the count, then the entries.
 pub const fn privileges_size(count: usize) -> u32 {
@@ -65,15 +80,41 @@ const fn privilege(luid: u32, attributes: u32) -> LuidAndAttributes {
     }
 }
 
-/// The privileges a token holds and their state when it is made, in the order Windows 2000 lists
-/// them (SeChangeNotifyPrivilege first).
+/// The privileges a token holds and their state when it is made: an administrator's on Windows
+/// 2000, in the order its token lists them. The ones every user holds come first, enabled by
+/// default (SeChangeNotifyPrivilege, bypassing traverse checking) or not; then the
+/// Administrators group's, held disabled: the token fixture's `privs` block enables
+/// SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege and SeDebugPrivilege and finds
+/// each held and disabled, and `notheld` finds SeTcbPrivilege not held (no account holds it but
+/// the system's own). SeUndockPrivilege, which every interactive user holds, is enabled by
+/// default as SeChangeNotifyPrivilege is. The privileges no administrator's token holds
+/// (SeCreateTokenPrivilege, SeAssignPrimaryTokenPrivilege, SeLockMemoryPrivilege,
+/// SeMachineAccountPrivilege, SeTcbPrivilege, SeCreatePermanentPrivilege, SeAuditPrivilege,
+/// SeSyncAgentPrivilege, SeEnableDelegationPrivilege) are refused: STATUS_NOT_ALL_ASSIGNED.
 pub const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
     privilege(
         SE_CHANGE_NOTIFY_PRIVILEGE,
         SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
     ),
+    privilege(SE_SECURITY_PRIVILEGE, 0),
+    privilege(SE_BACKUP_PRIVILEGE, 0),
+    privilege(SE_RESTORE_PRIVILEGE, 0),
+    privilege(SE_SYSTEMTIME_PRIVILEGE, 0),
     privilege(SE_SHUTDOWN_PRIVILEGE, 0),
+    privilege(SE_REMOTE_SHUTDOWN_PRIVILEGE, 0),
+    privilege(SE_TAKE_OWNERSHIP_PRIVILEGE, 0),
+    privilege(SE_DEBUG_PRIVILEGE, 0),
+    privilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, 0),
+    privilege(SE_SYSTEM_PROFILE_PRIVILEGE, 0),
+    privilege(SE_PROF_SINGLE_PROCESS_PRIVILEGE, 0),
+    privilege(SE_INC_BASE_PRIORITY_PRIVILEGE, 0),
     privilege(SE_LOAD_DRIVER_PRIVILEGE, 0),
+    privilege(SE_CREATE_PAGEFILE_PRIVILEGE, 0),
+    privilege(SE_INCREASE_QUOTA_PRIVILEGE, 0),
+    privilege(
+        SE_UNDOCK_PRIVILEGE,
+        SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
+    ),
 ];
 
 /// A token's type (TOKEN_TYPE): a process's primary token, or a copy a thread impersonates with.
@@ -550,16 +591,61 @@ mod tests {
             .map(|privilege| privilege.attributes)
     }
 
-    /// A new token holds SeShutdownPrivilege and SeLoadDriverPrivilege disabled and
-    /// SeChangeNotifyPrivilege enabled by default; TOKEN_PRIVILEGES for them takes 40 bytes.
+    /// A new token holds an administrator's privileges: the four the `privs` capture enables
+    /// (SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege, SeDebugPrivilege) and
+    /// SeLoadDriverPrivilege disabled, SeChangeNotifyPrivilege and SeUndockPrivilege enabled by
+    /// default, SeTcbPrivilege not at all; each once. TOKEN_PRIVILEGES for them takes 208 bytes.
     #[test]
-    fn a_new_token_holds_the_defaults() {
+    fn a_new_token_holds_an_administrators_privileges() {
         let token = token();
-        assert_eq!(attributes_of(&token, SE_SHUTDOWN_PRIVILEGE), Some(0));
-        assert_eq!(attributes_of(&token, SE_LOAD_DRIVER_PRIVILEGE), Some(0));
+        for luid in [
+            SE_SYSTEMTIME_PRIVILEGE,
+            SE_BACKUP_PRIVILEGE,
+            SE_SHUTDOWN_PRIVILEGE,
+            SE_DEBUG_PRIVILEGE,
+            SE_LOAD_DRIVER_PRIVILEGE,
+        ] {
+            assert_eq!(attributes_of(&token, luid), Some(0), "{luid}");
+        }
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(3));
-        assert_eq!(attributes_of(&token, TCB), None);
-        assert_eq!(privileges_size(HELD), 40);
+        assert_eq!(attributes_of(&token, SE_UNDOCK_PRIVILEGE), Some(3));
+        for luid in [2, 3, 4, 6, TCB, 16, 21, 26, 27] {
+            assert_eq!(attributes_of(&token, luid), None, "{luid}");
+        }
+        let mut luids: Vec<u32> = DEFAULT_PRIVILEGES.iter().map(|p| p.luid.low_part).collect();
+        luids.sort();
+        luids.dedup();
+        assert_eq!(luids.len(), HELD);
+        assert_eq!(privileges_size(HELD), 208);
+    }
+
+    /// The `privs` capture's last call: all four enabled at once report each one's old state,
+    /// 52 bytes; that report given back as NewState puts them back.
+    #[test]
+    fn four_enabled_at_once_and_put_back() {
+        let mut token = token();
+        let four = [
+            SE_SYSTEMTIME_PRIVILEGE,
+            SE_BACKUP_PRIVILEGE,
+            SE_SHUTDOWN_PRIVILEGE,
+            SE_DEBUG_PRIVILEGE,
+        ];
+        let all = token
+            .adjust(
+                &set(&four.map(|luid| (luid, SE_PRIVILEGE_ENABLED))),
+                Some(52),
+            )
+            .unwrap();
+        assert!(!all.not_all_assigned);
+        assert_eq!((all.previous.len(), all.length()), (4, 52));
+        let mut requests = Requests::new();
+        for &entry in all.previous.as_slice() {
+            requests.add(entry);
+        }
+        token.adjust(&Change::Set(requests), None).unwrap();
+        for luid in four {
+            assert_eq!(attributes_of(&token, luid), Some(0));
+        }
     }
 
     /// The privilege check reads the enabled bit of a privilege the token holds.
@@ -620,15 +706,18 @@ mod tests {
         assert_eq!(token.adjust(&disable, Some(4)).unwrap().length(), 4);
     }
 
-    /// DisableAllPrivileges disables what is enabled, reporting it (SeChangeNotifyPrivilege as 0x3,
-    /// left 0x1); its report given back as NewState restores it.
+    /// DisableAllPrivileges disables what is enabled, reporting it (SeChangeNotifyPrivilege and
+    /// SeUndockPrivilege as 0x3, left 0x1); its report given back as NewState restores them.
     #[test]
     fn disable_all_and_its_restore() {
         let mut token = token();
         let all = token.adjust(&Change::DisableAll, Some(4096)).unwrap();
         assert_eq!(
             all.previous.as_slice(),
-            [privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3)]
+            [
+                privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3),
+                privilege(SE_UNDOCK_PRIVILEGE, 3)
+            ]
         );
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(1));
         assert_eq!(attributes_of(&token, SE_SHUTDOWN_PRIVILEGE), Some(0));
