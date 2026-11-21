@@ -290,15 +290,6 @@ fn brush_object(_: &mut NtCall, _: Handle) -> Result<Brush, NtStatus> {
 mod tests {
     use super::*;
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
     /// The stock brushes paint their documented grays (NULL_BRUSH nothing); a system color's brush
     /// reads its color when it draws; the gray brush is the checkerboard in the DC's colors, from
     /// the DC's origin.
@@ -350,13 +341,20 @@ mod tests {
     /// DC's origin.
     #[test]
     fn pat_blt_rectangles_normalize() {
-        assert_eq!(pat_blt_rect(2, 3, 4, 5, (0, 0)), rect(2, 3, 6, 8));
-        assert_eq!(pat_blt_rect(2, 3, -2, -3, (0, 0)), rect(0, 0, 2, 3));
-        assert_eq!(pat_blt_rect(2, 3, 4, 5, (100, 50)), rect(102, 53, 106, 58));
-        assert_eq!(pat_blt_rect(1, 1, 0, 4, (0, 0)), rect(1, 1, 1, 5), "empty");
+        assert_eq!(pat_blt_rect(2, 3, 4, 5, (0, 0)), Rect::new(2, 3, 6, 8));
+        assert_eq!(pat_blt_rect(2, 3, -2, -3, (0, 0)), Rect::new(0, 0, 2, 3));
+        assert_eq!(
+            pat_blt_rect(2, 3, 4, 5, (100, 50)),
+            Rect::new(102, 53, 106, 58)
+        );
+        assert_eq!(
+            pat_blt_rect(1, 1, 0, 4, (0, 0)),
+            Rect::new(1, 1, 1, 5),
+            "empty"
+        );
         assert_eq!(
             pat_blt_rect(i32::MAX - 1, 0, 10, 1, (5, 0)),
-            rect(i32::MAX, 0, i32::MAX, 1),
+            Rect::new(i32::MAX, 0, i32::MAX, 1),
             "saturated, not wrapped"
         );
     }

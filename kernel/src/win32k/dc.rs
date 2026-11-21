@@ -227,7 +227,7 @@ impl Dc {
     pub fn window(width: i32, height: i32, area: Rect) -> Self {
         let mut dc = Dc::screen(width, height);
         dc.origin = (area.left, area.top);
-        dc.clip = super::raster::intersect(dc.clip, area);
+        dc.clip = dc.clip.intersect(area);
         dc
     }
 
@@ -241,14 +241,7 @@ impl Dc {
 
     /// The screen's rectangle for the logical rectangle `rect`.
     pub fn screen_rect(&self, rect: Rect) -> Rect {
-        let (left, top) = self.screen_point(rect.left, rect.top);
-        let (right, bottom) = self.screen_point(rect.right, rect.bottom);
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
+        rect.saturating_offset(self.origin.0, self.origin.1)
     }
 
     /// The attribute at `index` (the DC_ indexes); none for another index.
@@ -727,7 +720,7 @@ fn hand_out(call: &mut NtCall, dc: Dc, out: UserPtr<u32>) -> NtResult {
 pub(super) fn paint_dc(call: &mut NtCall, client: Rect, clip: Rect) -> Result<u32, NtStatus> {
     let (width, height) = screen_extent();
     let mut dc = Dc::window(width, height, client);
-    dc.clip = super::raster::intersect(dc.clip, clip);
+    dc.clip = dc.clip.intersect(clip);
     publish_dc(call, dc)
 }
 
@@ -899,21 +892,12 @@ pub(super) fn update_dc<R>(
 mod tests {
     use super::*;
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
     /// A screen DC starts as the platform's: black on white, OPAQUE, the white brush, the black
     /// pen and the system font selected, clipped to the screen.
     #[test]
     fn a_screen_dc_starts_at_the_defaults() {
         let dc = Dc::screen(640, 480);
-        assert_eq!(dc.clip, rect(0, 0, 640, 480));
+        assert_eq!(dc.clip, Rect::new(0, 0, 640, 480));
         assert_eq!(
             (dc.text_color, dc.bk_color, dc.bk_mode),
             (0x00_0000, 0xFF_FFFF, OPAQUE)
@@ -928,7 +912,7 @@ mod tests {
         assert_eq!(dc.object(OBJ_DC), None);
         assert_eq!(
             Dc::screen(0, 0).clip,
-            rect(0, 0, 0, 0),
+            Rect::new(0, 0, 0, 0),
             "before the mode is set"
         );
     }
@@ -978,9 +962,9 @@ mod tests {
         let mut dc = Dc::memory();
         assert!(dc.memory);
         assert_eq!(dc.object(rtl::dib::OBJ_BITMAP), Some(DEFAULT_BITMAP));
-        assert_eq!(dc.clip, rect(0, 0, 1, 1));
+        assert_eq!(dc.clip, Rect::new(0, 0, 1, 1));
         assert_eq!(dc.select_bitmap(0x7_0010, None, 16, 8), DEFAULT_BITMAP);
-        assert_eq!(dc.clip, rect(0, 0, 16, 8));
+        assert_eq!(dc.clip, Rect::new(0, 0, 16, 8));
         assert_eq!(dc.select_bitmap(DEFAULT_BITMAP, None, 1, 1), 0x7_0010);
     }
 
@@ -988,12 +972,15 @@ mod tests {
     /// screen; the logical coordinates land at the origin.
     #[test]
     fn a_window_dc_draws_at_its_origin_clipped() {
-        let dc = Dc::window(640, 480, rect(600, 30, 700, 80));
+        let dc = Dc::window(640, 480, Rect::new(600, 30, 700, 80));
         assert_eq!(dc.origin, (600, 30));
-        assert_eq!(dc.clip, rect(600, 30, 640, 80), "cut to the screen");
+        assert_eq!(dc.clip, Rect::new(600, 30, 640, 80), "cut to the screen");
         assert_eq!(dc.screen_point(0, 0), (600, 30));
         assert_eq!(dc.screen_point(-5, 7), (595, 37));
-        assert_eq!(dc.screen_rect(rect(1, 2, 3, 4)), rect(601, 32, 603, 34));
+        assert_eq!(
+            dc.screen_rect(Rect::new(1, 2, 3, 4)),
+            Rect::new(601, 32, 603, 34)
+        );
         assert_eq!(
             dc.brush,
             stock_handle(WHITE_BRUSH).unwrap(),
@@ -1003,8 +990,8 @@ mod tests {
         assert_eq!(screen.origin, (0, 0));
         assert_eq!(screen.screen_point(3, 4), (3, 4));
         assert_eq!(
-            Dc::window(640, 480, rect(-10, -10, -1, -1)).clip,
-            rect(0, 0, 0, 0),
+            Dc::window(640, 480, Rect::new(-10, -10, -1, -1)).clip,
+            Rect::new(0, 0, 0, 0),
             "off the screen: empty"
         );
     }

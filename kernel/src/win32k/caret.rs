@@ -158,23 +158,8 @@ fn draw(windows: &mut Windows, thread: ThreadId) {
         return;
     }
     let client = windows.client_rect(window);
-    let client = Rect {
-        left: client.left,
-        top: client.top,
-        right: client.right,
-        bottom: client.bottom,
-    };
-    let place = caret.rect();
-    let rect = super::raster::intersect(
-        client,
-        Rect {
-            left: client.left.saturating_add(place.left),
-            top: client.top.saturating_add(place.top),
-            right: client.left.saturating_add(place.right),
-            bottom: client.top.saturating_add(place.bottom),
-        },
-    );
-    if rect.left >= rect.right || rect.top >= rect.bottom {
+    let rect = client.intersect(caret.rect().saturating_offset(client.left, client.top));
+    if rect.is_empty() {
         return;
     }
     invert(rect, caret.gray);

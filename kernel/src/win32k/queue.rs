@@ -320,7 +320,7 @@ enum State {
 enum Carried {
     None,
     /// WM_NCCALCSIZE's rectangle.
-    Rect(window::Rect),
+    Rect(rtl::gdi::Rect),
     /// WM_NCCREATE's and WM_CREATE's create parameters: a slot of the creates' pool.
     Create(u16),
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS.
@@ -1528,12 +1528,7 @@ pub fn receipt_window_pos(windows: &Windows, id: SentId) -> Option<window::Windo
 /// The rectangle the sent message `id` carries, when it carries one.
 pub fn receipt_rect(windows: &Windows, id: SentId) -> Option<rtl::gdi::Rect> {
     match windows.queues.sent_at(id)?.carried {
-        Carried::Rect(r) => Some(rtl::gdi::Rect {
-            left: r.left,
-            top: r.top,
-            right: r.right,
-            bottom: r.bottom,
-        }),
+        Carried::Rect(r) => Some(r),
         _ => None,
     }
 }
@@ -2872,11 +2867,12 @@ mod services {
 /// threads with their queues, and windows of the class made through the queue's pump.
 #[cfg(test)]
 pub(crate) mod rig {
+    use rtl::gdi::Rect;
+
     use super::*;
     use crate::win32k::window::{
         CreateArgs,
         MenuInput,
-        Rect,
         WindowManager,
         DESKTOP_CREATEWINDOW,
         WS_POPUP,

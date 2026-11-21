@@ -500,16 +500,8 @@ fn reads_primary_display(at: UserAddr) -> Result<bool, Fault> {
 fn monitors_in(clip: Option<Rect>, screen: Rect, out: &mut [(u32, Rect)]) -> usize {
     let mut found = 0;
     for (index, bounds) in [screen].into_iter().enumerate() {
-        let part = match clip {
-            None => bounds,
-            Some(clip) => Rect {
-                left: bounds.left.max(clip.left),
-                top: bounds.top.max(clip.top),
-                right: bounds.right.min(clip.right),
-                bottom: bounds.bottom.min(clip.bottom),
-            },
-        };
-        if part.left >= part.right || part.top >= part.bottom {
+        let part = clip.map_or(bounds, |clip| bounds.intersect(clip));
+        if part.is_empty() {
             continue;
         }
         if let Some(slot) = out.get_mut(found) {

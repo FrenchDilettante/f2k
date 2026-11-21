@@ -127,31 +127,6 @@ impl<M: PixelMemory> Surface for Framebuffer<M> {
     }
 }
 
-/// The rectangle both `a` and `b` cover; as IntersectRect, the empty rectangle (all zero) when
-/// they do not meet, never an inverted one.
-pub fn intersect(a: Rect, b: Rect) -> Rect {
-    let common = Rect {
-        left: a.left.max(b.left),
-        top: a.top.max(b.top),
-        right: a.right.min(b.right),
-        bottom: a.bottom.min(b.bottom),
-    };
-    if common.left >= common.right || common.top >= common.bottom {
-        return Rect {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-    }
-    common
-}
-
-/// Whether (`x`, `y`) lies in `rect` (its right and bottom edges outside it).
-pub fn contains(rect: &Rect, x: i32, y: i32) -> bool {
-    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
-}
-
 /// The framebuffer's `0xRRGGBB` for a COLORREF (`0x00BBGGRR`; its high byte, a palette's flags,
 /// ignored).
 pub fn screen_rgb(color: u32) -> u32 {
@@ -196,10 +171,10 @@ impl TextOut {
     ) -> Self {
         let clipped = rect.filter(|_| options & ETO_CLIPPED != 0);
         TextOut {
-            clip: clipped.map_or(clip, |rect| intersect(clip, rect)),
+            clip: clipped.map_or(clip, |rect| clip.intersect(rect)),
             fill: rect
                 .filter(|_| options & ETO_OPAQUE != 0)
-                .map(|rect| intersect(clip, rect)),
+                .map(|rect| clip.intersect(rect)),
             y,
             text: screen_rgb(text_color),
             fill_color: screen_rgb(bk_color),
@@ -256,7 +231,7 @@ impl TextOut {
         };
         for y in self.y..self.y.saturating_add(height) {
             for x in left..right {
-                if contains(&self.clip, x, y) {
+                if self.clip.contains(x, y) {
                     screen.put_pixel(x as usize, y as usize, background);
                 }
             }
@@ -286,7 +261,7 @@ impl TextOut {
                     continue;
                 }
                 let px = x.saturating_add(column as i32);
-                if contains(&self.clip, px, py) {
+                if self.clip.contains(px, py) {
                     screen.put_pixel(px as usize, py as usize, self.text);
                 }
             }
@@ -299,7 +274,7 @@ impl TextOut {
             let y = self.y.saturating_add(row as i32);
             for column in 0..font::WIDTH {
                 let x = x.saturating_add(column);
-                if !contains(&self.clip, x, y) {
+                if !self.clip.contains(x, y) {
                     continue;
                 }
                 let color = if bits & (0x80 >> column) != 0 {
@@ -421,7 +396,7 @@ pub fn pat_blt<S: Surface + ?Sized>(
     rop: u32,
     pattern: Option<&Pattern>,
 ) {
-    let area = intersect(intersect(clip, rect), screen.bounds());
+    let area = clip.intersect(rect).intersect(screen.bounds());
     let reads = rop_uses_destination(rop);
     let code = rop3(rop);
     let solid = match pattern {
@@ -454,7 +429,7 @@ pub fn set_pixel_on<S: Surface + ?Sized>(
     color: u32,
 ) -> u32 {
     match screen {
-        Some(screen) if contains(clip, x, y) && contains(&screen.bounds(), x, y) => {
+        Some(screen) if clip.contains(x, y) && screen.bounds().contains(x, y) => {
             let pixel = screen.pixel(screen_rgb(color));
             screen.store(x, y, pixel);
             colorref(screen.rgb(pixel))
@@ -472,7 +447,7 @@ pub fn get_pixel_on<S: Surface + ?Sized>(
     y: i32,
 ) -> u32 {
     match screen {
-        Some(screen) if contains(clip, x, y) => screen
+        Some(screen) if clip.contains(x, y) => screen
             .get_pixel(x as usize, y as usize)
             .map_or(CLR_INVALID, colorref),
         _ => CLR_INVALID,
@@ -555,7 +530,7 @@ mod tests {
                     } else {
                         paper
                     };
-                    if let Some(color) = color.filter(|_| contains(&clip, px, py)) {
+                    if let Some(color) = color.filter(|_| clip.contains(px, py)) {
                         pixels.push((px as usize, py as usize, color));
                     }
                 }
@@ -563,15 +538,6 @@ mod tests {
         }
         pixels.sort_by_key(|&(x, y, _)| (y, x));
         pixels
-    }
-
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
     }
 
     /// ExtTextOut's drawing in a DC's default colors: black on white, OPAQUE.
@@ -598,10 +564,10 @@ mod tests {
     #[test]
     fn text_draws_exact_pixels() {
         let mut screen = desktop(40, 30);
-        let clip = rect(0, 0, 40, 30);
+        let clip = Rect::new(0, 0, 40, 30);
         let text = black_on_white(clip, 5, 0, None);
         assert_eq!(text.draw(&mut screen, 5, &units("Hi"), None), 21);
-        let clip = rect(0, 0, 40, 30);
+        let clip = Rect::new(0, 0, 40, 30);
         assert_eq!(
             drawn(&mut screen),
             expected("Hi", 5, 5, 0x00_0000, Some(0xFF_FFFF), clip)
@@ -624,14 +590,14 @@ mod tests {
     #[test]
     fn transparent_text_leaves_the_background() {
         let mut screen = desktop(40, 30);
-        let clip = rect(0, 0, 40, 30);
+        let clip = Rect::new(0, 0, 40, 30);
         TextOut::new(clip, 0x00_00FF, 0xFF_FFFF, false, 5, 0, None).draw(
             &mut screen,
             5,
             &units("Hi"),
             None,
         );
-        let clip = rect(0, 0, 40, 30);
+        let clip = Rect::new(0, 0, 40, 30);
         assert_eq!(
             drawn(&mut screen),
             expected("Hi", 5, 5, 0xFF_0000, None, clip)
@@ -644,10 +610,10 @@ mod tests {
     /// panic the fake).
     #[test]
     fn text_is_clipped_at_every_edge() {
-        let screen_clip = rect(0, 0, 24, 20);
+        let screen_clip = Rect::new(0, 0, 24, 20);
         for (x, y) in [(-4, 2), (2, -6), (18, 2), (2, 10), (-6, -6), (20, 16)] {
             let mut screen = desktop(24, 20);
-            let clip = rect(0, 0, 24, 20);
+            let clip = Rect::new(0, 0, 24, 20);
             black_on_white(clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
             assert_eq!(
                 drawn(&mut screen),
@@ -657,7 +623,7 @@ mod tests {
         }
         // A DC whose clipping region is smaller than the screen: nothing past it.
         let mut screen = desktop(24, 20);
-        let clip = rect(3, 4, 10, 12);
+        let clip = Rect::new(3, 4, 10, 12);
         black_on_white(clip, 0, 0, None).draw(&mut screen, 0, &units("AB"), None);
         assert_eq!(
             drawn(&mut screen),
@@ -665,7 +631,7 @@ mod tests {
         );
         // Far outside every edge: nothing at all.
         let mut screen = desktop(24, 20);
-        let clip = rect(0, 0, 24, 20);
+        let clip = Rect::new(0, 0, 24, 20);
         for (x, y) in [(i32::MIN, 0), (0, i32::MAX - 3), (100, 100), (-100, -100)] {
             black_on_white(clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
         }
@@ -677,8 +643,8 @@ mod tests {
     #[test]
     fn ext_text_out_fills_and_clips_to_its_rectangle() {
         let mut screen = desktop(40, 30);
-        let clip = rect(0, 0, 40, 30);
-        let area = rect(0, 2, 30, 22);
+        let clip = Rect::new(0, 0, 40, 30);
+        let area = Rect::new(0, 2, 30, 22);
         let text = TextOut::new(
             clip,
             0x00_0000,
@@ -702,14 +668,14 @@ mod tests {
             "the fill stops at the rectangle"
         );
         assert_eq!(at(&mut screen, 0, 22), DESKTOP);
-        let inked = expected("abc", 1, 4, 0x00_0000, None, rect(0, 0, 40, 30));
+        let inked = expected("abc", 1, 4, 0x00_0000, None, Rect::new(0, 0, 40, 30));
         for &(x, y, color) in &inked {
             assert_eq!(at(&mut screen, x, y), color);
         }
 
         let mut screen = desktop(40, 30);
-        let clip = rect(0, 0, 40, 30);
-        let narrow = rect(2, 6, 12, 14);
+        let clip = Rect::new(0, 0, 40, 30);
+        let narrow = Rect::new(2, 6, 12, 14);
         let text = black_on_white(clip, 4, ETO_CLIPPED, Some(narrow));
         text.fill_background(&mut screen);
         text.draw(&mut screen, 1, &units("abc"), None);
@@ -729,7 +695,7 @@ mod tests {
     #[test]
     fn wide_strings_and_advances() {
         let mut screen = desktop(64, 20);
-        let clip = rect(0, 0, 64, 20);
+        let clip = Rect::new(0, 0, 64, 20);
         let text = black_on_white(clip, 0, 0, None);
         let wide = [0x00E9u16, 0x2588, 0x4E00];
         assert_eq!(text.draw(&mut screen, 0, &wide, None), 24);
@@ -741,7 +707,7 @@ mod tests {
                 0,
                 0x00_0000,
                 Some(0xFF_FFFF),
-                rect(0, 0, 64, 20)
+                Rect::new(0, 0, 64, 20)
             )
         );
         assert_eq!(
@@ -756,7 +722,7 @@ mod tests {
         assert_eq!(text.draw(&mut screen, 2, &units("AB"), Some(&advances)), 25);
         assert_eq!(advanced(2, 2, Some(&advances)), 25);
         assert_eq!(advanced(2, 3, None), 26);
-        let all = rect(0, 0, 64, 20);
+        let all = Rect::new(0, 0, 64, 20);
         let mut placed = expected("A", 2, 0, 0x00_0000, Some(0xFF_FFFF), all);
         placed.extend(expected("B", 22, 0, 0x00_0000, Some(0xFF_FFFF), all));
         placed.sort_by_key(|&(x, y, _)| (y, x));
@@ -769,7 +735,7 @@ mod tests {
     #[test]
     fn pixels_inside_the_clip() {
         let mut screen = desktop(640, 480);
-        let clip = rect(0, 0, 640, 480);
+        let clip = Rect::new(0, 0, 640, 480);
         assert_eq!(
             set_pixel_on(Some(&mut screen), &clip, 100, 100, 0x0003_0201),
             0x0003_0201
@@ -789,7 +755,7 @@ mod tests {
         }
         assert_eq!(drawn(&mut screen), [(100, 100, 0x0001_0203)]);
         assert_eq!(
-            set_pixel_on(Some(&mut screen), &rect(0, 0, 0, 0), 5, 5, 0),
+            set_pixel_on(Some(&mut screen), &Rect::new(0, 0, 0, 0), 5, 5, 0),
             CLR_INVALID
         );
         assert_eq!(
@@ -833,25 +799,25 @@ mod tests {
     #[test]
     fn a_fill_paints_its_rectangle_exactly() {
         let mut screen = desktop(8, 6);
-        let all = rect(0, 0, 8, 6);
+        let all = Rect::new(0, 0, 8, 6);
         pat_blt(
             &mut screen,
             all,
-            rect(1, 1, 5, 3),
+            Rect::new(1, 1, 5, 3),
             rtl::gdi::PATCOPY,
             Some(&Pattern::Solid(RED)),
         );
         pat_blt(
             &mut screen,
             all,
-            rect(6, 0, 8, 2),
+            Rect::new(6, 0, 8, 2),
             rtl::gdi::BLACKNESS,
             None,
         );
         pat_blt(
             &mut screen,
             all,
-            rect(6, 4, 7, 6),
+            Rect::new(6, 4, 7, 6),
             rtl::gdi::WHITENESS,
             None,
         );
@@ -872,42 +838,42 @@ mod tests {
     fn a_fill_is_clipped() {
         let mut screen = desktop(8, 6);
         let solid = Pattern::Solid(RED);
-        let clip = rect(2, 1, 6, 5);
+        let clip = Rect::new(2, 1, 6, 5);
         pat_blt(
             &mut screen,
             clip,
-            rect(-10, -10, 100, 100),
+            Rect::new(-10, -10, 100, 100),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
         let legend = [(DESKTOP, '.'), (RED, 'R')];
         assert_eq!(
-            picture(&mut screen, rect(0, 0, 8, 6), &legend),
+            picture(&mut screen, Rect::new(0, 0, 8, 6), &legend),
             [
                 "........", //
                 "..RRRR..", "..RRRR..", "..RRRR..", "..RRRR..", "........",
             ]
         );
         let mut screen = desktop(8, 6);
-        let all = rect(0, 0, 8, 6);
+        let all = Rect::new(0, 0, 8, 6);
         pat_blt(
             &mut screen,
             all,
-            rect(5, 5, 2, 2),
+            Rect::new(5, 5, 2, 2),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
         pat_blt(
             &mut screen,
             all,
-            rect(3, 3, 3, 6),
+            Rect::new(3, 3, 3, 6),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
         pat_blt(
             &mut screen,
             all,
-            rect(i32::MIN, 0, i32::MIN + 2, 2),
+            Rect::new(i32::MIN, 0, i32::MIN + 2, 2),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
@@ -919,11 +885,11 @@ mod tests {
     #[test]
     fn the_inverting_operations_read_the_destination() {
         let mut screen = desktop(4, 2);
-        let all = rect(0, 0, 4, 2);
+        let all = Rect::new(0, 0, 4, 2);
         pat_blt(
             &mut screen,
             all,
-            rect(0, 0, 2, 1),
+            Rect::new(0, 0, 2, 1),
             rtl::gdi::DSTINVERT,
             None,
         );
@@ -932,7 +898,7 @@ mod tests {
         pat_blt(
             &mut screen,
             all,
-            rect(0, 0, 2, 1),
+            Rect::new(0, 0, 2, 1),
             rtl::gdi::DSTINVERT,
             None,
         );
@@ -941,7 +907,7 @@ mod tests {
         pat_blt(
             &mut screen,
             all,
-            rect(1, 0, 3, 2),
+            Rect::new(1, 0, 3, 2),
             rtl::gdi::PATINVERT,
             Some(&red),
         );
@@ -949,7 +915,7 @@ mod tests {
         pat_blt(
             &mut screen,
             all,
-            rect(1, 0, 3, 2),
+            Rect::new(1, 0, 3, 2),
             rtl::gdi::PATINVERT,
             Some(&red),
         );
@@ -973,7 +939,7 @@ mod tests {
         assert_eq!(checker.at(9, 8), WHITE, "8 pixels on");
         assert_eq!(checker.at(-7, -8), WHITE, "and 8 pixels back");
         let mut screen = desktop(6, 3);
-        let all = rect(0, 0, 6, 3);
+        let all = Rect::new(0, 0, 6, 3);
         pat_blt(&mut screen, all, all, rtl::gdi::PATINVERT, Some(&checker));
         let inverted = !DESKTOP & 0x00FF_FFFF;
         let legend = [(DESKTOP, '.'), (inverted, 'X')];
@@ -991,36 +957,9 @@ mod tests {
             zero: BLACK,
         };
         let mut screen = desktop(10, 1);
-        let all = rect(0, 0, 10, 1);
+        let all = Rect::new(0, 0, 10, 1);
         pat_blt(&mut screen, all, all, rtl::gdi::PATCOPY, Some(&stripes));
         let legend = [(RED, 'R'), (BLACK, 'K')];
         assert_eq!(picture(&mut screen, all, &legend), ["RRRRKKKKRR"]);
-    }
-
-    /// The rectangles' meeting and membership, the right and bottom edges outside. Rectangles that
-    /// do not meet (apart, edge to edge, or one of them empty) meet in IntersectRect's empty
-    /// rectangle, all zero, not an inverted one.
-    #[test]
-    fn rectangles_meet_and_hold() {
-        assert_eq!(
-            intersect(rect(0, 0, 10, 10), rect(5, -5, 20, 6)),
-            rect(5, 0, 10, 6)
-        );
-        let apart = intersect(rect(0, 0, 4, 4), rect(6, 6, 8, 8));
-        assert_eq!(apart, rect(0, 0, 0, 0), "apart: empty");
-        assert!(!contains(&apart, 6, 6) && !contains(&apart, 3, 3), "empty");
-        assert_eq!(
-            intersect(rect(0, 0, 4, 4), rect(4, 0, 8, 4)),
-            rect(0, 0, 0, 0),
-            "edge to edge: empty"
-        );
-        assert_eq!(
-            intersect(rect(10, 10, 10, 20), rect(0, 0, 50, 50)),
-            rect(0, 0, 0, 0),
-            "an empty one: empty"
-        );
-        assert!(contains(&rect(0, 0, 2, 2), 1, 1));
-        assert!(!contains(&rect(0, 0, 2, 2), 2, 1));
-        assert!(!contains(&rect(0, 0, 2, 2), 1, 2));
     }
 }

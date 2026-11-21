@@ -42,9 +42,7 @@ use rtl::user::HWND_LOCK_UPDATE_WINDOW;
 use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT};
 
 use super::queue::{self, Filter};
-use super::raster::intersect;
 use super::window::{
-    self,
     Hwnd,
     Message,
     Payload,
@@ -55,94 +53,6 @@ use super::window::{
     WS_VISIBLE,
 };
 use crate::sched::thread::ThreadId;
-
-/// The empty rectangle.
-const EMPTY: Rect = Rect {
-    left: 0,
-    top: 0,
-    right: 0,
-    bottom: 0,
-};
-
-/// Whether `r` covers nothing.
-fn is_empty(r: &Rect) -> bool {
-    r.left >= r.right || r.top >= r.bottom
-}
-
-/// The smallest rectangle covering both `a` and `b` (an empty one covers nothing).
-fn union(a: Rect, b: Rect) -> Rect {
-    if is_empty(&a) {
-        return b;
-    }
-    if is_empty(&b) {
-        return a;
-    }
-    Rect {
-        left: a.left.min(b.left),
-        top: a.top.min(b.top),
-        right: a.right.max(b.right),
-        bottom: a.bottom.max(b.bottom),
-    }
-}
-
-/// `r` moved by (`dx`, `dy`), saturated at i32's ends.
-fn offset(r: Rect, dx: i32, dy: i32) -> Rect {
-    Rect {
-        left: r.left.saturating_add(dx),
-        top: r.top.saturating_add(dy),
-        right: r.right.saturating_add(dx),
-        bottom: r.bottom.saturating_add(dy),
-    }
-}
-
-/// `r` moved back by (`dx`, `dy`), into the coordinates of an origin there, saturated at i32's
-/// ends.
-fn offset_back(r: Rect, dx: i32, dy: i32) -> Rect {
-    Rect {
-        left: r.left.saturating_sub(dx),
-        top: r.top.saturating_sub(dy),
-        right: r.right.saturating_sub(dx),
-        bottom: r.bottom.saturating_sub(dy),
-    }
-}
-
-/// What is left of `region` once `cut` is taken out of it, as a bounding box: nothing when `cut`
-/// covers it, the rest when `cut` covers a whole band across one side, the box unchanged
-/// otherwise.
-fn subtract(region: Rect, cut: Rect) -> Rect {
-    let common = intersect(region, cut);
-    if is_empty(&common) {
-        return region;
-    }
-    if common == region {
-        return EMPTY;
-    }
-    let mut left = region;
-    if common.top == region.top && common.bottom == region.bottom {
-        if common.left == region.left {
-            left.left = common.right;
-        } else if common.right == region.right {
-            left.right = common.left;
-        }
-    } else if common.left == region.left && common.right == region.right {
-        if common.top == region.top {
-            left.top = common.bottom;
-        } else if common.bottom == region.bottom {
-            left.bottom = common.top;
-        }
-    }
-    left
-}
-
-/// A window rectangle as GDI's RECT.
-fn rect_of(r: window::Rect) -> Rect {
-    Rect {
-        left: r.left,
-        top: r.top,
-        right: r.right,
-        bottom: r.bottom,
-    }
-}
 
 /// One window's update region.
 #[derive(Clone, Copy)]
@@ -161,7 +71,7 @@ impl Update {
     const EMPTY: Self = Update {
         window: None,
         thread: ThreadId(0),
-        rect: EMPTY,
+        rect: Rect::EMPTY,
         erase: false,
     };
 }
@@ -265,10 +175,12 @@ fn walk(
 /// The screen area `rect` names of the window's client area (client coordinates; the whole client
 /// area for none), cut to the client area.
 fn screen_area(windows: &Windows, window: WindowId, rect: Option<Rect>) -> Rect {
-    let client = rect_of(windows.client_rect(window));
+    let client = windows.client_rect(window);
     match rect {
         None => client,
-        Some(r) => intersect(offset(r, client.left, client.top), client),
+        Some(r) => r
+            .saturating_offset(client.left, client.top)
+            .intersect(client),
     }
 }
 
@@ -286,20 +198,20 @@ pub fn invalidate(windows: &mut Windows, window: WindowId, rect: Option<Rect>, e
         return;
     }
     let area = screen_area(windows, window, rect);
-    if is_empty(&area) {
+    if area.is_empty() {
         return;
     }
     walk(windows, window, |windows, w| {
         if w != window && windows.window_style(w) & WS_VISIBLE == 0 {
             return false;
         }
-        let client = rect_of(windows.client_rect(w));
-        let part = intersect(area, client);
-        if !is_empty(&part) {
+        let client = windows.client_rect(w);
+        let part = area.intersect(client);
+        if !part.is_empty() {
             add(
                 windows,
                 w,
-                offset_back(part, client.left, client.top),
+                part.saturating_offset_back(client.left, client.top),
                 erase,
             );
         }
@@ -327,7 +239,7 @@ fn add(windows: &mut Windows, window: WindowId, rect: Rect, erase: bool) {
         },
     };
     let record = &mut updates.records[at];
-    record.rect = union(record.rect, rect);
+    record.rect = record.rect.union(rect);
     record.erase |= erase;
     windows.queues.wake_thread(thread, QS_PAINT);
 }
@@ -338,14 +250,13 @@ fn add(windows: &mut Windows, window: WindowId, rect: Rect, erase: bool) {
 pub fn validate(windows: &mut Windows, window: WindowId, rect: Option<Rect>) {
     let area = screen_area(windows, window, rect);
     walk(windows, window, |windows, w| {
-        let client = rect_of(windows.client_rect(w));
+        let client = windows.client_rect(w);
         let cut = match rect {
             None if w == window => None,
-            _ => Some(offset_back(
-                intersect(area, client),
-                client.left,
-                client.top,
-            )),
+            _ => Some(
+                area.intersect(client)
+                    .saturating_offset_back(client.left, client.top),
+            ),
         };
         take_out(windows, w, cut);
         reaches_children(windows, w)
@@ -360,10 +271,10 @@ fn take_out(windows: &mut Windows, window: WindowId, cut: Option<Rect>) {
     };
     let record = &mut updates.records[at];
     let left = match cut {
-        None => EMPTY,
-        Some(cut) => subtract(record.rect, cut),
+        None => Rect::EMPTY,
+        Some(cut) => record.rect.subtract(cut),
     };
-    if is_empty(&left) {
+    if left.is_empty() {
         *record = Update::EMPTY;
     } else {
         record.rect = left;
@@ -396,7 +307,7 @@ pub fn update_of(windows: &Windows, window: WindowId) -> Option<(Rect, bool)> {
 pub fn update_rect(windows: &mut Windows, window: WindowId, erase: bool) -> (Rect, u32) {
     let updates = &mut windows.queues.updates;
     let Some(at) = updates.find(window) else {
-        return (EMPTY, 0);
+        return (Rect::EMPTY, 0);
     };
     let record = &mut updates.records[at];
     let mut bits = UPDATE_NOT_EMPTY;
@@ -434,22 +345,13 @@ pub struct PaintArea {
 
 /// BeginPaint's look at the window, before its DC is made: see [`PaintArea`].
 pub fn paint_area(windows: &Windows, window: WindowId) -> PaintArea {
-    let client = rect_of(windows.client_rect(window));
-    let (paint, erase) = update_of(windows, window).unwrap_or((EMPTY, false));
-    let paint = intersect(
-        paint,
-        Rect {
-            left: 0,
-            top: 0,
-            right: client.right - client.left,
-            bottom: client.bottom - client.top,
-        },
-    );
-    let paint = if is_empty(&paint) { EMPTY } else { paint };
+    let client = windows.client_rect(window);
+    let (paint, erase) = update_of(windows, window).unwrap_or((Rect::EMPTY, false));
+    let paint = paint.intersect(Rect::new(0, 0, client.width(), client.height()));
     PaintArea {
         paint,
         erase,
-        clip: offset(paint, client.left, client.top),
+        clip: paint.saturating_offset(client.left, client.top),
         client,
     }
 }
@@ -694,15 +596,6 @@ mod tests {
     use crate::win32k::queue::{QueuePump, Taken};
     use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP};
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
     /// A shown 320x200 popup at (`x`, `y`): its id and handle, its creation messages delivered.
     fn shown(
         m: &mut WindowManager,
@@ -729,16 +622,16 @@ mod tests {
         deliver(m, t);
         let w = m.windows.window_from_handle(h).unwrap();
         invalidate(&mut m.windows, w, None, true);
-        invalidate(&mut m.windows, w, Some(rect(10, 10, 50, 40)), true);
-        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
+        invalidate(&mut m.windows, w, Some(Rect::new(10, 10, 50, 40)), true);
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
         validate(&mut m.windows, w, None);
         assert_eq!(
             paint_area(&m.windows, w),
             PaintArea {
-                paint: EMPTY,
+                paint: Rect::EMPTY,
                 erase: false,
-                clip: EMPTY,
-                client: rect_of(m.windows.client_rect(w)),
+                clip: Rect::EMPTY,
+                client: m.windows.client_rect(w),
             }
         );
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
@@ -758,7 +651,7 @@ mod tests {
         assert_eq!(m.windows.queues.take_wakes()[0], 1 << t.0);
         assert_eq!(
             update_rect(&mut m.windows, w, false),
-            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY)
+            (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY)
         );
         let paint = msg_of(read(m, t, &all(), 0));
         assert_eq!((paint.hwnd, paint.message), (h, WM_PAINT));
@@ -770,23 +663,23 @@ mod tests {
         assert_eq!(
             paint_area(&m.windows, w),
             PaintArea {
-                paint: rect(0, 0, 320, 200),
+                paint: Rect::new(0, 0, 320, 200),
                 erase: true,
-                clip: rect(30, 40, 350, 240),
-                client: rect(30, 40, 350, 240),
+                clip: Rect::new(30, 40, 350, 240),
+                client: Rect::new(30, 40, 350, 240),
             }
         );
         assert_eq!(
             update_rect(&mut m.windows, w, true),
-            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY | UPDATE_ERASE)
+            (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY | UPDATE_ERASE)
         );
         assert_eq!(
             update_rect(&mut m.windows, w, true),
-            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY),
+            (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY),
             "the erase is handed out once"
         );
         begin_validate(&mut m.windows, w);
-        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
     }
 
@@ -798,39 +691,44 @@ mod tests {
         let (m, atom) = manager();
         let t = thread(m, 1, 0x100);
         let (w, _) = shown(m, atom, t, 0, 0);
-        let sub = rect(10, 10, 50, 40);
+        let sub = Rect::new(10, 10, 50, 40);
         invalidate(&mut m.windows, w, Some(sub), false);
         assert_eq!(
             update_rect(&mut m.windows, w, true),
             (sub, UPDATE_NOT_EMPTY)
         );
         validate(&mut m.windows, w, Some(sub));
-        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
 
         invalidate(&mut m.windows, w, Some(sub), false);
-        invalidate(&mut m.windows, w, Some(rect(100, 100, 120, 110)), false);
-        assert_eq!(
-            update_rect(&mut m.windows, w, false).0,
-            rect(10, 10, 120, 110)
+        invalidate(
+            &mut m.windows,
+            w,
+            Some(Rect::new(100, 100, 120, 110)),
+            false,
         );
-        validate(&mut m.windows, w, Some(rect(0, 0, 60, 200)));
         assert_eq!(
             update_rect(&mut m.windows, w, false).0,
-            rect(60, 10, 120, 110)
+            Rect::new(10, 10, 120, 110)
         );
-        validate(&mut m.windows, w, Some(rect(70, 20, 80, 30)));
+        validate(&mut m.windows, w, Some(Rect::new(0, 0, 60, 200)));
         assert_eq!(
             update_rect(&mut m.windows, w, false).0,
-            rect(60, 10, 120, 110)
+            Rect::new(60, 10, 120, 110)
+        );
+        validate(&mut m.windows, w, Some(Rect::new(70, 20, 80, 30)));
+        assert_eq!(
+            update_rect(&mut m.windows, w, false).0,
+            Rect::new(60, 10, 120, 110)
         );
         validate(&mut m.windows, w, None);
 
-        invalidate(&mut m.windows, w, Some(rect(400, 0, 500, 50)), false);
-        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
-        invalidate(&mut m.windows, w, Some(rect(-10, -10, 5, 5)), false);
+        invalidate(&mut m.windows, w, Some(Rect::new(400, 0, 500, 50)), false);
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
+        invalidate(&mut m.windows, w, Some(Rect::new(-10, -10, 5, 5)), false);
         assert_eq!(
             update_rect(&mut m.windows, w, false).0,
-            rect(0, 0, 5, 5),
+            Rect::new(0, 0, 5, 5),
             "cut to the client area"
         );
     }
@@ -849,19 +747,24 @@ mod tests {
         let child = m.windows.window_from_handle(child_h).unwrap();
         let hidden = m.windows.window_from_handle(hidden_h).unwrap();
         m.windows.set_visible_for_tests(child, true);
-        invalidate(&mut m.windows, parent, Some(rect(110, 60, 300, 200)), true);
+        invalidate(
+            &mut m.windows,
+            parent,
+            Some(Rect::new(110, 60, 300, 200)),
+            true,
+        );
         assert_eq!(
             update_rect(&mut m.windows, child, false).0,
-            rect(10, 10, 40, 30)
+            Rect::new(10, 10, 40, 30)
         );
-        assert_eq!(update_rect(&mut m.windows, hidden, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, hidden, false), (Rect::EMPTY, 0));
         begin_validate(&mut m.windows, parent);
         assert_eq!(
             update_rect(&mut m.windows, child, false).1,
             UPDATE_NOT_EMPTY
         );
         validate(&mut m.windows, parent, None);
-        assert_eq!(update_rect(&mut m.windows, child, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, child, false), (Rect::EMPTY, 0));
 
         let clipping = window_at(
             m,
@@ -885,7 +788,7 @@ mod tests {
             update_rect(&mut m.windows, clipping, false).1,
             UPDATE_NOT_EMPTY
         );
-        assert_eq!(update_rect(&mut m.windows, inner, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, inner, false), (Rect::EMPTY, 0));
         assert!(is_shown(&m.windows, inner));
         m.windows.set_visible_for_tests(clipping, false);
         assert!(
@@ -929,7 +832,7 @@ mod tests {
         deliver(m, t);
         assert_eq!(
             update_of(&m.windows, other),
-            Some((rect(0, 0, 320, 200), true))
+            Some((Rect::new(0, 0, 320, 200), true))
         );
         validate(&mut m.windows, other, None);
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
@@ -947,25 +850,9 @@ mod tests {
         invalidate_all(&mut m.windows, t, true);
         assert_eq!(
             update_rect(&mut m.windows, a, true),
-            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY | UPDATE_ERASE)
+            (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY | UPDATE_ERASE)
         );
-        assert_eq!(update_rect(&mut m.windows, hidden, false), (EMPTY, 0));
-    }
-
-    /// The box arithmetic: the union of two boxes, an empty one adding nothing; a cut that covers a
-    /// band across a side takes it off, one that covers it all leaves nothing.
-    #[test]
-    fn the_box_arithmetic() {
-        assert_eq!(union(EMPTY, rect(1, 2, 3, 4)), rect(1, 2, 3, 4));
-        assert_eq!(union(rect(0, 0, 2, 2), rect(5, 5, 6, 6)), rect(0, 0, 6, 6));
-        let r = rect(0, 0, 10, 10);
-        assert_eq!(subtract(r, rect(-5, -5, 20, 20)), EMPTY);
-        assert_eq!(subtract(r, rect(0, 0, 10, 4)), rect(0, 4, 10, 10));
-        assert_eq!(subtract(r, rect(0, 6, 10, 10)), rect(0, 0, 10, 6));
-        assert_eq!(subtract(r, rect(8, -1, 11, 11)), rect(0, 0, 8, 10));
-        assert_eq!(subtract(r, rect(-1, 0, 3, 10)), rect(3, 0, 10, 10));
-        assert_eq!(subtract(r, rect(2, 2, 4, 4)), r);
-        assert_eq!(subtract(r, rect(20, 20, 30, 30)), r);
+        assert_eq!(update_rect(&mut m.windows, hidden, false), (Rect::EMPTY, 0));
     }
 
     /// InvalidateRect of a rectangle at i32's end, of a window away from the screen's origin:
@@ -976,9 +863,9 @@ mod tests {
         let (m, atom) = manager();
         let t = thread(m, 1, 0x100);
         let (w, _) = shown(m, atom, t, 30, 40);
-        let far = rect(i32::MAX - 10, i32::MAX - 10, i32::MAX, i32::MAX);
+        let far = Rect::new(i32::MAX - 10, i32::MAX - 10, i32::MAX, i32::MAX);
         invalidate(&mut m.windows, w, Some(far), true);
-        assert_eq!(update_rect(&mut m.windows, w, false), (EMPTY, 0));
+        assert_eq!(update_rect(&mut m.windows, w, false), (Rect::EMPTY, 0));
         validate(&mut m.windows, w, Some(far));
     }
 
@@ -997,12 +884,12 @@ mod tests {
         invalidate(&mut m.windows, w, None, true);
         assert_eq!(
             update_rect(&mut m.windows, w, false),
-            (rect(0, 0, 320, 200), UPDATE_NOT_EMPTY)
+            (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY)
         );
-        validate(&mut m.windows, w, Some(rect(0, 0, 320, 100)));
+        validate(&mut m.windows, w, Some(Rect::new(0, 0, 320, 100)));
         assert_eq!(
             update_rect(&mut m.windows, w, false),
-            (rect(0, 100, 320, 200), UPDATE_NOT_EMPTY)
+            (Rect::new(0, 100, 320, 200), UPDATE_NOT_EMPTY)
         );
     }
 }

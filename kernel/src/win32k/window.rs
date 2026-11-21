@@ -80,6 +80,7 @@
 // hook state, the zombie's references).
 #![allow(dead_code)]
 
+use rtl::gdi::Rect;
 pub use rtl::user::StyleStruct;
 pub use rtl::window::{WindowData, WindowInfo, WindowPos, WindowText};
 
@@ -284,15 +285,6 @@ impl Failure {
 
 // --- The values the decisions pass around
 // ---------------------------------------------------------
-
-/// A rectangle (winuser.h's RECT).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Rect {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
-}
 
 /// A position and size as the create path works with them (x, y, cx, cy).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1684,18 +1676,9 @@ impl Windows {
     pub fn default_client(&self, id: WindowId, rect: Rect) -> Rect {
         let w = self.at(id);
         let menu = matches!(w.menu, Menu::Handle(_));
-        let client = rtl::nonclient::Frame::of(w.style, w.ex_style, menu).client(rtl::gdi::Rect {
-            left: 0,
-            top: 0,
-            right: rect.right.saturating_sub(rect.left),
-            bottom: rect.bottom.saturating_sub(rect.top),
-        });
-        Rect {
-            left: client.left.saturating_add(rect.left),
-            top: client.top.saturating_add(rect.top),
-            right: client.right.saturating_add(rect.left),
-            bottom: client.bottom.saturating_add(rect.top),
-        }
+        let frame = rtl::nonclient::Frame::of(w.style, w.ex_style, menu);
+        let client = frame.client(Rect::new(0, 0, rect.width(), rect.height()));
+        client.saturating_offset(rect.left, rect.top)
     }
 
     /// Whether the window `id` has a frame to paint: its window rectangle is not all client area.
@@ -3600,7 +3583,10 @@ impl Windows {
             _ => return Ok(()),
         };
         let origin = self.parent_origin(window);
-        let here = offset_rect_back(self.at(window).window_rect, origin.0, origin.1);
+        let here = self
+            .at(window)
+            .window_rect
+            .saturating_offset_back(origin.0, origin.1);
         {
             let w = self.at_mut(window);
             if minimized {
@@ -3639,8 +3625,8 @@ impl Windows {
             InsertAfter::Top,
             place.left,
             place.top,
-            place.right.saturating_sub(place.left),
-            place.bottom.saturating_sub(place.top),
+            place.width(),
+            place.height(),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             pump,
         )
@@ -3685,7 +3671,7 @@ impl Windows {
     pub fn window_placement(&self, window: WindowId) -> rtl::window::WindowPlacement {
         let w = self.at(window);
         let origin = self.parent_origin(window);
-        let here = offset_rect_back(w.window_rect, origin.0, origin.1);
+        let here = w.window_rect.saturating_offset_back(origin.0, origin.1);
         let minimized = w.style & WS_MINIMIZE != 0;
         let maximized = w.style & WS_MAXIMIZE != 0;
         let show_cmd = if minimized {
@@ -3718,7 +3704,7 @@ impl Windows {
             min_y,
             max_x,
             max_y,
-            normal: rtl_rect(normal),
+            normal,
         }
     }
 
@@ -3761,8 +3747,8 @@ impl Windows {
                 InsertAfter::Top,
                 normal.left,
                 normal.top,
-                normal.right.saturating_sub(normal.left),
-                normal.bottom.saturating_sub(normal.top),
+                normal.width(),
+                normal.height(),
                 SWP_NOZORDER | SWP_NOACTIVATE,
                 pump,
             )?;
@@ -3945,8 +3931,7 @@ impl Windows {
             }
             client
         } else {
-            offset_rect(
-                old_client,
+            old_client.saturating_offset(
                 rect.left.saturating_sub(old.left),
                 rect.top.saturating_sub(old.top),
             )
@@ -4100,19 +4085,14 @@ impl Windows {
                 continue;
             }
             let window_rect = self.at(id).window_rect;
-            let over = super::raster::intersect(rtl_rect(window_rect), rtl_rect(area));
-            if over.left >= over.right || over.top >= over.bottom {
+            let over = window_rect.intersect(area);
+            if over.is_empty() {
                 continue;
             }
             let client = self.at(id).client_rect;
-            let part = super::raster::intersect(rtl_rect(client), over);
-            if part.left < part.right && part.top < part.bottom {
-                let local = rtl::gdi::Rect {
-                    left: part.left - client.left,
-                    top: part.top - client.top,
-                    right: part.right - client.left,
-                    bottom: part.bottom - client.top,
-                };
+            let part = client.intersect(over);
+            if !part.is_empty() {
+                let local = part.saturating_offset_back(client.left, client.top);
                 super::paint::invalidate(self, id, Some(local), true);
             }
             if self.has_frame(id) && part != over {
@@ -4212,8 +4192,8 @@ impl Windows {
         loop {
             {
                 let w = self.at_mut(current);
-                w.window_rect = offset_rect(w.window_rect, dx, dy);
-                w.client_rect = offset_rect(w.client_rect, dx, dy);
+                w.window_rect = w.window_rect.saturating_offset(dx, dy);
+                w.client_rect = w.client_rect.saturating_offset(dx, dy);
             }
             if let Some(child) = self.at(current).child {
                 current = child;
@@ -4343,17 +4323,11 @@ impl Windows {
     /// keep no finer version).
     pub fn window_info(&self, classes: &class::Registry, window: WindowId) -> WindowInfo {
         let w = self.at(window);
-        let rect = |r: Rect| rtl::gdi::Rect {
-            left: r.left,
-            top: r.top,
-            right: r.right,
-            bottom: r.bottom,
-        };
         let active = self.thread(w.thread).active == Some(window);
         WindowInfo {
             size: core::mem::size_of::<WindowInfo>() as u32,
-            window: rect(w.window_rect),
-            client: rect(w.client_rect),
+            window: w.window_rect,
+            client: w.client_rect,
             style: w.style,
             ex_style: w.ex_style,
             status: if active {
@@ -4677,37 +4651,6 @@ impl Windows {
         let window = self.window_of(handle)?;
         self.at_mut(window).title = TextBuf::from_units(units);
         Ok(())
-    }
-}
-
-/// The rectangle as the drawing code's shape.
-fn rtl_rect(rect: Rect) -> rtl::gdi::Rect {
-    rtl::gdi::Rect {
-        left: rect.left,
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-    }
-}
-
-/// `rect` moved by `dx`, `dy`, saturated at i32's ends.
-fn offset_rect(rect: Rect, dx: i32, dy: i32) -> Rect {
-    Rect {
-        left: rect.left.saturating_add(dx),
-        top: rect.top.saturating_add(dy),
-        right: rect.right.saturating_add(dx),
-        bottom: rect.bottom.saturating_add(dy),
-    }
-}
-
-/// `rect` moved back by `dx`, `dy` (into the coordinates of an origin at (`dx`, `dy`)), saturated
-/// at i32's ends.
-fn offset_rect_back(rect: Rect, dx: i32, dy: i32) -> Rect {
-    Rect {
-        left: rect.left.saturating_sub(dx),
-        top: rect.top.saturating_sub(dy),
-        right: rect.right.saturating_sub(dx),
-        bottom: rect.bottom.saturating_sub(dy),
     }
 }
 
@@ -5129,8 +5072,7 @@ impl WindowManager {
         let parent = w.window_of(handle)?;
         let client = w.client_rect(parent);
         let (x, y) = (x.saturating_add(client.left), y.saturating_add(client.top));
-        let holds = |r: Rect| r.left <= x && x < r.right && r.top <= y && y < r.bottom;
-        if !holds(w.window_rect(parent)) {
+        if !w.window_rect(parent).contains(x, y) {
             return Ok(None);
         }
         let mut child = w.first_child(parent);
@@ -5140,7 +5082,7 @@ impl WindowManager {
                 || (flags & CWP_SKIPDISABLED != 0 && style & WS_DISABLED != 0)
                 || (flags & CWP_SKIPTRANSPARENT != 0
                     && w.window_ex_style(c) & WS_EX_TRANSPARENT != 0);
-            if !passed && holds(w.window_rect(c)) {
+            if !passed && w.window_rect(c).contains(x, y) {
                 return Ok(Some(w.handle_of(c)));
             }
             child = w.next_sibling(c);
@@ -9549,7 +9491,7 @@ mod tests {
                 -32000
             )
         );
-        assert_eq!(placement.normal, rtl_rect(normal));
+        assert_eq!(placement.normal, normal);
 
         w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
         assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), WS_MAXIMIZE);
@@ -9611,7 +9553,7 @@ mod tests {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
-        let first = rtl::gdi::Rect {
+        let first = Rect {
             left: 150,
             top: 120,
             right: 450,
@@ -9648,7 +9590,7 @@ mod tests {
         placement.show_cmd = SW_SHOWNORMAL as u32;
         w.set_window_placement(c, id, &placement, &mut pump)
             .unwrap();
-        assert_eq!(rtl_rect(w.at(id).window_rect), first);
+        assert_eq!(w.at(id).window_rect, first);
         assert_eq!(
             w.window_placement(id).min_x,
             -32000,
@@ -9797,7 +9739,7 @@ mod tests {
         let info = w.window_info(c, id);
         assert_eq!(
             info.window,
-            rtl::gdi::Rect {
+            Rect {
                 left: 10,
                 top: 20,
                 right: 110,
@@ -9806,7 +9748,7 @@ mod tests {
         );
         assert_eq!(
             info.client,
-            rtl::gdi::Rect {
+            Rect {
                 left: 13,
                 top: 23,
                 right: 107,
@@ -9952,7 +9894,7 @@ mod tests {
         assert_eq!(
             update_of(w, top),
             Some((
-                rtl::gdi::Rect {
+                Rect {
                     left: 0,
                     top: 0,
                     right: 392,
@@ -10136,7 +10078,7 @@ mod tests {
         );
         assert_eq!(
             m.window_placement(child).unwrap().normal,
-            rtl::gdi::Rect {
+            Rect {
                 left: 10,
                 top: 20,
                 right: 40,
@@ -10161,7 +10103,7 @@ mod tests {
             min_y: -1,
             max_x: -1,
             max_y: -1,
-            normal: rtl::gdi::Rect {
+            normal: Rect {
                 left: i32::MIN,
                 top: i32::MIN,
                 right: i32::MAX,
@@ -10203,7 +10145,7 @@ mod tests {
             min_y: at,
             max_x: at,
             max_y: at,
-            normal: rtl::gdi::Rect {
+            normal: Rect {
                 left: 0,
                 top: 0,
                 right: 200,

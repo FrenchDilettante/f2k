@@ -183,7 +183,7 @@ static INTERACTIVE: crate::sync::InitOnce<Interactive> = crate::sync::InitOnce::
 /// mode (the VBE driver's preferred one), as no taskbar takes any of it. A mode change replaces
 /// it ([`super::display`]).
 #[cfg(target_arch = "x86")]
-const WORK_AREA: super::window::Rect = super::window::Rect {
+const WORK_AREA: rtl::gdi::Rect = rtl::gdi::Rect {
     left: 0,
     top: 0,
     right: crate::hw::vbe::DEFAULT_WIDTH as i32,

@@ -30,7 +30,7 @@
 use rtl::dib::{rop3, sample, span, BLACKONWHITE, WHITEONBLACK};
 use rtl::gdi::{rop3 as rop_code, rop_uses_destination, Rect};
 
-use super::raster::{intersect, Pattern, Surface};
+use super::raster::{Pattern, Surface};
 
 /// Where a blit's source pixels come from.
 pub enum Source<'a> {
@@ -133,8 +133,8 @@ pub fn blit(
         right: left.saturating_add(width),
         bottom: top.saturating_add(height),
     };
-    let area = intersect(intersect(target, blit.clip), destination.bounds());
-    if area.left >= area.right || area.top >= area.bottom {
+    let area = target.intersect(blit.clip).intersect(destination.bounds());
+    if area.is_empty() {
         return;
     }
     let code = rop_code(blit.rop);
