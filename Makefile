@@ -10,8 +10,9 @@ TARGET ?= x86-f2k
 RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 # Build options (target spec, build-std, linker) live in .cargo/config.toml,
 # so cargo and rust-analyzer use the same settings as make.
-# The cargo profile the kernel builds with: dev (unoptimized, the default), or dev-opt (optimized,
-# the debug assertions and overflow checks kept; Cargo.toml). Each builds in its own directory.
+# The cargo profile the kernel builds with: dev (unoptimized, the default), dev-opt (optimized,
+# the debug assertions and overflow checks kept), or release (Cargo.toml). Each builds in its own
+# directory. The on-target suite boots its own default profile, TEST_PROFILE below.
 KERNEL_PROFILE ?= dev
 PROFILE_DIR = $(if $(filter dev,$(KERNEL_PROFILE)),debug,$(KERNEL_PROFILE))
 OUT_DIR = $(BUILD_DIR)/$(TARGET)/$(PROFILE_DIR)
@@ -159,7 +160,8 @@ help:
 	@echo "  DISK_IMG=...         - Disk image path"
 	@echo "  CMDLINE='...'        - What make run and make vbox-image boot into: the program's path"
 	@echo "                         on the volume and its arguments (default: F2K's cmd.exe)"
-	@echo "  KERNEL_PROFILE=dev   - Kernel cargo profile: dev, or dev-opt (optimized, checks kept)"
+	@echo "  KERNEL_PROFILE=dev   - Kernel cargo profile: dev (the default), dev-opt (optimized, checks kept), or release"
+	@echo "  TEST_PROFILE=release - Profile make test builds and boots: release (the default), dev, or dev-opt"
 
 .PHONY: all
 all: disk
@@ -294,10 +296,14 @@ clobber: clean
 UV ?= uv
 PYTEST = $(UV) run pytest
 PYTEST_FLAGS ?= -n 4
+# The profile the on-target suite builds and boots by default: release, because the dev-profile
+# kernel image outgrows the 16 MiB kernel image window on x86_64 hosts and cannot link there. The
+# host cargo tests (run-tests) are unaffected: they run under cargo's own default profile, dev.
+TEST_PROFILE ?= release
 
 .PHONY: test
 test:
-	F2K_KERNEL_PROFILE=$(KERNEL_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
+	F2K_KERNEL_PROFILE=$(TEST_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
 
 # Everything a change is verified with, fastest first, stopping at the first failure: the host unit
 # tests, the pins and the host scenarios (every scenario run), and the on-target suite

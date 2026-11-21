@@ -590,16 +590,43 @@ mod tests {
         assert_eq!(value.read(), 0x1122_3344);
         // SAFETY: none given.
         assert!(unsafe { Out::<u32>::optional(core::ptr::null_mut()) }.is_none());
-        let mut words = [0u8; 9];
+        // A byte array with a 2-aligned base, so a unit past its start is at an odd address
+        // (a plain [u8; 9] is aligned to 1 only, and the compiler may place it at an odd one).
+        #[repr(align(2))]
+        struct Bytes([u8; 9]);
+        let mut words = Bytes([0u8; 9]);
         // SAFETY: four units of the array, at an odd address.
-        let mut buffer = unsafe { OutBuf::new(words[1..].as_mut_ptr().cast::<u16>(), 4) };
+        let mut buffer = unsafe { OutBuf::new(words.0[1..].as_mut_ptr().cast::<u16>(), 4) };
         buffer.put(&[1, 2]);
         buffer.set(3, 4);
-        assert_eq!(&words, &[0, 1, 0, 2, 0, 0, 0, 4, 0]);
+        assert_eq!(&words.0, &[0, 1, 0, 2, 0, 0, 0, 4, 0]);
         // SAFETY: the units written above.
-        let read = unsafe { InBuf::new(words[1..].as_ptr().cast::<u16>(), 4) };
+        let read = unsafe { InBuf::new(words.0[1..].as_ptr().cast::<u16>(), 4) };
         assert!(read.aligned().is_none());
         assert_eq!(read.iter().collect::<std::vec::Vec<_>>(), [1, 2, 0, 4]);
+    }
+
+    /// `aligned` reports whether the buffer's address is aligned for its element type: the values
+    /// as a slice when it is, none when it is not (an empty buffer is a slice at any address).
+    #[test]
+    fn aligned_reports_the_address_alignment() {
+        let units = [1u16, 2, 3, 4];
+        // SAFETY: the four units above, at an aligned address.
+        let read = unsafe { InBuf::new(units.as_ptr(), 4) };
+        assert_eq!(read.aligned(), Some(&[1, 2, 3, 4][..]));
+
+        // A byte array with a 2-aligned base: a unit past its start is at an odd address.
+        #[repr(align(2))]
+        struct Bytes([u8; 10]);
+        let mut bytes = Bytes([0u8; 10]);
+        bytes.0[1..9].copy_from_slice(&[1, 0, 2, 0, 3, 0, 4, 0]);
+        // SAFETY: the eight bytes above, as four units at an odd address.
+        let read = unsafe { InBuf::new(bytes.0[1..].as_ptr().cast::<u16>(), 4) };
+        assert!(read.aligned().is_none());
+        assert_eq!(read.iter().collect::<std::vec::Vec<_>>(), [1, 2, 3, 4]);
+        // SAFETY: no values, at the same odd address.
+        let empty = unsafe { InBuf::new(bytes.0[1..].as_ptr().cast::<u16>(), 0) };
+        assert_eq!(empty.aligned(), Some(&[][..]));
     }
 
     #[test]
