@@ -1028,6 +1028,22 @@ ordinal = 772
 fails = "never"
 
 [[export]]
+name = "strtod"
+group = "strings"
+args = ["strA nptr", "ptr endptr"]
+impl = { native = "strtod" }
+ordinal = 732
+fails = "never"
+
+[[export]]
+name = "atof"
+group = "strings"
+args = ["strA str"]
+impl = { native = "atof" }
+ordinal = 594
+fails = "never"
+
+[[export]]
 name = "_wtol"
 group = "strings"
 args = ["strW str"]
@@ -3684,10 +3700,6 @@ name = "atexit"
 ordinal = 593
 
 [[export]]
-name = "atof"
-ordinal = 594
-
-[[export]]
 name = "bsearch"
 ordinal = 597
 
@@ -4002,10 +4014,6 @@ ordinal = 728
 [[export]]
 name = "strspn"
 ordinal = 730
-
-[[export]]
-name = "strtod"
-ordinal = 732
 
 [[export]]
 name = "strtok"

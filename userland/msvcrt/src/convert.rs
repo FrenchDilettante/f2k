@@ -1,5 +1,5 @@
 //! Number conversions: _ultoa, _itow, _ltow and _ultow, _wtol and _wtoi, atoi and atol, wcstol,
-//! wcstoul, strtol and strtoul, and wcstod, as wide's capture pins them.
+//! wcstoul, strtol and strtoul, wcstod, strtod and atof, as wide's capture pins them.
 //!
 //! - wcstol and wcstoul skip blanks, take a sign, then base 0's prefixes (`0x` hex, `0` octal) or
 //!   base 16's `0x`, and the ASCII digits below the base. With no digit (`0x` alone counts as none)
@@ -14,7 +14,8 @@
 //!   character that cannot be part of the number). _wtoi is _wtol and atol is atoi: an int is a
 //!   long on Win32.
 //! - wcstod reads the decimal form alone (its rules at [`wcstod`]), its value correctly rounded, as
-//!   the capture's bits are (0.1 is 0x3FB999999999999A).
+//!   the capture's bits are (0.1 is 0x3FB999999999999A). strtod reads a narrow string the same way;
+//!   atof too, but leaves errno alone and keeps a denormal ([`atof`]).
 //! - _ultoa and _ultow write the digits in any radix from 2 to 36, letters in lower case. _itow and
 //!   _ltow write a negative value with a `-` in radix 10 and as unsigned in any other (MSDN: "If
 //!   radix equals 10 and value is negative, the first character of the stored string is the minus
@@ -350,9 +351,20 @@ impl Digits {
 /// The smallest normal double: wcstod's results below it underflow.
 const SMALLEST_NORMAL: f64 = f64::MIN_POSITIVE;
 
-/// wcstod's work over the string's characters, each a narrow one (`at`, 0 past the end): the value,
-/// whether it overflowed or underflowed, and the end's index (0 without a digit).
-fn real(at: impl Fn(usize) -> u8) -> (f64, bool, usize) {
+/// Where a real number's value lies against a double's range.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Range {
+    Within,
+    /// Past the largest double: an infinity.
+    Over,
+    /// Nonzero, below the smallest normal double: a denormal, or 0.
+    Under,
+}
+
+/// The work wcstod, strtod and atof share over the string's characters, each a narrow one (`at`, 0
+/// past the end): the value as converted (correctly rounded: an infinity past the largest double,
+/// a denormal kept), where it lies, and the end's index (0 without a digit).
+fn real(at: impl Fn(usize) -> u8) -> (f64, Range, usize) {
     let is_digit = |byte: u8| byte.is_ascii_digit();
     let mut i = 0;
     while at(i) != 0 && ctype::byte_class(at(i)) & ctype::SPACE != 0 {
@@ -383,7 +395,7 @@ fn real(at: impl Fn(usize) -> u8) -> (f64, bool, usize) {
         }
     }
     if !seen {
-        return (0.0, false, 0);
+        return (0.0, Range::Within, 0);
     }
     let mut power = 0i64;
     if matches!(at(i), b'e' | b'E' | b'd' | b'D') {
@@ -406,12 +418,31 @@ fn real(at: impl Fn(usize) -> u8) -> (f64, bool, usize) {
         }
     }
     let nonzero = digits.count != 0;
-    let mut value = digits.value(power);
-    let out_of_range = value.is_infinite() || (nonzero && value < SMALLEST_NORMAL);
-    if nonzero && value < SMALLEST_NORMAL {
-        value = 0.0;
+    let value = digits.value(power);
+    let range = if value.is_infinite() {
+        Range::Over
+    } else if nonzero && value < SMALLEST_NORMAL {
+        Range::Under
+    } else {
+        Range::Within
+    };
+    (if negative { -value } else { value }, range, i)
+}
+
+/// strtod's and wcstod's answer for a value [`real`] read: ±HUGE_VAL past the largest double, 0
+/// (signed as the number) below the smallest normal one, errno ERANGE either way.
+fn in_range(value: f64, range: Range) -> f64 {
+    match range {
+        Range::Within => value,
+        Range::Over => {
+            set_errno(ERANGE);
+            value
+        }
+        Range::Under => {
+            set_errno(ERANGE);
+            0.0f64.copysign(value)
+        }
     }
-    (if negative { -value } else { value }, out_of_range, i)
 }
 
 /// wcstod: the string's double, the end of its number stored in `end`, as wide's capture pins it.
@@ -445,13 +476,46 @@ pub unsafe extern "C" fn wcstod(string: *const u16, end: *mut *const u16) -> f64
             .and_then(|unit| ctype::wide_to_byte(unit.get()))
             .unwrap_or(0)
     };
-    let (value, out_of_range, index) = real(narrow);
-    if out_of_range {
-        set_errno(ERANGE);
-    }
+    let (value, range, index) = real(narrow);
     // SAFETY: the caller's end pointer; the index is inside the string.
     unsafe { set_end(end, string, index) };
-    value
+    in_range(value, range)
+}
+
+/// A narrow string's byte at `index`, 0 past its end.
+fn byte_of(string: &[u8], index: usize) -> u8 {
+    string.get(index).copied().unwrap_or(0)
+}
+
+/// strtod: the narrow string's double, the end of its number stored in `end`, as wcstod reads a
+/// wide one (runtime's capture: `strtod("1e309")` answers HUGE_VAL, errno ERANGE), its bytes read
+/// as they are.
+///
+/// # Safety
+///
+/// `string` is NUL-terminated; `end` is null or a pointer's storage.
+#[unsafe(export_name = "f2k_export_strtod")]
+pub unsafe extern "C" fn strtod(string: *const u8, end: *mut *const u8) -> f64 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    let (value, range, index) = real(|i| byte_of(bytes, i));
+    // SAFETY: the caller's end pointer; the index is inside the string.
+    unsafe { set_end(end, string, index) };
+    in_range(value, range)
+}
+
+/// atof: the narrow string's double, read as strtod reads it, as VC6's atof reads it (`_fltin2`
+/// over strtod's scanner): errno untouched, and the value as converted, an infinity past the
+/// largest double and a denormal kept below the smallest normal one (where strtod answers 0).
+///
+/// # Safety
+///
+/// `string` is NUL-terminated.
+#[unsafe(export_name = "f2k_export_atof")]
+pub unsafe extern "C" fn atof(string: *const u8) -> f64 {
+    // SAFETY: the caller's string.
+    let bytes = unsafe { bytes_until_nul(string) };
+    real(|i| byte_of(bytes, i)).0
 }
 
 /// The room the text of a number takes: 32 binary digits at most (a `-` comes only with radix 10's
@@ -1007,6 +1071,74 @@ mod tests {
         // SAFETY: a NUL-terminated string, no end pointer.
         let v = unsafe { wcstod(s.as_ptr(), core::ptr::null_mut()) };
         assert_eq!((v.to_bits(), errno()), (0x4019000000000000, 0));
+    }
+
+    /// strtod reads a narrow string as wcstod reads a wide one: runtime's strtod lines (HUGE_VAL
+    /// and ERANGE for 1e309, DBL_MAX itself), and wcstod's edges: the end, no digit, underflow to
+    /// 0 with ERANGE, a byte past ASCII no blank in the "C" locale.
+    #[test]
+    fn strtod_reads_as_wcstod() {
+        let _locale = ctype::tests::LOCALE.lock().unwrap();
+        // SAFETY: setlocale over a NUL-terminated name.
+        unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
+        for (text, bits, end, error) in [
+            (&b"1e309"[..], 0x7FF0000000000000u64, 5, 34),
+            (b"-1e309", 0xFFF0000000000000, 6, 34),
+            (b"1.7976931348623157e308", 0x7FEFFFFFFFFFFFFF, 22, 0),
+            (b"  -2.5e-3xyz", 0xBF647AE147AE147B, 9, 0),
+            (b"0.1", 0x3FB999999999999A, 3, 0),
+            (b"1d2", 0x4059000000000000, 3, 0),
+            (b"1e+", 0x3FF0000000000000, 1, 0),
+            (b".5.", 0x3FE0000000000000, 2, 0),
+            (b"4.9e-324", 0, 8, 34),
+            (b"-1e-400", 0x8000000000000000, 7, 34),
+            (b"", 0, 0, 0),
+            (b" \t", 0, 0, 0),
+            (b"-x", 0, 0, 0),
+            (b"inf", 0, 0, 0),
+            (b"\xA07", 0, 0, 0),
+        ] {
+            let s: Vec<u8> = text.iter().copied().chain([0]).collect();
+            let mut e = core::ptr::null();
+            set_errno(0);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { strtod(s.as_ptr(), &mut e) };
+            // SAFETY: the end points into the string.
+            let offset = unsafe { e.offset_from(s.as_ptr()) };
+            assert_eq!(
+                (v.to_bits(), offset, errno()),
+                (bits, end, error),
+                "strtod({:?})",
+                String::from_utf8_lossy(text)
+            );
+        }
+        set_errno(0);
+        // SAFETY: a NUL-terminated string, no end pointer.
+        let v = unsafe { strtod(b"6.25\0".as_ptr(), core::ptr::null_mut()) };
+        assert_eq!((v, errno()), (6.25, 0));
+    }
+
+    /// atof reads as strtod does (runtime's atof line: "  -2.5e-3xyz" is -0.0025), but leaves
+    /// errno alone, and answers a value past the double's range as converted: an infinity, or a
+    /// denormal where strtod answers 0.
+    #[test]
+    fn atof_reads_as_strtod_without_errno() {
+        for (text, bits) in [
+            (&b"  -2.5e-3xyz\0"[..], 0xBF647AE147AE147Bu64),
+            (b"1.7976931348623157e308\0", 0x7FEFFFFFFFFFFFFF),
+            (b"1e309\0", 0x7FF0000000000000),
+            (b"-1e309\0", 0xFFF0000000000000),
+            (b"4.9e-324\0", 1),
+            (b"1e-400\0", 0),
+            (b"abc\0", 0),
+            (b"\0", 0),
+            (b"12,5\0", 0x4028000000000000),
+        ] {
+            set_errno(5);
+            // SAFETY: a NUL-terminated string.
+            let v = unsafe { atof(text.as_ptr()) };
+            assert_eq!((v.to_bits(), errno()), (bits, 5), "atof({text:?})");
+        }
     }
 
     /// Digits past the kept ones still decide the rounding, and a long run of zeros scales.
