@@ -88,8 +88,8 @@ def test_hello_reaches_the_text_screen(request, builder, log_path, boot_timeout)
             observe=observe,
         )
         if not screens:
-            pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\nlog: {log_path}\n"
-                        f"--- COM1 (tail) ---\n{f2kboot.tail(log)}", pytrace=False)
+            pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\n"
+                        f"{f2kboot.failure_context(log_path, log)}", pytrace=False)
         mismatch = f2kboot.compare_block(block, log, [])
         assert mismatch is None, f"the serial log does not carry the block: {mismatch}\nlog: {log_path}"
 

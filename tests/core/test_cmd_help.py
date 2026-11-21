@@ -16,35 +16,11 @@ from __future__ import annotations
 
 import pytest
 
-import f2kboot
-from test_cmd import BANNER, COMMAND_LINE, TIMEOUT, disk_with_cmd, run_with_c
+from test_cmd import BANNER, run_cmd, run_with_c
 
 # The first syntax lines of cmd's and cd's helps.
 CMD_SYNTAX = "CMD [/Q] [/S] [/A | /U] [/D] [/E:ON | /E:OFF] [/F:ON | /F:OFF] [/V:ON | /V:OFF]"
 CD_SYNTAX = ["CHDIR [/D] [drive:][path]", "CHDIR ..", "CD [/D] [drive:][path]", "CD .."]
-
-
-def run_cmd(builder, log_path, boot_timeout, arguments: str) -> tuple[list[str], int | None]:
-    """Boot `cmd.exe <arguments>` with the kernel option `redirected`: its output lines and exit
-    code."""
-    build, variant = disk_with_cmd(builder, log_path, [])
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=f"{COMMAND_LINE} {arguments}",
-            kernel_options=f2kboot.REDIRECTED_OPTION,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=f2kboot.process_ended,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    if not f2kboot.process_ended(log):
-        pytest.fail(f"cmd.exe never ended (stopped: {stopped})\nlog: {log_path}\n"
-                    f"--- COM1 (tail) ---\n{f2kboot.tail(log)}", pytrace=False)
-    return f2kboot.program_output(log)
 
 
 @pytest.mark.kernel

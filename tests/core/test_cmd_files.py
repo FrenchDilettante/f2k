@@ -32,18 +32,7 @@ from pathlib import Path
 
 import pytest
 
-import f2kboot
-from test_cmd import (
-    BANNER,
-    COMMAND_LINE,
-    PROMPT,
-    TIMEOUT,
-    Typist,
-    disk_with_cmd,
-    rows_of,
-    run_with_c,
-    shown,
-)
+from test_cmd import BANNER, PROMPT, run_with_c, type_at_the_prompt
 
 SCRIPT = [
     "@echo off",
@@ -178,30 +167,6 @@ def test_console_built_ins_at_the_prompt(builder, log_path, boot_timeout):
         "",
         PROMPT,
     ]
-    build, variant = disk_with_cmd(builder, log_path, [])
-    typist = Typist(steps)
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=COMMAND_LINE,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=lambda log: typist.screen is not None or f2kboot.process_ended(log),
-            during=typist,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    context = (f"\n--- the screen ---\n{shown(typist.screen or typist.last)}\nlog: {log_path}\n"
-               f"--- COM1 (tail) ---\n{f2kboot.tail(log)}")
-    if typist.taken < len(steps):
-        pytest.fail(f"step {typist.taken + 1}'s screen never showed: its last line "
-                    f"{steps[typist.taken][0]!r} (stopped: {stopped}){context}", pytrace=False)
-    if typist.screen is None:
-        pytest.fail(f"the prompt never came back after the last step (stopped: {stopped}){context}",
-                    pytrace=False)
-    rows = rows_of(typist.screen)
-    assert rows == expected + [""] * (f2kboot.ROWS - len(expected)), f"the screen differs{context}"
-    colours = {attribute for _, attribute in typist.screen.cells}
+    screen, context = type_at_the_prompt(builder, log_path, boot_timeout, steps, expected)
+    colours = {attribute for _, attribute in screen.cells}
     assert colours == {0x1E}, f"the screen's attributes: {sorted(colours)}{context}"

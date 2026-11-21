@@ -168,9 +168,7 @@ class Typist:
         wait, keys = self.steps[self.taken]
         if rows[row] != wait or line == self.met:
             return
-        for key in keys:
-            f2kboot.qmp_command(socket, [f2kboot.key_events(key, True),
-                                         f2kboot.key_events(key, False)])
+        f2kboot.press(socket, keys)
         self.taken += 1
         self.met = line
 
@@ -193,60 +191,44 @@ def batch_files(directory: Path) -> list[Path]:
     return paths
 
 
-def disk_with_cmd(builder, log_path, extra: list[Path]) -> tuple[f2kboot.Build, Path]:
-    """The build, and a copy of its disk with cmd.exe and `extra` in \\WINNT\\system32."""
+def boot_with_cmd(builder, log_path, boot_timeout, extra: list[Path], **options) -> tuple[str, str]:
+    """Boot the build with cmd.exe and `extra` added to \\WINNT\\system32
+    (`f2kboot.boot_with_programs`); `options` are `f2kboot.boot`'s."""
     build = builder([])
     assert CMD.exists(), f"{CMD} is missing: `make disk` builds and copies it"
-    variant = f2kboot.disk_with_programs(build, [CMD, *extra],
-                                         f2kboot.WORK / "variants" / f"{log_path.stem}.img")
-    return build, variant
+    return f2kboot.boot_with_programs(build, [CMD, *extra], log_path, timeout=boot_timeout(TIMEOUT),
+                                      **options)
+
+
+def run_cmd(builder, log_path, boot_timeout, arguments: str,
+            extra: list[Path] = ()) -> tuple[list[str], int | None]:
+    """Boot `cmd.exe <arguments>` with the kernel option `redirected` (its output on COM1, as a
+    corpus program's): its output lines and exit code."""
+    log, stopped = boot_with_cmd(builder, log_path, boot_timeout, list(extra),
+                                 cmdline=f"{COMMAND_LINE} {arguments}",
+                                 kernel_options=f2kboot.REDIRECTED_OPTION, done=f2kboot.process_ended)
+    if not f2kboot.process_ended(log):
+        pytest.fail(f"cmd.exe never ended (stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}",
+                    pytrace=False)
+    return f2kboot.program_output(log)
 
 
 def run_with_c(builder, log_path, boot_timeout, string: str,
                extra: list[Path]) -> tuple[list[str], int | None]:
-    """Boot `cmd.exe /c <string>` with the kernel option `redirected` (its output on COM1, as a
-    corpus program's): its output lines and exit code."""
-    build, variant = disk_with_cmd(builder, log_path, extra)
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=f"{COMMAND_LINE} /c {string}",
-            kernel_options=f2kboot.REDIRECTED_OPTION,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=f2kboot.process_ended,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    if not f2kboot.process_ended(log):
-        pytest.fail(f"cmd.exe never ended (stopped: {stopped})\nlog: {log_path}\n"
-                    f"--- COM1 (tail) ---\n{f2kboot.tail(log)}", pytrace=False)
-    return f2kboot.program_output(log)
+    """Boot `cmd.exe /c <string>` (`run_cmd`): its output lines and exit code."""
+    return run_cmd(builder, log_path, boot_timeout, f"/c {string}", extra)
 
 
 def type_at_the_prompt(builder, log_path, boot_timeout, steps: list[tuple[str, list[str]]],
-                       screen: list[str], extra: list[Path] | None = None) -> None:
+                       screen: list[str], extra: list[Path] | None = None) -> tuple[f2kboot.TextScreen, str]:
     """Boot into cmd.exe (`extra` files beside it), take `steps`, and check the screen the last
-    prompt shows on."""
-    build, variant = disk_with_cmd(builder, log_path, extra or [])
+    prompt shows on: that screen, and the context a failure's message ends with."""
     typist = Typist(steps)
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=COMMAND_LINE,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=lambda log: typist.screen is not None or f2kboot.process_ended(log),
-            during=typist,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    context = (f"\n--- the screen ---\n{shown(typist.screen or typist.last)}\nlog: {log_path}\n"
-               f"--- COM1 (tail) ---\n{f2kboot.tail(log)}")
+    log, stopped = boot_with_cmd(builder, log_path, boot_timeout, extra or [], cmdline=COMMAND_LINE,
+                                 done=lambda log: typist.screen is not None or f2kboot.process_ended(log),
+                                 during=typist)
+    context = (f"\n--- the screen ---\n{shown(typist.screen or typist.last)}\n"
+               f"{f2kboot.failure_context(log_path, log)}")
     if typist.taken == 0:
         pytest.fail(f"the first prompt never showed (stopped: {stopped}){context}", pytrace=False)
     if typist.taken < len(steps):
@@ -258,6 +240,7 @@ def type_at_the_prompt(builder, log_path, boot_timeout, steps: list[tuple[str, l
     rows = rows_of(typist.screen)
     expected = screen + [""] * (f2kboot.ROWS - len(screen))
     assert rows == expected, f"the screen differs{context}"
+    return typist.screen, context
 
 
 @pytest.mark.kernel

@@ -726,8 +726,7 @@ class KeyPress:
     def __call__(self, socket, log: str) -> None:
         if not self.pressed and self.line in log:
             self.pressed = True
-            f2kboot.qmp_command(socket, [{"execute": "human-monitor-command",
-                                          "arguments": {"command-line": "sendkey a"}}])
+            f2kboot.qmp_command(socket, [f2kboot.sendkey("a")])
 
 
 @pytest.mark.parametrize(
@@ -764,5 +763,4 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         why = f"QEMU exited before the expected output appeared ({detail})"
     else:
         why = f"expected output not found within the timeout ({detail})"
-    pytest.fail(f"{case.description}\n{why}\nlog: {log_path}\n--- COM1 (tail) ---\n"
-                f"{f2kboot.tail(log)}", pytrace=False)
+    pytest.fail(f"{case.description}\n{why}\n{f2kboot.failure_context(log_path, log)}", pytrace=False)

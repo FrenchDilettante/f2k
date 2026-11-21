@@ -109,15 +109,6 @@ class Step:
         return [record for record in self.records if record.vk == vk]
 
 
-def sendkey(key: str) -> dict:
-    return {"execute": "human-monitor-command", "arguments": {"command-line": f"sendkey {key}"}}
-
-
-def key_event(qcode: str, down: bool) -> dict:
-    return {"execute": "input-send-event",
-            "arguments": {"events": [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": qcode}}}]}}
-
-
 def kbd_lines(log_path: Path) -> list[str]:
     return [line.strip() for line in f2kboot.lines_of(f2kboot.read_log(log_path))
             if line.startswith("F2K: kbd: ")]
@@ -132,7 +123,7 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
     def observe(socket: Path) -> None:
         for step in steps:
             before = len(kbd_lines(log_path))
-            commands = [sendkey(command) if isinstance(command, str) else command for command in step.commands]
+            commands = [f2kboot.sendkey(command) if isinstance(command, str) else command for command in step.commands]
             f2kboot.qmp_command(socket, commands)
             deadline = time.monotonic() + STEP_TIMEOUT
             while True:
@@ -158,8 +149,8 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
         observe=observe,
     )
     if not ran:
-        pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\nlog: {log_path}\n"
-                    f"--- COM1 (tail) ---\n{f2kboot.tail(log)}", pytrace=False)
+        pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\n"
+                    f"{f2kboot.failure_context(log_path, log)}", pytrace=False)
     mismatch = f2kboot.compare_block(HELLO, log, [])
     assert mismatch is None, f"the serial log does not carry hello's block: {mismatch}\nlog: {log_path}"
     boot_lines = [line for line in kbd_lines(log_path) if not BYTE.match(line) and not RECORD.match(line)]
@@ -207,7 +198,8 @@ def test_the_producer_appends_key_event_records(builder, log_path, boot_timeout)
     right = Step(["right"], 1)
     twice = Step(["a", "a"], 2)
     held = Step(["a 1000"], 1)
-    repeated = Step([key_event("d", True), key_event("d", True), key_event("d", False)], 1)
+    repeated = Step([f2kboot.key_events("d", True), f2kboot.key_events("d", True),
+                     f2kboot.key_events("d", False)], 1)
     steps = [a, shift_a, caps_on, caps_a, caps_off, plain_a, num_on, pad_digit,
              num_off_again, num_on_again, pad_still, num_off, pad_clear,
              ctrl_c, right, twice, held, repeated]

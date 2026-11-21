@@ -68,9 +68,7 @@ class Typist:
     def __call__(self, socket, log: str) -> None:
         if self.typed or READY not in f2kboot.lines_of(log):
             return
-        for chord in CHORDS:
-            f2kboot.qmp_command(socket, [f2kboot.key_events(chord, True),
-                                         f2kboot.key_events(chord, False)])
+        f2kboot.press(socket, CHORDS)
         self.typed = True
 
 
@@ -80,24 +78,16 @@ def test_typed_keys_reach_the_window(builder, log_path, boot_timeout):
     TranslateMessage, and Escape ends it with 0."""
     build = builder([])
     assert KEYSHOW.exists(), f"{KEYSHOW} is missing: `make userland` builds and copies it"
-    variant = f2kboot.disk_with_programs(build, [KEYSHOW],
-                                         f2kboot.WORK / "variants" / f"{log_path.stem}.img")
     typist = Typist()
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=COMMAND_LINE,
-            kernel_options=f2kboot.REDIRECTED_OPTION,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=f2kboot.process_ended,
-            during=typist,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    context = f"(stopped: {stopped})\nlog: {log_path}\n--- COM1 (tail) ---\n{f2kboot.tail(log)}"
+    log, stopped = f2kboot.boot_with_programs(
+        build, [KEYSHOW], log_path,
+        cmdline=COMMAND_LINE,
+        kernel_options=f2kboot.REDIRECTED_OPTION,
+        timeout=boot_timeout(TIMEOUT),
+        done=f2kboot.process_ended,
+        during=typist,
+    )
+    context = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     if not typist.typed:
         pytest.fail(f"keyshow never said it was ready {context}", pytrace=False)
     lines, code = f2kboot.program_output(log)

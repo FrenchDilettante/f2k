@@ -49,7 +49,7 @@ def test_fish_paints_the_framebuffer(request, builder, log_path, boot_timeout, t
         done=f2kboot.teardown_audited,
         observe=observe,
     )
-    tail = f"log: {log_path} ({stopped})\n--- COM1 (tail) ---\n{f2kboot.tail(log)}"
+    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     assert "KERNEL PANIC" not in log, tail
     assert "F2K: vbe: 640x480x32" in log, f"no mode line\n{tail}"
     assert "child process" in log and "(PIPE) exited normally (exit code=0)" in log, (

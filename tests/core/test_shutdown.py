@@ -131,8 +131,7 @@ class Keys:
         met = wait(rows[row]) if callable(wait) else rows[row] == wait
         if not met or line == self.met:
             return
-        for key in keys:
-            f2kboot.qmp_command(socket, [f2kboot.key_events(key, True), f2kboot.key_events(key, False)])
+        f2kboot.press(socket, keys)
         self.taken += 1
         self.met = line
 
@@ -142,7 +141,7 @@ class Keys:
 
 def failure(what: str, log_path: Path, log: str, keys: Keys | None = None) -> str:
     screen = f"\n--- the screen ---\n{shown(keys.last)}" if keys is not None else ""
-    return f"{what}{screen}\nlog: {log_path}\n--- COM1 (tail) ---\n{f2kboot.tail(log)}"
+    return f"{what}{screen}\n{f2kboot.failure_context(log_path, log)}"
 
 
 def boot_cmd(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float, keys: Keys | Typist,
@@ -187,8 +186,7 @@ def assert_file_kept(build: f2kboot.Build, kept: Path, log_path: Path, timeout: 
                             done=lambda log: typist.screen is not None)
     if typist.screen is None:
         pytest.fail(f"the second boot's prompt never came back (stopped: {stopped})\n--- the screen ---\n"
-                    f"{shown(typist.last)}\nlog: {second_log}\n--- COM1 (tail) ---\n{f2kboot.tail(log)}",
-                    pytrace=False)
+                    f"{shown(typist.last)}\n{f2kboot.failure_context(second_log, log)}", pytrace=False)
     expected = [BANNER, "", PROMPT + "type C:\\KEPT.TXT", "kept", "", PROMPT]
     assert rows_of(typist.screen) == expected + [""] * (f2kboot.ROWS - len(expected))
     status, detail = f2kboot.Expectation(expects=[], forbids=FORBIDS).check(log)

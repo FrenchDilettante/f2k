@@ -71,7 +71,7 @@ def test_tahoma_reaches_the_framebuffer(request, builder, log_path, boot_timeout
             observe=observe,
             kept=disk,
         )
-    tail = f"log: {log_path} ({stopped})\n--- COM1 (tail) ---\n{f2kboot.tail(log)}"
+    tail = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     assert "KERNEL PANIC" not in log, tail
     for font in f2kboot.system_font_files():
         line = f"F2K: win32k: font loaded: \\WINNT\\Fonts\\{font.name}"

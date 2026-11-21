@@ -105,8 +105,7 @@ class ShotAndTypist:
         self.seen = at
         if screen is not None:
             f2kboot.screendump(socket, SCREENS / screen)
-        f2kboot.qmp_command(socket, [f2kboot.key_events(chord, True),
-                                     f2kboot.key_events(chord, False)])
+        f2kboot.press(socket, [chord])
         self.next += 1
 
 
@@ -121,25 +120,16 @@ def test_the_menu_bar_by_keyboard(builder, log_path, boot_timeout):
     for _, screen, _ in STEPS:
         if screen is not None:
             (SCREENS / screen).unlink(missing_ok=True)
-    variant = f2kboot.disk_with_programs(build, [MENUSHOW],
-                                         f2kboot.WORK / "variants" / f"{log_path.stem}.img",
-                                         fonts=True)
     typist = ShotAndTypist()
-    try:
-        log, stopped = f2kboot.boot(
-            f2kboot.Build(build.kernel, variant),
-            image="kernel",
-            cmdline=CMDLINE,
-            kernel_options=f2kboot.REDIRECTED_OPTION,
-            memory="256M",
-            log_path=log_path,
-            timeout=boot_timeout(TIMEOUT),
-            done=f2kboot.process_ended,
-            during=typist,
-        )
-    finally:
-        variant.unlink(missing_ok=True)
-    context = f"(stopped: {stopped}, step {typist.next})\nlog: {log_path}\n--- COM1 (tail) ---\n{f2kboot.tail(log)}"
+    log, stopped = f2kboot.boot_with_programs(
+        build, [MENUSHOW], log_path, fonts=True,
+        cmdline=CMDLINE,
+        kernel_options=f2kboot.REDIRECTED_OPTION,
+        timeout=boot_timeout(TIMEOUT),
+        done=f2kboot.process_ended,
+        during=typist,
+    )
+    context = f"(stopped: {stopped}, step {typist.next})\n{f2kboot.failure_context(log_path, log)}"
     if not typist.done:
         pytest.fail(f"menushow's steps did not all happen {context}", pytrace=False)
     lines, code = f2kboot.program_output(log)

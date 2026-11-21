@@ -22,7 +22,10 @@ Three pieces the test modules share:
   tests/core/screens/<test>/ (`check_screens`); a changed or missing one rewritten there by the
   canonical encoder (`encode_png`) and the test failed, so committing the file accepts it;
 - the keyboard: a fixture declaring `keys` has its interactive blocks' keys pressed through QMP as
-  each block asks for them (`KeyPresser`).
+  each block asks for them (`KeyPresser`); a core test presses its own chords (`press`), or sends
+  the monitor's `sendkey` (`sendkey`);
+- the core tests' boots: a copy of the disk with programs added, booted, then removed
+  (`boot_with_programs`), and the lines a failure's message ends with (`failure_context`).
 """
 from __future__ import annotations
 
@@ -738,6 +741,18 @@ def key_events(chord: str, down: bool) -> dict:
                                      for key in keys]}}
 
 
+def press(socket: Path, chords) -> None:
+    """Press then release each of `chords` in turn, one QMP command each."""
+    for chord in chords:
+        qmp_command(socket, [key_events(chord, True), key_events(chord, False)])
+
+
+def sendkey(keys: str) -> dict:
+    """The human monitor's `sendkey` command for `keys` (its own syntax: "a", "ctrl-c", "a 1000"
+    for a hold of 1000 ms), which presses the keys, then releases them after its hold time."""
+    return {"execute": "human-monitor-command", "arguments": {"command-line": f"sendkey {keys}"}}
+
+
 def last_screen_line(screen: TextScreen) -> str:
     """The text screen's last line holding anything but blanks, its trailing blanks dropped: what
     was written last (the console writes at its cursor, and blanks what it moves onto)."""
@@ -786,8 +801,7 @@ class KeyPresser:
             if step.screen is not None and last_screen_line(read_text_screen(socket)) != step.screen:
                 return
             self.release(socket)
-            for chord in step.press:
-                qmp_command(socket, [key_events(chord, True), key_events(chord, False)])
+            press(socket, step.press)
             if step.hold is not None:
                 qmp_command(socket, [key_events(step.hold, True)])
                 self.held = step.hold
@@ -1186,6 +1200,19 @@ def disk_with_programs(build: Build, programs: list[Path], path: Path, *,
     return path
 
 
+def boot_with_programs(build: Build, programs: list[Path], log_path: Path, *, fonts: bool = False,
+                       memory: str = RAM_MEMORY, **options) -> tuple[str, str]:
+    """`boot` of `build`'s kernel on a copy of its disk with `programs` (and with `fonts`, the
+    system's fonts) added (`disk_with_programs`), the copy beside the other variants, named after
+    the log, and removed after the boot; `options` are `boot`'s own. Returns what `boot` does."""
+    variant = disk_with_programs(build, programs, WORK / "variants" / f"{log_path.stem}.img", fonts=fonts)
+    try:
+        return boot(Build(build.kernel, variant), image="kernel", memory=memory, log_path=log_path,
+                    **options)
+    finally:
+        variant.unlink(missing_ok=True)
+
+
 # The marker before QEMU's stderr in a boot's log.
 QEMU_STDERR = "--- QEMU stderr ---"
 
@@ -1211,6 +1238,11 @@ def lines_of(log: str) -> list[str]:
 
 def tail(log: str, count: int = 40) -> str:
     return "\n".join(lines_of(log)[-count:])
+
+
+def failure_context(log_path: Path, log: str) -> str:
+    """The lines a failed boot's message ends with: where its log is, and COM1's tail."""
+    return f"log: {log_path}\n--- COM1 (tail) ---\n{tail(log)}"
 
 
 # --- The kernel cases' expected-string rules ---------------------------------------------------
