@@ -305,7 +305,7 @@ pub unsafe extern "system" fn draw_focus_rect(dc: usize, rect: *const Rect) -> u
 /// DrawFocusRect's work, for user32's own drawing: the dotted frame just inside `rect`; whether it
 /// was drawn.
 pub fn focus_rect_in(dc: usize, rect: Rect) -> bool {
-    if rect.right <= rect.left || rect.bottom <= rect.top {
+    if rect.is_empty() {
         return true;
     }
     let text = imports::set_text_color(dc, 0x0000_0000);
@@ -352,7 +352,7 @@ pub fn draw_edge_in(dc: usize, rect: Rect, edge: u32, flags: u32) -> (Rect, bool
     let soft = flags & BF_SOFT != 0;
     let layers = [(edge & 0x3, true), ((edge >> 2) & 0x3, false)];
     for (border, outer) in layers {
-        if rect.right <= rect.left || rect.bottom <= rect.top {
+        if rect.is_empty() {
             break;
         }
         if border == 0 {
@@ -647,12 +647,7 @@ fn underline(dc: usize, x: i32, y: i32, width: i32, clip: Option<&Rect>) {
         bottom: y + 1,
     };
     if let Some(clip) = clip {
-        line = Rect {
-            left: line.left.max(clip.left),
-            top: line.top.max(clip.top),
-            right: line.right.min(clip.right),
-            bottom: line.bottom.min(clip.bottom),
-        };
+        line = line.intersect(*clip);
     }
     let Some(brush) = imports::create_solid_brush(imports::text_color(dc)) else {
         return;
@@ -843,15 +838,6 @@ mod tests {
 
     const DC: usize = CANVAS_DC;
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
     /// The default scheme's 3D colors, the paper, and what the tests paint with, as characters.
     /// COLOR_3DLIGHT and COLOR_3DFACE are one color in it ('L').
     const LEGEND: [(u32, char); 7] = [
@@ -915,18 +901,21 @@ mod tests {
     fn fill_rect_paints_with_the_brush() {
         reset_canvas();
         let red = imports::create_solid_brush(0x0000_00FF).unwrap();
-        assert_ne!(fill(rect(1, 1, 4, 3), red), 0);
-        assert_ne!(fill(rect(4, 2, 6, 4), (COLOR_3DSHADOW + 1) as usize), 0);
+        assert_ne!(fill(Rect::new(1, 1, 4, 3), red), 0);
+        assert_ne!(
+            fill(Rect::new(4, 2, 6, 4), (COLOR_3DSHADOW + 1) as usize),
+            0
+        );
         assert_eq!(
-            picture(rect(0, 0, 7, 5)),
+            picture(Rect::new(0, 0, 7, 5)),
             [
                 ".......", //
                 ".RRR...", ".RRRSS.", "....SS.", ".......",
             ]
         );
-        assert_eq!(fill(rect(0, 0, 2, 2), 0), 0, "no brush");
+        assert_eq!(fill(Rect::new(0, 0, 2, 2), 0), 0, "no brush");
         // SAFETY: the test's own RECT.
-        assert_eq!(unsafe { fill_rect(0x99, &rect(0, 0, 2, 2), red) }, 0);
+        assert_eq!(unsafe { fill_rect(0x99, &Rect::new(0, 0, 2, 2), red) }, 0);
         imports::delete_object(red);
         left_as_found();
     }
@@ -941,17 +930,17 @@ mod tests {
         let black = stock_handle(BLACK_BRUSH).unwrap() as usize;
         // SAFETY: the tests' own RECTs.
         unsafe {
-            assert_ne!(frame_rect(DC, &rect(1, 1, 6, 5), black), 0);
-            assert_ne!(frame_rect(DC, &rect(8, 1, 9, 3), black), 0);
-            assert_ne!(frame_rect(DC, &rect(5, 4, 2, 2), black), 0);
+            assert_ne!(frame_rect(DC, &Rect::new(1, 1, 6, 5), black), 0);
+            assert_ne!(frame_rect(DC, &Rect::new(8, 1, 9, 3), black), 0);
+            assert_ne!(frame_rect(DC, &Rect::new(5, 4, 2, 2), black), 0);
             assert_ne!(
-                frame_rect(DC, &rect(3, 0, 3, 5), black),
+                frame_rect(DC, &Rect::new(3, 0, 3, 5), black),
                 0,
                 "empty: nothing"
             );
         }
         assert_eq!(
-            picture(rect(0, 0, 10, 6)),
+            picture(Rect::new(0, 0, 10, 6)),
             [
                 "..........", //
                 ".KKKKK..K.",
@@ -972,13 +961,13 @@ mod tests {
         reset_canvas();
         // SAFETY: the test's own RECT.
         unsafe {
-            assert_eq!(invert_rect(DC, &rect(1, 1, 3, 2)), 1);
+            assert_eq!(invert_rect(DC, &Rect::new(1, 1, 3, 2)), 1);
             assert_eq!(canvas(|canvas| canvas.at(1, 1)), !PAPER & RGB_MASK);
             assert_eq!(canvas(|canvas| canvas.at(3, 1)), PAPER);
-            assert_eq!(invert_rect(DC, &rect(1, 1, 3, 2)), 1);
-            assert_eq!(invert_rect(0x99, &rect(1, 1, 3, 2)), 0);
+            assert_eq!(invert_rect(DC, &Rect::new(1, 1, 3, 2)), 1);
+            assert_eq!(invert_rect(0x99, &Rect::new(1, 1, 3, 2)), 0);
         }
-        assert!(picture(rect(0, 0, 8, 8))
+        assert!(picture(Rect::new(0, 0, 8, 8))
             .iter()
             .all(|row| row == "........"));
     }
@@ -996,11 +985,11 @@ mod tests {
             canvas.bk_color = 0x0000_FF00;
         });
         // SAFETY: the test's own RECT.
-        assert_eq!(unsafe { draw_focus_rect(DC, &rect(1, 1, 6, 5)) }, 1);
+        assert_eq!(unsafe { draw_focus_rect(DC, &Rect::new(1, 1, 6, 5)) }, 1);
         let inverted = !PAPER & RGB_MASK;
         let legend = [(PAPER, '.'), (inverted, 'X')];
         assert_eq!(
-            canvas(|canvas| canvas.picture(rect(0, 0, 7, 6), &legend)),
+            canvas(|canvas| canvas.picture(Rect::new(0, 0, 7, 6), &legend)),
             [
                 ".......", //
                 ".X.X.X.", ".......", ".X...X.", "..X.X..", ".......",
@@ -1011,15 +1000,19 @@ mod tests {
             (0x0000_00FF, 0x0000_FF00)
         );
         // SAFETY: the test's own RECT.
-        assert_eq!(unsafe { draw_focus_rect(DC, &rect(1, 1, 6, 5)) }, 1);
+        assert_eq!(unsafe { draw_focus_rect(DC, &Rect::new(1, 1, 6, 5)) }, 1);
         assert!(canvas(|canvas| canvas
             .pixels
             .iter()
             .all(|&pixel| pixel == PAPER)));
         // SAFETY: the test's own RECTs.
         unsafe {
-            assert_eq!(draw_focus_rect(DC, &rect(3, 3, 3, 9)), 1, "empty: nothing");
-            assert_eq!(draw_focus_rect(0x99, &rect(1, 1, 6, 5)), 0);
+            assert_eq!(
+                draw_focus_rect(DC, &Rect::new(3, 3, 3, 9)),
+                1,
+                "empty: nothing"
+            );
+            assert_eq!(draw_focus_rect(0x99, &Rect::new(1, 1, 6, 5)), 0);
         }
         left_as_found();
     }
@@ -1032,18 +1025,18 @@ mod tests {
     #[test]
     fn a_raised_edge() {
         reset_canvas();
-        let (done, inside) = edge(rect(1, 1, 7, 6), EDGE_RAISED, BF_RECT | BF_ADJUST);
-        assert_eq!((done, inside), (1, rect(3, 3, 5, 4)));
+        let (done, inside) = edge(Rect::new(1, 1, 7, 6), EDGE_RAISED, BF_RECT | BF_ADJUST);
+        assert_eq!((done, inside), (1, Rect::new(3, 3, 5, 4)));
         assert_eq!(
-            picture(rect(0, 0, 8, 7)),
+            picture(Rect::new(0, 0, 8, 7)),
             [
                 "........", //
                 ".LLLLLD.", ".LHHHSD.", ".LH..SD.", ".LSSSSD.", ".DDDDDD.", "........",
             ]
         );
-        let (_, untouched) = edge(rect(1, 1, 7, 6), EDGE_RAISED, BF_RECT | BF_MIDDLE);
-        assert_eq!(untouched, rect(1, 1, 7, 6), "without BF_ADJUST");
-        assert_eq!(picture(rect(1, 3, 7, 4)), ["LHLLSD"]);
+        let (_, untouched) = edge(Rect::new(1, 1, 7, 6), EDGE_RAISED, BF_RECT | BF_MIDDLE);
+        assert_eq!(untouched, Rect::new(1, 1, 7, 6), "without BF_ADJUST");
+        assert_eq!(picture(Rect::new(1, 3, 7, 4)), ["LHLLSD"]);
         left_as_found();
     }
 
@@ -1055,26 +1048,26 @@ mod tests {
     #[test]
     fn a_sunken_edge_and_a_soft_one() {
         reset_canvas();
-        edge(rect(0, 0, 6, 5), EDGE_SUNKEN, BF_RECT);
+        edge(Rect::new(0, 0, 6, 5), EDGE_SUNKEN, BF_RECT);
         assert_eq!(
-            picture(rect(0, 0, 6, 5)),
+            picture(Rect::new(0, 0, 6, 5)),
             [
                 "SSSSSH", //
                 "SDDDLH", "SD..LH", "SLLLLH", "HHHHHH",
             ]
         );
         reset_canvas();
-        edge(rect(0, 0, 6, 5), EDGE_RAISED, BF_RECT | BF_SOFT);
+        edge(Rect::new(0, 0, 6, 5), EDGE_RAISED, BF_RECT | BF_SOFT);
         assert_eq!(
-            picture(rect(0, 0, 6, 5)),
+            picture(Rect::new(0, 0, 6, 5)),
             [
                 "HHHHHD", //
                 "HLLLSD", "HL..SD", "HSSSSD", "DDDDDD",
             ]
         );
         reset_canvas();
-        edge(rect(0, 0, 6, 5), EDGE_ETCHED, BF_RECT);
-        assert_eq!(picture(rect(0, 0, 6, 2)), ["SSSSSH", "SHHHSH"]);
+        edge(Rect::new(0, 0, 6, 5), EDGE_ETCHED, BF_RECT);
+        assert_eq!(picture(Rect::new(0, 0, 6, 2)), ["SSSSSH", "SHHHSH"]);
         left_as_found();
     }
 
@@ -1086,21 +1079,21 @@ mod tests {
     fn an_edge_on_some_sides() {
         reset_canvas();
         let (_, inside) = edge(
-            rect(0, 0, 4, 3),
+            Rect::new(0, 0, 4, 3),
             BDR_RAISEDINNER,
             BF_LEFT | BF_TOP | BF_ADJUST,
         );
-        assert_eq!(inside, rect(1, 1, 4, 3));
+        assert_eq!(inside, Rect::new(1, 1, 4, 3));
         assert_eq!(
-            picture(rect(0, 0, 5, 4)),
+            picture(Rect::new(0, 0, 5, 4)),
             ["HHHH.", "H....", "H....", "....."]
         );
         reset_canvas();
-        let (_, inside) = edge(rect(0, 0, 4, 3), EDGE_RAISED, BF_BOTTOM | BF_ADJUST);
-        assert_eq!(inside, rect(0, 0, 4, 1));
-        assert_eq!(picture(rect(0, 0, 4, 3)), ["....", "SSSS", "DDDD"]);
+        let (_, inside) = edge(Rect::new(0, 0, 4, 3), EDGE_RAISED, BF_BOTTOM | BF_ADJUST);
+        assert_eq!(inside, Rect::new(0, 0, 4, 1));
+        assert_eq!(picture(Rect::new(0, 0, 4, 3)), ["....", "SSSS", "DDDD"]);
         reset_canvas();
-        let (done, _) = edge(rect(3, 3, 3, 8), EDGE_RAISED, BF_RECT | BF_MIDDLE);
+        let (done, _) = edge(Rect::new(3, 3, 3, 8), EDGE_RAISED, BF_RECT | BF_MIDDLE);
         assert_eq!(done, 1);
         assert!(canvas(|canvas| canvas
             .pixels
@@ -1116,7 +1109,7 @@ mod tests {
     fn a_diagonal_edge_is_a_stub() {
         reset_canvas();
         let (done, _) = edge(
-            rect(0, 0, 4, 4),
+            Rect::new(0, 0, 4, 4),
             EDGE_RAISED,
             BF_DIAGONAL | BF_TOP | BF_LEFT,
         );
@@ -1135,7 +1128,7 @@ mod tests {
     /// Pins: user32.DrawTextW
     #[test]
     fn a_single_line_aligns_in_its_rectangle() {
-        let area = rect(0, 0, 40, 30);
+        let area = Rect::new(0, 0, 40, 30);
         let cases = [
             (DT_LEFT | DT_TOP, (0, 0), 16),
             (DT_CENTER | DT_VCENTER, (12, 7), 23),
@@ -1155,7 +1148,7 @@ mod tests {
             assert_eq!((call.options, call.rect), (ETO_CLIPPED, Some(area)));
         }
         reset_canvas();
-        let unclipped = text("Hi", rect(10, 20, 50, 50), DT_SINGLELINE | DT_NOCLIP);
+        let unclipped = text("Hi", Rect::new(10, 20, 50, 50), DT_SINGLELINE | DT_NOCLIP);
         assert_eq!(unclipped.0, 16);
         let call = canvas(|canvas| canvas.text[0].clone());
         assert_eq!((call.x, call.y, call.options, call.rect), (10, 20, 0, None));
@@ -1169,7 +1162,7 @@ mod tests {
     #[test]
     fn lines_break_at_carriage_returns_and_line_feeds() {
         reset_canvas();
-        let area = rect(0, 0, 40, 100);
+        let area = Rect::new(0, 0, 40, 100);
         assert_eq!(
             text("ab\r\ncd\nef\rg\n", area, DT_CENTER | DT_VCENTER).0,
             64
@@ -1199,14 +1192,18 @@ mod tests {
     #[test]
     fn words_wrap_and_the_rectangle_is_calculated() {
         reset_canvas();
-        let area = rect(0, 0, 48, 100);
+        let area = Rect::new(0, 0, 48, 100);
         assert_eq!(text("aa bbb   cc", area, DT_WORDBREAK).0, 32);
         assert_eq!(
             drawn(),
             [(0, 0, String::from("aa bbb")), (0, 16, String::from("cc"))]
         );
         reset_canvas();
-        let right = text("abcdefghij x", rect(0, 0, 40, 100), DT_WORDBREAK | DT_RIGHT);
+        let right = text(
+            "abcdefghij x",
+            Rect::new(0, 0, 40, 100),
+            DT_WORDBREAK | DT_RIGHT,
+        );
         assert_eq!(right.0, 32);
         assert_eq!(
             drawn(),
@@ -1218,17 +1215,21 @@ mod tests {
         reset_canvas();
         let calc = DT_WORDBREAK | DT_CALCRECT;
         assert_eq!(
-            text("aa bbb cc", rect(5, 5, 53, 100), calc),
-            (32, rect(5, 5, 53, 37))
+            text("aa bbb cc", Rect::new(5, 5, 53, 100), calc),
+            (32, Rect::new(5, 5, 53, 37))
         );
         assert_eq!(
-            text("abcdefghij x", rect(0, 0, 40, 10), calc),
-            (32, rect(0, 0, 80, 32)),
+            text("abcdefghij x", Rect::new(0, 0, 40, 10), calc),
+            (32, Rect::new(0, 0, 80, 32)),
             "widened to the long word"
         );
         assert_eq!(
-            text("Hello", rect(3, 4, 10, 10), DT_SINGLELINE | DT_CALCRECT),
-            (16, rect(3, 4, 43, 20))
+            text(
+                "Hello",
+                Rect::new(3, 4, 10, 10),
+                DT_SINGLELINE | DT_CALCRECT
+            ),
+            (16, Rect::new(3, 4, 43, 20))
         );
         assert!(drawn().is_empty(), "DT_CALCRECT draws nothing");
     }
@@ -1242,35 +1243,47 @@ mod tests {
     #[test]
     fn prefixes_underline_their_character() {
         reset_canvas();
-        assert_eq!(text("Sa&ve", rect(2, 1, 40, 30), DT_SINGLELINE).0, 16);
+        assert_eq!(text("Sa&ve", Rect::new(2, 1, 40, 30), DT_SINGLELINE).0, 16);
         assert_eq!(
             drawn(),
             [(2, 1, String::from("Sa")), (18, 1, String::from("ve"))]
         );
-        assert_eq!(picture(rect(17, 14, 27, 15)), [".KKKKKKKK."]);
+        assert_eq!(picture(Rect::new(17, 14, 27, 15)), [".KKKKKKKK."]);
         let unmarked = |row: &String| !row.contains('K');
-        assert!(picture(rect(0, 13, 40, 14)).iter().all(unmarked));
+        assert!(picture(Rect::new(0, 13, 40, 14)).iter().all(unmarked));
         left_as_found();
 
         reset_canvas();
-        text("a&&b&", rect(0, 0, 40, 30), DT_SINGLELINE);
+        text("a&&b&", Rect::new(0, 0, 40, 30), DT_SINGLELINE);
         assert_eq!(drawn(), [(0, 0, String::from("a&b"))]);
         reset_canvas();
-        text("&File", rect(0, 0, 40, 30), DT_SINGLELINE | DT_NOPREFIX);
+        text(
+            "&File",
+            Rect::new(0, 0, 40, 30),
+            DT_SINGLELINE | DT_NOPREFIX,
+        );
         assert_eq!(drawn(), [(0, 0, String::from("&File"))]);
-        assert!(picture(rect(0, 13, 40, 14)).iter().all(unmarked));
+        assert!(picture(Rect::new(0, 13, 40, 14)).iter().all(unmarked));
         reset_canvas();
-        text("&File", rect(0, 0, 40, 30), DT_SINGLELINE | DT_HIDEPREFIX);
+        text(
+            "&File",
+            Rect::new(0, 0, 40, 30),
+            DT_SINGLELINE | DT_HIDEPREFIX,
+        );
         assert_eq!(drawn(), [(0, 0, String::from("File"))]);
-        assert!(picture(rect(0, 13, 40, 14)).iter().all(unmarked));
+        assert!(picture(Rect::new(0, 13, 40, 14)).iter().all(unmarked));
         reset_canvas();
-        text("&File", rect(0, 0, 40, 30), DT_SINGLELINE | DT_PREFIXONLY);
+        text(
+            "&File",
+            Rect::new(0, 0, 40, 30),
+            DT_SINGLELINE | DT_PREFIXONLY,
+        );
         assert!(drawn().is_empty());
-        assert_eq!(picture(rect(0, 13, 9, 14)), ["KKKKKKKK."]);
+        assert_eq!(picture(Rect::new(0, 13, 9, 14)), ["KKKKKKKK."]);
         reset_canvas();
-        text("&File", rect(0, 0, 5, 30), DT_SINGLELINE);
+        text("&File", Rect::new(0, 0, 5, 30), DT_SINGLELINE);
         assert_eq!(
-            picture(rect(0, 13, 9, 14)),
+            picture(Rect::new(0, 13, 9, 14)),
             ["KKKKK...."],
             "clipped to the rectangle"
         );
@@ -1286,7 +1299,7 @@ mod tests {
         reset_canvas();
         text(
             "a\tb\tc",
-            rect(4, 0, 400, 30),
+            Rect::new(4, 0, 400, 30),
             DT_SINGLELINE | DT_EXPANDTABS,
         );
         assert_eq!(
@@ -1299,7 +1312,7 @@ mod tests {
         );
         reset_canvas();
         let format = DT_SINGLELINE | DT_EXPANDTABS | DT_TABSTOP | (3 << 8);
-        text("a\tb", rect(0, 0, 400, 30), format);
+        text("a\tb", Rect::new(0, 0, 400, 30), format);
         assert_eq!(
             drawn(),
             [(0, 0, String::from("a")), (24, 0, String::from("b"))]
@@ -1307,7 +1320,7 @@ mod tests {
         let clipped = canvas(|canvas| canvas.text[0].options);
         assert_eq!(clipped, ETO_CLIPPED, "the count's bits are no DT_NOCLIP");
         reset_canvas();
-        text("a\tb", rect(0, 0, 400, 30), DT_SINGLELINE);
+        text("a\tb", Rect::new(0, 0, 400, 30), DT_SINGLELINE);
         assert_eq!(drawn(), [(0, 0, String::from("a\tb"))]);
     }
 
@@ -1318,7 +1331,7 @@ mod tests {
     #[test]
     fn the_narrow_form_and_the_terminated_strings() {
         reset_canvas();
-        let mut area = rect(0, 0, 40, 30);
+        let mut area = Rect::new(0, 0, 40, 30);
         let wide: Vec<u16> = "Yo\0".encode_utf16().collect();
         // SAFETY: the test's own strings and RECT.
         unsafe {

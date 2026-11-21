@@ -406,15 +406,10 @@ impl Caption {
     }
 }
 
-/// Whether `point` is in `rect`.
-fn contains(rect: Rect, x: i32, y: i32) -> bool {
-    x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
-}
-
 /// WM_NCHITTEST's default answer for the point (`x`, `y`) and a window of `style` and `ex_style` at
 /// `window`, with a menu bar when `menu`, all in the same coordinates (the screen's).
 pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: i32) -> u32 {
-    if !contains(window, x, y) {
+    if !window.contains(x, y) {
         return HTNOWHERE;
     }
     let frame = Frame::of(style, ex_style, menu);
@@ -424,7 +419,7 @@ pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: 
         right: window.right - frame.border_width,
         bottom: window.bottom - frame.border_width,
     };
-    if !contains(inner, x, y) {
+    if !inner.contains(x, y) {
         if frame.border != Border::Sizing {
             return HTBORDER;
         }
@@ -485,11 +480,11 @@ pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: 
         return HTMENU;
     }
     let (vertical, horizontal) = frame.scroll_bars(window);
-    if contains(frame.client(window), x, y) {
+    if frame.client(window).contains(x, y) {
         HTCLIENT
-    } else if vertical.is_some_and(|bar| contains(bar, x, y)) {
+    } else if vertical.is_some_and(|bar| bar.contains(x, y)) {
         HTVSCROLL
-    } else if horizontal.is_some_and(|bar| contains(bar, x, y)) {
+    } else if horizontal.is_some_and(|bar| bar.contains(x, y)) {
         HTHSCROLL
     } else {
         HTBORDER
@@ -505,47 +500,44 @@ mod tests {
     /// WS_POPUP, which the frame does not read.
     const WS_POPUP_TEST: u32 = 0x8000_0000;
 
-    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {
-        Rect {
-            left,
-            top,
-            right,
-            bottom,
-        }
-    }
-
     /// AdjustWindowRectEx's widely published answers for the standard scheme: an overlapped
     /// window's 4-pixel border and 19-pixel caption, the menu bar's 19 more; and the coords
     /// capture's: a thin border's pixel, a captioned window's fixed frame.
     #[test]
     fn the_frames_of_the_common_styles() {
-        let client = rect(0, 0, 100, 100);
+        let client = Rect::new(0, 0, 100, 100);
         let adjust = |style, ex, menu| Frame::of_styles(style, ex, menu).window(client);
-        assert_eq!(adjust(OVERLAPPED_WINDOW, 0, false), rect(-4, -23, 104, 104));
-        assert_eq!(adjust(OVERLAPPED_WINDOW, 0, true), rect(-4, -42, 104, 104));
-        assert_eq!(adjust(WS_BORDER, 0, false), rect(-1, -1, 101, 101));
-        assert_eq!(adjust(WS_CAPTION, 0, false), rect(-3, -22, 103, 103));
+        assert_eq!(
+            adjust(OVERLAPPED_WINDOW, 0, false),
+            Rect::new(-4, -23, 104, 104)
+        );
+        assert_eq!(
+            adjust(OVERLAPPED_WINDOW, 0, true),
+            Rect::new(-4, -42, 104, 104)
+        );
+        assert_eq!(adjust(WS_BORDER, 0, false), Rect::new(-1, -1, 101, 101));
+        assert_eq!(adjust(WS_CAPTION, 0, false), Rect::new(-3, -22, 103, 103));
         assert_eq!(
             adjust(WS_CAPTION | WS_SYSMENU, WS_EX_DLGMODALFRAME, false),
-            rect(-3, -22, 103, 103)
+            Rect::new(-3, -22, 103, 103)
         );
         assert_eq!(
             adjust(WS_CHILD, WS_EX_CLIENTEDGE, false),
-            rect(-2, -2, 102, 102)
+            Rect::new(-2, -2, 102, 102)
         );
         assert_eq!(adjust(0, 0, false), client);
-        assert_eq!(adjust(WS_THICKFRAME, 0, false), rect(-3, -3, 103, 103));
+        assert_eq!(adjust(WS_THICKFRAME, 0, false), Rect::new(-3, -3, 103, 103));
         assert_eq!(
             adjust(WS_THICKFRAME, WS_EX_DLGMODALFRAME, false),
-            rect(-4, -4, 104, 104)
+            Rect::new(-4, -4, 104, 104)
         );
         assert_eq!(
             adjust(OVERLAPPED_WINDOW, WS_EX_CLIENTEDGE, false),
-            rect(-6, -25, 106, 106)
+            Rect::new(-6, -25, 106, 106)
         );
         assert_eq!(
             adjust(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, false),
-            rect(-3, -19, 103, 103)
+            Rect::new(-3, -19, 103, 103)
         );
         let frame = Frame::of(OVERLAPPED_WINDOW, 0, true);
         assert_eq!(frame.client(frame.window(client)), client);
@@ -555,7 +547,7 @@ mod tests {
     /// The mousein capture's answers on a 320x240 overlapped window.
     #[test]
     fn the_hit_test_as_captured() {
-        let w = rect(160, 120, 480, 360);
+        let w = Rect::new(160, 120, 480, 360);
         let hit = |x, y| hit_test(OVERLAPPED_WINDOW, 0, false, w, x, y);
         let caption_y = w.top + FRAME + CAPTION / 2;
         assert_eq!(hit(320, caption_y), HTCAPTION);
@@ -576,25 +568,28 @@ mod tests {
     /// leaves them out), inside the client edge.
     #[test]
     fn the_scroll_bars_come_off_the_client_area() {
-        let w = rect(0, 0, 240, 160);
+        let w = Rect::new(0, 0, 240, 160);
         let style = WS_CAPTION | WS_VSCROLL | WS_HSCROLL;
         let frame = Frame::of(style, 0, false);
-        assert_eq!(frame.client(w), rect(3, 22, 221, 141));
+        assert_eq!(frame.client(w), Rect::new(3, 22, 221, 141));
         assert_eq!(
             Frame::of_styles(style, 0, false).window(frame.client(w)),
-            rect(0, 0, 224, 144)
+            Rect::new(0, 0, 224, 144)
         );
         let (vertical, horizontal) = frame.scroll_bars(w);
-        assert_eq!(vertical, Some(rect(221, 22, 237, 141)));
-        assert_eq!(horizontal, Some(rect(3, 141, 221, 157)));
+        assert_eq!(vertical, Some(Rect::new(221, 22, 237, 141)));
+        assert_eq!(horizontal, Some(Rect::new(3, 141, 221, 157)));
         assert_eq!(hit_test(style, 0, false, w, 230, 50), HTVSCROLL);
         assert_eq!(hit_test(style, 0, false, w, 50, 150), HTHSCROLL);
         assert_eq!(hit_test(style, 0, false, w, 230, 150), HTBORDER);
         let edged = Frame::of(WS_VSCROLL, WS_EX_CLIENTEDGE, false);
-        assert_eq!(edged.client(w), rect(2, 2, 222, 158));
+        assert_eq!(edged.client(w), Rect::new(2, 2, 222, 158));
         // No room for a bar: none is taken.
         let narrow = Frame::of(WS_VSCROLL | WS_HSCROLL, 0, false);
-        assert_eq!(narrow.client(rect(0, 0, 10, 16)), rect(0, 0, 10, 16));
+        assert_eq!(
+            narrow.client(Rect::new(0, 0, 10, 16)),
+            Rect::new(0, 0, 10, 16)
+        );
         assert_eq!(
             Frame::of(WS_POPUP_TEST | WS_THICKFRAME, 0, false).border_width,
             3
@@ -606,7 +601,7 @@ mod tests {
     #[test]
     fn the_buttons_answer_over_their_cells() {
         let runs = |style: u32, ex: u32, y: i32| {
-            let w = rect(2, 2, 302, 202);
+            let w = Rect::new(2, 2, 302, 202);
             let mut runs = std::vec::Vec::new();
             for x in 0..304 {
                 let hit = hit_test(style, ex, false, w, x, y);
@@ -662,10 +657,10 @@ mod tests {
     /// border.
     #[test]
     fn the_buttons_the_menu_bar_and_a_dialog_frame() {
-        let w = rect(0, 0, 300, 200);
+        let w = Rect::new(0, 0, 300, 200);
         let caption = Caption::of(OVERLAPPED_WINDOW, 0, w).unwrap();
         let close = caption.buttons[0].unwrap();
-        assert_eq!(close.1, rect(278, 6, 294, 20));
+        assert_eq!(close.1, Rect::new(278, 6, 294, 20));
         assert_eq!(caption.buttons[1].unwrap().1.right, 276);
         assert_eq!(caption.buttons[2].unwrap().1.right, 260);
         let calc = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;

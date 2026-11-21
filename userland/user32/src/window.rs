@@ -576,14 +576,13 @@ pub extern "system" fn window_from_point(x: i32, y: i32) -> usize {
 
 /// The deepest window under `parent` holding the screen point, [`window_from_point`]'s search.
 fn window_under(parent: usize, x: i32, y: i32) -> Option<usize> {
-    let holds = |r: Rect| r.left <= x && x < r.right && r.top <= y && y < r.bottom;
     let mut child = links(parent).ok()?.child as usize;
     while child != 0 {
         if let Ok(info) = window_info(child) {
             let shown = info.style & crate::dialog::WS_VISIBLE != 0
                 && info.style & crate::dialog::WS_DISABLED == 0;
-            if shown && holds(info.window) && !lets_through(child, x, y) {
-                if holds(info.client) {
+            if shown && info.window.contains(x, y) && !lets_through(child, x, y) {
+                if info.client.contains(x, y) {
                     if let Some(inner) = window_under(child, x, y) {
                         return Some(inner);
                     }

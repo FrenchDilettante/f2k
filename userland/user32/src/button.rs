@@ -478,16 +478,6 @@ fn color(index: u32) -> usize {
     index as usize + 1
 }
 
-/// A rectangle `inset` pixels inside `rect` on every side.
-fn inset(rect: Rect, by: i32) -> Rect {
-    Rect {
-        left: rect.left + by,
-        top: rect.top + by,
-        right: rect.right - by,
-        bottom: rect.bottom - by,
-    }
-}
-
 /// A BS_OWNERDRAW button drawn: WM_DRAWITEM to its parent, the DRAWITEMSTRUCT on this frame (the
 /// send is the procedure's own call, so the address lives as long as the parent's handling).
 ///
@@ -594,7 +584,7 @@ fn draw_button(window: usize, dc: usize) {
             let mut face = client;
             if kind(window) == BS_DEFPUSHBUTTON {
                 draw::frame_in(dc, face, color(COLOR_WINDOWFRAME));
-                face = inset(face, 1);
+                face = face.inflate(-1, -1);
             }
             let mut label = face;
             if state & BST_PUSHED != 0 {
@@ -606,7 +596,7 @@ fn draw_button(window: usize, dc: usize) {
             }
             draw::draw_text_in(dc, text, label, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             if state & BST_FOCUS != 0 {
-                draw::focus_rect_in(dc, inset(face, 3));
+                draw::focus_rect_in(dc, face.inflate(-3, -3));
             }
         }
         BS_GROUPBOX => {

@@ -312,16 +312,6 @@ pub fn color(index: u32) -> usize {
     index as usize + 1
 }
 
-/// `rect` moved in by `by` on every side.
-pub fn inset(rect: Rect, by: i32) -> Rect {
-    Rect {
-        left: rect.left + by,
-        top: rect.top + by,
-        right: rect.right - by,
-        bottom: rect.bottom - by,
-    }
-}
-
 /// The borders of a frame in a window at `local`, and its client edge.
 fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
     let mut inside = local;
@@ -329,7 +319,7 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
         Border::None => {}
         Border::Thin => {
             draw::frame_in(dc, inside, color(COLOR_WINDOWFRAME));
-            inside = inset(inside, 1);
+            inside = inside.inflate(-1, -1);
         }
         Border::Dialog | Border::Sizing => {
             let (rest, _) = draw::draw_edge_in(dc, inside, EDGE_RAISED, BF_RECT);
@@ -343,7 +333,7 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
             };
             for _ in 2..frame.border_width {
                 draw::frame_in(dc, inside, color(fill));
-                inside = inset(inside, 1);
+                inside = inside.inflate(-1, -1);
             }
         }
     }
