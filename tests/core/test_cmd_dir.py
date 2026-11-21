@@ -33,7 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from test_cmd import SPAWNKID, run_with_c
+import f2kboot
+from test_cmd import SPAWNKID, run_with_c, write_batches
 
 # 58 letters and CR LF: 60 bytes; the script joins two into b.txt (120), ten of those into c.dat.
 LINE = "abcdefghijklmnopqrstuvwxyz" * 2 + "abcdef"
@@ -167,15 +168,7 @@ EXPECTED = [
 
 def files(directory: Path) -> list[Path]:
     """The script written into `directory`, its lines ended by CR LF."""
-    script = directory / "f2kdir.cmd"
-    script.write_bytes("".join(f"{line}\r\n" for line in SCRIPT).encode("ascii"))
-    return [script, SPAWNKID]
-
-
-def matches(expected: str | re.Pattern[str], line: str) -> bool:
-    if isinstance(expected, str):
-        return line == expected
-    return expected.fullmatch(line) is not None
+    return [*write_batches(directory, {"f2kdir.cmd": SCRIPT}), SPAWNKID]
 
 
 @pytest.mark.kernel
@@ -185,6 +178,6 @@ def test_dir_and_start(builder, log_path, boot_timeout, tmp_path):
     differing = [
         (number, expected, line)
         for number, (expected, line) in enumerate(zip(EXPECTED, output), start=1)
-        if not matches(expected, line)
+        if not f2kboot.matches_whole(expected, line)
     ]
     assert (differing, len(output), code) == ([], len(EXPECTED), 0), "\n".join(output)

@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cmd import BANNER, PROMPT, run_with_c, type_at_the_prompt
+from test_cmd import BANNER, PROMPT, line_of, run_with_c, type_at_the_prompt, write_batches
 
 SCRIPT = [
     "@echo off",
@@ -94,8 +94,7 @@ EXPECTED = [
 
 def files(directory: Path) -> list[Path]:
     """The script and its data file written into `directory`, their lines ended by CR LF."""
-    script = directory / "f2kfiles.cmd"
-    script.write_bytes("".join(f"{line}\r\n" for line in SCRIPT).encode("ascii"))
+    (script,) = write_batches(directory, {"f2kfiles.cmd": SCRIPT})
     data = directory / "f2kdata.txt"
     data.write_bytes(b"one\r\n")
     return [script, data]
@@ -106,21 +105,6 @@ def test_files_in_a_batch_file(builder, log_path, boot_timeout, tmp_path):
     """`cmd /c` of the script: each built-in's output and ERRORLEVEL, and the exit code 0."""
     output, code = run_with_c(builder, log_path, boot_timeout, "f2kfiles", files(tmp_path))
     assert (output, code) == (EXPECTED, 0)
-
-
-# QMP's key codes for the characters the typed lines hold that are not lowercase letters or digits.
-QCODES = {
-    " ": "spc",
-    "$": "shift-4",
-    "+": "shift-equal",
-    "\\": "backslash",
-    ".": "dot",
-}
-
-
-def line_of(text: str) -> list[str]:
-    """The chords that type `text`, then Return."""
-    return [QCODES.get(character, character) for character in text] + ["ret"]
 
 
 @pytest.mark.kernel

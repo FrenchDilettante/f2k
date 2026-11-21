@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cmd import run_with_c
+from test_cmd import run_with_c, write_batches
 
 SETA = [
     "@echo off",
@@ -88,11 +88,7 @@ EXPECTED = [
 
 def files(directory: Path) -> list[Path]:
     """The batch files and their data files written into `directory`, lines ended by CR LF."""
-    written = []
-    for name, lines in [("f2kseta.cmd", SETA), ("f2kpipe.cmd", PIPE)]:
-        path = directory / name
-        path.write_bytes("".join(f"{line}\r\n" for line in lines).encode("ascii"))
-        written.append(path)
+    written = write_batches(directory, {"f2kseta.cmd": SETA, "f2kpipe.cmd": PIPE})
     data = directory / "f2kin.txt"
     data.write_bytes(b"Bob\r\nnever read\r\n")
     empty = directory / "f2kempty.txt"

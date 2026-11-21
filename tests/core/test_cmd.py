@@ -78,6 +78,7 @@ the return code, and `^&`; and `echo ver| cmd`, a shell reading its commands fro
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -106,20 +107,36 @@ PROMPT = "C:\\WINNT\\system32>"
 BANNER = "F2K [Version 5.00.2195]"
 # How long the boot may take to reach the first prompt and its lines to run.
 TIMEOUT = 30.0
-# QMP's key codes for the characters typed that are not lowercase letters or digits.
-QCODES = {" ": "spc", "=": "equal", "%": "shift-5"}
+# QMP's key codes for the characters the tests type that are not letters or digits, on a US
+# keyboard (a lowercase letter or a digit is its own key code; an uppercase letter is typed with
+# Shift).
+QCODES = {
+    " ": "spc",
+    '"': "shift-apostrophe",
+    "$": "shift-4",
+    "%": "shift-5",
+    "+": "shift-equal",
+    ".": "dot",
+    "/": "slash",
+    ":": "shift-semicolon",
+    "=": "equal",
+    ">": "shift-dot",
+    "\\": "backslash",
+}
 
 
 def keys_of(text: str) -> list[str]:
-    """The chords that type `text` on a US keyboard."""
+    """The chords that type `text` on a US keyboard, no Return after them."""
     keys = []
     for character in text:
         if character in QCODES:
             keys.append(QCODES[character])
-        elif character.isupper():
+        elif character.isascii() and character.isupper():
             keys.append(f"shift-{character.lower()}")
-        else:
+        elif character.isascii() and (character.islower() or character.isdigit()):
             keys.append(character)
+        else:
+            raise ValueError(f"no key code for {character!r}: add it to QCODES")
     return keys
 
 
@@ -139,20 +156,27 @@ def last_row(rows: list[str]) -> int | None:
 
 
 class Typist:
-    """The boot's `during` step: `steps`, each the screen's last line to wait for and the chords
-    then pressed and released in turn, taken one after another; a step's wait is met only by a
-    last line on another row or with another text than the step before met. Once the steps are
-    done, a prompt on a row below the last step's ends the boot, its screen kept (`screen`)."""
+    """The boot's `during` step: `steps`, each a wait on the screen's last line (its text, or a
+    test of it) and the chords then pressed and released in turn, taken one after another; a
+    step's wait is met only by a last line on another row or with another text than the step before
+    met. The last screen read is kept (`last`). Once the steps are done (`done`), with `then_prompt`
+    a prompt on a row below the last step's ends the boot, its screen kept (`screen`); without it
+    the screen is no longer read."""
 
-    def __init__(self, steps: list[tuple[str, list[str]]]) -> None:
+    def __init__(self, steps: list[tuple[str | Callable[[str], bool], list[str]]], *,
+                 then_prompt: bool = True) -> None:
         self.steps = steps
+        self.then_prompt = then_prompt
         self.taken = 0
         self.met: tuple[int, str] | None = None
         self.screen: f2kboot.TextScreen | None = None
         self.last: f2kboot.TextScreen | None = None
 
+    def done(self) -> bool:
+        return self.taken == len(self.steps)
+
     def __call__(self, socket: Path, log: str) -> None:
-        if self.screen is not None:
+        if self.screen is not None or (self.done() and not self.then_prompt):
             return
         screen = f2kboot.read_text_screen(socket)
         self.last = screen
@@ -161,12 +185,13 @@ class Typist:
         if row is None:
             return
         line = (row, rows[row])
-        if self.taken == len(self.steps):
+        if self.done():
             if rows[row] == PROMPT and self.met is not None and row > self.met[0]:
                 self.screen = screen
             return
         wait, keys = self.steps[self.taken]
-        if rows[row] != wait or line == self.met:
+        met = wait(rows[row]) if callable(wait) else rows[row] == wait
+        if not met or line == self.met:
             return
         f2kboot.press(socket, keys)
         self.taken += 1
@@ -181,14 +206,20 @@ def shown(screen: f2kboot.TextScreen | None) -> str:
     return "\n".join(rows[:(end or 0) + 1])
 
 
-def batch_files(directory: Path) -> list[Path]:
-    """BATCHES written into `directory`, their lines ended by CR LF."""
+def write_batches(directory: Path, batches: dict[str, list[str]]) -> list[Path]:
+    """`batches` (file names, each with its lines) written into `directory`, their lines ended by
+    CR LF: the files' paths."""
     paths = []
-    for name, lines in BATCHES.items():
+    for name, lines in batches.items():
         path = directory / name
         path.write_bytes("".join(f"{line}\r\n" for line in lines).encode("ascii"))
         paths.append(path)
     return paths
+
+
+def batch_files(directory: Path) -> list[Path]:
+    """BATCHES written into `directory`, their lines ended by CR LF."""
+    return write_batches(directory, BATCHES)
 
 
 def boot_with_cmd(builder, log_path, boot_timeout, extra: list[Path], **options) -> tuple[str, str]:

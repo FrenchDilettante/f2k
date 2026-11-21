@@ -10,7 +10,8 @@ Three pieces the test modules share:
   test declaring `storage = "ide"`, a Limine boot, or a run with F2K_STORAGE=ide), so boots run side
   by side, or a kept copy of it attached as it is, for a boot whose writes a later boot or the host
   reads (`kept_disk`, `read_volume`), stopped as soon as the caller's check has its answer;
-- checks: the kernel cases' expected-string rules (`Expectation`), and the corpus's capture blocks
+- checks: the kernel cases' expected-string rules (`Expectation`, `matches`; a whole line,
+  `matches_whole`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
   tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`); a
   fixture's blocks run in one boot, each its own process, and each is compared on its own part of
@@ -1253,6 +1254,15 @@ def matches(expected: str, line: str) -> bool:
     if expected.startswith("re:"):
         return re.search(expected[3:], line) is not None
     return expected in line
+
+
+def matches_whole(expected: str | re.Pattern[str], line: str) -> bool:
+    """Whether a line is what a test expects of it, the whole line: equal to a string, or a
+    pattern's full match (a screen's row, a program's output line; `matches` is the `expects`
+    strings' looser rule)."""
+    if isinstance(expected, str):
+        return line == expected
+    return expected.fullmatch(line) is not None
 
 
 @dataclass

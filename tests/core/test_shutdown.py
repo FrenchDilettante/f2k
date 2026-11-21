@@ -39,21 +39,9 @@ from typing import Callable
 import pytest
 
 import f2kboot
-from test_cmd import BANNER, CMD, COMMAND_LINE, PROMPT, TIMEOUT, Typist, last_row, rows_of, shown
+from test_cmd import BANNER, CMD, COMMAND_LINE, PROMPT, TIMEOUT, Typist, line_of, rows_of, shown
 
 SAFE_TO_TURN_OFF = "It is now safe to turn off your computer."
-# QMP's key codes for the characters the typed lines hold that are not lowercase letters or
-# digits (an uppercase letter is typed with Shift).
-QCODES = {
-    " ": "spc",
-    ">": "shift-dot",
-    ":": "shift-semicolon",
-    "\\": "backslash",
-    "/": "slash",
-    ".": "dot",
-    '"': "shift-apostrophe",
-    "%": "shift-5",
-}
 WRITE = "echo kept> C:\\KEPT.TXT"
 FORBIDS = ["KERNEL PANIC", "F2K: object audit FAILED", "CPU EXCEPTION",
            # cmd.exe ends on the event: the session's end never waits it out.
@@ -68,19 +56,6 @@ TORN_DOWN = "F2K: teardown audit: frame database ok"
 # by then.
 SHUTDOWN_EXE_END = re.compile(r"^F2K: child process \d+ \(shutdown\) exited normally \(exit code=(\d+)\)$",
                               re.IGNORECASE)
-
-
-def keys_of(text: str) -> list[str]:
-    """The chords that type `text` on a US keyboard, then Return."""
-    keys = []
-    for character in text:
-        if character in QCODES:
-            keys.append(QCODES[character])
-        elif character.isupper():
-            keys.append(f"shift-{character.lower()}")
-        else:
-            keys.append(character)
-    return keys + ["ret"]
 
 
 def assert_torn_down_first(log: str, log_path: Path) -> None:
@@ -105,46 +80,12 @@ def machine_end(action: str) -> list[str]:
     ]
 
 
-class Keys:
-    """The boot's `during` step: `steps`, each a wait on the screen's last line (its text, or a
-    test of it) and the chords then pressed in turn, taken one after another; a wait is met only by
-    a last line on another row or with another text than the step before met. `screens` keeps the
-    last screen read."""
-
-    def __init__(self, steps: list[tuple[str | Callable[[str], bool], list[str]]]) -> None:
-        self.steps = steps
-        self.taken = 0
-        self.met: tuple[int, str] | None = None
-        self.last: f2kboot.TextScreen | None = None
-
-    def __call__(self, socket: Path, log: str) -> None:
-        if self.taken == len(self.steps):
-            return
-        screen = f2kboot.read_text_screen(socket)
-        self.last = screen
-        rows = rows_of(screen)
-        row = last_row(rows)
-        if row is None:
-            return
-        wait, keys = self.steps[self.taken]
-        line = (row, rows[row])
-        met = wait(rows[row]) if callable(wait) else rows[row] == wait
-        if not met or line == self.met:
-            return
-        f2kboot.press(socket, keys)
-        self.taken += 1
-        self.met = line
-
-    def done(self) -> bool:
-        return self.taken == len(self.steps)
-
-
-def failure(what: str, log_path: Path, log: str, keys: Keys | None = None) -> str:
+def failure(what: str, log_path: Path, log: str, keys: Typist | None = None) -> str:
     screen = f"\n--- the screen ---\n{shown(keys.last)}" if keys is not None else ""
     return f"{what}{screen}\n{f2kboot.failure_context(log_path, log)}"
 
 
-def boot_cmd(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float, keys: Keys | Typist,
+def boot_cmd(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float, keys: Typist,
              done: Callable[[str], bool],
              observe: Callable[[Path], None] | None = None) -> tuple[str, str]:
     """Boot cmd.exe on the kept disk `kept`, typing `keys`, until `done(log)` holds or QEMU exits."""
@@ -181,7 +122,7 @@ def assert_flushed(kept: Path, log: str) -> None:
 def assert_file_kept(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float) -> None:
     """The kept disk's next boot: `type C:\\KEPT.TXT` shows what the first boot wrote."""
     second_log = log_path.with_name(f"{log_path.stem}-again.log")
-    typist = Typist([(PROMPT, keys_of("type C:\\KEPT.TXT"))])
+    typist = Typist([(PROMPT, line_of("type C:\\KEPT.TXT"))])
     log, stopped = boot_cmd(build, kept, second_log, timeout, typist,
                             done=lambda log: typist.screen is not None)
     if typist.screen is None:
@@ -210,7 +151,7 @@ def shut_down(build: f2kboot.Build, disk: Path, log_path: Path, timeout: float, 
               expects: list[str], *, restart: bool) -> tuple[str, list[f2kboot.TextScreen]]:
     """The first boot: the file written, then `command`; its COM1 log once `expects` (in order) and
     shutdown.exe's end have shown, and the screen read then (none for a restart)."""
-    keys = Keys([(PROMPT, keys_of(WRITE)), (PROMPT, keys_of(command))])
+    keys = Typist([(PROMPT, line_of(WRITE)), (PROMPT, line_of(command))], then_prompt=False)
     expectation = f2kboot.Expectation(expects=expects, ordered=True, forbids=FORBIDS)
     screens: list[f2kboot.TextScreen] = []
     log, stopped = boot_cmd(
@@ -296,15 +237,15 @@ def test_no_and_ctrl_c_cancel_the_shutdown(kept, log_path, boot_timeout):
     returns to the prompt with ERRORLEVEL 1, and the machine runs on."""
     build, disk = kept
     question = "Shut down QEMU (Y/N)?"
-    keys = Keys([
-        (PROMPT, keys_of("shutdown /l /t:0")),
-        (question, keys_of("n")),
-        (PROMPT, keys_of("echo %errorlevel%")),
-        (PROMPT, keys_of("shutdown /l /t:30 /y")),
+    keys = Typist([
+        (PROMPT, line_of("shutdown /l /t:0")),
+        (question, line_of("n")),
+        (PROMPT, line_of("echo %errorlevel%")),
+        (PROMPT, line_of("shutdown /l /t:30 /y")),
         (lambda line: COUNTING.match(line) is not None, ["ctrl-c"]),
-        (PROMPT, keys_of("echo %errorlevel%")),
+        (PROMPT, line_of("echo %errorlevel%")),
         (PROMPT, []),
-    ])
+    ], then_prompt=False)
     log, stopped = boot_cmd(build, disk, log_path, boot_timeout(TIMEOUT + 20), keys,
                             done=lambda log: keys.done())
     if not keys.done():
@@ -332,7 +273,7 @@ def test_no_and_ctrl_c_cancel_the_shutdown(kept, log_path, boot_timeout):
     ]
     expected += [""] * (f2kboot.ROWS - len(expected))
     differ = [index for index, (want, row) in enumerate(zip(expected, rows))
-              if not (want.match(row) if isinstance(want, re.Pattern) else want == row)]
+              if not f2kboot.matches_whole(want, row)]
     assert not differ, failure(f"the screen differs at rows {differ}", log_path, log, keys)
     status, detail = f2kboot.Expectation(expects=[], forbids=[*FORBIDS, "F2K: shutdown", "F2K: user process"]).check(log)
     assert status == "pass", failure(f"the machine did not run on: {detail}", log_path, log)

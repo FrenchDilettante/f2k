@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cmd import run_with_c
+from test_cmd import run_with_c, write_batches
 
 FORTY = "x" * 40
 # The batch files the batch test adds beside cmd.exe, by name, their lines ended by CR LF.
@@ -85,12 +85,7 @@ FLOW = {
 
 def flow_files(directory: Path) -> list[Path]:
     """FLOW written into `directory`, their lines ended by CR LF."""
-    paths = []
-    for name, lines in FLOW.items():
-        path = directory / name
-        path.write_bytes("".join(f"{line}\r\n" for line in lines).encode("ascii"))
-        paths.append(path)
-    return paths
+    return write_batches(directory, FLOW)
 
 
 @pytest.mark.kernel

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from test_cmd import SPAWNKID, run_with_c
+from test_cmd import SPAWNKID, run_with_c, write_batches
 
 SCRIPT = [
     "@echo off",
@@ -91,11 +91,7 @@ WRITTEN = re.compile(r"^\d\d/\d\d/\d{4} \d\d:\d\d [AP]M$")
 
 def files(directory: Path) -> list[Path]:
     """The script, its helpers and its data file written into `directory`, lines ended by CR LF."""
-    paths = []
-    for name, lines in {"f2kuni.cmd": SCRIPT, **HELPERS}.items():
-        path = directory / name
-        path.write_bytes("".join(f"{line}\r\n" for line in lines).encode("ascii"))
-        paths.append(path)
+    paths = write_batches(directory, {"f2kuni.cmd": SCRIPT, **HELPERS})
     data = directory / "f2kansi.txt"
     data.write_bytes(b"caf\x82\r\n")
     return [*paths, data]
