@@ -409,7 +409,7 @@ The variable is one character, its case counting; in a batch file it is written 
   - `tokens=x,y,m-n`: the tokens handed to `%v` and the letters after it, in order (`%a`, `%b`, ...), the first without the option, from 1 to 31; a `*` at the end hands the next one the rest of the line after the last token; a line holding none of them is skipped, and one it lacks is empty;
   - `usebackq`: `"file"` names a file, `'string'` is a string, `` `command` `` a command.
 
-  A file that cannot be opened prints `The system cannot find the file name.`, ends the loop and sets ERRORLEVEL to 1.
+  A file that cannot be opened prints `The system cannot find the file ??.`, then `The system cannot find the file name.`, and ends the loop, the ERRORLEVEL kept: Windows 2000's reports it twice, the first time with whatever its memory holds for the name.
 - `%~v` is the item without its quotes; `%~` with the letters a batch file's `%~1` takes (`f`, `d`, `p`, `n`, `x`, `s`, `a`, `t`, `z`) is the same part of the item's path, or of the file it names (`%~zv` its size); `%~$PATH:v` is the full path of the first file of the item's name in the directories PATH lists (any variable's name in place of PATH), nothing when there is none, the letters before `$` applied to it.
   The longest run of letters followed by the loop's variable counts: with `%%f`, `%%~ff` is `f`'s full path.
 - With echo on, each pass's command is echoed after an empty line and the prompt, before it runs, unless it starts with `@`.
@@ -786,6 +786,7 @@ In a batch file:
 - `%~1` to `%~9` are the arguments without the quotes around them;
 - `%~` and modifier letters before the digit are parts of the argument's full path, or of the file it names: `f` the full path, `d` its drive, `p` its directory, `n` its name, `x` its extension, `s` the parts of the short path instead (each long name replaced by its 8.3 name, as GetShortPathNameW gives it; the whole short path when no other letter picks a part), `a` its attributes (`--a------`, the letters `drahscotl` or `-`), `t` the date and time it was last written (`11/04/2026 06:31 PM`), `z` its size; they combine (`%~dp0`, `%~snx1`), in the order `%~ftza1` shows them, attributes, time, size, then the path, separated by blanks.
   The attributes, time and size are left out for a name that names nothing, and its short path is its full path.
+  A name keeps the case it was given, whatever the case of the file's own (`%~nx1` of `batflow.cmd` is `batflow.cmd` for a file `BATFLOW.CMD`).
   `%0`, unquoted, is the batch file as it was found, its extension and the case of its name on the disk included (`call x` gives `%~x0` `.cmd`); quoted, its name as typed.
   `%~` followed by anything but modifier letters and a digit (`%~q1`, `%~x`) prints `The following usage of the path operator in batch-parameter substitution is invalid:` and the line from there on, then `For valid formats type CALL /? or FOR /?`, and ends every batch file, as a line too long does (see [Batch files](#batch-files));
 - `%%` is `%`;

@@ -430,19 +430,9 @@ impl cmd::Variables for Shell {
     fn full_path(&mut self, name: &[u16], value: &mut [u16]) -> Option<usize> {
         let mut buffer = [0; exe::MAX_PATH];
         let path = exe::full_path(name, &mut buffer).ok()?;
-        let target = value.get_mut(..path.len())?;
-        target.copy_from_slice(path);
-        // A file there is keeps its own name's case (`%~x0` of `x` found as `x.CMD` is the
-        // file's `.cmd`), as the directory holds it.
-        if !files::has_wildcards(path) {
-            if let Some(found) = exe::find(path).ok().and_then(|mut find| find.next()) {
-                let (_, last) = files::split(target);
-                let start = path.len() - last.len();
-                if files::same_path(last, found.name()) {
-                    target[start..].copy_from_slice(found.name());
-                }
-            }
-        }
+        // The name as given, whatever the case of the file's own (batflow: `%~nxf` over
+        // `batflow.cmd` is `batflow.cmd`); a batch file found has its own ([`disk_case`]).
+        value.get_mut(..path.len())?.copy_from_slice(path);
         Some(path.len())
     }
 
@@ -1527,6 +1517,9 @@ fn run(
         state.not_recognized();
         return Flow::Next;
     };
+    if search::is_batch(&found[..length]) {
+        disk_case(&mut found[..length]);
+    }
     let path = &found[..length];
     keep_found(path, state);
     if !search::is_batch(path) {
@@ -1548,6 +1541,24 @@ fn run(
                 state.return_code = state.errorlevel;
             }
             Flow::Next
+        }
+    }
+}
+
+/// The last name of `path`, a batch file found by a search, as its directory holds it: the case of
+/// the file's own name, which the search's extension from PATHEXT (`.CMD`) need not have, as
+/// Windows' cmd finds it (`%~x0` of `x` found as `x.CMD` is the file's `.cmd`).
+#[inline(never)]
+fn disk_case(path: &mut [u16]) {
+    if files::has_wildcards(path) {
+        return;
+    }
+    if let Some(found) = exe::find(path).ok().and_then(|mut find| find.next()) {
+        let length = path.len();
+        let (_, last) = files::split(path);
+        let start = length - last.len();
+        if files::same_path(last, found.name()) {
+            path[start..].copy_from_slice(found.name());
         }
     }
 }

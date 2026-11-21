@@ -377,11 +377,16 @@ fn lines(
         }
         Source::Files(names) => {
             for name in Items(names) {
-                // A file that cannot be opened is reported, and ends the loop, the ERRORLEVEL 1.
+                // A file that cannot be opened is reported, and ends the loop, the ERRORLEVEL
+                // kept. Windows 2000's cmd reports it twice, the first time with `??` for its
+                // name (batflow's capture).
                 let name = batch::unquote(name);
                 let Ok(file) = exe::open_file(name) else {
-                    let _ = exe::stderr().print(format_args!("{}", FileNotFound(name)));
-                    state.failed();
+                    let _ = exe::stderr().print(format_args!(
+                        "{}{}",
+                        FileNotFound(&[u16::from(b'?'); 2]),
+                        FileNotFound(name)
+                    ));
                     return Flow::Next;
                 };
                 match file_lines(pass, options, &file, state, batch) {
