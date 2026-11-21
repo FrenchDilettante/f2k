@@ -243,8 +243,9 @@ pub const FONTS: usize = 128;
 /// How many tokens can exist at once: one per process that opened its own, and those whose
 /// handles outlive their process.
 pub const TOKENS: usize = 64;
-/// How many names can be bound at once.
-pub const NAMES: usize = 64;
+/// How many names can be bound at once, across every process (one namespace): a full table
+/// refuses a named create (STATUS_INSUFFICIENT_RESOURCES), the object made for it going again.
+pub const NAMES: usize = 256;
 /// The longest object name: MAX_PATH.
 pub const MAX_NAME: usize = 260;
 
@@ -2017,6 +2018,39 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(directory.bind_name(b"one more", id), Err(NameError::Full));
+    }
+
+    /// A full name table refuses the next name, and the names an object's deletion frees serve the
+    /// next binds.
+    #[test]
+    fn the_name_table_fills_and_reuses() {
+        let directory = directory();
+        let first = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let second = directory.create_mutex().unwrap();
+        for index in 0..NAMES - 1 {
+            directory
+                .bind_name(format!("n{index}").as_bytes(), first)
+                .unwrap();
+        }
+        directory.bind_name(b"second", second).unwrap();
+        assert_eq!(
+            directory.bind_name(b"refused", second),
+            Err(NameError::Full)
+        );
+        assert_eq!(directory.lookup_name(b"refused"), None, "nothing bound");
+
+        assert_eq!(directory.dereference(second), None);
+        assert_eq!(
+            directory.lookup_name(b"second"),
+            None,
+            "its name went with it"
+        );
+        let third = directory.create_semaphore(0, 1).unwrap();
+        directory.bind_name(b"third", third).unwrap();
+        assert_eq!(directory.lookup_name(b"third"), Some(third));
+        assert_eq!(directory.bind_name(b"refused", third), Err(NameError::Full));
     }
 
     /// An object whose last handle closes while a thread waits on it stays live — the wait holds
