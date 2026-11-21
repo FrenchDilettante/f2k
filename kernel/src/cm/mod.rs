@@ -52,11 +52,13 @@ pub const SEPARATOR: u16 = b'\\' as u16;
 /// REG_SZ: a value's type, a NUL-terminated string.
 pub const REG_SZ: u32 = 1;
 
-/// A key: its record and the record's generation.
+/// A key: its record and the record's generation. The generation is 32 bits: a stale key would
+/// name its record's new key only after some four billion deletes of that one record, where 16 bits
+/// took 65,536.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Key {
     index: u16,
-    generation: u16,
+    generation: u32,
 }
 
 /// A key object's body: the key its open named (none in a pool's fresh record). The object lives
@@ -139,7 +141,7 @@ impl Scratch {
 #[derive(Clone, Copy)]
 struct Node {
     live: bool,
-    generation: u16,
+    generation: u32,
     /// The parent key's record (the root's is its own).
     parent: u16,
     /// A hive's root: never deleted.
@@ -1009,6 +1011,22 @@ mod tests {
         assert!(empty.bytes().is_empty() && empty.units().is_empty());
         r.release(empty);
         assert_eq!(r.arena.as_ref().unwrap().audit(), Ok(()));
+    }
+
+    /// A record deleted more often than a 16-bit generation counts still finds its first key gone.
+    #[test]
+    fn a_stale_key_outlives_many_reuses_of_its_record() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (first, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+        r.delete(first, 0).unwrap();
+        for _ in 0..=u16::MAX as u32 {
+            let (again, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+            r.delete(again, 0).unwrap();
+        }
+        let (last, _) = r.create(user, &wide("k"), &[], 0).unwrap();
+        assert_eq!(last.index, first.index, "the same record, reused");
+        assert_eq!(r.check(first), Err(STATUS_KEY_DELETED));
     }
 
     /// The listing's order is the folded names', whatever the records' order; a subkey's position
