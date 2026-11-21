@@ -623,6 +623,61 @@ pub unsafe extern "C" fn vswprintf(buffer: *mut u16, text: *const u16, args: *co
     unsafe { swprintf_va(buffer, text, args) }
 }
 
+/// vsprintf: sprintf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As sprintf_va's; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vsprintf")]
+pub unsafe extern "C" fn vsprintf(buffer: *mut u8, text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { sprintf_va(buffer, text, args) }
+}
+
+/// vprintf: printf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As printf_va's; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vprintf")]
+pub unsafe extern "C" fn vprintf(text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { printf_va(text, args) }
+}
+
+/// vfprintf: fprintf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As fprintf_va's; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vfprintf")]
+pub unsafe extern "C" fn vfprintf(stream: *mut File, text: *const u8, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { fprintf_va(stream, text, args) }
+}
+
+/// vwprintf: wprintf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As wprintf_va's; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vwprintf")]
+pub unsafe extern "C" fn vwprintf(text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { wprintf_va(text, args) }
+}
+
+/// vfwprintf: fwprintf with its arguments as a `va_list`.
+///
+/// # Safety
+///
+/// As fwprintf_va's; `args` is the caller's `va_list`.
+#[unsafe(export_name = "f2k_export_vfwprintf")]
+pub unsafe extern "C" fn vfwprintf(stream: *mut File, text: *const u16, args: *const u8) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { fwprintf_va(stream, text, args) }
+}
+
 /// _snwprintf's body.
 ///
 /// # Safety
@@ -1576,6 +1631,45 @@ mod tests {
         // SAFETY: as above, an empty format and no arguments.
         let n = unsafe { vswprintf(out.as_mut_ptr(), wide_z("").as_ptr(), list.as_ptr()) };
         assert_eq!((n, out[0]), (0, 0));
+    }
+
+    /// vsprintf, vfprintf and vfwprintf are sprintf, fprintf and fwprintf over a `va_list` (laid
+    /// out as the host's: a pointer takes its own width): the text, its NUL after it in vsprintf's
+    /// buffer, and the count; the streams' text buffered, a wide character a descriptor that is
+    /// not open in text mode takes as its two bytes.
+    #[test]
+    fn the_va_list_forms_format_as_their_variadic_ones() {
+        use rtl::testing::wide_z;
+        let ab = b"ab\0";
+        let mut list = Vec::new();
+        list.extend((-7i32).to_ne_bytes());
+        list.extend((ab.as_ptr() as usize).to_ne_bytes());
+        list.extend(0x2Au32.to_ne_bytes());
+        let mut out = [b'#'; 16];
+        // SAFETY: a buffer of 16 bytes; the list holds what the format consumes.
+        let n = unsafe { vsprintf(out.as_mut_ptr(), b"%d|%4s|%#x\0".as_ptr(), list.as_ptr()) };
+        assert_eq!((n, &out[..14]), (12, &b"-7|  ab|0x2a\0#"[..]));
+        // SAFETY: as above, an empty format.
+        let n = unsafe { vsprintf(out.as_mut_ptr(), b"\0".as_ptr(), list.as_ptr()) };
+        assert_eq!((n, out[0]), (0, 0));
+
+        let mut buffer = [0u8; 32];
+        let mut file = writing(&mut buffer);
+        let stream = core::ptr::addr_of_mut!(file);
+        // SAFETY: the test's stream; the list as above.
+        let n = unsafe { vfprintf(stream, b"%d|%s\0".as_ptr(), list.as_ptr()) };
+        // SAFETY: the test's stream.
+        assert_eq!((n, unsafe { pending(&*stream).1 }), (5, &b"-7|ab"[..]));
+
+        let mut buffer = [0u8; 32];
+        let mut file = writing(&mut buffer);
+        let stream = core::ptr::addr_of_mut!(file);
+        let mut list = Vec::new();
+        list.extend(5u32.to_ne_bytes());
+        // SAFETY: the test's stream; the list holds what the format consumes.
+        let n = unsafe { vfwprintf(stream, wide_z("%d!").as_ptr(), list.as_ptr()) };
+        // SAFETY: the test's stream.
+        assert_eq!((n, unsafe { pending(&*stream).1 }), (2, &b"5\0!\0"[..]));
     }
 
     /// strings' wformat block's files: in text mode each wide character as the C locale's code

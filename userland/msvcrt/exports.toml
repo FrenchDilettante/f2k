@@ -628,6 +628,30 @@ ordinal = 712
 fails = "-1"
 
 [[export]]
+name = "vprintf"
+group = "stdio"
+args = ["strA format", "ptr argptr"]
+impl = { native = "vprintf" }
+ordinal = 753
+fails = "-1"
+
+[[export]]
+name = "vfprintf"
+group = "stdio"
+args = ["ptr stream", "strA format", "ptr argptr"]
+impl = { native = "vfprintf" }
+ordinal = 751
+fails = "-1"
+
+[[export]]
+name = "vsprintf"
+group = "stdio"
+args = ["ptr buffer", "strA format", "ptr argptr"]
+impl = { native = "vsprintf" }
+ordinal = 754
+fails = "-1"
+
+[[export]]
 name = "_vsnprintf"
 group = "stdio"
 args = ["ptr buffer", "u32 count", "strA format", "ptr argptr"]
@@ -772,6 +796,22 @@ group = "stdio"
 args = ["ptr stream", "strW format", "..."]
 impl = { native = "fwprintf" }
 ordinal = 635
+fails = "-1"
+
+[[export]]
+name = "vwprintf"
+group = "stdio"
+args = ["strW format", "ptr argptr"]
+impl = { native = "vwprintf" }
+ordinal = 756
+fails = "-1"
+
+[[export]]
+name = "vfwprintf"
+group = "stdio"
+args = ["ptr stream", "strW format", "ptr argptr"]
+impl = { native = "vfwprintf" }
+ordinal = 752
 fails = "-1"
 
 [[export]]
@@ -3998,26 +4038,6 @@ ordinal = 749
 [[export]]
 name = "ungetwc"
 ordinal = 750
-
-[[export]]
-name = "vfprintf"
-ordinal = 751
-
-[[export]]
-name = "vfwprintf"
-ordinal = 752
-
-[[export]]
-name = "vprintf"
-ordinal = 753
-
-[[export]]
-name = "vsprintf"
-ordinal = 754
-
-[[export]]
-name = "vwprintf"
-ordinal = 756
 
 [[export]]
 name = "wcscoll"

@@ -1,6 +1,6 @@
-//! The printf engine every formatted-output export shares, narrow and wide: printf, fprintf,
-//! sprintf, _snprintf and _vsnprintf, wprintf and fwprintf, swprintf and vswprintf, _snwprintf and
-//! _vsnwprintf.
+//! The printf engine every formatted-output export shares, narrow and wide: printf and vprintf,
+//! fprintf and vfprintf, sprintf and vsprintf, _snprintf and _vsnprintf, wprintf and vwprintf,
+//! fwprintf and vfwprintf, swprintf and vswprintf, _snwprintf and _vsnwprintf.
 //!
 //! `%[flags][width][.precision][size]type`, as MSDN's "Format Specification Fields" describes
 //! Visual C++ 6's, and as the corpus captures pin it:
