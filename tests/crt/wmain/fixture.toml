@@ -7,9 +7,6 @@ description = "wmain - msvcrt.dll's wide startup under /MD (wmain.c, whose main 
 kind = "sectioned"
 gate = true
 
-[pending]
-env = "the child's U+03B1 reaches envp as '?': _wenviron is _environ widened, and the ANSI conversion behind GetEnvironmentStrings has no best-fit mapping (Windows 2000's code page 1252 table gives 'a')"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. The startup linked into the program calls __wgetmainargs before wmain.

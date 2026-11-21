@@ -9,6 +9,7 @@
 //! The caller's strings are read and written where they are: a pointer the caller cannot read or
 //! write faults in the caller's thread, as kernel32's own code does on Windows 2000.
 
+use rtl::codepage::sbcs::SingleByte;
 use rtl::codepage::{self, Page};
 use rtl::cp1252;
 
@@ -237,7 +238,7 @@ fn to_wide(
         Page::Utf8 => MB_ERR_INVALID_CHARS,
         Page::Utf7 | Page::Symbol => 0,
     };
-    if flags & !taken != 0 {
+    if flags & !taken != 0 || flags & MB_PRECOMPOSED_COMPOSITE == MB_PRECOMPOSED_COMPOSITE {
         return refused(ERROR_INVALID_FLAGS);
     }
     let bytes = convert_source(&src)?;
@@ -245,9 +246,40 @@ fn to_wide(
     let mut out = Produced::new(dst);
     let glyphs = flags & MB_USEGLYPHCHARS != 0;
     let strict = flags & MB_ERR_INVALID_CHARS != 0;
-    codepage::to_wide(page, bytes.bytes(), glyphs, strict, |unit| out.put(unit))
-        .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?;
+    let composite = flags & MB_COMPOSITE != 0;
+    codepage::to_wide(
+        page,
+        bytes.bytes(),
+        glyphs,
+        strict,
+        |unit| match composite {
+            true => out.put_decomposed(unit),
+            false => out.put(unit),
+        },
+    )
+    .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?;
     Ok(out.finish()? as i32)
+}
+
+/// MB_PRECOMPOSED and MB_COMPOSITE, which may not go together.
+const MB_PRECOMPOSED_COMPOSITE: u32 = 0x1 | MB_COMPOSITE;
+const MB_COMPOSITE: u32 = 0x2;
+
+impl Produced<'_, u16> {
+    /// MB_COMPOSITE's unit: a precomposed letter as its base letter and combining mark
+    /// ([`crate::fold::decomposed`]); but where the destination has room for one unit and not two,
+    /// the letter as it is, as Windows 2000 writes it (the locale fixture's bestfit block: é into
+    /// one unit is é).
+    fn put_decomposed(&mut self, unit: u16) {
+        match crate::fold::decomposed(unit) {
+            Some(_) if self.produced + 1 == self.dst.len() => self.put(unit),
+            Some((base, mark)) => {
+                self.put(base);
+                self.put(mark);
+            }
+            None => self.put(unit),
+        }
+    }
 }
 
 /// WideCharToMultiByte over the code pages [`rtl::codepage::page`] names: a single-byte page
@@ -306,20 +338,26 @@ fn to_narrow(
     dst: OutBuf<'_, u8>,
     narrow: Narrow<'_>,
 ) -> Result<i32, Failure> {
-    // Discard ns, sep chars, default char, composite check, no best fit.
-    const VALID_FLAGS: u32 = 0x10 | 0x20 | 0x40 | 0x200 | WC_NO_BEST_FIT_CHARS;
-    const WC_NO_BEST_FIT_CHARS: u32 = 0x400;
+    const VALID_FLAGS: u32 =
+        WC_DISCARDNS | WC_SEPCHARS | WC_DEFAULTCHAR | WC_COMPOSITECHECK | WC_NO_BEST_FIT_CHARS;
     let Narrow {
         default,
         used,
         capacity,
     } = narrow;
     let page = codepage::page(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
-    let single = matches!(page, Page::Single(_));
-    if flags & !VALID_FLAGS != 0 || (!single && flags != 0) {
+    let single = match page {
+        Page::Single(single) => Some(single),
+        _ => None,
+    };
+    let composing = WC_DISCARDNS | WC_SEPCHARS | WC_DEFAULTCHAR;
+    let refused_flags = flags & !VALID_FLAGS != 0
+        || (single.is_none() && flags != 0)
+        || (flags & composing != 0 && flags & WC_COMPOSITECHECK == 0);
+    if refused_flags {
         return refused(ERROR_INVALID_FLAGS);
     }
-    if !single && (default.is_some() || used.is_some()) {
+    if single.is_none() && (default.is_some() || used.is_some()) {
         return refused(ERROR_INVALID_PARAMETER);
     }
     let units = convert_source(&src)?;
@@ -328,13 +366,76 @@ fn to_narrow(
     let units = wide_units_of(units).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
     let mut out = Produced::new(dst);
     let fit = flags & WC_NO_BEST_FIT_CHARS == 0;
-    let replaced = codepage::to_narrow(page, &units, default, fit, |byte| out.put(byte))
-        .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?;
+    let replaced = match single {
+        Some(single) => encode_composites(single, flags, &units, default, |byte| out.put(byte)),
+        None => codepage::to_narrow(page, &units, default, fit, |byte| out.put(byte))
+            .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?,
+    };
     let produced = out.finish()?;
     if let Some(mut used) = used {
         used.set(u32::from(replaced));
     }
     Ok(produced as i32)
+}
+
+/// WideCharToMultiByte's flags.
+const WC_COMPOSITECHECK: u32 = 0x200;
+const WC_DISCARDNS: u32 = 0x10;
+const WC_SEPCHARS: u32 = 0x20;
+const WC_DEFAULTCHAR: u32 = 0x40;
+const WC_NO_BEST_FIT_CHARS: u32 = 0x400;
+
+/// Whether `unit` is a nonspacing mark WC_COMPOSITECHECK looks for after a base character: the
+/// combining diacritical marks.
+fn nonspacing(unit: u16) -> bool {
+    (0x0300..=0x036F).contains(&unit)
+}
+
+/// A single-byte page's encoding of `units` (WideCharToMultiByte's), each unit exactly, best-fit
+/// unless WC_NO_BEST_FIT_CHARS, else `default`. With WC_COMPOSITECHECK a base character and the
+/// nonspacing mark after it are composed into their precomposed character where there is one (and
+/// encoded as one); where there is none, WC_DISCARDNS drops the mark, WC_DEFAULTCHAR writes
+/// `default` for the pair, and WC_SEPCHARS (the default) encodes both. Returns whether `default`
+/// was written.
+fn encode_composites(
+    page: &SingleByte,
+    flags: u32,
+    units: &[u16],
+    default: u8,
+    mut out: impl FnMut(u8),
+) -> bool {
+    let fit = flags & WC_NO_BEST_FIT_CHARS == 0;
+    let mut used = false;
+    // A unit's byte, none standing for the default character.
+    let mut put = |byte: Option<u8>| {
+        used |= byte.is_none();
+        out(byte.unwrap_or(default));
+    };
+    let mut at = 0;
+    while at < units.len() {
+        let unit = units[at];
+        let mark = units.get(at + 1).copied().filter(|&next| nonspacing(next));
+        match mark {
+            Some(mark) if flags & WC_COMPOSITECHECK != 0 && !nonspacing(unit) => {
+                at += 2;
+                if let Some(precomposed) = crate::fold::composed(unit, mark) {
+                    put(page.encode(precomposed, fit));
+                } else if flags & WC_DISCARDNS != 0 {
+                    put(page.encode(unit, fit));
+                } else if flags & WC_DEFAULTCHAR != 0 {
+                    put(None);
+                } else {
+                    put(page.encode(unit, fit));
+                    put(page.encode(mark, fit));
+                }
+            }
+            _ => {
+                at += 1;
+                put(page.encode(unit, fit));
+            }
+        }
+    }
+    used
 }
 
 /// LCMapString's case-mapping flags.

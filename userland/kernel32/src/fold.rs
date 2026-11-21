@@ -96,7 +96,7 @@ fn folded(flags: u32, unit: u16) -> u16 {
 }
 
 /// The precomposed letter of `base` and `mark`, if any.
-fn composed(base: u16, mark: u16) -> Option<u16> {
+pub(crate) fn composed(base: u16, mark: u16) -> Option<u16> {
     COMPOSED
         .iter()
         .find(|&&(_, b, m)| b == base && m == mark)
@@ -104,7 +104,7 @@ fn composed(base: u16, mark: u16) -> Option<u16> {
 }
 
 /// The base letter and mark of a precomposed letter, if it is one.
-fn decomposed(unit: u16) -> Option<(u16, u16)> {
+pub(crate) fn decomposed(unit: u16) -> Option<(u16, u16)> {
     let at = COMPOSED.binary_search_by_key(&unit, |&(precomposed, ..)| precomposed);
     at.ok().map(|at| (COMPOSED[at].1, COMPOSED[at].2))
 }

@@ -10,6 +10,7 @@
 //! bytes, then the buffer. A string a conversion allocates comes from the process heap, through the
 //! allocator its caller hands over (ntdll's heap, or the host tests' stand-in).
 
+use crate::codepage::sbcs::CP1252;
 use crate::cp1252;
 use crate::heap::{Block, ProcessHeap};
 use crate::status::{
@@ -43,11 +44,12 @@ pub fn multi_byte_to_unicode(out: &mut [u16], bytes: &[u8]) -> usize {
 }
 
 /// RtlUnicodeToMultiByteN's conversion: as many units as `out` has room for, each its code-page
-/// byte (the default character for one the code page lacks); the bytes written.
+/// byte, best-fit where the code page lacks it (Windows' table for 1252, as the code page's own
+/// NLS table carries it: α is `a`), else the default character; the bytes written.
 pub fn unicode_to_multi_byte(out: &mut [u8], units: &[u16]) -> usize {
     let count = out.len().min(units.len());
     for (byte, &unit) in out.iter_mut().zip(units).take(count) {
-        *byte = cp1252::wc_to_mb(unit);
+        *byte = CP1252.encode(unit, true).unwrap_or(cp1252::DEFAULT_CHAR);
     }
     count
 }
@@ -418,7 +420,8 @@ mod tests {
     }
 
     /// The conversions take the code page's characters: 0x80 is the euro sign one way, the euro
-    /// sign 0x80 the other; a character the code page lacks is its default character.
+    /// sign 0x80 the other; a character the code page lacks is its best fit (α is `a`), else its
+    /// default character.
     #[test]
     fn the_conversions_follow_code_page_1252() {
         let mut wide = [0u16; 4];
@@ -426,10 +429,10 @@ mod tests {
         assert_eq!(wide, [0x61, 0x20AC, 0xE9, 0]);
         let mut narrow = [0u8; 4];
         assert_eq!(
-            unicode_to_multi_byte(&mut narrow, &[0x20AC, 0x3042, 0x41]),
-            3
+            unicode_to_multi_byte(&mut narrow, &[0x20AC, 0x3042, 0x41, 0x03B1]),
+            4
         );
-        assert_eq!(narrow, [0x80, b'?', b'A', 0]);
+        assert_eq!(narrow, [0x80, b'?', b'A', b'a']);
         assert_eq!(
             unicode_to_multi_byte(&mut narrow[..2], &[0x41, 0x42, 0x43]),
             2,

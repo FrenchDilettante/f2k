@@ -1,6 +1,6 @@
 //! The code pages' conversions past the ANSI and OEM pages' plain tables: UTF-8's ill-formed
-//! sequences, 850, 28591, UTF-7 and CP_SYMBOL. The locale fixture's utf8err and cpconv blocks are
-//! the contract.
+//! sequences, 850, 28591, UTF-7 and CP_SYMBOL, best fit and the composite flags. The locale
+//! fixture's utf8err, cpconv and bestfit blocks are the contract.
 
 use super::last_error;
 use crate::locale::*;
@@ -8,6 +8,11 @@ use crate::locale::*;
 const CP_UTF7: u32 = 65000;
 const CP_UTF8: u32 = 65001;
 const CP_SYMBOL: u32 = 42;
+const MB_COMPOSITE: u32 = 0x2;
+const WC_DISCARDNS: u32 = 0x10;
+const WC_SEPCHARS: u32 = 0x20;
+const WC_DEFAULTCHAR: u32 = 0x40;
+const WC_COMPOSITECHECK: u32 = 0x200;
 const WC_NO_BEST_FIT_CHARS: u32 = 0x400;
 const MB_PRECOMPOSED: u32 = 0x1;
 const MB_ERR_INVALID_CHARS: u32 = 0x8;
@@ -169,4 +174,77 @@ fn utf7_and_symbol_convert_without_flags() {
         to_narrow(CP_SYMBOL, 0, &[0x41, 0x03B1], false),
         Err(ERROR_NO_UNICODE_TRANSLATION)
     );
+}
+
+/// 1252 and 437 best-fit from Windows' tables (∞ is 8, ™ in 437 is T), unless
+/// WC_NO_BEST_FIT_CHARS; what neither holds is the default character, reported.
+///
+/// Pins: kernel32.WideCharToMultiByte
+#[test]
+fn best_fit_follows_windows_tables() {
+    for (page, unit, byte) in [
+        (1252, 0x221E, b'8'),
+        (1252, 0xFF21, b'A'),
+        (1252, 0x03B1, b'a'),
+        (437, 0x2122, b'T'),
+        (437, 0x00A9, b'c'),
+    ] {
+        assert_eq!(to_narrow(page, 0, &[unit], true), Ok((vec![byte], 0)));
+        assert_eq!(
+            to_narrow(page, WC_NO_BEST_FIT_CHARS, &[unit], true),
+            Ok((vec![b'?'], 1))
+        );
+    }
+    assert_eq!(to_narrow(1252, 0, &[0x0391], true), Ok((vec![b'?'], 1)));
+}
+
+/// WC_COMPOSITECHECK composes a letter and the mark after it; a pair with no precomposed form is
+/// both characters (WC_SEPCHARS), the letter alone (WC_DISCARDNS) or the default character
+/// (WC_DEFAULTCHAR). Those three need WC_COMPOSITECHECK.
+///
+/// Pins: kernel32.WideCharToMultiByte
+#[test]
+fn the_composite_check() {
+    let decomposed = [0x65, 0x0301, 0x78];
+    assert_eq!(
+        to_narrow(1252, WC_COMPOSITECHECK, &decomposed, true),
+        Ok((vec![0xE9, 0x78], 0))
+    );
+    assert_eq!(
+        to_narrow(1252, 0, &decomposed, true),
+        Ok((vec![0x65, 0xB4, 0x78], 0))
+    );
+    let uncomposable = [0x71, 0x0301];
+    for (flags, expected) in [
+        (WC_DISCARDNS, Ok((vec![0x71], 0))),
+        (WC_SEPCHARS, Ok((vec![0x71, 0xB4], 0))),
+        (WC_DEFAULTCHAR, Ok((vec![b'?'], 1))),
+    ] {
+        assert_eq!(
+            to_narrow(1252, WC_COMPOSITECHECK | flags, &uncomposable, true),
+            expected
+        );
+        assert_eq!(to_narrow(1252, flags, &uncomposable, true), Err(1004));
+    }
+}
+
+/// MB_COMPOSITE decomposes the precomposed letters, but writes one as it is where the destination
+/// has room for it alone; it may not go with MB_PRECOMPOSED.
+///
+/// Pins: kernel32.MultiByteToWideChar
+#[test]
+fn mb_composite_decomposes() {
+    assert_eq!(
+        to_wide(1252, MB_COMPOSITE, b"\xE9\xC5x"),
+        Ok(vec![0x65, 0x0301, 0x41, 0x030A, 0x78])
+    );
+    assert_eq!(
+        to_wide(1252, MB_PRECOMPOSED | MB_COMPOSITE, b"\xE9"),
+        Err(1004)
+    );
+    let mut out = [0xBEEFu16; 2];
+    let count = unsafe {
+        multi_byte_to_wide_char(1252, MB_COMPOSITE, b"\xE9".as_ptr(), 1, out.as_mut_ptr(), 1)
+    };
+    assert_eq!((count, out), (1, [0x00E9, 0xBEEF]));
 }
