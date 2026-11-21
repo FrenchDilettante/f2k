@@ -941,10 +941,7 @@ impl fmt::Display for Help {
 mod tests {
     use super::*;
     use crate::parse;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     /// The help `line` asks for, as the shell reads it.
     fn help_of(line: &str) -> Option<&'static Help> {

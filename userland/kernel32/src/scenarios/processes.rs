@@ -7,6 +7,8 @@
 //! the stack land in the child and what they hold, the first thread's context, the errors kernel32
 //! sets, and what every failure undoes.
 
+use rtl::testing::wide_z;
+
 use super::last_error;
 use crate::create::{
     create_process_a,
@@ -66,10 +68,6 @@ const OWN_ENVIRONMENT: &str = "PATH=C:\\TOOLS\0X=1\0\0";
 /// The default search's directories, as the stand-in process has them: the program's, the current
 /// one, the system directories, the Windows directory, PATH's.
 const SEARCH: &str = "C:\\CORPUS;.;C:\\WINNT\\system32;C:\\WINNT\\system;C:\\WINNT;C:\\TOOLS";
-
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
 
 /// A fresh scene: no child, nothing recorded, the stand-in process in `C:\CORPUS\` with
 /// [`OWN_ENVIRONMENT`] under the system root `C:\WINNT`, no file existing, the last error armed.
@@ -137,9 +135,9 @@ fn create(
     current_directory: Option<&str>,
     info: &StartupInfo<u16>,
 ) -> (u32, u32, ProcessInformation) {
-    let application_name = application_name.map(wide);
-    let mut command_line = command_line.map(wide);
-    let current_directory = current_directory.map(wide);
+    let application_name = application_name.map(wide_z);
+    let mut command_line = command_line.map(wide_z);
+    let current_directory = current_directory.map(wide_z);
     let mut information = ProcessInformation::default();
     let created = unsafe {
         create_process_w(
@@ -917,7 +915,7 @@ fn the_environment_block_is_written_into_the_child() {
         child_text(ENVIRONMENT_AT, 32),
         "ZED=last letter, first\0ALPHA=\u{20AC}\0\0"
     );
-    let unicode = wide("F2KW=wide\0F2KX=also wide\0");
+    let unicode = wide_z("F2KW=wide\0F2KX=also wide\0");
     with(unicode.as_ptr().cast(), 0x400);
     assert_eq!(
         child_text(ENVIRONMENT_AT, 26),
@@ -942,7 +940,11 @@ fn the_environment_block_is_written_into_the_child() {
 fn the_startup_information_reaches_the_child() {
     setup();
     existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
-    let (title, desktop, shell) = (wide("a title"), wide("WinSta0\\Default"), wide("shell"));
+    let (title, desktop, shell) = (
+        wide_z("a title"),
+        wide_z("WinSta0\\Default"),
+        wide_z("shell"),
+    );
     let runtime = [2u8, 0, 0, 0, 0x01, 0x41, 0x44, 0, 0, 0, 0x48, 0, 0, 0];
     let info = StartupInfo {
         reserved: shell.as_ptr(),
@@ -1006,7 +1008,7 @@ fn the_flags_and_attributes_shape_the_child() {
     setup();
     existing(&["C:\\CORPUS\\SPAWNKID.EXE"]);
     HARD_ERROR_MODE.with(|mode| mode.set(0));
-    let line = wide("spawnkid args");
+    let line = wide_z("spawnkid args");
     let mut line = line.clone();
     let inheritable = crate::base::SecurityAttributes {
         length: 12,

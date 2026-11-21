@@ -96,6 +96,8 @@ pub mod stub;
 pub mod sync;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod sys;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod time;
 pub mod truetype;
 pub mod user;

@@ -21,6 +21,8 @@ pub mod help;
 pub mod search;
 pub mod switches;
 pub mod syntax;
+#[cfg(test)]
+mod testing;
 
 use core::fmt;
 
@@ -1503,14 +1505,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     #[test]
     fn a_line_loses_its_line_break_and_blanks() {

@@ -4,6 +4,8 @@
 //! included; these pin what each call answers, which units reach the destination (the sentinel
 //! past them untouched), and that none of them sets the last error.
 
+use rtl::testing::wide_z;
+
 use super::last_error;
 use crate::base::set_last_error;
 use crate::lstr::*;
@@ -18,14 +20,10 @@ fn arm() {
     set_last_error(UNTOUCHED);
 }
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
-
 /// A wide buffer of `count` units, `text` and its terminator first, the sentinel after.
 fn wide_buffer(text: &str, count: usize) -> Vec<u16> {
     let mut buffer = vec![FILL_W; count];
-    let text = wide(text);
+    let text = wide_z(text);
     buffer[..text.len()].copy_from_slice(&text);
     buffer
 }
@@ -42,9 +40,12 @@ fn lstrlen_counts_to_the_terminator() {
     assert_eq!(unsafe { lstrlen_a(b"abc\0".as_ptr()) }, 3);
     assert_eq!(unsafe { lstrlen_a(b"caf\xE9\0".as_ptr()) }, 4);
     assert_eq!(unsafe { lstrlen_a(core::ptr::null()) }, 0);
-    assert_eq!(unsafe { lstrlen_w(wide("").as_ptr()) }, 0);
-    assert_eq!(unsafe { lstrlen_w(wide("abc").as_ptr()) }, 3);
-    assert_eq!(unsafe { lstrlen_w(wide("caf\u{E9}\u{4E2D}").as_ptr()) }, 5);
+    assert_eq!(unsafe { lstrlen_w(wide_z("").as_ptr()) }, 0);
+    assert_eq!(unsafe { lstrlen_w(wide_z("abc").as_ptr()) }, 3);
+    assert_eq!(
+        unsafe { lstrlen_w(wide_z("caf\u{E9}\u{4E2D}").as_ptr()) },
+        5
+    );
     assert_eq!(unsafe { lstrlen_w(core::ptr::null()) }, 0);
     let odd = b"\0a\0b\0\0\0";
     assert_eq!(unsafe { lstrlen_w(odd.as_ptr().add(1).cast()) }, 2);
@@ -72,10 +73,10 @@ fn lstrcpy_copies_through_the_terminator() {
     assert_eq!(buffer, [FILL_A; 16]);
 
     let mut buffer = [FILL_W; 16];
-    let answer = unsafe { lstrcpy_w(buffer.as_mut_ptr(), wide("abc").as_ptr()) };
+    let answer = unsafe { lstrcpy_w(buffer.as_mut_ptr(), wide_z("abc").as_ptr()) };
     assert_eq!(answer, buffer.as_mut_ptr());
     assert_eq!(buffer[..6], [97, 98, 99, 0, FILL_W, FILL_W]);
-    assert!(unsafe { lstrcpy_w(core::ptr::null_mut(), wide("abc").as_ptr()) }.is_null());
+    assert!(unsafe { lstrcpy_w(core::ptr::null_mut(), wide_z("abc").as_ptr()) }.is_null());
     let mut buffer = [FILL_W; 16];
     assert!(unsafe { lstrcpy_w(buffer.as_mut_ptr(), core::ptr::null()) }.is_null());
     assert_eq!(buffer, [FILL_W; 16]);
@@ -114,7 +115,7 @@ fn lstrcpyn_copies_at_most_one_less_than_its_count() {
         buffer.as_mut_ptr()
     );
 
-    let source = wide("abcde");
+    let source = wide_z("abcde");
     for (count, expected) in [(0, ""), (1, ""), (5, "abcd"), (6, "abcde"), (10, "abcde")] {
         let mut buffer = [FILL_W; 8];
         let answer = unsafe { lstrcpyn_w(buffer.as_mut_ptr(), source.as_ptr(), count) };
@@ -163,13 +164,13 @@ fn lstrcat_appends_at_the_terminator() {
     assert_eq!(buffer, start(b"ab\0"));
 
     let mut buffer = wide_buffer("ab", 16);
-    let answer = unsafe { lstrcat_w(buffer.as_mut_ptr(), wide("cd").as_ptr()) };
+    let answer = unsafe { lstrcat_w(buffer.as_mut_ptr(), wide_z("cd").as_ptr()) };
     assert_eq!(answer, buffer.as_mut_ptr());
     assert_eq!(buffer, wide_buffer("abcd", 16));
     let mut buffer = wide_buffer("", 16);
-    unsafe { lstrcat_w(buffer.as_mut_ptr(), wide("xy").as_ptr()) };
+    unsafe { lstrcat_w(buffer.as_mut_ptr(), wide_z("xy").as_ptr()) };
     assert_eq!(buffer, wide_buffer("xy", 16));
-    assert!(unsafe { lstrcat_w(core::ptr::null_mut(), wide("cd").as_ptr()) }.is_null());
+    assert!(unsafe { lstrcat_w(core::ptr::null_mut(), wide_z("cd").as_ptr()) }.is_null());
     let mut buffer = wide_buffer("ab", 16);
     assert!(unsafe { lstrcat_w(buffer.as_mut_ptr(), core::ptr::null()) }.is_null());
     assert_eq!(buffer, wide_buffer("ab", 16));

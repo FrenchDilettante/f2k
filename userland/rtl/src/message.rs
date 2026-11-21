@@ -476,16 +476,13 @@ impl Text {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
+    use crate::testing::wide_z;
 
     /// `text` formatted to `width` (inserts expanded, though it has none, or ignored), as a string;
     /// the status on failure.
     fn formatted(text: &str, width: u32, ignore: bool) -> Result<std::string::String, u32> {
         let mut out = [0u16; 512];
-        let length = format(&wide(text), width, ignore, None, &mut out)?;
+        let length = format(&wide_z(text), width, ignore, None, &mut out)?;
         assert_eq!(out[length], 0, "terminated");
         Ok(std::string::String::from_utf16(&out[..length]).unwrap())
     }
@@ -505,7 +502,7 @@ mod tests {
             slots: slots.as_ptr(),
             ansi,
         };
-        let length = format(&wide(text), 0, false, Some(arguments), &mut out)?;
+        let length = format(&wide_z(text), 0, false, Some(arguments), &mut out)?;
         Ok(std::string::String::from_utf16(&out[..length]).unwrap())
     }
 
@@ -625,8 +622,8 @@ mod tests {
     /// `*` taking the width and precision from the arguments (the documentation's example).
     #[test]
     fn inserts_expand_from_the_arguments() {
-        let bill: std::vec::Vec<u16> = wide("Bill");
-        let bob: std::vec::Vec<u16> = wide("Bob");
+        let bill: std::vec::Vec<u16> = wide_z("Bill");
+        let bob: std::vec::Vec<u16> = wide_z("Bob");
         let slots = [
             4,
             2,
@@ -659,14 +656,14 @@ mod tests {
     /// Inserts wrap like the rest of the message.
     #[test]
     fn inserts_wrap_with_the_text() {
-        let name = wide("C:\\TEMP\\A.TXT");
+        let name = wide_z("C:\\TEMP\\A.TXT");
         let slots = [name.as_ptr() as usize];
         let mut out = [0u16; 64];
         let arguments = Arguments {
             slots: slots.as_ptr(),
             ansi: false,
         };
-        let text = wide("Cannot open %1 now.\r\n");
+        let text = wide_z("Cannot open %1 now.\r\n");
         let length = format(&text, 12, false, Some(arguments), &mut out).unwrap();
         assert_eq!(
             std::string::String::from_utf16(&out[..length]).unwrap(),
@@ -680,18 +677,18 @@ mod tests {
     fn refusals() {
         let mut out = [0u16; 8];
         assert_eq!(
-            format(&wide("%1"), 0, false, None, &mut out),
+            format(&wide_z("%1"), 0, false, None, &mut out),
             Err(STATUS_INVALID_PARAMETER)
         );
         assert_eq!(with("%1!d", &[1], false), Err(STATUS_INVALID_PARAMETER));
         assert_eq!(with("%1!f!", &[1], false), Err(STATUS_INVALID_PARAMETER));
         assert_eq!(
-            format(&wide("12345678"), 0, true, None, &mut out),
+            format(&wide_z("12345678"), 0, true, None, &mut out),
             Err(STATUS_BUFFER_OVERFLOW)
         );
-        assert_eq!(format(&wide("1234567"), 0, true, None, &mut out), Ok(7));
+        assert_eq!(format(&wide_z("1234567"), 0, true, None, &mut out), Ok(7));
         assert_eq!(
-            format(&wide("1234 5678"), 4, true, None, &mut out),
+            format(&wide_z("1234 5678"), 4, true, None, &mut out),
             Err(STATUS_BUFFER_OVERFLOW),
             "the break needs a unit more"
         );

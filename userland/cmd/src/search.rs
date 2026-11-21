@@ -121,14 +121,7 @@ pub fn search<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     /// The search over a fake file system holding `files` (compared ignoring case), and every
     /// path it tried, in order.

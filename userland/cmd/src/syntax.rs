@@ -819,14 +819,7 @@ fn rebuild_at(text: &[u16], join: Join, put: &mut dyn FnMut(&[u16])) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     fn split(text: &str, join: Join) -> Vec<(String, Option<String>)> {
         let text = wide(text);

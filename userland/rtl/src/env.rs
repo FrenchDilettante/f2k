@@ -189,10 +189,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     /// A block of `room` units holding `entries`.
     fn block(entries: &[&str], room: usize) -> Vec<u16> {

@@ -624,10 +624,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     /// Variables in a map, their names compared in capitals as the environment's are.
     #[derive(Default)]

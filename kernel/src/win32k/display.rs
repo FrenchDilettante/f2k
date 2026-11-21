@@ -694,6 +694,8 @@ fn names_dc(_: &mut NtCall, _: Handle) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::utf16_bytes_z;
+
     use super::*;
 
     fn dev_mode(fields: u32, bits: u32, width: u32, height: u32) -> DevModeW {
@@ -811,13 +813,6 @@ mod tests {
         f(&mut NtCall::new(&mut frame, &mut passive))
     }
 
-    fn utf16(text: &str) -> std::vec::Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
-    }
-
     /// The modes' numbers: the current and registry settings are the current mode, any other the
     /// listed mode of its number; past the list, or with no list, STATUS_NO_MORE_ENTRIES.
     #[test]
@@ -915,7 +910,7 @@ mod tests {
         }
 
         // The display by its name.
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16("\\\\.\\DISPLAY1"));
+        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY1"));
         assert_eq!(
             with_call(|call| enum_display_settings(
                 call,
@@ -926,7 +921,7 @@ mod tests {
             )),
             Ok(STATUS_SUCCESS)
         );
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16("\\\\.\\DISPLAY2"));
+        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY2"));
         assert_eq!(
             with_call(|call| enum_display_settings(
                 call,
@@ -975,7 +970,7 @@ mod tests {
             assert_eq!(device.cb, 840);
             assert_eq!(
                 &device.device_name.as_bytes()[..26],
-                &utf16("\\\\.\\DISPLAY1")[..]
+                &utf16_bytes_z("\\\\.\\DISPLAY1")[..]
             );
             assert_ne!(device.device_string[0], 0);
             assert_eq!(
@@ -1012,7 +1007,7 @@ mod tests {
 
         // The primary display's monitors.
         set_cb(840);
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16("\\\\.\\display1"));
+        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\display1"));
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 0, out, 0)),
             Ok(STATUS_SUCCESS)
@@ -1020,13 +1015,13 @@ mod tests {
         let device = DisplayDeviceW::from_bytes(&page.borrow().0[..840]).unwrap();
         assert_eq!(
             &device.device_name.as_bytes()[..44],
-            &utf16("\\\\.\\DISPLAY1\\Monitor0")[..]
+            &utf16_bytes_z("\\\\.\\DISPLAY1\\Monitor0")[..]
         );
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 1, out, 0)),
             Err(STATUS_NO_MORE_ENTRIES)
         );
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16("\\\\.\\DISPLAY9"));
+        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY9"));
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 0, out, 0)),
             Err(STATUS_INVALID_PARAMETER)

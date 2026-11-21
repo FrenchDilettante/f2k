@@ -484,31 +484,27 @@ pub fn in_windows_directory(name: &[u16]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::{narrow, wide};
+
     use super::*;
-
-    fn w(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn s(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
 
     /// The units of a list, its NULs as `|`.
     fn shown(units: impl Iterator<Item = u16>) -> String {
-        s(&units
-            .map(|unit| if unit == 0 { u16::from(b'|') } else { unit })
-            .collect::<Vec<_>>())
+        narrow(
+            &units
+                .map(|unit| if unit == 0 { u16::from(b'|') } else { unit })
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn applied(text: &[u16], splice: &Splice<'_>) -> String {
-        s(&splice.pieces(text).concat())
+        narrow(&splice.pieces(text).concat())
     }
 
     /// An edit of `text`, the text it leaves taken as the new one.
     fn step(text: &mut Vec<u16>, edit: impl Fn(&[u16]) -> Option<String>) -> String {
         let after = edit(text).unwrap();
-        *text = w(&after);
+        *text = wide(&after);
         after
     }
 
@@ -536,8 +532,8 @@ mod tests {
         Inner=in a padded section name\r\n";
 
     fn lookup(text: &str, section: &str, key: &str) -> Option<String> {
-        let text = w(text);
-        value(&text, &w(section), &w(key)).map(s)
+        let text = wide(text);
+        value(&text, &wide(section), &wide(key)).map(narrow)
     }
 
     /// A key's value: the blanks around it dropped, matching quotes dropped, an unmatched one
@@ -592,12 +588,12 @@ mod tests {
     /// `=` left out), its entries as `key=value` (trimmed, quotes kept) or as they are.
     #[test]
     fn the_lists_follow_the_file() {
-        let text = w(PROFILE);
+        let text = wide(PROFILE);
         assert_eq!(
             shown(section_names(&text)),
             "First|Second|first|Empty|Padded||"
         );
-        let first = section(&text, &w("first")).unwrap();
+        let first = section(&text, &wide("first")).unwrap();
         assert_eq!(
             shown(key_names(&text, &first)),
             "Name|Spaced|Quoted|Single|Half|Number|Blank|Empty|NAME||"
@@ -608,12 +604,12 @@ mod tests {
              Single='in single quotes'|Half=\"opened only|Number=42|Blank=|Empty=|NoEquals|\
              NAME=the same key in upper case||"
         );
-        let second = section(&text, &w("Second")).unwrap();
+        let second = section(&text, &wide("Second")).unwrap();
         assert_eq!(
             shown(section_entries(&text, &second)),
             "Key=second section||"
         );
-        let empty = section(&text, &w("Empty")).unwrap();
+        let empty = section(&text, &wide("Empty")).unwrap();
         assert_eq!(shown(section_entries(&text, &empty)), "|");
         assert_eq!(shown(key_names(&text, &empty)), "|");
         assert_eq!(shown(section_names(&[])), "|");
@@ -622,12 +618,14 @@ mod tests {
     /// The capture's own count: [First]'s 202 units of entries in profile.ini.
     #[test]
     fn the_captured_section_counts() {
-        let text = w(&std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/kernel32/profile/profile.ini"
-        ))
-        .unwrap());
-        let first = section(&text, &w("First")).unwrap();
+        let text = wide(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/kernel32/profile/profile.ini"
+            ))
+            .unwrap(),
+        );
+        let first = section(&text, &wide("First")).unwrap();
         assert_eq!(section_entries(&text, &first).count() - 1, 202);
         assert_eq!(key_names(&text, &first).count() - 1, 73);
         assert_eq!(section_names(&text).count() - 1, 32);
@@ -708,7 +706,8 @@ mod tests {
     /// The write fixture's steps, each on the text the step before left.
     #[test]
     fn writes_edit_in_place() {
-        let mut text = w("[First]\r\n\
+        let mut text = wide(
+            "[First]\r\n\
             Name=value one\r\n\
             \x20 Spaced  =   padded value   \r\n\
             Number=42\r\n\
@@ -721,62 +720,69 @@ mod tests {
             Again=repeated\r\n\
             [Empty]\r\n\
             [ Padded ]\r\n\
-            Inner=x\r\n");
+            Inner=x\r\n",
+        );
         let added = step(&mut text, |t| {
             Some(applied(
                 t,
-                &write_key(t, &w("Second"), &w("Added"), &w("v")),
+                &write_key(t, &wide("Second"), &wide("Added"), &wide("v")),
             ))
         });
         assert!(added.contains("Key=second section\r\nAdded=v\r\n;Hidden"));
         let replaced = step(&mut text, |t| {
             Some(applied(
                 t,
-                &write_key(t, &w("First"), &w("number"), &w(" 43 ")),
+                &write_key(t, &wide("First"), &wide("number"), &wide(" 43 ")),
             ))
         });
         assert!(replaced.contains("\r\nNumber= 43 \r\n"));
         let deleted = step(&mut text, |t| {
-            Some(applied(t, &delete_key(t, &w("First"), &w("Spaced"))?))
+            Some(applied(t, &delete_key(t, &wide("First"), &wide("Spaced"))?))
         });
         assert!(deleted.contains("Name=value one\r\n  Number= 43 \r\n"));
         let set = step(&mut text, |t| {
             Some(applied(
                 t,
-                &write_key(t, &w("First"), &w("NoEquals"), &w("s")),
+                &write_key(t, &wide("First"), &wide("NoEquals"), &wide("s")),
             ))
         });
         assert!(set.contains("NoEquals\r\nNAME=upper\r\nNoEquals=s\r\n[Second]"));
         let gone = step(&mut text, |t| {
-            Some(applied(t, &delete_section(t, &w("Second"))?))
+            Some(applied(t, &delete_section(t, &wide("Second"))?))
         });
         assert!(gone.contains("NoEquals=s\r\n;Hidden=commented out\r\n[first]"));
         let third = step(&mut text, |t| {
-            Some(applied(t, &write_key(t, &w("Third"), &w("Key"), &w("n"))))
+            Some(applied(
+                t,
+                &write_key(t, &wide("Third"), &wide("Key"), &wide("n")),
+            ))
         });
         assert!(third.ends_with("Inner=x\r\n[Third]\r\nKey=n\r\n"));
         let again = step(&mut text, |t| {
-            Some(applied(t, &write_key(t, &w("first"), &w("Again"), &w("c"))))
+            Some(applied(
+                t,
+                &write_key(t, &wide("first"), &wide("Again"), &wide("c")),
+            ))
         });
         assert!(again.contains("NoEquals=s\r\nAgain=c\r\n;Hidden"));
         assert!(again.contains("[first]\r\nAgain=repeated\r\n"));
-        assert_eq!(delete_key(&text, &w("Missing"), &w("Key")), None);
-        assert_eq!(delete_key(&text, &w("First"), &w("Missing")), None);
-        assert_eq!(delete_section(&text, &w("Missing")), None);
+        assert_eq!(delete_key(&text, &wide("Missing"), &wide("Key")), None);
+        assert_eq!(delete_key(&text, &wide("First"), &wide("Missing")), None);
+        assert_eq!(delete_section(&text, &wide("Missing")), None);
 
-        let body: Vec<u16> = section_body(&w("One=1\0Two = 2\0Bare\0\0")).collect();
+        let body: Vec<u16> = section_body(&wide("One=1\0Two = 2\0Bare\0\0")).collect();
         let filled = step(&mut text, |t| {
-            Some(applied(t, &write_section(t, &w("Empty"), &body)))
+            Some(applied(t, &write_section(t, &wide("Empty"), &body)))
         });
         assert!(filled.contains("[Empty]\r\nOne=1\r\nTwo = 2\r\nBare\r\n[ Padded ]"));
-        let only: Vec<u16> = section_body(&w("Only=w\0\0")).collect();
+        let only: Vec<u16> = section_body(&wide("Only=w\0\0")).collect();
         let replaced = step(&mut text, |t| {
-            Some(applied(t, &write_section(t, &w("Third"), &only)))
+            Some(applied(t, &write_section(t, &wide("Third"), &only)))
         });
         assert!(replaced.ends_with("[Third]\r\nOnly=w\r\n"));
-        let made: Vec<u16> = section_body(&w("Made=by section\0\0")).collect();
+        let made: Vec<u16> = section_body(&wide("Made=by section\0\0")).collect();
         let fourth = step(&mut text, |t| {
-            Some(applied(t, &write_section(t, &w("Fourth"), &made)))
+            Some(applied(t, &write_section(t, &wide("Fourth"), &made)))
         });
         assert!(fourth.ends_with("[Third]\r\nOnly=w\r\n[Fourth]\r\nMade=by section\r\n"));
     }
@@ -788,15 +794,15 @@ mod tests {
         let empty: [u16; 0] = [];
         let made = write_key(&empty, &[0x4E], &[0x4B], &[0x76]);
         assert_eq!(applied(&empty, &made), "[N]\r\nK=v\r\n");
-        let text = w("[a]\r\nk=1");
+        let text = wide("[a]\r\nk=1");
         let key = write_key(&text, &[0x61], &[0x6A], &[0x32]);
         assert_eq!(applied(&text, &key), "[a]\r\nk=1\r\nj=2\r\n");
         let other = write_key(&text, &[0x62], &[0x6A], &[0x32]);
         assert_eq!(applied(&text, &other), "[a]\r\nk=1\r\n[b]\r\nj=2\r\n");
-        let header = w("[a]");
+        let header = wide("[a]");
         let into = write_key(&header, &[0x61], &[0x6A], &[0x32]);
         assert_eq!(applied(&header, &into), "[a]\r\nj=2\r\n");
-        let body = w("x\r\n");
+        let body = wide("x\r\n");
         assert_eq!(
             applied(&header, &write_section(&header, &[0x61], &body)),
             "[a]\r\nx\r\n"
@@ -806,18 +812,18 @@ mod tests {
     /// A default loses its trailing blanks only; a caller's name loses the blanks at both ends.
     #[test]
     fn defaults_and_names_lose_their_blanks() {
-        assert_eq!(s(without_trailing_blanks(&w(" dflt  "))), " dflt");
-        assert_eq!(s(without_trailing_blanks(&w("   "))), "");
-        assert_eq!(s(trimmed(&w(" Padded\t"))), "Padded");
+        assert_eq!(narrow(without_trailing_blanks(&wide(" dflt  "))), " dflt");
+        assert_eq!(narrow(without_trailing_blanks(&wide("   "))), "");
+        assert_eq!(narrow(trimmed(&wide(" Padded\t"))), "Padded");
     }
 
     /// A bare name is the Windows directory's; a path, relative or not, is its own.
     #[test]
     fn bare_names_go_to_the_windows_directory() {
-        assert!(in_windows_directory(&w("win.ini")));
-        assert!(!in_windows_directory(&w(".\\app.ini")));
-        assert!(!in_windows_directory(&w("sub/app.ini")));
-        assert!(!in_windows_directory(&w("C:app.ini")));
-        assert!(!in_windows_directory(&w("C:\\CORPUS\\profile.ini")));
+        assert!(in_windows_directory(&wide("win.ini")));
+        assert!(!in_windows_directory(&wide(".\\app.ini")));
+        assert!(!in_windows_directory(&wide("sub/app.ini")));
+        assert!(!in_windows_directory(&wide("C:app.ini")));
+        assert!(!in_windows_directory(&wide("C:\\CORPUS\\profile.ini")));
     }
 }

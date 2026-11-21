@@ -1110,12 +1110,10 @@ pub unsafe extern "system" fn get_number_format_a(
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::base::last_error;
-
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
 
     /// A SYSTEMTIME of the locale fixture's: 2001-02-03 (a Saturday) at `hour`:`minute`:`second`.
     fn when(day_of_week: u16, hour: u16, minute: u16, second: u16) -> SystemTimeWords {
@@ -1127,7 +1125,7 @@ mod tests {
         words: SystemTimeWords,
         picture: Option<&str>,
     ) -> (i32, std::string::String) {
-        let picture = picture.map(wide);
+        let picture = picture.map(wide_z);
         let mut out = [0u16; 128];
         // SAFETY: the test's SYSTEMTIME, picture and buffer of 128 characters.
         let count = unsafe {
@@ -1145,7 +1143,7 @@ mod tests {
     }
 
     fn time(flags: u32, words: SystemTimeWords, picture: Option<&str>) -> std::string::String {
-        let picture = picture.map(wide);
+        let picture = picture.map(wide_z);
         let mut out = [0u16; 128];
         // SAFETY: as in `date`.
         let count = unsafe {
@@ -1166,8 +1164,9 @@ mod tests {
         value: &str,
         format: Option<(u32, u32, u32, &str, &str, u32)>,
     ) -> std::string::String {
-        let value = wide(value);
-        let separators = format.map(|(.., decimal, thousand, _)| (wide(decimal), wide(thousand)));
+        let value = wide_z(value);
+        let separators =
+            format.map(|(.., decimal, thousand, _)| (wide_z(decimal), wide_z(thousand)));
         let format = format.zip(separators.as_ref()).map(
             |((digits, lz, grouping, .., negative), (d, t))| NumberFmt {
                 num_digits: digits,

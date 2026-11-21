@@ -17,6 +17,10 @@ test = false
 [dependencies]
 rtl = { path = "../rtl" }
 
+# The host tests take their text helpers from rtl (its `testing` module).
+[dev-dependencies]
+rtl = { path = "../rtl", features = ["testing"] }
+
 # The build script generates the .def and the stubs' bodies from the export specs.
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }

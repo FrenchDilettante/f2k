@@ -8,6 +8,7 @@ use std::vec::Vec;
 use std::{format, vec};
 
 use rtl::gdi::{LogFontW, DEFAULT_CHARSET};
+use rtl::testing::wide;
 
 use super::table::{FileIdentity, FontTable, Key, Owner, Realization};
 use super::*;
@@ -64,10 +65,6 @@ fn key_for(table: &Table, height: i32, weight: i32) -> Key {
         Realization::TrueType { key, .. } => key,
         other => panic!("{other:?}"),
     }
-}
-
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().collect()
 }
 
 /// A screen's pixel memory: 32-bit pixels, packed.

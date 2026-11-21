@@ -779,41 +779,41 @@ pub unsafe extern "C" fn wsplitpath(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::format::tests::wide;
+    use rtl::testing::wide_z;
 
-    fn w(text: &str) -> Vec<u16> {
-        wide(text)
-    }
+    use super::*;
 
     /// wide's wcs block.
     #[test]
     fn wcs_as_captured() {
         // SAFETY: NUL-terminated strings, buffers large enough.
         unsafe {
-            assert_eq!((wcslen(w("").as_ptr()), wcslen(w("abc").as_ptr())), (0, 3));
+            assert_eq!(
+                (wcslen(wide_z("").as_ptr()), wcslen(wide_z("abc").as_ptr())),
+                (0, 3)
+            );
             let mut buf = [b'#' as u16; 16];
             assert_eq!(
-                wcscpy(buf.as_mut_ptr(), w("hello").as_ptr()),
+                wcscpy(buf.as_mut_ptr(), wide_z("hello").as_ptr()),
                 buf.as_mut_ptr()
             );
             assert_eq!(String::from_utf16_lossy(&buf[..8]), "hello\0##");
             let mut buf = [b'#' as u16; 16];
-            wcsncpy(buf.as_mut_ptr(), w("ab").as_ptr(), 6);
+            wcsncpy(buf.as_mut_ptr(), wide_z("ab").as_ptr(), 6);
             assert_eq!(String::from_utf16_lossy(&buf[..8]), "ab\0\0\0\0##");
             let mut buf = [b'#' as u16; 16];
-            wcsncpy(buf.as_mut_ptr(), w("abcdef").as_ptr(), 4);
+            wcsncpy(buf.as_mut_ptr(), wide_z("abcdef").as_ptr(), 4);
             assert_eq!(String::from_utf16_lossy(&buf[..6]), "abcd##");
             let mut buf = [b'#' as u16; 16];
-            wcsncpy(buf.as_mut_ptr(), w("abc").as_ptr(), 0);
+            wcsncpy(buf.as_mut_ptr(), wide_z("abc").as_ptr(), 0);
             assert_eq!(String::from_utf16_lossy(&buf[..4]), "####");
             let mut buf = [b'#' as u16; 16];
-            buf[..3].copy_from_slice(&w("ab"));
-            wcscat(buf.as_mut_ptr(), w("cd").as_ptr());
-            wcscat(buf.as_mut_ptr(), w("").as_ptr());
+            buf[..3].copy_from_slice(&wide_z("ab"));
+            wcscat(buf.as_mut_ptr(), wide_z("cd").as_ptr());
+            wcscat(buf.as_mut_ptr(), wide_z("").as_ptr());
             assert_eq!(String::from_utf16_lossy(&buf[..6]), "abcd\0#");
 
-            let cmp = |a: &str, b: &str| wcscmp(w(a).as_ptr(), w(b).as_ptr());
+            let cmp = |a: &str, b: &str| wcscmp(wide_z(a).as_ptr(), wide_z(b).as_ptr());
             assert_eq!(
                 [
                     cmp("abc", "abd"),
@@ -828,7 +828,7 @@ mod tests {
                 ],
                 [-1, 0, 1, -1, 1, 0, 1, 1, -1]
             );
-            let ncmp = |a: &str, b: &str, n| wcsncmp(w(a).as_ptr(), w(b).as_ptr(), n);
+            let ncmp = |a: &str, b: &str, n| wcsncmp(wide_z(a).as_ptr(), wide_z(b).as_ptr(), n);
             assert_eq!(
                 [
                     ncmp("abcd", "abce", 3),
@@ -839,7 +839,7 @@ mod tests {
                 [0, -1, -99, 0]
             );
 
-            let list = w("a,b,c");
+            let list = wide_z("a,b,c");
             let off = |p: *const u16| {
                 if p.is_null() {
                     -1
@@ -865,9 +865,9 @@ mod tests {
                 ],
                 [3, 0, -1, 5]
             );
-            let hay = w("haystack");
+            let hay = wide_z("haystack");
             let find = |s: &str| {
-                let p = wcsstr(hay.as_ptr(), w(s).as_ptr());
+                let p = wcsstr(hay.as_ptr(), wide_z(s).as_ptr());
                 if p.is_null() {
                     -1
                 } else {
@@ -885,7 +885,7 @@ mod tests {
                 ],
                 [3, 3, 7, 0, -1, -1]
             );
-            let spn = |a: &str, b: &str| wcsspn(w(a).as_ptr(), w(b).as_ptr());
+            let spn = |a: &str, b: &str| wcsspn(wide_z(a).as_ptr(), wide_z(b).as_ptr());
             assert_eq!(
                 [
                     spn("aabbcx", "ab"),
@@ -1087,17 +1087,18 @@ mod tests {
     fn case_as_captured() {
         let _locale = crate::ctype::tests::LOCALE.lock().unwrap();
         // SAFETY: NUL-terminated strings.
-        let icmp = |a: &str, b: &str| unsafe { wcsicmp(w(a).as_ptr(), w(b).as_ptr()) };
-        let nicmp = |a: &str, b: &str, n| unsafe { wcsnicmp(w(a).as_ptr(), w(b).as_ptr(), n) };
+        let icmp = |a: &str, b: &str| unsafe { wcsicmp(wide_z(a).as_ptr(), wide_z(b).as_ptr()) };
+        let nicmp =
+            |a: &str, b: &str, n| unsafe { wcsnicmp(wide_z(a).as_ptr(), wide_z(b).as_ptr(), n) };
         let mixed = "AbC 1[_éÉÿāĀαΑжЖ";
         let lower = || {
-            let mut s = w(mixed);
+            let mut s = wide_z(mixed);
             // SAFETY: a NUL-terminated buffer.
             unsafe { wcslwr(s.as_mut_ptr()) };
             String::from_utf16_lossy(&s[..s.len() - 1])
         };
         let upper = || {
-            let mut s = w(mixed);
+            let mut s = wide_z(mixed);
             // SAFETY: as above.
             unsafe { wcsupr(s.as_mut_ptr()) };
             String::from_utf16_lossy(&s[..s.len() - 1])
@@ -1190,15 +1191,17 @@ mod tests {
         assert_eq!([find(empty, ""), find(empty, "a")], [0, -1]);
 
         let sets = ["", "xyz", "a", "f", "zf", "fa", "dc"];
-        let s = w("abcdef");
-        let e = w("");
-        let latin = w("éα");
+        let s = wide_z("abcdef");
+        let e = wide_z("");
+        let latin = wide_z("éα");
         let brk = |s: &[u16], set: &str| {
             // SAFETY: NUL-terminated strings.
-            offset(s.as_ptr(), unsafe { wcspbrk(s.as_ptr(), w(set).as_ptr()) })
+            offset(s.as_ptr(), unsafe {
+                wcspbrk(s.as_ptr(), wide_z(set).as_ptr())
+            })
         };
         // SAFETY: NUL-terminated strings.
-        let cspn = |s: &[u16], set: &str| unsafe { wcscspn(s.as_ptr(), w(set).as_ptr()) };
+        let cspn = |s: &[u16], set: &str| unsafe { wcscspn(s.as_ptr(), wide_z(set).as_ptr()) };
         assert_eq!(sets.map(|set| brk(&s, set)), [-1, -1, 0, 5, 5, 0, 2]);
         assert_eq!([brk(&e, ""), brk(&e, "a")], [-1, -1]);
         assert_eq!(
@@ -1218,7 +1221,7 @@ mod tests {
     fn wcsdup_wcsrev_and_strcmpi() {
         crate::heap::initialize();
         for text in ["duplicate me", "aéαZ", ""] {
-            let source = w(text);
+            let source = wide_z(text);
             // SAFETY: a NUL-terminated string; the copy is NUL-terminated, then freed.
             unsafe {
                 let copy = wcsdup(source.as_ptr());
@@ -1237,11 +1240,11 @@ mod tests {
             ("x", "x"),
             ("aαb", "bαa"),
         ] {
-            let mut buffer = w(text);
+            let mut buffer = wide_z(text);
             // SAFETY: a NUL-terminated, writable string.
             let r = unsafe { wcsrev(buffer.as_mut_ptr()) };
             assert_eq!(r, buffer.as_mut_ptr());
-            assert_eq!(buffer, w(reversed));
+            assert_eq!(buffer, wide_z(reversed));
         }
 
         let _locale = crate::ctype::tests::LOCALE.lock().unwrap();
@@ -1328,7 +1331,7 @@ mod tests {
             // SAFETY: as above, wide.
             unsafe {
                 wsplitpath(
-                    w(path).as_ptr(),
+                    wide_z(path).as_ptr(),
                     a.as_mut_ptr(),
                     b.as_mut_ptr(),
                     c.as_mut_ptr(),
@@ -1387,8 +1390,8 @@ mod tests {
     /// wcstok over a copy of `text`: each token's offset and text, the later calls' delimiters
     /// `later` (or the same), and the buffer as it is left, a NUL shown as `|`.
     fn tokens(text: &str, delimiters: &str, later: Option<&str>) -> (Vec<(isize, String)>, String) {
-        let mut buffer = w(text);
-        let (first, later) = (w(delimiters), w(later.unwrap_or(delimiters)));
+        let mut buffer = wide_z(text);
+        let (first, later) = (wide_z(delimiters), wide_z(later.unwrap_or(delimiters)));
         let base = buffer.as_mut_ptr();
         let mut found = Vec::new();
         // SAFETY: a writable NUL-terminated copy, tokenized by this thread alone.
@@ -1445,8 +1448,8 @@ mod tests {
         );
 
         // Two strings in turn; then another thread's tokens leave this thread's place.
-        let (mut one, mut two, mut three) = (w("1 2 3"), w("x-y-z"), w("m n o"));
-        let (space, dash) = (w(" "), w("-"));
+        let (mut one, mut two, mut three) = (wide_z("1 2 3"), wide_z("x-y-z"), wide_z("m n o"));
+        let (space, dash) = (wide_z(" "), wide_z("-"));
         // SAFETY: writable NUL-terminated strings, this thread's.
         unsafe {
             assert_eq!(token_text(wcstok(one.as_mut_ptr(), space.as_ptr())), "1");
@@ -1458,7 +1461,7 @@ mod tests {
             assert_eq!(token_text(wcstok(three.as_mut_ptr(), space.as_ptr())), "m");
         }
         let other = std::thread::spawn(|| {
-            let (mut four, space) = (w("p q r"), w(" "));
+            let (mut four, space) = (wide_z("p q r"), wide_z(" "));
             let mut count = 0;
             // SAFETY: as above, the other thread's.
             let mut token = unsafe { wcstok(four.as_mut_ptr(), space.as_ptr()) };

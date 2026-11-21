@@ -226,11 +226,9 @@ pub fn relative(units: &[u16]) -> Result<FileName, NtStatus> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     fn path(
         name: Result<impl Into<Option<FileName>>, NtStatus>,

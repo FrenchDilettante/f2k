@@ -783,14 +783,7 @@ pub fn overwrite_answer(line: &[u16]) -> Option<Answer> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     fn tokens(argument: &str, plus: bool) -> Vec<String> {
         Tokens::new(&wide(argument), plus)

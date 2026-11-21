@@ -991,6 +991,8 @@ pub use services::*;
 mod tests {
     use std::vec::Vec;
 
+    use rtl::testing::utf16_bytes_z;
+
     use super::*;
     use crate::win32k::queue::rig;
     use crate::win32k::window::WindowManager;
@@ -1005,13 +1007,6 @@ mod tests {
         let id = |m: &WindowManager, h| m.windows.window_from_handle(h).unwrap();
         let (first, second) = (id(m, first), id(m, second));
         (m, t, first, second)
-    }
-
-    fn utf16(text: &str) -> Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(|unit| unit.to_le_bytes())
-            .collect()
     }
 
     /// Put `bytes` under `format` as user32 does: converted, then set.
@@ -1063,7 +1058,7 @@ mod tests {
         assert_eq!(c.close(t), Err(Refusal::NotOpen));
         assert_eq!(c.empty(&mut m.windows, t), Err(Refusal::NotOpen));
         assert_eq!(
-            put(m, t, CF_UNICODETEXT, &utf16("closed")),
+            put(m, t, CF_UNICODETEXT, &utf16_bytes_z("closed")),
             Err(Refusal::NotOpen)
         );
         assert_eq!(m.clipboard.get(t, CF_UNICODETEXT), Err(Refusal::NotOpen));
@@ -1084,7 +1079,7 @@ mod tests {
         m.clipboard.open(t, Some(first)).unwrap();
         assert_eq!(m.clipboard.empty(&mut m.windows, t), Ok(None));
         assert_eq!(Clipboard::owner(&m.windows), Some(first));
-        put(m, t, CF_UNICODETEXT, &utf16("first's")).unwrap();
+        put(m, t, CF_UNICODETEXT, &utf16_bytes_z("first's")).unwrap();
         m.clipboard.close(t).unwrap();
         m.clipboard.open(t, Some(second)).unwrap();
         assert_eq!(m.clipboard.empty(&mut m.windows, t), Ok(Some(first)));
@@ -1118,7 +1113,7 @@ mod tests {
         let (m, t, first, _) = setup();
         m.clipboard.open(t, Some(first)).unwrap();
         m.clipboard.empty(&mut m.windows, t).unwrap();
-        put(m, t, CF_UNICODETEXT, &utf16("kept")).unwrap();
+        put(m, t, CF_UNICODETEXT, &utf16_bytes_z("kept")).unwrap();
         m.clipboard.close(t).unwrap();
         let handle = m.windows.handle_of(first);
         let WindowManager {
@@ -1140,7 +1135,13 @@ mod tests {
         let (m, t, first, _) = setup();
         m.clipboard.open(t, Some(first)).unwrap();
         m.clipboard.empty(&mut m.windows, t).unwrap();
-        put(m, t, CF_UNICODETEXT, &utf16("caf\u{e9} \u{4e00}!\r\n")).unwrap();
+        put(
+            m,
+            t,
+            CF_UNICODETEXT,
+            &utf16_bytes_z("caf\u{e9} \u{4e00}!\r\n"),
+        )
+        .unwrap();
         assert_eq!(m.clipboard.count(), 1, "nothing synthesised while open");
         assert_eq!(formats(m, t), [CF_UNICODETEXT]);
         m.clipboard.close(t).unwrap();
@@ -1176,10 +1177,13 @@ mod tests {
         m.clipboard.close(t).unwrap();
         m.clipboard.open(t, Some(first)).unwrap();
         assert_eq!(get(m, t, CF_TEXT).unwrap(), b"Caf\xe9 oem\0");
-        assert_eq!(get(m, t, CF_UNICODETEXT).unwrap(), utf16("Caf\u{e9} oem"));
+        assert_eq!(
+            get(m, t, CF_UNICODETEXT).unwrap(),
+            utf16_bytes_z("Caf\u{e9} oem")
+        );
         m.clipboard.empty(&mut m.windows, t).unwrap();
         put(m, t, CF_TEXT, b"ansi\0").unwrap();
-        put(m, t, CF_UNICODETEXT, &utf16("wide")).unwrap();
+        put(m, t, CF_UNICODETEXT, &utf16_bytes_z("wide")).unwrap();
         put(m, t, 0xC123, &[1, 2, 3, 4]).unwrap();
         assert_eq!(formats(m, t), [CF_TEXT, CF_UNICODETEXT, 0xC123]);
         m.clipboard.close(t).unwrap();
@@ -1206,7 +1210,7 @@ mod tests {
         assert_eq!(formats(m, t), [CF_TEXT]);
         m.clipboard.close(t).unwrap();
         m.clipboard.open(t, Some(first)).unwrap();
-        assert_eq!(get(m, t, CF_UNICODETEXT).unwrap(), utf16("two"));
+        assert_eq!(get(m, t, CF_UNICODETEXT).unwrap(), utf16_bytes_z("two"));
     }
 
     /// A data object is put only by its own process, and once.

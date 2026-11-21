@@ -307,10 +307,7 @@ impl fmt::Display for Saved<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     #[test]
     fn colours() {

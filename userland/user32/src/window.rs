@@ -1519,14 +1519,9 @@ pub extern "system" fn set_window_text_a(window: usize, text: usize) -> u32 {
     message::send_as(window, WM_SETTEXT, 0, text as i32, true).is_some() as u32
 }
 
-/// A wide name's units, for the tests' reading of what a creation was given.
-#[cfg(test)]
-fn units(name: &str) -> std::vec::Vec<u16> {
-    name.encode_utf16().collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide;
     use rtl::user::{WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_USER};
 
     use super::*;
@@ -1604,8 +1599,8 @@ mod tests {
         assert_eq!(seen(), [WM_NCCREATE, WM_CREATE]);
         let (created, answers) = wm(|wm| (wm.created[0].clone(), wm.answers.clone()));
         assert_eq!(created.ex_style, ANSI_CREATOR);
-        assert_eq!(created.class, Ok(units("F2KGuiWin")));
-        assert_eq!(created.name, Some(units("t")));
+        assert_eq!(created.class, Ok(wide("F2KGuiWin")));
+        assert_eq!(created.name, Some(wide("t")));
         assert_eq!(created.version, EXPECTED_VERSION);
         assert_eq!(answers, [(WM_NCCREATE, 0), (WM_CREATE, 0)]);
         assert_eq!(is_window(window), 1);
@@ -1617,7 +1612,7 @@ mod tests {
     #[test]
     fn the_wide_form_and_an_unknown_class() {
         register();
-        let class = units("F2KGuiWin\0");
+        let class = wide("F2KGuiWin\0");
         let window = create_window_ex_w(
             ANSI_CREATOR,
             class.as_ptr(),
@@ -1636,7 +1631,7 @@ mod tests {
         let created = wm(|wm| wm.created[0].clone());
         assert_eq!((created.ex_style, created.name), (0, None));
         arm();
-        let other = units("NoSuchClass\0");
+        let other = wide("NoSuchClass\0");
         assert_eq!(
             create_window_ex_w(
                 0,
@@ -1666,7 +1661,7 @@ mod tests {
         use crate::imports::host::DEBUG_PRINTS;
         let printed = || DEBUG_PRINTS.with(|prints| prints.take());
         let _ = printed();
-        let list_box = units("listbox\0");
+        let list_box = wide("listbox\0");
         let create = |class: *const u16| {
             create_window_ex_w(0, class, core::ptr::null(), 0, 0, 0, 1, 1, 0, 0, 0, 0)
         };
@@ -1679,7 +1674,7 @@ mod tests {
                 && line[0].ends_with(": the ListBox control class is not yet implemented\n"),
             "{line:?}"
         );
-        let other = units("NoSuchClass\0");
+        let other = wide("NoSuchClass\0");
         assert_eq!(create(other.as_ptr()), 0);
         assert!(printed().is_empty());
         // SAFETY: the tests' own NUL-terminated names.

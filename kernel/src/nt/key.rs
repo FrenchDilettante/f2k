@@ -687,6 +687,8 @@ pub use services::*;
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::utf16_bytes;
+
     use super::*;
 
     #[test]
@@ -709,14 +711,9 @@ mod tests {
         (out, status)
     }
 
-    /// A name's UTF-16 units as their little-endian bytes, as the registry reports a name.
-    fn le_bytes(text: &str) -> Vec<u8> {
-        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-    }
-
     #[test]
     fn a_reply_fits_overflows_or_is_refused() {
-        let name = le_bytes("Alpha");
+        let name = utf16_bytes("Alpha");
         let info = crate::cm::KeyInfo {
             last_write: 0x0102_0304_0506_0708,
             name: &name,
@@ -748,7 +745,7 @@ mod tests {
 
     #[test]
     fn the_value_classes_lay_out_as_documented() {
-        let name = le_bytes("sz");
+        let name = utf16_bytes("sz");
         let value = crate::cm::ValueInfo {
             kind: 1,
             name: &name,

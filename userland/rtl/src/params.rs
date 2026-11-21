@@ -241,10 +241,7 @@ pub fn lay_out(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u8> {
-        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
-    }
+    use crate::testing::utf16_bytes;
 
     /// A string's bytes in a laid-out block, by its offset (the tail follows the structure).
     fn at<'a>(tail: &'a [u8], string: &CountedString<usize>) -> &'a [u8] {
@@ -258,11 +255,11 @@ mod tests {
     #[test]
     fn the_block_holds_its_strings_after_the_structure() {
         let (directory, dll, image, command, title) = (
-            wide("C:\\CORPUS\\"),
-            wide("C:\\WINNT\\system32"),
-            wide("C:\\CORPUS\\SPAWNKID.EXE"),
-            wide("spawnkid args"),
-            wide("a title"),
+            utf16_bytes("C:\\CORPUS\\"),
+            utf16_bytes("C:\\WINNT\\system32"),
+            utf16_bytes("C:\\CORPUS\\SPAWNKID.EXE"),
+            utf16_bytes("spawnkid args"),
+            utf16_bytes("a title"),
         );
         let strings = Strings {
             current_directory: &directory,
@@ -334,7 +331,7 @@ mod tests {
     /// back; each does nothing to a block already in its form.
     #[test]
     fn normalizing_turns_offsets_into_addresses_and_back() {
-        let image = wide("C:\\A.EXE");
+        let image = utf16_bytes("C:\\A.EXE");
         let strings = Strings {
             image_path_name: &image,
             command_line: &image,
@@ -364,7 +361,7 @@ mod tests {
     /// the drive table are left as they are, as is a block's lengths.
     #[test]
     fn normalizing_moves_only_the_strings() {
-        let image = wide("C:\\A.EXE");
+        let image = utf16_bytes("C:\\A.EXE");
         let strings = Strings {
             image_path_name: &image,
             command_line: &image,

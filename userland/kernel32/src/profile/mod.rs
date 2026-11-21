@@ -931,19 +931,17 @@ pub unsafe extern "system" fn write_private_profile_section_w(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn w(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     /// A value is read as a number from its start, the default for an empty one or a word.
     #[test]
     fn a_value_reads_as_a_number() {
-        assert_eq!(integer(&w("42"), 7), 42);
-        assert_eq!(integer(&w("0x1F"), 7), 31);
-        assert_eq!(integer(&w("12abc"), 7), 12);
-        assert_eq!(integer(&w(""), 7), 7);
+        assert_eq!(integer(&wide("42"), 7), 42);
+        assert_eq!(integer(&wide("0x1F"), 7), 31);
+        assert_eq!(integer(&wide("12abc"), 7), 12);
+        assert_eq!(integer(&wide(""), 7), 7);
     }
 
     /// A value past a counted string's reach (32767 units and more) is read, not refused: cut to
@@ -954,15 +952,15 @@ mod tests {
         let long = std::iter::once("5")
             .chain(std::iter::repeat_n("0", 39_999))
             .collect::<String>();
-        let cut = integer(&w(&long), 7);
-        let first = w(&long[..INT_VALUE_UNITS]);
+        let cut = integer(&wide(&long), 7);
+        let first = wide(&long[..INT_VALUE_UNITS]);
         assert_eq!(
             cut,
             ntcall::unicode_string_to_integer(&first, 0).unwrap_or(7)
         );
         let spaced = format!("{}12", " ".repeat(INT_VALUE_UNITS - 1));
         assert_eq!(
-            integer(&w(&spaced), 7),
+            integer(&wide(&spaced), 7),
             1,
             "only the first digit is within the 255"
         );

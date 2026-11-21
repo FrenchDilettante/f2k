@@ -647,6 +647,7 @@ mod tests {
     use std::vec::Vec;
 
     use rtl::gdi::{LogFontW, DEFAULT_CHARSET};
+    use rtl::testing::wide;
 
     use super::*;
 
@@ -692,10 +693,6 @@ mod tests {
             *unit = byte;
         }
         font
-    }
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     /// The capture's load section: a private load twice, two removals, a third refused; a

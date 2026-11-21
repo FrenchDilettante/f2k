@@ -211,16 +211,14 @@ fn name_narrow(atom: u16, mut buffer: OutBuf<'_, u8>) -> Result<u32, Failure> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::base::last_error;
 
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
-
     fn add_w(text: &str) -> u16 {
         // SAFETY: a terminated string of the test's.
-        unsafe { global_add_atom_w(wide(text).as_ptr()) }
+        unsafe { global_add_atom_w(wide_z(text).as_ptr()) }
     }
 
     fn find_a(text: &[u8]) -> u16 {
@@ -242,7 +240,7 @@ mod tests {
         // SAFETY: the test's buffer of 64 characters.
         let length = unsafe { global_get_atom_name_w(atom, name.as_mut_ptr(), 64) };
         assert_eq!(length, 17);
-        assert_eq!(&name[..18], &wide("F2KAtomFixtureOne")[..]);
+        assert_eq!(&name[..18], &wide_z("F2KAtomFixtureOne")[..]);
         let mut narrow = [0x7Eu8; 64];
         // SAFETY: as above, in bytes.
         let length = unsafe { global_get_atom_name_a(atom, narrow.as_mut_ptr(), 64) };

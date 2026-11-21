@@ -3,6 +3,8 @@
 //! ntdll holds the program's resources as the resource fixture's script lays them out, and
 //! kernel32's message table (`crate::nt::resources`); it records each path kernel32 hands it.
 
+use rtl::testing::wide_z;
+
 use super::last_error;
 use crate::base::set_last_error;
 use crate::nt::{PathElement, IMAGE_BASE, KERNEL32, NTDLL, RESOURCE_PATHS, RT_RCDATA};
@@ -25,11 +27,6 @@ const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
 const ERROR_RESOURCE_LANG_NOT_FOUND: u32 = 1815;
 /// A last error no call sets: one still there after a call was left untouched.
 const UNTOUCHED: u32 = 0x0F2F_2F2F;
-
-/// A NUL-terminated UTF-16 copy of `text`.
-fn w(text: &str) -> std::vec::Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
 
 /// A NUL-terminated copy of `text`'s bytes.
 fn a(text: &[u8]) -> std::vec::Vec<u8> {
@@ -82,14 +79,14 @@ fn numbers_and_hash_strings_find_the_same_resource() {
     );
     for text in ["#101", "#0101"] {
         assert_eq!(
-            unsafe { find_resource_w(IMAGE, w(text).as_ptr(), rcdata) },
+            unsafe { find_resource_w(IMAGE, wide_z(text).as_ptr(), rcdata) },
             by_number,
             "{text}"
         );
         assert_eq!(last_path()[1], PathElement::Id(101));
     }
     assert_eq!(
-        unsafe { find_resource_w(IMAGE, w("#101").as_ptr(), w("#10").as_ptr()) },
+        unsafe { find_resource_w(IMAGE, wide_z("#101").as_ptr(), wide_z("#10").as_ptr()) },
         by_number
     );
     assert_eq!(
@@ -114,7 +111,7 @@ fn hash_strings_are_read_by_ntdll() {
     for (text, number) in [("#abc", 0), ("#", 0), ("#1a", 1), ("# 7", 7)] {
         set_last_error(0);
         assert_eq!(
-            unsafe { find_resource_w(IMAGE, w(text).as_ptr(), rcdata) },
+            unsafe { find_resource_w(IMAGE, wide_z(text).as_ptr(), rcdata) },
             0
         );
         assert_eq!(last_error(), ERROR_RESOURCE_NAME_NOT_FOUND, "{text}");
@@ -127,7 +124,7 @@ fn hash_strings_are_read_by_ntdll() {
     let lookups = RESOURCE_PATHS.with(|paths| paths.borrow().len());
     set_last_error(0);
     assert_eq!(
-        unsafe { find_resource_w(IMAGE, w("#70000").as_ptr(), rcdata) },
+        unsafe { find_resource_w(IMAGE, wide_z("#70000").as_ptr(), rcdata) },
         0
     );
     assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
@@ -160,11 +157,11 @@ fn the_empty_string_is_a_name() {
 #[test]
 fn names_are_upper_cased() {
     let rcdata = id_w(RT_RCDATA as u16);
-    let upper = unsafe { find_resource_w(IMAGE, w("MIXEDNAME").as_ptr(), rcdata) };
+    let upper = unsafe { find_resource_w(IMAGE, wide_z("MIXEDNAME").as_ptr(), rcdata) };
     assert_ne!(upper, 0);
     for text in ["mixedname", "MixedName", "mixedNAME"] {
         assert_eq!(
-            unsafe { find_resource_w(IMAGE, w(text).as_ptr(), rcdata) },
+            unsafe { find_resource_w(IMAGE, wide_z(text).as_ptr(), rcdata) },
             upper
         );
         assert_eq!(last_path()[1], name("MIXEDNAME"));
@@ -216,7 +213,7 @@ fn each_level_not_found_has_its_error() {
         assert_eq!(last_error(), error, "{what}");
     }
     let rcdata = id_w(RT_RCDATA as u16);
-    let no_type = w("NOSUCHTYPE");
+    let no_type = wide_z("NOSUCHTYPE");
     fails_with(
         "type",
         || unsafe { find_resource_w(IMAGE, id_w(101), no_type.as_ptr()) },

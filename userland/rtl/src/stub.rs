@@ -303,6 +303,7 @@ impl Write for Line {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::wide_z;
 
     /// Every address but the null page can be read, or none past a limit.
     struct Host(usize);
@@ -351,13 +352,9 @@ mod tests {
         out
     }
 
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
-
     #[test]
     fn every_argument_shows_as_its_kind() {
-        let command = wide("hello.exe \"two words\" c:\\x é");
+        let command = wide_z("hello.exe \"two words\" c:\\x é");
         let args = [
             0,
             command.as_ptr() as u64,

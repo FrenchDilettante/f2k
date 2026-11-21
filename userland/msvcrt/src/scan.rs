@@ -478,13 +478,15 @@ impl<'a> Set<'a> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
-    use crate::format::tests::{units_of, wide, Arg::P, List};
+    use crate::format::tests::{units_of, Arg::P, List};
 
     fn run(input: &str, format: &str, pointers: &[usize]) -> i32 {
         scan(
-            &units_of(&wide(input)),
-            &units_of(&wide(format)),
+            &units_of(&wide_z(input)),
+            &units_of(&wide_z(format)),
             &mut List(pointers.iter().map(|&p| P(p)).collect()),
         )
     }

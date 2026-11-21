@@ -9,6 +9,10 @@ edition = "2021"
 [build-dependencies]
 exportgen = { path = "../../tools/exportgen" }
 
+# The host tests' text helpers (`testing`), for the crates whose tests depend on rtl.
+[features]
+testing = []
+
 # What the compiler expects of an MSVC environment without its C runtime.
 [dependencies]
 compiler-helpers = { path = "../compiler-helpers" }

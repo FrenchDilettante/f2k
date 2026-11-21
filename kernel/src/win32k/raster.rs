@@ -474,6 +474,7 @@ mod tests {
     use std::vec::Vec;
 
     use rtl::gdi::{Rect, CLR_INVALID, ETO_CLIPPED, ETO_OPAQUE};
+    use rtl::testing::wide as units;
 
     use super::*;
     use crate::hw::vbe::Geometry;
@@ -552,10 +553,6 @@ mod tests {
         }
         pixels.sort_by_key(|&(x, y, _)| (y, x));
         pixels
-    }
-
-    fn units(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     fn rect(left: i32, top: i32, right: i32, bottom: i32) -> Rect {

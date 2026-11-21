@@ -965,6 +965,8 @@ pub extern "system" fn set_menu(window: usize, menu: usize) -> i32 {
 mod tests {
     use std::vec::Vec;
 
+    use rtl::testing::utf16_bytes_z;
+
     use super::*;
     use crate::imports::host::{add_resource, LAST_ERROR, PROGRAM};
 
@@ -972,24 +974,17 @@ mod tests {
         LAST_ERROR.with(|error| error.get())
     }
 
-    fn units(text: &str) -> Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(|u| u.to_le_bytes())
-            .collect()
-    }
-
     /// The menus fixture's menu 200 (menus.rc), as the resource compiler writes it.
     fn menu_200() -> Vec<u8> {
         let mut data = std::vec![0, 0, 0, 0];
         let popup = |data: &mut Vec<u8>, flags: u16, text: &str| {
             data.extend_from_slice(&flags.to_le_bytes());
-            data.extend(units(text));
+            data.extend(utf16_bytes_z(text));
         };
         let item = |data: &mut Vec<u8>, flags: u16, id: u16, text: &str| {
             data.extend_from_slice(&flags.to_le_bytes());
             data.extend_from_slice(&id.to_le_bytes());
-            data.extend(units(text));
+            data.extend(utf16_bytes_z(text));
         };
         popup(&mut data, 0x10, "&File");
         item(&mut data, 0, 201, "&New");
@@ -1080,7 +1075,7 @@ mod tests {
     #[test]
     fn edits_follow_the_capture() {
         let popup = create_popup_menu();
-        let text = |s: &str| units(s);
+        let text = |s: &str| utf16_bytes_z(s);
         let as_units = |bytes: std::vec::Vec<u8>| -> std::vec::Vec<u16> {
             bytes
                 .chunks(2)

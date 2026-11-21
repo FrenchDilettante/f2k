@@ -799,6 +799,8 @@ mod tests {
     //! The registry's tree over a registry of the tests' own: names, the listing's order, deletes
     //! and their stale keys, values.
 
+    use rtl::testing::wide;
+
     use super::*;
 
     fn registry() -> &'static mut Registry {
@@ -818,10 +820,6 @@ mod tests {
         scratch
     }
 
-    fn w(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
     /// A reported name's text, from its little-endian bytes.
     fn text(bytes: &[u8]) -> String {
         let units: Vec<u16> = bytes
@@ -836,15 +834,15 @@ mod tests {
         let r = registry();
         let root = r.root();
         assert_eq!(text(r.info(root).unwrap().name), "REGISTRY");
-        let user = r.open(root, &w("user\\JEB")).unwrap();
+        let user = r.open(root, &wide("user\\JEB")).unwrap();
         assert_eq!(text(r.info(user).unwrap().name), "jeb");
         let name = r
             .open(
                 root,
-                &w("Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ComputerName"),
+                &wide("Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ComputerName"),
             )
             .unwrap();
-        let value = r.query_value(name, &w("computername")).unwrap();
+        let value = r.query_value(name, &wide("computername")).unwrap();
         assert_eq!(value.kind, REG_SZ);
         assert_eq!(value.data, b"Q\0E\0M\0U\0\0\0");
         assert_eq!(
@@ -852,10 +850,10 @@ mod tests {
             Err(STATUS_CANNOT_DELETE),
             "a hive's root stays"
         );
-        let machine = r.open(root, &w("MACHINE")).unwrap();
+        let machine = r.open(root, &wide("MACHINE")).unwrap();
         assert_eq!(
             r.subkey(machine, 0).unwrap(),
-            Some(r.open(machine, &w("SYSTEM")).unwrap())
+            Some(r.open(machine, &wide("SYSTEM")).unwrap())
         );
         assert_eq!(r.subkey(machine, 1).unwrap(), None);
     }
@@ -863,29 +861,32 @@ mod tests {
     #[test]
     fn names_fold_case_and_keep_their_spelling() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
-        let (made, created) = r.create(user, &w("Software"), &[], 1).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (made, created) = r.create(user, &wide("Software"), &[], 1).unwrap();
         assert!(created);
-        let (again, created) = r.create(user, &w("SOFTWARE"), &[], 2).unwrap();
+        let (again, created) = r.create(user, &wide("SOFTWARE"), &[], 2).unwrap();
         assert_eq!((again, created), (made, false));
         assert_eq!(text(r.info(again).unwrap().name), "Software");
         assert_eq!(
-            r.open(user, &w("software\\")).unwrap(),
+            r.open(user, &wide("software\\")).unwrap(),
             made,
             "a trailing separator"
         );
-        assert_eq!(r.open(user, &w("")).unwrap(), user, "the empty path");
+        assert_eq!(r.open(user, &wide("")).unwrap(), user, "the empty path");
         assert_eq!(
-            r.open(user, &w("\\software")),
+            r.open(user, &wide("\\software")),
             Err(STATUS_OBJECT_NAME_INVALID)
         );
-        assert_eq!(r.open(user, &w("a\\\\b")), Err(STATUS_OBJECT_NAME_INVALID));
         assert_eq!(
-            r.open(user, &w("Missing\\x")),
+            r.open(user, &wide("a\\\\b")),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+        assert_eq!(
+            r.open(user, &wide("Missing\\x")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_eq!(
-            r.create(user, &w("Missing\\x"), &[], 0),
+            r.create(user, &wide("Missing\\x"), &[], 0),
             Err(STATUS_OBJECT_NAME_NOT_FOUND),
             "the keys on the way exist"
         );
@@ -899,9 +900,9 @@ mod tests {
     #[test]
     fn subkeys_list_in_folded_order() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         for name in ["delta", "Alpha", "charlie", "bravo", "Echo"] {
-            r.create(user, &w(name), &[], 0).unwrap();
+            r.create(user, &wide(name), &[], 0).unwrap();
         }
         let listed: Vec<String> = (0..)
             .map_while(|position| r.subkey(user, position).unwrap())
@@ -915,24 +916,27 @@ mod tests {
     #[test]
     fn a_deleted_key_is_gone_for_its_holders() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
-        let (a, _) = r.create(user, &w("a"), &[], 0).unwrap();
-        let (b, _) = r.create(a, &w("b"), &[], 0).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (a, _) = r.create(user, &wide("a"), &[], 0).unwrap();
+        let (b, _) = r.create(a, &wide("b"), &[], 0).unwrap();
         assert_eq!(
             r.delete(a, 0),
             Err(STATUS_CANNOT_DELETE),
             "a key with a subkey"
         );
         let data = scratch(r, &[0, 0]);
-        r.set_value(b, &w("x"), REG_SZ, data, 0).unwrap();
+        r.set_value(b, &wide("x"), REG_SZ, data, 0).unwrap();
         r.delete(b, 0).unwrap();
         assert_eq!(r.check(b), Err(STATUS_KEY_DELETED));
-        assert_eq!(r.query_value(b, &w("x")).err(), Some(STATUS_KEY_DELETED));
-        assert_eq!(r.create(b, &w("c"), &[], 0).err(), Some(STATUS_KEY_DELETED));
+        assert_eq!(r.query_value(b, &wide("x")).err(), Some(STATUS_KEY_DELETED));
+        assert_eq!(
+            r.create(b, &wide("c"), &[], 0).err(),
+            Some(STATUS_KEY_DELETED)
+        );
         assert_eq!(r.subkey(b, 0).err(), Some(STATUS_KEY_DELETED));
         assert_eq!(r.delete(b, 0), Err(STATUS_KEY_DELETED));
         // The name made anew is another key, even in the same record.
-        let (again, created) = r.create(a, &w("b"), &[], 0).unwrap();
+        let (again, created) = r.create(a, &wide("b"), &[], 0).unwrap();
         assert!(created);
         assert_ne!(again, b);
         assert_eq!(r.check(b), Err(STATUS_KEY_DELETED));
@@ -943,22 +947,22 @@ mod tests {
     #[test]
     fn values_set_replace_and_list_in_order() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         let set = |r: &mut Registry, name: &str, kind: u32, data: &[u8]| {
             let data = scratch(r, data);
-            r.set_value(user, &w(name), kind, data, 5).unwrap()
+            r.set_value(user, &wide(name), kind, data, 5).unwrap()
         };
         set(r, "one", 4, &[1, 0, 0, 0]);
         set(r, "", REG_SZ, b"d\0\0\0");
         set(r, "Two", 3, &[]);
         set(r, "ONE", 3, &[9, 9]);
-        let one = r.query_value(user, &w("one")).unwrap();
+        let one = r.query_value(user, &wide("one")).unwrap();
         assert_eq!(
             (one.kind, one.data, text(one.name)),
             (3, &[9u8, 9][..], "one".into())
         );
-        assert_eq!(r.query_value(user, &w("")).unwrap().data, b"d\0\0\0");
-        assert_eq!(r.query_value(user, &w("two")).unwrap().data, b"");
+        assert_eq!(r.query_value(user, &wide("")).unwrap().data, b"d\0\0\0");
+        assert_eq!(r.query_value(user, &wide("two")).unwrap().data, b"");
         let order: Vec<String> = (0..)
             .map_while(|position| r.value_at(user, position).unwrap())
             .map(|value| text(value.name))
@@ -969,35 +973,35 @@ mod tests {
             (info.values, info.max_value_name, info.max_value_data),
             (3, 6, 4)
         );
-        r.delete_value(user, &w("TWO"), 6).unwrap();
+        r.delete_value(user, &wide("TWO"), 6).unwrap();
         assert_eq!(
-            r.query_value(user, &w("Two")).err(),
+            r.query_value(user, &wide("Two")).err(),
             Some(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_eq!(
-            r.delete_value(user, &w("Two"), 6),
+            r.delete_value(user, &wide("Two"), 6),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_eq!(r.info(user).unwrap().last_write, 6);
         // A failed set leaves the value as it was, and gives its data back.
-        let (gone, _) = r.create(user, &w("gone"), &[], 7).unwrap();
+        let (gone, _) = r.create(user, &wide("gone"), &[], 7).unwrap();
         r.delete(gone, 7).unwrap();
         let data = scratch(r, &[1, 2, 3, 4]);
         assert_eq!(
-            r.set_value(gone, &w("one"), 1, data, 7),
+            r.set_value(gone, &wide("one"), 1, data, 7),
             Err(STATUS_KEY_DELETED)
         );
-        assert_eq!(r.query_value(user, &w("one")).unwrap().data, &[9, 9]);
+        assert_eq!(r.query_value(user, &wide("one")).unwrap().data, &[9, 9]);
         assert_eq!(r.arena.as_ref().unwrap().audit(), Ok(()));
     }
 
     #[test]
     fn a_scratch_block_goes_back() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         let name = scratch(r, b"J\0E\0B\0");
         let found = r
-            .open(r.root(), &w("USER"))
+            .open(r.root(), &wide("USER"))
             .and_then(|u| r.open(u, name.units()));
         assert_eq!(found, Ok(user));
         r.release(name);
@@ -1012,13 +1016,13 @@ mod tests {
     #[test]
     fn subkeys_select_by_position() {
         let r = registry();
-        let user = r.open(r.root(), &w("USER\\jeb")).unwrap();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
         for name in ["c", "A", "b"] {
-            r.create(user, &w(name), &[], 0).unwrap();
+            r.create(user, &wide(name), &[], 0).unwrap();
         }
-        let b = r.open(user, &w("B")).unwrap();
+        let b = r.open(user, &wide("B")).unwrap();
         r.delete(b, 0).unwrap();
-        r.create(user, &w("aa"), &[], 0).unwrap();
+        r.create(user, &wide("aa"), &[], 0).unwrap();
         let listed: Vec<String> = (0..)
             .map_while(|position| r.subkey(user, position).unwrap())
             .map(|key| text(r.info(key).unwrap().name))

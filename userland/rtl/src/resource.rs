@@ -444,6 +444,7 @@ mod tests {
     use super::model::message_table;
     use super::*;
     use crate::modules::model::{image, Space};
+    use crate::testing::utf16_bytes_z;
 
     const BASE: u32 = 0x7C4E_0000;
     /// Where the tests' images keep their resource directory, and its size.
@@ -504,17 +505,9 @@ mod tests {
         put(r, 0x184, 4);
         Space(std::vec![
             (BASE, bytes),
-            (0x0001_0000, name("HELLO")),
-            (0x0002_0000, name("HELL"))
+            (0x0001_0000, utf16_bytes_z("HELLO")),
+            (0x0002_0000, utf16_bytes_z("HELL"))
         ])
-    }
-
-    /// A NUL-terminated UTF-16 name.
-    fn name(text: &str) -> std::vec::Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
     }
 
     /// The text of the entry at `at`: its UTF-16 units to the first NUL.

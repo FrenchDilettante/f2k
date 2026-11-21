@@ -1123,15 +1123,12 @@ pub mod model {
 mod tests {
     use super::model::{image, lists, with_imports, Listed, Space};
     use super::*;
+    use crate::testing::wide;
 
     const LDR: u32 = 0x0032_0800;
     const IMAGE: u32 = 0x0040_0000;
     const NTDLL: u32 = 0x77F8_0000;
     const KERNEL32: u32 = 0x7C4E_0000;
-
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
 
     /// A process: its image (no exports), ntdll (RtlUnwind at 0x1230, ordinal 1; a dotted export
     /// name) and kernel32 (its own exports, and forwarders into ntdll: to a name, to a name ntdll

@@ -1832,6 +1832,7 @@ mod tests {
     use screen::{HEIGHT, WIDTH, WINDOW_HEIGHT};
 
     use super::*;
+    use crate::testing::wide;
 
     /// A fresh console on the heap, copied there from a fresh one in the image: its screen
     /// buffers are too large for a test thread's stack to hold a few of them as values pass.
@@ -2711,11 +2712,6 @@ mod tests {
                 "{fill:#x} {unicode}"
             );
         }
-    }
-
-    /// The UTF-16 units of `text`.
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     impl Server {

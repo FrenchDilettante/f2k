@@ -171,14 +171,7 @@ impl Start<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     #[test]
     fn the_command_and_its_parameters() {

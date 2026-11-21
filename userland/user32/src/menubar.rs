@@ -1292,6 +1292,8 @@ fn item_rect(window: usize, menu: usize, position: u32) -> Option<Rect> {
 mod tests {
     use core::cell::RefCell;
 
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::class::{register_class_a, WndClass, SYSTEM_CLASSES_WANTED};
     use crate::imports::host::procedure;
@@ -1323,10 +1325,6 @@ mod tests {
         crate::message::def_window_proc_a(window as usize, message, wparam, lparam)
     }
 
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
-
     /// A bar of "&File" and "&View", View's popup holding "&Standard" (211) and "S&cientific"
     /// (212), and a shown window holding it: the window, the bar, View's popup.
     fn window_with_menu() -> (usize, usize, usize) {
@@ -1336,11 +1334,11 @@ mod tests {
         let view = create_popup_menu();
         // SAFETY: the test's own strings.
         unsafe {
-            append_menu_w(file, 0, 201, units("&New").as_ptr());
-            append_menu_w(view, 0, 211, units("&Standard").as_ptr());
-            append_menu_w(view, 0, 212, units("S&cientific").as_ptr());
-            append_menu_w(bar, MF_POPUP, file, units("&File").as_ptr());
-            append_menu_w(bar, MF_POPUP, view, units("&View").as_ptr());
+            append_menu_w(file, 0, 201, wide_z("&New").as_ptr());
+            append_menu_w(view, 0, 211, wide_z("&Standard").as_ptr());
+            append_menu_w(view, 0, 212, wide_z("S&cientific").as_ptr());
+            append_menu_w(bar, MF_POPUP, file, wide_z("&File").as_ptr());
+            append_menu_w(bar, MF_POPUP, view, wide_z("&View").as_ptr());
         }
         let class = WndClass {
             wnd_proc: procedure(recorder) as usize,

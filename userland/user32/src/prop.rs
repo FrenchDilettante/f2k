@@ -149,6 +149,8 @@ pub extern "system" fn remove_prop_a(window: usize, name: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::class::{register_class_a, WndClass};
     use crate::imports::host::{atom_references, procedure, LAST_ERROR};
@@ -161,10 +163,6 @@ mod tests {
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())
-    }
-
-    fn wide(name: &str) -> std::vec::Vec<u16> {
-        name.encode_utf16().chain([0]).collect()
     }
 
     /// A hidden pop-up of a class of the tests' own.
@@ -180,7 +178,7 @@ mod tests {
         };
         // SAFETY: a WNDCLASSA of the tests' own.
         unsafe { register_class_a(&class) };
-        let class = wide("F2KProps");
+        let class = wide_z("F2KProps");
         crate::window::create_window_ex_w(
             0,
             class.as_ptr(),
@@ -207,10 +205,10 @@ mod tests {
     #[test]
     fn by_name() {
         let h = window();
-        let one = wide("F2KPropsOne");
+        let one = wide_z("F2KPropsOne");
         let one_w = one.as_ptr() as usize;
         let one_a = c"F2KPropsOne".as_ptr() as usize;
-        let other_case = wide("f2kpropsONE");
+        let other_case = wide_z("f2kpropsONE");
         arm();
         assert_eq!(set_prop_w(h, one_w, 0x1111), 1);
         assert_eq!(get_prop_w(h, one_w), 0x1111);
@@ -225,7 +223,7 @@ mod tests {
         assert_eq!(remove_prop_a(h, one_a), 0);
         assert_eq!(last_error(), UNSET);
 
-        let two = wide("F2KPropsTwo");
+        let two = wide_z("F2KPropsTwo");
         assert_eq!(set_prop_w(h, two.as_ptr() as usize, 0x2222), 1);
         assert_eq!(remove_prop_a(h, c"f2kpropstwo".as_ptr() as usize), 0x2222);
         assert_eq!(atom_references("F2KPropsTwo"), 0);
@@ -243,22 +241,22 @@ mod tests {
     #[test]
     fn by_atom_and_the_errors() {
         let h = window();
-        let number = wide("#291");
+        let number = wide_z("#291");
         assert_eq!(set_prop_w(h, number.as_ptr() as usize, 0x6666), 1);
         assert_eq!(get_prop_w(h, 291), 0x6666);
         assert_eq!(get_prop_a(h, c"#291".as_ptr() as usize), 0x6666);
         assert_eq!(remove_prop_a(h, c"#291".as_ptr() as usize), 0x6666);
         assert_eq!(get_prop_w(h, 291), 0);
 
-        let name = wide("F2KPropsOne");
+        let name = wide_z("F2KPropsOne");
         arm();
         assert_eq!(set_prop_w(0, name.as_ptr() as usize, 1), 0);
         assert_eq!(last_error(), 1400);
         assert_eq!(atom_references("F2KPropsOne"), 0);
-        let empty = wide("");
+        let empty = wide_z("");
         assert_eq!(set_prop_w(h, empty.as_ptr() as usize, 0xAAAA), 0);
         assert_eq!(last_error(), 123);
-        let long = wide(&"abcdefghijklmnopqrstuvwxyz".repeat(12)[..300]);
+        let long = wide_z(&"abcdefghijklmnopqrstuvwxyz".repeat(12)[..300]);
         assert_eq!(get_prop_w(h, long.as_ptr() as usize), 0);
         assert_eq!(last_error(), 87);
         arm();

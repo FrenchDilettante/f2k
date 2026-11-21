@@ -393,6 +393,8 @@ fn user_object(_: &mut NtCall, _: Handle) -> Option<UserObject> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::utf16_bytes_z;
+
     use super::*;
     use crate::user::syscall::host::{install, UserMemory};
 
@@ -410,24 +412,26 @@ mod tests {
         inherit: false,
     };
 
-    fn utf16(text: &str) -> std::vec::Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(u16::to_le_bytes)
-            .collect()
-    }
-
     /// The answers, as the capture shows them: the names and the types' names with their
     /// terminators (WinSta0 16 bytes, WindowStation 28, Default and Desktop 16), the flags a
     /// 12-byte USEROBJECTFLAGS; nothing for another index.
     #[test]
     fn the_answers_are_the_captures() {
         let answer = |object: &UserObject, index| information(object, index).unwrap();
-        assert_eq!(answer(&WINSTA0, UOI_NAME).bytes(), &utf16("WinSta0")[..]);
+        assert_eq!(
+            answer(&WINSTA0, UOI_NAME).bytes(),
+            &utf16_bytes_z("WinSta0")[..]
+        );
         assert_eq!(answer(&WINSTA0, UOI_NAME).bytes().len(), 16);
         assert_eq!(answer(&WINSTA0, UOI_TYPE).bytes().len(), 28);
-        assert_eq!(answer(&DEFAULT, UOI_NAME).bytes(), &utf16("Default")[..]);
-        assert_eq!(answer(&DEFAULT, UOI_TYPE).bytes(), &utf16("Desktop")[..]);
+        assert_eq!(
+            answer(&DEFAULT, UOI_NAME).bytes(),
+            &utf16_bytes_z("Default")[..]
+        );
+        assert_eq!(
+            answer(&DEFAULT, UOI_TYPE).bytes(),
+            &utf16_bytes_z("Desktop")[..]
+        );
         assert_eq!(
             answer(&WINSTA0, UOI_FLAGS).bytes(),
             &[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]
@@ -514,7 +518,7 @@ mod tests {
             Ok(STATUS_SUCCESS)
         );
         assert_eq!(read_needed(), 16);
-        assert_eq!(&page.borrow().0[..16], &utf16("WinSta0")[..]);
+        assert_eq!(&page.borrow().0[..16], &utf16_bytes_z("WinSta0")[..]);
         assert_eq!(page.borrow().0[16], 0xCC, "the answer alone");
         assert_eq!(
             answer(Some(DEFAULT), UOI_TYPE, UserAddr(0x2000), 16, needed),

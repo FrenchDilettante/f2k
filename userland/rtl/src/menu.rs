@@ -373,13 +373,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-
-    fn units(text: &str) -> Vec<u8> {
-        text.encode_utf16()
-            .chain([0])
-            .flat_map(|u| u.to_le_bytes())
-            .collect()
-    }
+    use crate::testing::utf16_bytes_z;
 
     fn text(item: &TemplateItem<'_>) -> std::string::String {
         let units: Vec<u16> = item
@@ -396,18 +390,18 @@ mod tests {
     fn menu_templates_read_item_by_item() {
         let mut data = std::vec![0, 0, 0, 0];
         data.extend_from_slice(&0x10u16.to_le_bytes());
-        data.extend(units("&File"));
+        data.extend(utf16_bytes_z("&File"));
         data.extend_from_slice(&0u16.to_le_bytes());
         data.extend_from_slice(&201u16.to_le_bytes());
-        data.extend(units("&New"));
+        data.extend(utf16_bytes_z("&New"));
         data.extend_from_slice(&[0, 0, 0, 0]);
-        data.extend(units(""));
+        data.extend(utf16_bytes_z(""));
         data.extend_from_slice(&0x81u16.to_le_bytes());
         data.extend_from_slice(&202u16.to_le_bytes());
-        data.extend(units("&Open"));
+        data.extend(utf16_bytes_z("&Open"));
         data.extend_from_slice(&0x80u16.to_le_bytes());
         data.extend_from_slice(&220u16.to_le_bytes());
-        data.extend(units("&Help"));
+        data.extend(utf16_bytes_z("&Help"));
         let mut template = Template::new(&data).unwrap();
         let file = template.next().unwrap();
         assert!(file.popup && !file.last);
@@ -444,7 +438,7 @@ mod tests {
             data.extend_from_slice(&s.to_le_bytes());
             data.extend_from_slice(&id.to_le_bytes());
             data.extend_from_slice(&info.to_le_bytes());
-            data.extend(units(name));
+            data.extend(utf16_bytes_z(name));
             if info & EX_POPUP != 0 {
                 while data.len() % 4 != 0 {
                     data.push(0);

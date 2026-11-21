@@ -707,10 +707,7 @@ impl fmt::Display for WideName<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     fn switches(dircmd: &str, argument: &str) -> Switches {
         let mut switches = Switches::default();

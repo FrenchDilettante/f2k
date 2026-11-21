@@ -155,14 +155,7 @@ pub fn command_string<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
+    use crate::testing::{narrow, wide};
 
     fn run_of(line: &str) -> Option<(Then, String)> {
         let line = wide(line);

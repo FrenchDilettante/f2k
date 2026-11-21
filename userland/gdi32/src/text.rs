@@ -318,6 +318,7 @@ pub unsafe extern "system" fn get_text_extent_point32_a(
 #[cfg(test)]
 mod tests {
     use rtl::gdi::{Rect, ETO_OPAQUE};
+    use rtl::testing::wide;
 
     use super::*;
     use crate::imports::host::{TextCall, BAD, DC, LAST_ERROR, TEXT};
@@ -331,10 +332,6 @@ mod tests {
         LAST_ERROR.with(|error| error.get())
     }
 
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
     /// The guidc capture's text calls: TextOutA and TextOutW of "Hi", ExtTextOutA and ExtTextOutW
     /// of "abc" with ETO_OPAQUE over a rectangle, each TRUE; the narrow forms reach the kernel as
     /// the same wide string, the rectangle and the options as given.
@@ -342,8 +339,8 @@ mod tests {
     fn text_reaches_the_kernel_wide() {
         calls();
         LAST_ERROR.with(|error| error.set(0xF2F2));
-        let hi = units("Hi");
-        let abc = units("abc");
+        let hi = wide("Hi");
+        let abc = wide("abc");
         let rect = Rect {
             left: 0,
             top: 40,
@@ -451,7 +448,7 @@ mod tests {
     #[test]
     fn extents_and_metrics() {
         calls();
-        let hello = units("Hello");
+        let hello = wide("Hello");
         let mut size = Size::default();
         // SAFETY: the tests' own strings and structures.
         unsafe {

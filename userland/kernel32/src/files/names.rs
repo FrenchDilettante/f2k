@@ -665,11 +665,9 @@ pub unsafe extern "system" fn get_short_path_name_w(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     /// The components GetShortPathName keeps as written.
     #[test]

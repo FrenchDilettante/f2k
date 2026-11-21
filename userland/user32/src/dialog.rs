@@ -2235,6 +2235,8 @@ pub unsafe extern "system" fn is_dialog_message_a(dialog: usize, msg: *const Msg
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide;
+
     use super::*;
 
     /// MulDiv rounds half away from zero.
@@ -2245,10 +2247,6 @@ mod tests {
         assert_eq!(mul_div(-3, 1, 2), -2);
         assert_eq!(mul_div(3, 1, -2), -2);
         assert_eq!(mul_div(1, 1, 0), -1);
-    }
-
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     /// GetDlgItemInt's readings, as the dialog capture's ints block shows them.
@@ -2271,8 +2269,8 @@ mod tests {
             ("0x10", (0, false), (0, false)),
         ];
         for &(text, signed, unsigned) in cases {
-            assert_eq!(parse_int(&units(text), true), signed, "{text} signed");
-            assert_eq!(parse_int(&units(text), false), unsigned, "{text} unsigned");
+            assert_eq!(parse_int(&wide(text), true), signed, "{text} signed");
+            assert_eq!(parse_int(&wide(text), false), unsigned, "{text} unsigned");
         }
     }
 
@@ -2302,10 +2300,10 @@ mod tests {
         dword(&mut words, 0x80C8_00C0);
         dword(&mut words, 0);
         words.extend([1, 20, 20, 200, 110, 0, 0]);
-        words.extend(units("Title"));
+        words.extend(wide("Title"));
         words.push(0);
         words.push(8);
-        words.extend(units("MS Shell Dlg"));
+        words.extend(wide("MS Shell Dlg"));
         words.push(0);
         while words.len() % 2 != 0 {
             words.push(0);
@@ -2313,7 +2311,7 @@ mod tests {
         dword(&mut words, 0x5001_0001);
         dword(&mut words, 0);
         words.extend([140, 8, 50, 14, 1, 0xFFFF, 0x80]);
-        words.extend(units("OK"));
+        words.extend(wide("OK"));
         words.extend([0, 0]);
         let bytes: std::vec::Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let read = |at: usize| bytes.get(at).copied();
@@ -2324,7 +2322,7 @@ mod tests {
         assert_eq!((header.count, header.cx, header.cy), (1, 200, 110));
         assert_eq!(header.title, Field::Text(5));
         assert_eq!(header.font.unwrap().points, 8);
-        assert_eq!(&names.face[..12], &units("MS Shell Dlg")[..]);
+        assert_eq!(&names.face[..12], &wide("MS Shell Dlg")[..]);
         let mut item_names = ItemNames::new();
         let item = read_item(&mut reader, false, &mut item_names).unwrap();
         assert_eq!((item.id, item.x, item.cx), (1, 140, 50));

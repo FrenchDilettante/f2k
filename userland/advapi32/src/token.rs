@@ -320,12 +320,10 @@ pub unsafe extern "system" fn get_token_information(
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS, TOKEN_STATUS};
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())
@@ -362,24 +360,24 @@ mod tests {
             low_part: 0xF2F2,
             high_part: 0x2F2F,
         };
-        let name = wide("SeShutdownPrivilege");
+        let name = wide_z("SeShutdownPrivilege");
         arm();
         let ok = unsafe { lookup_privilege_value_w(core::ptr::null(), name.as_ptr(), &mut luid) };
         assert_eq!((ok, last_error()), (1, 997));
         assert_eq!((luid.low_part, luid.high_part), (19, 0));
         for system in ["", "QEMU", "qemu", "\\\\QEMU"] {
             luid.low_part = 0;
-            let system = wide(system);
+            let system = wide_z(system);
             let ok = unsafe { lookup_privilege_value_w(system.as_ptr(), name.as_ptr(), &mut luid) };
             assert_eq!((ok, luid.low_part), (1, 19));
         }
-        let remote = wide("\\\\ELSEWHERE");
+        let remote = wide_z("\\\\ELSEWHERE");
         luid.low_part = 0xF2F2;
         let ok = unsafe { lookup_privilege_value_w(remote.as_ptr(), name.as_ptr(), &mut luid) };
         assert_eq!((ok, last_error(), luid.low_part), (0, 1722, 0xF2F2));
         for unknown in ["SeNoSuchPrivilege", ""] {
             luid.low_part = 0xF2F2;
-            let unknown = wide(unknown);
+            let unknown = wide_z(unknown);
             let ok =
                 unsafe { lookup_privilege_value_w(core::ptr::null(), unknown.as_ptr(), &mut luid) };
             assert_eq!((ok, last_error(), luid.low_part), (0, 1313, 0));

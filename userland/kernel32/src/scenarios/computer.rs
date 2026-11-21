@@ -1,13 +1,11 @@
 //! The computer's name: kernel32's GetComputerName over ntdll's key services (the stand-in answers
 //! the value the scenario sets). The token fixture's lookup block is the contract on the machine.
 
+use rtl::testing::wide;
+
 use super::last_error;
 use crate::computer::*;
 use crate::nt::host::{KEY_VALUE, LAST_NAME, VALUE_NAMES};
-
-fn wide(text: &str) -> std::vec::Vec<u16> {
-    text.encode_utf16().collect()
-}
 
 fn name_w(buffer: &mut [u16], size: u32) -> (u32, u32) {
     let mut size = size;

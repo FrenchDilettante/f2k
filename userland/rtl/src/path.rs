@@ -414,10 +414,7 @@ pub fn nt_path(full: &[u16], out: &mut [u16]) -> Result<usize, PathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     fn full(path: &str, current: &str) -> Result<(String, Option<usize>), PathError> {
         let mut out = [0u16; MAX_PATH];

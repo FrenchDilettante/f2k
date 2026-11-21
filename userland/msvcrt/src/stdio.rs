@@ -1556,15 +1556,15 @@ mod tests {
     /// pointer takes its own width).
     #[test]
     fn vswprintf_takes_a_va_list() {
-        use crate::format::tests::wide;
-        let ab = wide("ab");
+        use rtl::testing::wide_z;
+        let ab = wide_z("ab");
         let mut list = Vec::new();
         list.extend((-7i32).to_ne_bytes());
         list.extend(42u32.to_ne_bytes());
         list.extend(255u32.to_ne_bytes());
         list.extend((ab.as_ptr() as usize).to_ne_bytes());
         list.extend(('z' as u32).to_ne_bytes());
-        let format = wide("%d|%u|%x|%5s|%-3c|%%");
+        let format = wide_z("%d|%u|%x|%5s|%-3c|%%");
         let mut out = [b'#' as u16; 32];
         // SAFETY: a buffer of 32 units; the list holds what the format consumes.
         let n = unsafe { vswprintf(out.as_mut_ptr(), format.as_ptr(), list.as_ptr()) };
@@ -1574,7 +1574,7 @@ mod tests {
             "-7|42|ff|   ab|z  |%\0#"
         );
         // SAFETY: as above, an empty format and no arguments.
-        let n = unsafe { vswprintf(out.as_mut_ptr(), wide("").as_ptr(), list.as_ptr()) };
+        let n = unsafe { vswprintf(out.as_mut_ptr(), wide_z("").as_ptr(), list.as_ptr()) };
         assert_eq!((n, out[0]), (0, 0));
     }
 
@@ -1583,7 +1583,9 @@ mod tests {
     /// character's two bytes, low first.
     #[test]
     fn wide_output_takes_the_descriptors_mode() {
-        use crate::format::tests::{units_of, wide, List};
+        use rtl::testing::wide_z;
+
+        use crate::format::tests::{units_of, List};
         let _locale = ctype::tests::LOCALE.lock().unwrap();
         // SAFETY: setlocale over a NUL-terminated name.
         unsafe { ctype::setlocale(0, b"C\0".as_ptr()) };
@@ -1608,7 +1610,7 @@ mod tests {
                 unconverted: false,
             };
             let count = format::format(
-                &units_of(&wide(format)),
+                &units_of(&wide_z(format)),
                 &mut List(Default::default()),
                 &mut out,
             );

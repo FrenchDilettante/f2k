@@ -296,6 +296,8 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::imports::host::{
         HostDc,
@@ -318,10 +320,6 @@ mod tests {
         LAST_ERROR.with(|error| error.set(0xF2F2));
     }
 
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
-
     fn reset() {
         HOST_DC.with(|state| *state.borrow_mut() = HostDc::new());
         OPENED.with(|opened| opened.borrow_mut().clear());
@@ -333,9 +331,9 @@ mod tests {
     #[test]
     fn create_dc_opens_the_display() {
         reset();
-        let display = wide("DISPLAY");
-        let lower = wide("display");
-        let device = wide("\\\\.\\DISPLAY1");
+        let display = wide_z("DISPLAY");
+        let lower = wide_z("display");
+        let device = wide_z("\\\\.\\DISPLAY1");
         // SAFETY: the tests' own NUL-terminated names.
         unsafe {
             assert_eq!(
@@ -388,8 +386,8 @@ mod tests {
     #[test]
     fn create_dc_refuses_what_is_no_display() {
         reset();
-        let other = wide("\\\\.\\DISPLAY2");
-        let printer = wide("WINSPOOL");
+        let other = wide_z("\\\\.\\DISPLAY2");
+        let printer = wide_z("WINSPOOL");
         // SAFETY: the tests' own NUL-terminated names.
         unsafe {
             assert_eq!(

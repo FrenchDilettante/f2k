@@ -811,6 +811,8 @@ pub fn unbounded<U: Unit>(mut out: Unbounded<U>, text: &[U], args: &mut impl Arg
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
 
     /// One argument, as the host tests hand them over.
@@ -858,10 +860,6 @@ pub(crate) mod tests {
         }
     }
 
-    pub fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
-
     /// A string's wide units, as an export reads them, its NUL left out.
     pub fn units_of(text: &[u16]) -> Vec<WideUnit> {
         text.iter()
@@ -890,7 +888,7 @@ pub(crate) mod tests {
         let buffer = unsafe { Unbounded::new(out.as_mut_ptr().cast::<WideUnit>()) };
         let n = unbounded(
             buffer,
-            &units_of(&wide(format)),
+            &units_of(&wide_z(format)),
             &mut List(args.iter().copied().collect()),
         );
         (n, String::from_utf16_lossy(&out[..n as usize]))
@@ -916,8 +914,8 @@ pub(crate) mod tests {
             ),
             (84, "[   42][42   ][00042][+42][ 42][007][  007][   9][0xff][0XFF][010][4294967295][4464]".into())
         );
-        let w = wide("wide");
-        let ab = wide("ab");
+        let w = wide_z("wide");
+        let ab = wide_z("ab");
         let narrow_text = b"narrow\0";
         let mixed: Vec<u16> = vec![
             0xE9, 0xC9, 0xFF, 0x101, 0x100, 0x3B1, 0x391, 0x436, 0x416, 0,
@@ -970,7 +968,7 @@ pub(crate) mod tests {
             let mut out = vec![WideUnit::new(b'#' as u16); 20];
             let n = bounded(
                 &mut out[..count],
-                &units_of(&wide(format)),
+                &units_of(&wide_z(format)),
                 &mut List(args.iter().copied().collect()),
             );
             let out: Vec<u16> = edge::units(&out).collect();
@@ -986,9 +984,9 @@ pub(crate) mod tests {
                 .collect();
             (n, shown)
         };
-        let over = wide("overflowing");
-        let abcde = wide("abcde");
-        let tail = wide("tail");
+        let over = wide_z("overflowing");
+        let abcde = wide_z("abcde");
+        let tail = wide_z("tail");
         assert_eq!(
             run(5, "%s", &[P(over.as_ptr() as usize)]),
             (-1, "overf####".into())
@@ -1065,7 +1063,7 @@ pub(crate) mod tests {
             ),
             "-5 100000000 7"
         );
-        let w = wide("w\u{E9}");
+        let w = wide_z("w\u{E9}");
         assert_eq!(
             narrow(
                 "[%S][%ls][%5.1s][%s]",

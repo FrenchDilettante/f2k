@@ -180,11 +180,9 @@ pub unsafe extern "system" fn get_binary_type_a(name: *const u8, binary_type: *m
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn name(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     /// A program's description: an i386 executable for the console subsystem.
     fn program() -> SectionImageInformation {
@@ -231,7 +229,7 @@ mod tests {
     /// A file without MZ is typed by its name's extension, in any case, after its last separator.
     #[test]
     fn a_file_without_mz_is_typed_by_its_extension() {
-        let typed = |file_name: &str| of_refusal(STATUS_INVALID_IMAGE_NOT_MZ, &name(file_name));
+        let typed = |file_name: &str| of_refusal(STATUS_INVALID_IMAGE_NOT_MZ, &wide(file_name));
         assert_eq!(typed("SCRATCH\\notexe.exe"), Ok(SCS_DOS_BINARY));
         assert_eq!(typed("A.COM"), Ok(SCS_DOS_BINARY));
         assert_eq!(typed("a.Exe"), Ok(SCS_DOS_BINARY));
@@ -249,7 +247,7 @@ mod tests {
     /// is made of none, whatever its name; any other status its failure.
     #[test]
     fn the_section_refusals_type_the_rest() {
-        let exe = name("a.exe");
+        let exe = wide("a.exe");
         assert_eq!(
             of_refusal(STATUS_INVALID_IMAGE_PROTECT, &exe),
             Ok(SCS_DOS_BINARY)

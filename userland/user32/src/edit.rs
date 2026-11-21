@@ -2055,24 +2055,22 @@ pub extern "system" fn edit_proc_a(window: usize, message: u32, wparam: u32, lpa
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     /// Lines start after each CR LF; a lone CR or LF is text.
     #[test]
     fn lines_break_at_cr_lf() {
         let mut starts = [0u32; 8];
         assert_eq!(
-            line_starts(&units("one\r\ntwo two\r\n\r\nfour"), &mut starts),
+            line_starts(&wide("one\r\ntwo two\r\n\r\nfour"), &mut starts),
             4
         );
         assert_eq!(&starts[..4], &[0, 5, 14, 16]);
-        assert_eq!(line_starts(&units("a\nb"), &mut starts), 1);
-        assert_eq!(line_starts(&units("one\rnew\r\ntwo"), &mut starts), 2);
-        assert_eq!(line_starts(&units("a\r\n"), &mut starts), 2);
+        assert_eq!(line_starts(&wide("a\nb"), &mut starts), 1);
+        assert_eq!(line_starts(&wide("one\rnew\r\ntwo"), &mut starts), 2);
+        assert_eq!(line_starts(&wide("a\r\n"), &mut starts), 2);
         assert_eq!(starts[1], 3);
         assert_eq!(line_starts(&[], &mut starts), 1);
     }
@@ -2080,12 +2078,12 @@ mod tests {
     /// What fits the limit: the room the selection leaves, a CR LF kept whole.
     #[test]
     fn the_limit_cuts_what_goes_in() {
-        assert_eq!(fitting(&units("XYZW"), 3, 0, 5), 2);
-        assert_eq!(fitting(&units("123"), 5, 1, 5), 1);
-        assert_eq!(fitting(&units("z"), 11, 0, 3), 0);
+        assert_eq!(fitting(&wide("XYZW"), 3, 0, 5), 2);
+        assert_eq!(fitting(&wide("123"), 5, 1, 5), 1);
+        assert_eq!(fitting(&wide("z"), 11, 0, 3), 0);
         assert_eq!(fitting(&[CR, LF], 7, 0, 8), 0, "a CR LF is not split");
         assert_eq!(fitting(&[CR, LF], 6, 0, 8), 2);
-        assert_eq!(fitting(&units("abc"), 0, 0, MULTI_MOST), 3);
+        assert_eq!(fitting(&wide("abc"), 0, 0, MULTI_MOST), 3);
     }
 
     /// EM_SETSEL's ends: ordered, -1 as the end, a start of -1 deselecting at the caret.
@@ -2108,7 +2106,7 @@ mod tests {
     /// The caret keys step over a CR LF whole, and by words with Ctrl.
     #[test]
     fn steps_and_words() {
-        let text = units("ab\r\ncd ef");
+        let text = wide("ab\r\ncd ef");
         assert_eq!(step_back(&text, 4), 2);
         assert_eq!(step_on(&text, 2), 4);
         assert_eq!(step_on(&text, 9), 9);
@@ -2126,7 +2124,7 @@ mod tests {
     /// text's handling does not need): made, then `text` set.
     fn edit_with(window: usize, text: &str) {
         assert!(create(window));
-        assert!(set_text(window, &units(text)));
+        assert!(set_text(window, &wide(text)));
     }
 
     /// EM_REPLACESEL's insertion undone leaves the selection at 0; the undo redone selects what it
@@ -2139,7 +2137,7 @@ mod tests {
         let mut s = load(window).unwrap();
         select(&mut s, 5, 5);
         store(window, &s);
-        replace_selection(window, &units(" world"), true);
+        replace_selection(window, &wide(" world"), true);
         assert_eq!(text_of(window), "Hello world");
         assert!(load(window).unwrap().can_undo());
         assert_eq!(undo(window), 1);
@@ -2150,7 +2148,7 @@ mod tests {
         assert_eq!(text_of(window), "Hello world");
         let s = load(window).unwrap();
         assert_eq!((s.sel_min, s.sel_max), (5, 11));
-        replace_selection(window, &units("!"), false);
+        replace_selection(window, &wide("!"), false);
         assert_eq!(text_of(window), "Hello!");
         assert!(!load(window).unwrap().can_undo());
         destroy(window);
@@ -2165,7 +2163,7 @@ mod tests {
         let mut s = load(window).unwrap();
         s.limit = 5;
         store(window, &s);
-        for unit in units("abcdefg") {
+        for unit in wide("abcdefg") {
             typed(window, unit);
         }
         assert_eq!(text_of(window), "abcde");
@@ -2176,7 +2174,7 @@ mod tests {
         let mut s = load(window).unwrap();
         s.flags |= MULTILINE;
         store(window, &s);
-        for unit in units("ab\rcd") {
+        for unit in wide("ab\rcd") {
             typed(window, unit);
         }
         assert_eq!(text_of(window), "ab\r\ncd");

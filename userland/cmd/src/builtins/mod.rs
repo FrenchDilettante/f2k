@@ -108,10 +108,7 @@ impl Builtin<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     #[test]
     fn each_word_and_its_other_name() {

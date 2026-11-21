@@ -1162,6 +1162,7 @@ mod tests {
     use std::boxed::Box;
 
     use rtl::menu::{MFS_CHECKED, MFT_RADIOCHECK};
+    use rtl::testing::wide;
 
     use super::*;
 
@@ -1233,10 +1234,6 @@ mod tests {
         }
     }
 
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
     /// An item of type `item_type` and state `state`, id `id`, opening `submenu`, its text `text`.
     fn add(
         m: &mut Fixture,
@@ -1247,7 +1244,7 @@ mod tests {
         submenu: u32,
         text: &str,
     ) {
-        let text = units(text);
+        let text = wide(text);
         let info = ItemInfo {
             mask: MIIM_FTYPE | MIIM_STATE | MIIM_ID | MIIM_SUBMENU | MIIM_STRING,
             item_type,
@@ -1297,7 +1294,7 @@ mod tests {
         let help = m.query_item(bar_id, ItemRef::Position(2)).unwrap();
         assert_eq!(
             (help.id, help.submenu, help.text()),
-            (220, 0, &units("&Help")[..])
+            (220, 0, &wide("&Help")[..])
         );
         let file_item = m.query_item(bar_id, ItemRef::Position(0)).unwrap();
         assert_eq!((file_item.submenu, file_item.submenu_count), (file, 5));
@@ -1384,7 +1381,7 @@ mod tests {
             (item.item_type, item.state, item.id),
             (MFT_RADIOCHECK, MFS_CHECKED, 212)
         );
-        assert_eq!(item.text(), &units("S&cientific")[..]);
+        assert_eq!(item.text(), &wide("S&cientific")[..]);
     }
 
     /// A state change keeps the default and the highlight (the `info` capture's 0x1083); new check
@@ -1426,7 +1423,7 @@ mod tests {
         let mut m = menus();
         let (bar, file, recent, _) = menu_200(&mut m);
         let bar_id = m.menu_of(bar).unwrap();
-        let text = units("Lost");
+        let text = wide("Lost");
         let info = ItemInfo {
             mask: MIIM_ID | MIIM_STRING,
             item_type: 0,

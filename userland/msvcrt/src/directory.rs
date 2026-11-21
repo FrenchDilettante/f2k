@@ -149,13 +149,11 @@ pub unsafe extern "C" fn getdcwd(drive: i32, buffer: *mut u8, size: i32) -> *mut
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
     use crate::imports::host::CURRENT_DIRECTORY;
     use crate::thread::errno;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
 
     fn text_of(units: *const u16) -> String {
         // SAFETY: a terminated string the call wrote.
@@ -168,7 +166,7 @@ mod tests {
     #[test]
     fn wfullpath_fills_a_buffer_or_allocates_one() {
         crate::heap::initialize();
-        let name = wide("fullpath.tmp");
+        let name = wide_z("fullpath.tmp");
         let mut buffer = [0u16; 64];
         // SAFETY: a buffer of 64 characters; a terminated name.
         unsafe {
@@ -182,7 +180,7 @@ mod tests {
             set_errno(0);
             assert!(wfullpath(buffer.as_mut_ptr(), name.as_ptr(), 3).is_null());
             assert_eq!(errno(), ERANGE);
-            let got = wfullpath(buffer.as_mut_ptr(), wide("").as_ptr(), 64);
+            let got = wfullpath(buffer.as_mut_ptr(), wide_z("").as_ptr(), 64);
             assert_eq!(text_of(got), "C:\\CORPUS");
             let got = wfullpath(buffer.as_mut_ptr(), core::ptr::null(), 64);
             assert_eq!(text_of(got), "C:\\CORPUS");

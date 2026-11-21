@@ -131,15 +131,8 @@ pub(crate) fn asks_help(word: &[u16]) -> bool {
 pub(crate) mod tests {
     use std::collections::BTreeMap;
 
+    use crate::testing::{narrow, wide};
     use crate::{Time, TooLong, Variables};
-
-    pub fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
-    pub fn narrow(units: &[u16]) -> String {
-        String::from_utf16(units).unwrap()
-    }
 
     /// An environment for the flow modules' tests: variables, a current directory, and the files
     /// that exist (by their full path, upper-cased), with their attributes and sizes.

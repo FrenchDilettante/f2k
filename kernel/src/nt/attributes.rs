@@ -219,11 +219,9 @@ pub fn root_is_directory(handle: u32) -> Result<bool, NtStatus> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     #[test]
     fn names_resolve_in_the_named_objects_directory() {

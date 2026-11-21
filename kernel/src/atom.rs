@@ -348,28 +348,26 @@ pub fn with_global<R>(passive: &mut At<Passive>, work: impl FnOnce(&mut AtomTabl
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn units(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     /// The atom fixture's add section: one atom whatever the ASCII case, four references; é and É
     /// two names.
     #[test]
     fn names_fold_ascii_case_alone() {
         let mut table = AtomTable::new();
-        let first = table.add(&units("F2KAtomFixtureOne")).unwrap();
+        let first = table.add(&wide("F2KAtomFixtureOne")).unwrap();
         assert!(first >= FIRST_STRING_ATOM);
-        assert_eq!(table.add(&units("F2KATOMFIXTUREONE")), Ok(first));
-        assert_eq!(table.lookup(&units("f2katomfixtureone")), Ok(first));
+        assert_eq!(table.add(&wide("F2KATOMFIXTUREONE")), Ok(first));
+        assert_eq!(table.lookup(&wide("f2katomfixtureone")), Ok(first));
         let mut name = [0u16; 64];
         let facts = table.query(first, &mut name).unwrap();
         assert_eq!((facts.usage, facts.length), (2, 17));
-        assert_eq!(&name[..17], &units("F2KAtomFixtureOne")[..]);
-        let accent = table.add(&units("F2KAtomFixtureé")).unwrap();
+        assert_eq!(&name[..17], &wide("F2KAtomFixtureOne")[..]);
+        let accent = table.add(&wide("F2KAtomFixtureé")).unwrap();
         assert_eq!(
-            table.lookup(&units("F2KAtomFixtureÉ")),
+            table.lookup(&wide("F2KAtomFixtureÉ")),
             Err(STATUS_OBJECT_NAME_NOT_FOUND)
         );
         assert_ne!(accent, first);
@@ -379,7 +377,7 @@ mod tests {
     #[test]
     fn deletions_count_down() {
         let mut table = AtomTable::new();
-        let name = units("F2KAtomFixtureCount");
+        let name = wide("F2KAtomFixtureCount");
         let atom = table.add(&name).unwrap();
         table.add(&name).unwrap();
         assert_eq!(table.delete(atom), Ok(()));
@@ -397,19 +395,19 @@ mod tests {
     #[test]
     fn integer_atoms() {
         let mut table = AtomTable::new();
-        assert_eq!(table.add(&units("#123")), Ok(123));
-        assert_eq!(table.add(&units("#00123")), Ok(123));
-        assert_eq!(table.lookup(&units("#456")), Ok(456));
-        assert_eq!(table.add(&units("#49151")), Ok(49151));
+        assert_eq!(table.add(&wide("#123")), Ok(123));
+        assert_eq!(table.add(&wide("#00123")), Ok(123));
+        assert_eq!(table.lookup(&wide("#456")), Ok(456));
+        assert_eq!(table.add(&wide("#49151")), Ok(49151));
         for refused in ["#0", "#49152", "#65535", "#65536", "#", "#99999999999"] {
             assert_eq!(
-                table.add(&units(refused)),
+                table.add(&wide(refused)),
                 Err(STATUS_INVALID_PARAMETER),
                 "{refused}"
             );
         }
         for string in ["#12a", "#-1", "# 12"] {
-            assert!(table.add(&units(string)).unwrap() >= FIRST_STRING_ATOM);
+            assert!(table.add(&wide(string)).unwrap() >= FIRST_STRING_ATOM);
         }
         assert_eq!(table.count(), 3);
         assert_eq!(table.delete(123), Ok(()));
@@ -445,11 +443,11 @@ mod tests {
     fn a_full_table() {
         let mut table = AtomTable::new();
         for n in 0..CAPACITY {
-            table.add(&units(&std::format!("name{n}"))).unwrap();
+            table.add(&wide(&std::format!("name{n}"))).unwrap();
         }
-        assert_eq!(table.add(&units("one more")), Err(STATUS_NO_MEMORY));
+        assert_eq!(table.add(&wide("one more")), Err(STATUS_NO_MEMORY));
         table.delete(FIRST_STRING_ATOM + 7).unwrap();
-        assert_eq!(table.add(&units("one more")), Ok(FIRST_STRING_ATOM + 7));
+        assert_eq!(table.add(&wide("one more")), Ok(FIRST_STRING_ATOM + 7));
         let mut atoms = [0; 4];
         assert_eq!(table.atoms_from(CAPACITY - 2, &mut atoms), (2, CAPACITY));
         assert_eq!(&atoms[..2], &[0xC000 + 510, 0xC000 + 511]);

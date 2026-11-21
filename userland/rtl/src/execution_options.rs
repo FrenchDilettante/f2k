@@ -71,10 +71,7 @@ pub fn convert(wanted: u32, stored: u32, data: &[u8], out: &mut [u8]) -> (u32, u
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use crate::testing::wide;
 
     /// The key is the options key and the image's file name, whatever path it came with.
     #[test]

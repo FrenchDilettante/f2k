@@ -214,16 +214,14 @@ pub extern "system" fn unmap_view_of_file(base: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide;
+
     use super::*;
     use crate::base::{last_error, set_last_error};
     use crate::nt::host::{BASE, DIRECTORY, FAIL_NEXT, HANDLE, LAST_NAME, LAST_SECTION, LAST_VM};
 
     fn fail_next(status: u32) {
         FAIL_NEXT.with(|cell| cell.set(status));
-    }
-
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     /// The memory fixture's mapping block: a paging-file mapping of 1 MiB (the last error cleared),

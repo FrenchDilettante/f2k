@@ -2513,6 +2513,8 @@ pub fn set_class_word(_: &mut NtCall, _: Handle, _: i32, _: u32, _: UserPtr<u32>
 mod tests {
     //! The class decision logic's host tests, over a registry of each test's own.
 
+    use rtl::testing::wide;
+
     use super::*;
 
     /// A registry and the user handle table its cursors' handles are in (the window registry's on
@@ -2623,11 +2625,6 @@ mod tests {
         }))
     }
 
-    /// A text as UTF-16 units.
-    fn units(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
-    }
-
     /// The test's process and module handles: module handles match by high word.
     const OWNER: Owner = 0;
     const OTHER_OWNER: Owner = 1;
@@ -2724,7 +2721,7 @@ mod tests {
     #[test]
     fn the_atom_wrappers_follow_their_return_conventions() {
         let registry = registry();
-        let foo = units("Foo");
+        let foo = wide("Foo");
         let atom = registry.atoms.add(&foo, false);
         assert!(atom >= 0xC000, "a global string atom");
         assert_eq!(registry.atoms.find(&foo), atom);
@@ -2742,7 +2739,7 @@ mod tests {
             "inverted return on failure"
         );
         // Pin on add, and the pinned range's guard.
-        let bar = units("Bar");
+        let bar = wide("Bar");
         let pinned = registry.atoms.add(&bar, true);
         assert!(registry.atoms.is_pinned(pinned));
         registry.atoms.set_pinned_range(pinned, pinned);
@@ -2764,7 +2761,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.instance = WINDOW_MANAGER_MODULE;
-        let name = Name::Text(&units("Foo"));
+        let name = Name::Text(&wide("Foo"));
         let err = register(registry, name, &wc, compat40()).unwrap_err();
         assert_eq!(err, Failure::InvalidParameter);
         assert_eq!(err.code(), 87);
@@ -2786,7 +2783,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.style = CS_BYTEALIGNCLIENT | CS_BYTEALIGNWINDOW;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert_eq!(
             registry.classes.at(id).style,
@@ -2804,12 +2801,12 @@ mod tests {
         let (cursor, handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.cursor = 0xDEAD; // names no cursor
-        let name = Name::Text(&units("Foo"));
+        let name = Name::Text(&wide("Foo"));
         let err = register(registry, name, &wc, compat40()).unwrap_err();
         assert_eq!(err, Failure::InvalidParameter);
         assert_eq!(err.code(), 87);
         assert_eq!(
-            registry.class_ptr(registry.atoms.find(&units("Foo")), OWNER, MODULE),
+            registry.class_ptr(registry.atoms.find(&wide("Foo")), OWNER, MODULE),
             None
         );
         // Pre-4.0: the field is NULLed, registration continues.
@@ -2818,13 +2815,13 @@ mod tests {
         assert_eq!(registry.classes.at(id).cursor, None);
         // A valid handle is locked into the record.
         wc.cursor = handle;
-        let atom = register(registry, Name::Text(&units("Bar")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Bar")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert_eq!(registry.classes.at(id).cursor, Some(cursor));
         assert_eq!(registry.cursors.locks(cursor), 1);
         // Null is fine.
         wc.cursor = 0;
-        assert!(register(registry, Name::Text(&units("Baz")), &wc, compat40()).is_ok());
+        assert!(register(registry, Name::Text(&wide("Baz")), &wc, compat40()).is_ok());
     }
 
     /// The background brush is not validated at registration: any value is stored as-is.
@@ -2833,7 +2830,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.background = 0xBEEF;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert_eq!(registry.classes.at(id).background, 0xBEEF);
     }
@@ -2847,7 +2844,7 @@ mod tests {
         let (cursor, handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.cursor = handle;
-        let name_units = units("Foo");
+        let name_units = wide("Foo");
         // A menu name that does not fit fails after the atom was added and the cursor locked.
         let long_menu = vec![b'm' as u16; MAX_MENU_NAME + 1];
         let err = registry
@@ -2882,7 +2879,7 @@ mod tests {
         assert_eq!(registry.cursors.locks(cursor), 0);
         // Atom-table exhaustion: no atom to delete, the rest still released.
         registry.atoms.next = 0;
-        let other = units("Bar");
+        let other = wide("Bar");
         let err = register(registry, Name::Text(&other), &wc, compat40()).unwrap_err();
         assert_eq!(err, Failure::OutOfMemory);
         assert_eq!(registry.atoms.find(&other), 0);
@@ -2890,12 +2887,12 @@ mod tests {
         // A pool exhaustion: no record, no atom, no link.
         registry.atoms.next = 0xD000; // the table's numbering back in range
         for i in 0..CLASSES {
-            let name = Name::Text(&units(&format!("Class{i}")));
+            let name = Name::Text(&wide(&format!("Class{i}")));
             register(registry, name, &wc, compat40()).unwrap();
         }
-        let err = register(registry, Name::Text(&units("Last")), &wc, compat40()).unwrap_err();
+        let err = register(registry, Name::Text(&wide("Last")), &wc, compat40()).unwrap_err();
         assert_eq!(err, Failure::OutOfMemory);
-        assert_eq!(registry.atoms.find(&units("Last")), 0, "no atom was added");
+        assert_eq!(registry.atoms.find(&wide("Last")), 0, "no atom was added");
         // The 128 live classes hold the cursor's 128 locks; the failed one added none.
         assert_eq!(registry.cursors.locks(cursor), CLASSES as u32);
     }
@@ -2905,7 +2902,7 @@ mod tests {
     #[test]
     fn string_names_go_through_the_atom_table() {
         let registry = registry();
-        let name_units = units("Foo");
+        let name_units = wide("Foo");
         let wc = wnd_class();
         let atom = register(registry, Name::Text(&name_units), &wc, compat40()).unwrap();
         assert!((0xC000..=0xFFFF).contains(&atom));
@@ -2943,7 +2940,7 @@ mod tests {
     fn the_ansi_name_is_a_copy() {
         let registry = registry();
         let wc = wnd_class();
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let class = registry.classes.at(id);
         assert_eq!(&class.ansi_name[..4], b"Foo\0");
@@ -2960,15 +2957,9 @@ mod tests {
     #[test]
     fn names_resolve_to_atoms_as_lookups_do() {
         let registry = registry();
-        let atom = register(
-            registry,
-            Name::Text(&units("Foo")),
-            &wnd_class(),
-            compat40(),
-        )
-        .unwrap();
-        assert_eq!(registry.atom_of(Name::Text(&units("Foo"))), atom);
-        assert_eq!(registry.atom_of(Name::Text(&units("Nope"))), 0);
+        let atom = register(registry, Name::Text(&wide("Foo")), &wnd_class(), compat40()).unwrap();
+        assert_eq!(registry.atom_of(Name::Text(&wide("Foo"))), atom);
+        assert_eq!(registry.atom_of(Name::Text(&wide("Nope"))), 0);
         assert_eq!(registry.atom_of(Name::Atom(0x8002)), 0x8002);
         assert_eq!(registry.atom_of(Name::Atom(0)), 0);
     }
@@ -2979,7 +2970,7 @@ mod tests {
     fn the_class_name_is_the_atoms_name_or_its_number() {
         let registry = registry();
         let wc = wnd_class();
-        let foo = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let foo = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let dialog = register(registry, Name::Atom(0x8002), &wc, compat40()).unwrap();
         let name = |registry: &Registry, atom, len| {
             let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
@@ -3011,7 +3002,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.style = CS_GLOBALCLASS;
-        let bar = units("Bar");
+        let bar = wide("Bar");
         // A public class, then the same name as CS_GLOBALCLASS again: 1410.
         let atom = register(registry, Name::Text(&bar), &wc, compat40()).unwrap();
         assert_eq!(
@@ -3045,7 +3036,7 @@ mod tests {
     fn server_side_registration_skips_the_duplicate_check() {
         let registry = registry();
         let wc = wnd_class();
-        let name = Name::Text(&units("Sys"));
+        let name = Name::Text(&wide("Sys"));
         let flags = RegisterFlags {
             server_side_proc: true,
             ..RegisterFlags::default()
@@ -3064,7 +3055,7 @@ mod tests {
             system_class: true,
             ..RegisterFlags::default()
         };
-        let atom = register(registry, Name::Text(&units("Sys2")), &wc, flags).unwrap();
+        let atom = register(registry, Name::Text(&wide("Sys2")), &wc, flags).unwrap();
         assert_eq!(
             registry.list_head(List::System),
             Some(registry.class_ptr(atom, OWNER, MODULE).unwrap())
@@ -3077,7 +3068,7 @@ mod tests {
     fn lookups_match_the_module_by_high_word() {
         let registry = registry();
         let wc = wnd_class();
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         assert!(registry.class_ptr(atom, OWNER, SAME_HIGH_WORD).is_some());
         assert!(registry.class_ptr(atom, OWNER, OTHER_HIGH_WORD).is_none());
         assert!(
@@ -3094,13 +3085,13 @@ mod tests {
         let registry = registry();
         let wc = wnd_class();
         // A private class under the caller's module.
-        let private_atom = register(registry, Name::Text(&units("Mine")), &wc, compat40()).unwrap();
+        let private_atom = register(registry, Name::Text(&wide("Mine")), &wc, compat40()).unwrap();
         // A private class under the user32 module.
         let mut wc_client = wnd_class();
         wc_client.instance = CLIENT_MODULE;
         let client_private = register(
             registry,
-            Name::Text(&units("ClientPrivate")),
+            Name::Text(&wide("ClientPrivate")),
             &wc_client,
             compat40(),
         )
@@ -3110,7 +3101,7 @@ mod tests {
         wc_public.style = CS_GLOBALCLASS;
         let public = register(
             registry,
-            Name::Text(&units("Shared")),
+            Name::Text(&wide("Shared")),
             &wc_public,
             compat40(),
         )
@@ -3121,14 +3112,14 @@ mod tests {
             system_class: true,
             ..RegisterFlags::default()
         };
-        let system = register(registry, Name::Text(&units("System")), &wc, flags).unwrap();
+        let system = register(registry, Name::Text(&wide("System")), &wc, flags).unwrap();
         // A public class under the user32 module.
         let mut wc_cp = wnd_class();
         wc_cp.instance = CLIENT_MODULE;
         wc_cp.style = CS_GLOBALCLASS;
         let client_public = register(
             registry,
-            Name::Text(&units("ClientPublic")),
+            Name::Text(&wide("ClientPublic")),
             &wc_cp,
             compat40(),
         )
@@ -3166,7 +3157,7 @@ mod tests {
         );
         // One name in several lists: the caller's private wins over the public, the public over
         // the user32-module private, that over the user32 public, that over the system.
-        let name = units("Everywhere");
+        let name = wide("Everywhere");
         let a = register(registry, Name::Text(&name), &wc, compat40()).unwrap();
         let a_id = registry.class_ptr(a, OWNER, MODULE).unwrap();
         let mut wc_p = wnd_class();
@@ -3211,7 +3202,7 @@ mod tests {
         let (cursor, handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.cursor = handle;
-        let name = units("Foo");
+        let name = wide("Foo");
         let atom = register(registry, Name::Text(&name), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         // With a window: 1412, the class stays.
@@ -3267,11 +3258,11 @@ mod tests {
         wc.instance = MODULE;
         wc.cursor = handle;
         wc.background = 6;
-        let menu = units("File");
+        let menu = wide("File");
         let atom = registry
             .register_class(
                 &wc,
-                Name::Text(&units("Foo")),
+                Name::Text(&wide("Foo")),
                 MenuArg::Text(&menu),
                 OWNER,
                 compat40(),
@@ -3308,7 +3299,7 @@ mod tests {
         let atom = registry
             .register_class(
                 &wc,
-                Name::Text(&units("Empty")),
+                Name::Text(&wide("Empty")),
                 MenuArg::Text(&[]),
                 OWNER,
                 compat40(),
@@ -3320,7 +3311,7 @@ mod tests {
         let atom = registry
             .register_class(
                 &wc,
-                Name::Text(&units("Id")),
+                Name::Text(&wide("Id")),
                 MenuArg::Id(7),
                 OWNER,
                 compat40(),
@@ -3339,7 +3330,7 @@ mod tests {
     fn the_table_driven_class_data() {
         let registry = registry();
         let wc = wnd_class();
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(id);
         let noop = &mut noop as &mut dyn FnMut(&WindowView, WindowNotice);
@@ -3445,7 +3436,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.cb_cls_extra = 8;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(id);
         // Another process's window: 5.
@@ -3519,7 +3510,7 @@ mod tests {
         let registry = registry();
         let mut wc = wnd_class();
         wc.cb_cls_extra = 8;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(id);
         for index in [0x7FFF_FFFE, i32::MAX] {
@@ -3564,7 +3555,7 @@ mod tests {
     fn the_menu_name_change_copies() {
         let registry = registry();
         let wc = wnd_class();
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(id);
         let noop = &mut noop as &mut dyn FnMut(&WindowView, WindowNotice);
@@ -3574,7 +3565,7 @@ mod tests {
                 OWNER,
                 GCLP_MENUNAME,
                 0,
-                MenuArg::Text(&units("File")),
+                MenuArg::Text(&wide("File")),
                 None,
                 &[],
                 noop,
@@ -3584,7 +3575,7 @@ mod tests {
         match registry.classes.at(id).menu_name {
             MenuName::Text { len, units: stored } => {
                 assert_eq!(len, 4);
-                assert_eq!(&stored[..4], &units("File")[..]);
+                assert_eq!(&stored[..4], &wide("File")[..]);
             }
             other => panic!("{other:?}"),
         }
@@ -3663,7 +3654,7 @@ mod tests {
         registry.make_cursor_record(true, false); // a spare record so the synthesis has room
         let mut wc = wnd_class();
         wc.icon = old_handle;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         // Two windows of the class.
         let mut w1 = window(id);
@@ -3676,7 +3667,7 @@ mod tests {
         // own small icon), one of another class.
         let other_atom = register(
             registry,
-            Name::Text(&units("Other")),
+            Name::Text(&wide("Other")),
             &wnd_class(),
             compat40(),
         )
@@ -3804,7 +3795,7 @@ mod tests {
         let (_icon, icon_handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.icon = icon_handle;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let mut wnd = window(id);
         assert!(registry.reference_class(id, &mut wnd));
@@ -3861,7 +3852,7 @@ mod tests {
         let (new_cursor, new_handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.cursor = old_handle;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         let wnd = window(id);
         let noop = &mut noop as &mut dyn FnMut(&WindowView, WindowNotice);
@@ -3923,7 +3914,7 @@ mod tests {
         let (cursor, handle) = make_cursor(registry);
         let mut wc = wnd_class();
         wc.cursor = handle;
-        let atom = register(registry, Name::Text(&units("Foo")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Foo")), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         // Same desktop: the count up and down.
         let mut wnd = window(id);
@@ -3988,7 +3979,7 @@ mod tests {
         wc.cursor = handle;
         wc.icon = icon_handle;
         wc.background = 0x1000; // a real brush handle, above the system colors
-        let name = units("Foo");
+        let name = wide("Foo");
         let atom = register(registry, Name::Text(&name), &wc, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         // A clone, a window, a cached small icon.
@@ -4039,10 +4030,10 @@ mod tests {
         );
         assert_eq!(registry.list_head(List::Private(OWNER)), None);
         // A pinned class-name atom survives the teardown's delete.
-        let atom = register(registry, Name::Text(&units("Pinned")), &wc, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Pinned")), &wc, compat40()).unwrap();
         registry.atoms.set_pinned_range(atom, atom);
         registry
-            .unregister_class(Name::Text(&units("Pinned")), OWNER, MODULE)
+            .unregister_class(Name::Text(&wide("Pinned")), OWNER, MODULE)
             .unwrap();
         assert!(
             registry.atoms.contains(atom),
@@ -4058,13 +4049,7 @@ mod tests {
         let registry = registry();
         let mut system = wnd_class();
         system.background = 6;
-        let atom = register(
-            registry,
-            Name::Text(&units("SysColor")),
-            &system,
-            compat40(),
-        )
-        .unwrap();
+        let atom = register(registry, Name::Text(&wide("SysColor")), &system, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert!(
             !registry.destroy_class_brush(id, OWNER),
@@ -4072,7 +4057,7 @@ mod tests {
         );
         let mut edge = wnd_class();
         edge.background = 28;
-        let atom = register(registry, Name::Text(&units("Edge")), &edge, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Edge")), &edge, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert!(
             !registry.destroy_class_brush(id, OWNER),
@@ -4081,13 +4066,13 @@ mod tests {
         // A real brush, alone: deleted.
         let mut real = wnd_class();
         real.background = 0x1000;
-        let atom = register(registry, Name::Text(&units("Real")), &real, compat40()).unwrap();
+        let atom = register(registry, Name::Text(&wide("Real")), &real, compat40()).unwrap();
         let id = registry.class_ptr(atom, OWNER, MODULE).unwrap();
         assert!(registry.destroy_class_brush(id, OWNER));
         // Shared with a private class of the same process: not deleted.
         let mut share = wnd_class();
         share.background = 0x1000;
-        let atom2 = register(registry, Name::Text(&units("Share")), &share, compat40()).unwrap();
+        let atom2 = register(registry, Name::Text(&wide("Share")), &share, compat40()).unwrap();
         let id2 = registry.class_ptr(atom2, OWNER, MODULE).unwrap();
         assert!(
             !registry.destroy_class_brush(id, OWNER),
@@ -4101,7 +4086,7 @@ mod tests {
         };
         let mut sys = wnd_class();
         sys.background = 0x1000;
-        register(registry, Name::Text(&units("SysShare")), &sys, flags).unwrap();
+        register(registry, Name::Text(&wide("SysShare")), &sys, flags).unwrap();
         assert!(
             !registry.destroy_class_brush(id2, OWNER),
             "shared with a system class"
@@ -4111,7 +4096,7 @@ mod tests {
         other_brush.background = 0x2000;
         let atom4 = register(
             registry,
-            Name::Text(&units("Other")),
+            Name::Text(&wide("Other")),
             &other_brush,
             compat40(),
         )
@@ -4137,10 +4122,10 @@ mod tests {
         wc.style = CS_HREDRAW | 0x8000_0000; // an internal bit, masked out of the answer
         wc.cursor = cursor_handle;
         wc.icon = icon_handle;
-        let name = units("Foo");
+        let name = wide("Foo");
         let atom = register(registry, Name::Text(&name), &wc, compat40()).unwrap();
         let err = registry
-            .get_class_info(Name::Text(&units("Nope")), None, OWNER, true)
+            .get_class_info(Name::Text(&wide("Nope")), None, OWNER, true)
             .unwrap_err();
         assert_eq!(err, Failure::ClassDoesNotExist);
         assert_eq!(err.code(), 1411);
@@ -4158,7 +4143,7 @@ mod tests {
         // instance answers null for a 4.0 caller.
         let mut wc_client = wnd_class();
         wc_client.instance = CLIENT_MODULE;
-        let client_name = units("ClientFoo");
+        let client_name = wide("ClientFoo");
         register(registry, Name::Text(&client_name), &wc_client, compat40()).unwrap();
         let info = registry
             .get_class_info(Name::Text(&client_name), None, OWNER, true)
@@ -4172,9 +4157,9 @@ mod tests {
         wc_sys.instance = WINDOW_MANAGER_MODULE;
         wc_sys.style = CS_GLOBALCLASS;
         let flags = RegisterFlags::default(); // pre-4.0
-        register(registry, Name::Text(&units("Sys")), &wc_sys, flags).unwrap();
+        register(registry, Name::Text(&wide("Sys")), &wc_sys, flags).unwrap();
         let info = registry
-            .get_class_info(Name::Text(&units("Sys")), None, OWNER, false)
+            .get_class_info(Name::Text(&wide("Sys")), None, OWNER, false)
             .unwrap();
         assert_eq!(info.instance, CLIENT_MODULE);
         // A server-registered CS_GLOBALCLASS class: the bit is masked out for a 4.0 caller.
@@ -4186,13 +4171,13 @@ mod tests {
             win40_compat: true,
             ..RegisterFlags::default()
         };
-        let atom = register(registry, Name::Text(&units("Srv")), &wc_srv, flags).unwrap();
+        let atom = register(registry, Name::Text(&wide("Srv")), &wc_srv, flags).unwrap();
         let info = registry
-            .get_class_info(Name::Text(&units("Srv")), Some(MODULE), OWNER, true)
+            .get_class_info(Name::Text(&wide("Srv")), Some(MODULE), OWNER, true)
             .unwrap();
         assert_eq!(info.style & CS_GLOBALCLASS, 0);
         let info = registry
-            .get_class_info(Name::Text(&units("Srv")), Some(MODULE), OWNER, false)
+            .get_class_info(Name::Text(&wide("Srv")), Some(MODULE), OWNER, false)
             .unwrap();
         assert_eq!(
             info.style & CS_GLOBALCLASS,
@@ -4219,7 +4204,7 @@ mod tests {
             )
             .unwrap();
         let info = registry
-            .get_class_info(Name::Text(&units("Srv")), Some(MODULE), OWNER, true)
+            .get_class_info(Name::Text(&wide("Srv")), Some(MODULE), OWNER, true)
             .unwrap();
         assert_eq!(info.icon_sm, 0, "the synthesized small icon is secret");
     }
@@ -4230,16 +4215,16 @@ mod tests {
     fn the_process_end_destroys_its_classes() {
         let registry = registry();
         let wc = wnd_class();
-        register(registry, Name::Text(&units("A")), &wc, compat40()).unwrap();
+        register(registry, Name::Text(&wide("A")), &wc, compat40()).unwrap();
         let mut wc_p = wnd_class();
         wc_p.style = CS_GLOBALCLASS;
-        register(registry, Name::Text(&units("B")), &wc_p, compat40()).unwrap();
+        register(registry, Name::Text(&wide("B")), &wc_p, compat40()).unwrap();
         let mut wc_other = wnd_class();
         wc_other.instance = OTHER_HIGH_WORD;
         let c = registry
             .register_class(
                 &wc_other,
-                Name::Text(&units("C")),
+                Name::Text(&wide("C")),
                 MenuArg::None,
                 OTHER_OWNER,
                 compat40(),
@@ -4249,8 +4234,8 @@ mod tests {
         registry.destroy_owner_classes(OWNER);
         assert_eq!(registry.list_head(List::Private(OWNER)), None);
         assert_eq!(registry.list_head(List::Public(OWNER)), None);
-        assert_eq!(registry.atoms.find(&units("A")), 0);
-        assert_eq!(registry.atoms.find(&units("B")), 0);
+        assert_eq!(registry.atoms.find(&wide("A")), 0);
+        assert_eq!(registry.atoms.find(&wide("B")), 0);
         assert!(registry
             .classes
             .is_live(registry.class_ptr(c, OTHER_OWNER, OTHER_HIGH_WORD).unwrap()));
@@ -4270,8 +4255,8 @@ mod tests {
         let atom = registry
             .register_class(
                 &wc,
-                Name::Text(&units("Data")),
-                MenuArg::Text(&units("F2KMenu")),
+                Name::Text(&wide("Data")),
+                MenuArg::Text(&wide("F2KMenu")),
                 OWNER,
                 compat40(),
                 DESKTOP,

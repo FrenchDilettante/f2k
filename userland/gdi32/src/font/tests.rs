@@ -5,6 +5,8 @@
 use std::string::String;
 use std::vec::Vec;
 
+use rtl::testing::wide_z;
+
 use super::*;
 use crate::imports::host::{width_of, HostFonts, DC, FIRST_FONT, FONTS, LAST_ERROR};
 
@@ -21,17 +23,13 @@ fn fonts<R>(f: impl FnOnce(&HostFonts) -> R) -> R {
     FONTS.with(|fonts| f(&fonts.borrow()))
 }
 
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
-
 /// The capture's load section: the private load twice (W and A), two removals and a third
 /// refused; the missing file 0; the public load and its removals. Each looks in the Fonts
 /// directory first and leaves its ERROR_FILE_NOT_FOUND; every open is closed.
 #[test]
 fn loads_look_in_the_fonts_directory_first() {
     reset();
-    let file = wide("f2ktahom.ttf");
+    let file = wide_z("f2ktahom.ttf");
     // SAFETY: the tests' own names.
     unsafe {
         assert_eq!(add_font_resource_ex_w(file.as_ptr(), 0x10, 0), 1);
@@ -53,7 +51,7 @@ fn loads_look_in_the_fonts_directory_first() {
             "the Fonts directory's look, not the removal"
         );
         assert_eq!(
-            add_font_resource_ex_w(wide("f2knone.ttf").as_ptr(), 0x10, 0),
+            add_font_resource_ex_w(wide_z("f2knone.ttf").as_ptr(), 0x10, 0),
             0
         );
         assert_eq!(last_error(), 2);
@@ -64,7 +62,10 @@ fn loads_look_in_the_fonts_directory_first() {
         assert_eq!(add_font_resource_ex_w(file.as_ptr(), 0, 4), 0, "reserved");
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
         assert_eq!(add_font_resource_w(core::ptr::null()), 0);
-        assert_eq!(add_font_resource_w(wide("C:\\x\\f2ktahom.ttf").as_ptr()), 0);
+        assert_eq!(
+            add_font_resource_w(wide_z("C:\\x\\f2ktahom.ttf").as_ptr()),
+            0
+        );
     }
     let opened = fonts(|fonts| fonts.opened.clone());
     assert_eq!(opened[0], "C:\\WINNT\\Fonts|f2ktahom.ttf");
@@ -87,7 +88,7 @@ fn font_objects_keep_their_logfont() {
     lf.height = -11;
     lf.weight = 400;
     lf.char_set = DEFAULT_CHARSET;
-    lf.face_name[..10].copy_from_slice(&wide("F2K Tahoma")[..10]);
+    lf.face_name[..10].copy_from_slice(&wide_z("F2K Tahoma")[..10]);
     let first = create_font_indirect_w(&lf);
     assert_eq!(first, FIRST_FONT);
     let mut lfa = LogFontA::zeroed();
@@ -129,7 +130,7 @@ fn font_objects_keep_their_logfont() {
                 0,
                 0,
                 0,
-                wide("F2K Tahoma").as_ptr(),
+                wide_z("F2K Tahoma").as_ptr(),
             ),
         ]
     };
@@ -162,13 +163,13 @@ fn font_objects_keep_their_logfont() {
 fn face_names_count_as_the_capture() {
     reset();
     let mut lf = LogFontW::zeroed();
-    lf.face_name[..10].copy_from_slice(&wide("F2K Tahoma")[..10]);
+    lf.face_name[..10].copy_from_slice(&wide_z("F2K Tahoma")[..10]);
     let font = create_font_indirect_w(&lf);
     assert_ne!(crate::dc::select_object(DC, font), 0);
     let mut units = [0x23u16; 40];
     let mut bytes = [0x23u8; 40];
     assert_eq!(get_text_face_w(DC, 32, units.as_mut_ptr()), 11);
-    assert_eq!(&units[..11], &wide("F2K Tahoma")[..]);
+    assert_eq!(&units[..11], &wide_z("F2K Tahoma")[..]);
     // SAFETY: the tests' own buffers.
     unsafe {
         assert_eq!(get_text_face_a(DC, 32, bytes.as_mut_ptr()), 10);
@@ -392,7 +393,7 @@ fn enumerations_call_back() {
     seen();
     let mut lf = LogFontW::zeroed();
     lf.char_set = DEFAULT_CHARSET;
-    lf.face_name[..10].copy_from_slice(&wide("F2K Tahoma")[..10]);
+    lf.face_name[..10].copy_from_slice(&wide_z("F2K Tahoma")[..10]);
     // SAFETY: the tests' own structures and callbacks.
     unsafe {
         assert_eq!(enum_font_families_ex_w(DC, &lf, Some(seen_w), 5, 0), 5);
@@ -414,7 +415,7 @@ fn enumerations_call_back() {
             ("F2K Tahoma".into(), "Cyrillic".into(), 204, 204)
         );
         assert_eq!(
-            enum_font_families_w(DC, wide("F2K Tahoma").as_ptr(), Some(seen_w), 1),
+            enum_font_families_w(DC, wide_z("F2K Tahoma").as_ptr(), Some(seen_w), 1),
             1
         );
         assert_eq!(seen().len(), 1);

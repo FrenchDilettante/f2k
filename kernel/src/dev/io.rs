@@ -2484,11 +2484,9 @@ mod target {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::wide;
 
-    fn wide(text: &str) -> std::vec::Vec<u16> {
-        text.encode_utf16().collect()
-    }
+    use super::*;
 
     fn named(text: &str) -> ObName {
         normalize(&wide(text)).unwrap()

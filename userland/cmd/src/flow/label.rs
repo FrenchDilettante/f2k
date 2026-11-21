@@ -105,7 +105,7 @@ impl fmt::Display for NotFound<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::tests::wide;
+    use crate::testing::wide;
 
     fn target(argument: &str) -> Goto<'static> {
         let argument: &'static [u16] = Box::leak(wide(argument).into_boxed_slice());

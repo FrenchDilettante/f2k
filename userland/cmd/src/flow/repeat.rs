@@ -698,7 +698,8 @@ fn searched(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::tests::{narrow, wide, Fake};
+    use crate::flow::tests::Fake;
+    use crate::testing::{narrow, wide};
 
     fn header(text: &str) -> For<'static> {
         let text: &'static [u16] = Box::leak(wide(text).into_boxed_slice());

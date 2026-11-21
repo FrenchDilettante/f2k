@@ -536,8 +536,9 @@ pub unsafe extern "C" fn ultow(value: u32, buffer: *mut u16, radix: i32) -> *mut
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::wide_z;
+
     use super::*;
-    use crate::format::tests::wide;
     use crate::thread::errno_address;
 
     fn errno() -> i32 {
@@ -577,7 +578,7 @@ mod tests {
             ("\u{661}\u{662}", 10, 0, 0, 0),
             ("\u{FF11}\u{FF12}", 10, 0, 0, 0),
         ] {
-            let s = wide(text);
+            let s = wide_z(text);
             let mut e = core::ptr::null();
             set_errno(0);
             // SAFETY: a NUL-terminated string.
@@ -604,7 +605,7 @@ mod tests {
             ("", 0, 0, 0, 0),
             ("x", 0, 0, 0, 0),
         ] {
-            let s = wide(text);
+            let s = wide_z(text);
             let mut e = core::ptr::null();
             set_errno(0);
             // SAFETY: as above.
@@ -671,7 +672,7 @@ mod tests {
             ("-2147483649", i32::MAX),
             ("\u{661}\u{662}", 0),
         ] {
-            let s = wide(text);
+            let s = wide_z(text);
             set_errno(0);
             // SAFETY: a NUL-terminated string.
             assert_eq!(unsafe { wtol(s.as_ptr()) }, value, "{text:?}");
@@ -866,7 +867,7 @@ mod tests {
             ("99999999999", 1215752191),
             ("-99999999999", -1215752191),
         ] {
-            let s = wide(text);
+            let s = wide_z(text);
             let n: Vec<u8> = text.bytes().chain([0]).collect();
             set_errno(0);
             // SAFETY: NUL-terminated strings.
@@ -912,7 +913,7 @@ mod tests {
             ("\u{661}", 0, 0, 42),
             ("\u{A0}7", 0, 0, 0),
         ] {
-            let s = wide(text);
+            let s = wide_z(text);
             let mut e = core::ptr::null();
             set_errno(0);
             // SAFETY: a NUL-terminated string.
@@ -925,7 +926,7 @@ mod tests {
                 "wcstod({text:?})"
             );
         }
-        let s = wide("6.25");
+        let s = wide_z("6.25");
         set_errno(0);
         // SAFETY: a NUL-terminated string, no end pointer.
         let v = unsafe { wcstod(s.as_ptr(), core::ptr::null_mut()) };
@@ -947,7 +948,7 @@ mod tests {
             (format!("{halfway}.{}", &above[16..]), 9007199254740994.0),
             (scaled, 25.0),
         ] {
-            let s = wide(&text);
+            let s = wide_z(&text);
             // SAFETY: a NUL-terminated string, no end pointer.
             let v = unsafe { wcstod(s.as_ptr(), core::ptr::null_mut()) };
             assert_eq!(v, expected);

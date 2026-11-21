@@ -98,6 +98,10 @@ exportgen = { path = "../tools/exportgen" }
 # The runtime library the system DLLs compile too (as Windows 2000's Rtl is linked into both ntdll
 # and ntoskrnl): the code page tables, the console server's rules.
 rtl = { path = "../userland/rtl" }
+
+# The host tests take their text helpers from rtl (its `testing` module).
+[dev-dependencies]
+rtl = { path = "../userland/rtl", features = ["testing"] }
 # Core no_std crates for future use
 # spin = "0.9.8"        # Spinlocks and mutable statics
 # bitflags = "2.0"      # Bit flags

@@ -285,7 +285,7 @@ fn order(left: &[u16], right: &[u16], fold_case: bool) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flow::tests::wide;
+    use crate::testing::wide;
 
     struct State {
         errorlevel: u32,

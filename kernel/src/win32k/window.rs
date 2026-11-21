@@ -5992,6 +5992,7 @@ pub fn find_window_ex(
 mod tests {
     //! The create/destroy decision logic's host tests, over a registry of each test's own.
 
+    use rtl::testing::wide;
     use rtl::window::{QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
 
     use super::*;
@@ -6014,11 +6015,6 @@ mod tests {
         unsafe { class::Registry::write_empty(registry.as_mut_ptr()) };
         // SAFETY: written whole just above.
         Box::leak(unsafe { registry.assume_init() })
-    }
-
-    /// A text as UTF-16 units.
-    fn units(text: &str) -> Vec<u16> {
-        text.encode_utf16().collect()
     }
 
     const OWNER: class::Owner = 0;
@@ -6152,7 +6148,7 @@ mod tests {
         let atom = register(
             c,
             &w.handles,
-            class::Name::Text(&units("Test")),
+            class::Name::Text(&wide("Test")),
             &wnd_class(),
         );
         (w, c, t, atom, desk, msg)
@@ -6633,7 +6629,7 @@ mod tests {
     #[test]
     fn the_ansi_creator_bit_is_consumed() {
         let (w, c, t, atom, _, _) = setup();
-        let name = units("Test");
+        let name = wide("Test");
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED);
         a.ex_style = ANSI_CREATOR_BIT | WS_EX_TOPMOST;
@@ -6692,7 +6688,7 @@ mod tests {
     fn an_unknown_class_name_fails() {
         let (w, c, t, _atom, _, _) = setup();
         let mut pump = Rec::new(t);
-        let name = units("NoSuchClass");
+        let name = wide("NoSuchClass");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
         let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
@@ -6732,9 +6728,9 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.instance = OTHER_MODULE;
-        let atom = register(c, &w.handles, class::Name::Text(&units("Private")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&wide("Private")), &wc);
         let mut pump = Rec::new(t);
-        let name = units("Private");
+        let name = wide("Private");
         let mut a = args(atom, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
         let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
@@ -6766,7 +6762,7 @@ mod tests {
         let atom = register_on(
             c,
             &w.handles,
-            class::Name::Text(&units("Far")),
+            class::Name::Text(&wide("Far")),
             &wnd_class(),
             OTHER_DESKTOP,
             OWNER,
@@ -6777,7 +6773,7 @@ mod tests {
             register(
                 c,
                 &w.handles,
-                class::Name::Text(&units(&format!("Fill{i}"))),
+                class::Name::Text(&wide(&format!("Fill{i}"))),
                 &wnd_class(),
             );
         }
@@ -6798,7 +6794,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.cb_wnd_extra = 12;
-        let atom = register(c, &w.handles, class::Name::Text(&units("Extra")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&wide("Extra")), &wc);
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.ex_style = WS_EX_LAYERED | WS_EX_TOPMOST;
@@ -6819,7 +6815,7 @@ mod tests {
         let err = c
             .unregister_class(
                 &mut w.handles,
-                class::Name::Text(&units("Extra")),
+                class::Name::Text(&wide("Extra")),
                 OWNER,
                 MODULE,
             )
@@ -6845,7 +6841,7 @@ mod tests {
             bottom: 400,
         };
         let mut pump = Rec::new(t);
-        let name = units("hello");
+        let name = wide("hello");
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(parent);
         a.menu = MenuInput::Id(7);
@@ -6864,7 +6860,7 @@ mod tests {
         let (_, _, p) = &pump.params[0];
         assert_eq!(p.menu, 7, "a child's menu is the raw id");
         assert_eq!(p.parent, w.at(parent).handle);
-        assert_eq!(p.name.as_slice(), &units("hello")[..]);
+        assert_eq!(p.name.as_slice(), &wide("hello")[..]);
         assert_eq!(p.params, 0x1234);
         assert_eq!(p.style, WS_CHILD);
         // A top-level window's menu is a handle.
@@ -7256,7 +7252,7 @@ mod tests {
         let atom = register_on(
             c,
             &w.handles,
-            class::Name::Text(&units("Menu")),
+            class::Name::Text(&wide("Menu")),
             &wnd_class(),
             DESKTOP,
             OWNER,
@@ -7304,7 +7300,7 @@ mod tests {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
         wc.style = class::CS_PARENTDC;
-        let atom = register(c, &w.handles, class::Name::Text(&units("PD")), &wc);
+        let atom = register(c, &w.handles, class::Name::Text(&wide("PD")), &wc);
         let parent = raw_window(w, t, WS_OVERLAPPED, None); // no WS_CLIPCHILDREN
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
@@ -7401,7 +7397,7 @@ mod tests {
     fn the_title_set_during_nccreate_reaches_create() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
-        pump.title_on_nccreate = Some(units("new title"));
+        pump.title_on_nccreate = Some(wide("new title"));
         let a = args(atom, WS_OVERLAPPED);
         let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
         let (_, _, p) = pump
@@ -7409,7 +7405,7 @@ mod tests {
             .iter()
             .find(|(_, m, _)| *m == WM_CREATE)
             .unwrap();
-        assert_eq!(p.name.as_slice(), &units("new title")[..]);
+        assert_eq!(p.name.as_slice(), &wide("new title")[..]);
     }
 
     /// A WM_NCCREATE answered with 0 rolls the creation back: the only messages are WM_NCCREATE
@@ -7429,7 +7425,7 @@ mod tests {
         assert!(c
             .unregister_class(
                 &mut w.handles,
-                class::Name::Text(&units("Test")),
+                class::Name::Text(&wide("Test")),
                 OWNER,
                 MODULE
             )
@@ -8063,7 +8059,7 @@ mod tests {
         assert!(c
             .unregister_class(
                 &mut w.handles,
-                class::Name::Text(&units("Test")),
+                class::Name::Text(&wide("Test")),
                 OWNER,
                 MODULE
             )
@@ -8160,7 +8156,7 @@ mod tests {
         assert!(
             c.unregister_class(
                 &mut w.handles,
-                class::Name::Text(&units("Test")),
+                class::Name::Text(&wide("Test")),
                 OWNER,
                 MODULE
             )
@@ -8325,7 +8321,7 @@ mod tests {
         let button = register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("Button")),
+            class::Name::Text(&wide("Button")),
             &wc,
         );
         m.classes
@@ -8340,7 +8336,7 @@ mod tests {
             .windows
             .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
             .unwrap();
-        let upper = units("BUTTON");
+        let upper = wide("BUTTON");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&upper);
         a.ex_style = ANSI_CREATOR_BIT;
@@ -8376,8 +8372,8 @@ mod tests {
             .window_links(m.windows.window_from_handle(second).unwrap());
         assert_eq!(second_links.previous, first);
 
-        let dialog_name = units("#32770");
-        let title = units("Box");
+        let dialog_name = wide("#32770");
+        let title = wide("Box");
         let mut a = args(0, WS_POPUP);
         a.class_name = class::Name::Text(&dialog_name);
         a.name = &title;
@@ -8385,7 +8381,7 @@ mod tests {
             .create_window(t, 0, &mut a, &mut DefaultProcedure)
             .unwrap();
         m.windows.set_window_text(boxed, &title).unwrap();
-        let lower = units("box");
+        let lower = wide("box");
         let found = m.find_window(
             t,
             None,
@@ -8394,10 +8390,10 @@ mod tests {
             Some(&lower),
         );
         assert_eq!(found, Ok(Some(boxed)));
-        let other = units("Other");
+        let other = wide("Other");
         let found = m.find_window(t, None, None, Some(class::Name::Atom(0x8002)), Some(&other));
         assert_eq!(found, Ok(None));
-        let missing = units("Missing");
+        let missing = wide("Missing");
         let found = m.find_window(t, None, None, Some(class::Name::Text(&missing)), None);
         assert_eq!(found, Ok(None));
 
@@ -8426,15 +8422,15 @@ mod tests {
         register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("App")),
+            class::Name::Text(&wide("App")),
             &wnd_class(),
         );
         let t = m
             .windows
             .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
             .unwrap();
-        let name = units("App");
-        let title = units("Hello");
+        let name = wide("App");
+        let title = wide("Hello");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
         a.name = &title;
@@ -8469,7 +8465,7 @@ mod tests {
             m.create_window(t, 0x1234, &mut a, &mut DefaultProcedure),
             Err(Failure::InvalidWindowHandle)
         );
-        let missing = units("Missing");
+        let missing = wide("Missing");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&missing);
         assert_eq!(
@@ -8536,13 +8532,13 @@ mod tests {
         register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("App")),
+            class::Name::Text(&wide("App")),
             &wnd_class(),
         );
         register_on(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("Other")),
+            class::Name::Text(&wide("Other")),
             &wnd_class(),
             DESKTOP,
             OTHER_OWNER,
@@ -8560,7 +8556,7 @@ mod tests {
             .windows
             .connect_thread(key(3, 0), OTHER_OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x20)
             .unwrap();
-        let app = units("App");
+        let app = wide("App");
         let create = |m: &mut WindowManager, thread, parent, name: &[u16], style| {
             let mut a = args(0, style);
             a.class_name = class::Name::Text(name);
@@ -8572,7 +8568,7 @@ mod tests {
         let _grandchild = create(m, t, child, &app, WS_CHILD);
         let _owned = create(m, t, top, &app, WS_POPUP);
         let _second = create(m, t2, 0, &app, WS_POPUP);
-        let other_name = units("Other");
+        let other_name = wide("Other");
         let survivor = create(m, other, 0, &other_name, WS_OVERLAPPED);
         let foster = create(m, other, top, &other_name, WS_CHILD);
         assert_eq!(m.process_records(), 7 + 2);
@@ -8683,14 +8679,14 @@ mod tests {
         register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("App")),
+            class::Name::Text(&wide("App")),
             &wnd_class(),
         );
         let t = m
             .windows
             .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
             .unwrap();
-        let name = units("App");
+        let name = wide("App");
         let mut a = args(0, WS_OVERLAPPEDWINDOW);
         a.class_name = class::Name::Text(&name);
         let h = m
@@ -8731,14 +8727,14 @@ mod tests {
         register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("App")),
+            class::Name::Text(&wide("App")),
             &wnd_class(),
         );
         let t = m
             .windows
             .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
             .unwrap();
-        let name = units("App");
+        let name = wide("App");
         let mut a = args(0, WS_OVERLAPPEDWINDOW);
         a.class_name = class::Name::Text(&name);
         (a.x, a.y, a.cx, a.cy) = (0, 0, 320, 200);
@@ -8907,7 +8903,7 @@ mod tests {
         c.register_class(
             handles,
             &wc,
-            class::Name::Text(&units(name)),
+            class::Name::Text(&wide(name)),
             class::MenuArg::None,
             OWNER,
             flags,
@@ -9084,8 +9080,8 @@ mod tests {
             Err(Failure::AccessDenied)
         );
 
-        assert_eq!(w.set_window_text(ht, &units("a title")), Ok(()));
-        assert_eq!(w.window_text(top).as_slice(), &units("a title")[..]);
+        assert_eq!(w.set_window_text(ht, &wide("a title")), Ok(()));
+        assert_eq!(w.window_text(top).as_slice(), &wide("a title")[..]);
         assert_eq!(
             w.set_window_text(0x7FFF_FFFC, &[]),
             Err(Failure::InvalidWindowHandle)
@@ -9761,14 +9757,14 @@ mod tests {
         register(
             &mut m.classes,
             &m.windows.handles,
-            class::Name::Text(&units("App")),
+            class::Name::Text(&wide("App")),
             &wnd_class(),
         );
         let t = m
             .windows
             .connect_thread(key(1, 0), OWNER, DESKTOP, DESKTOP_CREATEWINDOW, 0x10)
             .unwrap();
-        let name = units("App");
+        let name = wide("App");
         let make = |m: &mut WindowManager, parent, style| {
             let mut a = args(0, style);
             a.class_name = class::Name::Text(&name);
