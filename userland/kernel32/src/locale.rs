@@ -188,8 +188,9 @@ impl<'a, U: Copy> Produced<'a, U> {
 
 /// MultiByteToWideChar over 1252, 437 and UTF-8 (see [`rtl::codepage`]): a size query (no
 /// destination size) or the conversion, the OEM page's control bytes as glyphs for
-/// MB_USEGLYPHCHARS. ERROR_INVALID_FLAGS for a flag the page does not take
-/// (UTF-8 takes none), ERROR_INVALID_PARAMETER for an unknown page or a bad count,
+/// MB_USEGLYPHCHARS. ERROR_INVALID_FLAGS for a flag the page does not take (UTF-8 takes
+/// MB_ERR_INVALID_CHARS alone), ERROR_INVALID_PARAMETER for an unknown page or a bad count,
+/// ERROR_NO_UNICODE_TRANSLATION for UTF-8 Windows 2000 refuses to decode,
 /// ERROR_INSUFFICIENT_BUFFER for a destination too small.
 ///
 /// # Safety
@@ -221,18 +222,24 @@ fn to_wide(
 ) -> Result<i32, Failure> {
     const VALID_FLAGS: u32 = 0xF; // precomposed, composite, glyph chars, invalid chars
     const MB_USEGLYPHCHARS: u32 = 0x4;
-    if flags & !VALID_FLAGS != 0 || (cp == codepage::CP_UTF8 && flags != 0) {
+    const MB_ERR_INVALID_CHARS: u32 = 0x8;
+    if flags & !VALID_FLAGS != 0 || (cp == codepage::CP_UTF8 && flags & !MB_ERR_INVALID_CHARS != 0)
+    {
         return refused(ERROR_INVALID_FLAGS);
     }
     let page = codepage::resolve(cp).ok_or(Failure::Error(ERROR_INVALID_PARAMETER))?;
     let bytes = convert_source(&src)?;
     check_destination(&dst, capacity)?;
     let mut out = Produced::new(dst);
-    codepage::to_wide(page, bytes.bytes(), flags & MB_USEGLYPHCHARS != 0, |unit| {
-        out.put(unit)
-    });
+    let glyphs = flags & MB_USEGLYPHCHARS != 0;
+    let strict = flags & MB_ERR_INVALID_CHARS != 0;
+    codepage::to_wide(page, bytes.bytes(), glyphs, strict, |unit| out.put(unit))
+        .map_err(|_| Failure::Error(ERROR_NO_UNICODE_TRANSLATION))?;
     Ok(out.finish()? as i32)
 }
+
+/// ERROR_NO_UNICODE_TRANSLATION: a string the code page cannot convert.
+const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
 
 /// WideCharToMultiByte over 1252, 437 and UTF-8: a single-byte page best-fits what it does not hold
 /// (unless WC_NO_BEST_FIT_CHARS) and substitutes the default character (the caller's, else `?`)

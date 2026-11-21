@@ -225,7 +225,8 @@ fn fold_narrow(
     let bytes = src.units(true).bytes();
     // A byte is one character of the code page; a character expands to three at most.
     let mut wide = HeapVec::with_capacity(bytes.len())?;
-    codepage::to_wide(CodePage::Ansi, bytes, false, |unit| wide.push(unit));
+    codepage::to_wide(CodePage::Ansi, bytes, false, false, |unit| wide.push(unit))
+        .expect("a single-byte page decodes every byte");
     let mut mapped = HeapVec::with_capacity(3 * wide.len())?;
     fold(flags, wide.iter().copied(), |unit| mapped.push(unit));
     let mut out = Produced::new(dst);

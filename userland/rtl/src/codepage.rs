@@ -7,9 +7,9 @@
 //!
 //! The narrow-to-wide direction is a table look-up for the single-byte pages (the low half is
 //! ASCII; with MB_USEGLYPHCHARS the OEM page's control bytes are its glyphs instead — the ANSI page
-//! has no glyph table) and, for UTF-8, Windows 2000's decoder, which drops an ill-formed sequence
-//! silently rather than replacing it: a lead byte whose continuation is missing is skipped and the
-//! byte that broke it decodes on its own, and a stray continuation byte is skipped. The
+//! has no glyph table) and, for UTF-8, Windows 2000's decoder ([`utf8_decode`]), which refuses an
+//! overlong or out-of-range sequence and otherwise drops an ill-formed one silently rather than
+//! replacing it, unless MB_ERR_INVALID_CHARS asks it to refuse that too. The
 //! wide-to-narrow direction maps a unit the page holds exactly; otherwise it best-fits (a Latin
 //! letter with a diacritic becomes its base letter; in the ANSI page, a combining accent becomes
 //! its spacing form, as Windows' best-fit table for 1252 has it: FoldStringA's MAP_COMPOSITE in
@@ -161,33 +161,58 @@ pub fn encode_unit(page: CodePage, unit: u16, fit: bool) -> Option<u8> {
     exact_byte(page, unit).or_else(|| best_fit(page, unit).filter(|_| fit))
 }
 
-/// UTF-8 to UTF-16, Windows 2000's way (see the module notes), into `out`: the units it decodes.
-pub fn utf8_decode(bytes: &[u8], mut out: impl FnMut(u16)) {
+/// A UTF-8 string Windows 2000 refuses to decode (ERROR_NO_UNICODE_TRANSLATION).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct InvalidUtf8;
+
+/// UTF-8 to UTF-16, Windows 2000's way (the locale fixture's utf8err block), into `out`: the units
+/// it decodes. A sequence that cannot be well formed refuses the whole string, whatever `strict`
+/// says: a lead byte no sequence starts with (C0 and C1, whose sequences are all overlong, and F5
+/// to FF, whose values all pass U+10FFFF or which start five- to eight-byte forms), and a
+/// completed sequence that is overlong or past U+10FFFF. A surrogate's own three bytes decode to
+/// it. The rest is dropped silently unless `strict` asks (MB_ERR_INVALID_CHARS): a continuation
+/// byte no lead byte asked for, and a sequence the string's end cuts short, refuse the string
+/// then. A sequence a byte that is not a continuation cuts short is dropped even then, and that
+/// byte decodes on its own.
+pub fn utf8_decode(
+    bytes: &[u8],
+    strict: bool,
+    mut out: impl FnMut(u16),
+) -> Result<(), InvalidUtf8> {
     let mut i = 0;
     while i < bytes.len() {
         let lead = bytes[i];
-        let (trail, initial) = match lead {
+        let (trail, initial, least) = match lead {
             0x00..=0x7F => {
                 out(lead as u16);
                 i += 1;
                 continue;
             }
-            0xC0..=0xDF => (1, (lead & 0x1F) as u32),
-            0xE0..=0xEF => (2, (lead & 0x0F) as u32),
-            0xF0..=0xF7 => (3, (lead & 0x07) as u32),
-            // A stray continuation byte, or a byte no sequence starts with.
-            _ => {
+            0x80..=0xBF if strict => return Err(InvalidUtf8),
+            0x80..=0xBF => {
                 i += 1;
                 continue;
             }
+            0xC2..=0xDF => (1, (lead & 0x1F) as u32, 0x80),
+            0xE0..=0xEF => (2, (lead & 0x0F) as u32, 0x800),
+            0xF0..=0xF4 => (3, (lead & 0x07) as u32, 0x1_0000),
+            _ => return Err(InvalidUtf8),
         };
-        let complete = (1..=trail).all(|k| bytes.get(i + k).is_some_and(|&b| b & 0xC0 == 0x80));
-        if !complete {
-            // The broken lead is skipped; the byte that broke it decodes on its own.
-            i += 1;
+        let present = (1..=trail)
+            .take_while(|&k| bytes.get(i + k).is_some_and(|&b| b & 0xC0 == 0x80))
+            .count();
+        if present < trail {
+            if strict && i + 1 + present == bytes.len() {
+                return Err(InvalidUtf8); // cut short by the string's end
+            }
+            // The broken sequence is dropped; the byte that broke it decodes on its own.
+            i += 1 + present;
             continue;
         }
         let value = (1..=trail).fold(initial, |v, k| (v << 6) | (bytes[i + k] & 0x3F) as u32);
+        if value < least || value > 0x10_FFFF {
+            return Err(InvalidUtf8);
+        }
         i += 1 + trail;
         if value >= 0x1_0000 {
             let v = value - 0x1_0000;
@@ -197,6 +222,7 @@ pub fn utf8_decode(bytes: &[u8], mut out: impl FnMut(u16)) {
             out(value as u16);
         }
     }
+    Ok(())
 }
 
 /// UTF-16 to UTF-8, into `out` (a surrogate pair as one four-byte sequence, a lone surrogate as the
@@ -238,13 +264,23 @@ pub fn utf8_encode(units: &[u16], mut out: impl FnMut(u8)) {
 }
 
 /// Narrow to wide: the units `bytes` decode to in `page`, a single-byte page's control bytes as
-/// their glyphs when `glyphs` asks (MB_USEGLYPHCHARS).
-pub fn to_wide(page: CodePage, bytes: &[u8], glyphs: bool, mut out: impl FnMut(u16)) {
+/// their glyphs when `glyphs` asks (MB_USEGLYPHCHARS); UTF-8 refuses what [`utf8_decode`] refuses
+/// (`strict` for MB_ERR_INVALID_CHARS).
+pub fn to_wide(
+    page: CodePage,
+    bytes: &[u8],
+    glyphs: bool,
+    strict: bool,
+    mut out: impl FnMut(u16),
+) -> Result<(), InvalidUtf8> {
     match page {
-        CodePage::Utf8 => utf8_decode(bytes, out),
-        _ => bytes
-            .iter()
-            .for_each(|&b| out(decode_glyph(page, b, glyphs))),
+        CodePage::Utf8 => utf8_decode(bytes, strict, out),
+        _ => {
+            bytes
+                .iter()
+                .for_each(|&b| out(decode_glyph(page, b, glyphs)));
+            Ok(())
+        }
     }
 }
 
@@ -282,7 +318,7 @@ mod tests {
 
     fn wide(page: CodePage, bytes: &[u8]) -> Vec<u16> {
         let mut out = Vec::new();
-        to_wide(page, bytes, false, |u| out.push(u));
+        to_wide(page, bytes, false, false, |u| out.push(u)).unwrap();
         out
     }
 
@@ -343,6 +379,48 @@ mod tests {
             b"\xF0\x9F\x98\x80"
         );
         assert_eq!(wide(CodePage::Utf8, b"\x80a\xBF"), [0x61]);
+    }
+
+    /// UTF-8's ill-formed sequences, as the locale fixture's utf8err block has Windows 2000 decode
+    /// them, leniently and under MB_ERR_INVALID_CHARS: the decoded units, or the refusal.
+    #[test]
+    fn utf8_ill_formed_sequences() {
+        fn decode(bytes: &[u8], strict: bool) -> Result<Vec<u16>, InvalidUtf8> {
+            let mut out = Vec::new();
+            utf8_decode(bytes, strict, |u| out.push(u)).map(|()| out)
+        }
+        let both: &[(&[u8], Result<&[u16], InvalidUtf8>)] = &[
+            (b"a\xC3\xA9", Ok(&[0x61, 0xE9])),
+            (b"\xF0\x90\x80\x80", Ok(&[0xD800, 0xDC00])),
+            (b"\xF4\x8F\xBF\xBF", Ok(&[0xDBFF, 0xDFFF])),
+            (b"\xF4\x90\x80\x80", Err(InvalidUtf8)),
+            (b"\xF5\x80\x80\x80", Err(InvalidUtf8)),
+            (b"\xF7\xBF\xBF\xBF", Err(InvalidUtf8)),
+            (b"\xF8\x88\x80\x80\x80", Err(InvalidUtf8)),
+            (b"\xFC\x84\x80\x80\x80\x80", Err(InvalidUtf8)),
+            (b"\xFE\xFF", Err(InvalidUtf8)),
+            (b"\xC0\xAF", Err(InvalidUtf8)),
+            (b"\xC1\xBF", Err(InvalidUtf8)),
+            (b"\xE0\x80\xAF", Err(InvalidUtf8)),
+            (b"\xF0\x80\x80\xAF", Err(InvalidUtf8)),
+            (b"\xED\xA0\x80", Ok(&[0xD800])),
+            (b"\xEF\xBF\xBF", Ok(&[0xFFFF])),
+            (b"\xE2\x82x", Ok(&[0x78])),
+        ];
+        for &(bytes, expected) in both {
+            for strict in [false, true] {
+                assert_eq!(
+                    decode(bytes, strict).as_deref().map_err(|e| *e),
+                    expected,
+                    "{bytes:02X?}, strict {strict}"
+                );
+            }
+        }
+        // A stray continuation, and a sequence the end cuts short: dropped, or refused when strict.
+        for bytes in [&b"\x80x"[..], b"x\xE2\x82"] {
+            assert_eq!(decode(bytes, false), Ok(vec![0x78]));
+            assert_eq!(decode(bytes, true), Err(InvalidUtf8));
+        }
     }
 
     /// The OEM page's glyphs (none of them a high-half character), and the best fit dropped for
