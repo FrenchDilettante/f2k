@@ -204,10 +204,15 @@ pub const MUTEXES: usize = 64;
 /// create (STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when its pool has no room for the
 /// object).
 pub const TIMERS: usize = 256;
-/// How many sections can exist at once.
-pub const SECTIONS: usize = 32;
-/// How many image segments can exist at once: one per image file mapped (see [`ImageSegment`]).
-pub const SEGMENTS: usize = 16;
+/// How many sections can exist at once, across every process: two for each process record. An
+/// image section can be closed once its view is mapped (the view holds the image's segment), so a
+/// program's DLLs take segments, not sections. A full table refuses a create
+/// (STATUS_INSUFFICIENT_RESOURCES).
+pub const SECTIONS: usize = 2 * PROCESSES;
+/// How many image segments can exist at once: one per image file mapped, shared by every process
+/// that maps it (see [`ImageSegment`]); two for each process record. A full table refuses an image
+/// section's create (STATUS_INSUFFICIENT_RESOURCES).
+pub const SEGMENTS: usize = 2 * PROCESSES;
 /// How many file objects can exist at once.
 pub const FILES: usize = crate::fs::file::OPEN_FILES;
 /// How many thread records exist, across every process: any process's thread takes any free
@@ -2318,6 +2323,69 @@ mod tests {
         assert_eq!(reused.index, undone.index, "the freed record is reused");
         assert_ne!(reused.generation, undone.generation);
         assert_eq!(directory.create_process(), None, "full again");
+    }
+
+    /// The section table fills at its capacity — a create is refused, nothing made — and a deleted
+    /// section's record serves the next create.
+    #[test]
+    fn the_section_table_fills_and_reuses() {
+        let directory = directory();
+        let sections: Vec<_> = (0..SECTIONS)
+            .map(|_| directory.create_section(SectionObject::none()).unwrap())
+            .collect();
+        assert_eq!(directory.create_section(SectionObject::none()), None);
+        assert_eq!(
+            directory.live_objects(),
+            SECTIONS,
+            "the refusal made nothing"
+        );
+
+        let freed = sections[SECTIONS / 2];
+        assert!(directory.dereference(freed).is_some(), "its frames go back");
+        let reused = directory.create_section(SectionObject::none()).unwrap();
+        assert_eq!(reused.index, freed.index, "the freed record is reused");
+        assert!(directory.section(freed).is_none(), "under a new generation");
+        assert_eq!(directory.create_section(SectionObject::none()), None);
+    }
+
+    /// The image segment table fills at its capacity — another image file's section is refused —
+    /// and a segment whose last reference went leaves its record to the next.
+    #[test]
+    fn the_segment_table_fills_and_reuses() {
+        let directory = directory();
+        let segment = |index: u16| ImageSegment {
+            frames: crate::mem::vm::SectionFrames::empty(),
+            file_object: ObjectId {
+                kind: ObjectType::File,
+                index,
+                generation: 0,
+            },
+            image_base: 0x1000_0000,
+            size: 0x3000,
+        };
+        let segments: Vec<_> = (0..SEGMENTS as u16)
+            .map(|index| directory.create_segment(segment(index)).unwrap())
+            .collect();
+        assert_eq!(
+            directory.create_segment(segment(0)),
+            None,
+            "the table is full"
+        );
+        assert_eq!(
+            directory.segments.live(),
+            SEGMENTS,
+            "the refusal made nothing"
+        );
+
+        let freed = segments[SEGMENTS / 2];
+        assert!(
+            directory.dereference_segment(freed).is_some(),
+            "its file goes back"
+        );
+        let reused = directory.create_segment(segment(0)).unwrap();
+        assert_eq!(reused.index, freed.index, "the freed record is reused");
+        assert!(directory.segment(freed).is_none(), "under a new generation");
+        assert_eq!(directory.create_segment(segment(1)), None, "full again");
     }
 
     /// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
