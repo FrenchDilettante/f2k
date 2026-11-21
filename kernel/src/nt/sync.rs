@@ -14,6 +14,7 @@ use rtl::pod::Pod;
 
 use super::attributes::{self, Name, ObjectName, Resolved, OBJ_OPENIF};
 use super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+use super::signal::{self as rules, Bound, Signal};
 use crate::level::{At, Dispatch, Passive};
 use crate::nt::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use crate::ob::access::{
@@ -24,14 +25,11 @@ use crate::ob::access::{
 };
 use crate::ob::{self, ObjectId, ObjectType};
 use crate::sched::dispatcher::Dispatcher;
-use crate::sched::event::{EventKind, EVENT_WAKE_INCREMENT};
+use crate::sched::event::EVENT_WAKE_INCREMENT;
 use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId, MAXIMUM_WAIT_OBJECTS};
 use crate::sched::DISPATCHER;
 use crate::status::*;
 use crate::sync::ShortGuard;
-
-/// The priority increment a semaphore release grants the waiters it wakes.
-const SEMAPHORE_WAKE_INCREMENT: i8 = 1;
 
 // --- Naming --------------------------------------------------------------------------------------
 
@@ -115,19 +113,15 @@ pub(super) fn create(
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
     if request.directory {
-        return Err(if request.open_if {
-            STATUS_OBJECT_TYPE_MISMATCH
-        } else {
-            STATUS_OBJECT_NAME_COLLISION
-        });
+        // Always refused: the directory is no kind a create makes.
+        rules::create_over(Bound::Directory, kind, request.open_if)?;
     }
     let name = request.name.as_deref();
     let made = {
         let mut directory = ob::lock(passive);
         match name.and_then(|name| directory.lookup_name(name)) {
-            Some(_) if !request.open_if => return Err(STATUS_OBJECT_NAME_COLLISION),
-            Some(existing) if existing.kind != kind => return Err(STATUS_OBJECT_TYPE_MISMATCH),
             Some(existing) => {
+                rules::create_over(Bound::Object(existing.kind), kind, request.open_if)?;
                 directory.reference(existing);
                 Made::Existing(existing)
             }
@@ -173,17 +167,13 @@ pub(super) fn open(
     let request = request(attributes)?;
     slot.addr().probe(4)?;
     if request.directory {
-        return Err(STATUS_OBJECT_TYPE_MISMATCH);
+        // Always refused: the directory is no kind an object's open asks.
+        rules::open_of(Bound::Directory, kind, access)?;
     }
     let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
     // Referenced as it is found: the object cannot go before its handle holds it.
     let existing = ob::reference_by_name(&name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
-    if existing.id().kind != kind {
-        return Err(STATUS_OBJECT_TYPE_MISMATCH);
-    }
-    if access == 0 {
-        return Err(STATUS_ACCESS_DENIED);
-    }
+    rules::open_of(Bound::Object(existing.id().kind), kind, access)?;
     let handle = ob::open(calling_process(), existing.id(), access, request.inherit)
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     deliver(slot, handle.get(), STATUS_SUCCESS)
@@ -274,11 +264,7 @@ pub fn create_event(
     event_type: u32,
     initial_state: bool,
 ) -> NtResult {
-    let kind = match event_type {
-        0 => EventKind::Notification,
-        1 => EventKind::Synchronization,
-        _ => return Err(STATUS_INVALID_PARAMETER),
-    };
+    let kind = rules::event_kind(event_type)?;
     create(
         call.passive(),
         slot,
@@ -345,11 +331,7 @@ pub fn clear_event(call: &mut NtCall, event: Handle) -> NtResult {
 /// NtPulseEvent: signal the event for the waiters present — all of them for a notification event,
 /// one for a synchronization event — and leave it cleared either way.
 pub fn pulse_event(call: &mut NtCall, event: Handle, previous: UserPtr<i32>) -> NtResult {
-    with_event(call.passive(), event, previous, |dispatcher, event| {
-        let was = dispatcher.set_event(event, EVENT_WAKE_INCREMENT);
-        dispatcher.reset_event(event);
-        was
-    })
+    with_event(call.passive(), event, previous, rules::pulse_event)
 }
 
 // --- Mutants and semaphores ----------------------------------------------------------------------
@@ -419,9 +401,7 @@ pub fn create_semaphore(
     initial: i32,
     maximum: i32,
 ) -> NtResult {
-    if maximum <= 0 || initial < 0 || initial > maximum {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    rules::check_semaphore(initial, maximum)?;
     create(
         call.passive(),
         slot,
@@ -453,18 +433,17 @@ pub fn release_semaphore(
     previous: UserPtr<i32>,
 ) -> NtResult {
     previous.addr().probe(4)?;
-    if count <= 0 {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    rules::check_release_count(count)?;
     let reference = object_needing(
         semaphore.raw(),
         ObjectType::Semaphore,
         SEMAPHORE_MODIFY_STATE,
     )?;
-    let was = DISPATCHER
-        .get(&mut call.passive().raise::<Dispatch>())
-        .release_semaphore(reference.semaphore(), count, SEMAPHORE_WAKE_INCREMENT)
-        .map_err(|_| STATUS_SEMAPHORE_LIMIT_EXCEEDED)?;
+    let was = rules::release_semaphore(
+        DISPATCHER.get(&mut call.passive().raise::<Dispatch>()),
+        reference.semaphore(),
+        count,
+    )?;
     previous.write_optional(was)?;
     Ok(STATUS_SUCCESS)
 }
@@ -480,11 +459,7 @@ pub fn create_timer(
     attributes: UserAddr,
     timer_type: u32,
 ) -> NtResult {
-    let manual_reset = match timer_type {
-        0 => true,
-        1 => false,
-        _ => return Err(STATUS_INVALID_PARAMETER),
-    };
+    let manual_reset = rules::timer_manual_reset(timer_type)?;
     create(
         call.passive(),
         slot,
@@ -536,9 +511,7 @@ pub fn set_timer(
     previous.probe(1)?;
     let reference = object_needing(timer.raw(), ObjectType::Timer, TIMER_MODIFY_STATE)?;
     let due = due_time.read()? as i64;
-    if period < 0 {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
+    let period = rules::timer_period(period)?;
     let timer = reference.timer();
     let crate::sched::timer::TimerId::Waitable(index) = timer else {
         unreachable!("a timer object's body is a waitable timer");
@@ -568,22 +541,11 @@ pub fn set_timer(
                 context.raw(),
             );
         }
-        dispatcher.set_waitable_timer(
-            timer,
-            due,
-            now,
-            period as u64 * 10_000,
-            completion,
-            signal_time,
-        );
+        dispatcher.set_waitable_timer(timer, due, now, period, completion, signal_time);
         armed
     };
     write_boolean(previous, armed)?;
-    Ok(if resume {
-        STATUS_TIMER_RESUME_IGNORED
-    } else {
-        STATUS_SUCCESS
-    })
+    Ok(rules::set_timer_status(resume))
 }
 
 /// NtCancelTimer: disarm the timer, its period and any queued completion APC dropped; the signal
@@ -767,28 +729,18 @@ pub fn signal_and_wait_for_single_object(
             .and_then(|entry| entry.object_id())
             .map(|id| id.kind)
     };
-    let reference = match kind.map(|kind| (kind, ob::access::signal_right(kind))) {
-        Some((kind, Some(needed))) => object_needing(signal, kind, needed)?,
-        Some((_, None)) => return Err(STATUS_OBJECT_TYPE_MISMATCH),
-        None => return Err(STATUS_INVALID_HANDLE),
+    let (kind, needed) = rules::signal_needs(kind)?;
+    let reference = object_needing(signal, kind, needed)?;
+    let signal = match kind {
+        ObjectType::Event => Signal::Event(reference.event()),
+        ObjectType::Semaphore => Signal::Semaphore(reference.semaphore()),
+        _ => Signal::Mutant(reference.mutex()),
     };
-    {
-        let mut dispatch = call.passive().raise::<Dispatch>();
-        let dispatcher = DISPATCHER.get(&mut dispatch);
-        match reference.id().kind {
-            ObjectType::Event => {
-                dispatcher.set_event(reference.event(), EVENT_WAKE_INCREMENT);
-            }
-            ObjectType::Semaphore => {
-                dispatcher
-                    .release_semaphore(reference.semaphore(), 1, SEMAPHORE_WAKE_INCREMENT)
-                    .map_err(|_| STATUS_SEMAPHORE_LIMIT_EXCEEDED)?;
-            }
-            _ => {
-                dispatcher.release_mutex(reference.mutex(), crate::sched::current_thread())?;
-            }
-        }
-    }
+    rules::signal(
+        DISPATCHER.get(&mut call.passive().raise::<Dispatch>()),
+        signal,
+        crate::sched::current_thread(),
+    )?;
     wait_one(waitable, timeout, alertable)
 }
 

@@ -69,4 +69,98 @@ mod tests {
         );
         assert_eq!(check_objects(&[a, b, a], false), Ok(()));
     }
+
+    /// The statuses a multiple wait completes with, as NtWaitForMultipleObjects returns them: a
+    /// wait-any STATUS_WAIT_0 + the lowest signaled index, STATUS_ABANDONED_WAIT_0 + it when that
+    /// object is a mutant its owner ended holding (taken at once, or woken by the owner's end); a
+    /// wait-all STATUS_WAIT_0, STATUS_ABANDONED_WAIT_0 when an abandoned mutant is among what it
+    /// took; STATUS_TIMEOUT when nothing is signaled in time.
+    #[test]
+    fn a_multiple_wait_s_statuses() {
+        use crate::sched::event::EventKind;
+        use crate::sched::testkit;
+        use crate::sched::thread::ThreadState;
+        use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
+
+        const WAIT_0: u32 = 0;
+        const ABANDONED_WAIT_0: u32 = 0x80;
+        const STAMP: ClockStamp = ClockStamp {
+            interrupt_time: 10_000,
+            tick: 5,
+        };
+        let d = testkit::dispatcher();
+        let p = testkit::process(8);
+        let (owner, waiter, other) = (testkit::thread(p), testkit::thread(p), testkit::thread(p));
+        let wait = |thread: testkit::Rec<crate::sched::thread::Thread>,
+                    objects: &[WaitableId],
+                    wait_all: bool,
+                    timeout: Option<i64>| {
+            testkit::installed().wait_for_multiple(
+                thread.id(),
+                objects,
+                wait_all,
+                WaitReason::UserRequest,
+                WaitMode::User,
+                false,
+                timeout,
+                STAMP,
+            )
+        };
+        let complete = |status: u32| WaitDisposition::Complete(NtStatus(status));
+
+        let unset = testkit::event(EventKind::Notification, false).id();
+        let set = testkit::event(EventKind::Notification, true).id();
+        let mut mutex = testkit::mutex();
+        let mutant = WaitableId::Mutex(mutex.id().0);
+
+        assert_eq!(
+            wait(waiter, &[unset, unset], false, Some(0)),
+            complete(0x102)
+        );
+        assert_eq!(
+            wait(waiter, &[unset, set], false, Some(0)),
+            complete(WAIT_0 + 1)
+        );
+        mutex.abandoned = true;
+        assert_eq!(
+            wait(waiter, &[unset, unset, mutant, set], false, Some(0)),
+            complete(ABANDONED_WAIT_0 + 2),
+            "the abandoned mutant is the lowest signaled"
+        );
+        assert_eq!(d.release_mutex(mutex.id(), waiter.id()), Ok(0));
+        assert_eq!(
+            wait(waiter, &[unset, mutant], false, Some(0)),
+            complete(WAIT_0 + 1),
+            "the abandonment is reported once"
+        );
+        assert_eq!(d.release_mutex(mutex.id(), waiter.id()), Ok(0));
+
+        mutex.abandoned = true;
+        assert_eq!(
+            wait(waiter, &[set, mutant], true, Some(0)),
+            complete(ABANDONED_WAIT_0)
+        );
+        assert_eq!(d.release_mutex(mutex.id(), waiter.id()), Ok(0));
+        assert_eq!(
+            wait(waiter, &[set, mutant], true, Some(0)),
+            complete(WAIT_0)
+        );
+        assert_eq!(d.release_mutex(mutex.id(), waiter.id()), Ok(0));
+
+        // Parked on [an event, the mutant] while its owner holds it, woken by the owner's end.
+        assert_eq!(wait(owner, &[mutant], false, None), complete(WAIT_0));
+        assert_eq!(
+            wait(other, &[unset, mutant], false, None),
+            WaitDisposition::Yield
+        );
+        d.enter(owner.id());
+        d.thread_mut(owner.id()).state = ThreadState::Running;
+        d.retire_current();
+        assert!(matches!(
+            other.state(),
+            ThreadState::Ready | ThreadState::Standby
+        ));
+        assert_eq!(other.wait_status(), NtStatus(ABANDONED_WAIT_0 + 1));
+        assert_eq!(mutex.owner(), Some(other.id()));
+    }
 }

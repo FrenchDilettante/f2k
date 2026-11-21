@@ -68,6 +68,7 @@ pub mod object;
 pub mod process;
 pub mod section;
 pub mod shutdown;
+pub mod signal;
 #[cfg(target_arch = "x86")]
 pub mod sync;
 pub mod system;
