@@ -150,9 +150,11 @@ pub(super) fn create(
 }
 
 /// The open every named kind shares (NtOpenSection; NtOpenEvent, NtOpenMutant, NtOpenSemaphore
-/// and NtOpenTimer as they come): a new handle to the live object the name binds, with the access
-/// asked for. STATUS_OBJECT_NAME_NOT_FOUND when it binds none, STATUS_OBJECT_TYPE_MISMATCH when it
-/// binds another kind (the directory included).
+/// and NtOpenTimer as they come): a new handle to the live object the name binds, granted the
+/// access asked for (mapped: [`ob::ObjectType::granted`]). STATUS_OBJECT_NAME_NOT_FOUND when it
+/// binds none, STATUS_OBJECT_TYPE_MISMATCH when it binds another kind (the directory included),
+/// and STATUS_ACCESS_DENIED for an open asking no access at all: Windows 2000's access check grants
+/// an empty request nothing (OpenThread(0)'s capture shows it for a thread's open).
 pub(super) fn open(
     slot: UserPtr<u32>,
     access: u32,
@@ -172,6 +174,9 @@ pub(super) fn open(
     let existing = ob::reference_by_name(&name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
     if existing.id().kind != kind {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
+    }
+    if access == 0 {
+        return Err(STATUS_ACCESS_DENIED);
     }
     let handle = ob::open(calling_process(), existing.id(), access, request.inherit)
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -807,13 +812,13 @@ pub fn yield_execution(_call: &mut NtCall) -> NtResult {
 /// own among them (see [`super::object::reference_process`]). The current-thread and
 /// current-process pseudo-handles duplicate to real handles to their objects: the calling thread,
 /// and the source process (a pseudo-handle is read in the source process's context, as MSDN's
-/// DuplicateHandle reads the source handle). The duplicate has the access asked for or the
-/// source's (DUPLICATE_SAME_ACCESS), is inheritable as the attributes say (OBJ_INHERIT), and the
-/// call optionally closes the source in its process (DUPLICATE_CLOSE_SOURCE), which a found source
-/// is whatever happens next, its slot freed before the duplicate is made (see
-/// [`super::object::duplicate_entry`]); with no target process, closing it is all the call does.
-/// The new handle's value goes into the caller's memory: a target handle the probe refuses fails
-/// the call before anything is looked up. A process that has ended is
+/// DuplicateHandle reads the source handle). The duplicate has the access asked for (mapped as an
+/// open's) or the source's (DUPLICATE_SAME_ACCESS), is inheritable as the attributes say
+/// (OBJ_INHERIT), and the call optionally closes the source in its process
+/// (DUPLICATE_CLOSE_SOURCE), which a found source is whatever happens next, its slot freed before
+/// the duplicate is made (see [`super::object::duplicate_entry`]); with no target process, closing
+/// it is all the call does. The new handle's value goes into the caller's memory: a target handle
+/// the probe refuses fails the call before anything is looked up. A process that has ended is
 /// STATUS_PROCESS_IS_TERMINATING on either side (its handles are gone with it).
 #[allow(clippy::too_many_arguments)]
 pub fn duplicate_object(
@@ -856,7 +861,9 @@ pub fn duplicate_object(
     impl DuplicateTables for Tables {
         fn insert(&mut self, entry: ob::Entry) -> Option<core::num::NonZeroU32> {
             let Target::Object(id) = entry.target;
-            self.target().insert_object(id, entry.access, entry.inherit)
+            // The access asked for is mapped as an open's is (the source's, already mapped, stays).
+            self.target()
+                .insert_object(id, id.kind.granted(entry.access), entry.inherit)
         }
 
         fn close_duplicate(&mut self, handle: u32) {

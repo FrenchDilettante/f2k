@@ -50,6 +50,8 @@
 //!
 //! The capacities are fixed (a create past them fails as the platform's out-of-memory would).
 
+pub mod access;
+
 use rtl::array_vec::ArrayVec;
 
 use crate::level::Dispatch;
@@ -1773,29 +1775,30 @@ mod target {
         }
     }
 
-    /// Publish a new object: a handle to it in `process` (the current one) with `access` and
-    /// `inheritance`, and its creator's reference dropped — the handle holds it from now on. A
-    /// failure (the table is full) takes the object back with it.
+    /// Publish a new object: a handle to it in `process` (the current one) granted `access` (its
+    /// generic rights mapped: [`ObjectType::granted`]) and `inheritance`, and its creator's
+    /// reference dropped — the handle holds it from now on. A failure (the table is full) takes
+    /// the object back with it.
     pub fn publish(
         process: &crate::process::Process,
         id: ObjectId,
         access: u32,
         inherit: bool,
     ) -> Option<NonZeroU32> {
-        let handle = process.insert_object(id, access, inherit);
+        let handle = process.insert_object(id, id.kind.granted(access), inherit);
         release(id);
         handle
     }
 
-    /// Open the object `id` names as a new handle in `process`; none when the table is full or
-    /// the object is gone.
+    /// Open the object `id` names as a new handle in `process`, granted `access` (its generic
+    /// rights mapped: [`ObjectType::granted`]); none when the table is full or the object is gone.
     pub fn open(
         process: &crate::process::Process,
         id: ObjectId,
         access: u32,
         inherit: bool,
     ) -> Option<NonZeroU32> {
-        process.insert_object(id, access, inherit)
+        process.insert_object(id, id.kind.granted(access), inherit)
     }
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
