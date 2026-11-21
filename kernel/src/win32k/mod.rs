@@ -50,6 +50,7 @@ pub mod icon;
 pub mod input;
 pub mod menu;
 pub mod paint;
+pub mod posted;
 pub mod prop;
 pub mod queue;
 pub mod raster;

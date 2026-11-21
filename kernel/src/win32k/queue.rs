@@ -6,8 +6,10 @@
 //! one lock), one per thread record ([`window::Thread`]), made when a thread connects (its first
 //! win32k service makes it a GUI thread, as on Windows 2000) and named by a generation-tagged id
 //! ([`QueueId`]), the object manager's pattern. Posted messages are entries of one pool the queues
-//! share, linked oldest first, in two lanes: the messages posted to the thread, and the input
-//! messages the keyboard's keystrokes became ([`super::input`], [`post_input`]). A read ([`take`])
+//! share, which grows a page at a time as they need it ([`super::posted`]), linked oldest first, in
+//! two lanes: the messages posted to the thread, at most [`POSTED_LIMIT`] of them (Windows 2000's
+//! USERPostMessageLimit), and the input messages the keyboard's keystrokes became
+//! ([`super::input`], [`post_input`]), which the limit does not count. A read ([`take`])
 //! answers, in the documented order: the messages sent to the thread's windows; the posted
 //! messages its filter takes; the input messages it takes, each bound to its window as it is read
 //! ([`super::input::bind`]: the focus window then, not when the key was pressed), a key message
@@ -136,8 +138,12 @@ use super::window::{
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
-/// How many posted messages the queues hold between them.
-pub const POSTED: usize = 512;
+/// How many messages posted to a thread its queue holds at once: Windows 2000's
+/// USERPostMessageLimit, 10,000 by default. A post past it fails (guimsg `quota`), the input
+/// messages aside, which it does not count.
+pub const POSTED_LIMIT: u32 = 10_000;
+/// ERROR_NOT_ENOUGH_QUOTA: the post past [`POSTED_LIMIT`]'s refusal, as win32k carries it.
+pub const ERROR_NOT_ENOUGH_QUOTA: u32 = 1816;
 /// How many sent messages can be on their way at once.
 pub const SENT: usize = 128;
 /// How many sent creation messages, each with its create parameters, can be on their way at once.
@@ -207,6 +213,22 @@ impl List {
     };
 }
 
+/// A queue's list of entries from the posted messages' pool, oldest first, and how many it holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PostedList {
+    head: Option<u32>,
+    tail: Option<u32>,
+    count: u32,
+}
+
+impl PostedList {
+    const EMPTY: Self = PostedList {
+        head: None,
+        tail: None,
+        count: 0,
+    };
+}
+
 /// A thread's queue.
 #[derive(Clone, Copy)]
 struct Queue {
@@ -217,9 +239,9 @@ struct Queue {
     /// The thread's client id, as PostThreadMessage names it.
     client_id: u32,
     /// The posted messages, oldest first.
-    posted: List,
+    posted: PostedList,
     /// The input messages, oldest first.
-    input: List,
+    input: PostedList,
     /// The sent messages not handed out yet, oldest first.
     sent: List,
     /// The sent messages handed out and not answered yet, innermost first.
@@ -246,8 +268,8 @@ impl Queue {
         generation: 0,
         key: None,
         client_id: 0,
-        posted: List::EMPTY,
-        input: List::EMPTY,
+        posted: PostedList::EMPTY,
+        input: PostedList::EMPTY,
         sent: List::EMPTY,
         receiving: None,
         quit: None,
@@ -266,7 +288,7 @@ struct Posted {
     /// An input message's key, as the key state names it (the side's key for Shift, Ctrl and Alt,
     /// where the message names the generic one); 0 for a message posted to the thread.
     key: u8,
-    next: Option<u16>,
+    next: Option<u32>,
 }
 
 /// The two lanes of a queue's entries from the posted messages' pool.
@@ -276,21 +298,6 @@ enum Lane {
     Posted,
     /// The input messages the keyboard's keystrokes became.
     Input,
-}
-
-impl Posted {
-    const EMPTY: Self = Posted {
-        msg: Msg {
-            hwnd: 0,
-            message: 0,
-            wparam: 0,
-            lparam: 0,
-            time: 0,
-            pt: Point { x: 0, y: 0 },
-        },
-        key: 0,
-        next: None,
-    };
 }
 
 /// Where a sent message is.
@@ -406,9 +413,7 @@ struct CreateSlot {
 /// window manager's lock.
 pub struct Queues {
     queues: [Queue; THREADS],
-    posted: [Posted; POSTED],
-    /// The free posted entries, linked through their `next`.
-    free_posted: Option<u16>,
+    posted: super::posted::Pool<Posted>,
     sent: [Sent; SENT],
     creates: [CreateSlot; CREATES],
     /// The texts the sent messages carry: a creation message's window name, a text to another
@@ -440,15 +445,7 @@ impl Queues {
             for index in 0..THREADS {
                 records.add(index).write(Queue::EMPTY);
             }
-            let posted = addr_of_mut!((*queues).posted) as *mut Posted;
-            for index in 0..POSTED {
-                let next = (index + 1 < POSTED).then_some(index as u16 + 1);
-                posted.add(index).write(Posted {
-                    next,
-                    ..Posted::EMPTY
-                });
-            }
-            addr_of_mut!((*queues).free_posted).write(Some(0));
+            addr_of_mut!((*queues).posted).write(super::posted::Pool::EMPTY);
             let sent = addr_of_mut!((*queues).sent) as *mut Sent;
             for index in 0..SENT {
                 sent.add(index).write(Sent::EMPTY);
@@ -525,7 +522,7 @@ impl Queues {
     // --- The posted messages' pool ---------------------------------------------------------------
 
     /// The queue at `index`'s list of the lane `lane`.
-    fn lane(&mut self, index: u16, lane: Lane) -> &mut List {
+    fn lane(&mut self, index: u16, lane: Lane) -> &mut PostedList {
         let queue = &mut self.queues[index as usize];
         match lane {
             Lane::Posted => &mut queue.posted,
@@ -533,53 +530,56 @@ impl Queues {
         }
     }
 
-    /// Append `msg` to the queue's posted messages; false when the pool is exhausted.
-    fn push_posted(&mut self, id: QueueId, msg: Msg) -> bool {
+    /// Append `msg` to the queue's posted messages: ERROR_NOT_ENOUGH_QUOTA (carried as a
+    /// FACILITY_NTWIN32 status) when it holds [`POSTED_LIMIT`] already,
+    /// STATUS_INSUFFICIENT_RESOURCES when the pool cannot grow.
+    fn push_posted(&mut self, id: QueueId, msg: Msg) -> Result<(), NtStatus> {
+        if self.queues[id.index as usize].posted.count >= POSTED_LIMIT {
+            return Err(NtStatus::from_win32(ERROR_NOT_ENOUGH_QUOTA));
+        }
         self.push(id, Lane::Posted, msg, 0)
     }
 
-    /// Append `msg` (an input message's key `key`) to the queue's lane `lane`; false when the pool
-    /// is exhausted.
-    fn push(&mut self, id: QueueId, lane: Lane, msg: Msg, key: u8) -> bool {
-        let Some(entry) = self.free_posted else {
-            return false;
-        };
-        self.free_posted = self.posted[entry as usize].next;
-        self.posted[entry as usize] = Posted {
-            msg,
-            key,
-            next: None,
-        };
+    /// Append `msg` (an input message's key `key`) to the queue's lane `lane`:
+    /// STATUS_INSUFFICIENT_RESOURCES when the pool cannot grow.
+    fn push(&mut self, id: QueueId, lane: Lane, msg: Msg, key: u8) -> Result<(), NtStatus> {
+        let entry = self
+            .posted
+            .allocate(Posted {
+                msg,
+                key,
+                next: None,
+            })
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         match self.lane(id.index, lane).tail {
-            Some(tail) => self.posted[tail as usize].next = Some(entry),
+            Some(tail) => self.posted.get_mut(tail).next = Some(entry),
             None => self.lane(id.index, lane).head = Some(entry),
         }
-        self.lane(id.index, lane).tail = Some(entry);
+        let list = self.lane(id.index, lane);
+        list.tail = Some(entry);
+        list.count += 1;
         let kind = match lane {
             Lane::Posted => QS_POSTMESSAGE,
             Lane::Input => QS_KEY,
         };
         self.change(id, kind);
-        true
+        Ok(())
     }
 
     /// Take `entry` out of the queue's lane `lane` (`previous` is the entry before it, none for
     /// the head) and give it back to the pool.
-    fn unlink_posted(&mut self, index: u16, lane: Lane, previous: Option<u16>, entry: u16) {
-        let next = self.posted[entry as usize].next;
+    fn unlink_posted(&mut self, index: u16, lane: Lane, previous: Option<u32>, entry: u32) {
+        let next = self.posted.get(entry).next;
         match previous {
-            Some(p) => self.posted[p as usize].next = next,
+            Some(p) => self.posted.get_mut(p).next = next,
             None => self.lane(index, lane).head = next,
         }
         let list = self.lane(index, lane);
         if list.tail == Some(entry) {
             list.tail = previous;
         }
-        self.posted[entry as usize] = Posted {
-            next: self.free_posted,
-            ..Posted::EMPTY
-        };
-        self.free_posted = Some(entry);
+        list.count -= 1;
+        self.posted.free(entry);
     }
 
     /// Drop every posted and input message of the queue at `index` that `drop` picks.
@@ -588,8 +588,8 @@ impl Queues {
             let mut previous = None;
             let mut at = self.lane(index, lane).head;
             while let Some(entry) = at {
-                let next = self.posted[entry as usize].next;
-                if drop(&self.posted[entry as usize].msg) {
+                let next = self.posted.get(entry).next;
+                if drop(&self.posted.get(entry).msg) {
                     self.unlink_posted(index, lane, previous, entry);
                 } else {
                     previous = Some(entry);
@@ -840,8 +840,9 @@ pub fn client_id_of(windows: &Windows, thread: ThreadId) -> Option<u32> {
 
 /// PostMessage: `message` posted to the window `hwnd`'s thread, stamped `time`; a null window
 /// posts a thread message to `caller`, HWND_BROADCAST posts to every top-level window of
-/// `caller`'s desktop. STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_INSUFFICIENT_RESOURCES when the posted messages' pool is full.
+/// `caller`'s desktop. STATUS_INVALID_HANDLE for a handle naming no window, ERROR_NOT_ENOUGH_QUOTA
+/// for a queue holding [`POSTED_LIMIT`] posted messages, STATUS_INSUFFICIENT_RESOURCES when the
+/// posted messages' pool cannot grow.
 pub fn post(
     windows: &mut Windows,
     caller: ThreadId,
@@ -909,16 +910,13 @@ pub fn post_thread(
 }
 
 /// Append `msg` to the thread record `thread`'s queue: STATUS_INVALID_PARAMETER when it has none
-/// (a thread that never called win32k, or the window manager's own), STATUS_INSUFFICIENT_RESOURCES
-/// when the pool is full.
+/// (a thread that never called win32k, or the window manager's own), ERROR_NOT_ENOUGH_QUOTA when
+/// it holds [`POSTED_LIMIT`] posted messages already, STATUS_INSUFFICIENT_RESOURCES when the pool
+/// cannot grow.
 fn post_to(windows: &mut Windows, thread: ThreadId, msg: Msg) -> Result<(), NtStatus> {
     let queues = &mut windows.queues;
     let id = queues.queue_of(thread).ok_or(STATUS_INVALID_PARAMETER)?;
-    if queues.push_posted(id, msg) {
-        Ok(())
-    } else {
-        Err(STATUS_INSUFFICIENT_RESOURCES)
-    }
+    queues.push_posted(id, msg)
 }
 
 /// An input message for the thread record `thread`'s queue: `msg`, a key message with no window
@@ -927,7 +925,7 @@ fn post_to(windows: &mut Windows, thread: ThreadId, msg: Msg) -> Result<(), NtSt
 /// message, not read yet, is the same message of the same key raises that message's repeat count
 /// (lParam's low word) instead, as Windows 2000's queue folds a held key's repeats (the folded
 /// message's window is bound when it is read, as any other's). Nothing when the thread has no
-/// queue; the message is lost when the pool is full.
+/// queue; the message is lost when the pool cannot grow.
 pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, repeat: bool) {
     let queues = &mut windows.queues;
     let Some(id) = queues.queue_of(thread) else {
@@ -935,7 +933,7 @@ pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, re
     };
     if repeat {
         if let Some(tail) = queues.queues[id.index as usize].input.tail {
-            let last = &mut queues.posted[tail as usize].msg;
+            let last = &mut queues.posted.get_mut(tail).msg;
             let count = last.lparam as u32 & 0xFFFF;
             if last.message == msg.message && last.wparam == msg.wparam && count < 0xFFFF {
                 last.lparam = ((last.lparam as u32 & !0xFFFF) | (count + 1)) as LParam;
@@ -944,7 +942,7 @@ pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, re
             }
         }
     }
-    queues.push(id, Lane::Input, msg, key);
+    let _ = queues.push(id, Lane::Input, msg, key);
 }
 
 /// PostQuitMessage: the caller's next read that finds nothing posted before it makes a WM_QUIT
@@ -1154,7 +1152,7 @@ fn read_queue(
         let mut previous = None;
         let mut at = queues.queues[id.index as usize].posted.head;
         while let Some(entry) = at {
-            let msg = queues.posted[entry as usize].msg;
+            let msg = queues.posted.get(entry).msg;
             if filter.takes(msg.hwnd, msg.message) {
                 if remove {
                     queues.unlink_posted(id.index, Lane::Posted, previous, entry);
@@ -1162,7 +1160,7 @@ fn read_queue(
                 return Ok(Taken::Message(msg));
             }
             previous = Some(entry);
-            at = queues.posted[entry as usize].next;
+            at = queues.posted.get(entry).next;
         }
     }
 
@@ -1175,7 +1173,7 @@ fn read_queue(
         let mut previous = None;
         let mut at = windows.queues.queues[id.index as usize].input.head;
         while let Some(entry) = at {
-            let Posted { msg, key, next } = windows.queues.posted[entry as usize];
+            let Posted { msg, key, next } = *windows.queues.posted.get(entry);
             match super::input::bind(windows, caller, msg) {
                 None => {
                     windows
@@ -3750,21 +3748,35 @@ mod tests {
         );
     }
 
-    /// The posted messages' pool is shared and bounded: a full pool refuses the post; a message
-    /// taken out gives its entry back.
+    /// guimsg `quota`: a queue holds [`POSTED_LIMIT`] posted messages, the next post refused with
+    /// ERROR_NOT_ENOUGH_QUOTA; another thread's queue still takes posts, and the full queue still
+    /// takes the keyboard's input, the pool growing for them; a message taken out makes room again.
     #[test]
-    fn a_full_pool_refuses_the_post() {
+    fn a_full_queue_refuses_the_post_and_no_other() {
         let (m, _) = manager();
         let t = thread(m, 1, 0x100);
-        for _ in 0..POSTED {
+        let other = thread(m, 2, 0x200);
+        for _ in 0..POSTED_LIMIT {
             post(&mut m.windows, t, 0, WM_USER, 0, 0, 0).unwrap();
         }
         assert_eq!(
             post(&mut m.windows, t, 0, WM_USER, 0, 0, 0),
-            Err(STATUS_INSUFFICIENT_RESOURCES)
+            Err(NtStatus::from_win32(ERROR_NOT_ENOUGH_QUOTA))
+        );
+        post_thread(&mut m.windows, other, WM_USER, 0, 0, 0).unwrap();
+        let key = Msg {
+            message: rtl::user::WM_KEYDOWN,
+            wparam: 0x41,
+            ..Msg::default()
+        };
+        post_input(&mut m.windows, t, key, 0x41, false);
+        assert_eq!(
+            m.windows.queues.queues[t.0 as usize].input.count, 1,
+            "the input message is queued past the limit"
         );
         read(m, t, &all(), 0);
         post(&mut m.windows, t, 0, WM_USER, 0, 0, 0).unwrap();
+        assert_eq!(m.windows.queues.posted.live(), POSTED_LIMIT + 2);
     }
 
     /// A post wakes the queue it goes to, once, until the wakes are taken; a thread with no queue

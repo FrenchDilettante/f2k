@@ -33,11 +33,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::pod::Pod;
+use rtl::status::NtStatus;
 use rtl::user::*;
 use rtl::window::WINDOW_OTHER_PROCESS;
 
 use crate::procedure::{self, Procedure};
-use crate::{answered, failed_with, focus, imports, menubar, nonclient, paint, window, Out};
+use crate::{answered, focus, imports, menubar, nonclient, paint, window, window_error, Out};
 
 /// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
 pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
@@ -330,6 +331,8 @@ pub extern "system" fn post_message_a(
 
 /// PostMessageW: the message posted to the window's thread (a null window: the calling thread;
 /// HWND_BROADCAST: every top-level window); TRUE, or FALSE with 1400 for a handle naming no window.
+/// A queue that holds its 10,000 posted messages already refuses the post, FALSE with the last
+/// error untouched ([`posted`]).
 #[unsafe(export_name = "f2k_export_PostMessageW")]
 pub extern "system" fn post_message_w(
     window: usize,
@@ -337,7 +340,28 @@ pub extern "system" fn post_message_w(
     wparam: u32,
     lparam: i32,
 ) -> u32 {
-    answered(imports::post_message(window, message, wparam, lparam)).is_some() as u32
+    posted(
+        imports::post_message(window, message, wparam, lparam),
+        window_error,
+    )
+}
+
+/// ERROR_NOT_ENOUGH_QUOTA: win32k's refusal of a post to a queue that holds its 10,000 posted
+/// messages already.
+const ERROR_NOT_ENOUGH_QUOTA: u32 = 1816;
+
+/// A post's answer: TRUE, or FALSE with the failure's Win32 error (`error` maps it) made the last
+/// error; but a full queue's refusal (ERROR_NOT_ENOUGH_QUOTA) leaves the last error as it was, as
+/// guimsg `quota` shows Windows 2000's PostMessage does (later versions set 1816).
+fn posted(answer: Result<(), NtStatus>, error: fn(NtStatus) -> u32) -> u32 {
+    match answer {
+        Ok(()) => 1,
+        Err(status) if status == NtStatus::from_win32(ERROR_NOT_ENOUGH_QUOTA) => 0,
+        Err(status) => {
+            imports::set_last_error(error(status));
+            0
+        }
+    }
 }
 
 /// PostThreadMessageA: PostThreadMessageW's, a character message's character converted to the
@@ -358,7 +382,8 @@ pub extern "system" fn post_thread_message_a(
 }
 
 /// PostThreadMessageW: a thread message posted to the thread whose id is `thread`; TRUE, or FALSE
-/// with ERROR_INVALID_THREAD_ID for an id no thread with a queue has.
+/// with ERROR_INVALID_THREAD_ID for an id no thread with a queue has (a full queue's refusal as
+/// PostMessageW's).
 #[unsafe(export_name = "f2k_export_PostThreadMessageW")]
 pub extern "system" fn post_thread_message_w(
     thread: u32,
@@ -366,11 +391,10 @@ pub extern "system" fn post_thread_message_w(
     wparam: u32,
     lparam: i32,
 ) -> u32 {
-    failed_with(
+    posted(
         imports::post_thread_message(thread, message, wparam, lparam),
         imports::dos_error,
     )
-    .is_some() as u32
 }
 
 /// PostQuitMessage: WM_QUIT with the exit code left for the calling thread's next read (made when
@@ -1825,6 +1849,22 @@ mod tests {
         assert_eq!(def_window_proc_a(window, WM_ENDSESSION, 1, 0), 0);
         assert_eq!(def_window_proc_w(window, WM_ENDSESSION, 0, logoff), 0);
         assert!(seen().is_empty());
+    }
+
+    /// guimsg `quota`: a post a full queue refuses fails with the last error as it was; another
+    /// refusal sets its error.
+    ///
+    /// Pins: user32.PostMessageW
+    #[test]
+    fn a_full_queue_leaves_the_last_error() {
+        arm();
+        let full = Err(NtStatus::from_win32(ERROR_NOT_ENOUGH_QUOTA));
+        assert_eq!(posted(full, window_error), 0);
+        assert_eq!(last_error(), UNSET);
+        let gone = Err(NtStatus(rtl::status::STATUS_INVALID_HANDLE));
+        assert_eq!(posted(gone, window_error), 0);
+        assert_eq!(last_error(), 1400);
+        assert_eq!(posted(Ok(()), window_error), 1);
     }
 
     /// guimsg `icon`: DefWindowProc keeps a window's big and small icons apart, WM_SETICON
