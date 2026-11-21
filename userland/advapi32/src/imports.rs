@@ -493,6 +493,37 @@ pub fn query_information_token(
     })
 }
 
+/// NtOpenProcessToken for advapi32's own use: a handle to the token of the process `process`
+/// names, opened with `access`.
+pub fn open_own_process_token(process: u32, access: u32) -> Result<u32, NtStatus> {
+    let mut token = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtOpenProcessToken(process, access, &mut token) })?;
+    Ok(token)
+}
+
+/// NtQueryInformationToken for advapi32's own use: the token's information of `class` into
+/// `information` (see [`Answer`]: a buffer too small is STATUS_BUFFER_TOO_SMALL, the size the
+/// answer takes its length).
+pub fn query_token(token: u32, class: u32, information: &mut [u8]) -> Answer {
+    let mut length = 0u32;
+    // SAFETY: the service writes at most the buffer's length into it, and the length into the
+    // local.
+    let status = unsafe {
+        raw::NtQueryInformationToken(
+            token,
+            class,
+            information.as_mut_ptr(),
+            information.len() as u32,
+            &mut length,
+        )
+    };
+    Answer {
+        status: NtStatus(status),
+        length,
+    }
+}
+
 /// SECURITY_QUALITY_OF_SERVICE: its size, the impersonation level, the context tracking (static,
 /// 0) and whether only the enabled parts are effective.
 #[repr(C)]

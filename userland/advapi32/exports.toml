@@ -281,6 +281,38 @@ ordinal = 145
 fails = "FALSE"
 
 [[export]]
+name = "AllocateAndInitializeSid"
+group = "security"
+args = ["ptr pIdentifierAuthority", "u32 nSubAuthorityCount", "u32 nSubAuthority0", "u32 nSubAuthority1", "u32 nSubAuthority2", "u32 nSubAuthority3", "u32 nSubAuthority4", "u32 nSubAuthority5", "u32 nSubAuthority6", "u32 nSubAuthority7", "ptr pSid"]
+impl = { native = "AllocateAndInitializeSid" }
+ordinal = 30
+fails = "FALSE"
+
+[[export]]
+name = "EqualSid"
+group = "security"
+args = ["ptr pSid1", "ptr pSid2"]
+impl = { native = "EqualSid" }
+ordinal = 180
+fails = "FALSE"
+
+[[export]]
+name = "FreeSid"
+group = "security"
+args = ["ptr pSid"]
+impl = { native = "FreeSid" }
+ordinal = 185
+
+[[export]]
+name = "CheckTokenMembership"
+group = "security"
+args = ["handle TokenHandle", "ptr SidToCheck", "ptr<u32> IsMember"]
+impl = { native = "CheckTokenMembership" }
+ordinal = 57
+fails = "FALSE"
+note = "the user and the enabled groups; with no token, the process's (F2K's threads never impersonate)"
+
+[[export]]
 name = "OpenThreadToken"
 group = "security"
 args = ["handle ThreadHandle", "u32 DesiredAccess", "bool OpenAsSelf", "ptr<u32> TokenHandle"]
@@ -404,10 +436,6 @@ name = "AdjustTokenGroups"
 ordinal = 28
 
 [[export]]
-name = "AllocateAndInitializeSid"
-ordinal = 30
-
-[[export]]
 name = "AllocateLocallyUniqueId"
 ordinal = 31
 
@@ -510,10 +538,6 @@ ordinal = 55
 [[export]]
 name = "ChangeServiceConfigW"
 ordinal = 56
-
-[[export]]
-name = "CheckTokenMembership"
-ordinal = 57
 
 [[export]]
 name = "ClearEventLogA"
@@ -997,10 +1021,6 @@ name = "EqualPrefixSid"
 ordinal = 179
 
 [[export]]
-name = "EqualSid"
-ordinal = 180
-
-[[export]]
 name = "FileEncryptionStatusA"
 ordinal = 181
 
@@ -1015,10 +1035,6 @@ ordinal = 183
 [[export]]
 name = "FreeEncryptionCertificateHashList"
 ordinal = 184
-
-[[export]]
-name = "FreeSid"
-ordinal = 185
 
 [[export]]
 name = "GetAccessPermissionsForObjectA"

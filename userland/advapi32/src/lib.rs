@@ -18,6 +18,7 @@
 pub mod imports;
 pub mod regenum;
 pub mod registry;
+pub mod sid;
 pub mod stub;
 pub mod token;
 

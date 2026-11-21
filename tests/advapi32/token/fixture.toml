@@ -10,7 +10,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-admin = "F2K's advapi32 has no CheckTokenMembership, AllocateAndInitializeSid, EqualSid or FreeSid"
 privs = "F2K's tokens hold three privileges (SeChangeNotifyPrivilege, SeShutdownPrivilege and SeLoadDriverPrivilege), so enabling SeSystemtimePrivilege, SeBackupPrivilege or SeDebugPrivilege answers ERROR_NOT_ALL_ASSIGNED"
 
 [pins]
