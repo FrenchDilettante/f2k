@@ -11,8 +11,8 @@
 //! also what raises the commit limit: the limit is memory plus the paging file's size in pages
 //! ([`PagingFile::pages`]).
 
-// Nothing calls into the module yet: the slice that wires it to the boot volume's file layer and
-// to the commit accounting lands later, so the target build sees only the host tests' calls.
+// The boot wires the module to the boot volume's file layer (the target half below); the parts
+// nothing calls yet on the target build see only the host tests' calls.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::paging::PAGE_SIZE;
@@ -28,6 +28,31 @@ pub const MAX_PAGES: u64 = 1 << 16;
 const MAX_WORDS: usize = (MAX_PAGES as usize + 63) / 64;
 /// How many pages one [`PagingFile::extend`] adds: 1024 (4 MiB).
 pub const EXTEND_PAGES: u64 = 1024;
+
+/// The free space the paging file leaves the boot volume's other users, in bytes: the volume
+/// keeps this much of its free space for the files written beside the paging file.
+pub const FREE_SPACE_RESERVE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The largest paging file the boot makes fresh, in pages: 2048 (8 MiB). The file is made anew at
+/// every boot and on this volume a cluster is one sector, so its length costs the device one
+/// allocation per 512 bytes — the boot keeps the file to what it can afford to write and lets it
+/// grow in [`EXTEND_PAGES`] chunks (which is also what raises the commit limit) when the allocator
+/// runs out of room.
+pub const BOOT_MAX_PAGES: u64 = 2048;
+
+/// The paging file's size in bytes from the volume's free space: whole pages of what the reserve
+/// leaves, capped at the boot's [`BOOT_MAX_PAGES`] (and so at the bitmap's [`MAX_PAGES`]).
+pub fn size_from_free_space(free_bytes: u64) -> u64 {
+    let usable = free_bytes.saturating_sub(FREE_SPACE_RESERVE_BYTES);
+    (usable / PAGE_BYTES as u64).min(BOOT_MAX_PAGES) * PAGE_BYTES as u64
+}
+
+/// The boot's sizing, from the volume's free space and the machine's physical memory: the paging
+/// file's size in bytes, and the commit limit the boot then sets — physical memory plus the file.
+pub fn boot_sizing(free_bytes: u64, ram_bytes: u64) -> (u64, u64) {
+    let size = size_from_free_space(free_bytes);
+    (size, ram_bytes.saturating_add(size))
+}
 
 /// The store's refusal of a paging-file operation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -223,10 +248,196 @@ impl<S: PageStore> PagingFile<S> {
     }
 }
 
+// --- The boot volume's file layer (target) ------------------------------------------------------
+//
+// The kernel wires the paging file to a file on the boot volume: [`BootVolumeStore`] adapts the
+// volume's file layer to [`PageStore`] — whole-page reads and writes at byte offsets and setting
+// the file's length, each operation inside the volume's own locked section — and [`boot_create`]
+// makes the file fresh at boot and sets the commit limit from it.
+
+#[cfg(target_arch = "x86")]
+mod target {
+    use super::{boot_sizing, Page, PageStore, PagingFile, StoreError};
+    use crate::block::lock::DeviceLock;
+    use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_SYSTEM};
+    use crate::fs::fat32::lookup::{self, File};
+    use crate::fs::fat32::read;
+    use crate::fs::fat32::volume::with_boot_volume;
+    use crate::fs::fat32::write;
+    use crate::status::{NtStatus, STATUS_DISK_FULL};
+
+    /// The paging file's name in the boot volume's root directory.
+    pub const PAGING_FILE_NAME: &[u8] = b"pagefile.sys";
+
+    /// The store's refusal from the file layer's status: a full volume is no room for the length
+    /// asked, anything else is an I/O failure.
+    fn store_error(status: NtStatus) -> StoreError {
+        if status == STATUS_DISK_FULL {
+            StoreError::NoSpace
+        } else {
+            StoreError::Io
+        }
+    }
+
+    /// The paging file on the boot volume: the store over its directory entry, kept by the boot
+    /// ([`boot_create`]). Every operation runs inside the volume's locked section, so the store
+    /// itself holds nothing but the entry.
+    pub struct BootVolumeStore {
+        file: File,
+    }
+
+    impl PageStore for BootVolumeStore {
+        fn read_at(&mut self, offset: u64, page: &mut Page) -> Result<(), StoreError> {
+            let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
+            let count = with_boot_volume(|volume| read::read_at(volume, &self.file, offset, page))
+                .ok_or(StoreError::Io)?
+                .map_err(store_error)?;
+            if count != page.len() {
+                return Err(StoreError::Io);
+            }
+            Ok(())
+        }
+
+        fn write_at(&mut self, offset: u64, page: &Page) -> Result<(), StoreError> {
+            let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
+            with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, page))
+                .ok_or(StoreError::Io)?
+                .map_err(store_error)
+        }
+
+        fn set_len(&mut self, len: u64) -> Result<(), StoreError> {
+            let len = u32::try_from(len).map_err(|_| StoreError::NoSpace)?;
+            with_boot_volume(|volume| write::set_size(volume, &mut self.file, len))
+                .ok_or(StoreError::Io)?
+                .map_err(store_error)
+        }
+    }
+
+    /// The system's one paging file, made at boot — none before it, or on a boot with no volume
+    /// or no room — behind the lock that serializes its users.
+    static PAGING_FILE: DeviceLock<Option<PagingFile<BootVolumeStore>>> = DeviceLock::new(None);
+
+    /// Run `body` on the paging file, serialized against its other users; none when the boot made
+    /// none.
+    pub fn with_paging_file<R>(
+        body: impl FnOnce(&mut PagingFile<BootVolumeStore>) -> R,
+    ) -> Option<R> {
+        crate::process::threads::critical_region(|| {
+            PAGING_FILE.with(|file| file.as_mut().map(body))
+        })
+    }
+
+    /// Take the entry named [`PAGING_FILE_NAME`] off the volume, when it is a file: the paging
+    /// file is made fresh at each boot, so one left by an earlier boot goes first.
+    fn remove_existing() {
+        let _ = with_boot_volume(|volume| match lookup::lookup(volume, PAGING_FILE_NAME) {
+            Ok(file) if !file.directory => write::delete(volume, &file),
+            _ => Ok(()),
+        });
+    }
+
+    /// Make the paging file fresh on the boot volume — sized from the volume's free space (see
+    /// [`super::size_from_free_space`]) — and set the system's commit limit to physical memory
+    /// plus the file's size. Boot context, after the volume's mount. A boot with no volume, or
+    /// whose volume cannot hold the file, leaves the limit at physical memory.
+    pub fn boot_create() {
+        PAGING_FILE.init();
+        let free_bytes = with_boot_volume(|volume| {
+            let cluster = u64::from(volume.layout().sectors_per_cluster) * 512;
+            volume.free_clusters().map(|free| u64::from(free) * cluster)
+        });
+        let Some(Ok(free_bytes)) = free_bytes else {
+            return;
+        };
+        // Physical memory while the limit is unset: the frame database's whole size.
+        let ram_bytes = crate::mem::system_commit_limit();
+        let (size, limit) = boot_sizing(free_bytes, ram_bytes);
+
+        remove_existing();
+        let store = match with_boot_volume(|volume| -> Result<BootVolumeStore, NtStatus> {
+            let mut file = File::plain(0, 0, false);
+            file.attributes = ATTR_HIDDEN | ATTR_SYSTEM;
+            file.times = crate::fs::io::now();
+            write::create_entry(
+                volume,
+                volume.layout().root_cluster,
+                PAGING_FILE_NAME,
+                &mut file,
+            )?;
+            Ok(BootVolumeStore { file })
+        }) {
+            Some(Ok(store)) => store,
+            _ => return,
+        };
+        let file = match PagingFile::create(store, size) {
+            Ok(file) => file,
+            Err(_) => {
+                remove_existing();
+                return;
+            }
+        };
+        crate::mem::set_system_commit_limit(limit);
+        let pages = file.pages();
+        PAGING_FILE.with(|slot| *slot = Some(file));
+        // Leave the volume as the boot found it: the file's writes are all on disk, so the flush
+        // counts its free clusters into FSInfo and marks it clean, and a shutdown later finds
+        // nothing to write.
+        let _ = with_boot_volume(|volume| volume.flush());
+        crate::serial_println!(
+            "F2K: paging file: {} pages ({} MiB), commit limit {} pages",
+            pages,
+            size / (1024 * 1024),
+            limit / 4096
+        );
+    }
+}
+
+#[cfg(target_arch = "x86")]
+pub use target::boot_create;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::vec::Vec;
+
+    /// The boot sizes the file from the volume's free space — the reserve stays free, the rest
+    /// goes in whole pages up to the boot's cap — and sets the commit limit to physical memory
+    /// plus the file.
+    #[test]
+    fn the_boot_sizes_the_file_from_the_free_space_and_sets_the_limit() {
+        let mib = 1024 * 1024;
+        let (size, limit) = boot_sizing(44 * mib + 123, 32 * mib);
+        assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64, "the boot's cap binds on a roomy volume");
+        assert_eq!(size % PAGE_BYTES as u64, 0);
+        assert_eq!(limit, 32 * mib + size, "RAM plus the paging file");
+        assert_eq!(limit - 32 * mib, size);
+
+        // A volume with less free than the cap takes what it has past the reserve, in whole pages.
+        let (size, limit) = boot_sizing(FREE_SPACE_RESERVE_BYTES + 10_000, 32 * mib);
+        assert_eq!(size, 2 * PAGE_BYTES as u64);
+        assert_eq!(limit, 32 * mib + 2 * PAGE_BYTES as u64);
+
+        // A nearly full volume: nothing past the reserve, so no file, and the limit is RAM alone.
+        let (size, limit) = boot_sizing(FREE_SPACE_RESERVE_BYTES, 32 * mib);
+        assert_eq!((size, limit), (0, 32 * mib));
+        let (size, limit) = boot_sizing(1024, 32 * mib);
+        assert_eq!((size, limit), (0, 32 * mib));
+    }
+
+    /// A volume with more free space than the boot's cap: the file stops at the cap, which stays
+    /// under the bitmap's.
+    #[test]
+    fn the_file_is_capped_at_the_boots_cap() {
+        let mib = 1024 * 1024;
+        assert!(BOOT_MAX_PAGES <= MAX_PAGES);
+        let (size, limit) = boot_sizing(u64::MAX, 32 * mib);
+        assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64);
+        assert_eq!(limit, 32 * mib + BOOT_MAX_PAGES * PAGE_BYTES as u64);
+
+        let (size, _) =
+            boot_sizing(FREE_SPACE_RESERVE_BYTES + (MAX_PAGES + 5) * PAGE_BYTES as u64, 0);
+        assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64, "the boot's cap binds before the bitmap's");
+    }
 
     /// A RAM disk as the store: a byte buffer that grows on `set_len` (zero-filling), refuses
     /// every operation while `fail` is set, caps its length at `max`, and records the offsets

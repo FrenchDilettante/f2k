@@ -396,7 +396,9 @@ mod target {
         if vector == 14 {
             // A page fault the entry resolves: apply it (map the page) and resume the access.
             let write = frame.error_code & 0b10 != 0;
-            if crate::mem::demand::apply(&mut crate::mem::vm::CurrentPages, cr2, write, true) {
+            if crate::mem::demand::apply(&mut crate::mem::vm::CurrentPages, cr2, write, true)
+                || crate::mem::backing::apply(&mut crate::mem::vm::CurrentPages, cr2, write, true)
+            {
                 return true;
             }
         }

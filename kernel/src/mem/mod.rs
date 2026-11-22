@@ -1,6 +1,7 @@
 //! Memory management: the physical frame database, paging, kernel stacks, the nonpaged pool,
 //! virtual memory, and the block heap the registry's arena runs on.
 
+pub mod backing;
 pub mod demand;
 pub mod dma;
 pub mod fault;

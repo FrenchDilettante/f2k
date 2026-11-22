@@ -212,6 +212,11 @@ pub fn devices() {
 /// whose disk smoke counts the disk's interrupts from the mount on.
 #[cfg(target_arch = "x86")]
 pub fn fonts() {
+    // The paging file is made in this phase — after the devices' diagnostics, whose disk smoke
+    // counts the disk's interrupts from the mount on: fresh on the boot volume, with the system's
+    // commit limit set to physical memory plus the file's size.
+    crate::mem::pagingfile::boot_create();
+
     crate::win32k::fonts::load_boot_fonts();
 }
 
