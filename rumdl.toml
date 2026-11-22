@@ -1,0 +1,7 @@
+[MD013]
+line-length = 0
+reflow = true
+reflow-mode = "sentence-per-line"
+
+[MD060]
+enabled = true
