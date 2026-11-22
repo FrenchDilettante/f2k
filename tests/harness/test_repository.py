@@ -71,7 +71,8 @@ LISTED = [name for name in SECTIONED if '"../common/f2kt.h"' in fixture_source(n
 # instead of skipping, and the binaries' --list (their section tables) is the checked-in source's.
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
-                    "keys", "system_programs", "boot_under", "data_files", "system_fonts", "storage"}
+                    "keys", "system_programs", "boot_under", "data_files", "system_fonts", "storage",
+                    "memory"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
 SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "storage"}

@@ -226,7 +226,9 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     with the block's exit code, and its teardown audits clean; a block the boot never reached fails
     as not run, naming the block the boot stopped in. The boot reads its disk from memory (the
     kernel's RAM disk) unless the fixture declares `storage = "ide"` or the run asks for the IDE
-    disk (F2K_STORAGE=ide): `f2kboot.boot`."""
+    disk (F2K_STORAGE=ide): `f2kboot.boot`; a fixture declaring `memory` boots the IDE disk with
+    that guest memory instead of RAM_MEMORY (the small-RAM rung), so it declares `storage = "ide"`
+    too (`f2kboot.fixture_memory`)."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)
@@ -257,6 +259,7 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
                     timeouts=[boot_timeout(each.timeout) for each in selected],
                     keys=keys,
                     storage=f2kboot.fixture_storage(captured.fixture),
+                    memory=f2kboot.fixture_memory(captured.fixture),
                 )
             finally:
                 if variant is not None:

@@ -1884,6 +1884,26 @@ def fixture_storage(fixture: str) -> str | None:
     return storage
 
 
+# A guest-memory size QEMU's -m takes: "32M" and friends.
+MEMORY_SIZE = re.compile(r"[0-9]+[KMG]?")
+
+
+def fixture_memory(fixture: str) -> str | None:
+    """The guest memory a fixture's boot runs with, its declaration's `memory` ("32M"; None, the
+    run's RAM_MEMORY, by default). It reaches QEMU's -m only where the disk is the IDE drive
+    (`storage = "ide"`): the RAM-disk boot loads the whole disk image as a module, so it keeps
+    RAM_MEMORY whatever `memory` says, and a fixture declaring `memory` must declare
+    `storage = "ide"` too."""
+    memory = declaration(fixture).get("memory")
+    if memory is not None:
+        if not isinstance(memory, str) or MEMORY_SIZE.fullmatch(memory) is None:
+            raise ValueError(f"{fixture}: memory is a guest size QEMU's -m takes, \"32M\", not {memory!r}")
+        if fixture_storage(fixture) != "ide":
+            raise ValueError(f"{fixture}: memory needs storage = \"ide\": the RAM-disk boot loads the"
+                             " whole disk image and keeps RAM_MEMORY")
+    return memory
+
+
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
     fixture's (`script_disk`) or a sectioned one's with its `system_programs`, `data_files` and
@@ -1917,6 +1937,7 @@ def corpus_params(fixture: str) -> list:
                   f"({', '.join(path.name for path in real_machine_files(fixture))})")
         return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
     fixture_storage(fixture)  # a storage it cannot have fails the collection, not the boot
+    fixture_memory(fixture)  # likewise, its memory
     if kind == "script":
         captured = read_capture(fixture)
         reason = declared.get("pending")
@@ -2087,13 +2108,14 @@ class Batch:
 
 def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: Path,
                timeouts: list[float], keys: dict[str, list[KeyStep]] | None = None,
-               storage: str | None = None) -> Batch:
+               storage: str | None = None, memory: str | None = None) -> Batch:
     """Run `captured`'s blocks in one boot of `build` (`image` as `boot` takes it), each its own
     process, in order; `timeouts` are each block's seconds on the boot's clock (`BootClock`; the
     boot's start counts against the first). Each block runs as its `block_command`: under its
     fixture's `boot_under` program where it declares one. With `keys`, each block's section's keys
     are pressed as the block asks for them (`KeyPresser`). `storage` is where the boot reads
-    its disk, as `boot` takes it."""
+    its disk, as `boot` takes it; `memory` is the guest memory for the IDE-disk boot (a fixture's
+    declaration; RAM_MEMORY by default)."""
     blocks = [each.block for each in captured]
     under = [boot_under(each.fixture) for each in captured]
     clock = BootClock()
@@ -2117,7 +2139,7 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         build,
         image=image,
         cmdline=cmdline,
-        memory=RAM_MEMORY,
+        memory=memory if memory is not None else RAM_MEMORY,
         log_path=log_path,
         timeout=sum(timeouts),
         done=watch,

@@ -4338,6 +4338,9 @@ name = "ZwAllocateVirtualMemory"
 ordinal = 1052
 
 [[export]]
+name = "ZwAreMappedFilesTheSame"
+
+[[export]]
 name = "ZwCancelIoFile"
 ordinal = 1053
 
@@ -4426,6 +4429,9 @@ name = "ZwEnumerateValueKey"
 ordinal = 1074
 
 [[export]]
+name = "ZwExtendSection"
+
+[[export]]
 name = "ZwFlushInstructionCache"
 ordinal = 1075
 
@@ -4456,6 +4462,9 @@ ordinal = 1081
 [[export]]
 name = "ZwLoadKey"
 ordinal = 1082
+
+[[export]]
+name = "ZwLockVirtualMemory"
 
 [[export]]
 name = "ZwMakeTemporaryObject"
@@ -4516,6 +4525,9 @@ ordinal = 1096
 [[export]]
 name = "ZwPowerInformation"
 ordinal = 1097
+
+[[export]]
+name = "ZwProtectVirtualMemory"
 
 [[export]]
 name = "ZwPulseEvent"
@@ -4582,6 +4594,9 @@ name = "ZwQuerySystemInformation"
 ordinal = 1113
 
 [[export]]
+name = "ZwQueryVirtualMemory"
+
+[[export]]
 name = "ZwQueryValueKey"
 ordinal = 1114
 
@@ -4592,6 +4607,9 @@ ordinal = 1115
 [[export]]
 name = "ZwReadFile"
 ordinal = 1116
+
+[[export]]
+name = "ZwReadVirtualMemory"
 
 [[export]]
 name = "ZwReplaceKey"
@@ -4682,6 +4700,9 @@ name = "ZwUnloadKey"
 ordinal = 1138
 
 [[export]]
+name = "ZwUnlockVirtualMemory"
+
+[[export]]
 name = "ZwUnmapViewOfSection"
 ordinal = 1139
 
@@ -4696,6 +4717,9 @@ ordinal = 1141
 [[export]]
 name = "ZwWriteFile"
 ordinal = 1142
+
+[[export]]
+name = "ZwWriteVirtualMemory"
 
 [[export]]
 name = "ZwYieldExecution"

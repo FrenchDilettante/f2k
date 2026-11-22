@@ -1,0 +1,111 @@
+# vmdemand: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat vmdemand and tests\capture.bat vmdemand
+# land vmdemand.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited).
+description = "vmdemand - the demand-paging surface: the commit charge against the commit limit with the failing status and error (commitlimit), a 1 GiB reservation with 16 MiB committed and touched at each end and what the queries report over it (reservelarge), MEM_RESET and decommit/recommit over committed, reserved and mapped pages (resetcommit), protection transitions and their query results (prottrans), NtQuerySystemInformation's performance class against GlobalMemoryStatus (sysinfo), a pattern round trip through committed private memory under pressure (pageroundtrip), a file-backed section's page-in and copy-on-write contract (filepagein), NtQueryVirtualMemory over free, reserved, committed, mapped and image regions (ntqueryvm), and the first region intact after a second is written (trimpressure)."
+kind = "sectioned"
+gate = true
+# The small-RAM rung: the batch boots the IDE disk at 32 MiB of guest memory, so a working set
+# only a few MiB over RAM gets trimmed and paged back in. The RAM-disk boot cannot go below
+# RAM_MEMORY (it loads the whole disk image as a module), so `memory` requires `storage = "ide"`.
+storage = "ide"
+memory = "32M"
+
+[pending]
+# Every block waits for the behavior it pins; tests/capture.bat vmdemand fills output.txt on the VM
+# trip, and each block un-xfails when that behavior lands.
+commitlimit = "F2K commits eagerly (a commit maps and zeroes its frames at once) and runs with no paging file, so its commit limit is physical memory and the chunk loop's refusal, its error and the past-the-limit Nt status differ"
+reservelarge = "F2K maps and zeroes a commit's frames at once, so at this fixture's small-RAM boot the 16 MiB end commits and the interior commit answer differently where Windows 2000 only charges"
+resetcommit = "F2K's MEM_RESET over committed, reserved and mapped pages and its decommit/recommit zeroing were chosen from memory"
+prottrans = "F2K's protection transition on a reserved region, its old-protection answers and NtProtectVirtualMemory's status were chosen from memory"
+sysinfo = "F2K reports the commit limit as physical memory with no paging file, so the performance class's commit limit, total and available and GlobalMemoryStatus's page file differ"
+pageroundtrip = "F2K has no backing store and commits eagerly, so at the small-RAM boot the second 16 MiB's commit fails where Windows 2000 charges and faults pages in"
+filepagein = "F2K reads a file-backed view's pages eagerly at map time and never writes them back, so the write view's file change after unmap differs"
+ntqueryvm = "F2K's 32 MiB commit over free space at the small-RAM boot fails where Windows 2000 only charges, so its status and the query over it differ; its too-short-buffer and unknown-class statuses were chosen from memory"
+trimpressure = "F2K has no working set to trim and no backing store, so at the small-RAM boot the eager commits fail where Windows 2000 trims and pages the first region back in"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+commitlimit = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.GlobalMemoryStatus",
+    "kernel32.GetSystemInfo",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.NtQuerySystemInformation",
+]
+reservelarge = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "ntdll.NtQueryVirtualMemory",
+]
+resetcommit = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.CloseHandle",
+    "ntdll.NtAllocateVirtualMemory",
+]
+prottrans = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualProtect",
+    "kernel32.VirtualQuery",
+    "kernel32.IsBadReadPtr",
+    "kernel32.IsBadWritePtr",
+    "ntdll.NtProtectVirtualMemory",
+]
+sysinfo = [
+    "kernel32.GlobalMemoryStatus",
+    "kernel32.GetSystemInfo",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtQuerySystemInformation",
+]
+pageroundtrip = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.VirtualQuery",
+    "ntdll.NtReadVirtualMemory",
+    "ntdll.NtWriteVirtualMemory",
+]
+filepagein = [
+    "kernel32.CreateFileA",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.ReadFile",
+    "kernel32.WriteFile",
+    "kernel32.SetFilePointer",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.VirtualQuery",
+    "ntdll.NtQueryVirtualMemory",
+]
+ntqueryvm = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.CloseHandle",
+    "kernel32.GetModuleHandleA",
+    "ntdll.NtAllocateVirtualMemory",
+    "ntdll.NtQueryVirtualMemory",
+]
+trimpressure = [
+    "kernel32.VirtualAlloc",
+    "kernel32.VirtualFree",
+    "kernel32.GlobalMemoryStatus",
+    "kernel32.GetSystemInfo",
+    "ntdll.NtQueryVirtualMemory",
+]

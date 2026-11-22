@@ -541,6 +541,27 @@ def test_a_fixture_declares_its_storage(tmp_path, monkeypatch):
             f2kboot.fixture_storage("secfake")
 
 
+def test_a_fixture_declares_its_memory(tmp_path, monkeypatch):
+    """A fixture's `memory` is a guest size QEMU's -m takes ("32M"; none by default: the run's
+    RAM_MEMORY); it needs `storage = "ide"`, the RAM-disk boot loading the whole disk image."""
+    directory = tmp_path / "kernel32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    declared.write_text('kind = "sectioned"\nstorage = "ide"\n')
+    assert f2kboot.fixture_memory("secfake") is None
+    for memory in ("32M", "64M", "256M", "512"):
+        declared.write_text(f'kind = "sectioned"\nstorage = "ide"\nmemory = "{memory}"\n')
+        assert f2kboot.fixture_memory("secfake") == memory
+    for wrong in ('"32 M"', '["32M"]', "1", '"ide"'):
+        declared.write_text(f'kind = "sectioned"\nstorage = "ide"\nmemory = {wrong}\n')
+        with pytest.raises(ValueError, match="memory"):
+            f2kboot.fixture_memory("secfake")
+    declared.write_text('kind = "sectioned"\nmemory = "32M"\n')
+    with pytest.raises(ValueError, match="storage"):
+        f2kboot.fixture_memory("secfake")
+
+
 def volume_image(path, *, fat1=0x0FFF_FFFF, free_count=0xFFFF_FFFF, next_free=0xFFFF_FFFF,
                  used=(), fsinfo=True):
     """A small FAT32-shaped volume at the partition's offset in a disk image: 8 reserved sectors

@@ -1,0 +1,131 @@
+# F2K capture of vmdemand (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  0:58:40.45
+vmdemand F2KT-SOURCE-CRC=0x23C19D8B
+>>> vmdemand.exe commitlimit
+== commitlimit
+GlobalMemoryStatus: total page file > 0: yes, avail <= total: yes, total a page multiple: yes
+NtQuerySystemInformation(performance): status=0x00000000 err=- retlen>=128: yes
+committed <= limit: yes
+peak >= committed: yes
+limit in pages == dwTotalPageFile/pages: yes
+avail == (limit-committed) pages: yes
+a chunk was refused at the limit: yes, its error the commitment limit (1455): yes
+chunks committed before the limit: at least 2: yes
+NtAllocateVirtualMemory(32 MiB commit) past the limit: status=0xC000012D is 0xC000012D: yes
+after freeing every chunk, one more commits: yes err=-
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe reservelarge
+== reservelarge
+reserve 1 GiB: ok err=-
+over the reservation: state 0x2000: yes, protect 0x0: yes, region 1 GiB: yes, alloc base is it: yes, below 0x7FFF0000: yes
+NtQueryVirtualMemory over it: status=0x00000000 same state as VirtualQuery: yes
+commit 16 MiB at each end: head yes, tail yes
+the touched slices read back: head yes, tail yes
+over the committed head: state 0x1000: yes, region 16 MiB: yes
+over the still-reserved middle: state 0x2000: yes, region 1 GiB - 32 MiB: yes
+an interior commit: ok err=-
+then: state 0x1000 protect 0x4
+release the 1 GiB: ret=1 err=-
+after release: state 0x10000: yes
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe resetcommit
+== resetcommit
+VirtualAlloc(committed private, MEM_RESET): the address err=-
+then: state 0x1000 protect 0x4
+first dword zero after MEM_RESET: no
+VirtualAlloc(committed private, MEM_RESET|MEM_COMMIT): NULL err=87
+VirtualAlloc(NULL, MEM_RESET|MEM_COMMIT): NULL err=87
+VirtualAlloc(reserved, MEM_RESET): the address err=-
+then: state 0x2000 protect 0x0
+VirtualAlloc(reserved, MEM_RESET|MEM_COMMIT): NULL err=87
+VirtualAlloc(reserved, MEM_COMMIT): the address err=-
+then: state 0x1000 protect 0x4
+decommit half: ret=1 err=-
+the decommitted half: state 0x2000 protect 0x0
+the kept half: state 0x1000 protect 0x4
+recommit the half: ok err=-
+then: state 0x1000 protect 0x4
+first dword of the recommitted half zero: yes
+CreateFileMapping(paging, 1 MiB): ret=ok err=0
+MapViewOfFile: ret=ok err=-
+VirtualAlloc(the paging view, MEM_RESET): the address err=-
+then: state 0x1000 protect 0x4
+VirtualAlloc(the paging view, MEM_COMMIT): the address err=-
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe prottrans
+== prottrans
+committed PAGE_READONLY: IsBadWritePtr yes, IsBadReadPtr no
+VirtualProtect(to PAGE_READWRITE, 0x4): ret=1 old 0x2 err=-
+then: state 0x1000 protect 0x4
+now IsBadWritePtr no
+a write went through: yes
+VirtualProtect(to PAGE_NOACCESS, 0x1): ret=1 old 0x4 err=-
+then: state 0x1000 protect 0x1
+IsBadReadPtr yes, IsBadWritePtr yes
+VirtualProtect(to PAGE_EXECUTE_READ, 0x20): ret=1 old 0x1 err=-
+then: state 0x1000 protect 0x20
+VirtualProtect(bogus 0x40, 0x40): ret=1 old 0x20 err=-
+VirtualProtect(size 0, 0x4): ret=0 err=87
+VirtualProtect(the reserved region to PAGE_NOACCESS, 0x1): ret=0 err=487
+then: state 0x2000 protect 0x0
+NtProtectVirtualMemory to PAGE_READWRITE: status=0x00000000 old 0x40
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe sysinfo
+== sysinfo
+performance class: status=0x00000000 err=- retlen>=128: yes
+commit: limit pages == dwTotalPageFile/pages: yes, avail == (limit-committed): yes
+fault counts nonzero: page faults yes, demand zero yes, transitions yes, copy-on-write yes
+memory load 43 <= 100: yes
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe pageroundtrip
+== pageroundtrip
+pattern written, checksum taken: yes
+NtReadVirtualMemory of the first 64 KiB: status=0x00000000 bytes=65536 equal: yes
+NtWriteVirtualMemory of one byte: status=0x00000000 bytes=1 read back: yes
+the first 16 MiB intact after the second 16 MiB was written: yes
+the first region: state 0x1000 protect 0x4
+the second region: state 0x1000 protect 0x4
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe filepagein
+== filepagein
+CreateFileMapping(file, PAGE_READWRITE): ret=ok err=0
+FILE_MAP_READ view: yes
+the view reads the file's bytes: first yes, last yes
+NtQueryVirtualMemory over the view: status=0x00000000 type 0x40000 (MEM_MAPPED): yes state 0x1000: yes
+FILE_MAP_COPY view: yes
+the copy view's write: the read view still sees the file byte: yes
+the file unchanged while a copy view was mapped: yes
+FILE_MAP_WRITE view: yes
+the file changed after the write view was unmapped: yes
+a remap after the file changed on disk sees the new byte: yes
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe ntqueryvm
+== ntqueryvm
+free region: status=0x00000000 retlen==sizeof: yes state 0x10000: yes
+reserved: status=0x00000000 state 0x2000: yes protect 0x0: yes region 1 MiB: yes
+committed head of it: status=0x00000000 state 0x1000: yes protect 0x4: yes region 64 KiB: yes
+a 32 MiB commit over free space: status=0x00000000
+over the 32 MiB: status=0x00000000 state 0x1000: yes region 32 MiB: yes
+a paging-file view: status=0x00000000 state 0x1000: yes type 0x40000: yes
+the image: status=0x00000000 type 0x1000000: yes alloc base is the module: yes
+a 16-byte buffer: status=0xC0000004 is 0xC0000004 (info length mismatch): yes
+class 99: status=0xC0000003 is 0xC0000003 (invalid info class): yes
+vmdemand: done
+<<< exit code=0
+>>> vmdemand.exe trimpressure
+== trimpressure
+the first 16 MiB intact after the second 16 MiB: yes
+available commit still > 0: yes
+the first region after the pressure: status=0x00000000 still state 0x1000: yes
+vmdemand: done
+<<< exit code=0
